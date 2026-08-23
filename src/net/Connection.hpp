@@ -38,6 +38,12 @@ public:
         int one = 1;
         setsockopt(fd_, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
     }
+    // A send that cannot complete within this many seconds means the peer went
+    // away without closing (or is maliciously stalling us); fail the session.
+    void setSendTimeout(unsigned seconds) {
+        timeval tv{seconds, 0};
+        setsockopt(fd_, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    }
     // returns peer ip:port string (best effort)
     std::string peer() const {
         sockaddr_in addr{}; socklen_t sl = sizeof(addr);
@@ -155,6 +161,7 @@ private:
                 if (errno == EINTR) continue;
                 throw SocketClosedError(std::string("send: ") + strerror(errno));
             }
+            if (r == 0) throw SocketClosedError("send made no progress");
             p += r; n -= static_cast<std::size_t>(r);
         }
     }

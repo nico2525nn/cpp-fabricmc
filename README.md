@@ -25,7 +25,10 @@ automated comparison against captured reference-server wire data.
 | Block digging/placing with **sequence acknowledgement**, cross-player block updates | ✅ |
 | Tab list (`player_info` add/remove/update, listed flag), held-slot, abilities, health, time | ✅ |
 | Keep-alive (periodic + timeout kick) | ✅ |
-| Multiple concurrent players; edits persist in-memory across relogs | ✅ |
+| Multiple concurrent players: cross-visibility (**spawn/move/head/remove**), edits persist in-memory across relogs | ✅ |
+| Packet compression (zlib framing, threshold 256) | ✅ |
+| Command tree (`declare_commands`) + `/help`, `/ping`; respawn request handling | ✅ |
+| Periodic time sync, robust zombie-session reaping (send timeouts, idle sweep) | ✅ |
 
 Verified by four test layers — see *Testing* below. The hardest part, chunk
 serialization, is proven **byte-identical to a real reference server's output**
@@ -35,13 +38,16 @@ by golden tests.
 
 - No encryption/authentication (offline mode only). Online-mode needs the Mojang
   session servers + authlib semantics.
-- No compression on our link (legal per spec; vanilla always enables it — we skip
-  Set Compression entirely). Easy to add via zlib if needed.
-- No entity sync yet (players don't see each other's avatars move; tab/chat/blocks
-  are shared). Roadmap item #1.
-- No commands tree (`declare_commands` skipped), no recipes, no inventories UI,
-  no death/respawn flow beyond basics, no persistence across restarts (in-memory
-  world).
+- Online-mode authentication (offline mode only; needs Mojang session servers).
+- Recipes / advancements / full command tree with arguments (a literal-only
+  command tree — `/help`, `/ping` — is advertised and handled).
+- Inventory transactions, containers, item components (starter hotbar is given).
+- World persistence across restarts (in-memory edits survive relogs, not restarts).
+- **Fabric mods cannot run inside a C++ process.** Mods are JVM bytecode loaded
+  through the Fabric Loader; "Fabric-compatible" here means *protocol-compatible
+  with what an unmodded Fabric server puts on the wire*. A C++ server can speak
+  the same protocol but cannot host JVM mod logic. (A hybrid design — C++ proxy/
+  implementation beside a JVM head — is the usual industry answer.)
 - **Fabric mods cannot run inside a C++ process.** Mods are JVM bytecode loaded
   through the Fabric Loader; "Fabric-compatible" here means *protocol-compatible
   with what an unmodded Fabric server puts on the wire*. A C++ server can speak

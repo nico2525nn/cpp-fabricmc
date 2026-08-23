@@ -72,6 +72,10 @@ private:
     void onUseItemOn(ReadBuffer& in);
     void onUseItem(ReadBuffer& in);
     void onHeldSlot(ReadBuffer& in);
+    void handleRespawnRequest();
+    void sendDeclareCommands();
+    void onChatCommand(ReadBuffer& in);
+    void dispatchCommand(const std::string& line);
     void broadcastMovement();
     void broadcastSpawnEntity(Player* about);
     void onMovement(ReadBuffer& in, bool hasPos, bool hasRot);

@@ -57,6 +57,10 @@ void GameServer::runForever() {
             }
             for (auto& p : playersSnapshot()) {
                 if (!p->spawned) continue;
+                if (now - p->lastSeenMs > 60000) {           // hard idle sweep
+                    try { p->conn->close(); } catch (...) {}
+                    continue;
+                }
                 if (p->pendingKeepAlive != 0 && now - p->lastSeenMs > 30000) {
                     WriteBuffer reason;
                     nbt::writeTextComponent(reason, "Timed out");
@@ -102,6 +106,7 @@ void GameServer::acceptLoop() {
         std::thread([this, fd] {
             auto conn = std::make_unique<Connection>(fd);
             conn->setNoDelay();
+            conn->setSendTimeout(15);
             Session s(*this, std::move(conn));
             s.run();
         }).detach();
@@ -400,6 +405,7 @@ void Session::onEnterPlay() {
     }
 
     broadcastSpawnEntity(self_.get());
+    sendDeclareCommands();
 
     sendStarterInventory();
     {   // health (creative ignores but harmless)
@@ -413,6 +419,56 @@ void Session::onEnterPlay() {
 
     srv_.broadcastSystemText("\u00a7e" + self_->name + " joined the game", nullptr);
     sendSystemText("\u00a77Welcome to \u00a7bCppFabricMC\u00a77! Build with the hotbar, chat freely.");
+}
+
+static WriteBuffer makeWorldState(const ServerConfig& c) {
+    WriteBuffer w;
+    w.varint(0);                                   // dimension type index
+    w.string("minecraft:overworld");
+    w.i64(c.hashedSeed);
+    w.i8(1);                                       // gamemode creative
+    w.u8(255);                                     // previous gamemode: none
+    w.boolean(false);                              // is debug
+    w.boolean(true);                               // is flat
+    w.boolean(false);                              // has death location
+    w.varint(0);                                   // portal cooldown
+    w.varint(kSeaLevelFlat);
+    return w;
+}
+
+// Minimal command tree: root -> /help, /ping  (literals only)
+static void writeDeclareCommands(WriteBuffer& b) {
+    const char* literals[] = {"help", "ping"};
+    b.varint(3);                       // node count
+    // node0: root, children = {1,2}
+    b.u8(0x00);
+    b.varint(2); b.varint(1); b.varint(2);
+    for (const char* name : literals) {
+        b.u8(0x01 | 0x04);             // literal | executable
+        b.varint(0);                   // no children
+        b.string(name);
+    }
+    b.varint(0);                       // root index
+}
+
+void Session::sendDeclareCommands() {
+    WriteBuffer b;
+    writeDeclareCommands(b);
+    conn_->sendPacket(pl::sc::DeclareCommands, b);
+}
+
+void Session::handleRespawnRequest() {
+    WriteBuffer ws = makeWorldState(srv_.config());
+    WriteBuffer b;
+    b.raw(ws.data.data(), ws.data.size());
+    b.u8(0x03);                                    // keep metadata + attributes
+    conn_->sendPacket(pl::sc::Respawn, b);
+    {   // re-sync position & vitals
+        WriteBuffer hp;
+        hp.f32(20.f); hp.varint(20); hp.f32(5.f);
+        conn_->sendPacket(pl::sc::SetHealth, hp);
+    }
+    sendTeleport(self_->x, -60.0, self_->z, self_->yaw, self_->pitch);
 }
 
 void Session::sendJoinGame() {
@@ -429,16 +485,10 @@ void Session::sendJoinGame() {
     b.boolean(true);                               // respawn screen
     b.boolean(false);                              // do limited crafting
     // SpawnInfo
-    b.varint(0);                                   // dimension type index (overworld)
-    b.string("minecraft:overworld");
-    b.i64(c.hashedSeed);
-    b.i8(1);                                       // gamemode creative
-    b.u8(255);                                     // previous gamemode: none
-    b.boolean(false);                              // is debug
-    b.boolean(true);                               // is flat
-    b.boolean(false);                              // has death location
-    b.varint(0);                                   // portal cooldown
-    b.varint(kSeaLevelFlat);
+    {
+        WriteBuffer ws = makeWorldState(c);
+        b.raw(ws.data.data(), ws.data.size());
+    }
     b.boolean(false);                              // enforces secure chat
     conn_->sendPacket(pl::sc::Login, b);
 }
@@ -653,6 +703,7 @@ void Session::handlePlay() {
             break;
         }
         case pl::cs::ChatMessage:         onChatMessage(in); break;
+        case pl::cs::ChatCommand:         onChatCommand(in); break;
         case pl::cs::PlayerAction:        onPlayerAction(in); break;
         case pl::cs::UseItemOn:           onUseItemOn(in); break;
         case pl::cs::UseItem:             onUseItem(in); break;
@@ -682,6 +733,11 @@ void Session::handlePlay() {
             break;
         }
         case pl::cs::ChangeDifficulty: (void)in.u8(); break;
+        case pl::cs::ClientCommand: {
+            const std::int32_t action = in.varint();
+            if (action == 0) handleRespawnRequest();
+            break;
+        }
         case pl::cs::PlayerInput: in.skipRest(); break;
         case pl::cs::MoveVehicle: in.skipRest(); break;
         case pl::cs::SignUpdate: in.skipRest(); break;
@@ -785,18 +841,22 @@ void Session::onChatMessage(ReadBuffer& in) {
     (void)in.varint();                               // offset
     in.bytes(3);                                     // acknowledged
 
-    if (!msg.empty() && msg[0] == '/') {
-        if (msg.rfind("/ping", 0) == 0)
-            sendSystemText("\u00a7aPong!");
-        else if (msg.rfind("/help", 0) == 0)
-            sendSystemText("\u00a77Commands: /ping /help");
-        else
-            sendSystemText("\u00a7cUnknown command: " + msg);
-        return;
-    }
-    srv_.broadcastSystemText("<" + self_->name + "> " + msg, nullptr);
-    // also show to self
-    sendSystemText("<" + self_->name + "> " + msg);
+    if (!msg.empty() && msg[0] == '/') return dispatchCommand(msg.substr(1));
+    const std::string line = "<" + self_->name + "> " + msg;
+    srv_.broadcastSystemText(line, nullptr);
+    sendSystemText(line);
+}
+
+void Session::onChatCommand(ReadBuffer& in) {
+    const std::string cmd = in.string(256);
+    dispatchCommand(cmd);
+}
+
+void Session::dispatchCommand(const std::string& line) {
+    const std::string head = line.substr(0, line.find(' '));
+    if (head == "ping") sendSystemText("\u00a7aPong!");
+    else if (head == "help") sendSystemText("\u00a77Commands: /ping /help");
+    else sendSystemText("\u00a7cUnknown command: /" + line);
 }
 
 void Session::onHeldSlot(ReadBuffer& in) {

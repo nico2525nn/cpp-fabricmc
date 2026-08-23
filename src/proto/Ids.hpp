@@ -110,6 +110,7 @@ constexpr std::uint8_t SetDefaultSpawn = 0x5B;
 constexpr std::uint8_t SetCenterChunk = 0x58;
 constexpr std::uint8_t SetHeldSlot = 0x63;
 constexpr std::uint8_t SetHealth = 0x62;
+constexpr std::uint8_t DeclareCommands = 0x11;
 constexpr std::uint8_t SetTime = 0x6B;
 constexpr std::uint8_t CustomPayload = 0x19;
 constexpr std::uint8_t SystemChat = 0x73;
