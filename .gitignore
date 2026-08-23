@@ -1,4 +1,6 @@
-build/
+build*
 *.o
 server.properties
 world/
+__pycache__/
+captures/

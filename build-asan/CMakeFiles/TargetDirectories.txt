@@ -1,4 +1,0 @@
-/run/media/nico/d/学校/app/cpp-fabricmc/build-asan/CMakeFiles/cppfm.dir
-/run/media/nico/d/学校/app/cpp-fabricmc/build-asan/CMakeFiles/test_golden.dir
-/run/media/nico/d/学校/app/cpp-fabricmc/build-asan/CMakeFiles/edit_cache.dir
-/run/media/nico/d/学校/app/cpp-fabricmc/build-asan/CMakeFiles/rebuild_cache.dir
