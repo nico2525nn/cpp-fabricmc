@@ -30,7 +30,10 @@ public:
         for (auto* r : kRegistries) {
             RegistryBlob blob;
             blob.body = readFile(dir + "/registry_" + r + ".bin");
-            blob.key = restoreKey(r);
+            {   // canonical key = first string inside the blob body
+                ReadBuffer in(blob.body);
+                blob.key = in.string();
+            }
             registries_.push_back(std::move(blob));
         }
         tags_ = readFile(dir + "/tags.bin");

@@ -1,0 +1,9 @@
+# server.properties (subset understood by CppFabricMC)
+server-port=25565
+max-players=20
+view-distance=6
+simulation-distance=10
+motd=CppFabricMC - C++ Minecraft 1.21.4 server
+
+# Vanilla keys that are intentionally ignored (offline-mode research server):
+# online-mode, level-type, generator-settings, enforce-secure-profile

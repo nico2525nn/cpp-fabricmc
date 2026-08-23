@@ -63,6 +63,13 @@ public:
         frame.insert(frame.end(), body, body + n);
         sendAll(frame.data(), frame.size());
     }
+    void sendPacketBuf(std::uint8_t id, const std::vector<std::uint8_t>& payload) {
+        std::lock_guard lk(tx_);
+        if (!isOpen()) throw SocketClosedError("closed");
+        WriteBuffer head;
+        head.u8(id);
+        writeFrameRaw2(head.data.data(), head.data.size(), payload.data(), payload.size());
+    }
     void sendPacket(std::uint8_t id, const WriteBuffer& payload) {
         std::lock_guard lk(tx_);
         if (!isOpen()) throw SocketClosedError("closed");

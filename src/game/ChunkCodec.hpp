@@ -164,20 +164,16 @@ inline void packHeightmapsNbt(WriteBuffer& out, const Chunk* chunk) {
 
 // Serializes LevelChunkWithLight body (packet id excluded).
 // biomeRegistryIndex: this world's biome id inside the synced registry order.
-inline void serializeLevelChunk(WriteBuffer& out, std::int32_t cx, std::int32_t cz,
-                                const World& world, std::uint32_t biomeRegistryIndex,
-                                const std::string& biomeKeyForDebug = {}) {
-    (void)biomeKeyForDebug;
-    world.generateChunkIfMissing(cx, cz);
-    const Chunk* chunk = world.tryGet(cx, cz);
-
+// Full LevelChunkWithLight body given an already-locked chunk reference.
+inline void serializeLevelChunkBody(WriteBuffer& out, std::int32_t cx, std::int32_t cz,
+                                    const Chunk& chunk, std::uint32_t biomeRegistryIndex) {
     out.i32(cx);
     out.i32(cz);
 
-    packHeightmapsNbt(out, chunk);
+    packHeightmapsNbt(out, &chunk);
 
     WriteBuffer blob;
-    serializeSectionData(blob, chunk, biomeRegistryIndex);
+    serializeSectionData(blob, &chunk, biomeRegistryIndex);
     out.varint(static_cast<std::int32_t>(blob.data.size()));
     out.raw(blob.data.data(), blob.data.size());
 
@@ -191,16 +187,16 @@ inline void serializeLevelChunk(WriteBuffer& out, std::int32_t cx, std::int32_t 
         int minH = INT_MAX, maxH = INT_MIN;
         for (int z = 0; z < 16; ++z)
             for (int x = 0; x < 16; ++x) {
-                int h = columnSurface(*chunk, x, z);
+                int h = columnSurface(chunk, x, z);
                 minH = std::min(minH, h); maxH = std::max(maxH, h);
             }
-        const int secBot = s * 16, secTop = s * 16 + 16;   // chunk-relative
+        const int secBot = s * 16, secTop = s * 16 + 16;
         if (maxH <= secBot) {                              // solid below surface
             emptySkyMask[s / 64] |= 1LL << (s % 64);
         } else if (minH < secTop) {                        // intersects surface band
             skyMask[s / 64] |= 1LL << (s % 64);
             std::vector<std::uint8_t> arr;
-            sectionSkyLight(arr, *chunk, s);
+            sectionSkyLight(arr, chunk, s);
             skyArrays.push_back(std::move(arr));
         }                                                  // else: implicitly bright
     }
@@ -210,6 +206,16 @@ inline void serializeLevelChunk(WriteBuffer& out, std::int32_t cx, std::int32_t 
     writeMaskArray(out, {});                               // empty block light mask
     writeLightArrays(out, skyArrays);
     writeLightArrays(out, {});                             // block light arrays
+}
+
+inline void serializeLevelChunk(WriteBuffer& out, std::int32_t cx, std::int32_t cz,
+                                const World& world, std::uint32_t biomeRegistryIndex,
+                                const std::string& biomeKeyForDebug = {}) {
+    (void)biomeKeyForDebug;
+    world.generateChunkIfMissing(cx, cz);
+    world.withChunk(cx, cz, [&](const Chunk& chunk) {
+        serializeLevelChunkBody(out, cx, cz, chunk, biomeRegistryIndex);
+    });
 }
 
 } // namespace cppfm

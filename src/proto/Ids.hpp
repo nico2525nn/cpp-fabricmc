@@ -79,6 +79,7 @@ constexpr std::uint8_t MovePlayerRot = 0x1E;
 constexpr std::uint8_t MovePlayerStatusOnly = 0x1F;
 constexpr std::uint8_t MoveVehicle = 0x20;
 constexpr std::uint8_t PingRequest = 0x24;
+constexpr std::uint8_t PlayerLoaded = 0x2A;
 constexpr std::uint8_t ChangeDifficulty = 0x03;
 constexpr std::uint8_t HeldItemSlot = 0x33;
 constexpr std::uint8_t PlayerAction = 0x27;

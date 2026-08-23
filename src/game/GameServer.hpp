@@ -38,6 +38,8 @@ struct Player {
     std::int32_t heldSlot = 0;
     std::int64_t lastSeenMs = 0;
     std::int64_t pendingKeepAlive = 0;
+    std::int64_t lastKeepAliveSentMs = 0;
+    std::int64_t keepAliveCounter = 0;
     bool spawned = false;          // entered PLAY & confirmed position
     Connection* conn = nullptr;
 };
@@ -86,8 +88,8 @@ private:
     std::unique_ptr<Connection> conn_;
     enum class State { Handshake, Status, Login, Configuration, Play, Done };
     State state_ = State::Handshake;
-    Player player_{};                 // owned per-session copy; registry holds pointer
-    Player* registered_ = nullptr;    // pointer while present in server registry
+    std::shared_ptr<Player> self_ = std::make_shared<Player>();
+    bool registered_ = false;         // present in server registry
     std::int32_t teleportId_ = 1;
     bool chunksStreamed_ = false;
     std::int32_t lastCx_ = INT32_MAX, lastCz_ = INT32_MAX;
@@ -111,7 +113,8 @@ public:
     EmbeddedData& data() { return data_; }
     bool running() const { return running_; }
 
-    std::vector<Player*> playersSnapshot() {
+    using PlayerRef = std::shared_ptr<Player>;
+    std::vector<PlayerRef> playersSnapshot() {
         std::lock_guard lk(playersMtx_);
         return players_;
     }
@@ -119,10 +122,11 @@ public:
         std::lock_guard lk(playersMtx_);
         return players_.size();
     }
-    void addPlayer(Player* p) { std::lock_guard lk(playersMtx_); players_.push_back(p); }
-    void removePlayer(Player* p) {
+    std::int32_t nextEntityId() { return entityIdCounter_++; }
+    void addPlayer(PlayerRef p) { std::lock_guard lk(playersMtx_); players_.push_back(std::move(p)); }
+    void removePlayer(const Player* p) {
         std::lock_guard lk(playersMtx_);
-        std::erase(players_, p);
+        std::erase_if(players_, [p](const PlayerRef& e) { return e.get() == p; });
     }
 
     void broadcastSystemText(const std::string& text, Player* except = nullptr) {
@@ -132,8 +136,8 @@ public:
         broadcastPacketExcept(except, proto::pl::sc::SystemChat, body);
     }
     void broadcastPacketExcept(Player* except, std::uint8_t id, const WriteBuffer& body) {
-        for (auto* p : playersSnapshot()) {
-            if (p == except || !p->spawned) continue;
+        for (auto& p : playersSnapshot()) {
+            if (p.get() == except || !p->spawned) continue;
             try { p->conn->sendPacket(id, body); } catch (...) {}
         }
     }
@@ -143,6 +147,29 @@ public:
         b.position(x, y, z);
         b.varint(state);
         broadcastPacketExcept(nullptr, proto::pl::sc::BlockUpdate, b);
+        invalidateChunkCache(x >> 4, z >> 4);
+    }
+    // Serialized-chunk cache: shared across players; keyed by chunk, invalidated
+    // by world revision on edits.
+    using ChunkBodyRef = std::shared_ptr<const std::vector<std::uint8_t>>;
+    bool getCachedChunk(std::int32_t cx, std::int32_t cz, std::uint32_t biomeIdx,
+                        ChunkBodyRef& out) {
+        const std::int64_t k = chunkKey(cx, cz);
+        std::lock_guard lk(chunkCacheMtx_);
+        auto it = chunkCache_.find(k);
+        if (it == chunkCache_.end()) return false;
+        out = it->second.body;
+        (void)biomeIdx;
+        return true;
+    }
+    void storeChunk(std::int32_t cx, std::int32_t cz, std::uint64_t rev, ChunkBodyRef body) {
+        std::lock_guard lk(chunkCacheMtx_);
+        if (chunkCache_.size() > 1024) chunkCache_.clear();   // simple bound
+        chunkCache_[chunkKey(cx, cz)] = {rev, std::move(body)};
+    }
+    void invalidateChunkCache(std::int32_t cx, std::int32_t cz) {
+        std::lock_guard lk(chunkCacheMtx_);
+        chunkCache_.erase(chunkKey(cx, cz));
     }
 
 private:
@@ -151,10 +178,14 @@ private:
     ServerConfig cfg_;
     World world_;
     EmbeddedData data_;
-    std::vector<Player*> players_;
+    std::vector<PlayerRef> players_;
     std::mutex playersMtx_;
+    struct CachedChunk { std::uint64_t rev; ChunkBodyRef body; };
+    std::unordered_map<std::int64_t, CachedChunk> chunkCache_;
+    std::mutex chunkCacheMtx_;
     std::atomic<bool> running_{true};
     int listenFd_ = -1;
+    std::int32_t entityIdCounter_ = 1;
 };
 
 } // namespace cppfm

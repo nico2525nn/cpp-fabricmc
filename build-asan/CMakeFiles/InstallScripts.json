@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"/run/media/nico/d/\u5b66\u6821/app/cpp-fabricmc/build-asan/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

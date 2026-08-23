@@ -41,6 +41,32 @@ static std::vector<HotbarEntry> g_hotbar = resolveHotbar();
 // ================================================================== GameServer
 
 void GameServer::runForever() {
+    std::thread janitor([this] {
+        while (running_) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            const auto now = nowMs();
+            for (auto& p : playersSnapshot()) {
+                if (!p->spawned) continue;
+                if (p->pendingKeepAlive != 0 && now - p->lastSeenMs > 30000) {
+                    WriteBuffer reason;
+                    nbt::writeTextComponent(reason, "Timed out");
+                    try { p->conn->sendPacket(pl::sc::Disconnect, reason); } catch (...) {}
+                    try { p->conn->close(); } catch (...) {}
+                    continue;
+                }
+                if (now - p->lastKeepAliveSentMs >= 10000) {
+                    const std::int64_t id = ++p->keepAliveCounter;
+                    p->pendingKeepAlive = id;
+                    p->lastKeepAliveSentMs = now;
+                    WriteBuffer b;
+                    b.i64(id);
+                    try { p->conn->sendPacket(pl::sc::KeepAlive, b); } catch (...) {}
+                }
+            }
+        }
+    });
+    janitor.detach();
+
     listenFd_ = ::socket(AF_INET, SOCK_STREAM, 0);
     if (listenFd_ < 0) throw std::runtime_error("socket() failed");
     int one = 1;
@@ -110,13 +136,13 @@ void Session::run() {
                      conn_->peer().c_str(), e.what());
     }
     if (registered_) {
-        srv_.broadcastSystemText("\u00a7e" + player_.name + " left the game", registered_);
+        srv_.broadcastSystemText("\u00a7e" + self_->name + " left the game", nullptr);
         WriteBuffer rm;
         rm.varint(1);
-        rm.uuid(player_.uuid.data());
-        srv_.broadcastPacketExcept(registered_, pl::sc::PlayerInfoRemove, rm);
-        srv_.removePlayer(registered_);
-        registered_ = nullptr;
+        rm.uuid(self_->uuid.data());
+        srv_.broadcastPacketExcept(nullptr, pl::sc::PlayerInfoRemove, rm);
+        srv_.removePlayer(self_.get());
+        registered_ = false;
     }
 }
 
@@ -185,15 +211,15 @@ void Session::handleLogin() {
     ReadBuffer in(frame);
     if (in.u8() != lo::cs::Hello) throw std::runtime_error("expected login hello");
 
-    player_.name = in.string(16);
+    self_->name = in.string(16);
     auto uuidBytes = in.bytes(16);
-    std::copy(uuidBytes.begin(), uuidBytes.end(), player_.uuid.begin());
-    player_.entityId = 0; // set on play entry
+    std::copy(uuidBytes.begin(), uuidBytes.end(), self_->uuid.begin());
+    self_->entityId = 0; // set on play entry
 
     // login success: uuid, name, empty property list (verified against capture)
     WriteBuffer ok;
-    ok.uuid(player_.uuid.data());
-    ok.string(player_.name);
+    ok.uuid(self_->uuid.data());
+    ok.string(self_->name);
     ok.varint(0);                                   // properties count
     conn_->sendPacket(lo::sc::GameProfile, ok);
 
@@ -310,8 +336,9 @@ packsDone:
 // ------------------------------------------------------------------ play join
 
 void Session::onEnterPlay() {
-    player_.conn = conn_.get();
-    player_.lastSeenMs = nowMs();
+    self_->conn = conn_.get();
+    self_->entityId = srv_.nextEntityId();
+    self_->lastSeenMs = nowMs();
 
     sendJoinGame();
     sendAbilities();
@@ -338,9 +365,9 @@ void Session::onEnterPlay() {
 
     sendPlayerInfoAddSelf();
     // tell everyone about us / tell us about everyone
-    broadcastPlayerInfoAdd(&player_);
-    for (auto* other : srv_.playersSnapshot()) {
-        if (other == registered_) continue;
+    broadcastPlayerInfoAdd(self_.get());
+    for (auto& other : srv_.playersSnapshot()) {
+        if (other.get() == self_.get()) continue;
         WriteBuffer add;
         add.u8(0x01 | 0x08);                       // add_player | update_listed
         add.varint(1);
@@ -358,17 +385,17 @@ void Session::onEnterPlay() {
         conn_->sendPacket(pl::sc::SetHealth, b);
     }
 
-    registered_ = &player_;
-    srv_.addPlayer(registered_);
+    registered_ = true;
+    srv_.addPlayer(self_);
 
-    srv_.broadcastSystemText("\u00a7e" + player_.name + " joined the game", registered_);
+    srv_.broadcastSystemText("\u00a7e" + self_->name + " joined the game", nullptr);
     sendSystemText("\u00a77Welcome to \u00a7bCppFabricMC\u00a77! Build with the hotbar, chat freely.");
 }
 
 void Session::sendJoinGame() {
     const ServerConfig& c = srv_.config();
     WriteBuffer b;
-    b.i32(player_.entityId);
+    b.i32(self_->entityId);
     b.boolean(false);                              // hardcore
     b.varint(1);                                   // worlds[]
     b.string("minecraft:overworld");
@@ -402,8 +429,8 @@ void Session::sendAbilities() {
 }
 
 void Session::sendTeleport(double x, double y, double z, float yaw, float pitch) {
-    player_.x = x; player_.y = y; player_.z = z;
-    player_.yaw = yaw; player_.pitch = pitch;
+    self_->x = x; self_->y = y; self_->z = z;
+    self_->yaw = yaw; self_->pitch = pitch;
     WriteBuffer b;
     b.varint(++teleportId_);
     b.f64(x); b.f64(y); b.f64(z);
@@ -417,8 +444,8 @@ void Session::sendPlayerInfoAddSelf() {
     WriteBuffer add;
     add.u8(0x01 | 0x04 | 0x08);                    // add_player | update_game_mode | update_listed
     add.varint(1);
-    add.uuid(player_.uuid.data());
-    add.string(player_.name);
+    add.uuid(self_->uuid.data());
+    add.string(self_->name);
     add.varint(0);                                 // properties
     add.varint(1);                                 // gamemode creative
     add.varint(1);                                 // listed
@@ -466,17 +493,28 @@ void Session::sendSystemText(const std::string& text) {
 // ------------------------------------------------------------------ chunking
 
 void Session::sendChunk(std::int32_t cx, std::int32_t cz) {
-    const std::uint32_t biomeIdx =
-        srv_.data().biomeIndex(srv_.config().worldBiome);
-    WriteBuffer body;
-    serializeLevelChunk(body, cx, cz, srv_.world(), biomeIdx);
-    conn_->sendPacket(pl::sc::LevelChunkWithLight, body);
+    static const std::uint32_t biomeIdx = srv_.data().biomeIndex(srv_.config().worldBiome);
+    GameServer::ChunkBodyRef body;
+    if (!srv_.getCachedChunk(cx, cz, biomeIdx, body)) {
+        auto fresh = std::make_shared<const std::vector<std::uint8_t>>([&]{
+            WriteBuffer wb;
+            srv_.world().generateChunkIfMissing(cx, cz);
+            srv_.world().withChunk(cx, cz, [&](const Chunk& c) {
+                serializeLevelChunkBody(wb, cx, cz, c, biomeIdx);
+            });
+            return wb.data;
+        }());
+        srv_.storeChunk(cx, cz, 0, fresh);
+        body = fresh;
+    }
+    conn_->sendPacketBuf(pl::sc::LevelChunkWithLight, *body);
     sentChunks_.insert(chunkKey(cx, cz));
 }
 
 void Session::streamInitialChunks() {
+    std::fprintf(stderr, "[cppfm] %s: streaming initial chunks\n", self_->name.c_str());
     chunksStreamed_ = true;
-    tickChunksAround(player_.x, player_.z);
+    tickChunksAround(self_->x, self_->z);
 }
 
 void Session::tickChunksAround(double px, double pz) {
@@ -545,7 +583,7 @@ void Session::handlePlay() {
     for (;;) {
         auto frame = conn_->readFrame();
         ReadBuffer in(frame);
-        player_.lastSeenMs = nowMs();
+        self_->lastSeenMs = nowMs();
         switch (in.u8()) {
         case pl::cs::AcceptTeleportation: {
             in.varint();
@@ -558,8 +596,8 @@ void Session::handlePlay() {
         case pl::cs::MovePlayerStatusOnly:onMovement(in, false, false);break;
         case pl::cs::KeepAlive: {
             const std::int64_t id = in.i64();
-            if (player_.pendingKeepAlive == 0 || id == player_.pendingKeepAlive) {
-                player_.pendingKeepAlive = 0;
+            if (self_->pendingKeepAlive == 0 || id == self_->pendingKeepAlive) {
+                self_->pendingKeepAlive = 0;
                 WriteBuffer b; b.i64(id);
                 conn_->sendPacket(pl::sc::KeepAlive, b);
             }
@@ -578,6 +616,9 @@ void Session::handlePlay() {
             break;
         }
         case pl::cs::ClientTickEnd: break;
+        case pl::cs::PlayerLoaded:                    // 0x2a
+            if (!chunksStreamed_) streamInitialChunks();
+            break;
         case pl::cs::Swing: break;
         case pl::cs::SetCreativeModeSlot: {
             // parse defensively: plain items only; bail out on components
@@ -607,22 +648,22 @@ void Session::handlePlay() {
 
 void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
     if (hasPos) {
-        player_.x = in.f64();
-        player_.y = in.f64();
-        player_.z = in.f64();
+        self_->x = in.f64();
+        self_->y = in.f64();
+        self_->z = in.f64();
     }
     if (hasRot) {
-        player_.yaw = in.f32();
-        player_.pitch = in.f32();
+        self_->yaw = in.f32();
+        self_->pitch = in.f32();
     }
-    player_.onGround = in.boolean();
+    self_->onGround = in.boolean();
     if (hasPos) {
-        const double dy = player_.y;
+        const double dy = self_->y;
         if (dy < -2048.0 || dy > 2048.0)
             throw std::runtime_error("player moved out of world bounds");
-        player_.spawned = true;
+        self_->spawned = true;
         if (!chunksStreamed_) streamInitialChunks();
-        else tickChunksAround(player_.x, player_.z);
+        else tickChunksAround(self_->x, self_->z);
     }
 }
 
@@ -643,14 +684,14 @@ void Session::onChatMessage(ReadBuffer& in) {
             sendSystemText("\u00a7cUnknown command: " + msg);
         return;
     }
-    srv_.broadcastSystemText("<" + player_.name + "> " + msg, nullptr);
+    srv_.broadcastSystemText("<" + self_->name + "> " + msg, nullptr);
     // also show to self
-    sendSystemText("<" + player_.name + "> " + msg);
+    sendSystemText("<" + self_->name + "> " + msg);
 }
 
 void Session::onHeldSlot(ReadBuffer& in) {
     const std::int16_t slot = in.i16();
-    if (slot >= 0 && slot < 9) player_.heldSlot = slot;
+    if (slot >= 0 && slot < 9) self_->heldSlot = slot;
 }
 
 void Session::onPlayerAction(ReadBuffer& in) {
@@ -690,8 +731,8 @@ void Session::onUseItemOn(ReadBuffer& in) {
     const std::int32_t tx = x + FX[d], ty = y + FY[d], tz = z + FZ[d];
 
     if (srv_.world().getBlock(tx, ty, tz) == 0 &&
-        player_.heldSlot < static_cast<std::int32_t>(g_hotbar.size())) {
-        const auto& entry = g_hotbar[static_cast<std::size_t>(player_.heldSlot)];
+        self_->heldSlot < static_cast<std::int32_t>(g_hotbar.size())) {
+        const auto& entry = g_hotbar[static_cast<std::size_t>(self_->heldSlot)];
         srv_.world().setBlock(tx, ty, tz, entry.stateId);
         srv_.broadcastBlockChange(tx, ty, tz, entry.stateId);
     }

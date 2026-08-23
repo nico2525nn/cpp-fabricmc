@@ -40,6 +40,7 @@ public:
     explicit World(std::string biomeKey) : biome_(std::move(biomeKey)) {}
 
     // NOTE: logically const (lazy generation); mutex is mutable
+    // Double-checked, atomic lazy generation (safe under concurrent joins).
     void generateChunkIfMissing(std::int32_t cx, std::int32_t cz) const {
         {
             std::shared_lock lock(mutex_);
@@ -48,7 +49,17 @@ public:
         auto c = std::make_unique<Chunk>();
         fillFlat(*c);
         std::unique_lock lock(mutex_);
-        chunks_[chunkKey(cx, cz)] = std::move(c);
+        chunks_.try_emplace(chunkKey(cx, cz), std::move(c));  // never replaces
+    }
+    // Runs fn(chunk) while holding the world read lock. Use for any access that
+    // must not race with chunk replacement or edits.
+    template <typename Fn>
+    bool withChunk(std::int32_t cx, std::int32_t cz, Fn&& fn) const {
+        std::shared_lock lock(mutex_);
+        auto it = chunks_.find(chunkKey(cx, cz));
+        if (it == chunks_.end()) return false;
+        fn(*it->second);
+        return true;
     }
     bool hasChunk(std::int32_t cx, std::int32_t cz) const {
         std::shared_lock lock(mutex_);
