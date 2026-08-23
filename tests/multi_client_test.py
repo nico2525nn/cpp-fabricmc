@@ -24,6 +24,9 @@ class Bot:
         self.chunks = set()
         self.confirmed = False
         self.infos = []
+        self.spawns = []
+        self.moves = []
+        self.times = 0
         self.last_move = 0.0
     def pump(self, seconds=1.0, move=True):
         t_end = time.time() + seconds
@@ -51,6 +54,12 @@ class Bot:
                 self.updates.append(data)
             elif pid == 0x40:
                 self.infos.append(data)
+            elif pid == 0x01:
+                self.spawns.append(data)
+            elif pid in (0x2f, 0x30, 0x77):
+                self.moves.append(data)
+            elif pid == 0x6b:
+                self.times += 1
             now = time.time()
             if move and now - self.last_move > 0.35 and not self.confirmed:
                 pass
@@ -69,6 +78,13 @@ b.pump(2.5)
 # B should have seen A's join message among chat packets
 sees_alice_tab = any(b"AliceBot" in d for d in b.infos)
 check(sees_alice_tab, "B has A in tab list via player_info")
+check(len(b.spawns) >= 1, f"B received A's spawn_entity ({len(b.spawns)})")
+
+# A moves; B must see relative movement / teleport
+a.c.send_packet_raw(0x1d, struct.pack(">ddd", 9.5, -60.0, 8.5) + struct.pack(">ff", 45.0, 10.0) + b"\x01")
+time.sleep(0.7); b.pump(0.5)
+check(len(b.moves) >= 1, f"B sees A's movement ({len(b.moves)} move pkts)")
+check(b.times >= 1, f"B receives periodic time updates ({b.times})")
 
 # A digs a distinctive block; both should get the update
 def pack_pos(x, y, z):

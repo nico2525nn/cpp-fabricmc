@@ -35,6 +35,7 @@ static void loadProperties(ServerConfig& c, const std::string& path) {
             else if (k == "view-distance") c.viewDistance = std::clamp(std::stoi(v), 2, 32);
             else if (k == "simulation-distance") c.simulationDistance = std::clamp(std::stoi(v), 2, 32);
             else if (k == "motd") c.motd = v;
+        else if (k == "compression-threshold") c.compressionThreshold = std::stoi(v);
         } catch (...) {}
     }
 }

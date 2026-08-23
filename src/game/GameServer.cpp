@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cmath>
 #include "../generated/ItemIds.hpp"
+#include "../generated/EntityIds.hpp"
 #include <cerrno>
 
 namespace cppfm {
@@ -45,6 +46,15 @@ void GameServer::runForever() {
         while (running_) {
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
             const auto now = nowMs();
+            static std::int64_t lastTime = 0;
+            if (now - lastTime >= 1000) {
+                lastTime = now;
+                WriteBuffer t;
+                t.i64(0);                    // age
+                t.i64(now / 50 % 24000);     // day time from wall clock
+                t.boolean(true);             // tick daylight
+                broadcastPacketExcept(nullptr, pl::sc::SetTime, t);
+            }
             for (auto& p : playersSnapshot()) {
                 if (!p->spawned) continue;
                 if (p->pendingKeepAlive != 0 && now - p->lastSeenMs > 30000) {
@@ -141,6 +151,10 @@ void Session::run() {
         rm.varint(1);
         rm.uuid(self_->uuid.data());
         srv_.broadcastPacketExcept(nullptr, pl::sc::PlayerInfoRemove, rm);
+        WriteBuffer ent;
+        ent.varint(1);
+        ent.varint(self_->entityId);
+        srv_.broadcastPacketExcept(nullptr, pl::sc::RemoveEntities, ent);
         srv_.removePlayer(self_.get());
         registered_ = false;
     }
@@ -215,6 +229,13 @@ void Session::handleLogin() {
     auto uuidBytes = in.bytes(16);
     std::copy(uuidBytes.begin(), uuidBytes.end(), self_->uuid.begin());
     self_->entityId = 0; // set on play entry
+
+    if (srv_.config().compressionThreshold >= 0) {
+        WriteBuffer sc;
+        sc.varint(srv_.config().compressionThreshold);
+        conn_->sendPacket(lo::sc::SetCompression, sc);
+        conn_->setCompression(srv_.config().compressionThreshold);
+    }
 
     // login success: uuid, name, empty property list (verified against capture)
     WriteBuffer ok;
@@ -378,6 +399,8 @@ void Session::onEnterPlay() {
         conn_->sendPacket(pl::sc::PlayerInfoUpdate, add);
     }
 
+    broadcastSpawnEntity(self_.get());
+
     sendStarterInventory();
     {   // health (creative ignores but harmless)
         WriteBuffer b;
@@ -438,6 +461,32 @@ void Session::sendTeleport(double x, double y, double z, float yaw, float pitch)
     b.f32(yaw); b.f32(pitch);
     b.u32(0);                                      // relatives flags: absolute all
     conn_->sendPacket(pl::sc::PlayerPosition, b);
+}
+
+static WriteBuffer makeSpawnEntity(const Player& p) {
+    WriteBuffer b;
+    b.varint(p.entityId);
+    b.uuid(p.uuid.data());
+    b.varint(static_cast<std::int32_t>(gen::kPlayerEntityTypeId));
+    b.f64(p.x); b.f64(p.y); b.f64(p.z);
+    const auto toAngle = [](float deg) { return static_cast<std::uint8_t>(deg * 256.f / 360.f); };
+    b.i8(static_cast<std::int8_t>(toAngle(p.pitch)));
+    b.i8(static_cast<std::int8_t>(toAngle(p.yaw)));
+    b.i8(static_cast<std::int8_t>(toAngle(p.yaw)));   // head pitch
+    b.varint(0);                                      // object data
+    b.i16(0); b.i16(0); b.i16(0);                     // velocity
+    return b;
+}
+
+void Session::broadcastSpawnEntity(Player* about) {
+    WriteBuffer b = makeSpawnEntity(*about);
+    srv_.broadcastPacketExcept(about, pl::sc::SpawnEntity, b);
+    // also tell the newcomer about everyone else
+    for (auto& other : srv_.playersSnapshot()) {
+        if (other.get() == about || !other->spawned) continue;
+        WriteBuffer ob = makeSpawnEntity(*other);
+        try { about->conn->sendPacket(pl::sc::SpawnEntity, ob); } catch (...) {}
+    }
 }
 
 void Session::sendPlayerInfoAddSelf() {
@@ -658,13 +707,74 @@ void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
     }
     self_->onGround = in.boolean();
     if (hasPos) {
-        const double dy = self_->y;
-        if (dy < -2048.0 || dy > 2048.0)
+        if (self_->y < -2048.0 || self_->y > 2048.0)
             throw std::runtime_error("player moved out of world bounds");
         self_->spawned = true;
         if (!chunksStreamed_) streamInitialChunks();
         else tickChunksAround(self_->x, self_->z);
     }
+    broadcastMovement();
+}
+
+void Session::broadcastMovement() {
+    if (!self_->spawned) return;
+    const bool first = !hasSent_;
+    const double dx = first ? 0 : self_->x - sentX_;
+    const double dy = first ? 0 : self_->y - sentY_;
+    const double dz = first ? 0 : self_->z - sentZ_;
+    const bool rotated = first || self_->yaw != sentYaw_ || self_->pitch != sentPitch_;
+
+    constexpr double kMaxRel = 7.999;              // i16 fixed point range /4096
+    if (!first && dx*dx + dy*dy + dz*dz > 0.0001) {
+        if (std::abs(dx) < kMaxRel && std::abs(dy) < kMaxRel && std::abs(dz) < kMaxRel) {
+            if (rotated) {
+                WriteBuffer b;
+                b.varint(self_->entityId);
+                b.i16(static_cast<std::int16_t>(dx * 4096));
+                b.i16(static_cast<std::int16_t>(dy * 4096));
+                b.i16(static_cast<std::int16_t>(dz * 4096));
+                b.i8(static_cast<std::int8_t>(self_->yaw * 256.f / 360.f));
+                b.i8(static_cast<std::int8_t>(self_->pitch * 256.f / 360.f));
+                b.boolean(self_->onGround);
+                srv_.broadcastPacketExcept(nullptr, pl::sc::MoveEntityPosRot, b);
+            } else {
+                WriteBuffer b;
+                b.varint(self_->entityId);
+                b.i16(static_cast<std::int16_t>(dx * 4096));
+                b.i16(static_cast<std::int16_t>(dy * 4096));
+                b.i16(static_cast<std::int16_t>(dz * 4096));
+                b.boolean(self_->onGround);
+                srv_.broadcastPacketExcept(nullptr, pl::sc::MoveEntityPos, b);
+            }
+            WriteBuffer h;
+            h.varint(self_->entityId);
+            h.i8(static_cast<std::int8_t>(self_->yaw * 256.f / 360.f));
+            srv_.broadcastPacketExcept(nullptr, pl::sc::RotateHead, h);
+        } else {                                    // teleport-class delta
+            WriteBuffer b;
+            b.varint(self_->entityId);
+            b.f64(self_->x); b.f64(self_->y); b.f64(self_->z);
+            b.i8(static_cast<std::int8_t>(self_->yaw * 256.f / 360.f));
+            b.i8(static_cast<std::int8_t>(self_->pitch * 256.f / 360.f));
+            b.boolean(self_->onGround);
+            srv_.broadcastPacketExcept(nullptr, pl::sc::EntityTeleport, b);
+        }
+    } else if (rotated) {                           // pure rotation
+        WriteBuffer b;
+        b.varint(self_->entityId);
+        b.i8(static_cast<std::int8_t>(self_->yaw * 256.f / 360.f));
+        b.i8(static_cast<std::int8_t>(self_->pitch * 256.f / 360.f));
+        b.boolean(self_->onGround);
+        srv_.broadcastPacketExcept(nullptr, 0x33 /*entity_look*/, b);
+        WriteBuffer h;
+        h.varint(self_->entityId);
+        h.i8(static_cast<std::int8_t>(self_->yaw * 256.f / 360.f));
+        srv_.broadcastPacketExcept(nullptr, pl::sc::RotateHead, h);
+    }
+
+    sentX_ = self_->x; sentY_ = self_->y; sentZ_ = self_->z;
+    sentYaw_ = self_->yaw; sentPitch_ = self_->pitch;
+    hasSent_ = true;
 }
 
 void Session::onChatMessage(ReadBuffer& in) {

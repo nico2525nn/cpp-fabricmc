@@ -17,7 +17,8 @@ add_executable(cppfm
 
 target_include_directories(cppfm PRIVATE src src/generated)
 find_package(Threads REQUIRED)
-target_link_libraries(cppfm PRIVATE Threads::Threads)
+find_package(ZLIB REQUIRED)
+target_link_libraries(cppfm PRIVATE Threads::Threads ZLIB::ZLIB)
 
 add_executable(test_golden tests/test_golden.cpp src/core/NBT.cpp)
 target_include_directories(test_golden PRIVATE src src/generated)

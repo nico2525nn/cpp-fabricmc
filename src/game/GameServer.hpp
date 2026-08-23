@@ -26,6 +26,7 @@ struct ServerConfig {
     std::string worldBiome = "minecraft:plains";
     std::int64_t hashedSeed = 1378645410614731511LL;
     std::string assetsDir = "assets/registry";
+    int compressionThreshold = 256;   // -1 disables Set Compression entirely
 };
 
 struct Player {
@@ -41,6 +42,8 @@ struct Player {
     std::int64_t lastKeepAliveSentMs = 0;
     std::int64_t keepAliveCounter = 0;
     bool spawned = false;          // entered PLAY & confirmed position
+    double sentX = 0, sentY = 0, sentZ = 0;   // last broadcast to others
+    float  sentYaw = 0, sentPitch = 0;
     Connection* conn = nullptr;
 };
 
@@ -69,6 +72,8 @@ private:
     void onUseItemOn(ReadBuffer& in);
     void onUseItem(ReadBuffer& in);
     void onHeldSlot(ReadBuffer& in);
+    void broadcastMovement();
+    void broadcastSpawnEntity(Player* about);
     void onMovement(ReadBuffer& in, bool hasPos, bool hasRot);
 
     // send helpers
@@ -93,6 +98,9 @@ private:
     std::int32_t teleportId_ = 1;
     bool chunksStreamed_ = false;
     std::int32_t lastCx_ = INT32_MAX, lastCz_ = INT32_MAX;
+    double sentX_ = 0, sentY_ = 0, sentZ_ = 0;
+    float sentYaw_ = 0, sentPitch_ = 0;
+    bool hasSent_ = false;
     std::unordered_set<std::int64_t> sentChunks_;
 };
 
