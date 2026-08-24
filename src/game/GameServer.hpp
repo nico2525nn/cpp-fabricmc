@@ -36,6 +36,7 @@ struct ServerConfig {
     RconConfig rcon;
     std::string levelTypeCli;
     std::uint64_t seed = 1378645410614731511ULL;
+    std::int64_t startTime = 1000;
     int compressionThreshold = 256;   // -1 disables Set Compression entirely
 };
 
@@ -145,7 +146,7 @@ class GameServer {
     friend class Session;
 public:
     explicit GameServer(ServerConfig cfg)
-        : cfg_(cfg),
+        : cfg_(cfg), startTime_(cfg.startTime),
           world_(cfg_.worldBiome,
                  cfg.levelType == "normal" ? LevelType::Normal : LevelType::Flat,
                  cfg.seed) {}
@@ -184,6 +185,7 @@ public:
     void tickOnce();
     void survivalTick();
     void mobsTick();
+    void applyDamageToMob(MobEntity& m, float amount, const char* cause);
     void itemsTick();
     void trySpawnMobs();
     void spawnItemDrop(double x,double y,double z,std::uint32_t itemId,std::uint8_t cnt,
@@ -195,6 +197,11 @@ public:
     void applyDamage(Player& p, float amount, const char* cause);
     void killPlayer(Player& p, const char* cause);
     std::int64_t tickNow() const { return tickNo_; }
+    std::int64_t dayTime() const { return ((tickNo_ / 10) + timeOffset_ + startTime_) % 24000; }
+    bool isNight() const { auto t = dayTime(); return t >= 13000 && t < 23000; }
+    void setTimeOfDay(std::int64_t target) {
+        timeOffset_ += target - dayTime();
+    }
     void broadcastDigStageFor(Player& p, std::int8_t st) { broadcastDigStage(p, st); }
     void broadcastDigStage(Player& p, std::int8_t stage);
     void tickDigs();
@@ -274,6 +281,8 @@ private:
     std::vector<std::shared_ptr<MobEntity>> mobs_;
     std::vector<std::shared_ptr<ItemEntity>> itemDrops_;
     std::int64_t tickNo_ = 0;
+    std::int64_t timeOffset_ = 0;
+    std::int64_t startTime_ = 1000;
     std::thread tickThread_;
     std::unique_ptr<Persistence> persist_;
     Whitelist whitelist_;

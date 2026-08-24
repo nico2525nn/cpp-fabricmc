@@ -35,6 +35,7 @@ static void loadProperties(ServerConfig& c, const std::string& path) {
             else if (k == "view-distance") c.viewDistance = std::clamp(std::stoi(v), 2, 32);
             else if (k == "simulation-distance") c.simulationDistance = std::clamp(std::stoi(v), 2, 32);
             else if (k == "motd") c.motd = v;
+        else if (k == "start-time") c.startTime = std::stoll(v);
         else if (k == "level-type") {
             std::string t = v;
             if (t.rfind("minecraft:", 0) == 0) t = t.substr(10);
@@ -66,6 +67,7 @@ int main(int argc, char** argv) {
                 if (t.rfind("minecraft:", 0) == 0) t = t.substr(10);
                 cfg.levelType = (t == "normal") ? "normal" : "flat";
             }
+            else if (k == "start-time") cfg.startTime = std::stoll(v);
             else if (k == "rcon.port") cfg.rcon.port = (uint16_t)std::stoi(v);
             else if (k == "rcon.password") cfg.rcon.password = v;
             else if (k == "enable-rcon") cfg.rcon.enabled = (v == "true");

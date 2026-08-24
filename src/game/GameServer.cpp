@@ -71,15 +71,6 @@ void GameServer::runForever() {
         while (running_) {
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
             const auto now = nowMs();
-            static std::int64_t lastTime = 0;
-            if (now - lastTime >= 1000) {
-                lastTime = now;
-                WriteBuffer t;
-                t.i64(0);                    // age
-                t.i64(now / 50 % 24000);     // day time from wall clock
-                t.boolean(true);             // tick daylight
-                broadcastPacketExcept(nullptr, pl::sc::SetTime, t);
-            }
             for (auto& p : playersSnapshot()) {
                 if (!p->inPlay) continue;
                 if (now - p->lastSeenMs > 60000) {           // hard idle sweep
@@ -242,8 +233,8 @@ void GameServer::tickOnce() {
     // periodic time sync every 20 ticks (1s)
     if (tickNo_ % 20 == 0) {
         WriteBuffer t;
-        t.i64(tickNo_);                                  // age
-        t.i64((tickNo_ / 10) % 24000);                   // day fraction
+        t.i64(tickNo_);
+        t.i64(dayTime());
         t.boolean(true);
         broadcastPacketExcept(nullptr, pl::sc::SetTime, t);
     }
@@ -282,6 +273,13 @@ void GameServer::survivalTick() {
 }
 
 void GameServer::trySpawnMobs() {
+    static std::int64_t lastTrace = 0;
+    const bool tr = getenv("CPPFM_TRACE") != nullptr;
+    if (tr && tickNow() - lastTrace >= 200) {
+        lastTrace = tickNow();
+        std::fprintf(stderr, "[cppfm] mob-spawn tick: night=%d mobs=%zu\n",
+                     (int)isNight(), mobs_.size());
+    }
     std::lock_guard lk(entsMtx_);
     for (auto& pp : playersSnapshot()) {
         auto* pl = pp.get();
@@ -310,8 +308,17 @@ void GameServer::trySpawnMobs() {
             // require grass-ish surface? MVP: any non-water solid
             auto mob = std::make_shared<MobEntity>();
             mob->entityId = nextEntityId();
-            static const MobKind kinds[] = {MobKind::Pig, MobKind::Cow, MobKind::Sheep, MobKind::Chicken};
-            mob->kind = kinds[rand() % 4];
+            static const MobKind passive[] = {MobKind::Pig, MobKind::Cow, MobKind::Sheep, MobKind::Chicken};
+            if (isNight()) {
+                int hostiles = 0;
+                for (auto& m : mobs_) if (m->kind == MobKind::Zombie) ++hostiles;
+                if (hostiles >= 6) continue;
+                mob->kind = MobKind::Zombie;
+                std::fprintf(stderr, "[cppfm] zombie spawned eid=%d at %.1f/%.1f\n",
+                             mob->entityId, mob->x, mob->z);
+            } else {
+                mob->kind = passive[rand() % 4];
+            }
             mob->x = wx + 0.5; mob->z = wz + 0.5; mob->y = groundY + 1.0;
             mob->lastSeenMs = nowMs();
             mobs_.push_back(mob);
@@ -333,6 +340,8 @@ void GameServer::trySpawnMobs() {
 void GameServer::mobsTick() {
     std::vector<std::pair<std::shared_ptr<MobEntity>, WriteBuffer>> moves;
     std::vector<std::int32_t> despawn;
+    std::vector<std::int32_t> deadIds;
+    std::vector<std::shared_ptr<MobEntity>> drops;
     {
         std::lock_guard lk(entsMtx_);
         const auto now = nowMs();
@@ -345,14 +354,48 @@ void GameServer::mobsTick() {
             }
             if (!nearPlayer) { despawn.push_back(m->entityId); it = mobs_.erase(it); continue; }
 
-            if (!m->hasTarget || now >= m->nextWanderAt) {
+            Player* chaseTarget = nullptr;
+            if (m->kind == MobKind::Zombie && !isNight() ) {
+                // burn in daylight
+                if (tickNo_ % 20 == 0) {
+                    applyDamageToMob(*m, 1.f, "burned to death");
+                    if (m->dead) { deadIds.push_back(m->entityId); drops.push_back(m); it = mobs_.erase(it); continue; }
+                }
+            }
+            if (m->kind == MobKind::Zombie) {
+                double best = 24*24;
+                for (auto& pp : playersSnapshot()) {
+                    if (!pp->inPlay || pp->dead || pp->gamemode == 1) continue;
+                    double ddx = pp->x-m->x, ddz = pp->z-m->z;
+                    double d2 = ddx*ddx+ddz*ddz;
+                    if (d2 < best) { best = d2; chaseTarget = pp.get(); }
+                }
+                if (chaseTarget) {
+                    m->tx = chaseTarget->x; m->tz = chaseTarget->z; m->hasTarget = true;
+                    // melee
+                    double cdx = chaseTarget->x-m->x, cdz = chaseTarget->z-m->z;
+                    double cd = sqrt(cdx*cdx+cdz*cdz);
+                    static std::int64_t nextAttack = 0;
+                    (void)nextAttack;
+                    if (cd < 1.8 && tickNo_ % 24 == 0) {
+                        // attack via srv loop context below? We're inside GameServer method:
+                        float before = chaseTarget->health;
+                        applyDamage(*chaseTarget, 3.f, "Zombie");
+                        if (before != chaseTarget->health && chaseTarget->conn) {
+                            // knockback-ish: small velocity not synced for players MVP
+                        }
+                    }
+                }
+            }
+            if (!chaseTarget && (!m->hasTarget || now >= m->nextWanderAt)) {
                 m->tx = m->x + (rand()/(double)RAND_MAX - .5) * 10;
                 m->tz = m->z + (rand()/(double)RAND_MAX - .5) * 10;
                 m->hasTarget = true;
                 m->nextWanderAt = now + 3000 + rand() % 4000;
             }
             // walk toward target at ~1.2 m/s (per tick 0.06*speed factor)
-            double dx = m->tx - m->x, dz = m->tz - m->z;
+            double dx = (chaseTarget ? chaseTarget->x : m->tx) - m->x;
+            double dz = (chaseTarget ? chaseTarget->z : m->tz) - m->z;
             const double dist = std::sqrt(dx*dx + dz*dz);
             if (dist > 0.3) {
                 const double step = std::min(0.09, dist);
@@ -394,10 +437,28 @@ void GameServer::mobsTick() {
         b.varint(1); b.varint(id);
         broadcastPacketExcept(nullptr, pl::sc::RemoveEntities, b);
     }
+    for (auto& m : drops) {
+        const auto drop = MobEntity::dropFor(m->kind);
+        spawnItemDrop(m->x, m->y + 0.4, m->z, drop.itemId, drop.count,
+                      (rand()/(double)RAND_MAX-.5)*.15, .1,
+                      (rand()/(double)RAND_MAX-.5)*.15);
+    }
+    for (auto id : deadIds) {
+        WriteBuffer rm;
+        rm.varint(1); rm.varint(id);
+        broadcastPacketExcept(nullptr, pl::sc::RemoveEntities, rm);
+    }
     for (auto& [mob, body] : moves) {
         (void)mob;
         broadcastPacketExcept(nullptr, pl::sc::MoveEntityPosRot, body);
     }
+}
+
+void GameServer::applyDamageToMob(MobEntity& m, float amount, const char* cause) {
+    (void)cause;
+    if (amount <= 0) return;
+    m.health -= amount;
+    if (m.health <= 0) m.dead = true;
 }
 
 void GameServer::itemsTick() {
@@ -1168,6 +1229,7 @@ void Session::handlePlay() {
         switch (in.u8()) {
         case pl::cs::AcceptTeleportation: {
             in.varint();
+            self_->spawned = true;
             if (!chunksStreamed_) streamInitialChunks();
             break;
         }

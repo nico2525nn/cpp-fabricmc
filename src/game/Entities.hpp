@@ -23,7 +23,7 @@ struct ItemEntity {
     double sentX=0, sentY=0, sentZ=0; bool hasSent=false;
 };
 
-enum class MobKind { Pig, Cow, Sheep, Chicken };
+enum class MobKind { Pig, Cow, Sheep, Chicken, Zombie };
 
 struct MobEntity {
     std::int32_t entityId = 0;
@@ -45,6 +45,7 @@ struct MobEntity {
         case MobKind::Cow: return "minecraft:cow";
         case MobKind::Sheep: return "minecraft:sheep";
         case MobKind::Chicken: return "minecraft:chicken";
+        case MobKind::Zombie: return "minecraft:zombie";
         }
         return "minecraft:pig";
     }
@@ -65,6 +66,7 @@ struct MobEntity {
         case MobKind::Cow:     return {get("minecraft:beef"), 1};
         case MobKind::Sheep:   return {get("minecraft:mutton"), 1};
         case MobKind::Chicken: return {get("minecraft:feather"), 1};
+        case MobKind::Zombie:  return {get("minecraft:rotten_flesh"), 1};
         }
         return {0, 1};
     }
