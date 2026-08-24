@@ -120,6 +120,7 @@ constexpr std::uint8_t ContainerSetContent = 0x13; // window items
 constexpr std::uint8_t SetEntityMetadata = 0x5D;
 constexpr std::uint8_t EntityTeleport = 0x77;
 constexpr std::uint8_t MoveEntityPos = 0x2F;
+constexpr std::uint8_t EntityLook = 0x32;
 constexpr std::uint8_t MoveEntityPosRot = 0x30;
 constexpr std::uint8_t RotateHead = 0x4D;
 constexpr std::uint8_t RemoveEntities = 0x47;

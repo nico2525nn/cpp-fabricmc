@@ -12,12 +12,17 @@
 #include <arpa/inet.h>
 #include "../core/ByteBuffer.hpp"
 #include "../core/Zlib.hpp"
+#include <chrono>
+#include <cstdlib>
+#include <cstdio>
 
 namespace cppfm {
 
 class SocketClosedError : public std::runtime_error {
 public:
-    explicit SocketClosedError(const std::string& w) : std::runtime_error(w) {}
+    explicit SocketClosedError(const std::string& w, bool timeout = false)
+        : std::runtime_error(w), timedOut(timeout) {}
+    bool timedOut;
 };
 
 class Connection {
@@ -44,6 +49,11 @@ public:
         timeval tv{seconds, 0};
         setsockopt(fd_, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
     }
+    std::uint16_t peerPort() const {
+        sockaddr_in addr{}; socklen_t sl = sizeof(addr);
+        if (getpeername(fd_, reinterpret_cast<sockaddr*>(&addr), &sl) != 0) return 0;
+        return ntohs(addr.sin_port);
+    }
     // returns peer ip:port string (best effort)
     std::string peer() const {
         sockaddr_in addr{}; socklen_t sl = sizeof(addr);
@@ -66,6 +76,13 @@ public:
         readExact(frame_.data(), frame_.size());
         if (compressionThreshold_ < 0) return frame_;
         // compressed layout: varint dataLength + (compressed | raw) body
+        {
+            static const bool tr = getenv("CPPFM_TRACE") != nullptr;
+            if (tr)
+                std::fprintf(stderr, "[recv pid=%d] fd=%d first=%02x framelen=%zu\n",
+                             (int)getpid(), fd_, frame_[static_cast<std::size_t>(compressionThreshold_ >= 0 ? 1 : 0)],
+                             frame_.size());
+        }
         ReadBuffer in(frame_);
         const std::int32_t dataLen = in.varint();
         const std::size_t left = in.remaining();
@@ -86,6 +103,11 @@ public:
                     const std::uint8_t* b = nullptr, std::size_t nb = 0) {
         std::lock_guard lk(tx_);
         if (!isOpen()) throw SocketClosedError("closed");
+        static const bool trace = getenv("CPPFM_TRACE") != nullptr;
+        if (trace && na > 0)
+            std::fprintf(stderr, "[send] t=%.3f fd=%d peer=%u id=%02x bytes=%zu\n",
+                std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(),
+                fd_, peerPort(), a[0], na + nb);
         const std::size_t total = na + nb;
         std::vector<std::uint8_t> frame;
         if (compressionThreshold_ >= 0) {
@@ -149,7 +171,8 @@ private:
             if (r == 0) throw SocketClosedError("peer closed");
             if (r < 0) {
                 if (errno == EINTR) continue;
-                throw SocketClosedError(std::string("recv: ") + strerror(errno));
+                throw SocketClosedError(std::string("recv: ") + strerror(errno),
+                                        errno == EAGAIN || errno == EWOULDBLOCK);
             }
             p += r; n -= static_cast<std::size_t>(r);
         }

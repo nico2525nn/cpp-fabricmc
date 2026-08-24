@@ -22,3 +22,17 @@ target_link_libraries(cppfm PRIVATE Threads::Threads ZLIB::ZLIB)
 
 add_executable(test_golden tests/test_golden.cpp src/core/NBT.cpp)
 target_include_directories(test_golden PRIVATE src src/generated)
+
+enable_testing()
+add_executable(test_native
+    tests/TestClient.cpp
+    tests/native_integration.cpp
+    src/core/NBT.cpp)
+target_include_directories(test_native PRIVATE src src/generated tests)
+find_package(ZLIB REQUIRED)
+target_link_libraries(test_native PRIVATE Threads::Threads ZLIB::ZLIB)
+
+# self-contained: spawns the server itself on a random port
+add_test(NAME native COMMAND test_native $<TARGET_FILE:cppfm>
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(native PROPERTIES TIMEOUT 300)

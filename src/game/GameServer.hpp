@@ -41,7 +41,8 @@ struct Player {
     std::int64_t pendingKeepAlive = 0;
     std::int64_t lastKeepAliveSentMs = 0;
     std::int64_t keepAliveCounter = 0;
-    bool spawned = false;          // entered PLAY & confirmed position
+    bool spawned = false;          // position confirmed (teleport/movement)
+    bool inPlay = false;           // finished onEnterPlay: eligible for broadcasts
     double sentX = 0, sentY = 0, sentZ = 0;   // last broadcast to others
     float  sentYaw = 0, sentPitch = 0;
     Connection* conn = nullptr;
@@ -147,9 +148,9 @@ public:
         body.boolean(false);
         broadcastPacketExcept(except, proto::pl::sc::SystemChat, body);
     }
-    void broadcastPacketExcept(Player* except, std::uint8_t id, const WriteBuffer& body) {
+    void broadcastPacketExcept(const Player* except, std::uint8_t id, const WriteBuffer& body) {
         for (auto& p : playersSnapshot()) {
-            if (p.get() == except || !p->spawned) continue;
+            if (p.get() == except || !p->inPlay) continue;
             try { p->conn->sendPacket(id, body); } catch (...) {}
         }
     }

@@ -56,7 +56,7 @@ void GameServer::runForever() {
                 broadcastPacketExcept(nullptr, pl::sc::SetTime, t);
             }
             for (auto& p : playersSnapshot()) {
-                if (!p->spawned) continue;
+                if (!p->inPlay) continue;
                 if (now - p->lastSeenMs > 60000) {           // hard idle sweep
                     try { p->conn->close(); } catch (...) {}
                     continue;
@@ -103,6 +103,7 @@ void GameServer::acceptLoop() {
         sockaddr_in cli{}; socklen_t cl = sizeof(cli);
         int fd = ::accept(listenFd_, reinterpret_cast<sockaddr*>(&cli), &cl);
         if (fd < 0) { if (running_) continue; break; }
+        std::fprintf(stderr, "[cppfm] accepted fd=%d\n", fd);
         std::thread([this, fd] {
             auto conn = std::make_unique<Connection>(fd);
             conn->setNoDelay();
@@ -242,6 +243,8 @@ void Session::handleLogin() {
         conn_->setCompression(srv_.config().compressionThreshold);
     }
 
+    std::fprintf(stderr, "[cppfm] login hello: %s from %s\n",
+                 self_->name.c_str(), conn_->peer().c_str());
     // login success: uuid, name, empty property list (verified against capture)
     WriteBuffer ok;
     ok.uuid(self_->uuid.data());
@@ -342,8 +345,11 @@ packsDone:
         ReadBuffer in(frame);
         switch (in.u8()) {
         case cf::cs::FinishAcknowledgement:
+            std::fprintf(stderr, "[cppfm] %s: finish ack at %.2f\n", self_->name.c_str(),
+                         std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count());
             state_ = State::Play;
             onEnterPlay();
+            std::fprintf(stderr, "[cppfm] %s: onEnterPlay done\n", self_->name.c_str());
             return;
         case cf::cs::KeepAlive: {
             WriteBuffer e; e.raw(in.p + in.off, in.remaining());
@@ -404,6 +410,10 @@ void Session::onEnterPlay() {
         conn_->sendPacket(pl::sc::PlayerInfoUpdate, add);
     }
 
+    registered_ = true;
+    srv_.addPlayer(self_);
+    self_->inPlay = true;
+
     broadcastSpawnEntity(self_.get());
     sendDeclareCommands();
 
@@ -413,9 +423,6 @@ void Session::onEnterPlay() {
         b.f32(20.f); b.varint(20); b.f32(5.f);
         conn_->sendPacket(pl::sc::SetHealth, b);
     }
-
-    registered_ = true;
-    srv_.addPlayer(self_);
 
     srv_.broadcastSystemText("\u00a7e" + self_->name + " joined the game", nullptr);
     sendSystemText("\u00a77Welcome to \u00a7bCppFabricMC\u00a77! Build with the hotbar, chat freely.");
@@ -530,10 +537,13 @@ static WriteBuffer makeSpawnEntity(const Player& p) {
 
 void Session::broadcastSpawnEntity(Player* about) {
     WriteBuffer b = makeSpawnEntity(*about);
+    if (getenv("CPPFM_TRACE"))
+        std::fprintf(stderr, "[cppfm] spawn-broadcast of %s (eid=%d)\n",
+                     about->name.c_str(), about->entityId);
     srv_.broadcastPacketExcept(about, pl::sc::SpawnEntity, b);
     // also tell the newcomer about everyone else
     for (auto& other : srv_.playersSnapshot()) {
-        if (other.get() == about || !other->spawned) continue;
+        if (other.get() == about || !other->inPlay) continue;
         WriteBuffer ob = makeSpawnEntity(*other);
         try { about->conn->sendPacket(pl::sc::SpawnEntity, ob); } catch (...) {}
     }
@@ -694,12 +704,11 @@ void Session::handlePlay() {
         case pl::cs::MovePlayerRot:       onMovement(in, false, true); break;
         case pl::cs::MovePlayerStatusOnly:onMovement(in, false, false);break;
         case pl::cs::KeepAlive: {
+            // Client's response: just clear the pending flag. Sending anything
+            // here creates an infinite keepalive ping-pong.
             const std::int64_t id = in.i64();
-            if (self_->pendingKeepAlive == 0 || id == self_->pendingKeepAlive) {
+            if (self_->pendingKeepAlive == 0 || id == self_->pendingKeepAlive)
                 self_->pendingKeepAlive = 0;
-                WriteBuffer b; b.i64(id);
-                conn_->sendPacket(pl::sc::KeepAlive, b);
-            }
             break;
         }
         case pl::cs::ChatMessage:         onChatMessage(in); break;
@@ -775,7 +784,20 @@ void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
 void Session::broadcastMovement() {
     if (!self_->spawned) return;
     const bool first = !hasSent_;
-    const double dx = first ? 0 : self_->x - sentX_;
+    if (first) {                                   // initial absolute pose
+        WriteBuffer b;
+        b.varint(self_->entityId);
+        b.f64(self_->x); b.f64(self_->y); b.f64(self_->z);
+        b.i8(static_cast<std::int8_t>(self_->yaw * 256.f / 360.f));
+        b.i8(static_cast<std::int8_t>(self_->pitch * 256.f / 360.f));
+        b.boolean(self_->onGround);
+        srv_.broadcastPacketExcept(nullptr, pl::sc::EntityTeleport, b);
+        sentX_ = self_->x; sentY_ = self_->y; sentZ_ = self_->z;
+        sentYaw_ = self_->yaw; sentPitch_ = self_->pitch;
+        hasSent_ = true;
+        return;
+    }
+    const double dx = self_->x - sentX_;
     const double dy = first ? 0 : self_->y - sentY_;
     const double dz = first ? 0 : self_->z - sentZ_;
     const bool rotated = first || self_->yaw != sentYaw_ || self_->pitch != sentPitch_;
@@ -821,7 +843,7 @@ void Session::broadcastMovement() {
         b.i8(static_cast<std::int8_t>(self_->yaw * 256.f / 360.f));
         b.i8(static_cast<std::int8_t>(self_->pitch * 256.f / 360.f));
         b.boolean(self_->onGround);
-        srv_.broadcastPacketExcept(nullptr, 0x33 /*entity_look*/, b);
+        srv_.broadcastPacketExcept(nullptr, pl::sc::EntityLook, b);
         WriteBuffer h;
         h.varint(self_->entityId);
         h.i8(static_cast<std::int8_t>(self_->yaw * 256.f / 360.f));

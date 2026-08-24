@@ -43,12 +43,21 @@ static void loadProperties(ServerConfig& c, const std::string& path) {
 int main(int argc, char** argv) {
     ServerConfig cfg;
     loadProperties(cfg, "server.properties");
+    auto apply = [&](const std::string& k, const std::string& v) {
+        try {
+            if (k == "port") cfg.port = static_cast<std::uint16_t>(std::stoi(v));
+            else if (k == "view-distance") cfg.viewDistance = std::clamp(std::stoi(v), 2, 32);
+            else if (k == "assets") cfg.assetsDir = v;
+            else if (k == "motd") cfg.motd = v;
+        } catch (...) {}
+    };
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
-        if (a == "--port" && i + 1 < argc) cfg.port = static_cast<std::uint16_t>(std::stoi(argv[++i]));
-        else if (a == "--view-distance" && i + 1 < argc) cfg.viewDistance = std::clamp(std::stoi(argv[++i]), 2, 32);
-        else if (a == "--assets" && i + 1 < argc) cfg.assetsDir = argv[++i];
-        else if (a == "--motd" && i + 1 < argc) cfg.motd = argv[++i];
+        if (a.rfind("--", 0) != 0) continue;
+        auto eq = a.find('=');
+        if (eq != std::string::npos) { apply(a.substr(2, eq - 2), a.substr(eq + 1)); continue; }
+        const std::string k = a.substr(2);
+        if (i + 1 < argc) apply(k, argv[++i]);
     }
 
     GameServer server(cfg);

@@ -64,6 +64,8 @@ public:
     void varint(std::int32_t v) { writeVarintTo(data, v); }
     void varlong(std::int64_t v) { writeVarlongTo(data, v); }
 
+    void bytes(std::initializer_list<std::uint8_t> v) { data.insert(data.end(), v); }
+
     void string(std::string_view s) {
         varint(static_cast<std::int32_t>(s.size()));
         raw(s.data(), s.size());
@@ -151,7 +153,7 @@ public:
         return s;
     }
     void position(std::int32_t& x, std::int32_t& y, std::int32_t& z) {
-        std::uint64_t v = u64();
+        const std::int64_t v = static_cast<std::int64_t>(u64());   // arithmetic shifts
         x = static_cast<std::int32_t>(v >> 38);
         y = static_cast<std::int32_t>((v << 52) >> 52);
         z = static_cast<std::int32_t>((v << 26) >> 38);
