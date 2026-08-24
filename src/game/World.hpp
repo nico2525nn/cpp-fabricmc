@@ -43,7 +43,7 @@ enum class LevelType { Flat, Normal };
 class World {
 public:
     World(std::string biomeKey, LevelType level, std::uint64_t seed)
-        : biome_(std::move(biomeKey)), level_(level), terrain_(seed) {}
+        : biome_(std::move(biomeKey)), level_(level), terrain_(seed), srv_seed(seed) {}
 
     LevelType levelType() const { return level_; }
     int seaLevel() const { return level_ == LevelType::Normal ? 63 : kSeaLevelFlat; }
@@ -130,11 +130,28 @@ private:
         const std::uint16_t sand    = (uint16_t)table.at("minecraft:sand");
         const std::uint16_t water   = (uint16_t)table.at("minecraft:water");
         const std::uint16_t bedrock = (uint16_t)table.at("minecraft:bedrock");
+        const std::uint16_t coalOre = (uint16_t)table.at("minecraft:coal_ore");
+        const std::uint16_t ironOre = (uint16_t)table.at("minecraft:iron_ore");
+        const std::uint16_t log     = (uint16_t)table.at("minecraft:oak_log");
+        const std::uint16_t leaves  = (uint16_t)table.at("minecraft:oak_leaves");
         constexpr int kSea = 63;
+
+        auto setIfIn = [&](std::int32_t wx, int wy, std::int32_t wz,
+                           std::uint16_t st, bool overwriteSolid=false) {
+            const std::int32_t ccx = wx >> 4, ccz = wz >> 4;
+            if (ccx != cx || ccz != cz) return;
+            if (wy < kMinY || wy >= kMaxY) return;
+            const int wyR = wy - kMinY;
+            auto& slot = c.blocks[Chunk::index(wyR >> 4, wyR & 15, wz & 15, wx & 15)];
+            if (!overwriteSolid && slot != 0 && slot != water) return;
+            if (overwriteSolid && slot == 0) return;
+            slot = st;
+        };
 
         for (int lz = 0; lz < 16; ++lz)
         for (int lx = 0; lx < 16; ++lx) {
-            const auto col = terrain_.column(cx * 16 + lx, cz * 16 + lz);
+            const std::int32_t wx = cx * 16 + lx, wz = cz * 16 + lz;
+            const auto col = terrain_.column(wx, wz);
             const int surf = col.surfaceY;                       // first air (world y)
             const bool beach = col.ocean || surf <= kSea + 2;
             for (int y = kMinY; y <= kMaxY && y < surf; ++y) {
@@ -143,6 +160,16 @@ private:
                 else if (y >= surf - 1) st = beach ? sand : grass;
                 else if (y >= surf - 4) st = beach ? sand : dirt;
                 else st = stone;
+                if (!col.ocean && y >= -58 && y < surf - 8) {    // spaghetti caves
+                    const double n1 = terrain_.caveA_.sample(wx*0.02, y*0.03, wz*0.02);
+                    const double n2 = terrain_.caveB_.sample(wx*0.023, y*0.033, wz*0.023);
+                    if (n1*n1 + n2*n2 < 0.0025) st = 0;          // carve air
+                }
+                if (st == stone) {                               // ores
+                    const double o = terrain_.oreA_.sample(wx*0.09, y*0.09, wz*0.09);
+                    if (o > 0.78 && y < 128) st = coalOre;
+                    else if (o < -0.80 && y < 62) st = ironOre;
+                }
                 const int wy = y - kMinY;
                 c.blocks[Chunk::index(wy >> 4, wy & 15, lz, lx)] = st;
             }
@@ -150,6 +177,29 @@ private:
                 const int wy = y - kMinY;
                 c.blocks[Chunk::index(wy >> 4, wy & 15, lz, lx)] = water;
             }
+        }
+
+        // trees: up to a few per chunk, fully inside chunk margin
+        int planted = 0;
+        for (int lz = 3; lz < 13 && planted < 3; ++lz)
+        for (int lx = 3; lx < 13 && planted < 3; ++lx) {
+            const std::int32_t wx = cx * 16 + lx, wz = cz * 16 + lz;
+            if (!terrain_.treeCandidate(srv_seed, wx, wz)) continue;
+            const auto col = terrain_.column(wx, wz);
+            if (col.ocean || col.surfaceY <= kSea + 1) continue;
+            const int gyR = col.surfaceY - 1 - kMinY;
+            if (c.blocks[Chunk::index(gyR >> 4, gyR & 15, wz & 15, wx & 15)] != grass) continue;
+            const int trunkH = 4 + static_cast<int>(terrain_.posHash(srv_seed,wx,555,wz)*3);
+            for (int t = 0; t < trunkH; ++t) setIfIn(wx, col.surfaceY + t, wz, log, true);
+            for (int dy = trunkH - 2; dy <= trunkH + 1; ++dy) {
+                const int rad = (dy >= trunkH) ? 1 : 2;
+                for (int dzl = -rad; dzl <= rad; ++dzl)
+                for (int dxl = -rad; dxl <= rad; ++dxl) {
+                    if (dxl==0 && dzl==0 && dy<trunkH) continue;
+                    setIfIn(wx+dxl, col.surfaceY+dy, wz+dzl, leaves, false);
+                }
+            }
+            ++planted;
         }
     }
 
@@ -172,6 +222,7 @@ private:
     std::string biome_;
     LevelType level_;
     TerrainGenerator terrain_;
+    std::uint64_t srv_seed;
     std::function<bool(std::int32_t, std::int32_t, Chunk&)> loader_;
     std::function<void(std::int32_t, std::int32_t)> onEdit_;
 };

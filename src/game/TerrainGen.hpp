@@ -72,10 +72,27 @@ private:
 class TerrainGenerator {
 public:
     static constexpr int kSeaLevelNormal = 63;
+
+    // Deterministic per-position hash in [0,1)
+    static double posHash(std::uint64_t seed, std::int32_t x, std::int32_t y, std::int32_t z) {
+        std::uint64_t h = seed;
+        h ^= static_cast<std::uint64_t>(static_cast<std::uint32_t>(x)) * 0x9E3779B97F4A7C15ULL;
+        h ^= static_cast<std::uint64_t>(static_cast<std::uint32_t>(y)) * 0xBF58476D1CE4E5B9ULL;
+        h ^= static_cast<std::uint64_t>(static_cast<std::uint32_t>(z)) * 0x94D049BB133111EBULL;
+        h ^= h >> 30; h *= 0xBF58476D1CE4E5B9ULL; h ^= h >> 27; h *= 0x94D049BB133111EBULL; h ^= h >> 31;
+        return (h >> 11) / (double)(1ULL << 53);
+    }
+    bool treeCandidate(std::uint64_t seed, std::int32_t wx, std::int32_t wz) const {
+        return posHash(seed ^ 0x5EED, wx, 777, wz) < 0.008;
+    }
     explicit TerrainGenerator(std::uint64_t seed)
         : cont_(seed ^ 0x9E3779B97F4A7C15ULL),
           ero_(seed ^ 0xC2B2AE3D27D4EB4FULL),
-          peak_(seed ^ 0x165667B19E3779F9ULL) {}
+          peak_(seed ^ 0x165667B19E3779F9ULL),
+          caveA_(seed ^ 0xA24BAED4963EE407ULL),
+          caveB_(seed ^ 0x9FB21C651E98DF25ULL),
+          oreA_(seed ^ 0x18DEE66A2D75FA36ULL) {}
+
 
     struct ColumnResult { int surfaceY; bool ocean; };
 
@@ -98,7 +115,8 @@ public:
     }
 
 private:
-    ImprovedNoise cont_, ero_, peak_;
+public:
+    ImprovedNoise cont_, ero_, peak_, caveA_, caveB_, oreA_;
 };
 
 } // namespace cppfm
