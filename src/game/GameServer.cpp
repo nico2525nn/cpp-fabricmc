@@ -226,14 +226,46 @@ void Session::disconnectIn(const char* textJson) {
     }
 }
 
+std::string GameServer::dispatchConsole(const std::string& line) {
+    const auto sp = line.find(' ');
+    const std::string head = line.substr(0, sp == std::string::npos ? line.size() : sp);
+    std::string out;
+    if (head == "list") {
+        for (auto& p : playersSnapshot()) out += p->name + " ";
+        out += "(" + std::to_string(playersSnapshot().size()) + " online)";
+    } else if (head == "say") {
+        const std::string msg = "[Server] " +
+            (sp == std::string::npos ? "" : line.substr(sp + 1));
+        broadcastSystemText("\u00a7d" + msg);
+        out = "broadcast sent";
+    } else if (head == "help") {
+        out = "commands: list | say <msg> | help";
+    } else out = "unknown command";
+    return out;
+}
+
 void Session::handleLogin() {
     auto frame = conn_->readFrame();
     ReadBuffer in(frame);
     if (in.u8() != lo::cs::Hello) throw std::runtime_error("expected login hello");
 
     self_->name = in.string(16);
+
     auto uuidBytes = in.bytes(16);
     std::copy(uuidBytes.begin(), uuidBytes.end(), self_->uuid.begin());
+    if (srv_.config().whitelist) {
+        bool ok = false;
+        // any registered-name match is impossible pre-join; check file-backed list
+        ok = srv_.whitelist().enabled() ? srv_.whitelist().contains(self_->name)
+                                        : true;
+        if (!ok) {
+            WriteBuffer kick;
+            nbt::writeTextComponent(kick, "You are not whitelisted on this server");
+            conn_->sendPacket(proto::lo::sc::Disconnect, kick);
+            state_ = State::Done;
+            return;
+        }
+    }
     self_->entityId = 0; // set on play entry
 
     if (srv_.config().compressionThreshold >= 0) {

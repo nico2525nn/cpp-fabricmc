@@ -15,6 +15,7 @@
 #include "ChunkCodec.hpp"
 #include "EmbeddedData.hpp"
 #include "Persistence.hpp"
+#include "../net/Rcon.hpp"
 
 namespace cppfm {
 
@@ -29,6 +30,9 @@ struct ServerConfig {
     std::string assetsDir = "assets/registry";
     std::string worldDir = "world";
     std::string levelType = "flat";          // flat | normal
+    bool whitelist = false;
+    RconConfig rcon;
+    std::string levelTypeCli;
     std::uint64_t seed = 1378645410614731511ULL;
     int compressionThreshold = 256;   // -1 disables Set Compression entirely
 };
@@ -117,23 +121,35 @@ class GameServer {
 public:
     explicit GameServer(ServerConfig cfg)
         : cfg_(cfg),
-          world_(cfg.worldBiome,
+          world_(cfg_.worldBiome,
                  cfg.levelType == "normal" ? LevelType::Normal : LevelType::Flat,
                  cfg.seed) {}
     ~GameServer() { stop(); }
 
     void init() {
         data_.load(cfg_.assetsDir);
+        whitelist_.load("whitelist.json");
+        if (cfg_.whitelist) whitelist_.setEnabled(true);
         persist_ = std::make_unique<Persistence>(world_, cfg_.worldDir, cfg_.worldBiome);
         persist_->start();
+        rconServer_ = std::make_unique<RconServer>(cfg_.rcon,
+            [this](const std::string& cmd){ return dispatchConsole(cmd); });
+        const bool rconUp = rconServer_->start();
+        std::fprintf(stderr, "[cppfm] RCON %s (enabled=%d port=%u)\n",
+                     rconUp ? "listening" : "not started", (int)cfg_.rcon.enabled,
+                     cfg_.rcon.port);
     }
     void runForever();
     void stop() {
         running_ = false;
+        if (rconServer_) rconServer_->stop();
         if (persist_) persist_->stop();
         if (listenFd_ >= 0) { ::close(listenFd_); listenFd_ = -1; }
     }
     Persistence& persistence() { return *persist_; }
+    Whitelist& whitelist() { return whitelist_; }
+    // Console command dispatch (shared by chat /commands and RCON)
+    std::string dispatchConsole(const std::string& line);
 
     const ServerConfig& config() const { return cfg_; }
     World& world() { return world_; }
@@ -205,6 +221,8 @@ private:
     ServerConfig cfg_;
     World world_;
     std::unique_ptr<Persistence> persist_;
+    Whitelist whitelist_;
+    std::unique_ptr<RconServer> rconServer_;
     EmbeddedData data_;
     std::vector<PlayerRef> players_;
     std::mutex playersMtx_;

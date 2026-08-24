@@ -25,10 +25,13 @@ automated comparison against captured reference-server wire data.
 | Block digging/placing with **sequence acknowledgement**, cross-player block updates | ✅ |
 | Tab list (`player_info` add/remove/update, listed flag), held-slot, abilities, health, time | ✅ |
 | Keep-alive (periodic + timeout kick) | ✅ |
-| Multiple concurrent players: cross-visibility (**spawn/move/head/remove**), edits persist in-memory across relogs | ✅ |
+| Multiple concurrent players: cross-visibility (**spawn/move/head/remove**), edits persist across relogs **and restarts** | ✅ |
 | Packet compression (zlib framing, threshold 256) | ✅ |
-| Command tree (`declare_commands`) + `/help`, `/ping`; respawn request handling | ✅ |
+| Command tree (`declare_commands`) + `/help`, `/ping`, `/say`; respawn handling | ✅ |
 | Periodic time sync, robust zombie-session reaping (send timeouts, idle sweep) | ✅ |
+| **Anvil persistence** (`world/region/*.mca`): async 3s flusher + shutdown flush; load-on-demand; **vanilla interop verified both directions** (vanilla boots on cppfm worlds and preserves edits; cppfm reads vanilla-saved chunks) | ✅ |
+| **Terrain generation** (`level-type=normal`): seeded Perlin octaves — continents, mountains, beaches, oceans at sea level 63; deterministic per seed | ✅ |
+| **RCON** (Source protocol, localhost bind, auth + command dispatch: list/say/help) and **whitelist** enforcement | ✅ |
 
 Verified by four test layers — see *Testing* below. The hardest part, chunk
 serialization, is proven **byte-identical to a real reference server's output**
@@ -39,6 +42,8 @@ by golden tests.
 - No encryption/authentication (offline mode only). Online-mode needs the Mojang
   session servers + authlib semantics.
 - Online-mode authentication (offline mode only; needs Mojang session servers).
+- Survival mechanics (health/hunger/fall damage/item drops) and mob AI — the
+  entity layer and game-loop hooks exist; behaviour systems are next.
 - Recipes / advancements / full command tree with arguments (a literal-only
   command tree — `/help`, `/ping` — is advertised and handled).
 - Inventory transactions, containers, item components (starter hotbar is given).

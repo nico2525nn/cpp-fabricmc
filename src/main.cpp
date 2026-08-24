@@ -35,6 +35,16 @@ static void loadProperties(ServerConfig& c, const std::string& path) {
             else if (k == "view-distance") c.viewDistance = std::clamp(std::stoi(v), 2, 32);
             else if (k == "simulation-distance") c.simulationDistance = std::clamp(std::stoi(v), 2, 32);
             else if (k == "motd") c.motd = v;
+        else if (k == "level-type") {
+            std::string t = v;
+            if (t.rfind("minecraft:", 0) == 0) t = t.substr(10);
+            c.levelType = (t == "normal") ? "normal" : "flat";
+        }
+        else if (k == "world-dir") c.worldDir = v;
+        else if (k == "rcon.port") c.rcon.port = static_cast<std::uint16_t>(std::stoi(v));
+        else if (k == "rcon.password") c.rcon.password = v;
+        else if (k == "enable-rcon") c.rcon.enabled = (v == "true");
+        else if (k == "whitelist") c.whitelist = (v == "true");
         else if (k == "compression-threshold") c.compressionThreshold = std::stoi(v);
         else if (k == "world-dir") c.worldDir = v;
         } catch (...) {}
@@ -51,6 +61,15 @@ int main(int argc, char** argv) {
             else if (k == "assets") cfg.assetsDir = v;
             else if (k == "motd") cfg.motd = v;
             else if (k == "world-dir") cfg.worldDir = v;
+            else if (k == "level-type") {
+                std::string t = v;
+                if (t.rfind("minecraft:", 0) == 0) t = t.substr(10);
+                cfg.levelType = (t == "normal") ? "normal" : "flat";
+            }
+            else if (k == "rcon.port") cfg.rcon.port = (uint16_t)std::stoi(v);
+            else if (k == "rcon.password") cfg.rcon.password = v;
+            else if (k == "enable-rcon") cfg.rcon.enabled = (v == "true");
+            else if (k == "whitelist") cfg.whitelist = (v == "true");
         } catch (...) {}
     };
     for (int i = 1; i < argc; ++i) {
