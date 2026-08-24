@@ -33,6 +33,10 @@ automated comparison against captured reference-server wire data.
 | **Terrain generation** (`level-type=normal`): seeded Perlin octaves — continents, mountains, beaches, oceans at sea level 63; deterministic per seed | ✅ |
 | **RCON** (Source protocol, localhost bind, auth + command dispatch: list/say/help) and **whitelist** enforcement | ✅ |
 | **Survival basics**: health/hunger/saturation, natural regen & starvation, fall damage, void damage, death→respawn flow; food eating (bread/apple); block-break drops as **item entities with pickup** (Collect packet + inventory merge) | ✅ |
+| **Mining progress**: per-block hardness/tool-speed dig timing, server-authoritative completion, crack animation broadcast to other players, bedrock unbreakable, requires-pickaxe harvest rules | ✅ |
+| **Hostile mobs: zombies** — night-only surface spawn near players (cap 6), chase nearest player, melee attack 3dmg every ~1.2s, daylight burn 1dmg/s, rotten flesh drops | ✅ |
+| **Worldgen v2**: spaghetti caves (dual-noise), coal/iron ore blobs (noise threshold), oak trees (hash placement + trunk/canopy) | ✅ |
+| **Online-mode auth**: RSA-1024 keypair, Encryption Request/Response handshake, session-server hasJoined via system curl, AES-128/CFB8 bidirectional stream encryption, Set Compression after auth | ✅ impl / ⚠ E2E needs real session |
 | **Passive mobs** (pig/cow/sheep/chicken): spawn near players, wander AI with ground snapping, delta-sync to clients, despawn by distance, attackable (sword damage), drop items on death | ✅ |
 | 20 TPS fixed game loop driving survival/entity systems | ✅ |
 | Commands: `/gamemode <mode>` (state+abilities switch), `/give <item> [n]`, `/time set day|night`, `/kill` | ✅ |
@@ -45,9 +49,8 @@ by golden tests.
 
 - No encryption/authentication (offline mode only). Online-mode needs the Mojang
   session servers + authlib semantics.
-- Online-mode authentication (offline mode only; needs Mojang session servers).
-- Full mob AI/pathfinding variety (passive wanderers + attack/drops exist;
-  hostile mobs, spawning rules by light, advanced goals are next).
+- Full mob AI variety (passive wanderers + hostile zombie chase/attack exist;
+  creeper/skeleton/enderman, spawning by light level, advanced goals are next).
 - Recipes / advancements / full command tree with arguments (a literal-only
   command tree — `/help`, `/ping` — is advertised and handled).
 - Inventory transactions, containers, item components (starter hotbar is given).
