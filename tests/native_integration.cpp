@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <random>
+#include <filesystem>
 
 using namespace cppfm;
 using namespace cpptest;
@@ -33,8 +34,12 @@ struct ServerProc {
     pid_t pid = -1;
     std::uint16_t port = 0;
 
+    std::string worldDir;
     bool start(const char* serverPath, int viewDistance) {
         port = static_cast<std::uint16_t>(26000 + (getpid() % 3000));
+        worldDir = "/tmp/opencode/native-world-" + std::to_string(getpid());
+        std::filesystem::remove_all(worldDir);
+        std::filesystem::create_directories(worldDir);
         // pick a free-ish port by probing
         for (int attempt = 0; attempt < 20; ++attempt) {
             TestClient probe;
@@ -44,16 +49,20 @@ struct ServerProc {
         }
         pid = fork();
         if (pid == 0) {
-            char portArg[32], vdArg[32];
+            char portArg[32], vdArg[32], wdArg[256];
             snprintf(portArg, sizeof(portArg), "--port=%u", port);
             snprintf(vdArg, sizeof(vdArg), "--view-distance=%d", viewDistance);
-            execl(serverPath, serverPath, portArg, vdArg, (char*)nullptr);
+            snprintf(wdArg, sizeof(wdArg), "--world-dir=%s", worldDir.c_str());
+            execl(serverPath, serverPath, portArg, vdArg, wdArg, (char*)nullptr);
             _exit(127);
         }
         return waitPort(port, 8000);
     }
     void stop() {
-        if (pid > 0) { kill(pid, SIGTERM); int st; waitpid(pid, &st, 0); pid = -1; }
+        if (pid > 0) {
+            kill(pid, SIGTERM); int st; waitpid(pid, &st, 0); pid = -1;
+            std::error_code ec; std::filesystem::remove_all(worldDir, ec);
+        }
     }
 };
 
@@ -150,6 +159,11 @@ static void scenarioJoinBuildChat(ServerProc& srv) {
         sawAck = a.acks > 0;
     }
     CHECK(sawAck, "dig acknowledged (sequence)");
+    if (!sawAirEcho) {
+        std::printf("    [diag] blockUpdates=%zu acks=%d\n", a.blockUpdates.size(), a.acks);
+        for (auto& u : a.blockUpdates)
+            std::printf("      upd (%d,%d,%d)->%u\n", u.x, u.y, u.z, u.state);
+    }
     CHECK(sawAirEcho, "block update broadcast for dug block");
 
     // chat round-trip

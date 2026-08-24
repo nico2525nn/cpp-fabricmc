@@ -39,9 +39,34 @@ static std::vector<HotbarEntry> resolveHotbar() {
 }
 static std::vector<HotbarEntry> g_hotbar = resolveHotbar();
 
+static const struct { const char* name; int cnt; } kKit[] = {
+    {"minecraft:iron_sword",1}, {"minecraft:iron_pickaxe",1}, {"minecraft:iron_axe",1},
+    {"minecraft:bread",8}, {"minecraft:apple",4},
+    {"minecraft:cobblestone",64}, {"minecraft:oak_planks",64}, {"minecraft:torch",32},
+    {"minecraft:dirt",64},
+};
+
 // ================================================================== GameServer
 
+void GameServer::startTickLoop() {
+    tickThread_ = std::thread([this] {
+        using clock = std::chrono::steady_clock;
+        auto next = clock::now() + std::chrono::milliseconds(50);
+        while (running_) {
+            std::this_thread::sleep_until(next);
+            next += std::chrono::milliseconds(50);
+            if (!running_) break;
+            ++tickNo_;
+            try { tickOnce(); } catch (...) {}
+        }
+    });
+}
+void GameServer::stopTickLoop() {
+    if (tickThread_.joinable()) { tickThread_.join(); }
+}
+
 void GameServer::runForever() {
+    startTickLoop();
     std::thread janitor([this] {
         while (running_) {
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
@@ -113,6 +138,336 @@ void GameServer::acceptLoop() {
         }).detach();
     }
 }
+
+// ============================================================ ticking (Ph3/4)
+void GameServer::sendSetHealth(Player& p) {
+    WriteBuffer b;
+    b.f32(p.health);
+    b.varint(p.food);
+    b.f32(p.saturation);
+    try { p.conn->sendPacket(pl::sc::SetHealth, b); } catch (...) {}
+}
+
+void GameServer::applyDamage(Player& p, float amount, const char* cause) {
+    if (p.gamemode == 1 || p.gamemode == 3) return;      // creative/spectator immune
+    if (amount <= 0 || p.dead) return;
+    p.health -= amount;
+    if (p.health <= 0) { p.health = 0; killPlayer(p, cause); }
+    sendSetHealth(p);
+}
+
+void GameServer::killPlayer(Player& p, const char* cause) {
+    if (p.dead) return;
+    p.dead = true;
+    broadcastSystemText(std::string("\u00a7c") + p.name + " died (" + cause + ")", &p);
+}
+
+void GameServer::tickOnce() {
+    survivalTick();
+
+    // mob spawn cadence: every 20 ticks
+    if (tickNo_ % 20 == 0) trySpawnMobs();
+    mobsTick();
+    itemsTick();
+
+    // periodic time sync every 20 ticks (1s)
+    if (tickNo_ % 20 == 0) {
+        WriteBuffer t;
+        t.i64(tickNo_);                                  // age
+        t.i64((tickNo_ / 10) % 24000);                   // day fraction
+        t.boolean(true);
+        broadcastPacketExcept(nullptr, pl::sc::SetTime, t);
+    }
+}
+
+void GameServer::survivalTick() {
+    const auto now = nowMs();
+    for (auto& pp : playersSnapshot()) {
+        auto* p = pp.get();
+        if (!p->inPlay || !p->spawned || p->dead) continue;
+        if (p->gamemode != 0) continue;                  // survival only
+
+        // exhaustion -> saturation/food
+        if (p->exhaustion >= 4.0) {
+            p->exhaustion -= 4.0;
+            if (p->saturation > 0) p->saturation = std::max(0.f, p->saturation - 1.f);
+            else p->food = std::max(0, p->food - 1);
+            sendSetHealth(*p);
+        }
+        // natural regeneration (every 4s)
+        if (tickNo_ % 80 == 0 && p->food >= 18 && p->health < 20.f) {
+            p->health = std::min(20.f, p->health + 1.f);
+            p->saturation = std::max(0.f, p->saturation - 1.f);
+            sendSetHealth(*p);
+        }
+        // starvation
+        if (tickNo_ % 80 == 0 && p->food == 0 && p->health > 1.f) {
+            p->health -= 1.f;
+            sendSetHealth(*p);
+        }
+        // void damage
+        if (p->y < kMinY - 16) applyDamage(*p, 4.f, "fell out of the world");
+        // keepalive watchdog uses lastSeenMs via janitor; nothing here
+        (void)now;
+    }
+}
+
+void GameServer::trySpawnMobs() {
+    std::lock_guard lk(entsMtx_);
+    for (auto& pp : playersSnapshot()) {
+        auto* pl = pp.get();
+        if (!pl->inPlay || !pl->spawned) continue;
+        int nearby = 0;
+        for (auto& m : mobs_) {
+            double dx = m->x - pl->x, dz = m->z - pl->z;
+            if (dx*dx + dz*dz < 48*48) ++nearby;
+        }
+        if (nearby >= 8) continue;
+        // 2 attempts
+        for (int a = 0; a < 2; ++a) {
+            const double ang = (rand() / (double)RAND_MAX) * 6.28318;
+            const double dist = 14 + (rand() % 22);
+            const std::int32_t wx = static_cast<std::int32_t>(pl->x + std::cos(ang)*dist);
+            const std::int32_t wz = static_cast<std::int32_t>(pl->z + std::sin(ang)*dist);
+            world_.generateChunkIfMissing(wx >> 4, wz >> 4);
+            int feet = 4;
+            bool ok = false;
+            world_.withChunk(wx >> 4, wz >> 4, [&](const Chunk& c) {
+                for (int ry = kSectionsPerChunk*16 - 1; ry >= 0; --ry)
+                    if (c.blocks[Chunk::index(ry>>4, ry&15, wz&15, wx&15)] != 0) { feet = ry+1; ok=true; break; }
+            });
+            if (!ok) continue;
+            const int groundY = kMinY + feet;                 // first solid world y
+            // require grass-ish surface? MVP: any non-water solid
+            auto mob = std::make_shared<MobEntity>();
+            mob->entityId = nextEntityId();
+            static const MobKind kinds[] = {MobKind::Pig, MobKind::Cow, MobKind::Sheep, MobKind::Chicken};
+            mob->kind = kinds[rand() % 4];
+            mob->x = wx + 0.5; mob->z = wz + 0.5; mob->y = groundY + 1.0;
+            mob->lastSeenMs = nowMs();
+            mobs_.push_back(mob);
+
+            // broadcast spawn to everyone in play
+            WriteBuffer b;
+            b.varint(mob->entityId);
+            static std::uint8_t zero[16] = {};
+            b.uuid(zero);
+            b.varint(static_cast<std::int32_t>(MobEntity::typeId(mob->kind)));
+            b.f64(mob->x); b.f64(mob->y); b.f64(mob->z);
+            b.i8(0); b.i8(0); b.i8(0);
+            b.varint(0); b.i16(0); b.i16(0); b.i16(0);
+            broadcastPacketExcept(nullptr, pl::sc::SpawnEntity, b);
+        }
+    }
+}
+
+void GameServer::mobsTick() {
+    std::vector<std::pair<std::shared_ptr<MobEntity>, WriteBuffer>> moves;
+    std::vector<std::int32_t> despawn;
+    {
+        std::lock_guard lk(entsMtx_);
+        const auto now = nowMs();
+        for (auto it = mobs_.begin(); it != mobs_.end();) {
+            auto& m = *it;
+            bool nearPlayer = false;
+            for (auto& pp : playersSnapshot()) {
+                double dx = pp->x - m->x, dz = pp->z - m->z;
+                if (dx*dx + dz*dz < 60*60) { nearPlayer = true; break; }
+            }
+            if (!nearPlayer) { despawn.push_back(m->entityId); it = mobs_.erase(it); continue; }
+
+            if (!m->hasTarget || now >= m->nextWanderAt) {
+                m->tx = m->x + (rand()/(double)RAND_MAX - .5) * 10;
+                m->tz = m->z + (rand()/(double)RAND_MAX - .5) * 10;
+                m->hasTarget = true;
+                m->nextWanderAt = now + 3000 + rand() % 4000;
+            }
+            // walk toward target at ~1.2 m/s (per tick 0.06*speed factor)
+            double dx = m->tx - m->x, dz = m->tz - m->z;
+            const double dist = std::sqrt(dx*dx + dz*dz);
+            if (dist > 0.3) {
+                const double step = std::min(0.09, dist);
+                m->yaw = static_cast<float>(std::atan2(dz, dx) * 180.0 / 3.14159 - 90.0);
+                m->x += dx / dist * step;
+                m->z += dz / dist * step;
+                world_.generateChunkIfMissing(static_cast<std::int32_t>(m->x) >> 4,
+                                       static_cast<std::int32_t>(m->z) >> 4);
+                int col = 4;
+                world_.withChunk(static_cast<std::int32_t>(m->x) >> 4,
+                          static_cast<std::int32_t>(m->z) >> 4, [&](const Chunk& c) {
+                    for (int ry = kSectionsPerChunk*16-1; ry >= 0; --ry)
+                        if (c.blocks[Chunk::index(ry>>4, ry&15,
+                            static_cast<std::int32_t>(m->z)&15,
+                            static_cast<std::int32_t>(m->x)&15)] != 0) { col = ry+1; break; }
+                });
+                m->y = kMinY + col + 1.0;
+            }
+
+            // delta broadcast
+            if (!m->hasSent ||
+                std::abs(m->x-m->sentX)+std::abs(m->y-m->sentY)+std::abs(m->z-m->sentZ) > 0.03) {
+                WriteBuffer b;
+                b.varint(m->entityId);
+                b.i16((std::int16_t)((m->x-m->sentX) * 4096));
+                b.i16((std::int16_t)((m->y-m->sentY) * 4096));
+                b.i16((std::int16_t)((m->z-m->sentZ) * 4096));
+                b.i8((std::int8_t)(m->yaw * 256.f/360.f));
+                b.i8(0);
+                b.boolean(true);
+                moves.emplace_back(m, std::move(b));
+                m->sentX=m->x; m->sentY=m->y; m->sentZ=m->z; m->hasSent=true;
+            }
+            ++it;
+        }
+    }
+    for (auto id : despawn) {
+        WriteBuffer b;
+        b.varint(1); b.varint(id);
+        broadcastPacketExcept(nullptr, pl::sc::RemoveEntities, b);
+    }
+    for (auto& [mob, body] : moves) {
+        (void)mob;
+        broadcastPacketExcept(nullptr, pl::sc::MoveEntityPosRot, body);
+    }
+}
+
+void GameServer::itemsTick() {
+    struct Pickup { std::shared_ptr<ItemEntity> ent; Player* collector; };
+    std::vector<Pickup> pickups;
+    std::vector<std::uint8_t> none;
+    {
+        std::lock_guard lk(entsMtx_);
+        for (auto it = itemDrops_.begin(); it != itemDrops_.end();) {
+            auto& e = *it;
+            ++e->ageTicks;
+            if (e->ageTicks > 6000) { it = itemDrops_.erase(it); continue; }
+            // gravity-lite
+            e->vy -= 0.04; if (e->vy < -0.5) e->vy = -0.5;
+            e->y += e->vy; e->x += e->vx; e->z += e->vz;
+            // crude ground clamp
+            world_.generateChunkIfMissing(static_cast<std::int32_t>(e->x)>>4,
+                                   static_cast<std::int32_t>(e->z)>>4);
+            int col=4;
+            world_.withChunk(static_cast<std::int32_t>(e->x)>>4,
+                      static_cast<std::int32_t>(e->z)>>4,[&](const Chunk& c){
+                for (int ry=kSectionsPerChunk*16-1; ry>=0; --ry)
+                    if (c.blocks[Chunk::index(ry>>4,ry&15,
+                        static_cast<std::int32_t>(e->z)&15,
+                        static_cast<std::int32_t>(e->x)&15)]!=0){col=ry+1;break;}
+            });
+            const double gy = kMinY + col + 0.25;
+            if (e->y < gy) { e->y = gy; e->vy = 0; e->vx *= 0.6; e->vz *= 0.6; }
+
+            if (e->ageTicks > 10) {
+                for (auto& pp : playersSnapshot()) {
+                    auto* pl = pp.get();
+                    if (!pl->inPlay || pl->dead) continue;
+                    double dx=pl->x-e->x, dy=(pl->y+0.9)-e->y, dz=pl->z-e->z;
+                    if (dx*dx+dy*dy+dz*dz < 2.0) {
+                        pickups.push_back({e, pl});
+                        break;
+                    }
+                }
+            }
+            ++it;
+        }
+    }
+    for (auto& pk : pickups) {
+        if (addToInventory(*pk.collector, pk.ent->itemId, pk.ent->count)) {
+            WriteBuffer c;
+            c.varint(pk.ent->entityId);
+            c.varint(pk.collector->entityId);
+            c.varint(pk.ent->count);
+            broadcastPacketExcept(nullptr, 0x76 /*collect*/, c);
+            resendInventory(*pk.collector);
+            std::lock_guard lk(entsMtx_);
+            pk.ent->collected = true;
+            itemDrops_.erase(std::remove_if(itemDrops_.begin(), itemDrops_.end(),
+                [&](const std::shared_ptr<ItemEntity>& x){ return x.get()==pk.ent.get(); }),
+                itemDrops_.end());
+            WriteBuffer rm;
+            rm.varint(1); rm.varint(pk.ent->entityId);
+            broadcastPacketExcept(nullptr, pl::sc::RemoveEntities, rm);
+        }
+    }
+}
+
+void GameServer::spawnItemDrop(double x,double y,double z,std::uint32_t itemId,std::uint8_t cnt,
+                               double vx,double vy,double vz) {
+    auto e = std::make_shared<ItemEntity>();
+    e->entityId = nextEntityId();
+    e->itemId = itemId; e->count = cnt;
+    e->x=x; e->y=y; e->z=z; e->vx=vx; e->vy=vy; e->vz=vz;
+    {
+        std::lock_guard lk(entsMtx_);
+        itemDrops_.push_back(e);
+    }
+    broadcastSpawnItem(*e);
+}
+
+void GameServer::broadcastSpawnItem(const ItemEntity& it) {
+    WriteBuffer b;
+    b.varint(it.entityId);
+    std::uint8_t zero[16] = {};
+    b.uuid(zero);
+    b.varint(static_cast<std::int32_t>(gen::entityTypeIdByName().at("minecraft:item")));
+    b.f64(it.x); b.f64(it.y); b.f64(it.z);
+    b.i8(0); b.i8(0); b.i8(0);
+    b.varint(1);                                        // objectData = 1 (item w/ stack)
+    b.i16(static_cast<std::int16_t>(it.vx*8000));
+    b.i16(static_cast<std::int16_t>(it.vy*8000));
+    b.i16(static_cast<std::int16_t>(it.vz*8000));
+    broadcastPacketExcept(nullptr, pl::sc::SpawnEntity, b);
+    // metadata index 8 = item stack: [idx][7][count][itemId][addC=0][remC=0], then FF
+    WriteBuffer md;
+    md.varint(it.entityId);
+    md.u8(8); md.u8(7);
+    md.varint(it.count ? it.count : 1);
+    md.varint(static_cast<std::int32_t>(it.itemId));
+    md.varint(0); md.varint(0);
+    md.u8(255);
+    broadcastPacketExcept(nullptr, pl::sc::SetEntityMetadata, md);
+}
+
+bool GameServer::addToInventory(Player& p, std::uint32_t itemId, std::uint16_t count) {
+    // merge into existing stacks (hotbar 36..44, main 9..35)
+    for (int pass = 0; pass < 2; ++pass) {
+        for (int i : (pass == 0 ? std::initializer_list<int>{36,37,38,39,40,41,42,43,44}
+                                : std::initializer_list<int>{9,10,11,12,13,14,15,16,17,18,19,
+                                                             20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35})) {
+            auto& s = p.inv[i];
+            if (pass == 0 && s.itemId == itemId && s.count > 0 && s.count < 64) {
+                const auto take = std::min<int16_t>((int16_t)(64 - s.count), (int16_t)count);
+                s.count += take; count -= take;
+                if (count == 0) return true;
+            } else if (pass == 1 && s.count == 0) {
+                s.itemId = itemId; s.count = std::min<int16_t>(64, (int16_t)count);
+                count -= s.count;
+                if (count == 0) return true;
+            }
+        }
+    }
+    return false;                                       // inventory full: stays on ground
+}
+
+void GameServer::resendInventory(Player& p) {
+    WriteBuffer b;
+    b.u8(0);                                            // window 0
+    b.varint(++p.invStateId);
+    b.varint(46);
+    for (int i = 0; i < 46; ++i) {
+        const auto& s = p.inv[i];
+        if (s.count > 0) {
+            b.varint(s.count);
+            b.varint(static_cast<std::int32_t>(s.itemId));
+            b.varint(0); b.varint(0);
+        } else b.varint(0);
+    }
+    b.varint(0);                                        // carried
+    try { p.conn->sendPacket(pl::sc::ContainerSetContent, b); } catch (...) {}
+}
+
+// ===================================================================== Session
 
 // ===================================================================== Session
 
@@ -447,6 +802,9 @@ void Session::onEnterPlay() {
     registered_ = true;
     srv_.addPlayer(self_);
     self_->inPlay = true;
+    self_->gamemode = 0;
+    self_->health = 20; self_->food = 20; self_->saturation = 5;
+    self_->exhaustion = 0; self_->fallDist = 0; self_->dead = false;
 
     broadcastSpawnEntity(self_.get());
     sendDeclareCommands();
@@ -467,7 +825,7 @@ static WriteBuffer makeWorldState(const ServerConfig& c) {
     w.varint(0);                                   // dimension type index
     w.string("minecraft:overworld");
     w.i64(c.hashedSeed);
-    w.i8(1);                                       // gamemode creative
+    w.i8(0);                                       // gamemode survival
     w.u8(255);                                     // previous gamemode: none
     w.boolean(false);                              // is debug
     w.boolean(true);                               // is flat
@@ -499,6 +857,9 @@ void Session::sendDeclareCommands() {
 }
 
 void Session::handleRespawnRequest() {
+    self_->dead = false;
+    self_->health = 20; self_->food = 20; self_->saturation = 5;
+    self_->fallDist = 0;
     WriteBuffer ws = makeWorldState(srv_.config());
     WriteBuffer b;
     b.raw(ws.data.data(), ws.data.size());
@@ -590,7 +951,7 @@ void Session::sendPlayerInfoAddSelf() {
     add.uuid(self_->uuid.data());
     add.string(self_->name);
     add.varint(0);                                 // properties
-    add.varint(1);                                 // gamemode creative
+    add.varint(self_->gamemode);
     add.varint(1);                                 // listed
     conn_->sendPacket(pl::sc::PlayerInfoUpdate, add);
 }
@@ -608,21 +969,29 @@ void Session::broadcastPlayerInfoAdd(Player* about) {
 }
 
 void Session::sendStarterInventory() {
+    // build inventory model from starter kit
+    for (auto& s2 : self_->inv) { s2.itemId = 0; s2.count = 0; }
+    {
+        int hot = 36;
+        for (auto& e : kKit) {
+            auto ii = gen::itemIdByName().find(e.name);
+            if (ii == gen::itemIdByName().end()) continue;
+            if (hot < 45) { self_->inv[hot] = InvSlot{ii->second, static_cast<std::int16_t>(e.cnt)}; ++hot; }
+        }
+    }
     WriteBuffer b;
     b.u8(0);                                       // window id: player inventory
-    b.varint(1);                                   // state id
+    b.varint(++self_->invStateId);
     b.varint(46);                                  // slots
-    auto emptySlot = [&]{ b.varint(0); };
-    auto itemSlot = [&](std::uint32_t itemId) {
-        b.varint(1);                               // count present => item
-        b.varint(static_cast<std::int32_t>(itemId));
-        b.varint(0);                               // added components
-        b.varint(0);                               // removed components
-    };
-    for (int i = 0; i < 46; ++i) emptySlot();
-    for (int i = 0; i < 9 && i < static_cast<int>(g_hotbar.size()); ++i)
-        itemSlot(g_hotbar[static_cast<std::size_t>(i)].itemId);
-    emptySlot();                                   // carried item
+    for (int i = 0; i < 46; ++i) {
+        const auto& sl = self_->inv[i];
+        if (sl.count > 0) {
+            b.varint(sl.count);
+            b.varint(static_cast<std::int32_t>(sl.itemId));
+            b.varint(0); b.varint(0);
+        } else b.varint(0);
+    }
+    b.varint(0);                                   // carried item
     conn_->sendPacket(pl::sc::ContainerSetContent, b);
 }
 
@@ -746,6 +1115,7 @@ void Session::handlePlay() {
             break;
         }
         case pl::cs::ChatMessage:         onChatMessage(in); break;
+        case pl::cs::UseEntity:           onUseEntity(in); break;
         case pl::cs::ChatCommand:         onChatCommand(in); break;
         case pl::cs::PlayerAction:        onPlayerAction(in); break;
         case pl::cs::UseItemOn:           onUseItemOn(in); break;
@@ -795,23 +1165,40 @@ void Session::handlePlay() {
 }
 
 void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
+    const double oldX = self_->x, oldZ = self_->z;
     if (hasPos) {
-        self_->x = in.f64();
-        self_->y = in.f64();
-        self_->z = in.f64();
+        const double nx = in.f64(), ny = in.f64(), nz = in.f64();
+        if (!self_->onGround && ny < self_->y && self_->gamemode == 0)
+            self_->fallDist += self_->y - ny;       // descending while airborne
+        self_->x = nx; self_->y = ny; self_->z = nz;
     }
     if (hasRot) {
         self_->yaw = in.f32();
         self_->pitch = in.f32();
     }
-    self_->onGround = in.boolean();
+    const bool nowGround = in.boolean();
     if (hasPos) {
         if (self_->y < -2048.0 || self_->y > 2048.0)
             throw std::runtime_error("player moved out of world bounds");
+        // landing
+        if (nowGround && !self_->onGround) {
+            if (getenv("CPPFM_TRACE"))
+                std::fprintf(stderr, "[cppfm] %s landed fallDist=%.2f gm=%u\n",
+                             self_->name.c_str(), self_->fallDist, self_->gamemode);
+            if (self_->fallDist > 3.0)
+                srv_.applyDamage(*self_, static_cast<float>(std::floor(self_->fallDist - 3.0)),
+                            "fell from a high place");
+            self_->fallDist = 0;
+        }
+        if (nowGround) self_->fallDist = 0;
+        // exhaustion from horizontal movement
+        const double hdx = self_->x - oldX, hdz = self_->z - oldZ;
+        self_->exhaustion += std::sqrt(hdx*hdx + hdz*hdz) * 0.01;
         self_->spawned = true;
         if (!chunksStreamed_) streamInitialChunks();
         else tickChunksAround(self_->x, self_->z);
     }
+    self_->onGround = nowGround;
     broadcastMovement();
 }
 
@@ -929,8 +1316,28 @@ void Session::onPlayerAction(ReadBuffer& in) {
 
     const bool digLike = (status == 0 || status == 2);   // started/finished
     if (digLike) {
-        srv_.world().setBlock(x, y, z, 0);
-        srv_.broadcastBlockChange(x, y, z, 0);
+        const std::uint16_t oldState = srv_.world().getBlock(x, y, z);
+        if (oldState != 0) {
+            srv_.world().setBlock(x, y, z, 0);
+            srv_.broadcastBlockChange(x, y, z, 0);
+            if (self_->gamemode == 0) {                 // survival: spawn drop
+                std::string bname;
+                for (auto& [n2, sid] : gen::kBlocks)
+                    if (sid == oldState) { bname = std::string(n2); break; }
+                static const std::unordered_map<std::string,std::string> kOverride{
+                    {"minecraft:grass_block","minecraft:dirt"},
+                    {"minecraft:stone","minecraft:cobblestone"},
+                };
+                auto ov = kOverride.find(bname);
+                const std::string iname = ov != kOverride.end() ? ov->second : bname;
+                auto it = gen::itemIdByName().find(iname);
+                if (it != gen::itemIdByName().end() && bname != "minecraft:glass") {
+                    srv_.spawnItemDrop(x + 0.5, y + 0.25, z + 0.5, it->second, 1,
+                        (rand()/(double)RAND_MAX-.5)*.2, .12,
+                        (rand()/(double)RAND_MAX-.5)*.2);
+                }
+            }
+        }
     }
     ack(sequence);                                      // ALWAYS ack sequences
 }
@@ -969,7 +1376,67 @@ void Session::onUseItem(ReadBuffer& in) {
     (void)in.varint();                                  // hand
     const std::int32_t sequence = in.varint();
     (void)in.f32(); (void)in.f32();                     // rotation
+    if (self_->heldSlot >= 0 && self_->heldSlot < 9) {
+        const auto& sl = self_->inv[36 + self_->heldSlot];
+        static const std::unordered_map<std::uint32_t, std::pair<int,float>> kFood{
+            {gen::itemIdByName().at("minecraft:bread"), {5,6}},
+            {gen::itemIdByName().at("minecraft:apple"), {4,3}},
+        };
+        auto f = kFood.find(sl.itemId);
+        if (f != kFood.end() && self_->food < 20) {
+            self_->food = std::min(20, self_->food + f->second.first);
+            self_->saturation = std::min<float>((float)self_->food,
+                                                self_->saturation + f->second.second);
+            srv_.sendSetHealth(*self_);
+            for (auto& s2 : self_->inv)
+                if (s2.itemId == sl.itemId && s2.count > 0) {
+                    if (--s2.count <= 0) s2 = InvSlot{};
+                    break;
+                }
+            srv_.resendInventory(*self_);
+        }
+    }
     ack(sequence);
+}
+
+void Session::onUseEntity(ReadBuffer& in) {
+    const std::int32_t target = in.varint();
+    const std::int32_t mouse = in.varint();
+    if (mouse == 2) { (void)in.f32(); (void)in.f32(); (void)in.f32(); }
+    if (mouse != 1) return;                             // only ATTACK
+
+    float dmg = 1.f;
+    if (self_->heldSlot >= 0 && self_->heldSlot < 9) {
+        const auto& sl = self_->inv[36 + self_->heldSlot];
+        if (sl.count > 0 && sl.itemId == gen::itemIdByName().at("minecraft:iron_sword"))
+            dmg = 6.f;
+    }
+
+    bool killed = false;
+    std::shared_ptr<MobEntity> victim;
+    {
+        std::lock_guard lk(srv_.entsMtx_);
+        for (auto& m : srv_.mobsForTest()) {
+            if (m->entityId != target || m->dead) continue;
+            m->health -= dmg;
+            if (m->health <= 0) { m->dead = true; killed = true; victim = m; }
+            break;
+        }
+    }
+    if (killed && victim) {
+        WriteBuffer rm;
+        rm.varint(1); rm.varint(target);
+        srv_.broadcastPacketExcept(nullptr, pl::sc::RemoveEntities, rm);
+        const auto drop = MobEntity::dropFor(victim->kind);
+        srv_.spawnItemDrop(victim->x, victim->y + 0.4, victim->z, drop.itemId, drop.count,
+                           (rand()/(double)RAND_MAX-.5)*.15, .1,
+                           (rand()/(double)RAND_MAX-.5)*.15);
+        std::lock_guard lk(srv_.entsMtx_);
+        srv_.mobsForTest().erase(
+            std::remove_if(srv_.mobsForTest().begin(), srv_.mobsForTest().end(),
+                [&](const std::shared_ptr<MobEntity>& x){ return x.get()==victim.get(); }),
+            srv_.mobsForTest().end());
+    }
 }
 
 } // namespace cppfm

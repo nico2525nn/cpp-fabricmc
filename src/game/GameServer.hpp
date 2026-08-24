@@ -15,6 +15,7 @@
 #include "ChunkCodec.hpp"
 #include "EmbeddedData.hpp"
 #include "Persistence.hpp"
+#include "Entities.hpp"
 #include "../net/Rcon.hpp"
 
 namespace cppfm {
@@ -37,6 +38,8 @@ struct ServerConfig {
     int compressionThreshold = 256;   // -1 disables Set Compression entirely
 };
 
+struct InvSlot { std::uint32_t itemId = 0; std::int16_t count = 0; };
+
 struct Player {
     std::string name;
     std::array<std::uint8_t, 16> uuid{};
@@ -51,6 +54,18 @@ struct Player {
     std::int64_t keepAliveCounter = 0;
     bool spawned = false;          // position confirmed (teleport/movement)
     bool inPlay = false;           // finished onEnterPlay: eligible for broadcasts
+    // survival state
+    std::uint8_t gamemode = 1;     // 0 survival 1 creative 2 adventure 3 spectator
+    float health = 20.f;
+    std::int32_t food = 20;
+    float saturation = 5.f;
+    double exhaustion = 0;
+    double fallDist = 0;
+    double prevFeetY = -60.0;
+    bool airborne = false;
+    std::array<InvSlot, 46> inv{};
+    std::int32_t invStateId = 1;
+    bool dead = false;
     double sentX = 0, sentY = 0, sentZ = 0;   // last broadcast to others
     float  sentYaw = 0, sentPitch = 0;
     Connection* conn = nullptr;
@@ -81,6 +96,7 @@ private:
     void onUseItemOn(ReadBuffer& in);
     void onUseItem(ReadBuffer& in);
     void onHeldSlot(ReadBuffer& in);
+    void onUseEntity(ReadBuffer& in);
     void handleRespawnRequest();
     void sendDeclareCommands();
     void onChatCommand(ReadBuffer& in);
@@ -117,7 +133,9 @@ private:
     std::unordered_set<std::int64_t> sentChunks_;
 };
 
+class Session;
 class GameServer {
+    friend class Session;
 public:
     explicit GameServer(ServerConfig cfg)
         : cfg_(cfg),
@@ -142,14 +160,33 @@ public:
     void runForever();
     void stop() {
         running_ = false;
+        stopTickLoop();
         if (rconServer_) rconServer_->stop();
         if (persist_) persist_->stop();
         if (listenFd_ >= 0) { ::close(listenFd_); listenFd_ = -1; }
     }
     Persistence& persistence() { return *persist_; }
+    auto& mobsForTest() { return mobs_; }
     Whitelist& whitelist() { return whitelist_; }
     // Console command dispatch (shared by chat /commands and RCON)
     std::string dispatchConsole(const std::string& line);
+
+    // ticking & entities (Phase 3/4)
+    void startTickLoop();
+    void stopTickLoop();
+    void tickOnce();
+    void survivalTick();
+    void mobsTick();
+    void itemsTick();
+    void trySpawnMobs();
+    void spawnItemDrop(double x,double y,double z,std::uint32_t itemId,std::uint8_t cnt,
+                       double vx=0,double vy=0,double vz=0);
+    void broadcastSpawnItem(const ItemEntity& it);
+    bool addToInventory(Player& p, std::uint32_t itemId, std::uint16_t count);
+    void resendInventory(Player& p);
+    void sendSetHealth(Player& p);
+    void applyDamage(Player& p, float amount, const char* cause);
+    void killPlayer(Player& p, const char* cause);
 
     const ServerConfig& config() const { return cfg_; }
     World& world() { return world_; }
@@ -220,6 +257,12 @@ private:
 
     ServerConfig cfg_;
     World world_;
+    // entities
+    std::mutex entsMtx_;
+    std::vector<std::shared_ptr<MobEntity>> mobs_;
+    std::vector<std::shared_ptr<ItemEntity>> itemDrops_;
+    std::int64_t tickNo_ = 0;
+    std::thread tickThread_;
     std::unique_ptr<Persistence> persist_;
     Whitelist whitelist_;
     std::unique_ptr<RconServer> rconServer_;

@@ -166,7 +166,7 @@ while time.time() < deadline:
                           mcproto.write_varint(0) + b"\x00\x00\x00")
     if chat_sent and not dig_sent:
         dig_sent = True
-        c.send_packet_raw(0x27, mcproto.write_varint(0) + pack_pos(0, -60, 0) +
+        c.send_packet_raw(0x27, mcproto.write_varint(0) + pack_pos(0, -61, 0) +
                           bytes([1]) + mcproto.write_varint(7))
     if time.time() - last_move > 0.35:
         last_move = time.time()
@@ -201,7 +201,7 @@ if join:
     check(len(worlds) == 1 and worlds[0] == "minecraft:overworld", "worlds list correct")
     check(dt == 0, f"dimension type index 0 (got {dt})")
     check(dname == "minecraft:overworld", "dimension name overworld")
-    check(gm == 1, "gamemode creative")
+    check(gm == 0, "gamemode survival (default)")
     check(flat == 1, "isFlat true")
     check(sea == -63, f"sea level -63 (got {sea})")
     check(consumed, "join game fully consumed (layout exact)")
@@ -220,7 +220,7 @@ if block_updates:
     v = struct.unpack(">q", bio.read(8))[0]
     xx, yy, zz = unpack_pos(v)
     st, _ = read_varint(bio)
-    check((xx, yy, zz) == (0, -60, 0), f"dug position echoed ({xx},{yy},{zz})")
+    check((xx, yy, zz) == (0, -61, 0), f"dug position echoed ({xx},{yy},{zz})")
     check(st == 0, f"dug block became air (state {st})")
 
 if (0, 0) in chunks:

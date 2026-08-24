@@ -32,6 +32,10 @@ automated comparison against captured reference-server wire data.
 | **Anvil persistence** (`world/region/*.mca`): async 3s flusher + shutdown flush; load-on-demand; **vanilla interop verified both directions** (vanilla boots on cppfm worlds and preserves edits; cppfm reads vanilla-saved chunks) | ✅ |
 | **Terrain generation** (`level-type=normal`): seeded Perlin octaves — continents, mountains, beaches, oceans at sea level 63; deterministic per seed | ✅ |
 | **RCON** (Source protocol, localhost bind, auth + command dispatch: list/say/help) and **whitelist** enforcement | ✅ |
+| **Survival basics**: health/hunger/saturation, natural regen & starvation, fall damage, void damage, death→respawn flow; food eating (bread/apple); block-break drops as **item entities with pickup** (Collect packet + inventory merge) | ✅ |
+| **Passive mobs** (pig/cow/sheep/chicken): spawn near players, wander AI with ground snapping, delta-sync to clients, despawn by distance, attackable (sword damage), drop items on death | ✅ |
+| 20 TPS fixed game loop driving survival/entity systems | ✅ |
+| Commands: `/gamemode <mode>` (state+abilities switch), `/give <item> [n]`, `/time set day|night`, `/kill` | ✅ |
 
 Verified by four test layers — see *Testing* below. The hardest part, chunk
 serialization, is proven **byte-identical to a real reference server's output**
@@ -42,8 +46,8 @@ by golden tests.
 - No encryption/authentication (offline mode only). Online-mode needs the Mojang
   session servers + authlib semantics.
 - Online-mode authentication (offline mode only; needs Mojang session servers).
-- Survival mechanics (health/hunger/fall damage/item drops) and mob AI — the
-  entity layer and game-loop hooks exist; behaviour systems are next.
+- Full mob AI/pathfinding variety (passive wanderers + attack/drops exist;
+  hostile mobs, spawning rules by light, advanced goals are next).
 - Recipes / advancements / full command tree with arguments (a literal-only
   command tree — `/help`, `/ping` — is advertised and handled).
 - Inventory transactions, containers, item components (starter hotbar is given).
