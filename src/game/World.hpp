@@ -4,11 +4,14 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <mutex>
 #include <shared_mutex>
 #include <string>
+#include <functional>
 #include <unordered_map>
 #include "generated/BlockStates.hpp"
+#include "TerrainGen.hpp"
 
 namespace cppfm {
 
@@ -35,11 +38,33 @@ struct Chunk {
     }
 };
 
+enum class LevelType { Flat, Normal };
+
 class World {
 public:
-    explicit World(std::string biomeKey) : biome_(std::move(biomeKey)) {}
+    World(std::string biomeKey, LevelType level, std::uint64_t seed)
+        : biome_(std::move(biomeKey)), level_(level), terrain_(seed) {}
+
+    LevelType levelType() const { return level_; }
+    int seaLevel() const { return level_ == LevelType::Normal ? 63 : kSeaLevelFlat; }
+    bool isFlat() const { return level_ == LevelType::Flat; }
+
+    // Feet Y for a fresh spawn at this column (after ensuring the chunk exists).
+    int surfaceFeetY(std::int32_t wx, std::int32_t wz) {
+        generateChunkIfMissing(wx >> 4, wz >> 4);
+        int col = 4;
+        withChunk(wx >> 4, wz >> 4, [&](const Chunk& c) {
+            for (int ry = kSectionsPerChunk * 16 - 1; ry >= 0; --ry)
+                if (c.blocks[Chunk::index(ry >> 4, ry & 15, wz & 15, wx & 15)] != 0) { col = ry + 1; break; }
+        });
+        return kMinY + col;
+    }
 
     // NOTE: logically const (lazy generation); mutex is mutable
+    // Loader hook: return true if it filled the chunk (e.g., from disk).
+    void setLoader(std::function<bool(std::int32_t, std::int32_t, Chunk&)> l) { loader_ = std::move(l); }
+    void setOnEdit(std::function<void(std::int32_t, std::int32_t)> cb) { onEdit_ = std::move(cb); }
+
     // Double-checked, atomic lazy generation (safe under concurrent joins).
     void generateChunkIfMissing(std::int32_t cx, std::int32_t cz) const {
         {
@@ -47,9 +72,13 @@ public:
             if (chunks_.count(chunkKey(cx, cz))) return;
         }
         auto c = std::make_unique<Chunk>();
-        fillFlat(*c);
+        const bool loaded = loader_ && loader_(cx, cz, *c);
+        if (!loaded) {
+            if (level_ == LevelType::Normal) fillTerrain(*c, cx, cz);
+            else fillFlat(*c);
+        }
         std::unique_lock lock(mutex_);
-        chunks_.try_emplace(chunkKey(cx, cz), std::move(c));  // never replaces
+        chunks_.try_emplace(chunkKey(cx, cz), std::move(c));   // never replaces
     }
     // Runs fn(chunk) while holding the world read lock. Use for any access that
     // must not race with chunk replacement or edits.
@@ -82,6 +111,7 @@ public:
         const int lx = x & 15, lz = z & 15, wy = y - kMinY;
         c.blocks[Chunk::index(wy >> 4, wy & 15, lz, lx)] = state;
         ++c.revision;
+        if (onEdit_) onEdit_(x >> 4, z >> 4);
     }
     const Chunk* tryGet(std::int32_t cx, std::int32_t cz) const {
         std::shared_lock lock(mutex_);
@@ -92,6 +122,37 @@ public:
     const std::string& biomeKey() const { return biome_; }
 
 private:
+    void fillTerrain(Chunk& c, std::int32_t cx, std::int32_t cz) const {
+        const auto& table = gen::blockNameToState();
+        const std::uint16_t stone   = (uint16_t)table.at("minecraft:stone");
+        const std::uint16_t dirt    = (uint16_t)table.at("minecraft:dirt");
+        const std::uint16_t grass   = (uint16_t)table.at("minecraft:grass_block");
+        const std::uint16_t sand    = (uint16_t)table.at("minecraft:sand");
+        const std::uint16_t water   = (uint16_t)table.at("minecraft:water");
+        const std::uint16_t bedrock = (uint16_t)table.at("minecraft:bedrock");
+        constexpr int kSea = 63;
+
+        for (int lz = 0; lz < 16; ++lz)
+        for (int lx = 0; lx < 16; ++lx) {
+            const auto col = terrain_.column(cx * 16 + lx, cz * 16 + lz);
+            const int surf = col.surfaceY;                       // first air (world y)
+            const bool beach = col.ocean || surf <= kSea + 2;
+            for (int y = kMinY; y <= kMaxY && y < surf; ++y) {
+                std::uint16_t st;
+                if (y == kMinY) st = bedrock;
+                else if (y >= surf - 1) st = beach ? sand : grass;
+                else if (y >= surf - 4) st = beach ? sand : dirt;
+                else st = stone;
+                const int wy = y - kMinY;
+                c.blocks[Chunk::index(wy >> 4, wy & 15, lz, lx)] = st;
+            }
+            for (int y = surf; y < kSea; ++y) {                  // oceans/lakes
+                const int wy = y - kMinY;
+                c.blocks[Chunk::index(wy >> 4, wy & 15, lz, lx)] = water;
+            }
+        }
+    }
+
     void fillFlat(Chunk& c) const {
         const auto& map = gen::blockNameToState();
         const std::uint16_t bedrock = static_cast<std::uint16_t>(map.at("minecraft:bedrock"));
@@ -109,6 +170,10 @@ private:
     mutable std::shared_mutex mutex_;
     mutable std::unordered_map<std::int64_t, std::unique_ptr<Chunk>> chunks_;
     std::string biome_;
+    LevelType level_;
+    TerrainGenerator terrain_;
+    std::function<bool(std::int32_t, std::int32_t, Chunk&)> loader_;
+    std::function<void(std::int32_t, std::int32_t)> onEdit_;
 };
 
 } // namespace cppfm

@@ -36,6 +36,7 @@ static void loadProperties(ServerConfig& c, const std::string& path) {
             else if (k == "simulation-distance") c.simulationDistance = std::clamp(std::stoi(v), 2, 32);
             else if (k == "motd") c.motd = v;
         else if (k == "compression-threshold") c.compressionThreshold = std::stoi(v);
+        else if (k == "world-dir") c.worldDir = v;
         } catch (...) {}
     }
 }
@@ -49,6 +50,7 @@ int main(int argc, char** argv) {
             else if (k == "view-distance") cfg.viewDistance = std::clamp(std::stoi(v), 2, 32);
             else if (k == "assets") cfg.assetsDir = v;
             else if (k == "motd") cfg.motd = v;
+            else if (k == "world-dir") cfg.worldDir = v;
         } catch (...) {}
     };
     for (int i = 1; i < argc; ++i) {
@@ -72,8 +74,9 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    std::printf("[cppfm] CppFabricMC starting: port=%u view=%d biome=%s\n",
-                cfg.port, cfg.viewDistance, cfg.worldBiome.c_str());
+    std::printf("[cppfm] CppFabricMC starting: port=%u view=%d biome=%s world=%s level=%s\n",
+                cfg.port, cfg.viewDistance, cfg.worldBiome.c_str(), cfg.worldDir.c_str(),
+                cfg.levelType.c_str());
     try {
         server.runForever();
     } catch (const std::exception& e) {

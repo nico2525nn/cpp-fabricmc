@@ -14,6 +14,7 @@
 #include "World.hpp"
 #include "ChunkCodec.hpp"
 #include "EmbeddedData.hpp"
+#include "Persistence.hpp"
 
 namespace cppfm {
 
@@ -26,6 +27,9 @@ struct ServerConfig {
     std::string worldBiome = "minecraft:plains";
     std::int64_t hashedSeed = 1378645410614731511LL;
     std::string assetsDir = "assets/registry";
+    std::string worldDir = "world";
+    std::string levelType = "flat";          // flat | normal
+    std::uint64_t seed = 1378645410614731511ULL;
     int compressionThreshold = 256;   // -1 disables Set Compression entirely
 };
 
@@ -111,15 +115,25 @@ private:
 
 class GameServer {
 public:
-    explicit GameServer(ServerConfig cfg) : cfg_(cfg), world_(cfg.worldBiome) {}
+    explicit GameServer(ServerConfig cfg)
+        : cfg_(cfg),
+          world_(cfg.worldBiome,
+                 cfg.levelType == "normal" ? LevelType::Normal : LevelType::Flat,
+                 cfg.seed) {}
     ~GameServer() { stop(); }
 
-    void init() { data_.load(cfg_.assetsDir); }
+    void init() {
+        data_.load(cfg_.assetsDir);
+        persist_ = std::make_unique<Persistence>(world_, cfg_.worldDir, cfg_.worldBiome);
+        persist_->start();
+    }
     void runForever();
     void stop() {
         running_ = false;
+        if (persist_) persist_->stop();
         if (listenFd_ >= 0) { ::close(listenFd_); listenFd_ = -1; }
     }
+    Persistence& persistence() { return *persist_; }
 
     const ServerConfig& config() const { return cfg_; }
     World& world() { return world_; }
@@ -190,6 +204,7 @@ private:
 
     ServerConfig cfg_;
     World world_;
+    std::unique_ptr<Persistence> persist_;
     EmbeddedData data_;
     std::vector<PlayerRef> players_;
     std::mutex playersMtx_;

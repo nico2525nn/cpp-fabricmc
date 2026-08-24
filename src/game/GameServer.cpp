@@ -286,7 +286,8 @@ void Session::handleConfiguration() {
     for (;;) {
         auto frame = conn_->readFrame();
         ReadBuffer in(frame);
-        switch (in.u8()) {
+        const std::uint8_t kpid = in.u8();
+        switch (kpid) {
         case cf::cs::SelectKnownPacks: {
             const std::int32_t n = in.varint();
             for (std::int32_t i = 0; i < n; ++i) {
@@ -320,7 +321,8 @@ void Session::handleConfiguration() {
             (void)in.u8(); (void)in.varint();
             break;
         default:
-            throw std::runtime_error("unexpected packet while awaiting known-packs reply");
+            throw std::runtime_error("unexpected packet 0x" + [&]{ 
+                char b[3]; snprintf(b,3,"%02x", kpid); return std::string(b); }() + " while awaiting known-packs reply");
         }
     }
 packsDone:

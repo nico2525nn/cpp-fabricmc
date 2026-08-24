@@ -65,7 +65,7 @@ static void testChunkGolden(const char* capturePath, std::int32_t cx, std::int32
     const std::int32_t size = in.varint();
     std::size_t blobOff = in.off;
 
-    World world("minecraft:plains");
+    World world("minecraft:plains", LevelType::Flat, 12345);
     world.generateChunkIfMissing(cx, cz);
     const Chunk* ch = world.tryGet(cx, cz);
 

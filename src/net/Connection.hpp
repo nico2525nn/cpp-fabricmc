@@ -27,7 +27,7 @@ public:
 
 class Connection {
 public:
-    explicit Connection(int fd) : fd_(fd), compressionThreshold_(-1) {}
+    explicit Connection(int fd) : fd_(fd) {}
     ~Connection() { close(); }
     Connection(const Connection&) = delete;
     Connection& operator=(const Connection&) = delete;
@@ -150,8 +150,8 @@ public:
 
 private:
     static constexpr std::uint32_t kMaxFrame = 8u * 1024 * 1024;
-    int compressionThreshold_;
     std::vector<std::uint8_t> frame_;
+    int compressionThreshold_ = -1;
 
     std::int32_t readVarintStream(int maxBytes) {
         std::int32_t result = 0; int shift = 0;
