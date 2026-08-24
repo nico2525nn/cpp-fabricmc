@@ -38,6 +38,7 @@ public:
     // login acknowledged -> configuration exchange (brand/knownpacks/registries/
     // tags/finish) -> play entry. Returns false on any deviation.
     bool join(const std::string& name);
+    bool joinOnline(const std::string& name);   // full encryption handshake
 
     // ---- play actions -----------------------------------------------------
     void confirmTeleport(std::int32_t teleportId);

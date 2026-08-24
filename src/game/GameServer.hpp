@@ -18,6 +18,8 @@
 #include "Entities.hpp"
 #include "MineData.hpp"
 #include "../net/Rcon.hpp"
+#include "../net/Crypto.hpp"
+#include "../net/MojangAuth.hpp"
 
 namespace cppfm {
 
@@ -33,6 +35,7 @@ struct ServerConfig {
     std::string worldDir = "world";
     std::string levelType = "flat";          // flat | normal
     bool whitelist = false;
+    bool onlineMode = false;
     RconConfig rcon;
     std::string levelTypeCli;
     std::uint64_t seed = 1378645410614731511ULL;
@@ -68,6 +71,8 @@ struct Player {
     std::array<InvSlot, 46> inv{};
     std::int32_t invStateId = 1;
     bool dead = false;
+    struct LoginProp { std::string name, value, signature; };
+    std::vector<LoginProp> loginProps;
     // survival dig tracking
     bool digActive = false;
     std::int32_t digX=0, digY=0, digZ=0;
@@ -287,6 +292,10 @@ private:
     std::unique_ptr<Persistence> persist_;
     Whitelist whitelist_;
     std::unique_ptr<RconServer> rconServer_;
+    crypto::RsaKeyPair loginKeys_;
+    std::vector<std::uint8_t> loginVerifyToken_;
+  public:
+    std::vector<std::uint8_t>& loginVerifyToken() { return loginVerifyToken_; }
     EmbeddedData data_;
     std::vector<PlayerRef> players_;
     std::mutex playersMtx_;

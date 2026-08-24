@@ -18,7 +18,7 @@ add_executable(cppfm
 target_include_directories(cppfm PRIVATE src src/generated)
 find_package(Threads REQUIRED)
 find_package(ZLIB REQUIRED)
-target_link_libraries(cppfm PRIVATE Threads::Threads ZLIB::ZLIB)
+target_link_libraries(cppfm PRIVATE Threads::Threads ZLIB::ZLIB OpenSSL::SSL OpenSSL::Crypto)
 
 add_executable(test_golden tests/test_golden.cpp src/core/NBT.cpp)
 target_include_directories(test_golden PRIVATE src src/generated)
@@ -29,8 +29,10 @@ add_executable(test_native
     tests/native_integration.cpp
     src/core/NBT.cpp)
 target_include_directories(test_native PRIVATE src src/generated tests)
+find_package(Threads REQUIRED)
 find_package(ZLIB REQUIRED)
-target_link_libraries(test_native PRIVATE Threads::Threads ZLIB::ZLIB)
+find_package(OpenSSL REQUIRED)
+target_link_libraries(test_native PRIVATE Threads::Threads ZLIB::ZLIB OpenSSL::Crypto)
 
 # self-contained: spawns the server itself on a random port
 add_test(NAME native COMMAND test_native $<TARGET_FILE:cppfm>

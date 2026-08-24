@@ -46,6 +46,8 @@ static void loadProperties(ServerConfig& c, const std::string& path) {
         else if (k == "rcon.password") c.rcon.password = v;
         else if (k == "enable-rcon") c.rcon.enabled = (v == "true");
         else if (k == "whitelist") c.whitelist = (v == "true");
+        else if (k == "online-mode") c.onlineMode = (v == "true");
+        else if (k == "online-mode") c.onlineMode = (v == "true");
         else if (k == "compression-threshold") c.compressionThreshold = std::stoi(v);
         else if (k == "world-dir") c.worldDir = v;
         } catch (...) {}
@@ -72,6 +74,7 @@ int main(int argc, char** argv) {
             else if (k == "rcon.password") cfg.rcon.password = v;
             else if (k == "enable-rcon") cfg.rcon.enabled = (v == "true");
             else if (k == "whitelist") cfg.whitelist = (v == "true");
+            else if (k == "online-mode") cfg.onlineMode = (v == "true");
         } catch (...) {}
     };
     for (int i = 1; i < argc; ++i) {

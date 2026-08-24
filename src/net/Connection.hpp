@@ -12,6 +12,7 @@
 #include <arpa/inet.h>
 #include "../core/ByteBuffer.hpp"
 #include "../core/Zlib.hpp"
+#include "../net/Crypto.hpp"
 #include <chrono>
 #include <cstdlib>
 #include <cstdio>
@@ -28,6 +29,15 @@ public:
 class Connection {
 public:
     explicit Connection(int fd) : fd_(fd) {}
+
+    // Protocol encryption (online mode): AES-128/CFB8, key = iv = shared secret.
+    void enableEncryption(const std::vector<std::uint8_t>& sharedSecret) {
+        encCtx_ = std::make_unique<crypto::AesCfb8>();
+        decCtx_ = std::make_unique<crypto::AesCfb8>();
+        encCtx_->initEncrypt(sharedSecret);
+        decCtx_->initDecrypt(sharedSecret);
+        encrypted_ = true;
+    }
     ~Connection() { close(); }
     Connection(const Connection&) = delete;
     Connection& operator=(const Connection&) = delete;
@@ -69,11 +79,27 @@ public:
     // Reads one frame payload (length-prefixed, optionally compressed).
     // Returns the packet body (packet id + payload). Throws SocketClosedError on EOF.
     std::vector<std::uint8_t> readFrame() {
-        const std::int32_t len = readVarintStream(5);
+        std::int32_t len;
+        if (!encrypted_) {
+            len = readVarintStream(5);
+        } else {
+            // varint bytes are encrypted: read/decrypt one at a time
+            len = 0; int shift = 0;
+            for (int i = 0; i < 5; ++i) {
+                std::uint8_t e[1];
+                readExact(e, 1);
+                decCtx_->crypt(e, 1, e);
+                len |= static_cast<std::int32_t>(e[0] & 0x7F) << shift;
+                if (!(e[0] & 0x80)) break;
+                shift += 7;
+            }
+            if (shift >= 35) throw std::runtime_error("varint overflow");
+        }
         if (len <= 0 || static_cast<std::uint32_t>(len) > kMaxFrame)
             throw std::runtime_error("frame length out of range: " + std::to_string(len));
         frame_.resize(static_cast<std::size_t>(len));
         readExact(frame_.data(), frame_.size());
+        if (encrypted_) decCtx_->crypt(frame_.data(), frame_.size(), frame_.data());
         if (compressionThreshold_ < 0) return frame_;
         // compressed layout: varint dataLength + (compressed | raw) body
         {
@@ -136,6 +162,7 @@ public:
         std::vector<std::uint8_t> outer;
         WriteBuffer::writeVarintTo(outer, static_cast<std::int32_t>(frame.size()));
         outer.insert(outer.end(), frame.begin(), frame.end());
+        if (encrypted_) encCtx_->crypt(outer.data(), outer.size(), outer.data());
         sendAll(outer.data(), outer.size());
     }
     void sendPacketBuf(std::uint8_t id, const std::vector<std::uint8_t>& payload) {
@@ -151,6 +178,8 @@ public:
 private:
     static constexpr std::uint32_t kMaxFrame = 8u * 1024 * 1024;
     std::vector<std::uint8_t> frame_;
+    bool encrypted_ = false;
+    std::unique_ptr<crypto::AesCfb8> encCtx_, decCtx_;
     int compressionThreshold_ = -1;
 
     std::int32_t readVarintStream(int maxBytes) {

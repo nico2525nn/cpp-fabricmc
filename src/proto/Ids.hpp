@@ -35,6 +35,7 @@ constexpr std::uint8_t LoginAcknowledged = 0x03;
 }
 namespace sc {
 constexpr std::uint8_t Disconnect = 0x00;
+constexpr std::uint8_t EncryptionRequest = 0x01;
 constexpr std::uint8_t GameProfile = 0x02;        // login success
 constexpr std::uint8_t SetCompression = 0x03;     // we never send this
 }

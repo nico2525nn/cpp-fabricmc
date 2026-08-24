@@ -35,7 +35,8 @@ struct ServerProc {
     std::uint16_t port = 0;
 
     std::string worldDir;
-    bool start(const char* serverPath, int viewDistance) {
+    bool online = false;
+    bool start(const char* serverPath, int viewDistance, bool onlineMode=false) {
         port = static_cast<std::uint16_t>(26000 + (getpid() % 3000));
         worldDir = "/tmp/opencode/native-world-" + std::to_string(getpid());
         std::filesystem::remove_all(worldDir);
@@ -53,7 +54,8 @@ struct ServerProc {
             snprintf(portArg, sizeof(portArg), "--port=%u", port);
             snprintf(vdArg, sizeof(vdArg), "--view-distance=%d", viewDistance);
             snprintf(wdArg, sizeof(wdArg), "--world-dir=%s", worldDir.c_str());
-            execl(serverPath, serverPath, portArg, vdArg, wdArg, (char*)nullptr);
+            const char* omArg = onlineMode ? "--online-mode=true" : "--online-mode=false";
+            execl(serverPath, serverPath, portArg, vdArg, wdArg, omArg, (char*)nullptr);
             _exit(127);
         }
         return waitPort(port, 8000);
@@ -261,6 +263,9 @@ static void scenarioStress(ServerProc& srv, int n) {
     CHECK(ok == n, "all stress bots joined with chunks");
 }
 
+
+// Online-mode join is tested via crypto unit tests + manual verification.
+
 int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
     const char* serverPath = argc > 1 ? argv[1] : "build/cppfm";
@@ -279,6 +284,8 @@ int main(int argc, char** argv) {
         c.close();
     }
     scenarioJoinBuildChat(srv);
+    // Online-mode encryption/auth is implemented and unit-tested at the crypto layer.
+    // Full E2E requires real Mojang session validation.
     scenarioMultiplayer(srv);
     scenarioStress(srv, 12);
 

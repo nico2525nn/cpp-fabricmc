@@ -112,6 +112,112 @@ std::string TestClient::queryStatusJson(std::uint16_t) {
     return {};
 }
 
+static cppfm::crypto::Bytes rsaEncryptPub(const cppfm::crypto::Bytes& pubDer, const cppfm::crypto::Bytes& pt) {
+    const unsigned char* pp = pubDer.data();
+    EVP_PKEY* pk = d2i_PUBKEY(nullptr, &pp, (long)pubDer.size());
+    if (!pk) throw std::runtime_error("bad pubkey der");
+    EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new(pk, nullptr);
+    EVP_PKEY_encrypt_init(ctx);
+    size_t outl = 0;
+    EVP_PKEY_encrypt(ctx, nullptr, &outl, pt.data(), pt.size());
+    cppfm::crypto::Bytes ct(outl);
+    EVP_PKEY_encrypt(ctx, ct.data(), &outl, pt.data(), pt.size());
+    EVP_PKEY_CTX_free(ctx);
+    EVP_PKEY_free(pk);
+    ct.resize(outl);
+    return ct;
+}
+
+bool TestClient::joinOnline(const std::string& name) {
+    WriteBuffer hb;
+    hb.varint(proto::kProtocolVersion);
+    hb.string("127.0.0.1");
+    hb.u16(25565);
+    hb.varint(2);
+    conn_->sendPacket(proto::hb::cs::Intention, hb);
+
+    unsigned char uuid[16];
+    md5("OfflinePlayer:" + name, uuid);
+    WriteBuffer hello;
+    hello.string(name);
+    hello.uuid(uuid);
+    conn_->sendPacket(proto::lo::cs::Hello, hello);
+
+    cppfm::crypto::Bytes sharedSecret(16, 0);
+    RAND_bytes(sharedSecret.data(), 16);
+
+    bool sawSuccess = false;
+    for (int guard = 0; guard < 60 && !sawSuccess; ++guard) {
+        auto frame = conn_->readFrame();
+        ReadBuffer in(frame);
+        const std::uint8_t pid = in.u8();
+        switch (pid) {
+        case proto::lo::sc::EncryptionRequest: {
+            (void)in.string();
+            auto pkLen = in.varint();
+            cppfm::crypto::Bytes pubDer = in.bytes(pkLen);
+            auto tkLen = in.varint();
+            cppfm::crypto::Bytes token = in.bytes(tkLen);
+            cppfm::crypto::Bytes secretCt = rsaEncryptPub(pubDer, sharedSecret);
+            cppfm::crypto::Bytes tokCt = rsaEncryptPub(pubDer, token);
+            WriteBuffer resp;
+            resp.varint((std::int32_t)secretCt.size()); resp.raw(secretCt.data(), secretCt.size());
+            resp.varint((std::int32_t)tokCt.size()); resp.raw(tokCt.data(), tokCt.size());
+            conn_->sendPacket(proto::lo::cs::Key, resp);
+            conn_->enableEncryption(sharedSecret);
+            break;
+        }
+        case proto::lo::sc::SetCompression: {
+            ReadBuffer cin(frame);
+            cin.u8();
+            auto th = cin.varint();
+            conn_->setCompression(th);
+            break;
+        }
+        case proto::lo::sc::GameProfile:
+            sawSuccess = true;
+            break;
+        default:
+            lastError = "unexpected login packet (online)";
+            return false;
+        }
+    }
+    if (!sawSuccess) { lastError = "no success (online)"; return false; }
+
+    conn_->sendPacket(proto::lo::cs::LoginAcknowledged, {});
+    bool finishSeen = false;
+    for (int guard = 0; guard < 400 && !finishSeen; ++guard) {
+        Packet p;
+        try { p.body = conn_->readFrame(); }
+        catch (const std::exception& e) { lastError = e.what(); return false; }
+        ReadBuffer in(p.body);
+        switch (in.u8()) {
+        case proto::cf::sc::CustomPayload: in.string(); break;
+        case proto::cf::sc::SelectKnownPacks: {
+            const std::int32_t n = in.varint();
+            for (std::int32_t i = 0; i < n; ++i) { (void)in.string(); (void)in.string(); (void)in.string(); }
+            conn_->sendPacket(proto::cf::cs::SelectKnownPacks, WriteBuffer{});
+            break;
+        }
+        case proto::cf::sc::KeepAlive: {
+            WriteBuffer echo; echo.raw(in.p + in.off, in.remaining());
+            conn_->sendPacket(proto::cf::cs::KeepAlive, echo);
+            break;
+        }
+        case proto::cf::sc::FinishConfiguration:
+            finishSeen = true;
+            conn_->sendPacket(proto::cf::cs::FinishAcknowledgement, {});
+            break;
+        default: break;
+        }
+    }
+    if (!finishSeen) { lastError = "no finish (online)"; return false; }
+
+    running_ = true;
+    reader_ = std::thread([this]{ readerLoop(); });
+    return true;
+}
+
 bool TestClient::join(const std::string& name) {
     std::fprintf(stderr, "[tc] join(\"%s\") local=%u caller=%p\n",
                  name.c_str(), localPort_, __builtin_return_address(0));

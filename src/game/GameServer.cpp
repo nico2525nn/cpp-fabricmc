@@ -762,11 +762,122 @@ void Session::handleLogin() {
 
     std::fprintf(stderr, "[cppfm] login hello: %s from %s\n",
                  self_->name.c_str(), conn_->peer().c_str());
-    // login success: uuid, name, empty property list (verified against capture)
+    if (srv_.config().onlineMode) {
+        std::fprintf(stderr, "[cppfm] ONLINE: sending encryption request to %s\n", self_->name.c_str());
+        if (!srv_.loginVerifyToken_.size()) {
+            srv_.loginKeys_.generate();
+            srv_.loginVerifyToken_.resize(16);
+            RAND_bytes(reinterpret_cast<unsigned char*>(srv_.loginVerifyToken_.data()), 16);
+        }
+        WriteBuffer er;
+        er.string("");                                // serverId
+        er.varint(static_cast<std::int32_t>(srv_.loginKeys_.publicDer.size()));
+        er.raw(srv_.loginKeys_.publicDer.data(), srv_.loginKeys_.publicDer.size());
+        er.varint(16);
+        er.raw(srv_.loginVerifyToken_.data(), 16);
+        conn_->sendPacket(proto::lo::sc::EncryptionRequest, er);
+
+        auto pbody = conn_->readFrame();
+        std::fprintf(stderr, "[cppfm] ONLINE: got response frame %zu bytes head=%s\n",
+                     pbody.size(),
+                     [&]{ std::string h; for (std::size_t k = 0; k < pbody.size() && k < 12; ++k)
+                         { char x[4]; snprintf(x,3,"%02x",pbody[k]); h+=x; } return h; }().c_str());
+        ReadBuffer rin(pbody);
+        const auto respPid = rin.u8();
+        std::fprintf(stderr, "[cppfm] ONLINE: response pid=%02x\n", respPid);
+        if (respPid != proto::lo::cs::Key) throw std::runtime_error("expected encryption response");
+        try {
+        std::fprintf(stderr, "[cppfm] D1: parsing secret ct\n");
+        const auto slen = rin.varint();
+        std::fprintf(stderr, "[cppfm] D2: slen=%d\n", slen);
+        const auto secretCt = rin.bytes(slen);
+        std::fprintf(stderr, "[cppfm] D3: got %zu ct bytes\n", secretCt.size());
+        const auto tlen = rin.varint();
+        std::fprintf(stderr, "[cppfm] D4: tlen=%d\n", tlen);
+        const auto tokenCt = rin.bytes(tlen);
+        std::fprintf(stderr, "[cppfm] D5: got %zu tok ct\n", tokenCt.size());
+
+        std::fprintf(stderr, "[cppfm] D6: rsa decrypt secret\n");
+        auto secret = crypto::rsaDecryptP(srv_.loginKeys_.pkey, secretCt.data(), secretCt.size());
+        std::fprintf(stderr, "[cppfm] D7: secret size=%zu\n", secret.size());
+        auto tokenBack = crypto::rsaDecryptP(srv_.loginKeys_.pkey, tokenCt.data(), tokenCt.size());
+        std::fprintf(stderr, "[cppfm] D8: token size=%zu\n", tokenBack.size());
+        std::fprintf(stderr, "[cppfm] D9: srv token=%s\n",
+            [&]{std::string r;for(auto b:srv_.loginVerifyToken_) {char x[4];snprintf(x,3,"%02x",b);r+=x;}return r;}().c_str());
+        std::fprintf(stderr, "[cppfm] D10: got token=%s\n",
+            [&]{std::string r;for(auto b:tokenBack) {char x[4];snprintf(x,3,"%02x",b);r+=x;}return r;}().c_str());
+        if (tokenBack != srv_.loginVerifyToken_)
+            throw std::runtime_error("verify token mismatch");
+        if (secret.size() != 16) throw std::runtime_error("bad shared secret size");
+        std::fprintf(stderr, "[cppfm] D9: all checks passed\n");
+
+        // Mojang session-server authentication
+        std::string hash = crypto::mcSha1Hex("", secret, srv_.loginKeys_.publicDer);
+        bool authOk = false;
+        std::string uuidHex;
+        if (getenv("CPPFM_AUTH_STUB")) {
+            // test mode: accept any session
+            unsigned char md[16];
+            unsigned int ml = 0;
+            EVP_MD_CTX* mm = EVP_MD_CTX_new();
+            EVP_DigestInit_ex(mm, EVP_sha1(), nullptr);
+            EVP_DigestUpdate(mm, self_->name.data(), self_->name.size());
+            EVP_DigestFinal_ex(mm, md, &ml);
+            EVP_MD_CTX_free(mm);
+            char hexbuf[33];
+            for (int q = 0; q < 16; ++q) snprintf(hexbuf + q * 2, 3, "%02x", md[q]);
+            uuidHex = std::string(hexbuf, 32);
+            authOk = true;
+        } else {
+            try {
+                const std::string url = "https://sessionserver.mojang.com/session/minecraft/hasJoined?username=" +
+                    self_->name + "&serverId=" + hash;
+                const std::string json = httpGet(url);
+                HasJoinedResult r;
+                authOk = parseHasJoined(json, r);
+                if (authOk) uuidHex = r.uuidNoDashes;
+                if (authOk) {
+                    for (auto& pr : r.props) self_->loginProps.push_back({pr.name, pr.value, pr.signature});
+                }
+            } catch (const std::exception& e) {
+                authOk = false;
+            }
+        }
+        if (!authOk) {
+            WriteBuffer kick;
+            nbt::writeTextComponent(kick, "Failed to verify your session (online mode)");
+            conn_->sendPacket(proto::lo::sc::Disconnect, kick);
+            state_ = State::Done;
+            return;
+        }
+        for (int q = 0; q < 16; ++q)
+            self_->uuid[q] = static_cast<std::uint8_t>(std::stoul(uuidHex.substr(q * 2, 2), nullptr, 16));
+
+        std::fprintf(stderr, "[cppfm] %s online auth ok, enabling encryption\n", self_->name.c_str());
+        conn_->enableEncryption(secret);
+        WriteBuffer scp;
+        scp.varint(256);
+        conn_->sendPacket(proto::lo::sc::SetCompression, scp);
+        conn_->setCompression(256);
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "[cppfm] ONLINE AUTH ERROR [%s]: %s\n",
+                         self_->name.c_str(), e.what());
+            throw;  // re-throw for session cleanup
+        }
+        std::fprintf(stderr, "[cppfm] %s sent compression+success\n", self_->name.c_str());
+    }
+
+    // login success: uuid, name, property list (verified against capture)
     WriteBuffer ok;
     ok.uuid(self_->uuid.data());
     ok.string(self_->name);
-    ok.varint(0);                                   // properties count
+    ok.varint(static_cast<std::int32_t>(self_->loginProps.size()));
+    for (const auto& pr : self_->loginProps) {
+        ok.string(pr.name);
+        ok.string(pr.value);
+        ok.boolean(!pr.signature.empty());
+        if (!pr.signature.empty()) ok.string(pr.signature);
+    }
     conn_->sendPacket(lo::sc::GameProfile, ok);
 
     // wait for LoginAcknowledged (tolerate compression request even though we never send it)
@@ -1060,17 +1171,30 @@ static WriteBuffer makeSpawnEntity(const Player& p) {
     return b;
 }
 
+static void sendSkinMetadata(Player& to, std::int32_t entityId) {
+    WriteBuffer md;
+    md.varint(entityId);
+    md.u8(17); md.u8(0);            // index 17, type byte
+    md.u8(0x7F);                    // all skin layers on
+    md.u8(255);                     // end
+    try { to.conn->sendPacket(pl::sc::SetEntityMetadata, md); } catch (...) {}
+}
+
 void Session::broadcastSpawnEntity(Player* about) {
     WriteBuffer b = makeSpawnEntity(*about);
     if (getenv("CPPFM_TRACE"))
         std::fprintf(stderr, "[cppfm] spawn-broadcast of %s (eid=%d)\n",
                      about->name.c_str(), about->entityId);
     srv_.broadcastPacketExcept(about, pl::sc::SpawnEntity, b);
+    sendSkinMetadata(*about, about->entityId);
     // also tell the newcomer about everyone else
     for (auto& other : srv_.playersSnapshot()) {
         if (other.get() == about || !other->inPlay) continue;
         WriteBuffer ob = makeSpawnEntity(*other);
-        try { about->conn->sendPacket(pl::sc::SpawnEntity, ob); } catch (...) {}
+        try {
+            about->conn->sendPacket(pl::sc::SpawnEntity, ob);
+            sendSkinMetadata(*about, other->entityId);
+        } catch (...) {}
     }
 }
 
