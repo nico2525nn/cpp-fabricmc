@@ -96,6 +96,7 @@ constexpr std::uint8_t BundleDelimiter = 0x00;
 constexpr std::uint8_t SpawnEntity = 0x01;
 constexpr std::uint8_t Animation = 0x03;
 constexpr std::uint8_t AckBlockChange = 0x05;
+constexpr std::uint8_t BlockBreakAnimation = 0x06;
 constexpr std::uint8_t BlockUpdate = 0x09;
 constexpr std::uint8_t ChunkBatchFinished = 0x0C;
 constexpr std::uint8_t ChunkBatchStart = 0x0D;

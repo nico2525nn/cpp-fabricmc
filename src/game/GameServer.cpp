@@ -139,6 +139,74 @@ void GameServer::acceptLoop() {
     }
 }
 
+// ------------------------------------------------------------ mining (Ph3)
+static std::string blockNameByState(std::uint16_t sid) {
+    for (auto& e : gen::kBlocks) if (e.state == sid) return std::string(e.name);
+    return "minecraft:air";
+}
+
+void GameServer::broadcastDigStage(Player& p, std::int8_t stage) {
+    WriteBuffer b;
+    b.varint(p.entityId);
+    b.position(p.digX, p.digY, p.digZ);
+    b.i8(stage);
+    broadcastPacketExcept(nullptr, proto::pl::sc::BlockBreakAnimation, b);
+}
+
+void GameServer::tickDigs() {
+    for (auto& pp : playersSnapshot()) {
+        auto* p = pp.get();
+        if (!p->digActive || !p->inPlay) continue;
+        const std::int64_t elapsed = tickNo_ - p->digStartTick;
+        if (p->digTotalTicks <= 0) continue;
+        const std::int64_t stage64 = elapsed * 10 / p->digTotalTicks;
+        const std::uint8_t stage = static_cast<std::uint8_t>(std::min<std::int64_t>(9, stage64));
+        if (stage != p->digLastStage) {
+            p->digLastStage = stage;
+            broadcastDigStage(*p, static_cast<std::int8_t>(stage));
+        }
+        if (elapsed >= p->digTotalTicks) {
+            // server-authoritative completion
+            const std::uint16_t oldState = world_.getBlock(p->digX, p->digY, p->digZ);
+            if (oldState != 0) {
+                world_.setBlock(p->digX, p->digY, p->digZ, 0);
+                broadcastBlockChange(p->digX, p->digY, p->digZ, 0);
+                if (p->gamemode == 0) {
+                    const std::string bn = blockNameByState(oldState);
+                    const BlockMineInfo* mi = mineInfo(bn);
+                    const bool canHarvest = !mi || !mi->requiresPickaxe ||
+                        [&]{
+                            if (p->heldSlot < 0 || p->heldSlot >= 9) return false;
+                            const auto& sl = p->inv[36 + p->heldSlot];
+                            if (sl.count <= 0) return false;
+                            static thread_local std::unordered_map<std::uint32_t,std::string> i2n;
+                            if (i2n.empty()) for (auto& e : gen::kItems) i2n.emplace(e.second, std::string(e.first));
+                            auto it = i2n.find(sl.itemId);
+                            return it != i2n.end() && it->second.find("pickaxe") != std::string::npos;
+                        }();
+                    if (canHarvest) {
+                        static const std::unordered_map<std::string,std::string> kOv{
+                            {"minecraft:grass_block","minecraft:dirt"},
+                            {"minecraft:stone","minecraft:cobblestone"}};
+                        auto ov = kOv.find(bn);
+                        const std::string dn = ov!=kOv.end()?ov->second:bn;
+                        if (bn != "minecraft:glass") {
+                            auto ii = gen::itemIdByName().find(dn);
+                            if (ii != gen::itemIdByName().end())
+                                spawnItemDrop(p->digX+.5, p->digY+.25, p->digZ+.5,
+                                              ii->second, 1,
+                                              (rand()/(double)RAND_MAX-.5)*.15, .12,
+                                              (rand()/(double)RAND_MAX-.5)*.15);
+                        }
+                    }
+                }
+            }
+            p->digActive = false;
+            broadcastDigStage(*p, -1);
+        }
+    }
+}
+
 // ============================================================ ticking (Ph3/4)
 void GameServer::sendSetHealth(Player& p) {
     WriteBuffer b;
@@ -163,6 +231,7 @@ void GameServer::killPlayer(Player& p, const char* cause) {
 }
 
 void GameServer::tickOnce() {
+    tickDigs();
     survivalTick();
 
     // mob spawn cadence: every 20 ticks
@@ -1314,29 +1383,73 @@ void Session::onPlayerAction(ReadBuffer& in) {
     (void)in.i8();                                    // face
     const std::int32_t sequence = in.varint();
 
-    const bool digLike = (status == 0 || status == 2);   // started/finished
-    if (digLike) {
+    if (status == 0 || status == 2) {                   // start / finish dig
         const std::uint16_t oldState = srv_.world().getBlock(x, y, z);
-        if (oldState != 0) {
-            srv_.world().setBlock(x, y, z, 0);
-            srv_.broadcastBlockChange(x, y, z, 0);
-            if (self_->gamemode == 0) {                 // survival: spawn drop
-                std::string bname;
-                for (auto& [n2, sid] : gen::kBlocks)
-                    if (sid == oldState) { bname = std::string(n2); break; }
-                static const std::unordered_map<std::string,std::string> kOverride{
-                    {"minecraft:grass_block","minecraft:dirt"},
-                    {"minecraft:stone","minecraft:cobblestone"},
-                };
-                auto ov = kOverride.find(bname);
-                const std::string iname = ov != kOverride.end() ? ov->second : bname;
-                auto it = gen::itemIdByName().find(iname);
-                if (it != gen::itemIdByName().end() && bname != "minecraft:glass") {
-                    srv_.spawnItemDrop(x + 0.5, y + 0.25, z + 0.5, it->second, 1,
-                        (rand()/(double)RAND_MAX-.5)*.2, .12,
-                        (rand()/(double)RAND_MAX-.5)*.2);
+        const std::string bn = blockNameByState(oldState);
+        const BlockMineInfo* mi = mineInfo(bn);
+        const bool unbreakable = mi && mi->hardness < 0;
+
+        if (status == 0 && self_->gamemode == 0 && !unbreakable && oldState != 0) {
+            // begin tracked dig
+            self_->digActive = true;
+            self_->digX=x; self_->digY=y; self_->digZ=z;
+            self_->digStartTick = srv_.tickNoForTest();
+            const bool canHarvest = !mi || !mi->requiresPickaxe ||
+                [&]{
+                    if (self_->heldSlot < 0 || self_->heldSlot >= 9) return false;
+                    const auto& sl = self_->inv[36 + self_->heldSlot];
+                    if (sl.count <= 0) return false;
+                    static thread_local std::unordered_map<std::uint32_t,std::string> i2n;
+                    if (i2n.empty()) for (auto& e : gen::kItems) i2n.emplace(e.second, std::string(e.first));
+                    auto it = i2n.find(sl.itemId);
+                    return it != i2n.end() && it->second.find("pickaxe") != std::string::npos;
+                }();
+            const float speed = 1.f;                     // held-tool speed MVP
+            const float h = mi ? mi->hardness : 1.f;
+            const float denom = canHarvest ? 30.f : 100.f;
+            self_->digTotalTicks = h <= 0 ? 1 :
+                static_cast<std::int32_t>(std::ceil(h * denom / std::max(1.f, speed)));
+            self_->digLastStage = 255;
+            srv_.broadcastDigStage(*self_, 0);
+        } else if (status == 1) {                        // cancelled
+            if (self_->digActive) srv_.broadcastDigStage(*self_, -1);
+            self_->digActive = false;
+        } else if (status == 2) {                        // finished (client-side timing)
+            if (self_->gamemode == 0) {
+                if (unbreakable || oldState == 0) {
+                    // reject: re-send authoritative block
+                    WriteBuffer rb;
+                    rb.position(x, y, z);
+                    rb.varint(oldState);
+                    conn_->sendPacket(proto::pl::sc::BlockUpdate, rb);
+                } else if (!self_->digActive ||
+                           self_->digX!=x || self_->digY!=y || self_->digZ!=z) {
+                    // no tracked dig (or wrong spot): trust client, break now
+                    srv_.world().setBlock(x,y,z,0);
+                    srv_.broadcastBlockChange(x,y,z,0);
+                } else {
+                    const std::int64_t elapsed = srv_.tickNoForTest() - self_->digStartTick;
+                    if (elapsed + 4 >= self_->digTotalTicks) {
+                        // let tick completion fire naturally this tick or force now
+                        self_->digTotalTicks = std::min(self_->digTotalTicks,
+                            static_cast<std::int32_t>(elapsed + 1));
+                    } else {
+                        // too fast: revert
+                        WriteBuffer rb;
+                        rb.position(x, y, z);
+                        rb.varint(oldState);
+                        conn_->sendPacket(proto::pl::sc::BlockUpdate, rb);
+                        self_->digActive = false;
+                        srv_.broadcastDigStage(*self_, -1);
+                    }
+                }
+            } else {                                      // creative instant
+                if (oldState != 0) {
+                    srv_.world().setBlock(x, y, z, 0);
+                    srv_.broadcastBlockChange(x, y, z, 0);
                 }
             }
+            self_->digActive = self_->digActive;          // tick completes survival digs
         }
     }
     ack(sequence);                                      // ALWAYS ack sequences

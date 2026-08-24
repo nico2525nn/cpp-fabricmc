@@ -16,6 +16,7 @@
 #include "EmbeddedData.hpp"
 #include "Persistence.hpp"
 #include "Entities.hpp"
+#include "MineData.hpp"
 #include "../net/Rcon.hpp"
 
 namespace cppfm {
@@ -66,6 +67,12 @@ struct Player {
     std::array<InvSlot, 46> inv{};
     std::int32_t invStateId = 1;
     bool dead = false;
+    // survival dig tracking
+    bool digActive = false;
+    std::int32_t digX=0, digY=0, digZ=0;
+    std::int64_t digStartTick = 0;
+    std::int32_t digTotalTicks = 0;
+    std::uint8_t digLastStage = 255;
     double sentX = 0, sentY = 0, sentZ = 0;   // last broadcast to others
     float  sentYaw = 0, sentPitch = 0;
     Connection* conn = nullptr;
@@ -187,6 +194,10 @@ public:
     void sendSetHealth(Player& p);
     void applyDamage(Player& p, float amount, const char* cause);
     void killPlayer(Player& p, const char* cause);
+    std::int64_t tickNow() const { return tickNo_; }
+    void broadcastDigStageFor(Player& p, std::int8_t st) { broadcastDigStage(p, st); }
+    void broadcastDigStage(Player& p, std::int8_t stage);
+    void tickDigs();
 
     const ServerConfig& config() const { return cfg_; }
     World& world() { return world_; }
@@ -198,6 +209,7 @@ public:
         std::lock_guard lk(playersMtx_);
         return players_;
     }
+    std::int64_t tickNoForTest() const { return tickNo_; }
     std::size_t playerCount() {
         std::lock_guard lk(playersMtx_);
         return players_.size();
