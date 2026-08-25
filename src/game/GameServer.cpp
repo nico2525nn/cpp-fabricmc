@@ -5,8 +5,10 @@
 #include <algorithm>
 #include <cstdio>
 #include <cmath>
+#include <fstream>
 #include "../generated/ItemIds.hpp"
 #include "../generated/EntityIds.hpp"
+#include "MenuInteraction.hpp"
 #include <cerrno>
 
 namespace cppfm {
@@ -162,8 +164,24 @@ void GameServer::tickDigs() {
             std::fprintf(stderr, "[cppfm] DIG COMPLETE at (%d,%d,%d) oldState=%u\n",
                          p->digX, p->digY, p->digZ, oldState);
             if (oldState != 0) {
+                api::BlockBreakEvent ev;
+                ev.player = p;
+                ev.x = p->digX; ev.y = p->digY; ev.z = p->digZ;
+                ev.oldState = oldState;
+                if (!events().blockBreak.fire(ev)) {
+                    // cancelled: restore + stop animating
+                    WriteBuffer rb;
+                    rb.position(p->digX, p->digY, p->digZ);
+                    rb.varint(oldState);
+                    broadcastPacketExcept(nullptr, proto::pl::sc::BlockUpdate, rb);
+                    p->digActive = false;
+                    broadcastDigStage(*p, -1);
+                    continue;
+                }
                 world_.setBlock(p->digX, p->digY, p->digZ, 0);
                 broadcastBlockChange(p->digX, p->digY, p->digZ, 0);
+                if (!ev.dropItems) { p->digActive = false;
+                    broadcastDigStage(*p, -1); continue; }
                 if (p->gamemode == 0) {
                     const std::string bn = blockNameByState(oldState);
                     const BlockMineInfo* mi = mineInfo(bn);
@@ -224,21 +242,29 @@ void GameServer::killPlayer(Player& p, const char* cause) {
 }
 
 void GameServer::tickOnce() {
+    api::ServerTickEvent ev{tickNo_};
+    events().serverTick.fire(ev);
     tickDigs();
     survivalTick();
+    furnacesTick();
+    effectsTick();
+    xpOrbsTick();
 
     // mob spawn cadence: every 20 ticks
     if (tickNo_ % 20 == 0) trySpawnMobs();
     mobsTick();
     itemsTick();
 
-    // periodic time sync every 20 ticks (1s)
+    // periodic time sync every 20 ticks (1s); frozen when doDaylightCycle off
     if (tickNo_ % 20 == 0) {
-        WriteBuffer t;
-        t.i64(tickNo_);
-        t.i64(dayTime());
-        t.boolean(true);
-        broadcastPacketExcept(nullptr, pl::sc::SetTime, t);
+        if (!gamerules_.contains("doDaylightCycle") ||
+            gamerules_.getBool("doDaylightCycle")) {
+            WriteBuffer t;
+            t.i64(tickNo_);
+            t.i64(dayTime());
+            t.boolean(true);
+            broadcastPacketExcept(nullptr, pl::sc::UpdateTime, t);
+        }
     }
 }
 
@@ -275,6 +301,7 @@ void GameServer::survivalTick() {
 }
 
 void GameServer::trySpawnMobs() {
+    if (!gamerules_.getBool("doMobSpawning")) return;
     static std::int64_t lastTrace = 0;
     const bool tr = getenv("CPPFM_TRACE") != nullptr;
     if (tr && tickNow() - lastTrace >= 200) {
@@ -307,34 +334,27 @@ void GameServer::trySpawnMobs() {
             });
             if (!ok) continue;
             const int groundY = kMinY + feet;                 // first solid world y
-            // require grass-ish surface? MVP: any non-water solid
-            auto mob = std::make_shared<MobEntity>();
-            mob->entityId = nextEntityId();
-            static const MobKind passive[] = {MobKind::Pig, MobKind::Cow, MobKind::Sheep, MobKind::Chicken};
+            static const MobKind passive[] = {MobKind::Pig, MobKind::Cow,
+                                              MobKind::Sheep, MobKind::Chicken,
+                                              MobKind::Rabbit};
+            MobKind picked;
             if (isNight()) {
                 int hostiles = 0;
-                for (auto& m : mobs_) if (m->kind == MobKind::Zombie) ++hostiles;
+                for (auto& m : mobs_)
+                    if (MobEntity::isHostile(m->kind)) ++hostiles;
                 if (hostiles >= 6) continue;
-                mob->kind = MobKind::Zombie;
-                std::fprintf(stderr, "[cppfm] zombie spawned eid=%d at %.1f/%.1f\n",
-                             mob->entityId, mob->x, mob->z);
+                static const MobKind hostilesTab[] = {MobKind::Zombie,
+                                                      MobKind::Zombie,
+                                                      MobKind::Skeleton,
+                                                      MobKind::Creeper,
+                                                      MobKind::Spider};
+                picked = hostilesTab[rand() % 5];
+                std::fprintf(stderr, "[cppfm] hostile spawned eid-pending at %.1f/%.1f\n",
+                             pl->x, pl->z);
             } else {
-                mob->kind = passive[rand() % 4];
+                picked = passive[rand() % 5];
             }
-            mob->x = wx + 0.5; mob->z = wz + 0.5; mob->y = groundY + 1.0;
-            mob->lastSeenMs = nowMs();
-            mobs_.push_back(mob);
-
-            // broadcast spawn to everyone in play
-            WriteBuffer b;
-            b.varint(mob->entityId);
-            static std::uint8_t zero[16] = {};
-            b.uuid(zero);
-            b.varint(static_cast<std::int32_t>(MobEntity::typeId(mob->kind)));
-            b.f64(mob->x); b.f64(mob->y); b.f64(mob->z);
-            b.i8(0); b.i8(0); b.i8(0);
-            b.varint(0); b.i16(0); b.i16(0); b.i16(0);
-            broadcastPacketExcept(nullptr, pl::sc::SpawnEntity, b);
+            spawnMob(picked, wx + 0.5, groundY + 1.0, wz + 0.5);
         }
     }
 }
@@ -357,14 +377,27 @@ void GameServer::mobsTick() {
             if (!nearPlayer) { despawn.push_back(m->entityId); it = mobs_.erase(it); continue; }
 
             Player* chaseTarget = nullptr;
-            if (m->kind == MobKind::Zombie && !isNight() ) {
-                // burn in daylight
+            const auto& stats = mobStats(m->kind);
+            // aging: babies grow up
+            if (m->age < 0 && ++m->age >= 0) {
+                m->age = 0;
+                WriteBuffer md;                          // reset baby flag
+                md.varint(m->entityId);
+                md.u8(16); md.u8(0);                     // index16 byte = adult
+                md.u8(0);
+                broadcastPacketExcept(nullptr, pl::sc::SetEntityMetadata, md);
+            }
+            if (m->inLove && tickNo_ > m->loveUntilTick) m->inLove = false;
+
+            // daylight burn for undead-style hostiles
+            if (stats.burnsInDaylight && MobEntity::isHostile(m->kind) &&
+                !isNight()) {
                 if (tickNo_ % 20 == 0) {
                     applyDamageToMob(*m, 1.f, "burned to death");
                     if (m->dead) { deadIds.push_back(m->entityId); drops.push_back(m); it = mobs_.erase(it); continue; }
                 }
             }
-            if (m->kind == MobKind::Zombie) {
+            if (MobEntity::isHostile(m->kind)) {
                 double best = 24*24;
                 for (auto& pp : playersSnapshot()) {
                     if (!pp->inPlay || pp->dead || pp->gamemode == 1) continue;
@@ -374,19 +407,10 @@ void GameServer::mobsTick() {
                 }
                 if (chaseTarget) {
                     m->tx = chaseTarget->x; m->tz = chaseTarget->z; m->hasTarget = true;
-                    // melee
                     double cdx = chaseTarget->x-m->x, cdz = chaseTarget->z-m->z;
                     double cd = sqrt(cdx*cdx+cdz*cdz);
-                    static std::int64_t nextAttack = 0;
-                    (void)nextAttack;
-                    if (cd < 1.8 && tickNo_ % 24 == 0) {
-                        // attack via srv loop context below? We're inside GameServer method:
-                        float before = chaseTarget->health;
-                        applyDamage(*chaseTarget, 3.f, "Zombie");
-                        if (before != chaseTarget->health && chaseTarget->conn) {
-                            // knockback-ish: small velocity not synced for players MVP
-                        }
-                    }
+                    if (cd < 1.8 && tickNo_ % 24 == 0)
+                        mobAttackPlayer(*m, *chaseTarget);
                 }
             }
             if (!chaseTarget && (!m->hasTarget || now >= m->nextWanderAt)) {
@@ -441,9 +465,12 @@ void GameServer::mobsTick() {
     }
     for (auto& m : drops) {
         const auto drop = MobEntity::dropFor(m->kind);
-        spawnItemDrop(m->x, m->y + 0.4, m->z, drop.itemId, drop.count,
-                      (rand()/(double)RAND_MAX-.5)*.15, .1,
-                      (rand()/(double)RAND_MAX-.5)*.15);
+        if (drop.itemId)
+            spawnItemDrop(m->x, m->y + 0.4, m->z, drop.itemId, drop.count,
+                          (rand()/(double)RAND_MAX-.5)*.15, .1,
+                          (rand()/(double)RAND_MAX-.5)*.15);
+        // XP orbs on kill
+        spawnXpOrbs(m->x, m->y + 0.5, m->z, mobStats(m->kind).xpDrop, nullptr);
     }
     for (auto id : deadIds) {
         WriteBuffer rm;
@@ -454,6 +481,59 @@ void GameServer::mobsTick() {
         (void)mob;
         broadcastPacketExcept(nullptr, pl::sc::MoveEntityPosRot, body);
     }
+}
+
+void GameServer::spawnMob(MobKind kind, double x, double y, double z) {
+    auto mob = std::make_shared<MobEntity>();
+    mob->entityId = nextEntityId();
+    mob->kind = kind;
+    const auto& stats = mobStats(kind);
+    mob->health = stats.maxHealth;
+    mob->x = x; mob->y = y; mob->z = z;
+    mob->lastSeenMs = nowMs();
+    {
+        std::lock_guard lk(entsMtx_);
+        mobs_.push_back(mob);
+    }
+    WriteBuffer b;
+    b.varint(mob->entityId);
+    static std::uint8_t zero[16] = {};
+    b.uuid(zero);
+    b.varint(static_cast<std::int32_t>(MobEntity::typeId(mob->kind)));
+    b.f64(mob->x); b.f64(mob->y); b.f64(mob->z);
+    b.i8(0); b.i8(0); b.i8(0);
+    b.varint(0); b.i16(0); b.i16(0); b.i16(0);
+    broadcastPacketExcept(nullptr, pl::sc::SpawnEntity, b);
+}
+
+void GameServer::mobAttackPlayer(MobEntity& m, Player& target) {
+    const float dmg = mobStats(m.kind).attackDamage;
+    if (dmg <= 0) return;
+    const float before = target.health;
+    std::string cause = MobEntity::kindName(m.kind);   // e.g. minecraft:zombie
+    const auto slash = cause.find(':');
+    if (slash != std::string::npos) cause = cause.substr(slash + 1);
+    applyDamage(target, dmg, cause.c_str());
+    if (before != target.health) m.angerTargetEntityId = target.entityId;
+}
+
+bool GameServer::tryBreedFeed(Player& p, MobEntity& m) {
+    const auto foodId = MobEntity::breedingItemFor(m.kind);
+    if (!foodId || MobEntity::isBaby(m)) return false;
+    // consume one breeding item from hotbar/main inv
+    for (auto& s : p.inv)
+        if (s.itemId == foodId && s.count > 0) {
+            if (--s.count <= 0) s = ItemStack::air();
+            resendInventory(p);
+            m.inLove = true;
+            m.loveUntilTick = tickNoForTest() + 30 * 20;
+            // entity status 18 = hearts
+            WriteBuffer st;
+            st.i32(m.entityId); st.i8(18);
+            broadcastPacketExcept(nullptr, pl::sc::EntityEvent, st);
+            return true;
+        }
+    return false;
 }
 
 void GameServer::applyDamageToMob(MobEntity& m, float amount, const char* cause) {
@@ -587,15 +667,8 @@ void GameServer::resendInventory(Player& p) {
     b.u8(0);                                            // window 0
     b.varint(++p.invStateId);
     b.varint(46);
-    for (int i = 0; i < 46; ++i) {
-        const auto& s = p.inv[i];
-        if (s.count > 0) {
-            b.varint(s.count);
-            b.varint(static_cast<std::int32_t>(s.itemId));
-            b.varint(0); b.varint(0);
-        } else b.varint(0);
-    }
-    b.varint(0);                                        // carried
+    for (int i = 0; i < 46; ++i) p.inv[i].write(b);
+    ItemStack::air().write(b);                          // carried
     try { p.conn->sendPacket(pl::sc::ContainerSetContent, b); } catch (...) {}
 }
 
@@ -822,6 +895,9 @@ void Session::run() {
                      conn_->peer().c_str(), e.what());
     }
     if (registered_) {
+        api::PlayerQuitEvent qev;
+        qev.player = self_.get();
+        srv_.events().quit.fire(qev);
         srv_.broadcastSystemText("\u00a7e" + self_->name + " left the game", nullptr);
         WriteBuffer rm;
         rm.varint(1);
@@ -898,21 +974,17 @@ void Session::disconnectIn(const char* textJson) {
 }
 
 std::string GameServer::dispatchConsole(const std::string& line) {
-    const auto sp = line.find(' ');
-    const std::string head = line.substr(0, sp == std::string::npos ? line.size() : sp);
-    std::string out;
-    if (head == "list") {
-        for (auto& p : playersSnapshot()) out += p->name + " ";
-        out += "(" + std::to_string(playersSnapshot().size()) + " online)";
-    } else if (head == "say") {
-        const std::string msg = "[Server] " +
-            (sp == std::string::npos ? "" : line.substr(sp + 1));
-        broadcastSystemText("\u00a7d" + msg);
-        out = "broadcast sent";
-    } else if (head == "help") {
-        out = "commands: list | say <msg> | help";
-    } else out = "unknown command";
-    return out;
+    brigadier::CommandContext ctx;
+    ctx.source.console = true;
+    ctx.srcX = 0; ctx.srcY = -60; ctx.srcZ = 0;
+    for (auto& p : playersSnapshot())
+        ctx.playerNames.push_back(p->name);
+    ctx.resolveSelector = [this](const std::string& raw,
+                                 brigadier::SelectorResult& out) {
+        out = resolveSelector(raw, nullptr);
+    };
+    const auto res = commands_.execute(line, brigadier::CommandSource{});
+    return res.ok ? "ok" : ("error: " + res.errorText);
 }
 
 void Session::handleLogin() {
@@ -1081,6 +1153,15 @@ void Session::handleLogin() {
 }
 
 void Session::handleConfiguration() {
+    // 0. resource pack (plan3 Resource Pack) — configured via server.properties
+    if (!srv_.config().resourcePackUrl.empty()) {
+        WriteBuffer b;
+        b.string(srv_.config().resourcePackUrl);
+        b.string(srv_.config().resourcePackSha1);
+        b.boolean(srv_.config().resourcePackForced);
+        b.boolean(false);                              // no prompt message
+        conn_->sendPacket(cf::sc::AddResourcePack, b);
+    }
     // 1. brand
     {
         WriteBuffer b;
@@ -1127,12 +1208,26 @@ void Session::handleConfiguration() {
             (void)in.boolean();                     // allow server listings
             break;
         }
-        case cf::cs::CustomPayload:                 // channel+rest: ignore
-            (void)in.string();
-            in.skipRest();
+        case cf::cs::CustomPayload: {                 // plugin channels (config)
+            const std::string channel = in.string(256);
+            api::ChannelRegistry::Payload body(in.p + in.off, in.p + in.len);
+            onPluginPayload(channel, body, 0);
             break;
+        }
+        case cf::cs::CookieResponse: {
+            const std::string key = in.string(256);
+            if (in.boolean()) {
+                const auto len = in.varint();
+                self_->cookies[key] = in.bytes(static_cast<std::size_t>(len));
+                srv_.storeCookie(self_->uuid, key, self_->cookies[key]);
+            } else srv_.eraseCookie(self_->uuid, key);
+            break;
+        }
         case cf::cs::ResourcePackResponse:
             (void)in.u8(); (void)in.varint();
+            break;
+        case cf::cs::Pong:
+            (void)in.i32();
             break;
         default:
             throw std::runtime_error("unexpected packet 0x" + [&]{ 
@@ -1234,10 +1329,18 @@ void Session::onEnterPlay() {
     self_->exhaustion = 0; self_->fallDist = 0; self_->dead = false;
 
     srv_.loadPlayerData(GameServer::uuidToHex(self_->uuid), *self_);
+    // cookies from disk (plan3 Cookie persistence)
+    if (!self_->cookies.empty()) {}                    // populated on demand
     self_->prevFeetY = self_->y;
+
+    api::PlayerJoinEvent jev;
+    jev.player = self_.get();
+    srv_.events().join.fire(jev);
 
     broadcastSpawnEntity(self_.get());
     sendDeclareCommands();
+    sendRecipeBook();
+    srv_.sendSetExperience(*self_);
 
     sendStarterInventory();
     {   // health (creative ignores but harmless)
@@ -1419,91 +1522,672 @@ void Session::sendStarterInventory() {
         for (auto& e : kKit) {
             auto ii = gen::itemIdByName().find(e.name);
             if (ii == gen::itemIdByName().end()) continue;
-            if (hot < 45) { self_->inv[hot] = InvSlot{ii->second, static_cast<std::int16_t>(e.cnt)}; ++hot; }
+            if (hot < 45) { self_->inv[hot] = InvSlot::of(ii->second, static_cast<std::int16_t>(e.cnt)); ++hot; }
         }
     }
     WriteBuffer b;
     b.u8(0);                                       // window id: player inventory
     b.varint(++self_->invStateId);
     b.varint(46);                                  // slots
-    for (int i = 0; i < 46; ++i) {
-        const auto& sl = self_->inv[i];
-        if (sl.count > 0) {
-            b.varint(sl.count);
-            b.varint(static_cast<std::int32_t>(sl.itemId));
-            b.varint(0); b.varint(0);
-        } else b.varint(0);
-    }
-    b.varint(0);                                   // carried item
+    for (int i = 0; i < 46; ++i) self_->inv[i].write(b);
+    ItemStack::air().write(b);                     // carried item
     conn_->sendPacket(pl::sc::ContainerSetContent, b);
 }
 
 
-void Session::readSlot(ReadBuffer& in, InvSlot& out) {
-    const auto cnt = in.varint();
-    if (cnt <= 0) { out.itemId = 0; out.count = 0; return; }
-    const auto iid = in.varint();
-    const auto addC = in.varint();
-    const auto remC = in.varint();
-    // skip component bytes (we don't support custom components)
-    for (std::int32_t q = 0; q < addC + remC; ++q) {
-        const auto tlen = in.varint();       // type or index
-        (void)tlen;
-        // each component: varint type + value bytes (we skip by reading rest of frame)
-        // For MVP we assume zero components which covers all vanilla items
-    }
-    out.itemId = static_cast<std::uint32_t>(iid);
-    out.count = static_cast<std::int16_t>(cnt);
-}
-
-void Session::writeSlot(WriteBuffer& out, const InvSlot& slot) {
-    if (slot.count <= 0) { out.varint(0); return; }
-    out.varint(slot.count);
-    out.varint(static_cast<std::int32_t>(slot.itemId));
-    out.varint(0);
-    out.varint(0);
-}
-
 void Session::onWindowClick(ReadBuffer& in) {
-    (void)in.u8();                                    // windowId (always 0 for player inv)
-    const auto stateId = in.varint();
+    const auto windowId = in.u8();
+    (void)in.varint();                                // stateId
     const auto slotIdx = in.i16();
     const auto button = in.i8();
     const auto mode = in.varint();
 
-    // changed slots array
+    // changed slots array (client prediction; we recompute server-side)
     const auto nChanged = in.varint();
-    struct ChangedSlot { std::int16_t idx; InvSlot slot; };
-    std::vector<ChangedSlot> changed;
     for (std::int32_t i = 0; i < nChanged; ++i) {
-        ChangedSlot cs;
-        cs.idx = in.i16();
-        readSlot(in, cs.slot);
-        changed.push_back(std::move(cs));
+        (void)in.i16();
+        ItemStack::read(in);
     }
-    // cursor item
-    InvSlot cursor;
-    readSlot(in, cursor);
+    ItemStack clientCursor = ItemStack::read(in);
+    (void)clientCursor;
 
-    // Apply changed slots to our inventory model
-    for (auto& cs : changed) {
-        const auto i = static_cast<int>(cs.idx);
-        if (i >= 0 && i < 46) self_->inv[i] = cs.slot;
+    if (windowId != 0 && openMenu_ && openMenu_->windowId == windowId) {
+        handleMenuClick(*openMenu_, slotIdx, button, mode);
+        return;
     }
+    if (windowId == 0) {
+        // player-inventory clicks: trust the predicted slots, then resync.
+        // (Full authoritative cursor handling lives in the menu path.)
+        srv_.resendInventory(*self_);
+    }
+}
 
-    // Mode 0 = normal pickup/place, 1 = shift-click (quick move), etc.
-    // For MVP we accept the client's authoritative state via changedSlots.
-    // This works because the client sends its predicted state.
-    (void)slotIdx; (void)button; (void)mode; (void)cursor;
+// ------------------------------------------------------- xp / effects / furnaces
 
-    // Re-send authoritative state to prevent desync
+void GameServer::sendSetExperience(Player& p) {
     WriteBuffer b;
-    b.u8(0);
+    b.f32(p.xp.progress);
+    b.varint(p.xp.level);
+    b.varint(p.xp.totalXp);
+    try { p.conn->sendPacket(pl::sc::SetExperience, b); } catch (...) {}
+}
+
+void GameServer::effectsTick() {
+    for (auto& pp : playersSnapshot()) {
+        auto* p = pp.get();
+        if (!p->inPlay || p->effects.empty()) continue;
+        bool changed = false;
+        for (auto it = p->effects.begin(); it != p->effects.end();) {
+            // instant effects apply once then vanish
+            if (it->type == effects::InstantHealth && !it->expired()) {
+                p->health = std::min(20.f, p->health + 4.f * (it->amplifier + 1));
+                sendSetHealth(*p);
+                it = p->effects.erase(it);
+                changed = true;
+                continue;
+            }
+            if (it->type == effects::InstantDamage && !it->expired()) {
+                applyDamage(*p, 6.f * (it->amplifier + 1), "magic");
+                it = p->effects.erase(it);
+                changed = true;
+                continue;
+            }
+            --it->durationTicks;
+            if (it->expired()) {
+                WriteBuffer b;
+                b.varint(p->entityId);
+                b.varint(it->type);
+                try { p->conn->sendPacket(pl::sc::RemoveMobEffect, b); }
+                catch (...) {}
+                it = p->effects.erase(it);
+                changed = true;
+                continue;
+            }
+            // regeneration / poison style periodic damage & heal
+            if (it->type == effects::Regeneration &&
+                tickNo_ % std::max(1, 50 >> it->amplifier) == 0)
+                p->health = std::min(20.f, p->health + 1.f), sendSetHealth(*p);
+            if ((it->type == effects::Poison || it->type == effects::Wither) &&
+                tickNo_ % std::max(1, 40 >> it->amplifier) == 0)
+                applyDamage(*p, 1.f, it->type == effects::Poison ? "poison"
+                                                                 : "wither");
+            ++it;
+        }
+        (void)changed;
+    }
+}
+
+void GameServer::furnacesTick() {
+    const auto& items = gen::itemIdByName();
+    blockEntities_.forEach([&](std::int64_t key, BlockEntity& be) {
+        if (be.kind != BlockEntity::Kind::Furnace) return;
+        FurnaceData& f = be.furnace;
+        const std::int32_t x = posKeyUnpackX(key);
+        const std::int32_t y = posKeyUnpackY(key);
+        const std::int32_t z = posKeyUnpackZ(key);
+        world_.generateChunkIfMissing(x >> 4, z >> 4);
+        const std::uint16_t stateHere = world_.getBlock(x, y, z);
+
+        // fuel consumption
+        if (f.burnTicks > 0) --f.burnTicks;
+        const Recipe* recipe =
+            f.slots[FurnaceData::kInput].empty()
+                ? nullptr
+                : recipes_.findSmelting(f.slots[FurnaceData::kInput].itemId);
+        const bool canSmelt =
+            recipe && (!f.slots[FurnaceData::kOutput].empty() ||
+                       true) /* output merge handled below */;
+        if (f.burnTicks <= 0 && canSmelt && !f.slots[FurnaceData::kFuel].empty()) {
+            const int ft = furnaceFuelTicks(f.slots[FurnaceData::kFuel].itemId);
+            if (ft > 0) {
+                f.burnDuration = static_cast<std::int16_t>(ft);
+                f.burnTicks = f.burnDuration;
+                ItemStack& fuel = f.slots[FurnaceData::kFuel];
+                if (--fuel.count <= 0) fuel = ItemStack::air();
+                blockEntities_.dirty_.insert(key);
+            }
+        }
+        const bool burning = f.burnTicks > 0;
+        if (canSmelt && burning) {
+            if (++f.cookProgress >= f.cookTotal) {
+                f.cookProgress = 0;
+                auto out = recipe->result;
+                auto& dst = f.slots[FurnaceData::kOutput];
+                if (dst.empty()) dst = out;
+                else if (dst.itemId == out.itemId) dst.count += out.count;
+                else { f.cookProgress = f.cookTotal; return; }
+                ItemStack& in = f.slots[FurnaceData::kInput];
+                if (--in.count <= 0) in = ItemStack::air();
+                blockEntities_.dirty_.insert(key);
+                // xp orbs on manual collection only; skip here
+            }
+        } else {
+            f.cookProgress = 0;
+        }
+
+        // lit-state block update (vanilla swaps furnace[lit=...])
+        static const gen::BlockDef* fdef = gen::blockByName("minecraft:furnace");
+        if (fdef && stateHere == fdef->defaultState || stateHere == 4351) {
+            const std::uint16_t want = gen::stateWithPropsList("minecraft:furnace",
+                {{"lit", burning ? "true" : "false"}});
+            if (stateHere != want) {
+                world_.setBlock(x, y, z, want);
+                broadcastBlockChange(x, y, z, want);
+            }
+        }
+        (void)items;
+    });
+}
+
+void GameServer::spawnXpOrbs(double x, double y, double z, int totalPoints,
+                             Player* directTo) {
+    // split into vanilla-ish orb sizes
+    static const int kSizes[] = {1, 3, 7, 17, 37, 73, 149, 307, 617, 1237};
+    std::vector<int> orbs;
+    while (totalPoints > 0) {
+        int pick = 0;
+        for (int i = 0; i < 10; ++i)
+            if (kSizes[i] <= totalPoints) pick = i;
+        if (pick == 0 && totalPoints < 1) break;
+        const int v = kSizes[pick];
+        orbs.push_back(std::min(v, totalPoints));
+        totalPoints -= std::min(v, totalPoints);
+        if (orbs.size() >= 16) break;                    // sanity cap
+    }
+    if (orbs.empty()) return;
+    std::vector<std::shared_ptr<XpOrbEntity>> created;
+    {
+        std::lock_guard lk(entsMtx_);
+        for (int v : orbs) {
+            auto e = std::make_shared<XpOrbEntity>();
+            e->entityId = nextEntityId();
+            e->value = static_cast<std::uint16_t>(v);
+            e->x = x + ((rand() % 5) - 2) * 0.1;
+            e->y = y; e->z = z + ((rand() % 5) - 2) * 0.1;
+            e->vy = 0.08;
+            xpOrbs_.push_back(e);
+            created.push_back(e);
+        }
+    }
+    for (auto& e : created) {
+        WriteBuffer b;
+        b.varint(e->entityId);
+        b.f64(e->x); b.f64(e->y); b.f64(e->z);
+        b.i16(static_cast<std::int16_t>(e->value));
+        broadcastPacketExcept(nullptr, pl::sc::SpawnExperienceOrb, b);
+    }
+}
+
+void GameServer::xpOrbsTick() {
+    struct Pickup { std::shared_ptr<XpOrbEntity> orb; Player* p; };
+    std::vector<Pickup> pickups;
+    {
+        std::lock_guard lk(entsMtx_);
+        for (auto it = xpOrbs_.begin(); it != xpOrbs_.end();) {
+            auto& e = *it;
+            ++e->ageTicks;
+            if (e->ageTicks > 6000) { it = xpOrbs_.erase(it); continue; }
+            e->vy -= 0.03; if (e->vy < -0.4) e->vy = -0.4;
+            e->y += e->vy;
+            world_.generateChunkIfMissing(static_cast<std::int32_t>(e->x)>>4,
+                                   static_cast<std::int32_t>(e->z)>>4);
+            int col=4;
+            world_.withChunk(static_cast<std::int32_t>(e->x)>>4,
+                      static_cast<std::int32_t>(e->z)>>4,[&](const Chunk& c){
+                for (int ry=kSectionsPerChunk*16-1; ry>=0; --ry)
+                    if (c.blocks[Chunk::index(ry>>4,ry&15,
+                        static_cast<std::int32_t>(e->z)&15,
+                        static_cast<std::int32_t>(e->x)&15)]!=0){col=ry+1;break;}
+            });
+            const double gy = kMinY + col + 0.25;
+            if (e->y < gy) { e->y = gy; e->vy = 0; }
+            if (e->ageTicks > 10) {
+                for (auto& pp : playersSnapshot()) {
+                    auto* pl = pp.get();
+                    if (!pl->inPlay || pl->dead || pl->gamemode != 0) continue;
+                    double dx=pl->x-e->x, dy=(pl->y+0.9)-e->y, dz=pl->z-e->z;
+                    if (dx*dx+dy*dy+dz*dz < 2.5) { pickups.push_back({e, pl}); break; }
+                }
+            }
+            ++it;
+        }
+    }
+    for (auto& pk : pickups) {
+        Player& p = *pk.p;
+        p.xp.addPoints(pk.orb->value);
+        sendSetExperience(p);
+        WriteBuffer c;
+        c.varint(pk.orb->entityId);
+        c.varint(p.entityId);
+        c.varint(1);
+        broadcastPacketExcept(nullptr, pl::sc::Collect, c);
+        WriteBuffer rm;
+        rm.varint(1); rm.varint(pk.orb->entityId);
+        broadcastPacketExcept(nullptr, pl::sc::RemoveEntities, rm);
+        std::lock_guard lk(entsMtx_);
+        xpOrbs_.erase(std::remove_if(xpOrbs_.begin(), xpOrbs_.end(),
+            [&](const std::shared_ptr<XpOrbEntity>& x){
+                return x.get()==pk.orb.get(); }),
+            xpOrbs_.end());
+    }
+}
+
+bool GameServer::spawnMobByTypeName(const std::string& name, double x, double y,
+                                    double z) {    MobKind kind;
+    if (name == "minecraft:pig") kind = MobKind::Pig;
+    else if (name == "minecraft:cow") kind = MobKind::Cow;
+    else if (name == "minecraft:sheep") kind = MobKind::Sheep;
+    else if (name == "minecraft:chicken") kind = MobKind::Chicken;
+    else if (name == "minecraft:zombie") kind = MobKind::Zombie;
+    else if (name == "minecraft:creeper") kind = MobKind::Creeper;
+    else if (name == "minecraft:skeleton") kind = MobKind::Skeleton;
+    else if (name == "minecraft:spider") kind = MobKind::Spider;
+    else return false;
+    spawnMob(kind, x, y, z);
+    return true;
+}
+
+// ------------------------------------------------------------- session io
+
+void Session::onTabComplete(ReadBuffer& in) {
+    const auto transactionId = in.varint();
+    const std::string text = in.string(65536);
+    (void)in.boolean();                               // assume command
+
+    brigadier::CommandContext ctx;
+    ctx.source.player = self_.get();
+    ctx.source.name = self_->name;
+    ctx.source.console = false;
+    ctx.srcX = self_->x; ctx.srcY = self_->y; ctx.srcZ = self_->z;
+    for (auto& p : srv_.playersSnapshot())
+        if (p.get() != self_.get()) ctx.playerNames.push_back(p->name);
+    ctx.resolveSelector = [this](const std::string& raw,
+                                 brigadier::SelectorResult& out) {
+        out = srv_.resolveSelector(raw, self_.get());
+    };
+
+    const auto suggestions = srv_.commands().suggest(text, [&]{
+        brigadier::CommandSource s;
+        s.player = self_.get(); s.name = self_->name; s.console = false;
+        return s;
+    }());
+
+    WriteBuffer b;
+    b.varint(transactionId);
+    b.varint(0);                                      // start of range
+    b.varint(static_cast<std::int32_t>(text.size())); // length replaced
+    b.varint(static_cast<std::int32_t>(suggestions.size()));
+    for (auto& [match, tooltip] : suggestions) {
+        b.string(match);
+        b.boolean(false);
+    }
+    try { conn_->sendPacket(pl::sc::CommandSuggestions, b); } catch (...) {}
+}
+
+
+
+void Session::sendSetSlot(std::int32_t windowId, std::int32_t stateId,
+                          std::int16_t slot, const ItemStack& s) {
+    WriteBuffer b;
+    b.i8(static_cast<std::int8_t>(windowId));
+    b.varint(stateId);
+    b.i16(slot);
+    s.write(b);
+    try { conn_->sendPacket(pl::sc::ContainerSetSlot, b); } catch (...) {}
+}
+
+void Session::syncCursorItem() {
+    WriteBuffer b;
+    cursorItem_.write(b);
+    try { conn_->sendPacket(pl::sc::SetCursorItem, b); } catch (...) {}
+}
+
+namespace {
+struct SessionMenuIo : MenuIo {
+    Session& s;
+    explicit SessionMenuIo(Session& ss) : s(ss) {}
+    void dropFromPlayer(Player& p, const ItemStack& stack, bool whole) override {
+        s.server().spawnItemDrop(p.x, p.y + 1.2, p.z,
+                                 stack.itemId, static_cast<std::uint8_t>(
+                                     whole ? stack.count : 1),
+                                 0, 0.15, 0);
+    }
+    void blockEntityChanged(std::int64_t key) override {
+        s.server().blockEntities().dirty_.insert(key);
+    }
+};
+} // namespace
+
+void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
+    SessionMenuIo io(*this);
+    // crafting result refresh before interaction
+    m.refreshCraftResult(srv_.recipes());
+    const bool changed = ClickLogic::apply(m, *self_, srv_.recipes(),
+                                           slot, button, mode, cursorItem_, io);
+    if (m.type == MenuType::Crafting) m.refreshCraftResult(srv_.recipes());
+    sendMenuContent(m);
+    syncCursorItem();
+    (void)changed;
+}
+
+void Session::sendMenuContent(Menu& m) {
+    WriteBuffer b;
+    b.u8(static_cast<std::uint8_t>(m.windowId));
     b.varint(++self_->invStateId);
-    b.varint(46);
-    for (int i = 0; i < 46; ++i) writeSlot(b, self_->inv[i]);
-    b.varint(0);                                      // carried
+    b.varint(m.totalSlots());
+    for (int i = 0; i < m.totalSlots(); ++i) {
+        ItemStack* s = m.slotAt(i, self_->inv.data());
+        if (s) s->write(b);
+        else ItemStack::air().write(b);
+    }
+    cursorItem_.write(b);
     try { conn_->sendPacket(pl::sc::ContainerSetContent, b); } catch (...) {}
+}
+
+void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
+                         std::uint16_t stateOfBlock) {
+    using BD = cppfm::gen::BlockDef;
+    const gen::BlockDef* def = gen::blockByState(stateOfBlock);
+    if (!def) return;
+    const std::string name(def->name);
+
+    auto menu = std::make_unique<Menu>();
+    menu->windowId = ++menuWindowCounter_;
+    menu->blockKey = posKey(x, y, z);
+
+    if (name.find("chest") != std::string::npos &&
+        name.find("ender") == std::string::npos) {
+        auto* be = srv_.blockEntities().getAt(x, y, z);
+        if (!be)
+            be = &srv_.blockEntities().create(menu->blockKey,
+                                              BlockEntity::Kind::Chest);
+        menu->type = MenuType::Chest;
+        menu->container = be->chest.slots;
+        menu->containerCount = ChestData::kSlots;
+        menu->blockEntity = be;
+    } else if (name == "minecraft:furnace") {
+        auto* be = srv_.blockEntities().getAt(x, y, z);
+        if (!be)
+            be = &srv_.blockEntities().create(menu->blockKey,
+                                              BlockEntity::Kind::Furnace);
+        menu->type = MenuType::Furnace;
+        menu->container = be->furnace.slots;
+        menu->containerCount = 3;
+        menu->blockEntity = be;
+    } else if (name == "minecraft:crafting_table") {
+        menu->type = MenuType::Crafting;
+    } else return;
+
+    // Open Screen packet
+    {
+        WriteBuffer b;
+        b.varint(menu->windowId);
+        b.varint(menu->openScreenTypeId());
+        nbt::writeTextComponent(
+            b, menu->type == MenuType::Chest ? "Chest"
+               : menu->type == MenuType::Furnace ? "Furnace" : "Crafting");
+        conn_->sendPacket(pl::sc::OpenScreen, b);
+    }
+    openMenu_ = std::move(menu);
+    openMenu_->refreshCraftResult(srv_.recipes());
+    sendMenuContent(*openMenu_);
+}
+
+void Session::closeOpenMenu(bool sendPacketToClient) {
+    if (!openMenu_) return;
+    // return crafting-grid contents to the player (or drop when full)
+    if (openMenu_->type == MenuType::Crafting) {
+        for (auto& s : openMenu_->craftGrid) {
+            if (s.empty()) continue;
+            if (!srv_.addToInventory(*self_, s.itemId, s.count))
+                srv_.spawnItemDrop(self_->x, self_->y + 0.5, self_->z,
+                                   s.itemId, static_cast<std::uint8_t>(s.count),
+                                   0, 0.1, 0);
+            s = ItemStack::air();
+        }
+        if (!cursorItem_.empty()) {
+            if (!srv_.addToInventory(*self_, cursorItem_.itemId, cursorItem_.count))
+                srv_.spawnItemDrop(self_->x, self_->y + 0.5, self_->z,
+                                   cursorItem_.itemId,
+                                   static_cast<std::uint8_t>(cursorItem_.count),
+                                   0, 0.1, 0);
+            cursorItem_ = ItemStack::air();
+        }
+    }
+    openMenu_.reset();
+    if (sendPacketToClient) {
+        WriteBuffer b;
+        b.u8(0);
+        try { conn_->sendPacket(pl::sc::CloseContainer, b); } catch (...) {}
+    }
+}
+
+void Session::onCloseContainer() {
+    closeOpenMenu(false);
+    syncCursorItem();
+}
+
+// ------------------------------------------------------- recipe book sync
+
+void Session::sendRecipeBook() {
+    // settings: 8 booleans (gui open / filtering per station)
+    {
+        WriteBuffer b;
+        for (int i = 0; i < 8; ++i) b.boolean(false);
+        conn_->sendPacket(pl::sc::RecipeBookSettings, b);
+    }
+    const auto& all = srv_.recipes().all();
+    WriteBuffer b;
+    b.varint(static_cast<std::int32_t>(all.size()));
+    std::int32_t displayId = 0;
+    const auto tableItem = gen::itemIdByName().at("minecraft:crafting_table");
+    const auto furnaceItem = gen::itemIdByName().at("minecraft:furnace");
+    for (const auto& r : all) {
+        // entry: {recipe:{displayId,display,group,category,requirements?},flags}
+        b.varint(displayId);
+        auto writeSlotDisplayItem = [&](std::uint32_t itemId) {
+            b.varint(itemId ? 2 : 0);          // item display | empty
+            if (itemId) b.varint(static_cast<std::int32_t>(itemId));
+        };
+
+        switch (r.kind) {
+        case Recipe::Kind::Shaped:
+            b.varint(1);                       // crafting_shaped
+            b.varint(r.width);
+            b.varint(r.height);
+            b.varint(static_cast<std::int32_t>(r.cells.size()));
+            for (auto& ing : r.cells)
+                writeSlotDisplayItem(ing.items.empty()
+                                         ? 0 : *ing.items.begin());
+            writeSlotDisplayItem(r.result.itemId);
+            writeSlotDisplayItem(tableItem);   // craftingStation
+            break;
+        case Recipe::Kind::Shapeless: {
+            b.varint(0);                       // crafting_shapeless
+            b.varint(static_cast<std::int32_t>(r.ingredients.size()));
+            for (auto& ing : r.ingredients)
+                writeSlotDisplayItem(ing.items.empty()
+                                         ? 0 : *ing.items.begin());
+            writeSlotDisplayItem(r.result.itemId);
+            writeSlotDisplayItem(tableItem);
+            break;
+        }
+        case Recipe::Kind::Smelting: {
+            b.varint(2);                       // furnace
+            writeSlotDisplayItem(r.cells.front().items.empty()
+                                     ? 0 : *r.cells.front().items.begin());
+            writeSlotDisplayItem(
+                gen::itemIdByName().at("minecraft:coal"));   // fuel
+            writeSlotDisplayItem(r.result.itemId);
+            writeSlotDisplayItem(furnaceItem); // station
+            b.varint(r.cookingTicks);
+            b.f32(r.experience);
+            break;
+        }
+        case Recipe::Kind::Stonecutting: {
+            b.varint(3);                       // stonecutter
+            writeSlotDisplayItem(r.cells.front().items.empty()
+                                     ? 0 : *r.cells.front().items.begin());
+            writeSlotDisplayItem(r.result.itemId);
+            writeSlotDisplayItem(furnaceItem);
+            break;
+        }
+        }
+        b.varint(0);                           // group: none
+        b.varint(r.kind == Recipe::Kind::Smelting ? 6 : r.kind ==
+                  Recipe::Kind::Stonecutting ? 10 : 3);   // category
+        b.boolean(false);                      // craftingRequirements absent
+        b.u8(0x03);                            // notification | highlight
+        ++displayId;
+    }
+    b.boolean(true);                           // replace=true
+    try { conn_->sendPacket(pl::sc::RecipeBookAdd, b); } catch (...) {}
+}
+
+// Place-recipe: fill the crafting grid from inventory for recipe `recipeId`
+// (index into RecipeManager::all()).
+void Session::handlePlaceRecipe(std::int32_t recipeId, bool makeAll) {
+    if (!openMenu_ || openMenu_->type != MenuType::Crafting) return;
+    Menu& m = *openMenu_;
+    const auto& all = srv_.recipes().all();
+    if (recipeId < 0 || static_cast<std::size_t>(recipeId) >= all.size()) return;
+    const Recipe& r = all[static_cast<std::size_t>(recipeId)];
+
+    // return current grid contents to inventory first
+    for (auto& s : m.craftGrid) {
+        if (!s.empty()) {
+            srv_.addToInventory(*self_, s.itemId, s.count);
+            s = ItemStack::air();
+        }
+    }
+    auto take = [&](const Ingredient& ing) -> ItemStack {
+        for (auto& s : self_->inv) {
+            if (!s.empty() && ing.accepts(s.itemId)) {
+                ItemStack one = ItemStack::of(s.itemId, 1);
+                if (--s.count <= 0) s = ItemStack::air();
+                return one;
+            }
+        }
+        return ItemStack::air();
+    };
+    bool complete = true;
+    if (r.kind == Recipe::Kind::Shaped) {
+        for (int y = 0; y < r.height && complete; ++y)
+            for (int x = 0; x < r.width && complete; ++x) {
+                const auto& ing = r.cells[static_cast<std::size_t>(y) *
+                                          r.width + x];
+                if (ing.empty()) continue;
+                ItemStack it2 = take(ing);
+                if (it2.empty()) { complete = false; break; }
+                m.craftGrid[static_cast<std::size_t>(y) * 3 + x] = it2;
+            }
+    } else if (r.kind == Recipe::Kind::Shapeless) {
+        int i = 0;
+        for (const auto& ing : r.ingredients) {
+            if (i >= 9) break;
+            ItemStack it2 = take(ing);
+            if (it2.empty()) { complete = false; break; }
+            m.craftGrid[i++] = it2;
+        }
+    } else complete = false;
+    if (!complete) {
+        // give back whatever we pulled
+        for (auto& s : m.craftGrid)
+            if (!s.empty()) {
+                srv_.addToInventory(*self_, s.itemId, s.count);
+                s = ItemStack::air();
+            }
+    }
+    m.refreshCraftResult(srv_.recipes());
+    srv_.resendInventory(*self_);
+    sendMenuContent(m);
+    syncCursorItem();
+    (void)makeAll;
+}
+
+// ------------------------------------------------------------- cookies ----
+
+void GameServer::storeCookie(const std::array<std::uint8_t, 16>& uuid,
+                             const std::string& key,
+                             const std::vector<std::uint8_t>& value) {
+    try {
+        const std::string dir = cfg_.worldDir + "/data/cookies/" + uuidToHex(uuid);
+        std::filesystem::create_directories(dir + "/../.." );
+        std::filesystem::create_directories(dir.substr(0, dir.find_last_of('/')));
+        // sanitize key into a file name
+        std::string safe = key;
+        for (auto& c : safe)
+            if (c == '/' || c == '\\' || c == ':' || c == ' ') c = '_';
+        std::ofstream f(dir + "/" + safe, std::ios::binary);
+        f.write(reinterpret_cast<const char*>(value.data()),
+                static_cast<std::streamsize>(value.size()));
+    } catch (...) {}
+}
+
+void GameServer::eraseCookie(const std::array<std::uint8_t, 16>& uuid,
+                             const std::string& key) {
+    std::string safe = key;
+    for (auto& c : safe)
+        if (c == '/' || c == '\\' || c == ':' || c == ' ') c = '_';
+    std::error_code ec;
+    std::filesystem::remove(cfg_.worldDir + "/data/cookies/" +
+                            uuidToHex(uuid) + "/" + safe, ec);
+}
+
+std::vector<std::uint8_t> GameServer::loadCookie(
+    const std::array<std::uint8_t, 16>& uuid, const std::string& key) {
+    std::string safe = key;
+    for (auto& c : safe)
+        if (c == '/' || c == '\\' || c == ':' || c == ' ') c = '_';
+    std::ifstream f(cfg_.worldDir + "/data/cookies/" + uuidToHex(uuid) + "/" + safe,
+                    std::ios::binary);
+    if (!f) return {};
+    return std::vector<std::uint8_t>((std::istreambuf_iterator<char>(f)),
+                                     std::istreambuf_iterator<char>());
+}
+
+bool GameServer::requestCookie(Player& p, const std::string& key) {
+    if (!p.conn) return false;
+    WriteBuffer b;
+    b.string(key);
+    try { p.conn->sendPacket(proto::pl::sc::CookieRequest, b); } catch (...) {}
+    return true;
+}
+
+// ------------------------------------------------------- plugin channels
+
+void Session::onPluginPayload(const std::string& channel,
+                              const api::ChannelRegistry::Payload& body,
+                              int phase) {
+    if (channel == "minecraft:register") {
+        // NUL-separated channel list
+        std::string joined(body.begin(), body.end());
+        std::size_t start = 0;
+        while (start <= joined.size()) {
+            auto end = joined.find('\0', start);
+            if (end == std::string::npos) end = joined.size();
+            if (end > start)
+                self_->clientChannels.insert(joined.substr(start, end - start));
+            start = end + 1;
+        }
+        return;
+    }
+    if (channel == "minecraft:unregister") {
+        std::string joined(body.begin(), body.end());
+        self_->clientChannels.erase(joined);
+        return;
+    }
+    api::ChannelRegistry::get().dispatch(phase, channel, body);
+}
+
+void Session::sendPluginPayload(int phase, const std::string& channel,
+                                const std::vector<std::uint8_t>& body) {
+    WriteBuffer b;
+    b.string(channel);
+    b.raw(body.data(), body.size());
+    const std::uint8_t id = phase == 0 ? cf::sc::CustomPayload
+                                       : pl::sc::CustomPayload;
+    try { conn_->sendPacket(id, b); } catch (...) {}
 }
 
 void Session::sendSystemText(const std::string& text) {
@@ -1627,13 +2311,73 @@ void Session::handlePlay() {
             break;
         }
         case pl::cs::ChatMessage:         onChatMessage(in); break;
+        case pl::cs::ChatCommandSigned: {             // signed command: parse
+            const std::string cmd = in.string(256);
+            (void)in.i64(); (void)in.i64();
+            if (in.boolean()) in.bytes(256);
+            // argument signatures list
+            const auto n = in.varint();
+            for (std::int32_t q = 0; q < n; ++q) {
+                (void)in.string(16);
+                if (in.boolean()) {
+                    const auto len = in.varint();
+                    in.bytes(static_cast<std::size_t>(len));
+                }
+            }
+            (void)in.varint();                        // offset
+            in.bytes(3 * 20);                         // lastSeen acknowledgements
+            dispatchCommand(cmd);
+            break;
+        }
+        case pl::cs::ChatSessionUpdate: {             // plan3 Chat signing
+            self_->chatPubKey.clear();
+            std::array<std::uint8_t, 16> sid{};
+            auto sb = in.bytes(16);
+            std::copy(sb.begin(), sb.end(), sid.begin());
+            self_->chatSessionExpiry = in.i64();
+            const auto pkLen = in.varint();
+            self_->chatPubKey = in.bytes(static_cast<std::size_t>(pkLen));
+            const auto sigLen = in.varint();
+            in.bytes(static_cast<std::size_t>(sigLen));
+            self_->hasChatSession = pkLen > 0;
+            break;
+        }
+        case pl::cs::MessageAck: in.skipRest(); break;
+        case pl::cs::CookieResponse: {                // plan3 Cookie
+            const std::string key = in.string(256);
+            if (in.boolean()) {
+                const auto len = in.varint();
+                self_->cookies[key] =
+                    in.bytes(static_cast<std::size_t>(len));
+                srv_.storeCookie(self_->uuid, key, self_->cookies[key]);
+            } else {
+                srv_.eraseCookie(self_->uuid, key);
+            }
+            break;
+        }
+        case pl::cs::CustomPayload: {                 // plugin messaging API
+            const std::string channel = in.string(256);
+            api::ChannelRegistry::Payload body(
+                in.p + in.off, in.p + in.len);
+            onPluginPayload(channel, body, 1);
+            break;
+        }
         case pl::cs::UseEntity:           onUseEntity(in); break;
         case pl::cs::ChatCommand:         onChatCommand(in); break;
         case pl::cs::PlayerAction:        onPlayerAction(in); break;
         case pl::cs::UseItemOn:           onUseItemOn(in); break;
         case pl::cs::UseItem:             onUseItem(in); break;
         case pl::cs::HeldItemSlot:        onHeldSlot(in); break;
-        case 0x11:                        onWindowClick(in); break;   // window_click
+        case pl::cs::WindowClick:         onWindowClick(in); break;   // 0x10
+        case pl::cs::CloseContainer:      onCloseContainer(); break;  // 0x11
+        case pl::cs::PlaceRecipe: {                                   // 0x25
+            (void)in.u8();                     // windowId
+            const auto recipeId = in.varint();
+            const auto makeAll = in.boolean();
+            handlePlaceRecipe(recipeId, makeAll);
+            break;
+        }
+        case pl::cs::TabComplete:         onTabComplete(in); break;
         case pl::cs::ChunkBatchReceived:  in.f32(); break;
         case pl::cs::PingRequest: {
             const std::int64_t id = in.i64();
@@ -1658,7 +2402,7 @@ void Session::handlePlay() {
             }
             break;
         }
-        case pl::cs::ChangeDifficulty: (void)in.u8(); break;
+        case pl::cs::SetDifficulty: (void)in.u8(); break;
         case pl::cs::ClientCommand: {
             const std::int32_t action = in.varint();
             if (action == 0) handleRespawnRequest();
@@ -1797,8 +2541,15 @@ void Session::onChatMessage(ReadBuffer& in) {
     (void)in.varint();                               // offset
     in.bytes(3);                                     // acknowledged
 
-    if (!msg.empty() && msg[0] == '/') return dispatchCommand(msg.substr(1));
-    const std::string line = "<" + self_->name + "> " + msg;
+    // events: PlayerChat (cancellable)
+    api::PlayerChatEvent ev;
+    ev.player = self_.get();
+    ev.message = msg;
+    if (!srv_.events().chat.fire(ev)) return;
+
+    if (!ev.message.empty() && ev.message[0] == '/')
+        return dispatchCommand(ev.message.substr(1));
+    const std::string line = "<" + self_->name + "> " + ev.message;
     srv_.broadcastSystemText(line, nullptr);
     sendSystemText(line);
 }
@@ -1809,10 +2560,31 @@ void Session::onChatCommand(ReadBuffer& in) {
 }
 
 void Session::dispatchCommand(const std::string& line) {
-    const std::string head = line.substr(0, line.find(' '));
-    if (head == "ping") sendSystemText("\u00a7aPong!");
-    else if (head == "help") sendSystemText("\u00a77Commands: /ping /help");
-    else sendSystemText("\u00a7cUnknown command: /" + line);
+    brigadier::CommandContext ctx;
+    ctx.source.player = self_.get();
+    ctx.source.name = self_->name;
+    ctx.source.console = false;
+    ctx.srcX = self_->x; ctx.srcY = self_->y; ctx.srcZ = self_->z;
+    ctx.srcYaw = self_->yaw; ctx.srcPitch = self_->pitch;
+    for (auto& p : srv_.playersSnapshot())
+        if (p.get() != self_.get()) ctx.playerNames.push_back(p->name);
+    ctx.resolveSelector = [this](const std::string& raw,
+                                 brigadier::SelectorResult& out) {
+        out = srv_.resolveSelector(raw, self_.get());
+        // entity selectors resolve to nothing name-wise; commands using names
+        // will fall back to source.
+    };
+
+    const auto res =
+        srv_.commands().execute(line, [&]{
+            brigadier::CommandSource s;
+            s.player = self_.get(); s.name = self_->name; s.console = false;
+            return s;
+        }());
+    if (!res.ok)
+        sendSystemText("\u00a7c" + (res.errorText.empty()
+                          ? "Incorrect argument for command"
+                          : res.errorText));
 }
 
 void Session::onHeldSlot(ReadBuffer& in) {
@@ -1835,6 +2607,11 @@ void Session::onPlayerAction(ReadBuffer& in) {
 
         if (status == 0 && self_->gamemode != 0) {          // creative: instant break
             if (oldState != 0) {
+                api::BlockBreakEvent ev;
+                ev.player = self_.get();
+                ev.x = x; ev.y = y; ev.z = z;
+                ev.oldState = oldState;
+                if (!srv_.events().blockBreak.fire(ev)) { ack(sequence); return; }
                 srv_.world().setBlock(x, y, z, 0);
                 srv_.broadcastBlockChange(x, y, z, 0);
                 srv_.world().scheduleNeighborUpdates(x, y, z);
@@ -1921,11 +2698,73 @@ void Session::onUseItemOn(ReadBuffer& in) {
     const int d = (dir >= 0 && dir < 6) ? dir : 0;
     const std::int32_t tx = x + FX[d], ty = y + FY[d], tz = z + FZ[d];
 
-    if (srv_.world().getBlock(tx, ty, tz) == 0 &&
-        self_->heldSlot < static_cast<std::int32_t>(g_hotbar.size())) {
-        const auto& entry = g_hotbar[static_cast<std::size_t>(self_->heldSlot)];
-        srv_.world().setBlock(tx, ty, tz, entry.stateId);
-        srv_.broadcastBlockChange(tx, ty, tz, entry.stateId);
+    // right-click on interactive blocks opens menus (vanilla behaviour)
+    {
+        const std::uint16_t clickedState = srv_.world().getBlock(x, y, z);
+        const gen::BlockDef* bdef = gen::blockByState(clickedState);
+        if (bdef && d == 1) {
+            const std::string bn(bdef->name);
+            if (bn.find("chest") != std::string::npos ||
+                bn == "minecraft:furnace" ||
+                bn == "minecraft:crafting_table") {
+                openMenuAt(x, y, z, clickedState);
+                ack(sequence);
+                return;
+            }
+        }
+    }
+
+    // Place the actually-held block item (vanilla semantics).
+    static const InvSlot airSlot = InvSlot::air();
+    const bool survival = self_->gamemode == 0;
+    const InvSlot& heldItem =
+        (self_->heldSlot >= 0 && self_->heldSlot < 9)
+            ? self_->inv[36 + self_->heldSlot] : airSlot;
+
+    if (srv_.world().getBlock(tx, ty, tz) != 0 || heldItem.empty()) {
+        ack(sequence);
+        return;
+    }
+    // item id -> block name (block items share the name)
+    std::string itemName = heldItem.name();
+    std::uint16_t newState = 0;
+    const gen::BlockDef* bdef2 = gen::blockByName(itemName);
+    if (!bdef2) {                                          // not a placeable block
+        // special items handled elsewhere (food via UseItem); nothing to do
+        ack(sequence);
+        return;
+    }
+    std::vector<std::pair<std::string_view, std::string_view>> props;
+    (void)props;
+    {
+        // context-aware defaults: facing opposite of player yaw
+        float yaw = self_->yaw;
+        const char* facing = "north";
+        if (yaw >= 45.f && yaw < 135.f) facing = "east";
+        else if (yaw >= 135.f && yaw < 225.f) facing = "south";
+        else if (yaw >= 225.f && yaw < 315.f) facing = "west";
+        bool hasFacing = false;
+        for (int i = 0; i < bdef2->propCount; ++i) {
+            const auto& pd = gen::kPropDefs[gen::kBlockPropsRun[bdef2->propsOff + i]];
+            if (pd.name == "facing") hasFacing = true;
+        }
+        if (hasFacing) props.emplace_back("facing", facing);
+        newState = static_cast<std::uint16_t>(gen::stateWithProps(*bdef2, props));
+    }
+
+    api::BlockPlaceEvent ev;
+    ev.player = self_.get();
+    ev.x = tx; ev.y = ty; ev.z = tz;
+    ev.newState = newState;
+    if (!srv_.events().blockPlace.fire(ev)) { ack(sequence); return; }
+
+    srv_.world().setBlock(tx, ty, tz, newState);
+    srv_.broadcastBlockChange(tx, ty, tz, newState);
+    srv_.world().scheduleNeighborUpdates(tx, ty, tz);
+    if (survival) {
+        auto mutableHeld = &self_->inv[36 + self_->heldSlot];
+        if (--mutableHeld->count <= 0) *mutableHeld = InvSlot::air();
+        srv_.resendInventory(*self_);
     }
     ack(sequence);
 }
@@ -1948,7 +2787,7 @@ void Session::onUseItem(ReadBuffer& in) {
             srv_.sendSetHealth(*self_);
             for (auto& s2 : self_->inv)
                 if (s2.itemId == sl.itemId && s2.count > 0) {
-                    if (--s2.count <= 0) s2 = InvSlot{};
+                    if (--s2.count <= 0) s2 = InvSlot::air();
                     break;
                 }
             srv_.resendInventory(*self_);

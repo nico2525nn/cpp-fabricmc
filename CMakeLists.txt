@@ -13,6 +13,10 @@ add_executable(cppfm
     src/main.cpp
     src/core/NBT.cpp
     src/game/GameServer.cpp
+    src/game/Recipes.cpp
+    src/game/MenuInteraction.cpp
+    src/game/Commands.cpp
+    src/game/Containers.cpp
 )
 
 target_include_directories(cppfm PRIVATE src src/generated)
