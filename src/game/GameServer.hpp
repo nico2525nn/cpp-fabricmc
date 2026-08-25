@@ -9,6 +9,7 @@
 #include <thread>
 #include <unordered_set>
 #include <vector>
+#include <array>
 #include "../net/Connection.hpp"
 #include "../proto/Ids.hpp"
 #include "World.hpp"
@@ -20,6 +21,18 @@
 #include "../net/Rcon.hpp"
 #include "../net/Crypto.hpp"
 #include "../net/MojangAuth.hpp"
+#include "Items.hpp"
+#include "Containers.hpp"
+#include "Recipes.hpp"
+#include "BlockEntities.hpp"
+#include "GameData.hpp"
+#include "Xp.hpp"
+#include "MobEffects.hpp"
+#include "../api/EventBus.hpp"
+#include "../api/PluginChannels.hpp"
+#include "../brigadier/Tree.hpp"
+#include "GameRules.hpp"
+#include "ServerEvents.hpp"
 
 namespace cppfm {
 
@@ -33,6 +46,10 @@ struct ServerConfig {
     std::int64_t hashedSeed = 1378645410614731511LL;
     std::string assetsDir = "assets/registry";
     std::string worldDir = "world";
+    std::string recipesDir = "assets/data/recipes";
+    std::string resourcePackUrl;                 // optional server pack
+    std::string resourcePackSha1;
+    bool resourcePackForced = false;
     std::string levelType = "flat";          // flat | normal
     bool whitelist = false;
     bool onlineMode = false;
@@ -43,7 +60,8 @@ struct ServerConfig {
     int compressionThreshold = 256;   // -1 disables Set Compression entirely
 };
 
-struct InvSlot { std::uint32_t itemId = 0; std::int16_t count = 0; };
+// Player inventory slot = full ItemStack (components preserved end-to-end).
+using InvSlot = ItemStack;
 
 struct Player {
     std::string name;
@@ -81,6 +99,18 @@ struct Player {
     std::uint8_t digLastStage = 255;
     double sentX = 0, sentY = 0, sentZ = 0;   // last broadcast to others
     float  sentYaw = 0, sentPitch = 0;
+    // experience (plan3 経験値システム)
+    XpState xp{};
+    // active status effects (plan3 ポーション)
+    std::vector<EffectInstance> effects;
+    // chat signing session (plan3 Chat signing)
+    bool hasChatSession = false;
+    std::vector<std::uint8_t> chatPubKey;
+    std::int64_t chatSessionExpiry = 0;
+    // cookies (plan3 Cookie) — opaque server-defined blobs
+    std::unordered_map<std::string, std::vector<std::uint8_t>> cookies;
+    // client-declared plugin channels
+    std::unordered_set<std::string> clientChannels;
     Connection* conn = nullptr;
 };
 
@@ -93,6 +123,7 @@ public:
         : srv_(srv), conn_(std::move(conn)) {}
 
     void run();
+    GameServer& server() { return srv_; }
 
 private:
     void handleHandshake(ReadBuffer& in);
@@ -117,6 +148,13 @@ private:
     void broadcastMovement();
     void broadcastSpawnEntity(Player* about);
     void onMovement(ReadBuffer& in, bool hasPos, bool hasRot);
+    void onTabComplete(ReadBuffer& in);
+    void handlePlaceRecipe(std::int32_t recipeId, bool makeAll);
+    void sendRecipeBook();
+    void onPluginPayload(const std::string& channel,
+                         const api::ChannelRegistry::Payload& body, int phase);
+    void sendPluginPayload(int phase, const std::string& channel,
+                           const std::vector<std::uint8_t>& body);
 
     // send helpers
     void disconnectIn(const char* jsonReason);   // uses current state_
@@ -130,9 +168,17 @@ private:
     void sendStarterInventory();
     void sendAbilities();
     void ack(std::int32_t sequence);
+    // container menus (chest/furnace/crafting)
+    void onCloseContainer();
+    void handleMenuClick(Menu& m, int slot, int button, int mode);
+    void sendMenuContent(Menu& m);
+    void sendSetSlot(std::int32_t windowId, std::int32_t stateId,
+                     std::int16_t slot, const ItemStack& s);
+    void syncCursorItem();
+    void openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
+                    std::uint16_t stateIdOfBlock);
+    void closeOpenMenu(bool sendPacket);
     void onWindowClick(ReadBuffer& in);
-    void readSlot(ReadBuffer& in, InvSlot& out);
-    void writeSlot(WriteBuffer& out, const InvSlot& slot);
 
     GameServer& srv_;
     std::unique_ptr<Connection> conn_;
@@ -148,6 +194,10 @@ private:
     float sentYaw_ = 0, sentPitch_ = 0;
     bool hasSent_ = false;
     std::unordered_set<std::int64_t> sentChunks_;
+    // open container menu (chest/furnace/crafting) when any
+    std::unique_ptr<Menu> openMenu_;
+    ItemStack cursorItem_;
+    std::int32_t menuWindowCounter_ = 0;
 };
 
 class Session;
@@ -163,8 +213,12 @@ public:
 
     void init() {
         data_.load(cfg_.assetsDir);
+        gameData_.load(data_);
         whitelist_.load("whitelist.json");
         if (cfg_.whitelist) whitelist_.setEnabled(true);
+        recipes_.loadDefaults();
+        recipes_.loadDirectory(cfg_.recipesDir);
+        initCommands();
         persist_ = std::make_unique<Persistence>(world_, cfg_.worldDir, cfg_.worldBiome);
         persist_->start();
         rconServer_ = std::make_unique<RconServer>(cfg_.rcon,
@@ -187,8 +241,33 @@ public:
     bool loadPlayerData(const std::string& uuidHex, Player& p);
     void saveLevelData();
     void loadLevelData();
+    // Cookie persistence (plan3 Cookie): world/data/cookies/<uuid>/<key>
+    void storeCookie(const std::array<std::uint8_t, 16>& uuid,
+                     const std::string& key,
+                     const std::vector<std::uint8_t>& value);
+    void eraseCookie(const std::array<std::uint8_t, 16>& uuid,
+                     const std::string& key);
+    std::vector<std::uint8_t> loadCookie(
+        const std::array<std::uint8_t, 16>& uuid, const std::string& key);
+    bool requestCookie(Player& p, const std::string& key);
     auto& mobsForTest() { return mobs_; }
     Whitelist& whitelist() { return whitelist_; }
+    BlockEntityStore& blockEntities() { return blockEntities_; }
+    RecipeManager& recipes() { return recipes_; }
+    brigadier::CommandDispatcher& commands() { return commands_; }
+    void initCommands();                             // builds command tree
+    api::ServerEvents& events() { return api::events(); }
+    // Resolve a selector string (@a/@e/@p/...) against players & mobs.
+    brigadier::SelectorResult resolveSelector(const std::string& raw,
+                                              Player* source);
+    // Spawn a mob by "minecraft:zombie"-style name at position.
+    bool spawnMobByTypeName(const std::string& name, double x, double y, double z);
+    // Furnace smelting tick (called once per game tick).
+    void furnacesTick();
+    // Send the experience bar + level to one player.
+    static void sendSetExperience(Player& p);
+    // Apply / expire status effects for all living things (per tick).
+    void effectsTick();
     // Console command dispatch (shared by chat /commands and RCON)
     std::string dispatchConsole(const std::string& line);
 
@@ -199,6 +278,16 @@ public:
     void survivalTick();
     void mobsTick();
     void applyDamageToMob(MobEntity& m, float amount, const char* cause);
+    // Spawn a mob of `kind` at position and broadcast it.
+    void spawnMob(MobKind kind, double x, double y, double z);
+    // Melee hit from a mob onto a player target (uses stats table).
+    void mobAttackPlayer(MobEntity& m, Player& target);
+    // Feed-to-breed handling when a player right-clicks an animal with food.
+    bool tryBreedFeed(Player& p, MobEntity& m);
+    // XP orbs (経験値システム)
+    void spawnXpOrbs(double x, double y, double z, int totalPoints,
+                     Player* directTo);
+    void xpOrbsTick();
     void itemsTick();
     void trySpawnMobs();
     void spawnItemDrop(double x,double y,double z,std::uint32_t itemId,std::uint8_t cnt,
@@ -299,6 +388,7 @@ private:
     std::mutex entsMtx_;
     std::vector<std::shared_ptr<MobEntity>> mobs_;
     std::vector<std::shared_ptr<ItemEntity>> itemDrops_;
+    std::vector<std::shared_ptr<XpOrbEntity>> xpOrbs_;
     std::int64_t tickNo_ = 0;
     std::int64_t timeOffset_ = 0;
     std::int64_t startTime_ = 1000;
@@ -311,8 +401,15 @@ private:
   public:
     std::vector<std::uint8_t>& loginVerifyToken() { return loginVerifyToken_; }
     EmbeddedData data_;
+    GameData gameData_;                                 // parsed registry orders
     std::vector<PlayerRef> players_;
     std::mutex playersMtx_;
+    BlockEntityStore blockEntities_;                 // chests & furnaces
+    RecipeManager recipes_;                          // crafting/smelting data
+    brigadier::CommandDispatcher commands_;          // Brigadier tree
+    GameRuleManager gamerules_;
+    std::string difficulty_ = "normal";
+    std::int32_t teleportCounterForTest_ = 1;
     struct CachedChunk { std::uint64_t rev; ChunkBodyRef body; };
     std::unordered_map<std::int64_t, CachedChunk> chunkCache_;
     std::mutex chunkCacheMtx_;

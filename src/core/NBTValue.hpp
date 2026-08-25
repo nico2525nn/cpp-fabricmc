@@ -1,6 +1,7 @@
 // Full NBT value tree: parse (named root) + serialize. Used by Anvil I/O.
 #pragma once
 #include "ByteBuffer.hpp"
+#include "NBT.hpp"
 #include <map>
 #include <memory>
 #include <stdexcept>
@@ -26,6 +27,7 @@ struct Value {
     std::vector<std::pair<std::string, Value>> comp;
 
     static Value makeByte(std::int8_t v) { Value x; x.tag = Byte; x.b = v; return x; }
+    static Value makeShort(std::int16_t v) { Value x; x.tag = Short; x.s = v; return x; }
     static Value makeInt(std::int32_t v) { Value x; x.tag = Int; x.i = v; return x; }
     static Value makeLong(std::int64_t v) { Value x; x.tag = Long; x.l = v; return x; }
     static Value makeString(std::string v) { Value x; x.tag = String; x.str = std::move(v); return x; }

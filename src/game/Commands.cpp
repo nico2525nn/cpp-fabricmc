@@ -1,0 +1,661 @@
+// Commands.cpp: Brigadier command tree + selector resolution (plan3.md
+// "Brigadier完全移植"). All commands are registered on a real CommandNode
+// tree, parsed by the dispatcher and advertised via declare_commands.
+#include "GameServer.hpp"
+#include "../generated/EntityIds.hpp"
+#include <algorithm>
+#include <cmath>
+#include <set>
+
+namespace cppfm {
+
+using brigadier::CommandNode;
+using brigadier::CommandContext;
+namespace args = brigadier::args;
+
+// ---------------------------------------------------------------- selectors
+
+brigadier::SelectorResult GameServer::resolveSelector(
+    const std::string& raw, Player* source) {
+    brigadier::SelectorResult out;
+    if (raw.empty()) return out;
+    if (raw[0] != '@') {
+        out.playersOnly = true;
+        out.playerNames.push_back(raw);
+        return out;
+    }
+    const char kind = raw.size() > 1 ? raw[1] : 'a';
+    std::unordered_map<std::string, std::string> kv;
+    const auto bracket = raw.find('[');
+    if (bracket != std::string::npos) {
+        std::string body = raw.substr(bracket + 1,
+                                      raw.find(']') - bracket - 1);
+        size_t pos = 0;
+        while (pos < body.size()) {
+            const auto eq = body.find('=', pos);
+            if (eq == std::string::npos) break;
+            auto comma = body.find(',', eq);
+            if (comma == std::string::npos) comma = body.size();
+            kv[body.substr(pos, eq - pos)] = body.substr(eq + 1, comma - eq - 1);
+            pos = comma + 1;
+        }
+    }
+
+    struct Cand { double dist; Player* p; };
+    std::vector<Cand> players;
+    for (auto& pl : playersSnapshot()) {
+        if (!pl->inPlay || pl->dead) continue;
+        if (!source || pl.get() != source)
+            players.push_back({std::pow(pl->x - (source ? source->x : 0), 2) +
+                               std::pow(pl->z - (source ? source->z : 0), 2),
+                               pl.get()});
+        else players.push_back({0.0, pl.get()});
+    }
+
+    switch (kind) {
+    case 'a':
+        for (auto& c : players) out.playerNames.push_back(c.p->name);
+        break;
+    case 's':
+        if (source && source->inPlay && !source->dead)
+            out.playerNames.push_back(source->name);
+        break;
+    case 'p': {
+        if (players.empty()) break;
+        auto best = *std::min_element(players.begin(), players.end(),
+            [](auto& a, auto& b) { return a.dist < b.dist; });
+        out.playerNames.push_back(best.p->name);
+        break;
+    }
+    case 'r': {
+        if (players.empty()) break;
+        out.playerNames.push_back(players[rand() % players.size()].p->name);
+        break;
+    }
+    case 'e': {
+        // entities (mobs); optional type= filter
+        const auto typeIt = kv.find("type");
+        const int limit = kv.count("limit") ? std::max(1, [&]{
+            try { return std::stoi(kv["limit"]); } catch (...) { return 1; }}()) : 0;
+        std::lock_guard lk(const_cast<std::mutex&>(entsMtx_));
+        for (const auto& m : mobs_) {
+            if (typeIt != kv.end()) {
+                const std::string want =
+                    typeIt->second.find(':') == std::string::npos
+                        ? "minecraft:" + typeIt->second
+                        : typeIt->second;
+                if (MobEntity::kindName(m->kind) != want) continue;
+            }
+            out.entityIds.push_back(m->entityId);
+            if (limit > 0 &&
+                static_cast<int>(out.entityIds.size()) >= limit) break;
+        }
+        break;
+    }
+    default: break;
+    }
+    return out;
+}
+
+// -------------------------------------------------------------- helpers ----
+
+static Player* findPlayer(GameServer& srv, const std::string& name) {
+    for (auto& p : srv.playersSnapshot())
+        if (p->name == name) return p.get();
+    return nullptr;
+}
+
+static void sendFeedback(Player* p, const std::string& msg) {
+    if (p && p->conn) {
+        WriteBuffer b;
+        nbt::writeTextComponent(b, msg);
+        b.boolean(false);
+        try { p->conn->sendPacket(proto::pl::sc::SystemChat, b); } catch (...) {}
+    } else {
+        std::fprintf(stderr, "[cppfm] %s\n", msg.c_str());
+    }
+}
+
+static std::vector<Player*> expandTargets(GameServer& srv, CommandContext& ctx,
+                                          Player* source, const char* argName) {
+    const std::string raw = ctx.arg(argName).asStr().empty()
+        ? std::string()
+        : std::string();     // selectors were resolved during parse; re-derive:
+    (void)raw;
+    std::vector<Player*> out;
+    // The parser stored a SelectorResult; use it when present.
+    const auto sel = ctx.arg(argName).asSelector();
+    for (auto& n : sel.playerNames) {
+        if (n == "@a" || n == "@e" || n == "@p") {   // unresolved fallback
+            for (auto& p : srv.playersSnapshot())
+                if (p->inPlay && !p->dead) out.push_back(p.get());
+            return out;
+        }
+        if (Player* p = findPlayer(srv, n)) out.push_back(p);
+    }
+    if (out.empty() && source) out.push_back(source);
+    return out;
+}
+
+// ------------------------------------------------------------ registration --
+
+void GameServer::initCommands() {
+    using NodePtr = brigadier::NodePtr;
+    auto& d = commands_;
+
+    // /ping
+    {
+        auto n = CommandNode::literal("ping");
+        n->executable = true;
+        n->action = [this](CommandContext& c) {
+            Player* p = static_cast<Player*>(c.source.player);
+            sendFeedback(p, "\u00a7aPong!");
+            return 1;
+        };
+        d.root->then(n);
+    }
+    // /help
+    {
+        auto n = CommandNode::literal("help");
+        n->executable = true;
+        n->action = [this](CommandContext& c) {
+            Player* p = static_cast<Player*>(c.source.player);
+            sendFeedback(p, "\u00a77Commands: /help /ping /gamemode /give /time "
+                            "/tp /kill /list /say /seed /gamerule /effect /xp "
+                            "/setblock /summon /clear /spawnpoint /kick");
+            return 1;
+        };
+        d.root->then(n);
+    }
+    // /list
+    {
+        auto n = CommandNode::literal("list");
+        n->executable = true;
+        n->action = [this](CommandContext& c) {
+            Player* p = static_cast<Player*>(c.source.player);
+            std::string names;
+            for (auto& pl : playersSnapshot()) names += pl->name + " ";
+            sendFeedback(p, "\u00a77Players online (" +
+                         std::to_string(playerCount()) + "): " + names);
+            return playerCount();
+        };
+        d.root->then(n);
+    }
+    // /seed
+    {
+        auto n = CommandNode::literal("seed");
+        n->executable = true;
+        n->action = [this](CommandContext& c) {
+            Player* p = static_cast<Player*>(c.source.player);
+            sendFeedback(p, "Seed: [" + std::to_string(config().seed) + "]");
+            return 1;
+        };
+        d.root->then(n);
+    }
+    // /say <message>
+    {
+        auto say = CommandNode::literal("say");
+        auto msg = CommandNode::argument("message", args::stringGreedy());
+        msg->executable = true;
+        msg->action = [this](CommandContext& c) {
+            broadcastSystemText("\u00a7d[Server] " + c.arg("message").asStr());
+            return 1;
+        };
+        say->then(msg);
+        d.root->then(say);
+    }
+    // /gamemode <mode> [target]
+    {
+        auto gm = CommandNode::literal("gamemode");
+        auto applyMode = [](const std::string& s) -> int {
+            if (s == "survival" || s == "s" || s == "0") return 0;
+            if (s == "creative" || s == "c" || s == "1") return 1;
+            if (s == "adventure" || s == "a" || s == "2") return 2;
+            if (s == "spectator" || s == "sp" || s == "3") return 3;
+            return -1;
+        };
+        auto modeArg = CommandNode::argument("mode", args::gamemodeArg());
+        modeArg->executable = true;
+        modeArg->action = [this, applyMode](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const int m = applyMode(c.arg("mode").asStr());
+            if (m < 0 || !src) throw std::runtime_error("unknown gamemode");
+            src->gamemode = static_cast<std::uint8_t>(m);
+            WriteBuffer ge;                          // game event 4 = gamemode
+            ge.u8(4); ge.f32(static_cast<float>(m));
+            try { src->conn->sendPacket(proto::pl::sc::GameEvent, ge); }
+            catch (...) {}
+            // abilities follow the mode
+            WriteBuffer ab;
+            ab.i8(m == 1 ? 0x01 | 0x04 | 0x08 : (m == 3 ? 0x01 | 0x08 : 0x01));
+            ab.f32(0.05f); ab.f32(m == 1 ? 0.10f : 0.05f);
+            try { src->conn->sendPacket(proto::pl::sc::Abilities, ab); } catch (...) {}
+            sendFeedback(src, "Set own game mode to " + c.arg("mode").asStr());
+            return 1;
+        };
+        auto target = CommandNode::argument("target",
+                                            args::entity(true, false));
+        target->executable = true;
+        target->action = [this, applyMode](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const int m = applyMode(c.arg("mode").asStr());
+            if (m < 0) throw std::runtime_error("unknown gamemode");
+            const auto sel = c.arg("target").asSelector();
+            int count = 0;
+            for (auto& name : sel.playerNames)
+                if (Player* t = findPlayer(*this, name)) {
+                    t->gamemode = static_cast<std::uint8_t>(m);
+                    WriteBuffer ab;
+                    ab.i8(m == 1 ? 0x01 | 0x04 | 0x08 : (m == 3 ? 0x01 | 0x08 : 0x01));
+                    ab.f32(0.05f); ab.f32(m == 1 ? 0.10f : 0.05f);
+                    try { t->conn->sendPacket(proto::pl::sc::Abilities, ab); } catch (...) {}
+                    ++count;
+                }
+            sendFeedback(src, "Updated gamemode for " + std::to_string(count));
+            return count;
+        };
+        modeArg->then(target);
+        gm->then(modeArg);
+        d.root->then(gm);
+    }
+    // /give <target> <item> [count]
+    {
+        auto give = CommandNode::literal("give");
+        auto who = CommandNode::argument("target", args::entity(true, false));
+        auto item = CommandNode::argument("item", args::itemStackArg());
+        item->executable = true;
+        item->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const auto sel = c.arg("target").asSelector();
+            const std::string itemName = c.arg("item").asStr();
+            auto it = gen::itemIdByName().find(itemName);
+            if (it == gen::itemIdByName().end())
+                throw std::runtime_error("Unknown item: " + itemName);
+            int given = 0;
+            for (auto& n : sel.playerNames)
+                if (Player* t = findPlayer(*this, n)) {
+                    addToInventory(*t, it->second, 1);
+                    resendInventory(*t);
+                    ++given;
+                }
+            sendFeedback(src, "Given 1 x " + itemName);
+            return given;
+        };
+        auto cnt = CommandNode::argument("count", args::integer(1, 576));
+        cnt->executable = true;
+        cnt->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const auto sel = c.arg("target").asSelector();
+            const std::string itemName = c.arg("item").asStr();
+            auto it = gen::itemIdByName().find(itemName);
+            if (it == gen::itemIdByName().end())
+                throw std::runtime_error("Unknown item: " + itemName);
+            const int n2 = c.arg("count").asInt();
+            int given = 0;
+            for (auto& nm : sel.playerNames)
+                if (Player* t = findPlayer(*this, nm)) {
+                    addToInventory(*t, it->second,
+                                   static_cast<std::uint16_t>(n2));
+                    resendInventory(*t);
+                    ++given;
+                }
+            sendFeedback(src, "Given " + std::to_string(n2) + " x " + itemName);
+            return given;
+        };
+        item->then(cnt);
+        who->then(item);
+        give->then(who);
+        d.root->then(give);
+    }
+    // /time set <value>
+    {
+        auto time = CommandNode::literal("time");
+        auto set = CommandNode::literal("set");
+        auto named = CommandNode::argument("named", args::stringWord());
+        named->executable = true;
+        named->suggestions = [](brigadier::StringReader&, brigadier::ParseCtx&) {
+            return std::vector<std::string>{"day", "noon", "night", "midnight"};
+        };
+        named->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const std::string v = c.arg("named").asStr();
+            std::int64_t t = 1000;
+            if (v == "day") t = 1000;
+            else if (v == "noon") t = 6000;
+            else if (v == "night") t = 13000;
+            else if (v == "midnight") t = 18000;
+            else throw std::runtime_error("unknown time of day");
+            setTimeOfDay(t);
+            broadcastSystemText("\u00a77Time set to " + v);
+            return 1;
+        };
+        auto ticks = CommandNode::argument("ticks", args::integer(0, 24000));
+        ticks->executable = true;
+        ticks->action = [this](CommandContext& c) {
+            setTimeOfDay(c.arg("ticks").asInt());
+            Player* src = static_cast<Player*>(c.source.player);
+            sendFeedback(src, "Set the time to " +
+                         std::to_string(c.arg("ticks").asInt()));
+            return 1;
+        };
+        set->then(named); set->then(ticks);
+        time->then(set);
+        d.root->then(time);
+    }
+    // /tp <x y z>
+    {
+        auto tp = CommandNode::literal("tp");
+        auto pos = CommandNode::argument("pos", args::vec3());
+        pos->executable = true;
+        pos->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            if (!src) return 0;
+            const auto v = c.arg("pos").asVec3();
+            src->fallDist = 0;
+            WriteBuffer b;
+            b.varint(0);                              // teleport id handled below
+            // reuse session teleport path through a synthetic packet:
+            WriteBuffer tb;
+            tb.varint(++teleportCounterForTest_);
+            tb.f64(v.x); tb.f64(v.y); tb.f64(v.z);
+            tb.f64(0); tb.f64(0); tb.f64(0);
+            tb.f32(src->yaw); tb.f32(src->pitch);
+            tb.u32(0);
+            try { src->conn->sendPacket(proto::pl::sc::PlayerPosition, tb); }
+            catch (...) {}
+            src->x = v.x; src->y = v.y; src->z = v.z;
+            sendFeedback(src, "Teleported to " + std::to_string(v.x) + ", " +
+                         std::to_string(v.y) + ", " + std::to_string(v.z));
+            return 1;
+        };
+        tp->then(pos);
+        d.root->then(tp);
+    }
+    // /kill [targets]
+    {
+        auto kill = CommandNode::literal("kill");
+        kill->executable = true;
+        kill->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            if (src) { applyDamage(*src, 1000.f, "/kill"); return 1; }
+            return 0;
+        };
+        auto targets = CommandNode::argument("targets",
+                                             args::entity(false, false));
+        targets->executable = true;
+        targets->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const auto sel = c.arg("targets").asSelector();
+            int killed = 0;
+            for (auto& n : sel.playerNames)
+                if (Player* t = findPlayer(*this, n)) {
+                    applyDamage(*t, 1000.f, "killed");
+                    ++killed;
+                }
+            std::lock_guard lk(entsMtx_);
+            std::vector<std::int32_t> ids;
+            for (auto id : sel.entityIds)
+                for (auto& m : mobs_)
+                    if (m->entityId == id && !m->dead) {
+                        m->health = 0; m->dead = true;
+                        ids.push_back(id);
+                        ++killed;
+                    }
+            for (auto id : ids) {
+                WriteBuffer rm; rm.varint(1); rm.varint(id);
+                broadcastPacketExcept(nullptr, proto::pl::sc::RemoveEntities, rm);
+            }
+            sendFeedback(src, "Killed " + std::to_string(killed) + " entities");
+            return killed;
+        };
+        kill->then(targets);
+        d.root->then(kill);
+    }
+    // /gamerule <rule> [value]
+    {
+        auto gr = CommandNode::literal("gamerule");
+        auto rule = CommandNode::argument("rule", args::stringWord());
+        rule->executable = true;
+        rule->suggestions = [](brigadier::StringReader&, brigadier::ParseCtx&) {
+            return std::vector<std::string>{"doDaylightCycle", "doMobSpawning",
+                                            "keepInventory", "randomTickSpeed",
+                                            "mobGriefing", "doFireTick"};
+        };
+        rule->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const std::string r = c.arg("rule").asStr();
+            sendFeedback(src, "\u00a77" + r + " = " + gamerules_.get(r));
+            return 1;
+        };
+        auto value = CommandNode::argument("value", args::stringWord());
+        value->executable = true;
+        value->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const std::string r = c.arg("rule").asStr();
+            const std::string v = c.arg("value").asStr();
+            gamerules_.set(r, v);
+            broadcastSystemText("\u00a77Gamerule " + r + " is now " + v);
+            return 1;
+        };
+        rule->then(value);
+        gr->then(rule);
+        d.root->then(gr);
+    }
+    // /effect give <targets> <effect> [seconds] [amplifier]
+    {
+        auto effect = CommandNode::literal("effect");
+        auto give = CommandNode::literal("give");
+        auto targets = CommandNode::argument("targets",
+                                             args::entity(false, false));
+        auto eff = CommandNode::argument("effect", args::resourceLocation());
+        eff->executable = true;
+        eff->suggestions = [](brigadier::StringReader&, brigadier::ParseCtx&) {
+            std::vector<std::string> v;
+            for (int i = effects::Speed; i <= effects::Darkness; ++i)
+                v.emplace_back(effects::nameOf(static_cast<std::uint8_t>(i)));
+            return v;
+        };
+        eff->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const std::string en = c.arg("effect").asStr();
+            auto it = effects::byName().find(en);
+            if (it == effects::byName().end())
+                throw std::runtime_error("unknown effect: " + en);
+            const auto sel = c.arg("targets").asSelector();
+            int applied = 0;
+            for (auto& n : sel.playerNames)
+                if (Player* t = findPlayer(*this, n)) {
+                    EffectInstance e;
+                    e.type = it->second;
+                    e.durationTicks = 30 * 20;
+                    t->effects.erase(
+                        std::remove_if(t->effects.begin(), t->effects.end(),
+                                       [&](const EffectInstance& x)
+                                           { return x.type == e.type; }),
+                        t->effects.end());
+                    t->effects.push_back(e);
+                    WriteBuffer b;
+                    b.varint(t->entityId);
+                    b.varint(e.type);
+                    b.varint(e.amplifier);
+                    b.varint(e.durationTicks);
+                    b.u8(effectFlags(e));
+                    try { t->conn->sendPacket(proto::pl::sc::EntityEffect, b); }
+                    catch (...) {}
+                    ++applied;
+                }
+            sendFeedback(src, "Applied " + en + " to " +
+                         std::to_string(applied));
+            return applied;
+        };
+        auto secs = CommandNode::argument("seconds", args::integer(1, 1000000));
+        secs->executable = true;
+        secs->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const std::string en = c.arg("effect").asStr();
+            auto it = effects::byName().find(en);
+            if (it == effects::byName().end())
+                throw std::runtime_error("unknown effect: " + en);
+            const auto sel = c.arg("targets").asSelector();
+            const int dur = c.arg("seconds").asInt();
+            for (auto& n : sel.playerNames)
+                if (Player* t = findPlayer(*this, n)) {
+                    EffectInstance e;
+                    e.type = it->second;
+                    e.durationTicks = dur * 20;
+                    t->effects.push_back(e);
+                    WriteBuffer b;
+                    b.varint(t->entityId);
+                    b.varint(e.type);
+                    b.varint(e.amplifier);
+                    b.varint(e.durationTicks);
+                    b.u8(effectFlags(e));
+                    try { t->conn->sendPacket(proto::pl::sc::EntityEffect, b); }
+                    catch (...) {}
+                }
+            sendFeedback(src, "Applied " + en + " (" +
+                         std::to_string(dur) + "s)");
+            return 1;
+        };
+        eff->then(secs);
+        targets->then(eff);
+        give->then(targets);
+        effect->then(give);
+        d.root->then(effect);
+    }
+    // /xp add <targets> <amount>
+    {
+        auto xpCmd = CommandNode::literal("xp");
+        auto add = CommandNode::literal("add");
+        auto targets = CommandNode::argument("targets",
+                                             args::entity(true, false));
+        auto amount = CommandNode::argument("amount", args::integer(-1000, 1000));
+        amount->executable = true;
+        amount->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const auto sel = c.arg("targets").asSelector();
+            const int amt = c.arg("amount").asInt();
+            for (auto& n : sel.playerNames)
+                if (Player* t = findPlayer(*this, n)) {
+                    t->xp.addPoints(amt);
+                    sendSetExperience(*t);
+                }
+            sendFeedback(src, "Gave " + std::to_string(amt) + " xp");
+            return 1;
+        };
+        targets->then(amount);
+        add->then(targets);
+        xpCmd->then(add);
+        d.root->then(xpCmd);
+    }
+    // /setblock <pos> <block>
+    {
+        auto sb = CommandNode::literal("setblock");
+        auto pos = CommandNode::argument("pos", args::blockPos());
+        auto block = CommandNode::argument("block", args::itemStackArg());
+        block->executable = true;
+        block->suggestions = [](brigadier::StringReader&, brigadier::ParseCtx&) {
+            std::vector<std::string> v{"minecraft:stone", "minecraft:dirt",
+                                       "minecraft:oak_planks", "minecraft:glass",
+                                       "minecraft:tnt", "minecraft:redstone_block"};
+            return v;
+        };
+        block->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const auto p = c.arg("pos").asBlockPos();
+            std::string bn = c.arg("block").asStr();
+            if (bn.find(':') == std::string::npos) bn = "minecraft:" + bn;
+            const gen::BlockDef* def = gen::blockByName(bn);
+            if (!def) throw std::runtime_error("unknown block: " + bn);
+            world_.generateChunkIfMissing(p.x >> 4, p.z >> 4);
+            world_.setBlock(p.x, p.y, p.z,
+                            static_cast<std::uint16_t>(def->defaultState));
+            broadcastBlockChange(p.x, p.y, p.z,
+                                 static_cast<std::uint16_t>(def->defaultState));
+            sendFeedback(src, "Changed the block at " + std::to_string(p.x) +
+                         ", " + std::to_string(p.y) + ", " +
+                         std::to_string(p.z));
+            return 1;
+        };
+        pos->then(block);
+        sb->then(pos);
+        d.root->then(sb);
+    }
+    // /summon <entity> [pos]
+    {
+        auto summon = CommandNode::literal("summon");
+        auto ent = CommandNode::argument("entity", args::resourceLocation());
+        ent->executable = true;
+        ent->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            std::string en = c.arg("entity").asStr();
+            if (en.find(':') == std::string::npos) en = "minecraft:" + en;
+            auto it = gen::entityTypeIdByName().find(en);
+            if (it == gen::entityTypeIdByName().end())
+                throw std::runtime_error("unknown entity: " + en);
+            spawnMobByTypeName(en,
+                src ? src->x + 2.0 : 0.5, src ? src->y + 1.0 : -60.0,
+                src ? src->z + 2.0 : 0.5);
+            sendFeedback(src, "Summoned " + en);
+            return 1;
+        };
+        summon->then(ent);
+        d.root->then(summon);
+    }
+    // /clear [targets]
+    {
+        auto clear = CommandNode::literal("clear");
+        clear->executable = true;
+        clear->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            int removed = 0;
+            for (auto& s : src->inv)
+                if (!s.empty()) { ++removed; s = ItemStack::air(); }
+            resendInventory(*src);
+            sendFeedback(src, "Removed " + std::to_string(removed) +
+                         " items");
+            return removed;
+        };
+        d.root->then(clear);
+    }
+    // /spawnpoint
+    {
+        auto sp = CommandNode::literal("spawnpoint");
+        sp->executable = true;
+        sp->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            world_.setSpawnPoint({static_cast<std::int32_t>(src->x),
+                                  static_cast<std::int32_t>(src->y),
+                                  static_cast<std::int32_t>(src->z)});
+            saveLevelData();
+            sendFeedback(src, "Set spawn point to current position");
+            return 1;
+        };
+        d.root->then(sp);
+    }
+    // /difficulty <level>
+    {
+        auto diff = CommandNode::literal("difficulty");
+        auto lvl = CommandNode::argument("level", args::stringWord());
+        lvl->executable = true;
+        lvl->suggestions = [](brigadier::StringReader&, brigadier::ParseCtx&) {
+            return std::vector<std::string>{"peaceful", "easy", "normal",
+                                            "hard"};
+        };
+        lvl->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            difficulty_ = c.arg("level").asStr();
+            WriteBuffer b;
+            b.i8(difficulty_ == "peaceful" ? 0 : difficulty_ == "easy" ? 1 :
+                 difficulty_ == "hard" ? 3 : 2);
+            b.boolean(false);
+            broadcastPacketExcept(nullptr, proto::pl::sc::ChangeDifficulty, b);
+            broadcastSystemText("\u00a77Difficulty set to " + difficulty_);
+            return 1;
+        };
+        diff->then(lvl);
+        d.root->then(diff);
+    }
+}
+
+} // namespace cppfm
