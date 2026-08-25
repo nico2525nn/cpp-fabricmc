@@ -159,6 +159,8 @@ void GameServer::tickDigs() {
         if (elapsed >= p->digTotalTicks) {
             // server-authoritative completion
             const std::uint16_t oldState = world_.getBlock(p->digX, p->digY, p->digZ);
+            std::fprintf(stderr, "[cppfm] DIG COMPLETE at (%d,%d,%d) oldState=%u\n",
+                         p->digX, p->digY, p->digZ, oldState);
             if (oldState != 0) {
                 world_.setBlock(p->digX, p->digY, p->digZ, 0);
                 broadcastBlockChange(p->digX, p->digY, p->digZ, 0);
@@ -601,6 +603,189 @@ void GameServer::resendInventory(Player& p) {
 
 // ===================================================================== Session
 
+
+// ------------------------------------------------------ level.dat + playerdata
+static std::string uuidToHexString(const std::array<std::uint8_t,16>& uuid) {
+    char buf[33];
+    for (int i = 0; i < 16; ++i) snprintf(buf + i * 2, 3, "%02x", uuid[i]);
+    return std::string(buf, 32);
+}
+
+void GameServer::saveLevelData() {
+    try {
+        WriteBuffer out;
+        out.u8(10); out.u16(0);                       // root compound, no name
+        auto w = [&](std::int8_t t, const char* n2, auto... args) {};
+        // DataVersion
+        out.u8(3); out.u16(11); out.raw("DataVersion", 11); out.i32(4189);
+        // Spawn
+        out.u8(3); out.u16(6); out.raw("SpawnX", 6); out.i32(world_.spawnPoint().x);
+        out.u8(3); out.u16(6); out.raw("SpawnY", 6); out.i32(world_.spawnPoint().y);
+        out.u8(3); out.u16(6); out.raw("SpawnZ", 6); out.i32(world_.spawnPoint().z);
+        out.u8(0);                                     // end root
+        std::filesystem::create_directories(cfg_.worldDir);
+        std::ofstream f(cfg_.worldDir + "/level.dat", std::ios::binary);
+        f.write(reinterpret_cast<const char*>(out.data.data()), out.data.size());
+    } catch (...) {}
+}
+
+void GameServer::loadLevelData() {
+    try {
+        std::ifstream f(cfg_.worldDir + "/level.dat", std::ios::binary);
+        if (!f) return;
+        std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(f)),
+                                         std::istreambuf_iterator<char>());
+        ReadBuffer in(bytes);
+        in.u8();                                       // root tag
+        in.u16();                                      // root name len
+        // walk entries looking for SpawnX/Y/Z
+        while (in.off < in.len) {
+            const auto et = in.u8();
+            if (et == 0) break;
+            const auto nl = in.u16();
+            const std::string nm(reinterpret_cast<const char*>(in.p + in.off), nl);
+            in.off += nl;
+            if (et == 3) {
+                const auto v = in.i32();
+                if (nm == "SpawnX") world_.spawnPt.x = v;
+                else if (nm == "SpawnY") world_.spawnPt.y = v;
+                else if (nm == "SpawnZ") world_.spawnPt.z = v;
+            } else {
+                switch (et) {
+                case 1: in.u8(); break;
+                case 2: in.u16(); break;
+                case 3: in.i32(); break;
+                case 4: in.i64(); break;
+                case 5: in.f32(); break;
+                case 6: in.f64(); break;
+                case 7: in.bytes(in.i32()); break;
+                case 8: in.bytes(in.u16()); break;
+                default: throw std::runtime_error("skip");
+                }
+            }
+        }
+    } catch (...) {}
+}
+
+static void savePlayerNBT(const std::string& path, Player& p) {
+    WriteBuffer out;
+    out.u8(10); out.u16(0);                            // root compound
+    // Health (float)
+    out.u8(5); out.u16(6); out.raw("Health", 6); out.f32(p.health);
+    // foodLevel (int)
+    out.u8(3); out.u16(9); out.raw("foodLevel", 9); out.i32(p.food);
+    // Pos (list of 3 doubles)
+    out.u8(9); out.u16(3); out.raw("Pos", 3);
+    out.u8(6); out.i32(3);
+    out.f64(p.x); out.f64(p.y); out.f64(p.z);
+    // Inventory (list of compounds)
+    out.u8(9); out.u16(9); out.raw("Inventory", 9);
+    int count = 0;
+    for (int i = 0; i < 46; ++i)
+        if (p.inv[i].count > 0) ++count;
+    out.i32(count);
+    for (int i = 0; i < 46; ++i) {
+        const auto& sl = p.inv[i];
+        if (sl.count <= 0) continue;
+        out.u8(10);                                    // compound
+        // id string
+        for (auto& e : gen::kItems)
+            if (e.second == sl.itemId) {
+                const std::string nm(e.first);
+                out.u16((uint16_t)nm.size()); out.raw(nm.data(), nm.size());
+                break;
+            }
+        // Count byte
+        out.u8(1); out.u16(5); out.raw("Count", 5); out.i8((int8_t)sl.count);
+        // Slot byte
+        out.u8(1); out.u16(4); out.raw("Slot", 4); out.i8((int8_t)i);
+        out.u8(0);                                     // end compound
+    }
+    out.u8(0);                                         // end inventory list
+    out.u8(0);                                         // end root
+    std::ofstream f(path, std::ios::binary);
+    f.write(reinterpret_cast<const char*>(out.data.data()), out.data.size());
+}
+
+static bool loadPlayerNBT(const std::string& path, Player& p) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return false;
+    std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(f)),
+                                     std::istreambuf_iterator<char>());
+    if (bytes.size() < 10 || bytes[0] != 10) return false;
+    ReadBuffer r(bytes);
+    r.u8(); r.u16();                                   // skip root tag+name
+    try {
+        while (r.off < r.len) {
+            const auto et = r.u8();
+            if (et == 0) break;
+            const auto nl = r.u16();
+            const std::string nm(reinterpret_cast<const char*>(r.p + r.off), nl);
+            r.off += nl;
+            if (et == 5 && nm == "Health") p.health = r.f32();
+            
+            else if (et == 3 && nm == "foodLevel") p.food = r.i32();
+            else if (et == 9 && nm == "Pos") {
+                const auto elemTag = r.u8();
+                const auto cnt = r.i32();
+                if (cnt == 3 && elemTag == 6) {
+                    p.x = r.f64(); p.y = r.f64(); p.z = r.f64();
+                    p.prevFeetY = p.y;
+                } else { r.off += 8 * cnt; }
+            } else if (et == 9 && nm == "Inventory") {
+                const auto elemTag = r.u8();
+                const auto cnt = r.i32();
+                for (int q = 0; q < cnt; ++q) {
+                    if (elemTag != 10) break;
+                    r.u8();                            // compound tag
+                    std::string itemIdStr;
+                    int8_t itemCnt = 0; int8_t slotIdx = -1;
+                    while (true) {
+                        const auto ft = r.u8();
+                        if (ft == 0) break;
+                        const auto fnl = r.u16();
+                        const std::string fn(reinterpret_cast<const char*>(r.p + r.off), fnl);
+                        r.off += fnl;
+                        if (ft == 8 && fn == "id") {
+                            const auto sl = r.u16();
+                            itemIdStr.assign(reinterpret_cast<const char*>(r.p + r.off), sl);
+                            r.off += sl;
+                        } else if (ft == 1 && fn == "Count") { itemCnt = r.i8(); }
+                        else if (ft == 1 && fn == "Slot") { slotIdx = r.i8(); }
+                        else if (ft == 3) r.i32();
+                        else if (ft == 5) r.f32();
+                        else break;
+                    }
+                    if (!itemIdStr.empty() && itemCnt > 0 && slotIdx >= 0 && slotIdx < 46) {
+                        auto it = gen::itemIdByName().find(itemIdStr);
+                        if (it != gen::itemIdByName().end())
+                            p.inv[slotIdx] = {(uint32_t)it->second, (int16_t)itemCnt};
+                    }
+                }
+            } else {
+                switch (et) {
+                case 1: r.u8(); break;
+                case 2: r.u16(); break;
+                case 3: r.i32(); break;
+                case 4: r.i64(); break;
+                case 5: r.f32(); break;
+                case 6: r.f64(); break;
+                default: return false;
+                }
+            }
+        }
+        return true;
+    } catch (...) { return false; }
+}
+
+void GameServer::savePlayerData(const std::string& uuidHex, Player& p) {
+    std::filesystem::create_directories(cfg_.worldDir + "/playerdata");
+    savePlayerNBT(cfg_.worldDir + "/playerdata/" + uuidHex + ".dat", p);
+}
+bool GameServer::loadPlayerData(const std::string& uuidHex, Player& p) {
+    return loadPlayerNBT(cfg_.worldDir + "/playerdata/" + uuidHex + ".dat", p);
+}
+
 void Session::run() {
     try {
         while (state_ != State::Done && srv_.running()) {
@@ -646,7 +831,8 @@ void Session::run() {
         ent.varint(1);
         ent.varint(self_->entityId);
         srv_.broadcastPacketExcept(nullptr, pl::sc::RemoveEntities, ent);
-        srv_.removePlayer(self_.get());
+                srv_.savePlayerData(GameServer::uuidToHex(self_->uuid), *self_);
+srv_.removePlayer(self_.get());
         registered_ = false;
     }
 }
@@ -1043,9 +1229,12 @@ void Session::onEnterPlay() {
     registered_ = true;
     srv_.addPlayer(self_);
     self_->inPlay = true;
-    self_->gamemode = 0;
+    self_->gamemode = 1;   // creative default for building comfort
     self_->health = 20; self_->food = 20; self_->saturation = 5;
     self_->exhaustion = 0; self_->fallDist = 0; self_->dead = false;
+
+    srv_.loadPlayerData(GameServer::uuidToHex(self_->uuid), *self_);
+    self_->prevFeetY = self_->y;
 
     broadcastSpawnEntity(self_.get());
     sendDeclareCommands();
@@ -1249,6 +1438,74 @@ void Session::sendStarterInventory() {
     conn_->sendPacket(pl::sc::ContainerSetContent, b);
 }
 
+
+void Session::readSlot(ReadBuffer& in, InvSlot& out) {
+    const auto cnt = in.varint();
+    if (cnt <= 0) { out.itemId = 0; out.count = 0; return; }
+    const auto iid = in.varint();
+    const auto addC = in.varint();
+    const auto remC = in.varint();
+    // skip component bytes (we don't support custom components)
+    for (std::int32_t q = 0; q < addC + remC; ++q) {
+        const auto tlen = in.varint();       // type or index
+        (void)tlen;
+        // each component: varint type + value bytes (we skip by reading rest of frame)
+        // For MVP we assume zero components which covers all vanilla items
+    }
+    out.itemId = static_cast<std::uint32_t>(iid);
+    out.count = static_cast<std::int16_t>(cnt);
+}
+
+void Session::writeSlot(WriteBuffer& out, const InvSlot& slot) {
+    if (slot.count <= 0) { out.varint(0); return; }
+    out.varint(slot.count);
+    out.varint(static_cast<std::int32_t>(slot.itemId));
+    out.varint(0);
+    out.varint(0);
+}
+
+void Session::onWindowClick(ReadBuffer& in) {
+    (void)in.u8();                                    // windowId (always 0 for player inv)
+    const auto stateId = in.varint();
+    const auto slotIdx = in.i16();
+    const auto button = in.i8();
+    const auto mode = in.varint();
+
+    // changed slots array
+    const auto nChanged = in.varint();
+    struct ChangedSlot { std::int16_t idx; InvSlot slot; };
+    std::vector<ChangedSlot> changed;
+    for (std::int32_t i = 0; i < nChanged; ++i) {
+        ChangedSlot cs;
+        cs.idx = in.i16();
+        readSlot(in, cs.slot);
+        changed.push_back(std::move(cs));
+    }
+    // cursor item
+    InvSlot cursor;
+    readSlot(in, cursor);
+
+    // Apply changed slots to our inventory model
+    for (auto& cs : changed) {
+        const auto i = static_cast<int>(cs.idx);
+        if (i >= 0 && i < 46) self_->inv[i] = cs.slot;
+    }
+
+    // Mode 0 = normal pickup/place, 1 = shift-click (quick move), etc.
+    // For MVP we accept the client's authoritative state via changedSlots.
+    // This works because the client sends its predicted state.
+    (void)slotIdx; (void)button; (void)mode; (void)cursor;
+
+    // Re-send authoritative state to prevent desync
+    WriteBuffer b;
+    b.u8(0);
+    b.varint(++self_->invStateId);
+    b.varint(46);
+    for (int i = 0; i < 46; ++i) writeSlot(b, self_->inv[i]);
+    b.varint(0);                                      // carried
+    try { conn_->sendPacket(pl::sc::ContainerSetContent, b); } catch (...) {}
+}
+
 void Session::sendSystemText(const std::string& text) {
     WriteBuffer body;
     nbt::writeTextComponent(body, text);
@@ -1376,6 +1633,7 @@ void Session::handlePlay() {
         case pl::cs::UseItemOn:           onUseItemOn(in); break;
         case pl::cs::UseItem:             onUseItem(in); break;
         case pl::cs::HeldItemSlot:        onHeldSlot(in); break;
+        case 0x11:                        onWindowClick(in); break;   // window_click
         case pl::cs::ChunkBatchReceived:  in.f32(); break;
         case pl::cs::PingRequest: {
             const std::int64_t id = in.i64();
@@ -1575,7 +1833,13 @@ void Session::onPlayerAction(ReadBuffer& in) {
         const BlockMineInfo* mi = mineInfo(bn);
         const bool unbreakable = mi && mi->hardness < 0;
 
-        if (status == 0 && self_->gamemode == 0 && !unbreakable && oldState != 0) {
+        if (status == 0 && self_->gamemode != 0) {          // creative: instant break
+            if (oldState != 0) {
+                srv_.world().setBlock(x, y, z, 0);
+                srv_.broadcastBlockChange(x, y, z, 0);
+                srv_.world().scheduleNeighborUpdates(x, y, z);
+            }
+        } else if (status == 0 && self_->gamemode == 0 && !unbreakable && oldState != 0) {
             // begin tracked dig
             self_->digActive = true;
             self_->digX=x; self_->digY=y; self_->digZ=z;
@@ -1629,13 +1893,8 @@ void Session::onPlayerAction(ReadBuffer& in) {
                         srv_.broadcastDigStage(*self_, -1);
                     }
                 }
-            } else {                                      // creative instant
-                if (oldState != 0) {
-                    srv_.world().setBlock(x, y, z, 0);
-                    srv_.broadcastBlockChange(x, y, z, 0);
-                }
             }
-            self_->digActive = self_->digActive;          // tick completes survival digs
+            // tick loop completes survival digs via digActive
         }
     }
     ack(sequence);                                      // ALWAYS ack sequences

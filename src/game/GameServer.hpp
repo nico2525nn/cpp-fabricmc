@@ -130,10 +130,14 @@ private:
     void sendStarterInventory();
     void sendAbilities();
     void ack(std::int32_t sequence);
+    void onWindowClick(ReadBuffer& in);
+    void readSlot(ReadBuffer& in, InvSlot& out);
+    void writeSlot(WriteBuffer& out, const InvSlot& slot);
 
     GameServer& srv_;
     std::unique_ptr<Connection> conn_;
     enum class State { Handshake, Status, Login, Configuration, Play, Done };
+
     State state_ = State::Handshake;
     std::shared_ptr<Player> self_ = std::make_shared<Player>();
     bool registered_ = false;         // present in server registry
@@ -179,6 +183,10 @@ public:
         if (listenFd_ >= 0) { ::close(listenFd_); listenFd_ = -1; }
     }
     Persistence& persistence() { return *persist_; }
+    void savePlayerData(const std::string& uuidHex, Player& p);
+    bool loadPlayerData(const std::string& uuidHex, Player& p);
+    void saveLevelData();
+    void loadLevelData();
     auto& mobsForTest() { return mobs_; }
     Whitelist& whitelist() { return whitelist_; }
     // Console command dispatch (shared by chat /commands and RCON)
@@ -199,8 +207,14 @@ public:
     bool addToInventory(Player& p, std::uint32_t itemId, std::uint16_t count);
     void resendInventory(Player& p);
     void sendSetHealth(Player& p);
+
     void applyDamage(Player& p, float amount, const char* cause);
     void killPlayer(Player& p, const char* cause);
+    static std::string uuidToHex(const std::array<std::uint8_t,16>& u) {
+        std::string h; char x[4];
+        for (auto b : u) { snprintf(x,3,"%02x",b); h+=x; }
+        return h;
+    }
     std::int64_t tickNow() const { return tickNo_; }
     std::int64_t dayTime() const { return ((tickNo_ / 10) + timeOffset_ + startTime_) % 24000; }
     bool isNight() const { auto t = dayTime(); return t >= 13000 && t < 23000; }

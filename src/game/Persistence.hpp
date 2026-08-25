@@ -17,6 +17,42 @@ public:
     Persistence(World& world, std::string worldDir, std::string biomeKey)
         : world_(world), dir_(std::move(worldDir)), biome_(std::move(biomeKey)) {}
 
+    // ---- level.dat ----
+    void saveLevelData() {
+        namespace nv = nbt;
+        try {
+            nv::Value root = nv::Value::makeCompound();
+            nv::Value data = nv::Value::makeCompound();
+            data.set("DataVersion", nv::Value::makeInt(4189));
+            auto spawn = world_.spawnPoint();
+            data.set("SpawnX", nv::Value::makeInt(spawn.x));
+            data.set("SpawnY", nv::Value::makeInt(spawn.y));
+            data.set("SpawnZ", nv::Value::makeInt(spawn.z));
+            root.set("Data", data);
+            WriteBuffer out;
+            nv::writeFileRoot(out, root);
+            std::ofstream f(dir_ + "/level.dat", std::ios::binary);
+            f.write(reinterpret_cast<const char*>(out.data.data()), out.data.size());
+        } catch (...) {}
+    }
+    void loadLevelData() {
+        try {
+            std::ifstream f(dir_ + "/level.dat", std::ios::binary);
+            if (!f) return;
+            std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(f)),
+                                             std::istreambuf_iterator<char>());
+            ReadBuffer in(bytes);
+            nbt::Parser parser(in);
+            nbt::Value root = parser.readFileRoot();
+            const auto* d = root.get("Data");
+            if (!d) return;
+            if (const auto* sx = d->get("SpawnX"))
+                if (const auto* sy = d->get("SpawnY"))
+                    if (const auto* sz = d->get("SpawnZ"))
+                        world_.setSpawnPoint({sx->i, sy->i, sz->i});
+        } catch (...) {}
+    }
+
     void start() {
         std::filesystem::create_directories(dir_ + "/region");
         world_.setLoader([this](std::int32_t cx, std::int32_t cz, Chunk& c) {

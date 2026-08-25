@@ -46,6 +46,10 @@ public:
         : biome_(std::move(biomeKey)), level_(level), terrain_(seed), srv_seed(seed) {}
 
     LevelType levelType() const { return level_; }
+    struct SpawnPoint { std::int32_t x=0, y=-60, z=0; };
+    SpawnPoint spawnPt = {};
+    SpawnPoint spawnPoint() const { return spawnPt; }
+    void setSpawnPoint(const SpawnPoint& sp) { spawnPt = sp; }
     int seaLevel() const { return level_ == LevelType::Normal ? 63 : kSeaLevelFlat; }
     bool isFlat() const { return level_ == LevelType::Flat; }
 
@@ -64,6 +68,42 @@ public:
     // Loader hook: return true if it filled the chunk (e.g., from disk).
     void setLoader(std::function<bool(std::int32_t, std::int32_t, Chunk&)> l) { loader_ = std::move(l); }
     void setOnEdit(std::function<void(std::int32_t, std::int32_t)> cb) { onEdit_ = std::move(cb); }
+
+    // Block update: check if block above needs to fall (sand/gravel)
+    void scheduleNeighborUpdates(std::int32_t x, std::int32_t y, std::int32_t z) {
+        // Check block above for gravity
+        const auto above = getBlock(x, y + 1, z);
+        const auto& names = gen::blockNameToState();
+        static const uint16_t sand  = (uint16_t)names.at("minecraft:sand");
+        static const uint16_t gravel= (uint16_t)names.at("minecraft:gravel");
+        if (above == sand || above == gravel) {
+            // make it fall: remove from old pos, find ground, place
+            setBlockInternal(x, y+1, z, 0);
+            int fallY = y;
+            while (fallY > kMinY && getBlock(x, fallY-1, z) == 0) --fallY;
+            setBlockInternal(x, fallY, z, above);
+            if (onEdit_) onEdit_(x >> 4, z >> 4);
+        }
+        // Torch/support blocks pop off if support removed
+        static const uint16_t torch = (uint16_t)names.at("minecraft:torch");
+        if (above == torch) {
+            setBlockInternal(x, y+1, z, 0);
+            if (onEdit_) onEdit_(x >> 4, z >> 4);
+        }
+    }
+
+private:
+    void setBlockInternal(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state) {
+        if (y < kMinY || y >= kMaxY) return;
+        generateChunkIfMissing(x >> 4, z >> 4);
+        std::unique_lock lock(mutex_);
+        auto& c = *chunks_.at(chunkKey(x >> 4, z >> 4));
+        const int lx = x & 15, lz = z & 15, wy = y - kMinY;
+        c.blocks[Chunk::index(wy >> 4, wy & 15, lz, lx)] = state;
+        ++c.revision;
+    }
+
+public:
 
     // Double-checked, atomic lazy generation (safe under concurrent joins).
     void generateChunkIfMissing(std::int32_t cx, std::int32_t cz) const {
