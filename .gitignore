@@ -4,3 +4,4 @@ server.properties
 world/
 __pycache__/
 captures/
+plan.md
