@@ -427,9 +427,12 @@ void GameServer::mobsTick() {
                 double dx = pp->x - m->x, dz = pp->z - m->z;
                 if (dx*dx + dz*dz < 60*60) { nearPlayer = true; break; }
             }
-            if (!nearPlayer) { despawn.push_back(m->entityId); it = mobs_.erase(it); continue; }
+            if (!nearPlayer) {
+                despawn.push_back(m->entityId);
+                mobAi_.erase(m->entityId);
+                it = mobs_.erase(it); continue;
+            }
 
-            Player* chaseTarget = nullptr;
             const auto& stats = mobStats(m->kind);
             // aging: babies grow up
             if (m->age < 0 && ++m->age >= 0) {
@@ -447,53 +450,19 @@ void GameServer::mobsTick() {
                 !isNight()) {
                 if (tickNo_ % 20 == 0) {
                     applyDamageToMob(*m, 1.f, "burned to death");
-                    if (m->dead) { deadIds.push_back(m->entityId); drops.push_back(m); it = mobs_.erase(it); continue; }
+                    if (m->dead) { deadIds.push_back(m->entityId); drops.push_back(m);
+                        mobAi_.erase(m->entityId);
+                        it = mobs_.erase(it); continue; }
                 }
-            }
-            if (MobEntity::isHostile(m->kind)) {
-                double best = 24*24;
-                for (auto& pp : playersSnapshot()) {
-                    if (!pp->inPlay || pp->dead || pp->gamemode == 1) continue;
-                    double ddx = pp->x-m->x, ddz = pp->z-m->z;
-                    double d2 = ddx*ddx+ddz*ddz;
-                    if (d2 < best) { best = d2; chaseTarget = pp.get(); }
-                }
-                if (chaseTarget) {
-                    m->tx = chaseTarget->x; m->tz = chaseTarget->z; m->hasTarget = true;
-                    double cdx = chaseTarget->x-m->x, cdz = chaseTarget->z-m->z;
-                    double cd = sqrt(cdx*cdx+cdz*cdz);
-                    if (cd < 1.8 && tickNo_ % 24 == 0)
-                        mobAttackPlayer(*m, *chaseTarget);
-                }
-            }
-            if (!chaseTarget && (!m->hasTarget || now >= m->nextWanderAt)) {
-                m->tx = m->x + (rand()/(double)RAND_MAX - .5) * 10;
-                m->tz = m->z + (rand()/(double)RAND_MAX - .5) * 10;
-                m->hasTarget = true;
-                m->nextWanderAt = now + 3000 + rand() % 4000;
-            }
-            // walk toward target at ~1.2 m/s (per tick 0.06*speed factor)
-            double dx = (chaseTarget ? chaseTarget->x : m->tx) - m->x;
-            double dz = (chaseTarget ? chaseTarget->z : m->tz) - m->z;
-            const double dist = std::sqrt(dx*dx + dz*dz);
-            if (dist > 0.3) {
-                const double step = std::min(0.09, dist);
-                m->yaw = static_cast<float>(std::atan2(dz, dx) * 180.0 / 3.14159 - 90.0);
-                m->x += dx / dist * step;
-                m->z += dz / dist * step;
-                world_.generateChunkIfMissing(static_cast<std::int32_t>(m->x) >> 4,
-                                       static_cast<std::int32_t>(m->z) >> 4);
-                int col = 4;
-                world_.withChunk(static_cast<std::int32_t>(m->x) >> 4,
-                          static_cast<std::int32_t>(m->z) >> 4, [&](const Chunk& c) {
-                    for (int ry = kSectionsPerChunk*16-1; ry >= 0; --ry)
-                        if (c.blocks[Chunk::index(ry>>4, ry&15,
-                            static_cast<std::int32_t>(m->z)&15,
-                            static_cast<std::int32_t>(m->x)&15)] != 0) { col = ry+1; break; }
-                });
-                m->y = kMinY + col + 1.0;
             }
 
+            // ---- Brain-Goal-Sensor AI tick (plan3)
+            auto& ai = aiFor(m);
+            ai.ctx->srv = this;
+            ai.ctx->world = &world_;
+            brainTickGuard_ = m.get();
+            ai.brain->tick(*m, *ai.ctx, tickNo_);
+            brainTickGuard_ = nullptr;
             // delta broadcast
             if (!m->hasSent ||
                 std::abs(m->x-m->sentX)+std::abs(m->y-m->sentY)+std::abs(m->z-m->sentZ) > 0.03) {
@@ -591,6 +560,30 @@ bool GameServer::tryBreedFeed(Player& p, MobEntity& m) {
             return true;
         }
     return false;
+}
+
+
+GameServer::MobAiEntry& GameServer::aiFor(const std::shared_ptr<MobEntity>& m) {
+    auto it = mobAi_.find(m->entityId);
+    if (it == mobAi_.end()) {
+        MobAiEntry e;
+        e.brain = std::make_unique<Brain>();
+        e.ctx = std::make_unique<AiContext>();
+        it = mobAi_.emplace(m->entityId, std::move(e)).first;
+    }
+    return it->second;
+}
+
+std::shared_ptr<MobEntity> GameServer::findLovePartner(const MobEntity& seeker) {
+    std::lock_guard lk(entsMtx_);
+    for (auto& other : mobs_) {
+        if (other.get() == &seeker || other->kind != seeker.kind ||
+            !other->inLove || MobEntity::isBaby(*other))
+            continue;
+        const double dx = other->x - seeker.x, dz = other->z - seeker.z;
+        if (dx * dx + dz * dz < 64) return other;
+    }
+    return nullptr;
 }
 
 void GameServer::applyDamageToMob(MobEntity& m, float amount, const char* cause) {
@@ -2880,6 +2873,12 @@ void Session::onUseEntity(ReadBuffer& in) {
         for (auto& m : srv_.mobsForTest()) {
             if (m->entityId != target || m->dead) continue;
             m->health -= dmg;
+            // AI hurt memory → panic/anger
+            auto it = srv_.mobAi_.find(m->entityId);
+            if (it != srv_.mobAi_.end()) {
+                it->second.ctx->lastHurtTick = srv_.tickNoForTest();
+                it->second.ctx->lastHurtByEntityId = self_->entityId;
+            }
             if (m->health <= 0) { m->dead = true; killed = true; victim = m; }
             break;
         }

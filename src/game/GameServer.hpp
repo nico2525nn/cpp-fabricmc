@@ -36,6 +36,7 @@
 #include "../brigadier/Tree.hpp"
 #include "GameRules.hpp"
 #include "ServerEvents.hpp"
+#include "AiBrain.hpp"
 
 namespace cppfm {
 
@@ -442,6 +443,17 @@ private:
     World world_;
     // entities
     std::mutex entsMtx_;
+    struct MobAiEntry {
+        std::unique_ptr<Brain> brain;
+        std::unique_ptr<AiContext> ctx;
+    };
+    std::unordered_map<std::int32_t, MobAiEntry> mobAi_;
+    MobAiEntry& aiFor(const std::shared_ptr<MobEntity>& m);
+public:
+    // Finds an in-love adult partner of the same kind within 8 blocks.
+    std::shared_ptr<MobEntity> findLovePartner(const MobEntity& seeker);
+    MobEntity* brainTickGuard_ = nullptr;   // set while AI ticks a mob
+private:
     std::vector<std::shared_ptr<MobEntity>> mobs_;
     std::vector<std::shared_ptr<ItemEntity>> itemDrops_;
     std::vector<std::shared_ptr<XpOrbEntity>> xpOrbs_;
