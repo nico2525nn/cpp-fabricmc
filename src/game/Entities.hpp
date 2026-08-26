@@ -48,7 +48,7 @@ struct ProjectileEntity {
 enum class MobKind : std::uint8_t {
     Pig = 0, Cow, Sheep, Chicken,
     Zombie, Creeper, Skeleton, Spider,
-    Slime, Enderman, Witch, Rabbit
+    Slime, Enderman, Witch, Rabbit, Villager
 };
 
 // Static per-kind gameplay table (clean-room values approximating vanilla).
@@ -79,6 +79,7 @@ inline const MobStats& mobStats(MobKind k) {
         {"minecraft:enderman", 40.f, 0.12f, 7.f, true, false, "minecraft:ender_pearl", 0, 1, nullptr,              5},
         {"minecraft:witch",    26.f, 0.09f, 3.f, true, false, "minecraft:glowstone_dust", 0, 2, nullptr,           5},
         {"minecraft:rabbit",    3.f, 0.13f, 0.f, false, false, "minecraft:rabbit_hide", 0, 1, "minecraft:dandelion",1},
+        {"minecraft:villager", 20.f, 0.09f, 0.f, false, false, nullptr, 0, 0, nullptr,                   0},
     };
     return table[static_cast<int>(k)];
 }
