@@ -29,6 +29,7 @@
 #include "Xp.hpp"
 #include "MobEffects.hpp"
 #include "Stats.hpp"
+#include "Scoreboard.hpp"
 #include "../physics/LightEngine.hpp"
 #include "../physics/Fluids.hpp"
 #include "../physics/Redstone.hpp"
@@ -316,6 +317,25 @@ public:
     auto& mobsForTest() { return mobs_; }
     Whitelist& whitelist() { return whitelist_; }
     BlockEntityStore& blockEntities() { return blockEntities_; }
+    Scoreboard scoreboard;
+    void scoreboardBroadcast(const std::function<void(WriteBuffer&)>& fn) {
+        WriteBuffer b; fn(b);
+        broadcastPacketExcept(nullptr, 0, b); // id unused; callers send directly
+    }
+    void sendObjectiveAll(const Scoreboard::Objective& o, std::int8_t method) {
+        WriteBuffer b; scoreboard.writeObjectivePacket(b, o, method);
+        broadcastPacketExcept(nullptr, proto::pl::sc::ScoreboardObjective, b);
+    }
+    void sendScoreAll(const std::string& obj, const std::string& holder,
+                      std::int32_t v) {
+        WriteBuffer b; scoreboard.writeScorePacket(b, obj, holder, v);
+        broadcastPacketExcept(nullptr, proto::pl::sc::ScoreboardScore, b);
+    }
+    void sendDisplayAll() {
+        WriteBuffer b; scoreboard.writeDisplayPacket(b);
+        broadcastPacketExcept(nullptr,
+                              proto::pl::sc::ScoreboardDisplayObjective, b);
+    }
     RecipeManager& recipes() { return recipes_; }
     brigadier::CommandDispatcher& commands() { return commands_; }
     void initCommands();                             // builds command tree

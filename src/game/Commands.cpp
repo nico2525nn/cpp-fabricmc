@@ -742,6 +742,80 @@ void GameServer::initCommands() {
         };
         d.root->then(st);
     }
+    // /scoreboard objectives add <name> <criteria> | players set <p> <obj> <v>
+    {
+        auto sb = CommandNode::literal("scoreboard");
+        auto obj = CommandNode::literal("objectives");
+        auto add = CommandNode::literal("add");
+        auto name = CommandNode::argument("name", args::stringWord());
+        auto crit = CommandNode::argument("criteria", args::stringWord());
+        crit->executable = true;
+        crit->suggestions = [](brigadier::StringReader&, brigadier::ParseCtx&) {
+            return std::vector<std::string>{"dummy", "deathCount",
+                                            "playerKillCount", "totalKillCount"};
+        };
+        crit->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const std::string n = c.arg("name").asStr();
+            const std::string cr = c.arg("criteria").asStr();
+            if (!scoreboard.addObjective(n, cr, n))
+                throw std::runtime_error("objective already exists");
+            Scoreboard::Objective* o =
+                const_cast<Scoreboard::Objective*>(scoreboard.find(n));
+            sendObjectiveAll(*o, 0);
+            sendFeedback(src, "Created objective [" + cr + "] " + n);
+            return 1;
+        };
+        auto list2 = CommandNode::literal("list");
+        list2->executable = true;
+        list2->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            std::string out;
+            for (auto& o : scoreboard.objectives) out += o.name + " (" + o.criteria + ") ";
+            sendFeedback(src, out.empty() ? "no objectives" : out);
+            return static_cast<int>(scoreboard.objectives.size());
+        };
+        auto setd = CommandNode::literal("setdisplay");
+        auto slot = CommandNode::literal("sidebar");
+        auto objName = CommandNode::argument("objective", args::stringWord());
+        objName->executable = true;
+        objName->action = [this](CommandContext& c) {
+            const std::string n = c.arg("objective").asStr();
+            if (n == "clear" || !scoreboard.find(n)) {
+                scoreboard.displayedSlot = -1;
+            } else {
+                scoreboard.displayedSlot = 1;         // sidebar
+                scoreboard.displayedObjective = n;
+            }
+            sendDisplayAll();
+            return 1;
+        };
+        setd->then(slot); slot->then(objName);
+        add->then(name); name->then(crit);
+        obj->then(add); obj->then(list2); obj->then(setd);
+
+        auto players = CommandNode::literal("players");
+        auto set = CommandNode::literal("set");
+        auto who = CommandNode::argument("player", args::stringWord());
+        auto oname = CommandNode::argument("objective", args::stringWord());
+        auto val = CommandNode::argument("score", args::integer(INT32_MIN, INT32_MAX));
+        val->executable = true;
+        val->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const std::string holder = c.arg("player").asStr();
+            const std::string objn = c.arg("objective").asStr();
+            const std::int32_t v = c.arg("score").asInt();
+            scoreboard.setScore(objn, holder, v);
+            sendScoreAll(objn, holder, v);
+            sendFeedback(src, "Set " + holder + " " + objn + " = " +
+                         std::to_string(v));
+            return 1;
+        };
+        set->then(who); who->then(oname); oname->then(val);
+        players->then(set);
+        sb->then(obj); sb->then(players);
+        d.root->then(sb);
+    }
     // /difficulty <level>
     {
         auto diff = CommandNode::literal("difficulty");

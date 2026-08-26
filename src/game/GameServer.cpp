@@ -252,6 +252,10 @@ void GameServer::applyDamage(Player& p, float amount, const char* cause) {
 void GameServer::killPlayer(Player& p, const char* cause) {
     if (p.dead) return;
     p.dead = true;
+    if (p.stats) p.stats->add("minecraft:custom|minecraft:deaths");
+    scoreboard.addScore("deaths", p.name, 1);
+    sendScoreAll("deaths", p.name,
+                 scoreboard.getScore("deaths", p.name));
     broadcastSystemText(std::string("\u00a7c") + p.name + " died (" + cause + ")", &p);
 }
 
@@ -3370,6 +3374,9 @@ void Session::onUseEntity(ReadBuffer& in) {
         rm.varint(1); rm.varint(target);
         srv_.broadcastPacketExcept(nullptr, pl::sc::RemoveEntities, rm);
         srv_.onMobKilledBy(*self_, victim->kind);
+        srv_.scoreboard.addScore("kills", self_->name, 1);
+        srv_.sendScoreAll("kills", self_->name,
+                          srv_.scoreboard.getScore("kills", self_->name));
         const auto drop = MobEntity::dropFor(victim->kind);
         if (drop.itemId)
             srv_.spawnItemDrop(victim->x, victim->y + 0.4, victim->z, drop.itemId, drop.count,
