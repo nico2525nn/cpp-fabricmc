@@ -118,6 +118,9 @@ struct Player {
     std::int64_t chatSessionExpiry = 0;
     // cookies (plan3 Cookie) — opaque server-defined blobs
     std::unordered_map<std::string, std::vector<std::uint8_t>> cookies;
+    // sleeping state (bed)
+    bool sleeping = false;
+    std::int32_t bedX=0, bedY=0, bedZ=0;
     // client-declared plugin channels
     std::unordered_set<std::string> clientChannels;
     Connection* conn = nullptr;
@@ -350,6 +353,11 @@ public:
     void spawnXpOrbs(double x, double y, double z, int totalPoints,
                      Player* directTo);
     void xpOrbsTick();
+    // Projectiles (arrows / snowballs / pearls) — plan4 P1-A
+    void spawnProjectile(ProjectileKind kind, double x, double y, double z,
+                         double vx, double vy, double vz,
+                         std::int32_t ownerId, bool ownerIsPlayer);
+    void projectilesTick();
     // Progress tracking (stats + advancements)
     void initPlayerProgress(Player& p);
     void savePlayerProgress(Player& p);
@@ -476,6 +484,7 @@ private:
     std::vector<std::shared_ptr<MobEntity>> mobs_;
     std::vector<std::shared_ptr<ItemEntity>> itemDrops_;
     std::vector<std::shared_ptr<XpOrbEntity>> xpOrbs_;
+    std::vector<std::shared_ptr<ProjectileEntity>> projectiles_;
     std::int64_t tickNo_ = 0;
     std::int64_t timeOffset_ = 0;
     std::int64_t startTime_ = 1000;
@@ -510,6 +519,9 @@ public:
 private:
     void weatherTick();
     void setWeather(Weather w, std::int64_t durationTicks);
+public:
+    void forceWeatherClear() { setWeather(Weather::Clear, 6000 * 20); }
+private:
     struct CachedChunk { std::uint64_t rev; ChunkBodyRef body; };
     std::unordered_map<std::int64_t, CachedChunk> chunkCache_;
     std::mutex chunkCacheMtx_;

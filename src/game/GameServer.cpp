@@ -2106,6 +2106,150 @@ void GameServer::xpOrbsTick() {
     }
 }
 
+void GameServer::spawnProjectile(ProjectileKind kind, double x, double y,
+                                 double z, double vx, double vy, double vz,
+                                 std::int32_t ownerId, bool ownerIsPlayer) {
+    auto e = std::make_shared<ProjectileEntity>();
+    e->entityId = nextEntityId();
+    e->kind = kind;
+    e->x = x; e->y = y; e->z = z;
+    e->vx = vx; e->vy = vy; e->vz = vz;
+    e->ownerId = ownerId;
+    e->ownerIsPlayer = ownerIsPlayer;
+    projectiles_.push_back(e);
+    {
+        std::lock_guard lk(entsMtx_);
+        // (kept consistent with other spawn paths)
+    }
+    const auto& types = gen::entityTypeIdByName();
+    static const char* kNames[] = {"minecraft:arrow", "minecraft:snowball",
+                                   "minecraft:egg", "minecraft:ender_pearl"};
+    auto ti = types.find(kNames[static_cast<int>(kind)]);
+    WriteBuffer b;
+    b.varint(e->entityId);
+    std::uint8_t zero[16] = {};
+    b.uuid(zero);
+    b.varint(ti != types.end() ? static_cast<std::int32_t>(ti->second) : 0);
+    b.f64(x); b.f64(y); b.f64(z);
+    b.i8(0); b.i8(0); b.i8(0);
+    b.varint(1);                                        // objectData: velocity
+    b.i16(static_cast<std::int16_t>(vx * 8000));
+    b.i16(static_cast<std::int16_t>(vy * 8000));
+    b.i16(static_cast<std::int16_t>(vz * 8000));
+    broadcastPacketExcept(nullptr, pl::sc::SpawnEntity, b);
+}
+
+void GameServer::projectilesTick() {
+    struct Hit { std::shared_ptr<ProjectileEntity> p; Player* player; std::shared_ptr<MobEntity> mob; float dmg; };
+    std::vector<Hit> hits;
+    std::vector<std::int32_t> despawn;
+    {
+        for (auto it = projectiles_.begin(); it != projectiles_.end();) {
+            auto& pr = *it;
+            ++pr->ageTicks;
+            if (pr->ageTicks > 1200 || pr->stuck && pr->ageTicks > 600 + 1200) {
+                despawn.push_back(pr->entityId);
+                it = projectiles_.erase(it);
+                continue;
+            }
+            if (!pr->stuck) {
+                const double g = pr->kind == ProjectileKind::Arrow ? 0.05 : 0.03;
+                pr->vy -= g;
+                pr->x += pr->vx; pr->y += pr->vy; pr->z += pr->vz;
+                world_.generateChunkIfMissing(
+                    static_cast<std::int32_t>(pr->x) >> 4,
+                    static_cast<std::int32_t>(pr->z) >> 4);
+                // block collision
+                if (world_.getBlock(static_cast<std::int32_t>(pr->x),
+                                    static_cast<std::int32_t>(pr->y),
+                                    static_cast<std::int32_t>(pr->z)) != 0) {
+                    if (pr->kind == ProjectileKind::Arrow) pr->stuck = true;
+                    else { despawn.push_back(pr->entityId);
+                           it = projectiles_.erase(it); continue; }
+                } else {
+                    // entity collision
+                    bool hitSomething = false;
+                    for (auto& pp : playersSnapshot()) {
+                        if (pr->ownerIsPlayer && pp->entityId == pr->ownerId)
+                            continue;
+                        if (pp->dead || !pp->inPlay) continue;
+                        const double dx = pp->x - pr->x;
+                        const double dy = pp->y + 0.9 - pr->y;
+                        const double dz = pp->z - pr->z;
+                        if (dx*dx + dy*dy + dz*dz < 0.55) {
+                            const float base =
+                                pr->kind == ProjectileKind::Arrow ? 6.f : 0.f;
+                            const float dmg = base *
+                                static_cast<float>(std::min(
+                                    1.0, std::sqrt(pr->vx*pr->vx +
+                                                   pr->vy*pr->vy +
+                                                   pr->vz*pr->vz) / 2.0));
+                            if (dmg > 0)
+                                hits.push_back({pr, pp.get(), nullptr, dmg});
+                            hitSomething = true;
+                            break;
+                        }
+                    }
+                    if (!hitSomething) {
+                        std::lock_guard lk(entsMtx_);
+                        for (auto& m : mobs_) {
+                            if (!pr->ownerIsPlayer &&
+                                m->entityId == pr->ownerId) continue;
+                            const double dx = m->x - pr->x;
+                            const double dy = m->y + 0.8 - pr->y;
+                            const double dz = m->z - pr->z;
+                            if (dx*dx + dy*dy + dz*dz < 0.55) {
+                                const float dmg = 5.f;
+                                hits.push_back({pr, nullptr, m, dmg});
+                                hitSomething = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (hitSomething) {
+                        despawn.push_back(pr->entityId);
+                        it = projectiles_.erase(it);
+                        continue;
+                    }
+                }
+            }
+            ++it;
+        }
+    }
+    for (auto& h : hits) {
+        if (h.player) {
+            applyDamage(*h.player, h.dmg, "arrow");
+            WriteBuffer de;
+            de.varint(h.player->entityId);
+            const auto dtid = gameData_.idOf("minecraft:damage_type",
+                                             "minecraft:arrow");
+            de.varint(dtid >= 0 ? dtid : 0);
+            de.varint(0); de.varint(0);
+            de.boolean(false);
+            try { h.player->conn->sendPacket(pl::sc::DamageEvent, de); }
+            catch (...) {}
+        } else if (h.mob) {
+            applyDamageToMob(*h.mob, h.dmg, "arrow");
+            if (h.mob->dead) {
+                WriteBuffer rm; rm.varint(1); rm.varint(h.mob->entityId);
+                broadcastPacketExcept(nullptr, pl::sc::RemoveEntities, rm);
+                const auto drop = MobEntity::dropFor(h.mob->kind);
+                if (drop.itemId)
+                    spawnItemDrop(h.mob->x, h.mob->y + .4, h.mob->z,
+                                  drop.itemId, drop.count);
+                std::lock_guard lk(entsMtx_);
+                mobAi_.erase(h.mob->entityId);
+                mobs_.erase(std::remove(mobs_.begin(), mobs_.end(), h.mob),
+                            mobs_.end());
+            }
+        }
+    }
+    for (auto id : despawn) {
+        WriteBuffer rm; rm.varint(1); rm.varint(id);
+        broadcastPacketExcept(nullptr, pl::sc::RemoveEntities, rm);
+    }
+}
+
 bool GameServer::spawnMobByTypeName(const std::string& name, double x, double y,
                                     double z) {    MobKind kind;
     if (name == "minecraft:pig") kind = MobKind::Pig;
@@ -3055,6 +3199,54 @@ void Session::onUseItemOn(ReadBuffer& in) {
             if (bn == "minecraft:lever" ||
                 bn.find("_button") != std::string::npos) {
                 srv_.redstone_->onInteract(x, y, z, srv_.tickNoForTest());
+                ack(sequence);
+                return;
+            }
+            // beds: sleep through the night (plan4 P1-C)
+            if (bn.find("_bed") != std::string::npos &&
+                bn.rfind("minecraft:", 0) == 0 && bn != "minecraft:bedrock") {
+                const bool night = srv_.isNight();
+                if (!night) {
+                    sendSystemText("\u00a77You can only sleep at night");
+                    ack(sequence);
+                    return;
+                }
+                self_->sleeping = true;
+                self_->bedX = x; self_->bedY = y; self_->bedZ = z;
+                WriteBuffer sp;
+                sp.position(x, y, z);
+                sp.f32(0.f);
+                try { conn_->sendPacket(proto::pl::sc::SetDefaultSpawn, sp); }
+                catch (...) {}
+                int sleepingCount = 0, survivalCount = 0;
+                for (auto& p : srv_.playersSnapshot()) {
+                    if (!p->inPlay || p->gamemode != 0) continue;
+                    ++survivalCount;
+                    if (p->sleeping) ++sleepingCount;
+                }
+                if (sleepingCount >= survivalCount) {
+                    srv_.setTimeOfDay(0);              // morning
+                    if (srv_.raining()) srv_.forceWeatherClear();
+                    for (auto& p : srv_.playersSnapshot())
+                        if (p->sleeping) {
+                            p->sleeping = false;
+                            double wx = p->bedX + 1.5, wz = p->bedZ + 0.5;
+                            WriteBuffer tb;
+                            tb.varint(++teleportId_);
+                            tb.f64(wx); tb.f64(p->bedY + 0.5); tb.f64(wz);
+                            tb.f64(0); tb.f64(0); tb.f64(0);
+                            tb.f32(p->yaw); tb.f32(0);
+                            tb.u32(0);
+                            try { p->conn->sendPacket(
+                                      proto::pl::sc::PlayerPosition, tb); }
+                            catch (...) {}
+                        }
+                    srv_.broadcastSystemText("\u00a77Good morning!");
+                } else {
+                    sendSystemText("\u00a77Sleeping... (" +
+                                   std::to_string(sleepingCount) + "/" +
+                                   std::to_string(survivalCount) + ")");
+                }
                 ack(sequence);
                 return;
             }

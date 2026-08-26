@@ -32,6 +32,19 @@ struct XpOrbEntity {
     std::int64_t ageTicks = 0;
 };
 
+enum class ProjectileKind : std::uint8_t { Arrow = 0, Snowball, Egg, EnderPearl };
+
+struct ProjectileEntity {
+    std::int32_t entityId = 0;
+    ProjectileKind kind = ProjectileKind::Arrow;
+    double x=0, y=0, z=0;
+    double vx=0, vy=0, vz=0;
+    std::int32_t ownerId = -1;           // shooter entity id
+    bool ownerIsPlayer = false;
+    std::int64_t ageTicks = 0;
+    bool stuck = false;
+};
+
 enum class MobKind : std::uint8_t {
     Pig = 0, Cow, Sheep, Chicken,
     Zombie, Creeper, Skeleton, Spider,
