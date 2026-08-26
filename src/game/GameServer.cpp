@@ -287,6 +287,12 @@ void GameServer::tickOnce() {
     mobsTick();
     mark('I');
     itemsTick();
+    mark('P');
+    projectilesTick();
+    mark('H');
+    hoppersTick();
+    mark('W');
+    weatherTick();
     mark('T');
 
     // periodic time sync every 20 ticks (1s); frozen when doDaylightCycle off
@@ -2339,15 +2345,18 @@ void GameServer::spawnProjectile(ProjectileKind kind, double x, double y,
     e->vx = vx; e->vy = vy; e->vz = vz;
     e->ownerId = ownerId;
     e->ownerIsPlayer = ownerIsPlayer;
-    projectiles_.push_back(e);
     {
         std::lock_guard lk(entsMtx_);
-        // (kept consistent with other spawn paths)
+        projectiles_.push_back(e);
     }
     const auto& types = gen::entityTypeIdByName();
     static const char* kNames[] = {"minecraft:arrow", "minecraft:snowball",
-                                   "minecraft:egg", "minecraft:ender_pearl"};
-    auto ti = types.find(kNames[static_cast<int>(kind)]);
+                                   "minecraft:egg", "minecraft:ender_pearl",
+                                   "minecraft:wither_skull", "minecraft:fireball",
+                                   "minecraft:dragon_fireball"};
+    const int ki = static_cast<int>(kind);
+    const char* lookup = (ki >= 0 && ki < 7) ? kNames[ki] : kNames[0];
+    auto ti = types.find(lookup);
     WriteBuffer b;
     b.varint(e->entityId);
     std::uint8_t zero[16] = {};
@@ -2366,7 +2375,21 @@ void GameServer::projectilesTick() {
     struct Hit { std::shared_ptr<ProjectileEntity> p; Player* player; std::shared_ptr<MobEntity> mob; float dmg; };
     std::vector<Hit> hits;
     std::vector<std::int32_t> despawn;
+    struct Teleport { Player* player; double x, y, z; };
+    std::vector<Teleport> teleports;
+    struct Explosion { double x, y, z; float power; ProjectileKind kind; };
+    std::vector<Explosion> explosions;
+    auto powerFor = [](ProjectileKind k) -> float {
+        if (k == ProjectileKind::WitherSkull) return 1.0f;
+        if (k == ProjectileKind::Fireball) return 2.0f;
+        if (k == ProjectileKind::DragonFireball) return 3.0f;
+        return 1.0f;
+    };
+    auto isExplosive = [](ProjectileKind k) {
+        return k == ProjectileKind::WitherSkull || k == ProjectileKind::Fireball || k == ProjectileKind::DragonFireball;
+    };
     {
+        std::lock_guard lk(entsMtx_);
         for (auto it = projectiles_.begin(); it != projectiles_.end();) {
             auto& pr = *it;
             ++pr->ageTicks;
@@ -2386,9 +2409,19 @@ void GameServer::projectilesTick() {
                 if (world_.getBlock(static_cast<std::int32_t>(pr->x),
                                     static_cast<std::int32_t>(pr->y),
                                     static_cast<std::int32_t>(pr->z)) != 0) {
-                    if (pr->kind == ProjectileKind::Arrow) pr->stuck = true;
-                    else { despawn.push_back(pr->entityId);
-                           it = projectiles_.erase(it); continue; }
+                    if (pr->kind == ProjectileKind::Arrow) { pr->stuck = true; ++it; continue; }
+                    // EnderPearl teleport on block impact
+                    if (pr->kind == ProjectileKind::EnderPearl && pr->ownerIsPlayer) {
+                        for (auto& pp : playersSnapshot())
+                            if (pp->entityId == pr->ownerId && pp->inPlay && !pp->dead) {
+                                teleports.push_back({pp.get(), pr->x, pr->y, pr->z});
+                                break;
+                            }
+                    } else if (isExplosive(pr->kind)) {
+                        explosions.push_back({pr->x, pr->y, pr->z, powerFor(pr->kind), pr->kind});
+                    }
+                    despawn.push_back(pr->entityId);
+                    it = projectiles_.erase(it); continue;
                 } else {
                     // entity collision
                     bool hitSomething = false;
@@ -2400,21 +2433,33 @@ void GameServer::projectilesTick() {
                         const double dy = pp->y + 0.9 - pr->y;
                         const double dz = pp->z - pr->z;
                         if (dx*dx + dy*dy + dz*dz < 0.55) {
-                            const float base =
-                                pr->kind == ProjectileKind::Arrow ? 6.f : 0.f;
-                            const float dmg = base *
-                                static_cast<float>(std::min(
-                                    1.0, std::sqrt(pr->vx*pr->vx +
-                                                   pr->vy*pr->vy +
-                                                   pr->vz*pr->vz) / 2.0));
-                            if (dmg > 0)
-                                hits.push_back({pr, pp.get(), nullptr, dmg});
+                            if (pr->kind == ProjectileKind::EnderPearl && pr->ownerIsPlayer) {
+                                for (auto& pp2 : playersSnapshot())
+                                    if (pp2->entityId == pr->ownerId && pp2->inPlay && !pp2->dead) {
+                                        teleports.push_back({pp2.get(), pr->x, pr->y, pr->z});
+                                        break;
+                                    }
+                            } else if (isExplosive(pr->kind)) {
+                                explosions.push_back({pr->x, pr->y, pr->z, powerFor(pr->kind), pr->kind});
+                            } else {
+                                const float base =
+                                    pr->kind == ProjectileKind::Arrow ? 6.f : 0.f;
+                                const float dmg = base *
+                                    static_cast<float>(std::min(
+                                        1.0, std::sqrt(pr->vx*pr->vx +
+                                                       pr->vy*pr->vy +
+                                                       pr->vz*pr->vz) / 2.0));
+                                if (dmg > 0)
+                                    hits.push_back({pr, pp.get(), nullptr, dmg});
+                                else if (pr->kind == ProjectileKind::Snowball || pr->kind == ProjectileKind::Egg) {
+                                    // still despawn but no damage
+                                }
+                            }
                             hitSomething = true;
                             break;
                         }
                     }
                     if (!hitSomething) {
-                        std::lock_guard lk(entsMtx_);
                         for (auto& m : mobs_) {
                             if (!pr->ownerIsPlayer &&
                                 m->entityId == pr->ownerId) continue;
@@ -2422,8 +2467,26 @@ void GameServer::projectilesTick() {
                             const double dy = m->y + 0.8 - pr->y;
                             const double dz = m->z - pr->z;
                             if (dx*dx + dy*dy + dz*dz < 0.55) {
-                                const float dmg = 5.f;
-                                hits.push_back({pr, nullptr, m, dmg});
+                                if (pr->kind == ProjectileKind::EnderPearl) {
+                                    // ender pearl hitting mob still teleports owner
+                                    if (pr->ownerIsPlayer) {
+                                        for (auto& pp2 : playersSnapshot())
+                                            if (pp2->entityId == pr->ownerId && pp2->inPlay && !pp2->dead) {
+                                                teleports.push_back({pp2.get(), pr->x, pr->y, pr->z});
+                                                break;
+                                            }
+                                    }
+                                } else if (isExplosive(pr->kind)) {
+                                    explosions.push_back({pr->x, pr->y, pr->z, powerFor(pr->kind), pr->kind});
+                                } else {
+                                    const float dmg = (pr->kind == ProjectileKind::Arrow ? 6.f : (pr->kind == ProjectileKind::Snowball ? 0.f : 0.f));
+                                    if (dmg > 0) hits.push_back({pr, nullptr, m, dmg});
+                                    else {
+                                        // Snowball/Egg knockback only; still count as hit to despawn
+                                        // optionally apply small damage
+                                        hits.push_back({pr, nullptr, m, 0.f});
+                                    }
+                                }
                                 hitSomething = true;
                                 break;
                             }
@@ -2440,12 +2503,13 @@ void GameServer::projectilesTick() {
         }
     }
     for (auto& h : hits) {
+        if (h.dmg <= 0) continue;
         if (h.player) {
             applyDamage(*h.player, h.dmg, "arrow");
             WriteBuffer de;
             de.varint(h.player->entityId);
             const auto dtid = gameData_.idOf("minecraft:damage_type",
-                                             "minecraft:arrow");
+                                              "minecraft:arrow");
             de.varint(dtid >= 0 ? dtid : 0);
             de.varint(0); de.varint(0);
             de.boolean(false);
@@ -2467,6 +2531,71 @@ void GameServer::projectilesTick() {
             }
         }
     }
+    // EnderPearl teleports
+    for (auto& tp : teleports) {
+        Player* pl = tp.player;
+        if (!pl || pl->dead || !pl->inPlay) continue;
+        pl->x = tp.x; pl->y = tp.y + 0.5; pl->z = tp.z;
+        pl->fallDist = 0;
+        applyDamage(*pl, 5.f, "ender_pearl");
+        WriteBuffer tb;
+        tb.varint(++teleportCounterForTest_);
+        tb.f64(pl->x); tb.f64(pl->y); tb.f64(pl->z);
+        tb.f64(0); tb.f64(0); tb.f64(0);
+        tb.f32(pl->yaw); tb.f32(pl->pitch);
+        tb.u32(0);
+        try { pl->conn->sendPacket(proto::pl::sc::PlayerPosition, tb); } catch (...) {}
+        WriteBuffer tel;
+        tel.varint(pl->entityId);
+        tel.f64(pl->x); tel.f64(pl->y); tel.f64(pl->z);
+        tel.i8(static_cast<std::int8_t>(pl->yaw * 256.f / 360.f));
+        tel.i8(static_cast<std::int8_t>(pl->pitch * 256.f / 360.f));
+        tel.boolean(pl->onGround);
+        broadcastPacketExcept(pl, proto::pl::sc::EntityTeleport, tel);
+        broadcastSound("minecraft:entity.enderman.teleport", tp.x, tp.y, tp.z, 1.f, 1.f, "players");
+        for (int i=0;i<2;++i){
+            WriteBuffer pt;
+            pt.boolean(false); pt.boolean(false);
+            pt.f64(tp.x); pt.f64(tp.y+0.5); pt.f64(tp.z);
+            pt.f32(0); pt.f32(0); pt.f32(0); pt.f32(0.5f);
+            pt.varint(24); // portal particle
+            broadcastPacketExcept(nullptr, proto::pl::sc::WorldParticles, pt);
+        }
+    }
+    // Explosive projectiles
+    for (auto& ex : explosions) {
+        explodeAt(ex.x, ex.y, ex.z, ex.power);
+        if (ex.kind == ProjectileKind::Fireball || ex.kind == ProjectileKind::DragonFireball) {
+            const std::int32_t bx = static_cast<std::int32_t>(std::floor(ex.x));
+            const std::int32_t by = static_cast<std::int32_t>(std::floor(ex.y));
+            const std::int32_t bz = static_cast<std::int32_t>(std::floor(ex.z));
+            if (world_.getBlock(bx, by, bz) == 0) {
+                auto it2 = gen::blockNameToState().find("minecraft:fire");
+                if (it2 != gen::blockNameToState().end()) {
+                    world_.setBlock(bx, by, bz, static_cast<std::uint16_t>(it2->second));
+                    broadcastBlockChange(bx, by, bz, static_cast<std::uint16_t>(it2->second));
+                }
+            }
+            if (ex.kind == ProjectileKind::DragonFireball) {
+                for (auto& pp : playersSnapshot()) {
+                    double dx=pp->x-ex.x, dy=pp->y-ex.y, dz=pp->z-ex.z;
+                    if (dx*dx+dy*dy+dz*dz < 9) {
+                        EffectInstance e; e.type = effects::Poison; e.durationTicks = 100; e.amplifier = 0;
+                        pp->effects.push_back(e);
+                    }
+                }
+            }
+        }
+        if (ex.kind == ProjectileKind::WitherSkull) {
+            for (auto& pp : playersSnapshot()) {
+                double dx=pp->x-ex.x, dy=pp->y-ex.y, dz=pp->z-ex.z;
+                if (dx*dx+dy*dy+dz*dz < 9) {
+                    EffectInstance e; e.type = effects::Wither; e.durationTicks = 200; e.amplifier = 0;
+                    pp->effects.push_back(e);
+                }
+            }
+        }
+    }
     for (auto id : despawn) {
         WriteBuffer rm; rm.varint(1); rm.varint(id);
         broadcastPacketExcept(nullptr, pl::sc::RemoveEntities, rm);
@@ -2474,17 +2603,31 @@ void GameServer::projectilesTick() {
 }
 
 bool GameServer::spawnMobByTypeName(const std::string& name, double x, double y,
-                                    double z) {    MobKind kind;
-    if (name == "minecraft:pig") kind = MobKind::Pig;
-    else if (name == "minecraft:cow") kind = MobKind::Cow;
-    else if (name == "minecraft:sheep") kind = MobKind::Sheep;
-    else if (name == "minecraft:chicken") kind = MobKind::Chicken;
-    else if (name == "minecraft:zombie") kind = MobKind::Zombie;
-    else if (name == "minecraft:creeper") kind = MobKind::Creeper;
-    else if (name == "minecraft:skeleton") kind = MobKind::Skeleton;
-    else if (name == "minecraft:spider") kind = MobKind::Spider;
-    else return false;
-    spawnMob(kind, x, y, z);
+                                    double z) {
+    std::string norm = name;
+    if (norm.find(':') == std::string::npos) norm = "minecraft:" + norm;
+    static const std::unordered_map<std::string, MobKind> kMap = []{
+        std::unordered_map<std::string, MobKind> m;
+        for (int i = 0; i <= static_cast<int>(MobKind::GlowSquid); ++i) {
+            auto k = static_cast<MobKind>(i);
+            const char* n = mobStats(k).name;
+            m.emplace(n, k);
+            std::string s(n);
+            auto c = s.find(':');
+            if (c != std::string::npos) m.emplace(s.substr(c+1), k);
+        }
+        return m;
+    }();
+    auto it = kMap.find(norm);
+    if (it == kMap.end()) it = kMap.find(name);
+    if (it == kMap.end()) {
+        // Truly unknown: also check entity registry to avoid false positives
+        if (gen::entityTypeIdByName().find(norm) == gen::entityTypeIdByName().end() &&
+            gen::entityTypeIdByName().find(name) == gen::entityTypeIdByName().end())
+            return false;
+        return false;
+    }
+    spawnMob(it->second, x, y, z);
     return true;
 }
 
