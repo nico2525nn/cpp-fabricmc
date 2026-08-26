@@ -1,0 +1,23 @@
+{
+  "type": "minecraft:elder_guardian",
+  "attributes": {
+    "max_health": 80,
+    "movement_speed": 0.06
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:deep_ocean"
+    ],
+    "structures": [
+      "minecraft:ocean_monument"
+    ]
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:guardian_beam",
+        "priority": 1
+      }
+    ]
+  }
+}

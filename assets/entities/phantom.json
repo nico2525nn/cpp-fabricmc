@@ -1,0 +1,20 @@
+{
+  "type": "minecraft:phantom",
+  "attributes": {
+    "max_health": 20,
+    "movement_speed": 0.12
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:plains"
+    ]
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:phantom_swoop",
+        "priority": 2
+      }
+    ]
+  }
+}

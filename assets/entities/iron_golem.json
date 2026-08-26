@@ -1,0 +1,18 @@
+{
+  "type": "minecraft:iron_golem",
+  "attributes": {
+    "max_health": 100,
+    "movement_speed": 0.08
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:plains"
+    ],
+    "structures": [
+      "minecraft:village"
+    ]
+  },
+  "equipment": {
+    "mainhand": "minecraft:poppy"
+  }
+}

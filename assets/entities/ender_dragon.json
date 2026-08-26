@@ -1,0 +1,24 @@
+{
+  "type": "minecraft:ender_dragon",
+  "attributes": {
+    "max_health": 200,
+    "movement_speed": 0.1,
+    "attack_damage": 10
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:the_end"
+    ],
+    "light_level": {
+      "max": 15
+    }
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:dragon_breath",
+        "priority": 1
+      }
+    ]
+  }
+}

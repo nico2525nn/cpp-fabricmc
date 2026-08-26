@@ -18,6 +18,12 @@ public:
         set("randomTickSpeed", "3", false);
         set("doWeatherCycle", "true", false);
         set("announceAdvancements", "true", false);
+        set("naturalRegeneration", "true", false);
+        set("doImmediateRespawn", "false", false);
+        set("drowningDamage", "true", false);
+        set("fallDamage", "true", false);
+        set("fireDamage", "true", false);
+        set("freezeDamage", "true", false);
     }
 
     void set(const std::string& key, const std::string& value,

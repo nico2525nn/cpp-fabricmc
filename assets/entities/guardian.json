@@ -1,0 +1,23 @@
+{
+  "type": "minecraft:guardian",
+  "attributes": {
+    "max_health": 30,
+    "movement_speed": 0.08
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:deep_ocean"
+    ],
+    "light_level": {
+      "max": 7
+    }
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:guardian_beam",
+        "priority": 2
+      }
+    ]
+  }
+}
