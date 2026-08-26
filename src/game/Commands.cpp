@@ -633,6 +633,84 @@ void GameServer::initCommands() {
         };
         d.root->then(sp);
     }
+    // /weather <clear|rain|thunder> [durationSeconds]
+    {
+        auto weather = CommandNode::literal("weather");
+        auto kind = CommandNode::argument("kind", args::stringWord());
+        kind->executable = true;
+        kind->suggestions = [](brigadier::StringReader&, brigadier::ParseCtx&) {
+            return std::vector<std::string>{"clear", "rain", "thunder"};
+        };
+        kind->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const std::string k = c.arg("kind").asStr();
+            if (k == "clear") setWeather(Weather::Clear, 6000 * 20);
+            else setWeather(Weather::Rain,
+                            (k == "thunder" ? 3000 : 6000) * 20LL);
+            broadcastSystemText("\u00a77Weather set to " + k);
+            return 1;
+        };
+        weather->then(kind);
+        d.root->then(weather);
+    }
+    // /title <targets?> <title|subtitle|clear|times> ...
+    {
+        auto title = CommandNode::literal("title");
+        auto clear = CommandNode::literal("clear");
+        clear->executable = true;
+        clear->action = [this](CommandContext&) {
+            for (auto& p : playersSnapshot()) {
+                WriteBuffer b;
+                try { p->conn->sendPacket(proto::pl::sc::ClearTitles, b); }
+                catch (...) {}
+            }
+            return 1;
+        };
+        title->then(clear);
+        auto text = CommandNode::argument("text", args::stringGreedy());
+        text->executable = true;
+        text->action = [this](CommandContext& c) {
+            const std::string t = c.arg("text").asStr();
+            for (auto& p : playersSnapshot()) {
+                WriteBuffer sub;
+                nbt::writeTextComponent(sub, "");
+                try { p->conn->sendPacket(proto::pl::sc::SetTitleSubtitle, sub); }
+                catch (...) {}
+                WriteBuffer b;
+                nbt::writeTextComponent(b, "\u00a76" + t);
+                try { p->conn->sendPacket(proto::pl::sc::SetTitleText, b); }
+                catch (...) {}
+            }
+            return 1;
+        };
+        title->then(text);
+        d.root->then(title);
+    }
+    // /worldborder center <x z> | size <s>
+    {
+        auto wb = CommandNode::literal("worldborder");
+        auto size = CommandNode::literal("size");
+        auto sz = CommandNode::argument("diameter", args::floatArg(1.f, 1000000.f));
+        sz->executable = true;
+        sz->action = [this](CommandContext& c) {
+            worldBorderDiameter_ = c.arg("diameter").asDouble();
+            for (auto& p : playersSnapshot()) {
+                WriteBuffer i;
+                i.f64(0); i.f64(0);                       // old center
+                i.f64(worldBorderDiameter_);              // old size
+                i.f64(worldBorderDiameter_);              // new size
+                i.varlong(0);                             // lerp time ms
+                i.varint(5);                              // warning blocks
+                i.varint(15);                             // warning ticks
+                try { p->conn->sendPacket(
+                          proto::pl::sc::InitializeWorldBorder, i); }
+                catch (...) {}
+            }
+            return 1;
+        };
+        wb->then(size);
+        d.root->then(wb);
+    }
     // /stats
     {
         auto st = CommandNode::literal("stats");
