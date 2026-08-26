@@ -143,6 +143,16 @@ struct Player {
     std::int32_t arrowsStuck = 0;
     std::int64_t lastEnderPearlTick = -10000;
     std::int64_t invulnUntilTick = 0;
+    // survival physics extended (76-78)
+    std::int32_t airTicks = 300;        // 0..300, drown when 0 (76)
+    std::int32_t freezeTicks = 0;       // 0..140+ powder snow (76)
+    std::int32_t fireTicks = 0;         // burning remainder (76)
+    bool isSneaking = false;            // EntityAction 0x28 (78)
+    bool isSprinting = false;           // EntityAction 0x28 + PlayerInput (78/80)
+    bool isSwimming = false;            // water swimming (77)
+    bool isEating = false;              // eating animation (79)
+    std::int32_t eatTicks = 0;
+    int pose = 0;                       // 0 standing, 5 crouching etc.
 };
 
 class GameServer;

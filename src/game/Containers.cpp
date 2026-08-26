@@ -15,6 +15,8 @@ ItemStack* Menu::slotAt(int slot, ItemStack* playerInv) {
         if (slot >= 9 && slot < 45) return &playerInv[slot - 9 + 9];
         return nullptr;
     case MenuType::Chest:
+    case MenuType::Barrel:
+    case MenuType::ShulkerBox:
         if (slot >= 0 && slot < 27) return &container[slot];
         if (slot >= 27 && slot < 63) return &playerInv[slot - 27 + 9]; // main+hotbar
         return nullptr;
@@ -35,7 +37,9 @@ const char* Menu::slotRegion(int slot) const {
     switch (type) {
     case MenuType::Hopper: return slot < 5 ? "container" : "player";
     case MenuType::Dispenser: return slot < 9 ? "container" : "player";
-    case MenuType::Chest: return slot < 27 ? "container" : "player";
+    case MenuType::Chest:
+    case MenuType::Barrel:
+    case MenuType::ShulkerBox: return slot < 27 ? "container" : "player";
     case MenuType::Furnace: return slot < 3 ? "container" : "player";
     case MenuType::Crafting:
         if (slot == 0) return "result";
