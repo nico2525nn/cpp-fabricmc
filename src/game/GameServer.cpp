@@ -3110,14 +3110,13 @@ void Session::handlePlay() {
             break;
         case pl::cs::Swing: break;
         case pl::cs::SetCreativeModeSlot: {
-            // parse defensively: plain items only; bail out on components
-            (void)in.i16();
-            if (in.varint() > 0) {
-                (void)in.varint();                  // item id
-                const std::int32_t add = in.varint();
-                const std::int32_t rem = in.varint();
-                if (add != 0 || rem != 0)
-                    throw std::runtime_error("creative slot with unsupported components");
+            const std::int16_t slot = in.i16();
+            const auto stack = ItemStack::read(in);
+            if (slot >= 0 && slot < 46) {
+                self_->inv[slot] = stack;
+                // keep other viewers in sync if needed (no-op for single)
+            } else if (slot == -1 && stack.empty()) {
+                // cursor clear - ignore
             }
             break;
         }
