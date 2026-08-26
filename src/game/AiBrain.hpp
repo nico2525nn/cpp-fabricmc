@@ -69,6 +69,17 @@ public:
     bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override;
 };
 
+// Ranged attack for skeletons (plan4 P1-A).
+class RangedAttackGoal final : public Goal {
+public:
+    RangedAttackGoal() : Goal(3) {}
+    static bool isRangedKind(MobKind k) { return k == MobKind::Skeleton; }
+    bool shouldStart(MobEntity&, AiContext& c) override {
+        return c.nearestPlayer != nullptr;
+    }
+    bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override;
+};
+
 class TemptGoal final : public Goal {
 public:
     TemptGoal() : Goal(4) {}
@@ -106,6 +117,7 @@ public:
         goals_.push_back(std::make_unique<PanicGoal>());
         goals_.push_back(std::make_unique<BreedGoal>());
         goals_.push_back(std::make_unique<MeleeAttackGoal>());
+        goals_.push_back(std::make_unique<RangedAttackGoal>());
         goals_.push_back(std::make_unique<TemptGoal>());
         goals_.push_back(std::make_unique<WanderAroundGoal>());
         goals_.push_back(std::make_unique<LookAtPlayerGoal>());

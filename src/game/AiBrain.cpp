@@ -201,4 +201,38 @@ bool LookAtPlayerGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     return ctx.nearestPlayerDist2 < 8 * 8;
 }
 
+
+// -------------------------------------------------------- ranged attacks --
+
+bool RangedAttackGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (!RangedAttackGoal::isRangedKind(m.kind)) return false;
+    Player* tgt = ctx.nearestPlayer;
+    if (!tgt) return false;
+    const double dx = tgt->x - m.x, dz = tgt->z - m.z;
+    const double dy = (tgt->y + 1.0) - (m.y + 1.6);
+    const double dist = std::sqrt(dx * dx + dz * dz);
+    if (dist < 5) return false;                       // melee goal takes over
+    if (dist > 16) { m.hasTarget = false; return true; }
+    // face the target
+    m.yaw = static_cast<float>(std::atan2(dz, dx) * 180.0 / 3.14159 - 90.0);
+    // fire every 2 s with a short warm-up
+    if (m.nextWanderAt == 0) m.nextWanderAt = now + 20;
+    if (now >= m.nextWanderAt) {
+        m.nextWanderAt = now + 40;
+        const double inv = 1.0 / dist;
+        double vx = dx * inv * 1.4;
+        double vz = dz * inv * 1.4;
+        double vy = dy * inv + dist * 0.04;
+        ctx.srv->spawnProjectile(ProjectileKind::Arrow, m.x, m.y + 1.6, m.z,
+                                 vx, vy, vz, m.entityId, false);
+        ctx.srv->broadcastSound("minecraft:entity.arrow.shoot",
+                                m.x, m.y, m.z, 1.f, 1.f, "hostile");
+    }
+    // hold ground while shooting
+    return true;
+}
+
+// -------------------------------------------------------- ranged attacks --
+
+
 } // namespace cppfm
