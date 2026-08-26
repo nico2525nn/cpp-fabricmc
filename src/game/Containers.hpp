@@ -52,6 +52,8 @@ public:
         case MenuType::Crafting: return 10 + 36;
         case MenuType::Hopper: return 5 + 36;
         case MenuType::Dispenser: return 9 + 36;
+        case MenuType::Barrel: return 27 + 36;
+        case MenuType::ShulkerBox: return 27 + 36;
         }
         return 63;
     }
@@ -62,6 +64,8 @@ public:
         case MenuType::Crafting: return menus::kCrafting;
         case MenuType::Hopper: return menus::kHopper;
         case MenuType::Dispenser: return menus::kGeneric3x3;
+        case MenuType::Barrel: return menus::kGeneric9x3;
+        case MenuType::ShulkerBox: return menus::kShulkerBox;
         }
         return menus::kGeneric9x3;
     }
