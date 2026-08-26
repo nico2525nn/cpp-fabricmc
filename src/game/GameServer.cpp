@@ -390,11 +390,24 @@ void GameServer::trySpawnMobs() {
             });
             if (!ok) continue;
             const int groundY = kMinY + feet;                 // first solid world y
+
+            // light-aware spawn rules: hostiles need light < 8 at the spawn
+            // cell (skylight scaled by weather/daytime), passives need >= 9.
+            lightEngine_->ensureSkyLight(wx >> 4, wz >> 4);
+            const std::uint8_t sky =
+                world_.getSkyLight(wx, groundY, wz);
+            const std::uint8_t blk =
+                world_.getBlockLight(wx, groundY, wz);
+            const double skyEff = isNight() ? 0.0
+                                  : raining() ? sky * 0.6 : double(sky);
+            const double effLight = std::max(double(blk), skyEff);
+
             static const MobKind passive[] = {MobKind::Pig, MobKind::Cow,
                                               MobKind::Sheep, MobKind::Chicken,
                                               MobKind::Rabbit};
             MobKind picked;
-            if (isNight()) {
+            const bool wantHostile = effLight < 8.0 && (isNight() || raining());
+            if (wantHostile) {
                 int hostiles = 0;
                 for (auto& m : mobs_)
                     if (MobEntity::isHostile(m->kind)) ++hostiles;
@@ -405,11 +418,9 @@ void GameServer::trySpawnMobs() {
                                                       MobKind::Creeper,
                                                       MobKind::Spider};
                 picked = hostilesTab[rand() % 5];
-                std::fprintf(stderr, "[cppfm] hostile spawned eid-pending at %.1f/%.1f\n",
-                             pl->x, pl->z);
-            } else {
+            } else if (effLight >= 9.0) {
                 picked = passive[rand() % 5];
-            }
+            } else continue;
             {
                 auto mob = std::make_shared<MobEntity>();
                 mob->entityId = nextEntityId();
@@ -475,6 +486,48 @@ void GameServer::mobsTick() {
             brainTickGuard_ = m.get();
             ai.brain->tick(*m, *ai.ctx, tickNo_);
             brainTickGuard_ = nullptr;
+
+            // ---- creeper fuse & explosion
+            if (m->kind == MobKind::Creeper && ai.ctx->nearestPlayer) {
+                const double cdx = ai.ctx->nearestPlayer->x - m->x;
+                const double cdy = ai.ctx->nearestPlayer->y - m->y;
+                const double cdz2 = ai.ctx->nearestPlayer->z - m->z;
+                const double cd2 = cdx*cdx + cdy*cdy + cdz2*cdz2;
+                if (cd2 < 9) {
+                    if (m->nextWanderAt == 0) {
+                        m->nextWanderAt = tickNo_ + 30;   // 1.5 s fuse
+                        broadcastSound("minecraft:block.grass.break",
+                                       m->x, m->y, m->z, 1.f, 1.4f);
+                    } else if (tickNo_ >= m->nextWanderAt) {
+                        const double cxp = m->x, cyp = m->y, czp = m->z;
+                        const std::int32_t eid = m->entityId;
+                        WriteBuffer rm; rm.varint(1); rm.varint(eid);
+                        broadcastPacketExcept(nullptr, pl::sc::RemoveEntities, rm);
+                        mobAi_.erase(eid);
+                        it = mobs_.erase(it);
+                        explodeAt(cxp, cyp + 0.5, czp, 3.f);
+                        continue;
+                    }
+                } else if (m->nextWanderAt != 0 && cd2 > 16) {
+                    m->nextWanderAt = 0;                   // defuse
+                }
+            }
+
+            // ---- light-aware daylight burn (real skylight at mob feet)
+            if (stats.burnsInDaylight && MobEntity::isHostile(m->kind) &&
+                !isNight() && tickNo_ % 20 == 0) {
+                world_.generateChunkIfMissing(
+                    static_cast<std::int32_t>(m->x) >> 4,
+                    static_cast<std::int32_t>(m->z) >> 4);
+                lightEngine_->ensureSkyLight(
+                    static_cast<std::int32_t>(m->x) >> 4,
+                    static_cast<std::int32_t>(m->z) >> 4);
+                const std::uint8_t sky =
+                    world_.getSkyLight(static_cast<std::int32_t>(m->x),
+                                       static_cast<std::int32_t>(m->y),
+                                       static_cast<std::int32_t>(m->z));
+                if (sky >= 14) applyDamageToMob(*m, 1.f, "burned to death");
+            }
             // delta broadcast
             if (!m->hasSent ||
                 std::abs(m->x-m->sentX)+std::abs(m->y-m->sentY)+std::abs(m->z-m->sentZ) > 0.03) {
@@ -669,6 +722,146 @@ void GameServer::onMobKilledBy(Player& p, MobKind kind) {
     p.stats->add(std::string("minecraft:killed|") +
                  MobEntity::kindName(kind));
     if (MobEntity::isHostile(kind)) grantAdvancement(p, "cppfm:hunter");
+}
+
+// --------------------------------------------------- weather / explosions
+
+void GameServer::weatherTick() {
+    if (!gamerules_.getBool("doWeatherCycle")) return;
+    if (tickNo_ < weatherUntilTick_) return;
+    setWeather(raining() ? Weather::Clear : Weather::Rain,
+               (6000 + rand() % 24000) * 20LL);
+}
+
+void GameServer::setWeather(Weather w, std::int64_t durationTicks) {
+    if (w == weather_) return;
+    weather_ = w;
+    WriteBuffer b;
+    b.u8(w == Weather::Rain ? 2 : 1);                 // begin/end raining
+    b.f32(0.f);
+    broadcastPacketExcept(nullptr, pl::sc::GameEvent, b);
+    weatherUntilTick_ = tickNo_ + durationTicks;
+}
+
+void GameServer::broadcastSound(const char* name, double x, double y,
+                                double z, float volume, float pitch,
+                                const char* category) {
+    static const std::unordered_map<std::string, std::uint8_t> kCat = {
+        {"master", 0}, {"music", 1}, {"record", 2}, {"weather", 3},
+        {"block", 4}, {"hostile", 5}, {"neutral", 6}, {"player", 7},
+        {"ambient", 8}, {"voice", 9}};
+    WriteBuffer b;
+    b.varint(0);                                       // holder: direct entry
+    b.string(name);                                    // sound name
+    b.boolean(false);                                  // no fixed range
+    auto it = kCat.find(category);
+    b.varint(it != kCat.end() ? it->second : 0);
+    b.i32(static_cast<std::int32_t>(x * 8.0));
+    b.i32(static_cast<std::int32_t>(y * 8.0));
+    b.i32(static_cast<std::int32_t>(z * 8.0));
+    b.f32(volume);
+    b.f32(pitch);
+    b.i64(rand());
+    broadcastPacketExcept(nullptr, pl::sc::SoundEffect, b);
+}
+
+void GameServer::explodeAt(double x, double y, double z, float power) {
+    const int r = static_cast<int>(std::ceil(power));
+    // block destruction sphere with randomised edges
+    std::vector<std::array<std::int32_t, 3>> changed;
+    for (int dy = -r; dy <= r; ++dy)
+        for (int dz = -r; dz <= r; ++dz)
+            for (int dx = -r; dx <= r; ++dx) {
+                const double d = std::sqrt(double(dx*dx + dy*dy + dz*dz));
+                if (d > power - 0.5 +
+                    TerrainGenerator::posHash(explosionSeed_,
+                        static_cast<std::int32_t>(x)+dx, dy,
+                        static_cast<std::int32_t>(z)+dz) * 0.8)
+                    continue;
+                const auto bx = static_cast<std::int32_t>(x) + dx;
+                const auto by = static_cast<std::int32_t>(y) + dy;
+                const auto bz = static_cast<std::int32_t>(z) + dz;
+                const auto st = world_.getBlock(bx, by, bz);
+                if (st == 0) continue;
+                const gen::BlockDef* def = gen::blockByState(st);
+                if (def && (def->name == "minecraft:bedrock" ||
+                            def->name == "minecraft:obsidian" ||
+                            def->hardness < 0))
+                    continue;
+                world_.setBlock(bx, by, bz, 0);
+                broadcastBlockChange(bx, by, bz, 0);
+                changed.push_back({bx, by, bz});
+            }
+    // entity damage: distance-scaled
+    for (auto& p : playersSnapshot()) {
+        const double dx = p->x - x, dy = p->y - y, dz = p->z - z;
+        const double dist = std::sqrt(dx*dx + dy*dy + dz*dz);
+        if (dist > power * 2) continue;
+        const float dmg =
+            (power * power - static_cast<float>(dist)) / power * 8.f;
+        if (dmg > 0)
+            applyDamage(*p, dmg, "explosion");
+        // knockback
+        const double inv = 1.0 / std::max(1.0, dist);
+        WriteBuffer v;
+        v.varint(p->entityId);
+        v.i16(static_cast<std::int16_t>(dx * inv * 12000));
+        v.i16(static_cast<std::int16_t>((dy * inv + 0.4) * 12000));
+        v.i16(static_cast<std::int16_t>(dz * inv * 12000));
+        try { p->conn->sendPacket(pl::sc::EntityVelocity, v); } catch (...) {}
+        // DamageEvent for the hurt animation/flash
+        WriteBuffer de;
+        de.varint(p->entityId);
+        de.varint(gameData_.idOf("minecraft:damage_type",
+                                 "minecraft:explosion") >= 0
+                      ? gameData_.idOf("minecraft:damage_type",
+                                       "minecraft:explosion")
+                      : 0);
+        de.varint(0); de.varint(0);
+        de.boolean(false);
+        try { p->conn->sendPacket(pl::sc::DamageEvent, de); } catch (...) {}
+    }
+    {
+        std::lock_guard lk(entsMtx_);
+        std::vector<std::shared_ptr<MobEntity>> dead;
+        for (auto& m : mobs_) {
+            const double dx = m->x - x, dy = m->y - y, dz = m->z - z;
+            const double dist = std::sqrt(dx*dx+dy*dy+dz*dz);
+            if (dist > power * 2 || m->dead) continue;
+            applyDamageToMob(*m,
+                (power * power - static_cast<float>(dist)) / power * 8.f,
+                "explosion");
+            if (m->dead) dead.push_back(m);
+        }
+        for (auto& m : dead) {
+            const auto drop = MobEntity::dropFor(m->kind);
+            if (drop.itemId)
+                spawnItemDrop(m->x, m->y + .4f, m->z, drop.itemId, drop.count);
+            WriteBuffer rm; rm.varint(1); rm.varint(m->entityId);
+            broadcastPacketExcept(nullptr, pl::sc::RemoveEntities, rm);
+            mobAi_.erase(m->entityId);
+            mobs_.erase(std::remove(mobs_.begin(), mobs_.end(), m),
+                        mobs_.end());
+        }
+    }
+    // visuals & audio
+    for (int i = 0; i < 4; ++i) {
+        WriteBuffer pt;
+        pt.boolean(true);                                // long distance
+        pt.boolean(false);                               // not always shown
+        pt.f64(x + (rand()%7 - 3) * 0.5);
+        pt.f64(y + (rand()%5 - 2) * 0.5);
+        pt.f64(z + (rand()%7 - 3) * 0.5);
+        pt.f32(0); pt.f32(0); pt.f32(0);
+        pt.f32(0);
+        pt.varint(i == 0 ? 21 : 22);                     // emitter/explosion
+        broadcastPacketExcept(nullptr, pl::sc::WorldParticles, pt);
+    }
+    broadcastSound("minecraft:entity.generic.explode", x, y, z, 4.f, 1.f,
+                   "blocks");
+    if (getenv("CPPFM_TRACE"))
+        std::fprintf(stderr, "[cppfm] explosion at %.1f/%.1f/%.1f (%zu blocks)\n",
+                     x, y, z, changed.size());
 }
 
 void GameServer::applyDamageToMob(MobEntity& m, float amount, const char* cause) {

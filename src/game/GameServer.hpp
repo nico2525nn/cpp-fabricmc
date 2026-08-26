@@ -358,6 +358,12 @@ public:
     void onBlockMined(Player& p, std::uint16_t oldState);
     void onItemObtained(Player& p, const ItemStack& s, const char* how);
     void onMobKilledBy(Player& p, MobKind kind);
+    // Explosion (creeper / TNT): destroys blocks & damages entities.
+    void explodeAt(double x, double y, double z, float power);
+    // Direct-named sound + particle broadcast helpers.
+    void broadcastSound(const char* name, double x, double y, double z,
+                        float volume = 1.f, float pitch = 1.f,
+                        const char* category = "blocks");
     void itemsTick();
     void trySpawnMobs();
     void spawnItemDrop(double x,double y,double z,std::uint32_t itemId,std::uint8_t cnt,
@@ -490,10 +496,20 @@ private:
     brigadier::CommandDispatcher commands_;          // Brigadier tree
     GameRuleManager gamerules_;
     std::string difficulty_ = "normal";
+    double worldBorderDiameter_ = 29999984;   // vanilla default
     std::int32_t teleportCounterForTest_ = 1;
     std::unique_ptr<LightEngine> lightEngine_;
     std::unique_ptr<FluidSim> fluidSim_;
     std::unique_ptr<RedstoneEngine> redstone_;
+    const std::uint64_t explosionSeed_ = 0x51AB1EULL;
+    // weather (本家互換: doWeatherCycle / rain)
+    enum class Weather { Clear, Rain } weather_ = Weather::Clear;
+    std::int64_t weatherUntilTick_ = 6000 * 20;   // next toggle attempt
+public:
+    bool raining() const { return weather_ == Weather::Rain; }
+private:
+    void weatherTick();
+    void setWeather(Weather w, std::int64_t durationTicks);
     struct CachedChunk { std::uint64_t rev; ChunkBodyRef body; };
     std::unordered_map<std::int64_t, CachedChunk> chunkCache_;
     std::mutex chunkCacheMtx_;
