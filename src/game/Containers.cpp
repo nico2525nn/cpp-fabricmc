@@ -6,6 +6,14 @@ namespace cppfm {
 
 ItemStack* Menu::slotAt(int slot, ItemStack* playerInv) {
     switch (type) {
+    case MenuType::Hopper:
+        if (slot >= 0 && slot < 5) return &container[slot];
+        if (slot >= 5 && slot < 41) return &playerInv[slot - 5 + 9];
+        return nullptr;
+    case MenuType::Dispenser:
+        if (slot >= 0 && slot < 9) return &container[slot];
+        if (slot >= 9 && slot < 45) return &playerInv[slot - 9 + 9];
+        return nullptr;
     case MenuType::Chest:
         if (slot >= 0 && slot < 27) return &container[slot];
         if (slot >= 27 && slot < 63) return &playerInv[slot - 27 + 9]; // main+hotbar
@@ -25,6 +33,8 @@ ItemStack* Menu::slotAt(int slot, ItemStack* playerInv) {
 
 const char* Menu::slotRegion(int slot) const {
     switch (type) {
+    case MenuType::Hopper: return slot < 5 ? "container" : "player";
+    case MenuType::Dispenser: return slot < 9 ? "container" : "player";
     case MenuType::Chest: return slot < 27 ? "container" : "player";
     case MenuType::Furnace: return slot < 3 ? "container" : "player";
     case MenuType::Crafting:

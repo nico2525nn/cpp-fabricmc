@@ -26,7 +26,7 @@ constexpr int kGeneric9x1 = 0, kGeneric9x2 = 1, kGeneric9x3 = 2,
               kSmoker = 22, kCartographyTable = 23, kStonecutter = 24;
 }
 
-enum class MenuType { Chest, Furnace, Crafting };
+enum class MenuType { Chest, Furnace, Crafting, Hopper, Dispenser };
 
 class RecipeManager;
 
@@ -44,11 +44,14 @@ public:
 
     // transient view of the owning player's inventory is external (Player.inv)
 
+    int containerCount_ = 0;             // hopper 5 / dispenser 9
     int totalSlots() const {
         switch (type) {
         case MenuType::Chest: return 27 + 36;
         case MenuType::Furnace: return 3 + 36;
         case MenuType::Crafting: return 10 + 36;
+        case MenuType::Hopper: return 5 + 36;
+        case MenuType::Dispenser: return 9 + 36;
         }
         return 63;
     }
@@ -57,6 +60,8 @@ public:
         case MenuType::Chest: return menus::kGeneric9x3;
         case MenuType::Furnace: return menus::kFurnace;
         case MenuType::Crafting: return menus::kCrafting;
+        case MenuType::Hopper: return menus::kHopper;
+        case MenuType::Dispenser: return menus::kGeneric3x3;
         }
         return menus::kGeneric9x3;
     }

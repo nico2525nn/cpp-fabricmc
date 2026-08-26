@@ -47,11 +47,19 @@ struct FurnaceData {
     std::int16_t cookTotal = 200;
 };
 
+// Generic container used by hoppers (5) and dispensers (9).
+struct GenericContainerData {
+    static constexpr int kMaxSlots = 9;
+    ItemStack slots[kMaxSlots];
+    std::uint8_t slotCount = kMaxSlots;
+};
+
 struct BlockEntity {
-    enum class Kind { Chest, Furnace };
+    enum class Kind { Chest, Furnace, Hopper, Dispenser };
     Kind kind = Kind::Chest;
     ChestData chest{};
     FurnaceData furnace{};
+    GenericContainerData generic{};      // hopper/dispenser
 };
 
 class BlockEntityStore {
@@ -97,6 +105,12 @@ public:
             if (be.kind == BlockEntity::Kind::Chest) {
                 e.set("id", nbt::Value::makeString("minecraft:chest"));
                 writeItems(e, be.chest.slots, ChestData::kSlots, "Items");
+            } else if (be.kind == BlockEntity::Kind::Hopper) {
+                e.set("id", nbt::Value::makeString("minecraft:hopper"));
+                writeItems(e, be.generic.slots, 5, "Items");
+            } else if (be.kind == BlockEntity::Kind::Dispenser) {
+                e.set("id", nbt::Value::makeString("minecraft:dispenser"));
+                writeItems(e, be.generic.slots, 9, "Items");
             } else {
                 e.set("id", nbt::Value::makeString("minecraft:furnace"));
                 writeFurnaceItems(e, be.furnace);
@@ -132,6 +146,15 @@ private:
             be = BlockEntity{};
             be.kind = BlockEntity::Kind::Chest;
             readItems(e, be.chest.slots, ChestData::kSlots, "Items");
+            dirty_.insert(key);
+        } else if (id == "minecraft:hopper" || id == "minecraft:dispenser" ||
+                   id == "minecraft:dropper") {
+            BlockEntity& be = map_[key];
+            be = BlockEntity{};
+            be.kind = id == "minecraft:hopper" ? BlockEntity::Kind::Hopper
+                                               : BlockEntity::Kind::Dispenser;
+            const int n = be.kind == BlockEntity::Kind::Hopper ? 5 : 9;
+            readItems(e, be.generic.slots, n, "Items");
             dirty_.insert(key);
         } else if (id.find("furnace") != std::string::npos ||
                    id.find("smoker") != std::string::npos ||
