@@ -20,6 +20,10 @@ add_executable(cppfm
     src/physics/LightEngine.cpp
     src/physics/Fluids.cpp
     src/physics/Redstone.cpp
+    src/game/WorldGen.cpp
+    src/worldgen/DensityFunction.cpp
+    src/worldgen/MultiNoise.cpp
+    src/worldgen/Structures.cpp
 )
 
 target_include_directories(cppfm PRIVATE src src/generated)

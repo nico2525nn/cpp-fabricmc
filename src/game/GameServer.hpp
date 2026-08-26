@@ -223,6 +223,12 @@ public:
         recipes_.loadDirectory(cfg_.recipesDir);
         initCommands();
         lightEngine_ = std::make_unique<LightEngine>(world_);
+        world_.setBiomeCodec(
+            [this](const std::string& key) {
+                return data_.biomeIndex(key);
+            },
+            static_cast<std::int32_t>(
+                data_.biomeIndex(cfg_.worldBiome)));
         fluidSim_ = std::make_unique<FluidSim>(world_);
         redstone_ = std::make_unique<RedstoneEngine>(world_);
         world_.setOnBlockChanged([this](std::int32_t x, std::int32_t y,
@@ -238,6 +244,24 @@ public:
             redstone_->onBlockChanged(x, y, z);
         });
         persist_ = std::make_unique<Persistence>(world_, cfg_.worldDir, cfg_.worldBiome);
+        {   // biome codec maps + chunk extras (block entities)
+            std::unordered_map<std::uint16_t, std::string> idxToKey;
+            const auto& order = gameData_.order("minecraft:worldgen/biome");
+            for (std::size_t i = 0; i < order.size(); ++i)
+                idxToKey.emplace(static_cast<std::uint16_t>(i), order[i]);
+            persist_->setBiomeCodec(std::move(idxToKey),
+                                    static_cast<std::int32_t>(
+                                        data_.biomeIndex(cfg_.worldBiome)));
+            persist_->setChunkExtras(
+                [this](std::int32_t cx, std::int32_t cz, nbt::Value& root) {
+                    nbt::Value list = nbt::Value::makeList(nbt::Compound);
+                    blockEntities_.writeChunkNbt(cx, cz, list);
+                    if (!list.list.empty()) root.set("block_entities", list);
+                },
+                [this](const nbt::Value& root) {
+                    blockEntities_.readChunkNbt(root);
+                });
+        }
         persist_->start();
         rconServer_ = std::make_unique<RconServer>(cfg_.rcon,
             [this](const std::string& cmd){ return dispatchConsole(cmd); });

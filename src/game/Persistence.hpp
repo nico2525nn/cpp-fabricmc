@@ -2,6 +2,7 @@
 #pragma once
 #include "World.hpp"
 #include "Anvil.hpp"
+#include <functional>
 #include "RegionFile.hpp"
 #include <atomic>
 #include <chrono>
@@ -16,6 +17,21 @@ class Persistence {
 public:
     Persistence(World& world, std::string worldDir, std::string biomeKey)
         : world_(world), dir_(std::move(worldDir)), biome_(std::move(biomeKey)) {}
+
+    // Optional hooks: block-entity + entity NBT attached to saved chunks.
+    void setChunkExtras(
+        std::function<void(std::int32_t, std::int32_t, nbt::Value&)> writeFn,
+        std::function<void(const nbt::Value&)> readFn) {
+        writeExtras_ = std::move(writeFn);
+        readExtras_ = std::move(readFn);
+    }
+    void setBiomeCodec(std::unordered_map<std::uint16_t, std::string> idxToKey,
+                       std::int32_t defaultIdx) {
+        biomeIdxToKey_ = std::move(idxToKey);
+        defaultBiomeIndex_ = defaultIdx;
+        for (auto& [k, v] : biomeIdxToKey_)
+            biomeKeyToIdx_.emplace(v, k);
+    }
 
     // ---- level.dat ----
     void saveLevelData() {
@@ -79,11 +95,18 @@ public:
             nbt::Parser parser(in);
             nbt::Value root = parser.readFileRoot();
             std::string bio;
-            if (!chunkFromNBT(root, out, {}, bio)) return false;
+            if (!chunkFromNBT(root, out, {}, bio,
+                              [this](const std::string& k) -> std::int32_t {
+                                  auto it = biomeKeyToIdx_.find(k);
+                                  return it != biomeKeyToIdx_.end()
+                                             ? it->second : -1;
+                              }))
+                return false;
             if (!bio.empty()) {
                 std::lock_guard lk(bioMtx_);
                 biomeOverride_ = bio;
             }
+            if (readExtras_) readExtras_(root);
             return true;
         } catch (...) {
             return false;                              // corrupt/foreign chunk: regenerate
@@ -114,7 +137,9 @@ public:
             }();
             world_.withChunk(cx, cz, [&](const Chunk& c) {
                 try {
-                    nbt::Value root = chunkToNBT(cx, cz, c, bio);
+                    nbt::Value root = chunkToNBT(cx, cz, c, bio,
+                                                 &biomeIdxToKey_);
+                    if (writeExtras_) writeExtras_(cx, cz, root);
                     WriteBuffer out;
                     nbt::writeFileRoot(out, root);
                     RegionFile rf(regionPath(cx, cz));
@@ -147,6 +172,11 @@ private:
     std::string biome_;
     std::optional<std::string> biomeOverride_;
     std::mutex bioMtx_;
+    std::unordered_map<std::uint16_t, std::string> biomeIdxToKey_;
+    std::unordered_map<std::string, std::uint16_t> biomeKeyToIdx_;
+    std::int32_t defaultBiomeIndex_ = 0;
+    std::function<void(std::int32_t, std::int32_t, nbt::Value&)> writeExtras_;
+    std::function<void(const nbt::Value&)> readExtras_;
 
     std::mutex dirtyMtx_;
     std::set<std::int64_t> dirty_;

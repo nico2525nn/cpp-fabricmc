@@ -135,7 +135,8 @@ inline void writeLightArrays(WriteBuffer& out, const std::vector<std::vector<std
 
 // Section-data blob (24 sections), shared by chunk packets & golden tests.
 inline void serializeSectionData(WriteBuffer& blob, const Chunk* chunk,
-                                 std::uint32_t biomeRegistryIndex) {    for (int s = 0; s < kSectionsPerChunk; ++s) {
+                                 std::uint32_t biomeRegistryIndex) {
+    for (int s = 0; s < kSectionsPerChunk; ++s) {
         std::size_t base = static_cast<std::size_t>(s) * 4096;
         std::uint16_t nonAir = 0;
         for (int i = 0; i < 4096; ++i)
@@ -145,9 +146,23 @@ inline void serializeSectionData(WriteBuffer& blob, const Chunk* chunk,
         writePalettedContainer(blob,
             [&](int i) -> std::uint32_t { return chunk->blocks[base + static_cast<std::size_t>(i)]; },
             PaletteSpec{4, true, gen::kMaxBlockStateId});
-        writePalettedContainer(blob,
-            [&](int) -> std::uint32_t { return biomeRegistryIndex; },
-            PaletteSpec{1, false, 0});
+
+        const std::size_t bBase = static_cast<std::size_t>(s) * 64;
+        bool uniform = true;
+        const std::uint16_t first = chunk->biomes[bBase];
+        for (std::size_t i = 1; i < 64; ++i)
+            if (chunk->biomes[bBase + i] != first) { uniform = false; break; }
+        if (uniform) {
+            writePalettedContainer(blob,
+                [&](int) -> std::uint32_t { return first; },
+                PaletteSpec{1, false, 0});
+        } else {
+            writePalettedContainer(blob,
+                [&](int i) -> std::uint32_t {
+                    return chunk->biomes[bBase + static_cast<std::size_t>(i)];
+                },
+                PaletteSpec{1, false, 0});
+        }
     }
 }
 
