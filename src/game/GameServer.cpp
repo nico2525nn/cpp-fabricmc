@@ -1029,6 +1029,91 @@ ItemStack* GameServer::containerAt(std::int32_t x, std::int32_t y,
     }
 }
 
+// ------------------------------------------------------- villager trading
+
+const std::vector<TradeOffer>& GameServer::tradeTable() {
+    using TO = TradeOffer;
+    static const std::vector<TradeOffer> table = [] {
+        auto id = [](const char* n) {
+            return gen::itemIdByName().at(n);
+        };
+        return std::vector<TO>{
+            {id("minecraft:wheat"), 20, 0, 0, id("minecraft:emerald"), 1},
+            {id("minecraft:coal"), 15, 0, 0, id("minecraft:emerald"), 1},
+            {id("minecraft:emerald"), 1, 0, 0, id("minecraft:bread"), 4},
+            {id("minecraft:emerald"), 3, 0, 0, id("minecraft:iron_pickaxe"), 1},
+            {id("minecraft:porkchop"), 7, 0, 0, id("minecraft:emerald"), 1},
+        };
+    }();
+    return table;
+}
+
+bool GameServer::openTrading(Player& p, MobEntity& v) {
+    if (!p.conn) return false;
+    const int windowId = ++villagerWindowSeq_;
+    WriteBuffer b;
+    b.varint(windowId);
+    b.varint(menus::kMerchant);
+    nbt::writeTextComponent(b, "Villager");
+    try { p.conn->sendPacket(proto::pl::sc::OpenScreen, b); } catch (...) {}
+    // Trade List payload
+    WriteBuffer tl;
+    tl.i8(static_cast<std::uint8_t>(windowId));
+    const auto& trades = tradeTable();
+    tl.varint(static_cast<std::int32_t>(trades.size()));
+    for (const auto& t : trades) {
+        // inputItem1
+        tl.varint(static_cast<std::int32_t>(t.inItem));
+        tl.varint(t.inCount);
+        tl.varint(0);                                    // no components
+        // outputItem as Slot
+        ItemStack::of(t.outItem, t.outCount).write(tl);
+        tl.boolean(false);                               // inputItem2 absent
+        tl.boolean(false);                               // trade disabled
+        tl.i32(0);                                       // uses
+        tl.i32(9999);                                    // max uses
+        tl.i32(1);                                       // xp
+        tl.i32(0);                                       // special price
+        tl.f32(0.05f);                                   // price multiplier
+        tl.i32(0);                                       // demand
+    }
+    tl.varint(0);                                        // villager entity id? (1.21: not present)
+    tl.varint(0);                                        // increase min uses?
+    // 1.21.4 trade list tail: villager level varint + xp varint + showProgress bool
+    tl.varint(1);
+    tl.i32(0);
+    tl.boolean(true);
+    try { p.conn->sendPacket(proto::pl::sc::TradeList, tl); } catch (...) {}
+    return true;
+}
+
+bool GameServer::selectTrade(Player& p, std::int32_t index) {
+    const auto& trades = tradeTable();
+    if (index < 0 || static_cast<std::size_t>(index) >= trades.size())
+        return false;
+    const auto& t = trades[static_cast<std::size_t>(index)];
+    // verify inputs present
+    int have = 0;
+    for (auto& s : p.inv)
+        if (!s.empty() && s.itemId == t.inItem) have += s.count;
+    if (have < t.inCount) return false;
+    int need = t.inCount;
+    for (auto& s : p.inv) {
+        if (need <= 0) break;
+        if (!s.empty() && s.itemId == t.inItem) {
+            const int take = std::min<int>(s.count, need);
+            s.count -= take; need -= take;
+            if (s.count <= 0) s = ItemStack::air();
+        }
+    }
+    addToInventory(p, t.outItem, t.outCount);
+    resendInventory(p);
+    spawnXpOrbs(p.x, p.y + 1, p.z, 2, &p);
+    broadcastSound("minecraft:entity.villager.yes", p.x, p.y, p.z,
+                   .8f, 1.f, "neutral");
+    return true;
+}
+
 void GameServer::applyDamageToMob(MobEntity& m, float amount, const char* cause) {
     (void)cause;
     if (amount <= 0) return;
@@ -3085,6 +3170,11 @@ void Session::handlePlay() {
             break;
         }
         case pl::cs::TabComplete:         onTabComplete(in); break;
+        case pl::cs::SelectTrade: {                                   // 0x31
+            const auto idx = in.varint();
+            if (tradingVillager_ >= 0) srv_.selectTrade(*self_, idx);
+            break;
+        }
         case pl::cs::ChunkBatchReceived:  in.f32(); break;
         case pl::cs::PingRequest: {
             const std::int64_t id = in.i64();
@@ -3632,7 +3722,25 @@ void Session::onUseEntity(ReadBuffer& in) {
     const std::int32_t target = in.varint();
     const std::int32_t mouse = in.varint();
     if (mouse == 2) { (void)in.f32(); (void)in.f32(); (void)in.f32(); }
-    if (mouse != 1) return;                             // only ATTACK
+    if (mouse != 1) {
+        // INTERACT (0) / INTERACT_AT (2): open trading for villagers
+        if (mouse == 0 || mouse == 2) {
+            (void)in.varint();                        // sneaking flag
+            std::lock_guard lk(srv_.entsMtx_);
+            for (auto& m : srv_.mobsForTest()) {
+                if (m->entityId != target) continue;
+                if (m->kind == MobKind::Villager) {
+                    srv_.openTrading(*self_, *m);
+                    tradingVillager_ = target;
+                    openMenu_ = nullptr;              // merchant menu tracked separately
+                }
+                break;
+            }
+        } else {
+            (void)in.varint();
+        }
+        return;
+    }
 
     float dmg = 1.f;
     if (self_->heldSlot >= 0 && self_->heldSlot < 9) {

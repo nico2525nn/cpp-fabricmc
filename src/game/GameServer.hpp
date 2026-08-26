@@ -69,6 +69,15 @@ struct ServerConfig {
 // Player inventory slot = full ItemStack (components preserved end-to-end).
 using InvSlot = ItemStack;
 
+struct TradeOffer {
+    std::uint32_t inItem;
+    std::uint16_t inCount;
+    std::uint32_t inItem2;
+    std::uint16_t inCount2;
+    std::uint32_t outItem;
+    std::uint16_t outCount;
+};
+
 struct Player {
     std::string name;
     std::array<std::uint8_t, 16> uuid{};
@@ -211,6 +220,8 @@ private:
     std::unique_ptr<Menu> openMenu_;
     ItemStack cursorItem_;
     std::int32_t menuWindowCounter_ = 0;
+    std::int32_t villagerWindowSeq_ = 100;
+    std::int32_t tradingVillager_ = -1;  // villager entity id while trading
 };
 
 class Session;
@@ -317,6 +328,7 @@ public:
     auto& mobsForTest() { return mobs_; }
     Whitelist& whitelist() { return whitelist_; }
     BlockEntityStore& blockEntities() { return blockEntities_; }
+    std::int32_t villagerWindowSeq_ = 100;
     Scoreboard scoreboard;
     void scoreboardBroadcast(const std::function<void(WriteBuffer&)>& fn) {
         WriteBuffer b; fn(b);
@@ -383,6 +395,10 @@ public:
                          double vx, double vy, double vz,
                          std::int32_t ownerId, bool ownerIsPlayer);
     void projectilesTick();
+    // Villager trading (plan4 P1-B)
+    static const std::vector<struct TradeOffer>& tradeTable();
+    bool openTrading(Player& p, MobEntity& villager);
+    bool selectTrade(Player& p, std::int32_t index);
     // Progress tracking (stats + advancements)
     void initPlayerProgress(Player& p);
     void savePlayerProgress(Player& p);
