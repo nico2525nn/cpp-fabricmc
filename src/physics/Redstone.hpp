@@ -35,6 +35,8 @@ public:
                     std::int64_t now);
 
     void tick(std::int64_t now);                         // delayed updates
+    // True when any adjacent source/wire carries power (dispenser gates).
+    bool isPoweredHere(std::int32_t x, std::int32_t y, std::int32_t z);
 
 private:
     enum class Comp {

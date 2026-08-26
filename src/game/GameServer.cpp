@@ -869,6 +869,166 @@ void GameServer::explodeAt(double x, double y, double z, float power) {
                      x, y, z, changed.size());
 }
 
+void GameServer::hoppersTick() {
+    if (tickNo_ % 8 != 0) return;
+    std::vector<std::pair<std::int64_t, BlockEntity>> snapshot;
+    blockEntities_.forEach([&](std::int64_t k, BlockEntity& be) {
+        if (be.kind == BlockEntity::Kind::Hopper ||
+            be.kind == BlockEntity::Kind::Dispenser)
+            snapshot.emplace_back(k, be);
+    });
+    for (auto& [key, be] : snapshot) {
+        const std::int32_t x = posKeyUnpackX(key);
+        const std::int32_t y = posKeyUnpackY(key);
+        const std::int32_t z = posKeyUnpackZ(key);
+        ItemStack* slots = be.generic.slots;
+        const int count = be.kind == BlockEntity::Kind::Hopper ? 5 : 9;
+
+        auto mergeIntoFirstFit = [&](const ItemStack& src) -> bool {
+            for (int i = 0; i < count; ++i) {
+                auto& s = slots[i];
+                if (s.empty()) { s = src; return true; }
+                if (s.itemId == src.itemId && s.count < 64) {
+                    const int take = std::min<int>(64 - s.count, src.count);
+                    s.count += take;
+                    if (take >= src.count) return true;
+                }
+            }
+            return false;
+        };
+        auto extractOneFrom = [&](BlockEntity* other) -> bool {
+            if (!other) return false;
+            ItemStack* oslots = nullptr; int on = 0;
+            switch (other->kind) {
+            case BlockEntity::Kind::Chest: oslots = other->chest.slots; on = 27; break;
+            case BlockEntity::Kind::Hopper: oslots = other->generic.slots; on = 5; break;
+            case BlockEntity::Kind::Dispenser: oslots = other->generic.slots; on = 9; break;
+            default: return false;
+            }
+            for (int i = 0; i < on; ++i) {
+                auto& s = oslots[i];
+                if (s.empty()) continue;
+                ItemStack one = ItemStack::of(s.itemId, 1);
+                if (mergeIntoFirstFit(one)) {
+                    if (--s.count <= 0) s = ItemStack::air();
+                    blockEntities_.dirty_.insert(key);
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        // ---- pull from above
+        int n = 0; BlockEntity::Kind k{};
+        if (ItemStack* p =
+                containerAt(x, y + 1, z, n, k)) {
+            (void)p; (void)n; (void)k;
+            if (auto* other = blockEntities_.getAt(x, y + 1, z))
+                extractOneFrom(other);
+        }
+        // ---- item entity pickup from the hopper cell itself
+        {
+            std::lock_guard lk(entsMtx_);
+            for (auto& e : itemDrops_) {
+                if (!e->collected &&
+                    std::abs(e->x - (x + .5)) < 0.8 &&
+                    std::abs(e->z - (z + .5)) < 0.8 &&
+                    e->y > y - 0.2 && e->y < y + 1.3) {
+                    ItemStack one = ItemStack::of(e->itemId, 1);
+                    if (mergeIntoFirstFit(one)) {
+                        if (--e->count <= 0) e->collected = true;
+                        WriteBuffer c;
+                        c.varint(e->entityId);
+                        c.varint(0);                     // collector: hopper
+                        c.varint(1);
+                        broadcastPacketExcept(nullptr, pl::sc::Collect, c);
+                        break;
+                    }
+                }
+            }
+        }
+        // ---- push downward
+        if (auto* below = blockEntities_.getAt(x, y - 1, z)) {
+            if (below != &be && below->kind != BlockEntity::Kind::Furnace) {
+                for (int i = 0; i < count; ++i) {
+                    auto& s = slots[i];
+                    if (s.empty()) continue;
+                    ItemStack one = ItemStack::of(s.itemId, 1);
+                    ItemStack* oslots = nullptr; int on = 0;
+                    switch (below->kind) {
+                    case BlockEntity::Kind::Chest: oslots = below->chest.slots; on = 27; break;
+                    case BlockEntity::Kind::Hopper: oslots = below->generic.slots; on = 5; break;
+                    case BlockEntity::Kind::Dispenser: oslots = below->generic.slots; on = 9; break;
+                    default: break;
+                    }
+                    bool moved = false;
+                    if (oslots) {
+                        for (int j = 0; j < on && !moved; ++j) {
+                            auto& d = oslots[j];
+                            if (d.empty()) { d = one; moved = true; }
+                            else if (d.itemId == one.itemId && d.count < 64) {
+                                ++d.count; moved = true;
+                            }
+                        }
+                    }
+                    if (moved) {
+                        if (--s.count <= 0) s = ItemStack::air();
+                        blockEntities_.dirty_.insert(key);
+                    }
+                    break;
+                }
+            }
+        }
+
+        // ---- dispenser: eject when powered (edge-triggered)
+        if (be.kind == BlockEntity::Kind::Dispenser) {
+            bool powered = redstone_->isPoweredHere(x, y, z);
+            bool& was = dispenserPower_[key];
+            if (powered && !was) {
+                for (int i = 0; i < 9; ++i) {
+                    auto& s = slots[i];
+                    if (s.empty()) continue;
+                    // facing → direction
+                    double dx = 0, dz = 0;
+                    std::string facing = "north";
+                    if (world_.getBlock(x, y, z)) {
+                        for (auto& [pk, pv] :
+                             gen::propsOf(world_.getBlock(x, y, z)))
+                            if (pk == "facing") facing = std::string(pv);
+                    }
+                    if (facing == "north") dz = -1;
+                    else if (facing == "south") dz = 1;
+                    else if (facing == "west") dx = -1;
+                    else if (facing == "east") dx = 1;
+                    spawnItemDrop(x + .5 + dx * .6, y + .5, z + .5 + dz * .6,
+                                  s.itemId, 1, dx * .25, .15, dz * .25);
+                    if (--s.count <= 0) s = ItemStack::air();
+                    broadcastSound("minecraft:entity.dispenser.dispense",
+                                   x + .5, y + .5, z + .5, 1.f, 1.f,
+                                   "blocks");
+                    blockEntities_.dirty_.insert(key);
+                    break;
+                }
+            }
+            was = powered;
+        }
+    }
+}
+
+ItemStack* GameServer::containerAt(std::int32_t x, std::int32_t y,
+                                   std::int32_t z, int& countOut,
+                                   BlockEntity::Kind& kindOut) {
+    auto* be = blockEntities_.getAt(x, y, z);
+    if (!be) return nullptr;
+    kindOut = be->kind;
+    switch (be->kind) {
+    case BlockEntity::Kind::Chest: countOut = 27; return be->chest.slots;
+    case BlockEntity::Kind::Hopper: countOut = 5; return be->generic.slots;
+    case BlockEntity::Kind::Dispenser: countOut = 9; return be->generic.slots;
+    default: return nullptr;
+    }
+}
+
 void GameServer::applyDamageToMob(MobEntity& m, float amount, const char* cause) {
     (void)cause;
     if (amount <= 0) return;
@@ -2439,6 +2599,19 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
         menu->container = be->chest.slots;
         menu->containerCount = ChestData::kSlots;
         menu->blockEntity = be;
+    } else if (name == "minecraft:hopper" || name == "minecraft:dispenser" ||
+               name == "minecraft:dropper") {
+        auto* be = srv_.blockEntities().getAt(x, y, z);
+        const bool hopper = name == "minecraft:hopper";
+        if (!be)
+            be = &srv_.blockEntities().create(menu->blockKey,
+                hopper ? BlockEntity::Kind::Hopper
+                       : BlockEntity::Kind::Dispenser);
+        menu->type = hopper ? MenuType::Hopper : MenuType::Dispenser;
+        menu->container = be->generic.slots;
+        menu->containerCount_ = hopper ? 5 : 9;
+        menu->containerCount = menu->containerCount_;
+        menu->blockEntity = be;
     } else if (name == "minecraft:furnace") {
         auto* be = srv_.blockEntities().getAt(x, y, z);
         if (!be)
@@ -3240,6 +3413,8 @@ void Session::onUseItemOn(ReadBuffer& in) {
             const std::string bn(bdef->name);
             if (bn.find("chest") != std::string::npos ||
                 bn == "minecraft:furnace" ||
+                bn == "minecraft:hopper" || bn == "minecraft:dispenser" ||
+                bn == "minecraft:dropper" ||
                 bn == "minecraft:crafting_table") {
                 openMenuAt(x, y, z, clickedState);
                 ack(sequence);

@@ -48,6 +48,26 @@ int RedstoneEngine::maxEmissionFor(Comp c) {
     }
 }
 
+
+bool RedstoneEngine::isPoweredHere(std::int32_t x, std::int32_t y,
+                                   std::int32_t z) {
+    static constexpr int DX[6] = {1,-1,0,0,0,0};
+    static constexpr int DY[6] = {0,0,1,-1,0,0};
+    static constexpr int DZ[6] = {0,0,0,0,1,-1};
+    for (int d = 0; d < 6; ++d) {
+        const std::uint16_t ns =
+            world_.getBlock(x + DX[d], y + DY[d], z + DZ[d]);
+        const Comp nc = classify(ns);
+        if (maxEmissionFor(nc) > 0) return true;
+        if (nc == Comp::Wire) {
+            for (auto& [k, v] : gen::propsOf(ns))
+                if (k == "power" && std::atoi(std::string(v).c_str()) > 0)
+                    return true;
+        }
+    }
+    return false;
+}
+
 void RedstoneEngine::onBlockChanged(std::int32_t x, std::int32_t y,
                                     std::int32_t z) {
     recomputeAround(x, y, z);

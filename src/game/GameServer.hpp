@@ -348,6 +348,11 @@ public:
     bool spawnMobByTypeName(const std::string& name, double x, double y, double z);
     // Furnace smelting tick (called once per game tick).
     void furnacesTick();
+    // Hopper item movement + dispenser ejection (every 8 ticks).
+    void hoppersTick();
+    // Direct inventory access helpers used by the hopper simulation.
+    ItemStack* containerAt(std::int32_t x, std::int32_t y, std::int32_t z,
+                           int& countOut, BlockEntity::Kind& kindOut);
     // Send the experience bar + level to one player.
     static void sendSetExperience(Player& p);
     // Apply / expire status effects for all living things (per tick).
@@ -510,6 +515,7 @@ private:
     std::vector<std::shared_ptr<ItemEntity>> itemDrops_;
     std::vector<std::shared_ptr<XpOrbEntity>> xpOrbs_;
     std::vector<std::shared_ptr<ProjectileEntity>> projectiles_;
+    std::unordered_map<std::int64_t, bool> dispenserPower_;
     std::int64_t tickNo_ = 0;
     std::int64_t timeOffset_ = 0;
     std::int64_t startTime_ = 1000;
