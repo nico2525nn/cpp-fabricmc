@@ -7,7 +7,8 @@
 
 using namespace cppfm;
 
-namespace cppfm { std::atomic<bool> g_stopRequested{false}; }
+namespace cppfm { extern std::atomic<bool> g_stopRequested; }
+using namespace cppfm;
 static GameServer* g_server = nullptr;
 static void onSignal(int) {
     g_stopRequested = true;
