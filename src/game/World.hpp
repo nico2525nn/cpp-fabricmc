@@ -69,7 +69,7 @@ struct Chunk {
     }
 };
 
-enum class LevelType { Flat, Normal };
+enum class LevelType { Flat, Normal, Nether, End };
 
 class World {
 public:
@@ -215,7 +215,8 @@ public:
         auto c = std::make_unique<Chunk>();
         const bool loaded = loader_ && loader_(cx, cz, *c);
         if (!loaded) {
-            if (level_ == LevelType::Normal) fillTerrainV3(*c, cx, cz);
+            if (level_ == LevelType::Nether || level_ == LevelType::End) fillTerrainV3(*c, cx, cz);
+            else if (level_ == LevelType::Normal) fillTerrainV3(*c, cx, cz);
             else if (false) fillTerrain(*c, cx, cz);
             else fillFlat(*c);
         }
@@ -276,6 +277,8 @@ public:
 
     // Biome codec wiring: resolve biome key <-> synced registry index.
     // Must be installed before any chunk generation (GameServer::init).
+    void setDimensionId(std::int8_t d) { dimensionId_ = d; }
+    std::int8_t dimensionId() const { return dimensionId_; }
     void setBiomeCodec(std::function<std::int32_t(const std::string&)> toIndex,
                        std::int32_t defaultIndex) {
         biomeToIndex_ = std::move(toIndex);
@@ -287,6 +290,8 @@ public:
 
 private:
     void fillTerrainV3(Chunk& c, std::int32_t cx, std::int32_t cz) const;
+    void fillNether(Chunk& c, std::int32_t cx, std::int32_t cz) const;
+    void fillEnd(Chunk& c, std::int32_t cx, std::int32_t cz) const;
 
 public:
     void fillTerrain(Chunk& c, std::int32_t cx, std::int32_t cz) const {
@@ -392,6 +397,7 @@ public:
     std::uint64_t srv_seed;
     std::function<std::int32_t(const std::string&)> biomeToIndex_;
     std::int32_t defaultBiomeIndex_ = 40;
+    std::int8_t dimensionId_ = 0;
     std::unique_ptr<worldgen::MultiNoiseBiomeSource> biomeSource_;
     std::unique_ptr<worldgen::StructureGenerator> structures_;
     std::vector<std::pair<const char*, float>> oreTableV3_;   // name, rarity
