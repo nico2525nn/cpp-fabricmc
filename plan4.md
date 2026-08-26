@@ -179,18 +179,23 @@ enforcesSecureChat 正、chat preview廃止済フィールド整理。
 RCON から brigadier 全コマンド(dispatchConsole 済み)のタブ補完なし完全動作確認、
 /banlist,/whitelist add/remove コマンド整備。
 
-## 2. 実装順序(本書承認後の作業キュー)
+## 2. 実装順序と進捗(随時更新)
 
-1. P1-A Projectile + Skeleton 射撃(RangedAttackGoal)
-2. P1-C ベッド(夜飛ばし+スポーン地点)
-3. P1-B 村人+交易最小(農民1職業)
-4. P1-D Scoreboard/Team/Bossbar + コマンド
-5. P2-E ホッパー/ディスペンサー(吸引/排出のみ)
-6. P2-G 多次元(ネザーのみ、ポータル遷移)
-7. P2-H エンチャント台/金床
-8. P3-M ドア/階段配置コンテキスト
-9. P2-F 乗り物
-10. 残り P2/P3 を順次
+| 項目 | 状態 |
+|---|---|
+| P1-A Projectile + Skeleton 射撃 | ✅ 実装済 (commit 0430dd1) |
+| P1-C ベッド(夜飛ばし+スポーン地点) | ✅ 実装済 (0430dd1) |
+| P1-B 村人+交易 | ✅ 実装済 (0d61c83) |
+| P1-D Scoreboard/Team/Bossbar | ✅ Scoreboard+sidebar+カウンタ実装 (0b1f11c)。BossBar UIは未 |
+| P2-E ホッパー/ディスペンサー | ✅ 実装済 (f9a229b) |
+| P3-K スペクテイター(/spectate カメラ) | ✅ 実装済 (156d6f8) |
+| P3-M ドア配置/開閉トグル | ✅ 実装済 (ed9a092) |
+| P3-O ping favicon/sample | ✅ 実装済 (2e008f9) |
+| P2-G 多次元(ネザー) | 未実装。Respawn遷移方式で着手可だが Session の world 参照分離が必要 |
+| P2-H エンチャント台/金床/醸造台 | 未実装。要: `minecraft:enchantments` コンポーネントの正確なネットワークNBT形状の追加リサーチ(誤形式はクライアント desync を招くため保留明示) |
+| P2-F 乗り物 | 未実装。SetPassengers/VehicleMove 形式は本書§P2-F参照 |
+| P2-J 釣り | 未実装 |
+| P2-N 高度レッドストーン | 未実装 |
 
 ## 3. 既知の非互換メモ(検証ベース)
 
