@@ -193,6 +193,7 @@ void GameServer::tickDigs() {
                 }
                 world_.setBlock(p->digX, p->digY, p->digZ, 0);
                 broadcastBlockChange(p->digX, p->digY, p->digZ, 0);
+                onBlockMined(*p, oldState);
                 if (!ev.dropItems) { p->digActive = false;
                     broadcastDigStage(*p, -1); continue; }
                 if (p->gamemode == 0) {
@@ -308,6 +309,17 @@ void GameServer::tickOnce() {
                 serializeUpdateLightBody(b, cx, cz, c);
                 broadcastPacketExcept(nullptr, pl::sc::UpdateLight, b);
             });
+        }
+    }
+
+    // periodic progress save every 20 s (play_time accrual + crash safety)
+    if (tickNo_ % 400 == 0) {
+        for (auto& p : playersSnapshot()) {
+            if (p->stats) {
+                p->stats->add("minecraft:custom|minecraft:play_time", 400);
+                p->stats->save(uuidToHex(p->uuid));
+            }
+            if (p->advancements) p->advancements->save();
         }
     }
 }
@@ -586,6 +598,79 @@ std::shared_ptr<MobEntity> GameServer::findLovePartner(const MobEntity& seeker) 
     return nullptr;
 }
 
+// ------------------------------------------------------- progress tracking
+
+void GameServer::initPlayerProgress(Player& p) {
+    const std::string hex = uuidToHex(p.uuid);
+    p.stats = std::make_unique<StatsManager>();
+    p.advancements = std::make_unique<AdvancementManager>(hex);
+    p.stats->load(hex);
+    p.advancements->load();
+    p.joinTick = tickNo_;
+    grantAdvancement(p, "cppfm:root");
+}
+
+void GameServer::savePlayerProgress(Player& p) {
+    if (!p.stats || !p.advancements) return;
+    if (p.joinTick) {
+        const std::int64_t ticks = tickNo_ - p.joinTick;
+        p.stats->add("minecraft:custom|minecraft:play_time", ticks);
+        p.joinTick = tickNo_;
+    }
+    p.stats->save(uuidToHex(p.uuid));
+    p.advancements->save();
+}
+
+void GameServer::sendAdvancementsTo(Player& p, bool reset) {
+    WriteBuffer b;
+    writeAdvancementsPacket(b, reset, advancementDefs(),
+        [&](const std::string& id) {
+            return p.advancements && p.advancements->has(id);
+        });
+    try { p.conn->sendPacket(pl::sc::UpdateAdvancements, b); } catch (...) {}
+}
+
+void GameServer::grantAdvancement(Player& p, const std::string& id) {
+    if (!p.advancements) return;
+    if (p.advancements->grant(id)) sendAdvancementsTo(p, false);
+}
+
+void GameServer::onBlockMined(Player& p, std::uint16_t oldState) {
+    if (!p.stats) return;
+    static thread_local std::unordered_map<std::uint32_t, std::string> inv;
+    if (inv.empty())
+        for (auto& [n, s] : gen::kBlocks) inv.emplace(s, std::string(n));
+    auto it = inv.find(oldState);
+    const std::string name = it != inv.end() ? it->second : "minecraft:air";
+    p.stats->add("minecraft:mined|" + name);
+    if (name == "minecraft:oak_log") grantAdvancement(p, "cppfm:wood");
+    if (name == "minecraft:stone") { /* stone age analog */ }
+}
+
+void GameServer::onItemObtained(Player& p, const ItemStack& s,
+                                const char* how) {
+    if (!p.stats) return;
+    const std::string n = s.name();
+    p.stats->add(std::string("minecraft:") + how + "|" + n,
+                 s.count);
+    if (how == std::string("crafted")) {
+        if (n == "minecraft:crafting_table") grantAdvancement(p, "cppfm:bench");
+        if (n == "minecraft:stone_pickaxe") grantAdvancement(p, "cppfm:tools");
+    }
+    if (how == std::string("smelted")) {
+        if (n == "minecraft:iron_ingot") grantAdvancement(p, "cppfm:iron");
+        grantAdvancement(p, "cppfm:cook");
+    }
+    if (n == "minecraft:diamond") grantAdvancement(p, "cppfm:diamonds");
+}
+
+void GameServer::onMobKilledBy(Player& p, MobKind kind) {
+    if (!p.stats) return;
+    p.stats->add(std::string("minecraft:killed|") +
+                 MobEntity::kindName(kind));
+    if (MobEntity::isHostile(kind)) grantAdvancement(p, "cppfm:hunter");
+}
+
 void GameServer::applyDamageToMob(MobEntity& m, float amount, const char* cause) {
     (void)cause;
     if (amount <= 0) return;
@@ -636,6 +721,9 @@ void GameServer::itemsTick() {
     }
     for (auto& pk : pickups) {
         if (addToInventory(*pk.collector, pk.ent->itemId, pk.ent->count)) {
+            onItemObtained(*pk.collector,
+                           ItemStack::of(pk.ent->itemId, pk.ent->count),
+                           "picked_up");
             WriteBuffer c;
             c.varint(pk.ent->entityId);
             c.varint(pk.collector->entityId);
@@ -948,6 +1036,7 @@ void Session::run() {
         api::PlayerQuitEvent qev;
         qev.player = self_.get();
         srv_.events().quit.fire(qev);
+        srv_.savePlayerProgress(*self_);
         srv_.broadcastSystemText("\u00a7e" + self_->name + " left the game", nullptr);
         WriteBuffer rm;
         rm.varint(1);
@@ -1386,6 +1475,8 @@ void Session::onEnterPlay() {
     api::PlayerJoinEvent jev;
     jev.player = self_.get();
     srv_.events().join.fire(jev);
+    srv_.initPlayerProgress(*self_);
+    srv_.sendAdvancementsTo(*self_, true);
 
     broadcastSpawnEntity(self_.get());
     sendDeclareCommands();
@@ -1904,6 +1995,12 @@ struct SessionMenuIo : MenuIo {
     }
     void blockEntityChanged(std::int64_t key) override {
         s.server().blockEntities().dirty_.insert(key);
+    }
+    void itemCrafted(Player& p, const ItemStack& result) override {
+        s.server().onItemObtained(p, result, "crafted");
+    }
+    void itemSmelted(Player& p, const ItemStack& result) override {
+        s.server().onItemObtained(p, result, "smelted");
     }
 };
 } // namespace
@@ -2887,11 +2984,16 @@ void Session::onUseEntity(ReadBuffer& in) {
         WriteBuffer rm;
         rm.varint(1); rm.varint(target);
         srv_.broadcastPacketExcept(nullptr, pl::sc::RemoveEntities, rm);
+        srv_.onMobKilledBy(*self_, victim->kind);
         const auto drop = MobEntity::dropFor(victim->kind);
-        srv_.spawnItemDrop(victim->x, victim->y + 0.4, victim->z, drop.itemId, drop.count,
-                           (rand()/(double)RAND_MAX-.5)*.15, .1,
-                           (rand()/(double)RAND_MAX-.5)*.15);
+        if (drop.itemId)
+            srv_.spawnItemDrop(victim->x, victim->y + 0.4, victim->z, drop.itemId, drop.count,
+                               (rand()/(double)RAND_MAX-.5)*.15, .1,
+                               (rand()/(double)RAND_MAX-.5)*.15);
+        srv_.spawnXpOrbs(victim->x, victim->y + 0.5, victim->z,
+                         mobStats(victim->kind).xpDrop, self_.get());
         std::lock_guard lk(srv_.entsMtx_);
+        srv_.mobAi_.erase(target);
         srv_.mobsForTest().erase(
             std::remove_if(srv_.mobsForTest().begin(), srv_.mobsForTest().end(),
                 [&](const std::shared_ptr<MobEntity>& x){ return x.get()==victim.get(); }),

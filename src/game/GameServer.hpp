@@ -28,6 +28,7 @@
 #include "GameData.hpp"
 #include "Xp.hpp"
 #include "MobEffects.hpp"
+#include "Stats.hpp"
 #include "../physics/LightEngine.hpp"
 #include "../physics/Fluids.hpp"
 #include "../physics/Redstone.hpp"
@@ -105,6 +106,10 @@ struct Player {
     float  sentYaw = 0, sentPitch = 0;
     // experience (plan3 経験値システム)
     XpState xp{};
+    // stats + advancements
+    std::unique_ptr<StatsManager> stats;
+    std::unique_ptr<AdvancementManager> advancements;
+    std::int64_t joinTick = 0;
     // active status effects (plan3 ポーション)
     std::vector<EffectInstance> effects;
     // chat signing session (plan3 Chat signing)
@@ -345,6 +350,14 @@ public:
     void spawnXpOrbs(double x, double y, double z, int totalPoints,
                      Player* directTo);
     void xpOrbsTick();
+    // Progress tracking (stats + advancements)
+    void initPlayerProgress(Player& p);
+    void savePlayerProgress(Player& p);
+    void grantAdvancement(Player& p, const std::string& id);
+    void sendAdvancementsTo(Player& p, bool reset);
+    void onBlockMined(Player& p, std::uint16_t oldState);
+    void onItemObtained(Player& p, const ItemStack& s, const char* how);
+    void onMobKilledBy(Player& p, MobKind kind);
     void itemsTick();
     void trySpawnMobs();
     void spawnItemDrop(double x,double y,double z,std::uint32_t itemId,std::uint8_t cnt,

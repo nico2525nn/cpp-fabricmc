@@ -25,6 +25,7 @@ add_executable(cppfm
     src/worldgen/MultiNoise.cpp
     src/worldgen/Structures.cpp
     src/game/AiBrain.cpp
+    src/game/Stats.cpp
 )
 
 target_include_directories(cppfm PRIVATE src src/generated)
