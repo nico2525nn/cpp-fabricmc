@@ -191,6 +191,7 @@ bool ClickLogic::quickMove(Menu& m, Player& p, const RecipeManager& recipes,
             while (!m.craftResult.empty() && crafted < 64) {
                 const ItemStack out = m.craftResult;
                 if (!addToPlayerInv(p, out)) break;
+                io.itemCrafted(p, out);
                 m.consumeCraftIngredients();
                 m.refreshCraftResult(recipes);
                 ++crafted;
@@ -328,20 +329,32 @@ bool ClickLogic::apply(Menu& m, Player& p, const RecipeManager& recipes,
             if (m.craftResult.empty()) return false;
             if (button == 0 && cursor.empty()) {
                 cursor = m.craftResult;
+                io.itemCrafted(p, cursor);
                 craftTaken(m, recipes);
                 return true;
             }
             if (button == 0 && sameItem(cursor, m.craftResult)) {
-                if (mergeInto(m.craftResult, cursor)) { craftTaken(m, recipes); return true; }
+                if (mergeInto(m.craftResult, cursor)) { io.itemCrafted(p, cursor); craftTaken(m, recipes); return true; }
                 return false;
             }
             if (button == 1) {
-                if (mergeInto(m.craftResult, cursor, 1)) { craftTaken(m, recipes); return true; }
+                if (mergeInto(m.craftResult, cursor, 1)) { io.itemCrafted(p, cursor); craftTaken(m, recipes); return true; }
                 return false;
             }
             return false;
         }
         if (clickedSlot == -999) return throwSlot(m, p, clickedSlot, button, cursor, io);
+        // furnace output take-only path
+        if (m.type == MenuType::Furnace && clickedSlot == FurnaceData::kOutput) {
+            ItemStack* out = &m.container[FurnaceData::kOutput];
+            if (out->empty()) return false;
+            bool took = false;
+            if (cursor.empty()) { cursor = *out; *out = ItemStack::air(); took = true; }
+            else if (sameItem(cursor, *out)) { took = mergeInto(*out, cursor); }
+            else return false;
+            if (took) { io.itemSmelted(p, cursor); io.blockEntityChanged(m.blockKey); }
+            return took;
+        }
         // player-inv region slots route through the same logic using inv array
         ItemStack* invTarget = playerInvSlot(m, clickedSlot, p);
         if (invTarget) {

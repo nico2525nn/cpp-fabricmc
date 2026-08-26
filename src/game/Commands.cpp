@@ -633,6 +633,37 @@ void GameServer::initCommands() {
         };
         d.root->then(sp);
     }
+    // /stats
+    {
+        auto st = CommandNode::literal("stats");
+        st->executable = true;
+        st->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            if (!src || !src->stats) return 0;
+            sendFeedback(src,
+                "\u00a77--- Stats ---\u00a7r\n"
+                "mined: " + std::to_string([&]{
+                    std::int64_t t = 0;
+                    for (auto& [k, v] : src->stats->counters())
+                        if (k.rfind("minecraft:mined|", 0) == 0) t += v;
+                    return t;
+                }()) +
+                "  killed: " + std::to_string([&]{
+                    std::int64_t t = 0;
+                    for (auto& [k, v] : src->stats->counters())
+                        if (k.rfind("minecraft:killed|", 0) == 0) t += v;
+                    return t;
+                }()) +
+                "\nplay time: " +
+                std::to_string(src->stats->get(
+                    "minecraft:custom|minecraft:play_time") / 20 / 60) +
+                " min\nadvancements: " +
+                std::to_string(src->advancements->unlocked().size()) + "/" +
+                std::to_string(advancementDefs().size()));
+            return 1;
+        };
+        d.root->then(st);
+    }
     // /difficulty <level>
     {
         auto diff = CommandNode::literal("difficulty");
