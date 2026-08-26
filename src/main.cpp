@@ -7,9 +7,11 @@
 
 using namespace cppfm;
 
+namespace cppfm { std::atomic<bool> g_stopRequested{false}; }
 static GameServer* g_server = nullptr;
 static void onSignal(int) {
-    if (g_server) g_server->stop();
+    g_stopRequested = true;
+    if (g_server) g_server->requestStop();   // async-signal-safe subset
 }
 
 static std::string trim(std::string s) {

@@ -28,6 +28,11 @@ inline constexpr std::int64_t chunkKey(std::int32_t cx, std::int32_t cz) {
 struct Chunk {
     // layout: [section][yInSection][z][x]
     std::array<std::uint16_t, kSectionsPerChunk * 4096> blocks{};
+    // Block light, 4 bits per block (same index layout as `blocks`).
+    std::array<std::uint8_t, (kSectionsPerChunk * 4096 + 1) / 2> blockLightNib{};
+    // Cached sky light (built lazily by the LightEngine), 4 bits per block.
+    std::shared_ptr<std::array<std::uint8_t,
+                               (kSectionsPerChunk * 4096 + 1) / 2>> skyLight;
     std::uint64_t revision = 0;
 
     static constexpr std::size_t index(int section, int yIn, int z, int x) {
@@ -35,6 +40,20 @@ struct Chunk {
              + (static_cast<std::size_t>(yIn) * 256)
              + (static_cast<std::size_t>(z) * 16)
              + static_cast<std::size_t>(x);
+    }
+    static std::uint8_t getNibble(const std::array<std::uint8_t,
+                                  (kSectionsPerChunk * 4096 + 1) / 2>& a,
+                                  std::size_t i) {
+        return (i & 1) ? static_cast<std::uint8_t>(a[i >> 1] >> 4)
+                       : static_cast<std::uint8_t>(a[i >> 1] & 0x0F);
+    }
+    static void setNibble(std::array<std::uint8_t,
+                          (kSectionsPerChunk * 4096 + 1) / 2>& a,
+                          std::size_t i, std::uint8_t v) {
+        const std::uint8_t hi = a[i >> 1] & 0xF0;
+        const std::uint8_t lo = a[i >> 1] & 0x0F;
+        a[i >> 1] = (i & 1) ? static_cast<std::uint8_t>(lo | (v << 4))
+                            : static_cast<std::uint8_t>(hi | (v & 0x0F));
     }
 };
 
@@ -68,6 +87,74 @@ public:
     // Loader hook: return true if it filled the chunk (e.g., from disk).
     void setLoader(std::function<bool(std::int32_t, std::int32_t, Chunk&)> l) { loader_ = std::move(l); }
     void setOnEdit(std::function<void(std::int32_t, std::int32_t)> cb) { onEdit_ = std::move(cb); }
+    // Per-block change hook (x,y,z,old,new) used by the light/fluid engines.
+    void setOnBlockChanged(std::function<void(std::int32_t, std::int32_t,
+                                              std::int32_t, std::uint16_t,
+                                              std::uint16_t)> cb) {
+        onBlockChanged_ = std::move(cb);
+    }
+
+    // ---- block-light accessors (nibble storage inside Chunk) --------------
+    std::uint8_t getBlockLight(std::int32_t x, std::int32_t y,
+                               std::int32_t z) const {
+        if (y < kMinY || y >= kMaxY) return 0;
+        std::shared_lock lock(mutex_);
+        auto it = chunks_.find(chunkKey(x >> 4, z >> 4));
+        if (it == chunks_.end()) return 0;
+        const int lx = x & 15, lz = z & 15, wy = y - kMinY;
+        const std::size_t i = Chunk::index(wy >> 4, wy & 15, lz, lx);
+        return Chunk::getNibble(it->second->blockLightNib, i);
+    }
+    void setBlockLightRaw(std::int32_t x, std::int32_t y, std::int32_t z,
+                          std::uint8_t v) {
+        if (y < kMinY || y >= kMaxY) return;
+        generateChunkIfMissing(x >> 4, z >> 4);
+        std::unique_lock lock(mutex_);
+        auto it = chunks_.find(chunkKey(x >> 4, z >> 4));
+        if (it == chunks_.end()) return;
+        const int lx = x & 15, lz = z & 15, wy = y - kMinY;
+        const std::size_t i = Chunk::index(wy >> 4, wy & 15, lz, lx);
+        Chunk::setNibble(it->second->blockLightNib, i, v & 0x0F);
+    }
+    // Sky light cache accessors (nullptr when not yet computed).
+    std::uint8_t getSkyLight(std::int32_t x, std::int32_t y,
+                             std::int32_t z) const {
+        if (y < kMinY || y >= kMaxY) return 0;
+        std::shared_lock lock(mutex_);
+        auto it = chunks_.find(chunkKey(x >> 4, z >> 4));
+        if (it == chunks_.end() || !it->second->skyLight) return 0;
+        const int lx = x & 15, lz = z & 15, wy = y - kMinY;
+        const std::size_t i = Chunk::index(wy >> 4, wy & 15, lz, lx);
+        return Chunk::getNibble(*it->second->skyLight, i);
+    }
+    bool hasSkyLightCache(std::int32_t cx, std::int32_t cz) const {
+        std::shared_lock lock(mutex_);
+        auto it = chunks_.find(chunkKey(cx, cz));
+        return it != chunks_.end() && static_cast<bool>(it->second->skyLight);
+    }
+    void setSkyLightRaw(std::int32_t x, std::int32_t y, std::int32_t z,
+                        std::uint8_t v) {
+        if (y < kMinY || y >= kMaxY) return;
+        std::unique_lock lock(mutex_);
+        auto it = chunks_.find(chunkKey(x >> 4, z >> 4));
+        if (it == chunks_.end()) return;
+        if (!it->second->skyLight)
+            it->second->skyLight =
+                std::make_shared<std::array<std::uint8_t,
+                                            (kSectionsPerChunk * 4096 + 1) / 2>>();
+        const int lx = x & 15, lz = z & 15, wy = y - kMinY;
+        const std::size_t i = Chunk::index(wy >> 4, wy & 15, lz, lx);
+        Chunk::setNibble(*it->second->skyLight, i, v & 0x0F);
+    }
+    void ensureSkyStorage(std::int32_t cx, std::int32_t cz) {
+        std::unique_lock lock(mutex_);
+        auto it = chunks_.find(chunkKey(cx, cz));
+        if (it == chunks_.end()) return;
+        if (!it->second->skyLight)
+            it->second->skyLight =
+                std::make_shared<std::array<std::uint8_t,
+                                            (kSectionsPerChunk * 4096 + 1) / 2>>();
+    }
 
     // Block update: check if block above needs to fall (sand/gravel)
     void scheduleNeighborUpdates(std::int32_t x, std::int32_t y, std::int32_t z) {
@@ -146,17 +233,28 @@ public:
     void setBlock(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state) {
         if (y < kMinY || y >= kMaxY) return;
         generateChunkIfMissing(x >> 4, z >> 4);
-        std::unique_lock lock(mutex_);
-        auto& c = *chunks_.at(chunkKey(x >> 4, z >> 4));
-        const int lx = x & 15, lz = z & 15, wy = y - kMinY;
-        c.blocks[Chunk::index(wy >> 4, wy & 15, lz, lx)] = state;
-        ++c.revision;
+        const std::uint16_t old =
+            getBlock(x, y, z);                       // re-acquires shared lock
+        {
+            std::unique_lock lock(mutex_);
+            auto& c = *chunks_.at(chunkKey(x >> 4, z >> 4));
+            const int lx = x & 15, lz = z & 15, wy = y - kMinY;
+            c.blocks[Chunk::index(wy >> 4, wy & 15, lz, lx)] = state;
+            ++c.revision;
+        }
+        if (onBlockChanged_) onBlockChanged_(x, y, z, old, state);
         if (onEdit_) onEdit_(x >> 4, z >> 4);
     }
     const Chunk* tryGet(std::int32_t cx, std::int32_t cz) const {
         std::shared_lock lock(mutex_);
         auto it = chunks_.find(chunkKey(cx, cz));
         return it == chunks_.end() ? nullptr : it->second.get();
+    }
+    // Sum of revisions of the chunk (cheap "did anything change" probe).
+    std::uint64_t revisionAt(std::int32_t cx, std::int32_t cz) const {
+        std::shared_lock lock(mutex_);
+        auto it = chunks_.find(chunkKey(cx, cz));
+        return it == chunks_.end() ? 0 : it->second->revision;
     }
 
     const std::string& biomeKey() const { return biome_; }
@@ -265,6 +363,8 @@ private:
     std::uint64_t srv_seed;
     std::function<bool(std::int32_t, std::int32_t, Chunk&)> loader_;
     std::function<void(std::int32_t, std::int32_t)> onEdit_;
+    std::function<void(std::int32_t, std::int32_t, std::int32_t,
+                       std::uint16_t, std::uint16_t)> onBlockChanged_;
 };
 
 } // namespace cppfm

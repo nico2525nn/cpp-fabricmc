@@ -17,6 +17,9 @@ add_executable(cppfm
     src/game/MenuInteraction.cpp
     src/game/Commands.cpp
     src/game/Containers.cpp
+    src/physics/LightEngine.cpp
+    src/physics/Fluids.cpp
+    src/physics/Redstone.cpp
 )
 
 target_include_directories(cppfm PRIVATE src src/generated)

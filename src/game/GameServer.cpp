@@ -1,4 +1,7 @@
 #include "GameServer.hpp"
+#include "../physics/LightEngine.hpp"
+#include "../physics/Fluids.hpp"
+#include "../physics/Redstone.hpp"
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -64,7 +67,11 @@ void GameServer::startTickLoop() {
     });
 }
 void GameServer::stopTickLoop() {
-    if (tickThread_.joinable()) { tickThread_.join(); }
+    if (tickThread_.joinable()) {
+        std::fprintf(stderr, "[cppfm] joining tick thread\n");
+        tickThread_.join();
+        std::fprintf(stderr, "[cppfm] tick thread joined\n");
+    }
 }
 
 void GameServer::runForever() {
@@ -116,11 +123,17 @@ void GameServer::runForever() {
     acceptLoop();
 }
 
+extern std::atomic<bool> g_stopRequested;
+
 void GameServer::acceptLoop() {
     while (running_) {
         sockaddr_in cli{}; socklen_t cl = sizeof(cli);
         int fd = ::accept(listenFd_, reinterpret_cast<sockaddr*>(&cli), &cl);
-        if (fd < 0) { if (running_) continue; break; }
+        if (fd < 0) {
+            if (g_stopRequested || !running_) break;
+            if (running_) continue;
+            break;
+        }
         std::fprintf(stderr, "[cppfm] accepted fd=%d\n", fd);
         std::thread([this, fd] {
             auto conn = std::make_unique<Connection>(fd);
@@ -242,18 +255,33 @@ void GameServer::killPlayer(Player& p, const char* cause) {
 }
 
 void GameServer::tickOnce() {
+    static const bool tr = getenv("CPPFM_TICK_TRACE") != nullptr;
+    auto mark = [&](char c) { if (tr) std::fprintf(stderr, "[tick] %c t=%ld\n", c, (long)tickNo_); };
     api::ServerTickEvent ev{tickNo_};
     events().serverTick.fire(ev);
+    mark('F');
+    fluidSim_->tick(tickNo_);
+    mark('R');
+    redstone_->tick(tickNo_);
+    mark('D');
     tickDigs();
+    mark('S');
     survivalTick();
+    mark('U');
     furnacesTick();
+    mark('E');
     effectsTick();
+    mark('X');
     xpOrbsTick();
+    mark('m');
 
     // mob spawn cadence: every 20 ticks
     if (tickNo_ % 20 == 0) trySpawnMobs();
+    mark('M');
     mobsTick();
+    mark('I');
     itemsTick();
+    mark('T');
 
     // periodic time sync every 20 ticks (1s); frozen when doDaylightCycle off
     if (tickNo_ % 20 == 0) {
@@ -264,6 +292,22 @@ void GameServer::tickOnce() {
             t.i64(dayTime());
             t.boolean(true);
             broadcastPacketExcept(nullptr, pl::sc::UpdateTime, t);
+        }
+    }
+
+    // light engine: drain queued BFS work, broadcast UpdateLight per chunk
+    {
+        mark('L');
+        const LightUpdateBatch batch = lightEngine_->drain();
+        mark('l');
+        for (auto k : batch.dirtyChunks) {
+            const std::int32_t cx = static_cast<std::int32_t>(k >> 32);
+            const std::int32_t cz = static_cast<std::int32_t>(k & 0xFFFFFFFFLL);
+            world_.withChunk(cx, cz, [&](const Chunk& c) {
+                WriteBuffer b;
+                serializeUpdateLightBody(b, cx, cz, c);
+                broadcastPacketExcept(nullptr, pl::sc::UpdateLight, b);
+            });
         }
     }
 }
@@ -354,7 +398,16 @@ void GameServer::trySpawnMobs() {
             } else {
                 picked = passive[rand() % 5];
             }
-            spawnMob(picked, wx + 0.5, groundY + 1.0, wz + 0.5);
+            {
+                auto mob = std::make_shared<MobEntity>();
+                mob->entityId = nextEntityId();
+                mob->kind = picked;
+                mob->health = mobStats(picked).maxHealth;
+                mob->x = wx + 0.5; mob->y = groundY + 1.0; mob->z = wz + 0.5;
+                mob->lastSeenMs = nowMs();
+                mobs_.push_back(mob);
+                broadcastMobSpawn(*mob);
+            }
         }
     }
 }
@@ -495,12 +548,16 @@ void GameServer::spawnMob(MobKind kind, double x, double y, double z) {
         std::lock_guard lk(entsMtx_);
         mobs_.push_back(mob);
     }
+    broadcastMobSpawn(*mob);
+}
+
+void GameServer::broadcastMobSpawn(const MobEntity& mob) {
     WriteBuffer b;
-    b.varint(mob->entityId);
+    b.varint(mob.entityId);
     static std::uint8_t zero[16] = {};
     b.uuid(zero);
-    b.varint(static_cast<std::int32_t>(MobEntity::typeId(mob->kind)));
-    b.f64(mob->x); b.f64(mob->y); b.f64(mob->z);
+    b.varint(static_cast<std::int32_t>(MobEntity::typeId(mob.kind)));
+    b.f64(mob.x); b.f64(mob.y); b.f64(mob.z);
     b.i8(0); b.i8(0); b.i8(0);
     b.varint(0); b.i16(0); b.i16(0); b.i16(0);
     broadcastPacketExcept(nullptr, pl::sc::SpawnEntity, b);
@@ -2708,6 +2765,13 @@ void Session::onUseItemOn(ReadBuffer& in) {
                 bn == "minecraft:furnace" ||
                 bn == "minecraft:crafting_table") {
                 openMenuAt(x, y, z, clickedState);
+                ack(sequence);
+                return;
+            }
+            // redstone interactables (lever / button) consume the click
+            if (bn == "minecraft:lever" ||
+                bn.find("_button") != std::string::npos) {
+                srv_.redstone_->onInteract(x, y, z, srv_.tickNoForTest());
                 ack(sequence);
                 return;
             }

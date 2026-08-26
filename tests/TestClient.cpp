@@ -417,7 +417,7 @@ void TestClient::filePacket(Packet p) {
         case proto::pl::sc::MoveEntityPosRot:
         case proto::pl::sc::MoveEntityPos:
         case proto::pl::sc::EntityTeleport: entityMoves++; break;
-        case proto::pl::sc::SetTime: timeUpdates++; break;
+        case proto::pl::sc::UpdateTime: timeUpdates++; break;
         case proto::pl::sc::DeclareCommands: declares++; break;
         case proto::pl::sc::Respawn: gotRespawn = true; break;
         default: break;

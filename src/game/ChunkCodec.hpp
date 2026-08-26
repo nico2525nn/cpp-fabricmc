@@ -135,8 +135,7 @@ inline void writeLightArrays(WriteBuffer& out, const std::vector<std::vector<std
 
 // Section-data blob (24 sections), shared by chunk packets & golden tests.
 inline void serializeSectionData(WriteBuffer& blob, const Chunk* chunk,
-                                 std::uint32_t biomeRegistryIndex) {
-    for (int s = 0; s < kSectionsPerChunk; ++s) {
+                                 std::uint32_t biomeRegistryIndex) {    for (int s = 0; s < kSectionsPerChunk; ++s) {
         std::size_t base = static_cast<std::size_t>(s) * 4096;
         std::uint16_t nonAir = 0;
         for (int i = 0; i < 4096; ++i)
@@ -162,6 +161,93 @@ inline void packHeightmapsNbt(WriteBuffer& out, const Chunk* chunk) {
     w.endCompound();
 }
 
+// Light payload shared by LevelChunkWithLight and UpdateLight packets.
+// Uses engine-maintained arrays when available; falls back to the column
+// heuristic for sky light and zeros for block light.
+inline void serializeLightPayload(WriteBuffer& out, const Chunk& chunk) {
+    std::vector<std::int64_t> skyMask((kSectionsPerChunk + 63) / 64, 0);
+    std::vector<std::int64_t> blockMask((kSectionsPerChunk + 63) / 64, 0);
+    std::vector<std::int64_t> emptySkyMask((kSectionsPerChunk + 63) / 64, 0);
+    std::vector<std::int64_t> emptyBlockMask((kSectionsPerChunk + 63) / 64, 0);
+    std::vector<std::vector<std::uint8_t>> skyArrays;
+    std::vector<std::vector<std::uint8_t>> blockArrays;
+    const bool haveSky = static_cast<bool>(chunk.skyLight);
+
+    for (int s = 0; s < kSectionsPerChunk; ++s) {
+        const std::size_t base = static_cast<std::size_t>(s) * 4096;
+        bool anyBlock = false;
+        if (haveSky || true) {}
+        // scan arrays (or heuristic) per section
+        int minH = INT_MAX, maxH = INT_MIN;
+        for (int z = 0; z < 16; ++z)
+            for (int x = 0; x < 16; ++x) {
+                int h = columnSurface(chunk, x, z);
+                minH = std::min(minH, h); maxH = std::max(maxH, h);
+            }
+        const int secBot = s * 16, secTop = s * 16 + 16;
+
+        // ---- sky section classification
+        if (!haveSky) {
+            if (maxH <= secBot) emptySkyMask[s / 64] |= 1LL << (s % 64);
+            else if (minH < secTop) {
+                skyMask[s / 64] |= 1LL << (s % 64);
+                std::vector<std::uint8_t> arr;
+                sectionSkyLight(arr, chunk, s);
+                skyArrays.push_back(std::move(arr));
+            }
+        } else {
+            bool anyLit = false, allZero = true;
+            std::vector<std::uint8_t> arr(2048, 0);
+            for (int i = 0; i < 4096; i += 2) {
+                const std::uint8_t lo = Chunk::getNibble(*chunk.skyLight, base + i);
+                const std::uint8_t hi = Chunk::getNibble(*chunk.skyLight, base + i + 1);
+                const std::uint8_t byte = static_cast<std::uint8_t>(lo | (hi << 4));
+                arr[i >> 1] = byte;
+                if (lo || hi) { anyLit = true; allZero = false; }
+            }
+            if (!anyLit || allZero) {
+                emptySkyMask[s / 64] |= 1LL << (s % 64);
+            } else {
+                skyMask[s / 64] |= 1LL << (s % 64);
+                skyArrays.push_back(std::move(arr));
+            }
+        }
+
+        // ---- block light section
+        {
+            bool any = false;
+            std::vector<std::uint8_t> arr(2048, 0);
+            for (int i = 0; i < 4096; i += 2) {
+                const std::uint8_t lo =
+                    Chunk::getNibble(chunk.blockLightNib, base + i);
+                const std::uint8_t hi =
+                    Chunk::getNibble(chunk.blockLightNib, base + i + 1);
+                arr[i >> 1] = static_cast<std::uint8_t>(lo | (hi << 4));
+                if (lo || hi) any = true;
+            }
+            if (any) {
+                blockMask[s / 64] |= 1LL << (s % 64);
+                blockArrays.push_back(std::move(arr));
+            } else {
+                emptyBlockMask[s / 64] |= 1LL << (s % 64);
+            }
+        }
+    }
+    writeMaskArray(out, skyMask);
+    writeMaskArray(out, blockMask);
+    writeMaskArray(out, emptySkyMask);
+    writeMaskArray(out, emptyBlockMask);
+    writeLightArrays(out, skyArrays);
+    writeLightArrays(out, blockArrays);
+}
+
+inline void serializeUpdateLightBody(WriteBuffer& out, std::int32_t cx,
+                                     std::int32_t cz, const Chunk& chunk) {
+    out.varint(cx);
+    out.varint(cz);
+    serializeLightPayload(out, chunk);
+}
+
 // Serializes LevelChunkWithLight body (packet id excluded).
 // biomeRegistryIndex: this world's biome id inside the synced registry order.
 // Full LevelChunkWithLight body given an already-locked chunk reference.
@@ -179,33 +265,7 @@ inline void serializeLevelChunkBody(WriteBuffer& out, std::int32_t cx, std::int3
 
     out.varint(0);   // block entities
 
-    // light: vanilla-style classification
-    std::vector<std::int64_t> skyMask((kSectionsPerChunk + 63) / 64, 0);
-    std::vector<std::int64_t> emptySkyMask((kSectionsPerChunk + 63) / 64, 0);
-    std::vector<std::vector<std::uint8_t>> skyArrays;
-    for (int s = 0; s < kSectionsPerChunk; ++s) {
-        int minH = INT_MAX, maxH = INT_MIN;
-        for (int z = 0; z < 16; ++z)
-            for (int x = 0; x < 16; ++x) {
-                int h = columnSurface(chunk, x, z);
-                minH = std::min(minH, h); maxH = std::max(maxH, h);
-            }
-        const int secBot = s * 16, secTop = s * 16 + 16;
-        if (maxH <= secBot) {                              // solid below surface
-            emptySkyMask[s / 64] |= 1LL << (s % 64);
-        } else if (minH < secTop) {                        // intersects surface band
-            skyMask[s / 64] |= 1LL << (s % 64);
-            std::vector<std::uint8_t> arr;
-            sectionSkyLight(arr, chunk, s);
-            skyArrays.push_back(std::move(arr));
-        }                                                  // else: implicitly bright
-    }
-    writeMaskArray(out, skyMask);
-    writeMaskArray(out, {});                               // block light mask
-    writeMaskArray(out, emptySkyMask);
-    writeMaskArray(out, {});                               // empty block light mask
-    writeLightArrays(out, skyArrays);
-    writeLightArrays(out, {});                             // block light arrays
+    serializeLightPayload(out, chunk);
 }
 
 inline void serializeLevelChunk(WriteBuffer& out, std::int32_t cx, std::int32_t cz,

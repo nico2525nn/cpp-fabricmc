@@ -28,6 +28,9 @@
 #include "GameData.hpp"
 #include "Xp.hpp"
 #include "MobEffects.hpp"
+#include "../physics/LightEngine.hpp"
+#include "../physics/Fluids.hpp"
+#include "../physics/Redstone.hpp"
 #include "../api/EventBus.hpp"
 #include "../api/PluginChannels.hpp"
 #include "../brigadier/Tree.hpp"
@@ -219,6 +222,21 @@ public:
         recipes_.loadDefaults();
         recipes_.loadDirectory(cfg_.recipesDir);
         initCommands();
+        lightEngine_ = std::make_unique<LightEngine>(world_);
+        fluidSim_ = std::make_unique<FluidSim>(world_);
+        redstone_ = std::make_unique<RedstoneEngine>(world_);
+        world_.setOnBlockChanged([this](std::int32_t x, std::int32_t y,
+                                        std::int32_t z, std::uint16_t o,
+                                        std::uint16_t n) {
+            lightEngine_->onBlockChanged(x, y, z, o, n);
+            fluidSim_->touch(x, y, z);
+            static constexpr int DX[6] = {1,-1,0,0,0,0};
+            static constexpr int DY[6] = {0,0,1,-1,0,0};
+            static constexpr int DZ[6] = {0,0,0,0,1,-1};
+            for (int d = 0; d < 6; ++d)
+                fluidSim_->touch(x + DX[d], y + DY[d], z + DZ[d]);
+            redstone_->onBlockChanged(x, y, z);
+        });
         persist_ = std::make_unique<Persistence>(world_, cfg_.worldDir, cfg_.worldBiome);
         persist_->start();
         rconServer_ = std::make_unique<RconServer>(cfg_.rcon,
@@ -229,12 +247,24 @@ public:
                      cfg_.rcon.port);
     }
     void runForever();
-    void stop() {
+    void requestStop() {                 // async-signal-safe minimal path
         running_ = false;
+        if (listenFd_ >= 0) {
+            int fd = listenFd_;
+            ::shutdown(fd, SHUT_RDWR);   // wake acceptLoop
+        }
+    }
+    void stop() {
+        requestStop();
+        std::fprintf(stderr, "[cppfm] stopping tick loop\n");
         stopTickLoop();
+        std::fprintf(stderr, "[cppfm] stopping rcon\n");
         if (rconServer_) rconServer_->stop();
+        std::fprintf(stderr, "[cppfm] stopping persistence\n");
         if (persist_) persist_->stop();
+        std::fprintf(stderr, "[cppfm] closing listen fd\n");
         if (listenFd_ >= 0) { ::close(listenFd_); listenFd_ = -1; }
+        std::fprintf(stderr, "[cppfm] stopped cleanly\n");
     }
     Persistence& persistence() { return *persist_; }
     void savePlayerData(const std::string& uuidHex, Player& p);
@@ -257,6 +287,7 @@ public:
     brigadier::CommandDispatcher& commands() { return commands_; }
     void initCommands();                             // builds command tree
     api::ServerEvents& events() { return api::events(); }
+    LightEngine& lights() { return *lightEngine_; }
     // Resolve a selector string (@a/@e/@p/...) against players & mobs.
     brigadier::SelectorResult resolveSelector(const std::string& raw,
                                               Player* source);
@@ -280,6 +311,7 @@ public:
     void applyDamageToMob(MobEntity& m, float amount, const char* cause);
     // Spawn a mob of `kind` at position and broadcast it.
     void spawnMob(MobKind kind, double x, double y, double z);
+    void broadcastMobSpawn(const MobEntity& mob);   // no locking inside
     // Melee hit from a mob onto a player target (uses stats table).
     void mobAttackPlayer(MobEntity& m, Player& target);
     // Feed-to-breed handling when a player right-clicks an animal with food.
@@ -410,6 +442,9 @@ private:
     GameRuleManager gamerules_;
     std::string difficulty_ = "normal";
     std::int32_t teleportCounterForTest_ = 1;
+    std::unique_ptr<LightEngine> lightEngine_;
+    std::unique_ptr<FluidSim> fluidSim_;
+    std::unique_ptr<RedstoneEngine> redstone_;
     struct CachedChunk { std::uint64_t rev; ChunkBodyRef body; };
     std::unordered_map<std::int64_t, CachedChunk> chunkCache_;
     std::mutex chunkCacheMtx_;
