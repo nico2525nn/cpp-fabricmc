@@ -55,7 +55,7 @@ struct GenericContainerData {
 };
 
 struct BlockEntity {
-    enum class Kind { Chest, Furnace, Hopper, Dispenser };
+    enum class Kind { Chest, Furnace, Hopper, Dispenser, Barrel, ShulkerBox };
     Kind kind = Kind::Chest;
     ChestData chest{};
     FurnaceData furnace{};
@@ -111,6 +111,12 @@ public:
             } else if (be.kind == BlockEntity::Kind::Dispenser) {
                 e.set("id", nbt::Value::makeString("minecraft:dispenser"));
                 writeItems(e, be.generic.slots, 9, "Items");
+            } else if (be.kind == BlockEntity::Kind::Barrel) {
+                e.set("id", nbt::Value::makeString("minecraft:barrel"));
+                writeItems(e, be.chest.slots, ChestData::kSlots, "Items");
+            } else if (be.kind == BlockEntity::Kind::ShulkerBox) {
+                e.set("id", nbt::Value::makeString("minecraft:shulker_box"));
+                writeItems(e, be.chest.slots, ChestData::kSlots, "Items");
             } else {
                 e.set("id", nbt::Value::makeString("minecraft:furnace"));
                 writeFurnaceItems(e, be.furnace);
