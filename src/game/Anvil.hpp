@@ -24,7 +24,8 @@ inline nbt::Value blockStateEntry(std::uint16_t stateId,
 
 inline nbt::Value chunkToNBT(std::int32_t cx, std::int32_t cz,
                              const Chunk& chunk,
-                             const std::string& biomeKey) {
+                             const std::string& biomeKey,
+                             const std::unordered_map<std::uint16_t, std::string>* biomeIdxToKey = nullptr) {
     namespace nv = nbt;
     nv::Value root = nv::Value::makeCompound();
     root.set("DataVersion", nv::Value::makeInt(kDataVersion));
@@ -63,11 +64,38 @@ inline nbt::Value chunkToNBT(std::int32_t cx, std::int32_t cz,
         nv::Value sec = nv::Value::makeCompound();
         sec.set("Y", nv::Value::makeByte(static_cast<std::int8_t>(s + kMinYSections)));
 
-        {   // biomes: uniform plains
+        {   // biomes: per-cell palette from the chunk's biome cells
             nv::Value bio = nv::Value::makeCompound();
+            // gather palette for this section
+            std::vector<std::uint16_t> pal;
+            std::unordered_map<std::uint16_t, std::uint16_t> bidx;
+            const std::size_t bBase = static_cast<std::size_t>(s) * 64;
+            for (std::size_t i = 0; i < 64; ++i) {
+                const std::uint16_t v = chunk.biomes[bBase + i];
+                if (!bidx.count(v)) { bidx.emplace(v, (std::uint16_t)pal.size()); pal.push_back(v); }
+            }
             nv::Value bp = nv::Value::makeList(nv::String);
-            bp.list.push_back(nv::Value::makeString(biomeKey));
+            for (auto v : pal) {
+                std::string key = biomeKey;
+                if (biomeIdxToKey) {
+                    auto it = biomeIdxToKey->find(v);
+                    if (it != biomeIdxToKey->end()) key = it->second;
+                }
+                bp.list.push_back(nv::Value::makeString(key));
+            }
             bio.set("palette", bp);
+            if (pal.size() > 1) {
+                const int bits = std::max(1, ceilLog2((std::uint32_t)pal.size()));
+                const int per = 64 / bits;
+                nv::Value data; data.tag = nv::LongArray;
+                data.longArray.assign((64 + per - 1) / per, 0);
+                for (int i = 0; i < 64; ++i) {
+                    const std::uint16_t pi = bidx.at(chunk.biomes[bBase + i]);
+                    data.longArray[i / per] |= static_cast<std::int64_t>(
+                        static_cast<std::uint64_t>(pi) << ((i % per) * bits));
+                }
+                bio.set("data", data);
+            }
             sec.set("biomes", bio);
         }
         {   // block_states
@@ -104,7 +132,9 @@ inline nbt::Value chunkToNBT(std::int32_t cx, std::int32_t cz,
 // ------------------------------------------------------------- NBT -> chunk
 inline bool chunkFromNBT(const nbt::Value& root, Chunk& chunk,
                          const std::unordered_map<std::string, std::uint32_t>& biomeIds,
-                         std::string& biomeOut) {
+                         std::string& biomeOut,
+                         const std::function<std::int32_t(const std::string&)>&
+                             keyToBiomeIndex = nullptr) {
     const auto* status = root.get("Status");
     if (!status || status->str.find("full") == std::string::npos)
         return false;                                       // unfinished: fall back to gen
@@ -121,31 +151,74 @@ inline bool chunkFromNBT(const nbt::Value& root, Chunk& chunk,
                 const std::size_t base = static_cast<std::size_t>(secY) * 4096;
 
                 const auto* bs = sec.get("block_states");
-                if (!bs) continue;
-                std::vector<std::uint32_t> pal;
-                if (const auto* p = bs->get("palette")) {
-                    for (auto& e : p->list) {
-                        std::string name = "minecraft:air";
-                        if (const auto* nm = e.get("Name")) name = nm->str;
-                        const auto& table = gen::blockNameToState();
-                        auto it = table.find(name);
-                        pal.push_back(it != table.end()
-                                      ? static_cast<std::uint32_t>(it->second) : 0);
+                if (bs) {
+                    std::vector<std::uint32_t> pal;
+                    if (const auto* p = bs->get("palette")) {
+                        for (auto& e : p->list) {
+                            std::string name = "minecraft:air";
+                            if (const auto* nm = e.get("Name")) name = nm->str;
+                            const auto& table = gen::blockNameToState();
+                            auto it = table.find(name);
+                            pal.push_back(it != table.end()
+                                          ? static_cast<std::uint32_t>(it->second) : 0);
+                        }
                     }
+                    std::vector<std::uint32_t> vals(4096, pal.empty() ? 0 : pal.front());
+                    if (pal.size() > 1) {
+                        if (const auto* d = bs->get("data"); d && d->tag == nbt::LongArray) {
+                            const int bits = std::max(4, ceilLog2((std::uint32_t)pal.size()));
+                            const int per = 64 / bits;
+                            for (int i = 0; i < 4096; ++i) {
+                                const auto w = d->longArray[i / per];
+                                vals[i] = pal[(static_cast<std::uint64_t>(w) >> ((i % per) * bits))
+                                              & ((1u << bits) - 1)];
+                            }
+                        }
+                    }
+                    for (int i = 0; i < 4096; ++i) chunk.blocks[base + i] = static_cast<std::uint16_t>(vals[i]);
                 }
-                std::vector<std::uint32_t> vals(4096, pal.empty() ? 0 : pal.front());
-                if (pal.size() > 1) {
-                    if (const auto* d = bs->get("data"); d && d->tag == nbt::LongArray) {
-                        const int bits = std::max(4, ceilLog2((std::uint32_t)pal.size()));
-                        const int per = 64 / bits;
-                        for (int i = 0; i < 4096; ++i) {
-                            const auto w = d->longArray[i / per];
-                            vals[i] = pal[(static_cast<std::uint64_t>(w) >> ((i % per) * bits))
-                                          & ((1u << bits) - 1)];
+
+                // biomes: restore per-cell registry indices via key->index fn
+                if (const auto* bio = sec.get("biomes")) {
+                    const auto* bp = bio->get("palette");
+                    if (bp && !bp->list.empty()) {
+                        // resolve palette entries
+                        std::vector<std::uint16_t> bpal;
+                        for (auto& e : bp->list) {
+                            if (e.tag == nbt::String) {
+                                bpal.push_back(static_cast<std::uint16_t>(
+                                    keyToBiomeIndex ? keyToBiomeIndex(e.str) : -1));
+                            }
+                        }
+                        if (!bpal.empty()) {
+                            std::vector<std::uint16_t> vals(
+                                64, static_cast<std::uint16_t>(bpal.front()));
+                            if (bpal.size() > 1) {
+                                if (const auto* d = bio->get("data");
+                                    d && d->tag == nbt::LongArray) {
+                                    const int bits =
+                                        std::max(1, ceilLog2((std::uint32_t)bpal.size()));
+                                    const int per = 64 / bits;
+                                    for (int i = 0; i < 64; ++i) {
+                                        const auto w = d->longArray[i / per];
+                                        const int pi = static_cast<int>(
+                                            (static_cast<std::uint64_t>(w)
+                                                 >> ((i % per) * bits)) &
+                                            ((1u << bits) - 1));
+                                        vals[i] = pi >= 0 &&
+                                                          pi < (int)bpal.size()
+                                                      ? bpal[pi]
+                                                      : bpal[0];
+                                    }
+                                }
+                            }
+                            const std::size_t bBase =
+                                static_cast<std::size_t>(secY) * 64;
+                            for (int i = 0; i < 64; ++i)
+                                chunk.biomes[bBase + i] = vals[i];
                         }
                     }
                 }
-                for (int i = 0; i < 4096; ++i) chunk.blocks[base + i] = static_cast<std::uint16_t>(vals[i]);
             }
         } else if (k == "Heightmaps") {
             // accepted silently; recomputed on demand anyway

@@ -12,6 +12,8 @@
 #include <unordered_map>
 #include "generated/BlockStates.hpp"
 #include "TerrainGen.hpp"
+#include "../worldgen/MultiNoise.hpp"
+#include "../worldgen/Structures.hpp"
 
 namespace cppfm {
 
@@ -28,6 +30,9 @@ inline constexpr std::int64_t chunkKey(std::int32_t cx, std::int32_t cz) {
 struct Chunk {
     // layout: [section][yInSection][z][x]
     std::array<std::uint16_t, kSectionsPerChunk * 4096> blocks{};
+    // Per-cell biomes: 24 sections × 64 cells (4×4×4), values are the
+    // synced biome-registry indices used directly on the wire.
+    std::array<std::uint16_t, kSectionsPerChunk * 64> biomes{};
     // Block light, 4 bits per block (same index layout as `blocks`).
     std::array<std::uint8_t, (kSectionsPerChunk * 4096 + 1) / 2> blockLightNib{};
     // Cached sky light (built lazily by the LightEngine), 4 bits per block.
@@ -40,6 +45,13 @@ struct Chunk {
              + (static_cast<std::size_t>(yIn) * 256)
              + (static_cast<std::size_t>(z) * 16)
              + static_cast<std::size_t>(x);
+    }
+    static constexpr std::size_t biomeIndex(int section, int cellY,
+                                            int cellZ, int cellX) {
+        return (static_cast<std::size_t>(section) * 64)
+             + (static_cast<std::size_t>(cellY) * 16)
+             + (static_cast<std::size_t>(cellZ) * 4)
+             + static_cast<std::size_t>(cellX);
     }
     static std::uint8_t getNibble(const std::array<std::uint8_t,
                                   (kSectionsPerChunk * 4096 + 1) / 2>& a,
@@ -62,7 +74,9 @@ enum class LevelType { Flat, Normal };
 class World {
 public:
     World(std::string biomeKey, LevelType level, std::uint64_t seed)
-        : biome_(std::move(biomeKey)), level_(level), terrain_(seed), srv_seed(seed) {}
+        : biome_(std::move(biomeKey)), level_(level), terrain_(seed), srv_seed(seed) {
+        initWorldgen();
+    }
 
     LevelType levelType() const { return level_; }
     struct SpawnPoint { std::int32_t x=0, y=-60, z=0; };
@@ -201,7 +215,8 @@ public:
         auto c = std::make_unique<Chunk>();
         const bool loaded = loader_ && loader_(cx, cz, *c);
         if (!loaded) {
-            if (level_ == LevelType::Normal) fillTerrain(*c, cx, cz);
+            if (level_ == LevelType::Normal) fillTerrainV3(*c, cx, cz);
+            else if (false) fillTerrain(*c, cx, cz);
             else fillFlat(*c);
         }
         std::unique_lock lock(mutex_);
@@ -259,7 +274,21 @@ public:
 
     const std::string& biomeKey() const { return biome_; }
 
+    // Biome codec wiring: resolve biome key <-> synced registry index.
+    // Must be installed before any chunk generation (GameServer::init).
+    void setBiomeCodec(std::function<std::int32_t(const std::string&)> toIndex,
+                       std::int32_t defaultIndex) {
+        biomeToIndex_ = std::move(toIndex);
+        defaultBiomeIndex_ = defaultIndex;
+    }
+    std::int32_t biomeIndexOf(const std::string& key) const {
+        return biomeToIndex_ ? biomeToIndex_(key) : 0;
+    }
+
 private:
+    void fillTerrainV3(Chunk& c, std::int32_t cx, std::int32_t cz) const;
+
+public:
     void fillTerrain(Chunk& c, std::int32_t cx, std::int32_t cz) const {
         const auto& table = gen::blockNameToState();
         const std::uint16_t stone   = (uint16_t)table.at("minecraft:stone");
@@ -361,6 +390,12 @@ private:
     LevelType level_;
     TerrainGenerator terrain_;
     std::uint64_t srv_seed;
+    std::function<std::int32_t(const std::string&)> biomeToIndex_;
+    std::int32_t defaultBiomeIndex_ = 40;
+    std::unique_ptr<worldgen::MultiNoiseBiomeSource> biomeSource_;
+    std::unique_ptr<worldgen::StructureGenerator> structures_;
+    std::vector<std::pair<const char*, float>> oreTableV3_;   // name, rarity
+    void initWorldgen();
     std::function<bool(std::int32_t, std::int32_t, Chunk&)> loader_;
     std::function<void(std::int32_t, std::int32_t)> onEdit_;
     std::function<void(std::int32_t, std::int32_t, std::int32_t,
