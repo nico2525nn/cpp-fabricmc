@@ -101,6 +101,16 @@ struct Player {
     double fallDist = 0;
     double prevFeetY = -60.0;
     bool airborne = false;
+    // survival physic ticks (76)
+    std::int32_t airTicks = 300;          // 0..300, drown when 0
+    std::int32_t freezeTicks = 0;         // powder snow freeze
+    std::int32_t fireTicks = 0;           // burning remainder
+    bool isSneaking = false;
+    bool isSprinting = false;
+    bool isSwimming = false;
+    bool isEating = false;
+    std::int32_t eatTicks = 0;
+    std::uint8_t eatenFoodId = 0;
     std::array<InvSlot, 46> inv{};
     std::int32_t invStateId = 1;
     bool dead = false;

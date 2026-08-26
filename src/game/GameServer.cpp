@@ -3401,7 +3401,10 @@ void Session::onUseItemOn(ReadBuffer& in) {
     std::int32_t x, y, z;
     in.position(x, y, z);
     const std::int32_t dir = in.varint();
-    (void)in.f32(); (void)in.f32(); (void)in.f32();     // cursor
+    const float cursorX = in.f32();
+    const float cursorY = in.f32();
+    const float cursorZ = in.f32();
+    (void)cursorX; (void)cursorZ;
     (void)in.boolean();                                 // inside block
     (void)in.boolean();                                 // world border hit
     const std::int32_t sequence = in.varint();
