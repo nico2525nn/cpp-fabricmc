@@ -33,14 +33,34 @@ find_package(Threads REQUIRED)
 find_package(ZLIB REQUIRED)
 target_link_libraries(cppfm PRIVATE Threads::Threads ZLIB::ZLIB OpenSSL::SSL OpenSSL::Crypto)
 
-add_executable(test_golden tests/test_golden.cpp src/core/NBT.cpp)
+add_executable(test_golden tests/test_golden.cpp src/core/NBT.cpp
+    src/game/WorldGen.cpp
+    src/worldgen/DensityFunction.cpp src/worldgen/MultiNoise.cpp
+    src/worldgen/Structures.cpp)
 target_include_directories(test_golden PRIVATE src src/generated)
+find_package(ZLIB REQUIRED)
+find_package(OpenSSL REQUIRED)
+target_link_libraries(test_golden PRIVATE ZLIB::ZLIB OpenSSL::Crypto)
 
 enable_testing()
 add_executable(test_native
     tests/TestClient.cpp
     tests/native_integration.cpp
-    src/core/NBT.cpp)
+    src/core/NBT.cpp
+    src/game/GameServer.cpp
+    src/game/WorldGen.cpp
+    src/game/Recipes.cpp
+    src/game/MenuInteraction.cpp
+    src/game/Containers.cpp
+    src/game/Commands.cpp
+    src/game/AiBrain.cpp
+    src/game/Stats.cpp
+    src/physics/LightEngine.cpp
+    src/physics/Fluids.cpp
+    src/physics/Redstone.cpp
+    src/worldgen/DensityFunction.cpp
+    src/worldgen/MultiNoise.cpp
+    src/worldgen/Structures.cpp)
 target_include_directories(test_native PRIVATE src src/generated tests)
 find_package(Threads REQUIRED)
 find_package(ZLIB REQUIRED)

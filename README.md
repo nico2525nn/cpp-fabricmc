@@ -14,57 +14,42 @@ automated comparison against captured reference-server wire data.
 
 | Area | Status |
 |---|---|
-| Server-list ping (status JSON, ping/pong) | ✅ |
-| Offline-mode login → Login Success → Login Ack | ✅ |
-| Configuration phase: brand, select-known-packs handshake, full registry data (12 registries), update-tags replay, finish/ack | ✅ |
-| Join Game (exact 1.21.4 layout incl. `SpawnInfo` with varint dimension-type id and sea level) | ✅ |
-| Chunk streaming with batching (`chunk_batch_start/finished`, client `received` handling), center-chunk updates, chunk forgetting | ✅ |
-| Superflat world generation + block edits | ✅ |
-| Heightmaps NBT + per-section sky light scheme (masks/arrays like vanilla) | ✅ |
-| Chat broadcast (system chat, NBT components) incl. join/leave messages | ✅ |
-| Block digging/placing with **sequence acknowledgement**, cross-player block updates | ✅ |
-| Tab list (`player_info` add/remove/update, listed flag), held-slot, abilities, health, time | ✅ |
-| Keep-alive (periodic + timeout kick) | ✅ |
-| Multiple concurrent players: cross-visibility (**spawn/move/head/remove**), edits persist across relogs **and restarts** | ✅ |
-| Packet compression (zlib framing, threshold 256) | ✅ |
-| Command tree (`declare_commands`) + `/help`, `/ping`, `/say`; respawn handling | ✅ |
-| Periodic time sync, robust zombie-session reaping (send timeouts, idle sweep) | ✅ |
-| **Anvil persistence** (`world/region/*.mca`): async 3s flusher + shutdown flush; load-on-demand; **vanilla interop verified both directions** (vanilla boots on cppfm worlds and preserves edits; cppfm reads vanilla-saved chunks) | ✅ |
-| **Terrain generation** (`level-type=normal`): seeded Perlin octaves — continents, mountains, beaches, oceans at sea level 63; deterministic per seed | ✅ |
-| **RCON** (Source protocol, localhost bind, auth + command dispatch: list/say/help) and **whitelist** enforcement | ✅ |
-| **Survival basics**: health/hunger/saturation, natural regen & starvation, fall damage, void damage, death→respawn flow; food eating (bread/apple); block-break drops as **item entities with pickup** (Collect packet + inventory merge) | ✅ |
-| **Mining progress**: per-block hardness/tool-speed dig timing, server-authoritative completion, crack animation broadcast to other players, bedrock unbreakable, requires-pickaxe harvest rules | ✅ |
-| **Hostile mobs: zombies** — night-only surface spawn near players (cap 6), chase nearest player, melee attack 3dmg every ~1.2s, daylight burn 1dmg/s, rotten flesh drops | ✅ |
-| **Worldgen v2**: spaghetti caves (dual-noise), coal/iron ore blobs (noise threshold), oak trees (hash placement + trunk/canopy) | ✅ |
-| **Online-mode auth**: RSA-1024 keypair, Encryption Request/Response handshake, session-server hasJoined via system curl, AES-128/CFB8 bidirectional stream encryption, Set Compression after auth | ✅ impl / ⚠ E2E needs real session |
-| **Passive mobs** (pig/cow/sheep/chicken): spawn near players, wander AI with ground snapping, delta-sync to clients, despawn by distance, attackable (sword damage), drop items on death | ✅ |
-| 20 TPS fixed game loop driving survival/entity systems | ✅ |
-| Commands: `/gamemode <mode>` (state+abilities switch), `/give <item> [n]`, `/time set day|night`, `/kill` | ✅ |
+| Server-list ping (status JSON, favicon, player sample, ping/pong) | ✅ |
+| Login → Login Success → Login Ack; **online-mode auth + AES encryption** | ✅ |
+| Configuration phase (brand, known-packs, 12 registries, tags) | ✅ |
+| Join Game exact 1.21.4 layout, chunk streaming w/ batching, center-chunk | ✅ |
+| Anvil persistence (`region/*.mca`) — blocks, per-cell biomes, block entities; vanilla interop both directions | ✅ |
+| Worldgen v3: MultiNoise biomes (30 points), density-function AST, structures (villages/pyramids/outposts), triangle-distribution ores | ✅ |
+| Light engine: block-light BFS add/remove + cached sky light + UpdateLight broadcast | ✅ |
+| Fluid simulation (scheduled ticks), redstone (wires/levers/buttons/torches/lamps) | ✅ |
+| Weather cycle + /weather; creeper explosions w/ terrain damage & knockback | ✅ |
+| Mobs: 12 kinds, Brain-Goal-Sensor AI, A* pathfinding, breeding/aging, ranged skeletons, light-aware spawning & daylight burn | ✅ |
+| Survival: hunger/regen/fall damage, mining timing w/ crack animation, item drops & pickup | ✅ |
+| Inventory: ItemStack with data-component passthrough, chest/furnace/crafting menus, authoritative clicks, PlaceRecipe | ✅ |
+| Crafting: built-in table + JSON loader, recipe book sync, furnace smelting | ✅ |
+| XP orbs/levels, status effects (/effect), enchantment hooks | ✅ |
+| Commands: Brigadier port (argument types, selectors, tab-completion), 25 commands | ✅ |
+| Scoreboard objectives/scores/sidebar + kill/death counters | ✅ |
+| Stats (world/stats/*.json) + advancements tree w/ toasts | ✅ |
+| Beds: night skip + spawn point | ✅ |
+| Projectiles: arrows/snowballs/eggs/pearls, skeleton archers | ✅ |
+| Network extensions: cookies, resource packs, transfer, plugin channels, chat-session acceptance | ✅ |
+| Event bus for internal hooks | ✅ |
+| RCON + whitelist | ✅ |
+| 20 TPS fixed game loop driving all systems | ✅ |
 
-Verified by four test layers — see *Testing* below. The hardest part, chunk
-serialization, is proven **byte-identical to a real reference server's output**
-by golden tests.
+Verified by four test layers — see *Testing* below. Chunk serialization is
+proven **byte-identical to a real reference server's output** by golden tests.
 
 ## What does *not* work (yet)
 
-- No encryption/authentication (offline mode only). Online-mode needs the Mojang
-  session servers + authlib semantics.
-- Full mob AI variety (passive wanderers + hostile zombie chase/attack exist;
-  creeper/skeleton/enderman, spawning by light level, advanced goals are next).
-- Recipes / advancements / full command tree with arguments (a literal-only
-  command tree — `/help`, `/ping` — is advertised and handled).
-- Inventory transactions, containers, item components (starter hotbar is given).
-- World persistence across restarts (in-memory edits survive relogs, not restarts).
+See [`plan4.md`](plan4.md) for the researched gap list and queue:
+villager trading, hoppers/dispensers, nether/end dimensions, enchanting-table
+logic, vehicles, maps/frames, fishing, spectator teleport, advanced redstone.
+
 - **Fabric mods cannot run inside a C++ process.** Mods are JVM bytecode loaded
   through the Fabric Loader; "Fabric-compatible" here means *protocol-compatible
-  with what an unmodded Fabric server puts on the wire*. A C++ server can speak
-  the same protocol but cannot host JVM mod logic. (A hybrid design — C++ proxy/
-  implementation beside a JVM head — is the usual industry answer.)
-- **Fabric mods cannot run inside a C++ process.** Mods are JVM bytecode loaded
-  through the Fabric Loader; "Fabric-compatible" here means *protocol-compatible
-  with what an unmodded Fabric server puts on the wire*. A C++ server can speak
-  the same protocol but cannot host JVM mod logic. (A hybrid design — C++ proxy/
-  implementation beside a JVM head — is the usual industry answer.)
+  with what an unmodded Fabric server puts on the wire*.
 
 ## Clean-room methodology (important)
 

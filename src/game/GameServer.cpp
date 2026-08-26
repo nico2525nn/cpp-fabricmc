@@ -15,6 +15,7 @@
 #include <cerrno>
 
 namespace cppfm {
+std::atomic<bool> g_stopRequested{false};
 
 using namespace proto;
 
@@ -1275,12 +1276,57 @@ void Session::handleStatus() {
         ReadBuffer in(frame);
         switch (in.u8()) {
         case st::cs::Request: {
-            const std::string json =
+            std::string sample;
+            {
+                int n = 0;
+                for (auto& p : srv_.playersSnapshot()) {
+                    if (n++ >= 2) break;
+                    sample += (n > 1 ? "," : "");
+                    sample += "{\"name\":\"" + p->name +
+                              "\",\"id\":\"" +
+                              GameServer::uuidToDashed(p->uuid) + "\"}";
+                }
+            }
+            std::string favicon;
+            {   // optional icon.png next to server.properties
+                std::ifstream f("server-icon.png", std::ios::binary);
+                if (f) {
+                    std::string bytes((std::istreambuf_iterator<char>(f)),
+                                      std::istreambuf_iterator<char>());
+                    static const char* b64 =
+                        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+                        "0123456789+/";
+                    const std::string prefix = "data:image/png;base64,";
+                    size_t i = 0;
+                    while (i < bytes.size()) {
+                        const uint32_t chunk[3] = {
+                            bytes[i],
+                            i + 1 < bytes.size() ? bytes[i + 1] : 0,
+                            i + 2 < bytes.size() ? bytes[i + 2] : 0};
+                        favicon += b64[(chunk[0] >> 2) & 0x3F];
+                        favicon += b64[((chunk[0] & 0x03) << 4) |
+                                       ((chunk[1] >> 4) & 0x0F)];
+                        favicon += i + 1 < bytes.size()
+                                       ? b64[((chunk[1] & 0x0F) << 2) |
+                                             ((chunk[2] >> 6) & 0x03)]
+                                       : '=';
+                        favicon += i + 2 < bytes.size()
+                                       ? b64[chunk[2] & 0x3F]
+                                       : '=';
+                        i += 3;
+                    }
+                    favicon.insert(0, prefix);
+                }
+            }
+            std::string json =
                 "{\"version\":{\"name\":\"" + std::string(kMinecraftVersion) +
                 "\",\"protocol\":" + std::to_string(kProtocolVersion) +
                 "},\"players\":{\"max\":" + std::to_string(srv_.config().maxPlayers) +
                 ",\"online\":" + std::to_string(srv_.playerCount() + 0) +
-                ",\"sample\":[]},\"description\":{\"text\":\"" + srv_.config().motd +
+                ",\"sample\":[" + sample + "]}" +
+                (favicon.empty() ? "" :
+                 ",\"favicon\":\"" + favicon + "\"") +
+                ",\"description\":{\"text\":\"" + srv_.config().motd +
                 "\"},\"enforcesSecureChat\":false}";
             WriteBuffer body;
             body.string(json);

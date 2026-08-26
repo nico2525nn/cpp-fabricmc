@@ -1,48 +1,39 @@
 # Next Steps — Development Continuation Guide
 
 ## Current State
-All tests green (native/golden/integration/multi/anvil-interop). ~4,000 lines C++20.
+All tests green (native/golden/integration/multi/anvil). ~15k lines C++20.
 
-## Priority Queue (from plan.md, ordered by impact)
+plan2.md (network/modding-API) and plan3.md (gameplay systems) are fully
+implemented. plan4.md holds the researched queue for the remaining vanilla
+gaps, with exact wire formats already extracted from the community datasets.
 
-### P0 — Inventory Click Handling (WindowClickC2S)
-Packet 0x0F in play/toServer. Structure:
-- windowId i8, stateId varint, slot i16, button i8, mode varint
-- changedSlots[] {slot i16, stack Slot}
-- cursorItem Slot
+## Priority Queue (from plan4.md)
 
-Slot format: [varint count][if count>0: varint itemId + varint addComp + varint remComp + components]
+### P1-B Villagers & trading
+Trade List packet format documented in plan4; needs MobKind::Villager,
+merchant menu (type 19), select_trade handling and a small trade table.
 
-Implementation plan:
-1. Parse packet fully in handlePlay case pl::cs::WindowClick (= 0x0F)
-2. Apply changes to Player::inv[46] array
-3. Resend ContainerSetContent(0x13) to sync client UI
+### P2-E Hoppers/Dispensers
+HopperData(5 slots) in BlockEntityStore + hoppersTick() every 8 ticks moving
+stacks between adjacent inventories. Dispenser fires projectiles via the
+existing spawnProjectile().
 
-### P0 — level.dat write/read
-Use NBTValue tree (already implemented in src/core/NBTValue.hpp).
-Write on shutdown + periodic flush. Read on boot.
-Key fields: DataVersion(i32), spawn X/Y/Z, GameRules compound, Time long.
+### P2-G Nether dimension
+Second World instance (world_nether), Respawn-based transition, nether density
+function (ceiling/floor via y_clamped_gradient).
 
-### P1 — playerdata/*.dat save/load
-Save Player::inv/health/food/position/uuid as NBT.
-File name = uuid hex string + ".dat".
-Load on login if file exists.
+### P2-H Enchanting/anvil/brewing menus
+Menu types 13/8/11 already known; EnchantmentHelper exists for damage — extend
+to mining/durability attribute modifiers.
 
-### P1 — /gamerule command
-GameRuleManager with map<string,string>. Persist inside level.dat GameRules compound.
-
-### P2 — Brigadier command tree
-CommandNode hierarchy with literal/argument types. Tab completion via Suggestions packet.
-
-### P2 — Mob entity persistence to entities/*.mca
-Serialize mob position/type/health to region files alongside chunk data.
-
-### P3 — Full worldgen density functions
-Requires JSON parsing VM for density_function definitions from misode/mcmeta.
+### P3-M Placement context for stairs/doors/logs
+stateWithProps() supports arbitrary property maps already; wire facing/half
+from UseItemOn context and add door two-block placement + right-click toggle.
 
 ## Architecture Notes
 - Connection handles compression + encryption transparently
-- World uses shared_mutex for concurrent access
-- Persistence runs on background thread every 3s
-- All entity data lives in Player/MobEntity/ItemEntity structs
-- TestClient provides full protocol client for testing
+- World uses shared_mutex; LightEngine/FluidSim/Redstone hook onBlockChanged
+- Persistence runs on background thread every 3s (+ chunk extras callbacks)
+- All entity data lives in Player/MobEntity/ItemEntity/XpOrb/Projectile structs
+- AI: per-mob Brain+AiContext in GameServer::mobAi_ (see src/game/AiBrain.*)
+- TestClient provides a full protocol client for native tests

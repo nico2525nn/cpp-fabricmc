@@ -408,6 +408,11 @@ public:
         for (auto b : u) { snprintf(x,3,"%02x",b); h+=x; }
         return h;
     }
+    static std::string uuidToDashed(const std::array<std::uint8_t,16>& u) {
+        const std::string h = uuidToHex(u);
+        return h.substr(0,8)+"-"+h.substr(8,4)+"-"+h.substr(12,4)+"-"+
+               h.substr(16,4)+"-"+h.substr(20,12);
+    }
     std::int64_t tickNow() const { return tickNo_; }
     std::int64_t dayTime() const { return ((tickNo_ / 10) + timeOffset_ + startTime_) % 24000; }
     bool isNight() const { auto t = dayTime(); return t >= 13000 && t < 23000; }
