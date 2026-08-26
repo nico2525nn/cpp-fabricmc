@@ -137,6 +137,12 @@ struct Player {
     // client-declared plugin channels
     std::unordered_set<std::string> clientChannels;
     Connection* conn = nullptr;
+    // PVP knockback / invuln (items 42)
+    std::int32_t hurtCooldown = 0;
+    std::int32_t vehicleId = -1; // riding
+    std::int32_t arrowsStuck = 0;
+    std::int64_t lastEnderPearlTick = -10000;
+    std::int64_t invulnUntilTick = 0;
 };
 
 class GameServer;
