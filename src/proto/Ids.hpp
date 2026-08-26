@@ -191,19 +191,14 @@ constexpr std::uint8_t UpdateAttributes = 0x7C;
 constexpr std::uint8_t EntityEffect = 0x7D;
 constexpr std::uint8_t UpdateRecipes = 0x7E;
 constexpr std::uint8_t UpdateTags = 0x7F;
+constexpr std::uint8_t UpdateTime = 0x6B;
+// Readability aliases used by call sites and the test client.
+constexpr std::uint8_t SetTime = UpdateTime;
+}
+namespace cs {
+constexpr std::uint8_t SignUpdate = UpdateSign;          // alias
+constexpr std::uint8_t ChangeDifficulty = SetDifficulty; // alias
 }
 }
 
 } // namespace cppfm::proto
-
-// Aliases kept for readability at call sites.
-namespace cppfm::proto {
-namespace pl {
-namespace sc {
-constexpr std::uint8_t UpdateTime = 0x6B;
-}
-namespace cs {
-constexpr std::uint8_t SignUpdate = 0x39;
-}
-}
-}
