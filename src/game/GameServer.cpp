@@ -3485,7 +3485,75 @@ void Session::onUseItemOn(ReadBuffer& in) {
         (self_->heldSlot >= 0 && self_->heldSlot < 9)
             ? self_->inv[36 + self_->heldSlot] : airSlot;
 
+    // ---- doors: two-block placement + toggle (plan4 P3-M)
+    if (!heldItem.empty()) {
+        const std::string heldName = heldItem.name();
+        if (heldName.size() > 5 && heldName.rfind("_door", heldName.size() - 5) != std::string::npos) {
+            const gen::BlockDef* ddef = gen::blockByName(heldName);
+            if (ddef && srv_.world().getBlock(tx, ty, tz) == 0 &&
+                srv_.world().getBlock(tx, ty + 1, tz) == 0) {
+                float yaw = self_->yaw;
+                const char* facing = "north";
+                if (yaw >= 45.f && yaw < 135.f) facing = "west";
+                else if (yaw >= 135.f && yaw < 225.f) facing = "south";
+                else if (yaw >= 225.f && yaw < 315.f) facing = "east";
+                const auto lower =
+                    static_cast<std::uint16_t>(gen::stateWithProps(*ddef,
+                        {{"half","lower"},{"facing",facing},{"open","false"},{"hinge","left"}}));
+                const auto upper =
+                    static_cast<std::uint16_t>(gen::stateWithProps(*ddef,
+                        {{"half","upper"},{"facing",facing},{"open","false"},{"hinge","left"}}));
+                srv_.world().setBlock(tx, ty, tz, lower);
+                srv_.broadcastBlockChange(tx, ty, tz, lower);
+                srv_.world().setBlock(tx, ty + 1, tz, upper);
+                srv_.broadcastBlockChange(tx, ty + 1, tz, upper);
+                if (survival) {
+                    auto mh = &self_->inv[36 + self_->heldSlot];
+                    if (--mh->count <= 0) *mh = InvSlot::air();
+                    srv_.resendInventory(*self_);
+                }
+                ack(sequence);
+                return;
+            }
+        }
+    }
+
     if (srv_.world().getBlock(tx, ty, tz) != 0 || heldItem.empty()) {
+        // toggling an existing door?
+        const std::uint16_t clickedState = srv_.world().getBlock(x, y, z);
+        const gen::BlockDef* cdef = gen::blockByState(clickedState);
+        if (cdef && cdef->name.size() > 5 &&
+            cdef->name.rfind("_door", cdef->name.size() - 5) != std::string::npos) {
+            bool open = false, upperHalf = false;
+            for (auto& [k, v] : gen::propsOf(clickedState)) {
+                if (k == "open") open = v == "true";
+                if (k == "half") upperHalf = v == "upper";
+            }
+            std::string facing;
+            std::string hinge = "left";
+            for (auto& [k, v] : gen::propsOf(clickedState)) {
+                if (k == "facing") facing = std::string(v);
+                if (k == "hinge") hinge = std::string(v);
+            }
+            const std::uint16_t st1 = static_cast<std::uint16_t>(
+                gen::stateWithProps(*cdef,
+                    {{"open", open ? "false" : "true"},
+                     {"half", upperHalf ? "upper" : "lower"},
+                     {"facing", facing}, {"hinge", hinge}}));
+            const std::int32_t oy = upperHalf ? y - 1 : y + 1;
+            const std::uint16_t st2 = static_cast<std::uint16_t>(
+                gen::stateWithProps(*cdef,
+                    {{"open", open ? "false" : "true"},
+                     {"half", upperHalf ? "lower" : "upper"},
+                     {"facing", facing}, {"hinge", hinge}}));
+            srv_.world().setBlock(x, y, z, st1);
+            srv_.broadcastBlockChange(x, y, z, st1);
+            srv_.world().setBlock(x, oy, z, st2);
+            srv_.broadcastBlockChange(x, oy, z, st2);
+            srv_.broadcastSound("minecraft:block.wooden_door.toggle",
+                                x + .5, y + .5, z + .5, 1.f,
+                                open ? 0.7f : 0.9f);
+        }
         ack(sequence);
         return;
     }
