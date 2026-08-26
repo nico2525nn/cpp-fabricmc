@@ -1,0 +1,20 @@
+{
+  "type": "minecraft:blaze",
+  "attributes": {
+    "max_health": 20,
+    "movement_speed": 0.09
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:nether_wastes"
+    ]
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:blaze_fireball",
+        "priority": 2
+      }
+    ]
+  }
+}

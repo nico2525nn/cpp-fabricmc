@@ -1,0 +1,24 @@
+{
+  "type": "minecraft:warden",
+  "attributes": {
+    "max_health": 500,
+    "movement_speed": 0.07,
+    "attack_damage": 30
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:deep_dark"
+    ],
+    "light_level": {
+      "max": 0
+    }
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:warden_sonic_boom",
+        "priority": 1
+      }
+    ]
+  }
+}

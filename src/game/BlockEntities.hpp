@@ -162,6 +162,18 @@ private:
             const int n = be.kind == BlockEntity::Kind::Hopper ? 5 : 9;
             readItems(e, be.generic.slots, n, "Items");
             dirty_.insert(key);
+        } else if (id == "minecraft:barrel") {
+            BlockEntity& be = map_[key];
+            be = BlockEntity{};
+            be.kind = BlockEntity::Kind::Barrel;
+            readItems(e, be.chest.slots, ChestData::kSlots, "Items");
+            dirty_.insert(key);
+        } else if (id.find("shulker_box") != std::string::npos) {
+            BlockEntity& be = map_[key];
+            be = BlockEntity{};
+            be.kind = BlockEntity::Kind::ShulkerBox;
+            readItems(e, be.chest.slots, ChestData::kSlots, "Items");
+            dirty_.insert(key);
         } else if (id.find("furnace") != std::string::npos ||
                    id.find("smoker") != std::string::npos ||
                    id.find("blast_furnace") != std::string::npos) {

@@ -1,0 +1,20 @@
+{
+  "type": "minecraft:ghast",
+  "attributes": {
+    "max_health": 10,
+    "movement_speed": 0.06
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:nether_wastes"
+    ]
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:ghast_fireball",
+        "priority": 2
+      }
+    ]
+  }
+}

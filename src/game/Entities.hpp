@@ -58,7 +58,8 @@ enum class MobKind : std::uint8_t {
     Hoglin, Piglin, Axolotl, Goat, Horse, Llama,
     Panda, Fox, Frog, Dolphin, Turtle, Bat,
     Cod, Salmon, TropicalFish, Pufferfish,
-    Squid, GlowSquid // extra to reach 40, harmless
+    Squid, GlowSquid, // extra to reach 40, harmless
+    Warden, Phantom, IronGolem, Allay, Shulker
 };
 
 // Static per-kind gameplay table (clean-room values approximating vanilla).
@@ -118,8 +119,13 @@ inline const MobStats& mobStats(MobKind k) {
         {"minecraft:pufferfish",      3.f, 0.10f, 0.f, false,false,"minecraft:pufferfish",1,1,nullptr,                      1},
         {"minecraft:squid",          10.f, 0.08f, 0.f, false,false,"minecraft:ink_sac",1,3,nullptr,                         1},
         {"minecraft:glow_squid",     10.f, 0.08f, 0.f, false,false,"minecraft:glow_ink_sac",1,3,nullptr,                    1},
+        {"minecraft:warden",         500.f,0.07f,30.f, true, false,"minecraft:sculk_catalyst",1,1,nullptr,                   5},
+        {"minecraft:phantom",        20.f, 0.12f, 6.f, true, false,"minecraft:phantom_membrane",0,1,nullptr,                5},
+        {"minecraft:iron_golem",     100.f,0.08f,15.f, false,false,"minecraft:iron_ingot",3,5,nullptr,                      0},
+        {"minecraft:allay",          20.f, 0.09f, 0.f, false,false,nullptr,0,0,nullptr,                                     0},
+        {"minecraft:shulker",        30.f, 0.05f, 4.f, true, false,"minecraft:shulker_shell",0,1,nullptr,                   5},
     };
-    static_assert(sizeof(table)/sizeof(table[0]) == 41, "table size must match MobKind count");
+    static_assert(sizeof(table)/sizeof(table[0]) == 46, "table size must match MobKind count");
     return table[static_cast<int>(k)];
 }
 

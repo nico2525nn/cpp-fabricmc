@@ -1,0 +1,35 @@
+{
+  "type": "minecraft:wither",
+  "attributes": {
+    "max_health": 300,
+    "movement_speed": 0.08,
+    "attack_damage": 8
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:soul_sand_valley"
+    ],
+    "light_level": {
+      "max": 7
+    },
+    "structures": [
+      "minecraft:fortress"
+    ]
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:look_at_player",
+        "priority": 5
+      },
+      {
+        "type": "minecraft:wither_skull_attack",
+        "priority": 2
+      }
+    ]
+  },
+  "equipment": {
+    "mainhand": "minecraft:nether_star"
+  },
+  "loot": "minecraft:entities/wither"
+}

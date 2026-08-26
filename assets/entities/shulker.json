@@ -1,0 +1,23 @@
+{
+  "type": "minecraft:shulker",
+  "attributes": {
+    "max_health": 30,
+    "movement_speed": 0.05
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:end_highlands"
+    ],
+    "structures": [
+      "minecraft:end_city"
+    ]
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:shulker_bullet",
+        "priority": 2
+      }
+    ]
+  }
+}
