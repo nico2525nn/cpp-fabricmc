@@ -55,6 +55,8 @@ void World::initWorldgen() {
 }
 
 void World::fillTerrainV3(Chunk& c, std::int32_t cx, std::int32_t cz) const {
+    if (dimensionId_ == -1) { fillNether(c, cx, cz); return; }
+    if (dimensionId_ == 1)  { fillEnd(c, cx, cz);   return; }
     const auto& table = gen::blockNameToState();
     auto id = [&](const char* n) -> std::uint16_t {
         auto it = table.find(n);
@@ -264,6 +266,105 @@ void World::fillTerrainV3(Chunk& c, std::int32_t cx, std::int32_t cz) const {
         const double h = biomeSource_->heightEstimate(wx, wz);
         return static_cast<std::int32_t>(std::clamp(h, -56.0, 150.0)) ;
     });
+}
+
+
+// ------------------------------------------------------- nether / end gen
+
+void World::fillNether(Chunk& c, std::int32_t cx, std::int32_t cz) const {
+    thread_local ImprovedNoise density(srv_seed ^ 0x6E657468ULL);
+    const auto& table = gen::blockNameToState();
+    auto id2 = [&](const char* n) -> std::uint16_t {
+        auto it = table.find(n);
+        return it != table.end() ? static_cast<std::uint16_t>(it->second) : 0;
+    };
+    const std::uint16_t NETHERRACK = id2("minecraft:netherrack");
+    const std::uint16_t BEDROCK = id2("minecraft:bedrock");
+    const std::uint16_t LAVA = id2("minecraft:lava");
+    const std::uint16_t SOUL = id2("minecraft:soul_sand");
+    const std::uint16_t GLOWSTONE = id2("minecraft:glowstone");
+    c.biomes.fill(static_cast<std::uint16_t>(defaultBiomeIndex_));
+    for (int lz = 0; lz < 16; ++lz)
+        for (int lx = 0; lx < 16; ++lx) {
+            const std::int32_t wx = cx * 16 + lx, wz = cz * 16 + lz;
+            for (int y = kMinY; y < kMaxY; ++y) {
+                std::uint16_t st = 0;
+                if (y == kMinY || y == kMaxY - 1) st = BEDROCK;
+                else if (y > kMaxY - 5 &&
+                         TerrainGenerator::posHash(srv_seed, wx, y, wz) < .7)
+                    st = BEDROCK;
+                else {
+                    const double d = density.octaves(wx * 0.012, y * 0.02,
+                                                     wz * 0.012, 3);
+                    if (d > 0.02) {
+                        st = NETHERRACK;
+                        if (density.sample(wx * 0.03, y * 0.05,
+                                           wz * 0.03) > 0.55 && y < 40)
+                            st = SOUL;
+                    } else if (y <= 31) {
+                        st = LAVA;
+                    }
+                }
+                const int wy = y - kMinY;
+                c.blocks[Chunk::index(wy >> 4, wy & 15, lz, lx)] = st;
+            }
+            // ceiling glowstone speckles
+            for (int k2 = 0; k2 < 3; ++k2) {
+                const int gy = kMaxY - 3 -
+                    static_cast<int>(TerrainGenerator::posHash(srv_seed, wx,
+                                                               k2, wz) * 4);
+                if (TerrainGenerator::posHash(srv_seed ^ 7, wx, gy, wz) < .12) {
+                    const int wy = gy - kMinY;
+                    c.blocks[Chunk::index(wy >> 4, wy & 15, lz, lx)] = GLOWSTONE;
+                }
+            }
+        }
+    // light engine seeds glowstone automatically via emission on first tick.
+}
+
+void World::fillEnd(Chunk& c, std::int32_t cx, std::int32_t cz) const {
+    const auto& table = gen::blockNameToState();
+    auto id2 = [&](const char* n) -> std::uint16_t {
+        auto it = table.find(n);
+        return it != table.end() ? static_cast<std::uint16_t>(it->second) : 0;
+    };
+    const std::uint16_t END_STONE = id2("minecraft:end_stone");
+    const std::uint16_t BEDROCK = id2("minecraft:bedrock");
+    const std::uint16_t PORTAL = id2("minecraft:end_portal")
+                                     ? id2("minecraft:end_portal")
+                                     : BEDROCK;
+    c.biomes.fill(static_cast<std::uint16_t>(defaultBiomeIndex_));
+    // central island ~ radius 60 at y=64 surface
+    for (int lz = 0; lz < 16; ++lz)
+        for (int lx = 0; lx < 16; ++lx) {
+            const std::int32_t wx = cx * 16 + lx, wz = cz * 16 + lz;
+            const double r = std::sqrt(double(wx) * wx + double(wz) * wz);
+            if (r < 58 +
+                     TerrainGenerator::posHash(srv_seed, wx, 1, wz) * 10) {
+                const int depth = 20 + static_cast<int>(
+                    TerrainGenerator::posHash(srv_seed, wx, 2, wz) * 14);
+                for (int y = 64 - depth; y <= 64; ++y) {
+                    const int wy = y - kMinY;
+                    c.blocks[Chunk::index(wy >> 4, wy & 15, lz, lx)] =
+                        y == 64 ? END_STONE : END_STONE;
+                }
+            }
+        }
+    // exit portal pedestal at origin
+    if (cx == 0 && cz == 0) {
+        for (int dx = -2; dx <= 2; ++dx)
+            for (int dz = -2; dz <= 2; ++dz) {
+                if (std::abs(dx) == 2 && std::abs(dz) == 2) continue;
+                const int wy = 65 - kMinY;
+                c.blocks[Chunk::index(wy >> 4, wy & 15, dz & 15, dx & 15)] =
+                    BEDROCK;
+                if (dx == 0 && dz == 0) {
+                    c.blocks[Chunk::index((66 - kMinY) >> 4, (66 - kMinY) & 15,
+                                          0, 0)] = BEDROCK;
+                }
+            }
+        (void)PORTAL;
+    }
 }
 
 } // namespace cppfm

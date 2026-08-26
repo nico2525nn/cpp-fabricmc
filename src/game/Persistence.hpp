@@ -18,6 +18,14 @@ public:
     Persistence(World& world, std::string worldDir, std::string biomeKey)
         : world_(world), dir_(std::move(worldDir)), biome_(std::move(biomeKey)) {}
 
+    // ---- level.dat ----
+    void setLevelStateProvider(
+        std::function<void(nbt::Value& data)> provider,
+        std::function<void(const nbt::Value& data)> consumer) {
+        provideLevelState_ = std::move(provider);
+        consumeLevelState_ = std::move(consumer);
+    }
+
     // Optional hooks: block-entity + entity NBT attached to saved chunks.
     void setChunkExtras(
         std::function<void(std::int32_t, std::int32_t, nbt::Value&)> writeFn,
@@ -34,7 +42,8 @@ public:
     }
 
     // ---- level.dat ----
-    void saveLevelData() {
+    // plan5 §1: full level.dat persistence — spawn, time, gamerules, weather.
+    void saveLevelData(std::int64_t worldTicks = 0, std::int64_t dayTime = 0) {
         namespace nv = nbt;
         try {
             nv::Value root = nv::Value::makeCompound();
@@ -44,9 +53,16 @@ public:
             data.set("SpawnX", nv::Value::makeInt(spawn.x));
             data.set("SpawnY", nv::Value::makeInt(spawn.y));
             data.set("SpawnZ", nv::Value::makeInt(spawn.z));
+            data.set("Time", nv::Value::makeLong(worldTicks));
+            data.set("DayTime", nv::Value::makeLong(dayTime));
+            data.set("LevelName", nv::Value::makeString("CppFabricMC World"));
+            data.set("raining", nv::Value::makeByte(0));      // filled below
+            data.set("thundering", nv::Value::makeByte(0));
+            if (provideLevelState_) provideLevelState_(data);  // gamerules etc.
             root.set("Data", data);
             WriteBuffer out;
             nv::writeFileRoot(out, root);
+            std::filesystem::create_directories(dir_);
             std::ofstream f(dir_ + "/level.dat", std::ios::binary);
             f.write(reinterpret_cast<const char*>(out.data.data()), out.data.size());
         } catch (...) {}
@@ -66,6 +82,7 @@ public:
                 if (const auto* sy = d->get("SpawnY"))
                     if (const auto* sz = d->get("SpawnZ"))
                         world_.setSpawnPoint({sx->i, sy->i, sz->i});
+            if (consumeLevelState_) consumeLevelState_(*d);
         } catch (...) {}
     }
 
@@ -177,6 +194,10 @@ private:
     std::int32_t defaultBiomeIndex_ = 0;
     std::function<void(std::int32_t, std::int32_t, nbt::Value&)> writeExtras_;
     std::function<void(const nbt::Value&)> readExtras_;
+public:
+    std::function<void(nbt::Value&)> provideLevelState_;
+    std::function<void(const nbt::Value&)> consumeLevelState_;
+private:
 
     std::mutex dirtyMtx_;
     std::set<std::int64_t> dirty_;

@@ -1266,97 +1266,48 @@ static std::string uuidToHexString(const std::array<std::uint8_t,16>& uuid) {
 }
 
 void GameServer::saveLevelData() {
-    try {
-        WriteBuffer out;
-        out.u8(10); out.u16(0);                       // root compound, no name
-        auto w = [&](std::int8_t t, const char* n2, auto... args) {};
-        // DataVersion
-        out.u8(3); out.u16(11); out.raw("DataVersion", 11); out.i32(4189);
-        // Spawn
-        out.u8(3); out.u16(6); out.raw("SpawnX", 6); out.i32(world_.spawnPoint().x);
-        out.u8(3); out.u16(6); out.raw("SpawnY", 6); out.i32(world_.spawnPoint().y);
-        out.u8(3); out.u16(6); out.raw("SpawnZ", 6); out.i32(world_.spawnPoint().z);
-        out.u8(0);                                     // end root
-        std::filesystem::create_directories(cfg_.worldDir);
-        std::ofstream f(cfg_.worldDir + "/level.dat", std::ios::binary);
-        f.write(reinterpret_cast<const char*>(out.data.data()), out.data.size());
-    } catch (...) {}
+    persist_->saveLevelData(tickNo_, dayTime());
 }
 
 void GameServer::loadLevelData() {
-    try {
-        std::ifstream f(cfg_.worldDir + "/level.dat", std::ios::binary);
-        if (!f) return;
-        std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(f)),
-                                         std::istreambuf_iterator<char>());
-        ReadBuffer in(bytes);
-        in.u8();                                       // root tag
-        in.u16();                                      // root name len
-        // walk entries looking for SpawnX/Y/Z
-        while (in.off < in.len) {
-            const auto et = in.u8();
-            if (et == 0) break;
-            const auto nl = in.u16();
-            const std::string nm(reinterpret_cast<const char*>(in.p + in.off), nl);
-            in.off += nl;
-            if (et == 3) {
-                const auto v = in.i32();
-                if (nm == "SpawnX") world_.spawnPt.x = v;
-                else if (nm == "SpawnY") world_.spawnPt.y = v;
-                else if (nm == "SpawnZ") world_.spawnPt.z = v;
-            } else {
-                switch (et) {
-                case 1: in.u8(); break;
-                case 2: in.u16(); break;
-                case 3: in.i32(); break;
-                case 4: in.i64(); break;
-                case 5: in.f32(); break;
-                case 6: in.f64(); break;
-                case 7: in.bytes(in.i32()); break;
-                case 8: in.bytes(in.u16()); break;
-                default: throw std::runtime_error("skip");
-                }
-            }
-        }
-    } catch (...) {}
+    persist_->loadLevelData();
 }
 
+
+// ---------------------------------------------------- playerdata NBT I/O
 static void savePlayerNBT(const std::string& path, Player& p) {
     WriteBuffer out;
     out.u8(10); out.u16(0);                            // root compound
-    // Health (float)
     out.u8(5); out.u16(6); out.raw("Health", 6); out.f32(p.health);
-    // foodLevel (int)
     out.u8(3); out.u16(9); out.raw("foodLevel", 9); out.i32(p.food);
-    // Pos (list of 3 doubles)
+    out.u8(5); out.u16(10); out.raw("foodSaturation", 10); out.f32(p.saturation);
+    out.u8(3); out.u16(9); out.raw("XpLevel", 9); out.i32(p.xp.level);
+    out.u8(3); out.u16(9); out.raw("XpTotal", 9); out.i32(p.xp.totalXp);
+    out.u8(5); out.u16(13); out.raw("XpP", 13); out.f32(p.xp.progress);
+    // playerDim / pos
+    out.u8(3); out.u16(3); out.raw("Dim", 3); out.i32(static_cast<std::int32_t>(p.dimension));
     out.u8(9); out.u16(3); out.raw("Pos", 3);
     out.u8(6); out.i32(3);
     out.f64(p.x); out.f64(p.y); out.f64(p.z);
-    // Inventory (list of compounds)
     out.u8(9); out.u16(9); out.raw("Inventory", 9);
     int count = 0;
     for (int i = 0; i < 46; ++i)
-        if (p.inv[i].count > 0) ++count;
+        if (!p.inv[i].empty()) ++count;
     out.i32(count);
     for (int i = 0; i < 46; ++i) {
         const auto& sl = p.inv[i];
-        if (sl.count <= 0) continue;
-        out.u8(10);                                    // compound
-        // id string
-        for (auto& e : gen::kItems)
-            if (e.second == sl.itemId) {
-                const std::string nm(e.first);
-                out.u16((uint16_t)nm.size()); out.raw(nm.data(), nm.size());
-                break;
-            }
-        // Count byte
+        if (sl.empty()) continue;
+        out.u8(10);
+        const std::string nm = sl.name();
+        out.u16((uint16_t)nm.size()); out.raw(nm.data(), nm.size());
         out.u8(1); out.u16(5); out.raw("Count", 5); out.i8((int8_t)sl.count);
-        // Slot byte
         out.u8(1); out.u16(4); out.raw("Slot", 4); out.i8((int8_t)i);
-        out.u8(0);                                     // end compound
+        out.u8(0);
     }
-    out.u8(0);                                         // end inventory list
-    out.u8(0);                                         // end root
+    out.u8(0);
+    out.u8(0);
+    std::filesystem::create_directories(
+        path.substr(0, path.find_last_of('/')));
     std::ofstream f(path, std::ios::binary);
     f.write(reinterpret_cast<const char*>(out.data.data()), out.data.size());
 }
@@ -1367,65 +1318,36 @@ static bool loadPlayerNBT(const std::string& path, Player& p) {
     std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(f)),
                                      std::istreambuf_iterator<char>());
     if (bytes.size() < 10 || bytes[0] != 10) return false;
-    ReadBuffer r(bytes);
-    r.u8(); r.u16();                                   // skip root tag+name
     try {
-        while (r.off < r.len) {
-            const auto et = r.u8();
-            if (et == 0) break;
-            const auto nl = r.u16();
-            const std::string nm(reinterpret_cast<const char*>(r.p + r.off), nl);
-            r.off += nl;
-            if (et == 5 && nm == "Health") p.health = r.f32();
-            
-            else if (et == 3 && nm == "foodLevel") p.food = r.i32();
-            else if (et == 9 && nm == "Pos") {
-                const auto elemTag = r.u8();
-                const auto cnt = r.i32();
-                if (cnt == 3 && elemTag == 6) {
-                    p.x = r.f64(); p.y = r.f64(); p.z = r.f64();
-                    p.prevFeetY = p.y;
-                } else { r.off += 8 * cnt; }
-            } else if (et == 9 && nm == "Inventory") {
-                const auto elemTag = r.u8();
-                const auto cnt = r.i32();
-                for (int q = 0; q < cnt; ++q) {
-                    if (elemTag != 10) break;
-                    r.u8();                            // compound tag
-                    std::string itemIdStr;
-                    int8_t itemCnt = 0; int8_t slotIdx = -1;
-                    while (true) {
-                        const auto ft = r.u8();
-                        if (ft == 0) break;
-                        const auto fnl = r.u16();
-                        const std::string fn(reinterpret_cast<const char*>(r.p + r.off), fnl);
-                        r.off += fnl;
-                        if (ft == 8 && fn == "id") {
-                            const auto sl = r.u16();
-                            itemIdStr.assign(reinterpret_cast<const char*>(r.p + r.off), sl);
-                            r.off += sl;
-                        } else if (ft == 1 && fn == "Count") { itemCnt = r.i8(); }
-                        else if (ft == 1 && fn == "Slot") { slotIdx = r.i8(); }
-                        else if (ft == 3) r.i32();
-                        else if (ft == 5) r.f32();
-                        else break;
-                    }
-                    if (!itemIdStr.empty() && itemCnt > 0 && slotIdx >= 0 && slotIdx < 46) {
-                        auto it = gen::itemIdByName().find(itemIdStr);
-                        if (it != gen::itemIdByName().end())
-                            p.inv[slotIdx] = {(uint32_t)it->second, (int16_t)itemCnt};
-                    }
-                }
-            } else {
-                switch (et) {
-                case 1: r.u8(); break;
-                case 2: r.u16(); break;
-                case 3: r.i32(); break;
-                case 4: r.i64(); break;
-                case 5: r.f32(); break;
-                case 6: r.f64(); break;
-                default: return false;
-                }
+        ReadBuffer r(bytes);
+        nbt::Parser parser(r);
+        nbt::Value root = parser.readFileRoot();
+        if (const auto* v = root.get("Health")) p.health = v->f;
+        if (const auto* v = root.get("foodLevel")) p.food = v->i;
+        if (const auto* v = root.get("foodSaturation")) p.saturation = v->f;
+        if (const auto* v = root.get("XpLevel")) p.xp.level = v->i;
+        if (const auto* v = root.get("XpTotal")) p.xp.totalXp = v->i;
+        if (const auto* v = root.get("XpP")) p.xp.progress = v->f;
+        if (const auto* v = root.get("Dim"))
+            p.dimension = static_cast<std::int8_t>(v->i);
+        if (const auto* v = root.get("Pos")) {
+            if (v->list.size() == 3) {
+                p.x = v->list[0].d; p.y = v->list[1].d; p.z = v->list[2].d;
+                p.prevFeetY = p.y;
+            }
+        }
+        if (const auto* invv = root.get("Inventory")) {
+            for (const auto& item : invv->list) {
+                const auto* idv = item.get("id");
+                const auto* cv = item.get("Count");
+                const auto* sv = item.get("Slot");
+                if (!idv || !sv) continue;
+                auto it = gen::itemIdByName().find(idv->str);
+                if (it == gen::itemIdByName().end()) continue;
+                const int slot = sv->b;
+                if (slot < 0 || slot >= 46) continue;
+                p.inv[slot] = ItemStack::of(it->second,
+                                            cv ? static_cast<std::int16_t>(cv->b) : 1);
             }
         }
         return true;

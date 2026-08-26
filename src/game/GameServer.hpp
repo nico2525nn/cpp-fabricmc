@@ -128,6 +128,9 @@ struct Player {
     std::int64_t chatSessionExpiry = 0;
     // cookies (plan3 Cookie) — opaque server-defined blobs
     std::unordered_map<std::string, std::vector<std::uint8_t>> cookies;
+    // current dimension: 0=overworld, -1=nether, 1=end (plan5 §1)
+    std::int8_t dimension = 0;
+    std::int64_t portalCooldownUntilTick = -100000;
     // sleeping state (bed)
     bool sleeping = false;
     std::int32_t bedX=0, bedY=0, bedZ=0;
@@ -228,11 +231,33 @@ class Session;
 class GameServer {
     friend class Session;
 public:
+    enum class Dim : std::int8_t { Overworld = 0, Nether = -1, End = 1 };
+
     explicit GameServer(ServerConfig cfg)
         : cfg_(cfg), startTime_(cfg.startTime),
           world_(cfg_.worldBiome,
                  cfg.levelType == "normal" ? LevelType::Normal : LevelType::Flat,
-                 cfg.seed) {}
+                 cfg.seed) {
+        netherWorld_ = std::make_unique<World>(
+            "minecraft:nether_wastes", LevelType::Nether, cfg.seed ^ 0x4E37ULL);
+        endWorld_ = std::make_unique<World>(
+            "minecraft:the_end", LevelType::End, cfg.seed ^ 0xE11DULL);
+        worlds_[0] = &world_;
+        worlds_[1] = netherWorld_.get();
+        worlds_[2] = endWorld_.get();
+        for (auto* w : worlds_) w->setDimensionId(
+            w == &world_ ? 0 : (w == netherWorld_.get() ? -1 : 1));
+    }
+    World& worldFor(std::int8_t dim) {
+        switch (dim) {
+        case -1: return *netherWorld_;
+        case 1: return *endWorld_;
+        default: return world_;
+        }
+    }
+    const World& worldFor(std::int8_t dim) const {
+        return const_cast<GameServer*>(this)->worldFor(dim);
+    }
     ~GameServer() { stop(); }
 
     void init() {
@@ -283,7 +308,53 @@ public:
                     blockEntities_.readChunkNbt(root);
                 });
         }
+        persist_->setLevelStateProvider(
+            [this](nbt::Value& data) {
+                namespace nv = nbt;
+                nv::Value gr = nv::Value::makeCompound();
+                for (auto& [k, v] : gamerules_.all())
+                    gr.set(k, nv::Value::makeString(v));
+                data.set("GameRules", gr);
+                data.set("raining", nv::Value::makeByte(raining() ? 1 : 0));
+                data.set("rainTime",
+                         nv::Value::makeInt(static_cast<std::int32_t>(
+                             (weatherUntilTick_ - tickNo_) / 20)));
+                data.set("thundering", nv::Value::makeByte(0));
+                data.set("thunderTime", nv::Value::makeInt(6000));
+                data.set("DayTime", nv::Value::makeLong(dayTime()));
+                data.set("Time", nv::Value::makeLong(tickNo_));
+            },
+            [this](const nbt::Value& data) {
+                if (const auto* t = data.get("Time"))
+                    tickNo_ = t->l;
+                if (const auto* dt = data.get("DayTime"))
+                    timeOffset_ += dt->l - dayTime();
+                if (const auto* r = data.get("raining"))
+                    weather_ = r->b ? Weather::Rain : Weather::Clear;
+                if (const auto* rt = data.get("rainTime"))
+                    weatherUntilTick_ = tickNo_ + rt->i * 20LL;
+                if (const auto* gr = data.get("GameRules"))
+                    for (auto& [k, v] : gr->comp)
+                        gamerules_.set(k, v.str, false);
+            });
+        persist_->loadLevelData();
+        // plan5 §1: spawn-chunk loader — generate a 5x5 area around spawn.
+        {
+            const auto sp = world_.spawnPoint();
+            for (int dz = -2; dz <= 2; ++dz)
+                for (int dx = -2; dx <= 2; ++dx)
+                    world_.generateChunkIfMissing((sp.x >> 4) + dx,
+                                                  (sp.z >> 4) + dz);
+        }
         persist_->start();
+        // plan5 §1: per-dimension persistence (DIM-1 / DIM1)
+        for (int d = 0; d < 2; ++d) {
+            auto& pw = dimPersist_[d];
+            const char* sub = d == 0 ? "DIM-1" : "DIM1";
+            pw = std::make_unique<Persistence>(worldFor(d == 0 ? -1 : 1),
+                                               cfg_.worldDir + "/" + sub, "");
+            pw->start();
+        }
         rconServer_ = std::make_unique<RconServer>(cfg_.rcon,
             [this](const std::string& cmd){ return dispatchConsole(cmd); });
         const bool rconUp = rconServer_->start();
@@ -446,6 +517,7 @@ public:
 
     const ServerConfig& config() const { return cfg_; }
     World& world() { return world_; }
+    World& worldByDim(std::int8_t d) { return worldFor(d); }
     EmbeddedData& data() { return data_; }
     bool running() const { return running_; }
 
@@ -514,6 +586,8 @@ private:
 
     ServerConfig cfg_;
     World world_;
+    std::unique_ptr<World> netherWorld_, endWorld_;
+    World* worlds_[3] = {};
     // entities
     std::mutex entsMtx_;
     struct MobAiEntry {
@@ -537,6 +611,7 @@ private:
     std::int64_t startTime_ = 1000;
     std::thread tickThread_;
     std::unique_ptr<Persistence> persist_;
+    std::unique_ptr<Persistence> dimPersist_[2];
     Whitelist whitelist_;
     std::unique_ptr<RconServer> rconServer_;
     crypto::RsaKeyPair loginKeys_;
