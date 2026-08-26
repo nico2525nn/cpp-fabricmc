@@ -816,6 +816,40 @@ void GameServer::initCommands() {
         sb->then(obj); sb->then(players);
         d.root->then(sb);
     }
+
+    // /spectate [player]
+    {
+        auto sp2 = CommandNode::literal("spectate");
+        sp2->executable = true;
+        sp2->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            if (!src) return 0;
+            WriteBuffer cam;
+            cam.varint(src->entityId);
+            try { src->conn->sendPacket(proto::pl::sc::Camera, cam); }
+            catch (...) {}
+            sendFeedback(src, "Camera reset");
+            return 1;
+        };
+        auto who = CommandNode::argument("target", args::entity(true, false));
+        who->executable = true;
+        who->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const auto sel = c.arg("target").asSelector();
+            if (!sel.playerNames.empty()) {
+                if (Player* t = findPlayer(*this, sel.playerNames[0])) {
+                    WriteBuffer cam;
+                    cam.varint(t->entityId);
+                    try { src->conn->sendPacket(
+                              proto::pl::sc::Camera, cam); } catch (...) {}
+                    sendFeedback(src, "Spectating " + t->name);
+                }
+            }
+            return 1;
+        };
+        sp2->then(who);
+        d.root->then(sp2);
+    }
     // /difficulty <level>
     {
         auto diff = CommandNode::literal("difficulty");
