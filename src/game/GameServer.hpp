@@ -293,6 +293,8 @@ public:
                 data_.biomeIndex(cfg_.worldBiome)));
         fluidSim_ = std::make_unique<FluidSim>(world_);
         redstone_ = std::make_unique<RedstoneEngine>(world_);
+        redstone_->setBlockEntityStore(&blockEntities_);
+        redstone_->setTickRef(&tickNo_);
         world_.setOnBlockChanged([this](std::int32_t x, std::int32_t y,
                                         std::int32_t z, std::uint16_t o,
                                         std::uint16_t n) {

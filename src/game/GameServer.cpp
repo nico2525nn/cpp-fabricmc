@@ -980,7 +980,7 @@ void GameServer::hoppersTick() {
             }
         }
 
-        // ---- dispenser: eject when powered (edge-triggered)
+        // ---- dispenser: eject when powered (edge-triggered) per-item (plan5 items 48-51)
         if (be.kind == BlockEntity::Kind::Dispenser) {
             bool powered = redstone_->isPoweredHere(x, y, z);
             bool& was = dispenserPower_[key];
@@ -989,19 +989,48 @@ void GameServer::hoppersTick() {
                     auto& s = slots[i];
                     if (s.empty()) continue;
                     // facing → direction
-                    double dx = 0, dz = 0;
+                    double dx = 0, dy = 0, dz = 0;
                     std::string facing = "north";
-                    if (world_.getBlock(x, y, z)) {
-                        for (auto& [pk, pv] :
-                             gen::propsOf(world_.getBlock(x, y, z)))
+                    std::uint16_t bstate = world_.getBlock(x, y, z);
+                    if (bstate) {
+                        for (auto& [pk, pv] : gen::propsOf(bstate))
                             if (pk == "facing") facing = std::string(pv);
                     }
                     if (facing == "north") dz = -1;
                     else if (facing == "south") dz = 1;
                     else if (facing == "west") dx = -1;
                     else if (facing == "east") dx = 1;
-                    spawnItemDrop(x + .5 + dx * .6, y + .5, z + .5 + dz * .6,
-                                  s.itemId, 1, dx * .25, .15, dz * .25);
+                    else if (facing == "up") dy = 1;
+                    else if (facing == "down") dy = -1;
+                    double sx = x + .5 + dx * .6;
+                    double sy = y + .5 + dy * .6;
+                    double sz = z + .5 + dz * .6;
+                    std::string iname = s.name();
+                    bool handled = false;
+                    if (iname.find("arrow") != std::string::npos) {
+                        spawnProjectile(ProjectileKind::Arrow, sx, sy, sz, dx*1.2, dy*0.2+0.15, dz*1.2, -1, false);
+                        handled = true;
+                    } else if (iname.find("snowball") != std::string::npos) {
+                        spawnProjectile(ProjectileKind::Snowball, sx, sy, sz, dx*1.2, dy*0.2+0.12, dz*1.2, -1, false);
+                        handled = true;
+                    } else if (iname == "minecraft:egg") {
+                        spawnProjectile(ProjectileKind::Egg, sx, sy, sz, dx*1.2, dy*0.2+0.12, dz*1.2, -1, false);
+                        handled = true;
+                    } else if (iname.find("ender_pearl") != std::string::npos) {
+                        spawnProjectile(ProjectileKind::EnderPearl, sx, sy, sz, dx*1.2, dy*0.2+0.12, dz*1.2, -1, false);
+                        handled = true;
+                    } else if (iname.find("fire_charge") != std::string::npos) {
+                        spawnProjectile(ProjectileKind::Fireball, sx, sy, sz, dx*0.5, dy*0.5, dz*0.5, -1, false);
+                        handled = true;
+                    }
+                    if (!handled) {
+                        if (iname == "minecraft:tnt" || iname.find("tnt") != std::string::npos) {
+                            // primed TNT: explode at front with delay via explodeAt
+                            explodeAt(x + dx + 0.5, y + dy + 0.5, z + dz + 0.5, 4.f);
+                        } else {
+                            spawnItemDrop(sx, sy, sz, s.itemId, 1, dx * .25, .15, dz * .25);
+                        }
+                    }
                     if (--s.count <= 0) s = ItemStack::air();
                     broadcastSound("minecraft:entity.dispenser.dispense",
                                    x + .5, y + .5, z + .5, 1.f, 1.f,
@@ -3498,6 +3527,87 @@ void Session::onUseItemOn(ReadBuffer& in) {
     const InvSlot& heldItem =
         (self_->heldSlot >= 0 && self_->heldSlot < 9)
             ? self_->inv[36 + self_->heldSlot] : airSlot;
+
+    // ---- buckets: water/lava placement and pickup (plan5 items 48-51)
+    if (!heldItem.empty()) {
+        const std::string heldName = heldItem.name();
+        if (heldName == "minecraft:water_bucket" || heldName == "minecraft:lava_bucket") {
+            std::uint16_t target = srv_.world().getBlock(tx, ty, tz);
+            bool replaceable = (target == 0);
+            // also consider replaceable plants? treat only air for now
+            if (replaceable) {
+                std::string fluidName = (heldName == "minecraft:water_bucket") ? "minecraft:water" : "minecraft:lava";
+                std::uint16_t fluidState = static_cast<std::uint16_t>(gen::stateWithPropsList(fluidName, {{"level","0"}}));
+                if (fluidState==0) {
+                    auto it = gen::blockNameToState().find(fluidName);
+                    if (it != gen::blockNameToState().end()) fluidState = static_cast<std::uint16_t>(it->second);
+                }
+                srv_.world().setBlock(tx, ty, tz, fluidState);
+                srv_.broadcastBlockChange(tx, ty, tz, fluidState);
+                if (survival) {
+                    auto* mh = &self_->inv[36 + self_->heldSlot];
+                    *mh = ItemStack::ofName("minecraft:bucket", 1);
+                    srv_.resendInventory(*self_);
+                }
+                srv_.broadcastSound("minecraft:item.bucket.empty", tx+0.5, ty+0.5, tz+0.5, 1.f, 1.f, "blocks");
+                ack(sequence);
+                return;
+            }
+        } else if (heldName == "minecraft:bucket") {
+            auto tryPick = [&](std::int32_t px,std::int32_t py,std::int32_t pz)->bool{
+                std::uint16_t bs = srv_.world().getBlock(px,py,pz);
+                const gen::BlockDef* bd = gen::blockByState(bs);
+                if (!bd) return false;
+                bool isWater=false,isLava=false;
+                if (bd->name=="minecraft:water") {
+                    for (auto& [k,v]: gen::propsOf(bs)) if (k=="level" && v=="0") isWater=true;
+                } else if (bd->name=="minecraft:lava") {
+                    for (auto& [k,v]: gen::propsOf(bs)) if (k=="level" && v=="0") isLava=true;
+                }
+                if (!isWater && !isLava) return false;
+                srv_.world().setBlock(px,py,pz, 0);
+                srv_.broadcastBlockChange(px,py,pz, 0);
+                if (survival) {
+                    auto* mh = &self_->inv[36 + self_->heldSlot];
+                    std::string newName = isWater ? "minecraft:water_bucket" : "minecraft:lava_bucket";
+                    *mh = ItemStack::ofName(newName, 1);
+                    srv_.resendInventory(*self_);
+                }
+                srv_.broadcastSound("minecraft:item.bucket.fill", px+0.5, py+0.5, pz+0.5, 1.f, 1.f, "blocks");
+                return true;
+            };
+            if (tryPick(x,y,z) || tryPick(tx,ty,tz)) {
+                ack(sequence);
+                return;
+            }
+        } else if (heldName == "minecraft:flint_and_steel" || heldName == "minecraft:fire_charge") {
+            std::uint16_t target = srv_.world().getBlock(tx, ty, tz);
+            if (target == 0) {
+                bool canPlace = true;
+                if (srv_.gameRules().contains("doFireTick") && !srv_.gameRules().getBool("doFireTick")) canPlace = false;
+                if (canPlace) {
+                    auto it = gen::blockNameToState().find("minecraft:fire");
+                    if (it != gen::blockNameToState().end()) {
+                        std::uint16_t fireState = static_cast<std::uint16_t>(it->second);
+                        srv_.world().setBlock(tx, ty, tz, fireState);
+                        srv_.broadcastBlockChange(tx, ty, tz, fireState);
+                        if (survival) {
+                            auto* mh = &self_->inv[36 + self_->heldSlot];
+                            if (heldName=="minecraft:flint_and_steel") {
+                                if (mh->applyDamage(1)) *mh = ItemStack::air();
+                            } else {
+                                if (--mh->count <=0) *mh = ItemStack::air();
+                            }
+                            srv_.resendInventory(*self_);
+                        }
+                        srv_.broadcastSound("minecraft:item.flintandsteel.use", tx+0.5, ty+0.5, tz+0.5, 1.f, 1.f, "blocks");
+                    }
+                }
+                ack(sequence);
+                return;
+            }
+        }
+    }
 
     // ---- doors: two-block placement + toggle (plan4 P3-M)
     if (!heldItem.empty()) {
