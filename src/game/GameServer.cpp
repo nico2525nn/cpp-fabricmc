@@ -397,6 +397,8 @@ void GameServer::tickOnce() {
     mobsTick();
     mark('P');
     projectilesTick();
+    mark('Q');
+    tntTick();
     mark('I');
     itemsTick();
     mark('T');
@@ -1589,8 +1591,10 @@ void GameServer::hoppersTick() {
                     }
                     if (!handled) {
                         if (iname == "minecraft:tnt" || iname.find("tnt") != std::string::npos) {
-                            // primed TNT: explode at front with delay via explodeAt
-                            explodeAt(x + dx + 0.5, y + dy + 0.5, z + dz + 0.5, 4.f);
+                            // plan10 §8 TNT: primed entity with fuse 80t, small random velocity
+                            double rvx = dx * 0.7 + (rand()/(double)RAND_MAX - 0.5) * 0.1;
+                            double rvz = dz * 0.7 + (rand()/(double)RAND_MAX - 0.5) * 0.1;
+                            spawnTnt(x + dx + 0.5, y + dy + 0.5, z + dz + 0.5, rvx, 0.2, rvz, 80);
                         } else {
                             spawnItemDrop(sx, sy, sz, s.itemId, 1, dx * .25, .15, dz * .25);
                         }
@@ -1616,8 +1620,12 @@ ItemStack* GameServer::containerAt(std::int32_t x, std::int32_t y,
     kindOut = be->kind;
     switch (be->kind) {
     case BlockEntity::Kind::Chest: countOut = 27; return be->chest.slots;
+    case BlockEntity::Kind::Barrel: countOut = 27; return be->chest.slots;
+    case BlockEntity::Kind::ShulkerBox: countOut = 27; return be->chest.slots;
     case BlockEntity::Kind::Hopper: countOut = 5; return be->generic.slots;
     case BlockEntity::Kind::Dispenser: countOut = 9; return be->generic.slots;
+    case BlockEntity::Kind::Brewing: countOut = 5; return be->brewing.slots;
+    case BlockEntity::Kind::Furnace: countOut = 3; return be->furnace.slots;
     default: return nullptr;
     }
 }
@@ -3355,6 +3363,75 @@ void GameServer::projectilesTick() {
     }
 }
 
+void GameServer::spawnTnt(double x,double y,double z,double vx,double vy,double vz,int fuse) {
+    auto t = std::make_shared<TntEntity>();
+    t->entityId = nextEntityId();
+    t->x=x; t->y=y; t->z=z; t->vx=vx; t->vy=vy; t->vz=vz; t->fuse=fuse;
+    {
+        std::lock_guard lk(entsMtx_);
+        tnts_.push_back(t);
+    }
+    WriteBuffer b;
+    b.varint(t->entityId);
+    static std::uint8_t zero[16]={};
+    b.uuid(zero);
+    auto tid = gen::entityTypeIdByName().find("minecraft:tnt");
+    b.varint(tid!=gen::entityTypeIdByName().end()? (int32_t)tid->second : 68);
+    b.f64(x); b.f64(y); b.f64(z);
+    b.i8(0); b.i8(0); b.i8(0);
+    b.varint(0); b.i16(0); b.i16(0); b.i16(0);
+    broadcastPacketExcept(nullptr, proto::pl::sc::SpawnEntity, b);
+    // fuse as metadata (varint index 8) + also via SetEntityMetadata if needed
+    if (fuse!=80) {
+        WriteBuffer md; md.varint(t->entityId);
+        md.u8(8); md.varint(2); md.varint(fuse);
+        md.u8(255);
+        broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);
+    }
+}
+
+void GameServer::tntTick() {
+    std::vector<std::shared_ptr<TntEntity>> toExplode;
+    {
+        std::lock_guard lk(entsMtx_);
+        for (auto it = tnts_.begin(); it != tnts_.end();) {
+            auto &t = *it;
+            // gravity
+            t->vy -= 0.04;
+            t->x += t->vx; t->y += t->vy; t->z += t->vz;
+            t->vx *= 0.98; t->vy *= 0.98; t->vz *= 0.98;
+            // ground collision: simple floor check
+            int bx = (int)std::floor(t->x);
+            int by = (int)std::floor(t->y);
+            int bz = (int)std::floor(t->z);
+            world_.generateChunkIfMissing(bx>>4, bz>>4);
+            if (world_.getBlock(bx, by, bz)!=0 && t->vy < 0) {
+                t->vy = -t->vy * 0.4;
+                t->y = by + 1.001;
+                t->vx *= 0.7; t->vz *= 0.7;
+            }
+            // broadcast movement
+            {
+                WriteBuffer mv; mv.varint(t->entityId);
+                mv.f64(t->x); mv.f64(t->y); mv.f64(t->z);
+                mv.i8(0); mv.i8(0); mv.boolean(false);
+                broadcastPacketExcept(nullptr, proto::pl::sc::EntityTeleport, mv);
+            }
+            if (--t->fuse <= 0) {
+                toExplode.push_back(t);
+                WriteBuffer rm; rm.varint(1); rm.varint(t->entityId);
+                broadcastPacketExcept(nullptr, proto::pl::sc::RemoveEntities, rm);
+                it = tnts_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    for (auto &t : toExplode) {
+        explodeAt(t->x, t->y + 0.5, t->z, 4.f);
+    }
+}
+
 bool GameServer::spawnMobByTypeName(const std::string& name, double x, double y,
                                      double z) {
     // Plan8: handle lightning_bolt via strikeLightning (charged creeper)
@@ -4588,22 +4665,14 @@ void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
             }
         }
         if (nowGround) self_->fallDist = 0;
-        // exhaustion: sprint / jump / walk (plan7 hunger)
+        // exhaustion: walk/sprint/swim/jump (plan9 #84 + plan10 survival) via HungerManager
         if (self_->gamemode == 0) {
-            const double hdx = self_->x - oldX, hdz = self_->z - oldZ;
-            double hDist = std::sqrt(hdx*hdx + hdz*hdz);
-            if (hDist > 0.001) {
-                float mult = self_->isSprinting ? 0.1f : 0.01f;
-                if (self_->isSwimming) mult = 0.01f;
-                self_->exhaustion += (float)hDist * mult;
-            }
-            // jump exhaustion: leaving ground with upward motion
+            HungerManager::onPlayerMove(*self_, oldX, oldY, oldZ,
+                                        self_->x, self_->y, self_->z,
+                                        wasOnGround, nowGround,
+                                        self_->isSprinting, self_->isSwimming, srv_);
             double dy = self_->y - oldY;
-            if (hasPos && wasOnGround && !nowGround && dy > 0.05) {
-                float jumpCost = self_->isSprinting ? 0.2f : 0.05f;
-                // apply jump boost reduction? ignore
-                srv_.addHungerExhaustion(*self_, jumpCost);
-            }
+            HungerManager::onPlayerJump(*self_, wasOnGround, nowGround, dy, self_->isSprinting, srv_);
         }
         self_->spawned = true;
         if (!chunksStreamed_) streamInitialChunks();
@@ -4795,10 +4864,14 @@ void Session::dispatchCommand(const std::string& line) {
     };
 
     const auto res = srv_.commands().execute(line, std::move(src));
-    if (!res.ok)
+    if (!res.ok) {
+        std::fprintf(stderr,"[cppfm] command '%s' failed: %s\n", line.c_str(), res.errorText.c_str());
         sendSystemText("\u00a7c" + (res.errorText.empty()
                           ? "Incorrect argument for command"
                           : res.errorText));
+    } else {
+        std::fprintf(stderr,"[cppfm] command '%s' ok val=%d\n", line.c_str(), res.value);
+    }
 }
 
 void Session::onHeldSlot(ReadBuffer& in) {
@@ -5071,6 +5144,32 @@ void Session::onUseItemOn(ReadBuffer& in) {
     const InvSlot& heldItem =
         (self_->heldSlot >= 0 && self_->heldSlot < 9)
             ? self_->inv[36 + self_->heldSlot] : airSlot;
+
+    // ---- TNT ignition (plan10 §8): flint_and_steel / fire_charge on TNT -> primed TNT entity (fuse 80t)
+    {
+        World& w = srv_.worldFor(self_->dimension);
+        std::uint16_t clickedSt = w.getBlock(x, y, z);
+        const gen::BlockDef* td = gen::blockByState(clickedSt);
+        if (td && std::string(td->name)=="minecraft:tnt" && !heldItem.empty()) {
+            const std::string hn = heldItem.name();
+            if (hn=="minecraft:flint_and_steel" || hn=="minecraft:fire_charge") {
+                w.setBlock(x, y, z, 0);
+                srv_.broadcastBlockChange(x, y, z, 0);
+                double vx = (rand()/(double)RAND_MAX - 0.5)*0.2;
+                double vz = (rand()/(double)RAND_MAX - 0.5)*0.2;
+                srv_.spawnTnt(x + 0.5, y + 0.5, z + 0.5, vx, 0.4, vz, 80);
+                if (survival) {
+                    auto* mh = &self_->inv[36 + self_->heldSlot];
+                    if (hn=="minecraft:flint_and_steel") { if (mh->applyDamage(1)) *mh = ItemStack::air(); }
+                    else { if (--mh->count <= 0) *mh = ItemStack::air(); }
+                    srv_.resendInventory(*self_);
+                }
+                srv_.broadcastSound("minecraft:entity.tnt.primed", x+0.5, y+0.5, z+0.5, 1.f, 1.f, "blocks");
+                ack(sequence);
+                return;
+            }
+        }
+    }
 
     // ---- portal ignition (plan5): flint_and_steel / fire_charge on obsidian frame 4x5 -> nether portal
     {
@@ -5480,6 +5579,7 @@ void Session::onUseItem(ReadBuffer& in) {
     (void)in.f32(); (void)in.f32();
     if (self_->heldSlot >= 0 && self_->heldSlot < 9) {
         auto& sl = self_->inv[36 + self_->heldSlot];
+        bool handledFood = false;
         if (!sl.empty() && self_->food < 20) {
             std::string iname = sl.name();
             bool isFood = false;
@@ -5492,8 +5592,8 @@ void Session::onUseItem(ReadBuffer& in) {
                 if (iname.find("stew")!=std::string::npos||iname.find("soup")!=std::string::npos||iname.find("cake")!=std::string::npos) isFood=true;
             }
             if (isFood) {
-                // exhaustion for eating: 0.05? vanilla 0.005 per food?
-                srv_.addHungerExhaustion(*self_, 0.005f);
+                // exhaustion for eating (plan10 survival) via HungerManager
+                HungerManager::addExhaustion(*self_, HungerManager::EXHAUST_EAT);
                 // consume item (stew leaves bowl already handled inside handleFoodConsume via addToInventory)
                 bool isStew = iname.find("stew")!=std::string::npos || iname.find("soup")!=std::string::npos;
                 bool isCake = iname.find("cake")!=std::string::npos;
@@ -5507,9 +5607,17 @@ void Session::onUseItem(ReadBuffer& in) {
                     if (--sl.count <=0) sl = InvSlot::air();
                 }
                 srv_.resendInventory(*self_);
+                handledFood = true;
             } else {
                 // revert if not food (handleFoodConsume might have clamped without change)
                 self_->food = beforeFood; self_->saturation = beforeSat;
+            }
+        }
+        // bow use exhaustion (plan9 #84) — UseItem with bow/crossbow triggers 0.01 exhaustion even if not eating
+        if (!handledFood && !sl.empty()) {
+            std::string iname = sl.name();
+            if (iname.find("bow")!=std::string::npos || iname.find("crossbow")!=std::string::npos) {
+                HungerManager::onBowUse(*self_, srv_);
             }
         }
     }
@@ -5606,8 +5714,8 @@ void Session::onUseEntity(ReadBuffer& in) {
     }
     // strength/weakness bonus
     dmg += meleeDamageBonusFor(self_->effects);
-    // attack exhaustion (plan7 hunger)
-    srv_.addHungerExhaustion(*self_, 0.1f);
+    // attack exhaustion (plan9 #84 + plan10 survival) via HungerManager
+    HungerManager::onPlayerAttack(*self_, srv_);
 
     // ---- PVP: check player victims first (items 76-80 combat)
     for (auto &pp : srv_.playersSnapshot()) {

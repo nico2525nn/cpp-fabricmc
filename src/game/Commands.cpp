@@ -517,6 +517,27 @@ void GameServer::initCommands() {
                          std::to_string(dur) + "s)");
             return 1;
         };
+        auto amplifier = CommandNode::argument("amplifier", args::integer(0,255));
+        amplifier->executable = true;
+        amplifier->action = [this](CommandContext& c){
+            Player* src = static_cast<Player*>(c.source.player);
+            const std::string en = c.arg("effect").asStr();
+            auto it = effects::byName().find(en);
+            if (it == effects::byName().end()) throw std::runtime_error("unknown effect: " + en);
+            const auto sel = c.arg("targets").asSelector();
+            const int dur = c.arg("seconds").asInt();
+            const int amp = c.arg("amplifier").asInt();
+            for (auto& n: sel.playerNames) if (Player* t=findPlayer(*this,n)){
+                EffectInstance e; e.type=it->second; e.durationTicks=dur*20; e.amplifier=(int8_t)amp;
+                t->effects.erase(std::remove_if(t->effects.begin(),t->effects.end(),[&](auto &x){return x.type==e.type;}),t->effects.end());
+                t->effects.push_back(e);
+                WriteBuffer b; b.varint(t->entityId); b.varint(e.type); b.varint(e.amplifier); b.varint(e.durationTicks); b.u8(effectFlags(e));
+                try{ t->conn->sendPacket(proto::pl::sc::EntityEffect,b);}catch(...){}
+            }
+            sendFeedback(src,"Applied "+en+" amp "+std::to_string(amp)+" ("+std::to_string(dur)+"s)");
+            return 1;
+        };
+        secs->then(amplifier);
         eff->then(secs);
         targets->then(eff);
         give->then(targets);
