@@ -48,6 +48,8 @@
 #include "Attributes.hpp"
 #include "DamageSource.hpp"
 #include "ServerProperties.hpp"
+#include "BossAI.hpp"
+#include "MenuLogic.hpp"
 
 namespace cppfm {
 
@@ -244,6 +246,7 @@ private:
                     std::uint16_t stateIdOfBlock);
     void closeOpenMenu(bool sendPacket);
     void onWindowClick(ReadBuffer& in);
+    void onEnchantItem(ReadBuffer& in);
 
     GameServer& srv_;
     std::unique_ptr<Connection> conn_;
@@ -483,6 +486,8 @@ public:
         std::fprintf(stderr, "[cppfm] RCON %s (enabled=%d port=%u)\n",
                      rconUp ? "listening" : "not started", (int)cfg_.rcon.enabled,
                      cfg_.rcon.port);
+        // Plan7 BossAI
+        bossAI_ = std::make_unique<BossAIManager>(*this);
     }
     void runForever();
     void requestStop() {                 // async-signal-safe minimal path
@@ -801,11 +806,17 @@ public:
     void loadOps();
     void sendWorldBorderTo(Player& p) const;
     void broadcastWorldBorder();
+    // Plan7 BossBar
+    BossAIManager* bossAI() { return bossAI_.get(); }
+    const BossAIManager* bossAI() const { return bossAI_.get(); }
+    BossBarManager* bossBars() { return bossAI_ ? &bossAI_->bars() : nullptr; }
 private:
     std::unique_ptr<LightEngine> lightEngine_;
     std::unique_ptr<FluidSim> fluidSim_;
     std::unique_ptr<RedstoneEngine> redstone_;
     std::unique_ptr<BlockTickScheduler> blockTicks_;
+    // Plan7 BossAI / BossBar
+    std::unique_ptr<BossAIManager> bossAI_;
     // Block Event Bus (plan6): simple vector of handlers in GameServer
     std::vector<std::function<void(std::int32_t,std::int32_t,std::int32_t,std::uint16_t,std::uint16_t)>> onBlockPlaceHandlers_;
     std::vector<std::function<void(std::int32_t,std::int32_t,std::int32_t,std::uint16_t,std::uint16_t)>> onBlockBreakHandlers_;
