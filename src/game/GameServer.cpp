@@ -4864,14 +4864,10 @@ void Session::dispatchCommand(const std::string& line) {
     };
 
     const auto res = srv_.commands().execute(line, std::move(src));
-    if (!res.ok) {
-        std::fprintf(stderr,"[cppfm] command '%s' failed: %s\n", line.c_str(), res.errorText.c_str());
+    if (!res.ok)
         sendSystemText("\u00a7c" + (res.errorText.empty()
                           ? "Incorrect argument for command"
                           : res.errorText));
-    } else {
-        std::fprintf(stderr,"[cppfm] command '%s' ok val=%d\n", line.c_str(), res.value);
-    }
 }
 
 void Session::onHeldSlot(ReadBuffer& in) {
