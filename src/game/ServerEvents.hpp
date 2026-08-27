@@ -37,6 +37,18 @@ struct CommandExecuteEvent : Cancelable {
     std::string line;
     void* source = nullptr;
 };
+struct BlockClickedEvent : Cancelable {
+    void* player = nullptr;
+    std::int32_t x = 0, y = 0, z = 0;
+    std::uint16_t state = 0;
+    int face = 0;
+};
+struct EntityLandEvent {
+    void* entity = nullptr;
+    std::int32_t x = 0, y = 0, z = 0;
+    std::uint16_t blockState = 0;
+    double fallDistance = 0;
+};
 
 struct ServerEvents {
     EventHook<PlayerJoinEvent> join;
@@ -44,6 +56,8 @@ struct ServerEvents {
     EventHook<PlayerChatEvent> chat;
     EventHook<BlockBreakEvent> blockBreak;
     EventHook<BlockPlaceEvent> blockPlace;
+    EventHook<BlockClickedEvent> blockClicked;
+    EventHook<EntityLandEvent> entityLand;
     EventHook<EntityDamageEvent> entityDamage;
     EventHook<MobSpawnEvent> mobSpawn;
     EventHook<ServerTickEvent> serverTick;
