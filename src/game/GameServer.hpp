@@ -451,6 +451,8 @@ public:
     void furnacesTick();
     // Hopper item movement + dispenser ejection (every 8 ticks).
     void hoppersTick();
+    GameRuleManager& gameRules() { return gamerules_; }
+    const GameRuleManager& gameRules() const { return gamerules_; }
     // Direct inventory access helpers used by the hopper simulation.
     ItemStack* containerAt(std::int32_t x, std::int32_t y, std::int32_t z,
                            int& countOut, BlockEntity::Kind& kindOut);

@@ -13,6 +13,7 @@
 #include <queue>
 #include <unordered_set>
 #include <unordered_map>
+#include <mutex>
 #include "../game/World.hpp"
 #include "../game/BlockEntities.hpp"
 
@@ -73,6 +74,7 @@ private:
     std::int64_t* tickRef_ = nullptr;
     std::priority_queue<RedstoneTick, std::vector<RedstoneTick>,
                         std::greater<RedstoneTick>> queue_;
+    mutable std::recursive_mutex mtx_;
     std::unordered_map<std::int64_t, std::int64_t> pendingRepeater_;
     std::unordered_map<std::int64_t, std::uint16_t> observerPrev_;
     std::unordered_map<std::int64_t, std::int64_t> observerPulseEnd_;

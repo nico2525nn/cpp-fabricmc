@@ -214,6 +214,7 @@ int RedstoneEngine::emissionLevel(std::uint16_t state, std::int32_t x, std::int3
 
 bool RedstoneEngine::isPoweredHere(std::int32_t x, std::int32_t y,
                                    std::int32_t z) {
+    std::lock_guard<std::recursive_mutex> lk(mtx_);
     static constexpr int DX[6] = {1,-1,0,0,0,0};
     static constexpr int DY[6] = {0,0,1,-1,0,0};
     static constexpr int DZ[6] = {0,0,0,0,1,-1};
@@ -235,6 +236,7 @@ bool RedstoneEngine::isPoweredHere(std::int32_t x, std::int32_t y,
 
 void RedstoneEngine::onBlockChanged(std::int32_t x, std::int32_t y,
                                     std::int32_t z) {
+    std::lock_guard<std::recursive_mutex> lk(mtx_);
     recomputeAround(x, y, z);
     // Rails shape recompute for changed pos and neighbors
     recomputeRailShape(x,y,z);
@@ -579,6 +581,7 @@ void RedstoneEngine::handlePiston(std::int32_t x, std::int32_t y, std::int32_t z
 
 bool RedstoneEngine::onInteract(std::int32_t x, std::int32_t y,
                                 std::int32_t z, std::int64_t now) {
+    std::lock_guard<std::recursive_mutex> lk(mtx_);
     const std::uint16_t st = world_.getBlock(x, y, z);
     const gen::BlockDef* b = gen::blockByState(st);
     if (!b) return false;
@@ -605,6 +608,7 @@ bool RedstoneEngine::onInteract(std::int32_t x, std::int32_t y,
 }
 
 void RedstoneEngine::tick(std::int64_t now) {
+    std::lock_guard<std::recursive_mutex> lk(mtx_);
     while (!queue_.empty() && queue_.top().dueTick <= now) {
         const RedstoneTick t = queue_.top();
         queue_.pop();
