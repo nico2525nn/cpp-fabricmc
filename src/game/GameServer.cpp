@@ -271,20 +271,140 @@ void GameServer::sendSetHealth(Player& p) {
     try { p.conn->sendPacket(pl::sc::SetHealth, b); } catch (...) {}
 }
 
-void GameServer::applyDamage(Player& p, float amount, const char* cause) {
-    if (p.gamemode == 1 || p.gamemode == 3) return;      // creative/spectator immune
-    if (amount <= 0 || p.dead) return;
-    // armor reduction
+void GameServer::syncPlayerArmorAttributes(Player& p) {
     int armor = totalArmorPoints(p.inv);
-    float reduced = applyArmorReduction(amount, armor);
-    // enchant protection
-    int prot = totalProtectionForPlayer(p);
-    if (prot > 0) {
-        float protEff = std::min(20.f, static_cast<float>(prot * 4)) / 25.f;
+    int toughness = 0;
+    float kbResist = 0.f;
+    for (int i = 5; i <= 8; ++i) {
+        if (i < 0 || i >= 46 || p.inv[i].empty()) continue;
+        std::string n = p.inv[i].name();
+        if (n.find("diamond_") != std::string::npos) toughness += 2;
+        else if (n.find("netherite_") != std::string::npos) { toughness += 3; kbResist += 0.1f; }
+    }
+    p.attributes.setBase(Attribute::ARMOR, (double)armor);
+    p.attributes.setBase(Attribute::ARMOR_TOUGHNESS, (double)toughness);
+    p.attributes.setBase(Attribute::KNOCKBACK_RESISTANCE, (double)kbResist);
+}
+int GameServer::computeProtectionEPF(const DamageSource& ds, const Player& p) const {
+    if (ds.bypassEnchant || ds.isDrown() || ds.isStarveFlag) return 0;
+    int total = 0;
+    for (int i = 5; i <= 8; ++i) {
+        if (i < 0 || i >= 46 || p.inv[i].empty()) continue;
+        const auto& s = p.inv[i];
+        int prot = std::max(s.enchantLevel("protection"), s.enchantLevel("minecraft:protection"));
+        int fire = std::max(s.enchantLevel("fire_protection"), s.enchantLevel("minecraft:fire_protection"));
+        int blast = std::max(s.enchantLevel("blast_protection"), s.enchantLevel("minecraft:blast_protection"));
+        int proj = std::max(s.enchantLevel("projectile_protection"), s.enchantLevel("minecraft:projectile_protection"));
+        int feather = std::max(s.enchantLevel("feather_falling"), s.enchantLevel("minecraft:feather_falling"));
+        int weight = 1;
+        if (ds.isFire() || ds.isExplosion() || ds.isProjectile()) weight = 2;
+        else if (ds.isFall()) weight = 1;
+        total += prot * weight;
+        if (ds.isFire()) total += fire * 2;
+        if (ds.isExplosion()) total += blast * 2;
+        if (ds.isProjectile()) total += proj * 2;
+        if (ds.isFall()) total += feather * 3;
+        else if (ds.isFall()) { /* fallback */ }
+        // also generic fall weight is 1 already
+    }
+    if (total > 20) total = 20;
+    return total;
+}
+int GameServer::computeProtectionEPF(const DamageSource& ds, const MobEntity& m) const {
+    if (ds.bypassEnchant || ds.isDrown() || ds.isStarveFlag) return 0;
+    int total = 0;
+    for (int i = 2; i < 6; ++i) {
+        if (m.equipment[i].empty()) continue;
+        const auto& s = m.equipment[i];
+        int prot = std::max(s.enchantLevel("protection"), s.enchantLevel("minecraft:protection"));
+        int fire = std::max(s.enchantLevel("fire_protection"), s.enchantLevel("minecraft:fire_protection"));
+        int blast = std::max(s.enchantLevel("blast_protection"), s.enchantLevel("minecraft:blast_protection"));
+        int proj = std::max(s.enchantLevel("projectile_protection"), s.enchantLevel("minecraft:projectile_protection"));
+        int feather = std::max(s.enchantLevel("feather_falling"), s.enchantLevel("minecraft:feather_falling"));
+        int weight = 1;
+        if (ds.isFire() || ds.isExplosion() || ds.isProjectile()) weight = 2;
+        else if (ds.isFall()) weight = 1;
+        total += prot * weight;
+        if (ds.isFire()) total += fire * 2;
+        if (ds.isExplosion()) total += blast * 2;
+        if (ds.isProjectile()) total += proj * 2;
+        if (ds.isFall()) total += feather * 3;
+    }
+    if (total > 20) total = 20;
+    return total;
+}
+void GameServer::addHungerExhaustion(Player& p, float amount) {
+    if (p.gamemode != 0) return;
+    p.exhaustion += amount;
+}
+void GameServer::addFoodAndSaturation(Player& p, int food, float sat) {
+    p.food = std::clamp(p.food + food, 0, 20);
+    p.saturation = std::clamp(p.saturation + sat, 0.f, (float)p.food);
+    if (p.saturation > (float)p.food) p.saturation = (float)p.food;
+    sendSetHealth(p);
+}
+void GameServer::handleFoodConsume(Player& p, const std::string& itemName) {
+    struct FoodInfo { int food; float sat; };
+    static const std::unordered_map<std::string, FoodInfo> kFood = {
+        {"minecraft:apple", {4, 2.4f}},
+        {"minecraft:bread", {5, 6.0f}},
+        {"minecraft:cake", {2, 0.4f}},
+        {"minecraft:cookie", {2, 0.4f}},
+        {"minecraft:mushroom_stew", {6, 7.2f}},
+        {"minecraft:beetroot_soup", {6, 7.2f}},
+        {"minecraft:cooked_beef", {8, 12.8f}},
+        {"minecraft:cooked_chicken", {6, 7.2f}},
+        {"minecraft:cooked_porkchop", {8, 12.8f}},
+        {"minecraft:cooked_mutton", {6, 9.6f}},
+        {"minecraft:baked_potato", {5, 6.0f}},
+        {"minecraft:carrot", {3, 3.6f}},
+        {"minecraft:melon_slice", {2, 1.2f}},
+        {"minecraft:golden_apple", {4, 9.6f}},
+        {"minecraft:golden_carrot", {6, 14.4f}},
+        {"minecraft:steak", {8, 12.8f}},
+        {"minecraft:pumpkin_pie", {8, 4.8f}},
+        {"minecraft:beetroot", {1, 1.2f}},
+        {"minecraft:dried_kelp", {1, 0.6f}},
+        {"minecraft:sweet_berries", {2, 0.4f}},
+        {"minecraft:glow_berries", {2, 0.4f}},
+        {"minecraft:honey_bottle", {6, 1.2f}},
+    };
+    auto it = kFood.find(itemName);
+    if (it != kFood.end()) {
+        addFoodAndSaturation(p, it->second.food, it->second.sat);
+        // special stew effect: clear? not needed
+        // cake handled via block but also as item: same
+    } else if (itemName.find("stew") != std::string::npos || itemName.find("soup") != std::string::npos) {
+        addFoodAndSaturation(p, 6, 7.2f);
+    } else if (itemName.find("cake") != std::string::npos) {
+        addFoodAndSaturation(p, 2, 0.4f);
+    }
+    // saturation clamp 0-food already done
+    // exhaustion handled elsewhere
+}
+void GameServer::applyDamage(Player& p, float amount, const DamageSource& src) {
+    if (p.gamemode == 1 || p.gamemode == 3) return;
+    if (amount <= 0 || p.dead) return;
+    syncPlayerArmorAttributes(p);
+    float reduced = amount;
+    if (!src.bypassArmor) {
+        int armor = (int)std::round(p.attributes.getValue(Attribute::ARMOR));
+        // fallback to legacy if attribute is 0 but armor exists
+        if (armor == 0) armor = totalArmorPoints(p.inv);
+        reduced = applyArmorReduction(amount, armor);
+        // toughness slightly reduces armor effectiveness via vanilla formula approximation:
+        double toughness = p.attributes.getValue(Attribute::ARMOR_TOUGHNESS);
+        if (toughness > 0 && reduced < amount) {
+            // simple: armor toughness reduces remaining damage a bit
+            reduced *= (1.f - (float)(toughness * 0.02));
+        }
+    }
+    int epf = computeProtectionEPF(src, p);
+    if (epf > 0) {
+        float protEff = std::min(20.f, static_cast<float>(epf * 4)) / 25.f;
         protEff = std::min(protEff, 0.8f);
         reduced *= (1.f - protEff);
     }
-    // resistance effect
     for (auto &e : p.effects) if (e.type == effects::Resistance) {
         float red = 0.2f * float(e.amplifier + 1);
         if (red > 0.8f) red = 0.8f;
@@ -294,13 +414,12 @@ void GameServer::applyDamage(Player& p, float amount, const char* cause) {
     if (finalAmt <= 0) return;
     p.health -= finalAmt;
     p.hurtCooldown = 10;
-    if (p.health <= 0) { p.health = 0; killPlayer(p, cause); }
+    if (p.health <= 0) { p.health = 0; killPlayer(p, src.type.c_str()); }
     sendSetHealth(p);
-    // damage event broadcast for animation (optional)
     if (p.conn) {
         WriteBuffer de;
         de.varint(p.entityId);
-        int dtid = gameData_.idOf("minecraft:damage_type", std::string("minecraft:") + cause);
+        int dtid = gameData_.idOf("minecraft:damage_type", std::string("minecraft:") + src.type);
         if (dtid < 0) dtid = gameData_.idOf("minecraft:damage_type", "minecraft:generic");
         if (dtid < 0) dtid = 0;
         de.varint(dtid >= 0 ? dtid : 0);
@@ -309,6 +428,10 @@ void GameServer::applyDamage(Player& p, float amount, const char* cause) {
         try { p.conn->sendPacket(pl::sc::DamageEvent, de); } catch (...) {}
         broadcastPacketExcept(&p, pl::sc::DamageEvent, de);
     }
+}
+void GameServer::applyDamage(Player& p, float amount, const char* cause) {
+    DamageSource src(cause ? std::string(cause) : std::string("generic"));
+    applyDamage(p, amount, src);
 }
 
 void GameServer::killPlayer(Player& p, const char* cause) {
@@ -1581,14 +1704,16 @@ bool GameServer::selectTrade(Player& p, std::int32_t index) {
     return true;
 }
 
-void GameServer::applyDamageToMob(MobEntity& m, float amount, const char* cause) {
-    (void)cause;
+void GameServer::applyDamageToMob(MobEntity& m, float amount, const DamageSource& src) {
     if (amount <= 0 || m.dead) return;
-    int armor = totalArmorPoints(m);
-    float reduced = applyArmorReduction(amount, armor);
-    int prot = totalProtectionForMob(m);
-    if (prot > 0) {
-        float protEff = std::min(20.f, static_cast<float>(prot * 4)) / 25.f;
+    float reduced = amount;
+    if (!src.bypassArmor) {
+        int armor = totalArmorPoints(m);
+        reduced = applyArmorReduction(amount, armor);
+    }
+    int epf = computeProtectionEPF(src, m);
+    if (epf > 0) {
+        float protEff = std::min(20.f, static_cast<float>(epf * 4)) / 25.f;
         protEff = std::min(protEff, 0.8f);
         reduced *= (1.f - protEff);
     }
@@ -1597,6 +1722,10 @@ void GameServer::applyDamageToMob(MobEntity& m, float amount, const char* cause)
     m.health -= finalAmt;
     m.hurtCooldown = 10;
     if (m.health <= 0) m.dead = true;
+}
+void GameServer::applyDamageToMob(MobEntity& m, float amount, const char* cause) {
+    DamageSource src(cause ? std::string(cause) : std::string("generic"));
+    applyDamageToMob(m, amount, src);
 }
 
 void GameServer::itemsTick() {

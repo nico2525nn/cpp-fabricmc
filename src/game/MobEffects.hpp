@@ -56,6 +56,12 @@ inline const char* nameOf(std::uint8_t id) {
     case BadOmen: return "minecraft:bad_omen";
     case HeroOfTheVillage: return "minecraft:hero_of_the_village";
     case Darkness: return "minecraft:darkness";
+    case TrialOmen: return "minecraft:trial_omen";
+    case RaidOmen: return "minecraft:raid_omen";
+    case WindCharged: return "minecraft:wind_charged";
+    case Weaving: return "minecraft:weaving";
+    case Oozing: return "minecraft:oozing";
+    case Infested: return "minecraft:infested";
     default: return "minecraft:speed";
     }
 }
