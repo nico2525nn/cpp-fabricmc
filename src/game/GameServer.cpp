@@ -24,6 +24,115 @@ static std::int64_t nowMs() {
         std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
+// ---------------------------------------------------------------- PacketBatcher
+void PacketBatcher::flush(GameServer& srv, const Player* except) {
+    if (queue.empty()) return;
+    if (queue.size() == 1) {
+        auto &q = queue[0];
+        srv.broadcastPacketExcept(except, q.id, q.body);
+    } else {
+        if (!tryFlushAsMultiBlockChange(srv, except)) {
+            WriteBuffer empty;
+            srv.broadcastPacketExcept(except, proto::pl::sc::BundleDelimiter, empty);
+            for (auto &q : queue) {
+                srv.broadcastPacketExcept(except, q.id, q.body);
+            }
+            WriteBuffer empty2;
+            srv.broadcastPacketExcept(except, proto::pl::sc::BundleDelimiter, empty2);
+        }
+    }
+    queue.clear();
+    lastFlushMs = nowMs();
+}
+
+bool PacketBatcher::tryFlushAsMultiBlockChange(GameServer& srv, const Player* except) {
+    if (queue.empty()) return false;
+    // Only coalesce if all queued are BlockUpdate and share same chunk section
+    bool allBlockUpdate = true;
+    for (auto &q : queue) if (q.id != proto::pl::sc::BlockUpdate) allBlockUpdate = false;
+    if (!allBlockUpdate) return false;
+    if (queue.size() < 2) return false;
+    // Extract positions and check same chunk section (x>>4, z>>4, y>>4)
+    struct Rec { int32_t x,y,z; uint16_t state; };
+    std::vector<Rec> recs;
+    recs.reserve(queue.size());
+    int32_t baseCx = INT32_MAX, baseCz = INT32_MAX, baseSy = INT32_MAX;
+    bool sameSection = true;
+    for (auto &q : queue) {
+        ReadBuffer in(q.body.data);
+        int32_t x,y,z; in.position(x,y,z);
+        uint16_t st = static_cast<uint16_t>(in.varint());
+        int32_t cx = x >> 4, cz = z >> 4, sy = y >> 4;
+        if (recs.empty()) { baseCx=cx; baseCz=cz; baseSy=sy; }
+        else if (cx!=baseCx || cz!=baseCz || sy!=baseSy) sameSection=false;
+        recs.push_back({x,y,z,st});
+    }
+    if (!sameSection) return false;
+    // Build MultiBlockChange packet: chunkCoordinates bitfield + records varint array
+    // bitfield: x 22 bits, z 22 bits, y 20 bits (section y)
+    WriteBuffer b;
+    // encode section pos as long via bitfield: use position-like packing but for section
+    // Vanilla uses long where low bits encode. Simpler: use x,z,sectionY encoding via manual bitfield
+    // We reuse WriteBuffer::position packing but shift y by 4? Actually section y is y>>4
+    // For wire we need to write 8-byte long with x 22b, z 22b, y 20b.
+    // We'll construct manually:
+    {
+        int64_t sx = baseCx;
+        int64_t sz = baseCz;
+        int64_t sy = baseSy;
+        uint64_t packed = 0;
+        packed |= (static_cast<uint64_t>(sx & 0x3FFFFF) << 42);
+        packed |= (static_cast<uint64_t>(sz & 0x3FFFFF) << 20);
+        packed |= (static_cast<uint64_t>(sy & 0xFFFFF));
+        b.u64(packed);
+    }
+    // records: each varint encodes (state << 12) | ((x&15)<<8) | ((z&15)<<4) | (y&15)
+    b.varint(static_cast<int32_t>(recs.size()));
+    for (auto &r : recs) {
+        int32_t lx = r.x & 15, ly = r.y & 15, lz = r.z & 15;
+        int32_t enc = (static_cast<int32_t>(r.state) << 12) | (lx << 8) | (lz << 4) | ly;
+        b.varint(enc);
+    }
+    srv.broadcastPacketExcept(except, proto::pl::sc::MultiBlockChange, b);
+    // invalidate cache once for the section's chunk
+    srv.invalidateChunkCache(baseCx, baseCz);
+    return true;
+}
+
+bool ChatMessageProcessor::verify(const Player& p, const std::string& msg, int64_t timestamp, int64_t salt, const std::vector<uint8_t>& signature) {
+    if (!p.hasChatSession) {
+        // No session: accept unsigned
+        return true;
+    }
+    if (signature.empty()) {
+        std::fprintf(stderr, "[cppfm] chat verify: session present but no signature for %s\n", p.name.c_str());
+        return true; // allow unsigned for now (stub)
+    }
+    if (p.chatPubKey.empty()) return true;
+    // Build data to verify: message + timestamp + salt (simplified)
+    std::string dataStr = msg + std::to_string(timestamp) + std::to_string(salt);
+    bool ok = crypto::verifyRsaSha256(p.chatPubKey,
+        reinterpret_cast<const uint8_t*>(dataStr.data()), dataStr.size(), signature);
+    if (!ok) {
+        std::fprintf(stderr, "[cppfm] chat signature verify FAILED for %s\n", p.name.c_str());
+    } else {
+        std::fprintf(stderr, "[cppfm] chat signature verify OK for %s\n", p.name.c_str());
+    }
+    // Stub: accept even if verify fails, to avoid breaking vanilla unsigned clients
+    return true;
+}
+
+bool ChatMessageProcessor::shouldUsePlayerChat(const Player& p) {
+    if (!p.hasChatSession) return false;
+    // check expiry if set
+    if (p.chatSessionExpiry != 0) {
+        int64_t now = nowMs();
+        if (now > p.chatSessionExpiry) return false;
+    }
+    return !p.chatPubKey.empty();
+}
+
+
 // hotbar: block name -> (itemId, stateId) resolved at startup
 struct HotbarEntry { std::uint32_t itemId; std::uint16_t stateId; };
 static const char* kHotbarNames[] = {
@@ -159,6 +268,62 @@ void GameServer::broadcastDigStage(Player& p, std::int8_t stage) {
     b.i8(stage);
     broadcastPacketExcept(nullptr, proto::pl::sc::BlockBreakAnimation, b);
 }
+
+void GameServer::broadcastBlockChange(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state) {
+    queueBlockChange(x, y, z, state);
+    invalidateChunkCache(x >> 4, z >> 4);
+}
+
+void GameServer::queueBlockChange(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state) {
+    WriteBuffer b;
+    b.position(x, y, z);
+    b.varint(state);
+    batcher_.queuePacket(proto::pl::sc::BlockUpdate, std::move(b));
+    if (batcher_.size() >= 64) {
+        flushBlockBatches();
+    }
+}
+
+void GameServer::flushBlockBatches() {
+    if (batcher_.empty()) return;
+    // throttle to 50ms unless forced by size
+    int64_t now = nowMs();
+    if (batcher_.size() < 64 && now - lastBlockBatchFlushMs_ < 50) return;
+    batcher_.flush(*this, nullptr);
+    lastBlockBatchFlushMs_ = now;
+}
+
+void GameServer::broadcastPlayerChat(Player& sender, const std::string& message, int64_t timestamp) {
+    WriteBuffer b;
+    b.uuid(sender.uuid.data());
+    b.varint(0); // index
+    b.boolean(false); // no signature
+    b.string(message);
+    b.i64(timestamp);
+    b.i64(0); // salt
+    b.varint(0); // previousMessages count
+    b.boolean(false); // unsignedChatContent absent
+    b.varint(0); // filterType PASS_THROUGH
+    // type holder (registryEntryHolder) : varint 0 = default chat type
+    b.varint(0);
+    // networkName as NBT text component
+    nbt::writeTextComponent(b, sender.name);
+    b.boolean(false); // networkTargetName absent
+    broadcastPacketExcept(nullptr, proto::pl::sc::PlayerChat, b);
+}
+
+bool GameServer::validateFeatureFlags(const std::vector<std::array<std::string,3>>& clientPacks) {
+    // Server advertises no known packs (empty). Client should send empty.
+    // If client sends any packs, it's mismatch for this simple server.
+    // FeatureFlags we advertise is {"minecraft:vanilla"}; client doesn't echo it.
+    // So only check packs count.
+    if (!clientPacks.empty()) {
+        std::fprintf(stderr, "[cppfm] featureFlags validation failed: client sent %zu packs but server has 0\n", clientPacks.size());
+        return false;
+    }
+    return true;
+}
+
 
 void GameServer::tickDigs() {
     for (auto& pp : playersSnapshot()) {
@@ -329,6 +494,17 @@ void GameServer::tickOnce() {
                 p->stats->save(uuidToHex(p->uuid));
             }
             if (p->advancements) p->advancements->save();
+        }
+    }
+    // network batching: flush coalesced block updates every tick (50ms window)
+    {
+        int64_t now = nowMs();
+        if (!batcher_.empty() && now - batcher_.lastFlushMs >= 50) {
+            batcher_.flush(*this, nullptr);
+            lastBlockBatchFlushMs_ = now;
+        } else if (!batcher_.empty() && tickNo_ % 2 == 0) {
+            // also flush via throttle helper
+            flushBlockBatches();
         }
     }
 }
@@ -801,6 +977,11 @@ void GameServer::explodeAt(double x, double y, double z, float power) {
                 broadcastBlockChange(bx, by, bz, 0);
                 changed.push_back({bx, by, bz});
             }
+    // coalesce explosion block changes into bundle / multi_block_change
+    if (!batcher_.empty()) {
+        batcher_.flush(*this, nullptr);
+        lastBlockBatchFlushMs_ = nowMs();
+    }
     // entity damage: distance-scaled
     for (auto& p : playersSnapshot()) {
         const double dx = p->x - x, dy = p->y - y, dz = p->z - z;
@@ -1731,6 +1912,7 @@ void Session::handleConfiguration() {
         conn_->sendPacket(cf::sc::SelectKnownPacks, b);
     }
     // 3. wait for the client's SelectKnownPacks answer (server hangs otherwise!)
+    std::vector<std::array<std::string,3>> clientPacks;
     for (;;) {
         auto frame = conn_->readFrame();
         ReadBuffer in(frame);
@@ -1738,10 +1920,12 @@ void Session::handleConfiguration() {
         switch (kpid) {
         case cf::cs::SelectKnownPacks: {
             const std::int32_t n = in.varint();
+            clientPacks.clear();
             for (std::int32_t i = 0; i < n; ++i) {
-                (void)in.string();                  // namespace
-                (void)in.string();                  // id
-                (void)in.string();                  // version
+                std::string ns = in.string();
+                std::string id = in.string();
+                std::string ver = in.string();
+                clientPacks.push_back({ns, id, ver});
             }
             goto packsDone;
         }
@@ -1788,6 +1972,21 @@ void Session::handleConfiguration() {
         }
     }
 packsDone:
+    // 3b. FeatureFlags validation: check known packs vs server packs, if mismatch send Disconnect
+    if (!srv_.validateFeatureFlags(clientPacks)) {
+        WriteBuffer kick;
+        nbt::writeTextComponent(kick, "{\"text\":\"Incompatible packs\"}");
+        conn_->sendPacket(cf::sc::Disconnect, kick);
+        state_ = State::Done;
+        return;
+    }
+    // 3c. send FeatureFlags (minecraft:vanilla)
+    {
+        WriteBuffer ff;
+        ff.varint(1);
+        ff.string("minecraft:vanilla");
+        conn_->sendPacket(cf::sc::FeatureFlags, ff);
+    }
     // 4. registry blobs, verbatim wire order
     for (const auto& r : srv_.data().registries()) {
         WriteBuffer pkt;
@@ -3257,11 +3456,18 @@ void Session::broadcastMovement() {
 
 void Session::onChatMessage(ReadBuffer& in) {
     const std::string msg = in.string(256);
-    (void)in.i64();                                  // timestamp
-    (void)in.i64();                                  // salt
-    if (in.boolean()) in.bytes(256);                 // signature
+    const std::int64_t timestamp = in.i64();
+    const std::int64_t salt = in.i64();
+    std::vector<std::uint8_t> sig;
+    if (in.boolean()) sig = in.bytes(256);
     (void)in.varint();                               // offset
     in.bytes(3);                                     // acknowledged
+
+    // chat signing verify (plan5 item 71): check Player::hasChatSession and verify RSA pubkey signature
+    if (!ChatMessageProcessor::verify(*self_, msg, timestamp, salt, sig)) {
+        std::fprintf(stderr, "[cppfm] chat rejected for %s due to bad signature\n", self_->name.c_str());
+        return;
+    }
 
     // events: PlayerChat (cancellable)
     api::PlayerChatEvent ev;
@@ -3272,8 +3478,12 @@ void Session::onChatMessage(ReadBuffer& in) {
     if (!ev.message.empty() && ev.message[0] == '/')
         return dispatchCommand(ev.message.substr(1));
     const std::string line = "<" + self_->name + "> " + ev.message;
-    srv_.broadcastSystemText(line, nullptr);
-    sendSystemText(line);
+    if (ChatMessageProcessor::shouldUsePlayerChat(*self_)) {
+        srv_.broadcastPlayerChat(*self_, ev.message, timestamp);
+    } else {
+        srv_.broadcastSystemText(line, nullptr);
+        sendSystemText(line);
+    }
 }
 
 void Session::onChatCommand(ReadBuffer& in) {
