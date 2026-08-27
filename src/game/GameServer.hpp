@@ -24,6 +24,8 @@
 #include "Items.hpp"
 #include "Containers.hpp"
 #include "Recipes.hpp"
+#include "TagManager.hpp"
+#include "LootTables.hpp"
 #include "BlockEntities.hpp"
 #include "GameData.hpp"
 #include "Xp.hpp"
@@ -283,6 +285,9 @@ public:
         if (cfg_.whitelist) whitelist_.setEnabled(true);
         recipes_.loadDefaults();
         recipes_.loadDirectory(cfg_.recipesDir);
+        tagManager_.loadDirectory("assets/data/tags");
+        tagManager_.applyToRecipeTags(recipes_.tags_);
+        lootTables_.loadDirectory("assets/data/loot_tables");
         initCommands();
         lightEngine_ = std::make_unique<LightEngine>(world_);
         world_.setBiomeCodec(
@@ -640,6 +645,8 @@ private:
     std::mutex playersMtx_;
     BlockEntityStore blockEntities_;                 // chests & furnaces
     RecipeManager recipes_;                          // crafting/smelting data
+    TagManager tagManager_;
+    LootTableEvaluator lootTables_;
     brigadier::CommandDispatcher commands_;          // Brigadier tree
     GameRuleManager gamerules_;
     std::string difficulty_ = "normal";

@@ -211,18 +211,38 @@ void GameServer::tickDigs() {
                             return it != i2n.end() && it->second.find("pickaxe") != std::string::npos;
                         }();
                     if (canHarvest) {
-                        static const std::unordered_map<std::string,std::string> kOv{
-                            {"minecraft:grass_block","minecraft:dirt"},
-                            {"minecraft:stone","minecraft:cobblestone"}};
-                        auto ov = kOv.find(bn);
-                        const std::string dn = ov!=kOv.end()?ov->second:bn;
-                        if (bn != "minecraft:glass") {
-                            auto ii = gen::itemIdByName().find(dn);
-                            if (ii != gen::itemIdByName().end())
-                                spawnItemDrop(p->digX+.5, p->digY+.25, p->digZ+.5,
-                                              ii->second, 1,
-                                              (rand()/(double)RAND_MAX-.5)*.15, .12,
-                                              (rand()/(double)RAND_MAX-.5)*.15);
+                        ItemStack heldStack;
+                        if (p->heldSlot >= 0 && p->heldSlot < 9) heldStack = p->inv[36 + p->heldSlot];
+                        std::vector<ItemStack> drops;
+                        if (heldStack.hasSilkTouch()) {
+                            if (bn != "minecraft:air") {
+                                auto ii = gen::itemIdByName().find(bn);
+                                if (ii != gen::itemIdByName().end())
+                                    drops.push_back(ItemStack::of(ii->second, 1));
+                            }
+                        } else {
+                            if (bn == "minecraft:glass") {
+                                // no drop without silk touch
+                            } else {
+                                drops = lootTables_.evaluate(bn, heldStack);
+                                if (drops.empty()) {
+                                    static const std::unordered_map<std::string,std::string> kOv{
+                                        {"minecraft:grass_block","minecraft:dirt"},
+                                        {"minecraft:stone","minecraft:cobblestone"}};
+                                    auto ov = kOv.find(bn);
+                                    const std::string dn = ov!=kOv.end()?ov->second:bn;
+                                    auto ii = gen::itemIdByName().find(dn);
+                                    if (ii != gen::itemIdByName().end())
+                                        drops.push_back(ItemStack::of(ii->second, 1));
+                                }
+                            }
+                        }
+                        for (auto &st : drops) {
+                            if (st.empty()) continue;
+                            spawnItemDrop(p->digX+.5, p->digY+.25, p->digZ+.5,
+                                          st.itemId, static_cast<std::uint8_t>(st.count),
+                                          (rand()/(double)RAND_MAX-.5)*.15, .12,
+                                          (rand()/(double)RAND_MAX-.5)*.15);
                         }
                     }
                 }
@@ -1523,16 +1543,14 @@ void Session::disconnectIn(const char* textJson) {
 }
 
 std::string GameServer::dispatchConsole(const std::string& line) {
-    brigadier::CommandContext ctx;
-    ctx.source.console = true;
-    ctx.srcX = 0; ctx.srcY = -60; ctx.srcZ = 0;
-    for (auto& p : playersSnapshot())
-        ctx.playerNames.push_back(p->name);
-    ctx.resolveSelector = [this](const std::string& raw,
+    brigadier::CommandSource src;
+    src.console = true;
+    src.srcX = 0; src.srcY = -60; src.srcZ = 0;
+    src.resolveSelector = [this](const std::string& raw,
                                  brigadier::SelectorResult& out) {
         out = resolveSelector(raw, nullptr);
     };
-    const auto res = commands_.execute(line, brigadier::CommandSource{});
+    const auto res = commands_.execute(line, std::move(src));
     return res.ok ? "ok" : ("error: " + res.errorText);
 }
 
@@ -2489,23 +2507,17 @@ void Session::onTabComplete(ReadBuffer& in) {
     const std::string text = in.string(65536);
     (void)in.boolean();                               // assume command
 
-    brigadier::CommandContext ctx;
-    ctx.source.player = self_.get();
-    ctx.source.name = self_->name;
-    ctx.source.console = false;
-    ctx.srcX = self_->x; ctx.srcY = self_->y; ctx.srcZ = self_->z;
-    for (auto& p : srv_.playersSnapshot())
-        if (p.get() != self_.get()) ctx.playerNames.push_back(p->name);
-    ctx.resolveSelector = [this](const std::string& raw,
+    brigadier::CommandSource src;
+    src.player = self_.get();
+    src.name = self_->name;
+    src.console = false;
+    src.srcX = self_->x; src.srcY = self_->y; src.srcZ = self_->z;
+    src.resolveSelector = [this](const std::string& raw,
                                  brigadier::SelectorResult& out) {
         out = srv_.resolveSelector(raw, self_.get());
     };
 
-    const auto suggestions = srv_.commands().suggest(text, [&]{
-        brigadier::CommandSource s;
-        s.player = self_.get(); s.name = self_->name; s.console = false;
-        return s;
-    }());
+    const auto suggestions = srv_.commands().suggest(text, std::move(src));
 
     WriteBuffer b;
     b.varint(transactionId);
@@ -3278,27 +3290,18 @@ void Session::onChatCommand(ReadBuffer& in) {
 }
 
 void Session::dispatchCommand(const std::string& line) {
-    brigadier::CommandContext ctx;
-    ctx.source.player = self_.get();
-    ctx.source.name = self_->name;
-    ctx.source.console = false;
-    ctx.srcX = self_->x; ctx.srcY = self_->y; ctx.srcZ = self_->z;
-    ctx.srcYaw = self_->yaw; ctx.srcPitch = self_->pitch;
-    for (auto& p : srv_.playersSnapshot())
-        if (p.get() != self_.get()) ctx.playerNames.push_back(p->name);
-    ctx.resolveSelector = [this](const std::string& raw,
+    brigadier::CommandSource src;
+    src.player = self_.get();
+    src.name = self_->name;
+    src.console = false;
+    src.srcX = self_->x; src.srcY = self_->y; src.srcZ = self_->z;
+    src.srcYaw = self_->yaw; src.srcPitch = self_->pitch;
+    src.resolveSelector = [this](const std::string& raw,
                                  brigadier::SelectorResult& out) {
         out = srv_.resolveSelector(raw, self_.get());
-        // entity selectors resolve to nothing name-wise; commands using names
-        // will fall back to source.
     };
 
-    const auto res =
-        srv_.commands().execute(line, [&]{
-            brigadier::CommandSource s;
-            s.player = self_.get(); s.name = self_->name; s.console = false;
-            return s;
-        }());
+    const auto res = srv_.commands().execute(line, std::move(src));
     if (!res.ok)
         sendSystemText("\u00a7c" + (res.errorText.empty()
                           ? "Incorrect argument for command"
