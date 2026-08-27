@@ -1,7 +1,10 @@
 build*
+build-asan/
 *.o
 server.properties
 world/
+world_nether/
+world_the_end/
 __pycache__/
 captures/
 plan.md
@@ -14,3 +17,6 @@ CONTINUATION_STATE.md
 NEXT_STEPS.md
 *.pdf
 Testing/
+.VSCodeCounter/
+.vscode/
+.idea/
