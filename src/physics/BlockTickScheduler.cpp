@@ -226,6 +226,15 @@ void FarmlandBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32
 
 // -------------------------------------------------------- Fire
 
+bool FireBehavior::isFlammable(const std::string& blockName) const {
+    if (blockName.find("planks") != std::string::npos) return true;
+    if (blockName.find("_log") != std::string::npos) return true;
+    if (blockName.find("leaves") != std::string::npos) return true;
+    if (blockName.find("wool") != std::string::npos) return true;
+    if (blockName == "minecraft:hay_block") return true;
+    return false;
+}
+
 void FireBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
                         std::uint16_t state, std::int64_t now, GameServer* srv) {
     (void)now;
@@ -243,26 +252,16 @@ void FireBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
         props.emplace_back("age", ns2);
         w.setBlock(x,y,z, static_cast<std::uint16_t>(gen::stateWithProps(*d, props)));
     }
-    // spread to flammable neighbors
-    static const char* flammable[] = {"minecraft:oak_planks","minecraft:oak_log","minecraft:oak_leaves","minecraft:wool","minecraft:hay_block"};
+    // spread to flammable neighbors using virtual isFlammable
     for (int dx=-1; dx<=1; ++dx) for (int dy=-1; dy<=1; ++dy) for (int dz=-1; dz<=1; ++dz){
         if (dx==0&&dy==0&&dz==0) continue;
         const std::uint16_t ns = w.getBlock(x+dx,y+dy,z+dz);
-        if (ns==0 && (rand()%100)<10) {
-            // check if neighbor is flammable block adjacent
-            for (auto* fn : flammable){
-                const gen::BlockDef* fb = gen::blockByState(ns);
-                if (fb && std::string(fb->name)==fn) { /* already fire */ break; }
-            }
-            // simple: if adjacent to flammable, ignite air
+        if (ns==0 && (rand()%100) < getSpreadChance()) {
             bool adjFlam = false;
             for (int ddx=-1; ddx<=1 && !adjFlam; ++ddx) for (int ddy=-1; ddy<=1 && !adjFlam; ++ddy) for (int ddz=-1; ddz<=1 && !adjFlam; ++ddz){
                 const std::uint16_t as = w.getBlock(x+dx+ddx, y+dy+ddy, z+dz+ddz);
                 const gen::BlockDef* ad = gen::blockByState(as);
-                if (ad) {
-                    std::string an(ad->name);
-                    if (an.find("planks")!=std::string::npos || an.find("log")!=std::string::npos || an.find("leaves")!=std::string::npos) adjFlam = true;
-                }
+                if (ad && isFlammable(std::string(ad->name))) adjFlam = true;
             }
             if (adjFlam && w.getBlock(x+dx,y+dy,z+dz)==0) {
                 const auto fire = gen::blockNameToState().find("minecraft:fire");
@@ -306,6 +305,39 @@ void PortalAgeBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int3
             if (!nearFrame) w.setBlock(x,y,z, 0);
         }
     }
+bool SoulFireBehavior::isFlammable(const std::string& blockName) const {
+    // soul_fire only on soul_sand / soul_soil adjacency
+    if (blockName == "minecraft:soul_sand" || blockName == "minecraft:soul_soil") return true;
+    return false;
+}
+void SoulFireBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
+                            std::uint16_t state, std::int64_t now, GameServer* srv) {
+    // soul_fire does not spread like normal fire, only stays on soul sand
+    if (srv) {
+        auto* gr = &srv->gameRules();
+        if (gr && !gr->getBool("doFireTick")) return;
+    }
+    const std::uint16_t below = w.getBlock(x, y-1, z);
+    const gen::BlockDef* bd = gen::blockByState(below);
+    if (!bd || (std::string(bd->name) != "minecraft:soul_sand" && std::string(bd->name) != "minecraft:soul_soil")) {
+        w.setBlock(x,y,z, 0);
+        return;
+    }
+    FireBehavior::tick(w, x, y, z, state, now, srv);
+}
+
+bool CampfireBehavior::isFlammable(const std::string& blockName) const {
+    // campfire only with lit state; flammable check similar to fire but only when lit
+    if (blockName.find("planks") != std::string::npos) return true;
+    if (blockName.find("log") != std::string::npos) return true;
+    return false;
+}
+void CampfireBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
+                            std::uint16_t state, std::int64_t now, GameServer* srv) {
+    bool lit = false;
+    for (auto& [k,v] : gen::propsOf(state)) if (k=="lit" && v=="true") lit = true;
+    if (!lit) return;
+    FireBehavior::tick(w, x, y, z, state, now, srv);
 }
 
 } // namespace cppfm

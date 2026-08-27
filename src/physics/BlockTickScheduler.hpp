@@ -20,6 +20,10 @@ public:
                       std::uint16_t state, std::int64_t now, GameServer* srv) = 0;
     virtual bool fertilize(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
                            std::uint16_t state, GameServer* srv) { return false; }
+    virtual void onNeighborChange(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
+                                  std::uint16_t state, std::int64_t now, GameServer* srv) {}
+    virtual bool isFlammable(const std::string& blockName) const { return false; }
+    virtual int getSpreadChance() const { return 0; }
 };
 
 struct ScheduledTick {
@@ -92,6 +96,24 @@ class FireBehavior : public IBlockBehavior {
 public:
     void tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
               std::uint16_t state, std::int64_t now, GameServer* srv) override;
+    bool isFlammable(const std::string& blockName) const override;
+    int getSpreadChance() const override { return 10; }
+};
+
+class SoulFireBehavior : public FireBehavior {
+public:
+    void tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
+              std::uint16_t state, std::int64_t now, GameServer* srv) override;
+    bool isFlammable(const std::string& blockName) const override;
+    int getSpreadChance() const override { return 10; }
+};
+
+class CampfireBehavior : public FireBehavior {
+public:
+    void tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
+              std::uint16_t state, std::int64_t now, GameServer* srv) override;
+    bool isFlammable(const std::string& blockName) const override;
+    int getSpreadChance() const override { return 5; }
 };
 
 class PortalAgeBehavior : public IBlockBehavior {
