@@ -146,36 +146,47 @@ LightUpdateBatch LightEngine::drain() {
         }
     }
 
-    // sky light: rebuild caches for touched chunks (bounded work per tick)
-    // include pending sky rebuilds (opacity changes even without block-light)
+    // sky light: rebuild caches for touched chunks (bounded work per tick) (plan10 §2 Light 3×3 batch)
+    // include pending sky rebuilds (opacity changes even without block-light) and expand to full 3×3
     {
         std::unordered_set<std::int64_t> skyRebuildSet;
-        skyRebuildSet.reserve(batch.dirtyChunks.size() + pendingSkyRebuild_.size() + 8);
-        for (auto k : batch.dirtyChunks) skyRebuildSet.insert(k);
-        for (auto k : pendingSkyRebuild_) skyRebuildSet.insert(k);
+        skyRebuildSet.reserve((batch.dirtyChunks.size() + pendingSkyRebuild_.size())*9 + 8);
+        // expand dirtyChunks to 3×3 for cross-chunk propagation
+        for (auto k : batch.dirtyChunks) {
+            std::int32_t cx = static_cast<std::int32_t>(k >> 32);
+            std::int32_t cz = static_cast<std::int32_t>(k & 0xFFFFFFFFLL);
+            for (int dz=-1; dz<=1; ++dz) for (int dx=-1; dx<=1; ++dx) skyRebuildSet.insert(chunkKey(cx+dx, cz+dz));
+        }
+        for (auto k : pendingSkyRebuild_) {
+            // pending already contains 3×3 from onBlockChanged, but expand again for safety
+            skyRebuildSet.insert(k);
+        }
         pendingSkyRebuild_.clear();
         skyDirtyExtra_.clear();
+        // filter to only chunks that exist or will be created by ensureSkyLight (avoid excessive creation)
+        // keep full 3×3 set for batch as per plan10 §2
         for (auto k : skyRebuildSet) {
             ensureSkyLight(static_cast<std::int32_t>(k >> 32),
                            static_cast<std::int32_t>(k & 0xFFFFFFFFLL));
         }
         for (auto k : skyDirtyExtra_) batch.dirtyChunks.insert(k);
         skyDirtyExtra_.clear();
-        // neighbor dirty tracking: broadcast neighbors whose sky cache exists
-        auto snapshot = batch.dirtyChunks;
-        for (auto k : snapshot) {
-            const std::int32_t cxx = static_cast<std::int32_t>(k >> 32);
-            const std::int32_t czz = static_cast<std::int32_t>(k & 0xFFFFFFFFLL);
-            for (int dz = -1; dz <= 1; ++dz)
-                for (int dx = -1; dx <= 1; ++dx) {
-                    if (dx == 0 && dz == 0) continue;
-                    const std::int32_t ncx = cxx + dx, ncz = czz + dz;
-                    if (world_.hasSkyLightCache(ncx, ncz))
-                        batch.dirtyChunks.insert(chunkKey(ncx, ncz));
-                }
+        // Batch dirty tracking: broadcast full 3×3 neighbourhood via LightUpdateQueue (plan10 §2)
+        // Previously only broadcast if cache existed, now always include 3×3 for atomic UpdateLight batch
+        {
+            std::unordered_set<std::int64_t> expandedDirty;
+            expandedDirty.reserve(batch.dirtyChunks.size()*9);
+            for (auto k : batch.dirtyChunks) {
+                std::int32_t cxx = static_cast<std::int32_t>(k >> 32);
+                std::int32_t czz = static_cast<std::int32_t>(k & 0xFFFFFFFFLL);
+                for (int dz=-1; dz<=1; ++dz) for (int dx=-1; dx<=1; ++dx) expandedDirty.insert(chunkKey(cxx+dx, czz+dz));
+            }
+            for (auto k : expandedDirty) batch.dirtyChunks.insert(k);
         }
         // also ensure all rebuilt chunks are marked dirty
         for (auto k : skyRebuildSet) batch.dirtyChunks.insert(k);
+        // feed queue for batch emission
+        for (auto k : batch.dirtyChunks) batch.queue.mark(static_cast<std::int32_t>(k>>32), static_cast<std::int32_t>(k & 0xFFFFFFFFLL));
     }
     return batch;
 }
