@@ -1101,6 +1101,166 @@ void GameServer::initCommands() {
         diff->then(lvl);
         d.root->then(diff);
     }
+    // /bossbar add <id> <title> | /bossbar remove <id> | /bossbar list  (plan10 §6)
+    {
+        auto bossbar = CommandNode::literal("bossbar");
+        auto add = CommandNode::literal("add");
+        auto idArg = CommandNode::argument("id", args::stringWord());
+        auto titleArg = CommandNode::argument("title", args::stringGreedy());
+        titleArg->executable = true;
+        titleArg->action = [this](CommandContext& c){
+            Player* src = static_cast<Player*>(c.source.player);
+            std::string id = c.arg("id").asStr();
+            std::string title = c.arg("title").asStr();
+            if (title.size()>=1 && title.front()=='"' && title.back()=='"') title = title.substr(1,title.size()-2);
+            bool ok = createBossBar(id, title);
+            sendFeedback(src, ok ? "Created bossbar " + id : "Bossbar already exists: " + id);
+            return ok?1:0;
+        };
+        idArg->then(titleArg);
+        add->then(idArg);
+        auto remove = CommandNode::literal("remove");
+        auto idRem = CommandNode::argument("id", args::stringWord());
+        idRem->executable = true;
+        idRem->action = [this](CommandContext& c){
+            Player* src = static_cast<Player*>(c.source.player);
+            std::string id = c.arg("id").asStr();
+            bool ok = removeBossBar(id);
+            sendFeedback(src, ok ? "Removed bossbar " + id : "No such bossbar: " + id);
+            return ok?1:0;
+        };
+        remove->then(idRem);
+        auto list = CommandNode::literal("list");
+        list->executable = true;
+        list->action = [this](CommandContext& c){
+            Player* src = static_cast<Player*>(c.source.player);
+            std::string out = "Bossbars: ";
+            for (auto& kv : genericBossBars_) out += kv.first + " ";
+            sendFeedback(src, out);
+            return (int)genericBossBars_.size();
+        };
+        bossbar->then(add); bossbar->then(remove); bossbar->then(list);
+        d.root->then(bossbar);
+    }
+    // /team add <team> | /team remove <team> | /team join <team> <member> | /team leave <member> | /team list (plan10 §6)
+    {
+        auto team = CommandNode::literal("team");
+        auto add = CommandNode::literal("add");
+        auto tname = CommandNode::argument("team", args::stringWord());
+        tname->executable = true;
+        tname->action = [this](CommandContext& c){
+            Player* src = static_cast<Player*>(c.source.player);
+            std::string n = c.arg("team").asStr();
+            bool ok = createTeam(n);
+            sendFeedback(src, ok ? "Created team " + n : "Team already exists: " + n);
+            return ok?1:0;
+        };
+        add->then(tname);
+        auto remove = CommandNode::literal("remove");
+        auto tname2 = CommandNode::argument("team", args::stringWord());
+        tname2->executable = true;
+        tname2->action = [this](CommandContext& c){
+            Player* src = static_cast<Player*>(c.source.player);
+            std::string n = c.arg("team").asStr();
+            bool ok = removeTeam(n);
+            sendFeedback(src, ok ? "Removed team " + n : "No such team: " + n);
+            return ok?1:0;
+        };
+        remove->then(tname2);
+        auto join = CommandNode::literal("join");
+        auto jteam = CommandNode::argument("team", args::stringWord());
+        auto jmem = CommandNode::argument("member", args::stringWord());
+        jmem->executable = true;
+        jmem->action = [this](CommandContext& c){
+            Player* src = static_cast<Player*>(c.source.player);
+            std::string t = c.arg("team").asStr();
+            std::string m = c.arg("member").asStr();
+            bool ok = joinTeam(t, m);
+            sendFeedback(src, ok ? m + " joined " + t : "Failed to join " + m + " to " + t);
+            return ok?1:0;
+        };
+        jteam->then(jmem); join->then(jteam);
+        auto leave = CommandNode::literal("leave");
+        auto lmem = CommandNode::argument("member", args::stringWord());
+        lmem->executable = true;
+        lmem->action = [this](CommandContext& c){
+            Player* src = static_cast<Player*>(c.source.player);
+            std::string m = c.arg("member").asStr();
+            bool ok = leaveTeam(m);
+            sendFeedback(src, ok ? m + " left team" : "No team for " + m);
+            return ok?1:0;
+        };
+        leave->then(lmem);
+        auto list = CommandNode::literal("list");
+        list->executable = true;
+        list->action = [this](CommandContext& c){
+            Player* src = static_cast<Player*>(c.source.player);
+            std::string out = "Teams: ";
+            for (auto& kv : scoreboard.teams) out += kv.first + "(" + std::to_string(kv.second.members.size()) + ") ";
+            sendFeedback(src, out);
+            return (int)scoreboard.teams.size();
+        };
+        team->then(add); team->then(remove); team->then(join); team->then(leave); team->then(list);
+        d.root->then(team);
+    }
+    // /tag <targets> add <tag> | remove <tag> | list  (plan10 §10)
+    {
+        auto tag = CommandNode::literal("tag");
+        auto targets = CommandNode::argument("targets", args::entity(false,false));
+        auto add = CommandNode::literal("add");
+        auto tagName = CommandNode::argument("tag", args::stringWord());
+        tagName->executable = true;
+        tagName->action = [this](CommandContext& c){
+            Player* src = static_cast<Player*>(c.source.player);
+            auto sel = c.arg("targets").asSelector();
+            std::string tg = c.arg("tag").asStr();
+            int cnt=0;
+            for (auto& n : sel.playerNames) if (Player* p=findPlayer(*this,n)) if (tagAdd(p, tg)) cnt++;
+            for (auto id : sel.entityIds) if (tagAddMob(id, tg)) cnt++;
+            sendFeedback(src, "Added tag " + tg + " to " + std::to_string(cnt));
+            return cnt;
+        };
+        add->then(tagName);
+        auto remove = CommandNode::literal("remove");
+        auto tagName2 = CommandNode::argument("tag", args::stringWord());
+        tagName2->executable = true;
+        tagName2->action = [this](CommandContext& c){
+            Player* src = static_cast<Player*>(c.source.player);
+            auto sel = c.arg("targets").asSelector();
+            std::string tg = c.arg("tag").asStr();
+            int cnt=0;
+            for (auto& n : sel.playerNames) if (Player* p=findPlayer(*this,n)) if (tagRemove(p, tg)) cnt++;
+            for (auto id : sel.entityIds) if (tagRemoveMob(id, tg)) cnt++;
+            sendFeedback(src, "Removed tag " + tg + " from " + std::to_string(cnt));
+            return cnt;
+        };
+        remove->then(tagName2);
+        auto list = CommandNode::literal("list");
+        list->executable = true;
+        list->action = [this](CommandContext& c){
+            Player* src = static_cast<Player*>(c.source.player);
+            auto sel = c.arg("targets").asSelector();
+            std::string out;
+            for (auto& n : sel.playerNames) if (Player* p=findPlayer(*this,n)) {
+                out += n + ": ";
+                for (auto& t: p->tags) out += t + " ";
+                out += "; ";
+            }
+            {
+                std::lock_guard lk(entsMtx_);
+                for (auto id : sel.entityIds) for (auto& m: mobs_) if (m->entityId==id) {
+                    out += std::to_string(id) + ": ";
+                    for (auto& t: m->tags) out += t + " ";
+                    out += "; ";
+                }
+            }
+            sendFeedback(src, out.empty()? "No tags": out);
+            return 1;
+        };
+        targets->then(add); targets->then(remove); targets->then(list);
+        tag->then(targets);
+        d.root->then(tag);
+    }
 }
 
 } // namespace cppfm
