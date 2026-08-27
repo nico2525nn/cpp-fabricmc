@@ -284,154 +284,32 @@ void GameServer::sendSetHealth(Player& p) {
 }
 
 void GameServer::syncPlayerArmorAttributes(Player& p) {
-    int armor = totalArmorPoints(p.inv);
-    int toughness = 0;
-    float kbResist = 0.f;
-    for (int i = 5; i <= 8; ++i) {
-        if (i < 0 || i >= 46 || p.inv[i].empty()) continue;
-        std::string n = p.inv[i].name();
-        if (n.find("diamond_") != std::string::npos) toughness += 2;
-        else if (n.find("netherite_") != std::string::npos) { toughness += 3; kbResist += 0.1f; }
-    }
-    bool dirty = p.attributes.armorDirty(armor, toughness, kbResist);
-    p.attributes.syncArmor(armor, toughness, kbResist);
-    if (dirty && p.conn && p.inPlay) {
-        WriteBuffer ab;
-        p.attributes.writeUpdate(ab, p.entityId);
-        try { p.conn->sendPacket(pl::sc::UpdateAttributes, ab); } catch(...) {}
-        // also broadcast to tracking players so they see equipment changes
-        broadcastPacketExcept(&p, pl::sc::UpdateAttributes, ab);
-    }
+    // modular split: delegate to CombatManager (plan8)
+    CombatManager::syncPlayerArmor(*this, p);
 }
 int GameServer::computeProtectionEPF(const DamageSource& ds, const Player& p) const {
-    if (ds.bypassEnchant || ds.isDrown() || ds.isStarveFlag) return 0;
-    int total = 0;
-    for (int i = 5; i <= 8; ++i) {
-        if (i < 0 || i >= 46 || p.inv[i].empty()) continue;
-        const auto& s = p.inv[i];
-        int prot = std::max(s.enchantLevel("protection"), s.enchantLevel("minecraft:protection"));
-        int fire = std::max(s.enchantLevel("fire_protection"), s.enchantLevel("minecraft:fire_protection"));
-        int blast = std::max(s.enchantLevel("blast_protection"), s.enchantLevel("minecraft:blast_protection"));
-        int proj = std::max(s.enchantLevel("projectile_protection"), s.enchantLevel("minecraft:projectile_protection"));
-        int feather = std::max(s.enchantLevel("feather_falling"), s.enchantLevel("minecraft:feather_falling"));
-        int weight = 1;
-        if (ds.isFire() || ds.isExplosion() || ds.isProjectile()) weight = 2;
-        else if (ds.isFall()) weight = 1;
-        total += prot * weight;
-        if (ds.isFire()) total += fire * 2;
-        if (ds.isExplosion()) total += blast * 2;
-        if (ds.isProjectile()) total += proj * 2;
-        if (ds.isFall()) total += feather * 3;
-        else if (ds.isFall()) { /* fallback */ }
-        // also generic fall weight is 1 already
-    }
-    if (total > 20) total = 20;
-    return total;
+    // modular split: delegate to CombatManager (plan8)
+    return CombatManager::computeEPF(ds, p);
 }
 int GameServer::computeProtectionEPF(const DamageSource& ds, const MobEntity& m) const {
-    if (ds.bypassEnchant || ds.isDrown() || ds.isStarveFlag) return 0;
-    int total = 0;
-    for (int i = 2; i < 6; ++i) {
-        if (m.equipment[i].empty()) continue;
-        const auto& s = m.equipment[i];
-        int prot = std::max(s.enchantLevel("protection"), s.enchantLevel("minecraft:protection"));
-        int fire = std::max(s.enchantLevel("fire_protection"), s.enchantLevel("minecraft:fire_protection"));
-        int blast = std::max(s.enchantLevel("blast_protection"), s.enchantLevel("minecraft:blast_protection"));
-        int proj = std::max(s.enchantLevel("projectile_protection"), s.enchantLevel("minecraft:projectile_protection"));
-        int feather = std::max(s.enchantLevel("feather_falling"), s.enchantLevel("minecraft:feather_falling"));
-        int weight = 1;
-        if (ds.isFire() || ds.isExplosion() || ds.isProjectile()) weight = 2;
-        else if (ds.isFall()) weight = 1;
-        total += prot * weight;
-        if (ds.isFire()) total += fire * 2;
-        if (ds.isExplosion()) total += blast * 2;
-        if (ds.isProjectile()) total += proj * 2;
-        if (ds.isFall()) total += feather * 3;
-    }
-    if (total > 20) total = 20;
-    return total;
+    // modular split: delegate to CombatManager (plan8)
+    return CombatManager::computeEPF(ds, m);
 }
 void GameServer::addHungerExhaustion(Player& p, float amount) {
-    if (p.gamemode != 0) return;
-    p.exhaustion += amount;
+    // modular split: delegate to HungerManager (plan8)
+    HungerManager::addExhaustion(p, amount);
 }
 void GameServer::addFoodAndSaturation(Player& p, int food, float sat) {
-    p.food = std::clamp(p.food + food, 0, 20);
-    p.saturation = std::clamp(p.saturation + sat, 0.f, (float)p.food);
-    if (p.saturation > (float)p.food) p.saturation = (float)p.food;
+    HungerManager::addFoodAndSaturation(p, food, sat);
     sendSetHealth(p);
 }
 void GameServer::handleFoodConsume(Player& p, const std::string& itemName) {
-    struct FoodInfo { int food; float sat; };
-    static const std::unordered_map<std::string, FoodInfo> kFood = {
-        {"minecraft:apple", {4, 2.4f}},
-        {"minecraft:bread", {5, 6.0f}},
-        {"minecraft:cake", {2, 0.4f}},
-        {"minecraft:cookie", {2, 0.4f}},
-        {"minecraft:mushroom_stew", {6, 7.2f}},
-        {"minecraft:beetroot_soup", {6, 7.2f}},
-        {"minecraft:cooked_beef", {8, 12.8f}},
-        {"minecraft:cooked_chicken", {6, 7.2f}},
-        {"minecraft:cooked_porkchop", {8, 12.8f}},
-        {"minecraft:cooked_mutton", {6, 9.6f}},
-        {"minecraft:baked_potato", {5, 6.0f}},
-        {"minecraft:carrot", {3, 3.6f}},
-        {"minecraft:melon_slice", {2, 1.2f}},
-        {"minecraft:golden_apple", {4, 9.6f}},
-        {"minecraft:golden_carrot", {6, 14.4f}},
-        {"minecraft:steak", {8, 12.8f}},
-        {"minecraft:pumpkin_pie", {8, 4.8f}},
-        {"minecraft:beetroot", {1, 1.2f}},
-        {"minecraft:dried_kelp", {1, 0.6f}},
-        {"minecraft:sweet_berries", {2, 0.4f}},
-        {"minecraft:glow_berries", {2, 0.4f}},
-        {"minecraft:honey_bottle", {6, 1.2f}},
-        {"minecraft:rabbit_stew", {10, 12.0f}},
-        {"minecraft:suspicious_stew", {6, 7.2f}},
-    };
-    auto it = kFood.find(itemName);
-    if (it != kFood.end()) {
-        addFoodAndSaturation(p, it->second.food, it->second.sat);
-        // stew: return empty bowl
-        if (itemName.find("stew") != std::string::npos || itemName.find("soup") != std::string::npos) {
-            addToInventory(p, gen::itemIdByName().at("minecraft:bowl"), 1);
-            resendInventory(p);
-        }
-        if (itemName == "minecraft:honey_bottle") {
-            addToInventory(p, gen::itemIdByName().at("minecraft:glass_bottle"), 1);
-            resendInventory(p);
-        }
-    } else if (itemName.find("stew") != std::string::npos || itemName.find("soup") != std::string::npos) {
-        addFoodAndSaturation(p, 6, 7.2f);
-        auto pit = gen::itemIdByName().find("minecraft:bowl");
-        if (pit != gen::itemIdByName().end()) { addToInventory(p, pit->second, 1); resendInventory(p); }
-    } else if (itemName.find("cake") != std::string::npos) {
-        addFoodAndSaturation(p, 2, 0.4f);
-    }
+    // modular split: delegate to HungerManager (plan8)
+    HungerManager::handleFoodConsume(p, itemName, *this);
 }
 bool handleCakeBlockConsume(GameServer& srv, Player& p, std::int32_t x, std::int32_t y, std::int32_t z){
-    World& w = srv.worldFor(p.dimension);
-    uint16_t st = w.getBlock(x,y,z);
-    auto* d = gen::blockByState(st);
-    if(!d || std::string(d->name) != "minecraft:cake") return false;
-    if(p.food >= 20) return false;
-    // cake has bites 0..6 (7 slices): each slice 2 food
-    int bites = 0;
-    for(auto& kv: gen::propsOf(st)) if(kv.first=="bites") bites = std::stoi(std::string(kv.second));
-    srv.handleFoodConsume(p, "minecraft:cake");
-    // exhaustion for eating cake is same as normal food
-    srv.addHungerExhaustion(p, 0.005f);
-    if(bites >= 6){
-        w.setBlock(x,y,z,0);
-        srv.broadcastBlockChange(x,y,z,0);
-    } else {
-        uint16_t ns = (uint16_t)gen::stateWithPropsList("minecraft:cake", {{"bites", std::to_string(bites+1)}});
-        if(ns==0) ns = st+1; // fallback incremental
-        w.setBlock(x,y,z,ns);
-        srv.broadcastBlockChange(x,y,z,ns);
-    }
-    srv.sendSetHealth(p);
-    return true;
+    // modular split: delegate to HungerManager (plan8)
+    return HungerManager::handleCakeBlockConsume(srv, p, x, y, z);
 }
 void GameServer::applyDamage(Player& p, float amount, const DamageSource& src) {
     if (p.gamemode == 1 || p.gamemode == 3) return;
@@ -691,24 +569,10 @@ void GameServer::survivalTick() {
         if (!p->inPlay || !p->spawned || p->dead) continue;
         if (p->gamemode != 0) continue;                  // survival only
 
-        // exhaustion -> saturation/food
-        if (p->exhaustion >= 4.0) {
-            p->exhaustion -= 4.0;
-            if (p->saturation > 0) p->saturation = std::max(0.f, p->saturation - 1.f);
-            else p->food = std::max(0, p->food - 1);
-            sendSetHealth(*p);
-        }
-        // natural regeneration (every 4s)
-        if (tickNo_ % 80 == 0 && p->food >= 18 && p->health < 20.f) {
-            p->health = std::min(20.f, p->health + 1.f);
-            p->saturation = std::max(0.f, p->saturation - 1.f);
-            sendSetHealth(*p);
-        }
-        // starvation
-        if (tickNo_ % 80 == 0 && p->food == 0 && p->health > 1.f) {
-            p->health -= 1.f;
-            sendSetHealth(*p);
-        }
+        // exhaustion -> saturation/food (modular: HungerManager)
+        HungerManager::tickExhaustion(*p, *this);
+        // natural regeneration / starvation (modular: HungerManager)
+        HungerManager::tickRegenAndStarve(*p, tickNo_, *this);
         // void damage
         if (p->y < kMinY - 16) applyDamage(*p, 4.f, "fell out of the world");
 

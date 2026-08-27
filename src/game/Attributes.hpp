@@ -1,15 +1,17 @@
-// Attributes: attribute system (plan5/7 エンティティ・Mobシステム)
+// Attributes: attribute system (plan8 Combat/Survival — full AttributeManager)
 // Each attribute has base value + vector<Modifier{uuid,amount,operation}>
-// Operations: 0 add, 1 multiply_base, 2 multiply_total
+// Operations: 0 add, 1 multiply_base, 2 multiply_total — order is add -> multiply_base -> multiply_total
+// Vanilla 1.21.4 attributes: see net.minecraft.world.entity.ai.attributes.Attributes
 #pragma once
 #include <string>
 #include <unordered_map>
 #include <vector>
 #include <algorithm>
 #include <cstdint>
+#include <cmath>
 #include "MobEffects.hpp"
 namespace cppfm {
-enum class Attribute : uint8_t { MOVEMENT_SPEED=0, MAX_HEALTH, KNOCKBACK_RESISTANCE, ARMOR, ARMOR_TOUGHNESS, ATTACK_DAMAGE, ATTACK_SPEED, FLYING_SPEED, FOLLOW_RANGE };
+enum class Attribute : uint8_t { MOVEMENT_SPEED=0, MAX_HEALTH, KNOCKBACK_RESISTANCE, ARMOR, ARMOR_TOUGHNESS, ATTACK_DAMAGE, ATTACK_SPEED, FLYING_SPEED, FOLLOW_RANGE, MAX_ABSORPTION, STEP_HEIGHT };
 struct AttributeModifier { std::string uuid; double amount=0; int operation=0; };
 struct AttributeInstance {
     double base=0;
@@ -30,6 +32,7 @@ public:
         setBase(Attribute::KNOCKBACK_RESISTANCE,0); setBase(Attribute::ARMOR,0);
         setBase(Attribute::ARMOR_TOUGHNESS,0); setBase(Attribute::ATTACK_DAMAGE,1);
         setBase(Attribute::ATTACK_SPEED,4); setBase(Attribute::FLYING_SPEED,0.02); setBase(Attribute::FOLLOW_RANGE,32);
+        setBase(Attribute::MAX_ABSORPTION,0); setBase(Attribute::STEP_HEIGHT,0.6);
     }
     void setBase(Attribute a,double v){ map_[a].base=v; }
     double getBase(Attribute a) const{ auto it=map_.find(a); return it==map_.end()?0:it->second.base; }
@@ -44,6 +47,7 @@ public:
         removeModifier(Attribute::MAX_HEALTH, "effect_health_boost");
         removeModifier(Attribute::ATTACK_DAMAGE, "effect_strength");
         removeModifier(Attribute::ATTACK_DAMAGE, "effect_weakness");
+        removeModifier(Attribute::MAX_ABSORPTION, "effect_absorption");
         double speedMod = speedModifierFor(eff);
         if (speedMod != 0.0) {
             addModifier(Attribute::MOVEMENT_SPEED, {"effect_speed", speedMod, 2});
@@ -51,8 +55,13 @@ public:
         int hb = 0;
         for (auto &e : eff) if (e.type == effects::HealthBoost) hb = std::max(hb, int(e.amplifier)+1);
         if (hb > 0) addModifier(Attribute::MAX_HEALTH, {"effect_health_boost", double(hb * 4), 0});
+        else { /* keep removed */ }
         float dmgBonus = meleeDamageBonusFor(eff);
         if (dmgBonus != 0.f) addModifier(Attribute::ATTACK_DAMAGE, {"effect_strength", double(dmgBonus), 0});
+        // Absorption handled via MAX_ABSORPTION (not serialized in UpdateAttributes, but tracked)
+        float abs = absorptionFor(eff);
+        if (abs > 0) addModifier(Attribute::MAX_ABSORPTION, {"effect_absorption", double(abs), 0});
+        // Attack speed from Haste/MiningFatigue not vanilla but we keep digSpeed separate
     }
     // ARMOR sync helpers (plan7): derive armor/toughness/kb from equipped items
     void syncArmor(int armor, int toughness, float kbResist){

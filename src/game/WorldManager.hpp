@@ -1,5 +1,6 @@
-// WorldManager: extracted world / chunk / block responsibility (plan7 modular split)
+// WorldManager: extracted world / chunk / block responsibility (plan8 modular split)
 // Owns chunk lifecycle, block change batching, light/fluid/redstone hooks.
+// Delegates to World; GameServer owns one manager per dimension.
 #pragma once
 #include <cstdint>
 #include <vector>
