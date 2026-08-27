@@ -630,6 +630,8 @@ public:
     void onMobKilledBy(Player& p, MobKind kind);
     // Explosion (creeper / TNT): destroys blocks & damages entities.
     void explodeAt(double x, double y, double z, float power);
+    // Lightning strike: charges creepers, spawns bolt visuals (plan8)
+    void strikeLightning(double x, double y, double z);
     // Direct-named sound + particle broadcast helpers.
     void broadcastSound(const char* name, double x, double y, double z,
                         float volume = 1.f, float pitch = 1.f,

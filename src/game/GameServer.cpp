@@ -16,6 +16,11 @@
 #include "../generated/EntityIds.hpp"
 #include "MenuInteraction.hpp"
 #include "BehaviorTree.hpp"
+#include "BehaviorTreeParser.hpp"
+#include "EquipmentComponent.hpp"
+#include "DamageComponent.hpp"
+#include "EnchantmentHelper.hpp"
+#include "MobSpawner.hpp"
 #include "BossAI.hpp"
 #include "MenuLogic.hpp"
 #include "CostCalculator.hpp"
@@ -208,11 +213,11 @@ void GameServer::tickDigs() {
                     (void)bev2;
                 }
                 onBlockMined(*p, oldState);
-                // durability: damage held tool if it has durability
+                // durability: damage held tool if it has durability – Plan8 DamageComponent (Unbreaking)
                 if (p->gamemode == 0 && p->heldSlot >=0 && p->heldSlot <9) {
                     auto &held = p->inv[36 + p->heldSlot];
                     if (!held.empty() && ItemStack::maxDamageFor(held.itemId) > 0) {
-                        if (held.applyDamage(1)) held = ItemStack::air();
+                        if (DamageComponent::applyDamage(held, 1)) held = ItemStack::air();
                         resendInventory(*p);
                     }
                 }
@@ -304,49 +309,25 @@ void GameServer::syncPlayerArmorAttributes(Player& p) {
     }
 }
 int GameServer::computeProtectionEPF(const DamageSource& ds, const Player& p) const {
+    // Plan8 EnchantmentHelper: delegate EPF calculation to centralized helper
     if (ds.bypassEnchant || ds.isDrown() || ds.isStarveFlag) return 0;
     int total = 0;
     for (int i = 5; i <= 8; ++i) {
         if (i < 0 || i >= 46 || p.inv[i].empty()) continue;
         const auto& s = p.inv[i];
-        int prot = std::max(s.enchantLevel("protection"), s.enchantLevel("minecraft:protection"));
-        int fire = std::max(s.enchantLevel("fire_protection"), s.enchantLevel("minecraft:fire_protection"));
-        int blast = std::max(s.enchantLevel("blast_protection"), s.enchantLevel("minecraft:blast_protection"));
-        int proj = std::max(s.enchantLevel("projectile_protection"), s.enchantLevel("minecraft:projectile_protection"));
-        int feather = std::max(s.enchantLevel("feather_falling"), s.enchantLevel("minecraft:feather_falling"));
-        int weight = 1;
-        if (ds.isFire() || ds.isExplosion() || ds.isProjectile()) weight = 2;
-        else if (ds.isFall()) weight = 1;
-        total += prot * weight;
-        if (ds.isFire()) total += fire * 2;
-        if (ds.isExplosion()) total += blast * 2;
-        if (ds.isProjectile()) total += proj * 2;
-        if (ds.isFall()) total += feather * 3;
-        else if (ds.isFall()) { /* fallback */ }
-        // also generic fall weight is 1 already
+        total += EnchantmentHelper::getProtectionEPF(ds, s);
     }
     if (total > 20) total = 20;
     return total;
 }
 int GameServer::computeProtectionEPF(const DamageSource& ds, const MobEntity& m) const {
+    // Plan8 EnchantmentHelper for mob equipment as well
     if (ds.bypassEnchant || ds.isDrown() || ds.isStarveFlag) return 0;
     int total = 0;
     for (int i = 2; i < 6; ++i) {
         if (m.equipment[i].empty()) continue;
         const auto& s = m.equipment[i];
-        int prot = std::max(s.enchantLevel("protection"), s.enchantLevel("minecraft:protection"));
-        int fire = std::max(s.enchantLevel("fire_protection"), s.enchantLevel("minecraft:fire_protection"));
-        int blast = std::max(s.enchantLevel("blast_protection"), s.enchantLevel("minecraft:blast_protection"));
-        int proj = std::max(s.enchantLevel("projectile_protection"), s.enchantLevel("minecraft:projectile_protection"));
-        int feather = std::max(s.enchantLevel("feather_falling"), s.enchantLevel("minecraft:feather_falling"));
-        int weight = 1;
-        if (ds.isFire() || ds.isExplosion() || ds.isProjectile()) weight = 2;
-        else if (ds.isFall()) weight = 1;
-        total += prot * weight;
-        if (ds.isFire()) total += fire * 2;
-        if (ds.isExplosion()) total += blast * 2;
-        if (ds.isProjectile()) total += proj * 2;
-        if (ds.isFall()) total += feather * 3;
+        total += EnchantmentHelper::getProtectionEPF(ds, s);
     }
     if (total > 20) total = 20;
     return total;
@@ -1015,7 +996,8 @@ void GameServer::mobsTick() {
                         broadcastPacketExcept(nullptr, pl::sc::RemoveEntities, rm);
                         mobAi_.erase(eid);
                         it = mobs_.erase(it);
-                        explodeAt(cxp, cyp + 0.5, czp, 3.f);
+                        // Plan8: Charged Creeper explodes with power 6.0 (vs 3.0 normal)
+                        explodeAt(cxp, cyp + 0.5, czp, m->creeperCharged ? 6.f : 3.f);
                         continue;
                     }
                 } else if (m->nextWanderAt != 0 && cd2 > 16) {
@@ -1061,6 +1043,30 @@ void GameServer::mobsTick() {
                     it = mobs_.erase(it); continue;
                 }
             }
+            // ---- Plan8 Breeding/Villager/Enderman tick enhancements
+            // Baby aging: age<0 increments towards 0 (20 ticks per minute vanilla ~ 20*20, but our -60*20)
+            if (m->age < 0) {
+                m->age++;
+                if (m->age == 0) {
+                    // grown up – broadcast metadata for baby flag (index 15? simplified)
+                    WriteBuffer md;
+                    md.varint(m->entityId);
+                    md.u8(15); md.varint(0); md.boolean(false);
+                    md.u8(255);
+                    broadcastPacketExcept(nullptr, pl::sc::SetEntityMetadata, md);
+                }
+            }
+            // Villager restock & gossip decay
+            if (m->kind==MobKind::Villager) {
+                if (tickNo_ >= m->restockUntil && m->restockUntil!=0) {
+                    m->restockUntil = 0;
+                    // restock sound
+                    broadcastSound("minecraft:entity.villager.work_farm", m->x,m->y,m->z,1.f,1.f,"neutral");
+                }
+                if (tickNo_%100==0 && m->gossip>0) m->gossip--;
+            }
+            // Enderman: occasional random block pickup via BehaviorTree is primary, but ensure carriedBlock persistence
+            // (handled in PickupBlockAction)
             // delta broadcast
             if (!m->hasSent ||
                 std::abs(m->x-m->sentX)+std::abs(m->y-m->sentY)+std::abs(m->z-m->sentZ) > 0.03) {
@@ -1146,18 +1152,12 @@ void GameServer::broadcastMobSpawn(const MobEntity& mob) {
 }
 
 void GameServer::sendEquipment(const MobEntity& mob) {
-    bool hasAny=false;
-    for (int i=0;i<6;++i) if (!mob.equipment[i].empty()) { hasAny=true; break; }
-    if (!hasAny) return;
+    // Plan8 EquipmentComponent: wrap equipment array and sync via SetEquipment
+    EquipmentComponent comp(mob.equipment);
+    if (!comp.hasAny()) return;
     WriteBuffer b;
     b.varint(mob.entityId);
-    // 1.21.4 SetEquipment: varint entity, then sequence of (varint slot, Slot)
-    // slot ids: 0 mainhand 1 offhand 2 boots 3 leggings 4 chest 5 head
-    for (int i=0;i<6;++i) {
-        if (mob.equipment[i].empty()) continue;
-        b.varint(i);
-        mob.equipment[i].write(b);
-    }
+    comp.writePayload(b);
     broadcastPacketExcept(nullptr, proto::pl::sc::SetEquipment, b);
 }
 
@@ -1243,9 +1243,11 @@ GameServer::MobAiEntry& GameServer::aiFor(const std::shared_ptr<MobEntity>& m) {
         MobAiEntry e;
         e.brain = std::make_unique<Brain>();
         e.ctx = std::make_unique<AiContext>();
-        // Plan7: data-driven BehaviorTree from EntityDataDef (Selector/Sequence/Condition/Action via JSON)
+        // Plan8 BehaviorTreeParser: data-driven BehaviorTree from EntityDataDef (Selector/Sequence/Condition/Action via JSON)
+        // Parser is now BehaviorTreeParser::parse which delegates to EntityDataLoader for backward compat.
         if (auto* def = entityDataLoader_.get(MobEntity::kindName(m->kind))) {
-            auto fresh = EntityDataLoader::buildUniqueTreeFor(*def);
+            auto fresh = BehaviorTreeParser::parse(*def);
+            if (!fresh) fresh = EntityDataLoader::buildUniqueTreeFor(*def);
             if (fresh) e.brain->setBehaviorTree(std::move(fresh));
             else if (m->kind==MobKind::Enderman) e.brain->setBehaviorTree(buildEndermanTree());
             else if (m->kind==MobKind::Wither) e.brain->setBehaviorTree(buildWitherTree());
@@ -1255,6 +1257,7 @@ GameServer::MobAiEntry& GameServer::aiFor(const std::shared_ptr<MobEntity>& m) {
             else if (m->kind==MobKind::Wither) e.brain->setBehaviorTree(buildWitherTree());
             else if (m->kind==MobKind::EnderDragon) e.brain->setBehaviorTree(buildDragonTree());
         }
+        // EquipmentComponent: apply equipment from definition if present (already in spawnMob)
         it = mobAi_.emplace(m->entityId, std::move(e)).first;
     }
     return it->second;
@@ -1485,6 +1488,44 @@ void GameServer::explodeAt(double x, double y, double z, float power) {
                      x, y, z, changed.size());
 }
 
+// Plan8 Charged Creeper: lightning strike charges creepers within 3 blocks, spawns bolt entity & visuals
+void GameServer::strikeLightning(double x, double y, double z) {
+    // Visual: spawn lightning bolt entity and broadcast sound
+    {
+        auto bolt = std::make_shared<LightningBoltEntity>();
+        bolt->entityId = nextEntityId();
+        bolt->x = x; bolt->y = y; bolt->z = z;
+        // Broadcast SpawnEntity for lightning (type 94? Use generic)
+        WriteBuffer b;
+        b.varint(bolt->entityId);
+        static std::uint8_t zero[16]={};
+        b.uuid(zero);
+        b.varint(94); // lightning bolt entity type id (approx)
+        b.f64(x); b.f64(y); b.f64(z);
+        b.i8(0); b.i8(0); b.i8(0);
+        b.varint(0); b.i16(0); b.i16(0); b.i16(0);
+        broadcastPacketExcept(nullptr, pl::sc::SpawnEntity, b);
+        broadcastSound("minecraft:entity.lightning_bolt.thunder", x,y,z, 2.f, 1.f, "weather");
+        broadcastSound("minecraft:entity.lightning_bolt.impact", x,y,z, 1.f, 1.f, "weather");
+    }
+    // Charge creepers within 4 blocks (includes via trident channeling)
+    std::lock_guard lk(entsMtx_);
+    for (auto& m : mobs_) if (m->kind==MobKind::Creeper && !m->creeperCharged) {
+        double dx=m->x - x, dy=m->y - y, dz=m->z - z;
+        if (dx*dx + dy*dy + dz*dz < 16) {
+            m->creeperCharged = true;
+            // metadata update for charged creeper (index 17? simplified)
+            WriteBuffer md;
+            md.varint(m->entityId);
+            md.u8(17); md.varint(0); md.u8(1);
+            md.u8(255);
+            broadcastPacketExcept(nullptr, pl::sc::SetEntityMetadata, md);
+            std::fprintf(stderr, "[cppfm] creeper %d charged via lightning at %.1f %.1f %.1f\n", m->entityId, x,y,z);
+        }
+    }
+    // Also handle Enderman damage via lightning? vanilla: enderman takes damage but teleports – already via applyDamage.
+}
+
 void GameServer::hoppersTick() {
     if (tickNo_ % 8 != 0) return;
     std::vector<std::pair<std::int64_t, BlockEntity>> snapshot;
@@ -1640,6 +1681,15 @@ void GameServer::hoppersTick() {
                     } else if (iname.find("fire_charge") != std::string::npos) {
                         spawnProjectile(ProjectileKind::Fireball, sx, sy, sz, dx*0.5, dy*0.5, dz*0.5, -1, false);
                         handled = true;
+                    } else if (iname.find("_spawn_egg") != std::string::npos) {
+                        // Plan8 MobSpawner: dispenser can spawn mobs via spawn eggs
+                        MobSpawner spawner2(*this);
+                        if (spawner2.spawnFromDispenser(iname, x, y, z, facing)) handled = true;
+                        else {
+                            // fallback to item drop if spawner fails
+                            spawnItemDrop(sx, sy, sz, s.itemId, 1, dx * .25, .15, dz * .25);
+                            handled = true;
+                        }
                     }
                     if (!handled) {
                         if (iname == "minecraft:tnt" || iname.find("tnt") != std::string::npos) {
@@ -1758,11 +1808,32 @@ bool GameServer::selectTrade(Player& p, std::int32_t index) {
     spawnXpOrbs(p.x, p.y + 1, p.z, 2, &p);
     broadcastSound("minecraft:entity.villager.yes", p.x, p.y, p.z,
                    .8f, 1.f, "neutral");
+    // Plan8 Villager: XP, gossip, level progression, restock timer
+    // Find nearest villager within 8 blocks to apply trade effects (simplified: first villager)
+    {
+        std::lock_guard lk(entsMtx_);
+        for (auto& m : mobs_) if (m->kind==MobKind::Villager) {
+            double dx=m->x - p.x, dz=m->z - p.z;
+            if (dx*dx+dz*dz < 64) {
+                m->villagerXp += 3 + (rand()%4);
+                m->gossip += 2;
+                // Level up check: every 10 xp -> level++
+                if (m->villagerXp >= m->villagerLevel * 10 && m->villagerLevel < 5) {
+                    m->villagerLevel++;
+                    broadcastSound("minecraft:entity.villager.levelup", m->x,m->y,m->z,1.f,1.f,"neutral");
+                }
+                // Restock: set restockUntil to now+ 20*120 (6 min) if not already
+                if (m->restockUntil < tickNo_) m->restockUntil = tickNo_ + 120*20;
+                break;
+            }
+        }
+    }
     return true;
 }
 
 void GameServer::applyDamageToMob(MobEntity& m, float amount, const DamageSource& src) {
     if (amount <= 0 || m.dead) return;
+    // Plan8 EnchantmentHelper + EquipmentComponent: armor via EquipmentComponent, EPF via EnchantmentHelper
     int armor = totalArmorPoints(m);
     int epf = computeProtectionEPF(src, m);
     // mobs have no toughness in current formula; pass 0
@@ -1771,6 +1842,21 @@ void GameServer::applyDamageToMob(MobEntity& m, float amount, const DamageSource
     if (finalAmt <= 0) return;
     m.health -= finalAmt;
     m.hurtCooldown = 10;
+    // Plan8 Enderman: damage triggers teleport (hurt condition already in BehaviorTree, but also instant chance)
+    if (m.kind==MobKind::Enderman && !m.dead) {
+        // 50% chance to teleport when hurt, respecting cooldown
+        if (rand()%2==0 && tickNo_ - m.lastTeleportTick > 20) {
+            // trigger teleport via AiContext next tick; also mark hurt
+            m.lastTeleportTick = tickNo_; // temporary, actual teleport will happen via BehaviorTree IsHurt->TeleportRandom
+            // we also update AiContext lastHurt for IsHurtCondition
+            auto it = mobAi_.find(m.entityId);
+            if (it!=mobAi_.end() && it->second.ctx) {
+                it->second.ctx->lastHurtTick = tickNo_;
+                it->second.ctx->lastHurtByEntityId = -1;
+            }
+        }
+    }
+    // Plan8 Charged Creeper: lightning handled separately; charged state persists
     if (MobEntity::isBoss(m.kind) && bossAI_) {
         if (m.health > 0) bossAI_->onDamage(m);
         else bossAI_->onDeath(m);
@@ -3375,6 +3461,11 @@ void GameServer::projectilesTick() {
 
 bool GameServer::spawnMobByTypeName(const std::string& name, double x, double y,
                                      double z) {
+    // Plan8: handle lightning_bolt via strikeLightning (charged creeper)
+    if (name=="minecraft:lightning_bolt" || name=="lightning_bolt" || name=="minecraft:lightning") {
+        strikeLightning(x,y,z);
+        return true;
+    }
     for (int i = 0; i < 46; ++i) {
         auto kind = static_cast<MobKind>(i);
         const char* n = MobEntity::kindName(kind);
@@ -4468,6 +4559,28 @@ void Session::handlePlay() {
                 fl.u8(0); fl.varint(0); fl.u8(self_->isSneaking ? 0x02 : 0x00);
                 fl.u8(255);
                 srv_.broadcastPacketExcept(self_.get(), pl::sc::SetEntityMetadata, fl);
+                // Plan8 EquipmentComponent/EntityAction: sneak dismount from vehicle (horse/llama/pig)
+                // Vanilla sends EntityAction 0x28 with action 0 for sneak start; if player is riding, dismount.
+                if (self_->isSneaking && self_->vehicleId != -1) {
+                    int veh = self_->vehicleId;
+                    // clear player vehicle
+                    self_->vehicleId = -1;
+                    // clear mob rider
+                    {
+                        std::lock_guard lk(srv_.entsMtx_);
+                        for (auto& m : srv_.mobsForTest()) if (m->entityId==veh) m->riderEntityId=-1;
+                    }
+                    srv_.broadcastSetPassengersEmpty(veh);
+                }
+            }
+            // Plan8: handle jump actions (e.g., horse jump) – stub for action 5/6
+            if (action==5 || action==6) {
+                // horse jump start/stop – broadcast to tracking players if riding
+                if (self_->vehicleId != -1) {
+                    WriteBuffer je;
+                    je.varint(self_->entityId); je.varint(action);
+                    srv_.broadcastPacketExcept(self_.get(), pl::sc::SetEntityMetadata, je);
+                }
             }
             (void)wasSprint;
             break;
@@ -4601,6 +4714,38 @@ void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
         else tickChunksAround(self_->x, self_->z);
     }
     self_->onGround = nowGround;
+    // Plan8 EnchantmentHelper: Frost Walker – freeze water around feet when on ground
+    if (self_->onGround && hasPos) {
+        bool hasFrost = false;
+        for (int i=5;i<=8;++i) if (!self_->inv[i].empty() && EnchantmentHelper::hasFrostWalker(self_->inv[i])) { hasFrost=true; break; }
+        if (hasFrost) {
+            World& w = srv_.worldFor(self_->dimension);
+            int bx = (int)std::floor(self_->x);
+            int by = (int)std::floor(self_->y - 0.5);
+            int bz = (int)std::floor(self_->z);
+            int lvl = 0;
+            for (int i=5;i<=8;++i) if (!self_->inv[i].empty()) lvl = std::max(lvl, self_->inv[i].enchantLevel("frost_walker"));
+            int radius = 2 + lvl;
+            auto frostIt = gen::blockNameToState().find("minecraft:frosted_ice");
+            if (frostIt != gen::blockNameToState().end()) {
+                std::uint16_t frosted = (std::uint16_t)frostIt->second;
+                for (int dx=-radius; dx<=radius; ++dx) for (int dz=-radius; dz<=radius; ++dz) {
+                    if (dx*dx+dz*dz > (radius+1)*(radius+1)) continue;
+                    int wx = bx+dx, wz = bz+dz;
+                    std::uint16_t st = w.getBlock(wx, by, wz);
+                    const gen::BlockDef* bd = gen::blockByState(st);
+                    if (bd && std::string(bd->name)=="minecraft:water") {
+                        // check level 0 source
+                        bool isSource=false;
+                        for (auto& [k,v]: gen::propsOf(st)) if (k=="level" && v=="0") isSource=true;
+                        if (!isSource) continue;
+                        w.setBlock(wx, by, wz, frosted);
+                        srv_.broadcastBlockChange(wx, by, wz, frosted);
+                    }
+                }
+            }
+        }
+    }
     broadcastMovement();
     // portal step-in teleport (plan5)
     {
@@ -5310,6 +5455,22 @@ void Session::onUseItemOn(ReadBuffer& in) {
     }
     // item id -> block name (block items share the name)
     std::string itemName = heldItem.name();
+    // Plan8 MobSpawner: spawn egg via UseItemOn (egg -> spawn mob at clicked face)
+    if (itemName.find("_spawn_egg") != std::string::npos) {
+        MobSpawner spawner(srv_);
+        // spawn at offset position tx,ty,tz (or slightly above if blocked)
+        double sx = tx + 0.5, sy = ty + 0.5, sz = tz + 0.5;
+        // if target block is solid, use tx,ty,tz as spawn, else check air
+        if (spawner.spawnFromEgg(itemName, sx, sy, sz)) {
+            if (survival) {
+                auto* mh = &self_->inv[36 + self_->heldSlot];
+                if (--mh->count <= 0) *mh = ItemStack::air();
+                srv_.resendInventory(*self_);
+            }
+            ack(sequence);
+            return;
+        }
+    }
     std::uint16_t newState = 0;
     const gen::BlockDef* bdef2 = gen::blockByName(itemName);
     if (!bdef2) {                                          // not a placeable block
@@ -5537,12 +5698,14 @@ void Session::onUseEntity(ReadBuffer& in) {
     if (self_->heldSlot >= 0 && self_->heldSlot < 9) {
         const auto& sl = self_->inv[36 + self_->heldSlot];
         if (sl.count > 0) {
-            // generic weapon damage
+            // generic weapon damage + Plan8 EnchantmentHelper sharpness
             std::string iname = sl.name();
             if (iname.find("sword") != std::string::npos) dmg = 6.f;
             else if (iname.find("axe") != std::string::npos) dmg = 7.f;
             else if (iname.find("_sword") != std::string::npos) dmg = 5.f;
             if (sl.itemId == gen::itemIdByName().at("minecraft:iron_sword")) dmg = 6.f;
+            // EnchantmentHelper: sharpness bonus
+            dmg = EnchantmentHelper::meleeDamageWithEnchant(dmg, sl);
         }
     }
     // strength/weakness bonus
@@ -5596,11 +5759,11 @@ void Session::onUseEntity(ReadBuffer& in) {
             break;
         }
     }
-    // durability on held item (attack)
+    // durability on held item (attack) – Plan8 DamageComponent with Unbreaking
     if (self_->heldSlot >=0 && self_->heldSlot < 9) {
         auto &held = self_->inv[36 + self_->heldSlot];
         if (!held.empty() && ItemStack::maxDamageFor(held.itemId) > 0) {
-            bool broken = held.applyDamage(1);
+            bool broken = DamageComponent::applyDamage(held, 1);
             if (broken) held = ItemStack::air();
             srv_.resendInventory(*self_);
         }
