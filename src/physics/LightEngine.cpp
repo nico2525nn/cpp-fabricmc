@@ -14,6 +14,9 @@ int LightEngine::opacityOf(std::uint16_t state) const {
     if (state == 0) return 0;
     const gen::BlockDef* b = gen::blockByState(state);
     if (!b) return 15;
+    // emissive blocks (glowstone, sea_lantern, shroomlight, beacon) are not opaque in vanilla
+    // dataset incorrectly marks them as filter 15; treat as transparent for light
+    if (b->emitLight > 0) return 0;
     if (b->filterLight >= 15) {
         // water attenuates by 1 in vanilla; dataset marks it opaque
         static const std::uint16_t water = static_cast<std::uint16_t>(
