@@ -173,6 +173,8 @@ struct Player {
     std::int64_t lastEnderPearlTick = -10000;
     std::int64_t invulnUntilTick = 0;
     AttributeManager attributes;
+    std::unordered_set<std::string> tags;
+    double vehicleJumpPending = 0; // horse jump power
 };
 
 struct BlockPos { std::int32_t x=0, y=0, z=0; };
@@ -666,6 +668,26 @@ public:
     void handleFoodConsume(Player& p, const std::string& itemName);
     int computeProtectionEPF(const DamageSource& ds, const Player& p) const;
     int computeProtectionEPF(const DamageSource& ds, const MobEntity& m) const;
+    // TNT primed (plan10 §8)
+    void spawnPrimedTnt(double x, double y, double z, double vx=0, double vy=0.2, double vz=0);
+    void primedTntsTick();
+    // Teams / BossBar / Tags (plan10 §6)
+    bool createTeam(const std::string& name, const std::string& display="");
+    bool removeTeam(const std::string& name);
+    bool joinTeam(const std::string& team, const std::string& member);
+    bool leaveTeam(const std::string& member);
+    bool createBossBar(const std::string& id, const std::string& title);
+    bool removeBossBar(const std::string& id);
+    // Tags
+    bool tagAdd(Player* p, const std::string& tag);
+    bool tagRemove(Player* p, const std::string& tag);
+    bool tagAddMob(std::int32_t eid, const std::string& tag);
+    bool tagRemoveMob(std::int32_t eid, const std::string& tag);
+    // Equipment sync
+    void updateMobEquipment(std::int32_t eid, int slot, const ItemStack& stack);
+    void syncMobEquipment(const MobEntity& mob);
+    // Riding: horse jump
+    void handleHorseJump(Player& p, int jumpPower);
     static std::string uuidToHex(const std::array<std::uint8_t,16>& u) {
         std::string h; char x[4];
         for (auto b : u) { snprintf(x,3,"%02x",b); h+=x; }
@@ -780,6 +802,7 @@ private:
     std::vector<std::shared_ptr<ItemEntity>> itemDrops_;
     std::vector<std::shared_ptr<XpOrbEntity>> xpOrbs_;
     std::vector<std::shared_ptr<ProjectileEntity>> projectiles_;
+    std::vector<std::shared_ptr<PrimedTntEntity>> primedTnts_;
     std::unordered_map<std::int64_t, bool> dispenserPower_;
     std::int64_t tickNo_ = 0;
     std::int64_t timeOffset_ = 0;
@@ -871,6 +894,7 @@ private:
     std::unique_ptr<NetworkManager> networkMgr_;
     // Plan7 BossAI / BossBar
     std::unique_ptr<BossAIManager> bossAI_;
+    std::unordered_map<std::string, BossBar> genericBossBars_;
     // Block Event Bus (plan6): simple vector of handlers in GameServer
     std::vector<std::function<void(std::int32_t,std::int32_t,std::int32_t,std::uint16_t,std::uint16_t)>> onBlockPlaceHandlers_;
     std::vector<std::function<void(std::int32_t,std::int32_t,std::int32_t,std::uint16_t,std::uint16_t)>> onBlockBreakHandlers_;

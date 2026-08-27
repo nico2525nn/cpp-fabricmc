@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include <array>
+#include <unordered_set>
 #include "../generated/EntityIds.hpp"
 #include "../generated/ItemIds.hpp"
 #include "Items.hpp"
@@ -13,6 +14,14 @@
 namespace cppfm {
 
 struct Vec3 { double x, y, z; };
+
+struct PrimedTntEntity {
+    std::int32_t entityId = 0;
+    double x=0, y=0, z=0;
+    double vx=0, vy=0, vz=0;
+    int fuse = 80;
+    std::int64_t ageTicks = 0;
+};
 
 struct ItemEntity {
     std::int32_t entityId = 0;
@@ -65,7 +74,8 @@ enum class MobKind : std::uint8_t {
     Panda, Fox, Frog, Dolphin, Turtle, Bat,
     Cod, Salmon, TropicalFish, Pufferfish,
     Squid, GlowSquid, // extra to reach 40, harmless
-    Warden, Phantom, IronGolem, Allay, Shulker
+    Warden, Phantom, IronGolem, Allay, Shulker,
+    Boat, Minecart
 };
 
 // Static per-kind gameplay table (clean-room values approximating vanilla).
@@ -130,8 +140,10 @@ inline const MobStats& mobStats(MobKind k) {
         {"minecraft:iron_golem",     100.f,0.08f,15.f, false,false,"minecraft:iron_ingot",3,5,nullptr,                      0},
         {"minecraft:allay",          20.f, 0.09f, 0.f, false,false,nullptr,0,0,nullptr,                                     0},
         {"minecraft:shulker",        30.f, 0.05f, 4.f, true, false,"minecraft:shulker_shell",0,1,nullptr,                   5},
+        {"minecraft:boat",            6.f,0.10f, 0.f, false,false,nullptr,0,0,nullptr,                                     0},
+        {"minecraft:minecart",       6.f,0.10f, 0.f, false,false,nullptr,0,0,nullptr,                                     0},
     };
-    static_assert(sizeof(table)/sizeof(table[0]) == 46, "table size must match MobKind count");
+    static_assert(sizeof(table)/sizeof(table[0]) == 48, "table size must match MobKind count");
     return table[static_cast<int>(k)];
 }
 
@@ -173,6 +185,7 @@ struct MobEntity {
     std::int64_t witherSkullCooldown = 0;
     int dragonPhase = 0; // 0 circling, 1 approaching, 2 perching/breath, 3 takeoff
     std::int64_t dragonPhaseUntil = 0;
+    std::unordered_set<std::string> tags;
 
     static const char* kindName(MobKind k) { return mobStats(k).name; }
     static std::uint32_t typeId(MobKind k) {

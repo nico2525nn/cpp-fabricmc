@@ -98,6 +98,103 @@ public:
         b.boolean(obj != nullptr);
         if (obj) b.string(*obj);
     }
+
+    // -------------------------------------------------------------- teams (plan10 §6, Teams 0x67)
+    struct Team {
+        std::string name;
+        std::string displayName;
+        std::uint8_t flags = 0;
+        std::string nametagVisibility = "always";
+        std::string collisionRule = "always";
+        int color = 21; // reset
+        std::string prefix;
+        std::string suffix;
+        std::vector<std::string> members;
+    };
+    std::unordered_map<std::string, Team> teams;
+
+    Team* findTeam(const std::string& name) {
+        auto it = teams.find(name);
+        return it == teams.end() ? nullptr : &it->second;
+    }
+    const Team* findTeam(const std::string& name) const {
+        auto it = teams.find(name);
+        return it == teams.end() ? nullptr : &it->second;
+    }
+    bool addTeam(const std::string& name, const std::string& display = "") {
+        if (teams.count(name)) return false;
+        Team t;
+        t.name = name;
+        t.displayName = display.empty() ? name : display;
+        teams.emplace(name, std::move(t));
+        return true;
+    }
+    bool removeTeam(const std::string& name) {
+        return teams.erase(name) > 0;
+    }
+    bool addTeamMember(const std::string& team, const std::string& member) {
+        auto* t = findTeam(team);
+        if (!t) return false;
+        if (std::find(t->members.begin(), t->members.end(), member) != t->members.end()) return false;
+        t->members.push_back(member);
+        return true;
+    }
+    bool removeTeamMember(const std::string& team, const std::string& member) {
+        auto* t = findTeam(team);
+        if (!t) return false;
+        auto it = std::find(t->members.begin(), t->members.end(), member);
+        if (it == t->members.end()) return false;
+        t->members.erase(it);
+        return true;
+    }
+    // removes member from whatever team they are in (vanilla auto-leave)
+    bool leaveTeam(const std::string& member) {
+        for (auto& kv : teams) {
+            auto& memb = kv.second.members;
+            auto it = std::find(memb.begin(), memb.end(), member);
+            if (it != memb.end()) { memb.erase(it); return true; }
+        }
+        return false;
+    }
+    void writeTeamsPacket(WriteBuffer& b, const Team& t, std::int8_t mode) const {
+        b.string(t.name);
+        b.i8(mode);
+        if (mode == 0 || mode == 2) {
+            nbt::writeTextComponent(b, t.displayName);
+            b.i8(t.flags);
+            b.string(t.nametagVisibility);
+            b.string(t.collisionRule);
+            b.varint(t.color);
+            nbt::writeTextComponent(b, t.prefix);
+            nbt::writeTextComponent(b, t.suffix);
+            if (mode == 0) {
+                b.varint((std::int32_t)t.members.size());
+                for (auto& m : t.members) b.string(m);
+            }
+        } else if (mode == 3 || mode == 4) {
+            b.varint((std::int32_t)t.members.size());
+            for (auto& m : t.members) b.string(m);
+        }
+    }
+    void writeTeamsCreate(WriteBuffer& b, const Team& t) const {
+        writeTeamsPacket(b, t, 0);
+    }
+    void writeTeamsRemove(WriteBuffer& b, const std::string& teamName) const {
+        b.string(teamName);
+        b.i8(1);
+    }
+    void writeTeamsAddPlayers(WriteBuffer& b, const std::string& teamName, const std::vector<std::string>& members) const {
+        b.string(teamName);
+        b.i8(3);
+        b.varint((std::int32_t)members.size());
+        for (auto& m : members) b.string(m);
+    }
+    void writeTeamsRemovePlayers(WriteBuffer& b, const std::string& teamName, const std::vector<std::string>& members) const {
+        b.string(teamName);
+        b.i8(4);
+        b.varint((std::int32_t)members.size());
+        for (auto& m : members) b.string(m);
+    }
 };
 
 } // namespace cppfm

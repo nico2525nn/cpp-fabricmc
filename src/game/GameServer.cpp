@@ -398,6 +398,7 @@ void GameServer::tickOnce() {
     mobsTick();
     mark('P');
     projectilesTick();
+    primedTntsTick();
     mark('I');
     itemsTick();
     mark('T');
@@ -1616,6 +1617,9 @@ void GameServer::hoppersTick() {
                         if (!isDropper && (iname == "minecraft:tnt" || iname.find("tnt") != std::string::npos)) {
                             // primed TNT: explode at front with delay via explodeAt (plan10 §8 would spawn primed entity)
                             explodeAt(x + dx + 0.5, y + dy + 0.5, z + dz + 0.5, 4.f);
+                        if (iname == "minecraft:tnt" || iname.find("tnt") != std::string::npos) {
+                            // primed TNT entity with fuse 80 (plan10 §8)
+                            spawnPrimedTnt(sx, sy, sz, dx*0.25, 0.2, dz*0.25);
                         } else {
                             spawnItemDrop(sx, sy, sz, s.itemId, 1, dx * .25, .15, dz * .25);
                         }
@@ -1919,6 +1923,198 @@ void GameServer::resendInventory(Player& p) {
     for (int i = 0; i < 46; ++i) p.inv[i].write(b);
     ItemStack::air().write(b);                          // carried
     try { p.conn->sendPacket(pl::sc::ContainerSetContent, b); } catch (...) {}
+    // Equipment sync: armor attributes (plan8+plan9 item 30)
+    syncPlayerArmorAttributes(p);
+}
+
+// ---- TNT primed (plan10 §8) ----
+void GameServer::spawnPrimedTnt(double x, double y, double z, double vx, double vy, double vz) {
+    auto t = std::make_shared<PrimedTntEntity>();
+    t->entityId = nextEntityId();
+    t->x = x; t->y = y; t->z = z;
+    t->vx = vx; t->vy = vy; t->vz = vz;
+    t->fuse = 80;
+    {
+        std::lock_guard lk(entsMtx_);
+        primedTnts_.push_back(t);
+    }
+    WriteBuffer b;
+    b.varint(t->entityId);
+    static std::uint8_t zero[16]={};
+    b.uuid(zero);
+    // tnt entity type id via registry
+    auto it = gen::entityTypeIdByName().find("minecraft:tnt");
+    std::int32_t tid = it != gen::entityTypeIdByName().end() ? (std::int32_t)it->second : 68;
+    b.varint(tid);
+    b.f64(x); b.f64(y); b.f64(z);
+    b.i8(0); b.i8(0); b.i8(0);
+    b.varint(0); b.i16(0); b.i16(0); b.i16(0);
+    broadcastPacketExcept(nullptr, pl::sc::SpawnEntity, b);
+    WriteBuffer vel;
+    vel.varint(t->entityId);
+    vel.i16((std::int16_t)(vx*8000)); vel.i16((std::int16_t)(vy*8000)); vel.i16((std::int16_t)(vz*8000));
+    broadcastPacketExcept(nullptr, pl::sc::EntityVelocity, vel);
+}
+void GameServer::primedTntsTick() {
+    std::vector<std::shared_ptr<PrimedTntEntity>> toExplode;
+    {
+        std::lock_guard lk(entsMtx_);
+        for (auto it = primedTnts_.begin(); it != primedTnts_.end();) {
+            auto& t = *it;
+            t->vx *= 0.98; t->vz *= 0.98;
+            t->vy -= 0.04;
+            t->x += t->vx; t->y += t->vy; t->z += t->vz;
+            // ground clamp
+            world_.generateChunkIfMissing((std::int32_t)t->x>>4,(std::int32_t)t->z>>4);
+            std::uint16_t below = world_.getBlock((std::int32_t)t->x, (std::int32_t)t->y -1, (std::int32_t)t->z);
+            bool solid = below != 0;
+            if (solid && t->y < -60 + 5) { // simple ground
+                t->y = std::floor(t->y)+0.49;
+                t->vy *= -0.3;
+                if (std::abs(t->vy) < 0.05) t->vy = 0;
+                t->vx *= 0.7; t->vz *= 0.7;
+            }
+            if (--t->fuse <= 0) {
+                toExplode.push_back(t);
+                it = primedTnts_.erase(it);
+            } else ++it;
+        }
+    }
+    for (auto& t : toExplode) {
+        // remove entity
+        WriteBuffer rm; rm.varint(1); rm.varint(t->entityId);
+        broadcastPacketExcept(nullptr, pl::sc::RemoveEntities, rm);
+        explodeAt(t->x, t->y, t->z, 4.0f);
+    }
+}
+
+// ---- Teams / BossBar / Tags / Equipment (plan10 §6) ----
+bool GameServer::createTeam(const std::string& name, const std::string& display) {
+    if (!scoreboard.addTeam(name, display)) return false;
+    auto* t = scoreboard.findTeam(name);
+    if (!t) return false;
+    WriteBuffer b;
+    scoreboard.writeTeamsCreate(b, *t);
+    broadcastPacketExcept(nullptr, pl::sc::Teams, b);
+    return true;
+}
+bool GameServer::removeTeam(const std::string& name) {
+    auto* t = scoreboard.findTeam(name);
+    if (!t) return false;
+    WriteBuffer b;
+    scoreboard.writeTeamsRemove(b, name);
+    broadcastPacketExcept(nullptr, pl::sc::Teams, b);
+    scoreboard.removeTeam(name);
+    return true;
+}
+bool GameServer::joinTeam(const std::string& team, const std::string& member) {
+    // auto-leave previous team (vanilla)
+    scoreboard.leaveTeam(member);
+    if (!scoreboard.addTeamMember(team, member)) return false;
+    WriteBuffer b;
+    scoreboard.writeTeamsAddPlayers(b, team, std::vector<std::string>{member});
+    broadcastPacketExcept(nullptr, pl::sc::Teams, b);
+    return true;
+}
+bool GameServer::leaveTeam(const std::string& member) {
+    std::string prev;
+    for (auto& kv : scoreboard.teams) {
+        auto& mems = kv.second.members;
+        if (std::find(mems.begin(), mems.end(), member) != mems.end()) { prev = kv.first; break; }
+    }
+    if (prev.empty()) return false;
+    if (!scoreboard.removeTeamMember(prev, member)) return false;
+    WriteBuffer b;
+    scoreboard.writeTeamsRemovePlayers(b, prev, std::vector<std::string>{member});
+    broadcastPacketExcept(nullptr, pl::sc::Teams, b);
+    return true;
+}
+bool GameServer::createBossBar(const std::string& id, const std::string& title) {
+    if (genericBossBars_.count(id)) return false;
+    BossBar bar;
+    // derive uuid from id hash
+    std::hash<std::string> h;
+    std::size_t hv = h(id);
+    for (int i=0;i<16;++i) bar.uuid[i] = std::uint8_t((hv >> (i*3)) & 0xFF);
+    bar.uuid[6] = (bar.uuid[6] & 0x0F) | 0x40;
+    bar.uuid[8] = (bar.uuid[8] & 0x3F) | 0x80;
+    bar.title = title;
+    bar.health = 1.0f;
+    bar.color = 5;
+    bar.division = 0;
+    bar.flags = 0;
+    genericBossBars_[id] = bar;
+    WriteBuffer b;
+    b.uuid(bar.uuid.data());
+    b.varint(0);
+    nbt::writeTextComponent(b, bar.title);
+    b.f32(bar.health);
+    b.varint(bar.color);
+    b.varint(bar.division);
+    b.u8(bar.flags);
+    broadcastPacketExcept(nullptr, pl::sc::BossBar, b);
+    return true;
+}
+bool GameServer::removeBossBar(const std::string& id) {
+    auto it = genericBossBars_.find(id);
+    if (it == genericBossBars_.end()) return false;
+    WriteBuffer b;
+    b.uuid(it->second.uuid.data());
+    b.varint(1);
+    broadcastPacketExcept(nullptr, pl::sc::BossBar, b);
+    genericBossBars_.erase(it);
+    return true;
+}
+bool GameServer::tagAdd(Player* p, const std::string& tag) {
+    if (!p) return false;
+    auto res = p->tags.insert(tag);
+    return res.second;
+}
+bool GameServer::tagRemove(Player* p, const std::string& tag) {
+    if (!p) return false;
+    return p->tags.erase(tag) > 0;
+}
+bool GameServer::tagAddMob(std::int32_t eid, const std::string& tag) {
+    std::lock_guard lk(entsMtx_);
+    for (auto& m : mobs_) if (m->entityId==eid) { auto res=m->tags.insert(tag); return res.second; }
+    return false;
+}
+bool GameServer::tagRemoveMob(std::int32_t eid, const std::string& tag) {
+    std::lock_guard lk(entsMtx_);
+    for (auto& m : mobs_) if (m->entityId==eid) return m->tags.erase(tag)>0;
+    return false;
+}
+void GameServer::updateMobEquipment(std::int32_t eid, int slot, const ItemStack& stack) {
+    std::lock_guard lk(entsMtx_);
+    for (auto& m : mobs_) if (m->entityId==eid) {
+        if (slot>=0 && slot<6) m->equipment[slot]=stack;
+        syncMobEquipment(*m);
+        break;
+    }
+}
+void GameServer::syncMobEquipment(const MobEntity& mob) {
+    sendEquipment(mob);
+}
+void GameServer::handleHorseJump(Player& p, int jumpPower) {
+    if (p.vehicleId==-1) return;
+    // find vehicle mob (horse)
+    std::shared_ptr<MobEntity> veh;
+    {
+        std::lock_guard lk(entsMtx_);
+        for (auto& m : mobs_) if (m->entityId==p.vehicleId) { veh=m; break; }
+    }
+    if (!veh) return;
+    if (veh->kind!=MobKind::Horse) return;
+    double power = std::clamp(jumpPower / 100.0, 0.0, 1.0);
+    // apply vertical velocity to horse
+    veh->y += power * 1.2;
+    // broadcast position
+    WriteBuffer b;
+    b.varint(veh->entityId);
+    b.f64(veh->x); b.f64(veh->y); b.f64(veh->z);
+    b.f32(veh->yaw); b.f32(0);
+    b.boolean(true);
+    broadcastPacketExcept(nullptr, pl::sc::EntityTeleport, b);
 }
 
 // ===================================================================== Session
@@ -3226,8 +3422,33 @@ void GameServer::xpOrbsTick() {
     }
     for (auto& pk : pickups) {
         Player& p = *pk.p;
-        p.xp.addPoints(pk.orb->value);
-        sendSetExperience(p);
+        // Mending: repair damaged item with XP before adding to player (plan9 item 32)
+        bool mendingApplied = false;
+        for (int i=0; i<46 && !mendingApplied; ++i) {
+            auto& s = p.inv[i];
+            if (!s.empty() && EnchantmentHelper::hasMending(s) && s.getDamage()>0) {
+                int dmg = s.getDamage();
+                int repair = pk.orb->value * 2;
+                int newDmg = dmg - repair;
+                if (newDmg < 0) {
+                    int excessXp = (-newDmg + 1)/2;
+                    s.setDamage(0);
+                    resendInventory(p);
+                    p.xp.addPoints(excessXp);
+                    sendSetExperience(p);
+                } else {
+                    s.setDamage(newDmg);
+                    resendInventory(p);
+                    // no XP to player, orb consumed for repair
+                    sendSetExperience(p);
+                }
+                mendingApplied = true;
+            }
+        }
+        if (!mendingApplied) {
+            p.xp.addPoints(pk.orb->value);
+            sendSetExperience(p);
+        }
         WriteBuffer c;
         c.varint(pk.orb->entityId);
         c.varint(p.entityId);
@@ -4496,8 +4717,37 @@ void Session::handlePlay() {
             if (action == 0) handleRespawnRequest();
             break;
         }
-        case pl::cs::PlayerInput: in.skipRest(); break;
-        case pl::cs::MoveVehicle: in.skipRest(); break;
+        case pl::cs::PlayerInput: {
+            // plan9 riding: forward/strafe/jump inputs for horse control
+            float sideways = in.f32(); float forward = in.f32(); std::uint8_t flags = in.u8();
+            bool jump = (flags & 0x01) != 0;
+            (void)sideways; (void)forward;
+            if (jump && self_->vehicleId != -1) {
+                // trigger horse jump if on horse
+                srv_.handleHorseJump(*self_, 80);
+            }
+            break;
+        }
+        case pl::cs::MoveVehicle: {
+            // MoveVehicle 0x20: double x,y,z + float yaw,pitch (vehicle controlled by player)
+            double vx = in.f64(), vy = in.f64(), vz = in.f64();
+            float vyaw = in.f32(), vpitch = in.f32();
+            if (self_->vehicleId != -1) {
+                std::lock_guard lk(srv_.entsMtx_);
+                for (auto& m : srv_.mobsForTest()) if (m->entityId==self_->vehicleId) {
+                    m->x = vx; m->y = vy; m->z = vz; m->yaw = vyaw;
+                    // broadcast to tracking players
+                    WriteBuffer b;
+                    b.varint(m->entityId);
+                    b.f64(vx); b.f64(vy); b.f64(vz);
+                    b.f32(vyaw); b.f32(vpitch);
+                    b.boolean(true);
+                    srv_.broadcastPacketExcept(self_.get(), pl::sc::EntityTeleport, b);
+                    break;
+                }
+            }
+            break;
+        }
         case pl::cs::SignUpdate: { // 0x39 - also PlaceGhostRecipe for stonecutter
             if (openMenu_ && openMenu_->type == MenuType::Stonecutter && in.len - in.off < 16) {
                 // treat as PlaceGhostRecipe: windowId + recipeId
@@ -4550,10 +4800,11 @@ void Session::handlePlay() {
                     srv_.broadcastSetPassengersEmpty(veh);
                 }
             }
-            // Plan8: handle jump actions (e.g., horse jump) – stub for action 5/6
-            if (action==5 || action==6) {
-                // horse jump start/stop – broadcast to tracking players if riding
+            // Plan8/9: handle jump actions (horse jump) – action 7 is horse jump with boost
+            if (action==5 || action==6 || action==7) {
                 if (self_->vehicleId != -1) {
+                    // horse jump handling via jumpBoost (plan9 item 31)
+                    srv_.handleHorseJump(*self_, jumpBoost);
                     WriteBuffer je;
                     je.varint(self_->entityId); je.varint(action);
                     srv_.broadcastPacketExcept(self_.get(), pl::sc::SetEntityMetadata, je);
@@ -4944,7 +5195,21 @@ void Session::onPlayerAction(ReadBuffer& in) {
                     auto it = i2n.find(sl.itemId);
                     return it != i2n.end() && it->second.find("pickaxe") != std::string::npos;
                 }();
-            const float speed = 1.f;                     // held-tool speed MVP
+            float effMult = 1.f;
+            if (self_->heldSlot>=0 && self_->heldSlot<9) {
+                auto &sl = self_->inv[36+self_->heldSlot];
+                if (!sl.empty()) {
+                    effMult = EnchantmentHelper::getEfficiencyMultiplier(sl);
+                    std::string n = sl.name();
+                    if (n.find("netherite")!=std::string::npos) effMult *= 9;
+                    else if (n.find("diamond")!=std::string::npos) effMult *= 8;
+                    else if (n.find("iron")!=std::string::npos) effMult *= 6;
+                    else if (n.find("stone")!=std::string::npos) effMult *= 4;
+                    else if (n.find("wooden")!=std::string::npos) effMult *= 2;
+                    else if (n.find("golden")!=std::string::npos) effMult *= 12;
+                }
+            }
+            const float speed = effMult;
             const float h = mi ? mi->hardness : 1.f;
             const float denom = canHarvest ? 30.f : 100.f;
             self_->digTotalTicks = h <= 0 ? 1 :
@@ -5307,6 +5572,28 @@ void Session::onUseItemOn(ReadBuffer& in) {
                 return;
             }
         } else if (heldName == "minecraft:flint_and_steel" || heldName == "minecraft:fire_charge") {
+            // TNT ignition -> primed TNT (plan10 §8)
+            {
+                std::uint16_t clickedSt = srv_.world().getBlock(x, y, z);
+                const gen::BlockDef* cd2 = gen::blockByState(clickedSt);
+                if (cd2 && std::string(cd2->name)=="minecraft:tnt") {
+                    srv_.world().setBlock(x, y, z, 0);
+                    srv_.broadcastBlockChange(x, y, z, 0);
+                    srv_.spawnPrimedTnt(x+0.5, y+0.5, z+0.5, (rand()/(double)RAND_MAX-0.5)*0.3, 0.4, (rand()/(double)RAND_MAX-0.5)*0.3);
+                    if (survival) {
+                        auto* mh = &self_->inv[36 + self_->heldSlot];
+                        if (heldName=="minecraft:flint_and_steel") {
+                            if (DamageComponent::applyDamage(*mh, 1)) *mh = ItemStack::air();
+                        } else {
+                            if (--mh->count <=0) *mh = ItemStack::air();
+                        }
+                        srv_.resendInventory(*self_);
+                    }
+                    srv_.broadcastSound("minecraft:entity.tnt.primed", x+0.5, y+0.5, z+0.5, 1.f, 1.f, "blocks");
+                    ack(sequence);
+                    return;
+                }
+            }
             std::uint16_t target = srv_.world().getBlock(tx, ty, tz);
             if (target == 0) {
                 bool canPlace = true;
@@ -5739,8 +6026,9 @@ void Session::onUseEntity(ReadBuffer& in) {
                             return;
                         }
                     }
-                    // riding: horse/llama/pig
-                    if (m->kind == MobKind::Horse || m->kind == MobKind::Llama || m->kind == MobKind::Pig) {
+                    // riding: horse/llama/pig + boat/minecart (plan9 item 31,45)
+                    if (m->kind == MobKind::Horse || m->kind == MobKind::Llama || m->kind == MobKind::Pig
+                        || m->kind == MobKind::Boat || m->kind == MobKind::Minecart) {
                         if (self_->vehicleId == -1 && m->riderEntityId == -1) {
                             self_->vehicleId = m->entityId;
                             m->riderEntityId = self_->entityId;
