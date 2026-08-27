@@ -46,6 +46,7 @@
 #include "EntityData.hpp"
 #include "../net/PacketBatcher.hpp"
 #include "Attributes.hpp"
+#include "DamageSource.hpp"
 
 namespace cppfm {
 
@@ -551,6 +552,7 @@ public:
     void survivalTick();
     void mobsTick();
     void applyDamageToMob(MobEntity& m, float amount, const char* cause);
+    void applyDamageToMob(MobEntity& m, float amount, const DamageSource& src);
     // Spawn a mob of `kind` at position and broadcast it.
     void spawnMob(MobKind kind, double x, double y, double z);
     void broadcastMobSpawn(const MobEntity& mob);   // no locking inside
@@ -602,7 +604,14 @@ public:
     void sendSetHealth(Player& p);
 
     void applyDamage(Player& p, float amount, const char* cause);
+    void applyDamage(Player& p, float amount, const DamageSource& src);
     void killPlayer(Player& p, const char* cause);
+    void syncPlayerArmorAttributes(Player& p);
+    void addHungerExhaustion(Player& p, float amount);
+    void addFoodAndSaturation(Player& p, int food, float sat);
+    void handleFoodConsume(Player& p, const std::string& itemName);
+    int computeProtectionEPF(const DamageSource& ds, const Player& p) const;
+    int computeProtectionEPF(const DamageSource& ds, const MobEntity& m) const;
     static std::string uuidToHex(const std::array<std::uint8_t,16>& u) {
         std::string h; char x[4];
         for (auto b : u) { snprintf(x,3,"%02x",b); h+=x; }
