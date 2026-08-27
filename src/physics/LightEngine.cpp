@@ -66,6 +66,23 @@ void LightEngine::onBlockChanged(std::int32_t x, std::int32_t y,
                 addQueue_.push({nx, ny, nz, nl});
             }
         }
+        // schedule sky-light rebuild for this chunk and neighbors
+        auto schedSky = [&](std::int32_t cxx, std::int32_t czz) {
+            world_.generateChunkIfMissing(cxx, czz);
+            world_.ensureSkyStorage(cxx, czz);
+            pendingSkyRebuild_.insert(chunkKey(cxx, czz));
+        };
+        const std::int32_t bcx = x >> 4, bcz = z >> 4;
+        schedSky(bcx, bcz);
+        for (int d = 0; d < 6; ++d) {
+            const std::int32_t ncx = (x + DX[d]) >> 4;
+            const std::int32_t ncz = (z + DZ[d]) >> 4;
+            if (ncx != bcx || ncz != bcz) schedSky(ncx, ncz);
+        }
+        // also cover diagonal neighbors for sky side-propagation
+        for (int dz = -1; dz <= 1; ++dz)
+            for (int dx = -1; dx <= 1; ++dx)
+                if (dx || dz) schedSky(bcx + dx, bcz + dz);
     }
     // sky light cache is invalidated wholesale for the chunk
     world_.ensureSkyStorage(x >> 4, z >> 4);
@@ -125,9 +142,35 @@ LightUpdateBatch LightEngine::drain() {
     }
 
     // sky light: rebuild caches for touched chunks (bounded work per tick)
-    for (auto k : batch.dirtyChunks) {
-        ensureSkyLight(static_cast<std::int32_t>(k >> 32),
-                       static_cast<std::int32_t>(k & 0xFFFFFFFFLL));
+    // include pending sky rebuilds (opacity changes even without block-light)
+    {
+        std::unordered_set<std::int64_t> skyRebuildSet;
+        skyRebuildSet.reserve(batch.dirtyChunks.size() + pendingSkyRebuild_.size() + 8);
+        for (auto k : batch.dirtyChunks) skyRebuildSet.insert(k);
+        for (auto k : pendingSkyRebuild_) skyRebuildSet.insert(k);
+        pendingSkyRebuild_.clear();
+        skyDirtyExtra_.clear();
+        for (auto k : skyRebuildSet) {
+            ensureSkyLight(static_cast<std::int32_t>(k >> 32),
+                           static_cast<std::int32_t>(k & 0xFFFFFFFFLL));
+        }
+        for (auto k : skyDirtyExtra_) batch.dirtyChunks.insert(k);
+        skyDirtyExtra_.clear();
+        // neighbor dirty tracking: broadcast neighbors whose sky cache exists
+        auto snapshot = batch.dirtyChunks;
+        for (auto k : snapshot) {
+            const std::int32_t cxx = static_cast<std::int32_t>(k >> 32);
+            const std::int32_t czz = static_cast<std::int32_t>(k & 0xFFFFFFFFLL);
+            for (int dz = -1; dz <= 1; ++dz)
+                for (int dx = -1; dx <= 1; ++dx) {
+                    if (dx == 0 && dz == 0) continue;
+                    const std::int32_t ncx = cxx + dx, ncz = czz + dz;
+                    if (world_.hasSkyLightCache(ncx, ncz))
+                        batch.dirtyChunks.insert(chunkKey(ncx, ncz));
+                }
+        }
+        // also ensure all rebuilt chunks are marked dirty
+        for (auto k : skyRebuildSet) batch.dirtyChunks.insert(k);
     }
     return batch;
 }
@@ -165,6 +208,14 @@ void LightEngine::ensureSkyLight(std::int32_t cx, std::int32_t cz) {
     constexpr int DZ[4] = {0,0,1,-1};
 
     // pass 1: vertical fill — full light from sky down to the blocker
+    // Clear shadowed region first so stale light does not persist
+    for (int lz = 0; lz < 16; ++lz)
+        for (int lx = 0; lx < 16; ++lx) {
+            const std::int32_t wx = cx * 16 + lx, wz = cz * 16 + lz;
+            const int blocker = surf[lz + 1][lx + 1];
+            for (int y = blocker; y >= kMinY; --y)
+                world_.setSkyLightRaw(wx, y, wz, 0);
+        }
     for (int lz = 0; lz < 16; ++lz)
         for (int lx = 0; lx < 16; ++lx) {
             const std::int32_t wx = cx * 16 + lx, wz = cz * 16 + lz;
@@ -183,14 +234,14 @@ void LightEngine::ensureSkyLight(std::int32_t cx, std::int32_t cz) {
                 if (!lit) break;
             }
             // boundary seeds: lit cells that can spread sideways into shadowed
-            // neighbours (under overhangs / beside cliffs)
+            // neighbours (under overhangs / beside cliffs) — fixed to use nbSurf
             if (lit || true) {
                 const int runBottom = blocker + 1;
                 for (int d = 0; d < 4; ++d) {
                     const int nbSurf =
                         surf[lz + 1 + DZ[d]][lx + 1 + DX[d]];
                     const int from = std::max(runBottom, nbSurf - 15);
-                    const int to = std::min(top, blocker);   // lit band top
+                    const int to = std::min(top, nbSurf);   // neighbor's dark top
                     for (int y = std::max(from, kMinY); y <= to && y < kMaxY; ++y) {
                         if (world_.getSkyLight(wx, y, wz) > 0)
                             q.push({wx, y, wz,
@@ -200,7 +251,7 @@ void LightEngine::ensureSkyLight(std::int32_t cx, std::int32_t cz) {
             }
         }
 
-    // pass 2: BFS spread (sideways/under overhangs), bounded to this chunk
+    // pass 2: BFS spread — now cross-chunk to fix side propagation
     while (!q.empty()) {
         const QN n = q.front(); q.pop();
         static constexpr int SDX[6] = {1,-1,0,0,0,0};
@@ -209,8 +260,12 @@ void LightEngine::ensureSkyLight(std::int32_t cx, std::int32_t cz) {
         for (int d = 0; d < 6; ++d) {
             const std::int32_t nx = n.x + SDX[d], ny = n.y + SDY[d],
                                nz = n.z + SDZ[d];
-            if ((nx >> 4) != cx || (nz >> 4) != cz) continue;
             if (ny < kMinY || ny >= kMaxY) continue;
+            const std::int32_t ncx = nx >> 4, ncz = nz >> 4;
+            if (ncx != cx || ncz != cz) {
+                world_.generateChunkIfMissing(ncx, ncz);
+                world_.ensureSkyStorage(ncx, ncz);
+            }
             const std::uint16_t ns = world_.getBlock(nx, ny, nz);
             const int op = opacityOf(ns);
             if (op >= 15) continue;
@@ -219,6 +274,8 @@ void LightEngine::ensureSkyLight(std::int32_t cx, std::int32_t cz) {
             if (target <= 0) continue;
             if (world_.getSkyLight(nx, ny, nz) < target) {
                 world_.setSkyLightRaw(nx, ny, nz, target);
+                if (ncx != cx || ncz != cz)
+                    skyDirtyExtra_.insert(chunkKey(ncx, ncz));
                 q.push({nx, ny, nz, target});
             }
         }

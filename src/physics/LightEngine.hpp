@@ -56,6 +56,10 @@ private:
     World& world_;
     std::queue<Node> addQueue_;
     std::queue<Node> removeQueue_;
+    // pending sky-light rebuilds (opacity changes, diagonal neighbors)
+    std::unordered_set<std::int64_t> pendingSkyRebuild_;
+    // chunks dirtied by cross-chunk sky BFS propagation
+    std::unordered_set<std::int64_t> skyDirtyExtra_;
 };
 
 } // namespace cppfm
