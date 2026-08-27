@@ -182,6 +182,7 @@ constexpr std::uint8_t RemoveEntities = 0x47;
 constexpr std::uint8_t RemoveMobEffect = 0x48;
 constexpr std::uint8_t Respawn = 0x4C;
 constexpr std::uint8_t RotateHead = 0x4D;
+constexpr std::uint8_t MultiBlockChange = 0x4E;
 constexpr std::uint8_t SetCenterChunk = 0x58;
 constexpr std::uint8_t SetCursorItem = 0x5A;
 constexpr std::uint8_t Camera = 0x57;
