@@ -275,6 +275,9 @@ void GameServer::tickOnce() {
     survivalTick();
     mark('U');
     furnacesTick();
+    if (tickNo_ % 8 == 0) hoppersTick();
+    weatherTick();
+    if (blockTicks_) blockTicks_->tick(tickNo_);
     mark('E');
     effectsTick();
     mark('X');
@@ -287,6 +290,7 @@ void GameServer::tickOnce() {
     mobsTick();
     mark('I');
     itemsTick();
+    projectilesTick();
     mark('T');
 
     // periodic time sync every 20 ticks (1s); frozen when doDaylightCycle off
@@ -326,6 +330,92 @@ void GameServer::tickOnce() {
             }
             if (p->advancements) p->advancements->save();
         }
+    }
+    // chunk LRU unload every 100 ticks (plan5 items 6,7)
+    if (tickNo_ % 100 == 0) chunksUnloadTick();
+    // level.dat periodic save every 6000 ticks (~5 min) + also 1200 (~1 min) for safety
+    if (tickNo_ % 6000 == 0 && tickNo_ != 0) {
+        try { persist_->saveLevelData(tickNo_, dayTime()); } catch (...) {}
+        for (int d = 0; d < 2; ++d) if (dimPersist_[d]) try { dimPersist_[d]->saveLevelData(tickNo_, dayTime()); } catch (...) {}
+        std::fprintf(stderr, "[cppfm] periodic level.dat save t=%ld\n", (long)tickNo_);
+    } else if (tickNo_ % 1200 == 0 && tickNo_ != 0) {
+        // lighter checkpoint: still flush level.dat (cheap)
+        try { persist_->saveLevelData(tickNo_, dayTime()); } catch (...) {}
+    }
+}
+
+bool GameServer::isChunkInSimulationDistance(std::int32_t cx, std::int32_t cz) const {
+    const int sim = cfg_.simulationDistance;
+    if (sim <= 0) return true;
+    const double limit = sim * 16.0;
+    const double limit2 = limit * limit;
+    // chunk center
+    const double chX = cx * 16.0 + 8.0;
+    const double chZ = cz * 16.0 + 8.0;
+    auto players = const_cast<GameServer*>(this)->playersSnapshot();
+    if (players.empty()) return false;
+    for (auto &p : players) {
+        if (!p->inPlay) continue;
+        double dx = p->x - chX;
+        double dz = p->z - chZ;
+        if (dx*dx + dz*dz < limit2) return true;
+    }
+    return false;
+}
+
+void GameServer::chunksUnloadTick() {
+    const int sim = cfg_.simulationDistance;
+    const int view = cfg_.viewDistance;
+    const int unloadDist = std::max(sim, view) * 16 + 32;
+    const double unloadDist2 = double(unloadDist) * double(unloadDist);
+    auto doWorld = [&](World &w, Persistence *pp, std::int8_t dim) {
+        auto keys = w.allChunkKeys();
+        std::vector<std::int64_t> toErase;
+        toErase.reserve(keys.size());
+        auto players = playersSnapshot();
+        for (auto k : keys) {
+            if (w.isForcedKey(k)) continue;
+            const std::int32_t cx = static_cast<std::int32_t>(k >> 32);
+            const std::int32_t cz = static_cast<std::int32_t>(k & 0xFFFFFFFFLL);
+            bool near = false;
+            for (auto &pl : players) {
+                if (!pl->inPlay) continue;
+                if (pl->dimension != dim) continue;
+                const double chX = cx * 16.0 + 8.0;
+                const double chZ = cz * 16.0 + 8.0;
+                double dx = pl->x - chX;
+                double dz = pl->z - chZ;
+                if (dx*dx + dz*dz < unloadDist2) { near = true; break; }
+            }
+            if (near) continue;
+            // if there are no players in this dimension, treat as far but keep spawn chunks already forced
+            bool anyInDim = false;
+            for (auto &pl : players) if (pl->inPlay && pl->dimension == dim) { anyInDim = true; break; }
+            if (!anyInDim && w.isForced(cx, cz)) continue;
+            if (!anyInDim) {
+                // if no player in this dim, unload if beyond spawn radius already handled (forced keeps 5x5)
+                // allow unload
+            }
+            if (pp && pp->isDirty(cx, cz)) {
+                pp->flushChunk(cx, cz);
+            }
+            toErase.push_back(k);
+            invalidateChunkCache(cx, cz);
+        }
+        for (auto k : toErase) {
+            const std::int32_t cx = static_cast<std::int32_t>(k >> 32);
+            const std::int32_t cz = static_cast<std::int32_t>(k & 0xFFFFFFFFLL);
+            if (w.eraseChunk(cx, cz)) {
+                std::fprintf(stderr, "[cppfm] unload chunk dim=%d %d,%d (dist>%d) remaining=%zu\n",
+                             (int)dim, cx, cz, unloadDist, w.loadedChunkCount());
+            }
+        }
+    };
+    doWorld(world_, persist_.get(), 0);
+    for (int d = 0; d < 2; ++d) {
+        World &w = worldFor(d == 0 ? -1 : 1);
+        Persistence *pp = dimPersist_[d] ? dimPersist_[d].get() : nullptr;
+        doWorld(w, pp, d == 0 ? -1 : 1);
     }
 }
 
@@ -386,6 +476,7 @@ void GameServer::trySpawnMobs() {
             const double dist = 14 + (rand() % 22);
             const std::int32_t wx = static_cast<std::int32_t>(pl->x + std::cos(ang)*dist);
             const std::int32_t wz = static_cast<std::int32_t>(pl->z + std::sin(ang)*dist);
+            if (!isChunkInSimulationDistance(wx >> 4, wz >> 4)) continue;
             world_.generateChunkIfMissing(wx >> 4, wz >> 4);
             int feet = 4;
             bool ok = false;
@@ -459,6 +550,12 @@ void GameServer::mobsTick() {
                 despawn.push_back(m->entityId);
                 mobAi_.erase(m->entityId);
                 it = mobs_.erase(it); continue;
+            }
+            // simulation-distance culling: freeze mobs far from any player
+            if (!isChunkInSimulationDistance(static_cast<std::int32_t>(m->x) >> 4,
+                                             static_cast<std::int32_t>(m->z) >> 4)) {
+                ++it;
+                continue;
             }
 
             const auto& stats = mobStats(m->kind);

@@ -10,6 +10,8 @@
 #include <string>
 #include <functional>
 #include <unordered_map>
+#include <unordered_set>
+#include <vector>
 #include "generated/BlockStates.hpp"
 #include "TerrainGen.hpp"
 #include "../worldgen/MultiNoise.hpp"
@@ -273,6 +275,37 @@ public:
         return it == chunks_.end() ? 0 : it->second->revision;
     }
 
+    std::vector<std::int64_t> allChunkKeys() const {
+        std::shared_lock lock(mutex_);
+        std::vector<std::int64_t> v;
+        v.reserve(chunks_.size());
+        for (auto &kv : chunks_) v.push_back(kv.first);
+        return v;
+    }
+    bool eraseChunk(std::int32_t cx, std::int32_t cz) {
+        std::unique_lock lock(mutex_);
+        auto it = chunks_.find(chunkKey(cx, cz));
+        if (it == chunks_.end()) return false;
+        chunks_.erase(it);
+        return true;
+    }
+    std::size_t loadedChunkCount() const {
+        std::shared_lock lock(mutex_);
+        return chunks_.size();
+    }
+    void addForcedChunk(std::int32_t cx, std::int32_t cz) {
+        std::unique_lock lock(mutex_);
+        forcedChunks_.insert(chunkKey(cx, cz));
+    }
+    bool isForced(std::int32_t cx, std::int32_t cz) const {
+        std::shared_lock lock(mutex_);
+        return forcedChunks_.count(chunkKey(cx, cz)) != 0;
+    }
+    bool isForcedKey(std::int64_t k) const {
+        std::shared_lock lock(mutex_);
+        return forcedChunks_.count(k) != 0;
+    }
+
     const std::string& biomeKey() const { return biome_; }
 
     // Biome codec wiring: resolve biome key <-> synced registry index.
@@ -391,6 +424,7 @@ public:
 
     mutable std::shared_mutex mutex_;
     mutable std::unordered_map<std::int64_t, std::unique_ptr<Chunk>> chunks_;
+    mutable std::unordered_set<std::int64_t> forcedChunks_;
     std::string biome_;
     LevelType level_;
     TerrainGenerator terrain_;

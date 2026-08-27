@@ -26,7 +26,7 @@ constexpr int kGeneric9x1 = 0, kGeneric9x2 = 1, kGeneric9x3 = 2,
               kSmoker = 22, kCartographyTable = 23, kStonecutter = 24;
 }
 
-enum class MenuType { Chest, Furnace, Crafting, Hopper, Dispenser };
+enum class MenuType { Chest, Furnace, Crafting, Hopper, Dispenser, Barrel, ShulkerBox };
 
 class RecipeManager;
 
