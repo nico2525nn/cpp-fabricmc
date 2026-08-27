@@ -1,4 +1,5 @@
-// EntityManager: extracted entity / mob / projectile / XP responsibility (plan7)
+// EntityManager: extracted entity / mob / projectile / XP responsibility (plan8 modular split)
+// Hosts mob lifecycle, projectile, XP, and combat helpers (DamageCalculator).
 #pragma once
 #include <cstdint>
 #include <vector>
@@ -6,6 +7,7 @@
 #include <mutex>
 #include "Entities.hpp"
 #include "DamageSource.hpp"
+#include "Attributes.hpp"
 
 namespace cppfm {
 struct Player;
@@ -23,6 +25,11 @@ public:
     }
     static float calculateMobDamage(float base, const DamageSource& src, int armor, int epf) {
         return DamageCalculator::calculate(base, src, armor, 0.0, epf, {});
+    }
+    static float calculateMobDamageFull(float base, const DamageSource& src,
+                                        int armor, double toughness, int epf,
+                                        const std::vector<EffectInstance>& effects) {
+        return DamageCalculator::calculate(base, src, armor, toughness, epf, effects);
     }
 
     // mob lifecycle helpers

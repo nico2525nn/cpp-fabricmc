@@ -1,4 +1,5 @@
-// InventoryController: extracted inventory / container / recipe / hunger (plan7)
+// InventoryController: extracted inventory / container / recipe / hunger (plan8 modular split)
+// Delegates hunger to HungerManager; inventory helpers mirror GameServer logic but are testable.
 #pragma once
 #include <cstdint>
 #include <string>
@@ -6,29 +7,32 @@
 #include <algorithm>
 #include "Items.hpp"
 #include "Containers.hpp"
+#include "HungerManager.hpp"
 
 namespace cppfm {
 struct Player;
+class World;
+class GameServer;
 
 class InventoryController {
 public:
-    // hunger exhaustion constants (vanilla)
-    static constexpr float EXHAUST_WALK = 0.01f;
-    static constexpr float EXHAUST_SPRINT = 0.1f;
-    static constexpr float EXHAUST_JUMP = 0.05f;
-    static constexpr float EXHAUST_SPRINT_JUMP = 0.2f;
-    static constexpr float EXHAUST_ATTACK = 0.1f;
-    static constexpr float EXHAUST_DAMAGE = 0.1f;
-    static constexpr float EXHAUST_SWIM = 0.01f;
+    // hunger exhaustion constants (vanilla) — mirrored from HungerManager for compat
+    static constexpr float EXHAUST_WALK = HungerManager::EXHAUST_WALK;
+    static constexpr float EXHAUST_SPRINT = HungerManager::EXHAUST_SPRINT;
+    static constexpr float EXHAUST_JUMP = HungerManager::EXHAUST_JUMP;
+    static constexpr float EXHAUST_SPRINT_JUMP = HungerManager::EXHAUST_SPRINT_JUMP;
+    static constexpr float EXHAUST_ATTACK = HungerManager::EXHAUST_ATTACK;
+    static constexpr float EXHAUST_DAMAGE = HungerManager::EXHAUST_DAMAGE_TAKEN;
+    static constexpr float EXHAUST_SWIM = HungerManager::EXHAUST_SWIM;
 
-    static void addExhaustion(Player& p, float amount) { (void)p; (void)amount; }
-    static void addFoodAndSaturation(Player& p, int food, float sat) { (void)p; (void)food; (void)sat; }
-    static void handleFoodConsume(Player& p, const std::string& itemName) { (void)p; (void)itemName; }
-    static bool handleCakeConsume(Player& p, class World& world, std::int32_t x, std::int32_t y, std::int32_t z) { (void)p; (void)world; (void)x; (void)y; (void)z; return false; }
+    static void addExhaustion(Player& p, float amount);
+    static void addFoodAndSaturation(Player& p, int food, float sat);
+    static void handleFoodConsume(Player& p, const std::string& itemName, GameServer& srv);
+    static bool handleCakeConsume(GameServer& srv, Player& p, World& world, std::int32_t x, std::int32_t y, std::int32_t z);
 
     // inventory merge helpers
-    static bool addToInventory(Player& p, std::uint32_t itemId, std::uint16_t count) { (void)p; (void)itemId; (void)count; return false; }
-    static void resendInventory(Player& p) { (void)p; }
+    static bool addToInventory(Player& p, std::uint32_t itemId, std::uint16_t count);
+    static void resendInventory(Player& p);
 
     // food table (shared with GameServer::handleFoodConsume)
     struct FoodInfo { int food; float saturation; };

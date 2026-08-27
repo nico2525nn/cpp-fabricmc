@@ -37,6 +37,9 @@ add_executable(cppfm
     src/game/BossAI.cpp
     src/game/MenuLogic.cpp
     src/game/MobSpawner.cpp
+    src/game/HungerManager.cpp
+    src/game/CombatManager.cpp
+    src/game/InventoryController.cpp
 )
 
 target_include_directories(cppfm PRIVATE src src/generated)
@@ -84,6 +87,9 @@ add_executable(test_native
     src/game/BossAI.cpp
     src/game/MenuLogic.cpp
     src/game/MobSpawner.cpp)
+    src/game/HungerManager.cpp
+    src/game/CombatManager.cpp
+    src/game/InventoryController.cpp)
 target_include_directories(test_native PRIVATE src src/generated tests)
 find_package(Threads REQUIRED)
 find_package(ZLIB REQUIRED)
@@ -124,6 +130,9 @@ add_executable(test_smoke_80
     src/game/BossAI.cpp
     src/game/MenuLogic.cpp
     src/game/MobSpawner.cpp)
+    src/game/HungerManager.cpp
+    src/game/CombatManager.cpp
+    src/game/InventoryController.cpp)
 target_include_directories(test_smoke_80 PRIVATE src src/generated tests)
 find_package(Threads REQUIRED)
 find_package(ZLIB REQUIRED)
