@@ -587,107 +587,44 @@ void RedstoneEngine::handlePiston(std::int32_t x, std::int32_t y, std::int32_t z
         if (k=="extended") extended = (v=="true");
     }
     bool powered = isPoweredHere(x,y,z);
-    if (powered && !extended) {
-        // extend
+    bool wantExtend = powered;
+    if (wantExtend == extended) {
+        // cancel any pending piston if state already matches
+        pistonQueue_.erase(std::remove_if(pistonQueue_.begin(), pistonQueue_.end(),
+            [&](const PistonEntity& pe){ return pe.x==x && pe.y==y && pe.z==z; }), pistonQueue_.end());
+        return;
+    }
+    // check if already scheduled
+    for (auto &pe : pistonQueue_) if (pe.x==x && pe.y==y && pe.z==z) return;
+    std::int64_t now = tickRef_ ? *tickRef_ : 0;
+    int face=0;
+    if (facing=="down") face=0; else if (facing=="up") face=1; else if (facing=="north") face=2; else if (facing=="south") face=3; else if (facing=="west") face=4; else if (facing=="east") face=5;
+    pistonQueue_.push_back({x,y,z, 0.f, wantExtend, now+2, face});
+    // For immediate feedback in non-tick contexts (e.g., direct setBlock), also apply quickly if no tick loop yet
+    // But vanilla has 2-tick delay, so we keep scheduled only; processPistonQueue will handle on next tick()
+    // Validate piston push feasibility now to avoid scheduling impossible moves
+    if (wantExtend) {
         int dx=0,dy=0,dz=0;
-        if (facing=="north") dz=-1;
-        else if (facing=="south") dz=1;
-        else if (facing=="west") dx=-1;
-        else if (facing=="east") dx=1;
-        else if (facing=="up") dy=1;
-        else if (facing=="down") dy=-1;
-        std::int32_t hx = x+dx, hy=y+dy, hz=z+dz;
-        // check target block for piston head
+        if (facing=="north") dz=-1; else if (facing=="south") dz=1; else if (facing=="west") dx=-1; else if (facing=="east") dx=1; else if (facing=="up") dy=1; else if (facing=="down") dy=-1;
+        std::int32_t hx=x+dx, hy=y+dy, hz=z+dz;
         std::uint16_t target = world_.getBlock(hx,hy,hz);
-        // if target is not air and not replaceable, try to push up to 12 blocks
-        // Simplified: only allow if target is air or is pushable (no hardness -1)
-        bool canPush = false;
-        if (target==0) canPush=true;
-        else {
+        if (target!=0) {
             const gen::BlockDef* tb = gen::blockByState(target);
-            if (tb && tb->hardness >=0 && tb->name!="minecraft:obsidian" && tb->name!="minecraft:bedrock") {
-                // check further blocks up to 12 in direction
-                canPush = true;
-                for (int i=1;i<=12;++i) {
-                    std::int32_t px = x + dx*i, py = y + dy*i, pz = z+dz*i;
-                    std::uint16_t ps = world_.getBlock(px,py,pz);
-                    if (ps==0) break;
-                    const gen::BlockDef* pb = gen::blockByState(ps);
-                    if (!pb || pb->hardness <0) { canPush=false; break; }
-                    // if next block beyond 12 is not air, can't push
-                    if (i==12) { canPush=false; break; }
-                }
-                if (canPush) {
-                    // shift blocks outward
-                    for (int i=12;i>=1;--i) {
-                        std::int32_t px = x + dx*i, py = y + dy*i, pz = z+dz*i;
-                        std::int32_t prevx = x + dx*(i-1), prevy = y + dy*(i-1), prevz = z+dz*(i-1);
-                        // prev is offset 0 is piston itself? Actually piston at x,y,z, head at hx, so pushing starts at hx
-                        // So for i==1, prev is piston pos? No piston remains, head moves. Simplify: push from furthest
-                        std::uint16_t prevSt = 0;
-                        if (i-1==0) {
-                            // this would be piston block itself, not move
-                            continue;
-                        } else {
-                            prevSt = world_.getBlock(prevx, prevy, prevz);
-                        }
-                        if (prevSt!=0) {
-                            std::int32_t destx = px, desty=py, destz=pz;
-                            world_.setBlock(destx, desty, destz, prevSt);
-                        }
-                    }
-                }
-            } else if (!tb) canPush=false;
-        }
-        if (!canPush && target!=0) return;
-        // set piston extended
-        std::vector<std::pair<std::string_view,std::string_view>> props;
-        for (auto& [k,v] : gen::propsOf(st)) if (k!="extended") props.emplace_back(k,v);
-        props.emplace_back("extended", "true");
-        std::uint16_t ns = static_cast<std::uint16_t>(gen::stateWithProps(*b, props));
-        world_.setBlock(x,y,z, ns);
-        // place piston head
-        const gen::BlockDef* headDef = gen::blockByName("minecraft:piston_head");
-        if (headDef) {
-            std::vector<std::pair<std::string_view,std::string_view>> hprops;
-            hprops.emplace_back("facing", facing);
-            hprops.emplace_back("type", c==Comp::StickyPiston ? "sticky" : "normal");
-            hprops.emplace_back("short", "false");
-            std::uint16_t headSt = static_cast<std::uint16_t>(gen::stateWithProps(*headDef, hprops));
-            world_.setBlock(hx,hy,hz, headSt);
-        }
-    } else if (!powered && extended) {
-        // retract
-        std::vector<std::pair<std::string_view,std::string_view>> props;
-        for (auto& [k,v] : gen::propsOf(st)) if (k!="extended") props.emplace_back(k,v);
-        props.emplace_back("extended", "false");
-        std::uint16_t ns = static_cast<std::uint16_t>(gen::stateWithProps(*b, props));
-        world_.setBlock(x,y,z, ns);
-        // remove head
-        int dx=0,dy=0,dz=0;
-        if (facing=="north") dz=-1;
-        else if (facing=="south") dz=1;
-        else if (facing=="west") dx=-1;
-        else if (facing=="east") dx=1;
-        else if (facing=="up") dy=1;
-        else if (facing=="down") dy=-1;
-        std::int32_t hx = x+dx, hy=y+dy, hz=z+dz;
-        std::uint16_t head = world_.getBlock(hx,hy,hz);
-        const gen::BlockDef* hb = gen::blockByState(head);
-        if (hb && hb->name=="minecraft:piston_head") {
-            world_.setBlock(hx,hy,hz, 0);
-            // for sticky, pull block
-            if (c==Comp::StickyPiston) {
-                std::int32_t pullx = hx+dx, pully=hy+dy, pullz=hz+dz;
-                std::uint16_t pullSt = world_.getBlock(pullx,pully,pullz);
-                if (pullSt!=0) {
-                    const gen::BlockDef* pb = gen::blockByState(pullSt);
-                    if (pb && pb->hardness>=0 && pb->name!="minecraft:obsidian") {
-                        world_.setBlock(pullx,pully,pullz, 0);
-                        world_.setBlock(hx,hy,hz, pullSt);
-                    }
-                }
+            if (!tb || tb->hardness <0 || tb->name=="minecraft:obsidian" || tb->name=="minecraft:bedrock") {
+                // impossible, cancel scheduling
+                pistonQueue_.pop_back();
+                return;
             }
+            bool ok=true;
+            for (int i=1;i<=12;++i) {
+                std::int32_t px=x+dx*i, py=y+dy*i, pz=z+dz*i;
+                std::uint16_t ps = world_.getBlock(px,py,pz);
+                if (ps==0) break;
+                const gen::BlockDef* pb = gen::blockByState(ps);
+                if (!pb || pb->hardness <0) { ok=false; break; }
+                if (i==12) { ok=false; break; }
+            }
+            if (!ok) { pistonQueue_.pop_back(); return; }
         }
     }
 }
@@ -719,7 +656,77 @@ bool RedstoneEngine::onInteract(std::int32_t x, std::int32_t y,
     return false;
 }
 
+void RedstoneEngine::handlePistonScheduled(std::int32_t x, std::int32_t y, std::int32_t z, bool extendNow) {
+    std::uint16_t st = world_.getBlock(x,y,z);
+    Comp c = classify(st);
+    if (c!=Comp::Piston && c!=Comp::StickyPiston) return;
+    const gen::BlockDef* b = gen::blockByState(st);
+    if (!b) return;
+    bool curExt=false;
+    for (auto& [k,v] : gen::propsOf(st)) if (k=="extended") curExt=(v=="true");
+    if (curExt==extendNow) return;
+    // delegate to handlePiston logic by temporarily setting powered expectation
+    // Reuse handlePiston by toggling extended state via direct set
+    std::string facing="north";
+    for (auto& [k,v] : gen::propsOf(st)) if (k=="facing") facing=std::string(v);
+    std::vector<std::pair<std::string_view,std::string_view>> props;
+    for (auto& [k,v] : gen::propsOf(st)) if (k!="extended") props.emplace_back(k,v);
+    props.emplace_back("extended", extendNow?"true":"false");
+    std::uint16_t ns = static_cast<std::uint16_t>(gen::stateWithProps(*b, props));
+    world_.setBlock(x,y,z, ns);
+    int dx=0,dy=0,dz=0;
+    if (facing=="north") dz=-1; else if (facing=="south") dz=1; else if (facing=="west") dx=-1; else if (facing=="east") dx=1; else if (facing=="up") dy=1; else if (facing=="down") dy=-1;
+    std::int32_t hx=x+dx, hy=y+dy, hz=z+dz;
+    if (extendNow) {
+        // push blocks up to 12 like vanilla
+        std::uint16_t target = world_.getBlock(hx,hy,hz);
+        if (target!=0) {
+            for (int i=12;i>=1;--i) {
+                std::int32_t px=x+dx*i, py=y+dy*i, pz=z+dz*i;
+                std::int32_t prevx=x+dx*(i-1), prevy=y+dy*(i-1), prevz=z+dz*(i-1);
+                if (i-1==0) continue;
+                std::uint16_t prevSt = world_.getBlock(prevx, prevy, prevz);
+                if (prevSt!=0) world_.setBlock(px,py,pz, prevSt);
+            }
+        }
+        const gen::BlockDef* headDef = gen::blockByName("minecraft:piston_head");
+        if (headDef) {
+            std::vector<std::pair<std::string_view,std::string_view>> hp;
+            hp.emplace_back("facing", facing);
+            hp.emplace_back("type", c==Comp::StickyPiston?"sticky":"normal");
+            hp.emplace_back("short", "false");
+            std::uint16_t headSt = static_cast<std::uint16_t>(gen::stateWithProps(*headDef, hp));
+            world_.setBlock(hx,hy,hz, headSt);
+        }
+    } else {
+        std::uint16_t head = world_.getBlock(hx,hy,hz);
+        const gen::BlockDef* hb = gen::blockByState(head);
+        if (hb && hb->name=="minecraft:piston_head") {
+            world_.setBlock(hx,hy,hz, 0);
+            if (c==Comp::StickyPiston) {
+                std::int32_t px=hx+dx, py=hy+dy, pz=hz+dz;
+                std::uint16_t ps = world_.getBlock(px,py,pz);
+                if (ps!=0) {
+                    const gen::BlockDef* pb = gen::blockByState(ps);
+                    if (pb && pb->hardness>=0 && std::string(pb->name)!="minecraft:obsidian") {
+                        world_.setBlock(px,py,pz, 0);
+                        world_.setBlock(hx,hy,hz, ps);
+                    }
+                }
+            }
+        }
+    }
+}
+void RedstoneEngine::processPistonQueue(std::int64_t now) {
+    for (auto it = pistonQueue_.begin(); it != pistonQueue_.end(); ) {
+        if (it->dueTick <= now) {
+            handlePistonScheduled(it->x, it->y, it->z, it->extended);
+            it = pistonQueue_.erase(it);
+        } else ++it;
+    }
+}
 void RedstoneEngine::tick(std::int64_t now) {
+    processPistonQueue(now);
     while (!queue_.empty() && queue_.top().dueTick <= now) {
         const RedstoneTick t = queue_.top();
         queue_.pop();
