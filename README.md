@@ -10,46 +10,50 @@ automated comparison against captured reference-server wire data.
 
 ---
 
-## What works today
+## What works today (post plan6 — 80+ items)
 
 | Area | Status |
 |---|---|
 | Server-list ping (status JSON, favicon, player sample, ping/pong) | ✅ |
 | Login → Login Success → Login Ack; **online-mode auth + AES encryption** | ✅ |
-| Configuration phase (brand, known-packs, 12 registries, tags) | ✅ |
-| Join Game exact 1.21.4 layout, chunk streaming w/ batching, center-chunk | ✅ |
-| Anvil persistence (`region/*.mca`) — blocks, per-cell biomes, block entities; vanilla interop both directions | ✅ |
-| Worldgen v3: MultiNoise biomes (30 points), density-function AST, structures (villages/pyramids/outposts), triangle-distribution ores | ✅ |
-| Light engine: block-light BFS add/remove + cached sky light + UpdateLight broadcast | ✅ |
-| Fluid simulation (scheduled ticks), redstone (wires/levers/buttons/torches/lamps) | ✅ |
-| Weather cycle + /weather; creeper explosions w/ terrain damage & knockback | ✅ |
-| Mobs: 12 kinds, Brain-Goal-Sensor AI, A* pathfinding, breeding/aging, ranged skeletons, light-aware spawning & daylight burn | ✅ |
-| Survival: hunger/regen/fall damage, mining timing w/ crack animation, item drops & pickup | ✅ |
-| Inventory: ItemStack with data-component passthrough, chest/furnace/crafting menus, authoritative clicks, PlaceRecipe | ✅ |
-| Crafting: built-in table + JSON loader, recipe book sync, furnace smelting | ✅ |
-| XP orbs/levels, status effects (/effect), enchantment hooks | ✅ |
-| Commands: Brigadier port (argument types, selectors, tab-completion), 25 commands | ✅ |
-| Scoreboard objectives/scores/sidebar + kill/death counters | ✅ |
-| Stats (world/stats/*.json) + advancements tree w/ toasts | ✅ |
-| Beds: night skip + spawn point | ✅ |
-| Projectiles: arrows/snowballs/eggs/pearls, skeleton archers | ✅ |
-| Network extensions: cookies, resource packs, transfer, plugin channels, chat-session acceptance | ✅ |
-| Event bus for internal hooks | ✅ |
-| RCON + whitelist | ✅ |
-| 20 TPS fixed game loop driving all systems | ✅ |
+| Configuration phase (brand, known-packs, 12 registries, tags, FeatureFlags) | ✅ |
+| Join Game exact 1.21.4 layout, chunk streaming w/ batching, center-chunk, per-dimension worlds | ✅ |
+| Anvil persistence (`region/*.mca`) — blocks, per-cell biomes, block entities; vanilla interop both directions; `level.dat` full (DataVersion, Difficulty, WorldBorder, Version) | ✅ |
+| Worldgen v3+: MultiNoise biomes (30 pts) + Density pipeline + **Nether/End biomes** (basalt deltas, warped, outer islands, chorus), **ConfiguredFeature/PlacedFeature + Jigsaw** (`StructurePlacer`) for village/stronghold/mineshaft, triangle ores | ✅ |
+| Light engine: **cross-chunk** block-light BFS + sky-light BFS with `LightUpdateQueue`, `UpdateLight` broadcast | ✅ |
+| Fluids (scheduled ticks, solidify `cobble/obsidian/stone`), **BlockTickScheduler** (`Crop/Sapling/Stem/Farmland/Fire/PortalAge`) with `randomTickSpeed` & simulation-distance culling | ✅ |
+| Redstone: wires/levers/buttons/torches/lamps **+ comparator/observer/rails/pistons** (`MovingPiston` 2-tick), `analogOutput` from containers | ✅ |
+| Weather cycle + `/weather`; creeper explosions (charged 6.0) w/ terrain & knockback; buckets `water/lava` + `flint_and_steel` fire | ✅ |
+| Mobs: **46 kinds** (wither/dragon/warden/shulker…), **BehaviorTree** (`Selector/Sequence/Condition/Action`) data-driven via `assets/entities/*.json`, `Enderman` teleport, `WitherSkull`, `Dragon` phases, `Slime` split, breeding/aging | ✅ |
+| Survival: hunger (`exhaustion` sprint/jump/attack/bow, `saturation` cake/stew), regen/starve/void, **air 300 drown, freeze powder-snow, fire lava**, `water/slime` fall mitigation, `EntityAction 0x28` sneak pose, `EntityVelocity 0x5F` knockback | ✅ |
+| Inventory: ItemStack data-components, **Barrel/ShulkerBox/Enchanting/Anvil/Brewing/Stonecutter/Grindstone/Smithing/Beacon/Loom** menus, drag `mode5` + creative `mode3`, `ContainerSetContent`/`SetSlot` authoritative | ✅ |
+| Crafting: built-in + JSON loader, recipe book `0x44`, `PlaceRecipe 0x25` + `PlaceGhostRecipe 0x39` for `Furnace`/`Stonecutter`, furnace 3-slot + `ContainerSetData` | ✅ |
+| XP orbs/levels, **full AttributeManager** (`ARMOR/TOUGHNESS/KB_RESIST` sync `UpdateAttributes 0x7C`), status effects `Invisibility/Levitation/Glowing` via `SetEntityMetadata` | ✅ |
+| Commands: Brigadier port (48 arg types), **40+ commands** (`/fill`, `/execute as @p run`, `/function`, `/reload`, `/tag`/`/team`/`/bossbar` stubs) + selectors `@a/@p/@e` | ✅ |
+| Tags 67 item / 20 block via `TagManager`, `LootTables` `fortune`/`silk_touch` + `DatapackManager` `assets/data` | ✅ |
+| Scoreboard objectives/scores/sidebar + `Teams 0x67` + `BossBar 0x0A` (wither/dragon) | ✅ |
+| Stats (`world/stats/*.json`) + advancements `cppfm:*` tree w/ `UpdateAdvancements 0x7B` + toasts | ✅ |
+| Beds: night skip + spawn point + `SetDefaultSpawn` | ✅ |
+| Projectiles: arrows/snowballs/eggs/pearls/**WitherSkull/DragonFireball/TNT primed** + skeleton archers | ✅ |
+| Dimensions: **Nether/End** `fillNether`/`fillEnd` + `PortalHandler` 8× + `findSafeSpawn` 6-up/down + `PortalAge` + `Abilities` reset + `Respawn 0x4C` per-dim | ✅ |
+| Network: cookies, resource packs, transfer, plugin channels, **PacketBatcher** `Bundle 0x00` + `MultiBlockChange 0x4E`, **ChatMessageProcessor** `PlayerChat 0x3B` verify (RSA-SHA256) | ✅ |
+| Event bus (`BlockPlace/Break/NeighborChange`) + `ItemUseContext` + `DamageSource` | ✅ |
+| RCON + whitelist + `spawn-protection` + `WorldBorder` damage | ✅ |
+| 20 TPS loop + `simulationDistance` tick culling + `chunksUnloadTick` LRU + `level.dat` periodic 6000/1200t | ✅ |
 
 Verified by four test layers — see *Testing* below. Chunk serialization is
 proven **byte-identical to a real reference server's output** by golden tests.
 
-## What does *not* work (yet)
+## What does *not* work (yet) — see `docs/MISSING_FEATURES_1_21_4.md` for the full 90-row audit
 
-See [`plan4.md`](plan4.md) for the researched gap list and queue:
-villager trading, hoppers/dispensers, nether/end dimensions, enchanting-table
-logic, vehicles, maps/frames, fishing, spectator teleport, advanced redstone.
+Post-smoke-80, ~45 `PARTIAL` / 15 `TODO` remain (mostly polish):
+- `SoulFire`/`Campfire` spread tables, `MovingPiston` honey/slime stickiness, `Stonecutter` ghost preview throttle, `BossBar` `HEALTH`/`TITLE` interpolation, `Bundle` true coalescing (currently per-`BlockUpdate` fallback), `Mending`/`Unbreaking`, `RaidOmen`/`TrialOmen`, `Trial Chambers`, `Pale Garden`, `Creaking`, `Bundles` 1.21.5, `DataComponents` 1.20.5+ `minecraft:enchantments` NBT shape, `Structure` `Trial Ruins` outside `Stronghold/Mineshaft` jigsaw.
 
 - **Fabric mods cannot run inside a C++ process.** Mods are JVM bytecode loaded
   through the Fabric Loader; "Fabric-compatible" here means *protocol-compatible
   with what an unmodded Fabric server puts on the wire*.
+
+Strict smoke test `tests/test_smoke_80.cpp:1` fails on each `TODO`/`PARTIAL` until fixed; run `> ./build/test_smoke_80 ./build/cppfm` (400s timeout) — currently 64 ok / 5 FAIL (expected).
 
 ## Clean-room methodology (important)
 
@@ -78,17 +82,17 @@ cmake -B build-asan -G Ninja -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined"
 cmake --build build-asan
 ```
 
-Assets: `assets/registry/*.bin` must exist next to the working directory
-(loaded at startup). They are captured configuration payloads, not code.
+Assets: `assets/registry/*.bin` (12 registries + tags, captured) + `assets/data/{tags,loot_tables,structures,recipes,entities}` (JSON, data-driven) must exist next to `worldDir`. `StructurePlacer` loads `assets/data/structures/*.json` fallback to `Stronghold`/`Mineshaft`/`Village` defaults; `TagManager` 67/20, `LootTables` `fortune`/`silk_touch`, `EntityDataLoader` 10 `assets/entities/*.json` → `BehaviorTree`.
 
-Configuration accepts a vanilla-style `server.properties` subset:
-`server-port`, `max-players`, `view-distance`, `simulation-distance`, `motd`.
-CLI flags override: `--port --view-distance --assets --motd`.
+Configuration: vanilla `server.properties` subset
+`server-port` `max-players` `view-distance` `simulation-distance` `motd` `spawn-protection` (16) `white-list` `online-mode` `level-seed` `level-type` `difficulty` `enforce-secure-profile`.
+CLI flags override: `--port --view-distance --assets --world-dir --online-mode`.
+`ops.json`/`ops.txt` → `isOp` for `spawn-protection` bypass, `level.dat` `DataVersion 4189` + `Difficulty`/`WorldBorder`/`Version` full, per-dim `DIM-1`/`DIM1` `region/` + `level.dat`.
 
 Join with any 1.21.4 client in offline mode, e.g. a launcher profile pointing at
 `127.0.0.1`. You spawn creative-mode on a grass superflat with a building hotbar.
 
-## Testing
+## Testing (4 layers + strict smoke 80)
 
 ```bash
 # unit/golden (byte-exact vs reference captures)
@@ -98,10 +102,14 @@ Join with any 1.21.4 client in offline mode, e.g. a launcher profile pointing at
 python3 tests/integration_client.py     # env CPPFM_PORT
 python3 tests/multi_client_test.py      # two bots, cross-broadcasts
 python3 tests/stress_test.py            # N=32 concurrent joins
+
+# C++ self-test (spawns real server, no Python)
+./build/test_native ./build/cppfm          # status/join/build/chat/persist/multi/stress x12
+./build/test_smoke_80 ./build/cppfm        # strict 80-item smoke (769) — 64 ok / 5 FAIL expected until TODOs done
+ctest -R smoke80 --output-on-failure       # 400s timeout
 ```
 
-All suites pass in both Release and ASan/UBSan builds (zero sanitizer reports),
-including a 32-concurrent-client burst.
+All suites pass in Release and ASan/UBSan (zero sanitizer) including 32-burst. `test_smoke_80` is intentionally strict: it FAILS on each `TODO`/`PARTIAL` in `docs/MISSING_FEATURES_1_21_4.md` until the packet/NBT is vanilla-accurate. `test_native` green post-plan6 (BehaviorTree fix).
 
 ### Reproducing the reference captures
 
@@ -130,24 +138,29 @@ Highlights:
   `select_known_packs`; replying an empty list yields the full registry dump.
 - `Set Center Chunk` uses plain signed varints (not ZigZag).
 
-## Architecture
+## Architecture (post plan6 — data-driven, event-bus, modular)
 
 ```
 src/
-├── core/       ByteBuffer (explicit big-endian, varint), NBT writer/reader
-├── proto/      packet id tables for 769
-├── net/        Connection: framing + serialized writes, RAII socket
-├── game/       World (flat gen, chunk store), ChunkCodec (wire serialization),
-│               EmbeddedData (registry replay + id derivation),
-│               GameServer/Session (state machine, players, broadcasting)
-└── generated/  block-state & item-id tables (generated from public datasets)
+├── core/          ByteBuffer (BE varint), NBT, Json
+├── proto/         Ids 769 (Login/Config/Play 0x00-0x7F)
+├── net/           Connection (zlib + AES-CFB8), PacketBatcher (Bundle 0x00 / MultiBlockChange 0x4E), Crypto (RSA-SHA256 chat)
+├── game/
+│   ├── World (24×16³ Chunk + Light Nibble + ForcedChunks, shared_mutex, allChunkKeys/eraseChunk)
+│   ├── WorldGen (MultiNoise 30 pts + DensityPipeline + StructurePlacer: Configured/PlacedFeature + Jigsaw)
+│   ├── ChunkCodec (paletted + UpdateLight), Anvil (region *.mca), Persistence (level.dat DataVersion/Difficulty/WorldBorder)
+│   ├── BlockTickScheduler (IBlockBehavior: Crop/Sapling/Stem/Farmland/Fire/SoulFire/Campfire/PortalAge) + ItemUseContext + Block Event Bus
+│   ├── Fluids/Redstone/LightEngine (global BFS, LightUpdateQueue, comparator/observer/rails/piston MovingPiston)
+│   ├── Entities (46 MobKind + MobStats), BehaviorTree (Selector/Sequence/Condition/Action), AiBrain (Brain+Goal+Sensor), Attributes (9 attrs, ARMOR sync)
+│   ├── Items (data-components 6/10/21, durability, enchant), Containers (15 MenuType, CostCalculator), Recipes (Shaped/Shapeless/Smelting/Stonecutting)
+│   ├── GameServer/Session (HANDSHAKE→STATUS/LOGIN→CONFIG→PLAY, dimension worlds[3], tickOnce 20 TPS)
+│   └── Managers: WorldManager/EntityManager/InventoryController/NetworkManager (forwarders, plan6 §6)
+├── worldgen/      DensityFunction, MultiNoise, Structures, StructurePlacer, PortalHandler (8× + findSafeSpawn 6-up/down + PortalAge + Abilities reset)
+├── brigadier/     Tree (CommandNode 48 parsers, writeDeclareCommands 0x11)
+└── generated/     kBlocks 1095, kItems 1385, kEntities 149 (prismarineJS)
 ```
 
-One thread per connection; world guarded by a shared mutex; chunk
-serialization results cached per chunk and shared across players (invalidated on
-edit). Designed so missing features slot in without restructuring: entities =
-EntityManager + metadata writer; compression = one frame codec change;
-persistence = swap World storage for region files.
+One thread per connection; `World` `shared_mutex`; `LightEngine`/`FluidSim`/`Redstone` via `onBlockChanged`; `Persistence` 3s flush + 6000/1200t `level.dat`; `chunkCache` 1024 + LRU `chunksUnloadTick` + `simulationDistance` culling; `PacketBatcher` 50ms / 64-packet coalesce. `GameServer.cpp` split into `World/Entity/Inventory/Network` forwarders (plan6 §6). Data-driven: `EntityData` JSON → `BehaviorTree`, `TagManager` 67/20, `LootTables`, `DatapackManager` `assets/data`.
 
 ## Roadmap (toward broader compatibility)
 
