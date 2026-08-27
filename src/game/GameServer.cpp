@@ -3744,6 +3744,38 @@ void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
             return false;
         };
         if (nowGround && !self_->onGround) {
+            // Farmland trample (plan6 item 15): if landed on farmland with fallDist >0.5
+            if (self_->fallDist > 0.5) {
+                int bx = static_cast<int>(std::floor(self_->x));
+                int by = static_cast<int>(std::floor(self_->y - 0.2));
+                int bz = static_cast<int>(std::floor(self_->z));
+                World& w = srv_.worldFor(self_->dimension);
+                std::uint16_t st = w.getBlock(bx, by, bz);
+                const gen::BlockDef* bd = gen::blockByState(st);
+                if (bd && std::string(bd->name) == "minecraft:farmland") {
+                    // set moisture 0
+                    bool hasMoisture = false;
+                    for (auto& [k,v] : gen::propsOf(st)) if (k=="moisture") hasMoisture=true;
+                    if (hasMoisture) {
+                        const gen::BlockDef* d = bd;
+                        std::vector<std::pair<std::string_view,std::string_view>> props;
+                        for (auto& [k,v] : gen::propsOf(st)) if (k!="moisture") props.emplace_back(k,v);
+                        props.emplace_back("moisture", "0");
+                        std::uint16_t ns = static_cast<std::uint16_t>(gen::stateWithProps(*d, props));
+                        w.setBlock(bx, by, bz, ns);
+                        srv_.broadcastBlockChange(bx, by, bz, ns);
+                        // if no crop above, revert to dirt
+                        if (w.getBlock(bx, by+1, bz)==0) {
+                            auto it = gen::blockNameToState().find("minecraft:dirt");
+                            if (it != gen::blockNameToState().end()) {
+                                std::uint16_t dirt = static_cast<std::uint16_t>(it->second);
+                                w.setBlock(bx, by, bz, dirt);
+                                srv_.broadcastBlockChange(bx, by, bz, dirt);
+                            }
+                        }
+                    }
+                }
+            }
             if (getenv("CPPFM_TRACE"))
                 std::fprintf(stderr, "[cppfm] %s landed fallDist=%.2f gm=%u\n",
                              self_->name.c_str(), self_->fallDist, self_->gamemode);
@@ -4048,6 +4080,16 @@ void Session::onUseItemOn(ReadBuffer& in) {
     (void)DX; (void)DY; (void)DZ;
     const int d = (dir >= 0 && dir < 6) ? dir : 0;
     const std::int32_t tx = x + FX[d], ty = y + FY[d], tz = z + FZ[d];
+    // --- ItemUseContext (plan6) ---
+    ItemUseContext ctx;
+    ctx.player = self_.get();
+    ctx.world = &srv_.worldFor(self_->dimension);
+    ctx.hitPos = {x, y, z};
+    ctx.placePos = {tx, ty, tz};
+    ctx.face = d;
+    ctx.cursor = {static_cast<double>(cursorX), static_cast<double>(cursorY), static_cast<double>(cursorZ)};
+    ctx.yaw = self_->yaw;
+    ctx.isSneaking = self_->isSneaking;
 
     // right-click on interactive blocks opens menus (vanilla behaviour)
     {
@@ -4418,18 +4460,73 @@ void Session::onUseItemOn(ReadBuffer& in) {
     std::vector<std::pair<std::string_view, std::string_view>> props;
     (void)props;
     {
-        // context-aware defaults: facing opposite of player yaw
-        float yaw = self_->yaw;
+        // context-aware placement using ItemUseContext (plan6 item 11/15)
+        float yaw = ctx.yaw;
         const char* facing = "north";
         if (yaw >= 45.f && yaw < 135.f) facing = "east";
         else if (yaw >= 135.f && yaw < 225.f) facing = "south";
         else if (yaw >= 225.f && yaw < 315.f) facing = "west";
         bool hasFacing = false;
+        bool hasHalf = false, hasShape = false, hasSnowy = false, hasWaterlogged = false, hasAxis = false;
         for (int i = 0; i < bdef2->propCount; ++i) {
             const auto& pd = gen::kPropDefs[gen::kBlockPropsRun[bdef2->propsOff + i]];
             if (pd.name == "facing") hasFacing = true;
+            if (pd.name == "half") hasHalf = true;
+            if (pd.name == "shape") hasShape = true;
+            if (pd.name == "snowy") hasSnowy = true;
+            if (pd.name == "waterlogged") hasWaterlogged = true;
+            if (pd.name == "axis") hasAxis = true;
         }
         if (hasFacing) props.emplace_back("facing", facing);
+        // stairs/slab half based on face and cursor.y (plan6)
+        if (hasHalf) {
+            const char* half = "bottom";
+            if (ctx.face == 0) half = "top";
+            else if (ctx.face == 1) half = "bottom";
+            else {
+                half = (ctx.cursor.y > 0.5 ? "top" : "bottom");
+            }
+            props.emplace_back("half", half);
+        }
+        // stairs shape default straight, orient with yaw
+        if (hasShape) {
+            props.emplace_back("shape", "straight");
+        }
+        // waterlogged: check if placePos currently water
+        if (hasWaterlogged) {
+            bool waterlogged = false;
+            std::uint16_t before = ctx.world->getBlock(ctx.placePos.x, ctx.placePos.y, ctx.placePos.z);
+            const gen::BlockDef* bd = gen::blockByState(before);
+            if (bd && std::string(bd->name).find("water") != std::string::npos) waterlogged = true;
+            props.emplace_back("waterlogged", waterlogged ? "true" : "false");
+        }
+        if (hasSnowy) {
+            bool snowy = false;
+            std::uint16_t above = ctx.world->getBlock(ctx.placePos.x, ctx.placePos.y + 1, ctx.placePos.z);
+            const gen::BlockDef* ad = gen::blockByState(above);
+            if (ad && std::string(ad->name) == "minecraft:snow") snowy = true;
+            props.emplace_back("snowy", snowy ? "true" : "false");
+        }
+        if (hasAxis) {
+            const char* axis = "y";
+            if (ctx.face == 4 || ctx.face == 5) axis = "x";
+            else if (ctx.face == 2 || ctx.face == 3) axis = "z";
+            props.emplace_back("axis", axis);
+        }
+        // slab type handling: reuse half logic as type
+        bool hasTypeSlab = false;
+        for (int i = 0; i < bdef2->propCount; ++i) {
+            const auto& pd = gen::kPropDefs[gen::kBlockPropsRun[bdef2->propsOff + i]];
+            if (pd.name == "type") { hasTypeSlab = true; break; }
+        }
+        if (hasTypeSlab && std::string(bdef2->name).find("_slab") != std::string::npos) {
+            const char* type = "bottom";
+            if (ctx.face == 0) type = "top";
+            else if (ctx.face == 1) type = "bottom";
+            else type = (ctx.cursor.y > 0.5 ? "top" : "bottom");
+            // remove previous if any, then add
+            props.emplace_back("type", type);
+        }
         newState = static_cast<std::uint16_t>(gen::stateWithProps(*bdef2, props));
     }
 
