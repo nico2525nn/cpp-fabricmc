@@ -140,5 +140,38 @@ inline float meleeDamageBonusFor(const std::vector<EffectInstance>& list) {
         else if (e.type == effects::Weakness) bonus -= 4.f * (e.amplifier + 1);
     return bonus;
 }
+inline bool hasEffect(const std::vector<EffectInstance>& list, std::uint8_t id) {
+    for (auto &e : list) if (e.type == id) return true;
+    return false;
+}
+inline int amplifierFor(const std::vector<EffectInstance>& list, std::uint8_t id) {
+    int best = -1;
+    for (auto &e : list) if (e.type == id) best = std::max(best, int(e.amplifier));
+    return best;
+}
+inline float absorptionFor(const std::vector<EffectInstance>& list) {
+    int amp = amplifierFor(list, effects::Absorption);
+    if (amp < 0) return 0.f;
+    return 4.f * float(amp + 1);
+}
+inline bool isInvisible(const std::vector<EffectInstance>& list) { return hasEffect(list, effects::Invisibility); }
+inline bool isGlowing(const std::vector<EffectInstance>& list) { return hasEffect(list, effects::Glowing); }
+// Hunger effect adds exhaustion per tick; saturation effect restores food
+inline float hungerExhaustionPerTick(const std::vector<EffectInstance>& list) {
+    int amp = amplifierFor(list, effects::Hunger);
+    if (amp < 0) return 0.f;
+    return 0.005f * float(amp + 1) * 20.f; // ~0.005 per tick per level *20 to scale per second
+}
+inline bool shouldApplySaturation(const std::vector<EffectInstance>& list, int tickNo) {
+    int amp = amplifierFor(list, effects::Saturation);
+    if (amp < 0) return false;
+    int period = std::max(1, 2 >> amp);
+    return tickNo % period == 0;
+}
+inline bool shouldApplyHunger(const std::vector<EffectInstance>& list, int tickNo) {
+    int amp = amplifierFor(list, effects::Hunger);
+    if (amp < 0) return false;
+    return tickNo % 40 == 0;
+}
 
 } // namespace cppfm
