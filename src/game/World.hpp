@@ -105,10 +105,32 @@ public:
     void setOnEdit(std::function<void(std::int32_t, std::int32_t)> cb) { onEdit_ = std::move(cb); }
     // Per-block change hook (x,y,z,old,new) used by the light/fluid engines.
     void setOnBlockChanged(std::function<void(std::int32_t, std::int32_t,
-                                              std::int32_t, std::uint16_t,
-                                              std::uint16_t)> cb) {
+                                               std::int32_t, std::uint16_t,
+                                               std::uint16_t)> cb) {
         onBlockChanged_ = std::move(cb);
     }
+    // Block Event Bus (plan6): onBlockPlace, onBlockBreak, onBlockNeighborChange
+    void setOnBlockPlace(std::function<void(std::int32_t, std::int32_t, std::int32_t, std::uint16_t, std::uint16_t)> cb) { onBlockPlace_ = std::move(cb); }
+    void setOnBlockBreak(std::function<void(std::int32_t, std::int32_t, std::int32_t, std::uint16_t, std::uint16_t)> cb) { onBlockBreak_ = std::move(cb); }
+    void setOnBlockNeighborChange(std::function<void(std::int32_t, std::int32_t, std::int32_t, std::uint16_t)> cb) { onBlockNeighborChange_ = std::move(cb); }
+    void addOnBlockPlaceListener(std::function<void(std::int32_t, std::int32_t, std::int32_t, std::uint16_t, std::uint16_t)> h) { blockPlaceListeners_.push_back(std::move(h)); }
+    void addOnBlockBreakListener(std::function<void(std::int32_t, std::int32_t, std::int32_t, std::uint16_t, std::uint16_t)> h) { blockBreakListeners_.push_back(std::move(h)); }
+    void addOnBlockNeighborChangeListener(std::function<void(std::int32_t, std::int32_t, std::int32_t, std::uint16_t)> h) { blockNeighborChangeListeners_.push_back(std::move(h)); }
+    void fireBlockPlace(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t oldSt, std::uint16_t newSt) {
+        if (onBlockPlace_) onBlockPlace_(x,y,z,oldSt,newSt);
+        for (auto& h : blockPlaceListeners_) h(x,y,z,oldSt,newSt);
+    }
+    void fireBlockBreak(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t oldSt, std::uint16_t newSt) {
+        if (onBlockBreak_) onBlockBreak_(x,y,z,oldSt,newSt);
+        for (auto& h : blockBreakListeners_) h(x,y,z,oldSt,newSt);
+    }
+    void fireBlockNeighborChange(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t neighborState) {
+        if (onBlockNeighborChange_) onBlockNeighborChange_(x,y,z,neighborState);
+        for (auto& h : blockNeighborChangeListeners_) h(x,y,z,neighborState);
+    }
+    void onBlockNeighborChange(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t ns) { fireBlockNeighborChange(x,y,z,ns); }
+    void onBlockPlace(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t o, std::uint16_t n) { fireBlockPlace(x,y,z,o,n); }
+    void onBlockBreak(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t o, std::uint16_t n) { fireBlockBreak(x,y,z,o,n); }
 
     // ---- block-light accessors (nibble storage inside Chunk) --------------
     std::uint8_t getBlockLight(std::int32_t x, std::int32_t y,
@@ -261,6 +283,20 @@ public:
             ++c.revision;
         }
         if (onBlockChanged_) onBlockChanged_(x, y, z, old, state);
+        // Block Event Bus firing
+        if (old == 0 && state != 0) fireBlockPlace(x,y,z,old,state);
+        else if (old != 0 && state == 0) fireBlockBreak(x,y,z,old,state);
+        else if (old != state) {
+            // treat as neighbor change for adjacent? also fire neighbor for subscribers
+            fireBlockNeighborChange(x,y,z,state);
+        }
+        // also notify neighbors for IBlockBehavior onNeighborChange
+        static constexpr int DX[6] = {1,-1,0,0,0,0};
+        static constexpr int DY[6] = {0,0,1,-1,0,0};
+        static constexpr int DZ[6] = {0,0,0,0,1,-1};
+        for (int d=0; d<6; ++d) {
+            fireBlockNeighborChange(x+DX[d], y+DY[d], z+DZ[d], state);
+        }
         if (onEdit_) onEdit_(x >> 4, z >> 4);
     }
     const Chunk* tryGet(std::int32_t cx, std::int32_t cz) const {
@@ -440,6 +476,12 @@ public:
     std::function<void(std::int32_t, std::int32_t)> onEdit_;
     std::function<void(std::int32_t, std::int32_t, std::int32_t,
                        std::uint16_t, std::uint16_t)> onBlockChanged_;
+    std::function<void(std::int32_t, std::int32_t, std::int32_t, std::uint16_t, std::uint16_t)> onBlockPlace_;
+    std::function<void(std::int32_t, std::int32_t, std::int32_t, std::uint16_t, std::uint16_t)> onBlockBreak_;
+    std::function<void(std::int32_t, std::int32_t, std::int32_t, std::uint16_t)> onBlockNeighborChange_;
+    std::vector<std::function<void(std::int32_t, std::int32_t, std::int32_t, std::uint16_t, std::uint16_t)>> blockPlaceListeners_;
+    std::vector<std::function<void(std::int32_t, std::int32_t, std::int32_t, std::uint16_t, std::uint16_t)>> blockBreakListeners_;
+    std::vector<std::function<void(std::int32_t, std::int32_t, std::int32_t, std::uint16_t)>> blockNeighborChangeListeners_;
 };
 
 } // namespace cppfm

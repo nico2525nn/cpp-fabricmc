@@ -24,6 +24,15 @@ struct RedstoneTick {
     bool operator>(const RedstoneTick& o) const { return dueTick > o.dueTick; }
 };
 
+// MovingPiston entity (plan6 item 19): piston animation with progress 0-1
+struct PistonEntity {
+    std::int32_t x=0, y=0, z=0;
+    float progress = 0.f; // 0-1
+    bool extended = false;
+    std::int64_t dueTick = 0;
+    int face = 0; // 0-5
+};
+class BlockTickScheduler;
 class RedstoneEngine {
 public:
     explicit RedstoneEngine(World& world) : world_(world) {}
@@ -42,6 +51,8 @@ public:
 
     void setBlockEntityStore(BlockEntityStore* s) { beStore_ = s; }
     void setTickRef(std::int64_t* t) { tickRef_ = t; }
+    void setBlockTickScheduler(BlockTickScheduler* bts) { blockTicks_ = bts; }
+    void setGameServer(void* srv) { gameServer_ = srv; }
 
 private:
     enum class Comp {
@@ -67,10 +78,15 @@ private:
     void handleObserverTrigger(std::int32_t x, std::int32_t y, std::int32_t z, std::int64_t now);
     void recomputeRailShape(std::int32_t x, std::int32_t y, std::int32_t z);
     void handlePiston(std::int32_t x, std::int32_t y, std::int32_t z);
+    void handlePistonScheduled(std::int32_t x, std::int32_t y, std::int32_t z, bool extendNow);
+    void processPistonQueue(std::int64_t now);
 
     World& world_;
     BlockEntityStore* beStore_ = nullptr;
     std::int64_t* tickRef_ = nullptr;
+    BlockTickScheduler* blockTicks_ = nullptr;
+    void* gameServer_ = nullptr;
+    std::vector<PistonEntity> pistonQueue_;
     std::priority_queue<RedstoneTick, std::vector<RedstoneTick>,
                         std::greater<RedstoneTick>> queue_;
     std::unordered_map<std::int64_t, std::int64_t> pendingRepeater_;
