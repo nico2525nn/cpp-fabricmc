@@ -282,9 +282,15 @@ void GameServer::syncPlayerArmorAttributes(Player& p) {
         if (n.find("diamond_") != std::string::npos) toughness += 2;
         else if (n.find("netherite_") != std::string::npos) { toughness += 3; kbResist += 0.1f; }
     }
-    p.attributes.setBase(Attribute::ARMOR, (double)armor);
-    p.attributes.setBase(Attribute::ARMOR_TOUGHNESS, (double)toughness);
-    p.attributes.setBase(Attribute::KNOCKBACK_RESISTANCE, (double)kbResist);
+    bool dirty = p.attributes.armorDirty(armor, toughness, kbResist);
+    p.attributes.syncArmor(armor, toughness, kbResist);
+    if (dirty && p.conn && p.inPlay) {
+        WriteBuffer ab;
+        p.attributes.writeUpdate(ab, p.entityId);
+        try { p.conn->sendPacket(pl::sc::UpdateAttributes, ab); } catch(...) {}
+        // also broadcast to tracking players so they see equipment changes
+        broadcastPacketExcept(&p, pl::sc::UpdateAttributes, ab);
+    }
 }
 int GameServer::computeProtectionEPF(const DamageSource& ds, const Player& p) const {
     if (ds.bypassEnchant || ds.isDrown() || ds.isStarveFlag) return 0;
@@ -369,50 +375,65 @@ void GameServer::handleFoodConsume(Player& p, const std::string& itemName) {
         {"minecraft:sweet_berries", {2, 0.4f}},
         {"minecraft:glow_berries", {2, 0.4f}},
         {"minecraft:honey_bottle", {6, 1.2f}},
+        {"minecraft:rabbit_stew", {10, 12.0f}},
+        {"minecraft:suspicious_stew", {6, 7.2f}},
     };
     auto it = kFood.find(itemName);
     if (it != kFood.end()) {
         addFoodAndSaturation(p, it->second.food, it->second.sat);
-        // special stew effect: clear? not needed
-        // cake handled via block but also as item: same
+        // stew: return empty bowl
+        if (itemName.find("stew") != std::string::npos || itemName.find("soup") != std::string::npos) {
+            addToInventory(p, gen::itemIdByName().at("minecraft:bowl"), 1);
+            resendInventory(p);
+        }
+        if (itemName == "minecraft:honey_bottle") {
+            addToInventory(p, gen::itemIdByName().at("minecraft:glass_bottle"), 1);
+            resendInventory(p);
+        }
     } else if (itemName.find("stew") != std::string::npos || itemName.find("soup") != std::string::npos) {
         addFoodAndSaturation(p, 6, 7.2f);
+        auto pit = gen::itemIdByName().find("minecraft:bowl");
+        if (pit != gen::itemIdByName().end()) { addToInventory(p, pit->second, 1); resendInventory(p); }
     } else if (itemName.find("cake") != std::string::npos) {
         addFoodAndSaturation(p, 2, 0.4f);
     }
-    // saturation clamp 0-food already done
-    // exhaustion handled elsewhere
+}
+bool handleCakeBlockConsume(GameServer& srv, Player& p, std::int32_t x, std::int32_t y, std::int32_t z){
+    World& w = srv.worldFor(p.dimension);
+    uint16_t st = w.getBlock(x,y,z);
+    auto* d = gen::blockByState(st);
+    if(!d || std::string(d->name) != "minecraft:cake") return false;
+    if(p.food >= 20) return false;
+    // cake has bites 0..6 (7 slices): each slice 2 food
+    int bites = 0;
+    for(auto& kv: gen::propsOf(st)) if(kv.first=="bites") bites = std::stoi(std::string(kv.second));
+    srv.handleFoodConsume(p, "minecraft:cake");
+    // exhaustion for eating cake is same as normal food
+    srv.addHungerExhaustion(p, 0.005f);
+    if(bites >= 6){
+        w.setBlock(x,y,z,0);
+        srv.broadcastBlockChange(x,y,z,0);
+    } else {
+        uint16_t ns = (uint16_t)gen::stateWithPropsList("minecraft:cake", {{"bites", std::to_string(bites+1)}});
+        if(ns==0) ns = st+1; // fallback incremental
+        w.setBlock(x,y,z,ns);
+        srv.broadcastBlockChange(x,y,z,ns);
+    }
+    srv.sendSetHealth(p);
+    return true;
 }
 void GameServer::applyDamage(Player& p, float amount, const DamageSource& src) {
     if (p.gamemode == 1 || p.gamemode == 3) return;
     if (amount <= 0 || p.dead) return;
     syncPlayerArmorAttributes(p);
-    float reduced = amount;
-    if (!src.bypassArmor) {
-        int armor = (int)std::round(p.attributes.getValue(Attribute::ARMOR));
-        // fallback to legacy if attribute is 0 but armor exists
-        if (armor == 0) armor = totalArmorPoints(p.inv);
-        reduced = applyArmorReduction(amount, armor);
-        // toughness slightly reduces armor effectiveness via vanilla formula approximation:
-        double toughness = p.attributes.getValue(Attribute::ARMOR_TOUGHNESS);
-        if (toughness > 0 && reduced < amount) {
-            // simple: armor toughness reduces remaining damage a bit
-            reduced *= (1.f - (float)(toughness * 0.02));
-        }
-    }
+    int armor = (int)std::round(p.attributes.getValue(Attribute::ARMOR));
+    if (armor == 0) armor = totalArmorPoints(p.inv);
+    double toughness = p.attributes.getValue(Attribute::ARMOR_TOUGHNESS);
     int epf = computeProtectionEPF(src, p);
-    if (epf > 0) {
-        float protEff = std::min(20.f, static_cast<float>(epf * 4)) / 25.f;
-        protEff = std::min(protEff, 0.8f);
-        reduced *= (1.f - protEff);
-    }
-    for (auto &e : p.effects) if (e.type == effects::Resistance) {
-        float red = 0.2f * float(e.amplifier + 1);
-        if (red > 0.8f) red = 0.8f;
-        reduced *= (1.0f - red);
-    }
-    float finalAmt = std::max(0.f, reduced);
+    float finalAmt = DamageCalculator::calculate(amount, src, armor, toughness, epf, p.effects);
     if (finalAmt <= 0) return;
+    // attack exhaustion for attacker is handled elsewhere; damage taken also adds exhaustion
+    if (p.gamemode == 0) addHungerExhaustion(p, 0.1f);
     p.health -= finalAmt;
     p.hurtCooldown = 10;
     if (p.health <= 0) { p.health = 0; killPlayer(p, src.type.c_str()); }
@@ -1711,18 +1732,11 @@ bool GameServer::selectTrade(Player& p, std::int32_t index) {
 
 void GameServer::applyDamageToMob(MobEntity& m, float amount, const DamageSource& src) {
     if (amount <= 0 || m.dead) return;
-    float reduced = amount;
-    if (!src.bypassArmor) {
-        int armor = totalArmorPoints(m);
-        reduced = applyArmorReduction(amount, armor);
-    }
+    int armor = totalArmorPoints(m);
     int epf = computeProtectionEPF(src, m);
-    if (epf > 0) {
-        float protEff = std::min(20.f, static_cast<float>(epf * 4)) / 25.f;
-        protEff = std::min(protEff, 0.8f);
-        reduced *= (1.f - protEff);
-    }
-    float finalAmt = std::max(0.f, reduced);
+    // mobs have no toughness in current formula; pass 0
+    float finalAmt = DamageCalculator::calculate(amount, src, armor, 0.0, epf, {});
+    // mobs have no resistance effects currently
     if (finalAmt <= 0) return;
     m.health -= finalAmt;
     m.hurtCooldown = 10;
@@ -2799,7 +2813,6 @@ void GameServer::effectsTick() {
         if (!p->inPlay || p->effects.empty()) continue;
         bool changed = false;
         for (auto it = p->effects.begin(); it != p->effects.end();) {
-            // instant effects apply once then vanish
             if (it->type == effects::InstantHealth && !it->expired()) {
                 p->health = std::min(20.f, p->health + 4.f * (it->amplifier + 1));
                 sendSetHealth(*p);
@@ -2824,29 +2837,69 @@ void GameServer::effectsTick() {
                 changed = true;
                 continue;
             }
-            // regeneration / poison style periodic damage & heal
             if (it->type == effects::Regeneration &&
                 tickNo_ % std::max(1, 50 >> it->amplifier) == 0)
                 p->health = std::min(20.f, p->health + 1.f), sendSetHealth(*p);
             if ((it->type == effects::Poison || it->type == effects::Wither) &&
                 tickNo_ % std::max(1, 40 >> it->amplifier) == 0)
-                applyDamage(*p, 1.f, it->type == effects::Poison ? "poison"
-                                                                 : "wither");
+                applyDamage(*p, 1.f, it->type == effects::Poison ? "poison" : "wither");
+            if (it->type == effects::Saturation && tickNo_ % std::max(1, 2 >> it->amplifier) == 0) {
+                addFoodAndSaturation(*p, 1, float(it->amplifier + 1));
+            }
+            if (it->type == effects::Hunger && tickNo_ % 30 == 0) {
+                addHungerExhaustion(*p, 0.005f * float(it->amplifier + 1) * 20.f);
+            }
+            if (it->type == effects::Wither && tickNo_ % 40 == 0) {
+                // wither already handled
+            }
             ++it;
         }
         (void)changed;
+        // per-tick metadata effects: invisibility/glowing/levitation/slow-falling
+        if (hasEffect(p->effects, effects::Levitation)) {
+            int amp = amplifierFor(p->effects, effects::Levitation);
+            // levitate upward ~0.05*(amp+1) per tick, clamped
+            double dy = 0.05 * double(amp + 1);
+            p->y += dy;
+            // broadcast movement for levitation
+            if (p->conn) {
+                WriteBuffer lev;
+                lev.varint(p->entityId);
+                lev.f64(p->x); lev.f64(p->y); lev.f64(p->z);
+                lev.i8((int8_t)(p->yaw*256.f/360.f)); lev.i8((int8_t)(p->pitch*256.f/360.f));
+                lev.boolean(p->onGround);
+                try { broadcastPacketExcept(nullptr, pl::sc::EntityTeleport, lev); } catch(...) {}
+            }
+        }
+        if (hasEffect(p->effects, effects::SlowFalling)) {
+            if (p->fallDist > 0) p->fallDist *= 0.9; // reduce fall distance
+        }
     }
-    // AttributeManager wiring: apply effect modifiers and sync to clients
     for (auto &pp2 : playersSnapshot()) {
         auto* p2 = pp2.get();
         if (!p2->inPlay || !p2->conn) continue;
         p2->attributes.applyEffectModifiers(p2->effects);
-        // send UpdateAttributes periodically or when effects active
         if (tickNo_ % 20 == 0 && (!p2->effects.empty() || p2->attributes.getValue(Attribute::MOVEMENT_SPEED) != 0.10
-            || p2->attributes.getValue(Attribute::MAX_HEALTH) != 20.0)) {
+            || p2->attributes.getValue(Attribute::MAX_HEALTH) != 20.0
+            || p2->attributes.getValue(Attribute::ARMOR) != 0
+            || p2->attributes.getValue(Attribute::ATTACK_DAMAGE) != 1.0)) {
             WriteBuffer ab;
             p2->attributes.writeUpdate(ab, p2->entityId);
             try { p2->conn->sendPacket(pl::sc::UpdateAttributes, ab); } catch(...) {}
+            try { broadcastPacketExcept(p2, pl::sc::UpdateAttributes, ab); } catch(...) {}
+        }
+        // sync invisibility/glowing metadata: index 0 flags, index 6 pose already
+        if (tickNo_ % 20 == 0) {
+            bool invis = isInvisible(p2->effects);
+            bool glow = isGlowing(p2->effects);
+            if (invis || glow) {
+                WriteBuffer md;
+                md.varint(p2->entityId);
+                if (invis) { md.u8(0); md.varint(0); md.u8(0x20); }
+                if (glow) { md.u8(0); md.varint(0); md.u8(0x40); }
+                md.u8(255);
+                if (md.data.size() > 2) try { broadcastPacketExcept(nullptr, pl::sc::SetEntityMetadata, md); } catch(...) {}
+            }
         }
     }
 }
@@ -3902,11 +3955,12 @@ void Session::handlePlay() {
 }
 
 void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
-    const double oldX = self_->x, oldZ = self_->z;
+    const double oldX = self_->x, oldY = self_->y, oldZ = self_->z;
+    const bool wasOnGround = self_->onGround;
     if (hasPos) {
         const double nx = in.f64(), ny = in.f64(), nz = in.f64();
         if (!self_->onGround && ny < self_->y && self_->gamemode == 0)
-            self_->fallDist += self_->y - ny;       // descending while airborne
+            self_->fallDist += self_->y - ny;
         self_->x = nx; self_->y = ny; self_->z = nz;
     }
     if (hasRot) {
@@ -3987,9 +4041,23 @@ void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
             }
         }
         if (nowGround) self_->fallDist = 0;
-        // exhaustion from horizontal movement
-        const double hdx = self_->x - oldX, hdz = self_->z - oldZ;
-        self_->exhaustion += std::sqrt(hdx*hdx + hdz*hdz) * 0.01;
+        // exhaustion: sprint / jump / walk (plan7 hunger)
+        if (self_->gamemode == 0) {
+            const double hdx = self_->x - oldX, hdz = self_->z - oldZ;
+            double hDist = std::sqrt(hdx*hdx + hdz*hdz);
+            if (hDist > 0.001) {
+                float mult = self_->isSprinting ? 0.1f : 0.01f;
+                if (self_->isSwimming) mult = 0.01f;
+                self_->exhaustion += (float)hDist * mult;
+            }
+            // jump exhaustion: leaving ground with upward motion
+            double dy = self_->y - oldY;
+            if (hasPos && wasOnGround && !nowGround && dy > 0.05) {
+                float jumpCost = self_->isSprinting ? 0.2f : 0.05f;
+                // apply jump boost reduction? ignore
+                srv_.addHungerExhaustion(*self_, jumpCost);
+            }
+        }
         self_->spawned = true;
         if (!chunksStreamed_) streamInitialChunks();
         else tickChunksAround(self_->x, self_->z);
@@ -4382,6 +4450,16 @@ void Session::onUseItemOn(ReadBuffer& in) {
         }
     }
 
+    // cake slice eat (plan7 hunger): right-click cake block consumes slice
+    {
+        World& ww = srv_.worldFor(self_->dimension);
+        uint16_t cst = ww.getBlock(x,y,z);
+        auto* cdef = gen::blockByState(cst);
+        if (cdef && std::string(cdef->name)=="minecraft:cake") {
+            if (handleCakeBlockConsume(srv_, *self_, x,y,z)) { ack(sequence); return; }
+        }
+    }
+
     // Place the actually-held block item (vanilla semantics).
     static const InvSlot airSlot = InvSlot::air();
     const bool survival = self_->gamemode == 0;
@@ -4770,27 +4848,42 @@ void Session::onUseItemOn(ReadBuffer& in) {
 }
 
 void Session::onUseItem(ReadBuffer& in) {
-    (void)in.varint();                                  // hand
+    (void)in.varint();
     const std::int32_t sequence = in.varint();
-    (void)in.f32(); (void)in.f32();                     // rotation
+    (void)in.f32(); (void)in.f32();
     if (self_->heldSlot >= 0 && self_->heldSlot < 9) {
-        const auto& sl = self_->inv[36 + self_->heldSlot];
-        static const std::unordered_map<std::uint32_t, std::pair<int,float>> kFood{
-            {gen::itemIdByName().at("minecraft:bread"), {5,6}},
-            {gen::itemIdByName().at("minecraft:apple"), {4,3}},
-        };
-        auto f = kFood.find(sl.itemId);
-        if (f != kFood.end() && self_->food < 20) {
-            self_->food = std::min(20, self_->food + f->second.first);
-            self_->saturation = std::min<float>((float)self_->food,
-                                                self_->saturation + f->second.second);
-            srv_.sendSetHealth(*self_);
-            for (auto& s2 : self_->inv)
-                if (s2.itemId == sl.itemId && s2.count > 0) {
-                    if (--s2.count <= 0) s2 = InvSlot::air();
-                    break;
+        auto& sl = self_->inv[36 + self_->heldSlot];
+        if (!sl.empty() && self_->food < 20) {
+            std::string iname = sl.name();
+            bool isFood = false;
+            int beforeFood = self_->food;
+            float beforeSat = self_->saturation;
+            srv_.handleFoodConsume(*self_, iname);
+            if (self_->food != beforeFood || self_->saturation != beforeSat) isFood = true;
+            else {
+                // generic fallback for unknown food names that handleFoodConsume might not have matched (e.g., modded)
+                if (iname.find("stew")!=std::string::npos||iname.find("soup")!=std::string::npos||iname.find("cake")!=std::string::npos) isFood=true;
+            }
+            if (isFood) {
+                // exhaustion for eating: 0.05? vanilla 0.005 per food?
+                srv_.addHungerExhaustion(*self_, 0.005f);
+                // consume item (stew leaves bowl already handled inside handleFoodConsume via addToInventory)
+                bool isStew = iname.find("stew")!=std::string::npos || iname.find("soup")!=std::string::npos;
+                bool isCake = iname.find("cake")!=std::string::npos;
+                if (!isStew && !isCake) {
+                    if (--sl.count <= 0) sl = InvSlot::air();
+                } else if (isStew) {
+                    // stew consumed: bowl already added, just decrement stew
+                    auto tmp = sl;
+                    if (--tmp.count <=0) sl = InvSlot::air(); else sl = tmp;
+                } else if (isCake) {
+                    if (--sl.count <=0) sl = InvSlot::air();
                 }
-            srv_.resendInventory(*self_);
+                srv_.resendInventory(*self_);
+            } else {
+                // revert if not food (handleFoodConsume might have clamped without change)
+                self_->food = beforeFood; self_->saturation = beforeSat;
+            }
         }
     }
     ack(sequence);
@@ -4884,6 +4977,8 @@ void Session::onUseEntity(ReadBuffer& in) {
     }
     // strength/weakness bonus
     dmg += meleeDamageBonusFor(self_->effects);
+    // attack exhaustion (plan7 hunger)
+    srv_.addHungerExhaustion(*self_, 0.1f);
 
     // ---- PVP: check player victims first (items 76-80 combat)
     for (auto &pp : srv_.playersSnapshot()) {
