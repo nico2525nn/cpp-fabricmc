@@ -86,7 +86,7 @@ add_executable(test_native
     src/game/EntityData.cpp
     src/game/BossAI.cpp
     src/game/MenuLogic.cpp
-    src/game/MobSpawner.cpp)
+    src/game/MobSpawner.cpp
     src/game/HungerManager.cpp
     src/game/CombatManager.cpp
     src/game/InventoryController.cpp)
@@ -129,7 +129,7 @@ add_executable(test_smoke_80
     src/game/EntityData.cpp
     src/game/BossAI.cpp
     src/game/MenuLogic.cpp
-    src/game/MobSpawner.cpp)
+    src/game/MobSpawner.cpp
     src/game/HungerManager.cpp
     src/game/CombatManager.cpp
     src/game/InventoryController.cpp)
