@@ -27,6 +27,7 @@ add_executable(cppfm
     src/worldgen/Structures.cpp
     src/game/AiBrain.cpp
     src/game/Stats.cpp
+    src/net/PacketBatcher.cpp
 )
 
 target_include_directories(cppfm PRIVATE src src/generated)
@@ -62,7 +63,8 @@ add_executable(test_native
     src/physics/BlockTickScheduler.cpp
     src/worldgen/DensityFunction.cpp
     src/worldgen/MultiNoise.cpp
-    src/worldgen/Structures.cpp)
+    src/worldgen/Structures.cpp
+    src/net/PacketBatcher.cpp)
 target_include_directories(test_native PRIVATE src src/generated tests)
 find_package(Threads REQUIRED)
 find_package(ZLIB REQUIRED)

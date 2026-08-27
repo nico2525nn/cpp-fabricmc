@@ -41,6 +41,23 @@ struct RsaKeyPair {
 };
 
 
+inline bool verifyRsaSha256(const Bytes& pubDer, const std::uint8_t* data, std::size_t len, const Bytes& sig) {
+    if (pubDer.empty() || sig.empty()) return false;
+    const unsigned char* pp = pubDer.data();
+    EVP_PKEY* pkey = d2i_PUBKEY(nullptr, &pp, (long)pubDer.size());
+    if (!pkey) return false;
+    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+    bool ok = false;
+    if (EVP_DigestVerifyInit(ctx, nullptr, EVP_sha256(), nullptr, pkey) == 1) {
+        if (EVP_DigestVerifyUpdate(ctx, data, len) == 1) {
+            ok = EVP_DigestVerifyFinal(ctx, sig.data(), sig.size()) == 1;
+        }
+    }
+    EVP_MD_CTX_free(ctx);
+    EVP_PKEY_free(pkey);
+    return ok;
+}
+
 inline Bytes rsaDecryptP(EVP_PKEY* kp, const std::uint8_t* ct, std::size_t n) {
     EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new(kp, nullptr);
     if (!ctx) throw std::runtime_error("ctx");

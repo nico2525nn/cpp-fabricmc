@@ -378,6 +378,16 @@ void GameServer::tickOnce() {
     } else if (tickNo_ % 1200 == 0 && tickNo_ != 0) {
         try { persist_->saveLevelData(tickNo_, dayTime()); } catch (...) {}
     }
+    // network batching: flush coalesced block updates every tick (50ms window)
+    {
+        int64_t now = nowMs();
+        if (!batcher_.empty() && now - batcher_.lastFlushMs >= 50) {
+            batcher_.flush(*this, nullptr);
+            lastBlockBatchFlushMs_ = now;
+        } else if (!batcher_.empty() && tickNo_ % 2 == 0) {
+            flushBlockBatches();
+        }
+    }
 }
 
 bool GameServer::isChunkInSimulationDistance(std::int32_t cx, std::int32_t cz) const {
@@ -447,6 +457,51 @@ void GameServer::chunksUnloadTick() {
         Persistence *pp = dimPersist_[d] ? dimPersist_[d].get() : nullptr;
         doWorld(w, pp, d == 0 ? -1 : 1);
     }
+}
+
+void GameServer::broadcastBlockChange(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state) {
+    queueBlockChange(x, y, z, state);
+    invalidateChunkCache(x >> 4, z >> 4);
+}
+
+void GameServer::queueBlockChange(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state) {
+    WriteBuffer b;
+    b.position(x, y, z);
+    b.varint(state);
+    batcher_.queuePacket(proto::pl::sc::BlockUpdate, std::move(b));
+    if (batcher_.size() >= 64) {
+        flushBlockBatches();
+    }
+}
+
+void GameServer::flushBlockBatches() {
+    if (batcher_.empty()) return;
+    int64_t now = nowMs();
+    if (batcher_.size() < 64 && now - lastBlockBatchFlushMs_ < 50) return;
+    batcher_.flush(*this, nullptr);
+    lastBlockBatchFlushMs_ = now;
+}
+
+void GameServer::broadcastPlayerChat(Player& sender, const std::string& message, int64_t timestamp) {
+    WriteBuffer b;
+    b.uuid(sender.uuid.data());
+    b.varint(0);
+    b.boolean(false);
+    b.string(message);
+    b.i64(timestamp);
+    b.i64(0);
+    b.varint(0);
+    b.boolean(false);
+    b.varint(0);
+    b.varint(0);
+    nbt::writeTextComponent(b, sender.name);
+    b.boolean(false);
+    broadcastPacketExcept(nullptr, proto::pl::sc::PlayerChat, b);
+}
+
+bool GameServer::validateFeatureFlags(const std::vector<std::array<std::string,3>>& clientPacks) {
+    if (!clientPacks.empty()) return false;
+    return true;
 }
 
 void GameServer::survivalTick() {
