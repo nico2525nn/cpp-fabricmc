@@ -164,6 +164,18 @@ struct Player {
     AttributeManager attributes;
 };
 
+struct BlockPos { std::int32_t x=0, y=0, z=0; };
+struct ItemUseContext {
+    Player* player = nullptr;
+    World* world = nullptr;
+    BlockPos hitPos{};
+    BlockPos placePos{};
+    int face = 0;
+    Vec3 cursor{0,0,0};
+    float yaw = 0;
+    bool isSneaking = false;
+};
+
 class GameServer;
 
 // Per-connection session: drives the state machine on its own thread.
@@ -759,6 +771,22 @@ private:
     std::unique_ptr<FluidSim> fluidSim_;
     std::unique_ptr<RedstoneEngine> redstone_;
     std::unique_ptr<BlockTickScheduler> blockTicks_;
+    // Block Event Bus (plan6): simple vector of handlers in GameServer
+    std::vector<std::function<void(std::int32_t,std::int32_t,std::int32_t,std::uint16_t,std::uint16_t)>> onBlockPlaceHandlers_;
+    std::vector<std::function<void(std::int32_t,std::int32_t,std::int32_t,std::uint16_t,std::uint16_t)>> onBlockBreakHandlers_;
+    std::vector<std::function<void(std::int32_t,std::int32_t,std::int32_t,std::uint16_t)>> onBlockNeighborChangeHandlers_;
+public:
+    void addOnBlockPlaceHandler(std::function<void(std::int32_t,std::int32_t,std::int32_t,std::uint16_t,std::uint16_t)> h) { onBlockPlaceHandlers_.push_back(std::move(h)); }
+    void addOnBlockBreakHandler(std::function<void(std::int32_t,std::int32_t,std::int32_t,std::uint16_t,std::uint16_t)> h) { onBlockBreakHandlers_.push_back(std::move(h)); }
+    void addOnBlockNeighborChangeHandler(std::function<void(std::int32_t,std::int32_t,std::int32_t,std::uint16_t)> h) { onBlockNeighborChangeHandlers_.push_back(std::move(h)); }
+    void fireBlockPlaceEvent(std::int32_t x,std::int32_t y,std::int32_t z,std::uint16_t oldSt,std::uint16_t newSt) { for(auto& h: onBlockPlaceHandlers_) h(x,y,z,oldSt,newSt); }
+    void fireBlockBreakEvent(std::int32_t x,std::int32_t y,std::int32_t z,std::uint16_t oldSt,std::uint16_t newSt) { for(auto& h: onBlockBreakHandlers_) h(x,y,z,oldSt,newSt); }
+    void fireBlockNeighborChangeEvent(std::int32_t x,std::int32_t y,std::int32_t z,std::uint16_t ns) { for(auto& h: onBlockNeighborChangeHandlers_) h(x,y,z,ns); }
+    // alias spec names
+    void onBlockPlace(std::int32_t x,std::int32_t y,std::int32_t z,std::uint16_t o,std::uint16_t n){ fireBlockPlaceEvent(x,y,z,o,n); }
+    void onBlockBreak(std::int32_t x,std::int32_t y,std::int32_t z,std::uint16_t o,std::uint16_t n){ fireBlockBreakEvent(x,y,z,o,n); }
+    void onBlockNeighborChange(std::int32_t x,std::int32_t y,std::int32_t z,std::uint16_t ns){ fireBlockNeighborChangeEvent(x,y,z,ns); }
+private:
     const std::uint64_t explosionSeed_ = 0x51AB1EULL;
     // weather (本家互換: doWeatherCycle / rain)
     enum class Weather { Clear, Rain } weather_ = Weather::Clear;
