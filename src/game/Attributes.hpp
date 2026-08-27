@@ -7,6 +7,7 @@
 #include <vector>
 #include <algorithm>
 #include <cstdint>
+#include "MobEffects.hpp"
 namespace cppfm {
 enum class Attribute : uint8_t { MOVEMENT_SPEED=0, MAX_HEALTH, KNOCKBACK_RESISTANCE, ARMOR, ARMOR_TOUGHNESS, ATTACK_DAMAGE, ATTACK_SPEED, FLYING_SPEED, FOLLOW_RANGE };
 struct AttributeModifier { std::string uuid; double amount=0; int operation=0; };
@@ -37,7 +38,21 @@ public:
     void removeModifier(Attribute a,const std::string& u){ auto it=map_.find(a); if(it!=map_.end()) it->second.removeModifier(u); }
     void clearModifiers(Attribute a){ auto it=map_.find(a); if(it!=map_.end()) it->second.modifiers.clear(); }
     void clearAllModifiers(){ for(auto &kv:map_) kv.second.modifiers.clear(); }
-    void applyEffectModifiers(const std::vector<struct EffectInstance>& eff);
+    void applyEffectModifiers(const std::vector<struct EffectInstance>& eff){
+        // speed / slowness affect movement_speed, health_boost affects max_health
+        removeModifier(Attribute::MOVEMENT_SPEED, "effect_speed");
+        removeModifier(Attribute::MOVEMENT_SPEED, "effect_slowness");
+        removeModifier(Attribute::MAX_HEALTH, "effect_health_boost");
+        double speedMod = speedModifierFor(eff);
+        if (speedMod != 0.0) {
+            // use multiply_total so 0.2 per level behaves like vanilla
+            addModifier(Attribute::MOVEMENT_SPEED, {"effect_speed", speedMod, 2});
+        }
+        int hb = 0;
+        for (auto &e : eff) if (e.type == effects::HealthBoost) hb = std::max(hb, int(e.amplifier)+1);
+        if (hb > 0) addModifier(Attribute::MAX_HEALTH, {"effect_health_boost", double(hb * 4), 0});
+        // also clear absorption? handled elsewhere
+    }
     template<typename W> void writeUpdate(W& out,int32_t eid) const{
         out.varint(eid); out.varint(3);
         auto wo=[&](Attribute at,const char* key){

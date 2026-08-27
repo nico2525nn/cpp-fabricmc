@@ -284,9 +284,31 @@ void GameServer::applyDamage(Player& p, float amount, const char* cause) {
         protEff = std::min(protEff, 0.8f);
         reduced *= (1.f - protEff);
     }
-    p.health -= reduced;
+    // resistance effect
+    for (auto &e : p.effects) if (e.type == effects::Resistance) {
+        float red = 0.2f * float(e.amplifier + 1);
+        if (red > 0.8f) red = 0.8f;
+        reduced *= (1.0f - red);
+    }
+    float finalAmt = std::max(0.f, reduced);
+    if (finalAmt <= 0) return;
+    p.health -= finalAmt;
+    p.hurtCooldown = 10;
     if (p.health <= 0) { p.health = 0; killPlayer(p, cause); }
     sendSetHealth(p);
+    // damage event broadcast for animation (optional)
+    if (p.conn) {
+        WriteBuffer de;
+        de.varint(p.entityId);
+        int dtid = gameData_.idOf("minecraft:damage_type", std::string("minecraft:") + cause);
+        if (dtid < 0) dtid = gameData_.idOf("minecraft:damage_type", "minecraft:generic");
+        if (dtid < 0) dtid = 0;
+        de.varint(dtid >= 0 ? dtid : 0);
+        de.varint(0); de.varint(0);
+        de.boolean(false);
+        try { p.conn->sendPacket(pl::sc::DamageEvent, de); } catch (...) {}
+        broadcastPacketExcept(&p, pl::sc::DamageEvent, de);
+    }
 }
 
 void GameServer::killPlayer(Player& p, const char* cause) {
@@ -531,7 +553,104 @@ void GameServer::survivalTick() {
         }
         // void damage
         if (p->y < kMinY - 16) applyDamage(*p, 4.f, "fell out of the world");
-        // keepalive watchdog uses lastSeenMs via janitor; nothing here
+
+        // ---- drowning (plan5 76)
+        {
+            bool hasWaterBreathing = false;
+            for (auto &e : p->effects) if (e.type == effects::WaterBreathing) { hasWaterBreathing = true; break; }
+            auto isWaterAt = [&](double px, double py, double pz)->bool {
+                int bx = (int)std::floor(px);
+                int by = (int)std::floor(py);
+                int bz = (int)std::floor(pz);
+                uint16_t st = worldFor(p->dimension).getBlock(bx,by,bz);
+                if (st==0) return false;
+                auto *d = gen::blockByState(st);
+                return d && d->name == "minecraft:water";
+            };
+            double headY = p->y + 1.62;
+            bool headInWater = isWaterAt(p->x, headY, p->z);
+            if (!headInWater) {
+                // also check if eye is inside waterlogged? simplified: check water at feet for swimming
+                // reset air
+                if (p->airTicks != 300) {
+                    p->airTicks = 300;
+                }
+            } else {
+                if (!hasWaterBreathing && gamerules_.getBool("drowningDamage")) {
+                    p->airTicks = std::max(0, p->airTicks - 1);
+                    if (p->airTicks <= 0) {
+                        if (tickNo_ % 20 == 0) applyDamage(*p, 1.f, "drown");
+                    }
+                } else {
+                    // with water breathing, don't decrement, slowly recover if needed
+                    if (p->airTicks < 300) p->airTicks = std::min(300, p->airTicks + 4);
+                }
+            }
+        }
+        // ---- freeze (powder snow) 77
+        {
+            auto isPowderSnowAt = [&](int bx,int by,int bz)->bool {
+                uint16_t st = worldFor(p->dimension).getBlock(bx,by,bz);
+                auto *d = gen::blockByState(st);
+                return d && d->name == "minecraft:powder_snow";
+            };
+            int fx = (int)std::floor(p->x);
+            int fy = (int)std::floor(p->y);
+            int fz = (int)std::floor(p->z);
+            bool inSnow = isPowderSnowAt(fx,fy,fz);
+            // also check slightly above feet (if player partially inside)
+            if (!inSnow) {
+                int fy2 = (int)std::floor(p->y + 0.5);
+                if (fy2 != fy) inSnow = isPowderSnowAt(fx,fy2,fz);
+            }
+            if (inSnow) {
+                p->freezeTicks = std::min(300, p->freezeTicks + 1);
+                if (p->freezeTicks >= 140) {
+                    if (gamerules_.getBool("freezeDamage") && tickNo_ % 20 == 0) applyDamage(*p, 1.f, "freeze");
+                }
+            } else {
+                p->freezeTicks = std::max(0, p->freezeTicks - 1);
+            }
+        }
+        // ---- fire / lava 77-78
+        {
+            auto isFireOrLavaAt = [&](double px,double py,double pz)->bool {
+                int bx=(int)std::floor(px); int by=(int)std::floor(py); int bz=(int)std::floor(pz);
+                uint16_t st = worldFor(p->dimension).getBlock(bx,by,bz);
+                auto *d = gen::blockByState(st);
+                if (!d) return false;
+                return d->name == "minecraft:lava" || d->name == "minecraft:fire" || d->name == "minecraft:soul_fire"
+                    || d->name == "minecraft:magma_block" || d->name == "minecraft:campfire" || d->name == "minecraft:soul_campfire";
+            };
+            bool hasFireRes = false;
+            for (auto &e: p->effects) if (e.type == effects::FireResistance) { hasFireRes = true; break; }
+            bool doFire = gamerules_.getBool("doFireTick");
+            bool inLavaFire = isFireOrLavaAt(p->x, p->y, p->z) || isFireOrLavaAt(p->x, p->y + 1.0, p->z);
+            if (inLavaFire && !hasFireRes) {
+                p->fireTicks = 160;
+            }
+            if (p->fireTicks > 0) {
+                if (!hasFireRes && gamerules_.getBool("fireDamage")) {
+                    if (tickNo_ % 20 == 0) applyDamage(*p, 1.f, "onFire");
+                }
+                p->fireTicks--;
+                if (!doFire && !inLavaFire) p->fireTicks = 0;
+                // extinguish if in water
+                {
+                    int hx=(int)std::floor(p->x); int hy=(int)std::floor(p->y+1.0); int hz=(int)std::floor(p->z);
+                    uint16_t st = worldFor(p->dimension).getBlock(hx,hy,hz);
+                    auto *d = gen::blockByState(st);
+                    bool inWater = d && d->name=="minecraft:water";
+                    if (!inWater) {
+                        int fx=(int)std::floor(p->x); int fy=(int)std::floor(p->y); int fz=(int)std::floor(p->z);
+                        uint16_t st2 = worldFor(p->dimension).getBlock(fx,fy,fz);
+                        auto *d2 = gen::blockByState(st2);
+                        inWater = d2 && d2->name=="minecraft:water";
+                    }
+                    if (inWater) p->fireTicks = 0;
+                }
+            }
+        }
         (void)now;
     }
 }
@@ -1464,7 +1583,7 @@ bool GameServer::selectTrade(Player& p, std::int32_t index) {
 
 void GameServer::applyDamageToMob(MobEntity& m, float amount, const char* cause) {
     (void)cause;
-    if (amount <= 0) return;
+    if (amount <= 0 || m.dead) return;
     int armor = totalArmorPoints(m);
     float reduced = applyArmorReduction(amount, armor);
     int prot = totalProtectionForMob(m);
@@ -1473,7 +1592,10 @@ void GameServer::applyDamageToMob(MobEntity& m, float amount, const char* cause)
         protEff = std::min(protEff, 0.8f);
         reduced *= (1.f - protEff);
     }
-    m.health -= reduced;
+    float finalAmt = std::max(0.f, reduced);
+    if (finalAmt <= 0) return;
+    m.health -= finalAmt;
+    m.hurtCooldown = 10;
     if (m.health <= 0) m.dead = true;
 }
 
@@ -2520,6 +2642,19 @@ void GameServer::effectsTick() {
         }
         (void)changed;
     }
+    // AttributeManager wiring: apply effect modifiers and sync to clients
+    for (auto &pp2 : playersSnapshot()) {
+        auto* p2 = pp2.get();
+        if (!p2->inPlay || !p2->conn) continue;
+        p2->attributes.applyEffectModifiers(p2->effects);
+        // send UpdateAttributes periodically or when effects active
+        if (tickNo_ % 20 == 0 && (!p2->effects.empty() || p2->attributes.getValue(Attribute::MOVEMENT_SPEED) != 0.10
+            || p2->attributes.getValue(Attribute::MAX_HEALTH) != 20.0)) {
+            WriteBuffer ab;
+            p2->attributes.writeUpdate(ab, p2->entityId);
+            try { p2->conn->sendPacket(pl::sc::UpdateAttributes, ab); } catch(...) {}
+        }
+    }
 }
 
 void GameServer::furnacesTick() {
@@ -3534,6 +3669,34 @@ void Session::handlePlay() {
         case pl::cs::PlayerInput: in.skipRest(); break;
         case pl::cs::MoveVehicle: in.skipRest(); break;
         case pl::cs::SignUpdate: in.skipRest(); break;
+        case pl::cs::EntityAction: {
+            const std::int32_t eid = in.varint();
+            const std::int32_t action = in.varint();
+            const std::int32_t jumpBoost = in.varint();
+            (void)eid; (void)jumpBoost;
+            bool wasSneak = self_->isSneaking;
+            bool wasSprint = self_->isSprinting;
+            if (action == 0) self_->isSneaking = true;
+            else if (action == 1) self_->isSneaking = false;
+            else if (action == 3) self_->isSprinting = true;
+            else if (action == 4) self_->isSprinting = false;
+            if (wasSneak != self_->isSneaking) {
+                // pose metadata index 6 varint: 5 crouching, 0 standing
+                WriteBuffer md;
+                md.varint(self_->entityId);
+                md.u8(6); md.varint(1); md.varint(self_->isSneaking ? 5 : 0);
+                md.u8(255);
+                srv_.broadcastPacketExcept(self_.get(), pl::sc::SetEntityMetadata, md);
+                // also flags byte index 0 bit 1 for sneaking
+                WriteBuffer fl;
+                fl.varint(self_->entityId);
+                fl.u8(0); fl.varint(0); fl.u8(self_->isSneaking ? 0x02 : 0x00);
+                fl.u8(255);
+                srv_.broadcastPacketExcept(self_.get(), pl::sc::SetEntityMetadata, fl);
+            }
+            (void)wasSprint;
+            break;
+        }
         default:
             // Unknown packets: skip payload to stay aligned, but log loudly.
             std::fprintf(stderr, "[cppfm] unknown play packet from %s\n",
@@ -3560,15 +3723,42 @@ void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
     if (hasPos) {
         if (self_->y < -2048.0 || self_->y > 2048.0)
             throw std::runtime_error("player moved out of world bounds");
-        // landing
+        // landing — fall mitigation (water/slime/honey/hay/powder_snow+slowfalling)
+        auto isFallMitigated = [&]() -> bool {
+            if (self_->gamemode == 1 || self_->gamemode == 3) return true;
+            int bx = (int)std::floor(self_->x);
+            int by = (int)std::floor(self_->y - 0.2);
+            int bz = (int)std::floor(self_->z);
+            uint16_t st = srv_.worldFor(self_->dimension).getBlock(bx,by,bz);
+            auto *d = gen::blockByState(st);
+            if (!d) return false;
+            if (d->name == "minecraft:water") return true;
+            if (d->name == "minecraft:slime_block") return true;
+            if (d->name == "minecraft:honey_block") return true;
+            if (d->name == "minecraft:hay_block") return true;
+            if (d->name == "minecraft:powder_snow") {
+                for (auto &e : self_->effects) if (e.type == effects::SlowFalling) return true;
+                return false;
+            }
+            // also check if landing block is waterlogged? simplified
+            return false;
+        };
         if (nowGround && !self_->onGround) {
             if (getenv("CPPFM_TRACE"))
                 std::fprintf(stderr, "[cppfm] %s landed fallDist=%.2f gm=%u\n",
                              self_->name.c_str(), self_->fallDist, self_->gamemode);
-            if (self_->fallDist > 3.0)
-                srv_.applyDamage(*self_, static_cast<float>(std::floor(self_->fallDist - 3.0)),
-                            "fell from a high place");
-            self_->fallDist = 0;
+            bool mitigated = false;
+            if (self_->fallDist > 3.0) mitigated = isFallMitigated();
+            if (mitigated) {
+                self_->fallDist = 0;
+            } else if (self_->fallDist > 3.0) {
+                if (srv_.gamerules_.getBool("fallDamage"))
+                    srv_.applyDamage(*self_, static_cast<float>(std::floor(self_->fallDist - 3.0)),
+                                "fall");
+                self_->fallDist = 0;
+            } else {
+                self_->fallDist = 0;
+            }
         }
         if (nowGround) self_->fallDist = 0;
         // exhaustion from horizontal movement
@@ -4377,9 +4567,38 @@ void Session::onUseEntity(ReadBuffer& in) {
             if (sl.itemId == gen::itemIdByName().at("minecraft:iron_sword")) dmg = 6.f;
         }
     }
+    // strength/weakness bonus
+    dmg += meleeDamageBonusFor(self_->effects);
+
+    // ---- PVP: check player victims first (items 76-80 combat)
+    for (auto &pp : srv_.playersSnapshot()) {
+        auto *victimP = pp.get();
+        if (victimP->entityId != target || victimP->dead) continue;
+        if (victimP == self_.get()) break; // self-hit ignore
+        float before = victimP->health;
+        srv_.applyDamage(*victimP, dmg, "player");
+        // knockback impulse
+        double dx = victimP->x - self_->x;
+        double dz = victimP->z - self_->z;
+        double len = std::sqrt(dx*dx + dz*dz);
+        if (len < 0.01) { dx = (rand()/(double)RAND_MAX - 0.5); dz = (rand()/(double)RAND_MAX - 0.5); len = std::sqrt(dx*dx+dz*dz); }
+        double nx = dx / len;
+        double nz = dz / len;
+        WriteBuffer vel;
+        vel.varint(victimP->entityId);
+        vel.i16(static_cast<std::int16_t>(nx * 400));
+        vel.i16(static_cast<std::int16_t>(300));
+        vel.i16(static_cast<std::int16_t>(nz * 400));
+        try { victimP->conn->sendPacket(pl::sc::EntityVelocity, vel); } catch (...) {}
+        srv_.broadcastPacketExcept(victimP, pl::sc::EntityVelocity, vel);
+        (void)before;
+        return;
+    }
 
     bool killed = false;
     std::shared_ptr<MobEntity> victim;
+    bool hitMob = false;
+    MobEntity* hitPtr = nullptr;
     {
         std::lock_guard lk(srv_.entsMtx_);
         for (auto& m : srv_.mobsForTest()) {
@@ -4391,6 +4610,8 @@ void Session::onUseEntity(ReadBuffer& in) {
                 it->second.ctx->lastHurtTick = srv_.tickNoForTest();
                 it->second.ctx->lastHurtByEntityId = self_->entityId;
             }
+            hitMob = true;
+            hitPtr = m.get();
             if (m->dead) { killed = true; victim = m; }
             break;
         }
@@ -4403,6 +4624,23 @@ void Session::onUseEntity(ReadBuffer& in) {
             if (broken) held = ItemStack::air();
             srv_.resendInventory(*self_);
         }
+    }
+    // PVP knockback for mob victim (even if not killed)
+    if (hitMob && hitPtr) {
+        double dx = hitPtr->x - self_->x;
+        double dz = hitPtr->z - self_->z;
+        double len = std::sqrt(dx*dx + dz*dz);
+        if (len < 0.01) { dx = (rand()/(double)RAND_MAX - 0.5); dz = (rand()/(double)RAND_MAX - 0.5); len = std::sqrt(dx*dx+dz*dz); }
+        double nx = dx / len;
+        double nz = dz / len;
+        WriteBuffer vel;
+        vel.varint(hitPtr->entityId);
+        vel.i16(static_cast<std::int16_t>(nx * 400));
+        vel.i16(static_cast<std::int16_t>(300));
+        vel.i16(static_cast<std::int16_t>(nz * 400));
+        srv_.broadcastPacketExcept(nullptr, pl::sc::EntityVelocity, vel);
+        // damage event for mob (no conn, broadcast only for animation via generic?)
+        // Could broadcast DamageEvent if needed, but mob has no player conn
     }
     if (killed && victim) {
         WriteBuffer rm;
