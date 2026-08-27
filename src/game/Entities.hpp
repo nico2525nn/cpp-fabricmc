@@ -49,6 +49,12 @@ struct ProjectileEntity {
     std::int32_t stuckBlockX=0, stuckBlockY=0, stuckBlockZ=0;
 };
 
+struct LightningBoltEntity {
+    std::int32_t entityId = 0;
+    double x=0, y=0, z=0;
+    std::int64_t ageTicks = 0;
+};
+
 enum class MobKind : std::uint8_t {
     Pig = 0, Cow, Sheep, Chicken,
     Zombie, Creeper, Skeleton, Spider,
@@ -159,6 +165,14 @@ struct MobEntity {
     std::int32_t leashHolder = -1;
     std::int64_t lastTeleportTick = -10000;
     bool isBabyVal = false;
+    // plan6 extensions
+    std::int32_t villagerXp = 0;
+    std::int32_t villagerLevel = 1;
+    std::int32_t gossip = 0;
+    std::int64_t restockUntil = 0;
+    std::int64_t witherSkullCooldown = 0;
+    int dragonPhase = 0; // 0 circling, 1 approaching, 2 perching/breath, 3 takeoff
+    std::int64_t dragonPhaseUntil = 0;
 
     static const char* kindName(MobKind k) { return mobStats(k).name; }
     static std::uint32_t typeId(MobKind k) {
