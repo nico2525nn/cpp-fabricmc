@@ -169,6 +169,36 @@ public:
             });
         }
     }
+    bool isDirty(std::int32_t cx, std::int32_t cz) {
+        std::lock_guard lk(dirtyMtx_);
+        return dirty_.count(chunkKey(cx, cz)) != 0;
+    }
+    bool flushChunk(std::int32_t cx, std::int32_t cz) {
+        {
+            std::lock_guard lk(dirtyMtx_);
+            dirty_.erase(chunkKey(cx, cz));
+        }
+        const std::string bio = [this] {
+            std::lock_guard lk(bioMtx_);
+            return biomeOverride_.value_or(biome_);
+        }();
+        bool ok = false;
+        world_.withChunk(cx, cz, [&](const Chunk& c) {
+            try {
+                nbt::Value root = chunkToNBT(cx, cz, c, bio, &biomeIdxToKey_);
+                if (writeExtras_) writeExtras_(cx, cz, root);
+                WriteBuffer out;
+                nbt::writeFileRoot(out, root);
+                RegionFile rf(regionPath(cx, cz));
+                rf.store(cx & 31, cz & 31, out.data);
+                ok = true;
+                std::fprintf(stderr, "[cppfm] flushChunk %d,%d (%zu bytes)\n", cx, cz, out.data.size());
+            } catch (const std::exception& e) {
+                std::fprintf(stderr, "[cppfm] FLUSH CHUNK ERROR %d,%d: %s\n", cx, cz, e.what());
+            }
+        });
+        return ok;
+    }
 
 private:
     void loop() {

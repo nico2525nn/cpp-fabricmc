@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <string>
+#include <vector>
 
 namespace cppfm {
 
@@ -16,36 +17,48 @@ void BlockTickScheduler::schedule(std::int32_t x, std::int32_t y, std::int32_t z
 }
 
 void BlockTickScheduler::tick(std::int64_t now) {
-    // random ticks: pick chunks
+    // random ticks: pick chunks (simulation-distance culled)
     if (rules_) {
         const int rts = rules_->getInt("randomTickSpeed", 3);
         if (rts > 0 && now % 5 == 0) {
-            // Use World's allChunkKeys to pick random chunks
+            // Use World's allChunkKeys to pick random chunks (simulation-distance culled)
             auto keys = world_.allChunkKeys();
             if (!keys.empty()) {
-                for (int i = 0; i < std::min<int>(rts, 8); ++i) {
-                    const std::int64_t k = keys[rand() % keys.size()];
+                // filter by simulation distance if server present
+                std::vector<std::int64_t> simKeys;
+                simKeys.reserve(keys.size());
+                for (auto k : keys) {
                     const std::int32_t cx = static_cast<std::int32_t>(k >> 32);
                     const std::int32_t cz = static_cast<std::int32_t>(k & 0xFFFFFFFFLL);
-                    for (int r = 0; r < 16; ++r) {
-                        const std::int32_t x = (cx << 4) + (rand() % 16);
-                        const std::int32_t z = (cz << 4) + (rand() % 16);
-                        const std::int32_t y = kMinY + (rand() % (kMaxY - kMinY));
-                        const std::uint16_t st = world_.getBlock(x,y,z);
-                        if (st == 0) continue;
-                        const gen::BlockDef* d = gen::blockByState(st);
-                        if (!d) continue;
-                        auto* beh = behaviorFor(std::string(d->name));
-                        if (beh) beh->tick(world_, x, y, z, st, now, srv_);
+                    if (srv_ && !srv_->isChunkInSimulationDistance(cx, cz)) continue;
+                    simKeys.push_back(k);
+                }
+                if (!simKeys.empty()) {
+                    for (int i = 0; i < std::min<int>(rts, 8); ++i) {
+                        const std::int64_t k = simKeys[rand() % simKeys.size()];
+                        const std::int32_t cx = static_cast<std::int32_t>(k >> 32);
+                        const std::int32_t cz = static_cast<std::int32_t>(k & 0xFFFFFFFFLL);
+                        for (int r = 0; r < 16; ++r) {
+                            const std::int32_t x = (cx << 4) + (rand() % 16);
+                            const std::int32_t z = (cz << 4) + (rand() % 16);
+                            const std::int32_t y = kMinY + (rand() % (kMaxY - kMinY));
+                            const std::uint16_t st = world_.getBlock(x,y,z);
+                            if (st == 0) continue;
+                            const gen::BlockDef* d = gen::blockByState(st);
+                            if (!d) continue;
+                            auto* beh = behaviorFor(std::string(d->name));
+                            if (beh) beh->tick(world_, x, y, z, st, now, srv_);
+                        }
                     }
                 }
             }
         }
     }
-    // scheduled ticks
+    // scheduled ticks (simulation-distance culled)
     while (!queue_.empty() && queue_.top().dueTick <= now) {
         ScheduledTick t = queue_.top(); queue_.pop();
         pendingPos_.erase(posKey3(t.x,t.y,t.z));
+        if (srv_ && !srv_->isChunkInSimulationDistance(t.x >> 4, t.z >> 4)) continue;
         const std::uint16_t st = world_.getBlock(t.x,t.y,t.z);
         if (st == 0) continue;
         const gen::BlockDef* d = gen::blockByState(st);
