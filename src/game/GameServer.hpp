@@ -33,6 +33,7 @@
 #include "../physics/LightEngine.hpp"
 #include "../physics/Fluids.hpp"
 #include "../physics/Redstone.hpp"
+#include "../physics/BlockTickScheduler.hpp"
 #include "../api/EventBus.hpp"
 #include "../api/PluginChannels.hpp"
 #include "../brigadier/Tree.hpp"
@@ -293,6 +294,20 @@ public:
                 data_.biomeIndex(cfg_.worldBiome)));
         fluidSim_ = std::make_unique<FluidSim>(world_);
         redstone_ = std::make_unique<RedstoneEngine>(world_);
+        blockTicks_ = std::make_unique<BlockTickScheduler>(world_, &gamerules_, this);
+        blockTicks_->registerBehavior("minecraft:wheat", std::make_unique<CropBehavior>());
+        blockTicks_->registerBehavior("minecraft:potatoes", std::make_unique<CropBehavior>());
+        blockTicks_->registerBehavior("minecraft:carrots", std::make_unique<CropBehavior>());
+        blockTicks_->registerBehavior("minecraft:beetroots", std::make_unique<CropBehavior>());
+        blockTicks_->registerBehavior("minecraft:oak_sapling", std::make_unique<SaplingBehavior>());
+        blockTicks_->registerBehavior("minecraft:spruce_sapling", std::make_unique<SaplingBehavior>());
+        blockTicks_->registerBehavior("minecraft:birch_sapling", std::make_unique<SaplingBehavior>());
+        blockTicks_->registerBehavior("minecraft:jungle_sapling", std::make_unique<SaplingBehavior>());
+        blockTicks_->registerBehavior("minecraft:bamboo", std::make_unique<StemBehavior>(16));
+        blockTicks_->registerBehavior("minecraft:sugar_cane", std::make_unique<StemBehavior>(4));
+        blockTicks_->registerBehavior("minecraft:cactus", std::make_unique<StemBehavior>(4));
+        blockTicks_->registerBehavior("minecraft:farmland", std::make_unique<FarmlandBehavior>());
+        blockTicks_->registerBehavior("minecraft:fire", std::make_unique<FireBehavior>());
         world_.setOnBlockChanged([this](std::int32_t x, std::int32_t y,
                                         std::int32_t z, std::uint16_t o,
                                         std::uint16_t n) {
@@ -440,6 +455,9 @@ public:
     void initCommands();                             // builds command tree
     api::ServerEvents& events() { return api::events(); }
     LightEngine& lights() { return *lightEngine_; }
+    GameRuleManager& gameRules() { return gamerules_; }
+    const GameRuleManager& gameRules() const { return gamerules_; }
+    BlockTickScheduler* blockTicks() { return blockTicks_.get(); }
     // Resolve a selector string (@a/@e/@p/...) against players & mobs.
     brigadier::SelectorResult resolveSelector(const std::string& raw,
                                               Player* source);
@@ -648,6 +666,7 @@ private:
     std::unique_ptr<LightEngine> lightEngine_;
     std::unique_ptr<FluidSim> fluidSim_;
     std::unique_ptr<RedstoneEngine> redstone_;
+    std::unique_ptr<BlockTickScheduler> blockTicks_;
     const std::uint64_t explosionSeed_ = 0x51AB1EULL;
     // weather (本家互換: doWeatherCycle / rain)
     enum class Weather { Clear, Rain } weather_ = Weather::Clear;
