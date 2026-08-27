@@ -1,5 +1,6 @@
 #include "TestClient.hpp"
 #include "../src/core/NBT.hpp"
+#include "../src/game/World.hpp"
 #include <cstdlib>
 
 static std::size_t rest_size(cppfm::ReadBuffer& r){ return r.len - r.off; }
@@ -421,6 +422,36 @@ void TestClient::filePacket(Packet p) {
         case proto::pl::sc::DeclareCommands: declares++; break;
         case proto::pl::sc::Respawn: gotRespawn = true; break;
         case proto::pl::sc::Login: joinGameBody = p.body; break;
+        case proto::pl::sc::MultiBlockChange: {
+            // Decode MultiBlockChange body: packed chunk pos u64, varint count, then varint enc entries
+            // enc = (state<<12) | (lx<<8) | (lz<<4) | ly
+            try {
+                ReadBuffer in(p.body);
+                std::uint64_t packed = in.u64();
+                std::int32_t cnt = in.varint();
+                // unpack base
+                std::int32_t baseCx = static_cast<std::int32_t>((packed >> 42) & 0x3FFFFF);
+                if (baseCx & 0x200000) baseCx |= ~0x3FFFFF;
+                std::int32_t baseCz = static_cast<std::int32_t>((packed >> 20) & 0x3FFFFF);
+                if (baseCz & 0x200000) baseCz |= ~0x3FFFFF;
+                std::int32_t baseSy = static_cast<std::int32_t>(packed & 0xFFFFF);
+                if (baseSy & 0x80000) baseSy |= ~0xFFFFF;
+                // world y = sectionY*16 + ly + kMinY
+                for (int i=0;i<cnt;++i){
+                    std::int32_t enc = in.varint();
+                    std::uint32_t state = static_cast<std::uint32_t>(enc >> 12);
+                    int lx = (enc >> 8) & 0xF;
+                    int lz = (enc >> 4) & 0xF;
+                    int ly = enc & 0xF;
+                    int x = baseCx*16 + lx;
+                    int y = baseSy*16 + ly + cppfm::kMinY;
+                    int z = baseCz*16 + lz;
+                    blockUpdates.push_back({x,y,z, state});
+                }
+            } catch (...){}
+            break;
+        }
+        case proto::pl::sc::UpdateLight: break; // counted via recent_ but no extra state
         default: break;
         }
         recent_.push_back(std::move(p));

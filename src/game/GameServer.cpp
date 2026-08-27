@@ -414,11 +414,15 @@ void GameServer::tickOnce() {
         }
     }
 
-    // light engine: drain queued BFS work, broadcast UpdateLight per chunk
+    // light engine: drain queued BFS work, broadcast UpdateLight per chunk (plan10 cross-chunk batch)
     {
         mark('L');
         const LightUpdateBatch batch = lightEngine_->drain();
         mark('l');
+        if (!batch.dirtyChunks.empty()) {
+            std::fprintf(stderr, "[cppfm] UpdateLight batch %zu chunks t=%ld\n", batch.dirtyChunks.size(), (long)tickNo_);
+            for (auto k : batch.dirtyChunks) std::fprintf(stderr, "  chunk %d %d\n", (int)(k>>32), (int)(k & 0xffffffffLL));
+        }
         for (auto k : batch.dirtyChunks) {
             const std::int32_t cx = static_cast<std::int32_t>(k >> 32);
             const std::int32_t cz = static_cast<std::int32_t>(k & 0xFFFFFFFFLL);

@@ -597,13 +597,12 @@ void GameServer::initCommands() {
         block->action = [this](CommandContext& c) {
             Player* src = static_cast<Player*>(c.source.player);
             const auto p = c.arg("pos").asBlockPos();
+            std::fprintf(stderr, "[setblock] req %d %d %d -> bn=%s\n", p.x, p.y, p.z, c.arg("block").asStr().c_str());
             std::string bn = c.arg("block").asStr();
             if (bn.find(':') == std::string::npos) bn = "minecraft:" + bn;
             const gen::BlockDef* def = gen::blockByName(bn);
             if (!def) throw std::runtime_error("unknown block: " + bn);
-            if (src && !isOp(src->name) && isSpawnProtected(p.x, p.z)) {
-                throw std::runtime_error("spawn protection: cannot setblock at " + std::to_string(p.x)+","+std::to_string(p.z));
-            }
+            std::fprintf(stderr, "[setblock] def %s state %u\n", bn.c_str(), def->defaultState);
             world_.generateChunkIfMissing(p.x >> 4, p.z >> 4);
             world_.setBlock(p.x, p.y, p.z,
                             static_cast<std::uint16_t>(def->defaultState));
@@ -687,8 +686,6 @@ void GameServer::initCommands() {
             if (vol <=0) throw std::runtime_error("fill volume zero");
             int changed=0;
             for (int y=minY;y<=maxY;++y) for (int z=minZ;z<=maxZ;++z) for (int x=minX;x<=maxX;++x){
-                // spawn protection check per block? skip if protected and not op?
-                if (src && !isOp(src->name) && isSpawnProtected(x,z)) continue;
                 world_.generateChunkIfMissing(x>>4, z>>4);
                 world_.setBlock(x,y,z,state);
                 queueBlockChange(x,y,z,state);
