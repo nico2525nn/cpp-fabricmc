@@ -3851,6 +3851,7 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
         }
     }
 }
+}
 
 void Session::closeOpenMenu(bool sendPacketToClient) {
     if (!openMenu_) return;
@@ -4383,48 +4384,6 @@ void Session::handlePlay() {
         case pl::cs::HeldItemSlot:        onHeldSlot(in); break;
         case pl::cs::WindowClick:         onWindowClick(in); break;   // 0x10
         case pl::cs::CloseContainer:      onCloseContainer(); break;  // 0x11
-        case pl::cs::EnchantItem: {                                   // 0x0F
-            const std::uint8_t win = in.u8();
-            const std::uint8_t button = in.u8();
-            (void)win;
-            if (openMenu_ && openMenu_->type == MenuType::Enchantment) {
-                int bs = 0;
-                if (openMenu_->blockKey >= 0) {
-                    int bx = posKeyUnpackX(openMenu_->blockKey);
-                    int by = posKeyUnpackY(openMenu_->blockKey);
-                    int bz = posKeyUnpackZ(openMenu_->blockKey);
-                    for (int dx = -2; dx <= 2; ++dx)
-                        for (int dz = -2; dz <= 2; ++dz)
-                            for (int dy = 0; dy <= 1; ++dy) {
-                                if (dx == 0 && dz == 0) continue;
-                                auto st = srv_.world().getBlock(bx + dx, by + dy, bz + dz);
-                                auto* d = gen::blockByState(st);
-                                if (d && std::string(d->name) == "minecraft:bookshelf") ++bs;
-                            }
-                    if (bs > 15) bs = 15;
-                }
-                int cost = CostCalculator::enchantingCost(*self_, bs);
-                cost = std::clamp(cost + button, 1, 30);
-                if (self_->xp.level >= cost || self_->gamemode == 1) {
-                    if (self_->gamemode == 0) {
-                        self_->xp.level -= cost;
-                        GameServer::sendSetExperience(*self_);
-                    }
-                    ItemStack* target = openMenu_->container ? &openMenu_->container[0] : &openMenu_->extraSlots[0];
-                    if (!target->empty()) {
-                        const char* ench = (button == 0 ? "minecraft:sharpness" : button == 1 ? "minecraft:efficiency" : "minecraft:unbreaking");
-                        ItemStack::addEnchant(*target, ench, cost / 10 + 1);
-                        sendMenuContent(*openMenu_);
-                        WriteBuffer pb;
-                        pb.u8(static_cast<std::uint8_t>(openMenu_->windowId));
-                        pb.i16(button);
-                        pb.i16(static_cast<std::int16_t>(cost));
-                        try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
-                    }
-                }
-            }
-            break;
-        }
         case pl::cs::PlaceRecipe: {                                   // 0x25
             (void)in.u8();                     // windowId
             const auto recipeId = in.varint();
@@ -4969,8 +4928,6 @@ void Session::onUseItemOn(ReadBuffer& in) {
         if (bdef) {
             const std::string bn(bdef->name);
             bool isMenuBlock = bn.find("chest") != std::string::npos ||
-                bn == "minecraft:furnace" ||
-            if (bn.find("chest") != std::string::npos ||
                 bn == "minecraft:furnace" || bn == "minecraft:blast_furnace" ||
                 bn == "minecraft:smoker" ||
                 bn == "minecraft:hopper" || bn == "minecraft:dispenser" ||
@@ -4995,20 +4952,6 @@ void Session::onUseItemOn(ReadBuffer& in) {
                     ack(sequence);
                     return;
                 }
-                bn == "minecraft:anvil" || bn == "minecraft:chipped_anvil" ||
-                bn == "minecraft:damaged_anvil" ||
-                bn == "minecraft:brewing_stand" ||
-                bn == "minecraft:stonecutter" ||
-                bn == "minecraft:grindstone" ||
-                bn == "minecraft:smithing_table" ||
-                bn == "minecraft:beacon" ||
-                bn == "minecraft:loom" ||
-                bn == "minecraft:barrel" ||
-                bn.find("shulker_box") != std::string::npos) {
-                openMenuAt(x, y, z, clickedState);
-                ack(sequence);
-                return;
-            }
             if (d == 1) {
             // redstone interactables (lever / button) consume the click
             if (bn == "minecraft:lever" ||
@@ -5469,6 +5412,7 @@ void Session::onUseItemOn(ReadBuffer& in) {
         srv_.resendInventory(*self_);
     }
     ack(sequence);
+}
 }
 
 void Session::onUseItem(ReadBuffer& in) {
