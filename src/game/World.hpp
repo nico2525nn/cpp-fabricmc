@@ -10,6 +10,7 @@
 #include <string>
 #include <functional>
 #include <unordered_map>
+#include <vector>
 #include "generated/BlockStates.hpp"
 #include "TerrainGen.hpp"
 #include "../worldgen/MultiNoise.hpp"
@@ -265,6 +266,13 @@ public:
         std::shared_lock lock(mutex_);
         auto it = chunks_.find(chunkKey(cx, cz));
         return it == chunks_.end() ? nullptr : it->second.get();
+    }
+    std::vector<std::int64_t> allChunkKeys() const {
+        std::shared_lock lock(mutex_);
+        std::vector<std::int64_t> out;
+        out.reserve(chunks_.size());
+        for (auto& kv : chunks_) out.push_back(kv.first);
+        return out;
     }
     // Sum of revisions of the chunk (cheap "did anything change" probe).
     std::uint64_t revisionAt(std::int32_t cx, std::int32_t cz) const {
