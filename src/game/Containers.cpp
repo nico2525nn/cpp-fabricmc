@@ -7,25 +7,59 @@ namespace cppfm {
 ItemStack* Menu::slotAt(int slot, ItemStack* playerInv) {
     switch (type) {
     case MenuType::Hopper:
-        if (slot >= 0 && slot < 5) return &container[slot];
+        if (slot >= 0 && slot < 5) return container ? &container[slot] : &extraSlots[slot];
         if (slot >= 5 && slot < 41) return &playerInv[slot - 5 + 9];
         return nullptr;
     case MenuType::Dispenser:
-        if (slot >= 0 && slot < 9) return &container[slot];
+        if (slot >= 0 && slot < 9) return container ? &container[slot] : &extraSlots[slot];
         if (slot >= 9 && slot < 45) return &playerInv[slot - 9 + 9];
         return nullptr;
     case MenuType::Chest:
-        if (slot >= 0 && slot < 27) return &container[slot];
+    case MenuType::Barrel:
+    case MenuType::ShulkerBox:
+        if (slot >= 0 && slot < 27) return container ? &container[slot] : &extraSlots[slot];
         if (slot >= 27 && slot < 63) return &playerInv[slot - 27 + 9]; // main+hotbar
         return nullptr;
     case MenuType::Furnace:
-        if (slot >= 0 && slot < 3) return &container[slot];
+        if (slot >= 0 && slot < 3) return container ? &container[slot] : &extraSlots[slot];
         if (slot >= 3 && slot < 39) return &playerInv[slot - 3 + 9];
         return nullptr;
     case MenuType::Crafting:
         if (slot == 0) return &craftResult;
         if (slot >= 1 && slot < 10) return &craftGrid[slot - 1];
         if (slot >= 10 && slot < 46) return &playerInv[slot - 10 + 9];
+        return nullptr;
+    case MenuType::Enchantment:
+        if (slot >= 0 && slot < 2) return container ? &container[slot] : &extraSlots[slot];
+        if (slot >= 2 && slot < 38) return &playerInv[slot - 2 + 9];
+        return nullptr;
+    case MenuType::Anvil:
+        if (slot >= 0 && slot < 3) return container ? &container[slot] : &extraSlots[slot];
+        if (slot >= 3 && slot < 39) return &playerInv[slot - 3 + 9];
+        return nullptr;
+    case MenuType::Brewing:
+        if (slot >= 0 && slot < 5) return container ? &container[slot] : &extraSlots[slot];
+        if (slot >= 5 && slot < 41) return &playerInv[slot - 5 + 9];
+        return nullptr;
+    case MenuType::Stonecutter:
+        if (slot >= 0 && slot < 2) return container ? &container[slot] : &extraSlots[slot];
+        if (slot >= 2 && slot < 38) return &playerInv[slot - 2 + 9];
+        return nullptr;
+    case MenuType::Grindstone:
+        if (slot >= 0 && slot < 3) return container ? &container[slot] : &extraSlots[slot];
+        if (slot >= 3 && slot < 39) return &playerInv[slot - 3 + 9];
+        return nullptr;
+    case MenuType::Smithing:
+        if (slot >= 0 && slot < 4) return container ? &container[slot] : &extraSlots[slot];
+        if (slot >= 4 && slot < 40) return &playerInv[slot - 4 + 9];
+        return nullptr;
+    case MenuType::Beacon:
+        if (slot >= 0 && slot < 1) return container ? &container[slot] : &extraSlots[slot];
+        if (slot >= 1 && slot < 37) return &playerInv[slot - 1 + 9];
+        return nullptr;
+    case MenuType::Loom:
+        if (slot >= 0 && slot < 4) return container ? &container[slot] : &extraSlots[slot];
+        if (slot >= 4 && slot < 40) return &playerInv[slot - 4 + 9];
         return nullptr;
     }
     return nullptr;
@@ -35,12 +69,22 @@ const char* Menu::slotRegion(int slot) const {
     switch (type) {
     case MenuType::Hopper: return slot < 5 ? "container" : "player";
     case MenuType::Dispenser: return slot < 9 ? "container" : "player";
-    case MenuType::Chest: return slot < 27 ? "container" : "player";
+    case MenuType::Chest:
+    case MenuType::Barrel:
+    case MenuType::ShulkerBox: return slot < 27 ? "container" : "player";
     case MenuType::Furnace: return slot < 3 ? "container" : "player";
     case MenuType::Crafting:
         if (slot == 0) return "result";
         if (slot < 10) return "craft";
         return "player";
+    case MenuType::Enchantment: return slot < 2 ? "container" : "player";
+    case MenuType::Anvil: return slot < 3 ? "container" : "player";
+    case MenuType::Brewing: return slot < 5 ? "container" : "player";
+    case MenuType::Stonecutter: return slot < 2 ? "container" : "player";
+    case MenuType::Grindstone: return slot < 3 ? "container" : "player";
+    case MenuType::Smithing: return slot < 4 ? "container" : "player";
+    case MenuType::Beacon: return slot < 1 ? "container" : "player";
+    case MenuType::Loom: return slot < 4 ? "container" : "player";
     }
     return "?";
 }
