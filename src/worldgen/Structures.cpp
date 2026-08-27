@@ -166,6 +166,101 @@ void StructureGenerator::outpostPiece(Chunk& chunk, std::int32_t cx,
     w.set(ox + 2, baseY + 11, oz + 2, B("minecraft:torch")->defaultState, true);
 }
 
+void StructureGenerator::jungleTemplePiece(Chunk& chunk, std::int32_t cx,
+                                           std::int32_t cz, std::int32_t ox,
+                                           std::int32_t oz, const GroundFn& ground) {
+    Writer w{chunk, cx, cz};
+    const auto mossy = B("minecraft:mossy_cobblestone") ? B("minecraft:mossy_cobblestone")->defaultState
+                    : B("minecraft:cobblestone")->defaultState;
+    const auto cobble = B("minecraft:cobblestone")->defaultState;
+    const auto chiseled = B("minecraft:chiseled_stone_bricks") ? B("minecraft:chiseled_stone_bricks")->defaultState : cobble;
+    const int baseY = ground(ox + 6, oz + 6);
+    // simple 12x12 temple base with walls 4 high, similar to pyramid but smaller and mossy
+    for (int step = 0; step < 3; ++step) {
+        const int r = 6 - step;
+        const int y = baseY + 1 + step;
+        for (int dz = -r; dz <= r; ++dz)
+            for (int dx = -r; dx <= r; ++dx) {
+                const bool edge = std::abs(dx) == r || std::abs(dz) == r;
+                if (!edge) continue;
+                w.set(ox + dx + 6, y, oz + dz + 6, (step % 2 == 0 ? mossy : cobble), true);
+            }
+    }
+    // inner chamber door and treasure
+    w.set(ox + 6, baseY + 1, oz, 0, true);
+    w.set(ox + 6, baseY + 2, oz, 0, true);
+    w.box(ox + 4, baseY + 1, oz + 4, ox + 8, baseY + 2, oz + 8, chiseled, true);
+    w.set(ox + 6, baseY + 1, oz + 6, B("minecraft:chest") ? B("minecraft:chest")->defaultState : cobble, true);
+}
+
+void StructureGenerator::iglooPiece(Chunk& chunk, std::int32_t cx,
+                                    std::int32_t cz, std::int32_t ox,
+                                    std::int32_t oz, const GroundFn& ground) {
+    Writer w{chunk, cx, cz};
+    const auto snow = B("minecraft:snow_block")->defaultState;
+    const auto ice = B("minecraft:ice") ? B("minecraft:ice")->defaultState : snow;
+    const int baseY = ground(ox + 4, oz + 4);
+    // 7x7 dome simplified as 5 high hollow box with snow
+    for (int dy = 0; dy < 4; ++dy) {
+        for (int dz = -3; dz <= 3; ++dz)
+            for (int dx = -3; dx <= 3; ++dx) {
+                const bool shell = std::abs(dx) == 3 || std::abs(dz) == 3 || dy == 3;
+                const bool interior = !shell && dy > 0;
+                if (shell) w.set(ox + dx + 4, baseY + 1 + dy, oz + dz + 4, snow, true);
+                if (interior && dy == 1) w.set(ox + dx + 4, baseY + 1 + dy, oz + dz + 4, 0, true);
+            }
+    }
+    // door hole south side
+    w.set(ox + 4, baseY + 1, oz + 7, 0, true);
+    w.set(ox + 4, baseY + 2, oz + 7, 0, true);
+    // interior features: crafting + furnace + bed
+    w.set(ox + 5, baseY + 1, oz + 5, B("minecraft:crafting_table") ? B("minecraft:crafting_table")->defaultState : snow, true);
+    w.set(ox + 3, baseY + 1, oz + 5, B("minecraft:furnace") ? B("minecraft:furnace")->defaultState : snow, true);
+    w.set(ox + 4, baseY + 1, oz + 3, ice, true);
+}
+
+void StructureGenerator::swampHutPiece(Chunk& chunk, std::int32_t cx,
+                                       std::int32_t cz, std::int32_t ox,
+                                       std::int32_t oz, const GroundFn& ground) {
+    Writer w{chunk, cx, cz};
+    const auto planks = B("minecraft:spruce_planks") ? B("minecraft:spruce_planks")->defaultState
+                        : B("minecraft:oak_planks")->defaultState;
+    const auto log = B("minecraft:oak_log")->defaultState;
+    const auto cauldron = B("minecraft:cauldron") ? B("minecraft:cauldron")->defaultState : planks;
+    const int baseY = ground(ox + 4, oz + 4);
+    // stilts
+    for (int dx = 0; dx < 7; ++dx)
+        for (int dz = 0; dz < 7; ++dz) {
+            const bool isPost = (dx % 6 == 0 && dz % 6 == 0);
+            if (isPost) {
+                for (int h = -2; h <= 0; ++h) w.set(ox + dx, baseY + h, oz + dz, log, true);
+            }
+        }
+    // platform 7x7
+    for (int dx = 0; dx < 7; ++dx)
+        for (int dz = 0; dz < 7; ++dz) {
+            w.set(ox + dx, baseY + 1, oz + dz, planks, true);
+        }
+    // walls 3 high, with door gap front and windows
+    for (int dy = 1; dy <= 3; ++dy) {
+        for (int dx = 0; dx < 7; ++dx) {
+            w.set(ox + dx, baseY + 1 + dy, oz, planks, true);
+            w.set(ox + dx, baseY + 1 + dy, oz + 6, planks, true);
+        }
+        for (int dz = 0; dz < 7; ++dz) {
+            w.set(ox, baseY + 1 + dy, oz + dz, planks, true);
+            w.set(ox + 6, baseY + 1 + dy, oz + dz, planks, true);
+        }
+    }
+    // carve door and windows
+    w.set(ox + 3, baseY + 2, oz, 0, true);
+    w.set(ox + 3, baseY + 3, oz, 0, true);
+    w.set(ox, baseY + 3, oz + 3, B("minecraft:glass") ? B("minecraft:glass")->defaultState : 0, true);
+    // interior cauldron + crafting
+    w.set(ox + 2, baseY + 2, oz + 2, cauldron, true);
+    w.set(ox + 4, baseY + 2, oz + 4, B("minecraft:crafting_table") ? B("minecraft:crafting_table")->defaultState : planks, true);
+}
+
 void StructureGenerator::generateChunk(Chunk& chunk, std::int32_t cx,
                                        std::int32_t cz, const GroundFn& ground) {
     for (const auto& s : structureSets()) {
@@ -187,7 +282,13 @@ void StructureGenerator::generateChunk(Chunk& chunk, std::int32_t cx,
             pyramidPiece(chunk, cx, cz, at.originX, at.originZ, ground);
         else if (name.find("pillager_outpost") != std::string::npos)
             outpostPiece(chunk, cx, cz, at.originX, at.originZ, ground);
-        else continue;                                    // others: gated later
+        else if (name.find("jungle_temple") != std::string::npos)
+            jungleTemplePiece(chunk, cx, cz, at.originX, at.originZ, ground);
+        else if (name.find("igloo") != std::string::npos)
+            iglooPiece(chunk, cx, cz, at.originX, at.originZ, ground);
+        else if (name.find("swamp_hut") != std::string::npos)
+            swampHutPiece(chunk, cx, cz, at.originX, at.originZ, ground);
+        else continue;
     }
 }
 

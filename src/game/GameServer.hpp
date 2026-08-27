@@ -33,6 +33,7 @@
 #include "../physics/LightEngine.hpp"
 #include "../physics/Fluids.hpp"
 #include "../physics/Redstone.hpp"
+#include "../physics/BlockTickScheduler.hpp"
 #include "../api/EventBus.hpp"
 #include "../api/PluginChannels.hpp"
 #include "../brigadier/Tree.hpp"
@@ -293,6 +294,20 @@ public:
                 data_.biomeIndex(cfg_.worldBiome)));
         fluidSim_ = std::make_unique<FluidSim>(world_);
         redstone_ = std::make_unique<RedstoneEngine>(world_);
+        blockTicks_ = std::make_unique<BlockTickScheduler>(world_, &gamerules_, this);
+        // register default random-tick behaviors (plan5 blocktick)
+        blockTicks_->registerBehavior("minecraft:wheat", std::make_unique<CropBehavior>());
+        blockTicks_->registerBehavior("minecraft:carrots", std::make_unique<CropBehavior>());
+        blockTicks_->registerBehavior("minecraft:potatoes", std::make_unique<CropBehavior>());
+        blockTicks_->registerBehavior("minecraft:beetroots", std::make_unique<CropBehavior>());
+        blockTicks_->registerBehavior("minecraft:oak_sapling", std::make_unique<SaplingBehavior>());
+        blockTicks_->registerBehavior("minecraft:birch_sapling", std::make_unique<SaplingBehavior>());
+        blockTicks_->registerBehavior("minecraft:spruce_sapling", std::make_unique<SaplingBehavior>());
+        blockTicks_->registerBehavior("minecraft:bamboo", std::make_unique<StemBehavior>(16));
+        blockTicks_->registerBehavior("minecraft:sugar_cane", std::make_unique<StemBehavior>(3));
+        blockTicks_->registerBehavior("minecraft:cactus", std::make_unique<StemBehavior>(3));
+        blockTicks_->registerBehavior("minecraft:farmland", std::make_unique<FarmlandBehavior>());
+        blockTicks_->registerBehavior("minecraft:fire", std::make_unique<FireBehavior>());
         world_.setOnBlockChanged([this](std::int32_t x, std::int32_t y,
                                         std::int32_t z, std::uint16_t o,
                                         std::uint16_t n) {
@@ -358,9 +373,12 @@ public:
         {
             const auto sp = world_.spawnPoint();
             for (int dz = -2; dz <= 2; ++dz)
-                for (int dx = -2; dx <= 2; ++dx)
-                    world_.generateChunkIfMissing((sp.x >> 4) + dx,
-                                                  (sp.z >> 4) + dz);
+                for (int dx = -2; dx <= 2; ++dx) {
+                    const std::int32_t cx = (sp.x >> 4) + dx;
+                    const std::int32_t cz = (sp.z >> 4) + dz;
+                    world_.generateChunkIfMissing(cx, cz);
+                    world_.addForcedChunk(cx, cz);
+                }
         }
         persist_->start();
         // plan5 §1: per-dimension persistence (DIM-1 / DIM1)
@@ -449,6 +467,9 @@ public:
     void furnacesTick();
     // Hopper item movement + dispenser ejection (every 8 ticks).
     void hoppersTick();
+    // Chunk LRU / simulation distance (plan5 items 6,7,8)
+    bool isChunkInSimulationDistance(std::int32_t cx, std::int32_t cz) const;
+    void chunksUnloadTick();
     // Direct inventory access helpers used by the hopper simulation.
     ItemStack* containerAt(std::int32_t x, std::int32_t y, std::int32_t z,
                            int& countOut, BlockEntity::Kind& kindOut);
@@ -648,12 +669,15 @@ private:
     std::unique_ptr<LightEngine> lightEngine_;
     std::unique_ptr<FluidSim> fluidSim_;
     std::unique_ptr<RedstoneEngine> redstone_;
+    std::unique_ptr<BlockTickScheduler> blockTicks_;
     const std::uint64_t explosionSeed_ = 0x51AB1EULL;
     // weather (本家互換: doWeatherCycle / rain)
     enum class Weather { Clear, Rain } weather_ = Weather::Clear;
     std::int64_t weatherUntilTick_ = 6000 * 20;   // next toggle attempt
 public:
     bool raining() const { return weather_ == Weather::Rain; }
+    GameRuleManager& gameRules() { return gamerules_; }
+    const GameRuleManager& gameRules() const { return gamerules_; }
 private:
     void weatherTick();
     void setWeather(Weather w, std::int64_t durationTicks);
