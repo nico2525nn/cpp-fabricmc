@@ -40,6 +40,7 @@
 #include "GameRules.hpp"
 #include "ServerEvents.hpp"
 #include "AiBrain.hpp"
+#include "Attributes.hpp"
 
 namespace cppfm {
 
@@ -154,6 +155,7 @@ struct Player {
     std::int32_t arrowsStuck = 0;
     std::int64_t lastEnderPearlTick = -10000;
     std::int64_t invulnUntilTick = 0;
+    AttributeManager attributes;
 };
 
 class GameServer;
