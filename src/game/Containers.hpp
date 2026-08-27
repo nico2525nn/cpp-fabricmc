@@ -49,6 +49,8 @@ public:
     // drag paint transient (mode 5)
     std::vector<int> dragSlots;
     int dragButton = -1;                 // initial button for drag type
+    // anvil rename text (per-menu, not singleton)
+    std::string anvilRename;
     int totalSlots() const {
         switch (type) {
         case MenuType::Chest: return 27 + 36;

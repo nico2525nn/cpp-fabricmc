@@ -10,14 +10,27 @@ struct Player;
 
 class CostCalculator {
 public:
-    // Enchanting: base = rand(4,17) + bookshelves*2 (vanilla formula simplified)
+    // Enchanting: vanilla 1.21.4: base = rand(1,8) + floor(bs/2) + rand(0,bs)
+    // clamped 1..30. Then 3 levels derived as max(base/3,1), (base*2)/3+1, max(base, bs*2)
     static int enchantingCost(const Player& /*player*/, int bookshelves) {
         int bs = std::clamp(bookshelves, 0, 15);
-        int base = 4 + (std::rand() % 14); // 4..17 inclusive
-        base += bs * 2;
+        int base = 1 + (std::rand() % 8); // 1..8
+        base += bs / 2;
+        if (bs > 0) base += (std::rand() % (bs + 1)); // 0..bs
         if (base < 1) base = 1;
         if (base > 30) base = 30;
         return base;
+    }
+    static std::array<int,3> enchantingCostsForShelves(const Player& p, int bookshelves) {
+        int bs = std::clamp(bookshelves, 0, 15);
+        int base = enchantingCost(p, bs);
+        int c0 = std::max(base / 3, 1);
+        int c1 = (base * 2) / 3 + 1;
+        int c2 = std::max(base, bs * 2);
+        c0 = std::clamp(c0, 1, 30);
+        c1 = std::clamp(c1, 1, 30);
+        c2 = std::clamp(c2, 1, 30);
+        return {c0, c1, c2};
     }
 
     // Anvil: repairCost = count * materialValue + renameCost ; validate name length <=50

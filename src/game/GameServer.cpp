@@ -3093,8 +3093,6 @@ void Session::onWindowClick(ReadBuffer& in) {
 }
 
 void Session::onEnchantItem(ReadBuffer& in) {
-    // Plan7 Enchantment table handling via EnchantmentMenuLogic
-    // Packet: windowId (byte) + enchantment (byte/varint)
     int windowId = 0;
     int button = 0;
     try {
@@ -3110,6 +3108,23 @@ void Session::onEnchantItem(ReadBuffer& in) {
     if (!logic) return;
     auto* ench = dynamic_cast<EnchantmentMenuLogic*>(logic);
     if (!ench) return;
+    int bs = 0;
+    if (openMenu_->blockKey >= 0) {
+        int bx = posKeyUnpackX(openMenu_->blockKey);
+        int by = posKeyUnpackY(openMenu_->blockKey);
+        int bz = posKeyUnpackZ(openMenu_->blockKey);
+        for (int dx = -2; dx <= 2; ++dx)
+            for (int dz = -2; dz <= 2; ++dz)
+                for (int dy = 0; dy <= 1; ++dy) {
+                    if (dx == 0 && dz == 0) continue;
+                    auto st = srv_.world().getBlock(bx + dx, by + dy, bz + dz);
+                    auto* d = gen::blockByState(st);
+                    if (d && std::string(d->name) == "minecraft:bookshelf") ++bs;
+                }
+        if (bs > 15) bs = 15;
+    } else {
+        bs = 15;
+    }
     struct LocalIo : MenuIo {
         Session& s;
         explicit LocalIo(Session& ss): s(ss){}
@@ -3120,7 +3135,16 @@ void Session::onEnchantItem(ReadBuffer& in) {
         void itemCrafted(Player& p, const ItemStack& result) override { s.server().onItemObtained(p,result,"crafted"); }
         void itemSmelted(Player& p, const ItemStack& result) override { s.server().onItemObtained(p,result,"smelted"); }
     } io(*this);
-    if (ench->onEnchantButton(*openMenu_, *self_, button, io)) {
+    bool ok = ench->onEnchantButton(*openMenu_, *self_, button, io, bs);
+    if (ok) {
+        auto costs = CostCalculator::enchantingCostsForShelves(*self_, bs);
+        for (int i = 0; i < 3; ++i) {
+            WriteBuffer pb;
+            pb.u8(static_cast<std::uint8_t>(openMenu_->windowId));
+            pb.i16(static_cast<std::int16_t>(i));
+            pb.i16(costs[i]);
+            try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
+        }
         sendMenuContent(*openMenu_);
         syncCursorItem();
     }
@@ -3312,33 +3336,31 @@ void GameServer::brewingTick() {
             --b.brewTime;
             blockEntities_.dirty_.insert(key);
             if (b.brewTime == 0) {
-                // brew complete: consume ingredient slot 3
+                uint32_t ingId = b.slots[3].empty() ? 0 : b.slots[3].itemId;
                 if (!b.slots[3].empty()) {
+                    for (int i = 0; i < 3; ++i) {
+                        if (b.slots[i].empty()) continue;
+                        std::string ingName;
+                        for (auto &e : gen::kItems) if (e.second == ingId) { ingName = e.first; break; }
+                        if (!ingName.empty()) {
+                            b.slots[i].components.erase(
+                                std::remove_if(b.slots[i].components.begin(), b.slots[i].components.end(),
+                                               [](auto& pr){ return pr.first==99; }),
+                                b.slots[i].components.end());
+                            std::vector<uint8_t> payload(ingName.begin(), ingName.end());
+                            b.slots[i].components.emplace_back(99, std::move(payload));
+                        }
+                    }
                     if (--b.slots[3].count <= 0) b.slots[3] = ItemStack::air();
-                    // Transform potions 0..2: keep same item but ensure output; vanilla would change potion type.
-                    // For parity we simply keep the items (ingredient consumed signals completion).
-                    // Optionally, if input was water bottle and ingredient was nether_wart, create awkward.
-                    // Simplified: do nothing else.
                     blockEntities_.dirty_.insert(key);
                 } else {
-                    // no ingredient but timer expired? just reset
                     b.brewTime = 0;
-                }
-                // send ContainerSetData to viewers of this brewing stand
-                // fuel and brewTime will be synced via dirty flag and next interaction,
-                // but also broadcast to any player with menu open on this block
-                for (auto& p : playersSnapshot()) {
-                    // find sessions? we broadcast via block entity dirty; menu content sync
-                    // will happen on next click; for now we just mark dirty.
-                    (void)p;
                 }
             }
         } else {
-            // idle: try to start brewing if we have ingredient + at least one potion and fuel
             bool hasIngredient = !b.slots[3].empty();
             bool hasPotion = !b.slots[0].empty() || !b.slots[1].empty() || !b.slots[2].empty();
             if (hasIngredient && hasPotion && b.fuel > 0) {
-                // consume 1 fuel per operation
                 --b.fuel;
                 b.brewTime = 400;
                 blockEntities_.dirty_.insert(key);
@@ -3778,11 +3800,12 @@ void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
             return;
         }
     }
-    // Anvil output take (slot 2) - charge XP, consume inputs
+    // Anvil output take (slot 2) - charge XP, consume inputs (per-menu rename)
     if (m.type == MenuType::Anvil && slot == 2 && mode == 0 && button == 0) {
         ItemStack* out = &m.extraSlots[2];
         if (!out->empty()) {
-            int cost = CostCalculator::anvilCost(m.extraSlots[0], m.extraSlots[1], "");
+            std::string rename = !m.anvilRename.empty() ? m.anvilRename : std::string("");
+            int cost = CostCalculator::anvilCost(m.extraSlots[0], m.extraSlots[1], rename);
             if (cost < 0) cost = 0;
             if ((self_->xp.level >= cost || self_->gamemode == 1) && cost > 0 && cost <= 39) {
                 if (self_->gamemode == 0) {
@@ -3795,8 +3818,10 @@ void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
                 if (--m.extraSlots[0].count <= 0) m.extraSlots[0] = ItemStack::air();
                 if (!m.extraSlots[1].empty() && --m.extraSlots[1].count <= 0) m.extraSlots[1] = ItemStack::air();
                 *out = ItemStack::air();
+                m.anvilRename.clear();
+                if (auto* al = dynamic_cast<AnvilMenuLogic*>(getMenuLogic(MenuType::Anvil))) al->setRenameText("");
                 // refresh cost
-                int newCost = CostCalculator::anvilCost(m.extraSlots[0], m.extraSlots[1], "");
+                int newCost = CostCalculator::anvilCost(m.extraSlots[0], m.extraSlots[1], m.anvilRename);
                 WriteBuffer pb;
                 pb.u8(static_cast<std::uint8_t>(m.windowId));
                 pb.i16(0);
@@ -3847,14 +3872,15 @@ void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
         sendSetSlot(m.windowId, self_->invStateId, 1, *out);
     }
     if (m.type == MenuType::Anvil) {
-        int cost = CostCalculator::anvilCost(m.extraSlots[0], m.extraSlots[1], "");
+        std::string rename = !m.anvilRename.empty() ? m.anvilRename : std::string("");
+        int cost = CostCalculator::anvilCost(m.extraSlots[0], m.extraSlots[1], rename);
         WriteBuffer pb;
         pb.u8(static_cast<std::uint8_t>(m.windowId));
         pb.i16(0);
         pb.i16(static_cast<std::int16_t>(cost < 0 ? 0 : cost));
         try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
         if (!m.extraSlots[0].empty() && cost > 0 && cost <= 39) {
-            m.extraSlots[2] = m.extraSlots[0];
+            if (m.extraSlots[2].empty()) m.extraSlots[2] = m.extraSlots[0];
             sendSetSlot(m.windowId, self_->invStateId, 2, m.extraSlots[2]);
         } else {
             m.extraSlots[2] = ItemStack::air();
@@ -3877,12 +3903,12 @@ void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
                     }
             if (bs > 15) bs = 15;
         }
+        auto costs = CostCalculator::enchantingCostsForShelves(*self_, bs);
         for (int i = 0; i < 3; ++i) {
-            int cost = CostCalculator::enchantingCost(*self_, bs);
             WriteBuffer pb;
             pb.u8(static_cast<std::uint8_t>(m.windowId));
             pb.i16(static_cast<std::int16_t>(i));
-            pb.i16(static_cast<std::int16_t>(cost + i));
+            pb.i16(costs[i]);
             try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
         }
     }
@@ -3978,16 +4004,18 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
         menu->type = MenuType::Enchantment;
         menu->container = menu->extraSlots;
         menu->containerCount = 2;
-    } else if (name.find("anvil") != std::string::npos) {
     } else if (name == "minecraft:anvil" || name == "minecraft:chipped_anvil" ||
                name == "minecraft:damaged_anvil") {
         menu->type = MenuType::Anvil;
         menu->container = menu->extraSlots;
         menu->containerCount = 3;
-    } else if (name == "minecraft:brewing_stand") {
-        menu->type = MenuType::Brewing;
+        menu->anvilRename.clear();
+    } else if (name.find("anvil") != std::string::npos) {
+        menu->type = MenuType::Anvil;
         menu->container = menu->extraSlots;
-        menu->containerCount = 5;
+        menu->containerCount = 3;
+        menu->anvilRename.clear();
+    } else if (name == "minecraft:brewing_stand") {
         auto* be = srv_.blockEntities().getAt(x, y, z);
         if (!be)
             be = &srv_.blockEntities().create(menu->blockKey,
@@ -4004,7 +4032,6 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
         menu->type = MenuType::Grindstone;
         menu->container = menu->extraSlots;
         menu->containerCount = 3;
-    } else if (name.find("smithing_table") != std::string::npos) {
     } else if (name == "minecraft:smithing_table") {
         menu->type = MenuType::Smithing;
         menu->container = menu->extraSlots;
@@ -4020,28 +4047,17 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
     } else if (name == "minecraft:barrel") {
         auto* be = srv_.blockEntities().getAt(x, y, z);
         if (!be) be = &srv_.blockEntities().create(menu->blockKey, BlockEntity::Kind::Chest);
+        be->kind = BlockEntity::Kind::Barrel;
         menu->type = MenuType::Barrel;
         menu->container = be->chest.slots;
         menu->containerCount = 27;
-        menu->blockEntity = be;
-    } else if (name.find("shulker_box") != std::string::npos) {
-        auto* be = srv_.blockEntities().getAt(x, y, z);
-        if (!be) be = &srv_.blockEntities().create(menu->blockKey, BlockEntity::Kind::Chest);
-        menu->type = MenuType::ShulkerBox;
-        menu->container = be->chest.slots;
-        menu->containerCount = 27;
-        if (!be)
-            be = &srv_.blockEntities().create(menu->blockKey,
-                                              BlockEntity::Kind::Barrel);
-        menu->type = MenuType::Barrel;
-        menu->container = be->chest.slots;
-        menu->containerCount = ChestData::kSlots;
         menu->blockEntity = be;
     } else if (name.find("shulker_box") != std::string::npos) {
         auto* be = srv_.blockEntities().getAt(x, y, z);
         if (!be)
             be = &srv_.blockEntities().create(menu->blockKey,
                                               BlockEntity::Kind::ShulkerBox);
+        be->kind = BlockEntity::Kind::ShulkerBox;
         menu->type = MenuType::ShulkerBox;
         menu->container = be->chest.slots;
         menu->containerCount = ChestData::kSlots;
@@ -4098,14 +4114,26 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
     // Send initial ContainerSetData for menus that need it
     if (openMenu_->type == MenuType::Enchantment) {
         int bs = 0;
-        // count bookshelves within 2 blocks (simplified placeholder 0..15)
-        // use CostCalculator for 3 levels
+        if (openMenu_->blockKey >= 0) {
+            int bx = posKeyUnpackX(openMenu_->blockKey);
+            int by = posKeyUnpackY(openMenu_->blockKey);
+            int bz = posKeyUnpackZ(openMenu_->blockKey);
+            for (int dx = -2; dx <= 2; ++dx)
+                for (int dz = -2; dz <= 2; ++dz)
+                    for (int dy = 0; dy <= 1; ++dy) {
+                        if (dx == 0 && dz == 0) continue;
+                        auto st = srv_.world().getBlock(bx + dx, by + dy, bz + dz);
+                        auto* d = gen::blockByState(st);
+                        if (d && std::string(d->name) == "minecraft:bookshelf") ++bs;
+                    }
+            if (bs > 15) bs = 15;
+        }
+        auto costs = CostCalculator::enchantingCostsForShelves(*self_, bs);
         for (int i = 0; i < 3; ++i) {
-            int cost = CostCalculator::enchantingCost(*self_, bs);
             WriteBuffer pb;
             pb.u8(static_cast<std::uint8_t>(openMenu_->windowId));
             pb.i16(static_cast<std::int16_t>(i));
-            pb.i16(static_cast<std::int16_t>(cost));
+            pb.i16(costs[i]);
             try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
         }
     } else if (openMenu_->type == MenuType::Anvil) {
@@ -4240,7 +4268,11 @@ void Session::sendRecipeBook() {
             writeSlotDisplayItem(r.cells.front().items.empty()
                                      ? 0 : *r.cells.front().items.begin());
             writeSlotDisplayItem(r.result.itemId);
-            writeSlotDisplayItem(furnaceItem);
+            std::uint32_t stonecutterItem = 0;
+            auto itSc = gen::itemIdByName().find("minecraft:stonecutter");
+            if (itSc != gen::itemIdByName().end()) stonecutterItem = itSc->second;
+            else stonecutterItem = furnaceItem;
+            writeSlotDisplayItem(stonecutterItem);
             break;
         }
         }
@@ -4463,6 +4495,39 @@ bool GameServer::requestCookie(Player& p, const std::string& key) {
 void Session::onPluginPayload(const std::string& channel,
                               const api::ChannelRegistry::Payload& body,
                               int phase) {
+    if ((channel == "minecraft:item_name" || channel == "MC|ItemName" || channel == "minecraft:anvil_rename")
+        && openMenu_ && openMenu_->type == MenuType::Anvil) {
+        std::string newName;
+        try {
+            ReadBuffer rb(std::vector<uint8_t>(body.begin(), body.end()));
+            if (rb.remaining() > 0) {
+                newName = rb.string(256);
+                if (newName.size() > 50) newName = newName.substr(0,50);
+            }
+        } catch (...) {
+            newName = std::string(body.begin(), body.end());
+            size_t nul = newName.find(char(0));
+            if (nul != std::string::npos) newName = newName.substr(0, nul);
+            if (newName.size() > 50) newName = newName.substr(0,50);
+        }
+        if (newName.size() > 50) newName.resize(50);
+        openMenu_->anvilRename = newName;
+        if (auto* logic = getMenuLogic(MenuType::Anvil)) {
+            if (auto* al = dynamic_cast<AnvilMenuLogic*>(logic)) {
+                al->setRenameForMenu(*openMenu_, newName);
+                al->onContentChanged(*openMenu_, *self_);
+            }
+        }
+        int cost = CostCalculator::anvilCost(openMenu_->extraSlots[0], openMenu_->extraSlots[1], newName);
+        WriteBuffer pb;
+        pb.u8(static_cast<uint8_t>(openMenu_->windowId));
+        pb.i16(0);
+        pb.i16(static_cast<int16_t>(cost < 0 ? 0 : cost));
+        try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
+        sendSetSlot(openMenu_->windowId, self_->invStateId, 2, openMenu_->extraSlots[2]);
+        sendMenuContent(*openMenu_);
+        return;
+    }
     if (channel == "minecraft:register") {
         // NUL-separated channel list
         std::string joined(body.begin(), body.end());
