@@ -204,10 +204,17 @@ void RecipeManager::loadDefaults() {
     addShapeless("minecraft:diamond", "minecraft:diamond", 9,
                  {"minecraft:diamond_block"});
 
-    // stonecutters
+    // stonecutters (expanded for ghost recipe tests)
     addStonecutting("minecraft:stone", "minecraft:stone_bricks", 1);
+    addStonecutting("minecraft:stone", "minecraft:stone_slab", 2);
+    addStonecutting("minecraft:stone", "minecraft:stone_stairs", 1);
     addStonecutting("minecraft:cobblestone", "minecraft:stone", 1);
+    addStonecutting("minecraft:cobblestone", "minecraft:cobblestone_slab", 2);
+    addStonecutting("minecraft:cobblestone", "minecraft:cobblestone_stairs", 1);
     addStonecutting("minecraft:oak_planks", "minecraft:oak_slab", 2);
+    addStonecutting("minecraft:oak_planks", "minecraft:oak_stairs", 1);
+    addStonecutting("minecraft:quartz_block", "minecraft:quartz_slab", 2);
+    addStonecutting("minecraft:quartz_block", "minecraft:quartz_stairs", 1);
 }
 
 // ------------------------------------------------------------------ json io

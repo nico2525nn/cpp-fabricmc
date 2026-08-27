@@ -389,7 +389,76 @@ bool ClickLogic::apply(Menu& m, Player& p, const RecipeManager& recipes,
     case 2: return swapWithHotbar(m, p, clickedSlot, button, cursor, io);
     case 3: return false;                            // creative clone: ignore
     case 4: return throwSlot(m, p, clickedSlot, button, cursor, io);
-    case 5: return false;                            // drag paint: client retries
+    case 5: { // drag paint: 0/4 start, 1/5 addSlot, 2/6 end
+        if (button==0 || button==4) {
+            if (cursor.empty()) return false;
+            m.dragButton = button;
+            m.dragSlots.clear();
+            return true;
+        } else if (button==1 || button==5) {
+            if (m.dragButton==-1) return false;
+            if (clickedSlot<0 || clickedSlot>=m.totalSlots()) return false;
+            if (isTakeOnlySlot(m, clickedSlot)) return false;
+            if (std::find(m.dragSlots.begin(), m.dragSlots.end(), clickedSlot)!=m.dragSlots.end()) return false;
+            ItemStack* tgt = m.slotAt(clickedSlot, p.inv.data());
+            if (!tgt) tgt = playerInvSlot(m, clickedSlot, p);
+            if (!tgt) return false;
+            if (!tgt->empty() && !sameItem(cursor, *tgt)) return false;
+            if (!tgt->empty() && tgt->count >= maxStackFor(*tgt)) return false;
+            m.dragSlots.push_back(clickedSlot);
+            return true;
+        } else if (button==2 || button==6) {
+            if (m.dragButton==-1 || m.dragSlots.empty()) { m.dragButton=-1; m.dragSlots.clear(); return false; }
+            bool isRight = (m.dragButton==4);
+            bool changed=false;
+            bool anyContainerChanged=false;
+            if (!isRight) {
+                int n = (int)m.dragSlots.size();
+                int total = cursor.count;
+                int per = total / n;
+                int rem = total % n;
+                for (int idx : m.dragSlots) {
+                    ItemStack* tgt = m.slotAt(idx, p.inv.data());
+                    if (!tgt) tgt = playerInvSlot(m, idx, p);
+                    if (!tgt) continue;
+                    if (!tgt->empty() && !sameItem(cursor, *tgt)) continue;
+                    int limit = maxStackFor(cursor);
+                    int canPlace = limit - (tgt->empty()?0:tgt->count);
+                    if (canPlace<=0) continue;
+                    int want = per + (rem>0?1:0);
+                    if (rem>0) rem--;
+                    want = std::min(want, canPlace);
+                    if (want<=0) continue;
+                    if (tgt->empty()) { *tgt = cursor; tgt->count = static_cast<int16_t>(want); }
+                    else tgt->count = static_cast<int16_t>(tgt->count + want);
+                    cursor.count = static_cast<int16_t>(cursor.count - want);
+                    if (cursor.count<=0) cursor = ItemStack::air();
+                    changed=true;
+                    if (idx < m.totalSlots()-36) anyContainerChanged=true;
+                }
+            } else {
+                for (int idx : m.dragSlots) {
+                    if (cursor.empty()) break;
+                    ItemStack* tgt = m.slotAt(idx, p.inv.data());
+                    if (!tgt) tgt = playerInvSlot(m, idx, p);
+                    if (!tgt) continue;
+                    if (!tgt->empty() && !sameItem(cursor, *tgt)) continue;
+                    int limit = maxStackFor(cursor);
+                    if (!tgt->empty() && tgt->count >= limit) continue;
+                    if (tgt->empty()){ *tgt=cursor; tgt->count=1; cursor.count--; }
+                    else { tgt->count++; cursor.count--; }
+                    if(cursor.count<=0) cursor = ItemStack::air();
+                    changed=true;
+                    if (idx < m.totalSlots()-36) anyContainerChanged=true;
+                }
+            }
+            m.dragButton=-1;
+            m.dragSlots.clear();
+            if (anyContainerChanged) io.blockEntityChanged(m.blockKey);
+            return changed;
+        }
+        return false;
+    }
     case 6: return pickupAll(m, p, clickedSlot, cursor, io);
     default: return false;
     }

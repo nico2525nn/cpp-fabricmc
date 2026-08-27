@@ -187,6 +187,14 @@ private:
             be.kind = BlockEntity::Kind::ShulkerBox;
             readItems(e, be.chest.slots, ChestData::kSlots, "Items");
             dirty_.insert(key);
+        } else if (id.find("brewing") != std::string::npos) {
+            BlockEntity& be = map_[key];
+            be = BlockEntity{};
+            be.kind = BlockEntity::Kind::Brewing;
+            readItems(e, be.brewing.slots, BrewingData::kSlots, "Items");
+            if (const auto* b = e.get("BrewTime")) be.brewing.brewTime = b->s;
+            if (const auto* f = e.get("Fuel")) be.brewing.fuel = static_cast<std::int16_t>(f->b);
+            dirty_.insert(key);
         } else if (id.find("furnace") != std::string::npos ||
                    id.find("smoker") != std::string::npos ||
                    id.find("blast_furnace") != std::string::npos) {
