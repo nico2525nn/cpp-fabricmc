@@ -115,15 +115,7 @@ class BehaviorTree; // forward (defined in BehaviorTree.hpp)
 
 class Brain {
 public:
-    Brain() {
-        goals_.push_back(std::make_unique<PanicGoal>());
-        goals_.push_back(std::make_unique<BreedGoal>());
-        goals_.push_back(std::make_unique<MeleeAttackGoal>());
-        goals_.push_back(std::make_unique<RangedAttackGoal>());
-        goals_.push_back(std::make_unique<TemptGoal>());
-        goals_.push_back(std::make_unique<WanderAroundGoal>());
-        goals_.push_back(std::make_unique<LookAtPlayerGoal>());
-    }
+    Brain();
     ~Brain();
     void setBehaviorTree(std::unique_ptr<BehaviorTree> t);
     bool hasBehaviorTree() const;

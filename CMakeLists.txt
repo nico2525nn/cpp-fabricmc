@@ -29,6 +29,7 @@ add_executable(cppfm
     src/game/AiBrain.cpp
     src/game/Stats.cpp
     src/net/PacketBatcher.cpp
+    src/game/BehaviorTree.cpp
 )
 
 target_include_directories(cppfm PRIVATE src src/generated)
@@ -66,7 +67,8 @@ add_executable(test_native
     src/worldgen/MultiNoise.cpp
     src/worldgen/Structures.cpp
     src/worldgen/StructurePlacer.cpp
-    src/net/PacketBatcher.cpp)
+    src/net/PacketBatcher.cpp
+    src/game/BehaviorTree.cpp)
 target_include_directories(test_native PRIVATE src src/generated tests)
 find_package(Threads REQUIRED)
 find_package(ZLIB REQUIRED)
@@ -97,7 +99,9 @@ add_executable(test_smoke_80
     src/worldgen/DensityFunction.cpp
     src/worldgen/MultiNoise.cpp
     src/worldgen/Structures.cpp
-    src/net/PacketBatcher.cpp)
+    src/worldgen/StructurePlacer.cpp
+    src/net/PacketBatcher.cpp
+    src/game/BehaviorTree.cpp)
 target_include_directories(test_smoke_80 PRIVATE src src/generated tests)
 find_package(Threads REQUIRED)
 find_package(ZLIB REQUIRED)

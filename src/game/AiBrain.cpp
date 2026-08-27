@@ -38,6 +38,16 @@ void groundSnap(GameServer& srv, MobEntity& m) {
 }
 } // namespace
 
+Brain::Brain() {
+    goals_.push_back(std::make_unique<PanicGoal>());
+    goals_.push_back(std::make_unique<BreedGoal>());
+    goals_.push_back(std::make_unique<MeleeAttackGoal>());
+    goals_.push_back(std::make_unique<RangedAttackGoal>());
+    goals_.push_back(std::make_unique<TemptGoal>());
+    goals_.push_back(std::make_unique<WanderAroundGoal>());
+    goals_.push_back(std::make_unique<LookAtPlayerGoal>());
+}
+
 void NearestPlayerSensor::update(MobEntity& m, AiContext& ctx) {
     if (!ctx.srv) return;
     ctx.resetPerception();

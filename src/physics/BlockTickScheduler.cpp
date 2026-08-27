@@ -305,6 +305,8 @@ void PortalAgeBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int3
             if (!nearFrame) w.setBlock(x,y,z, 0);
         }
     }
+}
+
 bool SoulFireBehavior::isFlammable(const std::string& blockName) const {
     // soul_fire only on soul_sand / soul_soil adjacency
     if (blockName == "minecraft:soul_sand" || blockName == "minecraft:soul_soil") return true;
