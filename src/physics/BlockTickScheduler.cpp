@@ -287,7 +287,7 @@ void FireBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
         props.emplace_back("age", ns2);
         w.setBlock(x,y,z, static_cast<std::uint16_t>(gen::stateWithProps(*d, props)));
     }
-    // spread to flammable neighbors using virtual isFlammable
+    // spread to flammable neighbors using virtual isFlammable (plan9 #16)
     for (int dx=-1; dx<=1; ++dx) for (int dy=-1; dy<=1; ++dy) for (int dz=-1; dz<=1; ++dz){
         if (dx==0&&dy==0&&dz==0) continue;
         const std::uint16_t ns = w.getBlock(x+dx,y+dy,z+dz);
@@ -300,8 +300,63 @@ void FireBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
             }
             if (adjFlam && w.getBlock(x+dx,y+dy,z+dz)==0) {
                 const auto fire = gen::blockNameToState().find("minecraft:fire");
-                if (fire != gen::blockNameToState().end()) w.setBlock(x+dx,y+dy,z+dz, fire->second);
+                if (fire != gen::blockNameToState().end()) {
+                    // create fire with correct directional props for its new location
+                    const gen::BlockDef* fd=gen::blockByState(fire->second);
+                    if (fd && fd->propCount>=6) {
+                        // compute direction bools for new fire position
+                        auto isFlamAt=[&](int ax,int ay,int az)->bool{
+                            const gen::BlockDef* ad=gen::blockByState(w.getBlock(ax,ay,az));
+                            return ad && isFlammable(std::string(ad->name));
+                        };
+                        bool n=isFlamAt(x+dx, y+dy, z+dz-1);
+                        bool s=isFlamAt(x+dx, y+dy, z+dz+1);
+                        bool e=isFlamAt(x+dx+1, y+dy, z+dz);
+                        bool west=isFlamAt(x+dx-1, y+dy, z+dz);
+                        bool up=isFlamAt(x+dx, y+dy+1, z+dz);
+                        std::vector<std::pair<std::string_view,std::string_view>> fp;
+                        // keep age 0 for new fire
+                        fp.emplace_back("age","0");
+                        fp.emplace_back("east", e?"true":"false");
+                        fp.emplace_back("north", n?"true":"false");
+                        fp.emplace_back("south", s?"true":"false");
+                        fp.emplace_back("up", up?"true":"false");
+                        fp.emplace_back("west", west?"true":"false");
+                        // try to create state with those props, fallback to default
+                        std::uint16_t ns2=static_cast<std::uint16_t>(gen::stateWithProps(*fd, fp));
+                        if (gen::blockByState(ns2) && std::string(gen::blockByState(ns2)->name)=="minecraft:fire") w.setBlock(x+dx,y+dy,z+dz, ns2);
+                        else w.setBlock(x+dx,y+dy,z+dz, fire->second);
+                    } else w.setBlock(x+dx,y+dy,z+dz, fire->second);
+                }
             }
+        }
+    }
+    // update directional props for existing fire to reflect surrounding flammable blocks (plan9 #16)
+    {
+        std::uint16_t cur=w.getBlock(x,y,z);
+        const gen::BlockDef* cd=gen::blockByState(cur);
+        if (cd && std::string(cd->name)=="minecraft:fire" && cd->propCount>=6) {
+            auto isFlamAt=[&](int ax,int ay,int az)->bool{
+                const gen::BlockDef* ad=gen::blockByState(w.getBlock(ax,ay,az));
+                return ad && isFlammable(std::string(ad->name));
+            };
+            bool n=isFlamAt(x, y, z-1);
+            bool s=isFlamAt(x, y, z+1);
+            bool e=isFlamAt(x+1, y, z);
+            bool west=isFlamAt(x-1, y, z);
+            bool up=isFlamAt(x, y+1, z);
+            // also consider if fire has age prop, keep it
+            int curAge=0;
+            for (auto& [k,v]: gen::propsOf(cur)) if (k=="age") curAge=std::atoi(std::string(v).c_str());
+            std::vector<std::pair<std::string_view,std::string_view>> np;
+            np.emplace_back("age", std::to_string(curAge));
+            np.emplace_back("east", e?"true":"false");
+            np.emplace_back("north", n?"true":"false");
+            np.emplace_back("south", s?"true":"false");
+            np.emplace_back("up", up?"true":"false");
+            np.emplace_back("west", west?"true":"false");
+            std::uint16_t ns2=static_cast<std::uint16_t>(gen::stateWithProps(*cd, np));
+            if (ns2!=cur && gen::blockByState(ns2) && std::string(gen::blockByState(ns2)->name)=="minecraft:fire") w.setBlock(x,y,z, ns2);
         }
     }
     if (age >= 15 && (rand()%100)<30) w.setBlock(x,y,z, 0);
@@ -374,7 +429,127 @@ void CampfireBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32
     bool lit = false;
     for (auto& [k,v] : gen::propsOf(state)) if (k=="lit" && v=="true") lit = true;
     if (!lit) return;
+    // campfire signal_fire if hay bale below, waterlogged check
+    bool waterlogged=false;
+    for (auto& [k,v] : gen::propsOf(state)) if (k=="waterlogged" && v=="true") waterlogged=true;
+    if (waterlogged) return;
     FireBehavior::tick(w, x, y, z, state, now, srv);
+    // spread chance lower than fire, also emit smoke particle via fire behavior already
+}
+
+// -------------------------------------------------------- Cocoa (plan9 #13)
+void CocoaBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
+                         std::uint16_t state, std::int64_t now, GameServer* srv) {
+    (void)now; (void)srv;
+    int age=0;
+    for (auto& [k,v] : gen::propsOf(state)) if (k=="age") age=std::atoi(std::string(v).c_str());
+    if (age>=2) return;
+    if ((rand()%100) >= 20) return; // 20% per random tick
+    const gen::BlockDef* d=gen::blockByState(state);
+    if (!d) return;
+    // check support: jungle log facing direction
+    std::string facing="north";
+    for (auto& [k,v] : gen::propsOf(state)) if (k=="facing") facing=std::string(v);
+    int dx=0,dz=0;
+    if (facing=="north") dz=1; else if (facing=="south") dz=-1; else if (facing=="west") dx=1; else if (facing=="east") dx=-1;
+    std::uint16_t support=w.getBlock(x+dx,y,z+dz);
+    const gen::BlockDef* sd=gen::blockByState(support);
+    if (!sd || std::string(sd->name).find("jungle_log")==std::string::npos) return;
+    std::vector<std::pair<std::string_view,std::string_view>> props;
+    for (auto& [k,v] : gen::propsOf(state)) if (k!="age") props.emplace_back(k,v);
+    std::string ns=std::to_string(age+1);
+    props.emplace_back("age", ns);
+    w.setBlock(x,y,z, static_cast<std::uint16_t>(gen::stateWithProps(*d, props)));
+}
+bool CocoaBehavior::fertilize(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
+                              std::uint16_t state, GameServer* srv) {
+    int age=0; for (auto& [k,v] : gen::propsOf(state)) if (k=="age") age=std::atoi(std::string(v).c_str());
+    if (age>=2) return false;
+    const gen::BlockDef* d=gen::blockByState(state);
+    std::vector<std::pair<std::string_view,std::string_view>> props;
+    for (auto& [k,v] : gen::propsOf(state)) if (k!="age") props.emplace_back(k,v);
+    props.emplace_back("age", "2");
+    w.setBlock(x,y,z, static_cast<std::uint16_t>(gen::stateWithProps(*d, props)));
+    (void)srv; return true;
+}
+
+// -------------------------------------------------------- Sweet Berry
+void SweetBerryBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
+                              std::uint16_t state, std::int64_t now, GameServer* srv) {
+    (void)now; (void)srv;
+    int age=0; for (auto& [k,v] : gen::propsOf(state)) if (k=="age") age=std::atoi(std::string(v).c_str());
+    if (age>=3) return;
+    if ((rand()%100) >= 20) return;
+    const gen::BlockDef* d=gen::blockByState(state);
+    std::vector<std::pair<std::string_view,std::string_view>> props;
+    for (auto& [k,v] : gen::propsOf(state)) if (k!="age") props.emplace_back(k,v);
+    props.emplace_back("age", std::to_string(age+1));
+    w.setBlock(x,y,z, static_cast<std::uint16_t>(gen::stateWithProps(*d, props)));
+}
+bool SweetBerryBehavior::fertilize(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
+                                   std::uint16_t state, GameServer* srv) {
+    int age=0; for (auto& [k,v] : gen::propsOf(state)) if (k=="age") age=std::atoi(std::string(v).c_str());
+    if (age>=3) return false;
+    const gen::BlockDef* d=gen::blockByState(state);
+    std::vector<std::pair<std::string_view,std::string_view>> props;
+    for (auto& [k,v] : gen::propsOf(state)) if (k!="age") props.emplace_back(k,v);
+    props.emplace_back("age", "3");
+    w.setBlock(x,y,z, static_cast<std::uint16_t>(gen::stateWithProps(*d, props)));
+    (void)srv; return true;
+}
+
+// -------------------------------------------------------- Nether Wart
+void NetherWartBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
+                              std::uint16_t state, std::int64_t now, GameServer* srv) {
+    (void)now; (void)srv;
+    int age=0; for (auto& [k,v] : gen::propsOf(state)) if (k=="age") age=std::atoi(std::string(v).c_str());
+    if (age>=3) return;
+    if ((rand()%100) >= 10) return; // slower 10%
+    const std::uint16_t below=w.getBlock(x,y-1,z);
+    const gen::BlockDef* bd=gen::blockByState(below);
+    if (!bd || std::string(bd->name)!="minecraft:soul_sand") return;
+    const gen::BlockDef* d=gen::blockByState(state);
+    std::vector<std::pair<std::string_view,std::string_view>> props;
+    for (auto& [k,v] : gen::propsOf(state)) if (k!="age") props.emplace_back(k,v);
+    props.emplace_back("age", std::to_string(age+1));
+    w.setBlock(x,y,z, static_cast<std::uint16_t>(gen::stateWithProps(*d, props)));
+}
+bool NetherWartBehavior::fertilize(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
+                                   std::uint16_t state, GameServer* srv) {
+    (void)w; (void)x; (void)y; (void)z; (void)state; (void)srv; return false; // bonemeal does not work on nether wart
+}
+
+// -------------------------------------------------------- Chorus Flower (plan9 #13)
+void ChorusFlowerBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
+                                std::uint16_t state, std::int64_t now, GameServer* srv) {
+    (void)now; (void)srv;
+    int age=0; for (auto& [k,v] : gen::propsOf(state)) if (k=="age") age=std::atoi(std::string(v).c_str());
+    if (age>=5) { w.setBlock(x,y,z, 0); // death -> chorus plant
+        auto plantIt=gen::blockNameToState().find("minecraft:chorus_plant");
+        if (plantIt!=gen::blockNameToState().end()) w.setBlock(x,y,z, plantIt->second);
+        return;
+    }
+    if ((rand()%100) >= 5) return;
+    // try grow upward if air above and end_stone or chorus_plant below support chain
+    if (w.getBlock(x,y+1,z)!=0) return;
+    // check if can survive: if air around and support below is chorus_plant or end_stone
+    const std::uint16_t below=w.getBlock(x,y-1,z);
+    const gen::BlockDef* bd=gen::blockByState(below);
+    bool support=false;
+    if (bd) {
+        std::string bn(bd->name);
+        if (bn=="minecraft:end_stone"||bn=="minecraft:chorus_plant"||bn.find("chorus")!=std::string::npos) support=true;
+    }
+    if (!support) return;
+    const gen::BlockDef* d=gen::blockByState(state);
+    // grow upward, increment age
+    std::vector<std::pair<std::string_view,std::string_view>> props;
+    for (auto& [k,v] : gen::propsOf(state)) if (k!="age") props.emplace_back(k,v);
+    props.emplace_back("age", std::to_string(age+1));
+    w.setBlock(x,y+1,z, static_cast<std::uint16_t>(gen::stateWithProps(*d, props)));
+    // original becomes chorus_plant
+    auto plantIt=gen::blockNameToState().find("minecraft:chorus_plant");
+    if (plantIt!=gen::blockNameToState().end()) w.setBlock(x,y,z, plantIt->second);
 }
 
 } // namespace cppfm

@@ -48,6 +48,14 @@ public:
     void onPlayerJoin(GameServer& srv, Player& p);
     void removeIfExists(GameServer& srv, std::int32_t entityId) { onBossRemove(srv, entityId); }
 
+    // Command-created bars (plan10 §6 bossbar add/remove)
+    void addCommandBar(std::int32_t key, const BossBar& bar) { bars_[key] = bar; }
+    void removeCommandBar(std::int32_t key) { bars_.erase(key); }
+    void updateHealthForCommandBar(std::int32_t key, float health) {
+        auto it = bars_.find(key);
+        if (it != bars_.end()) it->second.health = std::clamp(health, 0.f, 1.f);
+    }
+
     bool hasBar(std::int32_t eid) const { return bars_.find(eid)!=bars_.end(); }
     size_t size() const { return bars_.size(); }
 
