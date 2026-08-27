@@ -503,6 +503,40 @@ void GameServer::initCommands() {
                     EffectInstance e;
                     e.type = it->second;
                     e.durationTicks = dur * 20;
+                    t->effects.erase(std::remove_if(t->effects.begin(), t->effects.end(), [&](auto& x){return x.type==e.type;}), t->effects.end());
+                    t->effects.push_back(e);
+                    WriteBuffer b;
+                    b.varint(t->entityId);
+                    b.varint(e.type);
+                    b.varint(e.amplifier);
+                    b.varint(e.durationTicks);
+                    b.u8(effectFlags(e));
+                    try { t->conn->sendPacket(proto::pl::sc::EntityEffect, b); }
+                    catch (...) {}
+                    try { t->conn->sendPacket(proto::pl::sc::UpdateAttributes, WriteBuffer{}); } catch(...){}
+                }
+            sendFeedback(src, "Applied " + en + " (" +
+                         std::to_string(dur) + "s)");
+            return 1;
+        };
+        auto amp = CommandNode::argument("amplifier", args::integer(0, 255));
+        amp->executable = true;
+        amp->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const std::string en = c.arg("effect").asStr();
+            auto it = effects::byName().find(en);
+            if (it == effects::byName().end())
+                throw std::runtime_error("unknown effect: " + en);
+            const auto sel = c.arg("targets").asSelector();
+            const int dur = c.arg("seconds").asInt();
+            const int amplifier = c.arg("amplifier").asInt();
+            for (auto& n : sel.playerNames)
+                if (Player* t = findPlayer(*this, n)) {
+                    EffectInstance e;
+                    e.type = it->second;
+                    e.durationTicks = dur * 20;
+                    e.amplifier = (std::int8_t)amplifier;
+                    t->effects.erase(std::remove_if(t->effects.begin(), t->effects.end(), [&](auto& x){return x.type==e.type;}), t->effects.end());
                     t->effects.push_back(e);
                     WriteBuffer b;
                     b.varint(t->entityId);
@@ -513,10 +547,10 @@ void GameServer::initCommands() {
                     try { t->conn->sendPacket(proto::pl::sc::EntityEffect, b); }
                     catch (...) {}
                 }
-            sendFeedback(src, "Applied " + en + " (" +
-                         std::to_string(dur) + "s)");
+            sendFeedback(src, "Applied " + en + " lvl " + std::to_string(amplifier) + " for " + std::to_string(dur) + "s");
             return 1;
         };
+        secs->then(amp);
         eff->then(secs);
         targets->then(eff);
         give->then(targets);
@@ -563,10 +597,12 @@ void GameServer::initCommands() {
         block->action = [this](CommandContext& c) {
             Player* src = static_cast<Player*>(c.source.player);
             const auto p = c.arg("pos").asBlockPos();
+            std::fprintf(stderr, "[setblock] req %d %d %d -> bn=%s\n", p.x, p.y, p.z, c.arg("block").asStr().c_str());
             std::string bn = c.arg("block").asStr();
             if (bn.find(':') == std::string::npos) bn = "minecraft:" + bn;
             const gen::BlockDef* def = gen::blockByName(bn);
             if (!def) throw std::runtime_error("unknown block: " + bn);
+            std::fprintf(stderr, "[setblock] def %s state %u\n", bn.c_str(), def->defaultState);
             world_.generateChunkIfMissing(p.x >> 4, p.z >> 4);
             world_.setBlock(p.x, p.y, p.z,
                             static_cast<std::uint16_t>(def->defaultState));
@@ -580,6 +616,90 @@ void GameServer::initCommands() {
         pos->then(block);
         sb->then(pos);
         d.root->then(sb);
+    }
+    // /fill <from> <to> <block> — volume clamp 32768, batch via queueBlockChange (plan10)
+    {
+        auto fill = CommandNode::literal("fill");
+        auto from = CommandNode::argument("from", args::blockPos());
+        auto to = CommandNode::argument("to", args::blockPos());
+        auto block = CommandNode::argument("block", args::itemStackArg());
+        block->executable = true;
+        block->suggestions = [](brigadier::StringReader&, brigadier::ParseCtx&){
+            return std::vector<std::string>{"minecraft:stone","minecraft:dirt","minecraft:glass","minecraft:air","minecraft:oak_planks"};
+        };
+        block->action = [this](CommandContext& c){
+            Player* src = static_cast<Player*>(c.source.player);
+            auto p0 = c.arg("from").asBlockPos();
+            auto p1 = c.arg("to").asBlockPos();
+            std::string bn = c.arg("block").asStr();
+            if (bn.find(':')==std::string::npos) bn = "minecraft:"+bn;
+            // strip possible [props] for now – use default state
+            std::string base = bn;
+            auto br = bn.find('[');
+            if (br!=std::string::npos) base = bn.substr(0,br);
+            const gen::BlockDef* def = gen::blockByName(base);
+            if (!def) throw std::runtime_error("unknown block: "+base);
+            // handle block state props if present
+            std::uint16_t state = static_cast<std::uint16_t>(def->defaultState);
+            if (br!=std::string::npos) {
+                // try to parse full state string via blockByName lookup of raw string? fallback to default
+                // attempt to resolve via stateWithPropsList parsing of raw bn
+                // For now, if bn contains '[', try direct lookup via blockNameToState mapping of full name?
+                // We'll parse props manually
+                auto propsStr = bn.substr(br);
+                // simple: use gen::stateWithPropsList if possible
+                // propsStr like [facing=north,half=top]
+                // We'll extract key=val pairs
+                std::vector<std::pair<std::string_view,std::string_view>> props;
+                std::string inner = propsStr.substr(1, propsStr.size()-2);
+                size_t pos=0;
+                // temporary storage for strings to keep alive
+                static thread_local std::vector<std::string> storage;
+                storage.clear();
+                while (pos < inner.size()){
+                    size_t eq = inner.find('=', pos);
+                    if (eq==std::string::npos) break;
+                    size_t comma = inner.find(',', eq);
+                    std::string k = inner.substr(pos, eq-pos);
+                    std::string v;
+                    if (comma==std::string::npos) { v = inner.substr(eq+1); pos = inner.size(); }
+                    else { v = inner.substr(eq+1, comma-eq-1); pos = comma+1; }
+                    // trim
+                    auto trim = [](std::string s){
+                        size_t a=0; while(a<s.size() && isspace((unsigned char)s[a])) ++a;
+                        size_t b=s.size(); while(b>a && isspace((unsigned char)s[b-1])) --b;
+                        return s.substr(a,b-a);
+                    };
+                    k=trim(k); v=trim(v);
+                    storage.push_back(k); storage.push_back(v);
+                    props.emplace_back(storage[storage.size()-2], storage[storage.size()-1]);
+                }
+                if (!props.empty()){
+                    try { state = static_cast<std::uint16_t>(gen::stateWithProps(*def, props)); } catch(...){}
+                }
+            }
+            int minX=std::min(p0.x,p1.x), maxX=std::max(p0.x,p1.x);
+            int minY=std::min(p0.y,p1.y), maxY=std::max(p0.y,p1.y);
+            int minZ=std::min(p0.z,p1.z), maxZ=std::max(p0.z,p1.z);
+            std::int64_t vol = (std::int64_t)(maxX-minX+1)*(maxY-minY+1)*(maxZ-minZ+1);
+            if (vol > 32768) throw std::runtime_error("fill volume too large: "+std::to_string(vol)+" > 32768");
+            if (vol <=0) throw std::runtime_error("fill volume zero");
+            int changed=0;
+            for (int y=minY;y<=maxY;++y) for (int z=minZ;z<=maxZ;++z) for (int x=minX;x<=maxX;++x){
+                world_.generateChunkIfMissing(x>>4, z>>4);
+                world_.setBlock(x,y,z,state);
+                queueBlockChange(x,y,z,state);
+                ++changed;
+            }
+            flushBlockBatches();
+            // also flush light? lightEngine will broadcast UpdateLight on next tick
+            sendFeedback(src, "Filled " + std::to_string(changed) + " blocks with " + base);
+            return changed;
+        };
+        to->then(block);
+        from->then(to);
+        fill->then(from);
+        d.root->then(fill);
     }
     // /summon <entity> [pos]
     {
@@ -686,25 +806,134 @@ void GameServer::initCommands() {
         title->then(text);
         d.root->then(title);
     }
-    // /worldborder center <x z> | size <s>
+    // /worldborder — full vanilla subset (plan10 §1): get/set/add/center + lerp + damage
     {
         auto wb = CommandNode::literal("worldborder");
-        auto size = CommandNode::literal("size");
-        auto sz = CommandNode::argument("diameter", args::floatArg(1.f, 1000000.f));
-        sz->executable = true;
-        sz->action = [this](CommandContext& c) {
-            worldBorderDiameter_ = c.arg("diameter").asDouble();
-            // persist and broadcast (plan6 §10)
-            if (persist_) persist_->setWorldBorder(worldBorderDiameter_, worldBorderCenterX_, worldBorderCenterZ_);
-            broadcastWorldBorder();
-            // also send Center and LerpSize for spec compliance
-            for (auto& p : playersSnapshot()) {
-                WriteBuffer cc; cc.f64(worldBorderCenterX_); cc.f64(worldBorderCenterZ_);
-                try { p->conn->sendPacket(proto::pl::sc::WorldBorderCenter, cc); } catch(...) {}
-            }
-            return 1;
+        // /worldborder get
+        {
+            auto get = CommandNode::literal("get");
+            get->executable = true;
+            get->action = [this](CommandContext& c) {
+                Player* src = static_cast<Player*>(c.source.player);
+                sendFeedback(src, "WorldBorder is " + std::to_string(currentBorderDiameter()) + " blocks wide (center " + std::to_string(worldBorderCenterX_) + "," + std::to_string(worldBorderCenterZ_) + ")");
+                return (int)currentBorderDiameter();
+            };
+            wb->then(get);
+        }
+        // /worldborder set <diameter> [timeSeconds]
+        auto addSet = [&](const char* litName){
+            auto lit = CommandNode::literal(litName);
+            auto dia = CommandNode::argument("diameter", args::floatArg(1.f, 60000000.f));
+            dia->executable = true;
+            dia->action = [this, litName](CommandContext& c) {
+                double d = c.arg("diameter").asDouble();
+                double from = currentBorderDiameter();
+                double to = (std::string(litName)=="add") ? from + d : d;
+                if (persist_) persist_->setWorldBorder(to, worldBorderCenterX_, worldBorderCenterZ_);
+                if (from != to) {
+                    setBorderLerp(from, to, 0);
+                    worldBorderDiameter_ = to;
+                    worldBorderLerpFrom_ = from; worldBorderLerpTo_ = to;
+                    worldBorderLerpStartTick_ = tickNo_; worldBorderLerpEndTick_ = tickNo_;
+                } else {
+                    worldBorderDiameter_ = to;
+                }
+                broadcastWorldBorder();
+                Player* src = static_cast<Player*>(c.source.player);
+                sendFeedback(src, "WorldBorder " + std::string(litName) + " " + std::to_string(to));
+                return 1;
+            };
+            // optional time arg for lerp
+            auto timeArg = CommandNode::argument("time", args::integer(0, 86400));
+            timeArg->executable = true;
+            timeArg->action = [this, litName](CommandContext& c) {
+                double d = c.arg("diameter").asDouble();
+                int secs = c.arg("time").asInt();
+                double from = currentBorderDiameter();
+                double to = (std::string(litName)=="add") ? from + d : d;
+                std::int64_t ticks = (std::int64_t)secs * 20;
+                setBorderLerp(from, to, ticks);
+                // don't immediately set diameter, lerp will animate
+                broadcastWorldBorder();
+                Player* src = static_cast<Player*>(c.source.player);
+                sendFeedback(src, "WorldBorder " + std::string(litName) + " " + std::to_string(to) + " over " + std::to_string(secs) + "s");
+                return 1;
+            };
+            dia->then(timeArg);
+            lit->then(dia);
+            wb->then(lit);
         };
-        wb->then(size);
+        addSet("set");
+        addSet("size"); // alias for legacy test "worldborder size 100"
+        addSet("add");
+        // /worldborder center <x> <z>
+        {
+            auto center = CommandNode::literal("center");
+            auto cxArg = CommandNode::argument("x", args::floatArg(-30000000.f, 30000000.f));
+            auto czArg = CommandNode::argument("z", args::floatArg(-30000000.f, 30000000.f));
+            czArg->executable = true;
+            czArg->action = [this](CommandContext& c) {
+                worldBorderCenterX_ = c.arg("x").asDouble();
+                worldBorderCenterZ_ = c.arg("z").asDouble();
+                if (persist_) persist_->setWorldBorder(worldBorderDiameter_, worldBorderCenterX_, worldBorderCenterZ_);
+                broadcastWorldBorder();
+                Player* src = static_cast<Player*>(c.source.player);
+                sendFeedback(src, "WorldBorder center set to " + std::to_string(worldBorderCenterX_) + "," + std::to_string(worldBorderCenterZ_));
+                return 1;
+            };
+            cxArg->then(czArg);
+            center->then(cxArg);
+            wb->then(center);
+        }
+        // /worldborder damage amount <perBlock> / buffer <distance>
+        {
+            auto dmg = CommandNode::literal("damage");
+            auto amount = CommandNode::literal("amount");
+            auto val = CommandNode::argument("value", args::floatArg(0.f, 100.f));
+            val->executable = true;
+            val->action = [this](CommandContext& c){
+                worldBorderDamagePerBlock_ = c.arg("value").asDouble();
+                Player* src = static_cast<Player*>(c.source.player);
+                sendFeedback(src, "WorldBorder damage per block = " + std::to_string(worldBorderDamagePerBlock_));
+                return 1;
+            };
+            amount->then(val);
+            dmg->then(amount);
+            auto buffer = CommandNode::literal("buffer");
+            auto bval = CommandNode::argument("distance", args::floatArg(0.f, 1000.f));
+            bval->executable = true;
+            bval->action = [this](CommandContext& c){
+                worldBorderSafeZone_ = c.arg("distance").asDouble();
+                Player* src = static_cast<Player*>(c.source.player);
+                sendFeedback(src, "WorldBorder damage buffer = " + std::to_string(worldBorderSafeZone_));
+                return 1;
+            };
+            buffer->then(bval);
+            dmg->then(buffer);
+            wb->then(dmg);
+            auto warning = CommandNode::literal("warning");
+            auto blocks = CommandNode::literal("distance");
+            auto bdist = CommandNode::argument("distance", args::integer(0, 100000));
+            bdist->executable = true;
+            bdist->action=[this](CommandContext& c){
+                worldBorderWarningBlocks_=c.arg("distance").asInt();
+                broadcastWorldBorder();
+                return 1;
+            };
+            blocks->then(bdist);
+            warning->then(blocks);
+            auto timeLit = CommandNode::literal("time");
+            auto tval = CommandNode::argument("time", args::integer(0, 100000));
+            tval->executable = true;
+            tval->action=[this](CommandContext& c){
+                worldBorderWarningTime_=c.arg("time").asInt();
+                broadcastWorldBorder();
+                return 1;
+            };
+            timeLit->then(tval);
+            warning->then(timeLit);
+            wb->then(warning);
+        }
         d.root->then(wb);
     }
     // /stats
@@ -869,6 +1098,7 @@ void GameServer::initCommands() {
         diff->then(lvl);
         d.root->then(diff);
     }
+}
     // /team add|remove|join|leave|list|empty (plan10 §6 #79)
     {
         auto team = CommandNode::literal("team");
@@ -958,7 +1188,6 @@ void GameServer::initCommands() {
         leaveMember->action = [this](CommandContext& c) {
             Player* src = static_cast<Player*>(c.source.player);
             std::string member = c.arg("member").asStr();
-            // find which team contains member
             std::string foundTeam;
             for (auto& kv : scoreboard.teams) if (kv.second.members.count(member)) { foundTeam = kv.first; break; }
             if (foundTeam.empty()) throw std::runtime_error(member + " is not in a team");
@@ -1034,7 +1263,6 @@ void GameServer::initCommands() {
             for (auto& n : sel.playerNames) {
                 if (Player* p = findPlayer(*this, n)) { p->tags.insert(tagName); cnt++; }
             }
-            // also mobs
             std::lock_guard<std::mutex> lk(entsMtx_);
             for (auto id : sel.entityIds) for (auto& m : mobs_) if (m->entityId==id) { m->tags.insert(tagName); cnt++; }
             sendFeedback(src, "Added tag " + tagName + " to " + std::to_string(cnt));
@@ -1076,7 +1304,6 @@ void GameServer::initCommands() {
     // /bossbar add|remove|list|get|set (plan10 §6 #35 #79)
     {
         auto bossbar = CommandNode::literal("bossbar");
-        // bossbar add <id> <title>
         auto add = CommandNode::literal("add");
         auto idArg = CommandNode::argument("id", args::stringWord());
         auto titleArg = CommandNode::argument("title", args::stringGreedy());
@@ -1085,10 +1312,7 @@ void GameServer::initCommands() {
             Player* src = static_cast<Player*>(c.source.player);
             std::string id = c.arg("id").asStr();
             std::string title = c.arg("title").asStr();
-            // Use BossBarManager via bossAI? For command-created bars, use BossBarManager directly as generic team-like
-            // We'll create a bossbar entry with uuid derived from id hash
             BossBar bar;
-            // deterministic uuid from id string
             std::hash<std::string> h;
             size_t hv = h(id);
             for (int i=0;i<16;i++) bar.uuid[i] = (hv >> ((i%8)*8)) & 0xFF;
@@ -1097,20 +1321,14 @@ void GameServer::initCommands() {
             bar.entityId = -1;
             bar.title = title.empty() ? id : title;
             bar.health = 1.0f;
-            bar.color = 5; // purple
+            bar.color = 5;
             bar.division = 0;
             bar.flags = 0;
-            // store via BossBarManager as if entityId is hash
             int32_t key = static_cast<int32_t>(hv & 0x7fffffff);
             bar.entityId = key;
             if (bossAI()) {
-                // inject directly into bars map
                 bossAI()->bars().addCommandBar(key, bar);
-            } else {
-                BossBarManager tmp;
-                (void)tmp;
             }
-            // broadcast ADD
             WriteBuffer b;
             b.uuid(bar.uuid.data());
             b.varint(0);
@@ -1126,7 +1344,6 @@ void GameServer::initCommands() {
         idArg->then(titleArg);
         add->then(idArg);
         bossbar->then(add);
-        // bossbar remove <id>
         auto rem = CommandNode::literal("remove");
         auto remId = CommandNode::argument("id", args::stringWord());
         remId->executable = true;
@@ -1137,7 +1354,6 @@ void GameServer::initCommands() {
             size_t hv = h(id);
             int32_t key = static_cast<int32_t>(hv & 0x7fffffff);
             if (bossAI()) bossAI()->bars().removeCommandBar(key);
-            // broadcast REMOVE (need uuid)
             std::array<uint8_t,16> u{};
             for (int i=0;i<16;i++) u[i] = (hv >> ((i%8)*8)) & 0xFF;
             u[6] = (u[6] & 0x0F) | 0x40;
@@ -1151,7 +1367,6 @@ void GameServer::initCommands() {
         };
         rem->then(remId);
         bossbar->then(rem);
-        // bossbar list
         auto list = CommandNode::literal("list");
         list->executable = true;
         list->action = [this](CommandContext& c) {
@@ -1161,7 +1376,6 @@ void GameServer::initCommands() {
             return bossAI() ? (int)bossAI()->bars().size() : 0;
         };
         bossbar->then(list);
-        // bossbar get <id> value|max
         auto get = CommandNode::literal("get");
         auto getId = CommandNode::argument("id", args::stringWord());
         auto getProp = CommandNode::argument("prop", args::stringWord());
@@ -1177,7 +1391,6 @@ void GameServer::initCommands() {
         getId->then(getProp);
         get->then(getId);
         bossbar->then(get);
-        // bossbar set <id> value <value>
         auto set = CommandNode::literal("set");
         auto setId = CommandNode::argument("id", args::stringWord());
         auto setProp = CommandNode::literal("value");
@@ -1210,6 +1423,7 @@ void GameServer::initCommands() {
         bossbar->then(set);
         d.root->then(bossbar);
     }
+
 }
 
 } // namespace cppfm
