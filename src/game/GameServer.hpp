@@ -217,6 +217,7 @@ private:
     void onMovement(ReadBuffer& in, bool hasPos, bool hasRot);
     void onTabComplete(ReadBuffer& in);
     void handlePlaceRecipe(std::int32_t recipeId, bool makeAll);
+    void handlePlaceGhostRecipe(std::int32_t recipeId);
     void sendRecipeBook();
     void onPluginPayload(const std::string& channel,
                          const api::ChannelRegistry::Payload& body, int phase);
@@ -561,6 +562,7 @@ public:
     bool spawnMobByTypeName(const std::string& name, double x, double y, double z);
     // Furnace smelting tick (called once per game tick).
     void furnacesTick();
+    void brewingTick();
     // Hopper item movement + dispenser ejection (every 8 ticks).
     void hoppersTick();
     // Chunk LRU / simulation distance (plan5 items 6,7,8)
