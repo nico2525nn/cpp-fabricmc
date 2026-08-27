@@ -1,4 +1,5 @@
 #include "GameServer.hpp"
+#include "BlockEvent.hpp"
 #include "../physics/LightEngine.hpp"
 #include "../physics/Fluids.hpp"
 #include "../physics/Redstone.hpp"
@@ -196,6 +197,12 @@ void GameServer::tickDigs() {
                 }
                 world_.setBlock(p->digX, p->digY, p->digZ, 0);
                 broadcastBlockChange(p->digX, p->digY, p->digZ, 0);
+                // BlockEvent: fire onBlockBreak (plan7)
+                {
+                    blockEventDispatcher().onBlockBreak(p->digX, p->digY, p->digZ, oldState, p);
+                    api::BlockBreakEvent bev2; bev2.player=p; bev2.x=p->digX; bev2.y=p->digY; bev2.z=p->digZ; bev2.oldState=oldState;
+                    (void)bev2;
+                }
                 onBlockMined(*p, oldState);
                 // durability: damage held tool if it has durability
                 if (p->gamemode == 0 && p->heldSlot >=0 && p->heldSlot <9) {
@@ -454,6 +461,7 @@ void GameServer::tickOnce() {
     fluidSim_->tick(tickNo_);
     mark('R');
     redstone_->tick(tickNo_);
+    if (blockTicks_) blockTicks_->tick(tickNo_);
     mark('D');
     tickDigs();
     mark('S');
@@ -3970,6 +3978,16 @@ void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
                     }
                 }
             }
+            // BlockEvent: onEntityLand (plan7) – fire when entity lands on block
+            {
+                int lbx = static_cast<int>(std::floor(self_->x));
+                int lby = static_cast<int>(std::floor(self_->y - 0.2));
+                int lbz = static_cast<int>(std::floor(self_->z));
+                std::uint16_t lst = srv_.worldFor(self_->dimension).getBlock(lbx, lby, lbz);
+                blockEventDispatcher().onEntityLand(self_.get(), lbx, lby, lbz, lst, self_->fallDist);
+                api::EntityLandEvent lev; lev.entity=self_.get(); lev.x=lbx; lev.y=lby; lev.z=lbz; lev.blockState=lst; lev.fallDistance=self_->fallDist;
+                api::events().entityLand.fire(lev);
+            }
             if (getenv("CPPFM_TRACE"))
                 std::fprintf(stderr, "[cppfm] %s landed fallDist=%.2f gm=%u\n",
                              self_->name.c_str(), self_->fallDist, self_->gamemode);
@@ -4309,6 +4327,13 @@ void Session::onUseItemOn(ReadBuffer& in) {
         }
     }
 
+    // BlockEvent: fire onBlockClicked for every right-click (plan7)
+    {
+        const std::uint16_t _clickedSt = srv_.worldFor(self_->dimension).getBlock(x, y, z);
+        blockEventDispatcher().onBlockClicked(x, y, z, _clickedSt, d, self_.get());
+        api::BlockClickedEvent _bcev; _bcev.player=self_.get(); _bcev.x=x; _bcev.y=y; _bcev.z=z; _bcev.state=_clickedSt; _bcev.face=d;
+        api::events().blockClicked.fire(_bcev);
+    }
     // right-click on interactive blocks opens menus (vanilla behaviour)
     {
         const std::uint16_t clickedState = srv_.world().getBlock(x, y, z);
@@ -4757,6 +4782,11 @@ void Session::onUseItemOn(ReadBuffer& in) {
     srv_.world().setBlock(tx, ty, tz, newState);
     srv_.broadcastBlockChange(tx, ty, tz, newState);
     srv_.world().scheduleNeighborUpdates(tx, ty, tz);
+    // BlockEvent: fire onBlockPlace (plan7) after successful placement
+    {
+        std::uint16_t oldSt = 0; // air before
+        blockEventDispatcher().onBlockPlace(tx, ty, tz, oldSt, newState, self_.get());
+    }
     if (survival) {
         auto mutableHeld = &self_->inv[36 + self_->heldSlot];
         if (ItemStack::maxDamageFor(mutableHeld->itemId) > 0) {
