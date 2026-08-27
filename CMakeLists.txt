@@ -75,3 +75,32 @@ target_link_libraries(test_native PRIVATE Threads::Threads ZLIB::ZLIB OpenSSL::C
 add_test(NAME native COMMAND test_native $<TARGET_FILE:cppfm>
          WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(native PROPERTIES TIMEOUT 300)
+
+add_executable(test_smoke_80
+    tests/TestClient.cpp
+    tests/test_smoke_80.cpp
+    src/core/NBT.cpp
+    src/game/GameServer.cpp
+    src/game/WorldGen.cpp
+    src/game/Recipes.cpp
+    src/game/MenuInteraction.cpp
+    src/game/Containers.cpp
+    src/game/Commands.cpp
+    src/game/AiBrain.cpp
+    src/game/Stats.cpp
+    src/physics/LightEngine.cpp
+    src/physics/Fluids.cpp
+    src/physics/Redstone.cpp
+    src/physics/BlockTickScheduler.cpp
+    src/worldgen/DensityFunction.cpp
+    src/worldgen/MultiNoise.cpp
+    src/worldgen/Structures.cpp
+    src/net/PacketBatcher.cpp)
+target_include_directories(test_smoke_80 PRIVATE src src/generated tests)
+find_package(Threads REQUIRED)
+find_package(ZLIB REQUIRED)
+find_package(OpenSSL REQUIRED)
+target_link_libraries(test_smoke_80 PRIVATE Threads::Threads ZLIB::ZLIB OpenSSL::Crypto)
+add_test(NAME smoke80 COMMAND test_smoke_80 $<TARGET_FILE:cppfm>
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(smoke80 PROPERTIES TIMEOUT 400)
