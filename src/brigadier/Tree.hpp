@@ -34,6 +34,9 @@ struct CommandSource {
     std::string name = "Server";                     // display name
     bool console = true;
     bool hasOp = true;                               // permission level >=2
+    double srcX = 0, srcY = 0, srcZ = 0;
+    float srcYaw = 0, srcPitch = 0;
+    std::function<void(const std::string&, SelectorResult&)> resolveSelector;
 };
 
 class CommandContext : public ParseCtx {
@@ -192,6 +195,12 @@ public:
         CommandContext ctx;
         ctx.source = std::move(src);
         ctx.input = line;
+        ctx.srcX = ctx.source.srcX;
+        ctx.srcY = ctx.source.srcY;
+        ctx.srcZ = ctx.source.srcZ;
+        ctx.srcYaw = ctx.source.srcYaw;
+        ctx.srcPitch = ctx.source.srcPitch;
+        ctx.resolveSelector = ctx.source.resolveSelector;
         StringReader r(line);
         if (!root->executeAt(r, ctx, res)) {
             res.ok = false;
@@ -207,6 +216,10 @@ public:
         CommandContext ctx;
         ctx.source = std::move(src);
         ctx.input = line;
+        ctx.srcX = ctx.source.srcX;
+        ctx.srcY = ctx.source.srcY;
+        ctx.srcZ = ctx.source.srcZ;
+        ctx.resolveSelector = ctx.source.resolveSelector;
         std::vector<Suggestion> out;
         StringReader r(line);
 
