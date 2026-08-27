@@ -54,7 +54,7 @@ public:
         // also clear absorption? handled elsewhere
     }
     template<typename W> void writeUpdate(W& out,int32_t eid) const{
-        out.varint(eid); out.varint(3);
+        out.varint(eid); out.varint(6);
         auto wo=[&](Attribute at,const char* key){
             out.string(key); out.f64(getValue(at));
             auto it=map_.find(at); size_t n=it==map_.end()?0:it->second.modifiers.size(); out.varint((int32_t)n);
@@ -63,6 +63,9 @@ public:
         wo(Attribute::MAX_HEALTH,"minecraft:generic.max_health");
         wo(Attribute::MOVEMENT_SPEED,"minecraft:generic.movement_speed");
         wo(Attribute::ATTACK_DAMAGE,"minecraft:generic.attack_damage");
+        wo(Attribute::ARMOR,"minecraft:generic.armor");
+        wo(Attribute::ARMOR_TOUGHNESS,"minecraft:generic.armor_toughness");
+        wo(Attribute::KNOCKBACK_RESISTANCE,"minecraft:generic.knockback_resistance");
     }
 private: std::unordered_map<Attribute,AttributeInstance> map_;
 };
