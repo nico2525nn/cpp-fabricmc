@@ -111,6 +111,8 @@ public:
 
 // ---------------------------------------------------------------- brain ---
 
+class BehaviorTree; // forward (defined in BehaviorTree.hpp)
+
 class Brain {
 public:
     Brain() {
@@ -122,31 +124,16 @@ public:
         goals_.push_back(std::make_unique<WanderAroundGoal>());
         goals_.push_back(std::make_unique<LookAtPlayerGoal>());
     }
-
-    void tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
-        NearestPlayerSensor::update(m, ctx);
-        Goal* chosen = nullptr;
-        for (auto& g : goals_) {
-            if (g->shouldStart(m, ctx)) { chosen = g.get(); break; }
-            if (g.get() == active_ && running_) break;   // keep active unless preempted
-        }
-        if (!chosen && running_) chosen = active_;
-        if (chosen != active_) {
-            if (active_) active_->stop(m, ctx);
-            active_ = chosen;
-            running_ = false;
-            if (active_) { active_->start(m, ctx); running_ = true; }
-        }
-        if (active_) {
-            running_ = active_->tick(m, ctx, now);
-            if (!running_) { active_->stop(m, ctx); active_ = nullptr; }
-        }
-    }
+    ~Brain();
+    void setBehaviorTree(std::unique_ptr<BehaviorTree> t);
+    bool hasBehaviorTree() const;
+    void tick(MobEntity& m, AiContext& ctx, std::int64_t now);
 
 private:
     std::vector<std::unique_ptr<Goal>> goals_;
     Goal* active_ = nullptr;
     bool running_ = false;
+    std::unique_ptr<BehaviorTree> behaviorTree_;
 };
 
 } // namespace cppfm
