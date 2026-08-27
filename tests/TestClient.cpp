@@ -412,6 +412,84 @@ void TestClient::filePacket(Packet p) {
             if (extractChatText(p.body, text)) chatLines.push_back(text);
             break;
         }
+        case proto::pl::sc::PlayerChat: {
+            // PlayerChat 0x3B: sender(16) + index varint + hasSig bool + [sig] + message string + timestamp + salt ...
+            try {
+                ReadBuffer in(p.body);
+                if (in.remaining() < 16) throw std::runtime_error("short playerchat");
+                in.bytes(16);
+                (void)in.varint();
+                bool hasSig = in.boolean();
+                if (hasSig) {
+                    int32_t slen = in.varint();
+                    if (slen > 0 && slen < 2048) in.bytes((size_t)slen);
+                }
+                std::string msg = in.string(8192);
+                if (!msg.empty()) chatLines.push_back(msg);
+                // Also try to capture formatted component later (sender name) if msg empty
+                if (msg.empty()) {
+                    // heuristic fallback: search raw payload for printable message
+                    std::string raw(reinterpret_cast<const char*>(p.body.data()), p.body.size());
+                    // already tried; ignore
+                }
+            } catch (...) {
+                // fallback: raw search for known substrings – push whole raw as chat line for waitChat heuristic
+                std::string raw(reinterpret_cast<const char*>(p.body.data()), p.body.size());
+                // Keep only printable part
+                std::string filtered;
+                for (unsigned char c : raw) if (c >= 32 && c <= 126) filtered.push_back(c); else filtered.push_back(' ');
+                chatLines.push_back(filtered);
+            }
+            break;
+        }
+        case proto::pl::sc::DisguisedChat: {
+            // DisguisedChat 0x1C: message string + chat type? Try to extract via string parsing
+            try {
+                ReadBuffer in(p.body);
+                // first field may be chat component? Try to extract via extractChatText fallback
+                std::string text;
+                if (extractChatText(p.body, text)) chatLines.push_back(text);
+                else {
+                    // try to read as string
+                    try { std::string s = in.string(8192); if (!s.empty()) chatLines.push_back(s); } catch(...) {}
+                }
+            } catch(...) {}
+            break;
+        }
+        case proto::pl::sc::MultiBlockChange: {
+            try {
+                ReadBuffer in(p.body);
+                uint64_t packed = in.u64();
+                int32_t baseCx = (int32_t)((packed >> 42) & 0x3FFFFF);
+                // sign extend 22 bits
+                if (baseCx & 0x200000) baseCx |= ~0x3FFFFF;
+                int32_t baseCz = (int32_t)((packed >> 20) & 0x3FFFFF);
+                if (baseCz & 0x200000) baseCz |= ~0x3FFFFF;
+                int32_t baseSy = (int32_t)(packed & 0xFFFFF);
+                if (baseSy & 0x80000) baseSy |= ~0xFFFFF;
+                int32_t cnt = in.varint();
+                for (int i=0;i<cnt;i++) {
+                    int32_t enc = in.varint();
+                    uint32_t state = (uint32_t)(enc >> 12);
+                    int32_t lx = (enc >> 8) & 0xF;
+                    int32_t lz = (enc >> 4) & 0xF;
+                    int32_t ly = enc & 0xF;
+                    int32_t x = (baseCx << 4) | lx;
+                    int32_t y = (baseSy << 4) | ly;
+                    int32_t z = (baseCz << 4) | lz;
+                    blockUpdates.push_back({x,y,z, state});
+                }
+            } catch(...) {}
+            break;
+        }
+        case proto::pl::sc::BundleDelimiter: {
+            // no payload, just marker for smoke bundle check – count via recent, ignore here
+            break;
+        }
+        case proto::pl::sc::BossBar:
+        case proto::pl::sc::Teams:
+            // keep in recent for count, no extra state needed
+            break;
         case proto::pl::sc::AckBlockChange: acks++; break;
         case proto::pl::sc::SpawnEntity: spawnsReceived++; break;
         case proto::pl::sc::MoveEntityPosRot:
