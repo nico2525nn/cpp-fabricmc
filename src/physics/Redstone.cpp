@@ -8,6 +8,120 @@
 
 namespace cppfm {
 
+// ------------------------------------------------------------------ IRedstoneBehavior / RedstoneComponent (plan7)
+
+int RedstoneComponent::calculateOutputSignal(World& world, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state) {
+    (void)world; (void)x; (void)y; (void)z;
+    if (name_.find("lever") != std::string::npos || name_.find("button") != std::string::npos) {
+        for (auto& [k,v] : gen::propsOf(state)) if (k=="powered" && v=="true") return 15;
+        return 0;
+    }
+    if (name_ == "minecraft:redstone_wire") {
+        for (auto& [k,v] : gen::propsOf(state)) if (k=="power") return std::atoi(std::string(v).c_str());
+        return 0;
+    }
+    if (name_.find("torch") != std::string::npos) {
+        for (auto& [k,v] : gen::propsOf(state)) if (k=="lit" && v=="false") return 0;
+        return 15;
+    }
+    if (name_.find("observer") != std::string::npos) {
+        for (auto& [k,v] : gen::propsOf(state)) if (k=="powered" && v=="true") return 15;
+        return 0;
+    }
+    return 0;
+}
+void RedstoneComponent::onBlockChanged(World& world, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state, std::int64_t now) {
+    (void)world; (void)x; (void)y; (void)z; (void)state; (void)now;
+    // delegate to world neighbor updater – real logic lives in RedstoneEngine
+}
+
+int RedstoneWireBehavior::calculateOutputSignal(World& world, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state) {
+    (void)world; (void)x; (void)y; (void)z;
+    for (auto& [k,v] : gen::propsOf(state)) if (k=="power") return std::atoi(std::string(v).c_str());
+    return 0;
+}
+void RedstoneWireBehavior::onBlockChanged(World& world, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state, std::int64_t now) {
+    (void)world; (void)x; (void)y; (void)z; (void)state; (void)now;
+}
+
+int LeverBehavior::calculateOutputSignal(World& world, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state) {
+    (void)world; (void)x; (void)y; (void)z;
+    for (auto& [k,v] : gen::propsOf(state)) if (k=="powered" && v=="true") return 15;
+    return 0;
+}
+void LeverBehavior::onBlockChanged(World& world, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state, std::int64_t now) {
+    (void)world; (void)x; (void)y; (void)z; (void)state; (void)now;
+}
+
+int ObserverBehavior::calculateOutputSignal(World& world, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state) {
+    (void)world; (void)x; (void)y; (void)z;
+    for (auto& [k,v] : gen::propsOf(state)) if (k=="powered" && v=="true") return 15;
+    return 0;
+}
+void ObserverBehavior::onBlockChanged(World& world, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state, std::int64_t now) {
+    (void)world; (void)x; (void)y; (void)z; (void)state; (void)now;
+    // observer pulses handled in RedstoneEngine::handleObserverTrigger
+}
+
+int ButtonBehavior::calculateOutputSignal(World& world, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state) {
+    (void)world; (void)x; (void)y; (void)z;
+    for (auto& [k,v] : gen::propsOf(state)) if (k=="powered" && v=="true") return 15;
+    return 0;
+}
+void ButtonBehavior::onBlockChanged(World& world, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state, std::int64_t now) {
+    (void)world; (void)x; (void)y; (void)z; (void)state; (void)now;
+}
+
+int TorchBehavior::calculateOutputSignal(World& world, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state) {
+    (void)world; (void)x; (void)y; (void)z;
+    for (auto& [k,v] : gen::propsOf(state)) if (k=="lit" && v=="false") return 0;
+    return 15;
+}
+void TorchBehavior::onBlockChanged(World& world, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state, std::int64_t now) {
+    (void)world; (void)x; (void)y; (void)z; (void)state; (void)now;
+}
+
+int RepeaterBehavior::calculateOutputSignal(World& world, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state) {
+    (void)world; (void)x; (void)y; (void)z;
+    for (auto& [k,v] : gen::propsOf(state)) if (k=="powered" && v=="true") return 15;
+    return 0;
+}
+void RepeaterBehavior::onBlockChanged(World& world, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state, std::int64_t now) {
+    (void)world; (void)x; (void)y; (void)z; (void)state; (void)now;
+}
+
+int ComparatorBehavior::calculateOutputSignal(World& world, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state) {
+    (void)world; (void)x; (void)y; (void)z; (void)state;
+    for (auto& [k,v] : gen::propsOf(state)) if (k=="powered" && v=="true") return 15;
+    return 0;
+}
+void ComparatorBehavior::onBlockChanged(World& world, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state, std::int64_t now) {
+    (void)world; (void)x; (void)y; (void)z; (void)state; (void)now;
+}
+
+static std::unordered_map<std::string, std::unique_ptr<IRedstoneBehavior>> g_redstoneBehaviors;
+IRedstoneBehavior* RedstoneBehaviorRegistry::forBlock(const std::string& blockName) {
+    auto it = g_redstoneBehaviors.find(blockName);
+    if (it != g_redstoneBehaviors.end()) return it->second.get();
+    // fallback: generic component delegate
+    auto cit = g_redstoneBehaviors.find("*");
+    if (cit != g_redstoneBehaviors.end()) return cit->second.get();
+    return nullptr;
+}
+void RedstoneBehaviorRegistry::initDefaults() {
+    if (!g_redstoneBehaviors.empty()) return;
+    g_redstoneBehaviors.emplace("minecraft:redstone_wire", std::make_unique<RedstoneWireBehavior>());
+    g_redstoneBehaviors.emplace("minecraft:lever", std::make_unique<LeverBehavior>());
+    g_redstoneBehaviors.emplace("minecraft:observer", std::make_unique<ObserverBehavior>());
+    g_redstoneBehaviors.emplace("minecraft:stone_button", std::make_unique<ButtonBehavior>());
+    g_redstoneBehaviors.emplace("minecraft:oak_button", std::make_unique<ButtonBehavior>());
+    g_redstoneBehaviors.emplace("minecraft:redstone_torch", std::make_unique<TorchBehavior>());
+    g_redstoneBehaviors.emplace("minecraft:redstone_wall_torch", std::make_unique<TorchBehavior>());
+    g_redstoneBehaviors.emplace("minecraft:repeater", std::make_unique<RepeaterBehavior>());
+    g_redstoneBehaviors.emplace("minecraft:comparator", std::make_unique<ComparatorBehavior>());
+    g_redstoneBehaviors.emplace("*", std::make_unique<RedstoneComponent>("generic"));
+}
+
 RedstoneEngine::Comp RedstoneEngine::classify(std::uint16_t state) {
     const gen::BlockDef* b = gen::blockByState(state);
     if (!b) return Comp::None;
