@@ -30,10 +30,10 @@ void AnvilMenuLogic::recomputeResult(Menu& menu) {
     ItemStack* right = menu.container ? &menu.container[1] : &menu.extraSlots[1];
     ItemStack* result = menu.container ? &menu.container[2] : &menu.extraSlots[2];
     if (left->empty()) { *result = ItemStack::air(); return; }
-    // Simulate anvil repair: copy left, apply damage repair if right is material, apply rename
-    int cost = CostCalculator::anvilCost(*left, *right, pendingRename_);
+    std::string rename = !menu.anvilRename.empty() ? menu.anvilRename : pendingRename_;
+    int cost = CostCalculator::anvilCost(*left, *right, rename);
     if (cost < 0) { *result = ItemStack::air(); return; }
-    if (cost==0 && right->empty() && pendingRename_.empty()) { *result = ItemStack::air(); return; }
+    if (cost==0 && right->empty() && rename.empty()) { *result = ItemStack::air(); return; }
     ItemStack out = *left;
     // repair: reduce damage if both are same item or right is repair material
     if (!right->empty()) {
@@ -63,12 +63,10 @@ void AnvilMenuLogic::recomputeResult(Menu& menu) {
         }
     }
     // rename: store custom name as component 5? We store as plain component payload for demonstration
-    if (!pendingRename_.empty()) {
-        // use component id 6? store name payload
-        // Remove old custom_name
+    if (!rename.empty()) {
         out.components.erase(std::remove_if(out.components.begin(), out.components.end(),
             [](auto& p){ return p.first==5; }), out.components.end());
-        std::vector<uint8_t> payload(pendingRename_.begin(), pendingRename_.end());
+        std::vector<uint8_t> payload(rename.begin(), rename.end());
         out.components.emplace_back(5, std::move(payload));
     }
     out.count = 1;
@@ -90,7 +88,8 @@ bool AnvilMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, int but
         if (result->empty()) return false;
         ItemStack* left = menu.container ? &menu.container[0] : &menu.extraSlots[0];
         ItemStack* right = menu.container ? &menu.container[1] : &menu.extraSlots[1];
-        int cost = CostCalculator::anvilCost(*left, *right, pendingRename_);
+        std::string rename = !menu.anvilRename.empty() ? menu.anvilRename : pendingRename_;
+        int cost = CostCalculator::anvilCost(*left, *right, rename);
         if (cost < 0) return false;
         // check XP level (player.xp.level) — require cost
         if (player.gamemode==0 && player.xp.level < cost) {
@@ -111,6 +110,7 @@ bool AnvilMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, int but
         if (!right->empty()) { right->count -= 1; if (right->count<=0) *right=ItemStack::air(); }
         *result = ItemStack::air();
         pendingRename_.clear();
+        menu.anvilRename.clear();
         io.blockEntityChanged(menu.blockKey);
         return true;
     }
@@ -184,18 +184,16 @@ bool EnchantmentMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, i
 }
 
 bool EnchantmentMenuLogic::onEnchantButton(Menu& menu, Player& player, int buttonId, MenuIo& io) {
-    // buttonId 0..2 corresponds to enchant level
+    return onEnchantButton(menu, player, buttonId, io, 15);
+}
+bool EnchantmentMenuLogic::onEnchantButton(Menu& menu, Player& player, int buttonId, MenuIo& io, int bookshelves) {
     ItemStack* item = menu.container ? &menu.container[0] : &menu.extraSlots[0];
     ItemStack* lapis = menu.container ? &menu.container[1] : &menu.extraSlots[1];
     if (item->empty()) return false;
     if (lapis->empty() || lapis->count < (buttonId+1)) return false;
-    // durability: need at least level cost
-    int bookshelves = 0; // TODO: count bookshelves around enchanting table at menu.blockKey
-    // simplified: assume 15 bookshelves if available, else 0
-    bookshelves = 15;
-    int cost = CostCalculator::enchantingCost(player, bookshelves);
-    // adjust cost per button: button 0 low, 2 high
-    int levelCost = (buttonId==0? std::clamp(cost/3,1,10) : buttonId==1? std::clamp(cost*2/3,5,20) : cost);
+    bookshelves = std::clamp(bookshelves, 0, 15);
+    auto costs = CostCalculator::enchantingCostsForShelves(player, bookshelves);
+    int levelCost = costs[std::clamp(buttonId,0,2)];
     if (player.gamemode==0 && player.xp.level < levelCost) return false;
     // Deduct lapis
     lapis->count -= (buttonId+1);

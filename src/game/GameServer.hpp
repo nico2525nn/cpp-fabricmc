@@ -273,6 +273,9 @@ private:
     std::unique_ptr<Menu> openMenu_;
     ItemStack cursorItem_;
     std::int32_t menuWindowCounter_ = 0;
+    // inventory window drag state (windowId 0)
+    std::vector<int> invDragSlots;
+    int invDragButton = -1;
     std::int32_t villagerWindowSeq_ = 100;
     std::int32_t tradingVillager_ = -1;  // villager entity id while trading
 };

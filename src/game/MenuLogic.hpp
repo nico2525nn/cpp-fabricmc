@@ -40,6 +40,7 @@ private:
     std::string pendingRename_;
 public:
     void setRenameText(const std::string& t) { pendingRename_ = t; }
+    void setRenameForMenu(Menu& menu, const std::string& t) { menu.anvilRename = t; }
 };
 
 // Enchantment table: lapis + item -> enchant options, EnchantItem packet handling
@@ -51,6 +52,7 @@ public:
     const char* name() const override { return "Enchantment"; }
     // Handle EnchantItem (0x0F) packet directly
     bool onEnchantButton(Menu& menu, Player& player, int buttonId, MenuIo& io);
+    bool onEnchantButton(Menu& menu, Player& player, int buttonId, MenuIo& io, int bookshelves);
 };
 
 // Brewing stand: potion brewing logic (plan6)
