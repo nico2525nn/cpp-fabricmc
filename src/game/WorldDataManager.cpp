@@ -58,6 +58,39 @@ bool WorldDataManager::saveLevelDataWithProviders(std::int64_t worldTicks, std::
         data.set("WasModded", nbt::Value::makeByte(0));
         data.set("allowCommands", nbt::Value::makeByte(1));
         data.set("GameType", nbt::Value::makeInt(1));
+        // ForcedChunks (spawn chunks + forced): 5x5 around spawn, stored as long array for vanilla compat
+        {
+            nbt::Value fc = nbt::Value::makeList(nbt::Long);
+            auto sp = world.spawnPoint();
+            int scx = sp.x >> 4, scz = sp.z >> 4;
+            for (int dz=-2; dz<=2; ++dz) for (int dx=-2; dx<=2; ++dx) {
+                std::int64_t key = (static_cast<std::int64_t>(static_cast<std::uint32_t>(scx+dx))<<32) | static_cast<std::uint32_t>(scz+dz);
+                fc.list.push_back(nbt::Value::makeLong(key));
+            }
+            // also include any additional forced chunks from world
+            for (auto k : world.allChunkKeys()) if (world.isForcedKey(k)) {
+                bool already=false;
+                for (auto &v: fc.list) if (v.l==k) { already=true; break; }
+                if (!already) fc.list.push_back(nbt::Value::makeLong(k));
+            }
+            data.set("ForcedChunks", fc);
+        }
+        // End dragon fight data (per-dim level.dat for The End)
+        if (world.dimensionId() == 1 || world.levelType() == LevelType::End) {
+            nbt::Value dragon = nbt::Value::makeCompound();
+            dragon.set("DragonKilled", nbt::Value::makeByte(0));
+            dragon.set("PreviouslyKilled", nbt::Value::makeByte(0));
+            dragon.set("Gateways", nbt::Value::makeList(nbt::Int));
+            data.set("DragonFight", dragon);
+        }
+        // GameRules: ensure all vanilla rules present
+        if (!data.get("GameRules")) {
+            nbt::Value gr = nbt::Value::makeCompound();
+            gr.set("doFireTick", nbt::Value::makeString("true"));
+            gr.set("doMobSpawning", nbt::Value::makeString("true"));
+            gr.set("randomTickSpeed", nbt::Value::makeString("3"));
+            data.set("GameRules", gr);
+        }
         if (provide_) provide_(data);
         root.set("Data", data);
         return saveLevelData(root);

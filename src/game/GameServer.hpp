@@ -803,15 +803,40 @@ private:
     std::string difficulty_ = "normal";
     double worldBorderDiameter_ = 29999984;   // vanilla default
     double worldBorderCenterX_ = 0, worldBorderCenterZ_ = 0;
+    // WorldBorder lerp (plan10 §1): smooth diameter transition
+    double worldBorderLerpFrom_ = 29999984;
+    double worldBorderLerpTo_ = 29999984;
+    std::int64_t worldBorderLerpStartTick_ = 0;
+    std::int64_t worldBorderLerpEndTick_ = 0;
+    double worldBorderDamagePerBlock_ = 0.2;
+    double worldBorderSafeZone_ = 5.0;
+    int worldBorderWarningBlocks_ = 5;
+    int worldBorderWarningTime_ = 15;
     int spawnProtection_ = 16;               // server.properties spawn-protection (default 16)
     std::unordered_set<std::string> ops_;    // ops.json / op list
     std::int32_t teleportCounterForTest_ = 1;
 
 public:
-    // WorldBorder helpers (plan6 §10)
+    // WorldBorder helpers (plan6 §10 + plan10 lerp/damage)
     bool isInsideBorder(double x, double z) const {
-        double half = worldBorderDiameter_ * 0.5;
+        double half = currentBorderDiameter() * 0.5;
         return std::abs(x - worldBorderCenterX_) <= half && std::abs(z - worldBorderCenterZ_) <= half;
+    }
+    double currentBorderDiameter() const {
+        if (worldBorderLerpEndTick_ <= worldBorderLerpStartTick_) return worldBorderDiameter_;
+        if (tickNo_ >= worldBorderLerpEndTick_) return worldBorderLerpTo_;
+        if (tickNo_ <= worldBorderLerpStartTick_) return worldBorderLerpFrom_;
+        double t = double(tickNo_ - worldBorderLerpStartTick_) / double(worldBorderLerpEndTick_ - worldBorderLerpStartTick_);
+        return worldBorderLerpFrom_ + (worldBorderLerpTo_ - worldBorderLerpFrom_) * t;
+    }
+    void setBorderLerp(double from, double to, std::int64_t durationTicks);
+    void tickBorderLerp();
+    double borderDistanceOutside(double x, double z) const {
+        double half = currentBorderDiameter() * 0.5;
+        double dx = std::abs(x - worldBorderCenterX_) - half;
+        double dz = std::abs(z - worldBorderCenterZ_) - half;
+        double d = std::max(dx, dz);
+        return d > 0 ? d : 0;
     }
     bool isSpawnProtected(std::int32_t x, std::int32_t z) const {
         if (spawnProtection_ <= 0) return false;
