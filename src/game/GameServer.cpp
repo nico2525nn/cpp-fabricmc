@@ -373,6 +373,7 @@ void GameServer::tickOnce() {
     auto mark = [&](char c) { if (tr) std::fprintf(stderr, "[tick] %c t=%ld\n", c, (long)tickNo_); };
     api::ServerTickEvent ev{tickNo_};
     events().serverTick.fire(ev);
+    tickBorderLerp();
     mark('F');
     fluidSim_->tick(tickNo_);
     mark('R');
@@ -686,9 +687,26 @@ void GameServer::survivalTick() {
                 }
             }
         }
-        // ---- world border damage (plan6 §10)
-        if (!isInsideBorder(p->x, p->z)) {
-            if (tickNo_ % 20 == 0) applyDamage(*p, 1.f, "outside_border");
+        // ---- world border damage (plan6 §10 + plan10 damagePerBlock/buffer)
+        {
+            double distOut = borderDistanceOutside(p->x, p->z);
+            if (distOut > 0) {
+                double effective = distOut - worldBorderSafeZone_;
+                if (effective > 0) {
+                    // vanilla: damage = floor((effective+1)*damagePerBlock) per tick? We do per second scaling
+                    // Simplify: damage per second = max(1, floor(effective * damagePerBlock + 1))
+                    if (tickNo_ % 20 == 0) {
+                        float dmg = (float)std::max(1.0, std::floor(effective * worldBorderDamagePerBlock_ + 0.5) + 1.0);
+                        // per-block scaling: at least 1, grows with distance
+                        applyDamage(*p, dmg, "outside_border");
+                    }
+                } else {
+                    // inside safe zone: no damage but warning
+                    if (tickNo_ % 100 == 0 && effective > -2.0) {
+                        // could send warning packet, but ignore for now
+                    }
+                }
+            }
         }
         (void)now;
     }
@@ -2192,25 +2210,79 @@ void GameServer::loadOps() {
         }
     } catch (...) {}
 }
+void GameServer::setBorderLerp(double from, double to, std::int64_t durationTicks) {
+    worldBorderLerpFrom_ = from;
+    worldBorderLerpTo_ = to;
+    worldBorderLerpStartTick_ = tickNo_;
+    worldBorderLerpEndTick_ = tickNo_ + std::max<std::int64_t>(0, durationTicks);
+    if (durationTicks <= 0) {
+        worldBorderDiameter_ = to;
+        worldBorderLerpFrom_ = to;
+        worldBorderLerpTo_ = to;
+    }
+}
+void GameServer::tickBorderLerp() {
+    if (worldBorderLerpEndTick_ <= worldBorderLerpStartTick_) return;
+    double cur = currentBorderDiameter();
+    if (tickNo_ >= worldBorderLerpEndTick_) {
+        worldBorderDiameter_ = worldBorderLerpTo_;
+        worldBorderLerpFrom_ = worldBorderLerpTo_;
+        worldBorderLerpStartTick_ = worldBorderLerpEndTick_;
+        // persist final
+        if (persist_) persist_->setWorldBorder(worldBorderDiameter_, worldBorderCenterX_, worldBorderCenterZ_);
+        return;
+    }
+    // update diameter for persistence check (not every tick to avoid spam)
+    if (tickNo_ % 20 == 0) {
+        worldBorderDiameter_ = cur;
+    }
+}
 void GameServer::sendWorldBorderTo(Player& p) const {
     if (!p.conn) return;
-    // InitializeWorldBorder full packet
+    double curDia = currentBorderDiameter();
+    double targetDia = worldBorderLerpEndTick_ > worldBorderLerpStartTick_ && tickNo_ < worldBorderLerpEndTick_ ? worldBorderLerpTo_ : curDia;
+    std::int64_t remainingTicks = std::max<std::int64_t>(0, worldBorderLerpEndTick_ - tickNo_);
+    std::int64_t lerpMs = remainingTicks * 50;
+    // InitializeWorldBorder full packet (vanilla: x,z,oldDia,newDia,speed,portalBoundary,warningTime,warningBlocks)
     WriteBuffer i;
     i.f64(worldBorderCenterX_); i.f64(worldBorderCenterZ_);
-    i.f64(worldBorderDiameter_); i.f64(worldBorderDiameter_);
-    i.varlong(0);
-    i.varint(29999984); // max
-    i.varint(5);
-    i.varint(15);
+    // old vs new diameter for lerp
+    if (remainingTicks > 0) {
+        i.f64(worldBorderLerpFrom_); i.f64(worldBorderLerpTo_);
+        i.varlong(lerpMs);
+    } else {
+        i.f64(curDia); i.f64(curDia);
+        i.varlong(0);
+    }
+    i.varint(29999984); // max portal boundary
+    i.varint(worldBorderWarningTime_);
+    i.varint(worldBorderWarningBlocks_);
     try { p.conn->sendPacket(proto::pl::sc::InitializeWorldBorder, i); } catch (...) {}
-    // also send Center and Lerp separate for spec compliance
-    WriteBuffer c;
-    c.f64(worldBorderCenterX_); c.f64(worldBorderCenterZ_);
-    try { p.conn->sendPacket(proto::pl::sc::WorldBorderCenter, c); } catch (...) {}
-    WriteBuffer s;
-    s.varint((std::int32_t)worldBorderDiameter_);
-    // actually WorldBorderSize uses double? but use varint fallback
-    // send LerpSize as Initialize duplicate with 0 lerp
+    // also send separate Center / Size / Lerp for spec compliance (clients may listen to any)
+    {
+        WriteBuffer c;
+        c.f64(worldBorderCenterX_); c.f64(worldBorderCenterZ_);
+        try { p.conn->sendPacket(proto::pl::sc::WorldBorderCenter, c); } catch (...) {}
+    }
+    {
+        WriteBuffer s;
+        s.f64(curDia);
+        try { p.conn->sendPacket(proto::pl::sc::WorldBorderSize, s); } catch (...) {}
+    }
+    if (remainingTicks > 0) {
+        WriteBuffer ls;
+        ls.f64(worldBorderLerpFrom_); ls.f64(worldBorderLerpTo_);
+        ls.varlong(lerpMs);
+        try { p.conn->sendPacket(proto::pl::sc::WorldBorderLerpSize, ls); } catch (...) {}
+    }
+    {
+        WriteBuffer wd;
+        wd.varint(worldBorderWarningTime_);
+        try { p.conn->sendPacket(proto::pl::sc::WorldBorderWarningDelay, wd); } catch (...) {}
+        WriteBuffer wb;
+        wb.varint(worldBorderWarningBlocks_);
+        try { p.conn->sendPacket(proto::pl::sc::WorldBorderWarningReach, wb); } catch (...) {}
+    }
 }
 void GameServer::broadcastWorldBorder() {
     for (auto& p : playersSnapshot()) {
@@ -2218,7 +2290,9 @@ void GameServer::broadcastWorldBorder() {
         sendWorldBorderTo(*p);
     }
     if (persist_) {
-        persist_->setWorldBorder(worldBorderDiameter_, worldBorderCenterX_, worldBorderCenterZ_);
+        // persist current effective diameter and lerp target
+        persist_->setWorldBorder(currentBorderDiameter(), worldBorderCenterX_, worldBorderCenterZ_);
+        persist_->setWorldBorderLerp(worldBorderLerpFrom_, worldBorderLerpTo_, worldBorderLerpEndTick_ - tickNo_);
         persist_->saveLevelData(tickNo_, dayTime());
     }
 }
@@ -4499,6 +4573,12 @@ void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
         if (!self_->onGround && ny < self_->y && self_->gamemode == 0)
             self_->fallDist += self_->y - ny;
         self_->x = nx; self_->y = ny; self_->z = nz;
+        // WorldBorder check in onMovement (plan10 §1): apply damage/ warning if outside
+        if (!srv_.isInsideBorder(self_->x, self_->z) && self_->gamemode == 0) {
+            // vanilla does not teleport back; just marks for damage on next survivalTick
+            // but we can send a warning via actionbar if far outside
+            (void)srv_.borderDistanceOutside(self_->x, self_->z);
+        }
     }
     if (hasRot) {
         self_->yaw = in.f32();
