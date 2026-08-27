@@ -113,8 +113,6 @@ void World::fillTerrainV3(Chunk& c, std::int32_t cx, std::int32_t cz) const {
 
     // ------------------------------------------------------ biome assignment
     c.biomes.fill(static_cast<std::uint16_t>(defaultBiomeIndex_));
-    for (int s = 0; s < kSectionsPerChunk; ++s)
-        
     for (int sec = 0; sec < kSectionsPerChunk; ++sec)
         for (int cy = 0; cy < 4; ++cy)
             for (int cz2 = 0; cz2 < 4; ++cz2)

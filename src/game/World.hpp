@@ -243,10 +243,8 @@ public:
     // Inline delegation kept for header-only builds; actual impl in WorldGen.cpp
 private:
     void generateChunkFallback(Chunk& c, std::int32_t cx, std::int32_t cz) const {
-        if (level_ == LevelType::Nether || level_ == LevelType::End) fillTerrainV3(c, cx, cz);
-        else if (level_ == LevelType::Normal) fillTerrainV3(c, cx, cz);
-        else if (false) fillTerrain(c, cx, cz);
-        else fillFlat(c);
+        if (level_ == LevelType::Flat) fillFlat(c);
+        else fillTerrainV3(c, cx, cz);
     }
 public:
     // Runs fn(chunk) while holding the world read lock. Use for any access that
