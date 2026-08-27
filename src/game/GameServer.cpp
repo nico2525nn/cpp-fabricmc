@@ -15,6 +15,9 @@
 #include "../generated/ItemIds.hpp"
 #include "../generated/EntityIds.hpp"
 #include "MenuInteraction.hpp"
+#include "BehaviorTree.hpp"
+#include "BossAI.hpp"
+#include "MenuLogic.hpp"
 #include <cerrno>
 
 namespace cppfm {
@@ -887,6 +890,7 @@ void GameServer::mobsTick() {
             }
             if (!nearPlayer) {
                 despawn.push_back(m->entityId);
+                if (MobEntity::isBoss(m->kind) && bossAI_) bossAI_->onDeath(*m);
                 mobAi_.erase(m->entityId);
                 it = mobs_.erase(it); continue;
             }
@@ -896,6 +900,7 @@ void GameServer::mobsTick() {
             if (m->dead) {
                 deadIds.push_back(m->entityId);
                 drops.push_back(m);
+                if (MobEntity::isBoss(m->kind) && bossAI_) bossAI_->onDeath(*m);
                 // slime / magma cube split
                 if ((m->kind == MobKind::Slime || m->kind == MobKind::MagmaCube) && m->slimeSize > 0) {
                     int n = 2 + (rand() % 3);
@@ -960,13 +965,14 @@ void GameServer::mobsTick() {
                 }
             }
 
-            // ---- Brain-Goal-Sensor AI tick (plan3)
+            // ---- Brain-Goal-Sensor AI tick (plan3) + BossAI (plan7)
             auto& ai = aiFor(m);
             ai.ctx->srv = this;
             ai.ctx->world = &world_;
             brainTickGuard_ = m.get();
             ai.brain->tick(*m, *ai.ctx, tickNo_);
             brainTickGuard_ = nullptr;
+            if (MobEntity::isBoss(m->kind) && bossAI_) bossAI_->tick(*m, *ai.ctx, tickNo_);
 
             // ---- creeper fuse & explosion
             if (m->kind == MobKind::Creeper && ai.ctx->nearestPlayer) {
@@ -1100,6 +1106,7 @@ void GameServer::spawnMob(MobKind kind, double x, double y, double z) {
         mobs_.push_back(mob);
     }
     broadcastMobSpawn(*mob);
+    if (MobEntity::isBoss(kind) && bossAI_) bossAI_->onSpawn(*mob);
 }
 
 void GameServer::broadcastMobSpawn(const MobEntity& mob) {
@@ -1213,6 +1220,18 @@ GameServer::MobAiEntry& GameServer::aiFor(const std::shared_ptr<MobEntity>& m) {
         MobAiEntry e;
         e.brain = std::make_unique<Brain>();
         e.ctx = std::make_unique<AiContext>();
+        // Plan7: data-driven BehaviorTree from EntityDataDef (Selector/Sequence/Condition/Action via JSON)
+        if (auto* def = entityDataLoader_.get(MobEntity::kindName(m->kind))) {
+            auto fresh = EntityDataLoader::buildUniqueTreeFor(*def);
+            if (fresh) e.brain->setBehaviorTree(std::move(fresh));
+            else if (m->kind==MobKind::Enderman) e.brain->setBehaviorTree(buildEndermanTree());
+            else if (m->kind==MobKind::Wither) e.brain->setBehaviorTree(buildWitherTree());
+            else if (m->kind==MobKind::EnderDragon) e.brain->setBehaviorTree(buildDragonTree());
+        } else {
+            if (m->kind==MobKind::Enderman) e.brain->setBehaviorTree(buildEndermanTree());
+            else if (m->kind==MobKind::Wither) e.brain->setBehaviorTree(buildWitherTree());
+            else if (m->kind==MobKind::EnderDragon) e.brain->setBehaviorTree(buildDragonTree());
+        }
         it = mobAi_.emplace(m->entityId, std::move(e)).first;
     }
     return it->second;
@@ -1734,6 +1753,10 @@ void GameServer::applyDamageToMob(MobEntity& m, float amount, const DamageSource
     if (finalAmt <= 0) return;
     m.health -= finalAmt;
     m.hurtCooldown = 10;
+    if (MobEntity::isBoss(m.kind) && bossAI_) {
+        if (m.health > 0) bossAI_->onDamage(m);
+        else bossAI_->onDeath(m);
+    }
     if (m.health <= 0) m.dead = true;
 }
 void GameServer::applyDamageToMob(MobEntity& m, float amount, const char* cause) {
@@ -2580,6 +2603,7 @@ void Session::onEnterPlay() {
 
     srv_.broadcastSystemText("\u00a7e" + self_->name + " joined the game", nullptr);
     sendSystemText("\u00a77Welcome to \u00a7bCppFabricMC\u00a77! Build with the hotbar, chat freely.");
+    if (srv_.bossAI()) srv_.bossAI()->onPlayerJoin(*self_);
 }
 
 static WriteBuffer makeWorldState(const ServerConfig& c) {
@@ -2788,6 +2812,40 @@ void Session::onWindowClick(ReadBuffer& in) {
         // player-inventory clicks: trust the predicted slots, then resync.
         // (Full authoritative cursor handling lives in the menu path.)
         srv_.resendInventory(*self_);
+    }
+}
+
+void Session::onEnchantItem(ReadBuffer& in) {
+    // Plan7 Enchantment table handling via EnchantmentMenuLogic
+    // Packet: windowId (byte) + enchantment (byte/varint)
+    int windowId = 0;
+    int button = 0;
+    try {
+        windowId = in.varint();
+        if (in.remaining() > 0) button = in.varint();
+        else button = 0;
+    } catch (...) {
+        try { windowId = in.u8(); button = in.u8(); } catch(...) { return; }
+    }
+    if (!openMenu_ || openMenu_->windowId != windowId) return;
+    if (openMenu_->type != MenuType::Enchantment) return;
+    auto* logic = getMenuLogic(MenuType::Enchantment);
+    if (!logic) return;
+    auto* ench = dynamic_cast<EnchantmentMenuLogic*>(logic);
+    if (!ench) return;
+    struct LocalIo : MenuIo {
+        Session& s;
+        explicit LocalIo(Session& ss): s(ss){}
+        void dropFromPlayer(Player& p, const ItemStack& stack, bool whole) override {
+            s.server().spawnItemDrop(p.x, p.y + 1.2, p.z, stack.itemId, static_cast<std::uint8_t>(whole?stack.count:1), 0,0.15,0);
+        }
+        void blockEntityChanged(std::int64_t key) override { s.server().blockEntities().dirty_.insert(key); }
+        void itemCrafted(Player& p, const ItemStack& result) override { s.server().onItemObtained(p,result,"crafted"); }
+        void itemSmelted(Player& p, const ItemStack& result) override { s.server().onItemObtained(p,result,"smelted"); }
+    } io(*this);
+    if (ench->onEnchantButton(*openMenu_, *self_, button, io)) {
+        sendMenuContent(*openMenu_);
+        syncCursorItem();
     }
 }
 
@@ -3303,11 +3361,28 @@ struct SessionMenuIo : MenuIo {
 
 void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
     SessionMenuIo io(*this);
+    // Plan7 MenuLogic dispatch — per-menu-type object-oriented handling for Anvil/Enchantment/Brewing etc.
+    if (auto* logic = getMenuLogic(m.type)) {
+        // Check if click is within container region; let logic handle it, fallback to generic for player inv
+        int cont = m.totalSlots() - 36;
+        if (slot >=0 && slot < cont) {
+            bool handled = logic->onSlotClick(m, *self_, slot, button, mode, cursorItem_, io, srv_.recipes());
+            if (handled) {
+                logic->onContentChanged(m, *self_);
+                if (m.type == MenuType::Crafting) m.refreshCraftResult(srv_.recipes());
+                sendMenuContent(m);
+                syncCursorItem();
+                return;
+            }
+        }
+    }
     // crafting result refresh before interaction
     m.refreshCraftResult(srv_.recipes());
     const bool changed = ClickLogic::apply(m, *self_, srv_.recipes(),
                                            slot, button, mode, cursorItem_, io);
     if (m.type == MenuType::Crafting) m.refreshCraftResult(srv_.recipes());
+    // Also notify MenuLogic of content change for result recomputation (e.g., Anvil)
+    if (auto* logic2 = getMenuLogic(m.type)) logic2->onContentChanged(m, *self_);
     sendMenuContent(m);
     syncCursorItem();
     (void)changed;
@@ -3372,16 +3447,79 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
         menu->blockEntity = be;
     } else if (name == "minecraft:crafting_table") {
         menu->type = MenuType::Crafting;
+    } else if (name == "minecraft:enchanting_table") {
+        menu->type = MenuType::Enchantment;
+        menu->container = menu->extraSlots;
+        menu->containerCount = 2;
+    } else if (name.find("anvil") != std::string::npos) {
+        menu->type = MenuType::Anvil;
+        menu->container = menu->extraSlots;
+        menu->containerCount = 3;
+    } else if (name == "minecraft:brewing_stand") {
+        menu->type = MenuType::Brewing;
+        menu->container = menu->extraSlots;
+        menu->containerCount = 5;
+    } else if (name == "minecraft:stonecutter") {
+        menu->type = MenuType::Stonecutter;
+        menu->container = menu->extraSlots;
+        menu->containerCount = 2;
+    } else if (name == "minecraft:grindstone") {
+        menu->type = MenuType::Grindstone;
+        menu->container = menu->extraSlots;
+        menu->containerCount = 3;
+    } else if (name.find("smithing_table") != std::string::npos) {
+        menu->type = MenuType::Smithing;
+        menu->container = menu->extraSlots;
+        menu->containerCount = 4;
+    } else if (name == "minecraft:beacon") {
+        menu->type = MenuType::Beacon;
+        menu->container = menu->extraSlots;
+        menu->containerCount = 1;
+    } else if (name == "minecraft:loom") {
+        menu->type = MenuType::Loom;
+        menu->container = menu->extraSlots;
+        menu->containerCount = 4;
+    } else if (name == "minecraft:barrel") {
+        auto* be = srv_.blockEntities().getAt(x, y, z);
+        if (!be) be = &srv_.blockEntities().create(menu->blockKey, BlockEntity::Kind::Chest);
+        menu->type = MenuType::Barrel;
+        menu->container = be->chest.slots;
+        menu->containerCount = 27;
+        menu->blockEntity = be;
+    } else if (name.find("shulker_box") != std::string::npos) {
+        auto* be = srv_.blockEntities().getAt(x, y, z);
+        if (!be) be = &srv_.blockEntities().create(menu->blockKey, BlockEntity::Kind::Chest);
+        menu->type = MenuType::ShulkerBox;
+        menu->container = be->chest.slots;
+        menu->containerCount = 27;
+        menu->blockEntity = be;
     } else return;
 
-    // Open Screen packet
+    // Open Screen packet — plan7 MenuLogic: proper titles for Enchantment/Anvil/Brewing etc.
     {
         WriteBuffer b;
         b.varint(menu->windowId);
         b.varint(menu->openScreenTypeId());
-        nbt::writeTextComponent(
-            b, menu->type == MenuType::Chest ? "Chest"
-               : menu->type == MenuType::Furnace ? "Furnace" : "Crafting");
+        const char* title = "Container";
+        switch(menu->type) {
+            case MenuType::Chest: title="Chest"; break;
+            case MenuType::Furnace: title="Furnace"; break;
+            case MenuType::Crafting: title="Crafting"; break;
+            case MenuType::Enchantment: title="Enchant"; break;
+            case MenuType::Anvil: title="Repair & Name"; break;
+            case MenuType::Brewing: title="Brewing Stand"; break;
+            case MenuType::Stonecutter: title="Stonecutter"; break;
+            case MenuType::Grindstone: title="Grindstone"; break;
+            case MenuType::Smithing: title="Smithing Table"; break;
+            case MenuType::Beacon: title="Beacon"; break;
+            case MenuType::Loom: title="Loom"; break;
+            case MenuType::Barrel: title="Barrel"; break;
+            case MenuType::ShulkerBox: title="Shulker Box"; break;
+            case MenuType::Hopper: title="Hopper"; break;
+            case MenuType::Dispenser: title="Dispenser"; break;
+            default: title="Container"; break;
+        }
+        nbt::writeTextComponent(b, title);
         conn_->sendPacket(pl::sc::OpenScreen, b);
     }
     openMenu_ = std::move(menu);
@@ -3821,6 +3959,7 @@ void Session::handlePlay() {
         case pl::cs::UseEntity:           onUseEntity(in); break;
         case pl::cs::ChatCommand:         onChatCommand(in); break;
         case pl::cs::PlayerAction:        onPlayerAction(in); break;
+        case pl::cs::EnchantItem:         onEnchantItem(in); break;   // 0x0F plan7
         case pl::cs::UseItemOn:           onUseItemOn(in); break;
         case pl::cs::UseItem:             onUseItem(in); break;
         case pl::cs::HeldItemSlot:        onHeldSlot(in); break;
@@ -4335,20 +4474,38 @@ void Session::onUseItemOn(ReadBuffer& in) {
         api::events().blockClicked.fire(_bcev);
     }
     // right-click on interactive blocks opens menus (vanilla behaviour)
+    // right-click on interactive blocks opens menus (vanilla behaviour) — plan7 MenuLogic: Enchantment/Anvil/Brewing etc.
     {
         const std::uint16_t clickedState = srv_.world().getBlock(x, y, z);
         const gen::BlockDef* bdef = gen::blockByState(clickedState);
-        if (bdef && d == 1) {
+        if (bdef) {
             const std::string bn(bdef->name);
-            if (bn.find("chest") != std::string::npos ||
+            bool isMenuBlock = bn.find("chest") != std::string::npos ||
                 bn == "minecraft:furnace" ||
                 bn == "minecraft:hopper" || bn == "minecraft:dispenser" ||
                 bn == "minecraft:dropper" ||
-                bn == "minecraft:crafting_table") {
-                openMenuAt(x, y, z, clickedState);
-                ack(sequence);
-                return;
+                bn == "minecraft:crafting_table" ||
+                bn == "minecraft:enchanting_table" ||
+                bn.find("anvil") != std::string::npos ||
+                bn == "minecraft:brewing_stand" ||
+                bn == "minecraft:stonecutter" ||
+                bn == "minecraft:grindstone" ||
+                bn.find("smithing") != std::string::npos ||
+                bn == "minecraft:beacon" ||
+                bn == "minecraft:loom" ||
+                bn == "minecraft:barrel" ||
+                bn.find("shulker_box") != std::string::npos;
+            if (isMenuBlock) {
+                // Allow opening from any face if not sneaking; ensure sneaking bypass
+                if (ctx.isSneaking && !bn.empty()) {
+                    // sneaking still places block, so skip menu
+                } else {
+                    openMenuAt(x, y, z, clickedState);
+                    ack(sequence);
+                    return;
+                }
             }
+            if (d == 1) {
             // redstone interactables (lever / button) consume the click
             if (bn == "minecraft:lever" ||
                 bn.find("_button") != std::string::npos) {
@@ -4404,6 +4561,7 @@ void Session::onUseItemOn(ReadBuffer& in) {
                 ack(sequence);
                 return;
             }
+        }
         }
     }
 

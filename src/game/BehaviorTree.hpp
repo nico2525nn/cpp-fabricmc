@@ -145,35 +145,77 @@ public:
     BTStatus tick(MobEntity& m, AiContext& ctx, std::int64_t) override ;
 };
 
+// Plan7 extended boss/utility actions (data-driven via JSON)
+class BlazeFireballAction : public BehaviorNode {
+public:
+    BTStatus tick(MobEntity& m, AiContext& ctx, std::int64_t now) override ;
+};
+class GuardianBeamAction : public BehaviorNode {
+public:
+    BTStatus tick(MobEntity& m, AiContext& ctx, std::int64_t now) override ;
+};
+class GhastFireballAction : public BehaviorNode {
+public:
+    BTStatus tick(MobEntity& m, AiContext& ctx, std::int64_t now) override ;
+};
+class PhantomSwoopAction : public BehaviorNode {
+public:
+    BTStatus tick(MobEntity& m, AiContext& ctx, std::int64_t now) override ;
+};
+class ShulkerBulletAction : public BehaviorNode {
+public:
+    BTStatus tick(MobEntity& m, AiContext& ctx, std::int64_t now) override ;
+};
+class WardenSonicBoomAction : public BehaviorNode {
+public:
+    BTStatus tick(MobEntity& m, AiContext& ctx, std::int64_t now) override ;
+};
+class GenericRangedAttackAction : public BehaviorNode {
+public:
+    BTStatus tick(MobEntity& m, AiContext& ctx, std::int64_t now) override ;
+};
+
 // generic wander fallback
 class WanderAction : public BehaviorNode {
 public:
     BTStatus tick(MobEntity& m, AiContext& ctx, std::int64_t now) override ;
 };
 
-// Factory helper
+// Factory helper — plan7 data-driven: handles Condition/Action/Selector/Sequence via type string
 inline std::unique_ptr<BehaviorNode> createNodeForType(const std::string& rawType) {
     std::string t = rawType;
     // strip prefix minecraft:
     auto pos = t.find(':'); if (pos!=std::string::npos) t = t.substr(pos+1);
     // lower
-    for(auto& c: t) c=(char)std::tolower(c);
+    for(auto& c: t) c=(char)std::tolower((unsigned char)c);
+    // conditions
     if (t=="is_player_in_range"||t=="player_in_range"||t=="look_at_player") return std::make_unique<IsPlayerInRangeCondition>(8.0);
     if (t=="is_hurt"||t=="hurt"||t=="panic") return std::make_unique<IsHurtCondition>();
     if (t=="is_block_above"||t=="block_above") return std::make_unique<IsBlockAboveCondition>();
     if (t=="is_player_looking"||t=="player_looking"||t=="is_player_staring") return std::make_unique<IsPlayerLookingCondition>();
     if (t=="can_breed"||t=="breed"||t=="breeding") return std::make_unique<CanBreedCondition>();
-    if (t=="move_to_player"||t=="move_to_target") return std::make_unique<MoveToPlayerAction>();
-    if (t=="attack_player"||t=="melee_attack") return std::make_unique<AttackPlayerAction>();
+    // actions - movement/attack
+    if (t=="move_to_player"||t=="move_to_target"||t=="chase") return std::make_unique<MoveToPlayerAction>();
+    if (t=="attack_player"||t=="melee_attack"||t=="attack") return std::make_unique<AttackPlayerAction>();
     if (t=="teleport_random"||t=="teleport") return std::make_unique<TeleportRandomAction>();
     if (t=="pickup_block"||t=="pickup") return std::make_unique<PickupBlockAction>();
     if (t=="stare") return std::make_unique<StareAction>();
+    // boss + special actions (plan7)
     if (t=="wither_skull_attack"||t=="wither_skull") return std::make_unique<WitherSkullAction>();
-    if (t=="dragon_breath"||t=="dragon_fireball") return std::make_unique<DragonBreathAction>();
+    if (t=="dragon_breath"||t=="dragon_fireball"||t=="dragon_breath_attack") return std::make_unique<DragonBreathAction>();
+    if (t=="blaze_fireball"||t=="blaze_shoot"||t=="blaze_attack") return std::make_unique<BlazeFireballAction>();
+    if (t=="guardian_beam"||t=="guardian_attack"||t=="elder_guardian_beam") return std::make_unique<GuardianBeamAction>();
+    if (t=="ghast_fireball"||t=="ghast_shoot") return std::make_unique<GhastFireballAction>();
+    if (t=="phantom_swoop"||t=="phantom_attack") return std::make_unique<PhantomSwoopAction>();
+    if (t=="shulker_bullet"||t=="shulker_shoot") return std::make_unique<ShulkerBulletAction>();
+    if (t=="warden_sonic_boom"||t=="warden_attack"||t=="sonic_boom") return std::make_unique<WardenSonicBoomAction>();
+    if (t=="ranged_attack"||t=="shoot"||t=="fireball") return std::make_unique<GenericRangedAttackAction>();
     if (t=="breed_action") return std::make_unique<BreedAction>();
     if (t=="trade"||t=="trade_goal") return std::make_unique<TradeAction>();
     if (t=="wander"||t=="wander_around") return std::make_unique<WanderAction>();
-    // fallback: treat unknown as wander
+    // composite keys fallback to selector/sequence (handled in EntityData parsing)
+    if (t=="selector"||t=="sequence") return nullptr;
+    // fallback: treat unknown as wander/action generic
     return std::make_unique<WanderAction>();
 }
 
