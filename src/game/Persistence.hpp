@@ -41,8 +41,19 @@ public:
             biomeKeyToIdx_.emplace(v, k);
     }
 
+    // plan6 §9: full persistence setters
+    void setDifficulty(const std::string& d) { difficulty_ = d; }
+    void setWorldBorder(double diameter, double cx=0, double cz=0) {
+        worldBorderDiameter_ = diameter; worldBorderCenterX_=cx; worldBorderCenterZ_=cz;
+    }
+    std::string difficulty() const { return difficulty_; }
+    double worldBorderDiameter() const { return worldBorderDiameter_; }
+    double worldBorderCenterX() const { return worldBorderCenterX_; }
+    double worldBorderCenterZ() const { return worldBorderCenterZ_; }
+
     // ---- level.dat ----
     // plan5 §1: full level.dat persistence — spawn, time, gamerules, weather.
+    // plan6 §9: add Difficulty, WorldBorder, Version, WanderingTrader etc.
     void saveLevelData(std::int64_t worldTicks = 0, std::int64_t dayTime = 0) {
         namespace nv = nbt;
         try {
@@ -58,7 +69,48 @@ public:
             data.set("LevelName", nv::Value::makeString("CppFabricMC World"));
             data.set("raining", nv::Value::makeByte(0));      // filled below
             data.set("thundering", nv::Value::makeByte(0));
-            if (provideLevelState_) provideLevelState_(data);  // gamerules etc.
+            // Difficulty: map string -> byte 0 peaceful 1 easy 2 normal 3 hard
+            {
+                int diffByte = 2;
+                if (difficulty_=="peaceful") diffByte=0;
+                else if (difficulty_=="easy") diffByte=1;
+                else if (difficulty_=="normal") diffByte=2;
+                else if (difficulty_=="hard") diffByte=3;
+                data.set("Difficulty", nv::Value::makeByte((std::int8_t)diffByte));
+                data.set("DifficultyLocked", nv::Value::makeByte(0));
+            }
+            // Version
+            {
+                nv::Value ver = nv::Value::makeCompound();
+                ver.set("Name", nv::Value::makeString("1.21.4"));
+                ver.set("Id", nv::Value::makeInt(4189));
+                ver.set("Snapshot", nv::Value::makeByte(0));
+                ver.set("Series", nv::Value::makeString("main"));
+                data.set("Version", ver);
+            }
+            // WorldBorder
+            {
+                nv::Value wb = nv::Value::makeCompound();
+                wb.set("CenterX", nv::Value::makeDouble(worldBorderCenterX_));
+                wb.set("CenterZ", nv::Value::makeDouble(worldBorderCenterZ_));
+                wb.set("Size", nv::Value::makeDouble(worldBorderDiameter_));
+                wb.set("SizeLerpTarget", nv::Value::makeDouble(worldBorderDiameter_));
+                wb.set("SizeLerpTime", nv::Value::makeLong(0));
+                wb.set("SafeZone", nv::Value::makeDouble(5.0));
+                wb.set("DamagePerBlock", nv::Value::makeDouble(0.2));
+                wb.set("DamageBuffer", nv::Value::makeDouble(5.0));
+                wb.set("WarningBlocks", nv::Value::makeInt(5));
+                wb.set("WarningTime", nv::Value::makeInt(15));
+                data.set("WorldBorder", wb);
+            }
+            // Wandering trader etc. (minimal vanilla-compatible)
+            data.set("WanderingTraderSpawnDelay", nv::Value::makeInt(0));
+            data.set("WanderingTraderSpawnChance", nv::Value::makeInt(25));
+            data.set("WanderingTraderId", nv::Value::makeCompound());
+            data.set("WasModded", nv::Value::makeByte(0));
+            data.set("allowCommands", nv::Value::makeByte(1));
+            data.set("GameType", nv::Value::makeInt(1));
+            if (provideLevelState_) provideLevelState_(data);  // gamerules etc. (may override)
             root.set("Data", data);
             WriteBuffer out;
             nv::writeFileRoot(out, root);
@@ -82,7 +134,33 @@ public:
                 if (const auto* sy = d->get("SpawnY"))
                     if (const auto* sz = d->get("SpawnZ"))
                         world_.setSpawnPoint({sx->i, sy->i, sz->i});
+            if (const auto* diff = d->get("Difficulty")) {
+                int v = diff->b;
+                if (v==0) difficulty_="peaceful";
+                else if (v==1) difficulty_="easy";
+                else if (v==2) difficulty_="normal";
+                else if (v==3) difficulty_="hard";
+                else if (diff->tag==nbt::String) difficulty_=diff->str;
+            }
+            if (const auto* wb = d->get("WorldBorder")) {
+                if (auto* cx = wb->get("CenterX")) worldBorderCenterX_ = cx->d;
+                if (auto* cz = wb->get("CenterZ")) worldBorderCenterZ_ = cz->d;
+                if (auto* sz = wb->get("Size")) {
+                    if (sz->tag==nbt::Double) worldBorderDiameter_ = sz->d;
+                    else if (sz->tag==nbt::Float) worldBorderDiameter_ = sz->f;
+                    else if (sz->tag==nbt::Int) worldBorderDiameter_ = sz->i;
+                    else if (sz->tag==nbt::Long) worldBorderDiameter_ = (double)sz->l;
+                }
+            }
+            // also accept top-level Difficulty string (GameServer provider may have written it)
+            if (const auto* ds = d->get("Difficulty")) {
+                if (ds->tag==nbt::String) difficulty_ = ds->str;
+            }
             if (consumeLevelState_) consumeLevelState_(*d);
+            // if provider wrote Difficulty as string, prefer it
+            if (const auto* ds2 = d->get("Difficulty")) {
+                if (ds2->tag==nbt::String) difficulty_ = ds2->str;
+            }
         } catch (...) {}
     }
 
@@ -214,6 +292,9 @@ private:
                std::to_string(cz >> 5) + ".mca";
     }
 
+    std::string difficulty_ = "normal";
+    double worldBorderDiameter_ = 29999984;
+    double worldBorderCenterX_ = 0, worldBorderCenterZ_ = 0;
     World& world_;
     std::string dir_;
     std::string biome_;
