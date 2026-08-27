@@ -173,5 +173,31 @@ inline bool shouldApplyHunger(const std::vector<EffectInstance>& list, int tickN
     if (amp < 0) return false;
     return tickNo % 40 == 0;
 }
+inline bool shouldApplyRegeneration(const std::vector<EffectInstance>& list, int tickNo) {
+    int amp = amplifierFor(list, effects::Regeneration);
+    if (amp < 0) return false;
+    int period = std::max(1, 50 >> amp);
+    return tickNo % period == 0;
+}
+inline bool shouldApplyPoison(const std::vector<EffectInstance>& list, int tickNo) {
+    int amp = amplifierFor(list, effects::Poison);
+    if (amp < 0) amp = amplifierFor(list, effects::Wither);
+    if (amp < 0) return false;
+    int period = std::max(1, 25 >> amp);
+    return tickNo % period == 0;
+}
+// Plan8: effect tick helper — returns true if effect should apply damage/heal this tick
+inline bool isBeneficial(std::uint8_t id) {
+    switch(id){
+        case effects::Speed: case effects::Haste: case effects::Strength:
+        case effects::InstantHealth: case effects::JumpBoost: case effects::Regeneration:
+        case effects::Resistance: case effects::FireResistance: case effects::WaterBreathing:
+        case effects::Invisibility: case effects::NightVision: case effects::HealthBoost:
+        case effects::Absorption: case effects::Saturation: case effects::Glowing:
+        case effects::Luck: case effects::ConduitPower: case effects::DolphinsGrace:
+        case effects::HeroOfTheVillage: return true;
+        default: return false;
+    }
+}
 
 } // namespace cppfm

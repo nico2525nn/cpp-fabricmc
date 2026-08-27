@@ -54,6 +54,8 @@
 #include "EntityManager.hpp"
 #include "InventoryController.hpp"
 #include "NetworkManager.hpp"
+#include "HungerManager.hpp"
+#include "CombatManager.hpp"
 
 namespace cppfm {
 
@@ -491,6 +493,11 @@ public:
         std::fprintf(stderr, "[cppfm] RCON %s (enabled=%d port=%u)\n",
                      rconUp ? "listening" : "not started", (int)cfg_.rcon.enabled,
                      cfg_.rcon.port);
+        // Plan8 modular split: instantiate managers (facade)
+        worldMgr_ = std::make_unique<WorldManager>(world_, *netherWorld_, *endWorld_);
+        entityMgr_ = std::make_unique<EntityManager>();
+        networkMgr_ = std::make_unique<NetworkManager>(batcher_);
+        // HungerManager/CombatManager are stateless, no instance needed
         // Plan7 BossAI
         bossAI_ = std::make_unique<BossAIManager>(*this);
     }
@@ -821,6 +828,12 @@ private:
     std::unique_ptr<FluidSim> fluidSim_;
     std::unique_ptr<RedstoneEngine> redstone_;
     std::unique_ptr<BlockTickScheduler> blockTicks_;
+    // Plan8 modular managers (thin wrappers, keep GameServer as facade)
+    // WorldManager/EntityManager/InventoryController/NetworkManager already header-only;
+    // HungerManager/CombatManager are real classes with .cpp
+    std::unique_ptr<WorldManager> worldMgr_;
+    std::unique_ptr<EntityManager> entityMgr_;
+    std::unique_ptr<NetworkManager> networkMgr_;
     // Plan7 BossAI / BossBar
     std::unique_ptr<BossAIManager> bossAI_;
     // Block Event Bus (plan6): simple vector of handlers in GameServer
