@@ -67,22 +67,42 @@ void FluidSim::apply(std::int32_t x, std::int32_t y, std::int32_t z,
         const bool meetsOther =
             (lavaHere && nk == 0) || (!lavaHere && nk == 1);
         if (!meetsOther) return false;
+        const std::uint16_t cobble = static_cast<std::uint16_t>(
+            gen::blockNameToState().at("minecraft:cobblestone"));
+        const std::uint16_t obsidian = static_cast<std::uint16_t>(
+            gen::blockNameToState().at("minecraft:obsidian"));
+        const std::uint16_t stone = static_cast<std::uint16_t>(
+            gen::blockNameToState().at("minecraft:stone"));
         if (lavaHere) {
             // lava + water above → stone; lava source touched by water → obsidian
-            const std::uint16_t cobble = static_cast<std::uint16_t>(
-                gen::blockNameToState().at("minecraft:cobblestone"));
-            const std::uint16_t obsidian = static_cast<std::uint16_t>(
-                gen::blockNameToState().at("minecraft:obsidian"));
-            world_.setBlock(nx, ny, nz, isSource ? obsidian : cobble);
+            if (ny == y + 1) {
+                world_.setBlock(nx, ny, nz, stone);
+            } else {
+                world_.setBlock(nx, ny, nz, isSource ? obsidian : cobble);
+            }
+        } else {
+            // water + lava -> obsidian for source lava else cobble/stone
+            if (nl == 0) {
+                world_.setBlock(nx, ny, nz, obsidian);
+            } else {
+                if (ny == y - 1) {
+                    world_.setBlock(nx, ny, nz, stone);
+                } else {
+                    world_.setBlock(nx, ny, nz, cobble);
+                }
+            }
         }
         return true;
     };
-    (void)solidifyCheck;
 
-    // --- downward flow first
+    // --- downward flow first (check solidify before falling)
     const std::uint16_t belowState = world_.getBlock(x, y - 1, z);
     int belowLevel = -1;
     const int belowKind = kindAt(belowState, belowLevel);
+    if (belowKind >= 0 && belowKind != kindInt) {
+        solidifyCheck(x, y - 1, z);
+        schedule(x, y - 1, z, now + interval);
+    }
     const bool belowAirOrSame =
         belowState == 0 || (belowKind == kindInt);
     if (belowAirOrSame && y - 1 >= kMinY) {
@@ -146,16 +166,34 @@ void FluidSim::apply(std::int32_t x, std::int32_t y, std::int32_t z,
                 if (y < kMinY || y >= kMaxY) continue;
                 const std::uint16_t ns = world_.getBlock(nx, y, nz);
                 if (ns != 0) {
-                    // do not overwrite non-air solids
                     int nl = -1;
-                    if (kindAt(ns, nl) != kindInt) continue;
+                    int nk = kindAt(ns, nl);
+                    if (nk >= 0 && nk != kindInt) {
+                        solidifyCheck(nx, y, nz);
+                        continue;
+                    }
+                    if (nk != kindInt) continue;
                     if (nl <= nextLevel) continue;
+                    if (nk < 0) continue;
                 }
                 // don't flow into the block below being open? vanilla still
                 // spreads horizontally around edges; keep simple.
                 world_.setBlock(nx, y, nz, fluidState(kind, nextLevel));
                 schedule(nx, y, nz, now + interval);
             }
+        }
+    }
+    // --- final solidify check where water meets lava nearby
+    {
+        static constexpr int DXF[6] = {1,-1,0,0,0,0};
+        static constexpr int DYF[6] = {0,0,1,-1,0,0};
+        static constexpr int DZF[6] = {0,0,0,0,1,-1};
+        for (int d = 0; d < 6; ++d) solidifyCheck(x + DXF[d], y + DYF[d], z + DZF[d]);
+        static constexpr int DXH[4] = {1,-1,0,0};
+        static constexpr int DZH[4] = {0,0,1,-1};
+        for (int d = 0; d < 4; ++d) {
+            solidifyCheck(x + DXH[d], y, z + DZH[d]);
+            solidifyCheck(x + DXH[d], y - 1, z + DZH[d]);
         }
     }
     // re-check self soon ONLY if something changed this pass, so stable
