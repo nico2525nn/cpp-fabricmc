@@ -16,6 +16,8 @@
 #include "TerrainGen.hpp"
 #include "../worldgen/MultiNoise.hpp"
 #include "../worldgen/Structures.hpp"
+#include "../worldgen/ChunkGenerator.hpp"
+#include "../worldgen/StructureManager.hpp"
 
 namespace cppfm {
 
@@ -74,11 +76,17 @@ struct Chunk {
 enum class LevelType { Flat, Normal, Nether, End };
 
 class World {
+    friend class worldgen::ChunkGenerator;
+    friend class worldgen::FlatLevelSource;
+    friend class worldgen::NormalLevelSource;
+    friend class worldgen::NetherLevelSource;
+    friend class worldgen::EndLevelSource;
 public:
     World(std::string biomeKey, LevelType level, std::uint64_t seed)
         : biome_(std::move(biomeKey)), level_(level), terrain_(seed), srv_seed(seed) {
         initWorldgen();
     }
+    ~World();
 
     LevelType levelType() const { return level_; }
     struct SpawnPoint { std::int32_t x=0, y=-60, z=0; };
@@ -231,22 +239,16 @@ private:
 public:
 
     // Double-checked, atomic lazy generation (safe under concurrent joins).
-    void generateChunkIfMissing(std::int32_t cx, std::int32_t cz) const {
-        {
-            std::shared_lock lock(mutex_);
-            if (chunks_.count(chunkKey(cx, cz))) return;
-        }
-        auto c = std::make_unique<Chunk>();
-        const bool loaded = loader_ && loader_(cx, cz, *c);
-        if (!loaded) {
-            if (level_ == LevelType::Nether || level_ == LevelType::End) fillTerrainV3(*c, cx, cz);
-            else if (level_ == LevelType::Normal) fillTerrainV3(*c, cx, cz);
-            else if (false) fillTerrain(*c, cx, cz);
-            else fillFlat(*c);
-        }
-        std::unique_lock lock(mutex_);
-        chunks_.try_emplace(chunkKey(cx, cz), std::move(c));   // never replaces
+    void generateChunkIfMissing(std::int32_t cx, std::int32_t cz) const;
+    // Inline delegation kept for header-only builds; actual impl in WorldGen.cpp
+private:
+    void generateChunkFallback(Chunk& c, std::int32_t cx, std::int32_t cz) const {
+        if (level_ == LevelType::Nether || level_ == LevelType::End) fillTerrainV3(c, cx, cz);
+        else if (level_ == LevelType::Normal) fillTerrainV3(c, cx, cz);
+        else if (false) fillTerrain(c, cx, cz);
+        else fillFlat(c);
     }
+public:
     // Runs fn(chunk) while holding the world read lock. Use for any access that
     // must not race with chunk replacement or edits.
     template <typename Fn>
@@ -356,6 +358,27 @@ public:
     std::int32_t biomeIndexOf(const std::string& key) const {
         return biomeToIndex_ ? biomeToIndex_(key) : 0;
     }
+
+    // ---- World responsibility: simulation distance (plan7) ------------
+    bool isPositionInSimulationDistance(std::int32_t x, std::int32_t z) const {
+        if (simCallback_) return simCallback_(x >> 4, z >> 4);
+        // fallback: if we have simulationDistance_ consider spawn distance
+        if (simulationDistance_ <= 0) return true;
+        // without callback, assume in range (tests without GameServer)
+        return true;
+    }
+    bool isChunkInSimulationDistance(std::int32_t cx, std::int32_t cz) const {
+        if (simCallback_) return simCallback_(cx, cz);
+        return true;
+    }
+    void setSimulationDistanceCallback(std::function<bool(std::int32_t,std::int32_t)> cb) {
+        simCallback_ = std::move(cb);
+    }
+    void setSimulationDistance(int d) { simulationDistance_ = d; }
+    int simulationDistance() const { return simulationDistance_; }
+
+    void setGenerator(std::unique_ptr<worldgen::ChunkGenerator> g) { generator_ = std::move(g); }
+    const worldgen::ChunkGenerator* generator() const { return generator_.get(); }
 
 private:
     void fillTerrainV3(Chunk& c, std::int32_t cx, std::int32_t cz) const;
@@ -468,8 +491,12 @@ public:
     std::function<std::int32_t(const std::string&)> biomeToIndex_;
     std::int32_t defaultBiomeIndex_ = 40;
     std::int8_t dimensionId_ = 0;
-    std::unique_ptr<worldgen::MultiNoiseBiomeSource> biomeSource_;
+    std::shared_ptr<worldgen::MultiNoiseBiomeSource> biomeSource_;
     std::unique_ptr<worldgen::StructureGenerator> structures_;
+    std::unique_ptr<worldgen::StructureManager> structureManager_;
+    std::unique_ptr<worldgen::ChunkGenerator> generator_;
+    std::function<bool(std::int32_t,std::int32_t)> simCallback_;
+    int simulationDistance_ = 10;
     std::vector<std::pair<const char*, float>> oreTableV3_;   // name, rarity
     void initWorldgen();
     std::function<bool(std::int32_t, std::int32_t, Chunk&)> loader_;

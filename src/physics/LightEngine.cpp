@@ -37,6 +37,10 @@ std::uint8_t LightEngine::blockLightAt(std::int32_t x, std::int32_t y,
 void LightEngine::onBlockChanged(std::int32_t x, std::int32_t y,
                                  std::int32_t z, std::uint16_t oldState,
                                  std::uint16_t newState) {
+    // Simulation-distance check via World (plan7) – still process removal/addition but skip far chunks
+    // We keep light updates for view distance but gate heavy sky rebuilds via isPositionInSimulationDistance
+    const bool inSim = world_.isPositionInSimulationDistance(x, z);
+    (void)inSim;
     const int oldEmit = emissionOf(oldState);
     const int newEmit = emissionOf(newState);
 
@@ -66,8 +70,9 @@ void LightEngine::onBlockChanged(std::int32_t x, std::int32_t y,
                 addQueue_.push({nx, ny, nz, nl});
             }
         }
-        // schedule sky-light rebuild for this chunk and neighbors
+        // schedule sky-light rebuild for this chunk and neighbors (cull via World simulation check plan7)
         auto schedSky = [&](std::int32_t cxx, std::int32_t czz) {
+            if (!world_.isChunkInSimulationDistance(cxx, czz)) return;
             world_.generateChunkIfMissing(cxx, czz);
             world_.ensureSkyStorage(cxx, czz);
             pendingSkyRebuild_.insert(chunkKey(cxx, czz));

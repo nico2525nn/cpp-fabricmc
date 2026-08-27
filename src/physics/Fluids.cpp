@@ -34,6 +34,8 @@ std::uint16_t FluidSim::fluidState(Kind k, int level) const {
 }
 
 void FluidSim::touch(std::int32_t x, std::int32_t y, std::int32_t z) {
+    // Simulation-distance culling via World (plan7)
+    if (!world_.isPositionInSimulationDistance(x, z)) return;
     schedule(x, y, z, 0);                                // ASAP
 }
 
@@ -41,12 +43,14 @@ void FluidSim::tick(std::int64_t now) {
     while (!queue_.empty() && queue_.top().dueTick <= now) {
         const FluidTick t = queue_.top();
         queue_.pop();
+        if (!world_.isPositionInSimulationDistance(t.x, t.z)) continue;
         apply(t.x, t.y, t.z, now);
     }
 }
 
 void FluidSim::apply(std::int32_t x, std::int32_t y, std::int32_t z,
                      std::int64_t now) {
+    if (!world_.isPositionInSimulationDistance(x, z)) return;
     const std::uint64_t worldRevAtEntry = world_.revisionAt(x >> 4, z >> 4);
     const std::uint16_t st = world_.getBlock(x, y, z);
     int level = -1;
