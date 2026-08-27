@@ -44,6 +44,7 @@
 #include "AiBrain.hpp"
 #include "EntityData.hpp"
 #include "../net/PacketBatcher.hpp"
+#include "Attributes.hpp"
 
 namespace cppfm {
 
@@ -158,6 +159,7 @@ struct Player {
     std::int32_t arrowsStuck = 0;
     std::int64_t lastEnderPearlTick = -10000;
     std::int64_t invulnUntilTick = 0;
+    AttributeManager attributes;
 };
 
 class GameServer;
