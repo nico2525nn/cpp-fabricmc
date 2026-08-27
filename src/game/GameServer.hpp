@@ -40,6 +40,7 @@
 #include "GameRules.hpp"
 #include "ServerEvents.hpp"
 #include "AiBrain.hpp"
+#include "EntityData.hpp"
 
 namespace cppfm {
 
@@ -284,6 +285,12 @@ public:
         if (cfg_.whitelist) whitelist_.setEnabled(true);
         recipes_.loadDefaults();
         recipes_.loadDirectory(cfg_.recipesDir);
+        entityDataLoader_.loadDirectory("assets/entities");
+        for (auto &kv : entityDataLoader_.all()) {
+            const auto &def = kv.second;
+            std::fprintf(stderr, "[cppfm] entity data: %s max_health=%.1f speed=%.3f\n",
+                         def.type.c_str(), def.max_health, def.movement_speed);
+        }
         initCommands();
         lightEngine_ = std::make_unique<LightEngine>(world_);
         world_.setBiomeCodec(
@@ -499,6 +506,13 @@ public:
     void mobAttackPlayer(MobEntity& m, Player& target);
     // Feed-to-breed handling when a player right-clicks an animal with food.
     bool tryBreedFeed(Player& p, MobEntity& m);
+    // Equipment / riding sync (plan5 30-47)
+    void sendEquipment(const MobEntity& mob);
+    void broadcastSetPassengers(std::int32_t vehicleId);
+    void broadcastSetPassengersEmpty(std::int32_t vehicleId);
+    float applyArmorReduction(float dmg, int armor) const;
+    int totalProtectionForPlayer(const Player& p) const;
+    int totalProtectionForMob(const MobEntity& m) const;
     // XP orbs (経験値システム)
     void spawnXpOrbs(double x, double y, double z, int totalPoints,
                      Player* directTo);
@@ -631,6 +645,7 @@ private:
     void acceptLoop();
 
     ServerConfig cfg_;
+    EntityDataLoader entityDataLoader_;
     World world_;
     std::unique_ptr<World> netherWorld_, endWorld_;
     World* worlds_[3] = {};
