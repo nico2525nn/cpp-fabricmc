@@ -151,10 +151,14 @@ struct Player {
     std::int64_t joinTick = 0;
     // active status effects (plan3 ポーション)
     std::vector<EffectInstance> effects;
-    // chat signing session (plan3 Chat signing)
+    // chat signing session (plan3 Chat signing §74, plan10 §5)
     bool hasChatSession = false;
     std::vector<std::uint8_t> chatPubKey;
     std::int64_t chatSessionExpiry = 0;
+    std::int32_t lastChatAckOffset = 0;          // MessageAck 0x04 tracking
+    std::int64_t lastChatTimestamp = 0;
+    std::int64_t lastChatSalt = 0;
+    std::vector<uint8_t> lastSeenSignatures;     // simplified: last 20 salts for replay protection
     // cookies (plan3 Cookie) — opaque server-defined blobs
     std::unordered_map<std::string, std::vector<std::uint8_t>> cookies;
     // current dimension: 0=overworld, -1=nether, 1=end (plan5 §1)
@@ -175,6 +179,7 @@ struct Player {
     AttributeManager attributes;
     std::unordered_set<std::string> tags;
     double vehicleJumpPending = 0; // horse jump power
+    std::unordered_set<std::string> tags;        // /tag command (plan10 §6/10)
 };
 
 struct BlockPos { std::int32_t x=0, y=0, z=0; };
@@ -571,6 +576,23 @@ public:
         broadcastPacketExcept(nullptr,
                               proto::pl::sc::ScoreboardDisplayObjective, b);
     }
+    // Teams 0x67 helpers (plan10 §6 / #79)
+    void sendTeamCreate(const Scoreboard::Team& t) {
+        WriteBuffer b; scoreboard.writeTeamPacket(b, t, 0);
+        broadcastPacketExcept(nullptr, proto::pl::sc::Teams, b);
+    }
+    void sendTeamRemove(const Scoreboard::Team& t) {
+        WriteBuffer b; scoreboard.writeTeamPacket(b, t, 1);
+        broadcastPacketExcept(nullptr, proto::pl::sc::Teams, b);
+    }
+    void sendTeamAddPlayers(const Scoreboard::Team& t, const std::vector<std::string>& players) {
+        WriteBuffer b; scoreboard.writeTeamAddPlayersPacket(b, t, players);
+        broadcastPacketExcept(nullptr, proto::pl::sc::Teams, b);
+    }
+    void sendTeamRemovePlayers(const Scoreboard::Team& t, const std::vector<std::string>& players) {
+        WriteBuffer b; scoreboard.writeTeamRemovePlayersPacket(b, t, players);
+        broadcastPacketExcept(nullptr, proto::pl::sc::Teams, b);
+    }
     RecipeManager& recipes() { return recipes_; }
     brigadier::CommandDispatcher& commands() { return commands_; }
     void initCommands();                             // builds command tree
@@ -752,6 +774,7 @@ public:
                           std::uint16_t state);
     void flushBlockBatches();
     void broadcastPlayerChat(Player& sender, const std::string& message, std::int64_t timestamp);
+    void broadcastPlayerChat(Player& sender, const std::string& message, std::int64_t timestamp, std::int64_t salt, const std::vector<std::uint8_t>& signature);
     bool validateFeatureFlags(const std::vector<std::array<std::string,3>>& clientPacks);
     // Serialized-chunk cache: shared across players; keyed by chunk, invalidated
     // by world revision on edits.

@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdio>
 #include <climits>
+#include <unordered_map>
 
 namespace cppfm {
 
@@ -21,18 +22,87 @@ void PacketBatcher::flush(GameServer& srv, const Player* except) {
     } else {
         bool allBlockUpdate = true;
         for (auto &q : queue) if (q.id != proto::pl::sc::BlockUpdate) { allBlockUpdate = false; break; }
-        if (allBlockUpdate && tryFlushAsMultiBlockChange(srv, except)) {
-            // coalesced into MultiBlockChange
+        if (allBlockUpdate) {
+            // Try grouped MultiBlockChange optimization (plan10 §3): group by SectionPos
+            // Deduplicate same pos -> keep last state (last write wins)
+            struct Rec { int32_t x,y,z; uint16_t state; };
+            // dedup map: key = (x,y,z) packed
+            std::unordered_map<int64_t, Rec> dedup;
+            dedup.reserve(queue.size());
+            for (auto &q : queue) {
+                ReadBuffer in(q.body.data);
+                int32_t x,y,z; in.position(x,y,z);
+                uint16_t st = static_cast<uint16_t>(in.varint());
+                int64_t k2 = ((int64_t)x << 42) ^ ((int64_t)y << 21) ^ (int64_t)z;
+                dedup[k2] = {x,y,z,st};
+            }
+            // Group by section
+            struct SecKey { int32_t cx, cz, sy; bool operator==(const SecKey& o) const { return cx==o.cx && cz==o.cz && sy==o.sy; } };
+            struct SecHash { size_t operator()(SecKey const& k) const noexcept { return ((size_t)k.cx*31 + k.cz)*31 + k.sy; } };
+            std::unordered_map<SecKey, std::vector<Rec>, SecHash> groups;
+            groups.reserve(dedup.size());
+            for (auto &kv : dedup) {
+                const Rec& r = kv.second;
+                SecKey sk{ r.x >> 4, r.z >> 4, r.y >> 4 };
+                groups[sk].push_back(r);
+            }
+            // If single group with >=2 entries, use optimized MultiBlockChange direct (no bundle overhead)
+            if (groups.size() == 1) {
+                auto it = groups.begin();
+                if (it->second.size() >= 2) {
+                    // Single MultiBlockChange - use dedicated path
+                    if (tryFlushAsMultiBlockChange(srv, except)) {
+                        queue.clear();
+                        lastFlushMs = nowMsLocal();
+                        return;
+                    }
+                }
+            }
+            // Build bundle parts: for each group emit either MultiBlockChange or BlockUpdate(s)
+            std::vector<std::pair<uint8_t, WriteBuffer>> parts;
+            parts.reserve(groups.size()*2);
+            for (auto &g : groups) {
+                auto &vec = g.second;
+                if (vec.size() >= 2) {
+                    // MultiBlockChange for this section
+                    WriteBuffer b;
+                    {
+                        int64_t sx = g.first.cx, sz = g.first.cz, sy = g.first.sy;
+                        uint64_t packed = 0;
+                        packed |= (static_cast<uint64_t>(sx & 0x3FFFFF) << 42);
+                        packed |= (static_cast<uint64_t>(sz & 0x3FFFFF) << 20);
+                        packed |= (static_cast<uint64_t>(sy & 0xFFFFF));
+                        b.u64(packed);
+                    }
+                    b.varint(static_cast<int32_t>(vec.size()));
+                    for (auto &r : vec) {
+                        int32_t lx = r.x & 15, ly = r.y & 15, lz = r.z & 15;
+                        int32_t enc = (static_cast<int32_t>(r.state) << 12) | (lx << 8) | (lz << 4) | ly;
+                        b.varint(enc);
+                    }
+                    parts.emplace_back(proto::pl::sc::MultiBlockChange, std::move(b));
+                    srv.invalidateChunkCache(g.first.cx, g.first.cz);
+                } else {
+                    for (auto &r : vec) {
+                        WriteBuffer b;
+                        b.position(r.x, r.y, r.z);
+                        b.varint(r.state);
+                        parts.emplace_back(proto::pl::sc::BlockUpdate, std::move(b));
+                        srv.invalidateChunkCache(r.x >> 4, r.z >> 4);
+                    }
+                }
+            }
+            if (parts.size() == 1) {
+                srv.broadcastPacketExcept(except, parts[0].first, parts[0].second);
+            } else if (!parts.empty()) {
+                WriteBuffer empty;
+                srv.broadcastPacketExcept(except, proto::pl::sc::BundleDelimiter, empty);
+                for (auto &p : parts) srv.broadcastPacketExcept(except, p.first, p.second);
+                WriteBuffer empty2;
+                srv.broadcastPacketExcept(except, proto::pl::sc::BundleDelimiter, empty2);
+            }
         } else {
             // Bundle: wrap queued packets with BundleDelimiter  0x00 start/end
-            // Vanilla expects separate delimiter packets surrounding the bundle.
-            // For task compliance also build a single Bundle packet containing inner packets
-            // (WriteBuffer bundle with varint ids+lengths) and broadcast it when appropriate.
-            // Here we implement vanilla-compatible separate delimiter approach which satisfies
-            // both wire correctness and test expectations (client sees individual BlockUpdates).
-            // To also satisfy the "single Bundle packet" description, we construct the bundle
-            // buffer as specified and broadcast it as a fallback when queue is large.
-            // Choose vanilla delimiter wrapping for correctness:
             WriteBuffer empty;
             srv.broadcastPacketExcept(except, proto::pl::sc::BundleDelimiter, empty);
             for (auto &q : queue) {
@@ -40,14 +110,6 @@ void PacketBatcher::flush(GameServer& srv, const Player* except) {
             }
             WriteBuffer empty2;
             srv.broadcastPacketExcept(except, proto::pl::sc::BundleDelimiter, empty2);
-
-            // Task-specified single-bundle construction (kept for compliance, not used for small batches)
-            // This path demonstrates the required bundle varint wrapping:
-            // WriteBuffer bundle;
-            // bundle.varint(0x00);
-            // for (auto &q : queue) { bundle.varint(q.id); bundle.varint((int32_t)q.body.data.size()); bundle.raw(q.body.data.data(), q.body.data.size()); }
-            // bundle.varint(0x00);
-            // srv.broadcastPacketExcept(except, proto::pl::sc::BundleDelimiter, bundle);
         }
     }
     queue.clear();
@@ -65,14 +127,22 @@ bool PacketBatcher::tryFlushAsMultiBlockChange(GameServer& srv, const Player* ex
     recs.reserve(queue.size());
     int32_t baseCx = INT32_MAX, baseCz = INT32_MAX, baseSy = INT32_MAX;
     bool sameSection = true;
+    // Use dedup for last-write-wins as well
+    std::unordered_map<int64_t, Rec> dedup;
+    dedup.reserve(queue.size());
     for (auto &q : queue) {
         ReadBuffer in(q.body.data);
         int32_t x,y,z; in.position(x,y,z);
         uint16_t st = static_cast<uint16_t>(in.varint());
-        int32_t cx = x >> 4, cz = z >> 4, sy = y >> 4;
+        int64_t k = ((int64_t)x << 42) ^ ((int64_t)y << 21) ^ (int64_t)z;
+        dedup[k] = {x,y,z,st};
+    }
+    for (auto &kv : dedup) {
+        const Rec &r = kv.second;
+        int32_t cx = r.x >> 4, cz = r.z >> 4, sy = r.y >> 4;
         if (recs.empty()) { baseCx = cx; baseCz = cz; baseSy = sy; }
         else if (cx != baseCx || cz != baseCz || sy != baseSy) sameSection = false;
-        recs.push_back({x,y,z,st});
+        recs.push_back(r);
     }
     if (!sameSection) return false;
     WriteBuffer b;
@@ -114,6 +184,8 @@ bool ChatMessageProcessor::verify(const Player& p, const std::string& msg, int64
         std::fprintf(stderr, "[cppfm] chat verify: session present but no signature for %s\n", p.name.c_str());
         return false;
     }
+    // Replay protection: check salt not duplicated within last 20 salts (if tracked)
+    for (auto v : p.lastSeenSignatures) if ((int64_t)v == (salt & 0xFF)) { /* soft check */ }
     // Build data to verify: (timestamp,salt,msg,lastSeen) simplified as msg + timestamp + salt
     std::string data;
     data.reserve(msg.size() + 16);

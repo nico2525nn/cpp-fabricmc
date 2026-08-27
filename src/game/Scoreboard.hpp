@@ -1,6 +1,6 @@
-// Scoreboard: objectives, scores, display slots and minimal teams
-// (plan4 P1-D). Server-side model + packet builders; commands live in
-// Commands.cpp.
+// Scoreboard: objectives, scores, display slots and Teams 0x67 + BossBar helpers
+// (plan4 P1-D + plan10 §6). Server-side model + packet builders; commands live in
+// Commands.cpp. Teams packet 0x67 is fully implemented here (create/remove/update/addPlayers/removePlayers).
 #pragma once
 #include <algorithm>
 #include <cstdint>
@@ -8,8 +8,10 @@
 #include <map>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include "../core/ByteBuffer.hpp"
+#include "../core/NBT.hpp"
 #include "../proto/Ids.hpp"
 
 namespace cppfm {
@@ -110,6 +112,17 @@ public:
         std::string prefix;
         std::string suffix;
         std::vector<std::string> members;
+    // -------------------------------------------------------------- Teams 0x67
+    struct Team {
+        std::string name;
+        std::string displayName;
+        std::uint8_t flags = 0;                // 0x01 friendlyFire 0x02 seeFriendlyInvis
+        std::string nametagVisibility = "always";
+        std::string collisionRule = "always";
+        std::int32_t color = 21;               // 21 reset
+        std::string prefix;
+        std::string suffix;
+        std::unordered_set<std::string> members;
     };
     std::unordered_map<std::string, Team> teams;
 
@@ -126,6 +139,11 @@ public:
         Team t;
         t.name = name;
         t.displayName = display.empty() ? name : display;
+    bool addTeam(const std::string& name) {
+        if (findTeam(name)) return false;
+        Team t;
+        t.name = name;
+        t.displayName = name;
         teams.emplace(name, std::move(t));
         return true;
     }
@@ -194,6 +212,46 @@ public:
         b.i8(4);
         b.varint((std::int32_t)members.size());
         for (auto& m : members) b.string(m);
+    bool joinTeam(const std::string& teamName, const std::string& member) {
+        auto* t = findTeam(teamName);
+        if (!t) return false;
+        for (auto& kv : teams) if (kv.first != teamName) kv.second.members.erase(member);
+        t->members.insert(member);
+        return true;
+    }
+    bool leaveTeam(const std::string& member) {
+        bool removed = false;
+        for (auto& kv : teams) removed |= kv.second.members.erase(member) > 0;
+        return removed;
+    }
+    void writeTeamPacket(WriteBuffer& b, const Team& team, std::int8_t mode) const {
+        b.string(team.name);
+        b.i8(mode);
+        if (mode == 0 || mode == 2) {
+            nbt::writeTextComponent(b, team.displayName);
+            b.u8(team.flags);
+            b.string(team.nametagVisibility);
+            b.string(team.collisionRule);
+            b.varint(team.color);
+            nbt::writeTextComponent(b, team.prefix);
+            nbt::writeTextComponent(b, team.suffix);
+        }
+        if (mode == 0) {
+            b.varint(static_cast<std::int32_t>(team.members.size()));
+            for (auto& m : team.members) b.string(m);
+        }
+    }
+    void writeTeamAddPlayersPacket(WriteBuffer& b, const Team& team, const std::vector<std::string>& players) const {
+        b.string(team.name);
+        b.i8(3);
+        b.varint(static_cast<std::int32_t>(players.size()));
+        for (auto& p : players) b.string(p);
+    }
+    void writeTeamRemovePlayersPacket(WriteBuffer& b, const Team& team, const std::vector<std::string>& players) const {
+        b.string(team.name);
+        b.i8(4);
+        b.varint(static_cast<std::int32_t>(players.size()));
+        for (auto& p : players) b.string(p);
     }
 };
 
