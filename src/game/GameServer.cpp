@@ -14,6 +14,7 @@
 #include "../generated/ItemIds.hpp"
 #include "../generated/EntityIds.hpp"
 #include "MenuInteraction.hpp"
+#include "CostCalculator.hpp"
 #include <cerrno>
 
 namespace cppfm {
@@ -460,6 +461,7 @@ void GameServer::tickOnce() {
     survivalTick();
     mark('U');
     furnacesTick();
+    brewingTick();
     mark('E');
     effectsTick();
     mark('X');
@@ -2913,6 +2915,58 @@ void GameServer::furnacesTick() {
     });
 }
 
+void GameServer::brewingTick() {
+    // Brewing stand: fuel (blaze powder -> 20 fuel) + brewTime 400 ticks.
+    const auto itBlaze = gen::itemIdByName().find("minecraft:blaze_powder");
+    const std::uint32_t blazeId = itBlaze != gen::itemIdByName().end() ? itBlaze->second : 0;
+    blockEntities_.forEach([&](std::int64_t key, BlockEntity& be) {
+        if (be.kind != BlockEntity::Kind::Brewing) return;
+        BrewingData& b = be.brewing;
+        // replenish fuel from blaze powder in slot 4
+        if (b.fuel <= 0 && !b.slots[4].empty() && (blazeId == 0 || b.slots[4].itemId == blazeId)) {
+            if (--b.slots[4].count <= 0) b.slots[4] = ItemStack::air();
+            b.fuel = 20;
+            blockEntities_.dirty_.insert(key);
+        }
+        if (b.brewTime > 0) {
+            --b.brewTime;
+            blockEntities_.dirty_.insert(key);
+            if (b.brewTime == 0) {
+                // brew complete: consume ingredient slot 3
+                if (!b.slots[3].empty()) {
+                    if (--b.slots[3].count <= 0) b.slots[3] = ItemStack::air();
+                    // Transform potions 0..2: keep same item but ensure output; vanilla would change potion type.
+                    // For parity we simply keep the items (ingredient consumed signals completion).
+                    // Optionally, if input was water bottle and ingredient was nether_wart, create awkward.
+                    // Simplified: do nothing else.
+                    blockEntities_.dirty_.insert(key);
+                } else {
+                    // no ingredient but timer expired? just reset
+                    b.brewTime = 0;
+                }
+                // send ContainerSetData to viewers of this brewing stand
+                // fuel and brewTime will be synced via dirty flag and next interaction,
+                // but also broadcast to any player with menu open on this block
+                for (auto& p : playersSnapshot()) {
+                    // find sessions? we broadcast via block entity dirty; menu content sync
+                    // will happen on next click; for now we just mark dirty.
+                    (void)p;
+                }
+            }
+        } else {
+            // idle: try to start brewing if we have ingredient + at least one potion and fuel
+            bool hasIngredient = !b.slots[3].empty();
+            bool hasPotion = !b.slots[0].empty() || !b.slots[1].empty() || !b.slots[2].empty();
+            if (hasIngredient && hasPotion && b.fuel > 0) {
+                // consume 1 fuel per operation
+                --b.fuel;
+                b.brewTime = 400;
+                blockEntities_.dirty_.insert(key);
+            }
+        }
+    });
+}
+
 void GameServer::spawnXpOrbs(double x, double y, double z, int totalPoints,
                              Player* directTo) {
     // split into vanilla-ish orb sizes
@@ -3294,6 +3348,56 @@ struct SessionMenuIo : MenuIo {
 } // namespace
 
 void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
+    // Stonecutter output take (slot 1) - consume input, give result
+    if (m.type == MenuType::Stonecutter && slot == 1 && mode == 0 && button == 0) {
+        ItemStack* inp = m.container ? &m.container[0] : &m.extraSlots[0];
+        ItemStack* out = m.container ? &m.container[1] : &m.extraSlots[1];
+        if (!out->empty() && !inp->empty()) {
+            if (cursorItem_.empty()) cursorItem_ = *out;
+            else if (cursorItem_.itemId == out->itemId && cursorItem_.count + out->count <= 64) cursorItem_.count = static_cast<std::int16_t>(cursorItem_.count + out->count);
+            else srv_.addToInventory(*self_, out->itemId, out->count);
+            if (--inp->count <= 0) *inp = ItemStack::air();
+            if (!inp->empty()) {
+                const Recipe* r = srv_.recipes().findStonecutting(inp->itemId);
+                if (r) *out = r->result;
+                else *out = ItemStack::air();
+            } else *out = ItemStack::air();
+            sendMenuContent(m);
+            syncCursorItem();
+            sendSetSlot(m.windowId, self_->invStateId, 1, *out);
+            return;
+        }
+    }
+    // Anvil output take (slot 2) - charge XP, consume inputs
+    if (m.type == MenuType::Anvil && slot == 2 && mode == 0 && button == 0) {
+        ItemStack* out = &m.extraSlots[2];
+        if (!out->empty()) {
+            int cost = CostCalculator::anvilCost(m.extraSlots[0], m.extraSlots[1], "");
+            if (cost < 0) cost = 0;
+            if ((self_->xp.level >= cost || self_->gamemode == 1) && cost > 0 && cost <= 39) {
+                if (self_->gamemode == 0) {
+                    self_->xp.level -= cost;
+                    GameServer::sendSetExperience(*self_);
+                }
+                if (cursorItem_.empty()) cursorItem_ = *out;
+                else if (cursorItem_.itemId == out->itemId) cursorItem_.count = static_cast<std::int16_t>(cursorItem_.count + out->count);
+                else srv_.addToInventory(*self_, out->itemId, out->count);
+                if (--m.extraSlots[0].count <= 0) m.extraSlots[0] = ItemStack::air();
+                if (!m.extraSlots[1].empty() && --m.extraSlots[1].count <= 0) m.extraSlots[1] = ItemStack::air();
+                *out = ItemStack::air();
+                // refresh cost
+                int newCost = CostCalculator::anvilCost(m.extraSlots[0], m.extraSlots[1], "");
+                WriteBuffer pb;
+                pb.u8(static_cast<std::uint8_t>(m.windowId));
+                pb.i16(0);
+                pb.i16(static_cast<std::int16_t>(newCost < 0 ? 0 : newCost));
+                try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
+                sendMenuContent(m);
+                syncCursorItem();
+                return;
+            }
+        }
+    }
     SessionMenuIo io(*this);
     // crafting result refresh before interaction
     m.refreshCraftResult(srv_.recipes());
@@ -3302,6 +3406,84 @@ void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
     if (m.type == MenuType::Crafting) m.refreshCraftResult(srv_.recipes());
     sendMenuContent(m);
     syncCursorItem();
+    // Stonecutter ghost auto update
+    if (m.type == MenuType::Stonecutter) {
+        ItemStack* inp = m.container ? &m.container[0] : &m.extraSlots[0];
+        ItemStack* out = m.container ? &m.container[1] : &m.extraSlots[1];
+        if (!inp->empty()) {
+            const Recipe* r = srv_.recipes().findStonecutting(inp->itemId);
+            if (r) *out = r->result;
+            else *out = ItemStack::air();
+        } else {
+            *out = ItemStack::air();
+        }
+        sendSetSlot(m.windowId, self_->invStateId, 1, *out);
+    }
+    if (m.type == MenuType::Anvil) {
+        int cost = CostCalculator::anvilCost(m.extraSlots[0], m.extraSlots[1], "");
+        WriteBuffer pb;
+        pb.u8(static_cast<std::uint8_t>(m.windowId));
+        pb.i16(0);
+        pb.i16(static_cast<std::int16_t>(cost < 0 ? 0 : cost));
+        try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
+        if (!m.extraSlots[0].empty() && cost > 0 && cost <= 39) {
+            m.extraSlots[2] = m.extraSlots[0];
+            sendSetSlot(m.windowId, self_->invStateId, 2, m.extraSlots[2]);
+        } else {
+            m.extraSlots[2] = ItemStack::air();
+            sendSetSlot(m.windowId, self_->invStateId, 2, m.extraSlots[2]);
+        }
+    }
+    if (m.type == MenuType::Enchantment) {
+        int bs = 0;
+        if (m.blockKey >= 0) {
+            int bx = posKeyUnpackX(m.blockKey);
+            int by = posKeyUnpackY(m.blockKey);
+            int bz = posKeyUnpackZ(m.blockKey);
+            for (int dx = -2; dx <= 2; ++dx)
+                for (int dz = -2; dz <= 2; ++dz)
+                    for (int dy = 0; dy <= 1; ++dy) {
+                        if (dx == 0 && dz == 0) continue;
+                        auto st = srv_.world().getBlock(bx + dx, by + dy, bz + dz);
+                        auto* d = gen::blockByState(st);
+                        if (d && std::string(d->name) == "minecraft:bookshelf") ++bs;
+                    }
+            if (bs > 15) bs = 15;
+        }
+        for (int i = 0; i < 3; ++i) {
+            int cost = CostCalculator::enchantingCost(*self_, bs);
+            WriteBuffer pb;
+            pb.u8(static_cast<std::uint8_t>(m.windowId));
+            pb.i16(static_cast<std::int16_t>(i));
+            pb.i16(static_cast<std::int16_t>(cost + i));
+            try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
+        }
+    }
+    if (m.type == MenuType::Brewing) {
+        if (m.blockEntity && m.blockEntity->kind == BlockEntity::Kind::Brewing) {
+            auto& b = m.blockEntity->brewing;
+            for (int prop = 0; prop < 2; ++prop) {
+                WriteBuffer pb;
+                pb.u8(static_cast<std::uint8_t>(m.windowId));
+                pb.i16(static_cast<std::int16_t>(prop));
+                pb.i16(prop == 0 ? b.brewTime : b.fuel);
+                try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
+            }
+        }
+    }
+    if (m.type == MenuType::Furnace) {
+        if (m.blockEntity && m.blockEntity->kind == BlockEntity::Kind::Furnace) {
+            auto& f = m.blockEntity->furnace;
+            const int props[4] = {f.cookProgress, f.cookTotal, f.burnTicks, f.burnDuration};
+            for (int prop = 0; prop < 4; ++prop) {
+                WriteBuffer pb;
+                pb.u8(static_cast<std::uint8_t>(m.windowId));
+                pb.i16(static_cast<std::int16_t>(prop));
+                pb.i16(static_cast<std::int16_t>(props[prop]));
+                try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
+            }
+        }
+    }
     (void)changed;
 }
 
@@ -3353,7 +3535,8 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
         menu->containerCount_ = hopper ? 5 : 9;
         menu->containerCount = menu->containerCount_;
         menu->blockEntity = be;
-    } else if (name == "minecraft:furnace") {
+    } else if (name == "minecraft:furnace" || name == "minecraft:blast_furnace" ||
+               name == "minecraft:smoker") {
         auto* be = srv_.blockEntities().getAt(x, y, z);
         if (!be)
             be = &srv_.blockEntities().create(menu->blockKey,
@@ -3364,6 +3547,62 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
         menu->blockEntity = be;
     } else if (name == "minecraft:crafting_table") {
         menu->type = MenuType::Crafting;
+    } else if (name == "minecraft:enchanting_table") {
+        menu->type = MenuType::Enchantment;
+        menu->container = menu->extraSlots;
+        menu->containerCount = 2;
+    } else if (name == "minecraft:anvil" || name == "minecraft:chipped_anvil" ||
+               name == "minecraft:damaged_anvil") {
+        menu->type = MenuType::Anvil;
+        menu->container = menu->extraSlots;
+        menu->containerCount = 3;
+    } else if (name == "minecraft:brewing_stand") {
+        auto* be = srv_.blockEntities().getAt(x, y, z);
+        if (!be)
+            be = &srv_.blockEntities().create(menu->blockKey,
+                                              BlockEntity::Kind::Brewing);
+        menu->type = MenuType::Brewing;
+        menu->container = be->brewing.slots;
+        menu->containerCount = 5;
+        menu->blockEntity = be;
+    } else if (name == "minecraft:stonecutter") {
+        menu->type = MenuType::Stonecutter;
+        menu->container = menu->extraSlots;
+        menu->containerCount = 2;
+    } else if (name == "minecraft:grindstone") {
+        menu->type = MenuType::Grindstone;
+        menu->container = menu->extraSlots;
+        menu->containerCount = 3;
+    } else if (name == "minecraft:smithing_table") {
+        menu->type = MenuType::Smithing;
+        menu->container = menu->extraSlots;
+        menu->containerCount = 4;
+    } else if (name == "minecraft:beacon") {
+        menu->type = MenuType::Beacon;
+        menu->container = menu->extraSlots;
+        menu->containerCount = 1;
+    } else if (name == "minecraft:loom") {
+        menu->type = MenuType::Loom;
+        menu->container = menu->extraSlots;
+        menu->containerCount = 4;
+    } else if (name == "minecraft:barrel") {
+        auto* be = srv_.blockEntities().getAt(x, y, z);
+        if (!be)
+            be = &srv_.blockEntities().create(menu->blockKey,
+                                              BlockEntity::Kind::Barrel);
+        menu->type = MenuType::Barrel;
+        menu->container = be->chest.slots;
+        menu->containerCount = ChestData::kSlots;
+        menu->blockEntity = be;
+    } else if (name.find("shulker_box") != std::string::npos) {
+        auto* be = srv_.blockEntities().getAt(x, y, z);
+        if (!be)
+            be = &srv_.blockEntities().create(menu->blockKey,
+                                              BlockEntity::Kind::ShulkerBox);
+        menu->type = MenuType::ShulkerBox;
+        menu->container = be->chest.slots;
+        menu->containerCount = ChestData::kSlots;
+        menu->blockEntity = be;
     } else return;
 
     // Open Screen packet
@@ -3371,14 +3610,76 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
         WriteBuffer b;
         b.varint(menu->windowId);
         b.varint(menu->openScreenTypeId());
-        nbt::writeTextComponent(
-            b, menu->type == MenuType::Chest ? "Chest"
-               : menu->type == MenuType::Furnace ? "Furnace" : "Crafting");
+        const char* title = "Chest";
+        switch (menu->type) {
+        case MenuType::Chest: title = "Chest"; break;
+        case MenuType::Furnace: title = "Furnace"; break;
+        case MenuType::Crafting: title = "Crafting"; break;
+        case MenuType::Hopper: title = "Hopper"; break;
+        case MenuType::Dispenser: title = "Dispenser"; break;
+        case MenuType::Barrel: title = "Barrel"; break;
+        case MenuType::ShulkerBox: title = "Shulker Box"; break;
+        case MenuType::Enchantment: title = "Enchanting"; break;
+        case MenuType::Anvil: title = "Anvil"; break;
+        case MenuType::Brewing: title = "Brewing"; break;
+        case MenuType::Stonecutter: title = "Stonecutter"; break;
+        case MenuType::Grindstone: title = "Grindstone"; break;
+        case MenuType::Smithing: title = "Smithing"; break;
+        case MenuType::Beacon: title = "Beacon"; break;
+        case MenuType::Loom: title = "Loom"; break;
+        }
+        nbt::writeTextComponent(b, title);
         conn_->sendPacket(pl::sc::OpenScreen, b);
     }
     openMenu_ = std::move(menu);
     openMenu_->refreshCraftResult(srv_.recipes());
     sendMenuContent(*openMenu_);
+    // Send initial ContainerSetData for menus that need it
+    if (openMenu_->type == MenuType::Enchantment) {
+        int bs = 0;
+        // count bookshelves within 2 blocks (simplified placeholder 0..15)
+        // use CostCalculator for 3 levels
+        for (int i = 0; i < 3; ++i) {
+            int cost = CostCalculator::enchantingCost(*self_, bs);
+            WriteBuffer pb;
+            pb.u8(static_cast<std::uint8_t>(openMenu_->windowId));
+            pb.i16(static_cast<std::int16_t>(i));
+            pb.i16(static_cast<std::int16_t>(cost));
+            try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
+        }
+    } else if (openMenu_->type == MenuType::Anvil) {
+        ItemStack left = openMenu_->extraSlots[0];
+        ItemStack right = openMenu_->extraSlots[1];
+        int cost = CostCalculator::anvilCost(left, right, "");
+        WriteBuffer pb;
+        pb.u8(static_cast<std::uint8_t>(openMenu_->windowId));
+        pb.i16(0);
+        pb.i16(static_cast<std::int16_t>(cost < 0 ? 0 : cost));
+        try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
+    } else if (openMenu_->type == MenuType::Brewing) {
+        if (openMenu_->blockEntity && openMenu_->blockEntity->kind == BlockEntity::Kind::Brewing) {
+            auto &b = openMenu_->blockEntity->brewing;
+            for (int prop = 0; prop < 2; ++prop) {
+                WriteBuffer pb;
+                pb.u8(static_cast<std::uint8_t>(openMenu_->windowId));
+                pb.i16(static_cast<std::int16_t>(prop));
+                pb.i16(prop == 0 ? b.brewTime : b.fuel);
+                try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
+            }
+        }
+    } else if (openMenu_->type == MenuType::Furnace) {
+        if (openMenu_->blockEntity && openMenu_->blockEntity->kind == BlockEntity::Kind::Furnace) {
+            auto &f = openMenu_->blockEntity->furnace;
+            const int props[4] = {f.cookProgress, f.cookTotal, f.burnTicks, f.burnDuration};
+            for (int prop = 0; prop < 4; ++prop) {
+                WriteBuffer pb;
+                pb.u8(static_cast<std::uint8_t>(openMenu_->windowId));
+                pb.i16(static_cast<std::int16_t>(prop));
+                pb.i16(static_cast<std::int16_t>(props[prop]));
+                try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
+            }
+        }
+    }
 }
 
 void Session::closeOpenMenu(bool sendPacketToClient) {
@@ -3493,21 +3794,14 @@ void Session::sendRecipeBook() {
 }
 
 // Place-recipe: fill the crafting grid from inventory for recipe `recipeId`
-// (index into RecipeManager::all()).
+// (index into RecipeManager::all()). Handles Crafting, Furnace, Stonecutter.
 void Session::handlePlaceRecipe(std::int32_t recipeId, bool makeAll) {
-    if (!openMenu_ || openMenu_->type != MenuType::Crafting) return;
+    if (!openMenu_) return;
     Menu& m = *openMenu_;
     const auto& all = srv_.recipes().all();
     if (recipeId < 0 || static_cast<std::size_t>(recipeId) >= all.size()) return;
     const Recipe& r = all[static_cast<std::size_t>(recipeId)];
 
-    // return current grid contents to inventory first
-    for (auto& s : m.craftGrid) {
-        if (!s.empty()) {
-            srv_.addToInventory(*self_, s.itemId, s.count);
-            s = ItemStack::air();
-        }
-    }
     auto take = [&](const Ingredient& ing) -> ItemStack {
         for (auto& s : self_->inv) {
             if (!s.empty() && ing.accepts(s.itemId)) {
@@ -3518,39 +3812,139 @@ void Session::handlePlaceRecipe(std::int32_t recipeId, bool makeAll) {
         }
         return ItemStack::air();
     };
-    bool complete = true;
-    if (r.kind == Recipe::Kind::Shaped) {
-        for (int y = 0; y < r.height && complete; ++y)
-            for (int x = 0; x < r.width && complete; ++x) {
-                const auto& ing = r.cells[static_cast<std::size_t>(y) *
-                                          r.width + x];
-                if (ing.empty()) continue;
-                ItemStack it2 = take(ing);
-                if (it2.empty()) { complete = false; break; }
-                m.craftGrid[static_cast<std::size_t>(y) * 3 + x] = it2;
-            }
-    } else if (r.kind == Recipe::Kind::Shapeless) {
-        int i = 0;
-        for (const auto& ing : r.ingredients) {
-            if (i >= 9) break;
-            ItemStack it2 = take(ing);
-            if (it2.empty()) { complete = false; break; }
-            m.craftGrid[i++] = it2;
-        }
-    } else complete = false;
-    if (!complete) {
-        // give back whatever we pulled
-        for (auto& s : m.craftGrid)
+
+    if (m.type == MenuType::Crafting) {
+        // return current grid contents to inventory first
+        for (auto& s : m.craftGrid) {
             if (!s.empty()) {
                 srv_.addToInventory(*self_, s.itemId, s.count);
                 s = ItemStack::air();
             }
+        }
+        bool complete = true;
+        if (r.kind == Recipe::Kind::Shaped) {
+            for (int y = 0; y < r.height && complete; ++y)
+                for (int x = 0; x < r.width && complete; ++x) {
+                    const auto& ing = r.cells[static_cast<std::size_t>(y) *
+                                              r.width + x];
+                    if (ing.empty()) continue;
+                    ItemStack it2 = take(ing);
+                    if (it2.empty()) { complete = false; break; }
+                    m.craftGrid[static_cast<std::size_t>(y) * 3 + x] = it2;
+                }
+        } else if (r.kind == Recipe::Kind::Shapeless) {
+            int i = 0;
+            for (const auto& ing : r.ingredients) {
+                if (i >= 9) break;
+                ItemStack it2 = take(ing);
+                if (it2.empty()) { complete = false; break; }
+                m.craftGrid[i++] = it2;
+            }
+        } else complete = false;
+        if (!complete) {
+            for (auto& s : m.craftGrid)
+                if (!s.empty()) {
+                    srv_.addToInventory(*self_, s.itemId, s.count);
+                    s = ItemStack::air();
+                }
+        }
+        m.refreshCraftResult(srv_.recipes());
+        srv_.resendInventory(*self_);
+        sendMenuContent(m);
+        syncCursorItem();
+        (void)makeAll;
+        return;
+    } else if (m.type == MenuType::Furnace) {
+        if (r.kind != Recipe::Kind::Smelting) return;
+        // Place ingredient into input slot 0, and if needed fuel into slot 1
+        ItemStack* input = m.container ? &m.container[0] : &m.extraSlots[0];
+        ItemStack* fuel = m.container ? &m.container[1] : &m.extraSlots[1];
+        // if input already occupied, return it first
+        if (!input->empty()) {
+            srv_.addToInventory(*self_, input->itemId, input->count);
+            *input = ItemStack::air();
+        }
+        const Ingredient& ing = r.cells.front();
+        ItemStack got = take(ing);
+        if (got.empty()) return;
+        *input = got;
+        // try to place fuel if empty and makeAll is true or slot empty
+        if (fuel->empty()) {
+            // find any fuel item in inventory
+            for (auto& s : self_->inv) {
+                if (!s.empty() && isFuelItem(s.itemId)) {
+                    ItemStack one = ItemStack::of(s.itemId, 1);
+                    if (--s.count <= 0) s = ItemStack::air();
+                    *fuel = one;
+                    break;
+                }
+            }
+        }
+        // sync
+        sendMenuContent(m);
+        srv_.resendInventory(*self_);
+        syncCursorItem();
+        // also send ContainerSetData update (cook progress etc will be ticked)
+        if (m.blockEntity && m.blockEntity->kind == BlockEntity::Kind::Furnace) {
+            auto &f = m.blockEntity->furnace;
+            WriteBuffer pb;
+            pb.u8(static_cast<std::uint8_t>(m.windowId));
+            pb.i16(0);
+            pb.i16(f.cookProgress);
+            try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
+        }
+        (void)makeAll;
+        return;
+    } else if (m.type == MenuType::Stonecutter) {
+        if (r.kind != Recipe::Kind::Stonecutting) return;
+        ItemStack* input = m.container ? &m.container[0] : &m.extraSlots[0];
+        ItemStack* output = m.container ? &m.container[1] : &m.extraSlots[1];
+        if (!input->empty()) {
+            srv_.addToInventory(*self_, input->itemId, input->count);
+            *input = ItemStack::air();
+        }
+        const Ingredient& ing = r.cells.front();
+        ItemStack got = take(ing);
+        if (got.empty()) return;
+        *input = got;
+        *output = r.result;
+        // ghost preview: also send PlaceGhostRecipe to client
+        {
+            WriteBuffer b;
+            b.varint(m.windowId);
+            b.varint(recipeId);
+            try { conn_->sendPacket(pl::sc::PlaceGhostRecipe, b); } catch (...) {}
+        }
+        // also send ContainerSetSlot for output
+        sendSetSlot(m.windowId, self_->invStateId + 1, 1, *output);
+        sendMenuContent(m);
+        srv_.resendInventory(*self_);
+        syncCursorItem();
+        (void)makeAll;
+        return;
     }
-    m.refreshCraftResult(srv_.recipes());
-    srv_.resendInventory(*self_);
-    sendMenuContent(m);
-    syncCursorItem();
+    // For other containers (Enchantment, Anvil, Brewing, etc.), PlaceRecipe is no-op but we still ack
     (void)makeAll;
+}
+
+void Session::handlePlaceGhostRecipe(std::int32_t recipeId) {
+    if (!openMenu_ || openMenu_->type != MenuType::Stonecutter) return;
+    Menu& m = *openMenu_;
+    const auto& all = srv_.recipes().all();
+    if (recipeId < 0 || static_cast<std::size_t>(recipeId) >= all.size()) return;
+    const Recipe& r = all[static_cast<std::size_t>(recipeId)];
+    if (r.kind != Recipe::Kind::Stonecutting) return;
+    ItemStack* input = m.container ? &m.container[0] : &m.extraSlots[0];
+    ItemStack* output = m.container ? &m.container[1] : &m.extraSlots[1];
+    if (input->empty() || !r.cells.front().accepts(input->itemId)) return;
+    *output = r.result;
+    // send ghost slot update
+    sendSetSlot(m.windowId, self_->invStateId + 1, 1, *output);
+    // echo PlaceGhostRecipe back to client
+    WriteBuffer b;
+    b.varint(m.windowId);
+    b.varint(recipeId);
+    try { conn_->sendPacket(pl::sc::PlaceGhostRecipe, b); } catch (...) {}
 }
 
 // ------------------------------------------------------------- cookies ----
@@ -3818,6 +4212,48 @@ void Session::handlePlay() {
         case pl::cs::HeldItemSlot:        onHeldSlot(in); break;
         case pl::cs::WindowClick:         onWindowClick(in); break;   // 0x10
         case pl::cs::CloseContainer:      onCloseContainer(); break;  // 0x11
+        case pl::cs::EnchantItem: {                                   // 0x0F
+            const std::uint8_t win = in.u8();
+            const std::uint8_t button = in.u8();
+            (void)win;
+            if (openMenu_ && openMenu_->type == MenuType::Enchantment) {
+                int bs = 0;
+                if (openMenu_->blockKey >= 0) {
+                    int bx = posKeyUnpackX(openMenu_->blockKey);
+                    int by = posKeyUnpackY(openMenu_->blockKey);
+                    int bz = posKeyUnpackZ(openMenu_->blockKey);
+                    for (int dx = -2; dx <= 2; ++dx)
+                        for (int dz = -2; dz <= 2; ++dz)
+                            for (int dy = 0; dy <= 1; ++dy) {
+                                if (dx == 0 && dz == 0) continue;
+                                auto st = srv_.world().getBlock(bx + dx, by + dy, bz + dz);
+                                auto* d = gen::blockByState(st);
+                                if (d && std::string(d->name) == "minecraft:bookshelf") ++bs;
+                            }
+                    if (bs > 15) bs = 15;
+                }
+                int cost = CostCalculator::enchantingCost(*self_, bs);
+                cost = std::clamp(cost + button, 1, 30);
+                if (self_->xp.level >= cost || self_->gamemode == 1) {
+                    if (self_->gamemode == 0) {
+                        self_->xp.level -= cost;
+                        GameServer::sendSetExperience(*self_);
+                    }
+                    ItemStack* target = openMenu_->container ? &openMenu_->container[0] : &openMenu_->extraSlots[0];
+                    if (!target->empty()) {
+                        const char* ench = (button == 0 ? "minecraft:sharpness" : button == 1 ? "minecraft:efficiency" : "minecraft:unbreaking");
+                        ItemStack::addEnchant(*target, ench, cost / 10 + 1);
+                        sendMenuContent(*openMenu_);
+                        WriteBuffer pb;
+                        pb.u8(static_cast<std::uint8_t>(openMenu_->windowId));
+                        pb.i16(button);
+                        pb.i16(static_cast<std::int16_t>(cost));
+                        try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
+                    }
+                }
+            }
+            break;
+        }
         case pl::cs::PlaceRecipe: {                                   // 0x25
             (void)in.u8();                     // windowId
             const auto recipeId = in.varint();
@@ -3862,7 +4298,20 @@ void Session::handlePlay() {
         }
         case pl::cs::PlayerInput: in.skipRest(); break;
         case pl::cs::MoveVehicle: in.skipRest(); break;
-        case pl::cs::SignUpdate: in.skipRest(); break;
+        case pl::cs::SignUpdate: { // 0x39 - also PlaceGhostRecipe for stonecutter
+            if (openMenu_ && openMenu_->type == MenuType::Stonecutter && in.len - in.off < 16) {
+                // treat as PlaceGhostRecipe: windowId + recipeId
+                try {
+                    std::uint8_t win = in.u8();
+                    std::int32_t rid = in.varint();
+                    (void)win;
+                    handlePlaceGhostRecipe(rid);
+                } catch (...) {}
+            } else {
+                in.skipRest();
+            }
+            break;
+        }
         case pl::cs::EntityAction: {
             const std::int32_t eid = in.varint();
             const std::int32_t action = in.varint();
@@ -4316,10 +4765,22 @@ void Session::onUseItemOn(ReadBuffer& in) {
         if (bdef && d == 1) {
             const std::string bn(bdef->name);
             if (bn.find("chest") != std::string::npos ||
-                bn == "minecraft:furnace" ||
+                bn == "minecraft:furnace" || bn == "minecraft:blast_furnace" ||
+                bn == "minecraft:smoker" ||
                 bn == "minecraft:hopper" || bn == "minecraft:dispenser" ||
                 bn == "minecraft:dropper" ||
-                bn == "minecraft:crafting_table") {
+                bn == "minecraft:crafting_table" ||
+                bn == "minecraft:enchanting_table" ||
+                bn == "minecraft:anvil" || bn == "minecraft:chipped_anvil" ||
+                bn == "minecraft:damaged_anvil" ||
+                bn == "minecraft:brewing_stand" ||
+                bn == "minecraft:stonecutter" ||
+                bn == "minecraft:grindstone" ||
+                bn == "minecraft:smithing_table" ||
+                bn == "minecraft:beacon" ||
+                bn == "minecraft:loom" ||
+                bn == "minecraft:barrel" ||
+                bn.find("shulker_box") != std::string::npos) {
                 openMenuAt(x, y, z, clickedState);
                 ack(sequence);
                 return;
