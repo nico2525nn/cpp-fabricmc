@@ -270,16 +270,12 @@ void GameServer::tickOnce() {
     fluidSim_->tick(tickNo_);
     mark('R');
     redstone_->tick(tickNo_);
-    if (blockTicks_) blockTicks_->tick(tickNo_);
     mark('D');
     tickDigs();
     mark('S');
     survivalTick();
     mark('U');
     furnacesTick();
-    hoppersTick();
-    projectilesTick();
-    weatherTick();
     mark('E');
     effectsTick();
     mark('X');
@@ -292,7 +288,6 @@ void GameServer::tickOnce() {
     mobsTick();
     mark('I');
     itemsTick();
-    projectilesTick();
     mark('T');
 
     // periodic time sync every 20 ticks (1s); frozen when doDaylightCycle off
@@ -341,7 +336,6 @@ void GameServer::tickOnce() {
         for (int d = 0; d < 2; ++d) if (dimPersist_[d]) try { dimPersist_[d]->saveLevelData(tickNo_, dayTime()); } catch (...) {}
         std::fprintf(stderr, "[cppfm] periodic level.dat save t=%ld\n", (long)tickNo_);
     } else if (tickNo_ % 1200 == 0 && tickNo_ != 0) {
-        // lighter checkpoint: still flush level.dat (cheap)
         try { persist_->saveLevelData(tickNo_, dayTime()); } catch (...) {}
     }
 }
@@ -351,7 +345,6 @@ bool GameServer::isChunkInSimulationDistance(std::int32_t cx, std::int32_t cz) c
     if (sim <= 0) return true;
     const double limit = sim * 16.0;
     const double limit2 = limit * limit;
-    // chunk center
     const double chX = cx * 16.0 + 8.0;
     const double chZ = cz * 16.0 + 8.0;
     auto players = const_cast<GameServer*>(this)->playersSnapshot();
@@ -390,14 +383,9 @@ void GameServer::chunksUnloadTick() {
                 if (dx*dx + dz*dz < unloadDist2) { near = true; break; }
             }
             if (near) continue;
-            // if there are no players in this dimension, treat as far but keep spawn chunks already forced
             bool anyInDim = false;
             for (auto &pl : players) if (pl->inPlay && pl->dimension == dim) { anyInDim = true; break; }
             if (!anyInDim && w.isForced(cx, cz)) continue;
-            if (!anyInDim) {
-                // if no player in this dim, unload if beyond spawn radius already handled (forced keeps 5x5)
-                // allow unload
-            }
             if (pp && pp->isDirty(cx, cz)) {
                 pp->flushChunk(cx, cz);
             }
@@ -478,7 +466,6 @@ void GameServer::trySpawnMobs() {
             const double dist = 14 + (rand() % 22);
             const std::int32_t wx = static_cast<std::int32_t>(pl->x + std::cos(ang)*dist);
             const std::int32_t wz = static_cast<std::int32_t>(pl->z + std::sin(ang)*dist);
-            if (!isChunkInSimulationDistance(wx >> 4, wz >> 4)) continue;
             world_.generateChunkIfMissing(wx >> 4, wz >> 4);
             int feet = 4;
             bool ok = false;
@@ -552,12 +539,6 @@ void GameServer::mobsTick() {
                 despawn.push_back(m->entityId);
                 mobAi_.erase(m->entityId);
                 it = mobs_.erase(it); continue;
-            }
-            // simulation-distance culling: freeze mobs far from any player
-            if (!isChunkInSimulationDistance(static_cast<std::int32_t>(m->x) >> 4,
-                                             static_cast<std::int32_t>(m->z) >> 4)) {
-                ++it;
-                continue;
             }
 
             const auto& stats = mobStats(m->kind);
@@ -1079,7 +1060,7 @@ void GameServer::hoppersTick() {
             }
         }
 
-        // ---- dispenser: eject when powered (edge-triggered)
+        // ---- dispenser: eject when powered (edge-triggered) per-item (plan5 items 48-51)
         if (be.kind == BlockEntity::Kind::Dispenser) {
             bool powered = redstone_->isPoweredHere(x, y, z);
             bool& was = dispenserPower_[key];
@@ -1088,19 +1069,48 @@ void GameServer::hoppersTick() {
                     auto& s = slots[i];
                     if (s.empty()) continue;
                     // facing → direction
-                    double dx = 0, dz = 0;
+                    double dx = 0, dy = 0, dz = 0;
                     std::string facing = "north";
-                    if (world_.getBlock(x, y, z)) {
-                        for (auto& [pk, pv] :
-                             gen::propsOf(world_.getBlock(x, y, z)))
+                    std::uint16_t bstate = world_.getBlock(x, y, z);
+                    if (bstate) {
+                        for (auto& [pk, pv] : gen::propsOf(bstate))
                             if (pk == "facing") facing = std::string(pv);
                     }
                     if (facing == "north") dz = -1;
                     else if (facing == "south") dz = 1;
                     else if (facing == "west") dx = -1;
                     else if (facing == "east") dx = 1;
-                    spawnItemDrop(x + .5 + dx * .6, y + .5, z + .5 + dz * .6,
-                                  s.itemId, 1, dx * .25, .15, dz * .25);
+                    else if (facing == "up") dy = 1;
+                    else if (facing == "down") dy = -1;
+                    double sx = x + .5 + dx * .6;
+                    double sy = y + .5 + dy * .6;
+                    double sz = z + .5 + dz * .6;
+                    std::string iname = s.name();
+                    bool handled = false;
+                    if (iname.find("arrow") != std::string::npos) {
+                        spawnProjectile(ProjectileKind::Arrow, sx, sy, sz, dx*1.2, dy*0.2+0.15, dz*1.2, -1, false);
+                        handled = true;
+                    } else if (iname.find("snowball") != std::string::npos) {
+                        spawnProjectile(ProjectileKind::Snowball, sx, sy, sz, dx*1.2, dy*0.2+0.12, dz*1.2, -1, false);
+                        handled = true;
+                    } else if (iname == "minecraft:egg") {
+                        spawnProjectile(ProjectileKind::Egg, sx, sy, sz, dx*1.2, dy*0.2+0.12, dz*1.2, -1, false);
+                        handled = true;
+                    } else if (iname.find("ender_pearl") != std::string::npos) {
+                        spawnProjectile(ProjectileKind::EnderPearl, sx, sy, sz, dx*1.2, dy*0.2+0.12, dz*1.2, -1, false);
+                        handled = true;
+                    } else if (iname.find("fire_charge") != std::string::npos) {
+                        spawnProjectile(ProjectileKind::Fireball, sx, sy, sz, dx*0.5, dy*0.5, dz*0.5, -1, false);
+                        handled = true;
+                    }
+                    if (!handled) {
+                        if (iname == "minecraft:tnt" || iname.find("tnt") != std::string::npos) {
+                            // primed TNT: explode at front with delay via explodeAt
+                            explodeAt(x + dx + 0.5, y + dy + 0.5, z + dz + 0.5, 4.f);
+                        } else {
+                            spawnItemDrop(sx, sy, sz, s.itemId, 1, dx * .25, .15, dz * .25);
+                        }
+                    }
                     if (--s.count <= 0) s = ItemStack::air();
                     broadcastSound("minecraft:entity.dispenser.dispense",
                                    x + .5, y + .5, z + .5, 1.f, 1.f,
@@ -2003,52 +2013,19 @@ void Session::onEnterPlay() {
     sendSystemText("\u00a77Welcome to \u00a7bCppFabricMC\u00a77! Build with the hotbar, chat freely.");
 }
 
-static WriteBuffer makeWorldStateForDim(const ServerConfig& c, GameServer& srv, std::int8_t dim) {
-    std::string dimName;
-    std::string dimTypeKey;
-    if (dim == -1) { dimName = "minecraft:the_nether"; dimTypeKey = "minecraft:the_nether"; }
-    else if (dim == 1) { dimName = "minecraft:the_end"; dimTypeKey = "minecraft:the_end"; }
-    else { dimName = "minecraft:overworld"; dimTypeKey = "minecraft:overworld"; }
-    std::int32_t idx = srv.gameData_.idOf("minecraft:dimension_type", dimTypeKey);
-    if (idx < 0) {
-        if (dim == -1) idx = 3;
-        else if (dim == 1) idx = 2;
-        else idx = 0;
-    }
-    WriteBuffer w;
-    w.varint(idx);
-    w.string(dimName);
-    w.i64(c.hashedSeed);
-    // use player's gamemode if available? fallback to survival 0
-    w.i8(0);
-    w.u8(255);
-    w.boolean(false);
-    w.boolean(c.levelType == "flat");
-    w.boolean(false);
-    w.varint(0);
-    // sea level per dimension world
-    std::int32_t sea = kSeaLevelFlat;
-    try { sea = srv.worldFor(dim).seaLevel(); } catch (...) {}
-    w.varint(sea);
-    return w;
-}
 static WriteBuffer makeWorldState(const ServerConfig& c) {
-    // legacy wrapper for flat overworld (used in tests)
     WriteBuffer w;
-    w.varint(0);
+    w.varint(0);                                   // dimension type index
     w.string("minecraft:overworld");
     w.i64(c.hashedSeed);
-    w.i8(0);
-    w.u8(255);
-    w.boolean(false);
-    w.boolean(true);
-    w.boolean(false);
-    w.varint(0);
+    w.i8(0);                                       // gamemode survival
+    w.u8(255);                                     // previous gamemode: none
+    w.boolean(false);                              // is debug
+    w.boolean(true);                               // is flat
+    w.boolean(false);                              // has death location
+    w.varint(0);                                   // portal cooldown
     w.varint(kSeaLevelFlat);
     return w;
-}
-static WriteBuffer makeWorldState(const ServerConfig& c, GameServer& srv, std::int8_t dim) {
-    return makeWorldStateForDim(c, srv, dim);
 }
 
 // Minimal command tree: root -> /help, /ping  (literals only)
@@ -2076,7 +2053,7 @@ void Session::handleRespawnRequest() {
     self_->dead = false;
     self_->health = 20; self_->food = 20; self_->saturation = 5;
     self_->fallDist = 0;
-    WriteBuffer ws = makeWorldState(srv_.config(), srv_, self_->dimension);
+    WriteBuffer ws = makeWorldState(srv_.config());
     WriteBuffer b;
     b.raw(ws.data.data(), ws.data.size());
     b.u8(0x03);                                    // keep metadata + attributes
@@ -2086,12 +2063,7 @@ void Session::handleRespawnRequest() {
         hp.f32(20.f); hp.varint(20); hp.f32(5.f);
         conn_->sendPacket(pl::sc::SetHealth, hp);
     }
-    // reset chunk tracking for respawn dimension
-    sentChunks_.clear();
-    lastCx_ = INT32_MAX; lastCz_ = INT32_MAX;
     sendTeleport(self_->x, -60.0, self_->z, self_->yaw, self_->pitch);
-    // stream chunks for respawn position
-    try { tickChunksAround(self_->x, self_->z); } catch (...) {}
 }
 
 void Session::sendJoinGame() {
@@ -2099,10 +2071,8 @@ void Session::sendJoinGame() {
     WriteBuffer b;
     b.i32(self_->entityId);
     b.boolean(false);                              // hardcore
-    b.varint(3);                                   // worlds[]
+    b.varint(1);                                   // worlds[]
     b.string("minecraft:overworld");
-    b.string("minecraft:the_nether");
-    b.string("minecraft:the_end");
     b.varint(c.maxPlayers);
     b.varint(c.viewDistance);
     b.varint(std::min(c.simulationDistance, 10));
@@ -2111,7 +2081,7 @@ void Session::sendJoinGame() {
     b.boolean(false);                              // do limited crafting
     // SpawnInfo
     {
-        WriteBuffer ws = makeWorldState(c, srv_, self_->dimension);
+        WriteBuffer ws = makeWorldState(c);
         b.raw(ws.data.data(), ws.data.size());
     }
     b.boolean(false);                              // enforces secure chat
@@ -3053,19 +3023,13 @@ void Session::sendSystemText(const std::string& text) {
 // ------------------------------------------------------------------ chunking
 
 void Session::sendChunk(std::int32_t cx, std::int32_t cz) {
-    // Dimension-aware chunk streaming
-    World& w = srv_.worldFor(self_->dimension);
-    // Compute biome index for this world's biome (fallback to overworld if missing)
-    std::uint32_t biomeIdx = 0;
-    try { biomeIdx = srv_.data().biomeIndex(w.biomeKey()); } catch (...) {
-        try { biomeIdx = srv_.data().biomeIndex(srv_.config().worldBiome); } catch (...) { biomeIdx = 0; }
-    }
+    static const std::uint32_t biomeIdx = srv_.data().biomeIndex(srv_.config().worldBiome);
     GameServer::ChunkBodyRef body;
     if (!srv_.getCachedChunk(cx, cz, biomeIdx, body)) {
         auto fresh = std::make_shared<const std::vector<std::uint8_t>>([&]{
             WriteBuffer wb;
-            w.generateChunkIfMissing(cx, cz);
-            w.withChunk(cx, cz, [&](const Chunk& c) {
+            srv_.world().generateChunkIfMissing(cx, cz);
+            srv_.world().withChunk(cx, cz, [&](const Chunk& c) {
                 serializeLevelChunkBody(wb, cx, cz, c, biomeIdx);
             });
             return wb.data;
@@ -3585,6 +3549,7 @@ void Session::onUseItemOn(ReadBuffer& in) {
     const float cursorX = in.f32();
     const float cursorY = in.f32();
     const float cursorZ = in.f32();
+    (void)cursorX; (void)cursorZ;
     (void)in.boolean();                                 // inside block
     (void)in.boolean();                                 // world border hit
     const std::int32_t sequence = in.varint();
@@ -3673,6 +3638,13 @@ void Session::onUseItemOn(ReadBuffer& in) {
         }
     }
 
+    // Place the actually-held block item (vanilla semantics).
+    static const InvSlot airSlot = InvSlot::air();
+    const bool survival = self_->gamemode == 0;
+    const InvSlot& heldItem =
+        (self_->heldSlot >= 0 && self_->heldSlot < 9)
+            ? self_->inv[36 + self_->heldSlot] : airSlot;
+
     // ---- portal ignition (plan5): flint_and_steel / fire_charge on obsidian frame 4x5 -> nether portal
     {
         InvSlot heldCopy = (self_->heldSlot >= 0 && self_->heldSlot < 9) ? self_->inv[36 + self_->heldSlot] : InvSlot::air();
@@ -3681,7 +3653,6 @@ void Session::onUseItemOn(ReadBuffer& in) {
         bool isFireCharge = heldNameForPortal == "minecraft:fire_charge";
         if ((isFlint || isFireCharge) && !heldCopy.empty()) {
             World& w = srv_.worldFor(self_->dimension);
-            // clicked block must be obsidian
             std::uint16_t clickedSt = w.getBlock(x, y, z);
             const gen::BlockDef* cd = gen::blockByState(clickedSt);
             bool clickedIsObsidian = cd && std::string(cd->name) == "minecraft:obsidian";
@@ -3691,8 +3662,6 @@ void Session::onUseItemOn(ReadBuffer& in) {
                 std::uint16_t obsidian = obsIt != mp.end() ? static_cast<std::uint16_t>(obsIt->second) : 2397;
                 const gen::BlockDef* portalDef = gen::blockByName("minecraft:nether_portal");
                 bool ignited = false;
-                int portalFilled = 0;
-                // helper to fill interior and broadcast
                 auto fillInterior = [&](int orient, int ox, int oy, int oz) {
                     std::uint16_t portalState = 6033;
                     if (portalDef) {
@@ -3715,7 +3684,6 @@ void Session::onUseItemOn(ReadBuffer& in) {
                     srv_.broadcastSound("minecraft:block.portal.ambient", cxp+0.5, oy+2, czp+0.5, 0.8f, 1.0f, "blocks");
                     srv_.broadcastSound("minecraft:item.flintandsteel.use", x+0.5, y+0.5, z+0.5, 1.f, 1.f, "blocks");
                 };
-                // Try orientation X (constant Z = clicked Z)
                 for (int oy = y - 4; oy <= y && !ignited; ++oy) {
                     for (int ox = x - 3; ox <= x && !ignited; ++ox) {
                         if (oy < kMinY || oy+4 >= kMaxY) continue;
@@ -3729,13 +3697,11 @@ void Session::onUseItemOn(ReadBuffer& in) {
                             else { if (st != 0) valid=false; }
                         }
                         if (!valid) continue;
-                        // interior 2x3 air confirmed, check clicked is within border (already ensured by valid)
                         fillInterior(0, ox, oy, z);
-                        ignited = true; portalFilled = 6;
+                        ignited = true;
                     }
                 }
                 if (!ignited) {
-                    // Try orientation Z (constant X = clicked X)
                     for (int oy = y - 4; oy <= y && !ignited; ++oy) {
                         for (int oz = z - 3; oz <= z && !ignited; ++oz) {
                             if (oy < kMinY || oy+4 >= kMaxY) continue;
@@ -3750,11 +3716,11 @@ void Session::onUseItemOn(ReadBuffer& in) {
                             }
                             if (!valid) continue;
                             fillInterior(1, x, oy, oz);
-                            ignited = true; portalFilled = 6;
+                            ignited = true;
                         }
                     }
                 }
-                if (ignited && portalFilled>0) {
+                if (ignited) {
                     if (self_->gamemode == 0) {
                         if (isFlint) {
                             auto* slot = &self_->inv[36 + self_->heldSlot];
@@ -3774,12 +3740,86 @@ void Session::onUseItemOn(ReadBuffer& in) {
         }
     }
 
-    // Place the actually-held block item (vanilla semantics).
-    static const InvSlot airSlot = InvSlot::air();
-    const bool survival = self_->gamemode == 0;
-    const InvSlot& heldItem =
-        (self_->heldSlot >= 0 && self_->heldSlot < 9)
-            ? self_->inv[36 + self_->heldSlot] : airSlot;
+    // ---- buckets: water/lava placement and pickup (plan5 items 48-51)
+    if (!heldItem.empty()) {
+        const std::string heldName = heldItem.name();
+        if (heldName == "minecraft:water_bucket" || heldName == "minecraft:lava_bucket") {
+            std::uint16_t target = srv_.world().getBlock(tx, ty, tz);
+            bool replaceable = (target == 0);
+            // also consider replaceable plants? treat only air for now
+            if (replaceable) {
+                std::string fluidName = (heldName == "minecraft:water_bucket") ? "minecraft:water" : "minecraft:lava";
+                std::uint16_t fluidState = static_cast<std::uint16_t>(gen::stateWithPropsList(fluidName, {{"level","0"}}));
+                if (fluidState==0) {
+                    auto it = gen::blockNameToState().find(fluidName);
+                    if (it != gen::blockNameToState().end()) fluidState = static_cast<std::uint16_t>(it->second);
+                }
+                srv_.world().setBlock(tx, ty, tz, fluidState);
+                srv_.broadcastBlockChange(tx, ty, tz, fluidState);
+                if (survival) {
+                    auto* mh = &self_->inv[36 + self_->heldSlot];
+                    *mh = ItemStack::ofName("minecraft:bucket", 1);
+                    srv_.resendInventory(*self_);
+                }
+                srv_.broadcastSound("minecraft:item.bucket.empty", tx+0.5, ty+0.5, tz+0.5, 1.f, 1.f, "blocks");
+                ack(sequence);
+                return;
+            }
+        } else if (heldName == "minecraft:bucket") {
+            auto tryPick = [&](std::int32_t px,std::int32_t py,std::int32_t pz)->bool{
+                std::uint16_t bs = srv_.world().getBlock(px,py,pz);
+                const gen::BlockDef* bd = gen::blockByState(bs);
+                if (!bd) return false;
+                bool isWater=false,isLava=false;
+                if (bd->name=="minecraft:water") {
+                    for (auto& [k,v]: gen::propsOf(bs)) if (k=="level" && v=="0") isWater=true;
+                } else if (bd->name=="minecraft:lava") {
+                    for (auto& [k,v]: gen::propsOf(bs)) if (k=="level" && v=="0") isLava=true;
+                }
+                if (!isWater && !isLava) return false;
+                srv_.world().setBlock(px,py,pz, 0);
+                srv_.broadcastBlockChange(px,py,pz, 0);
+                if (survival) {
+                    auto* mh = &self_->inv[36 + self_->heldSlot];
+                    std::string newName = isWater ? "minecraft:water_bucket" : "minecraft:lava_bucket";
+                    *mh = ItemStack::ofName(newName, 1);
+                    srv_.resendInventory(*self_);
+                }
+                srv_.broadcastSound("minecraft:item.bucket.fill", px+0.5, py+0.5, pz+0.5, 1.f, 1.f, "blocks");
+                return true;
+            };
+            if (tryPick(x,y,z) || tryPick(tx,ty,tz)) {
+                ack(sequence);
+                return;
+            }
+        } else if (heldName == "minecraft:flint_and_steel" || heldName == "minecraft:fire_charge") {
+            std::uint16_t target = srv_.world().getBlock(tx, ty, tz);
+            if (target == 0) {
+                bool canPlace = true;
+                if (srv_.gameRules().contains("doFireTick") && !srv_.gameRules().getBool("doFireTick")) canPlace = false;
+                if (canPlace) {
+                    auto it = gen::blockNameToState().find("minecraft:fire");
+                    if (it != gen::blockNameToState().end()) {
+                        std::uint16_t fireState = static_cast<std::uint16_t>(it->second);
+                        srv_.world().setBlock(tx, ty, tz, fireState);
+                        srv_.broadcastBlockChange(tx, ty, tz, fireState);
+                        if (survival) {
+                            auto* mh = &self_->inv[36 + self_->heldSlot];
+                            if (heldName=="minecraft:flint_and_steel") {
+                                if (mh->applyDamage(1)) *mh = ItemStack::air();
+                            } else {
+                                if (--mh->count <=0) *mh = ItemStack::air();
+                            }
+                            srv_.resendInventory(*self_);
+                        }
+                        srv_.broadcastSound("minecraft:item.flintandsteel.use", tx+0.5, ty+0.5, tz+0.5, 1.f, 1.f, "blocks");
+                    }
+                }
+                ack(sequence);
+                return;
+            }
+        }
+    }
 
     // ---- bone meal fertilize hook ----
     if (!heldItem.empty() && heldItem.name() == "minecraft:bone_meal" && srv_.blockTicks_) {
@@ -3838,79 +3878,7 @@ void Session::onUseItemOn(ReadBuffer& in) {
         }
     }
 
-    // item id -> block name (block items share the name) -- needed early for water/slab checks
-    std::string itemName = heldItem.name();
-    const gen::BlockDef* bdef2 = nullptr;
-    if (!heldItem.empty()) bdef2 = gen::blockByName(itemName);
-
-    // ---- slab double stacking on clicked block (vanilla: clicking slab face merges into double) ----
-    if (bdef2 && itemName.find("slab") != std::string::npos) {
-        const std::uint16_t clickedState = srv_.world().getBlock(x, y, z);
-        const gen::BlockDef* cDef = gen::blockByState(clickedState);
-        if (cDef && cDef->name == bdef2->name) {
-            std::string curType;
-            for (auto& pr : gen::propsOf(clickedState)) if (pr.first == "type") curType = std::string(pr.second);
-            bool shouldDouble = false;
-            if (curType == "bottom" && d == 1) shouldDouble = true;
-            else if (curType == "top" && d == 0) shouldDouble = true;
-            if (shouldDouble) {
-                std::vector<std::pair<std::string,std::string>> ownedTmp;
-                ownedTmp.reserve(2);
-                ownedTmp.emplace_back("type", "double");
-                bool hasWater = false;
-                for (int i = 0; i < bdef2->propCount; ++i) {
-                    const auto& pd = gen::kPropDefs[gen::kBlockPropsRun[bdef2->propsOff + i]];
-                    if (pd.name == "waterlogged") { hasWater = true; break; }
-                }
-                if (hasWater) ownedTmp.emplace_back("waterlogged", "false");
-                std::vector<std::pair<std::string_view,std::string_view>> dprops;
-                dprops.reserve(ownedTmp.size());
-                for (auto& pr : ownedTmp) dprops.emplace_back(pr.first, pr.second);
-                std::uint16_t dblState = static_cast<std::uint16_t>(gen::stateWithProps(*bdef2, dprops));
-                api::BlockPlaceEvent ev;
-                ev.player = self_.get();
-                ev.x = x; ev.y = y; ev.z = z;
-                ev.newState = dblState;
-                if (!srv_.events().blockPlace.fire(ev)) { ack(sequence); return; }
-                srv_.world().setBlock(x, y, z, dblState);
-                srv_.broadcastBlockChange(x, y, z, dblState);
-                srv_.world().scheduleNeighborUpdates(x, y, z);
-                if (survival) {
-                    auto mh = &self_->inv[36 + self_->heldSlot];
-                    if (--mh->count <= 0) *mh = InvSlot::air();
-                    srv_.resendInventory(*self_);
-                }
-                ack(sequence);
-                return;
-            }
-        }
-    }
-
-    // Determine occupancy with exceptions for waterloggable and slab double at target
-    std::uint16_t targetState = srv_.world().getBlock(tx, ty, tz);
-    bool targetOccupied = targetState != 0;
-    bool targetIsWater = false;
-    bool canWaterlog = false;
-    bool targetIsSameSlab = false;
-    bool canDoubleAtTarget = false;
-    if (targetOccupied) {
-        const gen::BlockDef* tDef = gen::blockByState(targetState);
-        if (tDef && tDef->name == "minecraft:water") targetIsWater = true;
-        if (targetIsWater && bdef2) {
-            for (int i = 0; i < bdef2->propCount; ++i) {
-                const auto& pd = gen::kPropDefs[gen::kBlockPropsRun[bdef2->propsOff + i]];
-                if (pd.name == "waterlogged") { canWaterlog = true; break; }
-            }
-        }
-        if (bdef2 && itemName.find("slab") != std::string::npos && tDef && tDef->name == bdef2->name) {
-            targetIsSameSlab = true;
-            std::string curType;
-            for (auto& pr : gen::propsOf(targetState)) if (pr.first == "type") curType = std::string(pr.second);
-            if (curType != "double") canDoubleAtTarget = true;
-        }
-    }
-
-    if (targetOccupied && !canWaterlog && !canDoubleAtTarget) {
+    if (srv_.world().getBlock(tx, ty, tz) != 0 || heldItem.empty()) {
         // toggling an existing door?
         const std::uint16_t clickedState = srv_.world().getBlock(x, y, z);
         const gen::BlockDef* cdef = gen::blockByState(clickedState);
@@ -3949,111 +3917,30 @@ void Session::onUseItemOn(ReadBuffer& in) {
         ack(sequence);
         return;
     }
-    if (canDoubleAtTarget) {
-        std::vector<std::pair<std::string,std::string>> ownedTmp;
-        ownedTmp.reserve(2);
-        ownedTmp.emplace_back("type", "double");
-        bool hasWater = false;
-        for (int i = 0; i < bdef2->propCount; ++i) {
-            const auto& pd = gen::kPropDefs[gen::kBlockPropsRun[bdef2->propsOff + i]];
-            if (pd.name == "waterlogged") { hasWater = true; break; }
-        }
-        if (hasWater) ownedTmp.emplace_back("waterlogged", "false");
-        std::vector<std::pair<std::string_view,std::string_view>> dprops;
-        dprops.reserve(ownedTmp.size());
-        for (auto& pr : ownedTmp) dprops.emplace_back(pr.first, pr.second);
-        std::uint16_t dblState = static_cast<std::uint16_t>(gen::stateWithProps(*bdef2, dprops));
-        api::BlockPlaceEvent ev;
-        ev.player = self_.get();
-        ev.x = tx; ev.y = ty; ev.z = tz;
-        ev.newState = dblState;
-        if (!srv_.events().blockPlace.fire(ev)) { ack(sequence); return; }
-        srv_.world().setBlock(tx, ty, tz, dblState);
-        srv_.broadcastBlockChange(tx, ty, tz, dblState);
-        srv_.world().scheduleNeighborUpdates(tx, ty, tz);
-        if (survival) {
-            auto mh = &self_->inv[36 + self_->heldSlot];
-            if (--mh->count <= 0) *mh = InvSlot::air();
-            srv_.resendInventory(*self_);
-        }
-        ack(sequence);
-        return;
-    }
-
+    // item id -> block name (block items share the name)
+    std::string itemName = heldItem.name();
+    std::uint16_t newState = 0;
+    const gen::BlockDef* bdef2 = gen::blockByName(itemName);
     if (!bdef2) {                                          // not a placeable block
         // special items handled elsewhere (food via UseItem); nothing to do
         ack(sequence);
         return;
     }
-    if (heldItem.empty()) { ack(sequence); return; }
-
-    std::uint16_t newState = 0;
+    std::vector<std::pair<std::string_view, std::string_view>> props;
+    (void)props;
     {
-        // context-aware defaults
+        // context-aware defaults: facing opposite of player yaw
         float yaw = self_->yaw;
-        const char* yawFacing = "north";
-        if (yaw >= 45.f && yaw < 135.f) yawFacing = "east";
-        else if (yaw >= 135.f && yaw < 225.f) yawFacing = "south";
-        else if (yaw >= 225.f && yaw < 315.f) yawFacing = "west";
-
-        bool top = (cursorY > 0.5f) || d == 0;
-
-        std::string axisVal;
-        if (d == 0 || d == 1) axisVal = "y";
-        else if (d == 2 || d == 3) axisVal = "z";
-        else axisVal = "x";
-
-        std::string faceVal;
-        if (d == 0) faceVal = "ceiling";
-        else if (d == 1) faceVal = "floor";
-        else faceVal = "wall";
-
-        bool waterAtPlacement = false;
-        {
-            std::uint16_t cur = srv_.world().getBlock(tx, ty, tz);
-            const gen::BlockDef* wb = gen::blockByState(cur);
-            if (wb && wb->name == "minecraft:water") waterAtPlacement = true;
-        }
-
-        // Build props generically: iterate over block's prop definitions
-        std::vector<std::pair<std::string,std::string>> owned;
-        owned.reserve(bdef2->propCount);
+        const char* facing = "north";
+        if (yaw >= 45.f && yaw < 135.f) facing = "east";
+        else if (yaw >= 135.f && yaw < 225.f) facing = "south";
+        else if (yaw >= 225.f && yaw < 315.f) facing = "west";
+        bool hasFacing = false;
         for (int i = 0; i < bdef2->propCount; ++i) {
             const auto& pd = gen::kPropDefs[gen::kBlockPropsRun[bdef2->propsOff + i]];
-            std::string_view pname = pd.name;
-            if (pname == "facing") {
-                owned.emplace_back(std::string(pname), std::string(yawFacing));
-            } else if (pname == "half") {
-                owned.emplace_back(std::string(pname), top ? "top" : "bottom");
-            } else if (pname == "type") {
-                if (itemName.find("slab") != std::string::npos) {
-                    owned.emplace_back(std::string(pname), top ? "top" : "bottom");
-                } else {
-                    std::string_view firstVal = gen::kPropValuePool[pd.firstValue];
-                    owned.emplace_back(std::string(pname), std::string(firstVal));
-                }
-            } else if (pname == "axis") {
-                owned.emplace_back(std::string(pname), axisVal);
-            } else if (pname == "face") {
-                owned.emplace_back(std::string(pname), faceVal);
-            } else if (pname == "waterlogged") {
-                owned.emplace_back(std::string(pname), waterAtPlacement ? "true" : "false");
-            } else if (pname == "shape") {
-                owned.emplace_back(std::string(pname), "straight");
-            } else if (pname == "snowy") {
-                owned.emplace_back(std::string(pname), "false");
-            } else if (pname == "hinge") {
-                std::string_view firstVal = gen::kPropValuePool[pd.firstValue];
-                owned.emplace_back(std::string(pname), std::string(firstVal));
-            } else {
-                std::string_view firstVal = gen::kPropValuePool[pd.firstValue];
-                owned.emplace_back(std::string(pname), std::string(firstVal));
-            }
+            if (pd.name == "facing") hasFacing = true;
         }
-        std::vector<std::pair<std::string_view,std::string_view>> props;
-        props.reserve(owned.size());
-        for (auto& pr : owned) props.emplace_back(pr.first, pr.second);
-        (void)cursorX; (void)cursorZ;
+        if (hasFacing) props.emplace_back("facing", facing);
         newState = static_cast<std::uint16_t>(gen::stateWithProps(*bdef2, props));
     }
 

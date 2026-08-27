@@ -308,6 +308,8 @@ public:
         blockTicks_->registerBehavior("minecraft:cactus", std::make_unique<StemBehavior>(4));
         blockTicks_->registerBehavior("minecraft:farmland", std::make_unique<FarmlandBehavior>());
         blockTicks_->registerBehavior("minecraft:fire", std::make_unique<FireBehavior>());
+        redstone_->setBlockEntityStore(&blockEntities_);
+        redstone_->setTickRef(&tickNo_);
         world_.setOnBlockChanged([this](std::int32_t x, std::int32_t y,
                                         std::int32_t z, std::uint16_t o,
                                         std::uint16_t n) {
