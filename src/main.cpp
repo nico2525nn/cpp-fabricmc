@@ -1,4 +1,5 @@
 #include "game/GameServer.hpp"
+#include "game/ServerProperties.hpp"
 #include <csignal>
 #include <cstdio>
 #include <cstring>
@@ -20,43 +21,40 @@ static std::string trim(std::string s) {
     return s;
 }
 
-// Minimal server.properties reader (subset, vanilla-compatible keys)
+// Minimal server.properties reader (subset, vanilla-compatible keys) – now via ServerProperties (plan7)
 static void loadProperties(ServerConfig& c, const std::string& path) {
-    std::ifstream f(path);
-    if (!f) return;
-    std::string line;
-    while (std::getline(f, line)) {
-        line = trim(line);
-        if (line.empty() || line[0] == '#') continue;
-        auto eq = line.find('=');
-        if (eq == std::string::npos) continue;
-        const std::string k = line.substr(0, eq);
-        const std::string v = line.substr(eq + 1);
-        try {
-            if (k == "server-port") c.port = static_cast<std::uint16_t>(std::stoi(v));
-            else if (k == "max-players") c.maxPlayers = std::stoi(v);
-            else if (k == "view-distance") c.viewDistance = std::clamp(std::stoi(v), 2, 32);
-            else if (k == "simulation-distance") c.simulationDistance = std::clamp(std::stoi(v), 2, 32);
-            else if (k == "motd") c.motd = v;
-            else if (k == "spawn-protection") c.spawnProtection = std::max(0, std::stoi(v));
-        else if (k == "start-time") c.startTime = std::stoll(v);
-        else if (k == "level-type") {
-            std::string t = v;
+    ServerProperties props;
+    if (!props.load(path)) return;
+    // keep legacy manual handling for compatibility, but prefer typed get<>
+    try {
+        if (props.has("server-port")) c.port = static_cast<std::uint16_t>(props.get<int>("server-port", c.port));
+        if (props.has("max-players")) c.maxPlayers = props.get<int>("max-players", c.maxPlayers);
+        c.viewDistance = props.get<int>("view-distance", c.viewDistance);
+        c.viewDistance = std::clamp(c.viewDistance, 2, 32);
+        c.simulationDistance = props.get<int>("simulation-distance", c.simulationDistance);
+        c.simulationDistance = std::clamp(c.simulationDistance, 2, 32);
+        if (props.has("motd")) c.motd = props.get<std::string>("motd", c.motd);
+        if (props.has("spawn-protection")) c.spawnProtection = std::max(0, props.get<int>("spawn-protection", c.spawnProtection));
+        if (props.has("start-time")) c.startTime = props.get<std::int64_t>("start-time", c.startTime);
+        if (props.has("level-type")) {
+            std::string t = props.get<std::string>("level-type", c.levelType);
             if (t.rfind("minecraft:", 0) == 0) t = t.substr(10);
             c.levelType = (t == "normal") ? "normal" : "flat";
         }
-        else if (k == "world-dir") c.worldDir = v;
-        else if (k == "rcon.port") c.rcon.port = static_cast<std::uint16_t>(std::stoi(v));
-        else if (k == "rcon.password") c.rcon.password = v;
-        else if (k == "enable-rcon") c.rcon.enabled = (v == "true");
-        else if (k == "whitelist") c.whitelist = (v == "true");
-        else if (k == "online-mode") c.onlineMode = (v == "true");
-        else if (k == "online-mode") c.onlineMode = (v == "true");
-        else if (k == "enforcesSecureChat" || k == "enforce-secure-profile" || k == "enforces-secure-chat") c.enforcesSecureChat = (v == "true");
-        else if (k == "compression-threshold") c.compressionThreshold = std::stoi(v);
-        else if (k == "world-dir") c.worldDir = v;
-        } catch (...) {}
-    }
+        if (props.has("world-dir")) c.worldDir = props.get<std::string>("world-dir", c.worldDir);
+        if (props.has("rcon.port")) c.rcon.port = static_cast<std::uint16_t>(props.get<int>("rcon.port", c.rcon.port));
+        if (props.has("rcon.password")) c.rcon.password = props.get<std::string>("rcon.password", c.rcon.password);
+        if (props.has("enable-rcon")) c.rcon.enabled = props.get<bool>("enable-rcon", c.rcon.enabled);
+        if (props.has("whitelist")) c.whitelist = props.get<bool>("whitelist", c.whitelist);
+        if (props.has("online-mode")) c.onlineMode = props.get<bool>("online-mode", c.onlineMode);
+        if (props.has("enforce-secure-profile") || props.has("enforcesSecureChat") || props.has("enforces-secure-chat")) {
+            bool v = props.get<bool>("enforce-secure-profile", c.enforcesSecureChat);
+            v = props.get<bool>("enforcesSecureChat", v);
+            v = props.get<bool>("enforces-secure-chat", v);
+            c.enforcesSecureChat = v;
+        }
+        if (props.has("compression-threshold")) c.compressionThreshold = props.get<int>("compression-threshold", c.compressionThreshold);
+    } catch (...) {}
 }
 
 int main(int argc, char** argv) {

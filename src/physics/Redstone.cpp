@@ -235,6 +235,7 @@ bool RedstoneEngine::isPoweredHere(std::int32_t x, std::int32_t y,
 
 void RedstoneEngine::onBlockChanged(std::int32_t x, std::int32_t y,
                                     std::int32_t z) {
+    if (!world_.isPositionInSimulationDistance(x, z)) return;
     recomputeAround(x, y, z);
     // Rails shape recompute for changed pos and neighbors
     recomputeRailShape(x,y,z);
@@ -608,6 +609,7 @@ void RedstoneEngine::tick(std::int64_t now) {
     while (!queue_.empty() && queue_.top().dueTick <= now) {
         const RedstoneTick t = queue_.top();
         queue_.pop();
+        if (!world_.isPositionInSimulationDistance(t.x, t.z)) continue;
         const std::uint16_t st = world_.getBlock(t.x, t.y, t.z);
         const Comp c = classify(st);
         if (c == Comp::ButtonOn) {                       // release pulse
