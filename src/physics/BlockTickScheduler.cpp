@@ -2,6 +2,8 @@
 #include "BlockTickScheduler.hpp"
 #include "../game/GameServer.hpp"
 #include <algorithm>
+#include <cstdlib>
+#include <string>
 
 namespace cppfm {
 
@@ -18,9 +20,6 @@ void BlockTickScheduler::tick(std::int64_t now) {
     if (rules_) {
         const int rts = rules_->getInt("randomTickSpeed", 3);
         if (rts > 0 && now % 5 == 0) {
-            // sample a few loaded chunks
-            namespace fs = std::filesystem;
-            (void)fs::path(".");
             // Use World's allChunkKeys to pick random chunks
             auto keys = world_.allChunkKeys();
             if (!keys.empty()) {
@@ -75,13 +74,11 @@ void CropBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
     if ((rand() % 100) < 30) {
         const gen::BlockDef* dd = gen::blockByState(state);
         if (!dd) return;
+        std::string ageStr = std::to_string(age+1);
         std::vector<std::pair<std::string_view,std::string_view>> props;
         for (auto& [k,v] : gen::propsOf(state))
             if (k != "age") props.emplace_back(k, v);
-        props.emplace_back("age", std::to_string(age+1).c_str() + std::string_view("",0) /* hack */);
-        // rebuild with new age string
-        std::string ageStr = std::to_string(age+1);
-        props.back().second = ageStr;
+        props.emplace_back("age", ageStr);
         const std::uint16_t ns = static_cast<std::uint16_t>(gen::stateWithProps(*dd, props));
         w.setBlock(x,y,z, ns);
     }
