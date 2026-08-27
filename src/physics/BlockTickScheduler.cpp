@@ -8,6 +8,39 @@
 
 namespace cppfm {
 
+// RandomTickScheduler (plan7): multiset queue sorted by dueTick
+void RandomTickScheduler::scheduleRandomTick(std::int32_t x, std::int32_t y, std::int32_t z, std::int64_t delay) {
+    // delay treated as absolute dueTick if no current time; schedule for delay ticks from 0
+    queue_.insert({x, y, z, delay});
+}
+void RandomTickScheduler::scheduleRandomTick(std::int32_t x, std::int32_t y, std::int32_t z, std::int64_t delay, std::int64_t now) {
+    queue_.insert({x, y, z, now + delay});
+}
+void RandomTickScheduler::tick(std::int64_t now) {
+    while (!queue_.empty()) {
+        auto it = queue_.begin();
+        if (it->dueTick > now) break;
+        RandomTickEntry e = *it;
+        queue_.erase(it);
+        const std::uint16_t st = world_.getBlock(e.x, e.y, e.z);
+        if (st == 0) continue;
+        const gen::BlockDef* d = gen::blockByState(st);
+        if (!d) continue;
+        // lookup behavior via BlockTickScheduler if available, else direct
+        IBlockBehavior* beh = nullptr;
+        if (srv_) {
+            if (auto* bts = srv_->blockTicks()) beh = bts->behaviorFor(std::string(d->name));
+        } else {
+            // fallback: try to find via world? no op
+        }
+        if (beh) {
+            // simulation distance cull
+            if (srv_ && !srv_->isChunkInSimulationDistance(e.x >> 4, e.z >> 4)) continue;
+            beh->randomTick(world_, e.x, e.y, e.z, st, now, srv_);
+        }
+    }
+}
+
 void BlockTickScheduler::schedule(std::int32_t x, std::int32_t y, std::int32_t z,
                                   std::int64_t dueTick) {
     const std::int64_t k = posKey3(x,y,z);
@@ -17,6 +50,8 @@ void BlockTickScheduler::schedule(std::int32_t x, std::int32_t y, std::int32_t z
 }
 
 void BlockTickScheduler::tick(std::int64_t now) {
+    // integrate RandomTickScheduler (plan7): process multiset queue of explicit random ticks
+    randomScheduler_.tick(now);
     // random ticks: pick chunks (simulation-distance culled)
     if (rules_) {
         const int rts = rules_->getInt("randomTickSpeed", 3);

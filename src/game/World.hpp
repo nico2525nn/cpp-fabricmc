@@ -301,6 +301,20 @@ public:
         }
         if (onEdit_) onEdit_(x >> 4, z >> 4);
     }
+    // BlockNeighborUpdater: updateBlockState loops 6 neighbors and notifies via onBlockNeighborChange
+    void updateBlockState(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t newState) {
+        setBlock(x, y, z, newState);
+        static constexpr int DX[6] = {1,-1,0,0,0,0};
+        static constexpr int DY[6] = {0,0,1,-1,0,0};
+        static constexpr int DZ[6] = {0,0,0,0,1,-1};
+        for (int d = 0; d < 6; ++d) {
+            onBlockNeighborChange(x + DX[d], y + DY[d], z + DZ[d], newState);
+        }
+    }
+    struct BlockPosI { std::int32_t x=0, y=0, z=0; };
+    void updateBlockState(BlockPosI pos, std::uint16_t newState) {
+        updateBlockState(pos.x, pos.y, pos.z, newState);
+    }
     const Chunk* tryGet(std::int32_t cx, std::int32_t cz) const {
         std::shared_lock lock(mutex_);
         auto it = chunks_.find(chunkKey(cx, cz));
@@ -509,6 +523,26 @@ public:
     std::vector<std::function<void(std::int32_t, std::int32_t, std::int32_t, std::uint16_t, std::uint16_t)>> blockPlaceListeners_;
     std::vector<std::function<void(std::int32_t, std::int32_t, std::int32_t, std::uint16_t, std::uint16_t)>> blockBreakListeners_;
     std::vector<std::function<void(std::int32_t, std::int32_t, std::int32_t, std::uint16_t)>> blockNeighborChangeListeners_;
+};
+
+// BlockNeighborUpdater system (plan7): event-driven neighbor propagation
+class BlockNeighborUpdater {
+public:
+    static void updateNeighbors(World& world, std::int32_t x, std::int32_t y, std::int32_t z) {
+        static constexpr int DX[6] = {1,-1,0,0,0,0};
+        static constexpr int DY[6] = {0,0,1,-1,0,0};
+        static constexpr int DZ[6] = {0,0,0,0,1,-1};
+        std::uint16_t state = world.getBlock(x, y, z);
+        for (int d = 0; d < 6; ++d) {
+            world.onBlockNeighborChange(x + DX[d], y + DY[d], z + DZ[d], state);
+        }
+    }
+    static void updateBlockState(World& world, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t newState) {
+        world.updateBlockState(x, y, z, newState);
+    }
+    static void updateBlockState(World& world, World::BlockPosI pos, std::uint16_t newState) {
+        world.updateBlockState(pos, newState);
+    }
 };
 
 } // namespace cppfm
