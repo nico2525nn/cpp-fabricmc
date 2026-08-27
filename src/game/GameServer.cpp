@@ -195,6 +195,14 @@ void GameServer::tickDigs() {
                 world_.setBlock(p->digX, p->digY, p->digZ, 0);
                 broadcastBlockChange(p->digX, p->digY, p->digZ, 0);
                 onBlockMined(*p, oldState);
+                // durability: damage held tool if it has durability
+                if (p->gamemode == 0 && p->heldSlot >=0 && p->heldSlot <9) {
+                    auto &held = p->inv[36 + p->heldSlot];
+                    if (!held.empty() && ItemStack::maxDamageFor(held.itemId) > 0) {
+                        if (held.applyDamage(1)) held = ItemStack::air();
+                        resendInventory(*p);
+                    }
+                }
                 if (!ev.dropItems) { p->digActive = false;
                     broadcastDigStage(*p, -1); continue; }
                 if (p->gamemode == 0) {
@@ -245,7 +253,17 @@ void GameServer::sendSetHealth(Player& p) {
 void GameServer::applyDamage(Player& p, float amount, const char* cause) {
     if (p.gamemode == 1 || p.gamemode == 3) return;      // creative/spectator immune
     if (amount <= 0 || p.dead) return;
-    p.health -= amount;
+    // armor reduction
+    int armor = totalArmorPoints(p.inv);
+    float reduced = applyArmorReduction(amount, armor);
+    // enchant protection
+    int prot = totalProtectionForPlayer(p);
+    if (prot > 0) {
+        float protEff = std::min(20.f, static_cast<float>(prot * 4)) / 25.f;
+        protEff = std::min(protEff, 0.8f);
+        reduced *= (1.f - protEff);
+    }
+    p.health -= reduced;
     if (p.health <= 0) { p.health = 0; killPlayer(p, cause); }
     sendSetHealth(p);
 }
@@ -285,6 +303,8 @@ void GameServer::tickOnce() {
     if (tickNo_ % 20 == 0) trySpawnMobs();
     mark('M');
     mobsTick();
+    mark('P');
+    projectilesTick();
     mark('I');
     itemsTick();
     mark('T');
@@ -462,6 +482,32 @@ void GameServer::mobsTick() {
             }
 
             const auto& stats = mobStats(m->kind);
+            // dead check (generic, includes combat/arrow etc) with slime split
+            if (m->dead) {
+                deadIds.push_back(m->entityId);
+                drops.push_back(m);
+                // slime / magma cube split
+                if ((m->kind == MobKind::Slime || m->kind == MobKind::MagmaCube) && m->slimeSize > 0) {
+                    int n = 2 + (rand() % 3);
+                    for (int s=0; s<n; ++s) {
+                        auto baby = std::make_shared<MobEntity>();
+                        baby->entityId = nextEntityId();
+                        baby->kind = m->kind;
+                        baby->slimeSize = m->slimeSize - 1;
+                        const auto& bs = mobStats(baby->kind);
+                        baby->health = bs.maxHealth * 0.5f;
+                        if (baby->health < 1.f) baby->health = 1.f;
+                        baby->x = m->x + (rand()/(double)RAND_MAX - 0.5) * 0.5;
+                        baby->y = m->y;
+                        baby->z = m->z + (rand()/(double)RAND_MAX - 0.5) * 0.5;
+                        baby->lastSeenMs = nowMs();
+                        mobs_.push_back(baby);
+                        broadcastMobSpawn(*baby);
+                    }
+                }
+                mobAi_.erase(m->entityId);
+                it = mobs_.erase(it); continue;
+            }
             // aging: babies grow up
             if (m->age < 0 && ++m->age >= 0) {
                 m->age = 0;
@@ -478,9 +524,29 @@ void GameServer::mobsTick() {
                 !isNight()) {
                 if (tickNo_ % 20 == 0) {
                     applyDamageToMob(*m, 1.f, "burned to death");
-                    if (m->dead) { deadIds.push_back(m->entityId); drops.push_back(m);
+                    if (m->dead) {
+                        deadIds.push_back(m->entityId); drops.push_back(m);
+                        if ((m->kind == MobKind::Slime || m->kind == MobKind::MagmaCube) && m->slimeSize > 0) {
+                            int n = 2 + (rand() % 3);
+                            for (int s=0; s<n; ++s) {
+                                auto baby = std::make_shared<MobEntity>();
+                                baby->entityId = nextEntityId();
+                                baby->kind = m->kind;
+                                baby->slimeSize = m->slimeSize - 1;
+                                const auto& bs = mobStats(baby->kind);
+                                baby->health = bs.maxHealth * 0.5f;
+                                if (baby->health < 1.f) baby->health = 1.f;
+                                baby->x = m->x + (rand()/(double)RAND_MAX - 0.5) * 0.5;
+                                baby->y = m->y;
+                                baby->z = m->z + (rand()/(double)RAND_MAX - 0.5) * 0.5;
+                                baby->lastSeenMs = nowMs();
+                                mobs_.push_back(baby);
+                                broadcastMobSpawn(*baby);
+                            }
+                        }
                         mobAi_.erase(m->entityId);
-                        it = mobs_.erase(it); continue; }
+                        it = mobs_.erase(it); continue;
+                    }
                 }
             }
 
@@ -532,6 +598,29 @@ void GameServer::mobsTick() {
                                        static_cast<std::int32_t>(m->y),
                                        static_cast<std::int32_t>(m->z));
                 if (sky >= 14) applyDamageToMob(*m, 1.f, "burned to death");
+                if (m->dead) {
+                    deadIds.push_back(m->entityId); drops.push_back(m);
+                    if ((m->kind == MobKind::Slime || m->kind == MobKind::MagmaCube) && m->slimeSize > 0) {
+                        int n = 2 + (rand() % 3);
+                        for (int s=0; s<n; ++s) {
+                            auto baby = std::make_shared<MobEntity>();
+                            baby->entityId = nextEntityId();
+                            baby->kind = m->kind;
+                            baby->slimeSize = m->slimeSize - 1;
+                            const auto& bs = mobStats(baby->kind);
+                            baby->health = bs.maxHealth * 0.5f;
+                            if (baby->health < 1.f) baby->health = 1.f;
+                            baby->x = m->x + (rand()/(double)RAND_MAX - 0.5) * 0.5;
+                            baby->y = m->y;
+                            baby->z = m->z + (rand()/(double)RAND_MAX - 0.5) * 0.5;
+                            baby->lastSeenMs = nowMs();
+                            mobs_.push_back(baby);
+                            broadcastMobSpawn(*baby);
+                        }
+                    }
+                    mobAi_.erase(m->entityId);
+                    it = mobs_.erase(it); continue;
+                }
             }
             // delta broadcast
             if (!m->hasSent ||
@@ -581,6 +670,19 @@ void GameServer::spawnMob(MobKind kind, double x, double y, double z) {
     mob->kind = kind;
     const auto& stats = mobStats(kind);
     mob->health = stats.maxHealth;
+    if (auto *def = entityDataLoader_.get(MobEntity::kindName(kind))) {
+        if (def->max_health > 0) mob->health = def->max_health;
+        if (!def->equipment.empty()) {
+            for (auto &kv : def->equipment) {
+                int slot = kv.first;
+                auto it = gen::itemIdByName().find(kv.second);
+                if (it != gen::itemIdByName().end() && slot>=0 && slot<6) mob->equipment[slot] = ItemStack::of(it->second, 1);
+            }
+        }
+        if (kind==MobKind::Slime || kind==MobKind::MagmaCube) {
+            // slimeSize from def? use max_health scaling if present
+        }
+    }
     mob->x = x; mob->y = y; mob->z = z;
     mob->lastSeenMs = nowMs();
     {
@@ -600,7 +702,69 @@ void GameServer::broadcastMobSpawn(const MobEntity& mob) {
     b.i8(0); b.i8(0); b.i8(0);
     b.varint(0); b.i16(0); b.i16(0); b.i16(0);
     broadcastPacketExcept(nullptr, pl::sc::SpawnEntity, b);
+    sendEquipment(mob);
 }
+
+void GameServer::sendEquipment(const MobEntity& mob) {
+    bool hasAny=false;
+    for (int i=0;i<6;++i) if (!mob.equipment[i].empty()) { hasAny=true; break; }
+    if (!hasAny) return;
+    WriteBuffer b;
+    b.varint(mob.entityId);
+    // 1.21.4 SetEquipment: varint entity, then sequence of (varint slot, Slot)
+    // slot ids: 0 mainhand 1 offhand 2 boots 3 leggings 4 chest 5 head
+    for (int i=0;i<6;++i) {
+        if (mob.equipment[i].empty()) continue;
+        b.varint(i);
+        mob.equipment[i].write(b);
+    }
+    broadcastPacketExcept(nullptr, proto::pl::sc::SetEquipment, b);
+}
+
+void GameServer::broadcastSetPassengers(std::int32_t vehicleId) {
+    std::shared_ptr<MobEntity> veh;
+    {
+        std::lock_guard lk(entsMtx_);
+        for (auto &m : mobs_) if (m->entityId==vehicleId) { veh=m; break; }
+    }
+    if (!veh) return;
+    WriteBuffer b;
+    b.varint(vehicleId);
+    if (veh->riderEntityId != -1) {
+        b.varint(1);
+        b.varint(veh->riderEntityId);
+    } else {
+        b.varint(0);
+    }
+    broadcastPacketExcept(nullptr, proto::pl::sc::SetPassengers, b);
+}
+
+void GameServer::broadcastSetPassengersEmpty(std::int32_t vehicleId) {
+    WriteBuffer b;
+    b.varint(vehicleId);
+    b.varint(0);
+    broadcastPacketExcept(nullptr, proto::pl::sc::SetPassengers, b);
+}
+
+float GameServer::applyArmorReduction(float dmg, int armor) const {
+    if (armor <= 0 || dmg <= 0) return dmg;
+    float a = static_cast<float>(armor);
+    float eff = std::min(20.f, std::max(a/5.f, a - dmg/2.f));
+    return dmg * (1.f - eff/25.f);
+}
+
+int GameServer::totalProtectionForPlayer(const Player& p) const {
+    int prot=0;
+    for (int i=5;i<=8;++i) if (i>=0 && i<46 && !p.inv[i].empty()) prot += p.inv[i].enchantLevel("protection");
+    return prot;
+}
+
+int GameServer::totalProtectionForMob(const MobEntity& m) const {
+    int prot=0;
+    for (int i=2;i<6;++i) if (!m.equipment[i].empty()) prot += m.equipment[i].enchantLevel("protection");
+    return prot;
+}
+
 
 void GameServer::mobAttackPlayer(MobEntity& m, Player& target) {
     const float dmg = mobStats(m.kind).attackDamage;
@@ -1117,7 +1281,15 @@ bool GameServer::selectTrade(Player& p, std::int32_t index) {
 void GameServer::applyDamageToMob(MobEntity& m, float amount, const char* cause) {
     (void)cause;
     if (amount <= 0) return;
-    m.health -= amount;
+    int armor = totalArmorPoints(m);
+    float reduced = applyArmorReduction(amount, armor);
+    int prot = totalProtectionForMob(m);
+    if (prot > 0) {
+        float protEff = std::min(20.f, static_cast<float>(prot * 4)) / 25.f;
+        protEff = std::min(protEff, 0.8f);
+        reduced *= (1.f - protEff);
+    }
+    m.health -= reduced;
     if (m.health <= 0) m.dead = true;
 }
 
@@ -2380,9 +2552,57 @@ void GameServer::projectilesTick() {
                 if (world_.getBlock(static_cast<std::int32_t>(pr->x),
                                     static_cast<std::int32_t>(pr->y),
                                     static_cast<std::int32_t>(pr->z)) != 0) {
-                    if (pr->kind == ProjectileKind::Arrow) pr->stuck = true;
-                    else { despawn.push_back(pr->entityId);
-                           it = projectiles_.erase(it); continue; }
+                    if (pr->kind == ProjectileKind::Arrow) {
+                        pr->stuck = true;
+                    } else if (pr->kind == ProjectileKind::EnderPearl) {
+                        // pearl teleport: find owner player and teleport
+                        Player* owner = nullptr;
+                        for (auto &pp : playersSnapshot()) if (pp->entityId == pr->ownerId && pr->ownerIsPlayer) { owner = pp.get(); break; }
+                        if (owner) {
+                            double tx = pr->x + 0.5;
+                            double ty = pr->y + 0.5;
+                            double tz = pr->z + 0.5;
+                            // clamp to avoid inside block: raise by 0.5
+                            owner->x = tx; owner->y = ty; owner->z = tz;
+                            // teleport packet
+                            if (owner->conn) {
+                                WriteBuffer tb;
+                                tb.varint(0); // teleport id not tracked for pearl? use 0
+                                tb.f64(tx); tb.f64(ty); tb.f64(tz);
+                                tb.f64(0); tb.f64(0); tb.f64(0);
+                                tb.f32(owner->yaw); tb.f32(owner->pitch);
+                                tb.u32(0);
+                                try { owner->conn->sendPacket(proto::pl::sc::PlayerPosition, tb); } catch(...) {}
+                            }
+                            // broadcast to others
+                            {
+                                WriteBuffer tp;
+                                tp.varint(owner->entityId);
+                                tp.f64(tx); tp.f64(ty); tp.f64(tz);
+                                tp.i8(static_cast<int8_t>(owner->yaw*256.f/360.f));
+                                tp.i8(static_cast<int8_t>(owner->pitch*256.f/360.f));
+                                tp.boolean(false);
+                                broadcastPacketExcept(nullptr, proto::pl::sc::EntityTeleport, tp);
+                            }
+                            applyDamage(*owner, 5.f, "fall");
+                            owner->lastEnderPearlTick = tickNo_;
+                            // cooldown packet
+                            if (owner->conn) {
+                                auto pid = gen::itemIdByName().find("minecraft:ender_pearl");
+                                if (pid != gen::itemIdByName().end()) {
+                                    WriteBuffer cd;
+                                    cd.varint(static_cast<int32_t>(pid->second));
+                                    cd.varint(20*3); // 3 sec
+                                    try { owner->conn->sendPacket(proto::pl::sc::SetCooldown, cd); } catch(...) {}
+                                }
+                            }
+                        }
+                        despawn.push_back(pr->entityId);
+                        it = projectiles_.erase(it); continue;
+                    } else {
+                        despawn.push_back(pr->entityId);
+                        it = projectiles_.erase(it); continue;
+                    }
                 } else {
                     // entity collision
                     bool hitSomething = false;
@@ -2468,18 +2688,27 @@ void GameServer::projectilesTick() {
 }
 
 bool GameServer::spawnMobByTypeName(const std::string& name, double x, double y,
-                                    double z) {    MobKind kind;
-    if (name == "minecraft:pig") kind = MobKind::Pig;
-    else if (name == "minecraft:cow") kind = MobKind::Cow;
-    else if (name == "minecraft:sheep") kind = MobKind::Sheep;
-    else if (name == "minecraft:chicken") kind = MobKind::Chicken;
-    else if (name == "minecraft:zombie") kind = MobKind::Zombie;
-    else if (name == "minecraft:creeper") kind = MobKind::Creeper;
-    else if (name == "minecraft:skeleton") kind = MobKind::Skeleton;
-    else if (name == "minecraft:spider") kind = MobKind::Spider;
-    else return false;
-    spawnMob(kind, x, y, z);
-    return true;
+                                     double z) {
+    for (int i = 0; i < 46; ++i) {
+        auto kind = static_cast<MobKind>(i);
+        const char* n = MobEntity::kindName(kind);
+        if (name == n) { spawnMob(kind, x, y, z); return true; }
+    }
+    if (name.find(':') == std::string::npos) {
+        std::string full = "minecraft:" + name;
+        for (int i = 0; i < 46; ++i) {
+            auto kind = static_cast<MobKind>(i);
+            if (full == MobEntity::kindName(kind)) { spawnMob(kind, x, y, z); return true; }
+        }
+    }
+    auto it = gen::entityTypeIdByName().find(name);
+    if (it != gen::entityTypeIdByName().end()) {
+        for (int i = 0; i < 46; ++i) {
+            auto kind = static_cast<MobKind>(i);
+            if (MobEntity::typeId(kind) == it->second) { spawnMob(kind, x, y, z); return true; }
+        }
+    }
+    return false;
 }
 
 // ------------------------------------------------------------- session io
@@ -3372,6 +3601,13 @@ void Session::onPlayerAction(ReadBuffer& in) {
                     // no tracked dig (or wrong spot): trust client, break now
                     srv_.world().setBlock(x,y,z,0);
                     srv_.broadcastBlockChange(x,y,z,0);
+                    if (self_->heldSlot>=0 && self_->heldSlot<9) {
+                        auto &held = self_->inv[36 + self_->heldSlot];
+                        if (!held.empty() && ItemStack::maxDamageFor(held.itemId)>0) {
+                            if (held.applyDamage(1)) held = ItemStack::air();
+                            srv_.resendInventory(*self_);
+                        }
+                    }
                 } else {
                     const std::int64_t elapsed = srv_.tickNoForTest() - self_->digStartTick;
                     if (elapsed + 4 >= self_->digTotalTicks) {
@@ -3523,8 +3759,13 @@ void Session::onUseItemOn(ReadBuffer& in) {
                 srv_.broadcastBlockChange(tx, ty + 1, tz, upper);
                 if (survival) {
                     auto mh = &self_->inv[36 + self_->heldSlot];
-                    if (--mh->count <= 0) *mh = InvSlot::air();
-                    srv_.resendInventory(*self_);
+                    if (ItemStack::maxDamageFor(mh->itemId) > 0) {
+                        if (mh->applyDamage(1)) *mh = ItemStack::air();
+                        srv_.resendInventory(*self_);
+                    } else {
+                        if (--mh->count <= 0) *mh = InvSlot::air();
+                        srv_.resendInventory(*self_);
+                    }
                 }
                 ack(sequence);
                 return;
@@ -3609,7 +3850,11 @@ void Session::onUseItemOn(ReadBuffer& in) {
     srv_.world().scheduleNeighborUpdates(tx, ty, tz);
     if (survival) {
         auto mutableHeld = &self_->inv[36 + self_->heldSlot];
-        if (--mutableHeld->count <= 0) *mutableHeld = InvSlot::air();
+        if (ItemStack::maxDamageFor(mutableHeld->itemId) > 0) {
+            if (mutableHeld->applyDamage(1)) *mutableHeld = ItemStack::air();
+        } else {
+            if (--mutableHeld->count <= 0) *mutableHeld = ItemStack::air();
+        }
         srv_.resendInventory(*self_);
     }
     ack(sequence);
@@ -3647,18 +3892,68 @@ void Session::onUseEntity(ReadBuffer& in) {
     const std::int32_t mouse = in.varint();
     if (mouse == 2) { (void)in.f32(); (void)in.f32(); (void)in.f32(); }
     if (mouse != 1) {
-        // INTERACT (0) / INTERACT_AT (2): open trading for villagers
+        // INTERACT (0) / INTERACT_AT (2)
         if (mouse == 0 || mouse == 2) {
             (void)in.varint();                        // sneaking flag
-            std::lock_guard lk(srv_.entsMtx_);
-            for (auto& m : srv_.mobsForTest()) {
-                if (m->entityId != target) continue;
-                if (m->kind == MobKind::Villager) {
-                    srv_.openTrading(*self_, *m);
-                    tradingVillager_ = target;
-                    openMenu_ = nullptr;              // merchant menu tracked separately
+            // check shear and riding before trading
+            {
+                std::lock_guard lk(srv_.entsMtx_);
+                for (auto& m : srv_.mobsForTest()) {
+                    if (m->entityId != target) continue;
+                    // shear sheep
+                    if (m->kind == MobKind::Sheep && !m->sheared) {
+                        auto &held = self_->inv[36 + self_->heldSlot];
+                        auto shearsIdIt = gen::itemIdByName().find("minecraft:shears");
+                        if (shearsIdIt != gen::itemIdByName().end() && held.itemId == shearsIdIt->second) {
+                            m->sheared = true;
+                            // drop wool: 1-3
+                            static const char* woolNames[] = {
+                                "minecraft:white_wool","minecraft:orange_wool","minecraft:magenta_wool","minecraft:light_blue_wool",
+                                "minecraft:yellow_wool","minecraft:lime_wool","minecraft:pink_wool","minecraft:gray_wool",
+                                "minecraft:light_gray_wool","minecraft:cyan_wool","minecraft:purple_wool","minecraft:blue_wool",
+                                "minecraft:brown_wool","minecraft:green_wool","minecraft:red_wool","minecraft:black_wool"
+                            };
+                            int col = m->woolColor % 16;
+                            auto wit = gen::itemIdByName().find(woolNames[col]);
+                            if (wit != gen::itemIdByName().end()) {
+                                int cnt = 1 + (rand() % 3);
+                                srv_.spawnItemDrop(m->x, m->y+0.8, m->z, wit->second, (uint8_t)cnt,
+                                    (rand()/(double)RAND_MAX-.5)*0.12, 0.12, (rand()/(double)RAND_MAX-.5)*0.12);
+                            }
+                            // metadata: sheep index 17 sheared flag
+                            {
+                                WriteBuffer md;
+                                md.varint(m->entityId);
+                                md.u8(17); md.u8(0); md.u8(0x10);
+                                md.u8(255);
+                                srv_.broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);
+                            }
+                            // durability on shears
+                            if (held.applyDamage(1)) {
+                                held = ItemStack::air();
+                            }
+                            srv_.resendInventory(*self_);
+                            return;
+                        }
+                    }
+                    // riding: horse/llama/pig
+                    if (m->kind == MobKind::Horse || m->kind == MobKind::Llama || m->kind == MobKind::Pig) {
+                        if (self_->vehicleId == -1 && m->riderEntityId == -1) {
+                            self_->vehicleId = m->entityId;
+                            m->riderEntityId = self_->entityId;
+                            srv_.broadcastSetPassengers(m->entityId);
+                            return;
+                        }
+                    }
+                    // breeding
+                    if (srv_.tryBreedFeed(*self_, *m)) return;
+                    if (m->kind == MobKind::Villager) {
+                        srv_.openTrading(*self_, *m);
+                        tradingVillager_ = target;
+                        openMenu_ = nullptr;
+                    }
+                    break;
                 }
-                break;
             }
         } else {
             (void)in.varint();
@@ -3669,8 +3964,14 @@ void Session::onUseEntity(ReadBuffer& in) {
     float dmg = 1.f;
     if (self_->heldSlot >= 0 && self_->heldSlot < 9) {
         const auto& sl = self_->inv[36 + self_->heldSlot];
-        if (sl.count > 0 && sl.itemId == gen::itemIdByName().at("minecraft:iron_sword"))
-            dmg = 6.f;
+        if (sl.count > 0) {
+            // generic weapon damage
+            std::string iname = sl.name();
+            if (iname.find("sword") != std::string::npos) dmg = 6.f;
+            else if (iname.find("axe") != std::string::npos) dmg = 7.f;
+            else if (iname.find("_sword") != std::string::npos) dmg = 5.f;
+            if (sl.itemId == gen::itemIdByName().at("minecraft:iron_sword")) dmg = 6.f;
+        }
     }
 
     bool killed = false;
@@ -3679,15 +3980,24 @@ void Session::onUseEntity(ReadBuffer& in) {
         std::lock_guard lk(srv_.entsMtx_);
         for (auto& m : srv_.mobsForTest()) {
             if (m->entityId != target || m->dead) continue;
-            m->health -= dmg;
+            srv_.applyDamageToMob(*m, dmg, "player");
             // AI hurt memory → panic/anger
             auto it = srv_.mobAi_.find(m->entityId);
             if (it != srv_.mobAi_.end()) {
                 it->second.ctx->lastHurtTick = srv_.tickNoForTest();
                 it->second.ctx->lastHurtByEntityId = self_->entityId;
             }
-            if (m->health <= 0) { m->dead = true; killed = true; victim = m; }
+            if (m->dead) { killed = true; victim = m; }
             break;
+        }
+    }
+    // durability on held item (attack)
+    if (self_->heldSlot >=0 && self_->heldSlot < 9) {
+        auto &held = self_->inv[36 + self_->heldSlot];
+        if (!held.empty() && ItemStack::maxDamageFor(held.itemId) > 0) {
+            bool broken = held.applyDamage(1);
+            if (broken) held = ItemStack::air();
+            srv_.resendInventory(*self_);
         }
     }
     if (killed && victim) {
@@ -3705,12 +4015,37 @@ void Session::onUseEntity(ReadBuffer& in) {
                                (rand()/(double)RAND_MAX-.5)*.15);
         srv_.spawnXpOrbs(victim->x, victim->y + 0.5, victim->z,
                          mobStats(victim->kind).xpDrop, self_.get());
+        // slime split on player kill
+        if ((victim->kind == MobKind::Slime || victim->kind == MobKind::MagmaCube) && victim->slimeSize > 0) {
+            std::lock_guard lk(srv_.entsMtx_);
+            int n = 2 + (rand() % 3);
+            for (int s=0; s<n; ++s) {
+                auto baby = std::make_shared<MobEntity>();
+                baby->entityId = srv_.nextEntityId();
+                baby->kind = victim->kind;
+                baby->slimeSize = victim->slimeSize - 1;
+                const auto& bs = mobStats(baby->kind);
+                baby->health = bs.maxHealth * 0.5f;
+                if (baby->health < 1.f) baby->health = 1.f;
+                baby->x = victim->x + (rand()/(double)RAND_MAX - 0.5) * 0.5;
+                baby->y = victim->y;
+                baby->z = victim->z + (rand()/(double)RAND_MAX - 0.5) * 0.5;
+                baby->lastSeenMs = 0;
+                srv_.mobsForTest().push_back(baby);
+                srv_.broadcastMobSpawn(*baby);
+            }
+        }
         std::lock_guard lk(srv_.entsMtx_);
         srv_.mobAi_.erase(target);
         srv_.mobsForTest().erase(
             std::remove_if(srv_.mobsForTest().begin(), srv_.mobsForTest().end(),
                 [&](const std::shared_ptr<MobEntity>& x){ return x.get()==victim.get(); }),
             srv_.mobsForTest().end());
+        // dismount if victim was vehicle
+        if (self_->vehicleId == target) {
+            self_->vehicleId = -1;
+            srv_.broadcastSetPassengersEmpty(target);
+        }
     }
 }
 
