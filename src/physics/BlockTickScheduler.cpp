@@ -30,7 +30,7 @@ void BlockTickScheduler::tick(std::int64_t now) {
                 for (auto k : keys) {
                     const std::int32_t cx = static_cast<std::int32_t>(k >> 32);
                     const std::int32_t cz = static_cast<std::int32_t>(k & 0xFFFFFFFFLL);
-                    if (srv_ && !srv_->isChunkInSimulationDistance(cx, cz)) continue;
+                    if (!world_.isChunkInSimulationDistance(cx, cz)) continue;
                     simKeys.push_back(k);
                 }
                 if (!simKeys.empty()) {
@@ -58,7 +58,7 @@ void BlockTickScheduler::tick(std::int64_t now) {
     while (!queue_.empty() && queue_.top().dueTick <= now) {
         ScheduledTick t = queue_.top(); queue_.pop();
         pendingPos_.erase(posKey3(t.x,t.y,t.z));
-        if (srv_ && !srv_->isChunkInSimulationDistance(t.x >> 4, t.z >> 4)) continue;
+        if (!world_.isPositionInSimulationDistance(t.x, t.z)) continue;
         const std::uint16_t st = world_.getBlock(t.x,t.y,t.z);
         if (st == 0) continue;
         const gen::BlockDef* d = gen::blockByState(st);
