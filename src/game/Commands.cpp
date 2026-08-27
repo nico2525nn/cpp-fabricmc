@@ -869,6 +869,347 @@ void GameServer::initCommands() {
         diff->then(lvl);
         d.root->then(diff);
     }
+    // /team add|remove|join|leave|list|empty (plan10 §6 #79)
+    {
+        auto team = CommandNode::literal("team");
+        // team add <team>
+        auto add = CommandNode::literal("add");
+        auto teamName = CommandNode::argument("team", args::stringWord());
+        auto displayOpt = CommandNode::argument("displayName", args::stringGreedy());
+        teamName->executable = true;
+        teamName->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            std::string name = c.arg("team").asStr();
+            if (!scoreboard.addTeam(name)) throw std::runtime_error("team already exists");
+            auto* t = scoreboard.findTeam(name);
+            if (t) sendTeamCreate(*t);
+            sendFeedback(src, "Created team " + name);
+            return 1;
+        };
+        displayOpt->executable = true;
+        displayOpt->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            std::string name = c.arg("team").asStr();
+            std::string disp = c.arg("displayName").asStr();
+            if (!scoreboard.addTeam(name)) throw std::runtime_error("team already exists");
+            auto* t = scoreboard.findTeam(name);
+            if (t) {
+                t->displayName = disp.empty() ? name : disp;
+                sendTeamCreate(*t);
+            }
+            sendFeedback(src, "Created team " + name);
+            return 1;
+        };
+        teamName->then(displayOpt);
+        add->then(teamName);
+        team->then(add);
+        // team remove <team>
+        auto rem = CommandNode::literal("remove");
+        auto remName = CommandNode::argument("team", args::stringWord());
+        remName->executable = true;
+        remName->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            std::string name = c.arg("team").asStr();
+            auto* t = scoreboard.findTeam(name);
+            if (!t) throw std::runtime_error("unknown team");
+            Scoreboard::Team copy = *t;
+            if (!scoreboard.removeTeam(name)) throw std::runtime_error("no such team");
+            WriteBuffer b; scoreboard.writeTeamPacket(b, copy, 1);
+            broadcastPacketExcept(nullptr, proto::pl::sc::Teams, b);
+            sendFeedback(src, "Removed team " + name);
+            return 1;
+        };
+        rem->then(remName);
+        team->then(rem);
+        // team join <team> [<member>]
+        auto join = CommandNode::literal("join");
+        auto joinTeam = CommandNode::argument("team", args::stringWord());
+        auto joinMember = CommandNode::argument("member", args::stringWord());
+        joinMember->executable = true;
+        joinMember->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            std::string tname = c.arg("team").asStr();
+            std::string member = c.arg("member").asStr();
+            if (!scoreboard.joinTeam(tname, member)) throw std::runtime_error("no such team");
+            auto* t = scoreboard.findTeam(tname);
+            if (t) sendTeamAddPlayers(*t, {member});
+            sendFeedback(src, "Joined " + member + " to " + tname);
+            return 1;
+        };
+        joinTeam->executable = true;
+        joinTeam->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            std::string tname = c.arg("team").asStr();
+            std::string member = src ? src->name : "";
+            if (member.empty()) throw std::runtime_error("no player");
+            if (!scoreboard.joinTeam(tname, member)) throw std::runtime_error("no such team");
+            auto* t = scoreboard.findTeam(tname);
+            if (t) sendTeamAddPlayers(*t, {member});
+            sendFeedback(src, "Joined " + member + " to " + tname);
+            return 1;
+        };
+        joinTeam->then(joinMember);
+        join->then(joinTeam);
+        team->then(join);
+        // team leave <member>
+        auto leave = CommandNode::literal("leave");
+        auto leaveMember = CommandNode::argument("member", args::stringWord());
+        leaveMember->executable = true;
+        leaveMember->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            std::string member = c.arg("member").asStr();
+            // find which team contains member
+            std::string foundTeam;
+            for (auto& kv : scoreboard.teams) if (kv.second.members.count(member)) { foundTeam = kv.first; break; }
+            if (foundTeam.empty()) throw std::runtime_error(member + " is not in a team");
+            Scoreboard::Team* t = scoreboard.findTeam(foundTeam);
+            if (t) {
+                t->members.erase(member);
+                sendTeamRemovePlayers(*t, {member});
+            }
+            sendFeedback(src, "Removed " + member + " from " + foundTeam);
+            return 1;
+        };
+        leave->then(leaveMember);
+        team->then(leave);
+        // team list [<team>]
+        auto list = CommandNode::literal("list");
+        list->executable = true;
+        list->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            if (scoreboard.teams.empty()) sendFeedback(src, "No teams");
+            else {
+                std::string out;
+                for (auto& kv : scoreboard.teams) out += kv.first + " (" + std::to_string(kv.second.members.size()) + ") ";
+                sendFeedback(src, out);
+            }
+            return (int)scoreboard.teams.size();
+        };
+        auto listTeam = CommandNode::argument("team", args::stringWord());
+        listTeam->executable = true;
+        listTeam->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            std::string name = c.arg("team").asStr();
+            auto* t = scoreboard.findTeam(name);
+            if (!t) throw std::runtime_error("unknown team");
+            std::string out = t->name + ": ";
+            for (auto& m : t->members) out += m + " ";
+            if (t->members.empty()) out += "(empty)";
+            sendFeedback(src, out);
+            return (int)t->members.size();
+        };
+        list->then(listTeam);
+        team->then(list);
+        // team empty <team>
+        auto empty = CommandNode::literal("empty");
+        auto emptyName = CommandNode::argument("team", args::stringWord());
+        emptyName->executable = true;
+        emptyName->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            std::string name = c.arg("team").asStr();
+            auto* t = scoreboard.findTeam(name);
+            if (!t) throw std::runtime_error("unknown team");
+            std::vector<std::string> toRemove(t->members.begin(), t->members.end());
+            for (auto& m : toRemove) t->members.erase(m);
+            if (!toRemove.empty()) sendTeamRemovePlayers(*t, toRemove);
+            sendFeedback(src, "Emptied team " + name);
+            return (int)toRemove.size();
+        };
+        empty->then(emptyName);
+        team->then(empty);
+        d.root->then(team);
+    }
+    // /tag <targets> add|remove|list <tag> (plan10 §6 #70)
+    {
+        auto tag = CommandNode::literal("tag");
+        auto targets = CommandNode::argument("targets", args::entity(false, false));
+        auto add = CommandNode::literal("add");
+        auto addTag = CommandNode::argument("tag", args::stringWord());
+        addTag->executable = true;
+        addTag->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            auto sel = c.arg("targets").asSelector();
+            std::string tagName = c.arg("tag").asStr();
+            int cnt=0;
+            for (auto& n : sel.playerNames) {
+                if (Player* p = findPlayer(*this, n)) { p->tags.insert(tagName); cnt++; }
+            }
+            // also mobs
+            std::lock_guard<std::mutex> lk(entsMtx_);
+            for (auto id : sel.entityIds) for (auto& m : mobs_) if (m->entityId==id) { m->tags.insert(tagName); cnt++; }
+            sendFeedback(src, "Added tag " + tagName + " to " + std::to_string(cnt));
+            return cnt;
+        };
+        add->then(addTag);
+        auto remove = CommandNode::literal("remove");
+        auto remTag = CommandNode::argument("tag", args::stringWord());
+        remTag->executable = true;
+        remTag->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            auto sel = c.arg("targets").asSelector();
+            std::string tagName = c.arg("tag").asStr();
+            int cnt=0;
+            for (auto& n : sel.playerNames) if (Player* p = findPlayer(*this, n)) cnt += p->tags.erase(tagName);
+            std::lock_guard<std::mutex> lk(entsMtx_);
+            for (auto id : sel.entityIds) for (auto& m : mobs_) if (m->entityId==id) cnt += m->tags.erase(tagName);
+            sendFeedback(src, "Removed tag " + tagName + " from " + std::to_string(cnt));
+            return cnt;
+        };
+        remove->then(remTag);
+        auto list = CommandNode::literal("list");
+        list->executable = true;
+        list->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            auto sel = c.arg("targets").asSelector();
+            std::string out;
+            for (auto& n : sel.playerNames) if (Player* p = findPlayer(*this, n)) for (auto& t : p->tags) out += t + " ";
+            std::lock_guard<std::mutex> lk(entsMtx_);
+            for (auto id : sel.entityIds) for (auto& m : mobs_) if (m->entityId==id) for (auto& t : m->tags) out += t + " ";
+            if (out.empty()) out = "(no tags)";
+            sendFeedback(src, out);
+            return 1;
+        };
+        targets->then(add); targets->then(remove); targets->then(list);
+        tag->then(targets);
+        d.root->then(tag);
+    }
+    // /bossbar add|remove|list|get|set (plan10 §6 #35 #79)
+    {
+        auto bossbar = CommandNode::literal("bossbar");
+        // bossbar add <id> <title>
+        auto add = CommandNode::literal("add");
+        auto idArg = CommandNode::argument("id", args::stringWord());
+        auto titleArg = CommandNode::argument("title", args::stringGreedy());
+        titleArg->executable = true;
+        titleArg->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            std::string id = c.arg("id").asStr();
+            std::string title = c.arg("title").asStr();
+            // Use BossBarManager via bossAI? For command-created bars, use BossBarManager directly as generic team-like
+            // We'll create a bossbar entry with uuid derived from id hash
+            BossBar bar;
+            // deterministic uuid from id string
+            std::hash<std::string> h;
+            size_t hv = h(id);
+            for (int i=0;i<16;i++) bar.uuid[i] = (hv >> ((i%8)*8)) & 0xFF;
+            bar.uuid[6] = (bar.uuid[6] & 0x0F) | 0x40;
+            bar.uuid[8] = (bar.uuid[8] & 0x3F) | 0x80;
+            bar.entityId = -1;
+            bar.title = title.empty() ? id : title;
+            bar.health = 1.0f;
+            bar.color = 5; // purple
+            bar.division = 0;
+            bar.flags = 0;
+            // store via BossBarManager as if entityId is hash
+            int32_t key = static_cast<int32_t>(hv & 0x7fffffff);
+            bar.entityId = key;
+            if (bossAI()) {
+                // inject directly into bars map
+                bossAI()->bars().addCommandBar(key, bar);
+            } else {
+                BossBarManager tmp;
+                (void)tmp;
+            }
+            // broadcast ADD
+            WriteBuffer b;
+            b.uuid(bar.uuid.data());
+            b.varint(0);
+            nbt::writeTextComponent(b, bar.title);
+            b.f32(bar.health);
+            b.varint(bar.color);
+            b.varint(bar.division);
+            b.u8(bar.flags);
+            broadcastPacketExcept(nullptr, proto::pl::sc::BossBar, b);
+            sendFeedback(src, "Created bossbar " + id);
+            return 1;
+        };
+        idArg->then(titleArg);
+        add->then(idArg);
+        bossbar->then(add);
+        // bossbar remove <id>
+        auto rem = CommandNode::literal("remove");
+        auto remId = CommandNode::argument("id", args::stringWord());
+        remId->executable = true;
+        remId->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            std::string id = c.arg("id").asStr();
+            std::hash<std::string> h;
+            size_t hv = h(id);
+            int32_t key = static_cast<int32_t>(hv & 0x7fffffff);
+            if (bossAI()) bossAI()->bars().removeCommandBar(key);
+            // broadcast REMOVE (need uuid)
+            std::array<uint8_t,16> u{};
+            for (int i=0;i<16;i++) u[i] = (hv >> ((i%8)*8)) & 0xFF;
+            u[6] = (u[6] & 0x0F) | 0x40;
+            u[8] = (u[8] & 0x3F) | 0x80;
+            WriteBuffer b;
+            b.uuid(u.data());
+            b.varint(1);
+            broadcastPacketExcept(nullptr, proto::pl::sc::BossBar, b);
+            sendFeedback(src, "Removed bossbar " + id);
+            return 1;
+        };
+        rem->then(remId);
+        bossbar->then(rem);
+        // bossbar list
+        auto list = CommandNode::literal("list");
+        list->executable = true;
+        list->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            if (!bossAI() || bossAI()->bars().size()==0) sendFeedback(src, "No bossbars");
+            else sendFeedback(src, "Bossbars: " + std::to_string(bossAI()->bars().size()));
+            return bossAI() ? (int)bossAI()->bars().size() : 0;
+        };
+        bossbar->then(list);
+        // bossbar get <id> value|max
+        auto get = CommandNode::literal("get");
+        auto getId = CommandNode::argument("id", args::stringWord());
+        auto getProp = CommandNode::argument("prop", args::stringWord());
+        getProp->executable = true;
+        getProp->suggestions = [](brigadier::StringReader&, brigadier::ParseCtx&){ return std::vector<std::string>{"value","max","visible","players"}; };
+        getProp->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            std::string id = c.arg("id").asStr();
+            std::string prop = c.arg("prop").asStr();
+            sendFeedback(src, "Bossbar " + id + " " + prop + " queried");
+            return 1;
+        };
+        getId->then(getProp);
+        get->then(getId);
+        bossbar->then(get);
+        // bossbar set <id> value <value>
+        auto set = CommandNode::literal("set");
+        auto setId = CommandNode::argument("id", args::stringWord());
+        auto setProp = CommandNode::literal("value");
+        auto setVal = CommandNode::argument("value", args::integer(0,100));
+        setVal->executable = true;
+        setVal->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            std::string id = c.arg("id").asStr();
+            int v = c.arg("value").asInt();
+            std::hash<std::string> h;
+            size_t hv = h(id);
+            int32_t key = static_cast<int32_t>(hv & 0x7fffffff);
+            std::array<uint8_t,16> u{};
+            for (int i=0;i<16;i++) u[i] = (hv >> ((i%8)*8)) & 0xFF;
+            u[6] = (u[6] & 0x0F) | 0x40;
+            u[8] = (u[8] & 0x3F) | 0x80;
+            float health = v / 100.0f;
+            WriteBuffer b;
+            b.uuid(u.data());
+            b.varint(2);
+            b.f32(health);
+            broadcastPacketExcept(nullptr, proto::pl::sc::BossBar, b);
+            if (bossAI()) bossAI()->bars().updateHealthForCommandBar(key, health);
+            sendFeedback(src, "Set bossbar " + id + " value to " + std::to_string(v));
+            return 1;
+        };
+        setProp->then(setVal);
+        setId->then(setProp);
+        set->then(setId);
+        bossbar->then(set);
+        d.root->then(bossbar);
+    }
 }
 
 } // namespace cppfm

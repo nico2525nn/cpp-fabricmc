@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include <array>
+#include <unordered_set>
 #include "../generated/EntityIds.hpp"
 #include "../generated/ItemIds.hpp"
 #include "Items.hpp"
@@ -165,6 +166,7 @@ struct MobEntity {
     std::int32_t leashHolder = -1;
     std::int64_t lastTeleportTick = -10000;
     bool isBabyVal = false;
+    std::unordered_set<std::string> tags;        // /tag (plan10 §6)
     // plan6 extensions
     std::int32_t villagerXp = 0;
     std::int32_t villagerLevel = 1;
