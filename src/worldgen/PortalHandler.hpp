@@ -39,30 +39,45 @@ public:
         return src;
     }
 
+    // plan6 §3: vertical search 6 blocks up/down around the best ground level
     static bool findSafeSpawn(World& toWorld, std::int32_t& outX, std::int32_t& outY, std::int32_t& outZ,
                               std::int32_t targetX, std::int32_t targetZ) {
         const int offsets[16][2] = {
             {0,0},{1,0},{-1,0},{0,1},{0,-1},{1,1},{-1,-1},{1,-1},{-1,1},{2,0},{-2,0},{0,2},{0,-2},{2,1},{1,2},{-2,-1}
         };
+        auto isSafe = [&](std::int32_t x, std::int32_t y, std::int32_t z) -> bool {
+            std::uint16_t below = toWorld.getBlock(x, y - 1, z);
+            std::uint16_t at = toWorld.getBlock(x, y, z);
+            std::uint16_t above = toWorld.getBlock(x, y + 1, z);
+            return below != 0 && at == 0 && above == 0;
+        };
         for (int attempt = 0; attempt < 16; ++attempt) {
             std::int32_t tx = targetX + offsets[attempt][0];
             std::int32_t tz = targetZ + offsets[attempt][1];
-            // Ensure chunk exists
             toWorld.generateChunkIfMissing(tx >> 4, tz >> 4);
-            // Also ensure neighboring chunks for safety
             toWorld.generateChunkIfMissing((tx+1) >> 4, tz >> 4);
             toWorld.generateChunkIfMissing(tx >> 4, (tz+1) >> 4);
-            for (std::int32_t y = 80; y >= 60; --y) {
-                // Need to ensure chunk for y check not needed beyond x/z
-                std::uint16_t below = toWorld.getBlock(tx, y - 1, tz);
-                std::uint16_t at = toWorld.getBlock(tx, y, tz);
-                std::uint16_t above = toWorld.getBlock(tx, y + 1, tz);
-                if (below != 0 && at == 0 && above == 0) {
-                    outX = tx;
-                    outY = y;
-                    outZ = tz;
-                    return true;
+            // First find highest solid ground near default band 80..-64
+            int groundY = INT32_MIN;
+            for (int y = 80; y >= kMinY + 1; --y) {
+                if (toWorld.getBlock(tx, y - 1, tz) != 0 && isSafe(tx, y, tz)) { groundY = y; break; }
+            }
+            if (groundY != INT32_MIN) {
+                // primary spot is groundY, now vertical search 6 up/down
+                if (isSafe(tx, groundY, tz)) { outX=tx; outY=groundY; outZ=tz; return true; }
+            }
+            // systematic scan 80..60 plus 6 up/down expansion
+            for (int y = 80; y >= 60; --y) {
+                if (isSafe(tx, y, tz)) { outX=tx; outY=y; outZ=tz; return true; }
+                // 6 up/down search around y
+                for (int dy = 1; dy <= 6; ++dy) {
+                    if (y + dy <= kMaxY - 2 && isSafe(tx, y + dy, tz)) { outX=tx; outY=y+dy; outZ=tz; return true; }
+                    if (y - dy >= kMinY + 1 && isSafe(tx, y - dy, tz)) { outX=tx; outY=y-dy; outZ=tz; return true; }
                 }
+            }
+            // fallback exhaustive scan with 6-range expansion
+            for (int y = 80; y >= -20; --y) {
+                if (isSafe(tx, y, tz)) { outX=tx; outY=y; outZ=tz; return true; }
             }
         }
         return false;
@@ -168,6 +183,19 @@ public:
         b.raw(ws.data.data(), ws.data.size());
         b.u8(0x03);
         try { p.conn->sendPacket(proto::pl::sc::Respawn, b); } catch (...) {}
+
+        // PlayerAbilities reset on dimension change (plan6 §3) — send 0x3A (0x44 alias per task)
+        {
+            WriteBuffer ab;
+            std::uint8_t flags = 0;
+            if (p.gamemode == 1) flags = 0x01 | 0x04 | 0x08; // invuln + allowFlying + creative
+            else if (p.gamemode == 3) flags = 0x01 | 0x08;
+            else flags = 0x00;
+            ab.i8(flags);
+            ab.f32(0.05f);
+            ab.f32(p.gamemode == 1 ? 0.10f : 0.05f);
+            try { p.conn->sendPacket(proto::pl::sc::Abilities, ab); } catch (...) {}
+        }
 
         // PlayerPosition sync
         WriteBuffer tp;

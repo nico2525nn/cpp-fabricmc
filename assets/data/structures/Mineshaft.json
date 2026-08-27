@@ -1,0 +1,19 @@
+{
+  "type": "minecraft:mineshaft",
+  "name": "minecraft:mineshaft",
+  "config": {
+    "type": "normal",
+    "probability": 0.004
+  },
+  "placement": {
+    "type": "minecraft:random_spread",
+    "spacing": 32,
+    "separation": 8,
+    "salt": 123456,
+    "frequency": 0.8
+  },
+  "pieces": [
+    {"name": "minecraft:mineshaft/corridor", "weight": 12},
+    {"name": "minecraft:mineshaft/crossing", "weight": 6}
+  ]
+}

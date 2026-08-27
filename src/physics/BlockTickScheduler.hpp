@@ -94,4 +94,10 @@ public:
               std::uint16_t state, std::int64_t now, GameServer* srv) override;
 };
 
+class PortalAgeBehavior : public IBlockBehavior {
+public:
+    void tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
+              std::uint16_t state, std::int64_t now, GameServer* srv) override;
+};
+
 } // namespace cppfm

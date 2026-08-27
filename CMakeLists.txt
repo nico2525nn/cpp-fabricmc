@@ -25,6 +25,7 @@ add_executable(cppfm
     src/worldgen/DensityFunction.cpp
     src/worldgen/MultiNoise.cpp
     src/worldgen/Structures.cpp
+    src/worldgen/StructurePlacer.cpp
     src/game/AiBrain.cpp
     src/game/Stats.cpp
     src/net/PacketBatcher.cpp
@@ -38,7 +39,7 @@ target_link_libraries(cppfm PRIVATE Threads::Threads ZLIB::ZLIB OpenSSL::SSL Ope
 add_executable(test_golden tests/test_golden.cpp src/core/NBT.cpp
     src/game/WorldGen.cpp
     src/worldgen/DensityFunction.cpp src/worldgen/MultiNoise.cpp
-    src/worldgen/Structures.cpp)
+    src/worldgen/Structures.cpp src/worldgen/StructurePlacer.cpp)
 target_include_directories(test_golden PRIVATE src src/generated)
 find_package(ZLIB REQUIRED)
 find_package(OpenSSL REQUIRED)
@@ -64,6 +65,7 @@ add_executable(test_native
     src/worldgen/DensityFunction.cpp
     src/worldgen/MultiNoise.cpp
     src/worldgen/Structures.cpp
+    src/worldgen/StructurePlacer.cpp
     src/net/PacketBatcher.cpp)
 target_include_directories(test_native PRIVATE src src/generated tests)
 find_package(Threads REQUIRED)

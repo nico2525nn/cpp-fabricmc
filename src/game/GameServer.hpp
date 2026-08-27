@@ -4,6 +4,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <cmath>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -70,6 +71,7 @@ struct ServerConfig {
     std::uint64_t seed = 1378645410614731511ULL;
     std::int64_t startTime = 1000;
     int compressionThreshold = 256;   // -1 disables Set Compression entirely
+    int spawnProtection = 16;         // spawn-protection radius (0 disables)
 };
 
 // Player inventory slot = full ItemStack (components preserved end-to-end).
@@ -323,6 +325,7 @@ public:
         blockTicks_->registerBehavior("minecraft:cactus", std::make_unique<StemBehavior>(4));
         blockTicks_->registerBehavior("minecraft:farmland", std::make_unique<FarmlandBehavior>());
         blockTicks_->registerBehavior("minecraft:fire", std::make_unique<FireBehavior>());
+        blockTicks_->registerBehavior("minecraft:nether_portal", std::make_unique<PortalAgeBehavior>());
         redstone_->setBlockEntityStore(&blockEntities_);
         redstone_->setTickRef(&tickNo_);
         world_.setOnBlockChanged([this](std::int32_t x, std::int32_t y,
@@ -337,7 +340,12 @@ public:
                 fluidSim_->touch(x + DX[d], y + DY[d], z + DZ[d]);
             redstone_->onBlockChanged(x, y, z);
         });
+        // plan6 §9: seed persistence with current border/difficulty
+        spawnProtection_ = cfg_.spawnProtection;
         persist_ = std::make_unique<Persistence>(world_, cfg_.worldDir, cfg_.worldBiome);
+        persist_->setDifficulty(difficulty_);
+        persist_->setWorldBorder(worldBorderDiameter_, worldBorderCenterX_, worldBorderCenterZ_);
+        loadOps();
         {   // biome codec maps + chunk extras (block entities)
             std::unordered_map<std::uint16_t, std::string> idxToKey;
             const auto& order = gameData_.order("minecraft:worldgen/biome");
@@ -371,6 +379,7 @@ public:
                 data.set("thunderTime", nv::Value::makeInt(6000));
                 data.set("DayTime", nv::Value::makeLong(dayTime()));
                 data.set("Time", nv::Value::makeLong(tickNo_));
+                data.set("Difficulty", nv::Value::makeString(difficulty_));
             },
             [this](const nbt::Value& data) {
                 if (const auto* t = data.get("Time"))
@@ -384,8 +393,31 @@ public:
                 if (const auto* gr = data.get("GameRules"))
                     for (auto& [k, v] : gr->comp)
                         gamerules_.set(k, v.str, false);
+                if (const auto* diff = data.get("Difficulty")) {
+                    if (diff->tag==nbt::String) difficulty_ = diff->str;
+                    else if (diff->tag==nbt::Byte) {
+                        int v = diff->b;
+                        if (v==0) difficulty_="peaceful"; else if (v==1) difficulty_="easy";
+                        else if (v==2) difficulty_="normal"; else if (v==3) difficulty_="hard";
+                    }
+                }
+                if (const auto* wb = data.get("WorldBorder")) {
+                    if (auto* cx = wb->get("CenterX")) worldBorderCenterX_ = cx->d;
+                    if (auto* cz = wb->get("CenterZ")) worldBorderCenterZ_ = cz->d;
+                    if (auto* sz = wb->get("Size")) {
+                        if (sz->tag==nbt::Double) worldBorderDiameter_ = sz->d;
+                        else if (sz->tag==nbt::Float) worldBorderDiameter_ = sz->f;
+                        else if (sz->tag==nbt::Int) worldBorderDiameter_ = sz->i;
+                        else if (sz->tag==nbt::Long) worldBorderDiameter_ = (double)sz->l;
+                    }
+                }
             });
         persist_->loadLevelData();
+        // sync persistence's worldborder/difficulty (file may have overridden)
+        difficulty_ = persist_->difficulty();
+        worldBorderDiameter_ = persist_->worldBorderDiameter();
+        worldBorderCenterX_ = persist_->worldBorderCenterX();
+        worldBorderCenterZ_ = persist_->worldBorderCenterZ();
         // plan5 §1: spawn-chunk loader — generate a 5x5 area around spawn.
         {
             const auto sp = world_.spawnPoint();
@@ -700,7 +732,29 @@ private:
     GameRuleManager gamerules_;
     std::string difficulty_ = "normal";
     double worldBorderDiameter_ = 29999984;   // vanilla default
+    double worldBorderCenterX_ = 0, worldBorderCenterZ_ = 0;
+    int spawnProtection_ = 16;               // server.properties spawn-protection (default 16)
+    std::unordered_set<std::string> ops_;    // ops.json / op list
     std::int32_t teleportCounterForTest_ = 1;
+
+public:
+    // WorldBorder helpers (plan6 §10)
+    bool isInsideBorder(double x, double z) const {
+        double half = worldBorderDiameter_ * 0.5;
+        return std::abs(x - worldBorderCenterX_) <= half && std::abs(z - worldBorderCenterZ_) <= half;
+    }
+    bool isSpawnProtected(std::int32_t x, std::int32_t z) const {
+        if (spawnProtection_ <= 0) return false;
+        auto sp = world_.spawnPoint();
+        int dx = std::abs(x - sp.x);
+        int dz = std::abs(z - sp.z);
+        return std::max(dx, dz) <= spawnProtection_;
+    }
+    bool isOp(const std::string& name) const { return ops_.count(name) > 0; }
+    void loadOps();
+    void sendWorldBorderTo(Player& p) const;
+    void broadcastWorldBorder();
+private:
     std::unique_ptr<LightEngine> lightEngine_;
     std::unique_ptr<FluidSim> fluidSim_;
     std::unique_ptr<RedstoneEngine> redstone_;

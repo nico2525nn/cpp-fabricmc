@@ -30,6 +30,8 @@ struct Value {
     static Value makeShort(std::int16_t v) { Value x; x.tag = Short; x.s = v; return x; }
     static Value makeInt(std::int32_t v) { Value x; x.tag = Int; x.i = v; return x; }
     static Value makeLong(std::int64_t v) { Value x; x.tag = Long; x.l = v; return x; }
+    static Value makeFloat(float v) { Value x; x.tag = Float; x.f = v; return x; }
+    static Value makeDouble(double v) { Value x; x.tag = Double; x.d = v; return x; }
     static Value makeString(std::string v) { Value x; x.tag = String; x.str = std::move(v); return x; }
     static Value makeCompound() { Value x; x.tag = Compound; return x; }
     static Value makeList(Tag elem, std::size_t reserve = 0) {
