@@ -2,6 +2,7 @@
 #include "../physics/LightEngine.hpp"
 #include "../physics/Fluids.hpp"
 #include "../physics/Redstone.hpp"
+#include "../worldgen/PortalHandler.hpp"
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -1904,19 +1905,52 @@ void Session::onEnterPlay() {
     sendSystemText("\u00a77Welcome to \u00a7bCppFabricMC\u00a77! Build with the hotbar, chat freely.");
 }
 
-static WriteBuffer makeWorldState(const ServerConfig& c) {
+static WriteBuffer makeWorldStateForDim(const ServerConfig& c, GameServer& srv, std::int8_t dim) {
+    std::string dimName;
+    std::string dimTypeKey;
+    if (dim == -1) { dimName = "minecraft:the_nether"; dimTypeKey = "minecraft:the_nether"; }
+    else if (dim == 1) { dimName = "minecraft:the_end"; dimTypeKey = "minecraft:the_end"; }
+    else { dimName = "minecraft:overworld"; dimTypeKey = "minecraft:overworld"; }
+    std::int32_t idx = srv.gameData_.idOf("minecraft:dimension_type", dimTypeKey);
+    if (idx < 0) {
+        if (dim == -1) idx = 3;
+        else if (dim == 1) idx = 2;
+        else idx = 0;
+    }
     WriteBuffer w;
-    w.varint(0);                                   // dimension type index
+    w.varint(idx);
+    w.string(dimName);
+    w.i64(c.hashedSeed);
+    // use player's gamemode if available? fallback to survival 0
+    w.i8(0);
+    w.u8(255);
+    w.boolean(false);
+    w.boolean(c.levelType == "flat");
+    w.boolean(false);
+    w.varint(0);
+    // sea level per dimension world
+    std::int32_t sea = kSeaLevelFlat;
+    try { sea = srv.worldFor(dim).seaLevel(); } catch (...) {}
+    w.varint(sea);
+    return w;
+}
+static WriteBuffer makeWorldState(const ServerConfig& c) {
+    // legacy wrapper for flat overworld (used in tests)
+    WriteBuffer w;
+    w.varint(0);
     w.string("minecraft:overworld");
     w.i64(c.hashedSeed);
-    w.i8(0);                                       // gamemode survival
-    w.u8(255);                                     // previous gamemode: none
-    w.boolean(false);                              // is debug
-    w.boolean(true);                               // is flat
-    w.boolean(false);                              // has death location
-    w.varint(0);                                   // portal cooldown
+    w.i8(0);
+    w.u8(255);
+    w.boolean(false);
+    w.boolean(true);
+    w.boolean(false);
+    w.varint(0);
     w.varint(kSeaLevelFlat);
     return w;
+}
+static WriteBuffer makeWorldState(const ServerConfig& c, GameServer& srv, std::int8_t dim) {
+    return makeWorldStateForDim(c, srv, dim);
 }
 
 // Minimal command tree: root -> /help, /ping  (literals only)
@@ -1944,7 +1978,7 @@ void Session::handleRespawnRequest() {
     self_->dead = false;
     self_->health = 20; self_->food = 20; self_->saturation = 5;
     self_->fallDist = 0;
-    WriteBuffer ws = makeWorldState(srv_.config());
+    WriteBuffer ws = makeWorldState(srv_.config(), srv_, self_->dimension);
     WriteBuffer b;
     b.raw(ws.data.data(), ws.data.size());
     b.u8(0x03);                                    // keep metadata + attributes
@@ -1954,7 +1988,12 @@ void Session::handleRespawnRequest() {
         hp.f32(20.f); hp.varint(20); hp.f32(5.f);
         conn_->sendPacket(pl::sc::SetHealth, hp);
     }
+    // reset chunk tracking for respawn dimension
+    sentChunks_.clear();
+    lastCx_ = INT32_MAX; lastCz_ = INT32_MAX;
     sendTeleport(self_->x, -60.0, self_->z, self_->yaw, self_->pitch);
+    // stream chunks for respawn position
+    try { tickChunksAround(self_->x, self_->z); } catch (...) {}
 }
 
 void Session::sendJoinGame() {
@@ -1962,8 +2001,10 @@ void Session::sendJoinGame() {
     WriteBuffer b;
     b.i32(self_->entityId);
     b.boolean(false);                              // hardcore
-    b.varint(1);                                   // worlds[]
+    b.varint(3);                                   // worlds[]
     b.string("minecraft:overworld");
+    b.string("minecraft:the_nether");
+    b.string("minecraft:the_end");
     b.varint(c.maxPlayers);
     b.varint(c.viewDistance);
     b.varint(std::min(c.simulationDistance, 10));
@@ -1972,7 +2013,7 @@ void Session::sendJoinGame() {
     b.boolean(false);                              // do limited crafting
     // SpawnInfo
     {
-        WriteBuffer ws = makeWorldState(c);
+        WriteBuffer ws = makeWorldState(c, srv_, self_->dimension);
         b.raw(ws.data.data(), ws.data.size());
     }
     b.boolean(false);                              // enforces secure chat
@@ -2914,13 +2955,19 @@ void Session::sendSystemText(const std::string& text) {
 // ------------------------------------------------------------------ chunking
 
 void Session::sendChunk(std::int32_t cx, std::int32_t cz) {
-    static const std::uint32_t biomeIdx = srv_.data().biomeIndex(srv_.config().worldBiome);
+    // Dimension-aware chunk streaming
+    World& w = srv_.worldFor(self_->dimension);
+    // Compute biome index for this world's biome (fallback to overworld if missing)
+    std::uint32_t biomeIdx = 0;
+    try { biomeIdx = srv_.data().biomeIndex(w.biomeKey()); } catch (...) {
+        try { biomeIdx = srv_.data().biomeIndex(srv_.config().worldBiome); } catch (...) { biomeIdx = 0; }
+    }
     GameServer::ChunkBodyRef body;
     if (!srv_.getCachedChunk(cx, cz, biomeIdx, body)) {
         auto fresh = std::make_shared<const std::vector<std::uint8_t>>([&]{
             WriteBuffer wb;
-            srv_.world().generateChunkIfMissing(cx, cz);
-            srv_.world().withChunk(cx, cz, [&](const Chunk& c) {
+            w.generateChunkIfMissing(cx, cz);
+            w.withChunk(cx, cz, [&](const Chunk& c) {
                 serializeLevelChunkBody(wb, cx, cz, c, biomeIdx);
             });
             return wb.data;
@@ -3175,6 +3222,43 @@ void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
     }
     self_->onGround = nowGround;
     broadcastMovement();
+    // portal step-in teleport (plan5)
+    {
+        if (srv_.tickNow() > self_->portalCooldownUntilTick) {
+            World& curW = srv_.worldFor(self_->dimension);
+            std::int32_t bx = static_cast<std::int32_t>(std::floor(self_->x));
+            std::int32_t by = static_cast<std::int32_t>(std::floor(self_->y));
+            std::int32_t bz = static_cast<std::int32_t>(std::floor(self_->z));
+            bool inNether = false, inEnd = false;
+            for (int dy = 0; dy <= 1; ++dy) {
+                std::int32_t yy = by + dy;
+                std::uint16_t st = curW.getBlock(bx, yy, bz);
+                const gen::BlockDef* d = gen::blockByState(st);
+                if (d) {
+                    if (std::string_view(d->name) == "minecraft:nether_portal") inNether = true;
+                    if (std::string_view(d->name) == "minecraft:end_portal") inEnd = true;
+                }
+            }
+            std::int8_t target = 127;
+            if (inNether) {
+                if (self_->dimension == 0) target = -1;
+                else if (self_->dimension == -1) target = 0;
+                else if (self_->dimension == 1) target = 0;
+            } else if (inEnd) {
+                if (self_->dimension == 0) target = 1;
+                else if (self_->dimension == 1) target = 0;
+                else if (self_->dimension == -1) target = 0;
+            }
+            if (target != 127) {
+                bool ok = PortalHandler::tryTeleport(srv_, *self_, target);
+                if (ok) {
+                    sentChunks_.clear();
+                    lastCx_ = INT32_MAX; lastCz_ = INT32_MAX;
+                    try { tickChunksAround(self_->x, self_->z); } catch (...) {}
+                }
+            }
+        }
+    }
 }
 
 void Session::broadcastMovement() {
@@ -3488,6 +3572,107 @@ void Session::onUseItemOn(ReadBuffer& in) {
                 }
                 ack(sequence);
                 return;
+            }
+        }
+    }
+
+    // ---- portal ignition (plan5): flint_and_steel / fire_charge on obsidian frame 4x5 -> nether portal
+    {
+        InvSlot heldCopy = (self_->heldSlot >= 0 && self_->heldSlot < 9) ? self_->inv[36 + self_->heldSlot] : InvSlot::air();
+        const std::string heldNameForPortal = heldCopy.empty() ? std::string() : heldCopy.name();
+        bool isFlint = heldNameForPortal == "minecraft:flint_and_steel";
+        bool isFireCharge = heldNameForPortal == "minecraft:fire_charge";
+        if ((isFlint || isFireCharge) && !heldCopy.empty()) {
+            World& w = srv_.worldFor(self_->dimension);
+            // clicked block must be obsidian
+            std::uint16_t clickedSt = w.getBlock(x, y, z);
+            const gen::BlockDef* cd = gen::blockByState(clickedSt);
+            bool clickedIsObsidian = cd && std::string(cd->name) == "minecraft:obsidian";
+            if (clickedIsObsidian) {
+                const auto& mp = gen::blockNameToState();
+                auto obsIt = mp.find("minecraft:obsidian");
+                std::uint16_t obsidian = obsIt != mp.end() ? static_cast<std::uint16_t>(obsIt->second) : 2397;
+                const gen::BlockDef* portalDef = gen::blockByName("minecraft:nether_portal");
+                bool ignited = false;
+                int portalFilled = 0;
+                // helper to fill interior and broadcast
+                auto fillInterior = [&](int orient, int ox, int oy, int oz) {
+                    std::uint16_t portalState = 6033;
+                    if (portalDef) {
+                        if (orient == 0) portalState = static_cast<std::uint16_t>(gen::stateWithProps(*portalDef, {{"axis","x"}}));
+                        else portalState = static_cast<std::uint16_t>(gen::stateWithProps(*portalDef, {{"axis","z"}}));
+                    } else {
+                        auto it2 = mp.find("minecraft:nether_portal");
+                        if (it2 != mp.end()) portalState = static_cast<std::uint16_t>(it2->second);
+                    }
+                    for (int dy=1; dy<=3; ++dy) for (int dx=1; dx<=2; ++dx) {
+                        int32_t wx, wz;
+                        if (orient==0) { wx = ox+dx; wz = oz; }
+                        else { wx = ox; wz = oz+dx; }
+                        int32_t wy = oy+dy;
+                        w.setBlock(wx, wy, wz, portalState);
+                        srv_.broadcastBlockChange(wx, wy, wz, portalState);
+                    }
+                    int32_t cxp = ox+1 + (orient==0?1:0);
+                    int32_t czp = oz + (orient==1?1:0);
+                    srv_.broadcastSound("minecraft:block.portal.ambient", cxp+0.5, oy+2, czp+0.5, 0.8f, 1.0f, "blocks");
+                    srv_.broadcastSound("minecraft:item.flintandsteel.use", x+0.5, y+0.5, z+0.5, 1.f, 1.f, "blocks");
+                };
+                // Try orientation X (constant Z = clicked Z)
+                for (int oy = y - 4; oy <= y && !ignited; ++oy) {
+                    for (int ox = x - 3; ox <= x && !ignited; ++ox) {
+                        if (oy < kMinY || oy+4 >= kMaxY) continue;
+                        bool valid = true;
+                        for (int dy=0; dy<5 && valid; ++dy) for (int dx=0; dx<4 && valid; ++dx) {
+                            int32_t wx = ox+dx; int32_t wy = oy+dy; int32_t wz = z;
+                            w.generateChunkIfMissing(wx>>4, wz>>4);
+                            std::uint16_t st = w.getBlock(wx, wy, wz);
+                            bool isBorder = (dx==0 || dx==3 || dy==0 || dy==4);
+                            if (isBorder) { if (st != obsidian) valid=false; }
+                            else { if (st != 0) valid=false; }
+                        }
+                        if (!valid) continue;
+                        // interior 2x3 air confirmed, check clicked is within border (already ensured by valid)
+                        fillInterior(0, ox, oy, z);
+                        ignited = true; portalFilled = 6;
+                    }
+                }
+                if (!ignited) {
+                    // Try orientation Z (constant X = clicked X)
+                    for (int oy = y - 4; oy <= y && !ignited; ++oy) {
+                        for (int oz = z - 3; oz <= z && !ignited; ++oz) {
+                            if (oy < kMinY || oy+4 >= kMaxY) continue;
+                            bool valid = true;
+                            for (int dy=0; dy<5 && valid; ++dy) for (int dx=0; dx<4 && valid; ++dx) {
+                                int32_t wx = x; int32_t wy = oy+dy; int32_t wz = oz+dx;
+                                w.generateChunkIfMissing(wx>>4, wz>>4);
+                                std::uint16_t st = w.getBlock(wx, wy, wz);
+                                bool isBorder = (dx==0 || dx==3 || dy==0 || dy==4);
+                                if (isBorder) { if (st != obsidian) valid=false; }
+                                else { if (st != 0) valid=false; }
+                            }
+                            if (!valid) continue;
+                            fillInterior(1, x, oy, oz);
+                            ignited = true; portalFilled = 6;
+                        }
+                    }
+                }
+                if (ignited && portalFilled>0) {
+                    if (self_->gamemode == 0) {
+                        if (isFlint) {
+                            auto* slot = &self_->inv[36 + self_->heldSlot];
+                            bool broken = slot->applyDamage(1);
+                            if (broken) *slot = InvSlot::air();
+                            srv_.resendInventory(*self_);
+                        } else if (isFireCharge) {
+                            auto* slot = &self_->inv[36 + self_->heldSlot];
+                            if (--slot->count <= 0) *slot = InvSlot::air();
+                            srv_.resendInventory(*self_);
+                        }
+                    }
+                    ack(sequence);
+                    return;
+                }
             }
         }
     }
