@@ -20,18 +20,14 @@ bool sameItem(const ItemStack& a, const ItemStack& b) {
 } // namespace
 
 // Maps a player-inventory region protocol slot onto Player::inv storage.
+static int containerSlotCount(const Menu& m) {
+    // crafting and other menus: totalSlots includes container+36
+    // For all types totalSlots() = container + 36
+    return m.totalSlots() - 36;
+}
 static ItemStack* playerInvSlot(const Menu& m, int slot, Player& p) {
-    switch (m.type) {
-    case MenuType::Chest:
-        if (slot >= 27 && slot < 63) return &p.inv[slot - 27 + 9];
-        return nullptr;
-    case MenuType::Furnace:
-        if (slot >= 3 && slot < 39) return &p.inv[slot - 3 + 9];
-        return nullptr;
-    case MenuType::Crafting:
-        if (slot >= 10 && slot < 46) return &p.inv[slot - 10 + 9];
-        return nullptr;
-    }
+    int cont = containerSlotCount(m);
+    if (slot >= cont && slot < cont + 36) return &p.inv[slot - cont + 9];
     return nullptr;
 }
 
@@ -130,19 +126,17 @@ void ClickLogic::craftTaken(Menu& m, const RecipeManager& recipes) {
 bool ClickLogic::pickupPlace(Menu& m, Player&, int slot, int button,
                              ItemStack& cursor, MenuIo& io) {
     ItemStack* target = nullptr;
-    if (m.type == MenuType::Chest) {
-        if (slot < 0 || slot >= 27) return false;
-        target = &m.container[slot];
-        io.blockEntityChanged(m.blockKey);
-    } else if (m.type == MenuType::Furnace) {
-        if (slot < 0 || slot >= 3) return false;
-        target = &m.container[slot];
-        io.blockEntityChanged(m.blockKey);
-    } else {
+    if (m.type == MenuType::Crafting) {
         if (slot == 0) return false;                 // handled by caller (result)
         if (slot >= 1 && slot < 10) target = &m.craftGrid[slot - 1];
-        else if (slot >= 10 && slot < 46) return false;   // player inv via session
+        else return false;   // player inv via session
         if (!target) return false;
+    } else {
+        int cont = containerSlotCount(m);
+        if (slot < 0 || slot >= cont) return false;
+        if (m.container) target = &m.container[slot];
+        else target = &m.extraSlots[slot];
+        if (m.blockKey >= 0) io.blockEntityChanged(m.blockKey);
     }
 
     if (isTakeOnlySlot(m, slot)) return false;
@@ -151,7 +145,6 @@ bool ClickLogic::pickupPlace(Menu& m, Player&, int slot, int button,
     if (button == 0) {                               // left: full swap / merge
         if (sameItem(cursor, *target)) {
             changed = mergeInto(cursor, *target);     // place all cursor onto slot
-            // note mergeInto(from=cursor,into=target): places cursor items in
         } else {
             std::swap(cursor, *target);
             changed = true;
@@ -171,6 +164,8 @@ bool ClickLogic::pickupPlace(Menu& m, Player&, int slot, int button,
         }
     }
     if (changed && m.type == MenuType::Furnace) io.blockEntityChanged(m.blockKey);
+    else if (changed && m.blockKey >= 0 && m.type != MenuType::Crafting)
+        io.blockEntityChanged(m.blockKey);
     return changed;
 }
 
@@ -179,13 +174,7 @@ bool ClickLogic::quickMove(Menu& m, Player& p, const RecipeManager& recipes,
     (void)cursor;
     ItemStack* src = nullptr;
     bool fromPlayer = false;
-    if (m.type == MenuType::Chest) {
-        if (slot >= 0 && slot < 27) src = &m.container[slot];
-        else if (slot >= 27 && slot < 63) { src = &p.inv[slot - 27 + 9]; fromPlayer = true; }
-    } else if (m.type == MenuType::Furnace) {
-        if (slot >= 0 && slot < 3) src = &m.container[slot];
-        else if (slot >= 3 && slot < 39) { src = &p.inv[slot - 3 + 9]; fromPlayer = true; }
-    } else {
+    if (m.type == MenuType::Crafting) {
         if (slot == 0) {                             // craft result shift-click
             int crafted = 0;
             while (!m.craftResult.empty() && crafted < 64) {
@@ -200,6 +189,14 @@ bool ClickLogic::quickMove(Menu& m, Player& p, const RecipeManager& recipes,
         }
         if (slot >= 1 && slot < 10) src = &m.craftGrid[slot - 1];
         else if (slot >= 10 && slot < 46) src = playerInvSlot(m, slot, p), fromPlayer = true;
+    } else {
+        int cont = containerSlotCount(m);
+        if (slot >= 0 && slot < cont) {
+            src = m.container ? &m.container[slot] : &m.extraSlots[slot];
+        } else if (slot >= cont && slot < cont + 36) {
+            src = playerInvSlot(m, slot, p);
+            fromPlayer = true;
+        }
     }
     if (!src || src->empty()) return false;
 
@@ -208,25 +205,35 @@ bool ClickLogic::quickMove(Menu& m, Player& p, const RecipeManager& recipes,
     if (fromPlayer) {
         // into container (or furnace special slots)
         if (m.type == MenuType::Furnace) {
-            // smeltable → input, fuel → fuel
             const bool smeltable =
                 recipes.findSmelting(src->itemId) != nullptr;
             const bool isFuel = isFuelItem(src->itemId);
             int dstSlot = smeltable ? FurnaceData::kInput
                           : isFuel ? FurnaceData::kFuel : -1;
             if (dstSlot >= 0) {
-                ItemStack* dst = &m.container[dstSlot];
+                ItemStack* dst = m.container ? &m.container[dstSlot] : &m.extraSlots[dstSlot];
                 if (mergeInto(*src, *dst)) { moved = true; }
             }
         }
-        for (int i = 0; !moved && i < m.containerCount; ++i) {
-            if (&m.container[i] == src) continue;
-            moved = mergeInto(*src, m.container[i]);
+        int cont = containerSlotCount(m);
+        ItemStack* contPtr = m.container ? m.container : m.extraSlots;
+        // first pass: merge into existing same item
+        for (int i = 0; !moved && i < cont; ++i) {
+            if (contPtr && &contPtr[i] == src) continue;
+            if (contPtr && !contPtr[i].empty() && sameItem(*src, contPtr[i])) {
+                moved = mergeInto(*src, contPtr[i]);
+            }
+        }
+        // second pass: any same item (already handled) or any slot
+        for (int i = 0; !moved && i < cont; ++i) {
+            if (contPtr && &contPtr[i] == src) continue;
+            moved = mergeInto(*src, contPtr[i]);
+            if (moved) break;
         }
         if (!moved && !src->empty()) {
             // second pass: empty slots
-            for (int i = 0; i < m.containerCount; ++i) {
-                if (m.container[i].empty()) { m.container[i] = *src; *src = ItemStack::air(); moved = true; break; }
+            for (int i = 0; i < cont; ++i) {
+                if (contPtr[i].empty()) { contPtr[i] = *src; *src = ItemStack::air(); moved = true; break; }
             }
         }
     } else {
