@@ -331,7 +331,35 @@ void World::fillNether(Chunk& c, std::int32_t cx, std::int32_t cz) const {
     const std::uint16_t WARPED_NYLIUM = id2("minecraft:warped_nylium") ? id2("minecraft:warped_nylium") : NETHERRACK;
     const std::uint16_t GLOWSTONE = id2("minecraft:glowstone");
     const std::uint16_t QUARTZ_ORE = id2("minecraft:nether_quartz_ore") ? id2("minecraft:nether_quartz_ore") : NETHERRACK;
-    c.biomes.fill(static_cast<std::uint16_t>(defaultBiomeIndex_));
+    // Nether biomes per-cell (plan10): map noise selection to actual biome registry indices
+    {
+        int idxNether = biomeIndexOf("minecraft:nether_wastes");
+        int idxBasalt = biomeIndexOf("minecraft:basalt_deltas");
+        int idxWarped = biomeIndexOf("minecraft:warped_forest");
+        int idxCrimson = biomeIndexOf("minecraft:crimson_forest");
+        int idxSoul = biomeIndexOf("minecraft:soul_sand_valley");
+        if (idxNether < 0) idxNether = defaultBiomeIndex_;
+        if (idxBasalt < 0) idxBasalt = idxNether;
+        if (idxWarped < 0) idxWarped = idxNether;
+        if (idxCrimson < 0) idxCrimson = idxNether;
+        if (idxSoul < 0) idxSoul = idxNether;
+        for (int sec = 0; sec < kSectionsPerChunk; ++sec)
+            for (int cy = 0; cy < 4; ++cy)
+                for (int cz2 = 0; cz2 < 4; ++cz2)
+                    for (int cx2 = 0; cx2 < 4; ++cx2) {
+                        int wx = cx*16 + cx2*4 + 2;
+                        int wz = cz*16 + cz2*4 + 2;
+                        double surf = surfaceNoise.octaves(wx*0.008, 0, wz*0.008, 3);
+                        double dep = depthNoise.sample(wx*0.015, 0, wz*0.015);
+                        double flt = floatNoise.sample(wx*0.02, 0, wz*0.02);
+                        int biomeIdx = idxNether;
+                        if (surf > 0.55) biomeIdx = idxBasalt;
+                        else if (surf < -0.55 && dep > 0.3) biomeIdx = idxWarped;
+                        else if (surf > 0.35 && flt > 0.4) biomeIdx = idxCrimson;
+                        else if (surf < -0.3 && dep < -0.2) biomeIdx = idxSoul;
+                        c.biomes[Chunk::biomeIndex(sec, cy, cz2, cx2)] = static_cast<std::uint16_t>(biomeIdx);
+                    }
+    }
     for (int lz = 0; lz < 16; ++lz)
         for (int lx = 0; lx < 16; ++lx) {
             const std::int32_t wx = cx * 16 + lx, wz = cz * 16 + lz;
@@ -436,9 +464,41 @@ void World::fillEnd(Chunk& c, std::int32_t cx, std::int32_t cz) const {
     const std::uint16_t PORTAL = id2("minecraft:end_portal")
                                      ? id2("minecraft:end_portal")
                                      : BEDROCK;
-    // multi-noise for outer islands (plan6 §1)
+    // End biomes per-cell (plan10): the_end, highlands, midlands, small islands, barrens
     thread_local ImprovedNoise islandNoise(srv_seed ^ 0x454E4410ULL);
-    c.biomes.fill(static_cast<std::uint16_t>(defaultBiomeIndex_));
+    {
+        int idxEnd = biomeIndexOf("minecraft:the_end");
+        int idxHigh = biomeIndexOf("minecraft:end_highlands");
+        int idxMid = biomeIndexOf("minecraft:end_midlands");
+        int idxSmall = biomeIndexOf("minecraft:small_end_islands");
+        int idxBarr = biomeIndexOf("minecraft:end_barrens");
+        if (idxEnd < 0) idxEnd = defaultBiomeIndex_;
+        if (idxHigh < 0) idxHigh = idxEnd;
+        if (idxMid < 0) idxMid = idxEnd;
+        if (idxSmall < 0) idxSmall = idxEnd;
+        if (idxBarr < 0) idxBarr = idxEnd;
+        for (int sec = 0; sec < kSectionsPerChunk; ++sec)
+            for (int cy = 0; cy < 4; ++cy)
+                for (int cz2 = 0; cz2 < 4; ++cz2)
+                    for (int cx2 = 0; cx2 < 4; ++cx2) {
+                        int wx = cx*16 + cx2*4 + 2;
+                        int wz = cz*16 + cz2*4 + 2;
+                        double r = std::sqrt(double(wx)*wx + double(wz)*wz);
+                        int bIdx = idxEnd;
+                        if (r < 60) bIdx = idxEnd;
+                        else if (r < 200) bIdx = idxBarr;
+                        else {
+                            double n = islandNoise.octaves(wx*0.01, 0, wz*0.01, 3);
+                            double hash = TerrainGenerator::posHash(srv_seed ^ 0xE11D, wx, 7, wz);
+                            if (hash < 0.04 + n*0.02) {
+                                if (n > 0.5) bIdx = idxHigh;
+                                else if (n > 0.2) bIdx = idxMid;
+                                else bIdx = idxSmall;
+                            } else bIdx = idxBarr;
+                        }
+                        c.biomes[Chunk::biomeIndex(sec, cy, cz2, cx2)] = static_cast<std::uint16_t>(bIdx);
+                    }
+    }
     // central island ~ radius 60 at y=64 surface
     for (int lz = 0; lz < 16; ++lz)
         for (int lx = 0; lx < 16; ++lx) {

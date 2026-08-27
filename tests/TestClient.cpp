@@ -420,6 +420,7 @@ void TestClient::filePacket(Packet p) {
         case proto::pl::sc::UpdateTime: timeUpdates++; break;
         case proto::pl::sc::DeclareCommands: declares++; break;
         case proto::pl::sc::Respawn: gotRespawn = true; break;
+        case proto::pl::sc::Login: joinGameBody = p.body; break;
         default: break;
         }
         recent_.push_back(std::move(p));

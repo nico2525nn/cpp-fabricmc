@@ -47,11 +47,20 @@ public:
     void setDifficulty(const std::string& d) { difficulty_ = d; }
     void setWorldBorder(double diameter, double cx=0, double cz=0) {
         worldBorderDiameter_ = diameter; worldBorderCenterX_=cx; worldBorderCenterZ_=cz;
+        worldBorderLerpFrom_ = diameter; worldBorderLerpTo_ = diameter; worldBorderLerpMs_ = 0;
+    }
+    void setWorldBorderLerp(double from, double to, std::int64_t remainingTicks) {
+        worldBorderLerpFrom_ = from; worldBorderLerpTo_ = to;
+        worldBorderLerpMs_ = remainingTicks * 50;
+        worldBorderDiameter_ = to;
     }
     std::string difficulty() const { return difficulty_; }
     double worldBorderDiameter() const { return worldBorderDiameter_; }
     double worldBorderCenterX() const { return worldBorderCenterX_; }
     double worldBorderCenterZ() const { return worldBorderCenterZ_; }
+    double worldBorderLerpFrom() const { return worldBorderLerpFrom_; }
+    double worldBorderLerpTo() const { return worldBorderLerpTo_; }
+    std::int64_t worldBorderLerpMs() const { return worldBorderLerpMs_; }
 
     // ---- level.dat ----
     // plan5 §1: full level.dat persistence — spawn, time, gamerules, weather.
@@ -118,13 +127,27 @@ public:
                 data.set("WasModded", nv::Value::makeByte(0));
                 data.set("allowCommands", nv::Value::makeByte(1));
                 data.set("GameType", nv::Value::makeInt(1));
+                {
+                    nv::Value fc = nv::Value::makeList(nbt::Long);
+                    auto sp = world_.spawnPoint();
+                    int scx = sp.x >> 4, scz = sp.z >> 4;
+                    for (int dz=-2; dz<=2; ++dz) for (int dx=-2; dx<=2; ++dx) {
+                        std::int64_t key = (static_cast<std::int64_t>(static_cast<std::uint32_t>(scx+dx))<<32) | static_cast<std::uint32_t>(scz+dz);
+                        fc.list.push_back(nv::Value::makeLong(key));
+                    }
+                    data.set("ForcedChunks", fc);
+                }
                 if (provideLevelState_) provideLevelState_(data);
                 root.set("Data", data);
                 WriteBuffer out;
                 nv::writeFileRoot(out, root);
                 std::filesystem::create_directories(dir_);
-                std::ofstream f(dir_ + "/level.dat", std::ios::binary);
-                f.write(reinterpret_cast<const char*>(out.data.data()), out.data.size());
+                std::string tmp = dir_ + "/level.dat.new";
+                {
+                    std::ofstream tf(tmp, std::ios::binary | std::ios::trunc);
+                    tf.write(reinterpret_cast<const char*>(out.data.data()), out.data.size());
+                }
+                std::filesystem::rename(tmp, dir_ + "/level.dat");
             } catch (...) {}
         }
     }
@@ -308,6 +331,9 @@ private:
     std::string difficulty_ = "normal";
     double worldBorderDiameter_ = 29999984;
     double worldBorderCenterX_ = 0, worldBorderCenterZ_ = 0;
+    double worldBorderLerpFrom_ = 29999984;
+    double worldBorderLerpTo_ = 29999984;
+    std::int64_t worldBorderLerpMs_ = 0;
     World& world_;
     std::string dir_;
     WorldDataManager worldDataManager_;
