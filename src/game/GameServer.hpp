@@ -348,6 +348,9 @@ public:
         blockTicks_->registerBehavior("minecraft:cactus", std::make_unique<StemBehavior>(4));
         blockTicks_->registerBehavior("minecraft:farmland", std::make_unique<FarmlandBehavior>());
         blockTicks_->registerBehavior("minecraft:fire", std::make_unique<FireBehavior>());
+        blockTicks_->registerBehavior("minecraft:soul_fire", std::make_unique<SoulFireBehavior>());
+        blockTicks_->registerBehavior("minecraft:campfire", std::make_unique<CampfireBehavior>());
+        blockTicks_->registerBehavior("minecraft:soul_campfire", std::make_unique<CampfireBehavior>());
         blockTicks_->registerBehavior("minecraft:nether_portal", std::make_unique<PortalAgeBehavior>());
         // plan7: ServerProperties typed loading (viewDistance, spawn-protection, etc.)
         {

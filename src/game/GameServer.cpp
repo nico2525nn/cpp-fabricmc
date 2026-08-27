@@ -1497,6 +1497,8 @@ void GameServer::hoppersTick() {
         const std::int32_t x = posKeyUnpackX(key);
         const std::int32_t y = posKeyUnpackY(key);
         const std::int32_t z = posKeyUnpackZ(key);
+        // hopper lock: when powered by redstone, skip transfer (plan8 hopper fix)
+        if (be.kind == BlockEntity::Kind::Hopper && redstone_ && redstone_->isPoweredHere(x, y, z)) continue;
         ItemStack* slots = be.generic.slots;
         const int count = be.kind == BlockEntity::Kind::Hopper ? 5 : 9;
 
