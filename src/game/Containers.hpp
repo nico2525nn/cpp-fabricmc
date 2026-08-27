@@ -26,7 +26,7 @@ constexpr int kGeneric9x1 = 0, kGeneric9x2 = 1, kGeneric9x3 = 2,
               kSmoker = 22, kCartographyTable = 23, kStonecutter = 24;
 }
 
-enum class MenuType { Chest, Furnace, Crafting, Hopper, Dispenser };
+enum class MenuType { Chest, Furnace, Crafting, Hopper, Dispenser, Barrel, ShulkerBox, Enchantment, Anvil, Brewing, Stonecutter, Grindstone, Smithing, Beacon, Loom };
 
 class RecipeManager;
 
@@ -37,14 +37,18 @@ public:
     std::int64_t blockKey = -1;                  // packed pos, -1 for crafting
 
     // backing stores ---------------------------------------------------------
-    ItemStack* container = nullptr;              // chest slots (27) | furnace(3)
+    ItemStack* container = nullptr;              // chest slots (27) | furnace(3) etc.
     int containerCount = 0;
     ItemStack craftGrid[9];                      // crafting table only
     ItemStack craftResult;                       // cached result
+    ItemStack extraSlots[27];                    // generic storage for menus without BE
 
     // transient view of the owning player's inventory is external (Player.inv)
 
     int containerCount_ = 0;             // hopper 5 / dispenser 9
+    // drag paint transient (mode 5)
+    std::vector<int> dragSlots;
+    int dragButton = -1;                 // initial button for drag type
     int totalSlots() const {
         switch (type) {
         case MenuType::Chest: return 27 + 36;
@@ -54,6 +58,14 @@ public:
         case MenuType::Dispenser: return 9 + 36;
         case MenuType::Barrel: return 27 + 36;
         case MenuType::ShulkerBox: return 27 + 36;
+        case MenuType::Enchantment: return 2 + 36;
+        case MenuType::Anvil: return 3 + 36;
+        case MenuType::Brewing: return 5 + 36;
+        case MenuType::Stonecutter: return 2 + 36;
+        case MenuType::Grindstone: return 3 + 36;
+        case MenuType::Smithing: return 4 + 36;
+        case MenuType::Beacon: return 1 + 36;
+        case MenuType::Loom: return 4 + 36;
         }
         return 63;
     }
@@ -66,6 +78,14 @@ public:
         case MenuType::Dispenser: return menus::kGeneric3x3;
         case MenuType::Barrel: return menus::kGeneric9x3;
         case MenuType::ShulkerBox: return menus::kShulkerBox;
+        case MenuType::Enchantment: return menus::kEnchantment;
+        case MenuType::Anvil: return menus::kAnvil;
+        case MenuType::Brewing: return menus::kBrewingStand;
+        case MenuType::Stonecutter: return menus::kStonecutter;
+        case MenuType::Grindstone: return menus::kGrindstone;
+        case MenuType::Smithing: return menus::kSmithing;
+        case MenuType::Beacon: return menus::kBeacon;
+        case MenuType::Loom: return menus::kLoom;
         }
         return menus::kGeneric9x3;
     }
