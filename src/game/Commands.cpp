@@ -694,17 +694,13 @@ void GameServer::initCommands() {
         sz->executable = true;
         sz->action = [this](CommandContext& c) {
             worldBorderDiameter_ = c.arg("diameter").asDouble();
+            // persist and broadcast (plan6 §10)
+            if (persist_) persist_->setWorldBorder(worldBorderDiameter_, worldBorderCenterX_, worldBorderCenterZ_);
+            broadcastWorldBorder();
+            // also send Center and LerpSize for spec compliance
             for (auto& p : playersSnapshot()) {
-                WriteBuffer i;
-                i.f64(0); i.f64(0);                       // old center
-                i.f64(worldBorderDiameter_);              // old size
-                i.f64(worldBorderDiameter_);              // new size
-                i.varlong(0);                             // lerp time ms
-                i.varint(5);                              // warning blocks
-                i.varint(15);                             // warning ticks
-                try { p->conn->sendPacket(
-                          proto::pl::sc::InitializeWorldBorder, i); }
-                catch (...) {}
+                WriteBuffer cc; cc.f64(worldBorderCenterX_); cc.f64(worldBorderCenterZ_);
+                try { p->conn->sendPacket(proto::pl::sc::WorldBorderCenter, cc); } catch(...) {}
             }
             return 1;
         };

@@ -38,6 +38,7 @@ static void loadProperties(ServerConfig& c, const std::string& path) {
             else if (k == "view-distance") c.viewDistance = std::clamp(std::stoi(v), 2, 32);
             else if (k == "simulation-distance") c.simulationDistance = std::clamp(std::stoi(v), 2, 32);
             else if (k == "motd") c.motd = v;
+            else if (k == "spawn-protection") c.spawnProtection = std::max(0, std::stoi(v));
         else if (k == "start-time") c.startTime = std::stoll(v);
         else if (k == "level-type") {
             std::string t = v;
@@ -67,6 +68,7 @@ int main(int argc, char** argv) {
             else if (k == "assets") cfg.assetsDir = v;
             else if (k == "motd") cfg.motd = v;
             else if (k == "world-dir") cfg.worldDir = v;
+            else if (k == "spawn-protection") cfg.spawnProtection = std::max(0, std::stoi(v));
             else if (k == "level-type") {
                 std::string t = v;
                 if (t.rfind("minecraft:", 0) == 0) t = t.substr(10);

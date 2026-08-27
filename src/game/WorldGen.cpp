@@ -272,7 +272,11 @@ void World::fillTerrainV3(Chunk& c, std::int32_t cx, std::int32_t cz) const {
 // ------------------------------------------------------- nether / end gen
 
 void World::fillNether(Chunk& c, std::int32_t cx, std::int32_t cz) const {
+    // plan6 §1: multiple Noise Generators (surface, depth, float) for biome selection
     thread_local ImprovedNoise density(srv_seed ^ 0x6E657468ULL);
+    thread_local ImprovedNoise surfaceNoise(srv_seed ^ 0x53555246ULL); // surface pattern
+    thread_local ImprovedNoise depthNoise(srv_seed ^ 0x44455054ULL);   // depth/basal
+    thread_local ImprovedNoise floatNoise(srv_seed ^ 0x464C4F41ULL);   // floating islands
     const auto& table = gen::blockNameToState();
     auto id2 = [&](const char* n) -> std::uint16_t {
         auto it = table.find(n);
@@ -282,11 +286,27 @@ void World::fillNether(Chunk& c, std::int32_t cx, std::int32_t cz) const {
     const std::uint16_t BEDROCK = id2("minecraft:bedrock");
     const std::uint16_t LAVA = id2("minecraft:lava");
     const std::uint16_t SOUL = id2("minecraft:soul_sand");
+    const std::uint16_t SOUL_SOIL = id2("minecraft:soul_soil") ? id2("minecraft:soul_soil") : SOUL;
+    const std::uint16_t BASALT = id2("minecraft:basalt") ? id2("minecraft:basalt") : NETHERRACK;
+    const std::uint16_t BLACKSTONE = id2("minecraft:blackstone") ? id2("minecraft:blackstone") : BASALT;
+    const std::uint16_t CRIMSON_NYLIUM = id2("minecraft:crimson_nylium") ? id2("minecraft:crimson_nylium") : NETHERRACK;
+    const std::uint16_t WARPED_NYLIUM = id2("minecraft:warped_nylium") ? id2("minecraft:warped_nylium") : NETHERRACK;
     const std::uint16_t GLOWSTONE = id2("minecraft:glowstone");
+    const std::uint16_t QUARTZ_ORE = id2("minecraft:nether_quartz_ore") ? id2("minecraft:nether_quartz_ore") : NETHERRACK;
     c.biomes.fill(static_cast<std::uint16_t>(defaultBiomeIndex_));
     for (int lz = 0; lz < 16; ++lz)
         for (int lx = 0; lx < 16; ++lx) {
             const std::int32_t wx = cx * 16 + lx, wz = cz * 16 + lz;
+            // biome selection via noise thresholds (plan6 §1)
+            const double surf = surfaceNoise.octaves(wx*0.008, 0, wz*0.008, 3);
+            const double dep = depthNoise.sample(wx*0.015, 0, wz*0.015);
+            const double flt = floatNoise.sample(wx*0.02, 0, wz*0.02);
+            // enum: 0=nether_wastes, 1=basalt_deltas, 2=warped, 3=crimson, 4=soul_sand_valley
+            int biome = 0;
+            if (surf > 0.55) biome = 1; // basalt deltas
+            else if (surf < -0.55 && dep > 0.3) biome = 2; // warped forest
+            else if (surf > 0.35 && flt > 0.4) biome = 3; // crimson forest
+            else if (surf < -0.3 && dep < -0.2) biome = 4; // soul sand valley
             for (int y = kMinY; y < kMaxY; ++y) {
                 std::uint16_t st = 0;
                 if (y == kMinY || y == kMaxY - 1) st = BEDROCK;
@@ -294,13 +314,45 @@ void World::fillNether(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                          TerrainGenerator::posHash(srv_seed, wx, y, wz) < .7)
                     st = BEDROCK;
                 else {
-                    const double d = density.octaves(wx * 0.012, y * 0.02,
-                                                     wz * 0.012, 3);
-                    if (d > 0.02) {
-                        st = NETHERRACK;
-                        if (density.sample(wx * 0.03, y * 0.05,
-                                           wz * 0.03) > 0.55 && y < 40)
-                            st = SOUL;
+                    const double d = density.octaves(wx * 0.012, y * 0.02, wz * 0.012, 3);
+                    // basalt deltas have more solid at mid heights with basalt pillars
+                    double thresh = 0.02;
+                    if (biome==1) thresh = -0.05; // more terrain
+                    if (d > thresh) {
+                        // biome-specific top layer
+                        if (biome==1) {
+                            // basalt deltas: basalt/blackstone mix, occasional magma
+                            if (y > 40 && y < 90) {
+                                double b = surfaceNoise.sample(wx*0.04, y*0.03, wz*0.04);
+                                if (b > 0.4) st = BASALT;
+                                else if (b > 0.1) st = BLACKSTONE;
+                                else st = NETHERRACK;
+                            } else st = BASALT;
+                        } else if (biome==2) {
+                            // warped forest: warped nylium on top, netherrack below
+                            if (y > 72 && y < 78) st = WARPED_NYLIUM;
+                            else st = NETHERRACK;
+                            if (density.sample(wx * 0.03, y * 0.05, wz * 0.03) > 0.55 && y < 38) st = SOUL_SOIL;
+                        } else if (biome==3) {
+                            if (y > 72 && y < 78) st = CRIMSON_NYLIUM;
+                            else st = NETHERRACK;
+                            if (density.sample(wx * 0.03, y * 0.05, wz * 0.03) > 0.6 && y < 40) st = SOUL;
+                        } else if (biome==4) {
+                            // soul sand valley: soul soil/sand преобладает
+                            if (y < 45 && y > 32) {
+                                double s = depthNoise.sample(wx*0.05, y*0.02, wz*0.05);
+                                st = (s > 0.2) ? SOUL : SOUL_SOIL;
+                            } else st = NETHERRACK;
+                        } else {
+                            st = NETHERRACK;
+                            if (density.sample(wx * 0.03, y * 0.05, wz * 0.03) > 0.55 && y < 40)
+                                st = SOUL;
+                        }
+                        // quartz ore veins (rare)
+                        if (st==NETHERRACK || st==BASALT) {
+                            double q = floatNoise.sample(wx*0.08, y*0.08, wz*0.08);
+                            if (q > 0.82 && y > 10 && y < 110) st = QUARTZ_ORE;
+                        }
                     } else if (y <= 31) {
                         st = LAVA;
                     }
@@ -308,14 +360,25 @@ void World::fillNether(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                 const int wy = y - kMinY;
                 c.blocks[Chunk::index(wy >> 4, wy & 15, lz, lx)] = st;
             }
-            // ceiling glowstone speckles
+            // ceiling glowstone speckles + basalt pillar caps
             for (int k2 = 0; k2 < 3; ++k2) {
                 const int gy = kMaxY - 3 -
-                    static_cast<int>(TerrainGenerator::posHash(srv_seed, wx,
-                                                               k2, wz) * 4);
+                    static_cast<int>(TerrainGenerator::posHash(srv_seed, wx, k2, wz) * 4);
                 if (TerrainGenerator::posHash(srv_seed ^ 7, wx, gy, wz) < .12) {
                     const int wy = gy - kMinY;
                     c.blocks[Chunk::index(wy >> 4, wy & 15, lz, lx)] = GLOWSTONE;
+                }
+            }
+            // basalt delta pillars (occasional tall basalt columns)
+            if (biome==1 && TerrainGenerator::posHash(srv_seed ^ 0xBADA, wx, 1, wz) < 0.015) {
+                int h = 10 + (int)(TerrainGenerator::posHash(srv_seed, wx, 3, wz)*14);
+                for (int dy=0; dy<h; ++dy) {
+                    int py = 32 + dy;
+                    if (py < kMinY || py >= kMaxY) continue;
+                    const int wy = py - kMinY;
+                    if (c.blocks[Chunk::index(wy>>4, wy&15, lz, lx)]==0) continue;
+                    // overwrite with basalt for pillar
+                    c.blocks[Chunk::index(wy>>4, wy&15, lz, lx)] = BASALT;
                 }
             }
         }
@@ -330,23 +393,57 @@ void World::fillEnd(Chunk& c, std::int32_t cx, std::int32_t cz) const {
     };
     const std::uint16_t END_STONE = id2("minecraft:end_stone");
     const std::uint16_t BEDROCK = id2("minecraft:bedrock");
+    const std::uint16_t OBSIDIAN = id2("minecraft:obsidian") ? id2("minecraft:obsidian") : BEDROCK;
+    const std::uint16_t CHORUS = id2("minecraft:chorus_plant") ? id2("minecraft:chorus_plant") : END_STONE;
     const std::uint16_t PORTAL = id2("minecraft:end_portal")
                                      ? id2("minecraft:end_portal")
                                      : BEDROCK;
+    // multi-noise for outer islands (plan6 §1)
+    thread_local ImprovedNoise islandNoise(srv_seed ^ 0x454E4410ULL);
     c.biomes.fill(static_cast<std::uint16_t>(defaultBiomeIndex_));
     // central island ~ radius 60 at y=64 surface
     for (int lz = 0; lz < 16; ++lz)
         for (int lx = 0; lx < 16; ++lx) {
             const std::int32_t wx = cx * 16 + lx, wz = cz * 16 + lz;
             const double r = std::sqrt(double(wx) * wx + double(wz) * wz);
-            if (r < 58 +
-                     TerrainGenerator::posHash(srv_seed, wx, 1, wz) * 10) {
+            if (r < 58 + TerrainGenerator::posHash(srv_seed, wx, 1, wz) * 10) {
                 const int depth = 20 + static_cast<int>(
                     TerrainGenerator::posHash(srv_seed, wx, 2, wz) * 14);
                 for (int y = 64 - depth; y <= 64; ++y) {
                     const int wy = y - kMinY;
-                    c.blocks[Chunk::index(wy >> 4, wy & 15, lz, lx)] =
-                        y == 64 ? END_STONE : END_STONE;
+                    c.blocks[Chunk::index(wy >> 4, wy & 15, lz, lx)] = END_STONE;
+                }
+            } else if (r > 200) {
+                // outer islands: noise-modulated blobs beyond 200 blocks
+                double n = islandNoise.octaves(wx*0.01, 0, wz*0.01, 3);
+                double hash = TerrainGenerator::posHash(srv_seed ^ 0xE11D, wx, 7, wz);
+                // island threshold: central falloff + noise
+                double islandProb = 0.04 + n * 0.02;
+                if (hash < islandProb) {
+                    int islandH = 64 + (int)(n * 8);
+                    int depth = 8 + (int)(hash * 12);
+                    // occasionally tall outer island
+                    if (n > 0.6) depth += 8;
+                    for (int y = islandH - depth; y <= islandH; ++y) {
+                        if (y < kMinY || y >= kMaxY) continue;
+                        const int wy = y - kMinY;
+                        // island shape: circular falloff within chunk pixel
+                        // use small radius jitter
+                        c.blocks[Chunk::index(wy >> 4, wy & 15, lz, lx)] = END_STONE;
+                    }
+                    // chorus-like pillars on outer islands (4-7 high)
+                    if (hash < 0.008 && islandNoise.sample(wx*0.05, 0, wz*0.05) > 0.3) {
+                        int pillarH = 4 + (int)(TerrainGenerator::posHash(srv_seed, wx, 9, wz)*5);
+                        for (int dy = 1; dy <= pillarH; ++dy) {
+                            int py = islandH + dy;
+                            if (py < kMinY || py >= kMaxY) continue;
+                            const int wy = py - kMinY;
+                            // choose chorus or obsidian for pillar top
+                            std::uint16_t mat = (dy==pillarH) ? CHORUS : END_STONE;
+                            if (dy > pillarH-2 && hash < 0.003) mat = OBSIDIAN;
+                            c.blocks[Chunk::index(wy>>4, wy&15, lz, lx)] = mat;
+                        }
+                    }
                 }
             }
         }
@@ -364,6 +461,20 @@ void World::fillEnd(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                 }
             }
         (void)PORTAL;
+    }
+    // obsidian pillars for end gateways (like vanilla outer end pillars)
+    if (std::abs(cx) < 3 && std::abs(cz) < 3 && (cx!=0 || cz!=0)) {
+        // occasional obsidian spikes near origin ring
+        for (int lz=0; lz<16; ++lz) for (int lx=0; lx<16; ++lx) {
+            const std::int32_t wx = cx*16+lx, wz = cz*16+lz;
+            double r = std::sqrt(double(wx)*wx + double(wz)*wz);
+            if (r > 70 && r < 90 && TerrainGenerator::posHash(srv_seed ^ 0x5050, wx, wz, 3) < 0.005) {
+                for (int y=64; y<80; ++y) {
+                    const int wy = y - kMinY;
+                    c.blocks[Chunk::index(wy>>4, wy&15, lz, lx)] = OBSIDIAN;
+                }
+            }
+        }
     }
 }
 

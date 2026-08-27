@@ -40,85 +40,120 @@ struct Writer {
 } // namespace
 
 
+void StructureGenerator::villageHouse(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+                                     std::int32_t bx, std::int32_t bz, int gy) {
+    Writer w{chunk, cx, cz};
+    const auto planks = B("minecraft:oak_planks")->defaultState;
+    const auto log = B("minecraft:oak_log")->defaultState;
+    const auto glassP = B("minecraft:glass")->defaultState;
+    const auto torchB = B("minecraft:torch")->defaultState;
+    for (int dy = 0; dy <= 3; ++dy)
+        for (int dzz = 0; dzz < 5; ++dzz)
+            for (int dxx = 0; dxx < 5; ++dxx) {
+                const bool wall = dxx == 0 || dxx == 4 || dzz == 0 || dzz == 4 || dy == 3 || dy == 0;
+                if (!wall) continue;
+                const std::uint16_t mat = dy == 0 || dy == 3 ? log : planks;
+                w.set(bx + dxx, gy + 1 + dy, bz + dzz, mat);
+            }
+    w.set(bx + 2, gy + 1, bz, 0, true);
+    w.set(bx + 2, gy + 2, bz, 0, true);
+    w.set(bx, gy + 2, bz + 2, glassP);
+    w.set(bx + 4, gy + 2, bz + 2, glassP);
+    w.set(bx + 2, gy + 1, bz + 2, torchB, true);
+}
+void StructureGenerator::villageFarm(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+                                    std::int32_t bx, std::int32_t bz, int gy) {
+    Writer w{chunk, cx, cz};
+    const auto farmland = B("minecraft:farmland") ? B("minecraft:farmland")->defaultState : 0;
+    const auto wheat = B("minecraft:wheat") ? B("minecraft:wheat")->defaultState : 0;
+    const auto waterS = static_cast<std::uint16_t>(gen::stateWithPropsList("minecraft:water", {{"level","0"}}));
+    for (int dzz = 1; dzz < 6; ++dzz)
+        for (int dxx = 1; dxx < 7; ++dxx) {
+            const bool waterChannel = dxx == 4 && dzz == 3;
+            w.set(bx + dxx, gy, bz + dzz, waterChannel ? waterS : farmland, true);
+            if (!waterChannel) w.set(bx + dxx, gy + 1, bz + dzz, wheat);
+        }
+}
+void StructureGenerator::villageChurch(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+                                      std::int32_t bx, std::int32_t bz, int gy) {
+    Writer w{chunk, cx, cz};
+    const auto cobble = B("minecraft:cobblestone")->defaultState;
+    const auto glassP = B("minecraft:glass")->defaultState;
+    const auto torchB = B("minecraft:torch")->defaultState;
+    // 7x7 church with higher walls
+    for (int dy=0; dy<=5; ++dy) for (int dz=0; dz<7; ++dz) for (int dx=0; dx<7; ++dx){
+        const bool wall = dx==0||dx==6||dz==0||dz==6||dy==5||dy==0;
+        if (!wall) continue;
+        w.set(bx+dx, gy+1+dy, bz+dz, cobble);
+    }
+    w.set(bx+3, gy+1, bz, 0, true); w.set(bx+3, gy+2, bz, 0, true);
+    w.set(bx+3, gy+3, bz+3, torchB, true);
+    w.set(bx, gy+3, bz+3, glassP); w.set(bx+6, gy+3, bz+3, glassP);
+    // steeple
+    w.set(bx+3, gy+7, bz+3, cobble, true);
+    w.set(bx+3, gy+8, bz+3, torchB, true);
+}
+void StructureGenerator::villageJigsaw(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+                                      std::int32_t ox, std::int32_t oz, int depth,
+                                      const GroundFn& ground) {
+    if (depth <= 0) return;
+    const double r = structHash(seed_, ox, oz, 0xBEEF + depth*0x9E37ULL);
+    std::int32_t bx = ox, bz = oz;
+    const int gy = ground(bx+3, bz+3);
+    Writer w{chunk, cx, cz};
+    const auto path = B("minecraft:dirt_path") ? B("minecraft:dirt_path")->defaultState : 0;
+    for (int t=0; t<6; ++t){ w.set(bx+t, gy, bz, path, true); w.set(bx, gy, bz+t, path, true); }
+    if (r < 0.35) villageHouse(chunk, cx, cz, bx, bz, gy);
+    else if (r < 0.65) villageFarm(chunk, cx, cz, bx, bz, gy);
+    else if (r < 0.85) villageChurch(chunk, cx, cz, bx, bz, gy);
+    else {
+        const auto log = B("minecraft:oak_log")->defaultState;
+        const auto torchB = B("minecraft:torch")->defaultState;
+        w.set(bx+2, gy+1, bz+2, B("minecraft:fence")? B("minecraft:fence")->defaultState : log);
+        w.set(bx+2, gy+2, bz+2, B("minecraft:fence")? B("minecraft:fence")->defaultState : log);
+        w.set(bx+2, gy+3, bz+2, torchB, true);
+    }
+    // recurse to 4 neighbours
+    const int step = 12;
+    const std::int32_t nx[4]={ox+step, ox-step, ox, ox};
+    const std::int32_t nz[4]={oz, oz, oz+step, oz-step};
+    for (int i=0;i<4;++i) if (depth>1) {
+        // avoid overlapping centre well area
+        if (std::abs(nx[i])<8 && std::abs(nz[i])<8) continue;
+        // probabilistic branch
+        if (structHash(seed_, nx[i], nz[i], 0xCAFE) < 0.7)
+            villageJigsaw(chunk, cx, cz, nx[i], nz[i], depth-1, ground);
+    }
+}
 void StructureGenerator::villagePiece(Chunk& chunk, std::int32_t cx,
                                       std::int32_t cz, std::int32_t ox,
                                       std::int32_t oz, const GroundFn& ground) {
     Writer w{chunk, cx, cz};
     const auto cobble = B("minecraft:cobblestone")->defaultState;
-    const auto planks = B("minecraft:oak_planks")->defaultState;
-    const auto log    = B("minecraft:oak_log")->defaultState;
-    const auto path   = B("minecraft:dirt_path")
-                            ? B("minecraft:dirt_path")->defaultState : 0;
-    const auto glassP = B("minecraft:glass")->defaultState;
-    const auto torchB = B("minecraft:torch")->defaultState;
-    const auto farmland = B("minecraft:farmland")
-                              ? B("minecraft:farmland")->defaultState : 0;
-    const auto wheat  = B("minecraft:wheat")
-                            ? B("minecraft:wheat")->defaultState : 0;
-    const auto waterS = static_cast<std::uint16_t>(
-        gen::stateWithPropsList("minecraft:water", {{"level", "0"}}));
-    const auto cobbleSlab = B("minecraft:cobblestone_slab")
-                                ? B("minecraft:cobblestone_slab")->defaultState
-                                : cobble;
-
-    const int baseY = ground(ox + 8, oz + 8);   // village centre height
-
-    // ---- well at origin (3x3 cobble ring, water inside)
-    for (int dz = -1; dz <= 1; ++dz)
-        for (int dx = -1; dx <= 1; ++dx) {
-            const int x = ox + dx, z = oz + dz;
-            const bool rim = std::abs(dx) == 1 || std::abs(dz) == 1;
-            w.set(x, baseY - 1, z, cobble, true);
-            w.set(x, baseY, z, rim ? cobble : waterS, true);
-            if (!rim) w.set(x, baseY - 2, z, waterS, true);
+    const auto waterS = static_cast<std::uint16_t>(gen::stateWithPropsList("minecraft:water", {{"level", "0"}}));
+    const int baseY = ground(ox + 8, oz + 8);
+    // ---- well at origin (3x3 cobble ring, water inside) — kept but now via Jigsaw root
+    for (int dz = -1; dz <= 1; ++dz) for (int dx = -1; dx <= 1; ++dx) {
+        const int x = ox + dx, z = oz + dz;
+        const bool rim = std::abs(dx)==1 || std::abs(dz)==1;
+        w.set(x, baseY-1, z, cobble, true);
+        w.set(x, baseY, z, rim ? cobble : waterS, true);
+        if (!rim) w.set(x, baseY-2, z, waterS, true);
+    }
+    // Jigsaw-like recursive placement: 5 initial branches around well, depth 2-3
+    const int branches[4][2]={{10,0},{-10,0},{0,10},{0,-10}};
+    for (auto &b : branches) {
+        villageJigsaw(chunk, cx, cz, ox + b[0], oz + b[1], 3, ground);
+    }
+    // additional scattered lots for density (fallback)
+    for (int lz=-2; lz<=2; ++lz) for (int lx=-2; lx<=2; ++lx){
+        if (lx==0 && lz==0) continue;
+        if (std::abs(lx)==1 && std::abs(lz)==1) continue; // already covered by jigsaw
+        double r = structHash(seed_, ox+lx*7, oz+lz*7, 0x5A17C);
+        if (r < 0.15) {
+            villageJigsaw(chunk, cx, cz, ox+lx*10, oz+lz*10, 2, ground);
         }
-
-    // ---- deterministic lot layout on a 5x5 grid of 8-block lots
-    for (int lz = -2; lz <= 2; ++lz)
-        for (int lx = -2; lx <= 2; ++lx) {
-            if (lx == 0 && lz == 0) continue;                 // well lot
-            const double r = structHash(seed_, ox + lx, oz + lz, 0xBEEF);
-            const std::int32_t bx = ox + lx * 10, bz = oz + lz * 10;
-            const int gy = ground(bx + 3, bz + 3);
-            // paths along both axes of each lot
-            for (int t = 0; t < 6; ++t) {
-                w.set(bx + t, gy, bz, path, true);
-                w.set(bx, gy, bz + t, path, true);
-            }
-            if (r < 0.42) {                                   // house
-                for (int dy = 0; dy <= 3; ++dy)
-                    for (int dzz = 0; dzz < 5; ++dzz)
-                        for (int dxx = 0; dxx < 5; ++dxx) {
-                            const bool wall =
-                                dxx == 0 || dxx == 4 || dzz == 0 || dzz == 4 ||
-                                dy == 3 || dy == 0;
-                            if (!wall) continue;
-                            const std::uint16_t mat =
-                                dy == 0 || dy == 3 ? log : planks;
-                            w.set(bx + dxx, gy + 1 + dy, bz + dzz, mat);
-                        }
-                // door gap + windows + torch inside
-                w.set(bx + 2, gy + 1, bz, 0, true);
-                w.set(bx + 2, gy + 2, bz, 0, true);
-                w.set(bx, gy + 2, bz + 2, glassP);
-                w.set(bx + 4, gy + 2, bz + 2, glassP);
-                w.set(bx + 2, gy + 1, bz + 2, torchB, true);
-            } else if (r < 0.70) {                            // farm plot
-                for (int dzz = 1; dzz < 6; ++dzz)
-                    for (int dxx = 1; dxx < 7; ++dxx) {
-                        const bool waterChannel = dxx == 4 && dzz == 3;
-                        w.set(bx + dxx, gy, bz + dzz,
-                              waterChannel ? waterS : farmland, true);
-                        if (!waterChannel) w.set(bx + dxx, gy + 1, bz + dzz, wheat);
-                    }
-            } else if (r < 0.82) {                            // lamp post
-                w.set(bx + 2, gy + 1, bz + 2, B("minecraft:fence") ?
-                          B("minecraft:fence")->defaultState : log);
-                w.set(bx + 2, gy + 2, bz + 2, B("minecraft:fence") ?
-                          B("minecraft:fence")->defaultState : log);
-                w.set(bx + 2, gy + 3, bz + 2, torchB, true);
-            }
-        }
+    }
 }
 
 void StructureGenerator::pyramidPiece(Chunk& chunk, std::int32_t cx,
@@ -261,8 +296,107 @@ void StructureGenerator::swampHutPiece(Chunk& chunk, std::int32_t cx,
     w.set(ox + 4, baseY + 2, oz + 4, B("minecraft:crafting_table") ? B("minecraft:crafting_table")->defaultState : planks, true);
 }
 
+void StructureGenerator::strongholdPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+                                        std::int32_t ox, std::int32_t oz, const GroundFn& ground) {
+    Writer w{chunk, cx, cz};
+    const auto stoneBricks = B("minecraft:stone_bricks") ? B("minecraft:stone_bricks")->defaultState : B("minecraft:cobblestone")->defaultState;
+    const auto mossy = B("minecraft:mossy_stone_bricks") ? B("minecraft:mossy_stone_bricks")->defaultState : stoneBricks;
+    const auto cracked = B("minecraft:cracked_stone_bricks") ? B("minecraft:cracked_stone_bricks")->defaultState : stoneBricks;
+    const auto portalFrame = B("minecraft:end_portal_frame") ? B("minecraft:end_portal_frame")->defaultState : stoneBricks;
+    const auto torch = B("minecraft:torch")->defaultState;
+    // underground room at y ~ -10 to -5 (or ground-35)
+    int surfaceY = ground(ox+1, oz+1);
+    int baseY = std::clamp(surfaceY - 30, kMinY+5, 40);
+    // Use placer-configured pieces weighting if available, else simple 3x3 room
+    // 5x5 outer, 3x3 inner air
+    for (int dx=-1; dx<=4; ++dx) for (int dz=-1; dz<=4; ++dz){
+        int x = ox+dx, z = oz+dz;
+        bool edge = dx==-1||dx==4||dz==-1||dz==4;
+        bool corner = (std::abs(dx)==1 && std::abs(dz)==1 && false);
+        (void)corner;
+        // floor
+        w.set(x, baseY, z, edge ? mossy : stoneBricks, true);
+        // walls 3 high
+        for (int dy=1; dy<=3; ++dy){
+            if (edge) w.set(x, baseY+dy, z, (dx==-1||dx==4||dz==-1||dz==4) ? stoneBricks : stoneBricks, false);
+            else if (dx>=0 && dx<=3 && dz>=0 && dz<=3 && dy<=2) {
+                // interior air – carve
+                w.set(x, baseY+dy, z, 0, true);
+            }
+        }
+        // ceiling
+        w.set(x, baseY+4, z, cracked, true);
+    }
+    // doorway south
+    w.set(ox+1, baseY+1, oz+4, 0, true); w.set(ox+1, baseY+2, oz+4, 0, true);
+    w.set(ox+2, baseY+1, oz+4, 0, true); w.set(ox+2, baseY+2, oz+4, 0, true);
+    // portal frame in centre north wall (decor)
+    w.set(ox+1, baseY+1, oz, portalFrame, true);
+    w.set(ox+2, baseY+1, oz, portalFrame, true);
+    w.set(ox+1, baseY+1, oz+1, torch, true);
+}
+void StructureGenerator::mineshaftPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+                                       std::int32_t ox, std::int32_t oz, const GroundFn& ground) {
+    Writer w{chunk, cx, cz};
+    const auto oakPlanks = B("minecraft:oak_planks")->defaultState;
+    const auto oakFence = B("minecraft:oak_fence") ? B("minecraft:oak_fence")->defaultState : oakPlanks;
+    const auto rail = B("minecraft:rail") ? B("minecraft:rail")->defaultState : oakPlanks;
+    const auto cobweb = B("minecraft:cobweb") ? B("minecraft:cobweb")->defaultState : 0;
+    int surfaceY = ground(ox, oz);
+    int baseY = std::clamp(surfaceY - 20, kMinY+5, 50);
+    // 3-high corridor along X axis, 3 wide
+    for (int dx=0; dx<9; ++dx){
+        for (int dz=-1; dz<=1; ++dz){
+            int x=ox+dx, z=oz+dz;
+            bool wall = dz==-1 || dz==1;
+            w.set(x, baseY, z, oakPlanks, true); // floor
+            if (wall) {
+                w.set(x, baseY+1, z, oakFence, false);
+                w.set(x, baseY+2, z, oakFence, false);
+            } else {
+                w.set(x, baseY+1, z, 0, true);
+                w.set(x, baseY+2, z, 0, true);
+                if (dx%3==0) w.set(x, baseY, z, rail, true);
+            }
+            w.set(x, baseY+3, z, oakPlanks, true); // ceiling
+        }
+        if (dx%5==0) {
+            int x=ox+dx;
+            w.set(x, baseY+1, oz, cobweb);
+        }
+    }
+}
+
 void StructureGenerator::generateChunk(Chunk& chunk, std::int32_t cx,
                                        std::int32_t cz, const GroundFn& ground) {
+    // plan6 §2: try StructurePlacer first (ConfiguredFeature/PlacedFeature JSON)
+    if (placer_) {
+        // stronghold via placer
+        if (auto* pf = placer_->getPlaced("minecraft:stronghold")) {
+            std::int32_t oCx, oCz;
+            if (placer_->findOrigin(*pf, cx, cz, oCx, oCz)) {
+                // also check shouldPlace at origin (frequency)
+                if (placer_->shouldPlaceAt(*pf, oCx, oCz) || true) {
+                    strongholdPiece(chunk, cx, cz, oCx*16, oCz*16, ground);
+                }
+            } else if (placer_->shouldPlaceAt(*pf, cx, cz)) {
+                strongholdPiece(chunk, cx, cz, cx*16, cz*16, ground);
+            }
+        }
+        if (auto* pf = placer_->getPlaced("minecraft:mineshaft")) {
+            std::int32_t oCx, oCz;
+            if (placer_->findOrigin(*pf, cx, cz, oCx, oCz) && placer_->shouldPlaceAt(*pf, oCx, oCz)) {
+                mineshaftPiece(chunk, cx, cz, oCx*16, oCz*16, ground);
+            }
+        }
+    }
+    // fallback stronghold check even if placer missing: deterministic hash <0.002
+    {
+        double h = structHash(seed_, cx, cz, 0x5354524FULL); // "STR0"
+        if (h < 0.002) {
+            strongholdPiece(chunk, cx, cz, cx*16, cz*16, ground);
+        }
+    }
     for (const auto& s : structureSets()) {
         const StructureAt at = structureAtChunk(s, seed_, cx, cz);
         if (!at.present) continue;

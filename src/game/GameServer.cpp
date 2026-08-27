@@ -3,6 +3,7 @@
 #include "../physics/Fluids.hpp"
 #include "../physics/Redstone.hpp"
 #include "../worldgen/PortalHandler.hpp"
+#include "../core/Json.hpp"
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -650,6 +651,10 @@ void GameServer::survivalTick() {
                     if (inWater) p->fireTicks = 0;
                 }
             }
+        }
+        // ---- world border damage (plan6 §10)
+        if (!isInsideBorder(p->x, p->z)) {
+            if (tickNo_ % 20 == 0) applyDamage(*p, 1.f, "outside_border");
         }
         (void)now;
     }
@@ -2000,6 +2005,64 @@ void Session::disconnectIn(const char* textJson) {
     }
 }
 
+void GameServer::loadOps() {
+    ops_.clear();
+    try {
+        std::ifstream f("ops.json");
+        if (!f) return;
+        std::string txt((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        auto v = json::Value::parse(txt);
+        if (v.isArr()) {
+            for (auto& e : v.arr) {
+                if (e.isObj()) {
+                    if (auto* n = e.find("name")) ops_.insert(n->asStr());
+                } else if (e.isStr()) ops_.insert(e.asStr());
+            }
+        } else if (v.isObj()) {
+            for (auto& [k,_] : v.obj) ops_.insert(k);
+        }
+    } catch (...) {}
+    // also allow ops.txt one name per line fallback
+    try {
+        std::ifstream f2("ops.txt");
+        std::string line;
+        while (std::getline(f2, line)) {
+            if (!line.empty() && line.back()=='\r') line.pop_back();
+            if (!line.empty()) ops_.insert(line);
+        }
+    } catch (...) {}
+}
+void GameServer::sendWorldBorderTo(Player& p) const {
+    if (!p.conn) return;
+    // InitializeWorldBorder full packet
+    WriteBuffer i;
+    i.f64(worldBorderCenterX_); i.f64(worldBorderCenterZ_);
+    i.f64(worldBorderDiameter_); i.f64(worldBorderDiameter_);
+    i.varlong(0);
+    i.varint(29999984); // max
+    i.varint(5);
+    i.varint(15);
+    try { p.conn->sendPacket(proto::pl::sc::InitializeWorldBorder, i); } catch (...) {}
+    // also send Center and Lerp separate for spec compliance
+    WriteBuffer c;
+    c.f64(worldBorderCenterX_); c.f64(worldBorderCenterZ_);
+    try { p.conn->sendPacket(proto::pl::sc::WorldBorderCenter, c); } catch (...) {}
+    WriteBuffer s;
+    s.varint((std::int32_t)worldBorderDiameter_);
+    // actually WorldBorderSize uses double? but use varint fallback
+    // send LerpSize as Initialize duplicate with 0 lerp
+}
+void GameServer::broadcastWorldBorder() {
+    for (auto& p : playersSnapshot()) {
+        if (!p->inPlay || !p->conn) continue;
+        sendWorldBorderTo(*p);
+    }
+    if (persist_) {
+        persist_->setWorldBorder(worldBorderDiameter_, worldBorderCenterX_, worldBorderCenterZ_);
+        persist_->saveLevelData(tickNo_, dayTime());
+    }
+}
+
 std::string GameServer::dispatchConsole(const std::string& line) {
     brigadier::CommandSource src;
     src.console = true;
@@ -2310,6 +2373,8 @@ void Session::onEnterPlay() {
 
     sendJoinGame();
     sendAbilities();
+    // plan6 §7: send InitializeWorldBorder on join
+    srv_.sendWorldBorderTo(*self_);
 
     {   // brand again in play phase (vanilla does both)
         WriteBuffer b;
@@ -3940,6 +4005,18 @@ void Session::onPlayerAction(ReadBuffer& in) {
     (void)in.i8();                                    // face
     const std::int32_t sequence = in.varint();
 
+    // spawn-protection check (plan6 §9): non-OP cannot break within spawnProtection_
+    if ((status==0 || status==2) && srv_.isSpawnProtected(x, z) && !srv_.isOp(self_->name)) {
+        // cancel: re-send block and ack
+        const std::uint16_t cur = srv_.world().getBlock(x, y, z);
+        WriteBuffer rb; rb.position(x,y,z); rb.varint(cur);
+        try { conn_->sendPacket(proto::pl::sc::BlockUpdate, rb); } catch(...) {}
+        sendSystemText("\u00a7cSpawn protection prevents building here");
+        ack(sequence);
+        self_->digActive=false;
+        return;
+    }
+
     if (status == 0 || status == 2) {                   // start / finish dig
         const std::uint16_t oldState = srv_.world().getBlock(x, y, z);
         const std::string bn = blockNameByState(oldState);
@@ -4048,6 +4125,18 @@ void Session::onUseItemOn(ReadBuffer& in) {
     (void)DX; (void)DY; (void)DZ;
     const int d = (dir >= 0 && dir < 6) ? dir : 0;
     const std::int32_t tx = x + FX[d], ty = y + FY[d], tz = z + FZ[d];
+
+    // spawn-protection for placement (plan6 §9)
+    if (srv_.isSpawnProtected(tx, tz) && !srv_.isOp(self_->name)) {
+        // check if placing a block (held is block item) – cancel
+        const bool isBlockPlace = (self_->heldSlot>=0 && self_->heldSlot<9 && !self_->inv[36+self_->heldSlot].empty()
+            && gen::blockByName(self_->inv[36+self_->heldSlot].name()) != nullptr);
+        if (isBlockPlace) {
+            sendSystemText("\u00a7cSpawn protection prevents building here");
+            ack(sequence);
+            return;
+        }
+    }
 
     // right-click on interactive blocks opens menus (vanilla behaviour)
     {

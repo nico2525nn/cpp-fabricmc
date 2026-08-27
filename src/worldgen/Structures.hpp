@@ -11,7 +11,9 @@
 #include <functional>
 #include <string>
 #include <vector>
+#include <memory>
 #include "MultiNoise.hpp"
+#include "StructurePlacer.hpp"
 
 namespace cppfm { struct Chunk; }
 
@@ -98,7 +100,10 @@ inline StructureAt structureAtChunk(const StructureSet& s, std::uint64_t seed,
 class StructureGenerator {
 public:
     explicit StructureGenerator(std::uint64_t seed) : seed_(seed),
-        biomes_(std::make_shared<MultiNoiseBiomeSource>(seed)) {}
+        biomes_(std::make_shared<MultiNoiseBiomeSource>(seed)),
+        placer_(std::make_unique<StructurePlacer>(seed)) {
+        placer_->load("assets/data/structures");
+    }
 
     using GroundFn = std::function<std::int32_t(std::int32_t, std::int32_t)>;
     // `ground`: world Y of the first solid block top for a column (from the
@@ -106,10 +111,29 @@ public:
     void generateChunk(Chunk& chunk, std::int32_t cx, std::int32_t cz,
                        const GroundFn& ground);
 
+    // ConfiguredFeature/PlacedFeature access (plan6 §2)
+    const StructurePlacer& placer() const { return *placer_; }
+
 private:
     void villagePiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
                       std::int32_t originX, std::int32_t originZ,
                       const GroundFn& ground);
+    // Jigsaw-like recursive village (plan6 §2)
+    void villageJigsaw(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+                       std::int32_t ox, std::int32_t oz, int depth,
+                       const GroundFn& ground);
+    void villageHouse(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+                      std::int32_t bx, std::int32_t bz, int gy);
+    void villageFarm(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+                     std::int32_t bx, std::int32_t bz, int gy);
+    void villageChurch(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+                       std::int32_t bx, std::int32_t bz, int gy);
+    void strongholdPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+                         std::int32_t originX, std::int32_t originZ,
+                         const GroundFn& ground);
+    void mineshaftPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+                        std::int32_t originX, std::int32_t originZ,
+                        const GroundFn& ground);
     void pyramidPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
                       std::int32_t originX, std::int32_t originZ,
                       const GroundFn& ground);
@@ -128,6 +152,7 @@ private:
 
     std::uint64_t seed_;
     std::shared_ptr<MultiNoiseBiomeSource> biomes_;
+    std::unique_ptr<StructurePlacer> placer_;
 };
 
 } // namespace cppfm::worldgen

@@ -273,4 +273,39 @@ void FireBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
     if (age >= 15 && (rand()%100)<30) w.setBlock(x,y,z, 0);
 }
 
+// -------------------------------------------------------- PortalAge (plan6 §3)
+
+void PortalAgeBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
+                             std::uint16_t state, std::int64_t now, GameServer* srv) {
+    (void)now; (void)srv;
+    int age = 0;
+    for (auto& [k,v] : gen::propsOf(state)) if (k=="age") age = std::atoi(std::string(v).c_str());
+    const gen::BlockDef* d = gen::blockByState(state);
+    if (!d) return;
+    // Random decay: 10% chance to age, 5% chance to extinguish at max
+    if (age < 15) {
+        if ((rand() % 100) < 10) {
+            std::vector<std::pair<std::string_view,std::string_view>> props;
+            for (auto& [k,v] : gen::propsOf(state)) if (k!="age") props.emplace_back(k,v);
+            std::string ns = std::to_string(age+1);
+            props.emplace_back("age", ns);
+            std::uint16_t nsState = static_cast<std::uint16_t>(gen::stateWithProps(*d, props));
+            w.setBlock(x,y,z, nsState);
+        }
+    } else {
+        // age 15: 2% chance to decay (become air) if not near obsidian frame
+        if ((rand() % 100) < 2) {
+            // check for nearby obsidian within 2 blocks
+            bool nearFrame = false;
+            for (int dx=-2; dx<=2 && !nearFrame; ++dx) for (int dy=-2; dy<=2 && !nearFrame; ++dy) for (int dz=-2; dz<=2 && !nearFrame; ++dz){
+                if (dx==0&&dy==0&&dz==0) continue;
+                auto s2 = w.getBlock(x+dx, y+dy, z+dz);
+                auto* bd = gen::blockByState(s2);
+                if (bd && std::string(bd->name)=="minecraft:obsidian") nearFrame = true;
+            }
+            if (!nearFrame) w.setBlock(x,y,z, 0);
+        }
+    }
+}
+
 } // namespace cppfm
