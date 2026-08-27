@@ -231,4 +231,124 @@ BTStatus WanderAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     return BTStatus::Running;
 }
 
+// ---------- plan7 extended actions ----------
+
+BTStatus BlazeFireballAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (m.kind != MobKind::Blaze) return BTStatus::Failure;
+    if (m.witherSkullCooldown > now) return BTStatus::Failure;
+    Player* t = ctx.nearestPlayer;
+    if (!t) return BTStatus::Failure;
+    double dx = t->x - m.x, dy = (t->y+1.0)-(m.y+1.0), dz = t->z - m.z;
+    double d = std::sqrt(dx*dx+dz*dz);
+    if (d>16 || d<4) return BTStatus::Failure;
+    double inv = 1.0/(d+1e-6);
+    double vx = dx*inv*1.0, vz = dz*inv*1.0, vy = dy*inv*0.2 + 0.1;
+    if (ctx.srv) ctx.srv->spawnProjectile(ProjectileKind::Fireball, m.x, m.y+1.0, m.z, vx, vy, vz, m.entityId, false);
+    m.witherSkullCooldown = (int)(now + 30 + rand()%30);
+    return BTStatus::Success;
+}
+
+BTStatus GuardianBeamAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (m.kind != MobKind::Guardian && m.kind != MobKind::ElderGuardian) return BTStatus::Failure;
+    if (m.witherSkullCooldown > now) return BTStatus::Failure;
+    Player* t = ctx.nearestPlayer;
+    if (!t) return BTStatus::Failure;
+    double dx = t->x - m.x, dz = t->z - m.z;
+    double d = std::sqrt(dx*dx+dz*dz);
+    if (d>15) return BTStatus::Failure;
+    if (ctx.srv) {
+        ctx.srv->applyDamage(*t, 6.f, "magic");
+        ctx.srv->broadcastSound("minecraft:entity.guardian.attack", m.x,m.y,m.z,1.f,1.f,"hostile");
+    }
+    m.witherSkullCooldown = (int)(now + 60);
+    return BTStatus::Success;
+}
+
+BTStatus GhastFireballAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (m.kind != MobKind::Ghast) return BTStatus::Failure;
+    if (m.witherSkullCooldown > now) return BTStatus::Failure;
+    Player* t = ctx.nearestPlayer;
+    if (!t) return BTStatus::Failure;
+    double dx = t->x - m.x, dy = (t->y+1.0)-(m.y+1.5), dz = t->z - m.z;
+    double d = std::sqrt(dx*dx+dz*dz);
+    if (d>32) return BTStatus::Failure;
+    double inv=1.0/(d+1e-6);
+    double vx=dx*inv*1.0, vz=dz*inv*1.0, vy=dy*inv*0.2;
+    if (ctx.srv) ctx.srv->spawnProjectile(ProjectileKind::Fireball, m.x, m.y+1.5, m.z, vx, vy, vz, m.entityId, false);
+    m.witherSkullCooldown = (int)(now + 80 + rand()%40);
+    return BTStatus::Success;
+}
+
+BTStatus PhantomSwoopAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (m.kind != MobKind::Phantom) return BTStatus::Failure;
+    Player* t = ctx.nearestPlayer;
+    if (!t) return BTStatus::Failure;
+    double dx = t->x - m.x, dy = t->y - m.y, dz = t->z - m.z;
+    double d = std::sqrt(dx*dx+dz*dz);
+    if (d>30) {
+        m.x += dx/d * 0.25; m.z += dz/d * 0.25;
+        m.y += dy*0.05;
+        return BTStatus::Running;
+    }
+    if (d<2.0 && now % 20==0 && ctx.srv) ctx.srv->mobAttackPlayer(m, *t);
+    else {
+        m.x += dx/d * 0.18; m.z += dz/d * 0.18; m.y += (t->y+3 - m.y)*0.08;
+    }
+    return BTStatus::Running;
+}
+
+BTStatus ShulkerBulletAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (m.kind != MobKind::Shulker) return BTStatus::Failure;
+    if (m.witherSkullCooldown > now) return BTStatus::Failure;
+    Player* t = ctx.nearestPlayer;
+    if (!t) return BTStatus::Failure;
+    double d = std::sqrt((t->x-m.x)*(t->x-m.x)+(t->z-m.z)*(t->z-m.z));
+    if (d>16) return BTStatus::Failure;
+    double dx=t->x-m.x, dy=(t->y+0.5)-m.y, dz=t->z-m.z;
+    double inv=1.0/(d+1e-6);
+    if (ctx.srv) ctx.srv->spawnProjectile(ProjectileKind::Arrow, m.x, m.y+0.5, m.z, dx*inv*0.7, dy*inv*0.7+0.1, dz*inv*0.7, m.entityId, false);
+    m.witherSkullCooldown = (int)(now + 60 + rand()%40);
+    if (ctx.srv) ctx.srv->broadcastSound("minecraft:entity.shulker.shoot", m.x,m.y,m.z,1.f,1.f,"hostile");
+    return BTStatus::Success;
+}
+
+BTStatus WardenSonicBoomAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (m.kind != MobKind::Warden) return BTStatus::Failure;
+    if (m.witherSkullCooldown > now) return BTStatus::Failure;
+    Player* t = ctx.nearestPlayer;
+    if (!t) return BTStatus::Failure;
+    double d = std::sqrt((t->x-m.x)*(t->x-m.x)+(t->z-m.z)*(t->z-m.z));
+    if (d>18) {
+        // slowly approach
+        double dx=t->x-m.x, dz=t->z-m.z;
+        m.x += dx/d*0.06; m.z += dz/d*0.06;
+        m.yaw=(float)(std::atan2(dz,dx)*180/3.14159-90);
+        return BTStatus::Running;
+    }
+    if (ctx.srv) {
+        ctx.srv->applyDamage(*t, 30.f, "sonic_boom");
+        ctx.srv->broadcastSound("minecraft:entity.warden.sonic_boom", m.x,m.y,m.z,2.f,1.f,"hostile");
+        // knockback
+        double dx=t->x-m.x, dz=t->z-m.z;
+        double inv=1.0/(d+1e-6);
+        WriteBuffer v; v.varint(t->entityId); v.i16((int16_t)(dx*inv*12000)); v.i16((int16_t)(8000)); v.i16((int16_t)(dz*inv*12000));
+        try{ t->conn->sendPacket(proto::pl::sc::EntityVelocity, v);}catch(...){}
+    }
+    m.witherSkullCooldown = (int)(now + 80);
+    return BTStatus::Success;
+}
+
+BTStatus GenericRangedAttackAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    Player* t = ctx.nearestPlayer;
+    if (!t) return BTStatus::Failure;
+    if (m.witherSkullCooldown > now) return BTStatus::Failure;
+    double dx=t->x-m.x, dy=(t->y+1.0)-(m.y+1.6), dz=t->z-m.z;
+    double d=std::sqrt(dx*dx+dz*dz);
+    if (d<4 || d>16) return BTStatus::Failure;
+    double inv=1.0/(d+1e-6);
+    if (ctx.srv) ctx.srv->spawnProjectile(ProjectileKind::Arrow, m.x, m.y+1.6, m.z, dx*inv*1.2, dy*inv+0.15, dz*inv*1.2, m.entityId, false);
+    m.witherSkullCooldown=(int)(now+40+rand()%30);
+    return BTStatus::Success;
+}
+
 } // namespace cppfm
