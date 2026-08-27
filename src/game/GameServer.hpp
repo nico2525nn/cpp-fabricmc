@@ -373,9 +373,12 @@ public:
         {
             const auto sp = world_.spawnPoint();
             for (int dz = -2; dz <= 2; ++dz)
-                for (int dx = -2; dx <= 2; ++dx)
-                    world_.generateChunkIfMissing((sp.x >> 4) + dx,
-                                                  (sp.z >> 4) + dz);
+                for (int dx = -2; dx <= 2; ++dx) {
+                    const std::int32_t cx = (sp.x >> 4) + dx;
+                    const std::int32_t cz = (sp.z >> 4) + dz;
+                    world_.generateChunkIfMissing(cx, cz);
+                    world_.addForcedChunk(cx, cz);
+                }
         }
         persist_->start();
         // plan5 §1: per-dimension persistence (DIM-1 / DIM1)
@@ -467,6 +470,9 @@ public:
     void furnacesTick();
     // Hopper item movement + dispenser ejection (every 8 ticks).
     void hoppersTick();
+    // Chunk LRU / simulation distance (plan5 items 6,7,8)
+    bool isChunkInSimulationDistance(std::int32_t cx, std::int32_t cz) const;
+    void chunksUnloadTick();
     // Direct inventory access helpers used by the hopper simulation.
     ItemStack* containerAt(std::int32_t x, std::int32_t y, std::int32_t z,
                            int& countOut, BlockEntity::Kind& kindOut);
