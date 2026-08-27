@@ -47,6 +47,13 @@ struct FurnaceData {
     std::int16_t cookTotal = 200;
 };
 
+struct BrewingData {
+    static constexpr int kSlots = 5; // 0-2 potions, 3 ingredient, 4 fuel (blaze powder)
+    ItemStack slots[kSlots];
+    std::int16_t brewTime = 0; // 0..400
+    std::int16_t fuel = 0;     // remaining fuel (0..20)
+};
+
 // Generic container used by hoppers (5) and dispensers (9).
 struct GenericContainerData {
     static constexpr int kMaxSlots = 9;
@@ -55,11 +62,12 @@ struct GenericContainerData {
 };
 
 struct BlockEntity {
-    enum class Kind { Chest, Furnace, Hopper, Dispenser, Barrel, ShulkerBox };
+    enum class Kind { Chest, Furnace, Hopper, Dispenser, Barrel, ShulkerBox, Brewing };
     Kind kind = Kind::Chest;
     ChestData chest{};
     FurnaceData furnace{};
     GenericContainerData generic{};      // hopper/dispenser
+    BrewingData brewing{};
 };
 
 class BlockEntityStore {
@@ -117,6 +125,11 @@ public:
             } else if (be.kind == BlockEntity::Kind::ShulkerBox) {
                 e.set("id", nbt::Value::makeString("minecraft:shulker_box"));
                 writeItems(e, be.chest.slots, ChestData::kSlots, "Items");
+            } else if (be.kind == BlockEntity::Kind::Brewing) {
+                e.set("id", nbt::Value::makeString("minecraft:brewing_stand"));
+                writeItems(e, be.brewing.slots, BrewingData::kSlots, "Items");
+                e.set("BrewTime", nbt::Value::makeShort(be.brewing.brewTime));
+                e.set("Fuel", nbt::Value::makeByte(static_cast<std::int8_t>(be.brewing.fuel)));
             } else {
                 e.set("id", nbt::Value::makeString("minecraft:furnace"));
                 writeFurnaceItems(e, be.furnace);
