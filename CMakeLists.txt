@@ -20,6 +20,7 @@ add_executable(cppfm
     src/physics/LightEngine.cpp
     src/physics/Fluids.cpp
     src/physics/Redstone.cpp
+    src/physics/BlockTickScheduler.cpp
     src/game/WorldGen.cpp
     src/worldgen/DensityFunction.cpp
     src/worldgen/MultiNoise.cpp
@@ -58,6 +59,7 @@ add_executable(test_native
     src/physics/LightEngine.cpp
     src/physics/Fluids.cpp
     src/physics/Redstone.cpp
+    src/physics/BlockTickScheduler.cpp
     src/worldgen/DensityFunction.cpp
     src/worldgen/MultiNoise.cpp
     src/worldgen/Structures.cpp)

@@ -269,12 +269,16 @@ void GameServer::tickOnce() {
     fluidSim_->tick(tickNo_);
     mark('R');
     redstone_->tick(tickNo_);
+    if (blockTicks_) blockTicks_->tick(tickNo_);
     mark('D');
     tickDigs();
     mark('S');
     survivalTick();
     mark('U');
     furnacesTick();
+    hoppersTick();
+    projectilesTick();
+    weatherTick();
     mark('E');
     effectsTick();
     mark('X');
@@ -3498,6 +3502,30 @@ void Session::onUseItemOn(ReadBuffer& in) {
     const InvSlot& heldItem =
         (self_->heldSlot >= 0 && self_->heldSlot < 9)
             ? self_->inv[36 + self_->heldSlot] : airSlot;
+
+    // ---- bone meal fertilize hook ----
+    if (!heldItem.empty() && heldItem.name() == "minecraft:bone_meal" && srv_.blockTicks_) {
+        const std::uint16_t clickedSt = srv_.world().getBlock(x, y, z);
+        if (clickedSt != 0) {
+            const gen::BlockDef* cb = gen::blockByState(clickedSt);
+            if (cb) {
+                const std::string bn(cb->name);
+                auto* beh = srv_.blockTicks_->behaviorFor(bn);
+                if (beh && beh->fertilize(srv_.world(), x, y, z, clickedSt, &srv_)) {
+                    const std::uint16_t newSt = srv_.world().getBlock(x, y, z);
+                    srv_.broadcastBlockChange(x, y, z, newSt);
+                    srv_.broadcastSound("minecraft:item.bone_meal.use", x + 0.5, y + 0.5, z + 0.5);
+                    if (survival) {
+                        auto* mh = &self_->inv[36 + self_->heldSlot];
+                        if (--mh->count <= 0) *mh = InvSlot::air();
+                        srv_.resendInventory(*self_);
+                    }
+                    ack(sequence);
+                    return;
+                }
+            }
+        }
+    }
 
     // ---- doors: two-block placement + toggle (plan4 P3-M)
     if (!heldItem.empty()) {
