@@ -47,6 +47,7 @@
 #include "../net/PacketBatcher.hpp"
 #include "Attributes.hpp"
 #include "DamageSource.hpp"
+#include "ServerProperties.hpp"
 
 namespace cppfm {
 
@@ -340,6 +341,30 @@ public:
         blockTicks_->registerBehavior("minecraft:farmland", std::make_unique<FarmlandBehavior>());
         blockTicks_->registerBehavior("minecraft:fire", std::make_unique<FireBehavior>());
         blockTicks_->registerBehavior("minecraft:nether_portal", std::make_unique<PortalAgeBehavior>());
+        // plan7: ServerProperties typed loading (viewDistance, spawn-protection, etc.)
+        {
+            ServerProperties sp;
+            if (sp.load("server.properties")) {
+                cfg_.viewDistance = std::clamp(sp.get<int>("view-distance", cfg_.viewDistance), 2, 32);
+                cfg_.simulationDistance = std::clamp(sp.get<int>("simulation-distance", cfg_.simulationDistance), 2, 32);
+                cfg_.spawnProtection = std::max(0, sp.get<int>("spawn-protection", cfg_.spawnProtection));
+                // also mirror to world
+                world_.setSimulationDistance(cfg_.simulationDistance);
+                if (netherWorld_) netherWorld_->setSimulationDistance(cfg_.simulationDistance);
+                if (endWorld_) endWorld_->setSimulationDistance(cfg_.simulationDistance);
+            }
+        }
+        // plan7: World simulation-distance responsibility – engines use World::isPositionInSimulationDistance
+        world_.setSimulationDistance(cfg_.simulationDistance);
+        if (netherWorld_) netherWorld_->setSimulationDistance(cfg_.simulationDistance);
+        if (endWorld_) endWorld_->setSimulationDistance(cfg_.simulationDistance);
+        auto simCb = [this](std::int32_t cx, std::int32_t cz) -> bool {
+            return this->isChunkInSimulationDistance(cx, cz);
+        };
+        world_.setSimulationDistanceCallback(simCb);
+        if (netherWorld_) netherWorld_->setSimulationDistanceCallback(simCb);
+        if (endWorld_) endWorld_->setSimulationDistanceCallback(simCb);
+
         redstone_->setBlockEntityStore(&blockEntities_);
         redstone_->setTickRef(&tickNo_);
         world_.setOnBlockChanged([this](std::int32_t x, std::int32_t y,

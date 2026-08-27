@@ -1,8 +1,11 @@
 // Worldgen v3: density-function shaped terrain, MultiNoise per-cell biomes,
 // advanced triangle-distribution ores and structures (plan3.md ワールド生成).
 #include "World.hpp"
+#include "../worldgen/ChunkGenerator.hpp"
+#include "../worldgen/StructureManager.hpp"
 #include "../worldgen/DensityFunction.hpp"
 #include <algorithm>
+#include <shared_mutex>
 
 namespace cppfm {
 
@@ -49,9 +52,46 @@ std::uint64_t rng64(std::uint64_t& s) {
 
 } // namespace
 
+World::~World() = default;
+
 void World::initWorldgen() {
-    biomeSource_ = std::make_unique<worldgen::MultiNoiseBiomeSource>(srv_seed);
+    biomeSource_ = std::make_shared<worldgen::MultiNoiseBiomeSource>(srv_seed);
     structures_ = std::make_unique<worldgen::StructureGenerator>(srv_seed);
+    structureManager_ = std::make_unique<worldgen::StructureManager>(srv_seed, biomeSource_);
+    // try data-driven load (plan7): JSON sets from assets/data/structure_sets or structures
+    structureManager_->loadFromDirectory("assets/data/structure_sets");
+    structureManager_->loadFromDirectory("assets/data/structures");
+    // ChunkGenerator delegation (plan7): create level-specific generator
+    switch (level_) {
+        case LevelType::Flat:
+            generator_ = std::make_unique<worldgen::FlatLevelSource>(this);
+            break;
+        case LevelType::Nether:
+            generator_ = std::make_unique<worldgen::NetherLevelSource>(this);
+            break;
+        case LevelType::End:
+            generator_ = std::make_unique<worldgen::EndLevelSource>(this);
+            break;
+        case LevelType::Normal:
+        default:
+            generator_ = std::make_unique<worldgen::NormalLevelSource>(this);
+            break;
+    }
+}
+
+void World::generateChunkIfMissing(std::int32_t cx, std::int32_t cz) const {
+    {
+        std::shared_lock lock(mutex_);
+        if (chunks_.count(chunkKey(cx, cz))) return;
+    }
+    auto c = std::make_unique<Chunk>();
+    const bool loaded = loader_ && loader_(cx, cz, *c);
+    if (!loaded) {
+        if (generator_) generator_->fillChunk(*c, cx, cz);
+        else generateChunkFallback(*c, cx, cz);
+    }
+    std::unique_lock lock(mutex_);
+    chunks_.try_emplace(chunkKey(cx, cz), std::move(c));
 }
 
 void World::fillTerrainV3(Chunk& c, std::int32_t cx, std::int32_t cz) const {
@@ -259,13 +299,13 @@ void World::fillTerrainV3(Chunk& c, std::int32_t cx, std::int32_t cz) const {
             }
     }
 
-    // ---------------------------------------------------------- structures
-    structures_->generateChunk(c, cx, cz, [&](std::int32_t wx, std::int32_t wz)
-                                   -> std::int32_t {
-        // ground from the same height field used above
+    // ---------------------------------------------------------- structures (plan7: via StructureManager data-driven)
+    auto groundFn = [&](std::int32_t wx, std::int32_t wz) -> std::int32_t {
         const double h = biomeSource_->heightEstimate(wx, wz);
-        return static_cast<std::int32_t>(std::clamp(h, -56.0, 150.0)) ;
-    });
+        return static_cast<std::int32_t>(std::clamp(h, -56.0, 150.0));
+    };
+    if (structureManager_) structureManager_->generate(c, cx, cz, groundFn);
+    else structures_->generateChunk(c, cx, cz, groundFn);
 }
 
 
