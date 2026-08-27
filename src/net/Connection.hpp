@@ -13,6 +13,8 @@
 #include "../core/ByteBuffer.hpp"
 #include "../core/Zlib.hpp"
 #include "../net/Crypto.hpp"
+#include "PacketEncoder.hpp"
+#include "PacketDecoder.hpp"
 #include <chrono>
 #include <cstdlib>
 #include <cstdio>
@@ -78,6 +80,7 @@ public:
 
     // Reads one frame payload (length-prefixed, optionally compressed).
     // Returns the packet body (packet id + payload). Throws SocketClosedError on EOF.
+    // Delegates decompression to PacketDecoder for ByteBuffer handling.
     std::vector<std::uint8_t> readFrame() {
         std::int32_t len;
         if (!encrypted_) {
@@ -101,7 +104,7 @@ public:
         readExact(frame_.data(), frame_.size());
         if (encrypted_) decCtx_->crypt(frame_.data(), frame_.size(), frame_.data());
         if (compressionThreshold_ < 0) return frame_;
-        // compressed layout: varint dataLength + (compressed | raw) body
+        // Delegate to PacketDecoder for ByteBuffer conversion + decompression
         {
             static const bool tr = getenv("CPPFM_TRACE") != nullptr;
             if (tr)
@@ -109,22 +112,13 @@ public:
                              (int)getpid(), fd_, frame_[static_cast<std::size_t>(compressionThreshold_ >= 0 ? 1 : 0)],
                              frame_.size());
         }
-        ReadBuffer in(frame_);
-        const std::int32_t dataLen = in.varint();
-        const std::size_t left = in.remaining();
-        if (dataLen == 0) {
-            return std::vector<std::uint8_t>(in.p + in.off, in.p + in.off + left);
-        }
-        if (static_cast<std::uint32_t>(dataLen) > kMaxFrame)
-            throw std::runtime_error("declared size out of range");
-        std::vector<std::uint8_t> out;
-        decompressRaw(in.p + in.off, left, static_cast<std::size_t>(dataLen), out);
-        return out;
+        return PacketDecoder::decodeFrame(frame_, compressionThreshold_);
     }
     void writeFrameRaw(const std::uint8_t* body, std::size_t n) {
         sendFramed(body, n);
     }
     // Single compression-aware framed writer used by every send path.
+    // Delegates to PacketEncoder for ByteBuffer + compression + encryption handling.
     void sendFramed(const std::uint8_t* a, std::size_t na,
                     const std::uint8_t* b = nullptr, std::size_t nb = 0) {
         std::lock_guard lk(tx_);
@@ -134,35 +128,9 @@ public:
             std::fprintf(stderr, "[send] t=%.3f fd=%d peer=%u id=%02x bytes=%zu\n",
                 std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(),
                 fd_, peerPort(), a[0], na + nb);
-        const std::size_t total = na + nb;
-        std::vector<std::uint8_t> frame;
-        if (compressionThreshold_ >= 0) {
-            if (total >= static_cast<std::size_t>(compressionThreshold_)) {
-                WriteBuffer::writeVarintTo(frame, static_cast<std::int32_t>(total));
-                std::vector<std::uint8_t> joined;
-                const std::uint8_t* src; std::size_t slen;
-                if (nb) {                            // rare: join segments
-                    joined.reserve(total);
-                    joined.insert(joined.end(), a, a + na);
-                    joined.insert(joined.end(), b, b + nb);
-                    src = joined.data(); slen = total;
-                } else { src = a; slen = na; }
-                std::vector<std::uint8_t> comp;
-                compressRaw(src, slen, comp);        // zlib format
-                frame.insert(frame.end(), comp.begin(), comp.end());
-            } else {
-                frame.push_back(0);                  // dataLength 0: stored raw
-                frame.insert(frame.end(), a, a + na);
-                if (nb) frame.insert(frame.end(), b, b + nb);
-            }
-        } else {
-            frame.insert(frame.end(), a, a + na);
-            if (nb) frame.insert(frame.end(), b, b + nb);
-        }
-        std::vector<std::uint8_t> outer;
-        WriteBuffer::writeVarintTo(outer, static_cast<std::int32_t>(frame.size()));
-        outer.insert(outer.end(), frame.begin(), frame.end());
-        if (encrypted_) encCtx_->crypt(outer.data(), outer.size(), outer.data());
+        auto outer = PacketEncoder::encodeRaw(a, na, b, nb,
+                                              compressionThreshold_,
+                                              encrypted_ ? encCtx_.get() : nullptr);
         sendAll(outer.data(), outer.size());
     }
     void sendPacketBuf(std::uint8_t id, const std::vector<std::uint8_t>& payload) {
