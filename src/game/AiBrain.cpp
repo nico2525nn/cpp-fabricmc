@@ -1,6 +1,7 @@
 // AI goal/sensor implementations. Movement uses the A* pathfinder when the
 // target is far and direct steering when close (vanilla hybrid behaviour).
 #include "AiBrain.hpp"
+#include "BehaviorTree.hpp"
 #include "GameServer.hpp"
 
 namespace cppfm {
@@ -135,6 +136,8 @@ bool BreedGoal::shouldStart(MobEntity& m, AiContext& ctx) {
 bool BreedGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     GameServer& srv = *ctx.srv;
     if (!m.inLove || now < m.breedCooldownUntil) return m.inLove;
+    // BreedingGoal as ActionNode with LoveMode: wait 30 ticks after entering love
+    if (now < m.loveUntilTick - 30*20 + 30) return true; // 30 tick delay after feeding
     // find another in-love adult of same kind nearby
     auto partner = srv.findLovePartner(m);
     if (!partner) return true;                            // keep waiting
@@ -234,5 +237,38 @@ bool RangedAttackGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
 
 // -------------------------------------------------------- ranged attacks --
 
+Brain::~Brain() = default;
+void Brain::setBehaviorTree(std::unique_ptr<BehaviorTree> t) { behaviorTree_ = std::move(t); }
+bool Brain::hasBehaviorTree() const { return behaviorTree_ != nullptr; }
+void Brain::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    NearestPlayerSensor::update(m, ctx);
+    // BehaviorTree evaluation (plan6 item 29)
+    if (behaviorTree_) {
+        BTStatus s = behaviorTree_->tick(m, ctx, now);
+        if (s == BTStatus::Running || s == BTStatus::Success) {
+            // tree handled this tick; still allow fallback if tree returned Failure
+            if (s == BTStatus::Running) return;
+            // if Success, we consider tree consumed tick
+            return;
+        }
+        // Failure -> fall through to Goal logic
+    }
+    Goal* chosen = nullptr;
+    for (auto& g : goals_) {
+        if (g->shouldStart(m, ctx)) { chosen = g.get(); break; }
+        if (g.get() == active_ && running_) break;   // keep active unless preempted
+    }
+    if (!chosen && running_) chosen = active_;
+    if (chosen != active_) {
+        if (active_) active_->stop(m, ctx);
+        active_ = chosen;
+        running_ = false;
+        if (active_) { active_->start(m, ctx); running_ = true; }
+    }
+    if (active_) {
+        running_ = active_->tick(m, ctx, now);
+        if (!running_) { active_->stop(m, ctx); active_ = nullptr; }
+    }
+}
 
 } // namespace cppfm
