@@ -305,20 +305,6 @@ int GameServer::computeProtectionEPF(const DamageSource& ds, const Player& p) co
     return total;
 }
 int GameServer::computeProtectionEPF(const DamageSource& ds, const MobEntity& m) const {
-    // Plan8 EnchantmentHelper for mob equipment as well
-    if (ds.bypassEnchant || ds.isDrown() || ds.isStarveFlag) return 0;
-    int total = 0;
-    for (int i = 2; i < 6; ++i) {
-        if (m.equipment[i].empty()) continue;
-        const auto& s = m.equipment[i];
-        total += EnchantmentHelper::getProtectionEPF(ds, s);
-    }
-    if (total > 20) total = 20;
-    return total;
-    // modular split: delegate to CombatManager (plan8)
-    return CombatManager::computeEPF(ds, p);
-}
-int GameServer::computeProtectionEPF(const DamageSource& ds, const MobEntity& m) const {
     // modular split: delegate to CombatManager (plan8)
     return CombatManager::computeEPF(ds, m);
 }
