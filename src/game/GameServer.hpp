@@ -623,6 +623,9 @@ public:
                          double vx, double vy, double vz,
                          std::int32_t ownerId, bool ownerIsPlayer);
     void projectilesTick();
+    // TNT primed entity (plan10 §8): fuse 80t, gravity, SpawnEntity type minecraft:tnt
+    void spawnTnt(double x,double y,double z,double vx,double vy,double vz,int fuse=80);
+    void tntTick();
     // Villager trading (plan4 P1-B)
     static const std::vector<struct TradeOffer>& tradeTable();
     bool openTrading(Player& p, MobEntity& villager);
@@ -775,6 +778,7 @@ private:
     std::vector<std::shared_ptr<ItemEntity>> itemDrops_;
     std::vector<std::shared_ptr<XpOrbEntity>> xpOrbs_;
     std::vector<std::shared_ptr<ProjectileEntity>> projectiles_;
+    std::vector<std::shared_ptr<TntEntity>> tnts_;
     std::unordered_map<std::int64_t, bool> dispenserPower_;
     std::int64_t tickNo_ = 0;
     std::int64_t timeOffset_ = 0;

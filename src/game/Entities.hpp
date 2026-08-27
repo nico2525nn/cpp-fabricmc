@@ -55,6 +55,14 @@ struct LightningBoltEntity {
     std::int64_t ageTicks = 0;
 };
 
+struct TntEntity {
+    std::int32_t entityId = 0;
+    double x=0, y=0, z=0;
+    double vx=0, vy=0, vz=0;
+    std::int32_t fuse = 80; // ticks until explode (vanilla 80)
+    std::int64_t ageTicks = 0;
+};
+
 enum class MobKind : std::uint8_t {
     Pig = 0, Cow, Sheep, Chicken,
     Zombie, Creeper, Skeleton, Spider,
