@@ -40,6 +40,7 @@
 #include "GameRules.hpp"
 #include "ServerEvents.hpp"
 #include "AiBrain.hpp"
+#include "../net/PacketBatcher.hpp"
 
 namespace cppfm {
 
@@ -585,13 +586,12 @@ public:
         }
     }
     void broadcastBlockChange(std::int32_t x, std::int32_t y, std::int32_t z,
-                              std::uint16_t state) {
-        WriteBuffer b;
-        b.position(x, y, z);
-        b.varint(state);
-        broadcastPacketExcept(nullptr, proto::pl::sc::BlockUpdate, b);
-        invalidateChunkCache(x >> 4, z >> 4);
-    }
+                              std::uint16_t state);
+    void queueBlockChange(std::int32_t x, std::int32_t y, std::int32_t z,
+                          std::uint16_t state);
+    void flushBlockBatches();
+    void broadcastPlayerChat(Player& sender, const std::string& message, std::int64_t timestamp);
+    bool validateFeatureFlags(const std::vector<std::array<std::string,3>>& clientPacks);
     // Serialized-chunk cache: shared across players; keyed by chunk, invalidated
     // by world revision on edits.
     using ChunkBodyRef = std::shared_ptr<const std::vector<std::uint8_t>>;
@@ -643,6 +643,8 @@ private:
     std::int64_t tickNo_ = 0;
     std::int64_t timeOffset_ = 0;
     std::int64_t startTime_ = 1000;
+    PacketBatcher batcher_;
+    std::int64_t lastBlockBatchFlushMs_ = 0;
     std::thread tickThread_;
     std::unique_ptr<Persistence> persist_;
     std::unique_ptr<Persistence> dimPersist_[2];
