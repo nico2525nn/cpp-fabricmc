@@ -3403,7 +3403,6 @@ void Session::onUseItemOn(ReadBuffer& in) {
     const float cursorX = in.f32();
     const float cursorY = in.f32();
     const float cursorZ = in.f32();
-    (void)cursorX; (void)cursorZ;
     (void)in.boolean();                                 // inside block
     (void)in.boolean();                                 // world border hit
     const std::int32_t sequence = in.varint();
@@ -3532,7 +3531,79 @@ void Session::onUseItemOn(ReadBuffer& in) {
         }
     }
 
-    if (srv_.world().getBlock(tx, ty, tz) != 0 || heldItem.empty()) {
+    // item id -> block name (block items share the name) -- needed early for water/slab checks
+    std::string itemName = heldItem.name();
+    const gen::BlockDef* bdef2 = nullptr;
+    if (!heldItem.empty()) bdef2 = gen::blockByName(itemName);
+
+    // ---- slab double stacking on clicked block (vanilla: clicking slab face merges into double) ----
+    if (bdef2 && itemName.find("slab") != std::string::npos) {
+        const std::uint16_t clickedState = srv_.world().getBlock(x, y, z);
+        const gen::BlockDef* cDef = gen::blockByState(clickedState);
+        if (cDef && cDef->name == bdef2->name) {
+            std::string curType;
+            for (auto& pr : gen::propsOf(clickedState)) if (pr.first == "type") curType = std::string(pr.second);
+            bool shouldDouble = false;
+            if (curType == "bottom" && d == 1) shouldDouble = true;
+            else if (curType == "top" && d == 0) shouldDouble = true;
+            if (shouldDouble) {
+                std::vector<std::pair<std::string,std::string>> ownedTmp;
+                ownedTmp.reserve(2);
+                ownedTmp.emplace_back("type", "double");
+                bool hasWater = false;
+                for (int i = 0; i < bdef2->propCount; ++i) {
+                    const auto& pd = gen::kPropDefs[gen::kBlockPropsRun[bdef2->propsOff + i]];
+                    if (pd.name == "waterlogged") { hasWater = true; break; }
+                }
+                if (hasWater) ownedTmp.emplace_back("waterlogged", "false");
+                std::vector<std::pair<std::string_view,std::string_view>> dprops;
+                dprops.reserve(ownedTmp.size());
+                for (auto& pr : ownedTmp) dprops.emplace_back(pr.first, pr.second);
+                std::uint16_t dblState = static_cast<std::uint16_t>(gen::stateWithProps(*bdef2, dprops));
+                api::BlockPlaceEvent ev;
+                ev.player = self_.get();
+                ev.x = x; ev.y = y; ev.z = z;
+                ev.newState = dblState;
+                if (!srv_.events().blockPlace.fire(ev)) { ack(sequence); return; }
+                srv_.world().setBlock(x, y, z, dblState);
+                srv_.broadcastBlockChange(x, y, z, dblState);
+                srv_.world().scheduleNeighborUpdates(x, y, z);
+                if (survival) {
+                    auto mh = &self_->inv[36 + self_->heldSlot];
+                    if (--mh->count <= 0) *mh = InvSlot::air();
+                    srv_.resendInventory(*self_);
+                }
+                ack(sequence);
+                return;
+            }
+        }
+    }
+
+    // Determine occupancy with exceptions for waterloggable and slab double at target
+    std::uint16_t targetState = srv_.world().getBlock(tx, ty, tz);
+    bool targetOccupied = targetState != 0;
+    bool targetIsWater = false;
+    bool canWaterlog = false;
+    bool targetIsSameSlab = false;
+    bool canDoubleAtTarget = false;
+    if (targetOccupied) {
+        const gen::BlockDef* tDef = gen::blockByState(targetState);
+        if (tDef && tDef->name == "minecraft:water") targetIsWater = true;
+        if (targetIsWater && bdef2) {
+            for (int i = 0; i < bdef2->propCount; ++i) {
+                const auto& pd = gen::kPropDefs[gen::kBlockPropsRun[bdef2->propsOff + i]];
+                if (pd.name == "waterlogged") { canWaterlog = true; break; }
+            }
+        }
+        if (bdef2 && itemName.find("slab") != std::string::npos && tDef && tDef->name == bdef2->name) {
+            targetIsSameSlab = true;
+            std::string curType;
+            for (auto& pr : gen::propsOf(targetState)) if (pr.first == "type") curType = std::string(pr.second);
+            if (curType != "double") canDoubleAtTarget = true;
+        }
+    }
+
+    if (targetOccupied && !canWaterlog && !canDoubleAtTarget) {
         // toggling an existing door?
         const std::uint16_t clickedState = srv_.world().getBlock(x, y, z);
         const gen::BlockDef* cdef = gen::blockByState(clickedState);
@@ -3571,30 +3642,111 @@ void Session::onUseItemOn(ReadBuffer& in) {
         ack(sequence);
         return;
     }
-    // item id -> block name (block items share the name)
-    std::string itemName = heldItem.name();
-    std::uint16_t newState = 0;
-    const gen::BlockDef* bdef2 = gen::blockByName(itemName);
+    if (canDoubleAtTarget) {
+        std::vector<std::pair<std::string,std::string>> ownedTmp;
+        ownedTmp.reserve(2);
+        ownedTmp.emplace_back("type", "double");
+        bool hasWater = false;
+        for (int i = 0; i < bdef2->propCount; ++i) {
+            const auto& pd = gen::kPropDefs[gen::kBlockPropsRun[bdef2->propsOff + i]];
+            if (pd.name == "waterlogged") { hasWater = true; break; }
+        }
+        if (hasWater) ownedTmp.emplace_back("waterlogged", "false");
+        std::vector<std::pair<std::string_view,std::string_view>> dprops;
+        dprops.reserve(ownedTmp.size());
+        for (auto& pr : ownedTmp) dprops.emplace_back(pr.first, pr.second);
+        std::uint16_t dblState = static_cast<std::uint16_t>(gen::stateWithProps(*bdef2, dprops));
+        api::BlockPlaceEvent ev;
+        ev.player = self_.get();
+        ev.x = tx; ev.y = ty; ev.z = tz;
+        ev.newState = dblState;
+        if (!srv_.events().blockPlace.fire(ev)) { ack(sequence); return; }
+        srv_.world().setBlock(tx, ty, tz, dblState);
+        srv_.broadcastBlockChange(tx, ty, tz, dblState);
+        srv_.world().scheduleNeighborUpdates(tx, ty, tz);
+        if (survival) {
+            auto mh = &self_->inv[36 + self_->heldSlot];
+            if (--mh->count <= 0) *mh = InvSlot::air();
+            srv_.resendInventory(*self_);
+        }
+        ack(sequence);
+        return;
+    }
+
     if (!bdef2) {                                          // not a placeable block
         // special items handled elsewhere (food via UseItem); nothing to do
         ack(sequence);
         return;
     }
-    std::vector<std::pair<std::string_view, std::string_view>> props;
-    (void)props;
+    if (heldItem.empty()) { ack(sequence); return; }
+
+    std::uint16_t newState = 0;
     {
-        // context-aware defaults: facing opposite of player yaw
+        // context-aware defaults
         float yaw = self_->yaw;
-        const char* facing = "north";
-        if (yaw >= 45.f && yaw < 135.f) facing = "east";
-        else if (yaw >= 135.f && yaw < 225.f) facing = "south";
-        else if (yaw >= 225.f && yaw < 315.f) facing = "west";
-        bool hasFacing = false;
+        const char* yawFacing = "north";
+        if (yaw >= 45.f && yaw < 135.f) yawFacing = "east";
+        else if (yaw >= 135.f && yaw < 225.f) yawFacing = "south";
+        else if (yaw >= 225.f && yaw < 315.f) yawFacing = "west";
+
+        bool top = (cursorY > 0.5f) || d == 0;
+
+        std::string axisVal;
+        if (d == 0 || d == 1) axisVal = "y";
+        else if (d == 2 || d == 3) axisVal = "z";
+        else axisVal = "x";
+
+        std::string faceVal;
+        if (d == 0) faceVal = "ceiling";
+        else if (d == 1) faceVal = "floor";
+        else faceVal = "wall";
+
+        bool waterAtPlacement = false;
+        {
+            std::uint16_t cur = srv_.world().getBlock(tx, ty, tz);
+            const gen::BlockDef* wb = gen::blockByState(cur);
+            if (wb && wb->name == "minecraft:water") waterAtPlacement = true;
+        }
+
+        // Build props generically: iterate over block's prop definitions
+        std::vector<std::pair<std::string,std::string>> owned;
+        owned.reserve(bdef2->propCount);
         for (int i = 0; i < bdef2->propCount; ++i) {
             const auto& pd = gen::kPropDefs[gen::kBlockPropsRun[bdef2->propsOff + i]];
-            if (pd.name == "facing") hasFacing = true;
+            std::string_view pname = pd.name;
+            if (pname == "facing") {
+                owned.emplace_back(std::string(pname), std::string(yawFacing));
+            } else if (pname == "half") {
+                owned.emplace_back(std::string(pname), top ? "top" : "bottom");
+            } else if (pname == "type") {
+                if (itemName.find("slab") != std::string::npos) {
+                    owned.emplace_back(std::string(pname), top ? "top" : "bottom");
+                } else {
+                    std::string_view firstVal = gen::kPropValuePool[pd.firstValue];
+                    owned.emplace_back(std::string(pname), std::string(firstVal));
+                }
+            } else if (pname == "axis") {
+                owned.emplace_back(std::string(pname), axisVal);
+            } else if (pname == "face") {
+                owned.emplace_back(std::string(pname), faceVal);
+            } else if (pname == "waterlogged") {
+                owned.emplace_back(std::string(pname), waterAtPlacement ? "true" : "false");
+            } else if (pname == "shape") {
+                owned.emplace_back(std::string(pname), "straight");
+            } else if (pname == "snowy") {
+                owned.emplace_back(std::string(pname), "false");
+            } else if (pname == "hinge") {
+                std::string_view firstVal = gen::kPropValuePool[pd.firstValue];
+                owned.emplace_back(std::string(pname), std::string(firstVal));
+            } else {
+                std::string_view firstVal = gen::kPropValuePool[pd.firstValue];
+                owned.emplace_back(std::string(pname), std::string(firstVal));
+            }
         }
-        if (hasFacing) props.emplace_back("facing", facing);
+        std::vector<std::pair<std::string_view,std::string_view>> props;
+        props.reserve(owned.size());
+        for (auto& pr : owned) props.emplace_back(pr.first, pr.second);
+        (void)cursorX; (void)cursorZ;
         newState = static_cast<std::uint16_t>(gen::stateWithProps(*bdef2, props));
     }
 
