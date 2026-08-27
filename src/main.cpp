@@ -51,6 +51,7 @@ static void loadProperties(ServerConfig& c, const std::string& path) {
         else if (k == "whitelist") c.whitelist = (v == "true");
         else if (k == "online-mode") c.onlineMode = (v == "true");
         else if (k == "online-mode") c.onlineMode = (v == "true");
+        else if (k == "enforcesSecureChat" || k == "enforce-secure-profile" || k == "enforces-secure-chat") c.enforcesSecureChat = (v == "true");
         else if (k == "compression-threshold") c.compressionThreshold = std::stoi(v);
         else if (k == "world-dir") c.worldDir = v;
         } catch (...) {}
@@ -78,6 +79,7 @@ int main(int argc, char** argv) {
             else if (k == "enable-rcon") cfg.rcon.enabled = (v == "true");
             else if (k == "whitelist") cfg.whitelist = (v == "true");
             else if (k == "online-mode") cfg.onlineMode = (v == "true");
+            else if (k == "enforcesSecureChat" || k == "enforce-secure-profile" || k == "enforces-secure-chat") cfg.enforcesSecureChat = (v == "true");
         } catch (...) {}
     };
     for (int i = 1; i < argc; ++i) {
