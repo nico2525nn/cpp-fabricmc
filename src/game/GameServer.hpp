@@ -614,6 +614,10 @@ public:
         std::lock_guard lk(chunkCacheMtx_);
         chunkCache_.erase(chunkKey(cx, cz));
     }
+    void clearChunkCache() {
+        std::lock_guard lk(chunkCacheMtx_);
+        chunkCache_.clear();
+    }
 
 private:
     void acceptLoop();
