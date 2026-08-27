@@ -1,4 +1,4 @@
-// Attributes: attribute system (plan5 エンティティ・Mobシステム)
+// Attributes: attribute system (plan5/7 エンティティ・Mobシステム)
 // Each attribute has base value + vector<Modifier{uuid,amount,operation}>
 // Operations: 0 add, 1 multiply_base, 2 multiply_total
 #pragma once
@@ -39,19 +39,31 @@ public:
     void clearModifiers(Attribute a){ auto it=map_.find(a); if(it!=map_.end()) it->second.modifiers.clear(); }
     void clearAllModifiers(){ for(auto &kv:map_) kv.second.modifiers.clear(); }
     void applyEffectModifiers(const std::vector<struct EffectInstance>& eff){
-        // speed / slowness affect movement_speed, health_boost affects max_health
         removeModifier(Attribute::MOVEMENT_SPEED, "effect_speed");
         removeModifier(Attribute::MOVEMENT_SPEED, "effect_slowness");
         removeModifier(Attribute::MAX_HEALTH, "effect_health_boost");
+        removeModifier(Attribute::ATTACK_DAMAGE, "effect_strength");
+        removeModifier(Attribute::ATTACK_DAMAGE, "effect_weakness");
         double speedMod = speedModifierFor(eff);
         if (speedMod != 0.0) {
-            // use multiply_total so 0.2 per level behaves like vanilla
             addModifier(Attribute::MOVEMENT_SPEED, {"effect_speed", speedMod, 2});
         }
         int hb = 0;
         for (auto &e : eff) if (e.type == effects::HealthBoost) hb = std::max(hb, int(e.amplifier)+1);
         if (hb > 0) addModifier(Attribute::MAX_HEALTH, {"effect_health_boost", double(hb * 4), 0});
-        // also clear absorption? handled elsewhere
+        float dmgBonus = meleeDamageBonusFor(eff);
+        if (dmgBonus != 0.f) addModifier(Attribute::ATTACK_DAMAGE, {"effect_strength", double(dmgBonus), 0});
+    }
+    // ARMOR sync helpers (plan7): derive armor/toughness/kb from equipped items
+    void syncArmor(int armor, int toughness, float kbResist){
+        setBase(Attribute::ARMOR, double(armor));
+        setBase(Attribute::ARMOR_TOUGHNESS, double(toughness));
+        setBase(Attribute::KNOCKBACK_RESISTANCE, double(kbResist));
+    }
+    bool armorDirty(int armor, int toughness, float kbResist) const {
+        return getBase(Attribute::ARMOR) != double(armor)
+            || getBase(Attribute::ARMOR_TOUGHNESS) != double(toughness)
+            || getBase(Attribute::KNOCKBACK_RESISTANCE) != double(kbResist);
     }
     template<typename W> void writeUpdate(W& out,int32_t eid) const{
         out.varint(eid); out.varint(6);

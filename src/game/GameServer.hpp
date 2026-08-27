@@ -50,6 +50,10 @@
 #include "ServerProperties.hpp"
 #include "BossAI.hpp"
 #include "MenuLogic.hpp"
+#include "WorldManager.hpp"
+#include "EntityManager.hpp"
+#include "InventoryController.hpp"
+#include "NetworkManager.hpp"
 
 namespace cppfm {
 
