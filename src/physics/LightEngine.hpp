@@ -17,9 +17,25 @@
 
 namespace cppfm {
 
+// LightUpdateQueue: batching for cross-chunk light updates (plan10 §2)
+// Collects dirty chunk keys and expands to 3×3 neighbourhood to ensure
+// sky-light propagation across boundaries is sent atomically via UpdateLight.
+struct LightUpdateQueue {
+    std::unordered_set<std::int64_t> dirty;
+    void mark(std::int32_t cx, std::int32_t cz) { dirty.insert(chunkKey(cx, cz)); }
+    void markAndNeighbors(std::int32_t cx, std::int32_t cz) {
+        for (int dz=-1; dz<=1; ++dz) for (int dx=-1; dx<=1; ++dx) mark(cx+dx, cz+dz);
+    }
+    std::unordered_set<std::int64_t> drain() { auto v=dirty; dirty.clear(); return v; }
+    bool empty() const { return dirty.empty(); }
+    std::size_t size() const { return dirty.size(); }
+};
+
 struct LightUpdateBatch {
     // Chunks whose serialized light payload must be re-sent.
     std::unordered_set<std::int64_t> dirtyChunks;
+    // LightUpdateQueue for batch emission (plan10 §2)
+    LightUpdateQueue queue;
 };
 
 class LightEngine {

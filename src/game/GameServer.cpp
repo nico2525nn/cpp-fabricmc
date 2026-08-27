@@ -1578,36 +1578,43 @@ void GameServer::hoppersTick() {
                     double sx = x + .5 + dx * .6;
                     double sy = y + .5 + dy * .6;
                     double sz = z + .5 + dz * .6;
+                    bool isDropper=false;
+                    {
+                        auto* bd=gen::blockByState(world_.getBlock(x,y,z));
+                        if (bd && std::string(bd->name)=="minecraft:dropper") isDropper=true;
+                    }
                     std::string iname = s.name();
                     bool handled = false;
-                    if (iname.find("arrow") != std::string::npos) {
-                        spawnProjectile(ProjectileKind::Arrow, sx, sy, sz, dx*1.2, dy*0.2+0.15, dz*1.2, -1, false);
-                        handled = true;
-                    } else if (iname.find("snowball") != std::string::npos) {
-                        spawnProjectile(ProjectileKind::Snowball, sx, sy, sz, dx*1.2, dy*0.2+0.12, dz*1.2, -1, false);
-                        handled = true;
-                    } else if (iname == "minecraft:egg") {
-                        spawnProjectile(ProjectileKind::Egg, sx, sy, sz, dx*1.2, dy*0.2+0.12, dz*1.2, -1, false);
-                        handled = true;
-                    } else if (iname.find("ender_pearl") != std::string::npos) {
-                        spawnProjectile(ProjectileKind::EnderPearl, sx, sy, sz, dx*1.2, dy*0.2+0.12, dz*1.2, -1, false);
-                        handled = true;
-                    } else if (iname.find("fire_charge") != std::string::npos) {
-                        spawnProjectile(ProjectileKind::Fireball, sx, sy, sz, dx*0.5, dy*0.5, dz*0.5, -1, false);
-                        handled = true;
-                    } else if (iname.find("_spawn_egg") != std::string::npos) {
-                        // Plan8 MobSpawner: dispenser can spawn mobs via spawn eggs
-                        MobSpawner spawner2(*this);
-                        if (spawner2.spawnFromDispenser(iname, x, y, z, facing)) handled = true;
-                        else {
-                            // fallback to item drop if spawner fails
-                            spawnItemDrop(sx, sy, sz, s.itemId, 1, dx * .25, .15, dz * .25);
+                    if (!isDropper) {
+                        if (iname.find("arrow") != std::string::npos) {
+                            spawnProjectile(ProjectileKind::Arrow, sx, sy, sz, dx*1.2, dy*0.2+0.15, dz*1.2, -1, false);
                             handled = true;
+                        } else if (iname.find("snowball") != std::string::npos) {
+                            spawnProjectile(ProjectileKind::Snowball, sx, sy, sz, dx*1.2, dy*0.2+0.12, dz*1.2, -1, false);
+                            handled = true;
+                        } else if (iname == "minecraft:egg") {
+                            spawnProjectile(ProjectileKind::Egg, sx, sy, sz, dx*1.2, dy*0.2+0.12, dz*1.2, -1, false);
+                            handled = true;
+                        } else if (iname.find("ender_pearl") != std::string::npos) {
+                            spawnProjectile(ProjectileKind::EnderPearl, sx, sy, sz, dx*1.2, dy*0.2+0.12, dz*1.2, -1, false);
+                            handled = true;
+                        } else if (iname.find("fire_charge") != std::string::npos) {
+                            spawnProjectile(ProjectileKind::Fireball, sx, sy, sz, dx*0.5, dy*0.5, dz*0.5, -1, false);
+                            handled = true;
+                        } else if (iname.find("_spawn_egg") != std::string::npos) {
+                            // Plan8 MobSpawner: dispenser can spawn mobs via spawn eggs
+                            MobSpawner spawner2(*this);
+                            if (spawner2.spawnFromDispenser(iname, x, y, z, facing)) handled = true;
+                            else {
+                                // fallback to item drop if spawner fails
+                                spawnItemDrop(sx, sy, sz, s.itemId, 1, dx * .25, .15, dz * .25);
+                                handled = true;
+                            }
                         }
-                    }
+                    } // dropper: skip projectile handling, fall through to item drop (plan9 #26)
                     if (!handled) {
-                        if (iname == "minecraft:tnt" || iname.find("tnt") != std::string::npos) {
-                            // primed TNT: explode at front with delay via explodeAt
+                        if (!isDropper && (iname == "minecraft:tnt" || iname.find("tnt") != std::string::npos)) {
+                            // primed TNT: explode at front with delay via explodeAt (plan10 §8 would spawn primed entity)
                             explodeAt(x + dx + 0.5, y + dy + 0.5, z + dz + 0.5, 4.f);
                         } else {
                             spawnItemDrop(sx, sy, sz, s.itemId, 1, dx * .25, .15, dz * .25);
@@ -5476,6 +5483,7 @@ void Session::onUseItemOn(ReadBuffer& in) {
         }
         if (hasFacing) props.emplace_back("facing", facing);
         // stairs/slab half based on face and cursor.y (plan6)
+        const char* halfVal = "bottom";
         if (hasHalf) {
             const char* half = "bottom";
             if (ctx.face == 0) half = "top";
@@ -5483,11 +5491,74 @@ void Session::onUseItemOn(ReadBuffer& in) {
             else {
                 half = (ctx.cursor.y > 0.5 ? "top" : "bottom");
             }
+            halfVal = half;
             props.emplace_back("half", half);
         }
-        // stairs shape default straight, orient with yaw
+        // stairs shape: inner/outer/straight based on adjacent stairs (plan9 #11)
         if (hasShape) {
-            props.emplace_back("shape", "straight");
+            auto computeStairsShape = [&](std::string_view curFacing, std::string_view curHalf) -> std::string {
+                // Determine direction vectors for current facing
+                int fdx=0,fdz=0;
+                if (curFacing=="north") fdz=-1;
+                else if (curFacing=="south") fdz=1;
+                else if (curFacing=="west") fdx=-1;
+                else if (curFacing=="east") fdx=1;
+                auto isStairsAt = [&](int nx,int ny,int nz, std::string &nFacing, std::string &nHalf)->bool{
+                    std::uint16_t ns = ctx.world->getBlock(nx, ny, nz);
+                    const gen::BlockDef* nd = gen::blockByState(ns);
+                    if (!nd) return false;
+                    if (std::string(nd->name).find("stairs")==std::string::npos) return false;
+                    nFacing.clear(); nHalf.clear();
+                    for (auto& [k,v] : gen::propsOf(ns)) {
+                        if (k=="facing") nFacing=std::string(v);
+                        if (k=="half") nHalf=std::string(v);
+                    }
+                    return !nFacing.empty();
+                };
+                // helper to check axis difference
+                auto axisOf = [&](std::string_view f)->char{
+                    if (f=="north"||f=="south") return 'z';
+                    if (f=="east"||f=="west") return 'x';
+                    return '?';
+                };
+                auto leftOf = [&](std::string_view f)->std::string{
+                    if (f=="north") return "west";
+                    if (f=="south") return "east";
+                    if (f=="west") return "south";
+                    if (f=="east") return "north";
+                    return "";
+                };
+                // outer: check behind position (opposite of facing)
+                {
+                    int bx = ctx.placePos.x - fdx;
+                    int bz = ctx.placePos.z - fdz;
+                    std::string nFacing, nHalf;
+                    if (isStairsAt(bx, ctx.placePos.y, bz, nFacing, nHalf) && nHalf==curHalf && nFacing!=curFacing) {
+                        if (axisOf(nFacing)!=axisOf(curFacing)) {
+                            // outer shape if neighbor behind is perpendicular
+                            std::string left = leftOf(curFacing);
+                            if (nFacing==left) return "outer_left";
+                            else return "outer_right";
+                        }
+                    }
+                }
+                // inner: check front position
+                {
+                    int fx = ctx.placePos.x + fdx;
+                    int fz = ctx.placePos.z + fdz;
+                    std::string nFacing, nHalf;
+                    if (isStairsAt(fx, ctx.placePos.y, fz, nFacing, nHalf) && nHalf==curHalf && nFacing!=curFacing) {
+                        if (axisOf(nFacing)!=axisOf(curFacing)) {
+                            std::string left = leftOf(curFacing);
+                            if (nFacing==left) return "inner_left";
+                            else return "inner_right";
+                        }
+                    }
+                }
+                return "straight";
+            };
+            std::string shape = computeStairsShape(facing, halfVal);
+            props.emplace_back("shape", shape);
         }
         // waterlogged: check if placePos currently water
         if (hasWaterlogged) {
@@ -5510,19 +5581,42 @@ void Session::onUseItemOn(ReadBuffer& in) {
             else if (ctx.face == 2 || ctx.face == 3) axis = "z";
             props.emplace_back("axis", axis);
         }
-        // slab type handling: reuse half logic as type
+        // slab type handling: double slab merging (plan9 #11)
         bool hasTypeSlab = false;
         for (int i = 0; i < bdef2->propCount; ++i) {
             const auto& pd = gen::kPropDefs[gen::kBlockPropsRun[bdef2->propsOff + i]];
             if (pd.name == "type") { hasTypeSlab = true; break; }
         }
         if (hasTypeSlab && std::string(bdef2->name).find("_slab") != std::string::npos) {
-            const char* type = "bottom";
-            if (ctx.face == 0) type = "top";
-            else if (ctx.face == 1) type = "bottom";
-            else type = (ctx.cursor.y > 0.5 ? "top" : "bottom");
-            // remove previous if any, then add
-            props.emplace_back("type", type);
+            std::uint16_t existing = ctx.world->getBlock(ctx.placePos.x, ctx.placePos.y, ctx.placePos.z);
+            const gen::BlockDef* exDef = gen::blockByState(existing);
+            bool mergedDouble = false;
+            if (exDef && std::string(exDef->name)==std::string(bdef2->name)) {
+                for (auto& [k,v] : gen::propsOf(existing)) if (k=="type" && v!="double") {
+                    // same slab material, existing is single -> merge to double
+                    bool alreadyHasType=false;
+                    for (auto &pr: props) if (pr.first=="type") alreadyHasType=true;
+                    if (!alreadyHasType) props.emplace_back("type", "double");
+                    mergedDouble=true; break;
+                }
+            }
+            if (!mergedDouble) {
+                const char* type = "bottom";
+                if (ctx.face == 0) type = "top";
+                else if (ctx.face == 1) type = "bottom";
+                else type = (ctx.cursor.y > 0.5 ? "top" : "bottom");
+                // handle placing on top of existing slab block below/above
+                // Also check if the clicked face is the slab itself: if existing slab at hitPos is single, double it
+                std::uint16_t hitSt = ctx.world->getBlock(ctx.hitPos.x, ctx.hitPos.y, ctx.hitPos.z);
+                const gen::BlockDef* hd = gen::blockByState(hitSt);
+                if (hd && std::string(hd->name)==std::string(bdef2->name)) {
+                    for (auto& [k,v] : gen::propsOf(hitSt)) if (k=="type" && v!="double") {
+                        // if we clicked on a bottom slab from top face or top slab from bottom face, would have placed in same block but we are offset
+                        // fallback: if we are placing adjacent, keep single; the double case already handled via existing at placePos
+                    }
+                }
+                props.emplace_back("type", type);
+            }
         }
         newState = static_cast<std::uint16_t>(gen::stateWithProps(*bdef2, props));
     }
