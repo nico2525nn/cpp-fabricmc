@@ -194,7 +194,6 @@ struct MobEntity {
     std::int64_t witherSkullCooldown = 0;
     int dragonPhase = 0; // 0 circling, 1 approaching, 2 perching/breath, 3 takeoff
     std::int64_t dragonPhaseUntil = 0;
-    std::unordered_set<std::string> tags;
 
     static const char* kindName(MobKind k) { return mobStats(k).name; }
     static std::uint32_t typeId(MobKind k) {

@@ -151,14 +151,11 @@ struct Player {
     std::int64_t joinTick = 0;
     // active status effects (plan3 ポーション)
     std::vector<EffectInstance> effects;
-    // chat signing session (plan3 Chat signing §74, plan10 §5)
+    // chat signing session (plan3 Chat signing)
     bool hasChatSession = false;
     std::vector<std::uint8_t> chatPubKey;
     std::int64_t chatSessionExpiry = 0;
-    std::int32_t lastChatAckOffset = 0;          // MessageAck 0x04 tracking
-    std::int64_t lastChatTimestamp = 0;
-    std::int64_t lastChatSalt = 0;
-    std::vector<uint8_t> lastSeenSignatures;     // simplified: last 20 salts for replay protection
+    std::vector<uint8_t> lastSeenSignatures;
     // cookies (plan3 Cookie) — opaque server-defined blobs
     std::unordered_map<std::string, std::vector<std::uint8_t>> cookies;
     // current dimension: 0=overworld, -1=nether, 1=end (plan5 §1)
@@ -177,9 +174,6 @@ struct Player {
     std::int64_t lastEnderPearlTick = -10000;
     std::int64_t invulnUntilTick = 0;
     AttributeManager attributes;
-    std::unordered_set<std::string> tags;
-    double vehicleJumpPending = 0; // horse jump power
-    std::unordered_set<std::string> tags;        // /tag command (plan10 §6/10)
 };
 
 struct BlockPos { std::int32_t x=0, y=0, z=0; };
@@ -280,9 +274,6 @@ private:
     std::unique_ptr<Menu> openMenu_;
     ItemStack cursorItem_;
     std::int32_t menuWindowCounter_ = 0;
-    // inventory window drag state (windowId 0)
-    std::vector<int> invDragSlots;
-    int invDragButton = -1;
     std::int32_t villagerWindowSeq_ = 100;
     std::int32_t tradingVillager_ = -1;  // villager entity id while trading
 };
@@ -364,11 +355,6 @@ public:
         blockTicks_->registerBehavior("minecraft:campfire", std::make_unique<CampfireBehavior>());
         blockTicks_->registerBehavior("minecraft:soul_campfire", std::make_unique<CampfireBehavior>());
         blockTicks_->registerBehavior("minecraft:nether_portal", std::make_unique<PortalAgeBehavior>());
-        blockTicks_->registerBehavior("minecraft:cocoa", std::make_unique<CocoaBehavior>());
-        blockTicks_->registerBehavior("minecraft:sweet_berry_bush", std::make_unique<SweetBerryBehavior>());
-        blockTicks_->registerBehavior("minecraft:sweet_berries", std::make_unique<SweetBerryBehavior>());
-        blockTicks_->registerBehavior("minecraft:nether_wart", std::make_unique<NetherWartBehavior>());
-        blockTicks_->registerBehavior("minecraft:chorus_flower", std::make_unique<ChorusFlowerBehavior>());
         // plan7: ServerProperties typed loading (viewDistance, spawn-protection, etc.)
         {
             ServerProperties sp;
@@ -576,23 +562,6 @@ public:
         broadcastPacketExcept(nullptr,
                               proto::pl::sc::ScoreboardDisplayObjective, b);
     }
-    // Teams 0x67 helpers (plan10 §6 / #79)
-    void sendTeamCreate(const Scoreboard::Team& t) {
-        WriteBuffer b; scoreboard.writeTeamPacket(b, t, 0);
-        broadcastPacketExcept(nullptr, proto::pl::sc::Teams, b);
-    }
-    void sendTeamRemove(const Scoreboard::Team& t) {
-        WriteBuffer b; scoreboard.writeTeamPacket(b, t, 1);
-        broadcastPacketExcept(nullptr, proto::pl::sc::Teams, b);
-    }
-    void sendTeamAddPlayers(const Scoreboard::Team& t, const std::vector<std::string>& players) {
-        WriteBuffer b; scoreboard.writeTeamAddPlayersPacket(b, t, players);
-        broadcastPacketExcept(nullptr, proto::pl::sc::Teams, b);
-    }
-    void sendTeamRemovePlayers(const Scoreboard::Team& t, const std::vector<std::string>& players) {
-        WriteBuffer b; scoreboard.writeTeamRemovePlayersPacket(b, t, players);
-        broadcastPacketExcept(nullptr, proto::pl::sc::Teams, b);
-    }
     RecipeManager& recipes() { return recipes_; }
     brigadier::CommandDispatcher& commands() { return commands_; }
     void initCommands();                             // builds command tree
@@ -655,9 +624,6 @@ public:
                          double vx, double vy, double vz,
                          std::int32_t ownerId, bool ownerIsPlayer);
     void projectilesTick();
-    // TNT primed entity (plan10 §8): fuse 80t, gravity, SpawnEntity type minecraft:tnt
-    void spawnTnt(double x,double y,double z,double vx,double vy,double vz,int fuse=80);
-    void tntTick();
     // Villager trading (plan4 P1-B)
     static const std::vector<struct TradeOffer>& tradeTable();
     bool openTrading(Player& p, MobEntity& villager);
@@ -696,26 +662,6 @@ public:
     void handleFoodConsume(Player& p, const std::string& itemName);
     int computeProtectionEPF(const DamageSource& ds, const Player& p) const;
     int computeProtectionEPF(const DamageSource& ds, const MobEntity& m) const;
-    // TNT primed (plan10 §8)
-    void spawnPrimedTnt(double x, double y, double z, double vx=0, double vy=0.2, double vz=0);
-    void primedTntsTick();
-    // Teams / BossBar / Tags (plan10 §6)
-    bool createTeam(const std::string& name, const std::string& display="");
-    bool removeTeam(const std::string& name);
-    bool joinTeam(const std::string& team, const std::string& member);
-    bool leaveTeam(const std::string& member);
-    bool createBossBar(const std::string& id, const std::string& title);
-    bool removeBossBar(const std::string& id);
-    // Tags
-    bool tagAdd(Player* p, const std::string& tag);
-    bool tagRemove(Player* p, const std::string& tag);
-    bool tagAddMob(std::int32_t eid, const std::string& tag);
-    bool tagRemoveMob(std::int32_t eid, const std::string& tag);
-    // Equipment sync
-    void updateMobEquipment(std::int32_t eid, int slot, const ItemStack& stack);
-    void syncMobEquipment(const MobEntity& mob);
-    // Riding: horse jump
-    void handleHorseJump(Player& p, int jumpPower);
     static std::string uuidToHex(const std::array<std::uint8_t,16>& u) {
         std::string h; char x[4];
         for (auto b : u) { snprintf(x,3,"%02x",b); h+=x; }
@@ -777,7 +723,6 @@ public:
                           std::uint16_t state);
     void flushBlockBatches();
     void broadcastPlayerChat(Player& sender, const std::string& message, std::int64_t timestamp);
-    void broadcastPlayerChat(Player& sender, const std::string& message, std::int64_t timestamp, std::int64_t salt, const std::vector<std::uint8_t>& signature);
     bool validateFeatureFlags(const std::vector<std::array<std::string,3>>& clientPacks);
     // Serialized-chunk cache: shared across players; keyed by chunk, invalidated
     // by world revision on edits.
@@ -831,8 +776,6 @@ private:
     std::vector<std::shared_ptr<ItemEntity>> itemDrops_;
     std::vector<std::shared_ptr<XpOrbEntity>> xpOrbs_;
     std::vector<std::shared_ptr<ProjectileEntity>> projectiles_;
-    std::vector<std::shared_ptr<PrimedTntEntity>> primedTnts_;
-    std::vector<std::shared_ptr<TntEntity>> tnts_;
     std::unordered_map<std::int64_t, bool> dispenserPower_;
     std::int64_t tickNo_ = 0;
     std::int64_t timeOffset_ = 0;
@@ -861,40 +804,15 @@ private:
     std::string difficulty_ = "normal";
     double worldBorderDiameter_ = 29999984;   // vanilla default
     double worldBorderCenterX_ = 0, worldBorderCenterZ_ = 0;
-    // WorldBorder lerp (plan10 §1): smooth diameter transition
-    double worldBorderLerpFrom_ = 29999984;
-    double worldBorderLerpTo_ = 29999984;
-    std::int64_t worldBorderLerpStartTick_ = 0;
-    std::int64_t worldBorderLerpEndTick_ = 0;
-    double worldBorderDamagePerBlock_ = 0.2;
-    double worldBorderSafeZone_ = 5.0;
-    int worldBorderWarningBlocks_ = 5;
-    int worldBorderWarningTime_ = 15;
     int spawnProtection_ = 16;               // server.properties spawn-protection (default 16)
     std::unordered_set<std::string> ops_;    // ops.json / op list
     std::int32_t teleportCounterForTest_ = 1;
 
 public:
-    // WorldBorder helpers (plan6 §10 + plan10 lerp/damage)
+    // WorldBorder helpers (plan6 §10)
     bool isInsideBorder(double x, double z) const {
-        double half = currentBorderDiameter() * 0.5;
+        double half = worldBorderDiameter_ * 0.5;
         return std::abs(x - worldBorderCenterX_) <= half && std::abs(z - worldBorderCenterZ_) <= half;
-    }
-    double currentBorderDiameter() const {
-        if (worldBorderLerpEndTick_ <= worldBorderLerpStartTick_) return worldBorderDiameter_;
-        if (tickNo_ >= worldBorderLerpEndTick_) return worldBorderLerpTo_;
-        if (tickNo_ <= worldBorderLerpStartTick_) return worldBorderLerpFrom_;
-        double t = double(tickNo_ - worldBorderLerpStartTick_) / double(worldBorderLerpEndTick_ - worldBorderLerpStartTick_);
-        return worldBorderLerpFrom_ + (worldBorderLerpTo_ - worldBorderLerpFrom_) * t;
-    }
-    void setBorderLerp(double from, double to, std::int64_t durationTicks);
-    void tickBorderLerp();
-    double borderDistanceOutside(double x, double z) const {
-        double half = currentBorderDiameter() * 0.5;
-        double dx = std::abs(x - worldBorderCenterX_) - half;
-        double dz = std::abs(z - worldBorderCenterZ_) - half;
-        double d = std::max(dx, dz);
-        return d > 0 ? d : 0;
     }
     bool isSpawnProtected(std::int32_t x, std::int32_t z) const {
         if (spawnProtection_ <= 0) return false;
@@ -924,7 +842,6 @@ private:
     std::unique_ptr<NetworkManager> networkMgr_;
     // Plan7 BossAI / BossBar
     std::unique_ptr<BossAIManager> bossAI_;
-    std::unordered_map<std::string, BossBar> genericBossBars_;
     // Block Event Bus (plan6): simple vector of handlers in GameServer
     std::vector<std::function<void(std::int32_t,std::int32_t,std::int32_t,std::uint16_t,std::uint16_t)>> onBlockPlaceHandlers_;
     std::vector<std::function<void(std::int32_t,std::int32_t,std::int32_t,std::uint16_t,std::uint16_t)>> onBlockBreakHandlers_;
