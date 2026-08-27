@@ -17,6 +17,7 @@ class Persistence {
 public:
     Persistence(World& world, std::string worldDir, std::string biomeKey)
         : world_(world), dir_(std::move(worldDir)), biome_(std::move(biomeKey)) {}
+    ~Persistence() { stop(); }
 
     // ---- level.dat ----
     void setLevelStateProvider(

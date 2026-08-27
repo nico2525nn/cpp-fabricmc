@@ -399,6 +399,7 @@ public:
         if (rconServer_) rconServer_->stop();
         std::fprintf(stderr, "[cppfm] stopping persistence\n");
         if (persist_) persist_->stop();
+        for (auto &pp : dimPersist_) if (pp) pp->stop();
         std::fprintf(stderr, "[cppfm] closing listen fd\n");
         if (listenFd_ >= 0) { ::close(listenFd_); listenFd_ = -1; }
         std::fprintf(stderr, "[cppfm] stopped cleanly\n");
@@ -567,7 +568,7 @@ public:
     }
     void broadcastPacketExcept(const Player* except, std::uint8_t id, const WriteBuffer& body) {
         for (auto& p : playersSnapshot()) {
-            if (p.get() == except || !p->inPlay) continue;
+            if (p.get() == except || !p->inPlay || !p->conn) continue;
             try { p->conn->sendPacket(id, body); } catch (...) {}
         }
     }

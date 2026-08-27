@@ -1264,6 +1264,7 @@ bool GameServer::addToInventory(Player& p, std::uint32_t itemId, std::uint16_t c
 }
 
 void GameServer::resendInventory(Player& p) {
+    if (!p.conn) return;
     WriteBuffer b;
     b.u8(0);                                            // window 0
     b.varint(++p.invStateId);
@@ -1954,7 +1955,7 @@ static void writeDeclareCommands(WriteBuffer& b) {
 
 void Session::sendDeclareCommands() {
     WriteBuffer b;
-    writeDeclareCommands(b);
+    srv_.commands().writeDeclareCommands(b);
     conn_->sendPacket(pl::sc::DeclareCommands, b);
 }
 

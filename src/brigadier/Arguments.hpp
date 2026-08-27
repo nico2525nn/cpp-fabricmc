@@ -204,6 +204,7 @@ inline double readCoord(StringReader& r, ParseCtx& ctx, char axis, bool& relativ
         v = r.readDouble();
     }
     relativeOut = rel;
+    if (!rel) return v;
     const double base = axis == 'x' ? ctx.srcX : axis == 'y' ? ctx.srcY : ctx.srcZ;
     return base + v;
 }

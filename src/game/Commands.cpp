@@ -3,9 +3,12 @@
 // tree, parsed by the dispatcher and advertised via declare_commands.
 #include "GameServer.hpp"
 #include "../generated/EntityIds.hpp"
+#include "../generated/BlockStates.hpp"
 #include <algorithm>
 #include <cmath>
 #include <set>
+#include <filesystem>
+#include <fstream>
 
 namespace cppfm {
 
@@ -872,6 +875,214 @@ void GameServer::initCommands() {
         };
         diff->then(lvl);
         d.root->then(diff);
+    }
+    // /fill <from> BlockPos <to> BlockPos <block> string
+    {
+        auto fill = CommandNode::literal("fill");
+        auto from = CommandNode::argument("from", args::blockPos());
+        auto to = CommandNode::argument("to", args::blockPos());
+        auto block = CommandNode::argument("block", args::itemStackArg());
+        block->suggestions = [](brigadier::StringReader&, brigadier::ParseCtx&) {
+            return std::vector<std::string>{"minecraft:stone","minecraft:dirt","minecraft:grass_block","minecraft:cobblestone","minecraft:glass","minecraft:oak_planks","minecraft:sand","minecraft:air"};
+        };
+        block->executable = true;
+        block->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            auto p1 = c.arg("from").asBlockPos();
+            auto p2 = c.arg("to").asBlockPos();
+            std::string bn = c.arg("block").asStr();
+            if (bn.find(':') == std::string::npos) bn = "minecraft:" + bn;
+            auto bracket = bn.find('[');
+            if (bracket != std::string::npos) bn = bn.substr(0, bracket);
+            const gen::BlockDef* def = gen::blockByName(bn);
+            if (!def) throw std::runtime_error("unknown block: " + bn);
+            std::uint16_t state = static_cast<std::uint16_t>(def->defaultState);
+            int minX = std::min(p1.x, p2.x), maxX = std::max(p1.x, p2.x);
+            int minY = std::min(p1.y, p2.y), maxY = std::max(p1.y, p2.y);
+            int minZ = std::min(p1.z, p2.z), maxZ = std::max(p1.z, p2.z);
+            long long vol = static_cast<long long>(maxX - minX + 1) * (maxY - minY + 1) * (maxZ - minZ + 1);
+            if (vol > 32768) throw std::runtime_error("fill volume too large (max 32768, got " + std::to_string(vol) + ")");
+            int filled = 0;
+            for (int y = minY; y <= maxY; ++y)
+                for (int z = minZ; z <= maxZ; ++z)
+                    for (int x = minX; x <= maxX; ++x) {
+                        world_.setBlock(x, y, z, state);
+                        broadcastBlockChange(x, y, z, state);
+                        ++filled;
+                    }
+            sendFeedback(src, "Filled " + std::to_string(filled) + " blocks with " + bn);
+            return filled;
+        };
+        to->then(block);
+        from->then(to);
+        fill->then(from);
+        d.root->then(fill);
+    }
+    // /execute as <entity> run <command>
+    {
+        auto exec = CommandNode::literal("execute");
+        auto asLit = CommandNode::literal("as");
+        auto entityArg = CommandNode::argument("entity", args::entity(false, false));
+        auto runLit = CommandNode::literal("run");
+        auto cmdArg = CommandNode::argument("command", args::stringGreedy());
+        cmdArg->executable = true;
+        cmdArg->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const auto sel = c.arg("entity").asSelector();
+            std::string inner = c.arg("command").asStr();
+            if (!inner.empty() && inner.front() == '/') inner = inner.substr(1);
+            std::vector<Player*> targets;
+            for (auto &name : sel.playerNames) {
+                if (Player* tp = findPlayer(*this, name)) targets.push_back(tp);
+            }
+            if (targets.empty()) {
+                sendFeedback(src, "No targets matched for execute");
+                return 0;
+            }
+            int total = 0;
+            for (Player* target : targets) {
+                brigadier::CommandSource tsrc;
+                tsrc.player = target;
+                tsrc.name = target->name;
+                tsrc.console = false;
+                tsrc.srcX = target->x; tsrc.srcY = target->y; tsrc.srcZ = target->z;
+                tsrc.srcYaw = target->yaw; tsrc.srcPitch = target->pitch;
+                tsrc.resolveSelector = [this, target](const std::string& raw, brigadier::SelectorResult& out){
+                    out = resolveSelector(raw, target);
+                };
+                brigadier::CommandSource copy = tsrc;
+                auto res = commands_.execute(inner, std::move(copy));
+                if (!res.ok) {
+                    sendFeedback(src, "execute as " + target->name + " failed: " + res.errorText);
+                } else total += res.value;
+            }
+            return total;
+        };
+        runLit->then(cmdArg);
+        entityArg->then(runLit);
+        asLit->then(entityArg);
+        exec->then(asLit);
+        d.root->then(exec);
+    }
+    // /function <name> ResourceLocation
+    {
+        auto func = CommandNode::literal("function");
+        auto nameArg = CommandNode::argument("name", args::resourceLocation());
+        nameArg->executable = true;
+        nameArg->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            std::string id = c.arg("name").asStr();
+            std::string ns, path;
+            auto colon = id.find(':');
+            if (colon != std::string::npos) { ns = id.substr(0, colon); path = id.substr(colon+1); }
+            else { ns = "minecraft"; path = id; }
+            std::string file = "assets/data/" + ns + "/functions/" + path + ".mcfunction";
+            std::string alt = "assets/data/functions/" + id + ".mcfunction";
+            std::ifstream f(file);
+            if (!f) {
+                f.open(alt);
+                if (!f) {
+                    // also try assets/data/<ns>/functions/<path> without minecraft prefix if id already had ns
+                    // fallback to world/datapacks search (stub)
+                    throw std::runtime_error("function not found: " + id + " (" + file + ")");
+                }
+            }
+            std::string line;
+            int executed = 0;
+            brigadier::CommandSource baseSrc;
+            if (src) {
+                baseSrc.player = src;
+                baseSrc.name = src->name;
+                baseSrc.console = false;
+                baseSrc.srcX = src->x; baseSrc.srcY = src->y; baseSrc.srcZ = src->z;
+                baseSrc.srcYaw = src->yaw; baseSrc.srcPitch = src->pitch;
+                baseSrc.resolveSelector = [this, src](const std::string& raw, brigadier::SelectorResult& out){ out = resolveSelector(raw, src); };
+            } else {
+                baseSrc.console = true;
+                baseSrc.resolveSelector = [this](const std::string& raw, brigadier::SelectorResult& out){ out = resolveSelector(raw, nullptr); };
+            }
+            while (std::getline(f, line)) {
+                size_t start = line.find_first_not_of(" \t\r\n");
+                if (start == std::string::npos) continue;
+                size_t end = line.find_last_not_of(" \t\r\n");
+                std::string trimmed = line.substr(start, end - start + 1);
+                if (trimmed.empty() || trimmed[0] == '#') continue;
+                if (trimmed.front() == '/') trimmed = trimmed.substr(1);
+                brigadier::CommandSource cur = baseSrc;
+                auto res = commands_.execute(trimmed, std::move(cur));
+                if (!res.ok) {
+                    sendFeedback(src, "function line failed: " + trimmed + " -> " + res.errorText);
+                }
+                ++executed;
+            }
+            sendFeedback(src, "Executed function " + id + " (" + std::to_string(executed) + " commands)");
+            return executed;
+        };
+        func->then(nameArg);
+        d.root->then(func);
+    }
+    // /reload
+    {
+        auto reload = CommandNode::literal("reload");
+        reload->executable = true;
+        reload->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            recipes_.loadDirectory(cfg_.recipesDir);
+            tagManager_.loadDirectory("assets/data/tags");
+            tagManager_.applyToRecipeTags(recipes_.tags_);
+            lootTables_.loadDirectory("assets/data/loot_tables");
+            sendFeedback(src, "Reload complete: " + std::to_string(recipes_.size()) + " recipes, " + std::to_string(tagManager_.itemTags.size()) + " item tags, " + std::to_string(lootTables_.size()) + " loot tables");
+            return 1;
+        };
+        d.root->then(reload);
+    }
+    // /tag stub
+    {
+        auto tag = CommandNode::literal("tag");
+        auto tagImpl = [](CommandContext& c) -> int {
+            Player* src = static_cast<Player*>(c.source.player);
+            sendFeedback(src, "tag command not yet implemented");
+            return 1;
+        };
+        tag->executable = true;
+        tag->action = tagImpl;
+        auto args = CommandNode::argument("args", brigadier::args::stringGreedy());
+        args->executable = true;
+        args->action = tagImpl;
+        tag->then(args);
+        d.root->then(tag);
+    }
+    // /team stub
+    {
+        auto team = CommandNode::literal("team");
+        auto teamImpl = [](CommandContext& c) -> int {
+            Player* src = static_cast<Player*>(c.source.player);
+            sendFeedback(src, "team command not yet implemented");
+            return 1;
+        };
+        team->executable = true;
+        team->action = teamImpl;
+        auto args = CommandNode::argument("args", brigadier::args::stringGreedy());
+        args->executable = true;
+        args->action = teamImpl;
+        team->then(args);
+        d.root->then(team);
+    }
+    // /bossbar stub
+    {
+        auto boss = CommandNode::literal("bossbar");
+        auto bossImpl = [](CommandContext& c) -> int {
+            Player* src = static_cast<Player*>(c.source.player);
+            sendFeedback(src, "bossbar command not yet implemented");
+            return 1;
+        };
+        boss->executable = true;
+        boss->action = bossImpl;
+        auto args = CommandNode::argument("args", brigadier::args::stringGreedy());
+        args->executable = true;
+        args->action = bossImpl;
+        boss->then(args);
+        d.root->then(boss);
     }
 }
 
