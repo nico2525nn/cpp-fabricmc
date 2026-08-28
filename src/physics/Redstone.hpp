@@ -152,6 +152,7 @@ private:
     void handlePiston(std::int32_t x, std::int32_t y, std::int32_t z);
     void handlePistonScheduled(std::int32_t x, std::int32_t y, std::int32_t z, bool extendNow);
     void processPistonQueue(std::int64_t now);
+    void handleDoor(std::int32_t x, std::int32_t y, std::int32_t z);
 
     World& world_;
     BlockEntityStore* beStore_ = nullptr;

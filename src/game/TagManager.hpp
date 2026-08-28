@@ -145,6 +145,11 @@ private:
         };
         add("minecraft:logs", {"minecraft:oak_log","minecraft:spruce_log"});
         add("minecraft:planks", {"minecraft:oak_planks"});
+        // strict audit: infiniburn tags via TagManager (HIGH) and soul fire base (LOW)
+        add("minecraft:infiniburn_overworld", {"minecraft:netherrack","minecraft:magma_block"});
+        add("minecraft:infiniburn_nether", {"minecraft:netherrack","minecraft:magma_block","minecraft:bedrock"});
+        add("minecraft:infiniburn_end", {"minecraft:bedrock","minecraft:netherrack","minecraft:magma_block"});
+        add("minecraft:soul_fire_base_blocks", {"minecraft:soul_sand","minecraft:soul_soil"});
         while(out.size()<20){
             std::string dyn="minecraft:block_dynamic_"+std::to_string(out.size());
             out.emplace(dyn, IdSet{});
