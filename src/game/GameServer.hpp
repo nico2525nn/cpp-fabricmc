@@ -1,8 +1,10 @@
 // GameServer: protocol state machine (HANDSHAKE→STATUS/LOGIN→CONFIGURATION→PLAY),
 // player registry, world interaction, broadcasting.
 #pragma once
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <cmath>
 #include <memory>
@@ -463,6 +465,9 @@ public:
                 data.set("DayTime", nv::Value::makeLong(dayTime()));
                 data.set("Time", nv::Value::makeLong(tickNo_));
                 data.set("Difficulty", nv::Value::makeString(difficulty_));
+                data.set("WanderingTraderSpawnDelay", nv::Value::makeInt(wanderingTraderSpawnDelay_));
+                data.set("WanderingTraderSpawnChance", nv::Value::makeInt(wanderingTraderSpawnChance_));
+                data.set("WanderingTraderId", nv::Value::makeCompound());
             },
             [this](const nbt::Value& data) {
                 if (const auto* t = data.get("Time"))
@@ -493,6 +498,14 @@ public:
                         else if (sz->tag==nbt::Int) worldBorderDiameter_ = sz->i;
                         else if (sz->tag==nbt::Long) worldBorderDiameter_ = (double)sz->l;
                     }
+                }
+                if (const auto* d = data.get("WanderingTraderSpawnDelay")) {
+                    if (d->tag==nbt::Int) wanderingTraderSpawnDelay_ = d->i;
+                    else if (d->tag==nbt::Long) wanderingTraderSpawnDelay_ = (int)d->l;
+                }
+                if (const auto* c = data.get("WanderingTraderSpawnChance")) {
+                    if (c->tag==nbt::Int) wanderingTraderSpawnChance_ = c->i;
+                    else if (c->tag==nbt::Long) wanderingTraderSpawnChance_ = (int)c->l;
                 }
             });
         persist_->loadLevelData();
@@ -877,6 +890,9 @@ private:
     int spawnProtection_ = 16;               // server.properties spawn-protection (default 16)
     std::unordered_set<std::string> ops_;    // ops.json / op list
     std::int32_t teleportCounterForTest_ = 1;
+    // WanderingTrader scheduling (vanilla WanderingTraderManager)
+    int wanderingTraderSpawnDelay_ = 0;
+    int wanderingTraderSpawnChance_ = 25;
 
 public:
     // WorldBorder helpers (plan6 §10) — diameter 59999968, Chebyshev square
@@ -908,10 +924,46 @@ public:
     double worldBorderDamagePerBlock() const { return 0.2; }
     double worldBorderSafeZone() const { return 5.0; }
     double worldBorderDamageBuffer() const { return 5.0; }
+    void tickWanderingTrader() {
+        // vanilla WanderingTraderManager: gated by doTraderSpawning (or doMobSpawning)
+        if (!gamerules_.getBool("doTraderSpawning")) {
+            // fallback check legacy name variant
+            if (gamerules_.contains("doTraderSpawning") && !gamerules_.getBool("doTraderSpawning")) return;
+            // if gamerule missing, default true, so only return when explicitly false
+            // also respect doMobSpawning as global kill-switch per audit
+            if (gamerules_.contains("doMobSpawning") && !gamerules_.getBool("doMobSpawning")) return;
+        }
+        if (wanderingTraderSpawnDelay_ > 0) { --wanderingTraderSpawnDelay_; return; }
+        int roll = std::rand() % 100;
+        bool shouldSpawn = roll < wanderingTraderSpawnChance_;
+        if (shouldSpawn) {
+            auto players = playersSnapshot();
+            if (!players.empty()) {
+                auto &p = players[std::rand() % players.size()];
+                if (p->inPlay) {
+                    double sx = p->x + (std::rand()%48 - 24);
+                    double sz = p->z + (std::rand()%48 - 24);
+                    double sy = p->y;
+                    for (int y = (int)sy + 10; y > (int)sy - 10; --y) {
+                        if (world_.getBlock((int)sx, y, (int)sz)==0 && world_.getBlock((int)sx, y-1, (int)sz)!=0) { sy = y; break; }
+                    }
+                    spawnMob(MobKind::WanderingTrader, sx, sy, sz);
+                    wanderingTraderSpawnChance_ = 25;
+                }
+            }
+            wanderingTraderSpawnDelay_ = 24000;
+        } else {
+            wanderingTraderSpawnChance_ = std::min(75, wanderingTraderSpawnChance_ + 25);
+            wanderingTraderSpawnDelay_ = 24000;
+        }
+    }
+    int wanderingTraderSpawnDelay() const { return wanderingTraderSpawnDelay_; }
+    int wanderingTraderSpawnChance() const { return wanderingTraderSpawnChance_; }
     std::string difficulty() const { return difficulty_; }
     std::string difficultyPublic() const { return difficulty_; }
     bool isSpawnProtected(std::int32_t x, std::int32_t z) const {
         if (spawnProtection_ <= 0) return false;
+        if (ops_.empty()) return false;
         auto sp = world_.spawnPoint();
         int dx = std::abs(x - sp.x);
         int dz = std::abs(z - sp.z);
