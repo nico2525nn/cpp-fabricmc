@@ -347,7 +347,9 @@ bool RedstoneEngine::isPoweredHere(std::int32_t x, std::int32_t y,
 
 void RedstoneEngine::onBlockChanged(std::int32_t x, std::int32_t y,
                                     std::int32_t z) {
-    if (!world_.isPositionInSimulationDistance(x, z)) return;
+    // Simulation-distance culling for all subsystems via isChunkInSimulationDistance (plan11 §1 #6)
+    // Includes ChunkTicket SPAWN forced always-tick for spawn chunks.
+    if (!world_.isChunkInSimulationDistance(x >> 4, z >> 4) && !world_.isPositionInSimulationDistance(x, z)) return;
     recomputeAround(x, y, z);
     // Rails shape recompute for changed pos and neighbors
     recomputeRailShape(x,y,z);
@@ -921,7 +923,7 @@ void RedstoneEngine::tick(std::int64_t now) {
     while (!queue_.empty() && queue_.top().dueTick <= now) {
         const RedstoneTick t = queue_.top();
         queue_.pop();
-        if (!world_.isPositionInSimulationDistance(t.x, t.z)) continue;
+        if (!world_.isChunkInSimulationDistance(t.x >> 4, t.z >> 4) && !world_.isPositionInSimulationDistance(t.x, t.z)) continue;
         const std::uint16_t st = world_.getBlock(t.x, t.y, t.z);
         const Comp c = classify(st);
         if (c == Comp::ButtonOn) {                       // release pulse

@@ -40,10 +40,14 @@ std::uint8_t LightEngine::blockLightAt(std::int32_t x, std::int32_t y,
 void LightEngine::onBlockChanged(std::int32_t x, std::int32_t y,
                                  std::int32_t z, std::uint16_t oldState,
                                  std::uint16_t newState) {
-    // Simulation-distance check via World (plan7) – still process removal/addition but skip far chunks
-    // We keep light updates for view distance but gate heavy sky rebuilds via isPositionInSimulationDistance
-    const bool inSim = world_.isPositionInSimulationDistance(x, z);
-    (void)inSim;
+    // Simulation distance culling for all subsystems via isChunkInSimulationDistance (plan11 §1 #6)
+    // Block-light propagation is simulation-culled; sky rebuilds are also culled via isChunkInSimulationDistance.
+    // For spawn chunks (forced / ChunkTicket SPAWN level 31) we always tick even outside player simulation radius.
+    if (!world_.isChunkInSimulationDistance(x >> 4, z >> 4) && !world_.isPositionInSimulationDistance(x, z)) {
+        // Still ensure sky storage exists for view distance rendering, but skip heavy BFS queuing.
+        world_.ensureSkyStorage(x >> 4, z >> 4);
+        return;
+    }
     const int oldEmit = emissionOf(oldState);
     const int newEmit = emissionOf(newState);
 

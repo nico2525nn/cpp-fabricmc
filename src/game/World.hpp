@@ -18,6 +18,7 @@
 #include "../worldgen/Structures.hpp"
 #include "../worldgen/ChunkGenerator.hpp"
 #include "../worldgen/StructureManager.hpp"
+#include "ChunkTicket.hpp"
 
 namespace cppfm {
 
@@ -346,6 +347,12 @@ public:
     void addForcedChunk(std::int32_t cx, std::int32_t cz) {
         std::unique_lock lock(mutex_);
         forcedChunks_.insert(chunkKey(cx, cz));
+        ticketManager_.addTicket(cx, cz, TicketType::FORCED, 31, 0);
+    }
+    void addSpawnTicket(std::int32_t cx, std::int32_t cz, std::int64_t tick = 0) {
+        std::unique_lock lock(mutex_);
+        forcedChunks_.insert(chunkKey(cx, cz));
+        ticketManager_.addTicket(cx, cz, TicketType::SPAWN, 31, tick);
     }
     bool isForced(std::int32_t cx, std::int32_t cz) const {
         std::shared_lock lock(mutex_);
@@ -354,6 +361,31 @@ public:
     bool isForcedKey(std::int64_t k) const {
         std::shared_lock lock(mutex_);
         return forcedChunks_.count(k) != 0;
+    }
+    ChunkTicketManager& ticketManager() { return ticketManager_; }
+    const ChunkTicketManager& ticketManager() const { return ticketManager_; }
+    bool hasTicket(std::int32_t cx, std::int32_t cz, TicketType t) const {
+        std::shared_lock lock(mutex_);
+        return ticketManager_.hasTicket(cx, cz, t);
+    }
+    int ticketLevel(std::int32_t cx, std::int32_t cz) const {
+        std::shared_lock lock(mutex_);
+        return ticketManager_.getMinLevel(cx, cz);
+    }
+    std::vector<std::int64_t> forcedChunkKeys() const {
+        std::shared_lock lock(mutex_);
+        std::vector<std::int64_t> out(forcedChunks_.begin(), forcedChunks_.end());
+        return out;
+    }
+    void clearForcedChunks() {
+        std::unique_lock lock(mutex_);
+        forcedChunks_.clear();
+        ticketManager_.clear();
+    }
+    void restoreForcedChunk(std::int32_t cx, std::int32_t cz) {
+        std::unique_lock lock(mutex_);
+        forcedChunks_.insert(chunkKey(cx, cz));
+        ticketManager_.addTicket(cx, cz, TicketType::SPAWN, 31, 0);
     }
 
     const std::string& biomeKey() const { return biome_; }
@@ -372,14 +404,27 @@ public:
     }
 
     // ---- World responsibility: simulation distance (plan7) ------------
+    // Spawn chunks (forced / SPAWN ticket level 31) are always considered in simulation distance
+    // per vanilla ChunkTicket SPWAN behavior: they tick even without nearby players.
     bool isPositionInSimulationDistance(std::int32_t x, std::int32_t z) const {
-        if (simCallback_) return simCallback_(x >> 4, z >> 4);
+        std::int32_t cx = x >> 4, cz = z >> 4;
+        {
+            std::shared_lock lock(mutex_);
+            if (forcedChunks_.count(chunkKey(cx, cz))) return true;
+            if (ticketManager_.getMinLevel(cx, cz) <= 31) return true;
+        }
+        if (simCallback_) return simCallback_(cx, cz);
         // fallback: if we have simulationDistance_ consider spawn distance
         if (simulationDistance_ <= 0) return true;
         // without callback, assume in range (tests without GameServer)
         return true;
     }
     bool isChunkInSimulationDistance(std::int32_t cx, std::int32_t cz) const {
+        {
+            std::shared_lock lock(mutex_);
+            if (forcedChunks_.count(chunkKey(cx, cz))) return true;
+            if (ticketManager_.getMinLevel(cx, cz) <= 31) return true;
+        }
         if (simCallback_) return simCallback_(cx, cz);
         return true;
     }
@@ -496,6 +541,7 @@ public:
     mutable std::shared_mutex mutex_;
     mutable std::unordered_map<std::int64_t, std::unique_ptr<Chunk>> chunks_;
     mutable std::unordered_set<std::int64_t> forcedChunks_;
+    mutable ChunkTicketManager ticketManager_;
     std::string biome_;
     LevelType level_;
     TerrainGenerator terrain_;
