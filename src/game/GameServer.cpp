@@ -2144,7 +2144,7 @@ bool GameServer::openTrading(Player& p, MobEntity& v) {
     try { p.conn->sendPacket(proto::pl::sc::OpenScreen, b); } catch (...) {}
     // Trade List payload (plan14 §4: 2*level offers, VillagerData level/profession, Gossip priceMultiplier)
     WriteBuffer tl;
-    tl.i8(static_cast<std::uint8_t>(windowId));
+    tl.varint(windowId);
     const auto& trades = tradeTable();
     int lvl = std::clamp(v.villagerData.level,1,5);
     // ensure villagerLevel mirror
@@ -2393,7 +2393,7 @@ bool GameServer::addToInventory(Player& p, std::uint32_t itemId, std::uint16_t c
 
 void GameServer::resendInventory(Player& p) {
     WriteBuffer b;
-    b.u8(0);                                            // window 0
+    b.varint(0);                                            // window 0
     b.varint(++p.invStateId);
     b.varint(46);
     for (int i = 0; i < 46; ++i) p.inv[i].write(b);
@@ -3308,7 +3308,7 @@ void Session::sendStarterInventory() {
         }
     }
     WriteBuffer b;
-    b.u8(0);                                       // window id: player inventory
+    b.varint(0);                                       // window id: player inventory
     b.varint(++self_->invStateId);
     b.varint(46);                                  // slots
     for (int i = 0; i < 46; ++i) self_->inv[i].write(b);
@@ -3318,7 +3318,7 @@ void Session::sendStarterInventory() {
 
 
 void Session::onWindowClick(ReadBuffer& in) {
-    const auto windowId = in.u8();
+    const auto windowId = in.varint();
     (void)in.varint();                                // stateId
     const auto slotIdx = in.i16();
     const auto button = in.i8();
@@ -3567,13 +3567,28 @@ void GameServer::brewingTick() {
             --b.brewTime;
             blockEntities_.dirty_.insert(key);
             if (b.brewTime == 0) {
-                // brew complete: consume ingredient slot 3
+                // brew complete: consume ingredient slot 3 and transform potions (strict audit MEDIUM I7)
                 if (!b.slots[3].empty()) {
+                    std::uint32_t ingId = b.slots[3].itemId;
                     if (--b.slots[3].count <= 0) b.slots[3] = ItemStack::air();
-                    // Transform potions 0..2: keep same item but ensure output; vanilla would change potion type.
-                    // For parity we simply keep the items (ingredient consumed signals completion).
-                    // Optionally, if input was water bottle and ingredient was nether_wart, create awkward.
-                    // Simplified: do nothing else.
+                    // nether_wart -> awkward potion transform (vanilla PotionBrewing)
+                    auto itWart = gen::itemIdByName().find("minecraft:nether_wart");
+                    std::uint32_t wartId = itWart != gen::itemIdByName().end() ? itWart->second : 0;
+                    auto itPotion = gen::itemIdByName().find("minecraft:potion");
+                    std::uint32_t potionId = itPotion != gen::itemIdByName().end() ? itPotion->second : 0;
+                    if (ingId == wartId && potionId != 0) {
+                        for (int pi = 0; pi < 3; ++pi) {
+                            auto &stk = b.slots[pi];
+                            if (stk.empty()) continue;
+                            if (stk.itemId != potionId) continue;
+                            // water bottle has no potion_contents or id 0 -> becomes awkward (id 1)
+                            int curId = stk.getPotionId();
+                            bool isWater = !stk.hasPotionContents() || curId == 0;
+                            if (isWater) {
+                                stk.setPotionId(1); // awkward
+                            }
+                        }
+                    }
                     blockEntities_.dirty_.insert(key);
                 } else {
                     // no ingredient but timer expired? just reset
@@ -4255,7 +4270,7 @@ void Session::onTabComplete(ReadBuffer& in) {
 void Session::sendSetSlot(std::int32_t windowId, std::int32_t stateId,
                           std::int16_t slot, const ItemStack& s) {
     WriteBuffer b;
-    b.i8(static_cast<std::int8_t>(windowId));
+    b.varint(windowId);
     b.varint(stateId);
     b.i16(slot);
     s.write(b);
@@ -4333,7 +4348,7 @@ void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
                 // refresh cost
                 int newCost = CostCalculator::anvilCost(m.extraSlots[0], m.extraSlots[1], m.anvilRename);
                 WriteBuffer pb;
-                pb.u8(static_cast<std::uint8_t>(m.windowId));
+                pb.varint(m.windowId);
                 pb.i16(0);
                 pb.i16(static_cast<std::int16_t>(newCost < 0 ? 0 : newCost));
                 try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
@@ -4385,7 +4400,7 @@ void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
         std::string rename = m.anvilRename;
         int cost = CostCalculator::anvilCost(m.extraSlots[0], m.extraSlots[1], rename);
         WriteBuffer pb;
-        pb.u8(static_cast<std::uint8_t>(m.windowId));
+        pb.varint(m.windowId);
         pb.i16(0);
         pb.i16(static_cast<std::int16_t>(cost < 0 ? 0 : cost));
         try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
@@ -4425,7 +4440,7 @@ void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
         for (int i = 0; i < 3; ++i) {
             int cost = CostCalculator::enchantingCost(*self_, bs);
             WriteBuffer pb;
-            pb.u8(static_cast<std::uint8_t>(m.windowId));
+            pb.varint(m.windowId);
             pb.i16(static_cast<std::int16_t>(i));
             pb.i16(static_cast<std::int16_t>(cost + i));
             try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
@@ -4436,7 +4451,7 @@ void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
             auto& b = m.blockEntity->brewing;
             for (int prop = 0; prop < 2; ++prop) {
                 WriteBuffer pb;
-                pb.u8(static_cast<std::uint8_t>(m.windowId));
+                pb.varint(m.windowId);
                 pb.i16(static_cast<std::int16_t>(prop));
                 pb.i16(prop == 0 ? b.brewTime : b.fuel);
                 try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
@@ -4449,10 +4464,33 @@ void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
             const int props[4] = {f.cookProgress, f.cookTotal, f.burnTicks, f.burnDuration};
             for (int prop = 0; prop < 4; ++prop) {
                 WriteBuffer pb;
-                pb.u8(static_cast<std::uint8_t>(m.windowId));
+                pb.varint(m.windowId);
                 pb.i16(static_cast<std::int16_t>(prop));
                 pb.i16(static_cast<std::int16_t>(props[prop]));
                 try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
+            }
+        }
+    }
+    // Strict audit MEDIUM: Stonecutter/Crafter triggered toggle (1.21.4 crafter triggered + stonecutter parity)
+    if ((m.type == MenuType::Stonecutter || m.type == MenuType::Crafter) && m.blockKey >= 0) {
+        int bx = posKeyUnpackX(m.blockKey);
+        int by = posKeyUnpackY(m.blockKey);
+        int bz = posKeyUnpackZ(m.blockKey);
+        std::uint16_t st = srv_.world().getBlock(bx, by, bz);
+        const auto* def = gen::blockByState(st);
+        if (def) {
+            auto props = gen::propsOf(st);
+            bool hasTrig = false;
+            std::string cur;
+            for (auto& kv : props) if (kv.first == "triggered") { hasTrig = true; cur = std::string(kv.second); }
+            if (hasTrig) {
+                std::string nxt = (cur == "true" ? "false" : "true");
+                std::vector<std::pair<std::string_view,std::string_view>> np;
+                for (auto& kv : props) if (kv.first != "triggered") np.emplace_back(kv.first, kv.second);
+                np.emplace_back("triggered", nxt);
+                std::uint16_t ns = static_cast<std::uint16_t>(gen::stateWithProps(*def, np));
+                srv_.world().setBlock(bx, by, bz, ns);
+                srv_.broadcastBlockChange(bx, by, bz, ns);
             }
         }
     }
@@ -4461,7 +4499,7 @@ void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
 
 void Session::sendMenuContent(Menu& m) {
     WriteBuffer b;
-    b.u8(static_cast<std::uint8_t>(m.windowId));
+    b.varint(m.windowId);
     b.varint(++self_->invStateId);
     b.varint(m.totalSlots());
     for (int i = 0; i < m.totalSlots(); ++i) {
@@ -4648,7 +4686,7 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
         for (int i = 0; i < 3; ++i) {
             int cost = CostCalculator::enchantingCost(*self_, bs);
             WriteBuffer pb;
-            pb.u8(static_cast<std::uint8_t>(openMenu_->windowId));
+            pb.varint(openMenu_->windowId);
             pb.i16(static_cast<std::int16_t>(i));
             pb.i16(static_cast<std::int16_t>(cost));
             try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
@@ -4658,7 +4696,7 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
         ItemStack right = openMenu_->extraSlots[1];
         int cost = CostCalculator::anvilCost(left, right, "");
         WriteBuffer pb;
-        pb.u8(static_cast<std::uint8_t>(openMenu_->windowId));
+        pb.varint(openMenu_->windowId);
         pb.i16(0);
         pb.i16(static_cast<std::int16_t>(cost < 0 ? 0 : cost));
         try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
@@ -4667,7 +4705,7 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
             auto &b = openMenu_->blockEntity->brewing;
             for (int prop = 0; prop < 2; ++prop) {
                 WriteBuffer pb;
-                pb.u8(static_cast<std::uint8_t>(openMenu_->windowId));
+                pb.varint(openMenu_->windowId);
                 pb.i16(static_cast<std::int16_t>(prop));
                 pb.i16(prop == 0 ? b.brewTime : b.fuel);
                 try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
@@ -4679,7 +4717,7 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
             const int props[4] = {f.cookProgress, f.cookTotal, f.burnTicks, f.burnDuration};
             for (int prop = 0; prop < 4; ++prop) {
                 WriteBuffer pb;
-                pb.u8(static_cast<std::uint8_t>(openMenu_->windowId));
+                pb.varint(openMenu_->windowId);
                 pb.i16(static_cast<std::int16_t>(prop));
                 pb.i16(static_cast<std::int16_t>(props[prop]));
                 try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
@@ -4713,7 +4751,7 @@ void Session::closeOpenMenu(bool sendPacketToClient) {
     openMenu_.reset();
     if (sendPacketToClient) {
         WriteBuffer b;
-        b.u8(0);
+        b.varint(0);
         try { conn_->sendPacket(pl::sc::CloseContainer, b); } catch (...) {}
     }
 }
@@ -4895,7 +4933,7 @@ void Session::handlePlaceRecipe(std::int32_t recipeId, bool makeAll) {
         if (m.blockEntity && m.blockEntity->kind == BlockEntity::Kind::Furnace) {
             auto &f = m.blockEntity->furnace;
             WriteBuffer pb;
-            pb.u8(static_cast<std::uint8_t>(m.windowId));
+            pb.varint(m.windowId);
             pb.i16(0);
             pb.i16(f.cookProgress);
             try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
@@ -5058,7 +5096,7 @@ void Session::onPluginPayload(const std::string& channel,
             std::string rname = openMenu_->anvilRename;
             int cost = CostCalculator::anvilCost(openMenu_->extraSlots[0], openMenu_->extraSlots[1], rname);
             WriteBuffer pb;
-            pb.u8(static_cast<std::uint8_t>(openMenu_->windowId));
+            pb.varint(openMenu_->windowId);
             pb.i16(0);
             pb.i16(static_cast<std::int16_t>(cost < 0 ? 0 : cost));
             try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
