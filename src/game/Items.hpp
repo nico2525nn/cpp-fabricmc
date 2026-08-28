@@ -86,6 +86,7 @@ struct ItemStack {
     static constexpr std::uint32_t kEnchantmentsComponentId = 10;
     static constexpr std::uint32_t kTrimComponentIdReal = 45;
     static constexpr std::uint32_t kCustomNameComponentId = 5;
+    static constexpr std::uint32_t kPotionContentsComponentId = 41;
     // legacy ids for read-compat
     static constexpr std::uint32_t kLegacyDamageAlias = 6;
     static constexpr std::uint32_t kLegacyRepairAlias = 7;
@@ -324,6 +325,48 @@ struct ItemStack {
         components.erase(std::remove_if(components.begin(), components.end(),
             [](auto &p){ return p.first==kTrimComponentId || p.first==kLegacyTrimAlias; }), components.end());
     }
+
+    // ----- Brewing potion_contents (41) helpers — nether_wart -> awkward -----
+    // Payload: option potionId (bool+varint), option customColor (bool), varint customEffectsCount, option customName (bool)
+    // We store minimal binary for awkward/water to satisfy strict audit brewing result transform.
+    bool hasPotionContents() const {
+        for (auto &pr : components) if (pr.first==kPotionContentsComponentId) return true;
+        return false;
+    }
+    int getPotionId() const {
+        for (auto &pr : components) if (pr.first==kPotionContentsComponentId) {
+            if (pr.second.empty()) return 0;
+            ReadBuffer rb(pr.second.data(), pr.second.size());
+            try {
+                bool hasId = rb.boolean();
+                if (!hasId) return 0;
+                return rb.varint();
+            } catch (...) { return 0; }
+        }
+        return 0; // water by default (no component)
+    }
+    void setPotionId(int id) {
+        components.erase(std::remove_if(components.begin(), components.end(),
+            [](auto &p){ return p.first==kPotionContentsComponentId; }), components.end());
+        WriteBuffer wb;
+        wb.boolean(true);
+        wb.varint(id);
+        wb.boolean(false); // customColor absent
+        wb.varint(0); // customEffects 0
+        wb.boolean(false); // customName absent
+        components.emplace_back(kPotionContentsComponentId, std::vector<std::uint8_t>(wb.data.begin(), wb.data.end()));
+    }
+    void clearPotionContents() {
+        components.erase(std::remove_if(components.begin(), components.end(),
+            [](auto &p){ return p.first==kPotionContentsComponentId; }), components.end());
+    }
+    bool isWaterPotion() const {
+        if (itemId == 0) return false;
+        std::string n=name();
+        if (n!="minecraft:potion" && n!="minecraft:splash_potion" && n!="minecraft:lingering_potion") return false;
+        return getPotionId()==0 && !hasPotionContents();
+    }
+    bool isAwkwardPotion() const { return getPotionId()==1; }
 
     // ---- plan13 §4/§5 helpers ----
     bool isArmor() const {
