@@ -78,6 +78,8 @@ void LightEngine::onBlockChanged(std::int32_t x, std::int32_t y,
             }
         }
         // schedule sky-light rebuild for this chunk and neighbors (cull via World simulation check plan7)
+        // plan20 W10: single 3×3 batch — diagonal loop already covers all 8 neighbors, so the 6-dir
+        // orthogonal neighbor loop is redundant and caused double scheduling. Keep only the 3×3.
         auto schedSky = [&](std::int32_t cxx, std::int32_t czz) {
             if (!world_.isChunkInSimulationDistance(cxx, czz)) return;
             world_.generateChunkIfMissing(cxx, czz);
@@ -86,12 +88,6 @@ void LightEngine::onBlockChanged(std::int32_t x, std::int32_t y,
         };
         const std::int32_t bcx = x >> 4, bcz = z >> 4;
         schedSky(bcx, bcz);
-        for (int d = 0; d < 6; ++d) {
-            const std::int32_t ncx = (x + DX[d]) >> 4;
-            const std::int32_t ncz = (z + DZ[d]) >> 4;
-            if (ncx != bcx || ncz != bcz) schedSky(ncx, ncz);
-        }
-        // also cover diagonal neighbors for sky side-propagation
         for (int dz = -1; dz <= 1; ++dz)
             for (int dx = -1; dx <= 1; ++dx)
                 if (dx || dz) schedSky(bcx + dx, bcz + dz);
@@ -153,7 +149,9 @@ LightUpdateBatch LightEngine::drain() {
         }
     }
 
-    // sky light: rebuild caches for touched chunks (bounded work per tick) — single 3x3 (strict)
+    // sky light: rebuild caches for touched chunks (bounded work per tick) — single 3x3 (strict plan20 W10)
+    // plan20 W10: previously double 3×3 (snapshot expansion + skyRebuildSet re-merge + queue.mark).
+    // Now single unified expansion via base → expanded with hasChunk||hasSkyLightCache guard, matching Yarn LevelLightEngine.
     {
         std::unordered_set<std::int64_t> skyRebuildSet;
         skyRebuildSet.reserve(batch.dirtyChunks.size() + pendingSkyRebuild_.size() + 8);
@@ -165,22 +163,28 @@ LightUpdateBatch LightEngine::drain() {
             ensureSkyLight(static_cast<std::int32_t>(k >> 32),
                            static_cast<std::int32_t>(k & 0xFFFFFFFFLL));
         }
-        for (auto k : skyDirtyExtra_) batch.dirtyChunks.insert(k);
+        // base = dirtyChunks (now includes block-light dirty) ∪ skyDirtyExtra (cross-chunk BFS) ∪ skyRebuildSet (pending)
+        std::unordered_set<std::int64_t> base;
+        base.reserve(batch.dirtyChunks.size() + skyRebuildSet.size() + skyDirtyExtra_.size() + 8);
+        for (auto k : batch.dirtyChunks) base.insert(k);
+        for (auto k : skyRebuildSet) base.insert(k);
+        for (auto k : skyDirtyExtra_) base.insert(k);
         skyDirtyExtra_.clear();
-        // neighbor dirty tracking: single 3x3 conditional — only if sky cache exists
-        auto snapshot = batch.dirtyChunks;
-        for (auto k : snapshot) {
+        // single 3×3 expansion — only for chunks that exist (hasChunk or hasSkyLightCache) to avoid empty UpdateLight
+        std::unordered_set<std::int64_t> expanded;
+        expanded.reserve(base.size() * 9 + 8);
+        for (auto k : base) {
             const std::int32_t cxx = static_cast<std::int32_t>(k >> 32);
             const std::int32_t czz = static_cast<std::int32_t>(k & 0xFFFFFFFFLL);
-            for (int dz=-1; dz<=1; ++dz)
+            for (int dz=-1; dz<=1; ++dz) {
                 for (int dx=-1; dx<=1; ++dx) {
-                    if (dx==0 && dz==0) continue;
                     const std::int32_t ncx = cxx + dx, ncz = czz + dz;
-                    if (world_.hasSkyLightCache(ncx, ncz))
-                        batch.dirtyChunks.insert(chunkKey(ncx, ncz));
+                    if (world_.hasSkyLightCache(ncx, ncz) || world_.hasChunk(ncx, ncz))
+                        expanded.insert(chunkKey(ncx, ncz));
                 }
+            }
         }
-        for (auto k : skyRebuildSet) batch.dirtyChunks.insert(k);
+        batch.dirtyChunks = std::move(expanded);
         for (auto k : batch.dirtyChunks) batch.queue.mark(static_cast<std::int32_t>(k>>32), static_cast<std::int32_t>(k & 0xFFFFFFFFLL));
     }
     return batch;
