@@ -761,10 +761,10 @@ void GameServer::survivalTick() {
             if (inSnow) {
                 p->freezeTicks = std::min(300, p->freezeTicks + 1);
                 if (p->freezeTicks >= 140) {
-                    if (gamerules_.getBool("freezeDamage") && tickNo_ % 20 == 0) applyDamage(*p, 1.f, "freeze");
+                    if (gamerules_.getBool("freezeDamage") && tickNo_ % 40 == 0) applyDamage(*p, 1.f, "freeze");
                 }
             } else {
-                p->freezeTicks = std::max(0, p->freezeTicks - 1);
+                p->freezeTicks = std::max(0, p->freezeTicks - 2);
             }
         }
         // ---- fire / lava 77-78

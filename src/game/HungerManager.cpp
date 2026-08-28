@@ -124,15 +124,61 @@ void HungerManager::tickExhaustion(Player& p, GameServer& srv) {
 }
 
 void HungerManager::tickRegenAndStarve(Player& p, int64_t tickNo, GameServer& srv) {
-    if (tickNo % 80 == 0 && p.food >= 18 && p.health < 20.f) {
-        p.health = std::min(20.f, p.health + 1.f);
-        p.saturation = std::max(0.f, p.saturation - 1.f);
-        srv.sendSetHealth(p);
+    (void)tickNo;
+    // plan15 strict: per-player foodTickTimer + saturation fast heal (10) + naturalRegeneration gamerule + freeze 40 handled in survivalTick
+    bool naturalRegeneration = true;
+    if (srv.gameRules().contains("naturalRegeneration")) naturalRegeneration = srv.gameRules().getBool("naturalRegeneration");
+    // difficulty for starvation thresholds
+    std::string diff = "normal";
+    // access via GameServer difficulty if available
+    try { diff = srv.difficultyPublic(); } catch(...) { diff = "normal"; }
+
+    // Fast healing with saturation when food==20 and saturation>0
+    if (naturalRegeneration && p.saturation > 0.f && p.food >= FULL_FOOD_LEVEL && p.health > 0.f && p.health < 20.f) {
+        ++p.foodTickTimer;
+        if (p.foodTickTimer >= FAST_HEALING_INTERVAL) {
+            p.health = std::min(20.f, p.health + 1.f);
+            p.exhaustion += EXHAUSTION_PER_HEAL;
+            p.saturation = std::max(0.f, p.saturation - 1.f);
+            // saturation fast heal also consumes exhaustion; foodTickTimer reset
+            p.foodTickTimer = 0;
+            srv.sendSetHealth(p);
+        }
+        return;
     }
-    if (tickNo % 80 == 0 && p.food == 0 && p.health > 1.f) {
-        p.health -= 1.f;
-        srv.sendSetHealth(p);
+    // Slow healing when food >=18
+    if (naturalRegeneration && p.food >= SLOW_HEALING_FOOD_LEVEL && p.health > 0.f && p.health < 20.f) {
+        ++p.foodTickTimer;
+        if (p.foodTickTimer >= SLOW_HEALING_INTERVAL) {
+            p.health = std::min(20.f, p.health + 1.f);
+            p.exhaustion += EXHAUSTION_PER_HEAL;
+            p.foodTickTimer = 0;
+            srv.sendSetHealth(p);
+        }
+        return;
     }
+    // Starvation when food ==0
+    if (p.food <= STARVING_FOOD_LEVEL) {
+        ++p.foodTickTimer;
+        if (p.foodTickTimer >= SLOW_HEALING_INTERVAL) {
+            bool canStarve = false;
+            if (diff == "hard") canStarve = p.health > 0.f;
+            else if (diff == "easy") canStarve = p.health > 10.f;
+            else if (diff == "normal") canStarve = p.health > 1.f;
+            else if (diff == "peaceful") canStarve = false;
+            else canStarve = p.health > 1.f;
+            if (canStarve) {
+                // starve damage bypasses armor per DamageSource starve
+                p.health = std::max(0.f, p.health - 1.f);
+                srv.sendSetHealth(p);
+                if (p.health <= 0.f) srv.killPlayer(p, "starve");
+            }
+            p.foodTickTimer = 0;
+        }
+        return;
+    }
+    // otherwise reset timer
+    p.foodTickTimer = 0;
 }
 
 void HungerManager::onPlayerMove(Player& p, double oldX, double /*oldY*/, double oldZ,
