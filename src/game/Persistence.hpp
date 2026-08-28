@@ -193,6 +193,19 @@ public:
             if (const auto* ds = d->get("Difficulty")) {
                 if (ds->tag==nbt::String) difficulty_ = ds->str;
             }
+            // ForcedChunks fallback: restore ChunkTicket SPAWN tickets
+            if (const auto* fc = d->get("ForcedChunks")) {
+                world_.clearForcedChunks();
+                for (auto &v : fc->list) {
+                    std::int64_t key = 0;
+                    if (v.tag == nbt::Long) key = v.l;
+                    else if (v.tag == nbt::Int) key = v.i;
+                    else continue;
+                    std::int32_t cx = static_cast<std::int32_t>(key >> 32);
+                    std::int32_t cz = static_cast<std::int32_t>(key & 0xFFFFFFFFLL);
+                    world_.restoreForcedChunk(cx, cz);
+                }
+            }
             if (consumeLevelState_) consumeLevelState_(*d);
             if (const auto* ds2 = d->get("Difficulty")) {
                 if (ds2->tag==nbt::String) difficulty_ = ds2->str;
