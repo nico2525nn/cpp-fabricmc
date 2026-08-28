@@ -1,15 +1,9 @@
 // Fluids: event-driven water/lava simulation (plan3.md "水流シミュレーション").
-// A priority queue of scheduled block ticks; spreading recomputes flow levels
-// from neighbours exactly like the vanilla update-order-free model:
-//   * source blocks keep level 0
-//   * flowing water takes min(neighbour level) + 1 (max 7); falls downward
-//     as a full-level stream
-//   * lava mirrors this with double steps and slower ticks
-//   * water meeting lava yields cobblestone / obsidian
 #pragma once
 #include <cstdint>
 #include <queue>
 #include <vector>
+#include <string>
 #include "../game/World.hpp"
 
 namespace cppfm {
@@ -22,38 +16,39 @@ struct FluidTick {
     bool operator>(const FluidTick& o) const { return dueTick > o.dueTick; }
 };
 
+enum class FluidId { Empty, Water, Lava };
+struct FluidState { FluidId id = FluidId::Empty; int level = 0; bool falling = false; bool isWater() const { return id==FluidId::Water; } bool isLava() const { return id==FluidId::Lava; } };
+
 class FluidSim {
 public:
     explicit FluidSim(World& world) : world_(world) {}
 
-    // Queue an update for a position (call after ANY block change there or in
-    // its neighbourhood; redundant entries are harmless).
     void touch(std::int32_t x, std::int32_t y, std::int32_t z);
-
-    // Process all ticks whose time has come; `now` is the server tick.
     void tick(std::int64_t now);
-
     std::size_t pending() const { return queue_.size(); }
+    static FluidState getFluidState(World& w, std::int32_t x, std::int32_t y, std::int32_t z);
+    void checkInteraction(World& w, std::int32_t x, std::int32_t y, std::int32_t z, FluidState a, FluidState b);
 
 private:
     enum class Kind { Water, Lava };
-
     static constexpr int kWater = 0;
     static constexpr int kLava = 1;
-
-    // Returns 0 for water, 1 for lava, -1 otherwise; sets levelOut.
     int kindAt(std::uint16_t state, int& levelOut) const;
     std::uint16_t fluidState(Kind k, int level) const;
-    void apply(std::int32_t x, std::int32_t y, std::int32_t z,
-               std::int64_t now);
-    void schedule(std::int32_t x, std::int32_t y, std::int32_t z,
-                  std::int64_t at) {
+    void apply(std::int32_t x, std::int32_t y, std::int32_t z, std::int64_t now);
+    void schedule(std::int32_t x, std::int32_t y, std::int32_t z, std::int64_t at) {
         queue_.push({x, y, z, at});
     }
-
     World& world_;
-    std::priority_queue<FluidTick, std::vector<FluidTick>,
-                        std::greater<FluidTick>> queue_;
+    std::priority_queue<FluidTick, std::vector<FluidTick>, std::greater<FluidTick>> queue_;
+};
+
+class WaterloggableHelper {
+public:
+    static bool isWaterloggable(const std::string& blockName);
+    static bool isWaterloggable(std::uint16_t state);
+    static bool getWaterlogged(std::uint16_t state);
+    static std::uint16_t withWaterlogged(std::uint16_t state, bool v);
 };
 
 } // namespace cppfm
