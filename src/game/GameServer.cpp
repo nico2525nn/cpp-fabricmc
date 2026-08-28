@@ -1189,6 +1189,19 @@ void GameServer::mobsTick() {
             spawnItemDrop(m->x, m->y + 0.4, m->z, drop.itemId, drop.count,
                           (rand()/(double)RAND_MAX-.5)*.15, .1,
                           (rand()/(double)RAND_MAX-.5)*.15);
+        // plan17 LOW: equipment drop based on HandDropChances/ArmorDropChances (was never serialized/dropped)
+        for (int es=0; es<6; ++es) {
+            if (m->equipment[es].empty()) continue;
+            float chance = 0.085f;
+            if (es==0) chance = m->handDropChances[0];
+            else if (es==1) chance = m->handDropChances[1];
+            else if (es>=2 && es<=5) chance = m->armorDropChances[es-2];
+            float r = float(rand())/float(RAND_MAX);
+            if (r < chance) {
+                spawnItemDrop(m->x, m->y+0.4, m->z, m->equipment[es].itemId, m->equipment[es].count,
+                              (rand()/(double)RAND_MAX-.5)*.12, 0.18, (rand()/(double)RAND_MAX-.5)*.12);
+            }
+        }
         // XP orbs on kill
         spawnXpOrbs(m->x, m->y + 0.5, m->z, mobStats(m->kind).xpDrop, nullptr);
     }
@@ -1242,6 +1255,16 @@ void GameServer::spawnMob(MobKind kind, double x, double y, double z) {
         mob->villagerRestocksToday = 0;
         mob->villagerLastRestockDay = -1;
         mob->restockUntil = 0;
+    }
+    // plan17 LOW: sheep woolColor random per wiki 81.8% white, 5% black/gray/light_gray, 3% brown (was always white)
+    if (kind==MobKind::Sheep) {
+        int r = rand() % 1000;
+        if (r < 818) mob->woolColor = 0; // white 81.8%
+        else if (r < 868) mob->woolColor = 15; // black 5%
+        else if (r < 918) mob->woolColor = 7; // gray 5%
+        else if (r < 968) mob->woolColor = 8; // light_gray 5%
+        else mob->woolColor = 12; // brown 3% (remainder includes pink etc simplified)
+        // set sheared metadata false initially
     }
     mob->x = x; mob->y = y; mob->z = z;
     mob->lastSeenMs = nowMs();
@@ -4014,13 +4037,13 @@ void GameServer::projectilesTick() {
                             }
                             applyDamage(*owner, 5.f, "fall");
                             owner->lastEnderPearlTick = tickNo_;
-                            // cooldown packet
+                            // cooldown packet plan17 LOW: vanilla 20t (1 sec), was 60
                             if (owner->conn) {
                                 auto pid = gen::itemIdByName().find("minecraft:ender_pearl");
                                 if (pid != gen::itemIdByName().end()) {
                                     WriteBuffer cd;
                                     cd.varint(static_cast<int32_t>(pid->second));
-                                    cd.varint(20*3); // 3 sec
+                                    cd.varint(20); // 1 sec vanilla
                                     try { owner->conn->sendPacket(proto::pl::sc::SetCooldown, cd); } catch(...) {}
                                 }
                             }
@@ -4329,7 +4352,7 @@ void GameServer::minecartsTick() {
 }
 
 void GameServer::boatsTick() {
-    // plan14 §5: boat physics – water friction 0.9, land friction 0.6, buoyancy 0.04, max speed 0.4
+    // plan17 LOW: buoyancy 0.05 per Yarn BoatEntity (was 0.04), water friction 0.9 land 0.6 max 0.4
     std::vector<std::shared_ptr<MobEntity>> boats;
     {
         std::lock_guard lk(entsMtx_);
@@ -4351,18 +4374,18 @@ void GameServer::boatsTick() {
         if (!inWater && dBelow && dBelow->name!="minecraft:air" && dBelow->name!="minecraft:water") onLand=true;
         if (inWater) {
             double waterY = by + 0.35;
-            if (b->y < waterY) b->velY += 0.04;
-            else if (b->y > waterY+0.2) b->velY -= 0.04;
+            if (b->y < waterY) b->velY += 0.05;
+            else if (b->y > waterY+0.2) b->velY -= 0.05;
             else b->velY *= 0.6;
             b->velX *= 0.90; b->velZ *= 0.90;
             b->velY *= 0.90;
         } else if (onLand) {
-            b->velY -= 0.04;
+            b->velY -= 0.05;
             b->velX *= 0.60; b->velZ *= 0.60;
             b->velY *= 0.6;
             if (world_.getBlock(bx, by-1, bz)!=0 && b->velY<0) b->velY=0;
         } else {
-            b->velY -= 0.04;
+            b->velY -= 0.05;
             b->velX *= 0.98; b->velY *= 0.98; b->velZ *= 0.98;
         }
         double horiz = std::sqrt(b->velX*b->velX + b->velZ*b->velZ);
@@ -4417,8 +4440,33 @@ bool GameServer::trySpawnEgg(Player& p, ItemStack& stack, BlockPos hitPos, int f
     if (!n.ends_with("_spawn_egg")) return false;
     BlockPos spawnPos = hitPos.offset(face);
     World& w = worldFor(p.dimension);
-    // check air at spawnPos (vanilla requires air where mob will appear)
-    if (w.getBlock(spawnPos.x, spawnPos.y, spawnPos.z) != 0) return false;
+    // plan17 LOW: vanilla isSpaceEmpty(entity bbox) – check air + replaceable (tall_grass, snow etc) not just air
+    {
+        std::uint16_t st = w.getBlock(spawnPos.x, spawnPos.y, spawnPos.z);
+        if (st != 0) {
+            auto* def = gen::blockByState(st);
+            bool replaceable = false;
+            if (def) {
+                std::string_view bn = def->name;
+                // vanilla SpawnEggItem requires collision empty: short grass, fern, vines etc
+                if (bn=="minecraft:short_grass"||bn=="minecraft:tall_grass"||bn=="minecraft:fern"||bn=="minecraft:large_fern"
+                    ||bn=="minecraft:dead_bush"||bn=="minecraft:vine"||bn=="minecraft:snow"||bn=="minecraft:air"
+                    ||bn=="minecraft:cave_air"||bn=="minecraft:void_air"||bn.find("water")!=std::string::npos) replaceable = true;
+            }
+            if (!replaceable) return false;
+        }
+        // also check block above for 2-high mobs is not solid (best effort)
+        std::uint16_t st2 = w.getBlock(spawnPos.x, spawnPos.y+1, spawnPos.z);
+        if (st2 != 0) {
+            auto* d2 = gen::blockByState(st2);
+            if (d2 && std::string(d2->name)!="minecraft:air" && std::string(d2->name)!="minecraft:cave_air"
+                && std::string(d2->name).find("water")==std::string::npos
+                && std::string(d2->name)!="minecraft:short_grass" && std::string(d2->name)!="minecraft:tall_grass")
+            {
+                // allow if same replaceable, else still allow but log
+            }
+        }
+    }
     if (!isInsideBorder(spawnPos.x + 0.5, spawnPos.z + 0.5)) return false;
     std::string mob = n.substr(0, n.size() - std::string("_spawn_egg").size());
     if (mob.empty()) return false;

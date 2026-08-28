@@ -58,6 +58,8 @@ public:
 
     bool hasBar(std::int32_t eid) const { return bars_.find(eid)!=bars_.end(); }
     size_t size() const { return bars_.size(); }
+    // plan17 LOW: BossBar TITLE update (action 3) for lerp
+    void updateTitle(GameServer& srv, std::int32_t eid, const std::string& title);
 
 private:
     std::unordered_map<std::int32_t, BossBar> bars_;
@@ -68,6 +70,7 @@ private:
     void sendAddToPlayer(GameServer& srv, const BossBar& bar, Player& p);
     void sendHealth(GameServer& srv, const BossBar& bar);
     void sendRemove(GameServer& srv, const BossBar& bar);
+    void sendTitle(GameServer& srv, const BossBar& bar);
 };
 
 // Concrete boss AIs
