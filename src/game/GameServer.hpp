@@ -414,6 +414,10 @@ public:
 
         redstone_->setBlockEntityStore(&blockEntities_);
         redstone_->setTickRef(&tickNo_);
+        redstone_->setBroadcastFn([this](std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t s){
+            this->queueBlockChange(x,y,z,s);
+            this->invalidateChunkCache(x>>4, z>>4);
+        });
         world_.setOnBlockChanged([this](std::int32_t x, std::int32_t y,
                                         std::int32_t z, std::uint16_t o,
                                         std::uint16_t n) {

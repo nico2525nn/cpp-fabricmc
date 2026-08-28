@@ -2,6 +2,7 @@
 #include "Redstone.hpp"
 #include "../game/BlockEntities.hpp"
 #include "../generated/ItemIds.hpp"
+#include "../generated/BlockStates.hpp"
 #include <unordered_map>
 #include <cstdlib>
 #include <algorithm>
@@ -908,6 +909,104 @@ bool RedstoneEngine::onInteract(std::int32_t x, std::int32_t y,
     return false;
 }
 
+void RedstoneEngine::setBlockAndBroadcast(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state) {
+    world_.setBlock(x,y,z,state);
+    if (broadcastFn_) broadcastFn_(x,y,z,state);
+}
+void RedstoneEngine::processPendingPistonCommits(std::int64_t now) {
+    for (auto it = pendingPistonCommits_.begin(); it != pendingPistonCommits_.end(); ) {
+        if (it->dueTick > now) { ++it; continue; }
+        // finalize extend
+        if (it->extend) {
+            // clear moving_piston blocks (their BEs still hold state)
+            for (auto &e : it->entries) {
+                // remove moving_piston BE and clear block (was moving_piston)
+                if (beStore_) beStore_->remove(posKey(e.x,e.y,e.z));
+                // ensure block is cleared before placing shifted (already moving_piston)
+                setBlockAndBroadcast(e.x,e.y,e.z, 0);
+            }
+            // place shifted blocks farthest first
+            // entries are original positions; shifted = entry + delta
+            std::vector<typename PendingPistonCommit::Entry> sorted = it->entries;
+            std::sort(sorted.begin(), sorted.end(), [&](const auto &a, const auto &b){
+                int da=std::abs(a.x-it->pistonX)+std::abs(a.y-it->pistonY)+std::abs(a.z-it->pistonZ);
+                int db=std::abs(b.x-it->pistonX)+std::abs(b.y-it->pistonY)+std::abs(b.z-it->pistonZ);
+                return da>db;
+            });
+            for (auto &e : sorted) {
+                int nx=e.x+it->dx, ny=e.y+it->dy, nz=e.z+it->dz;
+                setBlockAndBroadcast(nx,ny,nz, e.state);
+            }
+            // piston head
+            const gen::BlockDef* headDef = gen::blockByName("minecraft:piston_head");
+            if (headDef) {
+                std::vector<std::pair<std::string_view,std::string_view>> hp;
+                hp.emplace_back("facing", it->facing);
+                hp.emplace_back("type", it->isSticky?"sticky":"normal");
+                hp.emplace_back("short", "false");
+                std::uint16_t headSt = static_cast<std::uint16_t>(gen::stateWithProps(*headDef, hp));
+                setBlockAndBroadcast(it->hx,it->hy,it->hz, headSt);
+            }
+        } else {
+            // retract: head was moving_piston at hx,hy,hz
+            // clear head moving_piston
+            if (beStore_) beStore_->remove(posKey(it->hx,it->hy,it->hz));
+            setBlockAndBroadcast(it->hx,it->hy,it->hz, 0);
+            // handle sticky pull entries (original pullEntries holds original positions+states)
+            if (!it->pullEntries.empty()) {
+                // clear originals
+                for (auto &e : it->pullEntries) {
+                    setBlockAndBroadcast(e.x,e.y,e.z, 0);
+                }
+                // sort by distance farthest first for moving toward piston
+                std::vector<typename PendingPistonCommit::Entry> sorted = it->pullEntries;
+                std::sort(sorted.begin(), sorted.end(), [&](const auto &a, const auto &b){
+                    int da=std::abs(a.x-it->pistonX)+std::abs(a.y-it->pistonY)+std::abs(a.z-it->pistonZ);
+                    int db=std::abs(b.x-it->pistonX)+std::abs(b.y-it->pistonY)+std::abs(b.z-it->pistonZ);
+                    return da>db;
+                });
+                for (auto &e : sorted) {
+                    int nx=e.x - it->dx, ny=e.y - it->dy, nz=e.z - it->dz;
+                    // create briefly moving_piston then finalize to state (2-tick handled by keeping same tick? we finalize directly after 2t)
+                    if (beStore_) {
+                        auto mvIt = gen::blockNameToState().find("minecraft:moving_piston");
+                        if (mvIt != gen::blockNameToState().end()) {
+                            uint16_t mvSt = static_cast<uint16_t>(mvIt->second);
+                            // transient moving for completeness (will be immediately replaced, but preserves BE tick logic)
+                            BlockEntity* be2 = beStore_->getAt(nx,ny,nz);
+                            if(!be2) be2 = &beStore_->create(posKey(nx,ny,nz), BlockEntity::Kind::MovingPiston);
+                            else be2->kind = BlockEntity::Kind::MovingPiston;
+                            be2->movingPiston.state = e.state;
+                            be2->movingPiston.facing = it->face;
+                            be2->movingPiston.extending = false;
+                            be2->movingPiston.progress = 0.f;
+                            setBlockAndBroadcast(nx,ny,nz, mvSt);
+                            setBlockAndBroadcast(nx,ny,nz, e.state);
+                            beStore_->remove(posKey(nx,ny,nz));
+                            continue;
+                        }
+                    }
+                    setBlockAndBroadcast(nx,ny,nz, e.state);
+                }
+            }
+        }
+        it = pendingPistonCommits_.erase(it);
+    }
+    // also tick existing moving_piston BEs progress (0->1 over 2 ticks) for strict audit visibility
+    if (beStore_ && tickRef_) {
+        for (auto &kv : beStore_->raw()) {
+            auto &be = kv.second;
+            if (be.kind != BlockEntity::Kind::MovingPiston) continue;
+            if (be.movingPiston.finishTick==0) continue;
+            int64_t rem = be.movingPiston.finishTick - *tickRef_;
+            if (rem <0) rem=0;
+            float prog = 1.f - float(rem)/2.f;
+            if (prog<0) prog=0;
+            if (prog>1) prog=1;
+            be.movingPiston.progress = prog;
+        }
+    }
+}
 void RedstoneEngine::handlePistonScheduled(std::int32_t x, std::int32_t y, std::int32_t z, bool extendNow) {
     std::uint16_t st = world_.getBlock(x,y,z);
     Comp c = classify(st);
@@ -923,12 +1022,13 @@ void RedstoneEngine::handlePistonScheduled(std::int32_t x, std::int32_t y, std::
     for (auto& [k,v] : gen::propsOf(st)) if (k!="extended") props.emplace_back(k,v);
     props.emplace_back("extended", extendNow?"true":"false");
     std::uint16_t ns = static_cast<std::uint16_t>(gen::stateWithProps(*b, props));
-    world_.setBlock(x,y,z, ns);
+    setBlockAndBroadcast(x,y,z, ns);
     int dx=0,dy=0,dz=0;
     if (facing=="north") dz=-1; else if (facing=="south") dz=1; else if (facing=="west") dx=-1; else if (facing=="east") dx=1; else if (facing=="up") dy=1; else if (facing=="down") dy=-1;
     int face=0;
     if(facing=="down") face=0; else if(facing=="up") face=1; else if(facing=="north") face=2; else if(facing=="south") face=3; else if(facing=="west") face=4; else if(facing=="east") face=5;
     std::int32_t hx=x+dx, hy=y+dy, hz=z+dz;
+    std::int64_t now = tickRef_ ? *tickRef_ : 0;
     if (extendNow) {
         // Collect blocks to push with sticky expansion (plan10 §4)
         struct Pos{int x,y,z;};
@@ -991,87 +1091,73 @@ void RedstoneEngine::handlePistonScheduled(std::int32_t x, std::int32_t y, std::
         }
         if (fail || (int)toPush.size()>12) {
             // revert piston state and abort
-            world_.setBlock(x,y,z, st);
+            setBlockAndBroadcast(x,y,z, st);
             return;
         }
-        // moving_piston BE for strict audit (2-tick animation via BlockEntity)
-        std::vector<std::pair<Pos,std::uint16_t>> orig;
-        orig.reserve(toPush.size());
-        for (auto &p: toPush) orig.emplace_back(p, world_.getBlock(p.x,p.y,p.z));
-        // create moving_piston BE at each pushed block's original pos (animation 0->1)
+        // plan19 §8: moving_piston BE 2-tick — create moving_piston at each original pos and defer commit 2 ticks
+        PendingPistonCommit commit;
+        commit.pistonX=x; commit.pistonY=y; commit.pistonZ=z;
+        commit.hx=hx; commit.hy=hy; commit.hz=hz;
+        commit.extend=true;
+        commit.face=face;
+        commit.facing=facing;
+        commit.dx=dx; commit.dy=dy; commit.dz=dz;
+        commit.isSticky = (c==Comp::StickyPiston);
+        commit.dueTick = now + 2;
+        commit.entries.reserve(toPush.size());
+        for (auto &p: toPush) {
+            uint16_t s = world_.getBlock(p.x,p.y,p.z);
+            commit.entries.push_back({p.x,p.y,p.z, s});
+        }
         if(beStore_){
             auto mvIt=gen::blockNameToState().find("minecraft:moving_piston");
             if(mvIt!=gen::blockNameToState().end()){
                 uint16_t mvSt = static_cast<uint16_t>(mvIt->second);
-                for(auto &pr: orig){
-                    BlockEntity* be = beStore_->getAt(pr.first.x, pr.first.y, pr.first.z);
-                    if(!be) be = &beStore_->create(posKey(pr.first.x,pr.first.y,pr.first.z), BlockEntity::Kind::MovingPiston);
+                for(auto &e: commit.entries){
+                    BlockEntity* be = beStore_->getAt(e.x,e.y,e.z);
+                    if(!be) be = &beStore_->create(posKey(e.x,e.y,e.z), BlockEntity::Kind::MovingPiston);
                     else be->kind = BlockEntity::Kind::MovingPiston;
-                    be->movingPiston.state = pr.second;
+                    be->movingPiston.state = e.state;
                     be->movingPiston.facing = face;
                     be->movingPiston.extending = true;
                     be->movingPiston.progress = 0.f;
-                    be->movingPiston.finishTick = tickRef_ ? *tickRef_+2 : 0;
-                    world_.setBlock(pr.first.x, pr.first.y, pr.first.z, mvSt);
+                    be->movingPiston.finishTick = now + 2;
+                    setBlockAndBroadcast(e.x,e.y,e.z, mvSt);
                 }
             }
         }
-        // Clear originals (now moving_piston) and finalize to shifted positions after 2-tick animation (immediate for test, BE holds state)
-        for (auto &pr: orig) {
-            world_.setBlock(pr.first.x, pr.first.y, pr.first.z, 0);
-            if(beStore_) beStore_->remove(posKey(pr.first.x,pr.first.y,pr.first.z));
-        }
-        // Place shifted blocks sorted farthest first to avoid overwrite
-        std::sort(toPush.begin(), toPush.end(), [&](const Pos&a, const Pos&b){
-            int da=std::abs(a.x-x)+std::abs(a.y-y)+std::abs(a.z-z);
-            int db=std::abs(b.x-x)+std::abs(b.y-y)+std::abs(b.z-z);
-            return da>db;
-        });
-        for (size_t i=0;i<toPush.size();++i){
-            Pos src = toPush[i];
-            std::uint16_t pst=0;
-            for (auto &pr: orig) if (pr.first.x==src.x && pr.first.y==src.y && pr.first.z==src.z) { pst=pr.second; break; }
-            int nx=src.x+dx, ny=src.y+dy, nz=src.z+dz;
-            world_.setBlock(nx,ny,nz, pst);
-        }
-        const gen::BlockDef* headDef = gen::blockByName("minecraft:piston_head");
-        if (headDef) {
-            std::vector<std::pair<std::string_view,std::string_view>> hp;
-            hp.emplace_back("facing", facing);
-            hp.emplace_back("type", c==Comp::StickyPiston?"sticky":"normal");
-            hp.emplace_back("short", "false");
-            std::uint16_t headSt = static_cast<std::uint16_t>(gen::stateWithProps(*headDef, hp));
-            world_.setBlock(hx,hy,hz, headSt);
-        }
-        // Sound and GameEvent (plan10 §4)
-        if (gameServer_) {
-            // Try to broadcast piston extend sound if GameServer pointer is valid
-            // Use reinterpret_cast to avoid circular include; GameServer::broadcastSound is at known offset
-            // Instead, emit via world block change which LightEngine will catch; sound is best-effort
-            // We forward via a generic callback if available: gameServer_ is GameServer*
-            // To avoid hard dependency, just check if we can call via function pointer stored elsewhere
-            // For now, attempt to dynamic cast if GameServer header is available - fallback to no-op if not
-        }
+        pendingPistonCommits_.push_back(std::move(commit));
     } else {
         std::uint16_t head = world_.getBlock(hx,hy,hz);
         const gen::BlockDef* hb = gen::blockByState(head);
         if (hb && hb->name=="minecraft:piston_head") {
-            // moving_piston BE for retract (2-tick animation)
-            auto mvItR = gen::blockNameToState().find("minecraft:moving_piston");
-            if(mvItR!=gen::blockNameToState().end() && beStore_){
-                uint16_t mvSt = static_cast<uint16_t>(mvItR->second);
-                BlockEntity* be = beStore_->getAt(hx,hy,hz);
-                if(!be) be = &beStore_->create(posKey(hx,hy,hz), BlockEntity::Kind::MovingPiston);
-                else be->kind = BlockEntity::Kind::MovingPiston;
-                be->movingPiston.state = head;
-                be->movingPiston.facing = face;
-                be->movingPiston.extending = false;
-                be->movingPiston.progress = 0.f;
-                be->movingPiston.finishTick = tickRef_ ? *tickRef_+2 : 0;
-                world_.setBlock(hx,hy,hz, mvSt);
+            // Create moving_piston at head for 2-tick animation, defer removal/pull
+            PendingPistonCommit commit;
+            commit.pistonX=x; commit.pistonY=y; commit.pistonZ=z;
+            commit.hx=hx; commit.hy=hy; commit.hz=hz;
+            commit.extend=false;
+            commit.face=face;
+            commit.facing=facing;
+            commit.dx=dx; commit.dy=dy; commit.dz=dz;
+            commit.isSticky = (c==Comp::StickyPiston);
+            commit.dueTick = now + 2;
+            commit.entries.push_back({hx,hy,hz, head});
+            if(beStore_){
+                auto mvItR = gen::blockNameToState().find("minecraft:moving_piston");
+                if(mvItR!=gen::blockNameToState().end()){
+                    uint16_t mvSt = static_cast<uint16_t>(mvItR->second);
+                    BlockEntity* be = beStore_->getAt(hx,hy,hz);
+                    if(!be) be = &beStore_->create(posKey(hx,hy,hz), BlockEntity::Kind::MovingPiston);
+                    else be->kind = BlockEntity::Kind::MovingPiston;
+                    be->movingPiston.state = head;
+                    be->movingPiston.facing = face;
+                    be->movingPiston.extending = false;
+                    be->movingPiston.progress = 0.f;
+                    be->movingPiston.finishTick = now + 2;
+                    setBlockAndBroadcast(hx,hy,hz, mvSt);
+                }
             }
-            world_.setBlock(hx,hy,hz, 0);
-            if(beStore_) beStore_->remove(posKey(hx,hy,hz));
+            // prepare sticky pull entries (defer actual movement to commit)
             if (c==Comp::StickyPiston) {
                 std::int32_t px=hx+dx, py=hy+dy, pz=hz+dz;
                 std::uint16_t frontSt = world_.getBlock(px,py,pz);
@@ -1126,37 +1212,16 @@ void RedstoneEngine::handlePistonScheduled(std::int32_t x, std::int32_t y, std::
                         }
                     }
                     if(!fail){
-                        std::vector<std::pair<Pos,uint16_t>> orig;
-                        for(auto &p: toPull) orig.emplace_back(p, world_.getBlock(p.x,p.y,p.z));
-                        for(auto &pr: orig) world_.setBlock(pr.first.x, pr.first.y, pr.first.z, 0);
-                        std::sort(toPull.begin(), toPull.end(), [&](const Pos&a, const Pos&b){
-                            int da=std::abs(a.x-x)+std::abs(a.y-y)+std::abs(a.z-z);
-                            int db=std::abs(b.x-x)+std::abs(b.y-y)+std::abs(b.z-z);
-                            return da>db;
-                        });
                         for(auto &p: toPull){
-                            uint16_t pst=0;
-                            for(auto &pr: orig) if(pr.first.x==p.x && pr.first.y==p.y && pr.first.z==p.z){ pst=pr.second; break; }
-                            int nx=p.x - dx, ny=p.y - dy, nz=p.z - dz;
-                            if(beStore_ && mvItR!=gen::blockNameToState().end()){
-                                uint16_t mvSt = static_cast<uint16_t>(mvItR->second);
-                                BlockEntity* be2 = beStore_->getAt(nx,ny,nz);
-                                if(!be2) be2 = &beStore_->create(posKey(nx,ny,nz), BlockEntity::Kind::MovingPiston);
-                                else be2->kind = BlockEntity::Kind::MovingPiston;
-                                be2->movingPiston.state = pst;
-                                be2->movingPiston.facing = face;
-                                be2->movingPiston.extending = false;
-                                be2->movingPiston.progress = 0.f;
-                                world_.setBlock(nx,ny,nz, mvSt);
-                                world_.setBlock(nx,ny,nz, pst);
-                                beStore_->remove(posKey(nx,ny,nz));
-                            } else {
-                                world_.setBlock(nx,ny,nz, pst);
-                            }
+                            uint16_t s = world_.getBlock(p.x,p.y,p.z);
+                            commit.pullEntries.push_back({p.x,p.y,p.z, s});
                         }
+                    } else {
+                        commit.pullEntries.clear();
                     }
                 }
             }
+            pendingPistonCommits_.push_back(std::move(commit));
         }
     }
 }
@@ -1167,9 +1232,11 @@ void RedstoneEngine::processPistonQueue(std::int64_t now) {
             it = pistonQueue_.erase(it);
         } else ++it;
     }
+    processPendingPistonCommits(now);
 }
 void RedstoneEngine::tick(std::int64_t now) {
     processPistonQueue(now);
+    processPendingPistonCommits(now);
     while (!queue_.empty() && queue_.top().dueTick <= now) {
         const RedstoneTick t = queue_.top();
         queue_.pop();
