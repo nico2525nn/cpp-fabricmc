@@ -421,15 +421,16 @@ BTStatus WardenSonicBoomAction::tick(MobEntity& m, AiContext& ctx, std::int64_t 
     Player* t = ctx.nearestPlayer;
     if (!t) return BTStatus::Failure;
     double d = std::sqrt((t->x-m.x)*(t->x-m.x)+(t->z-m.z)*(t->z-m.z));
-    if (d>18) {
-        // slowly approach
+    if (d>15) {
+        // slowly approach; vanilla SonicBoomTask range 15 (audit HIGH), 20 if lineOfSight simplified to 15
         double dx=t->x-m.x, dz=t->z-m.z;
         m.x += dx/d*0.06; m.z += dz/d*0.06;
         m.yaw=(float)(std::atan2(dz,dx)*180/3.14159-90);
         return BTStatus::Running;
     }
     if (ctx.srv) {
-        ctx.srv->applyDamage(*t, 30.f, "sonic_boom");
+        // strict audit HIGH: sonic boom bypasses armor (bypassArmor=true) range 15
+        ctx.srv->applyDamage(*t, 30.f, DamageSource::sonicBoom());
         ctx.srv->broadcastSound("minecraft:entity.warden.sonic_boom", m.x,m.y,m.z,2.f,1.f,"hostile");
         // knockback
         double dx=t->x-m.x, dz=t->z-m.z;

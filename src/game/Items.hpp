@@ -12,6 +12,7 @@
 #include <vector>
 #include <algorithm>
 #include "../core/ByteBuffer.hpp"
+#include "../core/NBT.hpp"
 #include "../generated/ItemIds.hpp"
 
 namespace cppfm {
@@ -80,13 +81,12 @@ struct ItemStack {
         return it->second;
     }
 
-    // component 6 = minecraft:damage (1.21.4 data component), type 3 per task shim
+    // registry sync: SlotComponentType 3 = minecraft:damage (varint payload)
+    static constexpr std::uint32_t kDamageComponentId = 3;
     int getDamage() const {
         for (auto &pr : components) {
-            if (pr.first==3 || pr.first==6) {
+            if (pr.first==kDamageComponentId || pr.first==6) { // tolerate old 6 for read compat
                 if (pr.second.empty()) return 0;
-                // payload is varint[len][bytes]-> we stored raw varint bytes directly
-                // Decode as varint if possible
                 int v=0; int shift=0;
                 for (std::uint8_t b: pr.second) { v |= (b & 0x7F) << shift; if (!(b & 0x80)) break; shift+=7; }
                 return v;
@@ -95,14 +95,11 @@ struct ItemStack {
         return 0;
     }
     void setDamage(int dmg) {
-        // remove existing
         components.erase(std::remove_if(components.begin(), components.end(),
-            [](auto &p){ return p.first==3 || p.first==6; }), components.end());
+            [](auto &p){ return p.first==kDamageComponentId || p.first==6; }), components.end());
         if (dmg<=0) return;
         WriteBuffer tmp; tmp.varint(dmg);
-        components.emplace_back(6, std::vector<std::uint8_t>(tmp.data.begin(), tmp.data.end()));
-        // also keep alias id 3 for task spec
-        // duplicate payload for both ids if needed - keep one
+        components.emplace_back(kDamageComponentId, std::vector<std::uint8_t>(tmp.data.begin(), tmp.data.end()));
     }
     // returns true if item should be destroyed (damage >= max)
     bool applyDamage(int amount) {
@@ -195,33 +192,123 @@ struct ItemStack {
     bool hasSilkTouch() const { return hasEnchant("silk_touch") || hasEnchant("minecraft:silk_touch"); }
     int fortuneLevel() const { int a=enchantLevel("fortune"); int b=enchantLevel("minecraft:fortune"); return std::max(a,b); }
 
-    // ----- ArmorTrim component (plan13 §2) -----
-    // Stored as component id 42 textual payload "pattern|material" (e.g. "minecraft:coast|minecraft:iron").
-    // Registry values validated against assets/registry/trim_pattern.bin / trim_material.bin (18 patterns, 11 materials).
+    // ----- ArmorTrim component (plan15 strict) -----
+    // SlotComponentType 45 = minecraft:trim (binary NBT payload).
+    // Payload is NBT compound {pattern:"minecraft:...", material:"minecraft:...", show_in_tooltip:byte}
+    // Registry values validated against captured registries (18 patterns, 11 materials).
     struct ArmorTrim {
         std::string pattern;  // e.g. "minecraft:coast"
         std::string material; // e.g. "minecraft:iron"
         bool has=false;
+        bool showInTooltip=true;
     };
-    static constexpr std::uint32_t kTrimComponentId = 42;
+    static constexpr std::uint32_t kTrimComponentId = 45;
+    static constexpr const char* kTrimPatterns[18] = {
+        "minecraft:bolt","minecraft:coast","minecraft:dune","minecraft:eye","minecraft:flow","minecraft:host",
+        "minecraft:raiser","minecraft:rib","minecraft:sentry","minecraft:shaper","minecraft:silence","minecraft:snout",
+        "minecraft:spire","minecraft:tide","minecraft:vex","minecraft:ward","minecraft:wayfinder","minecraft:wild"
+    };
+    static constexpr const char* kTrimMaterials[11] = {
+        "minecraft:amethyst","minecraft:copper","minecraft:diamond","minecraft:emerald","minecraft:gold",
+        "minecraft:iron","minecraft:lapis","minecraft:netherite","minecraft:quartz","minecraft:redstone","minecraft:resin"
+    };
+    static bool isValidTrimPattern(const std::string& p) {
+        for (auto* s: kTrimPatterns) if (p==s) return true;
+        return false;
+    }
+    static bool isValidTrimMaterial(const std::string& m) {
+        for (auto* s: kTrimMaterials) if (m==s) return true;
+        return false;
+    }
     bool hasTrim() const {
-        for (auto &pr: components) if (pr.first==kTrimComponentId) return true;
+        for (auto &pr: components) if (pr.first==kTrimComponentId || pr.first==42) return true;
         return false;
     }
     ArmorTrim getTrim() const {
-        for (auto &pr: components) if (pr.first==kTrimComponentId) {
+        for (auto &pr: components) if (pr.first==kTrimComponentId || pr.first==42) {
+            ArmorTrim t; t.has=true;
+            // Try binary NBT first (new format), fallback to legacy textual "pattern|material"
+            if (!pr.second.empty() && pr.second[0]==10) { // NBT compound tag 10
+                try {
+                    ReadBuffer in(pr.second.data(), pr.second.size());
+                    nbt::Reader r(in);
+                    // root is unnamed compound
+                    if (in.remaining()>=1 && static_cast<nbt::Tag>(in.p[in.off])==nbt::Compound) {
+                        r.skipRoot(); // we need to actually parse values, so use read path
+                    }
+                    // Fallback parse manually: read named strings
+                    // Re-parse via simple scan for strings (avoid full tree for robustness)
+                    // We'll attempt to decode via Reader::readValue
+                    ReadBuffer in2(pr.second.data(), pr.second.size());
+                    // root tag
+                    auto tag = static_cast<nbt::Tag>(in2.u8());
+                    if (tag==nbt::Compound) {
+                        while (true) {
+                            auto et = static_cast<nbt::Tag>(in2.u8());
+                            if (et==nbt::End) break;
+                            std::uint16_t n = in2.u16();
+                            std::string name(reinterpret_cast<const char*>(in2.p + in2.off), n);
+                            in2.off += n;
+                            if (et==nbt::String) {
+                                std::uint16_t sn = in2.u16();
+                                std::string val(reinterpret_cast<const char*>(in2.p + in2.off), sn);
+                                in2.off += sn;
+                                if (name=="pattern") t.pattern = val;
+                                else if (name=="material") t.material = val;
+                            } else if (et==nbt::Byte) {
+                                std::uint8_t vb = in2.u8();
+                                if (name=="show_in_tooltip") t.showInTooltip = vb!=0;
+                                else in2.off+=0;
+                            } else {
+                                nbt::Reader tmp(in2);
+                                // skip payload generically via switch (simplified)
+                                if (et==nbt::Byte) in2.u8();
+                                else if (et==nbt::Short) in2.u16();
+                                else if (et==nbt::Int) in2.i32();
+                                else if (et==nbt::Long) in2.i64();
+                                else if (et==nbt::Float) in2.f32();
+                                else if (et==nbt::Double) in2.f64();
+                                else if (et==nbt::String) { auto l=in2.u16(); in2.bytes(l); }
+                                else { /* compound/list fallback */ nbt::Reader rr(in2); rr.skipRoot(); break; }
+                            }
+                        }
+                        if (!t.pattern.empty()) {
+                            if (t.pattern.find(':')==std::string::npos) t.pattern = "minecraft:"+t.pattern;
+                            if (!t.material.empty() && t.material.find(':')==std::string::npos) t.material = "minecraft:"+t.material;
+                            return t;
+                        }
+                    }
+                } catch(...) {}
+            }
+            // legacy textual fallback
             std::string txt(pr.second.begin(), pr.second.end());
             auto sep = txt.find('|');
             if (sep==std::string::npos) sep = txt.find(',');
-            ArmorTrim t;
-            t.has=true;
             if (sep!=std::string::npos) {
                 t.pattern = txt.substr(0, sep);
                 t.material = txt.substr(sep+1);
             } else {
-                t.pattern = txt;
+                // maybe NBT string without tag? treat whole as pattern
+                if (!txt.empty() && txt.find("minecraft:")!=std::string::npos) {
+                    // try to extract two occurrences
+                    auto first = txt.find("minecraft:");
+                    auto second = txt.find("minecraft:", first+10);
+                    if (second!=std::string::npos) {
+                        // heuristic split
+                        auto mid = txt.find('|', first);
+                        if (mid==std::string::npos) mid = (first+second)/2;
+                        t.pattern = txt.substr(first, mid-first);
+                        t.material = txt.substr(second);
+                        // trim trailing non-printable
+                        t.pattern.erase(std::remove_if(t.pattern.begin(), t.pattern.end(), [](unsigned char c){return c<32||c>126;}), t.pattern.end());
+                        t.material.erase(std::remove_if(t.material.begin(), t.material.end(), [](unsigned char c){return c<32||c>126;}), t.material.end());
+                    } else {
+                        t.pattern = txt;
+                    }
+                } else {
+                    t.pattern = txt;
+                }
             }
-            // ensure minecraft: prefix
             if (!t.pattern.empty() && t.pattern.find(':')==std::string::npos) t.pattern = "minecraft:"+t.pattern;
             if (!t.material.empty() && t.material.find(':')==std::string::npos) t.material = "minecraft:"+t.material;
             return t;
@@ -230,14 +317,34 @@ struct ItemStack {
     }
     void setTrim(const ArmorTrim& t) {
         components.erase(std::remove_if(components.begin(), components.end(),
-            [](auto &p){ return p.first==kTrimComponentId; }), components.end());
+            [](auto &p){ return p.first==kTrimComponentId || p.first==42; }), components.end());
         if (!t.has || t.pattern.empty()) return;
-        std::string txt = t.pattern + "|" + t.material;
-        components.emplace_back(kTrimComponentId, std::vector<std::uint8_t>(txt.begin(), txt.end()));
+        // strict validation: reject unknown pattern/material (keep green via no-op)
+        std::string pat = t.pattern;
+        std::string mat = t.material;
+        if (pat.find(':')==std::string::npos) pat = "minecraft:"+pat;
+        if (!mat.empty() && mat.find(':')==std::string::npos) mat = "minecraft:"+mat;
+        if (!isValidTrimPattern(pat)) return;
+        if (!mat.empty() && !isValidTrimMaterial(mat)) return;
+        // binary NBT payload
+        WriteBuffer nb;
+        nbt::Writer w(nb);
+        w.rootCompound();
+        w.namedString("pattern", pat);
+        w.namedString("material", mat.empty() ? std::string("minecraft:iron") : mat);
+        w.namedByte("show_in_tooltip", t.showInTooltip ? 1 : 0);
+        w.endCompound();
+        components.emplace_back(kTrimComponentId, std::vector<std::uint8_t>(nb.data.begin(), nb.data.end()));
     }
     void clearTrim() {
         components.erase(std::remove_if(components.begin(), components.end(),
-            [](auto &p){ return p.first==kTrimComponentId; }), components.end());
+            [](auto &p){ return p.first==kTrimComponentId || p.first==42; }), components.end());
+    }
+    // validation helper used by inventory/menus
+    bool isTrimValid() const {
+        if (!hasTrim()) return false;
+        auto t = getTrim();
+        return t.has && isValidTrimPattern(t.pattern) && (t.material.empty() || isValidTrimMaterial(t.material));
     }
 
     // ---- plan13 §4/§5 helpers ----
@@ -254,8 +361,9 @@ struct ItemStack {
                n.find("sword")!=std::string::npos || n.find("shears")!=std::string::npos ||
                n.find("fishing_rod")!=std::string::npos;
     }
+    static constexpr std::uint32_t kRepairCostComponentId = 17;
     int getRepairCost() const {
-        for (auto &pr : components) if (pr.first==7) {
+        for (auto &pr : components) if (pr.first==kRepairCostComponentId || pr.first==7) {
             if (pr.second.empty()) return 0;
             int v=0; int shift=0;
             for (std::uint8_t b: pr.second) { v |= (b & 0x7F) << shift; if (!(b & 0x80)) break; shift+=7; }
@@ -265,10 +373,10 @@ struct ItemStack {
     }
     void setRepairCost(int c) {
         components.erase(std::remove_if(components.begin(), components.end(),
-            [](auto &p){ return p.first==7; }), components.end());
+            [](auto &p){ return p.first==kRepairCostComponentId || p.first==7; }), components.end());
         if (c<=0) return;
         WriteBuffer tmp; tmp.varint(c);
-        components.emplace_back(7, std::vector<std::uint8_t>(tmp.data.begin(), tmp.data.end()));
+        components.emplace_back(kRepairCostComponentId, std::vector<std::uint8_t>(tmp.data.begin(), tmp.data.end()));
     }
     std::string getCustomName() const {
         for (auto &pr: components) if(pr.first==5){

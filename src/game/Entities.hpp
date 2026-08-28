@@ -86,7 +86,13 @@ enum class MobKind : std::uint8_t {
     Cod, Salmon, TropicalFish, Pufferfish,
     Squid, GlowSquid, // extra to reach 40, harmless
     Warden, Phantom, IronGolem, Allay, Shulker,
-    Boat, Minecart
+    Boat, Minecart,
+    // strict audit HIGH: expand 48->80+ via gen (armadillo/beebogged/breeze/creaking etc)
+    Armadillo, Bee, Bogged, Breeze, Camel, Cat, CaveSpider, Creaking,
+    Donkey, Drowned, Endermite, Husk, Illusioner, Mooshroom, Mule, Ocelot,
+    Parrot, PiglinBrute, Pillager, PolarBear, Ravager, Silverfish, SkeletonHorse, Sniffer,
+    SnowGolem, Stray, Strider, Tadpole, TraderLlama, Vindicator, WanderingTrader, Wolf,
+    Zoglin, ZombieVillager, ZombifiedPiglin, Giant, EvokerFangs, EnderCrystal
 };
 
 // Static per-kind gameplay table (clean-room values approximating vanilla).
@@ -185,8 +191,47 @@ inline const MobStats& mobStats(MobKind k) {
         {"minecraft:shulker",        30.f, 0.05f, 4.f, true, false,"minecraft:shulker_shell",0,1,nullptr,                   5},
         {"minecraft:boat",            6.f,0.10f, 0.f, false,false,nullptr,0,0,nullptr,                                     0},
         {"minecraft:minecart",       6.f,0.10f, 0.f, false,false,nullptr,0,0,nullptr,                                     0},
+        // expanded 48->86 via gen (strict audit HIGH E1)
+        {"minecraft:armadillo",      12.f, 0.09f, 0.f, false,false,"minecraft:armadillo_scute",1,1,nullptr,                0},
+        {"minecraft:bee",            10.f, 0.10f, 2.f, false,false,nullptr,0,0,nullptr,                                     0},
+        {"minecraft:bogged",         20.f, 0.10f, 2.f, true, false,"minecraft:arrow",0,2,nullptr,                           5},
+        {"minecraft:breeze",         30.f, 0.09f, 6.f, true, false,"minecraft:breeze_rod",0,1,nullptr,                      5},
+        {"minecraft:camel",          32.f, 0.09f, 0.f, false,false,nullptr,0,0,nullptr,                                     0},
+        {"minecraft:cat",            10.f, 0.10f, 3.f, false,false,nullptr,0,0,nullptr,                                     0},
+        {"minecraft:cave_spider",    12.f, 0.12f, 2.f, true, false,"minecraft:string",0,2,nullptr,                          5},
+        {"minecraft:creaking",        1.f, 0.08f, 7.f, true, false,"minecraft:resin_clump",0,2,nullptr,                     5},
+        {"minecraft:donkey",         22.f, 0.10f, 0.f, false,false,"minecraft:leather",0,2,"minecraft:golden_carrot",      0},
+        {"minecraft:drowned",        20.f, 0.09f, 3.f, true, false,"minecraft:rotten_flesh",0,2,nullptr,                    5},
+        {"minecraft:endermite",       8.f, 0.10f, 2.f, true, false,nullptr,0,0,nullptr,                                     3},
+        {"minecraft:husk",           20.f, 0.09f, 3.f, true, false,"minecraft:rotten_flesh",0,2,nullptr,                    5},
+        {"minecraft:illusioner",     32.f, 0.09f, 4.f, true, false,nullptr,0,0,nullptr,                                     5},
+        {"minecraft:mooshroom",      10.f, 0.09f, 0.f, false,false,nullptr,0,0,"minecraft:wheat",                           1},
+        {"minecraft:mule",           22.f, 0.10f, 0.f, false,false,"minecraft:leather",0,2,"minecraft:golden_carrot",      0},
+        {"minecraft:ocelot",         10.f, 0.10f, 3.f, false,false,nullptr,0,0,"minecraft:cod",                             1},
+        {"minecraft:parrot",          6.f, 0.10f, 0.f, false,false,nullptr,0,0,"minecraft:cookie",                          1},
+        {"minecraft:piglin_brute",   50.f, 0.09f, 7.f, true, false,"minecraft:gold_nugget",0,1,nullptr,                     5},
+        {"minecraft:pillager",       24.f, 0.10f, 5.f, true, false,"minecraft:crossbow",0,1,nullptr,                        5},
+        {"minecraft:polar_bear",     30.f, 0.09f, 6.f, false,false,nullptr,0,0,nullptr,                                     5},
+        {"minecraft:ravager",       100.f, 0.08f,12.f, true, false,nullptr,0,0,nullptr,                                    20},
+        {"minecraft:silverfish",      8.f, 0.11f, 1.f, true, false,nullptr,0,0,nullptr,                                     5},
+        {"minecraft:skeleton_horse", 15.f, 0.12f, 0.f, false,false,nullptr,0,0,nullptr,                                     0},
+        {"minecraft:sniffer",        14.f, 0.08f, 0.f, false,false,nullptr,0,0,"minecraft:torchflower_seeds",               1},
+        {"minecraft:snow_golem",      4.f, 0.10f, 0.f, false,false,nullptr,0,0,"minecraft:snowball",                        0},
+        {"minecraft:stray",          20.f, 0.10f, 2.f, true, true, "minecraft:bone",0,2,nullptr,                           5},
+        {"minecraft:strider",        20.f, 0.09f, 2.f, false,false,nullptr,0,0,"minecraft:warped_fungus",                   1},
+        {"minecraft:tadpole",         6.f, 0.09f, 0.f, false,false,nullptr,0,0,"minecraft:slime_ball",                      1},
+        {"minecraft:trader_llama",   14.f, 0.09f, 3.f, false,false,nullptr,0,0,nullptr,                                     0},
+        {"minecraft:vindicator",     24.f, 0.09f, 5.f, true, false,"minecraft:emerald",0,1,nullptr,                         5},
+        {"minecraft:wandering_trader",20.f,0.09f, 0.f, false,false,nullptr,0,0,nullptr,                                    0},
+        {"minecraft:wolf",           16.f, 0.10f, 4.f, false,false,nullptr,0,0,"minecraft:bone",                            1},
+        {"minecraft:zoglin",         40.f, 0.09f, 6.f, true, false,"minecraft:rotten_flesh",0,1,nullptr,                    5},
+        {"minecraft:zombie_villager",20.f, 0.085f,3.f,true, true, "minecraft:rotten_flesh",0,2,nullptr,                     5},
+        {"minecraft:zombified_piglin",20.f,0.09f,5.f, true, false,"minecraft:gold_nugget",0,1,nullptr,                     5},
+        {"minecraft:giant",         100.f, 0.08f,10.f, true, false,nullptr,0,0,nullptr,                                    10},
+        {"minecraft:evoker_fangs",    1.f, 0.00f, 6.f, true, false,nullptr,0,0,nullptr,                                     0},
+        {"minecraft:end_crystal",     1.f, 0.00f, 0.f, false,false,nullptr,0,0,nullptr,                                     0},
     };
-    static_assert(sizeof(table)/sizeof(table[0]) == 48, "table size must match MobKind count");
+    static_assert(sizeof(table)/sizeof(table[0]) == 86, "table size must match MobKind count");
     return table[static_cast<int>(k)];
 }
 
