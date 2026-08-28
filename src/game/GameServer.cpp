@@ -6622,7 +6622,7 @@ void Session::onUseItemOn(ReadBuffer& in) {
         }
     }
 
-    // plan12 §4 slab double: if target already is same slab, convert to double
+    // plan12 §4 slab double: if target already is same slab, convert to double only opposite half (plan17 §1)
     if (!heldItem.empty()) {
         std::string hName = heldItem.name();
         if (hName.find("_slab") != std::string::npos) {
@@ -6631,25 +6631,65 @@ void Session::onUseItemOn(ReadBuffer& in) {
             if (ed && std::string(ed->name) == hName) {
                 std::string curType = getPropStr(existing, "type");
                 if (curType != "double") {
-                    // check if placing on top/bottom half merges: allow if different halves? simplified allow any.
-                    std::vector<std::pair<std::string_view,std::string_view>> p;
-                    for(auto&[k,v]: gen::propsOf(existing)) if(k!="type" && k!="waterlogged") p.emplace_back(k,v);
-                    p.emplace_back("type","double");
-                    // double slab must be waterlogged false
-                    // check if block definition has waterlogged prop
-                    bool hasWl=false; for(int i=0;i<ed->propCount;++i){ auto &pd=gen::kPropDefs[gen::kBlockPropsRun[ed->propsOff+i]]; if(pd.name=="waterlogged") hasWl=true; }
-                    if(hasWl) p.emplace_back("waterlogged","false");
-                    uint16_t dbl = static_cast<uint16_t>(gen::stateWithProps(*ed, p));
-                    // event
-                    api::BlockPlaceEvent ev2; ev2.player=self_.get(); ev2.x=tx; ev2.y=ty; ev2.z=tz; ev2.newState=dbl;
-                    if (srv_.events().blockPlace.fire(ev2)) {
-                        srv_.world().setBlock(tx,ty,tz,dbl);
-                        srv_.broadcastBlockChange(tx,ty,tz,dbl);
-                        if (survival) {
-                            auto* mh=&self_->inv[36 + self_->heldSlot];
-                            if(--mh->count<=0) *mh=ItemStack::air();
-                            srv_.resendInventory(*self_);
+                    bool isBottom = curType=="bottom";
+                    bool hittingOpposite = false;
+                    if(isBottom) hittingOpposite = (d==1 || ctx.cursor.y > 0.5);
+                    else /* top */ hittingOpposite = (d==0 || ctx.cursor.y < 0.5);
+                    if(hittingOpposite){
+                        std::vector<std::pair<std::string_view,std::string_view>> p;
+                        for(auto&[k,v]: gen::propsOf(existing)) if(k!="type" && k!="waterlogged") p.emplace_back(k,v);
+                        p.emplace_back("type","double");
+                        // double slab must be waterlogged false
+                        bool hasWl=false; for(int i=0;i<ed->propCount;++i){ auto &pd=gen::kPropDefs[gen::kBlockPropsRun[ed->propsOff+i]]; if(pd.name=="waterlogged") hasWl=true; }
+                        if(hasWl) p.emplace_back("waterlogged","false");
+                        uint16_t dbl = static_cast<uint16_t>(gen::stateWithProps(*ed, p));
+                        api::BlockPlaceEvent ev2; ev2.player=self_.get(); ev2.x=tx; ev2.y=ty; ev2.z=tz; ev2.newState=dbl;
+                        if (srv_.events().blockPlace.fire(ev2)) {
+                            srv_.world().setBlock(tx,ty,tz,dbl);
+                            srv_.broadcastBlockChange(tx,ty,tz,dbl);
+                            if (survival) {
+                                auto* mh=&self_->inv[36 + self_->heldSlot];
+                                if(--mh->count<=0) *mh=ItemStack::air();
+                                srv_.resendInventory(*self_);
+                            }
+                            ack(sequence);
+                            return;
                         }
+                    } else {
+                        // same half → try adjacent placement (vanilla places single slab at offset)
+                        const int adjX = tx + FX[d];
+                        const int adjY = ty + FY[d];
+                        const int adjZ = tz + FZ[d];
+                        if (srv_.world().getBlock(adjX,adjY,adjZ)==0) {
+                            const gen::BlockDef* sdef = gen::blockByName(hName);
+                            if(sdef){
+                                const char* newType;
+                                if(d==1) newType="bottom";
+                                else if(d==0) newType="top";
+                                else newType = (ctx.cursor.y > 0.5 ? "top" : "bottom");
+                                auto adjFs = FluidSim::getFluidState(srv_.world(), adjX, adjY, adjZ);
+                                bool wl = (adjFs.id==FluidId::Water && adjFs.level==0 && !adjFs.falling);
+                                bool hasWlAdj=false; for(int i=0;i<sdef->propCount;++i){ auto &pd=gen::kPropDefs[gen::kBlockPropsRun[sdef->propsOff+i]]; if(pd.name=="waterlogged") hasWlAdj=true; }
+                                std::vector<std::pair<std::string_view,std::string_view>> ap;
+                                ap.emplace_back("type", newType);
+                                if(hasWlAdj) ap.emplace_back("waterlogged", wl?"true":"false");
+                                uint16_t adjSt = static_cast<uint16_t>(gen::stateWithProps(*sdef, ap));
+                                api::BlockPlaceEvent evA; evA.player=self_.get(); evA.x=adjX; evA.y=adjY; evA.z=adjZ; evA.newState=adjSt;
+                                if(srv_.events().blockPlace.fire(evA)){
+                                    srv_.world().setBlock(adjX,adjY,adjZ,adjSt);
+                                    srv_.broadcastBlockChange(adjX,adjY,adjZ,adjSt);
+                                    if(wl && srv_.fluidSim_) srv_.fluidSim_->touch(adjX,adjY,adjZ);
+                                    if(survival){
+                                        auto* mh=&self_->inv[36 + self_->heldSlot];
+                                        if(--mh->count<=0) *mh=ItemStack::air();
+                                        srv_.resendInventory(*self_);
+                                    }
+                                    ack(sequence);
+                                    return;
+                                }
+                            }
+                        }
+                        // same half but adjacent blocked → do not make double, fall through to normal handling (will ack without placing)
                         ack(sequence);
                         return;
                     }
@@ -6813,14 +6853,11 @@ void Session::onUseItemOn(ReadBuffer& in) {
             std::string shape = computeStairsShape(*ctx.world, ctx.placePos.x, ctx.placePos.y, ctx.placePos.z, facingStr, halfStr);
             props.emplace_back("shape", shape);
         }
-        // waterlogged: check fluid state (any water) and waterlogged blocks
+        // waterlogged: check fluid state (still water only) — plan17 §2
         if (hasWaterlogged) {
             bool waterlogged = false;
-            std::uint16_t before = ctx.world->getBlock(ctx.placePos.x, ctx.placePos.y, ctx.placePos.z);
-            const gen::BlockDef* bd = gen::blockByState(before);
-            if (bd && std::string(bd->name).find("water") != std::string::npos) waterlogged = true;
-            // also consider if before is air but we are placing into waterlogged context? For stairs, fluid is WATER still.
-            // If still false, check world fluid? simplified: keep as above.
+            auto fluid = FluidSim::getFluidState(*ctx.world, ctx.placePos.x, ctx.placePos.y, ctx.placePos.z);
+            if (fluid.id==FluidId::Water && fluid.level==0 && !fluid.falling) waterlogged = true;
             // For double slab, force false (handled earlier)
             bool isDoubleSlab = false;
             for(auto& pr: props) if(pr.first=="type" && pr.second=="double") isDoubleSlab=true;

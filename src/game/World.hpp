@@ -402,6 +402,15 @@ public:
     std::int32_t biomeIndexOf(const std::string& key) const {
         return biomeToIndex_ ? biomeToIndex_(key) : 0;
     }
+    std::string sampledBiome(int x,int y,int z) const {
+        if(biomeSource_) return biomeSource_->sample(x,y,z);
+        return biome_;
+    }
+    bool isEndHighlandsAt(int x,int z) const {
+        if(dimensionId_ != 1) return true; // only gate in End
+        std::string bio = sampledBiome(x,64,z);
+        return bio=="minecraft:end_highlands" || bio=="minecraft:end_midlands";
+    }
 
     // ---- World responsibility: simulation distance (plan7) ------------
     // Spawn chunks (forced / SPAWN ticket level 31) are always considered in simulation distance
