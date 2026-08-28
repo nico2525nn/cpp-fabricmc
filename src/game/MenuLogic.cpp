@@ -253,7 +253,7 @@ bool BrewingMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, int b
 bool StonecutterMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, int button, int mode,
                                        ItemStack& cursor, MenuIo& io, const RecipeManager& recipes) {
     (void)player; (void)mode;
-    // slots: 0 input, 1 result (take-only) — strict audit MEDIUM requires triggered handling (crafter parity)
+    // slots: 0 input, 1 result (take-only) — stonecutter has no `triggered` blockstate (crafter only has it); no toggle here.
     if (slotId==1) {
         ItemStack* result = menu.container ? &menu.container[1] : &menu.extraSlots[1];
         if (result->empty()) return false;
@@ -314,7 +314,8 @@ bool StonecutterMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, i
 bool CrafterMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, int button, int mode,
                                    ItemStack& cursor, MenuIo& io, const RecipeManager& recipes) {
     (void)player; (void)recipes;
-    // Crafter 9 slots (0..8) + player inv 36. Stub: generic container logic, no redstone triggered behavior yet.
+    // Crafter 9 slots (0..8) + player inv 36. Yarn `CrafterScreenHandler` + `CrafterBlock` `triggered` parity:
+    // `triggered` toggle is handled server-side in `GameServer::handleMenuClick` (Crafter only), not here.
     // Behaves like a chest 3x3 but with crafting-like disabled slot handling (all slots enabled for stub).
     int cont = 9;
     if (slotId < cont) {
