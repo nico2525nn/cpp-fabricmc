@@ -173,10 +173,11 @@ void FluidSim::apply(std::int32_t x, std::int32_t y, std::int32_t z,
             if (nl == 0) best = -1;
             else best = std::min(best, nl);
         }
+        int lavaStep = world_.dimensionId()==-1 ? 1 : 2;
         int want;
         if (best == -1) want = 1;
         else if (best >= 99) want = -2;
-        else want = best + (kind == Kind::Water ? 1 : 2);
+        else want = best + (kind == Kind::Water ? 1 : lavaStep);
 
         if (want == -2 || want > kMaxRunLevel) {
             if (world_.getBlock(x, y, z) != 0)
@@ -195,7 +196,8 @@ void FluidSim::apply(std::int32_t x, std::int32_t y, std::int32_t z,
     }
 
     if (isSource || level < kMaxRunLevel || level == 8) {
-        const int nextLevel = level == 8 ? 1 : level + (kind == Kind::Water ? 1 : 2);
+        int lavaStep2 = world_.dimensionId()==-1 ? 1 : 2;
+        const int nextLevel = level == 8 ? 1 : level + (kind == Kind::Water ? 1 : lavaStep2);
         if (nextLevel <= kMaxRunLevel) {
             static constexpr int DX3[4] = {1,-1,0,0};
             static constexpr int DZ3[4] = {0,0,1,-1};

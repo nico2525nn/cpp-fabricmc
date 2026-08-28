@@ -60,13 +60,22 @@ struct GenericContainerData {
     std::uint8_t slotCount = kMaxSlots;
 };
 
+struct MovingPistonData {
+    std::uint16_t state = 0;
+    std::int32_t facing = 0;
+    bool extending = true;
+    float progress = 0.f;
+    std::int64_t finishTick = 0;
+};
+
 struct BlockEntity {
-    enum class Kind { Chest, Furnace, Hopper, Dispenser, Dropper, Barrel, ShulkerBox, Brewing };
+    enum class Kind { Chest, Furnace, Hopper, Dispenser, Dropper, Barrel, ShulkerBox, Brewing, MovingPiston };
     Kind kind = Kind::Chest;
     ChestData chest{};
     FurnaceData furnace{};
     GenericContainerData generic{};
     BrewingData brewing{};
+    MovingPistonData movingPiston{};
     bool isDropper() const { return kind == Kind::Dropper; }
     bool isDispenser() const { return kind == Kind::Dispenser; }
 };

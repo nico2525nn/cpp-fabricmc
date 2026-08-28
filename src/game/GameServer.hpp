@@ -694,6 +694,8 @@ public:
     void onMobKilledBy(Player& p, MobKind kind);
     // Explosion (creeper / TNT): destroys blocks & damages entities.
     void explodeAt(double x, double y, double z, float power);
+    void spawnPrimedTnt(double x,double y,double z,double vx,double vy,double vz,int fuse=80);
+    void tntTick();
     // Lightning strike: charges creepers, spawns bolt visuals (plan8)
     void strikeLightning(double x, double y, double z);
     // Direct-named sound + particle broadcast helpers.
@@ -832,6 +834,7 @@ private:
     std::vector<std::shared_ptr<ItemEntity>> itemDrops_;
     std::vector<std::shared_ptr<XpOrbEntity>> xpOrbs_;
     std::vector<std::shared_ptr<ProjectileEntity>> projectiles_;
+    std::vector<std::shared_ptr<TntEntity>> tntEntities_;
     std::unordered_map<std::int64_t, bool> dispenserPower_;
     std::int64_t tickNo_ = 0;
     std::int64_t timeOffset_ = 0;
