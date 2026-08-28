@@ -2,6 +2,7 @@
 // EPF categories: protection(1), fire(2), explosion(2), projectile(2), fall(feather_falling*3)
 // bypassArmor: drown/starve; bypassEnchant: drown/starve
 // + DamageCalculator: vanilla armor/EPF/resistance pipeline (armor 5..20 -> 4%..80% reduce)
+// plan19 combat polish: verified single formula f=2+t/4 g=clamp(a-dmg/f,a*0.2,20) caps 30/20, fall bypassArmor true (feather still applies).
 #pragma once
 #include <string>
 #include <algorithm>
