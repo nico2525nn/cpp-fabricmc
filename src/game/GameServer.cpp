@@ -6836,20 +6836,28 @@ void Session::onUseItemOn(ReadBuffer& in) {
                 if (yaw >= 45.f && yaw < 135.f) facing = "west";
                 else if (yaw >= 135.f && yaw < 225.f) facing = "south";
                 else if (yaw >= 225.f && yaw < 315.f) facing = "east";
-                // hinge logic via solid faces and neighboring doors (vanilla DoorBlock)
+                // hinge logic via solid faces and neighboring doors (vanilla DoorBlock per Yarn 1.21.4: isFullCube count + hitPos tie - strict B5)
                 std::string hingeStr = "left";
                 {
-                    auto isSolid = [&](int nx,int ny,int nz)->bool{
-                        uint16_t st = srv_.world().getBlock(nx,ny,nz);
-                        if(st==0) return false;
-                        auto* bd = gen::blockByState(st);
-                        if(!bd) return false;
-                        return !bd->transparent;
+                    auto isFullCubeAt = [&](int nx,int ny,int nz)->bool{
+                        uint16_t s2 = srv_.world().getBlock(nx,ny,nz);
+                        if(s2==0) return false;
+                        auto* bd2 = gen::blockByState(s2);
+                        if(!bd2) return false;
+                        std::string n(bd2->name);
+                        if(n.find("_slab")!=std::string::npos){
+                            for(auto& [k,v]: gen::propsOf(s2)) if(k=="type" && v!="double") return false;
+                        }
+                        if(n.find("stairs")!=std::string::npos) return false;
+                        return !bd2->transparent;
                     };
-                    auto isDoorAt = [&](int nx,int ny,int nz)->bool{
-                        uint16_t st = srv_.world().getBlock(nx,ny,nz);
-                        auto* bd = gen::blockByState(st);
-                        return bd && std::string(bd->name).find("_door")!=std::string::npos;
+                    auto isDoorLowerAt = [&](int nx,int ny,int nz)->bool{
+                        uint16_t s2 = srv_.world().getBlock(nx,ny,nz);
+                        if(s2==0) return false;
+                        auto* bd2 = gen::blockByState(s2);
+                        if(!bd2 || std::string(bd2->name).find("_door")==std::string::npos) return false;
+                        for(auto& [k,v]: gen::propsOf(s2)) if(k=="half" && v=="lower") return true;
+                        return false;
                     };
                     int dxL=0, dzL=0, dxR=0, dzR=0;
                     std::string fs(facing);
@@ -6858,15 +6866,27 @@ void Session::onUseItemOn(ReadBuffer& in) {
                     else if(fs=="west"){ dxL=0; dzL=1; dxR=0; dzR=-1; }
                     else if(fs=="east"){ dxL=0; dzL=-1; dxR=0; dzR=1; }
                     else { dxL=-1; dzL=0; dxR=1; dzR=0; }
-                    bool leftSolid = isSolid(tx+dxL, ty, tz+dzL) || isSolid(tx+dxL, ty+1, tz+dzL);
-                    bool rightSolid = isSolid(tx+dxR, ty, tz+dzR) || isSolid(tx+dxR, ty+1, tz+dzR);
-                    bool leftDoor = isDoorAt(tx+dxL, ty, tz+dzL) || isDoorAt(tx+dxL, ty+1, tz+dzL);
-                    bool rightDoor = isDoorAt(tx+dxR, ty, tz+dzR) || isDoorAt(tx+dxR, ty+1, tz+dzR);
-                    if(leftDoor && !rightDoor) hingeStr = "right";
-                    else if(rightDoor && !leftDoor) hingeStr = "left";
-                    else if(leftSolid && !rightSolid) hingeStr = "right";
-                    else if(rightSolid && !leftSolid) hingeStr = "left";
-                    else hingeStr = "left";
+                    int i = 0;
+                    if(isFullCubeAt(tx+dxL, ty, tz+dzL)) i += -1;
+                    if(isFullCubeAt(tx+dxL, ty+1, tz+dzL)) i += -1;
+                    if(isFullCubeAt(tx+dxR, ty, tz+dzR)) i += 1;
+                    if(isFullCubeAt(tx+dxR, ty+1, tz+dzR)) i += 1;
+                    bool leftDoor = isDoorLowerAt(tx+dxL, ty, tz+dzL);
+                    bool rightDoor = isDoorLowerAt(tx+dxR, ty, tz+dzR);
+                    if((!leftDoor || rightDoor) && i <= 0){
+                        if((!rightDoor || leftDoor) && i >= 0){
+                            int j = (fs=="east"?1: fs=="west"?-1:0);
+                            int k = (fs=="south"?1: fs=="north"?-1:0);
+                            double d = ctx.cursor.x;
+                            double e = ctx.cursor.z;
+                            bool chooseLeft = (j >= 0 || !(e < 0.5)) && (j <= 0 || !(e > 0.5)) && (k >= 0 || !(d > 0.5)) && (k <= 0 || !(d < 0.5));
+                            hingeStr = chooseLeft ? "left" : "right";
+                        } else {
+                            hingeStr = "left";
+                        }
+                    } else {
+                        hingeStr = "right";
+                    }
                 }
                 bool powered = false;
                 if(srv_.redstone_) powered = srv_.redstone_->isPoweredHere(tx,ty,tz) || srv_.redstone_->isPoweredHere(tx,ty+1,tz);
