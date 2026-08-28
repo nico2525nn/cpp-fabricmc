@@ -130,6 +130,21 @@ bool WorldDataManager::loadLevelData(World& world, std::string& difficultyOut,
         if (const auto* ds = d->get("Difficulty")) {
             if (ds->tag==nbt::String) difficultyOut = ds->str;
         }
+        // ForcedChunks (ChunkTicket SPAWN level 31) — restore spawn chunk loader tickets
+        if (const auto* fc = d->get("ForcedChunks")) {
+            world.clearForcedChunks();
+            for (auto &v : fc->list) {
+                std::int64_t key = 0;
+                if (v.tag == nbt::Long) key = v.l;
+                else if (v.tag == nbt::Int) key = v.i;
+                else continue;
+                std::int32_t cx = static_cast<std::int32_t>(key >> 32);
+                std::int32_t cz = static_cast<std::int32_t>(key & 0xFFFFFFFFLL);
+                world.restoreForcedChunk(cx, cz);
+                // ensure chunk exists for spawn loader (defer generation to when needed, but pre-generate here if possible)
+                // world.generateChunkIfMissing(cx, cz); // not needed during load to avoid recursion
+            }
+        }
         if (consume_) consume_(*d);
         if (const auto* ds2 = d->get("Difficulty")) {
             if (ds2->tag==nbt::String) difficultyOut = ds2->str;

@@ -471,7 +471,7 @@ public:
         worldBorderDiameter_ = persist_->worldBorderDiameter();
         worldBorderCenterX_ = persist_->worldBorderCenterX();
         worldBorderCenterZ_ = persist_->worldBorderCenterZ();
-        // plan5 §1: spawn-chunk loader — generate a 5x5 area around spawn.
+        // plan5 §1: spawn-chunk loader — generate a 5x5 area around spawn with ChunkTicket SPAWN level 31 (ForcedChunks NBT)
         {
             const auto sp = world_.spawnPoint();
             for (int dz = -2; dz <= 2; ++dz)
@@ -479,7 +479,7 @@ public:
                     const std::int32_t cx = (sp.x >> 4) + dx;
                     const std::int32_t cz = (sp.z >> 4) + dz;
                     world_.generateChunkIfMissing(cx, cz);
-                    world_.addForcedChunk(cx, cz);
+                    world_.addSpawnTicket(cx, cz, tickNo_);
                 }
         }
         persist_->start();

@@ -89,11 +89,11 @@ void BlockTickScheduler::tick(std::int64_t now) {
             }
         }
     }
-    // scheduled ticks (simulation-distance culled)
+    // scheduled ticks (simulation-distance culled via isChunkInSimulationDistance for all subsystems, plan11 §1 #6)
     while (!queue_.empty() && queue_.top().dueTick <= now) {
         ScheduledTick t = queue_.top(); queue_.pop();
         pendingPos_.erase(posKey3(t.x,t.y,t.z));
-        if (!world_.isPositionInSimulationDistance(t.x, t.z)) continue;
+        if (!world_.isChunkInSimulationDistance(t.x >> 4, t.z >> 4) && !world_.isPositionInSimulationDistance(t.x, t.z)) continue;
         const std::uint16_t st = world_.getBlock(t.x,t.y,t.z);
         if (st == 0) continue;
         const gen::BlockDef* d = gen::blockByState(st);

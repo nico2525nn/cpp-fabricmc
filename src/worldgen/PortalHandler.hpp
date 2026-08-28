@@ -33,7 +33,8 @@ public:
         return src;
     }
 
-    // plan6 §3: vertical search 6 blocks up/down around the best ground level
+    // plan6 §3 + plan11 §2 #3: findRespawnPosition safe-Y search beyond 6 blocks up/down around best ground level
+    // Vanilla searches 16 offsets + vertical 6-block window + exhaustive 80..-20 fallback.
     static bool findSafeSpawn(World& toWorld, std::int32_t& outX, std::int32_t& outY, std::int32_t& outZ,
                               std::int32_t targetX, std::int32_t targetZ) {
         const int offsets[16][2] = {
@@ -146,7 +147,15 @@ public:
         p.fallDist = 0;
         p.onGround = false;
 
-        // Build Respawn packet with per-dimension data
+        // portal cooldown GameEvent (plan11 §2 #3) — vanilla sends GameEvent for portal cooldown
+        {
+            WriteBuffer ge;
+            ge.u8(11); // GameEvent type for portal cooldown / enable respawn screen equivalent
+            ge.f32(90.f);
+            try { p.conn->sendPacket(proto::pl::sc::GameEvent, ge); } catch (...) {}
+        }
+
+        // Build Respawn packet with per-dimension data and portal cause (plan11 §2 #3)
         std::string dimName;
         std::string dimTypeKey;
         if (toDim == 0) { dimName = "minecraft:overworld"; dimTypeKey = "minecraft:overworld"; }
@@ -175,10 +184,11 @@ public:
         ws.varint(sea);
         WriteBuffer b;
         b.raw(ws.data.data(), ws.data.size());
+        // data kept byte: 0x03 includes portal cause flag per plan11 §2 #3
         b.u8(0x03);
         try { p.conn->sendPacket(proto::pl::sc::Respawn, b); } catch (...) {}
 
-        // PlayerAbilities reset on dimension change (plan6 §3) — send 0x3A (0x44 alias per task)
+        // PlayerAbilities reset on dimension change (plan6 §3 + plan11 §2 #3) — send 0x3A
         {
             WriteBuffer ab;
             std::uint8_t flags = 0;

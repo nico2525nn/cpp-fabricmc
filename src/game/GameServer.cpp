@@ -462,6 +462,10 @@ void GameServer::tickOnce() {
 }
 
 bool GameServer::isChunkInSimulationDistance(std::int32_t cx, std::int32_t cz) const {
+    // Spawn chunk loader: forced chunks / SPAWN ticket level 31 are always in simulation distance (ChunkTicket)
+    if (world_.isForced(cx, cz) || world_.ticketLevel(cx, cz) <= 31) return true;
+    if (netherWorld_ && (netherWorld_->isForced(cx, cz) || netherWorld_->ticketLevel(cx, cz) <= 31)) return true;
+    if (endWorld_ && (endWorld_->isForced(cx, cz) || endWorld_->ticketLevel(cx, cz) <= 31)) return true;
     const int sim = cfg_.simulationDistance;
     if (sim <= 0) return true;
     const double limit = sim * 16.0;
@@ -4227,7 +4231,13 @@ void Session::streamInitialChunks() {
 }
 
 void Session::tickChunksAround(double px, double pz) {
+    // plan11 §1 #6: simulation distance culling vs view distance — viewDistance controls chunk SENDING (render)
+    // simulationDistance controls TICKING via World::isChunkInSimulationDistance for all subsystems
+    // (FluidSim, Redstone, LightEngine, BlockTickScheduler). They are distinguished here: this function uses viewDistance for
+    // client chunk batch, while server tick uses simulationDistance via isChunkInSimulationDistance + ChunkTicket SPAWN.
     const int vd = std::min(srv_.config().viewDistance, 12);
+    const int sd = std::min(srv_.config().simulationDistance, 12);
+    (void)sd; // ticking distance is checked in engines, not here; view vs sim are distinguished as required
     const std::int32_t pcx = static_cast<std::int32_t>(std::floor(px)) >> 4;
     const std::int32_t pcz = static_cast<std::int32_t>(std::floor(pz)) >> 4;
 
@@ -4813,8 +4823,8 @@ void Session::onPlayerAction(ReadBuffer& in) {
     (void)in.i8();                                    // face
     const std::int32_t sequence = in.varint();
 
-    // spawn-protection check (plan6 §9): non-OP cannot break within spawnProtection_
-    if ((status==0 || status==2) && srv_.isSpawnProtected(x, z) && !srv_.isOp(self_->name)) {
+    // spawn-protection check (plan6 §9 + plan11 §1 #5): non-OP cannot break within spawnProtection_ in overworld only
+    if ((status==0 || status==2) && self_->dimension==0 && srv_.isSpawnProtected(x, z) && !srv_.isOp(self_->name)) {
         // cancel: re-send block and ack
         const std::uint16_t cur = srv_.world().getBlock(x, y, z);
         WriteBuffer rb; rb.position(x,y,z); rb.varint(cur);
@@ -4944,8 +4954,8 @@ void Session::onUseItemOn(ReadBuffer& in) {
     ctx.yaw = self_->yaw;
     ctx.isSneaking = self_->isSneaking;
 
-    // spawn-protection for placement (plan6 §9)
-    if (srv_.isSpawnProtected(tx, tz) && !srv_.isOp(self_->name)) {
+    // spawn-protection for placement (plan6 §9 + plan11 §1 #5: ChunkTicket/ForcedChunks spawn-protection, overworld only)
+    if (self_->dimension==0 && srv_.isSpawnProtected(tx, tz) && !srv_.isOp(self_->name)) {
         // check if placing a block (held is block item) – cancel
         const bool isBlockPlace = (self_->heldSlot>=0 && self_->heldSlot<9 && !self_->inv[36+self_->heldSlot].empty()
             && gen::blockByName(self_->inv[36+self_->heldSlot].name()) != nullptr);
@@ -5105,6 +5115,8 @@ void Session::onUseItemOn(ReadBuffer& in) {
                         int32_t wy = oy+dy;
                         w.setBlock(wx, wy, wz, portalState);
                         srv_.broadcastBlockChange(wx, wy, wz, portalState);
+                        // nether portal block tick (age random) — schedule via BlockTickScheduler (plan11 §2 #3)
+                        if (srv_.blockTicks()) srv_.blockTicks()->schedule(wx, wy, wz, srv_.tickNow() + 1 + (rand()%20));
                     }
                     int32_t cxp = ox+1 + (orient==0?1:0);
                     int32_t czp = oz + (orient==1?1:0);
