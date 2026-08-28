@@ -209,40 +209,6 @@ public:
               std::uint16_t state, std::int64_t now, GameServer* srv) override;
 };
 
-class CocoaBehavior : public IBlockBehavior {
-public:
-    void tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
-              std::uint16_t state, std::int64_t now, GameServer* srv) override;
-    bool fertilize(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
-                   std::uint16_t state, GameServer* srv) override;
-};
-
-class SweetBerryBehavior : public IBlockBehavior {
-public:
-    void tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
-              std::uint16_t state, std::int64_t now, GameServer* srv) override;
-    bool fertilize(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
-                   std::uint16_t state, GameServer* srv) override;
-};
-
-class NetherWartBehavior : public IBlockBehavior {
-public:
-    void tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
-              std::uint16_t state, std::int64_t now, GameServer* srv) override;
-};
-
-class ChorusFlowerBehavior : public IBlockBehavior {
-public:
-    void tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
-              std::uint16_t state, std::int64_t now, GameServer* srv) override;
-};
-
-class KelpBehavior : public IBlockBehavior {
-public:
-    void tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
-              std::uint16_t state, std::int64_t now, GameServer* srv) override;
-};
-
 struct FlammableEntry { int burnOdds=0; int igniteOdds=0; };
 class FlammableRegistry {
 public:

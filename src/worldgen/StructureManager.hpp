@@ -140,7 +140,6 @@ private:
     void endCityPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
                       std::int32_t originX, std::int32_t originZ,
                       const GroundFn& ground) const;
->>>>>>> wt12/combat
 
     std::uint64_t seed_;
     std::shared_ptr<MultiNoiseBiomeSource> biomes_;

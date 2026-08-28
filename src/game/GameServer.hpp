@@ -912,6 +912,7 @@ private:
     struct CachedChunk { std::uint64_t rev; ChunkBodyRef body; };
     std::unordered_map<std::int64_t, CachedChunk> chunkCache_;
     std::mutex chunkCacheMtx_;
+    std::unordered_map<std::int32_t, std::int64_t> ghostThrottle_; // entityId -> last tick for PlaceGhostRecipe 0x39
     std::atomic<bool> running_{true};
     int listenFd_ = -1;
     std::int32_t entityIdCounter_ = 1;
