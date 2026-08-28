@@ -1,12 +1,37 @@
 // Redstone implementation.
 #include "Redstone.hpp"
 #include "../game/BlockEntities.hpp"
+#include "../generated/ItemIds.hpp"
+#include <unordered_map>
 #include <cstdlib>
 #include <algorithm>
 #include <cmath>
 #include <string>
 
 namespace cppfm {
+
+// strict audit B22: comparator maxStack helper (16/1)
+static int maxStackForItemComp(uint32_t itemId) {
+    static std::unordered_map<uint32_t,int> cache;
+    auto itc = cache.find(itemId);
+    if(itc!=cache.end()) return itc->second;
+    std::string n;
+    for(auto &e: gen::kItems) if(e.second==itemId){ n=std::string(e.first); break; }
+    int limit=64;
+    if(n.find("sword")!=std::string::npos || n.find("pickaxe")!=std::string::npos || n.find("shovel")!=std::string::npos || n.find("hoe")!=std::string::npos ||
+       (n.find("axe")!=std::string::npos && n.find("pickaxe")==std::string::npos) || n.find("_helmet")!=std::string::npos || n.find("chestplate")!=std::string::npos ||
+       n.find("leggings")!=std::string::npos || n.find("boots")!=std::string::npos || n.find("bucket")!=std::string::npos || n.find("bow")!=std::string::npos ||
+       n.find("crossbow")!=std::string::npos || n.find("shield")!=std::string::npos || n.find("trident")!=std::string::npos || n.find("fishing_rod")!=std::string::npos ||
+       n.find("shears")!=std::string::npos || n.find("flint_and_steel")!=std::string::npos || n.find("horse_armor")!=std::string::npos || n.find("elytra")!=std::string::npos ||
+       n.find("potion")!=std::string::npos || n.find("enchanted_book")!=std::string::npos || n.find("minecart")!=std::string::npos || n.find("_boat")!=std::string::npos ||
+       n.find("bed")!=std::string::npos || n.find("music_disc")!=std::string::npos)
+        limit=1;
+    else if(n=="minecraft:snowball" || n=="minecraft:egg" || n=="minecraft:ender_pearl" || n=="minecraft:armor_stand" || n=="minecraft:honey_bottle" || n=="minecraft:lead" ||
+            n.find("sign")!=std::string::npos || n.find("banner")!=std::string::npos)
+        limit=16;
+    cache.emplace(itemId,limit);
+    return limit;
+}
 
 // ------------------------------------------------------------------ IRedstoneBehavior / RedstoneComponent (plan7)
 
@@ -184,7 +209,7 @@ int RedstoneEngine::analogOutputForContainer(BlockEntity* be) {
         slots = 27;
         for (int i=0;i<27;++i) {
             auto &s = be->chest.slots[i];
-            if (!s.empty()) { ++filled; fillSum += double(s.count)/64.0; }
+            if (!s.empty()) { ++filled; fillSum += double(s.count)/double(maxStackForItemComp(s.itemId)); }
         }
         break;
     }
@@ -193,7 +218,7 @@ int RedstoneEngine::analogOutputForContainer(BlockEntity* be) {
         slots = 27;
         for (int i=0;i<27;++i) {
             auto &s = be->chest.slots[i];
-            if (!s.empty()) { ++filled; fillSum += double(s.count)/64.0; }
+            if (!s.empty()) { ++filled; fillSum += double(s.count)/double(maxStackForItemComp(s.itemId)); }
         }
         break;
     }
@@ -201,7 +226,7 @@ int RedstoneEngine::analogOutputForContainer(BlockEntity* be) {
         slots = 3;
         for (int i=0;i<3;++i) {
             auto &s = be->furnace.slots[i];
-            if (!s.empty()) { ++filled; fillSum += double(s.count)/64.0; }
+            if (!s.empty()) { ++filled; fillSum += double(s.count)/double(maxStackForItemComp(s.itemId)); }
         }
         break;
     }
@@ -209,7 +234,7 @@ int RedstoneEngine::analogOutputForContainer(BlockEntity* be) {
         slots = 5;
         for (int i=0;i<5;++i) {
             auto &s = be->generic.slots[i];
-            if (!s.empty()) { ++filled; fillSum += double(s.count)/64.0; }
+            if (!s.empty()) { ++filled; fillSum += double(s.count)/double(maxStackForItemComp(s.itemId)); }
         }
         break;
     }
@@ -218,7 +243,7 @@ int RedstoneEngine::analogOutputForContainer(BlockEntity* be) {
         slots = 9;
         for (int i=0;i<9;++i) {
             auto &s = be->generic.slots[i];
-            if (!s.empty()) { ++filled; fillSum += double(s.count)/64.0; }
+            if (!s.empty()) { ++filled; fillSum += double(s.count)/double(maxStackForItemComp(s.itemId)); }
         }
         break;
     }
@@ -226,7 +251,7 @@ int RedstoneEngine::analogOutputForContainer(BlockEntity* be) {
         slots = 5;
         for (int i=0;i<5;++i) {
             auto &s = be->brewing.slots[i];
-            if (!s.empty()) { ++filled; fillSum += double(s.count)/64.0; }
+            if (!s.empty()) { ++filled; fillSum += double(s.count)/double(maxStackForItemComp(s.itemId)); }
         }
         break;
     }

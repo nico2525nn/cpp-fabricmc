@@ -70,7 +70,7 @@ static int stackLimit(std::uint32_t itemId) {
     int limit = 64;
     if (n.find("sword") != std::string::npos ||
         n.find("pickaxe") != std::string::npos ||
-        n.find("axe") != std::string::npos ||
+        (n.find("axe") != std::string::npos && n.find("pickaxe")==std::string::npos) ||
         n.find("shovel") != std::string::npos ||
         n.find("hoe") != std::string::npos ||
         n.find("_helmet") != std::string::npos ||
@@ -79,10 +79,24 @@ static int stackLimit(std::uint32_t itemId) {
         n.find("boots") != std::string::npos ||
         n.find("bucket") != std::string::npos ||
         n.find("bow") != std::string::npos ||
-        n.find("shield") != std::string::npos)
+        n.find("crossbow") != std::string::npos ||
+        n.find("shield") != std::string::npos ||
+        n.find("trident") != std::string::npos ||
+        n.find("fishing_rod") != std::string::npos ||
+        n.find("shears") != std::string::npos ||
+        n.find("flint_and_steel") != std::string::npos ||
+        n.find("horse_armor") != std::string::npos ||
+        n.find("elytra") != std::string::npos ||
+        n.find("potion") != std::string::npos ||
+        n.find("enchanted_book") != std::string::npos ||
+        n.find("minecart") != std::string::npos ||
+        n.find("_boat") != std::string::npos ||
+        n.find("bed") != std::string::npos ||
+        n.find("music_disc") != std::string::npos)
         limit = 1;
     else if (n == "minecraft:snowball" || n == "minecraft:egg" ||
-             n == "minecraft:sign" || n.find("banner") != std::string::npos)
+             n == "minecraft:ender_pearl" || n == "minecraft:armor_stand" || n == "minecraft:honey_bottle" || n == "minecraft:lead" ||
+             n == "minecraft:sign" || n.find("sign") != std::string::npos || n.find("banner") != std::string::npos)
         limit = 16;
     cache.emplace(itemId, limit);
     return limit;
