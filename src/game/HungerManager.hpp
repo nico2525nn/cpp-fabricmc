@@ -2,6 +2,7 @@
 // Owns food table, exhaustion constants, and per-tick handling.
 // Pure helpers are testable; GameServer delegates to this manager.
 // plan19 combat polish: verified per-player foodTickTimer, FAST 10 / SLOW 80, naturalRegeneration, starve diff, EPF weight 1.
+// plan20 combat polish: verify hunger unchanged by world-density/light changes; GameRules expanded to 50+ (W18) for naturalRegeneration parity.
 #pragma once
 #include <cstdint>
 #include <string>

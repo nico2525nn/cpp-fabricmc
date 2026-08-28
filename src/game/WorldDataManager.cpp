@@ -86,7 +86,7 @@ bool WorldDataManager::saveLevelDataWithProviders(std::int64_t worldTicks, std::
             dragon.set("Gateways", nbt::Value::makeList(nbt::Int));
             data.set("DragonFight", dragon);
         }
-        // GameRules: ensure all vanilla rules present — 37 defaults (strict)
+        // GameRules: ensure all vanilla rules present — 37+ defaults (plan20 W18 strict, was 14)
         auto ensureGr = [&](nbt::Value &gr){
             auto ensure = [&](const char* k, const char* v){ if (!gr.get(k)) gr.set(k, nbt::Value::makeString(v)); };
             ensure("doFireTick","true"); ensure("mobGriefing","true"); ensure("keepInventory","false");
@@ -102,6 +102,15 @@ bool WorldDataManager::saveLevelDataWithProviders(std::int64_t worldTicks, std::
             ensure("doPatrolSpawning","true"); ensure("doTraderSpawning","true"); ensure("doWardenSpawning","true");
             ensure("forgiveDeadPlayers","true"); ensure("universalAnger","false"); ensure("playersSleepingPercentage","100");
             ensure("blockExplosionDropDecay","true");
+            // plan20 W18: 1.19.3+ additions
+            ensure("mobExplosionDropDecay","true"); ensure("tntExplosionDropDecay","false");
+            ensure("waterSourceConversion","true"); ensure("lavaSourceConversion","false");
+            ensure("globalSoundEvents","true"); ensure("snowAccumulationHeight","1");
+            ensure("commandModificationBlockLimit","32768"); ensure("maxCommandForkCount","65536");
+            ensure("doVinesSpread","true"); ensure("enderPearlsVanishOnDeath","true");
+            ensure("projectilesCanBreakBlocks","true"); ensure("playersNetherPortalDefaultDelay","80");
+            ensure("playersNetherPortalCreativeDelay","0"); ensure("disablePlayerMovementCheck","false");
+            ensure("spawnChunkRadius","2");
         };
         if (!data.get("GameRules")) {
             nbt::Value gr = nbt::Value::makeCompound();

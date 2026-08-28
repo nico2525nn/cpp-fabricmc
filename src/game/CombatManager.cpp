@@ -1,4 +1,5 @@
 // CombatManager — plan19 combat polish: EPF weight 1 verified, armor+toughness single formula 30/20, E7 strict.
+// plan20 combat polish: verify no world-density changes affect combat; GameRules 37+ expansion covered in GameRules.hpp.
 #include "CombatManager.hpp"
 #include "GameServer.hpp"
 #include "Entities.hpp"
