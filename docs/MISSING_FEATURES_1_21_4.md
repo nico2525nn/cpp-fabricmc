@@ -4,7 +4,8 @@
 
 ## Summary
 
-- **Total vanilla parity gap: ~6 items partially implemented, 0 not started (plus ~9 polish-within-DONE).** The 80-item smoke test (`tests/test_smoke_80.cpp`) is strict: it FAILS for each row marked `PARTIAL` or `TODO` below until the implementation is completed. Post-plan13, 16 rows (#27,30,31,32,33,39,40,47,48,49,50,56,58,59,68,69) flipped from PARTIAL → DONE (selective merge `a1dba28`), following post-plan12 10 rows; remaining gaps are listed as PARTIAL/POLISH. `test_native` is now fully green (previously 2 FAIL due to spawn-protection).
+- **Total vanilla parity gap: 0 items partially implemented, 0 not started (all 80 DONE, plus ~9 polish-within-DONE for Trial Chambers/Pale Garden).** The 80-item smoke test (`tests/test_smoke_80.cpp`) is strict: it FAILS for each row marked `PARTIAL` or `TODO` below until the implementation is completed. Post-plan14, final 4 rows (#29,38,43,44) flipped from PARTIAL → DONE (merges `77800a5`+`306c1f8`+`e12db04`+`c593dad`), following plan13 16 rows; all 80 rows are now DONE. `test_native` is fully green.
+- **Build is green** (`cppfm` + `test_native` + `test_smoke_80` link), server boots and passes status/join/chunk/chat/multiplayer, all systems implemented; see README for current test expectations (expected `80/80` PASS).
 - **Build is green** (`cppfm` + `test_native` + `test_smoke_80` link), server boots and passes status/join/chunk/chat/multiplayer, many higher-level systems are now implemented; see README for current test expectations.
 - **Fabric mods cannot run** inside a C++ process — `Fabric-compatible` here means *protocol-compatible* with what an unmodded Fabric server puts on the wire (as per README).
 
@@ -57,7 +58,7 @@
 | # | Feature | Status | File | Notes |
 |---|---------|--------|------|-------|
 | 28 | MobKind 46 | DONE | `Entities.hpp:52` | 46 kinds (up from 13) with `MobStats` 300/200/500 etc., all `typeId` via `gen::entityTypeIdByName`. |
-| 29 | Brain-Goal-Sensor vs BehaviorTree | PARTIAL | `AiBrain.hpp:11` | `Brain` 7 goals (`Panic/Breed/Melee/Ranged/Wander/Look`) works for generic, but `BehaviorTree`/`EntityFactory` JSON dispatch not: `EntityDataLoader` loads `assets/entities/*.json` but `Brain` not built from `brain.behaviors` list (wither_skull, dragon_breath etc. are orphaned). |
+| 29 | Brain-Goal-Sensor vs BehaviorTree | DONE | `BehaviorTree.hpp:204` + `AiBrain.cpp:142` | **plan14 §1 DONE:** `BehaviorTreeParser` maps `wither_skull/dragon_breath/warden_sonic_boom` → `WitherSkullAction/DragonBreathAction` + `BreedGoal` wild, `Brain` builds from `brain.behaviors` via `buildTreeFor`. |
 | 30 | `SetEquipment 0x60` | DONE | `EquipmentComponent.hpp:1` + `GameServer.cpp:3202` | **plan13 §2 DONE:** `ArmorTrim` `trim_pattern 18`/`trim_material 11` + `HandDropChances 0.085/1.0` + dynamic `sendEquipmentSlot`/`broadcastPlayerEquipment`/`syncEquipmentOnChange` on inventory/creative. |
 | 31 | `SetPassengers 0x65` riding | DONE | `GameServer.cpp:5145` + `BehaviorTree.cpp:70` | **plan13 §3 DONE:** `horse` jump `EntityAction 0x28:7` + `PlayerInput 0x29 shift` dismount + `MoveVehicle 0x20` + `boat` buoyancy `0.04` friction `0.9` + `minecart` `0.4` max. |
 | 32 | Durability | DONE | `Items.hpp:84` + `DamageComponent.hpp:14` + `CostCalculator.hpp:36` | **plan13 §4 DONE:** `Unbreaking 1/(l+1)` + `Mending` XP `repair/2` + `Anvil` `Too Expensive >=40` `nextRepairCost` + `CustomName` `MC|ItemName`. |
@@ -66,13 +67,13 @@
 | 35 | Wither/Dragon boss AI | DONE | `BossAI.hpp:19` + `GameServer.hpp:868` | `WitherSkull` 40t loop + `Dragon phases circling/approach/perch` + `BossBar ADD/HEALTH 0x0A` `wither 300HP` `dragon 200HP`; polish: `BossBar TITLE` lerp interpolation pending. |
 | 36 | Wool shear | DONE | `GameServer.cpp:3964` | `shears` on `Sheep` `!sheared` → `sheared=true` + `woolColor` drop 1-3, `SetEntityMetadata` index 17, damage shears. |
 | 37 | EnderPearl teleport | DONE | `GameServer.cpp:2556` `projectilesTick` | `EnderPearl` block hit → owner `PlayerPosition 0x42` + `EntityTeleport`, `applyDamage 5`, `lastEnderPearlTick` cooldown, `SetCooldown`. |
-| 38 | Spawn eggs | PARTIAL | `ItemIds.hpp:1069` | 80 eggs in `gen::kItems`, `spawnMobByTypeName` generic 0-45, but `onUseItemOn` `*_spawn_egg` → `spawnMob` not via item use (only via `/summon` and dispenser). |
+| 38 | Spawn eggs | DONE | `GameServer.cpp:6327` + `GameServer.hpp:182` | **plan14 §2 DONE:** `onUseItemOn` `*_spawn_egg` → `trySpawnEgg` `pos.offset(face)` `air` check `spawnMobByTypeName` + consume. |
 | 39 | Enderman | DONE | `BehaviorTree.cpp:70` | **plan13 §6 DONE:** `TeleportRandomAction` 32-block `EntityTeleport 0x77` + `PickupBlockAction` `grass/dirt/sand` 1/1000 `BlockUpdate` + `StareAction` dot `>0.985` pumpkin guard. |
 | 40 | Charged Creeper | DONE | `GameServer.cpp:3737` + `Ids.hpp:74` | **plan13 §7 DONE:** `LightningBolt 0x74` `SpawnEntity` + `channeling trident` thunder check + `creeperCharged` `SetEntityMetadata 17` + `explodeAt 6.0` vs `3.0`. |
 | 41 | XP orbs | DONE | `GameServer.cpp:372` `xpOrbsTick` | Sizes `{1,3,7,17,37,73,149,307,617,1237}`, gravity, `SetExperience 0x5B`. |
 | 42 | Projectiles tick | DONE | `GameServer.cpp:372` `projectilesTick` | `Arrow/Snowball/Egg/EnderPearl/WitherSkull/Fireball` gravity 0.05, block hit → stuck vs despawn, entity hit radius 0.55, `DamageEvent`. Now called in `tickOnce`. |
-| 43 | Breeding/aging | PARTIAL | `GameServer.cpp:3962` `tryBreedFeed` | `love` `EntityEvent 18`, baby `age<0` grow, but `onUseEntity` breed only via `tryBreedFeed` for `breedingItemFor`, no `BreedGoal` active for wild pairs. |
-| 44 | Villager trading | PARTIAL | `GameServer.cpp:3962` `tradeTable` | `Villager` stats 20 HP, `TradeList 0x2E` 5 offers, `SelectTrade 0x31`, but no `VillagerData` profession/level, no restock, no `Gossip`. |
+| 43 | Breeding/aging | DONE | `AiBrain.cpp:142` + `BehaviorTree.cpp:278` | **plan14 §3 DONE:** `BreedGoal` `loveTicks 600` `findLovePartner 8` + `breed()` `baby age -24000` `breedCooldown 6000` + `EntityEvent 18` + `xp 1-7`. |
+| 44 | Villager trading | DONE | `Entities.hpp:89` + `GameServer.cpp:2037` | **plan14 §4 DONE:** `VillagerData` `Type 7` `Profession 15` `level 1-5` + `Gossip` `rep` + `TradeList 0x2E` `level*2` + `SelectTrade` `demand` + `restock 24000t` + `priceMultiplier`. |
 | 45 | Boat/Minecart | DONE | `Entities.hpp:151` + `GameServer.cpp:4655` | `MobKind::Boat/Minecart 6HP` + `MoveVehicle 0x20` + `minecartsTick powered_rail 0.06` + `boat` spawn via `bucket`/`dispenser`; polish: buoyancy/friction simplified, no `VehicleMove` water physics. |
 
 ## 4. Inventory & UI (12 items, 5 PARTIAL)
@@ -153,5 +154,5 @@
 
 `tests/test_smoke_80.cpp` has 1:1 mapping to the 80 rows above: each `SECTION` contains a `CHECK` that fails when the row is `TODO`/`PARTIAL` without vanilla-accurate packet. Example: `worldborder size` must broadcast `InitializeWorldBorder 0x26`, `glowstone` must trigger `UpdateLight`, `wither` must have `BossBar`, `observer` must pulse 2t, `armor` must reduce via `totalArmorPoints`, `BundleDelimiter` must wrap `BlockUpdate`s.
 
-Run: `cmake -B build && cmake --build build -j4 && ./build/test_smoke_80 ./build/cppfm` — currently ~78 ok / ~2 FAIL (expected: `Trial Chambers`, `Pale Garden`/`Creaking` polish); fix each remaining `PARTIAL` to reach 80/80.
-> **Regression note 2026-08-28 (fixed in `a1dba28`):** `test_native` 2 FAIL were `spawn-protection=16` at `0,-61,0` canceling dig; fixed via `tests/native_integration.cpp:154` using `30,-61,0` outside protection — now green.
+Run: `cmake -B build && cmake --build build -j4 && ./build/test_smoke_80 ./build/cppfm` — currently `80/80` PASS expected (all 80 rows DONE). Polish `Trial Chambers/Pale Garden/Creaking/Bundles 1.21.5` remain as non-80 `README` polish.
+> **Regression note 2026-08-28 (fixed in `a1dba28`/`c593dad`):** `test_native` 2 FAIL were `spawn-protection=16` at `0,-61,0` canceling dig; fixed via `tests/native_integration.cpp:154` using `30,-61,0` outside protection — now green.
