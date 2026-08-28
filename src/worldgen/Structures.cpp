@@ -366,6 +366,92 @@ void StructureGenerator::mineshaftPiece(Chunk& chunk, std::int32_t cx, std::int3
         }
     }
 }
+void StructureGenerator::monumentPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+                                       std::int32_t ox, std::int32_t oz, const GroundFn& ground) {
+    Writer w{chunk, cx, cz};
+    const auto prismarine = B("minecraft:prismarine") ? B("minecraft:prismarine")->defaultState : B("minecraft:stone_bricks")->defaultState;
+    const auto bricks = B("minecraft:prismarine_bricks") ? B("minecraft:prismarine_bricks")->defaultState : prismarine;
+    const auto dark = B("minecraft:dark_prismarine") ? B("minecraft:dark_prismarine")->defaultState : bricks;
+    const auto lantern = B("minecraft:sea_lantern") ? B("minecraft:sea_lantern")->defaultState : prismarine;
+    const auto gold = B("minecraft:gold_block") ? B("minecraft:gold_block")->defaultState : prismarine;
+    const auto water = static_cast<std::uint16_t>(gen::stateWithPropsList("minecraft:water", {{"level","0"}}));
+    int baseY = 39;
+    (void)ground;
+    for (int dx=0; dx<58; ++dx) for (int dz=0; dz<58; ++dz) {
+        int wx = ox + dx, wz = oz + dz;
+        bool edge = dx==0||dx==57||dz==0||dz==57;
+        for (int dy=0; dy<23; ++dy) {
+            int py = baseY + dy;
+            if (py<kMinY||py>=kMaxY) continue;
+            std::uint16_t mat = prismarine;
+            if (dy==0 || dy==22 || edge) mat = bricks;
+            else if (dx%7==0 && dz%7==0 && dy%5==0) mat = lantern;
+            else if (dx>20 && dx<37 && dz>20 && dz<37) {
+                if (dy==1 && dx==28 && dz==28) mat = gold;
+                else if (dy<3) mat = dark;
+                else if (dy==10 && (dx==28||dz==28)) mat = lantern;
+            }
+            if (dx>2&&dx<55&&dz>2&&dz<55&& dy>2&&dy<20 && mat==prismarine) mat = water;
+            if (mat==0) w.set(wx, py, wz, 0, true);
+            else w.set(wx, py, wz, mat, true);
+        }
+    }
+    const auto sponge = B("minecraft:sponge") ? B("minecraft:sponge")->defaultState : prismarine;
+    w.set(ox+28, baseY+10, oz+28, sponge, true);
+}
+void StructureGenerator::mansionPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+                                      std::int32_t ox, std::int32_t oz, const GroundFn& ground) {
+    Writer w{chunk, cx, cz};
+    const auto planks = B("minecraft:dark_oak_planks") ? B("minecraft:dark_oak_planks")->defaultState : B("minecraft:oak_planks")->defaultState;
+    const auto log = B("minecraft:dark_oak_log") ? B("minecraft:dark_oak_log")->defaultState : planks;
+    const auto cobble = B("minecraft:cobblestone")->defaultState;
+    const auto chest = B("minecraft:chest") ? B("minecraft:chest")->defaultState : cobble;
+    int surfaceY = ground(ox+20, oz+20);
+    int baseY = std::clamp(surfaceY+1, 70, 85);
+    for (int dx=0; dx<40; ++dx) for (int dz=0; dz<40; ++dz) {
+        int wx = ox+dx, wz = oz+dz;
+        bool edge = dx==0||dx==39||dz==0||dz==39;
+        w.set(wx, baseY, wz, planks, true);
+        w.set(wx, baseY+7, wz, planks, true);
+        if (edge) {
+            for (int dy=1; dy<=6; ++dy) w.set(wx, baseY+dy, wz, cobble, true);
+            for (int dy=8; dy<=12; ++dy) w.set(wx, baseY+dy, wz, planks, true);
+        }
+        bool corner = (dx==0||dx==39) && (dz==0||dz==39);
+        if (corner) for (int dy=1; dy<=12; ++dy) w.set(wx, baseY+dy, wz, log, true);
+    }
+    for (int dx=10; dx<30; dx+=10) for (int dz=0; dz<40; ++dz) {
+        for (int dy=1; dy<=6; ++dy) w.set(ox+dx, baseY+dy, oz+dz, planks, true);
+        for (int dy=8; dy<=12; ++dy) w.set(ox+dx, baseY+dy, oz+dz, planks, true);
+    }
+    for (int dz=10; dz<30; dz+=10) for (int dx=0; dx<40; ++dx) {
+        for (int dy=1; dy<=6; ++dy) w.set(ox+dx, baseY+dy, oz+dz, planks, true);
+        for (int dy=8; dy<=12; ++dy) w.set(ox+dx, baseY+dy, oz+dz, planks, true);
+    }
+    w.set(ox+20, baseY+1, oz, 0, true); w.set(ox+20, baseY+2, oz, 0, true);
+    w.set(ox+20, baseY+8, oz+10, 0, true); w.set(ox+20, baseY+9, oz+10, 0, true);
+    w.set(ox+5, baseY+1, oz+5, chest, true);
+    w.set(ox+35, baseY+1, oz+35, chest, true);
+}
+void StructureGenerator::endCityPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+                                      std::int32_t ox, std::int32_t oz, const GroundFn& ground) {
+    Writer w{chunk, cx, cz};
+    const auto endBricks = B("minecraft:end_stone_bricks") ? B("minecraft:end_stone_bricks")->defaultState : B("minecraft:end_stone")->defaultState;
+    const auto purpur = B("minecraft:purpur_block") ? B("minecraft:purpur_block")->defaultState : endBricks;
+    int baseY = 70;
+    if (ground) baseY = ground(ox+4, oz+4);
+    if (baseY < 55) baseY = 70;
+    for (int dx=0; dx<9; ++dx) for (int dz=0; dz<9; ++dz) {
+        int wx = ox+dx, wz = oz+dz;
+        w.set(wx, baseY, wz, endBricks, true);
+        for (int dy=1; dy<=12; ++dy) {
+            bool wall = dx==0||dx==8||dz==0||dz==8;
+            if (!wall) continue;
+            w.set(wx, baseY+dy, wz, purpur, true);
+        }
+    }
+    w.set(ox+4, baseY+1, oz+4, B("minecraft:chest")?B("minecraft:chest")->defaultState:endBricks, true);
+}
 
 void StructureGenerator::generateChunk(Chunk& chunk, std::int32_t cx,
                                        std::int32_t cz, const GroundFn& ground) {
@@ -422,6 +508,14 @@ void StructureGenerator::generateChunk(Chunk& chunk, std::int32_t cx,
             iglooPiece(chunk, cx, cz, at.originX, at.originZ, ground);
         else if (name.find("swamp_hut") != std::string::npos)
             swampHutPiece(chunk, cx, cz, at.originX, at.originZ, ground);
+        else if (name.find("monument") != std::string::npos)
+            monumentPiece(chunk, cx, cz, at.originX, at.originZ, ground);
+        else if (name.find("mansion") != std::string::npos)
+            mansionPiece(chunk, cx, cz, at.originX, at.originZ, ground);
+        else if (name.find("end_city") != std::string::npos)
+            endCityPiece(chunk, cx, cz, at.originX, at.originZ, ground);
+        else if (name.find("mineshaft") != std::string::npos)
+            mineshaftPiece(chunk, cx, cz, at.originX, at.originZ, ground);
         else continue;
     }
 }
