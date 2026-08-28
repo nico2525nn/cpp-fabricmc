@@ -506,9 +506,9 @@ void GameServer::tickOnce() {
     if (tickNo_ % 20 == 0) trySpawnMobs();
     mark('M');
     mobsTick();
-    mark('R'); // rails (plan11 §3)
-    minecartsTick();
-    boatsTick(); // plan13 §3 boat physics
+    mark('R'); // rails (plan14 §5)
+    minecartsTick(); // plan14 §5: powered_rail 0.06
+    boatsTick(); // plan14 §5: boat friction 0.9 water / 0.6 land, buoyancy 0.04, max 0.4
     mark('P');
     projectilesTick();
     mark('I');
@@ -563,7 +563,7 @@ void GameServer::tickOnce() {
     } else if (tickNo_ % 1200 == 0 && tickNo_ != 0) {
         try { persist_->saveLevelData(tickNo_, dayTime()); } catch (...) {}
     }
-    // plan13: scheduled function tick (schedule)
+    // plan14 §6: scheduled function tick (schedule) – execute due scheduled functions each tick
     tickScheduledFunctions();
     // network batching: flush coalesced block updates every tick (50ms window)
     {
@@ -1204,6 +1204,7 @@ void GameServer::syncEquipmentOnChange(Player& p){
     broadcastPlayerEquipment(p);
 }
 void GameServer::handleMoveVehicle(Player& p, double x, double y, double z, float yaw, float pitch) {
+    // plan14 §5: MoveVehicle 0x20 – update boat/minecart pos, clamp to WorldBorder, broadcast teleport
     if (p.vehicleId==-1) return;
     std::shared_ptr<MobEntity> veh;
     {
@@ -1211,7 +1212,17 @@ void GameServer::handleMoveVehicle(Player& p, double x, double y, double z, floa
         for(auto &m: mobs_) if(m->entityId==p.vehicleId){veh=m;break;}
     }
     if (!veh) return;
+    // WorldBorder clamp (edge case)
+    if (!isInsideBorder(x, z)) {
+        // stop if outside border
+        veh->velX = 0; veh->velZ = 0;
+        return;
+    }
+    // compute velocity delta for smoothing (optional)
+    double dx = x - veh->x, dz = z - veh->z;
+    veh->velX = dx * 0.5; veh->velZ = dz * 0.5;
     veh->x = x; veh->y = y; veh->z = z; veh->yaw = yaw;
+    // also update player to vehicle pos
     p.x = x; p.y = y; p.z = z; p.yaw = yaw; p.pitch = pitch;
     WriteBuffer tp;
     tp.varint(veh->entityId);
@@ -3794,7 +3805,7 @@ void GameServer::projectilesTick() {
 }
 
 void GameServer::minecartsTick() {
-    // Plan11 §3: minecart rail physics – powered boost, detector, activator, gravity/friction
+    // plan14 §5: minecart rail physics – powered_rail boost 0.06, detector/activator, gravity/friction
     std::vector<std::shared_ptr<MobEntity>> carts;
     {
         std::lock_guard lk(entsMtx_);
@@ -3859,7 +3870,7 @@ void GameServer::minecartsTick() {
                 bool powered=false;
                 for (auto &pr : gen::propsOf(railState)) if (pr.first=="powered" && pr.second=="true") powered=true;
                 if (powered) {
-                    // accelerate along rail axis by 0.06 per plan11
+                    // plan14 §5: accelerate along rail axis by 0.06 (powered_rail)
                     double ax=0, az=0;
                     if (railShape=="north_south" || railShape=="ascending_north" || railShape=="ascending_south") {
                         // Z axis
@@ -3989,7 +4000,7 @@ void GameServer::minecartsTick() {
 }
 
 void GameServer::boatsTick() {
-    // plan13 §3: boat water friction & buoyancy, on land friction 0.6, water 0.9, buoyancy 0.04
+    // plan14 §5: boat physics – water friction 0.9, land friction 0.6, buoyancy 0.04, max speed 0.4
     std::vector<std::shared_ptr<MobEntity>> boats;
     {
         std::lock_guard lk(entsMtx_);
