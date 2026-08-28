@@ -78,7 +78,7 @@ struct NoiseNode final : DensityNode {
     double eval(const Sample& s) const override {
         return reg->get(key).sample((s.x + xzOffset) * xzScale,
                                     s.y * yScale,
-                                    (s.z + xzOffset) * yScale);
+                                    (s.z + xzOffset) * xzScale);
     }
 };
 struct ShiftedNoise final : DensityNode {   // adds noise output as offset
