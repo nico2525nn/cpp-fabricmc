@@ -9,7 +9,7 @@ namespace cppfm {
 class GameRuleManager {
 public:
     GameRuleManager() {
-        // vanilla defaults
+        // vanilla defaults — 37 rules (strict audit MEDIUM)
         set("doFireTick", "true", false);
         set("mobGriefing", "true", false);
         set("keepInventory", "false", false);
@@ -24,6 +24,29 @@ public:
         set("fallDamage", "true", false);
         set("fireDamage", "true", false);
         set("freezeDamage", "true", false);
+        set("doTileDrops", "true", false);
+        set("doMobLoot", "true", false);
+        set("doEntityDrops", "true", false);
+        set("commandBlockOutput", "true", false);
+        set("logAdminCommands", "true", false);
+        set("showDeathMessages", "true", false);
+        set("sendCommandFeedback", "true", false);
+        set("reducedDebugInfo", "false", false);
+        set("spectatorsGenerateChunks", "true", false);
+        set("spawnRadius", "10", false);
+        set("maxEntityCramming", "24", false);
+        set("doLimitedCrafting", "false", false);
+        set("maxCommandChainLength", "65536", false);
+        set("disableElytraMovementCheck", "false", false);
+        set("disableRaids", "false", false);
+        set("doInsomnia", "true", false);
+        set("doPatrolSpawning", "true", false);
+        set("doTraderSpawning", "true", false);
+        set("doWardenSpawning", "true", false);
+        set("forgiveDeadPlayers", "true", false);
+        set("universalAnger", "false", false);
+        set("playersSleepingPercentage", "100", false);
+        set("blockExplosionDropDecay", "true", false);
     }
 
     void set(const std::string& key, const std::string& value,
