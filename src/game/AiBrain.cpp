@@ -140,32 +140,64 @@ bool TemptGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
 }
 
 bool BreedGoal::shouldStart(MobEntity& m, AiContext& ctx) {
-    return m.inLove && ctx.srv != nullptr;
+    if (!m.inLove || ctx.srv==nullptr) return false;
+    if (ctx.srv->tickNoForTest() < m.breedCooldownUntil) return false;
+    if (MobEntity::isBaby(m)) return false;
+    // plan14 §3: require love partner within 8 blocks sameKind & inLove
+    return ctx.srv->findLovePartner(m) != nullptr;
 }
 
 bool BreedGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     GameServer& srv = *ctx.srv;
-    if (!m.inLove || now < m.breedCooldownUntil) return m.inLove;
-    // BreedingGoal as ActionNode with LoveMode: wait 30 ticks after entering love
-    if (now < m.loveUntilTick - 30*20 + 30) return true; // 30 tick delay after feeding
-    // find another in-love adult of same kind nearby
+    if (!m.inLove || now < m.breedCooldownUntil) return false;
+    if (MobEntity::isBaby(m)) { m.inLove=false; return false; }
+    // wait 30 ticks after entering love (love 600t -> hearts)
+    if (now < m.loveUntilTick - 30*20 + 30) return true;
     auto partner = srv.findLovePartner(m);
-    if (!partner) return true;                            // keep waiting
-    // spawn baby (tick thread already holds entsMtx_)
+    if (!partner) return true; // keep waiting for partner to approach
+    double dx = partner->x - m.x, dz = partner->z - m.z;
+    double d2 = dx*dx + dz*dz;
+    if (d2 > 4.0) { // >2 blocks: move towards partner (plan14 §3 moveTo)
+        double d = std::sqrt(d2) + 1e-6;
+        m.yaw = static_cast<float>(std::atan2(dz,dx)*180.0/3.14159 -90.0);
+        m.x += dx/d * 0.09;
+        m.z += dz/d * 0.09;
+        // groundSnap
+        World& w = srv.world();
+        w.generateChunkIfMissing(static_cast<std::int32_t>(m.x)>>4, static_cast<std::int32_t>(m.z)>>4);
+        int col=4;
+        w.withChunk(static_cast<std::int32_t>(m.x)>>4, static_cast<std::int32_t>(m.z)>>4,[&](const Chunk& c){
+            for(int ry=kSectionsPerChunk*16-1; ry>=0; --ry) if(c.blocks[Chunk::index(ry>>4, ry&15, static_cast<std::int32_t>(m.z)&15, static_cast<std::int32_t>(m.x)&15)]!=0){col=ry+1;break;}
+        });
+        m.y = kMinY + col + 1.0;
+        partner->x += -dx/d * 0.04; partner->z += -dz/d * 0.04; // partner slowly approaches
+        return true;
+    }
+    // breed: spawn baby at mid pos (plan14 §3: age -24000, love reset, cooldown 6000, xp 1-7)
     const double bx = (m.x + partner->x) / 2.0;
     const double bz = (m.z + partner->z) / 2.0;
     auto baby = std::make_shared<MobEntity>();
     baby->entityId = ctx.srv->nextEntityId();
     baby->kind = m.kind;
     baby->health = mobStats(m.kind).maxHealth;
-    baby->age = -60 * 20;                                 // ~60s to grow up
+    baby->age = -24000; // 20 min vanilla
     baby->x = bx; baby->y = m.y; baby->z = bz;
     ctx.srv->mobsForTest().push_back(baby);
     ctx.srv->broadcastMobSpawn(*baby);
+    // xp 1-7
+    ctx.srv->spawnXpOrbs(bx, m.y+0.5, bz, 1 + (rand()%7), nullptr);
+    // reset love and set cooldown 6000t (5 min) simplified to 6000 = 300*20? use 6000
     m.inLove = false;
     partner->inLove = false;
-    m.breedCooldownUntil = now + 60 * 20;
-    partner->breedCooldownUntil = now + 60 * 20;
+    m.breedCooldownUntil = now + 6000;
+    partner->breedCooldownUntil = now + 6000;
+    // hearts already via EntityEvent 18 in tryBreedFeed, but also broadcast here
+    {
+        WriteBuffer st; st.i32(m.entityId); st.i8(18);
+        ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::EntityEvent, st);
+        WriteBuffer st2; st2.i32(partner->entityId); st2.i8(18);
+        ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::EntityEvent, st2);
+    }
     return false;
 }
 

@@ -200,15 +200,15 @@ inline std::unique_ptr<BehaviorNode> createNodeForType(const std::string& rawTyp
     if (t=="teleport_random"||t=="teleport") return std::make_unique<TeleportRandomAction>();
     if (t=="pickup_block"||t=="pickup") return std::make_unique<PickupBlockAction>();
     if (t=="stare") return std::make_unique<StareAction>();
-    // boss + special actions (plan7)
-    if (t=="wither_skull_attack"||t=="wither_skull") return std::make_unique<WitherSkullAction>();
-    if (t=="dragon_breath"||t=="dragon_fireball"||t=="dragon_breath_attack") return std::make_unique<DragonBreathAction>();
+    // boss + special actions (plan7, plan14 §1 fix: wither_skull/dragon_breath/warden_sonic_boom orphaned -> map explicitly)
+    if (t=="wither_skull"||t=="wither_skull_attack"||t=="wither_shoot") return std::make_unique<WitherSkullAction>();
+    if (t=="dragon_breath"||t=="dragon_breath_attack"||t=="dragon_fireball") return std::make_unique<DragonBreathAction>();
     if (t=="blaze_fireball"||t=="blaze_shoot"||t=="blaze_attack") return std::make_unique<BlazeFireballAction>();
     if (t=="guardian_beam"||t=="guardian_attack"||t=="elder_guardian_beam") return std::make_unique<GuardianBeamAction>();
     if (t=="ghast_fireball"||t=="ghast_shoot") return std::make_unique<GhastFireballAction>();
     if (t=="phantom_swoop"||t=="phantom_attack") return std::make_unique<PhantomSwoopAction>();
     if (t=="shulker_bullet"||t=="shulker_shoot") return std::make_unique<ShulkerBulletAction>();
-    if (t=="warden_sonic_boom"||t=="warden_attack"||t=="sonic_boom") return std::make_unique<WardenSonicBoomAction>();
+    if (t=="warden_sonic_boom"||t=="sonic_boom"||t=="warden_attack") return std::make_unique<WardenSonicBoomAction>();
     if (t=="ranged_attack"||t=="shoot"||t=="fireball") return std::make_unique<GenericRangedAttackAction>();
     if (t=="breed_action") return std::make_unique<BreedAction>();
     if (t=="trade"||t=="trade_goal") return std::make_unique<TradeAction>();
