@@ -77,7 +77,7 @@ void PacketBatcher::flush(GameServer& srv, const Player* except) {
                     b.varint(static_cast<int32_t>(vec.size()));
                     for (auto &r : vec) {
                         int32_t lx = r.x & 15, ly = r.y & 15, lz = r.z & 15;
-                        int32_t enc = (static_cast<int32_t>(r.state) << 12) | (lx << 8) | (lz << 4) | ly;
+                        int32_t enc = (static_cast<int32_t>(r.state) << 12) | (ly << 8) | (lz << 4) | lx;
                         b.varint(enc);
                     }
                     parts.emplace_back(proto::pl::sc::MultiBlockChange, std::move(b));
@@ -157,7 +157,7 @@ bool PacketBatcher::tryFlushAsMultiBlockChange(GameServer& srv, const Player* ex
     b.varint(static_cast<int32_t>(recs.size()));
     for (auto &r : recs) {
         int32_t lx = r.x & 15, ly = r.y & 15, lz = r.z & 15;
-        int32_t enc = (static_cast<int32_t>(r.state) << 12) | (lx << 8) | (lz << 4) | ly;
+        int32_t enc = (static_cast<int32_t>(r.state) << 12) | (ly << 8) | (lz << 4) | lx;
         b.varint(enc);
     }
     srv.broadcastPacketExcept(except, proto::pl::sc::MultiBlockChange, b);
