@@ -1,7 +1,10 @@
 // Packet IDs for Minecraft Java 1.21.4 (protocol 769).
-// Verified against community protocol documentation (PrismarineJS
-// minecraft-data 1.21.4 protocol.json, version-pinned) and against live wire
-// captures of a reference server.
+// Verified against PrismarineJS minecraft-data 1.21.4 protocol.json (version-
+// pinned) + live wire captures (docs/PROTOCOL_NOTES.md). Strict 1.21.4:
+// TradeList 0x2D (not 0x2E), ContainerSetContent 0x12 (not 0x13), OpenScreen
+// 0x34 (not 0x35), KeepAlive 0x26 (not 0x27), UpdateLight 0x2B — fixed plan15.
+// Login EncryptionRequest includes shouldAuthenticate bool true (N5).
+// Play BundleDelimiter 0x00 + MultiBlockChange 0x4E with ly<<8|lz<<4|lx (N7).
 #pragma once
 #include <cstdint>
 

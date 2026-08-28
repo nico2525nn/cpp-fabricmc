@@ -36,6 +36,34 @@ static std::int64_t nowMs() {
         std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
+// Deterministic pack UUID for AddResourcePack 0x09 (UUID first, strict 1.21.4).
+// Uses SHA-1(url) first 16 bytes as RFC4122 v5-like UUID for stability across
+// restarts. Previous hash-based version used std::hash (non-portable); SHA-1
+// matches Mojang's content-hash stability for the same url.
+static std::array<std::uint8_t,16> packUuidFromUrl(const std::string& url) {
+    std::array<std::uint8_t,16> out{};
+    unsigned char md[20];
+    unsigned int ml = 0;
+    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+    if (ctx) {
+        EVP_DigestInit_ex(ctx, EVP_sha1(), nullptr);
+        EVP_DigestUpdate(ctx, url.data(), url.size());
+        EVP_DigestFinal_ex(ctx, md, &ml);
+        EVP_MD_CTX_free(ctx);
+        for (int i = 0; i < 16; ++i) out[static_cast<size_t>(i)] = md[i];
+        out[6] = (out[6] & 0x0F) | 0x50; // v5
+        out[8] = (out[8] & 0x3F) | 0x80; // RFC4122 variant
+    } else {
+        // fallback: std::hash if OpenSSL unavailable (should not happen)
+        uint64_t h = std::hash<std::string>{}(url);
+        for (int i = 0; i < 8; ++i) out[static_cast<size_t>(i)] = static_cast<std::uint8_t>((h >> (i * 8)) & 0xFF);
+        for (int i = 8; i < 16; ++i) out[static_cast<size_t>(i)] = static_cast<std::uint8_t>((i * 37 + h) & 0xFF);
+        out[6] = (out[6] & 0x0F) | 0x40;
+        out[8] = (out[8] & 0x3F) | 0x80;
+    }
+    return out;
+}
+
 // hotbar: block name -> (itemId, stateId) resolved at startup
 struct HotbarEntry { std::uint32_t itemId; std::uint16_t stateId; };
 static const char* kHotbarNames[] = {
@@ -3073,38 +3101,24 @@ void Session::handleLogin() {
         conn_->sendPacket(proto::lo::sc::EncryptionRequest, er);
 
         auto pbody = conn_->readFrame();
-        std::fprintf(stderr, "[cppfm] ONLINE: got response frame %zu bytes head=%s\n",
-                     pbody.size(),
-                     [&]{ std::string h; for (std::size_t k = 0; k < pbody.size() && k < 12; ++k)
-                         { char x[4]; snprintf(x,3,"%02x",pbody[k]); h+=x; } return h; }().c_str());
+        const bool traceLogin = std::getenv("CPPFM_TRACE") != nullptr;
+        if (traceLogin) std::fprintf(stderr, "[cppfm] ONLINE: got response frame %zu bytes\n", pbody.size());
         ReadBuffer rin(pbody);
         const auto respPid = rin.u8();
-        std::fprintf(stderr, "[cppfm] ONLINE: response pid=%02x\n", respPid);
+        if (traceLogin) std::fprintf(stderr, "[cppfm] ONLINE: response pid=%02x\n", respPid);
         if (respPid != proto::lo::cs::Key) throw std::runtime_error("expected encryption response");
         try {
-        std::fprintf(stderr, "[cppfm] D1: parsing secret ct\n");
         const auto slen = rin.varint();
-        std::fprintf(stderr, "[cppfm] D2: slen=%d\n", slen);
         const auto secretCt = rin.bytes(slen);
-        std::fprintf(stderr, "[cppfm] D3: got %zu ct bytes\n", secretCt.size());
         const auto tlen = rin.varint();
-        std::fprintf(stderr, "[cppfm] D4: tlen=%d\n", tlen);
         const auto tokenCt = rin.bytes(tlen);
-        std::fprintf(stderr, "[cppfm] D5: got %zu tok ct\n", tokenCt.size());
 
-        std::fprintf(stderr, "[cppfm] D6: rsa decrypt secret\n");
         auto secret = crypto::rsaDecryptP(srv_.loginKeys_.pkey, secretCt.data(), secretCt.size());
-        std::fprintf(stderr, "[cppfm] D7: secret size=%zu\n", secret.size());
         auto tokenBack = crypto::rsaDecryptP(srv_.loginKeys_.pkey, tokenCt.data(), tokenCt.size());
-        std::fprintf(stderr, "[cppfm] D8: token size=%zu\n", tokenBack.size());
-        std::fprintf(stderr, "[cppfm] D9: srv token=%s\n",
-            [&]{std::string r;for(auto b:srv_.loginVerifyToken_) {char x[4];snprintf(x,3,"%02x",b);r+=x;}return r;}().c_str());
-        std::fprintf(stderr, "[cppfm] D10: got token=%s\n",
-            [&]{std::string r;for(auto b:tokenBack) {char x[4];snprintf(x,3,"%02x",b);r+=x;}return r;}().c_str());
         if (tokenBack != srv_.loginVerifyToken_)
             throw std::runtime_error("verify token mismatch");
         if (secret.size() != 16) throw std::runtime_error("bad shared secret size");
-        std::fprintf(stderr, "[cppfm] D9: all checks passed\n");
+        if (traceLogin) std::fprintf(stderr, "[cppfm] ONLINE: decrypt ok\n");
 
         // Mojang session-server authentication
         std::string hash = crypto::mcSha1Hex("", secret, srv_.loginKeys_.publicDer);
@@ -3193,18 +3207,10 @@ void Session::handleLogin() {
 
 void Session::handleConfiguration() {
     // 0. resource pack (plan3 Resource Pack) — configured via server.properties
-    // 1.21.4: AddResourcePack = UUID + url + hash + forced + hasPrompt (no message) — UUID required (strict)
+    // 1.21.4: AddResourcePack = UUID + url + hash + forced + hasPrompt (no message) — UUID required (strict N13)
     if (!srv_.config().resourcePackUrl.empty()) {
         WriteBuffer b;
-        // deterministic UUID derived from url (stable across restarts for same pack)
-        std::array<std::uint8_t,16> packUuid{};
-        {
-            uint64_t h = std::hash<std::string>{}(srv_.config().resourcePackUrl);
-            for (int i=0;i<8;++i) packUuid[i] = static_cast<std::uint8_t>((h >> (i*8)) & 0xFF);
-            for (int i=8;i<16;++i) packUuid[i] = static_cast<std::uint8_t>((i*37 + h) & 0xFF);
-            packUuid[6] = (packUuid[6] & 0x0F) | 0x40; // version 4
-            packUuid[8] = (packUuid[8] & 0x3F) | 0x80; // variant RFC4122
-        }
+        auto packUuid = packUuidFromUrl(srv_.config().resourcePackUrl);
         b.uuid(packUuid.data());
         b.string(srv_.config().resourcePackUrl);
         b.string(srv_.config().resourcePackSha1);
