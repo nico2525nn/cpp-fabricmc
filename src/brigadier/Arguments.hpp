@@ -25,15 +25,20 @@ enum class ParserId : std::uint8_t {
     Bool = 0, Float = 1, Double = 2, Integer = 3, Long = 4, String = 5,
     Entity = 6, GameProfile = 7, BlockPos = 8, ColumnPos = 9, Vec3 = 10,
     Vec2 = 11, BlockState = 12, BlockPredicate = 13, ItemStack = 14,
-    ItemPredicate = 15, Color = 16, Component = 17, Message = 18,
-    Nbt = 19, NbtCompoundTag = 20, NbtTag = 21, NbtPath = 22, Objective = 23,
+    ItemPredicate = 15, Color = 16, Component = 17, Style = 18, Message = 19,
+    Nbt = 20, NbtTag = 21, NbtPath = 22, Objective = 23,
     ObjectiveCriteria = 24, Operation = 25, Particle = 26, Angle = 27,
-    Rotation = 28, ScoreboardSlot = 29, Swizzle = 30, Team = 31,
-    ItemSlot = 32, ResourceLocation = 33, MobEffect = 34, FunctionTag = 35,
-    EntityAnchor = 36, IntRange = 37, FloatRange = 38, Dimension = 39,
-    Gamemode = 40, Time = 41, ResourceOrTag = 42, ResourceOrTagKey = 43,
-    Resource = 44, ResourceKey = 45, TemplateMirror = 46,
-    TemplateRotation = 47, Uuid = 48,
+    Rotation = 28, ScoreboardSlot = 29, ScoreHolder = 30, Swizzle = 31, Team = 32,
+    ItemSlot = 33, ItemSlots = 34, ResourceLocation = 35, Function = 36,
+    EntityAnchor = 37, IntRange = 38, FloatRange = 39, Dimension = 40,
+    Gamemode = 41, Time = 42, ResourceOrTag = 43, ResourceOrTagKey = 44,
+    Resource = 45, ResourceKey = 46, TemplateMirror = 47,
+    TemplateRotation = 48, Heightmap = 49, LootTable = 50, LootPredicate = 51,
+    LootModifier = 52, Uuid = 53,
+    // Legacy aliases for existing code
+    NbtCompoundTag = Nbt,
+    MobEffect = ItemSlots,
+    FunctionTag = Function,
 };
 
 enum class StringMode : std::uint8_t { SingleWord = 0, Quotable = 1, Greedy = 2 };
