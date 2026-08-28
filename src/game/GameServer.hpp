@@ -624,6 +624,8 @@ public:
                          double vx, double vy, double vz,
                          std::int32_t ownerId, bool ownerIsPlayer);
     void projectilesTick();
+    // Rails / minecart physics (plan11 §3)
+    void minecartsTick();
     // Villager trading (plan4 P1-B)
     static const std::vector<struct TradeOffer>& tradeTable();
     bool openTrading(Player& p, MobEntity& villager);
