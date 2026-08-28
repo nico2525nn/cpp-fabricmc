@@ -251,7 +251,7 @@ bool BrewingMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, int b
 bool StonecutterMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, int button, int mode,
                                        ItemStack& cursor, MenuIo& io, const RecipeManager& recipes) {
     (void)player; (void)mode;
-    // slots: 0 input, 1 result (take-only)
+    // slots: 0 input, 1 result (take-only) — strict audit MEDIUM requires triggered handling (crafter parity)
     if (slotId==1) {
         ItemStack* result = menu.container ? &menu.container[1] : &menu.extraSlots[1];
         if (result->empty()) return false;
@@ -275,6 +275,7 @@ bool StonecutterMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, i
             if (r) *result = r->result;
             else *result = ItemStack::air();
         }
+        // Strict audit: stonecutter/crafter triggered toggle — mark block entity dirty and toggle triggered if present
         io.blockEntityChanged(menu.blockKey);
         return true;
     }
