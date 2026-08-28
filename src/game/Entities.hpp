@@ -87,12 +87,15 @@ enum class MobKind : std::uint8_t {
     Squid, GlowSquid, // extra to reach 40, harmless
     Warden, Phantom, IronGolem, Allay, Shulker,
     Boat, Minecart,
-    // strict audit HIGH: expand 48->80+ via gen (armadillo/beebogged/breeze/creaking etc)
+    // strict audit HIGH: expand 48->86 via gen (armadillo/beebogged/breeze/creaking etc)
     Armadillo, Bee, Bogged, Breeze, Camel, Cat, CaveSpider, Creaking,
     Donkey, Drowned, Endermite, Husk, Illusioner, Mooshroom, Mule, Ocelot,
-    Parrot, PiglinBrute, Pillager, PolarBear, Ravager, Silverfish, SkeletonHorse, Sniffer,
+    Parrot, PiglinBrute, Pillager, PolarBear, Ravager, Silverfish, SkeletonHorse, ZombieHorse, Sniffer,
     SnowGolem, Stray, Strider, Tadpole, TraderLlama, Vindicator, WanderingTrader, Wolf,
-    Zoglin, ZombieVillager, ZombifiedPiglin, Giant, EvokerFangs, EnderCrystal
+    Zoglin, ZombieVillager, ZombifiedPiglin, Giant, EvokerFangs, EnderCrystal,
+    // plan19 strict E2: Boat variants 10+10 distinct (was generic Boat)
+    OakBoat, SpruceBoat, BirchBoat, JungleBoat, AcaciaBoat, DarkOakBoat, MangroveBoat, CherryBoat, PaleOakBoat, BambooRaft,
+    OakChestBoat, SpruceChestBoat, BirchChestBoat, JungleChestBoat, AcaciaChestBoat, DarkOakChestBoat, MangroveChestBoat, CherryChestBoat, PaleOakChestBoat, BambooChestRaft
 };
 
 // Static per-kind gameplay table (clean-room values approximating vanilla).
@@ -227,11 +230,33 @@ inline const MobStats& mobStats(MobKind k) {
         {"minecraft:zoglin",         40.f, 0.09f, 6.f, true, false,"minecraft:rotten_flesh",0,1,nullptr,                    5},
         {"minecraft:zombie_villager",20.f, 0.085f,3.f,true, true, "minecraft:rotten_flesh",0,2,nullptr,                     5},
         {"minecraft:zombified_piglin",20.f,0.09f,5.f, true, false,"minecraft:gold_nugget",0,1,nullptr,                     5},
+        {"minecraft:zombie_horse",   15.f, 0.11f, 0.f, false,false,nullptr,0,0,nullptr,                                     0},
         {"minecraft:giant",         100.f, 0.08f,10.f, true, false,nullptr,0,0,nullptr,                                    10},
         {"minecraft:evoker_fangs",    1.f, 0.00f, 6.f, true, false,nullptr,0,0,nullptr,                                     0},
         {"minecraft:end_crystal",     1.f, 0.00f, 0.f, false,false,nullptr,0,0,nullptr,                                     0},
+        // plan19 E2 boat variants (all 6HP, same physics, distinct typeId)
+        {"minecraft:oak_boat",        6.f,0.10f, 0.f, false,false,nullptr,0,0,nullptr,                                     0},
+        {"minecraft:spruce_boat",     6.f,0.10f, 0.f, false,false,nullptr,0,0,nullptr,                                     0},
+        {"minecraft:birch_boat",      6.f,0.10f, 0.f, false,false,nullptr,0,0,nullptr,                                     0},
+        {"minecraft:jungle_boat",     6.f,0.10f, 0.f, false,false,nullptr,0,0,nullptr,                                     0},
+        {"minecraft:acacia_boat",     6.f,0.10f, 0.f, false,false,nullptr,0,0,nullptr,                                     0},
+        {"minecraft:dark_oak_boat",   6.f,0.10f, 0.f, false,false,nullptr,0,0,nullptr,                                     0},
+        {"minecraft:mangrove_boat",   6.f,0.10f, 0.f, false,false,nullptr,0,0,nullptr,                                     0},
+        {"minecraft:cherry_boat",     6.f,0.10f, 0.f, false,false,nullptr,0,0,nullptr,                                     0},
+        {"minecraft:pale_oak_boat",   6.f,0.10f, 0.f, false,false,nullptr,0,0,nullptr,                                     0},
+        {"minecraft:bamboo_raft",     6.f,0.10f, 0.f, false,false,nullptr,0,0,nullptr,                                     0},
+        {"minecraft:oak_chest_boat",  6.f,0.10f, 0.f, false,false,nullptr,0,0,nullptr,                                     0},
+        {"minecraft:spruce_chest_boat",6.f,0.10f,0.f,false,false,nullptr,0,0,nullptr,                                      0},
+        {"minecraft:birch_chest_boat", 6.f,0.10f, 0.f, false,false,nullptr,0,0,nullptr,                                    0},
+        {"minecraft:jungle_chest_boat",6.f,0.10f,0.f,false,false,nullptr,0,0,nullptr,                                      0},
+        {"minecraft:acacia_chest_boat",6.f,0.10f,0.f,false,false,nullptr,0,0,nullptr,                                      0},
+        {"minecraft:dark_oak_chest_boat",6.f,0.10f,0.f,false,false,nullptr,0,0,nullptr,                                    0},
+        {"minecraft:mangrove_chest_boat",6.f,0.10f,0.f,false,false,nullptr,0,0,nullptr,                                    0},
+        {"minecraft:cherry_chest_boat",6.f,0.10f,0.f,false,false,nullptr,0,0,nullptr,                                      0},
+        {"minecraft:pale_oak_chest_boat",6.f,0.10f,0.f,false,false,nullptr,0,0,nullptr,                                    0},
+        {"minecraft:bamboo_chest_raft",6.f,0.10f,0.f,false,false,nullptr,0,0,nullptr,                                      0},
     };
-    static_assert(sizeof(table)/sizeof(table[0]) == 86, "table size must match MobKind count");
+    static_assert(sizeof(table)/sizeof(table[0]) == 107, "table size must match MobKind count");
     return table[static_cast<int>(k)];
 }
 // plan17 §10 E10: size-aware slime/magma health (size²) and attack — vanilla SlimeEntity size*size, MagmaCube size+2 attack and size*3 armor
@@ -332,6 +357,13 @@ struct MobEntity {
     static bool isHostile(MobKind k) { return mobStats(k).hostile; }
     static bool isBaby(const MobEntity& e) { return e.age < 0; }
     static bool isBoss(MobKind k) { return k==MobKind::Wither || k==MobKind::EnderDragon; }
+    static bool isBoat(MobKind k) {
+        return k==MobKind::Boat || k==MobKind::OakBoat || k==MobKind::SpruceBoat || k==MobKind::BirchBoat || k==MobKind::JungleBoat
+            || k==MobKind::AcaciaBoat || k==MobKind::DarkOakBoat || k==MobKind::MangroveBoat || k==MobKind::CherryBoat
+            || k==MobKind::PaleOakBoat || k==MobKind::BambooRaft || k==MobKind::OakChestBoat || k==MobKind::SpruceChestBoat
+            || k==MobKind::BirchChestBoat || k==MobKind::JungleChestBoat || k==MobKind::AcaciaChestBoat || k==MobKind::DarkOakChestBoat
+            || k==MobKind::MangroveChestBoat || k==MobKind::CherryChestBoat || k==MobKind::PaleOakChestBoat || k==MobKind::BambooChestRaft;
+    }
 
     struct Drop { std::uint32_t itemId; std::uint8_t count; };
     static Drop dropFor(MobKind k) {
