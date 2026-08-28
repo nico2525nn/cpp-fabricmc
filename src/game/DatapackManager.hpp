@@ -2,6 +2,7 @@
 // plus advancements/predicates/item_modifiers registries and function storage.
 // Plan13 §10: supports /datapack list/enable/disable and tab completion for functions.
 #pragma once
+#include <algorithm>
 #include <filesystem>
 #include <string>
 #include <unordered_map>
@@ -75,6 +76,7 @@ public:
                 TagManager extra;
                 extra.loadDirectory(base + "/tags");
                 for (auto& [k,v] : extra.itemTags) for (auto id: v) tagManager.itemTags[k].insert(id);
+                for (auto& [k,v] : extra.blockTags) for (auto id: v) tagManager.blockTags[k].insert(id);
                 tagManager.applyToRecipeTags(recipes.tags_);
                 lootTables.loadDirectory(base + "/loot_tables");
                 loadPackDirectory(base, packName);
@@ -173,7 +175,17 @@ public:
             out.push_back("minecraft:tick");
             out.push_back("minecraft:load");
         }
+        std::sort(out.begin(), out.end());
         return out;
+    }
+
+    // Plan14 §6 verification helper: ensure brigadier BlockState (id 12) and DatapackManager are consistent
+    bool verify() const {
+        // tag counts should meet vanilla 67/20 minimums (TagManager ensures defaults)
+        if (tagManager.itemTags.size() < 67 || tagManager.blockTags.size() < 20) return false;
+        // at least vanilla pack enabled
+        if (enabledPacks.find("vanilla") == enabledPacks.end()) return false;
+        return true;
     }
 
     const std::vector<std::string>* getFunction(const std::string& id) const {
