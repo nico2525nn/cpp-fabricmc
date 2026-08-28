@@ -91,7 +91,12 @@ int maxStackFor(const ItemStack& s) { return s.empty() ? 64 : stackLimit(s.itemI
 
 bool isTakeOnlySlot(const Menu& m, int slot) {
     if (m.type == MenuType::Crafting && slot == 0) return true;
-    if (m.type == MenuType::Furnace && slot == FurnaceData::kOutput) return true;
+    if ((m.type == MenuType::Furnace || m.type == MenuType::BlastFurnace || m.type == MenuType::Smoker) && slot == FurnaceData::kOutput) return true;
+    if (m.type == MenuType::CartographyTable && slot == 2) return true;
+    if (m.type == MenuType::Stonecutter && slot == 1) return true;
+    if (m.type == MenuType::Anvil && slot == 2) return true;
+    if (m.type == MenuType::Grindstone && slot == 2) return true; // result slot for grindstone
+    if (m.type == MenuType::Smithing && slot == 3) return true;
     return false;
 }
 
@@ -255,16 +260,21 @@ bool ClickLogic::quickMove(Menu& m, Player& p, const RecipeManager& recipes,
 }
 
 bool ClickLogic::swapWithHotbar(Menu& m, Player& p, int slot, int button,
-                                ItemStack& cursor, MenuIo& io) {
+                                 ItemStack& cursor, MenuIo& io) {
     (void)cursor;
     if (button < 0 || button > 8) return false;
     ItemStack* hotbar = &p.inv[36 + button];
     ItemStack* target = nullptr;
-    if (m.type == MenuType::Chest && slot >= 0 && slot < 27) target = &m.container[slot];
-    else if (m.type == MenuType::Furnace && slot >= 0 && slot < 3)
-        target = &m.container[slot];
-    else if (m.type == MenuType::Crafting && slot >= 1 && slot < 10)
-        target = &m.craftGrid[slot - 1];
+    int cont = containerSlotCount(m);
+    if (slot >=0 && slot < cont) {
+        if (m.type == MenuType::Crafting) {
+            if (slot >=1 && slot <10) target = &m.craftGrid[slot - 1];
+        } else {
+            target = m.container ? &m.container[slot] : &m.extraSlots[slot];
+        }
+    } else {
+        return false;
+    }
     if (!target || isTakeOnlySlot(m, slot)) return false;
     std::swap(*hotbar, *target);
     if (m.type != MenuType::Crafting) io.blockEntityChanged(m.blockKey);
@@ -272,18 +282,27 @@ bool ClickLogic::swapWithHotbar(Menu& m, Player& p, int slot, int button,
 }
 
 bool ClickLogic::throwSlot(Menu& m, Player& p, int slot, int button,
-                           ItemStack& cursor, MenuIo& io) {
+                            ItemStack& cursor, MenuIo& io) {
     (void)p;
     ItemStack dropped;
-    if (slot == -999) {                              // click outside window
+    if (slot == -999) {
         if (cursor.empty()) return false;
         dropped = cursor;
         cursor = ItemStack::air();
     } else {
         ItemStack* src = nullptr;
-        if (m.type == MenuType::Chest && slot >= 0 && slot < 63)
-            src = slot < 27 ? &m.container[slot] : nullptr;
-        if (!src) return false;
+        int cont = containerSlotCount(m);
+        if (slot >=0 && slot < cont) {
+            if (m.type == MenuType::Crafting) {
+                if (slot==0) return false;
+                if (slot>=1 && slot<10) src = &m.craftGrid[slot-1];
+            } else {
+                src = m.container ? &m.container[slot] : &m.extraSlots[slot];
+            }
+        } else if (slot >= cont && slot < cont+36) {
+            src = m.slotAt(slot, p.inv.data());
+        }
+        if (!src || src->empty() || isTakeOnlySlot(m, slot)) return false;
         dropped = *src;
         if (button == 1) *src = ItemStack::air();
         else {

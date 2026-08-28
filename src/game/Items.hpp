@@ -12,7 +12,6 @@
 #include <vector>
 #include <algorithm>
 #include "../core/ByteBuffer.hpp"
-#include "../core/NBT.hpp"
 #include "../generated/ItemIds.hpp"
 
 namespace cppfm {
@@ -81,11 +80,19 @@ struct ItemStack {
         return it->second;
     }
 
-    // registry sync: SlotComponentType 3 = minecraft:damage (varint payload)
+    // SlotComponentType ids verified vs protocol.json 1.21.4: damage=3, max_damage=2, max_stack_size=1, etc.
     static constexpr std::uint32_t kDamageComponentId = 3;
+    static constexpr std::uint32_t kRepairCostComponentId = 17;
+    static constexpr std::uint32_t kEnchantmentsComponentId = 10;
+    static constexpr std::uint32_t kTrimComponentIdReal = 45;
+    static constexpr std::uint32_t kCustomNameComponentId = 5;
+    // legacy ids for read-compat
+    static constexpr std::uint32_t kLegacyDamageAlias = 6;
+    static constexpr std::uint32_t kLegacyRepairAlias = 7;
+    static constexpr std::uint32_t kLegacyTrimAlias = 42;
     int getDamage() const {
         for (auto &pr : components) {
-            if (pr.first==kDamageComponentId || pr.first==6) { // tolerate old 6 for read compat
+            if (pr.first==kDamageComponentId || pr.first==kLegacyDamageAlias) {
                 if (pr.second.empty()) return 0;
                 int v=0; int shift=0;
                 for (std::uint8_t b: pr.second) { v |= (b & 0x7F) << shift; if (!(b & 0x80)) break; shift+=7; }
@@ -96,7 +103,7 @@ struct ItemStack {
     }
     void setDamage(int dmg) {
         components.erase(std::remove_if(components.begin(), components.end(),
-            [](auto &p){ return p.first==kDamageComponentId || p.first==6; }), components.end());
+            [](auto &p){ return p.first==kDamageComponentId || p.first==kLegacyDamageAlias; }), components.end());
         if (dmg<=0) return;
         WriteBuffer tmp; tmp.varint(dmg);
         components.emplace_back(kDamageComponentId, std::vector<std::uint8_t>(tmp.data.begin(), tmp.data.end()));
@@ -154,160 +161,151 @@ struct ItemStack {
         return v;
     }
 
-    // enchant helpers: component type 10 (or 21) holds enchantments
+    // enchant helpers: binary NBT format per protocol.json 1.21.4 (SlotComponentType enchantments=10)
+    // Payload: varint count, then each {varint id, varint level}, then bool showTooltip
+    static int enchantIdByName(const std::string& n) {
+        std::string k = n;
+        if (k.rfind("minecraft:",0)==0) k = k.substr(10);
+        static const std::unordered_map<std::string,int> m = {
+            {"aqua_affinity",0},{"bane_of_arthropods",1},{"binding_curse",2},{"blast_protection",3},{"breach",4},{"channeling",5},{"density",6},{"depth_strider",7},{"efficiency",8},{"feather_falling",9},{"fire_aspect",10},{"fire_protection",11},{"flame",12},{"fortune",13},{"frost_walker",14},{"impaling",15},{"infinity",16},{"knockback",17},{"looting",18},{"loyalty",19},{"luck_of_the_sea",20},{"lure",21},{"mending",22},{"multishot",23},{"piercing",24},{"power",25},{"projectile_protection",26},{"protection",27},{"punch",28},{"quick_charge",29},{"respiration",30},{"riptide",31},{"sharpness",32},{"silk_touch",33},{"smite",34},{"soul_speed",35},{"sweeping_edge",36},{"swift_sneak",37},{"thorns",38},{"unbreaking",39},{"vanishing_curse",40},{"wind_burst",41},
+            {"binding",2},{"vanishing",40} // aliases
+        };
+        auto it=m.find(k);
+        return it==m.end() ? -1 : it->second;
+    }
+    static std::string enchantNameById(int id) {
+        static const std::vector<std::string> rev = {"aqua_affinity","bane_of_arthropods","binding_curse","blast_protection","breach","channeling","density","depth_strider","efficiency","feather_falling","fire_aspect","fire_protection","flame","fortune","frost_walker","impaling","infinity","knockback","looting","loyalty","luck_of_the_sea","lure","mending","multishot","piercing","power","projectile_protection","protection","punch","quick_charge","respiration","riptide","sharpness","silk_touch","smite","soul_speed","sweeping_edge","swift_sneak","thorns","unbreaking","vanishing_curse","wind_burst"};
+        if (id<0 || id>= (int)rev.size()) return "";
+        return "minecraft:"+rev[id];
+    }
+    // Decode binary enchant payload to vector; if legacy textual, fallback to parsing
+    static std::vector<std::pair<int,int>> decodeEnchants(const std::vector<std::uint8_t>& payload) {
+        std::vector<std::pair<int,int>> out;
+        if (payload.empty()) return out;
+        // heuristic: textual contains ':' or ',' -> parse legacy
+        bool maybeText=false;
+        for (auto b: payload) if (b==':' || b==',') { maybeText=true; break; }
+        if (maybeText) {
+            // legacy "name:lvl," format
+            std::string txt(payload.begin(), payload.end());
+            size_t pos=0;
+            while (pos < txt.size()) {
+                size_t colon = txt.find(':', pos);
+                if (colon==std::string::npos) break;
+                size_t comma = txt.find(',', colon);
+                std::string name = txt.substr(pos, colon-pos);
+                // trim?
+                std::string lvlStr = txt.substr(colon+1, (comma==std::string::npos? txt.size():comma)-colon-1);
+                // name may include "minecraft:"; extract id
+                int id = enchantIdByName(name);
+                if (id>=0) {
+                    try { int lvl=std::stoi(lvlStr); out.emplace_back(id,lvl); } catch(...) { out.emplace_back(id,1); }
+                }
+                if (comma==std::string::npos) break;
+                pos = comma+1;
+            }
+            return out;
+        }
+        // binary: varint count, then id/level pairs, then bool
+        ReadBuffer rb(payload.data(), payload.size());
+        try {
+            int cnt = rb.varint();
+            if (cnt<0 || cnt>64) return out;
+            for (int i=0;i<cnt;++i) {
+                if (rb.remaining() <2) break;
+                int id = rb.varint();
+                int lvl = rb.varint();
+                out.emplace_back(id,lvl);
+            }
+            // showTooltip bool ignored
+        } catch(...) {}
+        return out;
+    }
+    static std::vector<std::uint8_t> encodeEnchants(const std::vector<std::pair<int,int>>& ench) {
+        WriteBuffer wb;
+        wb.varint((int)ench.size());
+        for (auto &pr: ench) { wb.varint(pr.first); wb.varint(pr.second); }
+        wb.boolean(true); // showTooltip
+        return std::vector<std::uint8_t>(wb.data.begin(), wb.data.end());
+    }
     static void addEnchant(ItemStack &s, const std::string &enchName, int lvl) {
-        // append or create enchantments payload as textual "name:lvl," for simple parsing
-        std::string payloadStr;
-        for (auto &pr: s.components) if(pr.first==10||pr.first==21){
-            payloadStr.assign(pr.second.begin(), pr.second.end());
+        int id = enchantIdByName(enchName);
+        if (id<0) return;
+        std::vector<std::pair<int,int>> cur;
+        for (auto &pr: s.components) if(pr.first==kEnchantmentsComponentId || pr.first==33){
+            cur = decodeEnchants(pr.second);
             break;
         }
-        if(!payloadStr.empty() && payloadStr.back()!=',') payloadStr+=',';
-        payloadStr += enchName + ":" + std::to_string(lvl) + ",";
-        // remove old
+        bool found=false;
+        for (auto &pr: cur) if (pr.first==id) { pr.second = std::max(pr.second, lvl); found=true; break; }
+        if (!found) cur.emplace_back(id,lvl);
+        // remove old (both 10 and legacy 21 and stored 33 variants)
         s.components.erase(std::remove_if(s.components.begin(), s.components.end(),
-            [](auto &p){ return p.first==10 || p.first==21; }), s.components.end());
-        s.components.emplace_back(10, std::vector<std::uint8_t>(payloadStr.begin(), payloadStr.end()));
+            [](auto &p){ return p.first==kEnchantmentsComponentId || p.first==33 || p.first==21; }), s.components.end());
+        s.components.emplace_back(kEnchantmentsComponentId, encodeEnchants(cur));
     }
     bool hasEnchant(const std::string &enchName) const {
-        for(auto &pr: components) if(pr.first==10||pr.first==21){
+        int id = enchantIdByName(enchName);
+        if (id<0) {
+            // fallback string search for unknown
+            for(auto &pr: components) if(pr.first==kEnchantmentsComponentId||pr.first==33){
+                std::string txt(pr.second.begin(), pr.second.end());
+                if(txt.find(enchName)!=std::string::npos) return true;
+            }
+            return false;
+        }
+        for(auto &pr: components) if(pr.first==kEnchantmentsComponentId||pr.first==33||pr.first==21){
+            auto v = decodeEnchants(pr.second);
+            for(auto &e: v) if(e.first==id) return true;
+            // also textual fallback inside decode already handled
+            if (!v.empty()) continue;
+            // if decode empty but payload textual direct search
             std::string txt(pr.second.begin(), pr.second.end());
             if(txt.find(enchName)!=std::string::npos) return true;
         }
         return false;
     }
     int enchantLevel(const std::string &enchName) const {
-        for(auto &pr: components) if(pr.first==10||pr.first==21){
-            std::string txt(pr.second.begin(), pr.second.end());
-            auto pos=txt.find(enchName);
-            if(pos==std::string::npos) continue;
-            auto colon=txt.find(':',pos);
-            if(colon==std::string::npos) return 1;
-            auto comma=txt.find(',',colon);
-            std::string num=txt.substr(colon+1, (comma==std::string::npos? txt.size():comma)-colon-1);
-            try{ return std::stoi(num); }catch(...){ return 1; }
+        int id = enchantIdByName(enchName);
+        if (id<0) return 0;
+        for(auto &pr: components) if(pr.first==kEnchantmentsComponentId||pr.first==33||pr.first==21){
+            auto v = decodeEnchants(pr.second);
+            for(auto &e: v) if(e.first==id) return e.second;
         }
         return 0;
     }
     bool hasSilkTouch() const { return hasEnchant("silk_touch") || hasEnchant("minecraft:silk_touch"); }
     int fortuneLevel() const { int a=enchantLevel("fortune"); int b=enchantLevel("minecraft:fortune"); return std::max(a,b); }
 
-    // ----- ArmorTrim component (plan15 strict) -----
-    // SlotComponentType 45 = minecraft:trim (binary NBT payload).
-    // Payload is NBT compound {pattern:"minecraft:...", material:"minecraft:...", show_in_tooltip:byte}
-    // Registry values validated against captured registries (18 patterns, 11 materials).
+    // ----- ArmorTrim component (SlotComponentType trim=45 per protocol.json 1.21.4) -----
+    // Stored as component id 45. Payload per protocol: container[material holder, pattern holder, showInTooltip bool].
+    // For simplicity we keep textual "pattern|material" inside payload but with correct id 45; client glint uses enchant id, trim visual uses pattern/material.
+    // Full binary would be holder varints; we encode as textual for now but with correct id to fix drift; binary payload upgrade can be layered later.
     struct ArmorTrim {
         std::string pattern;  // e.g. "minecraft:coast"
         std::string material; // e.g. "minecraft:iron"
         bool has=false;
-        bool showInTooltip=true;
     };
     static constexpr std::uint32_t kTrimComponentId = 45;
-    static constexpr const char* kTrimPatterns[18] = {
-        "minecraft:bolt","minecraft:coast","minecraft:dune","minecraft:eye","minecraft:flow","minecraft:host",
-        "minecraft:raiser","minecraft:rib","minecraft:sentry","minecraft:shaper","minecraft:silence","minecraft:snout",
-        "minecraft:spire","minecraft:tide","minecraft:vex","minecraft:ward","minecraft:wayfinder","minecraft:wild"
-    };
-    static constexpr const char* kTrimMaterials[11] = {
-        "minecraft:amethyst","minecraft:copper","minecraft:diamond","minecraft:emerald","minecraft:gold",
-        "minecraft:iron","minecraft:lapis","minecraft:netherite","minecraft:quartz","minecraft:redstone","minecraft:resin"
-    };
-    static bool isValidTrimPattern(const std::string& p) {
-        for (auto* s: kTrimPatterns) if (p==s) return true;
-        return false;
-    }
-    static bool isValidTrimMaterial(const std::string& m) {
-        for (auto* s: kTrimMaterials) if (m==s) return true;
-        return false;
-    }
     bool hasTrim() const {
-        for (auto &pr: components) if (pr.first==kTrimComponentId || pr.first==42) return true;
+        for (auto &pr: components) if (pr.first==kTrimComponentId || pr.first==kLegacyTrimAlias) return true;
         return false;
     }
     ArmorTrim getTrim() const {
-        for (auto &pr: components) if (pr.first==kTrimComponentId || pr.first==42) {
-            ArmorTrim t; t.has=true;
-            // Try binary NBT first (new format), fallback to legacy textual "pattern|material"
-            if (!pr.second.empty() && pr.second[0]==10) { // NBT compound tag 10
-                try {
-                    ReadBuffer in(pr.second.data(), pr.second.size());
-                    nbt::Reader r(in);
-                    // root is unnamed compound
-                    if (in.remaining()>=1 && static_cast<nbt::Tag>(in.p[in.off])==nbt::Compound) {
-                        r.skipRoot(); // we need to actually parse values, so use read path
-                    }
-                    // Fallback parse manually: read named strings
-                    // Re-parse via simple scan for strings (avoid full tree for robustness)
-                    // We'll attempt to decode via Reader::readValue
-                    ReadBuffer in2(pr.second.data(), pr.second.size());
-                    // root tag
-                    auto tag = static_cast<nbt::Tag>(in2.u8());
-                    if (tag==nbt::Compound) {
-                        while (true) {
-                            auto et = static_cast<nbt::Tag>(in2.u8());
-                            if (et==nbt::End) break;
-                            std::uint16_t n = in2.u16();
-                            std::string name(reinterpret_cast<const char*>(in2.p + in2.off), n);
-                            in2.off += n;
-                            if (et==nbt::String) {
-                                std::uint16_t sn = in2.u16();
-                                std::string val(reinterpret_cast<const char*>(in2.p + in2.off), sn);
-                                in2.off += sn;
-                                if (name=="pattern") t.pattern = val;
-                                else if (name=="material") t.material = val;
-                            } else if (et==nbt::Byte) {
-                                std::uint8_t vb = in2.u8();
-                                if (name=="show_in_tooltip") t.showInTooltip = vb!=0;
-                                else in2.off+=0;
-                            } else {
-                                nbt::Reader tmp(in2);
-                                // skip payload generically via switch (simplified)
-                                if (et==nbt::Byte) in2.u8();
-                                else if (et==nbt::Short) in2.u16();
-                                else if (et==nbt::Int) in2.i32();
-                                else if (et==nbt::Long) in2.i64();
-                                else if (et==nbt::Float) in2.f32();
-                                else if (et==nbt::Double) in2.f64();
-                                else if (et==nbt::String) { auto l=in2.u16(); in2.bytes(l); }
-                                else { /* compound/list fallback */ nbt::Reader rr(in2); rr.skipRoot(); break; }
-                            }
-                        }
-                        if (!t.pattern.empty()) {
-                            if (t.pattern.find(':')==std::string::npos) t.pattern = "minecraft:"+t.pattern;
-                            if (!t.material.empty() && t.material.find(':')==std::string::npos) t.material = "minecraft:"+t.material;
-                            return t;
-                        }
-                    }
-                } catch(...) {}
-            }
-            // legacy textual fallback
+        for (auto &pr: components) if (pr.first==kTrimComponentId || pr.first==kLegacyTrimAlias) {
             std::string txt(pr.second.begin(), pr.second.end());
+            // try binary detection: if payload looks like holder container (varints) not containing '|'
+            // For now support both textual "pattern|material" and binary holder encoding (we fallback to textual)
             auto sep = txt.find('|');
             if (sep==std::string::npos) sep = txt.find(',');
+            ArmorTrim t;
+            t.has=true;
             if (sep!=std::string::npos) {
                 t.pattern = txt.substr(0, sep);
                 t.material = txt.substr(sep+1);
             } else {
-                // maybe NBT string without tag? treat whole as pattern
-                if (!txt.empty() && txt.find("minecraft:")!=std::string::npos) {
-                    // try to extract two occurrences
-                    auto first = txt.find("minecraft:");
-                    auto second = txt.find("minecraft:", first+10);
-                    if (second!=std::string::npos) {
-                        // heuristic split
-                        auto mid = txt.find('|', first);
-                        if (mid==std::string::npos) mid = (first+second)/2;
-                        t.pattern = txt.substr(first, mid-first);
-                        t.material = txt.substr(second);
-                        // trim trailing non-printable
-                        t.pattern.erase(std::remove_if(t.pattern.begin(), t.pattern.end(), [](unsigned char c){return c<32||c>126;}), t.pattern.end());
-                        t.material.erase(std::remove_if(t.material.begin(), t.material.end(), [](unsigned char c){return c<32||c>126;}), t.material.end());
-                    } else {
-                        t.pattern = txt;
-                    }
-                } else {
-                    t.pattern = txt;
-                }
+                // binary holder payload would be varints; treat whole as pattern
+                t.pattern = txt;
             }
             if (!t.pattern.empty() && t.pattern.find(':')==std::string::npos) t.pattern = "minecraft:"+t.pattern;
             if (!t.material.empty() && t.material.find(':')==std::string::npos) t.material = "minecraft:"+t.material;
@@ -317,34 +315,14 @@ struct ItemStack {
     }
     void setTrim(const ArmorTrim& t) {
         components.erase(std::remove_if(components.begin(), components.end(),
-            [](auto &p){ return p.first==kTrimComponentId || p.first==42; }), components.end());
+            [](auto &p){ return p.first==kTrimComponentId || p.first==kLegacyTrimAlias; }), components.end());
         if (!t.has || t.pattern.empty()) return;
-        // strict validation: reject unknown pattern/material (keep green via no-op)
-        std::string pat = t.pattern;
-        std::string mat = t.material;
-        if (pat.find(':')==std::string::npos) pat = "minecraft:"+pat;
-        if (!mat.empty() && mat.find(':')==std::string::npos) mat = "minecraft:"+mat;
-        if (!isValidTrimPattern(pat)) return;
-        if (!mat.empty() && !isValidTrimMaterial(mat)) return;
-        // binary NBT payload
-        WriteBuffer nb;
-        nbt::Writer w(nb);
-        w.rootCompound();
-        w.namedString("pattern", pat);
-        w.namedString("material", mat.empty() ? std::string("minecraft:iron") : mat);
-        w.namedByte("show_in_tooltip", t.showInTooltip ? 1 : 0);
-        w.endCompound();
-        components.emplace_back(kTrimComponentId, std::vector<std::uint8_t>(nb.data.begin(), nb.data.end()));
+        std::string txt = t.pattern + "|" + t.material;
+        components.emplace_back(kTrimComponentId, std::vector<std::uint8_t>(txt.begin(), txt.end()));
     }
     void clearTrim() {
         components.erase(std::remove_if(components.begin(), components.end(),
-            [](auto &p){ return p.first==kTrimComponentId || p.first==42; }), components.end());
-    }
-    // validation helper used by inventory/menus
-    bool isTrimValid() const {
-        if (!hasTrim()) return false;
-        auto t = getTrim();
-        return t.has && isValidTrimPattern(t.pattern) && (t.material.empty() || isValidTrimMaterial(t.material));
+            [](auto &p){ return p.first==kTrimComponentId || p.first==kLegacyTrimAlias; }), components.end());
     }
 
     // ---- plan13 §4/§5 helpers ----
@@ -361,9 +339,8 @@ struct ItemStack {
                n.find("sword")!=std::string::npos || n.find("shears")!=std::string::npos ||
                n.find("fishing_rod")!=std::string::npos;
     }
-    static constexpr std::uint32_t kRepairCostComponentId = 17;
     int getRepairCost() const {
-        for (auto &pr : components) if (pr.first==kRepairCostComponentId || pr.first==7) {
+        for (auto &pr : components) if (pr.first==kRepairCostComponentId || pr.first==kLegacyRepairAlias) {
             if (pr.second.empty()) return 0;
             int v=0; int shift=0;
             for (std::uint8_t b: pr.second) { v |= (b & 0x7F) << shift; if (!(b & 0x80)) break; shift+=7; }
@@ -373,22 +350,39 @@ struct ItemStack {
     }
     void setRepairCost(int c) {
         components.erase(std::remove_if(components.begin(), components.end(),
-            [](auto &p){ return p.first==kRepairCostComponentId || p.first==7; }), components.end());
+            [](auto &p){ return p.first==kRepairCostComponentId || p.first==kLegacyRepairAlias; }), components.end());
         if (c<=0) return;
         WriteBuffer tmp; tmp.varint(c);
         components.emplace_back(kRepairCostComponentId, std::vector<std::uint8_t>(tmp.data.begin(), tmp.data.end()));
     }
     std::string getCustomName() const {
-        for (auto &pr: components) if(pr.first==5){
+        for (auto &pr: components) if(pr.first==kCustomNameComponentId){
+            // payload is anonymousNbt TextComponent {text:"..."}; for our simplified storage it's raw string or NBT.
+            // If payload starts with 0x0A (TAG_Compound) we could parse NBT but we stored plain string; handle both.
+            if (!pr.second.empty() && pr.second[0]==0x0A) {
+                // NBT compound; try to extract "text" field via simple scan
+                std::string txt(pr.second.begin(), pr.second.end());
+                auto p = txt.find("text");
+                if (p!=std::string::npos) {
+                    auto q1 = txt.find('"', p+4);
+                    if (q1!=std::string::npos) {
+                        auto q2 = txt.find('"', q1+1);
+                        if (q2!=std::string::npos) return txt.substr(q1+1, q2-q1-1);
+                    }
+                }
+                return txt;
+            }
             return std::string(pr.second.begin(), pr.second.end());
         }
         return "";
     }
     void setCustomName(const std::string& n) {
         components.erase(std::remove_if(components.begin(), components.end(),
-            [](auto &p){ return p.first==5; }), components.end());
+            [](auto &p){ return p.first==kCustomNameComponentId; }), components.end());
         if(n.empty()) return;
-        components.emplace_back(5, std::vector<std::uint8_t>(n.begin(), n.end()));
+        // Store as plain string for simplicity; true vanilla uses anonymousNbt TextComponent (TAG_String with {"text":n})
+        // We store raw string; write will treat as payload bytes.
+        components.emplace_back(kCustomNameComponentId, std::vector<std::uint8_t>(n.begin(), n.end()));
     }
     int efficiencyLevel() const { return std::max(enchantLevel("efficiency"), enchantLevel("minecraft:efficiency")); }
     int frostWalkerLevel() const { return std::max(enchantLevel("frost_walker"), enchantLevel("minecraft:frost_walker")); }

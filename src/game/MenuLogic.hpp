@@ -71,6 +71,25 @@ public:
     const char* name() const override { return "Stonecutter"; }
 };
 
+// Crafter: 3x3 crafting grid stub (1.21 crafter block) — disabled slots handled as normal container
+class CrafterMenuLogic final : public MenuLogic {
+public:
+    bool onSlotClick(Menu& menu, Player& player, int slotId, int button, int mode,
+                     ItemStack& cursor, MenuIo& io, const RecipeManager& recipes) override;
+    const char* name() const override { return "Crafter"; }
+};
+
+// Cartography Table: map cloning / extension stub (3 slots: map, paper, result)
+class CartographyMenuLogic final : public MenuLogic {
+public:
+    bool onSlotClick(Menu& menu, Player& player, int slotId, int button, int mode,
+                     ItemStack& cursor, MenuIo& io, const RecipeManager& recipes) override;
+    void onContentChanged(Menu& menu, Player& player) override;
+    const char* name() const override { return "CartographyTable"; }
+private:
+    void recomputeResult(Menu& menu);
+};
+
 // Grindstone, Smithing, Beacon, Loom etc. share generic logic
 class GenericMenuLogic final : public MenuLogic {
 public:

@@ -61,6 +61,43 @@ ItemStack* Menu::slotAt(int slot, ItemStack* playerInv) {
         if (slot >= 0 && slot < 4) return container ? &container[slot] : &extraSlots[slot];
         if (slot >= 4 && slot < 40) return &playerInv[slot - 4 + 9];
         return nullptr;
+    case MenuType::Crafter:
+        if (slot >= 0 && slot < 9) return container ? &container[slot] : &extraSlots[slot];
+        if (slot >= 9 && slot < 45) return &playerInv[slot - 9 + 9];
+        return nullptr;
+    case MenuType::CartographyTable:
+        if (slot >= 0 && slot < 3) return container ? &container[slot] : &extraSlots[slot];
+        if (slot >= 3 && slot < 39) return &playerInv[slot - 3 + 9];
+        return nullptr;
+    case MenuType::BlastFurnace:
+    case MenuType::Smoker:
+        if (slot >= 0 && slot < 3) return container ? &container[slot] : &extraSlots[slot];
+        if (slot >= 3 && slot < 39) return &playerInv[slot - 3 + 9];
+        return nullptr;
+    case MenuType::Lectern:
+        if (slot >= 0 && slot < 1) return container ? &container[slot] : &extraSlots[slot];
+        if (slot >= 1 && slot < 37) return &playerInv[slot - 1 + 9];
+        return nullptr;
+    case MenuType::Merchant:
+        if (slot >= 0 && slot < 3) return container ? &container[slot] : &extraSlots[slot];
+        if (slot >= 3 && slot < 39) return &playerInv[slot - 3 + 9];
+        return nullptr;
+    case MenuType::Generic9x1:
+        if (slot >= 0 && slot < 9) return container ? &container[slot] : &extraSlots[slot];
+        if (slot >= 9 && slot < 45) return &playerInv[slot - 9 + 9];
+        return nullptr;
+    case MenuType::Generic9x2:
+        if (slot >= 0 && slot < 18) return container ? &container[slot] : &extraSlots[slot];
+        if (slot >= 18 && slot < 54) return &playerInv[slot - 18 + 9];
+        return nullptr;
+    case MenuType::Generic9x4:
+        if (slot >= 0 && slot < 36) return container ? &container[slot] : &extraSlots[slot];
+        if (slot >= 36 && slot < 72) return &playerInv[slot - 36 + 9];
+        return nullptr;
+    case MenuType::Generic9x6:
+        if (slot >= 0 && slot < 54) return container ? &container[slot] : &extraSlots[slot];
+        if (slot >= 54 && slot < 90) return &playerInv[slot - 54 + 9];
+        return nullptr;
     }
     return nullptr;
 }
@@ -85,6 +122,16 @@ const char* Menu::slotRegion(int slot) const {
     case MenuType::Smithing: return slot < 4 ? "container" : "player";
     case MenuType::Beacon: return slot < 1 ? "container" : "player";
     case MenuType::Loom: return slot < 4 ? "container" : "player";
+    case MenuType::Crafter: return slot < 9 ? "container" : "player";
+    case MenuType::CartographyTable: return slot < 3 ? "container" : "player";
+    case MenuType::BlastFurnace: return slot < 3 ? "container" : "player";
+    case MenuType::Smoker: return slot < 3 ? "container" : "player";
+    case MenuType::Lectern: return slot < 1 ? "container" : "player";
+    case MenuType::Merchant: return slot < 3 ? "container" : "player";
+    case MenuType::Generic9x1: return slot < 9 ? "container" : "player";
+    case MenuType::Generic9x2: return slot < 18 ? "container" : "player";
+    case MenuType::Generic9x4: return slot < 36 ? "container" : "player";
+    case MenuType::Generic9x6: return slot < 54 ? "container" : "player";
     }
     return "?";
 }
