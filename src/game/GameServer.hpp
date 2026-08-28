@@ -33,6 +33,7 @@
 #include "MobEffects.hpp"
 #include "Stats.hpp"
 #include "Scoreboard.hpp"
+#include "Teams.hpp"
 #include "../physics/LightEngine.hpp"
 #include "../physics/Fluids.hpp"
 #include "../physics/Redstone.hpp"
@@ -554,6 +555,7 @@ public:
     BlockEntityStore& blockEntities() { return blockEntities_; }
     std::int32_t villagerWindowSeq_ = 100;
     Scoreboard scoreboard;
+    TeamsManager teams;
     void scoreboardBroadcast(const std::function<void(WriteBuffer&)>& fn) {
         WriteBuffer b; fn(b);
         broadcastPacketExcept(nullptr, 0, b); // id unused; callers send directly
@@ -571,6 +573,22 @@ public:
         WriteBuffer b; scoreboard.writeDisplayPacket(b);
         broadcastPacketExcept(nullptr,
                               proto::pl::sc::ScoreboardDisplayObjective, b);
+    }
+    void sendTeamsCreate(const Team& t) {
+        WriteBuffer b; TeamsManager::writeCreate(b, t);
+        broadcastPacketExcept(nullptr, proto::pl::sc::Teams, b);
+    }
+    void sendTeamsRemove(const std::string& name) {
+        WriteBuffer b; TeamsManager::writeRemove(b, name);
+        broadcastPacketExcept(nullptr, proto::pl::sc::Teams, b);
+    }
+    void sendTeamsJoin(const std::string& team, const std::vector<std::string>& members) {
+        WriteBuffer b; TeamsManager::writeAddMembers(b, team, members);
+        broadcastPacketExcept(nullptr, proto::pl::sc::Teams, b);
+    }
+    void sendTeamsLeave(const std::string& team, const std::vector<std::string>& members) {
+        WriteBuffer b; TeamsManager::writeRemoveMembers(b, team, members);
+        broadcastPacketExcept(nullptr, proto::pl::sc::Teams, b);
     }
     RecipeManager& recipes() { return recipes_; }
     brigadier::CommandDispatcher& commands() { return commands_; }
