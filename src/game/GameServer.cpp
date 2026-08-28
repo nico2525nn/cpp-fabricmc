@@ -964,7 +964,7 @@ void GameServer::mobsTick() {
                         baby->kind = m->kind;
                         baby->slimeSize = m->slimeSize - 1;
                         const auto& bs = mobStats(baby->kind);
-                        baby->health = bs.maxHealth * 0.5f;
+                        baby->health = MobEntity::slimeHealthForSize(baby->slimeSize);
                         if (baby->health < 1.f) baby->health = 1.f;
                         baby->x = m->x + (rand()/(double)RAND_MAX - 0.5) * 0.5;
                         baby->y = m->y;
@@ -1003,7 +1003,7 @@ void GameServer::mobsTick() {
                                 baby->kind = m->kind;
                                 baby->slimeSize = m->slimeSize - 1;
                                 const auto& bs = mobStats(baby->kind);
-                                baby->health = bs.maxHealth * 0.5f;
+                                baby->health = MobEntity::slimeHealthForSize(baby->slimeSize);
                                 if (baby->health < 1.f) baby->health = 1.f;
                                 baby->x = m->x + (rand()/(double)RAND_MAX - 0.5) * 0.5;
                                 baby->y = m->y;
@@ -1028,18 +1028,26 @@ void GameServer::mobsTick() {
             brainTickGuard_ = nullptr;
             if (MobEntity::isBoss(m->kind) && bossAI_) bossAI_->tick(*m, *ai.ctx, tickNo_);
 
-            // ---- creeper fuse & explosion
+            // ---- creeper fuse & explosion (plan16: ignited fuse separate field, 30 ticks, metadata)
             if (m->kind == MobKind::Creeper && ai.ctx->nearestPlayer) {
                 const double cdx = ai.ctx->nearestPlayer->x - m->x;
                 const double cdy = ai.ctx->nearestPlayer->y - m->y;
                 const double cdz2 = ai.ctx->nearestPlayer->z - m->z;
                 const double cd2 = cdx*cdx + cdy*cdy + cdz2*cdz2;
                 if (cd2 < 9) {
-                    if (m->nextWanderAt == 0) {
-                        m->nextWanderAt = tickNo_ + 30;   // 1.5 s fuse
-                        broadcastSound("minecraft:block.grass.break",
-                                       m->x, m->y, m->z, 1.f, 1.4f);
-                    } else if (tickNo_ >= m->nextWanderAt) {
+                    if (!m->creeperIgnited) {
+                        m->creeperIgnited = true;
+                        m->creeperFuseStart = tickNo_;
+                        // SetEntityMetadata ignited flag (index 16, vanilla CreeperEntity isIgnited)
+                        WriteBuffer md;
+                        md.varint(m->entityId);
+                        md.u8(16); md.varint(0); md.varint(1);
+                        md.u8(8); md.varint(1); // fuse? simplified second field
+                        md.u8(255);
+                        broadcastPacketExcept(nullptr, pl::sc::SetEntityMetadata, md);
+                        broadcastSound("minecraft:entity.creeper.primed",
+                                       m->x, m->y, m->z, 1.f, 1.f, "hostile");
+                    } else if (tickNo_ - m->creeperFuseStart >= MobEntity::CREEPER_FUSE_TICKS) {
                         const double cxp = m->x, cyp = m->y, czp = m->z;
                         const std::int32_t eid = m->entityId;
                         WriteBuffer rm; rm.varint(1); rm.varint(eid);
@@ -1050,8 +1058,14 @@ void GameServer::mobsTick() {
                         explodeAt(cxp, cyp + 0.5, czp, m->creeperCharged ? 6.f : 3.f);
                         continue;
                     }
-                } else if (m->nextWanderAt != 0 && cd2 > 16) {
-                    m->nextWanderAt = 0;                   // defuse
+                } else if (m->creeperIgnited && cd2 > 16) {
+                    m->creeperIgnited = false;
+                    m->creeperFuseStart = -1;
+                    WriteBuffer md;
+                    md.varint(m->entityId);
+                    md.u8(16); md.varint(0); md.varint(0);
+                    md.u8(255);
+                    broadcastPacketExcept(nullptr, pl::sc::SetEntityMetadata, md);
                 }
             }
 
@@ -1079,7 +1093,7 @@ void GameServer::mobsTick() {
                             baby->kind = m->kind;
                             baby->slimeSize = m->slimeSize - 1;
                             const auto& bs = mobStats(baby->kind);
-                            baby->health = bs.maxHealth * 0.5f;
+                            baby->health = MobEntity::slimeHealthForSize(baby->slimeSize);
                             if (baby->health < 1.f) baby->health = 1.f;
                             baby->x = m->x + (rand()/(double)RAND_MAX - 0.5) * 0.5;
                             baby->y = m->y;
@@ -1094,12 +1108,26 @@ void GameServer::mobsTick() {
                 }
             }
             // ---- Plan14 §3/§4: Villager/Enderman tick (aging already handled above single increment)
-            // Villager restock & gossip decay (plan14 §4: 24000t restock, Gossip decay)
+            // Villager restock & gossip decay (plan16: 2/day restock, Gossip decay)
             if (m->kind==MobKind::Villager) {
+                // day rollover for 2/day limit (vanilla: 2 restocks per in-game day)
+                std::int64_t curDay = tickNo_ / 24000;
+                if (curDay != m->villagerLastRestockDay) {
+                    m->villagerRestocksToday = 0;
+                    m->villagerLastRestockDay = curDay;
+                }
                 if (tickNo_ >= m->restockUntil && m->restockUntil!=0) {
+                    if (m->villagerRestocksToday < 2) {
+                        m->villagerRestocksToday++;
+                        broadcastSound("minecraft:entity.villager.work_farm", m->x,m->y,m->z,1.f,1.f,"neutral");
+                        // if first restock today and trades still need restock, schedule second window in 6000 ticks
+                        // For now we clear; next trade will schedule if needed, or auto-schedule second if still under limit and pending
+                        if (m->villagerRestocksToday < 2) {
+                            // keep restock pending for second restock after short delay if needed
+                            // we leave restockUntil 0; next trade or tick will reschedule
+                        }
+                    }
                     m->restockUntil = 0;
-                    // restock sound
-                    broadcastSound("minecraft:entity.villager.work_farm", m->x,m->y,m->z,1.f,1.f,"neutral");
                 }
                 if (tickNo_%100==0) m->gossip.tickDecay();
             }
@@ -1166,6 +1194,16 @@ void GameServer::spawnMob(MobKind kind, double x, double y, double z) {
             // slimeSize from def? use max_health scaling if present
         }
     }
+    // plan16: Slime health scaling size² (vanilla: health = size², size=4 =>16, 2=>4,1=>1)
+    if (kind==MobKind::Slime || kind==MobKind::MagmaCube) {
+        mob->health = MobEntity::slimeHealthForSize(mob->slimeSize);
+    }
+    // plan16: Horse variant random (vanilla HorseEntity random health 15-30, variant 0..6)
+    if (kind==MobKind::Horse) {
+        mob->horseVariant = rand() % 7; // color/markings variant
+        mob->horseJumpStrength = 0.4f + (rand()/(float)RAND_MAX)*0.6f; // 0.4..1.0
+        mob->health = 15.0f + (rand() % 16); // 15..30 vanilla random
+    }
     // plan14 §4: VillagerData init (profession/level/type)
     if (kind==MobKind::Villager) {
         mob->villagerData.type = static_cast<VillagerData::Type>(rand()%7);
@@ -1173,6 +1211,9 @@ void GameServer::spawnMob(MobKind kind, double x, double y, double z) {
         mob->villagerData.level = 1;
         mob->villagerLevel = 1;
         mob->villagerXp = 0;
+        mob->villagerRestocksToday = 0;
+        mob->villagerLastRestockDay = -1;
+        mob->restockUntil = 0;
     }
     mob->x = x; mob->y = y; mob->z = z;
     mob->lastSeenMs = nowMs();
@@ -2208,7 +2249,7 @@ bool GameServer::selectTrade(Player& p, std::int32_t index) {
     spawnXpOrbs(p.x, p.y + 1, p.z, 2, &p);
     broadcastSound("minecraft:entity.villager.yes", p.x, p.y, p.z,
                    .8f, 1.f, "neutral");
-    // Plan14 §4: Villager XP, Gossip (map<UUID,int>), level progression 1..5, restock 24000t
+    // Plan16: Villager XP, Gossip, level 1..5, restock 2/day (vanilla: 2 restocks per day at work site)
     {
         std::lock_guard lk(entsMtx_);
         for (auto& m : mobs_) if (m->kind==MobKind::Villager) {
@@ -2223,8 +2264,21 @@ bool GameServer::selectTrade(Player& p, std::int32_t index) {
                 } else {
                     m->syncVillagerLevel();
                 }
-                // Restock: 24000t (one minecraft day), work POI check simplified to timer only
-                if (m->restockUntil < tickNo_) m->restockUntil = tickNo_ + 24000;
+                // Restock: 2/day (vanilla: work POI, 6000-12000 ticks, max 2 per day)
+                std::int64_t curDay = tickNo_ / 24000;
+                if (curDay != m->villagerLastRestockDay) {
+                    m->villagerRestocksToday = 0;
+                    m->villagerLastRestockDay = curDay;
+                }
+                if (m->villagerRestocksToday >= 2) {
+                    // already restocked twice today, schedule next day morning
+                    m->restockUntil = (curDay+1)*24000 + 2000;
+                } else {
+                    if (m->restockUntil < tickNo_) {
+                        // schedule next restock in 6000 ticks (quarter day) so 2/day reachable
+                        m->restockUntil = tickNo_ + 6000 + (rand()%2000);
+                    }
+                }
                 break;
             }
         }
@@ -3604,12 +3658,12 @@ void GameServer::brewingTick() {
 
 void GameServer::spawnXpOrbs(double x, double y, double z, int totalPoints,
                              Player* directTo) {
-    // split into vanilla-ish orb sizes
-    static const int kSizes[] = {1, 3, 7, 17, 37, 73, 149, 307, 617, 1237};
+    // split into vanilla-ish orb sizes (plan16: include 2477 for dragon 12000)
+    static const int kSizes[] = {1, 3, 7, 17, 37, 73, 149, 307, 617, 1237, 2477};
     std::vector<int> orbs;
     while (totalPoints > 0) {
         int pick = 0;
-        for (int i = 0; i < 10; ++i)
+        for (int i = 0; i < 11; ++i)
             if (kSizes[i] <= totalPoints) pick = i;
         if (pick == 0 && totalPoints < 1) break;
         const int v = kSizes[pick];
@@ -3758,7 +3812,10 @@ void GameServer::projectilesTick() {
                 continue;
             }
             if (!pr->stuck) {
-                const double g = pr->kind == ProjectileKind::Arrow ? 0.05 : 0.03;
+                // plan16: Fireball gravity 0 (vanilla FireballEntity, WitherSkull, DragonFireball have no gravity)
+                double g = 0.03;
+                if (pr->kind == ProjectileKind::Arrow) g = 0.05;
+                else if (pr->kind == ProjectileKind::Fireball || pr->kind == ProjectileKind::WitherSkull || pr->kind == ProjectileKind::DragonFireball) g = 0.0;
                 pr->vy -= g;
                 pr->x += pr->vx; pr->y += pr->vy; pr->z += pr->vz;
                 world_.generateChunkIfMissing(
@@ -6932,7 +6989,7 @@ void Session::onUseEntity(ReadBuffer& in) {
                 baby->kind = victim->kind;
                 baby->slimeSize = victim->slimeSize - 1;
                 const auto& bs = mobStats(baby->kind);
-                baby->health = bs.maxHealth * 0.5f;
+                baby->health = MobEntity::slimeHealthForSize(baby->slimeSize);
                 if (baby->health < 1.f) baby->health = 1.f;
                 baby->x = victim->x + (rand()/(double)RAND_MAX - 0.5) * 0.5;
                 baby->y = victim->y;
