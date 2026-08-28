@@ -7,7 +7,8 @@ namespace cppfm {
 
 bool WorldDataManager::saveLevelDataWithProviders(std::int64_t worldTicks, std::int64_t dayTime, World& world,
                                     const std::string& difficulty,
-                                    double borderDiameter, double borderCX, double borderCZ) {
+                                    double borderDiameter, double borderCX, double borderCZ,
+                                    double borderLerpTarget, std::int64_t borderLerpMs) {
     try {
         nbt::Value root = nbt::Value::makeCompound();
         nbt::Value data = nbt::Value::makeCompound();
@@ -43,8 +44,10 @@ bool WorldDataManager::saveLevelDataWithProviders(std::int64_t worldTicks, std::
             wb.set("CenterX", nbt::Value::makeDouble(borderCX));
             wb.set("CenterZ", nbt::Value::makeDouble(borderCZ));
             wb.set("Size", nbt::Value::makeDouble(borderDiameter));
-            wb.set("SizeLerpTarget", nbt::Value::makeDouble(borderDiameter));
-            wb.set("SizeLerpTime", nbt::Value::makeLong(0));
+            double lerpTgt = (borderLerpTarget < 0 ? borderDiameter : borderLerpTarget);
+            std::int64_t lerpMs = (borderLerpMs < 0 ? 0 : borderLerpMs);
+            wb.set("SizeLerpTarget", nbt::Value::makeDouble(lerpTgt));
+            wb.set("SizeLerpTime", nbt::Value::makeLong(lerpMs));
             wb.set("SafeZone", nbt::Value::makeDouble(5.0));
             wb.set("DamagePerBlock", nbt::Value::makeDouble(0.2));
             wb.set("DamageBuffer", nbt::Value::makeDouble(5.0));
@@ -98,7 +101,8 @@ bool WorldDataManager::saveLevelDataWithProviders(std::int64_t worldTicks, std::
 }
 
 bool WorldDataManager::loadLevelData(World& world, std::string& difficultyOut,
-                       double& borderDiameterOut, double& borderCXOut, double& borderCZOut) {
+                       double& borderDiameterOut, double& borderCXOut, double& borderCZOut,
+                       double* borderLerpTargetOut, std::int64_t* borderLerpMsOut) {
     try {
         nbt::Value root;
         if (!loadRaw(root)) return false;
@@ -125,6 +129,23 @@ bool WorldDataManager::loadLevelData(World& world, std::string& difficultyOut,
                 else if (sz->tag==nbt::Float) borderDiameterOut = sz->f;
                 else if (sz->tag==nbt::Int) borderDiameterOut = sz->i;
                 else if (sz->tag==nbt::Long) borderDiameterOut = (double)sz->l;
+            }
+            if (borderLerpTargetOut || borderLerpMsOut) {
+                double tgt = borderDiameterOut;
+                std::int64_t ms = 0;
+                if (auto* lt = wb->get("SizeLerpTarget")) {
+                    if (lt->tag==nbt::Double) tgt = lt->d;
+                    else if (lt->tag==nbt::Float) tgt = lt->f;
+                    else if (lt->tag==nbt::Int) tgt = lt->i;
+                    else if (lt->tag==nbt::Long) tgt = (double)lt->l;
+                }
+                if (auto* lm = wb->get("SizeLerpTime")) {
+                    if (lm->tag==nbt::Long) ms = lm->l;
+                    else if (lm->tag==nbt::Int) ms = lm->i;
+                    else if (lm->tag==nbt::Double) ms = (std::int64_t)lm->d;
+                }
+                if (borderLerpTargetOut) *borderLerpTargetOut = tgt;
+                if (borderLerpMsOut) *borderLerpMsOut = ms;
             }
         }
         if (const auto* ds = d->get("Difficulty")) {

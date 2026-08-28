@@ -25,6 +25,7 @@ void MultiNoiseBiomeSource::buildDefaultTable() {
     add("minecraft:forest",       0.1,  0.5,  0.12,  0.10, 0.00, 0.0);
     add("minecraft:birch_forest", 0.0,  0.6,  0.12,  0.10, 0.00, 0.4);
     add("minecraft:dark_forest",  0.2,  0.7,  0.12,  0.10, 0.00,-0.4);
+    add("minecraft:pale_garden",  0.15, 0.65, 0.12,  0.10, 0.00,-0.55);
     add("minecraft:swamp",        0.3,  0.85, 0.02,  0.40,-0.10,-0.3);
     add("minecraft:jungle",       0.9,  0.9,  0.10,  0.00, 0.00, 0.2);
     add("minecraft:savanna",      0.8, -0.2,  0.14,  0.20, 0.00, 0.0);

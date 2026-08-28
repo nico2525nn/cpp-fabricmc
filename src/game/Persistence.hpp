@@ -48,11 +48,30 @@ public:
     void setWorldBorder(double diameter, double cx=0, double cz=0) {
         worldBorderDiameter_ = diameter; worldBorderCenterX_=cx; worldBorderCenterZ_=cz;
         worldBorderLerpFrom_ = diameter; worldBorderLerpTo_ = diameter; worldBorderLerpMs_ = 0;
+        worldBorderLerpRemainingTicks_ = 0; worldBorderLerpTotalTicks_ = 0;
     }
     void setWorldBorderLerp(double from, double to, std::int64_t remainingTicks) {
         worldBorderLerpFrom_ = from; worldBorderLerpTo_ = to;
         worldBorderLerpMs_ = remainingTicks * 50;
-        worldBorderDiameter_ = to;
+        worldBorderLerpRemainingTicks_ = remainingTicks;
+        worldBorderLerpTotalTicks_ = remainingTicks;
+        worldBorderDiameter_ = from;
+        if (remainingTicks <= 0) worldBorderDiameter_ = to;
+    }
+    // interpolate per tick — Yarn WorldBorder.tick() / interpolateSize
+    bool tickWorldBorder() {
+        if (worldBorderLerpRemainingTicks_ <= 0) return false;
+        --worldBorderLerpRemainingTicks_;
+        worldBorderLerpMs_ = worldBorderLerpRemainingTicks_ * 50;
+        if (worldBorderLerpRemainingTicks_ <= 0) {
+            worldBorderDiameter_ = worldBorderLerpTo_;
+            return true;
+        }
+        double prog = 1.0 - double(worldBorderLerpRemainingTicks_) / double(worldBorderLerpTotalTicks_ > 0 ? worldBorderLerpTotalTicks_ : 1);
+        if (prog < 0) prog = 0;
+        if (prog > 1) prog = 1;
+        worldBorderDiameter_ = worldBorderLerpFrom_ + (worldBorderLerpTo_ - worldBorderLerpFrom_) * prog;
+        return true;
     }
     std::string difficulty() const { return difficulty_; }
     double worldBorderDiameter() const { return worldBorderDiameter_; }
@@ -61,6 +80,7 @@ public:
     double worldBorderLerpFrom() const { return worldBorderLerpFrom_; }
     double worldBorderLerpTo() const { return worldBorderLerpTo_; }
     std::int64_t worldBorderLerpMs() const { return worldBorderLerpMs_; }
+    std::int64_t worldBorderLerpRemainingTicks() const { return worldBorderLerpRemainingTicks_; }
 
     // ---- level.dat ----
     // plan5 §1: full level.dat persistence — spawn, time, gamerules, weather.
@@ -71,9 +91,12 @@ public:
         worldDataManager_.setDirectory(dir_);
         worldDataManager_.setLevelStateProvider(provideLevelState_, consumeLevelState_);
         // Keep legacy inline fallback if manager fails, but primary is manager
+        double lerpTgt = worldBorderLerpRemainingTicks_ > 0 ? worldBorderLerpTo_ : worldBorderDiameter_;
+        std::int64_t lerpMs = worldBorderLerpMs_;
         bool ok = worldDataManager_.saveLevelDataWithProviders(worldTicks, dayTime, world_,
                                                                difficulty_, worldBorderDiameter_,
-                                                               worldBorderCenterX_, worldBorderCenterZ_);
+                                                               worldBorderCenterX_, worldBorderCenterZ_,
+                                                               lerpTgt, lerpMs);
         if (!ok) {
             // fallback: old direct write (should not happen)
             namespace nv = nbt;
@@ -112,8 +135,8 @@ public:
                     wb.set("CenterX", nv::Value::makeDouble(worldBorderCenterX_));
                     wb.set("CenterZ", nv::Value::makeDouble(worldBorderCenterZ_));
                     wb.set("Size", nv::Value::makeDouble(worldBorderDiameter_));
-                    wb.set("SizeLerpTarget", nv::Value::makeDouble(worldBorderDiameter_));
-                    wb.set("SizeLerpTime", nv::Value::makeLong(0));
+                    wb.set("SizeLerpTarget", nv::Value::makeDouble(worldBorderLerpRemainingTicks_ > 0 ? worldBorderLerpTo_ : worldBorderDiameter_));
+                    wb.set("SizeLerpTime", nv::Value::makeLong(worldBorderLerpMs_));
                     wb.set("SafeZone", nv::Value::makeDouble(5.0));
                     wb.set("DamagePerBlock", nv::Value::makeDouble(0.2));
                     wb.set("DamageBuffer", nv::Value::makeDouble(5.0));
@@ -154,9 +177,19 @@ public:
     void loadLevelData() {
         worldDataManager_.setDirectory(dir_);
         worldDataManager_.setLevelStateProvider(provideLevelState_, consumeLevelState_);
-        // try via manager (handles DataFixerUpper version check + atomic read)
-        bool ok = worldDataManager_.loadLevelData(world_, difficulty_, worldBorderDiameter_, worldBorderCenterX_, worldBorderCenterZ_);
-        if (ok) return;
+        // try via manager (handles DataFixerUpper version check + atomic read) — include lerp
+        double lerpTgt = worldBorderDiameter_;
+        std::int64_t lerpMs = 0;
+        bool ok = worldDataManager_.loadLevelData(world_, difficulty_, worldBorderDiameter_, worldBorderCenterX_, worldBorderCenterZ_, &lerpTgt, &lerpMs);
+        if (ok) {
+            worldBorderLerpFrom_ = worldBorderDiameter_;
+            worldBorderLerpTo_ = lerpTgt;
+            worldBorderLerpMs_ = lerpMs;
+            worldBorderLerpRemainingTicks_ = (lerpMs + 49) / 50;
+            worldBorderLerpTotalTicks_ = worldBorderLerpRemainingTicks_;
+            if (lerpMs == 0) { worldBorderLerpFrom_ = worldBorderDiameter_; worldBorderLerpTo_ = worldBorderDiameter_; }
+            return;
+        }
         // fallback legacy read
         try {
             std::ifstream f(dir_ + "/level.dat", std::ios::binary);
@@ -189,6 +222,26 @@ public:
                     else if (sz->tag==nbt::Int) worldBorderDiameter_ = sz->i;
                     else if (sz->tag==nbt::Long) worldBorderDiameter_ = (double)sz->l;
                 }
+                // lerp state — vanilla WorldBorder SizeLerpTarget/Time
+                double lerpTarget = worldBorderDiameter_;
+                std::int64_t lerpMs = 0;
+                if (auto* lt = wb->get("SizeLerpTarget")) {
+                    if (lt->tag==nbt::Double) lerpTarget = lt->d;
+                    else if (lt->tag==nbt::Float) lerpTarget = lt->f;
+                    else if (lt->tag==nbt::Int) lerpTarget = lt->i;
+                    else if (lt->tag==nbt::Long) lerpTarget = (double)lt->l;
+                }
+                if (auto* lm = wb->get("SizeLerpTime")) {
+                    if (lm->tag==nbt::Long) lerpMs = lm->l;
+                    else if (lm->tag==nbt::Int) lerpMs = lm->i;
+                    else if (lm->tag==nbt::Double) lerpMs = (std::int64_t)lm->d;
+                }
+                worldBorderLerpFrom_ = worldBorderDiameter_;
+                worldBorderLerpTo_ = lerpTarget;
+                worldBorderLerpMs_ = lerpMs;
+                worldBorderLerpRemainingTicks_ = (lerpMs + 49) / 50;
+                worldBorderLerpTotalTicks_ = worldBorderLerpRemainingTicks_;
+                if (lerpMs == 0) { worldBorderLerpFrom_ = worldBorderDiameter_; worldBorderLerpTo_ = worldBorderDiameter_; }
             }
             if (const auto* ds = d->get("Difficulty")) {
                 if (ds->tag==nbt::String) difficulty_ = ds->str;
@@ -342,11 +395,13 @@ private:
     }
 
     std::string difficulty_ = "normal";
-    double worldBorderDiameter_ = 29999984;
+    double worldBorderDiameter_ = 59999968;
     double worldBorderCenterX_ = 0, worldBorderCenterZ_ = 0;
-    double worldBorderLerpFrom_ = 29999984;
-    double worldBorderLerpTo_ = 29999984;
+    double worldBorderLerpFrom_ = 59999968;
+    double worldBorderLerpTo_ = 59999968;
     std::int64_t worldBorderLerpMs_ = 0;
+    std::int64_t worldBorderLerpRemainingTicks_ = 0;
+    std::int64_t worldBorderLerpTotalTicks_ = 0;
     World& world_;
     std::string dir_;
     WorldDataManager worldDataManager_;
