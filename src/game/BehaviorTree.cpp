@@ -33,7 +33,7 @@ BTStatus IsPlayerLookingCondition::tick(MobEntity& m, AiContext& ctx, std::int64
     double ly = -std::sin(pitchRad);
     double lz =  std::cos(yawRad) * std::cos(pitchRad);
     double dot = dx*lx + dy*ly + dz*lz;
-    return dot > 0.985 ? BTStatus::Success : BTStatus::Failure;
+    return dot > 0.99 ? BTStatus::Success : BTStatus::Failure;
 }
 
 BTStatus MoveToPlayerAction::tick(MobEntity& m, AiContext& ctx, std::int64_t) {

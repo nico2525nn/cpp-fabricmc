@@ -89,6 +89,20 @@ void BossBarManager::sendRemove(GameServer& srv, const BossBar& bar) {
     b.varint(1); // REMOVE
     srv.broadcastPacketExcept(nullptr, proto::pl::sc::BossBar, b);
 }
+void BossBarManager::sendTitle(GameServer& srv, const BossBar& bar) {
+    WriteBuffer b;
+    b.uuid(bar.uuid.data());
+    b.varint(3); // UPDATE_TITLE
+    nbt::writeTextComponent(b, bar.title);
+    srv.broadcastPacketExcept(nullptr, proto::pl::sc::BossBar, b);
+}
+void BossBarManager::updateTitle(GameServer& srv, std::int32_t eid, const std::string& title) {
+    auto it = bars_.find(eid);
+    if (it==bars_.end()) return;
+    if (it->second.title == title) return;
+    it->second.title = title;
+    sendTitle(srv, it->second);
+}
 
 void BossBarManager::onBossSpawn(GameServer& srv, const MobEntity& mob) {
     if (!MobEntity::isBoss(mob.kind)) return;
