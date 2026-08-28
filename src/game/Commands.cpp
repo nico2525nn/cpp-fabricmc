@@ -869,6 +869,274 @@ void GameServer::initCommands() {
         diff->then(lvl);
         d.root->then(diff);
     }
+    // /team add|remove|join|leave|list  (plan10 §6, network §79)
+    {
+        auto team = CommandNode::literal("team");
+        // /team add <team> [displayName]
+        auto tAdd = CommandNode::literal("add");
+        auto tAddName = CommandNode::argument("team", args::stringWord());
+        tAddName->executable = true;
+        tAddName->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const std::string name = c.arg("team").asStr();
+            if (!teams.create(name)) throw std::runtime_error("Team '" + name + "' already exists");
+            Team* t = teams.find(name);
+            if (t) sendTeamsCreate(*t);
+            sendFeedback(src, "Created team " + name);
+            return 1;
+        };
+        auto tDisplay = CommandNode::argument("displayName", args::stringGreedy());
+        tDisplay->executable = true;
+        tDisplay->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const std::string name = c.arg("team").asStr();
+            const std::string disp = c.arg("displayName").asStr();
+            if (!teams.create(name)) throw std::runtime_error("Team '" + name + "' already exists");
+            Team* t = teams.find(name);
+            if (t) { t->displayName = disp; sendTeamsCreate(*t); }
+            sendFeedback(src, "Created team " + name + " display=" + disp);
+            return 1;
+        };
+        tAddName->then(tDisplay);
+        tAdd->then(tAddName);
+        // /team remove <team>
+        auto tRemove = CommandNode::literal("remove");
+        auto tRemName = CommandNode::argument("team", args::stringWord());
+        tRemName->executable = true;
+        tRemName->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const std::string name = c.arg("team").asStr();
+            if (!teams.remove(name)) throw std::runtime_error("Team '" + name + "' does not exist");
+            sendTeamsRemove(name);
+            sendFeedback(src, "Removed team " + name);
+            return 1;
+        };
+        tRemove->then(tRemName);
+        // /team join <team> <members>
+        auto tJoin = CommandNode::literal("join");
+        auto tJoinTeam = CommandNode::argument("team", args::stringWord());
+        auto tJoinMembers = CommandNode::argument("members", args::entity(true, false));
+        tJoinMembers->executable = true;
+        tJoinMembers->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const std::string tname = c.arg("team").asStr();
+            auto* t = teams.find(tname);
+            if (!t) throw std::runtime_error("Team '" + tname + "' does not exist");
+            const auto sel = c.arg("members").asSelector();
+            std::vector<std::string> added;
+            for (auto& n : sel.playerNames) if (teams.addMember(tname, n)) added.push_back(n);
+            if (!added.empty()) sendTeamsJoin(tname, added);
+            sendFeedback(src, "Added " + std::to_string(added.size()) + " members to " + tname);
+            return (int)added.size();
+        };
+        tJoinTeam->then(tJoinMembers);
+        tJoin->then(tJoinTeam);
+        // /team leave <team> <members>
+        auto tLeave = CommandNode::literal("leave");
+        auto tLeaveTeam = CommandNode::argument("team", args::stringWord());
+        auto tLeaveMembers = CommandNode::argument("members", args::entity(true, false));
+        tLeaveMembers->executable = true;
+        tLeaveMembers->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const std::string tname = c.arg("team").asStr();
+            auto* t = teams.find(tname);
+            if (!t) throw std::runtime_error("Team '" + tname + "' does not exist");
+            const auto sel = c.arg("members").asSelector();
+            std::vector<std::string> removed;
+            for (auto& n : sel.playerNames) if (teams.removeMember(tname, n)) removed.push_back(n);
+            if (!removed.empty()) sendTeamsLeave(tname, removed);
+            sendFeedback(src, "Removed " + std::to_string(removed.size()) + " members from " + tname);
+            return (int)removed.size();
+        };
+        tLeaveTeam->then(tLeaveMembers);
+        tLeave->then(tLeaveTeam);
+        // /team list
+        auto tList = CommandNode::literal("list");
+        tList->executable = true;
+        tList->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            std::string out;
+            for (auto& kv : teams.teams) out += kv.first + " ";
+            sendFeedback(src, out.empty() ? "No teams" : out);
+            return (int)teams.teams.size();
+        };
+        team->then(tAdd); team->then(tRemove); team->then(tJoin); team->then(tLeave); team->then(tList);
+        d.root->then(team);
+    }
+    // /bossbar add <id> <name> | remove <id> | set <id> value <0..1> | get <id>
+    {
+        auto bb = CommandNode::literal("bossbar");
+        // add
+        auto add = CommandNode::literal("add");
+        auto idArg = CommandNode::argument("id", args::stringWord());
+        auto nameArg = CommandNode::argument("name", args::stringGreedy());
+        nameArg->executable = true;
+        nameArg->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const std::string id = c.arg("id").asStr();
+            const std::string name = c.arg("name").asStr();
+            if (!bossAI_) throw std::runtime_error("BossBar unavailable");
+            int key = (int)std::hash<std::string>{}(id);
+            BossBar bar;
+            bar.entityId = key;
+            // deterministic uuid from id hash (use key)
+            {
+                uint32_t h = (uint32_t)key * 0x9e3779b1u ^ 0x85ebca6bu;
+                for (int i=0;i<16;i++) bar.uuid[i] = uint8_t((h >> ((i%4)*8)) & 0xFF);
+                bar.uuid[6] = (bar.uuid[6] & 0x0F) | 0x40;
+                bar.uuid[8] = (bar.uuid[8] & 0x3F) | 0x80;
+            }
+            bar.title = name.empty() ? id : name;
+            bar.health = 1.0f;
+            bar.color = 5;
+            bar.division = 0;
+            bar.flags = 0;
+            bossAI_->bars().addCommandBar(key, bar);
+            // send ADD packet
+            {
+                WriteBuffer b;
+                b.uuid(bar.uuid.data());
+                b.varint(0);
+                nbt::writeTextComponent(b, bar.title);
+                b.f32(bar.health);
+                b.varint(bar.color);
+                b.varint(bar.division);
+                b.u8(bar.flags);
+                broadcastPacketExcept(nullptr, proto::pl::sc::BossBar, b);
+            }
+            sendFeedback(src, "Created bossbar " + id);
+            return 1;
+        };
+        idArg->then(nameArg);
+        add->then(idArg);
+        // remove
+        auto rem = CommandNode::literal("remove");
+        auto remId = CommandNode::argument("id", args::stringWord());
+        remId->executable = true;
+        remId->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const std::string id = c.arg("id").asStr();
+            if (!bossAI_) throw std::runtime_error("BossBar unavailable");
+            int key = (int)std::hash<std::string>{}(id);
+            auto* mgr = &bossAI_->bars();
+            if (!mgr->hasBar(key)) throw std::runtime_error("Bossbar '" + id + "' not found");
+            // send REMOVE
+            {
+                // need uuid: reconstruct or fetch from bars_
+                BossBar tmp; tmp.entityId = key;
+                uint32_t h = (uint32_t)key * 0x9e3779b1u ^ 0x85ebca6bu;
+                for (int i=0;i<16;i++) tmp.uuid[i] = uint8_t((h >> ((i%4)*8)) & 0xFF);
+                tmp.uuid[6] = (tmp.uuid[6] & 0x0F) | 0x40;
+                tmp.uuid[8] = (tmp.uuid[8] & 0x3F) | 0x80;
+                WriteBuffer b;
+                b.uuid(tmp.uuid.data());
+                b.varint(1);
+                broadcastPacketExcept(nullptr, proto::pl::sc::BossBar, b);
+            }
+            mgr->removeCommandBar(key);
+            sendFeedback(src, "Removed bossbar " + id);
+            return 1;
+        };
+        rem->then(remId);
+        // set value
+        auto set = CommandNode::literal("set");
+        auto setId = CommandNode::argument("id", args::stringWord());
+        auto setValueKw = CommandNode::literal("value");
+        auto setVal = CommandNode::argument("valueArg", args::integer(0, 100));
+        setVal->executable = true;
+        setVal->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const std::string id = c.arg("id").asStr();
+            int v = c.arg("valueArg").asInt();
+            if (!bossAI_) throw std::runtime_error("BossBar unavailable");
+            int key = (int)std::hash<std::string>{}(id);
+            float hf = std::clamp(v / 100.f, 0.f, 1.f);
+            bossAI_->bars().updateHealthForCommandBar(key, hf);
+            // send health update
+            {
+                uint32_t h = (uint32_t)key * 0x9e3779b1u ^ 0x85ebca6bu;
+                std::array<uint8_t,16> uuid{};
+                for (int i=0;i<16;i++) uuid[i] = uint8_t((h >> ((i%4)*8)) & 0xFF);
+                uuid[6] = (uuid[6] & 0x0F) | 0x40;
+                uuid[8] = (uuid[8] & 0x3F) | 0x80;
+                WriteBuffer b;
+                b.uuid(uuid.data());
+                b.varint(2);
+                b.f32(hf);
+                broadcastPacketExcept(nullptr, proto::pl::sc::BossBar, b);
+            }
+            sendFeedback(src, "Set bossbar " + id + " to " + std::to_string(v));
+            return 1;
+        };
+        setValueKw->then(setVal);
+        setId->then(setValueKw);
+        set->then(setId);
+        // get / list
+        auto get = CommandNode::literal("list");
+        get->executable = true;
+        get->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            if (!bossAI_) throw std::runtime_error("BossBar unavailable");
+            sendFeedback(src, "BossBars: " + std::to_string(bossAI_->bars().size()));
+            return (int)bossAI_->bars().size();
+        };
+        bb->then(add); bb->then(rem); bb->then(set); bb->then(get);
+        d.root->then(bb);
+    }
+    // /tag <targets> add|remove|list <tag>
+    {
+        auto tag = CommandNode::literal("tag");
+        auto targets = CommandNode::argument("targets", args::entity(false, false));
+        // tag add
+        auto add = CommandNode::literal("add");
+        auto tagName = CommandNode::argument("tag", args::stringWord());
+        tagName->executable = true;
+        tagName->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const auto sel = c.arg("targets").asSelector();
+            const std::string t = c.arg("tag").asStr();
+            int added = 0;
+            // Player tags are stored as scoreboard tags? For now store in Player:: cookies? Use simple set in Player (not persistent)
+            // We'll use a static map for entity tags
+            for (auto& n : sel.playerNames) {
+                if (Player* p = findPlayer(*this, n)) {
+                    // Use player's tags via a hidden set (reuse cookies as tag marker)
+                    if (p->cookies.count("tag:" + t) == 0) { p->cookies["tag:" + t] = {}; added++; }
+                }
+            }
+            sendFeedback(src, "Added tag " + t + " to " + std::to_string(added));
+            return added;
+        };
+        add->then(tagName);
+        auto rem = CommandNode::literal("remove");
+        auto remTag = CommandNode::argument("tag", args::stringWord());
+        remTag->executable = true;
+        remTag->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const auto sel = c.arg("targets").asSelector();
+            const std::string t = c.arg("tag").asStr();
+            int removed = 0;
+            for (auto& n : sel.playerNames) if (Player* p = findPlayer(*this, n)) if (p->cookies.erase("tag:" + t)) removed++;
+            sendFeedback(src, "Removed tag " + t + " from " + std::to_string(removed));
+            return removed;
+        };
+        rem->then(remTag);
+        auto list = CommandNode::literal("list");
+        list->executable = true;
+        list->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const auto sel = c.arg("targets").asSelector();
+            std::string out;
+            for (auto& n : sel.playerNames) if (Player* p = findPlayer(*this, n)) {
+                for (auto& kv : p->cookies) if (kv.first.rfind("tag:",0)==0) out += kv.first.substr(4) + " ";
+            }
+            sendFeedback(src, out.empty() ? "no tags" : out);
+            return 1;
+        };
+        targets->then(add); targets->then(rem); targets->then(list);
+        tag->then(targets);
+        d.root->then(tag);
+    }
 }
 
 } // namespace cppfm

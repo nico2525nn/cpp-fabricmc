@@ -2610,6 +2610,16 @@ void Session::onEnterPlay() {
     srv_.broadcastSystemText("\u00a7e" + self_->name + " joined the game", nullptr);
     sendSystemText("\u00a77Welcome to \u00a7bCppFabricMC\u00a77! Build with the hotbar, chat freely.");
     if (srv_.bossAI()) srv_.bossAI()->onPlayerJoin(*self_);
+    // Sync existing Teams to joining player (plan12 network §79)
+    for (auto& kv : srv_.teams.teams) {
+        WriteBuffer b; TeamsManager::writeCreate(b, kv.second);
+        try { conn_->sendPacket(proto::pl::sc::Teams, b); } catch (...) {}
+    }
+    // Sync Scoreboard objectives to joining player
+    for (auto& o : srv_.scoreboard.objectives) {
+        WriteBuffer b; srv_.scoreboard.writeObjectivePacket(b, o, 0);
+        try { conn_->sendPacket(proto::pl::sc::ScoreboardObjective, b); } catch (...) {}
+    }
 }
 
 static WriteBuffer makeWorldState(const ServerConfig& c) {
@@ -4964,12 +4974,39 @@ void Session::broadcastMovement() {
 }
 
 void Session::onChatMessage(ReadBuffer& in) {
-    const std::string msg = in.string(256);
-    (void)in.i64();                                  // timestamp
-    (void)in.i64();                                  // salt
-    if (in.boolean()) in.bytes(256);                 // signature
-    (void)in.varint();                               // offset
-    in.bytes(3);                                     // acknowledged
+    const std::string msg = in.string(8192);
+    int64_t timestamp = 0, salt = 0;
+    try { timestamp = in.i64(); } catch (...) {}
+    try { salt = in.i64(); } catch (...) {}
+    std::vector<uint8_t> signature;
+    try {
+        bool hasSig = in.boolean();
+        if (hasSig) {
+            int32_t slen = in.varint();
+            if (slen < 0 || slen > 8192) slen = 0;
+            if (slen > 0) signature = in.bytes((size_t)slen);
+        }
+    } catch (...) {}
+    try { (void)in.varint(); } catch (...) {} // offset
+    // Acknowledged: vanilla 1.21.4 sends LastSeenMessagesUpdate with 0-3 entries (bitset varint + entries)
+    // TestClient sends 3 raw bytes (u8*3). Support both: try to read remaining as varint or raw.
+    try {
+        // Peek remaining: if >=3 and next bytes look like varint count, try varint path
+        // For TestClient compatibility, consume up to 3 bytes if remaining is exactly 3
+        if (in.remaining() == 3) {
+            in.bytes(3);
+        } else if (in.remaining() > 0) {
+            // Try to skip LastSeenMessagesUpdate: bitset size varint + entries
+            // We don't need precise values for non-secure chat; just drain.
+            in.skipRest();
+        }
+    } catch (...) {}
+
+    // Replay/verify: track salt for simple duplicate detection
+    if (salt != 0) {
+        self_->lastSeenSignatures.push_back((uint8_t)(salt & 0xFF));
+        if (self_->lastSeenSignatures.size() > 20) self_->lastSeenSignatures.erase(self_->lastSeenSignatures.begin());
+    }
 
     // events: PlayerChat (cancellable)
     api::PlayerChatEvent ev;
@@ -4979,9 +5016,23 @@ void Session::onChatMessage(ReadBuffer& in) {
 
     if (!ev.message.empty() && ev.message[0] == '/')
         return dispatchCommand(ev.message.substr(1));
-    const std::string line = "<" + self_->name + "> " + ev.message;
-    srv_.broadcastSystemText(line, nullptr);
-    sendSystemText(line);
+
+    bool usePlayerChat = false;
+    bool verified = true;
+    if (ChatMessageProcessor::shouldUsePlayerChat(*self_)) {
+        verified = ChatMessageProcessor::verify(*self_, ev.message, timestamp, salt, signature);
+        usePlayerChat = verified;
+    }
+    if (usePlayerChat) {
+        srv_.broadcastPlayerChat(*self_, ev.message, timestamp);
+    } else {
+        const std::string line = "<" + self_->name + "> " + ev.message;
+        srv_.broadcastSystemText(line, nullptr);
+        // Echo to sender via SystemChat (already broadcast includes sender if inPlay, but ensure sender gets it)
+        // broadcastSystemText with except=null sends to all, so no extra needed.
+        // For legacy clients that filtered self, also send direct
+        // (no-op if already received)
+    }
 }
 
 void Session::onChatCommand(ReadBuffer& in) {
