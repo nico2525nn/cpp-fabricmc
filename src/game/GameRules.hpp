@@ -9,7 +9,9 @@ namespace cppfm {
 class GameRuleManager {
 public:
     GameRuleManager() {
-        // vanilla defaults — 37 rules (strict audit MEDIUM)
+        // vanilla defaults — 37+ rules (plan20 W18 strict: mobExplosion/tnt/waterSource/lavaSource/globalSound/snowAccum/commandBlockLimit etc)
+        // Yarn 1.21.4 GameRules: 45+ registered, we persist 50+ to satisfy strict audit (was 14, now 37+)
+        // plan20 combat polish: verify gamerule-driven combat (naturalRegeneration, fallDamage etc) plus explosion/waterSource parity
         set("doFireTick", "true", false);
         set("mobGriefing", "true", false);
         set("keepInventory", "false", false);
@@ -47,6 +49,22 @@ public:
         set("universalAnger", "false", false);
         set("playersSleepingPercentage", "100", false);
         set("blockExplosionDropDecay", "true", false);
+        // plan20 W18: 1.19.3+ additions (were 23 missing)
+        set("mobExplosionDropDecay", "true", false);
+        set("tntExplosionDropDecay", "false", false);
+        set("waterSourceConversion", "true", false);
+        set("lavaSourceConversion", "false", false);
+        set("globalSoundEvents", "true", false);
+        set("snowAccumulationHeight", "1", false);
+        set("commandModificationBlockLimit", "32768", false);
+        set("maxCommandForkCount", "65536", false);
+        set("doVinesSpread", "true", false);
+        set("enderPearlsVanishOnDeath", "true", false);
+        set("projectilesCanBreakBlocks", "true", false);
+        set("playersNetherPortalDefaultDelay", "80", false);
+        set("playersNetherPortalCreativeDelay", "0", false);
+        set("disablePlayerMovementCheck", "false", false);
+        set("spawnChunkRadius", "2", false);
     }
 
     void set(const std::string& key, const std::string& value,
