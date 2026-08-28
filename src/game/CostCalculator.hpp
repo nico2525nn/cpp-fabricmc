@@ -86,23 +86,21 @@ public:
         }
         int enchantCost = 0;
         if (!right.empty()) {
-            // if right is enchanted book or same item type, sum levels with weight
-            // Simplified: sum of all enchant levels on right (weight 1 for common, 2 for rare)
-            // Use textual payload parsing
-            for (auto &pr: right.components) if(pr.first==10||pr.first==21){
-                std::string txt(pr.second.begin(), pr.second.end());
-                // count ',' as enchant entries
-                size_t pos=0;
-                while((pos=txt.find(':', pos)) != std::string::npos){
-                    size_t comma = txt.find(',', pos);
-                    std::string lvlStr = txt.substr(pos+1, (comma==std::string::npos? txt.size():comma)-pos-1);
-                    try{
-                        int lvl = std::stoi(lvlStr);
-                        // weight: protection/sharpness etc weight 1, mending/soul etc weight 2? simplified 1
-                        enchantCost += lvl;
-                    }catch(...){ enchantCost += 1; }
-                    if(comma==std::string::npos) break;
-                    pos = comma+1;
+            // use binary decode (handles both binary and legacy textual)
+            for (auto &pr: right.components) if(pr.first==ItemStack::kEnchantmentsComponentId || pr.first==33 || pr.first==21){
+                auto ench = ItemStack::decodeEnchants(pr.second);
+                for (auto &e: ench) enchantCost += e.second;
+                // also try legacy fallback if decode empty but textual present
+                if (ench.empty()) {
+                    std::string txt(pr.second.begin(), pr.second.end());
+                    size_t pos=0;
+                    while((pos=txt.find(':', pos)) != std::string::npos){
+                        size_t comma = txt.find(',', pos);
+                        std::string lvlStr = txt.substr(pos+1, (comma==std::string::npos? txt.size():comma)-pos-1);
+                        try{ int lvl = std::stoi(lvlStr); enchantCost += lvl; }catch(...){ enchantCost += 1; }
+                        if(comma==std::string::npos) break;
+                        pos = comma+1;
+                    }
                 }
                 break;
             }
