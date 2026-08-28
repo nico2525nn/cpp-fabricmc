@@ -573,6 +573,8 @@ void GameServer::tickOnce() {
             broadcastWorldBorder();
         }
     }
+    // WanderingTrader scheduling — vanilla 24000 delay + chance (doTraderSpawning)
+    tickWanderingTrader();
     // plan14 §6: scheduled function tick (schedule) – execute due scheduled functions each tick
     tickScheduledFunctions();
     // network batching: flush coalesced block updates every tick (50ms window)

@@ -86,13 +86,29 @@ bool WorldDataManager::saveLevelDataWithProviders(std::int64_t worldTicks, std::
             dragon.set("Gateways", nbt::Value::makeList(nbt::Int));
             data.set("DragonFight", dragon);
         }
-        // GameRules: ensure all vanilla rules present
+        // GameRules: ensure all vanilla rules present — 37 defaults (strict)
+        auto ensureGr = [&](nbt::Value &gr){
+            auto ensure = [&](const char* k, const char* v){ if (!gr.get(k)) gr.set(k, nbt::Value::makeString(v)); };
+            ensure("doFireTick","true"); ensure("mobGriefing","true"); ensure("keepInventory","false");
+            ensure("doMobSpawning","true"); ensure("doDaylightCycle","true"); ensure("randomTickSpeed","3");
+            ensure("doWeatherCycle","true"); ensure("announceAdvancements","true"); ensure("naturalRegeneration","true");
+            ensure("doImmediateRespawn","false"); ensure("drowningDamage","true"); ensure("fallDamage","true");
+            ensure("fireDamage","true"); ensure("freezeDamage","true"); ensure("doTileDrops","true");
+            ensure("doMobLoot","true"); ensure("doEntityDrops","true"); ensure("commandBlockOutput","true");
+            ensure("logAdminCommands","true"); ensure("showDeathMessages","true"); ensure("sendCommandFeedback","true");
+            ensure("reducedDebugInfo","false"); ensure("spectatorsGenerateChunks","true"); ensure("spawnRadius","10");
+            ensure("maxEntityCramming","24"); ensure("doLimitedCrafting","false"); ensure("maxCommandChainLength","65536");
+            ensure("disableElytraMovementCheck","false"); ensure("disableRaids","false"); ensure("doInsomnia","true");
+            ensure("doPatrolSpawning","true"); ensure("doTraderSpawning","true"); ensure("doWardenSpawning","true");
+            ensure("forgiveDeadPlayers","true"); ensure("universalAnger","false"); ensure("playersSleepingPercentage","100");
+            ensure("blockExplosionDropDecay","true");
+        };
         if (!data.get("GameRules")) {
             nbt::Value gr = nbt::Value::makeCompound();
-            gr.set("doFireTick", nbt::Value::makeString("true"));
-            gr.set("doMobSpawning", nbt::Value::makeString("true"));
-            gr.set("randomTickSpeed", nbt::Value::makeString("3"));
+            ensureGr(gr);
             data.set("GameRules", gr);
+        } else {
+            if (auto* gr = data.get("GameRules")) ensureGr(*const_cast<nbt::Value*>(gr));
         }
         if (provide_) provide_(data);
         root.set("Data", data);
