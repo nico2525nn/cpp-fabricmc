@@ -205,10 +205,12 @@ bool EnchantmentMenuLogic::onEnchantButton(Menu& menu, Player& player, int butto
         player.xp.level = std::max(0, player.xp.level - levelCost);
         GameServer::sendSetExperience(player);
     }
-    // Apply random enchant(s) — simplified: add one enchant per button
+    // Apply enchant(s) — deterministic seeded RNG per Yarn EnchantmentScreenHandler (plan17 LOW I5)
     const char* enchants[] = {"minecraft:protection","minecraft:sharpness","minecraft:efficiency","minecraft:unbreaking"};
     const char* chosen = enchants[buttonId % 4];
-    int lvl = 1 + (buttonId) + (rand()%2);
+    std::uint32_t seed = static_cast<std::uint32_t>(player.enchantmentSeed ^ (buttonId * 0x9e3779b9u) ^ (bookshelves * 0x85ebca6bu));
+    seed = CostCalculator::splitmix32(seed);
+    int lvl = 1 + (buttonId) + static_cast<int>(seed % 2u);
     ItemStack::addEnchant(*item, chosen, lvl);
     io.blockEntityChanged(menu.blockKey);
     return true;
