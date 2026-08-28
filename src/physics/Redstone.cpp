@@ -271,6 +271,19 @@ int RedstoneEngine::analogOutputForContainer(BlockEntity* be) {
     return sig;
 }
 
+// plan18 §5: conductive block helper — comparator can read through opaque solid block
+static bool isConductiveBlock(std::uint16_t st) {
+    if (st==0) return false;
+    const gen::BlockDef* bd = gen::blockByState(st);
+    if (!bd) return false;
+    std::string_view n(bd->name);
+    if (n=="minecraft:air" || n=="minecraft:cave_air" || n=="minecraft:void_air") return false;
+    if (n.find("glass")!=std::string_view::npos) return false;
+    if (bd->transparent) return false;
+    if (n=="minecraft:barrier" || n=="minecraft:light") return false;
+    return bd->filterLight==15;
+}
+
 int RedstoneEngine::analogOutputAt(std::int32_t x, std::int32_t y, std::int32_t z) {
     if (!beStore_) return 0;
     BlockEntity* be = beStore_->getAt(x,y,z);
@@ -316,8 +329,51 @@ int RedstoneEngine::emissionLevel(std::uint16_t state, std::int32_t x, std::int3
         else if (facing=="east") bx-=1;
         else if (facing=="up") by-=1;
         else if (facing=="down") by+=1;
-        // Rear can be container or redstone dust; take max per plan11 §3
-        int containerSig = analogOutputAt(bx,by,bz);
+        // Rear can be container or redstone dust; take max per plan11 §3 — plan18 §5 adds conductive throughput
+        // 1) direct container
+        int directContainerSig = analogOutputAt(bx,by,bz);
+        BlockEntity* rearBE = beStore_ ? beStore_->getAt(bx,by,bz) : nullptr;
+        bool hasDirectContainer = (rearBE != nullptr && directContainerSig>=0) ? true : (rearBE!=nullptr);
+        // actually analogOutputAt returns 0 both for empty container and no container, so check BE presence
+        if (rearBE && directContainerSig==0) {
+            // distinguish empty container (filled==0) vs no container: analogOutputForContainer returns 0 for empty, but BE exists -> treat as container present with signal 0
+            // hasDirectContainer = true
+        } else if (!rearBE) {
+            hasDirectContainer = false;
+        }
+        int containerSig = directContainerSig;
+        uint16_t rearSt = world_.getBlock(bx,by,bz);
+        bool rearConductive = isConductiveBlock(rearSt);
+        bool overPowered = false;
+        if (!hasDirectContainer && rearConductive) {
+            // check one more block behind through conductive
+            int dx = bx - x, dy = by - y, dz = bz - z;
+            int bx2 = bx + dx, by2 = by + dy, bz2 = bz + dz;
+            int sig2 = analogOutputAt(bx2,by2,bz2);
+            BlockEntity* be2 = beStore_ ? beStore_->getAt(bx2,by2,bz2) : nullptr;
+            if (be2) {
+                containerSig = sig2;
+                // check overpower: if conductive block is powered to 15, output 15 irrespective of analog
+                // compute strongest neighbor power at (bx,by,bz)
+                int rearPowerLevel = 0;
+                static constexpr int DX6[6]={1,-1,0,0,0,0};
+                static constexpr int DY6[6]={0,0,1,-1,0,0};
+                static constexpr int DZ6[6]={0,0,0,0,1,-1};
+                for(int d=0;d<6;++d){
+                    int nx=bx+DX6[d], ny=by+DY6[d], nz=bz+DZ6[d];
+                    uint16_t ns = world_.getBlock(nx,ny,nz);
+                    Comp sc = classify(ns);
+                    int lvl=0;
+                    if(sc==Comp::Wire){
+                        for(auto&[k,v]: gen::propsOf(ns)) if(k=="power") lvl=std::atoi(std::string(v).c_str());
+                    } else {
+                        lvl = emissionLevel(ns,nx,ny,nz);
+                    }
+                    if(lvl>rearPowerLevel) rearPowerLevel=lvl;
+                }
+                if(rearPowerLevel>=15) overPowered=true;
+            }
+        }
         auto rearPower = [&]()->int {
             std::uint16_t sst = world_.getBlock(bx, by, bz);
             Comp sc = classify(sst);
@@ -329,8 +385,10 @@ int RedstoneEngine::emissionLevel(std::uint16_t state, std::int32_t x, std::int3
             return lvl;
         };
         int rearDust = rearPower();
-        int out = std::max(containerSig, rearDust);
-        // handle compare/subtract side power (plan9 #22)
+        int out;
+        if (overPowered) out = 15;
+        else out = std::max(containerSig, rearDust);
+        // handle compare/subtract side power (plan9 #22) — plan18 §5 keeps subtract/compare semantics
         auto sidePower = [&](int sx, int sz)->int {
             std::uint16_t sst = world_.getBlock(sx, y, sz);
             Comp sc = classify(sst);
@@ -341,7 +399,7 @@ int RedstoneEngine::emissionLevel(std::uint16_t state, std::int32_t x, std::int3
             int lvl = emissionLevel(sst, sx, y, sz);
             return lvl;
         };
-        if (mode=="subtract" || mode=="compare") {
+        if (!overPowered && (mode=="subtract" || mode=="compare")) {
             int sx1=x, sz1=z, sx2=x, sz2=z;
             if (facing=="north" || facing=="south") { sx1+=1; sx2-=1; }
             else if (facing=="east" || facing=="west") { sz1+=1; sz2-=1; }
