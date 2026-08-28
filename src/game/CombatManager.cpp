@@ -31,10 +31,8 @@ int CombatManager::computeEPF(const DamageSource& ds, const Player& p) {
         int blast = std::max(s.enchantLevel("blast_protection"), s.enchantLevel("minecraft:blast_protection"));
         int proj = std::max(s.enchantLevel("projectile_protection"), s.enchantLevel("minecraft:projectile_protection"));
         int feather = std::max(s.enchantLevel("feather_falling"), s.enchantLevel("minecraft:feather_falling"));
-        int weight = 1;
-        if (ds.isFire() || ds.isExplosion() || ds.isProjectile()) weight = 2;
-        else if (ds.isFall()) weight = 1;
-        total += prot * weight;
+        // plan19 strict E7: Protection weight 1 for all (was prot*2 for fire/explosion/projectile over-protects)
+        total += prot;
         if (ds.isFire()) total += fire * 2;
         if (ds.isExplosion()) total += blast * 2;
         if (ds.isProjectile()) total += proj * 2;
@@ -55,10 +53,8 @@ int CombatManager::computeEPF(const DamageSource& ds, const MobEntity& m) {
         int blast = std::max(s.enchantLevel("blast_protection"), s.enchantLevel("minecraft:blast_protection"));
         int proj = std::max(s.enchantLevel("projectile_protection"), s.enchantLevel("minecraft:projectile_protection"));
         int feather = std::max(s.enchantLevel("feather_falling"), s.enchantLevel("minecraft:feather_falling"));
-        int weight = 1;
-        if (ds.isFire() || ds.isExplosion() || ds.isProjectile()) weight = 2;
-        else if (ds.isFall()) weight = 1;
-        total += prot * weight;
+        // plan19 strict E7: Protection weight 1 for all (was prot*2 for fire/explosion/projectile over-protects)
+        total += prot;
         if (ds.isFire()) total += fire * 2;
         if (ds.isExplosion()) total += blast * 2;
         if (ds.isProjectile()) total += proj * 2;

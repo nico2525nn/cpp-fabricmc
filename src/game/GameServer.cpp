@@ -4439,7 +4439,7 @@ void GameServer::boatsTick() {
     std::vector<std::shared_ptr<MobEntity>> boats;
     {
         std::lock_guard lk(entsMtx_);
-        for (auto &m : mobs_) if (m->kind == MobKind::Boat) boats.push_back(m);
+        for (auto &m : mobs_) if (MobEntity::isBoat(m->kind)) boats.push_back(m);
     }
     for (auto &b : boats) {
         if (b->dead) continue;
@@ -4496,21 +4496,21 @@ bool GameServer::spawnMobByTypeName(const std::string& name, double x, double y,
         strikeLightning(x,y,z);
         return true;
     }
-    for (int i = 0; i < 46; ++i) {
+    for (int i = 0; i < 107; ++i) {
         auto kind = static_cast<MobKind>(i);
         const char* n = MobEntity::kindName(kind);
         if (name == n) { spawnMob(kind, x, y, z); return true; }
     }
     if (name.find(':') == std::string::npos) {
         std::string full = "minecraft:" + name;
-        for (int i = 0; i < 46; ++i) {
+        for (int i = 0; i < 107; ++i) {
             auto kind = static_cast<MobKind>(i);
             if (full == MobEntity::kindName(kind)) { spawnMob(kind, x, y, z); return true; }
         }
     }
     auto it = gen::entityTypeIdByName().find(name);
     if (it != gen::entityTypeIdByName().end()) {
-        for (int i = 0; i < 46; ++i) {
+        for (int i = 0; i < 107; ++i) {
             auto kind = static_cast<MobKind>(i);
             if (MobEntity::typeId(kind) == it->second) { spawnMob(kind, x, y, z); return true; }
         }
@@ -7355,7 +7355,7 @@ void Session::onUseEntity(ReadBuffer& in) {
                         }
                     }
                     // riding: horse/llama/pig + boat/minecart (plan13 §3)
-                    if (m->kind == MobKind::Horse || m->kind == MobKind::Llama || m->kind == MobKind::Pig || m->kind == MobKind::Boat || m->kind == MobKind::Minecart) {
+                    if (m->kind == MobKind::Horse || m->kind == MobKind::Llama || m->kind == MobKind::Pig || MobEntity::isBoat(m->kind) || m->kind == MobKind::Minecart) {
                         if (self_->vehicleId == -1 && m->riderEntityId == -1) {
                             self_->vehicleId = m->entityId;
                             m->riderEntityId = self_->entityId;
