@@ -3461,24 +3461,12 @@ static WriteBuffer makeWorldState(const ServerConfig& c) {
     return w;
 }
 
-// Minimal command tree: root -> /help, /ping  (literals only)
-static void writeDeclareCommands(WriteBuffer& b) {
-    const char* literals[] = {"help", "ping"};
-    b.varint(3);                       // node count
-    // node0: root, children = {1,2}
-    b.u8(0x00);
-    b.varint(2); b.varint(1); b.varint(2);
-    for (const char* name : literals) {
-        b.u8(0x01 | 0x04);             // literal | executable
-        b.varint(0);                   // no children
-        b.string(name);
-    }
-    b.varint(0);                       // root index
-}
-
 void Session::sendDeclareCommands() {
     WriteBuffer b;
-    writeDeclareCommands(b);
+    // Strict 1.21.4: serialize the full Brigadier dispatcher tree (not minimal 3-node stub).
+    // Commands.cpp builds 20+ commands via initCommands(); dispatcher.writeDeclareCommands
+    // emits flattened nodes with parser ids 0-53 matching protocol.json (N9/N10).
+    srv_.commands().writeDeclareCommands(b);
     conn_->sendPacket(pl::sc::DeclareCommands, b);
 }
 
@@ -6244,9 +6232,10 @@ void Session::broadcastMovement() {
 
 void Session::onChatMessage(ReadBuffer& in) {
     const std::string msg = in.string(256);
-    (void)in.i64();                                  // timestamp
-    (void)in.i64();                                  // salt
-    if (in.boolean()) in.bytes(256);                 // signature
+    std::int64_t timestamp = in.i64();
+    std::int64_t salt = in.i64();
+    std::vector<std::uint8_t> signature;
+    if (in.boolean()) signature = in.bytes(256);
     (void)in.varint();                               // offset
     in.bytes(3);                                     // acknowledged
 
@@ -6258,9 +6247,20 @@ void Session::onChatMessage(ReadBuffer& in) {
 
     if (!ev.message.empty() && ev.message[0] == '/')
         return dispatchCommand(ev.message.substr(1));
-    const std::string line = "<" + self_->name + "> " + ev.message;
-    srv_.broadcastSystemText(line, nullptr);
-    sendSystemText(line);
+    // Strict N6: verify RSA-SHA256 when hasChatSession; fallback to SystemChat
+    bool usePlayerChat = false;
+    if (self_->hasChatSession) {
+        usePlayerChat = ChatMessageProcessor::verify(*self_, ev.message, timestamp, salt, signature);
+        // record salt for replay soft-check (keep last 20)
+        self_->lastSeenSignatures.push_back(static_cast<std::uint8_t>(salt & 0xFF));
+        if (self_->lastSeenSignatures.size() > 20) self_->lastSeenSignatures.erase(self_->lastSeenSignatures.begin());
+    }
+    if (usePlayerChat && ChatMessageProcessor::shouldUsePlayerChat(*self_)) {
+        srv_.broadcastPlayerChat(*self_, ev.message, timestamp);
+    } else {
+        const std::string line = "<" + self_->name + "> " + ev.message;
+        srv_.broadcastSystemText(line, nullptr);
+    }
 }
 
 void Session::onChatCommand(ReadBuffer& in) {
