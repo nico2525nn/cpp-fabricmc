@@ -913,13 +913,14 @@ private:
     void setWeather(Weather w, std::int64_t durationTicks);
 public:
     void forceWeatherClear() { setWeather(Weather::Clear, 6000 * 20); }
-    // Plan13 datapack and function evaluator (network)
+    // plan14 §6: datapack and function evaluator (schedule tick)
     DatapackManager datapackManager_;
     FunctionEvaluator functionEvaluator_;
     DatapackManager& datapackManager() { return datapackManager_; }
     const DatapackManager& datapackManager() const { return datapackManager_; }
     FunctionEvaluator& functionEvaluator() { return functionEvaluator_; }
     const FunctionEvaluator& functionEvaluator() const { return functionEvaluator_; }
+    // plan14 §6: called each tick from tickOnce to run due scheduled functions
     void tickScheduledFunctions() { functionEvaluator_.tick(tickNo_); }
 private:
     struct CachedChunk { std::uint64_t rev; ChunkBodyRef body; };
