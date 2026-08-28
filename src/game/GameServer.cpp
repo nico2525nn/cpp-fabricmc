@@ -2931,8 +2931,19 @@ void Session::handleLogin() {
 
 void Session::handleConfiguration() {
     // 0. resource pack (plan3 Resource Pack) — configured via server.properties
+    // 1.21.4: AddResourcePack = UUID + url + hash + forced + hasPrompt (no message) — UUID required (strict)
     if (!srv_.config().resourcePackUrl.empty()) {
         WriteBuffer b;
+        // deterministic UUID derived from url (stable across restarts for same pack)
+        std::array<std::uint8_t,16> packUuid{};
+        {
+            uint64_t h = std::hash<std::string>{}(srv_.config().resourcePackUrl);
+            for (int i=0;i<8;++i) packUuid[i] = static_cast<std::uint8_t>((h >> (i*8)) & 0xFF);
+            for (int i=8;i<16;++i) packUuid[i] = static_cast<std::uint8_t>((i*37 + h) & 0xFF);
+            packUuid[6] = (packUuid[6] & 0x0F) | 0x40; // version 4
+            packUuid[8] = (packUuid[8] & 0x3F) | 0x80; // variant RFC4122
+        }
+        b.uuid(packUuid.data());
         b.string(srv_.config().resourcePackUrl);
         b.string(srv_.config().resourcePackSha1);
         b.boolean(srv_.config().resourcePackForced);
@@ -2948,10 +2959,20 @@ void Session::handleConfiguration() {
         b.raw(payload.data.data(), payload.data.size());
         conn_->sendPacket(cf::sc::CustomPayload, b);
     }
-    // 2. known packs: we advertise none -> client expects full registry data
+    // 1b. FeatureFlags 0x0C — vanilla 1.21.4 sends ["minecraft:vanilla"] (PROTOCOL_NOTES 12 registries + feature_flags)
     {
         WriteBuffer b;
-        b.varint(0);
+        b.varint(1);
+        b.string("minecraft:vanilla");
+        conn_->sendPacket(cf::sc::FeatureFlags, b);
+    }
+    // 2. SelectKnownPacks 0x0E — vanilla advertises {minecraft:core 1.21.4} (not empty)
+    {
+        WriteBuffer b;
+        b.varint(1);
+        b.string("minecraft");
+        b.string("core");
+        b.string("1.21.4");
         conn_->sendPacket(cf::sc::SelectKnownPacks, b);
     }
     // 3. wait for the client's SelectKnownPacks answer (server hangs otherwise!)
@@ -4238,10 +4259,29 @@ void Session::onTabComplete(ReadBuffer& in) {
 
     const auto suggestions = srv_.commands().suggest(text, std::move(src));
 
+    // Strict token start: replace only the current token, not whole line.
+    // Vanilla CommandSuggestions range is [start, start+length) covering the token being completed.
+    std::int32_t start = 0;
+    if (!text.empty()) {
+        // find last space — token starts after it
+        std::size_t lastSpace = text.rfind(' ');
+        if (lastSpace != std::string::npos) {
+            if (lastSpace + 1 >= text.size()) start = static_cast<std::int32_t>(text.size());
+            else start = static_cast<std::int32_t>(lastSpace + 1);
+        } else {
+            // no space: for "/" prefixed commands, token starts after '/'
+            if (text[0] == '/') start = 1;
+            else start = 0;
+        }
+        // also handle trailing spaces already covered; for quoted or colon-separated
+        // resource locations we keep the space-based token (vanilla includes "minecraft:" prefix).
+    }
+    std::int32_t length = static_cast<std::int32_t>(text.size()) - start;
+    if (length < 0) length = 0;
     WriteBuffer b;
     b.varint(transactionId);
-    b.varint(0);                                      // start of range
-    b.varint(static_cast<std::int32_t>(text.size())); // length replaced
+    b.varint(start);
+    b.varint(length);
     b.varint(static_cast<std::int32_t>(suggestions.size()));
     for (auto& [match, tooltip] : suggestions) {
         b.string(match);
