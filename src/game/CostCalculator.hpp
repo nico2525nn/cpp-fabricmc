@@ -1,6 +1,7 @@
 // CostCalculator: enchanting and anvil cost logic (plan6 items 47,48)
 #pragma once
 #include <algorithm>
+#include <cstdint>
 #include <cstdlib>
 #include <string>
 #include "Items.hpp"
@@ -11,13 +12,27 @@ struct Player;
 
 class CostCalculator {
 public:
+    // plan17 LOW I5: seeded deterministic RNG (Yarn EnchantmentScreenHandler seed) — replaces std::rand()
+    // Uses splitmix32 seeded by player.enchantmentSeed ^ bookshelves, so costs are deterministic per player/table
+    static std::uint32_t splitmix32(std::uint32_t x) {
+        x += 0x9e3779b9u;
+        x = (x ^ (x >> 16u)) * 0x85ebca6bu;
+        x = (x ^ (x >> 13u)) * 0xc2b2ae35u;
+        return x ^ (x >> 16u);
+    }
     // Enchanting: vanilla 1.21.4: base = rand(1,8) + floor(bs/2) + rand(0,bs)
     // clamped 1..30. Then 3 levels derived as max(base/3,1), (base*2)/3+1, max(base, bs*2)
-    static int enchantingCost(const Player& /*player*/, int bookshelves) {
+    static int enchantingCost(const Player& player, int bookshelves) {
         int bs = std::clamp(bookshelves, 0, 15);
-        int base = 1 + (std::rand() % 8); // 1..8
+        std::uint32_t seed = static_cast<std::uint32_t>(player.enchantmentSeed);
+        if (seed == 0) seed = static_cast<std::uint32_t>(player.entityId * 0x9e3779b9u ^ 0x85ebca6bu ^ (bs * 0x27d4eb2du));
+        seed = splitmix32(seed ^ 0x27d4eb2du);
+        int base = 1 + static_cast<int>(seed % 8u); // 1..8
         base += bs / 2;
-        if (bs > 0) base += (std::rand() % (bs + 1)); // 0..bs
+        if (bs > 0) {
+            seed = splitmix32(seed);
+            base += static_cast<int>(seed % static_cast<std::uint32_t>(bs + 1)); // 0..bs
+        }
         if (base < 1) base = 1;
         if (base > 30) base = 30;
         return base;

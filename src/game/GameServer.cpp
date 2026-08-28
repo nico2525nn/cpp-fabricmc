@@ -3286,6 +3286,11 @@ void Session::onEnterPlay() {
     self_->gamemode = 1;   // creative default for building comfort
     self_->health = 20; self_->food = 20; self_->saturation = 5;
     self_->exhaustion = 0; self_->fallDist = 0; self_->dead = false;
+    // plan17 LOW I5: init seeded enchanting RNG if not loaded from persistence
+    if (self_->enchantmentSeed == 0) {
+        self_->enchantmentSeed = static_cast<std::int32_t>(self_->entityId * 0x9e3779b9u ^ srv_.config().hashedSeed ^ 0x27d4eb2du);
+        if (self_->enchantmentSeed == 0) self_->enchantmentSeed = 0x5a5a5a5a;
+    }
 
     srv_.loadPlayerData(GameServer::uuidToHex(self_->uuid), *self_);
     // cookies from disk (plan3 Cookie persistence)
