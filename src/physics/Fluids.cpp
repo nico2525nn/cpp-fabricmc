@@ -103,41 +103,35 @@ void FluidSim::apply(std::int32_t x, std::int32_t y, std::int32_t z,
         const std::uint16_t cobble = static_cast<std::uint16_t>(gen::blockNameToState().at("minecraft:cobblestone"));
         const std::uint16_t obsidian = static_cast<std::uint16_t>(gen::blockNameToState().at("minecraft:obsidian"));
         const std::uint16_t stone = static_cast<std::uint16_t>(gen::blockNameToState().at("minecraft:stone"));
-        // 3 rules: per plan12 §8
+        // plan17 §8: strict vertical stone — only lava falling (8) + water source (0) vertical => stone
+        const bool isFalling = (level == 8);
+        const bool otherIsSource = (nl == 0);
+        const bool otherIsFalling = (nl == 8);
+        const bool vertical = (ny == y + 1 || ny == y - 1);
         if (lavaHere) {
-            // lava source touched by water side/top -> obsidian
-            if (isSource && nk==0) {
+            if (isSource) {
+                // lava source + any water -> obsidian
                 world_.setBlock(nx, ny, nz, obsidian);
-            } else if (nk==0 && ny == y+1) {
-                // lava flowing down onto water -> stone
+            } else if (vertical && isFalling && otherIsSource) {
+                // lava falling vertically onto water source -> stone
                 world_.setBlock(nx, ny, nz, stone);
-            } else if (nk==0 && ny==y-1) {
-                // water below lava falling -> stone as well
-                world_.setBlock(nx, ny, nz, stone);
+            } else if (vertical && isFalling && !otherIsSource) {
+                // lava falling onto flowing water -> cobble
+                world_.setBlock(nx, ny, nz, cobble);
             } else {
-                // lava flowing + water side -> cobble
-                world_.setBlock(nx, ny, nz, isSource ? obsidian : cobble);
-                // if this lava is flowing and water is source side, original water becomes obsidian? we handle below
-                if (!isSource && nk==0) {
-                    world_.setBlock(x, y, z, cobble);
-                    return true;
-                }
-                // For water perspective, lava source -> obsidian
+                // lava flowing non-falling + water -> cobble
+                world_.setBlock(nx, ny, nz, cobble);
             }
         } else {
-            // water + lava source -> obsidian, else cobble/stone
-            if (nl == 0) {
+            // water + lava
+            if (otherIsSource) {
                 world_.setBlock(nx, ny, nz, obsidian);
+            } else if (vertical && otherIsFalling && isSource) {
+                // water source + lava falling vertical -> stone
+                world_.setBlock(nx, ny, nz, stone);
             } else {
-                // flowing lava + water
-                if (ny == y - 1 || ny == y+1) {
-                    world_.setBlock(nx, ny, nz, stone);
-                } else {
-                    world_.setBlock(nx, ny, nz, cobble);
-                }
+                world_.setBlock(nx, ny, nz, cobble);
             }
-            // also handle waterlogged solidify: if waterlogged at this pos, the water part should become stone/cobble? but waterlogged block remains with waterlogged false?
-            // For simplicity, if waterlogged, set stone/cobble and clear waterlogged is not possible via simple block change; keep as stone
         }
         return true;
     };
