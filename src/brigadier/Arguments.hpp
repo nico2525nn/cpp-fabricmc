@@ -375,16 +375,20 @@ inline ArgumentType itemStackArg() {
     ArgumentType a;
     a.id = ParserId::ItemStack;
     a.parse = [](StringReader& r, ParseCtx&) -> ArgValue {
+        const std::size_t start = r.cursor();
         std::string id = readIdentifier(r);
         if (id.empty()) throw StringReader::ParseError("expected item id");
         if (id.find(':') == std::string::npos) id = "minecraft:" + id;
-        if (r.peek() == '[') {
+        // include components in brackets for trim/enchant parsing (plan13 §2)
+        if (r.canRead() && r.peek() == '[') {
             int depth = 0;
             while (r.canRead()) {
                 const char ch = r.read();
                 if (ch == '[') ++depth;
                 else if (ch == ']') { --depth; if (!depth) break; }
             }
+            // return full raw including brackets for GameServer to parse components
+            return r.slice(start);
         }
         return id;
     };
