@@ -1959,29 +1959,71 @@ void GameServer::hoppersTick() {
                     std::string iname = s.name();
 
                     auto doDropperInsert = [&]() -> bool {
-                        // try insert into container at target
-                        int cn=0; BlockEntity::Kind ck{};
-                        ItemStack* cont = containerAt(tx,ty,tz,cn,ck);
-                        if(cont){
-                            auto* beT = blockEntities_.getAt(tx,ty,tz);
-                            if(beT){
-                                ItemStack one = ItemStack::of(s.itemId,1);
-                                ItemStack* oslots=nullptr; int on=0;
-                                switch(beT->kind){
-                                    case BlockEntity::Kind::Chest: oslots=beT->chest.slots; on=27; break;
-                                    case BlockEntity::Kind::Hopper: oslots=beT->generic.slots; on=5; break;
-                                    case BlockEntity::Kind::Dispenser: oslots=beT->generic.slots; on=9; break;
-                                    default: break;
-                                }
-                                if(oslots){
-                                    for(int j=0;j<on;++j){
-                                        auto &d=oslots[j];
-                                        if(d.empty()){ d=one; blockEntities_.dirty_.insert(posKey(tx,ty,tz)); return true; }
-                                        if(d.itemId==one.itemId && d.count<64){ ++d.count; blockEntities_.dirty_.insert(posKey(tx,ty,tz)); return true; }
-                                    }
-                                }
+                        auto* beT = blockEntities_.getAt(tx,ty,tz);
+                        if(!beT) return false;
+                        // plan18 §7: furnace top ingredient / side fuel + barrel/shulker/brewing etc
+                        std::string insertDir;
+                        if(facing=="north") insertDir="south";
+                        else if(facing=="south") insertDir="north";
+                        else if(facing=="west") insertDir="east";
+                        else if(facing=="east") insertDir="west";
+                        else if(facing=="up") insertDir="down";
+                        else if(facing=="down") insertDir="up";
+                        else insertDir="up";
+                        ItemStack one = ItemStack::of(s.itemId,1);
+                        if(beT->kind==BlockEntity::Kind::Furnace){
+                            int trySlot = (insertDir=="up") ? 0 : 1;
+                            if(trySlot==1 && !isFuelItem(s.itemId)) return false;
+                            auto &dst = beT->furnace.slots[trySlot];
+                            if(dst.empty()){
+                                dst = one;
+                                blockEntities_.dirty_.insert(posKey(tx,ty,tz));
+                                return true;
+                            } else if(dst.itemId==one.itemId && dst.count<64){
+                                ++dst.count;
+                                blockEntities_.dirty_.insert(posKey(tx,ty,tz));
+                                return true;
+                            } else return false;
+                        }
+                        if(beT->kind==BlockEntity::Kind::Brewing){
+                            if(insertDir=="up"){
+                                auto &dst = beT->brewing.slots[3];
+                                if(dst.empty()){
+                                    dst = one;
+                                    blockEntities_.dirty_.insert(posKey(tx,ty,tz));
+                                    return true;
+                                } else if(dst.itemId==one.itemId && dst.count<64){
+                                    ++dst.count;
+                                    blockEntities_.dirty_.insert(posKey(tx,ty,tz));
+                                    return true;
+                                } else return false;
                             }
-                            // fallback to hopper generic containerAt already covers furnace etc? simplified
+                            for(int idx : {0,1,2,4}){
+                                auto &d = beT->brewing.slots[idx];
+                                if(d.empty()){ d=one; blockEntities_.dirty_.insert(posKey(tx,ty,tz)); return true; }
+                                if(d.itemId==one.itemId && d.count<64){ ++d.count; blockEntities_.dirty_.insert(posKey(tx,ty,tz)); return true; }
+                            }
+                            return false;
+                        }
+                        ItemStack* oslots=nullptr; int on=0;
+                        switch(beT->kind){
+                            case BlockEntity::Kind::Chest:
+                            case BlockEntity::Kind::Barrel:
+                            case BlockEntity::Kind::ShulkerBox:
+                                oslots=beT->chest.slots; on=27; break;
+                            case BlockEntity::Kind::Hopper:
+                                oslots=beT->generic.slots; on=5; break;
+                            case BlockEntity::Kind::Dispenser:
+                            case BlockEntity::Kind::Dropper:
+                                oslots=beT->generic.slots; on=9; break;
+                            default: return false;
+                        }
+                        if(oslots){
+                            for(int j=0;j<on;++j){
+                                auto &d=oslots[j];
+                                if(d.empty()){ d=one; blockEntities_.dirty_.insert(posKey(tx,ty,tz)); return true; }
+                                if(d.itemId==one.itemId && d.count<64){ ++d.count; blockEntities_.dirty_.insert(posKey(tx,ty,tz)); return true; }
+                            }
                         }
                         return false;
                     };
@@ -1998,10 +2040,36 @@ void GameServer::hoppersTick() {
                         broadcastSound("minecraft:block.dispenser.dispense", x+.5,y+.5,z+.5,1.f,1.f,"blocks");
                         blockEntities_.dirty_.insert(key);
                     } else {
-                        // Dispenser per-item behaviors
                         bool handled = false;
+                        // plan18 §6: shulker_box place (dispenser exception) — 16 colors, facing, container copy
+                        if (iname.find("shulker_box") != std::string::npos) {
+                            uint16_t tSt = world_.getBlock(tx,ty,tz);
+                            if (tSt==0) {
+                                uint16_t belowSt = world_.getBlock(tx,ty-1,tz);
+                                std::string shulkerFacing = (belowSt==0 ? facing : "up");
+                                const gen::BlockDef* def = gen::blockByName(iname);
+                                if (!def) def = gen::blockByName("minecraft:shulker_box");
+                                if (def) {
+                                    uint16_t ns = static_cast<uint16_t>(gen::stateWithProps(*def, {{"facing", shulkerFacing}}));
+                                    world_.setBlock(tx,ty,tz, ns);
+                                    broadcastBlockChange(tx,ty,tz, ns);
+                                    auto* beN = blockEntities_.getAt(tx,ty,tz);
+                                    if (!beN) beN = &blockEntities_.create(posKey(tx,ty,tz), BlockEntity::Kind::ShulkerBox);
+                                    else beN->kind = BlockEntity::Kind::ShulkerBox;
+                                    if (--s.count <= 0) s = ItemStack::air();
+                                    blockEntities_.dirty_.insert(key);
+                                    broadcastSound("minecraft:block.dispenser.dispense", x+.5,y+.5,z+.5,1.f,1.f,"blocks");
+                                    handled = true;
+                                }
+                            }
+                            if (!handled) {
+                                spawnItemDrop(sx, sy, sz, s.itemId, 1, dx * .25, .15, dz * .25);
+                                if(--s.count<=0) s=ItemStack::air();
+                                handled = true;
+                            }
+                        }
                         // bucket fluid dispense
-                        if(iname=="minecraft:water_bucket" || iname=="minecraft:lava_bucket" || iname=="minecraft:powder_snow_bucket"){
+                        if(!handled && (iname=="minecraft:water_bucket" || iname=="minecraft:lava_bucket" || iname=="minecraft:powder_snow_bucket")){
                             uint16_t tSt = world_.getBlock(tx,ty,tz);
                             bool replaceable = (tSt==0);
                             // check replaceable: air or non-solid? simplified air only
@@ -2035,7 +2103,7 @@ void GameServer::hoppersTick() {
                                 if(--s.count<=0) s=ItemStack::air();
                                 handled=true;
                             }
-                        } else if(iname=="minecraft:bucket"){
+                        } else if(!handled && iname=="minecraft:bucket"){
                             uint16_t tSt = world_.getBlock(tx,ty,tz);
                             const gen::BlockDef* td = gen::blockByState(tSt);
                             bool isWater=false,isLava=false,isPowder=false;
@@ -2053,12 +2121,12 @@ void GameServer::hoppersTick() {
                                 s = ItemStack::ofName(newName,1);
                                 handled=true;
                             }
-                        } else if(iname.find("splash_potion")!=std::string::npos || iname.find("lingering_potion")!=std::string::npos || iname=="minecraft:potion"){
+                        } else if(!handled && (iname.find("splash_potion")!=std::string::npos || iname.find("lingering_potion")!=std::string::npos || iname=="minecraft:potion")){
                             // strict B23: potion projectile should be Potion entity, not Snowball
                             spawnProjectile(ProjectileKind::Potion, sx, sy, sz, dx*1.1, dy*0.2+0.12, dz*1.1, -1, false);
                             if(--s.count<=0) s=ItemStack::air();
                             handled=true;
-                        } else if(iname.find("_helmet")!=std::string::npos || iname.find("_chestplate")!=std::string::npos || iname.find("_leggings")!=std::string::npos || iname.find("_boots")!=std::string::npos || iname.find("horse_armor")!=std::string::npos || iname=="minecraft:elytra" || iname=="minecraft:turtle_helmet" || iname=="minecraft:carved_pumpkin" || iname=="minecraft:skull"){
+                        } else if(!handled && (iname.find("_helmet")!=std::string::npos || iname.find("_chestplate")!=std::string::npos || iname.find("_leggings")!=std::string::npos || iname.find("_boots")!=std::string::npos || iname.find("horse_armor")!=std::string::npos || iname=="minecraft:elytra" || iname=="minecraft:turtle_helmet" || iname=="minecraft:carved_pumpkin" || iname=="minecraft:skull")){
                             // strict B24: dispenser armor equip (vanilla Dispenser armor)
                             bool equipped=false;
                             // Try players at target
@@ -2126,27 +2194,27 @@ void GameServer::hoppersTick() {
                                 if(--s.count<=0) s=ItemStack::air();
                                 handled=true;
                             }
-                        } else if(iname.find("arrow") != std::string::npos) {
+                        } else if(!handled && iname.find("arrow") != std::string::npos) {
                             spawnProjectile(ProjectileKind::Arrow, sx, sy, sz, dx*1.2, dy*0.2+0.15, dz*1.2, -1, false);
                             if(--s.count<=0) s=ItemStack::air();
                             handled = true;
-                        } else if (iname.find("snowball") != std::string::npos) {
+                        } else if(!handled && iname.find("snowball") != std::string::npos) {
                             spawnProjectile(ProjectileKind::Snowball, sx, sy, sz, dx*1.2, dy*0.2+0.12, dz*1.2, -1, false);
                             if(--s.count<=0) s=ItemStack::air();
                             handled = true;
-                        } else if (iname == "minecraft:egg") {
+                        } else if(!handled && iname == "minecraft:egg") {
                             spawnProjectile(ProjectileKind::Egg, sx, sy, sz, dx*1.2, dy*0.2+0.12, dz*1.2, -1, false);
                             if(--s.count<=0) s=ItemStack::air();
                             handled = true;
-                        } else if (iname.find("ender_pearl") != std::string::npos) {
+                        } else if(!handled && iname.find("ender_pearl") != std::string::npos) {
                             spawnProjectile(ProjectileKind::EnderPearl, sx, sy, sz, dx*1.2, dy*0.2+0.12, dz*1.2, -1, false);
                             if(--s.count<=0) s=ItemStack::air();
                             handled = true;
-                        } else if (iname.find("fire_charge") != std::string::npos) {
+                        } else if(!handled && iname.find("fire_charge") != std::string::npos) {
                             spawnProjectile(ProjectileKind::Fireball, sx, sy, sz, dx*0.5, dy*0.5, dz*0.5, -1, false);
                             if(--s.count<=0) s=ItemStack::air();
                             handled = true;
-                        } else if (iname.find("_spawn_egg") != std::string::npos) {
+                        } else if(!handled && iname.find("_spawn_egg") != std::string::npos) {
                             MobSpawner spawner2(*this);
                             if (spawner2.spawnFromDispenser(iname, x, y, z, facing)) {
                                 if(--s.count<=0) s=ItemStack::air();
@@ -2155,7 +2223,7 @@ void GameServer::hoppersTick() {
                                 if(--s.count<=0) s=ItemStack::air();
                             }
                             handled = true;
-                        } else if (iname=="minecraft:shears"){
+                        } else if(!handled && iname=="minecraft:shears"){
                             // try shear sheep at target
                             bool sheared=false;
                             {
@@ -2186,7 +2254,7 @@ void GameServer::hoppersTick() {
                                 // don't consume? vanilla consumes durability only on success, but we treat as not consumed
                                 handled=true; // don't double-decrement
                             }
-                        } else if (iname=="minecraft:flint_and_steel"){
+                        } else if(!handled && iname=="minecraft:flint_and_steel"){
                             uint16_t tSt = world_.getBlock(tx,ty,tz);
                             uint16_t below = world_.getBlock(tx,ty-1,tz);
                             const gen::BlockDef* td=gen::blockByState(tSt);
@@ -2227,7 +2295,7 @@ void GameServer::hoppersTick() {
                                 spawnItemDrop(sx, sy, sz, s.itemId, 1, dx * .25, .15, dz * .25);
                                 handled=true;
                             }
-                        } else if (iname=="minecraft:bone_meal"){
+                        } else if(!handled && iname=="minecraft:bone_meal"){
                             uint16_t tSt = world_.getBlock(tx,ty,tz);
                             const gen::BlockDef* td=gen::blockByState(tSt);
                             bool fertilized=false;
@@ -2248,11 +2316,11 @@ void GameServer::hoppersTick() {
                                 if(--s.count<=0) s=ItemStack::air();
                                 handled=true;
                             }
-                        } else if (iname=="minecraft:tnt" || iname.find("tnt") != std::string::npos) {
+                        } else if(!handled && (iname=="minecraft:tnt" || iname.find("tnt") != std::string::npos)) {
                             explodeAt(x + dx + 0.5, y + dy + 0.5, z + dz + 0.5, 4.f);
                             if(--s.count<=0) s=ItemStack::air();
                             handled=true;
-                        } else {
+                        } else if(!handled) {
                             // default drop
                             spawnItemDrop(sx, sy, sz, s.itemId, 1, dx * .25, .15, dz * .25);
                             if(--s.count<=0) s=ItemStack::air();
@@ -2277,9 +2345,14 @@ ItemStack* GameServer::containerAt(std::int32_t x, std::int32_t y,
     if (!be) return nullptr;
     kindOut = be->kind;
     switch (be->kind) {
-    case BlockEntity::Kind::Chest: countOut = 27; return be->chest.slots;
+    case BlockEntity::Kind::Chest:
+    case BlockEntity::Kind::Barrel:
+    case BlockEntity::Kind::ShulkerBox: countOut = 27; return be->chest.slots;
     case BlockEntity::Kind::Hopper: countOut = 5; return be->generic.slots;
-    case BlockEntity::Kind::Dispenser: countOut = 9; return be->generic.slots;
+    case BlockEntity::Kind::Dispenser:
+    case BlockEntity::Kind::Dropper: countOut = 9; return be->generic.slots;
+    case BlockEntity::Kind::Furnace: countOut = 3; return be->furnace.slots;
+    case BlockEntity::Kind::Brewing: countOut = 5; return be->brewing.slots;
     default: return nullptr;
     }
 }
