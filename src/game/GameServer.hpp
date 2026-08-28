@@ -57,6 +57,8 @@
 #include "NetworkManager.hpp"
 #include "HungerManager.hpp"
 #include "CombatManager.hpp"
+#include "DatapackManager.hpp"
+#include "FunctionEvaluator.hpp"
 
 namespace cppfm {
 
@@ -328,6 +330,12 @@ public:
         tagManager_.loadDirectory("assets/data/tags");
         tagManager_.applyToRecipeTags(recipes_.tags_);
         lootTables_.loadDirectory("assets/data/loot_tables");
+        // Plan13 datapackmanager (advancements/predicates/item_modifiers/functions)
+        datapackManager_.loadAll(recipes_, "assets/data", cfg_.worldDir + "/datapacks");
+        // sync primary managers for backward compat
+        tagManager_ = datapackManager_.tagManager;
+        lootTables_ = datapackManager_.lootTables;
+        functionEvaluator_.setServer(this);
         initCommands();
         lightEngine_ = std::make_unique<LightEngine>(world_);
         world_.setBiomeCodec(
@@ -908,6 +916,14 @@ private:
     void setWeather(Weather w, std::int64_t durationTicks);
 public:
     void forceWeatherClear() { setWeather(Weather::Clear, 6000 * 20); }
+    // Plan13 datapack and function evaluator (network)
+    DatapackManager datapackManager_;
+    FunctionEvaluator functionEvaluator_;
+    DatapackManager& datapackManager() { return datapackManager_; }
+    const DatapackManager& datapackManager() const { return datapackManager_; }
+    FunctionEvaluator& functionEvaluator() { return functionEvaluator_; }
+    const FunctionEvaluator& functionEvaluator() const { return functionEvaluator_; }
+    void tickScheduledFunctions() { functionEvaluator_.tick(tickNo_); }
 private:
     struct CachedChunk { std::uint64_t rev; ChunkBodyRef body; };
     std::unordered_map<std::int64_t, CachedChunk> chunkCache_;
