@@ -17,7 +17,7 @@ struct FluidTick {
 };
 
 enum class FluidId { Empty, Water, Lava };
-struct FluidState { FluidId id = FluidId::Empty; int level = 0; bool falling = false; bool isWater() const { return id==FluidId::Water; } bool isLava() const { return id==FluidId::Lava; } };
+struct FluidState { FluidId id = FluidId::Empty; int level = 0; bool falling = false; bool isWater() const { return id==FluidId::Water; } bool isLava() const { return id==FluidId::Lava; } bool isStillWater() const { return id==FluidId::Water && level==0 && !falling; } };
 
 class FluidSim {
 public:

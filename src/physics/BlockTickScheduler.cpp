@@ -470,7 +470,7 @@ std::int32_t BambooBehavior::findBaseY(const World& w, std::int32_t x, std::int3
 void GrassBlockBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state, std::int64_t now, GameServer* srv) {
     randomTick(w,x,y,z,state,now,srv);
 }
-// plan19 §3 B4 grass snowy strict: snow + snow_block (was only snow)
+// plan19 §3 B4 grass snowy strict: snow/snow_block/powder_snow (was only snow)
 void GrassBlockBehavior::randomTick(World& w, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state, std::int64_t now, GameServer* srv) {
     (void)now;
     if (srv) {
@@ -487,7 +487,7 @@ void GrassBlockBehavior::randomTick(World& w, std::int32_t x, std::int32_t y, st
         auto* ad = gen::blockByState(above);
         if (ad) {
             std::string an(ad->name);
-            if (an=="minecraft:snow" || an=="minecraft:snow_block") wantSnowy = true;
+            if (an=="minecraft:snow" || an=="minecraft:snow_block" || an=="minecraft:powder_snow") wantSnowy = true;
         }
     }
     if (curSnowy != wantSnowy) {

@@ -102,6 +102,35 @@ static std::string getPropStr(uint16_t state, const char* key){
     for(auto&[k,v]: gen::propsOf(state)) if(k==key) return std::string(v);
     return "";
 }
+// plan19 §1 B1 stairs strict: isDifferentOrientation per Yarn StairsBlock#isDifferentOrientation (vanilla 1.21.4)
+static bool isDifferentOrientation(World& w, int x,int y,int z, const std::string& stateFacing, const std::string& dir){
+    int nx=x, nz=z;
+    if(dir=="north") nz-=1;
+    else if(dir=="south") nz+=1;
+    else if(dir=="east") nx+=1;
+    else if(dir=="west") nx-=1;
+    else return true;
+    uint16_t ns = w.getBlock(nx,y,nz);
+    const gen::BlockDef* nd = gen::blockByState(ns);
+    if(!isStairsBlock(nd)) return true;
+    std::string nf = getPropStr(ns,"facing");
+    auto axisOf2 = [](const std::string& f)->char{
+        if(f=="north"||f=="south") return 'z';
+        if(f=="east"||f=="west") return 'x';
+        return 'y';
+    };
+    if(axisOf2(nf) != axisOf2(stateFacing)) return true;
+    auto opposite2 = [](const std::string& f)->std::string{
+        if(f=="north") return "south";
+        if(f=="south") return "north";
+        if(f=="east") return "west";
+        if(f=="west") return "east";
+        return f;
+    };
+    if(nf == opposite2(stateFacing)) return true;
+    if(nf == stateFacing) return false;
+    return true;
+}
 static std::string computeStairsShape(World& w, int x,int y,int z, const std::string& facing, const std::string& half){
     auto axisOf = [](const std::string& f)->char{
         if(f=="north"||f=="south") return 'z';
@@ -131,7 +160,8 @@ static std::string computeStairsShape(World& w, int x,int y,int z, const std::st
         if(f=="down") return "up";
         return f;
     };
-    // check outer: block in facing direction
+    (void)rotateCW;
+    // check outer: block in facing direction (front)
     {
         int nx=x, nz=z;
         if(facing=="north") nz-=1; else if(facing=="south") nz+=1;
@@ -142,12 +172,15 @@ static std::string computeStairsShape(World& w, int x,int y,int z, const std::st
             std::string nf = getPropStr(ns,"facing");
             std::string nh = getPropStr(ns,"half");
             if(nh==half && axisOf(nf)!=axisOf(facing)){
-                // need different orientation check simplified to true
-                if(nf == rotateCCW(facing)) return "outer_left";
-                else return "outer_right";
+                std::string checkDir = opposite(nf);
+                if(isDifferentOrientation(w,x,y,z,facing,checkDir)){
+                    if(nf == rotateCCW(facing)) return "outer_left";
+                    else return "outer_right";
+                }
             }
         }
     }
+    // check inner: block opposite facing direction (back)
     {
         int nx=x, nz=z;
         std::string opp = opposite(facing);
@@ -159,17 +192,73 @@ static std::string computeStairsShape(World& w, int x,int y,int z, const std::st
             std::string nf = getPropStr(ns,"facing");
             std::string nh = getPropStr(ns,"half");
             if(nh==half && axisOf(nf)!=axisOf(facing)){
-                if(nf == rotateCCW(facing)) return "inner_left";
-                else return "inner_right";
+                std::string checkDir = nf;
+                if(isDifferentOrientation(w,x,y,z,facing,checkDir)){
+                    if(nf == rotateCCW(facing)) return "inner_left";
+                    else return "inner_right";
+                }
             }
         }
     }
     return "straight";
 }
 static void updateNeighborStairsShapes(World& w, GameServer& srv, int x,int y,int z){
-    static const int DX[4]={1,-1,0,0}, DZ[4]={0,0,1,-1};
-    for(int i=0;i<4;++i){
-        int nx=x+DX[i], nz=z+DZ[i];
+    // plan19 §1 B1 stairs strict: only front+opposite of placed stair per Yarn, not 4-dir loop
+    uint16_t placed = w.getBlock(x,y,z);
+    const gen::BlockDef* pd = gen::blockByState(placed);
+    if(!isStairsBlock(pd)){
+        // fallback: if placed is not stairs (called for air?), check all 4 for safety
+        static const int DX4[4]={1,-1,0,0}, DZ4[4]={0,0,1,-1};
+        for(int i=0;i<4;++i){
+            int nx=x+DX4[i], nz=z+DZ4[i];
+            uint16_t ns=w.getBlock(nx,y,nz);
+            const gen::BlockDef* nd=gen::blockByState(ns);
+            if(!isStairsBlock(nd)) continue;
+            std::string nf=getPropStr(ns,"facing");
+            std::string nh=getPropStr(ns,"half");
+            std::string shape=computeStairsShape(w,nx,y,nz,nf,nh);
+            std::string curShape=getPropStr(ns,"shape");
+            if(curShape==shape) continue;
+            std::vector<std::pair<std::string_view,std::string_view>> props;
+            for(auto&[k,v]: gen::propsOf(ns)) if(k!="shape") props.emplace_back(k,v);
+            props.emplace_back("shape", shape);
+            uint16_t nst=static_cast<uint16_t>(gen::stateWithProps(*nd, props));
+            w.setBlock(nx,y,nz,nst);
+            srv.broadcastBlockChange(nx,y,nz,nst);
+        }
+        return;
+    }
+    std::string pf=getPropStr(placed,"facing");
+    int fdx=0,fdz=0,bdx=0,bdz=0;
+    if(pf=="north"){ fdz=-1; bdz=1; }
+    else if(pf=="south"){ fdz=1; bdz=-1; }
+    else if(pf=="east"){ fdx=1; bdx=-1; }
+    else if(pf=="west"){ fdx=-1; bdx=1; }
+    else {
+        static const int DX4[4]={1,-1,0,0}, DZ4[4]={0,0,1,-1};
+        for(int i=0;i<4;++i){
+            int nx=x+DX4[i], nz=z+DZ4[i];
+            uint16_t ns=w.getBlock(nx,y,nz);
+            const gen::BlockDef* nd=gen::blockByState(ns);
+            if(!isStairsBlock(nd)) continue;
+            std::string nf=getPropStr(ns,"facing");
+            std::string nh=getPropStr(ns,"half");
+            std::string shape=computeStairsShape(w,nx,y,nz,nf,nh);
+            std::string curShape=getPropStr(ns,"shape");
+            if(curShape==shape) continue;
+            std::vector<std::pair<std::string_view,std::string_view>> props;
+            for(auto&[k,v]: gen::propsOf(ns)) if(k!="shape") props.emplace_back(k,v);
+            props.emplace_back("shape", shape);
+            uint16_t nst=static_cast<uint16_t>(gen::stateWithProps(*nd, props));
+            w.setBlock(nx,y,nz,nst);
+            srv.broadcastBlockChange(nx,y,nz,nst);
+        }
+        return;
+    }
+    const int DX2[2]={fdx,bdx};
+    const int DZ2[2]={fdz,bdz};
+    for(int i=0;i<2;++i){
+        int nx=x+DX2[i], nz=z+DZ2[i];
         uint16_t ns=w.getBlock(nx,y,nz);
         const gen::BlockDef* nd=gen::blockByState(ns);
         if(!isStairsBlock(nd)) continue;
@@ -6944,7 +7033,7 @@ void Session::onUseItemOn(ReadBuffer& in) {
                                 else if(d==0) newType="top";
                                 else newType = (ctx.cursor.y > 0.5 ? "top" : "bottom");
                                 auto adjFs = FluidSim::getFluidState(srv_.world(), adjX, adjY, adjZ);
-                                bool wl = (adjFs.id==FluidId::Water && adjFs.level==0 && !adjFs.falling);
+                                bool wl = adjFs.isStillWater();
                                 bool hasWlAdj=false; for(int i=0;i<sdef->propCount;++i){ auto &pd=gen::kPropDefs[gen::kBlockPropsRun[sdef->propsOff+i]]; if(pd.name=="waterlogged") hasWlAdj=true; }
                                 std::vector<std::pair<std::string_view,std::string_view>> ap;
                                 ap.emplace_back("type", newType);
@@ -7129,11 +7218,11 @@ void Session::onUseItemOn(ReadBuffer& in) {
             std::string shape = computeStairsShape(*ctx.world, ctx.placePos.x, ctx.placePos.y, ctx.placePos.z, facingStr, halfStr);
             props.emplace_back("shape", shape);
         }
-        // waterlogged: check FluidState still water level 0 (plan19 §1 B3 strict: FluidState.isWater vs find("water"), plan17 §2)
+        // waterlogged: check FluidState still water level 0 (plan19 §2 B2 slab strict: FluidState.isStillWater vs find("water"), plan17 §2)
         if (hasWaterlogged) {
             bool waterlogged = false;
             auto fluid = FluidSim::getFluidState(*ctx.world, ctx.placePos.x, ctx.placePos.y, ctx.placePos.z);
-            if (fluid.id==FluidId::Water && fluid.level==0 && !fluid.falling) waterlogged = true;
+            if (fluid.isStillWater()) waterlogged = true;
             // For double slab, force false (handled earlier)
             bool isDoubleSlab = false;
             for(auto& pr: props) if(pr.first=="type" && pr.second=="double") isDoubleSlab=true;
@@ -7141,11 +7230,11 @@ void Session::onUseItemOn(ReadBuffer& in) {
             props.emplace_back("waterlogged", waterlogged ? "true" : "false");
         }
         if (hasSnowy) {
-            // plan19 §3 B4 grass snowy strict: snow OR snow_block above per Wiki (was only snow)
+            // plan19 §3 B4 grass snowy strict: snow/snow_block/powder_snow above per Wiki (was only snow)
             bool snowy = false;
             std::uint16_t above = ctx.world->getBlock(ctx.placePos.x, ctx.placePos.y + 1, ctx.placePos.z);
             const gen::BlockDef* ad = gen::blockByState(above);
-            if (ad && (std::string(ad->name) == "minecraft:snow" || std::string(ad->name) == "minecraft:snow_block")) snowy = true;
+            if (ad && (std::string(ad->name) == "minecraft:snow" || std::string(ad->name) == "minecraft:snow_block" || std::string(ad->name) == "minecraft:powder_snow")) snowy = true;
             props.emplace_back("snowy", snowy ? "true" : "false");
         }
         if (hasAxis) {
