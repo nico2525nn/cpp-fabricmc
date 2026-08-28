@@ -65,7 +65,6 @@ struct BlockEntity {
     Kind kind = Kind::Chest;
     ChestData chest{};
     FurnaceData furnace{};
-    GenericContainerData generic{};
     GenericContainerData generic{};      // hopper/dispenser/dropper
     BrewingData brewing{};
     bool isDropper() const { return kind == Kind::Dropper; }
@@ -172,8 +171,6 @@ private:
                    id == "minecraft:dropper") {
             BlockEntity& be = map_[key];
             be = BlockEntity{};
-            if (id=="minecraft:hopper") be.kind = BlockEntity::Kind::Hopper;
-            else if (id=="minecraft:dropper") be.kind = BlockEntity::Kind::Dropper;
             if (id == "minecraft:hopper") be.kind = BlockEntity::Kind::Hopper;
             else if (id == "minecraft:dropper") be.kind = BlockEntity::Kind::Dropper;
             else be.kind = BlockEntity::Kind::Dispenser;
