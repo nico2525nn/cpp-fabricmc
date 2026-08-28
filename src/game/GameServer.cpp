@@ -395,6 +395,8 @@ void GameServer::tickOnce() {
     if (tickNo_ % 20 == 0) trySpawnMobs();
     mark('M');
     mobsTick();
+    mark('R'); // rails (plan11 §3)
+    minecartsTick();
     mark('P');
     projectilesTick();
     mark('I');
@@ -3355,6 +3357,201 @@ void GameServer::projectilesTick() {
     }
 }
 
+void GameServer::minecartsTick() {
+    // Plan11 §3: minecart rail physics – powered boost, detector, activator, gravity/friction
+    std::vector<std::shared_ptr<MobEntity>> carts;
+    {
+        std::lock_guard lk(entsMtx_);
+        for (auto &m : mobs_) if (m->kind == MobKind::Minecart) carts.push_back(m);
+    }
+    for (auto &cart : carts) {
+        if (cart->dead) continue;
+        // Find rail under or at cart pos (check y, y-1, y+1 per vanilla)
+        int bx = static_cast<int>(std::floor(cart->x));
+        int by = static_cast<int>(std::floor(cart->y));
+        int bz = static_cast<int>(std::floor(cart->z));
+        std::uint16_t railState = 0;
+        const gen::BlockDef* railDef = nullptr;
+        int rx=bx, ry=by, rz=bz;
+        std::string railShape="north_south";
+        std::string railName;
+        bool found=false;
+        for (int dy : {0,-1,1}) {
+            std::uint16_t st = world_.getBlock(bx, by+dy, bz);
+            const gen::BlockDef* bd = gen::blockByState(st);
+            if (!bd) continue;
+            std::string n(bd->name);
+            if (n=="minecraft:rail" || n=="minecraft:powered_rail" || n=="minecraft:detector_rail" || n=="minecraft:activator_rail") {
+                railState = st; railDef = bd; ry = by+dy; rx=bx; rz=bz; railName=n; found=true;
+                for (auto &pr : gen::propsOf(st)) if (pr.first=="shape") railShape=std::string(pr.second);
+                break;
+            }
+        }
+        // Detector rail: powered when cart on it
+        if (found && railName=="minecraft:detector_rail") {
+            bool curPowered=false;
+            for (auto &pr : gen::propsOf(railState)) if (pr.first=="powered" && pr.second=="true") curPowered=true;
+            bool wantPowered = true; // cart present implies powered
+            // Check distance: cart must be within 0.3 of center to count? Use 0.5 for simplicity always true if found
+            if (curPowered != wantPowered) {
+                std::vector<std::pair<std::string_view,std::string_view>> props;
+                for (auto &pr : gen::propsOf(railState)) if (pr.first!="powered") props.emplace_back(pr.first, pr.second);
+                props.emplace_back("powered", wantPowered?"true":"false");
+                std::uint16_t ns = static_cast<std::uint16_t>(gen::stateWithProps(*railDef, props));
+                world_.setBlock(rx, ry, rz, ns);
+                // analog output 15 implied via emissionLevel when powered true
+            }
+        } else if (found && railName=="minecraft:detector_rail") {
+            // no-op
+        }
+        // If not on rail, apply free physics (gravity + friction)
+        if (!found) {
+            cart->velY -= 0.04; // gravity
+            cart->velX *= 0.98; cart->velY *= 0.98; cart->velZ *= 0.98;
+            // ground check
+            if (world_.getBlock(bx, by-1, bz) != 0) {
+                if (cart->velY < 0) cart->velY = 0;
+                cart->velX *= 0.7; cart->velZ *= 0.7;
+            }
+            cart->x += cart->velX; cart->y += cart->velY; cart->z += cart->velZ;
+        } else {
+            // On rail: snap y to rail top and apply rail-directed movement
+            double targetY = ry + 0.125 + 0.5; // rail top ~0.625 above block? vanilla 0.5; use 0.5
+            if (std::abs(cart->y - targetY) > 0.1) cart->y = targetY;
+            // Powered rail boost
+            if (railName=="minecraft:powered_rail") {
+                bool powered=false;
+                for (auto &pr : gen::propsOf(railState)) if (pr.first=="powered" && pr.second=="true") powered=true;
+                if (powered) {
+                    // accelerate along rail axis by 0.06 per plan11
+                    double ax=0, az=0;
+                    if (railShape=="north_south" || railShape=="ascending_north" || railShape=="ascending_south") {
+                        // Z axis
+                        double dir = (cart->velZ >= 0) ? 1.0 : -1.0;
+                        if (std::abs(cart->velZ) < 0.01) dir = 1.0; // default north->south
+                        az = dir * 0.06;
+                        // ascending adds Y
+                        if (railShape=="ascending_north" || railShape=="ascending_south") cart->velY += 0.04;
+                    } else if (railShape=="east_west" || railShape=="ascending_east" || railShape=="ascending_west") {
+                        double dir = (cart->velX >= 0) ? 1.0 : -1.0;
+                        if (std::abs(cart->velX) < 0.01) dir = 1.0;
+                        ax = dir * 0.06;
+                        if (railShape=="ascending_east" || railShape=="ascending_west") cart->velY += 0.04;
+                    } else {
+                        // curved: accelerate along dominant axis
+                        if (std::abs(cart->velX) > std::abs(cart->velZ)) ax = (cart->velX >=0?1:-1)*0.06;
+                        else az = (cart->velZ >=0?1:-1)*0.06;
+                    }
+                    cart->velX += ax; cart->velZ += az;
+                    // clamp speed
+                    double speed = std::sqrt(cart->velX*cart->velX + cart->velZ*cart->velZ);
+                    if (speed > 0.4) { double f=0.4/speed; cart->velX*=f; cart->velZ*=f; }
+                    // broadcast velocity for powered boost (plan11 spec EntityVelocity 0x5F)
+                    {
+                        WriteBuffer vb;
+                        vb.varint(cart->entityId);
+                        vb.i16(static_cast<std::int16_t>(cart->velX * 8000));
+                        vb.i16(static_cast<std::int16_t>(cart->velY * 8000));
+                        vb.i16(static_cast<std::int16_t>(cart->velZ * 8000));
+                        broadcastPacketExcept(nullptr, proto::pl::sc::EntityVelocity, vb);
+                    }
+                } else {
+                    // unpowered powered rail slows down
+                    cart->velX *= 0.5; cart->velZ *= 0.5;
+                }
+            }
+            // Activator rail eject
+            if (railName=="minecraft:activator_rail") {
+                bool powered=false;
+                for (auto &pr : gen::propsOf(railState)) if (pr.first=="powered" && pr.second=="true") powered=true;
+                if (powered && cart->riderEntityId != -1) {
+                    // eject rider
+                    int rider = cart->riderEntityId;
+                    cart->riderEntityId = -1;
+                    // find rider mob/player and clear vehicleId
+                    {
+                        std::lock_guard lk(entsMtx_);
+                        for (auto &m : mobs_) if (m->entityId==rider) m->vehicleId=-1;
+                    }
+                    for (auto &pp : playersSnapshot()) if (pp->entityId==rider) pp->vehicleId=-1;
+                    broadcastSetPassengersEmpty(cart->entityId);
+                    // also try to move rider slightly off
+                }
+            }
+            // General rail friction and motion
+            cart->velX *= 0.98; cart->velY *= 0.98; cart->velZ *= 0.98;
+            // Apply movement along rail shape (constrain to rail axis)
+            if (railShape=="north_south" || railShape=="ascending_north" || railShape=="ascending_south") {
+                cart->velX *= 0.9; // damp X
+                // keep Z
+            } else if (railShape=="east_west" || railShape=="ascending_east" || railShape=="ascending_west") {
+                cart->velZ *= 0.9;
+            } else if (railShape=="south_east" || railShape=="north_west" || railShape=="south_west" || railShape=="north_east") {
+                // curved: reduce speed a bit
+                cart->velX *= 0.9; cart->velZ *= 0.9;
+            }
+            cart->x += cart->velX;
+            cart->y += cart->velY;
+            cart->z += cart->velZ;
+            // Snap X/Z to rail center for straight rails
+            if (railShape=="north_south") cart->x = rx + 0.5;
+            else if (railShape=="east_west") cart->z = rz + 0.5;
+            // for ascending, keep center as well
+            if (railShape=="ascending_east" || railShape=="ascending_west") cart->z = rz + 0.5;
+            if (railShape=="ascending_north" || railShape=="ascending_south") cart->x = rx + 0.5;
+        }
+        // Broadcast movement if moved
+        if (!cart->hasSent || std::abs(cart->x-cart->sentX)+std::abs(cart->y-cart->sentY)+std::abs(cart->z-cart->sentZ) > 0.01) {
+            WriteBuffer b;
+            b.varint(cart->entityId);
+            b.i16(static_cast<std::int16_t>((cart->x-cart->sentX)*4096));
+            b.i16(static_cast<std::int16_t>((cart->y-cart->sentY)*4096));
+            b.i16(static_cast<std::int16_t>((cart->z-cart->sentZ)*4096));
+            b.i8(0); b.i8(0);
+            b.boolean(true);
+            broadcastPacketExcept(nullptr, proto::pl::sc::MoveEntityPosRot, b);
+            cart->sentX = cart->x; cart->sentY = cart->y; cart->sentZ = cart->z; cart->hasSent = true;
+        }
+        // Handle detector rail unpower when cart left (scan nearby rails for no cart)
+        // Do second pass for detector rails near previous position? Simplified: leave powered true while cart exists; will be cleared by next tick when no cart nearby if we scan.
+    }
+    // Clear detector rails that have no cart nearby (simple O(n) scan over nearby rails within 1 block of any cart)
+    // For all detector rails in loaded chunks, check if any cart within 1 block; if not and powered true, power off.
+    // To avoid scanning all chunks, just scan rails around carts' previous positions? We'll do a limited scan: for each cart's neighboring positions, check detector rail that is powered but no cart.
+    // This is best-effort; full scan would be heavy but okay for small world.
+    {
+        std::unordered_set<std::int64_t> poweredDetectorKeys;
+        // Collect detector rails that are powered near carts
+        for (auto &cart : carts) {
+            int bx = static_cast<int>(std::floor(cart->x));
+            int by = static_cast<int>(std::floor(cart->y));
+            int bz = static_cast<int>(std::floor(cart->z));
+            for (int dx=-1; dx<=1; ++dx) for (int dy=-1; dy<=1; ++dy) for (int dz=-1; dz<=1; ++dz) {
+                int nx=bx+dx, ny=by+dy, nz=bz+dz;
+                std::uint16_t st = world_.getBlock(nx, ny, nz);
+                const gen::BlockDef* bd = gen::blockByState(st);
+                if (!bd || std::string(bd->name)!="minecraft:detector_rail") continue;
+                bool p=false; for (auto &pr: gen::propsOf(st)) if (pr.first=="powered" && pr.second=="true") p=true;
+                if (!p) continue;
+                // check if any cart still on this rail
+                bool hasCart=false;
+                for (auto &c2: carts) {
+                    int cbx=(int)std::floor(c2->x), cby=(int)std::floor(c2->y), cbz=(int)std::floor(c2->z);
+                    for (int ddy : {0,-1,1}) if (cbx==nx && cby+ddy==ny && cbz==nz) hasCart=true;
+                }
+                if (!hasCart) {
+                    // power off
+                    std::vector<std::pair<std::string_view,std::string_view>> props;
+                    for (auto &pr: gen::propsOf(st)) if (pr.first!="powered") props.emplace_back(pr.first, pr.second);
+                    props.emplace_back("powered","false");
+                    std::uint16_t ns = static_cast<std::uint16_t>(gen::stateWithProps(*bd, props));
+                    world_.setBlock(nx, ny, nz, ns);
+                }
+            }
+        }
+    }
+}
+
 bool GameServer::spawnMobByTypeName(const std::string& name, double x, double y,
                                      double z) {
     // Plan8: handle lightning_bolt via strikeLightning (charged creeper)
@@ -4995,10 +5192,12 @@ void Session::onUseItemOn(ReadBuffer& in) {
                     ack(sequence);
                     return;
                 }
+            }
             if (d == 1) {
-            // redstone interactables (lever / button) consume the click
+            // redstone interactables (lever / button / comparator) consume the click
             if (bn == "minecraft:lever" ||
-                bn.find("_button") != std::string::npos) {
+                bn.find("_button") != std::string::npos ||
+                bn.find("comparator") != std::string::npos) {
                 srv_.redstone_->onInteract(x, y, z, srv_.tickNoForTest());
                 ack(sequence);
                 return;
@@ -5051,7 +5250,6 @@ void Session::onUseItemOn(ReadBuffer& in) {
                 ack(sequence);
                 return;
             }
-        }
         }
     }
 
