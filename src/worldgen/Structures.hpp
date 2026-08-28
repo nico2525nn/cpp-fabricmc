@@ -37,6 +37,10 @@ inline const std::vector<StructureSet>& structureSets() {
         {"minecraft:jungle_temple",  26, 8, 0x11AA, {"jungle"}},
         {"minecraft:igloo",          30, 8, 0x19D1, {"snowy_plains","snowy_taiga","grove"}},
         {"minecraft:swamp_hut",      26, 8, 0x1C9F, {"swamp"}},
+        {"minecraft:mineshaft",      10, 5, 0, {}},
+        {"minecraft:monument",       32, 5, 10387313ULL, {"deep_ocean","deep_cold_ocean","deep_frozen_ocean"}},
+        {"minecraft:mansion",        80,20, 10387319ULL, {"dark_forest","roofed_forest","pale_garden"}},
+        {"minecraft:end_city",       20,11, 10387313ULL, {"end_highlands","end_midlands"}},
     };
     return sets;
 }
@@ -149,6 +153,15 @@ private:
     void swampHutPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
                        std::int32_t originX, std::int32_t originZ,
                        const GroundFn& ground);
+    void monumentPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+                       std::int32_t originX, std::int32_t originZ,
+                       const GroundFn& ground);
+    void mansionPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+                      std::int32_t originX, std::int32_t originZ,
+                      const GroundFn& ground);
+    void endCityPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+                      std::int32_t originX, std::int32_t originZ,
+                      const GroundFn& ground);
 
     std::uint64_t seed_;
     std::shared_ptr<MultiNoiseBiomeSource> biomes_;
