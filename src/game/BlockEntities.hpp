@@ -62,12 +62,14 @@ struct GenericContainerData {
 };
 
 struct BlockEntity {
-    enum class Kind { Chest, Furnace, Hopper, Dispenser, Barrel, ShulkerBox, Brewing };
+    enum class Kind { Chest, Furnace, Hopper, Dispenser, Dropper, Barrel, ShulkerBox, Brewing };
     Kind kind = Kind::Chest;
     ChestData chest{};
     FurnaceData furnace{};
-    GenericContainerData generic{};      // hopper/dispenser
+    GenericContainerData generic{};      // hopper/dispenser/dropper
     BrewingData brewing{};
+    bool isDropper() const { return kind == Kind::Dropper; }
+    bool isDispenser() const { return kind == Kind::Dispenser; }
 };
 
 class BlockEntityStore {
@@ -118,6 +120,9 @@ public:
                 writeItems(e, be.generic.slots, 5, "Items");
             } else if (be.kind == BlockEntity::Kind::Dispenser) {
                 e.set("id", nbt::Value::makeString("minecraft:dispenser"));
+                writeItems(e, be.generic.slots, 9, "Items");
+            } else if (be.kind == BlockEntity::Kind::Dropper) {
+                e.set("id", nbt::Value::makeString("minecraft:dropper"));
                 writeItems(e, be.generic.slots, 9, "Items");
             } else if (be.kind == BlockEntity::Kind::Barrel) {
                 e.set("id", nbt::Value::makeString("minecraft:barrel"));
@@ -170,8 +175,9 @@ private:
                    id == "minecraft:dropper") {
             BlockEntity& be = map_[key];
             be = BlockEntity{};
-            be.kind = id == "minecraft:hopper" ? BlockEntity::Kind::Hopper
-                                               : BlockEntity::Kind::Dispenser;
+            if (id == "minecraft:hopper") be.kind = BlockEntity::Kind::Hopper;
+            else if (id == "minecraft:dropper") be.kind = BlockEntity::Kind::Dropper;
+            else be.kind = BlockEntity::Kind::Dispenser;
             const int n = be.kind == BlockEntity::Kind::Hopper ? 5 : 9;
             readItems(e, be.generic.slots, n, "Items");
             dirty_.insert(key);

@@ -1433,7 +1433,8 @@ void GameServer::hoppersTick() {
     std::vector<std::pair<std::int64_t, BlockEntity>> snapshot;
     blockEntities_.forEach([&](std::int64_t k, BlockEntity& be) {
         if (be.kind == BlockEntity::Kind::Hopper ||
-            be.kind == BlockEntity::Kind::Dispenser)
+            be.kind == BlockEntity::Kind::Dispenser ||
+            be.kind == BlockEntity::Kind::Dropper)
             snapshot.emplace_back(k, be);
     });
     for (auto& [key, be] : snapshot) {
@@ -1464,6 +1465,7 @@ void GameServer::hoppersTick() {
             case BlockEntity::Kind::Chest: oslots = other->chest.slots; on = 27; break;
             case BlockEntity::Kind::Hopper: oslots = other->generic.slots; on = 5; break;
             case BlockEntity::Kind::Dispenser: oslots = other->generic.slots; on = 9; break;
+            case BlockEntity::Kind::Dropper: oslots = other->generic.slots; on = 9; break;
             default: return false;
             }
             for (int i = 0; i < on; ++i) {
@@ -1520,6 +1522,7 @@ void GameServer::hoppersTick() {
                     case BlockEntity::Kind::Chest: oslots = below->chest.slots; on = 27; break;
                     case BlockEntity::Kind::Hopper: oslots = below->generic.slots; on = 5; break;
                     case BlockEntity::Kind::Dispenser: oslots = below->generic.slots; on = 9; break;
+                    case BlockEntity::Kind::Dropper: oslots = below->generic.slots; on = 9; break;
                     default: break;
                     }
                     bool moved = false;
@@ -1541,75 +1544,314 @@ void GameServer::hoppersTick() {
             }
         }
 
-        // ---- dispenser: eject when powered (edge-triggered) per-item (plan5 items 48-51)
-        if (be.kind == BlockEntity::Kind::Dispenser) {
-            bool powered = redstone_->isPoweredHere(x, y, z);
+        // ---- dispenser/dropper: eject when powered (edge-triggered) per-item (plan12 §9/§10)
+        if (be.kind == BlockEntity::Kind::Dispenser || be.kind == BlockEntity::Kind::Dropper) {
+            bool isDropper = be.kind == BlockEntity::Kind::Dropper;
+            bool powered = redstone_ && redstone_->isPoweredHere(x, y, z);
             bool& was = dispenserPower_[key];
             if (powered && !was) {
-                for (int i = 0; i < 9; ++i) {
-                    auto& s = slots[i];
-                    if (s.empty()) continue;
-                    // facing → direction
-                    double dx = 0, dy = 0, dz = 0;
-                    std::string facing = "north";
-                    std::uint16_t bstate = world_.getBlock(x, y, z);
-                    if (bstate) {
-                        for (auto& [pk, pv] : gen::propsOf(bstate))
-                            if (pk == "facing") facing = std::string(pv);
-                    }
-                    if (facing == "north") dz = -1;
-                    else if (facing == "south") dz = 1;
-                    else if (facing == "west") dx = -1;
-                    else if (facing == "east") dx = 1;
-                    else if (facing == "up") dy = 1;
-                    else if (facing == "down") dy = -1;
-                    double sx = x + .5 + dx * .6;
-                    double sy = y + .5 + dy * .6;
-                    double sz = z + .5 + dz * .6;
+                // facing vector
+                double dx = 0, dy = 0, dz = 0;
+                std::string facing = "north";
+                std::uint16_t bstate = world_.getBlock(x, y, z);
+                if (bstate) {
+                    for (auto& [pk, pv] : gen::propsOf(bstate))
+                        if (pk == "facing") facing = std::string(pv);
+                }
+                if (facing == "north") dz = -1;
+                else if (facing == "south") dz = 1;
+                else if (facing == "west") dx = -1;
+                else if (facing == "east") dx = 1;
+                else if (facing == "up") dy = 1;
+                else if (facing == "down") dy = -1;
+                const int tx = x + static_cast<int>(dx);
+                const int ty = y + static_cast<int>(dy);
+                const int tz = z + static_cast<int>(dz);
+                double sx = x + .5 + dx * .6;
+                double sy = y + .5 + dy * .6;
+                double sz = z + .5 + dz * .6;
+                // pick first non-empty slot
+                int pick = -1;
+                for (int i = 0; i < 9; ++i) if (!slots[i].empty()) { pick = i; break; }
+                if (pick != -1) {
+                    auto& s = slots[pick];
                     std::string iname = s.name();
                     bool handled = false;
-                    if (iname.find("arrow") != std::string::npos) {
-                        spawnProjectile(ProjectileKind::Arrow, sx, sy, sz, dx*1.2, dy*0.2+0.15, dz*1.2, -1, false);
-                        handled = true;
-                    } else if (iname.find("snowball") != std::string::npos) {
-                        spawnProjectile(ProjectileKind::Snowball, sx, sy, sz, dx*1.2, dy*0.2+0.12, dz*1.2, -1, false);
-                        handled = true;
-                    } else if (iname == "minecraft:egg") {
-                        spawnProjectile(ProjectileKind::Egg, sx, sy, sz, dx*1.2, dy*0.2+0.12, dz*1.2, -1, false);
-                        handled = true;
-                    } else if (iname.find("ender_pearl") != std::string::npos) {
-                        spawnProjectile(ProjectileKind::EnderPearl, sx, sy, sz, dx*1.2, dy*0.2+0.12, dz*1.2, -1, false);
-                        handled = true;
-                    } else if (iname.find("fire_charge") != std::string::npos) {
-                        spawnProjectile(ProjectileKind::Fireball, sx, sy, sz, dx*0.5, dy*0.5, dz*0.5, -1, false);
-                        handled = true;
-                    } else if (iname.find("_spawn_egg") != std::string::npos) {
-                        // Plan8 MobSpawner: dispenser can spawn mobs via spawn eggs
-                        MobSpawner spawner2(*this);
-                        if (spawner2.spawnFromDispenser(iname, x, y, z, facing)) handled = true;
-                        else {
-                            // fallback to item drop if spawner fails
-                            spawnItemDrop(sx, sy, sz, s.itemId, 1, dx * .25, .15, dz * .25);
+                    // ---- Dropper: always try container insert first, else drop (plan12 §10)
+                    if (isDropper) {
+                        int n = 0; BlockEntity::Kind k{};
+                        // Try to insert into container at facing pos
+                        if (auto* target = blockEntities_.getAt(tx, ty, tz)) {
+                            ItemStack* tslots = nullptr; int tn = 0;
+                            if (target->kind == BlockEntity::Kind::Chest) { tslots = target->chest.slots; tn = 27; }
+                            else if (target->kind == BlockEntity::Kind::Hopper) { tslots = target->generic.slots; tn = 5; }
+                            else if (target->kind == BlockEntity::Kind::Dispenser || target->kind == BlockEntity::Kind::Dropper) { tslots = target->generic.slots; tn = 9; }
+                            if (tslots) {
+                                for (int j = 0; j < tn; ++j) {
+                                    auto& d = tslots[j];
+                                    if (d.empty()) { d = ItemStack::of(s.itemId, 1); handled = true; break; }
+                                    if (d.itemId == s.itemId && d.count < 64) { ++d.count; handled = true; break; }
+                                }
+                                if (handled) blockEntities_.dirty_.insert(posKey(tx,ty,tz));
+                            }
+                        }
+                        if (!handled) {
+                            spawnItemDrop(tx + .5, ty + .5, tz + .5, s.itemId, 1, dx * .25, .15, dz * .25);
                             handled = true;
                         }
-                    }
-                    if (!handled) {
-                        if (iname == "minecraft:tnt" || iname.find("tnt") != std::string::npos) {
-                            // primed TNT: explode at front with delay via explodeAt
-                            explodeAt(x + dx + 0.5, y + dy + 0.5, z + dz + 0.5, 4.f);
-                        } else {
-                            spawnItemDrop(sx, sy, sz, s.itemId, 1, dx * .25, .15, dz * .25);
+                        if (handled) {
+                            if (--s.count <= 0) s = ItemStack::air();
+                            broadcastSound("minecraft:entity.dispenser.dispense", x+.5, y+.5, z+.5, 1.f, 1.f, "blocks");
+                            blockEntities_.dirty_.insert(key);
                         }
+                    } else {
+                        // ---- Dispenser per-item behaviors (plan12 §9)
+                        // Projectile types
+                        if (iname.find("arrow") != std::string::npos) {
+                            spawnProjectile(ProjectileKind::Arrow, sx, sy, sz, dx*1.2, dy*0.2+0.15, dz*1.2, -1, false);
+                            handled = true;
+                        } else if (iname.find("snowball") != std::string::npos) {
+                            spawnProjectile(ProjectileKind::Snowball, sx, sy, sz, dx*1.2, dy*0.2+0.12, dz*1.2, -1, false);
+                            handled = true;
+                        } else if (iname == "minecraft:egg") {
+                            spawnProjectile(ProjectileKind::Egg, sx, sy, sz, dx*1.2, dy*0.2+0.12, dz*1.2, -1, false);
+                            handled = true;
+                        } else if (iname.find("ender_pearl") != std::string::npos) {
+                            spawnProjectile(ProjectileKind::EnderPearl, sx, sy, sz, dx*1.2, dy*0.2+0.12, dz*1.2, -1, false);
+                            handled = true;
+                        } else if (iname.find("fire_charge") != std::string::npos) {
+                            spawnProjectile(ProjectileKind::Fireball, sx, sy, sz, dx*0.5, dy*0.5, dz*0.5, -1, false);
+                            handled = true;
+                        } else if (iname.find("_spawn_egg") != std::string::npos) {
+                            MobSpawner spawner2(*this);
+                            if (spawner2.spawnFromDispenser(iname, x, y, z, facing)) handled = true;
+                            else { spawnItemDrop(sx, sy, sz, s.itemId, 1, dx*.25, .15, dz*.25); handled = true; }
+                        } else if (iname == "minecraft:water_bucket" || iname == "minecraft:lava_bucket" || iname == "minecraft:powder_snow_bucket") {
+                            std::uint16_t targetState = world_.getBlock(tx, ty, tz);
+                            const gen::BlockDef* bd = gen::blockByState(targetState);
+                            bool isAir = targetState==0 || (bd && std::string(bd->name)=="minecraft:air");
+                            bool isReplaceable = isAir || (bd && (std::string(bd->name).find("grass")!=std::string::npos || std::string(bd->name).find("flower")!=std::string::npos));
+                            if (isReplaceable) {
+                                const char* fluidName = "minecraft:water";
+                                if (iname=="minecraft:lava_bucket") fluidName="minecraft:lava";
+                                else if (iname=="minecraft:powder_snow_bucket") fluidName="minecraft:powder_snow";
+                                auto fit = gen::blockNameToState().find(fluidName);
+                                if (fit != gen::blockNameToState().end()) {
+                                    std::uint16_t ns = static_cast<std::uint16_t>(fit->second);
+                                    world_.setBlock(tx, ty, tz, ns);
+                                    broadcastBlockChange(tx, ty, tz, ns);
+                                    // consume bucket -> empty bucket
+                                    if (--s.count <= 0) s = ItemStack::air();
+                                    // return empty bucket to dispenser or drop if full
+                                    auto emptyIt = gen::itemIdByName().find("minecraft:bucket");
+                                    if (emptyIt != gen::itemIdByName().end()) {
+                                        bool inserted = false;
+                                        for (int j=0;j<9;++j) if (slots[j].empty()) { slots[j]=ItemStack::of(emptyIt->second,1); inserted=true; break; }
+                                        if (!inserted) spawnItemDrop(sx, sy, sz, emptyIt->second, 1, dx*.25, .15, dz*.25);
+                                    }
+                                    broadcastSound("minecraft:item.bucket.empty", tx+.5, ty+.5, tz+.5, 1.f, 1.f, "blocks");
+                                    blockEntities_.dirty_.insert(key);
+                                    handled = true;
+                                    // skip normal decrement
+                                    goto dispenser_done;
+                                }
+                            }
+                            if (!handled) { spawnItemDrop(sx, sy, sz, s.itemId, 1, dx*.25, .15, dz*.25); handled = true; }
+                        } else if (iname == "minecraft:bucket") {
+                            std::uint16_t targetState = world_.getBlock(tx, ty, tz);
+                            const gen::BlockDef* bd = gen::blockByState(targetState);
+                            std::string tname = bd ? std::string(bd->name) : "";
+                            const char* filled = nullptr;
+                            if (tname=="minecraft:water") filled="minecraft:water_bucket";
+                            else if (tname=="minecraft:lava") filled="minecraft:lava_bucket";
+                            else if (tname=="minecraft:powder_snow") filled="minecraft:powder_snow_bucket";
+                            if (filled) {
+                                auto fit = gen::blockNameToState().find("minecraft:air");
+                                std::uint16_t air = fit != gen::blockNameToState().end() ? static_cast<std::uint16_t>(fit->second) : 0;
+                                world_.setBlock(tx, ty, tz, air);
+                                broadcastBlockChange(tx, ty, tz, air);
+                                if (--s.count <= 0) s = ItemStack::air();
+                                auto filledIt = gen::itemIdByName().find(filled);
+                                if (filledIt != gen::itemIdByName().end()) {
+                                    bool inserted=false;
+                                    for(int j=0;j<9;++j) if(slots[j].empty()){ slots[j]=ItemStack::of(filledIt->second,1); inserted=true; break; }
+                                    if(!inserted) spawnItemDrop(sx, sy, sz, filledIt->second, 1, dx*.25, .15, dz*.25);
+                                }
+                                broadcastSound("minecraft:item.bucket.fill", tx+.5, ty+.5, tz+.5, 1.f, 1.f, "blocks");
+                                blockEntities_.dirty_.insert(key);
+                                handled = true;
+                                goto dispenser_done;
+                            }
+                            if (!handled) { spawnItemDrop(sx, sy, sz, s.itemId, 1, dx*.25, .15, dz*.25); handled = true; }
+                        } else if (iname.find("_boat") != std::string::npos || iname.find("boat") != std::string::npos) {
+                            // Boat: spawn boat entity (MobKind::Boat) — plan12 §9 boat/minecart
+                            std::uint16_t tstate = world_.getBlock(tx, ty, tz);
+                            const gen::BlockDef* tbd = gen::blockByState(tstate);
+                            bool isWater = tbd && std::string(tbd->name)=="minecraft:water";
+                            double spawnY = ty + (isWater ? 0.5 : 0.05);
+                            spawnMob(MobKind::Boat, tx+0.5, spawnY, tz+0.5);
+                            handled = true;
+                        } else if (iname.find("minecart") != std::string::npos) {
+                            std::uint16_t tstate = world_.getBlock(tx, ty, tz);
+                            const gen::BlockDef* tbd = gen::blockByState(tstate);
+                            std::string tname = tbd ? std::string(tbd->name) : "";
+                            bool isRail = tname.find("rail") != std::string::npos;
+                            if (!isRail) {
+                                tstate = world_.getBlock(tx, ty-1, tz);
+                                tbd = gen::blockByState(tstate);
+                                tname = tbd ? std::string(tbd->name) : "";
+                                isRail = tname.find("rail") != std::string::npos;
+                                if (isRail) spawnMob(MobKind::Minecart, tx+0.5, ty, tz+0.5);
+                                else { spawnItemDrop(sx, sy, sz, s.itemId, 1, dx*.25, .15, dz*.25); }
+                            } else spawnMob(MobKind::Minecart, tx+0.5, ty+0.5, tz+0.5);
+                            handled = true;
+                        } else if (iname.find("shears") != std::string::npos) {
+                            // Shears: shear sheep in front
+                            bool sheared = false;
+                            {
+                                std::lock_guard lk(entsMtx_);
+                                for (auto& m : mobs_) if (m->kind==MobKind::Sheep && !m->sheared) {
+                                    if (std::abs(m->x - (tx+0.5)) < 1.0 && std::abs(m->y - (ty+0.5)) < 1.0 && std::abs(m->z - (tz+0.5)) < 1.0) {
+                                        m->sheared = true;
+                                        WriteBuffer md; md.varint(m->entityId); md.u8(17); md.u8(0); md.u8(0x10); md.u8(255);
+                                        broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);
+                                        // drop wool 1-3
+                                        auto wit = gen::itemIdByName().find("minecraft:white_wool");
+                                        if (wit != gen::itemIdByName().end()) spawnItemDrop(m->x, m->y+0.8, m->z, wit->second, uint8_t(1 + rand()%3), (rand()/(double)RAND_MAX-.5)*.12, 0.12, (rand()/(double)RAND_MAX-.5)*.12);
+                                        sheared = true; break;
+                                    }
+                                }
+                            }
+                            if (sheared) {
+                                if (s.applyDamage(1)) { s = ItemStack::air(); } else { /* keep */ }
+                                blockEntities_.dirty_.insert(key);
+                                broadcastSound("minecraft:entity.sheep.shear", tx+.5, ty+.5, tz+.5, 1.f, 1.f, "neutral");
+                                handled = true;
+                                goto dispenser_done;
+                            }
+                            if (!handled) { spawnItemDrop(sx, sy, sz, s.itemId, 1, dx*.25, .15, dz*.25); handled = true; }
+                        } else if (iname == "minecraft:flint_and_steel") {
+                            std::uint16_t tstate = world_.getBlock(tx, ty, tz);
+                            const gen::BlockDef* tbd = gen::blockByState(tstate);
+                            bool isAir = tstate==0 || (tbd && std::string(tbd->name)=="minecraft:air");
+                            std::uint16_t below = world_.getBlock(tx, ty-1, tz);
+                            const gen::BlockDef* bbd = gen::blockByState(below);
+                            bool belowSolid = below!=0 && bbd && std::string(bbd->name)!="minecraft:air" && std::string(bbd->name)!="minecraft:water";
+                            if (isAir && belowSolid) {
+                                auto fit = gen::blockNameToState().find("minecraft:fire");
+                                if (fit != gen::blockNameToState().end()) {
+                                    std::uint16_t ns = static_cast<std::uint16_t>(fit->second);
+                                    world_.setBlock(tx, ty, tz, ns);
+                                    broadcastBlockChange(tx, ty, tz, ns);
+                                    if (s.applyDamage(1)) s = ItemStack::air();
+                                    broadcastSound("minecraft:item.flintandsteel.use", tx+.5, ty+.5, tz+.5, 1.f, 1.f, "blocks");
+                                    blockEntities_.dirty_.insert(key);
+                                    handled = true;
+                                    goto dispenser_done;
+                                }
+                            }
+                            // tnt ignition
+                            if (tbd && std::string(tbd->name)=="minecraft:tnt") {
+                                explodeAt(tx+0.5, ty+0.5, tz+0.5, 4.f);
+                                if (s.applyDamage(1)) s = ItemStack::air();
+                                blockEntities_.dirty_.insert(key);
+                                handled = true;
+                                goto dispenser_done;
+                            }
+                            if (!handled) { spawnItemDrop(sx, sy, sz, s.itemId, 1, dx*.25, .15, dz*.25); handled = true; }
+                        } else if (iname.find("bone_meal") != std::string::npos) {
+                            std::uint16_t tstate = world_.getBlock(tx, ty, tz);
+                            const gen::BlockDef* tbd = gen::blockByState(tstate);
+                            std::string tname = tbd ? std::string(tbd->name) : "";
+                            bool fertilized = false;
+                            if (tname.find("wheat")!=std::string::npos || tname.find("potatoes")!=std::string::npos || tname.find("carrots")!=std::string::npos || tname.find("beetroots")!=std::string::npos) {
+                                for (auto& [pk,pv] : gen::propsOf(tstate)) if (pk=="age") {
+                                    // Try to set age to max via stateWithProps (age 7 for wheat)
+                                    const gen::BlockDef* bd = gen::blockByName(tname);
+                                    if (bd) {
+                                        std::vector<std::pair<std::string_view,std::string_view>> props;
+                                        for (auto& [k,v] : gen::propsOf(tstate)) if (k!="age") props.emplace_back(k,v);
+                                        props.emplace_back("age", "7");
+                                        std::uint16_t ns = static_cast<std::uint16_t>(gen::stateWithProps(*bd, props));
+                                        if (ns != 0 && ns != tstate) {
+                                            world_.setBlock(tx, ty, tz, ns);
+                                            broadcastBlockChange(tx, ty, tz, ns);
+                                        } else {
+                                            // fallback bump
+                                            std::uint16_t ns2 = tstate + 1;
+                                            world_.setBlock(tx, ty, tz, ns2);
+                                            broadcastBlockChange(tx, ty, tz, ns2);
+                                        }
+                                        fertilized = true; break;
+                                    }
+                                }
+                            }
+                            if (fertilized) {
+                                if (--s.count <= 0) s = ItemStack::air();
+                                blockEntities_.dirty_.insert(key);
+                                broadcastSound("minecraft:item.bone_meal.use", tx+.5, ty+.5, tz+.5, 1.f, 1.f, "blocks");
+                                handled = true;
+                                goto dispenser_done;
+                            }
+                            if (!handled) { spawnItemDrop(sx, sy, sz, s.itemId, 1, dx*.25, .15, dz*.25); handled = true; }
+                        } else if (iname.find("_helmet")!=std::string::npos || iname.find("_chestplate")!=std::string::npos || iname.find("_leggings")!=std::string::npos || iname.find("_boots")!=std::string::npos) {
+                            // Armor dispense: try equip nearby mob/player facing pos
+                            bool equipped = false;
+                            {
+                                std::lock_guard lk(entsMtx_);
+                                for (auto& m : mobs_) {
+                                    if (std::abs(m->x - (tx+0.5)) < 1.2 && std::abs(m->y - (ty+0.5)) < 1.2 && std::abs(m->z - (tz+0.5)) < 1.2) {
+                                        int slot = -1;
+                                        if (iname.find("_helmet")!=std::string::npos) slot = 5;
+                                        else if (iname.find("_chestplate")!=std::string::npos) slot = 4;
+                                        else if (iname.find("_leggings")!=std::string::npos) slot = 3;
+                                        else if (iname.find("_boots")!=std::string::npos) slot = 2;
+                                        if (slot>=2 && slot<=5 && m->equipment[slot].empty()) { m->equipment[slot]=ItemStack::of(s.itemId,1); sendEquipment(*m); equipped=true; break; }
+                                    }
+                                }
+                            }
+                            if (!equipped) {
+                                for (auto& pp : playersSnapshot()) {
+                                    if (std::abs(pp->x - (tx+0.5)) < 1.2 && std::abs(pp->y - (ty+0.5)) < 1.2 && std::abs(pp->z - (tz+0.5)) < 1.2) {
+                                        int slot = -1;
+                                        if (iname.find("_helmet")!=std::string::npos) slot = 8;
+                                        else if (iname.find("_chestplate")!=std::string::npos) slot = 7;
+                                        else if (iname.find("_leggings")!=std::string::npos) slot = 6;
+                                        else if (iname.find("_boots")!=std::string::npos) slot = 5;
+                                        if (slot>=5 && slot<=8 && pp->inv[slot].empty()) { pp->inv[slot]=ItemStack::of(s.itemId,1); resendInventory(*pp); equipped=true; break; }
+                                    }
+                                }
+                            }
+                            if (equipped) {
+                                if (--s.count <= 0) s = ItemStack::air();
+                                blockEntities_.dirty_.insert(key);
+                                broadcastSound("minecraft:item.armor.equip_generic", tx+.5, ty+.5, tz+.5, 1.f, 1.f, "blocks");
+                                handled = true;
+                                goto dispenser_done;
+                            }
+                            if (!handled) { spawnItemDrop(sx, sy, sz, s.itemId, 1, dx*.25, .15, dz*.25); handled = true; }
+                        } else {
+                            if (iname == "minecraft:tnt" || iname.find("tnt") != std::string::npos) {
+                                explodeAt(x + dx + 0.5, y + dy + 0.5, z + dz + 0.5, 4.f);
+                            } else {
+                                spawnItemDrop(sx, sy, sz, s.itemId, 1, dx * .25, .15, dz * .25);
+                            }
+                            handled = true;
+                        }
+                        if (handled) {
+                            if (--s.count <= 0) s = ItemStack::air();
+                            broadcastSound("minecraft:entity.dispenser.dispense", x + .5, y + .5, z + .5, 1.f, 1.f, "blocks");
+                            blockEntities_.dirty_.insert(key);
+                        }
+                        dispenser_done: ;
                     }
-                    if (--s.count <= 0) s = ItemStack::air();
-                    broadcastSound("minecraft:entity.dispenser.dispense",
-                                   x + .5, y + .5, z + .5, 1.f, 1.f,
-                                   "blocks");
-                    blockEntities_.dirty_.insert(key);
-                    break;
                 }
             }
             was = powered;
+        }
+        // flush snapshot copy back to store if any change (hopper push/pull or dispenser)
+        if (blockEntities_.dirty_.count(key)) {
+            if (auto* real = blockEntities_.get(key)) *real = be;
         }
     }
 }
@@ -1624,6 +1866,7 @@ ItemStack* GameServer::containerAt(std::int32_t x, std::int32_t y,
     case BlockEntity::Kind::Chest: countOut = 27; return be->chest.slots;
     case BlockEntity::Kind::Hopper: countOut = 5; return be->generic.slots;
     case BlockEntity::Kind::Dispenser: countOut = 9; return be->generic.slots;
+    case BlockEntity::Kind::Dropper: countOut = 9; return be->generic.slots;
     default: return nullptr;
     }
 }
@@ -3852,10 +4095,11 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
                name == "minecraft:dropper") {
         auto* be = srv_.blockEntities().getAt(x, y, z);
         const bool hopper = name == "minecraft:hopper";
+        const bool dropper = name == "minecraft:dropper";
         if (!be)
             be = &srv_.blockEntities().create(menu->blockKey,
                 hopper ? BlockEntity::Kind::Hopper
-                       : BlockEntity::Kind::Dispenser);
+                       : (dropper ? BlockEntity::Kind::Dropper : BlockEntity::Kind::Dispenser));
         menu->type = hopper ? MenuType::Hopper : MenuType::Dispenser;
         menu->container = be->generic.slots;
         menu->containerCount_ = hopper ? 5 : 9;
@@ -5576,6 +5820,47 @@ void Session::onUseItemOn(ReadBuffer& in) {
             ack(sequence);
             return;
         }
+    }
+    // Plan12 entity: boat / minecart placement via UseItemOn (not a block)
+    if (itemName.find("_boat") != std::string::npos || itemName == "minecraft:boat" || itemName.find("raft") != std::string::npos) {
+        // boat spawns at tx,ty,tz +0.5; check water for proper Y
+        std::uint16_t tSt = srv_.world().getBlock(tx, ty, tz);
+        const gen::BlockDef* tBd = gen::blockByState(tSt);
+        bool isWater = tBd && std::string(tBd->name) == "minecraft:water";
+        double sy = ty + (isWater ? 0.5 : 0.1);
+        srv_.spawnMob(MobKind::Boat, tx+0.5, sy, tz+0.5);
+        if (survival) {
+            auto* mh = &self_->inv[36 + self_->heldSlot];
+            if (--mh->count <= 0) *mh = ItemStack::air();
+            srv_.resendInventory(*self_);
+        }
+        ack(sequence);
+        return;
+    }
+    if (itemName.find("minecart") != std::string::npos) {
+        // minecart requires rail at tx,ty,tz or below
+        std::uint16_t tSt = srv_.world().getBlock(tx, ty, tz);
+        const gen::BlockDef* tBd = gen::blockByState(tSt);
+        std::string tName = tBd ? std::string(tBd->name) : "";
+        int spawnY = ty;
+        if (tName.find("rail") == std::string::npos) {
+            std::uint16_t below = srv_.world().getBlock(tx, ty-1, tz);
+            const gen::BlockDef* bBelow = gen::blockByState(below);
+            std::string bName = bBelow ? std::string(bBelow->name) : "";
+            if (bName.find("rail") != std::string::npos) spawnY = ty;
+            else {
+                ack(sequence);
+                return;
+            }
+        }
+        srv_.spawnMob(MobKind::Minecart, tx+0.5, spawnY+0.1, tz+0.5);
+        if (survival) {
+            auto* mh = &self_->inv[36 + self_->heldSlot];
+            if (--mh->count <= 0) *mh = ItemStack::air();
+            srv_.resendInventory(*self_);
+        }
+        ack(sequence);
+        return;
     }
     std::uint16_t newState = 0;
     const gen::BlockDef* bdef2 = gen::blockByName(itemName);
