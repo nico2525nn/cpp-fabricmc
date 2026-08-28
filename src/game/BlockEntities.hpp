@@ -65,8 +65,7 @@ struct BlockEntity {
     Kind kind = Kind::Chest;
     ChestData chest{};
     FurnaceData furnace{};
-    GenericContainerData generic{};
-    GenericContainerData generic{};      // hopper/dispenser/dropper
+    GenericContainerData generic{};      // hopper/dispenser/dropper/barrel
     BrewingData brewing{};
     bool isDropper() const { return kind == Kind::Dropper; }
     bool isDispenser() const { return kind == Kind::Dispenser; }

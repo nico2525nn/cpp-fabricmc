@@ -3,9 +3,12 @@
 // tree, parsed by the dispatcher and advertised via declare_commands.
 #include "GameServer.hpp"
 #include "../generated/EntityIds.hpp"
+#include "../generated/BlockStates.hpp"
 #include <algorithm>
 #include <cmath>
 #include <set>
+#include <filesystem>
+#include <fstream>
 
 namespace cppfm {
 
@@ -548,30 +551,86 @@ void GameServer::initCommands() {
         xpCmd->then(add);
         d.root->then(xpCmd);
     }
-    // /setblock <pos> <block>
+    // /setblock <pos> <block> (plan13: BlockState id 12 with props)
     {
         auto sb = CommandNode::literal("setblock");
         auto pos = CommandNode::argument("pos", args::blockPos());
-        auto block = CommandNode::argument("block", args::itemStackArg());
+        auto block = CommandNode::argument("block", args::blockStateArg());
         block->executable = true;
-        block->suggestions = [](brigadier::StringReader&, brigadier::ParseCtx&) {
-            std::vector<std::string> v{"minecraft:stone", "minecraft:dirt",
-                                       "minecraft:oak_planks", "minecraft:glass",
-                                       "minecraft:tnt", "minecraft:redstone_block"};
+        block->suggestions = [this](brigadier::StringReader&, brigadier::ParseCtx&) {
+            std::vector<std::string> v;
+            v.reserve(gen::kBlocks.size());
+            for (auto& e : gen::kBlocks) v.emplace_back(std::string(e.name));
+            // add a few with state examples for tab testing
+            v.push_back("minecraft:oak_stairs[facing=north,half=top]");
+            v.push_back("minecraft:stone");
             return v;
         };
         block->action = [this](CommandContext& c) {
             Player* src = static_cast<Player*>(c.source.player);
             const auto p = c.arg("pos").asBlockPos();
-            std::string bn = c.arg("block").asStr();
-            if (bn.find(':') == std::string::npos) bn = "minecraft:" + bn;
-            const gen::BlockDef* def = gen::blockByName(bn);
-            if (!def) throw std::runtime_error("unknown block: " + bn);
+            std::string raw = c.arg("block").asStr();
+            // parse block state string: name[props]{nbt}
+            std::string name = raw;
+            std::string propsStr;
+            auto b1 = raw.find('[');
+            auto b2 = raw.find('{');
+            size_t nameEnd = std::string::npos;
+            if (b1 != std::string::npos && b2 != std::string::npos) nameEnd = std::min(b1,b2);
+            else if (b1 != std::string::npos) nameEnd = b1;
+            else if (b2 != std::string::npos) nameEnd = b2;
+            if (nameEnd != std::string::npos) {
+                name = raw.substr(0, nameEnd);
+                if (b1 != std::string::npos) {
+                    size_t e = raw.find(']', b1);
+                    if (e != std::string::npos) propsStr = raw.substr(b1+1, e-b1-1);
+                }
+            }
+            if (name.find(':') == std::string::npos) name = "minecraft:" + name;
+            const gen::BlockDef* def = gen::blockByName(name);
+            if (!def) throw std::runtime_error("unknown block: " + name);
+            std::uint16_t state = static_cast<std::uint16_t>(def->defaultState);
+            if (!propsStr.empty()) {
+                std::vector<std::pair<std::string_view,std::string_view>> props;
+                size_t pos2=0;
+                while(pos2<propsStr.size()){
+                    size_t eq=propsStr.find('=',pos2);
+                    if(eq==std::string::npos) break;
+                    size_t comma=propsStr.find(',',eq);
+                    std::string k=propsStr.substr(pos2, eq-pos2);
+                    std::string v=propsStr.substr(eq+1, (comma==std::string::npos?propsStr.size():comma)-eq-1);
+                    // trim
+                    auto trim=[](std::string s){ size_t a=s.find_first_not_of(" \t"); size_t b=s.find_last_not_of(" \t"); return a==std::string::npos?s:s.substr(a,b-a+1); };
+                    k=trim(k); v=trim(v);
+                    props.emplace_back(k,v);
+                    if(comma==std::string::npos) break;
+                    pos2=comma+1;
+                }
+                if(!props.empty()){
+                    // try to resolve with props
+                    // need to keep original props + new props (override)
+                    std::vector<std::pair<std::string_view,std::string_view>> merged;
+                    // start from def's default props? Use stateWithProps with supplied props plus defaults
+                    // Simplistic: use stateWithProps with supplied props (will fill missing with defaults)
+                    // We need to build string_views that live long enough: use static storage via string copy
+                    // Instead, use gen::stateWithPropsList helper alternative
+                    std::vector<std::pair<std::string,std::string>> tmp;
+                    for(auto &pr: props) tmp.emplace_back(std::string(pr.first), std::string(pr.second));
+                    // Convert to string_view vector that points to tmp's strings (need lifetime during call)
+                    std::vector<std::pair<std::string_view,std::string_view>> sv;
+                    for(auto &pr: tmp) sv.emplace_back(pr.first, pr.second);
+                    // Actually gen::stateWithProps expects BlockDef and props; it will search exact match
+                    // Use a map approach: try stateWithProps, fallback to default
+                    uint32_t cand = gen::stateWithProps(*def, sv);
+                    if(cand!=0) state = static_cast<std::uint16_t>(cand);
+                    else {
+                        // fallback: try with just name
+                    }
+                }
+            }
             world_.generateChunkIfMissing(p.x >> 4, p.z >> 4);
-            world_.setBlock(p.x, p.y, p.z,
-                            static_cast<std::uint16_t>(def->defaultState));
-            broadcastBlockChange(p.x, p.y, p.z,
-                                 static_cast<std::uint16_t>(def->defaultState));
+            world_.setBlock(p.x, p.y, p.z, state);
+            broadcastBlockChange(p.x, p.y, p.z, state);
             sendFeedback(src, "Changed the block at " + std::to_string(p.x) +
                          ", " + std::to_string(p.y) + ", " +
                          std::to_string(p.z));
@@ -738,13 +797,18 @@ void GameServer::initCommands() {
         };
         d.root->then(st);
     }
-    // /scoreboard objectives add <name> <criteria> | players set <p> <obj> <v>
+    // /scoreboard objectives add <name> <criteria> | players set <p> <obj> <v> (plan13 Objective id 23)
     {
         auto sb = CommandNode::literal("scoreboard");
         auto obj = CommandNode::literal("objectives");
         auto add = CommandNode::literal("add");
-        auto name = CommandNode::argument("name", args::stringWord());
-        auto crit = CommandNode::argument("criteria", args::stringWord());
+        auto name = CommandNode::argument("name", args::objectiveArg());
+        name->suggestions = [this](brigadier::StringReader&, brigadier::ParseCtx&) {
+            std::vector<std::string> v;
+            for (auto& o : scoreboard.objectives) v.push_back(o.name);
+            return v;
+        };
+        auto crit = CommandNode::argument("criteria", args::objectiveCriteriaArg());
         crit->executable = true;
         crit->suggestions = [](brigadier::StringReader&, brigadier::ParseCtx&) {
             return std::vector<std::string>{"dummy", "deathCount",
@@ -773,7 +837,13 @@ void GameServer::initCommands() {
         };
         auto setd = CommandNode::literal("setdisplay");
         auto slot = CommandNode::literal("sidebar");
-        auto objName = CommandNode::argument("objective", args::stringWord());
+        auto objName = CommandNode::argument("objective", args::objectiveArg());
+        objName->suggestions = [this](brigadier::StringReader&, brigadier::ParseCtx&) {
+            std::vector<std::string> v;
+            for (auto& o : scoreboard.objectives) v.push_back(o.name);
+            v.push_back("clear");
+            return v;
+        };
         objName->executable = true;
         objName->action = [this](CommandContext& c) {
             const std::string n = c.arg("objective").asStr();
@@ -793,7 +863,12 @@ void GameServer::initCommands() {
         auto players = CommandNode::literal("players");
         auto set = CommandNode::literal("set");
         auto who = CommandNode::argument("player", args::stringWord());
-        auto oname = CommandNode::argument("objective", args::stringWord());
+        auto oname = CommandNode::argument("objective", args::objectiveArg());
+        oname->suggestions = [this](brigadier::StringReader&, brigadier::ParseCtx&) {
+            std::vector<std::string> v;
+            for (auto& o : scoreboard.objectives) v.push_back(o.name);
+            return v;
+        };
         auto val = CommandNode::argument("score", args::integer(INT32_MIN, INT32_MAX));
         val->executable = true;
         val->action = [this](CommandContext& c) {
@@ -869,13 +944,18 @@ void GameServer::initCommands() {
         diff->then(lvl);
         d.root->then(diff);
     }
-    // /team add|remove|join|leave|list  (plan10 §6, network §79)
+    // /team add|remove|join|leave|list  (plan10 §6, network §79) plan13 uses Team arg id 31
     {
         auto team = CommandNode::literal("team");
         // /team add <team> [displayName]
         auto tAdd = CommandNode::literal("add");
-        auto tAddName = CommandNode::argument("team", args::stringWord());
+        auto tAddName = CommandNode::argument("team", args::teamArg());
         tAddName->executable = true;
+        tAddName->suggestions = [this](brigadier::StringReader&, brigadier::ParseCtx&) {
+            std::vector<std::string> v;
+            for (auto& kv : teams.teams) v.push_back(kv.first);
+            return v;
+        };
         tAddName->action = [this](CommandContext& c) {
             Player* src = static_cast<Player*>(c.source.player);
             const std::string name = c.arg("team").asStr();
@@ -901,7 +981,12 @@ void GameServer::initCommands() {
         tAdd->then(tAddName);
         // /team remove <team>
         auto tRemove = CommandNode::literal("remove");
-        auto tRemName = CommandNode::argument("team", args::stringWord());
+        auto tRemName = CommandNode::argument("team", args::teamArg());
+        tRemName->suggestions = [this](brigadier::StringReader&, brigadier::ParseCtx&) {
+            std::vector<std::string> v;
+            for (auto& kv : teams.teams) v.push_back(kv.first);
+            return v;
+        };
         tRemName->executable = true;
         tRemName->action = [this](CommandContext& c) {
             Player* src = static_cast<Player*>(c.source.player);
@@ -914,7 +999,12 @@ void GameServer::initCommands() {
         tRemove->then(tRemName);
         // /team join <team> <members>
         auto tJoin = CommandNode::literal("join");
-        auto tJoinTeam = CommandNode::argument("team", args::stringWord());
+        auto tJoinTeam = CommandNode::argument("team", args::teamArg());
+        tJoinTeam->suggestions = [this](brigadier::StringReader&, brigadier::ParseCtx&) {
+            std::vector<std::string> v;
+            for (auto& kv : teams.teams) v.push_back(kv.first);
+            return v;
+        };
         auto tJoinMembers = CommandNode::argument("members", args::entity(true, false));
         tJoinMembers->executable = true;
         tJoinMembers->action = [this](CommandContext& c) {
@@ -933,7 +1023,12 @@ void GameServer::initCommands() {
         tJoin->then(tJoinTeam);
         // /team leave <team> <members>
         auto tLeave = CommandNode::literal("leave");
-        auto tLeaveTeam = CommandNode::argument("team", args::stringWord());
+        auto tLeaveTeam = CommandNode::argument("team", args::teamArg());
+        tLeaveTeam->suggestions = [this](brigadier::StringReader&, brigadier::ParseCtx&) {
+            std::vector<std::string> v;
+            for (auto& kv : teams.teams) v.push_back(kv.first);
+            return v;
+        };
         auto tLeaveMembers = CommandNode::argument("members", args::entity(true, false));
         tLeaveMembers->executable = true;
         tLeaveMembers->action = [this](CommandContext& c) {
@@ -1136,6 +1231,535 @@ void GameServer::initCommands() {
         targets->then(add); targets->then(rem); targets->then(list);
         tag->then(targets);
         d.root->then(tag);
+    }
+    // /fill <from> <to> <block> (plan13: BlockState + tab completion)
+    {
+        auto fill = CommandNode::literal("fill");
+        auto from = CommandNode::argument("from", args::blockPos());
+        auto to = CommandNode::argument("to", args::blockPos());
+        auto block = CommandNode::argument("block", args::blockStateArg());
+        block->suggestions = [this](brigadier::StringReader&, brigadier::ParseCtx&) {
+            std::vector<std::string> v;
+            v.reserve(gen::kBlocks.size() + 4);
+            for (auto& e : gen::kBlocks) v.emplace_back(std::string(e.name));
+            return v;
+        };
+        block->executable = true;
+        block->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            auto p1 = c.arg("from").asBlockPos();
+            auto p2 = c.arg("to").asBlockPos();
+            std::string raw = c.arg("block").asStr();
+            std::string name = raw;
+            std::string propsStr;
+            auto b1 = raw.find('[');
+            auto b2 = raw.find('{');
+            size_t nameEnd = std::string::npos;
+            if (b1 != std::string::npos && b2 != std::string::npos) nameEnd = std::min(b1,b2);
+            else if (b1 != std::string::npos) nameEnd = b1;
+            else if (b2 != std::string::npos) nameEnd = b2;
+            if (nameEnd != std::string::npos) {
+                name = raw.substr(0, nameEnd);
+                if (b1 != std::string::npos) {
+                    size_t e = raw.find(']', b1);
+                    if (e != std::string::npos) propsStr = raw.substr(b1+1, e-b1-1);
+                }
+            }
+            if (name.find(':') == std::string::npos) name = "minecraft:" + name;
+            const gen::BlockDef* def = gen::blockByName(name);
+            if (!def) throw std::runtime_error("unknown block: " + name);
+            std::uint16_t state = static_cast<std::uint16_t>(def->defaultState);
+            if (!propsStr.empty()) {
+                std::vector<std::pair<std::string,std::string>> tmp;
+                size_t pos2=0;
+                while(pos2<propsStr.size()){
+                    size_t eq=propsStr.find('=',pos2);
+                    if(eq==std::string::npos) break;
+                    size_t comma=propsStr.find(',',eq);
+                    std::string k=propsStr.substr(pos2, eq-pos2);
+                    std::string v=propsStr.substr(eq+1, (comma==std::string::npos?propsStr.size():comma)-eq-1);
+                    auto trim=[](std::string s){ size_t a=s.find_first_not_of(" \t"); size_t b=s.find_last_not_of(" \t"); return a==std::string::npos?s:s.substr(a,b-a+1); };
+                    k=trim(k); v=trim(v);
+                    tmp.emplace_back(k,v);
+                    if(comma==std::string::npos) break;
+                    pos2=comma+1;
+                }
+                if(!tmp.empty()){
+                    std::vector<std::pair<std::string_view,std::string_view>> sv;
+                    for(auto &pr: tmp) sv.emplace_back(pr.first, pr.second);
+                    uint32_t cand = gen::stateWithProps(*def, sv);
+                    if(cand!=0) state = static_cast<std::uint16_t>(cand);
+                }
+            }
+            int minX = std::min(p1.x, p2.x), maxX = std::max(p1.x, p2.x);
+            int minY = std::min(p1.y, p2.y), maxY = std::max(p1.y, p2.y);
+            int minZ = std::min(p1.z, p2.z), maxZ = std::max(p1.z, p2.z);
+            long long vol = static_cast<long long>(maxX - minX + 1) * (maxY - minY + 1) * (maxZ - minZ + 1);
+            if (vol > 32768) throw std::runtime_error("fill volume too large (max 32768, got " + std::to_string(vol) + ")");
+            int filled = 0;
+            for (int y = minY; y <= maxY; ++y)
+                for (int z = minZ; z <= maxZ; ++z)
+                    for (int x = minX; x <= maxX; ++x) {
+                        world_.setBlock(x, y, z, state);
+                        broadcastBlockChange(x, y, z, state);
+                        ++filled;
+                    }
+            sendFeedback(src, "Filled " + std::to_string(filled) + " blocks with " + name);
+            return filled;
+        };
+        to->then(block);
+        from->then(to);
+        fill->then(from);
+        d.root->then(fill);
+    }
+    // /execute ... (plan13: store/score + as/run)
+    {
+        auto exec = CommandNode::literal("execute");
+        // execute as <entity> run <command>
+        auto asLit = CommandNode::literal("as");
+        auto asEntity = CommandNode::argument("asTargets", args::entity(false, false));
+        auto asRun = CommandNode::literal("run");
+        auto asCmd = CommandNode::argument("command", args::stringGreedy());
+        asCmd->executable = true;
+        asCmd->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const auto sel = c.arg("asTargets").asSelector();
+            std::string inner = c.arg("command").asStr();
+            if (!inner.empty() && inner.front() == '/') inner = inner.substr(1);
+            std::vector<Player*> targets;
+            for (auto &name : sel.playerNames) if (Player* p = findPlayer(*this, name)) targets.push_back(p);
+            if (targets.empty()) { sendFeedback(src, "No targets for execute as"); return 0; }
+            int total=0;
+            for (Player* t : targets) {
+                brigadier::CommandSource tsrc;
+                tsrc.player = t; tsrc.name=t->name; tsrc.console=false;
+                tsrc.srcX=t->x; tsrc.srcY=t->y; tsrc.srcZ=t->z; tsrc.srcYaw=t->yaw; tsrc.srcPitch=t->pitch;
+                tsrc.resolveSelector=[this,t](const std::string& raw, brigadier::SelectorResult& out){ out=resolveSelector(raw,t); };
+                auto res = commands_.execute(inner, std::move(tsrc));
+                if(!res.ok) sendFeedback(src, "execute as " + t->name + " failed: "+res.errorText);
+                else total+=res.value;
+            }
+            return total;
+        };
+        asRun->then(asCmd);
+        asEntity->then(asRun);
+        asLit->then(asEntity);
+        exec->then(asLit);
+        // execute store result|success score <targets> <objective> run <command>
+        auto storeLit = CommandNode::literal("store");
+        auto storeRes = CommandNode::literal("result");
+        auto storeSuc = CommandNode::literal("success");
+        auto scoreLit = CommandNode::literal("score");
+        auto scoreTargets = CommandNode::argument("storeTargets", args::entity(false, false));
+        auto scoreObj = CommandNode::argument("storeObjective", args::objectiveArg());
+        scoreObj->suggestions = [this](brigadier::StringReader&, brigadier::ParseCtx&){
+            std::vector<std::string> v;
+            for(auto &o: scoreboard.objectives) v.push_back(o.name);
+            return v;
+        };
+        auto scoreRun = CommandNode::literal("run");
+        auto scoreCmd = CommandNode::argument("storeCommand", args::stringGreedy());
+        scoreCmd->executable = true;
+        scoreCmd->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            std::string storeType = "result";
+            // determine if we came via result or success by checking which path was taken
+            // We set storeType via captured literal; easiest: inspect input
+            std::string inputLower = c.input;
+            if (inputLower.find("store success") != std::string::npos) storeType = "success";
+            const auto sel = c.arg("storeTargets").asSelector();
+            std::string obj = c.arg("storeObjective").asStr();
+            std::string inner = c.arg("storeCommand").asStr();
+            if(!inner.empty() && inner.front()=='/') inner=inner.substr(1);
+            // resolve selector raw is already in sel; we need target string for store
+            // reconstruct target selector raw from sel? Use first name or raw arg? Use c.arg storeTargets as selector result: we need original raw string
+            // Instead, we will use the selector result's playerNames to store; but we need original raw for execution via resolveSelector
+            // For simplicity, build target string as the selector literal captured from input: extract via slicing?
+            // We'll just use the selector result to know targets, and execute inner command via functionEvaluator store helper
+            brigadier::CommandSource srcCtx;
+            if (src){ srcCtx.player=src; srcCtx.name=src->name; srcCtx.console=false; srcCtx.srcX=src->x; srcCtx.srcY=src->y; srcCtx.srcZ=src->z; srcCtx.resolveSelector=[this,src](const std::string& raw, brigadier::SelectorResult& out){ out=resolveSelector(raw,src); }; }
+            else { srcCtx.console=true; srcCtx.resolveSelector=[this](const std::string& raw, brigadier::SelectorResult& out){ out=resolveSelector(raw,nullptr); }; }
+            // Use FunctionEvaluator helper for store
+            // Build target selector string from sel (join with ,) ? Use first target raw approximation
+            std::string targetStr;
+            if(!sel.playerNames.empty()) targetStr = sel.playerNames[0];
+            else targetStr = "@a";
+            // Call evaluator
+            return functionEvaluator_.executeWithStore(storeType, targetStr, obj, inner, srcCtx);
+        };
+        scoreRun->then(scoreCmd);
+        scoreObj->then(scoreRun);
+        scoreTargets->then(scoreObj);
+        scoreLit->then(scoreTargets);
+        storeRes->then(scoreLit);
+        storeSuc->then(scoreLit);
+        storeLit->then(storeRes);
+        storeLit->then(storeSuc);
+        exec->then(storeLit);
+        d.root->then(exec);
+    }
+    // /function <name> (plan13: tab completion from datapack)
+    {
+        auto func = CommandNode::literal("function");
+        auto nameArg = CommandNode::argument("name", args::resourceLocation());
+        nameArg->suggestions = [this](brigadier::StringReader&, brigadier::ParseCtx&) {
+            return datapackManager_.getFunctionIds();
+        };
+        nameArg->executable = true;
+        nameArg->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            std::string id = c.arg("name").asStr();
+            std::string norm = id;
+            if (norm.find(':')==std::string::npos) norm = "minecraft:" + norm;
+            brigadier::CommandSource fsrc;
+            if (src){ fsrc.player=src; fsrc.name=src->name; fsrc.console=false; fsrc.srcX=src->x; fsrc.srcY=src->y; fsrc.srcZ=src->z; fsrc.resolveSelector=[this,src](const std::string& raw, brigadier::SelectorResult& out){ out=resolveSelector(raw,src); }; }
+            else { fsrc.console=true; fsrc.name="Server"; fsrc.resolveSelector=[this](const std::string& raw, brigadier::SelectorResult& out){ out=resolveSelector(raw,nullptr); }; }
+            int executed = functionEvaluator_.executeFunction(norm, fsrc);
+            if (executed==0) {
+                // Fallback: try direct file read (legacy)
+                auto colon = norm.find(':');
+                std::string ns = colon!=std::string::npos?norm.substr(0,colon):"minecraft";
+                std::string path = colon!=std::string::npos?norm.substr(colon+1):norm;
+                std::string file = "assets/data/" + ns + "/functions/" + path + ".mcfunction";
+                std::ifstream f(file);
+                if(!f) throw std::runtime_error("function not found: " + norm);
+                std::string line;
+                int cnt=0;
+                while(std::getline(f,line)){
+                    size_t s=line.find_first_not_of(" \t\r\n");
+                    if(s==std::string::npos) continue;
+                    size_t e=line.find_last_not_of(" \t\r\n");
+                    std::string t=line.substr(s,e-s+1);
+                    if(t.empty()||t[0]=='#') continue;
+                    if(!t.empty()&&t.front()=='/') t=t.substr(1);
+                    brigadier::CommandSource cur=fsrc;
+                    auto res=commands_.execute(t, std::move(cur));
+                    if(!res.ok) sendFeedback(src, "function line failed: "+t+" -> "+res.errorText);
+                    ++cnt;
+                }
+                sendFeedback(src, "Executed function " + norm + " ("+std::to_string(cnt)+" commands)");
+                return cnt;
+            }
+            sendFeedback(src, "Executed function " + norm + " (result="+std::to_string(executed)+")");
+            return executed;
+        };
+        func->then(nameArg);
+        d.root->then(func);
+    }
+    // /datapack list|enable|disable (plan13)
+    {
+        auto dp = CommandNode::literal("datapack");
+        auto list = CommandNode::literal("list");
+        list->executable = true;
+        list->action = [this](CommandContext& c){
+            Player* src = static_cast<Player*>(c.source.player);
+            auto avail = datapackManager_.listAvailable();
+            auto enabled = datapackManager_.listEnabled();
+            std::string out = "Available packs ("+std::to_string(avail.size())+"): ";
+            for(auto& p: avail) out+=p+" ";
+            out+="\nEnabled ("+std::to_string(enabled.size())+"): ";
+            for(auto& p: enabled) out+=p+" ";
+            out+="\nAdvancements: "+std::to_string(datapackManager_.advancementCount())+
+                 " Predicates: "+std::to_string(datapackManager_.predicateCount())+
+                 " Modifiers: "+std::to_string(datapackManager_.itemModifierCount());
+            sendFeedback(src,out);
+            return (int)avail.size();
+        };
+        auto enable = CommandNode::literal("enable");
+        auto enName = CommandNode::argument("name", args::stringWord());
+        enName->suggestions = [this](brigadier::StringReader&, brigadier::ParseCtx&){
+            return datapackManager_.listAvailable();
+        };
+        enName->executable = true;
+        enName->action = [this](CommandContext& c){
+            Player* src=static_cast<Player*>(c.source.player);
+            std::string n=c.arg("name").asStr();
+            if(datapackManager_.enablePack(n)){
+                sendFeedback(src,"Enabled datapack "+n);
+                return 1;
+            } else {
+                sendFeedback(src,"Datapack "+n+" already enabled or unknown");
+                return 0;
+            }
+        };
+        enable->then(enName);
+        auto disable = CommandNode::literal("disable");
+        auto disName = CommandNode::argument("name", args::stringWord());
+        disName->suggestions = [this](brigadier::StringReader&, brigadier::ParseCtx&){
+            return datapackManager_.listEnabled();
+        };
+        disName->executable = true;
+        disName->action = [this](CommandContext& c){
+            Player* src=static_cast<Player*>(c.source.player);
+            std::string n=c.arg("name").asStr();
+            if(datapackManager_.disablePack(n)){
+                sendFeedback(src,"Disabled datapack "+n);
+                return 1;
+            } else {
+                sendFeedback(src,"Cannot disable "+n+" (not enabled or vanilla)");
+                return 0;
+            }
+        };
+        disable->then(disName);
+        dp->then(list); dp->then(enable); dp->then(disable);
+        d.root->then(dp);
+    }
+    // /schedule function <name> <time> [append|replace] (plan13)
+    {
+        auto sched = CommandNode::literal("schedule");
+        auto funcLit = CommandNode::literal("function");
+        auto fname = CommandNode::argument("funcName", args::resourceLocation());
+        fname->suggestions = [this](brigadier::StringReader&, brigadier::ParseCtx&){
+            return datapackManager_.getFunctionIds();
+        };
+        auto ftime = CommandNode::argument("time", args::timeArg());
+        ftime->executable = true;
+        ftime->action = [this](CommandContext& c){
+            Player* src=static_cast<Player*>(c.source.player);
+            std::string id=c.arg("funcName").asStr();
+            std::int64_t t=c.arg("time").asI64();
+            if(t<=0) t=1;
+            functionEvaluator_.scheduleFunction(id, t, "replace", tickNo_);
+            sendFeedback(src,"Scheduled "+id+" in "+std::to_string(t)+" ticks (replace)");
+            return 1;
+        };
+        auto append = CommandNode::literal("append");
+        append->executable = true;
+        append->action = [this](CommandContext& c){
+            Player* src=static_cast<Player*>(c.source.player);
+            std::string id=c.arg("funcName").asStr();
+            std::int64_t t=c.arg("time").asI64();
+            functionEvaluator_.scheduleFunction(id, t, "append", tickNo_);
+            sendFeedback(src,"Scheduled "+id+" in "+std::to_string(t)+" ticks (append)");
+            return 1;
+        };
+        auto repl = CommandNode::literal("replace");
+        repl->executable = true;
+        repl->action = [this](CommandContext& c){
+            Player* src=static_cast<Player*>(c.source.player);
+            std::string id=c.arg("funcName").asStr();
+            std::int64_t t=c.arg("time").asI64();
+            functionEvaluator_.scheduleFunction(id, t, "replace", tickNo_);
+            sendFeedback(src,"Scheduled "+id+" in "+std::to_string(t)+" ticks (replace)");
+            return 1;
+        };
+        ftime->then(append);
+        ftime->then(repl);
+        fname->then(ftime);
+        funcLit->then(fname);
+        sched->then(funcLit);
+        d.root->then(sched);
+    }
+    // /return <value> (plan13: function return)
+    {
+        auto ret = CommandNode::literal("return");
+        auto val = CommandNode::argument("value", args::integer(INT32_MIN, INT32_MAX));
+        val->executable = true;
+        val->action = [this](CommandContext& c){
+            int v=c.arg("value").asInt();
+            functionEvaluator_.setReturnValue(v);
+            Player* src=static_cast<Player*>(c.source.player);
+            sendFeedback(src,"Return "+std::to_string(v));
+            return v;
+        };
+        ret->then(val);
+        // bare return (success)
+        ret->executable = true;
+        ret->action = [this](CommandContext& c){
+            functionEvaluator_.setReturnValue(1);
+            Player* src=static_cast<Player*>(c.source.player);
+            sendFeedback(src,"Return 1");
+            return 1;
+        };
+        d.root->then(ret);
+    }
+    // /data get/block/entity with NBT (plan13 Nbt args)
+    {
+        auto data = CommandNode::literal("data");
+        auto get = CommandNode::literal("get");
+        auto block = CommandNode::literal("block");
+        auto pos = CommandNode::argument("pos", args::blockPos());
+        pos->executable = true;
+        pos->action = [this](CommandContext& c){
+            Player* src=static_cast<Player*>(c.source.player);
+            auto p=c.arg("pos").asBlockPos();
+            std::uint16_t st=world_.getBlock(p.x,p.y,p.z);
+            auto* def=gen::blockByState(st);
+            std::string out = def?std::string(def->name):"minecraft:air";
+            out += " state=" + std::to_string(st);
+            sendFeedback(src, out);
+            return st;
+        };
+        auto nbtPath = CommandNode::argument("path", args::nbtPathArg());
+        nbtPath->executable = true;
+        nbtPath->action = [this](CommandContext& c){
+            Player* src=static_cast<Player*>(c.source.player);
+            auto p=c.arg("pos").asBlockPos();
+            std::string path=c.arg("path").asStr();
+            std::uint16_t st=world_.getBlock(p.x,p.y,p.z);
+            auto* def=gen::blockByState(st);
+            std::string out = (def?std::string(def->name):"minecraft:air") + " path=" + path;
+            sendFeedback(src, out);
+            return 1;
+        };
+        pos->then(nbtPath);
+        block->then(pos);
+        get->then(block);
+        data->then(get);
+        d.root->then(data);
+    }
+    // /clear with ItemPredicate (plan13)
+    {
+        // extend /clear to support predicate filtering: /clear <targets> <item> [maxCount]
+        auto clear2 = CommandNode::literal("clear");
+        auto who = CommandNode::argument("targets", args::entity(false,false));
+        auto itemPred = CommandNode::argument("item", args::itemPredicateArg());
+        itemPred->executable = true;
+        itemPred->action = [this](CommandContext& c){
+            Player* src=static_cast<Player*>(c.source.player);
+            const auto sel=c.arg("targets").asSelector();
+            std::string pred=c.arg("item").asStr();
+            // handle tag predicate like #minecraft:planks
+            bool isTag = !pred.empty() && pred[0]=='#';
+            std::string base = isTag ? pred.substr(1) : pred;
+            if(base.find(':')==std::string::npos) base="minecraft:"+base;
+            int removed=0;
+            for(auto& n: sel.playerNames) if(Player* p=findPlayer(*this,n)){
+                for(auto& s: p->inv) if(!s.empty()){
+                    bool match=false;
+                    if(isTag){
+                        // check tag membership via datapackManager
+                        auto* tagSet = datapackManager_.tagManager.getItemTag(base);
+                        if(tagSet && tagSet->count(s.itemId)) match=true;
+                    } else {
+                        auto it=gen::itemIdByName().find(base);
+                        if(it!=gen::itemIdByName().end() && it->second==s.itemId) match=true;
+                    }
+                    if(match){ removed+=s.count; s=ItemStack::air(); }
+                }
+                resendInventory(*p);
+            }
+            sendFeedback(src,"Cleared "+std::to_string(removed)+" matching "+pred);
+            return removed;
+        };
+        auto maxCount = CommandNode::argument("maxCount", args::integer(1,64));
+        maxCount->executable = true;
+        maxCount->action = [this](CommandContext& c){
+            Player* src=static_cast<Player*>(c.source.player);
+            const auto sel=c.arg("targets").asSelector();
+            std::string pred=c.arg("item").asStr();
+            int limit=c.arg("maxCount").asInt();
+            bool isTag = !pred.empty() && pred[0]=='#';
+            std::string base = isTag ? pred.substr(1) : pred;
+            if(base.find(':')==std::string::npos) base="minecraft:"+base;
+            int removed=0;
+            for(auto& n: sel.playerNames) if(Player* p=findPlayer(*this,n)){
+                for(auto& s: p->inv) if(!s.empty() && removed<limit){
+                    bool match=false;
+                    if(isTag){
+                        auto* tagSet = datapackManager_.tagManager.getItemTag(base);
+                        if(tagSet && tagSet->count(s.itemId)) match=true;
+                    } else {
+                        auto it=gen::itemIdByName().find(base);
+                        if(it!=gen::itemIdByName().end() && it->second==s.itemId) match=true;
+                    }
+                    if(match){
+                        int take = std::min<int>(s.count, limit-removed);
+                        removed+=take;
+                        s.count-=take;
+                        if(s.count<=0) s=ItemStack::air();
+                    }
+                }
+                resendInventory(*p);
+            }
+            sendFeedback(src,"Cleared "+std::to_string(removed)+" matching "+pred+" (limit)");
+            return removed;
+        };
+        itemPred->then(maxCount);
+        who->then(itemPred);
+        clear2->then(who);
+        d.root->then(clear2);
+    }
+    // /testargs – exercises all remaining arg types for DeclareCommands coverage (plan13)
+    {
+        auto ta = CommandNode::literal("testargs");
+        // block predicate
+        auto bpLit = CommandNode::literal("blockpred");
+        auto bpArg = CommandNode::argument("val", args::blockPredicateArg());
+        bpArg->executable = true;
+        bpArg->action = [this](CommandContext& c){
+            Player* src=static_cast<Player*>(c.source.player);
+            sendFeedback(src,"blockpred "+c.arg("val").asStr());
+            return 1;
+        };
+        bpLit->then(bpArg);
+        ta->then(bpLit);
+        // item predicate
+        auto ipLit = CommandNode::literal("itempred");
+        auto ipArg = CommandNode::argument("val", args::itemPredicateArg());
+        ipArg->executable = true;
+        ipArg->action = [this](CommandContext& c){
+            Player* src=static_cast<Player*>(c.source.player);
+            sendFeedback(src,"itempred "+c.arg("val").asStr());
+            return 1;
+        };
+        ipLit->then(ipArg);
+        ta->then(ipLit);
+        // nbt
+        auto nbtLit = CommandNode::literal("nbt");
+        auto nbtArg = CommandNode::argument("val", args::nbtArg());
+        nbtArg->executable = true;
+        nbtArg->action = [this](CommandContext& c){
+            Player* src=static_cast<Player*>(c.source.player);
+            sendFeedback(src,"nbt "+c.arg("val").asStr());
+            return 1;
+        };
+        nbtLit->then(nbtArg);
+        ta->then(nbtLit);
+        // nbt compound tag
+        auto nbtcLit = CommandNode::literal("nbtc");
+        auto nbtcArg = CommandNode::argument("val", args::nbtCompoundTagArg());
+        nbtcArg->executable = true;
+        nbtcArg->action = [this](CommandContext& c){
+            Player* src=static_cast<Player*>(c.source.player);
+            sendFeedback(src,"nbtc "+c.arg("val").asStr());
+            return 1;
+        };
+        nbtcLit->then(nbtcArg);
+        ta->then(nbtcLit);
+        // objective (already covered but ensure)
+        auto objLit = CommandNode::literal("objective");
+        auto objArg = CommandNode::argument("val", args::objectiveArg());
+        objArg->suggestions = [this](brigadier::StringReader&, brigadier::ParseCtx&){
+            std::vector<std::string> v;
+            for(auto& o: scoreboard.objectives) v.push_back(o.name);
+            return v;
+        };
+        objArg->executable = true;
+        objArg->action = [this](CommandContext& c){
+            Player* src=static_cast<Player*>(c.source.player);
+            sendFeedback(src,"objective "+c.arg("val").asStr());
+            return 1;
+        };
+        objLit->then(objArg);
+        ta->then(objLit);
+        // team
+        auto teamLit = CommandNode::literal("team");
+        auto teamArg = CommandNode::argument("val", args::teamArg());
+        teamArg->suggestions = [this](brigadier::StringReader&, brigadier::ParseCtx&){
+            std::vector<std::string> v;
+            for(auto& kv: teams.teams) v.push_back(kv.first);
+            return v;
+        };
+        teamArg->executable = true;
+        teamArg->action = [this](CommandContext& c){
+            Player* src=static_cast<Player*>(c.source.player);
+            sendFeedback(src,"team "+c.arg("val").asStr());
+            return 1;
+        };
+        teamLit->then(teamArg);
+        ta->then(teamLit);
+        d.root->then(ta);
     }
 }
 

@@ -8,7 +8,6 @@
 #include <functional>
 #include <string>
 #include <vector>
-#include <optional>
 #include "../game/World.hpp"
 #include "../game/GameRules.hpp"
 
@@ -207,50 +206,6 @@ class PortalAgeBehavior : public IBlockBehavior {
 public:
     void tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
               std::uint16_t state, std::int64_t now, GameServer* srv) override;
-};
-
-class CocoaBehavior : public IBlockBehavior {
-public:
-    void tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
-              std::uint16_t state, std::int64_t now, GameServer* srv) override;
-    bool fertilize(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
-                   std::uint16_t state, GameServer* srv) override;
-};
-
-class SweetBerryBehavior : public IBlockBehavior {
-public:
-    void tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
-              std::uint16_t state, std::int64_t now, GameServer* srv) override;
-    bool fertilize(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
-                   std::uint16_t state, GameServer* srv) override;
-};
-
-class NetherWartBehavior : public IBlockBehavior {
-public:
-    void tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
-              std::uint16_t state, std::int64_t now, GameServer* srv) override;
-};
-
-class ChorusFlowerBehavior : public IBlockBehavior {
-public:
-    void tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
-              std::uint16_t state, std::int64_t now, GameServer* srv) override;
-};
-
-class KelpBehavior : public IBlockBehavior {
-public:
-    void tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
-              std::uint16_t state, std::int64_t now, GameServer* srv) override;
-};
-
-struct FlammableEntry { int burnOdds=0; int igniteOdds=0; };
-class FlammableRegistry {
-public:
-    static const FlammableRegistry& instance();
-    std::optional<FlammableEntry> get(const std::string& blockName) const;
-private:
-    FlammableRegistry();
-    std::unordered_map<std::string, FlammableEntry> table_;
 };
 
 } // namespace cppfm
