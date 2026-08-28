@@ -4515,8 +4515,7 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
         menu->containerCount_ = hopper ? 5 : 9;
         menu->containerCount = menu->containerCount_;
         menu->blockEntity = be;
-    } else if (name == "minecraft:furnace" || name == "minecraft:blast_furnace" ||
-               name == "minecraft:smoker") {
+    } else if (name == "minecraft:furnace") {
         auto* be = srv_.blockEntities().getAt(x, y, z);
         if (!be)
             be = &srv_.blockEntities().create(menu->blockKey,
@@ -4525,22 +4524,44 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
         menu->container = be->furnace.slots;
         menu->containerCount = 3;
         menu->blockEntity = be;
+    } else if (name == "minecraft:blast_furnace") {
+        auto* be = srv_.blockEntities().getAt(x, y, z);
+        if (!be)
+            be = &srv_.blockEntities().create(menu->blockKey,
+                                              BlockEntity::Kind::Furnace);
+        menu->type = MenuType::BlastFurnace;
+        menu->container = be->furnace.slots;
+        menu->containerCount = 3;
+        menu->blockEntity = be;
+    } else if (name == "minecraft:smoker") {
+        auto* be = srv_.blockEntities().getAt(x, y, z);
+        if (!be)
+            be = &srv_.blockEntities().create(menu->blockKey,
+                                              BlockEntity::Kind::Furnace);
+        menu->type = MenuType::Smoker;
+        menu->container = be->furnace.slots;
+        menu->containerCount = 3;
+        menu->blockEntity = be;
     } else if (name == "minecraft:crafting_table") {
         menu->type = MenuType::Crafting;
+    } else if (name == "minecraft:crafter") {
+        menu->type = MenuType::Crafter;
+        menu->container = menu->extraSlots;
+        menu->containerCount = 9;
+    } else if (name == "minecraft:cartography_table") {
+        menu->type = MenuType::CartographyTable;
+        menu->container = menu->extraSlots;
+        menu->containerCount = 3;
     } else if (name == "minecraft:enchanting_table") {
         menu->type = MenuType::Enchantment;
         menu->container = menu->extraSlots;
         menu->containerCount = 2;
-    } else if (name.find("anvil") != std::string::npos) {
     } else if (name == "minecraft:anvil" || name == "minecraft:chipped_anvil" ||
                name == "minecraft:damaged_anvil") {
         menu->type = MenuType::Anvil;
         menu->container = menu->extraSlots;
         menu->containerCount = 3;
     } else if (name == "minecraft:brewing_stand") {
-        menu->type = MenuType::Brewing;
-        menu->container = menu->extraSlots;
-        menu->containerCount = 5;
         auto* be = srv_.blockEntities().getAt(x, y, z);
         if (!be)
             be = &srv_.blockEntities().create(menu->blockKey,
@@ -4557,7 +4578,6 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
         menu->type = MenuType::Grindstone;
         menu->container = menu->extraSlots;
         menu->containerCount = 3;
-    } else if (name.find("smithing_table") != std::string::npos) {
     } else if (name == "minecraft:smithing_table") {
         menu->type = MenuType::Smithing;
         menu->container = menu->extraSlots;
@@ -4570,25 +4590,16 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
         menu->type = MenuType::Loom;
         menu->container = menu->extraSlots;
         menu->containerCount = 4;
+    } else if (name == "minecraft:lectern") {
+        menu->type = MenuType::Lectern;
+        menu->container = menu->extraSlots;
+        menu->containerCount = 1;
     } else if (name == "minecraft:barrel") {
         auto* be = srv_.blockEntities().getAt(x, y, z);
-        if (!be) be = &srv_.blockEntities().create(menu->blockKey, BlockEntity::Kind::Chest);
+        if (!be) be = &srv_.blockEntities().create(menu->blockKey, BlockEntity::Kind::Barrel);
         menu->type = MenuType::Barrel;
         menu->container = be->chest.slots;
         menu->containerCount = 27;
-        menu->blockEntity = be;
-    } else if (name.find("shulker_box") != std::string::npos) {
-        auto* be = srv_.blockEntities().getAt(x, y, z);
-        if (!be) be = &srv_.blockEntities().create(menu->blockKey, BlockEntity::Kind::Chest);
-        menu->type = MenuType::ShulkerBox;
-        menu->container = be->chest.slots;
-        menu->containerCount = 27;
-        if (!be)
-            be = &srv_.blockEntities().create(menu->blockKey,
-                                              BlockEntity::Kind::Barrel);
-        menu->type = MenuType::Barrel;
-        menu->container = be->chest.slots;
-        menu->containerCount = ChestData::kSlots;
         menu->blockEntity = be;
     } else if (name.find("shulker_box") != std::string::npos) {
         auto* be = srv_.blockEntities().getAt(x, y, z);
@@ -4601,7 +4612,7 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
         menu->blockEntity = be;
     } else return;
 
-    // Open Screen packet — plan7 MenuLogic: proper titles for Enchantment/Anvil/Brewing etc.
+    // Open Screen packet — vanilla titles per MenuType
     {
         WriteBuffer b;
         b.varint(menu->windowId);
@@ -4610,37 +4621,30 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
         switch(menu->type) {
             case MenuType::Chest: title="Chest"; break;
             case MenuType::Furnace: title="Furnace"; break;
+            case MenuType::BlastFurnace: title="Blast Furnace"; break;
+            case MenuType::Smoker: title="Smoker"; break;
             case MenuType::Crafting: title="Crafting"; break;
-            case MenuType::Enchantment: title="Enchant"; break;
-            case MenuType::Anvil: title="Repair & Name"; break;
+            case MenuType::Crafter: title="Crafter"; break;
+            case MenuType::CartographyTable: title="Cartography Table"; break;
+            case MenuType::Enchantment: title="Enchanting"; break;
+            case MenuType::Anvil: title="Anvil"; break;
             case MenuType::Brewing: title="Brewing Stand"; break;
             case MenuType::Stonecutter: title="Stonecutter"; break;
             case MenuType::Grindstone: title="Grindstone"; break;
             case MenuType::Smithing: title="Smithing Table"; break;
             case MenuType::Beacon: title="Beacon"; break;
             case MenuType::Loom: title="Loom"; break;
+            case MenuType::Lectern: title="Lectern"; break;
             case MenuType::Barrel: title="Barrel"; break;
             case MenuType::ShulkerBox: title="Shulker Box"; break;
             case MenuType::Hopper: title="Hopper"; break;
             case MenuType::Dispenser: title="Dispenser"; break;
+            case MenuType::Merchant: title="Villager"; break;
+            case MenuType::Generic9x1: title="Chest"; break;
+            case MenuType::Generic9x2: title="Chest"; break;
+            case MenuType::Generic9x4: title="Chest"; break;
+            case MenuType::Generic9x6: title="Chest"; break;
             default: title="Container"; break;
-        const char* title = "Chest";
-        switch (menu->type) {
-        case MenuType::Chest: title = "Chest"; break;
-        case MenuType::Furnace: title = "Furnace"; break;
-        case MenuType::Crafting: title = "Crafting"; break;
-        case MenuType::Hopper: title = "Hopper"; break;
-        case MenuType::Dispenser: title = "Dispenser"; break;
-        case MenuType::Barrel: title = "Barrel"; break;
-        case MenuType::ShulkerBox: title = "Shulker Box"; break;
-        case MenuType::Enchantment: title = "Enchanting"; break;
-        case MenuType::Anvil: title = "Anvil"; break;
-        case MenuType::Brewing: title = "Brewing"; break;
-        case MenuType::Stonecutter: title = "Stonecutter"; break;
-        case MenuType::Grindstone: title = "Grindstone"; break;
-        case MenuType::Smithing: title = "Smithing"; break;
-        case MenuType::Beacon: title = "Beacon"; break;
-        case MenuType::Loom: title = "Loom"; break;
         }
         nbt::writeTextComponent(b, title);
         conn_->sendPacket(pl::sc::OpenScreen, b);
@@ -4681,7 +4685,7 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
                 try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
             }
         }
-    } else if (openMenu_->type == MenuType::Furnace) {
+    } else if (openMenu_->type == MenuType::Furnace || openMenu_->type == MenuType::BlastFurnace || openMenu_->type == MenuType::Smoker) {
         if (openMenu_->blockEntity && openMenu_->blockEntity->kind == BlockEntity::Kind::Furnace) {
             auto &f = openMenu_->blockEntity->furnace;
             const int props[4] = {f.cookProgress, f.cookTotal, f.burnTicks, f.burnDuration};
@@ -4694,7 +4698,6 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
             }
         }
     }
-}
 }
 
 void Session::closeOpenMenu(bool sendPacketToClient) {
