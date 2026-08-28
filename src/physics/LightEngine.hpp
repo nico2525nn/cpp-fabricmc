@@ -17,9 +17,11 @@
 
 namespace cppfm {
 
-// LightUpdateQueue: batching for cross-chunk light updates (plan10 §2)
-// Collects dirty chunk keys and expands to 3×3 neighbourhood to ensure
-// sky-light propagation across boundaries is sent atomically via UpdateLight.
+// LightUpdateQueue: batching for cross-chunk light updates (plan10 §2, plan20 §5 W10)
+// Collects dirty chunk keys and expands once to 3×3 neighbourhood (single expansion, was double).
+// vanilla LevelLightEngine queues dirty and expands once; LightEngine::drain() now unifies
+// base = dirtyChunks ∪ pendingSkyRebuild_ ∪ skyDirtyExtra_ and expands once via hasChunk||hasSkyLightCache.
+// markAndNeighbors is legacy helper kept for callers that need immediate 3×3 (drain uses unified expanded set).
 struct LightUpdateQueue {
     std::unordered_set<std::int64_t> dirty;
     void mark(std::int32_t cx, std::int32_t cz) { dirty.insert(chunkKey(cx, cz)); }
