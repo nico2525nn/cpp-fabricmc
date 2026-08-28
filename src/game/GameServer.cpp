@@ -1921,9 +1921,9 @@ void GameServer::hoppersTick() {
             }
         }
 
-        // ---- dispenser/dropper: eject when powered (edge-triggered) per-item plan12 §9/§10
+        // ---- dispenser/dropper: eject when powered (edge-triggered) per-item plan12 §9/§10 + QC (plan18 §3)
         if (be.kind == BlockEntity::Kind::Dispenser) {
-            bool powered = redstone_->isPoweredHere(x, y, z);
+            bool powered = redstone_->isPoweredHere(x, y, z) || redstone_->isPoweredHere(x, y+1, z);
             bool& was = dispenserPower_[key];
             if (powered && !was) {
                 // detect dropper vs dispenser by world block name
@@ -6604,10 +6604,24 @@ void Session::onUseItemOn(ReadBuffer& in) {
                 bool canPlace = true;
                 if (srv_.gameRules().contains("doFireTick") && !srv_.gameRules().getBool("doFireTick")) canPlace = false;
                 if (canPlace) {
-                    // plan12 §7 soul_fire on soul_sand/soil
+                    // plan18 §2 soul_fire via tag (strict: soul_fire_base_blocks)
                     std::uint16_t belowSt = srv_.world().getBlock(tx, ty-1, tz);
                     const gen::BlockDef* belowDef = gen::blockByState(belowSt);
-                    bool soulBase = belowDef && (std::string(belowDef->name)=="minecraft:soul_sand" || std::string(belowDef->name)=="minecraft:soul_soil");
+                    bool soulBase = false;
+                    if (belowDef) {
+                        auto &tags = srv_.tagManager_.blockTags;
+                        auto it = tags.find("minecraft:soul_fire_base_blocks");
+                        if (it != tags.end()) {
+                            auto nit = gen::blockNameToState().find(std::string(belowDef->name));
+                            if (nit != gen::blockNameToState().end()) {
+                                uint32_t defId = static_cast<uint32_t>(nit->second);
+                                soulBase = it->second.count(defId) > 0;
+                            }
+                        }
+                        if (!soulBase) {
+                            soulBase = std::string(belowDef->name)=="minecraft:soul_sand" || std::string(belowDef->name)=="minecraft:soul_soil";
+                        }
+                    }
                     std::string fireName = soulBase ? "minecraft:soul_fire" : "minecraft:fire";
                     auto it = gen::blockNameToState().find(fireName);
                     if (it == gen::blockNameToState().end()) it = gen::blockNameToState().find("minecraft:fire");
@@ -6841,13 +6855,13 @@ void Session::onUseItemOn(ReadBuffer& in) {
     }
 
     if (srv_.world().getBlock(tx, ty, tz) != 0 || heldItem.empty()) {
-        // toggling an existing door? (hinge & powered strict B5/B6)
+        // toggling an existing door? (hinge & powered strict B5/B6 — plan18 §1)
         const std::uint16_t clickedState = srv_.world().getBlock(x, y, z);
         const gen::BlockDef* cdef = gen::blockByState(clickedState);
         if (cdef && cdef->name.size() > 5 &&
             cdef->name.rfind("_door", cdef->name.size() - 5) != std::string::npos) {
-            // iron doors cannot be opened by hand, only redstone
-            bool isIron = std::string(cdef->name).find("iron_door") != std::string::npos;
+            // plan18 §1 Door powered: BlockSetType.IRON (iron_door) cannot be opened by hand, copper can (BlockSetType.COPPER)
+            bool isIron = std::string(cdef->name) == "minecraft:iron_door";
             if(isIron){
                 ack(sequence);
                 return;

@@ -90,7 +90,9 @@ void FluidSim::apply(std::int32_t x, std::int32_t y, std::int32_t z,
     if (kindInt < 0) return;
     const Kind kind = kindInt == 0 ? Kind::Water : Kind::Lava;
     const bool isSource = level == 0;
-    const int interval = kind == Kind::Water ? kWaterInterval : kLavaInterval;
+    const bool isNether = world_.dimensionId() == -1;
+    const int interval = kind == Kind::Water ? kWaterInterval : (isNether ? 10 : kLavaInterval);
+    const int maxLevel = (kind == Kind::Lava ? (isNether ? 7 : 6) : 7);
 
     auto solidifyCheck = [&](std::int32_t nx, std::int32_t ny, std::int32_t nz) -> bool {
         const std::uint16_t ns = world_.getBlock(nx, ny, nz);
@@ -167,13 +169,13 @@ void FluidSim::apply(std::int32_t x, std::int32_t y, std::int32_t z,
             if (nl == 0) best = -1;
             else best = std::min(best, nl);
         }
-        int lavaStep = world_.dimensionId()==-1 ? 1 : 2;
+        int lavaStep = isNether ? 1 : 2;
         int want;
         if (best == -1) want = 1;
         else if (best >= 99) want = -2;
         else want = best + (kind == Kind::Water ? 1 : lavaStep);
 
-        if (want == -2 || want > kMaxRunLevel) {
+        if (want == -2 || want > maxLevel) {
             if (world_.getBlock(x, y, z) != 0)
                 world_.setBlock(x, y, z, 0);
             static constexpr int DX2[4] = {1,-1,0,0};
@@ -189,10 +191,10 @@ void FluidSim::apply(std::int32_t x, std::int32_t y, std::int32_t z,
         (void)fedByFall;
     }
 
-    if (isSource || level < kMaxRunLevel || level == 8) {
-        int lavaStep2 = world_.dimensionId()==-1 ? 1 : 2;
+    if (isSource || level < maxLevel || level == 8) {
+        int lavaStep2 = isNether ? 1 : 2;
         const int nextLevel = level == 8 ? 1 : level + (kind == Kind::Water ? 1 : lavaStep2);
-        if (nextLevel <= kMaxRunLevel) {
+        if (nextLevel <= maxLevel) {
             static constexpr int DX3[4] = {1,-1,0,0};
             static constexpr int DZ3[4] = {0,0,1,-1};
             for (int d = 0; d < 4; ++d) {
