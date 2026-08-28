@@ -1239,16 +1239,19 @@ void GameServer::spawnMob(MobKind kind, double x, double y, double z) {
     if (kind==MobKind::Slime || kind==MobKind::MagmaCube) {
         mob->health = MobEntity::slimeHealthForSize(mob->slimeSize);
     }
-    // plan16: Horse variant random (vanilla HorseEntity random health 15-30, variant 0..6)
+    // plan16: Horse variant random (vanilla HorseEntity random health 15-30, variant 0..34 = 7 colors *5 markings) — plan18 polish strict 35
     if (kind==MobKind::Horse) {
-        mob->horseVariant = rand() % 7; // color/markings variant
+        int color = rand() % 7; // 0..6
+        int marking = rand() % 5; // 0..4
+        mob->horseVariant = color * 5 + marking; // 0..34
         mob->horseJumpStrength = 0.4f + (rand()/(float)RAND_MAX)*0.6f; // 0.4..1.0
         mob->health = 15.0f + (rand() % 16); // 15..30 vanilla random
     }
-    // plan14 §4: VillagerData init (profession/level/type)
+    // plan14 §4: VillagerData init (profession/level/type) — plan18 polish: NITWIT 1/12 random per Yarn VillagerProfession NITWIT
     if (kind==MobKind::Villager) {
         mob->villagerData.type = static_cast<VillagerData::Type>(rand()%7);
-        mob->villagerData.profession = VillagerData::FARMER;
+        if (rand() % 12 == 0) mob->villagerData.profession = VillagerData::NITWIT;
+        else mob->villagerData.profession = VillagerData::FARMER;
         mob->villagerData.level = 1;
         mob->villagerLevel = 1;
         mob->villagerXp = 0;
@@ -1256,14 +1259,15 @@ void GameServer::spawnMob(MobKind kind, double x, double y, double z) {
         mob->villagerLastRestockDay = -1;
         mob->restockUntil = 0;
     }
-    // plan17 LOW: sheep woolColor random per wiki 81.8% white, 5% black/gray/light_gray, 3% brown (was always white)
+    // plan17 LOW: sheep woolColor random per wiki 81.8% white, 5% black/gray/light_gray, 3% brown, 0.164% pink (was always white) — plan18 polish refine
     if (kind==MobKind::Sheep) {
         int r = rand() % 1000;
         if (r < 818) mob->woolColor = 0; // white 81.8%
         else if (r < 868) mob->woolColor = 15; // black 5%
         else if (r < 918) mob->woolColor = 7; // gray 5%
         else if (r < 968) mob->woolColor = 8; // light_gray 5%
-        else mob->woolColor = 12; // brown 3% (remainder includes pink etc simplified)
+        else if (r < 998) mob->woolColor = 12; // brown 3%
+        else mob->woolColor = 6; // pink 0.2% (~0.164% vanilla)
         // set sheared metadata false initially
     }
     mob->x = x; mob->y = y; mob->z = z;
@@ -7131,6 +7135,46 @@ void Session::onUseItem(ReadBuffer& in) {
             }
             ack(sequence);
             return;
+        }
+        // plan18 polish: throwable projectiles via UseItem (snowball/egg/ender_pearl) — vanilla UseItem right-click air
+        if (!sl.empty()) {
+            std::string n = sl.name();
+            bool isPearl = n.find("ender_pearl")!=std::string::npos;
+            bool isSnow  = n.find("snowball")!=std::string::npos;
+            bool isEgg   = n=="minecraft:egg";
+            if (isPearl || isSnow || isEgg) {
+                if (isPearl && srv_.tickNow() - self_->lastEnderPearlTick < 20) {
+                    // still on cooldown — notify
+                    auto pidIt = gen::itemIdByName().find("minecraft:ender_pearl");
+                    if (pidIt!=gen::itemIdByName().end() && self_->conn) {
+                        WriteBuffer cd; cd.varint((int32_t)pidIt->second); cd.varint(20 - (int)(srv_.tickNow() - self_->lastEnderPearlTick));
+                        try{ self_->conn->sendPacket(proto::pl::sc::SetCooldown, cd);}catch(...){}
+                    }
+                    ack(sequence); return;
+                }
+                double yawRad = self_->yaw * 3.14159265/180.0;
+                double pitchRad = self_->pitch * 3.14159265/180.0;
+                double vx = -std::sin(yawRad)*std::cos(pitchRad)*1.5;
+                double vy = -std::sin(pitchRad)*1.5;
+                double vz =  std::cos(yawRad)*std::cos(pitchRad)*1.5;
+                ProjectileKind pk = isPearl? ProjectileKind::EnderPearl : (isSnow? ProjectileKind::Snowball : ProjectileKind::Egg);
+                srv_.spawnProjectile(pk, self_->x, self_->y+1.6, self_->z, vx, vy, vz, self_->entityId, true);
+                if (isPearl) {
+                    self_->lastEnderPearlTick = srv_.tickNow();
+                    if (self_->conn) {
+                        auto pidIt = gen::itemIdByName().find("minecraft:ender_pearl");
+                        if (pidIt!=gen::itemIdByName().end()){
+                            WriteBuffer cd; cd.varint((int32_t)pidIt->second); cd.varint(20);
+                            try{ self_->conn->sendPacket(proto::pl::sc::SetCooldown, cd);}catch(...){}
+                        }
+                    }
+                }
+                if (self_->gamemode!=1) {
+                    if (--sl.count <=0) sl = ItemStack::air();
+                    srv_.resendInventory(*self_);
+                }
+                ack(sequence); return;
+            }
         }
         if (!sl.empty() && self_->food < 20) {
             std::string iname = sl.name();
