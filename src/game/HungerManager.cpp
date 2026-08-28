@@ -149,13 +149,13 @@ void HungerManager::tickRegenAndStarve(Player& p, int64_t tickNo, GameServer& sr
     // access via GameServer difficulty if available
     try { diff = srv.difficultyPublic(); } catch(...) { diff = "normal"; }
 
-    // Fast healing with saturation when food==20 and saturation>0
+    // Fast healing with saturation when food==20 and saturation>0 — plan18 §10: 1.5 saturation per 10t
     if (naturalRegeneration && p.saturation > 0.f && p.food >= FULL_FOOD_LEVEL && p.health > 0.f && p.health < 20.f) {
         ++p.foodTickTimer;
         if (p.foodTickTimer >= FAST_HEALING_INTERVAL) {
             p.health = std::min(20.f, p.health + 1.f);
             p.exhaustion += EXHAUSTION_PER_HEAL;
-            p.saturation = std::max(0.f, p.saturation - 1.f);
+            p.saturation = std::max(0.f, p.saturation - 1.5f);
             // saturation fast heal also consumes exhaustion; foodTickTimer reset
             p.foodTickTimer = 0;
             srv.sendSetHealth(p);
