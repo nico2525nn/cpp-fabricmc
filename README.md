@@ -46,14 +46,14 @@ proven **byte-identical to a real reference server's output** by golden tests.
 
 ## What does *not* work (yet) — see `docs/MISSING_FEATURES_1_21_4.md` for the full 90-row audit
 
-Post-smoke-80, ~6 `PARTIAL` / 0 `TODO` remain (mostly polish, post-plan13):
-- `Trial Chambers`, `Pale Garden`, `Creaking`, `Bundles` 1.21.5, `RaidOmen`/`TrialOmen` duration, `DataComponents` 1.20.5+ `minecraft:enchantments` NBT shape, remaining `Brain` wild `BreedGoal`/`Villager` profession polish.
+Post-smoke-80, **0 `PARTIAL` / 0 `TODO`** — all 80 rows DONE (post-plan14 `BreedGoal`/`Villager`/`SpawnEgg`/`Brain`):
+- Remaining polish (non-80): `Trial Chambers`, `Pale Garden`, `Creaking`, `Bundles` 1.21.5, `RaidOmen`/`TrialOmen` duration, `DataComponents` 1.20.5+ `minecraft:enchantments` NBT shape.
 
 - **Fabric mods cannot run inside a C++ process.** Mods are JVM bytecode loaded
   through the Fabric Loader; "Fabric-compatible" here means *protocol-compatible
   with what an unmodded Fabric server puts on the wire*.
 
-Strict smoke test `tests/test_smoke_80.cpp:1` fails on each `TODO`/`PARTIAL` until fixed; run `> ./build/test_smoke_80 ./build/cppfm` (400s timeout) — currently ~78 ok / ~2 FAIL (expected polish `Trial Chambers`/`Pale Garden`).
+Strict smoke test `tests/test_smoke_80.cpp:1` fails on each `TODO`/`PARTIAL` until fixed; run `> ./build/test_smoke_80 ./build/cppfm` (400s timeout) — currently **80/80 PASS expected** (all 80 DONE).
 
 ## Clean-room methodology (important)
 
