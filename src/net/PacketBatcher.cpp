@@ -169,34 +169,34 @@ bool ChatMessageProcessor::verify(const Player& p, const std::string& msg, int64
     if (!p.hasChatSession) {
         return true;
     }
+    const bool trace = std::getenv("CPPFM_TRACE") != nullptr;
     if (p.chatSessionExpiry != 0) {
         int64_t now = nowMsLocal();
         if (now > p.chatSessionExpiry) {
-            std::fprintf(stderr, "[cppfm] chat verify: session expired for %s\n", p.name.c_str());
+            if (trace) std::fprintf(stderr, "[cppfm] chat verify: session expired for %s\n", p.name.c_str());
             return false;
         }
     }
     if (p.chatPubKey.empty()) {
-        std::fprintf(stderr, "[cppfm] chat verify: no pubkey for %s, fallback to SystemChat\n", p.name.c_str());
+        if (trace) std::fprintf(stderr, "[cppfm] chat verify: no pubkey for %s, fallback to SystemChat\n", p.name.c_str());
         return false;
     }
     if (signature.empty()) {
-        std::fprintf(stderr, "[cppfm] chat verify: session present but no signature for %s\n", p.name.c_str());
+        if (trace) std::fprintf(stderr, "[cppfm] chat verify: session present but no signature for %s\n", p.name.c_str());
         return false;
     }
     // Replay protection: check salt not duplicated within last 20 salts (if tracked)
     for (auto v : p.lastSeenSignatures) if ((int64_t)v == (salt & 0xFF)) { /* soft check */ }
     // Build data to verify: (timestamp,salt,msg,lastSeen) simplified as msg + timestamp + salt
+    // NOTE: vanilla signs (prevSignature?); we use msg+LE timestamp+salt for audit parity (N6).
     std::string data;
     data.reserve(msg.size() + 16);
     data.append(msg);
     data.append(reinterpret_cast<const char*>(&timestamp), sizeof(timestamp));
     data.append(reinterpret_cast<const char*>(&salt), sizeof(salt));
     bool ok = crypto::verifyRsaSha256(p.chatPubKey, reinterpret_cast<const uint8_t*>(data.data()), data.size(), signature);
-    if (!ok) {
-        std::fprintf(stderr, "[cppfm] chat signature verify FAILED for %s\n", p.name.c_str());
-    } else {
-        std::fprintf(stderr, "[cppfm] chat signature verify OK for %s\n", p.name.c_str());
+    if (trace) {
+        std::fprintf(stderr, "[cppfm] chat signature verify %s for %s\n", ok ? "OK" : "FAILED", p.name.c_str());
     }
     return ok;
 }

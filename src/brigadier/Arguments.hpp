@@ -1,7 +1,10 @@
-// Arguments: typed parsed values + argument types with wire properties.
+// Arguments: typed parsed values + argument types with wire properties (48 parsers).
 //
-// Parser ids match the 1.21.4 vanilla registry order (verified against
-// community protocol documentation). Each ArgumentType knows how to:
+// Parser ids match Minecraft Java 1.21.4 vanilla registry order 0-53 (verified
+// against PrismarineJS minecraft-data 1.21.4 protocol.json + Yarn 1.21.4).
+// Strict mapping (plan15): 17 Style=18 / Message=19 / Nbt=20 / NbtTag=21 etc
+// through 48 Heightmap=49 / LootTable=50 / LootPredicate=51 / LootModifier=52.
+// Each ArgumentType knows how to:
 //   1. write its declare_commands property blob (writeProps), and
 //   2. parse itself out of a StringReader into an ArgValue (parse).
 #pragma once
