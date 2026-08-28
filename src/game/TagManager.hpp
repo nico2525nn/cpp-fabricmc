@@ -42,6 +42,13 @@ public:
     void applyToRecipeTags(std::unordered_map<std::string, std::unordered_set<std::uint32_t>>& recipeTags) const {
         for (auto& [k,v] : itemTags) for (auto id: v) recipeTags[k].insert(id);
     }
+    bool isBlockInTag(const std::string& tag, const std::string& blockName) const {
+        auto it = blockTags.find(tag);
+        if(it==blockTags.end()) return false;
+        auto nit = gen::blockNameToState().find(blockName);
+        if(nit==gen::blockNameToState().end()) return false;
+        return it->second.count(static_cast<std::uint32_t>(nit->second))>0;
+    }
 
 private:
     std::unordered_map<std::string, std::vector<std::string>> pendingRefs_;

@@ -835,15 +835,7 @@ static bool isInfiniburnBlock(const World& w, std::int32_t x, std::int32_t y, st
     if(!bd) return false;
     std::string name(bd->name);
     if(srv){
-        auto &tags = srv->tagManager_.blockTags;
-        auto checkTag = [&](const std::string& tag)->bool{
-            auto it = tags.find(tag);
-            if(it==tags.end()) return false;
-            auto nit = gen::blockNameToState().find(name);
-            if(nit==gen::blockNameToState().end()) return false;
-            uint32_t defId = static_cast<uint32_t>(nit->second);
-            return it->second.count(defId)>0;
-        };
+        auto checkTag = [&](const std::string& tag)->bool{ return srv->tagManager_.isBlockInTag(tag, name); };
         // plan17 §6: per-dimension tag check (vanilla FireBlock isInfiniteBurn per dim)
         std::int8_t dim = w.dimensionId();
         if(dim==0){
@@ -872,17 +864,7 @@ static bool isSoulBaseBlock(const World& w, std::int32_t x, std::int32_t y, std:
     const gen::BlockDef* bd = gen::blockByState(below);
     if(!bd) return false;
     std::string name(bd->name);
-    if(srv){
-        auto &tags = srv->tagManager_.blockTags;
-        auto it = tags.find("minecraft:soul_fire_base_blocks");
-        if(it!=tags.end()){
-            auto nit = gen::blockNameToState().find(name);
-            if(nit!=gen::blockNameToState().end()){
-                uint32_t defId = static_cast<uint32_t>(nit->second);
-                if(it->second.count(defId)) return true;
-            }
-        }
-    }
+    if(srv && srv->tagManager_.isBlockInTag("minecraft:soul_fire_base_blocks", name)) return true;
     return name=="minecraft:soul_sand" || name=="minecraft:soul_soil";
 }
 
