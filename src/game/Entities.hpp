@@ -7,6 +7,9 @@
 #include <vector>
 #include <array>
 #include <unordered_set>
+#include <unordered_map>
+#include <algorithm>
+#include <cstdio>
 #include "../generated/EntityIds.hpp"
 #include "../generated/ItemIds.hpp"
 #include "Items.hpp"
@@ -100,6 +103,38 @@ struct MobStats {
     std::uint32_t xpDrop;
 };
 
+// plan14 §4: VillagerData profession/level/type (1-5, 7 types, 15 professions)
+struct VillagerData {
+    enum Type : std::uint8_t { PLAINS=0, DESERT, SAVANNA, SNOW, SWAMP, JUNGLE, TAIGA };
+    enum Profession : std::uint8_t { NONE=0, ARMORER, BUTCHER, CARTOGRAPHER, CLERIC, FARMER, FISHERMAN, FLETCHER, LEATHERWORKER, LIBRARIAN, MASON, SHEPHERD, TOOLSMITH, WEAPONSMITH };
+    int level = 1; // 1..5
+    Type type = PLAINS;
+    Profession profession = FARMER;
+};
+
+// plan14 §4: Gossip reputation per UUID (trading discounts, hero_of_village)
+struct Gossip {
+    std::unordered_map<std::string,int> rep; // hex uuid -> reputation
+    void add(const std::array<std::uint8_t,16>& uuid, int delta){
+        char buf[33]; for(int i=0;i<16;++i) snprintf(buf+i*2,3,"%02x", uuid[i]); buf[32]=0;
+        rep[std::string(buf)] += delta;
+    }
+    void addHex(const std::string& hex, int delta){ rep[hex] += delta; }
+    int get(const std::array<std::uint8_t,16>& uuid) const {
+        char buf[33]; for(int i=0;i<16;++i) snprintf(buf+i*2,3,"%02x", uuid[i]); buf[32]=0;
+        auto it=rep.find(std::string(buf)); return it==rep.end()?0:it->second;
+    }
+    int getHex(const std::string& hex) const { auto it=rep.find(hex); return it==rep.end()?0:it->second; }
+    // decay towards 0 every 100 ticks, remove zeros
+    void tickDecay(){
+        for(auto it=rep.begin(); it!=rep.end();){
+            if(it->second>0) { --it->second; if(it->second==0) it=rep.erase(it); else ++it; }
+            else if(it->second<0){ ++it->second; if(it->second==0) it=rep.erase(it); else ++it; }
+            else it=rep.erase(it);
+        }
+    }
+};
+
 inline const MobStats& mobStats(MobKind k) {
     static const MobStats table[] = {
         {"minecraft:pig",            10.f, 0.10f, 0.f, false, false, "minecraft:porkchop", 1, 3, "minecraft:carrot",          1},
@@ -189,11 +224,14 @@ struct MobEntity {
     std::int64_t lastTeleportTick = -10000;
     bool isBabyVal = false;
     std::unordered_set<std::string> tags;        // /tag (plan10 §6)
-    // plan6 extensions
+    // plan14 §4: Villager trading profession/level/restock/Gossip
+    VillagerData villagerData;
     std::int32_t villagerXp = 0;
-    std::int32_t villagerLevel = 1;
-    std::int32_t gossip = 0;
+    std::int32_t villagerLevel = 1; // mirror villagerData.level for compat
+    Gossip gossip;
     std::int64_t restockUntil = 0;
+    void syncVillagerLevel(){ villagerData.level = std::clamp(villagerLevel,1,5); }
+    void setVillagerLevel(int lvl){ villagerLevel = std::clamp(lvl,1,5); villagerData.level = villagerLevel; }
     std::int64_t witherSkullCooldown = 0;
     int dragonPhase = 0; // 0 circling, 1 approaching, 2 perching/breath, 3 takeoff
     std::int64_t dragonPhaseUntil = 0;
