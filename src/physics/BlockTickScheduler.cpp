@@ -198,6 +198,7 @@ static bool isCropBlock(const gen::BlockDef* d) {
     return n.find("wheat")!=std::string::npos || n.find("carrots")!=std::string::npos ||
            n.find("potatoes")!=std::string::npos || n.find("beetroots")!=std::string::npos;
 }
+// plan19 §5 B7 farming growthSpeed strict: diagonal /4 and adjacent /2 per Yarn CropBlock (was -0.5 +/1.2)
 static float growthSpeed(World& w, std::int32_t x, std::int32_t y, std::int32_t z) {
     float f = 1.0f;
     for (int dx=-1; dx<=1; ++dx) for (int dz=-1; dz<=1; ++dz) {
@@ -206,9 +207,9 @@ static float growthSpeed(World& w, std::int32_t x, std::int32_t y, std::int32_t 
         if (!bd) continue;
         if (std::string(bd->name)!="minecraft:farmland") continue;
         int moist = getMoisture(bs);
-        f += (moist>0 ? 3.0f : 1.0f);
-        // diagonal contributes quarter? vanilla divides by 4 for diagonals, but we keep simple
-        if (dx!=0 && dz!=0) f -= 0.5f; // small adjust
+        float contrib = (moist>0 ? 3.0f : 1.0f);
+        if (dx!=0 && dz!=0) contrib /= 4.0f;
+        f += contrib;
     }
     // adjacent crop penalty
     bool hasAdjacentCrop = false;
@@ -224,7 +225,7 @@ static float growthSpeed(World& w, std::int32_t x, std::int32_t y, std::int32_t 
         if(dx==0&&dz==0) continue;
         if(dx!=0 && dz!=0){
             auto* nb = gen::blockByState(w.getBlock(x+dx, y, z+dz));
-            if (isCropBlock(nb)) { f /= 1.2f; break; }
+            if (isCropBlock(nb)) { f /= 2.0f; break; }
         }
     }
     if (f<1) f=1;
@@ -469,6 +470,7 @@ std::int32_t BambooBehavior::findBaseY(const World& w, std::int32_t x, std::int3
 void GrassBlockBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state, std::int64_t now, GameServer* srv) {
     randomTick(w,x,y,z,state,now,srv);
 }
+// plan19 §3 B4 grass snowy strict: snow + snow_block (was only snow)
 void GrassBlockBehavior::randomTick(World& w, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state, std::int64_t now, GameServer* srv) {
     (void)now;
     if (srv) {
@@ -513,8 +515,7 @@ void FarmlandBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32
                 if (bs==0) continue;
                 const gen::BlockDef* bd = gen::blockByState(bs);
                 if (!bd) continue;
-                if (std::string(bd->name).find("water")!=std::string::npos) {
-                    // check level if present? any water counts
+                if (std::string(bd->name)=="minecraft:water") {
                     hasWater = true;
                 }
             }
@@ -826,6 +827,7 @@ bool FireBehavior::isFlammable(const std::string& blockName) const {
     return false;
 }
 
+// plan19 §6 B12/B13 fire strict: infiniburn via TagManager per dimension (was hard-coded 19)
 static bool isInfiniburnBlock(const World& w, std::int32_t x, std::int32_t y, std::int32_t z, GameServer* srv){
     std::uint16_t below = w.getBlock(x, y-1, z);
     if(below==0) return false;
@@ -863,6 +865,7 @@ static bool isInfiniburnBlock(const World& w, std::int32_t x, std::int32_t y, st
     if(w.dimensionId()==1 && name=="minecraft:bedrock") return true;
     return false;
 }
+// plan19 §6 B13 soul fire strict: via soul_fire_base_blocks tag (was hard-coded 2)
 static bool isSoulBaseBlock(const World& w, std::int32_t x, std::int32_t y, std::int32_t z, GameServer* srv){
     std::uint16_t below = w.getBlock(x, y-1, z);
     if(below==0) return false;
