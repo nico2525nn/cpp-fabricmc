@@ -356,6 +356,142 @@ void FarmlandBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32
     }
 }
 
+// -------------------------------------------------------- Cocoa
+void CocoaBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
+                         std::uint16_t state, std::int64_t now, GameServer* srv) {
+    (void)now; (void)srv;
+    int age=0; for(auto&[k,v]: gen::propsOf(state)) if(k=="age") age=std::atoi(std::string(v).c_str());
+    if(age>=2) return;
+    if((rand()%5)!=0) return;
+    const gen::BlockDef* d=gen::blockByState(state); if(!d) return;
+    // require jungle_log adjacent per facing
+    std::string facing="north"; for(auto&[k,v]: gen::propsOf(state)) if(k=="facing") facing=std::string(v);
+    int dx=0,dz=0; if(facing=="north") dz=-1; else if(facing=="south") dz=1; else if(facing=="west") dx=-1; else if(facing=="east") dx=1;
+    auto below = w.getBlock(x+dx,y,z+dz);
+    auto* bd=gen::blockByState(below);
+    if(!bd || std::string(bd->name)!="minecraft:jungle_log") return;
+    std::vector<std::pair<std::string_view,std::string_view>> props;
+    for(auto&[k,v]: gen::propsOf(state)) if(k!="age") props.emplace_back(k,v);
+    props.emplace_back("age", std::to_string(age+1));
+    w.setBlock(x,y,z, static_cast<std::uint16_t>(gen::stateWithProps(*d, props)));
+}
+bool CocoaBehavior::fertilize(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
+                              std::uint16_t state, GameServer* srv){
+    int age=0; for(auto&[k,v]: gen::propsOf(state)) if(k=="age") age=std::atoi(std::string(v).c_str());
+    if(age>=2) return false;
+    const gen::BlockDef* d=gen::blockByState(state); if(!d) return false;
+    std::vector<std::pair<std::string_view,std::string_view>> props;
+    for(auto&[k,v]: gen::propsOf(state)) if(k!="age") props.emplace_back(k,v);
+    props.emplace_back("age","2");
+    w.setBlock(x,y,z, static_cast<std::uint16_t>(gen::stateWithProps(*d, props)));
+    (void)srv; return true;
+}
+void SweetBerryBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
+                              std::uint16_t state, std::int64_t now, GameServer* srv){
+    (void)now;(void)srv;
+    int age=0; for(auto&[k,v]: gen::propsOf(state)) if(k=="age") age=std::atoi(std::string(v).c_str());
+    if(age>=3) return;
+    int chance = age<2?33:50;
+    if((rand()%100)>=chance) return;
+    const gen::BlockDef* d=gen::blockByState(state); if(!d) return;
+    std::vector<std::pair<std::string_view,std::string_view>> props;
+    for(auto&[k,v]: gen::propsOf(state)) if(k!="age") props.emplace_back(k,v);
+    props.emplace_back("age", std::to_string(age+1));
+    w.setBlock(x,y,z, static_cast<std::uint16_t>(gen::stateWithProps(*d, props)));
+}
+bool SweetBerryBehavior::fertilize(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
+                                   std::uint16_t state, GameServer* srv){
+    int age=0; for(auto&[k,v]: gen::propsOf(state)) if(k=="age") age=std::atoi(std::string(v).c_str());
+    if(age>=3) return false;
+    const gen::BlockDef* d=gen::blockByState(state); if(!d) return false;
+    std::vector<std::pair<std::string_view,std::string_view>> props;
+    for(auto&[k,v]: gen::propsOf(state)) if(k!="age") props.emplace_back(k,v);
+    props.emplace_back("age", std::to_string(age+1));
+    w.setBlock(x,y,z, static_cast<std::uint16_t>(gen::stateWithProps(*d, props)));
+    (void)srv; return true;
+}
+void NetherWartBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
+                              std::uint16_t state, std::int64_t now, GameServer* srv){
+    (void)now;(void)srv;
+    int age=0; for(auto&[k,v]: gen::propsOf(state)) if(k=="age") age=std::atoi(std::string(v).c_str());
+    if(age>=3) return;
+    if((rand()%10)!=0) return;
+    auto below=w.getBlock(x,y-1,z); auto* bd=gen::blockByState(below);
+    if(!bd || std::string(bd->name)!="minecraft:soul_sand") return;
+    const gen::BlockDef* d=gen::blockByState(state); if(!d) return;
+    std::vector<std::pair<std::string_view,std::string_view>> props;
+    for(auto&[k,v]: gen::propsOf(state)) if(k!="age") props.emplace_back(k,v);
+    props.emplace_back("age", std::to_string(age+1));
+    w.setBlock(x,y,z, static_cast<std::uint16_t>(gen::stateWithProps(*d, props)));
+}
+void ChorusFlowerBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
+                                std::uint16_t state, std::int64_t now, GameServer* srv){
+    (void)now;(void)srv;
+    int age=0; for(auto&[k,v]: gen::propsOf(state)) if(k=="age") age=std::atoi(std::string(v).c_str());
+    if(age>=5) {
+        // dead -> replace with dead chorus plant? keep air for simplicity
+        // 1/5 chance to grow branch when <5
+        return;
+    }
+    if((rand()%5)!=0) return;
+    const gen::BlockDef* d=gen::blockByState(state); if(!d) return;
+    std::vector<std::pair<std::string_view,std::string_view>> props;
+    for(auto&[k,v]: gen::propsOf(state)) if(k!="age") props.emplace_back(k,v);
+    props.emplace_back("age", std::to_string(age+1));
+    w.setBlock(x,y,z, static_cast<std::uint16_t>(gen::stateWithProps(*d, props)));
+    // occasional vertical growth: place chorus_plant below? simplified: grow up 1
+    if(age+1<5 && w.getBlock(x,y+1,z)==0 && (rand()%2)==0){
+        auto plantIt = gen::blockNameToState().find("minecraft:chorus_plant");
+        if(plantIt!=gen::blockNameToState().end()){
+            w.setBlock(x,y+1,z, static_cast<std::uint16_t>(plantIt->second));
+        }
+    }
+}
+bool ChorusFlowerBehavior::fertilize(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
+                                     std::uint16_t state, GameServer* srv){ (void)w;(void)x;(void)y;(void)z;(void)state;(void)srv; return false; }
+
+void KelpBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
+                        std::uint16_t state, std::int64_t now, GameServer* srv){
+    (void)now;(void)srv;
+    int age=0; for(auto&[k,v]: gen::propsOf(state)) if(k=="age") age=std::atoi(std::string(v).c_str());
+    if(age>=25) return;
+    if(w.getBlock(x,y+1,z)!=0) return;
+    // must be water above
+    auto above = w.getBlock(x,y+1,z);
+    // if above is air, check water at current? kelp is waterlogged
+    // For simplicity, allow growth if above is water or air with water underlying
+    if((rand()%10)!=0) return;
+    const gen::BlockDef* d=gen::blockByState(state); if(!d) return;
+    // 10% growth per random tick when age<25
+    // grow one up
+    auto waterIt = gen::blockNameToState().find("minecraft:water");
+    uint16_t waterSt = waterIt!=gen::blockNameToState().end()?static_cast<uint16_t>(waterIt->second):0;
+    if(w.getBlock(x,y+1,z)==0) {
+        // place water + kelp?
+        w.setBlock(x,y+1,z, state); // same kelp state with age+1
+        // increment age on original
+        std::vector<std::pair<std::string_view,std::string_view>> props;
+        for(auto&[k,v]: gen::propsOf(state)) if(k!="age") props.emplace_back(k,v);
+        props.emplace_back("age", std::to_string(age+1));
+        w.setBlock(x,y,z, static_cast<std::uint16_t>(gen::stateWithProps(*d, props)));
+    }
+    (void)waterSt;
+}
+bool KelpBehavior::fertilize(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
+                             std::uint16_t state, GameServer* srv){
+    // bonemeal grows kelp by 1
+    if(w.getBlock(x,y+1,z)!=0) return false;
+    int age=0; for(auto&[k,v]: gen::propsOf(state)) if(k=="age") age=std::atoi(std::string(v).c_str());
+    const gen::BlockDef* d=gen::blockByState(state); if(!d) return false;
+    std::vector<std::pair<std::string_view,std::string_view>> props;
+    for(auto&[k,v]: gen::propsOf(state)) if(k!="age") props.emplace_back(k,v);
+    props.emplace_back("age", std::to_string(std::min(25, age+1)));
+    w.setBlock(x,y,z, static_cast<std::uint16_t>(gen::stateWithProps(*d, props)));
+    auto kelpIt=gen::blockNameToState().find("minecraft:kelp");
+    if(kelpIt!=gen::blockNameToState().end()) w.setBlock(x,y+1,z, static_cast<uint16_t>(kelpIt->second));
+    (void)srv; return true;
+}
+
 // -------------------------------------------------------- Fire
 
 FlammableRegistry::FlammableRegistry() {
@@ -389,6 +525,19 @@ std::optional<FlammableEntry> FlammableRegistry::get(const std::string& blockNam
 
 bool FireBehavior::isFlammable(const std::string& blockName) const {
     return FlammableRegistry::instance().get(blockName).has_value();
+    if (blockName.find("planks") != std::string::npos) return true;
+    if (blockName.find("_log") != std::string::npos) return true;
+    if (blockName.find("leaves") != std::string::npos) return true;
+    if (blockName.find("wool") != std::string::npos) return true;
+    if (blockName == "minecraft:hay_block") return true;
+    if (blockName.find("bamboo")!=std::string::npos) return true;
+    if (blockName.find("vine")!=std::string::npos) return true;
+    if (blockName == "minecraft:tnt") return true;
+    if (blockName.find("fence")!=std::string::npos) return true;
+    if (blockName.find("carpet")!=std::string::npos) return true;
+    // also coal block, etc? include broader
+    if (blockName.find("scaffolding")!=std::string::npos) return true;
+    return false;
 }
 
 void FireBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
