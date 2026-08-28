@@ -14,7 +14,7 @@ public:
     // Apply damage to a stack, respecting Unbreaking enchantment.
     // Returns true if the stack was destroyed (damage >= max).
     // If hasUnbreaking, each point of damage has a chance to be ignored.
-    // Vanilla Yarn EnchantmentHelper.shouldDamage: tools 1/(lvl+1), armor 60% + 40%/(lvl+1) simplified to same 1/(lvl+1) per plan13 §4.
+    // Vanilla Yarn EnchantmentHelper.shouldDamage: tools 1/(lvl+1), armor 60% + 40%/(lvl+1) per plan17 §10 E9 (vanilla armor: 60% ignore + 1/(lvl+1)).
     static bool applyDamage(ItemStack& stack, int amount) {
         if (stack.empty() || amount<=0) return false;
         int maxd = ItemStack::maxDamageFor(stack.itemId);
@@ -22,8 +22,11 @@ public:
         int unb = stack.unbreakingLevel();
         if (unb>0) {
             int effective = 0;
+            bool isArmor = stack.isArmor();
             for (int i=0;i<amount;++i) {
-                // plan13 §4: 1/(lvl+1) for both armor and tools (armor has 60%* variant but simplified same)
+                if (isArmor) {
+                    if ((rand() % 100) < 60) continue; // 60% ignore for armor (vanilla)
+                }
                 if (rand() % (unb + 1) == 0) effective++;
             }
             amount = effective;
@@ -31,11 +34,13 @@ public:
         }
         return stack.applyDamage(amount);
     }
-    // Unbreaking check helper for shouldDamage (mirrors Yarn)
+    // Unbreaking check helper for shouldDamage (mirrors Yarn EnchantmentHelper.shouldDamage)
     static bool shouldDamage(const ItemStack& stack) {
         int unb = stack.unbreakingLevel();
         if (unb<=0) return true;
-        // plan13 §4: tools random 1/(lvl+1), armor same simplified
+        if (stack.isArmor()) {
+            if ((rand() % 100) < 60) return false; // 60% ignore for armor
+        }
         return rand() % (unb + 1) == 0;
     }
 
