@@ -15,8 +15,8 @@ struct FoodInfo { int food; float saturation; };
 
 class HungerManager {
 public:
-    // vanilla exhaustion values
-    static constexpr float EXHAUST_WALK = 0.01f;
+    // vanilla exhaustion values — plan15 strict: walk 0 per HungerConstants (was 0.01)
+    static constexpr float EXHAUST_WALK = 0.0f;
     static constexpr float EXHAUST_SPRINT = 0.10f;
     static constexpr float EXHAUST_JUMP = 0.05f;
     static constexpr float EXHAUST_SPRINT_JUMP = 0.20f;
@@ -25,6 +25,13 @@ public:
     static constexpr float EXHAUST_SWIM = 0.01f;
     static constexpr float EXHAUST_EAT = 0.005f;
     static constexpr float EXHAUST_BOW = 0.01f;
+    // plan15 strict constants per HungerConstants
+    static constexpr int FAST_HEALING_INTERVAL = 10;
+    static constexpr int SLOW_HEALING_INTERVAL = 80;
+    static constexpr int SLOW_HEALING_FOOD_LEVEL = 18;
+    static constexpr int FULL_FOOD_LEVEL = 20;
+    static constexpr int STARVING_FOOD_LEVEL = 0;
+    static constexpr float EXHAUSTION_PER_HEAL = 6.0f;
 
     // Exhaustion -> saturation/food conversion and regen/starve
     static void addExhaustion(Player& p, float amount);
