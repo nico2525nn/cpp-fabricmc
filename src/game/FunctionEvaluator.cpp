@@ -9,15 +9,24 @@ namespace cppfm {
 std::vector<std::string> FunctionEvaluator::getFunctionLines(const std::string& id) {
     std::string norm = id;
     if (norm.find(':') == std::string::npos) norm = "minecraft:" + norm;
-    // First try DatapackManager if available
+    // Plan14 §6 polish: prefer DatapackManager cache (populated in GameServer::init) for
+    // fast lookup and for world/datapacks support. Trims comments and leading '/'.
     if (server_) {
-        // Try via datapack manager
-        // Need to access server's datapackManager if exists
-        // For now, check file system directly as fallback
-        // Use server's datapackManager if we add it to GameServer
-        // Attempt to find via function storage in datapackManager
-        // We'll use dynamic check: if server has datapackManager member, we need to include it
-        // For now, handle filesystem fallback
+        if (auto* cached = server_->datapackManager().getFunction(norm)) {
+            std::vector<std::string> out;
+            out.reserve(cached->size());
+            for (auto& raw : *cached) {
+                size_t start = raw.find_first_not_of(" \t\r\n");
+                if (start == std::string::npos) continue;
+                size_t end = raw.find_last_not_of(" \t\r\n");
+                std::string trimmed = raw.substr(start, end - start + 1);
+                if (trimmed.empty() || trimmed[0] == '#') continue;
+                if (!trimmed.empty() && trimmed.front() == '/') trimmed = trimmed.substr(1);
+                out.push_back(std::move(trimmed));
+            }
+            if (!out.empty()) return out;
+            // fall through to filesystem if cached entry was empty
+        }
     }
     // Try filesystem: assets/data/<ns>/functions/<path>.mcfunction
     auto colon = norm.find(':');
@@ -87,23 +96,8 @@ int FunctionEvaluator::executeFunction(const std::string& id, brigadier::Command
         std::fprintf(stderr, "[cppfm] function recursion limit reached for %s\n", id.c_str());
         return 0;
     }
-    // Check scheduledMap for replace?
     auto lines = getFunctionLines(id);
-    // Also try DatapackManager's functions if empty
-    if (lines.empty() && server_) {
-        // try via server's datapackManager if present (we will add member datapackManager_)
-        // Use a hack: try to get via server->getDatapackManager() if exists
-        // For now, we will attempt to look up via a global or via server's method if available
-        // We'll try to use server->datapackManager() if it exists (need to add)
-        try {
-            // This will fail to compile if not present, so we need conditional
-        } catch (...) {}
-    }
     if (lines.empty()) {
-        // fallback: if we have datapackManager loaded functions, check there
-        // We need server to expose datapackManager; we will add accessor
-        // For now, just return 0
-        // Try to dispatch as if function not found -> error
         return 0;
     }
     recursionDepth_++;
