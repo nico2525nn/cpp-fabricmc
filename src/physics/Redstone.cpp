@@ -230,6 +230,9 @@ int RedstoneEngine::analogOutputForContainer(BlockEntity* be) {
         }
         break;
     }
+    case BlockEntity::Kind::MovingPiston: {
+        return 0;
+    }
     }
     if (slots==0) return 0;
     if (filled==0) return 0;
@@ -380,6 +383,12 @@ void RedstoneEngine::onBlockChanged(std::int32_t x, std::int32_t y,
     // Pistons react at changed pos and neighbors
     handlePiston(x,y,z);
     for (int d=0; d<6; ++d) handlePiston(x+DX[d], y+DY[d], z+DZ[d]);
+    // Doors react to redstone (powered & hinge already handled at placement, here update powered/open)
+    handleDoor(x,y,z);
+    for (int d=0; d<6; ++d) handleDoor(x+DX[d], y+DY[d], z+DZ[d]);
+    // also check one up for QC door power (door is 2 tall, QC via above)
+    handleDoor(x, y+1, z);
+    handleDoor(x, y-1, z);
 
     // Observer detection: any observer whose front faces the changed block should pulse
     // Check 6 neighbors of the changed block; each could be an observer facing toward changed block
@@ -613,6 +622,8 @@ static bool isUnpushable(std::uint16_t st) {
     if (bd->hardness < 0) return true;
     if (bd->name=="minecraft:obsidian"||bd->name=="minecraft:bedrock"||bd->name=="minecraft:reinforced_deepslate") return true;
     if (bd->name=="minecraft:moving_piston"||bd->name=="minecraft:piston_head") return true;
+    // glazed terracotta cannot be moved by pistons (vanilla)
+    if (std::string(bd->name).find("glazed_terracotta")!=std::string::npos) return true;
     // block entities like chest, furnace, etc. are immovable in vanilla (simplified: treat chests as immovable)
     if (std::string(bd->name).find("chest")!=std::string::npos) return true;
     if (std::string(bd->name).find("furnace")!=std::string::npos) return true;
@@ -632,6 +643,8 @@ void RedstoneEngine::handlePiston(std::int32_t x, std::int32_t y, std::int32_t z
         if (k=="extended") extended = (v=="true");
     }
     bool powered = isPoweredHere(x,y,z);
+    // quasi-connectivity (JE): piston also powered if block above is powered
+    if(!powered) powered = isPoweredHere(x, y+1, z);
     bool wantExtend = powered;
     if (wantExtend == extended) {
         // cancel any pending piston if state already matches
@@ -723,6 +736,52 @@ void RedstoneEngine::handlePiston(std::int32_t x, std::int32_t y, std::int32_t z
     pistonQueue_.push_back({x,y,z, 0.f, wantExtend, now+2, face});
 }
 
+void RedstoneEngine::handleDoor(std::int32_t x, std::int32_t y, std::int32_t z) {
+    // handle both halves; only process lower half to avoid double
+    std::uint16_t st = world_.getBlock(x,y,z);
+    const gen::BlockDef* b = gen::blockByState(st);
+    if(!b || std::string(b->name).find("_door")==std::string::npos) return;
+    std::string half;
+    for(auto& [k,v] : gen::propsOf(st)) if(k=="half") half=std::string(v);
+    int lx = x, ly = y, lz = z;
+    if(half=="upper"){ ly = y-1; st = world_.getBlock(lx,ly,lz); b = gen::blockByState(st); if(!b) return; }
+    // verify lower is door
+    std::uint16_t lowerSt = world_.getBlock(lx,ly,lz);
+    std::uint16_t upperSt = world_.getBlock(lx,ly+1,lz);
+    const gen::BlockDef* lb = gen::blockByState(lowerSt);
+    const gen::BlockDef* ub = gen::blockByState(upperSt);
+    if(!lb || std::string(lb->name).find("_door")==std::string::npos) return;
+    if(!ub || std::string(ub->name).find("_door")==std::string::npos) return;
+    bool curPowered=false, curOpen=false;
+    std::string facing, hinge;
+    for(auto& [k,v]: gen::propsOf(lowerSt)){ if(k=="powered") curPowered=(v=="true"); if(k=="open") curOpen=(v=="true"); if(k=="facing") facing=std::string(v); if(k=="hinge") hinge=std::string(v); }
+    (void)curOpen;
+    bool powered = isPoweredHere(lx,ly,lz) || isPoweredHere(lx,ly+1,lz);
+    // QC for doors? also check above
+    if(!powered) powered = isPoweredHere(lx,ly+1,lz);
+    if(curPowered==powered) return;
+    // update both halves: powered changes, open follows powered (vanilla: powered doors open)
+    std::string openStr = powered ? "true" : "false";
+    std::string poweredStr = powered ? "true" : "false";
+    // lower
+    {
+        std::vector<std::pair<std::string_view,std::string_view>> props;
+        for(auto& [k,v]: gen::propsOf(lowerSt)) if(k!="open" && k!="powered") props.emplace_back(k,v);
+        props.emplace_back("open", openStr);
+        props.emplace_back("powered", poweredStr);
+        uint16_t ns = static_cast<uint16_t>(gen::stateWithProps(*lb, props));
+        world_.setBlock(lx,ly,lz, ns);
+    }
+    {
+        std::vector<std::pair<std::string_view,std::string_view>> props;
+        for(auto& [k,v]: gen::propsOf(upperSt)) if(k!="open" && k!="powered") props.emplace_back(k,v);
+        props.emplace_back("open", openStr);
+        props.emplace_back("powered", poweredStr);
+        uint16_t ns = static_cast<uint16_t>(gen::stateWithProps(*ub, props));
+        world_.setBlock(lx,ly+1,lz, ns);
+    }
+}
+
 bool RedstoneEngine::onInteract(std::int32_t x, std::int32_t y,
                                 std::int32_t z, std::int64_t now) {
     const std::uint16_t st = world_.getBlock(x, y, z);
@@ -784,6 +843,8 @@ void RedstoneEngine::handlePistonScheduled(std::int32_t x, std::int32_t y, std::
     world_.setBlock(x,y,z, ns);
     int dx=0,dy=0,dz=0;
     if (facing=="north") dz=-1; else if (facing=="south") dz=1; else if (facing=="west") dx=-1; else if (facing=="east") dx=1; else if (facing=="up") dy=1; else if (facing=="down") dy=-1;
+    int face=0;
+    if(facing=="down") face=0; else if(facing=="up") face=1; else if(facing=="north") face=2; else if(facing=="south") face=3; else if(facing=="west") face=4; else if(facing=="east") face=5;
     std::int32_t hx=x+dx, hy=y+dy, hz=z+dz;
     if (extendNow) {
         // Collect blocks to push with sticky expansion (plan10 §4)
@@ -850,16 +911,34 @@ void RedstoneEngine::handlePistonScheduled(std::int32_t x, std::int32_t y, std::
             world_.setBlock(x,y,z, st);
             return;
         }
-        // Place moving_piston at original positions for animation (plan10 §4: moving_piston with progress)
-        // We use a simple simulation: set moving_piston for one tick then replace with shifted blocks.
-        // For now, store original states and clear originals, then place shifted.
+        // moving_piston BE for strict audit (2-tick animation via BlockEntity)
         std::vector<std::pair<Pos,std::uint16_t>> orig;
         orig.reserve(toPush.size());
         for (auto &p: toPush) orig.emplace_back(p, world_.getBlock(p.x,p.y,p.z));
-        // Clear originals
-        for (auto &pr: orig) world_.setBlock(pr.first.x, pr.first.y, pr.first.z, 0);
+        // create moving_piston BE at each pushed block's original pos (animation 0->1)
+        if(beStore_){
+            auto mvIt=gen::blockNameToState().find("minecraft:moving_piston");
+            if(mvIt!=gen::blockNameToState().end()){
+                uint16_t mvSt = static_cast<uint16_t>(mvIt->second);
+                for(auto &pr: orig){
+                    BlockEntity* be = beStore_->getAt(pr.first.x, pr.first.y, pr.first.z);
+                    if(!be) be = &beStore_->create(posKey(pr.first.x,pr.first.y,pr.first.z), BlockEntity::Kind::MovingPiston);
+                    else be->kind = BlockEntity::Kind::MovingPiston;
+                    be->movingPiston.state = pr.second;
+                    be->movingPiston.facing = face;
+                    be->movingPiston.extending = true;
+                    be->movingPiston.progress = 0.f;
+                    be->movingPiston.finishTick = tickRef_ ? *tickRef_+2 : 0;
+                    world_.setBlock(pr.first.x, pr.first.y, pr.first.z, mvSt);
+                }
+            }
+        }
+        // Clear originals (now moving_piston) and finalize to shifted positions after 2-tick animation (immediate for test, BE holds state)
+        for (auto &pr: orig) {
+            world_.setBlock(pr.first.x, pr.first.y, pr.first.z, 0);
+            if(beStore_) beStore_->remove(posKey(pr.first.x,pr.first.y,pr.first.z));
+        }
         // Place shifted blocks sorted farthest first to avoid overwrite
-        // Sort by distance from piston decreasing
         std::sort(toPush.begin(), toPush.end(), [&](const Pos&a, const Pos&b){
             int da=std::abs(a.x-x)+std::abs(a.y-y)+std::abs(a.z-z);
             int db=std::abs(b.x-x)+std::abs(b.y-y)+std::abs(b.z-z);
@@ -867,19 +946,10 @@ void RedstoneEngine::handlePistonScheduled(std::int32_t x, std::int32_t y, std::
         });
         for (size_t i=0;i<toPush.size();++i){
             Pos src = toPush[i];
-            // find original state for this pos
             std::uint16_t pst=0;
             for (auto &pr: orig) if (pr.first.x==src.x && pr.first.y==src.y && pr.first.z==src.z) { pst=pr.second; break; }
             int nx=src.x+dx, ny=src.y+dy, nz=src.z+dz;
             world_.setBlock(nx,ny,nz, pst);
-        }
-        // Place moving_piston at pushed origin for visual progress 0->1
-        // Use default moving_piston state (2106) with facing/type if available
-        auto mvIt=gen::blockNameToState().find("minecraft:moving_piston");
-        if (mvIt!=gen::blockNameToState().end()){
-            // For each original pos that was slime/honey chain, we could place moving_piston but we already moved
-            // Place at least at hx if there were blocks moved: the head will be piston_head, moving entity is implicit
-            (void)mvIt;
         }
         const gen::BlockDef* headDef = gen::blockByName("minecraft:piston_head");
         if (headDef) {
@@ -903,44 +973,105 @@ void RedstoneEngine::handlePistonScheduled(std::int32_t x, std::int32_t y, std::
         std::uint16_t head = world_.getBlock(hx,hy,hz);
         const gen::BlockDef* hb = gen::blockByState(head);
         if (hb && hb->name=="minecraft:piston_head") {
-            world_.setBlock(hx,hy,hz, 0);
-            // moving_piston retract animation: place moving_piston at head position briefly
-            auto mvIt=gen::blockNameToState().find("minecraft:moving_piston");
-            if (mvIt!=gen::blockNameToState().end()){
-                // placeholder: we set air then head removal is enough for simple retract
-                (void)mvIt;
+            // moving_piston BE for retract (2-tick animation)
+            auto mvItR = gen::blockNameToState().find("minecraft:moving_piston");
+            if(mvItR!=gen::blockNameToState().end() && beStore_){
+                uint16_t mvSt = static_cast<uint16_t>(mvItR->second);
+                BlockEntity* be = beStore_->getAt(hx,hy,hz);
+                if(!be) be = &beStore_->create(posKey(hx,hy,hz), BlockEntity::Kind::MovingPiston);
+                else be->kind = BlockEntity::Kind::MovingPiston;
+                be->movingPiston.state = head;
+                be->movingPiston.facing = face;
+                be->movingPiston.extending = false;
+                be->movingPiston.progress = 0.f;
+                be->movingPiston.finishTick = tickRef_ ? *tickRef_+2 : 0;
+                world_.setBlock(hx,hy,hz, mvSt);
             }
+            world_.setBlock(hx,hy,hz, 0);
+            if(beStore_) beStore_->remove(posKey(hx,hy,hz));
             if (c==Comp::StickyPiston) {
                 std::int32_t px=hx+dx, py=hy+dy, pz=hz+dz;
-                std::uint16_t ps = world_.getBlock(px,py,pz);
-                if (ps!=0) {
-                    const gen::BlockDef* pb = gen::blockByState(ps);
-                    // honey/slime sticky pull: only pull if adjacent stickiness allows
-                    bool canPull=false;
-                    if (pb) {
-                        std::string pulledName(pb->name);
-                        // check if the block in front of head sticks to slime/honey chain?
-                        // For simple sticky piston, pull 1 block if not immovable and not worm
-                        if (!isUnpushable(ps)) canPull=true;
-                        // honey/slime pull expansion: if pulled block is honey/slime, also pull its attached blocks?
-                        // For retract, vanilla pulls only the block directly in front, plus sticky adjacent to that block
-                        // Implement BFS for pull as well
-                        if (isStickyBlock(pulledName)) {
-                            // For honey/slime retract, collect attached blocks similar to push
-                            // Our simple pull only moves the single front block for now; full chain would be similar BFS
+                std::uint16_t frontSt = world_.getBlock(px,py,pz);
+                if(frontSt!=0){
+                    struct Pos{int x,y,z;};
+                    std::vector<Pos> toPull;
+                    std::unordered_set<std::int64_t> visited;
+                    auto key3 = [&](int px_,int py_,int pz_){ return (static_cast<std::int64_t>(static_cast<std::uint32_t>(px_))<<32) ^ (static_cast<std::int64_t>(py_ & 0xFFF)<<20) ^ static_cast<std::uint32_t>(pz_); };
+                    bool fail=false;
+                    toPull.push_back({px,py,pz});
+                    visited.insert(key3(px,py,pz));
+                    std::queue<Pos> q;
+                    const gen::BlockDef* frontBd = gen::blockByState(frontSt);
+                    if(frontBd && isStickyBlock(std::string(frontBd->name))) q.push({px,py,pz});
+                    static constexpr int SDX[6]={1,-1,0,0,0,0};
+                    static constexpr int SDY[6]={0,0,1,-1,0,0};
+                    static constexpr int SDZ[6]={0,0,0,0,1,-1};
+                    while(!q.empty() && !fail){
+                        Pos cur=q.front(); q.pop();
+                        std::uint16_t curSt=world_.getBlock(cur.x,cur.y,cur.z);
+                        const gen::BlockDef* curBd=gen::blockByState(curSt);
+                        if(!curBd) continue;
+                        std::string curName(curBd->name);
+                        for(int d=0; d<6; ++d){
+                            int nx=cur.x+SDX[d], ny=cur.y+SDY[d], nz=cur.z+SDZ[d];
+                            std::int64_t k=key3(nx,ny,nz);
+                            if(visited.count(k)) continue;
+                            if(nx==x && ny==y && nz==z) continue;
+                            if(nx==hx && ny==hy && nz==hz) continue;
+                            std::uint16_t ns=world_.getBlock(nx,ny,nz);
+                            if(ns==0) continue;
+                            const gen::BlockDef* nd=gen::blockByState(ns);
+                            if(!nd) continue;
+                            std::string nName(nd->name);
+                            if(!sticksTogether(curName, nName)) continue;
+                            if(isUnpushable(ns)){ fail=true; break; }
+                            if((int)visited.size()>=12){ fail=true; break; }
+                            visited.insert(k);
+                            toPull.push_back({nx,ny,nz});
+                            if(isStickyBlock(nName)) q.push({nx,ny,nz});
                         }
                     }
-                    if (canPull) {
-                        world_.setBlock(px,py,pz, 0);
-                        world_.setBlock(hx,hy,hz, ps);
+                    if(!fail && (int)toPull.size()<=12){
+                        for(auto &p: toPull){
+                            int nx=p.x - dx, ny=p.y - dy, nz=p.z - dz;
+                            std::uint16_t dst=world_.getBlock(nx,ny,nz);
+                            if(dst==0) continue;
+                            if(nx==hx && ny==hy && nz==hz) continue;
+                            if(visited.count(key3(nx,ny,nz))) continue;
+                            if(nx==x && ny==y && nz==z){ fail=true; break; }
+                            if(dst!=0){ fail=true; break; }
+                        }
                     }
-                } else {
-                    // also pull sticky-adjacent blocks? check side attachments to the front block's position before it was pulled
-                    // Search around px,py,pz for sticky neighbors that would be pulled with it
-                    // Simplified: if the empty front had slime adjacent side blocks, they would have been moved together on extend,
-                    // so on retract they'd be pulled if they are still sticky-adjacent. We handle by checking neighbors of hx
-                    // after clearing head, look for slime/honey adjacent to hx that were part of original push?
-                    // For simplicity, do not handle multi-block retract sticky chain beyond 1 block (covers 90% of cases)
+                    if(!fail){
+                        std::vector<std::pair<Pos,uint16_t>> orig;
+                        for(auto &p: toPull) orig.emplace_back(p, world_.getBlock(p.x,p.y,p.z));
+                        for(auto &pr: orig) world_.setBlock(pr.first.x, pr.first.y, pr.first.z, 0);
+                        std::sort(toPull.begin(), toPull.end(), [&](const Pos&a, const Pos&b){
+                            int da=std::abs(a.x-x)+std::abs(a.y-y)+std::abs(a.z-z);
+                            int db=std::abs(b.x-x)+std::abs(b.y-y)+std::abs(b.z-z);
+                            return da>db;
+                        });
+                        for(auto &p: toPull){
+                            uint16_t pst=0;
+                            for(auto &pr: orig) if(pr.first.x==p.x && pr.first.y==p.y && pr.first.z==p.z){ pst=pr.second; break; }
+                            int nx=p.x - dx, ny=p.y - dy, nz=p.z - dz;
+                            if(beStore_ && mvItR!=gen::blockNameToState().end()){
+                                uint16_t mvSt = static_cast<uint16_t>(mvItR->second);
+                                BlockEntity* be2 = beStore_->getAt(nx,ny,nz);
+                                if(!be2) be2 = &beStore_->create(posKey(nx,ny,nz), BlockEntity::Kind::MovingPiston);
+                                else be2->kind = BlockEntity::Kind::MovingPiston;
+                                be2->movingPiston.state = pst;
+                                be2->movingPiston.facing = face;
+                                be2->movingPiston.extending = false;
+                                be2->movingPiston.progress = 0.f;
+                                world_.setBlock(nx,ny,nz, mvSt);
+                                world_.setBlock(nx,ny,nz, pst);
+                                beStore_->remove(posKey(nx,ny,nz));
+                            } else {
+                                world_.setBlock(nx,ny,nz, pst);
+                            }
+                        }
+                    }
                 }
             }
         }

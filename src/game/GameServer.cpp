@@ -511,6 +511,7 @@ void GameServer::tickOnce() {
     boatsTick(); // plan14 §5: boat friction 0.9 water / 0.6 land, buoyancy 0.04, max 0.4
     mark('P');
     projectilesTick();
+    tntTick();
     mark('I');
     itemsTick();
     mark('T');
@@ -1605,6 +1606,74 @@ void GameServer::explodeAt(double x, double y, double z, float power) {
                      x, y, z, changed.size());
 }
 
+void GameServer::spawnPrimedTnt(double x,double y,double z,double vx,double vy,double vz,int fuse){
+    auto t = std::make_shared<TntEntity>();
+    t->entityId = nextEntityId();
+    t->x = x; t->y = y; t->z = z;
+    t->vx = vx; t->vy = vy; t->vz = vz;
+    t->fuse = fuse;
+    t->ageTicks = 0;
+    {
+        std::lock_guard lk(entsMtx_);
+        tntEntities_.push_back(t);
+    }
+    // broadcast SpawnEntity for primed TNT (type id 125)
+    WriteBuffer b;
+    b.varint(t->entityId);
+    static std::uint8_t zero[16]={};
+    b.uuid(zero);
+    // resolve TNT entity type id via registry
+    int typeId = 125;
+    auto it = gen::entityTypeIdByName().find("minecraft:tnt");
+    if(it!=gen::entityTypeIdByName().end()) typeId = it->second;
+    b.varint(typeId);
+    b.f64(x); b.f64(y); b.f64(z);
+    b.i8(0); b.i8(0); b.i8(0);
+    b.varint(0);
+    b.i16(static_cast<int16_t>(vx*8000)); b.i16(static_cast<int16_t>(vy*8000)); b.i16(static_cast<int16_t>(vz*8000));
+    broadcastPacketExcept(nullptr, pl::sc::SpawnEntity, b);
+}
+
+void GameServer::tntTick(){
+    std::vector<std::shared_ptr<TntEntity>> toExplode;
+    {
+        std::lock_guard lk(entsMtx_);
+        for(auto &t: tntEntities_){
+            // gravity and motion
+            t->vy -= 0.04; // gravity
+            t->x += t->vx;
+            t->y += t->vy;
+            t->z += t->vz;
+            t->vx *= 0.98; t->vy *= 0.98; t->vz *= 0.98;
+            if(t->y < kMinY) t->y = kMinY;
+            // ground friction if on ground (simple check block below)
+            if(world_.getBlock((int)std::floor(t->x), (int)std::floor(t->y-0.1), (int)std::floor(t->z))!=0){
+                t->vx *= 0.7; t->vz *= 0.7;
+                if(t->vy < 0) t->vy = -t->vy * 0.5;
+            }
+            if(--t->fuse <= 0) toExplode.push_back(t);
+            ++t->ageTicks;
+            // broadcast entity position via teleport? simplified: use EntityTeleport every 4 ticks
+            if(t->ageTicks % 4 == 0){
+                WriteBuffer tp;
+                tp.varint(t->entityId);
+                tp.f64(t->x); tp.f64(t->y); tp.f64(t->z);
+                tp.i8(0); tp.i8(0); tp.boolean(false);
+                broadcastPacketExcept(nullptr, pl::sc::EntityTeleport, tp);
+            }
+        }
+        for(auto &t: toExplode){
+            tntEntities_.erase(std::remove(tntEntities_.begin(), tntEntities_.end(), t), tntEntities_.end());
+        }
+    }
+    for(auto &t: toExplode){
+        explodeAt(t->x, t->y, t->z, 4.f);
+        WriteBuffer rm;
+        rm.varint(1); rm.varint(t->entityId);
+        broadcastPacketExcept(nullptr, pl::sc::RemoveEntities, rm);
+    }
+}
+
 // Plan8 Charged Creeper: lightning strike charges creepers within 3 blocks, spawns bolt entity & visuals
 void GameServer::strikeLightning(double x, double y, double z) {
     // Visual: spawn lightning bolt entity and broadcast sound
@@ -1963,9 +2032,9 @@ void GameServer::hoppersTick() {
                             // also check for TNT, campfire, portal
                             bool handledFS=false;
                             if(td && std::string(td->name)=="minecraft:tnt"){
-                                // prime TNT
-                                explodeAt(tx+0.5, ty+0.5, tz+0.5, 4.f);
+                                // prime TNT dispenser fuse 80 (strict)
                                 world_.setBlock(tx,ty,tz,0); broadcastBlockChange(tx,ty,tz,0);
+                                spawnPrimedTnt(tx+0.5, ty+0.5, tz+0.5, 0, 0.2, 0, 80);
                                 handledFS=true;
                             } else if(td && (std::string(td->name)=="minecraft:campfire" || std::string(td->name)=="minecraft:soul_campfire")){
                                 std::string lit=getPropStr(tSt,"lit");
@@ -2016,7 +2085,10 @@ void GameServer::hoppersTick() {
                                 handled=true;
                             }
                         } else if (iname=="minecraft:tnt" || iname.find("tnt") != std::string::npos) {
-                            explodeAt(x + dx + 0.5, y + dy + 0.5, z + dz + 0.5, 4.f);
+                            double vx = dx*0.3 + (rand()/(double)RAND_MAX -0.5)*0.1;
+                            double vz = dz*0.3 + (rand()/(double)RAND_MAX -0.5)*0.1;
+                            double vy = dy*0.3 + 0.2;
+                            spawnPrimedTnt(sx, sy, sz, vx, vy, vz, 80);
                             if(--s.count<=0) s=ItemStack::air();
                             handled=true;
                         } else {
@@ -5772,6 +5844,23 @@ void Session::onPlayerAction(ReadBuffer& in) {
         return;
     }
 
+    // TNT unstable punch: if TNT with unstable true, left-click primes it (fuse 80) strict
+    if ((status==0 || status==1 || status==2)) {
+        const std::uint16_t tntState = srv_.world().getBlock(x, y, z);
+        const gen::BlockDef* tdef = gen::blockByState(tntState);
+        if (tdef && std::string(tdef->name)=="minecraft:tnt") {
+            std::string unstable = getPropStr(tntState, "unstable");
+            if (unstable=="true") {
+                srv_.world().setBlock(x, y, z, 0);
+                srv_.broadcastBlockChange(x, y, z, 0);
+                srv_.spawnPrimedTnt(x+0.5, y+0.5, z+0.5, 0, 0.2, 0, 80);
+                ack(sequence);
+                self_->digActive=false;
+                return;
+            }
+        }
+    }
+
     if (status == 0 || status == 2) {                   // start / finish dig
         const std::uint16_t oldState = srv_.world().getBlock(x, y, z);
         const std::string bn = blockNameByState(oldState);
@@ -6050,6 +6139,22 @@ void Session::onUseItemOn(ReadBuffer& in) {
             World& w = srv_.worldFor(self_->dimension);
             std::uint16_t clickedSt = w.getBlock(x, y, z);
             const gen::BlockDef* cd = gen::blockByState(clickedSt);
+            // TNT ignition via flint/fire_charge: prime with fuse 80 (strict)
+            if(cd && std::string(cd->name)=="minecraft:tnt"){
+                w.setBlock(x,y,z,0); srv_.broadcastBlockChange(x,y,z,0);
+                srv_.spawnPrimedTnt(x+0.5, y+0.5, z+0.5, 0,0.2,0,80);
+                if(isFlint && self_->gamemode==0){
+                    auto &sl = self_->inv[36 + self_->heldSlot];
+                    if(sl.applyDamage(1)) sl = ItemStack::air();
+                    srv_.resendInventory(*self_);
+                } else if(isFireCharge && self_->gamemode==0){
+                    auto &sl = self_->inv[36 + self_->heldSlot];
+                    if(--sl.count<=0) sl=ItemStack::air();
+                    srv_.resendInventory(*self_);
+                }
+                ack(sequence);
+                return;
+            }
             bool clickedIsObsidian = cd && std::string(cd->name) == "minecraft:obsidian";
             if (clickedIsObsidian) {
                 const auto& mp = gen::blockNameToState();
@@ -6248,7 +6353,7 @@ void Session::onUseItemOn(ReadBuffer& in) {
         }
     }
 
-    // ---- doors: two-block placement + toggle (plan4 P3-M)
+    // ---- doors: two-block placement + hinge & powered (strict audit)
     if (!heldItem.empty()) {
         const std::string heldName = heldItem.name();
         if (heldName.size() > 5 && heldName.rfind("_door", heldName.size() - 5) != std::string::npos) {
@@ -6260,12 +6365,48 @@ void Session::onUseItemOn(ReadBuffer& in) {
                 if (yaw >= 45.f && yaw < 135.f) facing = "west";
                 else if (yaw >= 135.f && yaw < 225.f) facing = "south";
                 else if (yaw >= 225.f && yaw < 315.f) facing = "east";
+                // hinge logic via solid faces and neighboring doors (vanilla DoorBlock)
+                std::string hingeStr = "left";
+                {
+                    auto isSolid = [&](int nx,int ny,int nz)->bool{
+                        uint16_t st = srv_.world().getBlock(nx,ny,nz);
+                        if(st==0) return false;
+                        auto* bd = gen::blockByState(st);
+                        if(!bd) return false;
+                        return !bd->transparent;
+                    };
+                    auto isDoorAt = [&](int nx,int ny,int nz)->bool{
+                        uint16_t st = srv_.world().getBlock(nx,ny,nz);
+                        auto* bd = gen::blockByState(st);
+                        return bd && std::string(bd->name).find("_door")!=std::string::npos;
+                    };
+                    int dxL=0, dzL=0, dxR=0, dzR=0;
+                    std::string fs(facing);
+                    if(fs=="north"){ dxL=-1; dzL=0; dxR=1; dzR=0; }
+                    else if(fs=="south"){ dxL=1; dzL=0; dxR=-1; dzR=0; }
+                    else if(fs=="west"){ dxL=0; dzL=1; dxR=0; dzR=-1; }
+                    else if(fs=="east"){ dxL=0; dzL=-1; dxR=0; dzR=1; }
+                    else { dxL=-1; dzL=0; dxR=1; dzR=0; }
+                    bool leftSolid = isSolid(tx+dxL, ty, tz+dzL) || isSolid(tx+dxL, ty+1, tz+dzL);
+                    bool rightSolid = isSolid(tx+dxR, ty, tz+dzR) || isSolid(tx+dxR, ty+1, tz+dzR);
+                    bool leftDoor = isDoorAt(tx+dxL, ty, tz+dzL) || isDoorAt(tx+dxL, ty+1, tz+dzL);
+                    bool rightDoor = isDoorAt(tx+dxR, ty, tz+dzR) || isDoorAt(tx+dxR, ty+1, tz+dzR);
+                    if(leftDoor && !rightDoor) hingeStr = "right";
+                    else if(rightDoor && !leftDoor) hingeStr = "left";
+                    else if(leftSolid && !rightSolid) hingeStr = "right";
+                    else if(rightSolid && !leftSolid) hingeStr = "left";
+                    else hingeStr = "left";
+                }
+                bool powered = false;
+                if(srv_.redstone_) powered = srv_.redstone_->isPoweredHere(tx,ty,tz) || srv_.redstone_->isPoweredHere(tx,ty+1,tz);
+                std::string openStr = powered ? "true" : "false";
+                std::string poweredStr = powered ? "true" : "false";
                 const auto lower =
                     static_cast<std::uint16_t>(gen::stateWithProps(*ddef,
-                        {{"half","lower"},{"facing",facing},{"open","false"},{"hinge","left"}}));
+                        {{"half","lower"},{"facing",facing},{"open",openStr},{"hinge",hingeStr},{"powered",poweredStr}}));
                 const auto upper =
                     static_cast<std::uint16_t>(gen::stateWithProps(*ddef,
-                        {{"half","upper"},{"facing",facing},{"open","false"},{"hinge","left"}}));
+                        {{"half","upper"},{"facing",facing},{"open",openStr},{"hinge",hingeStr},{"powered",poweredStr}}));
                 srv_.world().setBlock(tx, ty, tz, lower);
                 srv_.broadcastBlockChange(tx, ty, tz, lower);
                 srv_.world().setBlock(tx, ty + 1, tz, upper);
@@ -6356,15 +6497,23 @@ void Session::onUseItemOn(ReadBuffer& in) {
     }
 
     if (srv_.world().getBlock(tx, ty, tz) != 0 || heldItem.empty()) {
-        // toggling an existing door?
+        // toggling an existing door? (hinge & powered strict)
         const std::uint16_t clickedState = srv_.world().getBlock(x, y, z);
         const gen::BlockDef* cdef = gen::blockByState(clickedState);
         if (cdef && cdef->name.size() > 5 &&
             cdef->name.rfind("_door", cdef->name.size() - 5) != std::string::npos) {
+            // iron doors cannot be opened by hand, only redstone
+            bool isIron = std::string(cdef->name).find("iron_door") != std::string::npos;
+            if(isIron){
+                ack(sequence);
+                return;
+            }
             bool open = false, upperHalf = false;
+            bool powered = false;
             for (auto& [k, v] : gen::propsOf(clickedState)) {
                 if (k == "open") open = v == "true";
                 if (k == "half") upperHalf = v == "upper";
+                if (k == "powered") powered = v == "true";
             }
             std::string facing;
             std::string hinge = "left";
@@ -6376,13 +6525,13 @@ void Session::onUseItemOn(ReadBuffer& in) {
                 gen::stateWithProps(*cdef,
                     {{"open", open ? "false" : "true"},
                      {"half", upperHalf ? "upper" : "lower"},
-                     {"facing", facing}, {"hinge", hinge}}));
+                     {"facing", facing}, {"hinge", hinge}, {"powered", powered?"true":"false"}}));
             const std::int32_t oy = upperHalf ? y - 1 : y + 1;
             const std::uint16_t st2 = static_cast<std::uint16_t>(
                 gen::stateWithProps(*cdef,
                     {{"open", open ? "false" : "true"},
                      {"half", upperHalf ? "lower" : "upper"},
-                     {"facing", facing}, {"hinge", hinge}}));
+                     {"facing", facing}, {"hinge", hinge}, {"powered", powered?"true":"false"}}));
             srv_.world().setBlock(x, y, z, st1);
             srv_.broadcastBlockChange(x, y, z, st1);
             srv_.world().setBlock(x, oy, z, st2);
@@ -6469,14 +6618,17 @@ void Session::onUseItemOn(ReadBuffer& in) {
             std::string shape = computeStairsShape(*ctx.world, ctx.placePos.x, ctx.placePos.y, ctx.placePos.z, facingStr, halfStr);
             props.emplace_back("shape", shape);
         }
-        // waterlogged: check fluid state (any water) and waterlogged blocks
+        // waterlogged: check fluid state (level 0 only for source, not flowing) via FluidSim
         if (hasWaterlogged) {
             bool waterlogged = false;
-            std::uint16_t before = ctx.world->getBlock(ctx.placePos.x, ctx.placePos.y, ctx.placePos.z);
-            const gen::BlockDef* bd = gen::blockByState(before);
-            if (bd && std::string(bd->name).find("water") != std::string::npos) waterlogged = true;
-            // also consider if before is air but we are placing into waterlogged context? For stairs, fluid is WATER still.
-            // If still false, check world fluid? simplified: keep as above.
+            FluidState fs = FluidSim::getFluidState(*ctx.world, ctx.placePos.x, ctx.placePos.y, ctx.placePos.z);
+            bool isSlab = std::string(bdef2->name).find("_slab") != std::string::npos;
+            if (isSlab) {
+                // slab waterlogged only for source water level 0 (not flowing, not falling)
+                if (fs.isWater() && fs.level == 0 && !fs.falling) waterlogged = true;
+            } else {
+                if (fs.isWater()) waterlogged = true;
+            }
             // For double slab, force false (handled earlier)
             bool isDoubleSlab = false;
             for(auto& pr: props) if(pr.first=="type" && pr.second=="double") isDoubleSlab=true;

@@ -1,6 +1,7 @@
 // BlockTickScheduler implementation (items 12-15).
 #include "BlockTickScheduler.hpp"
 #include "../game/GameServer.hpp"
+#include "../game/TagManager.hpp"
 #include <algorithm>
 #include <cstdlib>
 #include <string>
@@ -734,6 +735,54 @@ bool FireBehavior::isFlammable(const std::string& blockName) const {
     return false;
 }
 
+static bool isInfiniburnBlock(const World& w, std::int32_t x, std::int32_t y, std::int32_t z, GameServer* srv){
+    std::uint16_t below = w.getBlock(x, y-1, z);
+    if(below==0) return false;
+    const gen::BlockDef* bd = gen::blockByState(below);
+    if(!bd) return false;
+    std::string name(bd->name);
+    if(srv){
+        auto &tags = srv->tagManager_.blockTags;
+        auto checkTag = [&](const std::string& tag)->bool{
+            auto it = tags.find(tag);
+            if(it==tags.end()) return false;
+            auto nit = gen::blockNameToState().find(name);
+            if(nit==gen::blockNameToState().end()) return false;
+            uint32_t defId = static_cast<uint32_t>(nit->second);
+            return it->second.count(defId)>0;
+        };
+        if(checkTag("minecraft:infiniburn_overworld")) return true;
+        if(checkTag("minecraft:infiniburn_nether")) return true;
+        if(checkTag("minecraft:infiniburn_end")) return true;
+        if(checkTag("minecraft:infiniburn")) return true;
+    }
+    // fallback when tags not loaded (ensure infiniburn for tests)
+    if(name=="minecraft:netherrack") return true;
+    if(name=="minecraft:magma_block") return true;
+    if(name=="minecraft:bedrock") return true;
+    if(name=="minecraft:obsidian") return true;
+    return false;
+}
+static bool isSoulBaseBlock(const World& w, std::int32_t x, std::int32_t y, std::int32_t z, GameServer* srv){
+    std::uint16_t below = w.getBlock(x, y-1, z);
+    if(below==0) return false;
+    const gen::BlockDef* bd = gen::blockByState(below);
+    if(!bd) return false;
+    std::string name(bd->name);
+    if(srv){
+        auto &tags = srv->tagManager_.blockTags;
+        auto it = tags.find("minecraft:soul_fire_base_blocks");
+        if(it!=tags.end()){
+            auto nit = gen::blockNameToState().find(name);
+            if(nit!=gen::blockNameToState().end()){
+                uint32_t defId = static_cast<uint32_t>(nit->second);
+                if(it->second.count(defId)) return true;
+            }
+        }
+    }
+    return name=="minecraft:soul_sand" || name=="minecraft:soul_soil";
+}
+
 void FireBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
                         std::uint16_t state, std::int64_t now, GameServer* srv) {
     (void)now;
@@ -862,6 +911,8 @@ void FireBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
         }
     }
     if (age >= 15) {
+        // infiniburn via TagManager: if below is infiniburn, never extinguish
+        if(isInfiniburnBlock(w,x,y,z,srv)) return;
         // check has flammable below
         bool hasFlammableBelow=false;
         for(int dx=-1;dx<=1 && !hasFlammableBelow;++dx) for(int dz=-1;dz<=1 && !hasFlammableBelow;++dz) for(int dy=-1; dy<=0 && !hasFlammableBelow; ++dy){
@@ -908,9 +959,7 @@ void SoulFireBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32
         auto* gr = &srv->gameRules();
         if (gr && !gr->getBool("doFireTick")) return;
     }
-    const std::uint16_t below = w.getBlock(x, y-1, z);
-    const gen::BlockDef* bd = gen::blockByState(below);
-    if (!bd || (std::string(bd->name) != "minecraft:soul_sand" && std::string(bd->name) != "minecraft:soul_soil")) {
+    if (!isSoulBaseBlock(w,x,y,z,srv)) {
         w.setBlock(x,y,z, 0);
         return;
     }
