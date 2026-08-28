@@ -2969,6 +2969,7 @@ void Session::handleLogin() {
         er.raw(srv_.loginKeys_.publicDer.data(), srv_.loginKeys_.publicDer.size());
         er.varint(16);
         er.raw(srv_.loginVerifyToken_.data(), 16);
+        er.boolean(true);                             // shouldAuthenticate (strict 1.21.4)
         conn_->sendPacket(proto::lo::sc::EncryptionRequest, er);
 
         auto pbody = conn_->readFrame();
@@ -3049,10 +3050,12 @@ void Session::handleLogin() {
 
         std::fprintf(stderr, "[cppfm] %s online auth ok, enabling encryption\n", self_->name.c_str());
         conn_->enableEncryption(secret);
-        WriteBuffer scp;
-        scp.varint(256);
-        conn_->sendPacket(proto::lo::sc::SetCompression, scp);
-        conn_->setCompression(256);
+        if (srv_.config().compressionThreshold >= 0) {
+            WriteBuffer scp;
+            scp.varint(srv_.config().compressionThreshold);
+            conn_->sendPacket(proto::lo::sc::SetCompression, scp);
+            conn_->setCompression(srv_.config().compressionThreshold);
+        }
         } catch (const std::exception& e) {
             std::fprintf(stderr, "[cppfm] ONLINE AUTH ERROR [%s]: %s\n",
                          self_->name.c_str(), e.what());
