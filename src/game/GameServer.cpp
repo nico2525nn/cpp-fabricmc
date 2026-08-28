@@ -2693,6 +2693,7 @@ void Session::handleLogin() {
         er.raw(srv_.loginKeys_.publicDer.data(), srv_.loginKeys_.publicDer.size());
         er.varint(16);
         er.raw(srv_.loginVerifyToken_.data(), 16);
+        er.boolean(true);                              // shouldAuthenticate 1.21.4
         conn_->sendPacket(proto::lo::sc::EncryptionRequest, er);
 
         auto pbody = conn_->readFrame();
@@ -2816,6 +2817,22 @@ void Session::handleConfiguration() {
     // 0. resource pack (plan3 Resource Pack) — configured via server.properties
     if (!srv_.config().resourcePackUrl.empty()) {
         WriteBuffer b;
+        // pack UUID (1.21.4 packet_common_add_resource_pack requires uuid first)
+        std::array<std::uint8_t,16> packUuid{};
+        // deterministic UUID from url hash (first 16 bytes of SHA1)
+        {
+            unsigned char md[20];
+            unsigned int ml=0;
+            EVP_MD_CTX* mm = EVP_MD_CTX_new();
+            EVP_DigestInit_ex(mm, EVP_sha1(), nullptr);
+            EVP_DigestUpdate(mm, srv_.config().resourcePackUrl.data(), srv_.config().resourcePackUrl.size());
+            EVP_DigestFinal_ex(mm, md, &ml);
+            EVP_MD_CTX_free(mm);
+            for(int i=0;i<16;i++) packUuid[i]=md[i];
+            packUuid[6] = (packUuid[6] & 0x0F) | 0x50; // version 5
+            packUuid[8] = (packUuid[8] & 0x3F) | 0x80; // variant
+        }
+        b.uuid(packUuid.data());
         b.string(srv_.config().resourcePackUrl);
         b.string(srv_.config().resourcePackSha1);
         b.boolean(srv_.config().resourcePackForced);
@@ -3033,24 +3050,9 @@ static WriteBuffer makeWorldState(const ServerConfig& c) {
     return w;
 }
 
-// Minimal command tree: root -> /help, /ping  (literals only)
-static void writeDeclareCommands(WriteBuffer& b) {
-    const char* literals[] = {"help", "ping"};
-    b.varint(3);                       // node count
-    // node0: root, children = {1,2}
-    b.u8(0x00);
-    b.varint(2); b.varint(1); b.varint(2);
-    for (const char* name : literals) {
-        b.u8(0x01 | 0x04);             // literal | executable
-        b.varint(0);                   // no children
-        b.string(name);
-    }
-    b.varint(0);                       // root index
-}
-
 void Session::sendDeclareCommands() {
     WriteBuffer b;
-    writeDeclareCommands(b);
+    srv_.commands().writeDeclareCommands(b);
     conn_->sendPacket(pl::sc::DeclareCommands, b);
 }
 
