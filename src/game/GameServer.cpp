@@ -1063,27 +1063,15 @@ void GameServer::mobsTick() {
                     it = mobs_.erase(it); continue;
                 }
             }
-            // ---- Plan8 Breeding/Villager/Enderman tick enhancements
-            // Baby aging: age<0 increments towards 0 (20 ticks per minute vanilla ~ 20*20, but our -60*20)
-            if (m->age < 0) {
-                m->age++;
-                if (m->age == 0) {
-                    // grown up – broadcast metadata for baby flag (index 15? simplified)
-                    WriteBuffer md;
-                    md.varint(m->entityId);
-                    md.u8(15); md.varint(0); md.boolean(false);
-                    md.u8(255);
-                    broadcastPacketExcept(nullptr, pl::sc::SetEntityMetadata, md);
-                }
-            }
-            // Villager restock & gossip decay
+            // ---- Plan14 §3/§4: Villager/Enderman tick (aging already handled above single increment)
+            // Villager restock & gossip decay (plan14 §4: 24000t restock, Gossip decay)
             if (m->kind==MobKind::Villager) {
                 if (tickNo_ >= m->restockUntil && m->restockUntil!=0) {
                     m->restockUntil = 0;
                     // restock sound
                     broadcastSound("minecraft:entity.villager.work_farm", m->x,m->y,m->z,1.f,1.f,"neutral");
                 }
-                if (tickNo_%100==0 && m->gossip>0) m->gossip--;
+                if (tickNo_%100==0) m->gossip.tickDecay();
             }
             // Enderman: occasional random block pickup via BehaviorTree is primary, but ensure carriedBlock persistence
             // (handled in PickupBlockAction)
@@ -1147,6 +1135,14 @@ void GameServer::spawnMob(MobKind kind, double x, double y, double z) {
         if (kind==MobKind::Slime || kind==MobKind::MagmaCube) {
             // slimeSize from def? use max_health scaling if present
         }
+    }
+    // plan14 §4: VillagerData init (profession/level/type)
+    if (kind==MobKind::Villager) {
+        mob->villagerData.type = static_cast<VillagerData::Type>(rand()%7);
+        mob->villagerData.profession = VillagerData::FARMER;
+        mob->villagerData.level = 1;
+        mob->villagerLevel = 1;
+        mob->villagerXp = 0;
     }
     mob->x = x; mob->y = y; mob->z = z;
     mob->lastSeenMs = nowMs();
@@ -2042,12 +2038,23 @@ bool GameServer::openTrading(Player& p, MobEntity& v) {
     b.varint(menus::kMerchant);
     nbt::writeTextComponent(b, "Villager");
     try { p.conn->sendPacket(proto::pl::sc::OpenScreen, b); } catch (...) {}
-    // Trade List payload
+    // Trade List payload (plan14 §4: 2*level offers, VillagerData level/profession, Gossip priceMultiplier)
     WriteBuffer tl;
     tl.i8(static_cast<std::uint8_t>(windowId));
     const auto& trades = tradeTable();
-    tl.varint(static_cast<std::int32_t>(trades.size()));
-    for (const auto& t : trades) {
+    int lvl = std::clamp(v.villagerData.level,1,5);
+    // ensure villagerLevel mirror
+    if (v.villagerLevel != lvl) lvl = std::clamp(v.villagerLevel,1,5);
+    int num = std::min<int>((int)trades.size(), lvl*2);
+    if (num==0) num = std::min<int>((int)trades.size(), 2);
+    tl.varint(static_cast<std::int32_t>(num));
+    int gossipRep = v.gossip.get(p.uuid);
+    float priceMult = 0.05f - gossipRep * 0.02f;
+    if (priceMult < -0.9f) priceMult = -0.9f;
+    if (priceMult > 0.2f) priceMult = 0.2f;
+    int specialPrice = -gossipRep; // discount for positive rep
+    for (int i=0;i<num;++i) {
+        const auto& t = trades[i];
         // inputItem1
         tl.varint(static_cast<std::int32_t>(t.inItem));
         tl.varint(t.inCount);
@@ -2057,17 +2064,17 @@ bool GameServer::openTrading(Player& p, MobEntity& v) {
         tl.boolean(false);                               // inputItem2 absent
         tl.boolean(false);                               // trade disabled
         tl.i32(0);                                       // uses
-        tl.i32(9999);                                    // max uses
-        tl.i32(1);                                       // xp
-        tl.i32(0);                                       // special price
-        tl.f32(0.05f);                                   // price multiplier
+        tl.i32(12);                                      // max uses (villager restock 12)
+        tl.i32(2);                                       // xp
+        tl.i32(specialPrice);                            // special price from Gossip
+        tl.f32(priceMult);                               // price multiplier
         tl.i32(0);                                       // demand
     }
     tl.varint(0);                                        // villager entity id? (1.21: not present)
     tl.varint(0);                                        // increase min uses?
     // 1.21.4 trade list tail: villager level varint + xp varint + showProgress bool
-    tl.varint(1);
-    tl.i32(0);
+    tl.varint(lvl);
+    tl.i32(v.villagerXp);
     tl.boolean(true);
     try { p.conn->sendPacket(proto::pl::sc::TradeList, tl); } catch (...) {}
     return true;
@@ -2097,22 +2104,23 @@ bool GameServer::selectTrade(Player& p, std::int32_t index) {
     spawnXpOrbs(p.x, p.y + 1, p.z, 2, &p);
     broadcastSound("minecraft:entity.villager.yes", p.x, p.y, p.z,
                    .8f, 1.f, "neutral");
-    // Plan8 Villager: XP, gossip, level progression, restock timer
-    // Find nearest villager within 8 blocks to apply trade effects (simplified: first villager)
+    // Plan14 §4: Villager XP, Gossip (map<UUID,int>), level progression 1..5, restock 24000t
     {
         std::lock_guard lk(entsMtx_);
         for (auto& m : mobs_) if (m->kind==MobKind::Villager) {
             double dx=m->x - p.x, dz=m->z - p.z;
             if (dx*dx+dz*dz < 64) {
                 m->villagerXp += 3 + (rand()%4);
-                m->gossip += 2;
-                // Level up check: every 10 xp -> level++
+                m->gossip.add(p.uuid, 2);
+                // Level up check: every 10 xp -> level++ (vanilla xp thresholds 10,70 etc simplified)
                 if (m->villagerXp >= m->villagerLevel * 10 && m->villagerLevel < 5) {
-                    m->villagerLevel++;
+                    m->setVillagerLevel(m->villagerLevel+1);
                     broadcastSound("minecraft:entity.villager.levelup", m->x,m->y,m->z,1.f,1.f,"neutral");
+                } else {
+                    m->syncVillagerLevel();
                 }
-                // Restock: set restockUntil to now+ 20*120 (6 min) if not already
-                if (m->restockUntil < tickNo_) m->restockUntil = tickNo_ + 120*20;
+                // Restock: 24000t (one minecraft day), work POI check simplified to timer only
+                if (m->restockUntil < tickNo_) m->restockUntil = tickNo_ + 24000;
                 break;
             }
         }
