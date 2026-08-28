@@ -16,6 +16,7 @@
 #include <string>
 #include <memory>
 #include <vector>
+#include <functional>
 #include "../game/World.hpp"
 #include "../game/BlockEntities.hpp"
 
@@ -125,6 +126,7 @@ public:
     void setTickRef(std::int64_t* t) { tickRef_ = t; }
     void setBlockTickScheduler(BlockTickScheduler* bts) { blockTicks_ = bts; }
     void setGameServer(void* srv) { gameServer_ = srv; }
+    void setBroadcastFn(std::function<void(std::int32_t,std::int32_t,std::int32_t,std::uint16_t)> fn) { broadcastFn_ = std::move(fn); }
 
 private:
     enum class Comp {
@@ -152,14 +154,31 @@ private:
     void handlePiston(std::int32_t x, std::int32_t y, std::int32_t z);
     void handlePistonScheduled(std::int32_t x, std::int32_t y, std::int32_t z, bool extendNow);
     void processPistonQueue(std::int64_t now);
+    void processPendingPistonCommits(std::int64_t now);
     void handleDoor(std::int32_t x, std::int32_t y, std::int32_t z);
+    void setBlockAndBroadcast(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state);
 
     World& world_;
     BlockEntityStore* beStore_ = nullptr;
     std::int64_t* tickRef_ = nullptr;
     BlockTickScheduler* blockTicks_ = nullptr;
     void* gameServer_ = nullptr;
+    std::function<void(std::int32_t,std::int32_t,std::int32_t,std::uint16_t)> broadcastFn_;
+    struct PendingPistonCommit {
+        std::int32_t pistonX=0, pistonY=0, pistonZ=0;
+        std::int32_t hx=0, hy=0, hz=0;
+        bool extend=false;
+        int face=0;
+        std::string facing;
+        std::int64_t dueTick=0;
+        struct Entry { std::int32_t x,y,z; std::uint16_t state; };
+        std::vector<Entry> entries; // original positions/states for extend (or head for retract)
+        std::vector<Entry> pullEntries; // sticky pull blocks (retract only, original states)
+        int dx=0, dy=0, dz=0;
+        bool isSticky=false;
+    };
     std::vector<PistonEntity> pistonQueue_;
+    std::vector<PendingPistonCommit> pendingPistonCommits_;
     std::priority_queue<RedstoneTick, std::vector<RedstoneTick>,
                         std::greater<RedstoneTick>> queue_;
     std::unordered_map<std::int64_t, std::int64_t> pendingRepeater_;
