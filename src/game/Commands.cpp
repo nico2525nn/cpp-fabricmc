@@ -267,18 +267,53 @@ void GameServer::initCommands() {
         item->action = [this](CommandContext& c) {
             Player* src = static_cast<Player*>(c.source.player);
             const auto sel = c.arg("target").asSelector();
-            const std::string itemName = c.arg("item").asStr();
-            auto it = gen::itemIdByName().find(itemName);
+            const std::string raw = c.arg("item").asStr();
+            // extract base item name before '['
+            std::string base = raw;
+            std::string compPart;
+            auto br = raw.find('[');
+            if (br!=std::string::npos) { base = raw.substr(0, br); compPart = raw.substr(br); }
+            auto it = gen::itemIdByName().find(base);
             if (it == gen::itemIdByName().end())
-                throw std::runtime_error("Unknown item: " + itemName);
+                throw std::runtime_error("Unknown item: " + base);
+            // build stack with trim if present (plan13 §2)
+            ItemStack stack = ItemStack::of(it->second, 1);
+            if (!compPart.empty() && compPart.find("trim")!=std::string::npos) {
+                // naive extract pattern and material strings
+                auto extract = [&](const std::string& key)->std::string{
+                    auto pos = compPart.find(key);
+                    if (pos==std::string::npos) return "";
+                    auto q1 = compPart.find('"', pos);
+                    if (q1==std::string::npos) return "";
+                    auto q2 = compPart.find('"', q1+1);
+                    if (q2==std::string::npos) return "";
+                    return compPart.substr(q1+1, q2-q1-1);
+                };
+                std::string pat = extract("pattern");
+                std::string mat = extract("material");
+                if (!pat.empty()) {
+                    ItemStack::ArmorTrim tr; tr.has=true; tr.pattern=pat; tr.material= mat.empty()?"minecraft:iron":mat;
+                    stack.setTrim(tr);
+                }
+            }
+            // also handle enchant components like [enchantments={...}]? simplified: keep as is
             int given = 0;
             for (auto& n : sel.playerNames)
                 if (Player* t = findPlayer(*this, n)) {
-                    addToInventory(*t, it->second, 1);
+                    // try to add stack preserving trim
+                    bool placed=false;
+                    for(int i: {36,37,38,39,40,41,42,43,44,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35}){
+                        auto &s = t->inv[i];
+                        if (s.empty()) { s = stack; placed=true; break; }
+                    }
+                    if(!placed) addToInventory(*t, it->second, 1);
                     resendInventory(*t);
+                    // if armor slot, sync equipment (plan13)
+                    if (base.find("_helmet")!=std::string::npos||base.find("_chestplate")!=std::string::npos||base.find("_leggings")!=std::string::npos||base.find("_boots")!=std::string::npos)
+                        syncEquipmentOnChange(*t);
                     ++given;
                 }
-            sendFeedback(src, "Given 1 x " + itemName);
+            sendFeedback(src, "Given 1 x " + base);
             return given;
         };
         auto cnt = CommandNode::argument("count", args::integer(1, 576));
@@ -286,20 +321,46 @@ void GameServer::initCommands() {
         cnt->action = [this](CommandContext& c) {
             Player* src = static_cast<Player*>(c.source.player);
             const auto sel = c.arg("target").asSelector();
-            const std::string itemName = c.arg("item").asStr();
-            auto it = gen::itemIdByName().find(itemName);
+            const std::string raw = c.arg("item").asStr();
+            std::string base = raw;
+            auto br = raw.find('[');
+            if (br!=std::string::npos) base = raw.substr(0, br);
+            auto it = gen::itemIdByName().find(base);
             if (it == gen::itemIdByName().end())
-                throw std::runtime_error("Unknown item: " + itemName);
+                throw std::runtime_error("Unknown item: " + base);
             const int n2 = c.arg("count").asInt();
             int given = 0;
             for (auto& nm : sel.playerNames)
                 if (Player* t = findPlayer(*this, nm)) {
-                    addToInventory(*t, it->second,
-                                   static_cast<std::uint16_t>(n2));
+                    // if trim present, handle per-stack with trim (loop)
+                    std::string compPart = br!=std::string::npos ? raw.substr(br) : "";
+                    ItemStack stack = ItemStack::of(it->second, 1);
+                    if (!compPart.empty() && compPart.find("trim")!=std::string::npos) {
+                        auto extract = [&](const std::string& key)->std::string{
+                            auto pos = compPart.find(key);
+                            if (pos==std::string::npos) return "";
+                            auto q1 = compPart.find('"', pos);
+                            if (q1==std::string::npos) return "";
+                            auto q2 = compPart.find('"', q1+1);
+                            if (q2==std::string::npos) return "";
+                            return compPart.substr(q1+1, q2-q1-1);
+                        };
+                        std::string pat = extract("pattern");
+                        std::string mat = extract("material");
+                        if (!pat.empty()) { ItemStack::ArmorTrim tr; tr.has=true; tr.pattern=pat; tr.material= mat.empty()?"minecraft:iron":mat; stack.setTrim(tr); }
+                    }
+                    for(int k=0;k<n2;k++){
+                        bool placed=false;
+                        for(int i: {36,37,38,39,40,41,42,43,44,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35}){
+                            auto &s = t->inv[i];
+                            if (s.empty()) { s = stack; placed=true; break; }
+                        }
+                        if(!placed) addToInventory(*t, it->second, 1);
+                    }
                     resendInventory(*t);
                     ++given;
                 }
-            sendFeedback(src, "Given " + std::to_string(n2) + " x " + itemName);
+            sendFeedback(src, "Given " + std::to_string(n2) + " x " + base);
             return given;
         };
         item->then(cnt);

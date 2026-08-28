@@ -645,10 +645,15 @@ public:
     void mobAttackPlayer(MobEntity& m, Player& target);
     // Feed-to-breed handling when a player right-clicks an animal with food.
     bool tryBreedFeed(Player& p, MobEntity& m);
-    // Equipment / riding sync (plan5 30-47)
+    // Equipment / riding sync (plan5 30-47) — plan13 §2 dynamic sync, ArmorTrim, HandDropChances
     void sendEquipment(const MobEntity& mob);
+    void sendEquipmentSlot(const MobEntity& mob, int slot);
+    void broadcastPlayerEquipment(const Player& p);
+    void syncEquipmentOnChange(Player& p); // helper for armor/hand changes
     void broadcastSetPassengers(std::int32_t vehicleId);
     void broadcastSetPassengersEmpty(std::int32_t vehicleId);
+    void handleMoveVehicle(Player& p, double x, double y, double z, float yaw, float pitch);
+    void handleHorseJump(Player& p, int power); // plan13 §3 horse jump
     float applyArmorReduction(float dmg, int armor) const;
     int totalProtectionForPlayer(const Player& p) const;
     int totalProtectionForMob(const MobEntity& m) const;
@@ -661,8 +666,9 @@ public:
                          double vx, double vy, double vz,
                          std::int32_t ownerId, bool ownerIsPlayer);
     void projectilesTick();
-    // Rails / minecart physics (plan11 §3)
+    // Rails / minecart physics (plan11 §3) + boat physics (plan13 §3)
     void minecartsTick();
+    void boatsTick();
     // Villager trading (plan4 P1-B)
     static const std::vector<struct TradeOffer>& tradeTable();
     bool openTrading(Player& p, MobEntity& villager);

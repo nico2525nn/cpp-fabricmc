@@ -42,7 +42,7 @@ struct XpOrbEntity {
     std::int64_t ageTicks = 0;
 };
 
-enum class ProjectileKind : std::uint8_t { Arrow=0, Snowball, Egg, EnderPearl, WitherSkull, Fireball, DragonFireball };
+enum class ProjectileKind : std::uint8_t { Arrow=0, Snowball, Egg, EnderPearl, WitherSkull, Fireball, DragonFireball, Trident };
 
 struct ProjectileEntity {
     std::int32_t entityId = 0;
@@ -174,11 +174,14 @@ struct MobEntity {
     std::int64_t lastSeenMs = 0;
     // equipment slots: 0 mainhand 1 offhand 2 boots 3 leggings 4 chest 5 head
     std::array<ItemStack,6> equipment{};
+    // plan13 §2: HandDropChances (0.085F default) for loot drop on death
+    std::array<float,2> handDropChances{0.085f,0.085f};
+    std::array<float,4> armorDropChances{0.085f,0.085f,0.085f,0.085f};
     std::int32_t riderEntityId = -1; // passenger entity id riding this mob
     std::int32_t vehicleId = -1; // if this mob is passenger, its vehicle
     bool sheared = false;
     std::uint8_t woolColor = 0; // 0 white
-    std::uint16_t carriedBlock = 0; // enderman
+    std::uint32_t carriedBlock = 0; // enderman: block state id, 0 = empty (plan13 §6)
     bool creeperCharged = false;
     int slimeSize = 2; // 2 large 1 medium 0 small
     std::int32_t hurtCooldown = 0;

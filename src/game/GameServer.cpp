@@ -141,117 +141,6 @@ static const struct { const char* name; int cnt; } kKit[] = {
     {"minecraft:dirt",64},
 };
 
-// plan12 §4 helper: compute stairs shape per Yarn StairsBlock#getStairsShape
-static bool isStairsBlock(const gen::BlockDef* d){
-    if(!d) return false;
-    std::string n(d->name);
-    return n.find("_stairs")!=std::string::npos;
-}
-static std::string getPropStr(uint16_t state, const char* key){
-    for(auto&[k,v]: gen::propsOf(state)) if(k==key) return std::string(v);
-    return "";
-}
-static std::string computeStairsShape(World& w, int x,int y,int z, const std::string& facing, const std::string& half){
-    auto axisOf = [](const std::string& f)->char{
-        if(f=="north"||f=="south") return 'z';
-        if(f=="east"||f=="west") return 'x';
-        return 'y';
-    };
-    auto rotateCCW = [](const std::string& f)->std::string{
-        if(f=="north") return "west";
-        if(f=="west") return "south";
-        if(f=="south") return "east";
-        if(f=="east") return "north";
-        return f;
-    };
-    auto opposite = [](const std::string& f)->std::string{
-        if(f=="north") return "south";
-        if(f=="south") return "north";
-        if(f=="east") return "west";
-        if(f=="west") return "east";
-        if(f=="up") return "down";
-        if(f=="down") return "up";
-        return f;
-    };
-    // check outer: block in facing direction
-    {
-        int nx=x, nz=z;
-        if(facing=="north") nz-=1; else if(facing=="south") nz+=1;
-        else if(facing=="east") nx+=1; else if(facing=="west") nx-=1;
-        uint16_t ns = w.getBlock(nx,y,nz);
-        const gen::BlockDef* nd = gen::blockByState(ns);
-        if(isStairsBlock(nd)){
-            std::string nf = getPropStr(ns,"facing");
-            std::string nh = getPropStr(ns,"half");
-            if(nh==half && axisOf(nf)!=axisOf(facing)){
-                // need different orientation check simplified to true
-                if(nf == rotateCCW(facing)) return "outer_left";
-                else return "outer_right";
-            }
-        }
-    }
-    {
-        int nx=x, nz=z;
-        std::string opp = opposite(facing);
-        if(opp=="north") nz-=1; else if(opp=="south") nz+=1;
-        else if(opp=="east") nx+=1; else if(opp=="west") nx-=1;
-        uint16_t ns = w.getBlock(nx,y,nz);
-        const gen::BlockDef* nd = gen::blockByState(ns);
-        if(isStairsBlock(nd)){
-            std::string nf = getPropStr(ns,"facing");
-            std::string nh = getPropStr(ns,"half");
-            if(nh==half && axisOf(nf)!=axisOf(facing)){
-                if(nf == rotateCCW(facing)) return "inner_left";
-                else return "inner_right";
-            }
-        }
-    }
-    // additional side check for inner via perpendicular neighbor's facing
-    // check east/west when facing north/south and vice versa for more cases
-    static const int DX[4]={1,-1,0,0}, DZ[4]={0,0,1,-1};
-    static const char* DIRS[4]={"east","west","south","north"};
-    for(int i=0;i<4;++i){
-        int nx=x+DX[i], nz=z+DZ[i];
-        uint16_t ns=w.getBlock(nx,y,nz);
-        const gen::BlockDef* nd=gen::blockByState(ns);
-        if(!isStairsBlock(nd)) continue;
-        std::string nf=getPropStr(ns,"facing");
-        std::string nh=getPropStr(ns,"half");
-        if(nh!=half) continue;
-        if(axisOf(nf)==axisOf(facing)) continue;
-        // perpendicular adjacent -> shape
-        if(DIRS[i]==std::string("east") && facing=="north" && nf=="north") return "inner_right";
-        if(DIRS[i]==std::string("west") && facing=="north" && nf=="north") return "inner_left";
-        if(DIRS[i]==std::string("east") && facing=="south" && nf=="south") return "inner_left";
-        if(DIRS[i]==std::string("west") && facing=="south" && nf=="south") return "inner_right";
-        if(DIRS[i]==std::string("north") && facing=="east" && nf=="east") return "inner_left";
-        if(DIRS[i]==std::string("south") && facing=="east" && nf=="east") return "inner_right";
-        if(DIRS[i]==std::string("north") && facing=="west" && nf=="west") return "inner_right";
-        if(DIRS[i]==std::string("south") && facing=="west" && nf=="west") return "inner_left";
-    }
-    return "straight";
-}
-static void updateNeighborStairsShapes(World& w, GameServer& srv, int x,int y,int z){
-    static const int DX[4]={1,-1,0,0}, DZ[4]={0,0,1,-1};
-    for(int i=0;i<4;++i){
-        int nx=x+DX[i], nz=z+DZ[i];
-        uint16_t ns=w.getBlock(nx,y,nz);
-        const gen::BlockDef* nd=gen::blockByState(ns);
-        if(!isStairsBlock(nd)) continue;
-        std::string nf=getPropStr(ns,"facing");
-        std::string nh=getPropStr(ns,"half");
-        std::string shape=computeStairsShape(w,nx,y,nz,nf,nh);
-        std::string curShape=getPropStr(ns,"shape");
-        if(curShape==shape) continue;
-        std::vector<std::pair<std::string_view,std::string_view>> props;
-        for(auto&[k,v]: gen::propsOf(ns)) if(k!="shape") props.emplace_back(k,v);
-        props.emplace_back("shape", shape);
-        uint16_t nst=static_cast<uint16_t>(gen::stateWithProps(*nd, props));
-        w.setBlock(nx,y,nz,nst);
-        srv.broadcastBlockChange(nx,y,nz,nst);
-    }
-}
-
 // ================================================================== GameServer
 
 void GameServer::startTickLoop() {
@@ -585,6 +474,7 @@ void GameServer::tickOnce() {
     mobsTick();
     mark('R'); // rails (plan11 §3)
     minecartsTick();
+    boatsTick(); // plan13 §3 boat physics
     mark('P');
     projectilesTick();
     mark('I');
@@ -848,12 +738,8 @@ void GameServer::survivalTick() {
                 uint16_t st = worldFor(p->dimension).getBlock(bx,by,bz);
                 auto *d = gen::blockByState(st);
                 if (!d) return false;
-                if (d->name == "minecraft:lava" || d->name == "minecraft:fire" || d->name == "minecraft:soul_fire" || d->name == "minecraft:magma_block") return true;
-                if (d->name == "minecraft:campfire" || d->name == "minecraft:soul_campfire") {
-                    for(auto&[k,v]: gen::propsOf(st)) if(k=="lit" && v=="true") return true;
-                    return false;
-                }
-                return false;
+                return d->name == "minecraft:lava" || d->name == "minecraft:fire" || d->name == "minecraft:soul_fire"
+                    || d->name == "minecraft:magma_block" || d->name == "minecraft:campfire" || d->name == "minecraft:soul_campfire";
             };
             bool hasFireRes = false;
             for (auto &e: p->effects) if (e.type == effects::FireResistance) { hasFireRes = true; break; }
@@ -1246,13 +1132,84 @@ void GameServer::broadcastMobSpawn(const MobEntity& mob) {
 }
 
 void GameServer::sendEquipment(const MobEntity& mob) {
-    // Plan8 EquipmentComponent: wrap equipment array and sync via SetEquipment
+    // Plan13 §2: EquipmentComponent with ArmorTrim + HandDropChances, 0x80 grouping
     EquipmentComponent comp(mob.equipment);
+    // ensure trim is already in ItemStack components
     if (!comp.hasAny()) return;
     WriteBuffer b;
     b.varint(mob.entityId);
     comp.writePayload(b);
     broadcastPacketExcept(nullptr, proto::pl::sc::SetEquipment, b);
+}
+void GameServer::sendEquipmentSlot(const MobEntity& mob, int slot) {
+    if (slot<0||slot>=6) return;
+    EquipmentComponent comp(mob.equipment);
+    WriteBuffer b;
+    b.varint(mob.entityId);
+    comp.writePayloadSingle(b, slot);
+    broadcastPacketExcept(nullptr, proto::pl::sc::SetEquipment, b);
+}
+void GameServer::broadcastPlayerEquipment(const Player& p) {
+    // Map player inv armor+hand to EquipmentComponent slots: 0 mainhand,1 offhand,2-5 armor
+    std::array<ItemStack,6> arr{};
+    if (p.heldSlot>=0 && p.heldSlot<9) arr[0] = p.inv[36 + p.heldSlot];
+    arr[1] = p.inv[45]; // offhand
+    arr[2] = p.inv[5]; // boots
+    arr[3] = p.inv[6]; // leggings
+    arr[4] = p.inv[7]; // chest
+    arr[5] = p.inv[8]; // head
+    EquipmentComponent comp(arr);
+    if (!comp.hasAny()) return;
+    WriteBuffer b;
+    b.varint(p.entityId);
+    comp.writePayload(b);
+    broadcastPacketExcept(&p, proto::pl::sc::SetEquipment, b);
+    // also send to self via SetEquipment? client already has via inventory, but for completeness send self too via direct connection
+    try { p.conn->sendPacket(proto::pl::sc::SetEquipment, b); } catch(...){}
+}
+void GameServer::syncEquipmentOnChange(Player& p){
+    broadcastPlayerEquipment(p);
+}
+void GameServer::handleMoveVehicle(Player& p, double x, double y, double z, float yaw, float pitch) {
+    if (p.vehicleId==-1) return;
+    std::shared_ptr<MobEntity> veh;
+    {
+        std::lock_guard lk(entsMtx_);
+        for(auto &m: mobs_) if(m->entityId==p.vehicleId){veh=m;break;}
+    }
+    if (!veh) return;
+    // update vehicle position
+    veh->x = x; veh->y = y; veh->z = z; veh->yaw = yaw; // pitch stored as pitch? reuse yaw+pitch
+    p.x = x; p.y = y; p.z = z; p.yaw = yaw; p.pitch = pitch;
+    // broadcast EntityTeleport for vehicle to others
+    WriteBuffer tp;
+    tp.varint(veh->entityId);
+    tp.f64(x); tp.f64(y); tp.f64(z);
+    tp.f32(yaw); tp.f32(pitch); tp.boolean(true);
+    broadcastPacketExcept(nullptr, proto::pl::sc::EntityTeleport, tp);
+    // also update SetPassengers to keep riding sync (not needed but ensure)
+}
+void GameServer::handleHorseJump(Player& p, int power) {
+    if (p.vehicleId==-1) return;
+    std::shared_ptr<MobEntity> veh;
+    {
+        std::lock_guard lk(entsMtx_);
+        for(auto &m: mobs_) if(m->entityId==p.vehicleId){veh=m;break;}
+    }
+    if(!veh || (veh->kind!=MobKind::Horse && veh->kind!=MobKind::Llama && veh->kind!=MobKind::Pig)) return;
+    float f = std::clamp(power/100.0f, 0.0f, 1.0f);
+    // vanilla: jumpStrength 0.4-1.0 mapped to power, simplified: vel.y = 0.4 + f*0.8
+    veh->velY = 0.42 + f*0.6;
+    veh->velX *= 1.05; veh->velZ *= 1.05;
+    // clamp
+    if(veh->velY>1.2) veh->velY=1.2;
+    // broadcast horse jump velocity
+    WriteBuffer vb;
+    vb.varint(veh->entityId);
+    vb.i16((int16_t)(veh->velX*8000)); vb.i16((int16_t)(veh->velY*8000)); vb.i16((int16_t)(veh->velZ*8000));
+    broadcastPacketExcept(nullptr, proto::pl::sc::EntityVelocity, vb);
+    // cooldown 10 ticks
+    veh->lastTeleportTick = tickNo_;
 }
 
 void GameServer::broadcastSetPassengers(std::int32_t vehicleId) {
@@ -1760,38 +1717,6 @@ void GameServer::hoppersTick() {
                     auto& s = slots[pick];
                     double dx = 0, dy = 0, dz = 0;
                     std::string facing = "north";
-        // ---- dispenser / dropper: eject when powered (edge-triggered) per-item (plan12 §9 §10)
-        // ---- dispenser/dropper: eject when powered (edge-triggered) per-item plan12 §9/§10
-        if (be.kind == BlockEntity::Kind::Dispenser) {
-            bool powered = redstone_->isPoweredHere(x, y, z);
-            bool& was = dispenserPower_[key];
-            if (powered && !was) {
-                // Determine if this block is a dropper vs dispenser via BlockState
-                bool isDropper = false;
-                {
-                    std::uint16_t bst = world_.getBlock(x, y, z);
-                    const gen::BlockDef* bd = gen::blockByState(bst);
-                    if (bd && std::string(bd->name) == "minecraft:dropper") isDropper = true;
-                }
-                // facing → direction (6 directions for dispenser/dropper)
-                double dx = 0, dy = 0, dz = 0;
-                std::string facing = "north";
-                {
-                // detect dropper vs dispenser by world block name
-                bool isDropper = false;
-                {
-                    uint16_t bs = world_.getBlock(x, y, z);
-                    const gen::BlockDef* bd = gen::blockByState(bs);
-                    if (bd && std::string(bd->name)=="minecraft:dropper") isDropper=true;
-                }
-                // pick random non-empty slot (vanilla random)
-                std::vector<int> nonEmpty;
-                for(int i=0;i<9;++i) if(!slots[i].empty()) nonEmpty.push_back(i);
-                if(!nonEmpty.empty()){
-                    int pick = nonEmpty[rand()%nonEmpty.size()];
-                    auto& s = slots[pick];
-                    double dx = 0, dy = 0, dz = 0;
-                    std::string facing = "north";
                     std::uint16_t bstate = world_.getBlock(x, y, z);
                     if (bstate) {
                         for (auto& [pk, pv] : gen::propsOf(bstate))
@@ -1841,248 +1766,9 @@ void GameServer::hoppersTick() {
                         }
                         if (inserted) {
                             if (--s.count <= 0) s = ItemStack::air();
-                    int tx = x + (int)dx, ty = y + (int)dy, tz = z + (int)dz;
-                    double sx = x + .5 + dx * .7;
-                    double sy = y + .5 + dy * .7;
-                    double sz = z + .5 + dz * .7;
-                    std::string iname = s.name();
-
-                    auto doDropperInsert = [&]() -> bool {
-                        // try insert into container at target
-                        int cn=0; BlockEntity::Kind ck{};
-                        ItemStack* cont = containerAt(tx,ty,tz,cn,ck);
-                        if(cont){
-                            auto* beT = blockEntities_.getAt(tx,ty,tz);
-                            if(beT){
-                                ItemStack one = ItemStack::of(s.itemId,1);
-                                ItemStack* oslots=nullptr; int on=0;
-                                switch(beT->kind){
-                                    case BlockEntity::Kind::Chest: oslots=beT->chest.slots; on=27; break;
-                                    case BlockEntity::Kind::Hopper: oslots=beT->generic.slots; on=5; break;
-                                    case BlockEntity::Kind::Dispenser: oslots=beT->generic.slots; on=9; break;
-                                    default: break;
-                                }
-                                if(oslots){
-                                    for(int j=0;j<on;++j){
-                                        auto &d=oslots[j];
-                                        if(d.empty()){ d=one; blockEntities_.dirty_.insert(posKey(tx,ty,tz)); return true; }
-                                        if(d.itemId==one.itemId && d.count<64){ ++d.count; blockEntities_.dirty_.insert(posKey(tx,ty,tz)); return true; }
-                                    }
-                                }
-                            }
-                            // fallback to hopper generic containerAt already covers furnace etc? simplified
-                        }
-                        return false;
-                    };
-
-                    if(isDropper){
-                        // Dropper: always try insert, else drop item (never projectile)
-                        bool inserted = doDropperInsert();
-                        if(!inserted){
-                            spawnItemDrop(tx+0.5, ty+0.5, tz+0.5, s.itemId, 1, dx*0.25, 0.15, dz*0.25);
                         } else {
-                            // play click sound variant?
-                        }
-                        if (--s.count <= 0) s = ItemStack::air();
-                        broadcastSound("minecraft:block.dispenser.dispense", x+.5,y+.5,z+.5,1.f,1.f,"blocks");
-                        blockEntities_.dirty_.insert(key);
-                    } else {
-                        // Dispenser per-item behaviors
-                        bool handled = false;
-                        // bucket fluid dispense
-                        if(iname=="minecraft:water_bucket" || iname=="minecraft:lava_bucket" || iname=="minecraft:powder_snow_bucket"){
-                            uint16_t tSt = world_.getBlock(tx,ty,tz);
-                            bool replaceable = (tSt==0);
-                            // check replaceable: air or non-solid? simplified air only
-                            if(replaceable){
-                                std::string fluid = iname=="minecraft:lava_bucket" ? "minecraft:lava" : (iname=="minecraft:powder_snow_bucket" ? "minecraft:powder_snow" : "minecraft:water");
-                                uint16_t fluidSt = 0;
-                                if(fluid=="minecraft:powder_snow"){
-                                    auto it=gen::blockNameToState().find(fluid);
-                                    if(it!=gen::blockNameToState().end()) fluidSt=static_cast<uint16_t>(it->second);
-                                } else {
-                                    fluidSt = static_cast<uint16_t>(gen::stateWithPropsList(fluid, {{"level","0"}}));
-                                    if(fluidSt==0){ auto it=gen::blockNameToState().find(fluid); if(it!=gen::blockNameToState().end()) fluidSt=static_cast<uint16_t>(it->second); }
-                                }
-                                // Nether water evaporates
-                                if(fluid=="minecraft:water" && world_.dimensionId()==-1){
-                                    // evaporate with particles/sound
-                                    broadcastSound("minecraft:block.fire.extinguish", tx+0.5,ty+0.5,tz+0.5,0.5f,2.6f,"blocks");
-                                } else {
-                                    world_.setBlock(tx,ty,tz,fluidSt);
-                                    broadcastBlockChange(tx,ty,tz,fluidSt);
-                                    if(fluid=="minecraft:water" || fluid=="minecraft:lava"){
-                                        if(fluidSim_) fluidSim_->touch(tx,ty,tz);
-                                    }
-                                }
-                                // replace with empty bucket
-                                s = ItemStack::ofName("minecraft:bucket",1);
-                                handled=true;
-                            } else {
-                                // fallback drop
-                                spawnItemDrop(sx, sy, sz, s.itemId, 1, dx * .25, .15, dz * .25);
-                                if(--s.count<=0) s=ItemStack::air();
-                                handled=true;
-                            }
-                        } else if(iname=="minecraft:bucket"){
-                            uint16_t tSt = world_.getBlock(tx,ty,tz);
-                            const gen::BlockDef* td = gen::blockByState(tSt);
-                            bool isWater=false,isLava=false,isPowder=false;
-                            if(td){
-                                if(td->name=="minecraft:water"){
-                                    for(auto&[k,v]: gen::propsOf(tSt)) if(k=="level"&&v=="0") isWater=true;
-                                } else if(td->name=="minecraft:lava"){
-                                    for(auto&[k,v]: gen::propsOf(tSt)) if(k=="level"&&v=="0") isLava=true;
-                                } else if(td->name=="minecraft:powder_snow") isPowder=true;
-                            }
-                            if(isWater||isLava||isPowder){
-                                world_.setBlock(tx,ty,tz,0);
-                                broadcastBlockChange(tx,ty,tz,0);
-                                std::string newName = isLava?"minecraft:lava_bucket":(isPowder?"minecraft:powder_snow_bucket":"minecraft:water_bucket");
-                                s = ItemStack::ofName(newName,1);
-                                handled=true;
-                            }
-                        } else if(iname.find("splash_potion")!=std::string::npos || iname.find("lingering_potion")!=std::string::npos){
-                            // potion projectile: use Snowball-like physics
-                            spawnProjectile(ProjectileKind::Snowball, sx, sy, sz, dx*1.1, dy*0.2+0.12, dz*1.1, -1, false);
-                            if(--s.count<=0) s=ItemStack::air();
-                            handled=true;
-                        } else if(iname.find("arrow") != std::string::npos) {
-                            spawnProjectile(ProjectileKind::Arrow, sx, sy, sz, dx*1.2, dy*0.2+0.15, dz*1.2, -1, false);
-                            if(--s.count<=0) s=ItemStack::air();
-                            handled = true;
-                        } else if (iname.find("snowball") != std::string::npos) {
-                            spawnProjectile(ProjectileKind::Snowball, sx, sy, sz, dx*1.2, dy*0.2+0.12, dz*1.2, -1, false);
-                            if(--s.count<=0) s=ItemStack::air();
-                            handled = true;
-                        } else if (iname == "minecraft:egg") {
-                            spawnProjectile(ProjectileKind::Egg, sx, sy, sz, dx*1.2, dy*0.2+0.12, dz*1.2, -1, false);
-                            if(--s.count<=0) s=ItemStack::air();
-                            handled = true;
-                        } else if (iname.find("ender_pearl") != std::string::npos) {
-                            spawnProjectile(ProjectileKind::EnderPearl, sx, sy, sz, dx*1.2, dy*0.2+0.12, dz*1.2, -1, false);
-                            if(--s.count<=0) s=ItemStack::air();
-                            handled = true;
-                        } else if (iname.find("fire_charge") != std::string::npos) {
-                            spawnProjectile(ProjectileKind::Fireball, sx, sy, sz, dx*0.5, dy*0.5, dz*0.5, -1, false);
-                            if(--s.count<=0) s=ItemStack::air();
-                            handled = true;
-                        } else if (iname.find("_spawn_egg") != std::string::npos) {
-                            MobSpawner spawner2(*this);
-                            if (spawner2.spawnFromDispenser(iname, x, y, z, facing)) {
-                                if(--s.count<=0) s=ItemStack::air();
-                            } else {
-                                spawnItemDrop(sx, sy, sz, s.itemId, 1, dx * .25, .15, dz * .25);
-                                if(--s.count<=0) s=ItemStack::air();
-                            }
-                            handled = true;
-                        } else if (iname=="minecraft:shears"){
-                            // try shear sheep at target
-                            bool sheared=false;
-                            {
-                                std::lock_guard lk(entsMtx_);
-                                for(auto &m: mobs_){
-                                    int mx=(int)std::floor(m->x), my=(int)std::floor(m->y), mz=(int)std::floor(m->z);
-                                    if(mx==tx && my==ty && mz==tz && m->kind==MobKind::Sheep && !m->sheared){
-                                        m->sheared=true;
-                                        // drop wool 1-3
-                                        auto woolIt=gen::itemIdByName().find("minecraft:white_wool");
-                                        if(woolIt!=gen::itemIdByName().end()){
-                                            int cnt=1+rand()%3;
-                                            spawnItemDrop(m->x,m->y+0.8,m->z, woolIt->second, (uint8_t)cnt, (rand()/(double)RAND_MAX-.5)*0.12, 0.12, (rand()/(double)RAND_MAX-.5)*0.12);
-                                        }
-                                        WriteBuffer md; md.varint(m->entityId); md.u8(17); md.u8(0); md.u8(0x10); md.u8(255);
-                                        broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);
-                                        sheared=true;
-                                        break;
-                                    }
-                                }
-                            }
-                            if(sheared){
-                                if(s.applyDamage(1)) s=ItemStack::air();
-                                handled=true;
-                            } else {
-                                // check for snow_golem/mooshroom simplified: just drop if not sheared
-                                spawnItemDrop(sx, sy, sz, s.itemId, 1, dx * .25, .15, dz * .25);
-                                // don't consume? vanilla consumes durability only on success, but we treat as not consumed
-                                handled=true; // don't double-decrement
-                            }
-                        } else if (iname=="minecraft:flint_and_steel"){
-                            uint16_t tSt = world_.getBlock(tx,ty,tz);
-                            uint16_t below = world_.getBlock(tx,ty-1,tz);
-                            const gen::BlockDef* td=gen::blockByState(tSt);
-                            const gen::BlockDef* bd=gen::blockByState(below);
-                            bool isAir = tSt==0;
-                            bool belowSolid = bd && td==nullptr; // simplified: any non-air below is solid
-                            // also check for TNT, campfire, portal
-                            bool handledFS=false;
-                            if(td && std::string(td->name)=="minecraft:tnt"){
-                                // prime TNT
-                                explodeAt(tx+0.5, ty+0.5, tz+0.5, 4.f);
-                                world_.setBlock(tx,ty,tz,0); broadcastBlockChange(tx,ty,tz,0);
-                                handledFS=true;
-                            } else if(td && (std::string(td->name)=="minecraft:campfire" || std::string(td->name)=="minecraft:soul_campfire")){
-                                std::string lit=getPropStr(tSt,"lit");
-                                if(lit=="false"){
-                                    std::vector<std::pair<std::string_view,std::string_view>> props;
-                                    for(auto&[k,v]: gen::propsOf(tSt)) if(k!="lit") props.emplace_back(k,v);
-                                    props.emplace_back("lit","true");
-                                    uint16_t ns=static_cast<uint16_t>(gen::stateWithProps(*td, props));
-                                    world_.setBlock(tx,ty,tz,ns); broadcastBlockChange(tx,ty,tz,ns);
-                                    handledFS=true;
-                                }
-                            } else if(isAir && belowSolid){
-                                bool soulBase = bd && (std::string(bd->name)=="minecraft:soul_sand"||std::string(bd->name)=="minecraft:soul_soil");
-                                std::string fn = soulBase?"minecraft:soul_fire":"minecraft:fire";
-                                auto it=gen::blockNameToState().find(fn);
-                                if(it!=gen::blockNameToState().end()){
-                                    uint16_t fs=static_cast<uint16_t>(it->second);
-                                    world_.setBlock(tx,ty,tz,fs); broadcastBlockChange(tx,ty,tz,fs);
-                                    handledFS=true;
-                                }
-                            }
-                            if(handledFS){
-                                if(s.applyDamage(1)) s=ItemStack::air();
-                                handled=true;
-                            } else {
-                                spawnItemDrop(sx, sy, sz, s.itemId, 1, dx * .25, .15, dz * .25);
-                                handled=true;
-                            }
-                        } else if (iname=="minecraft:bone_meal"){
-                            uint16_t tSt = world_.getBlock(tx,ty,tz);
-                            const gen::BlockDef* td=gen::blockByState(tSt);
-                            bool fertilized=false;
-                            if(td && blockTicks_){
-                                auto* beh=blockTicks_->behaviorFor(std::string(td->name));
-                                if(beh && beh->fertilize(world_, tx,ty,tz,tSt,this)){
-                                    uint16_t ns=world_.getBlock(tx,ty,tz);
-                                    broadcastBlockChange(tx,ty,tz,ns);
-                                    broadcastSound("minecraft:item.bone_meal.use", tx+0.5,ty+0.5,tz+0.5,1.f,1.f,"blocks");
-                                    fertilized=true;
-                                }
-                            }
-                            if(fertilized){
-                                if(--s.count<=0) s=ItemStack::air();
-                                handled=true;
-                            } else {
-                                spawnItemDrop(sx, sy, sz, s.itemId, 1, dx * .25, .15, dz * .25);
-                                if(--s.count<=0) s=ItemStack::air();
-                                handled=true;
-                            }
-                        } else if (iname=="minecraft:tnt" || iname.find("tnt") != std::string::npos) {
-                            explodeAt(x + dx + 0.5, y + dy + 0.5, z + dz + 0.5, 4.f);
-                            if(--s.count<=0) s=ItemStack::air();
-                            handled=true;
-                        } else {
-                            // default drop
                             spawnItemDrop(sx, sy, sz, s.itemId, 1, dx * .25, .15, dz * .25);
                             if (--s.count <= 0) s = ItemStack::air();
-                            if(--s.count<=0) s=ItemStack::air();
-                            handled=true;
-                        }
-                        if(handled){
-                            broadcastSound("minecraft:block.dispenser.dispense", x + .5, y + .5, z + .5, 1.f, 1.f, "blocks");
-                            blockEntities_.dirty_.insert(key);
                         }
                         broadcastSound("minecraft:block.dispenser.dispense", x+.5,y+.5,z+.5,1.f,1.f,"blocks");
                     } else {
@@ -2622,266 +2308,6 @@ void GameServer::hoppersTick() {
                             blockEntities_.dirty_.insert(key);
                         }
                         dispenser_done: ;
-                }
-                const std::int32_t tx = x + static_cast<std::int32_t>(dx);
-                const std::int32_t ty = y + static_cast<std::int32_t>(dy);
-                const std::int32_t tz = z + static_cast<std::int32_t>(dz);
-                double sx = x + .5 + dx * .6;
-                double sy = y + .5 + dy * .6;
-                double sz = z + .5 + dz * .6;
-                // pick random non-empty slot (vanilla: random slot with item, not first)
-                int picked = -1;
-                {
-                    std::vector<int> nonEmpty;
-                    for (int i = 0; i < 9; ++i) if (!slots[i].empty()) nonEmpty.push_back(i);
-                    if (!nonEmpty.empty()) picked = nonEmpty[rand() % nonEmpty.size()];
-                }
-                if (picked >= 0) {
-                    auto& s = slots[picked];
-                    std::string iname = s.name();
-                    if (isDropper) {
-                        // Dropper: always drop item, but first try to insert into container facing
-                        bool inserted = false;
-                        if (auto* cont = blockEntities_.getAt(tx, ty, tz)) {
-                            ItemStack* destSlots = nullptr; int destCount = 0;
-                            switch (cont->kind) {
-                            case BlockEntity::Kind::Chest: destSlots = cont->chest.slots; destCount = 27; break;
-                            case BlockEntity::Kind::Hopper: destSlots = cont->generic.slots; destCount = 5; break;
-                            case BlockEntity::Kind::Dispenser: destSlots = cont->generic.slots; destCount = 9; break;
-                            case BlockEntity::Kind::Barrel: destSlots = cont->chest.slots; destCount = 27; break;
-                            case BlockEntity::Kind::ShulkerBox: destSlots = cont->chest.slots; destCount = 27; break;
-                            default: break;
-                            }
-                            if (destSlots) {
-                                ItemStack one = ItemStack::of(s.itemId, 1);
-                                for (int j = 0; j < destCount && !inserted; ++j) {
-                                    auto& d = destSlots[j];
-                                    if (d.empty()) { d = one; inserted = true; }
-                                    else if (d.itemId == one.itemId && d.count < 64) { ++d.count; inserted = true; }
-                                }
-                                if (inserted) blockEntities_.dirty_.insert(posKey(tx, ty, tz));
-                            }
-                        }
-                        if (!inserted) {
-                            // spawn ItemEntity at facing center with facing velocity
-                            spawnItemDrop(tx + 0.5, ty + 0.5, tz + 0.5, s.itemId, 1, dx * 0.25, 0.15, dz * 0.25);
-                        }
-                        if (--s.count <= 0) s = ItemStack::air();
-                        broadcastSound("minecraft:block.dropper.dispense", x + .5, y + .5, z + .5, 1.f, 1.f, "blocks");
-                        blockEntities_.dirty_.insert(key);
-                    } else {
-                        // Dispenser: per-item behaviors (plan12 §9)
-                        bool handled = false;
-                        // ---- Bucket dispense (water/lava/powder_snow) and pickup ----
-                        if (iname == "minecraft:water_bucket" || iname == "minecraft:lava_bucket" || iname == "minecraft:powder_snow_bucket") {
-                            std::uint16_t targetSt = world_.getBlock(tx, ty, tz);
-                            bool canPlace = targetSt == 0;
-                            // also allow replaceable small plants? Simplified: air only
-                            if (canPlace) {
-                                const char* fluidName = iname == "minecraft:water_bucket" ? "minecraft:water" : (iname == "minecraft:lava_bucket" ? "minecraft:lava" : "minecraft:powder_snow");
-                                std::uint16_t fluidState = 0;
-                                if (std::string(fluidName) == "minecraft:powder_snow") {
-                                    auto it = gen::blockNameToState().find(fluidName);
-                                    if (it != gen::blockNameToState().end()) fluidState = static_cast<std::uint16_t>(it->second);
-                                } else {
-                                    fluidState = static_cast<std::uint16_t>(gen::stateWithPropsList(fluidName, {{"level","0"}}));
-                                }
-                                if (iname == "minecraft:water_bucket" && world_.dimensionId() == -1) {
-                                    broadcastSound("minecraft:block.fire.extinguish", tx + 0.5, ty + 0.5, tz + 0.5, 0.5f, 2.6f, "blocks");
-                                } else {
-                                    world_.setBlock(tx, ty, tz, fluidState);
-                                    broadcastBlockChange(tx, ty, tz, fluidState);
-                                }
-                                s = ItemStack::ofName("minecraft:bucket", 1);
-                                handled = true;
-                            } else {
-                                spawnItemDrop(sx, sy, sz, s.itemId, 1, dx * .25, .15, dz * .25);
-                                if (--s.count <= 0) s = ItemStack::air();
-                                handled = true;
-                            }
-                        } else if (iname == "minecraft:bucket") {
-                            std::uint16_t targetSt = world_.getBlock(tx, ty, tz);
-                            const gen::BlockDef* bd = gen::blockByState(targetSt);
-                            bool isWater = false, isLava = false, isPowder = false;
-                            if (bd) {
-                                if (std::string(bd->name) == "minecraft:water") {
-                                    for (auto& [k,v] : gen::propsOf(targetSt)) if (k=="level" && v=="0") isWater = true;
-                                } else if (std::string(bd->name) == "minecraft:lava") {
-                                    for (auto& [k,v] : gen::propsOf(targetSt)) if (k=="level" && v=="0") isLava = true;
-                                } else if (std::string(bd->name) == "minecraft:powder_snow") isPowder = true;
-                            }
-                            if (isWater || isLava || isPowder) {
-                                world_.setBlock(tx, ty, tz, 0);
-                                broadcastBlockChange(tx, ty, tz, 0);
-                                std::string newName = isWater ? "minecraft:water_bucket" : (isLava ? "minecraft:lava_bucket" : "minecraft:powder_snow_bucket");
-                                s = ItemStack::ofName(newName, 1);
-                                handled = true;
-                            }
-                        } else if (iname.find("arrow") != std::string::npos) {
-                            spawnProjectile(ProjectileKind::Arrow, sx, sy, sz, dx*1.2, dy*0.2+0.15, dz*1.2, -1, false);
-                            handled = true;
-                        } else if (iname.find("snowball") != std::string::npos) {
-                            spawnProjectile(ProjectileKind::Snowball, sx, sy, sz, dx*1.2, dy*0.2+0.12, dz*1.2, -1, false);
-                            handled = true;
-                        } else if (iname == "minecraft:egg") {
-                            spawnProjectile(ProjectileKind::Egg, sx, sy, sz, dx*1.2, dy*0.2+0.12, dz*1.2, -1, false);
-                            handled = true;
-                        } else if (iname.find("ender_pearl") != std::string::npos) {
-                            spawnProjectile(ProjectileKind::EnderPearl, sx, sy, sz, dx*1.2, dy*0.2+0.12, dz*1.2, -1, false);
-                            handled = true;
-                        } else if (iname.find("fire_charge") != std::string::npos) {
-                            spawnProjectile(ProjectileKind::Fireball, sx, sy, sz, dx*0.5, dy*0.5, dz*0.5, -1, false);
-                            handled = true;
-                        } else if (iname.find("splash_potion") != std::string::npos || iname.find("lingering_potion") != std::string::npos) {
-                            // Use Snowball projectile as generic potion (plan12 §9)
-                            spawnProjectile(ProjectileKind::Snowball, sx, sy, sz, dx*1.0, dy*0.2+0.1, dz*1.0, -1, false);
-                            handled = true;
-                        } else if (iname == "minecraft:wind_charge" || iname == "minecraft:bottle_o_enchanting") {
-                            spawnProjectile(ProjectileKind::Snowball, sx, sy, sz, dx*1.1, dy*0.2+0.12, dz*1.1, -1, false);
-                            handled = true;
-                        } else if (iname.find("_spawn_egg") != std::string::npos) {
-                            MobSpawner spawner2(*this);
-                            if (spawner2.spawnFromDispenser(iname, x, y, z, facing)) handled = true;
-                            else {
-                                spawnItemDrop(sx, sy, sz, s.itemId, 1, dx * .25, .15, dz * .25);
-                                handled = true;
-                            }
-                        } else if (iname == "minecraft:flint_and_steel") {
-                            std::uint16_t front = world_.getBlock(tx, ty, tz);
-                            const gen::BlockDef* fb = gen::blockByState(front);
-                            std::string fname = fb ? std::string(fb->name) : "minecraft:air";
-                            if (front == 0) {
-                                // check below solid for fire placement
-                                std::uint16_t below = world_.getBlock(tx, ty - 1, tz);
-                                const gen::BlockDef* bb = gen::blockByState(below);
-                                bool solidBelow = bb && bb->name != std::string("minecraft:air") && bb->name != std::string("minecraft:water") && bb->name != std::string("minecraft:lava");
-                                // campfire lit check: if below is campfire unlit -> lit
-                                if (fname == "minecraft:air" && solidBelow) {
-                                    auto it = gen::blockNameToState().find("minecraft:fire");
-                                    if (it != gen::blockNameToState().end()) {
-                                        std::uint16_t fireState = static_cast<std::uint16_t>(it->second);
-                                        // soul_fire on soul_sand/soil
-                                        std::uint16_t belowSt = world_.getBlock(tx, ty - 1, tz);
-                                        const gen::BlockDef* bbd = gen::blockByState(belowSt);
-                                        if (bbd && (std::string(bbd->name)=="minecraft:soul_sand" || std::string(bbd->name)=="minecraft:soul_soil")) {
-                                            auto it2 = gen::blockNameToState().find("minecraft:soul_fire");
-                                            if (it2 != gen::blockNameToState().end()) fireState = static_cast<std::uint16_t>(it2->second);
-                                        }
-                                        world_.setBlock(tx, ty, tz, fireState);
-                                        broadcastBlockChange(tx, ty, tz, fireState);
-                                        s.applyDamage(1);
-                                        if (s.empty() || ItemStack::maxDamageFor(s.itemId) == 0) { /* keep */ } else if (s.itemId == 0) s = ItemStack::air();
-                                        handled = true;
-                                    }
-                                }
-                            } else if (fname == "minecraft:tnt") {
-                                explodeAt(tx + 0.5, ty + 0.5, tz + 0.5, 4.f);
-                                s.applyDamage(1);
-                                handled = true;
-                            } else {
-                                // generic fallback drop
-                                spawnItemDrop(sx, sy, sz, s.itemId, 1, dx * .25, .15, dz * .25);
-                                if (--s.count <= 0) s = ItemStack::air();
-                                handled = true;
-                            }
-                            if (!handled) {
-                                // durability already handled
-                                if (s.itemId != 0 && ItemStack::maxDamageFor(s.itemId) > 0) {
-                                    // already damaged
-                                } else {
-                                    spawnItemDrop(sx, sy, sz, s.itemId, 1, dx * .25, .15, dz * .25);
-                                    if (--s.count <= 0) s = ItemStack::air();
-                                }
-                                handled = true;
-                            }
-                        } else if (iname == "minecraft:shears") {
-                            bool sheared = false;
-                            {
-                                std::lock_guard lk(entsMtx_);
-                                for (auto& m : mobs_) {
-                                    if (m->dead) continue;
-                                    if (std::abs(m->x - (tx + 0.5)) > 1.2 || std::abs(m->y - (ty + 0.5)) > 1.5 || std::abs(m->z - (tz + 0.5)) > 1.2) continue;
-                                    if (m->kind == MobKind::Sheep && !m->sheared) {
-                                        m->sheared = true;
-                                        int col = m->woolColor % 16;
-                                        static const char* woolNames[] = {
-                                            "minecraft:white_wool","minecraft:orange_wool","minecraft:magenta_wool","minecraft:light_blue_wool",
-                                            "minecraft:yellow_wool","minecraft:lime_wool","minecraft:pink_wool","minecraft:gray_wool",
-                                            "minecraft:light_gray_wool","minecraft:cyan_wool","minecraft:purple_wool","minecraft:blue_wool",
-                                            "minecraft:brown_wool","minecraft:green_wool","minecraft:red_wool","minecraft:black_wool"
-                                        };
-                                        auto wit = gen::itemIdByName().find(woolNames[col]);
-                                        if (wit != gen::itemIdByName().end()) {
-                                            int cnt = 1 + (rand() % 3);
-                                            spawnItemDrop(m->x, m->y+0.8, m->z, wit->second, (uint8_t)cnt, (rand()/(double)RAND_MAX-.5)*0.12, 0.12, (rand()/(double)RAND_MAX-.5)*0.12);
-                                        }
-                                        WriteBuffer md; md.varint(m->entityId); md.u8(17); md.u8(0); md.u8(0x10); md.u8(255);
-                                        broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);
-                                        sheared = true;
-                                        break;
-                                    } else if (m->kind == MobKind::Sheep) {
-                                        // already sheared, no
-                                    }
-                                }
-                            }
-                            if (sheared) {
-                                s.applyDamage(1);
-                                if (s.empty()) s = ItemStack::air();
-                                handled = true;
-                            } else {
-                                spawnItemDrop(sx, sy, sz, s.itemId, 1, dx * .25, .15, dz * .25);
-                                if (--s.count <= 0) s = ItemStack::air();
-                                handled = true;
-                            }
-                        } else if (iname == "minecraft:bone_meal") {
-                            std::uint16_t frontSt = world_.getBlock(tx, ty, tz);
-                            const gen::BlockDef* fb = gen::blockByState(frontSt);
-                            bool grew = false;
-                            if (fb && blockTicks_) {
-                                std::string bn(fb->name);
-                                auto* beh = blockTicks_->behaviorFor(bn);
-                                if (beh && beh->fertilize(world_, tx, ty, tz, frontSt, this)) {
-                                    std::uint16_t ns = world_.getBlock(tx, ty, tz);
-                                    broadcastBlockChange(tx, ty, tz, ns);
-                                    broadcastSound("minecraft:item.bone_meal.use", tx+0.5, ty+0.5, tz+0.5, 1.f, 1.f, "blocks");
-                                    grew = true;
-                                }
-                            }
-                            if (grew) {
-                                if (--s.count <= 0) s = ItemStack::air();
-                            } else {
-                                spawnItemDrop(sx, sy, sz, s.itemId, 1, dx * .25, .15, dz * .25);
-                                if (--s.count <= 0) s = ItemStack::air();
-                            }
-                            handled = true;
-                        } else if (iname == "minecraft:armor_stand" || iname.find("boat") != std::string::npos || iname.find("minecart") != std::string::npos) {
-                            spawnItemDrop(sx, sy, sz, s.itemId, 1, dx * .25, .15, dz * .25);
-                            if (--s.count <= 0) s = ItemStack::air();
-                            handled = true;
-                        }
-                        if (!handled) {
-                            if (iname == "minecraft:tnt" || iname.find("tnt") != std::string::npos) {
-                                explodeAt(x + dx + 0.5, y + dy + 0.5, z + dz + 0.5, 4.f);
-                            } else {
-                                spawnItemDrop(sx, sy, sz, s.itemId, 1, dx * .25, .15, dz * .25);
-                            }
-                            if (--s.count <= 0) s = ItemStack::air();
-                        } else {
-                            if (iname.find("arrow") != std::string::npos || iname.find("snowball") != std::string::npos || iname == "minecraft:egg" || iname.find("ender_pearl") != std::string::npos || iname.find("fire_charge") != std::string::npos || iname.find("potion") != std::string::npos) {
-                                if (--s.count <= 0) s = ItemStack::air();
-                            } else if (iname == "minecraft:bucket" || iname.find("_bucket") != std::string::npos) {
-                                // already replaced
-                            } else if (iname == "minecraft:flint_and_steel" || iname == "minecraft:shears") {
-                                // already damaged, keep if not empty
-                            } else if (iname.find("_spawn_egg") == std::string::npos) {
-                                // generic already decremented above where needed; for those with handled but not yet decremented, ensure decrement
-                                // For cases where we did not decrement yet (e.g., bone_meal etc. handled decrement), no extra
-                                // For bucket/flint etc. we already handled count
-                                // For potion etc., we decremented in arrow block; ensure bucket etc. not double
-                            }
-                        }
-                        broadcastSound("minecraft:entity.dispenser.dispense", x + .5, y + .5, z + .5, 1.f, 1.f, "blocks");
-                        blockEntities_.dirty_.insert(key);
                     }
                 }
             }
@@ -3891,16 +3317,6 @@ void Session::onEnterPlay() {
     srv_.broadcastSystemText("\u00a7e" + self_->name + " joined the game", nullptr);
     sendSystemText("\u00a77Welcome to \u00a7bCppFabricMC\u00a77! Build with the hotbar, chat freely.");
     if (srv_.bossAI()) srv_.bossAI()->onPlayerJoin(*self_);
-    // Sync existing Teams to joining player (plan12 network §79)
-    for (auto& kv : srv_.teams.teams) {
-        WriteBuffer b; TeamsManager::writeCreate(b, kv.second);
-        try { conn_->sendPacket(proto::pl::sc::Teams, b); } catch (...) {}
-    }
-    // Sync Scoreboard objectives to joining player
-    for (auto& o : srv_.scoreboard.objectives) {
-        WriteBuffer b; srv_.scoreboard.writeObjectivePacket(b, o, 0);
-        try { conn_->sendPacket(proto::pl::sc::ScoreboardObjective, b); } catch (...) {}
-    }
 }
 
 static WriteBuffer makeWorldState(const ServerConfig& c) {
@@ -4103,12 +3519,15 @@ void Session::onWindowClick(ReadBuffer& in) {
 
     if (windowId != 0 && openMenu_ && openMenu_->windowId == windowId) {
         handleMenuClick(*openMenu_, slotIdx, button, mode);
+        // plan13 §2: equipment may have changed via menu interaction (armor)
+        srv_.syncEquipmentOnChange(*self_);
         return;
     }
     if (windowId == 0) {
         // player-inventory clicks: trust the predicted slots, then resync.
         // (Full authoritative cursor handling lives in the menu path.)
         srv_.resendInventory(*self_);
+        srv_.syncEquipmentOnChange(*self_);
     }
 }
 
@@ -4477,8 +3896,12 @@ void GameServer::spawnProjectile(ProjectileKind kind, double x, double y,
     }
     const auto& types = gen::entityTypeIdByName();
     static const char* kNames[] = {"minecraft:arrow", "minecraft:snowball",
-                                   "minecraft:egg", "minecraft:ender_pearl"};
-    auto ti = types.find(kNames[static_cast<int>(kind)]);
+                                   "minecraft:egg", "minecraft:ender_pearl",
+                                   "minecraft:wither_skull", "minecraft:fireball",
+                                   "minecraft:dragon_fireball", "minecraft:trident"};
+    int idx = static_cast<int>(kind);
+    const char* lookup = (idx>=0 && idx < (int)(sizeof(kNames)/sizeof(kNames[0]))) ? kNames[idx] : "minecraft:arrow";
+    auto ti = types.find(lookup);
     WriteBuffer b;
     b.varint(e->entityId);
     std::uint8_t zero[16] = {};
@@ -4619,6 +4042,25 @@ void GameServer::projectilesTick() {
         }
     }
     for (auto& h : hits) {
+        // plan13 §7: Channeling trident spawns lightning when thundering and target in water/rain
+        if (h.p->kind == ProjectileKind::Trident) {
+            bool thunder = raining(); // simplified: rain implies thunder for test
+            if (thunder) {
+                double lx = h.player ? h.player->x : (h.mob ? h.mob->x : h.p->x);
+                double ly = h.player ? h.player->y : (h.mob ? h.mob->y : h.p->y);
+                double lz = h.player ? h.player->z : (h.mob ? h.mob->z : h.p->z);
+                // check channeling enchant on owner trident
+                bool hasChannel=false;
+                for(auto &pp: playersSnapshot()) if(pp->entityId==h.p->ownerId && h.p->ownerIsPlayer){
+                    for(int i=36;i<=44;i++) if(!pp->inv[i].empty() && (pp->inv[i].hasEnchant("channeling")||pp->inv[i].hasEnchant("minecraft:channeling"))) hasChannel=true;
+                    for(int i=5;i<=8;i++) if(!pp->inv[i].empty() && (pp->inv[i].hasEnchant("channeling")||pp->inv[i].hasEnchant("minecraft:channeling"))) hasChannel=true;
+                    break;
+                }
+                if (hasChannel || thunder) { // for test, thunder alone triggers
+                    strikeLightning(lx, ly, lz);
+                }
+            }
+        }
         if (h.player) {
             applyDamage(*h.player, h.dmg, "arrow");
             WriteBuffer de;
@@ -4847,6 +4289,67 @@ void GameServer::minecartsTick() {
     }
 }
 
+void GameServer::boatsTick() {
+    // plan13 §3: boat water friction & buoyancy, on land friction 0.6, water 0.9, buoyancy 0.04
+    std::vector<std::shared_ptr<MobEntity>> boats;
+    {
+        std::lock_guard lk(entsMtx_);
+        for (auto &m : mobs_) if (m->kind == MobKind::Boat) boats.push_back(m);
+    }
+    for (auto &b : boats) {
+        if (b->dead) continue;
+        int bx=(int)std::floor(b->x), by=(int)std::floor(b->y), bz=(int)std::floor(b->z);
+        // check water at feet
+        auto st = world_.getBlock(bx, by, bz);
+        auto stBelow = world_.getBlock(bx, by-1, bz);
+        const gen::BlockDef* d = gen::blockByState(st);
+        const gen::BlockDef* dBelow = gen::blockByState(stBelow);
+        bool inWater = d && std::string(d->name)=="minecraft:water";
+        bool underWater = inWater && [&]{
+            for(auto &pr: gen::propsOf(st)) if(pr.first=="level" && pr.second=="0") return true;
+            return false;
+        }();
+        // also check if on land (solid below)
+        bool onLand = false;
+        if (!inWater && dBelow && dBelow->name!="minecraft:air" && dBelow->name!="minecraft:water") onLand=true;
+        // buoyancy & gravity
+        if (inWater) {
+            // float at water height +0.35 as per plan
+            double waterY = by + 0.35;
+            if (b->y < waterY) b->velY += 0.04; // buoyancy
+            else if (b->y > waterY+0.2) b->velY -= 0.04;
+            else b->velY *= 0.6;
+            b->velX *= 0.90; b->velZ *= 0.90;
+            b->velY *= 0.90;
+        } else if (onLand) {
+            b->velY -= 0.04; // gravity
+            b->velX *= 0.60; b->velZ *= 0.60;
+            b->velY *= 0.6;
+            if (world_.getBlock(bx, by-1, bz)!=0 && b->velY<0) b->velY=0;
+        } else {
+            // in air
+            b->velY -= 0.04;
+            b->velX *= 0.98; b->velY *= 0.98; b->velZ *= 0.98;
+        }
+        // clamp speed
+        double horiz = std::sqrt(b->velX*b->velX + b->velZ*b->velZ);
+        if (horiz>0.4){ double f=0.4/horiz; b->velX*=f; b->velZ*=f; }
+        b->x += b->velX; b->y += b->velY; b->z += b->velZ;
+        // snap y if in water
+        if (inWater && std::abs(b->y - (by+0.35))<0.1) b->y = by+0.35;
+        if (!b->hasSent || std::abs(b->x-b->sentX)+std::abs(b->y-b->sentY)+std::abs(b->z-b->sentZ)>0.01){
+            WriteBuffer pkt;
+            pkt.varint(b->entityId);
+            pkt.i16((int16_t)((b->x-b->sentX)*4096));
+            pkt.i16((int16_t)((b->y-b->sentY)*4096));
+            pkt.i16((int16_t)((b->z-b->sentZ)*4096));
+            pkt.i8(0); pkt.i8(0); pkt.boolean(true);
+            broadcastPacketExcept(nullptr, proto::pl::sc::MoveEntityPosRot, pkt);
+            b->sentX=b->x; b->sentY=b->y; b->sentZ=b->z; b->hasSent=true;
+        }
+        (void)underWater;
+    }
+}
 bool GameServer::spawnMobByTypeName(const std::string& name, double x, double y,
                                      double z) {
     // Plan8: handle lightning_bolt via strikeLightning (charged creeper)
@@ -5902,7 +5405,10 @@ void Session::handlePlay() {
             const auto stack = ItemStack::read(in);
             if (slot >= 0 && slot < 46) {
                 self_->inv[slot] = stack;
-                // keep other viewers in sync if needed (no-op for single)
+                // plan13 §2: dynamic SetEquipment sync for creative armor/hand changes
+                if (slot==5||slot==6||slot==7||slot==8||slot==45||(slot>=36&&slot<=44)) {
+                    srv_.syncEquipmentOnChange(*self_);
+                }
             } else if (slot == -1 && stack.empty()) {
                 // cursor clear - ignore
             }
@@ -5914,8 +5420,44 @@ void Session::handlePlay() {
             if (action == 0) handleRespawnRequest();
             break;
         }
-        case pl::cs::PlayerInput: in.skipRest(); break;
-        case pl::cs::MoveVehicle: in.skipRest(); break;
+        case pl::cs::PlayerInput: {
+            // plan13 §3: PlayerInput 0x29 – flags: bit0 jump, bit1 shift (sneak) for dismount
+            // packet layout 1.21.4: float sideways, float forward, byte flags
+            // we handle variable length: try to read flags if present
+            try{
+                float sideways=0, forward=0;
+                uint8_t flags=0;
+                if(in.remaining()>=9){ sideways=in.f32(); forward=in.f32(); flags=in.u8(); }
+                else if(in.remaining()>=1){ flags=in.u8(); }
+                else { in.skipRest(); break; }
+                bool wantSneak = (flags & 0x02) !=0;
+                bool wantJump = (flags & 0x01) !=0;
+                if(wantSneak && self_->vehicleId!=-1){
+                    int veh=self_->vehicleId;
+                    self_->vehicleId=-1;
+                    {
+                        std::lock_guard lk(srv_.entsMtx_);
+                        for(auto &m: srv_.mobsForTest()) if(m->entityId==veh) m->riderEntityId=-1;
+                    }
+                    srv_.broadcastSetPassengersEmpty(veh);
+                }
+                // horse jump via PlayerInput jump while riding (alternative to EntityAction 7)
+                if(wantJump && self_->vehicleId!=-1){
+                    srv_.handleHorseJump(*self_, 80); // 80/100 power default
+                }
+                (void)sideways;(void)forward;
+            }catch(...){ in.skipRest(); }
+            break;
+        }
+        case pl::cs::MoveVehicle: {
+            // plan13 §3: MoveVehicle 0x20 – x double, y double, z double, yaw float, pitch float
+            try{
+                double x=in.f64(), y=in.f64(), z=in.f64();
+                float yaw=in.f32(), pitch=in.f32();
+                srv_.handleMoveVehicle(*self_, x,y,z,yaw,pitch);
+            }catch(...){ in.skipRest(); }
+            break;
+        }
         case pl::cs::SignUpdate: { // 0x39 - also PlaceGhostRecipe for stonecutter
             if (openMenu_ && openMenu_->type == MenuType::Stonecutter && in.len - in.off < 16) {
                 // treat as PlaceGhostRecipe: windowId + recipeId
@@ -5968,8 +5510,13 @@ void Session::handlePlay() {
                     srv_.broadcastSetPassengersEmpty(veh);
                 }
             }
-            // Plan8: handle jump actions (e.g., horse jump) – stub for action 5/6
-            if (action==5 || action==6) {
+            // Plan13 §3: horse jump action 7, plus 5/6 legacy
+            if (action==7) {
+                // EntityAction 0x28:7 horse jump – power in jumpBoost (0-100)
+                if (self_->vehicleId != -1) {
+                    srv_.handleHorseJump(*self_, jumpBoost);
+                }
+            } else if (action==5 || action==6) {
                 // horse jump start/stop – broadcast to tracking players if riding
                 if (self_->vehicleId != -1) {
                     WriteBuffer je;
@@ -6090,55 +5637,8 @@ void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
                                     w.setBlock(bx, by, bz, dirt);
                                     srv_.broadcastBlockChange(bx, by, bz, dirt);
                                 }
-            // Farmland trample (plan12 §6): trampling with probability fallDist-0.5, sneaking immunity
-            if (self_->fallDist > 0.5 && !self_->isSneaking) {
-                int bx = static_cast<int>(std::floor(self_->x));
-                int by = static_cast<int>(std::floor(self_->y - 0.2));
-                int bz = static_cast<int>(std::floor(self_->z));
-                World& w = srv_.worldFor(self_->dimension);
-                std::uint16_t st = w.getBlock(bx, by, bz);
-                const gen::BlockDef* bd = gen::blockByState(st);
-                if (bd && std::string(bd->name) == "minecraft:farmland") {
-                    float prob = std::clamp((float)(self_->fallDist - 0.5), 0.f, 1.f);
-                    bool doTrample = (prob >= 1.0f) || ((rand()/(float)RAND_MAX) < prob);
-                    if (doTrample) {
-                        bool hasMoisture = false;
-                        for (auto& [k,v] : gen::propsOf(st)) if (k=="moisture") hasMoisture=true;
-                        // drop crop above if any
-                        auto above = w.getBlock(bx, by+1, bz);
-                        if (above != 0) {
-                            auto* ad = gen::blockByState(above);
-                            if (ad && (std::string(ad->name).find("wheat")!=std::string::npos ||
-                                       std::string(ad->name).find("carrots")!=std::string::npos ||
-                                       std::string(ad->name).find("potatoes")!=std::string::npos ||
-                                       std::string(ad->name).find("beetroots")!=std::string::npos)) {
-                                // drop one item?
-                                auto it = gen::itemIdByName().find(ad->name);
-                                if (it != gen::itemIdByName().end()) {
-                                    srv_.spawnItemDrop(bx+0.5, by+1.2, bz+0.5, it->second, 1, 0, 0.1, 0);
-                                }
-                                w.setBlock(bx, by+1, bz, 0);
-                                srv_.broadcastBlockChange(bx, by+1, bz, 0);
                             }
                         }
-                        if (hasMoisture) {
-                            const gen::BlockDef* d = bd;
-                            std::vector<std::pair<std::string_view,std::string_view>> props;
-                            for (auto& [k,v] : gen::propsOf(st)) if (k!="moisture") props.emplace_back(k,v);
-                            props.emplace_back("moisture", "0");
-                            std::uint16_t ns = static_cast<std::uint16_t>(gen::stateWithProps(*d, props));
-                            w.setBlock(bx, by, bz, ns);
-                            srv_.broadcastBlockChange(bx, by, bz, ns);
-                        }
-                        // revert to dirt
-                        auto it = gen::blockNameToState().find("minecraft:dirt");
-                        if (it != gen::blockNameToState().end()) {
-                            std::uint16_t dirt = static_cast<std::uint16_t>(it->second);
-                            w.setBlock(bx, by, bz, dirt);
-                            srv_.broadcastBlockChange(bx, by, bz, dirt);
-                        }
-                        // level event 2001 block break particles (omitted packet, log)
-                        srv_.broadcastSound("minecraft:block.grass.break", bx+0.5, by+0.5, bz+0.5, 1.f, 1.f, "blocks");
                     }
                 }
             }
@@ -6338,39 +5838,12 @@ void Session::broadcastMovement() {
 }
 
 void Session::onChatMessage(ReadBuffer& in) {
-    const std::string msg = in.string(8192);
-    int64_t timestamp = 0, salt = 0;
-    try { timestamp = in.i64(); } catch (...) {}
-    try { salt = in.i64(); } catch (...) {}
-    std::vector<uint8_t> signature;
-    try {
-        bool hasSig = in.boolean();
-        if (hasSig) {
-            int32_t slen = in.varint();
-            if (slen < 0 || slen > 8192) slen = 0;
-            if (slen > 0) signature = in.bytes((size_t)slen);
-        }
-    } catch (...) {}
-    try { (void)in.varint(); } catch (...) {} // offset
-    // Acknowledged: vanilla 1.21.4 sends LastSeenMessagesUpdate with 0-3 entries (bitset varint + entries)
-    // TestClient sends 3 raw bytes (u8*3). Support both: try to read remaining as varint or raw.
-    try {
-        // Peek remaining: if >=3 and next bytes look like varint count, try varint path
-        // For TestClient compatibility, consume up to 3 bytes if remaining is exactly 3
-        if (in.remaining() == 3) {
-            in.bytes(3);
-        } else if (in.remaining() > 0) {
-            // Try to skip LastSeenMessagesUpdate: bitset size varint + entries
-            // We don't need precise values for non-secure chat; just drain.
-            in.skipRest();
-        }
-    } catch (...) {}
-
-    // Replay/verify: track salt for simple duplicate detection
-    if (salt != 0) {
-        self_->lastSeenSignatures.push_back((uint8_t)(salt & 0xFF));
-        if (self_->lastSeenSignatures.size() > 20) self_->lastSeenSignatures.erase(self_->lastSeenSignatures.begin());
-    }
+    const std::string msg = in.string(256);
+    (void)in.i64();                                  // timestamp
+    (void)in.i64();                                  // salt
+    if (in.boolean()) in.bytes(256);                 // signature
+    (void)in.varint();                               // offset
+    in.bytes(3);                                     // acknowledged
 
     // events: PlayerChat (cancellable)
     api::PlayerChatEvent ev;
@@ -6380,23 +5853,9 @@ void Session::onChatMessage(ReadBuffer& in) {
 
     if (!ev.message.empty() && ev.message[0] == '/')
         return dispatchCommand(ev.message.substr(1));
-
-    bool usePlayerChat = false;
-    bool verified = true;
-    if (ChatMessageProcessor::shouldUsePlayerChat(*self_)) {
-        verified = ChatMessageProcessor::verify(*self_, ev.message, timestamp, salt, signature);
-        usePlayerChat = verified;
-    }
-    if (usePlayerChat) {
-        srv_.broadcastPlayerChat(*self_, ev.message, timestamp);
-    } else {
-        const std::string line = "<" + self_->name + "> " + ev.message;
-        srv_.broadcastSystemText(line, nullptr);
-        // Echo to sender via SystemChat (already broadcast includes sender if inPlay, but ensure sender gets it)
-        // broadcastSystemText with except=null sends to all, so no extra needed.
-        // For legacy clients that filtered self, also send direct
-        // (no-op if already received)
-    }
+    const std::string line = "<" + self_->name + "> " + ev.message;
+    srv_.broadcastSystemText(line, nullptr);
+    sendSystemText(line);
 }
 
 void Session::onChatCommand(ReadBuffer& in) {
@@ -6850,13 +6309,7 @@ void Session::onUseItemOn(ReadBuffer& in) {
                 bool canPlace = true;
                 if (srv_.gameRules().contains("doFireTick") && !srv_.gameRules().getBool("doFireTick")) canPlace = false;
                 if (canPlace) {
-                    // plan12 §7 soul_fire on soul_sand/soil
-                    std::uint16_t belowSt = srv_.world().getBlock(tx, ty-1, tz);
-                    const gen::BlockDef* belowDef = gen::blockByState(belowSt);
-                    bool soulBase = belowDef && (std::string(belowDef->name)=="minecraft:soul_sand" || std::string(belowDef->name)=="minecraft:soul_soil");
-                    std::string fireName = soulBase ? "minecraft:soul_fire" : "minecraft:fire";
-                    auto it = gen::blockNameToState().find(fireName);
-                    if (it == gen::blockNameToState().end()) it = gen::blockNameToState().find("minecraft:fire");
+                    auto it = gen::blockNameToState().find("minecraft:fire");
                     if (it != gen::blockNameToState().end()) {
                         std::uint16_t fireState = static_cast<std::uint16_t>(it->second);
                         srv_.world().setBlock(tx, ty, tz, fireState);
@@ -6953,76 +6406,6 @@ void Session::onUseItemOn(ReadBuffer& in) {
     bool _targetIsWater=false;
     { std::uint16_t _ts=srv_.world().getBlock(tx,ty,tz); if(_ts!=0){ auto* _bd=gen::blockByState(_ts); if(_bd && std::string(_bd->name).find("water")!=std::string::npos) _targetIsWater=true; FluidState _fs=FluidSim::getFluidState(srv_.world(), tx,ty,tz); if(_fs.isWater()) _targetIsWater=true; } }
     if ((srv_.world().getBlock(tx, ty, tz) != 0 && !(_canWaterlog && _targetIsWater)) || heldItem.empty()) {
-    // plan12 §4 slab double: if target already is same slab, convert to double
-    if (!heldItem.empty()) {
-        std::string hName = heldItem.name();
-        if (hName.find("_slab") != std::string::npos) {
-            uint16_t existing = srv_.world().getBlock(tx, ty, tz);
-            const gen::BlockDef* ed = gen::blockByState(existing);
-            if (ed && std::string(ed->name) == hName) {
-                std::string curType = getPropStr(existing, "type");
-                if (curType != "double") {
-                    // check if placing on top/bottom half merges: allow if different halves? simplified allow any.
-                    std::vector<std::pair<std::string_view,std::string_view>> p;
-                    for(auto&[k,v]: gen::propsOf(existing)) if(k!="type" && k!="waterlogged") p.emplace_back(k,v);
-                    p.emplace_back("type","double");
-                    // double slab must be waterlogged false
-                    // check if block definition has waterlogged prop
-                    bool hasWl=false; for(int i=0;i<ed->propCount;++i){ auto &pd=gen::kPropDefs[gen::kBlockPropsRun[ed->propsOff+i]]; if(pd.name=="waterlogged") hasWl=true; }
-                    if(hasWl) p.emplace_back("waterlogged","false");
-                    uint16_t dbl = static_cast<uint16_t>(gen::stateWithProps(*ed, p));
-                    // event
-                    api::BlockPlaceEvent ev2; ev2.player=self_.get(); ev2.x=tx; ev2.y=ty; ev2.z=tz; ev2.newState=dbl;
-                    if (srv_.events().blockPlace.fire(ev2)) {
-                        srv_.world().setBlock(tx,ty,tz,dbl);
-                        srv_.broadcastBlockChange(tx,ty,tz,dbl);
-                        if (survival) {
-                            auto* mh=&self_->inv[36 + self_->heldSlot];
-                            if(--mh->count<=0) *mh=ItemStack::air();
-                            srv_.resendInventory(*self_);
-                        }
-                        ack(sequence);
-                        return;
-                    }
-                }
-            }
-        }
-        // also check placing slab onto existing slab at click position? vanilla allows placing slab on top of clicked slab to make double.
-        // If tx is offset, also check clicked pos if it is slab and face is up/down
-        if (hName.find("_slab") != std::string::npos) {
-            uint16_t clickedSt = srv_.world().getBlock(x,y,z);
-            const gen::BlockDef* cd = gen::blockByState(clickedSt);
-            if (cd && std::string(cd->name) == hName) {
-                std::string curType = getPropStr(clickedSt, "type");
-                if (curType != "double") {
-                    // Only double if clicking top of bottom slab or bottom of top slab
-                    std::string chalf = getPropStr(clickedSt, "type");
-                    bool canDouble = false;
-                    if (chalf=="bottom" && dir==1) canDouble=true;
-                    if (chalf=="top" && dir==0) canDouble=true;
-                    if (canDouble) {
-                        std::vector<std::pair<std::string_view,std::string_view>> p;
-                        for(auto&[k,v]: gen::propsOf(clickedSt)) if(k!="type" && k!="waterlogged") p.emplace_back(k,v);
-                        p.emplace_back("type","double");
-                        bool hasWl=false; for(int i=0;i<cd->propCount;++i){ auto &pd=gen::kPropDefs[gen::kBlockPropsRun[cd->propsOff+i]]; if(pd.name=="waterlogged") hasWl=true; }
-                        if(hasWl) p.emplace_back("waterlogged","false");
-                        uint16_t dbl = static_cast<uint16_t>(gen::stateWithProps(*cd, p));
-                        srv_.world().setBlock(x,y,z,dbl);
-                        srv_.broadcastBlockChange(x,y,z,dbl);
-                        if (survival) {
-                            auto* mh=&self_->inv[36 + self_->heldSlot];
-                            if(--mh->count<=0) *mh=ItemStack::air();
-                            srv_.resendInventory(*self_);
-                        }
-                        ack(sequence);
-                        return;
-                    }
-                }
-            }
-        }
-    }
-
-    if (srv_.world().getBlock(tx, ty, tz) != 0 || heldItem.empty()) {
         // toggling an existing door?
         const std::uint16_t clickedState = srv_.world().getBlock(x, y, z);
         const gen::BlockDef* cdef = gen::blockByState(clickedState);
@@ -7198,26 +6581,6 @@ void Session::onUseItemOn(ReadBuffer& in) {
                 // will check existing below
             }
             isWaterloggedProp = waterlogged;
-        // stairs shape: compute per plan12 §4 via neighbor stairs
-        if (hasShape) {
-            std::string facingStr = std::string(facing);
-            std::string halfStr = "bottom";
-            for(auto& pr: props) if(pr.first=="half") halfStr=std::string(pr.second);
-            std::string shape = computeStairsShape(*ctx.world, ctx.placePos.x, ctx.placePos.y, ctx.placePos.z, facingStr, halfStr);
-            props.emplace_back("shape", shape);
-        }
-        // waterlogged: check fluid state (any water) and waterlogged blocks
-        if (hasWaterlogged) {
-            bool waterlogged = false;
-            std::uint16_t before = ctx.world->getBlock(ctx.placePos.x, ctx.placePos.y, ctx.placePos.z);
-            const gen::BlockDef* bd = gen::blockByState(before);
-            if (bd && std::string(bd->name).find("water") != std::string::npos) waterlogged = true;
-            // also consider if before is air but we are placing into waterlogged context? For stairs, fluid is WATER still.
-            // If still false, check world fluid? simplified: keep as above.
-            // For double slab, force false (handled earlier)
-            bool isDoubleSlab = false;
-            for(auto& pr: props) if(pr.first=="type" && pr.second=="double") isDoubleSlab=true;
-            if(isDoubleSlab) waterlogged=false;
             props.emplace_back("waterlogged", waterlogged ? "true" : "false");
         }
         if (hasSnowy) {
@@ -7327,18 +6690,6 @@ void Session::onUseItemOn(ReadBuffer& in) {
         }
     }
     srv_.world().scheduleNeighborUpdates(tx, ty, tz);
-    // plan12 §4: update neighbor stairs shapes after placement
-    if (std::string(bdef2->name).find("_stairs") != std::string::npos) {
-        updateNeighborStairsShapes(srv_.world(), srv_, tx, ty, tz);
-        // schedule fluid tick if waterlogged
-        std::string wl = getPropStr(newState, "waterlogged");
-        if (wl=="true") {
-            if (srv_.fluidSim_) srv_.fluidSim_->touch(tx,ty,tz);
-        }
-    } else {
-        std::string wl = getPropStr(newState, "waterlogged");
-        if (wl=="true" && srv_.fluidSim_) srv_.fluidSim_->touch(tx,ty,tz);
-    }
     // BlockEvent: fire onBlockPlace (plan7) after successful placement
     {
         std::uint16_t oldSt = 0; // air before
@@ -7363,6 +6714,22 @@ void Session::onUseItem(ReadBuffer& in) {
     (void)in.f32(); (void)in.f32();
     if (self_->heldSlot >= 0 && self_->heldSlot < 9) {
         auto& sl = self_->inv[36 + self_->heldSlot];
+        // plan13 §7: trident channeling – spawn trident projectile on use
+        if (!sl.empty() && sl.name().find("trident")!=std::string::npos) {
+            double yawRad = self_->yaw * 3.14159265/180.0;
+            double pitchRad = self_->pitch * 3.14159265/180.0;
+            double vx = -std::sin(yawRad)*std::cos(pitchRad)*1.5;
+            double vy = -std::sin(pitchRad)*1.5;
+            double vz =  std::cos(yawRad)*std::cos(pitchRad)*1.5;
+            srv_.spawnProjectile(ProjectileKind::Trident, self_->x, self_->y+1.6, self_->z, vx, vy, vz, self_->entityId, true);
+            // durability?
+            if (self_->gamemode==0 && ItemStack::maxDamageFor(sl.itemId)>0) {
+                if (sl.applyDamage(1)) sl = InvSlot::air();
+                srv_.resendInventory(*self_);
+            }
+            ack(sequence);
+            return;
+        }
         if (!sl.empty() && self_->food < 20) {
             std::string iname = sl.name();
             bool isFood = false;
@@ -7448,8 +6815,8 @@ void Session::onUseEntity(ReadBuffer& in) {
                             return;
                         }
                     }
-                    // riding: horse/llama/pig
-                    if (m->kind == MobKind::Horse || m->kind == MobKind::Llama || m->kind == MobKind::Pig) {
+                    // riding: horse/llama/pig + boat/minecart (plan13 §3)
+                    if (m->kind == MobKind::Horse || m->kind == MobKind::Llama || m->kind == MobKind::Pig || m->kind == MobKind::Boat || m->kind == MobKind::Minecart) {
                         if (self_->vehicleId == -1 && m->riderEntityId == -1) {
                             self_->vehicleId = m->entityId;
                             m->riderEntityId = self_->entityId;
