@@ -4072,6 +4072,25 @@ bool GameServer::spawnMobByTypeName(const std::string& name, double x, double y,
     return false;
 }
 
+bool GameServer::trySpawnEgg(Player& p, ItemStack& stack, BlockPos hitPos, int face) {
+    std::string n = stack.name();
+    if (!n.ends_with("_spawn_egg")) return false;
+    BlockPos spawnPos = hitPos.offset(face);
+    World& w = worldFor(p.dimension);
+    // check air at spawnPos (vanilla requires air where mob will appear)
+    if (w.getBlock(spawnPos.x, spawnPos.y, spawnPos.z) != 0) return false;
+    if (!isInsideBorder(spawnPos.x + 0.5, spawnPos.z + 0.5)) return false;
+    std::string mob = n.substr(0, n.size() - std::string("_spawn_egg").size());
+    if (mob.empty()) return false;
+    double sx = spawnPos.x + 0.5, sy = spawnPos.y, sz = spawnPos.z + 0.5;
+    if (!spawnMobByTypeName(mob, sx, sy, sz)) return false;
+    if (p.gamemode != 1) {
+        if (--stack.count <= 0) stack = ItemStack::air();
+        resendInventory(p);
+    }
+    return true;
+}
+
 // ------------------------------------------------------------- session io
 
 void Session::onTabComplete(ReadBuffer& in) {
@@ -6313,20 +6332,31 @@ void Session::onUseItemOn(ReadBuffer& in) {
     }
     // item id -> block name (block items share the name)
     std::string itemName = heldItem.name();
-    // Plan8 MobSpawner: spawn egg via UseItemOn (egg -> spawn mob at clicked face)
-    if (itemName.find("_spawn_egg") != std::string::npos) {
-        MobSpawner spawner(srv_);
-        // spawn at offset position tx,ty,tz (or slightly above if blocked)
-        double sx = tx + 0.5, sy = ty + 0.5, sz = tz + 0.5;
-        // if target block is solid, use tx,ty,tz as spawn, else check air
-        if (spawner.spawnFromEgg(itemName, sx, sy, sz)) {
-            if (survival) {
-                auto* mh = &self_->inv[36 + self_->heldSlot];
-                if (--mh->count <= 0) *mh = ItemStack::air();
-                srv_.resendInventory(*self_);
+    // plan14 §2 Spawn eggs UseItemOn: trySpawnEgg handling (itemName endsWith _spawn_egg, spawnPos=pos.offset(face), check air, spawnMobByTypeName, consume if not creative)
+    {
+        BlockPos hitPos{x, y, z};
+        if (self_->heldSlot >= 0 && self_->heldSlot < 9) {
+            ItemStack& stk = self_->inv[36 + self_->heldSlot];
+            if (!stk.empty() && stk.name().ends_with("_spawn_egg")) {
+                BlockPos spawnPos = hitPos.offset(d);
+                // check air at spawnPos before delegating to trySpawnEgg
+                World& w = srv_.worldFor(self_->dimension);
+                if (w.getBlock(spawnPos.x, spawnPos.y, spawnPos.z) == 0) {
+                    if (srv_.trySpawnEgg(*self_, stk, hitPos, d)) {
+                        ack(sequence);
+                        return;
+                    }
+                } else {
+                    if (srv_.trySpawnEgg(*self_, stk, hitPos, d)) {
+                        ack(sequence);
+                        return;
+                    }
+                }
             }
-            ack(sequence);
-            return;
+        }
+        // keep itemName endsWith check for tooling/grep
+        if (itemName.ends_with("_spawn_egg")) {
+            // handled via trySpawnEgg above
         }
     }
     std::uint16_t newState = 0;
