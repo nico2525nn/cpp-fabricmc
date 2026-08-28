@@ -1127,7 +1127,7 @@ inline const std::unordered_map<std::string_view, std::uint32_t>& blockNameToSta
 // ============================ full state tables ============================
 
 // Unique property value strings, shared by all property definitions.
-inline constexpr std::array<std::string_view, 132> kPropValuePool = {{
+inline constexpr std::array<std::string_view, 135> kPropValuePool = {{
   "true",
   "false",
   "x",
@@ -1260,6 +1260,9 @@ inline constexpr std::array<std::string_view, 132> kPropValuePool = {{
   "ejecting_reward",
   "unlocking",
   "ejecting",
+  "none",
+  "small",
+  "large",
 }};
 
 // A named property with its ordered possible values (vanilla declaration order).
@@ -1352,7 +1355,7 @@ inline constexpr std::array<PropDef, 115> kPropDefs = {{
   {"eggs", 6, 4},
   {"hatch", 5, 3},
   {"pickles", 6, 4},
-  {"leaves", 82, 3},
+  {"leaves", 132, 3},
   {"drag", 0, 2},
   {"bottom", 0, 2},
   {"distance", 5, 8},
