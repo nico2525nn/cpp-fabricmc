@@ -292,14 +292,13 @@ struct MobEntity {
     }
     // plan17 §10 E10: slime dimensions 0.52*size and magma armor size*3
     static inline float slimeWidthForSize(int sz){
-        int s = (1 << std::clamp(sz,0,2));
-        return 0.52f * static_cast<float>(s);
+        return ::cppfm::slimeWidthForSize(sz); // delegate to free fn, de-duplicate (plan18 polish)
     }
     static inline int magmaArmorForSize(int sz){
         int s = (1 << std::clamp(sz,0,2));
         return s * 3; // vanilla MagmaCube armor = size*3
     }
-    // plan16: horse variant random (color/markings/health 15-30) — plan17 §10 E11 strict horse variant
+    // plan16: horse variant random (color/markings/health 15-30) — plan17 §10 E11 strict horse variant 0..34 (color 7 * markings 5)
     int horseVariant = 0; // 0..34 variant (color 0..6 + markings 0..4), randomized on spawn
     float horseJumpStrength = 0.0f; // randomized jump
     std::int32_t hurtCooldown = 0;
