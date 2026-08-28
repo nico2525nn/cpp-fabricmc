@@ -721,6 +721,7 @@ public:
     void broadcastSound(const char* name, double x, double y, double z,
                         float volume = 1.f, float pitch = 1.f,
                         const char* category = "blocks");
+    void broadcastWorldEvent(std::int32_t eventId, std::int32_t x, std::int32_t y, std::int32_t z, std::int32_t data, bool disableRelativeVolume = false);
     void itemsTick();
     void trySpawnMobs();
     void spawnItemDrop(double x,double y,double z,std::uint32_t itemId,std::uint8_t cnt,
