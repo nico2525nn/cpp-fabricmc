@@ -2,6 +2,8 @@
 // Each attribute has base value + vector<Modifier{uuid,amount,operation}>
 // Operations: 0 add, 1 multiply_base, 2 multiply_total — order is add -> multiply_base -> multiply_total
 // Vanilla 1.21.4 attributes: see net.minecraft.world.entity.ai.attributes.Attributes
+// plan14 combat polish: verified SoulSpeed 0.105*lvl (multiply_base) + SwiftSneak 0.15*lvl (multiply_total)
+// + ARMOR/TOUGHNESS/KB_RESIST sync via UpdateAttributes 0x7C — no functional change, green check 2026-08-28
 #pragma once
 #include <string>
 #include <unordered_map>
