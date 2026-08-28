@@ -1,4 +1,4 @@
-# Migration & Know-How Guide — cpp-fabricmc 1.21.4 (plan6)
+# Migration & Know-How Guide — cpp-fabricmc 1.21.4 (plan12)
 
 > How to move a vanilla Fabric feature or a new mod idea into this C++ server without touching `GameServer.cpp` monolith. Data-driven first, then event-bus, then packet.
 
@@ -17,13 +17,13 @@ src/game/{World, Chunk, BlockEntities, GameServer}  ← stores + tickOnce 20 TPS
 
 | Task | Primary files | Secondary | Tick |
 |------|---------------|-----------|------|
-| New block (stairs/slab/ore) | `generated/BlockStates.hpp:1` (gen), `World.hpp:241` `getBlock`/`setBlock`, `BlockTickScheduler.cpp:22` `behaviorFor` | `ChunkCodec.hpp:57` `writePalettedContainer` | `BlockTickScheduler::tick` 5t random |
-| New item | `generated/ItemIds.hpp:1`, `Items.hpp:19` `ItemStack` components 6/10/21 | `Recipes.cpp:1` `tags_` | `GameServer.cpp:3531` `onUseItemOn` |
+| New block (stairs/slab/ore) | `generated/BlockStates.hpp:1` (gen), `World.hpp:241` `getBlock`/`setBlock`, `physics/BlockTickScheduler.hpp:81` `behaviorFor` | `ChunkCodec.hpp:57` `writePalettedContainer` | `BlockTickScheduler::tick` 5t random |
+| New item | `generated/ItemIds.hpp:1`, `Items.hpp:19` `ItemStack` components 6/10/21 | `Recipes.cpp:1` `tags_` | `GameServer.cpp:6944` `onUseItemOn` |
 | New entity/mob | `Entities.hpp:52` `MobKind` 46, `EntityData.hpp:1` JSON, `AiBrain.hpp:16` `Goal`, `BehaviorTree.hpp:1` `BehaviorNode` | `GameServer.cpp:2690` `spawnMobByTypeName` generic 0-45, `mobsTick:588` | `mobsTick` + `Brain::tick` + `BehaviorTree::tick` |
 | New command | `Commands.cpp:142` `initCommands` Brigadier `literal/argument`, `brigadier/Tree.hpp:1` `writeDeclareCommands`, `Arguments.hpp:1` 48 parsers | `Ids.hpp:187` `DeclareCommands 0x11` | `dispatchCommand` |
-| Worldgen tweak | `WorldGen.cpp:274` `fillNether`/`fillEnd`, `worldgen/StructurePlacer.hpp:1` `load`, `MultiNoise.hpp:1` | `TerrainGen.hpp:1` `ImprovedNoise` | `World::generateChunkIfMissing` |
-| Network packet | `proto/Ids.hpp:1` 769, `ByteBuffer.hpp:1` BE varint, `net/Connection.hpp:29` zlib/AES, `net/PacketBatcher.hpp:1` Bundle | `GameServer.cpp:272` `broadcastBlockChange` → `queueBlockChange` | `tickOnce:372` `flushBlockBatches` 50ms |
-| Persistence | `Anvil.hpp:1` `chunkToNBT`/`chunkFromNBT`, `RegionFile.hpp:1`, `Persistence.hpp:31` `setWorldBorder`/`setDifficulty` | `World.hpp:82` `SpawnPoint`, `GameData.hpp:1` `idOf` | `Persistence::loop` 3s + `tickOnce` 6000/1200t `saveLevelData` |
+| Worldgen tweak | `World.cpp:314` `fillNether`/`546 fillEnd`, `worldgen/StructureManager.hpp:1` `shouldGenerate`, `StructurePlacer.hpp:1` `load`, `MultiNoise.hpp:1` | `worldgen/ImprovedNoise.hpp:1` | `World::generateChunkIfMissing` |
+| Network packet | `proto/Ids.hpp:1` 769, `ByteBuffer.hpp:1` BE varint, `net/Connection.hpp:29` zlib/AES, `net/PacketBatcher.hpp:1` Bundle + `MultiBlockChange 0x4E` | `GameServer.cpp:727` `broadcastBlockChange` → `queueBlockChange` | `tickOnce:606` `flushBlockBatches` 50ms/64 |
+| Persistence | `Anvil.hpp:1` `chunkToNBT`/`chunkFromNBT`, `RegionFile.hpp:1`, `WorldDataManager.hpp:26` `atomicWrite`, `Persistence.hpp:31` `setWorldBorder`/`setDifficulty` | `World.hpp:82` `SpawnPoint`, `GameData.hpp:1` `idOf` | `Persistence::loop` 3s + `tickOnce` 6000/1200t `saveLevelData` |
 | Inventory | `Containers.hpp:29` 15 `MenuType`, `MenuInteraction.cpp:1` `ClickLogic` 0-6, `BlockEntities.hpp:50` `GenericContainerData` | `GameServer.cpp:2588` `openMenuAt` | `hoppersTick` 8t |
 
 ## 3. Add a block with behavior (example: `minecraft:pointed_dripstone`)
@@ -74,9 +74,9 @@ locate->then(biomeArg); d.root->then(locate);
 
 ## 6. Data-driven worldgen tweak (example: add `minecraft:cherry_grove` plateau)
 
-1. **Noise**: `WorldGen.cpp:274` `fillNether` already shows 4 noises; add `ImprovedNoise cherryNoise(seed ^ 0x43484552)`, sample `x*0.008, z*0.008` and if `>0.6` set surface to `cherry_leaves` + `dirt` depth.
+1. **Noise**: `World.cpp:314` `fillNether` already shows 4 noises; add `ImprovedNoise cherryNoise(seed ^ 0x43484552)`, sample `x*0.008, z*0.008` and if `>0.6` set surface to `cherry_leaves` + `dirt` depth.
 2. **Biome**: `MultiNoise.hpp:1` `BiomeSource` already samples 30 points; add new point `cherry_grove` with `temperature 0.5 humidity 0.4 continentalness 0.2`.
-3. **Structure**: `assets/data/structures/CherryVillage.json` with `spacing 34`, `StructurePlacer` will load it; `Structures.cpp:169` `generateChunk` will call `jigsaw` for it.
+3. **Structure**: `assets/data/structures/CherryVillage.json` with `spacing 34`, `StructureManager`/`StructurePlacer` will load it; `World::generateChunkIfMissing` will call `StructureManager::generate` for it.
 
 ## 7. Networking: add a packet (example: `SetCooldown 0x17`)
 
@@ -96,13 +96,13 @@ locate->then(biomeArg); d.root->then(locate);
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build -j4
 ./build/test_golden /path/to/captures          # byte-identical chunks
-./build/test_native ./build/cppfm              # status/join/build/chat/multi/stress x12
-./build/test_smoke_80 ./build/cppfm            # 80 strict — expect 5 FAIL until TODOs done
+./build/test_native ./build/cppfm              # status/join/build/chat/multi/stress x12 (spawn-protection=0 if needed)
+./build/test_smoke_80 ./build/cppfm            # 80 strict — expect ~6 FAIL until polish TODOs done
 ctest -R native --output-on-failure            # 300s
 ctest -R smoke80 --output-on-failure           # 400s
 ```
 
-`test_smoke_80` is the gate for plan6: each `FAIL` maps to a row in `docs/MISSING_FEATURES_1_21_4.md`. Fix the `PARTIAL` row, rebuild, re-run smoke, watch `ok` increment.
+`test_smoke_80` is the gate for plan12: each `FAIL` maps to a row in `docs/MISSING_FEATURES_1_21_4.md`. Fix the `PARTIAL` row, rebuild, re-run smoke, watch `ok` increment.
 
 ## 10. Common pitfalls
 

@@ -72,6 +72,18 @@ sections; desert chunk = indirect biome container
   `emptySkyLightMask`, and leaves fully-open sections implicit (no mask bit).
   Block light was sent empty in all captures.
 
+## Bundle & Block Changes (`BundleDelimiter 0x00` + `MultiBlockChange 0x4E`)
+
+Empirical after plan12: vanilla coalesces same chunk-section `BlockUpdate 0x09`s into `MultiBlockChange 0x4E` (section pos `i64`, `varint count` + `varint packed = (blockId<<12)|(y<<8)|(z<<4)|x`, section-local), else wraps mixed packets in `BundleDelimiter 0x00` start/end (empty, id `0x00` both directions, play). Our `PacketBatcher` mirrors: `queueBlockChange` batches until `size>=64` or `50ms` timer, `tryFlushAsMultiBlockChange` dedup last-wins per `(x,y,z)` if all in same section → `MultiBlockChange`, else `BundleDelimiter` start + each `BlockUpdate` + end. Missing the `00` delimiter desyncs clients that wait for `Bundle` close.
+
+- `MultiBlockChange` count is `varint`, each entry is `varint` packed `(state<<12) | ((y&15)<<8) | ((z&15)<<4) | (x&15)` with section origin implicit.
+- `BundleDelimiter` is zero-length; both `0x00` wrappers must be sent even for single non-coalescable `BlockUpdate` if inside bundle window.
+
+## Light Update (`UpdateLight 0x2B` / `LightUpdateQueue`)
+
+- `UpdateLight` masks are `BitSet` of `int64` words; block-light for `glowstone` (emit 15) propagates via `LightEngine::drain` BFS 3×3 `expandedDirty` and `pendingSkyRebuild` 3×3 (post-plan12). Opacity for emissive `glowstone 0` after special-case, else `minecraft-data filter`.
+- `LightUpdateQueue` (`LightEngine.hpp:20`) batches `addQueue`/`removeQueue` and defers sky rebuild until `drain()`; `serializeUpdateLightBody` builds `skyMask/blockMask/emptyMasks` from `chunk.blockLightNib`.
+
 ## Misc wire facts
 
 - `Set Center Chunk`: plain signed varints (NOT ZigZag).
@@ -80,3 +92,4 @@ sections; desert chunk = indirect biome container
 - Every player action/use sequence must be answered with
   `Ack Block Change (0x05)` or clients stall their prediction queue.
 - System chat content is anonymous-NBT text components; `{text:"…"}` suffices.
+- `PlayerChat 0x3B` vs `SystemChat 0x73`: when `chatPubKey` valid, server verifies RSA-SHA256 and relays as `PlayerChat`; else `enforcesSecureChat:false` falls back to `SystemChat`. `MessageAck 0x04` is sunk.
