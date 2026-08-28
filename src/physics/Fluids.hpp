@@ -28,6 +28,7 @@ public:
     std::size_t pending() const { return queue_.size(); }
     static FluidState getFluidState(World& w, std::int32_t x, std::int32_t y, std::int32_t z);
     void checkInteraction(World& w, std::int32_t x, std::int32_t y, std::int32_t z, FluidState a, FluidState b);
+    bool canConvertToSource(std::int32_t x, std::int32_t y, std::int32_t z);
 
 private:
     enum class Kind { Water, Lava };

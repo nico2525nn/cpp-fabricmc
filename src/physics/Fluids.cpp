@@ -66,6 +66,20 @@ void FluidSim::checkInteraction(World& w, std::int32_t x, std::int32_t y, std::i
     (void)w; (void)x; (void)y; (void)z; (void)a; (void)b;
 }
 
+bool FluidSim::canConvertToSource(std::int32_t x, std::int32_t y, std::int32_t z) {
+    // vanilla WaterFluid.canConvertToSource: >=2 adjacent water source blocks horizontally (plan19 §9 B21)
+    int sources = 0;
+    static constexpr int DX[4] = {1,-1,0,0};
+    static constexpr int DZ[4] = {0,0,1,-1};
+    for (int d=0; d<4; ++d) {
+        FluidState fs = getFluidState(world_, x + DX[d], y, z + DZ[d]);
+        if (fs.id == FluidId::Water && fs.level == 0 && !fs.falling) {
+            if (++sources >= 2) return true;
+        }
+    }
+    return false;
+}
+
 void FluidSim::touch(std::int32_t x, std::int32_t y, std::int32_t z) {
     if (!world_.isChunkInSimulationDistance(x >> 4, z >> 4) && !world_.isPositionInSimulationDistance(x, z)) return;
     schedule(x, y, z, 0);
@@ -89,10 +103,22 @@ void FluidSim::apply(std::int32_t x, std::int32_t y, std::int32_t z,
     const int kindInt = kindAt(st, level);
     if (kindInt < 0) return;
     const Kind kind = kindInt == 0 ? Kind::Water : Kind::Lava;
-    const bool isSource = level == 0;
+    bool isSource = level == 0;
     const bool isNether = world_.dimensionId() == -1;
     const int interval = kind == Kind::Water ? kWaterInterval : (isNether ? 10 : kLavaInterval);
     const int maxLevel = (kind == Kind::Lava ? (isNether ? 7 : 6) : 7);
+    // plan19 §9 B21: water infinite source 2→1 (WaterFluid.canConvertToSource) — flowing level 1 with 2 adjacent sources becomes source
+    if (kind == Kind::Water && !isSource && level != 8 && level != -1) {
+        if (canConvertToSource(x, y, z)) {
+            world_.setBlock(x, y, z, fluidState(Kind::Water, 0));
+            level = 0;
+            isSource = true;
+            static constexpr int DXC[4]={1,-1,0,0};
+            static constexpr int DZC[4]={0,0,1,-1};
+            for (int d=0; d<4; ++d) schedule(x+DXC[d], y, z+DZC[d], now + interval);
+            schedule(x, y+1, z, now + interval);
+        }
+    }
 
     auto solidifyCheck = [&](std::int32_t nx, std::int32_t ny, std::int32_t nz) -> bool {
         const std::uint16_t ns = world_.getBlock(nx, ny, nz);
@@ -223,7 +249,12 @@ void FluidSim::apply(std::int32_t x, std::int32_t y, std::int32_t z,
                     continue;
                 }
                 if (world_.getBlock(nx, y, nz)==0) {
-                    world_.setBlock(nx, y, nz, fluidState(kind, nextLevel));
+                    // plan19 §9: if new flowing water would have 2 adjacent sources, place source directly (instant infinite)
+                    int placeLevel = nextLevel;
+                    if (kind == Kind::Water && nextLevel == 1 && canConvertToSource(nx, y, nz)) {
+                        placeLevel = 0;
+                    }
+                    world_.setBlock(nx, y, nz, fluidState(kind, placeLevel));
                     schedule(nx, y, nz, now + interval);
                 }
             }
