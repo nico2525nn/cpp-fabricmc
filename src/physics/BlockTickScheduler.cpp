@@ -128,7 +128,7 @@ static std::uint16_t withStage(const gen::BlockDef* d, std::uint16_t state, int 
     props.emplace_back("stage", s);
     return static_cast<std::uint16_t>(gen::stateWithProps(*d, props));
 }
-static std::uint16_t withLeaves(const gen::BlockDef* d, std::uint16_t state, const std::string& nl) {
+[[maybe_unused]] static std::uint16_t withLeaves(const gen::BlockDef* d, std::uint16_t state, const std::string& nl) {
     std::vector<std::pair<std::string_view,std::string_view>> props;
     for (auto& [k,v] : gen::propsOf(state)) if (k!="leaves") props.emplace_back(k,v);
     props.emplace_back("leaves", nl);
@@ -428,12 +428,7 @@ void StemBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
             std::uint16_t cur0 = withAge(d, state, 0);
             w.setBlock(x,y,z, cur0);
             if (srv) srv->broadcastBlockChange(x,y,z, cur0);
-            // new block age 0
-            const gen::BlockDef* dd = d;
-            std::vector<std::pair<std::string_view,std::string_view>> props0;
-            for (auto& [k,v] : gen::propsOf(state)) if(k!="age") props0.emplace_back(k,v);
-            props0.emplace_back("age", "0");
-            std::uint16_t ns = static_cast<std::uint16_t>(gen::stateWithProps(*dd, props0));
+            // new block age 0 — polish: removed unused props0/ns/dd; directly use defaultState+age fixup below
             // place new block with default leaves? for cactus/sugar_cane no leaves
             std::uint16_t place = static_cast<std::uint16_t>(gen::blockByState(state)->defaultState);
             // ensure age 0
@@ -657,9 +652,7 @@ void KelpBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
     int age=0; for(auto&[k,v]: gen::propsOf(state)) if(k=="age") age=std::atoi(std::string(v).c_str());
     if(age>=25) return;
     if(w.getBlock(x,y+1,z)!=0) return;
-    // must be water above
-    auto above = w.getBlock(x,y+1,z);
-    // if above is air, check water at current? kelp is waterlogged
+    // must be water above — polish: above block already checked; no need to refetch
     // For simplicity, allow growth if above is water or air with water underlying
     if((rand()%10)!=0) return;
     const gen::BlockDef* d=gen::blockByState(state); if(!d) return;
@@ -834,7 +827,7 @@ void FireBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
     {
         const gen::BlockDef* d = gen::blockByState(state);
         if (d) {
-            bool n = isFlammable(std::string(gen::blockByState(w.getBlock(x, y, z+1)) ? gen::blockByState(w.getBlock(x, y, z+1))->name : "")); // placeholder
+            // polish: removed placeholder isFlammable check (was unused); use correct neighbor check below
             // Instead compute correctly via neighbor check
             bool north = false, south=false, east=false, west=false, up=false;
             auto isFlamAt = [&](int ox,int oy,int oz){ auto* bd=gen::blockByState(w.getBlock(x+ox,y+oy,z+oz)); return bd && isFlammable(std::string(bd->name)); };
