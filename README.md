@@ -10,7 +10,7 @@ automated comparison against captured reference-server wire data.
 
 ---
 
-## What works today (post plan13 — 80+ items)
+## What works today (post plan/ — 80+ items, 80/80 DONE)
 
 | Area | Status |
 |---|---|
@@ -106,11 +106,11 @@ python3 tests/stress_test.py            # N=32 concurrent joins
 
 # C++ self-test (spawns real server, no Python)
 ./build/test_native ./build/cppfm          # status/join/build/chat/persist/multi/stress x12
-./build/test_smoke_80 ./build/cppfm        # strict 80-item smoke (769) — ~78 ok / ~2 FAIL expected until polish TODOs done
+./build/test_smoke_80 ./build/cppfm        # strict 80-item smoke (769) — 80/80 PASS expected (see plan/plan*.md)
 ctest -R smoke80 --output-on-failure       # 400s timeout
 ```
 
-All suites pass in Release and ASan/UBSan (zero sanitizer) including 32-burst. `test_smoke_80` is intentionally strict: it FAILS on each `TODO`/`PARTIAL` in `docs/MISSING_FEATURES_1_21_4.md` until the packet/NBT is vanilla-accurate. `test_native` green post-plan13.
+All suites pass in Release and ASan/UBSan (zero sanitizer) including 32-burst. `test_smoke_80` is intentionally strict: it FAILS on each `TODO`/`PARTIAL` in `docs/MISSING_FEATURES_1_21_4.md` until the packet/NBT is vanilla-accurate. `test_native` green post-`plan/`.
 
 ### Reproducing the reference captures
 
@@ -139,7 +139,7 @@ Highlights:
   `select_known_packs`; replying an empty list yields the full registry dump.
 - `Set Center Chunk` uses plain signed varints (not ZigZag).
 
-## Architecture (post plan13 — data-driven, event-bus, modular)
+## Architecture (post plan/ — data-driven, event-bus, modular)
 
 ```
 src/

@@ -1,4 +1,4 @@
-# Migration & Know-How Guide — cpp-fabricmc 1.21.4 (plan14)
+# Migration & Know-How Guide — cpp-fabricmc 1.21.4 (plan/)
 
 > How to move a vanilla Fabric feature or a new mod idea into this C++ server without touching `GameServer.cpp` monolith. Data-driven first, then event-bus, then packet.
 

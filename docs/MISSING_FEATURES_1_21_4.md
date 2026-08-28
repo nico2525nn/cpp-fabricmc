@@ -1,12 +1,11 @@
 # Missing Features vs Vanilla Fabric 1.21.4 (Protocol 769) — Post Smoke-80 Audit
 
-> This document is the post-smoke-80 gap list. It enumerates every feature that a vanilla Fabric 1.21.4 server provides but `cpp-fabricmc` does not yet fully match, grouped by the same 80-item taxonomy used in `plan5.md`. It is based on a re-read of `plan.md` through `plan13.md`, `PROTOCOL_NOTES.md`, `src/proto/Ids.hpp`, `src/generated/*`, and a live audit of the current HEAD (`a1dba28` selective merge of `wt13/block`+`wt13/entity`+`wt13/combat`+`wt13/inventory`+`wt13/network` plan13 polishes, plus docs `acd1b97`).
+> This document is the post-smoke-80 gap list. It enumerates every feature that a vanilla Fabric 1.21.4 server provides but `cpp-fabricmc` does not yet fully match, grouped by the same 80-item taxonomy used in `plan/plan5.md`. It is based on a re-read of `plan/plan*.md`, `PROTOCOL_NOTES.md`, `src/proto/Ids.hpp`, `src/generated/*`, and a live audit of the current HEAD (`plan/` 80/80 DONE).
 
 ## Summary
 
 - **Total vanilla parity gap: 0 items partially implemented, 0 not started (all 80 DONE, plus ~9 polish-within-DONE for Trial Chambers/Pale Garden).** The 80-item smoke test (`tests/test_smoke_80.cpp`) is strict: it FAILS for each row marked `PARTIAL` or `TODO` below until the implementation is completed. Post-plan14, final 4 rows (#29,38,43,44) flipped from PARTIAL → DONE (merges `77800a5`+`306c1f8`+`e12db04`+`c593dad`), following plan13 16 rows; all 80 rows are now DONE. `test_native` is fully green.
 - **Build is green** (`cppfm` + `test_native` + `test_smoke_80` link), server boots and passes status/join/chunk/chat/multiplayer, all systems implemented; see README for current test expectations (expected `80/80` PASS).
-- **Build is green** (`cppfm` + `test_native` + `test_smoke_80` link), server boots and passes status/join/chunk/chat/multiplayer, many higher-level systems are now implemented; see README for current test expectations.
 - **Fabric mods cannot run** inside a C++ process — `Fabric-compatible` here means *protocol-compatible* with what an unmodded Fabric server puts on the wire (as per README).
 
 ## How to read this list
