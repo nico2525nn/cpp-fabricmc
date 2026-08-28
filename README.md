@@ -44,17 +44,21 @@ automated comparison against captured reference-server wire data.
 Verified by four test layers — see *Testing* below. Chunk serialization is
 proven **byte-identical to a real reference server's output** by golden tests.
 
-## What does *not* work (yet) — see `docs/MISSING_FEATURES_1_21_4.md` for the 80-row audit and `docs/COMPAT_AUDIT_1_21_4_STRICT.md` for the strict no-miss wire audit (78 gaps)
+## What does *not* work (yet)
 
-Post-smoke-80, **0 `PARTIAL` / 0 `TODO`** per 80 taxonomy — all 80 rows DONE (post-plan14 `BreedGoal`/`Villager`/`SpawnEgg`/`Brain`):
-- Remaining polish (non-80): `Trial Chambers`, `Pale Garden`, `Creaking`, `Bundles` 1.21.5, `RaidOmen`/`TrialOmen` duration, `DataComponents` 1.20.5+ `minecraft:enchantments` NBT shape.
-- **Strict audit:** `docs/COMPAT_AUDIT_1_21_4_STRICT.md` lists every remaining wire/behaviour deviation (78 `file:line` gaps, Web Search/Web Fetch verified) — see that doc for true parity roadmap.
+- **Coarse taxonomy** (`docs/MISSING_FEATURES_1_21_4.md` 80 rows): **0 `PARTIAL` / 0 `TODO`** — all 80 rows DONE per that taxonomy (post-`plan/` `BreedGoal`/`Villager`/`SpawnEgg`/`Brain`).
+- **True parity — strict wire audit** (`docs/COMPAT_AUDIT_1_21_4_STRICT.md`, Web Search/Web Fetch verified, `file:line` absolute): **48 gaps remain of 78** (HIGH 10 fixed in `plan15`, MEDIUM 10 in `plan16`, LOW 10 in `plan17`; remaining 48 in progress). This doc is the true roadmap — see it for `Density zScale`, `pale_garden`, `Trial Chambers`, `Ids off-by-one`, `Bundle axis`, etc.
+- **Non-80 polish (beyond 1.21.4):** `Bundles` 1.21.5, `RaidOmen`/`TrialOmen` duration.
 
 - **Fabric mods cannot run inside a C++ process.** Mods are JVM bytecode loaded
   through the Fabric Loader; "Fabric-compatible" here means *protocol-compatible
   with what an unmodded Fabric server puts on the wire*.
 
-Strict smoke test `tests/test_smoke_80.cpp:1` fails on each `TODO`/`PARTIAL` until fixed; run `> ./build/test_smoke_80 ./build/cppfm` (400s timeout) — currently **80/80 PASS expected** (all 80 DONE).
+## Testing — evidence (what the numbers mean)
+
+- **`test_native` (C++ self-test, 12 cases: status/join/chunk/chat/persist/multi/stress):** `12/12 PASS` — run `./build/test_native ./build/cppfm` (50s). Verifies `status 769`, `Login Success`, `Join Game`, `LevelChunkWithLight`, `BlockUpdate` broadcast, `SystemChat`, and cross-client visibility.
+- **`test_smoke_80` (80-row taxonomy, `tests/test_smoke_80.cpp` 1:1 to `docs/MISSING_FEATURES_1_21_4.md`):** `80/80 PASS` per that taxonomy — each row checks a vanilla packet/NBT (e.g., `worldborder size → InitializeWorldBorder 0x26`, `glowstone → UpdateLight 0x2B`, `wither → BossBar 0x0A`). Run `./build/test_smoke_80 ./build/cppfm` (400s). This does **not** guarantee byte-identical vanilla behaviour; it guarantees the 80 coarse features emit the expected packet.
+- **Strict audit (`docs/COMPAT_AUDIT_1_21_4_STRICT.md`):** `30/78` fixed, `48` remain. This is the evidence for true parity (Density pipeline, `pale_garden`, `Ids` wire, `Bundle` axis, etc.).
 
 ## Clean-room methodology (important)
 
@@ -105,12 +109,12 @@ python3 tests/multi_client_test.py      # two bots, cross-broadcasts
 python3 tests/stress_test.py            # N=32 concurrent joins
 
 # C++ self-test (spawns real server, no Python)
-./build/test_native ./build/cppfm          # status/join/build/chat/persist/multi/stress x12
-./build/test_smoke_80 ./build/cppfm        # strict 80-item smoke (769) — 80/80 PASS expected (see plan/plan*.md)
+./build/test_native ./build/cppfm          # 12 cases status/join/chunk/chat/persist/multi/stress
+./build/test_smoke_80 ./build/cppfm        # 80-row taxonomy (see docs/MISSING_FEATURES_1_21_4.md)
 ctest -R smoke80 --output-on-failure       # 400s timeout
 ```
 
-All suites pass in Release and ASan/UBSan (zero sanitizer) including 32-burst. `test_smoke_80` is intentionally strict: it FAILS on each `TODO`/`PARTIAL` in `docs/MISSING_FEATURES_1_21_4.md` until the packet/NBT is vanilla-accurate. `test_native` green post-`plan/`.
+All suites pass in Release and ASan/UBSan (zero sanitizer) including 32-burst for the coarse 80-row taxonomy. For true parity, see `docs/COMPAT_AUDIT_1_21_4_STRICT.md` (78 wire gaps, 30 fixed). `test_native` green post-`plan/`.
 
 ### Reproducing the reference captures
 
