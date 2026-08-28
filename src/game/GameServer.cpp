@@ -3737,7 +3737,8 @@ void Session::onWindowClick(ReadBuffer& in) {
 
 void Session::onEnchantItem(ReadBuffer& in) {
     // Plan7 Enchantment table handling via EnchantmentMenuLogic
-    // Packet: windowId (byte) + enchantment (byte/varint)
+    // Packet `enchant_item` 0x0F: `windowId` VarInt (protocol.json 1.21.4, strict) + `button` VarInt.
+    // Yarn `EnchantmentScreenHandler` uses VarInt for windowId; retain u8 fallback for leniency (vanilla client sends VarInt, some proxies u8).
     int windowId = 0;
     int button = 0;
     try {
@@ -4974,8 +4975,9 @@ void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
             }
         }
     }
-    // Strict audit MEDIUM: Stonecutter/Crafter triggered toggle (1.21.4 crafter triggered + stonecutter parity)
-    if ((m.type == MenuType::Stonecutter || m.type == MenuType::Crafter) && m.blockKey >= 0) {
+    // Strict audit MEDIUM: Crafter triggered toggle (1.21.4 crafter `triggered` only; stonecutter has no triggered property — crafter parity)
+    // Yarn `CrafterBlock` `triggered` boolean toggles on every interaction; stonecutter is stateless. Previous `Stonecutter||Crafter` was spurious.
+    if (m.type == MenuType::Crafter && m.blockKey >= 0) {
         int bx = posKeyUnpackX(m.blockKey);
         int by = posKeyUnpackY(m.blockKey);
         int bz = posKeyUnpackZ(m.blockKey);

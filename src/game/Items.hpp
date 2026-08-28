@@ -1,10 +1,10 @@
 // Items: ItemStack with 1.20.5+ data components, item tables and helpers.
 //
-// Wire format (Slot): varint count; when >0: varint itemId,
-// varint addedComponents, varint removedComponents, then each added component
-// as (varint typeId, varint payloadLen, payload bytes) and each removed entry
-// as a bare varint typeId. We keep unknown component payloads verbatim so
-// client-provided stacks round-trip losslessly.
+// Strict 1.21.4 (protocol 769, DataVersion 4189) wire format (Slot):
+// varint count; when >0: varint itemId, varint addedComponents, varint removedComponents,
+// then each added component as (varint typeId, varint payloadLen, payload bytes) and each removed
+// as bare varint typeId. Yarn `SlotComponentType` 1.21.4: `damage 3`, `repair_cost 17`, `enchantments 10`,
+// `trim 45` (strict audit HIGH I6/I11). We keep unknown payloads verbatim for round-trip.
 #pragma once
 #include <cstdint>
 #include <string>

@@ -1,6 +1,8 @@
 // Containers: server-authoritative menus (chest / furnace / crafting table)
 // with vanilla click-mode handling (plan3.md "チェスト/かまどUI").
 //
+// Strict 1.21.4 (protocol 769) parity: Yarn `ScreenHandlerType` 25 entries
+// (generic_9x1..9x6, crafter 7, cartography 23, etc.) + MenuType 25 audit HIGH I1/I9/I10.
 // Menu slot layout follows the vanilla protocol tables:
 //   generic_9x3 : 0..26 container rows, 27..53 main inv, 54..62 hotbar
 //   furnace     : 0 input, 1 fuel, 2 output, 3..29 main inv, 30..38 hotbar
