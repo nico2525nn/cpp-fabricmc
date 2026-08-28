@@ -209,38 +209,25 @@ public:
               std::uint16_t state, std::int64_t now, GameServer* srv) override;
 };
 
-class CocoaBehavior : public IBlockBehavior {
+// --- plan13 §1 polish: bamboo leaves/stage + snowy + stem polish ---
+class BambooBehavior : public IBlockBehavior {
 public:
     void tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
               std::uint16_t state, std::int64_t now, GameServer* srv) override;
-    bool fertilize(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
-                   std::uint16_t state, GameServer* srv) override;
+    void randomTick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
+                    std::uint16_t state, std::int64_t now, GameServer* srv) override;
+    static int height(const World& w, std::int32_t x, std::int32_t y, std::int32_t z);
+    static int countHeight(const World& w, std::int32_t x, std::int32_t y, std::int32_t z);
+    static void updateLeaves(World& w, std::int32_t baseX, std::int32_t baseY, std::int32_t baseZ, int h, GameServer* srv);
+    static std::int32_t findBaseY(const World& w, std::int32_t x, std::int32_t y, std::int32_t z);
 };
 
-class SweetBerryBehavior : public IBlockBehavior {
+class GrassBlockBehavior : public IBlockBehavior {
 public:
     void tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
               std::uint16_t state, std::int64_t now, GameServer* srv) override;
-    bool fertilize(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
-                   std::uint16_t state, GameServer* srv) override;
-};
-
-class NetherWartBehavior : public IBlockBehavior {
-public:
-    void tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
-              std::uint16_t state, std::int64_t now, GameServer* srv) override;
-};
-
-class ChorusFlowerBehavior : public IBlockBehavior {
-public:
-    void tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
-              std::uint16_t state, std::int64_t now, GameServer* srv) override;
-};
-
-class KelpBehavior : public IBlockBehavior {
-public:
-    void tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
-              std::uint16_t state, std::int64_t now, GameServer* srv) override;
+    void randomTick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
+                    std::uint16_t state, std::int64_t now, GameServer* srv) override;
 };
 
 struct FlammableEntry { int burnOdds=0; int igniteOdds=0; };
