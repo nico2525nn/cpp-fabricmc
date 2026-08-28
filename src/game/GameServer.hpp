@@ -120,6 +120,7 @@ struct Player {
     std::int32_t food = 20;
     float saturation = 5.f;
     double exhaustion = 0;
+    std::int32_t foodTickTimer = 0; // plan15 strict: per-player foodTickTimer
     double fallDist = 0;
     double prevFeetY = -60.0;
     bool airborne = false;
@@ -865,6 +866,9 @@ private:
     std::int32_t teleportCounterForTest_ = 1;
 
 public:
+    // plan15 strict: expose difficulty for hunger starvation thresholds
+    std::string difficulty() const { return difficulty_; }
+    std::string difficultyPublic() const { return difficulty_; }
     // WorldBorder helpers (plan6 §10)
     bool isInsideBorder(double x, double z) const {
         double half = worldBorderDiameter_ * 0.5;
