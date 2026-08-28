@@ -588,8 +588,12 @@ void SweetBerryBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int
     (void)now;(void)srv;
     int age=0; for(auto&[k,v]: gen::propsOf(state)) if(k=="age") age=std::atoi(std::string(v).c_str());
     if(age>=3) return;
-    int chance = age<2?33:50;
-    if((rand()%100)>=chance) return;
+    // plan17 §3: 33.33% (1/3) via rand()%3, not 33/100. Keep 50% for mature stage if age==2
+    if(age<2){
+        if((rand()%3)!=0) return;
+    } else {
+        if((rand()%100)>=50) return;
+    }
     const gen::BlockDef* d=gen::blockByState(state); if(!d) return;
     std::vector<std::pair<std::string_view,std::string_view>> props;
     for(auto&[k,v]: gen::propsOf(state)) if(k!="age") props.emplace_back(k,v);
@@ -623,24 +627,111 @@ void NetherWartBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int
 }
 void ChorusFlowerBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
                                 std::uint16_t state, std::int64_t now, GameServer* srv){
-    (void)now;(void)srv;
+    (void)now;
     int age=0; for(auto&[k,v]: gen::propsOf(state)) if(k=="age") age=std::atoi(std::string(v).c_str());
-    if(age>=5) {
-        // dead -> replace with dead chorus plant? keep air for simplicity
-        // 1/5 chance to grow branch when <5
-        return;
-    }
+    if(age>=5) return;
+    // plan17 §4 Highlands gate
+    if(!w.isEndHighlandsAt(x,z)) return;
     if((rand()%5)!=0) return;
     const gen::BlockDef* d=gen::blockByState(state); if(!d) return;
-    std::vector<std::pair<std::string_view,std::string_view>> props;
-    for(auto&[k,v]: gen::propsOf(state)) if(k!="age") props.emplace_back(k,v);
-    props.emplace_back("age", std::to_string(age+1));
-    w.setBlock(x,y,z, static_cast<std::uint16_t>(gen::stateWithProps(*d, props)));
-    // occasional vertical growth: place chorus_plant below? simplified: grow up 1
-    if(age+1<5 && w.getBlock(x,y+1,z)==0 && (rand()%2)==0){
+    // vertical growth if above is air
+    bool canGrowUp = (w.getBlock(x,y+1,z)==0);
+    if(canGrowUp){
+        // vanilla also checks surrounding horizontal air, but simplify to above air
         auto plantIt = gen::blockNameToState().find("minecraft:chorus_plant");
         if(plantIt!=gen::blockNameToState().end()){
-            w.setBlock(x,y+1,z, static_cast<std::uint16_t>(plantIt->second));
+            uint16_t plantSt = static_cast<uint16_t>(plantIt->second);
+            // original becomes plant
+            w.setBlock(x,y,z, plantSt);
+            if(srv) srv->broadcastBlockChange(x,y,z, plantSt);
+            // new flower above with same age
+            w.setBlock(x,y+1,z, state);
+            if(srv) srv->broadcastBlockChange(x,y+1,z, state);
+            if(srv) srv->broadcastSound("minecraft:block.chorus_flower.grow", x+0.5, y+0.5, z+0.5, 1.f, 1.f, "blocks");
+            return;
+        }
+    }
+    if(age>=4){
+        // die: set age 5
+        std::vector<std::pair<std::string_view,std::string_view>> props;
+        for(auto&[k,v]: gen::propsOf(state)) if(k!="age") props.emplace_back(k,v);
+        props.emplace_back("age","5");
+        uint16_t dead = static_cast<uint16_t>(gen::stateWithProps(*d, props));
+        w.setBlock(x,y,z, dead);
+        if(srv) srv->broadcastBlockChange(x,y,z, dead);
+        return;
+    }
+    // horizontal branching 1-4 attempts (0-3 if already branched)
+    {
+        // determine if already branched (more than 1 adjacent plant)
+        int adjPlants=0;
+        const int DXB[4]={1,-1,0,0}, DZB[4]={0,0,1,-1};
+        for(int di=0;di<4;++di){
+            uint16_t nb = w.getBlock(x+DXB[di], y, z+DZB[di]);
+            auto* nbd = gen::blockByState(nb);
+            if(nbd && std::string(nbd->name)=="minecraft:chorus_plant") adjPlants++;
+        }
+        uint16_t below = w.getBlock(x,y-1,z);
+        auto* bbd = gen::blockByState(below);
+        if(bbd && std::string(bbd->name)=="minecraft:chorus_plant") adjPlants++;
+        bool isBranched = adjPlants>1;
+        int attempts = isBranched ? (rand()%4) : (1+rand()%4);
+        const int DX[4]={1,-1,0,0}, DZ[4]={0,0,1,-1};
+        bool branched=false;
+        auto plantIt = gen::blockNameToState().find("minecraft:chorus_plant");
+        uint16_t plantSt = 0;
+        if(plantIt!=gen::blockNameToState().end()) plantSt = static_cast<uint16_t>(plantIt->second);
+        for(int i=0;i<attempts;++i){
+            int dir = rand()%4;
+            int nx = x + DX[dir], nz = z + DZ[dir];
+            if(w.getBlock(nx,y,nz)!=0) continue;
+            if(w.getBlock(nx,y-1,nz)!=0) continue;
+            // check 3 other horizontals around target are air (simplified: require all 4 around target except source? we check 4 around target are air or source)
+            bool horizAir=true;
+            for(int od=0;od<4;++od){
+                if(od== (dir ^1)) continue; // skip the direction back to source (opposite)
+                if(w.getBlock(nx+DX[od], y, nz+DZ[od])!=0) { horizAir=false; break; }
+            }
+            if(!horizAir) continue;
+            // count adjacent plants at target (should be exactly 1 - the source)
+            int cnt=0;
+            for(int od=0;od<4;++od){
+                uint16_t nb = w.getBlock(nx+DX[od], y, nz+DZ[od]);
+                auto* nbd = gen::blockByState(nb);
+                if(nbd && std::string(nbd->name)=="minecraft:chorus_plant") cnt++;
+            }
+            uint16_t b = w.getBlock(nx,y-1,nz);
+            auto* bd = gen::blockByState(b);
+            if(bd && std::string(bd->name)=="minecraft:chorus_plant") cnt++;
+            // source at (x,y,z) is still flower, not plant, so cnt should be 0 or 1 depending on column below source
+            // allow cnt<=1
+            if(cnt>1) continue;
+            // success: place new flower with age+1
+            std::vector<std::pair<std::string_view,std::string_view>> props;
+            for(auto&[k,v]: gen::propsOf(state)) if(k!="age") props.emplace_back(k,v);
+            props.emplace_back("age", std::to_string(age+1));
+            uint16_t ns = static_cast<uint16_t>(gen::stateWithProps(*d, props));
+            w.setBlock(nx,y,nz, ns);
+            if(srv) srv->broadcastBlockChange(nx,y,nz, ns);
+            branched=true;
+        }
+        if(branched){
+            // original becomes plant
+            if(plantSt!=0){
+                w.setBlock(x,y,z, plantSt);
+                if(srv) srv->broadcastBlockChange(x,y,z, plantSt);
+                if(srv) srv->broadcastSound("minecraft:block.chorus_flower.grow", x+0.5, y+0.5, z+0.5, 1.f, 1.f, "blocks");
+            }
+            return;
+        } else {
+            // no branch -> die age 5
+            std::vector<std::pair<std::string_view,std::string_view>> props;
+            for(auto&[k,v]: gen::propsOf(state)) if(k!="age") props.emplace_back(k,v);
+            props.emplace_back("age","5");
+            uint16_t dead = static_cast<uint16_t>(gen::stateWithProps(*d, props));
+            w.setBlock(x,y,z, dead);
+            if(srv) srv->broadcastBlockChange(x,y,z, dead);
+            return;
         }
     }
 }
