@@ -306,6 +306,107 @@ bool StonecutterMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, i
     return false;
 }
 
+// ---------------- Crafter ----------------
+
+bool CrafterMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, int button, int mode,
+                                   ItemStack& cursor, MenuIo& io, const RecipeManager& recipes) {
+    (void)player; (void)recipes;
+    // Crafter 9 slots (0..8) + player inv 36. Stub: generic container logic, no redstone triggered behavior yet.
+    // Behaves like a chest 3x3 but with crafting-like disabled slot handling (all slots enabled for stub).
+    int cont = 9;
+    if (slotId < cont) {
+        ItemStack* target = menu.container ? &menu.container[slotId] : &menu.extraSlots[slotId];
+        bool changed=false;
+        if (mode==1) return false; // quick move not handled, fall back to ClickLogic
+        if (button==0) {
+            if (cursor.empty() && !target->empty()) { cursor=*target; *target=ItemStack::air(); changed=true; }
+            else if (!cursor.empty() && target->empty()) { *target=cursor; cursor=ItemStack::air(); changed=true; }
+            else { std::swap(cursor,*target); changed=true; }
+        } else {
+            if (cursor.empty() && !target->empty()) {
+                int half=(target->count+1)/2; cursor=*target; cursor.count=half; target->count-=half; if(target->count<=0) *target=ItemStack::air(); changed=true;
+            } else if (!cursor.empty() && target->empty()) {
+                *target=ItemStack::of(cursor.itemId,1); cursor.count--; if(cursor.count<=0) cursor=ItemStack::air(); changed=true;
+            }
+        }
+        if (changed) io.blockEntityChanged(menu.blockKey);
+        // Future: triggered property toggle on redstone pulse would craft result to facing inventory; stub keeps slots.
+        return changed;
+    }
+    return false;
+}
+
+// ---------------- Cartography ----------------
+
+void CartographyMenuLogic::recomputeResult(Menu& menu) {
+    // slots: 0 map, 1 paper, 2 result (output)
+    ItemStack* map = menu.container ? &menu.container[0] : &menu.extraSlots[0];
+    ItemStack* paper = menu.container ? &menu.container[1] : &menu.extraSlots[1];
+    ItemStack* result = menu.container ? &menu.container[2] : &menu.extraSlots[2];
+    // vanilla: filled_map + paper => clone, map scale upgrade with 8 paper etc. Stub: if both present, copy map to result
+    if (!map->empty() && !paper->empty()) {
+        // Check map is "minecraft:filled_map" or "minecraft:map" ; accept any for stub
+        std::string mn = map->name();
+        if (mn.find("map") != std::string::npos) {
+            *result = *map;
+            result->count = 1;
+            return;
+        }
+    }
+    *result = ItemStack::air();
+}
+
+void CartographyMenuLogic::onContentChanged(Menu& menu, Player& player) {
+    (void)player;
+    recomputeResult(menu);
+}
+
+bool CartographyMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, int button, int mode,
+                                       ItemStack& cursor, MenuIo& io, const RecipeManager& recipes) {
+    (void)player; (void)recipes;
+    if (slotId == 2) {
+        ItemStack* result = menu.container ? &menu.container[2] : &menu.extraSlots[2];
+        if (result->empty()) return false;
+        if (cursor.empty()) cursor = *result;
+        else if (cursor.itemId == result->itemId && cursor.count < 64) {
+            int take = std::min<int>(result->count, 64 - cursor.count);
+            cursor.count = static_cast<std::int16_t>(cursor.count + take);
+            result->count = static_cast<std::int16_t>(result->count - take);
+            if (result->count <= 0) *result = ItemStack::air();
+            // already moved part; need to consume inputs if we took something
+            if (!result->empty()) return true;
+        } else return false;
+        // consume inputs
+        ItemStack* map = menu.container ? &menu.container[0] : &menu.extraSlots[0];
+        ItemStack* paper = menu.container ? &menu.container[1] : &menu.extraSlots[1];
+        if (!map->empty()) { if (--map->count <= 0) *map = ItemStack::air(); }
+        if (!paper->empty()) { if (--paper->count <= 0) *paper = ItemStack::air(); }
+        *result = ItemStack::air();
+        recomputeResult(menu);
+        io.blockEntityChanged(menu.blockKey);
+        return true;
+    }
+    if (slotId == 0 || slotId == 1) {
+        ItemStack* target = menu.container ? &menu.container[slotId] : &menu.extraSlots[slotId];
+        bool changed=false;
+        if (button==0) {
+            if (cursor.empty() && !target->empty()) { cursor=*target; *target=ItemStack::air(); changed=true; }
+            else if (!cursor.empty() && target->empty()) { *target=cursor; cursor=ItemStack::air(); changed=true; }
+            else { std::swap(cursor,*target); changed=true; }
+        } else {
+            if (cursor.empty() && !target->empty()) {
+                int half=(target->count+1)/2; cursor=*target; cursor.count=half; target->count-=half; if(target->count<=0) *target=ItemStack::air(); changed=true;
+            } else if (!cursor.empty() && target->empty()) {
+                *target=ItemStack::of(cursor.itemId,1); cursor.count--; if(cursor.count<=0) cursor=ItemStack::air(); changed=true;
+            }
+        }
+        if (changed) recomputeResult(menu);
+        if (changed) io.blockEntityChanged(menu.blockKey);
+        return changed;
+    }
+    return false;
+}
+
 // ---------------- Generic ----------------
 
 bool GenericMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, int button, int mode,
@@ -345,13 +446,23 @@ std::unique_ptr<MenuLogic> createMenuLogic(MenuType type) {
         case MenuType::Enchantment: return std::make_unique<EnchantmentMenuLogic>();
         case MenuType::Brewing: return std::make_unique<BrewingMenuLogic>();
         case MenuType::Stonecutter: return std::make_unique<StonecutterMenuLogic>();
+        case MenuType::Crafter: return std::make_unique<CrafterMenuLogic>();
+        case MenuType::CartographyTable: return std::make_unique<CartographyMenuLogic>();
         case MenuType::Grindstone: return std::make_unique<GenericMenuLogic>("Grindstone");
         case MenuType::Smithing: return std::make_unique<GenericMenuLogic>("Smithing");
         case MenuType::Beacon: return std::make_unique<GenericMenuLogic>("Beacon");
         case MenuType::Loom: return std::make_unique<GenericMenuLogic>("Loom");
+        case MenuType::BlastFurnace: return std::make_unique<GenericMenuLogic>("BlastFurnace");
+        case MenuType::Smoker: return std::make_unique<GenericMenuLogic>("Smoker");
+        case MenuType::Lectern: return std::make_unique<GenericMenuLogic>("Lectern");
+        case MenuType::Merchant: return std::make_unique<GenericMenuLogic>("Merchant");
         case MenuType::Chest: return nullptr; // handled by ClickLogic generic
         case MenuType::Furnace: return nullptr;
         case MenuType::Crafting: return nullptr;
+        case MenuType::Generic9x1: return nullptr;
+        case MenuType::Generic9x2: return nullptr;
+        case MenuType::Generic9x4: return nullptr;
+        case MenuType::Generic9x6: return nullptr;
         default: return nullptr;
     }
 }

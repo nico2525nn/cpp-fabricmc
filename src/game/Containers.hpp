@@ -15,18 +15,25 @@
 
 namespace cppfm {
 
-// Open Screen inventoryType ids = vanilla MenuType registry order (1.21.x).
+// Open Screen inventoryType ids = vanilla MenuType registry order (1.21.4, 25 entries).
 namespace menus {
 constexpr int kGeneric9x1 = 0, kGeneric9x2 = 1, kGeneric9x3 = 2,
               kGeneric9x4 = 3, kGeneric9x5 = 4, kGeneric9x6 = 5,
-              kGeneric3x3 = 6, kAnvil = 8, kBeacon = 9, kBlastFurnace = 10,
+              kGeneric3x3 = 6, kCrafter = 7, kAnvil = 8, kBeacon = 9, kBlastFurnace = 10,
               kBrewingStand = 11, kCrafting = 12, kEnchantment = 13,
               kFurnace = 14, kGrindstone = 15, kHopper = 16, kLectern = 17,
               kLoom = 18, kMerchant = 19, kShulkerBox = 20, kSmithing = 21,
               kSmoker = 22, kCartographyTable = 23, kStonecutter = 24;
 }
 
-enum class MenuType { Chest, Furnace, Crafting, Hopper, Dispenser, Barrel, ShulkerBox, Enchantment, Anvil, Brewing, Stonecutter, Grindstone, Smithing, Beacon, Loom };
+// 25 vanilla MenuType entries (1.21.4) + Barrel alias for block-entity distinction (same wire id as Generic9x3)
+// Count must be 25 to match Yarn ScreenHandlerType/MENU registry; audit HIGH I1/I9/I10 require Crafter/Cartography/BlastFurnace/Smoker.
+enum class MenuType {
+    Chest, Furnace, Crafting, Hopper, Dispenser, Barrel, ShulkerBox, Enchantment, Anvil, Brewing, Stonecutter, Grindstone, Smithing, Beacon, Loom,
+    Crafter, CartographyTable, BlastFurnace, Smoker, Lectern, Merchant,
+    Generic9x1, Generic9x2, Generic9x4, Generic9x6
+};
+static_assert(static_cast<int>(MenuType::Generic9x6) == 24, "MenuType must be 25 entries (0..24)");
 
 class RecipeManager;
 
@@ -68,6 +75,16 @@ public:
         case MenuType::Smithing: return 4 + 36;
         case MenuType::Beacon: return 1 + 36;
         case MenuType::Loom: return 4 + 36;
+        case MenuType::Crafter: return 9 + 36;
+        case MenuType::CartographyTable: return 3 + 36;
+        case MenuType::BlastFurnace: return 3 + 36;
+        case MenuType::Smoker: return 3 + 36;
+        case MenuType::Lectern: return 1 + 36;
+        case MenuType::Merchant: return 3 + 36;
+        case MenuType::Generic9x1: return 9 + 36;
+        case MenuType::Generic9x2: return 18 + 36;
+        case MenuType::Generic9x4: return 36 + 36;
+        case MenuType::Generic9x6: return 54 + 36;
         }
         return 63;
     }
@@ -88,6 +105,16 @@ public:
         case MenuType::Smithing: return menus::kSmithing;
         case MenuType::Beacon: return menus::kBeacon;
         case MenuType::Loom: return menus::kLoom;
+        case MenuType::Crafter: return menus::kCrafter;
+        case MenuType::CartographyTable: return menus::kCartographyTable;
+        case MenuType::BlastFurnace: return menus::kBlastFurnace;
+        case MenuType::Smoker: return menus::kSmoker;
+        case MenuType::Lectern: return menus::kLectern;
+        case MenuType::Merchant: return menus::kMerchant;
+        case MenuType::Generic9x1: return menus::kGeneric9x1;
+        case MenuType::Generic9x2: return menus::kGeneric9x2;
+        case MenuType::Generic9x4: return menus::kGeneric9x4;
+        case MenuType::Generic9x6: return menus::kGeneric9x6;
         }
         return menus::kGeneric9x3;
     }
