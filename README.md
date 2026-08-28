@@ -44,10 +44,11 @@ automated comparison against captured reference-server wire data.
 Verified by four test layers — see *Testing* below. Chunk serialization is
 proven **byte-identical to a real reference server's output** by golden tests.
 
-## What does *not* work (yet) — see `docs/MISSING_FEATURES_1_21_4.md` for the full 90-row audit
+## What does *not* work (yet) — see `docs/MISSING_FEATURES_1_21_4.md` for the 80-row audit and `docs/COMPAT_AUDIT_1_21_4_STRICT.md` for the strict no-miss wire audit (78 gaps)
 
-Post-smoke-80, **0 `PARTIAL` / 0 `TODO`** — all 80 rows DONE (post-plan14 `BreedGoal`/`Villager`/`SpawnEgg`/`Brain`):
+Post-smoke-80, **0 `PARTIAL` / 0 `TODO`** per 80 taxonomy — all 80 rows DONE (post-plan14 `BreedGoal`/`Villager`/`SpawnEgg`/`Brain`):
 - Remaining polish (non-80): `Trial Chambers`, `Pale Garden`, `Creaking`, `Bundles` 1.21.5, `RaidOmen`/`TrialOmen` duration, `DataComponents` 1.20.5+ `minecraft:enchantments` NBT shape.
+- **Strict audit:** `docs/COMPAT_AUDIT_1_21_4_STRICT.md` lists every remaining wire/behaviour deviation (78 `file:line` gaps, Web Search/Web Fetch verified) — see that doc for true parity roadmap.
 
 - **Fabric mods cannot run inside a C++ process.** Mods are JVM bytecode loaded
   through the Fabric Loader; "Fabric-compatible" here means *protocol-compatible
