@@ -74,6 +74,33 @@ public:
             || getBase(Attribute::ARMOR_TOUGHNESS) != double(toughness)
             || getBase(Attribute::KNOCKBACK_RESISTANCE) != double(kbResist);
     }
+    // plan13 §5: SoulSpeed / SwiftSneak movement modifiers
+    void applySoulSpeed(int lvl){
+        removeModifier(Attribute::MOVEMENT_SPEED, "soul_speed");
+        if(lvl>0){
+            // vanilla uses AttributeModifier multiply_base 0.105*lvl
+            addModifier(Attribute::MOVEMENT_SPEED, {"soul_speed", 0.105 * double(lvl), 1});
+        }
+    }
+    void applySwiftSneak(int lvl){
+        removeModifier(Attribute::MOVEMENT_SPEED, "swift_sneak");
+        if(lvl>0){
+            // vanilla reduces sneak penalty: sneak speed 0.3 -> ~0.9 at lvl3
+            // we model as multiply_total boost so sneaking feels faster
+            double boost = 0.15 * double(lvl); // lvl3 => 0.45
+            addModifier(Attribute::MOVEMENT_SPEED, {"swift_sneak", boost, 2});
+        }
+    }
+    void clearEnchantSpeedModifiers(){
+        removeModifier(Attribute::MOVEMENT_SPEED, "soul_speed");
+        removeModifier(Attribute::MOVEMENT_SPEED, "swift_sneak");
+    }
+    // helper to sync both at once
+    void syncEnchantSpeed(int soulLvl, int swiftLvl, bool isSneaking, bool onSoul){
+        // soul speed only when on soul block and not sneaking
+        if(onSoul && !isSneaking) applySoulSpeed(soulLvl); else removeModifier(Attribute::MOVEMENT_SPEED, "soul_speed");
+        if(isSneaking && swiftLvl>0) applySwiftSneak(swiftLvl); else removeModifier(Attribute::MOVEMENT_SPEED, "swift_sneak");
+    }
     template<typename W> void writeUpdate(W& out,int32_t eid) const{
         out.varint(eid); out.varint(6);
         auto wo=[&](Attribute at,const char* key){

@@ -365,14 +365,6 @@ public:
         blockTicks_->registerBehavior("minecraft:campfire", std::make_unique<CampfireBehavior>());
         blockTicks_->registerBehavior("minecraft:soul_campfire", std::make_unique<CampfireBehavior>());
         blockTicks_->registerBehavior("minecraft:nether_portal", std::make_unique<PortalAgeBehavior>());
-        blockTicks_->registerBehavior("minecraft:cocoa", std::make_unique<CocoaBehavior>());
-        blockTicks_->registerBehavior("minecraft:sweet_berry_bush", std::make_unique<SweetBerryBehavior>());
-        blockTicks_->registerBehavior("minecraft:nether_wart", std::make_unique<NetherWartBehavior>());
-        blockTicks_->registerBehavior("minecraft:chorus_flower", std::make_unique<ChorusFlowerBehavior>());
-        blockTicks_->registerBehavior("minecraft:kelp", std::make_unique<KelpBehavior>());
-        blockTicks_->registerBehavior("minecraft:kelp_plant", std::make_unique<KelpBehavior>());
-        blockTicks_->registerBehavior("minecraft:seagrass", std::make_unique<KelpBehavior>());
-        blockTicks_->registerBehavior("minecraft:tall_seagrass", std::make_unique<KelpBehavior>());
         blockTicks_->registerBehavior("minecraft:torchflower_crop", std::make_unique<CropBehavior>());
         blockTicks_->registerBehavior("minecraft:pitcher_crop", std::make_unique<CropBehavior>());
         // plan7: ServerProperties typed loading (viewDistance, spawn-protection, etc.)
