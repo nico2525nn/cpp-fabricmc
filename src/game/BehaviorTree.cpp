@@ -288,13 +288,14 @@ BTStatus BreedAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     baby->entityId = ctx.srv->nextEntityId();
     baby->kind = m.kind;
     baby->health = mobStats(m.kind).maxHealth;
-    baby->age = -60*20;
+    baby->age = -24000; // plan14 §3: 20 min
     baby->x = bx; baby->y = m.y; baby->z = bz;
     ctx.srv->mobsForTest().push_back(baby);
     ctx.srv->broadcastMobSpawn(*baby);
+    ctx.srv->spawnXpOrbs(bx, m.y+0.5, bz, 1 + (rand()%7), nullptr);
     m.inLove=false; partner->inLove=false;
-    m.breedCooldownUntil = now + 60*20;
-    partner->breedCooldownUntil = now + 60*20;
+    m.breedCooldownUntil = now + 6000;
+    partner->breedCooldownUntil = now + 6000;
     return BTStatus::Success;
 }
 
