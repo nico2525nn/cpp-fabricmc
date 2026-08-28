@@ -97,12 +97,18 @@ inline int columnSurface(const Chunk& c, int lx, int lz) {
 
 inline void packHeightmap(std::vector<std::int64_t>& out, const Chunk& c) {
     constexpr int kBpe = 9;                    // ceil(log2(384+1))
-    constexpr int kPer = 64 / kBpe;            // 7 entries per long
-    out.assign((256 + kPer - 1) / kPer, 0);    // 37 longs
+    // vanilla packing is straddling: 256*9=2304 bits => 36 longs (not 37)
+    out.assign((256 * kBpe + 63) / 64, 0);    // 36 longs
     for (int z = 0; z < 16; ++z)
         for (int x = 0; x < 16; ++x) {
             const int idx = z * 16 + x;
-            out[idx / kPer] |= static_cast<std::int64_t>(columnSurface(c, x, z)) << (idx % kPer * kBpe);
+            const int bit = idx * kBpe;
+            const int lo = bit & 63;
+            const int wi = bit >> 6;
+            const std::int64_t v = static_cast<std::int64_t>(columnSurface(c, x, z) & ((1<<kBpe)-1));
+            out[wi] |= v << lo;
+            if (lo + kBpe > 64 && wi + 1 < (int)out.size())
+                out[wi + 1] |= v >> (64 - lo);
         }
 }
 
