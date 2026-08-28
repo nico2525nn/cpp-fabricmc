@@ -12,6 +12,7 @@
 #include <vector>
 #include <algorithm>
 #include "../core/ByteBuffer.hpp"
+#include "../core/NBT.hpp"
 #include "../generated/ItemIds.hpp"
 
 namespace cppfm {
@@ -279,9 +280,9 @@ struct ItemStack {
     int fortuneLevel() const { int a=enchantLevel("fortune"); int b=enchantLevel("minecraft:fortune"); return std::max(a,b); }
 
     // ----- ArmorTrim component (SlotComponentType trim=45 per protocol.json 1.21.4) -----
-    // Stored as component id 45. Payload per protocol: container[material holder, pattern holder, showInTooltip bool].
-    // For simplicity we keep textual "pattern|material" inside payload but with correct id 45; client glint uses enchant id, trim visual uses pattern/material.
-    // Full binary would be holder varints; we encode as textual for now but with correct id to fix drift; binary payload upgrade can be layered later.
+    // Payload per plan18 §9: binary container[material holder, pattern holder, showInTooltip bool].
+    // We encode as NBT-like binary: varint patternLen+bytes, varint materialLen+bytes, bool showTooltip.
+    // This replaces the earlier textual "pattern|material" fallback while retaining decode compatibility.
     struct ArmorTrim {
         std::string pattern;  // e.g. "minecraft:coast"
         std::string material; // e.g. "minecraft:iron"
@@ -294,23 +295,51 @@ struct ItemStack {
     }
     ArmorTrim getTrim() const {
         for (auto &pr: components) if (pr.first==kTrimComponentId || pr.first==kLegacyTrimAlias) {
-            std::string txt(pr.second.begin(), pr.second.end());
-            // try binary detection: if payload looks like holder container (varints) not containing '|'
-            // For now support both textual "pattern|material" and binary holder encoding (we fallback to textual)
-            auto sep = txt.find('|');
-            if (sep==std::string::npos) sep = txt.find(',');
-            ArmorTrim t;
-            t.has=true;
-            if (sep!=std::string::npos) {
-                t.pattern = txt.substr(0, sep);
-                t.material = txt.substr(sep+1);
-            } else {
-                // binary holder payload would be varints; treat whole as pattern
-                t.pattern = txt;
+            const auto &payload = pr.second;
+            if (payload.empty()) return {};
+            // Try binary decode: [varint patLen][pat bytes][varint matLen][mat bytes][bool]
+            // If decoding fails, fall back to textual "pattern|material".
+            try {
+                ReadBuffer rb(payload.data(), payload.size());
+                // Heuristic: if payload contains '|' or ',' and varint decode would be messy, try textual first
+                bool looksTextual = false;
+                for (auto b : payload) if (b=='|'||b==',') { looksTextual=true; break; }
+                // If looks textual and first byte is ascii letter, treat as textual
+                if (looksTextual && payload[0] >= 'a' && payload[0] <= 'z') {
+                    std::string txt(payload.begin(), payload.end());
+                    auto sep = txt.find('|');
+                    if (sep==std::string::npos) sep = txt.find(',');
+                    ArmorTrim t; t.has=true;
+                    if (sep!=std::string::npos) { t.pattern = txt.substr(0,sep); t.material = txt.substr(sep+1); }
+                    else t.pattern = txt;
+                    if (!t.pattern.empty() && t.pattern.find(':')==std::string::npos) t.pattern = "minecraft:"+t.pattern;
+                    if (!t.material.empty() && t.material.find(':')==std::string::npos) t.material = "minecraft:"+t.material;
+                    return t;
+                }
+                // Binary path
+                int patLen = rb.varint();
+                if (patLen <0 || patLen>256 || (size_t)rb.remaining() < (size_t)patLen) throw std::runtime_error("patLen");
+                std::string pat(reinterpret_cast<const char*>(rb.p + rb.off), patLen); rb.off+=patLen;
+                int matLen = rb.varint();
+                if (matLen <0 || matLen>256 || (size_t)rb.remaining() < (size_t)matLen) throw std::runtime_error("matLen");
+                std::string mat(reinterpret_cast<const char*>(rb.p + rb.off), matLen); rb.off+=matLen;
+                // bool showTooltip may be present
+                ArmorTrim t; t.has=true; t.pattern=pat; t.material=mat;
+                if (!t.pattern.empty() && t.pattern.find(':')==std::string::npos) t.pattern = "minecraft:"+t.pattern;
+                if (!t.material.empty() && t.material.find(':')==std::string::npos) t.material = "minecraft:"+t.material;
+                return t;
+            } catch (...) {
+                // fallback textual
+                std::string txt(payload.begin(), payload.end());
+                auto sep = txt.find('|');
+                if (sep==std::string::npos) sep = txt.find(',');
+                ArmorTrim t; t.has=true;
+                if (sep!=std::string::npos) { t.pattern = txt.substr(0,sep); t.material = txt.substr(sep+1); }
+                else t.pattern = txt;
+                if (!t.pattern.empty() && t.pattern.find(':')==std::string::npos) t.pattern = "minecraft:"+t.pattern;
+                if (!t.material.empty() && t.material.find(':')==std::string::npos) t.material = "minecraft:"+t.material;
+                return t;
             }
-            if (!t.pattern.empty() && t.pattern.find(':')==std::string::npos) t.pattern = "minecraft:"+t.pattern;
-            if (!t.material.empty() && t.material.find(':')==std::string::npos) t.material = "minecraft:"+t.material;
-            return t;
         }
         return {};
     }
@@ -318,8 +347,14 @@ struct ItemStack {
         components.erase(std::remove_if(components.begin(), components.end(),
             [](auto &p){ return p.first==kTrimComponentId || p.first==kLegacyTrimAlias; }), components.end());
         if (!t.has || t.pattern.empty()) return;
-        std::string txt = t.pattern + "|" + t.material;
-        components.emplace_back(kTrimComponentId, std::vector<std::uint8_t>(txt.begin(), txt.end()));
+        // Binary encode: varint patLen + pat bytes + varint matLen + mat bytes + bool true
+        WriteBuffer wb;
+        wb.varint((int)t.pattern.size());
+        wb.raw(t.pattern.data(), t.pattern.size());
+        wb.varint((int)t.material.size());
+        wb.raw(t.material.data(), t.material.size());
+        wb.boolean(true); // showInTooltip
+        components.emplace_back(kTrimComponentId, std::vector<std::uint8_t>(wb.data.begin(), wb.data.end()));
     }
     void clearTrim() {
         components.erase(std::remove_if(components.begin(), components.end(),
@@ -400,13 +435,39 @@ struct ItemStack {
     }
     std::string getCustomName() const {
         for (auto &pr: components) if(pr.first==kCustomNameComponentId){
-            // payload is anonymousNbt TextComponent {text:"..."}; for our simplified storage it's raw string or NBT.
-            // If payload starts with 0x0A (TAG_Compound) we could parse NBT but we stored plain string; handle both.
+            if (pr.second.empty()) return "";
             if (!pr.second.empty() && pr.second[0]==0x0A) {
-                // NBT compound; try to extract "text" field via simple scan
+                // NBT compound {text:"..."} written by setCustomName via writeTextComponent
+                // Payload: 0x0A 0x08 0x00 0x04 't' 'e' 'x' 't' 0x00 len 'value' 0x00
+                try {
+                    ReadBuffer rb(pr.second.data(), pr.second.size());
+                    nbt::Tag rt = static_cast<nbt::Tag>(rb.u8());
+                    if (rt == nbt::Compound) {
+                        while (true) {
+                            nbt::Tag et = static_cast<nbt::Tag>(rb.u8());
+                            if (et == nbt::End) break;
+                            uint16_t nl = rb.u16();
+                            std::string name(reinterpret_cast<const char*>(rb.p + rb.off), nl); rb.off+=nl;
+                            if (name=="text" && et==nbt::String) {
+                                uint16_t sl = rb.u16();
+                                if (rb.remaining() >= sl) {
+                                    std::string out(reinterpret_cast<const char*>(rb.p + rb.off), sl);
+                                    return out;
+                                }
+                                return "";
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                } catch (...) {}
+                // fallback: scan for "text" as string
                 std::string txt(pr.second.begin(), pr.second.end());
                 auto p = txt.find("text");
                 if (p!=std::string::npos) {
+                    // try NBT style: after "text", the next bytes are u16 len
+                    // find the string length bytes after "text"
+                    // simplest fallback: extract between quotes if present
                     auto q1 = txt.find('"', p+4);
                     if (q1!=std::string::npos) {
                         auto q2 = txt.find('"', q1+1);
@@ -423,9 +484,10 @@ struct ItemStack {
         components.erase(std::remove_if(components.begin(), components.end(),
             [](auto &p){ return p.first==kCustomNameComponentId; }), components.end());
         if(n.empty()) return;
-        // Store as plain string for simplicity; true vanilla uses anonymousNbt TextComponent (TAG_String with {"text":n})
-        // We store raw string; write will treat as payload bytes.
-        components.emplace_back(kCustomNameComponentId, std::vector<std::uint8_t>(n.begin(), n.end()));
+        // Plan18 §9 binary: store as anonymous NBT TextComponent compound {text:"n"} per wiki Item_components
+        WriteBuffer wb;
+        nbt::writeTextComponent(wb, n);
+        components.emplace_back(kCustomNameComponentId, std::vector<std::uint8_t>(wb.data.begin(), wb.data.end()));
     }
     int efficiencyLevel() const { return std::max(enchantLevel("efficiency"), enchantLevel("minecraft:efficiency")); }
     int frostWalkerLevel() const { return std::max(enchantLevel("frost_walker"), enchantLevel("minecraft:frost_walker")); }
