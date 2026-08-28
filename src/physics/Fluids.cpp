@@ -17,13 +17,17 @@ int FluidSim::kindAt(std::uint16_t state, int& levelOut) const {
     if (b->name == "minecraft:water" || b->name == "minecraft:flowing_water") {
         for (auto& [k, v] : gen::propsOf(state))
             if (k == "level") { levelOut = std::atoi(std::string(v).c_str()); break; }
+        if(levelOut==-1) levelOut=0;
         return 0;                                        // water
     }
     if (b->name == "minecraft:lava" || b->name == "minecraft:flowing_lava") {
         for (auto& [k, v] : gen::propsOf(state))
             if (k == "level") { levelOut = std::atoi(std::string(v).c_str()); break; }
+        if(levelOut==-1) levelOut=0;
         return 1;                                        // lava
     }
+    // plan12 §8 waterlogged: stairs/slab/fence etc with waterlogged=true is water source
+    for(auto&[k,v]: gen::propsOf(state)) if(k=="waterlogged" && v=="true"){ levelOut=0; return 0; }
     return -1;
 }
 
