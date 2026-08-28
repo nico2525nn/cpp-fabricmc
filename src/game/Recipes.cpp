@@ -265,59 +265,114 @@ void RecipeManager::loadDirectory(const std::string& dir) {
             while ((n = fread(buf, 1, sizeof buf, f)) > 0) text.append(buf, n);
             fclose(f);
             const json::Value v = json::Value::parse(text);
-            const std::string type =
+            std::string type =
                 v.at("type").isStr()
                     ? v.at("type").asStr()
                     : std::string();
+            // normalize "minecraft:" prefix per plan18 §8 (vanilla json uses it)
+            if (type.rfind("minecraft:",0)==0) type = type.substr(10);
             std::string rid = entry.path().stem().string();
+            // result may be string, object {id,count}, or object with id/count; handle all
             const json::Value result = v.at("result");
-            const std::string outId =
-                result.at("id").isStr()
-                    ? result.at("id").asStr()
-                    : (result.isStr() ? result.asStr() : std::string());
-            const int outCount =
-                result.at("count").asInt(1);
+            std::string outId;
+            int outCount = 1;
+            if (result.isStr()) outId = result.asStr();
+            else if (!result.isNull()) {
+                if (result.at("id").isStr()) outId = result.at("id").asStr();
+                // some recipes store result as {item: ...} (smithing)
+                if (outId.empty() && result.at("item").isStr()) outId = result.at("item").asStr();
+                outCount = result.at("count").asInt(1);
+                if (outCount==1) outCount = result.at("Count").asInt(1);
+            }
             if (outId.empty()) continue;
+
+            auto normalizeName = [](std::string s)->std::string{
+                if (s.rfind("minecraft:",0)!=0 && s.rfind("#",0)!=0) {
+                    if (s.find(':')==std::string::npos) s = "minecraft:"+s;
+                }
+                return s;
+            };
+            outId = normalizeName(outId);
 
             if (type == "crafting_shaped") {
                 std::vector<std::string> rows;
                 for (auto& rv : v.at("pattern").arr)
                     if (rv.isStr()) rows.push_back(rv.asStr());
                 std::unordered_map<char, std::string> keys;
-                for (auto& [k, def] : v.at("key").obj)
-                    if (def.isStr()) keys[k[0]] = def.asStr();
+                for (auto& [k, def] : v.at("key").obj) {
+                    if (def.isStr()) keys[k[0]] = normalizeName(def.asStr());
                     else {
                         const json::Value& it = def.at("item");
                         const json::Value& tg = def.at("tag");
-                        if (it.isStr()) keys[k[0]] = it.asStr();
-                        else if (tg.isStr()) keys[k[0]] = "#" + tg.asStr();
+                        if (it.isStr()) keys[k[0]] = normalizeName(it.asStr());
+                        else if (tg.isStr()) {
+                            std::string t = tg.asStr();
+                            if (t.find(':')==std::string::npos) t = "minecraft:"+t;
+                            keys[k[0]] = "#" + t;
+                        }
                     }
+                }
                 addShaped(rid, outId, outCount, rows, keys);
             } else if (type == "crafting_shapeless") {
                 std::vector<std::string> inputs;
                 for (auto& iv : v.at("ingredients").arr) {
-                    if (iv.isStr()) inputs.push_back(iv.asStr());
+                    if (iv.isStr()) inputs.push_back(normalizeName(iv.asStr()));
                     else if (iv.at("item").isStr())
-                        inputs.push_back(iv.at("item").asStr());
-                    else if (iv.at("tag").isStr())
-                        inputs.push_back("#" + iv.at("tag").asStr());
+                        inputs.push_back(normalizeName(iv.at("item").asStr()));
+                    else if (iv.at("tag").isStr()) {
+                        std::string t = iv.at("tag").asStr();
+                        if (t.find(':')==std::string::npos) t = "minecraft:"+t;
+                        inputs.push_back("#" + t);
+                    }
                 }
                 addShapeless(rid, outId, outCount, inputs);
             } else if (type == "smelting" || type == "smoking" ||
                        type == "blasting" || type == "campfire_cooking") {
                 const json::Value ing = v.at("ingredient");
-                const std::string name =
-                    ing.isStr() ? ing.asStr() : ing.at("item").asStr();
+                std::string name;
+                if (ing.isStr()) name = normalizeName(ing.asStr());
+                else if (ing.type == json::Value::Type::Arr && !ing.arr.empty()) {
+                    // ingredient may be array with one entry
+                    const auto &first = ing.arr[0];
+                    if (first.isStr()) name = normalizeName(first.asStr());
+                    else if (first.at("item").isStr()) name = normalizeName(first.at("item").asStr());
+                    else if (first.at("tag").isStr()) name = "#"+first.at("tag").asStr();
+                } else if (ing.at("item").isStr()) name = normalizeName(ing.at("item").asStr());
+                else if (ing.at("tag").isStr()) {
+                    std::string t = ing.at("tag").asStr();
+                    if (t.find(':')==std::string::npos) t = "minecraft:"+t;
+                    name = "#"+t;
+                }
+                if (name.empty()) continue;
                 addSmelting(name, outId,
                             static_cast<float>(
                                 v.at("experience").asFloat(0.f)),
-                            v.at("cookingtime").asInt(200),
+                            v.at("cookingtime").asInt(v.at("cookingTime").asInt(200)),
                             Recipe::Kind::Smelting);
             } else if (type == "stonecutting") {
                 const json::Value ing = v.at("ingredient");
-                const std::string name =
-                    ing.isStr() ? ing.asStr() : ing.at("item").asStr();
+                std::string name;
+                if (ing.isStr()) name = normalizeName(ing.asStr());
+                else if (ing.at("item").isStr()) name = normalizeName(ing.at("item").asStr());
+                else if (ing.at("tag").isStr()) {
+                    std::string t = ing.at("tag").asStr();
+                    if (t.find(':')==std::string::npos) t="minecraft:"+t;
+                    name = "#"+t;
+                }
+                if (name.empty()) continue;
                 addStonecutting(name, outId, outCount);
+            } else if (type == "smithing_transform" || type == "smithing_trim") {
+                // treat as shapeless for inventory parity (smithing table)
+                // inputs: template, base, addition
+                std::vector<std::string> inputs;
+                auto addIng = [&](const char* field){
+                    const json::Value vv = v.at(field);
+                    if (vv.isStr()) inputs.push_back(normalizeName(vv.asStr()));
+                    else if (vv.at("item").isStr()) inputs.push_back(normalizeName(vv.at("item").asStr()));
+                    else if (vv.at("tag").isStr()) inputs.push_back("#"+vv.at("tag").asStr());
+                };
+                addIng("template"); addIng("base"); addIng("addition");
+                if (!inputs.empty()) addShapeless(rid, outId, outCount, inputs);
             }
         } catch (const std::exception& e) {
             std::fprintf(stderr, "[cppfm] recipe %s skipped: %s\n",
