@@ -179,7 +179,17 @@ struct Player {
     AttributeManager attributes;
 };
 
-struct BlockPos { std::int32_t x=0, y=0, z=0; };
+struct BlockPos {
+    std::int32_t x=0, y=0, z=0;
+    // plan14 §2: offset by face (0:down -Y, 1:up +Y, 2:north -Z, 3:south +Z, 4:west -X, 5:east +X)
+    BlockPos offset(int face) const {
+        static constexpr int FX[] = {0, 0, 0, 0, -1, 1};
+        static constexpr int FY[] = {-1, 1, 0, 0, 0, 0};
+        static constexpr int FZ[] = {0, 0, -1, 1, 0, 0};
+        int d = (face >= 0 && face < 6) ? face : 0;
+        return {x + FX[d], y + FY[d], z + FZ[d]};
+    }
+};
 struct ItemUseContext {
     Player* player = nullptr;
     World* world = nullptr;
@@ -611,6 +621,8 @@ public:
                                               Player* source);
     // Spawn a mob by "minecraft:zombie"-style name at position.
     bool spawnMobByTypeName(const std::string& name, double x, double y, double z);
+    // plan14 §2 Spawn eggs UseItemOn: trySpawnEgg handling (itemName endsWith _spawn_egg, spawnPos=pos.offset(face), check air, spawnMobByTypeName, consume if not creative)
+    bool trySpawnEgg(Player& p, ItemStack& stack, BlockPos hitPos, int face);
     // Furnace smelting tick (called once per game tick).
     void furnacesTick();
     void brewingTick();
