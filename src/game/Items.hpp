@@ -194,6 +194,100 @@ struct ItemStack {
     }
     bool hasSilkTouch() const { return hasEnchant("silk_touch") || hasEnchant("minecraft:silk_touch"); }
     int fortuneLevel() const { int a=enchantLevel("fortune"); int b=enchantLevel("minecraft:fortune"); return std::max(a,b); }
+
+    // ----- ArmorTrim component (plan13 §2) -----
+    // Stored as component id 42 textual payload "pattern|material" (e.g. "minecraft:coast|minecraft:iron").
+    // Registry values validated against assets/registry/trim_pattern.bin / trim_material.bin (18 patterns, 11 materials).
+    struct ArmorTrim {
+        std::string pattern;  // e.g. "minecraft:coast"
+        std::string material; // e.g. "minecraft:iron"
+        bool has=false;
+    };
+    static constexpr std::uint32_t kTrimComponentId = 42;
+    bool hasTrim() const {
+        for (auto &pr: components) if (pr.first==kTrimComponentId) return true;
+        return false;
+    }
+    ArmorTrim getTrim() const {
+        for (auto &pr: components) if (pr.first==kTrimComponentId) {
+            std::string txt(pr.second.begin(), pr.second.end());
+            auto sep = txt.find('|');
+            if (sep==std::string::npos) sep = txt.find(',');
+            ArmorTrim t;
+            t.has=true;
+            if (sep!=std::string::npos) {
+                t.pattern = txt.substr(0, sep);
+                t.material = txt.substr(sep+1);
+            } else {
+                t.pattern = txt;
+            }
+            // ensure minecraft: prefix
+            if (!t.pattern.empty() && t.pattern.find(':')==std::string::npos) t.pattern = "minecraft:"+t.pattern;
+            if (!t.material.empty() && t.material.find(':')==std::string::npos) t.material = "minecraft:"+t.material;
+            return t;
+        }
+        return {};
+    }
+    void setTrim(const ArmorTrim& t) {
+        components.erase(std::remove_if(components.begin(), components.end(),
+            [](auto &p){ return p.first==kTrimComponentId; }), components.end());
+        if (!t.has || t.pattern.empty()) return;
+        std::string txt = t.pattern + "|" + t.material;
+        components.emplace_back(kTrimComponentId, std::vector<std::uint8_t>(txt.begin(), txt.end()));
+    }
+    void clearTrim() {
+        components.erase(std::remove_if(components.begin(), components.end(),
+            [](auto &p){ return p.first==kTrimComponentId; }), components.end());
+    }
+
+    // ---- plan13 §4/§5 helpers ----
+    bool isArmor() const {
+        std::string n=name();
+        return n.find("helmet")!=std::string::npos || n.find("chestplate")!=std::string::npos ||
+               n.find("leggings")!=std::string::npos || n.find("boots")!=std::string::npos ||
+               n.find("elytra")!=std::string::npos;
+    }
+    bool isTool() const {
+        std::string n=name();
+        return n.find("pickaxe")!=std::string::npos || n.find("axe")!=std::string::npos ||
+               n.find("shovel")!=std::string::npos || n.find("hoe")!=std::string::npos ||
+               n.find("sword")!=std::string::npos || n.find("shears")!=std::string::npos ||
+               n.find("fishing_rod")!=std::string::npos;
+    }
+    int getRepairCost() const {
+        for (auto &pr : components) if (pr.first==7) {
+            if (pr.second.empty()) return 0;
+            int v=0; int shift=0;
+            for (std::uint8_t b: pr.second) { v |= (b & 0x7F) << shift; if (!(b & 0x80)) break; shift+=7; }
+            return v;
+        }
+        return 0;
+    }
+    void setRepairCost(int c) {
+        components.erase(std::remove_if(components.begin(), components.end(),
+            [](auto &p){ return p.first==7; }), components.end());
+        if (c<=0) return;
+        WriteBuffer tmp; tmp.varint(c);
+        components.emplace_back(7, std::vector<std::uint8_t>(tmp.data.begin(), tmp.data.end()));
+    }
+    std::string getCustomName() const {
+        for (auto &pr: components) if(pr.first==5){
+            return std::string(pr.second.begin(), pr.second.end());
+        }
+        return "";
+    }
+    void setCustomName(const std::string& n) {
+        components.erase(std::remove_if(components.begin(), components.end(),
+            [](auto &p){ return p.first==5; }), components.end());
+        if(n.empty()) return;
+        components.emplace_back(5, std::vector<std::uint8_t>(n.begin(), n.end()));
+    }
+    int efficiencyLevel() const { return std::max(enchantLevel("efficiency"), enchantLevel("minecraft:efficiency")); }
+    int frostWalkerLevel() const { return std::max(enchantLevel("frost_walker"), enchantLevel("minecraft:frost_walker")); }
+    int soulSpeedLevel() const { return std::max(enchantLevel("soul_speed"), enchantLevel("minecraft:soul_speed")); }
+    int swiftSneakLevel() const { return std::max(enchantLevel("swift_sneak"), enchantLevel("minecraft:swift_sneak")); }
+    int unbreakingLevel() const { return std::max(enchantLevel("unbreaking"), enchantLevel("minecraft:unbreaking")); }
+    int mendingLevel() const { return std::max(enchantLevel("mending"), enchantLevel("minecraft:mending")); }
 };
 
 } // namespace cppfm

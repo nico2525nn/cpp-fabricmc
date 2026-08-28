@@ -204,6 +204,7 @@ inline double readCoord(StringReader& r, ParseCtx& ctx, char axis, bool& relativ
         v = r.readDouble();
     }
     relativeOut = rel;
+    if (!rel) return v;
     const double base = axis == 'x' ? ctx.srcX : axis == 'y' ? ctx.srcY : ctx.srcZ;
     return base + v;
 }
@@ -387,6 +388,195 @@ inline ArgumentType itemStackArg() {
             }
         }
         return id;
+    };
+    return a;
+}
+
+// ---- extended arg types (plan13 §10) -----------------------------------
+// BlockState parser id 12: `minecraft:stone` or `minecraft:oak_stairs[facing=north,half=top]`
+inline ArgumentType blockStateArg() {
+    ArgumentType a;
+    a.id = ParserId::BlockState;
+    a.parse = [](StringReader& r, ParseCtx&) -> ArgValue {
+        std::string id = readIdentifier(r);
+        if (id.empty()) throw StringReader::ParseError("expected block id");
+        if (id.find(':') == std::string::npos) id = "minecraft:" + id;
+        // optional block state props [prop=value,...]
+        if (r.peek() == '[') {
+            int depth = 0;
+            std::string props;
+            while (r.canRead()) {
+                char ch = r.read();
+                props.push_back(ch);
+                if (ch == '[') ++depth;
+                else if (ch == ']') { --depth; if (!depth) break; }
+            }
+            id += props;
+        }
+        // optional NBT { ... } for block entity
+        if (r.peek() == '{') {
+            int depth = 0;
+            std::string nbt;
+            while (r.canRead()) {
+                char ch = r.read();
+                nbt.push_back(ch);
+                if (ch == '{') ++depth;
+                else if (ch == '}') { --depth; if (!depth) break; }
+            }
+            id += nbt;
+        }
+        return id;
+    };
+    a.suggest = [](StringReader&, ParseCtx&) {
+        // lightweight default list; full list is injected via node-level suggestions in Commands.cpp
+        return std::vector<std::string>{"minecraft:stone","minecraft:dirt","minecraft:grass_block","minecraft:cobblestone","minecraft:oak_planks","minecraft:glass","minecraft:sand","minecraft:oak_log","minecraft:glowstone","minecraft:air"};
+    };
+    return a;
+}
+inline ArgumentType blockPredicateArg() {
+    ArgumentType a;
+    a.id = ParserId::BlockPredicate;
+    a.parse = [](StringReader& r, ParseCtx& c) -> ArgValue {
+        // same as blockState but also allows leading # for tag
+        if (r.peek() == '#') { r.skip(); std::string tag = readIdentifier(r); if (tag.empty()) throw StringReader::ParseError("expected tag"); if (tag.find(':')==std::string::npos) tag="minecraft:"+tag; return std::string("#")+tag; }
+        return blockStateArg().parse(r,c);
+    };
+    a.suggest = blockStateArg().suggest;
+    return a;
+}
+inline ArgumentType itemPredicateArg() {
+    ArgumentType a;
+    a.id = ParserId::ItemPredicate;
+    a.parse = [](StringReader& r, ParseCtx&) -> ArgValue {
+        bool isTag = false;
+        if (r.peek() == '#') { isTag=true; r.skip(); }
+        std::string id = readIdentifier(r);
+        if (id.empty()) throw StringReader::ParseError("expected item id");
+        if (id.find(':') == std::string::npos) id = "minecraft:" + id;
+        if (isTag) id = "#" + id;
+        if (r.peek() == '[') {
+            int depth=0;
+            while(r.canRead()){ char ch=r.read(); if(ch=='[')++depth; else if(ch==']'){--depth; if(!depth)break; } }
+        }
+        if (r.peek() == '{') {
+            int depth=0;
+            while(r.canRead()){ char ch=r.read(); if(ch=='{')++depth; else if(ch=='}'){--depth; if(!depth)break; } }
+        }
+        return id;
+    };
+    a.suggest = [](StringReader&, ParseCtx&) {
+        return std::vector<std::string>{"minecraft:stone","minecraft:dirt","minecraft:diamond","minecraft:iron_ingot","minecraft:diamond_sword"};
+    };
+    return a;
+}
+inline ArgumentType nbtArg() {
+    ArgumentType a;
+    a.id = ParserId::Nbt;
+    a.parse = [](StringReader& r, ParseCtx&) -> ArgValue {
+        r.skipWhitespace();
+        if (!r.canRead() || r.peek()!='{') throw StringReader::ParseError("expected NBT compound");
+        int depth=0;
+        std::string out;
+        while(r.canRead()){
+            char ch=r.read();
+            out.push_back(ch);
+            if(ch=='{')++depth;
+            else if(ch=='}'){--depth; if(!depth)break; }
+        }
+        if(depth!=0) throw StringReader::ParseError("unterminated NBT");
+        return out;
+    };
+    return a;
+}
+inline ArgumentType nbtCompoundTagArg() {
+    ArgumentType a;
+    a.id = ParserId::NbtCompoundTag;
+    a.parse = nbtArg().parse;
+    return a;
+}
+inline ArgumentType nbtTagArg() {
+    ArgumentType a;
+    a.id = ParserId::NbtTag;
+    a.parse = [](StringReader& r, ParseCtx&) -> ArgValue {
+        r.skipWhitespace();
+        const std::size_t start=r.cursor();
+        // accept any NBT value: compound, list, primitive, string
+        if(r.peek()=='{'){
+            int d=0;
+            while(r.canRead()){char c=r.read(); if(c=='{')++d; else if(c=='}'){--d; if(!d)break;}}
+        } else if(r.peek()=='['){
+            int d=0;
+            while(r.canRead()){char c=r.read(); if(c=='[')++d; else if(c==']'){--d; if(!d)break;}}
+        } else if(r.peek()=='"'){
+            r.readQuotedString();
+        } else {
+            r.readUnquotedString();
+            if(r.canRead() && r.peek()=='"') r.readQuotedString();
+        }
+        std::string s=r.slice(start);
+        if(s.empty()) throw StringReader::ParseError("expected NBT tag");
+        return s;
+    };
+    return a;
+}
+inline ArgumentType nbtPathArg() {
+    ArgumentType a;
+    a.id = ParserId::NbtPath;
+    a.parse = [](StringReader& r, ParseCtx&) -> ArgValue {
+        r.skipWhitespace();
+        std::size_t start=r.cursor();
+        while(r.canRead() && r.peek()!=' '){
+            char c=r.peek();
+            if(c=='"'){ r.readQuotedString(); continue; }
+            if(c=='['||c==']'||c=='.'||c=='{'||c=='}'|| isalnum((unsigned char)c) || c=='_' || c=='-' ) r.skip();
+            else break;
+        }
+        std::string s=r.slice(start);
+        if(s.empty()) throw StringReader::ParseError("expected NBT path");
+        return s;
+    };
+    return a;
+}
+inline ArgumentType objectiveArg() {
+    ArgumentType a;
+    a.id = ParserId::Objective;
+    a.parse = [](StringReader& r, ParseCtx&) -> ArgValue {
+        std::string n=r.readUnquotedString();
+        if(n.empty()) throw StringReader::ParseError("expected objective");
+        // vanilla objective name: 1-16 chars [a-zA-Z0-9_.-]
+        if(n.size()>16) throw StringReader::ParseError("objective too long");
+        return n;
+    };
+    a.suggest = [](StringReader&, ParseCtx&) {
+        return std::vector<std::string>{};
+    };
+    return a;
+}
+inline ArgumentType objectiveCriteriaArg() {
+    ArgumentType a;
+    a.id = ParserId::ObjectiveCriteria;
+    a.parse = [](StringReader& r, ParseCtx&) -> ArgValue {
+        std::string c=r.readUnquotedString();
+        if(c.empty()) c=readIdentifier(r);
+        if(c.empty()) throw StringReader::ParseError("expected criteria");
+        return c;
+    };
+    a.suggest = [](StringReader&, ParseCtx&) {
+        return std::vector<std::string>{"dummy","deathCount","playerKillCount","totalKillCount","health","xp","level","food","air","armor"};
+    };
+    return a;
+}
+inline ArgumentType teamArg() {
+    ArgumentType a;
+    a.id = ParserId::Team;
+    a.parse = [](StringReader& r, ParseCtx&) -> ArgValue {
+        std::string n=r.readUnquotedString();
+        if(n.empty()) throw StringReader::ParseError("expected team");
+        if(n.size()>16) throw StringReader::ParseError("team name too long");
+        return n;
+    };
+    a.suggest = [](StringReader&, ParseCtx&) {
+        return std::vector<std::string>{};
     };
     return a;
 }

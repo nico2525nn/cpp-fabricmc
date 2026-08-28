@@ -66,7 +66,6 @@ struct BlockEntity {
     ChestData chest{};
     FurnaceData furnace{};
     GenericContainerData generic{};
-    GenericContainerData generic{};      // hopper/dispenser/dropper
     BrewingData brewing{};
     bool isDropper() const { return kind == Kind::Dropper; }
     bool isDispenser() const { return kind == Kind::Dispenser; }
@@ -174,8 +173,6 @@ private:
             be = BlockEntity{};
             if (id=="minecraft:hopper") be.kind = BlockEntity::Kind::Hopper;
             else if (id=="minecraft:dropper") be.kind = BlockEntity::Kind::Dropper;
-            if (id == "minecraft:hopper") be.kind = BlockEntity::Kind::Hopper;
-            else if (id == "minecraft:dropper") be.kind = BlockEntity::Kind::Dropper;
             else be.kind = BlockEntity::Kind::Dispenser;
             const int n = be.kind == BlockEntity::Kind::Hopper ? 5 : 9;
             readItems(e, be.generic.slots, n, "Items");

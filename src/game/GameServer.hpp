@@ -57,6 +57,8 @@
 #include "NetworkManager.hpp"
 #include "HungerManager.hpp"
 #include "CombatManager.hpp"
+#include "DatapackManager.hpp"
+#include "FunctionEvaluator.hpp"
 
 namespace cppfm {
 
@@ -328,6 +330,11 @@ public:
         tagManager_.loadDirectory("assets/data/tags");
         tagManager_.applyToRecipeTags(recipes_.tags_);
         lootTables_.loadDirectory("assets/data/loot_tables");
+        // Plan13 datapackmanager (advancements/predicates/item_modifiers/functions)
+        datapackManager_.loadAll(recipes_, "assets/data", cfg_.worldDir + "/datapacks");
+        tagManager_ = datapackManager_.tagManager;
+        lootTables_ = datapackManager_.lootTables;
+        functionEvaluator_.setServer(this);
         initCommands();
         lightEngine_ = std::make_unique<LightEngine>(world_);
         world_.setBiomeCodec(
@@ -365,14 +372,6 @@ public:
         blockTicks_->registerBehavior("minecraft:campfire", std::make_unique<CampfireBehavior>());
         blockTicks_->registerBehavior("minecraft:soul_campfire", std::make_unique<CampfireBehavior>());
         blockTicks_->registerBehavior("minecraft:nether_portal", std::make_unique<PortalAgeBehavior>());
-        blockTicks_->registerBehavior("minecraft:cocoa", std::make_unique<CocoaBehavior>());
-        blockTicks_->registerBehavior("minecraft:sweet_berry_bush", std::make_unique<SweetBerryBehavior>());
-        blockTicks_->registerBehavior("minecraft:nether_wart", std::make_unique<NetherWartBehavior>());
-        blockTicks_->registerBehavior("minecraft:chorus_flower", std::make_unique<ChorusFlowerBehavior>());
-        blockTicks_->registerBehavior("minecraft:kelp", std::make_unique<KelpBehavior>());
-        blockTicks_->registerBehavior("minecraft:kelp_plant", std::make_unique<KelpBehavior>());
-        blockTicks_->registerBehavior("minecraft:seagrass", std::make_unique<KelpBehavior>());
-        blockTicks_->registerBehavior("minecraft:tall_seagrass", std::make_unique<KelpBehavior>());
         blockTicks_->registerBehavior("minecraft:torchflower_crop", std::make_unique<CropBehavior>());
         blockTicks_->registerBehavior("minecraft:pitcher_crop", std::make_unique<CropBehavior>());
         // plan7: ServerProperties typed loading (viewDistance, spawn-protection, etc.)
@@ -645,10 +644,15 @@ public:
     void mobAttackPlayer(MobEntity& m, Player& target);
     // Feed-to-breed handling when a player right-clicks an animal with food.
     bool tryBreedFeed(Player& p, MobEntity& m);
-    // Equipment / riding sync (plan5 30-47)
+    // Equipment / riding sync (plan5 30-47) — plan13 §2 dynamic sync, ArmorTrim, HandDropChances
     void sendEquipment(const MobEntity& mob);
+    void sendEquipmentSlot(const MobEntity& mob, int slot);
+    void broadcastPlayerEquipment(const Player& p);
+    void syncEquipmentOnChange(Player& p); // helper for armor/hand changes
     void broadcastSetPassengers(std::int32_t vehicleId);
     void broadcastSetPassengersEmpty(std::int32_t vehicleId);
+    void handleMoveVehicle(Player& p, double x, double y, double z, float yaw, float pitch);
+    void handleHorseJump(Player& p, int power); // plan13 §3 horse jump
     float applyArmorReduction(float dmg, int armor) const;
     int totalProtectionForPlayer(const Player& p) const;
     int totalProtectionForMob(const MobEntity& m) const;
@@ -661,8 +665,9 @@ public:
                          double vx, double vy, double vz,
                          std::int32_t ownerId, bool ownerIsPlayer);
     void projectilesTick();
-    // Rails / minecart physics (plan11 §3)
+    // Rails / minecart physics (plan11 §3) + boat physics (plan13 §3)
     void minecartsTick();
+    void boatsTick();
     // Villager trading (plan4 P1-B)
     static const std::vector<struct TradeOffer>& tradeTable();
     bool openTrading(Player& p, MobEntity& villager);
@@ -908,10 +913,19 @@ private:
     void setWeather(Weather w, std::int64_t durationTicks);
 public:
     void forceWeatherClear() { setWeather(Weather::Clear, 6000 * 20); }
+    // Plan13 datapack and function evaluator (network)
+    DatapackManager datapackManager_;
+    FunctionEvaluator functionEvaluator_;
+    DatapackManager& datapackManager() { return datapackManager_; }
+    const DatapackManager& datapackManager() const { return datapackManager_; }
+    FunctionEvaluator& functionEvaluator() { return functionEvaluator_; }
+    const FunctionEvaluator& functionEvaluator() const { return functionEvaluator_; }
+    void tickScheduledFunctions() { functionEvaluator_.tick(tickNo_); }
 private:
     struct CachedChunk { std::uint64_t rev; ChunkBodyRef body; };
     std::unordered_map<std::int64_t, CachedChunk> chunkCache_;
     std::mutex chunkCacheMtx_;
+    std::unordered_map<std::int32_t, std::int64_t> ghostThrottle_; // entityId -> last tick for PlaceGhostRecipe 0x39
     std::atomic<bool> running_{true};
     int listenFd_ = -1;
     std::int32_t entityIdCounter_ = 1;

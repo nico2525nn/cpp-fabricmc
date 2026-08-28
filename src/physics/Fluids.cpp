@@ -24,8 +24,6 @@ int FluidSim::kindAt(std::uint16_t state, int& levelOut) const {
             if (k == "level") { levelOut = std::atoi(std::string(v).c_str()); break; }
         if (levelOut==-1) levelOut=0;
         return 0;
-        if(levelOut==-1) levelOut=0;
-        return 0;                                        // water
     }
     if (b->name == "minecraft:lava" || b->name == "minecraft:flowing_lava") {
         for (auto& [k, v] : gen::propsOf(state))
@@ -34,11 +32,6 @@ int FluidSim::kindAt(std::uint16_t state, int& levelOut) const {
         return 1;
     }
     // seagrass/kelp are water-plants but also water source? treat as not fluid for solidify
-        if(levelOut==-1) levelOut=0;
-        return 1;                                        // lava
-    }
-    // plan12 §8 waterlogged: stairs/slab/fence etc with waterlogged=true is water source
-    for(auto&[k,v]: gen::propsOf(state)) if(k=="waterlogged" && v=="true"){ levelOut=0; return 0; }
     return -1;
 }
 

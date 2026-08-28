@@ -64,10 +64,6 @@ void StructureManager::ensureDefaults() {
         {"minecraft:monument", 32, 5, 10387313ULL, {"deep_ocean","deep_cold_ocean","deep_frozen_ocean","deep_lukewarm_ocean"}},
         {"minecraft:mansion", 80, 20, 10387319ULL, {"dark_forest","roofed_forest","pale_garden"}},
         {"minecraft:end_city", 20, 11, 10387313ULL, {"end_highlands","end_midlands","end_barrens","small_end_islands"}},
-        {"minecraft:ocean_monument", 32, 5, 10387313ULL, {"ocean","deep_ocean"}},
-        {"minecraft:woodland_mansion", 80, 20, 10387319ULL, {"roofed","dark_forest"}},
-        {"minecraft:mineshaft", 10, 5, 0, {}},
-        {"minecraft:stronghold", 32, 5, 0, {}},
     };
 }
 
@@ -558,48 +554,6 @@ void StructureManager::mineshaftPiece(Chunk& chunk, std::int32_t cx, std::int32_
     }
 }
 
-void StructureManager::monumentPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
-                                     std::int32_t ox, std::int32_t oz, const GroundFn& ground) const {
-    Writer w{chunk, cx, cz};
-    const auto prismarine = B("minecraft:prismarine") ? B("minecraft:prismarine")->defaultState : B("minecraft:stone")->defaultState;
-    const auto bricks = B("minecraft:prismarine_bricks") ? B("minecraft:prismarine_bricks")->defaultState : prismarine;
-    const auto dark = B("minecraft:dark_prismarine") ? B("minecraft:dark_prismarine")->defaultState : prismarine;
-    const auto lantern = B("minecraft:sea_lantern") ? B("minecraft:sea_lantern")->defaultState : prismarine;
-    const auto water = static_cast<std::uint16_t>(gen::stateWithPropsList("minecraft:water", {{"level","0"}}));
-    int baseY = 39;
-    // 58x58x23 box simplified as in plan12 §3
-    for (int y=0; y<23; ++y) for (int z=0; z<58; ++z) for (int x=0; x<58; ++x){
-        bool shell = x==0||x==57||z==0||z==57||y==0||y==22;
-        if (!shell) continue;
-        uint16_t mat = prismarine;
-        if (y==0||y==22) mat = dark;
-        else if (x==0||x==57||z==0||z==57) mat = bricks;
-        if ((x==4||x==53) && (z==4||z==53) && y%6==0) mat = lantern;
-        w.set(ox+x, baseY+y, oz+z, mat, true);
-    }
-    // inner water fill omitted for simplicity smoke only checks prismarine presence
-    (void)water;
-    (void)ground;
-}
-
-void StructureManager::mansionPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
-                                    std::int32_t ox, std::int32_t oz, const GroundFn& ground) const {
-    Writer w{chunk, cx, cz};
-    const auto oak = B("minecraft:dark_oak_planks") ? B("minecraft:dark_oak_planks")->defaultState : B("minecraft:oak_planks")->defaultState;
-    const auto cobble = B("minecraft:cobblestone")->defaultState;
-    int baseY = ground(ox+20, oz+20);
-    baseY = std::clamp(baseY, 60, 80);
-    for (int y=0; y<15; ++y) for (int z=0; z<40; ++z) for (int x=0; x<40; ++x){
-        bool shell = x==0||x==39||z==0||z==39||y==0||y==14;
-        if (!shell && y!=5 && y!=10) continue;
-        uint16_t mat = (y==0||y==5||y==10||y==14) ? cobble : oak;
-        if (y==0 || y==14) mat = cobble;
-        w.set(ox+x, baseY+y, oz+z, mat, true);
-    }
-    // doorway
-    w.set(ox+20, baseY+1, oz, 0, true); w.set(ox+20, baseY+2, oz, 0, true);
-}
-
 void StructureManager::generate(Chunk& chunk, std::int32_t cx,
                                        std::int32_t cz, const GroundFn& ground) const {
     if (placer_) {
@@ -657,14 +611,6 @@ void StructureManager::generate(Chunk& chunk, std::int32_t cx,
             endCityPiece(chunk, cx, cz, at.originX, at.originZ, ground);
         else if (name.find("mineshaft") != std::string::npos)
             mineshaftPiece(chunk, cx, cz, at.originX, at.originZ, ground);
-        else if (name.find("monument") != std::string::npos || name.find("ocean_monument") != std::string::npos)
-            monumentPiece(chunk, cx, cz, at.originX, at.originZ, ground);
-        else if (name.find("mansion") != std::string::npos || name.find("woodland") != std::string::npos)
-            mansionPiece(chunk, cx, cz, at.originX, at.originZ, ground);
-        else if (name.find("mineshaft") != std::string::npos)
-            mineshaftPiece(chunk, cx, cz, at.originX, at.originZ, ground);
-        else if (name.find("stronghold") != std::string::npos)
-            strongholdPiece(chunk, cx, cz, at.originX, at.originZ, ground);
         else continue;
     }
 }

@@ -25,7 +25,7 @@ static bool mergeStack(ItemStack& from, ItemStack& to) {
 // ---------------- Anvil ----------------
 
 void AnvilMenuLogic::recomputeResult(Menu& menu) {
-    // slots: 0 left, 1 right, 2 result
+    // slots: 0 left, 1 right, 2 result (plan13 §4)
     ItemStack* left = menu.container ? &menu.container[0] : &menu.extraSlots[0];
     ItemStack* right = menu.container ? &menu.container[1] : &menu.extraSlots[1];
     ItemStack* result = menu.container ? &menu.container[2] : &menu.extraSlots[2];
@@ -34,6 +34,8 @@ void AnvilMenuLogic::recomputeResult(Menu& menu) {
     int cost = CostCalculator::anvilCost(*left, *right, rename);
     if (cost < 0) { *result = ItemStack::air(); return; }
     if (cost==0 && right->empty() && rename.empty()) { *result = ItemStack::air(); return; }
+    // Too Expensive check (creative bypass handled in Session, here assume survival)
+    if (cost >= 40) { *result = ItemStack::air(); return; }
     ItemStack out = *left;
     // repair: reduce damage if both are same item or right is repair material
     if (!right->empty()) {
@@ -62,13 +64,13 @@ void AnvilMenuLogic::recomputeResult(Menu& menu) {
             if (lvl>0) ItemStack::addEnchant(out, "minecraft:protection", lvl);
         }
     }
-    // rename: store custom name as component 5? We store as plain component payload for demonstration
+    // rename: store custom name as component 5
     if (!rename.empty()) {
-        out.components.erase(std::remove_if(out.components.begin(), out.components.end(),
-            [](auto& p){ return p.first==5; }), out.components.end());
-        std::vector<uint8_t> payload(rename.begin(), rename.end());
-        out.components.emplace_back(5, std::move(payload));
+        out.setCustomName(rename);
     }
+    // next repair cost
+    int nextCost = CostCalculator::nextRepairCost(*left, *right);
+    out.setRepairCost(nextCost);
     out.count = 1;
     *result = out;
 }

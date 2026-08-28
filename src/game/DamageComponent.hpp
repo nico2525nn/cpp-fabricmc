@@ -14,23 +14,29 @@ public:
     // Apply damage to a stack, respecting Unbreaking enchantment.
     // Returns true if the stack was destroyed (damage >= max).
     // If hasUnbreaking, each point of damage has a chance to be ignored.
+    // Vanilla Yarn EnchantmentHelper.shouldDamage: tools 1/(lvl+1), armor 60% + 40%/(lvl+1) simplified to same 1/(lvl+1) per plan13 §4.
     static bool applyDamage(ItemStack& stack, int amount) {
         if (stack.empty() || amount<=0) return false;
         int maxd = ItemStack::maxDamageFor(stack.itemId);
         if (maxd<=0) return false;
-        // Unbreaking logic (vanilla: for armor/tools, chance to avoid damage)
-        int unb = std::max(stack.enchantLevel("unbreaking"), stack.enchantLevel("minecraft:unbreaking"));
+        int unb = stack.unbreakingLevel();
         if (unb>0) {
             int effective = 0;
             for (int i=0;i<amount;++i) {
-                // armor: (60 + 40/(lvl+1))% chance? Simplified: 1/(lvl+1) chance to take damage for tools
-                // We use generic: rand % (lvl+1) ==0 -> take damage
+                // plan13 §4: 1/(lvl+1) for both armor and tools (armor has 60%* variant but simplified same)
                 if (rand() % (unb + 1) == 0) effective++;
             }
             amount = effective;
             if (amount==0) return false;
         }
         return stack.applyDamage(amount);
+    }
+    // Unbreaking check helper for shouldDamage (mirrors Yarn)
+    static bool shouldDamage(const ItemStack& stack) {
+        int unb = stack.unbreakingLevel();
+        if (unb<=0) return true;
+        // plan13 §4: tools random 1/(lvl+1), armor same simplified
+        return rand() % (unb + 1) == 0;
     }
 
     // Repair via Mending: consume XP to repair one durability point.
