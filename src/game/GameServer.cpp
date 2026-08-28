@@ -92,7 +92,7 @@ static const struct { const char* name; int cnt; } kKit[] = {
     {"minecraft:dirt",64},
 };
 
-// plan12 §4 helper: compute stairs shape per Yarn StairsBlock#getStairsShape
+// plan19 §1 B1 stairs strict: only front+opposite per Yarn StairsBlock#getStairsShape, no 4-dir side loop (plan12 §4 helper)
 static bool isStairsBlock(const gen::BlockDef* d){
     if(!d) return false;
     std::string n(d->name);
@@ -113,6 +113,13 @@ static std::string computeStairsShape(World& w, int x,int y,int z, const std::st
         if(f=="west") return "south";
         if(f=="south") return "east";
         if(f=="east") return "north";
+        return f;
+    };
+    auto rotateCW = [](const std::string& f)->std::string{
+        if(f=="north") return "east";
+        if(f=="east") return "south";
+        if(f=="south") return "west";
+        if(f=="west") return "north";
         return f;
     };
     auto opposite = [](const std::string& f)->std::string{
@@ -2296,8 +2303,8 @@ void GameServer::hoppersTick() {
                             // also check for TNT, campfire, portal
                             bool handledFS=false;
                             if(td && std::string(td->name)=="minecraft:tnt"){
-                                // prime TNT
-                                explodeAt(tx+0.5, ty+0.5, tz+0.5, 4.f);
+                                spawnPrimedTnt(tx+0.5, ty+0.5, tz+0.5, 0, 0.2, 0, 80);
+                                broadcastSound("minecraft:entity.tnt.primed", tx+0.5, ty+0.5, tz+0.5, 1.f, 1.f, "blocks");
                                 world_.setBlock(tx,ty,tz,0); broadcastBlockChange(tx,ty,tz,0);
                                 handledFS=true;
                             } else if(td && (std::string(td->name)=="minecraft:campfire" || std::string(td->name)=="minecraft:soul_campfire")){
@@ -2311,7 +2318,16 @@ void GameServer::hoppersTick() {
                                     handledFS=true;
                                 }
                             } else if(isAir && belowSolid){
-                                bool soulBase = bd && (std::string(bd->name)=="minecraft:soul_sand"||std::string(bd->name)=="minecraft:soul_soil");
+                                bool soulBase = false;
+                                if (bd) {
+                                    auto &tags = tagManager_.blockTags;
+                                    auto it = tags.find("minecraft:soul_fire_base_blocks");
+                                    if (it != tags.end()) {
+                                        auto nit = gen::blockNameToState().find(std::string(bd->name));
+                                        if (nit != gen::blockNameToState().end()) soulBase = it->second.count(static_cast<uint32_t>(nit->second))>0;
+                                    }
+                                    if (!soulBase) soulBase = std::string(bd->name)=="minecraft:soul_sand"||std::string(bd->name)=="minecraft:soul_soil";
+                                }
                                 std::string fn = soulBase?"minecraft:soul_fire":"minecraft:fire";
                                 auto it=gen::blockNameToState().find(fn);
                                 if(it!=gen::blockNameToState().end()){
@@ -2349,7 +2365,8 @@ void GameServer::hoppersTick() {
                                 handled=true;
                             }
                         } else if(!handled && (iname=="minecraft:tnt" || iname.find("tnt") != std::string::npos)) {
-                            explodeAt(x + dx + 0.5, y + dy + 0.5, z + dz + 0.5, 4.f);
+                            spawnPrimedTnt(x + dx + 0.5, y + 0.3, z + dz + 0.5, dx*0.2, 0.2, dz*0.2, 80);
+                            broadcastSound("minecraft:entity.tnt.primed", x+dx+0.5, y+dy+0.5, z+dz+0.5, 1.f, 1.f, "blocks");
                             if(--s.count<=0) s=ItemStack::air();
                             handled=true;
                         } else if(!handled) {
@@ -5875,7 +5892,7 @@ void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
             return false;
         };
         if (nowGround && !self_->onGround) {
-            // Farmland trample (strict audit B10/B11): mobGriefing + 0.512 + LevelEvent 2001
+            // Farmland trample (plan19 §5 B10/B11 strict: mobGriefing + 0.512 + LevelEvent 2001, was sound)
             if (self_->fallDist > 0.5 && !self_->isSneaking) {
                 // 0.512 small mob check: width*width*height >0.512 (player 0.6*0.6*1.8=0.648 passes, small mobs like rabbit 0.4*0.4*0.5=0.08 fails)
                 float entityVolume = 0.6f * 0.6f * 1.8f; // player bounding box volume; mobs would use their own dims but Session is player
@@ -6687,7 +6704,7 @@ void Session::onUseItemOn(ReadBuffer& in) {
                 bool canPlace = true;
                 if (srv_.gameRules().contains("doFireTick") && !srv_.gameRules().getBool("doFireTick")) canPlace = false;
                 if (canPlace) {
-                    // plan18 §2 soul_fire via tag (strict: soul_fire_base_blocks)
+                    // plan19 §6 B12/B13 fire strict: soul_fire/infiniburn via tag per dimension (was hard-coded 19/2)
                     std::uint16_t belowSt = srv_.world().getBlock(tx, ty-1, tz);
                     const gen::BlockDef* belowDef = gen::blockByState(belowSt);
                     bool soulBase = false;
@@ -6754,7 +6771,7 @@ void Session::onUseItemOn(ReadBuffer& in) {
         }
     }
 
-    // ---- doors: two-block placement + hinge & powered (strict audit B5/B6)
+    // ---- doors: two-block placement + hinge & powered (plan19 §4 B5/B6 strict: hinge via solid faces, powered via isPoweredHere, iron hand-open false)
     if (!heldItem.empty()) {
         const std::string heldName = heldItem.name();
         if (heldName.size() > 5 && heldName.rfind("_door", heldName.size() - 5) != std::string::npos) {
@@ -6828,7 +6845,7 @@ void Session::onUseItemOn(ReadBuffer& in) {
         }
     }
 
-    // plan12 §4 slab double: if target already is same slab, convert to double only opposite half (plan17 §1)
+    // plan19 §2 B2 slab strict: top+top must not double, require opposite half per Yarn SlabBlock (plan12 §4 + plan17 §1)
     if (!heldItem.empty()) {
         std::string hName = heldItem.name();
         if (hName.find("_slab") != std::string::npos) {
@@ -6938,7 +6955,7 @@ void Session::onUseItemOn(ReadBuffer& in) {
     }
 
     if (srv_.world().getBlock(tx, ty, tz) != 0 || heldItem.empty()) {
-        // toggling an existing door? (hinge & powered strict B5/B6 — plan18 §1)
+        // toggling an existing door? (plan19 §4 B5/B6 strict: hinge & powered — plan18 §1 iron hand-open false)
         const std::uint16_t clickedState = srv_.world().getBlock(x, y, z);
         const gen::BlockDef* cdef = gen::blockByState(clickedState);
         if (cdef && cdef->name.size() > 5 &&
@@ -7059,7 +7076,7 @@ void Session::onUseItemOn(ReadBuffer& in) {
             std::string shape = computeStairsShape(*ctx.world, ctx.placePos.x, ctx.placePos.y, ctx.placePos.z, facingStr, halfStr);
             props.emplace_back("shape", shape);
         }
-        // waterlogged: check fluid state (still water only) — plan17 §2
+        // waterlogged: check FluidState still water level 0 (plan19 §1 B3 strict: FluidState.isWater vs find("water"), plan17 §2)
         if (hasWaterlogged) {
             bool waterlogged = false;
             auto fluid = FluidSim::getFluidState(*ctx.world, ctx.placePos.x, ctx.placePos.y, ctx.placePos.z);
@@ -7071,6 +7088,7 @@ void Session::onUseItemOn(ReadBuffer& in) {
             props.emplace_back("waterlogged", waterlogged ? "true" : "false");
         }
         if (hasSnowy) {
+            // plan19 §3 B4 grass snowy strict: snow OR snow_block above per Wiki (was only snow)
             bool snowy = false;
             std::uint16_t above = ctx.world->getBlock(ctx.placePos.x, ctx.placePos.y + 1, ctx.placePos.z);
             const gen::BlockDef* ad = gen::blockByState(above);
