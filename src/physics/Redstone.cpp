@@ -221,18 +221,24 @@ int RedstoneEngine::analogOutputForContainer(BlockEntity* be) {
         }
         break;
     }
+    case BlockEntity::Kind::Brewing: {
+        slots = 5;
+        for (int i=0;i<5;++i) {
+            auto &s = be->brewing.slots[i];
+            if (!s.empty()) { ++filled; fillSum += double(s.count)/64.0; }
+        }
+        break;
+    }
     }
     if (slots==0) return 0;
-    // spec: 15 * filledRatio where filledRatio = filled/slots
-    double ratio = double(filled)/double(slots);
-    // also consider average fill for partial stacks? Use fillSum for more accurate but keep spec simple
-    // Blend: use max of ratio and fillSum/slots to handle partially filled case
+    if (filled==0) return 0;
+    // Vanilla comparator formula (plan11 §3): signal = floor(1 + (fillSum/slots)*14)
+    // where fillSum = sum(count/maxStack) and filled>0 gives at least 1
     double avg = fillSum / double(slots);
-    ratio = std::max(ratio, avg);
-    int sig = static_cast<int>(std::floor(ratio * 15.0));
-    if (filled>0 && sig==0) sig=1;
+    int sig = static_cast<int>(std::floor(1.0 + avg * 14.0));
     if (sig>15) sig=15;
     if (sig<0) sig=0;
+    if (sig==0 && filled>0) sig=1;
     return sig;
 }
 
@@ -281,7 +287,20 @@ int RedstoneEngine::emissionLevel(std::uint16_t state, std::int32_t x, std::int3
         else if (facing=="east") bx-=1;
         else if (facing=="up") by-=1;
         else if (facing=="down") by+=1;
-        int out = analogOutputAt(bx,by,bz);
+        // Rear can be container or redstone dust; take max per plan11 §3
+        int containerSig = analogOutputAt(bx,by,bz);
+        auto rearPower = [&]()->int {
+            std::uint16_t sst = world_.getBlock(bx, by, bz);
+            Comp sc = classify(sst);
+            if (sc==Comp::Wire) {
+                for (auto& [k,v] : gen::propsOf(sst)) if (k=="power") return std::atoi(std::string(v).c_str());
+            }
+            if (maxEmissionFor(sc)>0) return 15;
+            int lvl = emissionLevel(sst, bx, by, bz);
+            return lvl;
+        };
+        int rearDust = rearPower();
+        int out = std::max(containerSig, rearDust);
         // handle compare/subtract side power (plan9 #22)
         auto sidePower = [&](int sx, int sz)->int {
             std::uint16_t sst = world_.getBlock(sx, y, sz);
@@ -724,6 +743,22 @@ bool RedstoneEngine::onInteract(std::int32_t x, std::int32_t y,
             gen::stateWithProps(*b, {{"powered", "true"}}));
         world_.setBlock(x, y, z, ns);
         queue_.push({x, y, z, now + 30});                // auto-release
+        recomputeAround(x, y, z);
+        return true;
+    }
+    if (b->name.find("comparator") != std::string::npos) {
+        // Toggle mode compare <-> subtract per plan11 §3
+        std::string curMode="compare";
+        for (auto& [k,v] : gen::propsOf(st)) if (k=="mode") curMode=std::string(v);
+        std::string newMode = (curMode=="compare"?"subtract":"compare");
+        // preserve other props
+        std::vector<std::pair<std::string_view,std::string_view>> props;
+        for (auto& [k,v] : gen::propsOf(st)) if (k!="mode") props.emplace_back(k,v);
+        props.emplace_back("mode", newMode);
+        const std::uint16_t ns = static_cast<std::uint16_t>(gen::stateWithProps(*b, props));
+        world_.setBlock(x, y, z, ns);
+        // recompute output after mode switch
+        handleComparator(x,y,z);
         recomputeAround(x, y, z);
         return true;
     }
