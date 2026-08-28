@@ -746,9 +746,9 @@ void KelpBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
     if(w.getBlock(x,y+1,z)!=0) return;
     // must be water above — polish: above block already checked; no need to refetch
     // For simplicity, allow growth if above is water or air with water underlying
-    if((rand()%10)!=0) return;
+    if((rand()%100) >= 14) return; // 14% vanilla KelpBlock#randomTick nextFloat <0.14 (plan17 §9 B27, plan16 §8)
     const gen::BlockDef* d=gen::blockByState(state); if(!d) return;
-    // 10% growth per random tick when age<25
+    // 14% growth per random tick when age<25
     // grow one up
     auto waterIt = gen::blockNameToState().find("minecraft:water");
     uint16_t waterSt = waterIt!=gen::blockNameToState().end()?static_cast<uint16_t>(waterIt->second):0;
