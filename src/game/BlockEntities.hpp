@@ -41,20 +41,19 @@ struct ChestData {
 struct FurnaceData {
     static constexpr int kInput = 0, kFuel = 1, kOutput = 2;
     ItemStack slots[3];
-    std::int16_t burnTicks = 0;          // remaining fuel burn
-    std::int16_t burnDuration = 0;       // total of currently burning fuel
-    std::int16_t cookProgress = 0;       // ticks toward cookTotal
+    std::int16_t burnTicks = 0;
+    std::int16_t burnDuration = 0;
+    std::int16_t cookProgress = 0;
     std::int16_t cookTotal = 200;
 };
 
 struct BrewingData {
-    static constexpr int kSlots = 5; // 0-2 potions, 3 ingredient, 4 fuel (blaze powder)
+    static constexpr int kSlots = 5;
     ItemStack slots[kSlots];
-    std::int16_t brewTime = 0; // 0..400
-    std::int16_t fuel = 0;     // remaining fuel (0..20)
+    std::int16_t brewTime = 0;
+    std::int16_t fuel = 0;
 };
 
-// Generic container used by hoppers (5) and dispensers (9).
 struct GenericContainerData {
     static constexpr int kMaxSlots = 9;
     ItemStack slots[kMaxSlots];
@@ -62,11 +61,11 @@ struct GenericContainerData {
 };
 
 struct BlockEntity {
-    enum class Kind { Chest, Furnace, Hopper, Dispenser, Barrel, ShulkerBox, Brewing };
+    enum class Kind { Chest, Furnace, Hopper, Dispenser, Dropper, Barrel, ShulkerBox, Brewing };
     Kind kind = Kind::Chest;
     ChestData chest{};
     FurnaceData furnace{};
-    GenericContainerData generic{};      // hopper/dispenser
+    GenericContainerData generic{};
     BrewingData brewing{};
 };
 
@@ -91,7 +90,6 @@ public:
         auto it = map_.find(key);
         if (it != map_.end()) { map_.erase(it); dirty_.insert(key); }
     }
-    // Remove entities whose block no longer exists (called after chunk edits).
     bool empty() const { return map_.empty(); }
     std::size_t size() const { return map_.size(); }
 
@@ -100,8 +98,6 @@ public:
     }
     std::unordered_map<std::int64_t, BlockEntity>& raw() { return map_; }
 
-    // ------------------------------------------------------------ persistence
-    // Writes all entities inside chunk (cx,cz) into `outList` (a List value).
     void writeChunkNbt(std::int32_t cx, std::int32_t cz, nbt::Value& outList) const {
         for (const auto& [k, be] : map_) {
             const std::int32_t x = posKeyUnpackX(k);
@@ -118,6 +114,9 @@ public:
                 writeItems(e, be.generic.slots, 5, "Items");
             } else if (be.kind == BlockEntity::Kind::Dispenser) {
                 e.set("id", nbt::Value::makeString("minecraft:dispenser"));
+                writeItems(e, be.generic.slots, 9, "Items");
+            } else if (be.kind == BlockEntity::Kind::Dropper) {
+                e.set("id", nbt::Value::makeString("minecraft:dropper"));
                 writeItems(e, be.generic.slots, 9, "Items");
             } else if (be.kind == BlockEntity::Kind::Barrel) {
                 e.set("id", nbt::Value::makeString("minecraft:barrel"));
@@ -170,8 +169,9 @@ private:
                    id == "minecraft:dropper") {
             BlockEntity& be = map_[key];
             be = BlockEntity{};
-            be.kind = id == "minecraft:hopper" ? BlockEntity::Kind::Hopper
-                                               : BlockEntity::Kind::Dispenser;
+            if (id=="minecraft:hopper") be.kind = BlockEntity::Kind::Hopper;
+            else if (id=="minecraft:dropper") be.kind = BlockEntity::Kind::Dropper;
+            else be.kind = BlockEntity::Kind::Dispenser;
             const int n = be.kind == BlockEntity::Kind::Hopper ? 5 : 9;
             readItems(e, be.generic.slots, n, "Items");
             dirty_.insert(key);
@@ -245,7 +245,6 @@ private:
     std::unordered_map<std::int64_t, BlockEntity> map_;
 
 public:
-    // Keys whose NBT must be flushed / clients re-synced.
     std::unordered_set<std::int64_t> dirty_;
 };
 

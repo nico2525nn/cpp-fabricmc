@@ -213,7 +213,8 @@ int RedstoneEngine::analogOutputForContainer(BlockEntity* be) {
         }
         break;
     }
-    case BlockEntity::Kind::Dispenser: {
+    case BlockEntity::Kind::Dispenser:
+    case BlockEntity::Kind::Dropper: {
         slots = 9;
         for (int i=0;i<9;++i) {
             auto &s = be->generic.slots[i];
