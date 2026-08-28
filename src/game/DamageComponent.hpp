@@ -1,7 +1,6 @@
 // DamageComponent — plan8 entity section
 // Handles item durability (minecraft:damage component) with Unbreaking and Mending.
-// Vanilla logic: Unbreaking gives (100 / (level+1))% chance to actually take damage;
-// Mending repairs via XP orbs (handled elsewhere). This component centralizes durability.
+// Vanilla logic: tools 1/(lvl+1) chance to damage, armor 60%+40%/(lvl+1) ignore per Yarn EnchantmentHelper.shouldDamage.
 #pragma once
 #include <cstdint>
 #include <cstdlib>
@@ -11,35 +10,45 @@ namespace cppfm {
 
 class DamageComponent {
 public:
+    static bool isArmorItem(const ItemStack& s) {
+        std::string n = s.name();
+        return n.find("_helmet")!=std::string::npos || n.find("_chestplate")!=std::string::npos
+            || n.find("_leggings")!=std::string::npos || n.find("_boots")!=std::string::npos
+            || n.find("turtle_helmet")!=std::string::npos || n.find("elytra")!=std::string::npos
+            || n.find("horse_armor")!=std::string::npos;
+    }
     // Apply damage to a stack, respecting Unbreaking enchantment.
     // Returns true if the stack was destroyed (damage >= max).
-    // If hasUnbreaking, each point of damage has a chance to be ignored.
-    // Vanilla Yarn EnchantmentHelper.shouldDamage: tools 1/(lvl+1), armor 60% + 40%/(lvl+1) per plan17 §10 E9 (vanilla armor: 60% ignore + 1/(lvl+1)).
+    // Vanilla Yarn: armor 0.6+0.4/(lvl+1) ignore, tools 1/(lvl+1) damage.
     static bool applyDamage(ItemStack& stack, int amount) {
         if (stack.empty() || amount<=0) return false;
         int maxd = ItemStack::maxDamageFor(stack.itemId);
         if (maxd<=0) return false;
         int unb = stack.unbreakingLevel();
         if (unb>0) {
+            bool armor = isArmorItem(stack);
             int effective = 0;
-            bool isArmor = stack.isArmor();
             for (int i=0;i<amount;++i) {
-                if (isArmor) {
-                    if ((rand() % 100) < 60) continue; // 60% ignore for armor (vanilla)
+                if (armor) {
+                    float ignoreChance = 0.6f + 0.4f / float(unb + 1);
+                    float r = float(rand()) / float(RAND_MAX);
+                    if (r >= ignoreChance) effective++;
+                } else {
+                    if (rand() % (unb + 1) == 0) effective++;
                 }
-                if (rand() % (unb + 1) == 0) effective++;
             }
             amount = effective;
             if (amount==0) return false;
         }
         return stack.applyDamage(amount);
     }
-    // Unbreaking check helper for shouldDamage (mirrors Yarn EnchantmentHelper.shouldDamage)
     static bool shouldDamage(const ItemStack& stack) {
         int unb = stack.unbreakingLevel();
         if (unb<=0) return true;
-        if (stack.isArmor()) {
-            if ((rand() % 100) < 60) return false; // 60% ignore for armor
+        if (isArmorItem(stack)) {
+            float ignoreChance = 0.6f + 0.4f / float(unb + 1);
+            float r = float(rand()) / float(RAND_MAX);
+            return r >= ignoreChance;
         }
         return rand() % (unb + 1) == 0;
     }

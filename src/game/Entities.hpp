@@ -109,10 +109,10 @@ struct MobStats {
     std::uint32_t xpDrop;
 };
 
-// plan14 §4: VillagerData profession/level/type (1-5, 7 types, 15 professions)
+// plan14 §4: VillagerData profession/level/type (1-5, 7 types, 15 professions) + NITWIT plan17 LOW
 struct VillagerData {
     enum Type : std::uint8_t { PLAINS=0, DESERT, SAVANNA, SNOW, SWAMP, JUNGLE, TAIGA };
-    enum Profession : std::uint8_t { NONE=0, ARMORER, BUTCHER, CARTOGRAPHER, CLERIC, FARMER, FISHERMAN, FLETCHER, LEATHERWORKER, LIBRARIAN, MASON, SHEPHERD, TOOLSMITH, WEAPONSMITH };
+    enum Profession : std::uint8_t { NONE=0, ARMORER, BUTCHER, CARTOGRAPHER, CLERIC, FARMER, FISHERMAN, FLETCHER, LEATHERWORKER, LIBRARIAN, MASON, SHEPHERD, TOOLSMITH, WEAPONSMITH, NITWIT };
     int level = 1; // 1..5
     Type type = PLAINS;
     Profession profession = FARMER;
