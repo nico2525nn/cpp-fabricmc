@@ -33,7 +33,6 @@
 #include "MobEffects.hpp"
 #include "Stats.hpp"
 #include "Scoreboard.hpp"
-#include "Teams.hpp"
 #include "../physics/LightEngine.hpp"
 #include "../physics/Fluids.hpp"
 #include "../physics/Redstone.hpp"
@@ -351,30 +350,11 @@ public:
         blockTicks_->registerBehavior("minecraft:sugar_cane", std::make_unique<StemBehavior>(4));
         blockTicks_->registerBehavior("minecraft:cactus", std::make_unique<StemBehavior>(4));
         blockTicks_->registerBehavior("minecraft:farmland", std::make_unique<FarmlandBehavior>());
-        blockTicks_->registerBehavior("minecraft:cocoa", std::make_unique<CocoaBehavior>());
-        blockTicks_->registerBehavior("minecraft:sweet_berry_bush", std::make_unique<SweetBerryBehavior>());
-        blockTicks_->registerBehavior("minecraft:sweet_berries", std::make_unique<SweetBerryBehavior>());
-        blockTicks_->registerBehavior("minecraft:nether_wart", std::make_unique<NetherWartBehavior>());
-        blockTicks_->registerBehavior("minecraft:chorus_flower", std::make_unique<ChorusFlowerBehavior>());
-        blockTicks_->registerBehavior("minecraft:kelp", std::make_unique<KelpBehavior>());
-        blockTicks_->registerBehavior("minecraft:kelp_plant", std::make_unique<KelpBehavior>());
-        blockTicks_->registerBehavior("minecraft:seagrass", std::make_unique<KelpBehavior>());
-        blockTicks_->registerBehavior("minecraft:tall_seagrass", std::make_unique<KelpBehavior>());
         blockTicks_->registerBehavior("minecraft:fire", std::make_unique<FireBehavior>());
         blockTicks_->registerBehavior("minecraft:soul_fire", std::make_unique<SoulFireBehavior>());
         blockTicks_->registerBehavior("minecraft:campfire", std::make_unique<CampfireBehavior>());
         blockTicks_->registerBehavior("minecraft:soul_campfire", std::make_unique<CampfireBehavior>());
         blockTicks_->registerBehavior("minecraft:nether_portal", std::make_unique<PortalAgeBehavior>());
-        blockTicks_->registerBehavior("minecraft:cocoa", std::make_unique<CocoaBehavior>());
-        blockTicks_->registerBehavior("minecraft:sweet_berry_bush", std::make_unique<SweetBerryBehavior>());
-        blockTicks_->registerBehavior("minecraft:nether_wart", std::make_unique<NetherWartBehavior>());
-        blockTicks_->registerBehavior("minecraft:chorus_flower", std::make_unique<ChorusFlowerBehavior>());
-        blockTicks_->registerBehavior("minecraft:kelp", std::make_unique<KelpBehavior>());
-        blockTicks_->registerBehavior("minecraft:kelp_plant", std::make_unique<KelpBehavior>());
-        blockTicks_->registerBehavior("minecraft:seagrass", std::make_unique<KelpBehavior>());
-        blockTicks_->registerBehavior("minecraft:tall_seagrass", std::make_unique<KelpBehavior>());
-        blockTicks_->registerBehavior("minecraft:torchflower_crop", std::make_unique<CropBehavior>());
-        blockTicks_->registerBehavior("minecraft:pitcher_crop", std::make_unique<CropBehavior>());
         // plan7: ServerProperties typed loading (viewDistance, spawn-protection, etc.)
         {
             ServerProperties sp;
@@ -564,7 +544,6 @@ public:
     BlockEntityStore& blockEntities() { return blockEntities_; }
     std::int32_t villagerWindowSeq_ = 100;
     Scoreboard scoreboard;
-    TeamsManager teams;
     void scoreboardBroadcast(const std::function<void(WriteBuffer&)>& fn) {
         WriteBuffer b; fn(b);
         broadcastPacketExcept(nullptr, 0, b); // id unused; callers send directly
@@ -582,22 +561,6 @@ public:
         WriteBuffer b; scoreboard.writeDisplayPacket(b);
         broadcastPacketExcept(nullptr,
                               proto::pl::sc::ScoreboardDisplayObjective, b);
-    }
-    void sendTeamsCreate(const Team& t) {
-        WriteBuffer b; TeamsManager::writeCreate(b, t);
-        broadcastPacketExcept(nullptr, proto::pl::sc::Teams, b);
-    }
-    void sendTeamsRemove(const std::string& name) {
-        WriteBuffer b; TeamsManager::writeRemove(b, name);
-        broadcastPacketExcept(nullptr, proto::pl::sc::Teams, b);
-    }
-    void sendTeamsJoin(const std::string& team, const std::vector<std::string>& members) {
-        WriteBuffer b; TeamsManager::writeAddMembers(b, team, members);
-        broadcastPacketExcept(nullptr, proto::pl::sc::Teams, b);
-    }
-    void sendTeamsLeave(const std::string& team, const std::vector<std::string>& members) {
-        WriteBuffer b; TeamsManager::writeRemoveMembers(b, team, members);
-        broadcastPacketExcept(nullptr, proto::pl::sc::Teams, b);
     }
     RecipeManager& recipes() { return recipes_; }
     brigadier::CommandDispatcher& commands() { return commands_; }
@@ -661,8 +624,6 @@ public:
                          double vx, double vy, double vz,
                          std::int32_t ownerId, bool ownerIsPlayer);
     void projectilesTick();
-    // Rails / minecart physics (plan11 §3)
-    void minecartsTick();
     // Villager trading (plan4 P1-B)
     static const std::vector<struct TradeOffer>& tradeTable();
     bool openTrading(Player& p, MobEntity& villager);

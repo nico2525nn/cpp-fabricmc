@@ -149,15 +149,16 @@ static void scenarioJoinBuildChat(ServerProc& srv) {
     CHECK(a.declares >= 1, "A received command tree");
 
     // dig the grass under spawn column and verify echo + ack + persistence bytes
-    a.sendPosition(0.5, -60.0, 0.5);
+    // regression fix: 0,-61,0 is inside spawn-protection=16, use 30,-61,0 outside (see MISSING_FEATURES #5)
+    a.sendPosition(30.5, -60.0, 0.5);
     a.pump(150);
-    a.sendDig(0, -61, 0, 7);                    // break a surface grass block
+    a.sendDig(30, -61, 0, 7);                    // break a surface grass block outside spawn protection
     bool sawAck = false, sawAirEcho = false;
     const auto dl2 = std::chrono::steady_clock::now() + std::chrono::milliseconds(4000);
     while (std::chrono::steady_clock::now() < dl2 && !(sawAck && sawAirEcho)) {
         a.pump(40);
         for (auto& u : a.blockUpdates)
-            if (u.x == 0 && u.y == -61 && u.z == 0 && u.state == 0) sawAirEcho = true;
+            if (u.x == 30 && u.y == -61 && u.z == 0 && u.state == 0) sawAirEcho = true;
         sawAck = a.acks > 0;
     }
     CHECK(sawAck, "dig acknowledged (sequence)");
@@ -194,7 +195,7 @@ static void scenarioJoinBuildChat(ServerProc& srv) {
         for (auto& body : b.rawChunks) {
             ReadBuffer in(body);
             const std::int32_t cx = in.i32(), cz = in.i32();
-            if (cx == 0 && cz == 0) persisted = chunkBlockAt(body, 0, -61, 0) == 0;
+            if (cx == 1 && cz == 0) persisted = chunkBlockAt(body, 30, -61, 0) == 0;
         }
     }
     CHECK(persisted, "edit persisted across reconnect (fresh chunk is air)");
