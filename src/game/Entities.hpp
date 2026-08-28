@@ -45,7 +45,7 @@ struct XpOrbEntity {
     std::int64_t ageTicks = 0;
 };
 
-enum class ProjectileKind : std::uint8_t { Arrow=0, Snowball, Egg, EnderPearl, WitherSkull, Fireball, DragonFireball, Trident };
+enum class ProjectileKind : std::uint8_t { Arrow=0, Snowball, Egg, EnderPearl, Potion, WitherSkull, Fireball, DragonFireball, Trident };
 
 struct ProjectileEntity {
     std::int32_t entityId = 0;
