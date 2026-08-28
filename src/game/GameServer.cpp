@@ -729,12 +729,20 @@ void GameServer::survivalTick() {
                 }
             }
         }
-        // ---- freeze (powder snow) 77
+        // ---- freeze (powder snow) 77 — plan16 strict: leather immunity, 40t damage, -2 decay
         {
             auto isPowderSnowAt = [&](int bx,int by,int bz)->bool {
                 uint16_t st = worldFor(p->dimension).getBlock(bx,by,bz);
                 auto *d = gen::blockByState(st);
                 return d && d->name == "minecraft:powder_snow";
+            };
+            auto hasLeatherArmor = [&]()->bool {
+                for (int i=5;i<=8;++i) if (!p->inv[i].empty()) {
+                    std::string n = p->inv[i].name();
+                    if (n.rfind("minecraft:leather_",0)==0) return true;
+                    if (n=="minecraft:leather_horse_armor") return true;
+                }
+                return false;
             };
             int fx = (int)std::floor(p->x);
             int fy = (int)std::floor(p->y);
@@ -745,16 +753,17 @@ void GameServer::survivalTick() {
                 int fy2 = (int)std::floor(p->y + 0.5);
                 if (fy2 != fy) inSnow = isPowderSnowAt(fx,fy2,fz);
             }
-            if (inSnow) {
+            bool leatherImmune = hasLeatherArmor();
+            if (inSnow && !leatherImmune) {
                 p->freezeTicks = std::min(300, p->freezeTicks + 1);
                 if (p->freezeTicks >= 140) {
-                    if (gamerules_.getBool("freezeDamage") && tickNo_ % 20 == 0) applyDamage(*p, 1.f, "freeze");
+                    if (gamerules_.getBool("freezeDamage") && tickNo_ % 40 == 0) applyDamage(*p, 1.f, "freeze");
                 }
             } else {
-                p->freezeTicks = std::max(0, p->freezeTicks - 1);
+                p->freezeTicks = std::max(0, p->freezeTicks - 2);
             }
         }
-        // ---- fire / lava 77-78
+        // ---- fire / lava 77-78 — plan16 strict: lava 300, fire 160
         {
             auto isFireOrLavaAt = [&](double px,double py,double pz)->bool {
                 int bx=(int)std::floor(px); int by=(int)std::floor(py); int bz=(int)std::floor(pz);
@@ -768,12 +777,19 @@ void GameServer::survivalTick() {
                 }
                 return false;
             };
+            auto isLavaAt = [&](double px,double py,double pz)->bool {
+                int bx=(int)std::floor(px); int by=(int)std::floor(py); int bz=(int)std::floor(pz);
+                uint16_t st = worldFor(p->dimension).getBlock(bx,by,bz);
+                auto *d = gen::blockByState(st);
+                return d && d->name == "minecraft:lava";
+            };
             bool hasFireRes = false;
             for (auto &e: p->effects) if (e.type == effects::FireResistance) { hasFireRes = true; break; }
             bool doFire = gamerules_.getBool("doFireTick");
             bool inLavaFire = isFireOrLavaAt(p->x, p->y, p->z) || isFireOrLavaAt(p->x, p->y + 1.0, p->z);
+            bool inLava = isLavaAt(p->x, p->y, p->z) || isLavaAt(p->x, p->y + 1.0, p->z);
             if (inLavaFire && !hasFireRes) {
-                p->fireTicks = 160;
+                p->fireTicks = inLava ? 300 : 160;
             }
             if (p->fireTicks > 0) {
                 if (!hasFireRes && gamerules_.getBool("fireDamage")) {
@@ -3555,17 +3571,18 @@ void GameServer::effectsTick() {
             if (it->type == effects::Regeneration &&
                 tickNo_ % std::max(1, 50 >> it->amplifier) == 0)
                 p->health = std::min(20.f, p->health + 1.f), sendSetHealth(*p);
-            if ((it->type == effects::Poison || it->type == effects::Wither) &&
+            // plan16 strict: poison 25>>amp, wither 40>>amp (was 40 for both)
+            if (it->type == effects::Poison &&
+                tickNo_ % std::max(1, 25 >> it->amplifier) == 0)
+                applyDamage(*p, 1.f, "poison");
+            if (it->type == effects::Wither &&
                 tickNo_ % std::max(1, 40 >> it->amplifier) == 0)
-                applyDamage(*p, 1.f, it->type == effects::Poison ? "poison" : "wither");
+                applyDamage(*p, 1.f, "wither");
             if (it->type == effects::Saturation && tickNo_ % std::max(1, 2 >> it->amplifier) == 0) {
                 addFoodAndSaturation(*p, 1, float(it->amplifier + 1));
             }
             if (it->type == effects::Hunger && tickNo_ % 30 == 0) {
                 addHungerExhaustion(*p, 0.005f * float(it->amplifier + 1) * 20.f);
-            }
-            if (it->type == effects::Wither && tickNo_ % 40 == 0) {
-                // wither already handled
             }
             ++it;
         }
@@ -5568,19 +5585,28 @@ void Session::handlePlay() {
             else if (action == 1) self_->isSneaking = false;
             else if (action == 3) self_->isSprinting = true;
             else if (action == 4) self_->isSprinting = false;
-            if (wasSneak != self_->isSneaking) {
-                // pose metadata index 6 varint: 5 crouching, 0 standing
-                WriteBuffer md;
-                md.varint(self_->entityId);
-                md.u8(6); md.varint(1); md.varint(self_->isSneaking ? 5 : 0);
-                md.u8(255);
-                srv_.broadcastPacketExcept(self_.get(), pl::sc::SetEntityMetadata, md);
-                // also flags byte index 0 bit 1 for sneaking
-                WriteBuffer fl;
-                fl.varint(self_->entityId);
-                fl.u8(0); fl.varint(0); fl.u8(self_->isSneaking ? 0x02 : 0x00);
-                fl.u8(255);
-                srv_.broadcastPacketExcept(self_.get(), pl::sc::SetEntityMetadata, fl);
+            // plan16 strict: sneak pose 5/0 + sprint flag 0x08 combined, broadcast on either change
+            if (wasSneak != self_->isSneaking || wasSprint != self_->isSprinting) {
+                if (wasSneak != self_->isSneaking) {
+                    // pose metadata index 6 varint: 5 crouching, 0 standing
+                    WriteBuffer md;
+                    md.varint(self_->entityId);
+                    md.u8(6); md.varint(1); md.varint(self_->isSneaking ? 5 : 0);
+                    md.u8(255);
+                    srv_.broadcastPacketExcept(self_.get(), pl::sc::SetEntityMetadata, md);
+                }
+                // flags byte index 0: 0x02 sneak + 0x08 sprint (combined)
+                {
+                    WriteBuffer fl;
+                    fl.varint(self_->entityId);
+                    fl.u8(0); fl.varint(0);
+                    uint8_t flags = 0;
+                    if (self_->isSneaking) flags |= 0x02;
+                    if (self_->isSprinting) flags |= 0x08;
+                    fl.u8(flags);
+                    fl.u8(255);
+                    srv_.broadcastPacketExcept(self_.get(), pl::sc::SetEntityMetadata, fl);
+                }
                 // plan13 §5 SwiftSneak – sync MovementSpeed when sneaking
                 {
                     int swiftLvl=0;
@@ -5771,13 +5797,12 @@ void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
             }
         }
         if (nowGround) self_->fallDist = 0;
-        // exhaustion: sprint / jump / walk (plan7 hunger)
+        // exhaustion: sprint / jump / walk — plan16 strict: walk 0 (was 0.01)
         if (self_->gamemode == 0) {
             const double hdx = self_->x - oldX, hdz = self_->z - oldZ;
             double hDist = std::sqrt(hdx*hdx + hdz*hdz);
             if (hDist > 0.001) {
-                float mult = self_->isSprinting ? 0.1f : 0.01f;
-                if (self_->isSwimming) mult = 0.01f;
+                float mult = self_->isSwimming ? 0.01f : (self_->isSprinting ? 0.10f : 0.0f);
                 self_->exhaustion += (float)hDist * mult;
             }
             // jump exhaustion: leaving ground with upward motion
