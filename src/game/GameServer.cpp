@@ -3863,25 +3863,87 @@ void GameServer::brewingTick() {
             blockEntities_.dirty_.insert(key);
             if (b.brewTime == 0) {
                 // brew complete: consume ingredient slot 3 and transform potions (strict audit MEDIUM I7)
+                // plan19 inventory: full PotionBrewing transforms (water->awkward, awkward->effect, splash/lingering, redstone/glowstone)
                 if (!b.slots[3].empty()) {
                     std::uint32_t ingId = b.slots[3].itemId;
                     if (--b.slots[3].count <= 0) b.slots[3] = ItemStack::air();
-                    // nether_wart -> awkward potion transform (vanilla PotionBrewing)
-                    auto itWart = gen::itemIdByName().find("minecraft:nether_wart");
-                    std::uint32_t wartId = itWart != gen::itemIdByName().end() ? itWart->second : 0;
-                    auto itPotion = gen::itemIdByName().find("minecraft:potion");
-                    std::uint32_t potionId = itPotion != gen::itemIdByName().end() ? itPotion->second : 0;
-                    if (ingId == wartId && potionId != 0) {
-                        for (int pi = 0; pi < 3; ++pi) {
-                            auto &stk = b.slots[pi];
-                            if (stk.empty()) continue;
-                            if (stk.itemId != potionId) continue;
-                            // water bottle has no potion_contents or id 0 -> becomes awkward (id 1)
-                            int curId = stk.getPotionId();
-                            bool isWater = !stk.hasPotionContents() || curId == 0;
-                            if (isWater) {
-                                stk.setPotionId(1); // awkward
+                    auto idOf = [&](const char* n)->std::uint32_t{
+                        auto it = gen::itemIdByName().find(n);
+                        return it != gen::itemIdByName().end() ? it->second : 0;
+                    };
+                    std::uint32_t wartId = idOf("minecraft:nether_wart");
+                    std::uint32_t potionId = idOf("minecraft:potion");
+                    std::uint32_t splashId = idOf("minecraft:splash_potion");
+                    std::uint32_t lingeringId = idOf("minecraft:lingering_potion");
+                    std::uint32_t sugarId = idOf("minecraft:sugar");
+                    std::uint32_t spiderEyeId = idOf("minecraft:spider_eye");
+                    std::uint32_t ghastTearId = idOf("minecraft:ghast_tear");
+                    std::uint32_t blazePowderId = idOf("minecraft:blaze_powder");
+                    std::uint32_t magmaCreamId = idOf("minecraft:magma_cream");
+                    std::uint32_t glisteringMelonId = idOf("minecraft:glistering_melon_slice");
+                    std::uint32_t goldenCarrotId = idOf("minecraft:golden_carrot");
+                    std::uint32_t rabbitFootId = idOf("minecraft:rabbit_foot");
+                    std::uint32_t fermentedEyeId = idOf("minecraft:fermented_spider_eye");
+                    std::uint32_t pufferfishId = idOf("minecraft:pufferfish");
+                    std::uint32_t phantomMembraneId = idOf("minecraft:phantom_membrane");
+                    std::uint32_t gunpowderId = idOf("minecraft:gunpowder");
+                    std::uint32_t dragonBreathId = idOf("minecraft:dragon_breath");
+                    std::uint32_t redstoneId = idOf("minecraft:redstone");
+                    std::uint32_t glowstoneId = idOf("minecraft:glowstone_dust");
+                    for (int pi = 0; pi < 3; ++pi) {
+                        auto &stk = b.slots[pi];
+                        if (stk.empty()) continue;
+                        // handle gunpowder -> splash and dragon breath -> lingering via itemId change
+                        if (ingId == gunpowderId && potionId != 0 && splashId != 0) {
+                            if (stk.itemId == potionId) {
+                                std::vector<std::uint8_t> saved;
+                                for (auto &pr : stk.components) if (pr.first==ItemStack::kPotionContentsComponentId) saved = pr.second;
+                                stk.itemId = splashId;
+                                if (!saved.empty()) {
+                                    bool has=false;
+                                    for (auto &pr: stk.components) if(pr.first==ItemStack::kPotionContentsComponentId) has=true;
+                                    if (!has) stk.components.emplace_back(ItemStack::kPotionContentsComponentId, saved);
+                                }
+                                continue;
                             }
+                        }
+                        if (ingId == dragonBreathId && splashId != 0 && lingeringId != 0) {
+                            if (stk.itemId == splashId) {
+                                std::vector<std::uint8_t> saved;
+                                for (auto &pr : stk.components) if (pr.first==ItemStack::kPotionContentsComponentId) saved = pr.second;
+                                stk.itemId = lingeringId;
+                                if (!saved.empty()) {
+                                    bool has=false;
+                                    for (auto &pr: stk.components) if(pr.first==ItemStack::kPotionContentsComponentId) has=true;
+                                    if (!has) stk.components.emplace_back(ItemStack::kPotionContentsComponentId, saved);
+                                }
+                                continue;
+                            }
+                        }
+                        bool isPotionItem = (stk.itemId == potionId || stk.itemId == splashId || stk.itemId == lingeringId);
+                        if (!isPotionItem) continue;
+                        int curId = stk.getPotionId();
+                        bool isWater = !stk.hasPotionContents() || curId == 0;
+                        int target = -1;
+                        if (ingId == wartId && isWater) target = 1; // awkward
+                        else if (curId == 1) {
+                            if (ingId == sugarId) target = 2; // swiftness
+                            else if (ingId == spiderEyeId) target = 3; // poison
+                            else if (ingId == ghastTearId) target = 4; // regeneration
+                            else if (ingId == blazePowderId) target = 5; // strength
+                            else if (ingId == magmaCreamId) target = 6; // fire_resistance
+                            else if (ingId == glisteringMelonId) target = 7; // healing
+                            else if (ingId == goldenCarrotId) target = 8; // night_vision
+                            else if (ingId == rabbitFootId) target = 9; // leaping
+                            else if (ingId == fermentedEyeId) target = 10; // weakness/harming placeholder
+                            else if (ingId == pufferfishId) target = 11; // water_breathing
+                            else if (ingId == phantomMembraneId) target = 12; // slow_falling
+                        } else if (curId >= 2 && curId <= 12) {
+                            if (ingId == redstoneId) target = curId + 100; // extended
+                            else if (ingId == glowstoneId) target = curId + 200; // strong
+                        }
+                        if (target >= 0) {
+                            stk.setPotionId(target);
                         }
                     }
                     blockEntities_.dirty_.insert(key);
@@ -4892,13 +4954,24 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
         menu->containerCount_ = hopper ? 5 : 9;
         menu->containerCount = menu->containerCount_;
         menu->blockEntity = be;
-    } else if (name == "minecraft:furnace" || name == "minecraft:blast_furnace" ||
-               name == "minecraft:smoker") {
+    } else if (name == "minecraft:furnace") {
         auto* be = srv_.blockEntities().getAt(x, y, z);
-        if (!be)
-            be = &srv_.blockEntities().create(menu->blockKey,
-                                              BlockEntity::Kind::Furnace);
+        if (!be) be = &srv_.blockEntities().create(menu->blockKey, BlockEntity::Kind::Furnace);
         menu->type = MenuType::Furnace;
+        menu->container = be->furnace.slots;
+        menu->containerCount = 3;
+        menu->blockEntity = be;
+    } else if (name == "minecraft:blast_furnace") {
+        auto* be = srv_.blockEntities().getAt(x, y, z);
+        if (!be) be = &srv_.blockEntities().create(menu->blockKey, BlockEntity::Kind::Furnace);
+        menu->type = MenuType::BlastFurnace;
+        menu->container = be->furnace.slots;
+        menu->containerCount = 3;
+        menu->blockEntity = be;
+    } else if (name == "minecraft:smoker") {
+        auto* be = srv_.blockEntities().getAt(x, y, z);
+        if (!be) be = &srv_.blockEntities().create(menu->blockKey, BlockEntity::Kind::Furnace);
+        menu->type = MenuType::Smoker;
         menu->container = be->furnace.slots;
         menu->containerCount = 3;
         menu->blockEntity = be;
@@ -4908,20 +4981,14 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
         menu->type = MenuType::Enchantment;
         menu->container = menu->extraSlots;
         menu->containerCount = 2;
-    } else if (name.find("anvil") != std::string::npos) {
     } else if (name == "minecraft:anvil" || name == "minecraft:chipped_anvil" ||
                name == "minecraft:damaged_anvil") {
         menu->type = MenuType::Anvil;
         menu->container = menu->extraSlots;
         menu->containerCount = 3;
     } else if (name == "minecraft:brewing_stand") {
-        menu->type = MenuType::Brewing;
-        menu->container = menu->extraSlots;
-        menu->containerCount = 5;
         auto* be = srv_.blockEntities().getAt(x, y, z);
-        if (!be)
-            be = &srv_.blockEntities().create(menu->blockKey,
-                                              BlockEntity::Kind::Brewing);
+        if (!be) be = &srv_.blockEntities().create(menu->blockKey, BlockEntity::Kind::Brewing);
         menu->type = MenuType::Brewing;
         menu->container = be->brewing.slots;
         menu->containerCount = 5;
@@ -4934,7 +5001,6 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
         menu->type = MenuType::Grindstone;
         menu->container = menu->extraSlots;
         menu->containerCount = 3;
-    } else if (name.find("smithing_table") != std::string::npos) {
     } else if (name == "minecraft:smithing_table") {
         menu->type = MenuType::Smithing;
         menu->container = menu->extraSlots;
@@ -4949,33 +5015,30 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
         menu->containerCount = 4;
     } else if (name == "minecraft:barrel") {
         auto* be = srv_.blockEntities().getAt(x, y, z);
-        if (!be) be = &srv_.blockEntities().create(menu->blockKey, BlockEntity::Kind::Chest);
+        if (!be) be = &srv_.blockEntities().create(menu->blockKey, BlockEntity::Kind::Barrel);
         menu->type = MenuType::Barrel;
         menu->container = be->chest.slots;
         menu->containerCount = 27;
         menu->blockEntity = be;
     } else if (name.find("shulker_box") != std::string::npos) {
         auto* be = srv_.blockEntities().getAt(x, y, z);
-        if (!be) be = &srv_.blockEntities().create(menu->blockKey, BlockEntity::Kind::Chest);
-        menu->type = MenuType::ShulkerBox;
-        menu->container = be->chest.slots;
-        menu->containerCount = 27;
-        if (!be)
-            be = &srv_.blockEntities().create(menu->blockKey,
-                                              BlockEntity::Kind::Barrel);
-        menu->type = MenuType::Barrel;
-        menu->container = be->chest.slots;
-        menu->containerCount = ChestData::kSlots;
-        menu->blockEntity = be;
-    } else if (name.find("shulker_box") != std::string::npos) {
-        auto* be = srv_.blockEntities().getAt(x, y, z);
-        if (!be)
-            be = &srv_.blockEntities().create(menu->blockKey,
-                                              BlockEntity::Kind::ShulkerBox);
+        if (!be) be = &srv_.blockEntities().create(menu->blockKey, BlockEntity::Kind::ShulkerBox);
         menu->type = MenuType::ShulkerBox;
         menu->container = be->chest.slots;
         menu->containerCount = ChestData::kSlots;
         menu->blockEntity = be;
+    } else if (name == "minecraft:crafter") {
+        menu->type = MenuType::Crafter;
+        menu->container = menu->extraSlots;
+        menu->containerCount = 9;
+    } else if (name == "minecraft:cartography_table") {
+        menu->type = MenuType::CartographyTable;
+        menu->container = menu->extraSlots;
+        menu->containerCount = 3;
+    } else if (name == "minecraft:lectern") {
+        menu->type = MenuType::Lectern;
+        menu->container = menu->extraSlots;
+        menu->containerCount = 1;
     } else return;
 
     // Open Screen packet — plan7 MenuLogic: proper titles for Enchantment/Anvil/Brewing etc.
@@ -4987,9 +5050,11 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
         switch(menu->type) {
             case MenuType::Chest: title="Chest"; break;
             case MenuType::Furnace: title="Furnace"; break;
+            case MenuType::BlastFurnace: title="Blast Furnace"; break;
+            case MenuType::Smoker: title="Smoker"; break;
             case MenuType::Crafting: title="Crafting"; break;
-            case MenuType::Enchantment: title="Enchant"; break;
-            case MenuType::Anvil: title="Repair & Name"; break;
+            case MenuType::Enchantment: title="Enchanting Table"; break;
+            case MenuType::Anvil: title="Anvil"; break;
             case MenuType::Brewing: title="Brewing Stand"; break;
             case MenuType::Stonecutter: title="Stonecutter"; break;
             case MenuType::Grindstone: title="Grindstone"; break;
@@ -5000,24 +5065,11 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
             case MenuType::ShulkerBox: title="Shulker Box"; break;
             case MenuType::Hopper: title="Hopper"; break;
             case MenuType::Dispenser: title="Dispenser"; break;
+            case MenuType::Crafter: title="Crafter"; break;
+            case MenuType::CartographyTable: title="Cartography Table"; break;
+            case MenuType::Lectern: title="Lectern"; break;
+            case MenuType::Merchant: title="Villager"; break;
             default: title="Container"; break;
-        const char* title = "Chest";
-        switch (menu->type) {
-        case MenuType::Chest: title = "Chest"; break;
-        case MenuType::Furnace: title = "Furnace"; break;
-        case MenuType::Crafting: title = "Crafting"; break;
-        case MenuType::Hopper: title = "Hopper"; break;
-        case MenuType::Dispenser: title = "Dispenser"; break;
-        case MenuType::Barrel: title = "Barrel"; break;
-        case MenuType::ShulkerBox: title = "Shulker Box"; break;
-        case MenuType::Enchantment: title = "Enchanting"; break;
-        case MenuType::Anvil: title = "Anvil"; break;
-        case MenuType::Brewing: title = "Brewing"; break;
-        case MenuType::Stonecutter: title = "Stonecutter"; break;
-        case MenuType::Grindstone: title = "Grindstone"; break;
-        case MenuType::Smithing: title = "Smithing"; break;
-        case MenuType::Beacon: title = "Beacon"; break;
-        case MenuType::Loom: title = "Loom"; break;
         }
         nbt::writeTextComponent(b, title);
         conn_->sendPacket(pl::sc::OpenScreen, b);
@@ -5028,8 +5080,6 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
     // Send initial ContainerSetData for menus that need it
     if (openMenu_->type == MenuType::Enchantment) {
         int bs = 0;
-        // count bookshelves within 2 blocks (simplified placeholder 0..15)
-        // use CostCalculator for 3 levels
         for (int i = 0; i < 3; ++i) {
             int cost = CostCalculator::enchantingCost(*self_, bs);
             WriteBuffer pb;
@@ -5058,7 +5108,7 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
                 try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
             }
         }
-    } else if (openMenu_->type == MenuType::Furnace) {
+    } else if (openMenu_->type == MenuType::Furnace || openMenu_->type == MenuType::BlastFurnace || openMenu_->type == MenuType::Smoker) {
         if (openMenu_->blockEntity && openMenu_->blockEntity->kind == BlockEntity::Kind::Furnace) {
             auto &f = openMenu_->blockEntity->furnace;
             const int props[4] = {f.cookProgress, f.cookTotal, f.burnTicks, f.burnDuration};
@@ -5072,7 +5122,7 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
         }
     }
 }
-}
+
 
 void Session::closeOpenMenu(bool sendPacketToClient) {
     if (!openMenu_) return;
@@ -6424,7 +6474,10 @@ void Session::onUseItemOn(ReadBuffer& in) {
                 bn == "minecraft:beacon" ||
                 bn == "minecraft:loom" ||
                 bn == "minecraft:barrel" ||
-                bn.find("shulker_box") != std::string::npos;
+                bn.find("shulker_box") != std::string::npos ||
+                bn == "minecraft:crafter" ||
+                bn == "minecraft:cartography_table" ||
+                bn == "minecraft:lectern";
             if (isMenuBlock) {
                 // Allow opening from any face if not sneaking; ensure sneaking bypass
                 if (ctx.isSneaking && !bn.empty()) {
