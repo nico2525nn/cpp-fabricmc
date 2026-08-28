@@ -301,6 +301,39 @@ void GameServer::tickDigs() {
                     (void)bev2;
                 }
                 onBlockMined(*p, oldState);
+                // plan17 §7: TNT unstable punch — prime on break if unstable or flint_and_steel (Yarn TntBlock.onBlockBreak)
+                {
+                    const std::string _bn = blockNameByState(oldState);
+                    if (_bn == "minecraft:tnt") {
+                        std::string unstableVal;
+                        for (auto& [k,v] : gen::propsOf(oldState)) if (k=="unstable") unstableVal = std::string(v);
+                        bool isUnstable = (unstableVal == "true");
+                        bool isCreative = (p->gamemode == 1);
+                        bool hasFlint = false;
+                        if (p->heldSlot >=0 && p->heldSlot <9) {
+                            const auto& _held = p->inv[36 + p->heldSlot];
+                            if (!_held.empty() && _held.name() == "minecraft:flint_and_steel") hasFlint = true;
+                        }
+                        if (hasFlint) {
+                            spawnPrimedTnt(p->digX + 0.5, p->digY + 0.5, p->digZ + 0.5, 0, 0.2, 0, 80);
+                            broadcastSound("minecraft:entity.tnt.primed", p->digX+0.5, p->digY+0.5, p->digZ+0.5, 1.f, 1.f, "blocks");
+                            if (!isCreative && p->heldSlot>=0 && p->heldSlot<9) {
+                                auto& _h = p->inv[36 + p->heldSlot];
+                                if (_h.applyDamage(1)) _h = ItemStack::air();
+                                resendInventory(*p);
+                            }
+                            p->digActive = false;
+                            broadcastDigStage(*p, -1);
+                            continue;
+                        } else if (isUnstable && !isCreative) {
+                            spawnPrimedTnt(p->digX + 0.5, p->digY + 0.5, p->digZ + 0.5, 0, 0.2, 0, 80);
+                            broadcastSound("minecraft:entity.tnt.primed", p->digX+0.5, p->digY+0.5, p->digZ+0.5, 1.f, 1.f, "blocks");
+                            p->digActive = false;
+                            broadcastDigStage(*p, -1);
+                            continue;
+                        }
+                    }
+                }
                 // durability: damage held tool if it has durability – Plan8 DamageComponent (Unbreaking)
                 if (p->gamemode == 0 && p->heldSlot >=0 && p->heldSlot <9) {
                     auto &held = p->inv[36 + p->heldSlot];
@@ -6434,6 +6467,26 @@ void Session::onUseItemOn(ReadBuffer& in) {
                     return;
                 }
             }
+        }
+    }
+
+    // ---- TNT prime via flint_and_steel / fire_charge on TNT (plan17 §7, Yarn TntBlock.onUse)
+    if (!heldItem.empty() && (heldItem.name()=="minecraft:flint_and_steel" || heldItem.name()=="minecraft:fire_charge")) {
+        std::uint16_t clickedSt = srv_.worldFor(self_->dimension).getBlock(x,y,z);
+        const gen::BlockDef* cbd = gen::blockByState(clickedSt);
+        if (cbd && std::string(cbd->name)=="minecraft:tnt") {
+            srv_.world().setBlock(x,y,z,0);
+            srv_.broadcastBlockChange(x,y,z,0);
+            srv_.spawnPrimedTnt(x+0.5, y+0.5, z+0.5, 0, 0.2, 0, 80);
+            srv_.broadcastSound("minecraft:entity.tnt.primed", x+0.5, y+0.5, z+0.5, 1.f, 1.f, "blocks");
+            if (survival) {
+                auto& mh = self_->inv[36 + self_->heldSlot];
+                if (heldItem.name()=="minecraft:flint_and_steel") { if (mh.applyDamage(1)) mh = ItemStack::air(); }
+                else { if (--mh.count <= 0) mh = ItemStack::air(); }
+                srv_.resendInventory(*self_);
+            }
+            ack(sequence);
+            return;
         }
     }
 

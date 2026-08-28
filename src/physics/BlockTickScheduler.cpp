@@ -751,16 +751,25 @@ static bool isInfiniburnBlock(const World& w, std::int32_t x, std::int32_t y, st
             uint32_t defId = static_cast<uint32_t>(nit->second);
             return it->second.count(defId)>0;
         };
-        if(checkTag("minecraft:infiniburn_overworld")) return true;
-        if(checkTag("minecraft:infiniburn_nether")) return true;
-        if(checkTag("minecraft:infiniburn_end")) return true;
+        // plan17 §6: per-dimension tag check (vanilla FireBlock isInfiniteBurn per dim)
+        std::int8_t dim = w.dimensionId();
+        if(dim==0){
+            if(checkTag("minecraft:infiniburn_overworld")) return true;
+        } else if(dim==-1){
+            if(checkTag("minecraft:infiniburn_nether")) return true;
+        } else if(dim==1){
+            if(checkTag("minecraft:infiniburn_end")) return true;
+        } else {
+            if(checkTag("minecraft:infiniburn_overworld")) return true;
+            if(checkTag("minecraft:infiniburn_nether")) return true;
+            if(checkTag("minecraft:infiniburn_end")) return true;
+        }
         if(checkTag("minecraft:infiniburn")) return true;
     }
-    // fallback when tags not loaded (ensure infiniburn for tests)
+    // fallback when tags not loaded (ensure infiniburn for tests) — per-dim vanilla defaults
     if(name=="minecraft:netherrack") return true;
     if(name=="minecraft:magma_block") return true;
-    if(name=="minecraft:bedrock") return true;
-    if(name=="minecraft:obsidian") return true;
+    if(w.dimensionId()==1 && name=="minecraft:bedrock") return true;
     return false;
 }
 static bool isSoulBaseBlock(const World& w, std::int32_t x, std::int32_t y, std::int32_t z, GameServer* srv){
