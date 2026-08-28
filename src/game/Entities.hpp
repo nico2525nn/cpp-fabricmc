@@ -234,6 +234,23 @@ inline const MobStats& mobStats(MobKind k) {
     static_assert(sizeof(table)/sizeof(table[0]) == 86, "table size must match MobKind count");
     return table[static_cast<int>(k)];
 }
+// plan17 §10 E10: size-aware slime/magma health (size²) and attack — vanilla SlimeEntity size*size, MagmaCube size+2 attack and size*3 armor
+inline MobStats mobStats(MobKind k, int slimeSize) {
+    if (k == MobKind::Slime || k == MobKind::MagmaCube) {
+        int s = 1 << std::clamp(slimeSize, 0, 2); // 1,2,4
+        float hp = static_cast<float>(s * s); // 1,4,16
+        float atk = (k == MobKind::MagmaCube) ? static_cast<float>(s + 2) : static_cast<float>(s);
+        MobStats out = mobStats(k); // base from table
+        out.maxHealth = hp;
+        out.attackDamage = atk;
+        return out;
+    }
+    return mobStats(k);
+}
+inline float slimeWidthForSize(int sz) {
+    int s = 1 << std::clamp(sz, 0, 2);
+    return 0.52f * static_cast<float>(s);
+}
 
 struct MobEntity {
     std::int32_t entityId = 0;
@@ -273,8 +290,17 @@ struct MobEntity {
         int s = (1 << std::clamp(sz,0,2));
         return static_cast<float>(s * s);
     }
-    // plan16: horse variant random (color/markings/health 15-30)
-    int horseVariant = 0; // 0..6 color * markings, randomized on spawn
+    // plan17 §10 E10: slime dimensions 0.52*size and magma armor size*3
+    static inline float slimeWidthForSize(int sz){
+        int s = (1 << std::clamp(sz,0,2));
+        return 0.52f * static_cast<float>(s);
+    }
+    static inline int magmaArmorForSize(int sz){
+        int s = (1 << std::clamp(sz,0,2));
+        return s * 3; // vanilla MagmaCube armor = size*3
+    }
+    // plan16: horse variant random (color/markings/health 15-30) — plan17 §10 E11 strict horse variant
+    int horseVariant = 0; // 0..34 variant (color 0..6 + markings 0..4), randomized on spawn
     float horseJumpStrength = 0.0f; // randomized jump
     std::int32_t hurtCooldown = 0;
     std::int32_t leashHolder = -1;

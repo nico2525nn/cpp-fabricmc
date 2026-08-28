@@ -378,8 +378,8 @@ public:
         blockTicks_->registerBehavior("minecraft:chorus_flower", std::make_unique<ChorusFlowerBehavior>());
         blockTicks_->registerBehavior("minecraft:kelp", std::make_unique<KelpBehavior>());
         blockTicks_->registerBehavior("minecraft:kelp_plant", std::make_unique<KelpBehavior>());
-        blockTicks_->registerBehavior("minecraft:seagrass", std::make_unique<KelpBehavior>());
-        blockTicks_->registerBehavior("minecraft:tall_seagrass", std::make_unique<KelpBehavior>());
+        // seagrass and tall_seagrass have no randomTick — vanilla SeagrassBlock has no randomTick (plan17 §9 B26)
+        // bone meal growth is handled separately in onUseItemOn
         blockTicks_->registerBehavior("minecraft:fire", std::make_unique<FireBehavior>());
         blockTicks_->registerBehavior("minecraft:soul_fire", std::make_unique<SoulFireBehavior>());
         blockTicks_->registerBehavior("minecraft:campfire", std::make_unique<CampfireBehavior>());
