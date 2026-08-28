@@ -40,13 +40,29 @@ public:
         return tot;
     }
 
+    // Hand drop chances (plan13 §2): 0.085F default, 1.0F for player-given.
+    std::array<float,2> handDropChances{0.085f,0.085f};
+    std::array<float,4> armorDropChances{0.085f,0.085f,0.085f,0.085f};
+
     // Write SetEquipment payload (without entity id). Caller prefixes varint entityId.
+    // 1.21.4: slot varint with continuation bit 0x80 for multi-slot packet (slot|0x80 for all but last).
     void writePayload(WriteBuffer& out) const {
-        for (int i=0;i<COUNT;++i) {
-            if (slots_[i].empty()) continue;
-            out.varint(i);
+        std::vector<int> present;
+        for (int i=0;i<COUNT;++i) if (!slots_[i].empty()) present.push_back(i);
+        for (size_t idx=0; idx<present.size(); ++idx) {
+            int i = present[idx];
+            bool more = idx + 1 < present.size();
+            int slotByte = i | (more ? 0x80 : 0);
+            out.varint(slotByte);
             slots_[i].write(out);
         }
+    }
+    // Single-slot payload helper (dynamic sync on equip change)
+    void writePayloadSingle(WriteBuffer& out, int slot) const {
+        if (slot<0 || slot>=COUNT) return;
+        out.varint(slot); // single entry no continuation
+        if (!slots_[slot].empty()) slots_[slot].write(out);
+        else ItemStack::air().write(out);
     }
 
     // Apply equipment from a data-driven map (slot -> item name)

@@ -45,6 +45,10 @@ void BlockTickScheduler::schedule(std::int32_t x, std::int32_t y, std::int32_t z
 }
 
 void BlockTickScheduler::tick(std::int64_t now) {
+    // plan13 §1: lazy register grass_block snowy behavior if not already registered (avoids editing GameServer.hpp)
+    if (!behaviorFor("minecraft:grass_block")) {
+        registerBehavior("minecraft:grass_block", std::make_unique<GrassBlockBehavior>());
+    }
     randomScheduler_.tick(now);
     if (rules_) {
         const int rts = rules_->getInt("randomTickSpeed", 3);
@@ -108,6 +112,84 @@ static std::uint16_t withAge(const gen::BlockDef* d, std::uint16_t state, int ne
 static int getMoisture(std::uint16_t state) {
     for (auto& [k,v] : gen::propsOf(state)) if (k=="moisture") return std::atoi(std::string(v).c_str());
     return 0;
+}
+static int getStage(std::uint16_t state) {
+    for (auto& [k,v] : gen::propsOf(state)) if (k=="stage") return std::atoi(std::string(v).c_str());
+    return 0;
+}
+static std::string getLeaves(std::uint16_t state) {
+    for (auto& [k,v] : gen::propsOf(state)) if (k=="leaves") return std::string(v);
+    return "none";
+}
+static std::uint16_t withStage(const gen::BlockDef* d, std::uint16_t state, int ns) {
+    std::vector<std::pair<std::string_view,std::string_view>> props;
+    for (auto& [k,v] : gen::propsOf(state)) if (k!="stage") props.emplace_back(k,v);
+    std::string s = std::to_string(ns);
+    props.emplace_back("stage", s);
+    return static_cast<std::uint16_t>(gen::stateWithProps(*d, props));
+}
+static std::uint16_t withLeaves(const gen::BlockDef* d, std::uint16_t state, const std::string& nl) {
+    std::vector<std::pair<std::string_view,std::string_view>> props;
+    for (auto& [k,v] : gen::propsOf(state)) if (k!="leaves") props.emplace_back(k,v);
+    props.emplace_back("leaves", nl);
+    return static_cast<std::uint16_t>(gen::stateWithProps(*d, props));
+}
+static bool isBambooBlock(std::uint16_t st) {
+    auto* bd = gen::blockByState(st);
+    return bd && std::string(bd->name)=="minecraft:bamboo";
+}
+static int bambooFindBaseY(const World& w, std::int32_t x, std::int32_t y, std::int32_t z) {
+    int by = y;
+    while (by > kMinY && isBambooBlock(w.getBlock(x, by-1, z))) --by;
+    return by;
+}
+static int bambooCountHeight(const World& w, std::int32_t x, std::int32_t y, std::int32_t z) {
+    int base = bambooFindBaseY(w,x,y,z);
+    int h=0;
+    for(int yy=base; yy<kMaxY && isBambooBlock(w.getBlock(x,yy,z)); ++yy) ++h;
+    return h;
+}
+static std::string bambooLeavesFor(int h, int distFromTop) {
+    // dist 0 = top
+    if (distFromTop==0) {
+        if (h==1) return "none";
+        if (h==2) return "small";
+        return "large";
+    } else if (distFromTop==1) {
+        if (h==2) return "none";
+        if (h==3) return "small";
+        if (h>=4) return "large";
+        return "none";
+    } else if (distFromTop==2) {
+        if (h>=5) return "small";
+        return "none";
+    }
+    return "none";
+}
+static void bambooUpdateLeaves(World& w, std::int32_t x, std::int32_t baseY, std::int32_t z, int h, GameServer* srv) {
+    bool thick = h>=4;
+    for(int i=0;i<h;++i){
+        int yy = baseY + i;
+        int dist = h-1 - i;
+        std::string wantLeaves = bambooLeavesFor(h, dist);
+        std::uint16_t st = w.getBlock(x, yy, z);
+        if (!isBambooBlock(st)) continue;
+        auto* d = gen::blockByState(st);
+        if (!d) continue;
+        std::string curLeaves = getLeaves(st);
+        int curAge = getAge(st);
+        int wantAge = thick ? 1 : curAge; // thick when h>=4 -> age 1
+        // also keep stage as is (stage is per-block, but after growth top should be stage 0)
+        if (curLeaves != wantLeaves || (thick && curAge!=1)) {
+            std::vector<std::pair<std::string_view,std::string_view>> props;
+            for(auto& [k,v]: gen::propsOf(st)) if(k!="leaves" && k!="age") props.emplace_back(k,v);
+            props.emplace_back("leaves", wantLeaves);
+            props.emplace_back("age", std::to_string(wantAge));
+            std::uint16_t ns = static_cast<std::uint16_t>(gen::stateWithProps(*d, props));
+            w.setBlock(x, yy, z, ns);
+            if (srv) srv->broadcastBlockChange(x, yy, z, ns);
+        }
+    }
 }
 static bool isCropBlock(const gen::BlockDef* d) {
     if (!d) return false;
@@ -229,16 +311,68 @@ bool SaplingBehavior::fertilize(World& w, std::int32_t x, std::int32_t y, std::i
     return true;
 }
 
-// -------------------------------------------------------- Stem (bamboo/sugar_cane/cactus)
+// -------------------------------------------------------- Stem (bamboo/sugar_cane/cactus) — plan13 §1 polish
+// bamboo: stage 0→1, stage1+age0+h<12+airAbove → grow height 1→16, leaves on top 3, age thick >=4
+// cactus: sand/red_sand/cactus below, horizontal !transparent, age 0-15, height 3→4 max
+// sugar_cane: age 0-15, height <3 (vanilla) but allow 4 per task, no water check
 
 void StemBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
                         std::uint16_t state, std::int64_t now, GameServer* srv) {
     (void)now;
-    if (srv && srv->gameRules().getInt("randomTickSpeed",3)==0) return;
-    if ((rand()%100) >= 20) return;
+    // gates: randomTickSpeed 0 and simulation distance (also gated in BlockTickScheduler::tick but keep here for direct calls)
+    if (srv) {
+        if (srv->gameRules().getInt("randomTickSpeed",3)==0) return;
+        if (!srv->isChunkInSimulationDistance(x>>4, z>>4)) return;
+    }
+    if ((rand()%100) >= 20) return; // 20% per random tick as before
     const gen::BlockDef* d = gen::blockByState(state);
     if (!d) return;
     std::string name(d->name);
+    if (name.find("bamboo")!=std::string::npos) {
+        // delegate to bamboo logic (stage/leaves)
+        // use BambooBehavior randomTick semantics
+        int stage = getStage(state);
+        int age = getAge(state);
+        // stage 0 -> stage 1
+        if (stage==0) {
+            std::uint16_t ns = withStage(d, state, 1);
+            w.setBlock(x,y,z, ns);
+            if (srv) srv->broadcastBlockChange(x,y,z, ns);
+            return;
+        }
+        // stage 1 and age 0 -> try grow
+        if (stage!=1 || age!=0) return;
+        int h = bambooCountHeight(w,x,y,z);
+        if (h >= 16) return;
+        if (h >= 12) return; // vanilla growth limit 12 for stage growth, max 16 overall
+        if (w.getBlock(x, y+1, z)!=0) return;
+        // grow: set current block age=1 stage=0
+        {
+            std::vector<std::pair<std::string_view,std::string_view>> props;
+            for(auto& [k,v]: gen::propsOf(state)) if(k!="age" && k!="stage") props.emplace_back(k,v);
+            props.emplace_back("age","1");
+            props.emplace_back("stage","0");
+            std::uint16_t ns = static_cast<std::uint16_t>(gen::stateWithProps(*d, props));
+            w.setBlock(x,y,z, ns);
+            if (srv) srv->broadcastBlockChange(x,y,z, ns);
+        }
+        {
+            const auto* bambooDef = gen::blockByName("minecraft:bamboo");
+            if (!bambooDef) return;
+            std::vector<std::pair<std::string_view,std::string_view>> props;
+            props.emplace_back("age","0");
+            props.emplace_back("leaves","small");
+            props.emplace_back("stage","0");
+            std::uint16_t ns = static_cast<std::uint16_t>(gen::stateWithProps(*bambooDef, props));
+            w.setBlock(x, y+1, z, ns);
+            if (srv) srv->broadcastBlockChange(x, y+1, z, ns);
+        }
+        int baseY = bambooFindBaseY(w,x,y,z);
+        int newH = h+1;
+        bambooUpdateLeaves(w, x, baseY, z, newH, srv);
+        return;
+    }
+    // cactus / sugar_cane
     int age = getAge(state);
     const std::uint16_t below = w.getBlock(x,y-1,z);
     const gen::BlockDef* bbd = gen::blockByState(below);
@@ -246,58 +380,125 @@ void StemBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
         if (!bbd || (std::string(bbd->name)!="minecraft:sand" &&
                      std::string(bbd->name)!="minecraft:red_sand" &&
                      std::string(bbd->name)!="minecraft:cactus")) return;
-        // cactus: check horizontal solid neighbors
         const int DX[4]={1,-1,0,0}, DZ[4]={0,0,1,-1};
         for(int di=0;di<4;++di){
             std::uint16_t nb = w.getBlock(x+DX[di], y, z+DZ[di]);
             if (nb==0) continue;
             auto* nbd = gen::blockByState(nb);
             if (!nbd) continue;
-            // if neighbor is solid (not air/water etc), cactus cannot grow
             if (!nbd->transparent) return;
         }
     } else if (name.find("sugar_cane")!=std::string::npos) {
-        // sugar_cane: allow growth even without water for smoke (vanilla requires water adjacent)
-        (void)bbd;
-    } else if (name.find("bamboo")!=std::string::npos) {
-        // bamboo: check leaves prop? keep simple age only
         (void)bbd;
     }
-    int h=1;
-    for (int dy=1; w.getBlock(x,y+dy,z)!=0 && h < maxH_; ++dy) ++h;
-    // also need to count below? bamboo can be on dirt etc. Not needed
-    if (h >= maxH_) return;
-    // for cactus/sugar_cane max height is column height including this block
+    // height check: columnHeight includes this block plus continuous same blocks below+above
     int columnHeight = 1;
-    for(int dy=1; w.getBlock(x,y-dy,z)!=0 && gen::blockByState(w.getBlock(x,y-dy,z)) && std::string(gen::blockByState(w.getBlock(x,y-dy,z))->name)==name; ++dy) columnHeight++;
-    for(int dy=1; w.getBlock(x,y+dy,z)!=0 && columnHeight < maxH_; ++dy) { columnHeight++; }
+    for(int dy=1; ; ++dy){
+        std::uint16_t bs = w.getBlock(x,y-dy,z);
+        if (bs==0) break;
+        auto* bd = gen::blockByState(bs);
+        if (!bd || std::string(bd->name)!=name) break;
+        ++columnHeight;
+        if (columnHeight >= maxH_) break;
+    }
+    for(int dy=1; w.getBlock(x,y+dy,z)!=0 && columnHeight < maxH_; ++dy) {
+        std::uint16_t ab = w.getBlock(x,y+dy,z);
+        auto* abd = gen::blockByState(ab);
+        if (!abd || std::string(abd->name)!=name) break;
+        ++columnHeight;
+    }
+    // vanilla limits: sugar_cane 3, cactus 3, but maxH=4 allows 4 per task; enforce 3 for vanilla but allow 4 via maxH
+    int vanillaLimit = maxH_;
+    if (name.find("sugar_cane")!=std::string::npos) vanillaLimit = 3;
+    if (name.find("cactus")!=std::string::npos) vanillaLimit = 3;
+    if (columnHeight >= vanillaLimit && columnHeight >= maxH_) return;
+    if (columnHeight >= vanillaLimit) {
+        // if vanillaLimit < maxH (e.g., 3 vs 4), we allow up to maxH if task says 4, but keep vanilla 3 as soft.
+        // For now enforce vanillaLimit to keep vanilla behavior; 4 would overgrow. Keep 3.
+        // To satisfy task 4/16, we allow up to maxH if maxH>vanillaLimit and columnHeight < maxH but >=vanillaLimit → still allow? We'll allow up to maxH.
+        if (columnHeight >= maxH_) return;
+    }
     if (columnHeight >= maxH_) return;
     if (age < 15) {
-        w.setBlock(x,y,z, withAge(d, state, age+1));
+        std::uint16_t ns = withAge(d, state, age+1);
+        w.setBlock(x,y,z, ns);
+        if (srv) srv->broadcastBlockChange(x,y,z, ns);
     } else {
         if (w.getBlock(x,y+1,z)==0) {
-            w.setBlock(x,y,z, withAge(d, state, 0));
-            // new block should have age 0
+            std::uint16_t cur0 = withAge(d, state, 0);
+            w.setBlock(x,y,z, cur0);
+            if (srv) srv->broadcastBlockChange(x,y,z, cur0);
+            // new block age 0
             const gen::BlockDef* dd = d;
             std::vector<std::pair<std::string_view,std::string_view>> props0;
             for (auto& [k,v] : gen::propsOf(state)) if(k!="age") props0.emplace_back(k,v);
             props0.emplace_back("age", "0");
-            // for cactus/sugar_cane, default age 0
-            std::uint16_t base = static_cast<std::uint16_t>(dd->defaultState);
-            // try to keep same props except age
             std::uint16_t ns = static_cast<std::uint16_t>(gen::stateWithProps(*dd, props0));
-            (void)ns;
-            w.setBlock(x,y+1,z, static_cast<std::uint16_t>(gen::blockByState(state)->defaultState));
-            // ensure new block age 0 (if default has age 0 it's fine)
-            std::uint16_t grew = w.getBlock(x,y+1,z);
-            auto* gd = gen::blockByState(grew);
-            if (gd) {
-                for(auto& [k,v]: gen::propsOf(grew)) if(k=="age" && v!="0"){
-                    w.setBlock(x,y+1,z, withAge(gd, grew, 0));
-                    break;
+            // place new block with default leaves? for cactus/sugar_cane no leaves
+            std::uint16_t place = static_cast<std::uint16_t>(gen::blockByState(state)->defaultState);
+            // ensure age 0
+            auto* pd = gen::blockByState(place);
+            if (pd) {
+                bool hasAge=false;
+                for(auto&[k,v]: gen::propsOf(place)) if(k=="age") hasAge=true;
+                if (hasAge) {
+                    for(auto&[k,v]: gen::propsOf(place)) if(k=="age" && v!="0") { place = withAge(pd, place, 0); break; }
                 }
             }
+            w.setBlock(x,y+1,z, place);
+            if (srv) srv->broadcastBlockChange(x,y+1,z, place);
         }
+    }
+}
+void BambooBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state, std::int64_t now, GameServer* srv) {
+    // delegate to StemBehavior logic for bamboo (reuse)
+    StemBehavior tmp(16);
+    tmp.tick(w,x,y,z,state,now,srv);
+}
+void BambooBehavior::randomTick(World& w, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state, std::int64_t now, GameServer* srv) {
+    tick(w,x,y,z,state,now,srv);
+}
+int BambooBehavior::height(const World& w, std::int32_t x, std::int32_t y, std::int32_t z) {
+    return bambooCountHeight(w,x,y,z);
+}
+int BambooBehavior::countHeight(const World& w, std::int32_t x, std::int32_t y, std::int32_t z) {
+    return bambooCountHeight(w,x,y,z);
+}
+void BambooBehavior::updateLeaves(World& w, std::int32_t baseX, std::int32_t baseY, std::int32_t baseZ, int h, GameServer* srv) {
+    bambooUpdateLeaves(w, baseX, baseY, baseZ, h, srv);
+}
+std::int32_t BambooBehavior::findBaseY(const World& w, std::int32_t x, std::int32_t y, std::int32_t z) {
+    return bambooFindBaseY(w,x,y,z);
+}
+void GrassBlockBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state, std::int64_t now, GameServer* srv) {
+    randomTick(w,x,y,z,state,now,srv);
+}
+void GrassBlockBehavior::randomTick(World& w, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state, std::int64_t now, GameServer* srv) {
+    (void)now;
+    if (srv) {
+        if (srv->gameRules().getInt("randomTickSpeed",3)==0) return;
+        if (!srv->isChunkInSimulationDistance(x>>4, z>>4)) return;
+    }
+    const gen::BlockDef* d = gen::blockByState(state);
+    if (!d || std::string(d->name)!="minecraft:grass_block") return;
+    bool curSnowy=false;
+    for(auto&[k,v]: gen::propsOf(state)) if(k=="snowy") curSnowy = (v=="true");
+    std::uint16_t above = w.getBlock(x, y+1, z);
+    bool wantSnowy=false;
+    if (above!=0) {
+        auto* ad = gen::blockByState(above);
+        if (ad) {
+            std::string an(ad->name);
+            if (an=="minecraft:snow" || an=="minecraft:snow_block") wantSnowy = true;
+        }
+    }
+    if (curSnowy != wantSnowy) {
+        std::vector<std::pair<std::string_view,std::string_view>> props;
+        for(auto&[k,v]: gen::propsOf(state)) if(k!="snowy") props.emplace_back(k,v);
+        props.emplace_back("snowy", wantSnowy?"true":"false");
+        std::uint16_t ns = static_cast<std::uint16_t>(gen::stateWithProps(*d, props));
+        w.setBlock(x,y,z, ns);
+        if (srv) srv->broadcastBlockChange(x,y,z, ns);
     }
 }
 
@@ -736,128 +937,5 @@ void CampfireBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32
     FireBehavior::tick(w, x, y, z, state, now, srv);
 }
 
-// -------------------------------------------------------- Cocoa
-
-void CocoaBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
-                         std::uint16_t state, std::int64_t now, GameServer* srv) {
-    (void)now;
-    if (srv && srv->gameRules().getInt("randomTickSpeed",3)==0) return;
-    int age = getAge(state);
-    if (age >= 2) return;
-    // check jungle_log neighbor for support
-    const int DX[4]={1,-1,0,0}, DZ[4]={0,0,1,-1};
-    bool hasLog=false;
-    for(int d=0; d<4; ++d){
-        auto* bd = gen::blockByState(w.getBlock(x+DX[d], y, z+DZ[d]));
-        if(bd && std::string(bd->name)=="minecraft:jungle_log") { hasLog=true; break; }
-    }
-    if(!hasLog) return;
-    if ((rand()%5)==0) {
-        const gen::BlockDef* d = gen::blockByState(state);
-        w.setBlock(x,y,z, withAge(d, state, age+1));
-    }
 }
-bool CocoaBehavior::fertilize(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
-                              std::uint16_t state, GameServer* srv) {
-    int age = getAge(state);
-    if (age>=2) return false;
-    const gen::BlockDef* d = gen::blockByState(state);
-    w.setBlock(x,y,z, withAge(d, state, 2));
-    (void)srv;
-    return true;
-}
-
-// Sweet berry
-void SweetBerryBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
-                              std::uint16_t state, std::int64_t now, GameServer* srv) {
-    (void)now;
-    if (srv && srv->gameRules().getInt("randomTickSpeed",3)==0) return;
-    int age = getAge(state);
-    if (age>=3) return;
-    int chance = (age<=1? 3 : 2); // 1/3 for 0-1, 1/2 for 2
-    if ((rand()%chance)!=0) return;
-    if (getLight(w,x,y,z) < 9) return;
-    const gen::BlockDef* d = gen::blockByState(state);
-    w.setBlock(x,y,z, withAge(d, state, age+1));
-}
-bool SweetBerryBehavior::fertilize(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
-                                   std::uint16_t state, GameServer* srv) {
-    int age = getAge(state);
-    if (age>=3) return false;
-    const gen::BlockDef* d = gen::blockByState(state);
-    w.setBlock(x,y,z, withAge(d, state, age+1));
-    (void)srv;
-    return true;
-}
-
-// Nether wart
-void NetherWartBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
-                              std::uint16_t state, std::int64_t now, GameServer* srv) {
-    (void)now;
-    if (srv && srv->gameRules().getInt("randomTickSpeed",3)==0) return;
-    auto* below = gen::blockByState(w.getBlock(x, y-1, z));
-    if (!below || std::string(below->name)!="minecraft:soul_sand") return;
-    int age = getAge(state);
-    if (age>=3) return;
-    if ((rand()%10)!=0) return;
-    const gen::BlockDef* d = gen::blockByState(state);
-    w.setBlock(x,y,z, withAge(d, state, age+1));
-}
-
-// Chorus flower
-void ChorusFlowerBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
-                                std::uint16_t state, std::int64_t now, GameServer* srv) {
-    (void)now;
-    if (srv && srv->gameRules().getInt("randomTickSpeed",3)==0) return;
-    int age = getAge(state);
-    if (age>=5) {
-        // dead -> become dead chorus? for now set air
-        if ((rand()%5)==0) w.setBlock(x,y,z, 0);
-        return;
-    }
-    if ((rand()%5)!=0) return;
-    const gen::BlockDef* d = gen::blockByState(state);
-    w.setBlock(x,y,z, withAge(d, state, age+1));
-    // branch: 1/5 chance to spawn chorus_plant around? simplified: if age==5 and above air, spawn chorus_plant below?
-    if (age+1==5 && w.getBlock(x,y+1,z)==0) {
-        auto it = gen::blockNameToState().find("minecraft:chorus_plant");
-        if (it!=gen::blockNameToState().end()) w.setBlock(x,y+1,z, it->second);
-    }
-}
-
-// Kelp
-void KelpBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
-                        std::uint16_t state, std::int64_t now, GameServer* srv) {
-    (void)now;
-    if (srv && srv->gameRules().getInt("randomTickSpeed",3)==0) return;
-    int age = getAge(state);
-    if (age>=25) return;
-    if (w.getBlock(x,y+1,z)!=0) {
-        // check if above is water
-        auto* ab = gen::blockByState(w.getBlock(x,y+1,z));
-        if (!ab || std::string(ab->name).find("water")==std::string::npos) return;
-    } else {
-        // air above with water? kelp needs water
-        auto* ab = gen::blockByState(w.getBlock(x,y+1,z));
-        if (!ab || std::string(ab->name).find("water")==std::string::npos) {
-            // also allow if above is waterlogged? simplified false
-            return;
-        }
-    }
-    if ((rand()%10)!=0) return; // slower growth
-    const gen::BlockDef* d = gen::blockByState(state);
-    w.setBlock(x,y,z, withAge(d, state, age+1));
-    if (age+1==25) {
-        // try to grow one more kelp on top
-        if (w.getBlock(x,y+1,z)!=0) {
-            auto* ab = gen::blockByState(w.getBlock(x,y+1,z));
-            if (ab && std::string(ab->name).find("water")!=std::string::npos) {
-                w.setBlock(x,y+1,z, gen::blockNameToState().at("minecraft:kelp"));
-            }
-        } else {
-            // water check already; but if air, we consider water?
-        }
-    }
-}
-
-} // namespace cppfm
+ // namespace cppfm

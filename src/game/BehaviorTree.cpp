@@ -16,6 +16,11 @@ BTStatus IsHurtCondition::tick(MobEntity& m, AiContext& ctx, std::int64_t) {
 BTStatus IsPlayerLookingCondition::tick(MobEntity& m, AiContext& ctx, std::int64_t) {
     Player* p = ctx.nearestPlayer;
     if (!p) return BTStatus::Failure;
+    if (p->gamemode==1 || p->gamemode==3) return BTStatus::Failure;
+    // carved_pumpkin helmet negates stare
+    for(int i=5;i<=8;i++) if(i>=0 && i < (int)p->inv.size() && !p->inv[i].empty()){
+        if(p->inv[i].name()=="minecraft:carved_pumpkin") return BTStatus::Failure;
+    }
     double dx = m.x - p->x;
     double dy = (m.y+1.6) - (p->y + 1.62);
     double dz = m.z - p->z;
@@ -65,12 +70,50 @@ BTStatus AttackPlayerAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now
 BTStatus TeleportRandomAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (now - m.lastTeleportTick < 20) return BTStatus::Failure;
     if (!ctx.world) return BTStatus::Failure;
-    for (int attempt=0; attempt<16; ++attempt) {
+    // plan13 §6: 32-block radius, 64 attempts, y = m.y + rand(32)-16
+    for (int attempt=0; attempt<64; ++attempt) {
         double nx = m.x + (rand()/(double)RAND_MAX*64 -32);
         double nz = m.z + (rand()/(double)RAND_MAX*64 -32);
+        double ny = m.y + (rand()/(double)RAND_MAX*32 -16);
         int ix = (int)std::floor(nx);
         int iz = (int)std::floor(nz);
+        int iy = (int)std::floor(ny);
         ctx.world->generateChunkIfMissing(ix>>4, iz>>4);
+        // try around iy first, fall back to column search if needed
+        for (int dy=-4; dy<=4; ++dy) {
+            int tryY = iy + dy;
+            if (tryY < kMinY || tryY > kMinY+320) continue;
+            std::uint16_t a1 = ctx.world->getBlock(ix, tryY, iz);
+            std::uint16_t a2 = ctx.world->getBlock(ix, tryY+1, iz);
+            std::uint16_t below = ctx.world->getBlock(ix, tryY-1, iz);
+            if (a1==0 && a2==0 && below!=0) {
+                double ox=m.x, oy=m.y, oz=m.z;
+                m.x = ix + 0.5; m.z = iz + 0.5; m.y = tryY + 0.5;
+                m.lastTeleportTick = now;
+                if (ctx.srv) {
+                    ctx.srv->broadcastSound("minecraft:entity.enderman.teleport", m.x,m.y,m.z,1.f,1.f,"hostile");
+                    // EntityTeleport 0x77 to all tracking
+                    WriteBuffer tp;
+                    tp.varint(m.entityId);
+                    tp.f64(m.x); tp.f64(m.y); tp.f64(m.z);
+                    tp.f32(m.yaw); tp.f32(0); tp.boolean(true);
+                    ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::EntityTeleport, tp);
+                    // portal particles
+                    for(int i=0;i<8;i++){
+                        WriteBuffer pt;
+                        pt.boolean(true); pt.boolean(false);
+                        pt.f64(ox + (rand()/(double)RAND_MAX-0.5)*1.5);
+                        pt.f64(oy + rand()/(double)RAND_MAX*2.0);
+                        pt.f64(oz + (rand()/(double)RAND_MAX-0.5)*1.5);
+                        pt.f32(0);pt.f32(0);pt.f32(0);pt.f32(0.1f);
+                        pt.varint(15); // portal
+                        ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::WorldParticles, pt);
+                    }
+                }
+                return BTStatus::Success;
+            }
+        }
+        // fallback column search if not found around ny
         int col = 4;
         bool found=false;
         ctx.world->withChunk(ix>>4, iz>>4,[&](const Chunk& c){
@@ -82,9 +125,18 @@ BTStatus TeleportRandomAction::tick(MobEntity& m, AiContext& ctx, std::int64_t n
         std::uint16_t a2 = ctx.world->getBlock(ix, feetY+1, iz);
         std::uint16_t below = ctx.world->getBlock(ix, feetY-1, iz);
         if (a1==0 && a2==0 && below!=0) {
+            double ox=m.x, oy=m.y, oz=m.z;
             m.x = ix + 0.5; m.z = iz + 0.5; m.y = feetY + 1.0;
             m.lastTeleportTick = now;
-            if (ctx.srv) ctx.srv->broadcastSound("minecraft:entity.enderman.teleport", m.x,m.y,m.z,1.f,1.f,"hostile");
+            if (ctx.srv) {
+                ctx.srv->broadcastSound("minecraft:entity.enderman.teleport", m.x,m.y,m.z,1.f,1.f,"hostile");
+                WriteBuffer tp;
+                tp.varint(m.entityId);
+                tp.f64(m.x); tp.f64(m.y); tp.f64(m.z);
+                tp.f32(m.yaw); tp.f32(0); tp.boolean(true);
+                ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::EntityTeleport, tp);
+            }
+            (void)ox;(void)oy;(void)oz;
             return BTStatus::Success;
         }
     }
@@ -94,25 +146,75 @@ BTStatus TeleportRandomAction::tick(MobEntity& m, AiContext& ctx, std::int64_t n
 BTStatus PickupBlockAction::tick(MobEntity& m, AiContext& ctx, std::int64_t) {
     if (m.carriedBlock !=0) return BTStatus::Failure;
     if (!ctx.world) return BTStatus::Failure;
-    int bx=(int)std::floor(m.x), by=(int)std::floor(m.y), bz=(int)std::floor(m.z);
-    std::uint16_t st = ctx.world->getBlock(bx, by-1, bz);
-    if (st==0) st = ctx.world->getBlock(bx, by, bz);
-    if (st==0) return BTStatus::Failure;
-    auto* def = gen::blockByState(st);
-    if (!def) return BTStatus::Failure;
-    std::string_view n = def->name;
-    if (n=="minecraft:bedrock"||n=="minecraft:obsidian") return BTStatus::Failure;
-    m.carriedBlock = st;
-    ctx.world->setBlock(bx, by-1, bz, 0);
-    if (ctx.srv) ctx.srv->broadcastBlockChange(bx, by-1, bz, 0);
-    return BTStatus::Success;
+    // plan13 §6: 1/1000 chance per tick, only holdable blocks (grass/dirt/sand/gravel etc.)
+    if (rand()%1000 != 0) return BTStatus::Failure;
+    // scan nearby 2-radius for holdable blocks (enderman_holdable tag ~70, simplified to 4 common + generic)
+    static const char* holdable[] = {
+        "minecraft:grass_block","minecraft:dirt","minecraft:coarse_dirt","minecraft:podzol","minecraft:rooted_dirt",
+        "minecraft:sand","minecraft:red_sand","minecraft:gravel","minecraft:clay","minecraft:soul_sand","minecraft:soul_soil",
+        "minecraft:snow","minecraft:snow_block","minecraft:pumpkin","minecraft:melon","minecraft:brown_mushroom","minecraft:red_mushroom",
+        "minecraft:cactus","minecraft:tnt","minecraft:mycelium"
+    };
+    auto isHoldable = [&](std::string_view n)->bool{
+        for(auto h: holdable) if(n==h) return true;
+        // fallback: allow any non-hard hardness < 0.5 and not bedrock/obsidian
+        if(n=="minecraft:bedrock"||n=="minecraft:obsidian") return false;
+        return false;
+    };
+    // try nearby positions
+    for(int tries=0; tries<8; ++tries){
+        int bx=(int)std::floor(m.x)+(rand()%5-2);
+        int by=(int)std::floor(m.y)+(rand()%3-1);
+        int bz=(int)std::floor(m.z)+(rand()%5-2);
+        std::uint16_t st = ctx.world->getBlock(bx, by, bz);
+        if (st==0) continue;
+        auto* def = gen::blockByState(st);
+        if (!def) continue;
+        if (!isHoldable(def->name)) continue;
+        m.carriedBlock = st;
+        ctx.world->setBlock(bx, by, bz, 0);
+        if (ctx.srv) {
+            ctx.srv->broadcastBlockChange(bx, by, bz, 0);
+            // SetEntityMetadata for carriedBlock (index 15 simplified, boolean+state)
+            WriteBuffer md;
+            md.varint(m.entityId);
+            md.u8(15); md.varint(0); md.varint((int)st);
+            md.u8(255);
+            ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);
+        }
+        return BTStatus::Success;
+    }
+    return BTStatus::Failure;
 }
 
-BTStatus StareAction::tick(MobEntity& m, AiContext& ctx, std::int64_t) {
+BTStatus StareAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     Player* p = ctx.nearestPlayer;
     if (!p) return BTStatus::Failure;
+    // plan13 §6: stare anger – check helmet not carved_pumpkin, not creative/spectator
+    if (p->gamemode==1 || p->gamemode==3) return BTStatus::Failure;
+    bool hasPumpkin=false;
+    if (p->inv.size()>=9) {
+        // head slot 8 is helmet (player inv 5-8 armor, 8 = head)
+        // we check all armor slots for pumpkin to be safe
+        for(int i=5;i<=8;i++) if(!p->inv[i].empty()){
+            std::string n = p->inv[i].name();
+            if(n=="minecraft:carved_pumpkin") {hasPumpkin=true;break;}
+        }
+    }
+    if (hasPumpkin) return BTStatus::Failure;
     double dx = p->x - m.x, dz = p->z - m.z;
     m.yaw = (float)(std::atan2(dz,dx)*180.0/3.1415926535 - 90.0);
+    // set anger
+    m.angerTargetEntityId = p->entityId;
+    m.angryUntilTick = now + 100 + rand()%100;
+    if (ctx.srv) {
+        // metadata angry flag (index 15? simplified)
+        WriteBuffer md;
+        md.varint(m.entityId);
+        md.u8(15); md.varint(0); md.varint(1);
+        md.u8(255);
+        ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);
+    }
     return BTStatus::Success;
 }
 

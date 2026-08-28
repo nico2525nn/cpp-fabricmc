@@ -47,12 +47,27 @@ public:
         return 0.25f * (lvl+1);
     }
 
-    // Efficiency: mining speed multiplier (vanilla: lvl^2 +1)
+    // Efficiency: mining speed multiplier (vanilla: lvl^2 +1, plan13 §5)
     static float getEfficiencyMultiplier(const ItemStack& stack) {
-        int lvl = std::max(stack.enchantLevel("efficiency"), stack.enchantLevel("minecraft:efficiency"));
+        int lvl = efficiencyLevel(stack);
         if (lvl<=0) return 1.f;
-        return 1.f + float(lvl*lvl + 1) * 0.3f; // simplified
+        return 1.f + float(lvl*lvl + 1); // vanilla: base * (1 + lvl^2+1)
     }
+    static int efficiencyLevel(const ItemStack& stack) {
+        return std::max(stack.enchantLevel("efficiency"), stack.enchantLevel("minecraft:efficiency"));
+    }
+    static int frostWalkerLevel(const ItemStack& stack) {
+        return std::max(stack.enchantLevel("frost_walker"), stack.enchantLevel("minecraft:frost_walker"));
+    }
+    static int soulSpeedLevel(const ItemStack& stack) {
+        return std::max(stack.enchantLevel("soul_speed"), stack.enchantLevel("minecraft:soul_speed"));
+    }
+    static int swiftSneakLevel(const ItemStack& stack) {
+        return std::max(stack.enchantLevel("swift_sneak"), stack.enchantLevel("minecraft:swift_sneak"));
+    }
+    static float miningSpeedBonus(int lvl){ return lvl==0?1.0f: 1.0f + float(lvl*lvl + 1); }
+    static float soulSpeedBonus(int lvl){ return 1.0f + 0.105f*float(lvl); }
+    static float swiftSneakFactor(int lvl){ return 0.3f + 0.08f*float(lvl); } // plan13 §5 simplified
 
     // Fortune level
     static int getFortune(const ItemStack& stack) { return stack.fortuneLevel(); }
