@@ -496,11 +496,16 @@ public:
                 }
             });
         persist_->loadLevelData();
-        // sync persistence's worldborder/difficulty (file may have overridden)
+        // sync persistence's worldborder/difficulty (file may have overridden) — include lerp
         difficulty_ = persist_->difficulty();
         worldBorderDiameter_ = persist_->worldBorderDiameter();
         worldBorderCenterX_ = persist_->worldBorderCenterX();
         worldBorderCenterZ_ = persist_->worldBorderCenterZ();
+        worldBorderLerpFrom_ = persist_->worldBorderLerpFrom();
+        worldBorderLerpTo_ = persist_->worldBorderLerpTo();
+        worldBorderLerpMs_ = persist_->worldBorderLerpMs();
+        worldBorderLerpRemainingTicks_ = persist_->worldBorderLerpRemainingTicks();
+        worldBorderLerpTotalTicks_ = worldBorderLerpRemainingTicks_;
         // plan5 §1: spawn-chunk loader — generate a 5x5 area around spawn with ChunkTicket SPAWN level 31 (ForcedChunks NBT)
         {
             const auto sp = world_.spawnPoint();
@@ -695,6 +700,8 @@ public:
     void onMobKilledBy(Player& p, MobKind kind);
     // Explosion (creeper / TNT): destroys blocks & damages entities.
     void explodeAt(double x, double y, double z, float power);
+    void spawnPrimedTnt(double x,double y,double z,double vx,double vy,double vz,int fuse=80);
+    void tntTick();
     // Lightning strike: charges creepers, spawns bolt visuals (plan8)
     void strikeLightning(double x, double y, double z);
     // Direct-named sound + particle broadcast helpers.
@@ -833,6 +840,7 @@ private:
     std::vector<std::shared_ptr<ItemEntity>> itemDrops_;
     std::vector<std::shared_ptr<XpOrbEntity>> xpOrbs_;
     std::vector<std::shared_ptr<ProjectileEntity>> projectiles_;
+    std::vector<std::shared_ptr<TntEntity>> tntEntities_;
     std::unordered_map<std::int64_t, bool> dispenserPower_;
     std::int64_t tickNo_ = 0;
     std::int64_t timeOffset_ = 0;
@@ -859,21 +867,49 @@ private:
     brigadier::CommandDispatcher commands_;          // Brigadier tree
     GameRuleManager gamerules_;
     std::string difficulty_ = "normal";
-    double worldBorderDiameter_ = 29999984;   // vanilla default
+    double worldBorderDiameter_ = 59999968;   // vanilla default 5.9999968E7
     double worldBorderCenterX_ = 0, worldBorderCenterZ_ = 0;
+    double worldBorderLerpFrom_ = 59999968;
+    double worldBorderLerpTo_ = 59999968;
+    std::int64_t worldBorderLerpRemainingTicks_ = 0;
+    std::int64_t worldBorderLerpTotalTicks_ = 0;
+    std::int64_t worldBorderLerpMs_ = 0;
     int spawnProtection_ = 16;               // server.properties spawn-protection (default 16)
     std::unordered_set<std::string> ops_;    // ops.json / op list
     std::int32_t teleportCounterForTest_ = 1;
 
 public:
-    // plan15 strict: expose difficulty for hunger starvation thresholds
-    std::string difficulty() const { return difficulty_; }
-    std::string difficultyPublic() const { return difficulty_; }
-    // WorldBorder helpers (plan6 §10)
+    // WorldBorder helpers (plan6 §10) — diameter 59999968, Chebyshev square
     bool isInsideBorder(double x, double z) const {
         double half = worldBorderDiameter_ * 0.5;
         return std::abs(x - worldBorderCenterX_) <= half && std::abs(z - worldBorderCenterZ_) <= half;
     }
+    void setWorldBorderLerp(double from, double to, std::int64_t remainingTicks) {
+        worldBorderLerpFrom_ = from; worldBorderLerpTo_ = to;
+        worldBorderLerpRemainingTicks_ = remainingTicks;
+        worldBorderLerpTotalTicks_ = remainingTicks;
+        worldBorderLerpMs_ = remainingTicks * 50;
+        worldBorderDiameter_ = (remainingTicks <= 0) ? to : from;
+    }
+    bool tickWorldBorder() {
+        if (worldBorderLerpRemainingTicks_ <= 0) return false;
+        --worldBorderLerpRemainingTicks_;
+        worldBorderLerpMs_ = worldBorderLerpRemainingTicks_ * 50;
+        if (worldBorderLerpRemainingTicks_ <= 0) {
+            worldBorderDiameter_ = worldBorderLerpTo_;
+            return true;
+        }
+        double prog = 1.0 - double(worldBorderLerpRemainingTicks_) / double(worldBorderLerpTotalTicks_ > 0 ? worldBorderLerpTotalTicks_ : 1);
+        if (prog < 0) prog = 0;
+        if (prog > 1) prog = 1;
+        worldBorderDiameter_ = worldBorderLerpFrom_ + (worldBorderLerpTo_ - worldBorderLerpFrom_) * prog;
+        return true;
+    }
+    double worldBorderDamagePerBlock() const { return 0.2; }
+    double worldBorderSafeZone() const { return 5.0; }
+    double worldBorderDamageBuffer() const { return 5.0; }
+    std::string difficulty() const { return difficulty_; }
+    std::string difficultyPublic() const { return difficulty_; }
     bool isSpawnProtected(std::int32_t x, std::int32_t z) const {
         if (spawnProtection_ <= 0) return false;
         auto sp = world_.spawnPoint();

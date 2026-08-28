@@ -511,9 +511,9 @@ void GameServer::tickOnce() {
     boatsTick(); // plan14 §5: boat friction 0.9 water / 0.6 land, buoyancy 0.04, max 0.4
     mark('P');
     projectilesTick();
-    tntTick();
     mark('I');
     itemsTick();
+    tntTick();
     mark('T');
 
     // periodic time sync every 20 ticks (1s); frozen when doDaylightCycle off
@@ -769,10 +769,10 @@ void GameServer::survivalTick() {
             if (inSnow) {
                 p->freezeTicks = std::min(300, p->freezeTicks + 1);
                 if (p->freezeTicks >= 140) {
-                    if (gamerules_.getBool("freezeDamage") && tickNo_ % 40 == 0) applyDamage(*p, 1.f, "freeze");
+                    if (gamerules_.getBool("freezeDamage") && tickNo_ % 20 == 0) applyDamage(*p, 1.f, "freeze");
                 }
             } else {
-                p->freezeTicks = std::max(0, p->freezeTicks - 2);
+                p->freezeTicks = std::max(0, p->freezeTicks - 1);
             }
         }
         // ---- fire / lava 77-78
@@ -1617,12 +1617,10 @@ void GameServer::spawnPrimedTnt(double x,double y,double z,double vx,double vy,d
         std::lock_guard lk(entsMtx_);
         tntEntities_.push_back(t);
     }
-    // broadcast SpawnEntity for primed TNT (type id 125)
     WriteBuffer b;
     b.varint(t->entityId);
     static std::uint8_t zero[16]={};
     b.uuid(zero);
-    // resolve TNT entity type id via registry
     int typeId = 125;
     auto it = gen::entityTypeIdByName().find("minecraft:tnt");
     if(it!=gen::entityTypeIdByName().end()) typeId = it->second;
@@ -1639,21 +1637,18 @@ void GameServer::tntTick(){
     {
         std::lock_guard lk(entsMtx_);
         for(auto &t: tntEntities_){
-            // gravity and motion
-            t->vy -= 0.04; // gravity
+            t->vy -= 0.04;
             t->x += t->vx;
             t->y += t->vy;
             t->z += t->vz;
             t->vx *= 0.98; t->vy *= 0.98; t->vz *= 0.98;
             if(t->y < kMinY) t->y = kMinY;
-            // ground friction if on ground (simple check block below)
             if(world_.getBlock((int)std::floor(t->x), (int)std::floor(t->y-0.1), (int)std::floor(t->z))!=0){
                 t->vx *= 0.7; t->vz *= 0.7;
                 if(t->vy < 0) t->vy = -t->vy * 0.5;
             }
             if(--t->fuse <= 0) toExplode.push_back(t);
             ++t->ageTicks;
-            // broadcast entity position via teleport? simplified: use EntityTeleport every 4 ticks
             if(t->ageTicks % 4 == 0){
                 WriteBuffer tp;
                 tp.varint(t->entityId);
@@ -2032,9 +2027,9 @@ void GameServer::hoppersTick() {
                             // also check for TNT, campfire, portal
                             bool handledFS=false;
                             if(td && std::string(td->name)=="minecraft:tnt"){
-                                // prime TNT dispenser fuse 80 (strict)
+                                // prime TNT
+                                explodeAt(tx+0.5, ty+0.5, tz+0.5, 4.f);
                                 world_.setBlock(tx,ty,tz,0); broadcastBlockChange(tx,ty,tz,0);
-                                spawnPrimedTnt(tx+0.5, ty+0.5, tz+0.5, 0, 0.2, 0, 80);
                                 handledFS=true;
                             } else if(td && (std::string(td->name)=="minecraft:campfire" || std::string(td->name)=="minecraft:soul_campfire")){
                                 std::string lit=getPropStr(tSt,"lit");
@@ -2085,10 +2080,7 @@ void GameServer::hoppersTick() {
                                 handled=true;
                             }
                         } else if (iname=="minecraft:tnt" || iname.find("tnt") != std::string::npos) {
-                            double vx = dx*0.3 + (rand()/(double)RAND_MAX -0.5)*0.1;
-                            double vz = dz*0.3 + (rand()/(double)RAND_MAX -0.5)*0.1;
-                            double vy = dy*0.3 + 0.2;
-                            spawnPrimedTnt(sx, sy, sz, vx, vy, vz, 80);
+                            explodeAt(x + dx + 0.5, y + dy + 0.5, z + dz + 0.5, 4.f);
                             if(--s.count<=0) s=ItemStack::air();
                             handled=true;
                         } else {
@@ -2818,7 +2810,6 @@ void Session::handleLogin() {
         er.raw(srv_.loginKeys_.publicDer.data(), srv_.loginKeys_.publicDer.size());
         er.varint(16);
         er.raw(srv_.loginVerifyToken_.data(), 16);
-        er.boolean(true);                              // shouldAuthenticate 1.21.4
         conn_->sendPacket(proto::lo::sc::EncryptionRequest, er);
 
         auto pbody = conn_->readFrame();
@@ -2942,22 +2933,6 @@ void Session::handleConfiguration() {
     // 0. resource pack (plan3 Resource Pack) — configured via server.properties
     if (!srv_.config().resourcePackUrl.empty()) {
         WriteBuffer b;
-        // pack UUID (1.21.4 packet_common_add_resource_pack requires uuid first)
-        std::array<std::uint8_t,16> packUuid{};
-        // deterministic UUID from url hash (first 16 bytes of SHA1)
-        {
-            unsigned char md[20];
-            unsigned int ml=0;
-            EVP_MD_CTX* mm = EVP_MD_CTX_new();
-            EVP_DigestInit_ex(mm, EVP_sha1(), nullptr);
-            EVP_DigestUpdate(mm, srv_.config().resourcePackUrl.data(), srv_.config().resourcePackUrl.size());
-            EVP_DigestFinal_ex(mm, md, &ml);
-            EVP_MD_CTX_free(mm);
-            for(int i=0;i<16;i++) packUuid[i]=md[i];
-            packUuid[6] = (packUuid[6] & 0x0F) | 0x50; // version 5
-            packUuid[8] = (packUuid[8] & 0x3F) | 0x80; // variant
-        }
-        b.uuid(packUuid.data());
         b.string(srv_.config().resourcePackUrl);
         b.string(srv_.config().resourcePackSha1);
         b.boolean(srv_.config().resourcePackForced);
@@ -3175,9 +3150,24 @@ static WriteBuffer makeWorldState(const ServerConfig& c) {
     return w;
 }
 
+// Minimal command tree: root -> /help, /ping  (literals only)
+static void writeDeclareCommands(WriteBuffer& b) {
+    const char* literals[] = {"help", "ping"};
+    b.varint(3);                       // node count
+    // node0: root, children = {1,2}
+    b.u8(0x00);
+    b.varint(2); b.varint(1); b.varint(2);
+    for (const char* name : literals) {
+        b.u8(0x01 | 0x04);             // literal | executable
+        b.varint(0);                   // no children
+        b.string(name);
+    }
+    b.varint(0);                       // root index
+}
+
 void Session::sendDeclareCommands() {
     WriteBuffer b;
-    srv_.commands().writeDeclareCommands(b);
+    writeDeclareCommands(b);
     conn_->sendPacket(pl::sc::DeclareCommands, b);
 }
 
@@ -4517,7 +4507,8 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
         menu->containerCount_ = hopper ? 5 : 9;
         menu->containerCount = menu->containerCount_;
         menu->blockEntity = be;
-    } else if (name == "minecraft:furnace") {
+    } else if (name == "minecraft:furnace" || name == "minecraft:blast_furnace" ||
+               name == "minecraft:smoker") {
         auto* be = srv_.blockEntities().getAt(x, y, z);
         if (!be)
             be = &srv_.blockEntities().create(menu->blockKey,
@@ -4526,44 +4517,22 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
         menu->container = be->furnace.slots;
         menu->containerCount = 3;
         menu->blockEntity = be;
-    } else if (name == "minecraft:blast_furnace") {
-        auto* be = srv_.blockEntities().getAt(x, y, z);
-        if (!be)
-            be = &srv_.blockEntities().create(menu->blockKey,
-                                              BlockEntity::Kind::Furnace);
-        menu->type = MenuType::BlastFurnace;
-        menu->container = be->furnace.slots;
-        menu->containerCount = 3;
-        menu->blockEntity = be;
-    } else if (name == "minecraft:smoker") {
-        auto* be = srv_.blockEntities().getAt(x, y, z);
-        if (!be)
-            be = &srv_.blockEntities().create(menu->blockKey,
-                                              BlockEntity::Kind::Furnace);
-        menu->type = MenuType::Smoker;
-        menu->container = be->furnace.slots;
-        menu->containerCount = 3;
-        menu->blockEntity = be;
     } else if (name == "minecraft:crafting_table") {
         menu->type = MenuType::Crafting;
-    } else if (name == "minecraft:crafter") {
-        menu->type = MenuType::Crafter;
-        menu->container = menu->extraSlots;
-        menu->containerCount = 9;
-    } else if (name == "minecraft:cartography_table") {
-        menu->type = MenuType::CartographyTable;
-        menu->container = menu->extraSlots;
-        menu->containerCount = 3;
     } else if (name == "minecraft:enchanting_table") {
         menu->type = MenuType::Enchantment;
         menu->container = menu->extraSlots;
         menu->containerCount = 2;
+    } else if (name.find("anvil") != std::string::npos) {
     } else if (name == "minecraft:anvil" || name == "minecraft:chipped_anvil" ||
                name == "minecraft:damaged_anvil") {
         menu->type = MenuType::Anvil;
         menu->container = menu->extraSlots;
         menu->containerCount = 3;
     } else if (name == "minecraft:brewing_stand") {
+        menu->type = MenuType::Brewing;
+        menu->container = menu->extraSlots;
+        menu->containerCount = 5;
         auto* be = srv_.blockEntities().getAt(x, y, z);
         if (!be)
             be = &srv_.blockEntities().create(menu->blockKey,
@@ -4580,6 +4549,7 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
         menu->type = MenuType::Grindstone;
         menu->container = menu->extraSlots;
         menu->containerCount = 3;
+    } else if (name.find("smithing_table") != std::string::npos) {
     } else if (name == "minecraft:smithing_table") {
         menu->type = MenuType::Smithing;
         menu->container = menu->extraSlots;
@@ -4592,16 +4562,25 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
         menu->type = MenuType::Loom;
         menu->container = menu->extraSlots;
         menu->containerCount = 4;
-    } else if (name == "minecraft:lectern") {
-        menu->type = MenuType::Lectern;
-        menu->container = menu->extraSlots;
-        menu->containerCount = 1;
     } else if (name == "minecraft:barrel") {
         auto* be = srv_.blockEntities().getAt(x, y, z);
-        if (!be) be = &srv_.blockEntities().create(menu->blockKey, BlockEntity::Kind::Barrel);
+        if (!be) be = &srv_.blockEntities().create(menu->blockKey, BlockEntity::Kind::Chest);
         menu->type = MenuType::Barrel;
         menu->container = be->chest.slots;
         menu->containerCount = 27;
+        menu->blockEntity = be;
+    } else if (name.find("shulker_box") != std::string::npos) {
+        auto* be = srv_.blockEntities().getAt(x, y, z);
+        if (!be) be = &srv_.blockEntities().create(menu->blockKey, BlockEntity::Kind::Chest);
+        menu->type = MenuType::ShulkerBox;
+        menu->container = be->chest.slots;
+        menu->containerCount = 27;
+        if (!be)
+            be = &srv_.blockEntities().create(menu->blockKey,
+                                              BlockEntity::Kind::Barrel);
+        menu->type = MenuType::Barrel;
+        menu->container = be->chest.slots;
+        menu->containerCount = ChestData::kSlots;
         menu->blockEntity = be;
     } else if (name.find("shulker_box") != std::string::npos) {
         auto* be = srv_.blockEntities().getAt(x, y, z);
@@ -4614,7 +4593,7 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
         menu->blockEntity = be;
     } else return;
 
-    // Open Screen packet — vanilla titles per MenuType
+    // Open Screen packet — plan7 MenuLogic: proper titles for Enchantment/Anvil/Brewing etc.
     {
         WriteBuffer b;
         b.varint(menu->windowId);
@@ -4623,30 +4602,37 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
         switch(menu->type) {
             case MenuType::Chest: title="Chest"; break;
             case MenuType::Furnace: title="Furnace"; break;
-            case MenuType::BlastFurnace: title="Blast Furnace"; break;
-            case MenuType::Smoker: title="Smoker"; break;
             case MenuType::Crafting: title="Crafting"; break;
-            case MenuType::Crafter: title="Crafter"; break;
-            case MenuType::CartographyTable: title="Cartography Table"; break;
-            case MenuType::Enchantment: title="Enchanting"; break;
-            case MenuType::Anvil: title="Anvil"; break;
+            case MenuType::Enchantment: title="Enchant"; break;
+            case MenuType::Anvil: title="Repair & Name"; break;
             case MenuType::Brewing: title="Brewing Stand"; break;
             case MenuType::Stonecutter: title="Stonecutter"; break;
             case MenuType::Grindstone: title="Grindstone"; break;
             case MenuType::Smithing: title="Smithing Table"; break;
             case MenuType::Beacon: title="Beacon"; break;
             case MenuType::Loom: title="Loom"; break;
-            case MenuType::Lectern: title="Lectern"; break;
             case MenuType::Barrel: title="Barrel"; break;
             case MenuType::ShulkerBox: title="Shulker Box"; break;
             case MenuType::Hopper: title="Hopper"; break;
             case MenuType::Dispenser: title="Dispenser"; break;
-            case MenuType::Merchant: title="Villager"; break;
-            case MenuType::Generic9x1: title="Chest"; break;
-            case MenuType::Generic9x2: title="Chest"; break;
-            case MenuType::Generic9x4: title="Chest"; break;
-            case MenuType::Generic9x6: title="Chest"; break;
             default: title="Container"; break;
+        const char* title = "Chest";
+        switch (menu->type) {
+        case MenuType::Chest: title = "Chest"; break;
+        case MenuType::Furnace: title = "Furnace"; break;
+        case MenuType::Crafting: title = "Crafting"; break;
+        case MenuType::Hopper: title = "Hopper"; break;
+        case MenuType::Dispenser: title = "Dispenser"; break;
+        case MenuType::Barrel: title = "Barrel"; break;
+        case MenuType::ShulkerBox: title = "Shulker Box"; break;
+        case MenuType::Enchantment: title = "Enchanting"; break;
+        case MenuType::Anvil: title = "Anvil"; break;
+        case MenuType::Brewing: title = "Brewing"; break;
+        case MenuType::Stonecutter: title = "Stonecutter"; break;
+        case MenuType::Grindstone: title = "Grindstone"; break;
+        case MenuType::Smithing: title = "Smithing"; break;
+        case MenuType::Beacon: title = "Beacon"; break;
+        case MenuType::Loom: title = "Loom"; break;
         }
         nbt::writeTextComponent(b, title);
         conn_->sendPacket(pl::sc::OpenScreen, b);
@@ -4687,7 +4673,7 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
                 try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
             }
         }
-    } else if (openMenu_->type == MenuType::Furnace || openMenu_->type == MenuType::BlastFurnace || openMenu_->type == MenuType::Smoker) {
+    } else if (openMenu_->type == MenuType::Furnace) {
         if (openMenu_->blockEntity && openMenu_->blockEntity->kind == BlockEntity::Kind::Furnace) {
             auto &f = openMenu_->blockEntity->furnace;
             const int props[4] = {f.cookProgress, f.cookTotal, f.burnTicks, f.burnDuration};
@@ -4700,6 +4686,7 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
             }
         }
     }
+}
 }
 
 void Session::closeOpenMenu(bool sendPacketToClient) {
@@ -5849,23 +5836,6 @@ void Session::onPlayerAction(ReadBuffer& in) {
         return;
     }
 
-    // TNT unstable punch: if TNT with unstable true, left-click primes it (fuse 80) strict
-    if ((status==0 || status==1 || status==2)) {
-        const std::uint16_t tntState = srv_.world().getBlock(x, y, z);
-        const gen::BlockDef* tdef = gen::blockByState(tntState);
-        if (tdef && std::string(tdef->name)=="minecraft:tnt") {
-            std::string unstable = getPropStr(tntState, "unstable");
-            if (unstable=="true") {
-                srv_.world().setBlock(x, y, z, 0);
-                srv_.broadcastBlockChange(x, y, z, 0);
-                srv_.spawnPrimedTnt(x+0.5, y+0.5, z+0.5, 0, 0.2, 0, 80);
-                ack(sequence);
-                self_->digActive=false;
-                return;
-            }
-        }
-    }
-
     if (status == 0 || status == 2) {                   // start / finish dig
         const std::uint16_t oldState = srv_.world().getBlock(x, y, z);
         const std::string bn = blockNameByState(oldState);
@@ -6144,22 +6114,6 @@ void Session::onUseItemOn(ReadBuffer& in) {
             World& w = srv_.worldFor(self_->dimension);
             std::uint16_t clickedSt = w.getBlock(x, y, z);
             const gen::BlockDef* cd = gen::blockByState(clickedSt);
-            // TNT ignition via flint/fire_charge: prime with fuse 80 (strict)
-            if(cd && std::string(cd->name)=="minecraft:tnt"){
-                w.setBlock(x,y,z,0); srv_.broadcastBlockChange(x,y,z,0);
-                srv_.spawnPrimedTnt(x+0.5, y+0.5, z+0.5, 0,0.2,0,80);
-                if(isFlint && self_->gamemode==0){
-                    auto &sl = self_->inv[36 + self_->heldSlot];
-                    if(sl.applyDamage(1)) sl = ItemStack::air();
-                    srv_.resendInventory(*self_);
-                } else if(isFireCharge && self_->gamemode==0){
-                    auto &sl = self_->inv[36 + self_->heldSlot];
-                    if(--sl.count<=0) sl=ItemStack::air();
-                    srv_.resendInventory(*self_);
-                }
-                ack(sequence);
-                return;
-            }
             bool clickedIsObsidian = cd && std::string(cd->name) == "minecraft:obsidian";
             if (clickedIsObsidian) {
                 const auto& mp = gen::blockNameToState();
@@ -6358,7 +6312,7 @@ void Session::onUseItemOn(ReadBuffer& in) {
         }
     }
 
-    // ---- doors: two-block placement + hinge & powered (strict audit)
+    // ---- doors: two-block placement + toggle (plan4 P3-M)
     if (!heldItem.empty()) {
         const std::string heldName = heldItem.name();
         if (heldName.size() > 5 && heldName.rfind("_door", heldName.size() - 5) != std::string::npos) {
@@ -6370,48 +6324,12 @@ void Session::onUseItemOn(ReadBuffer& in) {
                 if (yaw >= 45.f && yaw < 135.f) facing = "west";
                 else if (yaw >= 135.f && yaw < 225.f) facing = "south";
                 else if (yaw >= 225.f && yaw < 315.f) facing = "east";
-                // hinge logic via solid faces and neighboring doors (vanilla DoorBlock)
-                std::string hingeStr = "left";
-                {
-                    auto isSolid = [&](int nx,int ny,int nz)->bool{
-                        uint16_t st = srv_.world().getBlock(nx,ny,nz);
-                        if(st==0) return false;
-                        auto* bd = gen::blockByState(st);
-                        if(!bd) return false;
-                        return !bd->transparent;
-                    };
-                    auto isDoorAt = [&](int nx,int ny,int nz)->bool{
-                        uint16_t st = srv_.world().getBlock(nx,ny,nz);
-                        auto* bd = gen::blockByState(st);
-                        return bd && std::string(bd->name).find("_door")!=std::string::npos;
-                    };
-                    int dxL=0, dzL=0, dxR=0, dzR=0;
-                    std::string fs(facing);
-                    if(fs=="north"){ dxL=-1; dzL=0; dxR=1; dzR=0; }
-                    else if(fs=="south"){ dxL=1; dzL=0; dxR=-1; dzR=0; }
-                    else if(fs=="west"){ dxL=0; dzL=1; dxR=0; dzR=-1; }
-                    else if(fs=="east"){ dxL=0; dzL=-1; dxR=0; dzR=1; }
-                    else { dxL=-1; dzL=0; dxR=1; dzR=0; }
-                    bool leftSolid = isSolid(tx+dxL, ty, tz+dzL) || isSolid(tx+dxL, ty+1, tz+dzL);
-                    bool rightSolid = isSolid(tx+dxR, ty, tz+dzR) || isSolid(tx+dxR, ty+1, tz+dzR);
-                    bool leftDoor = isDoorAt(tx+dxL, ty, tz+dzL) || isDoorAt(tx+dxL, ty+1, tz+dzL);
-                    bool rightDoor = isDoorAt(tx+dxR, ty, tz+dzR) || isDoorAt(tx+dxR, ty+1, tz+dzR);
-                    if(leftDoor && !rightDoor) hingeStr = "right";
-                    else if(rightDoor && !leftDoor) hingeStr = "left";
-                    else if(leftSolid && !rightSolid) hingeStr = "right";
-                    else if(rightSolid && !leftSolid) hingeStr = "left";
-                    else hingeStr = "left";
-                }
-                bool powered = false;
-                if(srv_.redstone_) powered = srv_.redstone_->isPoweredHere(tx,ty,tz) || srv_.redstone_->isPoweredHere(tx,ty+1,tz);
-                std::string openStr = powered ? "true" : "false";
-                std::string poweredStr = powered ? "true" : "false";
                 const auto lower =
                     static_cast<std::uint16_t>(gen::stateWithProps(*ddef,
-                        {{"half","lower"},{"facing",facing},{"open",openStr},{"hinge",hingeStr},{"powered",poweredStr}}));
+                        {{"half","lower"},{"facing",facing},{"open","false"},{"hinge","left"}}));
                 const auto upper =
                     static_cast<std::uint16_t>(gen::stateWithProps(*ddef,
-                        {{"half","upper"},{"facing",facing},{"open",openStr},{"hinge",hingeStr},{"powered",poweredStr}}));
+                        {{"half","upper"},{"facing",facing},{"open","false"},{"hinge","left"}}));
                 srv_.world().setBlock(tx, ty, tz, lower);
                 srv_.broadcastBlockChange(tx, ty, tz, lower);
                 srv_.world().setBlock(tx, ty + 1, tz, upper);
@@ -6502,23 +6420,15 @@ void Session::onUseItemOn(ReadBuffer& in) {
     }
 
     if (srv_.world().getBlock(tx, ty, tz) != 0 || heldItem.empty()) {
-        // toggling an existing door? (hinge & powered strict)
+        // toggling an existing door?
         const std::uint16_t clickedState = srv_.world().getBlock(x, y, z);
         const gen::BlockDef* cdef = gen::blockByState(clickedState);
         if (cdef && cdef->name.size() > 5 &&
             cdef->name.rfind("_door", cdef->name.size() - 5) != std::string::npos) {
-            // iron doors cannot be opened by hand, only redstone
-            bool isIron = std::string(cdef->name).find("iron_door") != std::string::npos;
-            if(isIron){
-                ack(sequence);
-                return;
-            }
             bool open = false, upperHalf = false;
-            bool powered = false;
             for (auto& [k, v] : gen::propsOf(clickedState)) {
                 if (k == "open") open = v == "true";
                 if (k == "half") upperHalf = v == "upper";
-                if (k == "powered") powered = v == "true";
             }
             std::string facing;
             std::string hinge = "left";
@@ -6530,13 +6440,13 @@ void Session::onUseItemOn(ReadBuffer& in) {
                 gen::stateWithProps(*cdef,
                     {{"open", open ? "false" : "true"},
                      {"half", upperHalf ? "upper" : "lower"},
-                     {"facing", facing}, {"hinge", hinge}, {"powered", powered?"true":"false"}}));
+                     {"facing", facing}, {"hinge", hinge}}));
             const std::int32_t oy = upperHalf ? y - 1 : y + 1;
             const std::uint16_t st2 = static_cast<std::uint16_t>(
                 gen::stateWithProps(*cdef,
                     {{"open", open ? "false" : "true"},
                      {"half", upperHalf ? "lower" : "upper"},
-                     {"facing", facing}, {"hinge", hinge}, {"powered", powered?"true":"false"}}));
+                     {"facing", facing}, {"hinge", hinge}}));
             srv_.world().setBlock(x, y, z, st1);
             srv_.broadcastBlockChange(x, y, z, st1);
             srv_.world().setBlock(x, oy, z, st2);
@@ -6623,17 +6533,14 @@ void Session::onUseItemOn(ReadBuffer& in) {
             std::string shape = computeStairsShape(*ctx.world, ctx.placePos.x, ctx.placePos.y, ctx.placePos.z, facingStr, halfStr);
             props.emplace_back("shape", shape);
         }
-        // waterlogged: check fluid state (level 0 only for source, not flowing) via FluidSim
+        // waterlogged: check fluid state (any water) and waterlogged blocks
         if (hasWaterlogged) {
             bool waterlogged = false;
-            FluidState fs = FluidSim::getFluidState(*ctx.world, ctx.placePos.x, ctx.placePos.y, ctx.placePos.z);
-            bool isSlab = std::string(bdef2->name).find("_slab") != std::string::npos;
-            if (isSlab) {
-                // slab waterlogged only for source water level 0 (not flowing, not falling)
-                if (fs.isWater() && fs.level == 0 && !fs.falling) waterlogged = true;
-            } else {
-                if (fs.isWater()) waterlogged = true;
-            }
+            std::uint16_t before = ctx.world->getBlock(ctx.placePos.x, ctx.placePos.y, ctx.placePos.z);
+            const gen::BlockDef* bd = gen::blockByState(before);
+            if (bd && std::string(bd->name).find("water") != std::string::npos) waterlogged = true;
+            // also consider if before is air but we are placing into waterlogged context? For stairs, fluid is WATER still.
+            // If still false, check world fluid? simplified: keep as above.
             // For double slab, force false (handled earlier)
             bool isDoubleSlab = false;
             for(auto& pr: props) if(pr.first=="type" && pr.second=="double") isDoubleSlab=true;
