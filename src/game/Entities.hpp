@@ -263,7 +263,19 @@ struct MobEntity {
     std::uint8_t woolColor = 0; // 0 white
     std::uint32_t carriedBlock = 0; // enderman: block state id, 0 = empty (plan13 §6)
     bool creeperCharged = false;
+    // plan16: creeper ignited fuse (separate from nextWanderAt)
+    bool creeperIgnited = false;
+    std::int64_t creeperFuseStart = -1;
+    static constexpr int CREEPER_FUSE_TICKS = 30;
     int slimeSize = 2; // 2 large 1 medium 0 small
+    // plan16: slime health size² helper (vanilla: (1<<size)² => 1,4,16)
+    static inline float slimeHealthForSize(int sz){
+        int s = (1 << std::clamp(sz,0,2));
+        return static_cast<float>(s * s);
+    }
+    // plan16: horse variant random (color/markings/health 15-30)
+    int horseVariant = 0; // 0..6 color * markings, randomized on spawn
+    float horseJumpStrength = 0.0f; // randomized jump
     std::int32_t hurtCooldown = 0;
     std::int32_t leashHolder = -1;
     std::int64_t lastTeleportTick = -10000;
@@ -275,6 +287,9 @@ struct MobEntity {
     std::int32_t villagerLevel = 1; // mirror villagerData.level for compat
     Gossip gossip;
     std::int64_t restockUntil = 0;
+    // plan16: villager restock 2/day (vanilla: 2 restocks per in-game day)
+    int villagerRestocksToday = 0;
+    std::int64_t villagerLastRestockDay = -1;
     void syncVillagerLevel(){ villagerData.level = std::clamp(villagerLevel,1,5); }
     void setVillagerLevel(int lvl){ villagerLevel = std::clamp(lvl,1,5); villagerData.level = villagerLevel; }
     std::int64_t witherSkullCooldown = 0;

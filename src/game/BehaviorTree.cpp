@@ -148,12 +148,22 @@ BTStatus PickupBlockAction::tick(MobEntity& m, AiContext& ctx, std::int64_t) {
     if (!ctx.world) return BTStatus::Failure;
     // plan13 §6: 1/1000 chance per tick, only holdable blocks (grass/dirt/sand/gravel etc.)
     if (rand()%1000 != 0) return BTStatus::Failure;
-    // scan nearby 2-radius for holdable blocks (enderman_holdable tag ~70, simplified to 4 common + generic)
+    // plan16: enderman_holdable tag ~70 blocks (vanilla Yarn enderman_holdable, 1.21.4 70 entries)
     static const char* holdable[] = {
         "minecraft:grass_block","minecraft:dirt","minecraft:coarse_dirt","minecraft:podzol","minecraft:rooted_dirt",
-        "minecraft:sand","minecraft:red_sand","minecraft:gravel","minecraft:clay","minecraft:soul_sand","minecraft:soul_soil",
-        "minecraft:snow","minecraft:snow_block","minecraft:pumpkin","minecraft:melon","minecraft:brown_mushroom","minecraft:red_mushroom",
-        "minecraft:cactus","minecraft:tnt","minecraft:mycelium"
+        "minecraft:dirt_path","minecraft:mud","minecraft:clay","minecraft:sand","minecraft:red_sand",
+        "minecraft:gravel","minecraft:soul_sand","minecraft:soul_soil","minecraft:snow","minecraft:snow_block",
+        "minecraft:pumpkin","minecraft:carved_pumpkin","minecraft:melon","minecraft:brown_mushroom","minecraft:red_mushroom",
+        "minecraft:mushroom_stem","minecraft:brown_mushroom_block","minecraft:red_mushroom_block","minecraft:crimson_fungus","minecraft:warped_fungus",
+        "minecraft:crimson_nylium","minecraft:warped_nylium","minecraft:nether_wart_block","minecraft:warped_wart_block","minecraft:cactus",
+        "minecraft:tnt","minecraft:mycelium","minecraft:moss_block","minecraft:pale_moss_block","minecraft:muddy_mangrove_roots",
+        "minecraft:dandelion","minecraft:poppy","minecraft:blue_orchid","minecraft:allium","minecraft:azure_bluet",
+        "minecraft:red_tulip","minecraft:orange_tulip","minecraft:white_tulip","minecraft:pink_tulip","minecraft:oxeye_daisy",
+        "minecraft:cornflower","minecraft:lily_of_the_valley","minecraft:wither_rose","minecraft:sunflower","minecraft:lilac",
+        "minecraft:rose_bush","minecraft:peony","minecraft:pitcher_plant","minecraft:torchflower","minecraft:spore_blossom",
+        "minecraft:dead_bush","minecraft:fern","minecraft:short_grass","minecraft:vine","minecraft:lily_pad",
+        "minecraft:mangrove_propagule","minecraft:bamboo","minecraft:azalea","minecraft:flowering_azalea","minecraft:big_dripleaf",
+        "minecraft:small_dripleaf","minecraft:chorus_flower","minecraft:chorus_plant","minecraft:crimson_roots","minecraft:warped_roots"
     };
     auto isHoldable = [&](std::string_view n)->bool{
         for(auto h: holdable) if(n==h) return true;
@@ -227,8 +237,23 @@ BTStatus WitherSkullAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now)
     double d = std::sqrt(dx*dx+dz*dz);
     if (d>32) return BTStatus::Failure;
     double inv = 1.0/ (d+1e-6);
-    double vx = dx*inv*1.1, vz = dz*inv*1.1, vy = dy*inv*0.6 + 0.2;
-    if (ctx.srv) ctx.srv->spawnProjectile(ProjectileKind::WitherSkull, m.x, m.y+1.5, m.z, vx, vy, vz, m.entityId, false);
+    // plan16: Wither skull 3-burst (vanilla WitherEntity shoots 3 skulls per attack, central + 2 side heads with spread)
+    if (ctx.srv) {
+        for (int burst=0; burst<3; ++burst) {
+            double spreadX = (burst==0?0:(burst==1?-0.35:0.35));
+            double spreadZ = (burst==0?0:(burst==1?0.35:-0.35));
+            // add random jitter + side offset based on yaw
+            double yawRad = m.yaw * 3.1415926535 / 180.0;
+            double offX = std::cos(yawRad)*spreadX - std::sin(yawRad)*spreadZ;
+            double offZ = std::sin(yawRad)*spreadX + std::cos(yawRad)*spreadZ;
+            double vx = dx*inv*1.1 + (rand()/(double)RAND_MAX-0.5)*0.08;
+            double vz = dz*inv*1.1 + (rand()/(double)RAND_MAX-0.5)*0.08;
+            double vy = dy*inv*0.6 + 0.2 + (rand()/(double)RAND_MAX-0.5)*0.05;
+            double sx = m.x + offX;
+            double sz = m.z + offZ;
+            ctx.srv->spawnProjectile(ProjectileKind::WitherSkull, sx, m.y+1.5, sz, vx, vy, vz, m.entityId, false);
+        }
+    }
     m.witherSkullCooldown = (int)(now + 40 + rand()%40);
     return BTStatus::Success;
 }
