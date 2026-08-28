@@ -351,6 +351,15 @@ public:
         blockTicks_->registerBehavior("minecraft:sugar_cane", std::make_unique<StemBehavior>(4));
         blockTicks_->registerBehavior("minecraft:cactus", std::make_unique<StemBehavior>(4));
         blockTicks_->registerBehavior("minecraft:farmland", std::make_unique<FarmlandBehavior>());
+        blockTicks_->registerBehavior("minecraft:cocoa", std::make_unique<CocoaBehavior>());
+        blockTicks_->registerBehavior("minecraft:sweet_berry_bush", std::make_unique<SweetBerryBehavior>());
+        blockTicks_->registerBehavior("minecraft:sweet_berries", std::make_unique<SweetBerryBehavior>());
+        blockTicks_->registerBehavior("minecraft:nether_wart", std::make_unique<NetherWartBehavior>());
+        blockTicks_->registerBehavior("minecraft:chorus_flower", std::make_unique<ChorusFlowerBehavior>());
+        blockTicks_->registerBehavior("minecraft:kelp", std::make_unique<KelpBehavior>());
+        blockTicks_->registerBehavior("minecraft:kelp_plant", std::make_unique<KelpBehavior>());
+        blockTicks_->registerBehavior("minecraft:seagrass", std::make_unique<KelpBehavior>());
+        blockTicks_->registerBehavior("minecraft:tall_seagrass", std::make_unique<KelpBehavior>());
         blockTicks_->registerBehavior("minecraft:fire", std::make_unique<FireBehavior>());
         blockTicks_->registerBehavior("minecraft:soul_fire", std::make_unique<SoulFireBehavior>());
         blockTicks_->registerBehavior("minecraft:campfire", std::make_unique<CampfireBehavior>());
