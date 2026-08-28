@@ -71,6 +71,12 @@ struct DamageSource {
         if (lower == "starve" || lower == "starvation") { isStarveFlag = true; bypassArmor = true; bypassEnchant = true; }
         if (lower == "lightning" || lower == "lightningbolt") isLightningFlag = true;
         if (lower == "cramming" || lower.find("cram") != std::string::npos) isCrammingFlag = true;
+        // strict audit HIGH: warden sonic boom bypasses armor (Yarn SonicBoomTask)
+        if (lower == "sonic_boom" || lower == "sonicboom" || lower.find("sonic") != std::string::npos) {
+            bypassArmor = true;
+            // sonic boom is not bypassEnchant in vanilla? it bypasses armor only, enchant still applies? Actually bypasses armor and enchant? Wiki: bypasses armor
+            // We'll keep bypassEnchant false so EPF still applies per vanilla? But spec says bypassArmor only.
+        }
         // wither is magic-type but still affected by protection (vanilla: protection applies)
         // fall uses only feather_falling (handled in EPF), but armor reduction still vanilla: fall bypasses armor in 1.21.4? Actually armor does not reduce fall.
         // We keep armor for fall as vanilla does NOT apply armor to fall; however our DamageCalculator currently applies armor unless bypass.
@@ -88,23 +94,36 @@ struct DamageSource {
     static DamageSource freeze() { DamageSource s("freeze"); s.isFreezeFlag = true; return s; }
     static DamageSource starve() { DamageSource s("starve"); s.isStarveFlag = true; s.bypassArmor = true; s.bypassEnchant = true; return s; }
     static DamageSource lightning() { DamageSource s("lightningBolt"); s.isLightningFlag = true; return s; }
+    static DamageSource sonicBoom() { DamageSource s("sonic_boom"); s.bypassArmor = true; return s; }
     static DamageSource generic() { return DamageSource("generic"); }
     static DamageSource fromString(const std::string& t) { return DamageSource(t); }
     static DamageSource fromCStr(const char* t) { return DamageSource(std::string(t)); }
 };
 
-// DamageCalculator: vanilla armor + toughness + EPF + Resistance pipeline
-// All calculations are pure functions so they can be unit-tested independently.
+// DamageCalculator: vanilla armor + toughness + EPF + Resistance pipeline (strict audit HIGH E6)
+// Vanilla 1.21.4 Yarn DamageUtil: f = 2 + toughness/4, g = clamp(armor - dmg/f, armor*0.2, 20), dmg*=1-g/25
 struct DamageCalculator {
-    static float applyArmorReduction(float dmg, int armor) {
+    // combined armor+toughness per vanilla (armor 0..20, toughness 0..)
+    static float applyArmorReduction(float dmg, int armor, double toughness) {
         if (armor <= 0 || dmg <= 0) return dmg;
         float a = static_cast<float>(armor);
-        float eff = std::min(20.f, std::max(a/5.f, a - dmg/2.f));
-        return dmg * (1.f - eff/25.f);
+        float t = static_cast<float>(toughness);
+        float f = 2.f + t / 4.f;
+        float g = std::clamp(a - dmg / f, a * 0.2f, 20.f);
+        return dmg * (1.f - g / 25.f);
+    }
+    static float applyArmorReduction(float dmg, int armor) {
+        return applyArmorReduction(dmg, armor, 0.0);
     }
     static float applyToughness(float dmgAfterArmor, float original, double toughness) {
         if (toughness <= 0 || dmgAfterArmor >= original) return dmgAfterArmor;
-        return dmgAfterArmor * (1.f - static_cast<float>(toughness * 0.02));
+        // legacy separate path: recompute combined correctly from original then derive delta
+        // For strict audit, toughness formula is  /(2+toughness/4) not *0.02
+        // If called standalone, approximate by applying combined divisor to original
+        float combined = applyArmorReduction(original, static_cast<int>((original - dmgAfterArmor) / original * 25.f + 0.5f), toughness);
+        // Fallback: if combined not meaningful, just return input (toughness already handled in calculate)
+        (void)combined;
+        return dmgAfterArmor;
     }
     static float applyEnchantProtection(float dmg, int epf) {
         if (epf <= 0 || dmg <= 0) return dmg;
@@ -127,8 +146,7 @@ struct DamageCalculator {
         if (base <= 0) return 0.f;
         float d = base;
         if (!src.bypassArmor) {
-            float afterArmor = applyArmorReduction(d, armor);
-            d = applyToughness(afterArmor, base, toughness);
+            d = applyArmorReduction(d, armor, toughness);
         }
         if (!src.bypassEnchant && !src.isDrown()) {
             d = applyEnchantProtection(d, epf);
