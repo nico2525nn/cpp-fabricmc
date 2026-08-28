@@ -63,6 +63,7 @@ void StructureManager::ensureDefaults() {
         {"minecraft:mineshaft", 10, 5, 0, {}},
         {"minecraft:monument", 32, 5, 10387313ULL, {"deep_ocean","deep_cold_ocean","deep_frozen_ocean","deep_lukewarm_ocean"}},
         {"minecraft:mansion", 80, 20, 10387319ULL, {"dark_forest","roofed_forest","pale_garden"}},
+        {"minecraft:trial_chambers", 34, 8, 942731826ULL, {}},
         {"minecraft:end_city", 20, 11, 10387313ULL, {"end_highlands","end_midlands","end_barrens","small_end_islands"}},
     };
 }
@@ -473,6 +474,41 @@ void StructureManager::mansionPiece(Chunk& chunk, std::int32_t cx, std::int32_t 
     w.set(ox+20, baseY+1, oz+20, B("minecraft:torch")?B("minecraft:torch")->defaultState:planks, true);
     // evoker placeholder: leave space (mob spawn would be here)
 }
+void StructureManager::trialChambersPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+                      std::int32_t originX, std::int32_t originZ,
+                      const GroundFn& ground) const {
+    Writer w{chunk, cx, cz};
+    const auto tuff = B("minecraft:tuff") ? B("minecraft:tuff")->defaultState : B("minecraft:stone_bricks")->defaultState;
+    const auto tuffBricks = B("minecraft:tuff_bricks") ? B("minecraft:tuff_bricks")->defaultState : tuff;
+    const auto chiseledTuff = B("minecraft:chiseled_tuff") ? B("minecraft:chiseled_tuff")->defaultState : tuffBricks;
+    const auto copperBulb = B("minecraft:copper_bulb") ? B("minecraft:copper_bulb")->defaultState : tuffBricks;
+    const auto spawner = B("minecraft:trial_spawner") ? B("minecraft:trial_spawner")->defaultState : tuffBricks;
+    int surfaceY = ground ? ground(originX+8, originZ+8) : 64;
+    int baseY = std::clamp(surfaceY - 30, kMinY+5, 20);
+    // simple 18x18 chamber at depth, with corridors
+    for (int dx=0; dx<18; ++dx) for (int dz=0; dz<18; ++dz) {
+        int wx = originX + dx, wz = originZ + dz;
+        bool edge = dx==0||dx==17||dz==0||dz==17;
+        w.set(wx, baseY, wz, tuffBricks, true);
+        w.set(wx, baseY+6, wz, tuffBricks, true);
+        if (edge) {
+            for (int dy=1; dy<=5; ++dy) w.set(wx, baseY+dy, wz, tuff, true);
+            if ((dx%6==0||dz%6==0) && dx%3==0) w.set(wx, baseY+1, wz, chiseledTuff, true);
+        } else if (dx%9==4 && dz%9==4) {
+            for (int dy=1; dy<=3; ++dy) w.set(wx, baseY+dy, wz, 0, true);
+            w.set(wx, baseY+1, wz, spawner, true);
+            if (dx==9 && dz==9) w.set(wx, baseY+2, wz, copperBulb, true);
+        } else {
+            for (int dy=1; dy<=5; ++dy) if (w.set(wx, baseY+dy, wz, 0, false)) {}
+        }
+    }
+    // entrance corridor
+    for (int d=0; d<6; ++d) {
+        int wx = originX + 8 + d, wz = originZ - 1 - d/2;
+        w.set(wx, baseY+1, wz, 0, true); w.set(wx, baseY+2, wz, 0, true);
+        w.set(wx, baseY, wz, tuffBricks, true); w.set(wx, baseY+3, wz, tuffBricks, true);
+    }
+}
 void StructureManager::endCityPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
                       std::int32_t originX, std::int32_t originZ,
                       const GroundFn& ground) const {
@@ -607,6 +643,8 @@ void StructureManager::generate(Chunk& chunk, std::int32_t cx,
             monumentPiece(chunk, cx, cz, at.originX, at.originZ, ground);
         else if (name.find("mansion") != std::string::npos)
             mansionPiece(chunk, cx, cz, at.originX, at.originZ, ground);
+        else if (name.find("trial_chambers") != std::string::npos || name.find("trial_chamber") != std::string::npos)
+            trialChambersPiece(chunk, cx, cz, at.originX, at.originZ, ground);
         else if (name.find("end_city") != std::string::npos)
             endCityPiece(chunk, cx, cz, at.originX, at.originZ, ground);
         else if (name.find("mineshaft") != std::string::npos)

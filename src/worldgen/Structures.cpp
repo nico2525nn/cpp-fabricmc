@@ -433,6 +433,24 @@ void StructureGenerator::mansionPiece(Chunk& chunk, std::int32_t cx, std::int32_
     w.set(ox+5, baseY+1, oz+5, chest, true);
     w.set(ox+35, baseY+1, oz+35, chest, true);
 }
+void StructureGenerator::trialChambersPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+                                      std::int32_t ox, std::int32_t oz, const GroundFn& ground) {
+    Writer w{chunk, cx, cz};
+    const auto tuff = B("minecraft:tuff") ? B("minecraft:tuff")->defaultState : B("minecraft:stone_bricks")->defaultState;
+    const auto tuffBricks = B("minecraft:tuff_bricks") ? B("minecraft:tuff_bricks")->defaultState : tuff;
+    const auto spawner = B("minecraft:trial_spawner") ? B("minecraft:trial_spawner")->defaultState : tuffBricks;
+    int surfaceY = ground(ox+8, oz+8);
+    int baseY = std::clamp(surfaceY - 30, kMinY+5, 20);
+    for (int dx=0; dx<18; ++dx) for (int dz=0; dz<18; ++dz) {
+        int wx = ox+dx, wz = oz+dz;
+        bool edge = dx==0||dx==17||dz==0||dz==17;
+        w.set(wx, baseY, wz, tuffBricks, true);
+        w.set(wx, baseY+6, wz, tuffBricks, true);
+        if (edge) for (int dy=1; dy<=5; ++dy) w.set(wx, baseY+dy, wz, tuff, true);
+        else if (dx%9==4 && dz%9==4) { for (int dy=1; dy<=3; ++dy) w.set(wx, baseY+dy, wz, 0, true); w.set(wx, baseY+1, wz, spawner, true); }
+        else for (int dy=1; dy<=5; ++dy) w.set(wx, baseY+dy, wz, 0, false);
+    }
+}
 void StructureGenerator::endCityPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
                                       std::int32_t ox, std::int32_t oz, const GroundFn& ground) {
     Writer w{chunk, cx, cz};
@@ -512,6 +530,8 @@ void StructureGenerator::generateChunk(Chunk& chunk, std::int32_t cx,
             monumentPiece(chunk, cx, cz, at.originX, at.originZ, ground);
         else if (name.find("mansion") != std::string::npos)
             mansionPiece(chunk, cx, cz, at.originX, at.originZ, ground);
+        else if (name.find("trial_chamber") != std::string::npos)
+            trialChambersPiece(chunk, cx, cz, at.originX, at.originZ, ground);
         else if (name.find("end_city") != std::string::npos)
             endCityPiece(chunk, cx, cz, at.originX, at.originZ, ground);
         else if (name.find("mineshaft") != std::string::npos)

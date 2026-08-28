@@ -92,10 +92,12 @@ public:
     }
     bool saveLevelDataWithProviders(std::int64_t worldTicks, std::int64_t dayTime, class World& world,
                                     const std::string& difficulty,
-                                    double borderDiameter, double borderCX, double borderCZ);
+                                    double borderDiameter, double borderCX, double borderCZ,
+                                    double borderLerpTarget = -1, std::int64_t borderLerpMs = -1);
 
     bool loadLevelData(class World& world, std::string& difficultyOut,
-                       double& borderDiameterOut, double& borderCXOut, double& borderCZOut);
+                       double& borderDiameterOut, double& borderCXOut, double& borderCZOut,
+                       double* borderLerpTargetOut = nullptr, std::int64_t* borderLerpMsOut = nullptr);
 
     // Raw load for testing: returns root
     bool loadRaw(nbt::Value& outRoot) const {

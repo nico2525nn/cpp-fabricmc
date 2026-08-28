@@ -563,6 +563,15 @@ void GameServer::tickOnce() {
     } else if (tickNo_ % 1200 == 0 && tickNo_ != 0) {
         try { persist_->saveLevelData(tickNo_, dayTime()); } catch (...) {}
     }
+    // WorldBorder lerp tick interpolation — Yarn WorldBorder.tick()
+    {
+        bool changed = tickWorldBorder();
+        if (persist_) changed |= persist_->tickWorldBorder();
+        if (changed && tickNo_ % 20 == 0) {
+            // periodically broadcast interpolated size to keep client in sync (lerp packet)
+            broadcastWorldBorder();
+        }
+    }
     // plan14 §6: scheduled function tick (schedule) – execute due scheduled functions each tick
     tickScheduledFunctions();
     // network batching: flush coalesced block updates every tick (50ms window)
@@ -585,7 +594,6 @@ bool GameServer::isChunkInSimulationDistance(std::int32_t cx, std::int32_t cz) c
     const int sim = cfg_.simulationDistance;
     if (sim <= 0) return true;
     const double limit = sim * 16.0;
-    const double limit2 = limit * limit;
     const double chX = cx * 16.0 + 8.0;
     const double chZ = cz * 16.0 + 8.0;
     auto players = const_cast<GameServer*>(this)->playersSnapshot();
@@ -594,7 +602,7 @@ bool GameServer::isChunkInSimulationDistance(std::int32_t cx, std::int32_t cz) c
         if (!p->inPlay) continue;
         double dx = p->x - chX;
         double dz = p->z - chZ;
-        if (dx*dx + dz*dz < limit2) return true;
+        if (std::max(std::abs(dx), std::abs(dz)) < limit) return true;
     }
     return false;
 }
@@ -603,7 +611,6 @@ void GameServer::chunksUnloadTick() {
     const int sim = cfg_.simulationDistance;
     const int view = cfg_.viewDistance;
     const int unloadDist = std::max(sim, view) * 16 + 32;
-    const double unloadDist2 = double(unloadDist) * double(unloadDist);
     auto doWorld = [&](World &w, Persistence *pp, std::int8_t dim) {
         auto keys = w.allChunkKeys();
         std::vector<std::int64_t> toErase;
@@ -621,7 +628,7 @@ void GameServer::chunksUnloadTick() {
                 const double chZ = cz * 16.0 + 8.0;
                 double dx = pl->x - chX;
                 double dz = pl->z - chZ;
-                if (dx*dx + dz*dz < unloadDist2) { near = true; break; }
+                if (std::max(std::abs(dx), std::abs(dz)) < double(unloadDist)) { near = true; break; }
             }
             if (near) continue;
             bool anyInDim = false;
@@ -810,9 +817,31 @@ void GameServer::survivalTick() {
                 }
             }
         }
-        // ---- world border damage (plan6 §10)
-        if (!isInsideBorder(p->x, p->z)) {
-            if (tickNo_ % 20 == 0) applyDamage(*p, 1.f, "outside_border");
+        // ---- world border damage (plan6 §10) — 0.2*blocksOutside buffer 5.0 Chebyshev
+        {
+            double half = worldBorderDiameter_ * 0.5;
+            double dx = std::abs(p->x - worldBorderCenterX_);
+            double dz = std::abs(p->z - worldBorderCenterZ_);
+            double furthest = std::max(dx, dz);
+            double outside = furthest - half;
+            if (outside > 0) {
+                double buffer = worldBorderDamageBuffer(); // 5.0
+                double perBlock = worldBorderDamagePerBlock(); // 0.2
+                double effective = outside - buffer;
+                if (effective < 0) effective = 0;
+                // vanilla: damage = effective * perBlock per second, but we tick per second
+                // ensure at least 1 dmg when outside > buffer and also >0 outside without buffer? Keep buffer logic
+                // If effective ==0 but outside>0 then still 0 damage inside buffer zone
+                if (effective > 0 && tickNo_ % 20 == 0) {
+                    float dmg = static_cast<float>(effective * perBlock);
+                    // vanilla also clamps? ensure minimum 1 when just beyond buffer? at least 1 if >0
+                    if (dmg < 1.f) dmg = 1.f;
+                    // alternative if outside >0 but within buffer, no damage (vanilla buffer grace)
+                    applyDamage(*p, dmg, "outside_border");
+                } else if (effective == 0 && outside > 0 && tickNo_ % 20 == 0) {
+                    // still inside damage buffer (5 blocks) — no damage per vanilla
+                }
+            }
         }
         (void)now;
     }
@@ -2606,23 +2635,41 @@ void GameServer::loadOps() {
 }
 void GameServer::sendWorldBorderTo(Player& p) const {
     if (!p.conn) return;
-    // InitializeWorldBorder full packet
+    // InitializeWorldBorder full packet — Yarn WorldBorder 59999968, lerp interpolation
     WriteBuffer i;
     i.f64(worldBorderCenterX_); i.f64(worldBorderCenterZ_);
-    i.f64(worldBorderDiameter_); i.f64(worldBorderDiameter_);
-    i.varlong(0);
-    i.varint(29999984); // max
-    i.varint(5);
-    i.varint(15);
+    double oldSize = worldBorderDiameter_;
+    double newSize = worldBorderDiameter_;
+    std::int64_t lerpMs = 0;
+    if (worldBorderLerpRemainingTicks_ > 0) {
+        oldSize = worldBorderDiameter_;
+        newSize = worldBorderLerpTo_;
+        lerpMs = worldBorderLerpMs_;
+        // if at start, oldSize should be lerpFrom (diameter is from)
+        // current diameter already interpolates, so oldSize is current
+        // but for packet spec, we send current->target with remaining time
+        // maintain vanilla: old = current, new = target
+    }
+    i.f64(oldSize); i.f64(newSize);
+    i.varlong(lerpMs);
+    i.varint(59999968); // max world border (portalTeleportBoundary)
+    i.varint(5);  // warning blocks
+    i.varint(15); // warning time
     try { p.conn->sendPacket(proto::pl::sc::InitializeWorldBorder, i); } catch (...) {}
-    // also send Center and Lerp separate for spec compliance
+    // also send Center for spec compliance (separate packet)
     WriteBuffer c;
     c.f64(worldBorderCenterX_); c.f64(worldBorderCenterZ_);
     try { p.conn->sendPacket(proto::pl::sc::WorldBorderCenter, c); } catch (...) {}
-    WriteBuffer s;
-    s.varint((std::int32_t)worldBorderDiameter_);
-    // actually WorldBorderSize uses double? but use varint fallback
-    // send LerpSize as Initialize duplicate with 0 lerp
+    // Lerp-specific separate packets if active
+    if (worldBorderLerpRemainingTicks_ > 0) {
+        WriteBuffer l;
+        l.f64(oldSize); l.f64(newSize); l.varlong(lerpMs);
+        try { p.conn->sendPacket(proto::pl::sc::WorldBorderLerpSize, l); } catch (...) {}
+    } else {
+        WriteBuffer s;
+        s.f64(newSize);
+        try { p.conn->sendPacket(proto::pl::sc::WorldBorderSize, s); } catch (...) {}
+    }
 }
 void GameServer::broadcastWorldBorder() {
     for (auto& p : playersSnapshot()) {
@@ -2630,7 +2677,13 @@ void GameServer::broadcastWorldBorder() {
         sendWorldBorderTo(*p);
     }
     if (persist_) {
-        persist_->setWorldBorder(worldBorderDiameter_, worldBorderCenterX_, worldBorderCenterZ_);
+        if (worldBorderLerpRemainingTicks_ > 0) {
+            double cur = worldBorderDiameter_;
+            persist_->setWorldBorder(cur, worldBorderCenterX_, worldBorderCenterZ_);
+            persist_->setWorldBorderLerp(cur, worldBorderLerpTo_, worldBorderLerpRemainingTicks_);
+        } else {
+            persist_->setWorldBorder(worldBorderDiameter_, worldBorderCenterX_, worldBorderCenterZ_);
+        }
         persist_->saveLevelData(tickNo_, dayTime());
     }
 }
