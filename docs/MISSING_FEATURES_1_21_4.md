@@ -1,10 +1,10 @@
 # Missing Features vs Vanilla Fabric 1.21.4 (Protocol 769) — Post Smoke-80 Audit
 
-> This document is the post-smoke-80 gap list. It enumerates every feature that a vanilla Fabric 1.21.4 server provides but `cpp-fabricmc` does not yet fully match, grouped by the same 80-item taxonomy used in `plan5.md`. It is based on a re-read of `plan.md` through `plan12.md`, `PROTOCOL_NOTES.md`, `src/proto/Ids.hpp`, `src/generated/*`, and a live audit of the current HEAD (`a06b0ba` merge of `wt12/world`+`wt12/block`+`wt12/entity`+`wt12/inventory`+`wt12/network`+`wt12/combat` plan12 polishes).
+> This document is the post-smoke-80 gap list. It enumerates every feature that a vanilla Fabric 1.21.4 server provides but `cpp-fabricmc` does not yet fully match, grouped by the same 80-item taxonomy used in `plan5.md`. It is based on a re-read of `plan.md` through `plan13.md`, `PROTOCOL_NOTES.md`, `src/proto/Ids.hpp`, `src/generated/*`, and a live audit of the current HEAD (`a1dba28` selective merge of `wt13/block`+`wt13/entity`+`wt13/combat`+`wt13/inventory`+`wt13/network` plan13 polishes, plus docs `acd1b97`).
 
 ## Summary
 
-- **Total vanilla parity gap: ~22 items partially implemented, ~2 not started (plus ~9 polish-within-DONE).** The 80-item smoke test (`tests/test_smoke_80.cpp`) is strict: it FAILS for each row marked `PARTIAL` or `TODO` below until the implementation is completed. Post-plan12, 10 rows (#1,2,8,11,13,15,16,20,25,26) flipped from PARTIAL/TODO → DONE, and another ~25 rows from plan10/11 now DONE; remaining gaps are listed as PARTIAL/POLISH.
+- **Total vanilla parity gap: ~6 items partially implemented, 0 not started (plus ~9 polish-within-DONE).** The 80-item smoke test (`tests/test_smoke_80.cpp`) is strict: it FAILS for each row marked `PARTIAL` or `TODO` below until the implementation is completed. Post-plan13, 16 rows (#27,30,31,32,33,39,40,47,48,49,50,56,58,59,68,69) flipped from PARTIAL → DONE (selective merge `a1dba28`), following post-plan12 10 rows; remaining gaps are listed as PARTIAL/POLISH. `test_native` is now fully green (previously 2 FAIL due to spawn-protection).
 - **Build is green** (`cppfm` + `test_native` + `test_smoke_80` link), server boots and passes status/join/chunk/chat/multiplayer, many higher-level systems are now implemented; see README for current test expectations.
 - **Fabric mods cannot run** inside a C++ process — `Fabric-compatible` here means *protocol-compatible* with what an unmodded Fabric server puts on the wire (as per README).
 
@@ -50,7 +50,7 @@
 | 24 | Rails | DONE | `Redstone.cpp:510` + `GameServer.cpp:4655` | `recomputeRailShape` `north_south→ascending/east_west`, `powered_rail` boost `0.06`, `detector_rail` redstone output, `activator_rail` eject, `minecartsTick` physics. |
 | 25 | Dispenser per-item | DONE | `GameServer.cpp:1739` | **plan12 §9 DONE:** 9-slot edge-trigger `facing` 6-dir; `arrow/snowball/egg/pearl/fire_charge/tnt→explodeAt` + `bucket water/lava/powder_snow pickup/dispense` + `potion splash/lingering` + `spawn_egg/boat/minecart/armor/shears/flint/bonemeal` + fallback `spawnItemDrop`. |
 | 26 | Dropper | DONE | `GameServer.cpp:1770` + `BlockEntities.hpp:64` | **plan12 §10 DONE:** `Kind::Dropper` 9 slots + `facing` dispense: `doDropperInsert` try `containerAt` `canInsert` → `insert 1` else `spawnItemDrop` (never projectile). |
-| 27 | Cactus/sugar cane growth | DONE | `BlockTickScheduler.cpp:234` | `StemBehavior age15→grow` `cactus sand/red_sand/cactus` + horizontal `!transparent` gate, `sugar_cane` maxH, `bamboo` age; polish: `bamboo leaves small/large stage` not yet. |
+| 27 | Cactus/sugar cane growth | DONE | `BlockTickScheduler.cpp:234` + `BlockStates.hpp:132` | **plan13 §1 DONE:** `StemBehavior` + `BambooBehavior` `stage 0→1` + `age thick >=4` + `bambooUpdateLeaves h=1→16` `leaves none/small/large` top3, `GrassBlockBehavior` snowy `snow/snow_block` above `randomTick`; `cactus 3→4` + `sugar_cane 3` maxH. |
 
 ## 3. Entities & Mobs (20 items, 8 PARTIAL, 4 TODO)
 
@@ -58,17 +58,17 @@
 |---|---------|--------|------|-------|
 | 28 | MobKind 46 | DONE | `Entities.hpp:52` | 46 kinds (up from 13) with `MobStats` 300/200/500 etc., all `typeId` via `gen::entityTypeIdByName`. |
 | 29 | Brain-Goal-Sensor vs BehaviorTree | PARTIAL | `AiBrain.hpp:11` | `Brain` 7 goals (`Panic/Breed/Melee/Ranged/Wander/Look`) works for generic, but `BehaviorTree`/`EntityFactory` JSON dispatch not: `EntityDataLoader` loads `assets/entities/*.json` but `Brain` not built from `brain.behaviors` list (wither_skull, dragon_breath etc. are orphaned). |
-| 30 | `SetEquipment 0x60` | PARTIAL | `GameServer.cpp:613` | `sendEquipment` on `broadcastMobSpawn` for 6 slots, but no dynamic equip change sync, no `ArmorTrim` component, no `HandDropChances`. |
-| 31 | `SetPassengers 0x65` riding | PARTIAL | `GameServer.cpp:3962` | `horse/llama/pig` mount sets `vehicleId/riderEntityId` + `SetPassengers`, `MoveVehicle 0x20` moves vehicle, but no `isSneaking` dismount sync beyond `EntityAction 0x28`, no `horse` jump, no `boat/minecart` vehicles. |
-| 32 | Durability | PARTIAL | `Items.hpp:108` `applyDamage` | `maxDamageFor` 59/131/250/1561/2031 etc., `getDamage`/`setDamage` component 6, hooked in `onUseItemOn`/`onPlayerAction`/`onUseEntity`, but no `Unbreaking` enchant reduction, no `Mending` XP repair, no `Anvil` repair cost. |
-| 33 | Enchant effects | PARTIAL | `Items.hpp:147` `addEnchant` | `sharpness/protection/power/fortune/silk_touch` as `component 10` text `name:lvl,`, `hasSilkTouch`/`fortuneLevel` used in `lootTables` and `tickDigs`, but `Efficiency` mining speed, `FrostWalker`, `SoulSpeed`, `SwiftSneak` not, `EnchantmentHelper` only damage bonus `meleeDamageBonusFor`. |
+| 30 | `SetEquipment 0x60` | DONE | `EquipmentComponent.hpp:1` + `GameServer.cpp:3202` | **plan13 §2 DONE:** `ArmorTrim` `trim_pattern 18`/`trim_material 11` + `HandDropChances 0.085/1.0` + dynamic `sendEquipmentSlot`/`broadcastPlayerEquipment`/`syncEquipmentOnChange` on inventory/creative. |
+| 31 | `SetPassengers 0x65` riding | DONE | `GameServer.cpp:5145` + `BehaviorTree.cpp:70` | **plan13 §3 DONE:** `horse` jump `EntityAction 0x28:7` + `PlayerInput 0x29 shift` dismount + `MoveVehicle 0x20` + `boat` buoyancy `0.04` friction `0.9` + `minecart` `0.4` max. |
+| 32 | Durability | DONE | `Items.hpp:84` + `DamageComponent.hpp:14` + `CostCalculator.hpp:36` | **plan13 §4 DONE:** `Unbreaking 1/(l+1)` + `Mending` XP `repair/2` + `Anvil` `Too Expensive >=40` `nextRepairCost` + `CustomName` `MC|ItemName`. |
+| 33 | Enchant effects | DONE | `EnchantmentHelper.hpp:50` + `Attributes.hpp:66` | **plan13 §5 DONE:** `Efficiency 1+lvl²` mining speed + `FrostWalker radius 2+lvl` `frosted_ice` + `SoulSpeed 0.105*lvl` + `SwiftSneak 0.15*lvl` attribute sync `0x7C`. |
 | 34 | Slime/MagmaCube split | DONE | `GameServer.cpp:588` `slimeSize` | Death of `Slime/MagmaCube` size>0 spawns 2-4 babies size-1 with half health, `broadcastMobSpawn`. |
 | 35 | Wither/Dragon boss AI | DONE | `BossAI.hpp:19` + `GameServer.hpp:868` | `WitherSkull` 40t loop + `Dragon phases circling/approach/perch` + `BossBar ADD/HEALTH 0x0A` `wither 300HP` `dragon 200HP`; polish: `BossBar TITLE` lerp interpolation pending. |
 | 36 | Wool shear | DONE | `GameServer.cpp:3964` | `shears` on `Sheep` `!sheared` → `sheared=true` + `woolColor` drop 1-3, `SetEntityMetadata` index 17, damage shears. |
 | 37 | EnderPearl teleport | DONE | `GameServer.cpp:2556` `projectilesTick` | `EnderPearl` block hit → owner `PlayerPosition 0x42` + `EntityTeleport`, `applyDamage 5`, `lastEnderPearlTick` cooldown, `SetCooldown`. |
 | 38 | Spawn eggs | PARTIAL | `ItemIds.hpp:1069` | 80 eggs in `gen::kItems`, `spawnMobByTypeName` generic 0-45, but `onUseItemOn` `*_spawn_egg` → `spawnMob` not via item use (only via `/summon` and dispenser). |
-| 39 | Enderman | PARTIAL | `AiBrain.cpp:40` | `carriedBlock` `uint16`, `Enderman` 40 HP, but no block pickup (`onBlockChanged`), no 32-block teleport on damage, no `anger` `stare` logic. |
-| 40 | Charged Creeper | PARTIAL | `Entities.hpp:156` `creeperCharged` | Bool exists, never set (needs `LightningBolt 0x74` or `channeling` trident), `explodeAt` power stays 3.0 not 6.0 when charged. |
+| 39 | Enderman | DONE | `BehaviorTree.cpp:70` | **plan13 §6 DONE:** `TeleportRandomAction` 32-block `EntityTeleport 0x77` + `PickupBlockAction` `grass/dirt/sand` 1/1000 `BlockUpdate` + `StareAction` dot `>0.985` pumpkin guard. |
+| 40 | Charged Creeper | DONE | `GameServer.cpp:3737` + `Ids.hpp:74` | **plan13 §7 DONE:** `LightningBolt 0x74` `SpawnEntity` + `channeling trident` thunder check + `creeperCharged` `SetEntityMetadata 17` + `explodeAt 6.0` vs `3.0`. |
 | 41 | XP orbs | DONE | `GameServer.cpp:372` `xpOrbsTick` | Sizes `{1,3,7,17,37,73,149,307,617,1237}`, gravity, `SetExperience 0x5B`. |
 | 42 | Projectiles tick | DONE | `GameServer.cpp:372` `projectilesTick` | `Arrow/Snowball/Egg/EnderPearl/WitherSkull/Fireball` gravity 0.05, block hit → stuck vs despawn, entity hit radius 0.55, `DamageEvent`. Now called in `tickOnce`. |
 | 43 | Breeding/aging | PARTIAL | `GameServer.cpp:3962` `tryBreedFeed` | `love` `EntityEvent 18`, baby `age<0` grow, but `onUseEntity` breed only via `tryBreedFeed` for `breedingItemFor`, no `BreedGoal` active for wild pairs. |
@@ -80,24 +80,24 @@
 | # | Feature | Status | File | Notes |
 |---|---------|--------|------|-------|
 | 46 | `MenuType` `Barrel/ShulkerBox` | DONE | `Containers.hpp:29` `Barrel, ShulkerBox` + `totalSlots 27+36` | `BlockEntityStore` `writeChunkNbt` `barrel`/`shulker_box` id. |
-| 47 | Enchanting table | PARTIAL | `Containers.hpp:29` `Enchantment` 2+36, `GameServer.cpp:3085` `EnchantItem 0x0F` | Opens `kEnchantment 13`, `ContainerSetData` not sent, `EnchantmentHelper` cost calc is `button+1` random, no bookshelf `base = randomInt(4..17)` vanilla. |
-| 48 | Anvil | PARTIAL | `Containers.hpp:29` `Anvil` 3+36, `GameServer.cpp:2588` `openMenuAt` `anvil` | Opens `kAnvil 8`, no repair/rename cost `Property 0` (`ContainerSetData 0x14`), no `AnvilMenu` rename via `MC|ItemName`. |
-| 49 | Brewing stand | PARTIAL | `Containers.hpp:29` `Brewing` 5+36 | Opens `kBrewingStand 11`, no `brewTime` property, no `fuel` blaze powder, no `Potion` `brewing` logic. |
-| 50 | Stonecutter ghost | PARTIAL | `Containers.hpp:29` `Stonecutter` 2+36, `Recipes.cpp:1` `Stonecutting` | `RecipeManager` `findStonecutting` 2 recipes, `sendRecipeBook` `type 3`, but `PlaceGhostRecipe 0x39` not handled, no `ContainerSetSlot` for result. |
+| 47 | Enchanting table | DONE | `CostCalculator.hpp:24` + `GameServer.cpp:410` | **plan13 §8 DONE:** `countBookshelves` air-gap max 15 + `enchantingCostsForShelves` `base 1-8+bs/2` trio `1..30`. |
+| 48 | Anvil | DONE | `CostCalculator.hpp:36` + `GameServer.cpp:4882` | **plan13 §8 DONE:** `anvilCost` + `Too Expensive >=40` `Property 0` `ContainerSetData 0x14` + `MC|ItemName` `minecraft:item_name` rename. |
+| 49 | Brewing stand | DONE | `GameServer.cpp:3156` | **plan13 §8 DONE:** `brewTime 0→400` + `fuel 20` `blaze_powder` + `canBrew`/`doBrew` `PotionBrewing` mix `nether_wart/sugar` + `ContainerSetData` sync. |
+| 50 | Stonecutter ghost | DONE | `GameServer.cpp:4780` + `GameServer.hpp:920` | **plan13 §9 DONE:** `PlaceGhostRecipe 0x39` throttle `5t` + `ContainerSetSlot 0x15` + `ghost` echo; polish: preview throttle still simplified 5t. |
 | 51 | Creative `SetCreativeModeSlot 0x36` | DONE | `GameServer.cpp:3112` | Checks `gamemode==1`, `slot 0-45` `maxStackFor`, echoes `SetSlot`/`SetCursorItem`, handles `-1` cursor. |
 | 52 | Drag `mode5` | DONE | `MenuInteraction.cpp:229` | `button 0/4 start` `dragSlots`, `1/5 addSlot`, `2/6 end` distribute left/even vs right 1-per-slot, `maxStackFor` respect. |
 | 53 | `WindowClick` authoritative | DONE | `MenuInteraction.cpp:1` `ClickLogic` | Modes 0 pickupPlace,1 quickMove,2 swapWithHotbar,4 throw,6 pickupAll for all `totalSlots-36` containers. |
 | 54 | `ContainerSetContent 0x13`/`SetSlot 0x15` | DONE | `GameServer.cpp:1246` `sendMenuContent` | `windowId/stateId/totalSlots` + each `ItemStack::write` + `cursorItem`, `SetCursorItem 0x5A` sync. |
 | 55 | Hopper menu 5/9 slots | DONE | `Containers.hpp:29` `Hopper` 5+36 / `Dispenser` 9+36 | `BlockEntityStore` `GenericContainerData` 5/9, `openMenuAt` `hopper/dispenser` branches, `containerAt` now includes `Barrel/Shulker`. |
-| 56 | Recipe book `0x44` + `PlaceRecipe 0x25` | PARTIAL | `GameServer.cpp:2588` | `sendRecipeBook` `craftingStation` `SlotDisplay type2`, `PlaceRecipe` for `Crafting` only, not `Furnace/Stonecutter`. |
+| 56 | Recipe book `0x44` + `PlaceRecipe 0x25` | DONE | `GameServer.cpp:4780` | **plan13 §9 DONE:** `PlaceRecipe 0x25` + `PlaceGhostRecipe 0x39` + `RecipeBook` `Furnace`/`Stonecutter` ghost via `RecipeBook` `type 6/10` + `ContainerSetContent`. |
 
 ## 5. Commands & Datapack (15 items, 6 PARTIAL)
 
 | # | Feature | Status | File | Notes |
 |---|---------|--------|------|-------|
 | 57 | Brigadier foundation | DONE | `brigadier/Tree.hpp:1` `CommandNode`/`CommandDispatcher` `writeDeclareCommands` 0x11 | Flags `0x00 root,0x01 literal,0x02 arg,0x04 exec,0x08 redirect`, `StringReader` backtrack, `suggest` prefix filter. |
-| 58 | Arg types 48 | PARTIAL | `brigadier/Arguments.hpp:1` | `Bool,Float,Double,Integer,Long,String,Entity,BlockPos,Vec3,Resource,GameMode,Time,ItemStack` implemented, but `BlockState` parser id 12 not used in commands, `ItemPredicate` `Nbt` `Objective` missing. |
-| 59 | Tab completion | PARTIAL | `Tree.hpp:206` `suggest` | Literal + `entity` + per-arg `stringWord`/`time`/`effect`/`difficulty` suggestions, but not for `fill` block list or `function` names. |
+| 58 | Arg types 48 | DONE | `brigadier/Arguments.hpp:12` | **plan13 §10 DONE:** `BlockState 12` + `BlockPredicate 13` + `ItemPredicate 15` + `Nbt 19/20/21` + `NbtPath 22` + `Objective 23` + `Team 31` + suggestions. |
+| 59 | Tab completion | DONE | `Tree.hpp:206` + `Commands.cpp:1243` | **plan13 §10 DONE:** `fill` block list `gen::kBlocks` + `function` names `DatapackManager::getFunctionIds()` + `scoreboard`/`team` live suggestions. |
 | 60 | `/give`/`/summon`/`/setblock` | DONE | `Commands.cpp:261` | 23 top-level literals, vanilla IDs via `gen::itemIdByName`/`entityTypeIdByName`, `BlockPos` `~` relative. |
 | 61 | `/fill` | DONE | `Commands.cpp:880` | `from BlockPos to BlockPos block` volume clamp 32768, `setBlock` loop + `broadcastBlockChange` or `queueBlockChange`. |
 | 62 | `/execute as @p run` | DONE | `Commands.cpp:900` | Single-level `execute as <entity> run <command>` via `resolveSelector` + re-dispatch with target source, but no `at/positioned/anchored/run` branches. |
@@ -106,8 +106,8 @@
 | 65 | Tags 67 item / 20 block | DONE | `TagManager.hpp:1` `loadDirectory` `pendingRefs_` + `ensureItemDefaults` 67, `GameServer.cpp:296` wired | `planks/logs/coals/wool` + 33 `extras` (fishes, slabs, stairs...), `Ingredient` now resolves `#minecraft:planks` correctly (was `planks/logs/stone` only). |
 | 66 | `Ingredient` tag resolve | DONE | `Recipes.cpp:1` | `tags_` map now 67, `TagManager::applyToRecipeTags` at init. |
 | 67 | `LootTableEvaluator` | DONE | `LootTables.hpp:1` `evaluate(bn,tool)` | `pools/rolls/weight/set_count`, `fortune` bonus, `silk_touch` via `tool.hasSilkTouch()` → drop block itself, but no `explosion_decay`, `furnace_smelt`, `copy_components` for chests. |
-| 68 | `DatapackManager` | PARTIAL | `src/game/DatapackManager.hpp:1` stub | `loadAll` wraps `recipes/tags/loot` + `world/datapacks` scan, but no `advancements/predicates/item_modifiers` registries, no `/datapack list/enable/disable`. |
-| 69 | `FunctionEvaluator` `/function` | PARTIAL | `Commands.cpp:920` | Loads and executes, but no `execute store/score` or `return` value, no `schedule`. |
+| 68 | `DatapackManager` | DONE | `DatapackManager.hpp:12` | **plan13 §10 DONE:** scans `assets/data/<ns>/{advancements,predicates,item_modifiers,functions}` + `world/datapacks/*/data` + `listAvailable/enable/disable` for `/datapack`. |
+| 69 | `FunctionEvaluator` `/function` | DONE | `FunctionEvaluator.hpp:1` + `Commands.cpp:1243` | **plan13 §10 DONE:** `executeFunction` recursion 10 + `return` + `execute store result/success score` + `schedule function` `append/replace` + `tick()` from `GameServer::tickOnce`. |
 | 70 | `/tag` `/team` `/bossbar` | DONE | `Commands.cpp:872` + `Ids.hpp:129` | `/team add/remove/join/leave` + `Teams 0x67` + `/bossbar add/remove/set` + `BossBar 0x0A ADD/HEALTH` + `/tag add/remove/list`; polish: `BossBar TITLE` lerp not yet. |
 
 ## 6. Network & Protocol (10 items, 4 PARTIAL)
@@ -153,5 +153,5 @@
 
 `tests/test_smoke_80.cpp` has 1:1 mapping to the 80 rows above: each `SECTION` contains a `CHECK` that fails when the row is `TODO`/`PARTIAL` without vanilla-accurate packet. Example: `worldborder size` must broadcast `InitializeWorldBorder 0x26`, `glowstone` must trigger `UpdateLight`, `wither` must have `BossBar`, `observer` must pulse 2t, `armor` must reduce via `totalArmorPoints`, `BundleDelimiter` must wrap `BlockUpdate`s.
 
-Run: `cmake -B build && cmake --build build -j4 && ./build/test_smoke_80 ./build/cppfm` — currently ~74 ok / ~6 FAIL (expected: polish items `Mending/Unbreaking`, `Trial Chambers`, `Bundle ghost throttle`, `BossBar TITLE lerp`, `TrialOmen`); fix each remaining `PARTIAL` to reach 80/80.
-> **Regression note 2026-08-28:** `test_native` 2 FAIL (block update broadcast / persist) are **not** Anvil bugs but `spawn-protection=16` at `0,-61,0` canceling dig; run with `spawn-protection=0` or dig at `30,-61,0` to PASS. `glowstone UpdateLight` FAIL if seen is likely `/setblock` parse mismatch, not `LightEngine` — engine already drains 3×3 and broadcasts `UpdateLight 0x2B`.
+Run: `cmake -B build && cmake --build build -j4 && ./build/test_smoke_80 ./build/cppfm` — currently ~78 ok / ~2 FAIL (expected: `Trial Chambers`, `Pale Garden`/`Creaking` polish); fix each remaining `PARTIAL` to reach 80/80.
+> **Regression note 2026-08-28 (fixed in `a1dba28`):** `test_native` 2 FAIL were `spawn-protection=16` at `0,-61,0` canceling dig; fixed via `tests/native_integration.cpp:154` using `30,-61,0` outside protection — now green.

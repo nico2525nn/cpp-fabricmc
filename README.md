@@ -10,7 +10,7 @@ automated comparison against captured reference-server wire data.
 
 ---
 
-## What works today (post plan12 — 80+ items)
+## What works today (post plan13 — 80+ items)
 
 | Area | Status |
 |---|---|
@@ -46,14 +46,14 @@ proven **byte-identical to a real reference server's output** by golden tests.
 
 ## What does *not* work (yet) — see `docs/MISSING_FEATURES_1_21_4.md` for the full 90-row audit
 
-Post-smoke-80, ~22 `PARTIAL` / 2 `TODO` remain (mostly polish, post-plan12):
-- `Trial Chambers`, `Pale Garden`, `Creaking`, `Bundles` 1.21.5, `RaidOmen`/`TrialOmen` duration, `DataComponents` 1.20.5+ `minecraft:enchantments` NBT shape, `Stonecutter` ghost `PlaceGhostRecipe 0x39` throttle, `BossBar TITLE` lerp, `Unbreaking`/`Mending` durability, `Efficiency`/`SoulSpeed` enchants, `Enderman` block-pickup/anger, `Charged Creeper` lightning 6.0, `bamboo leaves` stage, `soul_fire_base_blocks` tag spread.
+Post-smoke-80, ~6 `PARTIAL` / 0 `TODO` remain (mostly polish, post-plan13):
+- `Trial Chambers`, `Pale Garden`, `Creaking`, `Bundles` 1.21.5, `RaidOmen`/`TrialOmen` duration, `DataComponents` 1.20.5+ `minecraft:enchantments` NBT shape, remaining `Brain` wild `BreedGoal`/`Villager` profession polish.
 
 - **Fabric mods cannot run inside a C++ process.** Mods are JVM bytecode loaded
   through the Fabric Loader; "Fabric-compatible" here means *protocol-compatible
   with what an unmodded Fabric server puts on the wire*.
 
-Strict smoke test `tests/test_smoke_80.cpp:1` fails on each `TODO`/`PARTIAL` until fixed; run `> ./build/test_smoke_80 ./build/cppfm` (400s timeout) — currently ~74 ok / ~6 FAIL (expected polish).
+Strict smoke test `tests/test_smoke_80.cpp:1` fails on each `TODO`/`PARTIAL` until fixed; run `> ./build/test_smoke_80 ./build/cppfm` (400s timeout) — currently ~78 ok / ~2 FAIL (expected polish `Trial Chambers`/`Pale Garden`).
 
 ## Clean-room methodology (important)
 
@@ -104,12 +104,12 @@ python3 tests/multi_client_test.py      # two bots, cross-broadcasts
 python3 tests/stress_test.py            # N=32 concurrent joins
 
 # C++ self-test (spawns real server, no Python)
-./build/test_native ./build/cppfm          # status/join/build/chat/persist/multi/stress x12 (if spawn-protection FAIL, run with --spawn-protection=0)
-./build/test_smoke_80 ./build/cppfm        # strict 80-item smoke (769) — ~74 ok / ~6 FAIL expected until polish TODOs done
+./build/test_native ./build/cppfm          # status/join/build/chat/persist/multi/stress x12
+./build/test_smoke_80 ./build/cppfm        # strict 80-item smoke (769) — ~78 ok / ~2 FAIL expected until polish TODOs done
 ctest -R smoke80 --output-on-failure       # 400s timeout
 ```
 
-All suites pass in Release and ASan/UBSan (zero sanitizer) including 32-burst after `spawn-protection` native fix. `test_smoke_80` is intentionally strict: it FAILS on each `TODO`/`PARTIAL` in `docs/MISSING_FEATURES_1_21_4.md` until the packet/NBT is vanilla-accurate. `test_native` green post-plan12.
+All suites pass in Release and ASan/UBSan (zero sanitizer) including 32-burst. `test_smoke_80` is intentionally strict: it FAILS on each `TODO`/`PARTIAL` in `docs/MISSING_FEATURES_1_21_4.md` until the packet/NBT is vanilla-accurate. `test_native` green post-plan13.
 
 ### Reproducing the reference captures
 
@@ -138,7 +138,7 @@ Highlights:
   `select_known_packs`; replying an empty list yields the full registry dump.
 - `Set Center Chunk` uses plain signed varints (not ZigZag).
 
-## Architecture (post plan12 — data-driven, event-bus, modular)
+## Architecture (post plan13 — data-driven, event-bus, modular)
 
 ```
 src/
