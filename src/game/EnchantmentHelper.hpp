@@ -1,4 +1,5 @@
 // EnchantmentHelper — plan8 entity section
+// plan22 combat polish: E7 strict weight 1 for Protection (was 2 for fire/explosion/projectile), sonic_boom bypass all
 // Centralizes enchantment calculations: protection EPF, sharpness, efficiency, etc.
 // Vanilla formulas referenced from plan8.md § Enchant effects.
 #pragma once
@@ -16,16 +17,16 @@ public:
     // EPF weighting: protection=1, fire/blast/projectile=2 when matching damage type, feather=3 for fall.
     static int getProtectionEPF(const DamageSource& ds, const ItemStack& stack) {
         if (ds.bypassEnchant || ds.isDrown() || ds.isStarveFlag) return 0;
+        // plan22 combat polish: sonic_boom bypasses all enchantments (including protection)
+        if (ds.isSonic()) return 0;
         int prot = std::max(stack.enchantLevel("protection"), stack.enchantLevel("minecraft:protection"));
         int fire = std::max(stack.enchantLevel("fire_protection"), stack.enchantLevel("minecraft:fire_protection"));
         int blast= std::max(stack.enchantLevel("blast_protection"), stack.enchantLevel("minecraft:blast_protection"));
         int proj = std::max(stack.enchantLevel("projectile_protection"), stack.enchantLevel("minecraft:projectile_protection"));
         int feather= std::max(stack.enchantLevel("feather_falling"), stack.enchantLevel("minecraft:feather_falling"));
         int total=0;
-        int weight = 1;
-        if (ds.isFire() || ds.isExplosion() || ds.isProjectile()) weight=2;
-        else if (ds.isFall()) weight=1;
-        total += prot * weight;
+        // plan22 E7 strict: Protection weight 1 for all (was prot*2 for fire/explosion/projectile)
+        total += prot;
         if (ds.isFire()) total += fire*2;
         if (ds.isExplosion()) total += blast*2;
         if (ds.isProjectile()) total += proj*2;

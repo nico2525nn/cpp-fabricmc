@@ -5,6 +5,7 @@
 // plan15 combat strict: expanded 11→32 per Yarn 1.21.4 EntityAttributes (attack_knockback/block_break_speed/gravity etc)
 // + ARMOR/TOUGHNESS/KB_RESIST sync via UpdateAttributes 0x7C — caps 30/20 verified 2026-08-28
 // plan21 combat polish: 32 attributes retry verify, ARMOR 30/TOUGHNESS 20 caps, GRAVITY 0.08 etc, sync via 0x7C (retry).
+// plan22 combat polish: verify 32 attributes (E5) with correct bases, caps 30/20, ovoid 15x20 sonic boom連携
 #pragma once
 #include <string>
 #include <unordered_map>
