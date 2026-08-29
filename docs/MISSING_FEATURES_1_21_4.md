@@ -122,7 +122,7 @@
 | 76 | KeepAlive `0x26` / `Cookie` / `ResourcePack` | DONE | `GameServer.cpp:80` | `KeepAlive` 10s send `i64`, 30s timeout `Disconnect Timed out`, 60s idle sweep, `StoreCookie 0x0A/0x72` + `CookieRequest 0x00/0x16` with `world/data/cookies` persistence, `AddResourcePack 0x09` `url/sha1/forced` (SHA1 not verified, forced kick not). |
 | 77 | `DeclareCommands 0x11` | DONE | `Tree.hpp:193` `writeDeclareCommands` | Flatten DFS, flags `0x01 literal,0x02 arg,0x04 exec,0x08 redirect`, `parserId` 0-48. |
 | 78 | `ChunkData` + `UpdateLight` | DONE | `ChunkCodec.hpp:182` | `LevelChunkWithLight 0x27` `writePalettedContainer` longCount even for single palette, `biome` 40/desert 14 etc., `UpdateLight 0x25` via `serializeUpdateLightBody`. |
-| 79 | `BossBar 0x0A` / `Teams 0x67` | DONE | `Ids.hpp:129` + `Teams.hpp:1` | `ScoreboardObjective 0x64`/`Score 0x68`/`Display 0x5C` + `BossBar 0x0A ADD/HEALTH/TITLE` (`BossAI` `wither/dragon`) + `Teams 0x67 create/remove/join` via `Commands.cpp:872` + `GameServer.hpp:586` sync on join. |
+| 79 | `BossBar 0x0A` / `Teams 0x67` | DONE | `Ids.hpp:129` + `Teams.hpp:1` | `ScoreboardObjective 0x64`/`Score 0x68`/`ResetScore 0x49`/`Display 0x5C` + `BossBar 0x0A ADD/HEALTH/TITLE` (`BossAI` `wither/dragon`) + `Teams 0x67 create/remove/join` via `Commands.cpp:872` + `GameServer.hpp:586` sync on join. `ResetScore 0x49` (`Prismarine 0x49 vs 0x68`, PR #806) wired via `Scoreboard::writeResetScorePacket` + `GameServer::sendResetScoreAll` + `Commands /scoreboard players reset` + `FunctionEvaluator` + `Session::run` disconnect wildcard + `removeObjectiveWithReset`. |
 
 ## 7. Combat & Survival (12 items, 6 PARTIAL)
 
