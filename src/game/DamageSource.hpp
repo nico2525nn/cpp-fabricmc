@@ -77,7 +77,7 @@ struct DamageSource {
         if (lower == "starve" || lower == "starvation") { isStarveFlag = true; bypassArmor = true; bypassEnchant = true; }
         if (lower == "lightning" || lower == "lightningbolt") isLightningFlag = true;
         if (lower == "cramming" || lower.find("cram") != std::string::npos) isCrammingFlag = true;
-        if (lower == "sonic_boom" || lower == "sonicboom" || lower.find("sonic") != std::string::npos) { isSonicFlag = true; bypassArmor = true; }
+        if (lower == "sonic_boom" || lower == "sonicboom" || lower.find("sonic") != std::string::npos) { isSonicFlag = true; bypassArmor = true; bypassEnchant = true; }
         // plan15 strict: fall bypasses armor (bypassArmor true) but not enchant (feather_falling still applies) per DamageSource bypasses_armor tag
     }
 
@@ -91,7 +91,7 @@ struct DamageSource {
     static DamageSource freeze() { DamageSource s("freeze"); s.isFreezeFlag = true; return s; }
     static DamageSource starve() { DamageSource s("starve"); s.isStarveFlag = true; s.bypassArmor = true; s.bypassEnchant = true; return s; }
     static DamageSource lightning() { DamageSource s("lightningBolt"); s.isLightningFlag = true; return s; }
-    static DamageSource sonicBoom() { DamageSource s("sonic_boom"); s.isSonicFlag = true; s.bypassArmor = true; return s; }
+    static DamageSource sonicBoom() { DamageSource s("sonic_boom"); s.isSonicFlag = true; s.bypassArmor = true; s.bypassEnchant = true; return s; }
     static DamageSource generic() { return DamageSource("generic"); }
     static DamageSource fromString(const std::string& t) { return DamageSource(t); }
     static DamageSource fromCStr(const char* t) { return DamageSource(std::string(t)); }

@@ -204,7 +204,7 @@ inline const MobStats& mobStats(MobKind k) {
         // expanded 48->86 via gen (strict audit HIGH E1)
         {"minecraft:armadillo",      12.f, 0.09f, 0.f, false,false,"minecraft:armadillo_scute",1,1,nullptr,                0},
         {"minecraft:bee",            10.f, 0.10f, 2.f, false,false,nullptr,0,0,nullptr,                                     0},
-        {"minecraft:bogged",         20.f, 0.10f, 2.f, true, false,"minecraft:arrow",0,2,nullptr,                           5},
+        {"minecraft:bogged",         16.f, 0.10f, 2.f, true, false,"minecraft:arrow",0,2,nullptr,                           5},
         {"minecraft:breeze",         30.f, 0.09f, 6.f, true, false,"minecraft:breeze_rod",0,1,nullptr,                      5},
         {"minecraft:camel",          32.f, 0.09f, 0.f, false,false,nullptr,0,0,nullptr,                                     0},
         {"minecraft:cat",            10.f, 0.10f, 3.f, false,false,nullptr,0,0,nullptr,                                     0},

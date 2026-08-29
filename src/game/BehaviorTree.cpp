@@ -237,14 +237,14 @@ BTStatus WitherSkullAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now)
     double d = std::sqrt(dx*dx+dz*dz);
     if (d>32) return BTStatus::Failure;
     double inv = 1.0/ (d+1e-6);
-    // plan21 E3: Wither skull 3-burst (vanilla WitherEntity shoots 3 skulls per attack, central + 2 side heads with spread)
-    // plan21 adds charged (blue) skull when health <= half (150) for head 0, with 3-burst and armor bypass via projectile
+    // plan22 E3: Wither skull 3-burst conditional (half health -> 3 burst, else single) + charged blue on last skull when half
     if (ctx.srv) {
         const float maxH = mobStats(m.kind).maxHealth;
         bool halfHealth = m.health <= maxH * 0.5f;
-        for (int burst=0; burst<3; ++burst) {
-            double spreadX = (burst==0?0:(burst==1?-0.35:0.35));
-            double spreadZ = (burst==0?0:(burst==1?0.35:-0.35));
+        int bursts = halfHealth ? 3 : 1;
+        for (int burst=0; burst<bursts; ++burst) {
+            double spreadX = (bursts==1?0:(burst==0?0:(burst==1?-0.35:0.35)));
+            double spreadZ = (bursts==1?0:(burst==0?0:(burst==1?0.35:-0.35)));
             double yawRad = m.yaw * 3.1415926535 / 180.0;
             double offX = std::cos(yawRad)*spreadX - std::sin(yawRad)*spreadZ;
             double offZ = std::sin(yawRad)*spreadX + std::cos(yawRad)*spreadZ;
@@ -253,12 +253,16 @@ BTStatus WitherSkullAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now)
             double vy = dy*inv*0.6 + 0.2 + (rand()/(double)RAND_MAX-0.5)*0.05;
             double sx = m.x + offX;
             double sz = m.z + offZ;
-            bool charged = halfHealth && burst==0; // head 0 charged (blue) when <= half health
+            bool charged = halfHealth && burst==bursts-1; // last skull blue (charged) when half health (plan22 §9)
             ctx.srv->spawnProjectile(ProjectileKind::WitherSkull, sx, m.y+1.5, sz, vx, vy, vz, m.entityId, false, charged);
         }
         ctx.srv->broadcastSound("minecraft:entity.wither.shoot", m.x, m.y, m.z, 1.0f, 1.0f, "hostile");
     }
-    m.witherSkullCooldown = (int)(now + 40 + rand()%40);
+    {
+        const float maxH = mobStats(m.kind).maxHealth;
+        bool halfHealth = m.health <= maxH * 0.5f;
+        m.witherSkullCooldown = (int)(now + (halfHealth ? 20 + rand()%20 : 40 + rand()%40));
+    }
     return BTStatus::Success;
 }
 
@@ -449,15 +453,13 @@ BTStatus WardenSonicBoomAction::tick(MobEntity& m, AiContext& ctx, std::int64_t 
     if (m.witherSkullCooldown > now) return BTStatus::Failure;
     Player* t = ctx.nearestPlayer;
     if (!t) return BTStatus::Failure;
-    // plan21 E4: sonic boom 15x20 ovoid (horizontal 15, vertical 20), armor bypass, through walls, 10 damage (15 hard)
+    // plan22 E4: sonic boom 15×20 cylinder (horizontal <=15, vertical <=20 independent, NOT ellipsoid) + bypass armor/enchant/shield, through walls
     auto isInSonicBoomRange = [](double wx, double wy, double wz, double tx, double ty, double tz) -> bool {
         double dx = tx - wx, dz = tz - wz, dy = ty - wy;
-        double horiz2 = dx*dx + dz*dz;
-        if (horiz2 > 15*15) return false;
-        if (std::abs(dy) > 20) return false;
-        double hn = std::sqrt(horiz2) / 15.0;
-        double vn = std::abs(dy) / 20.0;
-        return hn*hn + vn*vn <= 1.0; // ovoid ellipsoid
+        double horiz = std::sqrt(dx*dx + dz*dz);
+        if (horiz > 15.0) return false;
+        if (std::abs(dy) > 20.0) return false;
+        return true; // cylinder, not ovoid ellipsoid (plan22 §10)
     };
     double dy = (t->y + 0.9) - (m.y + 1.0);
     if (!isInSonicBoomRange(m.x, m.y+1.0, m.z, t->x, t->y+0.9, t->z)) {
@@ -470,7 +472,7 @@ BTStatus WardenSonicBoomAction::tick(MobEntity& m, AiContext& ctx, std::int64_t 
         return BTStatus::Running;
     }
     if (ctx.srv) {
-        // strict audit HIGH: sonic boom bypasses armor (bypassArmor=true) 15x20 ovoid, 10 damage (15 hard), no knockback, pierces shields
+        // plan22 E4: sonic boom bypasses armor/enchant/shield (bypassArmor/bypassEnchant), 15×20 cylinder, 10 damage (15 hard), no knockback, pierces walls
         float dmg = 10.0f;
         if (ctx.srv->difficulty() == "hard") dmg = 15.0f;
         ctx.srv->applyDamage(*t, dmg, DamageSource::sonicBoom());
@@ -488,7 +490,7 @@ BTStatus WardenSonicBoomAction::tick(MobEntity& m, AiContext& ctx, std::int64_t 
             (void)p;
         }
     }
-    m.witherSkullCooldown = (int)(now + 80);
+    m.witherSkullCooldown = (int)(now + 40); // plan22 E4: 2s cooldown (40t) not 80
     return BTStatus::Success;
 }
 
