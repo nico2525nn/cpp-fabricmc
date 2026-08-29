@@ -4730,28 +4730,56 @@ void GameServer::boatsTick() {
 bool GameServer::spawnMobByTypeName(const std::string& name, double x, double y,
                                      double z) {
     // Plan8: handle lightning_bolt via strikeLightning (charged creeper)
+    // plan22 inventory polish: expand 107->149 (MobKind 149, Yarn EntityType parity E1) for SpawnEgg linkage
+    // Use dynamic count via MobKind::WitherSkull+1 so future 149+ stays correct; also handle bare name + prefix fallback
     if (name=="minecraft:lightning_bolt" || name=="lightning_bolt" || name=="minecraft:lightning") {
         strikeLightning(x,y,z);
         return true;
     }
-    for (int i = 0; i < 107; ++i) {
+    constexpr int kMobCount = static_cast<int>(MobKind::WitherSkull) + 1; // 149 in 1.21.4
+    for (int i = 0; i < kMobCount; ++i) {
         auto kind = static_cast<MobKind>(i);
         const char* n = MobEntity::kindName(kind);
         if (name == n) { spawnMob(kind, x, y, z); return true; }
     }
     if (name.find(':') == std::string::npos) {
         std::string full = "minecraft:" + name;
-        for (int i = 0; i < 107; ++i) {
+        for (int i = 0; i < kMobCount; ++i) {
             auto kind = static_cast<MobKind>(i);
             if (full == MobEntity::kindName(kind)) { spawnMob(kind, x, y, z); return true; }
+        }
+        // also try without prefix via entityTypeId map (some callers pass short name)
+        auto it2 = gen::entityTypeIdByName().find(full);
+        if (it2 != gen::entityTypeIdByName().end()) {
+            for (int i = 0; i < kMobCount; ++i) {
+                auto kind = static_cast<MobKind>(i);
+                if (MobEntity::typeId(kind) == it2->second) { spawnMob(kind, x, y, z); return true; }
+            }
         }
     }
     auto it = gen::entityTypeIdByName().find(name);
     if (it != gen::entityTypeIdByName().end()) {
-        for (int i = 0; i < 107; ++i) {
+        for (int i = 0; i < kMobCount; ++i) {
             auto kind = static_cast<MobKind>(i);
             if (MobEntity::typeId(kind) == it->second) { spawnMob(kind, x, y, z); return true; }
         }
+        // fallback: handle short name without minecraft: via map (e.g., "armadillo")
+        if (name.find(':') != std::string::npos) {
+            auto shortName = name.substr(name.find(':')+1);
+            auto itS = gen::entityTypeIdByName().find(shortName);
+            if (itS != gen::entityTypeIdByName().end()) {
+                for (int i = 0; i < kMobCount; ++i) {
+                    auto kind = static_cast<MobKind>(i);
+                    if (MobEntity::typeId(kind) == itS->second) { spawnMob(kind, x, y, z); return true; }
+                }
+            }
+        }
+    }
+    // also handle spawn_egg style name directly (e.g., "minecraft:armadillo" from "minecraft:armadillo_spawn_egg" already stripped)
+    // but if caller passes the egg name itself, strip suffix and retry once
+    if (name.ends_with("_spawn_egg")) {
+        std::string base = name.substr(0, name.size()-std::string("_spawn_egg").size());
+        if (base != name) return spawnMobByTypeName(base, x, y, z);
     }
     return false;
 }
@@ -4943,6 +4971,36 @@ void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
             }
         }
     }
+    // plan22 inventory polish: Cartography Table output take (slot 2) — map duplication (vanilla CartographyTableScreenHandler)
+    // Yarn `CartographyTableScreenHandler` slots: 0 map, 1 paper, 2 result (filled_map clone). Take result consumes paper.
+    if (m.type == MenuType::CartographyTable && slot == 2 && mode == 0 && button == 0) {
+        ItemStack* mapIn = m.container ? &m.container[0] : &m.extraSlots[0];
+        ItemStack* paperIn = m.container ? &m.container[1] : &m.extraSlots[1];
+        ItemStack* out = m.container ? &m.container[2] : &m.extraSlots[2];
+        if (!out->empty() && !mapIn->empty() && !paperIn->empty()) {
+            // Validate map duplication recipe: filled_map + paper -> filled_map clone
+            bool isFilledMap = out->name() == "minecraft:filled_map" || mapIn->name() == "minecraft:filled_map";
+            bool isPaper = paperIn->name() == "minecraft:paper";
+            if (isFilledMap && isPaper) {
+                if (cursorItem_.empty()) cursorItem_ = *out;
+                else if (cursorItem_.itemId == out->itemId && cursorItem_.count + out->count <= 64) cursorItem_.count = static_cast<std::int16_t>(cursorItem_.count + out->count);
+                else srv_.addToInventory(*self_, out->itemId, out->count);
+                if (--paperIn->count <= 0) *paperIn = ItemStack::air();
+                // map slot is not consumed (vanilla duplicates map, not consumes); vanilla keeps map and only consumes paper
+                // Duplicate output is single map copy already given; clear output and recompute
+                *out = ItemStack::air();
+                if (!mapIn->empty() && !paperIn->empty()) {
+                    // recompute output: clone map (preserve components like map_id)
+                    *out = *mapIn;
+                    out->count = 1;
+                }
+                sendMenuContent(m);
+                syncCursorItem();
+                sendSetSlot(m.windowId, self_->invStateId, 2, *out);
+                return;
+            }
+        }
+    }
     SessionMenuIo io(*this);
     // Plan7 MenuLogic dispatch — per-menu-type object-oriented handling for Anvil/Enchantment/Brewing etc.
     if (auto* logic = getMenuLogic(m.type)) {
@@ -4980,6 +5038,30 @@ void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
             *out = ItemStack::air();
         }
         sendSetSlot(m.windowId, self_->invStateId, 1, *out);
+    }
+    // plan22 inventory polish: Cartography Table ghost output — map clone preview (I10)
+    // vanilla: filled_map + paper -> filled_map copy (count 1); paper consumed on take, map preserved
+    if (m.type == MenuType::CartographyTable) {
+        ItemStack* mapIn = m.container ? &m.container[0] : &m.extraSlots[0];
+        ItemStack* paperIn = m.container ? &m.container[1] : &m.extraSlots[1];
+        ItemStack* out = m.container ? &m.container[2] : &m.extraSlots[2];
+        bool canClone = false;
+        if (!mapIn->empty() && !paperIn->empty()) {
+            std::string mn = mapIn->name();
+            std::string pn = paperIn->name();
+            // allow filled_map + paper -> filled_map copy, also map + paper
+            bool isMap = (mn == "minecraft:filled_map" || mn == "minecraft:map");
+            bool isPaper = (pn == "minecraft:paper");
+            canClone = isMap && isPaper;
+        }
+        if (canClone) {
+            *out = *mapIn;
+            out->count = 1;
+            // preserve map_id etc via components already copied
+        } else {
+            *out = ItemStack::air();
+        }
+        sendSetSlot(m.windowId, self_->invStateId, 2, *out);
     }
     if (m.type == MenuType::Anvil) {
         std::string rename = m.anvilRename;
