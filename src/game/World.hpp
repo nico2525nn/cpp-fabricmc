@@ -345,6 +345,9 @@ public:
         std::shared_lock lock(mutex_);
         return chunks_.size();
     }
+    // W19 async cap: Yarn getTotalChunksLoadedCount / getLoadedChunkCount
+    std::size_t getTotalChunksLoadedCount() const { return loadedChunkCount(); }
+    int getLoadedChunkCount() const { return static_cast<int>(loadedChunkCount()); }
     void addForcedChunk(std::int32_t cx, std::int32_t cz) {
         std::unique_lock lock(mutex_);
         forcedChunks_.insert(chunkKey(cx, cz));
@@ -352,7 +355,8 @@ public:
     }
     void addSpawnTicket(std::int32_t cx, std::int32_t cz, std::int64_t tick = 0) {
         std::unique_lock lock(mutex_);
-        forcedChunks_.insert(chunkKey(cx, cz));
+        // W17 strict: SPAWN tickets must NOT pollute ForcedChunks persistence (avoid maxLoadedChunks inflation)
+        // Only add to ticketManager, not forcedChunks_ set (Yarn spawn chunk loader is transient)
         ticketManager_.addTicket(cx, cz, TicketType::SPAWN, 31, tick);
     }
     bool isForced(std::int32_t cx, std::int32_t cz) const {
@@ -386,7 +390,7 @@ public:
     void restoreForcedChunk(std::int32_t cx, std::int32_t cz) {
         std::unique_lock lock(mutex_);
         forcedChunks_.insert(chunkKey(cx, cz));
-        ticketManager_.addTicket(cx, cz, TicketType::SPAWN, 31, 0);
+        ticketManager_.addTicket(cx, cz, TicketType::FORCED, 31, 0);
     }
     // W17 strict: ForcedChunkState helpers (Yarn ForcedChunkState/PersistentState)
     struct ForcedChunkState {
