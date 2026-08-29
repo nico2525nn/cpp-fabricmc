@@ -1,8 +1,8 @@
 // Packet IDs for Minecraft Java 1.21.4 (protocol 769).
 // Verified against PrismarineJS minecraft-data 1.21.4 protocol.json (version-
 // pinned) + live wire captures (docs/PROTOCOL_NOTES.md). Strict 1.21.4:
-// TradeList 0x2D (not 0x2E), ContainerSetContent 0x12 (not 0x13), OpenScreen
-// 0x34 (not 0x35), KeepAlive 0x26 (not 0x27), UpdateLight 0x2B — fixed plan15.
+// TradeList 0x2E (not 0x2D), ContainerSetContent 0x13 (not 0x12), OpenScreen
+// 0x35 (not 0x34), KeepAlive 0x27 (not 0x26), UpdateLight 0x2B, LevelChunkWithLight 0x28 — fixed plan23 network (prism verified).
 // Login EncryptionRequest includes shouldAuthenticate bool true (N5).
 // Play BundleDelimiter 0x00 + MultiBlockChange 0x4E with ly<<8|lz<<4|lx (N7).
 #pragma once
@@ -130,7 +130,7 @@ constexpr std::uint8_t BlockEntityData = 0x07;
 constexpr std::uint8_t BlockAction = 0x08;
 constexpr std::uint8_t BlockUpdate = 0x09;
 constexpr std::uint8_t BossBar = 0x0A;
-constexpr std::uint8_t TradeList = 0x2D;
+constexpr std::uint8_t TradeList = 0x2E;
 constexpr std::uint8_t ChangeDifficulty = 0x0B;
 constexpr std::uint8_t ChunkBatchFinished = 0x0C;
 constexpr std::uint8_t ChunkBatchStart = 0x0D;
@@ -148,10 +148,10 @@ constexpr std::uint8_t ScoreboardDisplayObjective = 0x5C;
 constexpr std::uint8_t ScoreboardObjective = 0x64;
 constexpr std::uint8_t Teams = 0x67;
 constexpr std::uint8_t ScoreboardScore = 0x68;
-constexpr std::uint8_t CommandSuggestions = 0x10; // tab-complete response
+constexpr std::uint8_t CommandSuggestions = 0x10; // tab-complete response (packet_tab_complete 0x10)
 constexpr std::uint8_t DeclareCommands = 0x11;
 constexpr std::uint8_t CloseContainer = 0x12;
-constexpr std::uint8_t ContainerSetContent = 0x12;// window items
+constexpr std::uint8_t ContainerSetContent = 0x13;// window items (0x13 per protocol.json, not 0x12)
 constexpr std::uint8_t ContainerSetData = 0x14;   // window property (furnace)
 constexpr std::uint8_t ContainerSetSlot = 0x15;   // set slot
 constexpr std::uint8_t CookieRequest = 0x16;
@@ -164,7 +164,7 @@ constexpr std::uint8_t EntityEvent = 0x1F;        // entity status
 constexpr std::uint8_t Explosion = 0x21;
 constexpr std::uint8_t ForgetLevelChunk = 0x22;
 constexpr std::uint8_t GameEvent = 0x23;
-constexpr std::uint8_t KeepAlive = 0x26;
+constexpr std::uint8_t KeepAlive = 0x27;
 constexpr std::uint8_t LevelChunkWithLight = 0x28;
 constexpr std::uint8_t WorldEvent = 0x29;
 constexpr std::uint8_t WorldParticles = 0x2A;
@@ -173,7 +173,7 @@ constexpr std::uint8_t Login = 0x2C;              // join game
 constexpr std::uint8_t MoveEntityPos = 0x2F;
 constexpr std::uint8_t MoveEntityPosRot = 0x30;
 constexpr std::uint8_t EntityLook = 0x32;
-constexpr std::uint8_t OpenScreen = 0x34;
+constexpr std::uint8_t OpenScreen = 0x35;
 constexpr std::uint8_t PingResponse = 0x38;
 constexpr std::uint8_t PlaceGhostRecipe = 0x39;
 constexpr std::uint8_t Abilities = 0x3A;

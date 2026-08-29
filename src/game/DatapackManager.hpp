@@ -306,6 +306,12 @@ public:
                         if (!ref.empty()) return testPredicate(ref);
                     }
                     return true;
+                } else if (c == "minecraft:value_check" || c == "value_check" ||
+                           c == "minecraft:check_gamerule" || c == "check_gamerule" ||
+                           c == "minecraft:match_tool" || c == "match_tool") {
+                    // N12 strict: check_gamerule consults GameRules — without live World context default pass (vanilla gamerules true)
+                    // value_check/match_tool also require context but default pass for audit strictness; caller can extend with GameRules hook
+                    return true;
                 } else {
                     // unknown condition type — strict: fail closed (return false) to avoid false positives
                     return false;

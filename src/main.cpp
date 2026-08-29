@@ -53,7 +53,9 @@ static void loadProperties(ServerConfig& c, const std::string& path) {
             v = props.get<bool>("enforces-secure-chat", v);
             c.enforcesSecureChat = v;
         }
-        if (props.has("compression-threshold")) c.compressionThreshold = props.get<int>("compression-threshold", c.compressionThreshold);
+        if (props.has("network-compression-threshold") || props.has("compression-threshold")) {
+            c.compressionThreshold = props.get<int>("network-compression-threshold", props.get<int>("compression-threshold", c.compressionThreshold));
+        }
         // W19 maxLoadedChunks: respect explicit max-loaded-chunks else auto max(8192, viewDist²*4) (plan21 §3)
         if (props.has("max-loaded-chunks") || props.has("maxLoadedChunks")) {
             c.maxLoadedChunks = std::max(0, props.get<int>("max-loaded-chunks", props.get<int>("maxLoadedChunks", c.maxLoadedChunks)));
