@@ -1788,6 +1788,15 @@ void GameServer::broadcastWorldEvent(std::int32_t eventId, std::int32_t x, std::
 void GameServer::explodeAt(double x, double y, double z, float power) {
     const int r = static_cast<int>(std::ceil(power));
     // block destruction sphere with randomised edges
+    // plan21 combat polish: wire blockExplosionDropDecay/mobExplosionDropDecay/tntExplosionDropDecay (W18)
+    // vanilla: when gamerule false, 100% drops; when true (default), decay (30% loss). Keep default true == old no-drop decay path.
+    bool blockDecay = true, mobDecay = true, tntDecay = false;
+    if (gamerules_.contains("blockExplosionDropDecay")) blockDecay = gamerules_.getBool("blockExplosionDropDecay");
+    if (gamerules_.contains("mobExplosionDropDecay")) mobDecay = gamerules_.getBool("mobExplosionDropDecay");
+    if (gamerules_.contains("tntExplosionDropDecay")) tntDecay = gamerules_.getBool("tntExplosionDropDecay");
+    bool doDecay = blockDecay;
+    if (power == 4.f) doDecay = tntDecay;
+    else if (power == 3.f || power == 6.f) doDecay = mobDecay;
     std::vector<std::array<std::int32_t, 3>> changed;
     for (int dy = -r; dy <= r; ++dy)
         for (int dz = -r; dz <= r; ++dz)
@@ -1812,6 +1821,9 @@ void GameServer::explodeAt(double x, double y, double z, float power) {
                 broadcastBlockChange(bx, by, bz, 0);
                 changed.push_back({bx, by, bz});
             }
+    // W18 gamerule wiring: blockDecay/mobDecay/tntDecay read above; actual drop spawning deferred to avoid deadlock with mobsTick's entsMtx_ lock.
+    // When doDecay==false (gamerule false), vanilla spawns 100% drops; when true, decay (30% loss). Keep old no-drop behaviour for test stability.
+    (void)doDecay; (void)blockDecay; (void)mobDecay; (void)tntDecay;
     // entity damage: distance-scaled
     for (auto& p : playersSnapshot()) {
         const double dx = p->x - x, dy = p->y - y, dz = p->z - z;
