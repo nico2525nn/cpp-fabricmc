@@ -5,7 +5,7 @@
 // plan20 combat polish: verify hunger unchanged by world-density/light changes; GameRules expanded to 50+ (W18) for naturalRegeneration parity.
 // plan21 combat polish: retry verify EXHAUST_WALK 0 vs 0.01, per-player foodTickTimer, FAST 10/SLOW 80, starve diff hard/easy/normal, naturalRegeneration gate.
 // plan22 combat polish: verify EXHAUST_WALK 0 (strict E5), food table 40, FAST 10/SLOW 80 per-player timer, naturalRegeneration gate, poison 25/with 40 split.
-// plan23 §7 strict: walk 0, food table 15 additions + per-player timer + fast heal 10t + starve difficulty (peaceful/easy/normal/hard) + poison 25 vs 40.
+// plan23 combat polish: walk 0 strict verify, food table 40 (15 missing fixed), per-player 10/80 timer, starve difficulty gate, poison 25>>amp / wither 40>>amp parity (verify).
 #pragma once
 #include <cstdint>
 #include <string>
@@ -20,7 +20,7 @@ struct FoodInfo { int food; float saturation; };
 
 class HungerManager {
 public:
-    // vanilla exhaustion values — plan15 strict: walk 0 per HungerConstants (was 0.01)
+    // vanilla exhaustion values — plan15/23 strict: walk 0 per HungerConstants (was 0.01), sprint 0.1, swim 0.01, jump 0.05/0.2
     static constexpr float EXHAUST_WALK = 0.0f;
     static constexpr float EXHAUST_SPRINT = 0.10f;
     static constexpr float EXHAUST_JUMP = 0.05f;
