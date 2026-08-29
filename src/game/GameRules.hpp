@@ -1,8 +1,12 @@
 // GameRules: vanilla-style rule storage persisted inside level.dat
 // (plan3.md 永続化拡張). Values kept as strings like vanilla NBT.
+// W18 strict: 37 Yarn keys + aliases, Boolean vs Int typed with validation (Yarn GameRules Type<T>)
 #pragma once
 #include <string>
 #include <unordered_map>
+#include <vector>
+#include <algorithm>
+#include <unordered_set>
 
 namespace cppfm {
 
@@ -95,6 +99,35 @@ public:
     void clearDirty() { dirty_ = false; }
     const std::unordered_map<std::string, std::string>& all() const {
         return rules_;
+    }
+    // W18 polish: Yarn GameRules 37 typed (Boolean vs Int) + allKeys for /gamerule suggest
+    std::vector<std::string> allKeys() const {
+        std::vector<std::string> out; out.reserve(rules_.size());
+        for (auto &kv : rules_) out.push_back(kv.first);
+        std::sort(out.begin(), out.end());
+        return out;
+    }
+    static bool isIntRule(const std::string& k) {
+        static const std::unordered_set<std::string> ints = {
+            "randomTickSpeed","spawnRadius","maxEntityCramming","maxCommandChainLength",
+            "commandModificationBlockLimit","maxCommandForkCount","playersSleepingPercentage",
+            "snowAccumulationHeight","playersNetherPortalDefaultDelay","playersNetherPortalCreativeDelay",
+            "spawnChunkRadius","maxBlockModifications"
+        };
+        return ints.count(k) != 0;
+    }
+    static bool isValidValue(const std::string& key, const std::string& val) {
+        if (isIntRule(key)) {
+            try { int v = std::stoi(val); (void)v; return true; } catch (...) { return false; }
+        } else {
+            return val=="true" || val=="false";
+        }
+    }
+    bool setValidated(const std::string& key, const std::string& val, std::string* err=nullptr) {
+        if (!contains(key)) { if(err) *err="Unknown gamerule: "+key; return false; }
+        if (!isValidValue(key,val)) { if(err) *err="Invalid value for "+key+": "+val; return false; }
+        set(key,val,true);
+        return true;
     }
 
 private:

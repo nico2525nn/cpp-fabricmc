@@ -14,6 +14,7 @@
 #include <unordered_set>
 #include <vector>
 #include <array>
+#include <future>
 #include "../net/Connection.hpp"
 #include "../proto/Ids.hpp"
 #include "World.hpp"
@@ -62,6 +63,7 @@
 #include "CombatManager.hpp"
 #include "DatapackManager.hpp"
 #include "FunctionEvaluator.hpp"
+#include "../core/ThreadPool.hpp"
 
 namespace cppfm {
 
@@ -1056,6 +1058,19 @@ private:
     std::unordered_map<std::int64_t, CachedChunk> chunkCache_;
     std::mutex chunkCacheMtx_;
     std::unordered_map<std::int32_t, std::int64_t> ghostThrottle_; // entityId -> last tick for PlaceGhostRecipe 0x39
+    // W19 async I/O: ThreadPool for RegionFile zlib offload (Yarn ThreadedAnvilChunkStorage)
+    core::ThreadPool ioPool_{4};
+    // pending async chunk loads (ChunkPos -> future) polled in tickOnce via pollPendingLoads()
+    // kept simple: pending map polled with wait_for(0) to avoid blocking main tick (MC-177729)
+    std::unordered_map<std::int64_t, std::future<std::vector<std::uint8_t>>> pendingLoads_;
+    void pollPendingLoads() { // W19: poll ready futures (no-op if none)
+        for (auto it = pendingLoads_.begin(); it != pendingLoads_.end(); ) {
+            if (it->second.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                try { (void)it->second.get(); } catch (...) {}
+                it = pendingLoads_.erase(it);
+            } else ++it;
+        }
+    }
     std::atomic<bool> running_{true};
     int listenFd_ = -1;
     std::int32_t entityIdCounter_ = 1;
