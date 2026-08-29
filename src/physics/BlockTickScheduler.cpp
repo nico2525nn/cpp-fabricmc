@@ -198,20 +198,40 @@ static bool isCropBlock(const gen::BlockDef* d) {
     return n.find("wheat")!=std::string::npos || n.find("carrots")!=std::string::npos ||
            n.find("potatoes")!=std::string::npos || n.find("beetroots")!=std::string::npos;
 }
-// plan21 B7 farming growthSpeed strict: Yarn CropBlock.getAvailableMoisture hydrated 1.0 dry 0.5 diag /4, center excluded, no crop penalty
+// plan22 B7 farming growthSpeed strict: Yarn CropBlock.getGrowthSpeed 1/3 per farmland, diag /4, center included, crop density /4 +2
 static float growthSpeed(World& w, std::int32_t x, std::int32_t y, std::int32_t z) {
     float f = 1.0f;
     for (int dx=-1; dx<=1; ++dx) for (int dz=-1; dz<=1; ++dz) {
-        if (dx==0 && dz==0) continue;
         std::uint16_t bs = w.getBlock(x+dx, y-1, z+dz);
         const gen::BlockDef* bd = gen::blockByState(bs);
         if (!bd) continue;
         if (std::string(bd->name)!="minecraft:farmland") continue;
         int moist = getMoisture(bs);
-        float g = (moist>0 ? 1.0f : 0.5f);
-        if (dx!=0 && dz!=0) g /= 4.0f;
+        float g = (moist>0 ? 3.0f : 1.0f);
+        if (dx!=0 || dz!=0) g /= 4.0f;
         f += g;
     }
+    // crop density penalty: same crop species adjacent -> /4 (vanilla CropBlock.getGrowthSpeed)
+    const gen::BlockDef* curDef = gen::blockByState(w.getBlock(x,y,z));
+    if (curDef) {
+        std::string curName(curDef->name);
+        bool isCrop = isCropBlock(curDef) || curName.find("torchflower")!=std::string::npos || curName.find("pitcher")!=std::string::npos;
+        if (isCrop) {
+            auto isSameCrop = [&](std::int32_t nx, std::int32_t ny, std::int32_t nz)->bool{
+                std::uint16_t ns = w.getBlock(nx,ny,nz);
+                if (ns==0) return false;
+                const gen::BlockDef* nd = gen::blockByState(ns);
+                return nd && std::string(nd->name)==curName;
+            };
+            bool westEast = isSameCrop(x-1,y,z) || isSameCrop(x+1,y,z);
+            bool northSouth = isSameCrop(x,y,z-1) || isSameCrop(x,y,z+1);
+            bool diag = isSameCrop(x-1,y,z-1) || isSameCrop(x-1,y,z+1) || isSameCrop(x+1,y,z-1) || isSameCrop(x+1,y,z+1);
+            if ((westEast && northSouth) || diag) {
+                f /= 4.0f;
+            }
+        }
+    }
+    f += 2.0f;
     return f;
 }
 static int getLight(World& w, std::int32_t x, std::int32_t y, std::int32_t z){
