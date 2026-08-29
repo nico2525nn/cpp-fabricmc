@@ -107,6 +107,27 @@ public:
         return it2 != it->second.end() ? it2->second : 0;
     }
 
+    // D26 reset helpers — ghost-free scoreboard
+    bool resetScore(const std::string& holder, const std::string& objective) {
+        auto it = scores.find(objective);
+        if (it == scores.end()) return false;
+        return it->second.erase(holder) > 0;
+    }
+    std::vector<std::string> resetAllScores(const std::string& holder) {
+        std::vector<std::string> affected;
+        for (auto& [objName, mp] : scores)
+            if (mp.erase(holder)) affected.push_back(objName);
+        return affected;
+    }
+    bool removeObjectiveWithReset(const std::string& name, std::vector<std::string>& outHolders) {
+        auto it = scores.find(name);
+        if (it != scores.end()) {
+            for (auto& [h, _] : it->second) outHolders.push_back(h);
+            scores.erase(it);
+        }
+        return removeObjectives(name);
+    }
+
     // -------------------------------------------------------------- packets
     void writeObjectivePacket(WriteBuffer& b, const Objective& o,
                               std::int8_t method) const {
