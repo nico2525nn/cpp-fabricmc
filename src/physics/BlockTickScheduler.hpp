@@ -175,6 +175,20 @@ class KelpBehavior : public IBlockBehavior {
 public:
     void tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
               std::uint16_t state, std::int64_t now, GameServer* srv) override;
+    void randomTick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
+                    std::uint16_t state, std::int64_t now, GameServer* srv) override {
+        tick(w,x,y,z,state,now,srv);
+    }
+    bool fertilize(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
+                   std::uint16_t state, GameServer* srv) override;
+};
+
+class SeagrassBehavior : public IBlockBehavior {
+public:
+    void tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
+              std::uint16_t state, std::int64_t now, GameServer* srv) override {}
+    void randomTick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
+                    std::uint16_t state, std::int64_t now, GameServer* srv) override {}
     bool fertilize(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
                    std::uint16_t state, GameServer* srv) override;
 };
