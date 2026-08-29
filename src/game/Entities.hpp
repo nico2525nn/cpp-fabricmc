@@ -30,11 +30,24 @@ struct ItemEntity {
     std::int32_t entityId = 0;
     std::uint32_t itemId = 0;
     std::uint8_t count = 1;
+    // D11 (plan26 §4): full ItemStack with components for Slot type 7 preservation.
+    // If `stack` is non-empty it overrides itemId/count and carries enchant/trim/damage.
+    ItemStack stack{};
     double x=0, y=0, z=0;
     double vx=0, vy=0, vz=0;
     std::int64_t ageTicks = 0;
     bool collected = false;
     double sentX=0, sentY=0, sentZ=0; bool hasSent=false;
+    ItemStack asStack() const {
+        if (!stack.empty()) return stack;
+        if (itemId==0 || count==0) return ItemStack::air();
+        return ItemStack::of(itemId, count);
+    }
+    void setStack(const ItemStack& s){
+        stack = s;
+        itemId = s.itemId;
+        count = s.count;
+    }
 };
 
 struct XpOrbEntity {
