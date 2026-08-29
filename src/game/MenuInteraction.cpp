@@ -1,4 +1,6 @@
-// MenuInteraction implementation (vanilla click semantics).
+// MenuInteraction implementation (vanilla click semantics, 1.21.4 protocol 769).
+// Strict audit: I13 swapWithHotbar all-slots (Yarn `ScreenHandler` Slot 0..n), I14 throwSlot all-slots (chest/generic),
+// windowId VarInt (I12), drag paint 5-mode, pickupAll. Yarn 1.21.4 `ScreenHandler` parity.
 #include "MenuInteraction.hpp"
 #include "GameServer.hpp"
 #include <unordered_map>
@@ -286,16 +288,23 @@ bool ClickLogic::swapWithHotbar(Menu& m, Player& p, int slot, int button,
     ItemStack* hotbar = &p.inv[36 + button];
     ItemStack* target = nullptr;
     int cont = containerSlotCount(m);
+    // Yarn 1.21.4 ScreenHandler: swapWithHotbar (mode 2) works for all slots (container + player inv), not 3-type limited (I13)
     if (slot >=0 && slot < cont) {
         if (m.type == MenuType::Crafting) {
             if (slot >=1 && slot <10) target = &m.craftGrid[slot - 1];
+            else if (slot==0) return false; // result take-only handled by isTakeOnlySlot
         } else {
             target = m.container ? &m.container[slot] : &m.extraSlots[slot];
         }
+        if (!target || isTakeOnlySlot(m, slot)) return false;
+    } else if (slot >= cont && slot < cont + 36) {
+        target = playerInvSlot(m, slot, p);
+        if (!target) return false;
+        // player inventory slots are never take-only; allow swap even if hotbar==target (no-op)
+        if (target == hotbar) return true;
     } else {
         return false;
     }
-    if (!target || isTakeOnlySlot(m, slot)) return false;
     std::swap(*hotbar, *target);
     if (m.type != MenuType::Crafting) io.blockEntityChanged(m.blockKey);
     return true;
