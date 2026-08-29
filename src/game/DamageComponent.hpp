@@ -1,9 +1,11 @@
 // DamageComponent — plan8 entity section
 // Handles item durability (minecraft:damage component) with Unbreaking and Mending.
 // Vanilla logic: tools 1/(lvl+1) chance to damage, armor 60%+40%/(lvl+1) ignore per Yarn EnchantmentHelper.shouldDamage.
+// plan23 world: replace rand() with thread_local mt19937 for correct 60%+ armor distribution (E9).
 #pragma once
 #include <cstdint>
 #include <cstdlib>
+#include <random>
 #include "Items.hpp"
 
 namespace cppfm {
@@ -28,13 +30,15 @@ public:
         if (unb>0) {
             bool armor = isArmorItem(stack);
             int effective = 0;
+            thread_local std::mt19937 rng{std::random_device{}()};
             for (int i=0;i<amount;++i) {
                 if (armor) {
                     float ignoreChance = 0.6f + 0.4f / float(unb + 1);
-                    float r = float(rand()) / float(RAND_MAX);
-                    if (r >= ignoreChance) effective++;
+                    std::uniform_real_distribution<float> dist(0.f,1.f);
+                    if (dist(rng) >= ignoreChance) effective++;
                 } else {
-                    if (rand() % (unb + 1) == 0) effective++;
+                    std::uniform_int_distribution<int> dist(0, unb);
+                    if (dist(rng)==0) effective++;
                 }
             }
             amount = effective;
@@ -45,12 +49,35 @@ public:
     static bool shouldDamage(const ItemStack& stack) {
         int unb = stack.unbreakingLevel();
         if (unb<=0) return true;
+        thread_local std::mt19937 rng{std::random_device{}()};
         if (isArmorItem(stack)) {
             float ignoreChance = 0.6f + 0.4f / float(unb + 1);
-            float r = float(rand()) / float(RAND_MAX);
-            return r >= ignoreChance;
+            std::uniform_real_distribution<float> dist(0.f,1.f);
+            return dist(rng) >= ignoreChance;
         }
-        return rand() % (unb + 1) == 0;
+        std::uniform_int_distribution<int> dist(0, unb);
+        return dist(rng)==0;
+    }
+    // Deterministic overloads for unit tests (plan23 §2)
+    static bool shouldDamage(const ItemStack& stack, std::mt19937& rng) {
+        int unb = stack.unbreakingLevel();
+        if (unb<=0) return true;
+        if (isArmorItem(stack)) {
+            float ignoreChance = 0.6f + 0.4f / float(unb + 1);
+            std::uniform_real_distribution<float> dist(0.f,1.f);
+            return dist(rng) >= ignoreChance;
+        }
+        std::uniform_int_distribution<int> dist(0, unb);
+        return dist(rng)==0;
+    }
+    static bool shouldDamageArmor(int lvl, std::mt19937& rng){
+        if(lvl<=0) return true;
+        std::uniform_real_distribution<float> dist(0.f,1.f);
+        return dist(rng) >= (0.6f + 0.4f / float(lvl+1));
+    }
+    static bool shouldDamageTool(int lvl, std::mt19937& rng){
+        if(lvl<=0) return true;
+        return std::uniform_int_distribution<int>(0,lvl)(rng)==0;
     }
 
     // Repair via Mending: consume XP to repair one durability point.
