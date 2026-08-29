@@ -24,6 +24,7 @@
 #include "BossAI.hpp"
 #include "MenuLogic.hpp"
 #include "CostCalculator.hpp"
+#include "PotionBrewing.hpp"
 #include <cerrno>
 
 namespace cppfm {
@@ -4049,29 +4050,15 @@ void GameServer::brewingTick() {
                         auto it = gen::itemIdByName().find(n);
                         return it != gen::itemIdByName().end() ? it->second : 0;
                     };
-                    std::uint32_t wartId = idOf("minecraft:nether_wart");
                     std::uint32_t potionId = idOf("minecraft:potion");
                     std::uint32_t splashId = idOf("minecraft:splash_potion");
                     std::uint32_t lingeringId = idOf("minecraft:lingering_potion");
-                    std::uint32_t sugarId = idOf("minecraft:sugar");
-                    std::uint32_t spiderEyeId = idOf("minecraft:spider_eye");
-                    std::uint32_t ghastTearId = idOf("minecraft:ghast_tear");
-                    std::uint32_t blazePowderId = idOf("minecraft:blaze_powder");
-                    std::uint32_t magmaCreamId = idOf("minecraft:magma_cream");
-                    std::uint32_t glisteringMelonId = idOf("minecraft:glistering_melon_slice");
-                    std::uint32_t goldenCarrotId = idOf("minecraft:golden_carrot");
-                    std::uint32_t rabbitFootId = idOf("minecraft:rabbit_foot");
-                    std::uint32_t fermentedEyeId = idOf("minecraft:fermented_spider_eye");
-                    std::uint32_t pufferfishId = idOf("minecraft:pufferfish");
-                    std::uint32_t phantomMembraneId = idOf("minecraft:phantom_membrane");
                     std::uint32_t gunpowderId = idOf("minecraft:gunpowder");
                     std::uint32_t dragonBreathId = idOf("minecraft:dragon_breath");
-                    std::uint32_t redstoneId = idOf("minecraft:redstone");
-                    std::uint32_t glowstoneId = idOf("minecraft:glowstone_dust");
                     for (int pi = 0; pi < 3; ++pi) {
                         auto &stk = b.slots[pi];
                         if (stk.empty()) continue;
-                        // handle gunpowder -> splash and dragon breath -> lingering via itemId change
+                        // handle gunpowder -> splash and dragon breath -> lingering via itemId change (PotionBrewing splash transform)
                         if (ingId == gunpowderId && potionId != 0 && splashId != 0) {
                             if (stk.itemId == potionId) {
                                 std::vector<std::uint8_t> saved;
@@ -4100,26 +4087,10 @@ void GameServer::brewingTick() {
                         }
                         bool isPotionItem = (stk.itemId == potionId || stk.itemId == splashId || stk.itemId == lingeringId);
                         if (!isPotionItem) continue;
+                        // plan23 §5 I7: use PotionBrewing::mix for transform (water->awkward, awkward->effect, redstone/glowstone)
                         int curId = stk.getPotionId();
-                        bool isWater = !stk.hasPotionContents() || curId == 0;
-                        int target = -1;
-                        if (ingId == wartId && isWater) target = 1; // awkward
-                        else if (curId == 1) {
-                            if (ingId == sugarId) target = 2; // swiftness
-                            else if (ingId == spiderEyeId) target = 3; // poison
-                            else if (ingId == ghastTearId) target = 4; // regeneration
-                            else if (ingId == blazePowderId) target = 5; // strength
-                            else if (ingId == magmaCreamId) target = 6; // fire_resistance
-                            else if (ingId == glisteringMelonId) target = 7; // healing
-                            else if (ingId == goldenCarrotId) target = 8; // night_vision
-                            else if (ingId == rabbitFootId) target = 9; // leaping
-                            else if (ingId == fermentedEyeId) target = 10; // weakness/harming placeholder
-                            else if (ingId == pufferfishId) target = 11; // water_breathing
-                            else if (ingId == phantomMembraneId) target = 12; // slow_falling
-                        } else if (curId >= 2 && curId <= 12) {
-                            if (ingId == redstoneId) target = curId + 100; // extended
-                            else if (ingId == glowstoneId) target = curId + 200; // strong
-                        }
+                        bool hasContents = stk.hasPotionContents();
+                        int target = PotionBrewing::mix(curId, hasContents, ingId);
                         if (target >= 0) {
                             stk.setPotionId(target);
                         }
@@ -5097,22 +5068,14 @@ void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
             int bx = posKeyUnpackX(m.blockKey);
             int by = posKeyUnpackY(m.blockKey);
             int bz = posKeyUnpackZ(m.blockKey);
-            for (int dx = -2; dx <= 2; ++dx)
-                for (int dz = -2; dz <= 2; ++dz)
-                    for (int dy = 0; dy <= 1; ++dy) {
-                        if (dx == 0 && dz == 0) continue;
-                        auto st = srv_.world().getBlock(bx + dx, by + dy, bz + dz);
-                        auto* d = gen::blockByState(st);
-                        if (d && std::string(d->name) == "minecraft:bookshelf") ++bs;
-                    }
-            if (bs > 15) bs = 15;
+            bs = CostCalculator::countBookshelves(srv_.world(), bx, by, bz);
         }
+        auto costs = CostCalculator::enchantingCostsForShelves(*self_, bs);
         for (int i = 0; i < 3; ++i) {
-            int cost = CostCalculator::enchantingCost(*self_, bs);
             WriteBuffer pb;
             pb.varint(m.windowId);
             pb.i16(static_cast<std::int16_t>(i));
-            pb.i16(static_cast<std::int16_t>(cost + i));
+            pb.i16(static_cast<std::int16_t>(costs[i]));
             try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
         }
     }
@@ -5339,15 +5302,21 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
     openMenu_ = std::move(menu);
     openMenu_->refreshCraftResult(srv_.recipes());
     sendMenuContent(*openMenu_);
-    // Send initial ContainerSetData for menus that need it
+    // Send initial ContainerSetData for menus that need it — plan23 §5 seeded RNG + air-gap bookshelf count
     if (openMenu_->type == MenuType::Enchantment) {
         int bs = 0;
+        if (openMenu_->blockKey >= 0) {
+            int bx = posKeyUnpackX(openMenu_->blockKey);
+            int by = posKeyUnpackY(openMenu_->blockKey);
+            int bz = posKeyUnpackZ(openMenu_->blockKey);
+            bs = CostCalculator::countBookshelves(srv_.world(), bx, by, bz);
+        }
+        auto costs = CostCalculator::enchantingCostsForShelves(*self_, bs);
         for (int i = 0; i < 3; ++i) {
-            int cost = CostCalculator::enchantingCost(*self_, bs);
             WriteBuffer pb;
             pb.varint(openMenu_->windowId);
             pb.i16(static_cast<std::int16_t>(i));
-            pb.i16(static_cast<std::int16_t>(cost));
+            pb.i16(static_cast<std::int16_t>(costs[i]));
             try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
         }
     } else if (openMenu_->type == MenuType::Anvil) {
