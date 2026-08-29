@@ -3897,10 +3897,11 @@ void GameServer::effectsTick() {
             if (it->type == effects::Regeneration &&
                 tickNo_ % std::max(1, 50 >> it->amplifier) == 0)
                 p->health = std::min(20.f, p->health + 1.f), sendSetHealth(*p);
-            // plan16 strict: poison 25>>amp, wither 40>>amp (was 40 for both)
+            // plan23 §7 strict: poison 25>>amp (was 40), wither 40>>amp, poison does not kill below 1
             if (it->type == effects::Poison &&
-                tickNo_ % std::max(1, 25 >> it->amplifier) == 0)
-                applyDamage(*p, 1.f, "poison");
+                tickNo_ % std::max(1, 25 >> it->amplifier) == 0) {
+                if (p->health > 1.0f) applyDamage(*p, 1.f, "poison");
+            }
             if (it->type == effects::Wither &&
                 tickNo_ % std::max(1, 40 >> it->amplifier) == 0)
                 applyDamage(*p, 1.f, "wither");

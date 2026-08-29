@@ -75,6 +75,7 @@ struct DamageSource {
         if (lower == "magic" || lower == "indirectmagic" || lower == "poison" || lower == "wither") {
             isMagicFlag = true;
             if (lower == "wither") isWitherFlag = true;
+            bypassArmor = true;
         }
         if (lower == "freeze" || lower == "powdersnow" || lower == "powder_snow") isFreezeFlag = true;
         if (lower == "starve" || lower == "starvation") { isStarveFlag = true; bypassArmor = true; bypassEnchant = true; }

@@ -4,6 +4,7 @@
 #include "../generated/ItemIds.hpp"
 #include "../generated/BlockStates.hpp"
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 
 namespace cppfm {
@@ -141,22 +142,19 @@ void HungerManager::tickExhaustion(Player& p, GameServer& srv) {
 
 void HungerManager::tickRegenAndStarve(Player& p, int64_t tickNo, GameServer& srv) {
     (void)tickNo;
-    // plan15 strict: per-player foodTickTimer + saturation fast heal (10) + naturalRegeneration gamerule + freeze 40 handled in survivalTick
+    // plan23 §7 strict: per-player foodTickTimer + fast heal 10t (food 20 + saturation>0) + slow heal 80t (food>=18) + starve difficulty + naturalRegeneration gate
     bool naturalRegeneration = true;
     if (srv.gameRules().contains("naturalRegeneration")) naturalRegeneration = srv.gameRules().getBool("naturalRegeneration");
-    // difficulty for starvation thresholds
     std::string diff = "normal";
-    // access via GameServer difficulty if available
     try { diff = srv.difficultyPublic(); } catch(...) { diff = "normal"; }
+    std::transform(diff.begin(), diff.end(), diff.begin(), [](unsigned char c){ return std::tolower(c); });
 
-    // Fast healing with saturation when food==20 and saturation>0 — plan18 §10: 1.5 saturation per 10t
+    // Fast healing with saturation when food==20 and saturation>0 — Yarn HungerManager: heal 1 per 10t at cost 6 exhaustion
     if (naturalRegeneration && p.saturation > 0.f && p.food >= FULL_FOOD_LEVEL && p.health > 0.f && p.health < 20.f) {
         ++p.foodTickTimer;
         if (p.foodTickTimer >= FAST_HEALING_INTERVAL) {
             p.health = std::min(20.f, p.health + 1.f);
             p.exhaustion += EXHAUSTION_PER_HEAL;
-            p.saturation = std::max(0.f, p.saturation - 1.5f);
-            // saturation fast heal also consumes exhaustion; foodTickTimer reset
             p.foodTickTimer = 0;
             srv.sendSetHealth(p);
         }
@@ -173,7 +171,7 @@ void HungerManager::tickRegenAndStarve(Player& p, int64_t tickNo, GameServer& sr
         }
         return;
     }
-    // Starvation when food ==0
+    // Starvation when food ==0 — difficulty gates: PEACEFUL 0, EASY health>10, NORMAL health>1, HARD health>0 per Yarn
     if (p.food <= STARVING_FOOD_LEVEL) {
         ++p.foodTickTimer;
         if (p.foodTickTimer >= SLOW_HEALING_INTERVAL) {
@@ -184,7 +182,6 @@ void HungerManager::tickRegenAndStarve(Player& p, int64_t tickNo, GameServer& sr
             else if (diff == "peaceful") canStarve = false;
             else canStarve = p.health > 1.f;
             if (canStarve) {
-                // starve damage bypasses armor per DamageSource starve
                 p.health = std::max(0.f, p.health - 1.f);
                 srv.sendSetHealth(p);
                 if (p.health <= 0.f) srv.killPlayer(p, "starve");
