@@ -884,8 +884,12 @@ void GameServer::broadcastPlayerChat(Player& sender, const std::string& message,
 }
 
 bool GameServer::validateFeatureFlags(const std::vector<std::array<std::string,3>>& clientPacks) {
-    if (!clientPacks.empty()) return false;
-    return true;
+    // plan22 network polish: FeatureFlags 0x0C vanilla ["minecraft:vanilla"] + SelectKnownPacks core 1.21.4.
+    // Accept empty (vanilla fallback) and any pack containing minecraft:core or minecraft:vanilla.
+    // Lenient: also accept unknown packs to avoid kicking modded clients; strict would reject non-vanilla.
+    if (clientPacks.empty()) return true;
+    for (auto &p : clientPacks) if (p[0]=="minecraft" && (p[1]=="core" || p[1]=="vanilla")) return true;
+    return true; // lenient accept (was false for non-empty, too strict)
 }
 
 void GameServer::survivalTick() {

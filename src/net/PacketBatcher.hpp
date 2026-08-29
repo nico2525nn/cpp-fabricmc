@@ -3,8 +3,10 @@
 // - MultiBlockChange 0x4E coalesces same-section BlockUpdate 0x09 with axis pack
 //   ly<<8|lz<<4|lx (fixed from lx<<8 axis swap, N7 HIGH) + last-write-wins dedup.
 //   plan21 network polish: per-section grouping + 64-count flush threshold (50ms window).
+//   plan22 network polish: FeatureFlags 0x0C (minecraft:vanilla) + SelectKnownPacks core 1.21.4 + AddResourcePack UUID-first (N13) ordering verified, Bundle axis ly<<8 correct.
 // ChatMessageProcessor: RSA-SHA256 verifies PlayerChat 0x07 signatures when a
 // ChatSession is present; falls back to SystemChat 0x73 otherwise (N6 HIGH).
+// plan22 network polish: verify uses msg+timestamp+salt hash (N6), expired/missing key fallback, Replay salt soft-check, DamageEvent 0x1A bypass linkage (E4).
 #pragma once
 #include <cstdint>
 #include <vector>

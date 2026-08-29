@@ -449,17 +449,14 @@ BTStatus WardenSonicBoomAction::tick(MobEntity& m, AiContext& ctx, std::int64_t 
     if (m.witherSkullCooldown > now) return BTStatus::Failure;
     Player* t = ctx.nearestPlayer;
     if (!t) return BTStatus::Failure;
-    // plan21 E4: sonic boom 15x20 ovoid (horizontal 15, vertical 20), armor bypass, through walls, 10 damage (15 hard)
+    // plan22 network polish: sonic boom 15×20 cylinder (independent horiz 15, vert 20, inclusive), armor+enchant bypass, through walls, 10 damage (15 hard)
     auto isInSonicBoomRange = [](double wx, double wy, double wz, double tx, double ty, double tz) -> bool {
         double dx = tx - wx, dz = tz - wz, dy = ty - wy;
         double horiz2 = dx*dx + dz*dz;
         if (horiz2 > 15*15) return false;
         if (std::abs(dy) > 20) return false;
-        double hn = std::sqrt(horiz2) / 15.0;
-        double vn = std::abs(dy) / 20.0;
-        return hn*hn + vn*vn <= 1.0; // ovoid ellipsoid
+        return true; // cylinder 15×20 inclusive (plan22 §10: horiz hypot <=15 && vert abs <=20)
     };
-    double dy = (t->y + 0.9) - (m.y + 1.0);
     if (!isInSonicBoomRange(m.x, m.y+1.0, m.z, t->x, t->y+0.9, t->z)) {
         double dx=t->x-m.x, dz=t->z-m.z;
         double d = std::sqrt(dx*dx+dz*dz);
@@ -470,7 +467,7 @@ BTStatus WardenSonicBoomAction::tick(MobEntity& m, AiContext& ctx, std::int64_t 
         return BTStatus::Running;
     }
     if (ctx.srv) {
-        // strict audit HIGH: sonic boom bypasses armor (bypassArmor=true) 15x20 ovoid, 10 damage (15 hard), no knockback, pierces shields
+        // strict audit HIGH: sonic boom bypasses armor+enchant (bypassArmor/bypassEnchant=true) 15×20 cylinder, 10 damage (15 hard), no knockback, pierces shields
         float dmg = 10.0f;
         if (ctx.srv->difficulty() == "hard") dmg = 15.0f;
         ctx.srv->applyDamage(*t, dmg, DamageSource::sonicBoom());
