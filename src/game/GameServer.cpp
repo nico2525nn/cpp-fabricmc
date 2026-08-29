@@ -5186,8 +5186,7 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
                        : BlockEntity::Kind::Dispenser);
         menu->type = hopper ? MenuType::Hopper : MenuType::Dispenser;
         menu->container = be->generic.slots;
-        menu->containerCount_ = hopper ? 5 : 9;
-        menu->containerCount = menu->containerCount_;
+        menu->containerCount = hopper ? 5 : 9;
         menu->blockEntity = be;
     } else if (name == "minecraft:furnace") {
         auto* be = srv_.blockEntities().getAt(x, y, z);
