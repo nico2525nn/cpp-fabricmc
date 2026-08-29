@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <vector>
 #include <cmath>
+#include <random>
 #include "MobEffects.hpp"
 namespace cppfm {
 struct DamageSource {
@@ -101,11 +102,14 @@ struct DamageSource {
 
 // DamageCalculator: vanilla armor + toughness + EPF + Resistance pipeline
 // plan15 strict: single formula caps 30/20 per DamageUtil.getDamageLeft: f=2+tough/4, g=clamp(armor - dmg/f, armor*0.2, 20), dmg*=1-g/25
+// plan23 world: add isfinite guard + scale/gravity clamp, expose getDamageLeft for strict audit E6
 // All calculations are pure functions so they can be unit-tested independently.
 struct DamageCalculator {
     // vanilla single armor+toughness formula (caps 30/20)
     static float applyArmorAndToughness(float dmg, float armor, float toughness) {
-        if (dmg <= 0) return 0.f;
+        if (!std::isfinite(dmg) || dmg <= 0) return 0.f;
+        if (!std::isfinite(armor)) armor = 0.f;
+        if (!std::isfinite(toughness)) toughness = 0.f;
         float a = std::clamp(armor, 0.f, 30.f);
         float t = std::clamp(toughness, 0.f, 20.f);
         if (a <= 0) return dmg;
@@ -113,6 +117,7 @@ struct DamageCalculator {
         float g = std::clamp(a - dmg / f, a * 0.2f, 20.f);
         return dmg * (1.f - g / 25.f);
     }
+    static float getDamageLeft(float dmg, float armor, float toughness) { return applyArmorAndToughness(dmg, armor, toughness); }
     // legacy split helpers kept for compat but delegate to single formula
     static float applyArmorReduction(float dmg, int armor) {
         return applyArmorAndToughness(dmg, static_cast<float>(armor), 0.f);
@@ -141,7 +146,7 @@ struct DamageCalculator {
     static float calculate(float base, const DamageSource& src,
                            int armor, double toughness, int epf,
                            const std::vector<EffectInstance>& effects) {
-        if (base <= 0) return 0.f;
+        if (!std::isfinite(base) || base <= 0) return 0.f;
         float d = base;
         if (!src.bypassArmor) {
             d = applyArmorAndToughness(d, static_cast<float>(armor), static_cast<float>(toughness));
@@ -154,4 +159,15 @@ struct DamageCalculator {
         return std::max(0.f, d);
     }
 };
+// plan23 world: free helper for unit tests expecting global getDamageLeft (mirrors DamageCalculator::getDamageLeft)
+inline float getDamageLeft(float dmg, float armor, float toughness){ return DamageCalculator::applyArmorAndToughness(dmg, armor, toughness); }
+inline bool shouldDamageArmor(int lvl, std::mt19937& rng){
+    if(lvl<=0) return true;
+    std::uniform_real_distribution<float> dist(0.f,1.f);
+    return dist(rng) >= (0.6f + 0.4f / float(lvl+1));
+}
+inline bool shouldDamageTool(int lvl, std::mt19937& rng){
+    if(lvl<=0) return true;
+    return std::uniform_int_distribution<int>(0,lvl)(rng)==0;
+}
 }

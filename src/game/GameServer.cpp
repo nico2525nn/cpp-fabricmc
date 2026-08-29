@@ -1580,10 +1580,8 @@ void GameServer::broadcastSetPassengersEmpty(std::int32_t vehicleId) {
 }
 
 float GameServer::applyArmorReduction(float dmg, int armor) const {
-    if (armor <= 0 || dmg <= 0) return dmg;
-    float a = static_cast<float>(armor);
-    float eff = std::min(20.f, std::max(a/5.f, a - dmg/2.f));
-    return dmg * (1.f - eff/25.f);
+    // plan23 world: delegate to single vanilla formula f=2+t/4 caps 30/20 (toughness 0 here)
+    return DamageCalculator::applyArmorAndToughness(dmg, static_cast<float>(armor), 0.f);
 }
 
 int GameServer::totalProtectionForPlayer(const Player& p) const {
