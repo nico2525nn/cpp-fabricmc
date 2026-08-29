@@ -642,6 +642,14 @@ public:
         WriteBuffer b; scoreboard.writeScorePacket(b, obj, holder, v);
         broadcastPacketExcept(nullptr, proto::pl::sc::ScoreboardScore, b);
     }
+    // D26 polish: ResetScore 0x49 (1.20.3 split, wildcard null = all objectives)
+    void sendResetScoreAll(const std::string& holder, const std::string* objective) {
+        WriteBuffer b; scoreboard.writeResetScorePacket(b, holder, objective);
+        broadcastPacketExcept(nullptr, proto::pl::sc::ResetScore, b);
+    }
+    void sendResetScoreAllWildcard(const std::string& holder) {
+        sendResetScoreAll(holder, nullptr);
+    }
     void sendDisplayAll() {
         WriteBuffer b; scoreboard.writeDisplayPacket(b);
         broadcastPacketExcept(nullptr,
