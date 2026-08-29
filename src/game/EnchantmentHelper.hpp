@@ -1,5 +1,6 @@
 // EnchantmentHelper — plan8 entity section
 // plan22 combat polish: E7 strict weight 1 for Protection (was 2 for fire/explosion/projectile), sonic_boom bypass all
+// plan28 combat polish: verify EnchantmentHelper remains orthogonal to Scoreboard ResetScore 0x49 (D26) — EPF weight 1 (protection=1, fire/blast/proj=2, feather=3), sonic_boom bypassEnchant, sharpness/efficiency formulas verified intact after deep 31 merges.
 // Centralizes enchantment calculations: protection EPF, sharpness, efficiency, etc.
 // Vanilla formulas referenced from plan8.md § Enchant effects.
 #pragma once
