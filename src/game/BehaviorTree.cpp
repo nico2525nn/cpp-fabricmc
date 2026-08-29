@@ -1,5 +1,6 @@
 #include "BehaviorTree.hpp"
 #include "GameServer.hpp"
+#include "MetadataTypes.hpp"
 #include "World.hpp"
 #include "../worldgen/MultiNoise.hpp"
 
@@ -185,10 +186,10 @@ BTStatus PickupBlockAction::tick(MobEntity& m, AiContext& ctx, std::int64_t) {
         ctx.world->setBlock(bx, by, bz, 0);
         if (ctx.srv) {
             ctx.srv->broadcastBlockChange(bx, by, bz, 0);
-            // SetEntityMetadata for carriedBlock (index 15 simplified, boolean+state)
+            // Yarn EndermanEntity.CARRIED_BLOCK Optional<BlockState> idx 15 type 15 OptBlockState present+varint
             WriteBuffer md;
             md.varint(m.entityId);
-            md.u8(15); md.varint(0); md.varint((int)st);
+            meta::writeMetaOptBlockState(md, 15, static_cast<std::uint32_t>(st));
             md.u8(255);
             ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);
         }

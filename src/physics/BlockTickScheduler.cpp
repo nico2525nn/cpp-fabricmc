@@ -647,7 +647,7 @@ void ChorusFlowerBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::i
             // new flower above with same age
             w.setBlock(x,y+1,z, state);
             if(srv) srv->broadcastBlockChange(x,y+1,z, state);
-            if(srv) srv->broadcastSound("minecraft:block.chorus_flower.grow", x+0.5, y+0.5, z+0.5, 1.f, 1.f, "blocks");
+            if(srv) srv->broadcastSound("minecraft:block.chorus_flower.grow", x+0.5, y+0.5, z+0.5, 1.f, 1.f, "block");
             return;
         }
     }
@@ -720,7 +720,7 @@ void ChorusFlowerBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::i
             if(plantSt!=0){
                 w.setBlock(x,y,z, plantSt);
                 if(srv) srv->broadcastBlockChange(x,y,z, plantSt);
-                if(srv) srv->broadcastSound("minecraft:block.chorus_flower.grow", x+0.5, y+0.5, z+0.5, 1.f, 1.f, "blocks");
+                if(srv) srv->broadcastSound("minecraft:block.chorus_flower.grow", x+0.5, y+0.5, z+0.5, 1.f, 1.f, "block");
             }
             return;
         } else {
