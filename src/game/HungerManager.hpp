@@ -3,6 +3,7 @@
 // Pure helpers are testable; GameServer delegates to this manager.
 // plan19 combat polish: verified per-player foodTickTimer, FAST 10 / SLOW 80, naturalRegeneration, starve diff, EPF weight 1.
 // plan20 combat polish: verify hunger unchanged by world-density/light changes; GameRules expanded to 50+ (W18) for naturalRegeneration parity.
+// plan21 combat polish: retry verify EXHAUST_WALK 0 vs 0.01, per-player foodTickTimer, FAST 10/SLOW 80, starve diff hard/easy/normal, naturalRegeneration gate.
 #pragma once
 #include <cstdint>
 #include <string>
