@@ -106,6 +106,25 @@ public:
         auto it2 = it->second.find(holder);
         return it2 != it->second.end() ? it2->second : 0;
     }
+    // D26 polish: reset helpers for ResetScore 0x49 (1.20.3 split, was action 1 in 0x68)
+    bool resetScore(const std::string& holder, const std::string& objective) {
+        auto it = scores.find(objective);
+        if (it == scores.end()) return false;
+        return it->second.erase(holder) > 0;
+    }
+    std::vector<std::string> resetAllScores(const std::string& holder) {
+        std::vector<std::string> affected;
+        for (auto& kv : scores) if (kv.second.erase(holder)) affected.push_back(kv.first);
+        return affected;
+    }
+    bool removeObjectiveWithReset(const std::string& name, std::vector<std::string>& outHolders) {
+        auto it = scores.find(name);
+        if (it != scores.end()) {
+            for (auto& kv : it->second) outHolders.push_back(kv.first);
+            scores.erase(it);
+        }
+        return removeObjectives(name);
+    }
 
     // -------------------------------------------------------------- packets
     void writeObjectivePacket(WriteBuffer& b, const Objective& o,
