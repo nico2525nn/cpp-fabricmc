@@ -3,6 +3,7 @@
 #include "DatapackManager.hpp"
 #include <fstream>
 #include <filesystem>
+#include <sstream>
 
 namespace cppfm {
 
@@ -63,6 +64,31 @@ std::vector<std::string> FunctionEvaluator::getFunctionLines(const std::string& 
 
 int FunctionEvaluator::executeLine(const std::string& line, brigadier::CommandSource src) {
     if (!server_) return 0;
+    // D26: handle scoreboard players reset directly for function support (wildcard vs specific, Prismarine 0x49)
+    if (line.rfind("scoreboard players reset", 0) == 0) {
+        std::istringstream iss(line);
+        std::vector<std::string> tokens; std::string tok;
+        while (iss >> tok) tokens.push_back(tok);
+        if (tokens.size() >= 4) {
+            std::string holder = tokens[3];
+            std::string obj; std::string* objPtr = nullptr;
+            if (tokens.size() >= 5) { obj = tokens[4]; objPtr = &obj; }
+            std::vector<std::string> holders;
+            if (!holder.empty() && holder[0] == '@') {
+                auto sel = server_->resolveSelector(holder, static_cast<Player*>(src.player));
+                holders = sel.playerNames;
+                if (holders.empty()) holders.push_back(holder);
+            } else {
+                holders.push_back(holder);
+            }
+            int cnt = 0;
+            for (auto& h : holders) {
+                if (objPtr) { if (server_->scoreboard.resetScore(h, *objPtr)) { server_->sendResetScoreAll(h, objPtr); ++cnt; } }
+                else { auto aff = server_->scoreboard.resetAllScores(h); if (!aff.empty()) { server_->sendResetScoreAllWildcard(h); ++cnt; } }
+            }
+            return cnt;
+        }
+    }
     // Handle return command directly
     if (line.rfind("return ", 0) == 0) {
         std::string valStr = line.substr(7);
