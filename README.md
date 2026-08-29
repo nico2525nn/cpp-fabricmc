@@ -47,7 +47,7 @@ proven **byte-identical to a real reference server's output** by golden tests.
 ## What does *not* work (yet)
 
 - **Coarse taxonomy** (`docs/MISSING_FEATURES_1_21_4.md` 80 rows): **0 `PARTIAL` / 0 `TODO`** — all 80 rows DONE per that taxonomy (post-`plan/` `BreedGoal`/`Villager`/`SpawnEgg`/`Brain`).
-- **True parity — strict wire audit** (`docs/COMPAT_AUDIT_1_21_4_STRICT.md`, Web Search/Web Fetch verified, `file:line` absolute): **0 gaps remain of 78** — **78/78 fixed** (HIGH 10 in `plan15`, MEDIUM 10 in `plan16`, LOW 10 in `plan17`, `plan18` 10, `plan19` 10, `plan20` 10, `plan21` 10, `plan22` 10, `plan23` 8). Bit-level protocol parity achieved.
+- **True parity — strict wire audit** (`docs/COMPAT_AUDIT_1_21_4_STRICT.md`, Web Search/Web Fetch verified, `file:line` absolute): **0 gaps remain of 78** — **78/78 fixed** (HIGH 10 in `plan15`, MEDIUM 10 in `plan16`, LOW 10 in `plan17`, `plan18` 10, `plan19` 10, `plan20` 10, `plan21` 10, `plan22` 10, `plan23` 8, `plan24` 10, `plan25` 10). Bit-level protocol parity achieved — now deep audit `docs/COMPAT_DEEP_AUDIT.md` 20/31 fixed, 11 remain.
 - **Non-80 polish (beyond 1.21.4):** `Bundles` 1.21.5, `RaidOmen`/`TrialOmen` duration.
 
 - **Fabric mods cannot run inside a C++ process.** Mods are JVM bytecode loaded
