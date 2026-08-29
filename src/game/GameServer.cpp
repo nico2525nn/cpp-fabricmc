@@ -4685,11 +4685,11 @@ void GameServer::boatsTick() {
     for (auto &b : boats) {
         if (b->dead) continue;
         int bx=(int)std::floor(b->x), by=(int)std::floor(b->y), bz=(int)std::floor(b->z);
-        auto st = world_.getBlock(bx, by, bz);
         auto stBelow = world_.getBlock(bx, by-1, bz);
-        const gen::BlockDef* d = gen::blockByState(st);
         const gen::BlockDef* dBelow = gen::blockByState(stBelow);
-        bool inWater = d && std::string(d->name)=="minecraft:water";
+        // plan23 §3: use FluidState.isWater() for water detection (was block name string, fails for waterlogged/flowing)
+        bool inWater = FluidSim::getFluidState(world_, bx, by, bz).isWater();
+        auto st = world_.getBlock(bx, by, bz);
         bool underWater = inWater && [&]{
             for(auto &pr: gen::propsOf(st)) if(pr.first=="level" && pr.second=="0") return true;
             return false;
@@ -7358,6 +7358,51 @@ void Session::onUseItemOn(ReadBuffer& in) {
         // keep itemName endsWith check for tooling/grep
         if (itemName.ends_with("_spawn_egg")) {
             // handled via trySpawnEgg above
+        }
+    }
+    // plan23 §3: Boat variants 20 distinct — place boat/raft item spawns correct variant (E2)
+    // Vanilla: right-click water with boat spawns variant matching item; typeId via MobKind::typeId.
+    // Intercept before generic block placement (boat items are not block items).
+    {
+        if (!heldItem.empty()) {
+            std::string hName = heldItem.name();
+            bool isBoatItem = hName.ends_with("_boat") || hName.ends_with("_raft");
+            if (isBoatItem) {
+                auto kindOpt = [&]() -> std::optional<MobKind> {
+                    if (hName=="minecraft:oak_boat") return MobKind::OakBoat;
+                    if (hName=="minecraft:spruce_boat") return MobKind::SpruceBoat;
+                    if (hName=="minecraft:birch_boat") return MobKind::BirchBoat;
+                    if (hName=="minecraft:jungle_boat") return MobKind::JungleBoat;
+                    if (hName=="minecraft:acacia_boat") return MobKind::AcaciaBoat;
+                    if (hName=="minecraft:dark_oak_boat") return MobKind::DarkOakBoat;
+                    if (hName=="minecraft:mangrove_boat") return MobKind::MangroveBoat;
+                    if (hName=="minecraft:cherry_boat") return MobKind::CherryBoat;
+                    if (hName=="minecraft:pale_oak_boat") return MobKind::PaleOakBoat;
+                    if (hName=="minecraft:bamboo_raft") return MobKind::BambooRaft;
+                    if (hName=="minecraft:oak_chest_boat") return MobKind::OakChestBoat;
+                    if (hName=="minecraft:spruce_chest_boat") return MobKind::SpruceChestBoat;
+                    if (hName=="minecraft:birch_chest_boat") return MobKind::BirchChestBoat;
+                    if (hName=="minecraft:jungle_chest_boat") return MobKind::JungleChestBoat;
+                    if (hName=="minecraft:acacia_chest_boat") return MobKind::AcaciaChestBoat;
+                    if (hName=="minecraft:dark_oak_chest_boat") return MobKind::DarkOakChestBoat;
+                    if (hName=="minecraft:mangrove_chest_boat") return MobKind::MangroveChestBoat;
+                    if (hName=="minecraft:cherry_chest_boat") return MobKind::CherryChestBoat;
+                    if (hName=="minecraft:pale_oak_chest_boat") return MobKind::PaleOakChestBoat;
+                    if (hName=="minecraft:bamboo_chest_raft") return MobKind::BambooChestRaft;
+                    return std::nullopt;
+                }();
+                if (kindOpt) {
+                    double sx = tx + 0.5, sy = ty + 0.1, sz = tz + 0.5;
+                    srv_.spawnMob(*kindOpt, sx, sy, sz);
+                    if (survival) {
+                        auto* mh = &self_->inv[36 + self_->heldSlot];
+                        if (--mh->count <= 0) *mh = ItemStack::air();
+                        srv_.resendInventory(*self_);
+                    }
+                    ack(sequence);
+                    return;
+                }
+            }
         }
     }
     std::uint16_t newState = 0;
