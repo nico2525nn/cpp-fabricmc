@@ -757,9 +757,10 @@ void GameServer::chunksUnloadTick() {
         toErase.reserve(keys.size());
         auto players = playersSnapshot();
         for (auto k : keys) {
-            if (w.isForcedKey(k)) continue;
             const std::int32_t cx = static_cast<std::int32_t>(k >> 32);
             const std::int32_t cz = static_cast<std::int32_t>(k & 0xFFFFFFFFLL);
+            // W17/W19: keep both FORCED and SPAWN (level 31) tickets from unloading
+            if (w.isForcedKey(k) || w.ticketLevel(cx, cz) <= 31) continue;
             bool near = false;
             for (auto &pl : players) {
                 if (!pl->inPlay) continue;
@@ -773,7 +774,7 @@ void GameServer::chunksUnloadTick() {
             if (near) continue;
             bool anyInDim = false;
             for (auto &pl : players) if (pl->inPlay && pl->dimension == dim) { anyInDim = true; break; }
-            if (!anyInDim && w.isForced(cx, cz)) continue;
+            if (!anyInDim && (w.isForced(cx, cz) || w.ticketLevel(cx, cz) <= 31)) continue;
             if (pp && pp->isDirty(cx, cz)) {
                 pp->flushChunk(cx, cz);
             }
@@ -787,8 +788,12 @@ void GameServer::chunksUnloadTick() {
             size_t remaining = keys.size() > toErase.size() ? keys.size() - toErase.size() : 0;
             if (remaining > (size_t)cfg_.maxLoadedChunks) {
                 // guard: forced chunks never evicted; if forced >= cap, warn and skip (avoid infinite loop)
+                // W17/W19: count both FORCED and SPAWN (level 31) as protected
                 size_t forcedCount = 0;
-                for (auto k : keys) if (w.isForcedKey(k)) ++forcedCount;
+                for (auto k : keys) {
+                    int32_t cx = static_cast<int32_t>(k>>32), cz = static_cast<int32_t>(k & 0xFFFFFFFFLL);
+                    if (w.isForcedKey(k) || w.ticketLevel(cx,cz) <= 31) ++forcedCount;
+                }
                 if (forcedCount >= (size_t)cfg_.maxLoadedChunks) {
                     std::fprintf(stderr, "[cppfm] maxLoadedChunks %d < forced %zu, skip cap evict\n",
                                  cfg_.maxLoadedChunks, forcedCount);
@@ -796,7 +801,12 @@ void GameServer::chunksUnloadTick() {
                     std::unordered_set<std::int64_t> already(toErase.begin(), toErase.end());
                     std::vector<std::int64_t> candidates;
                     candidates.reserve(remaining);
-                    for (auto k : keys) if (!already.count(k) && !w.isForcedKey(k)) candidates.push_back(k);
+                    for (auto k : keys) {
+                        if (already.count(k)) continue;
+                        int32_t cx = static_cast<int32_t>(k>>32), cz = static_cast<int32_t>(k & 0xFFFFFFFFLL);
+                        if (w.isForcedKey(k) || w.ticketLevel(cx,cz) <= 31) continue;
+                        candidates.push_back(k);
+                    }
                     auto distToNearest = [&](std::int32_t cx, std::int32_t cz) -> double {
                         double best = 1e100;
                         for (auto &pl : players) if (pl->inPlay && pl->dimension == dim) {

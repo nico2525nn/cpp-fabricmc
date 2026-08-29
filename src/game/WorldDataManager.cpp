@@ -9,6 +9,8 @@ bool WorldDataManager::saveLevelDataWithProviders(std::int64_t worldTicks, std::
                                     const std::string& difficulty,
                                     double borderDiameter, double borderCX, double borderCZ,
                                     double borderLerpTarget, std::int64_t borderLerpMs) {
+    // W16 single level.dat: DIM dirs must not own level.dat
+    if (dir_.find("DIM") != std::string::npos) return false;
     try {
         nbt::Value root = nbt::Value::makeCompound();
         nbt::Value data = nbt::Value::makeCompound();
@@ -61,29 +63,41 @@ bool WorldDataManager::saveLevelDataWithProviders(std::int64_t worldTicks, std::
         data.set("WasModded", nbt::Value::makeByte(0));
         data.set("allowCommands", nbt::Value::makeByte(1));
         data.set("GameType", nbt::Value::makeInt(1));
-        // ForcedChunks — Yarn ForcedChunkState: only ticket FORCED/SPAWN set, truncate 256 (W17 strict)
+        // ForcedChunks — Yarn ForcedChunkState: only ticket FORCED set, truncate 256 (W17 strict)
         {
             nbt::Value fc = nbt::Value::makeList(nbt::Long);
             // W17: persist ticketManager forced set via World::forcedChunkKeys(), not allChunkKeys scan.
             // Vanilla ForcedChunkState stores ChunkPos.toLong(x,z) long[] with 256 limit.
+            // W17 strict: SPAWN (spawn chunk loader) must NOT be persisted here; only FORCED from /forceload.
+            // forcedChunkKeys() already returns only FORCED (addSpawnTicket no longer pollutes set).
             auto forced = world.forcedChunkKeys();
             if (forced.size() > 256) {
                 std::fprintf(stderr, "[WorldDataManager] ForcedChunks %zu >256, truncating to 256 (vanilla limit)\n", forced.size());
                 forced.resize(256);
             }
             for (auto k : forced) fc.list.push_back(nbt::Value::makeLong(k));
-            // Note: spawn 5x5 tickets are recreated on startup via GameServer::init (SPAWN level 31)
-            // and are included in forcedChunkKeys() after init, so they will be persisted if present.
-            // We do NOT synthesize spawn here to avoid inflating maxLoadedChunks (W19) with implicit forced.
+            // Note: spawn 5x5 SPAWN tickets are recreated on startup via GameServer::init (SPAWN level 31)
+            // and are NOT persisted here (W17) to avoid inflating maxLoadedChunks (W19) with implicit forced.
             data.set("ForcedChunks", fc);
         }
-        // End dragon fight data (per-dim level.dat for The End)
-        if (world.dimensionId() == 1 || world.levelType() == LevelType::End) {
+        // W16 single level.dat: DragonFight Gateways 12 intact (vanilla 1.21.4 Data.DragonFight)
+        // Yarn PrimaryLevelData EnderDragonFight.Data 12 Gateways, single world/level.dat
+        // 26.1 moves to ender_dragon_fight.dat, but 1.21.4 keeps it in level.dat.
+        {
             nbt::Value dragon = nbt::Value::makeCompound();
             dragon.set("DragonKilled", nbt::Value::makeByte(0));
             dragon.set("PreviouslyKilled", nbt::Value::makeByte(0));
-            dragon.set("Gateways", nbt::Value::makeList(nbt::Int));
-            data.set("DragonFight", dragon);
+            nbt::Value gw = nbt::Value::makeList(nbt::Int);
+            gw.list.reserve(12);
+            for (int i = 0; i < 12; ++i) gw.list.push_back(nbt::Value::makeInt(0));
+            dragon.set("Gateways", std::move(gw));
+            dragon.set("NeedsStateScanning", nbt::Value::makeByte(0));
+            nbt::Value exitPos = nbt::Value::makeCompound();
+            exitPos.set("X", nbt::Value::makeInt(0));
+            exitPos.set("Y", nbt::Value::makeInt(65));
+            exitPos.set("Z", nbt::Value::makeInt(0));
+            dragon.set("ExitPortalLocation", std::move(exitPos));
+            data.set("DragonFight", std::move(dragon));
         }
         // GameRules: ensure all vanilla rules present — 37+ defaults (plan20 W18 strict, was 14)
         auto ensureGr = [&](nbt::Value &gr){

@@ -163,6 +163,23 @@ public:
                     for (auto k : forced) fc.list.push_back(nv::Value::makeLong(k));
                     data.set("ForcedChunks", fc);
                 }
+                // W16 single level.dat: DragonFight Gateways 12
+                {
+                    nbt::Value dragon = nbt::Value::makeCompound();
+                    dragon.set("DragonKilled", nbt::Value::makeByte(0));
+                    dragon.set("PreviouslyKilled", nbt::Value::makeByte(0));
+                    nbt::Value gw = nbt::Value::makeList(nbt::Int);
+                    gw.list.reserve(12);
+                    for (int i=0;i<12;++i) gw.list.push_back(nbt::Value::makeInt(0));
+                    dragon.set("Gateways", std::move(gw));
+                    dragon.set("NeedsStateScanning", nbt::Value::makeByte(0));
+                    nbt::Value exitPos = nbt::Value::makeCompound();
+                    exitPos.set("X", nbt::Value::makeInt(0));
+                    exitPos.set("Y", nbt::Value::makeInt(65));
+                    exitPos.set("Z", nbt::Value::makeInt(0));
+                    dragon.set("ExitPortalLocation", std::move(exitPos));
+                    data.set("DragonFight", std::move(dragon));
+                }
                 if (provideLevelState_) provideLevelState_(data);
                 root.set("Data", data);
                 WriteBuffer out;
@@ -173,6 +190,15 @@ public:
                     std::ofstream tf(tmp, std::ios::binary | std::ios::trunc);
                     tf.write(reinterpret_cast<const char*>(out.data.data()), out.data.size());
                 }
+                // W16: backup level.dat_old before rename
+                try {
+                    std::string dst = dir_ + "/level.dat";
+                    std::string old = dst + "_old";
+                    if (std::filesystem::exists(dst)) {
+                        std::error_code ec;
+                        std::filesystem::copy_file(dst, old, std::filesystem::copy_options::overwrite_existing, ec);
+                    }
+                } catch (...) {}
                 std::filesystem::rename(tmp, dir_ + "/level.dat");
             } catch (...) {}
         }
