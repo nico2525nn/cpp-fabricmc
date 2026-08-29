@@ -1246,11 +1246,10 @@ void GameServer::mobsTick() {
                     if (!m->creeperIgnited) {
                         m->creeperIgnited = true;
                         m->creeperFuseStart = tickNo_;
-                        // SetEntityMetadata ignited flag (index 16, vanilla CreeperEntity isIgnited)
+                        // SetEntityMetadata ignited flag (index 16, vanilla CreeperEntity IGNITED Boolean) Yarn CreeperEntity.IGNITED Boolean idx16
                         WriteBuffer md;
                         md.varint(m->entityId);
-                        md.u8(16); md.varint(0); md.varint(1);
-                        md.u8(8); md.varint(1); // fuse? simplified second field
+                        md.u8(16); md.varint(8); md.boolean(true); // Boolean true (Yarn BOOLEAN handler, not Byte 0)
                         md.u8(255);
                         broadcastPacketExcept(nullptr, pl::sc::SetEntityMetadata, md);
                         broadcastSound("minecraft:entity.creeper.primed",
@@ -1271,7 +1270,7 @@ void GameServer::mobsTick() {
                     m->creeperFuseStart = -1;
                     WriteBuffer md;
                     md.varint(m->entityId);
-                    md.u8(16); md.varint(0); md.varint(0);
+                    md.u8(16); md.varint(8); md.boolean(false); // Boolean false
                     md.u8(255);
                     broadcastPacketExcept(nullptr, pl::sc::SetEntityMetadata, md);
                 }
@@ -1990,10 +1989,10 @@ void GameServer::strikeLightning(double x, double y, double z) {
         double dx=m->x - x, dy=m->y - y, dz=m->z - z;
         if (dx*dx + dy*dy + dz*dz < 16) {
             m->creeperCharged = true;
-            // metadata update for charged creeper (index 17? simplified)
+            // metadata update for charged creeper (index 17 Boolean Yarn CreeperEntity.CHARGED Boolean idx17)
             WriteBuffer md;
             md.varint(m->entityId);
-            md.u8(17); md.varint(0); md.u8(1);
+            md.u8(17); md.varint(8); md.boolean(true); // Boolean true, not Byte 0
             md.u8(255);
             broadcastPacketExcept(nullptr, pl::sc::SetEntityMetadata, md);
             std::fprintf(stderr, "[cppfm] creeper %d charged via lightning at %.1f %.1f %.1f\n", m->entityId, x,y,z);
