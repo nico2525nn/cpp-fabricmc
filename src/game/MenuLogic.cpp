@@ -5,6 +5,7 @@
 #include "../generated/ItemIds.hpp"
 #include <algorithm>
 #include <cstdio>
+#include <random>
 
 namespace cppfm {
 
@@ -205,13 +206,19 @@ bool EnchantmentMenuLogic::onEnchantButton(Menu& menu, Player& player, int butto
         player.xp.level = std::max(0, player.xp.level - levelCost);
         GameServer::sendSetExperience(player);
     }
-    // Apply enchant(s) — deterministic seeded RNG per Yarn EnchantmentScreenHandler (plan17 LOW I5)
+    // Apply enchant(s) — deterministic seeded RNG per Yarn EnchantmentScreenHandler (plan23 §5 seeded Random)
+    // Yarn `EnchantmentHelper.generateEnchantments` uses Random.create(seed) where seed = player.enchantmentSeed
     const char* enchants[] = {"minecraft:protection","minecraft:sharpness","minecraft:efficiency","minecraft:unbreaking"};
     const char* chosen = enchants[buttonId % 4];
-    std::uint32_t seed = static_cast<std::uint32_t>(player.enchantmentSeed ^ (buttonId * 0x9e3779b9u) ^ (bookshelves * 0x85ebca6bu));
-    seed = CostCalculator::splitmix32(seed);
-    int lvl = 1 + (buttonId) + static_cast<int>(seed % 2u);
-    ItemStack::addEnchant(*item, chosen, lvl);
+    {
+        std::uint32_t baseSeed = static_cast<std::uint32_t>(player.enchantmentSeed ^ (buttonId * 0x9e3779b9u) ^ (bookshelves * 0x85ebca6bu));
+        if (baseSeed == 0) baseSeed = 0x5a5a5a5a;
+        std::mt19937 rng(baseSeed);
+        int lvl = 1 + (buttonId) + static_cast<int>(rng() % 2u);
+        // clamp lvl to enchant max (protection 4, sharpness 5 etc) — keep simple 1..5
+        lvl = std::clamp(lvl, 1, 5);
+        ItemStack::addEnchant(*item, chosen, lvl);
+    }
     io.blockEntityChanged(menu.blockKey);
     return true;
 }

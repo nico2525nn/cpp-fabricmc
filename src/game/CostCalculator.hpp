@@ -1,8 +1,10 @@
-// CostCalculator: enchanting and anvil cost logic (plan6 items 47,48)
+// CostCalculator: enchanting and anvil cost logic (plan6 items 47,48) — plan23 §5 seeded RNG
 #pragma once
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstdlib>
+#include <random>
 #include <string>
 #include "Items.hpp"
 #include "World.hpp"
@@ -12,26 +14,27 @@ struct Player;
 
 class CostCalculator {
 public:
-    // plan17 LOW I5: seeded deterministic RNG (Yarn EnchantmentScreenHandler seed) — replaces std::rand()
-    // Uses splitmix32 seeded by player.enchantmentSeed ^ bookshelves, so costs are deterministic per player/table
+    // plan23 §5 I5: seeded deterministic RNG (Yarn EnchantmentScreenHandler seed) — replaces std::rand()
+    // Yarn `EnchantmentScreenHandler` uses `Random.create(seed)` where seed = player.enchantmentSeed.
+    // Vanilla 1.21.4 formula: enchantmentPower = bs; base = 1 + rand(0,7) + bs/2 + rand(0,bs)
+    // then three levels: c0 = base + rand(0,base/4) + rand(0,base/4), c1 = c0/3+1, c2 = c0  (clamped 1..30)
+    // We use std::mt19937 seeded by player.enchantmentSeed ^ bookshelves for determinism.
     static std::uint32_t splitmix32(std::uint32_t x) {
         x += 0x9e3779b9u;
         x = (x ^ (x >> 16u)) * 0x85ebca6bu;
         x = (x ^ (x >> 13u)) * 0xc2b2ae35u;
         return x ^ (x >> 16u);
     }
-    // Enchanting: vanilla 1.21.4: base = rand(1,8) + floor(bs/2) + rand(0,bs)
-    // clamped 1..30. Then 3 levels derived as max(base/3,1), (base*2)/3+1, max(base, bs*2)
     static int enchantingCost(const Player& player, int bookshelves) {
         int bs = std::clamp(bookshelves, 0, 15);
         std::uint32_t seed = static_cast<std::uint32_t>(player.enchantmentSeed);
         if (seed == 0) seed = static_cast<std::uint32_t>(player.entityId * 0x9e3779b9u ^ 0x85ebca6bu ^ (bs * 0x27d4eb2du));
-        seed = splitmix32(seed ^ 0x27d4eb2du);
-        int base = 1 + static_cast<int>(seed % 8u); // 1..8
+        // plan23: use mt19937 seeded by player seed for vanilla parity (Random.create(seed))
+        std::mt19937 rng(seed);
+        int base = 1 + static_cast<int>(rng() % 8u); // 1..8
         base += bs / 2;
         if (bs > 0) {
-            seed = splitmix32(seed);
-            base += static_cast<int>(seed % static_cast<std::uint32_t>(bs + 1)); // 0..bs
+            base += static_cast<int>(rng() % static_cast<std::uint32_t>(bs + 1)); // 0..bs
         }
         if (base < 1) base = 1;
         if (base > 30) base = 30;
@@ -39,14 +42,33 @@ public:
     }
     static std::array<int,3> enchantingCostsForShelves(const Player& p, int bookshelves) {
         int bs = std::clamp(bookshelves, 0, 15);
-        int base = enchantingCost(p, bs);
-        int c0 = std::max(base / 3, 1);
-        int c1 = (base * 2) / 3 + 1;
-        int c2 = std::max(base, bs * 2);
-        c0 = std::clamp(c0, 1, 30);
-        c1 = std::clamp(c1, 1, 30);
-        c2 = std::clamp(c2, 1, 30);
-        return {c0, c1, c2};
+        std::uint32_t seed = static_cast<std::uint32_t>(p.enchantmentSeed);
+        if (seed == 0) seed = static_cast<std::uint32_t>(p.entityId * 0x9e3779b9u ^ 0x85ebca6bu ^ (bs * 0x27d4eb2du));
+        std::mt19937 rng(seed);
+        int base = 1 + static_cast<int>(rng() % 8u);
+        base += bs / 2;
+        if (bs > 0) base += static_cast<int>(rng() % static_cast<std::uint32_t>(bs + 1));
+        base = std::clamp(base, 1, 30);
+        std::array<int,3> c;
+        // Yarn method_17411: c0 = base + rand(base/4+1) + rand(base/4+1)
+        c[0] = std::clamp(base + static_cast<int>(rng() % static_cast<std::uint32_t>(base/4 + 1)) + static_cast<int>(rng() % static_cast<std::uint32_t>(base/4 + 1)), 1, 30);
+        c[1] = std::clamp(c[0]/3 + 1, 1, 30);
+        c[2] = std::clamp(c[0], 1, 30);
+        // For bs ==0, ensure at least 1..8 range; for bs 15, c0 tends to 30
+        return c;
+    }
+    // Deterministic helper for tests: costsFor with explicit seed (plan23 §5 test)
+    static std::array<int,3> costsFor(int bookshelves, std::uint32_t seed){
+        std::mt19937 rng(seed);
+        int bs = std::clamp(bookshelves, 0, 15);
+        int base = 1 + static_cast<int>(rng() % 8u) + bs/2;
+        if (bs > 0) base += static_cast<int>(rng() % static_cast<std::uint32_t>(bs + 1));
+        base = std::clamp(base, 1, 30);
+        std::array<int,3> c;
+        c[0] = std::clamp(base + static_cast<int>(rng() % static_cast<std::uint32_t>(base/4+1)) + static_cast<int>(rng() % static_cast<std::uint32_t>(base/4+1)), 1, 30);
+        c[1] = std::clamp(c[0]/3+1, 1, 30);
+        c[2] = std::clamp(c[0], 1, 30);
+        return c;
     }
     // vanilla bookshelf counting with air gap (Yarn EnchantingTableBlock)
     static int countBookshelves(const World& w, std::int32_t bx, std::int32_t by, std::int32_t bz) {
