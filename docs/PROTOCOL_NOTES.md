@@ -84,6 +84,15 @@ Empirical after plan12: vanilla coalesces same chunk-section `BlockUpdate 0x09`s
 - `UpdateLight` masks are `BitSet` of `int64` words; block-light for `glowstone` (emit 15) propagates via `LightEngine::drain` BFS 3×3 `expandedDirty` and `pendingSkyRebuild` 3×3 (post-plan12). Opacity for emissive `glowstone 0` after special-case, else `minecraft-data filter`.
 - `LightUpdateQueue` (`LightEngine.hpp:20`) batches `addQueue`/`removeQueue` and defers sky rebuild until `drain()`; `serializeUpdateLightBody` builds `skyMask/blockMask/emptyMasks` from `chunk.blockLightNib`.
 
+## Scoreboard (`ScoreboardObjective 0x64` / `ScoreboardScore 0x68` / `ResetScore 0x49` / `ScoreboardDisplayObjective 0x5C`)
+
+Prismarine `minecraft-data 1.21.4` `protocol.json` 131 `toClient` sorted hex verifies `0x49` between `0x48 RemoveMobEffect` and `0x4A CommandSuggestions`:
+`packet_reset_score {entity_name string 32767, objective_name Prefixed Optional<string>}` → wire `string holder (varint len + bytes) + boolean present + string if present`.
+`packet_scoreboard_score {itemName string, scoreName string, value varint, display_name Prefixed Optional<NBT>, number_format Prefixed Optional<varint>}` → no action byte (pre-1.20.3 `action i8 0/1` removed).
+`packet_scoreboard_objective {objectiveName string, action i8 0 create /1 remove /2 update, displayName Chat, type varint 0 integer/1 hearts, number_format option varint}`.
+`packet_scoreboard_display_objective {position varint 0 list/1 sidebar/2 below_name, scoreName string}` empty string clears slot.
+Bundle coalescing: `0x49` and `0x68` are single-byte varint ids, `dataLength` <256 → `zlib` level 6 `0.01ms`, `BundleDelimiter 0x00` correctly wraps `0x49` with `0x68/0x64/0x5C`. Verified `Ids.hpp:147-152` `static_assert` 4-way lock byte-identical to Prismarine.
+
 ## Misc wire facts
 
 - `Set Center Chunk`: plain signed varints (NOT ZigZag).
