@@ -23,6 +23,8 @@
 #include <algorithm>
 #include <climits>
 #include <unordered_map>
+#include <unordered_set>
+#include <string_view>
 
 namespace cppfm {
 
@@ -38,28 +40,35 @@ struct PaletteSpec {
     std::uint32_t globalMaxId;      // for direct mode
 };
 
-// Packs 4096 entries of `bits` width into longs (no straddling) after a varint count.
+// Packs `entryCount` entries of `bits` width into longs (no straddling) after a varint count.
+// entryCount is 4096 for blocks, 64 for biomes (D1 fix: biomes were incorrectly 4096).
 template <typename Fn>
-inline void writePackedEntries(WriteBuffer& out, int bits, Fn&& valueAt) {
+inline void writePackedEntries(WriteBuffer& out, int bits, int entryCount, Fn&& valueAt) {
     const int per = 64 / bits;
-    const int nLongs = (4096 + per - 1) / per;
+    const int nLongs = (entryCount + per - 1) / per;
     out.varint(nLongs);
     std::uint64_t cur = 0;
     int filled = 0;
-    for (int i = 0; i < 4096; ++i) {
+    for (int i = 0; i < entryCount; ++i) {
         cur |= static_cast<std::uint64_t>(valueAt(i) & ((1ULL << bits) - 1)) << (filled * bits);
         if (++filled == per) { out.u64(cur); cur = 0; filled = 0; }
     }
     if (filled) out.u64(cur);
 }
+// Backward-compatible overload for blocks (4096 entries)
+template <typename Fn>
+inline void writePackedEntries(WriteBuffer& out, int bits, Fn&& valueAt) {
+    writePackedEntries(out, bits, 4096, std::forward<Fn>(valueAt));
+}
 
-// Getter maps linear index 0..4095 -> state id (blocks: global id; biomes: registry index).
+// Getter maps linear index 0..entryCount-1 -> state id (blocks: global id; biomes: registry index).
+// entryCount 4096 for blocks, 64 for biomes (D1 fix).
 template <typename Getter>
-inline void writePalettedContainer(WriteBuffer& out, Getter&& get, const PaletteSpec& spec) {
+inline void writePalettedContainer(WriteBuffer& out, Getter&& get, const PaletteSpec& spec, int entryCount = 4096) {
     std::vector<std::uint32_t> palette;
     palette.reserve(16);
     std::unordered_map<std::uint32_t, std::uint16_t> indexOf;
-    for (int i = 0; i < 4096; ++i) {
+    for (int i = 0; i < entryCount; ++i) {
         const std::uint32_t v = get(i);
         if (!indexOf.count(v)) {
             indexOf.emplace(v, static_cast<std::uint16_t>(palette.size()));
@@ -78,13 +87,13 @@ inline void writePalettedContainer(WriteBuffer& out, Getter&& get, const Palette
     if (spec.allowDirect && bits > 8) {              // direct/global ids
         const int gbits = ceilLog2(spec.globalMaxId + 1);
         out.u8(static_cast<std::uint8_t>(gbits));
-        writePackedEntries(out, gbits, get);
+        writePackedEntries(out, gbits, entryCount, get);
         return;
     }
     out.u8(static_cast<std::uint8_t>(bits));         // indirect
     out.varint(static_cast<std::int32_t>(palette.size()));
     for (auto id : palette) out.varint(static_cast<std::int32_t>(id));
-    writePackedEntries(out, bits, [&](int i) { return indexOf.at(get(i)); });
+    writePackedEntries(out, bits, entryCount, [&](int i) { return indexOf.at(get(i)); });
 }
 
 // Highest non-air y within chunk (chunk-relative 0..383); 0 if empty column.
@@ -95,21 +104,84 @@ inline int columnSurface(const Chunk& c, int lx, int lz) {
     return 0;
 }
 
-inline void packHeightmap(std::vector<std::int64_t>& out, const Chunk& c) {
-    constexpr int kBpe = 9;                    // ceil(log2(384+1))
-    // vanilla packing is straddling: 256*9=2304 bits => 36 longs (not 37)
-    out.assign((256 * kBpe + 63) / 64, 0);    // 36 longs
+// D2: MOTION_BLOCKING vs WORLD_SURFACE distinction.
+// WORLD_SURFACE = highest non-air (columnSurface)
+// MOTION_BLOCKING = highest block that blocks motion or contains fluid (vanilla Heightmap.Type)
+inline bool isMotionBlocking(std::uint32_t stateId) {
+    if (stateId == 0) return false;
+    // void/cave air (13971,13972) are air variants
+    if (stateId == 13971 || stateId == 13972) return false;
+    const auto* def = gen::blockByState(stateId);
+    if (!def) return false;
+    std::string_view name = def->name;
+    // fluids are motion blocking (water/lava/bubble_column) – any level state shares same name
+    if (name == "minecraft:water" || name == "minecraft:lava" || name == "minecraft:bubble_column")
+        return true;
+    // waterlogged blocks contain fluid
+    {
+        auto props = gen::propsOf(stateId);
+        for (auto& kv : props) if (kv.first == "waterlogged" && kv.second == "true") return true;
+    }
+    if (name == "minecraft:cobweb" || name == "minecraft:bamboo_sapling") return false;
+    // snow: layers=1 is non-solid (MOTION false), layers 2..8 is solid
+    if (name == "minecraft:snow") {
+        auto props = gen::propsOf(stateId);
+        for (auto& kv : props) if (kv.first == "layers") return kv.second != "1";
+        return false;
+    }
+    // extensive non-solid foliage / no-collision list (blocksMotion false)
+    // Leaves are intentionally NOT here – they ARE motion blocking (MOTION counts leaves)
+    static const std::unordered_set<std::string_view> kNonMotion = {
+        "minecraft:short_grass","minecraft:fern","minecraft:dead_bush","minecraft:seagrass","minecraft:tall_seagrass",
+        "minecraft:dandelion","minecraft:poppy","minecraft:blue_orchid","minecraft:allium","minecraft:azure_bluet",
+        "minecraft:red_tulip","minecraft:orange_tulip","minecraft:white_tulip","minecraft:pink_tulip","minecraft:oxeye_daisy",
+        "minecraft:cornflower","minecraft:wither_rose","minecraft:lily_of_the_valley","minecraft:brown_mushroom","minecraft:red_mushroom",
+        "minecraft:tall_grass","minecraft:large_fern","minecraft:sunflower","minecraft:lilac","minecraft:rose_bush","minecraft:peony",
+        "minecraft:vine","minecraft:glow_lichen","minecraft:resin_clump","minecraft:sugar_cane","minecraft:kelp","minecraft:kelp_plant",
+        "minecraft:bamboo","minecraft:powder_snow","minecraft:moss_carpet","minecraft:pale_moss_carpet","minecraft:open_eyeblossom","minecraft:closed_eyeblossom",
+        "minecraft:cave_vines","minecraft:cave_vines_plant","minecraft:spore_blossom","minecraft:pink_petals","minecraft:hanging_roots","minecraft:big_dripleaf","minecraft:big_dripleaf_stem","minecraft:small_dripleaf",
+        "minecraft:sweet_berry_bush","minecraft:nether_sprouts","minecraft:warped_roots","minecraft:crimson_roots","minecraft:weeping_vines","minecraft:weeping_vines_plant","minecraft:twisting_vines","minecraft:twisting_vines_plant","minecraft:crimson_fungus","minecraft:warped_fungus",
+        "minecraft:torch","minecraft:wall_torch","minecraft:soul_torch","minecraft:soul_wall_torch","minecraft:redstone_wire","minecraft:repeater","minecraft:comparator",
+        "minecraft:ladder","minecraft:rail","minecraft:powered_rail","minecraft:detector_rail","minecraft:activator_rail","minecraft:lever",
+        "minecraft:stone_button","minecraft:oak_button","minecraft:spruce_button","minecraft:birch_button","minecraft:jungle_button","minecraft:acacia_button","minecraft:cherry_button","minecraft:dark_oak_button","minecraft:pale_oak_button","minecraft:mangrove_button","minecraft:bamboo_button",
+        "minecraft:crimson_button","minecraft:warped_button","minecraft:polished_blackstone_button",
+        "minecraft:tripwire","minecraft:tripwire_hook","minecraft:chain","minecraft:pointed_dripstone","minecraft:light","minecraft:barrier","minecraft:structure_void",
+        "minecraft:oak_sapling","minecraft:spruce_sapling","minecraft:birch_sapling","minecraft:jungle_sapling","minecraft:acacia_sapling","minecraft:cherry_sapling","minecraft:dark_oak_sapling","minecraft:pale_oak_sapling","minecraft:mangrove_propagule",
+        "minecraft:wheat","minecraft:carrots","minecraft:potatoes","minecraft:beetroots","minecraft:torchflower_crop","minecraft:pitcher_crop","minecraft:nether_wart","minecraft:cocoa","minecraft:chorus_plant","minecraft:chorus_flower",
+        "minecraft:scaffolding","minecraft:azalea","minecraft:flowering_azalea"
+    };
+    if (kNonMotion.count(name)) return false;
+    // default: solid / motion blocking (includes leaves, logs, stone, glass, etc.)
+    return true;
+}
+
+inline int columnMotionBlocking(const Chunk& c, int lx, int lz) {
+    for (int wy = kSectionsPerChunk * 16 - 1; wy >= 0; --wy) {
+        const auto id = c.blocks[Chunk::index(wy >> 4, wy & 15, lz, lx)];
+        if (isMotionBlocking(id)) return wy + 1;
+    }
+    return 0;
+}
+
+template <typename Fn>
+inline void packHeightmapGeneric(std::vector<std::int64_t>& out, Fn&& heightAt) {
+    constexpr int kBpe = 9;
+    out.assign((256 * kBpe + 63) / 64, 0);
     for (int z = 0; z < 16; ++z)
         for (int x = 0; x < 16; ++x) {
             const int idx = z * 16 + x;
             const int bit = idx * kBpe;
             const int lo = bit & 63;
             const int wi = bit >> 6;
-            const std::int64_t v = static_cast<std::int64_t>(columnSurface(c, x, z) & ((1<<kBpe)-1));
+            const std::int64_t v = static_cast<std::int64_t>(heightAt(x, z) & ((1 << kBpe) - 1));
             out[wi] |= v << lo;
             if (lo + kBpe > 64 && wi + 1 < (int)out.size())
                 out[wi + 1] |= v >> (64 - lo);
         }
+}
+
+inline void packHeightmap(std::vector<std::int64_t>& out, const Chunk& c) {
+    packHeightmapGeneric(out, [&](int x, int z){ return columnSurface(c, x, z); });
 }
 
 // Sky-light bytes for a transition section (lit at/above surface).
@@ -151,7 +223,7 @@ inline void serializeSectionData(WriteBuffer& blob, const Chunk* chunk,
 
         writePalettedContainer(blob,
             [&](int i) -> std::uint32_t { return chunk->blocks[base + static_cast<std::size_t>(i)]; },
-            PaletteSpec{4, true, gen::kMaxBlockStateId});
+            PaletteSpec{4, true, gen::kMaxBlockStateId}, 4096);
 
         const std::size_t bBase = static_cast<std::size_t>(s) * 64;
         bool uniform = true;
@@ -161,24 +233,25 @@ inline void serializeSectionData(WriteBuffer& blob, const Chunk* chunk,
         if (uniform) {
             writePalettedContainer(blob,
                 [&](int) -> std::uint32_t { return first; },
-                PaletteSpec{1, false, 0});
+                PaletteSpec{1, false, 0}, 64);
         } else {
             writePalettedContainer(blob,
                 [&](int i) -> std::uint32_t {
                     return chunk->biomes[bBase + static_cast<std::size_t>(i)];
                 },
-                PaletteSpec{1, false, 0});
+                PaletteSpec{1, false, 0}, 64);
         }
     }
 }
 
 inline void packHeightmapsNbt(WriteBuffer& out, const Chunk* chunk) {
-    std::vector<std::int64_t> hm;
-    packHeightmap(hm, *chunk);
+    std::vector<std::int64_t> ws(36), mo(36);
+    packHeightmapGeneric(ws, [&](int x,int z){ return columnSurface(*chunk, x, z); });
+    packHeightmapGeneric(mo, [&](int x,int z){ return columnMotionBlocking(*chunk, x, z); });
     nbt::Writer w(out);
     w.rootCompound();
-    w.namedLongArray("MOTION_BLOCKING", hm);
-    w.namedLongArray("WORLD_SURFACE", hm);   // flat world: identical surfaces
+    w.namedLongArray("MOTION_BLOCKING", mo);
+    w.namedLongArray("WORLD_SURFACE", ws);
     w.endCompound();
 }
 
