@@ -18,7 +18,7 @@ struct Team {
     std::string displayName;
     std::string prefix;
     std::string suffix;
-    int color = 15; // 0-15, 15 = white/reset, 21 = reset
+    int color = 21; // Formatting.RESET 1.21.4 (0-15 dye, 21 reset) — was 15 white
     std::string nameTagVisibility = "always";
     std::string collisionRule = "always";
     uint8_t friendlyFlags = 0; // 0x01 allowFriendlyFire 0x02 seeFriendlyInvisibles
