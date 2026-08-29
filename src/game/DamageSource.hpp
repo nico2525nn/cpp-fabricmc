@@ -7,6 +7,8 @@
 // plan21 combat polish: sonic_boom armor bypass (E4) + fall bypassArmor true, EPF weight 1, Resistance after armor, retry wiring.
 // plan22 combat polish: sonic_boom bypassArmor+bypassEnchant+bypassShield 15x20 ovoid, E6 armor+toughness f=2+t/4 caps 30/20, E7 weight 1, E8 fall bypassArmor true, Resistance after armor.
 // plan23 combat polish: verify E5 32 attrs, E6 single formula caps 30/20, E7 weight1, E8 fall bypassArmor, E9 Unbreaking 60%+ (verify).
+// plan24 combat polish: verify caps 30/20, E7 weight1, E8 fall bypassArmor, Resistance after armor, Unbreaking parity after wt24 merges.
+// plan25 combat polish: verify no regressions from W16-W19 + B7/B17/B18/B26 + E1 149 + E3 burst 3; single formula caps 30/20, E7 weight1, E8 fall bypassArmor, sonic 15x20 bypass, Resistance after armor intact.
 #pragma once
 #include <string>
 #include <algorithm>

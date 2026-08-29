@@ -3,6 +3,8 @@
 // plan21 combat polish: wire blockExplosionDropDecay/mob/tntExplosionDropDecay (W18) into explodeAt; verify fall/sonic armor bypass, naturalRegeneration parity, hunger per-player timer (retry).
 // plan22 combat polish: E7 weight 1 (prot*1 not *2), sonic_boom bypassEnchant/bypassShield 15x20, E6 single formula caps 30/20, E8 fall bypassArmor.
 // plan23 combat polish: verify E7 weight1, E8 fall bypassArmor, E9 Unbreaking 60%+ via DamageComponent, armor single formula 30/20 (verify).
+// plan24 combat polish: verify E7 weight1, E8 fall bypassArmor, naturalRegeneration gate, blockExplosionDropDecay intact after wt24 inventory/network merges.
+// plan25 combat polish: verify no regressions from W16-W19 world changes (single level.dat, ForcedChunks ticket, GameRules 37, maxLoadedChunks async) + B7 farming + E1 MobKind 149 + E3 wither burst 3; EPF weight1, sonic 15x20 bypass, fall bypassArmor, single formula caps 30/20 intact.
 #include "CombatManager.hpp"
 #include "GameServer.hpp"
 #include "Entities.hpp"
