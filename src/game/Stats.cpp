@@ -100,9 +100,13 @@ void writeAdvancementsPacket(
             ItemStack icon = ItemStack::ofName(d.iconItem, 1);
             icon.write(out);
             out.varint(d.frame);                      // frame type
-            int flags = 0x02;                         // show toast
-            out.u8(flags & 0xFF);
-            // no background texture (flag 0x01 not set) → no string
+            int flags = d.flags;
+            if (reset) flags &= ~0x02;                // suppress toast on reset/relog (D23)
+            out.varint(flags);
+            if (flags & 0x01) {
+                const char* bg = d.background ? d.background : "minecraft:textures/gui/advancements/backgrounds/stone.png";
+                out.string(bg);
+            }
             out.f32(d.x);
             out.f32(d.y);
         }
