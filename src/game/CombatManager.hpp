@@ -1,6 +1,7 @@
 // CombatManager: extracted combat/damage responsibility (plan8 modular split)
 // Wraps DamageCalculator, EPF, armor sync and DamageSource classification.
 // Pure functions are testable; GameServer delegates to this manager.
+// plan25 combat polish: verify no regressions from W16-W19 world, B7-B26 block, E1/E3 entity after wt25 merges; caps 30/20 intact.
 #pragma once
 #include <cstdint>
 #include <vector>
