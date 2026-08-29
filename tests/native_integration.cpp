@@ -62,7 +62,22 @@ struct ServerProc {
     }
     void stop() {
         if (pid > 0) {
-            kill(pid, SIGTERM); int st; waitpid(pid, &st, 0); pid = -1;
+            kill(pid, SIGTERM);
+            int st = 0;
+            for (int i = 0; i < 20; ++i) {
+                pid_t r = waitpid(pid, &st, WNOHANG);
+                if (r == pid) break;
+                if (r == -1) break;
+                usleep(100 * 1000);
+            }
+            if (kill(pid, 0) == 0) {
+                kill(pid, SIGKILL);
+                waitpid(pid, &st, 0);
+            } else {
+                // already reaped in loop
+                if (pid > 0) waitpid(pid, &st, 0);
+            }
+            pid = -1;
             std::error_code ec; std::filesystem::remove_all(worldDir, ec);
         }
     }

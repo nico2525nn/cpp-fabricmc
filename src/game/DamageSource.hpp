@@ -4,6 +4,7 @@
 // + DamageCalculator: vanilla armor/EPF/resistance pipeline (armor 5..20 -> 4%..80% reduce)
 // plan19 combat polish: verified single formula f=2+t/4 g=clamp(a-dmg/f,a*0.2,20) caps 30/20, fall bypassArmor true (feather still applies).
 // plan20 combat polish: world-density (W2/W3) does not affect DamageSource; verify gamerule damage gates still use getBool.
+// plan21 combat polish: sonic_boom armor bypass (E4) + fall bypassArmor true, EPF weight 1, Resistance after armor, retry wiring.
 #pragma once
 #include <string>
 #include <algorithm>

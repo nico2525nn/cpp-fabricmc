@@ -4,6 +4,7 @@
 // Vanilla 1.21.4 attributes: see net.minecraft.world.entity.ai.attributes.Attributes
 // plan15 combat strict: expanded 11→32 per Yarn 1.21.4 EntityAttributes (attack_knockback/block_break_speed/gravity etc)
 // + ARMOR/TOUGHNESS/KB_RESIST sync via UpdateAttributes 0x7C — caps 30/20 verified 2026-08-28
+// plan21 combat polish: 32 attributes retry verify, ARMOR 30/TOUGHNESS 20 caps, GRAVITY 0.08 etc, sync via 0x7C (retry).
 #pragma once
 #include <string>
 #include <unordered_map>
