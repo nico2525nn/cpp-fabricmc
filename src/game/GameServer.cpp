@@ -616,6 +616,7 @@ void GameServer::killPlayer(Player& p, const char* cause) {
 void GameServer::tickOnce() {
     static const bool tr = getenv("CPPFM_TICK_TRACE") != nullptr;
     auto mark = [&](char c) { if (tr) std::fprintf(stderr, "[tick] %c t=%ld\n", c, (long)tickNo_); };
+    pollPendingLoads(); // W19 async I/O: poll Chunk futures (ThreadPool 4) without blocking (MC-177729)
     api::ServerTickEvent ev{tickNo_};
     events().serverTick.fire(ev);
     mark('F');

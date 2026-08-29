@@ -61,21 +61,20 @@ bool WorldDataManager::saveLevelDataWithProviders(std::int64_t worldTicks, std::
         data.set("WasModded", nbt::Value::makeByte(0));
         data.set("allowCommands", nbt::Value::makeByte(1));
         data.set("GameType", nbt::Value::makeInt(1));
-        // ForcedChunks (spawn chunks + forced): 5x5 around spawn, stored as long array for vanilla compat
+        // ForcedChunks — Yarn ForcedChunkState: only ticket FORCED/SPAWN set, truncate 256 (W17 strict)
         {
             nbt::Value fc = nbt::Value::makeList(nbt::Long);
-            auto sp = world.spawnPoint();
-            int scx = sp.x >> 4, scz = sp.z >> 4;
-            for (int dz=-2; dz<=2; ++dz) for (int dx=-2; dx<=2; ++dx) {
-                std::int64_t key = (static_cast<std::int64_t>(static_cast<std::uint32_t>(scx+dx))<<32) | static_cast<std::uint32_t>(scz+dz);
-                fc.list.push_back(nbt::Value::makeLong(key));
+            // W17: persist ticketManager forced set via World::forcedChunkKeys(), not allChunkKeys scan.
+            // Vanilla ForcedChunkState stores ChunkPos.toLong(x,z) long[] with 256 limit.
+            auto forced = world.forcedChunkKeys();
+            if (forced.size() > 256) {
+                std::fprintf(stderr, "[WorldDataManager] ForcedChunks %zu >256, truncating to 256 (vanilla limit)\n", forced.size());
+                forced.resize(256);
             }
-            // also include any additional forced chunks from world
-            for (auto k : world.allChunkKeys()) if (world.isForcedKey(k)) {
-                bool already=false;
-                for (auto &v: fc.list) if (v.l==k) { already=true; break; }
-                if (!already) fc.list.push_back(nbt::Value::makeLong(k));
-            }
+            for (auto k : forced) fc.list.push_back(nbt::Value::makeLong(k));
+            // Note: spawn 5x5 tickets are recreated on startup via GameServer::init (SPAWN level 31)
+            // and are included in forcedChunkKeys() after init, so they will be persisted if present.
+            // We do NOT synthesize spawn here to avoid inflating maxLoadedChunks (W19) with implicit forced.
             data.set("ForcedChunks", fc);
         }
         // End dragon fight data (per-dim level.dat for The End)
@@ -176,19 +175,24 @@ bool WorldDataManager::loadLevelData(World& world, std::string& difficultyOut,
         if (const auto* ds = d->get("Difficulty")) {
             if (ds->tag==nbt::String) difficultyOut = ds->str;
         }
-        // ForcedChunks (ChunkTicket SPAWN level 31) — restore spawn chunk loader tickets
+        // ForcedChunks — Yarn ForcedChunkState: restore LongSet with 256 cap and sign-correct ChunkPos.toLong
         if (const auto* fc = d->get("ForcedChunks")) {
             world.clearForcedChunks();
+            if (fc->list.size() > 256) {
+                std::fprintf(stderr, "[WorldDataManager] load ForcedChunks %zu >256, truncating to 256\n", fc->list.size());
+            }
+            size_t count = 0;
             for (auto &v : fc->list) {
+                if (count >= 256) break;
                 std::int64_t key = 0;
                 if (v.tag == nbt::Long) key = v.l;
                 else if (v.tag == nbt::Int) key = v.i;
                 else continue;
+                // ChunkPos.toLong: (long)x<<32 | (z & 0xffffffffL) — sign-extend via uint32_t cast already
                 std::int32_t cx = static_cast<std::int32_t>(key >> 32);
                 std::int32_t cz = static_cast<std::int32_t>(key & 0xFFFFFFFFLL);
                 world.restoreForcedChunk(cx, cz);
-                // ensure chunk exists for spawn loader (defer generation to when needed, but pre-generate here if possible)
-                // world.generateChunkIfMissing(cx, cz); // not needed during load to avoid recursion
+                ++count;
             }
         }
         if (consume_) consume_(*d);
