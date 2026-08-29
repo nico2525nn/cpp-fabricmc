@@ -89,8 +89,8 @@ struct ServerConfig {
     std::int64_t startTime = 1000;
     int compressionThreshold = 256;   // -1 disables Set Compression entirely
     int spawnProtection = 16;         // spawn-protection radius (0 disables)
-    int maxLoadedChunks = 1000;       // W19 cap — 0 = unlimited
-    int ioWorkerThreads = 2;          // W19 async I/O workers
+    int maxLoadedChunks = 8192;       // W19 cap — 0 = unlimited, vanilla ThreadedAnvilChunkStorage maxCache 8192 (plan21 §3)
+    int ioWorkerThreads = 4;          // W19 async I/O workers (ThreadPool 4, matches core/ThreadPool default)
 };
 
 // Player inventory slot = full ItemStack (components preserved end-to-end).
