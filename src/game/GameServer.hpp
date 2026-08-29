@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <unordered_set>
 #include <vector>
@@ -756,6 +757,13 @@ public:
     void broadcastSound(const char* name, double x, double y, double z,
                         float volume = 1.f, float pitch = 1.f,
                         const char* category = "block");
+    enum class SoundSource : std::int32_t { Master=0, Music=1, Record=2, Weather=3, Block=4, Hostile=5, Neutral=6, Player=7, Ambient=8, Voice=9 };
+    // D22 StopSound 0x71: flags i8 (1=source,2=sound), optional varint source, optional string sound
+    void broadcastStopSound(const std::optional<SoundSource>& source,
+                            const std::optional<std::string>& sound);
+    void broadcastStopSound(SoundSource source, const std::string* soundOrNull);
+    void broadcastStopSound(SoundSource source);
+    void stopRecord(const std::string& discNameWithoutPrefix); // record category
     void broadcastWorldEvent(std::int32_t eventId, std::int32_t x, std::int32_t y, std::int32_t z, std::int32_t data, bool disableRelativeVolume = false);
     // plan26 D20: per-type particle helpers (block/dust/pale_oak_leaves etc) - correct wire (amount + switch)
     void broadcastBlockParticle(double x, double y, double z, std::uint32_t blockState, int count = 10);
