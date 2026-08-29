@@ -198,37 +198,20 @@ static bool isCropBlock(const gen::BlockDef* d) {
     return n.find("wheat")!=std::string::npos || n.find("carrots")!=std::string::npos ||
            n.find("potatoes")!=std::string::npos || n.find("beetroots")!=std::string::npos;
 }
-// plan19 §5 B7 farming growthSpeed strict: diagonal /4 and adjacent /2 per Yarn CropBlock (was -0.5 +/1.2)
+// plan21 B7 farming growthSpeed strict: Yarn CropBlock.getAvailableMoisture hydrated 1.0 dry 0.5 diag /4, center excluded, no crop penalty
 static float growthSpeed(World& w, std::int32_t x, std::int32_t y, std::int32_t z) {
     float f = 1.0f;
     for (int dx=-1; dx<=1; ++dx) for (int dz=-1; dz<=1; ++dz) {
+        if (dx==0 && dz==0) continue;
         std::uint16_t bs = w.getBlock(x+dx, y-1, z+dz);
         const gen::BlockDef* bd = gen::blockByState(bs);
         if (!bd) continue;
         if (std::string(bd->name)!="minecraft:farmland") continue;
         int moist = getMoisture(bs);
-        float contrib = (moist>0 ? 3.0f : 1.0f);
-        if (dx!=0 && dz!=0) contrib /= 4.0f;
-        f += contrib;
+        float g = (moist>0 ? 1.0f : 0.5f);
+        if (dx!=0 && dz!=0) g /= 4.0f;
+        f += g;
     }
-    // adjacent crop penalty
-    bool hasAdjacentCrop = false;
-    const int ADX[4]={1,-1,0,0}, ADZ[4]={0,0,1,-1};
-    for(int d=0;d<4;++d){
-        auto* nb = gen::blockByState(w.getBlock(x+ADX[d], y, z+ADZ[d]));
-        if (isCropBlock(nb)) { hasAdjacentCrop=true; break; }
-        nb = gen::blockByState(w.getBlock(x+ADX[d], y, z+ADZ[d]+0)); // diagonal also?
-    }
-    if (hasAdjacentCrop) f /= 2.0f;
-    // also check diagonal crops slightly
-    for(int dx=-1;dx<=1;++dx) for(int dz=-1;dz<=1;++dz){
-        if(dx==0&&dz==0) continue;
-        if(dx!=0 && dz!=0){
-            auto* nb = gen::blockByState(w.getBlock(x+dx, y, z+dz));
-            if (isCropBlock(nb)) { f /= 2.0f; break; }
-        }
-    }
-    if (f<1) f=1;
     return f;
 }
 static int getLight(World& w, std::int32_t x, std::int32_t y, std::int32_t z){
@@ -245,7 +228,6 @@ static int getLight(World& w, std::int32_t x, std::int32_t y, std::int32_t z){
 void CropBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
                         std::uint16_t state, std::int64_t now, GameServer* srv) {
     (void)now;
-    // respect randomTickSpeed 0 and simulation distance already culled in BlockTickScheduler::tick
     if (srv) {
         auto* gr = &srv->gameRules();
         if (gr && gr->getInt("randomTickSpeed",3)==0) return;
@@ -256,14 +238,11 @@ void CropBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
     if (!d) return;
     if (std::string(d->name).find("beetroots") != std::string::npos) maxAge = 3;
     if (age >= maxAge) return;
-    if (getLight(w,x,y,z) < 9) return;
-    float gs = growthSpeed(w,x,y,z);
-    int denom = (int)(25.0f / gs);
+    if (getLight(w,x,y+1,z) < 9) return;
+    float f = growthSpeed(w,x,y,z);
+    int denom = (int)(25.0f / f) + 1;
     if (denom < 1) denom = 1;
-    if ((rand() % denom) != 0) {
-        // also 1/3 fallback to match spec 30% variant
-        if ((rand()%100) >= 30) return;
-    }
+    if ((rand() % denom) != 0) return;
     w.setBlock(x,y,z, withAge(d, state, age+1));
 }
 
@@ -741,42 +720,119 @@ bool ChorusFlowerBehavior::fertilize(World& w, std::int32_t x, std::int32_t y, s
 
 void KelpBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
                         std::uint16_t state, std::int64_t now, GameServer* srv){
-    (void)now;(void)srv;
+    (void)now;
+    const gen::BlockDef* d=gen::blockByState(state); if(!d) return;
+    if (std::string(d->name)!="minecraft:kelp") return;
     int age=0; for(auto&[k,v]: gen::propsOf(state)) if(k=="age") age=std::atoi(std::string(v).c_str());
     if(age>=25) return;
-    if(w.getBlock(x,y+1,z)!=0) return;
-    // must be water above — polish: above block already checked; no need to refetch
-    // For simplicity, allow growth if above is water or air with water underlying
-    if((rand()%100) >= 14) return; // 14% vanilla KelpBlock#randomTick nextFloat <0.14 (plan17 §9 B27, plan16 §8)
-    const gen::BlockDef* d=gen::blockByState(state); if(!d) return;
-    // 14% growth per random tick when age<25
-    // grow one up
-    auto waterIt = gen::blockNameToState().find("minecraft:water");
-    uint16_t waterSt = waterIt!=gen::blockNameToState().end()?static_cast<uint16_t>(waterIt->second):0;
-    if(w.getBlock(x,y+1,z)==0) {
-        // place water + kelp?
-        w.setBlock(x,y+1,z, state); // same kelp state with age+1
-        // increment age on original
+    if((rand()%100) >= 14) return;
+    std::uint16_t up = w.getBlock(x,y+1,z);
+    if(up==0) return;
+    const gen::BlockDef* upDef = gen::blockByState(up);
+    if(!upDef || std::string(upDef->name)!="minecraft:water") return;
+    bool still=true;
+    for(auto&[k,v]: gen::propsOf(up)) if(k=="level" && v!="0") still=false;
+    if(!still) return;
+    // increment age on original
+    {
         std::vector<std::pair<std::string_view,std::string_view>> props;
         for(auto&[k,v]: gen::propsOf(state)) if(k!="age") props.emplace_back(k,v);
         props.emplace_back("age", std::to_string(age+1));
-        w.setBlock(x,y,z, static_cast<std::uint16_t>(gen::stateWithProps(*d, props)));
+        std::uint16_t ns = static_cast<std::uint16_t>(gen::stateWithProps(*d, props));
+        w.setBlock(x,y,z, ns);
+        if(srv) srv->broadcastBlockChange(x,y,z, ns);
     }
-    (void)waterSt;
+    // place new kelp with age 0 at up
+    {
+        auto kelpIt = gen::blockNameToState().find("minecraft:kelp");
+        if(kelpIt!=gen::blockNameToState().end()){
+            auto* kelpDef = gen::blockByName("minecraft:kelp");
+            std::uint16_t ns = static_cast<std::uint16_t>(kelpIt->second);
+            if(kelpDef){
+                bool hasAge=false;
+                for(auto&[k,v]: gen::propsOf(ns)) if(k=="age") hasAge=true;
+                if(hasAge){
+                    std::vector<std::pair<std::string_view,std::string_view>> props2;
+                    for(auto&[k,v]: gen::propsOf(ns)) if(k!="age") props2.emplace_back(k,v);
+                    props2.emplace_back("age","0");
+                    ns = static_cast<std::uint16_t>(gen::stateWithProps(*kelpDef, props2));
+                }
+            }
+            w.setBlock(x,y+1,z, ns);
+            if(srv) srv->broadcastBlockChange(x,y+1,z, ns);
+        }
+    }
 }
 bool KelpBehavior::fertilize(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
                              std::uint16_t state, GameServer* srv){
-    // bonemeal grows kelp by 1
-    if(w.getBlock(x,y+1,z)!=0) return false;
-    int age=0; for(auto&[k,v]: gen::propsOf(state)) if(k=="age") age=std::atoi(std::string(v).c_str());
     const gen::BlockDef* d=gen::blockByState(state); if(!d) return false;
+    if (std::string(d->name)!="minecraft:kelp") return false;
+    int age=0; for(auto&[k,v]: gen::propsOf(state)) if(k=="age") age=std::atoi(std::string(v).c_str());
+    if(age>=25) return false;
+    std::uint16_t up = w.getBlock(x,y+1,z);
+    if(up==0) return false;
+    const gen::BlockDef* upDef = gen::blockByState(up);
+    if(!upDef || std::string(upDef->name)!="minecraft:water") return false;
+    bool still=true;
+    for(auto&[k,v]: gen::propsOf(up)) if(k=="level" && v!="0") still=false;
+    if(!still) return false;
     std::vector<std::pair<std::string_view,std::string_view>> props;
     for(auto&[k,v]: gen::propsOf(state)) if(k!="age") props.emplace_back(k,v);
     props.emplace_back("age", std::to_string(std::min(25, age+1)));
-    w.setBlock(x,y,z, static_cast<std::uint16_t>(gen::stateWithProps(*d, props)));
+    std::uint16_t ns = static_cast<std::uint16_t>(gen::stateWithProps(*d, props));
+    w.setBlock(x,y,z, ns);
+    if(srv) srv->broadcastBlockChange(x,y,z, ns);
     auto kelpIt=gen::blockNameToState().find("minecraft:kelp");
-    if(kelpIt!=gen::blockNameToState().end()) w.setBlock(x,y+1,z, static_cast<uint16_t>(kelpIt->second));
-    (void)srv; return true;
+    if(kelpIt!=gen::blockNameToState().end()){
+        auto* kelpDef = gen::blockByName("minecraft:kelp");
+        std::uint16_t place = static_cast<uint16_t>(kelpIt->second);
+        if(kelpDef){
+            bool hasAge=false;
+            for(auto&[k,v]: gen::propsOf(place)) if(k=="age") hasAge=true;
+            if(hasAge){
+                std::vector<std::pair<std::string_view,std::string_view>> props2;
+                for(auto&[k,v]: gen::propsOf(place)) if(k!="age") props2.emplace_back(k,v);
+                props2.emplace_back("age","0");
+                place = static_cast<uint16_t>(gen::stateWithProps(*kelpDef, props2));
+            }
+        }
+        w.setBlock(x,y+1,z, place);
+        if(srv) srv->broadcastBlockChange(x,y+1,z, place);
+    }
+    return true;
+}
+bool SeagrassBehavior::fertilize(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
+                                 std::uint16_t state, GameServer* srv){
+    const gen::BlockDef* d=gen::blockByState(state); if(!d) return false;
+    if (std::string(d->name)!="minecraft:seagrass") return false;
+    std::uint16_t up = w.getBlock(x,y+1,z);
+    if(up==0) return false;
+    const gen::BlockDef* upDef = gen::blockByState(up);
+    if(!upDef || std::string(upDef->name)!="minecraft:water") return false;
+    bool still=true;
+    for(auto&[k,v]: gen::propsOf(up)) if(k=="level" && v!="0") still=false;
+    if(!still) return false;
+    auto tallIt = gen::blockNameToState().find("minecraft:tall_seagrass");
+    if(tallIt==gen::blockNameToState().end()) return false;
+    auto* tallDef = gen::blockByName("minecraft:tall_seagrass");
+    if(!tallDef) return false;
+    // lower half
+    {
+        std::vector<std::pair<std::string_view,std::string_view>> props;
+        props.emplace_back("half","lower");
+        std::uint16_t lower = static_cast<std::uint16_t>(gen::stateWithProps(*tallDef, props));
+        w.setBlock(x,y,z, lower);
+        if(srv) srv->broadcastBlockChange(x,y,z, lower);
+    }
+    // upper half
+    {
+        std::vector<std::pair<std::string_view,std::string_view>> props;
+        props.emplace_back("half","upper");
+        std::uint16_t upper = static_cast<std::uint16_t>(gen::stateWithProps(*tallDef, props));
+        w.setBlock(x,y+1,z, upper);
+        if(srv) srv->broadcastBlockChange(x,y+1,z, upper);
+    }
+    return true;
 }
 
 // -------------------------------------------------------- Fire
