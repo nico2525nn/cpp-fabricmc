@@ -2445,13 +2445,22 @@ void GameServer::hoppersTick() {
                                     int mx=(int)std::floor(m->x), my=(int)std::floor(m->y), mz=(int)std::floor(m->z);
                                     if(mx==tx && my==ty && mz==tz && m->kind==MobKind::Sheep && !m->sheared){
                                         m->sheared=true;
-                                        // drop wool 1-3
-                                        auto woolIt=gen::itemIdByName().find("minecraft:white_wool");
-                                        if(woolIt!=gen::itemIdByName().end()){
-                                            int cnt=1+rand()%3;
-                                            spawnItemDrop(m->x,m->y+0.8,m->z, woolIt->second, (uint8_t)cnt, (rand()/(double)RAND_MAX-.5)*0.12, 0.12, (rand()/(double)RAND_MAX-.5)*0.12);
+                                        // drop wool 1-3 (use woolColor, D16 fix)
+                                        {
+                                            static const char* woolNamesD[] = {
+                                                "minecraft:white_wool","minecraft:orange_wool","minecraft:magenta_wool","minecraft:light_blue_wool",
+                                                "minecraft:yellow_wool","minecraft:lime_wool","minecraft:pink_wool","minecraft:gray_wool",
+                                                "minecraft:light_gray_wool","minecraft:cyan_wool","minecraft:purple_wool","minecraft:blue_wool",
+                                                "minecraft:brown_wool","minecraft:green_wool","minecraft:red_wool","minecraft:black_wool"
+                                            };
+                                            int colD = m->woolColor % 16;
+                                            auto woolIt=gen::itemIdByName().find(woolNamesD[colD]);
+                                            if(woolIt!=gen::itemIdByName().end()){
+                                                int cnt=1+rand()%3;
+                                                spawnItemDrop(m->x,m->y+0.8,m->z, woolIt->second, (uint8_t)cnt, (rand()/(double)RAND_MAX-.5)*0.12, 0.12, (rand()/(double)RAND_MAX-.5)*0.12);
+                                            }
                                         }
-                                        WriteBuffer md; md.varint(m->entityId); md.u8(17); md.u8(0); md.u8(0x10); md.u8(255);
+                                        WriteBuffer md; md.varint(m->entityId); md.u8(17); md.u8(8); md.u8(1); md.u8(255);
                                         broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);
                                         sheared=true;
                                         break;
@@ -7719,11 +7728,11 @@ void Session::onUseEntity(ReadBuffer& in) {
                                 srv_.spawnItemDrop(m->x, m->y+0.8, m->z, wit->second, (uint8_t)cnt,
                                     (rand()/(double)RAND_MAX-.5)*0.12, 0.12, (rand()/(double)RAND_MAX-.5)*0.12);
                             }
-                            // metadata: sheep index 17 sheared flag
+                            // metadata: sheep index 17 sheared flag (D16 Boolean 8 fix)
                             {
                                 WriteBuffer md;
                                 md.varint(m->entityId);
-                                md.u8(17); md.u8(0); md.u8(0x10);
+                                md.u8(17); md.u8(8); md.u8(1);
                                 md.u8(255);
                                 srv_.broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);
                             }
