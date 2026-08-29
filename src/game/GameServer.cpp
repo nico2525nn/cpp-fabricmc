@@ -4216,7 +4216,7 @@ void GameServer::xpOrbsTick() {
 
 void GameServer::spawnProjectile(ProjectileKind kind, double x, double y,
                                  double z, double vx, double vy, double vz,
-                                 std::int32_t ownerId, bool ownerIsPlayer) {
+                                 std::int32_t ownerId, bool ownerIsPlayer, bool charged) {
     auto e = std::make_shared<ProjectileEntity>();
     e->entityId = nextEntityId();
     e->kind = kind;
@@ -4224,6 +4224,7 @@ void GameServer::spawnProjectile(ProjectileKind kind, double x, double y,
     e->vx = vx; e->vy = vy; e->vz = vz;
     e->ownerId = ownerId;
     e->ownerIsPlayer = ownerIsPlayer;
+    e->charged = charged;
     projectiles_.push_back(e);
     {
         std::lock_guard lk(entsMtx_);
