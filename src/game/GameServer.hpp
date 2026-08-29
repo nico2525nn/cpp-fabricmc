@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -88,6 +89,8 @@ struct ServerConfig {
     std::int64_t startTime = 1000;
     int compressionThreshold = 256;   // -1 disables Set Compression entirely
     int spawnProtection = 16;         // spawn-protection radius (0 disables)
+    int maxLoadedChunks = 1000;       // W19 cap — 0 = unlimited
+    int ioWorkerThreads = 2;          // W19 async I/O workers
 };
 
 // Player inventory slot = full ItemStack (components preserved end-to-end).
@@ -395,6 +398,7 @@ public:
                 cfg_.viewDistance = std::clamp(sp.get<int>("view-distance", cfg_.viewDistance), 2, 32);
                 cfg_.simulationDistance = std::clamp(sp.get<int>("simulation-distance", cfg_.simulationDistance), 2, 32);
                 cfg_.spawnProtection = std::max(0, sp.get<int>("spawn-protection", cfg_.spawnProtection));
+                cfg_.maxLoadedChunks = std::max(0, sp.get<int>("max-loaded-chunks", sp.get<int>("maxLoadedChunks", cfg_.maxLoadedChunks)));
                 // also mirror to world
                 world_.setSimulationDistance(cfg_.simulationDistance);
                 if (netherWorld_) netherWorld_->setSimulationDistance(cfg_.simulationDistance);
@@ -514,6 +518,16 @@ public:
                 }
             });
         persist_->loadLevelData();
+        // W16 single level.dat migration: remove legacy DIM level.dat files (strict)
+        for (auto sub : {"DIM-1", "DIM1"}) {
+            std::string p = cfg_.worldDir + "/" + std::string(sub) + "/level.dat";
+            if (std::filesystem::exists(p)) {
+                std::fprintf(stderr, "[cppfm] found legacy %s, removing (single level.dat now)\n", p.c_str());
+                std::error_code ec; std::filesystem::remove(p, ec);
+            }
+            std::string pn = cfg_.worldDir + "/" + std::string(sub) + "/level.dat.new";
+            if (std::filesystem::exists(pn)) { std::error_code ec; std::filesystem::remove(pn, ec); }
+        }
         // sync persistence's worldborder/difficulty (file may have overridden) — include lerp
         difficulty_ = persist_->difficulty();
         worldBorderDiameter_ = persist_->worldBorderDiameter();

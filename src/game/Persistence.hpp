@@ -87,6 +87,8 @@ public:
     // plan6 §9: add Difficulty, WorldBorder, Version, WanderingTrader etc.
     // plan7: delegated to WorldDataManager with atomic rename + DataFixerUpper version check
     void saveLevelData(std::int64_t worldTicks = 0, std::int64_t dayTime = 0) {
+        // W16 single level.dat: DIM dirs must not own level.dat
+        if (dir_.find("DIM") != std::string::npos) return;
         // Use WorldDataManager for atomic write + version handling
         worldDataManager_.setDirectory(dir_);
         worldDataManager_.setLevelStateProvider(provideLevelState_, consumeLevelState_);
@@ -158,6 +160,15 @@ public:
                         std::int64_t key = (static_cast<std::int64_t>(static_cast<std::uint32_t>(scx+dx))<<32) | static_cast<std::uint32_t>(scz+dz);
                         fc.list.push_back(nv::Value::makeLong(key));
                     }
+                    for (auto k : world_.forcedChunkKeys()) {
+                        bool already=false; for (auto &v: fc.list) if (v.l==k) { already=true; break; }
+                        if (!already) fc.list.push_back(nv::Value::makeLong(k));
+                    }
+                    for (auto k : world_.ticketManager().allTicketKeys()) {
+                        if (world_.ticketManager().getMinLevel(static_cast<std::int32_t>(k>>32), static_cast<std::int32_t>(k & 0xFFFFFFFFLL)) > 31) continue;
+                        bool already=false; for (auto &v: fc.list) if (v.l==k) { already=true; break; }
+                        if (!already) fc.list.push_back(nv::Value::makeLong(k));
+                    }
                     data.set("ForcedChunks", fc);
                 }
                 if (provideLevelState_) provideLevelState_(data);
@@ -175,6 +186,8 @@ public:
         }
     }
     void loadLevelData() {
+        // W16: DIM dirs never own level.dat
+        if (dir_.find("DIM") != std::string::npos) return;
         worldDataManager_.setDirectory(dir_);
         worldDataManager_.setLevelStateProvider(provideLevelState_, consumeLevelState_);
         // try via manager (handles DataFixerUpper version check + atomic read) — include lerp
