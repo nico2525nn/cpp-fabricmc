@@ -3085,11 +3085,6 @@ void Session::run() {
         srv_.events().quit.fire(qev);
         srv_.savePlayerProgress(*self_);
         srv_.broadcastSystemText("\u00a7e" + self_->name + " left the game", nullptr);
-        // D26: wildcard reset_score for disconnect — prevents sidebar ghost leak
-        {
-            auto affected = srv_.scoreboard.resetAllScores(self_->name);
-            if (!affected.empty()) srv_.sendResetScoreAllWildcard(self_->name);
-        }
         WriteBuffer rm;
         rm.varint(1);
         rm.uuid(self_->uuid.data());
@@ -3098,7 +3093,7 @@ void Session::run() {
         ent.varint(1);
         ent.varint(self_->entityId);
         srv_.broadcastPacketExcept(nullptr, pl::sc::RemoveEntities, ent);
-        // D26 polish: wildcard reset_score 0x49 for disconnecting holder (sidebar ghost cleanup)
+        // D26: wildcard reset_score 0x49 for disconnecting holder to clear sidebar ghost
         {
             auto affected = srv_.scoreboard.resetAllScores(self_->name);
             if (!affected.empty()) srv_.sendResetScoreAllWildcard(self_->name);
