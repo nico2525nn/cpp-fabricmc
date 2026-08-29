@@ -1,6 +1,7 @@
 // BossAI + BossBarManager (plan7 entity section)
 // Data-driven boss combat phases and synchronized BossBar UI.
 // Sends BossBar ADD/HEALTH/REMOVE packets (0x0A) on spawn/damage/death.
+// plan28 entity polish: verify BossAI/BossBar handling orthogonal to Scoreboard ResetScore 0x49 (D26) — Wither 300HP 3-burst, Dragon phases, BossBar 0x0A ADD/HEALTH verified intact after deep 31 merges.
 #pragma once
 #include <array>
 #include <cstdint>
