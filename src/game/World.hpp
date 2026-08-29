@@ -1,5 +1,6 @@
 // World: superflat world storage, generation, block get/set.
 // Chunk model: 24 sections of 16x16x16 block state ids (flat arrays; simple & fast).
+// plan28 block polish: verify World block get/set paths are orthogonal to Scoreboard ResetScore 0x49 (D26) — piston QC, moving_piston 2-tick, ChunkCodec 64 vs 4096 verified intact after deep 31 merges.
 #pragma once
 #include <array>
 #include <cstdint>
