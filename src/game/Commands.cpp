@@ -473,35 +473,131 @@ void GameServer::initCommands() {
         kill->then(targets);
         d.root->then(kill);
     }
-    // /gamerule <rule> [value]
+    // /gamerule <rule> [value] — W18 strict: 37 Yarn keys + validation, suggest via allKeys()
     {
         auto gr = CommandNode::literal("gamerule");
         auto rule = CommandNode::argument("rule", args::stringWord());
         rule->executable = true;
-        rule->suggestions = [](brigadier::StringReader&, brigadier::ParseCtx&) {
-            return std::vector<std::string>{"doDaylightCycle", "doMobSpawning",
-                                            "keepInventory", "randomTickSpeed",
-                                            "mobGriefing", "doFireTick"};
+        rule->suggestions = [this](brigadier::StringReader&, brigadier::ParseCtx&) {
+            return gamerules_.allKeys();
         };
         rule->action = [this](CommandContext& c) {
             Player* src = static_cast<Player*>(c.source.player);
             const std::string r = c.arg("rule").asStr();
-            sendFeedback(src, "\u00a77" + r + " = " + gamerules_.get(r));
+            if (!gamerules_.contains(r)) { sendFeedback(src, "\u00a7cUnknown gamerule: " + r); return 0; }
+            std::string cur = gamerules_.get(r);
+            sendFeedback(src, "\u00a77" + r + " = " + cur);
             return 1;
         };
         auto value = CommandNode::argument("value", args::stringWord());
         value->executable = true;
+        value->suggestions = [this](brigadier::StringReader& reader, brigadier::ParseCtx&) {
+            // W18 polish: suggest true/false for Boolean, numeric hints for Int
+            // Peek already-typed rule prefix: try to infer via token
+            std::string token = reader.canRead() ? reader.readUnquotedString() : std::string();
+            // fallback: offer both
+            (void)token;
+            // use last parsed rule if available; brigadier context would have it, but we approximate
+            // Offer boolean choices; int rules also accept true/false as invalid but hint numbers
+            std::vector<std::string> opts = {"true","false"};
+            // also suggest common int values for int rules
+            opts.push_back("0"); opts.push_back("1"); opts.push_back("10");
+            return opts;
+        };
         value->action = [this](CommandContext& c) {
             Player* src = static_cast<Player*>(c.source.player);
             const std::string r = c.arg("rule").asStr();
             const std::string v = c.arg("value").asStr();
-            gamerules_.set(r, v);
+            std::string err;
+            if (!gamerules_.setValidated(r, v, &err)) {
+                sendFeedback(src, "\u00a7c" + err);
+                return 0;
+            }
             broadcastSystemText("\u00a77Gamerule " + r + " is now " + v);
             return 1;
         };
         rule->then(value);
         gr->then(rule);
         d.root->then(gr);
+    }
+    // /forceload — W17 strict: ForcedChunkState via setChunkForced/isChunkForced (Yarn ServerWorld)
+    {
+        auto fl = CommandNode::literal("forceload");
+        // query
+        auto flQuery = CommandNode::literal("query");
+        flQuery->executable = true;
+        flQuery->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            auto keys = world_.forcedChunkKeys();
+            if (keys.empty()) { sendFeedback(src, "No forced chunks"); return 0; }
+            std::string out="Forced chunks:";
+            for(auto k: keys){
+                int cx = static_cast<int32_t>(k>>32);
+                int cz = static_cast<int32_t>(k & 0xFFFFFFFFLL);
+                out += " [" + std::to_string(cx) + "," + std::to_string(cz) + "]";
+            }
+            sendFeedback(src, out);
+            return (int)keys.size();
+        };
+        fl->then(flQuery);
+        // remove all
+        auto flRemove = CommandNode::literal("remove");
+        auto flRemoveAll = CommandNode::literal("all");
+        flRemoveAll->executable = true;
+        flRemoveAll->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            auto keys = world_.forcedChunkKeys();
+            for(auto k: keys){
+                int cx = static_cast<int32_t>(k>>32);
+                int cz = static_cast<int32_t>(k & 0xFFFFFFFFLL);
+                world_.setChunkForced(cx,cz,false);
+            }
+            sendFeedback(src, "Removed all forced chunks (" + std::to_string(keys.size()) + ")");
+            return (int)keys.size();
+        };
+        flRemove->then(flRemoveAll);
+        // add <x> <z> and remove <x> <z>
+        auto flAdd = CommandNode::literal("add");
+        auto addX = CommandNode::argument("x", args::integer(INT32_MIN, INT32_MAX));
+        auto addZ = CommandNode::argument("z", args::integer(INT32_MIN, INT32_MAX));
+        addZ->executable = true;
+        addZ->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            int cx = c.arg("x").asInt();
+            int cz = c.arg("z").asInt();
+            // vanilla forceload uses chunk coords directly; support block pos via >>4 fallback if large? keep chunk coords
+            bool ok = world_.setChunkForced(cx,cz,true);
+            if (!ok) { sendFeedback(src, "Chunk [" + std::to_string(cx)+","+std::to_string(cz)+"] already forced"); return 0; }
+            sendFeedback(src, "Added chunk [" + std::to_string(cx)+","+std::to_string(cz)+"]");
+            return 1;
+        };
+        auto remX = CommandNode::argument("x", args::integer(INT32_MIN, INT32_MAX));
+        auto remZ = CommandNode::argument("z", args::integer(INT32_MIN, INT32_MAX));
+        remZ->executable = true;
+        remZ->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            int cx = c.arg("x").asInt();
+            int cz = c.arg("z").asInt();
+            bool ok = world_.setChunkForced(cx,cz,false);
+            if (!ok) { sendFeedback(src, "Chunk [" + std::to_string(cx)+","+std::to_string(cz)+"] not forced"); return 0; }
+            sendFeedback(src, "Removed chunk [" + std::to_string(cx)+","+std::to_string(cz)+"]");
+            return 1;
+        };
+        addX->then(addZ);
+        flAdd->then(addX);
+        remX->then(remZ);
+        flRemove->then(remX);
+        fl->then(flAdd);
+        fl->then(flRemove);
+        // default executable query (bare /forceload)
+        fl->executable = true;
+        fl->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            auto keys = world_.forcedChunkKeys();
+            sendFeedback(src, "Forced chunks: " + std::to_string(keys.size()));
+            return (int)keys.size();
+        };
+        d.root->then(fl);
     }
     // /effect give <targets> <effect> [seconds] [amplifier]
     {
