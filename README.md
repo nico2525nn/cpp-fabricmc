@@ -47,7 +47,7 @@ proven **byte-identical to a real reference server's output** by golden tests.
 ## What does *not* work (yet)
 
 - **Coarse taxonomy** (`docs/MISSING_FEATURES_1_21_4.md` 80 rows): **0 `PARTIAL` / 0 `TODO`** — all 80 rows DONE per that taxonomy (post-`plan/` `BreedGoal`/`Villager`/`SpawnEgg`/`Brain`).
-- **True parity — strict wire audit** (`docs/COMPAT_AUDIT_1_21_4_STRICT.md`, Web Search/Web Fetch verified, `file:line` absolute): **8 gaps remain of 78** (HIGH 10 fixed in `plan15`, MEDIUM 10 in `plan16`, LOW 10 in `plan17`, `plan18` 10, `plan19` 10, `plan20` 10, `plan21` 10, `plan22` 10; remaining 8 in progress). This doc is the true roadmap.
+- **True parity — strict wire audit** (`docs/COMPAT_AUDIT_1_21_4_STRICT.md`, Web Search/Web Fetch verified, `file:line` absolute): **0 gaps remain of 78** — **78/78 fixed** (HIGH 10 in `plan15`, MEDIUM 10 in `plan16`, LOW 10 in `plan17`, `plan18` 10, `plan19` 10, `plan20` 10, `plan21` 10, `plan22` 10, `plan23` 8). Bit-level protocol parity achieved.
 - **Non-80 polish (beyond 1.21.4):** `Bundles` 1.21.5, `RaidOmen`/`TrialOmen` duration.
 
 - **Fabric mods cannot run inside a C++ process.** Mods are JVM bytecode loaded
@@ -58,7 +58,7 @@ proven **byte-identical to a real reference server's output** by golden tests.
 
 - **`test_native` (C++ self-test, 12 cases: status/join/chunk/chat/persist/multi/stress):** `12/12 PASS` — run `./build/test_native ./build/cppfm` (50s). Verifies `status 769`, `Login Success`, `Join Game`, `LevelChunkWithLight`, `BlockUpdate` broadcast, `SystemChat`, and cross-client visibility.
 - **`test_smoke_80` (80-row taxonomy, `tests/test_smoke_80.cpp` 1:1 to `docs/MISSING_FEATURES_1_21_4.md`):** `80/80 PASS` per that taxonomy — each row checks a vanilla packet/NBT (e.g., `worldborder size → InitializeWorldBorder 0x26`, `glowstone → UpdateLight 0x2B`, `wither → BossBar 0x0A`). Run `./build/test_smoke_80 ./build/cppfm` (400s). This does **not** guarantee byte-identical vanilla behaviour; it guarantees the 80 coarse features emit the expected packet.
-- **Strict audit (`docs/COMPAT_AUDIT_1_21_4_STRICT.md`):** `70/78` fixed, `8` remain. This is the evidence for true parity.
+- **Strict audit (`docs/COMPAT_AUDIT_1_21_4_STRICT.md`):** `78/78` fixed, `0` remain. Bit-level protocol parity achieved.
 
 ## Clean-room methodology (important)
 
