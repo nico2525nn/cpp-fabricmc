@@ -495,8 +495,16 @@ public:
                 if (const auto* rt = data.get("rainTime"))
                     weatherUntilTick_ = tickNo_ + rt->i * 20LL;
                 if (const auto* gr = data.get("GameRules"))
-                    for (auto& [k, v] : gr->comp)
-                        gamerules_.set(k, v.str, false);
+                    for (auto& [k, v] : gr->comp) {
+                        // W18: handle both String "true"/"3" and Int/String mixed NBT (DataFixer compat)
+                        std::string sv;
+                        if (v.tag == nbt::String) sv = v.str;
+                        else if (v.tag == nbt::Int) sv = std::to_string(v.i);
+                        else if (v.tag == nbt::Long) sv = std::to_string(v.l);
+                        else if (v.tag == nbt::Byte) sv = v.b ? "true" : "false";
+                        else sv = v.str;
+                        gamerules_.set(k, sv, false);
+                    }
                 if (const auto* diff = data.get("Difficulty")) {
                     if (diff->tag==nbt::String) difficulty_ = diff->str;
                     else if (diff->tag==nbt::Byte) {

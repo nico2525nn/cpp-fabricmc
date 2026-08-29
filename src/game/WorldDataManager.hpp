@@ -22,7 +22,7 @@ public:
     void setDirectory(std::string d) { dir_ = std::move(d); }
     const std::string& directory() const { return dir_; }
 
-    // Atomic write helper: write to temp then rename
+    // Atomic write helper: write to temp then rename (W16 single level.dat + level.dat_old backup)
     bool atomicWrite(const std::string& path, const std::vector<std::uint8_t>& data) const {
         try {
             std::filesystem::create_directories(std::filesystem::path(path).parent_path());
@@ -33,6 +33,16 @@ public:
                 f.write(reinterpret_cast<const char*>(data.data()), data.size());
                 if (!f) return false;
             }
+            // W16: backup level.dat -> level.dat_old before rename (vanilla LevelStorage)
+            try {
+                if (std::filesystem::exists(path)) {
+                    std::string old = path + "_old";
+                    // level.dat -> level.dat_old (append _old)
+                    std::error_code ec;
+                    std::filesystem::copy_file(path, old, std::filesystem::copy_options::overwrite_existing, ec);
+                    (void)ec;
+                }
+            } catch (...) {}
             // atomic rename
             std::filesystem::rename(tmp, path);
             return true;
