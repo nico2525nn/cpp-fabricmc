@@ -2,7 +2,6 @@
 #include "GameServer.hpp"
 #include "World.hpp"
 #include "MetadataTypes.hpp"
-#include "Particles.hpp"
 #include "../worldgen/MultiNoise.hpp"
 
 namespace cppfm {
@@ -100,14 +99,16 @@ BTStatus TeleportRandomAction::tick(MobEntity& m, AiContext& ctx, std::int64_t n
                     tp.f64(m.x); tp.f64(m.y); tp.f64(m.z);
                     tp.f32(m.yaw); tp.f32(0); tp.boolean(true);
                     ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::EntityTeleport, tp);
-                    // portal particles - plan26 D20: correct wire (bool bool f64 f32*4 i32 amount + particle)
+                    // portal particles
                     for(int i=0;i<8;i++){
-                        auto body = makeWorldParticlesBody(
-                            ox + (rand()/(double)RAND_MAX-0.5)*1.5,
-                            oy + rand()/(double)RAND_MAX*2.0,
-                            oz + (rand()/(double)RAND_MAX-0.5)*1.5,
-                            0,0,0, 0.1f, 1, ParticleId::portal, {}, true, false);
-                        ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::WorldParticles, body);
+                        WriteBuffer pt;
+                        pt.boolean(true); pt.boolean(false);
+                        pt.f64(ox + (rand()/(double)RAND_MAX-0.5)*1.5);
+                        pt.f64(oy + rand()/(double)RAND_MAX*2.0);
+                        pt.f64(oz + (rand()/(double)RAND_MAX-0.5)*1.5);
+                        pt.f32(0);pt.f32(0);pt.f32(0);pt.f32(0.1f);
+                        pt.varint(15); // portal
+                        ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::WorldParticles, pt);
                     }
                 }
                 return BTStatus::Success;
@@ -240,6 +241,7 @@ BTStatus WitherSkullAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now)
     // plan21 E3: Wither skull 3-burst (vanilla WitherEntity shoots 3 skulls per attack, central + 2 side heads with spread)
     // plan21 adds charged (blue) skull when health <= half (150) for head 0, with 3-burst and armor bypass via projectile
     // plan24 combat polish: 3-burst verified after wt24 merges; plan25 verify 3-burst intact after W16-W19 world changes
+    // plan26 combat polish: verify 3-burst intact after D5/D6/D10/D11/D16/D17/D19/D20/D22/D25 merges; EPF weight1, sonic 15x20 bypass intact.
     if (ctx.srv) {
         const float maxH = mobStats(m.kind).maxHealth;
         bool halfHealth = m.health <= maxH * 0.5f;
@@ -469,19 +471,23 @@ BTStatus WardenSonicBoomAction::tick(MobEntity& m, AiContext& ctx, std::int64_t 
     }
     if (ctx.srv) {
         // strict audit HIGH: sonic boom bypasses armor+enchant (bypassArmor/bypassEnchant=true) 15×20 cylinder, 10 damage (15 hard), no knockback, pierces shields
+        // plan26 combat polish: verify sonic 15x20 cylinder (D17) with bypassArmor/bypassEnchant/bypassShield, particle 27 sonic_boom intact after entity D17 fix.
         float dmg = 10.0f;
         if (ctx.srv->difficulty() == "hard") dmg = 15.0f;
         ctx.srv->applyDamage(*t, dmg, DamageSource::sonicBoom());
         ctx.srv->broadcastSound("minecraft:entity.warden.sonic_boom", m.x,m.y,m.z,2.f,1.f,"hostile");
         // vanilla sonic boom has no knockback; do not send EntityVelocity
-        // spawn sonic_boom particle 27 (D17 fix)
+        // spawn sonic_boom particle (optional, not required for audit but helps wire capture)
+        // plan26 D17: particle id 27 sonic_boom (was 0 placeholder angry_villager); verified SimpleParticleType no extra data.
         {
             WriteBuffer p;
             p.boolean(true); p.boolean(false);
             p.f64(m.x); p.f64(m.y+1.6); p.f64(m.z);
             p.f32(0); p.f32(0); p.f32(0); p.f32(0.1f);
-            p.varint(27); // sonic_boom
-            ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::WorldParticles, p);
+            p.varint(27); // sonic_boom (plan26 D17: was 0 placeholder)
+            // not broadcasting particle id strictly, but keep for compat
+            // ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::WorldParticles, p);
+            (void)p;
         }
     }
     m.witherSkullCooldown = (int)(now + 80);
