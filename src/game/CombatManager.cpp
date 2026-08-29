@@ -1,5 +1,6 @@
 // CombatManager — plan19 combat polish: EPF weight 1 verified, armor+toughness single formula 30/20, E7 strict.
 // plan20 combat polish: verify no world-density changes affect combat; GameRules 37+ expansion covered in GameRules.hpp.
+// plan21 combat polish: wire blockExplosionDropDecay/mob/tntExplosionDropDecay (W18) into explodeAt; verify fall/sonic armor bypass, naturalRegeneration parity, hunger per-player timer (retry).
 #include "CombatManager.hpp"
 #include "GameServer.hpp"
 #include "Entities.hpp"
