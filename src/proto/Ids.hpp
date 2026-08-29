@@ -202,6 +202,7 @@ constexpr std::uint8_t SetHealth = 0x62;
 constexpr std::uint8_t SetHeldSlot = 0x63;
 constexpr std::uint8_t SimulationDistance = 0x69;
 constexpr std::uint8_t SoundEffect = 0x6F;
+constexpr std::uint8_t StopSound = 0x71;
 constexpr std::uint8_t StoreCookie = 0x72;
 constexpr std::uint8_t SystemChat = 0x73;
 constexpr std::uint8_t Collect = 0x76;
