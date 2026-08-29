@@ -6,6 +6,7 @@
 // + ARMOR/TOUGHNESS/KB_RESIST sync via UpdateAttributes 0x7C — caps 30/20 verified 2026-08-28
 // plan21 combat polish: 32 attributes retry verify, ARMOR 30/TOUGHNESS 20 caps, GRAVITY 0.08 etc, sync via 0x7C (retry).
 // plan22 combat polish: verify 32 attributes (E5) with correct bases, caps 30/20, ovoid 15x20 sonic boom連携
+// plan23 combat polish: 32 attributes verify (11→32), gravity 0.08 scale 1.0 safe_fall 3, armor single formula f=2+t/4 caps 30/20 wire 0x7C (verify).
 #pragma once
 #include <string>
 #include <unordered_map>
@@ -106,7 +107,17 @@ public:
         setBase(Attribute::TEMPT_RANGE,10);
         setBase(Attribute::WATER_MOVEMENT_EFFICIENCY,0);
     }
-    void setBase(Attribute a,double v){ map_[a].base=v; }
+    void setBase(Attribute a,double v){
+        // plan23 edge: clamp NaN/Inf and vanilla bounds (gravity >=0, scale 0.0625-16, armor 30 toughness 20)
+        if (!std::isfinite(v)) v = 0;
+        if (a == Attribute::GRAVITY) v = std::max(0.0, v);
+        else if (a == Attribute::SCALE) v = std::clamp(v, 0.0625, 16.0);
+        else if (a == Attribute::ARMOR) v = std::clamp(v, 0.0, 30.0);
+        else if (a == Attribute::ARMOR_TOUGHNESS) v = std::clamp(v, 0.0, 20.0);
+        else if (a == Attribute::SAFE_FALL_DISTANCE) v = std::max(0.0, v);
+        else if (a == Attribute::FALL_DAMAGE_MULTIPLIER) v = std::max(0.0, v);
+        map_[a].base=v;
+    }
     double getBase(Attribute a) const{ auto it=map_.find(a); return it==map_.end()?0:it->second.base; }
     double getValue(Attribute a) const{ auto it=map_.find(a); return it==map_.end()?0:it->second.computed(); }
     void addModifier(Attribute a,AttributeModifier m){ map_[a].addModifier(std::move(m)); }

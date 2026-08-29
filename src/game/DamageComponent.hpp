@@ -1,9 +1,10 @@
 // DamageComponent — plan8 entity section
 // Handles item durability (minecraft:damage component) with Unbreaking and Mending.
 // Vanilla logic: tools 1/(lvl+1) chance to damage, armor 60%+40%/(lvl+1) ignore per Yarn EnchantmentHelper.shouldDamage.
+// plan23 combat polish: thread_local mt19937 for Unbreaking (was rand), armor 60%+ verify, tool 1/(lvl+1) verify.
 #pragma once
 #include <cstdint>
-#include <cstdlib>
+#include <random>
 #include "Items.hpp"
 
 namespace cppfm {
@@ -28,13 +29,16 @@ public:
         if (unb>0) {
             bool armor = isArmorItem(stack);
             int effective = 0;
+            thread_local std::mt19937 rng{std::random_device{}()};
+            std::uniform_real_distribution<float> dist(0.f, 1.f);
+            std::uniform_int_distribution<int> intDist(0, unb);
             for (int i=0;i<amount;++i) {
                 if (armor) {
                     float ignoreChance = 0.6f + 0.4f / float(unb + 1);
-                    float r = float(rand()) / float(RAND_MAX);
+                    float r = dist(rng);
                     if (r >= ignoreChance) effective++;
                 } else {
-                    if (rand() % (unb + 1) == 0) effective++;
+                    if (intDist(rng) == 0) effective++;
                 }
             }
             amount = effective;
@@ -45,12 +49,26 @@ public:
     static bool shouldDamage(const ItemStack& stack) {
         int unb = stack.unbreakingLevel();
         if (unb<=0) return true;
+        thread_local std::mt19937 rng{std::random_device{}()};
         if (isArmorItem(stack)) {
             float ignoreChance = 0.6f + 0.4f / float(unb + 1);
-            float r = float(rand()) / float(RAND_MAX);
-            return r >= ignoreChance;
+            std::uniform_real_distribution<float> dist(0.f, 1.f);
+            return dist(rng) >= ignoreChance;
         }
-        return rand() % (unb + 1) == 0;
+        std::uniform_int_distribution<int> intDist(0, unb);
+        return intDist(rng) == 0;
+    }
+    // Deterministic variant for tests (seeded rng)
+    static bool shouldDamageWithRng(const ItemStack& stack, std::mt19937& rng) {
+        int unb = stack.unbreakingLevel();
+        if (unb<=0) return true;
+        if (isArmorItem(stack)) {
+            float ignoreChance = 0.6f + 0.4f / float(unb + 1);
+            std::uniform_real_distribution<float> dist(0.f, 1.f);
+            return dist(rng) >= ignoreChance;
+        }
+        std::uniform_int_distribution<int> intDist(0, unb);
+        return intDist(rng) == 0;
     }
 
     // Repair via Mending: consume XP to repair one durability point.
