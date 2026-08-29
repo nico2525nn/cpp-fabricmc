@@ -81,7 +81,16 @@ struct ItemStack {
         return it->second;
     }
 
-    // SlotComponentType ids verified vs protocol.json 1.21.4: damage=3, max_damage=2, max_stack_size=1, etc.
+    // SlotComponentType ids verified vs protocol.json 1.21.4 (pc/1.21.4/protocol.json SlotComponentType mapper):
+    // 0 custom_data, 1 max_stack_size, 2 max_damage, 3 damage, 4 unbreakable, 5 custom_name, 6 item_name, 7 item_model,
+    // 8 lore, 9 rarity, 10 enchantments, 11 can_place_on, 12 can_break, 13 attribute_modifiers, 14 custom_model_data,
+    // 15 hide_additional_tooltip, 16 hide_tooltip, 17 repair_cost, 18 creative_slot_lock, 19 enchantment_glint_override,
+    // 20 intangible_projectile, 21 food, 22 consumable, 23 use_remainder, 24 use_cooldown, 25 damage_resistant, 26 tool,
+    // 27 enchantable, 28 equippable, 29 repairable, 30 glider, 31 tooltip_style, 32 death_protection, 33 stored_enchantments,
+    // 34 dyed_color, 35 map_color, 36 map_id, 37 map_decorations, 38 map_post_processing, 39 charged_projectiles,
+    // 40 bundle_contents, 41 potion_contents, 42 suspicious_stew_effects, 43 writable_book_content, 44 written_book_content,
+    // 45 trim, 46 debug_stick_state, ... 66 container_loot — strict audit HIGH I6/I11.
+    // Yarn `SlotComponentType` parity: damage=3, repair_cost=17, enchantments=10, trim=45 (replaces legacy 6/7/42).
     static constexpr std::uint32_t kDamageComponentId = 3;
     static constexpr std::uint32_t kRepairCostComponentId = 17;
     static constexpr std::uint32_t kEnchantmentsComponentId = 10;

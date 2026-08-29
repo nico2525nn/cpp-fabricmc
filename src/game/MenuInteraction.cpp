@@ -1,6 +1,7 @@
 // MenuInteraction implementation (vanilla click semantics, 1.21.4 protocol 769).
 // Strict audit: I13 swapWithHotbar all-slots (Yarn `ScreenHandler` Slot 0..n), I14 throwSlot all-slots (chest/generic),
-// windowId VarInt (I12), drag paint 5-mode, pickupAll. Yarn 1.21.4 `ScreenHandler` parity.
+// windowId VarInt (I12) with u8 fallback, drag paint 5-mode, pickupAll. Yarn 1.21.4 `ScreenHandler` parity.
+// Inventory polish (plan21): VarInt windowId leniency, drag distribution even/left, maxStackFor bundle-aware.
 #include "MenuInteraction.hpp"
 #include "GameServer.hpp"
 #include <unordered_map>
