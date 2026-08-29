@@ -26,6 +26,7 @@
 #include "MenuLogic.hpp"
 #include "CostCalculator.hpp"
 #include "PotionBrewing.hpp"
+#include "Particles.hpp"
 #include <cerrno>
 
 namespace cppfm {
@@ -1809,6 +1810,22 @@ void GameServer::broadcastWorldEvent(std::int32_t eventId, std::int32_t x, std::
     broadcastPacketExcept(nullptr, pl::sc::WorldEvent, b);
 }
 
+// plan26 D19/D20: per-type particle helpers with correct wire (amount + switch)
+void GameServer::broadcastPaleOakLeavesParticle(double x, double y, double z){
+    auto body = makePaleOakLeavesBody(x, y, z);
+    broadcastPacketExcept(nullptr, pl::sc::WorldParticles, body);
+}
+void GameServer::broadcastBlockParticle(double x, double y, double z, std::uint32_t blockState, int count){
+    ParticleData d; d.blockState = blockState;
+    auto body = makeWorldParticlesBody(x, y, z, 0,0,0, 0, count, ParticleId::block, d, false, false);
+    broadcastPacketExcept(nullptr, pl::sc::WorldParticles, body);
+}
+void GameServer::broadcastDustParticle(double x, double y, double z, std::int32_t rgb, float scale){
+    ParticleData d; d.setDustFromARGB(0xFF000000 | (rgb & 0xFFFFFF), scale);
+    auto body = makeWorldParticlesBody(x, y, z, 0,0,0, 0, 1, ParticleId::dust, d, false, false);
+    broadcastPacketExcept(nullptr, pl::sc::WorldParticles, body);
+}
+
 void GameServer::explodeAt(double x, double y, double z, float power) {
     const int r = static_cast<int>(std::ceil(power));
     // block destruction sphere with randomised edges
@@ -1900,18 +1917,14 @@ void GameServer::explodeAt(double x, double y, double z, float power) {
                         mobs_.end());
         }
     }
-    // visuals & audio
+    // visuals & audio - plan26 D20: correct wire (bool bool f64 f32 f32 f32 f32 i32 amount + particle)
     for (int i = 0; i < 4; ++i) {
-        WriteBuffer pt;
-        pt.boolean(true);                                // long distance
-        pt.boolean(false);                               // not always shown
-        pt.f64(x + (rand()%7 - 3) * 0.5);
-        pt.f64(y + (rand()%5 - 2) * 0.5);
-        pt.f64(z + (rand()%7 - 3) * 0.5);
-        pt.f32(0); pt.f32(0); pt.f32(0);
-        pt.f32(0);
-        pt.varint(i == 0 ? 21 : 22);                     // emitter/explosion
-        broadcastPacketExcept(nullptr, pl::sc::WorldParticles, pt);
+        int pid = (i == 0 ? ParticleId::explosion_emitter : ParticleId::explosion); // 21/22, Simple
+        auto body = makeWorldParticlesBody(x + (rand()%7 - 3) * 0.5,
+                                           y + (rand()%5 - 2) * 0.5,
+                                           z + (rand()%7 - 3) * 0.5,
+                                           0,0,0, 0, 1, pid, {}, true, false);
+        broadcastPacketExcept(nullptr, pl::sc::WorldParticles, body);
     }
     broadcastSound("minecraft:entity.generic.explode", x, y, z, 4.f, 1.f,
                    "block");
