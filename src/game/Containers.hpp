@@ -58,8 +58,6 @@ public:
     ItemStack extraSlots[27];                    // generic storage for menus without BE
 
     // transient view of the owning player's inventory is external (Player.inv)
-
-    int containerCount_ = 0;             // hopper 5 / dispenser 9
     // drag paint transient (mode 5)
     std::vector<int> dragSlots;
     int dragButton = -1;                 // initial button for drag type
