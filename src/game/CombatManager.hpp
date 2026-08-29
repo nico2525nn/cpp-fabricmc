@@ -3,6 +3,7 @@
 // Pure functions are testable; GameServer delegates to this manager.
 // plan25 combat polish: verify no regressions from W16-W19 world, B7-B26 block, E1/E3 entity after wt25 merges; caps 30/20 intact.
 // plan26 combat polish: verify no regressions from D5/D6 palette, D10 registry, D11 slot, D16/D17 warden, D19/D20 particles, D22/D25 network; caps 30/20, E7 weight1, sonic 15x20 bypass intact.
+// plan28 combat polish: verify CombatManager remains orthogonal to Scoreboard ResetScore 0x49 (D26) — DamageCalculator single formula caps 30/20, EPF weighting, sonic_boom bypass, Resistance pipeline verified intact after scoreboard reset hardening.
 #pragma once
 #include <cstdint>
 #include <vector>

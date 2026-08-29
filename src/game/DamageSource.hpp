@@ -10,6 +10,7 @@
 // plan24 combat polish: verify caps 30/20, E7 weight1, E8 fall bypassArmor, Resistance after armor, Unbreaking parity after wt24 merges.
 // plan25 combat polish: verify no regressions from W16-W19 + B7/B17/B18/B26 + E1 149 + E3 burst 3; single formula caps 30/20, E7 weight1, E8 fall bypassArmor, sonic 15x20 bypass, Resistance after armor intact.
 // plan26 combat polish: verify no regressions from D5/D6 palette + D10 registry 12 + D11 slot + D16 sheep + D17 sonic_boom 27 + D19/D20 particles + D22 StopSound + D25 scoreboard; single formula caps 30/20, E7 weight1, E8 fall bypassArmor, sonic 15x20 bypassArmor/bypassEnchant/bypassShield intact.
+// plan28 combat polish: verify combat pipeline remains orthogonal to Scoreboard ResetScore 0x49 (D26) — single formula f=2+t/4 caps 30/20, fall bypassArmor true (feather_falling×3), sonic_boom 15x20 bypassArmor/bypassEnchant/bypassShield, EPF weight 1, Resistance after armor verified intact after deep 31 merges.
 #pragma once
 #include <string>
 #include <algorithm>
