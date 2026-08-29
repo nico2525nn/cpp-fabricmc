@@ -7,6 +7,7 @@
 // ChatMessageProcessor: RSA-SHA256 verifies PlayerChat 0x07 signatures when a
 // ChatSession is present; falls back to SystemChat 0x73 otherwise (N6 HIGH).
 // plan22 network polish: verify uses msg+timestamp+salt hash (N6), expired/missing key fallback, Replay salt soft-check, DamageEvent 0x1A bypass linkage (E4).
+// plan25 network polish: verify strict 78/78 remains green (no new network gaps); Bundle/MultiBlockChange 0x4E BundleDelimiter 0x00 parity locked, 50ms/64 flush thresholds verified (deep D10 RegistryData order + D11 Slot payload deferred to plan26).
 #pragma once
 #include <cstdint>
 #include <vector>

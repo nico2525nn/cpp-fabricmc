@@ -1,4 +1,5 @@
 // Connection: blocking TCP client connection + packet framing.
+// plan25 network polish: verified readFrame/writeFrame varint+compression+AES-CFB8 parity (plan23 online-mode), strict 78/78 green, deep D10/D11 deferred.
 #pragma once
 #include <cstdint>
 #include <string>
