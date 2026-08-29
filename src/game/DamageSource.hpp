@@ -6,6 +6,7 @@
 // plan20 combat polish: world-density (W2/W3) does not affect DamageSource; verify gamerule damage gates still use getBool.
 // plan21 combat polish: sonic_boom armor bypass (E4) + fall bypassArmor true, EPF weight 1, Resistance after armor, retry wiring.
 // plan22 combat polish: sonic_boom bypassArmor+bypassEnchant+bypassShield 15x20 ovoid, E6 armor+toughness f=2+t/4 caps 30/20, E7 weight 1, E8 fall bypassArmor true, Resistance after armor.
+// plan23 combat polish: verify E5 32 attrs, E6 single formula caps 30/20, E7 weight1, E8 fall bypassArmor, E9 Unbreaking 60%+ (verify).
 #pragma once
 #include <string>
 #include <algorithm>
@@ -103,9 +104,11 @@ struct DamageSource {
 // plan15 strict: single formula caps 30/20 per DamageUtil.getDamageLeft: f=2+tough/4, g=clamp(armor - dmg/f, armor*0.2, 20), dmg*=1-g/25
 // All calculations are pure functions so they can be unit-tested independently.
 struct DamageCalculator {
-    // vanilla single armor+toughness formula (caps 30/20)
+    // vanilla single armor+toughness formula (caps 30/20) — plan23 edge: NaN/Inf guard
     static float applyArmorAndToughness(float dmg, float armor, float toughness) {
-        if (dmg <= 0) return 0.f;
+        if (dmg <= 0 || !std::isfinite(dmg)) return 0.f;
+        if (!std::isfinite(armor)) armor = 0.f;
+        if (!std::isfinite(toughness)) toughness = 0.f;
         float a = std::clamp(armor, 0.f, 30.f);
         float t = std::clamp(toughness, 0.f, 20.f);
         if (a <= 0) return dmg;

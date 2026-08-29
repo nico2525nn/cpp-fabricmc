@@ -2,6 +2,7 @@
 // plan20 combat polish: verify no world-density changes affect combat; GameRules 37+ expansion covered in GameRules.hpp.
 // plan21 combat polish: wire blockExplosionDropDecay/mob/tntExplosionDropDecay (W18) into explodeAt; verify fall/sonic armor bypass, naturalRegeneration parity, hunger per-player timer (retry).
 // plan22 combat polish: E7 weight 1 (prot*1 not *2), sonic_boom bypassEnchant/bypassShield 15x20, E6 single formula caps 30/20, E8 fall bypassArmor.
+// plan23 combat polish: verify E7 weight1, E8 fall bypassArmor, E9 Unbreaking 60%+ via DamageComponent, armor single formula 30/20 (verify).
 #include "CombatManager.hpp"
 #include "GameServer.hpp"
 #include "Entities.hpp"
