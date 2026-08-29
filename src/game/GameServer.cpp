@@ -1,5 +1,6 @@
 #include "GameServer.hpp"
 #include "BlockEvent.hpp"
+#include "MetadataTypes.hpp"
 #include "../physics/LightEngine.hpp"
 #include "../physics/Fluids.hpp"
 #include "../physics/Redstone.hpp"
@@ -1246,10 +1247,10 @@ void GameServer::mobsTick() {
                     if (!m->creeperIgnited) {
                         m->creeperIgnited = true;
                         m->creeperFuseStart = tickNo_;
-                        // SetEntityMetadata ignited flag (index 16, vanilla CreeperEntity IGNITED Boolean) Yarn CreeperEntity.IGNITED Boolean idx16
+                        // SetEntityMetadata ignited flag (index 16, Yarn CreeperEntity IGNITED Boolean)
                         WriteBuffer md;
                         md.varint(m->entityId);
-                        md.u8(16); md.varint(8); md.boolean(true); // Boolean true (Yarn BOOLEAN handler, not Byte 0)
+                        meta::writeMetaBool(md, 16, true);
                         md.u8(255);
                         broadcastPacketExcept(nullptr, pl::sc::SetEntityMetadata, md);
                         broadcastSound("minecraft:entity.creeper.primed",
@@ -1270,7 +1271,7 @@ void GameServer::mobsTick() {
                     m->creeperFuseStart = -1;
                     WriteBuffer md;
                     md.varint(m->entityId);
-                    md.u8(16); md.varint(8); md.boolean(false); // Boolean false
+                    meta::writeMetaBool(md, 16, false);
                     md.u8(255);
                     broadcastPacketExcept(nullptr, pl::sc::SetEntityMetadata, md);
                 }
@@ -1765,23 +1766,20 @@ void GameServer::broadcastSound(const char* name, double x, double y,
         {"master", 0}, {"music", 1}, {"record", 2}, {"weather", 3},
         {"block", 4}, {"hostile", 5}, {"neutral", 6}, {"player", 7},
         {"ambient", 8}, {"voice", 9}};
-    // D21: normalize plural alias + case-insensitive + trim (Yarn SoundCategory BLOCKS wire is "block" singular)
-    std::string catStr = category ? std::string(category) : "master";
-    for (char &c : catStr) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    // trim leading/trailing spaces
-    auto l = catStr.find_first_not_of(" \t\r\n");
-    auto r = catStr.find_last_not_of(" \t\r\n");
-    if (l == std::string::npos) catStr.clear();
-    else catStr = catStr.substr(l, r - l + 1);
-    if (catStr == "blocks") catStr = "block";
-    else if (catStr == "hostiles") catStr = "hostile";
-    else if (catStr == "players") catStr = "player";
-    else if (catStr == "neutrals") catStr = "neutral";
+    // D21 polish: "blocks" plural alias → "block" singular (Yarn SoundCategory.BLOCKS -> wire "block")
+    std::string norm = category ? std::string(category) : std::string("master");
+    for (char& c : norm) c = static_cast<char>(::tolower(static_cast<unsigned char>(c)));
+    while (!norm.empty() && std::isspace(static_cast<unsigned char>(norm.back()))) norm.pop_back();
+    while (!norm.empty() && std::isspace(static_cast<unsigned char>(norm.front()))) norm.erase(norm.begin());
+    if (norm == "blocks") norm = "block";
+    if (norm == "hostiles") norm = "hostile";
+    if (norm == "neutrals") norm = "neutral";
+    if (norm == "players") norm = "player";
     WriteBuffer b;
     b.varint(0);                                       // holder: direct entry
     b.string(name);                                    // sound name
     b.boolean(false);                                  // no fixed range
-    auto it = kCat.find(catStr);
+    auto it = kCat.find(norm);
     b.varint(it != kCat.end() ? it->second : 0);
     b.i32(static_cast<std::int32_t>(x * 8.0));
     b.i32(static_cast<std::int32_t>(y * 8.0));
@@ -2001,10 +1999,10 @@ void GameServer::strikeLightning(double x, double y, double z) {
         double dx=m->x - x, dy=m->y - y, dz=m->z - z;
         if (dx*dx + dy*dy + dz*dz < 16) {
             m->creeperCharged = true;
-            // metadata update for charged creeper (index 17 Boolean Yarn CreeperEntity.CHARGED Boolean idx17)
+            // metadata update for charged creeper (index 17, Yarn CreeperEntity CHARGED Boolean)
             WriteBuffer md;
             md.varint(m->entityId);
-            md.u8(17); md.varint(8); md.boolean(true); // Boolean true, not Byte 0
+            meta::writeMetaBool(md, 17, true);
             md.u8(255);
             broadcastPacketExcept(nullptr, pl::sc::SetEntityMetadata, md);
             std::fprintf(stderr, "[cppfm] creeper %d charged via lightning at %.1f %.1f %.1f\n", m->entityId, x,y,z);
