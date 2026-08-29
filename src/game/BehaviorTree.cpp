@@ -2,6 +2,7 @@
 #include "GameServer.hpp"
 #include "World.hpp"
 #include "MetadataTypes.hpp"
+#include "Particles.hpp"
 #include "../worldgen/MultiNoise.hpp"
 
 namespace cppfm {
@@ -99,16 +100,14 @@ BTStatus TeleportRandomAction::tick(MobEntity& m, AiContext& ctx, std::int64_t n
                     tp.f64(m.x); tp.f64(m.y); tp.f64(m.z);
                     tp.f32(m.yaw); tp.f32(0); tp.boolean(true);
                     ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::EntityTeleport, tp);
-                    // portal particles
+                    // portal particles - plan26 D20: correct wire (bool bool f64 f32*4 i32 amount + particle)
                     for(int i=0;i<8;i++){
-                        WriteBuffer pt;
-                        pt.boolean(true); pt.boolean(false);
-                        pt.f64(ox + (rand()/(double)RAND_MAX-0.5)*1.5);
-                        pt.f64(oy + rand()/(double)RAND_MAX*2.0);
-                        pt.f64(oz + (rand()/(double)RAND_MAX-0.5)*1.5);
-                        pt.f32(0);pt.f32(0);pt.f32(0);pt.f32(0.1f);
-                        pt.varint(15); // portal
-                        ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::WorldParticles, pt);
+                        auto body = makeWorldParticlesBody(
+                            ox + (rand()/(double)RAND_MAX-0.5)*1.5,
+                            oy + rand()/(double)RAND_MAX*2.0,
+                            oz + (rand()/(double)RAND_MAX-0.5)*1.5,
+                            0,0,0, 0.1f, 1, ParticleId::portal, {}, true, false);
+                        ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::WorldParticles, body);
                     }
                 }
                 return BTStatus::Success;
