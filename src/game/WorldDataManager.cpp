@@ -70,30 +70,23 @@ bool WorldDataManager::saveLevelDataWithProviders(std::int64_t worldTicks, std::
                 std::int64_t key = (static_cast<std::int64_t>(static_cast<std::uint32_t>(scx+dx))<<32) | static_cast<std::uint32_t>(scz+dz);
                 fc.list.push_back(nbt::Value::makeLong(key));
             }
-            // also include any additional forced chunks from world — W17 ticketManager persistence
-            for (auto k : world.forcedChunkKeys()) {
-                bool already=false;
-                for (auto &v: fc.list) if (v.l==k) { already=true; break; }
-                if (!already) fc.list.push_back(nbt::Value::makeLong(k));
-            }
-            for (auto k : world.ticketManager().allTicketKeys()) {
-                if (world.ticketManager().getMinLevel(static_cast<std::int32_t>(k>>32), static_cast<std::int32_t>(k & 0xFFFFFFFFLL)) > 31) continue;
+            // also include any additional forced chunks from world
+            for (auto k : world.allChunkKeys()) if (world.isForcedKey(k)) {
                 bool already=false;
                 for (auto &v: fc.list) if (v.l==k) { already=true; break; }
                 if (!already) fc.list.push_back(nbt::Value::makeLong(k));
             }
             data.set("ForcedChunks", fc);
         }
-        // End dragon fight data — single level.dat must contain DragonFight for vanilla compat (W16)
-        // Always write for overworld single-file level.dat; vanilla stores DragonFight in world/level.dat even though End is dim 1.
-        {
+        // End dragon fight data (per-dim level.dat for The End)
+        if (world.dimensionId() == 1 || world.levelType() == LevelType::End) {
             nbt::Value dragon = nbt::Value::makeCompound();
             dragon.set("DragonKilled", nbt::Value::makeByte(0));
             dragon.set("PreviouslyKilled", nbt::Value::makeByte(0));
             dragon.set("Gateways", nbt::Value::makeList(nbt::Int));
             data.set("DragonFight", dragon);
         }
-        // GameRules: ensure all vanilla rules present — 37 defaults (strict)
+        // GameRules: ensure all vanilla rules present — 37+ defaults (plan20 W18 strict, was 14)
         auto ensureGr = [&](nbt::Value &gr){
             auto ensure = [&](const char* k, const char* v){ if (!gr.get(k)) gr.set(k, nbt::Value::makeString(v)); };
             ensure("doFireTick","true"); ensure("mobGriefing","true"); ensure("keepInventory","false");
@@ -109,15 +102,15 @@ bool WorldDataManager::saveLevelDataWithProviders(std::int64_t worldTicks, std::
             ensure("doPatrolSpawning","true"); ensure("doTraderSpawning","true"); ensure("doWardenSpawning","true");
             ensure("forgiveDeadPlayers","true"); ensure("universalAnger","false"); ensure("playersSleepingPercentage","100");
             ensure("blockExplosionDropDecay","true");
+            // plan20 W18: 1.19.3+ additions
             ensure("mobExplosionDropDecay","true"); ensure("tntExplosionDropDecay","false");
             ensure("waterSourceConversion","true"); ensure("lavaSourceConversion","false");
             ensure("globalSoundEvents","true"); ensure("snowAccumulationHeight","1");
-            ensure("commandModificationBlockLimit","32768"); ensure("maxBlockModifications","32768");
-            ensure("maxCommandForkCount","65536"); ensure("doVinesSpread","true");
-            ensure("enderPearlsVanishOnDeath","true"); ensure("projectilesCanBreakBlocks","true");
-            ensure("playersNetherPortalDefaultDelay","80"); ensure("playersNetherPortalCreativeDelay","0");
-            ensure("spawnChunkRadius","2"); ensure("spawnerBlocksEnabled","true");
-            ensure("disablePlayerMovementCheck","false");
+            ensure("commandModificationBlockLimit","32768"); ensure("maxCommandForkCount","65536");
+            ensure("doVinesSpread","true"); ensure("enderPearlsVanishOnDeath","true");
+            ensure("projectilesCanBreakBlocks","true"); ensure("playersNetherPortalDefaultDelay","80");
+            ensure("playersNetherPortalCreativeDelay","0"); ensure("disablePlayerMovementCheck","false");
+            ensure("spawnChunkRadius","2");
         };
         if (!data.get("GameRules")) {
             nbt::Value gr = nbt::Value::makeCompound();
