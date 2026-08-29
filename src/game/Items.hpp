@@ -1,4 +1,5 @@
 // Items: ItemStack with 1.20.5+ data components, item tables and helpers.
+// plan28 inventory polish: verify ItemStack components remain decoupled from Scoreboard ResetScore 0x49 (D26) — trim 45 holder varint, potion_contents 41, damage 3/repair_cost 17/enchantments 10 wire verified intact after scoreboard reset hardening; no inventory state touches Scoreboard scores.
 //
 // Strict 1.21.4 (protocol 769, DataVersion 4189) wire format (Slot):
 // varint count; when >0: varint itemId, varint addedComponents, varint removedComponents,

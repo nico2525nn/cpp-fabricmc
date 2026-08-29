@@ -1,4 +1,5 @@
 // Particles: world_particles 0x2A wire helpers (plan26 D19/D20).
+// plan28 inventory polish: verify particle helpers remain orthogonal to Scoreboard ResetScore 0x49 (D26) — pale_oak_leaves 34, block/dust payload packing, amount + switch wire verified intact after scoreboard reset hardening.
 // Prismarine 1.21.4 protocol.json: packet_world_particles { longDistance bool, alwaysShow bool, x f64, y f64, z f64, offsetX f32, offsetY f32, offsetZ f32, velocityOffset f32, amount i32, particle { type varint, data switch } }
 // Particle switch (excerpt): block(1)/block_marker(2)/falling_dust(28)/dust_pillar(107)/block_crumble(111) → varint blockState
 // dust(13) → r f32 g f32 b f32 scale f32, dust_color_transition(14) → fromR/G/B scale toR/G/B, entity_effect(20) → i32 color, item(45) → Slot, sculk_charge(36) → f32 roll, etc.
