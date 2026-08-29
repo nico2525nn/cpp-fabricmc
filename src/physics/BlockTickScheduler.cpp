@@ -2,6 +2,8 @@
 #include "BlockTickScheduler.hpp"
 #include "../game/GameServer.hpp"
 #include "../game/TagManager.hpp"
+#include "../game/Particles.hpp"
+#include "../proto/Ids.hpp"
 #include <algorithm>
 #include <cstdlib>
 #include <string>
@@ -496,6 +498,21 @@ void GrassBlockBehavior::randomTick(World& w, std::int32_t x, std::int32_t y, st
         w.setBlock(x,y,z, ns);
         if (srv) srv->broadcastBlockChange(x,y,z, ns);
     }
+}
+
+// -------------------------------------------------------- PaleOakLeaves (plan26 D19: pale_oak_leaves 34 ambience, 2% per randomTick)
+void PaleOakLeavesBehavior::randomTick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
+                                       std::uint16_t state, std::int64_t now, GameServer* srv) {
+    (void)w; (void)state; (void)now;
+    if (!srv) return;
+    if (srv->gameRules().getInt("randomTickSpeed", 3) == 0) return;
+    if (!srv->isChunkInSimulationDistance(x>>4, z>>4)) return;
+    const gen::BlockDef* d = gen::blockByState(state);
+    if (!d || std::string(d->name) != "minecraft:pale_oak_leaves") return;
+    // 2% chance (1/50) per randomTick, as vanilla PaleOakLeavesBlock randomTick
+    if ((rand() % 50) != 0) return;
+    // Broadcast pale_oak_leaves particle 34, Simple, count 1, at center of block (D19)
+    srv->broadcastPaleOakLeavesParticle(x + 0.5, y + 0.5, z + 0.5);
 }
 
 // -------------------------------------------------------- Farmland moisture

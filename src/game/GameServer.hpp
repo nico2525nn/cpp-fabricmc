@@ -393,6 +393,7 @@ public:
         blockTicks_->registerBehavior("minecraft:nether_portal", std::make_unique<PortalAgeBehavior>());
         blockTicks_->registerBehavior("minecraft:torchflower_crop", std::make_unique<CropBehavior>());
         blockTicks_->registerBehavior("minecraft:pitcher_crop", std::make_unique<CropBehavior>());
+        blockTicks_->registerBehavior("minecraft:pale_oak_leaves", std::make_unique<PaleOakLeavesBehavior>());
         // plan7: ServerProperties typed loading (viewDistance, spawn-protection, etc.)
         {
             ServerProperties sp;
@@ -756,6 +757,10 @@ public:
                         float volume = 1.f, float pitch = 1.f,
                         const char* category = "block");
     void broadcastWorldEvent(std::int32_t eventId, std::int32_t x, std::int32_t y, std::int32_t z, std::int32_t data, bool disableRelativeVolume = false);
+    // plan26 D20: per-type particle helpers (block/dust/pale_oak_leaves etc) - correct wire (amount + switch)
+    void broadcastBlockParticle(double x, double y, double z, std::uint32_t blockState, int count = 10);
+    void broadcastDustParticle(double x, double y, double z, std::int32_t rgb, float scale = 1.0f);
+    void broadcastPaleOakLeavesParticle(double x, double y, double z); // D19 helper
     void itemsTick();
     void trySpawnMobs();
     void spawnItemDrop(double x,double y,double z,std::uint32_t itemId,std::uint8_t cnt,
