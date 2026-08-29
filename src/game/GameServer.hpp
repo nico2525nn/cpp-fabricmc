@@ -654,6 +654,13 @@ public:
         broadcastPacketExcept(nullptr,
                               proto::pl::sc::ScoreboardDisplayObjective, b);
     }
+    void sendResetScoreAll(const std::string& holder, const std::string* objective) {
+        WriteBuffer b; scoreboard.writeResetScorePacket(b, holder, objective);
+        broadcastPacketExcept(nullptr, proto::pl::sc::ResetScore, b);
+    }
+    void sendResetScoreAllWildcard(const std::string& holder) {
+        sendResetScoreAll(holder, nullptr);
+    }
     void sendTeamsCreate(const Team& t) {
         WriteBuffer b; TeamsManager::writeCreate(b, t);
         broadcastPacketExcept(nullptr, proto::pl::sc::Teams, b);
