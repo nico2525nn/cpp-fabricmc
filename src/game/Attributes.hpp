@@ -106,9 +106,17 @@ public:
         setBase(Attribute::TEMPT_RANGE,10);
         setBase(Attribute::WATER_MOVEMENT_EFFICIENCY,0);
     }
-    void setBase(Attribute a,double v){ map_[a].base=v; }
+    void setBase(Attribute a,double v){
+        if (!std::isfinite(v)) v = 0;
+        if (a == Attribute::SCALE) v = std::clamp(v, 0.0625, 16.0);
+        else if (a == Attribute::GRAVITY) v = std::max(0.0, v);
+        else if (a == Attribute::ARMOR) v = std::clamp(v, 0.0, 30.0);
+        else if (a == Attribute::ARMOR_TOUGHNESS) v = std::clamp(v, 0.0, 20.0);
+        map_[a].base=v;
+    }
     double getBase(Attribute a) const{ auto it=map_.find(a); return it==map_.end()?0:it->second.base; }
     double getValue(Attribute a) const{ auto it=map_.find(a); return it==map_.end()?0:it->second.computed(); }
+    std::vector<Attribute> allKeys() const { std::vector<Attribute> out; out.reserve(map_.size()); for(auto &kv: map_) out.push_back(kv.first); return out; }
     void addModifier(Attribute a,AttributeModifier m){ map_[a].addModifier(std::move(m)); }
     void removeModifier(Attribute a,const std::string& u){ auto it=map_.find(a); if(it!=map_.end()) it->second.removeModifier(u); }
     void clearModifiers(Attribute a){ auto it=map_.find(a); if(it!=map_.end()) it->second.modifiers.clear(); }
