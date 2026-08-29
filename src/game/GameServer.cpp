@@ -3085,6 +3085,11 @@ void Session::run() {
         srv_.events().quit.fire(qev);
         srv_.savePlayerProgress(*self_);
         srv_.broadcastSystemText("\u00a7e" + self_->name + " left the game", nullptr);
+        // D26: wildcard reset_score for disconnect — prevents sidebar ghost leak
+        {
+            auto affected = srv_.scoreboard.resetAllScores(self_->name);
+            if (!affected.empty()) srv_.sendResetScoreAllWildcard(self_->name);
+        }
         WriteBuffer rm;
         rm.varint(1);
         rm.uuid(self_->uuid.data());

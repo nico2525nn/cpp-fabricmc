@@ -146,9 +146,12 @@ constexpr std::uint8_t WorldBorderWarningDelay = 0x55;
 constexpr std::uint8_t WorldBorderWarningReach = 0x56;
 constexpr std::uint8_t ScoreboardDisplayObjective = 0x5C;
 constexpr std::uint8_t ScoreboardObjective = 0x64;
+constexpr std::uint8_t ResetScore = 0x49; // D26 1.20.3 split PR #806 bf05291 — packet_reset_score (was action 1 in 0x68)
 constexpr std::uint8_t Teams = 0x67;
 constexpr std::uint8_t ResetScore = 0x49;
 constexpr std::uint8_t ScoreboardScore = 0x68;
+static_assert(ResetScore == 0x49, "D26 Prismarine packet_reset_score 0x49");
+static_assert(ScoreboardScore == 0x68, "D26 Prismarine packet_scoreboard_score 0x68");
 constexpr std::uint8_t CommandSuggestions = 0x10; // tab-complete response (packet_tab_complete 0x10)
 constexpr std::uint8_t DeclareCommands = 0x11;
 constexpr std::uint8_t CloseContainer = 0x12;
