@@ -760,6 +760,9 @@ public:
     void trySpawnMobs();
     void spawnItemDrop(double x,double y,double z,std::uint32_t itemId,std::uint8_t cnt,
                        double vx=0,double vy=0,double vz=0);
+    // D11 (plan26 §4): ItemStack overload preserves components (enchant/trim/damage) for Slot type 7
+    void spawnItemDrop(double x,double y,double z,const ItemStack& stack,
+                       double vx=0,double vy=0,double vz=0);
     void broadcastSpawnItem(const ItemEntity& it);
     bool addToInventory(Player& p, std::uint32_t itemId, std::uint16_t count);
     void resendInventory(Player& p);

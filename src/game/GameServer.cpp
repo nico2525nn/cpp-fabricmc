@@ -513,7 +513,7 @@ void GameServer::tickDigs() {
                         for (auto &st : drops) {
                             if (st.empty()) continue;
                             spawnItemDrop(p->digX+.5, p->digY+.25, p->digZ+.5,
-                                          st.itemId, static_cast<std::uint8_t>(st.count),
+                                          st,
                                           (rand()/(double)RAND_MAX-.5)*.15, .12,
                                           (rand()/(double)RAND_MAX-.5)*.15);
                         }
@@ -1388,7 +1388,7 @@ void GameServer::mobsTick() {
             else if (es>=2 && es<=5) chance = m->armorDropChances[es-2];
             float r = float(rand())/float(RAND_MAX);
             if (r < chance) {
-                spawnItemDrop(m->x, m->y+0.4, m->z, m->equipment[es].itemId, m->equipment[es].count,
+                spawnItemDrop(m->x, m->y+0.4, m->z, m->equipment[es],
                               (rand()/(double)RAND_MAX-.5)*.12, 0.18, (rand()/(double)RAND_MAX-.5)*.12);
             }
         }
@@ -2813,10 +2813,15 @@ void GameServer::itemsTick() {
 
 void GameServer::spawnItemDrop(double x,double y,double z,std::uint32_t itemId,std::uint8_t cnt,
                                double vx,double vy,double vz) {
+    ItemStack s = (itemId==0 || cnt==0) ? ItemStack::air() : ItemStack::of(itemId, cnt);
+    spawnItemDrop(x, y, z, s, vx, vy, vz);
+}
+void GameServer::spawnItemDrop(double x,double y,double z,const ItemStack& stack,
+                               double vx,double vy,double vz) {
     auto e = std::make_shared<ItemEntity>();
     e->entityId = nextEntityId();
-    e->itemId = itemId; e->count = cnt;
     e->x=x; e->y=y; e->z=z; e->vx=vx; e->vy=vy; e->vz=vz;
+    e->setStack(stack);
     {
         std::lock_guard lk(entsMtx_);
         itemDrops_.push_back(e);
@@ -2837,13 +2842,16 @@ void GameServer::broadcastSpawnItem(const ItemEntity& it) {
     b.i16(static_cast<std::int16_t>(it.vy*8000));
     b.i16(static_cast<std::int16_t>(it.vz*8000));
     broadcastPacketExcept(nullptr, pl::sc::SpawnEntity, b);
-    // metadata index 8 = item stack: [idx][7][count][itemId][addC=0][remC=0], then FF
+    // D11 (plan26 §4): metadata index 8 type 7 Slot must carry full ItemStack payload
+    // via ItemStack::write (count,varint itemId, added, removed, components).
+    // Old code wrote minimal `0,0` and mishandled air (count 0 wrote itemId 0).
     WriteBuffer md;
     md.varint(it.entityId);
     md.u8(8); md.u8(7);
-    md.varint(it.count ? it.count : 1);
-    md.varint(static_cast<std::int32_t>(it.itemId));
-    md.varint(0); md.varint(0);
+    WriteBuffer slot;
+    ItemStack s = it.asStack();
+    s.write(slot);
+    md.raw(slot.data.data(), slot.data.size());
     md.u8(255);
     broadcastPacketExcept(nullptr, pl::sc::SetEntityMetadata, md);
 }
@@ -3492,12 +3500,21 @@ void Session::handleConfiguration() {
         }
     }
 packsDone:
-    // 4. registry blobs, verbatim wire order
-    for (const auto& r : srv_.data().registries()) {
-        WriteBuffer pkt;
-        pkt.u8(cf::sc::RegistryData);
-        pkt.raw(r.body.data(), r.body.size());
-        conn_->sendRawBody(pkt.data);
+    // 4. registry blobs, verbatim wire order — D10 lock: exactly 12 in PROTOCOL_NOTES order
+    {
+        const auto& regs = srv_.data().registries();
+        if (regs.size() != EmbeddedData::kRegistrySpec.size()) {
+            std::fprintf(stderr, "[Registry] expected %zu registries, got %zu\n",
+                EmbeddedData::kRegistrySpec.size(), regs.size());
+        }
+        // runtime order/count check (EmbeddedData::verifyRegistrySpec already logged)
+        srv_.data().verifyRegistrySpec();
+        for (const auto& r : regs) {
+            WriteBuffer pkt;
+            pkt.u8(cf::sc::RegistryData);
+            pkt.raw(r.body.data(), r.body.size());
+            conn_->sendRawBody(pkt.data);
+        }
     }
     // 5. tags (captured verbatim)
     {
@@ -3861,7 +3878,9 @@ void Session::onEnchantItem(ReadBuffer& in) {
         Session& s;
         explicit LocalIo(Session& ss): s(ss){}
         void dropFromPlayer(Player& p, const ItemStack& stack, bool whole) override {
-            s.server().spawnItemDrop(p.x, p.y + 1.2, p.z, stack.itemId, static_cast<std::uint8_t>(whole?stack.count:1), 0,0.15,0);
+            ItemStack s2 = stack;
+            if (!whole) s2.count = 1;
+            s.server().spawnItemDrop(p.x, p.y + 1.2, p.z, s2, 0,0.15,0);
         }
         void blockEntityChanged(std::int64_t key) override { s.server().blockEntities().dirty_.insert(key); }
         void itemCrafted(Player& p, const ItemStack& result) override { s.server().onItemObtained(p,result,"crafted"); }
@@ -4895,10 +4914,9 @@ struct SessionMenuIo : MenuIo {
     Session& s;
     explicit SessionMenuIo(Session& ss) : s(ss) {}
     void dropFromPlayer(Player& p, const ItemStack& stack, bool whole) override {
-        s.server().spawnItemDrop(p.x, p.y + 1.2, p.z,
-                                 stack.itemId, static_cast<std::uint8_t>(
-                                     whole ? stack.count : 1),
-                                 0, 0.15, 0);
+        ItemStack s2 = stack;
+        if (!whole) s2.count = 1;
+        s.server().spawnItemDrop(p.x, p.y + 1.2, p.z, s2, 0, 0.15, 0);
     }
     void blockEntityChanged(std::int64_t key) override {
         s.server().blockEntities().dirty_.insert(key);
@@ -5381,17 +5399,12 @@ void Session::closeOpenMenu(bool sendPacketToClient) {
         for (auto& s : openMenu_->craftGrid) {
             if (s.empty()) continue;
             if (!srv_.addToInventory(*self_, s.itemId, s.count))
-                srv_.spawnItemDrop(self_->x, self_->y + 0.5, self_->z,
-                                   s.itemId, static_cast<std::uint8_t>(s.count),
-                                   0, 0.1, 0);
+                srv_.spawnItemDrop(self_->x, self_->y + 0.5, self_->z, s, 0, 0.1, 0);
             s = ItemStack::air();
         }
         if (!cursorItem_.empty()) {
             if (!srv_.addToInventory(*self_, cursorItem_.itemId, cursorItem_.count))
-                srv_.spawnItemDrop(self_->x, self_->y + 0.5, self_->z,
-                                   cursorItem_.itemId,
-                                   static_cast<std::uint8_t>(cursorItem_.count),
-                                   0, 0.1, 0);
+                srv_.spawnItemDrop(self_->x, self_->y + 0.5, self_->z, cursorItem_, 0, 0.1, 0);
             cursorItem_ = ItemStack::air();
         }
     }
