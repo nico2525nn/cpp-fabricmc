@@ -240,6 +240,7 @@ BTStatus WitherSkullAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now)
     double inv = 1.0/ (d+1e-6);
     // plan21 E3: Wither skull 3-burst (vanilla WitherEntity shoots 3 skulls per attack, central + 2 side heads with spread)
     // plan21 adds charged (blue) skull when health <= half (150) for head 0, with 3-burst and armor bypass via projectile
+    // plan24 combat polish: 3-burst verified after wt24 merges; plan25 verify 3-burst intact after W16-W19 world changes
     if (ctx.srv) {
         const float maxH = mobStats(m.kind).maxHealth;
         bool halfHealth = m.health <= maxH * 0.5f;
