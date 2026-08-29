@@ -149,6 +149,8 @@ constexpr std::uint8_t ScoreboardObjective = 0x64;
 constexpr std::uint8_t Teams = 0x67;
 constexpr std::uint8_t ResetScore = 0x49; // D26 1.20.3 split: reset_score vs scoreboard_score (Prismarine 0x49 vs 0x68, PR #806)
 constexpr std::uint8_t ScoreboardScore = 0x68;
+static_assert(ScoreboardDisplayObjective == 0x5C, "Prismarine packet_scoreboard_display_objective 0x5C");
+static_assert(ScoreboardObjective == 0x64, "Prismarine packet_scoreboard_objective 0x64");
 static_assert(ResetScore == 0x49, "Prismarine packet_reset_score 0x49");
 static_assert(ScoreboardScore == 0x68, "Prismarine packet_scoreboard_score 0x68");
 constexpr std::uint8_t CommandSuggestions = 0x10; // tab-complete response (packet_tab_complete 0x10)
