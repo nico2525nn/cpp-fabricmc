@@ -146,6 +146,7 @@ constexpr std::uint8_t WorldBorderWarningDelay = 0x55;
 constexpr std::uint8_t WorldBorderWarningReach = 0x56;
 constexpr std::uint8_t ScoreboardDisplayObjective = 0x5C;
 constexpr std::uint8_t ScoreboardObjective = 0x64;
+constexpr std::uint8_t ResetScore = 0x49; // D26: reset_score (1.20.3 split PR #806 bf05291) vs 0x68 scoreboard_score
 constexpr std::uint8_t Teams = 0x67;
 constexpr std::uint8_t ResetScore = 0x49; // D26 1.20.3 split: reset_score vs scoreboard_score (Prismarine 0x49 vs 0x68, PR #806)
 constexpr std::uint8_t ScoreboardScore = 0x68;
