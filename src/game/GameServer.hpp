@@ -87,10 +87,10 @@ struct ServerConfig {
     std::string levelTypeCli;
     std::uint64_t seed = 1378645410614731511ULL;
     std::int64_t startTime = 1000;
-    int compressionThreshold = 256;   // -1 disables Set Compression entirely
+    int compressionThreshold = 256;   // -1 disables Set Compression entirely (N4 respects config, not hard-coded)
     int spawnProtection = 16;         // spawn-protection radius (0 disables)
-    int maxLoadedChunks = 1000;       // W19 cap — 0 = unlimited
-    int ioWorkerThreads = 2;          // W19 async I/O workers
+    int maxLoadedChunks = 8192;       // W19 cap — 0 = unlimited, default max(8192, viewDist²*4) (plan21 §3)
+    int ioWorkerThreads = 4;          // W19 async I/O workers (ThreadPool 4 for RegionFile zlib)
 };
 
 // Player inventory slot = full ItemStack (components preserved end-to-end).
@@ -398,7 +398,12 @@ public:
                 cfg_.viewDistance = std::clamp(sp.get<int>("view-distance", cfg_.viewDistance), 2, 32);
                 cfg_.simulationDistance = std::clamp(sp.get<int>("simulation-distance", cfg_.simulationDistance), 2, 32);
                 cfg_.spawnProtection = std::max(0, sp.get<int>("spawn-protection", cfg_.spawnProtection));
-                cfg_.maxLoadedChunks = std::max(0, sp.get<int>("max-loaded-chunks", sp.get<int>("maxLoadedChunks", cfg_.maxLoadedChunks)));
+                // W19 maxLoadedChunks polish (plan21 §3): auto max(8192, viewDist²*4) when not configured
+                if (sp.has("max-loaded-chunks") || sp.has("maxLoadedChunks")) {
+                    cfg_.maxLoadedChunks = std::max(0, sp.get<int>("max-loaded-chunks", sp.get<int>("maxLoadedChunks", cfg_.maxLoadedChunks)));
+                } else {
+                    cfg_.maxLoadedChunks = std::max(8192, cfg_.viewDistance * cfg_.viewDistance * 4);
+                }
                 // also mirror to world
                 world_.setSimulationDistance(cfg_.simulationDistance);
                 if (netherWorld_) netherWorld_->setSimulationDistance(cfg_.simulationDistance);
