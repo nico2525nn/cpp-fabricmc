@@ -1101,7 +1101,35 @@ void GameServer::initCommands() {
         nfLit->then(blankLit); nfLit->then(styledLit); nfLit->then(fixedLit);
         modTarget->then(nfLit);
         modify->then(modTarget);
-        obj->then(add); obj->then(list2); obj->then(setd); obj->then(modify);
+        // D26 /scoreboard objectives remove <name> with per-holder reset_score 0x49
+        auto removeLit = CommandNode::literal("remove");
+        auto rmName = CommandNode::argument("rmName", args::objectiveArg());
+        rmName->suggestions = [this](brigadier::StringReader&, brigadier::ParseCtx&) {
+            std::vector<std::string> v;
+            for (auto& o : scoreboard.objectives) v.push_back(o.name);
+            return v;
+        };
+        rmName->executable = true;
+        rmName->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const std::string n = c.arg("rmName").asStr();
+            auto* o = scoreboard.find(n);
+            if (!o) throw std::runtime_error("Objective not found: " + n);
+            Scoreboard::Objective copy = *o;
+            std::vector<std::string> holders;
+            scoreboard.removeObjectiveWithReset(n, holders);
+            for (auto& h : holders) sendResetScoreAll(h, &n);
+            sendObjectiveAll(copy, 1);
+            if (scoreboard.displayedObjective == n) {
+                scoreboard.displayedSlot = -1;
+                scoreboard.displayedObjective.clear();
+                sendDisplayAll();
+            }
+            sendFeedback(src, "Removed objective " + n);
+            return 1;
+        };
+        removeLit->then(rmName);
+        obj->then(add); obj->then(list2); obj->then(setd); obj->then(modify); obj->then(removeLit);
 
         auto players = CommandNode::literal("players");
         auto set = CommandNode::literal("set");
@@ -1126,7 +1154,60 @@ void GameServer::initCommands() {
             return 1;
         };
         set->then(who); who->then(oname); oname->then(val);
-        players->then(set);
+        // D26 /scoreboard players reset <target> [objective] (wildcard vs single)
+        auto resetLit = CommandNode::literal("reset");
+        auto resetWho = CommandNode::argument("resetTarget", args::stringWord());
+        resetWho->executable = true;
+        resetWho->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const std::string raw = c.arg("resetTarget").asStr();
+            std::vector<std::string> holders;
+            if (!raw.empty() && raw[0] == '@') {
+                auto sel = resolveSelector(raw, src);
+                holders = sel.playerNames;
+                if (holders.empty()) holders.push_back(raw);
+            } else {
+                holders.push_back(raw);
+            }
+            int n = 0;
+            for (auto& h : holders) {
+                auto affected = scoreboard.resetAllScores(h);
+                if (!affected.empty()) {
+                    sendResetScoreAllWildcard(h);
+                    ++n;
+                }
+            }
+            sendFeedback(src, "Reset score for " + std::to_string(holders.size()) + " holder(s) (" + std::to_string(n) + " had scores)");
+            return n > 0 ? n : 1;
+        };
+        auto resetObj = CommandNode::argument("resetObjective", args::objectiveArg());
+        resetObj->suggestions = [this](brigadier::StringReader&, brigadier::ParseCtx&) {
+            std::vector<std::string> v;
+            for (auto& o : scoreboard.objectives) v.push_back(o.name);
+            return v;
+        };
+        resetObj->executable = true;
+        resetObj->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const std::string raw = c.arg("resetTarget").asStr();
+            const std::string obj = c.arg("resetObjective").asStr();
+            if (!scoreboard.find(obj)) throw std::runtime_error("Unknown objective '" + obj + "'");
+            std::vector<std::string> holders;
+            if (!raw.empty() && raw[0] == '@') {
+                auto sel = resolveSelector(raw, src);
+                holders = sel.playerNames;
+                if (holders.empty()) holders.push_back(raw);
+            } else {
+                holders.push_back(raw);
+            }
+            int n = 0;
+            for (auto& h : holders) if (scoreboard.resetScore(h, obj)) { sendResetScoreAll(h, &obj); ++n; }
+            sendFeedback(src, "Reset " + std::to_string(n) + " score(s) for objective " + obj);
+            return n > 0 ? n : 1;
+        };
+        resetWho->then(resetObj);
+        resetLit->then(resetWho);
+        players->then(set); players->then(resetLit);
         sb->then(obj); sb->then(players);
         d.root->then(sb);
     }

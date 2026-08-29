@@ -3093,6 +3093,13 @@ void Session::run() {
         ent.varint(1);
         ent.varint(self_->entityId);
         srv_.broadcastPacketExcept(nullptr, pl::sc::RemoveEntities, ent);
+        // D26: wildcard reset_score 0x49 for disconnecting holder to clear sidebar ghosts
+        {
+            auto affected = srv_.scoreboard.resetAllScores(self_->name);
+            if (!affected.empty()) {
+                srv_.sendResetScoreAllWildcard(self_->name);
+            }
+        }
                 srv_.savePlayerData(GameServer::uuidToHex(self_->uuid), *self_);
 srv_.removePlayer(self_.get());
         registered_ = false;
