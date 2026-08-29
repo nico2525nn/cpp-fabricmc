@@ -1,5 +1,6 @@
 // Entities: item drops + mobs with data-driven stats (plan.md Phase 3/4 +
 // plan3.md "74種類のモブ" registry approach). Expanded to 40 kinds for items 30-47.
+// plan28 entity polish: verify entity metadata handling orthogonal to Scoreboard ResetScore 0x49 (D26) — Creeper IGNITED/CHARGED Boolean 8, Enderman carried block Optional, Sheep sheared/wool, Slime size, Warden sonic_boom 27, pale_oak_leaves 34 verified intact after deep 31 merges.
 #pragma once
 #include <cstdint>
 #include <memory>
