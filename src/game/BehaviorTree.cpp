@@ -1,6 +1,7 @@
 #include "BehaviorTree.hpp"
 #include "GameServer.hpp"
 #include "World.hpp"
+#include "MetadataTypes.hpp"
 #include "../worldgen/MultiNoise.hpp"
 
 namespace cppfm {
@@ -185,10 +186,10 @@ BTStatus PickupBlockAction::tick(MobEntity& m, AiContext& ctx, std::int64_t) {
         ctx.world->setBlock(bx, by, bz, 0);
         if (ctx.srv) {
             ctx.srv->broadcastBlockChange(bx, by, bz, 0);
-            // SetEntityMetadata for carriedBlock (index 15 simplified, boolean+state)
+            // SetEntityMetadata for carriedBlock (index 15, Yarn EndermanEntity CARRIED_BLOCK Optional<BlockState>)
             WriteBuffer md;
             md.varint(m.entityId);
-            md.u8(15); md.varint(0); md.varint((int)st);
+            meta::writeMetaOptBlockState(md, 15, st);
             md.u8(255);
             ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);
         }
@@ -218,10 +219,10 @@ BTStatus StareAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     m.angerTargetEntityId = p->entityId;
     m.angryUntilTick = now + 100 + rand()%100;
     if (ctx.srv) {
-        // metadata angry flag (index 15? simplified)
+        // metadata angry flag (Yarn EndermanEntity CREEPY Boolean 16, was 15 Byte)
         WriteBuffer md;
         md.varint(m.entityId);
-        md.u8(15); md.varint(0); md.varint(1);
+        meta::writeMetaBool(md, 16, true);
         md.u8(255);
         ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);
     }

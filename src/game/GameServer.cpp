@@ -1,5 +1,6 @@
 #include "GameServer.hpp"
 #include "BlockEvent.hpp"
+#include "MetadataTypes.hpp"
 #include "../physics/LightEngine.hpp"
 #include "../physics/Fluids.hpp"
 #include "../physics/Redstone.hpp"
@@ -441,7 +442,7 @@ void GameServer::tickDigs() {
                         }
                         if (hasFlint) {
                             spawnPrimedTnt(p->digX + 0.5, p->digY + 0.5, p->digZ + 0.5, 0, 0.2, 0, 80);
-                            broadcastSound("minecraft:entity.tnt.primed", p->digX+0.5, p->digY+0.5, p->digZ+0.5, 1.f, 1.f, "blocks");
+                            broadcastSound("minecraft:entity.tnt.primed", p->digX+0.5, p->digY+0.5, p->digZ+0.5, 1.f, 1.f, "block");
                             if (!isCreative && p->heldSlot>=0 && p->heldSlot<9) {
                                 auto& _h = p->inv[36 + p->heldSlot];
                                 if (_h.applyDamage(1)) _h = ItemStack::air();
@@ -452,7 +453,7 @@ void GameServer::tickDigs() {
                             continue;
                         } else if (isUnstable && !isCreative) {
                             spawnPrimedTnt(p->digX + 0.5, p->digY + 0.5, p->digZ + 0.5, 0, 0.2, 0, 80);
-                            broadcastSound("minecraft:entity.tnt.primed", p->digX+0.5, p->digY+0.5, p->digZ+0.5, 1.f, 1.f, "blocks");
+                            broadcastSound("minecraft:entity.tnt.primed", p->digX+0.5, p->digY+0.5, p->digZ+0.5, 1.f, 1.f, "block");
                             p->digActive = false;
                             broadcastDigStage(*p, -1);
                             continue;
@@ -1246,11 +1247,10 @@ void GameServer::mobsTick() {
                     if (!m->creeperIgnited) {
                         m->creeperIgnited = true;
                         m->creeperFuseStart = tickNo_;
-                        // SetEntityMetadata ignited flag (index 16, vanilla CreeperEntity isIgnited)
+                        // SetEntityMetadata ignited flag (index 16, Yarn CreeperEntity IGNITED Boolean)
                         WriteBuffer md;
                         md.varint(m->entityId);
-                        md.u8(16); md.varint(0); md.varint(1);
-                        md.u8(8); md.varint(1); // fuse? simplified second field
+                        meta::writeMetaBool(md, 16, true);
                         md.u8(255);
                         broadcastPacketExcept(nullptr, pl::sc::SetEntityMetadata, md);
                         broadcastSound("minecraft:entity.creeper.primed",
@@ -1271,7 +1271,7 @@ void GameServer::mobsTick() {
                     m->creeperFuseStart = -1;
                     WriteBuffer md;
                     md.varint(m->entityId);
-                    md.u8(16); md.varint(0); md.varint(0);
+                    meta::writeMetaBool(md, 16, false);
                     md.u8(255);
                     broadcastPacketExcept(nullptr, pl::sc::SetEntityMetadata, md);
                 }
@@ -1766,11 +1766,20 @@ void GameServer::broadcastSound(const char* name, double x, double y,
         {"master", 0}, {"music", 1}, {"record", 2}, {"weather", 3},
         {"block", 4}, {"hostile", 5}, {"neutral", 6}, {"player", 7},
         {"ambient", 8}, {"voice", 9}};
+    // D21 polish: "blocks" plural alias → "block" singular (Yarn SoundCategory.BLOCKS -> wire "block")
+    std::string norm = category ? std::string(category) : std::string("master");
+    for (char& c : norm) c = static_cast<char>(::tolower(static_cast<unsigned char>(c)));
+    while (!norm.empty() && std::isspace(static_cast<unsigned char>(norm.back()))) norm.pop_back();
+    while (!norm.empty() && std::isspace(static_cast<unsigned char>(norm.front()))) norm.erase(norm.begin());
+    if (norm == "blocks") norm = "block";
+    if (norm == "hostiles") norm = "hostile";
+    if (norm == "neutrals") norm = "neutral";
+    if (norm == "players") norm = "player";
     WriteBuffer b;
     b.varint(0);                                       // holder: direct entry
     b.string(name);                                    // sound name
     b.boolean(false);                                  // no fixed range
-    auto it = kCat.find(category);
+    auto it = kCat.find(norm);
     b.varint(it != kCat.end() ? it->second : 0);
     b.i32(static_cast<std::int32_t>(x * 8.0));
     b.i32(static_cast<std::int32_t>(y * 8.0));
@@ -1895,7 +1904,7 @@ void GameServer::explodeAt(double x, double y, double z, float power) {
         broadcastPacketExcept(nullptr, pl::sc::WorldParticles, pt);
     }
     broadcastSound("minecraft:entity.generic.explode", x, y, z, 4.f, 1.f,
-                   "blocks");
+                   "block");
     if (getenv("CPPFM_TRACE"))
         std::fprintf(stderr, "[cppfm] explosion at %.1f/%.1f/%.1f (%zu blocks)\n",
                      x, y, z, changed.size());
@@ -1990,10 +1999,10 @@ void GameServer::strikeLightning(double x, double y, double z) {
         double dx=m->x - x, dy=m->y - y, dz=m->z - z;
         if (dx*dx + dy*dy + dz*dz < 16) {
             m->creeperCharged = true;
-            // metadata update for charged creeper (index 17? simplified)
+            // metadata update for charged creeper (index 17, Yarn CreeperEntity CHARGED Boolean)
             WriteBuffer md;
             md.varint(m->entityId);
-            md.u8(17); md.varint(0); md.u8(1);
+            meta::writeMetaBool(md, 17, true);
             md.u8(255);
             broadcastPacketExcept(nullptr, pl::sc::SetEntityMetadata, md);
             std::fprintf(stderr, "[cppfm] creeper %d charged via lightning at %.1f %.1f %.1f\n", m->entityId, x,y,z);
@@ -2231,7 +2240,7 @@ void GameServer::hoppersTick() {
                             // play click sound variant?
                         }
                         if (--s.count <= 0) s = ItemStack::air();
-                        broadcastSound("minecraft:block.dispenser.dispense", x+.5,y+.5,z+.5,1.f,1.f,"blocks");
+                        broadcastSound("minecraft:block.dispenser.dispense", x+.5,y+.5,z+.5,1.f,1.f,"block");
                         blockEntities_.dirty_.insert(key);
                     } else {
                         bool handled = false;
@@ -2252,7 +2261,7 @@ void GameServer::hoppersTick() {
                                     else beN->kind = BlockEntity::Kind::ShulkerBox;
                                     if (--s.count <= 0) s = ItemStack::air();
                                     blockEntities_.dirty_.insert(key);
-                                    broadcastSound("minecraft:block.dispenser.dispense", x+.5,y+.5,z+.5,1.f,1.f,"blocks");
+                                    broadcastSound("minecraft:block.dispenser.dispense", x+.5,y+.5,z+.5,1.f,1.f,"block");
                                     handled = true;
                                 }
                             }
@@ -2280,7 +2289,7 @@ void GameServer::hoppersTick() {
                                 // Nether water evaporates
                                 if(fluid=="minecraft:water" && world_.dimensionId()==-1){
                                     // evaporate with particles/sound
-                                    broadcastSound("minecraft:block.fire.extinguish", tx+0.5,ty+0.5,tz+0.5,0.5f,2.6f,"blocks");
+                                    broadcastSound("minecraft:block.fire.extinguish", tx+0.5,ty+0.5,tz+0.5,0.5f,2.6f,"block");
                                 } else {
                                     world_.setBlock(tx,ty,tz,fluidSt);
                                     broadcastBlockChange(tx,ty,tz,fluidSt);
@@ -2459,7 +2468,7 @@ void GameServer::hoppersTick() {
                             bool handledFS=false;
                             if(td && std::string(td->name)=="minecraft:tnt"){
                                 spawnPrimedTnt(tx+0.5, ty+0.5, tz+0.5, 0, 0.2, 0, 80);
-                                broadcastSound("minecraft:entity.tnt.primed", tx+0.5, ty+0.5, tz+0.5, 1.f, 1.f, "blocks");
+                                broadcastSound("minecraft:entity.tnt.primed", tx+0.5, ty+0.5, tz+0.5, 1.f, 1.f, "block");
                                 world_.setBlock(tx,ty,tz,0); broadcastBlockChange(tx,ty,tz,0);
                                 handledFS=true;
                             } else if(td && (std::string(td->name)=="minecraft:campfire" || std::string(td->name)=="minecraft:soul_campfire")){
@@ -2507,7 +2516,7 @@ void GameServer::hoppersTick() {
                                 if(beh && beh->fertilize(world_, tx,ty,tz,tSt,this)){
                                     uint16_t ns=world_.getBlock(tx,ty,tz);
                                     broadcastBlockChange(tx,ty,tz,ns);
-                                    broadcastSound("minecraft:item.bone_meal.use", tx+0.5,ty+0.5,tz+0.5,1.f,1.f,"blocks");
+                                    broadcastSound("minecraft:item.bone_meal.use", tx+0.5,ty+0.5,tz+0.5,1.f,1.f,"block");
                                     fertilized=true;
                                 }
                             }
@@ -2521,7 +2530,7 @@ void GameServer::hoppersTick() {
                             }
                         } else if(!handled && (iname=="minecraft:tnt" || iname.find("tnt") != std::string::npos)) {
                             spawnPrimedTnt(x + dx + 0.5, y + 0.3, z + dz + 0.5, dx*0.2, 0.2, dz*0.2, 80);
-                            broadcastSound("minecraft:entity.tnt.primed", x+dx+0.5, y+dy+0.5, z+dz+0.5, 1.f, 1.f, "blocks");
+                            broadcastSound("minecraft:entity.tnt.primed", x+dx+0.5, y+dy+0.5, z+dz+0.5, 1.f, 1.f, "block");
                             if(--s.count<=0) s=ItemStack::air();
                             handled=true;
                         } else if(!handled) {
@@ -2531,7 +2540,7 @@ void GameServer::hoppersTick() {
                             handled=true;
                         }
                         if(handled){
-                            broadcastSound("minecraft:block.dispenser.dispense", x + .5, y + .5, z + .5, 1.f, 1.f, "blocks");
+                            broadcastSound("minecraft:block.dispenser.dispense", x + .5, y + .5, z + .5, 1.f, 1.f, "block");
                             blockEntities_.dirty_.insert(key);
                         }
                     }
@@ -6847,8 +6856,8 @@ void Session::onUseItemOn(ReadBuffer& in) {
                     }
                     int32_t cxp = ox+1 + (orient==0?1:0);
                     int32_t czp = oz + (orient==1?1:0);
-                    srv_.broadcastSound("minecraft:block.portal.ambient", cxp+0.5, oy+2, czp+0.5, 0.8f, 1.0f, "blocks");
-                    srv_.broadcastSound("minecraft:item.flintandsteel.use", x+0.5, y+0.5, z+0.5, 1.f, 1.f, "blocks");
+                    srv_.broadcastSound("minecraft:block.portal.ambient", cxp+0.5, oy+2, czp+0.5, 0.8f, 1.0f, "block");
+                    srv_.broadcastSound("minecraft:item.flintandsteel.use", x+0.5, y+0.5, z+0.5, 1.f, 1.f, "block");
                 };
                 for (int oy = y - 4; oy <= y && !ignited; ++oy) {
                     for (int ox = x - 3; ox <= x && !ignited; ++ox) {
@@ -6914,7 +6923,7 @@ void Session::onUseItemOn(ReadBuffer& in) {
             srv_.world().setBlock(x,y,z,0);
             srv_.broadcastBlockChange(x,y,z,0);
             srv_.spawnPrimedTnt(x+0.5, y+0.5, z+0.5, 0, 0.2, 0, 80);
-            srv_.broadcastSound("minecraft:entity.tnt.primed", x+0.5, y+0.5, z+0.5, 1.f, 1.f, "blocks");
+            srv_.broadcastSound("minecraft:entity.tnt.primed", x+0.5, y+0.5, z+0.5, 1.f, 1.f, "block");
             if (survival) {
                 auto& mh = self_->inv[36 + self_->heldSlot];
                 if (heldItem.name()=="minecraft:flint_and_steel") { if (mh.applyDamage(1)) mh = ItemStack::air(); }
@@ -6947,7 +6956,7 @@ void Session::onUseItemOn(ReadBuffer& in) {
                     *mh = ItemStack::ofName("minecraft:bucket", 1);
                     srv_.resendInventory(*self_);
                 }
-                srv_.broadcastSound("minecraft:item.bucket.empty", tx+0.5, ty+0.5, tz+0.5, 1.f, 1.f, "blocks");
+                srv_.broadcastSound("minecraft:item.bucket.empty", tx+0.5, ty+0.5, tz+0.5, 1.f, 1.f, "block");
                 ack(sequence);
                 return;
             }
@@ -6971,7 +6980,7 @@ void Session::onUseItemOn(ReadBuffer& in) {
                     *mh = ItemStack::ofName(newName, 1);
                     srv_.resendInventory(*self_);
                 }
-                srv_.broadcastSound("minecraft:item.bucket.fill", px+0.5, py+0.5, pz+0.5, 1.f, 1.f, "blocks");
+                srv_.broadcastSound("minecraft:item.bucket.fill", px+0.5, py+0.5, pz+0.5, 1.f, 1.f, "block");
                 return true;
             };
             if (tryPick(x,y,z) || tryPick(tx,ty,tz)) {
@@ -7018,7 +7027,7 @@ void Session::onUseItemOn(ReadBuffer& in) {
                             }
                             srv_.resendInventory(*self_);
                         }
-                        srv_.broadcastSound("minecraft:item.flintandsteel.use", tx+0.5, ty+0.5, tz+0.5, 1.f, 1.f, "blocks");
+                        srv_.broadcastSound("minecraft:item.flintandsteel.use", tx+0.5, ty+0.5, tz+0.5, 1.f, 1.f, "block");
                     }
                 }
                 ack(sequence);
