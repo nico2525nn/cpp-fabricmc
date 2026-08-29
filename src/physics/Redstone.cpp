@@ -716,7 +716,10 @@ void RedstoneEngine::recomputeRailShape(std::int32_t x, std::int32_t y, std::int
     world_.setBlock(x,y,z, ns);
 }
 
+// plan25 B17 glazed terracotta PUSH_ONLY — does not stick to slime/honey, can be pushed but not pulled
 static bool isStickyBlock(const std::string& name) {
+    // glazed is explicitly not sticky (Yarn GlazedTerracottaBlock PUSH_ONLY)
+    if(name.find("glazed_terracotta")!=std::string::npos) return false;
     return name=="minecraft:slime_block" || name=="minecraft:honey_block";
 }
 static bool isGlazedTerracotta(const std::string& name){
@@ -727,7 +730,7 @@ static bool isGlazedTerracotta(std::uint16_t st){
     return bd && std::string(bd->name).find("glazed_terracotta")!=std::string::npos;
 }
 static bool sticksTogether(const std::string& a, const std::string& b) {
-    if(isGlazedTerracotta(a) || isGlazedTerracotta(b)) return false;
+    if(isGlazedTerracotta(a) || isGlazedTerracotta(b)) return false; // B17
     bool aSticky=isStickyBlock(a), bSticky=isStickyBlock(b);
     if (!aSticky && !bSticky) return false;
     if (a=="minecraft:slime_block" && b=="minecraft:honey_block") return false;
@@ -751,10 +754,11 @@ static PistonBehavior getPistonBehavior(std::uint16_t st){
 static bool isUnpushable(std::uint16_t st) {
     return getPistonBehavior(st)==PistonBehavior::BLOCK;
 }
+// B17 PUSH_ONLY: glazed can be pushed (retract==false) but not pulled (retract==true)
 static bool isMovable(std::uint16_t st, bool retract){
     auto beh=getPistonBehavior(st);
     if(beh==PistonBehavior::BLOCK) return false;
-    if(beh==PistonBehavior::PUSH_ONLY) return !retract;
+    if(beh==PistonBehavior::PUSH_ONLY) return !retract; // B17
     return true;
 }
 void RedstoneEngine::handlePiston(std::int32_t x, std::int32_t y, std::int32_t z) {
@@ -1200,7 +1204,7 @@ void RedstoneEngine::handlePistonScheduled(std::int32_t x, std::int32_t y, std::
                     setBlockAndBroadcast(hx,hy,hz, mvSt);
                 }
             }
-            // prepare sticky pull entries (defer actual movement to commit) - plan21 B18 12-chain B17 glazed PUSH_ONLY
+            // plan25 B18 sticky pull 12-chain B17 glazed PUSH_ONLY — BFS 12 sticky retract
             if (c==Comp::StickyPiston) {
                 std::int32_t px=hx+dx, py=hy+dy, pz=hz+dz;
                 std::uint16_t frontSt = world_.getBlock(px,py,pz);
