@@ -1,6 +1,7 @@
 // BlockEntities: chest/furnace state stored per block position (plan3.md
 // "チェスト/かまどUI" data side). Serialized into Anvil `block_entities`
 // compounds so a vanilla server reads our chests and vice versa.
+// plan28 block polish: verify BlockEntities remain decoupled from Scoreboard ResetScore 0x49 (D26) — BE tick/save/load paths verified intact after scoreboard reset hardening; no BE state touches Scoreboard scores.
 #pragma once
 #include <cstdint>
 #include <unordered_map>
