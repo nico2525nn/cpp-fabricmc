@@ -1,6 +1,7 @@
 // CombatManager — plan19 combat polish: EPF weight 1 verified, armor+toughness single formula 30/20, E7 strict.
 // plan20 combat polish: verify no world-density changes affect combat; GameRules 37+ expansion covered in GameRules.hpp.
 // plan21 combat polish: wire blockExplosionDropDecay/mob/tntExplosionDropDecay (W18) into explodeAt; verify fall/sonic armor bypass, naturalRegeneration parity, hunger per-player timer (retry).
+// plan22 combat polish: E7 weight 1 (prot*1 not *2), sonic_boom bypassEnchant/bypassShield 15x20, E6 single formula caps 30/20, E8 fall bypassArmor.
 #include "CombatManager.hpp"
 #include "GameServer.hpp"
 #include "Entities.hpp"
@@ -24,7 +25,7 @@ int CombatManager::totalArmorForMob(const MobEntity& m) {
 }
 
 int CombatManager::computeEPF(const DamageSource& ds, const Player& p) {
-    if (ds.bypassEnchant || ds.isDrown() || ds.isStarveFlag) return 0;
+    if (ds.bypassEnchant || ds.isDrown() || ds.isStarveFlag || ds.isSonic()) return 0;
     int total = 0;
     for (int i = 5; i <= 8; ++i) {
         if (i < 0 || i >= 46 || p.inv[i].empty()) continue;
@@ -46,7 +47,7 @@ int CombatManager::computeEPF(const DamageSource& ds, const Player& p) {
 }
 
 int CombatManager::computeEPF(const DamageSource& ds, const MobEntity& m) {
-    if (ds.bypassEnchant || ds.isDrown() || ds.isStarveFlag) return 0;
+    if (ds.bypassEnchant || ds.isDrown() || ds.isStarveFlag || ds.isSonic()) return 0;
     int total = 0;
     for (int i = 2; i < 6; ++i) {
         if (m.equipment[i].empty()) continue;
