@@ -690,10 +690,9 @@ void GameServer::tickOnce() {
     }
     // chunk LRU unload every 100 ticks (plan5 items 6,7)
     if (tickNo_ % 100 == 0) chunksUnloadTick();
-    // level.dat periodic save every 6000 ticks (~5 min) + also 1200 (~1 min) for safety
+    // level.dat periodic save every 6000 ticks (~5 min) + also 1200 (~1 min) for safety — single level.dat (W16)
     if (tickNo_ % 6000 == 0 && tickNo_ != 0) {
         try { persist_->saveLevelData(tickNo_, dayTime()); } catch (...) {}
-        for (int d = 0; d < 2; ++d) if (dimPersist_[d]) try { dimPersist_[d]->saveLevelData(tickNo_, dayTime()); } catch (...) {}
         std::fprintf(stderr, "[cppfm] periodic level.dat save t=%ld\n", (long)tickNo_);
     } else if (tickNo_ % 1200 == 0 && tickNo_ != 0) {
         try { persist_->saveLevelData(tickNo_, dayTime()); } catch (...) {}
@@ -776,6 +775,43 @@ void GameServer::chunksUnloadTick() {
             }
             toErase.push_back(k);
             invalidateChunkCache(cx, cz);
+        }
+        // W19 cap-based LRU: if still over maxLoadedChunks, evict farthest beyond cap (Chebyshev)
+        if (cfg_.maxLoadedChunks > 0) {
+            size_t remaining = keys.size() > toErase.size() ? keys.size() - toErase.size() : 0;
+            if (remaining > (size_t)cfg_.maxLoadedChunks) {
+                std::unordered_set<std::int64_t> already(toErase.begin(), toErase.end());
+                std::vector<std::int64_t> candidates;
+                candidates.reserve(remaining);
+                for (auto k : keys) if (!already.count(k) && !w.isForcedKey(k)) candidates.push_back(k);
+                auto distToNearest = [&](std::int32_t cx, std::int32_t cz) -> double {
+                    double best = 1e100;
+                    for (auto &pl : players) if (pl->inPlay && pl->dimension == dim) {
+                        double dx = std::abs((cx*16.0+8.0)-pl->x);
+                        double dz = std::abs((cz*16.0+8.0)-pl->z);
+                        double d = std::max(dx, dz);
+                        if (d < best) best = d;
+                    }
+                    if (best < 1e90) return best;
+                    auto sp = w.spawnPoint();
+                    double dx = std::abs((cx*16.0+8.0)-sp.x);
+                    double dz = std::abs((cz*16.0+8.0)-sp.z);
+                    return std::max(dx, dz);
+                };
+                std::sort(candidates.begin(), candidates.end(), [&](std::int64_t a, std::int64_t b){
+                    int32_t ax=int32_t(a>>32), az=int32_t(a & 0xFFFFFFFF);
+                    int32_t bx=int32_t(b>>32), bz=int32_t(b & 0xFFFFFFFF);
+                    return distToNearest(ax,az) > distToNearest(bx,bz);
+                });
+                size_t need = remaining - (size_t)cfg_.maxLoadedChunks;
+                if (need > candidates.size()) need = candidates.size();
+                for (size_t i=0;i<need;++i) {
+                    int32_t cx=int32_t(candidates[i]>>32), cz=int32_t(candidates[i]&0xFFFFFFFF);
+                    if (pp && pp->isDirty(cx, cz)) pp->flushChunk(cx, cz);
+                    toErase.push_back(candidates[i]);
+                    invalidateChunkCache(cx, cz);
+                }
+            }
         }
         for (auto k : toErase) {
             const std::int32_t cx = static_cast<std::int32_t>(k >> 32);
