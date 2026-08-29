@@ -198,7 +198,7 @@ static bool isCropBlock(const gen::BlockDef* d) {
     return n.find("wheat")!=std::string::npos || n.find("carrots")!=std::string::npos ||
            n.find("potatoes")!=std::string::npos || n.find("beetroots")!=std::string::npos;
 }
-// plan22 B7 farming growthSpeed strict: Yarn CropBlock.getGrowthSpeed 1/3 per farmland, diag /4, center included, crop density /4 +2
+// plan25 B7 farming growthSpeed strict: Yarn CropBlock.getAvailableMoisture — hydrated 3.0 vs dry 1.0, /4 off-center, crop density /2 (not /4+2)
 static float growthSpeed(World& w, std::int32_t x, std::int32_t y, std::int32_t z) {
     float f = 1.0f;
     for (int dx=-1; dx<=1; ++dx) for (int dz=-1; dz<=1; ++dz) {
@@ -207,11 +207,11 @@ static float growthSpeed(World& w, std::int32_t x, std::int32_t y, std::int32_t 
         if (!bd) continue;
         if (std::string(bd->name)!="minecraft:farmland") continue;
         int moist = getMoisture(bs);
-        float g = (moist>0 ? 3.0f : 1.0f);
+        float g = (moist==7 ? 3.0f : 1.0f); // B7: hydrated is moisture==7, not >0
         if (dx!=0 || dz!=0) g /= 4.0f;
         f += g;
     }
-    // crop density penalty: same crop species adjacent -> /4 (vanilla CropBlock.getGrowthSpeed)
+    // crop density penalty: vanilla CropBlock.getAvailableMoisture — diagonal or (westEast && northSouth) => f/=2
     const gen::BlockDef* curDef = gen::blockByState(w.getBlock(x,y,z));
     if (curDef) {
         std::string curName(curDef->name);
@@ -227,11 +227,10 @@ static float growthSpeed(World& w, std::int32_t x, std::int32_t y, std::int32_t 
             bool northSouth = isSameCrop(x,y,z-1) || isSameCrop(x,y,z+1);
             bool diag = isSameCrop(x-1,y,z-1) || isSameCrop(x-1,y,z+1) || isSameCrop(x+1,y,z-1) || isSameCrop(x+1,y,z+1);
             if ((westEast && northSouth) || diag) {
-                f /= 4.0f;
+                f /= 2.0f; // B7: halved, not quartered; no +2
             }
         }
     }
-    f += 2.0f;
     return f;
 }
 static int getLight(World& w, std::int32_t x, std::int32_t y, std::int32_t z){
@@ -738,14 +737,15 @@ void ChorusFlowerBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::i
 bool ChorusFlowerBehavior::fertilize(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
                                      std::uint16_t state, GameServer* srv){ (void)w;(void)x;(void)y;(void)z;(void)state;(void)srv; return false; }
 
+// plan25 B26 kelp 14% age25 — seagrass never grows via KelpBehavior (vanilla TallSeagrass has no randomTick)
 void KelpBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
                         std::uint16_t state, std::int64_t now, GameServer* srv){
     (void)now;
     const gen::BlockDef* d=gen::blockByState(state); if(!d) return;
-    if (std::string(d->name)!="minecraft:kelp") return;
+    if (std::string(d->name)!="minecraft:kelp") return; // B26: seagrass excluded
     int age=0; for(auto&[k,v]: gen::propsOf(state)) if(k=="age") age=std::atoi(std::string(v).c_str());
-    if(age>=25) return;
-    if((rand()%100) >= 14) return;
+    if(age>=25) return; // B26 age cap
+    if((rand()%100) >= 14) return; // B26 14% not 10%
     std::uint16_t up = w.getBlock(x,y+1,z);
     if(up==0) return;
     const gen::BlockDef* upDef = gen::blockByState(up);
