@@ -106,6 +106,7 @@ public:
         auto it2 = it->second.find(holder);
         return it2 != it->second.end() ? it2->second : 0;
     }
+    // D26 reset helpers — Prismarine packet_reset_score 0x49 (wildcard null vs specific)
     bool resetScore(const std::string& holder, const std::string& objective) {
         auto it = scores.find(objective);
         if (it == scores.end()) return false;
@@ -120,7 +121,7 @@ public:
     bool removeObjectiveWithReset(const std::string& name, std::vector<std::string>& outHolders) {
         auto it = scores.find(name);
         if (it != scores.end()) {
-            for (auto& [h, _] : it->second) outHolders.push_back(h);
+            for (auto& [holder, _] : it->second) outHolders.push_back(holder);
             scores.erase(it);
         }
         return removeObjectives(name);
