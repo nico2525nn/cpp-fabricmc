@@ -5,6 +5,7 @@
 // plan23 combat polish: verify E7 weight1, E8 fall bypassArmor, E9 Unbreaking 60%+ via DamageComponent, armor single formula 30/20 (verify).
 // plan24 combat polish: verify E7 weight1, E8 fall bypassArmor, naturalRegeneration gate, blockExplosionDropDecay intact after wt24 inventory/network merges.
 // plan25 combat polish: verify no regressions from W16-W19 world changes (single level.dat, ForcedChunks ticket, GameRules 37, maxLoadedChunks async) + B7 farming + E1 MobKind 149 + E3 wither burst 3; EPF weight1, sonic 15x20 bypass, fall bypassArmor, single formula caps 30/20 intact.
+// plan26 combat polish: verify no regressions from D5/D6 palette determinism + D10 registry 12 + D11 item slot + D16 sheep + D17 sonic_boom 27 + D19/D20 particles + D22 StopSound + D25 scoreboard numberFormat; EPF weight1, sonic 15x20 bypassArmor/bypassEnchant/bypassShield, fall bypassArmor, single formula caps 30/20 intact.
 #include "CombatManager.hpp"
 #include "GameServer.hpp"
 #include "Entities.hpp"
