@@ -719,29 +719,43 @@ void RedstoneEngine::recomputeRailShape(std::int32_t x, std::int32_t y, std::int
 static bool isStickyBlock(const std::string& name) {
     return name=="minecraft:slime_block" || name=="minecraft:honey_block";
 }
+static bool isGlazedTerracotta(const std::string& name){
+    return name.find("glazed_terracotta")!=std::string::npos;
+}
+static bool isGlazedTerracotta(std::uint16_t st){
+    const gen::BlockDef* bd=gen::blockByState(st);
+    return bd && std::string(bd->name).find("glazed_terracotta")!=std::string::npos;
+}
 static bool sticksTogether(const std::string& a, const std::string& b) {
+    if(isGlazedTerracotta(a) || isGlazedTerracotta(b)) return false;
     bool aSticky=isStickyBlock(a), bSticky=isStickyBlock(b);
     if (!aSticky && !bSticky) return false;
-    // slime and honey do not stick to each other
     if (a=="minecraft:slime_block" && b=="minecraft:honey_block") return false;
     if (a=="minecraft:honey_block" && b=="minecraft:slime_block") return false;
-    // if one is sticky, they stick (sticky pulls non-sticky)
     return true;
 }
-static bool isUnpushable(std::uint16_t st) {
-    if (st==0) return false;
+enum class PistonBehavior { NORMAL, BLOCK, PUSH_ONLY };
+static PistonBehavior getPistonBehavior(std::uint16_t st){
+    if(st==0) return PistonBehavior::NORMAL;
+    if(isGlazedTerracotta(st)) return PistonBehavior::PUSH_ONLY;
     const gen::BlockDef* bd=gen::blockByState(st);
-    if (!bd) return true;
-    if (bd->hardness < 0) return true;
-    if (bd->name=="minecraft:obsidian"||bd->name=="minecraft:bedrock"||bd->name=="minecraft:reinforced_deepslate") return true;
-    if (bd->name=="minecraft:moving_piston"||bd->name=="minecraft:piston_head") return true;
-    // glazed terracotta cannot be moved by pistons (vanilla)
-    if (std::string(bd->name).find("glazed_terracotta")!=std::string::npos) return true;
-    // block entities like chest, furnace, etc. are immovable in vanilla (simplified: treat chests as immovable)
-    if (std::string(bd->name).find("chest")!=std::string::npos) return true;
-    if (std::string(bd->name).find("furnace")!=std::string::npos) return true;
-    if (std::string(bd->name).find("shulker")!=std::string::npos) return true;
-    return false;
+    if(!bd) return PistonBehavior::BLOCK;
+    if(bd->hardness < 0) return PistonBehavior::BLOCK;
+    if(bd->name=="minecraft:obsidian"||bd->name=="minecraft:bedrock"||bd->name=="minecraft:reinforced_deepslate") return PistonBehavior::BLOCK;
+    if(bd->name=="minecraft:moving_piston"||bd->name=="minecraft:piston_head") return PistonBehavior::BLOCK;
+    if(std::string(bd->name).find("chest")!=std::string::npos) return PistonBehavior::BLOCK;
+    if(std::string(bd->name).find("furnace")!=std::string::npos) return PistonBehavior::BLOCK;
+    if(std::string(bd->name).find("shulker")!=std::string::npos) return PistonBehavior::BLOCK;
+    return PistonBehavior::NORMAL;
+}
+static bool isUnpushable(std::uint16_t st) {
+    return getPistonBehavior(st)==PistonBehavior::BLOCK;
+}
+static bool isMovable(std::uint16_t st, bool retract){
+    auto beh=getPistonBehavior(st);
+    if(beh==PistonBehavior::BLOCK) return false;
+    if(beh==PistonBehavior::PUSH_ONLY) return !retract;
+    return true;
 }
 void RedstoneEngine::handlePiston(std::int32_t x, std::int32_t y, std::int32_t z) {
     std::uint16_t st = world_.getBlock(x,y,z);
@@ -785,7 +799,7 @@ void RedstoneEngine::handlePiston(std::int32_t x, std::int32_t y, std::int32_t z
             std::int32_t px=x+dx*i, py=y+dy*i, pz=z+dz*i;
             std::uint16_t ps = world_.getBlock(px,py,pz);
             if (ps==0) break;
-            if (isUnpushable(ps)) { fail=true; break; }
+            if (!isMovable(ps,false)) { fail=true; break; }
             toPush.push_back({px,py,pz});
             visited.insert(key3(px,py,pz));
             if (i==12) { // check one beyond
@@ -822,7 +836,7 @@ void RedstoneEngine::handlePiston(std::int32_t x, std::int32_t y, std::int32_t z
                 if (!nd) continue;
                 std::string nName(nd->name);
                 if (!sticksTogether(curName, nName)) continue;
-                if (isUnpushable(ns)) { fail=true; break; }
+                if (!isMovable(ns,false)) { fail=true; break; }
                 if ((int)visited.size() >= 12) { fail=true; break; }
                 // also check that destination after push is not blocked by immovable not in set
                 // For side blocks, new pos is nx+dx, ny+dy, nz+dz; if that new pos is occupied by non-moved immovable, fail
@@ -1059,7 +1073,7 @@ void RedstoneEngine::handlePistonScheduled(std::int32_t x, std::int32_t y, std::
     std::int32_t hx=x+dx, hy=y+dy, hz=z+dz;
     std::int64_t now = tickRef_ ? *tickRef_ : 0;
     if (extendNow) {
-        // Collect blocks to push with sticky expansion (plan10 §4)
+        // Collect blocks to push with sticky expansion (plan21 B17/B18: glazed PUSH_ONLY, 12 limit)
         struct Pos{int x,y,z;};
         std::vector<Pos> toPush;
         std::unordered_set<std::int64_t> visited;
@@ -1069,7 +1083,7 @@ void RedstoneEngine::handlePistonScheduled(std::int32_t x, std::int32_t y, std::
             std::int32_t px=x+dx*i, py=y+dy*i, pz=z+dz*i;
             std::uint16_t ps=world_.getBlock(px,py,pz);
             if (ps==0) break;
-            if (isUnpushable(ps)) { fail=true; break; }
+            if (!isMovable(ps,false)) { fail=true; break; }
             toPush.push_back({px,py,pz});
             visited.insert(key3(px,py,pz));
             if ((int)toPush.size()>12) { fail=true; break; }
@@ -1101,7 +1115,7 @@ void RedstoneEngine::handlePistonScheduled(std::int32_t x, std::int32_t y, std::
                     if (!nd) continue;
                     std::string nName(nd->name);
                     if (!sticksTogether(curName, nName)) continue;
-                    if (isUnpushable(ns2)) { fail=true; break; }
+                    if (!isMovable(ns2,false)) { fail=true; break; }
                     if ((int)visited.size()>=12) { fail=true; break; }
                     visited.insert(k);
                     toPush.push_back({nx,ny,nz});
@@ -1186,11 +1200,11 @@ void RedstoneEngine::handlePistonScheduled(std::int32_t x, std::int32_t y, std::
                     setBlockAndBroadcast(hx,hy,hz, mvSt);
                 }
             }
-            // prepare sticky pull entries (defer actual movement to commit)
+            // prepare sticky pull entries (defer actual movement to commit) - plan21 B18 12-chain B17 glazed PUSH_ONLY
             if (c==Comp::StickyPiston) {
                 std::int32_t px=hx+dx, py=hy+dy, pz=hz+dz;
                 std::uint16_t frontSt = world_.getBlock(px,py,pz);
-                if(frontSt!=0){
+                if(frontSt!=0 && isMovable(frontSt,true)){
                     struct Pos{int x,y,z;};
                     std::vector<Pos> toPull;
                     std::unordered_set<std::int64_t> visited;
@@ -1221,15 +1235,16 @@ void RedstoneEngine::handlePistonScheduled(std::int32_t x, std::int32_t y, std::
                             const gen::BlockDef* nd=gen::blockByState(ns);
                             if(!nd) continue;
                             std::string nName(nd->name);
+                            if(!isMovable(ns,true)) continue;
                             if(!sticksTogether(curName, nName)) continue;
-                            if(isUnpushable(ns)){ fail=true; break; }
                             if((int)visited.size()>=12){ fail=true; break; }
                             visited.insert(k);
                             toPull.push_back({nx,ny,nz});
                             if(isStickyBlock(nName)) q.push({nx,ny,nz});
                         }
                     }
-                    if(!fail && (int)toPull.size()<=12){
+                    if((int)toPull.size()>12) fail=true;
+                    if(!fail){
                         for(auto &p: toPull){
                             int nx=p.x - dx, ny=p.y - dy, nz=p.z - dz;
                             std::uint16_t dst=world_.getBlock(nx,ny,nz);
@@ -1246,6 +1261,13 @@ void RedstoneEngine::handlePistonScheduled(std::int32_t x, std::int32_t y, std::
                             commit.pullEntries.push_back({p.x,p.y,p.z, s});
                         }
                     } else {
+                        if((int)toPull.size()>12){
+                            // 12 overflow -> piston fails to retract (vanilla: sticky pull >12 -> no movement)
+                            setBlockAndBroadcast(x,y,z, st);
+                            if(beStore_) beStore_->remove(posKey(hx,hy,hz));
+                            setBlockAndBroadcast(hx,hy,hz, head);
+                            return;
+                        }
                         commit.pullEntries.clear();
                     }
                 }
