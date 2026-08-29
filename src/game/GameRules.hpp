@@ -47,6 +47,24 @@ public:
         set("universalAnger", "false", false);
         set("playersSleepingPercentage", "100", false);
         set("blockExplosionDropDecay", "true", false);
+        // 1.19.3+ additions — complete to 37+ strict parity (W18)
+        set("mobExplosionDropDecay", "true", false);
+        set("tntExplosionDropDecay", "false", false);
+        set("waterSourceConversion", "true", false);
+        set("lavaSourceConversion", "false", false);
+        set("globalSoundEvents", "true", false);
+        set("snowAccumulationHeight", "1", false);
+        set("commandModificationBlockLimit", "32768", false);
+        set("maxBlockModifications", "32768", false);
+        set("maxCommandForkCount", "65536", false);
+        set("doVinesSpread", "true", false);
+        set("enderPearlsVanishOnDeath", "true", false);
+        set("projectilesCanBreakBlocks", "true", false);
+        set("playersNetherPortalDefaultDelay", "80", false);
+        set("playersNetherPortalCreativeDelay", "0", false);
+        set("spawnChunkRadius", "2", false);
+        set("spawnerBlocksEnabled", "true", false);
+        set("disablePlayerMovementCheck", "false", false);
     }
 
     void set(const std::string& key, const std::string& value,

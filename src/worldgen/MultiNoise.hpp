@@ -72,6 +72,7 @@ public:
     }
 
 private:
+    static constexpr double kW_T = 1.0, kW_H = 1.0, kW_C = 1.5, kW_E = 1.5, kW_D = 1.0, kW_W = 1.0;
     static double dist2(const ClimateParams& a, const ClimateParams& b) {
         const double t = a.temperature - b.temperature;
         const double h = a.humidity - b.humidity;
@@ -79,9 +80,11 @@ private:
         const double e = a.erosion - b.erosion;
         const double d = a.depth - b.depth;
         const double w = a.weirdness - b.weirdness;
-        return t * t + h * h + c * c + e * e + d * d + w * w;
+        if (!std::isfinite(t) || !std::isfinite(h) || !std::isfinite(c) || !std::isfinite(e) || !std::isfinite(d) || !std::isfinite(w)) return 1e300;
+        return kW_T*t*t + kW_H*h*h + kW_C*c*c + kW_E*e*e + kW_D*d*d + kW_W*w*w;
     }
     const std::string& nearest(const ClimateParams& c) const {
+        if (entries_.empty()) { static const std::string fallback = "minecraft:plains"; return fallback; }
         const std::string* best = &entries_.front().key;
         double bestD = 1e300;
         for (const auto& e : entries_) {
@@ -90,8 +93,12 @@ private:
         }
         return *best;
     }
+public:
+    // Exposed for testing: nearest by climate without sampling
+    const std::string& sampleByClimate(const ClimateParams& c) const { return nearest(c); }
     void buildDefaultTable();                        // authored points (.cpp)
 
+private:
     std::shared_ptr<NoiseRegistry> noises_;
     std::uint64_t seed_;
     std::vector<BiomeEntry> entries_;

@@ -153,34 +153,34 @@ LightUpdateBatch LightEngine::drain() {
         }
     }
 
-    // sky light: rebuild caches for touched chunks (bounded work per tick) — single 3x3 (strict)
+    // sky light: rebuild caches for touched chunks (bounded work per tick) — single 3x3 (strict W10)
     {
-        std::unordered_set<std::int64_t> skyRebuildSet;
-        skyRebuildSet.reserve(batch.dirtyChunks.size() + pendingSkyRebuild_.size() + 8);
-        for (auto k : batch.dirtyChunks) skyRebuildSet.insert(k);
-        for (auto k : pendingSkyRebuild_) skyRebuildSet.insert(k);
+        std::unordered_set<std::int64_t> base;
+        base.reserve(batch.dirtyChunks.size() + pendingSkyRebuild_.size() + skyDirtyExtra_.size() + 8);
+        for (auto k : batch.dirtyChunks) base.insert(k);
+        for (auto k : pendingSkyRebuild_) base.insert(k);
+        for (auto k : skyDirtyExtra_) base.insert(k);
         pendingSkyRebuild_.clear();
         skyDirtyExtra_.clear();
-        for (auto k : skyRebuildSet) {
+        for (auto k : base) {
             ensureSkyLight(static_cast<std::int32_t>(k >> 32),
                            static_cast<std::int32_t>(k & 0xFFFFFFFFLL));
         }
-        for (auto k : skyDirtyExtra_) batch.dirtyChunks.insert(k);
+        for (auto k : skyDirtyExtra_) base.insert(k);
         skyDirtyExtra_.clear();
-        // neighbor dirty tracking: single 3x3 conditional — only if sky cache exists
-        auto snapshot = batch.dirtyChunks;
-        for (auto k : snapshot) {
+        std::unordered_set<std::int64_t> expanded;
+        expanded.reserve(base.size()*9);
+        for (auto k : base) {
             const std::int32_t cxx = static_cast<std::int32_t>(k >> 32);
             const std::int32_t czz = static_cast<std::int32_t>(k & 0xFFFFFFFFLL);
             for (int dz=-1; dz<=1; ++dz)
                 for (int dx=-1; dx<=1; ++dx) {
-                    if (dx==0 && dz==0) continue;
                     const std::int32_t ncx = cxx + dx, ncz = czz + dz;
-                    if (world_.hasSkyLightCache(ncx, ncz))
-                        batch.dirtyChunks.insert(chunkKey(ncx, ncz));
+                    if (world_.hasSkyLightCache(ncx, ncz) || world_.hasChunk(ncx, ncz))
+                        expanded.insert(chunkKey(ncx, ncz));
                 }
         }
-        for (auto k : skyRebuildSet) batch.dirtyChunks.insert(k);
+        batch.dirtyChunks = std::move(expanded);
         for (auto k : batch.dirtyChunks) batch.queue.mark(static_cast<std::int32_t>(k>>32), static_cast<std::int32_t>(k & 0xFFFFFFFFLL));
     }
     return batch;

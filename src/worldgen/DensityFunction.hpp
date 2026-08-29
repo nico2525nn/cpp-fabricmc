@@ -5,19 +5,25 @@
 // clean-room JSON definitions shaped like the game's data format:
 //   {"type":"constant","value":0.5}
 //   {"type":"noise","noise":"cppfm:terrain","xz_scale":1,"y_scale":1}
-//   {"type":"shift_noise","noise":"...","xz_offset":..}
+//   {"type":"shifted_noise","shift_x":{...},"shift_y":{...},"shift_z":{...},"xz_scale":1,"y_scale":1,"noise":"minecraft:terrain"}
+//   {"type":"shift","noise":"minecraft:offset"}  // Shift / ShiftA / ShiftB
 //   {"type":"clamp","input":{...},"min":-1,"max":1}
 //   {"type":"add","inputs":[{...},{...}]}          (also min/max/mul)
 //   {"type":"abs"|"square"|"cube"|"half_negative"|"quarter_negative"|"squeeze","input":{...}}
-//   {"type":"range_choice","input":{...},"min":a,"max":b,
+//   {"type":"cube","input":{...}}  // alias of Unary Cube
+//   {"type":"range_choice","input":{...},"min_inclusive":a,"max_exclusive":b,
 //        "when_in_range":{...},"when_out_of_range":{...}}
 //   {"type":"y_clamped_gradient","from_y":..,"to_y":..,"from_value":..,"to_value":..}
 //   {"type":"interpolated","input":{...}}           (cell-grid smoothing)
 //   {"type":"flat_cache","input":{...}} / {"type":"cache_2d",...} / cache_once
+//   {"type":"beardifier"} {"type":"old_blended_noise","input":{...}}
+//   {"type":"blend_alpha"} {"type":"blend_offset"} {"type":"blend_density","input":{...}}
+//   {"type":"end_islands"} {"type":"weird_scaled_sampler","input":{...},"rarity":"type_1"}
 // Noise parameters come from a small registry seeded deterministically.
 #pragma once
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -81,11 +87,26 @@ struct NoiseNode final : DensityNode {
                                     (s.z + xzOffset) * xzScale);
     }
 };
-struct ShiftedNoise final : DensityNode {   // adds noise output as offset
+// Yarn Shift: offsetNoise * 4.0 (block unit shift)
+struct Shift final : DensityNode {
     std::shared_ptr<NoiseRegistry> reg;
-    std::string key; double scale;
+    std::string key;
     double eval(const Sample& s) const override {
-        return s.y + reg->get(key).sample(s.x * scale, 0, s.z * scale) * scale;
+        return reg->get(key).sample(s.x * 0.25, s.y * 0.25, s.z * 0.25) * 4.0;
+    }
+};
+struct ShiftedNoise final : DensityNode {
+    NodePtr shiftX, shiftY, shiftZ;
+    std::shared_ptr<NoiseRegistry> reg;
+    std::string key; double xzScale = 1, yScale = 1;
+    double eval(const Sample& s) const override {
+        const double dx = shiftX ? shiftX->eval(s) : 0;
+        const double dy = shiftY ? shiftY->eval(s) : 0;
+        const double dz = shiftZ ? shiftZ->eval(s) : 0;
+        const double sx = s.x * xzScale * 0.25 + dx;
+        const double sy = s.y * yScale * 0.25 + dy;
+        const double sz = s.z * xzScale * 0.25 + dz;
+        return reg->get(key).sample(sx, sy, sz);
     }
 };
 struct Unary final : DensityNode {
@@ -135,10 +156,55 @@ struct Clamp final : DensityNode {
     }
 };
 struct RangeChoice final : DensityNode {
-    NodePtr in, whenIn, whenOut; double lo, hiInclusive;
+    NodePtr in, whenIn, whenOut; double lo = 0, hiExclusive = 0;
     double eval(const Sample& s) const override {
         const double v = in->eval(s);
-        return (v >= lo && v <= hiInclusive) ? whenIn->eval(s) : whenOut->eval(s);
+        // Yarn: v >= minInclusive && v < maxExclusive
+        return (v >= lo && v < hiExclusive) ? whenIn->eval(s) : whenOut->eval(s);
+    }
+};
+struct BeardifierNode final : DensityNode {
+    std::function<double(int,int)> sampleXZ;
+    double eval(const Sample& s) const override {
+        if (!sampleXZ) return 0;
+        const double v = sampleXZ(static_cast<int>(std::floor(s.x)), static_cast<int>(std::floor(s.z)));
+        const double yFactor = std::clamp(1.0 - std::abs(s.y - 10.0)/40.0, 0.0, 1.0);
+        return v * yFactor;
+    }
+};
+struct OldBlendedNoiseNode final : DensityNode {
+    NodePtr in;
+    double eval(const Sample& s) const override {
+        return in ? in->eval(s) : 0;
+    }
+};
+struct BlendAlphaNode final : DensityNode {
+    double eval(const Sample&) const override { return 1.0; }
+};
+struct BlendOffsetNode final : DensityNode {
+    double eval(const Sample&) const override { return 0.0; }
+};
+struct BlendDensityNode final : DensityNode {
+    NodePtr in;
+    double eval(const Sample& s) const override { return in ? in->eval(s) : 0; }
+};
+struct EndIslandsNode final : DensityNode {
+    double eval(const Sample& s) const override {
+        const double dx = s.x / 384.0, dz = s.z / 384.0;
+        const double r = std::hypot(dx, dz);
+        if (r < 1.0) return 0;
+        const double envelope = std::sin(r * 0.4) * 2.0 - 1.0;
+        return envelope * 0.5;
+    }
+};
+struct WeirdScaledSamplerNode final : DensityNode {
+    NodePtr input; double rarity = 1.0;
+    double eval(const Sample& s) const override {
+        const double v = input ? input->eval(s) : 0;
+        const double w = std::abs(v);
+        if (w < 0.2) return v * 1.0;
+        if (w < 0.6) return v * (1.0 + rarity * 0.5);
+        return v * (1.0 + rarity);
     }
 };
 struct Cache2d final : DensityNode {   // memoize per column within one chunk
@@ -155,7 +221,6 @@ struct Cache2d final : DensityNode {   // memoize per column within one chunk
         return v;
     }
     static std::uint64_t chunkColumnKey(double x, double z) {
-        // quantize to block coords: stable per column
         const auto xi = static_cast<std::int64_t>(std::floor(x));
         const auto zi = static_cast<std::int64_t>(std::floor(z));
         return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(xi)) << 32)
@@ -178,6 +243,21 @@ inline void collectCaches(const NodePtr& n, std::vector<Cache2dPtr>& out) {
         collectCaches(rc->whenOut, out);
     } else if (auto na = std::dynamic_pointer_cast<Nary>(n))
         for (auto& c : na->inputs) collectCaches(c, out);
+    else if (auto sn = std::dynamic_pointer_cast<ShiftedNoise>(n)) {
+        if (sn->shiftX) collectCaches(sn->shiftX, out);
+        if (sn->shiftY) collectCaches(sn->shiftY, out);
+        if (sn->shiftZ) collectCaches(sn->shiftZ, out);
+    } else if (auto sh = std::dynamic_pointer_cast<Shift>(n)) {
+        (void)sh;
+    } else if (auto beard = std::dynamic_pointer_cast<BeardifierNode>(n)) {
+        (void)beard;
+    } else if (auto old = std::dynamic_pointer_cast<OldBlendedNoiseNode>(n)) {
+        collectCaches(old->in, out);
+    } else if (auto ws = std::dynamic_pointer_cast<WeirdScaledSamplerNode>(n)) {
+        collectCaches(ws->input, out);
+    } else if (auto bd = std::dynamic_pointer_cast<BlendDensityNode>(n)) {
+        collectCaches(bd->in, out);
+    }
 }
 
 } // namespace detail
@@ -187,6 +267,7 @@ public:
     DensityPipeline() : noises_(std::make_shared<NoiseRegistry>(1337ULL)) {}
 
     void setSeed(std::uint64_t s) { noises_ = std::make_shared<NoiseRegistry>(s); }
+    void setBeardifierProvider(std::function<double(int,int)> f) { beardifierProvider_ = std::move(f); }
 
     bool buildFromJson(const json::Value& root, std::string* err = nullptr);
     // Evaluate at world coordinates.
@@ -203,6 +284,7 @@ private:
     std::shared_ptr<NoiseRegistry> noises_;
     NodePtr root_;
     std::vector<detail::Cache2dPtr> caches_;
+    std::function<double(int,int)> beardifierProvider_;
 };
 
 } // namespace cppfm::worldgen
