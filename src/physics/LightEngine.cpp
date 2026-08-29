@@ -85,16 +85,10 @@ void LightEngine::onBlockChanged(std::int32_t x, std::int32_t y,
             pendingSkyRebuild_.insert(chunkKey(cxx, czz));
         };
         const std::int32_t bcx = x >> 4, bcz = z >> 4;
-        schedSky(bcx, bcz);
-        for (int d = 0; d < 6; ++d) {
-            const std::int32_t ncx = (x + DX[d]) >> 4;
-            const std::int32_t ncz = (z + DZ[d]) >> 4;
-            if (ncx != bcx || ncz != bcz) schedSky(ncx, ncz);
-        }
-        // also cover diagonal neighbors for sky side-propagation
+        // plan20 §5: single 3×3 sky rebuild — was 6-dir + diagonal double (9× over-broadcast). One loop covers all.
         for (int dz = -1; dz <= 1; ++dz)
             for (int dx = -1; dx <= 1; ++dx)
-                if (dx || dz) schedSky(bcx + dx, bcz + dz);
+                schedSky(bcx + dx, bcz + dz);
     }
     // sky light cache is invalidated wholesale for the chunk
     world_.ensureSkyStorage(x >> 4, z >> 4);
@@ -153,32 +147,39 @@ LightUpdateBatch LightEngine::drain() {
         }
     }
 
-    // sky light: rebuild caches for touched chunks (bounded work per tick) — single 3x3 (strict W10)
+    // sky light: rebuild caches for touched chunks — single 3×3 (strict, plan20 §5 W10)
+    // vanilla LevelLightEngine collects dirty and expands once; previous impl did double 3×3 (manual + queue).
+    // Fix: base = dirty ∪ pending, ensure each, toSend = dirty ∪ base ∪ skyDirtyExtra, expanded = toSend 3×3.
     {
         std::unordered_set<std::int64_t> base;
-        base.reserve(batch.dirtyChunks.size() + pendingSkyRebuild_.size() + skyDirtyExtra_.size() + 8);
+        base.reserve(batch.dirtyChunks.size() + pendingSkyRebuild_.size() + 8);
         for (auto k : batch.dirtyChunks) base.insert(k);
         for (auto k : pendingSkyRebuild_) base.insert(k);
-        for (auto k : skyDirtyExtra_) base.insert(k);
         pendingSkyRebuild_.clear();
         skyDirtyExtra_.clear();
         for (auto k : base) {
             ensureSkyLight(static_cast<std::int32_t>(k >> 32),
                            static_cast<std::int32_t>(k & 0xFFFFFFFFLL));
         }
-        for (auto k : skyDirtyExtra_) base.insert(k);
+        // toSend = BFS dirty + base (includes pending) + cross-chunk skyDirtyExtra from ensureSkyLight BFS
+        std::unordered_set<std::int64_t> toSend;
+        toSend.reserve(batch.dirtyChunks.size() + base.size() + skyDirtyExtra_.size() + 8);
+        for (auto k : batch.dirtyChunks) toSend.insert(k);
+        for (auto k : base) toSend.insert(k);
+        for (auto k : skyDirtyExtra_) toSend.insert(k);
         skyDirtyExtra_.clear();
+
+        // single 3×3 expansion — include chunk if it exists or has sky cache (avoid sending empty light for ungenerated)
         std::unordered_set<std::int64_t> expanded;
-        expanded.reserve(base.size()*9);
-        for (auto k : base) {
+        expanded.reserve(toSend.size()*9);
+        for (auto k : toSend) {
             const std::int32_t cxx = static_cast<std::int32_t>(k >> 32);
             const std::int32_t czz = static_cast<std::int32_t>(k & 0xFFFFFFFFLL);
-            for (int dz=-1; dz<=1; ++dz)
-                for (int dx=-1; dx<=1; ++dx) {
-                    const std::int32_t ncx = cxx + dx, ncz = czz + dz;
-                    if (world_.hasSkyLightCache(ncx, ncz) || world_.hasChunk(ncx, ncz))
-                        expanded.insert(chunkKey(ncx, ncz));
-                }
+            for (int dz=-1; dz<=1; ++dz) for (int dx=-1; dx<=1; ++dx) {
+                const std::int32_t ncx = cxx + dx, ncz = czz + dz;
+                if (world_.hasSkyLightCache(ncx, ncz) || world_.hasChunk(ncx, ncz))
+                    expanded.insert(chunkKey(ncx, ncz));
+            }
         }
         batch.dirtyChunks = std::move(expanded);
         for (auto k : batch.dirtyChunks) batch.queue.mark(static_cast<std::int32_t>(k>>32), static_cast<std::int32_t>(k & 0xFFFFFFFFLL));
