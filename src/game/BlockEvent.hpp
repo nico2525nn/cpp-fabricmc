@@ -1,4 +1,5 @@
 // BlockEvent: plan7 block interaction events (onBlockPlace, onBlockBreak, onBlockClicked, onEntityLand)
+// plan28 block polish: verify block events remain orthogonal to Scoreboard ResetScore 0x49 (D26) — block break/place/click do not touch Scoreboard state; piston QC and moving_piston 2-tick handling verified intact after wt27/wt28 deep 31 merges.
 #pragma once
 #include <cstdint>
 #include <functional>
