@@ -87,10 +87,10 @@ struct ServerConfig {
     std::string levelTypeCli;
     std::uint64_t seed = 1378645410614731511ULL;
     std::int64_t startTime = 1000;
-    int compressionThreshold = 256;   // -1 disables Set Compression entirely
+    int compressionThreshold = 256;   // -1 disables Set Compression entirely (N4 respects config, not hard-coded)
     int spawnProtection = 16;         // spawn-protection radius (0 disables)
-    int maxLoadedChunks = 8192;       // W19 cap — 0 = unlimited, vanilla ThreadedAnvilChunkStorage maxCache 8192 (plan21 §3)
-    int ioWorkerThreads = 4;          // W19 async I/O workers (ThreadPool 4, matches core/ThreadPool default)
+    int maxLoadedChunks = 8192;       // W19 cap — 0 = unlimited, default max(8192, viewDist²*4) (plan21 §3)
+    int ioWorkerThreads = 4;          // W19 async I/O workers (ThreadPool 4 for RegionFile zlib)
 };
 
 // Player inventory slot = full ItemStack (components preserved end-to-end).
@@ -382,8 +382,8 @@ public:
         blockTicks_->registerBehavior("minecraft:chorus_flower", std::make_unique<ChorusFlowerBehavior>());
         blockTicks_->registerBehavior("minecraft:kelp", std::make_unique<KelpBehavior>());
         blockTicks_->registerBehavior("minecraft:kelp_plant", std::make_unique<KelpBehavior>());
-        blockTicks_->registerBehavior("minecraft:seagrass", std::make_unique<SeagrassBehavior>());
-        blockTicks_->registerBehavior("minecraft:tall_seagrass", std::make_unique<SeagrassBehavior>());
+        // seagrass and tall_seagrass have no randomTick — vanilla SeagrassBlock has no randomTick (plan17 §9 B26)
+        // bone meal growth is handled separately in onUseItemOn
         blockTicks_->registerBehavior("minecraft:fire", std::make_unique<FireBehavior>());
         blockTicks_->registerBehavior("minecraft:soul_fire", std::make_unique<SoulFireBehavior>());
         blockTicks_->registerBehavior("minecraft:campfire", std::make_unique<CampfireBehavior>());
@@ -398,7 +398,12 @@ public:
                 cfg_.viewDistance = std::clamp(sp.get<int>("view-distance", cfg_.viewDistance), 2, 32);
                 cfg_.simulationDistance = std::clamp(sp.get<int>("simulation-distance", cfg_.simulationDistance), 2, 32);
                 cfg_.spawnProtection = std::max(0, sp.get<int>("spawn-protection", cfg_.spawnProtection));
-                cfg_.maxLoadedChunks = std::max(0, sp.get<int>("max-loaded-chunks", sp.get<int>("maxLoadedChunks", cfg_.maxLoadedChunks)));
+                // W19 maxLoadedChunks polish (plan21 §3): auto max(8192, viewDist²*4) when not configured
+                if (sp.has("max-loaded-chunks") || sp.has("maxLoadedChunks")) {
+                    cfg_.maxLoadedChunks = std::max(0, sp.get<int>("max-loaded-chunks", sp.get<int>("maxLoadedChunks", cfg_.maxLoadedChunks)));
+                } else {
+                    cfg_.maxLoadedChunks = std::max(8192, cfg_.viewDistance * cfg_.viewDistance * 4);
+                }
                 // also mirror to world
                 world_.setSimulationDistance(cfg_.simulationDistance);
                 if (netherWorld_) netherWorld_->setSimulationDistance(cfg_.simulationDistance);
@@ -713,7 +718,7 @@ public:
     // Projectiles (arrows / snowballs / pearls) — plan4 P1-A
     void spawnProjectile(ProjectileKind kind, double x, double y, double z,
                          double vx, double vy, double vz,
-                         std::int32_t ownerId, bool ownerIsPlayer, bool charged=false);
+                         std::int32_t ownerId, bool ownerIsPlayer);
     void projectilesTick();
     // Rails / minecart physics (plan11 §3) + boat physics (plan13 §3)
     void minecartsTick();
