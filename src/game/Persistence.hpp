@@ -152,23 +152,15 @@ public:
                 data.set("WasModded", nv::Value::makeByte(0));
                 data.set("allowCommands", nv::Value::makeByte(1));
                 data.set("GameType", nv::Value::makeInt(1));
+                // W17 strict: ForcedChunks via World::forcedChunkKeys() + ticket FORCED, truncate 256 (no spawn synthesis)
                 {
                     nv::Value fc = nv::Value::makeList(nbt::Long);
-                    auto sp = world_.spawnPoint();
-                    int scx = sp.x >> 4, scz = sp.z >> 4;
-                    for (int dz=-2; dz<=2; ++dz) for (int dx=-2; dx<=2; ++dx) {
-                        std::int64_t key = (static_cast<std::int64_t>(static_cast<std::uint32_t>(scx+dx))<<32) | static_cast<std::uint32_t>(scz+dz);
-                        fc.list.push_back(nv::Value::makeLong(key));
+                    auto forced = world_.forcedChunkKeys();
+                    if (forced.size() > 256) {
+                        std::fprintf(stderr, "[Persistence] ForcedChunks %zu >256, truncating\n", forced.size());
+                        forced.resize(256);
                     }
-                    for (auto k : world_.forcedChunkKeys()) {
-                        bool already=false; for (auto &v: fc.list) if (v.l==k) { already=true; break; }
-                        if (!already) fc.list.push_back(nv::Value::makeLong(k));
-                    }
-                    for (auto k : world_.ticketManager().allTicketKeys()) {
-                        if (world_.ticketManager().getMinLevel(static_cast<std::int32_t>(k>>32), static_cast<std::int32_t>(k & 0xFFFFFFFFLL)) > 31) continue;
-                        bool already=false; for (auto &v: fc.list) if (v.l==k) { already=true; break; }
-                        if (!already) fc.list.push_back(nv::Value::makeLong(k));
-                    }
+                    for (auto k : forced) fc.list.push_back(nv::Value::makeLong(k));
                     data.set("ForcedChunks", fc);
                 }
                 if (provideLevelState_) provideLevelState_(data);
@@ -259,10 +251,13 @@ public:
             if (const auto* ds = d->get("Difficulty")) {
                 if (ds->tag==nbt::String) difficulty_ = ds->str;
             }
-            // ForcedChunks fallback: restore ChunkTicket SPAWN tickets
+            // ForcedChunks fallback: restore with 256 cap and sign-correct toLong
             if (const auto* fc = d->get("ForcedChunks")) {
+                if (fc->list.size() > 256) std::fprintf(stderr, "[Persistence] load ForcedChunks %zu >256, truncating\n", fc->list.size());
                 world_.clearForcedChunks();
+                size_t cnt=0;
                 for (auto &v : fc->list) {
+                    if (cnt>=256) break;
                     std::int64_t key = 0;
                     if (v.tag == nbt::Long) key = v.l;
                     else if (v.tag == nbt::Int) key = v.i;
@@ -270,6 +265,7 @@ public:
                     std::int32_t cx = static_cast<std::int32_t>(key >> 32);
                     std::int32_t cz = static_cast<std::int32_t>(key & 0xFFFFFFFFLL);
                     world_.restoreForcedChunk(cx, cz);
+                    ++cnt;
                 }
             }
             if (consumeLevelState_) consumeLevelState_(*d);

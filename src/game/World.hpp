@@ -3,6 +3,7 @@
 #pragma once
 #include <array>
 #include <cstdint>
+#include <cstdio>
 #include <memory>
 #include <optional>
 #include <mutex>
@@ -386,6 +387,41 @@ public:
         std::unique_lock lock(mutex_);
         forcedChunks_.insert(chunkKey(cx, cz));
         ticketManager_.addTicket(cx, cz, TicketType::SPAWN, 31, 0);
+    }
+    // W17 strict: ForcedChunkState helpers (Yarn ForcedChunkState/PersistentState)
+    struct ForcedChunkState {
+        static inline std::int64_t toLong(int cx,int cz){ return (static_cast<std::int64_t>(static_cast<std::uint32_t>(cx))<<32) | static_cast<std::uint32_t>(cz); }
+        static inline std::pair<int,int> fromLong(std::int64_t k){ return {static_cast<std::int32_t>(k>>32), static_cast<std::int32_t>(k & 0xFFFFFFFFLL)}; }
+    };
+    static inline std::int64_t forcedKey(int cx,int cz){ return ForcedChunkState::toLong(cx,cz); }
+    bool isChunkForced(int cx,int cz) const { return isForced(cx,cz); }
+    bool setChunkForced(int cx,int cz,bool forced){
+        std::int64_t k = ForcedChunkState::toLong(cx,cz);
+        std::unique_lock lock(mutex_);
+        if(forced){
+            if(forcedChunks_.insert(k).second){ ticketManager_.addTicket(cx,cz,TicketType::FORCED,31,0); return true; }
+            return false;
+        } else {
+            if(forcedChunks_.erase(k)){ ticketManager_.removeTicket(cx,cz,TicketType::FORCED); return true; }
+            return false;
+        }
+    }
+    const std::unordered_set<std::int64_t>& getForcedChunks() const {
+        return forcedChunks_;
+    }
+    std::vector<std::int64_t> getForcedChunksSnapshot() const {
+        std::shared_lock lock(mutex_);
+        return std::vector<std::int64_t>(forcedChunks_.begin(), forcedChunks_.end());
+    }
+    void truncateForcedChunksIfNeeded(){
+        std::unique_lock lock(mutex_);
+        if(forcedChunks_.size()<=256) return;
+        std::fprintf(stderr,"[World] ForcedChunks %zu >256, truncating to 256 (vanilla limit)\n", forcedChunks_.size());
+        std::unordered_set<std::int64_t> truncated;
+        truncated.reserve(256);
+        int c=0;
+        for(auto k: forcedChunks_){ if(c++>=256) break; truncated.insert(k); }
+        forcedChunks_.swap(truncated);
     }
 
     const std::string& biomeKey() const { return biome_; }
