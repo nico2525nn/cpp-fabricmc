@@ -475,16 +475,14 @@ BTStatus WardenSonicBoomAction::tick(MobEntity& m, AiContext& ctx, std::int64_t 
         ctx.srv->applyDamage(*t, dmg, DamageSource::sonicBoom());
         ctx.srv->broadcastSound("minecraft:entity.warden.sonic_boom", m.x,m.y,m.z,2.f,1.f,"hostile");
         // vanilla sonic boom has no knockback; do not send EntityVelocity
-        // spawn sonic_boom particle (optional, not required for audit but helps wire capture)
+        // spawn sonic_boom particle 27 (D17 fix)
         {
             WriteBuffer p;
             p.boolean(true); p.boolean(false);
             p.f64(m.x); p.f64(m.y+1.6); p.f64(m.z);
             p.f32(0); p.f32(0); p.f32(0); p.f32(0.1f);
-            p.varint(0); // placeholder particle id for sonic_boom
-            // not broadcasting particle id strictly, but keep for compat
-            // ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::WorldParticles, p);
-            (void)p;
+            p.varint(27); // sonic_boom
+            ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::WorldParticles, p);
         }
     }
     m.witherSkullCooldown = (int)(now + 80);
