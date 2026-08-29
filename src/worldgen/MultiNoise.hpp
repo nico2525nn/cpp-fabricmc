@@ -71,7 +71,7 @@ public:
         return base;
     }
 
-private:
+    // plan20 §4 W6: vanilla MultiNoiseUtil isosceles weighting — continentalness/erosion 1.5× (biome borders ±2%)
     static constexpr double kW_T = 1.0, kW_H = 1.0, kW_C = 1.5, kW_E = 1.5, kW_D = 1.0, kW_W = 1.0;
     static double dist2(const ClimateParams& a, const ClimateParams& b) {
         const double t = a.temperature - b.temperature;
@@ -80,9 +80,15 @@ private:
         const double e = a.erosion - b.erosion;
         const double d = a.depth - b.depth;
         const double w = a.weirdness - b.weirdness;
-        if (!std::isfinite(t) || !std::isfinite(h) || !std::isfinite(c) || !std::isfinite(e) || !std::isfinite(d) || !std::isfinite(w)) return 1e300;
+        if (!std::isfinite(t) || !std::isfinite(h) || !std::isfinite(c) ||
+            !std::isfinite(e) || !std::isfinite(d) || !std::isfinite(w)) return 1e300;
         return kW_T*t*t + kW_H*h*h + kW_C*c*c + kW_E*e*e + kW_D*d*d + kW_W*w*w;
     }
+    // test helper — plan20 entity regression for pale_garden weighting (public for unit tests)
+    const std::string& sampleByClimate(const ClimateParams& c) const { return nearest(c); }
+    std::size_t biomeEntryCount() const { return entries_.size(); }
+
+private:
     const std::string& nearest(const ClimateParams& c) const {
         if (entries_.empty()) { static const std::string fallback = "minecraft:plains"; return fallback; }
         const std::string* best = &entries_.front().key;
@@ -93,12 +99,8 @@ private:
         }
         return *best;
     }
-public:
-    // Exposed for testing: nearest by climate without sampling
-    const std::string& sampleByClimate(const ClimateParams& c) const { return nearest(c); }
     void buildDefaultTable();                        // authored points (.cpp)
 
-private:
     std::shared_ptr<NoiseRegistry> noises_;
     std::uint64_t seed_;
     std::vector<BiomeEntry> entries_;
