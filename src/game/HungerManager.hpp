@@ -5,6 +5,7 @@
 // plan20 combat polish: verify hunger unchanged by world-density/light changes; GameRules expanded to 50+ (W18) for naturalRegeneration parity.
 // plan21 combat polish: retry verify EXHAUST_WALK 0 vs 0.01, per-player foodTickTimer, FAST 10/SLOW 80, starve diff hard/easy/normal, naturalRegeneration gate.
 // plan22 combat polish: verify EXHAUST_WALK 0 (strict E5), food table 40, FAST 10/SLOW 80 per-player timer, naturalRegeneration gate, poison 25/with 40 split.
+// plan23 §7 strict: walk 0, food table 15 additions + per-player timer + fast heal 10t + starve difficulty (peaceful/easy/normal/hard) + poison 25 vs 40.
 #pragma once
 #include <cstdint>
 #include <string>
