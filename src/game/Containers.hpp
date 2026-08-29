@@ -28,8 +28,13 @@ constexpr int kGeneric9x1 = 0, kGeneric9x2 = 1, kGeneric9x3 = 2,
               kSmoker = 22, kCartographyTable = 23, kStonecutter = 24;
 }
 
-// 25 vanilla MenuType entries (1.21.4) + Barrel alias for block-entity distinction (same wire id as Generic9x3)
-// Count must be 25 to match Yarn ScreenHandlerType/MENU registry; audit HIGH I1/I9/I10 require Crafter/Cartography/BlastFurnace/Smoker.
+// 25 vanilla MenuType entries (1.21.4 protocol 769) + Barrel alias for block-entity distinction (same wire id as Generic9x3)
+// Count must be 25 to match Yarn `ScreenHandlerType` / `MenuRegistry` (1.21.4) : 0 generic_9x1 .. 24 stonecutter.
+// Strict audit HIGH I1/I9/I10 require Crafter (7) / Cartography (23) / BlastFurnace (10) / Smoker (22) at correct registry index.
+// Wire order (Yarn `ScreenHandlerType`): generic_9x1=0, generic_9x2=1, generic_9x3=2, generic_9x4=3, generic_9x5=4, generic_9x6=5,
+// generic_3x3=6, crafter=7, anvil=8, beacon=9, blast_furnace=10, brewing_stand=11, crafting=12, enchantment=13, furnace=14,
+// grindstone=15, hopper=16, lectern=17, loom=18, merchant=19, shulker_box=20, smithing=21, smoker=22, cartography=23, stonecutter=24.
+// Barrel uses generic_9x3 wire id for parity (same as Chest) but distinct block-entity kind.
 enum class MenuType {
     Chest, Furnace, Crafting, Hopper, Dispenser, Barrel, ShulkerBox, Enchantment, Anvil, Brewing, Stonecutter, Grindstone, Smithing, Beacon, Loom,
     Crafter, CartographyTable, BlastFurnace, Smoker, Lectern, Merchant,

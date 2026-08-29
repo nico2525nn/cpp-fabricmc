@@ -3742,8 +3742,26 @@ void Session::sendStarterInventory() {
 
 
 void Session::onWindowClick(ReadBuffer& in) {
-    const auto windowId = in.varint();
-    (void)in.varint();                                // stateId
+    // Strict 1.21.4 (protocol 769) : `window_click` 0x10 windowId VarInt + stateId VarInt (I12).
+    // Lenient fallback to u8 for proxies that still send u8 windowId (vanilla 1.21.4 sends VarInt, plan20 inventory polish).
+    int windowId = 0;
+    int stateId = 0;
+    size_t mark = in.off;
+    try {
+        windowId = in.varint();
+        stateId = in.varint();
+    } catch (...) {
+        in.off = mark;
+        try {
+            windowId = in.u8();
+            stateId = in.varint();
+        } catch (...) {
+            in.off = mark;
+            try { windowId = in.varint(); } catch (...) { return; }
+            try { stateId = in.varint(); } catch (...) { stateId = 0; }
+        }
+    }
+    (void)stateId;
     const auto slotIdx = in.i16();
     const auto button = in.i8();
     const auto mode = in.varint();
