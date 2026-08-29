@@ -4,6 +4,11 @@ max-players=20
 view-distance=6
 simulation-distance=10
 motd=CppFabricMC - C++ Minecraft 1.21.4 server
+# W19 maxLoadedChunks: cap on loaded chunks (0=unlimited). Default max(8192, view-distance²*4)
+# plan21 §3 polish: also supports maxLoadedChunks camelCase, io-worker-threads (default 4)
+#max-loaded-chunks=8192
+#compression-threshold=256
+#io-worker-threads=4
 
 # Vanilla keys that are intentionally ignored (offline-mode research server):
 # online-mode, level-type, generator-settings, enforce-secure-profile

@@ -1,9 +1,10 @@
 // PacketBatcher: coalesces block updates into BundleDelimiter / MultiBlockChange.
 // - BundleDelimiter 0x00 wraps heterogeneous packets (strict 1.21.4, PLAN10 §3).
 // - MultiBlockChange 0x4E coalesces same-section BlockUpdate 0x09 with axis pack
-//   ly<<8|lz<<4|lx (fixed from lx<<8 axis swap) + last-write-wins dedup.
+//   ly<<8|lz<<4|lx (fixed from lx<<8 axis swap, N7 HIGH) + last-write-wins dedup.
+//   plan21 network polish: per-section grouping + 64-count flush threshold (50ms window).
 // ChatMessageProcessor: RSA-SHA256 verifies PlayerChat 0x07 signatures when a
-// ChatSession is present; falls back to SystemChat 0x73 otherwise.
+// ChatSession is present; falls back to SystemChat 0x73 otherwise (N6 HIGH).
 #pragma once
 #include <cstdint>
 #include <vector>
