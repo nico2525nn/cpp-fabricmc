@@ -65,6 +65,9 @@ public:
         set("playersNetherPortalCreativeDelay", "0", false);
         set("disablePlayerMovementCheck", "false", false);
         set("spawnChunkRadius", "2", false);
+        // plan21 W18 aliases: ensure 50+ to cover Yarn 37 + Paper aliases (strict audit 50/78)
+        set("maxBlockModifications", "32768", false);
+        set("spawnerBlocksEnabled", "true", false);
     }
 
     void set(const std::string& key, const std::string& value,

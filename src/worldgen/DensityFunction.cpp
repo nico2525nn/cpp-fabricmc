@@ -56,12 +56,20 @@ NodePtr DensityPipeline::parse(const json::Value& v, std::string* err) const {
         n->shiftX = parseChild("shift_x", "shiftX");
         n->shiftY = parseChild("shift_y", "shiftY");
         n->shiftZ = parseChild("shift_z", "shiftZ");
-        // noise key
-        try { n->key = v.at("noise").asStr(); }
-        catch (...) {
-            try { n->key = v.at("argument").asStr(); }
-            catch (...) { n->key = "minecraft:terrain"; }
+        // noise key - plan21 W2: handle both string and object form for robustness
+        std::string nk;
+        const auto& noiseVal = v.at("noise");
+        if (noiseVal.isStr()) nk = noiseVal.asStr();
+        else if (noiseVal.isObj()) {
+            if (auto* p = noiseVal.find("noise")) if (p->isStr()) nk = p->asStr();
+            if (nk.empty()) if (auto* p = noiseVal.find("argument")) if (p->isStr()) nk = p->asStr();
         }
+        if (nk.empty()) {
+            const auto& argVal = v.at("argument");
+            if (argVal.isStr()) nk = argVal.asStr();
+            else if (argVal.isObj()) if (auto* p = argVal.find("noise")) if (p->isStr()) nk = p->asStr();
+        }
+        n->key = nk.empty() ? "minecraft:terrain" : nk;
         n->xzScale = v.at("xz_scale").asFloat(1.f);
         // support xzScale alias or outer scale
         if (v.find("xzScale")) n->xzScale = v.at("xzScale").asFloat(1.f);
