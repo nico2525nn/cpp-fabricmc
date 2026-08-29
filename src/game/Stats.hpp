@@ -51,29 +51,32 @@ struct AdvancementDef {
     const char* iconItem;
     int frame;                   // 0 task, 1 challenge, 2 goal
     float x, y;
+    int flags = 0;               // 0x01 background, 0x02 show_toast, 0x04 hidden
+    const char* background = nullptr; // valid when flags & 0x01
 };
 
 inline const std::vector<AdvancementDef>& advancementDefs() {
     static const std::vector<AdvancementDef> defs = {
         {"cppfm:root", nullptr, "CppFabricMC",
-         "Welcome to the C++ server", "minecraft:grass_block", 0, 0.f, 0.f},
+         "Welcome to the C++ server", "minecraft:grass_block", 0, 0.f, 0.f,
+         0x01, "minecraft:textures/gui/advancements/backgrounds/stone.png"},
         {"cppfm:wood", "cppfm:root", "Getting Wood",
          "Punch a tree until a block of wood pops out",
-         "minecraft:oak_log", 0, -2.f, 1.f},
+         "minecraft:oak_log", 0, -2.f, 1.f, 0x00, nullptr},
         {"cppfm:bench", "cppfm:wood", "Benchmarking",
-         "Craft a crafting table", "minecraft:crafting_table", 0, -2.f, 2.f},
+         "Craft a crafting table", "minecraft:crafting_table", 0, -2.f, 2.f, 0x00, nullptr},
         {"cppfm:tools", "cppfm:bench", "Time to Mine!",
-         "Craft a stone pickaxe", "minecraft:stone_pickaxe", 0, -3.f, 3.f},
+         "Craft a stone pickaxe", "minecraft:stone_pickaxe", 0, -3.f, 3.f, 0x00, nullptr},
         {"cppfm:iron", "cppfm:tools", "Acquire Hardware",
-         "Smelt an iron ingot", "minecraft:iron_ingot", 1, -1.f, 4.f},
+         "Smelt an iron ingot", "minecraft:iron_ingot", 1, -1.f, 4.f, 0x02, nullptr},
         {"cppfm:diamonds", "cppfm:iron", "DIAMONDS!",
-         "Acquire diamonds", "minecraft:diamond", 1, -1.f, 5.5f},
+         "Acquire diamonds", "minecraft:diamond", 1, -1.f, 5.5f, 0x02, nullptr},
         {"cppfm:hunter", "cppfm:root", "Monster Hunter",
-         "Slay a hostile monster", "minecraft:iron_sword", 0, 2.f, 1.f},
+         "Slay a hostile monster", "minecraft:iron_sword", 0, 2.f, 1.f, 0x00, nullptr},
         {"cppfm:husbandry", "cppfm:root", "The Parrots and the Bats",
-         "Breed two animals", "minecraft:wheat", 0, 4.f, 1.f},
+         "Breed two animals", "minecraft:wheat", 0, 4.f, 1.f, 0x00, nullptr},
         {"cppfm:cook", "cppfm:bench", "Delicious Fish",
-         "Cook something in a furnace", "minecraft:furnace", 0, 0.f, 3.f},
+         "Cook something in a furnace", "minecraft:furnace", 0, 0.f, 3.f, 0x00, nullptr},
     };
     return defs;
 }
