@@ -1,4 +1,5 @@
 // MobEffects: vanilla status-effect registry (numeric ids are the jar's
+// plan22 combat polish: poison 25>>amp / wither 40>>amp split (was both 40), hunger/regeneration parity
 // registration order; mob_effect is not a network-synced registry) and the
 // per-entity EffectInstance model with tick handling hooks.
 #pragma once
@@ -181,9 +182,14 @@ inline bool shouldApplyRegeneration(const std::vector<EffectInstance>& list, int
 }
 inline bool shouldApplyPoison(const std::vector<EffectInstance>& list, int tickNo) {
     int amp = amplifierFor(list, effects::Poison);
-    if (amp < 0) amp = amplifierFor(list, effects::Wither);
     if (amp < 0) return false;
     int period = std::max(1, 25 >> amp);
+    return tickNo % period == 0;
+}
+inline bool shouldApplyWither(const std::vector<EffectInstance>& list, int tickNo) {
+    int amp = amplifierFor(list, effects::Wither);
+    if (amp < 0) return false;
+    int period = std::max(1, 40 >> amp);
     return tickNo % period == 0;
 }
 // Plan8: effect tick helper — returns true if effect should apply damage/heal this tick

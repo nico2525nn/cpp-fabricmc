@@ -539,7 +539,8 @@ void GameServer::syncPlayerArmorAttributes(Player& p) {
 }
 int GameServer::computeProtectionEPF(const DamageSource& ds, const Player& p) const {
     // Plan8 EnchantmentHelper: delegate EPF calculation to centralized helper
-    if (ds.bypassEnchant || ds.isDrown() || ds.isStarveFlag) return 0;
+    // plan22 combat polish: sonic_boom bypasses all enchantments (bypassEnchant + isSonic)
+    if (ds.bypassEnchant || ds.isDrown() || ds.isStarveFlag || ds.isSonic()) return 0;
     int total = 0;
     for (int i = 5; i <= 8; ++i) {
         if (i < 0 || i >= 46 || p.inv[i].empty()) continue;
