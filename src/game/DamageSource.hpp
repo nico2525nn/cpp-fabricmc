@@ -5,6 +5,7 @@
 // plan19 combat polish: verified single formula f=2+t/4 g=clamp(a-dmg/f,a*0.2,20) caps 30/20, fall bypassArmor true (feather still applies).
 // plan20 combat polish: world-density (W2/W3) does not affect DamageSource; verify gamerule damage gates still use getBool.
 // plan21 combat polish: sonic_boom armor bypass (E4) + fall bypassArmor true, EPF weight 1, Resistance after armor, retry wiring.
+// plan22 network polish: sonic_boom armor+enchant+shield bypass (bypasses_armor/enchantments), 15×20 DamageEvent 0x1A linkage verified.
 #pragma once
 #include <string>
 #include <algorithm>
@@ -77,7 +78,7 @@ struct DamageSource {
         if (lower == "starve" || lower == "starvation") { isStarveFlag = true; bypassArmor = true; bypassEnchant = true; }
         if (lower == "lightning" || lower == "lightningbolt") isLightningFlag = true;
         if (lower == "cramming" || lower.find("cram") != std::string::npos) isCrammingFlag = true;
-        if (lower == "sonic_boom" || lower == "sonicboom" || lower.find("sonic") != std::string::npos) { isSonicFlag = true; bypassArmor = true; }
+        if (lower == "sonic_boom" || lower == "sonicboom" || lower.find("sonic") != std::string::npos) { isSonicFlag = true; bypassArmor = true; bypassEnchant = true; }
         // plan15 strict: fall bypasses armor (bypassArmor true) but not enchant (feather_falling still applies) per DamageSource bypasses_armor tag
     }
 
@@ -91,7 +92,7 @@ struct DamageSource {
     static DamageSource freeze() { DamageSource s("freeze"); s.isFreezeFlag = true; return s; }
     static DamageSource starve() { DamageSource s("starve"); s.isStarveFlag = true; s.bypassArmor = true; s.bypassEnchant = true; return s; }
     static DamageSource lightning() { DamageSource s("lightningBolt"); s.isLightningFlag = true; return s; }
-    static DamageSource sonicBoom() { DamageSource s("sonic_boom"); s.isSonicFlag = true; s.bypassArmor = true; return s; }
+    static DamageSource sonicBoom() { DamageSource s("sonic_boom"); s.isSonicFlag = true; s.bypassArmor = true; s.bypassEnchant = true; return s; }
     static DamageSource generic() { return DamageSource("generic"); }
     static DamageSource fromString(const std::string& t) { return DamageSource(t); }
     static DamageSource fromCStr(const char* t) { return DamageSource(std::string(t)); }
