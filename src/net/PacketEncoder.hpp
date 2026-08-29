@@ -1,6 +1,7 @@
 // PacketEncoder: converts packet id + ByteBuffer payload to framed wire bytes.
 // Handles VarInt length prefix, optional zlib compression and AES-CFB8 encryption
 // mirroring the logic in Connection::sendFramed. Also provides ByteBuffer helpers.
+// plan25 network polish: verified outer length varint + dataLength 0 path (no compression) and AES-CFB8 crypt parity; no wire change, strict 78/78 locked.
 #pragma once
 #include <cstdint>
 #include <vector>
