@@ -56,14 +56,14 @@
 
 | # | Feature | Status | File | Notes |
 |---|---------|--------|------|-------|
-| 28 | MobKind 46 | DONE | `Entities.hpp:52` | 46 kinds (up from 13) with `MobStats` 300/200/500 etc., all `typeId` via `gen::entityTypeIdByName`. |
+| 28 | MobKind 46 | DONE | `Entities.hpp:52` | **plan25 E1 DONE:** 149 kinds (up from 13→46→86→149) with `MobStats` 300/200/500 etc., all `typeId` via `gen::entityTypeIdByName` (kEntities 149, armadillo/bogged/breeze/creaking etc 101 missing fixed). |
 | 29 | Brain-Goal-Sensor vs BehaviorTree | DONE | `BehaviorTree.hpp:204` + `AiBrain.cpp:142` | **plan14 §1 DONE:** `BehaviorTreeParser` maps `wither_skull/dragon_breath/warden_sonic_boom` → `WitherSkullAction/DragonBreathAction` + `BreedGoal` wild, `Brain` builds from `brain.behaviors` via `buildTreeFor`. |
 | 30 | `SetEquipment 0x60` | DONE | `EquipmentComponent.hpp:1` + `GameServer.cpp:3202` | **plan13 §2 DONE:** `ArmorTrim` `trim_pattern 18`/`trim_material 11` + `HandDropChances 0.085/1.0` + dynamic `sendEquipmentSlot`/`broadcastPlayerEquipment`/`syncEquipmentOnChange` on inventory/creative. |
 | 31 | `SetPassengers 0x65` riding | DONE | `GameServer.cpp:5145` + `BehaviorTree.cpp:70` | **plan13 §3 DONE:** `horse` jump `EntityAction 0x28:7` + `PlayerInput 0x29 shift` dismount + `MoveVehicle 0x20` + `boat` buoyancy `0.04` friction `0.9` + `minecart` `0.4` max. |
 | 32 | Durability | DONE | `Items.hpp:84` + `DamageComponent.hpp:14` + `CostCalculator.hpp:36` | **plan13 §4 DONE:** `Unbreaking 1/(l+1)` + `Mending` XP `repair/2` + `Anvil` `Too Expensive >=40` `nextRepairCost` + `CustomName` `MC|ItemName`. |
 | 33 | Enchant effects | DONE | `EnchantmentHelper.hpp:50` + `Attributes.hpp:66` | **plan13 §5 DONE:** `Efficiency 1+lvl²` mining speed + `FrostWalker radius 2+lvl` `frosted_ice` + `SoulSpeed 0.105*lvl` + `SwiftSneak 0.15*lvl` attribute sync `0x7C`. |
 | 34 | Slime/MagmaCube split | DONE | `GameServer.cpp:588` `slimeSize` | Death of `Slime/MagmaCube` size>0 spawns 2-4 babies size-1 with half health, `broadcastMobSpawn`. |
-| 35 | Wither/Dragon boss AI | DONE | `BossAI.hpp:19` + `GameServer.hpp:868` | `WitherSkull` 40t loop + `Dragon phases circling/approach/perch` + `BossBar ADD/HEALTH 0x0A` `wither 300HP` `dragon 200HP`; polish: `BossBar TITLE` lerp interpolation pending. |
+| 35 | Wither/Dragon boss AI | DONE | `BossAI.hpp:19` + `GameServer.hpp:868` | **plan25 E3 DONE:** `WitherSkull` 40t loop **3-burst** (central + 2 side heads spread 0.35, charged blue at ≤150 HP) + `Dragon phases circling/approach/perch` + `BossBar ADD/HEALTH 0x0A` `wither 300HP` `dragon 200HP`; polish: `BossBar TITLE` lerp interpolation pending. |
 | 36 | Wool shear | DONE | `GameServer.cpp:3964` | `shears` on `Sheep` `!sheared` → `sheared=true` + `woolColor` drop 1-3, `SetEntityMetadata` index 17, damage shears. |
 | 37 | EnderPearl teleport | DONE | `GameServer.cpp:2556` `projectilesTick` | `EnderPearl` block hit → owner `PlayerPosition 0x42` + `EntityTeleport`, `applyDamage 5`, `lastEnderPearlTick` cooldown, `SetCooldown`. |
 | 38 | Spawn eggs | DONE | `GameServer.cpp:6327` + `GameServer.hpp:182` | **plan14 §2 DONE:** `onUseItemOn` `*_spawn_egg` → `trySpawnEgg` `pos.offset(face)` `air` check `spawnMobByTypeName` + consume. |
