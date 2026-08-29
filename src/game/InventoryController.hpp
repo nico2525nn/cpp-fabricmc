@@ -34,22 +34,24 @@ public:
     static bool addToInventory(Player& p, std::uint32_t itemId, std::uint16_t count);
     static void resendInventory(Player& p);
 
-    // food table (shared with GameServer::handleFoodConsume)
+    // food table (shared with GameServer::handleFoodConsume) — plan23 §7 strict: 40 entries mirroring HungerManager (cake 2/0.4, pumpkin_pie 8/4.8, cooked_chicken 6/7.2 etc)
     struct FoodInfo { int food; float saturation; };
     static const std::unordered_map<std::string, FoodInfo>& foodTable() {
         static const std::unordered_map<std::string, FoodInfo> k = {
-            {"minecraft:apple",{4,2.4f}}, {"minecraft:bread",{5,6.0f}},
-            {"minecraft:cake",{2,0.4f}}, {"minecraft:cookie",{2,0.4f}},
-            {"minecraft:mushroom_stew",{6,7.2f}}, {"minecraft:beetroot_soup",{6,7.2f}},
-            {"minecraft:cooked_beef",{8,12.8f}}, {"minecraft:cooked_chicken",{6,7.2f}},
-            {"minecraft:cooked_porkchop",{8,12.8f}}, {"minecraft:cooked_mutton",{6,9.6f}},
-            {"minecraft:baked_potato",{5,6.0f}}, {"minecraft:carrot",{3,3.6f}},
-            {"minecraft:melon_slice",{2,1.2f}}, {"minecraft:golden_apple",{4,9.6f}},
-            {"minecraft:golden_carrot",{6,14.4f}}, {"minecraft:steak",{8,12.8f}},
-            {"minecraft:pumpkin_pie",{8,4.8f}}, {"minecraft:beetroot",{1,1.2f}},
-            {"minecraft:dried_kelp",{1,0.6f}}, {"minecraft:sweet_berries",{2,0.4f}},
-            {"minecraft:glow_berries",{2,0.4f}}, {"minecraft:honey_bottle",{6,1.2f}},
-            {"minecraft:rabbit_stew",{10,12.0f}}, {"minecraft:suspicious_stew",{6,7.2f}},
+            {"minecraft:apple",{4,2.4f}}, {"minecraft:baked_potato",{5,6.0f}}, {"minecraft:beetroot",{1,1.2f}},
+            {"minecraft:beetroot_soup",{6,7.2f}}, {"minecraft:bread",{5,6.0f}}, {"minecraft:cake",{2,0.4f}},
+            {"minecraft:carrot",{3,3.6f}}, {"minecraft:chorus_fruit",{4,2.4f}}, {"minecraft:cooked_beef",{8,12.8f}},
+            {"minecraft:steak",{8,12.8f}}, {"minecraft:cooked_chicken",{6,7.2f}}, {"minecraft:cooked_cod",{5,6.0f}},
+            {"minecraft:cooked_mutton",{6,9.6f}}, {"minecraft:cooked_porkchop",{8,12.8f}}, {"minecraft:cooked_rabbit",{5,6.0f}},
+            {"minecraft:cooked_salmon",{6,9.6f}}, {"minecraft:cookie",{2,0.4f}}, {"minecraft:dried_kelp",{1,0.6f}},
+            {"minecraft:enchanted_golden_apple",{4,9.6f}}, {"minecraft:golden_apple",{4,9.6f}}, {"minecraft:golden_carrot",{6,14.4f}},
+            {"minecraft:glow_berries",{2,0.4f}}, {"minecraft:honey_bottle",{6,1.2f}}, {"minecraft:melon_slice",{2,1.2f}},
+            {"minecraft:mushroom_stew",{6,7.2f}}, {"minecraft:poisonous_potato",{2,1.2f}}, {"minecraft:potato",{1,0.6f}},
+            {"minecraft:pumpkin_pie",{8,4.8f}}, {"minecraft:rabbit_stew",{10,12.0f}}, {"minecraft:suspicious_stew",{6,7.2f}},
+            {"minecraft:beef",{3,1.8f}}, {"minecraft:chicken",{2,1.2f}}, {"minecraft:porkchop",{3,1.8f}},
+            {"minecraft:mutton",{2,1.2f}}, {"minecraft:rabbit",{3,1.8f}}, {"minecraft:cod",{2,0.4f}},
+            {"minecraft:salmon",{2,0.4f}}, {"minecraft:rotten_flesh",{4,0.8f}}, {"minecraft:spider_eye",{2,3.2f}},
+            {"minecraft:tropical_fish",{1,0.2f}}, {"minecraft:pufferfish",{1,0.2f}}, {"minecraft:sweet_berries",{2,0.4f}},
         };
         return k;
     }
