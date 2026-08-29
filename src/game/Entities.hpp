@@ -59,6 +59,7 @@ struct ProjectileEntity {
     // for arrow stuck & retrieval
     std::int64_t stuckTicks = 0;
     std::int32_t stuckBlockX=0, stuckBlockY=0, stuckBlockZ=0;
+    bool charged = false; // for WitherSkull blue (charged) variant
 };
 
 struct LightningBoltEntity {
@@ -75,7 +76,7 @@ struct TntEntity {
     std::int64_t ageTicks = 0;
 };
 
-enum class MobKind : std::uint8_t {
+enum class MobKind : std::uint16_t {
     Pig = 0, Cow, Sheep, Chicken,
     Zombie, Creeper, Skeleton, Spider,
     Slime, Enderman, Witch, Rabbit, Villager,
@@ -95,7 +96,13 @@ enum class MobKind : std::uint8_t {
     Zoglin, ZombieVillager, ZombifiedPiglin, Giant, EvokerFangs, EnderCrystal,
     // plan19 strict E2: Boat variants 10+10 distinct (was generic Boat)
     OakBoat, SpruceBoat, BirchBoat, JungleBoat, AcaciaBoat, DarkOakBoat, MangroveBoat, CherryBoat, PaleOakBoat, BambooRaft,
-    OakChestBoat, SpruceChestBoat, BirchChestBoat, JungleChestBoat, AcaciaChestBoat, DarkOakChestBoat, MangroveChestBoat, CherryChestBoat, PaleOakChestBoat, BambooChestRaft
+    OakChestBoat, SpruceChestBoat, BirchChestBoat, JungleChestBoat, AcaciaChestBoat, DarkOakChestBoat, MangroveChestBoat, CherryChestBoat, PaleOakChestBoat, BambooChestRaft,
+    // plan21 E1: expand 107->149 (add 42 missing entity types from kEntities 149, exclude player for MobKind)
+    AreaEffectCloud, ArmorStand, Arrow, BlockDisplay, BreezeWindCharge, ChestMinecart, CommandBlockMinecart, DragonFireball, Egg, EnderPearl,
+    ExperienceBottle, ExperienceOrb, EyeOfEnder, FallingBlock, Fireball, FireworkRocket, FishingBobber, FurnaceMinecart, GlowItemFrame, HopperMinecart,
+    Interaction, Item, ItemDisplay, ItemFrame, LeashKnot, LightningBolt, LlamaSpit, Marker, OminousItemSpawner, Painting,
+    Potion, ShulkerBullet, SmallFireball, Snowball, SpawnerMinecart, SpectralArrow, TextDisplay, Tnt, TntMinecart, Trident,
+    WindCharge, WitherSkull
 };
 
 // Static per-kind gameplay table (clean-room values approximating vanilla).
@@ -255,8 +262,51 @@ inline const MobStats& mobStats(MobKind k) {
         {"minecraft:cherry_chest_boat",6.f,0.10f,0.f,false,false,nullptr,0,0,nullptr,                                      0},
         {"minecraft:pale_oak_chest_boat",6.f,0.10f,0.f,false,false,nullptr,0,0,nullptr,                                    0},
         {"minecraft:bamboo_chest_raft",6.f,0.10f,0.f,false,false,nullptr,0,0,nullptr,                                      0},
+        // plan21 E1: 42 missing entity types (149 total, exclude player)
+        {"minecraft:area_effect_cloud", 1.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:armor_stand", 20.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:arrow", 1.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:block_display", 1.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:breeze_wind_charge", 1.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:chest_minecart", 6.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:command_block_minecart", 6.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:dragon_fireball", 1.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:egg", 1.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:ender_pearl", 1.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:experience_bottle", 10.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:experience_orb", 10.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:eye_of_ender", 10.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:falling_block", 1.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:fireball", 1.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:firework_rocket", 10.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:fishing_bobber", 1.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:furnace_minecart", 6.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:glow_item_frame", 1.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:hopper_minecart", 6.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:interaction", 1.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:item", 1.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:item_display", 1.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:item_frame", 1.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:leash_knot", 1.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:lightning_bolt", 1.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:llama_spit", 1.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:marker", 1.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:ominous_item_spawner", 1.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:painting", 1.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:potion", 1.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:shulker_bullet", 1.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:small_fireball", 1.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:snowball", 1.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:spawner_minecart", 6.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:spectral_arrow", 1.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:text_display", 1.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:tnt", 10.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:tnt_minecart", 6.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:trident", 1.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:wind_charge", 1.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
+        {"minecraft:wither_skull", 1.f, 0.10f, 0.f, false, false, nullptr, 0,0,nullptr, 0},
     };
-    static_assert(sizeof(table)/sizeof(table[0]) == 107, "table size must match MobKind count");
+    static_assert(sizeof(table)/sizeof(table[0]) == 149, "table size must match MobKind count");
     return table[static_cast<int>(k)];
 }
 // plan17 §10 E10: size-aware slime/magma health (size²) and attack — vanilla SlimeEntity size*size, MagmaCube size+2 attack and size*3 armor

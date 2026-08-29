@@ -713,7 +713,7 @@ public:
     // Projectiles (arrows / snowballs / pearls) — plan4 P1-A
     void spawnProjectile(ProjectileKind kind, double x, double y, double z,
                          double vx, double vy, double vz,
-                         std::int32_t ownerId, bool ownerIsPlayer);
+                         std::int32_t ownerId, bool ownerIsPlayer, bool charged=false);
     void projectilesTick();
     // Rails / minecart physics (plan11 §3) + boat physics (plan13 §3)
     void minecartsTick();
