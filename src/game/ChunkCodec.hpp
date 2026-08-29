@@ -21,6 +21,7 @@
 #include "World.hpp"
 #include "../core/NBT.hpp"
 #include <algorithm>
+#include <atomic>
 #include <climits>
 #include <unordered_map>
 #include <unordered_set>
@@ -34,10 +35,21 @@ inline int ceilLog2(std::uint32_t v) { // smallest b with (1<<b) >= v ; v>=1
     return b;
 }
 
+// D5: live registry size for global bits (vanilla computes ceilLog2(registry size))
+// Atomic override for tests / modded servers; 0 means fallback to spec.globalMaxId+1 (27865→15)
+inline std::atomic<std::uint32_t> g_liveBlockRegistrySize{0};
+inline void setLiveBlockRegistrySizeForTest(std::uint32_t v){ g_liveBlockRegistrySize.store(v, std::memory_order_relaxed); }
+inline std::uint32_t liveBlockRegistrySize(){ return g_liveBlockRegistrySize.load(std::memory_order_relaxed); }
+inline std::uint32_t worldLiveBlockRegistrySize(){ return liveBlockRegistrySize(); }
+inline int gbitsFromRegistry(std::uint32_t liveSize, std::uint32_t fallbackMaxId){
+    if(liveSize > 0) return ceilLog2(liveSize);
+    return ceilLog2(fallbackMaxId + 1);
+}
+
 struct PaletteSpec {
     int minBits;                    // blocks:4, biomes:1
     bool allowDirect;               // blocks:true, biomes:false
-    std::uint32_t globalMaxId;      // for direct mode
+    std::uint32_t globalMaxId;      // for direct mode (fallback when live size 0)
 };
 
 // Packs `entryCount` entries of `bits` width into longs (no straddling) after a varint count.
@@ -63,17 +75,17 @@ inline void writePackedEntries(WriteBuffer& out, int bits, Fn&& valueAt) {
 
 // Getter maps linear index 0..entryCount-1 -> state id (blocks: global id; biomes: registry index).
 // entryCount 4096 for blocks, 64 for biomes (D1 fix).
+// D5: global bits from live registry size (fallback 27865→15). D6: deterministic palette (vector linear, no hash salt).
 template <typename Getter>
 inline void writePalettedContainer(WriteBuffer& out, Getter&& get, const PaletteSpec& spec, int entryCount = 4096) {
+    // D6: deterministic palette — first-appearance order via linear search (palette ≤256, no hash salt)
     std::vector<std::uint32_t> palette;
     palette.reserve(16);
-    std::unordered_map<std::uint32_t, std::uint16_t> indexOf;
     for (int i = 0; i < entryCount; ++i) {
         const std::uint32_t v = get(i);
-        if (!indexOf.count(v)) {
-            indexOf.emplace(v, static_cast<std::uint16_t>(palette.size()));
-            palette.push_back(v);
-        }
+        bool found = false;
+        for (auto p : palette) if (p == v) { found = true; break; }
+        if (!found) palette.push_back(v);
     }
 
     if (palette.size() <= 1) {                       // single valued
@@ -85,7 +97,7 @@ inline void writePalettedContainer(WriteBuffer& out, Getter&& get, const Palette
 
     int bits = std::max(spec.minBits, ceilLog2(static_cast<std::uint32_t>(palette.size())));
     if (spec.allowDirect && bits > 8) {              // direct/global ids
-        const int gbits = ceilLog2(spec.globalMaxId + 1);
+        const int gbits = gbitsFromRegistry(worldLiveBlockRegistrySize(), spec.globalMaxId);
         out.u8(static_cast<std::uint8_t>(gbits));
         writePackedEntries(out, gbits, entryCount, get);
         return;
@@ -93,7 +105,12 @@ inline void writePalettedContainer(WriteBuffer& out, Getter&& get, const Palette
     out.u8(static_cast<std::uint8_t>(bits));         // indirect
     out.varint(static_cast<std::int32_t>(palette.size()));
     for (auto id : palette) out.varint(static_cast<std::int32_t>(id));
-    writePackedEntries(out, bits, entryCount, [&](int i) { return indexOf.at(get(i)); });
+    // D6: deterministic index lookup via linear search (palette ≤16 typical)
+    auto indexOf = [&](std::uint32_t v) -> std::uint32_t {
+        for (size_t i = 0; i < palette.size(); ++i) if (palette[i] == v) return static_cast<std::uint32_t>(i);
+        return 0;
+    };
+    writePackedEntries(out, bits, entryCount, [&](int i) { return indexOf(get(i)); });
 }
 
 // Highest non-air y within chunk (chunk-relative 0..383); 0 if empty column.
