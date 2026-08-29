@@ -74,14 +74,64 @@ public:
         set("spawnerBlocksEnabled", "true", false);
     }
 
+    // Alias normalization for 1.21.11 snake_case -> 1.21.4 camelCase + Paper aliases
+    static std::string normalizeKey(const std::string& k) {
+        static const std::unordered_map<std::string,std::string> aliases = {
+            {"keep_inventory","keepInventory"},
+            {"mob_griefing","mobGriefing"},
+            {"do_fire_tick","doFireTick"},
+            {"do_mob_spawning","doMobSpawning"},
+            {"do_daylight_cycle","doDaylightCycle"},
+            {"random_tick_speed","randomTickSpeed"},
+            {"do_weather_cycle","doWeatherCycle"},
+            {"spawn_radius","spawnRadius"},
+            {"max_entity_cramming","maxEntityCramming"},
+            {"max_command_chain_length","maxCommandChainLength"},
+            {"players_sleeping_percentage","playersSleepingPercentage"},
+            {"command_modification_block_limit","commandModificationBlockLimit"},
+            {"max_command_fork_count","maxCommandForkCount"},
+            {"snow_accumulation_height","snowAccumulationHeight"},
+            {"players_nether_portal_default_delay","playersNetherPortalDefaultDelay"},
+            {"players_nether_portal_creative_delay","playersNetherPortalCreativeDelay"},
+            {"spawn_chunk_radius","spawnChunkRadius"},
+            {"max_block_modifications","maxBlockModifications"},
+            {"block_explosion_drop_decay","blockExplosionDropDecay"},
+            {"mob_explosion_drop_decay","mobExplosionDropDecay"},
+            {"tnt_explosion_drop_decay","tntExplosionDropDecay"},
+            {"water_source_conversion","waterSourceConversion"},
+            {"lava_source_conversion","lavaSourceConversion"},
+            {"global_sound_events","globalSoundEvents"},
+            {"do_vines_spread","doVinesSpread"},
+            {"ender_pearls_vanish_on_death","enderPearlsVanishOnDeath"},
+            {"projectiles_can_break_blocks","projectilesCanBreakBlocks"},
+            {"disable_player_movement_check","disablePlayerMovementCheck"},
+            {"spawner_blocks_enabled","spawnerBlocksEnabled"},
+            // Paper aliases
+            {"maxBlockModification","commandModificationBlockLimit"},
+        };
+        auto it = aliases.find(k);
+        if (it != aliases.end()) return it->second;
+        return k;
+    }
+
     void set(const std::string& key, const std::string& value,
              bool markDirty = true) {
-        rules_[key] = value;
+        std::string nk = normalizeKey(key);
+        rules_[nk] = value;
         if (markDirty) dirty_ = true;
     }
+    // Overload for legacy int NBT handling: allow direct string normalized
+    void setNormalized(const std::string& key, const std::string& value, bool markDirty=true){
+        rules_[key]=value;
+        if(markDirty) dirty_=true;
+    }
     std::string get(const std::string& key) const {
-        auto it = rules_.find(key);
-        return it != rules_.end() ? it->second : std::string();
+        std::string nk = normalizeKey(key);
+        auto it = rules_.find(nk);
+        if (it != rules_.end()) return it->second;
+        // also try raw key for alias fallback
+        auto it2 = rules_.find(key);
+        return it2 != rules_.end() ? it2->second : std::string();
     }
     bool getBool(const std::string& key) const {
         const std::string v = get(key);
@@ -92,8 +142,13 @@ public:
         if (v.empty()) return def;
         try { return std::stoi(v); } catch (...) { return def; }
     }
+    // W18 typed get with default from defs
+    int getInt(const std::string& key) const {
+        return getInt(key, getDefaultInt(key));
+    }
     bool contains(const std::string& key) const {
-        return rules_.count(key) != 0;
+        std::string nk = normalizeKey(key);
+        return rules_.count(nk) != 0 || rules_.count(key) != 0;
     }
     bool dirty() const { return dirty_; }
     void clearDirty() { dirty_ = false; }
@@ -108,25 +163,66 @@ public:
         return out;
     }
     static bool isIntRule(const std::string& k) {
+        std::string nk = normalizeKey(k);
         static const std::unordered_set<std::string> ints = {
             "randomTickSpeed","spawnRadius","maxEntityCramming","maxCommandChainLength",
             "commandModificationBlockLimit","maxCommandForkCount","playersSleepingPercentage",
             "snowAccumulationHeight","playersNetherPortalDefaultDelay","playersNetherPortalCreativeDelay",
             "spawnChunkRadius","maxBlockModifications"
         };
-        return ints.count(k) != 0;
+        return ints.count(nk) != 0;
+    }
+    static int getDefaultInt(const std::string& k) {
+        std::string nk = normalizeKey(k);
+        if (nk=="randomTickSpeed") return 3;
+        if (nk=="spawnRadius") return 10;
+        if (nk=="maxEntityCramming") return 24;
+        if (nk=="maxCommandChainLength") return 65536;
+        if (nk=="commandModificationBlockLimit") return 32768;
+        if (nk=="maxCommandForkCount") return 65536;
+        if (nk=="playersSleepingPercentage") return 100;
+        if (nk=="snowAccumulationHeight") return 1;
+        if (nk=="playersNetherPortalDefaultDelay") return 80;
+        if (nk=="playersNetherPortalCreativeDelay") return 0;
+        if (nk=="spawnChunkRadius") return 2;
+        if (nk=="maxBlockModifications") return 32768;
+        return 0;
+    }
+    static std::pair<int,int> intRange(const std::string& k){
+        std::string nk = normalizeKey(k);
+        if (nk=="randomTickSpeed") return {0, 10000};
+        if (nk=="spawnRadius") return {0, 32};
+        if (nk=="maxEntityCramming") return {0, 1000};
+        if (nk=="maxCommandChainLength") return {0, 2147483647};
+        if (nk=="commandModificationBlockLimit") return {0, 2147483647};
+        if (nk=="maxCommandForkCount") return {0, 2147483647};
+        if (nk=="playersSleepingPercentage") return {0, 100};
+        if (nk=="snowAccumulationHeight") return {0, 8};
+        if (nk=="playersNetherPortalDefaultDelay") return {0, 1200};
+        if (nk=="playersNetherPortalCreativeDelay") return {0, 1200};
+        if (nk=="spawnChunkRadius") return {0, 32};
+        if (nk=="maxBlockModifications") return {0, 2147483647};
+        return {INT_MIN, INT_MAX};
     }
     static bool isValidValue(const std::string& key, const std::string& val) {
-        if (isIntRule(key)) {
-            try { int v = std::stoi(val); (void)v; return true; } catch (...) { return false; }
+        std::string nk = normalizeKey(key);
+        if (isIntRule(nk)) {
+            try {
+                int v = std::stoi(val);
+                auto [mn,mx] = intRange(nk);
+                return v >= mn && v <= mx;
+            } catch (...) { return false; }
         } else {
             return val=="true" || val=="false";
         }
     }
     bool setValidated(const std::string& key, const std::string& val, std::string* err=nullptr) {
-        if (!contains(key)) { if(err) *err="Unknown gamerule: "+key; return false; }
-        if (!isValidValue(key,val)) { if(err) *err="Invalid value for "+key+": "+val; return false; }
-        set(key,val,true);
+        std::string nk = normalizeKey(key);
+        if (!contains(nk)) { if(err) *err="Unknown gamerule: "+key; return false; }
+        if (!isValidValue(nk,val)) { if(err) *err="Invalid value for "+key+": "+val; return false; }
+        set(nk,val,true);
+        // also mirror alias if different
+        if (nk != key) rules_[key]=val;
         return true;
     }
 
