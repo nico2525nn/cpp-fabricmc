@@ -1,6 +1,7 @@
 // BehaviorTree engine (plan6 item 29,39,40,43,44,35)
 // Data-driven behavior tree with Selector/Sequence/Condition/Action nodes.
 // Factory builds tree from EntityDataDef.behaviors JSON array.
+// plan28 entity polish: verify BehaviorTree actions remain orthogonal to Scoreboard ResetScore 0x49 (D26) — WitherSkull/DragonBreath/WardenSonicBoom actions, BreedGoal, Brain behaviors verified intact after scoreboard reset hardening.
 #pragma once
 #include <memory>
 #include <vector>
