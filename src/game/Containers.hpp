@@ -1,5 +1,6 @@
 // Containers: server-authoritative menus (chest / furnace / crafting table)
 // with vanilla click-mode handling (plan3.md "チェスト/かまどUI").
+// plan28 inventory polish: verify container menus remain orthogonal to Scoreboard ResetScore 0x49 (D26) — generic_9x3/furnace/crafting/crafter/cartography MenuType 25 and slot layouts verified intact after deep 31 merges; container open/close does not touch Scoreboard state.
 //
 // Strict 1.21.4 (protocol 769) parity: Yarn `ScreenHandlerType` 25 entries
 // (generic_9x1..9x6, crafter 7, cartography 23, etc.) + MenuType 25 audit HIGH I1/I9/I10.
