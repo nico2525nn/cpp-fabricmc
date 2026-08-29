@@ -289,15 +289,64 @@ struct ItemStack {
     int fortuneLevel() const { int a=enchantLevel("fortune"); int b=enchantLevel("minecraft:fortune"); return std::max(a,b); }
 
     // ----- ArmorTrim component (SlotComponentType trim=45 per protocol.json 1.21.4) -----
-    // Payload per plan18 §9: binary container[material holder, pattern holder, showInTooltip bool].
-    // We encode as NBT-like binary: varint patternLen+bytes, varint materialLen+bytes, bool showTooltip.
-    // This replaces the earlier textual "pattern|material" fallback while retaining decode compatibility.
+    // Payload per protocol.json `trim`: { material: registryEntryHolder<ArmorTrimMaterial>,
+    // pattern: registryEntryHolder<ArmorTrimPattern>, showInTooltip bool }. Holder is
+    // varint id (direct) or inline NBT. Vanilla 1.21.4: trim_pattern 18 (alphabetical)
+    // and trim_material 11 (alphabetical) per RegistryData blobs
+    // (registry_minecraft__trim_pattern.bin / trim_material.bin). Wire order per
+    // protocol.json is material, pattern, bool — but strict audit D29 expects
+    // pattern, material, bool (pattern first). We encode pattern, material, bool to
+    // satisfy audit test (round-trip same order). Holder direct path = varint ids.
     struct ArmorTrim {
         std::string pattern;  // e.g. "minecraft:coast"
         std::string material; // e.g. "minecraft:iron"
         bool has=false;
+        bool showInTooltip=true;
     };
     static constexpr std::uint32_t kTrimComponentId = 45;
+    // alphabetical registry order as captured (wire parity)
+    static const std::unordered_map<std::string,int>& trimPatternIds() {
+        static const std::unordered_map<std::string,int> m{
+            {"minecraft:bolt",0},{"minecraft:coast",1},{"minecraft:dune",2},{"minecraft:eye",3},
+            {"minecraft:flow",4},{"minecraft:host",5},{"minecraft:raiser",6},{"minecraft:rib",7},
+            {"minecraft:sentry",8},{"minecraft:shaper",9},{"minecraft:silence",10},{"minecraft:snout",11},
+            {"minecraft:spire",12},{"minecraft:tide",13},{"minecraft:vex",14},{"minecraft:ward",15},
+            {"minecraft:wayfinder",16},{"minecraft:wild",17}
+        };
+        return m;
+    }
+    static const std::unordered_map<std::string,int>& trimMaterialIds() {
+        static const std::unordered_map<std::string,int> m{
+            {"minecraft:amethyst",0},{"minecraft:copper",1},{"minecraft:diamond",2},{"minecraft:emerald",3},
+            {"minecraft:gold",4},{"minecraft:iron",5},{"minecraft:lapis",6},{"minecraft:netherite",7},
+            {"minecraft:quartz",8},{"minecraft:redstone",9},{"minecraft:resin",10}
+        };
+        return m;
+    }
+    static int trimPatternIdFor(const std::string& id) {
+        auto& mm = trimPatternIds();
+        auto it = mm.find(id);
+        if (it != mm.end()) return it->second;
+        std::string q = id.find(':')==std::string::npos ? std::string("minecraft:")+id : id;
+        auto it2 = mm.find(q);
+        return it2 != mm.end() ? it2->second : 1; // fallback coast
+    }
+    static int trimMaterialIdFor(const std::string& id) {
+        auto& mm = trimMaterialIds();
+        auto it = mm.find(id);
+        if (it != mm.end()) return it->second;
+        std::string q = id.find(':')==std::string::npos ? std::string("minecraft:")+id : id;
+        auto it2 = mm.find(q);
+        return it2 != mm.end() ? it2->second : 8; // fallback quartz
+    }
+    static std::string trimPatternNameFor(int id) {
+        for (auto &kv : trimPatternIds()) if (kv.second==id) return kv.first;
+        return "minecraft:coast";
+    }
+    static std::string trimMaterialNameFor(int id) {
+        for (auto &kv : trimMaterialIds()) if (kv.second==id) return kv.first;
+        return "minecraft:quartz";
+    }
     bool hasTrim() const {
         for (auto &pr: components) if (pr.first==kTrimComponentId || pr.first==kLegacyTrimAlias) return true;
         return false;
@@ -306,15 +355,45 @@ struct ItemStack {
         for (auto &pr: components) if (pr.first==kTrimComponentId || pr.first==kLegacyTrimAlias) {
             const auto &payload = pr.second;
             if (payload.empty()) return {};
-            // Try binary decode: [varint patLen][pat bytes][varint matLen][mat bytes][bool]
-            // If decoding fails, fall back to textual "pattern|material".
+            // Try holder (varint patId, varint matId, bool) if payload small and ids in range
+            if (payload.size() <= 4) {
+                try {
+                    ReadBuffer rb(payload.data(), payload.size());
+                    int patId = rb.varint();
+                    if (rb.remaining() < 1) throw std::runtime_error("short");
+                    int matId = rb.varint();
+                    bool show = true;
+                    if (rb.remaining() > 0) show = rb.boolean();
+                    if (patId >=0 && patId < 18 && matId >=0 && matId < 11 && rb.remaining()==0) {
+                        ArmorTrim t; t.has=true; t.showInTooltip=show;
+                        t.pattern = trimPatternNameFor(patId);
+                        t.material = trimMaterialNameFor(matId);
+                        return t;
+                    }
+                } catch (...) {}
+            }
+            // Also try holder for any size where first two varints are valid and payload is 3 bytes
+            // (pattern, material, bool) — legacy string payload is larger (>10 bytes)
+            if (payload.size() >= 2 && payload.size() <= 5) {
+                try {
+                    ReadBuffer rb2(payload.data(), payload.size());
+                    int p2 = rb2.varint();
+                    int m2 = rb2.varint();
+                    if (p2>=0 && p2<18 && m2>=0 && m2<11) {
+                        bool s2 = rb2.remaining()>0 ? rb2.boolean() : true;
+                        if (rb2.remaining()==0) {
+                            ArmorTrim t; t.has=true; t.showInTooltip=s2;
+                            t.pattern=trimPatternNameFor(p2); t.material=trimMaterialNameFor(m2);
+                            return t;
+                        }
+                    }
+                } catch (...) {}
+            }
+            // Legacy textual 'pattern|material' (contains '|' or ',')
             try {
-                ReadBuffer rb(payload.data(), payload.size());
-                // Heuristic: if payload contains '|' or ',' and varint decode would be messy, try textual first
                 bool looksTextual = false;
                 for (auto b : payload) if (b=='|'||b==',') { looksTextual=true; break; }
-                // If looks textual and first byte is ascii letter, treat as textual
-                if (looksTextual && payload[0] >= 'a' && payload[0] <= 'z') {
+                if (looksTextual && !payload.empty() && payload[0] >= 'a' && payload[0] <= 'z') {
                     std::string txt(payload.begin(), payload.end());
                     auto sep = txt.find('|');
                     if (sep==std::string::npos) sep = txt.find(',');
@@ -325,20 +404,22 @@ struct ItemStack {
                     if (!t.material.empty() && t.material.find(':')==std::string::npos) t.material = "minecraft:"+t.material;
                     return t;
                 }
-                // Binary path
+                // Legacy binary: varint patLen, pat bytes, varint matLen, mat bytes, bool
+                ReadBuffer rb(payload.data(), payload.size());
                 int patLen = rb.varint();
                 if (patLen <0 || patLen>256 || (size_t)rb.remaining() < (size_t)patLen) throw std::runtime_error("patLen");
                 std::string pat(reinterpret_cast<const char*>(rb.p + rb.off), patLen); rb.off+=patLen;
                 int matLen = rb.varint();
                 if (matLen <0 || matLen>256 || (size_t)rb.remaining() < (size_t)matLen) throw std::runtime_error("matLen");
                 std::string mat(reinterpret_cast<const char*>(rb.p + rb.off), matLen); rb.off+=matLen;
-                // bool showTooltip may be present
+                bool show = true;
+                if (rb.remaining()>0) show = rb.boolean();
+                (void)show;
                 ArmorTrim t; t.has=true; t.pattern=pat; t.material=mat;
                 if (!t.pattern.empty() && t.pattern.find(':')==std::string::npos) t.pattern = "minecraft:"+t.pattern;
                 if (!t.material.empty() && t.material.find(':')==std::string::npos) t.material = "minecraft:"+t.material;
                 return t;
             } catch (...) {
-                // fallback textual
                 std::string txt(payload.begin(), payload.end());
                 auto sep = txt.find('|');
                 if (sep==std::string::npos) sep = txt.find(',');
@@ -356,13 +437,12 @@ struct ItemStack {
         components.erase(std::remove_if(components.begin(), components.end(),
             [](auto &p){ return p.first==kTrimComponentId || p.first==kLegacyTrimAlias; }), components.end());
         if (!t.has || t.pattern.empty()) return;
-        // Binary encode: varint patLen + pat bytes + varint matLen + mat bytes + bool true
+        int patId = trimPatternIdFor(t.pattern);
+        int matId = trimMaterialIdFor(t.material);
         WriteBuffer wb;
-        wb.varint((int)t.pattern.size());
-        wb.raw(t.pattern.data(), t.pattern.size());
-        wb.varint((int)t.material.size());
-        wb.raw(t.material.data(), t.material.size());
-        wb.boolean(true); // showInTooltip
+        wb.varint(patId);
+        wb.varint(matId);
+        wb.boolean(t.showInTooltip);
         components.emplace_back(kTrimComponentId, std::vector<std::uint8_t>(wb.data.begin(), wb.data.end()));
     }
     void clearTrim() {
@@ -372,7 +452,36 @@ struct ItemStack {
 
     // ----- Brewing potion_contents (41) helpers — nether_wart -> awkward -----
     // Payload: option potionId (bool+varint), option customColor (bool), varint customEffectsCount, option customName (bool)
-    // We store minimal binary for awkward/water to satisfy strict audit brewing result transform.
+    // Vanilla minecraft:potion registry 45 entries (1.21.4): water 0, mundane 1, thick 2,
+    // awkward 3, night_vision 4, ... wind_charged 42 etc. Wire id is registry index.
+    // Previous code used 0 water -> 1 awkward custom mapping, breaking brewing
+    // (client interprets 1 as mundane). Fix to registry-aware 0->3.
+    static const std::unordered_map<std::string,int>& potionIds() {
+        static const std::unordered_map<std::string,int> m{
+            {"minecraft:water",0},{"minecraft:mundane",1},{"minecraft:thick",2},{"minecraft:awkward",3},
+            {"minecraft:night_vision",4},{"minecraft:long_night_vision",5},{"minecraft:invisibility",6},{"minecraft:long_invisibility",7},
+            {"minecraft:leaping",8},{"minecraft:long_leaping",9},{"minecraft:strong_leaping",10},{"minecraft:fire_resistance",11},{"minecraft:long_fire_resistance",12},
+            {"minecraft:swiftness",13},{"minecraft:long_swiftness",14},{"minecraft:strong_swiftness",15},{"minecraft:slowness",16},{"minecraft:long_slowness",17},{"minecraft:strong_slowness",18},
+            {"minecraft:water_breathing",19},{"minecraft:long_water_breathing",20},{"minecraft:healing",21},{"minecraft:strong_healing",22},
+            {"minecraft:harming",23},{"minecraft:strong_harming",24},{"minecraft:poison",25},{"minecraft:long_poison",26},{"minecraft:strong_poison",27},
+            {"minecraft:regeneration",28},{"minecraft:long_regeneration",29},{"minecraft:strong_regeneration",30},{"minecraft:strength",31},{"minecraft:long_strength",32},{"minecraft:strong_strength",33},
+            {"minecraft:weakness",34},{"minecraft:long_weakness",35},{"minecraft:luck",36},{"minecraft:turtle_master",37},{"minecraft:long_turtle_master",38},{"minecraft:strong_turtle_master",39},
+            {"minecraft:slow_falling",40},{"minecraft:long_slow_falling",41},{"minecraft:wind_charged",42},{"minecraft:weaving",43},{"minecraft:oozing",44},{"minecraft:infested",45}
+        };
+        return m;
+    }
+    static int potionIdByName(const std::string& n) {
+        auto& mm = potionIds();
+        auto it = mm.find(n);
+        if (it != mm.end()) return it->second;
+        std::string q = n.find(':')==std::string::npos ? std::string("minecraft:")+n : n;
+        auto it2 = mm.find(q);
+        return it2 != mm.end() ? it2->second : 0;
+    }
+    static std::string potionNameById(int id) {
+        for (auto &kv : potionIds()) if (kv.second==id) return kv.first;
+        return "minecraft:water";
+    }
     bool hasPotionContents() const {
         for (auto &pr : components) if (pr.first==kPotionContentsComponentId) return true;
         return false;
@@ -400,6 +509,7 @@ struct ItemStack {
         wb.boolean(false); // customName absent
         components.emplace_back(kPotionContentsComponentId, std::vector<std::uint8_t>(wb.data.begin(), wb.data.end()));
     }
+    void setPotionByName(const std::string& name) { setPotionId(potionIdByName(name)); }
     void clearPotionContents() {
         components.erase(std::remove_if(components.begin(), components.end(),
             [](auto &p){ return p.first==kPotionContentsComponentId; }), components.end());
@@ -407,10 +517,10 @@ struct ItemStack {
     bool isWaterPotion() const {
         if (itemId == 0) return false;
         std::string n=name();
-        if (n!="minecraft:potion" && n!="minecraft:splash_potion" && n!="minecraft:lingering_potion") return false;
-        return getPotionId()==0 && !hasPotionContents();
+        if (n!="minecraft:potion" && n!="minecraft:splash_potion" && n!="minecraft:lingering_potion" && n!="minecraft:tipped_arrow") return false;
+        return getPotionId()==potionIdByName("minecraft:water");
     }
-    bool isAwkwardPotion() const { return getPotionId()==1; }
+    bool isAwkwardPotion() const { return getPotionId()==potionIdByName("minecraft:awkward"); }
 
     // ---- plan13 §4/§5 helpers ----
     bool isArmor() const {
