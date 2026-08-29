@@ -88,7 +88,7 @@ enum class MobKind : std::uint16_t {
     Squid, GlowSquid, // extra to reach 40, harmless
     Warden, Phantom, IronGolem, Allay, Shulker,
     Boat, Minecart,
-    // strict audit HIGH: expand 48->86 via gen (armadillo/beebogged/breeze/creaking etc)
+    // plan25 E1 strict audit HIGH: expand 48->149 via gen (armadillo/beebogged/breeze/creaking etc) — 101 missing fixed, 149 = kEntities 149
     Armadillo, Bee, Bogged, Breeze, Camel, Cat, CaveSpider, Creaking,
     Donkey, Drowned, Endermite, Husk, Illusioner, Mooshroom, Mule, Ocelot,
     Parrot, PiglinBrute, Pillager, PolarBear, Ravager, Silverfish, SkeletonHorse, ZombieHorse, Sniffer,
