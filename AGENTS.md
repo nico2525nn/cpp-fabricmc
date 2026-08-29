@@ -44,6 +44,7 @@
      }
    - 同一worktreeでの重複起動は絶対に避ける (被ると競合)。
    - 研究完了前に実装を開始しない。
+    - **すべてのコマンドに確実なタイムアウトを付与** (`test_smoke_80` は子プロセス `cppfm` を fork するため親だけを殺すと孤児化)。例: `timeout --foreground --kill-after=5 120 cmake -B build -G Ninja` / `timeout 300 cmake --build build -j2` / `timeout --foreground --kill-after=5 450 ./build/test_smoke_80 ./build/cppfm 2>&1; echo EXIT:$?; pkill -9 -f "cppfm --port"`。`ctest -R smoke80 --timeout 450` でも可。
 
 4. 並行で開発させ、すべてが終わったあと diff をレビューしマージ
    - `git diff main --stat` と `git log --oneline --graph` で確認
@@ -76,11 +77,12 @@
 ## 5. Testing (Evidence)
 
 ```bash
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
-cmake --build build -j4          # -j2 if OOM on /tmp tmpfs
-./build/test_native ./build/cppfm          # 12/12 PASS expected (50s)
-./build/test_smoke_80 ./build/cppfm        # 80/80 per taxonomy (400s), strict 78 gaps has 38 remain
-ctest -R native --output-on-failure
+timeout --foreground --kill-after=5 120 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+timeout 300 cmake --build build -j4          # -j2 if OOM on /tmp tmpfs
+timeout --foreground --kill-after=5 60 ./build/test_native ./build/cppfm          # 12/12 PASS expected (50s)
+timeout --foreground --kill-after=5 450 ./build/test_smoke_80 ./build/cppfm        # 80/80 per taxonomy (400s), strict 78 gaps has 38 remain
+pkill -9 -f "cppfm --port" 2>/dev/null; sleep 1
+ctest -R native --output-on-failure --timeout 60
 ```
 
 `test_native` の `2 FAIL` (spawn-protection 0,-61,0) は `30,-61,0` 修正で解消済み (`a1dba28`)。

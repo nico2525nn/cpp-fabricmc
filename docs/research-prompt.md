@@ -28,3 +28,5 @@
 * 作成した技術レポートは `plan/planx.md` に記述する。
 
 レポート内では、各章の冒頭で `docs/MISSING_FEATURES_1_21_4.md` のどの項目を対象としているかを明記すること。
+
+実装時は **すべてのコマンドに確実なタイムアウトを付与** すること（`test_smoke_80` が子プロセス `cppfm` を fork するため `timeout` が親だけを殺すと孤児化する）。例: `timeout --foreground --kill-after=5 120 cmake -B build -G Ninja` / `timeout 300 cmake --build build -j2` / `timeout --foreground --kill-after=5 450 ./build/test_smoke_80 ./build/cppfm 2>&1; echo EXIT:$?; pkill -9 -f "cppfm --port"`。`ctest -R smoke80 --timeout 450` でも可。
