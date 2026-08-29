@@ -1013,7 +1013,95 @@ void GameServer::initCommands() {
         };
         setd->then(slot); slot->then(objName);
         add->then(name); name->then(crit);
-        obj->then(add); obj->then(list2); obj->then(setd);
+        // D25 §10: /scoreboard objectives modify <objective> numberformat <blank|styled|fixed> [arg]
+        auto modify = CommandNode::literal("modify");
+        auto modTarget = CommandNode::argument("targetObjective", args::objectiveArg());
+        modTarget->suggestions = [this](brigadier::StringReader&, brigadier::ParseCtx&) {
+            std::vector<std::string> v;
+            for (auto& o : scoreboard.objectives) v.push_back(o.name);
+            return v;
+        };
+        auto nfLit = CommandNode::literal("numberformat");
+        auto blankLit = CommandNode::literal("blank");
+        blankLit->executable = true;
+        blankLit->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const std::string t = c.arg("targetObjective").asStr();
+            auto* o = scoreboard.find(t);
+            if (!o) throw std::runtime_error("objective not found: " + t);
+            o->numberFormat.has = true;
+            o->numberFormat.type = Scoreboard::NumberFormatType::Blank;
+            sendObjectiveAll(*o, 2);
+            sendFeedback(src, "Set numberformat of " + t + " to blank");
+            return 1;
+        };
+        auto styledLit = CommandNode::literal("styled");
+        styledLit->executable = true;
+        styledLit->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const std::string t = c.arg("targetObjective").asStr();
+            auto* o = scoreboard.find(t);
+            if (!o) throw std::runtime_error("objective not found: " + t);
+            o->numberFormat.has = true;
+            o->numberFormat.type = Scoreboard::NumberFormatType::Styled;
+            o->numberFormat.color = "red";
+            sendObjectiveAll(*o, 2);
+            sendFeedback(src, "Set numberformat of " + t + " to styled red");
+            return 1;
+        };
+        auto styledArg = CommandNode::argument("style", args::stringWord());
+        styledArg->executable = true;
+        styledArg->suggestions = [](brigadier::StringReader&, brigadier::ParseCtx&) {
+            return std::vector<std::string>{"red","green","yellow","white","blue","aqua","gold"};
+        };
+        styledArg->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const std::string t = c.arg("targetObjective").asStr();
+            const std::string col = c.arg("style").asStr();
+            auto* o = scoreboard.find(t);
+            if (!o) throw std::runtime_error("objective not found: " + t);
+            o->numberFormat.has = true;
+            o->numberFormat.type = Scoreboard::NumberFormatType::Styled;
+            o->numberFormat.color = col;
+            sendObjectiveAll(*o, 2);
+            sendFeedback(src, "Set numberformat of " + t + " to styled " + col);
+            return 1;
+        };
+        styledLit->then(styledArg);
+        auto fixedLit = CommandNode::literal("fixed");
+        fixedLit->executable = true;
+        fixedLit->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const std::string t = c.arg("targetObjective").asStr();
+            auto* o = scoreboard.find(t);
+            if (!o) throw std::runtime_error("objective not found: " + t);
+            o->numberFormat.has = true;
+            o->numberFormat.type = Scoreboard::NumberFormatType::Fixed;
+            o->numberFormat.fixedText = std::string("\xE2\x99\xA5");
+            sendObjectiveAll(*o, 2);
+            sendFeedback(src, "Set numberformat of " + t + " to fixed");
+            return 1;
+        };
+        auto fixedArg = CommandNode::argument("fixedText", args::stringGreedy());
+        fixedArg->executable = true;
+        fixedArg->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const std::string t = c.arg("targetObjective").asStr();
+            const std::string txt = c.arg("fixedText").asStr();
+            auto* o = scoreboard.find(t);
+            if (!o) throw std::runtime_error("objective not found: " + t);
+            o->numberFormat.has = true;
+            o->numberFormat.type = Scoreboard::NumberFormatType::Fixed;
+            o->numberFormat.fixedText = txt;
+            sendObjectiveAll(*o, 2);
+            sendFeedback(src, "Set numberformat of " + t + " to fixed " + txt);
+            return 1;
+        };
+        fixedLit->then(fixedArg);
+        nfLit->then(blankLit); nfLit->then(styledLit); nfLit->then(fixedLit);
+        modTarget->then(nfLit);
+        modify->then(modTarget);
+        obj->then(add); obj->then(list2); obj->then(setd); obj->then(modify);
 
         auto players = CommandNode::literal("players");
         auto set = CommandNode::literal("set");

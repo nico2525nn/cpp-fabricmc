@@ -1799,6 +1799,32 @@ void GameServer::broadcastSound(const char* name, double x, double y,
     b.i64(rand());
     broadcastPacketExcept(nullptr, pl::sc::SoundEffect, b);
 }
+void GameServer::broadcastStopSound(const std::optional<SoundSource>& source,
+                                    const std::optional<std::string>& sound) {
+    WriteBuffer b;
+    std::int8_t flags = 0;
+    if (source) flags |= 1;
+    if (sound) flags |= 2;
+    b.i8(flags);
+    if (source) b.varint(static_cast<std::int32_t>(*source));
+    if (sound) b.string(*sound);
+    broadcastPacketExcept(nullptr, pl::sc::StopSound, b);
+}
+void GameServer::broadcastStopSound(SoundSource source, const std::string* soundOrNull) {
+    std::optional<SoundSource> src = source;
+    std::optional<std::string> snd;
+    if (soundOrNull) snd = *soundOrNull;
+    broadcastStopSound(src, snd);
+}
+void GameServer::broadcastStopSound(SoundSource source) {
+    std::optional<SoundSource> src = source;
+    std::optional<std::string> snd;
+    broadcastStopSound(src, snd);
+}
+void GameServer::stopRecord(const std::string& discNameWithoutPrefix) {
+    std::string sound = "minecraft:music_disc." + discNameWithoutPrefix;
+    broadcastStopSound(SoundSource::Record, &sound);
+}
 
 void GameServer::broadcastWorldEvent(std::int32_t eventId, std::int32_t x, std::int32_t y, std::int32_t z, std::int32_t data, bool disableRelativeVolume) {
     WriteBuffer b;
