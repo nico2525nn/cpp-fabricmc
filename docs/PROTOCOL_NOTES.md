@@ -84,13 +84,14 @@ Empirical after plan12: vanilla coalesces same chunk-section `BlockUpdate 0x09`s
 - `UpdateLight` masks are `BitSet` of `int64` words; block-light for `glowstone` (emit 15) propagates via `LightEngine::drain` BFS 3×3 `expandedDirty` and `pendingSkyRebuild` 3×3 (post-plan12). Opacity for emissive `glowstone 0` after special-case, else `minecraft-data filter`.
 - `LightUpdateQueue` (`LightEngine.hpp:20`) batches `addQueue`/`removeQueue` and defers sky rebuild until `drain()`; `serializeUpdateLightBody` builds `skyMask/blockMask/emptyMasks` from `chunk.blockLightNib`.
 
-## Scoreboard (`ScoreboardObjective 0x64` / `ScoreboardScore 0x68` / `ResetScore 0x49` / `DisplayObjective 0x5C`)
+## Scoreboard (`ScoreboardObjective 0x64` / `ScoreboardScore 0x68` / `ResetScore 0x49` / `ScoreboardDisplayObjective 0x5C`)
 
-- 1.21.4 (protocol 769): `packet_reset_score 0x49` and `packet_scoreboard_score 0x68` are split since 1.20.3 `23w46a` (Prismarine PR #806 `bf05291`). `ResetScore 0x49` = `string holder (entity_name 32767)` + `PrefixedOptional<string> objective_name` (`boolean present + string if present`); `present=false` is wildcard — deletes all objectives for holder (Yarn `ClientboundResetScorePacket` `writeNullable`). Old `packet_scoreboard_score` `action 0/1` was removed; sending `action 1` via `0x68` in 1.21.4 mis-parses as `itemName varint` and kicks.
-- `ScoreboardScore 0x68` = `string holder` + `string objective` + `varint value` + `option<anonymousNbt> display_name` + `option<varint> number_format` (`write` via `NumberFormat::write` `boolean has + varint type + switch styling NBT` — `blank/styled/fixed`).
-- `ScoreboardObjective 0x64` = `string name` + `i8 action 0 create /1 remove /2 update` + if `0/2`: `anonymousNbt displayName` + `varint type 0 integer 1 hearts` + `option number_format`. `DisplayObjective 0x5C` = `varint position 0 list/1 sidebar/2 below_name` + `string name` (empty clears).
-- Server broadcast helpers: `GameServer::sendScoreAll 0x68`, `sendResetScoreAll 0x49` (`sendResetScoreAllWildcard` for `present=false`), `sendObjectiveAll 0x64`, `sendDisplayAll 0x5C`. Wire helpers `Scoreboard::writeResetScorePacket` (`b.string(holder); b.boolean(obj!=nullptr); if(obj) b.string(*obj)`) matches Prismarine `["string","option string"]`.
-- Disconnect / `objectives remove` / `players reset` must send `0x49` (wildcard or with objective) to avoid ghost rows on `sidebar`/`below_name`/`list` (vanilla `ServerScoreboard.resetSingleScore` / `resetAllScores` / `removeObjective` → `ClientboundResetScorePacket(holder, objectiveOrNull)`). `BundleDelimiter 0x00` may wrap `0x49` with `0x68/0x64/0x5C` without desync (1-byte varint ids, zlib `dataLength 0 vs >0`, AES-CFB8 `0x80` byte-by-byte).
+Prismarine `minecraft-data 1.21.4` `protocol.json` 131 `toClient` sorted hex verifies `0x49` between `0x48 RemoveMobEffect` and `0x4A CommandSuggestions`:
+`packet_reset_score {entity_name string 32767, objective_name Prefixed Optional<string>}` → wire `string holder (varint len + bytes) + boolean present + string if present`.
+`packet_scoreboard_score {itemName string, scoreName string, value varint, display_name Prefixed Optional<NBT>, number_format Prefixed Optional<varint>}` → no action byte (pre-1.20.3 `action i8 0/1` removed).
+`packet_scoreboard_objective {objectiveName string, action i8 0 create /1 remove /2 update, displayName Chat, type varint 0 integer/1 hearts, number_format option varint}`.
+`packet_scoreboard_display_objective {position varint 0 list/1 sidebar/2 below_name, scoreName string}` empty string clears slot.
+Bundle coalescing: `0x49` and `0x68` are single-byte varint ids, `dataLength` <256 → `zlib` level 6 `0.01ms`, `BundleDelimiter 0x00` correctly wraps `0x49` with `0x68/0x64/0x5C`. Verified `Ids.hpp:147-152` `static_assert` 4-way lock byte-identical to Prismarine.
 
 ## Misc wire facts
 
