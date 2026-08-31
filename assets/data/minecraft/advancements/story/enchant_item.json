@@ -1,0 +1,30 @@
+{
+  "parent": "minecraft:story/shiny_gear",
+  "display": {
+    "icon": {
+      "item": "minecraft:enchanting_table"
+    },
+    "title": "Enchanter",
+    "description": "Enchant an item",
+    "frame": "task",
+    "show_toast": true,
+    "announce_to_chat": true
+  },
+  "criteria": {
+    "enchant": {
+      "trigger": "minecraft:inventory_changed",
+      "conditions": {
+        "items": [
+          {
+            "items": "minecraft:enchanted_book"
+          }
+        ]
+      }
+    }
+  },
+  "requirements": [
+    [
+      "enchant"
+    ]
+  ]
+}
