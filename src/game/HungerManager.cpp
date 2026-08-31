@@ -223,7 +223,17 @@ void HungerManager::onPlayerAttack(Player& p, GameServer& srv) {
 }
 
 void HungerManager::onBowUse(Player& p, GameServer& srv) {
-    addExhaustion(p, EXHAUST_BOW);
+    if (EXHAUST_BOW != 0.f) addExhaustion(p, EXHAUST_BOW);
+    (void)srv;
+}
+
+void HungerManager::onBlockBreak(Player& p, GameServer& srv) {
+    addExhaustion(p, EXHAUST_BLOCK_BREAK);
+    (void)srv;
+}
+
+void HungerManager::onDamageTaken(Player& p, GameServer& srv) {
+    addExhaustion(p, EXHAUST_DAMAGE_TAKEN);
     (void)srv;
 }
 
