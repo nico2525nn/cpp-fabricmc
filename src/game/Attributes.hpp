@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cmath>
+#include <optional>
 #include "MobEffects.hpp"
 namespace cppfm {
 enum class Attribute : uint8_t {
@@ -156,6 +157,11 @@ public:
     }
     double getBase(Attribute a) const{ auto it=map_.find(a); return it==map_.end()?0:it->second.base; }
     double getValue(Attribute a) const{ auto it=map_.find(a); return it==map_.end()?0:it->second.computed(); }
+    std::optional<double> getModifierValue(Attribute a, const std::string& uuid) const{
+        auto it=map_.find(a); if(it==map_.end()) return std::nullopt;
+        for(auto &m: it->second.modifiers) if(m.uuid==uuid) return m.amount;
+        return std::nullopt;
+    }
     void addModifier(Attribute a,AttributeModifier m){ map_[a].addModifier(std::move(m)); }
     void removeModifier(Attribute a,const std::string& u){ auto it=map_.find(a); if(it!=map_.end()) it->second.removeModifier(u); }
     void clearModifiers(Attribute a){ auto it=map_.find(a); if(it!=map_.end()) it->second.modifiers.clear(); }
