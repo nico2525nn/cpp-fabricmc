@@ -162,14 +162,15 @@ src/
 │   ├── Fluids/Redstone/LightEngine (global BFS, LightUpdateQueue, comparator/observer/rails/piston MovingPiston)
 │   ├── Entities (46 MobKind + MobStats), BehaviorTree (Selector/Sequence/Condition/Action), AiBrain (Brain+Goal+Sensor), Attributes (9 attrs, ARMOR sync)
 │   ├── Items (data-components 6/10/21, durability, enchant), Containers (15 MenuType, CostCalculator), Recipes (Shaped/Shapeless/Smelting/Stonecutting)
-│   ├── GameServer/Session (HANDSHAKE→STATUS/LOGIN→CONFIG→PLAY, dimension worlds[3], tickOnce 20 TPS)
+│   ├── GameServer (split plan31: GameServer.cpp 35 + _tick 980 + _combat 455 + _items 1831 + _world 216 + _session 3805 + _core 492 = 7714 + Helpers 61 + StairsHelper 192 + Constants 41) / Session (HANDSHAKE→STATUS/LOGIN→CONFIG→PLAY, dimension worlds[3], tickOnce 20 TPS)
+│   └── Helpers: StairsHelper (isStairsBlock/getPropStr/computeStairsShape), GameServerHelpers (nowMs/packUuidFromUrl/kKit/blockNameByState/savePlayerNBT...), Constants (kWorldBorderDiameter 59999968 / kTicketLevelSpawn 31 / kBlockBatchFlushMs 50)
 │   └── Managers: WorldManager/EntityManager/InventoryController/NetworkManager (forwarders, plan6 §6)
 ├── worldgen/      DensityFunction, MultiNoise, Structures, StructurePlacer, PortalHandler (8× + findSafeSpawn 6-up/down + PortalAge + Abilities reset)
 ├── brigadier/     Tree (CommandNode 48 parsers, writeDeclareCommands 0x11)
 └── generated/     kBlocks 1095, kItems 1385, kEntities 149 (prismarineJS)
 ```
 
-One thread per connection; `World` `shared_mutex`; `LightEngine`/`FluidSim`/`Redstone` via `onBlockChanged`; `Persistence` 3s flush + 6000/1200t `level.dat`; `chunkCache` 1024 + LRU `chunksUnloadTick` + `simulationDistance` culling; `PacketBatcher` 50ms / 64-packet coalesce. `GameServer.cpp` split into `World/Entity/Inventory/Network` forwarders (plan6 §6). Data-driven: `EntityData` JSON → `BehaviorTree`, `TagManager` 67/20, `LootTables`, `DatapackManager` `assets/data`.
+One thread per connection; `World` `shared_mutex`; `LightEngine`/`FluidSim`/`Redstone` via `onBlockChanged`; `Persistence` 3s flush + 6000/1200t `level.dat`; `chunkCache` 1024 + LRU `chunksUnloadTick` + `simulationDistance` culling; `PacketBatcher` 50ms / 64-packet coalesce. `GameServer.cpp` split plan31 into 6 topic files (tick/combat/items/world/session/core) + 3 helper headers (Helpers/Stairs/Constants) — header `GameServer.hpp` single (1114) kept, cpp 7843→35 (99.5% dispersed). Data-driven: `EntityData` JSON → `BehaviorTree`, `TagManager` 67/20, `LootTables`, `DatapackManager` `assets/data`.
 
 ## Roadmap (toward broader compatibility)
 
