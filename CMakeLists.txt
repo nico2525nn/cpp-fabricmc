@@ -13,6 +13,12 @@ add_executable(cppfm
     src/main.cpp
     src/core/NBT.cpp
     src/game/GameServer.cpp
+    src/game/GameServer_tick.cpp
+    src/game/GameServer_combat.cpp
+    src/game/GameServer_items.cpp
+    src/game/GameServer_world.cpp
+    src/game/GameServer_session.cpp
+    src/game/GameServer_core.cpp
     src/game/Recipes.cpp
     src/game/MenuInteraction.cpp
     src/game/Commands.cpp
@@ -64,6 +70,12 @@ add_executable(test_native
     tests/native_integration.cpp
     src/core/NBT.cpp
     src/game/GameServer.cpp
+    src/game/GameServer_tick.cpp
+    src/game/GameServer_combat.cpp
+    src/game/GameServer_items.cpp
+    src/game/GameServer_world.cpp
+    src/game/GameServer_session.cpp
+    src/game/GameServer_core.cpp
     src/game/WorldGen.cpp
     src/game/Recipes.cpp
     src/game/MenuInteraction.cpp
@@ -126,6 +138,12 @@ add_executable(test_smoke_80
     tests/test_smoke_80.cpp
     src/core/NBT.cpp
     src/game/GameServer.cpp
+    src/game/GameServer_tick.cpp
+    src/game/GameServer_combat.cpp
+    src/game/GameServer_items.cpp
+    src/game/GameServer_world.cpp
+    src/game/GameServer_session.cpp
+    src/game/GameServer_core.cpp
     src/game/WorldGen.cpp
     src/game/Recipes.cpp
     src/game/MenuInteraction.cpp

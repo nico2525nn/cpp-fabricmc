@@ -28,6 +28,7 @@
 #include "../net/Crypto.hpp"
 #include "../net/MojangAuth.hpp"
 #include "Items.hpp"
+#include "Constants.hpp"
 #include "Containers.hpp"
 #include "Recipes.hpp"
 #include "TagManager.hpp"
@@ -735,9 +736,6 @@ public:
     void broadcastSetPassengersEmpty(std::int32_t vehicleId);
     void handleMoveVehicle(Player& p, double x, double y, double z, float yaw, float pitch);
     void handleHorseJump(Player& p, int power); // plan13 §3 horse jump
-    float applyArmorReduction(float dmg, int armor) const;
-    int totalProtectionForPlayer(const Player& p) const;
-    int totalProtectionForMob(const MobEntity& m) const;
     // XP orbs (経験値システム)
     void spawnXpOrbs(double x, double y, double z, int totalPoints,
                      Player* directTo);
@@ -803,8 +801,6 @@ public:
     void addHungerExhaustion(Player& p, float amount);
     void addFoodAndSaturation(Player& p, int food, float sat);
     void handleFoodConsume(Player& p, const std::string& itemName);
-    int computeProtectionEPF(const DamageSource& ds, const Player& p) const;
-    int computeProtectionEPF(const DamageSource& ds, const MobEntity& m) const;
     static std::string uuidToHex(const std::array<std::uint8_t,16>& u) {
         std::string h; char x[4];
         for (auto b : u) { snprintf(x,3,"%02x",b); h+=x; }
@@ -946,10 +942,10 @@ private:
     brigadier::CommandDispatcher commands_;          // Brigadier tree
     GameRuleManager gamerules_;
     std::string difficulty_ = "normal";
-    double worldBorderDiameter_ = 59999968;   // vanilla default 5.9999968E7
+    double worldBorderDiameter_ = constants::kWorldBorderDiameter;   // vanilla default 5.9999968E7
     double worldBorderCenterX_ = 0, worldBorderCenterZ_ = 0;
-    double worldBorderLerpFrom_ = 59999968;
-    double worldBorderLerpTo_ = 59999968;
+    double worldBorderLerpFrom_ = constants::kWorldBorderDiameter;
+    double worldBorderLerpTo_ = constants::kWorldBorderDiameter;
     std::int64_t worldBorderLerpRemainingTicks_ = 0;
     std::int64_t worldBorderLerpTotalTicks_ = 0;
     std::int64_t worldBorderLerpMs_ = 0;

@@ -3,6 +3,7 @@
 #include "World.hpp"
 #include "Anvil.hpp"
 #include "WorldDataManager.hpp"
+#include "Constants.hpp"
 #include <functional>
 #include "RegionFile.hpp"
 #include <atomic>
@@ -366,8 +367,7 @@ public:
             batch.swap(dirty_);
         }
         for (auto k : batch) {
-            const std::int32_t cx = static_cast<std::int32_t>(k >> 32);
-            const std::int32_t cz = static_cast<std::int32_t>(k & 0xFFFFFFFFLL);
+            auto [cx, cz] = chunkKeyDecode(k);
             const std::string bio = [this] {
                 std::lock_guard lk(bioMtx_);
                 return biomeOverride_.value_or(biome_);
@@ -435,10 +435,10 @@ private:
     }
 
     std::string difficulty_ = "normal";
-    double worldBorderDiameter_ = 59999968;
+    double worldBorderDiameter_ = constants::kWorldBorderDiameter;
     double worldBorderCenterX_ = 0, worldBorderCenterZ_ = 0;
-    double worldBorderLerpFrom_ = 59999968;
-    double worldBorderLerpTo_ = 59999968;
+    double worldBorderLerpFrom_ = constants::kWorldBorderDiameter;
+    double worldBorderLerpTo_ = constants::kWorldBorderDiameter;
     std::int64_t worldBorderLerpMs_ = 0;
     std::int64_t worldBorderLerpRemainingTicks_ = 0;
     std::int64_t worldBorderLerpTotalTicks_ = 0;
