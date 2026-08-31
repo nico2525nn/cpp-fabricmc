@@ -73,6 +73,11 @@ static bool waitBlockUpdate(TestClient& c, int x,int y,int z, uint32_t state, in
     while(std::chrono::steady_clock::now()<dl){ c.pump(40); for(auto &u:c.blockUpdates) if(u.x==x&&u.y==y&&u.z==z&&u.state==state) return true; }
     return false;
 }
+static bool waitBlockPos(TestClient& c, int x,int y,int z, int ms=2000){
+    auto dl=std::chrono::steady_clock::now()+std::chrono::milliseconds(ms);
+    while(std::chrono::steady_clock::now()<dl){ c.pump(40); for(auto &u:c.blockUpdates) if(u.x==x&&u.y==y&&u.z==z) return true; }
+    return false;
+}
 // plan28 finish: the server streams a client's initial chunks on its Session
 // thread (cold-cache serialization of a dirtied world can take seconds); chat
 // commands queue behind it. Latency-sensitive checks must wait for the stream
@@ -140,12 +145,12 @@ static void testBlockBehaviors(ServerProc& srv){
     c.sendChatCommand("setblock 4 -60 0 minecraft:farmland[moisture=7]");
     c.pump(200);
     c.sendChatCommand("setblock 4 -59 0 minecraft:wheat[age=0]");
-    c.sendChatCommand("gamerule randomTickSpeed 100");
-    c.pump(1200);
-    // check if wheat grew (age>0) via block update or chunk re-read
+    c.sendChatCommand("gamerule randomTickSpeed 1000");
+    c.pump(3000);
+    // wheat age 0 state 4333, age>0 is 4334+ ; attempted deterministic but BlockTickScheduler timing is flaky (requires simulationDistance + randomTick culling), keep weak until scheduler stabilized
     bool grew=false;
-    for(auto &u:c.blockUpdates) if(u.x==4&&u.y==-59&&u.z==0&&u.state!=0) grew=true;
-    CHECK(grew||true,"wheat random tick (may need longer, weak check)");
+    for(auto &u:c.blockUpdates) if(u.x==4&&u.y==-59&&u.z==0&&u.state>4333) grew=true;
+    CHECK(grew||true,"wheat random tick with randomTickSpeed 1000 (weak — scheduler not yet deterministic)");
     c.sendChatCommand("gamerule randomTickSpeed 3");
     // 15 farmland moisture: place farmland without water, check it dries to dirt via BlockTickScheduler
     c.sendChatCommand("setblock 6 -60 0 minecraft:farmland[moisture=0]");
@@ -155,11 +160,11 @@ static void testBlockBehaviors(ServerProc& srv){
     c.sendChatCommand("give BlockTester minecraft:flint_and_steel 1");
     c.pump(200);
     c.sendChatCommand("setblock 7 -59 0 minecraft:fire");
-    CHECK(waitBlockUpdate(c,7,-59,0,0,1500)||true,"fire placement via /setblock");
+    CHECK(waitBlockPos(c,7,-59,0,2000),"fire placement via /setblock (any state at 7,-59,0)");
     // doFireTick gamerule should affect fire tick
     c.sendChatCommand("gamerule doFireTick false");
     c.pump(200);
-    CHECK(waitChat(c,"doFireTick")||true,"gamerule doFireTick toggle");
+    CHECK(waitChat(c,"doFireTick"),"gamerule doFireTick toggle");
     c.sendChatCommand("gamerule doFireTick true");
     // 17 TNT: place TNT and ignite via flint
     c.sendChatCommand("setblock 8 -60 0 minecraft:tnt[unstable=false]");
@@ -169,7 +174,7 @@ static void testBlockBehaviors(ServerProc& srv){
     c.sendChatCommand("give BlockTester minecraft:water_bucket 1");
     c.pump(200);
     c.sendChatCommand("setblock 9 -60 0 minecraft:water[level=0]");
-    CHECK(waitBlockUpdate(c,9,-60,0,0,1500)||true,"water bucket fluid placement");
+    CHECK(waitBlockPos(c,9,-60,0,2000),"water bucket fluid placement (any state at 9,-60,0)");
     // piston: place piston facing
     c.sendChatCommand("setblock 10 -60 0 minecraft:piston[facing=north,extended=false]");
     CHECK(true,"piston placement");
@@ -185,7 +190,7 @@ static void testRedstone(ServerProc& srv){
     c.pump(200);
     // interact via UseItemOn is complex via client; use /setblock to simulate powered
     c.sendChatCommand("setblock 11 -60 0 minecraft:lever[face=wall,facing=north,powered=true]");
-    CHECK(waitBlockUpdate(c,11,-60,0,0,1500)||true,"lever powered toggle");
+    CHECK(waitBlockPos(c,11,-60,0,2000),"lever powered toggle (any state at 11,-60,0)");
     // redstone wire
     c.sendChatCommand("setblock 12 -60 0 minecraft:redstone_wire[power=15]");
     CHECK(true,"redstone wire power 15");
@@ -222,7 +227,7 @@ static void testEntities(ServerProc& srv){
     bool sawEquip=false;
     dl=std::chrono::steady_clock::now()+std::chrono::milliseconds(1000);
     while(std::chrono::steady_clock::now()<dl){ c.pump(40); if(c.count(proto::pl::sc::SetEquipment)>0) sawEquip=true; }
-    CHECK(sawEquip||true,"SetEquipment 0x60 after spawn (weak, may be 0 if no equip)");
+    CHECK(sawEquip || c.spawnsReceived>0,"SetEquipment 0x60 or SpawnEntity after wither summon (deterministic spawn)");
     // 33 riding: try to use horse (if exists) - weak
     c.sendChatCommand("summon minecraft:horse");
     c.pump(300);
@@ -302,7 +307,7 @@ static void testCommandsDatapack(ServerProc& srv){
     CHECK(waitChat(c,"Summoned")||c.spawnsReceived>0,"/summon");
     // /setblock
     c.sendChatCommand("setblock 40 -60 0 minecraft:stone");
-    CHECK(waitBlockUpdate(c,40,-60,0,0,2000)||true,"/setblock");
+    CHECK(waitBlockPos(c,40,-60,0,2000),"setblock 40,-60,0 stone (any state)");
     // /fill
     c.sendChatCommand("fill 41 -60 0 43 -60 2 minecraft:stone");
     bool gotFill=false;
@@ -311,22 +316,23 @@ static void testCommandsDatapack(ServerProc& srv){
     CHECK(gotFill,"/fill 3x3 area");
     // /gamerule
     c.sendChatCommand("gamerule randomTickSpeed 10");
-    CHECK(waitChat(c,"randomTickSpeed")||true,"/gamerule");
+    CHECK(waitChat(c,"randomTickSpeed"),"gamerule randomTickSpeed 10");
     // /time
     c.sendChatCommand("time set day");
     CHECK(waitChat(c,"day")||c.count(proto::pl::sc::UpdateTime)>0,"/time set day");
     // /weather
     c.sendChatCommand("weather clear");
-    CHECK(waitChat(c,"Weather")||true,"/weather clear");
+    CHECK(waitChat(c,"Weather"),"weather clear");
     // /execute
     c.sendChatCommand("execute as @p run say executed");
-    CHECK(waitChat(c,"executed")||true,"/execute as @p run say");
+    CHECK(waitChat(c,"executed"),"execute as @p run say executed");
     // /function
     c.sendChatCommand("function minecraft:tick");
     CHECK(true,"/function (stub, should not crash)");
     // /reload
     c.sendChatCommand("reload");
-    CHECK(waitChat(c,"reload")||true,"/reload");
+    // actual feedback is "Reloaded whitelist" (capital R), and datapack reload is no-op; check case-insensitive or whitelist
+    CHECK(waitChat(c,"Reload") || waitChat(c,"whitelist") || c.count(proto::pl::sc::SystemChat)>0,"reload (whitelist reload)");
     // tags: check that #minecraft:planks ingredient matches (via crafting)
     c.sendChatCommand("give CmdTester minecraft:oak_planks 3");
     CHECK(true,"tag ingredient #minecraft:planks");
@@ -398,9 +404,9 @@ static void testSurvivalCombat(ServerProc& srv){
     // attack via UseEntity (not directly exposed, but we can check via /kill)
     c.sendChatCommand("kill Victim");
     bool victimDead=false;
-    auto dl=std::chrono::steady_clock::now()+std::chrono::milliseconds(2000);
-    while(std::chrono::steady_clock::now()<dl){ victim.pump(40); for(auto &l:victim.chatLines) if(l.find("died")!=std::string::npos) victimDead=true; }
-    CHECK(victimDead||true,"PVP /kill (weak, knockback via EntityVelocity 0x5F)");
+    auto dl=std::chrono::steady_clock::now()+std::chrono::milliseconds(2500);
+    while(std::chrono::steady_clock::now()<dl){ victim.pump(40); for(auto &l:victim.chatLines) if(l.find("died")!=std::string::npos || l.find("Victim")!=std::string::npos) victimDead=true; if(waitChat(victim,"died",100)) victimDead=true; }
+    CHECK(victimDead,"PVP /kill Victim died broadcast");
     // hunger: check food sync via SetHealth
     CHECK(c.count(proto::pl::sc::SetHealth)>0,"SetHealth 0x5A received (hunger)");
     // XP: kill mob and check SetExperience
@@ -408,9 +414,10 @@ static void testSurvivalCombat(ServerProc& srv){
     c.pump(400);
     c.sendChatCommand("kill @e[type=zombie,limit=1]");
     bool sawXp=false;
-    dl=std::chrono::steady_clock::now()+std::chrono::milliseconds(1500);
+    dl=std::chrono::steady_clock::now()+std::chrono::milliseconds(2000);
     while(std::chrono::steady_clock::now()<dl){ c.pump(40); if(c.count(proto::pl::sc::SetExperience)>0) sawXp=true; }
-    CHECK(sawXp||true,"XP orbs SetExperience 0x5B (weak)");
+    // XP is not guaranteed for /kill (no orb), keep weak but document
+    CHECK(sawXp||true,"XP orbs SetExperience 0x5B (weak — /kill does not spawn orb, keep until combat XP)");
     // effects: /effect — the player teleported around (chunk re-stream) and the
     // world is dirty; wait for the stream before the latency-sensitive command
     waitForChunks(c, 240, 10000);
@@ -441,7 +448,7 @@ static void testPlan33WorldGen(ServerProc& srv){
         auto dl=std::chrono::steady_clock::now()+std::chrono::milliseconds(1200);
         while(std::chrono::steady_clock::now()<dl){ c.pump(40); for(auto &l:c.chatLines){ if(l.find("nearest")!=std::string::npos||l.find("Could not find")!=std::string::npos) got=true; if(l.find("Unknown structure")!=std::string::npos) unknown=true; } if(got) break; }
         CHECK(!unknown, std::string("locate ")+name+" not Unknown");
-        CHECK(got||true, std::string("locate ")+name+" returns nearest or Could not find (no crash)");
+        CHECK(got, std::string("locate ")+name+" returns nearest or Could not find");
     }
     // verify that locate ancient_city specifically returns deterministic (no Unknown)
     c.chatLines.clear();
@@ -450,7 +457,7 @@ static void testPlan33WorldGen(ServerProc& srv){
     bool ancientGot=false;
     auto dl=std::chrono::steady_clock::now()+std::chrono::milliseconds(1200);
     while(std::chrono::steady_clock::now()<dl){ c.pump(40); for(auto &l:c.chatLines) if(l.find("ancient_city")!=std::string::npos || l.find("nearest")!=std::string::npos) ancientGot=true; }
-    CHECK(ancientGot||true, "locate ancient_city returns valid response");
+    CHECK(ancientGot, "locate ancient_city returns valid response");
     // shallow check for trial_chambers salt-correct: locate should succeed near spawn (seed fixed, but we just check not Unknown)
     c.chatLines.clear();
     c.sendChatCommand("locate structure minecraft:trial_chambers");
@@ -458,7 +465,7 @@ static void testPlan33WorldGen(ServerProc& srv){
     bool trialGot=false;
     dl=std::chrono::steady_clock::now()+std::chrono::milliseconds(1200);
     while(std::chrono::steady_clock::now()<dl){ c.pump(40); for(auto &l:c.chatLines) if(l.find("trial_chambers")!=std::string::npos) trialGot=true; }
-    CHECK(trialGot||true, "locate trial_chambers (salt 94251327) not Unknown");
+    CHECK(trialGot, "locate trial_chambers (salt 94251327) not Unknown");
     c.close();
 }
 
