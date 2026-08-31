@@ -63,6 +63,42 @@ inline const char* attributeKey(Attribute a){
         default: return "minecraft:generic.movement_speed";
     }
 }
+// 1.21.4 UpdateAttributes mapper varint 0-21 per Prismarine protocol.json packet_entity_update_attributes
+// Fetch: https://raw.githubusercontent.com/PrismarineJS/minecraft-data/master/data/pc/1.21.4/protocol.json
+// Verified 2026-08-31: 0 generic.armor, 1 generic.armor_toughness, 2 generic.attack_damage,
+// 3 generic.attack_knockback, 4 generic.attack_speed, 5 player.block_break_speed,
+// 6 player.block_interaction_range, 7 player.entity_interaction_range, 8 generic.fall_damage_multiplier,
+// 9 generic.flying_speed, 10 generic.follow_range, 11 generic.gravity, 12 generic.jump_strength,
+// 13 generic.knockback_resistance, 14 generic.luck, 15 generic.max_absorption, 16 generic.max_health,
+// 17 generic.movement_speed, 18 generic.safe_fall_distance, 19 generic.scale,
+// 20 zombie.spawn_reinforcements, 21 generic.step_height
+inline int attributeMapperId(Attribute a){
+    switch(a){
+        case Attribute::ARMOR: return 0;
+        case Attribute::ARMOR_TOUGHNESS: return 1;
+        case Attribute::ATTACK_DAMAGE: return 2;
+        case Attribute::ATTACK_KNOCKBACK: return 3;
+        case Attribute::ATTACK_SPEED: return 4;
+        case Attribute::BLOCK_BREAK_SPEED: return 5;
+        case Attribute::BLOCK_INTERACTION_RANGE: return 6;
+        case Attribute::ENTITY_INTERACTION_RANGE: return 7;
+        case Attribute::FALL_DAMAGE_MULTIPLIER: return 8;
+        case Attribute::FLYING_SPEED: return 9;
+        case Attribute::FOLLOW_RANGE: return 10;
+        case Attribute::GRAVITY: return 11;
+        case Attribute::JUMP_STRENGTH: return 12;
+        case Attribute::KNOCKBACK_RESISTANCE: return 13;
+        case Attribute::LUCK: return 14;
+        case Attribute::MAX_ABSORPTION: return 15;
+        case Attribute::MAX_HEALTH: return 16;
+        case Attribute::MOVEMENT_SPEED: return 17;
+        case Attribute::SAFE_FALL_DISTANCE: return 18;
+        case Attribute::SCALE: return 19;
+        case Attribute::SPAWN_REINFORCEMENTS: return 20;
+        case Attribute::STEP_HEIGHT: return 21;
+        default: return -1;
+    }
+}
 struct AttributeModifier { std::string uuid; double amount=0; int operation=0; };
 struct AttributeInstance {
     double base=0;
@@ -185,9 +221,10 @@ public:
         if(isSneaking && swiftLvl>0) applySwiftSneak(swiftLvl); else removeModifier(Attribute::MOVEMENT_SPEED, "swift_sneak");
     }
     template<typename W> void writeUpdate(W& out,int32_t eid) const{
-        // plan15 strict: send 32 attributes per Yarn 1.21.4 (was 6). Keep 6 for minimal but strict wants 32.
-        // To remain compatible we send all 32 — client will accept any count.
-        static const Attribute order[] = {
+        // plan30 H1: 1.21.4 UpdateAttributes key is varint mapper 0-21 per Prismarine protocol.json
+        // packet_entity_update_attributes {key mapper varint 0-21, value f64, modifiers [{uuid string 36 chars, amount f64, operation i8}]}
+        // Previous code sent string "minecraft:generic.armor" and uuid 16 bytes — both wrong (1.21.2+ mapped varint + string uuid).
+        static const Attribute orderAll[] = {
             Attribute::MAX_HEALTH, Attribute::MOVEMENT_SPEED, Attribute::ATTACK_DAMAGE,
             Attribute::ARMOR, Attribute::ARMOR_TOUGHNESS, Attribute::KNOCKBACK_RESISTANCE,
             Attribute::ATTACK_KNOCKBACK, Attribute::BLOCK_BREAK_SPEED, Attribute::BLOCK_INTERACTION_RANGE,
@@ -200,13 +237,17 @@ public:
             Attribute::SWEEPING_DAMAGE_RATIO, Attribute::TEMPT_RANGE, Attribute::WATER_MOVEMENT_EFFICIENCY,
             Attribute::ATTACK_SPEED
         };
-        constexpr int N = sizeof(order)/sizeof(order[0]);
-        out.varint(eid); out.varint(N);
-        for(int i=0;i<N;++i){
-            Attribute at = order[i];
-            out.string(attributeKey(at)); out.f64(getValue(at));
+        // Filter to only mapper-known attributes (22); unmapped ones (burning_time etc) are 1.21.5+ and skipped for 1.21.4 wire
+        std::vector<Attribute> order;
+        order.reserve(22);
+        for(auto a: orderAll){ if(attributeMapperId(a) >= 0) order.push_back(a); }
+        out.varint(eid); out.varint((int32_t)order.size());
+        for(Attribute at: order){
+            int mid = attributeMapperId(at);
+            out.varint(mid);
+            out.f64(getValue(at));
             auto it=map_.find(at); size_t n=it==map_.end()?0:it->second.modifiers.size(); out.varint((int32_t)n);
-            if(it!=map_.end()) for(auto &m:it->second.modifiers){ uint8_t d[16]={}; for(size_t j=0;j<m.uuid.size()&&j<16;j++) d[j]=uint8_t(m.uuid[j]); out.uuid(d); out.f64(m.amount); out.i8(int8_t(m.operation)); }
+            if(it!=map_.end()) for(auto &m:it->second.modifiers){ out.string(m.uuid); out.f64(m.amount); out.i8(int8_t(m.operation)); }
         }
     }
 private: std::unordered_map<Attribute,AttributeInstance> map_;
