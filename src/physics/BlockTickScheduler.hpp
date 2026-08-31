@@ -253,6 +253,15 @@ public:
                     std::uint16_t state, std::int64_t now, GameServer* srv) override;
 };
 
+// plan29 §3 CreakingHeart: active toggle (natural+night+logs) + spawn 1 creaking/heart within 16/8
+class CreakingHeartBehavior : public IBlockBehavior {
+public:
+    void tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
+              std::uint16_t state, std::int64_t now, GameServer* srv) override;
+    void randomTick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
+                    std::uint16_t state, std::int64_t now, GameServer* srv) override;
+};
+
 struct FlammableEntry { int burnOdds=0; int igniteOdds=0; };
 class FlammableRegistry {
 public:

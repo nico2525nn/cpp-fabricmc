@@ -396,6 +396,7 @@ public:
         blockTicks_->registerBehavior("minecraft:torchflower_crop", std::make_unique<CropBehavior>());
         blockTicks_->registerBehavior("minecraft:pitcher_crop", std::make_unique<CropBehavior>());
         blockTicks_->registerBehavior("minecraft:pale_oak_leaves", std::make_unique<PaleOakLeavesBehavior>());
+        blockTicks_->registerBehavior("minecraft:creaking_heart", std::make_unique<CreakingHeartBehavior>());
         // plan7: ServerProperties typed loading (viewDistance, spawn-protection, etc.)
         {
             ServerProperties sp;
@@ -717,6 +718,7 @@ public:
     void mobsTick();
     void applyDamageToMob(MobEntity& m, float amount, const char* cause);
     void applyDamageToMob(MobEntity& m, float amount, const DamageSource& src);
+    void growResinNearHeart(int hx,int hy,int hz);
     // Spawn a mob of `kind` at position and broadcast it.
     void spawnMob(MobKind kind, double x, double y, double z);
     void broadcastMobSpawn(const MobEntity& mob);   // no locking inside

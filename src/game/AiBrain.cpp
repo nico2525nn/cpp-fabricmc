@@ -39,6 +39,7 @@ void groundSnap(GameServer& srv, MobEntity& m) {
 } // namespace
 
 Brain::Brain() {
+    goals_.push_back(std::make_unique<CreakingGoal>());
     goals_.push_back(std::make_unique<PanicGoal>());
     goals_.push_back(std::make_unique<BreedGoal>());
     goals_.push_back(std::make_unique<MeleeAttackGoal>());
@@ -244,6 +245,125 @@ bool LookAtPlayerGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     const double dz = ctx.nearestPlayer->z - m.z;
     m.yaw = static_cast<float>(std::atan2(dz, dx) * 180.0 / 3.14159 - 90.0);
     return ctx.nearestPlayerDist2 < 8 * 8;
+}
+
+// plan29 §3 Creaking freeze when looked at (60° yaw/pitch + raycast), else chase 0.30 + attack 2.5/3/4.5
+static float wrapDegrees(float v) {
+    while (v <= -180) v += 360;
+    while (v > 180) v -= 360;
+    return v;
+}
+static bool raycastObstructed(World* w, double x0,double y0,double z0, double x1,double y1,double z1) {
+    if (!w) return false;
+    double dx=x1-x0, dy=y1-y0, dz=z1-z0;
+    double dist = std::sqrt(dx*dx+dy*dy+dz*dz);
+    int steps = std::max(1, (int)(dist*4));
+    for (int i=1;i<steps;++i) {
+        double t = (double)i/steps;
+        double x = x0 + dx*t, y = y0 + dy*t, z = z0 + dz*t;
+        int ix=(int)std::floor(x), iy=(int)std::floor(y), iz=(int)std::floor(z);
+        uint16_t st = w->getBlock(ix,iy,iz);
+        if (st==0) continue;
+        auto* bd = gen::blockByState(st);
+        if (!bd) continue;
+        if (!bd->transparent) return true;
+    }
+    return false;
+}
+static bool isPlayerLookingAtCreaking(Player* p, MobEntity& cr, World* w) {
+    if (!p) return false;
+    if (p->gamemode==1 || p->gamemode==3) return false;
+    for (int i=5;i<=8;++i) if (i>=0 && i < (int)p->inv.size() && !p->inv[i].empty()) {
+        if (p->inv[i].name()=="minecraft:carved_pumpkin") return false;
+    }
+    double dx = cr.x - p->x;
+    double dy = (cr.y+0.9) - (p->y+1.62);
+    double dz = cr.z - p->z;
+    double dist = std::sqrt(dx*dx+dy*dy+dz*dz);
+    if (dist > 32 || dist < 0.1) return false;
+    double yawToMob = std::atan2(dz,dx)*180.0/3.1415926535 - 90.0;
+    double pitchToMob = -std::asin(dy/dist)*180.0/3.1415926535;
+    double dYaw = std::abs(wrapDegrees((float)(yawToMob - p->yaw)));
+    double dPitch = std::abs((float)(pitchToMob - p->pitch));
+    if (dYaw > 60 || dPitch > 60) return false;
+    if (raycastObstructed(w, p->x, p->y+1.62, p->z, cr.x, cr.y+0.9, cr.z)) return false;
+    return true;
+}
+bool CreakingGoal::shouldStart(MobEntity& m, AiContext&) {
+    return m.kind == MobKind::Creaking;
+}
+bool CreakingGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (m.kind != MobKind::Creaking) return false;
+    if (!ctx.srv || !ctx.world) return false;
+    // check any player looking => frozen
+    bool frozen = false;
+    for (auto& pp : ctx.srv->playersSnapshot()) {
+        if (!pp->inPlay || pp->dead) continue;
+        if (isPlayerLookingAtCreaking(pp.get(), m, ctx.world)) { frozen = true; break; }
+    }
+    m.creakingFrozen = frozen;
+    m.creakingAlerted = (ctx.nearestPlayer && ctx.nearestPlayerDist2 < 12*12);
+    if (frozen) {
+        // immobile, cannot be pushed/knocked; also do not attack
+        return true;
+    }
+    Player* tgt = ctx.nearestPlayer;
+    if (!tgt) return false;
+    double dx = tgt->x - m.x, dz = tgt->z - m.z;
+    double d = std::sqrt(dx*dx+dz*dz);
+    if (d < 1.9) {
+        if (now % 20 == 0) ctx.srv->mobAttackPlayer(m, *tgt);
+        return true;
+    }
+    if (d > 24) return false;
+    // pathfind occasionally
+    if (ctx.pathIdx >= ctx.path.size() ||
+        std::abs(ctx.path.back().x - (int)std::floor(tgt->x)) > 3 ||
+        std::abs(ctx.path.back().z - (int)std::floor(tgt->z)) > 3) {
+        ai::Pathfinder pf(*ctx.world);
+        auto res = pf.find((int)std::floor(m.x),(int)std::floor(m.y),(int)std::floor(m.z),
+                           (int)std::floor(tgt->x),(int)std::floor(tgt->y),(int)std::floor(tgt->z),800);
+        ctx.path = std::move(res.points);
+        ctx.pathIdx = res.found ? 1 : 0;
+        if (!res.found) {
+            m.yaw = (float)(std::atan2(dz,dx)*180.0/3.1415926535 - 90.0);
+            m.x += dx/d * 0.14;
+            m.z += dz/d * 0.14;
+            World& w = *ctx.world;
+            w.generateChunkIfMissing((int)m.x>>4,(int)m.z>>4);
+            int col=4;
+            w.withChunk((int)m.x>>4,(int)m.z>>4,[&](const Chunk& c){
+                for(int ry=kSectionsPerChunk*16-1; ry>=0; --ry) if(c.blocks[Chunk::index(ry>>4, ry&15, (int)m.z&15, (int)m.x&15)]!=0){col=ry+1;break;}
+            });
+            m.y = kMinY + col + 1.0;
+            return true;
+        }
+    }
+    // step along path at creaking speed 0.14 (approx 0.3 scaled)
+    if (ctx.pathIdx < ctx.path.size()) {
+        const auto& node = ctx.path[ctx.pathIdx];
+        double tx = node.x+0.5, tz=node.z+0.5;
+        double pdx=tx-m.x, pdz=tz-m.z;
+        double pd = std::sqrt(pdx*pdx+pdz*pdz);
+        if (pd < 0.35) { ++ctx.pathIdx; }
+        else {
+            m.yaw = (float)(std::atan2(pdz,pdx)*180.0/3.1415926535 - 90.0);
+            m.x += pdx/pd * 0.14;
+            m.z += pdz/pd * 0.14;
+        }
+    } else {
+        m.yaw = (float)(std::atan2(dz,dx)*180.0/3.1415926535 - 90.0);
+        m.x += dx/d * 0.10;
+        m.z += dz/d * 0.10;
+    }
+    World& w = *ctx.world;
+    w.generateChunkIfMissing((int)m.x>>4,(int)m.z>>4);
+    int col=4;
+    w.withChunk((int)m.x>>4,(int)m.z>>4,[&](const Chunk& c){
+        for(int ry=kSectionsPerChunk*16-1; ry>=0; --ry) if(c.blocks[Chunk::index(ry>>4, ry&15, (int)m.z&15, (int)m.x&15)]!=0){col=ry+1;break;}
+    });
+    m.y = kMinY + col + 1.0;
+    return true;
 }
 
 

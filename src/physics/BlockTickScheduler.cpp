@@ -515,6 +515,90 @@ void PaleOakLeavesBehavior::randomTick(World& w, std::int32_t x, std::int32_t y,
     srv->broadcastPaleOakLeavesParticle(x + 0.5, y + 0.5, z + 0.5);
 }
 
+// plan29 §3 CreakingHeart: active toggle + spawn
+static bool isPaleOakLogBlock(std::uint16_t st) {
+    auto* bd = gen::blockByState(st);
+    if (!bd) return false;
+    std::string n(bd->name);
+    return n == "minecraft:pale_oak_log" || n == "minecraft:stripped_pale_oak_log" || n == "minecraft:pale_oak_wood" || n == "minecraft:stripped_pale_oak_wood";
+}
+static bool checkPaleOakLogsAlongAxis(World& w, std::int32_t x, std::int32_t y, std::int32_t z, const std::string& axis) {
+    if (axis == "y" || axis == "Y") return isPaleOakLogBlock(w.getBlock(x, y-1, z)) && isPaleOakLogBlock(w.getBlock(x, y+1, z));
+    if (axis == "x" || axis == "X") return isPaleOakLogBlock(w.getBlock(x-1, y, z)) && isPaleOakLogBlock(w.getBlock(x+1, y, z));
+    return isPaleOakLogBlock(w.getBlock(x, y, z-1)) && isPaleOakLogBlock(w.getBlock(x, y, z+1));
+}
+static void trySpawnCreakingForHeart(World& w, std::int32_t hx, std::int32_t hy, std::int32_t hz, GameServer* srv) {
+    if (!srv) return;
+    // one creaking per heart: check living
+    for (auto& m : srv->mobsForTest()) {
+        if (m->kind == MobKind::Creaking && m->hasCreakingHeart && !m->dead && m->creakingHeartX==hx && m->creakingHeartY==hy && m->creakingHeartZ==hz) return;
+    }
+    // find spawn pos within 16 horiz 8 vert, try up to 8 attempts
+    for (int attempt=0; attempt<8; ++attempt) {
+        int dx = (rand() % 32) - 16;
+        int dz = (rand() % 32) - 16;
+        int dy = (rand() % 17) - 8;
+        int sx = hx + dx;
+        int sz = hz + dz;
+        int sy = hy + dy;
+        if (sy < kMinY || sy >= kMaxY) continue;
+        uint16_t at = w.getBlock(sx, sy, sz);
+        uint16_t below = w.getBlock(sx, sy-1, sz);
+        uint16_t above = w.getBlock(sx, sy+1, sz);
+        if (at != 0) continue;
+        if (above != 0) continue;
+        if (below == 0) continue;
+        auto* bd = gen::blockByState(below);
+        if (!bd || bd->transparent) continue;
+        w.generateChunkIfMissing(sx>>4, sz>>4);
+        double fx = sx + 0.5, fy = sy, fz = sz + 0.5;
+        srv->spawnMob(MobKind::Creaking, fx, fy, fz);
+        // patch heart linkage on last spawned
+        auto& mobs = srv->mobsForTest();
+        if (!mobs.empty()) {
+            auto& last = mobs.back();
+            if (last->kind == MobKind::Creaking) {
+                last->hasCreakingHeart = true;
+                last->creakingHeartX = hx; last->creakingHeartY = hy; last->creakingHeartZ = hz;
+                last->creakingTransient = true;
+            }
+        }
+        srv->broadcastSound("minecraft:entity.creaking.spawn", fx, fy, fz, 1.f, 1.f, "hostile");
+        return;
+    }
+}
+void CreakingHeartBehavior::randomTick(World& w, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state, std::int64_t now, GameServer* srv) {
+    (void)now;
+    if (!srv) return;
+    if (!srv->isChunkInSimulationDistance(x>>4, z>>4)) return;
+    const gen::BlockDef* d = gen::blockByState(state);
+    if (!d || std::string(d->name) != "minecraft:creaking_heart") return;
+    std::string axis = "y";
+    bool natural = false, active = false;
+    for (auto& [k,v] : gen::propsOf(state)) {
+        if (k=="axis") axis = std::string(v);
+        else if (k=="natural") natural = (v=="true");
+        else if (k=="active") active = (v=="true");
+    }
+    bool isNight = srv->isNight();
+    bool inOverworld = (w.dimensionId()==0);
+    bool shouldActive = natural && isNight && inOverworld && checkPaleOakLogsAlongAxis(w,x,y,z,axis);
+    if (active != shouldActive) {
+        std::vector<std::pair<std::string_view,std::string_view>> props;
+        props.emplace_back("axis", axis);
+        props.emplace_back("natural", natural ? "true" : "false");
+        props.emplace_back("active", shouldActive ? "true" : "false");
+        uint16_t ns = static_cast<uint16_t>(gen::stateWithProps(*d, props));
+        w.setBlock(x,y,z,ns);
+        srv->broadcastBlockChange(x,y,z,ns);
+        // light engine handled via onBlockChanged elsewhere
+    }
+    if (shouldActive) trySpawnCreakingForHeart(w,x,y,z,srv);
+}
+void CreakingHeartBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state, std::int64_t now, GameServer* srv) {
+    randomTick(w,x,y,z,state,now,srv);
+}
+
 // -------------------------------------------------------- Farmland moisture
 
 void FarmlandBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
