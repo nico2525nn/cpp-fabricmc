@@ -4094,6 +4094,7 @@ void GameServer::initCommands() {
         objective->then(setLit);
         trigger->then(objective);
         d.root->then(trigger);
+    }
     // plan32 block: ban/op/whitelist/kick admin commands
     {
         // /kick <targets> [<reason>]
@@ -4388,6 +4389,7 @@ void GameServer::initCommands() {
         };
         wl->then(wlOn); wl->then(wlOff); wl->then(wlList); wl->then(wlAdd); wl->then(wlRemove); wl->then(wlReload);
         d.root->then(wl);
+    }
     // ---------------------------------------------------------------- plan32 combat: advancement/recipe/item/me/msg
     // New additions only – other worktrees (world/entity/block) also extend Commands.cpp
     // ---------------------------------------------------------------- advancement
@@ -5156,4 +5158,5 @@ void GameServer::initCommands() {
     }
 }
 
+}
 } // namespace cppfm
