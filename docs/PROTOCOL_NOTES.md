@@ -78,6 +78,7 @@ Empirical after plan12: vanilla coalesces same chunk-section `BlockUpdate 0x09`s
 
 - `MultiBlockChange` count is `varint`, each entry is `varint` packed `(state<<12) | ((x&15)<<8) | ((z&15)<<4) | (y&15)` with section origin implicit (wiki `Update Section Blocks`: `blockStateId << 12 | (blockLocalX << 8 | blockLocalZ << 4 | blockLocalY)`; plan28 finish fixed the x/y swap that was `(y&15)<<8|(z&15)<<4|(x&15)`).
 - `BundleDelimiter` is zero-length; both `0x00` wrappers must be sent even for single non-coalescable `BlockUpdate` if inside bundle window.
+- **Non-confusion — packet `BundleDelimiter 0x00` vs Bundle *item*:** the play `BundleDelimiter 0x00` above bundles *packets* (`BundleDelimiter` start + `BlockUpdate`/`MultiBlockChange`/other + `BundleDelimiter` end; `protocol.json` `packet.bundle_delimiter` `0x00`, `SlotComponentType bundle_contents 40`). It is **unrelated** to the Bundle *item* (`minecraft:bundle` + 16 dyed `*_bundle`, component `minecraft:bundle_contents` `SlotComponent 40` `container { contents: Slot[] }`, experimental in 1.21.4 protocol 769, formal in 1.21.5 776; `minecraft-data` `items.json` `bundle 963`). Packet `0x00` wraps heterogeneous packets for one tick; item `bundle_contents` wraps `Slot`s inside `Slot` NBT — no wire coupling (see plan29 §4).
 
 ## Light Update (`UpdateLight 0x2B` / `LightUpdateQueue`)
 
