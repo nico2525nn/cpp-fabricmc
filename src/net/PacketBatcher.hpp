@@ -1,15 +1,18 @@
 // PacketBatcher: coalesces block updates into BundleDelimiter / MultiBlockChange.
 // - BundleDelimiter 0x00 wraps heterogeneous packets (strict 1.21.4, PLAN10 §3).
-// - MultiBlockChange 0x4E coalesces same-section BlockUpdate 0x09 with axis pack
-//   ly<<8|lz<<4|lx (fixed from lx<<8 axis swap, N7 HIGH) + last-write-wins dedup.
-//   plan21 network polish: per-section grouping + 64-count flush threshold (50ms window).
-//   plan22 network polish: FeatureFlags 0x0C (minecraft:vanilla) + SelectKnownPacks core 1.21.4 + AddResourcePack UUID-first (N13) ordering verified, Bundle axis ly<<8 correct.
+// - MultiBlockChange 0x4E coalesces same-section BlockUpdate 0x09 with vanilla
+//   axis pack (state<<12)|(x<<8)|(z<<4)|y (plan28 finish fixed the y/x swap).
+// - plan28 finish: threadsafe — chat commands execute on the Session (connection)
+//   thread and queue block changes (queueBlockChange) while the game tick thread
+//   flushes the same queue; a plain vector raced (lost fill/MultiBlockChange
+//   packets). mtx_ guards the queue; lastFlushMs is atomic.
+// - 64-count flush threshold (50ms window), per-section grouping, last-write-wins.
 // ChatMessageProcessor: RSA-SHA256 verifies PlayerChat 0x07 signatures when a
 // ChatSession is present; falls back to SystemChat 0x73 otherwise (N6 HIGH).
-// plan22 network polish: verify uses msg+timestamp+salt hash (N6), expired/missing key fallback, Replay salt soft-check, DamageEvent 0x1A bypass linkage (E4).
-// plan25 network polish: verify strict 78/78 remains green (no new network gaps); Bundle/MultiBlockChange 0x4E BundleDelimiter 0x00 parity locked, 50ms/64 flush thresholds verified (deep D10 RegistryData order + D11 Slot payload deferred to plan26).
 #pragma once
+#include <atomic>
 #include <cstdint>
+#include <mutex>
 #include <vector>
 #include <string>
 #include "../core/ByteBuffer.hpp"
@@ -26,22 +29,34 @@ public:
         uint8_t id;
         WriteBuffer body;
     };
-    std::vector<Queued> queue;
-    int64_t lastFlushMs = 0;
+    std::vector<Queued> queue;                // guarded by mtx_
+    std::mutex mtx_;
+    std::atomic<int64_t> lastFlushMs{0};
 
     void queuePacket(uint8_t id, WriteBuffer body) {
+        std::lock_guard lk(mtx_);
         queue.push_back({id, std::move(body)});
     }
-    [[nodiscard]] bool empty() const noexcept { return queue.empty(); }
-    [[nodiscard]] size_t size() const noexcept { return queue.size(); }
-    void clear() noexcept { queue.clear(); }
+    [[nodiscard]] bool empty() noexcept {
+        std::lock_guard lk(mtx_);
+        return queue.empty();
+    }
+    [[nodiscard]] size_t size() {
+        std::lock_guard lk(mtx_);
+        return queue.size();
+    }
+    void clear() noexcept {
+        std::lock_guard lk(mtx_);
+        queue.clear();
+    }
 
     // Flushes queued packets. If multiple, wraps in BundleDelimiter (0x00) start/end
     // or coalesces to MultiBlockChange when all BlockUpdates share same chunk section.
     void flush(GameServer& srv, const Player* except);
 
 private:
-    bool tryFlushAsMultiBlockChange(GameServer& srv, const Player* except);
+    bool tryFlushAsMultiBlockChange(GameServer& srv, const Player* except,
+                                    std::vector<Queued>& q);
 };
 
 class ChatMessageProcessor {

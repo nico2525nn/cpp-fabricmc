@@ -605,6 +605,10 @@ public:
         if (rconServer_) rconServer_->stop();
         std::fprintf(stderr, "[cppfm] stopping persistence\n");
         if (persist_) persist_->stop();
+        // plan28 finish: nether/end persistence workers were never stopped; their
+        // ~Persistence (cv_ destroyed before worker_ in reverse member order) then
+        // livelocked on the futex during ~GameServer. Stop (and save) them here.
+        for (auto& d : dimPersist_) if (d) d->stop();
         std::fprintf(stderr, "[cppfm] closing listen fd\n");
         if (listenFd_ >= 0) { ::close(listenFd_); listenFd_ = -1; }
         std::fprintf(stderr, "[cppfm] stopped cleanly\n");

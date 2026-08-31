@@ -15,22 +15,29 @@ static int64_t nowMsLocal() {
 }
 
 void PacketBatcher::flush(GameServer& srv, const Player* except) {
-    if (queue.empty()) return;
-    if (queue.size() == 1) {
-        auto &q = queue[0];
-        srv.broadcastPacketExcept(except, q.id, q.body);
+    // Plan28 finish: swap the queue under the lock so the game-tick thread can
+    // flush while a Session thread (chat command / block change) keeps queuing.
+    std::vector<Queued> q;
+    {
+        std::lock_guard lk(mtx_);
+        if (queue.empty()) return;
+        q.swap(queue);
+    }
+    if (q.size() == 1) {
+        auto &q0 = q[0];
+        srv.broadcastPacketExcept(except, q0.id, q0.body);
     } else {
         bool allBlockUpdate = true;
-        for (auto &q : queue) if (q.id != proto::pl::sc::BlockUpdate) { allBlockUpdate = false; break; }
+        for (auto &queued : q) if (queued.id != proto::pl::sc::BlockUpdate) { allBlockUpdate = false; break; }
         if (allBlockUpdate) {
             // Try grouped MultiBlockChange optimization (plan10 §3): group by SectionPos
             // Deduplicate same pos -> keep last state (last write wins)
             struct Rec { int32_t x,y,z; uint16_t state; };
             // dedup map: key = (x,y,z) packed
             std::unordered_map<int64_t, Rec> dedup;
-            dedup.reserve(queue.size());
-            for (auto &q : queue) {
-                ReadBuffer in(q.body.data);
+            dedup.reserve(q.size());
+            for (auto &queued : q) {
+                ReadBuffer in(queued.body.data);
                 int32_t x,y,z; in.position(x,y,z);
                 uint16_t st = static_cast<uint16_t>(in.varint());
                 int64_t k2 = ((int64_t)x << 42) ^ ((int64_t)y << 21) ^ (int64_t)z;
@@ -51,9 +58,8 @@ void PacketBatcher::flush(GameServer& srv, const Player* except) {
                 auto it = groups.begin();
                 if (it->second.size() >= 2) {
                     // Single MultiBlockChange - use dedicated path
-                    if (tryFlushAsMultiBlockChange(srv, except)) {
-                        queue.clear();
-                        lastFlushMs = nowMsLocal();
+                    if (tryFlushAsMultiBlockChange(srv, except, q)) {
+                        lastFlushMs.store(nowMsLocal());
                         return;
                     }
                 }
@@ -77,7 +83,10 @@ void PacketBatcher::flush(GameServer& srv, const Player* except) {
                     b.varint(static_cast<int32_t>(vec.size()));
                     for (auto &r : vec) {
                         int32_t lx = r.x & 15, ly = r.y & 15, lz = r.z & 15;
-                        int32_t enc = (static_cast<int32_t>(r.state) << 12) | (ly << 8) | (lz << 4) | lx;
+                        // vanilla/Prismarine: (state<<12)|(localX<<8)|(localZ<<4)|localY
+                        // (not y<<8|z<<4|x — that swap placed blocks at wrong section-local
+                        // coords, plan28 finish fix, see COMPAT_AUDIT N7)
+                        int32_t enc = (static_cast<int32_t>(r.state) << 12) | (lx << 8) | (lz << 4) | ly;
                         b.varint(enc);
                     }
                     parts.emplace_back(proto::pl::sc::MultiBlockChange, std::move(b));
@@ -105,33 +114,33 @@ void PacketBatcher::flush(GameServer& srv, const Player* except) {
             // Bundle: wrap queued packets with BundleDelimiter  0x00 start/end
             WriteBuffer empty;
             srv.broadcastPacketExcept(except, proto::pl::sc::BundleDelimiter, empty);
-            for (auto &q : queue) {
-                srv.broadcastPacketExcept(except, q.id, q.body);
+            for (auto &queued : q) {
+                srv.broadcastPacketExcept(except, queued.id, queued.body);
             }
             WriteBuffer empty2;
             srv.broadcastPacketExcept(except, proto::pl::sc::BundleDelimiter, empty2);
         }
     }
-    queue.clear();
-    lastFlushMs = nowMsLocal();
+    lastFlushMs.store(nowMsLocal());
 }
 
-bool PacketBatcher::tryFlushAsMultiBlockChange(GameServer& srv, const Player* except) {
-    if (queue.empty()) return false;
-    if (queue.size() < 2) return false;
+bool PacketBatcher::tryFlushAsMultiBlockChange(GameServer& srv, const Player* except,
+                                               std::vector<Queued>& q) {
+    if (q.empty()) return false;
+    if (q.size() < 2) return false;
     bool allBlockUpdate = true;
-    for (auto &q : queue) if (q.id != proto::pl::sc::BlockUpdate) { allBlockUpdate = false; break; }
+    for (auto &queued : q) if (queued.id != proto::pl::sc::BlockUpdate) { allBlockUpdate = false; break; }
     if (!allBlockUpdate) return false;
     struct Rec { int32_t x,y,z; uint16_t state; };
     std::vector<Rec> recs;
-    recs.reserve(queue.size());
+    recs.reserve(q.size());
     int32_t baseCx = INT32_MAX, baseCz = INT32_MAX, baseSy = INT32_MAX;
     bool sameSection = true;
     // Use dedup for last-write-wins as well
     std::unordered_map<int64_t, Rec> dedup;
-    dedup.reserve(queue.size());
-    for (auto &q : queue) {
-        ReadBuffer in(q.body.data);
+    dedup.reserve(q.size());
+    for (auto &queued : q) {
+        ReadBuffer in(queued.body.data);
         int32_t x,y,z; in.position(x,y,z);
         uint16_t st = static_cast<uint16_t>(in.varint());
         int64_t k = ((int64_t)x << 42) ^ ((int64_t)y << 21) ^ (int64_t)z;
@@ -157,7 +166,8 @@ bool PacketBatcher::tryFlushAsMultiBlockChange(GameServer& srv, const Player* ex
     b.varint(static_cast<int32_t>(recs.size()));
     for (auto &r : recs) {
         int32_t lx = r.x & 15, ly = r.y & 15, lz = r.z & 15;
-        int32_t enc = (static_cast<int32_t>(r.state) << 12) | (ly << 8) | (lz << 4) | lx;
+        // vanilla/Prismarine: (state<<12)|(localX<<8)|(localZ<<4)|localY (not y<<8|z<<4|x)
+        int32_t enc = (static_cast<int32_t>(r.state) << 12) | (lx << 8) | (lz << 4) | ly;
         b.varint(enc);
     }
     srv.broadcastPacketExcept(except, proto::pl::sc::MultiBlockChange, b);

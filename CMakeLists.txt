@@ -103,6 +103,12 @@ add_test(NAME native COMMAND test_native $<TARGET_FILE:cppfm>
          WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(native PROPERTIES TIMEOUT 300)
 
+# plan28 D26: header-only ResetScore 0x49 wire + wildcard reset lock
+add_executable(test_scoreboard_reset tests/test_scoreboard_reset.cpp)
+target_include_directories(test_scoreboard_reset PRIVATE src src/generated)
+add_test(NAME scoreboard_reset COMMAND test_scoreboard_reset)
+set_tests_properties(scoreboard_reset PROPERTIES TIMEOUT 30)
+
 add_executable(test_smoke_80
     tests/TestClient.cpp
     tests/test_smoke_80.cpp
