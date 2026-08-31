@@ -765,6 +765,16 @@ public:
     void onBlockMined(Player& p, std::uint16_t oldState);
     void onItemObtained(Player& p, const ItemStack& s, const char* how);
     void onMobKilledBy(Player& p, MobKind kind);
+    // plan35 §1: trigger evaluation helpers
+    void evaluateTickAdvancements(Player& p);
+    void evaluateInventoryChanged(Player& p, const ItemStack& s);
+    void evaluatePlayerKilledEntity(Player& p, MobKind kind);
+    std::vector<AdvancementDefOwned> getMergedAdvancements();
+private:
+    // plan35 cached merged advancements (story 30 + cppfm 9)
+    std::vector<AdvancementDefOwned> cachedMergedAdv_;
+    size_t cachedAdvRawSize_ = 0;
+public:
     // Explosion (creeper / TNT): destroys blocks & damages entities.
     void explodeAt(double x, double y, double z, float power);
     void spawnPrimedTnt(double x,double y,double z,double vx,double vy,double vz,int fuse=80);

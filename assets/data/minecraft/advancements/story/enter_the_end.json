@@ -1,0 +1,23 @@
+{
+  "parent": "minecraft:story/follow_eyeball",
+  "display": {
+    "icon": {
+      "item": "minecraft:end_stone"
+    },
+    "title": "The End?",
+    "description": "Enter the End",
+    "frame": "goal",
+    "show_toast": true,
+    "announce_to_chat": true
+  },
+  "criteria": {
+    "entered_end": {
+      "trigger": "minecraft:tick"
+    }
+  },
+  "requirements": [
+    [
+      "entered_end"
+    ]
+  ]
+}

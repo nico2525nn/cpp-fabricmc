@@ -81,6 +81,45 @@ inline const std::vector<AdvancementDef>& advancementDefs() {
     return defs;
 }
 
+// plan35 §1: owned advancement with parsed vanilla JSON (story tree)
+struct AdvancementTriggerInfo {
+    std::string trigger;
+    json::Value conditions;
+};
+struct AdvancementDefOwned {
+    std::string id;
+    std::string parent; // empty if root
+    std::string title;
+    std::string description;
+    std::string iconItem = "minecraft:stone";
+    int frame = 0;
+    float x = 0.f, y = 0.f;
+    int flags = 0;
+    std::string background;
+    std::vector<AdvancementTriggerInfo> triggers;
+    std::vector<std::vector<std::string>> requirements;
+};
+
+inline AdvancementDefOwned AdvancementDefToOwned(const AdvancementDef& d) {
+    AdvancementDefOwned o;
+    o.id = d.id;
+    o.parent = d.parent ? std::string(d.parent) : std::string();
+    o.title = d.title ? std::string(d.title) : std::string();
+    o.description = d.description ? std::string(d.description) : std::string();
+    o.iconItem = d.iconItem ? std::string(d.iconItem) : std::string("minecraft:stone");
+    o.frame = d.frame;
+    o.x = d.x; o.y = d.y;
+    o.flags = d.flags;
+    o.background = d.background ? std::string(d.background) : std::string();
+    if (o.requirements.empty()) o.requirements = {{"done"}};
+    return o;
+}
+
+// Build owned advancements from datapack raw json map (minecraft:story/* etc.)
+// Filters to story/adventure/husbandry/adventure but plan35 limits to story first.
+std::vector<AdvancementDefOwned> buildOwnedFromRaw(const std::unordered_map<std::string,std::string>& rawAdv);
+std::vector<AdvancementDefOwned> mergedAdvancements(const std::unordered_map<std::string,std::string>& rawAdv);
+
 class AdvancementManager {
 public:
     explicit AdvancementManager(const std::string& uuidHex)
@@ -122,6 +161,11 @@ private:
 void writeAdvancementsPacket(
     WriteBuffer& out, bool reset,
     const std::vector<AdvancementDef>& defs,
+    const std::function<bool(const std::string&)>& isUnlocked,
+    const std::vector<std::string>& removed = {});
+void writeAdvancementsPacket(
+    WriteBuffer& out, bool reset,
+    const std::vector<AdvancementDefOwned>& defs,
     const std::function<bool(const std::string&)>& isUnlocked,
     const std::vector<std::string>& removed = {});
 
