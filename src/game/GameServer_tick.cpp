@@ -336,6 +336,8 @@ void GameServer::chunksUnloadTick() {
         // W19 cap-based LRU: if still over maxLoadedChunks, evict farthest beyond cap (Chebyshev)
         // plan21 §3 polish: cap auto max(8192, viewDist²*4), cap=0 unlimited, clamp 1 when configured 0,
         // and per-tick burst limit 16 to avoid UpdateLight storms.
+        // NOTE plan35 §5: this is NOT a simple clear(); it is Chebyshev-distance sorted LRU with
+        // forced/spawn ticket protection and burst 16/tick. Documented as compliant (not TODO).
         if (cfg_.maxLoadedChunks > 0) {
             size_t remaining = keys.size() > toErase.size() ? keys.size() - toErase.size() : 0;
             if (remaining > (size_t)cfg_.maxLoadedChunks) {
