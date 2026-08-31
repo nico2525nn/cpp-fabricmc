@@ -3215,6 +3215,405 @@ void GameServer::initCommands() {
         ta->then(teamLit);
         d.root->then(ta);
     }
+    // /enchant <targets> <enchantment> [<level>] (plan32 entity — Yarn EnchantCommand)
+    {
+        auto enchant = CommandNode::literal("enchant");
+        auto targets = CommandNode::argument("targets", args::entity(false,false));
+        auto ench = CommandNode::argument("enchantment", args::resourceLocation());
+        ench->suggestions = [](brigadier::StringReader&, brigadier::ParseCtx&){
+            std::vector<std::string> v;
+            for(int i=0;i<42;++i){ std::string n=ItemStack::enchantNameById(i); if(!n.empty()) v.push_back(n); }
+            // also bare names without namespace
+            std::vector<std::string> extra;
+            for(auto &s: v) { auto p=s.find(':'); if(p!=std::string::npos) extra.push_back(s.substr(p+1)); }
+            v.insert(v.end(), extra.begin(), extra.end());
+            return v;
+        };
+        // without level (default 1)
+        ench->executable = true;
+        ench->action = [this](CommandContext& c){
+            Player* src = static_cast<Player*>(c.source.player);
+            const auto sel = c.arg("targets").asSelector();
+            std::string enchName = c.arg("enchantment").asStr();
+            if(enchName.find(':')==std::string::npos) enchName="minecraft:"+enchName;
+            if(ItemStack::enchantIdByName(enchName)<0) throw std::runtime_error("Unknown enchantment: "+enchName);
+            int level = 1;
+            int enchanted = 0;
+            for(auto &nm: sel.playerNames) if(Player* t=findPlayer(*this,nm)){
+                if(t->heldSlot<0 || t->heldSlot>=9) continue;
+                auto &held = t->inv[36 + t->heldSlot];
+                if(held.empty()) continue;
+                ItemStack::addEnchant(held, enchName, level);
+                resendInventory(*t);
+                syncEquipmentOnChange(*t);
+                ++enchanted;
+            }
+            if(enchanted==0) throw std::runtime_error("No target held an item to enchant");
+            sendFeedback(src, "Enchanted "+std::to_string(enchanted)+" target(s) with "+enchName+" "+std::to_string(level));
+            return enchanted;
+        };
+        auto lvlArg = CommandNode::argument("level", args::integer(1, 255));
+        lvlArg->executable = true;
+        lvlArg->action = [this](CommandContext& c){
+            Player* src = static_cast<Player*>(c.source.player);
+            const auto sel = c.arg("targets").asSelector();
+            std::string enchName = c.arg("enchantment").asStr();
+            if(enchName.find(':')==std::string::npos) enchName="minecraft:"+enchName;
+            if(ItemStack::enchantIdByName(enchName)<0) throw std::runtime_error("Unknown enchantment: "+enchName);
+            int level = c.arg("level").asInt();
+            int enchanted = 0;
+            for(auto &nm: sel.playerNames) if(Player* t=findPlayer(*this,nm)){
+                if(t->heldSlot<0 || t->heldSlot>=9) continue;
+                auto &held = t->inv[36 + t->heldSlot];
+                if(held.empty()) continue;
+                ItemStack::addEnchant(held, enchName, level);
+                resendInventory(*t);
+                syncEquipmentOnChange(*t);
+                ++enchanted;
+            }
+            if(enchanted==0) throw std::runtime_error("No target held an item to enchant");
+            sendFeedback(src, "Enchanted "+std::to_string(enchanted)+" target(s) with "+enchName+" "+std::to_string(level));
+            return enchanted;
+        };
+        ench->then(lvlArg);
+        targets->then(ench);
+        enchant->then(targets);
+        d.root->then(enchant);
+    }
+    // /attribute <target> <attribute> get|base set|modifier add|modifier remove|modifier value get (plan32 entity — Yarn AttributeCommand)
+    {
+        auto attribute = CommandNode::literal("attribute");
+        auto target = CommandNode::argument("target", args::entity(true,false));
+        auto attrArg = CommandNode::argument("attribute", args::resourceLocation());
+        attrArg->suggestions = [](brigadier::StringReader&, brigadier::ParseCtx&){
+            std::vector<std::string> v;
+            for(auto a: {Attribute::MAX_HEALTH, Attribute::MOVEMENT_SPEED, Attribute::ATTACK_DAMAGE, Attribute::ARMOR, Attribute::ARMOR_TOUGHNESS, Attribute::KNOCKBACK_RESISTANCE, Attribute::ATTACK_SPEED, Attribute::ATTACK_KNOCKBACK, Attribute::BLOCK_BREAK_SPEED, Attribute::BLOCK_INTERACTION_RANGE, Attribute::ENTITY_INTERACTION_RANGE, Attribute::FALL_DAMAGE_MULTIPLIER, Attribute::FLYING_SPEED, Attribute::FOLLOW_RANGE, Attribute::GRAVITY, Attribute::JUMP_STRENGTH, Attribute::LUCK, Attribute::MAX_ABSORPTION, Attribute::SAFE_FALL_DISTANCE, Attribute::SCALE, Attribute::STEP_HEIGHT, Attribute::SPAWN_REINFORCEMENTS, Attribute::TEMPT_RANGE, Attribute::WATER_MOVEMENT_EFFICIENCY}){
+                v.emplace_back(attributeKey(a));
+            }
+            // also add short names for convenience
+            v.push_back("minecraft:generic.max_health"); v.push_back("minecraft:generic.movement_speed");
+            return v;
+        };
+        auto resolveAttr = [](const std::string& raw) -> std::optional<Attribute> {
+            std::string id = raw;
+            if(id.find(':')==std::string::npos) id="minecraft:"+id;
+            // direct mapped keys
+            for(auto a: {Attribute::MOVEMENT_SPEED, Attribute::MAX_HEALTH, Attribute::KNOCKBACK_RESISTANCE, Attribute::ARMOR, Attribute::ARMOR_TOUGHNESS, Attribute::ATTACK_DAMAGE, Attribute::ATTACK_SPEED, Attribute::FLYING_SPEED, Attribute::FOLLOW_RANGE, Attribute::MAX_ABSORPTION, Attribute::STEP_HEIGHT, Attribute::ATTACK_KNOCKBACK, Attribute::BLOCK_BREAK_SPEED, Attribute::BLOCK_INTERACTION_RANGE, Attribute::BURNING_TIME, Attribute::ENTITY_INTERACTION_RANGE, Attribute::EXPLOSION_KNOCKBACK_RESISTANCE, Attribute::FALL_DAMAGE_MULTIPLIER, Attribute::GRAVITY, Attribute::JUMP_STRENGTH, Attribute::LUCK, Attribute::MINING_EFFICIENCY, Attribute::MOVEMENT_EFFICIENCY, Attribute::OXYGEN_BONUS, Attribute::SAFE_FALL_DISTANCE, Attribute::SCALE, Attribute::SNEAKING_SPEED, Attribute::SPAWN_REINFORCEMENTS, Attribute::SUBMERGED_MINING_SPEED, Attribute::SWEEPING_DAMAGE_RATIO, Attribute::TEMPT_RANGE, Attribute::WATER_MOVEMENT_EFFICIENCY}){
+                if(std::string(attributeKey(a))==id) return a;
+            }
+            // aliases: allow "generic.max_health" etc to map to same
+            std::string low=id;
+            for(char &c: low) c=tolower((unsigned char)c);
+            if(low=="minecraft:generic.max_health" || low=="generic.max_health" || low=="max_health") return Attribute::MAX_HEALTH;
+            if(low=="minecraft:generic.movement_speed" || low=="generic.movement_speed" || low=="movement_speed") return Attribute::MOVEMENT_SPEED;
+            return std::nullopt;
+        };
+        auto sendAttrUpdate = [this](Player& p){
+            WriteBuffer ab; p.attributes.writeUpdate(ab, p.entityId);
+            try{ p.conn->sendPacket(proto::pl::sc::UpdateAttributes, ab); }catch(...){}
+        };
+        // attribute <target> <attribute> get [<scale>]
+        {
+            auto getLit = CommandNode::literal("get");
+            getLit->executable = true;
+            getLit->action = [this, resolveAttr](CommandContext& c){
+                Player* src = static_cast<Player*>(c.source.player);
+                const auto sel = c.arg("target").asSelector();
+                std::string attrRaw = c.arg("attribute").asStr();
+                auto aopt = resolveAttr(attrRaw);
+                if(!aopt) throw std::runtime_error("Unknown attribute: "+attrRaw);
+                Attribute at = *aopt;
+                std::vector<Player*> targets;
+                for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)) targets.push_back(p);
+                if(targets.empty() && src) targets.push_back(src);
+                if(targets.empty()) throw std::runtime_error("No target for attribute get");
+                double v = targets.front()->attributes.getValue(at);
+                sendFeedback(src, std::string(attributeKey(at))+" has value "+std::to_string(v));
+                return (int)std::llround(v);
+            };
+            auto scaleArg = CommandNode::argument("scale", args::floatArg(-1e9f, 1e9f));
+            scaleArg->executable = true;
+            scaleArg->action = [this, resolveAttr](CommandContext& c){
+                Player* src = static_cast<Player*>(c.source.player);
+                const auto sel = c.arg("target").asSelector();
+                std::string attrRaw = c.arg("attribute").asStr();
+                auto aopt = resolveAttr(attrRaw);
+                if(!aopt) throw std::runtime_error("Unknown attribute: "+attrRaw);
+                Attribute at = *aopt;
+                double scale = c.arg("scale").asDouble();
+                std::vector<Player*> targets;
+                for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)) targets.push_back(p);
+                if(targets.empty() && src) targets.push_back(src);
+                if(targets.empty()) throw std::runtime_error("No target for attribute get");
+                double v = targets.front()->attributes.getValue(at) * scale;
+                sendFeedback(src, std::string(attributeKey(at))+" scaled value "+std::to_string(v));
+                return (int)std::llround(v);
+            };
+            getLit->then(scaleArg);
+            attrArg->then(getLit);
+        }
+        // base branch: base set <value> | base get [<scale>] | base reset
+        {
+            auto baseLit = CommandNode::literal("base");
+            auto baseSet = CommandNode::literal("set");
+            auto baseVal = CommandNode::argument("value", args::floatArg(-1e9f, 1e9f));
+            baseVal->executable = true;
+            baseVal->action = [this, resolveAttr, sendAttrUpdate](CommandContext& c){
+                Player* src = static_cast<Player*>(c.source.player);
+                const auto sel = c.arg("target").asSelector();
+                std::string attrRaw = c.arg("attribute").asStr();
+                auto aopt = resolveAttr(attrRaw);
+                if(!aopt) throw std::runtime_error("Unknown attribute: "+attrRaw);
+                Attribute at = *aopt;
+                double v = c.arg("value").asDouble();
+                int cnt=0;
+                for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)){
+                    p->attributes.setBase(at, v);
+                    sendAttrUpdate(*p);
+                    ++cnt;
+                }
+                if(cnt==0 && src){ src->attributes.setBase(at, v); sendAttrUpdate(*src); cnt=1; }
+                sendFeedback(src, std::string(attributeKey(at))+" base set to "+std::to_string(v));
+                return cnt;
+            };
+            baseSet->then(baseVal);
+            baseLit->then(baseSet);
+            auto baseGet = CommandNode::literal("get");
+            baseGet->executable = true;
+            baseGet->action = [this, resolveAttr](CommandContext& c){
+                Player* src = static_cast<Player*>(c.source.player);
+                const auto sel = c.arg("target").asSelector();
+                std::string attrRaw = c.arg("attribute").asStr();
+                auto aopt = resolveAttr(attrRaw);
+                if(!aopt) throw std::runtime_error("Unknown attribute: "+attrRaw);
+                Attribute at = *aopt;
+                std::vector<Player*> targets;
+                for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)) targets.push_back(p);
+                if(targets.empty() && src) targets.push_back(src);
+                if(targets.empty()) throw std::runtime_error("No target");
+                double v = targets.front()->attributes.getBase(at);
+                sendFeedback(src, std::string(attributeKey(at))+" base is "+std::to_string(v));
+                return (int)std::llround(v);
+            };
+            auto baseGetScale = CommandNode::argument("scale", args::floatArg(-1e9f, 1e9f));
+            baseGetScale->executable = true;
+            baseGetScale->action = [this, resolveAttr](CommandContext& c){
+                Player* src = static_cast<Player*>(c.source.player);
+                const auto sel = c.arg("target").asSelector();
+                std::string attrRaw = c.arg("attribute").asStr();
+                auto aopt = resolveAttr(attrRaw);
+                if(!aopt) throw std::runtime_error("Unknown attribute: "+attrRaw);
+                Attribute at = *aopt;
+                double scale = c.arg("scale").asDouble();
+                std::vector<Player*> targets;
+                for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)) targets.push_back(p);
+                if(targets.empty() && src) targets.push_back(src);
+                double v = targets.front()->attributes.getBase(at) * scale;
+                sendFeedback(src, std::string(attributeKey(at))+" base scaled "+std::to_string(v));
+                return (int)std::llround(v);
+            };
+            baseGet->then(baseGetScale);
+            baseLit->then(baseGet);
+            auto baseReset = CommandNode::literal("reset");
+            baseReset->executable = true;
+            baseReset->action = [this, resolveAttr, sendAttrUpdate](CommandContext& c){
+                Player* src = static_cast<Player*>(c.source.player);
+                const auto sel = c.arg("target").asSelector();
+                std::string attrRaw = c.arg("attribute").asStr();
+                auto aopt = resolveAttr(attrRaw);
+                if(!aopt) throw std::runtime_error("Unknown attribute: "+attrRaw);
+                Attribute at = *aopt;
+                // reset to default base per AttributeManager defaults
+                AttributeManager defaults;
+                double def = defaults.getBase(at);
+                int cnt=0;
+                for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)){ p->attributes.setBase(at, def); sendAttrUpdate(*p); ++cnt; }
+                sendFeedback(src, std::string(attributeKey(at))+" base reset");
+                return cnt;
+            };
+            baseLit->then(baseReset);
+            attrArg->then(baseLit);
+        }
+        // modifier branch
+        {
+            auto modLit = CommandNode::literal("modifier");
+            // add <uuid> <name> <value> <operation>
+            auto addLit = CommandNode::literal("add");
+            auto uuidArg = CommandNode::argument("uuid", args::stringWord());
+            auto nameArg = CommandNode::argument("name", args::stringWord());
+            auto valArg = CommandNode::argument("value", args::floatArg(-1e9f, 1e9f));
+            auto opArg = CommandNode::argument("operation", args::stringWord());
+            opArg->suggestions = [](brigadier::StringReader&, brigadier::ParseCtx&){ return std::vector<std::string>{"add_value","add_multiplied_base","add_multiplied_total","0","1","2"}; };
+            opArg->executable = true;
+            opArg->action = [this, resolveAttr, sendAttrUpdate](CommandContext& c){
+                Player* src = static_cast<Player*>(c.source.player);
+                const auto sel = c.arg("target").asSelector();
+                std::string attrRaw = c.arg("attribute").asStr();
+                auto aopt = resolveAttr(attrRaw);
+                if(!aopt) throw std::runtime_error("Unknown attribute: "+attrRaw);
+                Attribute at = *aopt;
+                std::string uuid = c.arg("uuid").asStr();
+                std::string opStr = c.arg("operation").asStr();
+                double amount = c.arg("value").asDouble();
+                int op = 0;
+                if(opStr=="add_value" || opStr=="0") op=0;
+                else if(opStr=="add_multiplied_base" || opStr=="1") op=1;
+                else if(opStr=="add_multiplied_total" || opStr=="2") op=2;
+                else throw std::runtime_error("Unknown operation: "+opStr);
+                int cnt=0;
+                for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)){
+                    p->attributes.addModifier(at, {uuid, amount, op});
+                    sendAttrUpdate(*p);
+                    ++cnt;
+                }
+                if(cnt==0 && src){ src->attributes.addModifier(at, {uuid, amount, op}); sendAttrUpdate(*src); cnt=1; }
+                sendFeedback(src, "Added modifier "+uuid+" to "+std::string(attributeKey(at)));
+                return cnt;
+            };
+            valArg->then(opArg);
+            nameArg->then(valArg);
+            uuidArg->then(nameArg);
+            addLit->then(uuidArg);
+            modLit->then(addLit);
+            // remove <uuid>
+            auto remLit = CommandNode::literal("remove");
+            auto remUuid = CommandNode::argument("uuid", args::stringWord());
+            remUuid->executable = true;
+            remUuid->action = [this, resolveAttr, sendAttrUpdate](CommandContext& c){
+                Player* src = static_cast<Player*>(c.source.player);
+                const auto sel = c.arg("target").asSelector();
+                std::string attrRaw = c.arg("attribute").asStr();
+                auto aopt = resolveAttr(attrRaw);
+                if(!aopt) throw std::runtime_error("Unknown attribute: "+attrRaw);
+                Attribute at = *aopt;
+                std::string uuid = c.arg("uuid").asStr();
+                int cnt=0;
+                for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)){ p->attributes.removeModifier(at, uuid); sendAttrUpdate(*p); ++cnt; }
+                if(cnt==0 && src){ src->attributes.removeModifier(at, uuid); sendAttrUpdate(*src); cnt=1; }
+                sendFeedback(src, "Removed modifier "+uuid);
+                return cnt;
+            };
+            remLit->then(remUuid);
+            modLit->then(remLit);
+            // value get <uuid> [<scale>]
+            auto valGetLit = CommandNode::literal("value");
+            auto valGetKw = CommandNode::literal("get");
+            auto vgUuid = CommandNode::argument("uuid", args::stringWord());
+            vgUuid->executable = true;
+            vgUuid->action = [this, resolveAttr](CommandContext& c){
+                Player* src = static_cast<Player*>(c.source.player);
+                const auto sel = c.arg("target").asSelector();
+                std::string attrRaw = c.arg("attribute").asStr();
+                auto aopt = resolveAttr(attrRaw);
+                if(!aopt) throw std::runtime_error("Unknown attribute: "+attrRaw);
+                Attribute at = *aopt;
+                std::string uuid = c.arg("uuid").asStr();
+                std::vector<Player*> targets;
+                for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)) targets.push_back(p);
+                if(targets.empty() && src) targets.push_back(src);
+                if(targets.empty()) throw std::runtime_error("No target");
+                auto opt = targets.front()->attributes.getModifierValue(at, uuid);
+                double amt = opt ? *opt : 0;
+                if(!opt) throw std::runtime_error("Modifier not found: "+uuid);
+                sendFeedback(src, "Modifier "+uuid+" has value "+std::to_string(amt));
+                return (int)std::llround(amt);
+            };
+            auto vgScale = CommandNode::argument("scale", args::floatArg(-1e9f, 1e9f));
+            vgScale->executable = true;
+            vgScale->action = [this, resolveAttr](CommandContext& c){
+                Player* src = static_cast<Player*>(c.source.player);
+                const auto sel = c.arg("target").asSelector();
+                std::string attrRaw = c.arg("attribute").asStr();
+                auto aopt = resolveAttr(attrRaw);
+                if(!aopt) throw std::runtime_error("Unknown attribute: "+attrRaw);
+                Attribute at = *aopt;
+                double scale = c.arg("scale").asDouble();
+                std::string uuid = c.arg("uuid").asStr();
+                std::vector<Player*> targets;
+                for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)) targets.push_back(p);
+                if(targets.empty() && src) targets.push_back(src);
+                if(targets.empty()) throw std::runtime_error("No target");
+                auto opt = targets.front()->attributes.getModifierValue(at, uuid);
+                double amt = opt ? *opt * scale : 0;
+                if(!opt) throw std::runtime_error("Modifier not found: "+uuid);
+                sendFeedback(src, "Modifier "+uuid+" scaled value "+std::to_string(amt));
+                return (int)std::llround(amt);
+            };
+            vgUuid->then(vgScale);
+            valGetKw->then(vgUuid);
+            valGetLit->then(valGetKw);
+            modLit->then(valGetLit);
+            attrArg->then(modLit);
+        }
+        target->then(attrArg);
+        attribute->then(target);
+        d.root->then(attribute);
+    }
+    // /trigger <objective> [add|set <value>] (plan32 entity — Yarn TriggerCommand)
+    {
+        auto trigger = CommandNode::literal("trigger");
+        auto objective = CommandNode::argument("objective", args::objectiveArg());
+        objective->suggestions = [this](brigadier::StringReader&, brigadier::ParseCtx&){
+            std::vector<std::string> v;
+            for(auto &o: scoreboard.objectives) v.push_back(o.name);
+            return v;
+        };
+        objective->executable = true;
+        objective->action = [this](CommandContext& c){
+            Player* src = static_cast<Player*>(c.source.player);
+            if(!src) throw std::runtime_error("trigger can only be run by a player");
+            std::string obj = c.arg("objective").asStr();
+            auto* o = scoreboard.find(obj);
+            if(!o) throw std::runtime_error("Unknown objective: "+obj);
+            if(o->criteria!="trigger") throw std::runtime_error("Objective "+obj+" is not trigger criteria");
+            // bare trigger enables? In vanilla, bare trigger does nothing but feedback. We implement as add 1
+            // Check if score exists and enabled? Simplified: add 1
+            scoreboard.addScore(obj, src->name, 1);
+            int v = scoreboard.getScore(obj, src->name);
+            sendScoreAll(obj, src->name, v);
+            sendFeedback(src, "Triggered "+obj+" add 1 (now "+std::to_string(v)+")");
+            return v;
+        };
+        auto addLit = CommandNode::literal("add");
+        auto addVal = CommandNode::argument("value", args::integer(INT32_MIN, INT32_MAX));
+        addVal->executable = true;
+        addVal->action = [this](CommandContext& c){
+            Player* src = static_cast<Player*>(c.source.player);
+            if(!src) throw std::runtime_error("trigger can only be run by a player");
+            std::string obj = c.arg("objective").asStr();
+            auto* o = scoreboard.find(obj);
+            if(!o) throw std::runtime_error("Unknown objective: "+obj);
+            if(o->criteria!="trigger") throw std::runtime_error("Objective "+obj+" is not trigger criteria");
+            int delta = c.arg("value").asInt();
+            scoreboard.addScore(obj, src->name, delta);
+            int v = scoreboard.getScore(obj, src->name);
+            sendScoreAll(obj, src->name, v);
+            sendFeedback(src, "Triggered "+obj+" add "+std::to_string(delta)+" (now "+std::to_string(v)+")");
+            return v;
+        };
+        addLit->then(addVal);
+        objective->then(addLit);
+        auto setLit = CommandNode::literal("set");
+        auto setVal = CommandNode::argument("value", args::integer(INT32_MIN, INT32_MAX));
+        setVal->executable = true;
+        setVal->action = [this](CommandContext& c){
+            Player* src = static_cast<Player*>(c.source.player);
+            if(!src) throw std::runtime_error("trigger can only be run by a player");
+            std::string obj = c.arg("objective").asStr();
+            auto* o = scoreboard.find(obj);
+            if(!o) throw std::runtime_error("Unknown objective: "+obj);
+            if(o->criteria!="trigger") throw std::runtime_error("Objective "+obj+" is not trigger criteria");
+            int v = c.arg("value").asInt();
+            scoreboard.setScore(obj, src->name, v);
+            sendScoreAll(obj, src->name, v);
+            sendFeedback(src, "Triggered "+obj+" set "+std::to_string(v));
+            return v;
+        };
+        setLit->then(setVal);
+        objective->then(setLit);
+        trigger->then(objective);
+        d.root->then(trigger);
+    }
 }
 
 } // namespace cppfm
