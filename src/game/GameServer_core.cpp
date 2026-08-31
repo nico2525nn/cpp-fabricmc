@@ -329,6 +329,17 @@ void GameServer::evaluateTickAdvancements(Player& p) {
         if (p.advancements->has(adv.id)) continue;
         for (auto& tr : adv.triggers) {
             if (tr.trigger == "minecraft:tick" || tr.trigger == "tick") {
+                // plan35 §3: gate tick trigger via PredicateContext if conditions contain check_gamerule/location etc
+                if (!tr.conditions.isNull() && tr.conditions.isObj()) {
+                    PredicateContext ctx;
+                    ctx.world = &worldFor(p.dimension);
+                    ctx.gamerules = &gamerules_;
+                    ctx.player = &p;
+                    ctx.x = static_cast<int32_t>(p.x);
+                    ctx.y = static_cast<int32_t>(p.y);
+                    ctx.z = static_cast<int32_t>(p.z);
+                    if (!datapackManager_.evaluatePredicateValue(tr.conditions, ctx)) continue;
+                }
                 grantAdvancement(p, adv.id);
                 break;
             }
@@ -372,7 +383,20 @@ void GameServer::evaluateInventoryChanged(Player& p, const ItemStack& s) {
                     match = true;
                 }
             }
-            if (match) { grantAdvancement(p, adv.id); break; }
+            if (match) {
+                // plan35 §3: additional predicate gating via PredicateContext (check_gamerule/location_check)
+                if (!tr.conditions.isNull() && tr.conditions.isObj() && tr.conditions.find("condition")) {
+                    PredicateContext ctx;
+                    ctx.world = &worldFor(p.dimension);
+                    ctx.gamerules = &gamerules_;
+                    ctx.player = &p;
+                    ctx.x = static_cast<int32_t>(p.x);
+                    ctx.y = static_cast<int32_t>(p.y);
+                    ctx.z = static_cast<int32_t>(p.z);
+                    if (!datapackManager_.evaluatePredicateValue(tr.conditions, ctx)) match = false;
+                }
+                if (match) { grantAdvancement(p, adv.id); break; }
+            }
         }
     }
 }
@@ -380,6 +404,8 @@ void GameServer::evaluatePlayerKilledEntity(Player& p, MobKind kind) {
     if (!p.advancements) return;
     std::string killed = MobEntity::kindName(kind);
     auto merged = getMergedAdvancements();
+    // temporary victim entity for predicate context
+    MobEntity victimTmp; victimTmp.kind = kind;
     for (auto& adv : merged) {
         if (p.advancements->has(adv.id)) continue;
         for (auto& tr : adv.triggers) {
@@ -388,7 +414,6 @@ void GameServer::evaluatePlayerKilledEntity(Player& p, MobKind kind) {
             if (tr.conditions.isNull()) match = true;
             else {
                 if (auto* ent = tr.conditions.find("entity")) {
-                    // entity predicate may contain type
                     if (ent->isArr()) {
                         for (auto& e : ent->arr) if (e.isObj()) if (auto* tp = e.find("type")) if (tp->asStr()==killed) match=true;
                     } else if (ent->isObj()) {
@@ -403,8 +428,19 @@ void GameServer::evaluatePlayerKilledEntity(Player& p, MobKind kind) {
                 } else {
                     match = true;
                 }
-                // if no entity filter, grant
                 if (!tr.conditions.find("entity") && !tr.conditions.find("predicate")) match = true;
+                // plan35 §3: gate with PredicateContext if conditions contain check_gamerule/location_check/entity_properties
+                if (match && tr.conditions.isObj() && tr.conditions.find("condition")) {
+                    PredicateContext ctx;
+                    ctx.world = &worldFor(p.dimension);
+                    ctx.gamerules = &gamerules_;
+                    ctx.player = &p;
+                    ctx.entity = &victimTmp;
+                    ctx.x = static_cast<int32_t>(p.x);
+                    ctx.y = static_cast<int32_t>(p.y);
+                    ctx.z = static_cast<int32_t>(p.z);
+                    if (!datapackManager_.evaluatePredicateValue(tr.conditions, ctx)) match = false;
+                }
             }
             if (match) { grantAdvancement(p, adv.id); break; }
         }
