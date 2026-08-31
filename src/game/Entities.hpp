@@ -59,7 +59,7 @@ struct XpOrbEntity {
     std::int64_t ageTicks = 0;
 };
 
-enum class ProjectileKind : std::uint8_t { Arrow=0, Snowball, Egg, EnderPearl, Potion, WitherSkull, Fireball, DragonFireball, Trident };
+enum class ProjectileKind : std::uint8_t { Arrow=0, Snowball, Egg, EnderPearl, Potion, WitherSkull, Fireball, DragonFireball, Trident, WindCharge=9, BreezeWindCharge=10 };
 
 struct ProjectileEntity {
     std::int32_t entityId = 0;
@@ -418,6 +418,14 @@ struct MobEntity {
     bool creakingFrozen = false;
     bool creakingAlerted = false;
     int creakingSameBlockTicks = 0;
+    // plan34 §3 Armadillo roll-up (80 tick TTL, scanRate 5) / Breeze wind_charge & jump
+    bool armadilloRolledUp = false;
+    std::int64_t armadilloRollUpUntil = 0;
+    std::int64_t armadilloDangerDetectedUntil = 0;
+    std::int64_t armadilloLastScanTick = -10000;
+    std::int64_t breezeWindChargeCooldown = 0;
+    std::int64_t breezeJumpCooldown = 0;
+    std::int64_t breezeLastJumpTick = -10000;
 
     static const char* kindName(MobKind k) { return mobStats(k).name; }
     static std::uint32_t typeId(MobKind k) {
