@@ -2,8 +2,7 @@
 // Prismarine 1.21.4 protocol.json field order → hand-embedded expected bytes.
 // No server/network required; unit-form, <30s.  See plan/plan30.md App.A + App.C.
 // All expectations cite Prismarine type (mc-data pc/1.21.4/protocol.json) + Yarn/wikis.
-// H1 (UpdateAttributes varint mapper) is still old string wire on main(02cc268) —
-//   marked FIXME/SKIP until wt30/entity merges H1.  Other HIGH (H2/H3) already FIXED.
+// H1 merged 56e0ef6, varint mapper verified
 
 #include "../src/core/ByteBuffer.hpp"
 #include "../src/core/NBT.hpp"
@@ -297,7 +296,7 @@ static void test_update_attributes_wire() {
     if (b.data.size() < 4) { check(false,"UpdateAttributes body too short"); return; }
     // After eid(1 byte) + count(1 byte), next should be varint mapper (1 byte small) or string len varint (~1C)
     uint8_t third = b.data[2];
-    bool isOldStringWire = (third >= 10); // string len 28 = 0x1C, varint mapper 0-21 = <=0x15
+    bool isOldStringWire = (third > 0x15); // old string len 20-35 (0x14-0x23), new mapper 0-21 (0x00-0x15)
     if (isOldStringWire) {
         std::printf("  SKIP H1 UpdateAttributes spec (old string wire detected, third=0x%02x) — TODO after entity merge\n", third);
         ++g_skip;
@@ -316,11 +315,14 @@ static void test_update_attributes_wire() {
         for(auto v: specExp) std::printf("%02x ",v); std::printf("(key varint 08 = generic.armor)\n");
         return;
     }
-    // New wire path: verify spec
+    // New wire path: verify spec (H1 merged 56e0ef6 — 22 attrs filtered, first MAX_HEALTH 16)
     ReadBuffer r(b.data);
     check(r.varint()==1, "UpdateAttributes eid 1");
-    int cnt = r.varint(); check(cnt==31 || cnt==32, "count 31/32");
-    int key = r.varint(); check(key>=0 && key<=21, "first key varint mapper 0-21");
+    int cnt = r.varint(); check(cnt==22, "count 22 (mapper-filtered 22/32)");
+    int key = r.varint(); check(key==16, "first key 16 MAX_HEALTH (mapper 0x10)");
+    double v = r.f64(); check(std::isfinite(v), "first value f64 8 bytes (MAX_HEALTH getValue)");
+    int mods = r.varint(); check(mods==0, "first modifiers 0");
+    check(r.remaining() > 0, "remaining attrs present");
 }
 
 // C3 SpawnEntity, C4 EntityTeleport etc
