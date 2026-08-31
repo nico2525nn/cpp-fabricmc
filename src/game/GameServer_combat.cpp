@@ -19,6 +19,8 @@
 #include "EnchantmentHelper.hpp"
 #include "MobSpawner.hpp"
 #include "BossAI.hpp"
+#include <fstream>
+#include <cmath>
 #include "MenuLogic.hpp"
 #include "CostCalculator.hpp"
 #include "PotionBrewing.hpp"
@@ -60,6 +62,13 @@ void GameServer::applyDamage(Player& p, float amount, const DamageSource& src) {
         de.boolean(false);
         try { p.conn->sendPacket(pl::sc::DamageEvent, de); } catch (...) {}
         broadcastPacketExcept(&p, pl::sc::DamageEvent, de);
+    }
+    // plan34 network: HurtAnimation 0x25 (yaw 0 when attacker unknown) + EntitySoundEffect 0x6E for player hurt
+    {
+        float yaw = 0.f;
+        broadcastHurtAnimation(p.entityId, yaw, nullptr);
+        std::string snd = "minecraft:entity.player.hurt";
+        broadcastEntitySound(p.entityId, snd, 1.f, 1.f, SoundSource::Player);
     }
 }
 void GameServer::applyDamage(Player& p, float amount, const char* cause) {
@@ -356,6 +365,7 @@ void GameServer::tntTick(){
                 tp.f64(t->x); tp.f64(t->y); tp.f64(t->z);
                 tp.i8(0); tp.i8(0); tp.boolean(false);
                 broadcastPacketExcept(nullptr, pl::sc::EntityTeleport, tp);
+                broadcastSyncEntityPosition(t->entityId, t->x, t->y, t->z, t->vx, t->vy, t->vz, 0, 0, false, nullptr);
             }
         }
         for(auto &t: toExplode){
@@ -465,9 +475,130 @@ void GameServer::applyDamageToMob(MobEntity& m, float amount, const DamageSource
         else bossAI_->onDeath(m);
     }
     if (m.health <= 0) m.dead = true;
+    // plan34 network: HurtAnimation 0x25 + EntitySoundEffect 0x6E
+    {
+        float yaw = 0.f;
+        // try to compute yaw if attacker is nearest player (best effort)
+        Player* attacker = nullptr;
+        double best = 1e100;
+        for (auto& pl : playersSnapshot()) {
+            double dx = pl->x - m.x, dz = pl->z - m.z;
+            double d2 = dx*dx + dz*dz;
+            if (d2 < best) { best = d2; attacker = pl.get(); }
+        }
+        if (attacker && best < 64) {
+            double dx = attacker->x - m.x, dz = attacker->z - m.z;
+            yaw = static_cast<float>(std::atan2(dz, dx) * 180.0 / 3.141592653589793);
+        }
+        broadcastHurtAnimation(m.entityId, yaw, nullptr);
+        std::string snd;
+        switch (m.kind) {
+            case MobKind::Creeper: snd = "minecraft:entity.creeper.hurt"; break;
+            case MobKind::Zombie: snd = "minecraft:entity.zombie.hurt"; break;
+            case MobKind::Skeleton: snd = "minecraft:entity.skeleton.hurt"; break;
+            case MobKind::Spider: snd = "minecraft:entity.spider.hurt"; break;
+            case MobKind::Enderman: snd = "minecraft:entity.enderman.hurt"; break;
+            default: snd = "minecraft:entity.generic.hurt"; break;
+        }
+        broadcastEntitySound(m.entityId, snd, 1.f, 1.f, SoundSource::Hostile);
+    }
 }
 void GameServer::applyDamageToMob(MobEntity& m, float amount, const char* cause) {
     DamageSource src(cause ? std::string(cause) : std::string("generic"));
     applyDamageToMob(m, amount, src);
+}
+// plan34 network: 6 toClient helpers
+void GameServer::sendActionBar(Player& p, const std::string& text) {
+    if (!p.conn) return;
+    WriteBuffer b; nbt::writeTextComponent(b, text);
+    try { p.conn->sendPacket(proto::pl::sc::ActionBar, b); } catch (...) {}
+}
+void GameServer::broadcastActionBar(const std::string& text, Player* except) {
+    WriteBuffer b; nbt::writeTextComponent(b, text);
+    broadcastPacketExcept(except, proto::pl::sc::ActionBar, b);
+}
+void GameServer::sendServerData(Player& p) {
+    if (!p.conn) return;
+    WriteBuffer b;
+    nbt::writeTextComponent(b, config().motd);
+    // iconBytes optional ByteArray: try server-icon.png raw bytes
+    std::vector<uint8_t> icon;
+    {
+        std::ifstream f("server-icon.png", std::ios::binary);
+        if (f) {
+            icon.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+            // vanilla limit 64x64 png; clamp to avoid huge
+            if (icon.size() > 65535) icon.resize(65535);
+        }
+    }
+    if (icon.empty()) {
+        b.boolean(false);
+    } else {
+        b.boolean(true);
+        b.varint(static_cast<int32_t>(icon.size()));
+        b.raw(icon.data(), icon.size());
+    }
+    try { p.conn->sendPacket(proto::pl::sc::ServerData, b); } catch (...) {}
+}
+void GameServer::broadcastServerData() {
+    for (auto& pp : playersSnapshot()) sendServerData(*pp);
+}
+void GameServer::sendHurtAnimation(Player& p, int32_t entityId, float yaw) {
+    if (!p.conn) return;
+    if (!std::isfinite(yaw)) yaw = 0;
+    WriteBuffer b; b.varint(entityId); b.f32(yaw);
+    try { p.conn->sendPacket(proto::pl::sc::HurtAnimation, b); } catch (...) {}
+}
+void GameServer::broadcastHurtAnimation(int32_t entityId, float yaw, Player* except) {
+    if (!std::isfinite(yaw)) yaw = 0;
+    WriteBuffer b; b.varint(entityId); b.f32(yaw);
+    broadcastPacketExcept(except, proto::pl::sc::HurtAnimation, b);
+}
+void GameServer::sendEntitySound(Player& p, int32_t entityId, const std::string& soundName, float volume, float pitch, SoundSource category) {
+    if (!p.conn) return;
+    WriteBuffer b;
+    b.varint(0); b.string(soundName); b.boolean(false);
+    b.varint(static_cast<int32_t>(category));
+    b.varint(entityId);
+    b.f32(volume); b.f32(pitch);
+    b.i64(static_cast<int64_t>(entityId) ^ tickNo_);
+    try { p.conn->sendPacket(proto::pl::sc::EntitySoundEffect, b); } catch (...) {}
+}
+void GameServer::broadcastEntitySound(int32_t entityId, const std::string& soundName, float volume, float pitch, SoundSource category) {
+    WriteBuffer b;
+    b.varint(0); b.string(soundName); b.boolean(false);
+    b.varint(static_cast<int32_t>(category));
+    b.varint(entityId);
+    b.f32(volume); b.f32(pitch);
+    b.i64(static_cast<int64_t>(entityId) ^ tickNo_);
+    broadcastPacketExcept(nullptr, proto::pl::sc::EntitySoundEffect, b);
+}
+void GameServer::sendChatSuggestions(Player& p, int32_t action, const std::vector<std::string>& entries) {
+    if (!p.conn) return;
+    WriteBuffer b; b.varint(action); b.varint(static_cast<int32_t>(entries.size()));
+    for (auto& s : entries) b.string(s);
+    try { p.conn->sendPacket(proto::pl::sc::ChatSuggestions, b); } catch (...) {}
+}
+void GameServer::broadcastChatSuggestions(int32_t action, const std::vector<std::string>& entries, Player* except) {
+    WriteBuffer b; b.varint(action); b.varint(static_cast<int32_t>(entries.size()));
+    for (auto& s : entries) b.string(s);
+    broadcastPacketExcept(except, proto::pl::sc::ChatSuggestions, b);
+}
+void GameServer::sendSyncEntityPosition(Player& p, int32_t entityId, double x, double y, double z, double dx, double dy, double dz, float yaw, float pitch, bool onGround) {
+    if (!p.conn) return;
+    WriteBuffer b; b.varint(entityId); b.f64(x); b.f64(y); b.f64(z); b.f64(dx); b.f64(dy); b.f64(dz); b.f32(yaw); b.f32(pitch); b.boolean(onGround);
+    try { p.conn->sendPacket(proto::pl::sc::SyncEntityPosition, b); } catch (...) {}
+}
+void GameServer::broadcastSyncEntityPosition(int32_t entityId, double x, double y, double z, double dx, double dy, double dz, float yaw, float pitch, bool onGround, Player* except) {
+    WriteBuffer b; b.varint(entityId); b.f64(x); b.f64(y); b.f64(z); b.f64(dx); b.f64(dy); b.f64(dz); b.f32(yaw); b.f32(pitch); b.boolean(onGround);
+    broadcastPacketExcept(except, proto::pl::sc::SyncEntityPosition, b);
+}
+void GameServer::sendSyncEntityPosition(Player& p, const MobEntity& mob) {
+    float yawf = 0, pitchf = 0;
+    sendSyncEntityPosition(p, mob.entityId, mob.x, mob.y, mob.z, 0, 0, 0, yawf, pitchf, true);
+}
+void GameServer::broadcastSyncEntityPosition(const MobEntity& mob, Player* except) {
+    float yawf = 0, pitchf = 0;
+    broadcastSyncEntityPosition(mob.entityId, mob.x, mob.y, mob.z, 0, 0, 0, yawf, pitchf, true, except);
 }
 } // namespace cppfm
