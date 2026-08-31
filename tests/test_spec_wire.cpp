@@ -14,6 +14,7 @@
 #include "../src/game/MetadataTypes.hpp"
 #include "../src/game/ChunkCodec.hpp"
 #include "../src/game/World.hpp"
+#include "../src/game/Stats.hpp"
 #include "../src/proto/Ids.hpp"
 
 #include <cstdio>
@@ -772,6 +773,77 @@ static void test_ids_byte_identical() {
     check(proto::cf::sc::AddResourcePack==0x09, "AddResourcePack 0x09");
 }
 
+// plan35 §1 UpdateAdvancements 0x7B golden — 3 cases (L)
+static void test_update_advancements_reset_true(){
+    std::printf("[L1] UpdateAdvancements 0x7B reset=true mapping (cppfm 9) wire\n");
+    check(proto::pl::sc::UpdateAdvancements==0x7B, "UpdateAdvancements id 0x7B");
+    auto& defs = advancementDefs();
+    WriteBuffer b;
+    writeAdvancementsPacket(b, true, defs, [&](const std::string& id){ return id=="cppfm:root"; });
+    // decode and verify
+    ReadBuffer r(b.data);
+    check(r.boolean()==true, "reset true");
+    int cnt = r.varint(); check(cnt==(int)defs.size(), "mappingCount == 9 cppfm defs");
+    // first entry: cppfm:root parent none, hasDisplay true (since isUnlocked root true)
+    std::string id = r.string(); check(id=="cppfm:root","first id cppfm:root");
+    bool hasParent = r.boolean(); check(hasParent==false,"root hasParent false");
+    bool hasDisplay = r.boolean(); check(hasDisplay==true,"root hasDisplay true (unlocked)");
+    if(hasDisplay){
+        nbt::Reader rr(r); rr.skipRoot();
+        nbt::Reader rr2(r); rr2.skipRoot();
+        ItemStack icon = ItemStack::read(r);
+        check(!icon.empty(),"icon non-empty");
+        int frame = r.varint(); (void)frame;
+        int flags = r.varint(); check((flags & 0x02)==0,"reset suppress toast flags &~0x02");
+        if(flags & 0x01){ std::string bg = r.string(); (void)bg; }
+        r.f32(); r.f32();
+    }
+    // spot check last byte structure: packet must be non-empty and end with progressMapping
+    check(b.data.size()>50,"UpdateAdvancements reset packet >50 bytes");
+}
+static void test_update_advancements_delta(){
+    std::printf("[L2] UpdateAdvancements 0x7B delta reset=false single advancement wire\n");
+    auto& defs = advancementDefs();
+    // delta: only cppfm:wood unlocked, reset false
+    std::vector<AdvancementDef> single = { defs[1] }; // wood
+    WriteBuffer b;
+    writeAdvancementsPacket(b, false, single, [&](const std::string& id){ return id=="cppfm:wood"; });
+    ReadBuffer r(b.data);
+    check(r.boolean()==false,"delta reset false");
+    check(r.varint()==1,"delta mappingCount 1");
+    std::string id = r.string(); check(id=="cppfm:wood","delta id cppfm:wood");
+    bool hasParent = r.boolean(); check(hasParent==true,"wood hasParent true");
+    if(hasParent){ std::string par = r.string(); check(par=="cppfm:root","wood parent cppfm:root"); }
+    bool hasDisplay = r.boolean(); check(hasDisplay==true,"wood hasDisplay true");
+    check(b.data.size()>20,"delta packet >20 bytes");
+}
+static void test_update_advancements_removed(){
+    std::printf("[L3] UpdateAdvancements 0x7B removed identifiers + owned merge wire\n");
+    // removed identifiers path
+    std::vector<AdvancementDef> empty;
+    WriteBuffer b;
+    std::vector<std::string> removed = {"minecraft:story/removed_test"};
+    writeAdvancementsPacket(b, false, empty, [&](const std::string&){return false;}, removed);
+    ReadBuffer r(b.data);
+    check(r.boolean()==false,"removed reset false");
+    check(r.varint()==0,"removed mapping 0");
+    int remCnt = r.varint(); check(remCnt==1,"removed count 1");
+    std::string rem = r.string(); check(rem=="minecraft:story/removed_test","removed id preserved");
+    int prog = r.varint(); check(prog==0,"progressMapping 0");
+    check(b.data.size()>5,"removed packet >5 bytes");
+    // owned merge path: 9 cppfm + story 20 -> ~29
+    std::unordered_map<std::string,std::string> raw;
+    // simulate one story entry
+    raw["minecraft:story/root"] = R"({"display":{"icon":{"item":"minecraft:grass_block"},"title":"Root","description":"Story"},"parent":"","criteria":{"tick":{"trigger":"minecraft:tick"}},"requirements":[["tick"]]})";
+    auto merged = mergedAdvancements(raw);
+    check(merged.size()>=10,"mergedAdvancements >=10 (cppfm 9 + story 1)");
+    WriteBuffer b2;
+    writeAdvancementsPacket(b2, true, merged, [&](const std::string& id){return id=="cppfm:root";});
+    ReadBuffer r2(b2.data);
+    check(r2.boolean()==true,"merged reset true");
+    int cnt2 = r2.varint(); check(cnt2==(int)merged.size(),"merged mappingCount matches");
+}
+
 int main(){
     std::printf("=== spec_wire: Prismarine 1.21.4 byte-identical lock (plan30 App.A) ===\n");
     // A
@@ -836,6 +908,9 @@ int main(){
     test_transfer_wire();
     test_unsent_27_verify();
     test_ids_byte_identical();
+    test_update_advancements_reset_true();
+    test_update_advancements_delta();
+    test_update_advancements_removed();
 
     std::printf("=== spec_wire: %d PASS %d FAIL %d SKIP ===\n", g_pass, g_fail, g_skip);
     if (g_skip) std::printf("NOTE: %d SKIP are FIXMEs pending entity/network merge (H1 etc)\n", g_skip);
