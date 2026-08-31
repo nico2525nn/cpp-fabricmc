@@ -21,6 +21,7 @@ struct FoodInfo { int food; float saturation; };
 class HungerManager {
 public:
     // vanilla exhaustion values — plan15/23 strict: walk 0 per HungerConstants (was 0.01), sprint 0.1, swim 0.01, jump 0.05/0.2
+    // plan29 §6 polish: verify walk 0, sprint 0.1/m, swim 0.01/m, jump 0.05/0.2, attack 0.1, damage 0.1, eat/block break 0.005
     static constexpr float EXHAUST_WALK = 0.0f;
     static constexpr float EXHAUST_SPRINT = 0.10f;
     static constexpr float EXHAUST_JUMP = 0.05f;
@@ -29,7 +30,8 @@ public:
     static constexpr float EXHAUST_DAMAGE_TAKEN = 0.10f;
     static constexpr float EXHAUST_SWIM = 0.01f;
     static constexpr float EXHAUST_EAT = 0.005f;
-    static constexpr float EXHAUST_BOW = 0.01f;
+    static constexpr float EXHAUST_BLOCK_BREAK = 0.005f;
+    static constexpr float EXHAUST_BOW = 0.0f; // vanilla bow has no exhaustion (was 0.01)
     // plan15 strict constants per HungerConstants
     static constexpr int FAST_HEALING_INTERVAL = 10;
     static constexpr int SLOW_HEALING_INTERVAL = 80;
@@ -56,6 +58,8 @@ public:
     static void onPlayerJump(Player& p, bool wasOnGround, bool nowOnGround, double dy, bool isSprinting, GameServer& srv);
     static void onPlayerAttack(Player& p, GameServer& srv);
     static void onBowUse(Player& p, GameServer& srv);
+    static void onBlockBreak(Player& p, GameServer& srv);
+    static void onDamageTaken(Player& p, GameServer& srv);
 
     static const std::unordered_map<std::string, FoodInfo>& foodTable();
 

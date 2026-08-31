@@ -90,6 +90,10 @@ inline const std::unordered_map<std::string, std::uint8_t>& byName() {
         mm.emplace("glowing", Glowing);            mm.emplace("levitation", Levitation);
         mm.emplace("luck", Luck);                  mm.emplace("unluck", Unluck);
         mm.emplace("slow_falling", SlowFalling);   mm.emplace("darkness", Darkness);
+        mm.emplace("bad_omen", BadOmen);           mm.emplace("trial_omen", TrialOmen);
+        mm.emplace("raid_omen", RaidOmen);         mm.emplace("hero_of_the_village", HeroOfTheVillage);
+        mm.emplace("wind_charged", WindCharged);   mm.emplace("weaving", Weaving);
+        mm.emplace("oozing", Oozing);              mm.emplace("infested", Infested);
         return mm;
     }();
     return m;
@@ -159,10 +163,18 @@ inline float absorptionFor(const std::vector<EffectInstance>& list) {
 inline bool isInvisible(const std::vector<EffectInstance>& list) { return hasEffect(list, effects::Invisibility); }
 inline bool isGlowing(const std::vector<EffectInstance>& list) { return hasEffect(list, effects::Glowing); }
 // Hunger effect adds exhaustion per tick; saturation effect restores food
+// plan29 §6 polish: vanilla 0.005 per tick per level (was 0.005*20 per 30t = 20x over)
 inline float hungerExhaustionPerTick(const std::vector<EffectInstance>& list) {
     int amp = amplifierFor(list, effects::Hunger);
     if (amp < 0) return 0.f;
-    return 0.005f * float(amp + 1) * 20.f; // ~0.005 per tick per level *20 to scale per second
+    return 0.005f * float(amp + 1);
+}
+// Levitation velocity per Yarn LivingEntity: vy += (0.05*(amp+1) - vy)*0.2, fallDistance reset
+inline double levitationVelocity(int amp) { return 0.05 * double(amp + 1); }
+
+namespace mob_effect_dur {
+    constexpr int TRIAL_OMEN_PER_LEVEL = 15 * 60 * 20; // 18000 ticks per BadOmen level (vanilla TrialOmen)
+    constexpr int RAID_OMEN_DURATION = 30 * 20;        // 600 ticks, amplifier = BadOmen level (vanilla RaidOmen)
 }
 inline bool shouldApplySaturation(const std::vector<EffectInstance>& list, int tickNo) {
     int amp = amplifierFor(list, effects::Saturation);
