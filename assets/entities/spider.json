@@ -1,0 +1,13 @@
+{
+  "type": "minecraft:spider",
+  "attributes": { "max_health": 16, "movement_speed": 0.13, "attack_damage": 2 },
+  "spawning": { "biomes": ["minecraft:plains"], "light_level": { "max": 7 } },
+  "brain": {
+    "behaviors": [
+      { "type": "minecraft:leap_at_target", "priority": 2 },
+      { "type": "minecraft:melee_attack", "priority": 3 },
+      { "type": "minecraft:wander", "priority": 6 }
+    ],
+    "sensors": ["minecraft:nearest_players"]
+  }
+}

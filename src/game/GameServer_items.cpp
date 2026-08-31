@@ -1384,7 +1384,7 @@ void GameServer::spawnProjectile(ProjectileKind kind, double x, double y,
                                    "minecraft:egg", "minecraft:ender_pearl",
                                    "minecraft:potion", "minecraft:wither_skull",
                                    "minecraft:fireball", "minecraft:dragon_fireball",
-                                   "minecraft:trident"};
+                                   "minecraft:trident", "minecraft:wind_charge", "minecraft:breeze_wind_charge"};
     int idx = static_cast<int>(kind);
     const char* entName = (idx >=0 && idx < (int)(sizeof(kNames)/sizeof(kNames[0]))) ? kNames[idx] : "minecraft:snowball";
     auto ti = types.find(entName);
@@ -1416,9 +1416,22 @@ void GameServer::projectilesTick() {
             }
             if (!pr->stuck) {
                 // plan16: Fireball gravity 0 (vanilla FireballEntity, WitherSkull, DragonFireball have no gravity)
+                // plan34 §3 wind_charge / breeze_wind_charge gravity 0 + breeze deflect
                 double g = 0.03;
                 if (pr->kind == ProjectileKind::Arrow) g = 0.05;
-                else if (pr->kind == ProjectileKind::Fireball || pr->kind == ProjectileKind::WitherSkull || pr->kind == ProjectileKind::DragonFireball) g = 0.0;
+                else if (pr->kind == ProjectileKind::Fireball || pr->kind == ProjectileKind::WitherSkull || pr->kind == ProjectileKind::DragonFireball || pr->kind == ProjectileKind::WindCharge || pr->kind == ProjectileKind::BreezeWindCharge) g = 0.0;
+                // plan34 breeze deflect: reverse non-wind projectiles within 1.5 of a breeze
+                if (pr->kind != ProjectileKind::BreezeWindCharge && pr->kind != ProjectileKind::WindCharge) {
+                    std::lock_guard lk2(entsMtx_);
+                    for (auto& mb : mobs_) if (mb->kind==MobKind::Breeze) {
+                        double bdx=mb->x - pr->x, bdy=(mb->y+1.0)-pr->y, bdz=mb->z - pr->z;
+                        if (bdx*bdx+bdy*bdy+bdz*bdz < 2.25) { // 1.5²
+                            pr->vx = -pr->vx; pr->vy = -pr->vy*0.6 + 0.2; pr->vz = -pr->vz;
+                            broadcastSound("minecraft:entity.breeze.deflect", mb->x, mb->y, mb->z, 1.f, 1.f, "hostile");
+                            break;
+                        }
+                    }
+                }
                 pr->vy -= g;
                 pr->x += pr->vx; pr->y += pr->vy; pr->z += pr->vz;
                 world_.generateChunkIfMissing(
@@ -1490,15 +1503,28 @@ void GameServer::projectilesTick() {
                         const double dy = pp->y + 0.9 - pr->y;
                         const double dz = pp->z - pr->z;
                         if (dx*dx + dy*dy + dz*dz < 0.55) {
-                            const float base =
-                                pr->kind == ProjectileKind::Arrow ? 6.f : 0.f;
-                            const float dmg = base *
-                                static_cast<float>(std::min(
-                                    1.0, std::sqrt(pr->vx*pr->vx +
-                                                   pr->vy*pr->vy +
-                                                   pr->vz*pr->vz) / 2.0));
+                            float dmg = 0;
+                            if (pr->kind == ProjectileKind::Arrow) {
+                                float base=6.f;
+                                dmg = base * static_cast<float>(std::min(1.0, std::sqrt(pr->vx*pr->vx+pr->vy*pr->vy+pr->vz*pr->vz)/2.0));
+                            } else if (pr->kind==ProjectileKind::BreezeWindCharge || pr->kind==ProjectileKind::WindCharge) {
+                                dmg = 1.f;
+                            }
                             if (dmg > 0)
                                 hits.push_back({pr, pp.get(), nullptr, dmg});
+                            else if (pr->kind==ProjectileKind::BreezeWindCharge || pr->kind==ProjectileKind::WindCharge) {
+                                // wind charge knockback only even if dmg 1
+                                hits.push_back({pr, pp.get(), nullptr, 1.f});
+                            } else {
+                                hitSomething = true; break;
+                            }
+                            // wind charge knockback
+                            if (pr->kind==ProjectileKind::BreezeWindCharge || pr->kind==ProjectileKind::WindCharge) {
+                                double inv=1.0/(std::sqrt(pr->vx*pr->vx+pr->vz*pr->vz)+1e-6);
+                                double kx=pr->vx*inv*1.8, kz=pr->vz*inv*1.8;
+                                WriteBuffer vel; vel.varint(pp->entityId); vel.i16((int16_t)(kx*8000)); vel.i16((int16_t)(0.35*8000)); vel.i16((int16_t)(kz*8000));
+                                try{ pp->conn->sendPacket(proto::pl::sc::EntityVelocity, vel);}catch(...){}
+                            }
                             hitSomething = true;
                             break;
                         }
@@ -1512,7 +1538,8 @@ void GameServer::projectilesTick() {
                             const double dy = m->y + 0.8 - pr->y;
                             const double dz = m->z - pr->z;
                             if (dx*dx + dy*dy + dz*dz < 0.55) {
-                                const float dmg = 5.f;
+                                float dmg = 5.f;
+                                if (pr->kind==ProjectileKind::BreezeWindCharge || pr->kind==ProjectileKind::WindCharge) dmg=1.f;
                                 hits.push_back({pr, nullptr, m, dmg});
                                 hitSomething = true;
                                 break;

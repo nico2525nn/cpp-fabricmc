@@ -24,6 +24,8 @@ struct AiContext {
     Player* temptingPlayer = nullptr;      // holding breeding food
     std::int32_t lastHurtByEntityId = -1;
     std::int64_t lastHurtTick = -1000;
+    // plan34 §3 armadillo scare sensor state
+    bool dangerDetectedRecently = false;
     // active path
     std::vector<ai::PathNode> path;
     std::size_t pathIdx = 0;
@@ -32,6 +34,7 @@ struct AiContext {
         nearestPlayer = nullptr;
         nearestPlayerDist2 = 1e300;
         temptingPlayer = nullptr;
+        dangerDetectedRecently = false;
     }
 };
 
@@ -69,14 +72,64 @@ public:
     bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override;
 };
 
-// Ranged attack for skeletons (plan4 P1-A).
+// Ranged attack for skeletons (plan4 P1-A) — plan34 §2 extends to Stray/Bogged/Piglin/Brute/Blaze/Ghast/SnowGolem
 class RangedAttackGoal final : public Goal {
 public:
     RangedAttackGoal() : Goal(3) {}
-    static bool isRangedKind(MobKind k) { return k == MobKind::Skeleton; }
-    bool shouldStart(MobEntity&, AiContext& c) override {
-        return c.nearestPlayer != nullptr;
+    static bool isRangedKind(MobKind k) {
+        return k == MobKind::Skeleton || k == MobKind::Stray || k == MobKind::Bogged
+            || k == MobKind::Piglin || k == MobKind::PiglinBrute || k == MobKind::SnowGolem
+            || k == MobKind::Blaze || k == MobKind::Ghast;
     }
+    bool shouldStart(MobEntity& m, AiContext& c) override {
+        return isRangedKind(m.kind) && c.nearestPlayer != nullptr;
+    }
+    bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override;
+};
+
+// plan34 §2 five new Goal nodes
+class SwellGoal final : public Goal {
+public:
+    SwellGoal() : Goal(1) {}
+    bool shouldStart(MobEntity& m, AiContext& ctx) override;
+    bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override;
+};
+class AvoidEntityGoal final : public Goal {
+public:
+    AvoidEntityGoal(double dist=6.0) : Goal(3), dist2_(dist*dist) {}
+    explicit AvoidEntityGoal(MobKind t, double dist=6.0) : Goal(3), target_(t), dist2_(dist*dist) {}
+    bool shouldStart(MobEntity& m, AiContext& ctx) override;
+    bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override;
+private:
+    MobKind target_ = MobKind::Pig; bool hasTarget_=false; double dist2_=36;
+};
+class FleeSunGoal final : public Goal {
+public:
+    FleeSunGoal() : Goal(1) {}
+    bool shouldStart(MobEntity& m, AiContext& ctx) override;
+    bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override;
+};
+class LeapAtTargetGoal final : public Goal {
+public:
+    LeapAtTargetGoal() : Goal(2) {}
+    bool shouldStart(MobEntity& m, AiContext& ctx) override;
+    bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override;
+};
+// plan34 §3 Breeze / Armadillo goals
+class BreezeJumpGoal final : public Goal {
+public:
+    BreezeJumpGoal() : Goal(1) {}
+    bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override;
+};
+class BreezeWindChargeGoal final : public Goal {
+public:
+    BreezeWindChargeGoal() : Goal(2) {}
+    bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override;
+};
+class ArmadilloRollUpGoal final : public Goal {
+public:
+    ArmadilloRollUpGoal() : Goal(1) {}
+    bool shouldStart(MobEntity& m, AiContext& ctx) override;
     bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override;
 };
 
