@@ -1,6 +1,6 @@
 # AGENTS.md — cpp-fabricmc Workflow Handover
 
-> **Purpose:** 次セッションのエージェント（人間/サブエージェント）が `cpp-fabricmc` (Fabric 1.21.4 / protocol 769) の改善ループを中断なく引き継ぐための必須情報。`docs/research-prompt.md` が正規手順。
+> **Purpose:** 次セッションのエージェント（人間/サブエージェント）が `cpp-fabricmc` (Fabric 1.21.4 / protocol 769) の改善ループを中断なく引き継ぐための必須情報。`docs/research-prompt.md` が正規手順。**すべてのサブエージェントは muse (`agent: "muse"`) を使用する (グローバル `~/.config/opencode/AGENTS.md` の委任ルール準拠)。**
 
 ## 1. Project Goal
 
@@ -19,8 +19,8 @@
 ## 3. Improvement Loop Workflow (厳守)
 
 ```
-1. research-prompt.md をサブエージェントに投げる
-   → サブエージェントが Web Search + Web Fetch 無制限で本家 Mojang/Fabric を検証し、
+1. research-prompt.md を **muse サブエージェント** (`agent: "muse"`, グローバル `~/.config/opencode/AGENTS.md` の委任ルール準拠) に投げる
+   → muse が Web Search + Web Fetch 無制限で本家 Mojang/Fabric を検証し、
      plan/planX.md (X = max(plan/plan*.md)+1) を作成。
      各章13観点 (機能概要/本家仕様/クラス・データ構造・パケット・イベント・状態遷移/
      実装フロー/C++設計例/クラス構成/モジュール分割/注意点/パフォーマンス/
@@ -34,14 +34,15 @@
      git worktree add -b wtX/$n /tmp/opencode/wtX/$n HEAD
    done
 
-3. サブエージェントを分野別に同時に **バックグラウンド** 起動
-   - 必ず `background: true` で起動:
+3. サブエージェント (**すべて muse**) を分野別に同時に **バックグラウンド** 起動
+   - 必ず `background: true` かつ `agent: "muse"` で起動:
      {
-       "agent": "general",
+       "agent": "muse",
        "description": "Impl wtX/entity ...",
        "prompt": "Implement planX §... in /tmp/opencode/wtX/entity ... Keep build green: cmake -B build && cmake --build build -j4. Commit \"planX entity: ...\". Work only in wtX/entity. Background.",
        "background": true
      }
+   - `general`/`explore` は使わない (グローバル AGENTS.md: 手を動かす作業は必ず muse に委任)。
    - 同一worktreeでの重複起動は絶対に避ける (被ると競合)。
    - 研究完了前に実装を開始しない。
     - **すべてのコマンドに確実なタイムアウトを付与** (`test_smoke_80` は子プロセス `cppfm` を fork するため親だけを殺すと孤児化)。例: `timeout --foreground --kill-after=5 120 cmake -B build -G Ninja` / `timeout 300 cmake --build build -j2` / `timeout --foreground --kill-after=5 450 ./build/test_smoke_80 ./build/cppfm 2>&1; echo EXIT:$?; pkill -9 -f "cppfm --port"`。`ctest -R smoke80 --timeout 450` でも可。
@@ -63,6 +64,7 @@
 ```
 
 **禁止事項:**
+- サブエージェントは **必ず muse** (`agent: "muse"`) を使う。`general` は使わない。
 - `background: false` (デフォルト) でサブエージェントを起動しない。必ず `background: true`。
 - 同一worktreeで2つのエージェントを同時に動かさない。
 - 研究が終わる前に実装を開始しない。
@@ -116,4 +118,4 @@ ctest -R native --output-on-failure --timeout 60
 2. ループを回す場合は §3 の手順で `wt29/*` 6 worktree → バックグラウンド並行実装 → `git merge --no-ff` → ドキュメント更新。
 3. 不要な旧ブランチ (`wt/*`) は `git branch -D` で削除可。
 
-> このファイル自体が引き継ぎのエントリポイント。次回セッション開始時は本書の §3 のコマンドで worktree を再生成し、`plan/` の最新と `MISSING`/`COMPAT_AUDIT` を照合して再開すること。
+> このファイル自体が引き継ぎのエントリポイント。次回セッション開始時は本書の §3 のコマンドで worktree を再生成し、`plan/` の最新と `MISSING`/`COMPAT_AUDIT` を照合して再開すること。サブエージェントはすべて muse を使うこと。
