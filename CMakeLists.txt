@@ -109,6 +109,18 @@ target_include_directories(test_scoreboard_reset PRIVATE src src/generated)
 add_test(NAME scoreboard_reset COMMAND test_scoreboard_reset)
 set_tests_properties(scoreboard_reset PROPERTIES TIMEOUT 30)
 
+add_executable(test_spec_wire tests/test_spec_wire.cpp
+    src/core/NBT.cpp
+    src/game/WorldGen.cpp src/worldgen/DensityFunction.cpp src/worldgen/MultiNoise.cpp
+    src/worldgen/Structures.cpp src/worldgen/StructurePlacer.cpp
+    src/worldgen/ChunkGenerator.cpp src/worldgen/StructureManager.cpp src/game/WorldDataManager.cpp)
+target_include_directories(test_spec_wire PRIVATE src src/generated)
+find_package(ZLIB REQUIRED)
+find_package(OpenSSL REQUIRED)
+target_link_libraries(test_spec_wire PRIVATE ZLIB::ZLIB OpenSSL::Crypto)
+add_test(NAME spec_wire COMMAND test_spec_wire)
+set_tests_properties(spec_wire PROPERTIES TIMEOUT 30)
+
 add_executable(test_smoke_80
     tests/TestClient.cpp
     tests/test_smoke_80.cpp
