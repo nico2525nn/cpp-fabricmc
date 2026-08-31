@@ -1,0 +1,15 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "AA"
+  ],
+  "key": {
+    "A": {
+      "item": "minecraft:magenta_wool"
+    }
+  },
+  "result": {
+    "id": "minecraft:magenta_carpet",
+    "count": 3
+  }
+}

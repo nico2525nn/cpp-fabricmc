@@ -1,0 +1,16 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "AAA",
+    "AAA"
+  ],
+  "key": {
+    "A": {
+      "item": "minecraft:sandstone"
+    }
+  },
+  "result": {
+    "id": "minecraft:sandstone_wall",
+    "count": 6
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "AA"
+  ],
+  "key": {
+    "A": {
+      "item": "minecraft:mangrove_planks"
+    }
+  },
+  "result": {
+    "id": "minecraft:mangrove_pressure_plate",
+    "count": 1
+  }
+}

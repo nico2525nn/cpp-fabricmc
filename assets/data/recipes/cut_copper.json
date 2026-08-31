@@ -1,0 +1,16 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "AA",
+    "AA"
+  ],
+  "key": {
+    "A": {
+      "item": "minecraft:copper_block"
+    }
+  },
+  "result": {
+    "id": "minecraft:cut_copper",
+    "count": 4
+  }
+}

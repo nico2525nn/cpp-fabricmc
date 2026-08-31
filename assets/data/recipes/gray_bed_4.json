@@ -1,0 +1,19 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "AAA",
+    "BBB"
+  ],
+  "key": {
+    "A": {
+      "item": "minecraft:gray_wool"
+    },
+    "B": {
+      "item": "minecraft:warped_planks"
+    }
+  },
+  "result": {
+    "id": "minecraft:gray_bed",
+    "count": 1
+  }
+}

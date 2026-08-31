@@ -1,0 +1,19 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "AB",
+    "BA"
+  ],
+  "key": {
+    "A": {
+      "item": "minecraft:dirt"
+    },
+    "B": {
+      "item": "minecraft:gravel"
+    }
+  },
+  "result": {
+    "id": "minecraft:coarse_dirt",
+    "count": 4
+  }
+}

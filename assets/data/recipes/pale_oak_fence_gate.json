@@ -1,0 +1,19 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "ABA",
+    "ABA"
+  ],
+  "key": {
+    "A": {
+      "item": "minecraft:stick"
+    },
+    "B": {
+      "item": "minecraft:pale_oak_planks"
+    }
+  },
+  "result": {
+    "id": "minecraft:pale_oak_fence_gate",
+    "count": 1
+  }
+}
