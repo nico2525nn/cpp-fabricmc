@@ -1,0 +1,15 @@
+{
+  "type": "minecraft:piglin",
+  "attributes": { "max_health": 16, "movement_speed": 0.09, "attack_damage": 5 },
+  "spawning": { "biomes": ["minecraft:nether_wastes"] },
+  "brain": {
+    "behaviors": [
+      { "type": "minecraft:panic", "priority": 1 },
+      { "type": "minecraft:ranged_attack", "priority": 2 },
+      { "type": "minecraft:avoid_entity", "priority": 3, "entity": "minecraft:zoglin", "distance": 8 },
+      { "type": "minecraft:tempt", "priority": 4 },
+      { "type": "minecraft:wander", "priority": 6 }
+    ],
+    "sensors": ["minecraft:nearest_players", "minecraft:hurt_by"]
+  }
+}

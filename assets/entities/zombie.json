@@ -1,0 +1,15 @@
+{
+  "type": "minecraft:zombie",
+  "attributes": { "max_health": 20, "movement_speed": 0.085, "attack_damage": 3 },
+  "spawning": { "biomes": ["minecraft:plains"], "light_level": { "max": 7 } },
+  "brain": {
+    "behaviors": [
+      { "type": "minecraft:panic", "priority": 1 },
+      { "type": "minecraft:zombie_attack", "priority": 2 },
+      { "type": "minecraft:avoid_entity", "priority": 3, "entity": "minecraft:wolf", "distance": 6 },
+      { "type": "minecraft:wander", "priority": 6 },
+      { "type": "minecraft:look_at_player", "priority": 7 }
+    ],
+    "sensors": ["minecraft:nearest_players", "minecraft:hurt_by"]
+  }
+}

@@ -3,6 +3,9 @@
 #include "AiBrain.hpp"
 #include "BehaviorTree.hpp"
 #include "GameServer.hpp"
+#include "MetadataTypes.hpp"
+#include "../proto/Ids.hpp"
+#include "../generated/BlockStates.hpp"
 
 namespace cppfm {
 
@@ -40,10 +43,17 @@ void groundSnap(GameServer& srv, MobEntity& m) {
 
 Brain::Brain() {
     goals_.push_back(std::make_unique<CreakingGoal>());
+    goals_.push_back(std::make_unique<SwellGoal>());
+    goals_.push_back(std::make_unique<ArmadilloRollUpGoal>());
     goals_.push_back(std::make_unique<PanicGoal>());
+    goals_.push_back(std::make_unique<FleeSunGoal>());
+    goals_.push_back(std::make_unique<LeapAtTargetGoal>());
+    goals_.push_back(std::make_unique<BreezeJumpGoal>());
     goals_.push_back(std::make_unique<BreedGoal>());
+    goals_.push_back(std::make_unique<BreezeWindChargeGoal>());
     goals_.push_back(std::make_unique<MeleeAttackGoal>());
     goals_.push_back(std::make_unique<RangedAttackGoal>());
+    goals_.push_back(std::make_unique<AvoidEntityGoal>());
     goals_.push_back(std::make_unique<TemptGoal>());
     goals_.push_back(std::make_unique<WanderAroundGoal>());
     goals_.push_back(std::make_unique<LookAtPlayerGoal>());
@@ -397,6 +407,214 @@ bool RangedAttackGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     return true;
 }
 
+// ------------------------------------------------- plan34 §2-3 new goals --
+
+bool SwellGoal::shouldStart(MobEntity& m, AiContext& ctx) {
+    if (m.kind != MobKind::Creeper || m.dead) return false;
+    if (!ctx.nearestPlayer) return m.creeperIgnited;
+    double dx = ctx.nearestPlayer->x - m.x, dz = ctx.nearestPlayer->z - m.z;
+    double d2 = dx*dx+dz*dz;
+    if (m.creeperIgnited) return true;
+    return d2 < 9; // 3 blocks
+}
+bool SwellGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (m.kind != MobKind::Creeper || m.dead) return false;
+    if (!ctx.nearestPlayer) {
+        // if ignited but player left far, let GameServer_tick handle defuse; hold still until fuse handled
+        return m.creeperIgnited;
+    }
+    double dx = ctx.nearestPlayer->x - m.x, dz = ctx.nearestPlayer->z - m.z;
+    double d2 = dx*dx+dz*dz;
+    // ignite already handled in GameServer_tick mobsTick; just hold position while swelling
+    if (m.creeperIgnited) {
+        if (now - m.creeperFuseStart >= MobEntity::CREEPER_FUSE_TICKS) return false;
+        return true; // stay still during swell
+    }
+    if (d2 < 9 && ctx.srv) {
+        // trigger ignite here too for Goal-driven path (server tick also does it)
+        m.creeperIgnited = true;
+        m.creeperFuseStart = now;
+        WriteBuffer md; md.varint(m.entityId); meta::writeMetaBool(md, 16, true); md.u8(255);
+        ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);
+        ctx.srv->broadcastSound("minecraft:entity.creeper.primed", m.x, m.y, m.z, 1.f, 1.f, "hostile");
+    }
+    return m.creeperIgnited;
+}
+
+bool AvoidEntityGoal::shouldStart(MobEntity& m, AiContext& ctx) {
+    if (!ctx.nearestPlayer) return false;
+    // differentiate per mob: creeper avoids cat/ocelot, skeleton avoids wolf, piglin avoids zoglin etc.
+    // simplified: any of those kinds use same player-distance check; for non-listed, still flee if close 4
+    if (m.kind==MobKind::Creeper || m.kind==MobKind::Skeleton || m.kind==MobKind::Piglin || m.kind==MobKind::Spider) {
+        return ctx.nearestPlayerDist2 < dist2_;
+    }
+    return false;
+}
+bool AvoidEntityGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t) {
+    if (!ctx.srv || !ctx.nearestPlayer) return false;
+    if (ctx.nearestPlayerDist2 > dist2_) return false;
+    double dx = m.x - ctx.nearestPlayer->x, dz = m.z - ctx.nearestPlayer->z;
+    double d = std::sqrt(dx*dx+dz*dz)+1e-6;
+    m.yaw = static_cast<float>(std::atan2(dz,dx)*180/3.14159 -90);
+    m.x += dx/d * 0.12;
+    m.z += dz/d * 0.12;
+    if (ctx.srv && ctx.world) {
+        ctx.world->generateChunkIfMissing((int)m.x>>4,(int)m.z>>4);
+        int col=4;
+        ctx.world->withChunk((int)m.x>>4,(int)m.z>>4,[&](const Chunk& c){
+            for(int ry=kSectionsPerChunk*16-1; ry>=0; --ry) if(c.blocks[Chunk::index(ry>>4, ry&15, (int)m.z&15, (int)m.x&15)]!=0){col=ry+1;break;}
+        });
+        m.y = kMinY + col + 1.0;
+    }
+    return true;
+}
+
+bool FleeSunGoal::shouldStart(MobEntity& m, AiContext& ctx) {
+    if (!ctx.srv || !ctx.world) return false;
+    if (m.kind!=MobKind::Skeleton && m.kind!=MobKind::Zombie && m.kind!=MobKind::Stray && m.kind!=MobKind::Husk && m.kind!=MobKind::Drowned) return false;
+    if (ctx.srv->isNight()) return false;
+    // check sky light >=14 at mob feet
+    ctx.world->generateChunkIfMissing((int)m.x>>4,(int)m.z>>4);
+    uint8_t sky = ctx.world->getSkyLight((int)m.x,(int)m.y,(int)m.z);
+    return sky >= 14;
+}
+bool FleeSunGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t) {
+    if (!ctx.srv || !ctx.world) return false;
+    if (ctx.srv->isNight()) return false;
+    // seek shade: move opposite to player or random if no player
+    double dx=0, dz=0;
+    if (ctx.nearestPlayer) { dx = m.x - ctx.nearestPlayer->x; dz = m.z - ctx.nearestPlayer->z; }
+    else { dx = (rand()/(double)RAND_MAX-0.5)*2; dz = (rand()/(double)RAND_MAX-0.5)*2; }
+    double d = std::sqrt(dx*dx+dz*dz)+1e-6;
+    m.x += dx/d * 0.13; m.z += dz/d * 0.13;
+    m.yaw = static_cast<float>(std::atan2(dz,dx)*180/3.14159 -90);
+    ctx.world->generateChunkIfMissing((int)m.x>>4,(int)m.z>>4);
+    int col=4;
+    ctx.world->withChunk((int)m.x>>4,(int)m.z>>4,[&](const Chunk& c){
+        for(int ry=kSectionsPerChunk*16-1; ry>=0; --ry) if(c.blocks[Chunk::index(ry>>4, ry&15, (int)m.z&15, (int)m.x&15)]!=0){col=ry+1;break;}
+    });
+    m.y = kMinY + col + 1.0;
+    return true;
+}
+
+bool LeapAtTargetGoal::shouldStart(MobEntity& m, AiContext& ctx) {
+    if (m.kind!=MobKind::Spider && m.kind!=MobKind::CaveSpider && m.kind!=MobKind::Phantom) return false;
+    if (!ctx.nearestPlayer) return false;
+    double dx=ctx.nearestPlayer->x - m.x, dz=ctx.nearestPlayer->z - m.z;
+    double d = std::sqrt(dx*dx+dz*dz);
+    return d >= 2.0 && d <= 5.0;
+}
+bool LeapAtTargetGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t) {
+    if (!ctx.srv || !ctx.nearestPlayer) return false;
+    double dx=ctx.nearestPlayer->x - m.x, dz=ctx.nearestPlayer->z - m.z;
+    double d = std::sqrt(dx*dx+dz*dz)+1e-6;
+    double vx = dx/d * 0.42, vz = dz/d * 0.42;
+    double vy = 0.38;
+    // apply leap
+    m.x += vx; m.z += vz; m.y += vy;
+    // gravity will be handled by tick loop groundSnap next tick; clamp y
+    if (m.y > kMinY + 320) m.y = kMinY + 320;
+    m.yaw = static_cast<float>(std::atan2(dz,dx)*180/3.14159 -90);
+    if (ctx.srv) {
+        WriteBuffer vel; vel.varint(m.entityId); vel.i16((int16_t)(vx*8000)); vel.i16((int16_t)(vy*8000)); vel.i16((int16_t)(vz*8000));
+        ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::EntityVelocity, vel);
+        ctx.srv->broadcastSound("minecraft:entity.spider.jump", m.x, m.y, m.z, 1.f, 1.f, "hostile");
+    }
+    if (ctx.world) {
+        ctx.world->generateChunkIfMissing((int)m.x>>4,(int)m.z>>4);
+    }
+    return true;
+}
+
+bool BreezeJumpGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (m.kind != MobKind::Breeze) return false;
+    if (m.breezeJumpCooldown > now) return false;
+    Player* t = ctx.nearestPlayer;
+    if (!t) return false;
+    double dx=t->x - m.x, dz=t->z - m.z;
+    double d=std::sqrt(dx*dx+dz*dz);
+    if (d < 4) return false;
+    double inv=1.0/(d+1e-6);
+    // vanilla breeze jump 15h/5v, simplified to 0.7h + 0.45v scaled; pass via position delta + velocity
+    double jx = dx*inv * 0.55;
+    double jz = dz*inv * 0.55;
+    // clamp lava jump vy=1 case: we just use 0.45 normally, but if in lava would be 0.12 – simplified keep 0.45
+    double jy = 0.45;
+    // avoid jumping too high if already high
+    if (m.y > t->y + 6) jy = 0.15;
+    m.x += jx * 2.2; m.z += jz * 2.2; m.y += jy * 3.0;
+    m.breezeJumpCooldown = now + 40;
+    m.breezeLastJumpTick = now;
+    if (ctx.srv) {
+        WriteBuffer vel; vel.varint(m.entityId); vel.i16((int16_t)(jx*8000*2)); vel.i16((int16_t)(jy*8000)); vel.i16((int16_t)(jz*8000*2));
+        ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::EntityVelocity, vel);
+        ctx.srv->broadcastSound("minecraft:entity.breeze.jump", m.x, m.y, m.z, 1.f, 1.f, "hostile");
+    }
+    if (ctx.world) ctx.world->generateChunkIfMissing((int)m.x>>4,(int)m.z>>4);
+    return true;
+}
+bool BreezeWindChargeGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (m.kind != MobKind::Breeze) return false;
+    if (m.breezeWindChargeCooldown > now) return false;
+    Player* t = ctx.nearestPlayer;
+    if (!t) return false;
+    double dx=t->x - m.x, dy=(t->y+1.0)-(m.y+1.2), dz=t->z - m.z;
+    double d=std::sqrt(dx*dx+dz*dz);
+    if (d>16) return false;
+    double inv=1.0/(d+1e-6);
+    double vx=dx*inv*1.15, vz=dz*inv*1.15, vy=dy*inv*0.2 + 0.12;
+    if (ctx.srv) {
+        // use Fireball-like wind_charge; entity type BreezeWindCharge visual via typeId lookup inside spawnProjectile
+        // spawn as BreezeWindCharge kind for correct entity type (fallback uses Fireball if mapping fails)
+        ctx.srv->spawnProjectile(ProjectileKind::BreezeWindCharge, m.x, m.y+1.2, m.z, vx, vy, vz, m.entityId, false);
+        ctx.srv->broadcastSound("minecraft:entity.breeze.wind_burst", m.x, m.y, m.z, 1.f, 1.f, "hostile");
+    }
+    m.breezeWindChargeCooldown = now + 32;
+    return true;
+}
+
+bool ArmadilloRollUpGoal::shouldStart(MobEntity& m, AiContext& ctx) {
+    if (m.kind != MobKind::Armadillo) return false;
+    // scanRate 5: only check every 5 ticks; danger flag from AiContext or pending until
+    return ctx.dangerDetectedRecently || m.armadilloDangerDetectedUntil > 0;
+}
+bool ArmadilloRollUpGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (m.kind != MobKind::Armadillo) return false;
+    bool danger = ctx.dangerDetectedRecently || now < m.armadilloDangerDetectedUntil;
+    // water check: immediate unroll if in water (simplified: y below sea or block water)
+    if (ctx.world) {
+        uint16_t st = ctx.world->getBlock((int)std::floor(m.x),(int)std::floor(m.y),(int)std::floor(m.z));
+        auto* bd = gen::blockByState(st);
+        if (bd && std::string(bd->name).find("water")!=std::string::npos) danger = false;
+    }
+    if (danger && !m.armadilloRolledUp) {
+        m.armadilloRolledUp = true;
+        m.armadilloRollUpUntil = now + 60;
+        if (ctx.srv) {
+            WriteBuffer md; md.varint(m.entityId); meta::writeMetaByte(md, 16, 1); md.u8(255);
+            ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);
+            ctx.srv->broadcastSound("minecraft:entity.armadillo.roll", m.x, m.y, m.z, 1.f, 1.f, "neutral");
+        }
+        return true;
+    }
+    if (m.armadilloRolledUp) {
+        if (now > m.armadilloRollUpUntil) {
+            if (!danger) {
+                m.armadilloRolledUp = false;
+                if (ctx.srv) {
+                    WriteBuffer md; md.varint(m.entityId); meta::writeMetaByte(md, 16, 0); md.u8(255);
+                    ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);
+                }
+                return false;
+            } else {
+                m.armadilloRollUpUntil = now + 20;
+            }
+        }
+        return true;
+    }
+    return false;
+}
+
 // -------------------------------------------------------- ranged attacks --
 
 Brain::~Brain() = default;
@@ -404,6 +622,22 @@ void Brain::setBehaviorTree(std::unique_ptr<BehaviorTree> t) { behaviorTree_ = s
 bool Brain::hasBehaviorTree() const { return behaviorTree_ != nullptr; }
 void Brain::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     NearestPlayerSensor::update(m, ctx);
+    // plan34 §3 ArmadilloScareDetectedSensor scanRate 5 / 80 TTL
+    if (m.kind == MobKind::Armadillo) {
+        if (now - m.armadilloLastScanTick >= 5) {
+            m.armadilloLastScanTick = now;
+            bool danger = false;
+            if (ctx.nearestPlayer && ctx.nearestPlayerDist2 < 7*7) {
+                if (ctx.nearestPlayer->isSprinting) danger = true;
+                else if (now - ctx.lastHurtTick < 80) danger = true;
+                else if (m.health < mobStats(m.kind).maxHealth) danger = true;
+                else if (ctx.nearestPlayerDist2 < 3*3) danger = true;
+            } else if (now - ctx.lastHurtTick < 80) danger = true;
+            if (danger) m.armadilloDangerDetectedUntil = now + 80;
+        }
+        ctx.dangerDetectedRecently = now < m.armadilloDangerDetectedUntil;
+        // also water immediate danger clear handled in goal tick, but keep TTL
+    }
     // BehaviorTree evaluation (plan6 item 29)
     if (behaviorTree_) {
         BTStatus s = behaviorTree_->tick(m, ctx, now);
