@@ -1,0 +1,17 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "A A",
+    "A A",
+    "AAA"
+  ],
+  "key": {
+    "A": {
+      "item": "minecraft:birch_slab"
+    }
+  },
+  "result": {
+    "id": "minecraft:composter",
+    "count": 1
+  }
+}

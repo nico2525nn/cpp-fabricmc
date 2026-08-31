@@ -1,0 +1,16 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "AAA",
+    "AAA"
+  ],
+  "key": {
+    "A": {
+      "item": "minecraft:tuff"
+    }
+  },
+  "result": {
+    "id": "minecraft:tuff_wall",
+    "count": 6
+  }
+}

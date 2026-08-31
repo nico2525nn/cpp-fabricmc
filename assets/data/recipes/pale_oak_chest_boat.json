@@ -1,0 +1,15 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "ingredients": [
+    {
+      "item": "minecraft:chest"
+    },
+    {
+      "item": "minecraft:pale_oak_boat"
+    }
+  ],
+  "result": {
+    "id": "minecraft:pale_oak_chest_boat",
+    "count": 1
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    " A ",
+    "A A",
+    " A "
+  ],
+  "key": {
+    "A": {
+      "item": "minecraft:waxed_copper_block"
+    }
+  },
+  "result": {
+    "id": "minecraft:waxed_copper_grate",
+    "count": 4
+  }
+}

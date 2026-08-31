@@ -1,0 +1,17 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    " A ",
+    "A A",
+    " A "
+  ],
+  "key": {
+    "A": {
+      "item": "minecraft:oxidized_copper"
+    }
+  },
+  "result": {
+    "id": "minecraft:oxidized_copper_grate",
+    "count": 4
+  }
+}

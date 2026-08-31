@@ -1,0 +1,17 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "A  ",
+    "AAA",
+    "A A"
+  ],
+  "key": {
+    "A": {
+      "item": "minecraft:armadillo_scute"
+    }
+  },
+  "result": {
+    "id": "minecraft:wolf_armor",
+    "count": 1
+  }
+}

@@ -1,5 +1,6 @@
 // Recipes implementation: built-in clean-room recipe table + JSON loader.
 #include "Recipes.hpp"
+#include <algorithm>
 #include <filesystem>
 #include <cstdio>
 
@@ -113,137 +114,9 @@ void RecipeManager::loadDefaults() {
     fillTag("stone", {"minecraft:stone", "minecraft:granite", "minecraft:diorite",
                       "minecraft:andesite"});
     tagPlanks_ = tags_["minecraft:planks"];
-
-    // ---- planks / sticks / basics -----------------------------------------
-    for (auto id : tags_["minecraft:logs"]) {
-        // log -> 4 planks of matching kind is data-driven in vanilla; we map
-        // every log to oak planks family via per-log entries below instead.
-        (void)id;
-    }
-    addShapeless("minecraft:oak_planks", "minecraft:oak_planks", 4,
-                 {"#minecraft:logs"});
-    addShaped("minecraft:stick", "minecraft:stick", 4,
-              {"P", "P"}, {{'P', "#minecraft:planks"}});
-    addShaped("minecraft:crafting_table", "minecraft:crafting_table", 1,
-              {"PP", "PP"}, {{'P', "#minecraft:planks"}});
-    addShaped("minecraft:furnace", "minecraft:furnace", 1,
-              {"CCC", "C C", "CCC"}, {{'C', "minecraft:cobblestone"}});
-    addShaped("minecraft:chest", "minecraft:chest", 1,
-              {"PPP", "P P", "PPP"}, {{'P', "#minecraft:planks"}});
-    addShaped("minecraft:torch", "minecraft:torch", 4,
-              {"C", "S"}, {{'C', "minecraft:coal"}, {'S', "minecraft:stick"}});
-
-    // ---- tools -------------------------------------------------------------
-    const char* heads[][2] = {
-        {"pickaxe", "minecraft:cobblestone"}, {"axe", "minecraft:cobblestone"},
-        {"shovel", "minecraft:cobblestone"}, {"hoe", "minecraft:cobblestone"}};
-    (void)heads;
-    auto toolSet = [&](const char* kind, const char* material,
-                       const char* outPrefix) {
-        std::string m(material);
-        std::string base = std::string(outPrefix);
-        if (std::string(kind) == "wooden") m = "#minecraft:planks";
-        if (std::string(kind) == "stone") m = "minecraft:cobblestone";
-        if (std::string(kind) == "iron") m = "minecraft:iron_ingot";
-        if (std::string(kind) == "golden") m = "minecraft:gold_ingot";
-        if (std::string(kind) == "diamond") m = "minecraft:diamond";
-        addShaped(base + kind + "_pickaxe", base + kind + "_pickaxe", 1,
-                  {"MMM", " S ", " S "},
-                  {{'M', m}, {'S', "minecraft:stick"}});
-        addShaped(base + kind + "_axe", base + kind + "_axe", 1,
-                  {"MM", "MS", " S"},
-                  {{'M', m}, {'S', "minecraft:stick"}});
-        addShaped(base + kind + "_shovel", base + kind + "_shovel", 1,
-                  {"M", "S", "S"}, {{'M', m}, {'S', "minecraft:stick"}});
-        addShaped(base + kind + "_sword", base + kind + "_sword", 1,
-                  {"M", "M", "S"}, {{'M', m}, {'S', "minecraft:stick"}});
-    };
-    toolSet("wooden", "", "minecraft:");
-    toolSet("stone", "", "minecraft:");
-    toolSet("iron", "minecraft:iron_ingot", "minecraft:");
-    toolSet("golden", "minecraft:gold_ingot", "minecraft:");
-    toolSet("diamond", "minecraft:diamond", "minecraft:");
-
-    // ---- combat / utility --------------------------------------------------
-    addShaped("minecraft:shield", "minecraft:shield", 1,
-              {"PIP", "PPP", " P "},
-              {{'P', "#minecraft:planks"}, {'I', "minecraft:iron_ingot"}});
-    addShapeless("minecraft:bread", "minecraft:bread", 1,
-                 {"minecraft:wheat", "minecraft:wheat", "minecraft:wheat"});
-    addSmelting("minecraft:sand", "minecraft:glass", 0.1f, 200,
-                Recipe::Kind::Smelting);
-    addSmelting("minecraft:iron_ore", "minecraft:iron_ingot", 0.7f, 200,
-                Recipe::Kind::Smelting);
-    addSmelting("minecraft:gold_ore", "minecraft:gold_ingot", 1.f, 200,
-                Recipe::Kind::Smelting);
-    addSmelting("minecraft:copper_ore", "minecraft:copper_ingot", 0.7f, 200,
-                Recipe::Kind::Smelting);
-    addSmelting("minecraft:ancient_debris", "minecraft:netherite_scrap", 2.f, 200,
-                Recipe::Kind::Smelting);
-    addSmelting("minecraft:raw_iron", "minecraft:iron_ingot", 0.7f, 200,
-                Recipe::Kind::Smelting);
-    addSmelting("minecraft:beef", "minecraft:cooked_beef", 0.35f, 200,
-                Recipe::Kind::Smelting);
-    addSmelting("minecraft:porkchop", "minecraft:cooked_porkchop", 0.35f, 200,
-                Recipe::Kind::Smelting);
-    addSmelting("minecraft:chicken", "minecraft:cooked_chicken", 0.35f, 200,
-                Recipe::Kind::Smelting);
-    addSmelting("minecraft:mutton", "minecraft:cooked_mutton", 0.35f, 200,
-                Recipe::Kind::Smelting);
-    addSmelting("minecraft:potato", "minecraft:baked_potato", 0.35f, 200,
-                Recipe::Kind::Smelting);
-
-    addShaped("minecraft:iron_block", "minecraft:iron_block", 1,
-              {"III", "III", "III"}, {{'I', "minecraft:iron_ingot"}});
-    addShapeless("minecraft:iron_ingot_from_block", "minecraft:iron_ingot", 9,
-                 {"minecraft:iron_block"});
-    addShaped("minecraft:gold_block", "minecraft:gold_block", 1,
-              {"GGG", "GGG", "GGG"}, {{'G', "minecraft:gold_ingot"}});
-    addShaped("minecraft:diamond_block", "minecraft:diamond_block", 1,
-              {"DDD", "DDD", "DDD"}, {{'D', "minecraft:diamond"}});
-    addShapeless("minecraft:diamond", "minecraft:diamond", 9,
-                 {"minecraft:diamond_block"});
-
-    // stonecutters (expanded for ghost recipe tests)
-    addStonecutting("minecraft:stone", "minecraft:stone_bricks", 1);
-    addStonecutting("minecraft:stone", "minecraft:stone_slab", 2);
-    addStonecutting("minecraft:stone", "minecraft:stone_stairs", 1);
-    addStonecutting("minecraft:cobblestone", "minecraft:stone", 1);
-    addStonecutting("minecraft:cobblestone", "minecraft:cobblestone_slab", 2);
-    addStonecutting("minecraft:cobblestone", "minecraft:cobblestone_stairs", 1);
-    addStonecutting("minecraft:oak_planks", "minecraft:oak_slab", 2);
-    addStonecutting("minecraft:oak_planks", "minecraft:oak_stairs", 1);
-    addStonecutting("minecraft:quartz_block", "minecraft:quartz_slab", 2);
-    addStonecutting("minecraft:quartz_block", "minecraft:quartz_stairs", 1);
-
-    // Strict audit MEDIUM I15: expand from ~35 to 1100 recipes for vanilla parity (minecraft-data recipes 1100)
-    // Generate synthetic filler recipes using valid items to reach 1100 without external JSON.
-    {
-        const std::vector<std::string> fillerOutputs = {
-            "minecraft:stone","minecraft:cobblestone","minecraft:oak_planks","minecraft:iron_ingot",
-            "minecraft:gold_ingot","minecraft:diamond","minecraft:brick","minecraft:glass","minecraft:paper","minecraft:stick",
-            "minecraft:torch","minecraft:coal","minecraft:iron_block","minecraft:gold_block","minecraft:diamond_block"
-        };
-        int genIdx = 0;
-        while (recipes_.size() < 1100) {
-            std::string id = "minecraft:generated_" + std::to_string(genIdx);
-            std::string out = fillerOutputs[genIdx % fillerOutputs.size()];
-            int mod = genIdx % 4;
-            if (mod == 0) {
-                addShapeless(id, out, 1 + (genIdx % 3), {"minecraft:cobblestone", "minecraft:stick"});
-            } else if (mod == 1) {
-                addShaped(id, out, 1, {"AB","BA"}, {{'A',"minecraft:stone"}, {'B',"minecraft:cobblestone"}});
-            } else if (mod == 2) {
-                addStonecutting("minecraft:stone", out, 1 + (genIdx % 2));
-                if (!recipes_.empty()) recipes_.back().id = id;
-            } else {
-                addSmelting("minecraft:cobblestone", out, 0.1f, 200, Recipe::Kind::Smelting);
-                if (!recipes_.empty()) recipes_.back().id = id;
-            }
-            ++genIdx;
-            if (genIdx > 5000) break;
-        }
-    }
+    // NOTE: built-in shaped/shapeless/smelting/stonecutting and synthetic filler
+    // are now JSON-driven via assets/data/recipes/*.json (plan32 §3).
+    // loadDirectory will populate recipes_; no built-in registration here.
 }
 
 // ------------------------------------------------------------------ json io
@@ -252,12 +125,15 @@ void RecipeManager::loadDirectory(const std::string& dir) {
     namespace fs = std::filesystem;
     std::error_code ec;
     if (!fs::exists(dir, ec)) return;
-    for (auto& entry : fs::directory_iterator(dir, ec)) {
-        if (!entry.is_regular_file() ||
-            entry.path().extension().string() != ".json")
-            continue;
+    std::vector<fs::path> files;
+    for (auto& e : fs::directory_iterator(dir, ec)) {
+        if (!e.is_regular_file() || e.path().extension().string() != ".json") continue;
+        files.push_back(e.path());
+    }
+    std::sort(files.begin(), files.end());
+    for (auto& path : files) {
         try {
-            FILE* f = fopen(entry.path().string().c_str(), "rb");
+            FILE* f = fopen(path.string().c_str(), "rb");
             if (!f) continue;
             std::string text;
             char buf[4096];
@@ -271,7 +147,16 @@ void RecipeManager::loadDirectory(const std::string& dir) {
                     : std::string();
             // normalize "minecraft:" prefix per plan18 §8 (vanilla json uses it)
             if (type.rfind("minecraft:",0)==0) type = type.substr(10);
-            std::string rid = entry.path().stem().string();
+            std::string rid = path.stem().string();
+            std::string group = v.at("group").isStr() ? v.at("group").asStr() : "";
+            std::string categoryStr = v.at("category").isStr() ? v.at("category").asStr() : "";
+            int categoryInt = 3;
+            if (type == "smelting" || type == "smoking" || type == "blasting" || type == "campfire_cooking") categoryInt = 6;
+            else if (type == "stonecutting") categoryInt = 10;
+            else if (categoryStr == "blocks" || categoryStr == "building") categoryInt = 3;
+            else if (categoryStr == "equipment") categoryInt = 3;
+            else if (categoryStr == "misc") categoryInt = 3;
+            else if (categoryStr == "food") categoryInt = 6;
             // result may be string, object {id,count}, or object with id/count; handle all
             const json::Value result = v.at("result");
             std::string outId;
@@ -294,6 +179,7 @@ void RecipeManager::loadDirectory(const std::string& dir) {
             };
             outId = normalizeName(outId);
 
+            size_t before = recipes_.size();
             if (type == "crafting_shaped") {
                 std::vector<std::string> rows;
                 for (auto& rv : v.at("pattern").arr)
@@ -362,8 +248,6 @@ void RecipeManager::loadDirectory(const std::string& dir) {
                 if (name.empty()) continue;
                 addStonecutting(name, outId, outCount);
             } else if (type == "smithing_transform" || type == "smithing_trim") {
-                // treat as shapeless for inventory parity (smithing table)
-                // inputs: template, base, addition
                 std::vector<std::string> inputs;
                 auto addIng = [&](const char* field){
                     const json::Value vv = v.at(field);
@@ -372,11 +256,44 @@ void RecipeManager::loadDirectory(const std::string& dir) {
                     else if (vv.at("tag").isStr()) inputs.push_back("#"+vv.at("tag").asStr());
                 };
                 addIng("template"); addIng("base"); addIng("addition");
-                if (!inputs.empty()) addShapeless(rid, outId, outCount, inputs);
+                if (!inputs.empty()) {
+                    // register as Smithing kind with 3 cells for future MenuType::Smithing
+                    size_t pre = recipes_.size();
+                    addShapeless(rid, outId, outCount, inputs);
+                    if (recipes_.size() > pre) {
+                        recipes_.back().kind = Recipe::Kind::Smithing;
+                        recipes_.back().cells = recipes_.back().ingredients;
+                        // keep ingredients for matching fallback as shapeless too
+                    }
+                }
+            } else if (type == "crafting_special" || type == "crafting_transmute" || type == "crafting_decorated_pot") {
+                // register as Special (matches false, book display only)
+                Recipe r;
+                r.kind = Recipe::Kind::Special;
+                r.id = rid;
+                r.group = group;
+                r.category = categoryInt;
+                auto it = gen::itemIdByName().find(outId.empty() ? "minecraft:firework_rocket" : outId);
+                // for special without result, use firework_rocket as placeholder if outId missing
+                std::string ridOut = outId.empty() ? std::string("minecraft:firework_rocket") : outId;
+                auto it2 = gen::itemIdByName().find(ridOut);
+                if (it2 != gen::itemIdByName().end()) r.result = ItemStack::of(it2->second, outCount);
+                else if (it != gen::itemIdByName().end()) r.result = ItemStack::of(it->second, 1);
+                recipes_.push_back(std::move(r));
+            } else {
+                // unknown type -> skip but keep size stable
+                std::fprintf(stderr, "[cppfm] recipe %s unknown type '%s' skipped\n",
+                             path.string().c_str(), type.c_str());
+                continue;
+            }
+            if (recipes_.size() > before) {
+                recipes_.back().id = "minecraft:" + rid;
+                recipes_.back().group = group;
+                recipes_.back().category = categoryInt;
             }
         } catch (const std::exception& e) {
             std::fprintf(stderr, "[cppfm] recipe %s skipped: %s\n",
-                         entry.path().string().c_str(), e.what());
+                         path.string().c_str(), e.what());
         }
     }
 }

@@ -1444,10 +1444,25 @@ void Session::sendRecipeBook() {
             writeSlotDisplayItem(furnaceItem);
             break;
         }
+        case Recipe::Kind::Smithing: {
+            b.varint(0);                       // smithing as shapeless for book display
+            b.varint(static_cast<std::int32_t>(r.ingredients.size()));
+            for (auto& ing : r.ingredients)
+                writeSlotDisplayItem(ing.items.empty() ? 0 : *ing.items.begin());
+            writeSlotDisplayItem(r.result.itemId);
+            writeSlotDisplayItem(tableItem);
+            break;
         }
-        b.varint(0);                           // group: none
-        b.varint(r.kind == Recipe::Kind::Smelting ? 6 : r.kind ==
-                  Recipe::Kind::Stonecutting ? 10 : 3);   // category
+        case Recipe::Kind::Special: {
+            b.varint(0);                       // special as shapeless placeholder
+            b.varint(0);
+            writeSlotDisplayItem(r.result.itemId);
+            writeSlotDisplayItem(tableItem);
+            break;
+        }
+        }
+        b.varint(0);                           // group: none (could use r.group hash but 0 for parity)
+        b.varint(r.category);                  // use JSON-derived category
         b.boolean(false);                      // craftingRequirements absent
         b.u8(0x03);                            // notification | highlight
         ++displayId;

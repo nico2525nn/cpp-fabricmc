@@ -1,0 +1,16 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "AA",
+    "AA"
+  ],
+  "key": {
+    "A": {
+      "item": "minecraft:popped_chorus_fruit"
+    }
+  },
+  "result": {
+    "id": "minecraft:purpur_block",
+    "count": 4
+  }
+}

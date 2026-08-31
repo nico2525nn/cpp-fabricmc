@@ -1,0 +1,15 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "AAA"
+  ],
+  "key": {
+    "A": {
+      "item": "minecraft:chiseled_sandstone"
+    }
+  },
+  "result": {
+    "id": "minecraft:sandstone_slab",
+    "count": 6
+  }
+}
