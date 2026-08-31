@@ -67,27 +67,6 @@ static std::array<std::uint8_t,16> packUuidFromUrl(const std::string& url) {
     return out;
 }
 
-// hotbar: block name -> (itemId, stateId) resolved at startup
-struct HotbarEntry { std::uint32_t itemId; std::uint16_t stateId; };
-static const char* kHotbarNames[] = {
-    "minecraft:grass_block", "minecraft:dirt", "minecraft:stone",
-    "minecraft:cobblestone", "minecraft:oak_planks", "minecraft:glass",
-    "minecraft:sand", "minecraft:oak_log", "minecraft:glowstone",
-};
-static std::vector<HotbarEntry> resolveHotbar() {
-    std::vector<HotbarEntry> v;
-    const auto& items = gen::itemIdByName();
-    const auto& blocks = gen::blockNameToState();
-    for (auto* n : kHotbarNames) {
-        auto ii = items.find(n);
-        auto bi = blocks.find(n);
-        if (ii == items.end() || bi == blocks.end()) continue;
-        v.push_back({ii->second, static_cast<std::uint16_t>(bi->second)});
-    }
-    return v;
-}
-static std::vector<HotbarEntry> g_hotbar = resolveHotbar();
-
 static const struct { const char* name; int cnt; } kKit[] = {
     {"minecraft:iron_sword",1}, {"minecraft:iron_pickaxe",1}, {"minecraft:iron_axe",1},
     {"minecraft:bread",8}, {"minecraft:apple",4},
@@ -3042,12 +3021,6 @@ void GameServer::resendInventory(Player& p) {
 
 
 // ------------------------------------------------------ level.dat + playerdata
-static std::string uuidToHexString(const std::array<std::uint8_t,16>& uuid) {
-    char buf[33];
-    for (int i = 0; i < 16; ++i) snprintf(buf + i * 2, 3, "%02x", uuid[i]);
-    return std::string(buf, 32);
-}
-
 void GameServer::saveLevelData() {
     persist_->saveLevelData(tickNo_, dayTime());
 }
