@@ -421,6 +421,8 @@ void GameServer::tickDigs() {
                 }
                 world_.setBlock(p->digX, p->digY, p->digZ, 0);
                 broadcastBlockChange(p->digX, p->digY, p->digZ, 0);
+                // plan29 §6 polish: breaking block adds 0.005 exhaustion (vanilla Hunger per block)
+                if (p->gamemode == 0) HungerManager::onBlockBreak(*p, *this);
                 // BlockEvent: fire onBlockBreak (plan7)
                 {
                     blockEventDispatcher().onBlockBreak(p->digX, p->digY, p->digZ, oldState, p);
@@ -3999,30 +4001,42 @@ void GameServer::effectsTick() {
             if (it->type == effects::Saturation && tickNo_ % std::max(1, 2 >> it->amplifier) == 0) {
                 addFoodAndSaturation(*p, 1, float(it->amplifier + 1));
             }
-            if (it->type == effects::Hunger && tickNo_ % 30 == 0) {
-                addHungerExhaustion(*p, 0.005f * float(it->amplifier + 1) * 20.f);
+            if (it->type == effects::Hunger) {
+                addHungerExhaustion(*p, 0.005f * float(it->amplifier + 1));
             }
             ++it;
         }
         (void)changed;
         // per-tick metadata effects: invisibility/glowing/levitation/slow-falling
-        if (hasEffect(p->effects, effects::Levitation)) {
-            int amp = amplifierFor(p->effects, effects::Levitation);
-            // levitate upward ~0.05*(amp+1) per tick, clamped
-            double dy = 0.05 * double(amp + 1);
-            p->y += dy;
-            // broadcast movement for levitation
-            if (p->conn) {
-                WriteBuffer lev;
-                lev.varint(p->entityId);
-                lev.f64(p->x); lev.f64(p->y); lev.f64(p->z);
-                lev.i8((int8_t)(p->yaw*256.f/360.f)); lev.i8((int8_t)(p->pitch*256.f/360.f));
-                lev.boolean(p->onGround);
-                try { broadcastPacketExcept(nullptr, pl::sc::EntityTeleport, lev); } catch(...) {}
+        // plan29 §7 polish: vanilla Levitation vy = 0.05*(amp+1) with lerp 0.2, fallDistance reset, ignore when swimming/riding
+        {
+            static thread_local std::unordered_map<std::int32_t,double> levVy;
+            int levAmp = amplifierFor(p->effects, effects::Levitation);
+            if (levAmp >= 0 && !p->isSwimming && p->vehicleId == -1) {
+                double target = levitationVelocity(levAmp);
+                double &vy = levVy[p->entityId];
+                vy += (target - vy) * 0.2;
+                p->y += vy;
+                p->fallDist = 0;
+                p->prevFeetY = p->y;
+                if (p->conn) {
+                    WriteBuffer lev;
+                    lev.varint(p->entityId);
+                    lev.f64(p->x); lev.f64(p->y); lev.f64(p->z);
+                    lev.i8((int8_t)(p->yaw*256.f/360.f)); lev.i8((int8_t)(p->pitch*256.f/360.f));
+                    lev.boolean(p->onGround);
+                    try { broadcastPacketExcept(nullptr, pl::sc::EntityTeleport, lev); } catch(...) {}
+                }
+            } else if (levAmp >= 0) {
+                // levitating but swimming/riding -> still suppress fall damage
+                p->fallDist = 0;
+                levVy.erase(p->entityId);
+            } else {
+                levVy.erase(p->entityId);
+                if (hasEffect(p->effects, effects::SlowFalling)) {
+                    if (p->fallDist > 0) p->fallDist *= 0.9;
+                }
             }
-        }
-        if (hasEffect(p->effects, effects::SlowFalling)) {
-            if (p->fallDist > 0) p->fallDist *= 0.9; // reduce fall distance
         }
     }
     for (auto &pp2 : playersSnapshot()) {
