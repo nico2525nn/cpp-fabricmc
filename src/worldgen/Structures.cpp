@@ -438,18 +438,52 @@ void StructureGenerator::trialChambersPiece(Chunk& chunk, std::int32_t cx, std::
     Writer w{chunk, cx, cz};
     const auto tuff = B("minecraft:tuff") ? B("minecraft:tuff")->defaultState : B("minecraft:stone_bricks")->defaultState;
     const auto tuffBricks = B("minecraft:tuff_bricks") ? B("minecraft:tuff_bricks")->defaultState : tuff;
+    const auto chiseledTuff = B("minecraft:chiseled_tuff") ? B("minecraft:chiseled_tuff")->defaultState : tuffBricks;
+    const auto chiseledBricks = B("minecraft:chiseled_tuff_bricks") ? B("minecraft:chiseled_tuff_bricks")->defaultState : chiseledTuff;
+    const auto waxedChiseled = B("minecraft:waxed_chiseled_copper") ? B("minecraft:waxed_chiseled_copper")->defaultState : chiseledTuff;
+    const auto copperBulb = B("minecraft:copper_bulb") ? B("minecraft:copper_bulb")->defaultState : tuffBricks;
+    const auto waxedBulb = B("minecraft:waxed_copper_bulb") ? B("minecraft:waxed_copper_bulb")->defaultState : copperBulb;
     const auto spawner = B("minecraft:trial_spawner") ? B("minecraft:trial_spawner")->defaultState : tuffBricks;
+    const auto vault = B("minecraft:vault") ? B("minecraft:vault")->defaultState : tuffBricks;
+    const auto dispenser = B("minecraft:dispenser") ? B("minecraft:dispenser")->defaultState : tuff;
+    const auto polishedTuff = B("minecraft:polished_tuff") ? B("minecraft:polished_tuff")->defaultState : tuffBricks;
     int surfaceY = ground(ox+8, oz+8);
     int baseY = std::clamp(surfaceY - 30, kMinY+5, 20);
-    for (int dx=0; dx<18; ++dx) for (int dz=0; dz<18; ++dz) {
-        int wx = ox+dx, wz = oz+dz;
-        bool edge = dx==0||dx==17||dz==0||dz==17;
-        w.set(wx, baseY, wz, tuffBricks, true);
-        w.set(wx, baseY+6, wz, tuffBricks, true);
-        if (edge) for (int dy=1; dy<=5; ++dy) w.set(wx, baseY+dy, wz, tuff, true);
-        else if (dx%9==4 && dz%9==4) { for (int dy=1; dy<=3; ++dy) w.set(wx, baseY+dy, wz, 0, true); w.set(wx, baseY+1, wz, spawner, true); }
-        else for (int dy=1; dy<=5; ++dy) w.set(wx, baseY+dy, wz, 0, false);
-    }
+    auto chamberAt = [&](int cxo, int czo, int kind) {
+        int sz = 18; if (kind==2) sz=14; if (kind==3) sz=22;
+        for (int dx=0; dx<sz; ++dx) for (int dz=0; dz<sz; ++dz) {
+            int wx=cxo+dx, wz=czo+dz;
+            bool edge=dx==0||dx==sz-1||dz==0||dz==sz-1;
+            w.set(wx, baseY, wz, tuffBricks, true);
+            w.set(wx, baseY+6, wz, tuffBricks, true);
+            if (edge){ for(int dy=1;dy<=5;++dy) w.set(wx, baseY+dy,wz,tuff,true); if((dx%6==0||dz%6==0)&&dx%3==0) w.set(wx,baseY+1,wz,chiseledTuff,true); if(dx==0&&dz%4==0) w.set(wx,baseY+2,wz,waxedChiseled,true); }
+            else if(dx%7==3&&dz%7==3){ for(int dy=1;dy<=3;++dy) w.set(wx,baseY+dy,wz,0,true); if(kind==1) w.set(wx,baseY+1,wz,spawner,true); else if(kind==2) w.set(wx,baseY+1,wz,vault,true); else w.set(wx,baseY+1,wz,spawner,true); if(dx==sz/2&&dz==sz/2) w.set(wx,baseY+3,wz,waxedBulb,true); }
+            else for(int dy=1;dy<=5;++dy) (void)w.set(wx,baseY+dy,wz,0,false);
+        }
+        w.set(cxo+2, baseY+1, czo+2, dispenser, true);
+        w.set(cxo+sz-3, baseY+1, czo+sz-3, copperBulb, true);
+        (void)chiseledBricks;
+    };
+    auto straightCorridor = [&](int cxo,int czo,int len,int dir){
+        for(int i=0;i<len;++i){ int wx=cxo+(dir==0?i:dir==1?-i:0); int wz=czo+(dir==2?i:dir==3?-i:0);
+            for(int dw=-1;dw<=1;++dw){ int px=wx+(dir>=2?dw:0); int pz=wz+(dir<2?dw:0);
+                w.set(px,baseY,pz,tuffBricks,true); w.set(px,baseY+4,pz,tuffBricks,true);
+                if(std::abs(dw)==1) for(int dy=1;dy<=3;++dy) w.set(px,baseY+dy,pz,tuff,true); else for(int dy=1;dy<=3;++dy) w.set(px,baseY+dy,pz,0,true);
+            } if(i%4==0) w.set(wx,baseY+1,wz,copperBulb,true);
+        }
+    };
+    auto intersectionAt = [&](int cxo,int czo){
+        for(int dx=-4;dx<=4;++dx) for(int dz=-4;dz<=4;++dz){ int wx=cxo+dx,wz=czo+dz; bool cross=(std::abs(dx)<=1||std::abs(dz)<=1); if(!cross) continue; w.set(wx,baseY,wz,tuffBricks,true); w.set(wx,baseY+5,wz,tuffBricks,true); bool edge=std::abs(dx)==4||std::abs(dz)==4; if(edge) for(int dy=1;dy<=4;++dy) w.set(wx,baseY+dy,wz,tuff,true); else for(int dy=1;dy<=4;++dy) (void)w.set(wx,baseY+dy,wz,0,true); } w.set(cxo,baseY+1,czo,spawner,true); w.set(cxo,baseY+2,czo,waxedBulb,true);
+    };
+    auto atriumAt = [&](int cxo,int czo){
+        for(int dx=-6;dx<=6;++dx) for(int dz=-6;dz<=6;++dz){ int wx=cxo+dx,wz=czo+dz; bool edge=std::abs(dx)==6||std::abs(dz)==6; w.set(wx,baseY,wz,polishedTuff,true); w.set(wx,baseY+7,wz,tuffBricks,true); if(edge) for(int dy=1;dy<=6;++dy) w.set(wx,baseY+dy,wz,tuff,true); else for(int dy=1;dy<=6;++dy) (void)w.set(wx,baseY+dy,wz,0,false); } w.set(cxo,baseY+1,czo,vault,true);
+    };
+    const double r0 = structHash(seed_, ox, oz, 0xBEEF);
+    const double r1 = structHash(seed_, ox, oz, 0xCAFE);
+    for(int dx=-2;dx<=2;++dx) for(int dz=-2;dz<=2;++dz){ int wx=ox+dx,wz=oz+dz; bool edge=std::abs(dx)==2||std::abs(dz)==2; w.set(wx,baseY,wz,tuffBricks,true); w.set(wx,baseY+4,wz,tuffBricks,true); if(edge) for(int dy=1;dy<=3;++dy) w.set(wx,baseY+dy,wz,tuff,true); else for(int dy=1;dy<=3;++dy) (void)w.set(wx,baseY+dy,wz,0,false); } w.set(ox,baseY+1,oz,spawner,true);
+    straightCorridor(ox+3, oz, 10, 0); straightCorridor(ox-3, oz, 8, 1);
+    int chamberKind = int(r0*4)%4; chamberAt(ox+10, oz-9, chamberKind); if(r0>0.5){ int k2=int(r1*4)%4; chamberAt(ox-24, oz+4, k2); }
+    intersectionAt(ox, oz+12); if(r1>0.35) atriumAt(ox+18, oz+16); straightCorridor(ox+28, oz-2, 6, 0);
 }
 void StructureGenerator::endCityPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
                                       std::int32_t ox, std::int32_t oz, const GroundFn& ground) {
@@ -504,6 +538,11 @@ void StructureGenerator::generateChunk(Chunk& chunk, std::int32_t cx,
     for (const auto& s : structureSets()) {
         const StructureAt at = structureAtChunk(s, seed_, cx, cz);
         if (!at.present) continue;
+        // trial_chambers deep_dark origin reject (vanilla)
+        if (std::string(s.name).find("trial_chambers") != std::string::npos || std::string(s.name).find("trial_chamber") != std::string::npos) {
+            const std::string& picked = biomes_->sample(at.originX + 8, 63, at.originZ + 8);
+            if (picked.find("deep_dark") != std::string::npos) continue;
+        }
         // biome gate using the climate source at the origin
         if (!s.biomes.empty()) {
             const std::string& picked = biomes_->sample(at.originX + 8, 63,

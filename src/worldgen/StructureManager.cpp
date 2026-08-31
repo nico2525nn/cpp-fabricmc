@@ -63,7 +63,7 @@ void StructureManager::ensureDefaults() {
         {"minecraft:mineshaft", 10, 5, 0, {}},
         {"minecraft:monument", 32, 5, 10387313ULL, {"deep_ocean","deep_cold_ocean","deep_frozen_ocean","deep_lukewarm_ocean"}},
         {"minecraft:mansion", 80, 20, 10387319ULL, {"dark_forest","roofed_forest","pale_garden"}},
-        {"minecraft:trial_chambers", 34, 8, 942731826ULL, {}},
+        {"minecraft:trial_chambers", 34, 12, 942731826ULL, {}},
         {"minecraft:end_city", 20, 11, 10387313ULL, {"end_highlands","end_midlands","end_barrens","small_end_islands"}},
     };
 }
@@ -481,33 +481,119 @@ void StructureManager::trialChambersPiece(Chunk& chunk, std::int32_t cx, std::in
     const auto tuff = B("minecraft:tuff") ? B("minecraft:tuff")->defaultState : B("minecraft:stone_bricks")->defaultState;
     const auto tuffBricks = B("minecraft:tuff_bricks") ? B("minecraft:tuff_bricks")->defaultState : tuff;
     const auto chiseledTuff = B("minecraft:chiseled_tuff") ? B("minecraft:chiseled_tuff")->defaultState : tuffBricks;
+    const auto chiseledBricks = B("minecraft:chiseled_tuff_bricks") ? B("minecraft:chiseled_tuff_bricks")->defaultState : chiseledTuff;
+    const auto waxedChiseled = B("minecraft:waxed_chiseled_copper") ? B("minecraft:waxed_chiseled_copper")->defaultState : chiseledTuff;
     const auto copperBulb = B("minecraft:copper_bulb") ? B("minecraft:copper_bulb")->defaultState : tuffBricks;
+    const auto waxedBulb = B("minecraft:waxed_copper_bulb") ? B("minecraft:waxed_copper_bulb")->defaultState : copperBulb;
     const auto spawner = B("minecraft:trial_spawner") ? B("minecraft:trial_spawner")->defaultState : tuffBricks;
+    const auto vault = B("minecraft:vault") ? B("minecraft:vault")->defaultState : tuffBricks;
+    const auto dispenser = B("minecraft:dispenser") ? B("minecraft:dispenser")->defaultState : tuff;
     int surfaceY = ground ? ground(originX+8, originZ+8) : 64;
     int baseY = std::clamp(surfaceY - 30, kMinY+5, 20);
-    // simple 18x18 chamber at depth, with corridors
-    for (int dx=0; dx<18; ++dx) for (int dz=0; dz<18; ++dz) {
-        int wx = originX + dx, wz = originZ + dz;
-        bool edge = dx==0||dx==17||dz==0||dz==17;
-        w.set(wx, baseY, wz, tuffBricks, true);
-        w.set(wx, baseY+6, wz, tuffBricks, true);
-        if (edge) {
-            for (int dy=1; dy<=5; ++dy) w.set(wx, baseY+dy, wz, tuff, true);
-            if ((dx%6==0||dz%6==0) && dx%3==0) w.set(wx, baseY+1, wz, chiseledTuff, true);
-        } else if (dx%9==4 && dz%9==4) {
-            for (int dy=1; dy<=3; ++dy) w.set(wx, baseY+dy, wz, 0, true);
-            w.set(wx, baseY+1, wz, spawner, true);
-            if (dx==9 && dz==9) w.set(wx, baseY+2, wz, copperBulb, true);
-        } else {
-            for (int dy=1; dy<=5; ++dy) if (w.set(wx, baseY+dy, wz, 0, false)) {}
+    auto chamberAt = [&](int ox, int oz, int kind) {
+        // kind 0=chamber_1 1=chamber_2 2=chamber_4 3=chamber_8 (size/pattern variant)
+        int sz = 18;
+        if (kind==2) sz = 14;
+        if (kind==3) sz = 22;
+        for (int dx=0; dx<sz; ++dx) for (int dz=0; dz<sz; ++dz) {
+            int wx = ox + dx, wz = oz + dz;
+            bool edge = dx==0||dx==sz-1||dz==0||dz==sz-1;
+            w.set(wx, baseY, wz, tuffBricks, true);
+            w.set(wx, baseY+6, wz, tuffBricks, true);
+            if (edge) {
+                for (int dy=1; dy<=5; ++dy) w.set(wx, baseY+dy, wz, tuff, true);
+                if ((dx%6==0||dz%6==0) && dx%3==0) w.set(wx, baseY+1, wz, chiseledTuff, true);
+                if (dx==0 && dz%4==0) w.set(wx, baseY+2, wz, waxedChiseled, true);
+            } else if (dx%7==3 && dz%7==3) {
+                for (int dy=1; dy<=3; ++dy) w.set(wx, baseY+dy, wz, 0, true);
+                // spawner variant based on kind
+                if (kind==1) w.set(wx, baseY+1, wz, spawner, true);
+                else if (kind==2) w.set(wx, baseY+1, wz, vault, true);
+                else w.set(wx, baseY+1, wz, spawner, true);
+                if (dx==sz/2 && dz==sz/2) w.set(wx, baseY+3, wz, waxedBulb, true);
+            } else {
+                for (int dy=1; dy<=5; ++dy) (void)w.set(wx, baseY+dy, wz, 0, false);
+            }
         }
+        // copper bulb + dispenser in corners for extra decoration
+        w.set(ox+2, baseY+1, oz+2, dispenser, true);
+        w.set(ox+sz-3, baseY+1, oz+sz-3, copperBulb, true);
+        (void)chiseledBricks;
+    };
+    auto straightCorridor = [&](int ox, int oz, int len, int dir) {
+        // dir 0=+x 1=-x 2=+z 3=-z : 3-wide corridor with slices
+        for (int i=0;i<len;++i){
+            int wx = ox + (dir==0? i : dir==1? -i : 0);
+            int wz = oz + (dir==2? i : dir==3? -i : 0);
+            // floor/ceiling
+            for (int dw=-1; dw<=1; ++dw){
+                int px = wx + (dir>=2? dw:0);
+                int pz = wz + (dir<2? dw:0);
+                w.set(px, baseY, pz, tuffBricks, true);
+                w.set(px, baseY+4, pz, tuffBricks, true);
+                if (std::abs(dw)==1){
+                    for(int dy=1; dy<=3; ++dy) w.set(px, baseY+dy, pz, tuff, true);
+                } else {
+                    for(int dy=1; dy<=3; ++dy) w.set(px, baseY+dy, pz, 0, true);
+                }
+            }
+            if (i%4==0) w.set(wx, baseY+1, wz, copperBulb, true);
+        }
+    };
+    auto intersectionAt = [&](int ox, int oz) {
+        for (int dx=-4; dx<=4; ++dx) for (int dz=-4; dz<=4; ++dz){
+            int wx=ox+dx, wz=oz+dz;
+            bool edge = std::abs(dx)==4 || std::abs(dz)==4;
+            bool cross = (std::abs(dx)<=1 || std::abs(dz)<=1);
+            if (!cross) continue;
+            w.set(wx, baseY, wz, tuffBricks, true);
+            w.set(wx, baseY+5, wz, tuffBricks, true);
+            if (edge) for(int dy=1; dy<=4; ++dy) w.set(wx, baseY+dy, wz, tuff, true);
+            else for(int dy=1; dy<=4; ++dy) (void)w.set(wx, baseY+dy, wz, 0, true);
+        }
+        w.set(ox, baseY+1, oz, spawner, true);
+        w.set(ox, baseY+2, oz, waxedBulb, true);
+    };
+    auto atriumAt = [&](int ox, int oz) {
+        const auto polishedTuff = B("minecraft:polished_tuff") ? B("minecraft:polished_tuff")->defaultState : tuffBricks;
+        for (int dx=-6; dx<=6; ++dx) for (int dz=-6; dz<=6; ++dz){
+            int wx=ox+dx, wz=oz+dz;
+            bool edge = std::abs(dx)==6 || std::abs(dz)==6;
+            w.set(wx, baseY, wz, polishedTuff, true);
+            w.set(wx, baseY+7, wz, tuffBricks, true);
+            if (edge) for(int dy=1; dy<=6; ++dy) w.set(wx, baseY+dy, wz, tuff, true);
+            else for(int dy=1; dy<=6; ++dy) (void)w.set(wx, baseY+dy, wz, 0, false);
+        }
+        w.set(ox, baseY+1, oz, vault, true);
+    };
+    const double r0 = smStructureHash(seed_, originX, originZ, 0xBEEF);
+    const double r1 = smStructureHash(seed_, originX, originZ, 0xCAFE);
+    // start piece: corridor/end (5x5 entry)
+    for (int dx=-2; dx<=2; ++dx) for (int dz=-2; dz<=2; ++dz){
+        int wx=originX+dx, wz=originZ+dz;
+        bool edge = std::abs(dx)==2 || std::abs(dz)==2;
+        w.set(wx, baseY, wz, tuffBricks, true);
+        w.set(wx, baseY+4, wz, tuffBricks, true);
+        if (edge) for(int dy=1; dy<=3; ++dy) w.set(wx, baseY+dy, wz, tuff, true);
+        else for(int dy=1; dy<=3; ++dy) (void)w.set(wx, baseY+dy, wz, 0, false);
     }
-    // entrance corridor
-    for (int d=0; d<6; ++d) {
-        int wx = originX + 8 + d, wz = originZ - 1 - d/2;
-        w.set(wx, baseY+1, wz, 0, true); w.set(wx, baseY+2, wz, 0, true);
-        w.set(wx, baseY, wz, tuffBricks, true); w.set(wx, baseY+3, wz, tuffBricks, true);
+    w.set(originX, baseY+1, originZ, spawner, true);
+    // corridor straight slices (4 slices)
+    straightCorridor(originX+3, originZ, 10, 0);
+    straightCorridor(originX-3, originZ, 8, 1);
+    // central chamber (hash-driven variant)
+    int chamberKind = int(r0*4) % 4;
+    chamberAt(originX+10, originZ-9, chamberKind);
+    if (r0 > 0.5) {
+        int k2 = int(r1*4)%4;
+        chamberAt(originX-24, originZ+4, k2);
     }
+    // intersection + hallway branch
+    intersectionAt(originX, originZ+12);
+    // atrium near center-south
+    if (r1 > 0.35) atriumAt(originX+18, originZ+16);
+    // hallway connector east
+    straightCorridor(originX+28, originZ-2, 6, 0);
 }
 void StructureManager::endCityPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
                       std::int32_t originX, std::int32_t originZ,
@@ -619,6 +705,11 @@ void StructureManager::generate(Chunk& chunk, std::int32_t cx,
     for (const auto& s : sets_) {
         const SMStructureAt at = smStructureAtChunk(s, seed_, cx, cz);
         if (!at.present) continue;
+        // trial_chambers deep_dark origin reject (vanilla: origin in deep_dark => skip)
+        if (s.name.find("trial_chambers") != std::string::npos || s.name.find("trial_chamber") != std::string::npos) {
+            const std::string& picked = biomes_->sample(at.originX + 8, 63, at.originZ + 8);
+            if (picked.find("deep_dark") != std::string::npos) continue;
+        }
         if (!s.biomes.empty()) {
             const std::string& picked = biomes_->sample(at.originX + 8, 63, at.originZ + 8);
             bool ok = false;
