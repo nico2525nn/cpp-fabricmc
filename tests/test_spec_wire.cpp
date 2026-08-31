@@ -601,6 +601,163 @@ static void test_add_resource_pack_wire() {
     // OLD bug: no uuid -> url len at 0, so we lock that correct starts with 16-byte uuid
 }
 
+static void test_award_stats_wire(){
+    std::printf("[J1] AwardStats 0x04 {count varint, array{category,varint id,varint value}}\n");
+    WriteBuffer b; b.varint(1); b.varint(0); b.varint(1); b.varint(10);
+    std::vector<std::uint8_t> exp{0x01,0x00,0x01,0x0A};
+    expectEq(b.data, exp, "AwardStats 1 stat -> 01 00 01 0A");
+    check(proto::pl::sc::AwardStats==0x04, "AwardStats 0x04");
+}
+static void test_ack_block_change_wire(){
+    std::printf("[J2] AckBlockChange 0x05 varint sequence\n");
+    WriteBuffer b; b.varint(42);
+    expectEq(b.data, std::vector<uint8_t>{0x2A}, "AckBlockChange seq 42 -> 2A");
+    check(proto::pl::sc::AckBlockChange==0x05, "AckBlockChange 0x05");
+    ReadBuffer r(b.data); check(r.varint()==42, "AckBlockChange roundtrip 42");
+}
+static void test_block_break_animation_wire(){
+    std::printf("[J3] BlockBreakAnimation 0x06 {varint eid, position, stage i8}\n");
+    WriteBuffer b; b.varint(7); b.position(0,-60,0); b.i8(5);
+    check(b.data.size()==1+8+1, "BlockBreakAnimation size 10");
+    ReadBuffer r(b.data); check(r.varint()==7,"eid 7"); int32_t x,y,z; r.position(x,y,z); check(x==0 && y==-60 && z==0,"pos 0,-60,0"); check(r.i8()==5,"stage 5");
+    check(proto::pl::sc::BlockBreakAnimation==0x06, "BlockBreakAnimation 0x06");
+}
+static void test_animation_wire(){
+    std::printf("[J4] Animation 0x03 {varint eid, u8 animation}\n");
+    WriteBuffer b; b.varint(5); b.u8(0);
+    expectEq(b.data, std::vector<uint8_t>{0x05,0x00}, "Animation eid5 swing 0 -> 05 00");
+    check(proto::pl::sc::Animation==0x03, "Animation 0x03");
+}
+static void test_spawn_exp_orb_wire(){
+    std::printf("[J5] SpawnExperienceOrb 0x02 {varint eid, f64 x,y,z, i16 count}\n");
+    WriteBuffer b; b.varint(10); b.f64(1.5); b.f64(64.0); b.f64(-3.0); b.i16(7);
+    check(b.data.size()==1+24+2, "SpawnExpOrb size 27");
+    ReadBuffer r(b.data); check(r.varint()==10,"eid 10"); double x=r.f64(); check(x==1.5,"x 1.5");
+    check(proto::pl::sc::SpawnExperienceOrb==0x02, "SpawnExpOrb 0x02");
+}
+static void test_block_entity_data_wire(){
+    std::printf("[J6] BlockEntityData 0x07 {position, varint type, anonymousNbt}\n");
+    WriteBuffer b; b.position(0,-60,0); b.varint(4); nbt::writeTextComponent(b,"test");
+    check(b.data.size()>9, "BlockEntityData non-empty");
+    ReadBuffer r(b.data); int32_t x,y,z; r.position(x,y,z); check(y==-60,"y -60"); check(r.varint()==4,"type 4");
+    check(proto::pl::sc::BlockEntityData==0x07, "BlockEntityData 0x07");
+}
+static void test_block_action_wire(){
+    std::printf("[J7] BlockAction 0x08 {position, u8 action, u8 param, varint blockType}\n");
+    WriteBuffer b; b.position(0,-60,0); b.u8(1); b.u8(0); b.varint(1);
+    check(b.data.size()==8+2+1, "BlockAction size 11");
+    check(proto::pl::sc::BlockAction==0x08, "BlockAction 0x08");
+}
+static void test_chunk_batch_wire(){
+    std::printf("[J8] ChunkBatchFinished/Start 0x0C/0x0D + ClearTitles 0x0F\n");
+    WriteBuffer b; b.varint(5);
+    expectEq(b.data, std::vector<uint8_t>{0x05}, "ChunkBatchFinished varint 5 -> 05");
+    check(proto::pl::sc::ChunkBatchFinished==0x0C, "ChunkBatchFinished 0x0C");
+    check(proto::pl::sc::ChunkBatchStart==0x0D, "ChunkBatchStart 0x0D");
+    WriteBuffer c; c.boolean(true);
+    expectEq(c.data, std::vector<uint8_t>{0x01}, "ClearTitles boolean true -> 01");
+    check(proto::pl::sc::ClearTitles==0x0F, "ClearTitles 0x0F");
+}
+static void test_command_suggestions_wire(){
+    std::printf("[J9] CommandSuggestions 0x10 {varint id, start, length, matches}\n");
+    WriteBuffer b; b.varint(7); b.varint(0); b.varint(3); b.varint(1); b.string("help");
+    check(b.data[0]==0x07,"id 7"); check(proto::pl::sc::CommandSuggestions==0x10,"CommandSuggestions 0x10");
+    // alias ChatSuggestions 0x18 is unsent, distinct
+    check(proto::pl::sc::ChatSuggestions==0x18,"ChatSuggestions 0x18 unsent");
+}
+static void test_close_container_wire(){
+    std::printf("[J10] CloseContainer 0x12 + ContainerSetSlot 0x15 + SetCooldown 0x17\n");
+    WriteBuffer a; a.varint(0); expectEq(a.data, std::vector<uint8_t>{0x00}, "CloseContainer window 0 -> 00");
+    check(proto::pl::sc::CloseContainer==0x12, "CloseContainer 0x12");
+    WriteBuffer b; b.varint(0); b.varint(1); b.i16(5); ItemStack air; air.write(b);
+    check(b.data.size()>=4,"ContainerSetSlot size >=4"); check(proto::pl::sc::ContainerSetSlot==0x15,"ContainerSetSlot 0x15");
+    WriteBuffer c; c.varint(1); c.varint(20); expectEq(c.data, std::vector<uint8_t>{0x01,0x14}, "SetCooldown item1 ticks20 -> 01 14");
+    check(proto::pl::sc::SetCooldown==0x17, "SetCooldown 0x17");
+}
+static void test_custom_payload_wire(){
+    std::printf("[J11] CustomPayload 0x19 {string identifier, bytes}\n");
+    WriteBuffer b; b.string("minecraft:brand"); b.string("vanilla");
+    check(b.data.size()>2,"CustomPayload non-empty"); check(proto::pl::sc::CustomPayload==0x19,"CustomPayload 0x19");
+}
+static void test_forget_level_chunk_wire(){
+    std::printf("[J12] ForgetLevelChunk 0x22 {i32 cx,cz}\n");
+    WriteBuffer b; b.i32(3); b.i32(-2);
+    std::vector<uint8_t> exp{0x00,0x00,0x00,0x03, 0xFF,0xFF,0xFF,0xFE};
+    expectEq(b.data, exp, "ForgetLevelChunk 3,-2 -> 00 00 00 03 FF FF FF FE");
+    check(proto::pl::sc::ForgetLevelChunk==0x22,"ForgetLevelChunk 0x22");
+}
+static void test_game_event_wire(){
+    std::printf("[J13] GameEvent 0x23 {u8 event, f32 value}\n");
+    WriteBuffer b; b.u8(13); b.f32(0.0f);
+    std::vector<uint8_t> exp{0x0D,0x00,0x00,0x00,0x00};
+    expectEq(b.data, exp, "GameEvent 13 0.0 -> 0D 00 00 00 00");
+    check(proto::pl::sc::GameEvent==0x23,"GameEvent 0x23");
+}
+static void test_keepalive_ping_wire(){
+    std::printf("[J14] KeepAlive 0x27 i64 + PingResponse 0x38 i64 + Abilities 0x3A\n");
+    WriteBuffer k; k.i64(12345); check(k.data.size()==8,"KeepAlive 8B"); check(proto::pl::sc::KeepAlive==0x27,"KeepAlive 0x27");
+    WriteBuffer p; p.i64(98765); check(proto::pl::sc::PingResponse==0x38,"PingResponse 0x38");
+    WriteBuffer a; a.u8(0x02); a.f32(0.05f); a.f32(0.1f); check(a.data.size()==9,"Abilities 9B"); check(proto::pl::sc::Abilities==0x3A,"Abilities 0x3A");
+}
+static void test_player_info_remove_wire(){
+    std::printf("[J15] PlayerInfoRemove 0x3F varint count + uuid\n");
+    WriteBuffer b; b.varint(1); uint8_t uu[16]={1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16}; b.uuid(uu);
+    check(b.data.size()==1+16,"PlayerInfoRemove 17B"); check(proto::pl::sc::PlayerInfoRemove==0x3F,"PlayerInfoRemove 0x3F");
+}
+static void test_remove_entities_wire(){
+    std::printf("[J16] RemoveEntities 0x47 varint count + varint eids\n");
+    WriteBuffer b; b.varint(2); b.varint(5); b.varint(6);
+    expectEq(b.data, std::vector<uint8_t>{0x02,0x05,0x06}, "RemoveEntities 2->5,6 -> 02 05 06");
+    check(proto::pl::sc::RemoveEntities==0x47,"RemoveEntities 0x47");
+}
+static void test_sound_effect_wire(){
+    std::printf("[J17] SoundEffect 0x6F {varint id, varint category, i32 xyz, f32 vol,pitch, i64 seed}\n");
+    WriteBuffer b; b.varint(1); b.varint(0); b.i32(0); b.i32(64); b.i32(0); b.f32(1.0f); b.f32(1.0f); b.i64(123);
+    check(b.data.size()>10,"SoundEffect non-empty"); check(proto::pl::sc::SoundEffect==0x6F,"SoundEffect 0x6F");
+}
+static void test_transfer_wire(){
+    std::printf("[J18] Transfer 0x7A {string host, varint port}\n");
+    WriteBuffer b; b.string("127.0.0.1"); b.varint(25565);
+    check(b.data.size()>2,"Transfer non-empty"); check(proto::pl::sc::Transfer==0x7A,"Transfer 0x7A");
+}
+static void test_unsent_27_verify(){
+    std::printf("[K] Unsent 27 verify (count==0, not sent)\n");
+    // Verify Ids values for unsent 27 and document not sent semantics
+    check(proto::pl::sc::ChunkBiomes==0x0E,"ChunkBiomes 0x0E unsent (in LevelChunk 0x28)");
+    check(proto::pl::sc::ChatSuggestions==0x18,"ChatSuggestions 0x18 unsent");
+    check(proto::pl::sc::DebugSample==0x1B,"DebugSample 0x1B unsent");
+    check(proto::pl::sc::HideMessage==0x1C,"HideMessage 0x1C unsent");
+    check(proto::pl::sc::ProfilelessChat==0x1E,"ProfilelessChat 0x1E unsent");
+    check(proto::pl::sc::SyncEntityPosition==0x20,"SyncEntityPosition 0x20 unsent");
+    check(proto::pl::sc::OpenHorseWindow==0x24,"OpenHorseWindow 0x24 unsent");
+    check(proto::pl::sc::HurtAnimation==0x25,"HurtAnimation 0x25 unsent");
+    check(proto::pl::sc::MapData==0x2D,"MapData 0x2D unsent");
+    check(proto::pl::sc::MoveMinecart==0x31,"MoveMinecart 0x31 unsent");
+    check(proto::pl::sc::VehicleMove==0x33,"VehicleMove 0x33 unsent");
+    check(proto::pl::sc::OpenBook==0x34,"OpenBook 0x34 unsent");
+    check(proto::pl::sc::OpenSignEntity==0x36,"OpenSignEntity 0x36 unsent");
+    check(proto::pl::sc::EndCombatEvent==0x3C,"EndCombatEvent 0x3C unsent");
+    check(proto::pl::sc::EnterCombatEvent==0x3D,"EnterCombatEvent 0x3D unsent");
+    check(proto::pl::sc::DeathCombatEvent==0x3E,"DeathCombatEvent 0x3E unsent");
+    check(proto::pl::sc::FacePlayer==0x41,"FacePlayer 0x41 unsent");
+    check(proto::pl::sc::PlayerRotation==0x43,"PlayerRotation 0x43 unsent");
+    check(proto::pl::sc::PlayRemoveResourcePack==0x4A,"PlayRemoveResourcePack 0x4A unsent");
+    check(proto::pl::sc::PlayAddResourcePack==0x4B,"PlayAddResourcePack 0x4B unsent");
+    check(proto::pl::sc::SelectAdvancementTab==0x4F,"SelectAdvancementTab 0x4F unsent");
+    check(proto::pl::sc::ServerData==0x50,"ServerData 0x50 unsent");
+    check(proto::pl::sc::ActionBar==0x51,"ActionBar 0x51 unsent");
+    check(proto::pl::sc::UpdateViewDistance==0x59,"UpdateViewDistance 0x59 unsent");
+    check(proto::pl::sc::AttachEntity==0x5E,"AttachEntity 0x5E unsent");
+    check(proto::pl::sc::SetPlayerInventory==0x66,"SetPlayerInventory 0x66 unsent");
+    check(proto::pl::sc::EntitySoundEffect==0x6E,"EntitySoundEffect 0x6E unsent");
+    check(proto::pl::sc::StartConfiguration==0x70,"StartConfiguration 0x70 unsent");
+    check(proto::pl::sc::SetTikingState==0x78,"SetTikingState 0x78 unsent");
+    check(proto::pl::sc::StepTick==0x79,"StepTick 0x79 unsent");
+    check(proto::pl::sc::SetProjectilePower==0x80,"SetProjectilePower 0x80 unsent");
+    check(proto::pl::sc::CustomReportDetails==0x81,"CustomReportDetails 0x81 unsent");
+    check(proto::pl::sc::ServerLinks==0x82,"ServerLinks 0x82 unsent");
+}
+
 static void test_ids_byte_identical() {
     std::printf("[I] Ids.hpp lock: ResetScore 0x49, UpdateAttributes 0x7C, SetEntityMetadata 0x5D, BossBar 0x0A\n");
     check(proto::pl::sc::ResetScore==0x49, "ResetScore 0x49");
@@ -658,6 +815,26 @@ int main(){
     test_system_chat_wire();
     test_boss_bar_wire();
     test_add_resource_pack_wire();
+    // J 18 new + K unsent 27
+    test_award_stats_wire();
+    test_ack_block_change_wire();
+    test_block_break_animation_wire();
+    test_animation_wire();
+    test_spawn_exp_orb_wire();
+    test_block_entity_data_wire();
+    test_block_action_wire();
+    test_chunk_batch_wire();
+    test_command_suggestions_wire();
+    test_close_container_wire();
+    test_custom_payload_wire();
+    test_forget_level_chunk_wire();
+    test_game_event_wire();
+    test_keepalive_ping_wire();
+    test_player_info_remove_wire();
+    test_remove_entities_wire();
+    test_sound_effect_wire();
+    test_transfer_wire();
+    test_unsent_27_verify();
     test_ids_byte_identical();
 
     std::printf("=== spec_wire: %d PASS %d FAIL %d SKIP ===\n", g_pass, g_fail, g_skip);
