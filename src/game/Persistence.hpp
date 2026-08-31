@@ -3,6 +3,7 @@
 #include "World.hpp"
 #include "Anvil.hpp"
 #include "WorldDataManager.hpp"
+#include "Constants.hpp"
 #include <functional>
 #include "RegionFile.hpp"
 #include <atomic>
@@ -434,10 +435,10 @@ private:
     }
 
     std::string difficulty_ = "normal";
-    double worldBorderDiameter_ = 59999968;
+    double worldBorderDiameter_ = constants::kWorldBorderDiameter;
     double worldBorderCenterX_ = 0, worldBorderCenterZ_ = 0;
-    double worldBorderLerpFrom_ = 59999968;
-    double worldBorderLerpTo_ = 59999968;
+    double worldBorderLerpFrom_ = constants::kWorldBorderDiameter;
+    double worldBorderLerpTo_ = constants::kWorldBorderDiameter;
     std::int64_t worldBorderLerpMs_ = 0;
     std::int64_t worldBorderLerpRemainingTicks_ = 0;
     std::int64_t worldBorderLerpTotalTicks_ = 0;

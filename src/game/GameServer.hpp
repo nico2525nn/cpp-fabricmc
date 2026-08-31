@@ -28,6 +28,7 @@
 #include "../net/Crypto.hpp"
 #include "../net/MojangAuth.hpp"
 #include "Items.hpp"
+#include "Constants.hpp"
 #include "Containers.hpp"
 #include "Recipes.hpp"
 #include "TagManager.hpp"
@@ -941,10 +942,10 @@ private:
     brigadier::CommandDispatcher commands_;          // Brigadier tree
     GameRuleManager gamerules_;
     std::string difficulty_ = "normal";
-    double worldBorderDiameter_ = 59999968;   // vanilla default 5.9999968E7
+    double worldBorderDiameter_ = constants::kWorldBorderDiameter;   // vanilla default 5.9999968E7
     double worldBorderCenterX_ = 0, worldBorderCenterZ_ = 0;
-    double worldBorderLerpFrom_ = 59999968;
-    double worldBorderLerpTo_ = 59999968;
+    double worldBorderLerpFrom_ = constants::kWorldBorderDiameter;
+    double worldBorderLerpTo_ = constants::kWorldBorderDiameter;
     std::int64_t worldBorderLerpRemainingTicks_ = 0;
     std::int64_t worldBorderLerpTotalTicks_ = 0;
     std::int64_t worldBorderLerpMs_ = 0;
