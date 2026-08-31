@@ -55,6 +55,7 @@ public:
     using Map = std::unordered_map<std::string, LootTable>;
     const Map& tables() const { return tables_; }
     size_t size() const { return tables_.size(); }
+    void clear() { tables_.clear(); }
     const LootTable* find(const std::string& id) const {
         auto it=tables_.find(id);
         return it==tables_.end()?nullptr:&it->second;

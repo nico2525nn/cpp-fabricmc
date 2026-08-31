@@ -2490,6 +2490,37 @@ void GameServer::initCommands() {
         dp->then(list); dp->then(enable); dp->then(disable);
         d.root->then(dp);
     }
+    // /reload — plan35 §4: re-read recipes/tags/loot + advancements/predicates + re-send UpdateAdvancements 0x7B
+    {
+        auto reload = CommandNode::literal("reload");
+        reload->executable = true;
+        reload->action = [this](CommandContext& c){
+            Player* src = static_cast<Player*>(c.source.player);
+            // clear so deleted files disappear (plan35 §4 note: loadAll alone would leave stale entries)
+            datapackManager_.advancements.clear();
+            datapackManager_.predicates.clear();
+            datapackManager_.itemModifiers.clear();
+            datapackManager_.functions.clear();
+            datapackManager_.tagManager.itemTags.clear();
+            datapackManager_.tagManager.blockTags.clear();
+            datapackManager_.lootTables.clear();
+            datapackManager_.availablePacks.clear();
+            datapackManager_.enabledPacks.clear();
+            datapackManager_.availablePacks.insert("vanilla");
+            datapackManager_.enabledPacks.insert("vanilla");
+            datapackManager_.availablePacks.insert("cppfm");
+            datapackManager_.enabledPacks.insert("cppfm");
+            datapackManager_.loadAll(recipes_, "assets/data", cfg_.worldDir + "/datapacks");
+            tagManager_ = datapackManager_.tagManager;
+            lootTables_ = datapackManager_.lootTables;
+            cachedMergedAdv_.clear();
+            cachedAdvRawSize_ = 0;
+            for (auto& pp : playersSnapshot()) if (pp->inPlay) sendAdvancementsTo(*pp, true);
+            sendFeedback(src, "Reload complete");
+            return 1;
+        };
+        d.root->then(reload);
+    }
     // /schedule function <name> <time> [append|replace] (plan13)
     {
         auto sched = CommandNode::literal("schedule");
