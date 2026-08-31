@@ -6,15 +6,15 @@
 
 - Minecraft Fabric 1.21.4 サーバーを C++ で非公式に完全再実装し、**完全な互換性** (protocol-compatible) を目指す。
 - `docs/MISSING_FEATURES_1_21_4.md` の `PARTIAL/TODO` が 0 になるまでループ。`docs/COMPAT_AUDIT_1_21_4_STRICT.md` の厳密Wire監査 (78 gaps) も 0 まで。
-- 現状: `plan/` に `plan.md`〜`plan29.md` が蓄積。最新は `plan/plan29.md` (1216行, polish 層 10章 — Trial Chambers 12 / Pale Garden / Creaking / hunger/levitation)。`MISSING` は 80/80 DONE、strict 78/78 FIXED、deep 31/31 FIXED — **計109 gaps 全閉** + plan29 polish 層マージ済み (README 参照)。
+- 現状: `plan/` に `plan.md`〜`plan30.md` が蓄積。最新は `plan/plan30.md` (131 toClient wire 検証 10章 — 120 `test_spec_wire` cases)。`MISSING` は 80/80 DONE、strict 78/78 FIXED、deep 31/31 FIXED + plan30 `H1 UpdateAttributes 0x7C` varint mapper `32/32` — **計109 gaps 全閉 + plan30 wire lock** + plan29 polish 層マージ済み (README 参照)。次は `plan/plan31.md` リファクタ (本ファイル)。
 
-## 2. Current State (2026-08-31 確認)
+## 2. Current State (2026-08-31 確認 — plan30 完遂)
 
-- **HEAD:** `29abd26` (`wt29/*` 6 worktree マージ完: plan29 polish 層 §1/§2 world + §3 entity + §5/§6/§7 combat + §9/§10 block + §8 network) → plan29 マージ完 (15 files +659/-55)。plan24〜28 で deep audit 31/31 FIXED、plan29 で polish 層 10章のうち 7章実装 + 3章検証済み見送り/変更なしに到達。**worktree は全て削除済み** (`git worktree list` は main のみ)。
-- **Tests:** `cmake -B build -G Ninja && cmake --build build -j4` green。`./build/test_native ./build/cppfm` **ALL PASS (12/12)**。`./build/test_scoreboard_reset` **22 PASS 0 FAIL** (ctest `scoreboard_reset`, TIMEOUT 30, ResetScore `0x49` round-trip/wildcard/copy-before-erase)。`./build/test_smoke_80` は **69 PASS 0 FAIL**・exit 0・約7分 (450s 以内、省マシン負荷時は 600s 推奨、`=== SMOKE 80: 69 PASS 0 FAIL ===`、80-row taxonomy の各項目をカバー) — 以前 2 FAIL + タイムアウトだったが plan28 finish で修正 (`waitForChunks`/`ServerProc::stop()` SIGKILL フォールバック)。
-- **Docs:** `README.md` は strict 78/78 + deep 31/31 = 109 gaps closed に更新済み (2026-08-31 にTesting節の stale 記述も修正)。`docs/research-prompt.md` は `plan/` 一括無視のまま。
+- **HEAD:** `fc0e43e` (`wt30/*` 3 worktree マージ完: plan30 entity `H1 UpdateAttributes varint mapper + uuid string 36` + network `H3/M3/M4/M6/M7` + test `test_spec_wire 120 PASS` — 25+ wire cases bit-level lock) → plan30 マージ完 (H1 是正 `Attributes.hpp:224-250` count 22 + MAX_HEALTH mapper 16 + detector `third>0x15` fix)。plan24〜28 で deep audit 31/31 FIXED、plan29 polish 10章 + plan30 wire 10章 完了。**worktree は全て削除済み** (`git worktree list` は main のみ、`/tmp/opencode/wt31/refactor` 単一)。
+- **Tests:** `cmake -B build -G Ninja && cmake --build build -j4` green。`./build/test_native ./build/cppfm` **ALL PASS (12/12)**。`./build/test_scoreboard_reset` **22 PASS 0 FAIL** (ctest `scoreboard_reset`, TIMEOUT 30, ResetScore `0x49` round-trip/wildcard/copy-before-erase)。`./build/test_spec_wire` **120 PASS 0 FAIL 0 SKIP** (ctest `spec_wire` TIMEOUT 60, `[C2] UpdateAttributes 0x7C` H1 varint mapper 0-21 + count 22 + MAX_HEALTH 16 lock)。`./build/test_smoke_80` は **69 PASS 0 FAIL**・exit 0・約7分 (450s 以内、省マシン負荷時は 600s 推奨、`=== SMOKE 80: 69 PASS 0 FAIL ===`、80-row taxonomy の各項目をカバー)。
+- **Docs:** `README.md` は strict 78/78 + deep 31/31 (+ plan30 H1 → 32/32) = 109 gaps closed + `test_spec_wire 120 PASS` に更新済み。`docs/COMPAT_DEEP_AUDIT.md` は H1 UpdateAttributes varint mapper FIXED 追記、`docs/PROTOCOL_NOTES.md` は UpdateAttributes 0x7C wire 追記済み。`docs/research-prompt.md` は `plan/` 一括無視のまま。
 - **Git:** `plan/` フォルダは `.gitignore:10` で一括無視 (`plan/` 1行)。`plan/*.md` は追跡対象外。今後も `git add -f` 不要で無視される。
-- **旧ブランチ:** `wt/blocktick` `wt/command` `wt/datapack` `wt/entity` `wt/inventory` `wt/light` `wt/network` `wt/placement` `wt/portal` が残存 (worktree 無し・削除しても可)。
+- **旧ブランチ:** `wt/blocktick` `wt/command` `wt/datapack` `wt/entity` `wt/inventory` `wt/light` `wt/network` `wt/placement` `wt/portal` が残存 (worktree 無し・削除しても可)。`wt30/*` は削除済み。
 
 ## 3. Improvement Loop Workflow (厳守)
 
@@ -73,7 +73,7 @@
 ## 4. Plan Numbering
 
 - `ls plan/plan*.md | sort -V | tail -1` で最大Xを取得 → 次は `X+1`。
-- 現在最大: `plan/plan29.md` (1216行, polish 層 10章 — §1 Trial Chambers 12 / §2 Pale Garden / §3 Creaking 等)。次は `plan/plan30.md`。
+- 現在最大: `plan/plan30.md` (131 toClient wire 検証 10章 + 付録A/B/C — `test_spec_wire` 設計)。次は `plan/plan31.md` (1135行, リファクタ計画 — 本ファイル)。
 - 生成後は `ls -lh plan/planX.md && wc -l plan/planX.md` で確認。
 
 ## 5. Testing (Evidence)
@@ -83,13 +83,14 @@ timeout --foreground --kill-after=5 120 cmake -B build -G Ninja -DCMAKE_BUILD_TY
 timeout 300 cmake --build build -j4          # -j2 if OOM on /tmp tmpfs
 timeout --foreground --kill-after=5 60 ./build/test_native ./build/cppfm          # 12/12 PASS expected (50s)
 timeout --foreground --kill-after=5 30 ./build/test_scoreboard_reset               # 22/22 PASS expected (ctest scoreboard_reset TIMEOUT 30)
-timeout --foreground --kill-after=5 450 ./build/test_smoke_80 ./build/cppfm        # 69 PASS 0 FAIL (80-row taxonomy covering 69 checks) — 450s (600s under load), strict 78/78 + deep 31/31 FIXED (計109 gaps 全閉)
+timeout --foreground --kill-after=5 60 ./build/test_spec_wire                     # 120 PASS 0 FAIL 0 SKIP (wire byte-identical lock, H1 32/32)
+timeout --foreground --kill-after=5 450 ./build/test_smoke_80 ./build/cppfm        # 69 PASS 0 FAIL (80-row taxonomy covering 69 checks) — 450s (600s under load), strict 78/78 + deep 31/31 (+ H1 32/32) FIXED (計109 gaps 全閉 + plan30 wire)
 pkill -9 -f "cppfm --port" 2>/dev/null; sleep 1
-ctest -R "native|scoreboard_reset" --output-on-failure --timeout 60
+ctest -R "native|scoreboard_reset|spec_wire" --output-on-failure --timeout 60
 ctest -R smoke80 --output-on-failure --timeout 450   # 600 under load
 ```
 
-`test_native` の `2 FAIL` (spawn-protection 0,-61,0) は `30,-61,0` 修正で解消済み (`a1dba28`)。現 HEAD (`26b164a`, plan28 finish) で `test_native` 12/12 + `test_scoreboard_reset` 22/22 + `test_smoke_80` 69 PASS 0 FAIL ALL PASS 確認済み。
+`test_native` の `2 FAIL` (spawn-protection 0,-61,0) は `30,-61,0` 修正で解消済み (`a1dba28`)。現 HEAD (`fc0e43e`, plan30 完遂) で `test_native` 12/12 + `test_scoreboard_reset` 22/22 + `test_spec_wire` 120 PASS 0 FAIL + `test_smoke_80` 69 PASS 0 FAIL ALL PASS 確認済み。
 
 ## 6. Architecture Quick Map
 
@@ -113,10 +114,11 @@ ctest -R smoke80 --output-on-failure --timeout 450   # 600 under load
 
 ## 8. Next Steps
 
-1. **109 gaps は全閉済み (strict 78/78・deep 31/31・MISSING 80/80) — plan29 polish 層 (`29abd26`: 6 worktree, 15 files +659/-55, 試7+検3) まで完遂。次の改善ループは残 polish + 新監査観点から `plan/plan30.md` を作成**:
+1. **109 gaps は全閉済み (strict 78/78・deep 31/31・MISSING 80/80) + plan30 wire lock (H1 UpdateAttributes 0x7C varint mapper 32/32 + test_spec_wire 120 PASS) — plan29 polish 層 (`29abd26`) + plan30 wire 層 (`fc0e43e`: 3 worktree, H1 是正 + 120 wire cases) まで完遂。次は `plan/plan31.md` リファクタ (本 worktree `wt31/refactor` 単一エージェントで遂行中)**:
+   - plan31: 大規模リファクタ — `GameServer.cpp` 8092→470 分割 (6ファイル) + デッドコード除去 + 重複共通化 + 定数集約 (wire 不変、plan31.md §3 フェーズ Phase0→1→2→3→4→5→6)。機能追加・ビヘイビア変更なし。
    - 残った polish: `Bundles` 1.21.5 / proto 776 時再設計 (§4 見送り)、boat buoyancy / ghost preview throttle 現状維持 (§10/§9 検証済み)、`BossBar` lerp はクライアント側 (§8 検証済み・修正不要)
-   - 新しい監査観点 (例: 1.21.5 互換、datapack/function 網羅、perf) が必要なら `docs/research-prompt.md` を更新して `plan/plan30.md` を生成。
-2. ループを回す場合は §3 の手順で `wt30/*` 6 worktree → バックグラウンド並行実装 → `git merge --no-ff` → ドキュメント更新。
-3. 不要な旧ブランチ (`wt/*`) は `git branch -D` で削除可。
+   - 新しい監査観点 (例: 1.21.5 互換、datapack/function 網羅、perf) は plan31 リファクタ後に `docs/research-prompt.md` 更新 → `plan/plan32.md` で。
+2. ループを回す場合は §3 の手順で `wt31/refactor` 単一 worktree (`/tmp/opencode/wt31/refactor` ブランチ `wt31/refactor`) で直列フェーズ実行 → `git log --oneline` Phase0a→Phase6 → docs 更新。**並行 worktree は使わない (plan31 は単一エージェント)**。
+3. 不要な旧ブランチ (`wt/*`, `wt30/*`) は `git branch -D` で削除可。
 
 > このファイル自体が引き継ぎのエントリポイント。次回セッション開始時は本書の §3 のコマンドで worktree を再生成し、`plan/` の最新と `MISSING`/`COMPAT_AUDIT` を照合して再開すること。サブエージェントはすべて muse を使うこと。
