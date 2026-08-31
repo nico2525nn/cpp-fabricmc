@@ -5,11 +5,13 @@
 namespace cppfm::worldgen {
 
 NodePtr DensityPipeline::parse(const json::Value& v, std::string* err) const {
-    std::string type;
-    try { type = v.at("type").asStr(); } catch (...) {
+    std::string rawType;
+    try { rawType = v.at("type").asStr(); } catch (...) {
         if (err) *err = "missing type";
         return nullptr;
     }
+    std::string type = rawType;
+    if (type.rfind("minecraft:", 0) == 0) type = type.substr(10);
     auto fail = [&](const char* msg) -> NodePtr {
         if (err) *err = msg;
         return nullptr;
@@ -23,20 +25,27 @@ NodePtr DensityPipeline::parse(const json::Value& v, std::string* err) const {
         n->toV = v.at("to_value").asFloat();
         return n;
     }
-    // shift: {"type":"shift","noise":"minecraft:offset"} or shift_a / shift_b
+    // shift / shift_a / shift_b — Yarn Shift, ShiftA, ShiftB axis variants
     if (type == "shift" || type == "shift_a" || type == "shift_b") {
-        auto n = std::make_shared<detail::Shift>();
-        n->reg = noises_;
-        // try various key spellings
-        try { n->key = v.at("noise").asStr(); }
+        std::string key;
+        try { key = v.at("noise").asStr(); }
         catch (...) {
-            try { n->key = v.at("offset_noise").asStr(); }
+            try { key = v.at("offset_noise").asStr(); }
             catch (...) {
-                try { n->key = v.at("argument").at("noise").asStr(); }
-                catch (...) { n->key = "minecraft:offset"; }
+                try { key = v.at("argument").at("noise").asStr(); }
+                catch (...) {
+                    try { key = v.at("argument").asStr(); }
+                    catch (...) { key = "minecraft:offset"; }
+                }
             }
         }
-        return n;
+        if (type == "shift_a") {
+            auto n = std::make_shared<detail::ShiftA>(); n->reg = noises_; n->key = key; return n;
+        }
+        if (type == "shift_b") {
+            auto n = std::make_shared<detail::ShiftB>(); n->reg = noises_; n->key = key; return n;
+        }
+        auto n = std::make_shared<detail::Shift>(); n->reg = noises_; n->key = key; return n;
     }
     if (type == "shifted_noise") {
         auto n = std::make_shared<detail::ShiftedNoise>();
@@ -86,7 +95,7 @@ NodePtr DensityPipeline::parse(const json::Value& v, std::string* err) const {
         n->xzOffset = 0;
         return n;
     }
-    if (type == "abs" || type == "square" || type == "cube" ||
+    if (type == "abs" || type == "square" ||
         type == "half_negative" || type == "quarter_negative" ||
         type == "squeeze" || type == "neg") {
         auto n = std::make_shared<detail::Unary>();
@@ -104,13 +113,10 @@ NodePtr DensityPipeline::parse(const json::Value& v, std::string* err) const {
     if (type == "cube") {
         auto n = std::make_shared<detail::Unary>();
         n->op = detail::Unary::Cube;
-        try {
-            n->in = parse(v.at("input"), err);
-        } catch (...) {
-            // try argument
-            try { n->in = parse(v.at("argument"), err); } catch (...) { return fail("cube missing input"); }
-        }
-        return n->in ? n : nullptr;
+        n->in = parse(v.at("input"), err);
+        if (!n->in) n->in = parse(v.at("argument"), err);
+        if (!n->in) return fail("cube missing input");
+        return n;
     }
     if (type == "add" || type == "mul" || type == "min" || type == "max") {
         auto n = std::make_shared<detail::Nary>();
@@ -157,10 +163,23 @@ NodePtr DensityPipeline::parse(const json::Value& v, std::string* err) const {
     }
     if (type == "old_blended_noise") {
         auto n = std::make_shared<detail::OldBlendedNoiseNode>();
-        try { n->in = parse(v.at("input"), err); } catch (...) { n->in = nullptr; }
-        // fallback to inner if present, otherwise pass-through 0
-        if (n->in) return n;
-        try { return parse(v.at("input"), err); } catch (...) { return n; }
+        n->reg = noises_;
+        n->in = parse(v.at("input"), err);
+        if (!n->in) n->in = parse(v.at("argument"), err);
+        auto getF = [&](const char* a, const char* b, double def) -> double {
+            try { return v.at(a).asFloat(float(def)); } catch (...) {
+                try { return v.at(b).asFloat(float(def)); } catch (...) { return def; }
+            }
+        };
+        n->xzScale = getF("xz_scale", "xzScale", 1.0);
+        n->yScale = getF("y_scale", "yScale", 1.0);
+        n->xzFactor = getF("xz_factor", "xzFactor", 80.0);
+        n->yFactor = getF("y_factor", "yFactor", 160.0);
+        n->smearScale = getF("smear_scale_multiplier", "smearScaleMultiplier", 8.0);
+        // also support alternative name smear_scale
+        try { n->smearScale = v.at("smear_scale").asFloat(float(n->smearScale)); } catch (...) {}
+        n->smearScale = std::clamp(n->smearScale, 1.0, 8.0);
+        return n;
     }
     if (type == "blend_alpha") {
         return std::make_shared<detail::BlendAlphaNode>();
@@ -170,27 +189,30 @@ NodePtr DensityPipeline::parse(const json::Value& v, std::string* err) const {
     }
     if (type == "blend_density") {
         auto n = std::make_shared<detail::BlendDensityNode>();
-        try { n->in = parse(v.at("input"), err); } catch (...) { n->in = nullptr; }
+        n->in = parse(v.at("input"), err);
+        if (!n->in) n->in = parse(v.at("argument"), err);
         return n;
     }
     if (type == "end_islands") {
-        return std::make_shared<detail::EndIslandsNode>();
+        auto n = std::make_shared<detail::EndIslandsNode>();
+        n->reg = noises_;
+        return n;
     }
-    if (type == "weird_scaled_sampler") {
+    if (type == "weird_scaled_sampler" || type == "interval_select") {
         auto n = std::make_shared<detail::WeirdScaledSamplerNode>();
-        try { n->input = parse(v.at("input"), err); } catch (...) { try { n->input = parse(v.at("argument"), err); } catch (...) {} }
-        // rarity mapper string
+        n->reg = noises_;
+        n->input = parse(v.at("input"), err);
+        if (!n->input) n->input = parse(v.at("argument"), err);
         std::string rarityStr;
-        try { rarityStr = v.at("rarity").asStr(); } catch (...) {
-            try { rarityStr = v.at("rarity_value_mapper").asStr(); } catch (...) {
+        try { rarityStr = v.at("rarity_value_mapper").asStr(); } catch (...) {
+            try { rarityStr = v.at("rarity").asStr(); } catch (...) {
                 try { rarityStr = v.at("mapper").asStr(); } catch (...) {}
             }
         }
-        if (rarityStr == "type_1" || rarityStr.find("type_1") != std::string::npos) n->rarity = 1.0;
-        else if (rarityStr == "type_2" || rarityStr.find("type_2") != std::string::npos) n->rarity = 2.0;
-        else {
-            // numeric or default
-            try { n->rarity = v.at("rarity").asFloat(1.f); } catch (...) { n->rarity = 1.0; }
+        if (rarityStr.find("type_2") != std::string::npos) n->mapper = detail::WeirdScaledSamplerNode::Type2;
+        else n->mapper = detail::WeirdScaledSamplerNode::Type1;
+        try { n->noiseKey = v.at("noise").asStr(); } catch (...) {
+            try { n->noiseKey = v.at("input").at("noise").asStr(); } catch (...) {}
         }
         return n;
     }

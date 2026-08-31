@@ -9,6 +9,11 @@ void MultiNoiseBiomeSource::buildDefaultTable() {
     auto add = [&](const char* k, double t, double h, double c, double e,
                    double d, double w) {
         entries_.push_back({k, {t, h, c, e, d, w}});
+        NoiseHypercube cube;
+        auto r = [&](double v){ return ParameterRange{float(v-0.05), float(v+0.05)}; };
+        cube.temperature = r(t); cube.humidity = r(h); cube.continentalness = r(c);
+        cube.erosion = r(e); cube.depth = r(d); cube.weirdness = r(w);
+        entriesCube_.push_back({k, cube});
     };
     // ---- oceans (low continentalness)
     add("minecraft:deep_ocean",   0.0,  0.0, -0.45, -0.2,  0.35, 0.0);
