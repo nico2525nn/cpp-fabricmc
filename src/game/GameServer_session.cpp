@@ -258,6 +258,28 @@ void Session::handleLogin() {
 
     auto uuidBytes = in.bytes(16);
     std::copy(uuidBytes.begin(), uuidBytes.end(), self_->uuid.begin());
+    // ban check (banned-players.json)
+    if (srv_.isBanned(self_->name)) {
+        WriteBuffer kick;
+        nbt::writeTextComponent(kick, "You are banned from this server");
+        conn_->sendPacket(proto::lo::sc::Disconnect, kick);
+        state_ = State::Done;
+        return;
+    }
+    // ip ban check
+    {
+        std::string peer = conn_->peer();
+        std::string ip = peer;
+        auto colon = ip.find(':');
+        if (colon != std::string::npos) ip = ip.substr(0, colon);
+        if (!ip.empty() && ip != "?" && srv_.isIpBanned(ip)) {
+            WriteBuffer kick;
+            nbt::writeTextComponent(kick, "You are IP banned from this server");
+            conn_->sendPacket(proto::lo::sc::Disconnect, kick);
+            state_ = State::Done;
+            return;
+        }
+    }
     if (srv_.config().whitelist) {
         bool ok = false;
         // any registered-name match is impossible pre-join; check file-backed list

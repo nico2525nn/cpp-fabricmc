@@ -699,6 +699,21 @@ inline ArgumentType lootTableArg() {
     return a;
 }
 inline ArgumentType boolArg() { return boolean(); }
+inline ArgumentType gameProfileArg() {
+    ArgumentType a;
+    a.id = ParserId::GameProfile;
+    a.parse = [](StringReader& r, ParseCtx&) -> ArgValue {
+        std::string s = r.readUnquotedString();
+        if (s.empty()) throw StringReader::ParseError("expected player name");
+        return s;
+    };
+    a.suggest = [](StringReader&, ParseCtx& c) {
+        std::vector<std::string> v;
+        for (auto& n : c.playerNames) v.push_back(n);
+        return v;
+    };
+    return a;
+}
 
 } // namespace args
 } // namespace cppfm::brigadier
