@@ -6,15 +6,15 @@
 
 - Minecraft Fabric 1.21.4 サーバーを C++ で非公式に完全再実装し、**完全な互換性** (protocol-compatible) を目指す。
 - `docs/MISSING_FEATURES_1_21_4.md` の `PARTIAL/TODO` が 0 になるまでループ。`docs/COMPAT_AUDIT_1_21_4_STRICT.md` の厳密Wire監査 (78 gaps) も 0 まで。
-- 現状: `plan/` に `plan.md`〜`plan19.md` (+ `plan18` 等) が蓄積。最新は `plan/plan19.md` (1687行, LOW 10件)。`MISSING` は 80/80 DONE per taxonomy だが、厳密監査では 38 gaps残存 (plan18までで40/78 fixed)。
+- 現状: `plan/` に `plan.md`〜`plan28.md` が蓄積。最新は `plan/plan28.md` (718行, Score reset `0x49` 最終ハードニング)。`MISSING` は 80/80 DONE、strict 78/78 FIXED、deep 31/31 FIXED — **計109 gaps 全閉** (README 参照)。
 
-## 2. Current State (2026-08-29 01:05 JST)
+## 2. Current State (2026-08-31 確認)
 
-- **HEAD:** `f0324ca` + `wt18` 6マージ (`8606ea2` world / `702d922` block / `aea386c` entity / `dc96380` inventory / `7d59114` network / `3d7b90c` combat) → `plan18` 10件を解消。`wt19/*` 6 worktreeが `f0324ca` から作成済みで `plan19` 実装中 (一部完了)。
-- **Tests:** `cmake -B build -G Ninja && cmake --build build -j4` green。`./build/test_native ./build/cppfm` **12/12 PASS**。`./build/test_smoke_80` は 80/80 per taxonomyだが厳密では 38 gaps残存。
-- **Docs:** `README.md` は `plan/` 参照と strict audit 40/78 fixed に更新済み。`docs/research-prompt.md` は `plan/plan*.md` と `plan/` フォルダ一括無視に更新済み (2026-08-29)。
-- **Git:** `plan/` フォルダは `.gitignore:10` で一括無視 (`plan/` 1行)。`plan/*.md` は追跡対象外 ( `git rm --cached plan13.md plan14.md` で untracked化済み、 `e9130eb` )。今後の `plan/planX.md` は `git add -f` 不要で無視される。
-- **Worktrees:** `git worktree list` で `wt14` (plan14), `wt15` (plan15), `wt16` (plan16), `wt17` (plan17), `wt18` (plan18), `wt19` (plan19) が `/tmp/opencode/wt*` に残存。ループ完了後は `git worktree remove --force /tmp/opencode/wtXX/<name> && git worktree prune` で削除すること。
+- **HEAD:** `77897ab` (`wt28` 6マージ完: world/block/entity/inventory/network/combat) → plan28 完遂。plan24〜28 で deep audit 31/31 FIXED に到達。**worktree は全て削除済み** (`git worktree list` は main のみ)。
+- **Tests:** `cmake -B build -G Ninja && cmake --build build -j4` green。`./build/test_native ./build/cppfm` **ALL PASS (12/12)**。`./build/test_smoke_80` は 80/80 per taxonomy (最終確認ログ `/tmp/opencode/smoke80_plan28.log`)。
+- **Docs:** `README.md` は strict 78/78 + deep 31/31 = 109 gaps closed に更新済み (2026-08-31 にTesting節の stale 記述も修正)。`docs/research-prompt.md` は `plan/` 一括無視のまま。
+- **Git:** `plan/` フォルダは `.gitignore:10` で一括無視 (`plan/` 1行)。`plan/*.md` は追跡対象外。今後も `git add -f` 不要で無視される。
+- **旧ブランチ:** `wt/blocktick` `wt/command` `wt/datapack` `wt/entity` `wt/inventory` `wt/light` `wt/network` `wt/placement` `wt/portal` が残存 (worktree 無し・削除しても可)。
 
 ## 3. Improvement Loop Workflow (厳守)
 
@@ -71,7 +71,7 @@
 ## 4. Plan Numbering
 
 - `ls plan/plan*.md | sort -V | tail -1` で最大Xを取得 → 次は `X+1`。
-- 現在最大: `plan/plan19.md` (1687行, LOW 10件)。次は `plan/plan20.md`。
+- 現在最大: `plan/plan28.md` (718行, D26 Score reset 最終ハードニング)。次は `plan/plan29.md`。
 - 生成後は `ls -lh plan/planX.md && wc -l plan/planX.md` で確認。
 
 ## 5. Testing (Evidence)
@@ -80,12 +80,12 @@
 timeout --foreground --kill-after=5 120 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
 timeout 300 cmake --build build -j4          # -j2 if OOM on /tmp tmpfs
 timeout --foreground --kill-after=5 60 ./build/test_native ./build/cppfm          # 12/12 PASS expected (50s)
-timeout --foreground --kill-after=5 450 ./build/test_smoke_80 ./build/cppfm        # 80/80 per taxonomy (400s), strict 78 gaps has 38 remain
+timeout --foreground --kill-after=5 450 ./build/test_smoke_80 ./build/cppfm        # 80/80 per taxonomy, strict 78/78 + deep 31/31 FIXED (計109 gaps 全閉)
 pkill -9 -f "cppfm --port" 2>/dev/null; sleep 1
 ctest -R native --output-on-failure --timeout 60
 ```
 
-`test_native` の `2 FAIL` (spawn-protection 0,-61,0) は `30,-61,0` 修正で解消済み (`a1dba28`)。
+`test_native` の `2 FAIL` (spawn-protection 0,-61,0) は `30,-61,0` 修正で解消済み (`a1dba28`)。現 HEAD (`77897ab`) で ALL PASS 確認済み。
 
 ## 6. Architecture Quick Map
 
@@ -109,8 +109,11 @@ ctest -R native --output-on-failure --timeout 60
 
 ## 8. Next Steps
 
-1. `plan/plan19.md` の残り38 gapsのうち未着手10件を `plan/plan20.md` で詳述 (HIGH残りがあれば優先)。
-2. `wt20/*` 6 worktreeで並行実装 → マージ → `COMPAT_AUDIT` 更新。
-3. 78 gapsが0になるまで繰り返し。
+1. **109 gaps は全閉済み (strict 78/78・deep 31/31・MISSING 80/80)。次の改善ループは「非80項・polish層」**:
+   - `docs/MISSING_FEATURES_1_21_4.md` 末尾の polish 群 (Trial Chambers/Pale Garden/Creaking/Bundles 1.21.5 等)
+   - `README.md` の "Polish-within-DONE" / `MISSING` 行の `polish:` 注記 (例: #84 hunger exhaustion の vanilla weight 差、#90 Levitation の gravity 簡略化)
+   - 新しい監査観点 (例: 1.21.5 互換、datapack/function 網羅、perf) が必要なら `docs/research-prompt.md` を更新して `plan/plan29.md` を生成。
+2. ループを回す場合は §3 の手順で `wt29/*` 6 worktree → バックグラウンド並行実装 → `git merge --no-ff` → ドキュメント更新。
+3. 不要な旧ブランチ (`wt/*`) は `git branch -D` で削除可。
 
 > このファイル自体が引き継ぎのエントリポイント。次回セッション開始時は本書の §3 のコマンドで worktree を再生成し、`plan/` の最新と `MISSING`/`COMPAT_AUDIT` を照合して再開すること。
