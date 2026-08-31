@@ -225,25 +225,25 @@ constexpr std::uint8_t SetTime = UpdateTime;
 // Documented as constexpr aliases with "not sent" comment per plan30 §10 / L6.
 // Included here so Ids.hpp enumerates the full 131 toClient mapper and future
 // code can reference the id without reintroducing a magic number.
-// 27 not sent (see plan30 §10): 0x0E chunk_biomes, 0x18 chat_suggestions,
+// 27 not sent (see plan30 §10, plan34 sent 6: 0x18,0x20,0x25,0x50,0x51,0x6E): 0x0E chunk_biomes, 0x18 chat_suggestions (now sent),
 // 0x1B debug_sample, 0x1C hide_message, 0x1E profileless_chat, 0x20 sync_entity_position,
-// 0x24 open_horse_window, 0x25 hurt_animation, 0x2D map, 0x31 move_minecart,
+// 0x24 open_horse_window, 0x25 hurt_animation (now sent), 0x2D map, 0x31 move_minecart,
 // 0x33 vehicle_move, 0x34 open_book, 0x36 open_sign_entity, 0x3C end_combat_event,
 // 0x3D enter_combat_event, 0x3E death_combat_event, 0x41 face_player,
 // 0x43 player_rotation, 0x4A remove_resource_pack, 0x4B add_resource_pack,
-// 0x4F select_advancement_tab, 0x50 server_data, 0x51 action_bar,
+// 0x4F select_advancement_tab, 0x50 server_data (now sent), 0x51 action_bar (now sent),
 // 0x59 update_view_distance, 0x5E attach_entity, 0x66 set_player_inventory,
 // 0x6E entity_sound_effect, 0x70 start_configuration, 0x78 set_ticking_state,
 // 0x79 step_tick, 0x80 set_projectile_power, 0x81 custom_report_details,
 // 0x82 server_links — not sent, see ChunkCodec/GameServer/Advancements for alternatives.
 constexpr std::uint8_t ChunkBiomes = 0x0E;            // not sent, included in map_chunk 0x28
-constexpr std::uint8_t ChatSuggestions = 0x18;        // not sent
+constexpr std::uint8_t ChatSuggestions = 0x18;        // sent (plan34 network: chat_suggestions action+entries)
 constexpr std::uint8_t DebugSample = 0x1B;            // not sent
 constexpr std::uint8_t HideMessage = 0x1C;            // not sent
 constexpr std::uint8_t ProfilelessChat = 0x1E;        // not sent, see SystemChat 0x73
-constexpr std::uint8_t SyncEntityPosition = 0x20;     // not sent, see EntityTeleport 0x77
+constexpr std::uint8_t SyncEntityPosition = 0x20;     // sent (plan34 network: sync_entity_position 10 fields)
 constexpr std::uint8_t OpenHorseWindow = 0x24;        // not sent
-constexpr std::uint8_t HurtAnimation = 0x25;          // not sent, see EntityEvent 0x1F
+constexpr std::uint8_t HurtAnimation = 0x25;          // sent (plan34 network: hurt_animation eid+yaw)
 constexpr std::uint8_t MapData = 0x2D;                // not sent (map)
 constexpr std::uint8_t MoveMinecart = 0x31;           // not sent
 constexpr std::uint8_t VehicleMove = 0x33;            // not sent
@@ -257,12 +257,12 @@ constexpr std::uint8_t PlayerRotation = 0x43;         // not sent
 constexpr std::uint8_t PlayRemoveResourcePack = 0x4A; // not sent, see cf:sc RemoveResourcePack 0x08
 constexpr std::uint8_t PlayAddResourcePack = 0x4B;    // not sent, see cf:sc AddResourcePack 0x09
 constexpr std::uint8_t SelectAdvancementTab = 0x4F;   // not sent
-constexpr std::uint8_t ServerData = 0x50;             // not sent
-constexpr std::uint8_t ActionBar = 0x51;              // not sent, see SystemChat 0x73 isActionBar
+constexpr std::uint8_t ServerData = 0x50;             // sent (plan34 network: server_data motd+iconBytes)
+constexpr std::uint8_t ActionBar = 0x51;              // sent (plan34 network: action_bar anonymousNbt)
 constexpr std::uint8_t UpdateViewDistance = 0x59;     // not sent, see Login viewDistance + SimulationDistance 0x69
 constexpr std::uint8_t AttachEntity = 0x5E;           // not sent, see SetPassengers 0x65
 constexpr std::uint8_t SetPlayerInventory = 0x66;     // not sent
-constexpr std::uint8_t EntitySoundEffect = 0x6E;      // not sent, see SoundEffect 0x6F
+constexpr std::uint8_t EntitySoundEffect = 0x6E;      // sent (plan34 network: entity_sound_effect)
 constexpr std::uint8_t StartConfiguration = 0x70;     // not sent, see Transfer 0x7A
 constexpr std::uint8_t SetTikingState = 0x78;         // not sent, 20t fixed
 constexpr std::uint8_t StepTick = 0x79;               // not sent
