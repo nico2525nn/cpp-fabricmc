@@ -340,6 +340,9 @@ public:
         gameData_.load(data_);
         whitelist_.load("whitelist.json");
         if (cfg_.whitelist) whitelist_.setEnabled(true);
+        loadOps();
+        loadBans();
+        loadBannedIps();
         recipes_.loadDefaults();
         recipes_.loadDirectory(cfg_.recipesDir);
         entityDataLoader_.loadDirectory("assets/entities");
@@ -951,6 +954,8 @@ private:
     std::int64_t worldBorderLerpMs_ = 0;
     int spawnProtection_ = 16;               // server.properties spawn-protection (default 16)
     std::unordered_set<std::string> ops_;    // ops.json / op list
+    std::unordered_set<std::string> bannedPlayers_; // banned-players.json
+    std::unordered_set<std::string> bannedIps_; // banned-ips.json
     std::int32_t teleportCounterForTest_ = 1;
     // WanderingTrader scheduling (vanilla WanderingTraderManager)
     int wanderingTraderSpawnDelay_ = 0;
@@ -1033,6 +1038,19 @@ public:
     }
     bool isOp(const std::string& name) const { return ops_.count(name) > 0; }
     void loadOps();
+    void saveOps() const;
+    bool isBanned(const std::string& name) const { return bannedPlayers_.count(name) > 0; }
+    bool isIpBanned(const std::string& ip) const { return bannedIps_.count(ip) > 0; }
+    void loadBans();
+    void saveBans() const;
+    void loadBannedIps();
+    void saveBannedIps() const;
+    void saveWhitelist() const;
+    const std::unordered_set<std::string>& bannedPlayers() const { return bannedPlayers_; }
+    const std::unordered_set<std::string>& bannedIps() const { return bannedIps_; }
+    std::unordered_set<std::string>& bannedPlayersMut() { return bannedPlayers_; }
+    std::unordered_set<std::string>& bannedIpsMut() { return bannedIps_; }
+    void kickPlayer(const std::string& name, const std::string& reason);
     void sendWorldBorderTo(Player& p) const;
     void broadcastWorldBorder();
     // Plan7 BossBar
