@@ -52,20 +52,58 @@ StructureManager::StructureManager(std::uint64_t seed, std::shared_ptr<MultiNois
 
 void StructureManager::ensureDefaults() {
     if (!sets_.empty()) return;
+    // 20 sets per plan33 §4 wiki Structure set table (spacing, separation, salt, spread, frequency, maxHoriz)
+    SMStructureSet stronghold;
+    stronghold.name = "minecraft:stronghold";
+    stronghold.spacing = 32; stronghold.separation = 0; stronghold.salt = 0;
+    stronghold.spread = SMStructureSet::Linear; stronghold.frequency = 1.0;
+    stronghold.maxHoriz = 3; stronghold.maxVert = 8;
+    stronghold.concentric.enabled = true; stronghold.concentric.distance = 32; stronghold.concentric.count = 128; stronghold.concentric.spread = 3;
+    SMStructureSet buried; buried.name = "minecraft:buried_treasure"; buried.spacing = 1; buried.separation = 0; buried.salt = 0;
+    buried.spread = SMStructureSet::Linear; buried.frequency = 0.01; buried.locateOffsetX = 9; buried.locateOffsetZ = 9; buried.maxHoriz = 1; buried.maxVert = 2; buried.biomes = {"beach"};
+    SMStructureSet mineshaft; mineshaft.name = "minecraft:mineshaft"; mineshaft.spacing = 1; mineshaft.separation = 0; mineshaft.salt = 0;
+    mineshaft.spread = SMStructureSet::Linear; mineshaft.frequency = 0.004; mineshaft.maxHoriz = 2; mineshaft.maxVert = 4;
     sets_ = {
-        {"minecraft:village", 34, 8, 0x5A17C, {"plains","savanna","desert","taiga","snowy"}},
-        {"minecraft:pillager_outpost",32, 8, 0x0F31, {}},
-        {"minecraft:desert_pyramid", 28, 8, 0x2B1E, {"desert"}},
-        {"minecraft:jungle_temple",  26, 8, 0x11AA, {"jungle"}},
-        {"minecraft:igloo",          30, 8, 0x19D1, {"snowy_plains","snowy_taiga","grove"}},
-        {"minecraft:swamp_hut",      26, 8, 0x1C9F, {"swamp"}},
-        // plan12 §3: Stronghold is handled via StructurePlacer, but also add set for spacing debug
-        {"minecraft:mineshaft", 10, 5, 0, {}},
+        {"minecraft:village", 34, 8, 10387312ULL, {"plains","savanna","desert","taiga","snowy"}},
+        {"minecraft:ancient_city", 24, 8, 20083232ULL, {"deep_dark"}},
+        {"minecraft:trail_ruins", 34, 8, 83469867ULL, {"taiga","snowy","old_growth_pine_taiga","old_growth_spruce_taiga"}},
+        {"minecraft:desert_pyramid", 32, 8, 14357617ULL, {"desert"}},
+        {"minecraft:jungle_temple", 32, 8, 14357619ULL, {"jungle"}},
+        {"minecraft:swamp_hut", 32, 8, 14357620ULL, {"swamp"}},
+        {"minecraft:igloo", 32, 8, 14357618ULL, {"snowy_plains","snowy_taiga","grove"}},
+        {"minecraft:pillager_outpost", 32, 8, 165745296ULL, {}},
         {"minecraft:monument", 32, 5, 10387313ULL, {"deep_ocean","deep_cold_ocean","deep_frozen_ocean","deep_lukewarm_ocean"}},
         {"minecraft:mansion", 80, 20, 10387319ULL, {"dark_forest","roofed_forest","pale_garden"}},
-        {"minecraft:trial_chambers", 34, 12, 942731826ULL, {}},
+        {"minecraft:ruined_portal", 40, 15, 34222645ULL, {}},
+        {"minecraft:shipwreck", 24, 4, 165745295ULL, {"beach","ocean"}},
+        {"minecraft:ocean_ruins", 20, 8, 14357621ULL, {"ocean"}},
+        {"minecraft:nether_complexes", 27, 4, 30084232ULL, {}},
+        {"minecraft:nether_fossil", 2, 1, 14357921ULL, {"soul_sand_valley"}},
         {"minecraft:end_city", 20, 11, 10387313ULL, {"end_highlands","end_midlands","end_barrens","small_end_islands"}},
+        {"minecraft:trial_chambers", 34, 12, 94251327ULL, {}},
+        buried,
+        mineshaft,
+        stronghold,
     };
+    // adjust mansion/monument to triangular
+    for (auto& s : sets_) {
+        if (s.name == "minecraft:monument" || s.name == "minecraft:mansion") s.spread = SMStructureSet::Triangular;
+        if (s.name == "minecraft:trial_chambers") { s.maxHoriz = 5; s.maxVert = 12; }
+        if (s.name == "minecraft:monument") { s.maxHoriz = 4; s.maxVert = 8; }
+        if (s.name == "minecraft:mansion") { s.maxHoriz = 3; s.maxVert = 12; }
+        if (s.name == "minecraft:pillager_outpost") { s.exclusionOther = "minecraft:village"; s.exclusionCount = 10; }
+        if (s.name == "minecraft:ruined_portal") { s.maxHoriz = 3; }
+        if (s.name == "minecraft:ocean_ruins" || s.name == "minecraft:shipwreck") s.maxHoriz = 3;
+        if (s.name == "minecraft:end_city") s.maxHoriz = 3;
+        if (s.name == "minecraft:ancient_city") s.maxHoriz = 3;
+        if (s.name == "minecraft:trail_ruins") s.maxHoriz = 3;
+        if (s.name == "minecraft:nether_complexes") s.maxHoriz = 3;
+    }
+    // nether_complexes weight 40/60
+    for (auto& s : sets_) if (s.name == "minecraft:nether_complexes") {
+        s.structures = {{"minecraft:fortress",40},{"minecraft:bastion_remnant",60}};
+    }
+    // verify size 20
 }
 
 int StructureManager::loadFromFile(const std::string& path) {
@@ -86,6 +124,26 @@ int StructureManager::loadFromFile(const std::string& path) {
                 for (auto& e : bi->arr) if (e.isStr()) s.biomes.push_back(e.asStr());
             } else if (auto* bs = o.find("biome"); bs && bs->isStr()) {
                 s.biomes.push_back(bs->asStr());
+            }
+            if (auto* st = o.find("spread_type")) {
+                std::string v = st->asStr();
+                if (v == "triangular") s.spread = SMStructureSet::Triangular;
+                else if (v == "concentric") s.spread = SMStructureSet::Concentric;
+                else s.spread = SMStructureSet::Linear;
+            }
+            if (auto* fr = o.find("frequency")) s.frequency = fr->asFloat(float(s.frequency));
+            if (auto* lo = o.find("locate_offset"); lo && lo->isArr() && lo->arr.size() >= 3) {
+                s.locateOffsetX = lo->arr[0].asInt(s.locateOffsetX);
+                s.locateOffsetY = lo->arr[1].asInt(s.locateOffsetY);
+                s.locateOffsetZ = lo->arr[2].asInt(s.locateOffsetZ);
+            }
+            if (auto* hz = o.find("max_distance_from_center")) {
+                if (hz->isArr() && hz->arr.size() >= 2) { s.maxHoriz = hz->arr[0].asInt(s.maxHoriz); s.maxVert = hz->arr[1].asInt(s.maxVert); }
+                else s.maxHoriz = hz->asInt(s.maxHoriz);
+            }
+            if (auto* ex = o.find("exclusion_zone"); ex && ex->isObj()) {
+                if (auto* on = ex->find("other_set")) s.exclusionOther = on->asStr();
+                if (auto* cc = ex->find("chunk_count")) s.exclusionCount = cc->asInt(s.exclusionCount);
             }
             sets_.push_back(std::move(s));
             ++added;
@@ -617,6 +675,67 @@ void StructureManager::endCityPiece(Chunk& chunk, std::int32_t cx, std::int32_t 
     }
     w.set(originX+4, baseY+1, originZ+4, B("minecraft:chest")?B("minecraft:chest")->defaultState:endBricks, true);
 }
+void StructureManager::ancientCityPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz, std::int32_t ox, std::int32_t oz, const GroundFn& ground) const {
+    Writer w{chunk, cx, cz};
+    const auto deepslate = B("minecraft:deepslate_bricks") ? B("minecraft:deepslate_bricks")->defaultState : B("minecraft:cobblestone")->defaultState;
+    const auto chest = B("minecraft:chest") ? B("minecraft:chest")->defaultState : deepslate;
+    int baseY = ground ? ground(ox+4, oz+4) : 64;
+    baseY = std::clamp(baseY - 8, -50, 30);
+    for (int dx=0; dx<9; ++dx) for (int dz=0; dz<9; ++dz) w.set(ox+dx, baseY, oz+dz, deepslate, true);
+    for (int dx=0; dx<9; ++dx){ w.set(ox+dx, baseY+1, oz, deepslate, true); w.set(ox+dx, baseY+1, oz+8, deepslate, true); }
+    for (int dz=0; dz<9; ++dz){ w.set(ox, baseY+1, oz+dz, deepslate, true); w.set(ox+8, baseY+1, oz+dz, deepslate, true); }
+    w.set(ox+4, baseY+1, oz+4, chest, true);
+}
+void StructureManager::trailRuinsPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz, std::int32_t ox, std::int32_t oz, const GroundFn& ground) const {
+    Writer w{chunk, cx, cz};
+    const auto bricks = B("minecraft:mud_bricks") ? B("minecraft:mud_bricks")->defaultState : B("minecraft:bricks")->defaultState;
+    int baseY = ground ? ground(ox+4, oz+4) : 64;
+    for (int dx=0; dx<7; ++dx) for (int dz=0; dz<7; ++dz) w.set(ox+dx, baseY, oz+dz, bricks, true);
+    for (int dy=1; dy<=3; ++dy){ w.set(ox, baseY+dy, oz, bricks, true); w.set(ox+6, baseY+dy, oz+6, bricks, true); }
+    w.set(ox+3, baseY+1, oz+3, B("minecraft:suspicious_gravel")?B("minecraft:suspicious_gravel")->defaultState:bricks, true);
+}
+void StructureManager::ruinedPortalPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz, std::int32_t ox, std::int32_t oz, const GroundFn& ground) const {
+    Writer w{chunk, cx, cz};
+    const auto obs = B("minecraft:obsidian")->defaultState;
+    const auto crying = B("minecraft:crying_obsidian") ? B("minecraft:crying_obsidian")->defaultState : obs;
+    int baseY = ground ? ground(ox+2, oz+2) : 64;
+    for (int dy=0; dy<5; ++dy){ w.set(ox, baseY+dy, oz, obs, true); w.set(ox+4, baseY+dy, oz, obs, true); }
+    for (int dx=0; dx<5; ++dx){ w.set(ox+dx, baseY+4, oz, crying, true); }
+    w.set(ox+2, baseY+1, oz, 0, true); w.set(ox+2, baseY+2, oz, 0, true);
+}
+void StructureManager::shipwreckPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz, std::int32_t ox, std::int32_t oz, const GroundFn& ground) const {
+    Writer w{chunk, cx, cz};
+    const auto planks = B("minecraft:oak_planks")->defaultState;
+    const auto chest = B("minecraft:chest") ? B("minecraft:chest")->defaultState : planks;
+    int baseY = 42;
+    if (ground) baseY = std::clamp(ground(ox+3, oz+3)-2, 40, 60);
+    for (int dx=0; dx<7; ++dx) for (int dz=0; dz<3; ++dz) w.set(ox+dx, baseY, oz+dz, planks, true);
+    w.set(ox+3, baseY+1, oz+1, chest, true);
+}
+void StructureManager::oceanRuinsPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz, std::int32_t ox, std::int32_t oz, const GroundFn& ground) const {
+    Writer w{chunk, cx, cz};
+    const auto stone = B("minecraft:stone_bricks") ? B("minecraft:stone_bricks")->defaultState : B("minecraft:cobblestone")->defaultState;
+    int baseY = 38;
+    if (ground) baseY = std::clamp(ground(ox+2, oz+2)-3, 30, 50);
+    for (int dx=0; dx<5; ++dx) for (int dz=0; dz<5; ++dz) w.set(ox+dx, baseY, oz+dz, stone, true);
+    w.set(ox+2, baseY+1, oz+2, B("minecraft:chest")?B("minecraft:chest")->defaultState:stone, true);
+}
+void StructureManager::netherFossilPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz, std::int32_t ox, std::int32_t oz, const GroundFn& ground) const {
+    Writer w{chunk, cx, cz};
+    const auto bone = B("minecraft:bone_block") ? B("minecraft:bone_block")->defaultState : B("minecraft:quartz_block")->defaultState;
+    int baseY = 40;
+    if (ground) baseY = ground(ox+2, oz+2);
+    baseY = std::clamp(baseY, 30, 70);
+    for (int dy=0; dy<7; ++dy) w.set(ox+2, baseY+dy, oz+2, bone, true);
+    for (int dx=-2; dx<=2; ++dx) w.set(ox+dx, baseY+3, oz+2, bone, true);
+}
+void StructureManager::buriedTreasurePiece(Chunk& chunk, std::int32_t cx, std::int32_t cz, std::int32_t ox, std::int32_t oz, const GroundFn& ground) const {
+    Writer w{chunk, cx, cz};
+    const auto chest = B("minecraft:chest") ? B("minecraft:chest")->defaultState : B("minecraft:oak_planks")->defaultState;
+    int baseY = ground ? ground(ox+1, oz+1)-2 : 50;
+    baseY = std::clamp(baseY, 45, 65);
+    w.set(ox+1, baseY, oz+1, chest, true);
+}
 void StructureManager::strongholdPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
                                         std::int32_t ox, std::int32_t oz, const GroundFn& ground) const {
     Writer w{chunk, cx, cz};
@@ -740,6 +859,27 @@ void StructureManager::generate(Chunk& chunk, std::int32_t cx,
             endCityPiece(chunk, cx, cz, at.originX, at.originZ, ground);
         else if (name.find("mineshaft") != std::string::npos)
             mineshaftPiece(chunk, cx, cz, at.originX, at.originZ, ground);
+        else if (name.find("ancient_city") != std::string::npos)
+            ancientCityPiece(chunk, cx, cz, at.originX, at.originZ, ground);
+        else if (name.find("trail_ruins") != std::string::npos)
+            trailRuinsPiece(chunk, cx, cz, at.originX, at.originZ, ground);
+        else if (name.find("ruined_portal") != std::string::npos)
+            ruinedPortalPiece(chunk, cx, cz, at.originX, at.originZ, ground);
+        else if (name.find("shipwreck") != std::string::npos)
+            shipwreckPiece(chunk, cx, cz, at.originX, at.originZ, ground);
+        else if (name.find("ocean_ruins") != std::string::npos)
+            oceanRuinsPiece(chunk, cx, cz, at.originX, at.originZ, ground);
+        else if (name.find("nether_fossil") != std::string::npos)
+            netherFossilPiece(chunk, cx, cz, at.originX, at.originZ, ground);
+        else if (name.find("buried_treasure") != std::string::npos)
+            buriedTreasurePiece(chunk, cx, cz, at.originX, at.originZ, ground);
+        else if (name.find("nether_complexes") != std::string::npos || name.find("bastion") != std::string::npos || name.find("fortress") != std::string::npos) {
+            // lottery based on hash
+            double r = smStructureHash(seed_, at.originX, at.originZ, s.salt ^ 0xBEEF);
+            if (r < 0.4) mineshaftPiece(chunk, cx, cz, at.originX, at.originZ, ground); // fortress placeholder reuse
+            else ancientCityPiece(chunk, cx, cz, at.originX, at.originZ, ground); // bastion placeholder
+        } else if (name.find("stronghold") != std::string::npos)
+            strongholdPiece(chunk, cx, cz, at.originX, at.originZ, ground);
         else continue;
     }
 }

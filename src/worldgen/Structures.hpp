@@ -29,19 +29,29 @@ struct StructureSet {
     std::vector<const char*> biomes;
 };
 
+[[deprecated("Use StructureManager::sets() — this legacy header will be removed in plan34; see plan33 §5")]]
 inline const std::vector<StructureSet>& structureSets() {
     static const std::vector<StructureSet> sets = {
-        {"minecraft:village",        34, 8, 0x5A17C, {"plains","savanna","desert","taiga","snowy"}},
-        {"minecraft:pillager_outpost",32, 8, 0x0F31, {}},
-        {"minecraft:desert_pyramid", 28, 8, 0x2B1E, {"desert"}},
-        {"minecraft:jungle_temple",  26, 8, 0x11AA, {"jungle"}},
-        {"minecraft:igloo",          30, 8, 0x19D1, {"snowy_plains","snowy_taiga","grove"}},
-        {"minecraft:swamp_hut",      26, 8, 0x1C9F, {"swamp"}},
-        {"minecraft:mineshaft",      10, 5, 0, {}},
+        {"minecraft:village",        34, 8, 10387312ULL, {"plains","savanna","desert","taiga","snowy"}},
+        {"minecraft:ancient_city",   24, 8, 20083232ULL, {"deep_dark"}},
+        {"minecraft:trail_ruins",    34, 8, 83469867ULL, {"taiga","snowy"}},
+        {"minecraft:desert_pyramid", 32, 8, 14357617ULL, {"desert"}},
+        {"minecraft:jungle_temple",  32, 8, 14357619ULL, {"jungle"}},
+        {"minecraft:igloo",          32, 8, 14357618ULL, {"snowy_plains","snowy_taiga","grove"}},
+        {"minecraft:swamp_hut",      32, 8, 14357620ULL, {"swamp"}},
+        {"minecraft:pillager_outpost",32, 8, 165745296ULL, {}},
         {"minecraft:monument",       32, 5, 10387313ULL, {"deep_ocean","deep_cold_ocean","deep_frozen_ocean"}},
         {"minecraft:mansion",        80,20, 10387319ULL, {"dark_forest","roofed_forest","pale_garden"}},
-        {"minecraft:trial_chambers", 34, 12, 942731826ULL, {}},
+        {"minecraft:ruined_portal",  40,15, 34222645ULL, {}},
+        {"minecraft:shipwreck",      24, 4, 165745295ULL, {"beach","ocean"}},
+        {"minecraft:ocean_ruins",    20, 8, 14357621ULL, {"ocean"}},
+        {"minecraft:nether_complexes",27,4, 30084232ULL, {}},
+        {"minecraft:nether_fossil",   2, 1, 14357921ULL, {"soul_sand_valley"}},
         {"minecraft:end_city",       20,11, 10387313ULL, {"end_highlands","end_midlands"}},
+        {"minecraft:trial_chambers", 34, 12, 94251327ULL, {}},
+        {"minecraft:buried_treasure",1, 0, 0ULL, {"beach"}},
+        {"minecraft:mineshaft",       1, 0, 0ULL, {}},
+        {"minecraft:stronghold",     32, 0, 0ULL, {}},
     };
     return sets;
 }
