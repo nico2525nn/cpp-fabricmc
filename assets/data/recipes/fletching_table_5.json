@@ -1,0 +1,20 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "AA",
+    "BB",
+    "BB"
+  ],
+  "key": {
+    "A": {
+      "item": "minecraft:flint"
+    },
+    "B": {
+      "item": "minecraft:crimson_planks"
+    }
+  },
+  "result": {
+    "id": "minecraft:fletching_table",
+    "count": 1
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "AA",
+    "AA",
+    "AA"
+  ],
+  "key": {
+    "A": {
+      "item": "minecraft:acacia_planks"
+    }
+  },
+  "result": {
+    "id": "minecraft:acacia_door",
+    "count": 3
+  }
+}

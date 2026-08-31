@@ -1,0 +1,19 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "AAA",
+    "BBB"
+  ],
+  "key": {
+    "A": {
+      "item": "minecraft:light_blue_wool"
+    },
+    "B": {
+      "item": "minecraft:bamboo_planks"
+    }
+  },
+  "result": {
+    "id": "minecraft:light_blue_bed",
+    "count": 1
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    " A ",
+    "A A",
+    " A "
+  ],
+  "key": {
+    "A": {
+      "item": "minecraft:brick"
+    }
+  },
+  "result": {
+    "id": "minecraft:decorated_pot",
+    "count": 1
+  }
+}

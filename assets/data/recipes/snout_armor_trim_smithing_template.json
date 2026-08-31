@@ -1,0 +1,23 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "ABA",
+    "ACA",
+    "AAA"
+  ],
+  "key": {
+    "A": {
+      "item": "minecraft:diamond"
+    },
+    "B": {
+      "item": "minecraft:snout_armor_trim_smithing_template"
+    },
+    "C": {
+      "item": "minecraft:blackstone"
+    }
+  },
+  "result": {
+    "id": "minecraft:snout_armor_trim_smithing_template",
+    "count": 2
+  }
+}

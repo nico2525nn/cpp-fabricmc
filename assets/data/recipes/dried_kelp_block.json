@@ -1,0 +1,17 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "AAA",
+    "AAA",
+    "AAA"
+  ],
+  "key": {
+    "A": {
+      "item": "minecraft:dried_kelp"
+    }
+  },
+  "result": {
+    "id": "minecraft:dried_kelp_block",
+    "count": 1
+  }
+}

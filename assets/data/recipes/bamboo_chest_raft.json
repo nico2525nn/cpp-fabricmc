@@ -1,0 +1,15 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "ingredients": [
+    {
+      "item": "minecraft:chest"
+    },
+    {
+      "item": "minecraft:bamboo_raft"
+    }
+  ],
+  "result": {
+    "id": "minecraft:bamboo_chest_raft",
+    "count": 1
+  }
+}

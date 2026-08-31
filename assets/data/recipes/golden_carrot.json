@@ -1,0 +1,20 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "AAA",
+    "ABA",
+    "AAA"
+  ],
+  "key": {
+    "A": {
+      "item": "minecraft:gold_nugget"
+    },
+    "B": {
+      "item": "minecraft:carrot"
+    }
+  },
+  "result": {
+    "id": "minecraft:golden_carrot",
+    "count": 1
+  }
+}

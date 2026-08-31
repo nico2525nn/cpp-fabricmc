@@ -1,0 +1,36 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "ingredients": [
+    {
+      "item": "minecraft:disc_fragment_5"
+    },
+    {
+      "item": "minecraft:disc_fragment_5"
+    },
+    {
+      "item": "minecraft:disc_fragment_5"
+    },
+    {
+      "item": "minecraft:disc_fragment_5"
+    },
+    {
+      "item": "minecraft:disc_fragment_5"
+    },
+    {
+      "item": "minecraft:disc_fragment_5"
+    },
+    {
+      "item": "minecraft:disc_fragment_5"
+    },
+    {
+      "item": "minecraft:disc_fragment_5"
+    },
+    {
+      "item": "minecraft:disc_fragment_5"
+    }
+  ],
+  "result": {
+    "id": "minecraft:music_disc_5",
+    "count": 1
+  }
+}

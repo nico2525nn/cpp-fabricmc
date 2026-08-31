@@ -1,0 +1,19 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "AAA",
+    "BBB"
+  ],
+  "key": {
+    "A": {
+      "item": "minecraft:brown_wool"
+    },
+    "B": {
+      "item": "minecraft:spruce_planks"
+    }
+  },
+  "result": {
+    "id": "minecraft:brown_bed",
+    "count": 1
+  }
+}

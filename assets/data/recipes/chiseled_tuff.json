@@ -1,0 +1,16 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "A",
+    "A"
+  ],
+  "key": {
+    "A": {
+      "item": "minecraft:tuff_slab"
+    }
+  },
+  "result": {
+    "id": "minecraft:chiseled_tuff",
+    "count": 1
+  }
+}
