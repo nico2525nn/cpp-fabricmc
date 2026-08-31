@@ -40,7 +40,7 @@ inline const std::vector<StructureSet>& structureSets() {
         {"minecraft:mineshaft",      10, 5, 0, {}},
         {"minecraft:monument",       32, 5, 10387313ULL, {"deep_ocean","deep_cold_ocean","deep_frozen_ocean"}},
         {"minecraft:mansion",        80,20, 10387319ULL, {"dark_forest","roofed_forest","pale_garden"}},
-        {"minecraft:trial_chambers", 34, 8, 942731826ULL, {}},
+        {"minecraft:trial_chambers", 34, 12, 942731826ULL, {}},
         {"minecraft:end_city",       20,11, 10387313ULL, {"end_highlands","end_midlands"}},
     };
     return sets;

@@ -298,6 +298,101 @@ void World::fillTerrainV3(Chunk& c, std::int32_t cx, std::int32_t cz) const {
             }
     }
 
+    // -------------------------------------------------- pale garden decoration (plan29 §2)
+    {
+        const std::uint16_t PALE_LOG = id("minecraft:pale_oak_log");
+        const std::uint16_t PALE_LEAVES = id("minecraft:pale_oak_leaves");
+        const std::uint16_t PALE_MOSS = id("minecraft:pale_moss_block");
+        const std::uint16_t PALE_CARPET = id("minecraft:pale_moss_carpet");
+        const std::uint16_t HANGING_MOSS = id("minecraft:pale_hanging_moss");
+        const std::uint16_t CREAKING_HEART = id("minecraft:creaking_heart");
+        const std::uint16_t OPEN_EYE = id("minecraft:open_eyeblossom");
+        const std::uint16_t CLOSED_EYE = id("minecraft:closed_eyeblossom");
+        // need at least one pale_garden column in this chunk to run
+        bool hasPale = false;
+        for (int lz=0; lz<16 && !hasPale; ++lz) for (int lx=0; lx<16; ++lx) if (cols[lz+1][lx+1].biome=="minecraft:pale_garden") hasPale=true;
+        if (hasPale && PALE_LOG && PALE_LEAVES) {
+            // scatter 2-4 pale oak trees per pale_garden chunk
+            int plantedPale = 0;
+            for (int lz=2; lz<14 && plantedPale<4; ++lz) for (int lx=2; lx<14 && plantedPale<4; ++lx){
+                const std::int32_t wx=cx*16+lx, wz=cz*16+lz;
+                const auto& col = cols[lz+1][lx+1];
+                if (col.biome!="minecraft:pale_garden") continue;
+                if (col.ocean || col.surf <= kSea+1) continue;
+                double h = TerrainGenerator::posHash(srv_seed ^ 0xA1E5, wx, 991, wz);
+                if (h < 0.52) continue; // ~48% attempt per cell -> 2-4 trees per chunk
+                const int gyR = col.surf -1 - kMinY;
+                if (gyR<0 || gyR>=kSectionsPerChunk*16) continue;
+                if (c.blocks[Chunk::index(gyR>>4, gyR&15, wz&15, wx&15)] != GRASS) continue;
+                const int trunkH = 5 + static_cast<int>(TerrainGenerator::posHash(srv_seed, wx, 557, wz)*3);
+                bool hasHeart = TerrainGenerator::posHash(srv_seed ^ 0xC14E, wx, wz, 77) < 0.20;
+                int heartY = col.surf + 2;
+                for (int t=0; t<trunkH; ++t){
+                    int py = col.surf + t;
+                    if (hasHeart && t==2 && CREAKING_HEART) setIfIn(wx, py, wz, CREAKING_HEART, true);
+                    else setIfIn(wx, py, wz, PALE_LOG, true);
+                }
+                for (int dy=trunkH-2; dy<=trunkH+1; ++dy){
+                    int rad = dy>=trunkH ? 1:2;
+                    for(int dzl=-rad; dzl<=rad; ++dzl) for(int dxl=-rad; dxl<=rad; ++dxl){
+                        if(dxl==0 && dzl==0 && dy<trunkH) continue;
+                        setIfIn(wx+dxl, col.surf+dy, wz+dzl, PALE_LEAVES);
+                        // hanging moss under leaves
+                        if (HANGING_MOSS && dy==trunkH-2 && TerrainGenerator::posHash(srv_seed ^ 0xB0B5, wx+dxl, wz+dzl, dy) < 0.35){
+                            // 1-3 hanging
+                            int hangLen = 1 + int(TerrainGenerator::posHash(srv_seed ^ 0xC0B5, wx+dxl, wz+dzl, 99)*2);
+                            for(int hl=1; hl<=hangLen; ++hl){
+                                int hy = col.surf+dy - hl;
+                                if (hy < kMinY) break;
+                                // check leaf adjacency: place hanging moss only below leaves
+                                if (c.blocks[Chunk::index((hy+1 -kMinY)>>4,(hy+1 -kMinY)&15,(wz+dzl)&15,(wx+dxl)&15)]==0) break;
+                                setIfIn(wx+dxl, hy, wz+dzl, HANGING_MOSS);
+                            }
+                        }
+                    }
+                }
+                ++plantedPale;
+            }
+            // pale moss carpet patches (5x5) scattered
+            for(int attempt=0; attempt<3; ++attempt){
+                int lx = int(TerrainGenerator::posHash(srv_seed ^ 0xD15E, cx, attempt, cz)*16);
+                int lz = int(TerrainGenerator::posHash(srv_seed ^ 0xD15F, cx, attempt+10, cz)*16);
+                if(lx<0||lx>=16||lz<0||lz>=16) continue;
+                const auto& col = cols[lz+1][lx+1];
+                if(col.biome!="minecraft:pale_garden") continue;
+                const std::int32_t wx=cx*16+lx, wz=cz*16+lz;
+                if(col.ocean) continue;
+                // 5x5 patch around wx,wz at ground level
+                for(int dz=-2; dz<=2; ++dz) for(int dx=-2; dx<=2; ++dx){
+                    const std::int32_t px=wx+dx, pz=wz+dz;
+                    const std::int32_t ccx=px>>4, ccz=pz>>4; if(ccx!=cx||ccz!=cz) continue;
+                    // need grass below carpet
+                    int gy = col.surf -1;
+                    // sample col for neighbor? use cols approx for interior, else skip if different biome chunk border
+                    // just check we are in pale_garden by re-sampling biome at px,pz
+                    const std::string& b2 = biomeSource_->sample(px+2, 63, pz+2);
+                    if(b2!="minecraft:pale_garden") continue;
+                    // place moss block occasionally, else carpet
+                    double r = TerrainGenerator::posHash(srv_seed ^ 0xA55E, px, pz, attempt);
+                    if (r < 0.35 && PALE_MOSS) {
+                        // moss block at ground
+                        int py = col.surf -1;
+                        // replace grass with moss block
+                        setIfIn(px, py, pz, PALE_MOSS, true);
+                        // eyeblossom on top of moss 5%
+                        if (r < 0.05) {
+                            std::uint16_t eye = OPEN_EYE ? OPEN_EYE : CLOSED_EYE;
+                            if (eye) setIfIn(px, py+1, pz, eye);
+                        }
+                    } else if (PALE_CARPET) {
+                        // carpet one above ground (like moss_carpet)
+                        setIfIn(px, col.surf, pz, PALE_CARPET);
+                    }
+                }
+            }
+        }
+    }
+
     // ---------------------------------------------------------- structures (plan7: via StructureManager data-driven)
     auto groundFn = [&](std::int32_t wx, std::int32_t wz) -> std::int32_t {
         const double h = biomeSource_->heightEstimate(wx, wz);
