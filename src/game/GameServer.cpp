@@ -498,7 +498,7 @@ void GameServer::tickOnce() {
     // network batching: flush coalesced block updates every tick (50ms window)
     {
         int64_t now = nowMs();
-        if (!batcher_.empty() && now - batcher_.lastFlushMs.load() >= 50) {
+        if (!batcher_.empty() && now - batcher_.lastFlushMs.load() >= constants::kBlockBatchFlushMs) {
             batcher_.flush(*this, nullptr);
             lastBlockBatchFlushMs_ = now;
         } else if (!batcher_.empty() && tickNo_ % 2 == 0) {
@@ -509,9 +509,9 @@ void GameServer::tickOnce() {
 
 bool GameServer::isChunkInSimulationDistance(std::int32_t cx, std::int32_t cz) const {
     // Spawn chunk loader: forced chunks / SPAWN ticket level 31 are always in simulation distance (ChunkTicket)
-    if (world_.isForced(cx, cz) || world_.ticketLevel(cx, cz) <= 31) return true;
-    if (netherWorld_ && (netherWorld_->isForced(cx, cz) || netherWorld_->ticketLevel(cx, cz) <= 31)) return true;
-    if (endWorld_ && (endWorld_->isForced(cx, cz) || endWorld_->ticketLevel(cx, cz) <= 31)) return true;
+    if (world_.isForced(cx, cz) || world_.ticketLevel(cx, cz) <= constants::kTicketLevelSpawn) return true;
+    if (netherWorld_ && (netherWorld_->isForced(cx, cz) || netherWorld_->ticketLevel(cx, cz) <= constants::kTicketLevelSpawn)) return true;
+    if (endWorld_ && (endWorld_->isForced(cx, cz) || endWorld_->ticketLevel(cx, cz) <= constants::kTicketLevelSpawn)) return true;
     const int sim = cfg_.simulationDistance;
     if (sim <= 0) return true;
     const double limit = sim * 16.0;
@@ -540,7 +540,7 @@ void GameServer::chunksUnloadTick() {
         for (auto k : keys) {
             auto [cx, cz] = chunkKeyDecode(k);
             // W17/W19: keep both FORCED and SPAWN (level 31) tickets from unloading
-            if (w.isForcedKey(k) || w.ticketLevel(cx, cz) <= 31) continue;
+            if (w.isForcedKey(k) || w.ticketLevel(cx, cz) <= constants::kTicketLevelSpawn) continue;
             bool near = false;
             for (auto &pl : players) {
                 if (!pl->inPlay) continue;
@@ -554,7 +554,7 @@ void GameServer::chunksUnloadTick() {
             if (near) continue;
             bool anyInDim = false;
             for (auto &pl : players) if (pl->inPlay && pl->dimension == dim) { anyInDim = true; break; }
-            if (!anyInDim && (w.isForced(cx, cz) || w.ticketLevel(cx, cz) <= 31)) continue;
+            if (!anyInDim && (w.isForced(cx, cz) || w.ticketLevel(cx, cz) <= constants::kTicketLevelSpawn)) continue;
             if (pp && pp->isDirty(cx, cz)) {
                 pp->flushChunk(cx, cz);
             }
@@ -572,7 +572,7 @@ void GameServer::chunksUnloadTick() {
                 size_t forcedCount = 0;
                 for (auto k : keys) {
                     auto [cx, cz] = chunkKeyDecode(k);
-                    if (w.isForcedKey(k) || w.ticketLevel(cx,cz) <= 31) ++forcedCount;
+                    if (w.isForcedKey(k) || w.ticketLevel(cx,cz) <= constants::kTicketLevelSpawn) ++forcedCount;
                 }
                 if (forcedCount >= (size_t)cfg_.maxLoadedChunks) {
                     std::fprintf(stderr, "[cppfm] maxLoadedChunks %d < forced %zu, skip cap evict\n",
@@ -584,7 +584,7 @@ void GameServer::chunksUnloadTick() {
                     for (auto k : keys) {
                         if (already.count(k)) continue;
                         auto [cx, cz] = chunkKeyDecode(k);
-                        if (w.isForcedKey(k) || w.ticketLevel(cx,cz) <= 31) continue;
+                        if (w.isForcedKey(k) || w.ticketLevel(cx,cz) <= constants::kTicketLevelSpawn) continue;
                         candidates.push_back(k);
                     }
                     auto distToNearest = [&](std::int32_t cx, std::int32_t cz) -> double {
@@ -646,7 +646,7 @@ void GameServer::queueBlockChange(std::int32_t x, std::int32_t y, std::int32_t z
     b.position(x, y, z);
     b.varint(state);
     batcher_.queuePacket(proto::pl::sc::BlockUpdate, std::move(b));
-    if (batcher_.size() >= 64) {
+    if (batcher_.size() >= constants::kBlockBatchMaxPackets) {
         flushBlockBatches();
     }
 }
@@ -654,7 +654,7 @@ void GameServer::queueBlockChange(std::int32_t x, std::int32_t y, std::int32_t z
 void GameServer::flushBlockBatches() {
     if (batcher_.empty()) return;
     int64_t now = nowMs();
-    if (batcher_.size() < 64 && now - lastBlockBatchFlushMs_ < 50) return;
+    if (batcher_.size() < constants::kBlockBatchMaxPackets && now - lastBlockBatchFlushMs_ < constants::kBlockBatchFlushMs) return;
     batcher_.flush(*this, nullptr);
     lastBlockBatchFlushMs_ = now;
 }
@@ -3107,7 +3107,7 @@ void GameServer::sendWorldBorderTo(Player& p) const {
     }
     i.f64(oldSize); i.f64(newSize);
     i.varlong(lerpMs);
-    i.varint(59999968); // max world border (portalTeleportBoundary)
+    i.varint((int)constants::kWorldBorderDiameter); // max world border (portalTeleportBoundary)
     i.varint(5);  // warning blocks
     i.varint(15); // warning time
     try { p.conn->sendPacket(proto::pl::sc::InitializeWorldBorder, i); } catch (...) {}
