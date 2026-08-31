@@ -48,7 +48,7 @@ proven **byte-identical to a real reference server's output** by golden tests.
 
 - **Coarse taxonomy** (`docs/MISSING_FEATURES_1_21_4.md` 80 rows): **0 `PARTIAL` / 0 `TODO`** — all 80 rows DONE per that taxonomy (post-`plan/` `BreedGoal`/`Villager`/`SpawnEgg`/`Brain`).
 - **True parity — strict wire audit** (`docs/COMPAT_AUDIT_1_21_4_STRICT.md`, Web Search/Web Fetch verified, `file:line` absolute): **0 gaps remain of 78** — **78/78 fixed** (HIGH 10 in `plan15`, MEDIUM 10 in `plan16`, LOW 10 in `plan17`, `plan18` 10, `plan19` 10, `plan20` 10, `plan21` 10, `plan22` 10, `plan23` 8, `plan24` 10, `plan25` 10, `plan26` 10). Bit-level protocol parity achieved — deep audit `docs/COMPAT_DEEP_AUDIT.md` **31/31 fixed, 0 remain** — **109 gaps closed** (80 taxonomy +78 strict +31 deep, overlaps removed, Prismarine 131 `toClient` byte-identical).
-- **Non-80 polish (beyond 1.21.4):** `Bundles` 1.21.5, `RaidOmen`/`TrialOmen` duration.
+- **Non-80 polish (beyond 1.21.4):** `Bundles` 1.21.5 deferred to proto 776 (`bundle_contents` experimental in 769 — no client render; redesign at 776), `BossBar` Title lerp verified client-side (§8), boat buoyancy / ghost preview throttle verified as-is. **Plan29 implemented:** Trial Chambers `separation 12` + jigsaw 12-variant fallback + `deep_dark` gate (§1), Pale Garden `pale_oak`/`pale_moss`/`eyeblossom` + 20% `creaking_heart` (§2), Creaking/Creaking Heart — 60° gaze-freeze, resin `resin_clump`, daylight despawn (§3), hunger vanilla exhaustion weights `EXHAUST_BOW 0→0.0` + `EXHAUST_BLOCK_BREAK 0.005` (§6), Levitation `vy += (0.05*(amp+1)-vy)*0.2` (§7), `tall_seagrass` bonemeal (§10); Omen alias + durations `TRIAL_OMEN_PER_LEVEL 18000` / `RAID_OMEN_DURATION 600` (§5).
 
 - **Fabric mods cannot run inside a C++ process.** Mods are JVM bytecode loaded
   through the Fabric Loader; "Fabric-compatible" here means *protocol-compatible
@@ -116,7 +116,7 @@ python3 tests/stress_test.py            # N=32 concurrent joins
 ctest -R "native|smoke80|scoreboard_reset" --output-on-failure  # smoke80 450s (600s under load), scoreboard_reset 30s
 ```
 
-All suites pass in Release and ASan/UBSan (zero sanitizer) including 32-burst for the coarse 80-row taxonomy (69 CHECK all PASS). For true parity, see `docs/COMPAT_AUDIT_1_21_4_STRICT.md` (**78/78 fixed, 0 remain**) and `docs/COMPAT_DEEP_AUDIT.md` (**31/31 fixed, 0 remain**) — 109 gaps closed. `test_native` + `test_scoreboard_reset` green post-`plan28 finish`.
+All suites pass in Release and ASan/UBSan (zero sanitizer) including 32-burst for the coarse 80-row taxonomy (69 CHECK all PASS). For true parity, see `docs/COMPAT_AUDIT_1_21_4_STRICT.md` (**78/78 fixed, 0 remain**) and `docs/COMPAT_DEEP_AUDIT.md` (**31/31 fixed, 0 remain**) — 109 gaps closed. `test_native` + `test_scoreboard_reset` green post-`plan28 finish`; plan29 polish layer (10 ch, §4/§8/§9 verified no-change) green at `29abd26`.
 
 ### Reproducing the reference captures
 

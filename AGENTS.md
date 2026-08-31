@@ -6,11 +6,11 @@
 
 - Minecraft Fabric 1.21.4 サーバーを C++ で非公式に完全再実装し、**完全な互換性** (protocol-compatible) を目指す。
 - `docs/MISSING_FEATURES_1_21_4.md` の `PARTIAL/TODO` が 0 になるまでループ。`docs/COMPAT_AUDIT_1_21_4_STRICT.md` の厳密Wire監査 (78 gaps) も 0 まで。
-- 現状: `plan/` に `plan.md`〜`plan28.md` が蓄積。最新は `plan/plan28.md` (718行, Score reset `0x49` 最終ハードニング)。`MISSING` は 80/80 DONE、strict 78/78 FIXED、deep 31/31 FIXED — **計109 gaps 全閉** (README 参照)。
+- 現状: `plan/` に `plan.md`〜`plan29.md` が蓄積。最新は `plan/plan29.md` (1216行, polish 層 10章 — Trial Chambers 12 / Pale Garden / Creaking / hunger/levitation)。`MISSING` は 80/80 DONE、strict 78/78 FIXED、deep 31/31 FIXED — **計109 gaps 全閉** + plan29 polish 層マージ済み (README 参照)。
 
 ## 2. Current State (2026-08-31 確認)
 
-- **HEAD:** `26b164a` (`wt28/finish` マージ完: plan28 finish — test_scoreboard_reset + effect amplifier + MultiBlockChange 軸 + piston/persistence/deadlock 修正) → plan28 finish 完遂。plan24〜28 で deep audit 31/31 FIXED に到達。**worktree は全て削除済み** (`git worktree list` は main のみ)。
+- **HEAD:** `29abd26` (`wt29/*` 6 worktree マージ完: plan29 polish 層 §1/§2 world + §3 entity + §5/§6/§7 combat + §9/§10 block + §8 network) → plan29 マージ完 (15 files +659/-55)。plan24〜28 で deep audit 31/31 FIXED、plan29 で polish 層 10章のうち 7章実装 + 3章検証済み見送り/変更なしに到達。**worktree は全て削除済み** (`git worktree list` は main のみ)。
 - **Tests:** `cmake -B build -G Ninja && cmake --build build -j4` green。`./build/test_native ./build/cppfm` **ALL PASS (12/12)**。`./build/test_scoreboard_reset` **22 PASS 0 FAIL** (ctest `scoreboard_reset`, TIMEOUT 30, ResetScore `0x49` round-trip/wildcard/copy-before-erase)。`./build/test_smoke_80` は **69 PASS 0 FAIL**・exit 0・約7分 (450s 以内、省マシン負荷時は 600s 推奨、`=== SMOKE 80: 69 PASS 0 FAIL ===`、80-row taxonomy の各項目をカバー) — 以前 2 FAIL + タイムアウトだったが plan28 finish で修正 (`waitForChunks`/`ServerProc::stop()` SIGKILL フォールバック)。
 - **Docs:** `README.md` は strict 78/78 + deep 31/31 = 109 gaps closed に更新済み (2026-08-31 にTesting節の stale 記述も修正)。`docs/research-prompt.md` は `plan/` 一括無視のまま。
 - **Git:** `plan/` フォルダは `.gitignore:10` で一括無視 (`plan/` 1行)。`plan/*.md` は追跡対象外。今後も `git add -f` 不要で無視される。
@@ -73,7 +73,7 @@
 ## 4. Plan Numbering
 
 - `ls plan/plan*.md | sort -V | tail -1` で最大Xを取得 → 次は `X+1`。
-- 現在最大: `plan/plan28.md` (718行, D26 Score reset 最終ハードニング)。次は `plan/plan29.md`。
+- 現在最大: `plan/plan29.md` (1216行, polish 層 10章 — §1 Trial Chambers 12 / §2 Pale Garden / §3 Creaking 等)。次は `plan/plan30.md`。
 - 生成後は `ls -lh plan/planX.md && wc -l plan/planX.md` で確認。
 
 ## 5. Testing (Evidence)
@@ -113,11 +113,10 @@ ctest -R smoke80 --output-on-failure --timeout 450   # 600 under load
 
 ## 8. Next Steps
 
-1. **109 gaps は全閉済み (strict 78/78・deep 31/31・MISSING 80/80) — plan28 finish (`26b164a`: test_scoreboard_reset 22/22 + smoke 69 PASS 0 FAIL + MultiBlockChange/effect 修正) まで完遂。次の改善ループは「非80項・polish層」から `plan/plan29.md` を作成**:
-   - `docs/MISSING_FEATURES_1_21_4.md` 末尾の polish 群 (Trial Chambers/Pale Garden/Creaking/Bundles 1.21.5 等)
-   - `README.md` の "Polish-within-DONE" / `MISSING` 行の `polish:` 注記 (例: #84 hunger exhaustion の vanilla weight 差、#90 Levitation の gravity 簡略化)
-   - 新しい監査観点 (例: 1.21.5 互換、datapack/function 網羅、perf) が必要なら `docs/research-prompt.md` を更新して `plan/plan29.md` を生成。
-2. ループを回す場合は §3 の手順で `wt29/*` 6 worktree → バックグラウンド並行実装 → `git merge --no-ff` → ドキュメント更新。
+1. **109 gaps は全閉済み (strict 78/78・deep 31/31・MISSING 80/80) — plan29 polish 層 (`29abd26`: 6 worktree, 15 files +659/-55, 試7+検3) まで完遂。次の改善ループは残 polish + 新監査観点から `plan/plan30.md` を作成**:
+   - 残った polish: `Bundles` 1.21.5 / proto 776 時再設計 (§4 見送り)、boat buoyancy / ghost preview throttle 現状維持 (§10/§9 検証済み)、`BossBar` lerp はクライアント側 (§8 検証済み・修正不要)
+   - 新しい監査観点 (例: 1.21.5 互換、datapack/function 網羅、perf) が必要なら `docs/research-prompt.md` を更新して `plan/plan30.md` を生成。
+2. ループを回す場合は §3 の手順で `wt30/*` 6 worktree → バックグラウンド並行実装 → `git merge --no-ff` → ドキュメント更新。
 3. 不要な旧ブランチ (`wt/*`) は `git branch -D` で削除可。
 
 > このファイル自体が引き継ぎのエントリポイント。次回セッション開始時は本書の §3 のコマンドで worktree を再生成し、`plan/` の最新と `MISSING`/`COMPAT_AUDIT` を照合して再開すること。サブエージェントはすべて muse を使うこと。
