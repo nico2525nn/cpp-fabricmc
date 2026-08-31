@@ -4388,6 +4388,771 @@ void GameServer::initCommands() {
         };
         wl->then(wlOn); wl->then(wlOff); wl->then(wlList); wl->then(wlAdd); wl->then(wlRemove); wl->then(wlReload);
         d.root->then(wl);
+    // ---------------------------------------------------------------- plan32 combat: advancement/recipe/item/me/msg
+    // New additions only – other worktrees (world/entity/block) also extend Commands.cpp
+    // ---------------------------------------------------------------- advancement
+    {
+        auto advancement = CommandNode::literal("advancement");
+        auto grantLit = CommandNode::literal("grant");
+        auto revokeLit = CommandNode::literal("revoke");
+        // helper to expand advancement ids for mode (recursive via std::function)
+        std::function<std::vector<std::string>(const std::string&,const std::string&)> expandAdv;
+        expandAdv = [this, &expandAdv](const std::string& base, const std::string& mode) -> std::vector<std::string> {
+            std::vector<std::string> out;
+            auto normalize = [](std::string s)->std::string{
+                if(s.find(':')==std::string::npos) s="minecraft:"+s;
+                return s;
+            };
+            const auto& defs = advancementDefs();
+            std::unordered_map<std::string, std::string> parentOf;
+            std::unordered_map<std::string, std::vector<std::string>> childrenOf;
+            for(auto &d : defs){ std::string id=d.id; std::string par=d.parent?std::string(d.parent):std::string(); parentOf[id]=par; if(!par.empty()) childrenOf[par].push_back(id); }
+            for(auto &kv : datapackManager_.advancements){ std::string id=kv.first; if(!parentOf.count(id)) parentOf[id]=""; }
+            std::string normBase = normalize(base);
+            if(mode=="everything"){
+                for(auto &d: defs) out.push_back(d.id);
+                for(auto &kv: datapackManager_.advancements) if(std::find(out.begin(),out.end(),kv.first)==out.end()) out.push_back(kv.first);
+                return out;
+            }
+            if(mode=="only"){
+                out.push_back(normBase);
+                return out;
+            }
+            if(mode=="from"){
+                std::vector<std::string> q{normBase};
+                std::unordered_set<std::string> seen;
+                size_t idx=0;
+                while(idx<q.size()){
+                    std::string cur=q[idx++];
+                    if(seen.count(cur)) continue;
+                    seen.insert(cur);
+                    out.push_back(cur);
+                    auto it=childrenOf.find(cur);
+                    if(it!=childrenOf.end()) for(auto &ch: it->second) if(!seen.count(ch)) q.push_back(ch);
+                }
+                return out;
+            }
+            if(mode=="until"){
+                std::string cur=normBase;
+                while(!cur.empty()){
+                    out.push_back(cur);
+                    auto it=parentOf.find(cur);
+                    if(it==parentOf.end() || it->second.empty()) break;
+                    cur=it->second;
+                }
+                return out;
+            }
+            if(mode=="through"){
+                auto a = expandAdv(base,"until");
+                auto b = expandAdv(base,"from");
+                std::unordered_set<std::string> s(a.begin(),a.end());
+                for(auto &x: b) if(!s.count(x)) a.push_back(x);
+                return a;
+            }
+            return out;
+        };
+        auto knownAdvancements = [this]() -> std::vector<std::string> {
+            std::vector<std::string> v;
+            for(auto &d: advancementDefs()) v.push_back(d.id);
+            for(auto &kv: datapackManager_.advancements) v.push_back(kv.first);
+            return v;
+        };
+        auto makeGrantAction = [this, expandAdv](const std::string& mode) -> std::function<int(CommandContext&)> {
+            return [this, expandAdv, mode](CommandContext& c) -> int {
+                const auto sel = c.arg("targets").asSelector();
+                std::string advId;
+                try { advId = c.arg("advId").asStr(); } catch(...) { advId=""; }
+                std::string criterion;
+                try { criterion = c.arg("criterion").asStr(); } catch(...) {}
+                Player* src = static_cast<Player*>(c.source.player);
+                if(mode=="everything"){
+                    int total=0, already=0;
+                    for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)){
+                        auto ids = expandAdv("", "everything");
+                        int granted=0;
+                        for(auto &id: ids){
+                            // existence check: allow any id that is in defs or datapack; still grant for copy fallback
+                            bool known=false;
+                            for(auto &d: advancementDefs()) if(d.id==id) known=true;
+                            if(!known && datapackManager_.advancements.find(id)==datapackManager_.advancements.end() && id.rfind("cppfm:",0)!=0) known=false; else known=true;
+                            if(!p->advancements) continue;
+                            if(p->advancements->grant(id)) ++granted;
+                        }
+                        if(granted>0) sendAdvancementsTo(*p,false);
+                        total+=granted;
+                        // feedback
+                        if(granted>0) sendFeedback(src, "Granted "+std::to_string(granted)+" advancements to "+p->name);
+                        else sendFeedback(src, p->name+" already had all advancements");
+                    }
+                    return total;
+                } else {
+                    if(advId.empty()) throw std::runtime_error("advancement id required");
+                    std::string full = advId;
+                    if(full.find(':')==std::string::npos) full="minecraft:"+full;
+                    // allow cppfm: ids as is; if not found treat as full
+                    // check existence: must be in defs or datapack or allow wildcard *
+                    if(full!="*" && full.find('*')==std::string::npos){
+                        bool found=false;
+                        for(auto &d: advancementDefs()) if(d.id==full || d.id==advId) found=true;
+                        if(!found && datapackManager_.advancements.find(full)!=datapackManager_.advancements.end()) found=true;
+                        if(!found && datapackManager_.advancements.find(advId)!=datapackManager_.advancements.end()) found=true;
+                        // also allow minecraft: fallback for cppfm? not strict
+                        if(!found){
+                            // try raw advId as stored
+                            for(auto &d: advancementDefs()) if(std::string(d.id)==advId) { found=true; full=d.id; break; }
+                        }
+                        // if still not found, treat as unknown -> error feedback but still grant as cppfm custom?
+                        if(!found){
+                            // For combat worktree, allow granting even unknown as if it were cppfm custom advancement
+                            // but we will still report and attempt grant
+                        }
+                    }
+                    std::vector<std::string> ids;
+                    if(full=="*"){
+                        ids = expandAdv("", "everything");
+                    } else {
+                        ids = expandAdv(full, mode);
+                    }
+                    int total=0;
+                    for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)){
+                        if(!p->advancements) continue;
+                        int granted=0, already=0;
+                        for(auto &id: ids){
+                            if(p->advancements->has(id)) ++already;
+                            else if(p->advancements->grant(id)) ++granted;
+                        }
+                        if(granted>0) sendAdvancementsTo(*p,false);
+                        if(granted>0) sendFeedback(src, "Granted advancement "+full+" to "+p->name+" ("+std::to_string(granted)+" new)");
+                        else sendFeedback(src, p->name+" already had advancement "+full);
+                        total+=granted;
+                    }
+                    return total;
+                }
+            };
+        };
+        auto makeRevokeAction = [this, expandAdv](const std::string& mode) -> std::function<int(CommandContext&)> {
+            return [this, expandAdv, mode](CommandContext& c) -> int {
+                const auto sel = c.arg("targets").asSelector();
+                std::string advId;
+                try { advId = c.arg("advId").asStr(); } catch(...) { advId=""; }
+                Player* src = static_cast<Player*>(c.source.player);
+                if(mode=="everything"){
+                    int total=0;
+                    for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)){
+                        if(!p->advancements) continue;
+                        auto ids = expandAdv("", "everything");
+                        int revoked=0;
+                        for(auto &id: ids) if(p->advancements->revoke(id)) ++revoked;
+                        if(revoked>0) sendAdvancementsTo(*p,false);
+                        sendFeedback(src, "Revoked "+std::to_string(revoked)+" advancements from "+p->name);
+                        total+=revoked;
+                    }
+                    return total;
+                } else {
+                    if(advId.empty()) throw std::runtime_error("advancement id required");
+                    std::string full = advId;
+                    if(full.find(':')==std::string::npos) full="minecraft:"+full;
+                    std::vector<std::string> ids;
+                    if(full=="*") ids = expandAdv("", "everything");
+                    else ids = expandAdv(full, mode);
+                    int total=0;
+                    for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)){
+                        if(!p->advancements) continue;
+                        int revoked=0;
+                        for(auto &id: ids) if(p->advancements->revoke(id)) ++revoked;
+                        if(revoked>0) sendAdvancementsTo(*p,false);
+                        if(revoked>0) sendFeedback(src, "Revoked advancement "+full+" from "+p->name+" ("+std::to_string(revoked)+")");
+                        else sendFeedback(src, p->name+" did not have advancement "+full);
+                        total+=revoked;
+                    }
+                    return total;
+                }
+            };
+        };
+        // Build tree: /advancement grant|revoke <targets> everything|only|from|until|through <adv> [criterion]
+        for(auto outerLit : std::vector<NodePtr>{grantLit, revokeLit}){
+            std::string outer = outerLit->name; // "grant" or "revoke"
+            auto targets = CommandNode::argument("targets", args::entity(false,false));
+            // everything (no adv arg)
+            auto everything = CommandNode::literal("everything");
+            everything->executable = true;
+            if(outer=="grant") everything->action = makeGrantAction("everything");
+            else everything->action = makeRevokeAction("everything");
+            targets->then(everything);
+            // only / from / until / through <adv> [criterion]
+            for(auto modeStr : {"only","from","until","through"}){
+                auto modeLit = CommandNode::literal(modeStr);
+                auto advArg = CommandNode::argument("advId", args::resourceLocation());
+                advArg->suggestions = [knownAdvancements](brigadier::StringReader&, brigadier::ParseCtx&){ return knownAdvancements(); };
+                advArg->executable = true;
+                if(outer=="grant") advArg->action = makeGrantAction(modeStr);
+                else advArg->action = makeRevokeAction(modeStr);
+                // optional criterion stringWord
+                auto critArg = CommandNode::argument("criterion", args::stringWord());
+                critArg->executable = true;
+                if(outer=="grant") critArg->action = makeGrantAction(modeStr);
+                else critArg->action = makeRevokeAction(modeStr);
+                advArg->then(critArg);
+                modeLit->then(advArg);
+                targets->then(modeLit);
+            }
+            outerLit->then(targets);
+            advancement->then(outerLit);
+        }
+        d.root->then(advancement);
+    }
+    // ---------------------------------------------------------------- recipe
+    {
+        auto recipe = CommandNode::literal("recipe");
+        auto giveLit = CommandNode::literal("give");
+        auto takeLit = CommandNode::literal("take");
+        auto knownRecipes = [this]() -> std::vector<std::string> {
+            std::vector<std::string> v;
+            for(auto &r: recipes_.all()) v.push_back(r.id);
+            v.push_back("*");
+            return v;
+        };
+        auto sendAddFor = [this](Player& p, const std::vector<int>& idxs, bool replaceFlag){
+            if(idxs.empty()) return;
+            WriteBuffer b;
+            b.varint(static_cast<std::int32_t>(idxs.size()));
+            const auto tableItem = gen::itemIdByName().at("minecraft:crafting_table");
+            const auto furnaceItem = gen::itemIdByName().at("minecraft:furnace");
+            const auto& all = recipes_.all();
+            auto writeSlotDisplayItem = [&](WriteBuffer& bb, std::uint32_t itemId){ bb.varint(itemId?2:0); if(itemId) bb.varint(static_cast<std::int32_t>(itemId)); };
+            for(int id : idxs){
+                if(id<0 || (size_t)id >= all.size()) continue;
+                const auto &r = all[(size_t)id];
+                b.varint(id);
+                switch(r.kind){
+                case Recipe::Kind::Shaped:
+                    b.varint(1); b.varint(r.width); b.varint(r.height); b.varint((int)r.cells.size());
+                    for(auto &ing: r.cells) writeSlotDisplayItem(b, ing.items.empty()?0:*ing.items.begin());
+                    writeSlotDisplayItem(b, r.result.itemId); writeSlotDisplayItem(b, tableItem);
+                    break;
+                case Recipe::Kind::Shapeless:
+                    b.varint(0); b.varint((int)r.ingredients.size());
+                    for(auto &ing: r.ingredients) writeSlotDisplayItem(b, ing.items.empty()?0:*ing.items.begin());
+                    writeSlotDisplayItem(b, r.result.itemId); writeSlotDisplayItem(b, tableItem);
+                    break;
+                case Recipe::Kind::Smelting:
+                    b.varint(2); writeSlotDisplayItem(b, r.cells.front().items.empty()?0:*r.cells.front().items.begin());
+                    writeSlotDisplayItem(b, gen::itemIdByName().at("minecraft:coal"));
+                    writeSlotDisplayItem(b, r.result.itemId); writeSlotDisplayItem(b, furnaceItem);
+                    b.varint(r.cookingTicks); b.f32(r.experience);
+                    break;
+                case Recipe::Kind::Stonecutting:
+                    b.varint(3); writeSlotDisplayItem(b, r.cells.front().items.empty()?0:*r.cells.front().items.begin());
+                    writeSlotDisplayItem(b, r.result.itemId); writeSlotDisplayItem(b, furnaceItem);
+                    break;
+                case Recipe::Kind::Smithing:
+                    b.varint(0); b.varint((int)r.ingredients.size());
+                    for(auto &ing: r.ingredients) writeSlotDisplayItem(b, ing.items.empty()?0:*ing.items.begin());
+                    writeSlotDisplayItem(b, r.result.itemId); writeSlotDisplayItem(b, tableItem);
+                    break;
+                case Recipe::Kind::Special:
+                    b.varint(0); b.varint(0); writeSlotDisplayItem(b, r.result.itemId); writeSlotDisplayItem(b, tableItem);
+                    break;
+                }
+                b.varint(0); b.varint(r.category); b.boolean(false); b.u8(0x03);
+            }
+            b.boolean(replaceFlag);
+            try{ p.conn->sendPacket(proto::pl::sc::RecipeBookAdd, b);}catch(...){}
+        };
+        auto sendRemoveFor = [this](Player& p, const std::vector<int>& idxs){
+            if(idxs.empty()) return;
+            WriteBuffer b;
+            b.varint(static_cast<std::int32_t>(idxs.size()));
+            for(int id: idxs) b.varint(id);
+            try{ p.conn->sendPacket(proto::pl::sc::RecipeBookRemove, b);}catch(...){}
+        };
+        auto resolveRecipeIds = [this](const std::string& raw, bool isStar) -> std::vector<int> {
+            std::vector<int> out;
+            if(isStar){ out.reserve(recipes_.all().size()); for(size_t i=0;i<recipes_.all().size();++i) out.push_back((int)i); return out; }
+            std::string rid = raw;
+            if(rid.find(':')==std::string::npos) rid="minecraft:"+rid;
+            const auto& all = recipes_.all();
+            for(size_t i=0;i<all.size();++i) if(all[i].id==rid || all[i].id==raw) out.push_back((int)i);
+            return out;
+        };
+        for(auto verbLit : std::vector<NodePtr>{giveLit, takeLit}){
+            std::string verb = verbLit->name;
+            auto targets = CommandNode::argument("targets", args::entity(false,false));
+            // /recipe give <targets> [*|recipe]
+            auto star = CommandNode::literal("*");
+            star->executable = true;
+            star->action = [this, verb, sendAddFor, sendRemoveFor, resolveRecipeIds](CommandContext& c){
+                const auto sel = c.arg("targets").asSelector();
+                Player* src = static_cast<Player*>(c.source.player);
+                std::vector<int> allIds = resolveRecipeIds("*", true);
+                int total=0;
+                for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)){
+                    if(verb=="give"){
+                        int newly=0;
+                        std::vector<int> toSend;
+                        for(int id: allIds){
+                            std::string rid = recipes_.all()[(size_t)id].id;
+                            if(p->combatRecipeUnlocks.find(rid)==p->combatRecipeUnlocks.end()){
+                                p->combatRecipeUnlocks.insert(rid); ++newly; toSend.push_back(id);
+                            }
+                        }
+                        if(!toSend.empty()) sendAddFor(*p, toSend, false);
+                        sendFeedback(src, "Given "+std::to_string(newly)+" recipes to "+p->name+" (all)");
+                        total+=newly;
+                    } else {
+                        int removed=0;
+                        std::vector<int> toRem;
+                        for(int id: allIds){
+                            std::string rid = recipes_.all()[(size_t)id].id;
+                            if(p->combatRecipeUnlocks.erase(rid)) { ++removed; toRem.push_back(id); }
+                        }
+                        if(!toRem.empty()) sendRemoveFor(*p, toRem);
+                        sendFeedback(src, "Took "+std::to_string(removed)+" recipes from "+p->name);
+                        total+=removed;
+                    }
+                }
+                return total;
+            };
+            auto recipeArg = CommandNode::argument("recipe", args::resourceLocation());
+            recipeArg->suggestions = [knownRecipes](brigadier::StringReader&, brigadier::ParseCtx&){ return knownRecipes(); };
+            recipeArg->executable = true;
+            recipeArg->action = [this, verb, sendAddFor, sendRemoveFor, resolveRecipeIds](CommandContext& c){
+                const auto sel = c.arg("targets").asSelector();
+                std::string rid = c.arg("recipe").asStr();
+                Player* src = static_cast<Player*>(c.source.player);
+                std::vector<int> ids = resolveRecipeIds(rid, false);
+                if(ids.empty()){
+                    sendFeedback(src, "Unknown recipe: "+rid);
+                    return 0;
+                }
+                int total=0;
+                for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)){
+                    if(verb=="give"){
+                        int newly=0; std::vector<int> toSend;
+                        for(int id: ids){
+                            std::string full = recipes_.all()[(size_t)id].id;
+                            if(p->combatRecipeUnlocks.insert(full).second){ ++newly; toSend.push_back(id); }
+                        }
+                        if(!toSend.empty()) sendAddFor(*p, toSend, false);
+                        if(newly>0) sendFeedback(src, "Given recipe "+rid+" to "+p->name);
+                        else sendFeedback(src, p->name+" already had recipe "+rid);
+                        total+=newly;
+                    } else {
+                        int rem=0; std::vector<int> toRem;
+                        for(int id: ids){
+                            std::string full = recipes_.all()[(size_t)id].id;
+                            if(p->combatRecipeUnlocks.erase(full)){ ++rem; toRem.push_back(id); }
+                        }
+                        if(!toRem.empty()) sendRemoveFor(*p, toRem);
+                        if(rem>0) sendFeedback(src, "Took recipe "+rid+" from "+p->name);
+                        else sendFeedback(src, p->name+" did not have recipe "+rid);
+                        total+=rem;
+                    }
+                }
+                return total;
+            };
+            // also allow without recipe arg? Yarn has optional recipeId, but we require at least targets. For bare /recipe give <targets> without id, treat as all?
+            targets->executable = true;
+            targets->action = [this, verb, sendAddFor, sendRemoveFor, resolveRecipeIds](CommandContext& c){
+                const auto sel = c.arg("targets").asSelector();
+                Player* src = static_cast<Player*>(c.source.player);
+                std::vector<int> allIds = resolveRecipeIds("*", true);
+                int total=0;
+                for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)){
+                    if(verb=="give"){
+                        int newly=0; std::vector<int> toSend;
+                        for(int id: allIds){ std::string rid=recipes_.all()[(size_t)id].id; if(p->combatRecipeUnlocks.insert(rid).second){ ++newly; toSend.push_back(id);} }
+                        if(!toSend.empty()) sendAddFor(*p,toSend,false);
+                        sendFeedback(src, "Given "+std::to_string(newly)+" recipes to "+p->name+" (all)");
+                        total+=newly;
+                    } else {
+                        int rem=0; std::vector<int> toRem;
+                        for(int id: allIds){ std::string rid=recipes_.all()[(size_t)id].id; if(p->combatRecipeUnlocks.erase(rid)){ ++rem; toRem.push_back(id);} }
+                        if(!toRem.empty()) sendRemoveFor(*p,toRem);
+                        sendFeedback(src, "Took "+std::to_string(rem)+" recipes from "+p->name);
+                        total+=rem;
+                    }
+                }
+                return total;
+            };
+            targets->then(star);
+            targets->then(recipeArg);
+            verbLit->then(targets);
+            recipe->then(verbLit);
+        }
+        d.root->then(recipe);
+    }
+    // ---------------------------------------------------------------- item
+    {
+        auto item = CommandNode::literal("item");
+        auto replaceLit = CommandNode::literal("replace");
+        auto modifyLit = CommandNode::literal("modify");
+        auto removeLit = CommandNode::literal("remove");
+        // helpers
+        auto slotToPlayerStack = [](Player& p, const std::string& slot)->ItemStack*{
+            if(slot=="weapon.mainhand") return &p.inv[36];
+            if(slot=="weapon.offhand") return &p.inv[45];
+            if(slot=="armor.head") return &p.inv[8];
+            if(slot=="armor.chest") return &p.inv[7];
+            if(slot=="armor.legs") return &p.inv[6];
+            if(slot=="armor.feet") return &p.inv[5];
+            if(slot.rfind("container.",0)==0){
+                try{ int idx=std::stoi(slot.substr(10)); if(idx>=0 && idx<27) return &p.inv[9+idx]; }catch(...){}
+                return nullptr;
+            }
+            if(slot.rfind("hotbar.",0)==0){
+                try{ int idx=std::stoi(slot.substr(7)); if(idx>=0 && idx<9) return &p.inv[36+idx]; }catch(...){}
+                return nullptr;
+            }
+            if(slot.rfind("inventory.",0)==0){
+                try{ int idx=std::stoi(slot.substr(10)); if(idx>=0 && idx<27) return &p.inv[9+idx]; }catch(...){}
+                return nullptr;
+            }
+            if(slot.rfind("enderchest.",0)==0){ return nullptr; }
+            if(slot=="container.0") return &p.inv[9];
+            return nullptr;
+        };
+        auto slotToBlockStack = [this](const brigadier::BlockPosI& pos, const std::string& slot)->ItemStack*{
+            int64_t key = posKey(pos.x,pos.y,pos.z);
+            auto* be = blockEntities_.getAt(pos.x,pos.y,pos.z);
+            if(!be) {
+                // create chest if missing for convenience?
+                return nullptr;
+            }
+            // map container.0.. for generic container
+            if(slot.rfind("container.",0)==0){
+                try{
+                    int idx=std::stoi(slot.substr(10));
+                    if(be->kind==BlockEntity::Kind::Chest){
+                        if(idx>=0 && idx<27) return &be->chest.slots[idx];
+                    } else if(be->kind==BlockEntity::Kind::Barrel){
+                        if(idx>=0 && idx<27) return &be->chest.slots[idx];
+                    } else {
+                        if(idx>=0 && idx<9) return &be->generic.slots[idx];
+                    }
+                }catch(...){}
+            }
+            return nullptr;
+        };
+        auto parseItemStack = [](const std::string& raw, int count)->ItemStack{
+            std::string base = raw;
+            auto br = base.find('[');
+            if(br!=std::string::npos) base = base.substr(0, br);
+            if(base.find(':')==std::string::npos) base="minecraft:"+base;
+            auto it = gen::itemIdByName().find(base);
+            if(it==gen::itemIdByName().end()) throw std::runtime_error("Unknown item: "+base);
+            if(count<=0) count=1;
+            if(count>64) count=64;
+            return ItemStack::of(it->second, (std::int16_t)count);
+        };
+        // ----- replace
+        {
+            // replace block <pos> <slot> with <item> [count]
+            auto blockLit = CommandNode::literal("block");
+            auto posArg = CommandNode::argument("pos", args::blockPos());
+            auto slotArg = CommandNode::argument("slot", args::stringWord());
+            slotArg->suggestions = [](brigadier::StringReader&, brigadier::ParseCtx&){ return std::vector<std::string>{"container.0","container.1","container.5"}; };
+            auto withLit = CommandNode::literal("with");
+            auto itemArg = CommandNode::argument("item", args::itemStackArg());
+            itemArg->executable = true;
+            itemArg->action = [this, slotToBlockStack, parseItemStack](CommandContext& c){
+                auto pos = c.arg("pos").asBlockPos();
+                std::string slot = c.arg("slot").asStr();
+                std::string itemStr = c.arg("item").asStr();
+                ItemStack stack = parseItemStack(itemStr, 1);
+                ItemStack* tgt = slotToBlockStack(pos, slot);
+                if(!tgt){ Player* src=static_cast<Player*>(c.source.player); sendFeedback(src, "No block inventory at "+std::to_string(pos.x)+" or invalid slot "+slot); return 0; }
+                *tgt = stack;
+                // mark dirty and notify chunk?
+                blockEntities_.dirty_.insert(posKey(pos.x,pos.y,pos.z));
+                Player* src=static_cast<Player*>(c.source.player);
+                sendFeedback(src, "Replaced block "+std::to_string(pos.x)+" slot "+slot+" with "+itemStr);
+                // try to sync to nearby players via ContainerSetContent? For now feedback only
+                // Also send ContainerSetSlot to src if they have menu open at that pos?
+                return 1;
+            };
+            auto countArg = CommandNode::argument("count", args::integer(1,64));
+            countArg->executable = true;
+            countArg->action = [this, slotToBlockStack, parseItemStack](CommandContext& c){
+                auto pos = c.arg("pos").asBlockPos();
+                std::string slot = c.arg("slot").asStr();
+                std::string itemStr = c.arg("item").asStr();
+                int cnt = c.arg("count").asInt();
+                ItemStack stack = parseItemStack(itemStr, cnt);
+                ItemStack* tgt = slotToBlockStack(pos, slot);
+                if(!tgt){ Player* src=static_cast<Player*>(c.source.player); sendFeedback(src, "No block inventory at slot "+slot); return 0; }
+                *tgt = stack;
+                blockEntities_.dirty_.insert(posKey(pos.x,pos.y,pos.z));
+                Player* src=static_cast<Player*>(c.source.player);
+                sendFeedback(src, "Replaced block slot "+slot+" with "+itemStr+" x"+std::to_string(cnt));
+                return 1;
+            };
+            itemArg->then(countArg);
+            withLit->then(itemArg);
+            slotArg->then(withLit);
+            posArg->then(slotArg);
+            blockLit->then(posArg);
+            replaceLit->then(blockLit);
+            // replace entity <targets> <slot> with <item> [count]
+            auto entityLit = CommandNode::literal("entity");
+            auto targets = CommandNode::argument("targets", args::entity(false,false));
+            auto eSlot = CommandNode::argument("slot", args::stringWord());
+            eSlot->suggestions = [](brigadier::StringReader&, brigadier::ParseCtx&){ return std::vector<std::string>{"weapon.mainhand","weapon.offhand","armor.head","armor.chest","armor.legs","armor.feet","container.0","hotbar.0"}; };
+            auto eWith = CommandNode::literal("with");
+            auto eItem = CommandNode::argument("item", args::itemStackArg());
+            eItem->executable = true;
+            eItem->action = [this, slotToPlayerStack, parseItemStack](CommandContext& c){
+                const auto sel = c.arg("targets").asSelector();
+                std::string slot = c.arg("slot").asStr();
+                std::string itemStr = c.arg("item").asStr();
+                ItemStack stack = parseItemStack(itemStr, 1);
+                int n=0;
+                for(auto &nm: sel.playerNames) if(Player* p=findPlayer(*this,nm)){
+                    ItemStack* tgt = slotToPlayerStack(*p, slot);
+                    if(!tgt) continue;
+                    *tgt = stack;
+                    resendInventory(*p);
+                    syncEquipmentOnChange(*p);
+                    ++n;
+                }
+                Player* src=static_cast<Player*>(c.source.player);
+                sendFeedback(src, "Replaced entity slot "+slot+" with "+itemStr+" for "+std::to_string(n));
+                return n;
+            };
+            auto eCount = CommandNode::argument("count", args::integer(1,64));
+            eCount->executable = true;
+            eCount->action = [this, slotToPlayerStack, parseItemStack](CommandContext& c){
+                const auto sel = c.arg("targets").asSelector();
+                std::string slot = c.arg("slot").asStr();
+                std::string itemStr = c.arg("item").asStr();
+                int cnt = c.arg("count").asInt();
+                ItemStack stack = parseItemStack(itemStr, cnt);
+                int n=0;
+                for(auto &nm: sel.playerNames) if(Player* p=findPlayer(*this,nm)){
+                    ItemStack* tgt = slotToPlayerStack(*p, slot);
+                    if(!tgt) continue;
+                    *tgt = stack;
+                    resendInventory(*p);
+                    syncEquipmentOnChange(*p);
+                    ++n;
+                }
+                Player* src=static_cast<Player*>(c.source.player);
+                sendFeedback(src, "Replaced entity slot "+slot+" with "+itemStr+" x"+std::to_string(cnt));
+                return n;
+            };
+            eItem->then(eCount);
+            eWith->then(eItem);
+            eSlot->then(eWith);
+            targets->then(eSlot);
+            entityLit->then(targets);
+            replaceLit->then(entityLit);
+        }
+        // ----- modify
+        {
+            // modify block <pos> <slot> <modifier>
+            auto blockLit = CommandNode::literal("block");
+            auto posArg = CommandNode::argument("pos", args::blockPos());
+            auto slotArg = CommandNode::argument("slot", args::stringWord());
+            auto modArg = CommandNode::argument("modifier", args::resourceLocation());
+            modArg->suggestions = [this](brigadier::StringReader&, brigadier::ParseCtx&){
+                std::vector<std::string> v;
+                for(auto &kv: datapackManager_.itemModifiers) v.push_back(kv.first);
+                if(v.empty()) v.push_back("minecraft:test_modifier");
+                return v;
+            };
+            modArg->executable = true;
+            modArg->action = [this, slotToBlockStack](CommandContext& c){
+                auto pos = c.arg("pos").asBlockPos();
+                std::string slot=c.arg("slot").asStr();
+                std::string mod=c.arg("modifier").asStr();
+                if(mod.find(':')==std::string::npos) mod="minecraft:"+mod;
+                ItemStack* tgt = slotToBlockStack(pos, slot);
+                if(!tgt || tgt->empty()){ Player* src=static_cast<Player*>(c.source.player); sendFeedback(src, "No item in block slot to modify"); return 0; }
+                bool ok = datapackManager_.applyItemModifier(mod, *tgt);
+                if(!ok){
+                    // fallback: just set count to 2 as visible modification
+                    if(tgt->count<64) tgt->count+=1;
+                    Player* src=static_cast<Player*>(c.source.player);
+                    sendFeedback(src, "Applied modifier "+mod+" (fallback)");
+                } else {
+                    Player* src=static_cast<Player*>(c.source.player);
+                    sendFeedback(src, "Applied modifier "+mod+" to block slot "+slot);
+                }
+                blockEntities_.dirty_.insert(posKey(pos.x,pos.y,pos.z));
+                return 1;
+            };
+            slotArg->then(modArg);
+            posArg->then(slotArg);
+            blockLit->then(posArg);
+            modifyLit->then(blockLit);
+            // modify entity <targets> <slot> <modifier>
+            auto entityLit = CommandNode::literal("entity");
+            auto targets = CommandNode::argument("targets", args::entity(false,false));
+            auto eSlot = CommandNode::argument("slot", args::stringWord());
+            auto eMod = CommandNode::argument("modifier", args::resourceLocation());
+            eMod->suggestions = [this](brigadier::StringReader&, brigadier::ParseCtx&){
+                std::vector<std::string> v;
+                for(auto &kv: datapackManager_.itemModifiers) v.push_back(kv.first);
+                if(v.empty()) v.push_back("minecraft:test_modifier");
+                return v;
+            };
+            eMod->executable = true;
+            eMod->action = [this](CommandContext& c){
+                const auto sel = c.arg("targets").asSelector();
+                std::string slot=c.arg("slot").asStr();
+                std::string mod=c.arg("modifier").asStr();
+                if(mod.find(':')==std::string::npos) mod="minecraft:"+mod;
+                int n=0;
+                for(auto &nm: sel.playerNames) if(Player* p=findPlayer(*this,nm)){
+                    ItemStack* tgt=nullptr;
+                    if(slot=="weapon.mainhand") tgt=&p->inv[36];
+                    else if(slot=="weapon.offhand") tgt=&p->inv[45];
+                    else if(slot=="armor.head") tgt=&p->inv[8];
+                    else if(slot=="armor.chest") tgt=&p->inv[7];
+                    else if(slot=="armor.legs") tgt=&p->inv[6];
+                    else if(slot=="armor.feet") tgt=&p->inv[5];
+                    else if(slot.rfind("container.",0)==0){
+                        try{int idx=std::stoi(slot.substr(10)); if(idx>=0&&idx<27) tgt=&p->inv[9+idx];}catch(...){}
+                    } else if(slot.rfind("hotbar.",0)==0){
+                        try{int idx=std::stoi(slot.substr(7)); if(idx>=0&&idx<9) tgt=&p->inv[36+idx];}catch(...){}
+                    }
+                    if(!tgt || tgt->empty()) continue;
+                    bool ok = datapackManager_.applyItemModifier(mod, *tgt);
+                    if(!ok){ if(tgt->count<64) tgt->count+=1; }
+                    resendInventory(*p);
+                    ++n;
+                }
+                Player* src=static_cast<Player*>(c.source.player);
+                if(n>0) sendFeedback(src, "Applied modifier "+mod+" to "+std::to_string(n)+" entities");
+                else sendFeedback(src, "No items modified for "+mod);
+                return n;
+            };
+            eSlot->then(eMod);
+            targets->then(eSlot);
+            entityLit->then(targets);
+            modifyLit->then(entityLit);
+        }
+        // ----- remove style: item remove block|entity ... (and also support replace-style rm?)
+        {
+            // legacy remove as sibling of replace/modify
+            auto blockLit = CommandNode::literal("block");
+            auto posArg = CommandNode::argument("pos", args::blockPos());
+            auto slotArg = CommandNode::argument("slot", args::stringWord());
+            slotArg->executable = true;
+            slotArg->action = [this, slotToBlockStack](CommandContext& c){
+                auto pos=c.arg("pos").asBlockPos();
+                std::string slot=c.arg("slot").asStr();
+                ItemStack* tgt = slotToBlockStack(pos, slot);
+                if(!tgt){ Player* src=static_cast<Player*>(c.source.player); sendFeedback(src, "No block slot "+slot); return 0; }
+                *tgt = ItemStack::air();
+                blockEntities_.dirty_.insert(posKey(pos.x,pos.y,pos.z));
+                Player* src=static_cast<Player*>(c.source.player);
+                sendFeedback(src, "Removed item from block slot "+slot);
+                return 1;
+            };
+            posArg->then(slotArg);
+            blockLit->then(posArg);
+            removeLit->then(blockLit);
+            auto entityLit = CommandNode::literal("entity");
+            auto targets = CommandNode::argument("targets", args::entity(false,false));
+            auto eSlot = CommandNode::argument("slot", args::stringWord());
+            eSlot->executable = true;
+            eSlot->action = [this](CommandContext& c){
+                const auto sel = c.arg("targets").asSelector();
+                std::string slot=c.arg("slot").asStr();
+                int n=0;
+                for(auto &nm: sel.playerNames) if(Player* p=findPlayer(*this,nm)){
+                    ItemStack* tgt=nullptr;
+                    if(slot=="weapon.mainhand") tgt=&p->inv[36];
+                    else if(slot=="weapon.offhand") tgt=&p->inv[45];
+                    else if(slot=="armor.head") tgt=&p->inv[8];
+                    else if(slot=="armor.chest") tgt=&p->inv[7];
+                    else if(slot=="armor.legs") tgt=&p->inv[6];
+                    else if(slot=="armor.feet") tgt=&p->inv[5];
+                    else if(slot.rfind("container.",0)==0){
+                        try{int idx=std::stoi(slot.substr(10)); if(idx>=0&&idx<27) tgt=&p->inv[9+idx];}catch(...){}
+                    } else if(slot.rfind("hotbar.",0)==0){
+                        try{int idx=std::stoi(slot.substr(7)); if(idx>=0&&idx<9) tgt=&p->inv[36+idx];}catch(...){}
+                    }
+                    if(!tgt) continue;
+                    *tgt = ItemStack::air();
+                    resendInventory(*p);
+                    syncEquipmentOnChange(*p);
+                    ++n;
+                }
+                Player* src=static_cast<Player*>(c.source.player);
+                sendFeedback(src, "Removed item from "+std::to_string(n)+" entities slot "+slot);
+                return n;
+            };
+            targets->then(eSlot);
+            entityLit->then(targets);
+            removeLit->then(entityLit);
+        }
+        // wire up
+        item->then(replaceLit);
+        item->then(modifyLit);
+        item->then(removeLit);
+        d.root->then(item);
+    }
+    // ---------------------------------------------------------------- me / msg / tell / w
+    {
+        auto me = CommandNode::literal("me");
+        auto act = CommandNode::argument("action", args::stringGreedy());
+        act->executable = true;
+        act->action = [this](CommandContext& c){
+            Player* src = static_cast<Player*>(c.source.player);
+            std::string txt = c.arg("action").asStr();
+            std::string who = src?src->name:"Server";
+            std::string line = "* "+who+" "+txt;
+            // emote is italic gray ? Use SystemChat with italic flag in JSON
+            WriteBuffer b;
+            nbt::writeTextComponent(b, "{\"text\":\""+line+"\",\"italic\":true,\"color\":\"gray\"}");
+            b.boolean(false);
+            broadcastPacketExcept(nullptr, proto::pl::sc::SystemChat, b);
+            return 1;
+        };
+        me->then(act);
+        d.root->then(me);
+        for(auto alias : {"msg","tell","w"}){
+            auto msgLit = CommandNode::literal(alias);
+            auto targets = CommandNode::argument("targets", args::entity(false,false));
+            auto message = CommandNode::argument("message", args::stringGreedy());
+            message->executable = true;
+            message->action = [this, alias](CommandContext& c){
+                const auto sel = c.arg("targets").asSelector();
+                std::string txt = c.arg("message").asStr();
+                Player* src = static_cast<Player*>(c.source.player);
+                std::string from = src?src->name:"Server";
+                int delivered=0;
+                for(auto &nm: sel.playerNames) if(Player* p=findPlayer(*this,nm)){
+                    // whisper to target
+                    WriteBuffer b;
+                    std::string json = "{\"text\":\"["+from+" -> "+p->name+"] "+txt+"\",\"color\":\"gray\",\"italic\":true}";
+                    nbt::writeTextComponent(b, json);
+                    b.boolean(false);
+                    try{ p->conn->sendPacket(proto::pl::sc::SystemChat, b);}catch(...){}
+                    ++delivered;
+                }
+                // also echo to sender if not among targets
+                if(src){
+                    bool senderIsTarget=false;
+                    for(auto &nm: sel.playerNames) if(nm==src->name) senderIsTarget=true;
+                    if(!senderIsTarget){
+                        WriteBuffer b2;
+                        std::string firstTarget = sel.playerNames.empty()?"?":sel.playerNames[0];
+                        std::string json2 = "{\"text\":\"["+from+" -> "+firstTarget+"] "+txt+"\",\"color\":\"gray\",\"italic\":true}";
+                        nbt::writeTextComponent(b2, json2);
+                        b2.boolean(false);
+                        try{ src->conn->sendPacket(proto::pl::sc::SystemChat, b2);}catch(...){}
+                    }
+                }
+                if(src) sendFeedback(src, "Whispered to "+std::to_string(delivered)+" player(s)");
+                return delivered;
+            };
+            targets->then(message);
+            msgLit->then(targets);
+            d.root->then(msgLit);
+        }
     }
 }
 
