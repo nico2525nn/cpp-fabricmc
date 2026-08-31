@@ -105,7 +105,7 @@ ctest -R native --output-on-failure --timeout 60
 - `WorldBorder` diameter `59999968` (not `29999984`), lerp `tickWorldBorder()` 要 `50ms` 補間。
 - `SimulationDistance` は Chebyshev `max(|dx|,|dz|)` (not Euclidean)。
 - `Ids` off-by-one: `OpenScreen 0x34` `ContainerSetContent 0x12` `TradeList 0x2D` `KeepAlive 0x26`。
-- `Bundle` axis `ly<<8|lz<<4|lx` (not `lx<<8`)。
+- `Bundle` axis `lx<<8|lz<<4|ly` (vanilla `state<<12|x<<8|z<<4|y`; NOT `ly<<8|lz<<4|lx` — x/y swap was plan28 finish fix, see COMPAT_AUDIT N7).
 - `SlotComponent` ids `damage 3 repair_cost 17 trim 45` (not 6/7/42)。
 - `DamageCalculator` armor `f=2+t/4 g=clamp(a-dmg/f, a*0.2,20)` caps 30/20。
 

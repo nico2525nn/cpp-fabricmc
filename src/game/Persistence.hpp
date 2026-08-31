@@ -316,6 +316,11 @@ public:
         if (worker_.joinable()) worker_.join();
         flushOnce();                                   // final save
     }
+    // Plan28 finish: worker_/cv_/cvMtx_ must never be destroyed while the worker
+    // thread may still touch them (reverse member order would destroy cv_/cvMtx_
+    // before worker_ for instances where stop() was never called, e.g. nether/end
+    // dimPersist_ during server shutdown -> futex livelock). stop() is idempotent.
+    ~Persistence() { stop(); }
 
     // World loader: read chunk from its region file; false = not stored.
     bool loadChunk(std::int32_t cx, std::int32_t cz, Chunk& out) {

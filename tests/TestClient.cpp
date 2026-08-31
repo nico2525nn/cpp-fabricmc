@@ -350,10 +350,12 @@ void TestClient::readerLoop() {
         }
         ReadBuffer in(p.body);
         p.id = in.u8();
-        {   // permanent lightweight trace of the first packets of each reader
-            if (myFirstPackets < 10) {
+        {   // permanent lightweight trace of the first packets of each reader,
+            // or ALL packets when CPPFM_PKTRACE is set (debug aid)
+            const bool full = std::getenv("CPPFM_PKTRACE") != nullptr;
+            if (full || myFirstPackets < 10) {
                 std::fprintf(stderr, "[tc pid=%d] r#%d filed %02x raw=",(int)getpid(), myId, p.id);
-                const std::size_t n = std::min<std::size_t>(in.len - in.off, 8);
+                const std::size_t n = std::min<std::size_t>(in.len - in.off, full ? 32 : 8);
                 for (std::size_t k = 0; k < n; ++k)
                     std::fprintf(stderr, "%02x", p.body[k]);
                 std::fprintf(stderr, "\n");
