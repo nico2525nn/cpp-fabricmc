@@ -95,6 +95,9 @@ struct ServerConfig {
     int spawnProtection = 16;         // spawn-protection radius (0 disables)
     int maxLoadedChunks = 8192;       // W19 cap — 0 = unlimited, default max(8192, viewDist²*4) (plan21 §3)
     int ioWorkerThreads = 4;          // W19 async I/O workers (ThreadPool 4 for RegionFile zlib)
+    bool pvp = true;                  // plan35 §5: server.properties pvp (default true)
+    bool allowFlight = false;         // plan35 §5: server.properties allow-flight (default false)
+    bool hardcore = false;            // plan35 §5: server.properties hardcore (default false)
 };
 
 // Player inventory slot = full ItemStack (components preserved end-to-end).
@@ -187,6 +190,9 @@ struct Player {
     std::int64_t lastEnderPearlTick = -10000;
     std::int64_t invulnUntilTick = 0;
     std::int32_t enchantmentSeed = 0; // plan17 LOW I5: seeded enchanting RNG (Yarn EnchantmentScreenHandler seed)
+    // plan35 §5: flight tracking for allow-flight=false kick (simple onGround-based)
+    bool isFlying = false;
+    std::int32_t flyingTicks = 0;
     AttributeManager attributes;
     // plan32 combat: per-player recipe unlocks for /recipe give|take
     std::unordered_set<std::string> combatRecipeUnlocks;
