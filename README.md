@@ -114,7 +114,7 @@ python3 tests/stress_test.py            # N=32 concurrent joins
 ctest -R smoke80 --output-on-failure       # 400s timeout
 ```
 
-All suites pass in Release and ASan/UBSan (zero sanitizer) including 32-burst for the coarse 80-row taxonomy. For true parity, see `docs/COMPAT_AUDIT_1_21_4_STRICT.md` (78 wire gaps, 30 fixed). `test_native` green post-`plan/`.
+All suites pass in Release and ASan/UBSan (zero sanitizer) including 32-burst for the coarse 80-row taxonomy. For true parity, see `docs/COMPAT_AUDIT_1_21_4_STRICT.md` (**78/78 fixed, 0 remain**) and `docs/COMPAT_DEEP_AUDIT.md` (**31/31 fixed, 0 remain**) — 109 gaps closed. `test_native` green post-`plan/`.
 
 ### Reproducing the reference captures
 
