@@ -1,0 +1,20 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "AAA",
+    "ABA",
+    "AAA"
+  ],
+  "key": {
+    "A": {
+      "item": "minecraft:terracotta"
+    },
+    "B": {
+      "item": "minecraft:brown_dye"
+    }
+  },
+  "result": {
+    "id": "minecraft:brown_terracotta",
+    "count": 8
+  }
+}

@@ -45,9 +45,11 @@ struct Ingredient {
 
 class Recipe {
 public:
-    enum class Kind { Shaped, Shapeless, Smelting, Stonecutting };
+    enum class Kind { Shaped, Shapeless, Smelting, Stonecutting, Smithing, Special };
     Kind kind;
     std::string id;                              // e.g. minecraft:oak_planks
+    std::string group;                           // recipe group (wire varint, 0=none)
+    int category = 3;                            // wire category: 3 crafting / 6 furnace / 10 stonecutter
     // shaped
     int width = 0, height = 0;
     std::vector<Ingredient> cells;               // width*height, row-major

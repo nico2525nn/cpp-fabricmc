@@ -1,0 +1,19 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "A",
+    "B"
+  ],
+  "key": {
+    "A": {
+      "item": "minecraft:heavy_core"
+    },
+    "B": {
+      "item": "minecraft:breeze_rod"
+    }
+  },
+  "result": {
+    "id": "minecraft:mace",
+    "count": 1
+  }
+}

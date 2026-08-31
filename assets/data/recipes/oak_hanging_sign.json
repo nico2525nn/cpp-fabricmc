@@ -1,0 +1,20 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "A A",
+    "BBB",
+    "BBB"
+  ],
+  "key": {
+    "A": {
+      "item": "minecraft:chain"
+    },
+    "B": {
+      "item": "minecraft:stripped_oak_log"
+    }
+  },
+  "result": {
+    "id": "minecraft:oak_hanging_sign",
+    "count": 6
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "AAA",
+    "BBB"
+  ],
+  "key": {
+    "A": {
+      "item": "minecraft:green_wool"
+    },
+    "B": {
+      "item": "minecraft:birch_planks"
+    }
+  },
+  "result": {
+    "id": "minecraft:green_bed",
+    "count": 1
+  }
+}

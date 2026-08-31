@@ -1,0 +1,20 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "AA",
+    " B",
+    " B"
+  ],
+  "key": {
+    "A": {
+      "item": "minecraft:cherry_planks"
+    },
+    "B": {
+      "item": "minecraft:stick"
+    }
+  },
+  "result": {
+    "id": "minecraft:wooden_hoe",
+    "count": 1
+  }
+}

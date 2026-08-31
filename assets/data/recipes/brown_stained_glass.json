@@ -1,0 +1,20 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "AAA",
+    "ABA",
+    "AAA"
+  ],
+  "key": {
+    "A": {
+      "item": "minecraft:glass"
+    },
+    "B": {
+      "item": "minecraft:brown_dye"
+    }
+  },
+  "result": {
+    "id": "minecraft:brown_stained_glass",
+    "count": 8
+  }
+}

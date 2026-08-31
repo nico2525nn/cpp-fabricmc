@@ -1,0 +1,17 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "A  ",
+    "AA ",
+    "AAA"
+  ],
+  "key": {
+    "A": {
+      "item": "minecraft:cut_sandstone"
+    }
+  },
+  "result": {
+    "id": "minecraft:sandstone_stairs",
+    "count": 4
+  }
+}

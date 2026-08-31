@@ -1,0 +1,17 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "AA",
+    "AA",
+    "AA"
+  ],
+  "key": {
+    "A": {
+      "item": "minecraft:crimson_planks"
+    }
+  },
+  "result": {
+    "id": "minecraft:crimson_door",
+    "count": 3
+  }
+}

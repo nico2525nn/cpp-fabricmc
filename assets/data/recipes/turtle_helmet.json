@@ -1,0 +1,16 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "AAA",
+    "A A"
+  ],
+  "key": {
+    "A": {
+      "item": "minecraft:turtle_scute"
+    }
+  },
+  "result": {
+    "id": "minecraft:turtle_helmet",
+    "count": 1
+  }
+}
