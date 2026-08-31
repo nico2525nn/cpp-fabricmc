@@ -126,7 +126,7 @@
 | N4 | Compression hard-code 256 | `GameServer.cpp:2777` online `256` | `ServerConfig threshold` | Ignore config | LOW |
 | N5 | Encryption shouldAuthenticate | `GameServer.cpp:2692` missing `bool true` | `protocol.json packet_encryption_begin` | Desync | HIGH |
 | N6 | Chat verify bypass | `GameServer.cpp:5653` no `verifyRsaSha256` | `minecraft-data player_chat` | Stub | HIGH |
-| N7 | Bundle axis swap | `PacketBatcher.cpp:80` `lx<<8|lz<<4|ly` should be `ly<<8|lz<<4|lx` | Wiki `MultiBlockChange` | Wrong intra-section | HIGH |
+| N7 | Bundle axis swap FIXED | `PacketBatcher.cpp:80` was `(ly<<8)|(lz<<4)|lx` (x/y swapped); now `(lx<<8)|(lz<<4)|ly` | Wiki `Update Section Blocks` `state<<12\|(x<<8)\|(z<<4)\|y` | Wrong intra-section, plan28 finish | HIGH |
 | N8 | KeepAlive 0x27 vs 0x26 drift + docs | `Ids.hpp:164` `0x27` | `protocol.json keep_alive 0x26` | Drift | MEDIUM |
 | N9 | DeclareCommands stub | `GameServer.cpp:3037` `3 nodes help/ping` vs `Tree.hpp:294` | Yarn `CommandDispatcher` | Brigadier incomplete | HIGH |
 | N10 | ParserId drift 18+ | `Arguments.hpp:24` `18 Message→style` | `protocol.json command_node parser 0-53` | IDs off | HIGH |

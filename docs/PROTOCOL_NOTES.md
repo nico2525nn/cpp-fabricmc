@@ -74,9 +74,9 @@ sections; desert chunk = indirect biome container
 
 ## Bundle & Block Changes (`BundleDelimiter 0x00` + `MultiBlockChange 0x4E`)
 
-Empirical after plan12: vanilla coalesces same chunk-section `BlockUpdate 0x09`s into `MultiBlockChange 0x4E` (section pos `i64`, `varint count` + `varint packed = (blockId<<12)|(y<<8)|(z<<4)|x`, section-local), else wraps mixed packets in `BundleDelimiter 0x00` start/end (empty, id `0x00` both directions, play). Our `PacketBatcher` mirrors: `queueBlockChange` batches until `size>=64` or `50ms` timer, `tryFlushAsMultiBlockChange` dedup last-wins per `(x,y,z)` if all in same section → `MultiBlockChange`, else `BundleDelimiter` start + each `BlockUpdate` + end. Missing the `00` delimiter desyncs clients that wait for `Bundle` close.
+Empirical after plan12: vanilla coalesces same chunk-section `BlockUpdate 0x09`s into `MultiBlockChange 0x4E` (section pos `i64`, `varint count` + `varint packed = (blockId<<12)|(x<<8)|(z<<4)|y`, section-local), else wraps mixed packets in `BundleDelimiter 0x00` start/end (empty, id `0x00` both directions, play). Our `PacketBatcher` mirrors: `queueBlockChange` batches until `size>=64` or `50ms` timer, `tryFlushAsMultiBlockChange` dedup last-wins per `(x,y,z)` if all in same section → `MultiBlockChange`, else `BundleDelimiter` start + each `BlockUpdate` + end. Missing the `00` delimiter desyncs clients that wait for `Bundle` close.
 
-- `MultiBlockChange` count is `varint`, each entry is `varint` packed `(state<<12) | ((y&15)<<8) | ((z&15)<<4) | (x&15)` with section origin implicit.
+- `MultiBlockChange` count is `varint`, each entry is `varint` packed `(state<<12) | ((x&15)<<8) | ((z&15)<<4) | (y&15)` with section origin implicit (wiki `Update Section Blocks`: `blockStateId << 12 | (blockLocalX << 8 | blockLocalZ << 4 | blockLocalY)`; plan28 finish fixed the x/y swap that was `(y&15)<<8|(z&15)<<4|(x&15)`).
 - `BundleDelimiter` is zero-length; both `0x00` wrappers must be sent even for single non-coalescable `BlockUpdate` if inside bundle window.
 
 ## Light Update (`UpdateLight 0x2B` / `LightUpdateQueue`)

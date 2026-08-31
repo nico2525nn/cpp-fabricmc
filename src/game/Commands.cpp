@@ -600,7 +600,7 @@ void GameServer::initCommands() {
         };
         d.root->then(fl);
     }
-    // /effect give <targets> <effect> [seconds] [amplifier]
+    // /effect give <targets> <effect> [seconds] [amplifier] [hideParticles]
     {
         auto effect = CommandNode::literal("effect");
         auto give = CommandNode::literal("give");
@@ -662,6 +662,11 @@ void GameServer::initCommands() {
                     EffectInstance e;
                     e.type = it->second;
                     e.durationTicks = dur * 20;
+                    t->effects.erase(
+                        std::remove_if(t->effects.begin(), t->effects.end(),
+                                       [&](const EffectInstance& x)
+                                           { return x.type == e.type; }),
+                        t->effects.end());
                     t->effects.push_back(e);
                     WriteBuffer b;
                     b.varint(t->entityId);
@@ -676,7 +681,90 @@ void GameServer::initCommands() {
                          std::to_string(dur) + "s)");
             return 1;
         };
+        // plan28 finish: amplifier argument was missing — `effect give <p> <eff>
+        // 10 1` left "1" as an extra token → parse error → no EntityEffect 0x5E.
+        // Vanilla: amplifier 0..255, sent as the varint after the effect id.
+        auto amp = CommandNode::argument("amplifier", args::integer(0, 255));
+        amp->executable = true;
+        amp->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const std::string en = c.arg("effect").asStr();
+            auto it = effects::byName().find(en);
+            if (it == effects::byName().end())
+                throw std::runtime_error("unknown effect: " + en);
+            const auto sel = c.arg("targets").asSelector();
+            const int dur = c.arg("seconds").asInt();
+            const int ampv = c.arg("amplifier").asInt();
+            for (auto& n : sel.playerNames)
+                if (Player* t = findPlayer(*this, n)) {
+                    EffectInstance e;
+                    e.type = it->second;
+                    e.durationTicks = dur * 20;
+                    e.amplifier = static_cast<std::int8_t>(ampv); // level-1 model
+                    t->effects.erase(
+                        std::remove_if(t->effects.begin(), t->effects.end(),
+                                       [&](const EffectInstance& x)
+                                           { return x.type == e.type; }),
+                        t->effects.end());
+                    t->effects.push_back(e);
+                    WriteBuffer b;
+                    b.varint(t->entityId);
+                    b.varint(e.type);
+                    b.varint(ampv);          // raw 0..255 (int8_t wraps >127)
+                    b.varint(e.durationTicks);
+                    b.u8(effectFlags(e));
+                    try { t->conn->sendPacket(proto::pl::sc::EntityEffect, b); }
+                    catch (...) {}
+                }
+            sendFeedback(src, "Applied " + en + " (" +
+                         std::to_string(dur) + "s, amplifier " +
+                         std::to_string(ampv) + ")");
+            return 1;
+        };
+        // vanilla optional <hideParticles> boolean (low priority completion)
+        auto hide = CommandNode::argument("hideParticles", args::boolean());
+        hide->executable = true;
+        hide->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const std::string en = c.arg("effect").asStr();
+            auto it = effects::byName().find(en);
+            if (it == effects::byName().end())
+                throw std::runtime_error("unknown effect: " + en);
+            const auto sel = c.arg("targets").asSelector();
+            const int dur = c.arg("seconds").asInt();
+            const int ampv = c.arg("amplifier").asInt();
+            const bool hidep = c.arg("hideParticles").asBool();
+            for (auto& n : sel.playerNames)
+                if (Player* t = findPlayer(*this, n)) {
+                    EffectInstance e;
+                    e.type = it->second;
+                    e.durationTicks = dur * 20;
+                    e.amplifier = static_cast<std::int8_t>(ampv);
+                    e.showParticles = !hidep;
+                    t->effects.erase(
+                        std::remove_if(t->effects.begin(), t->effects.end(),
+                                       [&](const EffectInstance& x)
+                                           { return x.type == e.type; }),
+                        t->effects.end());
+                    t->effects.push_back(e);
+                    WriteBuffer b;
+                    b.varint(t->entityId);
+                    b.varint(e.type);
+                    b.varint(ampv);
+                    b.varint(e.durationTicks);
+                    b.u8(effectFlags(e));
+                    try { t->conn->sendPacket(proto::pl::sc::EntityEffect, b); }
+                    catch (...) {}
+                }
+            sendFeedback(src, "Applied " + en + " (" +
+                         std::to_string(dur) + "s, amplifier " +
+                         std::to_string(ampv) + ", hideParticles " +
+                         (hidep ? "true" : "false") + ")");
+            return 1;
+        };
         eff->then(secs);
+        amp->then(hide);
+        secs->then(amp);
         targets->then(eff);
         give->then(targets);
         effect->then(give);
