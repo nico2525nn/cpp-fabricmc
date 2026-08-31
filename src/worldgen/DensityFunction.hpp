@@ -87,12 +87,26 @@ struct NoiseNode final : DensityNode {
                                     (s.z + xzOffset) * xzScale);
     }
 };
-// Yarn Shift: offsetNoise * 4.0 (block unit shift)
+// Yarn Shift / ShiftA / ShiftB: offsetNoise * 4.0 with axis variants
 struct Shift final : DensityNode {
     std::shared_ptr<NoiseRegistry> reg;
     std::string key;
     double eval(const Sample& s) const override {
         return reg->get(key).sample(s.x * 0.25, s.y * 0.25, s.z * 0.25) * 4.0;
+    }
+};
+struct ShiftA final : DensityNode {
+    std::shared_ptr<NoiseRegistry> reg;
+    std::string key;
+    double eval(const Sample& s) const override {
+        return reg->get(key).sample(s.x * 0.25, 0, s.z * 0.25) * 4.0;
+    }
+};
+struct ShiftB final : DensityNode {
+    std::shared_ptr<NoiseRegistry> reg;
+    std::string key;
+    double eval(const Sample& s) const override {
+        return reg->get(key).sample(s.z * 0.25, s.x * 0.25, 0) * 4.0;
     }
 };
 struct ShiftedNoise final : DensityNode {
@@ -165,46 +179,114 @@ struct RangeChoice final : DensityNode {
 };
 struct BeardifierNode final : DensityNode {
     std::function<double(int,int)> sampleXZ;
+    struct Box { int minX, maxX, minZ, maxZ; int groundY; double height; };
+    std::vector<Box> boxes;
     double eval(const Sample& s) const override {
+        if (!sampleXZ && boxes.empty()) return 0;
+        if (!boxes.empty()) {
+            double best = 0;
+            for (auto& b : boxes) {
+                if (s.x < b.minX || s.x > b.maxX || s.z < b.minZ || s.z > b.maxZ) continue;
+                double v = sampleXZ ? sampleXZ(int(std::floor(s.x)), int(std::floor(s.z))) : 1.0;
+                // sample 8 neighbours average if provider exists
+                if (sampleXZ) {
+                    const int xi = int(std::floor(s.x)), zi = int(std::floor(s.z));
+                    double acc = 0; int cnt = 0;
+                    for (int dz = -1; dz <= 1; ++dz) for (int dx = -1; dx <= 1; ++dx) {
+                        if (dx == 0 && dz == 0) continue;
+                        acc += sampleXZ(xi + dx, zi + dz);
+                        if (++cnt >= 8) break;
+                    }
+                    v = cnt ? acc / cnt : v;
+                }
+                double yFactor = 1.0 - std::clamp(std::abs(s.y - b.groundY) / b.height, 0.0, 1.0);
+                yFactor = yFactor * yFactor * (3 - 2 * yFactor); // smoothstep
+                best = std::max(best, v * yFactor);
+            }
+            if (best != 0) return best * 0.5;
+        }
         if (!sampleXZ) return 0;
-        const double v = sampleXZ(static_cast<int>(std::floor(s.x)), static_cast<int>(std::floor(s.z)));
-        const double yFactor = std::clamp(1.0 - std::abs(s.y - 10.0)/40.0, 0.0, 1.0);
-        return v * yFactor;
+        // fallback 8-neighbour average + yFactor peak at y=10
+        const int xi = int(std::floor(s.x)), zi = int(std::floor(s.z));
+        double acc = 0; int cnt = 0;
+        for (int dz = -1; dz <= 1; ++dz) for (int dx = -1; dx <= 1; ++dx) {
+            if (dx == 0 && dz == 0) continue;
+            acc += sampleXZ(xi + dx, zi + dz);
+            if (++cnt >= 8) break;
+        }
+        const double v = cnt ? acc / cnt : sampleXZ(xi, zi);
+        const double yFactor = std::clamp(1.0 - std::abs(s.y - 10.0) / 40.0, 0.0, 1.0);
+        return v * yFactor * 0.5;
     }
 };
 struct OldBlendedNoiseNode final : DensityNode {
     NodePtr in;
+    std::shared_ptr<NoiseRegistry> reg;
+    double xzScale = 1, yScale = 1, xzFactor = 80, yFactor = 160, smearScale = 8;
     double eval(const Sample& s) const override {
-        return in ? in->eval(s) : 0;
+        double blended = 0;
+        if (reg) {
+            const double nx = s.x * xzScale * xzFactor * 0.001;
+            const double ny = s.y * yScale * yFactor * 0.001;
+            const double nz = s.z * xzScale * xzFactor * 0.001;
+            blended = reg->get("minecraft:blended").octaves(nx, ny, nz, 3);
+            blended += s.y * smearScale * 0.01;
+        }
+        if (in) return in->eval(s) + blended * 0.5;
+        return blended;
     }
 };
 struct BlendAlphaNode final : DensityNode {
-    double eval(const Sample&) const override { return 1.0; }
+    double eval(const Sample& s) const override {
+        const double cx = std::fmod(std::abs(s.x), 16.0), cz = std::fmod(std::abs(s.z), 16.0);
+        const double d = std::min({cx, 16 - cx, cz, 16 - cz});
+        return std::clamp(d / 8.0, 0.0, 1.0);
+    }
 };
 struct BlendOffsetNode final : DensityNode {
-    double eval(const Sample&) const override { return 0.0; }
+    double eval(const Sample& s) const override {
+        // old-new height diff approximated via offset; mimic vanilla blend offset near chunk edges
+        const double cx = std::fmod(std::abs(s.x), 16.0), cz = std::fmod(std::abs(s.z), 16.0);
+        const double d = std::min({cx, 16 - cx, cz, 16 - cz});
+        const double alpha = std::clamp(d / 8.0, 0.0, 1.0);
+        return (1.0 - alpha) * 0.2; // small offset inside blend zone
+    }
 };
 struct BlendDensityNode final : DensityNode {
     NodePtr in;
-    double eval(const Sample& s) const override { return in ? in->eval(s) : 0; }
+    double eval(const Sample& s) const override {
+        if (!in) return 0;
+        const double alpha = BlendAlphaNode{}.eval(s);
+        const double offset = BlendOffsetNode{}.eval(s);
+        return in->eval(s) * alpha + offset;
+    }
 };
 struct EndIslandsNode final : DensityNode {
+    std::shared_ptr<NoiseRegistry> reg;
     double eval(const Sample& s) const override {
-        const double dx = s.x / 384.0, dz = s.z / 384.0;
-        const double r = std::hypot(dx, dz);
-        if (r < 1.0) return 0;
-        const double envelope = std::sin(r * 0.4) * 2.0 - 1.0;
-        return envelope * 0.5;
+        const double r = std::hypot(s.x / 384.0, s.z / 384.0);
+        if (r < 1.0) return -0.84375;
+        double n = 0;
+        if (reg) n = reg->get("minecraft:end_islands").octaves(s.x * 0.01, 0, s.z * 0.01, 2);
+        else n = std::sin(r * 0.4) * 2.0 - 1.0;
+        const double t = std::clamp(n * 0.5 + 0.5, 0.0, 1.0);
+        const double h = -0.84375 + t * (0.5625 - (-0.84375));
+        const double falloff = std::clamp(2.0 - r * 0.5, 0.0, 1.0);
+        return h * falloff;
     }
 };
 struct WeirdScaledSamplerNode final : DensityNode {
-    NodePtr input; double rarity = 1.0;
+    NodePtr input;
+    std::shared_ptr<NoiseRegistry> reg;
+    std::string noiseKey = "minecraft:terrain";
+    enum Mapper { Type1, Type2 } mapper = Type1;
     double eval(const Sample& s) const override {
         const double v = input ? input->eval(s) : 0;
-        const double w = std::abs(v);
-        if (w < 0.2) return v * 1.0;
-        if (w < 0.6) return v * (1.0 + rarity * 0.5);
-        return v * (1.0 + rarity);
+        const double a = std::clamp(std::abs(v), 0.0, 1.0);
+        const double scale = (mapper == Type1) ? (0.75 + a * (2.0 - 0.75)) : (0.5 + a * (3.0 - 0.5));
+        double n = 0;
+        if (reg) n = reg->get(noiseKey).sample(s.x * 0.25, s.y * 0.25, s.z * 0.25);
+        return std::abs(v * scale + n * 0.25);
     }
 };
 struct Cache2d final : DensityNode {   // memoize per column within one chunk
@@ -249,6 +331,10 @@ inline void collectCaches(const NodePtr& n, std::vector<Cache2dPtr>& out) {
         if (sn->shiftZ) collectCaches(sn->shiftZ, out);
     } else if (auto sh = std::dynamic_pointer_cast<Shift>(n)) {
         (void)sh;
+    } else if (auto sha = std::dynamic_pointer_cast<ShiftA>(n)) {
+        (void)sha;
+    } else if (auto shb = std::dynamic_pointer_cast<ShiftB>(n)) {
+        (void)shb;
     } else if (auto beard = std::dynamic_pointer_cast<BeardifierNode>(n)) {
         (void)beard;
     } else if (auto old = std::dynamic_pointer_cast<OldBlendedNoiseNode>(n)) {
@@ -257,6 +343,12 @@ inline void collectCaches(const NodePtr& n, std::vector<Cache2dPtr>& out) {
         collectCaches(ws->input, out);
     } else if (auto bd = std::dynamic_pointer_cast<BlendDensityNode>(n)) {
         collectCaches(bd->in, out);
+    } else if (auto ba = std::dynamic_pointer_cast<BlendAlphaNode>(n)) {
+        (void)ba;
+    } else if (auto bo = std::dynamic_pointer_cast<BlendOffsetNode>(n)) {
+        (void)bo;
+    } else if (auto ei = std::dynamic_pointer_cast<EndIslandsNode>(n)) {
+        (void)ei;
     }
 }
 
