@@ -137,6 +137,8 @@ void Session::run() {
         ent.varint(1);
         ent.varint(self_->entityId);
         srv_.broadcastPacketExcept(nullptr, pl::sc::RemoveEntities, ent);
+        // plan34 network: ChatSuggestions remove (action 1) for disconnected player
+        srv_.broadcastChatSuggestions(1, std::vector<std::string>{self_->name}, nullptr);
         // D26: wildcard reset_score 0x49 for disconnecting holder to clear sidebar ghosts
         {
             auto affected = srv_.scoreboard.resetAllScores(self_->name);
@@ -575,6 +577,8 @@ void Session::onEnterPlay() {
     self_->lastSeenMs = nowMs();
 
     sendJoinGame();
+    // plan34 network: ServerData 0x50 right after JoinGame (Prismarine packet_server_data {motd:anonymousNbt, iconBytes:option<ByteArray>})
+    srv_.sendServerData(*self_);
     sendAbilities();
     // plan6 §7: send InitializeWorldBorder on join
     srv_.sendWorldBorderTo(*self_);
@@ -650,6 +654,16 @@ void Session::onEnterPlay() {
     }
 
     srv_.broadcastSystemText("\u00a7e" + self_->name + " joined the game", nullptr);
+    // plan34 network: ChatSuggestions 0x18 (Prismarine packet_chat_suggestions {action:varint, entries:array<string>}) - sync player names for chat tab
+    {
+        std::vector<std::string> all;
+        for (auto& pl : srv_.playersSnapshot()) all.push_back(pl->name);
+        // action 2 = set for self
+        srv_.sendChatSuggestions(*self_, 2, all);
+        // action 0 = add for others
+        std::vector<std::string> one{self_->name};
+        srv_.broadcastChatSuggestions(0, one, self_.get());
+    }
     sendSystemText("\u00a77Welcome to \u00a7bCppFabricMC\u00a77! Build with the hotbar, chat freely.");
     if (srv_.bossAI()) srv_.bossAI()->onPlayerJoin(*self_);
 }
