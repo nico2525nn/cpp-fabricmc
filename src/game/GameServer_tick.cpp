@@ -799,6 +799,7 @@ void GameServer::mobsTick() {
                                         m->creakingSameBlockTicks=0;
                                         WriteBuffer tp; tp.varint(m->entityId); tp.f64(m->x); tp.f64(m->y); tp.f64(m->z); tp.f32(m->yaw); tp.f32(0); tp.boolean(true);
                                         broadcastPacketExcept(nullptr, proto::pl::sc::EntityTeleport, tp);
+                                        broadcastSyncEntityPosition(*m, nullptr);
                                         break;
                                     }
                                 }
@@ -837,6 +838,7 @@ void GameServer::mobsTick() {
                         broadcastPacketExcept(nullptr, pl::sc::SetEntityMetadata, md);
                         broadcastSound("minecraft:entity.creeper.primed",
                                        m->x, m->y, m->z, 1.f, 1.f, "hostile");
+                        broadcastEntitySound(m->entityId, "minecraft:entity.creeper.primed", 1.f, 1.f, SoundSource::Hostile);
                     } else if (tickNo_ - m->creeperFuseStart >= MobEntity::CREEPER_FUSE_TICKS) {
                         const double cxp = m->x, cyp = m->y, czp = m->z;
                         const std::int32_t eid = m->entityId;

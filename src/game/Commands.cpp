@@ -968,6 +968,25 @@ void GameServer::initCommands() {
             return 1;
         };
         title->then(clear);
+        // plan34 network: /title <text> existing + /title actionbar <text> -> ActionBar 0x51 (Prismarine packet_action_bar {text:anonymousNbt})
+        auto actionbarLit = CommandNode::literal("actionbar");
+        auto abText = CommandNode::argument("ab_text", args::stringGreedy());
+        abText->executable = true;
+        abText->action = [this](CommandContext& c) {
+            const std::string t = c.arg("ab_text").asStr();
+            for (auto& pl : playersSnapshot()) {
+                this->sendActionBar(*pl, t);
+            }
+            return 1;
+        };
+        actionbarLit->then(abText);
+        // also support bare actionbar without text (clear)
+        actionbarLit->executable = true;
+        actionbarLit->action = [this](CommandContext&) {
+            for (auto& pl : playersSnapshot()) this->sendActionBar(*pl, "");
+            return 1;
+        };
+        title->then(actionbarLit);
         auto text = CommandNode::argument("text", args::stringGreedy());
         text->executable = true;
         text->action = [this](CommandContext& c) {

@@ -787,6 +787,21 @@ public:
     void broadcastBlockParticle(double x, double y, double z, std::uint32_t blockState, int count = 10);
     void broadcastDustParticle(double x, double y, double z, std::int32_t rgb, float scale = 1.0f);
     void broadcastPaleOakLeavesParticle(double x, double y, double z); // D19 helper
+    // plan34 network: 6 toClient (ActionBar 0x51 prismarine packet_action_bar {text:anonymousNbt}, ServerData 0x50 {motd:anonymousNbt,iconBytes:option<ByteArray>}, HurtAnimation 0x25 {entityId:varint,yaw:f32}, EntitySoundEffect 0x6E {sound:ItemSoundHolder,soundCategory:varint,entityId:varint,volume:f32,pitch:f32,seed:i64}, ChatSuggestions 0x18 {action:varint,entries:array<string>}, SyncEntityPosition 0x20 {entityId:varint,x:f64,y:f64,z:f64,dx:f64,dy:f64,dz:f64,yaw:f32,pitch:f32,onGround:bool})
+    void sendActionBar(Player& p, const std::string& text);
+    void broadcastActionBar(const std::string& text, Player* except = nullptr);
+    void sendServerData(Player& p);
+    void broadcastServerData();
+    void sendHurtAnimation(Player& p, std::int32_t entityId, float yaw);
+    void broadcastHurtAnimation(std::int32_t entityId, float yaw, Player* except = nullptr);
+    void broadcastEntitySound(std::int32_t entityId, const std::string& soundName, float volume = 1.f, float pitch = 1.f, SoundSource category = SoundSource::Neutral);
+    void sendEntitySound(Player& p, std::int32_t entityId, const std::string& soundName, float volume = 1.f, float pitch = 1.f, SoundSource category = SoundSource::Neutral);
+    void sendChatSuggestions(Player& p, std::int32_t action, const std::vector<std::string>& entries);
+    void broadcastChatSuggestions(std::int32_t action, const std::vector<std::string>& entries, Player* except = nullptr);
+    void sendSyncEntityPosition(Player& p, std::int32_t entityId, double x, double y, double z, double dx=0, double dy=0, double dz=0, float yaw=0, float pitch=0, bool onGround=true);
+    void broadcastSyncEntityPosition(std::int32_t entityId, double x, double y, double z, double dx=0, double dy=0, double dz=0, float yaw=0, float pitch=0, bool onGround=true, Player* except=nullptr);
+    void sendSyncEntityPosition(Player& p, const MobEntity& mob);
+    void broadcastSyncEntityPosition(const MobEntity& mob, Player* except=nullptr);
     void itemsTick();
     void trySpawnMobs();
     void spawnItemDrop(double x,double y,double z,std::uint32_t itemId,std::uint8_t cnt,
