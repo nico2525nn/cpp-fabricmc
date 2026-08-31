@@ -354,6 +354,7 @@ inline void serializeLightPayload(WriteBuffer& out, const Chunk& chunk) {
 
 inline void serializeUpdateLightBody(WriteBuffer& out, std::int32_t cx,
                                      std::int32_t cz, const Chunk& chunk) {
+    // L1: UpdateLight 0x2B chunkX/Z are varint (not i32) per Prismarine packet_update_light — lock verified.
     out.varint(cx);
     out.varint(cz);
     serializeLightPayload(out, chunk);
