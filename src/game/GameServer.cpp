@@ -27,6 +27,7 @@
 #include "CostCalculator.hpp"
 #include "PotionBrewing.hpp"
 #include "Particles.hpp"
+#include "StairsHelper.hpp"
 #include <cerrno>
 
 namespace cppfm {
@@ -73,190 +74,6 @@ static const struct { const char* name; int cnt; } kKit[] = {
     {"minecraft:cobblestone",64}, {"minecraft:oak_planks",64}, {"minecraft:torch",32},
     {"minecraft:dirt",64},
 };
-
-// plan19 §1 B1 stairs strict: only front+opposite per Yarn StairsBlock#getStairsShape, no 4-dir side loop (plan12 §4 helper)
-static bool isStairsBlock(const gen::BlockDef* d){
-    if(!d) return false;
-    std::string n(d->name);
-    return n.find("_stairs")!=std::string::npos;
-}
-static std::string getPropStr(uint16_t state, const char* key){
-    for(auto&[k,v]: gen::propsOf(state)) if(k==key) return std::string(v);
-    return "";
-}
-// plan19 §1 B1 stairs strict: isDifferentOrientation per Yarn StairsBlock#isDifferentOrientation (vanilla 1.21.4)
-static bool isDifferentOrientation(World& w, int x,int y,int z, const std::string& stateFacing, const std::string& dir){
-    int nx=x, nz=z;
-    if(dir=="north") nz-=1;
-    else if(dir=="south") nz+=1;
-    else if(dir=="east") nx+=1;
-    else if(dir=="west") nx-=1;
-    else return true;
-    uint16_t ns = w.getBlock(nx,y,nz);
-    const gen::BlockDef* nd = gen::blockByState(ns);
-    if(!isStairsBlock(nd)) return true;
-    std::string nf = getPropStr(ns,"facing");
-    auto axisOf2 = [](const std::string& f)->char{
-        if(f=="north"||f=="south") return 'z';
-        if(f=="east"||f=="west") return 'x';
-        return 'y';
-    };
-    if(axisOf2(nf) != axisOf2(stateFacing)) return true;
-    auto opposite2 = [](const std::string& f)->std::string{
-        if(f=="north") return "south";
-        if(f=="south") return "north";
-        if(f=="east") return "west";
-        if(f=="west") return "east";
-        return f;
-    };
-    if(nf == opposite2(stateFacing)) return true;
-    if(nf == stateFacing) return false;
-    return true;
-}
-static std::string computeStairsShape(World& w, int x,int y,int z, const std::string& facing, const std::string& half){
-    auto axisOf = [](const std::string& f)->char{
-        if(f=="north"||f=="south") return 'z';
-        if(f=="east"||f=="west") return 'x';
-        return 'y';
-    };
-    auto rotateCCW = [](const std::string& f)->std::string{
-        if(f=="north") return "west";
-        if(f=="west") return "south";
-        if(f=="south") return "east";
-        if(f=="east") return "north";
-        return f;
-    };
-    auto rotateCW = [](const std::string& f)->std::string{
-        if(f=="north") return "east";
-        if(f=="east") return "south";
-        if(f=="south") return "west";
-        if(f=="west") return "north";
-        return f;
-    };
-    auto opposite = [](const std::string& f)->std::string{
-        if(f=="north") return "south";
-        if(f=="south") return "north";
-        if(f=="east") return "west";
-        if(f=="west") return "east";
-        if(f=="up") return "down";
-        if(f=="down") return "up";
-        return f;
-    };
-    (void)rotateCW;
-    // check outer: block in facing direction (front)
-    {
-        int nx=x, nz=z;
-        if(facing=="north") nz-=1; else if(facing=="south") nz+=1;
-        else if(facing=="east") nx+=1; else if(facing=="west") nx-=1;
-        uint16_t ns = w.getBlock(nx,y,nz);
-        const gen::BlockDef* nd = gen::blockByState(ns);
-        if(isStairsBlock(nd)){
-            std::string nf = getPropStr(ns,"facing");
-            std::string nh = getPropStr(ns,"half");
-            if(nh==half && axisOf(nf)!=axisOf(facing)){
-                std::string checkDir = opposite(nf);
-                if(isDifferentOrientation(w,x,y,z,facing,checkDir)){
-                    if(nf == rotateCCW(facing)) return "outer_left";
-                    else return "outer_right";
-                }
-            }
-        }
-    }
-    // check inner: block opposite facing direction (back)
-    {
-        int nx=x, nz=z;
-        std::string opp = opposite(facing);
-        if(opp=="north") nz-=1; else if(opp=="south") nz+=1;
-        else if(opp=="east") nx+=1; else if(opp=="west") nx-=1;
-        uint16_t ns = w.getBlock(nx,y,nz);
-        const gen::BlockDef* nd = gen::blockByState(ns);
-        if(isStairsBlock(nd)){
-            std::string nf = getPropStr(ns,"facing");
-            std::string nh = getPropStr(ns,"half");
-            if(nh==half && axisOf(nf)!=axisOf(facing)){
-                std::string checkDir = nf;
-                if(isDifferentOrientation(w,x,y,z,facing,checkDir)){
-                    if(nf == rotateCCW(facing)) return "inner_left";
-                    else return "inner_right";
-                }
-            }
-        }
-    }
-    return "straight";
-}
-static void updateNeighborStairsShapes(World& w, GameServer& srv, int x,int y,int z){
-    // plan19 §1 B1 stairs strict: only front+opposite of placed stair per Yarn, not 4-dir loop
-    uint16_t placed = w.getBlock(x,y,z);
-    const gen::BlockDef* pd = gen::blockByState(placed);
-    if(!isStairsBlock(pd)){
-        // fallback: if placed is not stairs (called for air?), check all 4 for safety
-        static const int DX4[4]={1,-1,0,0}, DZ4[4]={0,0,1,-1};
-        for(int i=0;i<4;++i){
-            int nx=x+DX4[i], nz=z+DZ4[i];
-            uint16_t ns=w.getBlock(nx,y,nz);
-            const gen::BlockDef* nd=gen::blockByState(ns);
-            if(!isStairsBlock(nd)) continue;
-            std::string nf=getPropStr(ns,"facing");
-            std::string nh=getPropStr(ns,"half");
-            std::string shape=computeStairsShape(w,nx,y,nz,nf,nh);
-            std::string curShape=getPropStr(ns,"shape");
-            if(curShape==shape) continue;
-            std::vector<std::pair<std::string_view,std::string_view>> props;
-            for(auto&[k,v]: gen::propsOf(ns)) if(k!="shape") props.emplace_back(k,v);
-            props.emplace_back("shape", shape);
-            uint16_t nst=static_cast<uint16_t>(gen::stateWithProps(*nd, props));
-            w.setBlock(nx,y,nz,nst);
-            srv.broadcastBlockChange(nx,y,nz,nst);
-        }
-        return;
-    }
-    std::string pf=getPropStr(placed,"facing");
-    int fdx=0,fdz=0,bdx=0,bdz=0;
-    if(pf=="north"){ fdz=-1; bdz=1; }
-    else if(pf=="south"){ fdz=1; bdz=-1; }
-    else if(pf=="east"){ fdx=1; bdx=-1; }
-    else if(pf=="west"){ fdx=-1; bdx=1; }
-    else {
-        static const int DX4[4]={1,-1,0,0}, DZ4[4]={0,0,1,-1};
-        for(int i=0;i<4;++i){
-            int nx=x+DX4[i], nz=z+DZ4[i];
-            uint16_t ns=w.getBlock(nx,y,nz);
-            const gen::BlockDef* nd=gen::blockByState(ns);
-            if(!isStairsBlock(nd)) continue;
-            std::string nf=getPropStr(ns,"facing");
-            std::string nh=getPropStr(ns,"half");
-            std::string shape=computeStairsShape(w,nx,y,nz,nf,nh);
-            std::string curShape=getPropStr(ns,"shape");
-            if(curShape==shape) continue;
-            std::vector<std::pair<std::string_view,std::string_view>> props;
-            for(auto&[k,v]: gen::propsOf(ns)) if(k!="shape") props.emplace_back(k,v);
-            props.emplace_back("shape", shape);
-            uint16_t nst=static_cast<uint16_t>(gen::stateWithProps(*nd, props));
-            w.setBlock(nx,y,nz,nst);
-            srv.broadcastBlockChange(nx,y,nz,nst);
-        }
-        return;
-    }
-    const int DX2[2]={fdx,bdx};
-    const int DZ2[2]={fdz,bdz};
-    for(int i=0;i<2;++i){
-        int nx=x+DX2[i], nz=z+DZ2[i];
-        uint16_t ns=w.getBlock(nx,y,nz);
-        const gen::BlockDef* nd=gen::blockByState(ns);
-        if(!isStairsBlock(nd)) continue;
-        std::string nf=getPropStr(ns,"facing");
-        std::string nh=getPropStr(ns,"half");
-        std::string shape=computeStairsShape(w,nx,y,nz,nf,nh);
-        std::string curShape=getPropStr(ns,"shape");
-        if(curShape==shape) continue;
-        std::vector<std::pair<std::string_view,std::string_view>> props;
-        for(auto&[k,v]: gen::propsOf(ns)) if(k!="shape") props.emplace_back(k,v);
-        props.emplace_back("shape", shape);
-        uint16_t nst=static_cast<uint16_t>(gen::stateWithProps(*nd, props));
-        w.setBlock(nx,y,nz,nst);
-        srv.broadcastBlockChange(nx,y,nz,nst);
-    }
-}
 
 // ================================================================== GameServer
 
@@ -352,9 +169,9 @@ void GameServer::acceptLoop() {
     }
 }
 
-// ------------------------------------------------------------ mining (Ph3)
+// ------------------------------------------------------------ mining (Ph3) — plan31 R5: O(1095) → O(1) via gen::blockByState (air s0 behavior preserved)
 static std::string blockNameByState(std::uint16_t sid) {
-    for (auto& e : gen::kBlocks) if (e.state == sid) return std::string(e.name);
+    if (auto* d = gen::blockByState(sid)) return std::string(d->name);
     return "minecraft:air";
 }
 
@@ -521,23 +338,6 @@ void GameServer::syncPlayerArmorAttributes(Player& p) {
     // modular split: delegate to CombatManager (plan8)
     CombatManager::syncPlayerArmor(*this, p);
 }
-int GameServer::computeProtectionEPF(const DamageSource& ds, const Player& p) const {
-    // Plan8 EnchantmentHelper: delegate EPF calculation to centralized helper
-    // plan22 combat polish: sonic_boom bypasses all enchantments (bypassEnchant + isSonic)
-    if (ds.bypassEnchant || ds.isDrown() || ds.isStarveFlag || ds.isSonic()) return 0;
-    int total = 0;
-    for (int i = 5; i <= 8; ++i) {
-        if (i < 0 || i >= 46 || p.inv[i].empty()) continue;
-        const auto& s = p.inv[i];
-        total += EnchantmentHelper::getProtectionEPF(ds, s);
-    }
-    if (total > 20) total = 20;
-    return total;
-}
-int GameServer::computeProtectionEPF(const DamageSource& ds, const MobEntity& m) const {
-    // modular split: delegate to CombatManager (plan8)
-    return CombatManager::computeEPF(ds, m);
-}
 void GameServer::addHungerExhaustion(Player& p, float amount) {
     // modular split: delegate to HungerManager (plan8)
     HungerManager::addExhaustion(p, amount);
@@ -561,7 +361,7 @@ void GameServer::applyDamage(Player& p, float amount, const DamageSource& src) {
     int armor = (int)std::round(p.attributes.getValue(Attribute::ARMOR));
     if (armor == 0) armor = totalArmorPoints(p.inv);
     double toughness = p.attributes.getValue(Attribute::ARMOR_TOUGHNESS);
-    int epf = computeProtectionEPF(src, p);
+    int epf = CombatManager::computeEPF(src, p);
     float finalAmt = DamageCalculator::calculate(amount, src, armor, toughness, epf, p.effects);
     if (finalAmt <= 0) return;
     // attack exhaustion for attacker is handled elsewhere; damage taken also adds exhaustion
@@ -654,8 +454,7 @@ void GameServer::tickOnce() {
         const LightUpdateBatch batch = lightEngine_->drain();
         mark('l');
         for (auto k : batch.dirtyChunks) {
-            const std::int32_t cx = static_cast<std::int32_t>(k >> 32);
-            const std::int32_t cz = static_cast<std::int32_t>(k & 0xFFFFFFFFLL);
+            auto [cx, cz] = chunkKeyDecode(k);
             world_.withChunk(cx, cz, [&](const Chunk& c) {
                 WriteBuffer b;
                 serializeUpdateLightBody(b, cx, cz, c);
@@ -739,8 +538,7 @@ void GameServer::chunksUnloadTick() {
         toErase.reserve(keys.size());
         auto players = playersSnapshot();
         for (auto k : keys) {
-            const std::int32_t cx = static_cast<std::int32_t>(k >> 32);
-            const std::int32_t cz = static_cast<std::int32_t>(k & 0xFFFFFFFFLL);
+            auto [cx, cz] = chunkKeyDecode(k);
             // W17/W19: keep both FORCED and SPAWN (level 31) tickets from unloading
             if (w.isForcedKey(k) || w.ticketLevel(cx, cz) <= 31) continue;
             bool near = false;
@@ -773,7 +571,7 @@ void GameServer::chunksUnloadTick() {
                 // W17/W19: count both FORCED and SPAWN (level 31) as protected
                 size_t forcedCount = 0;
                 for (auto k : keys) {
-                    int32_t cx = static_cast<int32_t>(k>>32), cz = static_cast<int32_t>(k & 0xFFFFFFFFLL);
+                    auto [cx, cz] = chunkKeyDecode(k);
                     if (w.isForcedKey(k) || w.ticketLevel(cx,cz) <= 31) ++forcedCount;
                 }
                 if (forcedCount >= (size_t)cfg_.maxLoadedChunks) {
@@ -785,7 +583,7 @@ void GameServer::chunksUnloadTick() {
                     candidates.reserve(remaining);
                     for (auto k : keys) {
                         if (already.count(k)) continue;
-                        int32_t cx = static_cast<int32_t>(k>>32), cz = static_cast<int32_t>(k & 0xFFFFFFFFLL);
+                        auto [cx, cz] = chunkKeyDecode(k);
                         if (w.isForcedKey(k) || w.ticketLevel(cx,cz) <= 31) continue;
                         candidates.push_back(k);
                     }
@@ -804,8 +602,8 @@ void GameServer::chunksUnloadTick() {
                         return std::max(dx, dz);
                     };
                     std::sort(candidates.begin(), candidates.end(), [&](std::int64_t a, std::int64_t b){
-                        int32_t ax=int32_t(a>>32), az=int32_t(a & 0xFFFFFFFF);
-                        int32_t bx=int32_t(b>>32), bz=int32_t(b & 0xFFFFFFFF);
+                        auto [ax, az] = chunkKeyDecode(a);
+                        auto [bx, bz] = chunkKeyDecode(b);
                         return distToNearest(ax,az) > distToNearest(bx,bz);
                     });
                     size_t need = remaining - (size_t)cfg_.maxLoadedChunks;
@@ -814,7 +612,7 @@ void GameServer::chunksUnloadTick() {
                     constexpr size_t kMaxUnloadPerTick = 16;
                     if (need > kMaxUnloadPerTick) need = kMaxUnloadPerTick;
                     for (size_t i=0;i<need;++i) {
-                        int32_t cx=int32_t(candidates[i]>>32), cz=int32_t(candidates[i]&0xFFFFFFFF);
+                        auto [cx, cz] = chunkKeyDecode(candidates[i]);
                         if (pp && pp->isDirty(cx, cz)) pp->flushChunk(cx, cz);
                         toErase.push_back(candidates[i]);
                         invalidateChunkCache(cx, cz);
@@ -823,8 +621,7 @@ void GameServer::chunksUnloadTick() {
             }
         }
         for (auto k : toErase) {
-            const std::int32_t cx = static_cast<std::int32_t>(k >> 32);
-            const std::int32_t cz = static_cast<std::int32_t>(k & 0xFFFFFFFFLL);
+            auto [cx, cz] = chunkKeyDecode(k);
             if (w.eraseChunk(cx, cz)) {
                 std::fprintf(stderr, "[cppfm] unload chunk dim=%d %d,%d (dist>%d) remaining=%zu\n",
                              (int)dim, cx, cz, unloadDist, w.loadedChunkCount());
@@ -1626,24 +1423,6 @@ void GameServer::broadcastSetPassengersEmpty(std::int32_t vehicleId) {
     b.varint(0);
     broadcastPacketExcept(nullptr, proto::pl::sc::SetPassengers, b);
 }
-
-float GameServer::applyArmorReduction(float dmg, int armor) const {
-    // plan23 world: delegate to single vanilla formula f=2+t/4 caps 30/20 (toughness 0 here)
-    return DamageCalculator::applyArmorAndToughness(dmg, static_cast<float>(armor), 0.f);
-}
-
-int GameServer::totalProtectionForPlayer(const Player& p) const {
-    int prot=0;
-    for (int i=5;i<=8;++i) if (i>=0 && i<46 && !p.inv[i].empty()) prot += p.inv[i].enchantLevel("protection");
-    return prot;
-}
-
-int GameServer::totalProtectionForMob(const MobEntity& m) const {
-    int prot=0;
-    for (int i=2;i<6;++i) if (!m.equipment[i].empty()) prot += m.equipment[i].enchantLevel("protection");
-    return prot;
-}
-
 
 void GameServer::mobAttackPlayer(MobEntity& m, Player& target) {
     float dmg = mobStats(m.kind).attackDamage;
@@ -2840,9 +2619,8 @@ void GameServer::applyDamageToMob(MobEntity& m, float amount, const DamageSource
             return;
         }
     }
-    // Plan8 EnchantmentHelper + EquipmentComponent: armor via EquipmentComponent, EPF via EnchantmentHelper
     int armor = totalArmorPoints(m);
-    int epf = computeProtectionEPF(src, m);
+    int epf = CombatManager::computeEPF(src, m);
     // mobs have no toughness in current formula; pass 0
     float finalAmt = DamageCalculator::calculate(amount, src, armor, 0.0, epf, {});
     // mobs have no resistance effects currently
@@ -5996,16 +5774,16 @@ void Session::tickChunksAround(double px, double pz) {
     // forget distant chunks
     std::vector<std::int64_t> forget;
     for (auto k : sentChunks_) {
-        const std::int32_t cx = static_cast<std::int32_t>(k >> 32);
-        const std::int32_t cz = static_cast<std::int32_t>(k & 0xFFFFFFFFLL);
+        auto [cx, cz] = chunkKeyDecode(k);
         if (std::abs(cx - pcx) > vd + 1 || std::abs(cz - pcz) > vd + 1)
             forget.push_back(k);
     }
     if (!forget.empty()) {
         for (auto k : forget) {
+            auto [fcx, fcz] = chunkKeyDecode(k);
             WriteBuffer f;
-            f.i32(static_cast<std::int32_t>(k & 0xFFFFFFFFLL));   // z first per schema!
-            f.i32(static_cast<std::int32_t>(k >> 32));
+            f.i32(fcz);   // z first per schema!
+            f.i32(fcx);
             try { conn_->sendPacket(pl::sc::ForgetLevelChunk, f); } catch (...) {}
             sentChunks_.erase(k);
         }

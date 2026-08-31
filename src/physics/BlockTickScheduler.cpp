@@ -61,16 +61,14 @@ void BlockTickScheduler::tick(std::int64_t now) {
                 std::vector<std::int64_t> simKeys;
                 simKeys.reserve(keys.size());
                 for (auto k : keys) {
-                    const std::int32_t cx = static_cast<std::int32_t>(k >> 32);
-                    const std::int32_t cz = static_cast<std::int32_t>(k & 0xFFFFFFFFLL);
+                    auto [cx, cz] = chunkKeyDecode(k);
                     if (!world_.isChunkInSimulationDistance(cx, cz)) continue;
                     simKeys.push_back(k);
                 }
                 if (!simKeys.empty()) {
                     for (int i = 0; i < std::min<int>(rts, 8); ++i) {
                         const std::int64_t k = simKeys[rand() % simKeys.size()];
-                        const std::int32_t cx = static_cast<std::int32_t>(k >> 32);
-                        const std::int32_t cz = static_cast<std::int32_t>(k & 0xFFFFFFFFLL);
+                        auto [cx, cz] = chunkKeyDecode(k);
                         for (int r = 0; r < 16; ++r) {
                             const std::int32_t x = (cx << 4) + (rand() % 16);
                             const std::int32_t z = (cz << 4) + (rand() % 16);

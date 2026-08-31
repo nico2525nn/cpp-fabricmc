@@ -33,6 +33,9 @@ inline constexpr std::int64_t chunkKey(std::int32_t cx, std::int32_t cz) {
     return (static_cast<std::int64_t>(static_cast<std::uint32_t>(cx)) << 32)
          | static_cast<std::uint32_t>(cz);
 }
+inline constexpr std::pair<std::int32_t,std::int32_t> chunkKeyDecode(std::int64_t k) {
+    return {static_cast<std::int32_t>(k >> 32), static_cast<std::int32_t>(k & 0xFFFFFFFFLL)};
+}
 
 struct Chunk {
     // layout: [section][yInSection][z][x]
@@ -393,10 +396,10 @@ public:
         forcedChunks_.insert(chunkKey(cx, cz));
         ticketManager_.addTicket(cx, cz, TicketType::FORCED, 31, 0);
     }
-    // W17 strict: ForcedChunkState helpers (Yarn ForcedChunkState/PersistentState)
+    // W17 strict: ForcedChunkState helpers (Yarn ForcedChunkState/PersistentState) — alias to chunkKey for uniformity (plan31 R1)
     struct ForcedChunkState {
-        static inline std::int64_t toLong(int cx,int cz){ return (static_cast<std::int64_t>(static_cast<std::uint32_t>(cx))<<32) | static_cast<std::uint32_t>(cz); }
-        static inline std::pair<int,int> fromLong(std::int64_t k){ return {static_cast<std::int32_t>(k>>32), static_cast<std::int32_t>(k & 0xFFFFFFFFLL)}; }
+        static inline std::int64_t toLong(int cx,int cz){ return chunkKey(cx,cz); }
+        static inline std::pair<int,int> fromLong(std::int64_t k){ return chunkKeyDecode(k); }
     };
     static inline std::int64_t forcedKey(int cx,int cz){ return ForcedChunkState::toLong(cx,cz); }
     bool isChunkForced(int cx,int cz) const { return isForced(cx,cz); }

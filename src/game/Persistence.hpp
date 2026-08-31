@@ -366,8 +366,7 @@ public:
             batch.swap(dirty_);
         }
         for (auto k : batch) {
-            const std::int32_t cx = static_cast<std::int32_t>(k >> 32);
-            const std::int32_t cz = static_cast<std::int32_t>(k & 0xFFFFFFFFLL);
+            auto [cx, cz] = chunkKeyDecode(k);
             const std::string bio = [this] {
                 std::lock_guard lk(bioMtx_);
                 return biomeOverride_.value_or(biome_);
