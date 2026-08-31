@@ -13,6 +13,7 @@ inline std::int64_t ticketChunkKey(std::int32_t cx, std::int32_t cz) {
     return (static_cast<std::int64_t>(static_cast<std::uint32_t>(cx)) << 32)
          | static_cast<std::uint32_t>(cz);
 }
+// ticketChunkKey — same bits as World::chunkKey (plan31 R1: three names, one logic; kept separate header to avoid World <-> ChunkTicket cycle)
 
 // ChunkTicket levels mirror vanilla: lower level = higher priority / more ticking
 // Vanilla: 31 = spawn / forced, 33 = player,  etc. We use 31 for spawn forced.
@@ -84,8 +85,10 @@ public:
     }
     void forEach(std::function<void(int32_t,int32_t,const ChunkTicket&)> fn) const {
         for (auto &kv : tickets_) {
+            // use chunkKeyDecode bits (same as World::chunkKey) — include via forward; manual here to avoid World cycle
             int32_t cx = static_cast<int32_t>(kv.first >> 32);
             int32_t cz = static_cast<int32_t>(kv.first & 0xFFFFFFFFLL);
+            // NOTE: same bits as chunkKeyDecode(kv.first) — kept manual to avoid World.hpp cycle (plan31 R1: logic identical)
             for (auto &t : kv.second) fn(cx, cz, t);
         }
     }

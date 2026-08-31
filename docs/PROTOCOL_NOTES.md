@@ -85,6 +85,15 @@ Empirical after plan12: vanilla coalesces same chunk-section `BlockUpdate 0x09`s
 - `UpdateLight` masks are `BitSet` of `int64` words; block-light for `glowstone` (emit 15) propagates via `LightEngine::drain` BFS 3×3 `expandedDirty` and `pendingSkyRebuild` 3×3 (post-plan12). Opacity for emissive `glowstone 0` after special-case, else `minecraft-data filter`.
 - `LightUpdateQueue` (`LightEngine.hpp:20`) batches `addQueue`/`removeQueue` and defers sky rebuild until `drain()`; `serializeUpdateLightBody` builds `skyMask/blockMask/emptyMasks` from `chunk.blockLightNib`.
 
+## UpdateAttributes (`0x7C` — H1 FIXED plan30)
+
+Prismarine `minecraft-data 1.21.4` `protocol.json` `packet_entity_update_attributes`:
+`{entityId varint, properties array<{key varint mapper 0-21, value f64, modifiers array<{uuid string 36 chars, amount f64, operation i8}>}>}`.
+`key` is **varint mapper 0-21** (e.g. `generic.armor=0`, `generic.max_health=16`, `generic.movement_speed=9` etc. — 22 entries filtered for 1.21.4, burn-time etc. are 1.21.5+ skipped).
+`modifiers[].uuid` is **string 36 chars** (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`) not 16-byte UUID.
+Previous impl sent `string "minecraft:generic.armor"` + `uuid 16 bytes` — 10+20 bytes mismatch caused BufferUnderrun (H1 suspect, fixed `Attributes.hpp:224-250` `mapperId` + `string uuid`, `test_spec_wire` `[C2]` verifies `eid varint 1 + count 22 + first key varint 16 MAX_HEALTH`).
+22 attributes are synced per `UpdateAttributes` broadcast (`AttributeManager::writeUpdate` `out.varint(eid) + varint 22 + {varint key + f64 value + varint n + {string uuid + f64 + i8}}`).
+
 ## Scoreboard (`ScoreboardObjective 0x64` / `ScoreboardScore 0x68` / `ResetScore 0x49` / `ScoreboardDisplayObjective 0x5C`)
 
 Prismarine `minecraft-data 1.21.4` `protocol.json` 131 `toClient` sorted hex verifies `0x49` between `0x48 RemoveMobEffect` and `0x4A CommandSuggestions`:
