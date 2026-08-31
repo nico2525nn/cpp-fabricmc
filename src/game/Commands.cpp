@@ -3228,10 +3228,13 @@ void GameServer::initCommands() {
             auto structArg = CommandNode::argument("locateStructureId", args::resourceLocation());
             structArg->suggestions = [](brigadier::StringReader&, brigadier::ParseCtx&){
                 return std::vector<std::string>{
-                    "minecraft:village","minecraft:desert_pyramid","minecraft:jungle_temple",
-                    "minecraft:swamp_hut","minecraft:igloo","minecraft:pillager_outpost",
-                    "minecraft:monument","minecraft:mansion","minecraft:trial_chambers",
-                    "minecraft:end_city","minecraft:mineshaft","minecraft:stronghold"
+                    "minecraft:village","minecraft:ancient_city","minecraft:trail_ruins",
+                    "minecraft:desert_pyramid","minecraft:jungle_temple","minecraft:swamp_hut",
+                    "minecraft:igloo","minecraft:pillager_outpost","minecraft:monument",
+                    "minecraft:mansion","minecraft:ruined_portal","minecraft:shipwreck",
+                    "minecraft:ocean_ruins","minecraft:nether_complexes","minecraft:nether_fossil",
+                    "minecraft:end_city","minecraft:trial_chambers","minecraft:buried_treasure",
+                    "minecraft:mineshaft","minecraft:stronghold"
                 };
             };
             structArg->executable = true;

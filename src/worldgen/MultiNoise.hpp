@@ -26,6 +26,17 @@ struct BiomeEntry {
     ClimateParams target;
 };
 
+struct ParameterRange {
+    float min = -1, max = 1;
+    bool contains(float v) const { return v >= min && v <= max; }
+    float width() const { return max - min; }
+};
+struct NoiseHypercube {
+    ParameterRange temperature, humidity, continentalness, erosion, depth, weirdness;
+    float offset = 0.f;
+};
+struct HypercubeEntry { std::string key; NoiseHypercube cube; };
+
 class MultiNoiseBiomeSource {
 public:
     explicit MultiNoiseBiomeSource(std::uint64_t seed)
@@ -37,6 +48,37 @@ public:
     // Register an authored biome point.
     void add(const std::string& key, const ClimateParams& p) {
         entries_.push_back({key, p});
+        // also register hypercube ±0.05 width for isosceles parity
+        NoiseHypercube cube;
+        auto r = [&](double v){ return ParameterRange{float(v-0.05), float(v+0.05)}; };
+        cube.temperature = r(p.temperature);
+        cube.humidity = r(p.humidity);
+        cube.continentalness = r(p.continentalness);
+        cube.erosion = r(p.erosion);
+        cube.depth = r(p.depth);
+        cube.weirdness = r(p.weirdness);
+        entriesCube_.push_back({key, cube});
+    }
+    // Test helpers: hypercube direct
+    void clear() { entries_.clear(); entriesCube_.clear(); }
+    void addCube(const std::string& key, const NoiseHypercube& cube) {
+        entriesCube_.push_back({key, cube});
+        // also keep point entry for legacy dist2 fallback
+        ClimateParams mid{};
+        mid.temperature = (cube.temperature.min + cube.temperature.max) * 0.5;
+        mid.humidity = (cube.humidity.min + cube.humidity.max) * 0.5;
+        mid.continentalness = (cube.continentalness.min + cube.continentalness.max) * 0.5;
+        mid.erosion = (cube.erosion.min + cube.erosion.max) * 0.5;
+        mid.depth = (cube.depth.min + cube.depth.max) * 0.5;
+        mid.weirdness = (cube.weirdness.min + cube.weirdness.max) * 0.5;
+        entries_.push_back({key, mid});
+    }
+    void addCubePoint(const std::string& key, double t,double h,double c,double e,double d,double w){
+        NoiseHypercube cube;
+        auto r=[&](double v){ return ParameterRange{float(v-0.05), float(v+0.05)}; };
+        cube.temperature=r(t); cube.humidity=r(h); cube.continentalness=r(c);
+        cube.erosion=r(e); cube.depth=r(d); cube.weirdness=r(w);
+        addCube(key, cube);
     }
 
     // Sample climate at world coordinates and resolve to a biome key.
@@ -84,12 +126,42 @@ public:
             !std::isfinite(e) || !std::isfinite(d) || !std::isfinite(w)) return 1e300;
         return kW_T*t*t + kW_H*h*h + kW_C*c*c + kW_E*e*e + kW_D*d*d + kW_W*w*w;
     }
+    static double isoscelesWeight(const NoiseHypercube& cube, const ClimateParams& p){
+        if (!std::isfinite(p.temperature) || !std::isfinite(p.humidity) || !std::isfinite(p.continentalness) ||
+            !std::isfinite(p.erosion) || !std::isfinite(p.depth) || !std::isfinite(p.weirdness)) return 1e300;
+        auto dist1 = [](const ParameterRange& r, double v, double w)->double {
+            if (v < r.min) return w * (r.min - v) / std::max(double(r.width()), 1e-6);
+            if (v > r.max) return w * (v - r.max) / std::max(double(r.width()), 1e-6);
+            return 0.0;
+        };
+        double d = 0;
+        d += dist1(cube.temperature, p.temperature, kW_T);
+        d += dist1(cube.humidity, p.humidity, kW_H);
+        d += dist1(cube.continentalness, p.continentalness, kW_C);
+        d += dist1(cube.erosion, p.erosion, kW_E);
+        d += dist1(cube.depth, p.depth, kW_D);
+        d += dist1(cube.weirdness, p.weirdness, kW_W);
+        d += cube.offset;
+        return d;
+    }
     // test helper — plan20 entity regression for pale_garden weighting (public for unit tests)
     const std::string& sampleByClimate(const ClimateParams& c) const { return nearest(c); }
     std::size_t biomeEntryCount() const { return entries_.size(); }
+    std::size_t hypercubeEntryCount() const { return entriesCube_.size(); }
+    const std::vector<HypercubeEntry>& hypercubes() const { return entriesCube_; }
 
 private:
     const std::string& nearest(const ClimateParams& c) const {
+        // Prefer hypercube isosceles if available (vanilla SearchTree parity)
+        if (!entriesCube_.empty()) {
+            const HypercubeEntry* best = &entriesCube_.front();
+            double bestD = 1e300;
+            for (const auto& e : entriesCube_) {
+                const double d = isoscelesWeight(e.cube, c);
+                if (d < bestD) { bestD = d; best = &e; }
+            }
+            return best->key;
+        }
         if (entries_.empty()) { static const std::string fallback = "minecraft:plains"; return fallback; }
         const std::string* best = &entries_.front().key;
         double bestD = 1e300;
@@ -104,6 +176,7 @@ private:
     std::shared_ptr<NoiseRegistry> noises_;
     std::uint64_t seed_;
     std::vector<BiomeEntry> entries_;
+    std::vector<HypercubeEntry> entriesCube_;
 };
 
 } // namespace cppfm::worldgen
