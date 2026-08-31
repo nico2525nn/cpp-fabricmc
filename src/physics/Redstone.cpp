@@ -1281,18 +1281,37 @@ void RedstoneEngine::handlePistonScheduled(std::int32_t x, std::int32_t y, std::
     }
 }
 void RedstoneEngine::processPistonQueue(std::int64_t now) {
-    for (auto it = pistonQueue_.begin(); it != pistonQueue_.end(); ) {
-        if (it->dueTick <= now) {
-            handlePistonScheduled(it->x, it->y, it->z, it->extended);
-            it = pistonQueue_.erase(it);
-        } else ++it;
+    // plan28 finish: drain by index — handlePistonScheduled pushes NEW entries
+    // (pistonQueue_.push_back) via its block-update callbacks, which can
+    // reallocate the vector and invalidate a range-for/iterator loop (observed
+    // livelock: tick stuck for minutes at now=416, smoke test redstone piston).
+    // Index-based drain keeps the loop valid across recursive pushes; fresh
+    // entries have dueTick=now+2 and are skipped this round. A per-tick budget
+    // additionally caps a pathological self-oscillating piston (power flapping
+    // + head/wire feedback) from flooding the tick and starving sessions.
+    const int budget = 32;
+    int done = 0;
+    for (std::size_t i = 0; i < pistonQueue_.size() && done < budget; ) {
+        if (pistonQueue_[i].dueTick <= now) {
+            PistonEntity pe = pistonQueue_[i];
+            pistonQueue_.erase(pistonQueue_.begin() + static_cast<std::ptrdiff_t>(i));
+            handlePistonScheduled(pe.x, pe.y, pe.z, pe.extended);
+            ++done;
+            // don't advance: the slot at i now holds the next entry (or new end)
+        } else ++i;
     }
     processPendingPistonCommits(now);
 }
 void RedstoneEngine::tick(std::int64_t now) {
     processPistonQueue(now);
     processPendingPistonCommits(now);
-    while (!queue_.empty() && queue_.top().dueTick <= now) {
+    // plan28 finish: a redstone feedback cascade (wire/piston/repeater updates
+    // re-queuing immediate dueTick<=now entries) could starve the game tick
+    // forever — the smoke test observed the tick stuck for minutes. Bound the
+    // per-tick drain (vanilla processes redstone updates with per-tick limits
+    // too); leftover work drains on subsequent ticks (queue_ persists).
+    int budget = 4096;
+    while (!queue_.empty() && queue_.top().dueTick <= now && --budget > 0) {
         const RedstoneTick t = queue_.top();
         queue_.pop();
         if (!world_.isChunkInSimulationDistance(t.x >> 4, t.z >> 4) && !world_.isPositionInSimulationDistance(t.x, t.z)) continue;

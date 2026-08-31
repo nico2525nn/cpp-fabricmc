@@ -59,7 +59,7 @@ struct ServerProc {
         }
         return waitPort(port,8000);
     }
-    void stop(){ if(pid>0){ kill(pid,SIGTERM); int st; waitpid(pid,&st,0); pid=-1; std::filesystem::remove_all(worldDir); } }
+    void stop(){ if(pid>0){ kill(pid,SIGTERM); int st=0; for(int i=0;i<25;++i){ pid_t r=waitpid(pid,&st,WNOHANG); if(r==pid||r==-1) break; usleep(100*1000); } if(kill(pid,0)==0){ kill(pid,SIGKILL); waitpid(pid,&st,0); } else if(pid>0){ waitpid(pid,&st,WNOHANG); } pid=-1; std::filesystem::remove_all(worldDir); } }
 };
 
 // Helpers
@@ -72,6 +72,15 @@ static bool waitBlockUpdate(TestClient& c, int x,int y,int z, uint32_t state, in
     auto dl=std::chrono::steady_clock::now()+std::chrono::milliseconds(ms);
     while(std::chrono::steady_clock::now()<dl){ c.pump(40); for(auto &u:c.blockUpdates) if(u.x==x&&u.y==y&&u.z==z&&u.state==state) return true; }
     return false;
+}
+// plan28 finish: the server streams a client's initial chunks on its Session
+// thread (cold-cache serialization of a dirtied world can take seconds); chat
+// commands queue behind it. Latency-sensitive checks must wait for the stream
+// (mirrors tests/repro_fill.cpp which waits for chunk (2,0) before filling).
+static bool waitForChunks(TestClient& c, std::size_t minChunks, int ms=8000){
+    auto dl=std::chrono::steady_clock::now()+std::chrono::milliseconds(ms);
+    while(std::chrono::steady_clock::now()<dl){ c.pump(40); if(c.chunkCoords.size()>=minChunks) return true; }
+    return c.chunkCoords.size()>=minChunks;
 }
 
 // 80-item smoke coverage — each SECTION corresponds to plan5 categories.
@@ -341,6 +350,9 @@ static void testNetwork(ServerProc& srv){
     c.sendChatCommand("summon minecraft:creeper");
     c.pump(500);
     // multi_block_change: /fill large area should be batched if implemented
+    // (wait for NetTester's initial chunk stream — cold serialization of the
+    // dirtied world delays command processing, plan28 finish)
+    waitForChunks(c, 160, 10000);
     c.sendChatCommand("fill 50 -60 0 55 -60 5 minecraft:stone");
     bool gotUpdates=false;
     auto dl=std::chrono::steady_clock::now()+std::chrono::milliseconds(1500);
@@ -399,7 +411,9 @@ static void testSurvivalCombat(ServerProc& srv){
     dl=std::chrono::steady_clock::now()+std::chrono::milliseconds(1500);
     while(std::chrono::steady_clock::now()<dl){ c.pump(40); if(c.count(proto::pl::sc::SetExperience)>0) sawXp=true; }
     CHECK(sawXp||true,"XP orbs SetExperience 0x5B (weak)");
-    // effects: /effect
+    // effects: /effect — the player teleported around (chunk re-stream) and the
+    // world is dirty; wait for the stream before the latency-sensitive command
+    waitForChunks(c, 240, 10000);
     c.sendChatCommand("effect give SurvTester minecraft:speed 10 1");
     CHECK(waitChat(c,"speed")||c.count(proto::pl::sc::EntityEffect)>0,"/effect give speed");
     c.close(); victim.close();

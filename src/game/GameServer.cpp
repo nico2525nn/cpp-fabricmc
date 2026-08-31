@@ -718,7 +718,7 @@ void GameServer::tickOnce() {
     // network batching: flush coalesced block updates every tick (50ms window)
     {
         int64_t now = nowMs();
-        if (!batcher_.empty() && now - batcher_.lastFlushMs >= 50) {
+        if (!batcher_.empty() && now - batcher_.lastFlushMs.load() >= 50) {
             batcher_.flush(*this, nullptr);
             lastBlockBatchFlushMs_ = now;
         } else if (!batcher_.empty() && tickNo_ % 2 == 0) {
@@ -4336,10 +4336,11 @@ void GameServer::spawnProjectile(ProjectileKind kind, double x, double y,
     e->ownerIsPlayer = ownerIsPlayer;
     e->charged = charged;
     projectiles_.push_back(e);
-    {
-        std::lock_guard lk(entsMtx_);
-        // (kept consistent with other spawn paths)
-    }
+    // plan28 finish: this was an EMPTY entsMtx_ lock_guard — spawnProjectile is
+    // called from BehaviorTree actions while GameServer::mobsTick already holds
+    // entsMtx_ (mob AI runs under it); re-locking the non-recursive mutex was a
+    // SELF-DEADLOCK that froze the tick forever (dragon breath -> fireball).
+    // projectiles_ is only mutated on the tick thread (spawn + projectilesTick).
     const auto& types = gen::entityTypeIdByName();
     static const char* kNames[] = {"minecraft:arrow", "minecraft:snowball",
                                    "minecraft:egg", "minecraft:ender_pearl",
