@@ -1,0 +1,32 @@
+{
+  "parent": "minecraft:story/kill_zombie",
+  "display": {
+    "icon": {
+      "item": "minecraft:bone"
+    },
+    "title": "Sniper Duel",
+    "description": "Kill a skeleton",
+    "frame": "task",
+    "show_toast": true,
+    "announce_to_chat": true
+  },
+  "criteria": {
+    "kill_skeleton": {
+      "trigger": "minecraft:player_killed_entity",
+      "conditions": {
+        "entity": [
+          {
+            "predicate": {
+              "type": "minecraft:skeleton"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "requirements": [
+    [
+      "kill_skeleton"
+    ]
+  ]
+}

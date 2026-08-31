@@ -1,0 +1,30 @@
+{
+  "parent": "minecraft:story/mine_diamond",
+  "display": {
+    "icon": {
+      "item": "minecraft:diamond_chestplate"
+    },
+    "title": "Cover Me With Diamonds",
+    "description": "Get diamond armor",
+    "frame": "task",
+    "show_toast": true,
+    "announce_to_chat": true
+  },
+  "criteria": {
+    "diamond_armor": {
+      "trigger": "minecraft:inventory_changed",
+      "conditions": {
+        "items": [
+          {
+            "items": "minecraft:diamond_chestplate"
+          }
+        ]
+      }
+    }
+  },
+  "requirements": [
+    [
+      "diamond_armor"
+    ]
+  ]
+}
