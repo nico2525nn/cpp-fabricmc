@@ -93,7 +93,7 @@ cmake --build build-asan
 Assets: `assets/registry/*.bin` (12 registries + tags, captured) + `assets/data/{tags,loot_tables,structures,recipes,entities}` (JSON, data-driven) must exist next to `worldDir`. `StructurePlacer` loads `assets/data/structures/*.json` fallback to `Stronghold`/`Mineshaft`/`Village` defaults; `TagManager` 67/20, `LootTables` `fortune`/`silk_touch`, `EntityDataLoader` 10 `assets/entities/*.json` → `BehaviorTree`.
 
 Configuration: vanilla `server.properties` subset
-`server-port` `max-players` `view-distance` `simulation-distance` `motd` `spawn-protection` (16) `white-list` `online-mode` `level-seed` `level-type` `difficulty` `enforce-secure-profile`.
+`server-port` `max-players` `view-distance` `simulation-distance` `motd` `spawn-protection` (16) `white-list` `online-mode` `level-seed` `level-type` `difficulty` `enforce-secure-profile` `pvp` `allow-flight` `hardcore` `max-players` enforced. `maxLoadedChunks` LRU is Chebyshev-distance sorted with burst 16/tick and forced/spawn ticket protection (not simple `clear()`). Signal handling (`SIGINT`/`SIGTERM` in `main.cpp`) is POSIX-dependent; Windows requires `SetConsoleCtrlHandler` for full support.
 CLI flags override: `--port --view-distance --assets --world-dir --online-mode`.
 `ops.json`/`ops.txt` → `isOp` for `spawn-protection` bypass, `level.dat` `DataVersion 4189` + `Difficulty`/`WorldBorder`/`Version` full, per-dim `DIM-1`/`DIM1` `region/` + `level.dat`.
 

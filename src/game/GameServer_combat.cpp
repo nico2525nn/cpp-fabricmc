@@ -83,6 +83,18 @@ void GameServer::killPlayer(Player& p, const char* cause) {
     sendScoreAll("deaths", p.name,
                  scoreboard.getScore("deaths", p.name));
     broadcastSystemText(std::string("\u00a7c") + p.name + " died (" + cause + ")", &p);
+    // plan35 §5 hardcore: ban on death when hardcore=true (vanilla hardcore -> spectator + world delete, here ban)
+    if (cfg_.hardcore) {
+        bannedPlayers_.insert(p.name);
+        try { saveBans(); } catch (...) {}
+        if (p.conn) {
+            WriteBuffer b;
+            nbt::writeTextComponent(b, "You died in hardcore mode and are banned");
+            try { p.conn->sendPacket(proto::pl::sc::Disconnect, b); } catch (...) {}
+            try { p.conn->close(); } catch (...) {}
+        }
+        p.gamemode = 3; // spectator
+    }
 }
 void GameServer::mobAttackPlayer(MobEntity& m, Player& target) {
     float dmg = mobStats(m.kind).attackDamage;

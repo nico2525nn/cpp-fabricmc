@@ -120,6 +120,8 @@ public:
     int viewDistance() const { return get<int>("view-distance", get<int>("viewDistance", 6)); }
     int simulationDistance() const { return get<int>("simulation-distance", get<int>("simulationDistance", 10)); }
     int spawnProtection() const { return get<int>("spawn-protection", 16); }
+    // plan35 §5 doc: maxLoadedChunks cap=0 unlimited, otherwise capped; current LRU in GameServer_tick.cpp is
+    // Chebyshev-sorted + burst 16/tick with forced/spawn ticket protection — NOT a simple clear().
     int maxLoadedChunks(int viewDist) const {
         int configured = get<int>("max-loaded-chunks", get<int>("maxLoadedChunks", -1));
         if (configured >= 0) return std::max(0, configured);

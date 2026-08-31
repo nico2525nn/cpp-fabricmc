@@ -11,6 +11,8 @@ using namespace cppfm;
 namespace cppfm { extern std::atomic<bool> g_stopRequested; }
 using namespace cppfm;
 static GameServer* g_server = nullptr;
+// POSIX signal handler for SIGINT/SIGTERM — POSIX only, Windows uses SetConsoleCtrlHandler (not implemented, non-portable).
+// On Windows SIGTERM is not generated; SIGINT (Ctrl+C) still works via CRT mapping but signal() may fail silently.
 static void onSignal(int) {
     g_stopRequested = true;
     if (g_server) g_server->requestStop();   // async-signal-safe subset
@@ -57,6 +59,8 @@ static void loadProperties(ServerConfig& c, const std::string& path) {
             c.compressionThreshold = props.get<int>("network-compression-threshold", props.get<int>("compression-threshold", c.compressionThreshold));
         }
         // W19 maxLoadedChunks: respect explicit max-loaded-chunks else auto max(8192, viewDist²*4) (plan21 §3)
+        // Note: current implementation in GameServer_tick.cpp:334-399 is NOT a simple clear(); it does
+        // Chebyshev distance sort + burst limit 16/tick with forced/spawn ticket protection. See GameServer_tick.cpp.
         if (props.has("max-loaded-chunks") || props.has("maxLoadedChunks")) {
             c.maxLoadedChunks = std::max(0, props.get<int>("max-loaded-chunks", props.get<int>("maxLoadedChunks", c.maxLoadedChunks)));
         } else {
@@ -64,6 +68,11 @@ static void loadProperties(ServerConfig& c, const std::string& path) {
             c.maxLoadedChunks = autoCap;
         }
         if (props.has("io-worker-threads")) c.ioWorkerThreads = std::max(1, props.get<int>("io-worker-threads", c.ioWorkerThreads));
+        if (props.has("pvp")) c.pvp = props.get<bool>("pvp", c.pvp);
+        if (props.has("allow-flight")) c.allowFlight = props.get<bool>("allow-flight", c.allowFlight);
+        if (props.has("hardcore")) c.hardcore = props.get<bool>("hardcore", c.hardcore);
+        // max-players already handled above; keep fallback for hyphen variant
+        // online-mode / enforce-secure-profile already handled above
     } catch (...) {}
 }
 
@@ -90,6 +99,10 @@ int main(int argc, char** argv) {
             else if (k == "whitelist") cfg.whitelist = (v == "true");
             else if (k == "online-mode") cfg.onlineMode = (v == "true");
             else if (k == "enforcesSecureChat" || k == "enforce-secure-profile" || k == "enforces-secure-chat") cfg.enforcesSecureChat = (v == "true");
+            else if (k == "pvp") cfg.pvp = (v == "true");
+            else if (k == "allow-flight") cfg.allowFlight = (v == "true");
+            else if (k == "hardcore") cfg.hardcore = (v == "true");
+            else if (k == "max-players") cfg.maxPlayers = std::max(0, std::stoi(v));
         } catch (...) {}
     };
     for (int i = 1; i < argc; ++i) {
@@ -103,6 +116,9 @@ int main(int argc, char** argv) {
 
     GameServer server(cfg);
     g_server = &server;
+    // POSIX signal handling — SIGINT/SIGTERM via std::signal. POSIX-dependent; on Windows
+    // SIGTERM is not reliably generated and signal() semantics differ. Use SetConsoleCtrlHandler
+    // for full Windows support (future work). Current handler sets atomic flag + requestStop().
     std::signal(SIGINT, onSignal);
     std::signal(SIGTERM, onSignal);
 

@@ -295,6 +295,14 @@ void Session::handleLogin() {
             return;
         }
     }
+    // plan35 §5 max-players gate (0 = unlimited, vanilla semantics)
+    if (srv_.config().maxPlayers > 0 && (int)srv_.playerCount() >= srv_.config().maxPlayers) {
+        WriteBuffer kick;
+        nbt::writeTextComponent(kick, "Server is full");
+        conn_->sendPacket(proto::lo::sc::Disconnect, kick);
+        state_ = State::Done;
+        return;
+    }
     self_->entityId = 0; // set on play entry
 
     if (srv_.config().compressionThreshold >= 0) {
@@ -2244,6 +2252,28 @@ void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
         else tickChunksAround(self_->x, self_->z);
     }
     self_->onGround = nowGround;
+    // plan35 §5 allow-flight tracking: simple airborne ticks (creative/spectator exempt)
+    {
+        if (!self_->onGround && self_->gamemode == 0) {
+            // if player is not on ground for a while, consider flying (vanilla allowFlight check is per-tick)
+            // Use vertical drift check: not falling and not in water/lava
+            if (self_->fallDist < 0.5) {
+                self_->flyingTicks++;
+            } else {
+                self_->flyingTicks = 0;
+            }
+            self_->isFlying = self_->flyingTicks > 10;
+            if (!srv_.config().allowFlight && self_->flyingTicks > 80) {
+                WriteBuffer kick;
+                nbt::writeTextComponent(kick, "Flying is not enabled on this server");
+                try { self_->conn->sendPacket(proto::pl::sc::Disconnect, kick); } catch (...) {}
+                try { self_->conn->close(); } catch (...) {}
+            }
+        } else {
+            self_->flyingTicks = 0;
+            self_->isFlying = false;
+        }
+    }
     // Plan8 EnchantmentHelper: Frost Walker – freeze water around feet when on ground (plan13 §5 polish)
     if (self_->onGround && hasPos) {
         bool hasFrost = false;
@@ -2435,6 +2465,16 @@ void Session::onChatMessage(ReadBuffer& in) {
     if (in.boolean()) signature = in.bytes(256);
     (void)in.varint();                               // offset
     in.bytes(3);                                     // acknowledged
+    // plan35 §5 enforce-secure-profile: when online-mode true + enforcesSecureChat, require signature
+    if (srv_.config().onlineMode && srv_.config().enforcesSecureChat) {
+        if (signature.empty()) {
+            WriteBuffer kick;
+            nbt::writeTextComponent(kick, "Chat message signature required (enforce-secure-profile)");
+            try { conn_->sendPacket(proto::pl::sc::Disconnect, kick); } catch (...) {}
+            try { conn_->close(); } catch (...) {}
+            return;
+        }
+    }
 
     // events: PlayerChat (cancellable)
     api::PlayerChatEvent ev;
@@ -3734,10 +3774,15 @@ void Session::onUseEntity(ReadBuffer& in) {
     srv_.addHungerExhaustion(*self_, 0.1f);
 
     // ---- PVP: check player victims first (items 76-80 combat)
+    // plan35 §5 pvp=false gate — player vs player damage disabled (mob vs player unaffected)
     for (auto &pp : srv_.playersSnapshot()) {
         auto *victimP = pp.get();
         if (victimP->entityId != target || victimP->dead) continue;
         if (victimP == self_.get()) break; // self-hit ignore
+        if (!srv_.config().pvp) {
+            // PvP disabled: suppress damage, optionally notify
+            return;
+        }
         float before = victimP->health;
         srv_.applyDamage(*victimP, dmg, "player");
         // knockback impulse
