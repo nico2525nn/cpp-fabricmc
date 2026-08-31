@@ -160,8 +160,8 @@ LightUpdateBatch LightEngine::drain() {
         pendingSkyRebuild_.clear();
         skyDirtyExtra_.clear();
         for (auto k : skyRebuildSet) {
-            ensureSkyLight(static_cast<std::int32_t>(k >> 32),
-                           static_cast<std::int32_t>(k & 0xFFFFFFFFLL));
+            auto [skx, skz] = chunkKeyDecode(k);
+            ensureSkyLight(skx, skz);
         }
         // base = dirtyChunks (now includes block-light dirty) ∪ skyDirtyExtra (cross-chunk BFS) ∪ skyRebuildSet (pending)
         std::unordered_set<std::int64_t> base;
@@ -174,8 +174,7 @@ LightUpdateBatch LightEngine::drain() {
         std::unordered_set<std::int64_t> expanded;
         expanded.reserve(base.size() * 9 + 8);
         for (auto k : base) {
-            const std::int32_t cxx = static_cast<std::int32_t>(k >> 32);
-            const std::int32_t czz = static_cast<std::int32_t>(k & 0xFFFFFFFFLL);
+            auto [cxx, czz] = chunkKeyDecode(k);
             for (int dz=-1; dz<=1; ++dz) {
                 for (int dx=-1; dx<=1; ++dx) {
                     const std::int32_t ncx = cxx + dx, ncz = czz + dz;
@@ -185,7 +184,7 @@ LightUpdateBatch LightEngine::drain() {
             }
         }
         batch.dirtyChunks = std::move(expanded);
-        for (auto k : batch.dirtyChunks) batch.queue.mark(static_cast<std::int32_t>(k>>32), static_cast<std::int32_t>(k & 0xFFFFFFFFLL));
+        for (auto k : batch.dirtyChunks) { auto [dkx, dkz] = chunkKeyDecode(k); batch.queue.mark(dkx, dkz); }
     }
     return batch;
 }

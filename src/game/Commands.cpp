@@ -533,8 +533,7 @@ void GameServer::initCommands() {
             if (keys.empty()) { sendFeedback(src, "No forced chunks"); return 0; }
             std::string out="Forced chunks:";
             for(auto k: keys){
-                int cx = static_cast<int32_t>(k>>32);
-                int cz = static_cast<int32_t>(k & 0xFFFFFFFFLL);
+                auto [cx, cz] = chunkKeyDecode(k);
                 out += " [" + std::to_string(cx) + "," + std::to_string(cz) + "]";
             }
             sendFeedback(src, out);
@@ -549,8 +548,7 @@ void GameServer::initCommands() {
             Player* src = static_cast<Player*>(c.source.player);
             auto keys = world_.forcedChunkKeys();
             for(auto k: keys){
-                int cx = static_cast<int32_t>(k>>32);
-                int cz = static_cast<int32_t>(k & 0xFFFFFFFFLL);
+                auto [cx, cz] = chunkKeyDecode(k);
                 world_.setChunkForced(cx,cz,false);
             }
             sendFeedback(src, "Removed all forced chunks (" + std::to_string(keys.size()) + ")");
