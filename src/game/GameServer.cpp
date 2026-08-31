@@ -1241,6 +1241,61 @@ void GameServer::mobsTick() {
                 }
             }
 
+            // plan29 §3 Creaking despawn / 32-block radius / heart break
+            if (m->kind == MobKind::Creaking && m->creakingTransient) {
+                if (!isNight()) {
+                    despawn.push_back(m->entityId);
+                    mobAi_.erase(m->entityId);
+                    it = mobs_.erase(it); continue;
+                }
+                if (m->hasCreakingHeart) {
+                    double dx = m->x - (m->creakingHeartX+0.5), dy = m->y - (m->creakingHeartY+0.5), dz = m->z - (m->creakingHeartZ+0.5);
+                    if (dx*dx+dy*dy+dz*dz > 32*32) {
+                        m->dead = true;
+                    } else {
+                        uint16_t hs = world_.getBlock(m->creakingHeartX,m->creakingHeartY,m->creakingHeartZ);
+                        auto* hd = gen::blockByState(hs);
+                        bool heartGone = !hd || std::string(hd->name)!="minecraft:creaking_heart";
+                        if (heartGone) {
+                            // twitch then death: immediate for now
+                            m->dead = true;
+                            if (m->dead) {
+                                broadcastSound("minecraft:entity.creaking.twitch", m->x,m->y,m->z,1.f,1.f,"hostile");
+                            }
+                        }
+                    }
+                    if (m->dead) {
+                        deadIds.push_back(m->entityId); drops.push_back(m);
+                        mobAi_.erase(m->entityId);
+                        it = mobs_.erase(it); continue;
+                    }
+                    // same-block 5s respawn near heart (vanilla softlock): if within same block as player >5s, respawn near heart
+                    for (auto& pp : playersSnapshot()) {
+                        if (!pp->inPlay || pp->dead) continue;
+                        int mx=(int)std::floor(m->x), my=(int)std::floor(m->y), mz=(int)std::floor(m->z);
+                        int px=(int)std::floor(pp->x), py=(int)std::floor(pp->y), pz=(int)std::floor(pp->z);
+                        if (mx==px && my==py && mz==pz) {
+                            m->creakingSameBlockTicks++;
+                            if (m->creakingSameBlockTicks>100) {
+                                // respawn near heart
+                                for (int a=0;a<8;++a){
+                                    int sx=m->creakingHeartX+(rand()%8-4), sz=m->creakingHeartZ+(rand()%8-4), sy=m->creakingHeartY+1;
+                                    if (world_.getBlock(sx,sy,sz)==0 && world_.getBlock(sx,sy+1,sz)==0 && world_.getBlock(sx,sy-1,sz)!=0){
+                                        m->x=sx+0.5; m->y=sy; m->z=sz+0.5;
+                                        m->creakingSameBlockTicks=0;
+                                        WriteBuffer tp; tp.varint(m->entityId); tp.f64(m->x); tp.f64(m->y); tp.f64(m->z); tp.f32(m->yaw); tp.f32(0); tp.boolean(true);
+                                        broadcastPacketExcept(nullptr, proto::pl::sc::EntityTeleport, tp);
+                                        break;
+                                    }
+                                }
+                            }
+                        } else {
+                            m->creakingSameBlockTicks=0;
+                        }
+                    }
+                }
+            }
+
             // ---- Brain-Goal-Sensor AI tick (plan3) + BossAI (plan7)
             auto& ai = aiFor(m);
             ai.ctx->srv = this;
@@ -1612,7 +1667,13 @@ int GameServer::totalProtectionForMob(const MobEntity& m) const {
 
 
 void GameServer::mobAttackPlayer(MobEntity& m, Player& target) {
-    const float dmg = mobStats(m.kind).attackDamage;
+    float dmg = mobStats(m.kind).attackDamage;
+    // plan29 §3 Creaking difficulty scaling Easy 2.5 / Normal 3 / Hard 4.5 (was generic 7)
+    if (m.kind==MobKind::Creaking) {
+        if (difficulty_=="easy") dmg=2.5f;
+        else if (difficulty_=="hard") dmg=4.5f;
+        else dmg=3.0f;
+    }
     if (dmg <= 0) return;
     const float before = target.health;
     std::string cause = MobEntity::kindName(m.kind);   // e.g. minecraft:zombie
@@ -2760,8 +2821,46 @@ bool GameServer::selectTrade(Player& p, std::int32_t index) {
     return true;
 }
 
+void GameServer::growResinNearHeart(int hx,int hy,int hz) {
+    if (!isNight()) return;
+    // find pale_oak_log within 8 of heart and place resin_clump on side
+    for (int attempt=0; attempt<8; ++attempt) {
+        int lx = hx + (rand()%17 - 8);
+        int ly = hy + (rand()%9 - 4);
+        int lz = hz + (rand()%17 - 8);
+        uint16_t st = world_.getBlock(lx,ly,lz);
+        auto* bd = gen::blockByState(st);
+        if (!bd) continue;
+        std::string n(bd->name);
+        if (n!="minecraft:pale_oak_log" && n!="minecraft:stripped_pale_oak_log" && n!="minecraft:pale_oak_wood") continue;
+        const int DX[4]={1,-1,0,0}, DZ[4]={0,0,1,-1};
+        for (int d=0; d<4; ++d) {
+            int rx=lx+DX[d], rz=lz+DZ[d];
+            if (world_.getBlock(rx,ly,rz)!=0) continue;
+            auto it = gen::blockNameToState().find("minecraft:resin_clump");
+            if (it==gen::blockNameToState().end()) continue;
+            uint16_t place = static_cast<uint16_t>(it->second);
+            world_.setBlock(rx,ly,rz,place);
+            broadcastBlockChange(rx,ly,rz,place);
+            broadcastSound("minecraft:block.resin.place", rx+0.5, ly+0.5, rz+0.5, 1.f, 1.f, "block");
+            return;
+        }
+    }
+}
 void GameServer::applyDamageToMob(MobEntity& m, float amount, const DamageSource& src) {
     if (amount <= 0 || m.dead) return;
+    // plan29 §3 Creaking invulnerable when transient (heart-linked) except void/kill
+    if (m.kind==MobKind::Creaking && m.creakingTransient) {
+        std::string low = src.type;
+        std::transform(low.begin(), low.end(), low.begin(), ::tolower);
+        bool allowed = (low=="void"||low=="kill"||low=="out_of_world"||low.find("void")!=std::string::npos||low.find("kill")!=std::string::npos);
+        if (!allowed) {
+            if (m.hasCreakingHeart) growResinNearHeart(m.creakingHeartX,m.creakingHeartY,m.creakingHeartZ);
+            broadcastSound("minecraft:entity.creaking.sway", m.x,m.y,m.z,1.f,1.f,"hostile");
+            // trigger resin clump growth is handled in growResinNearHeart
+            return;
+        }
+    }
     // Plan8 EnchantmentHelper + EquipmentComponent: armor via EquipmentComponent, EPF via EnchantmentHelper
     int armor = totalArmorPoints(m);
     int epf = computeProtectionEPF(src, m);
@@ -7560,6 +7659,15 @@ void Session::onUseItemOn(ReadBuffer& in) {
             props.emplace_back("type", type);
         }
         newState = static_cast<std::uint16_t>(gen::stateWithProps(*bdef2, props));
+        // plan29 §3 creaking_heart player placement: natural=false active=false (worldgen uses natural=true)
+        if (std::string(bdef2->name)=="minecraft:creaking_heart") {
+            std::string axis="y"; for(auto& pr: props) if(pr.first=="axis") axis=std::string(pr.second);
+            std::vector<std::pair<std::string_view,std::string_view>> cprops;
+            cprops.emplace_back("axis", axis);
+            cprops.emplace_back("natural", "false");
+            cprops.emplace_back("active", "false");
+            newState = static_cast<std::uint16_t>(gen::stateWithProps(*bdef2, cprops));
+        }
     }
 
     api::BlockPlaceEvent ev;

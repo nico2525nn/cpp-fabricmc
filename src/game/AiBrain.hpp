@@ -109,6 +109,13 @@ public:
     bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override;
 };
 
+class CreakingGoal final : public Goal {
+public:
+    CreakingGoal() : Goal(1) {}
+    bool shouldStart(MobEntity& m, AiContext& c) override;
+    bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override;
+};
+
 // ---------------------------------------------------------------- brain ---
 
 class BehaviorTree; // forward (defined in BehaviorTree.hpp)
