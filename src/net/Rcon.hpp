@@ -166,6 +166,22 @@ public:
     bool contains(const std::string& name) const { return names_.count(name) != 0; }
     void setEnabled(bool v) { enabled_ = v; }
     void insert(const std::string& n) { names_.insert(n); }
+    bool remove(const std::string& n) { return names_.erase(n) > 0; }
+    void clear() { names_.clear(); }
+    const std::set<std::string>& names() const { return names_; }
+    std::size_t size() const { return names_.size(); }
+    void save(const std::string& path) const {
+        std::ofstream f(path, std::ios::trunc);
+        if (!f) return;
+        f << "[\n";
+        bool first = true;
+        for (auto& n : names_) {
+            if (!first) f << ",\n";
+            first = false;
+            f << "  {\"name\":\"" << n << "\"}";
+        }
+        f << "\n]\n";
+    }
 
 private:
     bool enabled_ = false;
