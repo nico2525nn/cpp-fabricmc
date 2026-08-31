@@ -10,8 +10,8 @@
 
 ## 2. Current State (2026-08-31 確認)
 
-- **HEAD:** `77897ab` (`wt28` 6マージ完: world/block/entity/inventory/network/combat) → plan28 完遂。plan24〜28 で deep audit 31/31 FIXED に到達。**worktree は全て削除済み** (`git worktree list` は main のみ)。
-- **Tests:** `cmake -B build -G Ninja && cmake --build build -j4` green。`./build/test_native ./build/cppfm` **ALL PASS (12/12)**。`./build/test_smoke_80` は 80/80 per taxonomy (最終確認ログ `/tmp/opencode/smoke80_plan28.log`)。
+- **HEAD:** `26b164a` (`wt28/finish` マージ完: plan28 finish — test_scoreboard_reset + effect amplifier + MultiBlockChange 軸 + piston/persistence/deadlock 修正) → plan28 finish 完遂。plan24〜28 で deep audit 31/31 FIXED に到達。**worktree は全て削除済み** (`git worktree list` は main のみ)。
+- **Tests:** `cmake -B build -G Ninja && cmake --build build -j4` green。`./build/test_native ./build/cppfm` **ALL PASS (12/12)**。`./build/test_scoreboard_reset` **22 PASS 0 FAIL** (ctest `scoreboard_reset`, TIMEOUT 30, ResetScore `0x49` round-trip/wildcard/copy-before-erase)。`./build/test_smoke_80` は **69 PASS 0 FAIL**・exit 0・約7分 (450s 以内、省マシン負荷時は 600s 推奨、`=== SMOKE 80: 69 PASS 0 FAIL ===`、80-row taxonomy の各項目をカバー) — 以前 2 FAIL + タイムアウトだったが plan28 finish で修正 (`waitForChunks`/`ServerProc::stop()` SIGKILL フォールバック)。
 - **Docs:** `README.md` は strict 78/78 + deep 31/31 = 109 gaps closed に更新済み (2026-08-31 にTesting節の stale 記述も修正)。`docs/research-prompt.md` は `plan/` 一括無視のまま。
 - **Git:** `plan/` フォルダは `.gitignore:10` で一括無視 (`plan/` 1行)。`plan/*.md` は追跡対象外。今後も `git add -f` 不要で無視される。
 - **旧ブランチ:** `wt/blocktick` `wt/command` `wt/datapack` `wt/entity` `wt/inventory` `wt/light` `wt/network` `wt/placement` `wt/portal` が残存 (worktree 無し・削除しても可)。
@@ -82,12 +82,14 @@
 timeout --foreground --kill-after=5 120 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
 timeout 300 cmake --build build -j4          # -j2 if OOM on /tmp tmpfs
 timeout --foreground --kill-after=5 60 ./build/test_native ./build/cppfm          # 12/12 PASS expected (50s)
-timeout --foreground --kill-after=5 450 ./build/test_smoke_80 ./build/cppfm        # 80/80 per taxonomy, strict 78/78 + deep 31/31 FIXED (計109 gaps 全閉)
+timeout --foreground --kill-after=5 30 ./build/test_scoreboard_reset               # 22/22 PASS expected (ctest scoreboard_reset TIMEOUT 30)
+timeout --foreground --kill-after=5 450 ./build/test_smoke_80 ./build/cppfm        # 69 PASS 0 FAIL (80-row taxonomy covering 69 checks) — 450s (600s under load), strict 78/78 + deep 31/31 FIXED (計109 gaps 全閉)
 pkill -9 -f "cppfm --port" 2>/dev/null; sleep 1
-ctest -R native --output-on-failure --timeout 60
+ctest -R "native|scoreboard_reset" --output-on-failure --timeout 60
+ctest -R smoke80 --output-on-failure --timeout 450   # 600 under load
 ```
 
-`test_native` の `2 FAIL` (spawn-protection 0,-61,0) は `30,-61,0` 修正で解消済み (`a1dba28`)。現 HEAD (`77897ab`) で ALL PASS 確認済み。
+`test_native` の `2 FAIL` (spawn-protection 0,-61,0) は `30,-61,0` 修正で解消済み (`a1dba28`)。現 HEAD (`26b164a`, plan28 finish) で `test_native` 12/12 + `test_scoreboard_reset` 22/22 + `test_smoke_80` 69 PASS 0 FAIL ALL PASS 確認済み。
 
 ## 6. Architecture Quick Map
 
@@ -111,7 +113,7 @@ ctest -R native --output-on-failure --timeout 60
 
 ## 8. Next Steps
 
-1. **109 gaps は全閉済み (strict 78/78・deep 31/31・MISSING 80/80)。次の改善ループは「非80項・polish層」**:
+1. **109 gaps は全閉済み (strict 78/78・deep 31/31・MISSING 80/80) — plan28 finish (`26b164a`: test_scoreboard_reset 22/22 + smoke 69 PASS 0 FAIL + MultiBlockChange/effect 修正) まで完遂。次の改善ループは「非80項・polish層」から `plan/plan29.md` を作成**:
    - `docs/MISSING_FEATURES_1_21_4.md` 末尾の polish 群 (Trial Chambers/Pale Garden/Creaking/Bundles 1.21.5 等)
    - `README.md` の "Polish-within-DONE" / `MISSING` 行の `polish:` 注記 (例: #84 hunger exhaustion の vanilla weight 差、#90 Levitation の gravity 簡略化)
    - 新しい監査観点 (例: 1.21.5 互換、datapack/function 網羅、perf) が必要なら `docs/research-prompt.md` を更新して `plan/plan29.md` を生成。
