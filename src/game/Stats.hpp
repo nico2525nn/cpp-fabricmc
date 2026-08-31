@@ -99,6 +99,13 @@ public:
         dirty_ = true;
         return true;
     }
+    // plan32 combat: revoke advancement (Yarn AdvancementCommand revoke)
+    bool revoke(const std::string& id) {
+        if (!has(id)) return false;
+        unlocked_.erase(id);
+        dirty_ = true;
+        return true;
+    }
     const std::unordered_set<std::string>& unlocked() const {
         return unlocked_;
     }

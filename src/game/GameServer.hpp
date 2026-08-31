@@ -188,6 +188,8 @@ struct Player {
     std::int64_t invulnUntilTick = 0;
     std::int32_t enchantmentSeed = 0; // plan17 LOW I5: seeded enchanting RNG (Yarn EnchantmentScreenHandler seed)
     AttributeManager attributes;
+    // plan32 combat: per-player recipe unlocks for /recipe give|take
+    std::unordered_set<std::string> combatRecipeUnlocks;
 };
 
 struct BlockPos {
