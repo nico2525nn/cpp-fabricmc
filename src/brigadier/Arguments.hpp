@@ -589,5 +589,116 @@ inline ArgumentType teamArg() {
     return a;
 }
 
+inline ArgumentType dimensionArg() {
+    ArgumentType a;
+    a.id = ParserId::Dimension;
+    a.parse = [](StringReader& r, ParseCtx&) -> ArgValue {
+        std::string id = readIdentifier(r);
+        if (id.empty()) throw StringReader::ParseError("expected dimension");
+        if (id.find(':') == std::string::npos) id = "minecraft:" + id;
+        return id;
+    };
+    a.suggest = [](StringReader&, ParseCtx&) {
+        return std::vector<std::string>{"minecraft:overworld","minecraft:the_nether","minecraft:the_end"};
+    };
+    return a;
+}
+inline ArgumentType swizzleArg() {
+    ArgumentType a;
+    a.id = ParserId::Swizzle;
+    a.parse = [](StringReader& r, ParseCtx&) -> ArgValue {
+        std::string s = r.readUnquotedString();
+        if (s.empty()) throw StringReader::ParseError("expected swizzle");
+        return s;
+    };
+    a.suggest = [](StringReader&, ParseCtx&) {
+        return std::vector<std::string>{"x","y","z","xy","xz","yz","xyz"};
+    };
+    return a;
+}
+inline ArgumentType entityAnchorArg() {
+    ArgumentType a;
+    a.id = ParserId::EntityAnchor;
+    a.parse = [](StringReader& r, ParseCtx&) -> ArgValue {
+        std::string s = r.readUnquotedString();
+        if (s!="feet" && s!="eyes") throw StringReader::ParseError("expected feet|eyes");
+        return s;
+    };
+    a.suggest = [](StringReader&, ParseCtx&) {
+        return std::vector<std::string>{"feet","eyes"};
+    };
+    return a;
+}
+inline ArgumentType scoreHolderArg() {
+    ArgumentType a;
+    a.id = ParserId::ScoreHolder;
+    a.parse = [](StringReader& r, ParseCtx& c) -> ArgValue {
+        const std::size_t start=r.cursor();
+        if (r.peek()=='@') {
+            r.skip(); char k=r.read(); (void)k;
+            if(r.peek()=='['){ int d=0; while(r.canRead()){ char ch=r.read(); if(ch=='[')++d; else if(ch==']'){--d; if(!d)break; } } }
+        } else r.readUnquotedString();
+        std::string raw=r.slice(start);
+        if(raw.empty()) throw StringReader::ParseError("expected score holder");
+        SelectorResult out;
+        if(c.resolveSelector) c.resolveSelector(raw,out);
+        if(!out.playerNames.empty() || !out.entityIds.empty()) return out;
+        // fallback: raw name as single holder
+        SelectorResult sr; sr.playerNames.push_back(raw); return sr;
+    };
+    a.suggest = [](StringReader&, ParseCtx& c){
+        std::vector<std::string> v{"@a","@p","@s"};
+        for(auto& n: c.playerNames) v.push_back(n);
+        return v;
+    };
+    return a;
+}
+inline ArgumentType vec3Arg(bool = false) {
+    return vec3();
+}
+inline ArgumentType vec2Arg() {
+    return vec2();
+}
+inline ArgumentType rotationArg() {
+    ArgumentType a;
+    a.id = ParserId::Rotation;
+    a.parse = [](StringReader& r, ParseCtx& c) -> ArgValue {
+        bool rel=false;
+        double yaw = readCoord(r,c,'x',rel);
+        r.skipWhitespace();
+        double pitch = readCoord(r,c,'y',rel);
+        return Vec2f{static_cast<float>(yaw), static_cast<float>(pitch)};
+    };
+    return a;
+}
+inline ArgumentType angleArg() {
+    ArgumentType a;
+    a.id = ParserId::Angle;
+    a.parse = [](StringReader& r, ParseCtx&) -> ArgValue { return r.readFloat(); };
+    return a;
+}
+inline ArgumentType intRangeArg() {
+    ArgumentType a;
+    a.id = ParserId::IntRange;
+    a.parse = [](StringReader& r, ParseCtx&) -> ArgValue {
+        std::string s=r.readUnquotedString();
+        if(s.empty()) throw StringReader::ParseError("expected int range");
+        return s;
+    };
+    return a;
+}
+inline ArgumentType lootTableArg() {
+    ArgumentType a;
+    a.id = ParserId::LootTable;
+    a.parse = [](StringReader& r, ParseCtx&) -> ArgValue {
+        std::string id=readIdentifier(r);
+        if(id.empty()) throw StringReader::ParseError("expected loot table");
+        if(id.find(':')==std::string::npos) id="minecraft:"+id;
+        return id;
+    };
+    return a;
+}
+inline ArgumentType boolArg() { return boolean(); }
+
 } // namespace args
 } // namespace cppfm::brigadier
