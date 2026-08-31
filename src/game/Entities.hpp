@@ -411,6 +411,13 @@ struct MobEntity {
     std::int64_t dragonPhaseUntil = 0;
     // minecart/vehicle physics (plan11 §3)
     double velX = 0, velY = 0, velZ = 0;
+    // plan29 §3 Creaking heart linkage (transient creaking spawned by heart)
+    int creakingHeartX = 0, creakingHeartY = 0, creakingHeartZ = 0;
+    bool hasCreakingHeart = false;
+    bool creakingTransient = false;
+    bool creakingFrozen = false;
+    bool creakingAlerted = false;
+    int creakingSameBlockTicks = 0;
 
     static const char* kindName(MobKind k) { return mobStats(k).name; }
     static std::uint32_t typeId(MobKind k) {
