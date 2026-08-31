@@ -18,7 +18,12 @@
       {
         "type": "minecraft:warden_sonic_boom",
         "priority": 1
+      },
+      {
+        "type": "minecraft:wander",
+        "priority": 6
       }
-    ]
+    ],
+    "sensors": ["minecraft:nearest_players"]
   }
 }

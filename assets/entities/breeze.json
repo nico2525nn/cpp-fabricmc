@@ -1,0 +1,13 @@
+{
+  "type": "minecraft:breeze",
+  "attributes": { "max_health": 30, "movement_speed": 0.09, "attack_damage": 6 },
+  "spawning": { "biomes": ["minecraft:trial_chambers"] },
+  "brain": {
+    "behaviors": [
+      { "type": "minecraft:breeze_jump", "priority": 1 },
+      { "type": "minecraft:breeze_wind_charge", "priority": 2 },
+      { "type": "minecraft:wander", "priority": 6 }
+    ],
+    "sensors": ["minecraft:nearest_players"]
+  }
+}

@@ -419,6 +419,13 @@ void GameServer::applyDamageToMob(MobEntity& m, float amount, const DamageSource
             return;
         }
     }
+    // plan34 §3 Armadillo roll-up damage reduction (dmg-1)/2 while rolled, before armor
+    if (m.kind==MobKind::Armadillo && m.armadilloRolledUp) {
+        amount = (amount - 1.0f) * 0.5f;
+        if (amount < 0) amount = 0;
+        // keep roll active
+        m.armadilloDangerDetectedUntil = std::max(m.armadilloDangerDetectedUntil, tickNo_ + 80);
+    }
     int armor = totalArmorPoints(m);
     int epf = CombatManager::computeEPF(src, m);
     // mobs have no toughness in current formula; pass 0
@@ -427,6 +434,17 @@ void GameServer::applyDamageToMob(MobEntity& m, float amount, const DamageSource
     if (finalAmt <= 0) return;
     m.health -= finalAmt;
     m.hurtCooldown = 10;
+    // plan34 §3 Armadillo scare on damage + generic lastHurt for sensor
+    {
+        auto it = mobAi_.find(m.entityId);
+        if (it!=mobAi_.end() && it->second.ctx) {
+            it->second.ctx->lastHurtTick = tickNo_;
+            it->second.ctx->lastHurtByEntityId = -1;
+        }
+        if (m.kind==MobKind::Armadillo) {
+            m.armadilloDangerDetectedUntil = tickNo_ + 80;
+        }
+    }
     // Plan8 Enderman: damage triggers teleport (hurt condition already in BehaviorTree, but also instant chance)
     if (m.kind==MobKind::Enderman && !m.dead) {
         // 50% chance to teleport when hurt, respecting cooldown

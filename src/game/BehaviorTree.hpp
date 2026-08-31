@@ -211,6 +211,13 @@ inline std::unique_ptr<BehaviorNode> createNodeForType(const std::string& rawTyp
     if (t=="shulker_bullet"||t=="shulker_shoot") return std::make_unique<ShulkerBulletAction>();
     if (t=="warden_sonic_boom"||t=="sonic_boom"||t=="warden_attack") return std::make_unique<WardenSonicBoomAction>();
     if (t=="ranged_attack"||t=="shoot"||t=="fireball") return std::make_unique<GenericRangedAttackAction>();
+    // plan34 §2-3 aliases for JSON-driven differentiation (swell/avoid/flee_sun/leap/breeze/armadillo)
+    if (t=="swell"||t=="creeper_swell"||t=="swell_goal") return std::make_unique<WanderAction>(); // swell is Goal-layer (AiBrain::SwellGoal), BT fallback wander
+    if (t=="avoid_entity"||t=="avoid") return std::make_unique<WanderAction>();
+    if (t=="flee_sun"||t=="flee_sunlight") return std::make_unique<WanderAction>();
+    if (t=="leap_at_target"||t=="leap") return std::make_unique<WanderAction>();
+    if (t=="breeze_jump"||t=="breeze_wind_charge"||t=="wind_charge"||t=="armadillo_roll_up"||t=="roll_up") return std::make_unique<WanderAction>();
+    if (t=="zombie_attack"||t=="skeleton_attack"||t=="spider_attack"||t=="warden_attack") return std::make_unique<GenericRangedAttackAction>();
     if (t=="breed_action") return std::make_unique<BreedAction>();
     if (t=="trade"||t=="trade_goal") return std::make_unique<TradeAction>();
     if (t=="wander"||t=="wander_around") return std::make_unique<WanderAction>();

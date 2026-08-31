@@ -1,0 +1,15 @@
+{
+  "type": "minecraft:skeleton",
+  "attributes": { "max_health": 20, "movement_speed": 0.10, "attack_damage": 2 },
+  "spawning": { "biomes": ["minecraft:plains"], "light_level": { "max": 7 } },
+  "brain": {
+    "behaviors": [
+      { "type": "minecraft:flee_sun", "priority": 1 },
+      { "type": "minecraft:avoid_entity", "priority": 2, "entity": "minecraft:wolf", "distance": 6 },
+      { "type": "minecraft:ranged_attack", "priority": 2 },
+      { "type": "minecraft:melee_attack", "priority": 3 },
+      { "type": "minecraft:wander", "priority": 6 }
+    ],
+    "sensors": ["minecraft:nearest_players", "minecraft:hurt_by"]
+  }
+}

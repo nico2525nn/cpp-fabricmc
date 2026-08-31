@@ -1,0 +1,12 @@
+{
+  "type": "minecraft:armadillo",
+  "attributes": { "max_health": 12, "movement_speed": 0.09, "attack_damage": 0 },
+  "spawning": { "biomes": ["minecraft:savanna", "minecraft:badlands"] },
+  "brain": {
+    "behaviors": [
+      { "type": "minecraft:armadillo_roll_up", "priority": 1 },
+      { "type": "minecraft:wander", "priority": 6 }
+    ],
+    "sensors": ["minecraft:armadillo_scare_detected", "minecraft:nearest_players", "minecraft:hurt_by"]
+  }
+}

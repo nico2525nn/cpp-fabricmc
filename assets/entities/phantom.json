@@ -13,8 +13,13 @@
     "behaviors": [
       {
         "type": "minecraft:phantom_swoop",
-        "priority": 2
+        "priority": 1
+      },
+      {
+        "type": "minecraft:wander",
+        "priority": 6
       }
-    ]
+    ],
+    "sensors": ["minecraft:nearest_players"]
   }
 }

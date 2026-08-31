@@ -1,0 +1,17 @@
+{
+  "type": "minecraft:enderman",
+  "attributes": { "max_health": 40, "movement_speed": 0.12, "attack_damage": 7 },
+  "spawning": { "biomes": ["minecraft:warped_forest"], "light_level": { "max": 7 } },
+  "brain": {
+    "behaviors": [
+      { "type": "minecraft:is_player_looking", "priority": 1 },
+      { "type": "minecraft:stare", "priority": 1 },
+      { "type": "minecraft:is_hurt", "priority": 1 },
+      { "type": "minecraft:teleport_random", "priority": 1 },
+      { "type": "minecraft:pickup_block", "priority": 2 },
+      { "type": "minecraft:melee_attack", "priority": 3 },
+      { "type": "minecraft:wander", "priority": 6 }
+    ],
+    "sensors": ["minecraft:nearest_players", "minecraft:hurt_by"]
+  }
+}
