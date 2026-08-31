@@ -122,7 +122,7 @@ add_test(NAME scoreboard_reset COMMAND test_scoreboard_reset)
 set_tests_properties(scoreboard_reset PROPERTIES TIMEOUT 30)
 
 add_executable(test_spec_wire tests/test_spec_wire.cpp
-    src/core/NBT.cpp
+    src/core/NBT.cpp src/game/Stats.cpp
     src/game/WorldGen.cpp src/worldgen/DensityFunction.cpp src/worldgen/MultiNoise.cpp
     src/worldgen/Structures.cpp src/worldgen/StructurePlacer.cpp
     src/worldgen/ChunkGenerator.cpp src/worldgen/StructureManager.cpp src/game/WorldDataManager.cpp)

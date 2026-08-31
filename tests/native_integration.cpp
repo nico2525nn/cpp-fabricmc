@@ -7,6 +7,10 @@
 #include "../src/worldgen/MultiNoise.hpp"
 #include "../src/worldgen/StructureManager.hpp"
 #include "../src/worldgen/Structures.hpp"
+#include "../src/game/DatapackManager.hpp"
+#include "../src/game/GameRules.hpp"
+#include "../src/game/World.hpp"
+#include "../src/game/Entities.hpp"
 #include <sys/wait.h>
 #include <unistd.h>
 #include <cstdio>
@@ -418,6 +422,72 @@ void scenarioWorldGenParity(){
     }
 }
 
+void scenarioPredicateUnit(){
+    std::printf("\n[Predicate unit — DatapackManager::testPredicate/evaluatePredicateValue 8 cases (plan35 §3/§6)]\n");
+    DatapackManager dm;
+    GameRuleManager gr;
+    // Populate predicates registry (mimics datapack load) — 8 distinct predicate JSONs
+    dm.predicates["test:check_true"]  = R"({"condition":"minecraft:check_gamerule","game_rule":"doMobSpawning","value":true})";
+    dm.predicates["test:check_false"] = R"({"condition":"minecraft:check_gamerule","game_rule":"doMobSpawning","value":false})";
+    dm.predicates["test:loc_in"]      = R"({"condition":"minecraft:location_check","predicate":{"position":{"x":{"min":0,"max":10},"y":{"min":-64,"max":320},"z":{"min":-10,"max":10}}}})";
+    dm.predicates["test:loc_out"]     = R"({"condition":"minecraft:location_check","predicate":{"position":{"x":{"min":100,"max":200}}}})";
+    dm.predicates["test:entity_zombie"] = R"({"condition":"minecraft:entity_properties","predicate":{"type":"minecraft:zombie"}})";
+    dm.predicates["test:random_high"] = R"({"condition":"minecraft:random_chance","chance":0.9})";
+    dm.predicates["test:random_low"]  = R"({"condition":"minecraft:random_chance","chance":0.1})";
+    dm.predicates["test:any_of"]      = R"({"condition":"minecraft:any_of","terms":[{"condition":"minecraft:random_chance","chance":0.0},{"condition":"minecraft:random_chance","chance":0.9}]})";
+    // 1) check_gamerule doMobSpawning true when gamerule true -> true
+    {
+        gr.set("doMobSpawning","true");
+        PredicateContext ctx; ctx.gamerules=&gr;
+        CHECK(dm.testPredicate("test:check_true", ctx)==true, "predicate check_gamerule doMobSpawning true -> true");
+    }
+    // 2) check_gamerule doMobSpawning false when gamerule true -> false
+    {
+        gr.set("doMobSpawning","true");
+        PredicateContext ctx; ctx.gamerules=&gr;
+        CHECK(dm.testPredicate("test:check_false", ctx)==false, "predicate check_gamerule doMobSpawning false when true -> false");
+    }
+    // 3) location_check position in range (x=5 inside 0..10) -> true, needs world != nullptr
+    {
+        cppfm::World w("minecraft:plains", cppfm::LevelType::Flat, 0);
+        PredicateContext ctx; ctx.world=&w; ctx.gamerules=&gr; ctx.x=5; ctx.y=0; ctx.z=0;
+        CHECK(dm.testPredicate("test:loc_in", ctx)==true, "predicate location_check pos in 0..10 (x=5) -> true");
+    }
+    // 4) location_check position out of range (x=5 outside 100..200) -> false
+    {
+        cppfm::World w("minecraft:plains", cppfm::LevelType::Flat, 0);
+        PredicateContext ctx; ctx.world=&w; ctx.gamerules=&gr; ctx.x=5; ctx.y=0; ctx.z=0;
+        CHECK(dm.testPredicate("test:loc_out", ctx)==false, "predicate location_check pos 100..200 with x=5 -> false");
+    }
+    // 5) entity_properties type zombie match -> true
+    {
+        MobEntity zombie; zombie.kind=MobKind::Zombie;
+        PredicateContext ctx; ctx.entity=&zombie; ctx.gamerules=&gr;
+        CHECK(dm.testPredicate("test:entity_zombie", ctx)==true, "predicate entity_properties type zombie (zombie) -> true");
+    }
+    // 6) entity_properties type zombie mismatch with creeper -> false
+    {
+        MobEntity creeper; creeper.kind=MobKind::Creeper;
+        PredicateContext ctx; ctx.entity=&creeper; ctx.gamerules=&gr;
+        CHECK(dm.testPredicate("test:entity_zombie", ctx)==false, "predicate entity_properties type zombie (creeper) -> false");
+    }
+    // 7) random_chance 0.9 (threshold 0.5) -> true
+    {
+        PredicateContext ctx;
+        CHECK(dm.testPredicate("test:random_high", ctx)==true, "predicate random_chance 0.9 >=0.5 -> true");
+    }
+    // 8) random_chance 0.1 -> false + inverted via any_of (any_of with one true -> true)
+    {
+        PredicateContext ctx;
+        CHECK(dm.testPredicate("test:random_low", ctx)==false, "predicate random_chance 0.1 <0.5 -> false");
+        CHECK(dm.testPredicate("test:any_of", ctx)==true, "predicate any_of [0.0,0.9] -> true");
+        // inverted: {condition:inverted, term:{random 0.9}} -> false
+        json::Value inv = json::Value::parse(R"({"condition":"minecraft:inverted","term":{"condition":"minecraft:random_chance","chance":0.9}})");
+        CHECK(dm.evaluatePredicateValue(inv, ctx)==false, "predicate inverted(random 0.9) -> false");
+        // only count 8 CHECKs for the 8 cases, but inverted is extra documentation; treat any_of as 8th
+    }
+}
+
 // Online-mode join is tested via crypto unit tests + manual verification.
 
 int main(int argc, char** argv) {
@@ -445,6 +515,7 @@ int main(int argc, char** argv) {
 
     srv.stop();
     scenarioWorldGenParity();
+    scenarioPredicateUnit();
     std::printf("\n%s (%d failures)\n", g_fail ? "FAILURES" : "ALL PASS", g_fail);
     return g_fail ? 1 : 0;
 }
