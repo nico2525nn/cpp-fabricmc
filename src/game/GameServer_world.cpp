@@ -125,17 +125,18 @@ void GameServer::loadOps() {
     ops_.clear();
     try {
         std::ifstream f("ops.json");
-        if (!f) return;
-        std::string txt((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-        auto v = json::Value::parse(txt);
-        if (v.isArr()) {
-            for (auto& e : v.arr) {
-                if (e.isObj()) {
-                    if (auto* n = e.find("name")) ops_.insert(n->asStr());
-                } else if (e.isStr()) ops_.insert(e.asStr());
+        if (f) {
+            std::string txt((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+            auto v = json::Value::parse(txt);
+            if (v.isArr()) {
+                for (auto& e : v.arr) {
+                    if (e.isObj()) {
+                        if (auto* n = e.find("name")) ops_.insert(n->asStr());
+                    } else if (e.isStr()) ops_.insert(e.asStr());
+                }
+            } else if (v.isObj()) {
+                for (auto& [k,_] : v.obj) ops_.insert(k);
             }
-        } else if (v.isObj()) {
-            for (auto& [k,_] : v.obj) ops_.insert(k);
         }
     } catch (...) {}
     // also allow ops.txt one name per line fallback
@@ -147,6 +148,98 @@ void GameServer::loadOps() {
             if (!line.empty()) ops_.insert(line);
         }
     } catch (...) {}
+}
+void GameServer::saveOps() const {
+    try {
+        std::ofstream f("ops.json", std::ios::trunc);
+        if (!f) return;
+        f << "[\n";
+        bool first = true;
+        for (auto& n : ops_) {
+            if (!first) f << ",\n";
+            first = false;
+            f << "  {\"name\":\"" << n << "\",\"level\":4,\"bypassesPlayerLimit\":false}";
+        }
+        f << "\n]\n";
+    } catch (...) {}
+}
+void GameServer::loadBans() {
+    bannedPlayers_.clear();
+    try {
+        std::ifstream f("banned-players.json");
+        if (!f) return;
+        std::string txt((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        auto v = json::Value::parse(txt);
+        if (v.isArr()) {
+            for (auto& e : v.arr) {
+                if (e.isObj()) {
+                    if (auto* n = e.find("name")) bannedPlayers_.insert(n->asStr());
+                } else if (e.isStr()) bannedPlayers_.insert(e.asStr());
+            }
+        } else if (v.isObj()) {
+            for (auto& [k,_] : v.obj) bannedPlayers_.insert(k);
+        }
+    } catch (...) {}
+}
+void GameServer::saveBans() const {
+    try {
+        std::ofstream f("banned-players.json", std::ios::trunc);
+        if (!f) return;
+        f << "[\n";
+        bool first = true;
+        for (auto& n : bannedPlayers_) {
+            if (!first) f << ",\n";
+            first = false;
+            f << "  {\"name\":\"" << n << "\",\"reason\":\"Banned by an operator.\"}";
+        }
+        f << "\n]\n";
+    } catch (...) {}
+}
+void GameServer::loadBannedIps() {
+    bannedIps_.clear();
+    try {
+        std::ifstream f("banned-ips.json");
+        if (!f) return;
+        std::string txt((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        auto v = json::Value::parse(txt);
+        if (v.isArr()) {
+            for (auto& e : v.arr) {
+                if (e.isObj()) {
+                    if (auto* ip = e.find("ip")) bannedIps_.insert(ip->asStr());
+                    else if (auto* n = e.find("name")) bannedIps_.insert(n->asStr());
+                } else if (e.isStr()) bannedIps_.insert(e.asStr());
+            }
+        } else if (v.isObj()) {
+            for (auto& [k,_] : v.obj) bannedIps_.insert(k);
+        }
+    } catch (...) {}
+}
+void GameServer::saveBannedIps() const {
+    try {
+        std::ofstream f("banned-ips.json", std::ios::trunc);
+        if (!f) return;
+        f << "[\n";
+        bool first = true;
+        for (auto& ip : bannedIps_) {
+            if (!first) f << ",\n";
+            first = false;
+            f << "  {\"ip\":\"" << ip << "\",\"reason\":\"Banned by an operator.\"}";
+        }
+        f << "\n]\n";
+    } catch (...) {}
+}
+void GameServer::saveWhitelist() const {
+    try { whitelist_.save("whitelist.json"); } catch (...) {}
+}
+void GameServer::kickPlayer(const std::string& name, const std::string& reason) {
+    Player* t = nullptr;
+    for (auto& p : playersSnapshot()) if (p->name == name) { t = p.get(); break; }
+    if (!t || !t->conn) return;
+    std::string txt = reason.empty() ? "Kicked by an operator." : reason;
+    WriteBuffer b;
+    nbt::writeTextComponent(b, txt);
+    try { t->conn->sendPacket(proto::pl::sc::Disconnect, b); } catch (...) {}
+    try { t->conn->close(); } catch (...) {}
 }
 void GameServer::sendWorldBorderTo(Player& p) const {
     if (!p.conn) return;
