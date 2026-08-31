@@ -1,0 +1,23 @@
+{
+  "parent": "minecraft:story/form_obsidian",
+  "display": {
+    "icon": {
+      "item": "minecraft:obsidian"
+    },
+    "title": "We Need to Go Deeper",
+    "description": "Build a Nether portal",
+    "frame": "task",
+    "show_toast": true,
+    "announce_to_chat": true
+  },
+  "criteria": {
+    "entered_nether": {
+      "trigger": "minecraft:tick"
+    }
+  },
+  "requirements": [
+    [
+      "entered_nether"
+    ]
+  ]
+}

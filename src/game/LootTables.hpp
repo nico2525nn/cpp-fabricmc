@@ -20,6 +20,22 @@ struct LootEntry {
     std::string name; // e.g. minecraft:cobblestone
     int weight = 1;
     int countMin = 1, countMax = 1;
+    // plan35 §2: extended loot functions
+    bool explosionDecay = false;
+    bool furnaceSmelt = false;
+    struct CopyComponents {
+        std::string source = "block_entity";
+        std::vector<std::string> include;
+        std::vector<std::string> exclude;
+        bool has = false;
+    } copyComponents;
+    bool countIsBinomial = false;
+    int countBinomN = 3;
+    double countBinomP = 0.5;
+};
+struct LootContext {
+    float explosionRadius = 0.f;
+    // future: BlockEntity*, killer etc — plan35 §2 needs explosionRadius only
 };
 
 struct LootPool {
@@ -127,14 +143,50 @@ public:
         }
     }
 
+    static std::string smeltResultFor(const std::string& in) {
+        static const std::unordered_map<std::string,std::string> mp{
+            {"minecraft:iron_ore","minecraft:iron_ingot"},
+            {"minecraft:deepslate_iron_ore","minecraft:iron_ingot"},
+            {"minecraft:gold_ore","minecraft:gold_ingot"},
+            {"minecraft:deepslate_gold_ore","minecraft:gold_ingot"},
+            {"minecraft:nether_gold_ore","minecraft:gold_nugget"},
+            {"minecraft:copper_ore","minecraft:copper_ingot"},
+            {"minecraft:deepslate_copper_ore","minecraft:copper_ingot"},
+            {"minecraft:sand","minecraft:glass"},
+            {"minecraft:red_sand","minecraft:glass"},
+            {"minecraft:cobblestone","minecraft:stone"},
+            {"minecraft:cobbled_deepslate","minecraft:deepslate"},
+            {"minecraft:clay","minecraft:terracotta"},
+            {"minecraft:netherrack","minecraft:nether_brick"},
+            {"minecraft:ancient_debris","minecraft:netherite_scrap"},
+            {"minecraft:raw_iron_block","minecraft:iron_block"},
+            {"minecraft:raw_gold_block","minecraft:gold_block"},
+            {"minecraft:raw_copper_block","minecraft:copper_block"},
+        };
+        auto it=mp.find(in);
+        if(it!=mp.end()) return it->second;
+        // heuristic: _ore -> strip prefix
+        if(in.find("_ore")!=std::string::npos) {
+            // fallback keep as is if not in map
+        }
+        return "";
+    }
     // Evaluate returns list of ItemStacks for blockName using tool (silk_touch/fortune).
     // Replaces hard-coded kOv drop table in tickDigs (issue 65).
     std::vector<ItemStack> evaluate(const std::string& blockName, const ItemStack& tool = {}) const {
+        return evaluateWithContext(blockName, tool, nullptr);
+    }
+    std::vector<ItemStack> evaluateWithContext(const std::string& blockName, const ItemStack& tool, const LootContext* ctx) const {
         std::string base = blockName.find(':')!=std::string::npos ? blockName.substr(blockName.find(':')+1) : blockName;
         std::string id = "minecraft:blocks/" + base;
         auto it = tables_.find(id);
         if (it==tables_.end()) it=tables_.find(blockName);
-        if (it==tables_.end()) return {};
+        if (it==tables_.end()) {
+            // also try direct id without blocks prefix (for chest tables etc)
+            auto it2 = tables_.find("minecraft:" + base);
+            if (it2!=tables_.end()) it=it2;
+            else if (it==tables_.end()) return {};
+        }
         const LootTable& tbl=it->second;
         std::vector<ItemStack> out;
         for (auto& pool: tbl.pools) {
@@ -148,20 +200,40 @@ public:
                 const LootEntry* chosen=nullptr;
                 for(auto& e:pool.entries){ if(pick<e.weight){chosen=&e;break;} pick-=e.weight; }
                 if(!chosen) chosen=&pool.entries.back();
-                auto iidIt=gen::itemIdByName().find(chosen->name);
+                // plan35 §2: explosion_decay — 1/radius vanish
+                if (chosen->explosionDecay && ctx && ctx->explosionRadius > 0.f) {
+                    double vanish = 1.0 / ctx->explosionRadius;
+                    if ((rand()/(double)RAND_MAX) < vanish) continue;
+                }
+                std::string dropName = chosen->name;
+                // plan35 §2: furnace_smelt — convert via smelting map
+                if (chosen->furnaceSmelt) {
+                    std::string sm = smeltResultFor(dropName);
+                    if (!sm.empty()) dropName = sm;
+                }
+                // copy_components: no wire effect for drops, just flag passes
+                auto iidIt=gen::itemIdByName().find(dropName);
                 if(iidIt==gen::itemIdByName().end()) continue;
                 int cnt=chosen->countMin;
-                if(chosen->countMax>chosen->countMin) cnt=chosen->countMin + rand()%(chosen->countMax-chosen->countMin+1);
+                if (chosen->countIsBinomial) {
+                    cnt=0;
+                    for(int i=0;i<chosen->countBinomN;++i) if((rand()/(double)RAND_MAX) < chosen->countBinomP) ++cnt;
+                    if(cnt<=0 && chosen->countMin>0) cnt=1; // ensure at least 1 if binomial zero? vanilla may zero
+                } else if(chosen->countMax>chosen->countMin) cnt=chosen->countMin + rand()%(chosen->countMax-chosen->countMin+1);
                 // fortune bonus for ores (simplified vanilla bonus_ore_drops)
                 if(tool.itemId!=0){
                     int fortune=tool.fortuneLevel();
-                    if(fortune>0 && (chosen->name.find("ore")!=std::string::npos || base.find("ore")!=std::string::npos)){
+                    if(fortune>0 && (dropName.find("ore")!=std::string::npos || base.find("ore")!=std::string::npos)){
                         int bonus=rand()%(fortune+1);
                         cnt+=bonus;
                     }
                 }
                 if(cnt<=0) cnt=1;
-                out.push_back(ItemStack::of(iidIt->second, static_cast<int16_t>(cnt)));
+                auto st = ItemStack::of(iidIt->second, static_cast<int16_t>(cnt));
+                // copy_components: attach dummy component if flagged (simulation)
+                // real copy would need BlockEntity source, but we note flag
+                (void)chosen->copyComponents;
+                out.push_back(std::move(st));
             }
         }
         return out;
@@ -170,14 +242,42 @@ public:
 private:
     void applyFunctions(const json::Value& funcs, LootEntry& ent){
         for(auto& fn: funcs.arr){
+            if(!fn.isObj()) continue;
             std::string ftype=fn.at("function").asStr();
-            if(ftype.find("set_count")!=std::string::npos){
+            if(ftype.find("explosion_decay")!=std::string::npos){
+                ent.explosionDecay = true;
+            } else if(ftype.find("furnace_smelt")!=std::string::npos){
+                ent.furnaceSmelt = true;
+            } else if(ftype.find("copy_components")!=std::string::npos){
+                ent.copyComponents.has = true;
+                if(auto* src=fn.find("source")) ent.copyComponents.source = src->asStr();
+                if(auto* inc=fn.find("include")) if(inc->isArr()) for(auto& s: inc->arr) if(s.isStr()) ent.copyComponents.include.push_back(s.asStr());
+                if(auto* exc=fn.find("exclude")) if(exc->isArr()) for(auto& s: exc->arr) if(s.isStr()) ent.copyComponents.exclude.push_back(s.asStr());
+            } else if(ftype.find("set_count")!=std::string::npos){
                 const auto& cnt=fn.at("count");
                 if(cnt.isNum()) ent.countMin=ent.countMax=cnt.asInt(1);
                 else if(cnt.isObj()){
-                    ent.countMin=cnt.at("min").asInt(1);
-                    ent.countMax=cnt.at("max").asInt(1);
-                    if(ent.countMax<ent.countMin) ent.countMax=ent.countMin;
+                    if(auto* tp=cnt.find("type")){
+                        std::string t=tp->asStr();
+                        if(t.find("uniform")!=std::string::npos){
+                            if(auto* mn=cnt.find("min")) ent.countMin=mn->asInt(1);
+                            if(auto* mx=cnt.find("max")) ent.countMax=mx->asInt(1);
+                            if(ent.countMax<ent.countMin) ent.countMax=ent.countMin;
+                        } else if(t.find("binomial")!=std::string::npos){
+                            ent.countIsBinomial=true;
+                            if(auto* n=cnt.find("n")) ent.countBinomN=n->asInt(3);
+                            if(auto* p=cnt.find("p")) ent.countBinomP=p->asFloat(0.5);
+                        } else if(t.find("constant")!=std::string::npos){
+                            if(auto* v=cnt.find("value")) ent.countMin=ent.countMax=v->asInt(1);
+                        } else {
+                            if(auto* mn=cnt.find("min")) ent.countMin=mn->asInt(1);
+                            if(auto* mx=cnt.find("max")) ent.countMax=mx->asInt(1);
+                        }
+                    } else {
+                        ent.countMin=cnt.at("min").asInt(1);
+                        ent.countMax=cnt.at("max").asInt(1);
+                        if(ent.countMax<ent.countMin) ent.countMax=ent.countMin;
+                    }
                 }
             }
         }

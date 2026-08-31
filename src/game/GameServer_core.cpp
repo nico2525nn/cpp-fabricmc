@@ -304,7 +304,8 @@ void GameServer::savePlayerProgress(Player& p) {
 }
 void GameServer::sendAdvancementsTo(Player& p, bool reset) {
     WriteBuffer b;
-    writeAdvancementsPacket(b, reset, advancementDefs(),
+    auto merged = getMergedAdvancements();
+    writeAdvancementsPacket(b, reset, merged,
         [&](const std::string& id) {
             return p.advancements && p.advancements->has(id);
         });
@@ -313,6 +314,101 @@ void GameServer::sendAdvancementsTo(Player& p, bool reset) {
 void GameServer::grantAdvancement(Player& p, const std::string& id) {
     if (!p.advancements) return;
     if (p.advancements->grant(id)) sendAdvancementsTo(p, false);
+}
+std::vector<AdvancementDefOwned> GameServer::getMergedAdvancements() {
+    size_t cur = datapackManager_.advancements.size();
+    if (!cachedMergedAdv_.empty() && cachedAdvRawSize_ == cur) return cachedMergedAdv_;
+    cachedMergedAdv_ = mergedAdvancements(datapackManager_.advancements);
+    cachedAdvRawSize_ = cur;
+    return cachedMergedAdv_;
+}
+void GameServer::evaluateTickAdvancements(Player& p) {
+    if (!p.advancements) return;
+    auto merged = getMergedAdvancements();
+    for (auto& adv : merged) {
+        if (p.advancements->has(adv.id)) continue;
+        for (auto& tr : adv.triggers) {
+            if (tr.trigger == "minecraft:tick" || tr.trigger == "tick") {
+                grantAdvancement(p, adv.id);
+                break;
+            }
+        }
+    }
+}
+void GameServer::evaluateInventoryChanged(Player& p, const ItemStack& s) {
+    if (!p.advancements || s.empty()) return;
+    std::string itemName = s.name();
+    auto merged = getMergedAdvancements();
+    for (auto& adv : merged) {
+        if (p.advancements->has(adv.id)) continue;
+        for (auto& tr : adv.triggers) {
+            if (tr.trigger != "minecraft:inventory_changed" && tr.trigger != "inventory_changed") continue;
+            bool match = false;
+            if (tr.conditions.isNull() || tr.conditions.isObj()==false) {
+                // no conditions -> any item triggers
+                match = true;
+            } else {
+                if (auto* items = tr.conditions.find("items")) {
+                    if (items->isArr()) {
+                        for (auto& it : items->arr) {
+                            std::string want;
+                            if (it.isStr()) want = it.asStr();
+                            else if (it.isObj()) {
+                                if (auto* in = it.find("items")) {
+                                    if (in->isStr()) want = in->asStr();
+                                    else if (in->isArr() && !in->arr.empty() && in->arr[0].isStr()) want = in->arr[0].asStr();
+                                } else if (auto* it2 = it.find("item")) want = it2->asStr();
+                                else if (auto* id2 = it.find("id")) want = id2->asStr();
+                            }
+                            if (!want.empty() && want == itemName) { match = true; break; }
+                            // tag handling: #minecraft:logs etc — treat as substring match for now
+                            if (!want.empty() && want[0]=='#' && itemName.find(want.substr(want.find(':')+1))!=std::string::npos) { match = true; break; }
+                        }
+                    } else if (items->isStr()) {
+                        if (items->asStr() == itemName) match = true;
+                    }
+                } else {
+                    // no items filter -> any
+                    match = true;
+                }
+            }
+            if (match) { grantAdvancement(p, adv.id); break; }
+        }
+    }
+}
+void GameServer::evaluatePlayerKilledEntity(Player& p, MobKind kind) {
+    if (!p.advancements) return;
+    std::string killed = MobEntity::kindName(kind);
+    auto merged = getMergedAdvancements();
+    for (auto& adv : merged) {
+        if (p.advancements->has(adv.id)) continue;
+        for (auto& tr : adv.triggers) {
+            if (tr.trigger != "minecraft:player_killed_entity" && tr.trigger != "player_killed_entity") continue;
+            bool match = false;
+            if (tr.conditions.isNull()) match = true;
+            else {
+                if (auto* ent = tr.conditions.find("entity")) {
+                    // entity predicate may contain type
+                    if (ent->isArr()) {
+                        for (auto& e : ent->arr) if (e.isObj()) if (auto* tp = e.find("type")) if (tp->asStr()==killed) match=true;
+                    } else if (ent->isObj()) {
+                        if (auto* tp = ent->find("type")) {
+                            if (tp->asStr()==killed) match=true;
+                        } else match = true;
+                    } else if (ent->isStr()) {
+                        if (ent->asStr()==killed) match=true;
+                    }
+                } else if (auto* pred = tr.conditions.find("predicate")) {
+                    if (auto* tp = pred->find("type")) if (tp->asStr()==killed) match=true; else match=true;
+                } else {
+                    match = true;
+                }
+                // if no entity filter, grant
+                if (!tr.conditions.find("entity") && !tr.conditions.find("predicate")) match = true;
+            }
+            if (match) { grantAdvancement(p, adv.id); break; }
+        }
+    }
 }
 void GameServer::onBlockMined(Player& p, std::uint16_t oldState) {
     if (!p.stats) return;
@@ -324,6 +420,9 @@ void GameServer::onBlockMined(Player& p, std::uint16_t oldState) {
     p.stats->add("minecraft:mined|" + name);
     if (name == "minecraft:oak_log") grantAdvancement(p, "cppfm:wood");
     if (name == "minecraft:stone") { /* stone age analog */ }
+    // plan35 §1: also trigger story mine_stone via inventory change path? onBlockMined doesn't give item, but mining still may count; evaluate via dummy stack
+    ItemStack dummy = ItemStack::ofName(name,1);
+    if (!dummy.empty()) evaluateInventoryChanged(p, dummy);
 }
 void GameServer::onItemObtained(Player& p, const ItemStack& s,
                                 const char* how) {
@@ -340,12 +439,14 @@ void GameServer::onItemObtained(Player& p, const ItemStack& s,
         grantAdvancement(p, "cppfm:cook");
     }
     if (n == "minecraft:diamond") grantAdvancement(p, "cppfm:diamonds");
+    evaluateInventoryChanged(p, s);
 }
 void GameServer::onMobKilledBy(Player& p, MobKind kind) {
     if (!p.stats) return;
     p.stats->add(std::string("minecraft:killed|") +
                  MobEntity::kindName(kind));
     if (MobEntity::isHostile(kind)) grantAdvancement(p, "cppfm:hunter");
+    evaluatePlayerKilledEntity(p, kind);
 }
 bool GameServer::spawnMobByTypeName(const std::string& name, double x, double y,
                                      double z) {

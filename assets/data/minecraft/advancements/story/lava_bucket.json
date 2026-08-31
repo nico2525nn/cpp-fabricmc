@@ -1,0 +1,30 @@
+{
+  "parent": "minecraft:story/obtain_armor",
+  "display": {
+    "icon": {
+      "item": "minecraft:lava_bucket"
+    },
+    "title": "Hot Stuff",
+    "description": "Fill a bucket with lava",
+    "frame": "task",
+    "show_toast": true,
+    "announce_to_chat": true
+  },
+  "criteria": {
+    "lava_bucket": {
+      "trigger": "minecraft:inventory_changed",
+      "conditions": {
+        "items": [
+          {
+            "items": "minecraft:lava_bucket"
+          }
+        ]
+      }
+    }
+  },
+  "requirements": [
+    [
+      "lava_bucket"
+    ]
+  ]
+}

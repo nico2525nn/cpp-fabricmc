@@ -267,6 +267,8 @@ void GameServer::tickOnce() {
     tickWanderingTrader();
     // plan14 §6: scheduled function tick (schedule) – execute due scheduled functions each tick
     tickScheduledFunctions();
+    // plan35 §1: tick trigger for advancements (minecraft:tick)
+    for (auto& pp : playersSnapshot()) if (pp->inPlay) evaluateTickAdvancements(*pp);
     // network batching: flush coalesced block updates every tick (50ms window)
     {
         int64_t now = nowMs();
