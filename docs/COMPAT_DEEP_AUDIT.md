@@ -4,6 +4,7 @@
 > **Date:** 2026-08-29  (deep audit, beyond `COMPAT_AUDIT_1_21_4_STRICT.md` 78 gaps + `MISSING_FEATURES_1_21_4.md` 80 taxonomy).  
 > **Method:** Unlimited **Web Search + Web Fetch** cross-check: `PrismarineJS/minecraft-data#master data/pc/1.21.4/protocol.json` live-fetched 2026-08-29, `minecraft.wiki/w/Java_Edition_protocol/Chunk_format`, `wiki.vg`, `VoidMC Chunks & Lighting`, `mappings.dev`/`maven.fabricmc.net` Yarn DataTracker indices, `minecraft.wiki/w/Java_Edition_protocol/Particles`, Fabric/Yarn `EntityAttributes`, `MobEffect`, `SoundSource`. Every gap carries absolute `src/...:line` (verified on this HEAD). Severity: **HIGH** = client kick/desync or seed break; **MEDIUM** = player-visible deviation; **LOW** = cosmetic/datapack/perf.
 > **Result:** **31 new micro-gaps** not covered by the 80 taxonomy or the 78 strict audit. 0 of them are caught by `test_smoke_80` (which checks taxonomy-level packets only). **31/31 FIXED (0 remain)** — `plan24`+`plan25`+`plan26`+`plan27`+`plan28` hardened, Prismarine 131 `toClient` byte-identical (`0x49` `reset_score` between `0x48` and `0x4A`, `0x68` `scoreboard_score` lock).
+> **Addendum plan30 H1:** `UpdateAttributes 0x7C` `string key → varint mapper 0-21` + `uuid 16 bytes → string 36 chars` — **FIXED** `Attributes.hpp:224-250` (`mapperId()` varint 0-21, `AttributeModifier.uuid` string 36, `writeUpdate` count 22 filtered for 1.21.4). Prismarine `packet_entity_update_attributes {key mapper varint, value f64, modifiers [{uuid string 36, amount f64, operation i8}]}` byte-identical. Verified `test_spec_wire [C2]` `120 PASS 0 FAIL 0 SKIP` (H1 `eid 1 + count 22 + first key 16 MAX_HEALTH`). Deep audit total now **31+1=32 gaps, 32/32 FIXED** if counting H1.
 
 ---
 
@@ -193,11 +194,11 @@ See table.
 
 ## 7. Attributes & Combat — Deep
 
-**Spec** Yarn `EntityAttributes` 32 entries. `entity_update_attributes 0x7C` per-attribute `{key string, value f64, modifiers varint[] {uuid 16, amount f64, operation byte}}` operations `0 add 1 multiply_base 2 multiply_total` ordered add→base→total.
+**Spec** Yarn `EntityAttributes` 32 entries. Prismarine `protocol.json` `packet_entity_update_attributes 0x7C` is `array<{key varint mapper 0-21, value f64, modifiers array<{uuid string 36, amount f64, operation i8}>}>` (operations `0 add 1 multiply_base 2 multiply_total` ordered add→base→total; `key` mapper e.g. `generic.armor 0, max_health 16, movement_speed 9`; 22 entries filtered for 1.21.4 — burn-time etc. are 1.21.5+).
 
-**Code** `Attributes.hpp:187-211` `writeUpdate`: 32 order, `operation` bytes correct, UUID stub `16 zero-ish` from `uuid` string truncation — should be real UUID bytes (variant bits) but client ignores.
+**Code** `Attributes.hpp:187-211` `writeUpdate` before plan30 sent `string key "minecraft:generic.armor"` + `uuid 16 bytes` — **H1 suspect** (string vs varint 10 bytes diff, uuid 16 vs string 36 20 bytes diff → desync/BufferUnderrun). After `56e0ef6` fix `Attributes.hpp:224-250` sends `varint mapperId + string uuid 36`, count filtered to 22 for 1.21.4.
 
-**Gap** `Attributes.hpp:115` `ARMOR 30 TOUGHNESS 20` caps correct; `GRAVITY 0.08 SCALE1` correct. No HIGH here; included to lock.
+**Gap** **H1 FIXED plan30 (HIGH):** `key` now `varint mapper 0-21` via `mapperId()` (`MAX_HEALTH 16` first), `modifiers[].uuid` now `string 36 chars`, `writeUpdate` filters 22 mapped attributes. Verified `test_spec_wire [C2]` `eid 1 + count 22 + first key 16 + first value f64 + modifiers 0` PASS. Remaining: `ARMOR 30 TOUGHNESS 20` caps, `GRAVITY 0.08 SCALE1` correct (no gap); included to lock wire.
 
 ---
 

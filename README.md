@@ -59,7 +59,8 @@ proven **byte-identical to a real reference server's output** by golden tests.
 - **`test_native` (C++ self-test, 12 cases: status/join/chunk/chat/persist/multi/stress):** `12/12 PASS` — run `./build/test_native ./build/cppfm` (50s). Verifies `status 769`, `Login Success`, `Join Game`, `LevelChunkWithLight`, `BlockUpdate` broadcast, `SystemChat`, and cross-client visibility.
 - **`test_smoke_80` (80-row taxonomy, `tests/test_smoke_80.cpp` covering all 80 rows of `docs/MISSING_FEATURES_1_21_4.md`):** `69 CHECK all PASS` (80-row taxonomy — 69 checks covering all 80 rows) — each check verifies a vanilla packet/NBT (e.g., `worldborder size → InitializeWorldBorder 0x26`, `glowstone → UpdateLight 0x2B`, `wither → BossBar 0x0A`). Run `./build/test_smoke_80 ./build/cppfm` (450s, 600s recommended under load; `=== SMOKE 80: 69 PASS 0 FAIL ===`, exit 0). This does **not** guarantee byte-identical vanilla behaviour; it guarantees the 80 coarse features emit the expected packet.
 - **`test_scoreboard_reset` (ResetScore `0x49` round-trip, `tests/test_scoreboard_reset.cpp`):** `22/22 PASS` — holder + optional objectiveName round-trip / wildcard null broadcast / copy-before-erase. Run `./build/test_scoreboard_reset` (ctest `scoreboard_reset`, TIMEOUT 30).
-- **Strict audit (`docs/COMPAT_AUDIT_1_21_4_STRICT.md`):** `78/78` fixed, `0` remain. Bit-level protocol parity achieved — deep audit `31/31` fixed, `0` remain — **109 gaps closed**, `test_smoke_80` `69 CHECK all PASS` + strict `78/78` + deep `31/31` byte-identical Prismarine 131 `toClient`.
+- **`test_spec_wire` (wire byte-identical, `tests/test_spec_wire.cpp` plan30):** `120 PASS 0 FAIL 0 SKIP` — 25+ wire cases covering all play `toClient` families (chunk/light/bundle, entity metadata `D13/D14` Boolean, `UpdateAttributes 0x7C` `H1` varint mapper 0-21 + uuid string 36, particles/advancements, `AddResourcePack` uuid, teams/sound etc.) vs Prismarine `protocol.json` spec bytes (`EXPECT_EQ` `WriteBuffer` vs spec). Run `./build/test_spec_wire` (ctest `spec_wire`, TIMEOUT 60). Exit 1 on `third>0x15` old string wire detection — now `120 PASS` after `H1` fix `56e0ef6` + detector `fc0e43e` (count 22 + `MAX_HEALTH` mapper `16` lock).
+- **Strict audit (`docs/COMPAT_AUDIT_1_21_4_STRICT.md`):** `78/78` fixed, `0` remain. Bit-level protocol parity achieved — deep audit `31/31` fixed, `0` remain (+ plan30 `H1 UpdateAttributes 0x7C` varint mapper `32/32`) — **109 gaps closed** (80 taxonomy +78 strict +31 deep, overlaps removed, Prismarine 131 `toClient` byte-identical) + plan30 wire lock `test_spec_wire 120 PASS`.
 
 ## Clean-room methodology (important)
 
@@ -113,10 +114,11 @@ python3 tests/stress_test.py            # N=32 concurrent joins
 ./build/test_native ./build/cppfm          # 12 cases status/join/chunk/chat/persist/multi/stress
 ./build/test_smoke_80 ./build/cppfm        # 80-row taxonomy covering 69 checks (see docs/MISSING_FEATURES_1_21_4.md) — 69 PASS 0 FAIL (~7 min)
 ./build/test_scoreboard_reset              # 22 cases ResetScore 0x49 round-trip (holder/objectiveName/wildcard/copy-before-erase)
-ctest -R "native|smoke80|scoreboard_reset" --output-on-failure  # smoke80 450s (600s under load), scoreboard_reset 30s
+./build/test_spec_wire                     # 120 wire byte-identical cases — UpdateAttributes 0x7C H1 varint mapper 0-21 + uuid string 36 lock etc.
+ctest -R "native|smoke80|scoreboard_reset|spec_wire" --output-on-failure  # smoke80 450s (600s under load), scoreboard_reset 30s, spec_wire 60s
 ```
 
-All suites pass in Release and ASan/UBSan (zero sanitizer) including 32-burst for the coarse 80-row taxonomy (69 CHECK all PASS). For true parity, see `docs/COMPAT_AUDIT_1_21_4_STRICT.md` (**78/78 fixed, 0 remain**) and `docs/COMPAT_DEEP_AUDIT.md` (**31/31 fixed, 0 remain**) — 109 gaps closed. `test_native` + `test_scoreboard_reset` green post-`plan28 finish`; plan29 polish layer (10 ch, §4/§8/§9 verified no-change) green at `29abd26`.
+All suites pass in Release and ASan/UBSan (zero sanitizer) including 32-burst for the coarse 80-row taxonomy (69 CHECK all PASS). For true parity, see `docs/COMPAT_AUDIT_1_21_4_STRICT.md` (**78/78 fixed, 0 remain**) and `docs/COMPAT_DEEP_AUDIT.md` (**31/31 fixed, 0 remain** + plan30 `H1 UpdateAttributes 0x7C` varint mapper → `32/32`) — 109 gaps closed + `test_spec_wire` `120 PASS 0 FAIL` wire lock (plan30 `fc0e43e`). `test_native` + `test_scoreboard_reset` + `test_spec_wire` green post-`plan30`; plan29 polish layer (10 ch, §4/§8/§9 verified no-change) green at `29abd26`.
 
 ### Reproducing the reference captures
 
