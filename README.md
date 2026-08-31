@@ -27,9 +27,9 @@ automated comparison against captured reference-server wire data.
 | Mobs: **46 kinds** (wither/dragon/warden/shulker…), **BehaviorTree** (`Selector/Sequence/Condition/Action`) data-driven via `assets/entities/*.json`, `Enderman` teleport, `WitherSkull`, `Dragon` phases, `Slime` split, breeding/aging | ✅ |
 | Survival: hunger (`exhaustion` sprint/jump/attack/bow, `saturation` cake/stew), regen/starve/void, **air 300 drown, freeze powder-snow, fire lava**, `water/slime` fall mitigation, `EntityAction 0x28` sneak pose, `EntityVelocity 0x5F` knockback | ✅ |
 | Inventory: ItemStack data-components, **Barrel/ShulkerBox/Enchanting/Anvil/Brewing/Stonecutter/Grindstone/Smithing/Beacon/Loom** menus, drag `mode5` + creative `mode3`, `ContainerSetContent`/`SetSlot` authoritative | ✅ |
-| Crafting: built-in + JSON loader, recipe book `0x44`, `PlaceRecipe 0x25` + `PlaceGhostRecipe 0x39` for `Furnace`/`Stonecutter`, furnace 3-slot + `ContainerSetData` | ✅ |
+| Crafting: **1578 recipes JSON-driven** (`assets/data/recipes/*.json` 1581, 1578 loaded), recipe book `0x44`, `PlaceRecipe 0x25` + `PlaceGhostRecipe 0x39` for `Furnace`/`Stonecutter`, furnace 3-slot + `ContainerSetData` | ✅ |
 | XP orbs/levels, **full AttributeManager** (`ARMOR/TOUGHNESS/KB_RESIST` sync `UpdateAttributes 0x7C`), status effects `Invisibility/Levitation/Glowing` via `SetEntityMetadata` | ✅ |
-| Commands: Brigadier port (48 arg types), **40+ commands** (`/fill`, `/execute as @p run`, `/function`, `/reload`, `/tag`/`/team`/`/bossbar` stubs) + selectors `@a/@p/@e` | ✅ |
+| Commands: Brigadier port (48 arg types), **30+ vanilla commands** (`/execute` modifiers `as/at/positioned/anchored/in/dimension/rotated/facing/if/unless` + `run`, `/data get/merge/remove`, `/clone`, `/loot give/fish`, `/place feature/structure/jigsaw`, `/locate structure/biome/poi`, `/spreadplayers`, `/enchant`, `/attribute`, `/trigger`, `/advancement`, `/recipe`, `/item`, `/me`, `/msg`, `/ban`, `/ban-ip`, `/pardon`, `/op`, `/deop`, `/whitelist`, `/kick` admin + `/fill`, `/function`, `/reload`, `/tag`/`/team`/`/bossbar`) + selectors `@a/@p/@e` | ✅ |
 | Tags 67 item / 20 block via `TagManager`, `LootTables` `fortune`/`silk_touch` + `DatapackManager` `assets/data` | ✅ |
 | Scoreboard objectives/scores/sidebar + `Teams 0x67` + `BossBar 0x0A` (wither/dragon) | ✅ |
 | Stats (`world/stats/*.json`) + advancements `cppfm:*` tree w/ `UpdateAdvancements 0x7B` + toasts | ✅ |
@@ -40,6 +40,7 @@ automated comparison against captured reference-server wire data.
 | Event bus (`BlockPlace/Break/NeighborChange`) + `ItemUseContext` + `DamageSource` | ✅ |
 | RCON + whitelist + `spawn-protection` + `WorldBorder` damage | ✅ |
 | 20 TPS loop + `simulationDistance` tick culling + `chunksUnloadTick` LRU + `level.dat` periodic 6000/1200t | ✅ |
+| Admin: `/ban`/`ban-ip`/`pardon`/`op`/`deop`/`whitelist`/`kick` + `Rcon` + `whitelist.json`/`ops.json` enforcement | ✅ |
 
 Verified by four test layers — see *Testing* below. Chunk serialization is
 proven **byte-identical to a real reference server's output** by golden tests.
@@ -118,7 +119,7 @@ python3 tests/stress_test.py            # N=32 concurrent joins
 ctest -R "native|smoke80|scoreboard_reset|spec_wire" --output-on-failure  # smoke80 450s (600s under load), scoreboard_reset 30s, spec_wire 60s
 ```
 
-All suites pass in Release and ASan/UBSan (zero sanitizer) including 32-burst for the coarse 80-row taxonomy (69 CHECK all PASS). For true parity, see `docs/COMPAT_AUDIT_1_21_4_STRICT.md` (**78/78 fixed, 0 remain**) and `docs/COMPAT_DEEP_AUDIT.md` (**31/31 fixed, 0 remain** + plan30 `H1 UpdateAttributes 0x7C` varint mapper → `32/32`) — 109 gaps closed + `test_spec_wire` `120 PASS 0 FAIL` wire lock (plan30 `fc0e43e`). `test_native` + `test_scoreboard_reset` + `test_spec_wire` green post-`plan30`; plan29 polish layer (10 ch, §4/§8/§9 verified no-change) green at `29abd26`.
+All suites pass in Release and ASan/UBSan (zero sanitizer) including 32-burst for the coarse 80-row taxonomy (69 CHECK all PASS). For true parity, see `docs/COMPAT_AUDIT_1_21_4_STRICT.md` (**78/78 fixed, 0 remain**) and `docs/COMPAT_DEEP_AUDIT.md` (**31/31 fixed, 0 remain** + plan30 `H1 UpdateAttributes 0x7C` varint mapper → `32/32`) — 109 gaps closed + `test_spec_wire` `120 PASS 0 FAIL` wire lock (plan30 `fc0e43e`). `test_native` + `test_scoreboard_reset` + `test_spec_wire` green post-`plan30`; plan29 polish layer (10 ch, §4/§8/§9 verified no-change) green at `29abd26`; **plan32 green: 1578 recipes + 30+ commands (place/locate/spreadplayers + execute modifiers/data/clone/loot + ban/op/whitelist + enchant/attribute/trigger + advancement/recipe/item/me/msg), `test_smoke_80` 69 PASS maintained, wire 120 PASS maintained**.
 
 ### Reproducing the reference captures
 

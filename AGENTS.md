@@ -6,15 +6,15 @@
 
 - Minecraft Fabric 1.21.4 サーバーを C++ で非公式に完全再実装し、**完全な互換性** (protocol-compatible) を目指す。
 - `docs/MISSING_FEATURES_1_21_4.md` の `PARTIAL/TODO` が 0 になるまでループ。`docs/COMPAT_AUDIT_1_21_4_STRICT.md` の厳密Wire監査 (78 gaps) も 0 まで。
-- 現状: `plan/` に `plan.md`〜`plan31.md` が蓄積。最新は `plan/plan31.md` (1135行, リファクタ 6-phase — 40k行→構造健全化)。`MISSING` は 80/80 DONE、strict 78/78 FIXED、deep 31/31 FIXED + plan30 `H1` `32/32` — **計109 gaps 全閉 + plan30 wire lock + plan31 refactor** — GameServer.cpp 7843→35 (99.5% dispersed, 6 files) + StairsHelper/Helpers/Constants (README Architecture 更新)。次は `plan/plan32.md` へ。
+- 現状: `plan/` に `plan.md`〜`plan32.md` が蓄積。最新は `plan/plan32.md` (recipes 1578 + commands)。`MISSING` は 80/80 DONE、strict 78/78 FIXED、deep 31/31 FIXED + plan30 `H1` `32/32` — **計109 gaps 全閉 + plan30 wire lock + plan31 refactor + plan32 recipes/commands** — GameServer.cpp 7843→35 (99.5% dispersed, 6 files) + StairsHelper/Helpers/Constants + **plan32: recipes 1578 JSON-driven (assets/data/recipes 1581) + 30+ vanilla commands (execute modifiers/data/clone/loot/place/locate/spreadplayers + ban/op/whitelist + enchant/attribute/trigger + advancement/recipe/item/me/msg) (README What works 更新)**。次は `plan/plan33.md` へ。
 
-## 2. Current State (2026-08-31 確認 — plan31 完遂)
+## 2. Current State (2026-08-31 確認 — plan32 完遂 HEAD 539cd20)
 
-- **HEAD:** `36611b7` (plan31 refactor 6-phase完: Phase0 docs H1 + Phase1 dead code -27 + Phase2 dedup -35 + Phase3 constants + Phase4 split 7843→35 + Phase5 skip + Phase6 docs) → plan31 完遂 (GameServer.cpp 7843→35 99.5% dispersed, 6 files 7714 + Helpers/Stairs/Constants, total src 40111→40124 +13, wire diff 0, grep dedup 0)。plan24〜30 で 109 gaps + plan31 構造健全化。**worktree は全て削除済み** (`git worktree list` は main のみ、`/tmp/opencode/wt31/refactor` 単一, ブランチ `wt31/refactor`)。
-- **Tests:** `cmake -B build -G Ninja && cmake --build build -j4` green (full rebuild 3m38s, incremental 0.1s, -j4)。`./build/test_native ./build/cppfm` **ALL PASS (12/12)**。`./build/test_scoreboard_reset` **22 PASS 0 FAIL** (ctest `scoreboard_reset`, TIMEOUT 30)。`./build/test_spec_wire` **120 PASS 0 FAIL 0 SKIP** (ctest `spec_wire` TIMEOUT 60, H1 32/32 lock)。`./build/test_smoke_80` は **69 PASS 0 FAIL**・exit 0・約7分 (450s, 600s under load, `=== SMOKE 80: 69 PASS 0 FAIL ===`)。
-- **Docs:** `README.md` は Architecture (split 6) + Testing (spec_wire 120) 更新済み。`docs/COMPAT_DEEP_AUDIT.md` は H1 FIXED + plan31 split 追記、`docs/PROTOCOL_NOTES.md` は UpdateAttributes 0x7C 追記。`AGENTS.md` は 本State + §4 + §8 更新。`docs/research-prompt.md` は `plan/` 一括無視のまま。
+- **HEAD:** `539cd20` (plan32: recipes 1578 + commands 30+ — cf913af 1578 recipes JSON-driven + 3af3b98 execute/data/clone/loot + 9838189 place/locate/spreadplayers + 2ec9050 enchant/attribute/trigger + 8ddc338 ban/op/whitelist + 34ae053 advancement/recipe/item/me/msg) → plan32 完遂 (6-way merge, total recipes 1578, commands 30+)。plan31 は `36611b7` で完 (GameServer.cpp 7843→35 99.5% dispersed, 6 files 7714 + Helpers/Stairs/Constants, total src 40124)。**worktree は全て削除済み** (`git worktree list` は main のみ, 現行 worktree `/tmp/opencode/wt33/worldgen` 単一, ブランチ `wt33/worldgen`)。
+- **Tests:** `cmake -B build -G Ninja && cmake --build build -j4` green。`./build/test_native ./build/cppfm` **ALL PASS (12/12)**。`./build/test_scoreboard_reset` **22 PASS 0 FAIL** (ctest `scoreboard_reset`, TIMEOUT 30)。`./build/test_spec_wire` **120 PASS 0 FAIL 0 SKIP** (ctest `spec_wire` TIMEOUT 60, H1 32/32 lock)。`./build/test_smoke_80` は **69 PASS 0 FAIL**・exit 0・約7分 (450s, 600s under load, `=== SMOKE 80: 69 PASS 0 FAIL ===`) — plan32 コマンド/レシピ追加後も 69 PASS 維持 (wire 非破壊)。
+- **Docs:** `README.md` は plan32 What works (recipes 1578 + 30+ commands + ban/op/whitelist) 更新予定。`docs/COMPAT_DEEP_AUDIT.md` は H1 FIXED + plan31 split 追記済み、`docs/PROTOCOL_NOTES.md` は UpdateAttributes 0x7C 追記済み。`AGENTS.md` は 本State + §4 + §8 を plan33 進行中に更新。`docs/research-prompt.md` は `plan/` 一括無視のまま。
 - **Git:** `plan/` フォルダは `.gitignore:10` で一括無視 (`plan/` 1行)。`plan/*.md` は追跡対象外。今後も `git add -f` 不要で無視される。
-- **旧ブランチ:** `wt/*` 30+ が残存 (worktree 無し・削除しても可)。`wt30/*` は削除済み, `wt31/refactor` が現行。
+- **旧ブランチ:** `wt/*` 30+ が残存 (worktree 無し・削除しても可)。`wt31/refactor` / `wt32/*` 6-way が現行 main にマージ済み。
 
 ## 3. Improvement Loop Workflow (厳守)
 
@@ -73,7 +73,7 @@
 ## 4. Plan Numbering
 
 - `ls plan/plan*.md | sort -V | tail -1` で最大Xを取得 → 次は `X+1`。
-- 現在最大: `plan/plan31.md` (1135行, リファクタ 6-phase — 40k→構造健全化)。次は `plan/plan32.md`。
+- 現在最大: `plan/plan32.md` (recipes 1578 + commands)。次は `plan/plan33.md` (1193行, WorldGen Density/MultiNoise/Structures)。
 - 生成後は `ls -lh plan/planX.md && wc -l plan/planX.md` で確認。
 
 ## 5. Testing (Evidence)
@@ -114,11 +114,11 @@ ctest -R smoke80 --output-on-failure --timeout 450   # 600 under load
 
 ## 8. Next Steps
 
-1. **109 gaps は全閉済み (strict 78/78・deep 31/31・MISSING 80/80) + plan30 wire lock (H1 32/32 + test_spec_wire 120 PASS) + plan31 refactor 完遂 (`36611b7`: GameServer.cpp 7843→35 6-split + Helpers/Stairs/Constants, total src 40124, wire diff 0, all tests green) — 次は `plan/plan32.md` へ**:
-   - plan31 Phase5 packet struct trial は任意のためスキップ (wireに最も近い変更のため test_spec_wire 120 PASS 維持を優先し、1パケット試行は別途 plan32 で)。Phase6 で全 gate green + docs 更新済み。
-   - 残った polish: `Bundles` 1.21.5 / proto 776 時再設計 (§4 見送り)、boat buoyancy / ghost preview throttle 現状維持 (§10/§9 検証済み)、`BossBar` lerp はクライアント側 (§8 検証済み・修正不要)
-   - 新しい監査観点 (例: 1.21.5 互換、datapack/function 網羅、perf、trySpawnEgg/hoppersTick 巨大関数内分割) は `docs/research-prompt.md` 更新 → `plan/plan32.md` で。
-2. ループを回す場合は §3 の手順で `wt32/*` 6 worktree → バックグラウンド並行実装 → `git merge --no-ff` → ドキュメント更新。**plan31 は単一エージェントで完遂したため、plan32 以降は通常の6 worktree並行に戻す**。
-3. 不要な旧ブランチ (`wt/*` 30+, `wt30/*`, `wt31/refactor`) は `git branch -D` で削除可 (main には影響なし)。
+1. **109 gaps は全閉済み (strict 78/78・deep 31/31・MISSING 80/80) + plan30 wire lock (H1 32/32 + test_spec_wire 120 PASS) + plan31 refactor 完遂 (`36611b7`: GameServer.cpp 7843→35 6-split + Helpers/Stairs/Constants, total src 40124, wire diff 0, all tests green) + plan32 完遂 (`539cd20`: recipes 1578 + 30+ commands) — 次は `plan/plan33.md` WorldGen (単一 worktree `/tmp/opencode/wt33/worldgen` ブランチ `wt33/worldgen` で進行中)**:
+   - plan32: recipes 1578 JSON-driven (assets/data/recipes) + commands 30+ (execute modifiers/data/clone/loot/place/locate/spreadplayers + ban/op/whitelist + enchant/attribute/trigger + advancement/recipe/item/me/msg) — wire 非破壊 (test_spec_wire 120 PASS 維持)。
+   - plan33 進行中: DensityFunction 7型 (Beardifier/OldBlended/Blend*/EndIslands/WeirdScaled/ShiftA/B) + MultiNoise isosceles + Structures 20 セット + /locate 20 セット + tests (§6) — 単一 worktreeでじっくり整合 (§3の6-worktree並行は plan33 では単一に集約)。
+   - 残った polish: `Bundles` 1.21.5 / proto 776 時再設計、boat buoyancy / ghost preview throttle 現状維持、BossBar lerp クライアント側 — plan33 では WorldGen parity 優先。
+2. ループを回す場合は §3 の手順で `wt33/*` 6 worktree → バックグラウンド並行実装 → `git merge --no-ff` → ドキュメント更新。**plan33 は深い整合が必要なため単一 worktree・単一エージェントでじっくり (ユーザー方針)。plan34 以降は通常の6 worktree並行に戻す**。
+3. 不要な旧ブランチ (`wt/*` 30+, `wt30/*`, `wt31/refactor`, `wt32/*`) は `git branch -D` で削除可 (main には影響なし)。
 
 > このファイル自体が引き継ぎのエントリポイント。次回セッション開始時は本書の §3 のコマンドで worktree を再生成し、`plan/` の最新と `MISSING`/`COMPAT_AUDIT` を照合して再開すること。サブエージェントはすべて muse を使うこと。
