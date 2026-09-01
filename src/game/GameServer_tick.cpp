@@ -271,6 +271,10 @@ void GameServer::tickOnce() {
     tickScheduledFunctions();
     // plan35 §1: tick trigger for advancements (minecraft:tick)
     for (auto& pp : playersSnapshot()) if (pp->inPlay) evaluateTickAdvancements(*pp);
+    // plan37 §3: location trigger every 20 ticks (0.5 Hz like vanilla)
+    if (tickNo_ % 20 == 0) {
+        for (auto& pp : playersSnapshot()) if (pp->inPlay) evaluateLocationTrigger(*pp);
+    }
     // network batching: flush coalesced block updates every tick (50ms window)
     {
         int64_t now = nowMs();

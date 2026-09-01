@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <map>
 #include <functional>
 #include <algorithm>
 #include <cstdint>
@@ -33,6 +34,10 @@ public:
     // Execute a function by id, with given source. Returns result value (from return command) or last command result.
     // Handles recursion limit (max 10).
     int executeFunction(const std::string& id, brigadier::CommandSource src);
+    // plan37 macro minimal: $var replacement with args map (for `function <id> {arg: value}`)
+    int executeFunction(const std::string& id, brigadier::CommandSource src, const std::map<std::string,std::string>& args);
+    // helper for macro expansion
+    static std::string expandMacro(const std::string& line, const std::map<std::string,std::string>& args);
 
     // Execute a single line as command via server's dispatcher, capturing return value.
     int executeLine(const std::string& line, brigadier::CommandSource src);

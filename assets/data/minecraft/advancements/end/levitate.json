@@ -1,0 +1,24 @@
+{
+  "display": {
+    "icon": {
+      "item": "minecraft:shulker_shell"
+    },
+    "title": "Great View From Up Here",
+    "description": "Levitate 50 blocks via Shulker",
+    "frame": "challenge",
+    "show_toast": true,
+    "announce_to_chat": true,
+    "hidden": false
+  },
+  "parent": "minecraft:end/root",
+  "criteria": {
+    "levit": {
+      "trigger": "minecraft:tick"
+    }
+  },
+  "requirements": [
+    [
+      "levit"
+    ]
+  ]
+}

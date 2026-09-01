@@ -1,0 +1,29 @@
+{
+  "display": {
+    "icon": {
+      "item": "minecraft:purpur_block"
+    },
+    "title": "The City at the End of the Game",
+    "description": "Go to an End City",
+    "frame": "task",
+    "show_toast": true,
+    "announce_to_chat": true,
+    "hidden": false
+  },
+  "parent": "minecraft:end/kill_dragon",
+  "criteria": {
+    "located": {
+      "trigger": "minecraft:location",
+      "conditions": {
+        "location": {
+          "biome": "minecraft:end_highlands"
+        }
+      }
+    }
+  },
+  "requirements": [
+    [
+      "located"
+    ]
+  ]
+}
