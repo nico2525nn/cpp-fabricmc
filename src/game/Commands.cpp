@@ -17,6 +17,60 @@ using brigadier::CommandNode;
 using brigadier::CommandContext;
 namespace args = brigadier::args;
 
+// plan38 B-13: helper to parse inline NBT {k:v,...} into map<string,string> without suffixes
+static std::map<std::string,std::string> parseFunctionArgsNbt(const std::string& nbtStr) {
+    std::map<std::string,std::string> out;
+    if (nbtStr.empty()) return out;
+    std::string s = nbtStr;
+    // trim whitespace
+    size_t a = s.find_first_not_of(" \t\r\n");
+    size_t b = s.find_last_not_of(" \t\r\n");
+    if (a==std::string::npos) return out;
+    s = s.substr(a, b-a+1);
+    if (s.size()>=2 && s.front()=='{' && s.back()=='}') s = s.substr(1, s.size()-2);
+    else if (s.empty()) return out;
+    // split by commas respecting quotes and nesting
+    std::vector<std::string> parts;
+    std::string cur; bool inQ=false; char qChar=0; int depth=0;
+    for (size_t i=0;i<s.size();++i) {
+        char c = s[i];
+        if (inQ) {
+            cur.push_back(c);
+            if (c==qChar && (i==0 || s[i-1]!='\\')) inQ=false;
+        } else {
+            if (c=='"' || c=='\'') { inQ=true; qChar=c; cur.push_back(c); }
+            else if (c=='{' || c=='[') { depth++; cur.push_back(c); }
+            else if (c=='}' || c==']') { depth--; cur.push_back(c); }
+            else if (c==',' && depth==0) { parts.push_back(cur); cur.clear(); }
+            else cur.push_back(c);
+        }
+    }
+    if (!cur.empty()) parts.push_back(cur);
+    for (auto &p : parts) {
+        size_t colon = p.find(':');
+        if (colon==std::string::npos) continue;
+        std::string k = p.substr(0, colon);
+        std::string v = p.substr(colon+1);
+        auto trim = [](std::string &t){ size_t aa=t.find_first_not_of(" \t\r\n"); size_t bb=t.find_last_not_of(" \t\r\n"); if(aa==std::string::npos) t.clear(); else t=t.substr(aa,bb-aa+1); };
+        trim(k); trim(v);
+        // strip quotes from key
+        if (k.size()>=2 && ((k.front()=='"' && k.back()=='"') || (k.front()=='\'' && k.back()=='\''))) k = k.substr(1,k.size()-2);
+        // strip quotes from value if string
+        if (v.size()>=2 && ((v.front()=='"' && v.back()=='"') || (v.front()=='\'' && v.back()=='\''))) {
+            v = v.substr(1, v.size()-2);
+        } else {
+            // numeric: strip suffix s,b,l,d,f (23w31a without suffixes)
+            if (!v.empty() && (v.back()=='s' || v.back()=='b' || v.back()=='L' || v.back()=='l' || v.back()=='d' || v.back()=='D' || v.back()=='f' || v.back()=='F')) {
+                // ensure preceding is digit or . to avoid stripping letters in plain strings
+                if (v.size()>=2 && (isdigit((unsigned char)v[v.size()-2]) || v[v.size()-2]=='.')) v.pop_back();
+            }
+            // also handle quoted numeric already stripped
+        }
+        if (!k.empty()) out[k]=v;
+    }
+    return out;
+}
+
 // ---------------------------------------------------------------- selectors
 
 brigadier::SelectorResult GameServer::resolveSelector(
@@ -2391,26 +2445,60 @@ void GameServer::initCommands() {
         nameArg->suggestions = [this](brigadier::StringReader&, brigadier::ParseCtx&) {
             return datapackManager_.getFunctionIds();
         };
-        nameArg->executable = true;
-        nameArg->action = [this](CommandContext& c) {
+        // shared executor for /function with and without NBT args
+        auto execFunctionWithArgs = [this](CommandContext& c, bool hasNbt) -> int {
             Player* src = static_cast<Player*>(c.source.player);
             std::string id = c.arg("name").asStr();
             std::string norm = id;
             if (norm.find(':')==std::string::npos) norm = "minecraft:" + norm;
+            std::map<std::string,std::string> argsMap;
+            if (hasNbt) {
+                std::string nbtStr = c.arg("arguments").asStr();
+                argsMap = parseFunctionArgsNbt(nbtStr);
+            }
             brigadier::CommandSource fsrc;
             if (src){ fsrc.player=src; fsrc.name=src->name; fsrc.console=false; fsrc.srcX=src->x; fsrc.srcY=src->y; fsrc.srcZ=src->z; fsrc.resolveSelector=[this,src](const std::string& raw, brigadier::SelectorResult& out){ out=resolveSelector(raw,src); }; }
             else { fsrc.console=true; fsrc.name="Server"; fsrc.resolveSelector=[this](const std::string& raw, brigadier::SelectorResult& out){ out=resolveSelector(raw,nullptr); }; }
-            int executed = functionEvaluator_.executeFunction(norm, fsrc);
+            int executed = 0;
+            if (argsMap.empty()) executed = functionEvaluator_.executeFunction(norm, fsrc);
+            else executed = functionEvaluator_.executeFunction(norm, fsrc, argsMap);
             if (executed==0) {
-                // Fallback: try direct file read (legacy)
+                // Fallback: try direct file read (legacy) - also handle macro if args present
                 auto colon = norm.find(':');
                 std::string ns = colon!=std::string::npos?norm.substr(0,colon):"minecraft";
                 std::string path = colon!=std::string::npos?norm.substr(colon+1):norm;
                 std::string file = "assets/data/" + ns + "/functions/" + path + ".mcfunction";
                 std::ifstream f(file);
-                if(!f) throw std::runtime_error("function not found: " + norm);
+                if(!f) {
+                    // try datapack functions map fallback with macro
+                    auto* fn = datapackManager_.getFunction(norm);
+                    if (fn) {
+                        int cnt=0; int last=0;
+                        for (auto &line : *fn) {
+                            size_t s=line.find_first_not_of(" \t\r\n");
+                            if(s==std::string::npos) continue;
+                            size_t e=line.find_last_not_of(" \t\r\n");
+                            std::string t=line.substr(s,e-s+1);
+                            if(t.empty()||t[0]=='#') continue;
+                            if(!t.empty()&&t.front()=='/') t=t.substr(1);
+                            std::string expanded = FunctionEvaluator::expandMacro(t, argsMap);
+                            bool isMacro = !t.empty() && t[0]=='$';
+                            if (isMacro && expanded.empty()) break;
+                            std::string toExec = isMacro ? expanded : t;
+                            brigadier::CommandSource cur=fsrc;
+                            auto res=commands_.execute(toExec, std::move(cur));
+                            if(!res.ok) sendFeedback(src, "function line failed: "+toExec+" -> "+res.errorText);
+                            last = res.ok?res.value:0;
+                            ++cnt;
+                        }
+                        if (cnt==0) throw std::runtime_error("function not found: " + norm);
+                        sendFeedback(src, "Executed function " + norm + " ("+std::to_string(cnt)+" commands)");
+                        return last;
+                    }
+                    throw std::runtime_error("function not found: " + norm);
+                }
                 std::string line;
-                int cnt=0;
+                int cnt=0; int last=0;
                 while(std::getline(f,line)){
                     size_t s=line.find_first_not_of(" \t\r\n");
                     if(s==std::string::npos) continue;
@@ -2418,17 +2506,28 @@ void GameServer::initCommands() {
                     std::string t=line.substr(s,e-s+1);
                     if(t.empty()||t[0]=='#') continue;
                     if(!t.empty()&&t.front()=='/') t=t.substr(1);
+                    std::string expanded = FunctionEvaluator::expandMacro(t, argsMap);
+                    bool isMacro = !t.empty() && t[0]=='$';
+                    if (isMacro && expanded.empty()) break;
+                    std::string toExec = isMacro ? expanded : t;
                     brigadier::CommandSource cur=fsrc;
-                    auto res=commands_.execute(t, std::move(cur));
-                    if(!res.ok) sendFeedback(src, "function line failed: "+t+" -> "+res.errorText);
+                    auto res=commands_.execute(toExec, std::move(cur));
+                    if(!res.ok) sendFeedback(src, "function line failed: "+toExec+" -> "+res.errorText);
+                    last = res.ok?res.value:0;
                     ++cnt;
                 }
                 sendFeedback(src, "Executed function " + norm + " ("+std::to_string(cnt)+" commands)");
-                return cnt;
+                return last;
             }
             sendFeedback(src, "Executed function " + norm + " (result="+std::to_string(executed)+")");
             return executed;
         };
+        nameArg->executable = true;
+        nameArg->action = [execFunctionWithArgs](CommandContext& c){ return execFunctionWithArgs(c, false); };
+        auto arguments = CommandNode::argument("arguments", args::nbtCompoundTagArg());
+        arguments->executable = true;
+        arguments->action = [execFunctionWithArgs](CommandContext& c){ return execFunctionWithArgs(c, true); };
+        nameArg->then(arguments);
         func->then(nameArg);
         d.root->then(func);
     }
