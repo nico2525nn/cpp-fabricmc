@@ -5,7 +5,7 @@ score_review.py — plan35 再評価フレーム (4カテゴリ)
   および plan35.md §6 の 25/25/25/25 換算も併記。
   各項目は "対応済み (planX)" / "残" で列挙し現状スコアを算出する。
   実行: python3 tools/score_review.py  (or ./tools/score_review.py)
-  参照: plan/plan35.md §6「再評価フレーム」, docs/COMPAT_AUDIT_1_21_4_STRICT.md, docs/MISSING_FEATURES_1_21_4.md
+  参照: plan/plan35.md §6「再評価フレーム」, docs/assessment-1.md, docs/MISSING_FEATURES_1_21_4.md
 """
 import sys
 

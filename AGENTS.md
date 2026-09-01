@@ -5,14 +5,14 @@
 ## 1. Project Goal
 
 - Minecraft Fabric 1.21.4 サーバーを C++ で非公式に完全再実装し、**完全な互換性** (protocol-compatible) を目指す。
-- `docs/MISSING_FEATURES_1_21_4.md` の `PARTIAL/TODO` が 0 になるまでループ。`docs/COMPAT_AUDIT_1_21_4_STRICT.md` の厳密Wire監査 (78 gaps) も 0 まで。
+- `docs/MISSING_FEATURES_1_21_4.md` の `PARTIAL/TODO` が 0 になるまでループ。`docs/assessment-1.md` の厳密Wire監査 (78 gaps) も 0 まで。
 - 現状: `plan/` に `plan.md`〜`plan35.md` が蓄積。最新は `plan/plan35.md` (812行, datapack+finish)。`MISSING` は 80/80 DONE、strict 78/78 FIXED、deep 31/31 FIXED + plan30 `H1` `32/32` + plan30-35 wire/機能拡張 (spec_wire 233・smoke 127) — **計109 gaps 全閉 + plan30-35 wire/機能拡張 + plan31 refactor (GameServer.cpp 7843→35 99.5% dispersed, 6 files + Helpers/Stairs/Constants) + plan32 recipes 1578 JSON-driven (assets/data/recipes 1581) + 30+ vanilla commands (execute modifiers/data/clone/loot/place/locate/spreadplayers + ban/op/whitelist + enchant/attribute/trigger + advancement/recipe/item/me/msg) + plan33 WorldGen (Density 7型・MultiNoise isosceles・Structures 20) + plan34 Mob AI 10種/Breeze/Armadillo + 未送信6パケット (ActionBar 0x51/ServerData 0x50/HurtAnimation 0x25/EntitySoundEffect 0x6E/ChatSuggestions 0x18/SyncEntityPosition 0x20) + plan35 datapack (advancements story 20 + loot functions + predicate 8 + server.properties) (README What works 更新)**。次は `plan/plan36.md` (任意継続) へ。
 
 ## 2. Current State (2026-09-01 確認 — plan35 完遂 HEAD 9cba7f4)
 
 - **HEAD:** `9cba7f4` (plan35 完遂: advancements story 20 + loot functions + predicate 8 + server.properties pvp/flight/hardcore/max-players + test 127 — plan32 539cd20 recipes 1578 + plan33 WorldGen Density 7型/MultiNoise isosceles/Structures 20/trial_chambers salt 94251327 + plan34 Mob AI 10種/Breeze/Armadillo + 未送信6パケット ActionBar 0x51/ServerData 0x50/HurtAnimation 0x25/EntitySoundEffect 0x6E/ChatSuggestions 0x18/SyncEntityPosition 0x20 + Fuzz 23/Soak 60s/弱検査撤廃 15/16)。plan31 は `36611b7` で完 (GameServer.cpp 7843→35 99.5% dispersed, 6 files 7714 + Helpers/Stairs/Constants, total src 40124)。**worktree は全て削除済み** (`git worktree list` は main のみ)。
 - **Tests:** `cmake -B build -G Ninja && cmake --build build -j4` green。`./build/test_native ./build/cppfm` **ALL PASS (12+31+10)**。`./build/test_scoreboard_reset` **22 PASS 0 FAIL** (ctest `scoreboard_reset`, TIMEOUT 30)。`./build/test_spec_wire` **233 PASS 0 FAIL 0 SKIP** (ctest `spec_wire` TIMEOUT 60, H1 32/32 + plan34-35 6パケット/predicate 8 含む)。`./build/test_fuzz` **23 PASS 0 FAIL** (ctest `fuzz`, 23 cases)。`./build/test_smoke_80` は **127 PASS 0 FAIL**・exit 0・約7分 (450s, 600s under load, `=== SMOKE 80: 127 PASS 0 FAIL ===`) — plan32-35 拡張後 69→127 へ拡張、wire 非破壊 (spec 233 維持)。
-- **Docs:** `README.md` は plan35 What works (advancements story 20・loot functions・predicate・server.properties) + Testing (spec 233/fuzz 23/smoke 127) 更新済み。`docs/COMPAT_DEEP_AUDIT.md` は H1 FIXED + plan31 split 追記済み、`docs/PROTOCOL_NOTES.md` は UpdateAttributes 0x7C + plan34 6パケット追記済み。`AGENTS.md` は 本State + §4 + §8 を plan35 完遂に更新。`docs/research-prompt.md` は `plan/` 一括無視のまま。
+- **Docs:** `README.md` は plan35 What works (advancements story 20・loot functions・predicate・server.properties) + Testing (spec 233/fuzz 23/smoke 127) 更新済み。`docs/assessment-2.md` は H1 FIXED + plan31 split 追記済み、`docs/PROTOCOL_NOTES.md` は UpdateAttributes 0x7C + plan34 6パケット追記済み。`AGENTS.md` は 本State + §4 + §8 を plan35 完遂に更新。`docs/research-prompt.md` は `plan/` 一括無視のまま。
 - **Git:** `plan/` フォルダは `.gitignore:10` で一括無視 (`plan/` 1行)。`plan/*.md` は追跡対象外。今後も `git add -f` 不要で無視される。
 - **旧ブランチ:** `wt/*` 30+ が残存 (worktree 無し・削除しても可)。`wt31/refactor` / `wt32/*` 6-way / `wt33/worldgen` / `wt34/*` / `wt35/*` は main にマージ済み・削除済み (worktree なし)。
 
@@ -55,7 +55,7 @@
 
 5. 随時すべてのドキュメントに漏れがないように完璧に更新し続ける
    - `docs/MISSING_FEATURES_1_21_4.md` の Status を DONE/PARTIAL/TODO で正確に更新
-   - `docs/COMPAT_AUDIT_1_21_4_STRICT.md` の厳密Wire監査を更新 (file:line 絶対パス)
+   - `docs/assessment-1.md` の厳密Wire監査を更新 (file:line 絶対パス)
    - `README.md` の What works / Testing — evidence を更新 (80 taxonomy vs 78 strict の数値を明確に)
    - `docs/PROTOCOL_NOTES.md` の新パケット (Bundle/MultiBlockChange/UpdateLight) を追記
    - `docs/MIGRATION_GUIDE.md` の Module map を更新
@@ -109,7 +109,7 @@ ctest -R smoke80 --output-on-failure --timeout 450   # 600 under load
 - `WorldBorder` diameter `59999968` (not `29999984`), lerp `tickWorldBorder()` 要 `50ms` 補間。
 - `SimulationDistance` は Chebyshev `max(|dx|,|dz|)` (not Euclidean)。
 - `Ids` off-by-one: `OpenScreen 0x34` `ContainerSetContent 0x12` `TradeList 0x2D` `KeepAlive 0x26`。
-- `Bundle` axis `lx<<8|lz<<4|ly` (vanilla `state<<12|x<<8|z<<4|y`; NOT `ly<<8|lz<<4|lx` — x/y swap was plan28 finish fix, see COMPAT_AUDIT N7).
+- `Bundle` axis `lx<<8|lz<<4|ly` (vanilla `state<<12|x<<8|z<<4|y`; NOT `ly<<8|lz<<4|lx` — x/y swap was plan28 finish fix, see assessment-1 S07 (old N7)).
 - `SlotComponent` ids `damage 3 repair_cost 17 trim 45` (not 6/7/42)。
 - `DamageCalculator` armor `f=2+t/4 g=clamp(a-dmg/f, a*0.2,20)` caps 30/20。
 
@@ -124,4 +124,4 @@ ctest -R smoke80 --output-on-failure --timeout 450   # 600 under load
 2. ループを回す場合は §3 の手順で `wt36/*` 6 worktree → バックグラウンド並行実装 → `git merge --no-ff` → ドキュメント更新。**plan36 候補:** Mob AI 追加差別化 (10→30種) / 構造物ピース拡張 (20→40) / Bundles 以外の polish (BossBar lerp は client-side のため現状維持) / perf (async Anvil, chunkCache 調整) — plan36 は通常の6 worktree並行に戻す。
 3. 不要な旧ブランチは削除済み: `wt29/*` `wt30/*` `wt31/refactor` `wt32/*` `wt33/worldgen` `wt34/*` `wt35/*` は main にマージ後削除済み (worktree なし)。残存は古い `wt/*` (wt6-wt28 等) のみで `git branch -D` で削除可 (main には影響なし)。
 
-> このファイル自体が引き継ぎのエントリポイント。次回セッション開始時は本書の §3 のコマンドで worktree を再生成し、`plan/` の最新と `MISSING`/`COMPAT_AUDIT` を照合して再開すること。サブエージェントはすべて muse を使うこと。
+> このファイル自体が引き継ぎのエントリポイント。次回セッション開始時は本書の §3 のコマンドで worktree を再生成し、`plan/` の最新と `MISSING`/`assessment-1/2` を照合して再開すること。サブエージェントはすべて muse を使うこと。
