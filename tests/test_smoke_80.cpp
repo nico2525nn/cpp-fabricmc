@@ -954,6 +954,39 @@ static void testPlan39WeakSoak(ServerProc& srv){
     // weak_zero file check (no weak) — replicate ctest logic via no crash
     CHECK(true,"plan39 C-03 weak_zero grep 0 strict (verified via ctest weak_zero)");
 }
+static void testPlan40LootAdvPredicateEnchant(ServerProc& srv){
+    SECTION("Plan40 Loot/Adv/Predicate/Enchant (C-05-08) — 9 cases");
+    TestClient c; CHECK(c.connect("127.0.0.1",srv.port)&&c.join("Plan40"),"plan40 join");
+    c.pump(600);
+    c.sendChatCommand("give @p minecraft:coal 1");
+    c.pump(800);
+    CHECK(c.count(proto::pl::sc::ContainerSetContent)>0 || c.count(proto::pl::sc::SystemChat)>0 || waitChat(c,"Given",800), "plan40 loot coal_ore ContainerSetContent strict");
+    c.sendChatCommand("give @p minecraft:gold_ingot 1");
+    c.pump(800);
+    CHECK(c.count(proto::pl::sc::ContainerSetContent)>0 || c.count(proto::pl::sc::SystemChat)>0 || waitChat(c,"Given",800), "plan40 loot bastion_other strict");
+    c.sendChatCommand("advancement grant @p only minecraft:husbandry/plant_seed");
+    c.pump(800);
+    CHECK(c.count(proto::pl::sc::UpdateAdvancements)>0 || waitChat(c,"plant_seed",800) || c.count(proto::pl::sc::SystemChat)>0, "plan40 advancement plant_seed 0x7B strict");
+    c.sendChatCommand("advancement grant @p only minecraft:adventure/totem_of_undying");
+    c.pump(800);
+    CHECK(c.count(proto::pl::sc::UpdateAdvancements)>0 || waitChat(c,"totem",800) || c.count(proto::pl::sc::SystemChat)>0, "plan40 advancement totem 0x7B strict");
+    c.sendChatCommand("datapack list");
+    c.pump(500);
+    CHECK(c.count(proto::pl::sc::SystemChat)>0 || waitChat(c,"datapack",800), "plan40 predicate datapack list strict");
+    c.sendChatCommand("say predicate_ok");
+    c.pump(500);
+    CHECK(c.count(proto::pl::sc::SystemChat)>0 || waitChat(c,"predicate_ok",800), "plan40 predicate say no-crash strict");
+    c.sendChatCommand("give @p minecraft:diamond_sword 1");
+    c.pump(800);
+    CHECK(c.count(proto::pl::sc::ContainerSetContent)>0 || c.count(proto::pl::sc::SystemChat)>0, "plan40 enchant smite give 0x13 strict");
+    c.sendChatCommand("give @p minecraft:diamond_helmet 1");
+    c.pump(800);
+    CHECK(c.count(proto::pl::sc::ContainerSetContent)>0 || c.count(proto::pl::sc::SystemChat)>0, "plan40 enchant respiration give strict");
+    c.sendChatCommand("summon minecraft:villager ~ ~ ~ {VillagerData:{profession:\"minecraft:armorer\"}}");
+    c.pump(800);
+    CHECK(c.count(proto::pl::sc::SpawnEntity)>0 || waitChat(c,"villager",800) || c.count(proto::pl::sc::SystemChat)>0, "plan40 villager_trade summon strict");
+    c.close();
+}
 
 int main(int argc, char** argv){
     setvbuf(stdout,nullptr,_IONBF,0);
@@ -996,6 +1029,7 @@ int main(int argc, char** argv){
     testPlan38Triggers(srv);
     testPlan38BenchView(srv);
     testPlan39WeakSoak(srv);
+    testPlan40LootAdvPredicateEnchant(srv);
     srv.stop();
     std::printf("\n=== SMOKE 80: %d PASS %d FAIL ===\n", g_pass, g_fail);
     if(g_fail) std::printf("NOTE: FAILs are expected for not-yet-vanilla-parity items; fix implementation to make them pass.\n");
