@@ -1,0 +1,47 @@
+{
+  "name": "minecraft:shipwreck_beached",
+  "type": "minecraft:shipwreck_beached",
+  "placement": {
+    "spacing": 24,
+    "separation": 4,
+    "salt": 165745296,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:shipwreck/beached",
+      "weight": 10
+    },
+    {
+      "name": "minecraft:shipwreck/ocean",
+      "weight": 6
+    },
+    {
+      "name": "minecraft:shipwreck/full",
+      "weight": 4
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:oak_planks",
+    "log": "minecraft:oak_log",
+    "chest": "minecraft:chest"
+  },
+  "variants": {},
+  "mobs": [
+    {
+      "pos": [
+        3,
+        1,
+        1
+      ],
+      "mob": "minecraft:drowned",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "3,1,1",
+      "table": "minecraft:chests/shipwreck_treasure"
+    }
+  ]
+}

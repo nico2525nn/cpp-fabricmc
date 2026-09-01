@@ -1,0 +1,42 @@
+{
+  "name": "minecraft:nether_fossil",
+  "type": "minecraft:nether_fossil",
+  "placement": {
+    "spacing": 2,
+    "separation": 1,
+    "salt": 14357921,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:nether_fossil/fossil_small",
+      "weight": 10
+    },
+    {
+      "name": "minecraft:nether_fossil/fossil_large",
+      "weight": 6
+    },
+    {
+      "name": "minecraft:nether_fossil/fossil_huge",
+      "weight": 4
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:bone_block",
+    "log": "minecraft:bone_block",
+    "chest": "minecraft:chest"
+  },
+  "variants": {},
+  "mobs": [
+    {
+      "pos": [
+        2,
+        1,
+        2
+      ],
+      "mob": "minecraft:skeleton",
+      "count": 1
+    }
+  ],
+  "loot": []
+}

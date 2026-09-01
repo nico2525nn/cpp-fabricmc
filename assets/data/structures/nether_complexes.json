@@ -1,0 +1,47 @@
+{
+  "name": "minecraft:nether_complexes",
+  "type": "minecraft:nether_complexes",
+  "placement": {
+    "spacing": 27,
+    "separation": 4,
+    "salt": 30084232,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:nether_complexes/fortress",
+      "weight": 10
+    },
+    {
+      "name": "minecraft:nether_complexes/bastion",
+      "weight": 8
+    },
+    {
+      "name": "minecraft:nether_complexes/bridge",
+      "weight": 6
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:nether_bricks",
+    "log": "minecraft:nether_bricks",
+    "chest": "minecraft:chest"
+  },
+  "variants": {},
+  "mobs": [
+    {
+      "pos": [
+        3,
+        1,
+        3
+      ],
+      "mob": "minecraft:blaze",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "3,1,3",
+      "table": "minecraft:chests/nether_bridge"
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "name": "minecraft:village_taiga",
+  "type": "minecraft:village_taiga",
+  "placement": {
+    "spacing": 34,
+    "separation": 8,
+    "salt": 10387315,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:village/taiga/house",
+      "weight": 10
+    },
+    {
+      "name": "minecraft:village/taiga/farm",
+      "weight": 8
+    },
+    {
+      "name": "minecraft:village/taiga/church",
+      "weight": 6
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:spruce_planks",
+    "log": "minecraft:spruce_log",
+    "chest": "minecraft:chest"
+  },
+  "variants": {},
+  "mobs": [
+    {
+      "pos": [
+        2,
+        1,
+        2
+      ],
+      "mob": "minecraft:villager",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "2,1,2",
+      "table": "minecraft:chests/village/village_taiga_house"
+    }
+  ]
+}

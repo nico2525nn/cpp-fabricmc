@@ -1,0 +1,47 @@
+{
+  "name": "minecraft:igloo",
+  "type": "minecraft:igloo",
+  "placement": {
+    "spacing": 32,
+    "separation": 8,
+    "salt": 14357618,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:igloo/igloo_top",
+      "weight": 10
+    },
+    {
+      "name": "minecraft:igloo/igloo_basement",
+      "weight": 6
+    },
+    {
+      "name": "minecraft:igloo/igloo_lab",
+      "weight": 4
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:snow_block",
+    "log": "minecraft:snow_block",
+    "chest": "minecraft:chest"
+  },
+  "variants": {},
+  "mobs": [
+    {
+      "pos": [
+        2,
+        1,
+        2
+      ],
+      "mob": "minecraft:villager",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "2,1,2",
+      "table": "minecraft:chests/igloo_chest"
+    }
+  ]
+}

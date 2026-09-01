@@ -1,0 +1,47 @@
+{
+  "name": "minecraft:monument",
+  "type": "minecraft:monument",
+  "placement": {
+    "spacing": 32,
+    "separation": 5,
+    "salt": 10387313,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:monument/base",
+      "weight": 10
+    },
+    {
+      "name": "minecraft:monument/wing",
+      "weight": 8
+    },
+    {
+      "name": "minecraft:monument/treasure",
+      "weight": 6
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:prismarine",
+    "log": "minecraft:prismarine_bricks",
+    "chest": "minecraft:chest"
+  },
+  "variants": {},
+  "mobs": [
+    {
+      "pos": [
+        5,
+        1,
+        5
+      ],
+      "mob": "minecraft:guardian",
+      "count": 2
+    }
+  ],
+  "loot": [
+    {
+      "pos": "5,1,5",
+      "table": "minecraft:chests/monument"
+    }
+  ]
+}

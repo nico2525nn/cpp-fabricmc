@@ -2,6 +2,7 @@
 // Reads JSON definitions from assets/data/structures/*.json if present, otherwise
 // falls back to hardcoded defaults. Provides deterministic placement checks.
 #pragma once
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -17,6 +18,12 @@ struct ConfiguredFeature {
     json::Value config = json::Value::object();
     // jigsaw pieces (name, weight)
     std::vector<std::pair<std::string,int>> pieces;
+    // plan36 palette extension
+    std::unordered_map<std::string,std::string> palette; // logical -> minecraft name
+    std::unordered_map<std::string,std::unordered_map<std::string,std::string>> variants; // pieceName -> palette override
+    std::vector<std::pair<std::string,std::string>> lootByPos; // "x,y,z" -> loot table id
+    struct MobPlace{ std::array<int,3> pos{0,0,0}; std::string mob; int count=1; };
+    std::vector<MobPlace> mobs;
 };
 
 struct PlacedFeature {

@@ -1,0 +1,47 @@
+{
+  "name": "minecraft:village_plains",
+  "type": "minecraft:village_plains",
+  "placement": {
+    "spacing": 34,
+    "separation": 8,
+    "salt": 10387312,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:village/plains/house_oak",
+      "weight": 10
+    },
+    {
+      "name": "minecraft:village/plains/farm",
+      "weight": 8
+    },
+    {
+      "name": "minecraft:village/plains/church",
+      "weight": 6
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:oak_planks",
+    "log": "minecraft:oak_log",
+    "chest": "minecraft:chest"
+  },
+  "variants": {},
+  "mobs": [
+    {
+      "pos": [
+        2,
+        1,
+        2
+      ],
+      "mob": "minecraft:villager",
+      "count": 2
+    }
+  ],
+  "loot": [
+    {
+      "pos": "2,1,2",
+      "table": "minecraft:chests/village/village_plains_house"
+    }
+  ]
+}

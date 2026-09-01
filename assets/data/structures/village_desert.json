@@ -1,0 +1,47 @@
+{
+  "name": "minecraft:village_desert",
+  "type": "minecraft:village_desert",
+  "placement": {
+    "spacing": 34,
+    "separation": 8,
+    "salt": 10387313,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:village/desert/house",
+      "weight": 10
+    },
+    {
+      "name": "minecraft:village/desert/farm",
+      "weight": 8
+    },
+    {
+      "name": "minecraft:village/desert/church",
+      "weight": 6
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:sandstone",
+    "log": "minecraft:sandstone",
+    "chest": "minecraft:chest"
+  },
+  "variants": {},
+  "mobs": [
+    {
+      "pos": [
+        2,
+        1,
+        2
+      ],
+      "mob": "minecraft:villager",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "2,1,2",
+      "table": "minecraft:chests/village/village_desert_house"
+    }
+  ]
+}

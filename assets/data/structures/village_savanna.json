@@ -1,0 +1,47 @@
+{
+  "name": "minecraft:village_savanna",
+  "type": "minecraft:village_savanna",
+  "placement": {
+    "spacing": 34,
+    "separation": 8,
+    "salt": 10387314,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:village/savanna/house",
+      "weight": 10
+    },
+    {
+      "name": "minecraft:village/savanna/farm",
+      "weight": 8
+    },
+    {
+      "name": "minecraft:village/savanna/church",
+      "weight": 6
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:acacia_planks",
+    "log": "minecraft:acacia_log",
+    "chest": "minecraft:chest"
+  },
+  "variants": {},
+  "mobs": [
+    {
+      "pos": [
+        2,
+        1,
+        2
+      ],
+      "mob": "minecraft:villager",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "2,1,2",
+      "table": "minecraft:chests/village/village_savanna_house"
+    }
+  ]
+}
