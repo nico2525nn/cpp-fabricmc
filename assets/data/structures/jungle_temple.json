@@ -1,0 +1,47 @@
+{
+  "name": "minecraft:jungle_temple",
+  "type": "minecraft:jungle_temple",
+  "placement": {
+    "spacing": 32,
+    "separation": 8,
+    "salt": 14357619,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:jungle_temple/temple",
+      "weight": 10
+    },
+    {
+      "name": "minecraft:jungle_temple/trap",
+      "weight": 6
+    },
+    {
+      "name": "minecraft:jungle_temple/altar",
+      "weight": 4
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:mossy_cobblestone",
+    "log": "minecraft:cobblestone",
+    "chest": "minecraft:chest"
+  },
+  "variants": {},
+  "mobs": [
+    {
+      "pos": [
+        3,
+        1,
+        3
+      ],
+      "mob": "minecraft:skeleton",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "3,1,3",
+      "table": "minecraft:chests/jungle_temple"
+    }
+  ]
+}

@@ -1,0 +1,70 @@
+{
+  "name": "minecraft:village",
+  "type": "minecraft:village",
+  "placement": {
+    "spacing": 34,
+    "separation": 8,
+    "salt": 10387312,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:village/plains/house_oak",
+      "weight": 10
+    },
+    {
+      "name": "minecraft:village/plains/farm",
+      "weight": 8
+    },
+    {
+      "name": "minecraft:village/plains/church",
+      "weight": 6
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:oak_planks",
+    "log": "minecraft:oak_log",
+    "glass": "minecraft:glass",
+    "chest": "minecraft:chest"
+  },
+  "variants": {
+    "minecraft:village/plains/house_oak": {
+      "plank": "minecraft:oak_planks",
+      "log": "minecraft:oak_log"
+    },
+    "minecraft:village/desert/house": {
+      "plank": "minecraft:sandstone",
+      "log": "minecraft:sandstone"
+    },
+    "minecraft:village/savanna/house": {
+      "plank": "minecraft:acacia_planks",
+      "log": "minecraft:acacia_log"
+    }
+  },
+  "mobs": [
+    {
+      "pos": [
+        2,
+        1,
+        2
+      ],
+      "mob": "minecraft:villager",
+      "count": 2
+    },
+    {
+      "pos": [
+        4,
+        1,
+        4
+      ],
+      "mob": "minecraft:iron_golem",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "2,1,2",
+      "table": "minecraft:chests/village/village_plains_house"
+    }
+  ]
+}

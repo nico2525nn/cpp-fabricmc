@@ -1,0 +1,47 @@
+{
+  "name": "minecraft:shipwreck",
+  "type": "minecraft:shipwreck",
+  "placement": {
+    "spacing": 24,
+    "separation": 4,
+    "salt": 165745295,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:shipwreck/ship_bow",
+      "weight": 10
+    },
+    {
+      "name": "minecraft:shipwreck/ship_stern",
+      "weight": 8
+    },
+    {
+      "name": "minecraft:shipwreck/ship_full",
+      "weight": 6
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:oak_planks",
+    "log": "minecraft:oak_log",
+    "chest": "minecraft:chest"
+  },
+  "variants": {},
+  "mobs": [
+    {
+      "pos": [
+        3,
+        1,
+        1
+      ],
+      "mob": "minecraft:drowned",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "3,1,1",
+      "table": "minecraft:chests/shipwreck_supply"
+    }
+  ]
+}

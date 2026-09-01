@@ -1,0 +1,47 @@
+{
+  "name": "minecraft:ruined_portal_desert",
+  "type": "minecraft:ruined_portal_desert",
+  "placement": {
+    "spacing": 40,
+    "separation": 15,
+    "salt": 34222646,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:ruined_portal/desert",
+      "weight": 10
+    },
+    {
+      "name": "minecraft:ruined_portal/jungle",
+      "weight": 6
+    },
+    {
+      "name": "minecraft:ruined_portal/mountain",
+      "weight": 4
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:obsidian",
+    "log": "minecraft:crying_obsidian",
+    "chest": "minecraft:chest"
+  },
+  "variants": {},
+  "mobs": [
+    {
+      "pos": [
+        2,
+        1,
+        0
+      ],
+      "mob": "minecraft:zombie",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "2,1,0",
+      "table": "minecraft:chests/ruined_portal"
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "name": "minecraft:ancient_city_center",
+  "type": "minecraft:ancient_city_center",
+  "placement": {
+    "spacing": 24,
+    "separation": 8,
+    "salt": 20083233,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:ancient_city/center",
+      "weight": 10
+    },
+    {
+      "name": "minecraft:ancient_city/wing_1",
+      "weight": 6
+    },
+    {
+      "name": "minecraft:ancient_city/wing_2",
+      "weight": 4
+    }
+  ],
+  "palette": {
+    "deepslate": "minecraft:deepslate_bricks",
+    "chest": "minecraft:chest",
+    "sculk": "minecraft:sculk"
+  },
+  "variants": {},
+  "mobs": [
+    {
+      "pos": [
+        5,
+        1,
+        5
+      ],
+      "mob": "minecraft:warden",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "4,1,4",
+      "table": "minecraft:chests/ancient_city"
+    }
+  ]
+}

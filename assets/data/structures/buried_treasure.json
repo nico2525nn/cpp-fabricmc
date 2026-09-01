@@ -1,0 +1,37 @@
+{
+  "name": "minecraft:buried_treasure",
+  "type": "minecraft:buried_treasure",
+  "placement": {
+    "spacing": 1,
+    "separation": 0,
+    "salt": 0,
+    "frequency": 0.01
+  },
+  "pieces": [
+    {
+      "name": "minecraft:buried_treasure/treasure",
+      "weight": 10
+    },
+    {
+      "name": "minecraft:buried_treasure/treasure_large",
+      "weight": 6
+    },
+    {
+      "name": "minecraft:buried_treasure/treasure_small",
+      "weight": 4
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:chest",
+    "log": "minecraft:chest",
+    "chest": "minecraft:chest"
+  },
+  "variants": {},
+  "mobs": [],
+  "loot": [
+    {
+      "pos": "1,1,1",
+      "table": "minecraft:chests/buried_treasure"
+    }
+  ]
+}

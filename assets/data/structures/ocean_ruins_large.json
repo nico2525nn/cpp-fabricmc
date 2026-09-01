@@ -1,0 +1,47 @@
+{
+  "name": "minecraft:ocean_ruins_large",
+  "type": "minecraft:ocean_ruins_large",
+  "placement": {
+    "spacing": 20,
+    "separation": 8,
+    "salt": 14357622,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:ocean_ruins/ruins_large",
+      "weight": 10
+    },
+    {
+      "name": "minecraft:ocean_ruins/ruins_huge",
+      "weight": 6
+    },
+    {
+      "name": "minecraft:ocean_ruins/cluster",
+      "weight": 4
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:prismarine_bricks",
+    "log": "minecraft:prismarine",
+    "chest": "minecraft:chest"
+  },
+  "variants": {},
+  "mobs": [
+    {
+      "pos": [
+        2,
+        1,
+        2
+      ],
+      "mob": "minecraft:drowned",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "2,1,2",
+      "table": "minecraft:chests/ocean_ruins"
+    }
+  ]
+}

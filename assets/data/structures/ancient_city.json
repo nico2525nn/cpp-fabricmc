@@ -1,0 +1,64 @@
+{
+  "name": "minecraft:ancient_city",
+  "type": "minecraft:ancient_city",
+  "placement": {
+    "spacing": 24,
+    "separation": 8,
+    "salt": 20083232,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:ancient_city/center",
+      "weight": 10
+    },
+    {
+      "name": "minecraft:ancient_city/wing_1",
+      "weight": 8
+    },
+    {
+      "name": "minecraft:ancient_city/wing_2",
+      "weight": 6
+    }
+  ],
+  "palette": {
+    "deepslate": "minecraft:deepslate_bricks",
+    "chest": "minecraft:chest",
+    "sculk": "minecraft:sculk"
+  },
+  "variants": {
+    "minecraft:ancient_city/center": {
+      "deepslate": "minecraft:deepslate_bricks",
+      "sculk": "minecraft:sculk_sensor"
+    },
+    "minecraft:ancient_city/wing_1": {
+      "deepslate": "minecraft:cobbled_deepslate",
+      "sculk": "minecraft:sculk"
+    },
+    "minecraft:ancient_city/wing_2": {
+      "deepslate": "minecraft:polished_deepslate",
+      "sculk": "minecraft:sculk_catalyst"
+    }
+  },
+  "mobs": [
+    {
+      "pos": [
+        5,
+        1,
+        5
+      ],
+      "mob": "minecraft:warden",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "4,1,4",
+      "table": "minecraft:chests/ancient_city"
+    },
+    {
+      "pos": "6,1,6",
+      "table": "minecraft:chests/ancient_city_ice_box"
+    }
+  ]
+}

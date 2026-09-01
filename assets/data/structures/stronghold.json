@@ -1,0 +1,47 @@
+{
+  "name": "minecraft:stronghold",
+  "type": "minecraft:stronghold",
+  "placement": {
+    "spacing": 32,
+    "separation": 8,
+    "salt": 14357617,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:stronghold/room_crossing",
+      "weight": 10
+    },
+    {
+      "name": "minecraft:stronghold/corridor",
+      "weight": 8
+    },
+    {
+      "name": "minecraft:stronghold/portal_room",
+      "weight": 2
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:stone_bricks",
+    "log": "minecraft:stone_bricks",
+    "chest": "minecraft:chest"
+  },
+  "variants": {},
+  "mobs": [
+    {
+      "pos": [
+        1,
+        1,
+        0
+      ],
+      "mob": "minecraft:silverfish",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "1,1,0",
+      "table": "minecraft:chests/stronghold_corridor"
+    }
+  ]
+}

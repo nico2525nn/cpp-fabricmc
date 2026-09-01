@@ -1,0 +1,68 @@
+{
+  "name": "minecraft:trial_chambers",
+  "type": "minecraft:trial_chambers",
+  "placement": {
+    "spacing": 34,
+    "separation": 12,
+    "salt": 94251327,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:trial_chambers/corridor",
+      "weight": 8
+    },
+    {
+      "name": "minecraft:trial_chambers/chamber_1",
+      "weight": 12
+    },
+    {
+      "name": "minecraft:trial_chambers/chamber_4",
+      "weight": 6
+    }
+  ],
+  "palette": {
+    "tuff": "minecraft:tuff",
+    "tuff_bricks": "minecraft:tuff_bricks",
+    "chiseled_tuff": "minecraft:chiseled_tuff",
+    "spawner": "minecraft:trial_spawner",
+    "vault": "minecraft:vault",
+    "chest": "minecraft:chest",
+    "copper_bulb": "minecraft:copper_bulb"
+  },
+  "variants": {
+    "minecraft:trial_chambers/corridor": {
+      "tuff": "minecraft:tuff",
+      "tuff_bricks": "minecraft:tuff_bricks"
+    },
+    "minecraft:trial_chambers/chamber_4": {
+      "tuff": "minecraft:polished_tuff",
+      "chest": "minecraft:chest"
+    },
+    "minecraft:trial_chambers/chamber_1": {
+      "tuff": "minecraft:tuff_bricks",
+      "chest": "minecraft:chest"
+    }
+  },
+  "mobs": [
+    {
+      "pos": [
+        2,
+        1,
+        2
+      ],
+      "mob": "minecraft:breeze",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "2,1,2",
+      "table": "minecraft:chests/trial_chambers/corridor"
+    },
+    {
+      "pos": "5,1,5",
+      "table": "minecraft:chests/trial_chambers/chamber"
+    }
+  ]
+}

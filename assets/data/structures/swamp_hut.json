@@ -1,0 +1,47 @@
+{
+  "name": "minecraft:swamp_hut",
+  "type": "minecraft:swamp_hut",
+  "placement": {
+    "spacing": 32,
+    "separation": 8,
+    "salt": 14357620,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:swamp_hut/hut",
+      "weight": 10
+    },
+    {
+      "name": "minecraft:swamp_hut/garden",
+      "weight": 6
+    },
+    {
+      "name": "minecraft:swamp_hut/dock",
+      "weight": 4
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:spruce_planks",
+    "log": "minecraft:oak_log",
+    "chest": "minecraft:chest"
+  },
+  "variants": {},
+  "mobs": [
+    {
+      "pos": [
+        2,
+        1,
+        2
+      ],
+      "mob": "minecraft:witch",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "2,1,2",
+      "table": "minecraft:chests/swamp_hut"
+    }
+  ]
+}

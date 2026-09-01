@@ -84,6 +84,39 @@ int StructurePlacer::load(const std::string& baseDir) {
                     if (!pn.empty()) cf.pieces.emplace_back(pn, w);
                 }
             }
+            if (auto* pal = v.find("palette"); pal && pal->isObj()) {
+                for (auto& [k,val] : pal->obj) if (val.isStr()) cf.palette[k]=val.asStr();
+            }
+            if (auto* vars = v.find("variants"); vars && vars->isObj()) {
+                for (auto& [piece,val] : vars->obj) if (val.isObj()) {
+                    for (auto& [k2,val2] : val.obj) if (val2.isStr()) cf.variants[piece][k2]=val2.asStr();
+                }
+            }
+            if (auto* mobs = v.find("mobs"); mobs && mobs->isArr()) {
+                for (auto& e : mobs->arr) if (e.isObj()) {
+                    ConfiguredFeature::MobPlace mp{};
+                    if (auto* pos = e.find("pos"); pos && pos->isArr() && pos->arr.size()>=3) {
+                        mp.pos[0]=pos->arr[0].asInt(0); mp.pos[1]=pos->arr[1].asInt(0); mp.pos[2]=pos->arr[2].asInt(0);
+                    }
+                    if (auto* mob = e.find("mob")) mp.mob=mob->asStr();
+                    else if (auto* mob2 = e.find("type")) mp.mob=mob2->asStr();
+                    if (auto* c = e.find("count")) mp.count=c->asInt(1);
+                    if (!mp.mob.empty()) cf.mobs.push_back(std::move(mp));
+                }
+            }
+            if (auto* lt = v.find("loot"); lt && lt->isArr()) {
+                for (auto& e : lt->arr) if (e.isObj()) {
+                    std::string posStr, table;
+                    if (auto* p = e.find("pos")) posStr=p->asStr();
+                    if (auto* t = e.find("table")) table=t->asStr();
+                    else if (auto* t2 = e.find("loot_table")) table=t2->asStr();
+                    if (!posStr.empty() && !table.empty()) cf.lootByPos.emplace_back(posStr, table);
+                }
+            }
+            // also support loot_tables map form
+            if (auto* lt2 = v.find("loot_tables"); lt2 && lt2->isObj()) {
+                for (auto& [k,val] : lt2->obj) if (val.isStr()) cf.lootByPos.emplace_back(k, val.asStr());
+            }
             configured_.emplace(cf.name, std::move(cf));
             // placed
             PlacedFeature pf;

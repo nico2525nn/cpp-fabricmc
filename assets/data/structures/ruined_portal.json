@@ -1,0 +1,47 @@
+{
+  "name": "minecraft:ruined_portal",
+  "type": "minecraft:ruined_portal",
+  "placement": {
+    "spacing": 40,
+    "separation": 15,
+    "salt": 34222645,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:ruined_portal/portal",
+      "weight": 10
+    },
+    {
+      "name": "minecraft:ruined_portal/portal_small",
+      "weight": 6
+    },
+    {
+      "name": "minecraft:ruined_portal/portal_large",
+      "weight": 4
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:obsidian",
+    "log": "minecraft:crying_obsidian",
+    "chest": "minecraft:chest"
+  },
+  "variants": {},
+  "mobs": [
+    {
+      "pos": [
+        2,
+        1,
+        0
+      ],
+      "mob": "minecraft:zombie",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "2,1,0",
+      "table": "minecraft:chests/ruined_portal"
+    }
+  ]
+}
