@@ -729,10 +729,10 @@ static void testPlan37Recipes(ServerProc& srv){
     SECTION("Plan37 Recipes: craft stick mirrored + stonecutting (B-03) — 2 cases");
     TestClient c; CHECK(c.connect("127.0.0.1",srv.port)&&c.join("Rec37"),"plan37 recipes join");
     c.pump(800);
-    // mirrored: give planks and check ContainerClick crafting not crash; use /give and check SystemChat
+    // mirrored: give planks and check ContainerClick crafting not crash; strict via SystemChat>0 or waitChat Given
     c.sendChatCommand("give Rec37 minecraft:oak_planks 3");
     c.pump(400);
-    CHECK(c.count(proto::pl::sc::SystemChat)>=0,"plan37 craft plank mirrored give strict (C-03: SystemChat no-crash)");
+    CHECK(c.count(proto::pl::sc::SystemChat)>0 || waitChat(c,"Given",800),"plan37 craft plank mirrored give strict (C-11 strict: SystemChat >0)");
     // stonecutting: place stonecutter and give stone, check block placement
     c.sendChatCommand("setblock 200 -60 0 minecraft:stonecutter");
     c.pump(300);
