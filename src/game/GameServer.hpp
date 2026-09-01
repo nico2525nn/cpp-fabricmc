@@ -728,6 +728,7 @@ public:
     void tickOnce();
     void survivalTick();
     void mobsTick();
+    void drainPendingStructureQueues(); // plan36 §5: drain StructureManager pending loot/mobs tick
     void applyDamageToMob(MobEntity& m, float amount, const char* cause);
     void applyDamageToMob(MobEntity& m, float amount, const DamageSource& src);
     void growResinNearHeart(int hx,int hy,int hz);
