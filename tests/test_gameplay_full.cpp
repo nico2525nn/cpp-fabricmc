@@ -620,7 +620,6 @@ static void test_worldgen() {
             if(e.key.find("desert")!=std::string::npos) foundDesert=true;
             if(e.key.find("jungle")!=std::string::npos) foundJungle=true;
         }
-        CHECK(foundDesert || true, "hypercubes contain desert (if missing -> FAIL gap)");
         // Actually we expect desert present; if missing we want FAIL
         CHECK(foundDesert, "hypercubes must contain desert biome (vanilla)");
         CHECK(foundJungle, "hypercubes must contain jungle biome");
