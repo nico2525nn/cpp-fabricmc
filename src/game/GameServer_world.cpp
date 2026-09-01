@@ -24,6 +24,9 @@
 #include "PotionBrewing.hpp"
 #include "Particles.hpp"
 #include "../core/NBTValue.hpp"
+#include "Anvil.hpp"
+#include "RegionFile.hpp"
+#include "ChunkCodec.hpp"
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -438,5 +441,106 @@ std::string GameServer::dispatchConsole(const std::string& line) {
     };
     const auto res = commands_.execute(line, std::move(src));
     return res.ok ? "ok" : ("error: " + res.errorText);
+}
+
+// -------- B-07 async Anvil I/O + LRU (plan38 world worktree) --------
+void GameServer::demandChunkAsync(std::int32_t cx, std::int32_t cz) {
+    const std::int64_t k = chunkKey(cx, cz);
+    {
+        std::lock_guard lk(chunkCacheMtx_);
+        if (chunkCache_.find(k) != chunkCache_.end()) return;
+    }
+    if (world_.hasChunk(cx, cz)) return;
+    {
+        std::lock_guard lk(pendingLoadsMtx_);
+        if (pendingLoads_.count(k)) return;
+        std::string path = cfg_.worldDir + "/region/r." + std::to_string(cx >> 5) + "." + std::to_string(cz >> 5) + ".mca";
+        pendingLoads_[k] = ioPool_.submit([path, cx, cz]{
+            std::vector<std::uint8_t> raw;
+            try {
+                RegionFile rf(path);
+                raw = rf.load(cx & 31, cz & 31);
+            } catch (...) {}
+            return raw;
+        });
+        if (ioPool_.pending() > 64) {
+            // backpressure hint: caller tick will drain via pollPendingLoads()
+        }
+    }
+}
+void GameServer::saveChunkAsync(std::int32_t cx, std::int32_t cz) {
+    // Serialize NBT on tick thread, then offload zlib + file write to ioPool (fire-and-forget)
+    Chunk tmp;
+    bool has = false;
+    world_.withChunk(cx, cz, [&](const Chunk& c){ tmp = c; has = true; });
+    if (!has) return;
+    // Build NBT bytes on tick thread (cheap: chunkToNBT without compression)
+    nbt::Value root = chunkToNBT(cx, cz, tmp, world_.biomeKey(), nullptr);
+    WriteBuffer out;
+    nbt::writeFileRoot(out, root);
+    std::vector<std::uint8_t> nbtBytes = out.data;
+    std::string path = cfg_.worldDir + "/region/r." + std::to_string(cx >> 5) + "." + std::to_string(cz >> 5) + ".mca";
+    // cache body update (tick thread)
+    {
+        static const std::uint32_t biomeIdx = 0;
+        auto body = std::make_shared<const std::vector<std::uint8_t>>([&]{
+            WriteBuffer wb;
+            world_.withChunk(cx, cz, [&](const Chunk& c){ serializeLevelChunkBody(wb, cx, cz, c, biomeIdx); });
+            return wb.data;
+        }());
+        storeChunk(cx, cz, tmp.revision, body);
+    }
+    ioPool_.submit([path, cx, cz, nbtBytes = std::move(nbtBytes)]() mutable {
+        try {
+            RegionFile rf(path);
+            rf.store(cx & 31, cz & 31, nbtBytes);
+        } catch (...) {}
+    });
+    if (ioPool_.pending() > 64) pollPendingLoads();
+}
+void GameServer::pollPendingLoads() {
+    // Tick-thread only: drain ready futures (LightUpdateQueue pattern)
+    std::vector<std::int64_t> toErase;
+    {
+        std::lock_guard lk(pendingLoadsMtx_);
+        for (auto it = pendingLoads_.begin(); it != pendingLoads_.end(); ) {
+            if (it->second.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                std::vector<std::uint8_t> bytes;
+                try { bytes = it->second.get(); } catch (...) {}
+                const std::int64_t key = it->first;
+                const std::int32_t cx = static_cast<std::int32_t>(key >> 32);
+                const std::int32_t cz = static_cast<std::int32_t>(key & 0xFFFFFFFFLL);
+                if (!bytes.empty()) {
+                    try {
+                        ReadBuffer rb(bytes);
+                        nbt::Parser parser(rb);
+                        nbt::Value root = parser.readFileRoot();
+                        Chunk chunk;
+                        std::string bio;
+                        if (chunkFromNBT(root, chunk, {}, bio, nullptr)) {
+                            world_.setChunk(cx, cz, std::move(chunk));
+                            // populate cache with encoded body
+                            auto body = std::make_shared<const std::vector<std::uint8_t>>([&]{
+                                WriteBuffer wb;
+                                static const std::uint32_t biomeIdx = 0;
+                                world_.withChunk(cx, cz, [&](const Chunk& c){ serializeLevelChunkBody(wb, cx, cz, c, biomeIdx); });
+                                return wb.data;
+                            }());
+                            std::uint64_t rev = world_.revisionAt(cx, cz);
+                            storeChunk(cx, cz, rev, body);
+                        } else {
+                            world_.generateChunkIfMissing(cx, cz);
+                        }
+                    } catch (...) {
+                        world_.generateChunkIfMissing(cx, cz);
+                    }
+                } else {
+                    // no stored chunk → generate via WorldGen (tick thread, seed-safe)
+                    world_.generateChunkIfMissing(cx, cz);
+                }
+                it = pendingLoads_.erase(it);
+            } else ++it;
+        }
+    }
 }
 } // namespace cppfm
