@@ -925,12 +925,33 @@ public:
     bool validateFeatureFlags(const std::vector<std::array<std::string,3>>& clientPacks);
     // Serialized-chunk cache: LRU 1024 (plan38 B-07) — Chebyshev-aware eviction via MRU list
     using ChunkBodyRef = std::shared_ptr<const std::vector<std::uint8_t>>;
+    // plan41 C-09: LRU stats (atomic hits/misses, p50<5/p95<10/hit>80 strict)
+    struct ChunkCacheStats {
+        std::size_t hits = 0, misses = 0, size = 0;
+        static constexpr std::size_t kMax = 1024;
+        double hitRate() const { auto tot = hits + misses; return tot == 0 ? 0.0 : (double)hits / (double)tot; }
+    };
+    struct ChunkIoStats { std::size_t ioQueueDepth = 0, pendingLoads = 0; int viewDistance = 32; };
+    double chunkCacheHitRate() const {
+        auto tot = cacheHits_.load(std::memory_order_relaxed) + cacheMisses_.load(std::memory_order_relaxed);
+        return tot == 0 ? 0.0 : (double)cacheHits_.load(std::memory_order_relaxed) / (double)tot;
+    }
+    ChunkCacheStats chunkCacheStats() const {
+        std::lock_guard lk(chunkCacheMtx_);
+        return {cacheHits_.load(std::memory_order_relaxed), cacheMisses_.load(std::memory_order_relaxed), chunkCache_.size()};
+    }
+    ChunkIoStats chunkIoStats() const {
+        std::lock_guard lk(pendingLoadsMtx_);
+        int vd = cfg_.viewDistance;
+        return {ioPool_.pending(), pendingLoads_.size(), vd};
+    }
     bool getCachedChunk(std::int32_t cx, std::int32_t cz, std::uint32_t biomeIdx,
                         ChunkBodyRef& out) {
         const std::int64_t k = chunkKey(cx, cz);
         std::lock_guard lk(chunkCacheMtx_);
         auto it = chunkCache_.find(k);
-        if (it == chunkCache_.end()) return false;
+        if (it == chunkCache_.end()) { cacheMisses_.fetch_add(1, std::memory_order_relaxed); return false; }
+        cacheHits_.fetch_add(1, std::memory_order_relaxed);
         // LRU touch: move to front (MRU)
         chunkCacheLru_.splice(chunkCacheLru_.begin(), chunkCacheLru_, it->second.it);
         it->second.it = chunkCacheLru_.begin();
@@ -984,6 +1005,9 @@ public:
         std::lock_guard lk(pendingLoadsMtx_);
         return pendingLoads_.size();
     }
+    // plan41 C-09: aliases for bench (ChunkCacheStats already provides size)
+    std::size_t chunkCacheHits() const { return cacheHits_.load(std::memory_order_relaxed); }
+    std::size_t chunkCacheMisses() const { return cacheMisses_.load(std::memory_order_relaxed); }
 
 private:
     void acceptLoop();
@@ -1204,6 +1228,7 @@ private:
     std::unordered_map<std::int64_t, CachedChunk> chunkCache_;
     std::list<std::int64_t> chunkCacheLru_; // MRU front, LRU back (plan38 B-07 LRU 1024)
     mutable std::mutex chunkCacheMtx_;
+    std::atomic<std::size_t> cacheHits_{0}, cacheMisses_{0}; // plan41 C-09 LRU stats
     std::unordered_map<std::int32_t, std::int64_t> ghostThrottle_; // entityId -> last tick for PlaceGhostRecipe 0x39
     // W19/B-07 async I/O: ThreadPool for RegionFile zlib offload (Yarn ThreadedAnvilChunkStorage)
     core::ThreadPool ioPool_{4};
