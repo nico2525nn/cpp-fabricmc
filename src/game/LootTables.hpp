@@ -16,6 +16,7 @@
 
 namespace cppfm {
 
+struct LootAttribute { std::string name, attribute, operation; double amount = 0; };
 struct LootEntry {
     std::string name; // e.g. minecraft:cobblestone
     int weight = 1;
@@ -41,12 +42,22 @@ struct LootEntry {
     std::string applyBonusEnchant;
     bool lootingEnchant = false;
     int lootingMin = 0, lootingMax = 1;
+    // plan40 C-05: extended functions
+    bool hasLimit = false; int limitMin = 1, limitMax = 64;
+    bool hasApplyBonusBinomial = false, hasApplyBonusUniform = false;
+    int applyBonusN = 1; double applyBonusP = 0.33; double bonusMultiplier = 1.0; double applyBonusExtra = 0;
+    bool hasSetDamage = false; double setDamageMin = 0, setDamageMax = 0;
+    bool hasSetAttributes = false; std::vector<LootAttribute> setAttributes;
+    bool hasSetNbt = false; std::string setNbt;
+    bool hasSetLore = false; std::vector<std::string> setLore;
+    std::string setName;
 };
 struct LootContext {
     float explosionRadius = 0.f;
     int fortuneLevel = 0;
     int lootingLevel = 0;
     std::string killerName;
+    bool isPlayerKill = false;
     // future: BlockEntity*, killer etc — plan35 §2 needs explosionRadius only
 };
 
@@ -55,6 +66,7 @@ struct LootPool {
     double rollsMin = 1, rollsMax = 1;
     bool rollsIsRange = false;
     std::vector<LootEntry> entries;
+    json::Value conditionsJson;
 };
 
 struct LootTable {
@@ -104,6 +116,8 @@ public:
                         pool.rollsIsRange=true; pool.rollsMin=mn; pool.rollsMax=mx;
                         pool.rolls=static_cast<int>((mn+mx)/2+0.5); if(pool.rolls<1) pool.rolls=1;
                     }
+                    // plan40: pool-level conditions
+                    if(auto* conds=poolV.find("conditions")) if(conds->isArr()) pool.conditionsJson = *conds;
                     const auto& entries = poolV.at("entries");
                     if (entries.isArr()) {
                         for (auto& e: entries.arr) {
@@ -118,14 +132,15 @@ public:
                                         if (chEntries.isArr()) {
                                             for (auto& ee: chEntries.arr) if(ee.at("name").isStr()){
                                                 LootEntry ent; ent.name=ee.at("name").asStr();
-                                                const auto& funcs=ee.at("functions");
-                                                if(funcs.isArr()) applyFunctions(funcs,ent);
+                                                if(auto* w2=ee.find("weight")) if(w2->isNum()) ent.weight=w2->asInt(1);
+                                                if(auto* f2=ee.find("functions")) if(f2->isArr()) applyFunctions(*f2,ent);
+                                                else if(auto* cl=e.find("conditions")) (void)cl;
                                                 pool.entries.push_back(std::move(ent));
                                             }
                                         } else if (ch.at("name").isStr()){
                                             LootEntry ent; ent.name=ch.at("name").asStr();
-                                            const auto& funcs=ch.at("functions");
-                                            if(funcs.isArr()) applyFunctions(funcs,ent);
+                                            if(auto* w2=ch.find("weight")) if(w2->isNum()) ent.weight=w2->asInt(1);
+                                            if(auto* f2=ch.find("functions")) if(f2->isArr()) applyFunctions(*f2,ent);
                                             pool.entries.push_back(std::move(ent));
                                         }
                                     }
@@ -137,8 +152,14 @@ public:
                             LootEntry ent; ent.name=n;
                             const auto& w=e.at("weight");
                             if(w.isNum()) ent.weight=w.asInt(1);
-                            const auto& funcs=e.at("functions");
-                            if(funcs.isArr()) applyFunctions(funcs,ent);
+                            // entry-level conditions as functions: skip if needed (survives_explosion handled via explosionDecay)
+                            if(auto* ec=e.find("conditions")) if(ec->isArr()){
+                                for(auto& cc: ec->arr){
+                                    std::string cn=cc.at("condition").asStr();
+                                    if(cn.find("survives_explosion")!=std::string::npos) ent.explosionDecay=true;
+                                }
+                            }
+                            if(auto* funcs=e.find("functions")) if(funcs->isArr()) applyFunctions(*funcs,ent);
                             pool.entries.push_back(std::move(ent));
                         }
                     }
@@ -228,6 +249,26 @@ public:
         (void)tool;
         std::vector<ItemStack> out;
         for (auto& pool: tbl.pools) {
+            // plan40 C-05: pool conditions (random_chance/killed_by_player/survives_explosion)
+            bool poolSkip=false;
+            if(pool.conditionsJson.isArr()){
+                for(auto& cond: pool.conditionsJson.arr){
+                    std::string c=cond.at("condition").asStr();
+                    if(c.find("random_chance")!=std::string::npos){
+                        double ch=1.0;
+                        if(auto* v=cond.find("chance")) if(v->isNum()) ch=v->number;
+                        if(ch<1.0 && (rand()/(double)RAND_MAX) >= ch) { poolSkip=true; break; }
+                    } else if(c.find("killed_by_player")!=std::string::npos){
+                        if(ctx && ctx->killerName.empty() && !ctx->isPlayerKill) { poolSkip=true; break; }
+                    } else if(c.find("survives_explosion")!=std::string::npos){
+                        if(ctx && ctx->explosionRadius>0.f){
+                            double vanish=1.0/ctx->explosionRadius;
+                            if((rand()/(double)RAND_MAX) < vanish) { poolSkip=true; break; }
+                        }
+                    }
+                }
+            }
+            if(poolSkip) continue;
             int rolls=pool.rolls;
             if(pool.rollsIsRange){ double r=pool.rollsMin + (rand()/(double)RAND_MAX)*(pool.rollsMax-pool.rollsMin); rolls=static_cast<int>(r+0.5); if(rolls<1)rolls=1; }
             for(int r=0;r<rolls;++r){
@@ -238,7 +279,7 @@ public:
                 const LootEntry* chosen=nullptr;
                 for(auto& e:pool.entries){ if(pick<e.weight){chosen=&e;break;} pick-=e.weight; }
                 if(!chosen) chosen=&pool.entries.back();
-                // plan35 §2: explosion_decay — 1/radius vanish
+                // plan35 §2: explosion_decay — 1/radius vanish (entry-level)
                 if (chosen->explosionDecay && ctx && ctx->explosionRadius > 0.f) {
                     double vanish = 1.0 / ctx->explosionRadius;
                     if ((rand()/(double)RAND_MAX) < vanish) continue;
@@ -262,35 +303,55 @@ public:
                     int looting = ctx->lootingLevel;
                     if (looting>0) {
                         int extra = chosen->lootingMin + (chosen->lootingMax>chosen->lootingMin ? rand()%(chosen->lootingMax-chosen->lootingMin+1) : 0);
-                        // vanilla looting_enchant count: uniform 0..looting
                         cnt += rand()%(looting+1) + extra;
                     }
                 }
-                // plan37 B-05: apply_bonus ore_drops (fortune)
+                // plan40 C-05: apply_bonus 3 formulas (ore_drops binomial p=0.33, uniform, binomial)
                 if (chosen->applyBonusOre && ctx) {
                     int fortune = ctx->fortuneLevel;
                     if (fortune>0) {
                         int bonus=0;
-                        if(fortune==1) bonus = rand()%2;
-                        else if(fortune==2) bonus = rand()%3;
-                        else if(fortune>=3) bonus = rand()%4;
+                        if(chosen->applyBonusFormula.find("ore_drops")!=std::string::npos){
+                            for(int i=0;i<fortune;++i) if((rand()/(double)RAND_MAX) < 0.33) ++bonus;
+                            if(fortune>=3 && (rand()/(double)RAND_MAX) < 0.33) ++bonus;
+                        } else if(chosen->hasApplyBonusBinomial){
+                            for(int i=0;i<chosen->applyBonusN;++i) if((rand()/(double)RAND_MAX) < chosen->applyBonusP) ++bonus;
+                            bonus += fortune;
+                        } else if(chosen->hasApplyBonusUniform){
+                            bonus = (int)(chosen->applyBonusExtra * fortune);
+                        } else {
+                            if(fortune==1) bonus = rand()%2;
+                            else if(fortune==2) bonus = rand()%3;
+                            else if(fortune>=3) bonus = rand()%4;
+                        }
                         cnt += bonus;
                         if(cnt>64) cnt=64;
                     }
                 } else if (ctx && (dropName.find("ore")!=std::string::npos || base.find("ore")!=std::string::npos)) {
                     int fortune = ctx->fortuneLevel;
                     if(fortune>0){
-                        // fallback generic fortune for ores when no explicit apply_bonus (plan35 simplified)
-                        int bonus=rand()%(fortune+1);
+                        int bonus=0;
+                        for(int i=0;i<fortune;++i) if((rand()/(double)RAND_MAX) < 0.33) ++bonus;
                         cnt+=bonus;
                     }
                 }
+                // plan40: limit_count clamp after bonus
+                if(chosen->hasLimit){ if(cnt < chosen->limitMin) cnt=chosen->limitMin; if(cnt > chosen->limitMax) cnt=chosen->limitMax; }
                 if(cnt<=0) {
-                    // allow zero count for some pools (vanilla 0-2). Skip if zero.
                     if(chosen->countMin==0) continue;
                     cnt=1;
                 }
                 auto st = ItemStack::of(iidIt->second, static_cast<int16_t>(cnt));
+                // plan40: set_damage
+                if(chosen->hasSetDamage){
+                    float dmg = (float)chosen->setDamageMin + (float)rand()/(float)RAND_MAX * (float)(chosen->setDamageMax - chosen->setDamageMin);
+                    int maxDmg = ItemStack::maxDamageFor(dropName.find(':')!=std::string::npos? gen::itemIdByName().at(dropName) : 0);
+                    // fallback: use iid
+                    if(maxDmg==0) maxDmg = ItemStack::maxDamageFor(iidIt->second);
+                    if(maxDmg>0) st.setDamage((int)(maxDmg * dmg));
+                }
+                if(!chosen->setLore.empty()) st.lore = chosen->setLore;
+                if(!chosen->setName.empty()) st.displayNameLoot = chosen->setName;
                 // plan37 B-05: enchant_randomly
                 if (chosen->enchantRandomly) {
                     std::string pick;
@@ -302,12 +363,13 @@ public:
                     int lvl = 1 + rand()%3;
                     ItemStack::addEnchant(st, pick, lvl);
                 }
-                // plan37 B-05: fill_player_head — keep count 1, skull owner would be killerName (stub)
                 if (chosen->fillPlayerHead) {
                     st.count = 1;
-                    (void)ctx; // killerName would set SkullOwner component
+                    (void)ctx;
                 }
                 (void)chosen->copyComponents;
+                (void)chosen->setAttributes;
+                (void)chosen->setNbt;
                 out.push_back(std::move(st));
             }
         }
@@ -363,7 +425,14 @@ private:
                 ent.applyBonusOre = true;
                 if(auto* f=fn.find("formula")) ent.applyBonusFormula = f->asStr();
                 if(auto* e=fn.find("enchantment")) ent.applyBonusEnchant = e->asStr();
-                if(ent.applyBonusFormula.empty()) if(auto* pf=fn.find("parameters")) if(auto* bm=pf->find("bonusMultiplier")) (void)bm;
+                if(auto* pf=fn.find("parameters")){
+                    if(auto* bm=pf->find("bonusMultiplier")) ent.bonusMultiplier = bm->asFloat(1.0f);
+                    if(auto* ex=pf->find("extra")) ent.applyBonusN = ex->asInt(1);
+                    if(auto* p=pf->find("probability")) ent.applyBonusP = p->asFloat(0.33f);
+                }
+                if(ent.applyBonusFormula.find("ore_drops")!=std::string::npos) ent.applyBonusOre=true;
+                else if(ent.applyBonusFormula.find("binomial")!=std::string::npos){ ent.hasApplyBonusBinomial=true; if(ent.applyBonusN<=0) ent.applyBonusN=1; }
+                else if(ent.applyBonusFormula.find("uniform")!=std::string::npos){ ent.hasApplyBonusUniform=true; ent.applyBonusExtra = ent.bonusMultiplier; }
             } else if(ftype.find("looting_enchant")!=std::string::npos){
                 ent.lootingEnchant = true;
                 if(auto* cnt=fn.find("count")){
@@ -379,7 +448,35 @@ private:
             } else if(ftype.find("enchant_with_levels")!=std::string::npos){
                 ent.enchantRandomly = true;
             } else if(ftype.find("limit_count")!=std::string::npos){
-                // stub: handled as min/max clamp in evaluate
+                ent.hasLimit=true;
+                if(auto* l=fn.find("limit")){
+                    if(l->isNum()) ent.limitMin=ent.limitMax=l->asInt(1);
+                    else if(l->isObj()){ if(auto* mn=l->find("min")) ent.limitMin=mn->asInt(1); if(auto* mx=l->find("max")) ent.limitMax=mx->asInt(64); if(ent.limitMax<ent.limitMin) ent.limitMax=ent.limitMin; }
+                    else if(l->isArr() && l->arr.size()>=2){ ent.limitMin=l->arr[0].asInt(1); ent.limitMax=l->arr[1].asInt(64); }
+                } else {
+                    if(auto* mn=fn.find("min")) ent.limitMin=mn->asInt(1);
+                    if(auto* mx=fn.find("max")) ent.limitMax=mx->asInt(64);
+                }
+            } else if(ftype.find("set_damage")!=std::string::npos){
+                ent.hasSetDamage=true;
+                if(auto* d=fn.find("damage")){
+                    if(d->isNum()) ent.setDamageMin=ent.setDamageMax=d->asFloat(0);
+                    else if(d->isObj()){ if(auto* mn=d->find("min")) ent.setDamageMin=mn->asFloat(0); if(auto* mx=d->find("max")) ent.setDamageMax=mx->asFloat(0); }
+                }
+            } else if(ftype.find("set_attributes")!=std::string::npos){
+                ent.hasSetAttributes=true;
+                if(auto* attrs=fn.find("attributes")) if(attrs->isArr()) for(auto& a: attrs->arr) if(a.isObj()){
+                    LootAttribute at; if(auto* n=a.find("name")) at.name=n->asStr(); if(auto* at2=a.find("attribute")) at.attribute=at2->asStr(); if(auto* op=a.find("operation")) at.operation=op->asStr(); if(auto* am=a.find("amount")){ if(am->isNum()) at.amount=am->number; else if(am->isObj()){ if(auto* mn=am->find("min")) at.amount=mn->asFloat(0); } } ent.setAttributes.push_back(std::move(at));
+                }
+            } else if(ftype.find("set_nbt")!=std::string::npos || ftype.find("set_components")!=std::string::npos){
+                ent.hasSetNbt=true;
+                if(auto* t=fn.find("tag")) ent.setNbt=t->asStr(); else if(auto* c=fn.find("components")) ent.setNbt=c->dump(); else if(auto* comps=fn.find("components")) ent.setNbt=comps->dump();
+            } else if(ftype.find("set_lore")!=std::string::npos){
+                ent.hasSetLore=true;
+                if(auto* lore=fn.find("lore")) if(lore->isArr()) for(auto& l: lore->arr) ent.setLore.push_back(l.isStr()?l.asStr():l.dump());
+            } else if(ftype.find("set_name")!=std::string::npos || ftype.find("set_custom_name")!=std::string::npos){
+                if(auto* nm=fn.find("name")) ent.setName=nm->asStr(); else if(auto* v=fn.find("value")) ent.setName=v->asStr();
+                ent.hasSetLore=true;
             }
         }
     }
