@@ -589,81 +589,125 @@ void GameServer::survivalTick() {
         (void)now;
     }
 }
+namespace {
+enum SpawnGroupIdx{ SG_MONSTER=0, SG_CREATURE=1, SG_AMBIENT=2, SG_WATER_CREATURE=3, SG_WATER_AMBIENT=4, SG_UNDERGROUND=5, SG_AXOLOTLS=6 };
+const std::array<int,7> kSpawnCaps{70,10,15,5,20,5,5};
+inline SpawnGroupIdx groupForKind(MobKind k){
+    if(MobEntity::isHostile(k)) return SG_MONSTER;
+    if(k==MobKind::Bat) return SG_AMBIENT;
+    if(k==MobKind::Cod||k==MobKind::Salmon||k==MobKind::TropicalFish||k==MobKind::Pufferfish||
+       k==MobKind::Squid||k==MobKind::GlowSquid||k==MobKind::Dolphin||k==MobKind::Turtle) return SG_WATER_CREATURE;
+    return SG_CREATURE;
+}
+} // namespace
+// plan36 natural spawn helper: count mobs by group
+static std::array<int,7> countMobsByGroup(const std::vector<std::shared_ptr<MobEntity>>& mobs){
+    std::array<int,7> c{}; for(auto& m: mobs) c[(int)groupForKind(m->kind)]++; return c;
+}
 void GameServer::trySpawnMobs() {
     if (!gamerules_.getBool("doMobSpawning")) return;
+    if (difficulty()=="peaceful") {
+        // still allow creature spawns but no monster; handle via caps below
+    }
     static std::int64_t lastTrace = 0;
     const bool tr = getenv("CPPFM_TRACE") != nullptr;
     if (tr && tickNow() - lastTrace >= 200) {
         lastTrace = tickNow();
-        std::fprintf(stderr, "[cppfm] mob-spawn tick: night=%d mobs=%zu\n",
-                     (int)isNight(), mobs_.size());
+        std::fprintf(stderr, "[cppfm] mob-spawn tick: night=%d mobs=%zu\n", (int)isNight(), mobs_.size());
     }
-    std::lock_guard lk(entsMtx_);
+    // snapshot caps
+    std::array<int,7> caps = kSpawnCaps;
+    if (difficulty()=="peaceful") caps[SG_MONSTER]=0;
+    std::array<int,7> cnts; { std::lock_guard lk(entsMtx_); cnts = countMobsByGroup(mobs_); }
     for (auto& pp : playersSnapshot()) {
         auto* pl = pp.get();
-        if (!pl->inPlay || !pl->spawned) continue;
-        int nearby = 0;
-        for (auto& m : mobs_) {
-            double dx = m->x - pl->x, dz = m->z - pl->z;
-            if (dx*dx + dz*dz < 48*48) ++nearby;
-        }
-        if (nearby >= 8) continue;
-        // 2 attempts
-        for (int a = 0; a < 2; ++a) {
-            const double ang = (rand() / (double)RAND_MAX) * 6.28318;
-            const double dist = 14 + (rand() % 22);
+        if (!pl->inPlay || !pl->spawned || pl->dead) continue;
+        for (int attempt=0; attempt<6; ++attempt) {
+            const double ang = (rand()/(double)RAND_MAX)*6.28318;
+            const double dist = 24 + (rand()%24);
             const std::int32_t wx = static_cast<std::int32_t>(pl->x + std::cos(ang)*dist);
             const std::int32_t wz = static_cast<std::int32_t>(pl->z + std::sin(ang)*dist);
-            world_.generateChunkIfMissing(wx >> 4, wz >> 4);
-            int feet = 4;
-            bool ok = false;
-            world_.withChunk(wx >> 4, wz >> 4, [&](const Chunk& c) {
-                for (int ry = kSectionsPerChunk*16 - 1; ry >= 0; --ry)
-                    if (c.blocks[Chunk::index(ry>>4, ry&15, wz&15, wx&15)] != 0) { feet = ry+1; ok=true; break; }
+            world_.generateChunkIfMissing(wx>>4, wz>>4);
+            int feet=4; bool ok=false;
+            world_.withChunk(wx>>4, wz>>4, [&](const Chunk& c){
+                for(int ry=kSectionsPerChunk*16-1; ry>=0; --ry) if(c.blocks[Chunk::index(ry>>4, ry&15, wz&15, wx&15)]!=0){ feet=ry+1; ok=true; break; }
             });
-            if (!ok) continue;
-            const int groundY = kMinY + feet;                 // first solid world y
-
-            // light-aware spawn rules: hostiles need light < 8 at the spawn
-            // cell (skylight scaled by weather/daytime), passives need >= 9.
-            lightEngine_->ensureSkyLight(wx >> 4, wz >> 4);
-            const std::uint8_t sky =
-                world_.getSkyLight(wx, groundY, wz);
-            const std::uint8_t blk =
-                world_.getBlockLight(wx, groundY, wz);
-            const double skyEff = isNight() ? 0.0
-                                  : raining() ? sky * 0.6 : double(sky);
-            const double effLight = std::max(double(blk), skyEff);
-
-            static const MobKind passive[] = {MobKind::Pig, MobKind::Cow,
-                                              MobKind::Sheep, MobKind::Chicken,
-                                              MobKind::Rabbit};
-            MobKind picked;
-            const bool wantHostile = effLight < 8.0 && (isNight() || raining());
-            if (wantHostile) {
-                int hostiles = 0;
-                for (auto& m : mobs_)
-                    if (MobEntity::isHostile(m->kind)) ++hostiles;
-                if (hostiles >= 6) continue;
-                static const MobKind hostilesTab[] = {MobKind::Zombie,
-                                                      MobKind::Zombie,
-                                                      MobKind::Skeleton,
-                                                      MobKind::Creeper,
-                                                      MobKind::Spider};
-                picked = hostilesTab[rand() % 5];
-            } else if (effLight >= 9.0) {
-                picked = passive[rand() % 5];
-            } else continue;
-            {
-                auto mob = std::make_shared<MobEntity>();
-                mob->entityId = nextEntityId();
-                mob->kind = picked;
-                mob->health = mobStats(picked).maxHealth;
-                mob->x = wx + 0.5; mob->y = groundY + 1.0; mob->z = wz + 0.5;
-                mob->lastSeenMs = nowMs();
-                mobs_.push_back(mob);
-                broadcastMobSpawn(*mob);
+            if(!ok) continue;
+            const int groundY = kMinY + feet;
+            lightEngine_->ensureSkyLight(wx>>4, wz>>4);
+            const uint8_t sky = world_.getSkyLight(wx,groundY,wz);
+            const uint8_t blk = world_.getBlockLight(wx,groundY,wz);
+            bool night=isNight(); bool rain=raining(); bool thunder=thundering();
+            double skyEff = night ? 0.0 : rain ? (thunder? sky*0.2 : sky*0.6) : double(sky);
+            double effLight = std::max(double(blk), skyEff);
+            // biome gate: sample biome at spawn pos
+            std::string biome;
+            try { biome = world_.sampledBiome(wx, 63, wz); } catch(...){ biome="minecraft:plains"; }
+            if(biome.empty()) biome="minecraft:plains";
+            // build candidates
+            std::vector<const EntityDataDef*> monsterEntries, creatureEntries;
+            for(auto& kv : entityDataLoader_.all()){
+                const auto& def = kv.second;
+                if(!def.biomes.empty()){
+                    bool okB=false;
+                    for(auto& b: def.biomes){ if(biome.find(b)!=std::string::npos || biome==b){ okB=true; break; } std::string tb=b; auto p=tb.find(':'); if(p!=std::string::npos) tb=tb.substr(p+1); if(biome.find(tb)!=std::string::npos) okB=true; }
+                    if(!okB) continue;
+                }
+                if(def.lightMin>=0 && effLight < def.lightMin) continue;
+                if(def.lightMax>=0 && effLight > def.lightMax) continue;
+                // resolve kind
+                MobKind kind = MobKind::Pig; bool found=false;
+                for(int i=0;i<149;++i){ if(std::string(mobStats(static_cast<MobKind>(i)).name)==def.type){ kind=static_cast<MobKind>(i); found=true; break; } }
+                if(!found) continue;
+                auto g = groupForKind(kind);
+                if(g==SG_MONSTER) monsterEntries.push_back(&def);
+                else if(g==SG_CREATURE) creatureEntries.push_back(&def);
             }
+            // fallback if no defs loaded for group: use hardcoded
+            bool wantHostile = effLight <= 7 && (night || rain || thunder) && difficulty()!="peaceful";
+            bool wantCreature = effLight >= 9;
+            const std::vector<const EntityDataDef*>* use=nullptr;
+            SpawnGroupIdx gIdx=SG_MONSTER;
+            if(wantHostile && !monsterEntries.empty()){
+                if(cnts[SG_MONSTER] >= caps[SG_MONSTER]) continue;
+                use=&monsterEntries; gIdx=SG_MONSTER;
+            } else if(wantHostile && monsterEntries.empty()){
+                // fallback hardcoded hostile
+                if(cnts[SG_MONSTER] >= caps[SG_MONSTER]) continue;
+                static const MobKind hostilesTab[]={MobKind::Zombie,MobKind::Zombie,MobKind::Skeleton,MobKind::Creeper,MobKind::Spider};
+                MobKind picked = hostilesTab[rand()%5];
+                auto mob=std::make_shared<MobEntity>(); mob->entityId=nextEntityId(); mob->kind=picked; mob->health=mobStats(picked).maxHealth;
+                mob->x=wx+0.5; mob->y=groundY+1.0; mob->z=wz+0.5; mob->lastSeenMs=nowMs();
+                { std::lock_guard lk(entsMtx_); if(cnts[SG_MONSTER] >= caps[SG_MONSTER]) continue; mobs_.push_back(mob); cnts[SG_MONSTER]++; }
+                broadcastMobSpawn(*mob); continue;
+            } else if(wantCreature && !creatureEntries.empty()){
+                if(cnts[SG_CREATURE] >= caps[SG_CREATURE]) continue;
+                use=&creatureEntries; gIdx=SG_CREATURE;
+            } else if(wantCreature && creatureEntries.empty()){
+                if(cnts[SG_CREATURE] >= caps[SG_CREATURE]) continue;
+                static const MobKind passive[]={MobKind::Pig,MobKind::Cow,MobKind::Sheep,MobKind::Chicken,MobKind::Rabbit};
+                MobKind picked=passive[rand()%5];
+                auto mob=std::make_shared<MobEntity>(); mob->entityId=nextEntityId(); mob->kind=picked; mob->health=mobStats(picked).maxHealth;
+                mob->x=wx+0.5; mob->y=groundY+1.0; mob->z=wz+0.5; mob->lastSeenMs=nowMs();
+                { std::lock_guard lk(entsMtx_); if(cnts[SG_CREATURE] >= caps[SG_CREATURE]) continue; mobs_.push_back(mob); cnts[SG_CREATURE]++; }
+                broadcastMobSpawn(*mob); continue;
+            } else continue;
+            if(!use || use->empty()) continue;
+            if(cnts[(int)gIdx] >= caps[(int)gIdx]) continue;
+            // weighted pick
+            int total=0; for(auto* e: *use) total+= std::max(1,e->spawnWeight);
+            int r = total>0? rand()%total : 0;
+            const EntityDataDef* pickedDef=nullptr;
+            for(auto* e: *use){ r-= std::max(1,e->spawnWeight); if(r<0){ pickedDef=e; break; } }
+            if(!pickedDef) pickedDef = (*use)[0];
+            MobKind pickedKind=MobKind::Zombie; bool f=false;
+            for(int i=0;i<149;++i) if(std::string(mobStats(static_cast<MobKind>(i)).name)==pickedDef->type){ pickedKind=static_cast<MobKind>(i); f=true; break; }
+            if(!f) continue;
+            auto mob=std::make_shared<MobEntity>(); mob->entityId=nextEntityId(); mob->kind=pickedKind; mob->health=mobStats(pickedKind).maxHealth;
+            if(pickedDef->max_health>0) mob->health=pickedDef->max_health;
+            mob->x=wx+0.5; mob->y=groundY+1.0; mob->z=wz+0.5; mob->lastSeenMs=nowMs();
+            { std::lock_guard lk(entsMtx_); if(cnts[(int)groupForKind(pickedKind)] >= caps[(int)groupForKind(pickedKind)]) continue; mobs_.push_back(mob); cnts[(int)groupForKind(pickedKind)]++; }
+            broadcastMobSpawn(*mob);
         }
     }
 }

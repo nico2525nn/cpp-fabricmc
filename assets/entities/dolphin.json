@@ -1,0 +1,33 @@
+{
+  "type": "minecraft:dolphin",
+  "attributes": {
+    "max_health": 10,
+    "movement_speed": 0.12,
+    "attack_damage": 3
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:ocean"
+    ],
+    "light_level": {
+      "max": 9
+    },
+    "weight": 10
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:dolphin_play",
+        "priority": 2
+      },
+      {
+        "type": "minecraft:wander",
+        "priority": 6
+      }
+    ],
+    "sensors": [
+      "minecraft:nearest_players",
+      "minecraft:hurt_by"
+    ]
+  }
+}

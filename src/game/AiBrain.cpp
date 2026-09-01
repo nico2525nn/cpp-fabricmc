@@ -46,15 +46,28 @@ Brain::Brain() {
     goals_.push_back(std::make_unique<SwellGoal>());
     goals_.push_back(std::make_unique<ArmadilloRollUpGoal>());
     goals_.push_back(std::make_unique<PanicGoal>());
+    goals_.push_back(std::make_unique<IronGolemDefendGoal>());
+    goals_.push_back(std::make_unique<WitchPotionThrowGoal>());
+    goals_.push_back(std::make_unique<RavagerRoarGoal>());
+    goals_.push_back(std::make_unique<EvokerFangGoal>());
+    goals_.push_back(std::make_unique<WolfAngerGoal>());
     goals_.push_back(std::make_unique<FleeSunGoal>());
     goals_.push_back(std::make_unique<LeapAtTargetGoal>());
     goals_.push_back(std::make_unique<BreezeJumpGoal>());
+    goals_.push_back(std::make_unique<DrownedTridentGoal>());
+    goals_.push_back(std::make_unique<PiglinBarterGoal>());
+    goals_.push_back(std::make_unique<CatScareGoal>());
+    goals_.push_back(std::make_unique<FoxPounceGoal>());
     goals_.push_back(std::make_unique<BreedGoal>());
+    goals_.push_back(std::make_unique<BeePollinateGoal>());
+    goals_.push_back(std::make_unique<PandaRollGoal>());
+    goals_.push_back(std::make_unique<DolphinPlayGoal>());
     goals_.push_back(std::make_unique<BreezeWindChargeGoal>());
     goals_.push_back(std::make_unique<MeleeAttackGoal>());
     goals_.push_back(std::make_unique<RangedAttackGoal>());
     goals_.push_back(std::make_unique<AvoidEntityGoal>());
     goals_.push_back(std::make_unique<TemptGoal>());
+    goals_.push_back(std::make_unique<VillagerScheduleGoal>());
     goals_.push_back(std::make_unique<WanderAroundGoal>());
     goals_.push_back(std::make_unique<LookAtPlayerGoal>());
 }
@@ -613,6 +626,271 @@ bool ArmadilloRollUpGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
         return true;
     }
     return false;
+}
+
+// -------------------------------------------------------- plan36 30 species goals --
+bool WitchPotionThrowGoal::shouldStart(MobEntity& m, AiContext& ctx) {
+    if (m.kind != MobKind::Witch) return false;
+    if (!ctx.nearestPlayer) return false;
+    if (ctx.nearestPlayerDist2 > 16*16) return false;
+    if (ctx.srv && ctx.srv->tickNoForTest() < m.witchPotionCooldown) return false;
+    return true;
+}
+bool WitchPotionThrowGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (m.kind != MobKind::Witch) return false;
+    Player* t = ctx.nearestPlayer; if (!t) return false;
+    double dx=t->x - m.x, dz=t->z - m.z; double d2=dx*dx+dz*dz; if (d2>256) return false;
+    if (now < m.witchPotionCooldown) return false;
+    double d=std::sqrt(d2)+1e-6;
+    if (ctx.srv) {
+        // heal if low health
+        if (m.health < 13) {
+            m.health = std::min(m.health+6.f, (double)mobStats(m.kind).maxHealth);
+            ctx.srv->broadcastSound("minecraft:entity.witch.drink", m.x,m.y,m.z,1.f,1.f,"hostile");
+            WriteBuffer md; md.varint(m.entityId); meta::writeMetaBool(md,16,true); md.u8(255);
+            ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);
+        } else {
+            double vx=dx/d*0.9, vz=dz/d*0.9;
+            ctx.srv->spawnProjectile(ProjectileKind::Potion, m.x, m.y+1.6, m.z, vx, 0.12, vz, m.entityId, false);
+            ctx.srv->broadcastSound("minecraft:entity.witch.throw", m.x,m.y,m.z,1.f,1.f,"hostile");
+            WriteBuffer md; md.varint(m.entityId); meta::writeMetaBool(md,16,false); md.u8(255);
+            ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);
+        }
+    }
+    m.witchPotionCooldown = now + 40 + (rand()%20);
+    return true;
+}
+bool RavagerRoarGoal::shouldStart(MobEntity& m, AiContext& ctx) {
+    if (m.kind != MobKind::Ravager) return false;
+    if (!ctx.nearestPlayer) return false;
+    if (ctx.nearestPlayerDist2 > 5*5) return false;
+    if (ctx.srv && ctx.srv->tickNoForTest() < m.ravagerRoarCooldown) return false;
+    return true;
+}
+bool RavagerRoarGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (m.kind != MobKind::Ravager) return false;
+    if (now < m.ravagerRoarCooldown) return false;
+    Player* t = ctx.nearestPlayer; if (!t) return false;
+    double dx=t->x - m.x, dz=t->z - m.z; double d=std::sqrt(dx*dx+dz*dz)+1e-6;
+    if (d>5) return false;
+    if (ctx.srv) {
+        double vx=dx/d*0.4, vz=dz/d*0.4;
+        WriteBuffer vel; vel.varint(t->entityId); vel.i16((int16_t)(vx*8000)); vel.i16((int16_t)(0.3*8000)); vel.i16((int16_t)(vz*8000));
+        ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::EntityVelocity, vel);
+        ctx.srv->broadcastHurtAnimation(t->entityId, (float)(std::atan2(dz,dx)*180/3.14159));
+        ctx.srv->broadcastSound("minecraft:entity.ravager.roar", m.x,m.y,m.z,1.f,1.f,"hostile");
+    }
+    m.ravagerRoarCooldown = now + 100;
+    m.ravagerStunUntil = now + 10;
+    return true;
+}
+bool IronGolemDefendGoal::shouldStart(MobEntity& m, AiContext& ctx) {
+    if (m.kind != MobKind::IronGolem) return false;
+    if (!ctx.nearestPlayer) return false;
+    // defend if any hostile within 12 or player attacked recently
+    if (ctx.nearestPlayerDist2 < 12*12) return true;
+    if (ctx.lastHurtTick >=0 && ctx.srv && ctx.srv->tickNoForTest() - ctx.lastHurtTick < 40) return true;
+    return false;
+}
+bool IronGolemDefendGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (m.kind != MobKind::IronGolem) return false;
+    if (now < m.ironGolemDefendCooldown) return false;
+    Player* t = ctx.nearestPlayer; if (!t) return false;
+    // attack nearest hostile mob if present, else just approach player
+    std::shared_ptr<MobEntity> nearestHostile;
+    double best=1e300;
+    if (ctx.srv) {
+        for (auto& mm : ctx.srv->mobsForTest()) if (MobEntity::isHostile(mm->kind) && !mm->dead) {
+            double dx=mm->x - m.x, dz=mm->z - m.z; double d2=dx*dx+dz*dz; if (d2<best){best=d2; nearestHostile=mm;}
+        }
+    }
+    if (nearestHostile && best < 12*12) {
+        double dx=nearestHostile->x - m.x, dz=nearestHostile->z - m.z; double d=std::sqrt(dx*dx+dz*dz)+1e-6;
+        if (d < 2.2) {
+            if (ctx.srv) { ctx.srv->applyDamageToMob(*nearestHostile, 8.f, "mob"); ctx.srv->broadcastSound("minecraft:entity.iron_golem.attack", m.x,m.y,m.z,1.f,1.f,"neutral");}
+            m.ironGolemDefendCooldown = now + 20;
+            return true;
+        }
+        m.x += dx/d*0.12; m.z += dz/d*0.12; m.yaw=(float)(std::atan2(dz,dx)*180/3.14159-90);
+        if (ctx.srv) ctx.srv->broadcastSound("minecraft:entity.iron_golem.step", m.x,m.y,m.z,0.5f,1.f,"neutral");
+        return true;
+    }
+    return false;
+}
+bool BeePollinateGoal::shouldStart(MobEntity& m, AiContext& ctx) {
+    if (m.kind != MobKind::Bee) return false;
+    if (m.beeHasNectar) return false;
+    if (ctx.srv && ctx.srv->tickNoForTest() < m.beePollenUntil) return false;
+    return true;
+}
+bool BeePollinateGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (m.kind != MobKind::Bee) return false;
+    if (m.beeHasNectar) return false;
+    // scan for flower every 20 ticks
+    if (now % 20 != 0) return true;
+    if (!ctx.world) return false;
+    for (int dx=-8; dx<=8; ++dx) for (int dz=-8; dz<=8; ++dz) for (int dy=-2; dy<=2; ++dy){
+        int bx=(int)std::floor(m.x)+dx, by=(int)std::floor(m.y)+dy, bz=(int)std::floor(m.z)+dz;
+        uint16_t st=ctx.world->getBlock(bx,by,bz); if(st==0) continue;
+        auto* bd=gen::blockByState(st); if(!bd) continue;
+        std::string n(bd->name);
+        if (n.find("flower")!=std::string::npos || n=="minecraft:dandelion" || n=="minecraft:poppy") {
+            double ddx=bx+0.5 - m.x, ddz=bz+0.5 - m.z; double d=std::sqrt(ddx*ddx+ddz*ddz)+1e-6;
+            m.x += ddx/d*0.08; m.z += ddz/d*0.08; if(d<1.2){ m.beeHasNectar=true; m.beePollenUntil=now+400; if(ctx.srv){ WriteBuffer md; md.varint(m.entityId); meta::writeMetaBool(md,17,true); md.u8(255); ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);} return true; }
+            return true;
+        }
+    }
+    // no flower: wander
+    return false;
+}
+bool WolfAngerGoal::shouldStart(MobEntity& m, AiContext& ctx) {
+    if (m.kind != MobKind::Wolf) return false;
+    if (ctx.lastHurtTick>=0 && ctx.srv && ctx.srv->tickNoForTest() - ctx.lastHurtTick < 40) return true;
+    if (m.wolfAngerTarget!=-1 && ctx.srv && ctx.srv->tickNoForTest() < m.wolfAngerUntil) return true;
+    if (ctx.nearestPlayer && ctx.nearestPlayerDist2 < 4) return false; // not angry by proximity alone
+    return false;
+}
+bool WolfAngerGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (m.kind != MobKind::Wolf) return false;
+    if (m.isTamed) return false;
+    Player* t=ctx.nearestPlayer; if(!t) return false;
+    double dx=t->x - m.x, dz=t->z - m.z; double d=std::sqrt(dx*dx+dz*dz)+1e-6;
+    if (d>12) return false;
+    if (d<1.9) { if(now%20==0 && ctx.srv) ctx.srv->mobAttackPlayer(m,*t); return true; }
+    m.x += dx/d*0.11; m.z += dz/d*0.11; m.yaw=(float)(std::atan2(dz,dx)*180/3.14159-90);
+    if (ctx.srv) { WriteBuffer md; md.varint(m.entityId); meta::writeMetaByte(md,16,1); md.u8(255); ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);}
+    m.wolfAngerTarget = t->entityId; m.wolfAngerUntil = now + 100;
+    return true;
+}
+bool DrownedTridentGoal::shouldStart(MobEntity& m, AiContext& ctx) {
+    if (m.kind != MobKind::Drowned) return false;
+    if (!ctx.nearestPlayer) return false;
+    if (ctx.nearestPlayerDist2 > 16*16) return false;
+    if (ctx.srv && ctx.srv->tickNoForTest() < m.drownedTridentCooldown) return false;
+    return true;
+}
+bool DrownedTridentGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (m.kind != MobKind::Drowned) return false;
+    Player* t=ctx.nearestPlayer; if(!t) return false;
+    double dx=t->x - m.x, dy=(t->y+1.0)-(m.y+1.6), dz=t->z - m.z; double d=std::sqrt(dx*dx+dz*dz)+1e-6;
+    if (d>16) return false;
+    if (d<5) return false; // melee takes over
+    if (ctx.srv) {
+        ctx.srv->spawnProjectile(ProjectileKind::Trident, m.x, m.y+1.6, m.z, dx/d*1.2, dy/d*0.2+0.15, dz/d*1.2, m.entityId, false);
+        ctx.srv->broadcastSound("minecraft:entity.drowned.shoot", m.x,m.y,m.z,1.f,1.f,"hostile");
+    }
+    m.drownedTridentCooldown = now + 40;
+    return true;
+}
+bool VillagerScheduleGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (m.kind != MobKind::Villager && m.kind != MobKind::WanderingTrader) return false;
+    int tod = (int)(ctx.srv ? ctx.srv->dayTime()%24000 : now%24000);
+    // work 0-12000 wander, gather 12000-18000, rest 18000-24000
+    if (tod < 12000) {
+        if (rand()%40==0 && ctx.srv) ctx.srv->broadcastSound("minecraft:entity.villager.work", m.x,m.y,m.z,0.5f,1.f,"neutral");
+    } else if (tod < 18000) {
+        // gather: move slowly
+        if (rand()%20==0){ double ang=rand()/(double)RAND_MAX*6.28; m.x+=std::cos(ang)*0.04; m.z+=std::sin(ang)*0.04; }
+    } else {
+        // rest: stay
+    }
+    // restock tick already in mobsTick
+    return true;
+}
+bool PiglinBarterGoal::shouldStart(MobEntity& m, AiContext& ctx) {
+    if (m.kind != MobKind::Piglin) return false;
+    if (!ctx.nearestPlayer) return false;
+    if (ctx.nearestPlayerDist2 > 8*8) return false;
+    if (ctx.srv && ctx.srv->tickNoForTest() < m.piglinBarterCooldown) return false;
+    // check player holds gold ingot
+    if (ctx.nearestPlayer->heldSlot>=0 && ctx.nearestPlayer->heldSlot<9) {
+        auto& h=ctx.nearestPlayer->inv[36+ctx.nearestPlayer->heldSlot];
+        if (!h.empty() && h.name()=="minecraft:gold_ingot") return true;
+    }
+    return false;
+}
+bool PiglinBarterGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (m.kind != MobKind::Piglin) return false;
+    m.piglinBarterCooldown = now + 100;
+    if (ctx.srv) ctx.srv->broadcastSound("minecraft:entity.piglin.admiring_item", m.x,m.y,m.z,1.f,1.f,"neutral");
+    return true;
+}
+bool CatScareGoal::shouldStart(MobEntity& m, AiContext& ctx) {
+    if (m.kind != MobKind::Cat) return false;
+    if (!ctx.nearestPlayer) return false;
+    return ctx.nearestPlayerDist2 < 6*6;
+}
+bool CatScareGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (m.kind != MobKind::Cat) return false;
+    if (now < m.catScareCooldown) return false;
+    // cat scares creeper: just sit and purr
+    if (ctx.srv) ctx.srv->broadcastSound("minecraft:entity.cat.purr", m.x,m.y,m.z,0.5f,1.f,"neutral");
+    m.catScareCooldown = now + 60;
+    // creeper avoid handled elsewhere
+    return true;
+}
+bool FoxPounceGoal::shouldStart(MobEntity& m, AiContext& ctx) {
+    if (m.kind != MobKind::Fox) return false;
+    if (!ctx.nearestPlayer) return false;
+    double d=std::sqrt(ctx.nearestPlayerDist2); return d>=2 && d<=6;
+}
+bool FoxPounceGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (m.kind != MobKind::Fox) return false;
+    if (now < m.foxPounceCooldown) return false;
+    Player* t=ctx.nearestPlayer; if(!t) return false;
+    double dx=t->x - m.x, dz=t->z - m.z; double d=std::sqrt(dx*dx+dz*dz)+1e-6;
+    m.x += dx/d*0.42; m.z += dz/d*0.42; m.y += 0.38; if(ctx.srv){ WriteBuffer vel; vel.varint(m.entityId); vel.i16((int16_t)(dx/d*0.42*8000)); vel.i16((int16_t)(0.38*8000)); vel.i16((int16_t)(dz/d*0.42*8000)); ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::EntityVelocity, vel); }
+    m.foxPounceCooldown = now + 40;
+    return true;
+}
+bool PandaRollGoal::shouldStart(MobEntity& m, AiContext&) {
+    if (m.kind != MobKind::Panda) return false;
+    return (rand()%200==0);
+}
+bool PandaRollGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (m.kind != MobKind::Panda) return false;
+    if (now < m.pandaRollCooldown) return false;
+    m.pandaRollCooldown = now + 100;
+    if (ctx.srv) ctx.srv->broadcastSound("minecraft:entity.panda.cant_breed", m.x,m.y,m.z,1.f,1.f,"neutral");
+    return true;
+}
+bool DolphinPlayGoal::shouldStart(MobEntity& m, AiContext& ctx) {
+    if (m.kind != MobKind::Dolphin) return false;
+    if (!ctx.nearestPlayer) return false;
+    return ctx.nearestPlayerDist2 < 10*10;
+}
+bool DolphinPlayGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (m.kind != MobKind::Dolphin) return false;
+    if (now < m.dolphinPlayCooldown) return false;
+    Player* t=ctx.nearestPlayer; if(!t) return false;
+    double dx=t->x - m.x, dz=t->z - m.z; double d=std::sqrt(dx*dx+dz*dz)+1e-6;
+    m.x += dx/d*0.13; m.z += dz/d*0.13; m.yaw=(float)(std::atan2(dz,dx)*180/3.14159-90);
+    if (ctx.srv && rand()%30==0) ctx.srv->broadcastSound("minecraft:entity.dolphin.play", m.x,m.y,m.z,1.f,1.f,"neutral");
+    m.dolphinPlayCooldown = now + 20;
+    return true;
+}
+bool EvokerFangGoal::shouldStart(MobEntity& m, AiContext& ctx) {
+    if (m.kind != MobKind::Evoker) return false;
+    if (!ctx.nearestPlayer) return false;
+    if (ctx.nearestPlayerDist2 > 12*12) return false;
+    if (ctx.srv && ctx.srv->tickNoForTest() < m.evokerFangCooldown) return false;
+    return true;
+}
+bool EvokerFangGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (m.kind != MobKind::Evoker) return false;
+    Player* t=ctx.nearestPlayer; if(!t) return false;
+    if (ctx.srv) {
+        // spawn evoker fangs at target pos
+        for(int i=0;i<3;++i){
+            double fx=t->x + (rand()/(double)RAND_MAX-0.5)*2, fz=t->z + (rand()/(double)RAND_MAX-0.5)*2;
+            auto fang=std::make_shared<MobEntity>(); fang->entityId=ctx.srv->nextEntityId(); fang->kind=MobKind::EvokerFangs; fang->x=fx; fang->y=t->y; fang->z=fz; fang->health=1;
+            ctx.srv->mobsForTest().push_back(fang); ctx.srv->broadcastMobSpawn(*fang);
+        }
+        ctx.srv->broadcastSound("minecraft:entity.evoker.cast_spell", m.x,m.y,m.z,1.f,1.f,"hostile");
+        ctx.srv->applyDamage(*t, 6.f, DamageSource::magic());
+    }
+    m.evokerFangCooldown = now + 60;
+    return true;
 }
 
 // -------------------------------------------------------- ranged attacks --

@@ -1,0 +1,41 @@
+{
+  "type": "minecraft:wolf",
+  "attributes": {
+    "max_health": 16,
+    "movement_speed": 0.1,
+    "attack_damage": 4
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:forest"
+    ],
+    "light_level": {
+      "max": 9
+    },
+    "weight": 10
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:wolf_anger",
+        "priority": 1
+      },
+      {
+        "type": "minecraft:melee_attack",
+        "priority": 3
+      },
+      {
+        "type": "minecraft:wander",
+        "priority": 6
+      },
+      {
+        "type": "minecraft:look_at_player",
+        "priority": 7
+      }
+    ],
+    "sensors": [
+      "minecraft:nearest_players",
+      "minecraft:hurt_by"
+    ]
+  }
+}
