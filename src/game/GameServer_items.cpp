@@ -240,9 +240,9 @@ void GameServer::hoppersTick() {
             }
         }
 
-        // ---- dispenser/dropper: eject when powered (edge-triggered) per-item plan12 §9/§10 + QC (plan18 §3)
+        // ---- dispenser/dropper: eject when powered (edge-triggered) per-item plan12 §9/§10 + QC (plan38 B-08 isQuasiPowered)
         if (be.kind == BlockEntity::Kind::Dispenser) {
-            bool powered = redstone_->isPoweredHere(x, y, z) || redstone_->isPoweredHere(x, y+1, z);
+            bool powered = redstone_->isQuasiPowered(x, y, z);
             bool& was = dispenserPower_[key];
             if (powered && !was) {
                 // detect dropper vs dispenser by world block name

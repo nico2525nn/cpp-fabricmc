@@ -121,6 +121,12 @@ public:
     void tick(std::int64_t now);                         // delayed updates
     // True when any adjacent source/wire carries power (dispenser gates).
     bool isPoweredHere(std::int32_t x, std::int32_t y, std::int32_t z);
+    // JE quasi-connectivity: piston/dispenser powered if y+1 would be powered
+    bool isQuasiPowered(std::int32_t x, std::int32_t y, std::int32_t z) {
+        if (isPoweredHere(x, y, z)) return true;
+        if (isPoweredHere(x, y + 1, z)) return true;
+        return false;
+    }
 
     void setBlockEntityStore(BlockEntityStore* s) { beStore_ = s; }
     void setTickRef(std::int64_t* t) { tickRef_ = t; }
