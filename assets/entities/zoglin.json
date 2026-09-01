@@ -1,0 +1,41 @@
+{
+  "type": "minecraft:zoglin",
+  "attributes": {
+    "max_health": 40,
+    "movement_speed": 0.09,
+    "attack_damage": 6
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:crimson_forest"
+    ],
+    "light_level": {
+      "max": 0
+    },
+    "weight": 5
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:melee_attack",
+        "priority": 1
+      },
+      {
+        "type": "minecraft:melee_attack",
+        "priority": 3
+      },
+      {
+        "type": "minecraft:wander",
+        "priority": 6
+      },
+      {
+        "type": "minecraft:look_at_player",
+        "priority": 7
+      }
+    ],
+    "sensors": [
+      "minecraft:nearest_players",
+      "minecraft:hurt_by"
+    ]
+  }
+}

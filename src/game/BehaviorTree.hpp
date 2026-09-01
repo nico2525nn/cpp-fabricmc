@@ -181,6 +181,19 @@ class WanderAction : public BehaviorNode {
 public:
     BTStatus tick(MobEntity& m, AiContext& ctx, std::int64_t now) override ;
 };
+// plan36 new BT actions (12)
+class WitchPotionAction : public BehaviorNode { public: BTStatus tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class RavagerRoarAction : public BehaviorNode { public: BTStatus tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class IronGolemDefendAction : public BehaviorNode { public: BTStatus tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class BeePollinateAction : public BehaviorNode { public: BTStatus tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class VillagerScheduleAction : public BehaviorNode { public: BTStatus tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class WolfAngerAction : public BehaviorNode { public: BTStatus tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class DrownedTridentAction : public BehaviorNode { public: BTStatus tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class PiglinBarterAction : public BehaviorNode { public: BTStatus tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class CatScareAction : public BehaviorNode { public: BTStatus tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class FoxPounceAction : public BehaviorNode { public: BTStatus tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class DolphinPlayAction : public BehaviorNode { public: BTStatus tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class EvokerFangAction : public BehaviorNode { public: BTStatus tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
 
 // Factory helper — plan7 data-driven: handles Condition/Action/Selector/Sequence via type string
 inline std::unique_ptr<BehaviorNode> createNodeForType(const std::string& rawType) {
@@ -218,6 +231,18 @@ inline std::unique_ptr<BehaviorNode> createNodeForType(const std::string& rawTyp
     if (t=="leap_at_target"||t=="leap") return std::make_unique<WanderAction>();
     if (t=="breeze_jump"||t=="breeze_wind_charge"||t=="wind_charge"||t=="armadillo_roll_up"||t=="roll_up") return std::make_unique<WanderAction>();
     if (t=="zombie_attack"||t=="skeleton_attack"||t=="spider_attack"||t=="warden_attack") return std::make_unique<GenericRangedAttackAction>();
+    if (t=="witch_throw_potion"||t=="witch_potion"||t=="throw_potion"||t=="witch_attack") return std::make_unique<WitchPotionAction>();
+    if (t=="ravager_roar"||t=="roar") return std::make_unique<RavagerRoarAction>();
+    if (t=="defend_village"||t=="iron_golem_defend"||t=="golem_defend") return std::make_unique<IronGolemDefendAction>();
+    if (t=="pollinate"||t=="bee_pollinate") return std::make_unique<BeePollinateAction>();
+    if (t=="villager_schedule"||t=="schedule") return std::make_unique<VillagerScheduleAction>();
+    if (t=="wolf_anger"||t=="wolf_angry") return std::make_unique<WolfAngerAction>();
+    if (t=="drowned_trident"||t=="trident") return std::make_unique<DrownedTridentAction>();
+    if (t=="piglin_barter"||t=="barter") return std::make_unique<PiglinBarterAction>();
+    if (t=="cat_scare"||t=="scare_creeper") return std::make_unique<CatScareAction>();
+    if (t=="fox_pounce"||t=="pounce") return std::make_unique<FoxPounceAction>();
+    if (t=="dolphin_play"||t=="play") return std::make_unique<DolphinPlayAction>();
+    if (t=="evoker_fang"||t=="fang"||t=="evoker_attack") return std::make_unique<EvokerFangAction>();
     if (t=="breed_action") return std::make_unique<BreedAction>();
     if (t=="trade"||t=="trade_goal") return std::make_unique<TradeAction>();
     if (t=="wander"||t=="wander_around") return std::make_unique<WanderAction>();

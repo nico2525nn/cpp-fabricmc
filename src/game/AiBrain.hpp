@@ -169,6 +169,72 @@ public:
     bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override;
 };
 
+// plan36 §1 12-15 new Goals for 30 species
+class WitchPotionThrowGoal final : public Goal {
+public: WitchPotionThrowGoal(): Goal(2) {}
+    bool shouldStart(MobEntity& m, AiContext& ctx) override;
+    bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override;
+};
+class RavagerRoarGoal final : public Goal {
+public: RavagerRoarGoal(): Goal(2) {}
+    bool shouldStart(MobEntity& m, AiContext& ctx) override;
+    bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override;
+};
+class IronGolemDefendGoal final : public Goal {
+public: IronGolemDefendGoal(): Goal(1) {}
+    bool shouldStart(MobEntity& m, AiContext& ctx) override;
+    bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override;
+};
+class BeePollinateGoal final : public Goal {
+public: BeePollinateGoal(): Goal(4) {}
+    bool shouldStart(MobEntity& m, AiContext& ctx) override;
+    bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override;
+};
+class WolfAngerGoal final : public Goal {
+public: WolfAngerGoal(): Goal(2) {}
+    bool shouldStart(MobEntity& m, AiContext& ctx) override;
+    bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override;
+};
+class DrownedTridentGoal final : public Goal {
+public: DrownedTridentGoal(): Goal(3) {}
+    bool shouldStart(MobEntity& m, AiContext& ctx) override;
+    bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override;
+};
+class VillagerScheduleGoal final : public Goal {
+public: VillagerScheduleGoal(): Goal(6) {}
+    bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override;
+};
+class PiglinBarterGoal final : public Goal {
+public: PiglinBarterGoal(): Goal(3) {}
+    bool shouldStart(MobEntity& m, AiContext& ctx) override;
+    bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override;
+};
+class CatScareGoal final : public Goal {
+public: CatScareGoal(): Goal(3) {}
+    bool shouldStart(MobEntity& m, AiContext& ctx) override;
+    bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override;
+};
+class FoxPounceGoal final : public Goal {
+public: FoxPounceGoal(): Goal(3) {}
+    bool shouldStart(MobEntity& m, AiContext& ctx) override;
+    bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override;
+};
+class PandaRollGoal final : public Goal {
+public: PandaRollGoal(): Goal(4) {}
+    bool shouldStart(MobEntity& m, AiContext& ctx) override;
+    bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override;
+};
+class DolphinPlayGoal final : public Goal {
+public: DolphinPlayGoal(): Goal(4) {}
+    bool shouldStart(MobEntity& m, AiContext& ctx) override;
+    bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override;
+};
+class EvokerFangGoal final : public Goal {
+public: EvokerFangGoal(): Goal(2) {}
+    bool shouldStart(MobEntity& m, AiContext& ctx) override;
+    bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override;
+};
+
 // ---------------------------------------------------------------- brain ---
 
 class BehaviorTree; // forward (defined in BehaviorTree.hpp)
