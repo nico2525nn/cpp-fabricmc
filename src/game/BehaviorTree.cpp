@@ -506,5 +506,31 @@ BTStatus GenericRangedAttackAction::tick(MobEntity& m, AiContext& ctx, std::int6
     m.witherSkullCooldown=(int)(now+40+rand()%30);
     return BTStatus::Success;
 }
+BTStatus WitchPotionAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
+    if(m.kind!=MobKind::Witch) return BTStatus::Failure;
+    if(now < m.witchPotionCooldown) return BTStatus::Failure;
+    Player* t=ctx.nearestPlayer; if(!t) return BTStatus::Failure;
+    double d2=(t->x-m.x)*(t->x-m.x)+(t->z-m.z)*(t->z-m.z); if(d2>256) return BTStatus::Failure;
+    if(ctx.srv){ double d=std::sqrt(d2)+1e-6; double vx=(t->x-m.x)/d*0.9, vz=(t->z-m.z)/d*0.9; ctx.srv->spawnProjectile(ProjectileKind::Potion, m.x, m.y+1.6, m.z, vx, 0.12, vz, m.entityId, false); ctx.srv->broadcastSound("minecraft:entity.witch.throw", m.x,m.y,m.z,1.f,1.f,"hostile"); }
+    m.witchPotionCooldown = now + 40 + rand()%20; return BTStatus::Success;
+}
+BTStatus RavagerRoarAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
+    if(m.kind!=MobKind::Ravager) return BTStatus::Failure;
+    if(now < m.ravagerRoarCooldown) return BTStatus::Failure;
+    Player* t=ctx.nearestPlayer; if(!t) return BTStatus::Failure;
+    double dx=t->x - m.x, dz=t->z - m.z; double d=std::sqrt(dx*dx+dz*dz)+1e-6; if(d>5) return BTStatus::Failure;
+    if(ctx.srv){ double vx=dx/d*0.4, vz=dz/d*0.4; WriteBuffer vel; vel.varint(t->entityId); vel.i16((int16_t)(vx*8000)); vel.i16((int16_t)(0.3*8000)); vel.i16((int16_t)(vz*8000)); ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::EntityVelocity, vel); ctx.srv->broadcastHurtAnimation(t->entityId, 0); }
+    m.ravagerRoarCooldown = now + 100; return BTStatus::Success;
+}
+BTStatus IronGolemDefendAction::tick(MobEntity& m, AiContext& ctx, std::int64_t) { if(m.kind!=MobKind::IronGolem) return BTStatus::Failure; if(ctx.srv) ctx.srv->broadcastSound("minecraft:entity.iron_golem.step", m.x,m.y,m.z,0.5f,1.f,"neutral"); return BTStatus::Success; }
+BTStatus BeePollinateAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now){ if(m.kind!=MobKind::Bee) return BTStatus::Failure; if(m.beeHasNectar) return BTStatus::Failure; if(now%20!=0) return BTStatus::Running; m.beeHasNectar=true; m.beePollenUntil=now+400; if(ctx.srv){ WriteBuffer md; md.varint(m.entityId); meta::writeMetaBool(md,17,true); md.u8(255); ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);} return BTStatus::Success; }
+BTStatus VillagerScheduleAction::tick(MobEntity& m, AiContext& ctx, std::int64_t){ if(m.kind!=MobKind::Villager && m.kind!=MobKind::WanderingTrader) return BTStatus::Failure; if(ctx.srv) ctx.srv->broadcastSound("minecraft:entity.villager.work", m.x,m.y,m.z,0.3f,1.f,"neutral"); return BTStatus::Success; }
+BTStatus WolfAngerAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now){ if(m.kind!=MobKind::Wolf) return BTStatus::Failure; if(m.isTamed) return BTStatus::Failure; Player* t=ctx.nearestPlayer; if(!t) return BTStatus::Failure; m.wolfAngerTarget=t->entityId; m.wolfAngerUntil=now+100; if(ctx.srv){ WriteBuffer md; md.varint(m.entityId); meta::writeMetaByte(md,16,1); md.u8(255); ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);} return BTStatus::Success; }
+BTStatus DrownedTridentAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now){ if(m.kind!=MobKind::Drowned) return BTStatus::Failure; if(now < m.drownedTridentCooldown) return BTStatus::Failure; Player* t=ctx.nearestPlayer; if(!t) return BTStatus::Failure; double dx=t->x-m.x, dz=t->z-m.z, dy=(t->y+1)-(m.y+1.6); double d=std::sqrt(dx*dx+dz*dz)+1e-6; if(d>16||d<5) return BTStatus::Failure; if(ctx.srv) ctx.srv->spawnProjectile(ProjectileKind::Trident, m.x, m.y+1.6, m.z, dx/d*1.2, dy/d*0.2+0.15, dz/d*1.2, m.entityId, false); m.drownedTridentCooldown=now+40; return BTStatus::Success; }
+BTStatus PiglinBarterAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now){ if(m.kind!=MobKind::Piglin) return BTStatus::Failure; if(now < m.piglinBarterCooldown) return BTStatus::Failure; m.piglinBarterCooldown=now+100; if(ctx.srv) ctx.srv->broadcastSound("minecraft:entity.piglin.admiring_item", m.x,m.y,m.z,1.f,1.f,"neutral"); return BTStatus::Success; }
+BTStatus CatScareAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now){ if(m.kind!=MobKind::Cat) return BTStatus::Failure; if(now < m.catScareCooldown) return BTStatus::Failure; m.catScareCooldown=now+60; if(ctx.srv) ctx.srv->broadcastSound("minecraft:entity.cat.purr", m.x,m.y,m.z,0.5f,1.f,"neutral"); return BTStatus::Success; }
+BTStatus FoxPounceAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now){ if(m.kind!=MobKind::Fox) return BTStatus::Failure; if(now < m.foxPounceCooldown) return BTStatus::Failure; Player* t=ctx.nearestPlayer; if(!t) return BTStatus::Failure; double dx=t->x-m.x, dz=t->z-m.z; double d=std::sqrt(dx*dx+dz*dz)+1e-6; if(d<2||d>6) return BTStatus::Failure; m.x+=dx/d*0.42; m.z+=dz/d*0.42; m.y+=0.38; m.foxPounceCooldown=now+40; return BTStatus::Success; }
+BTStatus DolphinPlayAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now){ if(m.kind!=MobKind::Dolphin) return BTStatus::Failure; if(now < m.dolphinPlayCooldown) return BTStatus::Failure; m.dolphinPlayCooldown=now+20; if(ctx.srv) ctx.srv->broadcastSound("minecraft:entity.dolphin.play", m.x,m.y,m.z,1.f,1.f,"neutral"); return BTStatus::Success; }
+BTStatus EvokerFangAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now){ if(m.kind!=MobKind::Evoker) return BTStatus::Failure; if(now < m.evokerFangCooldown) return BTStatus::Failure; Player* t=ctx.nearestPlayer; if(!t) return BTStatus::Failure; m.evokerFangCooldown=now+60; if(ctx.srv){ ctx.srv->broadcastSound("minecraft:entity.evoker.cast_spell", m.x,m.y,m.z,1.f,1.f,"hostile"); if(t) ctx.srv->applyDamage(*t,6.f, DamageSource::magic()); } return BTStatus::Success; }
 
 } // namespace cppfm

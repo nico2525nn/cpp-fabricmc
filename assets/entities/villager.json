@@ -1,0 +1,37 @@
+{
+  "type": "minecraft:villager",
+  "attributes": {
+    "max_health": 20,
+    "movement_speed": 0.09,
+    "attack_damage": 0
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:plains"
+    ],
+    "light_level": {
+      "max": 9
+    },
+    "weight": 10
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:villager_schedule",
+        "priority": 6
+      },
+      {
+        "type": "minecraft:trade",
+        "priority": 2
+      },
+      {
+        "type": "minecraft:wander",
+        "priority": 6
+      }
+    ],
+    "sensors": [
+      "minecraft:nearest_players",
+      "minecraft:hurt_by"
+    ]
+  }
+}

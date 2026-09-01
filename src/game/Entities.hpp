@@ -426,6 +426,26 @@ struct MobEntity {
     std::int64_t breezeWindChargeCooldown = 0;
     std::int64_t breezeJumpCooldown = 0;
     std::int64_t breezeLastJumpTick = -10000;
+    // plan36 §1 30 species fields (witch/ravager/bee/iron_golem/wolf/drowned/villager/piglin/etc)
+    std::int64_t witchPotionCooldown = 0;
+    std::int64_t ravagerRoarCooldown = 0;
+    std::int64_t ravagerStunUntil = 0;
+    bool beeHasNectar = false;
+    std::int64_t beePollenUntil = 0;
+    std::array<int,3> beeHivePos{INT_MAX,INT_MAX,INT_MAX};
+    std::int64_t ironGolemDefendCooldown = 0;
+    std::int32_t wolfAngerTarget = -1;
+    std::int64_t wolfAngerUntil = 0;
+    bool isTamed = false;
+    std::int64_t drownedTridentCooldown = 0;
+    std::int64_t villagerScheduleTick = 0;
+    std::int64_t piglinBarterCooldown = 0;
+    std::int64_t foxPounceCooldown = 0;
+    std::int64_t pandaRollCooldown = 0;
+    std::int64_t catScareCooldown = 0;
+    std::int64_t dolphinPlayCooldown = 0;
+    std::int64_t evokerFangCooldown = 0;
+    std::int64_t hoglinRetreatUntil = 0;
 
     static const char* kindName(MobKind k) { return mobStats(k).name; }
     static std::uint32_t typeId(MobKind k) {

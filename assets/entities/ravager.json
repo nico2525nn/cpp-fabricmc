@@ -1,0 +1,37 @@
+{
+  "type": "minecraft:ravager",
+  "attributes": {
+    "max_health": 100,
+    "movement_speed": 0.08,
+    "attack_damage": 12
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:plains"
+    ],
+    "light_level": {
+      "max": 7
+    },
+    "weight": 6
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:ravager_roar",
+        "priority": 2
+      },
+      {
+        "type": "minecraft:melee_attack",
+        "priority": 3
+      },
+      {
+        "type": "minecraft:wander",
+        "priority": 6
+      }
+    ],
+    "sensors": [
+      "minecraft:nearest_players",
+      "minecraft:hurt_by"
+    ]
+  }
+}

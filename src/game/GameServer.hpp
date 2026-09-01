@@ -1125,6 +1125,7 @@ private:
     std::int64_t weatherUntilTick_ = 6000 * 20;   // next toggle attempt
 public:
     bool raining() const { return weather_ == Weather::Rain; }
+    bool thundering() const { return weather_ == Weather::Rain && (tickNo_ % 6000) < 500; } // approximate thunder window
 private:
     void weatherTick();
     void setWeather(Weather w, std::int64_t durationTicks);

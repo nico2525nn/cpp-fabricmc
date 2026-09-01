@@ -1,0 +1,33 @@
+{
+  "type": "minecraft:bee",
+  "attributes": {
+    "max_health": 10,
+    "movement_speed": 0.1,
+    "attack_damage": 2
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:plains"
+    ],
+    "light_level": {
+      "max": 9
+    },
+    "weight": 10
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:bee_pollinate",
+        "priority": 2
+      },
+      {
+        "type": "minecraft:wander",
+        "priority": 6
+      }
+    ],
+    "sensors": [
+      "minecraft:nearest_players",
+      "minecraft:hurt_by"
+    ]
+  }
+}

@@ -29,6 +29,11 @@ struct EntityDataDef{
     std::vector<std::string> sensors;
     std::unordered_map<int,std::string> equipment;
     std::string loot;
+    // B-09 spawn weight/group (plan36)
+    int spawnWeight = 10;
+    int spawnMinCount = 1;
+    int spawnMaxCount = 4;
+    std::string spawnGroup;
     // prototype behavior tree built from behaviors (plan6 item 29, plan7 data-driven)
     std::shared_ptr<BehaviorTree> behaviorTree;
 };
