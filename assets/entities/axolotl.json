@@ -1,0 +1,27 @@
+{
+  "type": "minecraft:axolotl",
+  "attributes": {
+    "max_health": 14,
+    "movement_speed": 0.09,
+    "attack_damage": 2
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:lush_caves"
+    ],
+    "light_level": {
+      "max": 7
+    }
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:axolotl_play_dead",
+        "priority": "priority"
+      }
+    ],
+    "sensors": [
+      "minecraft:nearest_players"
+    ]
+  }
+}

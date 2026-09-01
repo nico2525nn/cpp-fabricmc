@@ -1,0 +1,26 @@
+{
+  "type": "minecraft:turtle",
+  "attributes": {
+    "max_health": 30,
+    "movement_speed": 0.07
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:beach"
+    ],
+    "light_level": {
+      "max": 12
+    }
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:turtle_home",
+        "priority": "priority"
+      }
+    ],
+    "sensors": [
+      "minecraft:nearest_players"
+    ]
+  }
+}

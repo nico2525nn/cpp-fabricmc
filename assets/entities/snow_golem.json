@@ -1,0 +1,26 @@
+{
+  "type": "minecraft:snow_golem",
+  "attributes": {
+    "max_health": 4,
+    "movement_speed": 0.1
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:snowy_plains"
+    ],
+    "light_level": {
+      "max": 15
+    }
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:snow_trail",
+        "priority": "priority"
+      }
+    ],
+    "sensors": [
+      "minecraft:nearest_players"
+    ]
+  }
+}

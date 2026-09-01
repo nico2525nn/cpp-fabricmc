@@ -1,0 +1,27 @@
+{
+  "type": "minecraft:goat",
+  "attributes": {
+    "max_health": 10,
+    "movement_speed": 0.11,
+    "attack_damage": 3
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:snowy_plains"
+    ],
+    "light_level": {
+      "max": 15
+    }
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:goat_ram",
+        "priority": "priority"
+      }
+    ],
+    "sensors": [
+      "minecraft:nearest_players"
+    ]
+  }
+}
