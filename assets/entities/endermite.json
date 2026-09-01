@@ -1,0 +1,27 @@
+{
+  "type": "minecraft:endermite",
+  "attributes": {
+    "max_health": 8,
+    "movement_speed": 0.1,
+    "attack_damage": 2
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:end_highlands"
+    ],
+    "light_level": {
+      "max": 7
+    }
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:endermite_teleport",
+        "priority": "priority"
+      }
+    ],
+    "sensors": [
+      "minecraft:nearest_players"
+    ]
+  }
+}

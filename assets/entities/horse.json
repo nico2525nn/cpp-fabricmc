@@ -1,0 +1,26 @@
+{
+  "type": "minecraft:horse",
+  "attributes": {
+    "max_health": 30,
+    "movement_speed": 0.12
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:plains"
+    ],
+    "light_level": {
+      "max": 12
+    }
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:wander",
+        "priority": "priority"
+      }
+    ],
+    "sensors": [
+      "minecraft:nearest_players"
+    ]
+  }
+}

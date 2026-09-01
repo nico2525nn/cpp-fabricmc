@@ -1,0 +1,26 @@
+{
+  "type": "minecraft:llama",
+  "attributes": {
+    "max_health": 22,
+    "movement_speed": 0.09
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:savanna"
+    ],
+    "light_level": {
+      "max": 12
+    }
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:wander",
+        "priority": "priority"
+      }
+    ],
+    "sensors": [
+      "minecraft:nearest_players"
+    ]
+  }
+}

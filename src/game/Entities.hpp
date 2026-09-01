@@ -446,6 +446,40 @@ struct MobEntity {
     std::int64_t dolphinPlayCooldown = 0;
     std::int64_t evokerFangCooldown = 0;
     std::int64_t hoglinRetreatUntil = 0;
+    // plan39 C-01: 30 species extra differentiation fields (60 species)
+    std::int64_t wardenSonicCooldown = 0;
+    int wardenAnger = 0;
+    int phantomSize = 0;
+    std::int64_t phantomLastSwoop = -10000;
+    double phantomOrbitAngle = 0;
+    Vec3 phantomOrbitCenter{0,80,0};
+    int shulkerPeek = 0;
+    std::int64_t guardianBeamCooldown = 0;
+    std::int64_t silverfishCallCooldown = 0;
+    std::int64_t endermiteLifeUntil = 0;
+    std::int64_t vindicatorJohnnyUntil = 0;
+    std::int64_t pillagerCrossbowCooldown = 0;
+    std::int64_t hoglinRepelCooldown = 0;
+    std::int64_t zoglinFrenzyUntil = 0;
+    std::int64_t witherSkeletonEffectCooldown = 0;
+    std::int64_t goatRamCooldown = 0;
+    std::int64_t axolotlPlayDeadUntil = 0;
+    std::int64_t frogTongueCooldown = 0;
+    std::array<int,3> turtleHomePos{INT_MAX,INT_MAX,INT_MAX};
+    std::int64_t turtleEggCooldown = 0;
+    bool parrotDancing = false;
+    std::int64_t parrotDanceUntil = 0;
+    std::int64_t ocelotTrustCooldown = 0;
+    std::int64_t snowGolemTrailCooldown = 0;
+    std::int64_t witherBarrageCooldown = 0;
+    std::int64_t striderShiverUntil = 0;
+    bool striderShivering = false;
+    std::int64_t illusionerInvisUntil = 0;
+    std::int64_t snifferDigCooldown = 0;
+    std::int64_t camelDashCooldown = 0;
+    std::int64_t allayDuplicateCooldown = 0;
+    std::int64_t boggedPoisonCooldown = 0;
+    std::int64_t slimeJumpCooldown = 0;
 
     static const char* kindName(MobKind k) { return mobStats(k).name; }
     static std::uint32_t typeId(MobKind k) {

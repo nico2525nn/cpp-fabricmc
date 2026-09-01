@@ -1,0 +1,26 @@
+{
+  "type": "minecraft:strider",
+  "attributes": {
+    "max_health": 20,
+    "movement_speed": 0.09
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:nether_wastes"
+    ],
+    "light_level": {
+      "max": 15
+    }
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:strider_lava_walk",
+        "priority": "priority"
+      }
+    ],
+    "sensors": [
+      "minecraft:nearest_players"
+    ]
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "type": "minecraft:ocelot",
+  "attributes": {
+    "max_health": 10,
+    "movement_speed": 0.1
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:jungle"
+    ],
+    "light_level": {
+      "max": 7
+    }
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:ocelot_trust",
+        "priority": "priority"
+      }
+    ],
+    "sensors": [
+      "minecraft:nearest_players"
+    ]
+  }
+}
