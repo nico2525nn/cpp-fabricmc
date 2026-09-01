@@ -97,6 +97,39 @@ public:
     static bool hasMending(const ItemStack& stack) {
         return stack.hasEnchant("mending") || stack.hasEnchant("minecraft:mending");
     }
+    // plan37 B-11: 7 new enchants (32/41) — mending already, infinity/silk/fortune/channeling/riptide/curses
+    static bool hasInfinity(const ItemStack& stack) {
+        return stack.hasEnchant("infinity") || stack.hasEnchant("minecraft:infinity");
+    }
+    static int getInfinity(const ItemStack& stack) {
+        return std::max(stack.enchantLevel("infinity"), stack.enchantLevel("minecraft:infinity"));
+    }
+    static bool hasChanneling(const ItemStack& stack) {
+        return stack.hasEnchant("channeling") || stack.hasEnchant("minecraft:channeling");
+    }
+    static int getChanneling(const ItemStack& stack) {
+        return std::max(stack.enchantLevel("channeling"), stack.enchantLevel("minecraft:channeling"));
+    }
+    static bool hasRiptide(const ItemStack& stack) {
+        return stack.hasEnchant("riptide") || stack.hasEnchant("minecraft:riptide");
+    }
+    static int getRiptide(const ItemStack& stack) {
+        return std::max(stack.enchantLevel("riptide"), stack.enchantLevel("minecraft:riptide"));
+    }
+    static bool hasBindingCurse(const ItemStack& stack) {
+        return stack.hasEnchant("binding_curse") || stack.hasEnchant("minecraft:binding_curse")
+            || stack.hasEnchant("binding") || stack.hasEnchant("minecraft:binding");
+    }
+    static bool hasVanishingCurse(const ItemStack& stack) {
+        return stack.hasEnchant("vanishing_curse") || stack.hasEnchant("minecraft:vanishing_curse")
+            || stack.hasEnchant("vanishing") || stack.hasEnchant("minecraft:vanishing");
+    }
+    static int getMending(const ItemStack& stack) {
+        return std::max(stack.enchantLevel("mending"), stack.enchantLevel("minecraft:mending"));
+    }
+    // additional enchants to reach 32/41 coverage (plan37 B-11 remaining 2 to fill 25→32)
+    static int getLoyalty(const ItemStack& s) { return std::max(s.enchantLevel("loyalty"), s.enchantLevel("minecraft:loyalty")); }
+    static int getImpaling(const ItemStack& s) { return std::max(s.enchantLevel("impaling"), s.enchantLevel("minecraft:impaling")); }
 
     // Generic enchant existence
     static bool hasEnchant(const ItemStack& s, const std::string& name) { return s.hasEnchant(name); }
