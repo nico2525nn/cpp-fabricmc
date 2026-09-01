@@ -1228,7 +1228,7 @@ void GameServer::effectsTick() {
             }
             ++it;
         }
-        (void)changed;
+        if (changed) onEffectsChanged(p);
         // per-tick metadata effects: invisibility/glowing/levitation/slow-falling
         // plan29 §7 polish: vanilla Levitation vy = 0.05*(amp+1) with lerp 0.2, fallDistance reset, ignore when swimming/riding
         {

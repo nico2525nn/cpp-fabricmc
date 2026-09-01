@@ -277,6 +277,15 @@ void GameServer::tickOnce() {
     if (tickNo_ % 20 == 0) {
         for (auto& pp : playersSnapshot()) if (pp->inPlay) evaluateLocationTrigger(*pp);
     }
+    // plan38 B-13: enter_block every 20 ticks
+    if (tickNo_ % 20 == 0) {
+        for (auto& pp : playersSnapshot()) if (pp->inPlay) {
+            int bx = static_cast<int>(std::floor(pp->x));
+            int by = static_cast<int>(std::floor(pp->y));
+            int bz = static_cast<int>(std::floor(pp->z));
+            onEnterBlock(pp.get(), bx, by, bz);
+        }
+    }
     // network batching: flush coalesced block updates every tick (50ms window)
     {
         int64_t now = nowMs();

@@ -789,6 +789,11 @@ public:
     void evaluateLocationTrigger(Player& p);
     void onPlacedBlock(Player& p, int x, int y, int z, std::uint16_t state);
     void onConsumeItem(Player& p, const ItemStack& stack);
+    // plan38 B-13: 6->10 triggers
+    void onBredAnimals(Player* p);
+    void onEnterBlock(Player* p, int x, int y, int z);
+    void onItemUsedOnBlock(Player* p, int x, int y, int z, const ItemStack& item);
+    void onEffectsChanged(Player* p);
     std::vector<AdvancementDefOwned> getMergedAdvancements();
 private:
     // plan35 cached merged advancements (story 30 + cppfm 9)

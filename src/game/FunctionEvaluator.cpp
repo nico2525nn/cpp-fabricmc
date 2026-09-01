@@ -89,14 +89,25 @@ int FunctionEvaluator::executeLine(const std::string& line, brigadier::CommandSo
             return cnt;
         }
     }
-    // Handle return command directly
+    // Handle return command directly — plan38 B-13: return run <command> propagation
     if (line.rfind("return ", 0) == 0) {
-        std::string valStr = line.substr(7);
-        // trim
-        size_t s = valStr.find_first_not_of(" \t");
-        if (s != std::string::npos) valStr = valStr.substr(s);
+        std::string rest = line.substr(7);
+        size_t s = rest.find_first_not_of(" \t");
+        if (s != std::string::npos) rest = rest.substr(s);
+        else rest.clear();
+        if (rest.rfind("run ", 0) == 0) {
+            std::string inner = rest.substr(4);
+            size_t t = inner.find_first_not_of(" \t");
+            if (t != std::string::npos) inner = inner.substr(t);
+            else inner.clear();
+            if (inner.empty()) { setReturnValue(0); return 0; }
+            auto res = server_->commands().execute(inner, std::move(src));
+            int v = res.ok ? res.value : 0;
+            setReturnValue(v);
+            return v;
+        }
         try {
-            int v = std::stoi(valStr);
+            int v = std::stoi(rest);
             setReturnValue(v);
             return v;
         } catch (...) {
@@ -118,25 +129,31 @@ int FunctionEvaluator::executeLine(const std::string& line, brigadier::CommandSo
 
 std::string FunctionEvaluator::expandMacro(const std::string& line, const std::map<std::string,std::string>& args) {
     if (args.empty()) return line;
-    std::string out = line;
+    if (line.empty() || line[0] != '$') return line;
+    std::string body = line.substr(1);
+    size_t s = body.find_first_not_of(" \t");
+    if (s != std::string::npos) body = body.substr(s);
+    else body.clear();
+    // 1) $(var) first (must before $var to avoid prefix overlap)
     for (auto& [k, v] : args) {
-        // $var and $(var) forms (plan37 §4)
-        std::string pat1 = "$" + k;
         std::string pat2 = "$(" + k + ")";
         size_t pos = 0;
-        while ((pos = out.find(pat1, pos)) != std::string::npos) {
-            // avoid replacing prefix of pat2 twice: check if pat2 already handled
-            // but replace both; prefer pat2 first
-            out.replace(pos, pat1.size(), v);
-            pos += v.size();
-        }
-        pos = 0;
-        while ((pos = out.find(pat2, pos)) != std::string::npos) {
-            out.replace(pos, pat2.size(), v);
+        while ((pos = body.find(pat2, pos)) != std::string::npos) {
+            body.replace(pos, pat2.size(), v);
             pos += v.size();
         }
     }
-    return out;
+    // 2) $var legacy
+    for (auto& [k, v] : args) {
+        std::string pat1 = "$" + k;
+        size_t pos = 0;
+        while ((pos = body.find(pat1, pos)) != std::string::npos) {
+            body.replace(pos, pat1.size(), v);
+            pos += v.size();
+        }
+    }
+    if (body.find("$(") != std::string::npos) return "";
+    return body;
 }
 
 int FunctionEvaluator::executeFunction(const std::string& id, brigadier::CommandSource src) {
@@ -156,9 +173,12 @@ int FunctionEvaluator::executeFunction(const std::string& id, brigadier::Command
     recursionDepth_++;
     clearReturn();
     int lastResult = 0;
-    for (auto line : lines) {
-        if (line.empty()) continue;
-        line = expandMacro(line, args);
+    for (auto origLine : lines) {
+        if (origLine.empty()) continue;
+        bool isMacro = !origLine.empty() && origLine[0] == '$';
+        std::string line = expandMacro(origLine, args);
+        if (isMacro && line.empty()) { lastResult = 0; break; } // missing var -> fail
+        std::string toExec = isMacro ? line : origLine;
         // Prepare source for each line (copy)
         brigadier::CommandSource lineSrc = src;
         // If hasReturn, break (return command stops function)
@@ -166,7 +186,7 @@ int FunctionEvaluator::executeFunction(const std::string& id, brigadier::Command
             lastResult = getReturnValue();
             break;
         }
-        int res = executeLine(line, lineSrc);
+        int res = executeLine(toExec, lineSrc);
         lastResult = res;
         if (hasReturn()) {
             lastResult = getReturnValue();

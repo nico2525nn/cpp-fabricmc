@@ -328,6 +328,17 @@ BTStatus BreedAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     m.inLove=false; partner->inLove=false;
     m.breedCooldownUntil = now + 6000;
     partner->breedCooldownUntil = now + 6000;
+    // plan38 B-13: bred_animals for nearest player
+    {
+        auto nearby = ctx.srv->playersSnapshot();
+        Player* best=nullptr; double bestD=64;
+        for (auto &pp: nearby) if (pp->inPlay) {
+            double dx=pp->x-bx, dz=pp->z-bz;
+            double d2=dx*dx+dz*dz;
+            if (d2<bestD*bestD) { bestD=std::sqrt(d2); best=pp.get(); }
+        }
+        if (best) ctx.srv->onBredAnimals(best);
+    }
     return BTStatus::Success;
 }
 
