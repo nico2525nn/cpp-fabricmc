@@ -207,6 +207,16 @@ set_tests_properties(wire_full PROPERTIES TIMEOUT 30)
 add_test(NAME soak2h COMMAND python3 tests/soak_test.py --duration 7200 --binary $<TARGET_FILE:cppfm> WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(soak2h PROPERTIES TIMEOUT 8000 LABELS nightly)
 
+add_executable(test_gameplay_full tests/test_gameplay_full.cpp
+    src/core/NBT.cpp
+    src/worldgen/DensityFunction.cpp src/worldgen/MultiNoise.cpp src/worldgen/Structures.cpp src/worldgen/StructurePlacer.cpp src/worldgen/ChunkGenerator.cpp src/worldgen/StructureManager.cpp src/game/WorldGen.cpp src/game/WorldDataManager.cpp)
+target_include_directories(test_gameplay_full PRIVATE src src/generated)
+find_package(ZLIB REQUIRED)
+find_package(OpenSSL REQUIRED)
+target_link_libraries(test_gameplay_full PRIVATE ZLIB::ZLIB OpenSSL::Crypto)
+add_test(NAME gameplay_full COMMAND test_gameplay_full)
+set_tests_properties(gameplay_full PROPERTIES TIMEOUT 60)
+
 # plan39 C-03 weak_zero gate — grep 0 strict
 add_test(NAME weak_zero COMMAND sh -c "test $(grep -rn '|| true' ${CMAKE_SOURCE_DIR}/tests --include='*.cpp' | wc -l) -eq 0")
 set_tests_properties(weak_zero PROPERTIES TIMEOUT 10)
