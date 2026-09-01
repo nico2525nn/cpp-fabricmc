@@ -837,6 +837,17 @@ void Session::onWindowClick(ReadBuffer& in) {
         return;
     }
     if (windowId == 0) {
+        // plan37 B-11 binding_curse: in survival inventory window, prevent removing cursed armor
+        // slotIdx 5..8 correspond to armor (boots/leggings/chest/head) in our 46-slot layout
+        if (slotIdx>=5 && slotIdx<=8 && !self_->inv[slotIdx].empty() && EnchantmentHelper::hasBindingCurse(self_->inv[slotIdx])) {
+            // any click that would empty the slot: mode 0 pickup, mode 1 quickMove, mode 2 hotbar, mode 4 throw
+            bool wouldRemove = (mode==0 || mode==1 || mode==2 || mode==4 || mode==5);
+            if (wouldRemove) {
+                srv_.resendInventory(*self_);
+                srv_.syncEquipmentOnChange(*self_);
+                return;
+            }
+        }
         // player-inventory clicks: trust the predicted slots, then resync.
         // (Full authoritative cursor handling lives in the menu path.)
         srv_.resendInventory(*self_);
@@ -1944,6 +1955,13 @@ void Session::handlePlay() {
             const std::int16_t slot = in.i16();
             const auto stack = ItemStack::read(in);
             if (slot >= 0 && slot < 46) {
+                // plan37 B-11 binding_curse: prevent removing armor with curse (creative also respects)
+                if ((slot==5||slot==6||slot==7||slot==8) && !self_->inv[slot].empty() && stack.empty()) {
+                    if (EnchantmentHelper::hasBindingCurse(self_->inv[slot])) {
+                        srv_.resendInventory(*self_);
+                        break;
+                    }
+                }
                 self_->inv[slot] = stack;
                 // plan13 §2: dynamic SetEquipment sync for creative armor/hand changes
                 if (slot==5||slot==6||slot==7||slot==8||slot==45||(slot>=36&&slot<=44)) {
@@ -3592,8 +3610,50 @@ void Session::onUseItem(ReadBuffer& in) {
     (void)in.f32(); (void)in.f32();
     if (self_->heldSlot >= 0 && self_->heldSlot < 9) {
         auto& sl = self_->inv[36 + self_->heldSlot];
-        // plan13 §7: trident channeling – spawn trident projectile on use
+        // plan13 §7: trident channeling/riptide – spawn trident projectile or riptide boost on use (plan37 B-11)
         if (!sl.empty() && sl.name().find("trident")!=std::string::npos) {
+            // plan37 B-11 riptide gate: raining/thundering or in water
+            int riptideLvl = EnchantmentHelper::getRiptide(sl);
+            bool isInWater = false;
+            {
+                // check block at feet is water
+                uint16_t bst = srv_.world().getBlock((int)std::floor(self_->x), (int)std::floor(self_->y), (int)std::floor(self_->z));
+                if (auto* bd = gen::blockByState(bst)) {
+                    std::string bn(bd->name);
+                    if (bn.find("water")!=std::string::npos) isInWater = true;
+                }
+                // also check block at eye height
+                if (!isInWater) {
+                    uint16_t bst2 = srv_.world().getBlock((int)std::floor(self_->x), (int)std::floor(self_->y+1), (int)std::floor(self_->z));
+                    if (auto* bd2 = gen::blockByState(bst2)) {
+                        std::string bn2(bd2->name);
+                        if (bn2.find("water")!=std::string::npos) isInWater = true;
+                    }
+                }
+            }
+            bool raining = srv_.raining() || srv_.thundering();
+            if (riptideLvl>0 && (raining || isInWater)) {
+                // riptide: propel player in look direction, damage trident, no projectile
+                double yawRad = self_->yaw * 3.14159265/180.0;
+                double pitchRad = self_->pitch * 3.14159265/180.0;
+                double vx = -std::sin(yawRad)*std::cos(pitchRad)*(1.2f * riptideLvl);
+                double vy = -std::sin(pitchRad)*(1.2f * riptideLvl);
+                double vz =  std::cos(yawRad)*std::cos(pitchRad)*(1.2f * riptideLvl);
+                // apply velocity via EntityVelocity packet
+                WriteBuffer vel;
+                vel.varint(self_->entityId);
+                vel.i16((int16_t)(vx*8000)); vel.i16((int16_t)(vy*8000)); vel.i16((int16_t)(vz*8000));
+                try { self_->conn->sendPacket(proto::pl::sc::EntityVelocity, vel); } catch(...) {}
+                // also broadcast to others
+                srv_.broadcastPacketExcept(self_.get(), proto::pl::sc::EntityVelocity, vel);
+                if (self_->gamemode==0 && ItemStack::maxDamageFor(sl.itemId)>0) {
+                    if (sl.applyDamage(1)) sl = ItemStack::air();
+                    srv_.resendInventory(*self_);
+                }
+                ack(sequence);
+                return;
+            }
+            // normal trident throw (channeling handled on hit in GameServer_items.cpp)
             double yawRad = self_->yaw * 3.14159265/180.0;
             double pitchRad = self_->pitch * 3.14159265/180.0;
             double vx = -std::sin(yawRad)*std::cos(pitchRad)*1.5;
@@ -3604,6 +3664,47 @@ void Session::onUseItem(ReadBuffer& in) {
                 if (sl.applyDamage(1)) sl = ItemStack::air();
                 srv_.resendInventory(*self_);
             }
+            ack(sequence);
+            return;
+        }
+        // plan37 B-11 infinity bow: handle bow shoot via UseItem (simplified immediate shoot)
+        if (!sl.empty() && sl.name()=="minecraft:bow") {
+            bool hasInfinity = EnchantmentHelper::hasInfinity(sl);
+            bool isCreative = self_->gamemode==1;
+            // find arrow in inventory (any arrow type)
+            int arrowSlot = -1;
+            for(int i=9;i<=44;++i){
+                if(self_->inv[i].empty()) continue;
+                std::string an = self_->inv[i].name();
+                if(an.find("arrow")!=std::string::npos){ arrowSlot=i; break; }
+            }
+            // also check offhand
+            if(arrowSlot==-1 && !self_->inv[45].empty() && self_->inv[45].name().find("arrow")!=std::string::npos) arrowSlot=45;
+            bool hasArrow = arrowSlot!=-1 && self_->inv[arrowSlot].count>0;
+            if(!hasArrow && !isCreative && !hasInfinity){
+                ack(sequence); return;
+            }
+            // spawn arrow projectile
+            double yawRad = self_->yaw * 3.14159265/180.0;
+            double pitchRad = self_->pitch * 3.14159265/180.0;
+            double vx = -std::sin(yawRad)*std::cos(pitchRad)*2.0;
+            double vy = -std::sin(pitchRad)*2.0 + 0.15;
+            double vz =  std::cos(yawRad)*std::cos(pitchRad)*2.0;
+            srv_.spawnProjectile(ProjectileKind::Arrow, self_->x, self_->y+1.6, self_->z, vx, vy, vz, self_->entityId, true);
+            // damage bow
+            if (self_->gamemode==0 && ItemStack::maxDamageFor(sl.itemId)>0) {
+                if (sl.applyDamage(1)) sl = ItemStack::air();
+            }
+            // consume arrow unless infinity or creative
+            if(!isCreative){
+                if(hasInfinity && hasArrow){
+                    // infinity: consume 0 (require at least 1 arrow stays)
+                } else if(hasArrow){
+                    auto &arr = self_->inv[arrowSlot];
+                    if(--arr.count<=0) arr = ItemStack::air();
+                }
+            }
+            srv_.resendInventory(*self_);
             ack(sequence);
             return;
         }

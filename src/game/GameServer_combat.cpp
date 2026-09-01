@@ -83,6 +83,30 @@ void GameServer::killPlayer(Player& p, const char* cause) {
     sendScoreAll("deaths", p.name,
                  scoreboard.getScore("deaths", p.name));
     broadcastSystemText(std::string("\u00a7c") + p.name + " died (" + cause + ")", &p);
+    // plan37 B-11 vanishing_curse: drop inventory except vanishing, respect keepInventory gamerule
+    {
+        bool keepInv = false;
+        try { keepInv = gamerules_.getBool("keepInventory"); } catch (...) {}
+        if (!keepInv) {
+            for (int i=0;i<46;++i) {
+                auto &st = p.inv[i];
+                if (st.empty()) continue;
+                if (EnchantmentHelper::hasVanishingCurse(st)) {
+                    st = ItemStack::air();
+                    continue;
+                }
+                // spawn drop (preserve components)
+                spawnItemDrop(p.x, p.y + 0.5, p.z, st, (rand()/(double)RAND_MAX-.5)*0.3, 0.2, (rand()/(double)RAND_MAX-.5)*0.3);
+                st = ItemStack::air();
+            }
+            // also clear cursor? handled via sync
+            if (!keepInv) resendInventory(p);
+        } else {
+            // keepInventory true: still vanish cursed items disappear (vanilla: vanishing still vanishes even with keepInventory)
+            for (int i=0;i<46;++i) if(!p.inv[i].empty() && EnchantmentHelper::hasVanishingCurse(p.inv[i])) p.inv[i]=ItemStack::air();
+            if (!p.inv[45].empty() && EnchantmentHelper::hasVanishingCurse(p.inv[45])) p.inv[45]=ItemStack::air();
+        }
+    }
     // plan35 §5 hardcore: ban on death when hardcore=true (vanilla hardcore -> spectator + world delete, here ban)
     if (cfg_.hardcore) {
         bannedPlayers_.insert(p.name);

@@ -1557,21 +1557,45 @@ void GameServer::projectilesTick() {
         }
     }
     for (auto& h : hits) {
-        // plan13 §7: Channeling trident spawns lightning when thundering and target in water/rain
+        // plan13 §7: Channeling trident spawns lightning when thundering and target in water/rain (plan37 B-11 thunder gate + canSeeSky)
         if (h.p->kind == ProjectileKind::Trident) {
-            bool thunder = raining();
-            if (thunder) {
+            bool isThundering = thundering();
+            if (isThundering) {
                 double lx = h.player ? h.player->x : (h.mob ? h.mob->x : h.p->x);
                 double ly = h.player ? h.player->y : (h.mob ? h.mob->y : h.p->y);
                 double lz = h.player ? h.player->z : (h.mob ? h.mob->z : h.p->z);
                 bool hasChannel=false;
                 for(auto &pp: playersSnapshot()) if(pp->entityId==h.p->ownerId && h.p->ownerIsPlayer){
-                    for(int i=36;i<=44;i++) if(!pp->inv[i].empty() && (pp->inv[i].hasEnchant("channeling")||pp->inv[i].hasEnchant("minecraft:channeling"))) hasChannel=true;
-                    for(int i=5;i<=8;i++) if(!pp->inv[i].empty() && (pp->inv[i].hasEnchant("channeling")||pp->inv[i].hasEnchant("minecraft:channeling"))) hasChannel=true;
+                    for(int i=36;i<=44;i++) if(!pp->inv[i].empty() && EnchantmentHelper::hasChanneling(pp->inv[i])) hasChannel=true;
+                    for(int i=5;i<=8;i++) if(!pp->inv[i].empty() && EnchantmentHelper::hasChanneling(pp->inv[i])) hasChannel=true;
+                    // also check held trident directly if owner inventory not found via helper already, but also direct check
                     break;
                 }
-                if (hasChannel || thunder) {
-                    strikeLightning(lx, ly, lz);
+                // plan37: channeling requires thundering && canSeeSky && hasChannel
+                if (hasChannel && isThundering) {
+                    // canSeeSky: check sky light or no opaque blocks above target
+                    bool canSeeSky = false;
+                    {
+                        int tx = (int)std::floor(lx);
+                        int ty = (int)std::floor(ly);
+                        int tz = (int)std::floor(lz);
+                        // simplified: if sky light 15 at target y, consider canSeeSky
+                        try{
+                            uint8_t sky = world_.getSkyLight(tx, ty, tz);
+                            if(sky >= 15) canSeeSky = true;
+                            else {
+                                // fallback: scan up to maxY for non-air
+                                bool blocked=false;
+                                for(int y2=ty+1; y2<320; ++y2){
+                                    if(world_.getBlock(tx, y2, tz)!=0){ blocked=true; break; }
+                                }
+                                canSeeSky = !blocked;
+                            }
+                        } catch(...){ canSeeSky = true; }
+                    }
+                    if(canSeeSky){
+                        strikeLightning(lx, ly, lz);
+                    }
                 }
             }
         }
