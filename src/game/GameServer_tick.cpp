@@ -1066,11 +1066,34 @@ void GameServer::mobsTick() {
         broadcastPacketExcept(nullptr, pl::sc::RemoveEntities, b);
     }
     for (auto& m : drops) {
-        const auto drop = MobEntity::dropFor(m->kind);
-        if (drop.itemId)
-            spawnItemDrop(m->x, m->y + 0.4, m->z, drop.itemId, drop.count,
-                          (rand()/(double)RAND_MAX-.5)*.15, .1,
-                          (rand()/(double)RAND_MAX-.5)*.15);
+        // plan37 B-05: entity loot tables (10 species) via LootTableEvaluator, fallback to legacy dropFor
+        bool spawnedViaLoot = false;
+        {
+            std::string kindName = MobEntity::kindName(m->kind);
+            std::string base = kindName.find(':')!=std::string::npos ? kindName.substr(kindName.find(':')+1) : kindName;
+            std::string tblId = "minecraft:entities/" + base;
+            if (lootTables_.find(tblId)) {
+                LootContext ctx;
+                // try to get looting from killer's tool if available (fallback 0)
+                ctx.lootingLevel = 0;
+                ctx.fortuneLevel = 0;
+                auto loot = lootTables_.evaluateEntity(kindName, &ctx);
+                for (auto& st : loot) {
+                    if (st.empty()) continue;
+                    spawnItemDrop(m->x, m->y + 0.4, m->z, st,
+                                  (rand()/(double)RAND_MAX-.5)*.15, .1,
+                                  (rand()/(double)RAND_MAX-.5)*.15);
+                    spawnedViaLoot = true;
+                }
+            }
+        }
+        if (!spawnedViaLoot) {
+            const auto drop = MobEntity::dropFor(m->kind);
+            if (drop.itemId)
+                spawnItemDrop(m->x, m->y + 0.4, m->z, drop.itemId, drop.count,
+                              (rand()/(double)RAND_MAX-.5)*.15, .1,
+                              (rand()/(double)RAND_MAX-.5)*.15);
+        }
         // plan17 LOW: equipment drop based on HandDropChances/ArmorDropChances (was never serialized/dropped)
         for (int es=0; es<6; ++es) {
             if (m->equipment[es].empty()) continue;
