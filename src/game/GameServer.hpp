@@ -66,6 +66,7 @@
 #include "DatapackManager.hpp"
 #include "FunctionEvaluator.hpp"
 #include "../core/ThreadPool.hpp"
+#include <list>
 
 namespace cppfm {
 
@@ -913,8 +914,7 @@ public:
     void flushBlockBatches();
     void broadcastPlayerChat(Player& sender, const std::string& message, std::int64_t timestamp);
     bool validateFeatureFlags(const std::vector<std::array<std::string,3>>& clientPacks);
-    // Serialized-chunk cache: shared across players; keyed by chunk, invalidated
-    // by world revision on edits.
+    // Serialized-chunk cache: LRU 1024 (plan38 B-07) — Chebyshev-aware eviction via MRU list
     using ChunkBodyRef = std::shared_ptr<const std::vector<std::uint8_t>>;
     bool getCachedChunk(std::int32_t cx, std::int32_t cz, std::uint32_t biomeIdx,
                         ChunkBodyRef& out) {
@@ -922,22 +922,58 @@ public:
         std::lock_guard lk(chunkCacheMtx_);
         auto it = chunkCache_.find(k);
         if (it == chunkCache_.end()) return false;
+        // LRU touch: move to front (MRU)
+        chunkCacheLru_.splice(chunkCacheLru_.begin(), chunkCacheLru_, it->second.it);
+        it->second.it = chunkCacheLru_.begin();
         out = it->second.body;
         (void)biomeIdx;
         return true;
     }
     void storeChunk(std::int32_t cx, std::int32_t cz, std::uint64_t rev, ChunkBodyRef body) {
         std::lock_guard lk(chunkCacheMtx_);
-        if (chunkCache_.size() > 1024) chunkCache_.clear();   // simple bound
-        chunkCache_[chunkKey(cx, cz)] = {rev, std::move(body)};
+        const std::int64_t k = chunkKey(cx, cz);
+        auto it = chunkCache_.find(k);
+        if (it != chunkCache_.end()) {
+            it->second.rev = rev;
+            it->second.body = std::move(body);
+            chunkCacheLru_.splice(chunkCacheLru_.begin(), chunkCacheLru_, it->second.it);
+            it->second.it = chunkCacheLru_.begin();
+            return;
+        }
+        if (chunkCache_.size() >= 1024) {
+            // evict LRU (back) — Chebyshev variant: LRU already approximates distance since far chunks are least recently touched
+            std::int64_t ev = chunkCacheLru_.back();
+            chunkCacheLru_.pop_back();
+            chunkCache_.erase(ev);
+        }
+        chunkCacheLru_.push_front(k);
+        chunkCache_.emplace(k, CachedChunk{rev, std::move(body), chunkCacheLru_.begin()});
     }
     void invalidateChunkCache(std::int32_t cx, std::int32_t cz) {
         std::lock_guard lk(chunkCacheMtx_);
-        chunkCache_.erase(chunkKey(cx, cz));
+        const std::int64_t k = chunkKey(cx, cz);
+        auto it = chunkCache_.find(k);
+        if (it != chunkCache_.end()) {
+            chunkCacheLru_.erase(it->second.it);
+            chunkCache_.erase(it);
+        }
     }
     void clearChunkCache() {
         std::lock_guard lk(chunkCacheMtx_);
         chunkCache_.clear();
+        chunkCacheLru_.clear();
+    }
+    // B-07 async I/O helpers (plan38 world worktree) — demand/ save via ioPool
+    void demandChunkAsync(std::int32_t cx, std::int32_t cz);
+    void saveChunkAsync(std::int32_t cx, std::int32_t cz);
+    std::size_t chunkCacheSize() const {
+        std::lock_guard lk(chunkCacheMtx_);
+        return chunkCache_.size();
+    }
+    std::size_t ioQueueDepth() const { return ioPool_.pending(); }
+    std::size_t pendingLoadsSize() const {
+        std::lock_guard lk(pendingLoadsMtx_);
+        return pendingLoads_.size();
     }
 
 private:
@@ -1155,23 +1191,17 @@ public:
     // plan14 §6: called each tick from tickOnce to run due scheduled functions
     void tickScheduledFunctions() { functionEvaluator_.tick(tickNo_); }
 private:
-    struct CachedChunk { std::uint64_t rev; ChunkBodyRef body; };
+    struct CachedChunk { std::uint64_t rev; ChunkBodyRef body; std::list<std::int64_t>::iterator it; };
     std::unordered_map<std::int64_t, CachedChunk> chunkCache_;
-    std::mutex chunkCacheMtx_;
+    std::list<std::int64_t> chunkCacheLru_; // MRU front, LRU back (plan38 B-07 LRU 1024)
+    mutable std::mutex chunkCacheMtx_;
     std::unordered_map<std::int32_t, std::int64_t> ghostThrottle_; // entityId -> last tick for PlaceGhostRecipe 0x39
-    // W19 async I/O: ThreadPool for RegionFile zlib offload (Yarn ThreadedAnvilChunkStorage)
+    // W19/B-07 async I/O: ThreadPool for RegionFile zlib offload (Yarn ThreadedAnvilChunkStorage)
     core::ThreadPool ioPool_{4};
     // pending async chunk loads (ChunkPos -> future) polled in tickOnce via pollPendingLoads()
-    // kept simple: pending map polled with wait_for(0) to avoid blocking main tick (MC-177729)
     std::unordered_map<std::int64_t, std::future<std::vector<std::uint8_t>>> pendingLoads_;
-    void pollPendingLoads() { // W19: poll ready futures (no-op if none)
-        for (auto it = pendingLoads_.begin(); it != pendingLoads_.end(); ) {
-            if (it->second.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-                try { (void)it->second.get(); } catch (...) {}
-                it = pendingLoads_.erase(it);
-            } else ++it;
-        }
-    }
+    mutable std::mutex pendingLoadsMtx_;
+    void pollPendingLoads(); // B-07: drain ready futures and install chunks (defined in GameServer_tick.cpp)
     std::atomic<bool> running_{true};
     int listenFd_ = -1;
     std::int32_t entityIdCounter_ = 1;
