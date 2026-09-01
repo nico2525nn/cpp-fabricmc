@@ -1,0 +1,26 @@
+{
+  "type": "minecraft:bat",
+  "attributes": {
+    "max_health": 6,
+    "movement_speed": 0.08
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:plains"
+    ],
+    "light_level": {
+      "max": 7
+    }
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:wander",
+        "priority": "priority"
+      }
+    ],
+    "sensors": [
+      "minecraft:nearest_players"
+    ]
+  }
+}

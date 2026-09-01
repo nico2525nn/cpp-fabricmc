@@ -1,0 +1,27 @@
+{
+  "type": "minecraft:bogged",
+  "attributes": {
+    "max_health": 16,
+    "movement_speed": 0.1,
+    "attack_damage": 2
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:swamp"
+    ],
+    "light_level": {
+      "max": 7
+    }
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:bogged_poison",
+        "priority": "priority"
+      }
+    ],
+    "sensors": [
+      "minecraft:nearest_players"
+    ]
+  }
+}
