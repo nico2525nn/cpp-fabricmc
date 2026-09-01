@@ -267,6 +267,8 @@ void GameServer::tickOnce() {
     }
     // WanderingTrader scheduling — vanilla 24000 delay + chance (doTraderSpawning)
     tickWanderingTrader();
+    // B-12 thunder lightning + weather cycle (doWeatherCycle gate inside weatherTick)
+    weatherTick();
     // plan14 §6: scheduled function tick (schedule) – execute due scheduled functions each tick
     tickScheduledFunctions();
     // plan35 §1: tick trigger for advancements (minecraft:tick)
