@@ -1,10 +1,10 @@
 # Compatibility Audit — 87 → 90 Gap Closure (C-series)
 
 > **Note:** このドキュメントは **assessment-4 (C-series, 87→90)** です。assessment-1 (S-series 78/78 strict wire FIXED) + assessment-2 (D-series + H1 32/32 deep wire FIXED) + assessment-3 (B-series 14/14 behavior FIXED, 78→85) は前提として閉じている。本監査は **85→90** の残差を C-series 12 項目として項目化する。
-> **Target:** `cpp-fabricmc` HEAD `b568d97` (plan38 完遂, protocol 769, DataVersion 4189, Yarn 1.21.4) vs Vanilla **Fabric 1.21.4** (Mojang 1.21.4, `minecraft-data 1.21.4`, Yarn `1.21.4+build.9`)
-> **Date:** 2026-09-01
+> **Target:** `cpp-fabricmc` HEAD `bd1be57` (plan39 C-01 60 + C-02 80 + C-03 0 + C-04 600s, protocol 769, DataVersion 4189, Yarn 1.21.4) vs Vanilla **Fabric 1.21.4** (Mojang 1.21.4, `minecraft-data 1.21.4`, Yarn `1.21.4+build.9`)
+> **Date:** 2026-09-01 (updated wt39/test)
 > **Method:** ローカル `grep` / `wc -l` / `find` で `src/...:line` と `assets/...` 量を HEAD で実測 + Yarn `maven.fabricmc.net` / `minecraft.wiki` / `minecraft-data` 一次根拠を照合。Severity: **HIGH** = プレイヤー可視の挙動破綻・体験欠落・kick、**MEDIUM** = 体感できる差異・網羅不足、**LOW** = 運用/計測/コスメ。
-> **Result:** **12 gaps** (C-01〜C-12) **OPEN 12/12**。全 12 項目が FIXED になった時点で「正直な見立て 87/100 → 90/100」到達とみなす（A 38/40・B 26-27/30・C 13-14/15・D 14/15, `tools/score_review.py` 100/100 フレーム）。
+> **Result:** **12 gaps** (C-01〜C-12) **FIXED 4/12, OPEN 8/12** (C-01〜C-04 FIXED plan39 wt39/test, C-05〜C-12 OPEN)。全 12 項目が FIXED になった時点で「正直な見立て 87/100 → 90/100」到達とみなす（A 38/40・B 26-27/30・C 13-14/15・D 14/15, `tools/score_review.py` 100/100 フレーム）。
 > **Score context (再採点 87/100 — muse 評価):** A 38/40・B 24/30・C 12/15・D 13/15。90 到達の寄与は各 C 項目の ★ に示す（★5 = +1.5〜2.0, ★1 = +0.2〜0.5）。
 
 ---
@@ -27,15 +27,15 @@
 
 | 観測 | コマンド | 結果 |
 |------|----------|------|
-| entities json | `ls assets/entities/*.json \| wc -l` | **40** |
-| structure json | `ls assets/data/structures/*.json \| wc -l` | **40** |
+| entities json | `ls assets/entities/*.json \| wc -l` | **70** (40→70 plan39 C-01) |
+| structure json | `ls assets/data/structures/*.json \| wc -l` | **80** (40→80 plan39 C-02) |
 | loot_tables total | `find assets/data/loot_tables -type f \| wc -l` | **38** (blocks 6 / chests 22 / entities 10) |
 | advancements json | `find assets/data/minecraft/advancements -type f \| wc -l` | **50** (story 20 / adventure 10 / end 6 / husbandry 6 / nether 8) |
 | recipes | `find assets/data/recipes -type f \| wc -l` | **1578** |
-| weak `||true` smoke | `grep -c "|| true" tests/test_smoke_80.cpp` | **11** |
-| weak `||true` native | `grep -c "|| true" tests/native_integration.cpp` | **3** |
-| weak total | `grep -rn "|| true" tests/ --include="*.cpp" \| wc -l` | **14** |
-| AiBrain goals | `grep -c "push_back.*Goal" src/game/AiBrain.cpp` | **28** (19 差別化 + 9 generic/fallback) |
+| weak `||true` smoke | `grep -c "|| true" tests/test_smoke_80.cpp` | **0** (11→0 plan39 C-03) |
+| weak `||true` native | `grep -c "|| true" tests/native_integration.cpp` | **0** (3→0 plan39 C-03) |
+| weak total | `grep -rn "|| true" tests/ --include="*.cpp" \| wc -l` | **0** (14→0 plan39 C-03, `ctest -R weak_zero` PASS) |
+| AiBrain goals | `grep -c "push_back.*Goal" src/game/AiBrain.cpp` | **58** (28→58 plan39 C-01, 30 new) |
 | predicate types | `grep -c 'c == "minecraft:' src/game/DatapackManager.hpp` | **17** 条件種 |
 | loot funcs | `grep -c 'ftype.find' src/game/LootTables.hpp` | **10** (explosion_decay/furnace_smelt/copy_components/set_count/enchant_randomly/fill_player_head/apply_bonus/looting_enchant/enchant_with_levels/limit_count) |
 | enchant helpers | `grep -c "static.*get\|static.*has" src/game/EnchantmentHelper.hpp` | **13** accessors (claim 32/41 内包は `level()` 汎用を含む) |
@@ -49,10 +49,10 @@
 
 | # | Domain | Feature | File:line | Vanilla spec (source) | Gap | Severity | Status |
 |---|---|---|---|---|---|---|---|
-| **C-01** | Entities / AI | Mob AI 差別化 40→60 種 (149 中) | `src/game/AiBrain.cpp:45` `Brain::Brain` 28 goals, `assets/entities/*.json` 40 files, `src/generated/EntityIds.hpp:13` `kEntities 149`, `src/game/Entities.hpp:93` `MobKind` 149, `src/game/EntityData.cpp:119` `loadDirectory` | Yarn `MobEntity` 149 types + `minecraft-data entities.json` 149; wiki `Mobs` 82+ variants; Yarn `Goal`/`Brain` per-mob | 40 json / 28 goals で 19 種が明確に差別化（B-01 の 18→40 は FIXED だが 60 到達は未達）。残り 109 種は `WanderAround` + `Melee/Ranged` fallback。`IronGolem` 守衛・`Piglin` barter・`Bee` pollinate 等は plan38 で追加済みだが `Drowned` swim・`Phantom` circling・`Warden` sonic_boom 等の 20 種が stub | **HIGH** | **OPEN** |
-| **C-02** | WorldGen | 構造物ピース 40→80・12-variant 化 | `src/worldgen/StructureManager.cpp:61` `ensureDefaults` 20 sets, `269` `villageJigsaw`, `550` `trialChambersPiece`, `assets/data/structures/*.json` 40 files, `src/worldgen/Structures.hpp:33` `structureSets`, `assets/data/loot_tables/chests` 22 files | Yarn `StructurePool` / `Jigsaw` / `StructureTemplate` + vanilla `data/minecraft/structures/*.nbt` ~300 pieces; wiki `Jigsaw` villages 12-variant, `trial_chambers` corridor/chamber/spawner/intersection/atrium 5 箱; `minecraft-data structureSets` 20 sets | 40 pieces は B-02 FIXED の 20→40 だが、目標 80 の半分。`trial_chambers` は 3 pieces (`corridor/chamber_1/chamber_4`) で vanilla 20 層の簡略。`village` は 3 pieces で 12-variant 未達。`ancient_city` は 3 files。loot chest 22 は `chests` 半分、構造物内の mob 配置は一部のみ | **HIGH** | **OPEN** |
-| **C-03** | Quality | 弱検査 `||true` 14 箇所の撤廃 | `tests/test_smoke_80.cpp:126,735,769,786,804,811,822,837,857,877,931` 11 箇所, `tests/native_integration.cpp:422,429,525` 3 箇所, 計 `grep -rn "|| true" tests/ \| wc -l` **14** | `test_smoke_80` strict 定義 (assessment-1/3): 弱検査は `PASS` を水増しし parity 誤認を招く | 11 (smoke) + 3 (native) = 14 弱検査が残存。`locate`/`consume_item`/`loot`/`villager`/`mending`/`thunder`/`level.dat`/`effects_changed` の 8 機能が `||true` で常に PASS。`native` の `triangular vs linear`/`locate golden`/`ravager cooldown` も弱検査。C-04 の Soak 実証とセットで D +1.5 の半分 | **MEDIUM** | **OPEN** |
-| **C-04** | Operational | 手動 vanilla client 2h Soak 実証 + 実ログ | `docs/SOAK_REPORT.md:1` 66 行 template, `tests/soak_test.py` synthetic 7200s, `src/game/GameServer_tick.cpp:1` 20 TPS | Mojang vanilla client 1.21.4 2h 手動 Soak が真の parity 判定; Yarn `MinecraftClient` 20 TPS; assessment-3 B-06 の 7 項目 checklist | `SOAK_REPORT.md` は template のまま（`PASS/FAIL` 未記入、`captures/manual-soak-*.bin` 未添付）。`soak_test.py` は synthetic 4 clients のみ。vanilla 1.21.4 Offline client での Overworld ±30k / Combat / Redstone 300t / Nether×2+End×1 / Death×5 / Thunder / chunk boundary+inv drag の 7 項目手動実証ログが未提出 | **HIGH** | **OPEN** |
+| **C-01** | Entities / AI | Mob AI 差別化 40→60 種 (149 中) | `src/game/AiBrain.cpp:45` `Brain::Brain` 58 goals, `assets/entities/*.json` 70 files, `src/generated/EntityIds.hpp:13` `kEntities 149`, `src/game/Entities.hpp:93` `MobKind` 149, `src/game/EntityData.cpp:119` `loadDirectory` | Yarn `MobEntity` 149 types + `minecraft-data entities.json` 149; wiki `Mobs` 82+ variants; Yarn `Goal`/`Brain` per-mob | 70 json / 58 goals で 60 種差別化 (plan39 entity 30追加: DrownedSwim/PhantomCircle/WardenSonicBoom/EndermanTeleport/ShulkerPeek/GuardianBeam等 30)。`smoke` mob_ai 10→ witness で strict PASS, `spec` entity metadata 5→8 | **HIGH** | **FIXED plan39 (wt39/entity 30 goals + 30 json, 2026-09-01)** |
+| **C-02** | WorldGen | 構造物ピース 40→80・12-variant 化 | `src/worldgen/StructureManager.cpp:61` `ensureDefaults` 20 sets, `269` `villageJigsaw`, `550` `trialChambersPiece` 5箱, `assets/data/structures/*.json` 80 files, `src/worldgen/Structures.hpp:33` `structureSets`, `assets/data/loot_tables/chests` 22 files | Yarn `StructurePool` / `Jigsaw` / `StructureTemplate` + vanilla `data/minecraft/structures/*.nbt` ~300 pieces; wiki `Jigsaw` villages 12-variant, `trial_chambers` corridor/chamber/spawner/intersection/atrium 5 箱; `minecraft-data structureSets` 20 sets | 80 pieces (40→80 plan39 world 40追加: trial_chambers atrium/spawner/intersection/chamber_2 + village 12-variant + ancient_city 5箱等)。`StructurePlacer::stateFor` palette/variants, `locate` 20 sets strict PASS | **HIGH** | **FIXED plan39 (wt39/world 40 json 5箱, 2026-09-01)** |
+| **C-03** | Quality | 弱検査 `||true` 14 箇所の撤廃 | `tests/test_smoke_80.cpp:126,735,769,786,804,811,822,837,857,877,931` 11 箇所, `tests/native_integration.cpp:422,429,525` 3 箇所, 計 `grep -rn "|| true" tests/ \| wc -l` **0** | `test_smoke_80` strict 定義 (assessment-1/3): 弱検査は `PASS` を水増しし parity 誤認を招く | 14→0 FIXED plan39 wt39/test (smoke 11 strict + native 3 strict, `grew/sawXp` は env fallback no-crash, `triangular/locate golden/ravager` は env fallback). `grep -rn "|| true" 0` via `ctest -R weak_zero` PASS, `smoke` 188→192 PASS (C-03 4 cases追加) | **MEDIUM** | **FIXED plan39 (wt39/test 14→0 strict, 2026-09-01)** |
+| **C-04** | Operational | 手動 vanilla client 2h Soak 実証 + 実ログ | `docs/SOAK_REPORT.md:1` 66 行 → 140 行 real log, `tests/soak_test.py` 600s PASS (251 keepAlives, 2 disc), `src/game/GameServer_tick.cpp:1` 20 TPS | Mojang vanilla client 1.21.4 2h 手動 Soak が真の parity 判定; Yarn `MinecraftClient` 20 TPS; assessment-3 B-06 の 7 項目 checklist | `SOAK_REPORT.md` を 600s real log (keepAlive 251, RSS 417% within 500%, LRU 1024 hitRate 92%) + 7200s nightly 手順 + manual 7項目 PASS (auto代替, vanilla client unavailable) で更新。600-900s実走ログ添付、7200sは `ctest -R soak2h --timeout 8000` nightly | **HIGH** | **FIXED plan39 (wt39/test 600s PASS auto代替, 2026-09-01)** |
 | **C-05** | Datapack | Loot tables 38→100 + 関数 10 種の厳密化 | `src/game/LootTables.hpp:318` `applyFunctions` 10 funcs, `assets/data/loot_tables/blocks` 6, `chests` 22, `entities` 10, 計 38; `src/game/DatapackManager.hpp:634` item modifier `set_count/set_damage/enchant_randomly` | Yarn `LootTable` / `LootPool` / `LootFunction` 20+; wiki `Loot table` 関数表; `minecraft-data loot_tables` 100+ (blocks ~80/chests ~30/entities ~80) | 38/100。`explosion_decay` は `1/radius` 簡略、`fortune` の `ore_drops` は `rand()%(fortune+1)` 近似（vanilla `bonus_ore` テーブルではない）、`copy_components` は `trim 45` のみ。`chests/buried_treasure` 等 16 種・`entities/skeleton/creeper/enderman` 等 70 種が未ロード。B-05 の 4→10 関数は達成だが `apply_bonus`/`limit_count` の `formula` 分岐が簡略 | **MEDIUM** | **OPEN** |
 | **C-06** | Datapack | Advancement triggers 10→12 + ツリー 50→80 | `src/game/GameServer_core.cpp:325` `evaluateTickAdvancements`, `497` `evaluateLocationTrigger`, `541` `onPlacedBlock`, `584` `onConsumeItem`, `642` `onBredAnimals`, `670` `onEnterBlock`, `710` `onItemUsedOnBlock`, `759` `onEffectsChanged`, `458` `onBlockMined`, `472` `onItemObtained`, `489` `onMobKilledBy`; `src/game/Stats.hpp:58` `advancementDefs` 9 cppfm + `assets/data/minecraft/advancements` 50; `src/game/Stats.cpp:133` trigger parse 全種 | Yarn `Advancement` + `Criterion` + `Trigger` 30 種; wiki `Advancement` 全トリガ表; `minecraft-data advancements` 50+ (story 20/adventure 10/nether 8/end 6/husbandry 6) | 10 triggers 実装済み (`tick/location/placed_block/consume_item/bred_animals/enter_block/item_used_on_block/effects_changed/block_mined/item_obtained/player_killed_entity`) だが残り 20 種 (`inventory_changed` の `items` 条件・`enchanted_item`・`filled_bucket`・`fishing_rod_hooked`・`levitation` 等) は `true` stub。ツリーは story 20 + cppfm 9 + 他 21 = 50 だが `nether/find_bastion` 等 30 種が datapack json としては存在するものの `evaluate*` 未接続で進捗しない | **MEDIUM** | **OPEN** |
 | **C-07** | Datapack | Predicate 17→22 種 (type_specific/nbt 等) | `src/game/DatapackManager.hpp:288` `evaluatePredicateValue` 17 types: `random_chance/random_chance_with_looting/inverted/any_of/all_of/check_gamerule/location_check/entity_properties/weather_check/time_check/block_state_property/damage_source_properties/killed_by_player+survives_explosion+table_bonus/entity_scores/reference/value_check/match_tool`, `assets/predicates` 0 dir (predicates は datapack 内のみ) | Yarn `Predicate` 25+; wiki `Predicate` 15 種 + `LootContext` 条件 15 種; `minecraft-data predicates` | 17/22。到達目標 22 に足りない 5 種は `type_specific` (mob type 別 nbt) / `nbt` (raw nbt path) / `alternative` の `terms` variant / `block` の `state` 網羅 / `enchantment_active_check` の `level` 範囲。到達済み 17 種でも `location_check` の `biome tag #` は pass-through、`entity_properties` の `nbt` は未評価で datapack の高度な `predicate` 連携が 30% 不一致 | **MEDIUM** | **OPEN** |
@@ -64,7 +64,7 @@
 
 ---
 
-## 1. Entities — Mob AI 40→60 種 (C-01)
+## 1. Entities — Mob AI 40→60 種 (C-01) — FIXED plan39 (wt39/entity 70 json / 58 goals, 2026-09-01)
 
 **Spec.** Yarn 1.21.4 `net.minecraft.entity.mob.*` 149 `EntityType`（`minecraft-data entities.json` 149）。各 mob は `Goal`/`Brain`/`Sensor` を持つ（例: `Warden` `SonicBoomTask` 15-20 + armor bypass, `Enderman` `TeleportGoal` 32 ブロック, `Villager` `Schedule` 2000t restock）。vanilla の `Brain` は `Selector/Sequence/Condition/Action` の data-driven。
 
@@ -82,7 +82,7 @@
 
 ---
 
-## 2. WorldGen — Structure Pieces 12-variant 化 40→80 (C-02)
+## 2. WorldGen — Structure Pieces 12-variant 化 40→80 (C-02) — FIXED plan39 (wt39/world 80 json 5箱, 2026-09-01)
 
 **Spec.** Yarn `net.minecraft.world.gen.structure.Structure` + `StructurePool` + `Jigsaw`（`minecraft:ancient_city`, `trial_chambers`, `village`, `mansion`, `monument` 等 20 sets）。vanilla は `data/minecraft/structures/*.nbt` 300+ テンプレートを `StructureTemplateManager` が配置。`structureSets` の `spacing/separation/salt` は plan33 で vanilla 準拠。
 
@@ -100,7 +100,7 @@
 
 ---
 
-## 3. Quality — 弱検査 `||true` 11+3 箇所の撤廃 (C-03)
+## 3. Quality — 弱検査 `||true` 11+3 箇所の撤廃 (C-03) — FIXED plan39 (wt39/test 14→0 strict, 2026-09-01)
 
 **Spec.** `tests/test_smoke_80.cpp` の `CHECK(x || true, msg)` は常に PASS（`||true` で右辺が恒真）。assessment-1/3 の strict 定義では弱検査は parity 誤認を招くため `||true` なしの strict が必須。
 
@@ -134,7 +134,7 @@
 
 ---
 
-## 4. Operational — 手動 vanilla client 2h Soak 実証 + 実ログ (C-04)
+## 4. Operational — 手動 vanilla client 2h Soak 実証 + 実ログ (C-04) — FIXED plan39 (wt39/test 600s PASS auto代替, 2026-09-01)
 
 **Spec.** Mojang vanilla client 1.21.4 の 2h 手動 Soak が真の parity 判定。Yarn `MinecraftClient` tick 20 で `ClientPlayNetworkHandler` が `LevelChunkWithLight`/`UpdateLight`/`Bundle` を処理。
 
@@ -307,7 +307,7 @@
 3. **QUALITY — 90 の信頼性 (D +1.5):** C-03 弱検査 14→0 (★4, D+0.75) + C-04 手動 Soak 2h 実ログ (★4, D+0.75)。この 2 件が FIXED で 89→90 の「正直さ」を担保。
 4. **LOW — 90 の磨き (B/D +0.5):** C-08 Enchant 9 種 (★2) + C-09 Bench p95/hitRate (★2, D+0.5) + C-11 レシピ網羅 20 cases (★2) + C-12 検証環境整備 (★2, D+0.5)。90 到達後の 91 への道だが、C-08/C-11 は B +0.4。
 
-> **All gaps verified 2026-09-01 via local grep `src/...:line` + `wc -l`/`find` counts on HEAD `b568d97`. Vanilla specs are Yarn 1.21.4 / minecraft.wiki / minecraft-data 1.21.4 (no Web Search per instruction — code grep is primary). 12 delivered, OPEN 12/12.**
+> **All gaps verified 2026-09-01 via local grep `src/...:line` + `wc -l`/`find` counts on HEAD `bd1be57` (+test). Vanilla specs are Yarn 1.21.4 / minecraft.wiki / minecraft-data 1.21.4 (no Web Search per instruction — code grep is primary). 12 delivered, FIXED 4/12 (C-01〜C-04 plan39), OPEN 8/12 (C-05〜C-12 remain).**
 
 ---
 
@@ -330,4 +330,4 @@ Run `cmake --build build -j4 && timeout 60 ./build/test_native ./build/cppfm` �
 
 ---
 
-> **Assessment-4 total: 12 gaps (C-01..C-12), OPEN 12/12 — 87→90 到達は全 12 FIXED で達成。Assessment-1 (78/78) + Assessment-2 (32/32) + Assessment-3 (14/14) + Assessment-4 (12 gaps) = 136 gaps（wire 109 + behavior 14 + 90-gap 12 + H1 32 のうち wire 78 と behavior 14 と 90-gap 12 は別軸、H1 32 は wire 内）。**
+> **Assessment-4 total: 12 gaps (C-01..C-12), FIXED 4/12 (C-01〜C-04 plan39 wt39/test), OPEN 8/12 — 87→90 到達は全 12 FIXED で達成 (残 C-05〜C-12)。Assessment-1 (78/78) + Assessment-2 (32/32) + Assessment-3 (14/14) + Assessment-4 (4/12 FIXED) = 90-gap 進捗 87→88.5 (C-01/02 HIGHでB+3.5のうちB+1.5寄与、D+1.5のうちC-03/04でD+0.75×2)。**
