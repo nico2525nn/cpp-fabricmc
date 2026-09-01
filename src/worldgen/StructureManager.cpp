@@ -321,6 +321,13 @@ void StructureManager::villagePiece(Chunk& chunk, std::int32_t cx,
             villageJigsaw(chunk, cx, cz, ox+lx*10, oz+lz*10, 2, ground);
         }
     }
+    // B-10: village mob placement — 2 villagers + 1 iron_golem via pending queue (drainPendingStructureQueues spawns them)
+    {
+        int vy = baseY + 1;
+        enqueuePendingMob(ox+2, vy, oz+2, "minecraft:villager", 1);
+        enqueuePendingMob(ox-2, vy, oz-2, "minecraft:villager", 1);
+        enqueuePendingMob(ox, vy, oz, "minecraft:iron_golem", 1);
+    }
 }
 
 void StructureManager::pyramidPiece(Chunk& chunk, std::int32_t cx,
