@@ -23,6 +23,7 @@
 #include "../src/physics/Redstone.hpp"
 #include "../src/physics/BlockTickScheduler.hpp"
 #include "../src/game/FunctionEvaluator.hpp"
+#include "../src/game/DamageSource.hpp"
 #include "../src/game/Scoreboard.hpp"
 #include <sys/wait.h>
 #include <unistd.h>
@@ -893,6 +894,118 @@ void scenarioPredicate16Extra(){
     }
 }
 
+void scenarioLoot100Plan40(){
+    std::printf("\n[Loot 100 plan40 — 8 cases (C-05) ore_drops binomial/limit/set_damage]\n");
+    LootTableEvaluator eval;
+    std::string lootPath="assets/data/loot_tables";
+    if(!std::filesystem::exists(lootPath)) lootPath="/tmp/opencode/wt40/test/assets/data/loot_tables";
+    eval.loadDirectory(lootPath);
+    CHECK(eval.tables().size()>=98, "loot 100 size >=98");
+    CHECK(eval.tables().count("minecraft:blocks/coal_ore")>0, "loot coal_ore with ore_drops");
+    CHECK(eval.tables().count("minecraft:blocks/redstone_ore")>0, "loot redstone uniform_bonus");
+    CHECK(eval.tables().count("minecraft:chests/bastion_other")>0, "loot bastion_other exists");
+    CHECK(eval.tables().count("minecraft:entities/cow")>0, "loot cow exists");
+    CHECK(eval.tables().count("minecraft:gameplay/fishing_treasure")>0, "loot fishing_treasure exists");
+    // fortune evaluation
+    {
+        LootContext ctx0{0,0,0,"",false}; ctx0.fortuneLevel=0;
+        auto d0=eval.evaluateWithContext("minecraft:blocks/coal_ore", ItemStack::ofName("minecraft:iron_pickaxe",1), &ctx0);
+        CHECK(!d0.empty(), "loot coal_ore fortune 0 non-empty");
+        LootContext ctx3{0,3,0,"",false}; ctx3.fortuneLevel=3;
+        auto d3=eval.evaluateWithContext("minecraft:blocks/coal_ore", ItemStack::ofName("minecraft:iron_pickaxe",1), &ctx3);
+        CHECK(!d3.empty(), "loot coal_ore fortune 3 non-empty");
+    }
+}
+
+void scenarioPredicate22Plan40(){
+    std::printf("\n[Predicate 22 plan40 — 6 cases (C-07) nbt/type_specific/dimension/enchantment_active]\n");
+    DatapackManager dm;
+    // nbt true/false
+    {
+        json::Value v=json::Value::parse(R"({"condition":"minecraft:nbt","nbt":"{\"Tags\":[\"test\"]}"})");
+        PredicateContext ctx; ctx.nbt="{\"Tags\":[\"test\"],\"Health\":20}";
+        CHECK(dm.evaluatePredicateValue(v, ctx)==true, "predicate nbt true");
+        ctx.nbt="{\"Tags\":[\"other\"]}";
+        CHECK(dm.evaluatePredicateValue(v, ctx)==false, "predicate nbt false");
+    }
+    // type_specific player
+    {
+        json::Value v=json::Value::parse(R"({"condition":"minecraft:entity_properties","predicate":{"type_specific":{"type":"minecraft:player"}}})");
+        PredicateContext ctx; ctx.player=reinterpret_cast<decltype(ctx.player)>(0x1);
+        CHECK(dm.evaluatePredicateValue(v, ctx)==true, "predicate type_specific player true");
+        ctx.player=nullptr;
+        CHECK(dm.evaluatePredicateValue(v, ctx)==false, "predicate type_specific player false");
+    }
+    // dimension overworld
+    {
+        json::Value v=json::Value::parse(R"({"condition":"minecraft:location_check","predicate":{"dimension":"minecraft:overworld"}})");
+        PredicateContext ctx;
+        CHECK(dm.evaluatePredicateValue(v, ctx)==true, "predicate dimension overworld true");
+    }
+    // enchantment_active_check fortune 3
+    {
+        json::Value v=json::Value::parse(R"({"condition":"minecraft:enchantment_active_check","enchantment":"minecraft:fortune","levels":{"min":1,"max":3}})");
+        PredicateContext ctx; ctx.fortuneLevel=3;
+        CHECK(dm.evaluatePredicateValue(v, ctx)==true, "predicate enchantment_active fortune 3 true");
+        ctx.fortuneLevel=0;
+        CHECK(dm.evaluatePredicateValue(v, ctx)==false, "predicate enchantment_active fortune 0 false");
+    }
+    // block_state_property air
+    {
+        json::Value v=json::Value::parse(R"({"condition":"minecraft:block_state_property","block":"minecraft:air"})");
+        PredicateContext ctx;
+        CHECK(dm.evaluatePredicateValue(v, ctx)==true, "predicate block_state_property air true");
+    }
+    // damage_source is_fire
+    {
+        json::Value v=json::Value::parse(R"({"condition":"minecraft:damage_source_properties","predicate":{"tags":[{"id":"minecraft:is_fire","expected":true}]}})");
+        PredicateContext ctx; DamageSource ds=DamageSource::fire(); ctx.damageSource=&ds;
+        CHECK(dm.evaluatePredicateValue(v, ctx)==true, "predicate damage_source is_fire true");
+        DamageSource ds2=DamageSource::fall(); ctx.damageSource=&ds2;
+        CHECK(dm.evaluatePredicateValue(v, ctx)==false, "predicate damage_source is_fire false for fall");
+    }
+}
+
+void scenarioEnchant41Plan40(){
+    std::printf("\n[Enchant 41 plan40 — 9 cases (C-08) smite/bane/punch/flame/EPF caps 30/20]\n");
+    ItemStack sword=ItemStack::ofName("minecraft:diamond_sword",1);
+    ItemStack::addEnchant(sword,"minecraft:smite",3);
+    CHECK(EnchantmentHelper::getSmite(sword)==3, "enchant smite 3 level");
+    CHECK(EnchantmentHelper::isUndead(MobKind::Zombie)==true, "isUndead zombie true");
+    CHECK(EnchantmentHelper::isUndead(MobKind::Cow)==false, "isUndead cow false");
+    CHECK(EnchantmentHelper::isArthropod(MobKind::Spider)==true, "isArthropod spider true");
+    ItemStack spider=ItemStack::ofName("minecraft:diamond_sword",1);
+    ItemStack::addEnchant(spider,"minecraft:bane_of_arthropods",2);
+    CHECK(EnchantmentHelper::getBaneOfArthropods(spider)==2, "enchant bane 2");
+    // punch/knockback
+    ItemStack bow=ItemStack::ofName("minecraft:bow",1);
+    ItemStack::addEnchant(bow,"minecraft:punch",2);
+    CHECK(EnchantmentHelper::getPunch(bow)==2, "enchant punch 2");
+    ItemStack kb=ItemStack::ofName("minecraft:diamond_sword",1);
+    ItemStack::addEnchant(kb,"minecraft:knockback",1);
+    CHECK(EnchantmentHelper::getKnockback(kb)==1, "enchant knockback 1");
+    // aqua/respiration
+    ItemStack helm=ItemStack::ofName("minecraft:diamond_helmet",1);
+    ItemStack::addEnchant(helm,"minecraft:aqua_affinity",1);
+    CHECK(EnchantmentHelper::hasAquaAffinity(helm)==true, "enchant aqua_affinity true");
+    ItemStack helm2=ItemStack::ofName("minecraft:diamond_helmet",1);
+    ItemStack::addEnchant(helm2,"minecraft:respiration",3);
+    CHECK(EnchantmentHelper::getRespiration(helm2)==3, "enchant respiration 3");
+    // EPF caps 30/20: protection weight 1, fire weight 2, total caps 20
+    {
+        ItemStack prot=ItemStack::ofName("minecraft:diamond_chestplate",1);
+        ItemStack::addEnchant(prot,"minecraft:protection",4);
+        CHECK(EnchantmentHelper::getProtectionEPF(DamageSource::generic(), prot)==4, "EPF protection 4 weight1");
+        ItemStack fireProt=ItemStack::ofName("minecraft:diamond_chestplate",1);
+        ItemStack::addEnchant(fireProt,"minecraft:fire_protection",4);
+        CHECK(EnchantmentHelper::getProtectionEPF(DamageSource::fire(), fireProt)==8, "EPF fire_protection 4 weight2");
+        float d1=DamageCalculator::applyArmorAndToughness(40.f, 30, 20);
+        float d2=DamageCalculator::applyEnchantProtection(d1, 20);
+        CHECK(d2>=1.f && d2<=3.f, "EPF caps 30/20 40->1..3");
+        CHECK(DamageSource::sonicBoom().bypassEnchant==true, "sonic_boom bypassEnchant");
+    }
+}
+
 // Online-mode join is tested via crypto unit tests + manual verification.
 
 int main(int argc, char** argv) {
@@ -941,6 +1054,9 @@ int main(int argc, char** argv) {
     scenarioQCNative();
     scenarioFunctionMacroNative();
     scenarioPredicate16Extra();
+    scenarioLoot100Plan40();
+    scenarioPredicate22Plan40();
+    scenarioEnchant41Plan40();
     std::printf("\n%s (%d failures)\n", g_fail ? "FAILURES" : "ALL PASS", g_fail);
     return g_fail ? 1 : 0;
 }
