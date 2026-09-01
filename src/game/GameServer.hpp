@@ -110,6 +110,10 @@ struct TradeOffer {
     std::uint16_t inCount2;
     std::uint32_t outItem;
     std::uint16_t outCount;
+    std::int32_t maxUses = 12;
+    std::int32_t xp = 2;
+    float priceMultiplier = 0.05f;
+    std::int32_t demand = 0;
 };
 
 struct Player {

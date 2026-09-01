@@ -697,17 +697,142 @@ const std::vector<TradeOffer>& GameServer::tradeTable() {
     using TO = TradeOffer;
     static const std::vector<TradeOffer> table = [] {
         auto id = [](const char* n) {
-            return gen::itemIdByName().at(n);
+            auto it = gen::itemIdByName().find(n);
+            return it!=gen::itemIdByName().end()? it->second : 0u;
         };
         return std::vector<TO>{
-            {id("minecraft:wheat"), 20, 0, 0, id("minecraft:emerald"), 1},
-            {id("minecraft:coal"), 15, 0, 0, id("minecraft:emerald"), 1},
-            {id("minecraft:emerald"), 1, 0, 0, id("minecraft:bread"), 4},
-            {id("minecraft:emerald"), 3, 0, 0, id("minecraft:iron_pickaxe"), 1},
-            {id("minecraft:porkchop"), 7, 0, 0, id("minecraft:emerald"), 1},
+            {id("minecraft:wheat"), 20, 0, 0, id("minecraft:emerald"), 1, 16, 2, 0.05f},
+            {id("minecraft:coal"), 15, 0, 0, id("minecraft:emerald"), 1, 16, 2, 0.05f},
+            {id("minecraft:emerald"), 1, 0, 0, id("minecraft:bread"), 4, 16, 2, 0.05f},
+            {id("minecraft:emerald"), 3, 0, 0, id("minecraft:iron_pickaxe"), 1, 12, 10, 0.05f},
+            {id("minecraft:porkchop"), 7, 0, 0, id("minecraft:emerald"), 1, 16, 5, 0.05f},
         };
     }();
     return table;
+}
+// B-10: 13 professions x 5 levels (minecraft-data villagerTrades -> plan37 §6)
+static std::string professionToString(VillagerData::Profession p){
+    switch(p){
+        case VillagerData::ARMORER: return "minecraft:armorer";
+        case VillagerData::BUTCHER: return "minecraft:butcher";
+        case VillagerData::CARTOGRAPHER: return "minecraft:cartographer";
+        case VillagerData::CLERIC: return "minecraft:cleric";
+        case VillagerData::FARMER: return "minecraft:farmer";
+        case VillagerData::FISHERMAN: return "minecraft:fisherman";
+        case VillagerData::FLETCHER: return "minecraft:fletcher";
+        case VillagerData::LEATHERWORKER: return "minecraft:leatherworker";
+        case VillagerData::LIBRARIAN: return "minecraft:librarian";
+        case VillagerData::MASON: return "minecraft:mason";
+        case VillagerData::SHEPHERD: return "minecraft:shepherd";
+        case VillagerData::TOOLSMITH: return "minecraft:toolsmith";
+        case VillagerData::WEAPONSMITH: return "minecraft:weaponsmith";
+        default: return "minecraft:farmer";
+    }
+}
+static const std::unordered_map<std::string, std::array<std::vector<TradeOffer>,5>>& professionTrades(){
+    using TO = TradeOffer;
+    static std::unordered_map<std::string, std::array<std::vector<TO>,5>> m;
+    static bool init=false;
+    if(init) return m;
+    init=true;
+    auto id = [](const char* n)->uint32_t{
+        auto it = gen::itemIdByName().find(n);
+        return it!=gen::itemIdByName().end()? it->second : 0u;
+    };
+    auto emerald=id("minecraft:emerald");
+    // farmer 13x5 example from plan37 §6
+    m["minecraft:farmer"] = {{
+        std::vector<TO>{{emerald,1,0,0,id("minecraft:bread"),6,16,2,0.05f},{id("minecraft:wheat"),20,0,0,emerald,1,16,2,0.05f}},
+        std::vector<TO>{{id("minecraft:pumpkin"),6,0,0,emerald,1,16,5,0.05f},{emerald,1,0,0,id("minecraft:pumpkin_pie"),4,12,5,0.05f}},
+        std::vector<TO>{{id("minecraft:melon_slice"),4,0,0,emerald,1,16,7,0.05f},{emerald,1,0,0,id("minecraft:cookie"),18,12,10,0.05f}},
+        std::vector<TO>{{emerald,1,0,0,id("minecraft:cake"),1,12,15,0.05f},{emerald,1,0,0,id("minecraft:suspicious_stew"),1,12,15,0.05f}},
+        std::vector<TO>{{emerald,1,0,0,id("minecraft:golden_carrot"),3,12,30,0.05f},{emerald,1,0,0,id("minecraft:glistering_melon_slice"),3,12,30,0.05f}}
+    }};
+    m["minecraft:librarian"] = {{
+        std::vector<TO>{{emerald,1,0,0,id("minecraft:bookshelf"),1,12,2,0.05f},{id("minecraft:paper"),24,0,0,emerald,1,16,2,0.05f}},
+        std::vector<TO>{{id("minecraft:book"),4,0,0,emerald,1,12,5,0.05f},{emerald,5,0,0,id("minecraft:clock"),1,12,5,0.05f}},
+        std::vector<TO>{{id("minecraft:written_book"),1,0,0,emerald,1,12,10,0.05f},{emerald,5,0,0,id("minecraft:name_tag"),1,12,10,0.05f}},
+        std::vector<TO>{{emerald,8,0,0,id("minecraft:enchanted_book"),1,12,15,0.05f}},
+        std::vector<TO>{{emerald,5,0,0,id("minecraft:enchanted_book"),1,12,30,0.20f}}
+    }};
+    m["minecraft:cleric"] = {{
+        std::vector<TO>{{id("minecraft:rotten_flesh"),32,0,0,emerald,1,16,2,0.05f},{emerald,1,0,0,id("minecraft:redstone"),2,12,2,0.05f}},
+        std::vector<TO>{{id("minecraft:gold_ingot"),3,0,0,emerald,1,12,5,0.05f},{emerald,1,0,0,id("minecraft:glowstone"),1,12,5,0.05f}},
+        std::vector<TO>{{id("minecraft:rabbit_foot"),1,0,0,emerald,1,12,10,0.05f},{emerald,1,0,0,id("minecraft:ender_pearl"),1,12,10,0.05f}},
+        std::vector<TO>{{id("minecraft:scute"),4,0,0,emerald,1,12,15,0.05f},{emerald,1,0,0,id("minecraft:bottle_o_enchanting"),1,12,15,0.05f}},
+        std::vector<TO>{{id("minecraft:nether_wart"),1,0,0,emerald,1,12,30,0.05f},{emerald,1,0,0,id("minecraft:ender_pearl"),1,12,30,0.05f}}
+    }};
+    m["minecraft:armorer"] = {{
+        std::vector<TO>{{id("minecraft:coal"),15,0,0,emerald,1,16,2,0.05f},{emerald,1,0,0,id("minecraft:iron_leggings"),1,12,2,0.05f}},
+        std::vector<TO>{{id("minecraft:iron_ingot"),4,0,0,emerald,1,12,5,0.05f},{emerald,1,0,0,id("minecraft:iron_boots"),1,12,5,0.05f}},
+        std::vector<TO>{{id("minecraft:lava_bucket"),1,0,0,emerald,1,12,10,0.05f},{emerald,4,0,0,id("minecraft:iron_helmet"),1,12,10,0.05f}},
+        std::vector<TO>{{id("minecraft:diamond"),1,0,0,emerald,1,12,15,0.05f},{emerald,6,0,0,id("minecraft:diamond_chestplate"),1,12,15,0.05f}},
+        std::vector<TO>{{emerald,7,0,0,id("minecraft:diamond_chestplate"),1,12,30,0.05f},{emerald,8,0,0,id("minecraft:diamond_boots"),1,12,30,0.05f}}
+    }};
+    m["minecraft:weaponsmith"] = {{
+        std::vector<TO>{{id("minecraft:coal"),15,0,0,emerald,1,16,2,0.05f},{emerald,1,0,0,id("minecraft:iron_axe"),1,12,2,0.05f}},
+        std::vector<TO>{{id("minecraft:iron_ingot"),4,0,0,emerald,1,12,5,0.05f},{emerald,1,0,0,id("minecraft:iron_sword"),1,12,5,0.05f}},
+        std::vector<TO>{{id("minecraft:flint"),10,0,0,emerald,1,12,10,0.05f},{emerald,3,0,0,id("minecraft:iron_sword"),1,12,10,0.05f}},
+        std::vector<TO>{{id("minecraft:diamond"),1,0,0,emerald,1,12,15,0.05f},{emerald,8,0,0,id("minecraft:diamond_axe"),1,12,15,0.05f}},
+        std::vector<TO>{{emerald,7,0,0,id("minecraft:diamond_sword"),1,12,30,0.05f},{emerald,8,0,0,id("minecraft:diamond_axe"),1,12,30,0.05f}}
+    }};
+    m["minecraft:toolsmith"] = {{
+        std::vector<TO>{{id("minecraft:coal"),15,0,0,emerald,1,16,2,0.05f},{emerald,1,0,0,id("minecraft:stone_axe"),1,12,2,0.05f}},
+        std::vector<TO>{{id("minecraft:iron_ingot"),4,0,0,emerald,1,12,5,0.05f},{emerald,1,0,0,id("minecraft:iron_pickaxe"),1,12,5,0.05f}},
+        std::vector<TO>{{id("minecraft:flint"),10,0,0,emerald,1,12,10,0.05f},{emerald,3,0,0,id("minecraft:iron_pickaxe"),1,12,10,0.05f}},
+        std::vector<TO>{{id("minecraft:diamond"),1,0,0,emerald,1,12,15,0.05f},{emerald,6,0,0,id("minecraft:diamond_pickaxe"),1,12,15,0.05f}},
+        std::vector<TO>{{emerald,7,0,0,id("minecraft:diamond_pickaxe"),1,12,30,0.05f},{emerald,8,0,0,id("minecraft:diamond_shovel"),1,12,30,0.05f}}
+    }};
+    m["minecraft:butcher"] = {{
+        std::vector<TO>{{id("minecraft:chicken"),14,0,0,emerald,1,16,2,0.05f},{emerald,1,0,0,id("minecraft:cooked_chicken"),8,16,2,0.05f}},
+        std::vector<TO>{{id("minecraft:porkchop"),7,0,0,emerald,1,16,5,0.05f},{emerald,1,0,0,id("minecraft:cooked_porkchop"),5,16,5,0.05f}},
+        std::vector<TO>{{id("minecraft:mutton"),7,0,0,emerald,1,16,7,0.05f},{emerald,1,0,0,id("minecraft:cooked_mutton"),7,12,10,0.05f}},
+        std::vector<TO>{{id("minecraft:rabbit"),4,0,0,emerald,1,12,15,0.05f},{emerald,1,0,0,id("minecraft:rabbit_stew"),1,12,15,0.05f}},
+        std::vector<TO>{{emerald,1,0,0,id("minecraft:cooked_rabbit"),5,12,30,0.05f},{emerald,1,0,0,id("minecraft:cooked_mutton"),7,12,30,0.05f}}
+    }};
+    m["minecraft:fisherman"] = {{
+        std::vector<TO>{{id("minecraft:string"),20,0,0,emerald,1,16,2,0.05f},{emerald,1,0,0,id("minecraft:cooked_cod"),6,16,2,0.05f}},
+        std::vector<TO>{{id("minecraft:coal"),10,0,0,emerald,1,16,5,0.05f},{emerald,1,0,0,id("minecraft:cooked_salmon"),6,16,5,0.05f}},
+        std::vector<TO>{{id("minecraft:cod"),15,0,0,emerald,1,16,10,0.05f},{emerald,1,0,0,id("minecraft:fishing_rod"),1,12,10,0.05f}},
+        std::vector<TO>{{id("minecraft:salmon"),13,0,0,emerald,1,12,15,0.05f},{emerald,1,0,0,id("minecraft:bucket"),1,12,15,0.05f}},
+        std::vector<TO>{{emerald,1,0,0,id("minecraft:cooked_cod"),6,12,30,0.05f},{emerald,1,0,0,id("minecraft:nautilus_shell"),1,12,30,0.05f}}
+    }};
+    m["minecraft:fletcher"] = {{
+        std::vector<TO>{{id("minecraft:stick"),32,0,0,emerald,1,16,2,0.05f},{emerald,1,0,0,id("minecraft:arrow"),16,12,2,0.05f}},
+        std::vector<TO>{{id("minecraft:flint"),10,0,0,emerald,1,16,5,0.05f},{emerald,2,0,0,id("minecraft:bow"),1,12,5,0.05f}},
+        std::vector<TO>{{id("minecraft:string"),14,0,0,emerald,1,16,10,0.05f},{emerald,3,0,0,id("minecraft:crossbow"),1,12,10,0.05f}},
+        std::vector<TO>{{id("minecraft:feather"),24,0,0,emerald,1,12,15,0.05f},{emerald,3,0,0,id("minecraft:bow"),1,12,15,0.05f}},
+        std::vector<TO>{{emerald,5,0,0,id("minecraft:arrow"),16,12,30,0.05f},{emerald,5,0,0,id("minecraft:tipped_arrow"),5,12,30,0.05f}}
+    }};
+    m["minecraft:leatherworker"] = {{
+        std::vector<TO>{{id("minecraft:leather"),6,0,0,emerald,1,16,2,0.05f},{emerald,1,0,0,id("minecraft:leather_leggings"),1,12,2,0.05f}},
+        std::vector<TO>{{id("minecraft:flint"),26,0,0,emerald,1,12,5,0.05f},{emerald,2,0,0,id("minecraft:leather_chestplate"),1,12,5,0.05f}},
+        std::vector<TO>{{id("minecraft:rabbit_hide"),9,0,0,emerald,1,12,10,0.05f},{emerald,3,0,0,id("minecraft:leather_helmet"),1,12,10,0.05f}},
+        std::vector<TO>{{id("minecraft:scute"),6,0,0,emerald,1,12,15,0.05f},{emerald,5,0,0,id("minecraft:leather_chestplate"),1,12,15,0.05f}},
+        std::vector<TO>{{emerald,6,0,0,id("minecraft:saddle"),1,12,30,0.05f},{emerald,4,0,0,id("minecraft:leather_horse_armor"),1,12,30,0.05f}}
+    }};
+    m["minecraft:mason"] = {{
+        std::vector<TO>{{id("minecraft:clay_ball"),10,0,0,emerald,1,16,2,0.05f},{emerald,1,0,0,id("minecraft:brick"),10,16,2,0.05f}},
+        std::vector<TO>{{id("minecraft:stone"),20,0,0,emerald,1,16,5,0.05f},{emerald,1,0,0,id("minecraft:chiseled_stone_bricks"),4,16,5,0.05f}},
+        std::vector<TO>{{id("minecraft:granite"),16,0,0,emerald,1,16,10,0.05f},{emerald,1,0,0,id("minecraft:diorite"),1,16,10,0.05f}},
+        std::vector<TO>{{id("minecraft:quartz"),12,0,0,emerald,1,12,15,0.05f},{emerald,1,0,0,id("minecraft:quartz_pillar"),1,12,15,0.05f}},
+        std::vector<TO>{{emerald,1,0,0,id("minecraft:quartz_block"),1,12,30,0.05f},{emerald,1,0,0,id("minecraft:clay"),10,12,30,0.05f}}
+    }};
+    m["minecraft:shepherd"] = {{
+        std::vector<TO>{{id("minecraft:wool"),18,0,0,emerald,1,16,2,0.05f},{emerald,1,0,0,id("minecraft:shears"),1,12,2,0.05f}},
+        std::vector<TO>{{id("minecraft:dye"),12,0,0,emerald,1,16,5,0.05f},{emerald,1,0,0,id("minecraft:bed"),1,16,5,0.05f}},
+        std::vector<TO>{{id("minecraft:wool"),18,0,0,emerald,1,16,10,0.05f},{emerald,2,0,0,id("minecraft:banner"),1,12,10,0.05f}},
+        std::vector<TO>{{id("minecraft:string"),14,0,0,emerald,1,12,15,0.05f},{emerald,3,0,0,id("minecraft:painting"),3,12,15,0.05f}},
+        std::vector<TO>{{emerald,3,0,0,id("minecraft:bed"),1,12,30,0.05f},{emerald,2,0,0,id("minecraft:shears"),1,12,30,0.05f}}
+    }};
+    m["minecraft:cartographer"] = {{
+        std::vector<TO>{{id("minecraft:paper"),24,0,0,emerald,1,16,2,0.05f},{emerald,7,0,0,id("minecraft:empty_map"),1,12,2,0.05f}},
+        std::vector<TO>{{id("minecraft:glass_pane"),11,0,0,emerald,1,16,5,0.05f},{emerald,7,0,0,id("minecraft:explorer_map"),1,12,5,0.05f}},
+        std::vector<TO>{{id("minecraft:compass"),1,0,0,emerald,1,12,10,0.05f},{emerald,7,0,0,id("minecraft:explorer_map"),1,12,10,0.05f}},
+        std::vector<TO>{{emerald,12,0,0,id("minecraft:explorer_map"),1,12,15,0.05f},{emerald,7,0,0,id("minecraft:item_frame"),1,12,15,0.05f}},
+        std::vector<TO>{{emerald,20,0,0,id("minecraft:explorer_map"),1,12,30,0.05f},{emerald,7,0,0,id("minecraft:banner"),1,12,30,0.05f}}
+    }};
+    return m;
 }
 bool GameServer::openTrading(Player& p, MobEntity& v) {
     if (!p.conn) return false;
@@ -717,41 +842,72 @@ bool GameServer::openTrading(Player& p, MobEntity& v) {
     b.varint(menus::kMerchant);
     nbt::writeTextComponent(b, "Villager");
     try { p.conn->sendPacket(proto::pl::sc::OpenScreen, b); } catch (...) {}
-    // Trade List payload (plan14 §4: 2*level offers, VillagerData level/profession, Gossip priceMultiplier)
+    // Trade List payload (plan37 B-10: profession 13x5, 2*level offers, Gossip priceMultiplier 0.05)
     WriteBuffer tl;
     tl.varint(windowId);
-    const auto& trades = tradeTable();
+    // NITWIT: no trades
+    if (v.villagerData.profession == VillagerData::NITWIT) {
+        tl.varint(0);
+        tl.varint(0); tl.varint(0);
+        int lvl = std::clamp(v.villagerData.level,1,5);
+        tl.varint(lvl); tl.i32(v.villagerXp); tl.boolean(false);
+        try { p.conn->sendPacket(proto::pl::sc::TradeList, tl); } catch (...) {}
+        return true;
+    }
     int lvl = std::clamp(v.villagerData.level,1,5);
-    // ensure villagerLevel mirror
     if (v.villagerLevel != lvl) lvl = std::clamp(v.villagerLevel,1,5);
-    int num = std::min<int>((int)trades.size(), lvl*2);
-    if (num==0) num = std::min<int>((int)trades.size(), 2);
+    std::string profStr = professionToString(v.villagerData.profession);
+    const auto& pt = professionTrades();
+    const std::vector<TradeOffer>* offersPtr = nullptr;
+    std::vector<TradeOffer> fallback;
+    auto it = pt.find(profStr);
+    if (it != pt.end()) {
+        offersPtr = &it->second[lvl-1];
+    } else {
+        // fallback to legacy table slice (should not happen)
+        const auto& t = tradeTable();
+        int num = std::min<int>((int)t.size(), lvl*2);
+        if (num==0) num = std::min<int>((int)t.size(), 2);
+        fallback.assign(t.begin(), t.begin()+num);
+        offersPtr = &fallback;
+    }
+    const auto& offers = *offersPtr;
+    int num = (int)offers.size();
+    // lvl*2 slicing is already per-level vector size <=2*lvl, but enforce min 2 for lvl1 fallback display
+    // For farmer lvl1 size 2 already OK
     tl.varint(static_cast<std::int32_t>(num));
     int gossipRep = v.gossip.get(p.uuid);
-    float priceMult = 0.05f - gossipRep * 0.02f;
-    if (priceMult < -0.9f) priceMult = -0.9f;
-    if (priceMult > 0.2f) priceMult = 0.2f;
-    int specialPrice = -gossipRep; // discount for positive rep
     for (int i=0;i<num;++i) {
-        const auto& t = trades[i];
-        // inputItem1
+        const auto& t = offers[i];
+        // Gossip priceMultiplier: 0.05 discount scaled by gossip (plan37 §6: min 0.5 cap)
+        float baseMult = t.priceMultiplier;
+        float gossipDiscount = std::min(0.5f, gossipRep * 0.02f);
+        // villager Workaround: priceMult stays baseMult, specialPrice carries discount
+        float priceMult = baseMult;
+        int specialPrice = - int(std::floor(gossipDiscount * t.inCount));
+        // firstBuy
         tl.varint(static_cast<std::int32_t>(t.inItem));
         tl.varint(t.inCount);
-        tl.varint(0);                                    // no components
-        // outputItem as Slot
+        tl.varint(0);
         ItemStack::of(t.outItem, t.outCount).write(tl);
-        tl.boolean(false);                               // inputItem2 absent
-        tl.boolean(false);                               // trade disabled
-        tl.i32(0);                                       // uses
-        tl.i32(12);                                      // max uses (villager restock 12)
-        tl.i32(2);                                       // xp
-        tl.i32(specialPrice);                            // special price from Gossip
-        tl.f32(priceMult);                               // price multiplier
-        tl.i32(0);                                       // demand
+        if (t.inItem2 != 0) {
+            tl.boolean(true);
+            tl.varint(static_cast<std::int32_t>(t.inItem2));
+            tl.varint(t.inCount2);
+            tl.varint(0);
+        } else {
+            tl.boolean(false);
+        }
+        tl.boolean(false);
+        tl.i32(0);
+        tl.i32(t.maxUses);
+        tl.i32(t.xp);
+        tl.i32(specialPrice);
+        tl.f32(priceMult);
+        tl.i32(t.demand);
     }
-    tl.varint(0);                                        // villager entity id? (1.21: not present)
-    tl.varint(0);                                        // increase min uses?
-    // 1.21.4 trade list tail: villager level varint + xp varint + showProgress bool
+    tl.varint(0);
+    tl.varint(0);
     tl.varint(lvl);
     tl.i32(v.villagerXp);
     tl.boolean(true);
@@ -759,15 +915,41 @@ bool GameServer::openTrading(Player& p, MobEntity& v) {
     return true;
 }
 bool GameServer::selectTrade(Player& p, std::int32_t index) {
-    const auto& trades = tradeTable();
-    if (index < 0 || static_cast<std::size_t>(index) >= trades.size())
-        return false;
-    const auto& t = trades[static_cast<std::size_t>(index)];
-    // verify inputs present
+    // B-10: resolve trade from professionTrades by nearby villager's profession/level, fallback to tradeTable
+    TradeOffer t{};
+    bool found=false;
+    {
+        std::lock_guard lk(entsMtx_);
+        for (auto& m : mobs_) if (m->kind==MobKind::Villager) {
+            double dx=m->x - p.x, dz=m->z - p.z;
+            if (dx*dx+dz*dz < 128) {
+                if (m->villagerData.profession == VillagerData::NITWIT) return false;
+                std::string profStr = professionToString(m->villagerData.profession);
+                auto it = professionTrades().find(profStr);
+                if (it != professionTrades().end()) {
+                    int lvl = std::clamp(m->villagerData.level,1,5);
+                    if (m->villagerLevel != lvl) lvl = std::clamp(m->villagerLevel,1,5);
+                    const auto& vec = it->second[lvl-1];
+                    if (index>=0 && index < (int)vec.size()) { t = vec[index]; found=true; }
+                }
+                break;
+            }
+        }
+    }
+    if (!found) {
+        const auto& trades = tradeTable();
+        if (index < 0 || static_cast<std::size_t>(index) >= trades.size()) return false;
+        t = trades[static_cast<std::size_t>(index)];
+    }
+    // verify first buy present
     int have = 0;
-    for (auto& s : p.inv)
-        if (!s.empty() && s.itemId == t.inItem) have += s.count;
+    for (auto& s : p.inv) if (!s.empty() && s.itemId == t.inItem) have += s.count;
     if (have < t.inCount) return false;
+    if (t.inItem2 != 0) {
+        int have2=0;
+        for (auto& s: p.inv) if (!s.empty() && s.itemId == t.inItem2) have2+= s.count;
+        if (have2 < t.inCount2) return false;
+    }
     int need = t.inCount;
     for (auto& s : p.inv) {
         if (need <= 0) break;
@@ -775,6 +957,17 @@ bool GameServer::selectTrade(Player& p, std::int32_t index) {
             const int take = std::min<int>(s.count, need);
             s.count -= take; need -= take;
             if (s.count <= 0) s = ItemStack::air();
+        }
+    }
+    if (t.inItem2 != 0) {
+        int need2 = t.inCount2;
+        for (auto& s: p.inv) {
+            if (need2<=0) break;
+            if (!s.empty() && s.itemId == t.inItem2) {
+                const int take = std::min<int>(s.count, need2);
+                s.count -= take; need2 -= take;
+                if (s.count <= 0) s = ItemStack::air();
+            }
         }
     }
     addToInventory(p, t.outItem, t.outCount);
