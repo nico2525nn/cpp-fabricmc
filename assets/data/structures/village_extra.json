@@ -1,0 +1,42 @@
+{
+  "name": "minecraft:village_extra",
+  "type": "minecraft:village",
+  "placement": {
+    "spacing": 34,
+    "separation": 8,
+    "salt": 10387343,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:village/road",
+      "weight": 10
+    },
+    {
+      "name": "minecraft:village/lamp",
+      "weight": 6
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:dirt_path",
+    "log": "minecraft:oak_log",
+    "chest": "minecraft:chest"
+  },
+  "mobs": [
+    {
+      "pos": [
+        1,
+        1,
+        1
+      ],
+      "mob": "minecraft:villager",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "1,1,1",
+      "table": "minecraft:chests/village/village_plains_house"
+    }
+  ]
+}

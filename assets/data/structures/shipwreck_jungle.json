@@ -1,0 +1,38 @@
+{
+  "name": "minecraft:shipwreck_jungle",
+  "type": "minecraft:shipwreck",
+  "placement": {
+    "spacing": 24,
+    "separation": 4,
+    "salt": 165745297,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:shipwreck/jungle",
+      "weight": 6
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:jungle_planks",
+    "log": "minecraft:jungle_log",
+    "chest": "minecraft:chest"
+  },
+  "mobs": [
+    {
+      "pos": [
+        3,
+        1,
+        2
+      ],
+      "mob": "minecraft:drowned",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "3,1,2",
+      "table": "minecraft:chests/shipwreck_treasure"
+    }
+  ]
+}

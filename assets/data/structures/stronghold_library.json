@@ -1,0 +1,38 @@
+{
+  "name": "minecraft:stronghold_library",
+  "type": "minecraft:stronghold",
+  "placement": {
+    "spacing": 32,
+    "separation": 0,
+    "salt": 14357618,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:stronghold/library",
+      "weight": 8
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:bookshelf",
+    "log": "minecraft:oak_planks",
+    "chest": "minecraft:chest"
+  },
+  "mobs": [
+    {
+      "pos": [
+        5,
+        1,
+        5
+      ],
+      "mob": "minecraft:silverfish",
+      "count": 2
+    }
+  ],
+  "loot": [
+    {
+      "pos": "5,1,5",
+      "table": "minecraft:chests/stronghold_library"
+    }
+  ]
+}

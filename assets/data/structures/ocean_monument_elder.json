@@ -1,0 +1,38 @@
+{
+  "name": "minecraft:ocean_monument_elder",
+  "type": "minecraft:monument",
+  "placement": {
+    "spacing": 32,
+    "separation": 5,
+    "salt": 10387315,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:monument/elder",
+      "weight": 6
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:prismarine_bricks",
+    "log": "minecraft:dark_prismarine",
+    "chest": "minecraft:chest"
+  },
+  "mobs": [
+    {
+      "pos": [
+        4,
+        1,
+        4
+      ],
+      "mob": "minecraft:elder_guardian",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "4,1,4",
+      "table": "minecraft:chests/simple_dungeon"
+    }
+  ]
+}

@@ -1,5 +1,6 @@
 // StructurePlacer implementation: JSON-driven with fallback.
 #include "StructurePlacer.hpp"
+#include "../generated/BlockStates.hpp"
 #include <filesystem>
 #include <fstream>
 #include <cmath>
@@ -169,6 +170,21 @@ bool StructurePlacer::findOrigin(const PlacedFeature& pf, std::int32_t cx, std::
         }
     }
     return false;
+}
+
+std::uint16_t StructurePlacer::stateFor(const ConfiguredFeature& cf, const std::string& piece, const std::string& key, const std::string& fallback) const {
+    auto itV = cf.variants.find(piece);
+    if (itV != cf.variants.end()) {
+        auto it2 = itV->second.find(key);
+        if (it2 != itV->second.end()) {
+            if (auto* d = gen::blockByName(it2->second.c_str())) return d->defaultState;
+        }
+    }
+    auto it = cf.palette.find(key);
+    const std::string& name = (it != cf.palette.end() ? it->second : fallback);
+    if (auto* d = gen::blockByName(name.c_str())) return d->defaultState;
+    if (auto* f = gen::blockByName(fallback.c_str())) return f->defaultState;
+    return 0;
 }
 
 } // namespace cppfm::worldgen
