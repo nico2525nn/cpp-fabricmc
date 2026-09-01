@@ -1,0 +1,38 @@
+{
+  "name": "minecraft:ancient_city_portal",
+  "type": "minecraft:ancient_city",
+  "placement": {
+    "spacing": 24,
+    "separation": 8,
+    "salt": 20083237,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:ancient_city/portal",
+      "weight": 6
+    }
+  ],
+  "palette": {
+    "deepslate": "minecraft:reinforced_deepslate",
+    "chest": "minecraft:chest",
+    "sculk": "minecraft:sculk_catalyst"
+  },
+  "mobs": [
+    {
+      "pos": [
+        4,
+        1,
+        4
+      ],
+      "mob": "minecraft:warden",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "4,1,4",
+      "table": "minecraft:chests/ancient_city_ice_box"
+    }
+  ]
+}

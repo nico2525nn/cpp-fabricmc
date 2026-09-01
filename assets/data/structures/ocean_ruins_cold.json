@@ -1,0 +1,38 @@
+{
+  "name": "minecraft:ocean_ruins_cold",
+  "type": "minecraft:ocean_ruins",
+  "placement": {
+    "spacing": 20,
+    "separation": 8,
+    "salt": 14357624,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:ocean_ruins/cold",
+      "weight": 8
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:gravel",
+    "log": "minecraft:stone_bricks",
+    "chest": "minecraft:chest"
+  },
+  "mobs": [
+    {
+      "pos": [
+        2,
+        1,
+        2
+      ],
+      "mob": "minecraft:drowned",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "2,1,2",
+      "table": "minecraft:chests/underwater_ruin_big"
+    }
+  ]
+}

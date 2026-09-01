@@ -1,0 +1,44 @@
+{
+  "name": "minecraft:trial_chambers_intersection",
+  "type": "minecraft:trial_chambers",
+  "placement": {
+    "spacing": 34,
+    "separation": 12,
+    "salt": 94251329,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:trial_chambers/intersection",
+      "weight": 6
+    }
+  ],
+  "palette": {
+    "tuff": "minecraft:tuff",
+    "tuff_bricks": "minecraft:tuff_bricks",
+    "chest": "minecraft:chest",
+    "copper_bulb": "minecraft:copper_bulb"
+  },
+  "variants": {
+    "minecraft:trial_chambers/intersection": {
+      "tuff": "minecraft:tuff_bricks"
+    }
+  },
+  "mobs": [
+    {
+      "pos": [
+        2,
+        2,
+        2
+      ],
+      "mob": "minecraft:breeze",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "0,1,0",
+      "table": "minecraft:chests/trial_chambers/intersection"
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "name": "minecraft:end_gateway",
+  "type": "minecraft:end_city",
+  "placement": {
+    "spacing": 20,
+    "separation": 11,
+    "salt": 10387318,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:end_city/gateway",
+      "weight": 4
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:end_stone",
+    "log": "minecraft:purpur_pillar",
+    "chest": "minecraft:chest"
+  },
+  "mobs": [
+    {
+      "pos": [
+        2,
+        1,
+        2
+      ],
+      "mob": "minecraft:shulker",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "2,1,2",
+      "table": "minecraft:chests/end_city_treasure"
+    }
+  ]
+}

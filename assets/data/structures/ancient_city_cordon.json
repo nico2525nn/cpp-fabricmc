@@ -1,0 +1,38 @@
+{
+  "name": "minecraft:ancient_city_cordon",
+  "type": "minecraft:ancient_city",
+  "placement": {
+    "spacing": 24,
+    "separation": 8,
+    "salt": 20083235,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:ancient_city/cordon",
+      "weight": 8
+    }
+  ],
+  "palette": {
+    "deepslate": "minecraft:cobbled_deepslate",
+    "chest": "minecraft:chest",
+    "sculk": "minecraft:sculk"
+  },
+  "mobs": [
+    {
+      "pos": [
+        4,
+        1,
+        4
+      ],
+      "mob": "minecraft:warden",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "4,1,4",
+      "table": "minecraft:chests/ancient_city"
+    }
+  ]
+}

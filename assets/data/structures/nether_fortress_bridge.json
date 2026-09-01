@@ -1,0 +1,38 @@
+{
+  "name": "minecraft:nether_fortress_bridge",
+  "type": "minecraft:nether_complexes",
+  "placement": {
+    "spacing": 27,
+    "separation": 4,
+    "salt": 30084239,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:nether_fortress/bridge",
+      "weight": 10
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:nether_bricks",
+    "log": "minecraft:nether_brick_fence",
+    "chest": "minecraft:chest"
+  },
+  "mobs": [
+    {
+      "pos": [
+        4,
+        2,
+        4
+      ],
+      "mob": "minecraft:blaze",
+      "count": 2
+    }
+  ],
+  "loot": [
+    {
+      "pos": "4,1,4",
+      "table": "minecraft:chests/nether_bridge"
+    }
+  ]
+}

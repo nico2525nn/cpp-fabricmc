@@ -1,0 +1,44 @@
+{
+  "name": "minecraft:trial_chambers_chamber_2",
+  "type": "minecraft:trial_chambers",
+  "placement": {
+    "spacing": 34,
+    "separation": 12,
+    "salt": 94251331,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:trial_chambers/chamber_2",
+      "weight": 12
+    }
+  ],
+  "palette": {
+    "tuff": "minecraft:tuff_bricks",
+    "tuff_bricks": "minecraft:tuff_bricks",
+    "spawner": "minecraft:trial_spawner",
+    "chest": "minecraft:chest"
+  },
+  "variants": {
+    "minecraft:trial_chambers/chamber_2": {
+      "tuff": "minecraft:tuff_bricks"
+    }
+  },
+  "mobs": [
+    {
+      "pos": [
+        3,
+        2,
+        3
+      ],
+      "mob": "minecraft:breeze",
+      "count": 2
+    }
+  ],
+  "loot": [
+    {
+      "pos": "3,1,3",
+      "table": "minecraft:chests/trial_chambers/chamber"
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "name": "minecraft:bastion_treasure",
+  "type": "minecraft:bastion_remnant",
+  "placement": {
+    "spacing": 27,
+    "separation": 4,
+    "salt": 30084236,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:bastion/treasure",
+      "weight": 8
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:gilded_blackstone",
+    "log": "minecraft:blackstone",
+    "chest": "minecraft:chest"
+  },
+  "mobs": [
+    {
+      "pos": [
+        4,
+        2,
+        4
+      ],
+      "mob": "minecraft:piglin_brute",
+      "count": 2
+    }
+  ],
+  "loot": [
+    {
+      "pos": "4,1,4",
+      "table": "minecraft:chests/bastion_treasure"
+    }
+  ]
+}

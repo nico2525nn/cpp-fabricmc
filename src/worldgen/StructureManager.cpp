@@ -1095,7 +1095,8 @@ void StructureManager::generate(Chunk& chunk, std::int32_t cx,
                 if (variant >= (int)cf->pieces.size()) variant = (int)cf->pieces.size()-1;
                 const std::string& pieceName = cf->pieces[variant].first;
                 auto itv = cf->variants.find(pieceName);
-                std::unordered_map<std::string,std::string> pal = (itv != cf->variants.end() ? itv->second : cf->palette);
+                std::unordered_map<std::string,std::string> pal = cf->palette;
+                if (itv != cf->variants.end()) for (auto& kv : itv->second) pal[kv.first] = kv.second;
                 // enqueue loot/mobs defined in JSON (defer)
                 int baseY = ground ? ground(at.originX+8, at.originZ+8) : 64;
                 for (auto& mb : cf->mobs) enqueuePendingMob(at.originX + mb.pos[0], baseY + mb.pos[1], at.originZ + mb.pos[2], mb.mob, mb.count);
@@ -1181,7 +1182,8 @@ void StructureManager::generate(Chunk& chunk, std::int32_t cx,
             if (variant >= (int)cf->pieces.size()) variant = (int)cf->pieces.size()-1;
             const std::string& pieceName = cf->pieces[variant].first;
             auto itv = cf->variants.find(pieceName);
-            std::unordered_map<std::string,std::string> pal = (itv != cf->variants.end() ? itv->second : cf->palette);
+            std::unordered_map<std::string,std::string> pal = cf->palette;
+            if (itv != cf->variants.end()) for (auto& kv : itv->second) pal[kv.first] = kv.second;
             int baseY = ground ? ground(originX+8, originZ+8) : 64;
             for (auto& mb : cf->mobs) enqueuePendingMob(originX + mb.pos[0], baseY + mb.pos[1], originZ + mb.pos[2], mb.mob, mb.count);
             for (auto& lb : cf->lootByPos) { int lx=0,ly=0,lz=0; if (sscanf(lb.first.c_str(), "%d,%d,%d",&lx,&ly,&lz)==3) enqueuePendingLoot(originX+lx, baseY+ly, originZ+lz, lb.second); }
