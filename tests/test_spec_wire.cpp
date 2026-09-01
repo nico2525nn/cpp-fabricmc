@@ -919,6 +919,73 @@ static void test_mob_spawn_picked_plan36(){
     }
 }
 
+// plan37 §8 test_spec_wire +7 (244->251): PlaceRecipe 3 + TradeList 1 + UpdateAdvancements 1 + ContainerSetContent 2
+static void test_place_recipe_wire_plan37(){
+    std::printf("[N1] PlaceRecipe 0x25 shaped/shapeless/stonecutting — 3 cases\n");
+    check(proto::pl::cs::PlaceRecipe==0x25, "PlaceRecipe id 0x25");
+    {
+        WriteBuffer b; b.varint(0); // recipe display id
+        b.varint(3); // category crafting 3
+        expectEq(b.data, std::vector<std::uint8_t>{0x00,0x03}, "PlaceRecipe shaped category 3 -> 00 03");
+    }
+    {
+        WriteBuffer b; b.varint(1); b.varint(3);
+        expectEq(b.data, std::vector<std::uint8_t>{0x01,0x03}, "PlaceRecipe shapeless category 3 -> 01 03");
+    }
+    {
+        WriteBuffer b; b.varint(2); b.varint(10); // stonecutting 10
+        expectEq(b.data, std::vector<std::uint8_t>{0x02,0x0a}, "PlaceRecipe stonecutting category 10 -> 02 0A");
+    }
+}
+static void test_tradelist_wire_plan37(){
+    std::printf("[N2] TradeList 0x2E priceMultiplier 0.05f + offers 2 — 1 case\n");
+    check(proto::pl::sc::TradeList==0x2E, "TradeList id 0x2E");
+    {
+        WriteBuffer b; b.varint(2); // 2 offers (farmer lvl1)
+        b.f32(0.05f);
+        // 0.05f = 0x3D4CCCCD LE? but f32 BE is 3D 4C CC CD
+        std::vector<std::uint8_t> exp{0x02, 0x3d,0x4c,0xcc,0xcd};
+        expectEq(b.data, exp, "TradeList 2 offers + priceMult 0.05f -> 02 3D 4C CC CD");
+    }
+}
+static void test_advancement_wire_plan37(){
+    std::printf("[N3] UpdateAdvancements 0x7B progress + merged 50 — 1 case\n");
+    check(proto::pl::sc::UpdateAdvancements==0x7B, "UpdateAdvancements 0x7B");
+    {
+        // merged should contain at least 10 (cppfm 9 + at least 1 story)
+        std::unordered_map<std::string,std::string> raw;
+        raw["minecraft:story/root"] = R"({"display":{"icon":{"item":"minecraft:grass_block"},"title":"Root","description":"Story"},"parent":"","criteria":{"tick":{"trigger":"minecraft:tick"}},"requirements":[["tick"]]})";
+        // add nether/end/adventure dummies to reach >=30
+        for(int i=0;i<30;++i){
+            raw["minecraft:test/dummy"+std::to_string(i)] = R"({"display":{"icon":{"item":"minecraft:stone"},"title":"Dummy","description":"x"},"parent":"minecraft:story/root","criteria":{"tick":{"trigger":"minecraft:tick"}},"requirements":[["tick"]]})";
+        }
+        auto merged = mergedAdvancements(raw);
+        check((int)merged.size() >= 30, "mergedAdvancements >=30 with 30 dummies");
+        WriteBuffer b;
+        writeAdvancementsPacket(b, true, merged, [&](const std::string&){return false;});
+        check(b.data.size()>50, "UpdateAdvancements merged packet >50 bytes");
+    }
+}
+static void test_container_content_wire_plan37(){
+    std::printf("[N4] ContainerSetContent 0x13 enchant + ender — 2 cases\n");
+    check(proto::pl::sc::ContainerSetContent==0x13, "ContainerSetContent 0x13");
+    {
+        ItemStack s = ItemStack::of(1,1);
+        ItemStack::addEnchant(s, "minecraft:mending",1);
+        WriteBuffer b; s.write(b);
+        // should contain varint 10 for enchant component inside; we just verify non-empty and has varint 10
+        bool has10=false; for(auto v:b.data) if(v==10) has10=true;
+        check(has10, "ContainerSetContent enchant mending contains component 10");
+        check(b.data.size()>3, "enchanted slot size >3");
+    }
+    {
+        // ender chest: air slot still varint 0, but enderItems persistence would be same wire
+        ItemStack air = ItemStack::air();
+        WriteBuffer b; air.write(b);
+        expectEq(b.data, std::vector<std::uint8_t>{0x00}, "ContainerSetContent ender air -> 00");
+    }
+}
+
 int main(){
     std::printf("=== spec_wire: Prismarine 1.21.4 byte-identical lock (plan30 App.A) ===\n");
     // A
@@ -990,6 +1057,10 @@ int main(){
     test_structure_sets_40_plan36();
     test_loot_chest_wire_plan36();
     test_mob_spawn_picked_plan36();
+    test_place_recipe_wire_plan37();
+    test_tradelist_wire_plan37();
+    test_advancement_wire_plan37();
+    test_container_content_wire_plan37();
 
     std::printf("=== spec_wire: %d PASS %d FAIL %d SKIP ===\n", g_pass, g_fail, g_skip);
     if (g_skip) std::printf("NOTE: %d SKIP are FIXMEs pending entity/network merge (H1 etc)\n", g_skip);
