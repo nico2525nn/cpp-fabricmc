@@ -47,6 +47,7 @@ public:
     void sendChatMessage(const std::string& message);
     void sendChatCommand(const std::string& command);
     void sendDig(std::int32_t x, std::int32_t y, std::int32_t z, std::int32_t seq);
+    void sendUseItemOn(std::int32_t x, std::int32_t y, std::int32_t z, int face=1, std::int32_t seq=1);
     void sendRespawnRequest();
     void respondKeepAlive(std::int64_t id);
     void sendPlayerLoadedOnce();
