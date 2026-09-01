@@ -23,6 +23,7 @@
 #include "CostCalculator.hpp"
 #include "PotionBrewing.hpp"
 #include "Particles.hpp"
+#include "../core/NBTValue.hpp"
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -30,40 +31,103 @@
 namespace cppfm {
 using namespace proto;
 static void savePlayerNBT(const std::string& path, Player& p) {
-    WriteBuffer out;
-    out.u8(10); out.u16(0);                            // root compound
-    out.u8(5); out.u16(6); out.raw("Health", 6); out.f32(p.health);
-    out.u8(3); out.u16(9); out.raw("foodLevel", 9); out.i32(p.food);
-    out.u8(5); out.u16(10); out.raw("foodSaturation", 10); out.f32(p.saturation);
-    out.u8(3); out.u16(9); out.raw("XpLevel", 9); out.i32(p.xp.level);
-    out.u8(3); out.u16(9); out.raw("XpTotal", 9); out.i32(p.xp.totalXp);
-    out.u8(5); out.u16(13); out.raw("XpP", 13); out.f32(p.xp.progress);
-    // playerDim / pos
-    out.u8(3); out.u16(3); out.raw("Dim", 3); out.i32(static_cast<std::int32_t>(p.dimension));
-    out.u8(9); out.u16(3); out.raw("Pos", 3);
-    out.u8(6); out.i32(3);
-    out.f64(p.x); out.f64(p.y); out.f64(p.z);
-    out.u8(9); out.u16(9); out.raw("Inventory", 9);
-    int count = 0;
-    for (int i = 0; i < 46; ++i)
-        if (!p.inv[i].empty()) ++count;
-    out.i32(count);
-    for (int i = 0; i < 46; ++i) {
-        const auto& sl = p.inv[i];
-        if (sl.empty()) continue;
-        out.u8(10);
-        const std::string nm = sl.name();
-        out.u16((uint16_t)nm.size()); out.raw(nm.data(), nm.size());
-        out.u8(1); out.u16(5); out.raw("Count", 5); out.i8((int8_t)sl.count);
-        out.u8(1); out.u16(4); out.raw("Slot", 4); out.i8((int8_t)i);
-        out.u8(0);
+    using namespace nbt;
+    Value root = Value::makeCompound();
+    root.set("Health", Value::makeFloat(p.health));
+    root.set("foodLevel", Value::makeInt(p.food));
+    root.set("foodSaturation", Value::makeFloat(p.saturation));
+    root.set("XpLevel", Value::makeInt(p.xp.level));
+    root.set("XpTotal", Value::makeInt(p.xp.totalXp));
+    root.set("XpP", Value::makeFloat(p.xp.progress));
+    root.set("Dim", Value::makeInt(static_cast<std::int32_t>(p.dimension)));
+    // Pos as List<Double> 3
+    {
+        Value pos = Value::makeList(Double);
+        Value vx; vx.tag = Double; vx.d = p.x; pos.list.push_back(vx);
+        Value vy; vy.tag = Double; vy.d = p.y; pos.list.push_back(vy);
+        Value vz; vz.tag = Double; vz.d = p.z; pos.list.push_back(vz);
+        root.set("Pos", std::move(pos));
     }
-    out.u8(0);
-    out.u8(0);
-    std::filesystem::create_directories(
-        path.substr(0, path.find_last_of('/')));
-    std::ofstream f(path, std::ios::binary);
-    f.write(reinterpret_cast<const char*>(out.data.data()), out.data.size());
+    // Inventory 46 with components (SlotComponent 45 fix: damage 3/repair_cost 17/trim 45 preserved)
+    {
+        Value inv = Value::makeList(Compound);
+        for (int i = 0; i < 46; ++i) {
+            const auto& sl = p.inv[i];
+            if (sl.empty()) continue;
+            Value it = Value::makeCompound();
+            it.set("id", Value::makeString(sl.name()));
+            it.set("Count", Value::makeByte(static_cast<std::int8_t>(sl.count)));
+            it.set("Slot", Value::makeByte(static_cast<std::int8_t>(i)));
+            if (!sl.components.empty()) {
+                Value clist = Value::makeList(Compound);
+                for (auto &pr : sl.components) {
+                    Value ce = Value::makeCompound();
+                    ce.set("type", Value::makeInt(static_cast<std::int32_t>(pr.first)));
+                    Value da; da.tag = ByteArray; da.byteArray = pr.second;
+                    ce.set("data", std::move(da));
+                    clist.list.push_back(std::move(ce));
+                }
+                it.set("components", std::move(clist));
+            }
+            if (!sl.removedComponents.empty()) {
+                Value rlist = Value::makeList(Int);
+                for (auto v : sl.removedComponents) {
+                    rlist.list.push_back(Value::makeInt(static_cast<std::int32_t>(v)));
+                }
+                it.set("removed", std::move(rlist));
+            }
+            inv.list.push_back(std::move(it));
+        }
+        root.set("Inventory", std::move(inv));
+    }
+    // B-14 EnderItems 27 with same SlotComponent 45 preservation
+    {
+        Value ender = Value::makeList(Compound);
+        for (int i = 0; i < 27; ++i) {
+            const auto& sl = p.enderItems[i];
+            if (sl.empty()) continue;
+            Value it = Value::makeCompound();
+            it.set("id", Value::makeString(sl.name()));
+            it.set("Count", Value::makeByte(static_cast<std::int8_t>(sl.count)));
+            it.set("Slot", Value::makeByte(static_cast<std::int8_t>(i)));
+            if (!sl.components.empty()) {
+                Value clist = Value::makeList(Compound);
+                for (auto &pr : sl.components) {
+                    Value ce = Value::makeCompound();
+                    ce.set("type", Value::makeInt(static_cast<std::int32_t>(pr.first)));
+                    Value da; da.tag = ByteArray; da.byteArray = pr.second;
+                    ce.set("data", std::move(da));
+                    clist.list.push_back(std::move(ce));
+                }
+                it.set("components", std::move(clist));
+            }
+            if (!sl.removedComponents.empty()) {
+                Value rlist = Value::makeList(Int);
+                for (auto v : sl.removedComponents) rlist.list.push_back(Value::makeInt(static_cast<std::int32_t>(v)));
+                it.set("removed", std::move(rlist));
+            }
+            ender.list.push_back(std::move(it));
+        }
+        root.set("EnderItems", std::move(ender));
+    }
+    WriteBuffer out;
+    writeFileRoot(out, root);
+    std::filesystem::create_directories(std::filesystem::path(path).parent_path());
+    // atomic: write to .new then rename
+    std::string tmp = path + ".new";
+    {
+        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+        if (!f) return;
+        f.write(reinterpret_cast<const char*>(out.data.data()), out.data.size());
+        if (!f) return;
+    }
+    std::error_code ec;
+    std::filesystem::rename(tmp, path, ec);
+    if (ec) {
+        // fallback direct
+        std::ofstream f2(path, std::ios::binary | std::ios::trunc);
+        f2.write(reinterpret_cast<const char*>(out.data.data()), out.data.size());
+    }
 }
 
 static bool loadPlayerNBT(const std::string& path, Player& p) {
@@ -71,39 +135,108 @@ static bool loadPlayerNBT(const std::string& path, Player& p) {
     if (!f) return false;
     std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(f)),
                                      std::istreambuf_iterator<char>());
-    if (bytes.size() < 10 || bytes[0] != 10) return false;
+    if (bytes.empty()) return false;
     try {
         ReadBuffer r(bytes);
         nbt::Parser parser(r);
         nbt::Value root = parser.readFileRoot();
-        if (const auto* v = root.get("Health")) p.health = v->f;
-        if (const auto* v = root.get("foodLevel")) p.food = v->i;
-        if (const auto* v = root.get("foodSaturation")) p.saturation = v->f;
-        if (const auto* v = root.get("XpLevel")) p.xp.level = v->i;
-        if (const auto* v = root.get("XpTotal")) p.xp.totalXp = v->i;
-        if (const auto* v = root.get("XpP")) p.xp.progress = v->f;
-        if (const auto* v = root.get("Dim"))
-            p.dimension = static_cast<std::int8_t>(v->i);
+        if (const auto* v = root.get("Health")) {
+            if (v->tag == nbt::Float) p.health = v->f;
+            else if (v->tag == nbt::Double) p.health = static_cast<float>(v->d);
+            else if (v->tag == nbt::Int) p.health = static_cast<float>(v->i);
+        }
+        if (const auto* v = root.get("foodLevel")) {
+            if (v->tag == nbt::Int) p.food = v->i;
+            else if (v->tag == nbt::Byte) p.food = v->b;
+            else if (v->tag == nbt::Short) p.food = v->s;
+        }
+        if (const auto* v = root.get("foodSaturation")) {
+            if (v->tag == nbt::Float) p.saturation = v->f;
+            else if (v->tag == nbt::Double) p.saturation = static_cast<float>(v->d);
+        }
+        if (const auto* v = root.get("XpLevel")) p.xp.level = (v->tag==nbt::Int? v->i : (v->tag==nbt::Byte? (int)v->b : v->i));
+        if (const auto* v = root.get("XpTotal")) p.xp.totalXp = (v->tag==nbt::Int? v->i : (v->tag==nbt::Byte? (int)v->b : v->i));
+        if (const auto* v = root.get("XpP")) {
+            if (v->tag == nbt::Float) p.xp.progress = v->f;
+            else if (v->tag == nbt::Double) p.xp.progress = static_cast<float>(v->d);
+        }
+        if (const auto* v = root.get("Dim")) {
+            if (v->tag == nbt::Int) p.dimension = static_cast<std::int8_t>(v->i);
+            else if (v->tag == nbt::Byte) p.dimension = static_cast<std::int8_t>(v->b);
+        }
         if (const auto* v = root.get("Pos")) {
-            if (v->list.size() == 3) {
+            if (v->tag == nbt::List && v->list.size() == 3) {
                 p.x = v->list[0].d; p.y = v->list[1].d; p.z = v->list[2].d;
+                if (v->list[0].tag == nbt::Float) p.x = v->list[0].f;
+                if (v->list[1].tag == nbt::Float) p.y = v->list[1].f;
+                if (v->list[2].tag == nbt::Float) p.z = v->list[2].f;
+                // handle Double vs Float
                 p.prevFeetY = p.y;
             }
         }
-        if (const auto* invv = root.get("Inventory")) {
-            for (const auto& item : invv->list) {
+        // helper to load Inventory or EnderItems
+        auto loadItems = [&](const char* key, ItemStack* dst, int dstSize){
+            const auto* lst = root.get(key);
+            if (!lst || lst->tag != nbt::List) return;
+            for (const auto& item : lst->list) {
                 const auto* idv = item.get("id");
-                const auto* cv = item.get("Count");
                 const auto* sv = item.get("Slot");
                 if (!idv || !sv) continue;
                 auto it = gen::itemIdByName().find(idv->str);
                 if (it == gen::itemIdByName().end()) continue;
-                const int slot = sv->b;
-                if (slot < 0 || slot >= 46) continue;
-                p.inv[slot] = ItemStack::of(it->second,
-                                            cv ? static_cast<std::int16_t>(cv->b) : 1);
+                int slot = 0;
+                if (sv->tag == nbt::Byte) slot = sv->b;
+                else if (sv->tag == nbt::Int) slot = sv->i;
+                else if (sv->tag == nbt::Short) slot = sv->s;
+                else continue;
+                if (slot < 0 || slot >= dstSize) continue;
+                const auto* cv = item.get("Count");
+                int cnt = 1;
+                if (cv) {
+                    if (cv->tag == nbt::Byte) cnt = cv->b;
+                    else if (cv->tag == nbt::Int) cnt = cv->i;
+                    else if (cv->tag == nbt::Short) cnt = cv->s;
+                }
+                ItemStack st = ItemStack::of(it->second, static_cast<std::int16_t>(cnt));
+                // components
+                if (const auto* cl = item.get("components")) {
+                    if (cl->tag == nbt::List) {
+                        for (const auto& ce : cl->list) {
+                            const auto* tv = ce.get("type");
+                            const auto* dv = ce.get("data");
+                            if (!tv || !dv) continue;
+                            int typeId = (tv->tag==nbt::Int? tv->i : (int)tv->b);
+                            std::vector<std::uint8_t> payload;
+                            if (dv->tag == nbt::ByteArray) payload = dv->byteArray;
+                            else if (dv->tag == nbt::String) payload.assign(dv->str.begin(), dv->str.end());
+                            st.components.emplace_back((std::uint32_t)typeId, std::move(payload));
+                        }
+                    }
+                }
+                if (const auto* rl = item.get("removed")) {
+                    if (rl->tag == nbt::List) {
+                        for (const auto& re : rl->list) {
+                            if (re.tag == nbt::Int) st.removedComponents.push_back((std::uint32_t)re.i);
+                            else if (re.tag == nbt::Byte) st.removedComponents.push_back((std::uint32_t)(std::uint8_t)re.b);
+                        }
+                    }
+                }
+                // legacy single field components (e.g., old Damage tag) fallback – check if no components list but has raw fields
+                // old saves stored Damage as Int? Not needed – new write supersedes
+                dst[slot] = std::move(st);
             }
+        };
+        // clear before load (important for rejoin)
+        // Do not clear player position/health already set; inventory is overwritten per slot, but clear empty slots remain air – we keep existing air for slots not in file
+        // To ensure round-trip, we should clear inventory before loading? We'll clear only if list exists
+        if (root.get("Inventory")) {
+            for (auto &s : p.inv) s = ItemStack::air();
         }
+        if (root.get("EnderItems")) {
+            for (auto &s : p.enderItems) s = ItemStack::air();
+        }
+        loadItems("Inventory", p.inv.data(), 46);
+        loadItems("EnderItems", p.enderItems.data(), 27);
         return true;
     } catch (...) { return false; }
 }

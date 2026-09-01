@@ -147,6 +147,7 @@ struct Player {
     std::int32_t eatTicks = 0;
     std::uint8_t eatenFoodId = 0;
     std::array<InvSlot, 46> inv{};
+    std::array<InvSlot, 27> enderItems{}; // B-14 EnderItems 27 (vanilla EnderChest)
     std::int32_t invStateId = 1;
     bool dead = false;
     struct LoginProp { std::string name, value, signature; };
