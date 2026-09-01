@@ -391,6 +391,7 @@ struct MobEntity {
     int horseVariant = 0; // 0..34 variant (color 0..6 + markings 0..4), randomized on spawn
     float horseJumpStrength = 0.0f; // randomized jump
     std::int32_t hurtCooldown = 0;
+    std::int32_t onFireTicks = 0; // plan40 C-08 flame 100t
     std::int32_t leashHolder = -1;
     std::int64_t lastTeleportTick = -10000;
     bool isBabyVal = false;
