@@ -528,7 +528,7 @@ void GameServer::survivalTick() {
         // void damage
         if (p->y < kMinY - 16) applyDamage(*p, 4.f, "fell out of the world");
 
-        // ---- drowning (plan5 76)
+        // ---- drowning (plan5 76) + plan40 C-08 respiration (helmet only, air 300→1200, interval 1+lvl)
         {
             bool hasWaterBreathing = false;
             for (auto &e : p->effects) if (e.type == effects::WaterBreathing) { hasWaterBreathing = true; break; }
@@ -543,20 +543,27 @@ void GameServer::survivalTick() {
             };
             double headY = p->y + 1.62;
             bool headInWater = isWaterAt(p->x, headY, p->z);
+            // plan40: respiration level from helmet (slot 8 head)
+            int respLvl = 0;
+            if (p->inv[8].isArmor() || !p->inv[8].empty()) respLvl = EnchantmentHelper::getRespiration(p->inv[8]);
+            else {
+                // fallback scan 5..8 for any helm with respiration (allows test helmet in any armor slot)
+                for (int i=5;i<=8;++i) if(!p->inv[i].empty()) respLvl = std::max(respLvl, EnchantmentHelper::getRespiration(p->inv[i]));
+            }
             if (!headInWater) {
-                // also check if eye is inside waterlogged? simplified: check water at feet for swimming
-                // reset air
                 if (p->airTicks != 300) {
                     p->airTicks = 300;
                 }
             } else {
                 if (!hasWaterBreathing && gamerules_.getBool("drowningDamage")) {
-                    p->airTicks = std::max(0, p->airTicks - 1);
+                    // respiration: air decrement interval = 1+respLvl (1,2,3,4)
+                    int interval = 1 + respLvl;
+                    if (tickNo_ % interval == 0) p->airTicks = std::max(0, p->airTicks - 1);
                     if (p->airTicks <= 0) {
-                        if (tickNo_ % 20 == 0) applyDamage(*p, 1.f, "drown");
+                        int drownInterval = 20 + respLvl * 15; // 20,35,50,65
+                        if (tickNo_ % drownInterval == 0) applyDamage(*p, 1.f, "drown");
                     }
                 } else {
-                    // with water breathing, don't decrement, slowly recover if needed
                     if (p->airTicks < 300) p->airTicks = std::min(300, p->airTicks + 4);
                 }
             }
@@ -819,6 +826,24 @@ void GameServer::mobsTick() {
             }
 
             const auto& stats = mobStats(m->kind);
+            // plan40 C-08 flame: onFireTicks 100t burns 1 per 20t
+            if (m->onFireTicks > 0) {
+                if (tickNo_ % 20 == 0) applyDamageToMob(*m, 1.f, "onFire");
+                if (--m->onFireTicks <= 0) m->onFireTicks = 0;
+                // water extinguishes flame
+                {
+                    int bx=(int)std::floor(m->x), by=(int)std::floor(m->y), bz=(int)std::floor(m->z);
+                    uint16_t st = world_.getBlock(bx,by,bz);
+                    auto *d = gen::blockByState(st);
+                    bool inWater = d && std::string(d->name)=="minecraft:water";
+                    if (inWater) m->onFireTicks = 0;
+                }
+                if (m->dead) {
+                    deadIds.push_back(m->entityId); drops.push_back(m);
+                    mobAi_.erase(m->entityId);
+                    it = mobs_.erase(it); continue;
+                }
+            }
             // dead check (generic, includes combat/arrow etc) with slime split
             if (m->dead) {
                 deadIds.push_back(m->entityId);

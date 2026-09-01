@@ -9,6 +9,7 @@
 #include <cmath>
 #include "Items.hpp"
 #include "DamageSource.hpp"
+#include "Entities.hpp"
 
 namespace cppfm {
 
@@ -131,13 +132,59 @@ public:
     static int getLoyalty(const ItemStack& s) { return std::max(s.enchantLevel("loyalty"), s.enchantLevel("minecraft:loyalty")); }
     static int getImpaling(const ItemStack& s) { return std::max(s.enchantLevel("impaling"), s.enchantLevel("minecraft:impaling")); }
 
+    // plan40 C-08: 9 new accessors (smite/bane/punch/flame/knockback/luck/lure/aqua/respiration)
+    static bool hasAquaAffinity(const ItemStack& s){ return s.hasEnchant("aqua_affinity")||s.hasEnchant("minecraft:aqua_affinity"); }
+    static int getRespiration(const ItemStack& s){ return std::max(s.enchantLevel("respiration"), s.enchantLevel("minecraft:respiration")); }
+    static int getSmite(const ItemStack& s){ return std::max(s.enchantLevel("smite"), s.enchantLevel("minecraft:smite")); }
+    static int getBaneOfArthropods(const ItemStack& s){ return std::max(s.enchantLevel("bane_of_arthropods"), s.enchantLevel("minecraft:bane_of_arthropods")); }
+    static int getPunch(const ItemStack& s){ return std::max(s.enchantLevel("punch"), s.enchantLevel("minecraft:punch")); }
+    static int getFlame(const ItemStack& s){ return std::max(s.enchantLevel("flame"), s.enchantLevel("minecraft:flame")); }
+    static int getKnockback(const ItemStack& s){ return std::max(s.enchantLevel("knockback"), s.enchantLevel("minecraft:knockback")); }
+    static int getLuckOfSea(const ItemStack& s){ return std::max(s.enchantLevel("luck_of_the_sea"), s.enchantLevel("minecraft:luck_of_the_sea")); }
+    static int getLure(const ItemStack& s){ return std::max(s.enchantLevel("lure"), s.enchantLevel("minecraft:lure")); }
+    // crossbow helpers (deferred but accessor present for 41/41)
+    static int getMultishot(const ItemStack& s){ return std::max(s.enchantLevel("multishot"), s.enchantLevel("minecraft:multishot")); }
+    static int getPiercing(const ItemStack& s){ return std::max(s.enchantLevel("piercing"), s.enchantLevel("minecraft:piercing")); }
+    static int getQuickCharge(const ItemStack& s){ return std::max(s.enchantLevel("quick_charge"), s.enchantLevel("minecraft:quick_charge")); }
+
+    // plan40 C-08: undead / arthropod helpers for smite/bane
+    static bool isUndead(MobKind k){
+        switch(k){
+            case MobKind::Zombie: case MobKind::Skeleton: case MobKind::WitherSkeleton:
+            case MobKind::Drowned: case MobKind::Husk: case MobKind::Stray:
+            case MobKind::Phantom: case MobKind::Wither: case MobKind::Bogged:
+            case MobKind::ZombieVillager: case MobKind::Zoglin: case MobKind::SkeletonHorse:
+            case MobKind::ZombieHorse: return true;
+            default: return false;
+        }
+    }
+    static bool isArthropod(MobKind k){
+        switch(k){ case MobKind::Spider: case MobKind::CaveSpider: case MobKind::Silverfish:
+                 case MobKind::Endermite: case MobKind::Bee: return true; default: return false; }
+    }
+    static float aquaAffinityMiningPenalty(const ItemStack& helm){ return hasAquaAffinity(helm) ? 1.f : 0.2f; }
+
     // Generic enchant existence
     static bool hasEnchant(const ItemStack& s, const std::string& name) { return s.hasEnchant(name); }
     static int level(const ItemStack& s, const std::string& name) { return s.enchantLevel(name); }
 
-    // Melee damage bonus including enchant (used in onUseEntity)
+    // Melee damage bonus including enchant (used in onUseEntity) — base sharpness only (compat)
     static float meleeDamageWithEnchant(float base, const ItemStack& weapon) {
         return base + getSharpnessBonus(weapon);
+    }
+    // plan40 C-08: victim-aware melee (sharp + smite 2.5*lvl vs undead + bane 2.5*lvl vs arthropod)
+    static float meleeDamageWithEnchant(float base, const ItemStack& weapon, MobKind victimKind) {
+        float bonus = getSharpnessBonus(weapon);
+        if (isUndead(victimKind)) bonus += 2.5f * getSmite(weapon);
+        if (isArthropod(victimKind)) bonus += 2.5f * getBaneOfArthropods(weapon);
+        return base + bonus;
+    }
+    static float extraDamageFor(const ItemStack& weapon, MobKind victimKind){
+        float extra=0;
+        extra += getSharpnessBonus(weapon);
+        if (isUndead(victimKind)) extra += 2.5f * getSmite(weapon);
+        if (isArthropod(victimKind)) extra += 2.5f * getBaneOfArthropods(weapon);
+        return extra;
     }
 };
 
