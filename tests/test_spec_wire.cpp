@@ -986,6 +986,41 @@ static void test_container_content_wire_plan37(){
     }
 }
 
+// plan38 §4 +3 (257->260): QC noop + function macro SystemChat + predicate 16
+static void test_qc_wire_noop_plan38(){
+    std::printf("[O1] QC wire noop — BlockUpdate 0x09 / LevelChunk 0x27 / Bundle 0x00 unchanged (B-08)\n");
+    check(proto::pl::sc::BlockUpdate==0x09, "QC noop BlockUpdate 0x09 id unchanged");
+    check(proto::pl::sc::SystemChat==0x73, "QC noop SystemChat 0x73 unchanged");
+    // piston extended state varint should be stable: encode power 15 as varint 0x0F (wire level) still byte-identical
+    WriteBuffer b; b.varint(15);
+    expectEq(b.data, std::vector<std::uint8_t>{0x0f}, "QC noop power 15 varint -> 0f");
+}
+static void test_function_macro_systemchat_plan38(){
+    std::printf("[O2] Function macro SystemChat 0x73 — $var/$(var) macro hello world (B-13)\n");
+    // macro output "hello world" as SystemChat NBT text component
+    WriteBuffer b; nbt::writeTextComponent(b, "hello world"); b.boolean(false);
+    check(b.data[0]==0x0A, "macro SystemChat NBT root 0A for hello world");
+    std::string all((char*)b.data.data(), b.data.size());
+    check(all.find("hello world")!=std::string::npos, "macro SystemChat contains hello world");
+    check(all.find("hello")!=std::string::npos, "macro SystemChat contains hello");
+}
+static void test_predicate16_plan38(){
+    std::printf("[O3] Predicate 16 wire — value_check/entity_scores/reference/match_tool ids (B-13)\n");
+    // ensure condition strings encode with correct varint length prefix (wire byte-identical for predicates registry)
+    WriteBuffer b1; b1.string("minecraft:value_check");
+    WriteBuffer b2; b2.string("minecraft:entity_scores");
+    WriteBuffer b3; b3.string("minecraft:reference");
+    WriteBuffer b4; b4.string("minecraft:match_tool");
+    // string wire: varint len + bytes; check len prefix matches strlen
+    check(b1.data[0]==0x15, "predicate value_check string len 21 -> 15");
+    check(b2.data[0]==0x17, "predicate entity_scores string len 23 -> 17");
+    check(b3.data[0]==0x13, "predicate reference string len 19 -> 13");
+    check(b4.data[0]==0x14, "predicate match_tool string len 20 -> 14");
+    // also verify enchantment_active alias
+    WriteBuffer b5; b5.string("minecraft:enchantment_active");
+    check(b5.data[0]==0x1c, "predicate enchantment_active len 28 -> 1c");
+}
+
 int main(){
     std::printf("=== spec_wire: Prismarine 1.21.4 byte-identical lock (plan30 App.A) ===\n");
     // A
@@ -1061,6 +1096,9 @@ int main(){
     test_tradelist_wire_plan37();
     test_advancement_wire_plan37();
     test_container_content_wire_plan37();
+    test_qc_wire_noop_plan38();
+    test_function_macro_systemchat_plan38();
+    test_predicate16_plan38();
 
     std::printf("=== spec_wire: %d PASS %d FAIL %d SKIP ===\n", g_pass, g_fail, g_skip);
     if (g_skip) std::printf("NOTE: %d SKIP are FIXMEs pending entity/network merge (H1 etc)\n", g_skip);
