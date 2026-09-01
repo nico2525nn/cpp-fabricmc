@@ -1,0 +1,41 @@
+{
+  "type": "minecraft:magma_cube",
+  "attributes": {
+    "max_health": 16,
+    "movement_speed": 0.06,
+    "attack_damage": 3
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:basalt_deltas"
+    ],
+    "light_level": {
+      "max": 0
+    },
+    "weight": 20
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:melee_attack",
+        "priority": 1
+      },
+      {
+        "type": "minecraft:melee_attack",
+        "priority": 3
+      },
+      {
+        "type": "minecraft:wander",
+        "priority": 6
+      },
+      {
+        "type": "minecraft:look_at_player",
+        "priority": 7
+      }
+    ],
+    "sensors": [
+      "minecraft:nearest_players",
+      "minecraft:hurt_by"
+    ]
+  }
+}
