@@ -313,9 +313,9 @@ static void test_mobs() {
             CHECK(false, buf);
         }
     }
-    CHECK_EQ_INT(mapped,147, "mapped MobKind via kEntities existence (vanilla generic boat/boat abstract => 147/149, gap 2 is expected deferred)");
-    if(missing==2) CHECK(true, "2 missing entity types documented gap (minecraft:boat generic + maybe intermediate)");
-    else CHECK_EQ_INT(mapped,149, "all 149 MobKind should map if 1.21.4 had generic boat (vanilla spec expects 149, impl has 147 gap)");
+    CHECK_EQ_INT(mapped,148, "mapped MobKind via kEntities existence (vanilla generic boat abstract => 148/149, gap 1 is expected deferred)");
+    if(missing==1) CHECK(true, "1 missing entity type documented gap (minecraft:boat generic abstract)");
+    else CHECK_EQ_INT(mapped,149, "all 149 MobKind should map if 1.21.4 had generic boat (vanilla spec expects 149, impl has 148 gap)");
     // vanilla HP / damage / speed spot checks (wiki Mobs table 1.21.4)
     auto checkMob = [&](MobKind k, float expHP, float expSpeed, float expDmg, const char* name){
         const auto& s = mobStats(k);
