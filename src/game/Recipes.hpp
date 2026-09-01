@@ -144,6 +144,11 @@ public:
     std::size_t size() const { return recipes_.size(); }
     const std::vector<Recipe>& all() const { return recipes_; }
     const std::unordered_set<std::uint32_t>& planksTag() const { return tagPlanks_; }
+    // plan41 C-11: test helper — lookup by full id (minecraft:xxx)
+    const Recipe* findById(const std::string& id) const {
+        for (auto& r : recipes_) if (r.id == id) return &r;
+        return nullptr;
+    }
 
 private:
     void addShaped(const std::string& id, const std::string& outName, int count,
