@@ -3572,6 +3572,8 @@ void Session::onUseItemOn(ReadBuffer& in) {
         std::uint16_t oldSt = 0; // air before
         blockEventDispatcher().onBlockPlace(tx, ty, tz, oldSt, newState, self_.get());
     }
+    // plan37 §3: placed_block trigger
+    srv_.onPlacedBlock(*self_, tx, ty, tz, newState);
     if (survival) {
         auto mutableHeld = &self_->inv[36 + self_->heldSlot];
         if (ItemStack::maxDamageFor(mutableHeld->itemId) > 0) {
@@ -3659,6 +3661,12 @@ void Session::onUseItem(ReadBuffer& in) {
             if (isFood) {
                 // exhaustion for eating: 0.05? vanilla 0.005 per food?
                 srv_.addHungerExhaustion(*self_, 0.005f);
+                // plan37 §3: consume_item trigger before decrement (preserve itemName)
+                {
+                    ItemStack consumed = sl;
+                    consumed.count = 1;
+                    srv_.onConsumeItem(*self_, consumed);
+                }
                 // consume item (stew leaves bowl already handled inside handleFoodConsume via addToInventory)
                 bool isStew = iname.find("stew")!=std::string::npos || iname.find("soup")!=std::string::npos;
                 bool isCake = iname.find("cake")!=std::string::npos;
