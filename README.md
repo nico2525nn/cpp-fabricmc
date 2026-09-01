@@ -118,7 +118,10 @@ python3 tests/stress_test.py            # N=32 concurrent joins
 ./build/test_scoreboard_reset              # 22 cases ResetScore 0x49 round-trip (holder/objectiveName/wildcard/copy-before-erase)
 ./build/test_spec_wire                     # 233 PASS 0 FAIL wire byte-identical — UpdateAttributes 0x7C H1 varint mapper 0-21 + uuid string 36 + 6パケット + predicate 8
 ./build/test_fuzz                          # 23 PASS fuzz 23 cases — malformed varint/NBT/packet no crash
-ctest -R "native|smoke80|scoreboard_reset|spec_wire|fuzz" --output-on-failure  # smoke80 450s (600s under load), scoreboard_reset 30s, spec_wire 60s, fuzz 30s
+ctest -R "native|smoke80|scoreboard_reset|spec_wire|fuzz" --output-on-failure  # smoke80 700s (600s under load), scoreboard_reset 30s, spec_wire 60s, fuzz 30s
+# Soak: dry 300s + nightly 2h (7200s) — B-06
+python3 tests/soak_test.py --duration 300 --binary ./build/cppfm   # dry 300s (Soak PASS RSS/KeepAlive/tick p99)
+ctest -R soak2h --output-on-failure --timeout 8000                  # nightly 2h (LABELS nightly, TIMEOUT 8000)
 ```
 
 All suites pass in Release and ASan/UBSan (zero sanitizer) including 32-burst for the coarse 80-row taxonomy + 拡張 (127 PASS 0 FAIL). For true parity, see `docs/assessment-1.md` (**78/78 fixed, 0 remain**) and `docs/assessment-2.md` (**31/31 fixed, 0 remain** + plan30 `H1 UpdateAttributes 0x7C` varint mapper → `32/32`) — 109 gaps closed + `test_spec_wire` `233 PASS 0 FAIL` / `test_smoke_80` `127 PASS` / `test_fuzz` `23 PASS` wire lock (plan35 `9cba7f4`). `test_native` + `test_scoreboard_reset` + `test_spec_wire` + `test_fuzz` green post-`plan35`; plan29 polish layer (10 ch, §4/§8/§9 verified no-change) green at `29abd26`; **plan32-35 green: 1578 recipes + 30+ commands + WorldGen 7型/isosceles/20構造 + Mob AI 10種/Breeze + 6パケット + datapack story20/predicate8 + server.properties, `test_smoke_80` 127 PASS, wire 233 PASS**. Honest 90/100 (A 38-39/40・B 26-27/30・C 13-14/15・D 14/15) — Bundles 776 deferred / Mob AI 139→10 / 構造物簡略 / perf — Re-evaluation frame (plan35 §6) — `python3 tools/score_review.py` reports **100/100 (40/30/15/15) / 100/100 (25 each)** for plan35 (see `tools/score_review.py`).

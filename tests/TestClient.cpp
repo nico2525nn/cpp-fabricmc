@@ -574,6 +574,17 @@ void TestClient::sendDig(std::int32_t x, std::int32_t y, std::int32_t z, std::in
     b.varint(seq);
     conn_->sendPacket(proto::pl::cs::PlayerAction, b);
 }
+void TestClient::sendUseItemOn(std::int32_t x, std::int32_t y, std::int32_t z, int face, std::int32_t seq) {
+    WriteBuffer b;
+    b.varint(0); // hand main
+    b.position(x,y,z);
+    b.varint(face);
+    b.f32(0.5f); b.f32(0.5f); b.f32(0.5f);
+    b.boolean(false); // insideBlock
+    b.boolean(false); // worldBorderHit
+    b.varint(seq);
+    conn_->sendPacket(proto::pl::cs::UseItemOn, b);
+}
 void TestClient::sendRespawnRequest() {
     WriteBuffer b; b.varint(0);
     conn_->sendPacket(proto::pl::cs::ClientCommand, b);
