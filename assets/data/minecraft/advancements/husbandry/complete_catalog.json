@@ -1,0 +1,25 @@
+{
+  "display": {
+    "icon": {
+      "item": "minecraft:cod"
+    },
+    "title": "Complete Catalogue",
+    "description": "Tame all cat variants",
+    "frame": "goal",
+    "show_toast": true,
+    "announce_to_chat": true,
+    "hidden": false
+  },
+  "parent": "minecraft:husbandry/root",
+  "criteria": {
+    "tame": {
+      "trigger": "minecraft:tame_an_animal",
+      "conditions": {}
+    }
+  },
+  "requirements": [
+    [
+      "tame"
+    ]
+  ]
+}

@@ -886,6 +886,19 @@ void Session::onEnchantItem(ReadBuffer& in) {
         void itemSmelted(Player& p, const ItemStack& result) override { s.server().onItemObtained(p,result,"smelted"); }
     } io(*this);
     if (ench->onEnchantButton(*openMenu_, *self_, button, io)) {
+        // plan40 C-06: enchanted_item trigger (levels from button 0->1, 1->2, 2->3 -> 10-30)
+        if(self_){
+            int levels = (button+1)*10; // approximate vanilla 5-30 mapping
+            std::string enchItemName="minecraft:diamond_sword";
+            if(self_->heldSlot>=0 && self_->heldSlot<9){
+                auto &hs = self_->inv[36+self_->heldSlot];
+                if(!hs.empty()) enchItemName=hs.name();
+                else {
+                    if(!openMenu_->extraSlots[0].empty()) enchItemName=openMenu_->extraSlots[0].name();
+                }
+            }
+            srv_.onItemEnchanted(*self_, enchItemName, levels);
+        }
         sendMenuContent(*openMenu_);
         syncCursorItem();
     }
@@ -3003,6 +3016,10 @@ void Session::onUseItemOn(ReadBuffer& in) {
                     std::string newName = isWater ? "minecraft:water_bucket" : "minecraft:lava_bucket";
                     *mh = ItemStack::ofName(newName, 1);
                     srv_.resendInventory(*self_);
+                    srv_.onBucketFilled(*self_, newName);
+                } else {
+                    std::string newName = isWater ? "minecraft:water_bucket" : "minecraft:lava_bucket";
+                    srv_.onBucketFilled(*self_, newName);
                 }
                 srv_.broadcastSound("minecraft:item.bucket.fill", px+0.5, py+0.5, pz+0.5, 1.f, 1.f, "block");
                 return true;

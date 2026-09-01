@@ -1,0 +1,25 @@
+{
+  "display": {
+    "icon": {
+      "item": "minecraft:apple"
+    },
+    "title": "Two by Two",
+    "description": "Breed all animals",
+    "frame": "task",
+    "show_toast": true,
+    "announce_to_chat": true,
+    "hidden": false
+  },
+  "parent": "minecraft:husbandry/root",
+  "criteria": {
+    "breed": {
+      "trigger": "minecraft:bred_animals",
+      "conditions": {}
+    }
+  },
+  "requirements": [
+    [
+      "breed"
+    ]
+  ]
+}

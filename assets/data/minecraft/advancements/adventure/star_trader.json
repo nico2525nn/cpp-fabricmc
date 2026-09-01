@@ -1,0 +1,31 @@
+{
+  "display": {
+    "icon": {
+      "item": "minecraft:emerald"
+    },
+    "title": "Star Trader",
+    "description": "Trade with a Villager",
+    "frame": "task",
+    "show_toast": true,
+    "announce_to_chat": true,
+    "hidden": false
+  },
+  "parent": "minecraft:adventure/root",
+  "criteria": {
+    "trade": {
+      "trigger": "minecraft:villager_trade",
+      "conditions": {
+        "item": {
+          "items": [
+            "minecraft:emerald"
+          ]
+        }
+      }
+    }
+  },
+  "requirements": [
+    [
+      "trade"
+    ]
+  ]
+}

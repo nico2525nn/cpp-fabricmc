@@ -1,0 +1,25 @@
+{
+  "display": {
+    "icon": {
+      "item": "minecraft:tadpole_bucket"
+    },
+    "title": "When the Squad Hops...",
+    "description": "Lead a tadpole with a bucket",
+    "frame": "task",
+    "show_toast": true,
+    "announce_to_chat": true,
+    "hidden": false
+  },
+  "parent": "minecraft:husbandry/root",
+  "criteria": {
+    "breed": {
+      "trigger": "minecraft:bred_animals",
+      "conditions": {}
+    }
+  },
+  "requirements": [
+    [
+      "breed"
+    ]
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "display": {
+    "icon": {
+      "item": "minecraft:red_bed"
+    },
+    "title": "Sweet Dreams",
+    "description": "Sleep in a bed",
+    "frame": "task",
+    "show_toast": true,
+    "announce_to_chat": true,
+    "hidden": false
+  },
+  "parent": "minecraft:adventure/root",
+  "criteria": {
+    "sleep": {
+      "trigger": "minecraft:tick",
+      "conditions": {}
+    }
+  },
+  "requirements": [
+    [
+      "sleep"
+    ]
+  ]
+}

@@ -795,6 +795,10 @@ public:
     void onEnterBlock(Player* p, int x, int y, int z);
     void onItemUsedOnBlock(Player* p, int x, int y, int z, const ItemStack& item);
     void onEffectsChanged(Player* p);
+    // plan40 §2 C-06: 10->13 triggers (inventory_changed tag + enchanted_item + filled_bucket + villager_trade/player_killed_entity refinement)
+    void onItemEnchanted(Player& p, const std::string& itemName, int levels);
+    void onBucketFilled(Player& p, const std::string& filledName);
+    void onVillagerTraded(Player& p, const std::string& soldId, int count);
     std::vector<AdvancementDefOwned> getMergedAdvancements();
 private:
     // plan35 cached merged advancements (story 30 + cppfm 9)
