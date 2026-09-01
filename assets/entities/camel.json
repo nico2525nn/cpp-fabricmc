@@ -1,0 +1,26 @@
+{
+  "type": "minecraft:camel",
+  "attributes": {
+    "max_health": 32,
+    "movement_speed": 0.09
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:desert"
+    ],
+    "light_level": {
+      "max": 12
+    }
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:camel_dash",
+        "priority": "priority"
+      }
+    ],
+    "sensors": [
+      "minecraft:nearest_players"
+    ]
+  }
+}

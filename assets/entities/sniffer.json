@@ -1,0 +1,26 @@
+{
+  "type": "minecraft:sniffer",
+  "attributes": {
+    "max_health": 14,
+    "movement_speed": 0.08
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:plains"
+    ],
+    "light_level": {
+      "max": 12
+    }
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:sniffer_dig",
+        "priority": "priority"
+      }
+    ],
+    "sensors": [
+      "minecraft:nearest_players"
+    ]
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "type": "minecraft:slime",
+  "attributes": {
+    "max_health": 4,
+    "movement_speed": 0.06,
+    "attack_damage": 2
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:swamp"
+    ],
+    "light_level": {
+      "max": 7
+    }
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:slime",
+        "priority": "priority"
+      }
+    ],
+    "sensors": [
+      "minecraft:nearest_players"
+    ]
+  }
+}

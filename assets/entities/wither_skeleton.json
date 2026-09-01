@@ -1,0 +1,27 @@
+{
+  "type": "minecraft:wither_skeleton",
+  "attributes": {
+    "max_health": 20,
+    "movement_speed": 0.1,
+    "attack_damage": 8
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:nether_wastes"
+    ],
+    "light_level": {
+      "max": 7
+    }
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:wither_skeleton_effect",
+        "priority": "priority"
+      }
+    ],
+    "sensors": [
+      "minecraft:nearest_players"
+    ]
+  }
+}

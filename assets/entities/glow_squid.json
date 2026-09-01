@@ -1,0 +1,26 @@
+{
+  "type": "minecraft:glow_squid",
+  "attributes": {
+    "max_health": 10,
+    "movement_speed": 0.08
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:ocean"
+    ],
+    "light_level": {
+      "max": 7
+    }
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:wander",
+        "priority": "priority"
+      }
+    ],
+    "sensors": [
+      "minecraft:nearest_players"
+    ]
+  }
+}

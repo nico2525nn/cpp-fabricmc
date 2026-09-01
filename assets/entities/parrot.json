@@ -1,0 +1,26 @@
+{
+  "type": "minecraft:parrot",
+  "attributes": {
+    "max_health": 6,
+    "movement_speed": 0.1
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:jungle"
+    ],
+    "light_level": {
+      "max": 12
+    }
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:parrot_dance",
+        "priority": "priority"
+      }
+    ],
+    "sensors": [
+      "minecraft:nearest_players"
+    ]
+  }
+}

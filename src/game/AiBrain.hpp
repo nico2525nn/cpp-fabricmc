@@ -235,6 +235,38 @@ public: EvokerFangGoal(): Goal(2) {}
     bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override;
 };
 
+// plan39 C-01: 30 new goals (60 species)
+class DrownedSwimGoal final : public Goal { public: DrownedSwimGoal(): Goal(1) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class PhantomCircleGoal final : public Goal { public: PhantomCircleGoal(): Goal(2) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class WardenSonicBoomGoal final : public Goal { public: WardenSonicBoomGoal(): Goal(1) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class EndermanTeleportGoal final : public Goal { public: EndermanTeleportGoal(): Goal(1) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class ShulkerPeekGoal final : public Goal { public: ShulkerPeekGoal(): Goal(1) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class GuardianBeamGoal final : public Goal { public: GuardianBeamGoal(): Goal(2) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class SlimeSplitGoal final : public Goal { public: SlimeSplitGoal(): Goal(3) {} bool shouldStart(MobEntity& m, AiContext&) override { return m.kind==MobKind::Slime; } bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class MagmaCubeJumpGoal final : public Goal { public: MagmaCubeJumpGoal(): Goal(3) {} bool shouldStart(MobEntity& m, AiContext&) override { return m.kind==MobKind::MagmaCube; } bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class SilverfishInfestGoal final : public Goal { public: SilverfishInfestGoal(): Goal(2) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class EndermiteTeleportGoal final : public Goal { public: EndermiteTeleportGoal(): Goal(2) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class VindicatorAxeGoal final : public Goal { public: VindicatorAxeGoal(): Goal(2) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class PillagerCrossbowGoal final : public Goal { public: PillagerCrossbowGoal(): Goal(2) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class HoglinRepelGoal final : public Goal { public: HoglinRepelGoal(): Goal(2) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class ZoglinFrenzyGoal final : public Goal { public: ZoglinFrenzyGoal(): Goal(1) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class WitherSkeletonEffectGoal final : public Goal { public: WitherSkeletonEffectGoal(): Goal(2) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class GoatRamGoal final : public Goal { public: GoatRamGoal(): Goal(2) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class AxolotlPlayDeadGoal final : public Goal { public: AxolotlPlayDeadGoal(): Goal(2) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class FrogTongueGoal final : public Goal { public: FrogTongueGoal(): Goal(3) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class TurtleEggLayGoal final : public Goal { public: TurtleEggLayGoal(): Goal(3) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class ParrotDanceGoal final : public Goal { public: ParrotDanceGoal(): Goal(3) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class OcelotTrustGoal final : public Goal { public: OcelotTrustGoal(): Goal(2) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class SnowGolemSnowTrailGoal final : public Goal { public: SnowGolemSnowTrailGoal(): Goal(2) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class WitherSkullBarrageGoal final : public Goal { public: WitherSkullBarrageGoal(): Goal(2) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class EnderDragonPerchGoal final : public Goal { public: EnderDragonPerchGoal(): Goal(2) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class StriderLavaWalkGoal final : public Goal { public: StriderLavaWalkGoal(): Goal(2) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class IllusionerInvisGoal final : public Goal { public: IllusionerInvisGoal(): Goal(2) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class SnifferDigGoal final : public Goal { public: SnifferDigGoal(): Goal(3) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class CamelDashGoal final : public Goal { public: CamelDashGoal(): Goal(2) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class AllayDuplicateGoal final : public Goal { public: AllayDuplicateGoal(): Goal(3) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class BoggedPoisonGoal final : public Goal { public: BoggedPoisonGoal(): Goal(2) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+
 // ---------------------------------------------------------------- brain ---
 
 class BehaviorTree; // forward (defined in BehaviorTree.hpp)

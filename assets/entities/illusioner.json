@@ -1,0 +1,27 @@
+{
+  "type": "minecraft:illusioner",
+  "attributes": {
+    "max_health": 32,
+    "movement_speed": 0.09,
+    "attack_damage": 4
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:dark_forest"
+    ],
+    "light_level": {
+      "max": 7
+    }
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:illusioner_invis",
+        "priority": "priority"
+      }
+    ],
+    "sensors": [
+      "minecraft:nearest_players"
+    ]
+  }
+}
