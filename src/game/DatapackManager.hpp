@@ -17,6 +17,7 @@
 #include "Items.hpp"
 #include "GameRules.hpp"
 #include "Scoreboard.hpp"
+#include "DamageSource.hpp"
 // PredicateContext deps — World/Entities for location/entity checks (plan35 §3)
 #include "Entities.hpp"
 struct Player; // forward (GameServer.hpp defines struct Player, avoid circular)
@@ -26,6 +27,41 @@ class World;   // forward for location checks; included conditionally below
 #include "World.hpp"
 
 namespace cppfm {
+
+// plan40 §3 helper: json subset for nbt predicate
+inline bool jsonSubset(const json::Value& want, const json::Value& have){
+    if(want.isObj()){
+        if(!have.isObj()) return false;
+        for(auto& kv : want.obj){
+            auto* hv = have.find(kv.first);
+            if(!hv) return false;
+            if(!jsonSubset(kv.second, *hv)) return false;
+        }
+        return true;
+    }
+    if(want.isArr()){
+        if(!have.isArr()) return false;
+        for(auto& wv: want.arr){
+            bool found=false;
+            for(auto& hv: have.arr) if(jsonSubset(wv, hv)) { found=true; break; }
+            if(!found) return false;
+        }
+        return true;
+    }
+    if(want.isStr()) return have.isStr() && want.asStr()==have.asStr();
+    if(want.isNum()) return have.isNum() && want.number==have.number;
+    if(want.isBool()) return have.isBool() && want.boolean==have.boolean;
+    if(want.isNull()) return have.isNull();
+    return true;
+}
+inline std::string entityNbtDump(const MobEntity* e){
+    if(!e) return "{}";
+    json::Value o = json::Value::object();
+    o.set("Health", json::Value::ofNumber(e->health));
+    json::Value tags = json::Value::array();
+    o.set("Tags", tags);
+    return o.dump();
+}
 
 // plan35 §3: PredicateContext — bridges gamerule (GameRules), location (World biome/pos/light) and entity (MobEntity/Player) references
 // Used by evaluatePredicateValue(ctx) to give context-aware results instead of true-fixed stubs.
@@ -48,6 +84,11 @@ struct PredicateContext {
     bool hasValueCheck = false;
     std::string playerName;
     std::string heldItemName;
+    // plan40 §3 C-07: additional for nbt/type_specific/location dimension
+    DamageSource* damageSource = nullptr;
+    std::string nbt;
+    std::unordered_set<std::string> advancements;
+    std::string dimension;
 };
 
 class DatapackManager {
@@ -344,14 +385,47 @@ public:
                 } else if (c == "minecraft:location_check" || c == "location_check") {
                     if (!ctx.world) return true;
                     if (auto* pred = v.find("predicate")) {
-                        // biome check
+                        // dimension gate: predicate.dimension == "minecraft:overworld" etc
+                        if (auto* dim = pred->find("dimension")) {
+                            std::string wantDim = dim->asStr();
+                            std::string haveDim = ctx.dimension.empty() ? ctx.world->dimensionKey() : ctx.dimension;
+                            if(wantDim.find(':')==std::string::npos) wantDim="minecraft:"+wantDim;
+                            if(haveDim.find(':')==std::string::npos) haveDim="minecraft:"+haveDim;
+                            // lenient substring: the_nether vs nether
+                            bool dimMatch = (wantDim==haveDim) || (wantDim.find(haveDim)!=std::string::npos) || (haveDim.find(wantDim)!=std::string::npos) || (wantDim.find("nether")!=std::string::npos && haveDim.find("nether")!=std::string::npos) || (wantDim.find("end")!=std::string::npos && haveDim.find("end")!=std::string::npos);
+                            if(!dimMatch) return false;
+                        }
+                        // biome check with tag support
                         if (auto* biome = pred->find("biome")) {
                             std::string want = biome->asStr();
                             std::string have;
                             try { have = ctx.world->sampledBiome(ctx.x, ctx.y, ctx.z); } catch(...) { have = ctx.world->biomeKey(); }
-                            // want may be tag (#minecraft:is_overworld) -> unsupported, pass
-                            if (!want.empty() && want[0]=='#') { /* tag unsupported -> pass */ }
-                            else if (!want.empty() && have != want) return false;
+                            if (!want.empty() && want[0]=='#') {
+                                std::string tag = want.substr(1);
+                                auto* mgr = &tagManager;
+                                auto it = mgr->biomeTags.find(tag);
+                                if(it != mgr->biomeTags.end()){
+                                    if(it->second.find(have)==it->second.end() && it->second.find(have.substr(have.find(':')+1))==it->second.end()){
+                                        // also try without minecraft: prefix in tag values
+                                        bool found=false;
+                                        for(auto& val: it->second) if(val==have || val==have.substr(have.find(':')+1)) { found=true; break; }
+                                        if(!found) return false;
+                                    }
+                                } else {
+                                    // alternative: tag without minecraft: prefix
+                                    std::string tag2 = tag.find(':')!=std::string::npos ? tag.substr(tag.find(':')+1) : tag;
+                                    auto it2 = mgr->biomeTags.find("minecraft:"+tag2);
+                                    if(it2 != mgr->biomeTags.end()){
+                                        if(it2->second.count(have)==0) return false;
+                                    } else {
+                                        // unsupported tag -> pass
+                                    }
+                                }
+                            } else if (!want.empty() && have != want) {
+                                std::string wantNorm = want.find(':')==std::string::npos ? "minecraft:"+want : want;
+                                std::string haveNorm = have.find(':')==std::string::npos ? "minecraft:"+have : have;
+                                if(wantNorm != haveNorm && want != have) return false;
+                            }
                         }
                         // block check: predicate.block.blocks or predicate.block
                         if (auto* block = pred->find("block")) {
@@ -417,10 +491,96 @@ public:
                             if (ctx.entity) have = MobEntity::kindName(ctx.entity->kind);
                             else if (ctx.player) have = "minecraft:player";
                             else have = "";
-                            // normalize without prefix for comparison
                             auto norm = [](std::string s){ return s.find(':')==std::string::npos ? "minecraft:"+s : s; };
                             if (!want.empty() && !have.empty() && norm(want) != norm(have)) return false;
                             if (!want.empty() && have.empty()) return false;
+                        }
+                        // equipment: {mainhand:{items:..., enchantments:...}}
+                        if (auto* equip = pred->find("equipment")) {
+                            if (equip->isObj()) {
+                                if (auto* mh = equip->find("mainhand")) {
+                                    if (mh->isObj()) {
+                                        if (auto* items = mh->find("items")) {
+                                            bool any=false;
+                                            std::string haveName = ctx.heldItemName.empty() ? "minecraft:air" : ctx.heldItemName;
+                                            auto norm2 = [](std::string s){ return s.find(':')==std::string::npos ? "minecraft:"+s : s; };
+                                            if(items->isStr()){
+                                                if(norm2(items->asStr())==norm2(haveName)) any=true;
+                                            } else if(items->isArr()){
+                                                for(auto& it: items->arr) if(it.isStr() && norm2(it.asStr())==norm2(haveName)) { any=true; break; }
+                                            }
+                                            if(!any) return false;
+                                        }
+                                        if (auto* ench = mh->find("enchantments")) {
+                                            if (ench->isArr()) {
+                                                for(auto& e: ench->arr) if(e.isObj()){
+                                                    if(auto* en = e.find("enchantment")){
+                                                        std::string enStr=en->asStr();
+                                                        bool wantFortune=enStr.find("fortune")!=std::string::npos;
+                                                        bool wantSilk=enStr.find("silk_touch")!=std::string::npos;
+                                                        if(wantFortune && ctx.fortuneLevel==0) return false;
+                                                        if(wantSilk && !ctx.silkTouch) return false;
+                                                        if(auto* lv=e.find("levels")){
+                                                            int haveLv = wantSilk ? (ctx.silkTouch?1:0) : ctx.fortuneLevel;
+                                                            if(lv->isNum()){ if(haveLv!=lv->asInt(haveLv)) return false; }
+                                                            else if(lv->isObj()){
+                                                                if(auto* mn=lv->find("min")) if(haveLv < mn->asInt(mn->number)) return false;
+                                                                if(auto* mx=lv->find("max")) if(haveLv > mx->asInt(mx->number)) return false;
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        // nbt inside entity_properties: predicate.nbt
+                        if (auto* nbt = pred->find("nbt")) if(nbt->isStr()){
+                            std::string wantNbt=nbt->asStr();
+                            std::string haveNbt = ctx.nbt.empty() ? (ctx.entity ? entityNbtDump(ctx.entity) : "") : ctx.nbt;
+                            if(!wantNbt.empty()){
+                                bool contains=false;
+                                try{
+                                    auto wantV=json::Value::parse(wantNbt);
+                                    auto haveV=json::Value::parse(haveNbt);
+                                    contains=jsonSubset(wantV, haveV);
+                                } catch(...){
+                                    contains = haveNbt.find(wantNbt)!=std::string::npos || haveNbt.find(wantNbt.substr(1, wantNbt.size()>2?wantNbt.size()-2:0))!=std::string::npos;
+                                }
+                                if(!contains) return false;
+                            }
+                        }
+                        // type_specific inside entity_properties
+                        if (auto* ts = pred->find("type_specific")) {
+                            if(ts->isObj()){
+                                if(auto* tp = ts->find("type")){
+                                    std::string wantTp=tp->asStr();
+                                    std::string haveTp = ctx.entity ? std::string(MobEntity::kindName(ctx.entity->kind)) : (ctx.player ? "minecraft:player" : "");
+                                    // reconstruct haveTp properly
+                                    if(ctx.entity) haveTp = MobEntity::kindName(ctx.entity->kind);
+                                    else if(ctx.player) haveTp = "minecraft:player";
+                                    else haveTp = "";
+                                    if(!wantTp.empty() && wantTp.find("player")!=std::string::npos && !ctx.player) return false;
+                                    if(!wantTp.empty() && wantTp.find("fishing_hook")!=std::string::npos) return false;
+                                    if(!wantTp.empty() && !haveTp.empty() && wantTp!=haveTp){
+                                        auto norm3=[&](std::string s){ return s.find(':')==std::string::npos?"minecraft:"+s:s; };
+                                        if(norm3(wantTp)!=norm3(haveTp)) return false;
+                                    }
+                                }
+                                if(auto* pl = ts->find("player")){
+                                    if(pl->isObj()){
+                                        if(auto* advs = pl->find("advancements")){
+                                            if(advs->isObj()) for(auto& kv: advs->obj){
+                                                bool haveAdv = ctx.advancements.count(kv.first);
+                                                bool expected = kv.second.isBool()? kv.second.boolean : (kv.second.isStr()? kv.second.asStr()=="true" : kv.second.asInt(1)!=0);
+                                                if(haveAdv != expected) return false;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                     return true;
@@ -462,10 +622,57 @@ public:
                     // properties ignored (stub true)
                     return true;
                 } else if (c == "minecraft:damage_source_properties" || c == "damage_source_properties") {
+                    if (auto* pred = v.find("predicate")) {
+                        if (auto* tags = pred->find("tags")) {
+                            auto checkTag = [&](const json::Value& tag)->bool{
+                                if(!tag.isObj()) return true;
+                                std::string tagId = tag.find("id") ? tag.at("id").asStr() : "";
+                                bool expected = true;
+                                if(auto* ex = tag.find("expected")){
+                                    if(ex->isBool()) expected=ex->boolean;
+                                    else if(ex->isStr()) expected=(ex->asStr()=="true");
+                                    else if(ex->isNum()) expected=(ex->number!=0);
+                                }
+                                bool actual=true;
+                                if(ctx.damageSource){
+                                    if(tagId.find("is_fire")!=std::string::npos) actual=ctx.damageSource->isFire();
+                                    else if(tagId.find("is_fall")!=std::string::npos) actual=ctx.damageSource->isFall();
+                                    else if(tagId.find("is_explosion")!=std::string::npos) actual=ctx.damageSource->isExplosion();
+                                    else if(tagId.find("is_projectile")!=std::string::npos) actual=ctx.damageSource->isProjectile();
+                                    else if(tagId.find("is_magic")!=std::string::npos) actual=ctx.damageSource->isMagic();
+                                    else if(tagId.find("is_lightning")!=std::string::npos) actual=ctx.damageSource->isLightning();
+                                    else actual=true;
+                                } else {
+                                    // without source, fire/false? treat as true unless expected false with unknown
+                                    actual=true;
+                                }
+                                return actual==expected;
+                            };
+                            if(tags->isArr()){
+                                for(auto& tag: tags->arr) if(!checkTag(tag)) return false;
+                            } else if(tags->isObj()){
+                                if(!checkTag(*tags)) return false;
+                            }
+                        }
+                    }
                     return true;
-                } else if (c == "minecraft:killed_by_player" || c == "killed_by_player" ||
-                           c == "minecraft:survives_explosion" || c == "survives_explosion" ||
-                           c == "minecraft:table_bonus" || c == "table_bonus") {
+                } else if (c == "minecraft:killed_by_player" || c == "killed_by_player") {
+                    return true;
+                } else if (c == "minecraft:survives_explosion" || c == "survives_explosion") {
+                    return true;
+                } else if (c == "minecraft:table_bonus" || c == "table_bonus") {
+                    // fortune-indexed chance
+                    if(ctx.fortuneLevel>=0){
+                        double ch=0.5;
+                        if(auto* chances=v.find("chances")){
+                            if(chances->isArr()){
+                                int idx = std::min(ctx.fortuneLevel, (int)chances->arr.size()-1);
+                                if(idx>=0 && chances->arr[idx].isNum()) ch=chances->arr[idx].number;
+                                else if(idx>=0 && chances->arr[idx].isStr()) ch=std::stod(chances->arr[idx].asStr());
+                            } else if(chances->isNum()) ch=chances->number;
+                        } else if(auto* chance=v.find("chance")) ch=chance->isNum()?chance->number:0.5;
+                        return ch >= 0.5;
+                    }
                     return true;
                 } else if (c == "minecraft:entity_scores" || c == "entity_scores") {
                     if (ctx.playerName.empty() && !ctx.entity) return true;
@@ -568,12 +775,82 @@ public:
                         }
                     }
                     if (c.find("enchantment_active")!=std::string::npos) {
-                        // enchantment_active checks if player has active enchantment: use same silk/fortune check
                         if (auto* ench = v.find("enchantment")) {
                             std::string enStr = ench->asStr();
                             bool wantSilk = enStr.find("silk_touch")!=std::string::npos;
                             if (wantSilk && !ctx.silkTouch) return false;
                         }
+                    }
+                    return true;
+                } else if (c == "minecraft:enchantment_active_check" || c == "enchantment_active_check") {
+                    std::string enchantName;
+                    if(auto* e=v.find("enchantment")) enchantName=e->asStr();
+                    else if(auto* e=v.find("enchantments")) enchantName=e->asStr();
+                    bool wantFortune = enchantName.find("fortune")!=std::string::npos;
+                    bool wantSilk = enchantName.find("silk_touch")!=std::string::npos;
+                    bool wantMending = enchantName.find("mending")!=std::string::npos;
+                    int haveLv=0;
+                    if(wantFortune) haveLv=ctx.fortuneLevel;
+                    else if(wantSilk) haveLv=ctx.silkTouch?1:0;
+                    else if(wantMending) haveLv=ctx.heldItemName.find("mending")!=std::string::npos?1:0;
+                    else haveLv=ctx.fortuneLevel;
+                    if(auto* lv=v.find("levels")){
+                        if(lv->isNum()){ if(haveLv != lv->asInt(haveLv)) return false; }
+                        else if(lv->isObj()){
+                            if(auto* mn=lv->find("min")) if(haveLv < mn->asInt(mn->number)) return false;
+                            if(auto* mx=lv->find("max")) if(haveLv > mx->asInt(mx->number)) return false;
+                        }
+                    } else {
+                        if(haveLv<=0) return false;
+                    }
+                    return true;
+                } else if (c == "minecraft:nbt" || c == "nbt") {
+                    std::string wantNbt;
+                    if(auto* n=v.find("nbt")) wantNbt=n->asStr();
+                    else if(auto* tag=v.find("tag")) wantNbt=tag->asStr();
+                    if(!wantNbt.empty()){
+                        std::string haveNbt = ctx.nbt.empty() ? (ctx.entity? entityNbtDump(ctx.entity) : "") : ctx.nbt;
+                        bool contains=true;
+                        try{
+                            auto wantV=json::Value::parse(wantNbt);
+                            auto haveV=json::Value::parse(haveNbt);
+                            contains = jsonSubset(wantV, haveV);
+                        } catch(...){
+                            contains = haveNbt.find(wantNbt)!=std::string::npos;
+                            if(!contains && wantNbt.size()>2) contains = haveNbt.find(wantNbt.substr(1,wantNbt.size()-2))!=std::string::npos;
+                        }
+                        if(!contains) return false;
+                    }
+                    return true;
+                } else if (c == "minecraft:type_specific" || c == "type_specific") {
+                    if(auto* pred=v.find("predicate")){
+                        if(auto* ts=pred->find("type_specific")){
+                            if(ts->isObj()){
+                                if(auto* tp=ts->find("type")){
+                                    std::string wantTp=tp->asStr();
+                                    std::string haveTp = ctx.entity ? MobEntity::kindName(ctx.entity->kind) : (ctx.player ? "minecraft:player" : "");
+                                    if(!wantTp.empty() && wantTp.find("player")!=std::string::npos && !ctx.player) return false;
+                                    if(!wantTp.empty() && wantTp.find("fishing_hook")!=std::string::npos) return false;
+                                    if(!wantTp.empty() && !haveTp.empty() && wantTp!=haveTp){
+                                        auto norm=[&](std::string s){ return s.find(':')==std::string::npos?"minecraft:"+s:s; };
+                                        if(norm(wantTp)!=norm(haveTp)) return false;
+                                    }
+                                }
+                                if(auto* pl=ts->find("player")){
+                                    if(pl->isObj()){
+                                        if(auto* advs=pl->find("advancements")){
+                                            if(advs->isObj()) for(auto& kv: advs->obj){
+                                                bool haveAdv = ctx.advancements.count(kv.first);
+                                                bool expected = kv.second.isBool()? kv.second.boolean : (kv.second.isStr()? kv.second.asStr()=="true" : kv.second.asInt(1)!=0);
+                                                if(haveAdv != expected) return false;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else if(auto* ts=v.find("type_specific")){
+                        if(ts->isObj() && ts->find("type") && !ctx.player) return false;
                     }
                     return true;
                 } else {

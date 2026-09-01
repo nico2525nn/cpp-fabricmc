@@ -1,0 +1,29 @@
+{
+  "display": {
+    "icon": {
+      "item": "minecraft:enchanting_table"
+    },
+    "title": "Enchanted Weapon",
+    "description": "Enchant your first item",
+    "frame": "task",
+    "show_toast": true,
+    "announce_to_chat": true,
+    "hidden": false
+  },
+  "parent": "minecraft:adventure/root",
+  "criteria": {
+    "enchanted": {
+      "trigger": "minecraft:enchanted_item",
+      "conditions": {
+        "levels": {
+          "min": 1
+        }
+      }
+    }
+  },
+  "requirements": [
+    [
+      "enchanted"
+    ]
+  ]
+}

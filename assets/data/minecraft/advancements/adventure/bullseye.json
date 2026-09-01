@@ -1,0 +1,27 @@
+{
+  "display": {
+    "icon": {
+      "item": "minecraft:target"
+    },
+    "title": "Bullseye",
+    "description": "Hit the bullseye of a Target block",
+    "frame": "challenge",
+    "show_toast": true,
+    "announce_to_chat": true,
+    "hidden": false
+  },
+  "parent": "minecraft:adventure/root",
+  "criteria": {
+    "hit": {
+      "trigger": "minecraft:placed_block",
+      "conditions": {
+        "block": "minecraft:target"
+      }
+    }
+  },
+  "requirements": [
+    [
+      "hit"
+    ]
+  ]
+}
