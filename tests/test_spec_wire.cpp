@@ -1032,9 +1032,19 @@ static void test_predicate16_plan38(){
 // plan40 C-05 loot + C-06 advancement + C-07 predicate + C-08 enchant (268->296 +28)
 static void test_loot100_plan40(){
     std::printf("[P1] Loot 100 plan40 — apply_bonus binomial/set_damage/ContainerSetContent (C-05)\n");
-    // loadDirectory covers 100 tables (blocks 20 + chests 30 + entities 40 + gameplay 8)
+    // loadDirectory covers 100 tables (blocks 20 + chests 30 + entities 40 + gameplay 8) - handle ctest build cwd
     LootTableEvaluator eval;
     eval.loadDirectory("assets/data/loot_tables");
+    if(eval.tables().size() < 98){
+        eval.loadDirectory("../assets/data/loot_tables");
+    }
+    if(eval.tables().size() < 98){
+        eval.loadDirectory("/tmp/opencode/wt40/test/assets/data/loot_tables");
+    }
+    if(eval.tables().size() < 98){
+        // fallback to main repo assets if worktree path differs
+        eval.loadDirectory("/run/media/nico/d/学校/app/cpp-fabricmc/assets/data/loot_tables");
+    }
     check(eval.tables().size() >= 98, "loot tables size >=98 (100)");
     check(eval.tables().find("minecraft:blocks/coal_ore") != eval.tables().end(), "loot coal_ore exists with ore_drops");
     check(eval.tables().find("minecraft:blocks/redstone_ore") != eval.tables().end(), "loot redstone_ore exists with uniform_bonus");
@@ -1077,18 +1087,22 @@ static void test_loot100_plan40(){
 }
 static void test_advancement80_plan40(){
     std::printf("[P2] Advancement 80 plan40 — 0x7B 80 tree mapping progress (C-06)\n");
-    // count advancement json files
+    // count advancement json files - handle ctest build cwd
     namespace fs=std::filesystem;
+    std::string advBase="assets/data/minecraft/advancements";
+    if(!fs::exists(advBase)) advBase="../assets/data/minecraft/advancements";
+    if(!fs::exists(advBase)) advBase="/tmp/opencode/wt40/test/assets/data/minecraft/advancements";
+    if(!fs::exists(advBase)) advBase="/run/media/nico/d/学校/app/cpp-fabricmc/assets/data/minecraft/advancements";
     int fileCount=0;
-    try{ for(auto &e: fs::recursive_directory_iterator("assets/data/minecraft/advancements")) if(e.is_regular_file()) ++fileCount; }catch(...){ }
+    try{ for(auto &e: fs::recursive_directory_iterator(advBase)) if(e.is_regular_file()) ++fileCount; }catch(...){ }
     check(fileCount >= 80, "advancement files >=80 (datapack)");
     // build rawAdv map by reading files
     std::unordered_map<std::string,std::string> rawAdv;
     try{
-        for(auto &e: fs::recursive_directory_iterator("assets/data/minecraft/advancements")){
+        for(auto &e: fs::recursive_directory_iterator(advBase)){
             if(!e.is_regular_file()) continue;
             std::string fp=e.path().string();
-            std::string rel=fs::relative(e.path(), "assets/data/minecraft/advancements").string();
+            std::string rel=fs::relative(e.path(), advBase).string();
             std::replace(rel.begin(), rel.end(), '\\', '/');
             if(rel.size()>5 && rel.substr(rel.size()-5)==".json") rel=rel.substr(0,rel.size()-5);
             std::string id="minecraft:"+rel;
