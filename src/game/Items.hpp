@@ -615,6 +615,9 @@ struct ItemStack {
     int swiftSneakLevel() const { return std::max(enchantLevel("swift_sneak"), enchantLevel("minecraft:swift_sneak")); }
     int unbreakingLevel() const { return std::max(enchantLevel("unbreaking"), enchantLevel("minecraft:unbreaking")); }
     int mendingLevel() const { return std::max(enchantLevel("mending"), enchantLevel("minecraft:mending")); }
+    // plan40 C-05: loot lore/display extensions (non-wire, for set_lore/set_name functions)
+    std::vector<std::string> lore;
+    std::string displayNameLoot;
 };
 
 } // namespace cppfm
