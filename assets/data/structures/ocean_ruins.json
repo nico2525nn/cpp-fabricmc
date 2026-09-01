@@ -1,0 +1,47 @@
+{
+  "name": "minecraft:ocean_ruins",
+  "type": "minecraft:ocean_ruins",
+  "placement": {
+    "spacing": 20,
+    "separation": 8,
+    "salt": 14357621,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:ocean_ruins/ruins_large",
+      "weight": 10
+    },
+    {
+      "name": "minecraft:ocean_ruins/ruins_small",
+      "weight": 8
+    },
+    {
+      "name": "minecraft:ocean_ruins/ruins_cluster",
+      "weight": 6
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:stone_bricks",
+    "log": "minecraft:stone_bricks",
+    "chest": "minecraft:chest"
+  },
+  "variants": {},
+  "mobs": [
+    {
+      "pos": [
+        2,
+        1,
+        2
+      ],
+      "mob": "minecraft:drowned",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "2,1,2",
+      "table": "minecraft:chests/ocean_ruins"
+    }
+  ]
+}

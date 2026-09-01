@@ -1,0 +1,47 @@
+{
+  "name": "minecraft:trail_ruins_extra",
+  "type": "minecraft:trail_ruins_extra",
+  "placement": {
+    "spacing": 34,
+    "separation": 8,
+    "salt": 83469868,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:trail_ruins/tower",
+      "weight": 10
+    },
+    {
+      "name": "minecraft:trail_ruins/hall",
+      "weight": 6
+    },
+    {
+      "name": "minecraft:trail_ruins/garden",
+      "weight": 4
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:mud_bricks",
+    "log": "minecraft:mud_bricks",
+    "chest": "minecraft:chest"
+  },
+  "variants": {},
+  "mobs": [
+    {
+      "pos": [
+        3,
+        1,
+        3
+      ],
+      "mob": "minecraft:zombie",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "3,1,3",
+      "table": "minecraft:chests/trail_ruins"
+    }
+  ]
+}

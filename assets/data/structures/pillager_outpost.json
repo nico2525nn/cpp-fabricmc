@@ -1,0 +1,47 @@
+{
+  "name": "minecraft:pillager_outpost",
+  "type": "minecraft:pillager_outpost",
+  "placement": {
+    "spacing": 32,
+    "separation": 8,
+    "salt": 165745296,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:pillager_outpost/watchtower",
+      "weight": 10
+    },
+    {
+      "name": "minecraft:pillager_outpost/cage",
+      "weight": 6
+    },
+    {
+      "name": "minecraft:pillager_outpost/tent",
+      "weight": 4
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:dark_oak_planks",
+    "log": "minecraft:dark_oak_log",
+    "chest": "minecraft:chest"
+  },
+  "variants": {},
+  "mobs": [
+    {
+      "pos": [
+        2,
+        1,
+        2
+      ],
+      "mob": "minecraft:pillager",
+      "count": 2
+    }
+  ],
+  "loot": [
+    {
+      "pos": "2,1,2",
+      "table": "minecraft:chests/pillager_outpost"
+    }
+  ]
+}

@@ -12,6 +12,14 @@ namespace {
 const gen::BlockDef* B(const char* name) {
     return gen::blockByName(name);
 }
+inline std::uint16_t stateByPalette(const std::unordered_map<std::string,std::string>& pal,
+                                    const std::string& key, const std::string& fallback) {
+    auto it = pal.find(key);
+    const std::string& name = (it != pal.end() ? it->second : fallback);
+    if (auto* d = B(name.c_str())) return d->defaultState;
+    if (auto* f = B(fallback.c_str())) return f->defaultState;
+    return 0;
+}
 struct Writer {
     Chunk& c;
     std::int32_t cx, cz;
@@ -795,6 +803,242 @@ void StructureManager::mineshaftPiece(Chunk& chunk, std::int32_t cx, std::int32_
     }
 }
 
+std::uint16_t StructureManager::resolvePaletteState(const std::unordered_map<std::string,std::string>& pal,
+                                             const std::string& key,
+                                             const std::string& fallback) {
+    return stateByPalette(pal, key, fallback);
+}
+void StructureManager::enqueuePendingMob(int x,int y,int z, const std::string& mob, int count) const {
+    std::lock_guard<std::mutex> lk(pendingMtx_);
+    pendingMobs_.push_back({{x,y,z}, mob, count});
+}
+void StructureManager::enqueuePendingLoot(int x,int y,int z, const std::string& loot) const {
+    std::lock_guard<std::mutex> lk(pendingMtx_);
+    pendingLoot_.push_back({{x,y,z}, loot});
+}
+void StructureManager::drainPendingMobs(std::vector<PendingMob>& out) const {
+    std::lock_guard<std::mutex> lk(pendingMtx_);
+    out.insert(out.end(), pendingMobs_.begin(), pendingMobs_.end());
+    pendingMobs_.clear();
+}
+void StructureManager::drainPendingLoot(std::vector<PendingLoot>& out) const {
+    std::lock_guard<std::mutex> lk(pendingMtx_);
+    out.insert(out.end(), pendingLoot_.begin(), pendingLoot_.end());
+    pendingLoot_.clear();
+}
+std::vector<StructureManager::PendingMob> StructureManager::takePendingMobs() const {
+    std::lock_guard<std::mutex> lk(pendingMtx_);
+    auto v = pendingMobs_; pendingMobs_.clear(); return v;
+}
+std::vector<StructureManager::PendingLoot> StructureManager::takePendingLoot() const {
+    std::lock_guard<std::mutex> lk(pendingMtx_);
+    auto v = pendingLoot_; pendingLoot_.clear(); return v;
+}
+size_t StructureManager::pendingMobCount() const { std::lock_guard<std::mutex> lk(pendingMtx_); return pendingMobs_.size(); }
+size_t StructureManager::pendingLootCount() const { std::lock_guard<std::mutex> lk(pendingMtx_); return pendingLoot_.size(); }
+void StructureManager::clearPending() const { std::lock_guard<std::mutex> lk(pendingMtx_); pendingMobs_.clear(); pendingLoot_.clear(); }
+
+void StructureManager::placeTrialChambersPalette(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+                                   std::int32_t originX, std::int32_t originZ,
+                                   const std::string& pieceName,
+                                   const std::unordered_map<std::string,std::string>& palette,
+                                   int /*variant*/, const GroundFn& ground) const {
+    Writer w{chunk, cx, cz};
+    const auto tuff = stateByPalette(palette, "tuff", "minecraft:tuff");
+    const auto tuffBricks = stateByPalette(palette, "tuff_bricks", "minecraft:tuff_bricks");
+    const auto chiseledTuff = stateByPalette(palette, "chiseled_tuff", "minecraft:chiseled_tuff");
+    const auto chiseledBricks = stateByPalette(palette, "chiseled_tuff_bricks", "minecraft:chiseled_tuff_bricks");
+    const auto copperBulb = stateByPalette(palette, "copper_bulb", "minecraft:copper_bulb");
+    const auto spawner = stateByPalette(palette, "spawner", "minecraft:trial_spawner");
+    const auto vault = stateByPalette(palette, "vault", "minecraft:vault");
+    const auto chestS = stateByPalette(palette, "chest", "minecraft:chest");
+    const auto dispenserS = stateByPalette(palette, "dispenser", "minecraft:dispenser");
+    int surfaceY = ground ? ground(originX+8, originZ+8) : 64;
+    int baseY = std::clamp(surfaceY - 30, kMinY+5, 20);
+    bool isCorridor = pieceName.find("corridor")!=std::string::npos;
+    bool isChamber = pieceName.find("chamber")!=std::string::npos;
+    bool isSpawner = pieceName.find("spawner")!=std::string::npos || pieceName.find("intersection")!=std::string::npos;
+    if (isCorridor) {
+        // 3-wide straight corridor 10 long + copper bulbs + adjacent chamber to ensure >200 non-air
+        for (int i=0;i<10;++i){
+            int wx = originX + i; int wz = originZ;
+            for (int dw=-1; dw<=1; ++dw){
+                int px = wx; int pz = wz + dw;
+                w.set(px, baseY, pz, tuffBricks, true);
+                w.set(px, baseY+4, pz, tuffBricks, true);
+                if (std::abs(dw)==1){ for(int dy=1; dy<=3; ++dy) w.set(px, baseY+dy, pz, tuff, true); }
+                else { for(int dy=1; dy<=3; ++dy) w.set(px, baseY+dy, pz, 0, true); }
+            }
+            if (i%4==0) w.set(wx, baseY+1, wz, copperBulb, true);
+        }
+        // attach chamber at end to guarantee 3-piece composition corridor+chamber+spawner
+        {
+            int cOx = originX+10, cOz = originZ-9, sz=18;
+            for (int dx=0; dx<sz; ++dx) for (int dz=0; dz<sz; ++dz) {
+                int wx = cOx + dx, wz = cOz + dz;
+                bool edge = dx==0||dx==sz-1||dz==0||dz==sz-1;
+                w.set(wx, baseY, wz, tuffBricks, true);
+                w.set(wx, baseY+6, wz, tuffBricks, true);
+                if (edge) for(int dy=1; dy<=5; ++dy) w.set(wx, baseY+dy, wz, tuff, true);
+                else if (dx%7==3 && dz%7==3) { for(int dy=1; dy<=3; ++dy) w.set(wx, baseY+dy, wz, 0, true); w.set(wx, baseY+1, wz, spawner, true); enqueuePendingMob(wx, baseY+2, wz, "minecraft:breeze", 1); }
+            }
+            w.set(cOx+2, baseY+1, cOz+2, dispenserS, true);
+            w.set(cOx+sz/2, baseY+1, cOz+sz/2, chestS, true);
+            enqueuePendingLoot(cOx+sz/2, baseY+1, cOz+sz/2, "minecraft:chests/trial_chambers/chamber");
+        }
+        w.set(originX+5, baseY+1, originZ, spawner, true);
+        enqueuePendingMob(originX+5, baseY+2, originZ, "minecraft:breeze", 1);
+        w.set(originX+2, baseY+1, originZ+1, chestS, true);
+        enqueuePendingLoot(originX+2, baseY+1, originZ+1, "minecraft:chests/trial_chambers/corridor");
+    } else if (isChamber) {
+        int sz = 18;
+        if (pieceName.find("chamber_4")!=std::string::npos) sz = 14;
+        else if (pieceName.find("chamber_8")!=std::string::npos) sz = 22;
+        for (int dx=0; dx<sz; ++dx) for (int dz=0; dz<sz; ++dz) {
+            int wx = originX + dx, wz = originZ + dz;
+            bool edge = dx==0||dx==sz-1||dz==0||dz==sz-1;
+            w.set(wx, baseY, wz, tuffBricks, true);
+            w.set(wx, baseY+6, wz, tuffBricks, true);
+            if (edge) {
+                for (int dy=1; dy<=5; ++dy) w.set(wx, baseY+dy, wz, tuff, true);
+                if ((dx%6==0||dz%6==0) && dx%3==0) w.set(wx, baseY+1, wz, chiseledTuff, true);
+            } else if (dx%7==3 && dz%7==3) {
+                for (int dy=1; dy<=3; ++dy) w.set(wx, baseY+dy, wz, 0, true);
+                w.set(wx, baseY+1, wz, spawner, true);
+                enqueuePendingMob(wx, baseY+2, wz, "minecraft:breeze", 1);
+                if (dx==sz/2 && dz==sz/2) w.set(wx, baseY+3, wz, copperBulb, true);
+            } else {
+                for (int dy=1; dy<=5; ++dy) (void)w.set(wx, baseY+dy, wz, 0, false);
+            }
+        }
+        w.set(originX+2, baseY+1, originZ+2, dispenserS, true);
+        w.set(originX+sz-3, baseY+1, originZ+sz-3, vault, true);
+        w.set(originX+sz/2, baseY+1, originZ+sz/2, chestS, true);
+        enqueuePendingLoot(originX+sz/2, baseY+1, originZ+sz/2, "minecraft:chests/trial_chambers/chamber");
+        (void)chiseledBricks;
+    } else if (isSpawner) {
+        for (int dx=-4; dx<=4; ++dx) for (int dz=-4; dz<=4; ++dz){
+            int wx=originX+dx, wz=originZ+dz;
+            bool edge = std::abs(dx)==4 || std::abs(dz)==4;
+            bool cross = (std::abs(dx)<=1 || std::abs(dz)<=1);
+            if (!cross) continue;
+            w.set(wx, baseY, wz, tuffBricks, true);
+            w.set(wx, baseY+5, wz, tuffBricks, true);
+            if (edge) for(int dy=1; dy<=4; ++dy) w.set(wx, baseY+dy, wz, tuff, true);
+            else for(int dy=1; dy<=4; ++dy) (void)w.set(wx, baseY+dy, wz, 0, true);
+        }
+        w.set(originX, baseY+1, originZ, spawner, true);
+        enqueuePendingMob(originX, baseY+2, originZ, "minecraft:breeze", 1);
+        w.set(originX+3, baseY+1, originZ+3, chestS, true);
+        enqueuePendingLoot(originX+3, baseY+1, originZ+3, "minecraft:chests/trial_chambers/intersection");
+        w.set(originX, baseY+2, originZ, copperBulb, true);
+    } else {
+        // fallback: generic chamber
+        for (int dx=0; dx<9; ++dx) for (int dz=0; dz<9; ++dz){ w.set(originX+dx, baseY, originZ+dz, tuffBricks, true); w.set(originX+dx, baseY+4, originZ+dz, tuffBricks, true); }
+        w.set(originX+4, baseY+1, originZ+4, spawner, true);
+        enqueuePendingMob(originX+4, baseY+2, originZ+4, "minecraft:breeze", 1);
+    }
+}
+void StructureManager::placeGenericPalette(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+                             std::int32_t originX, std::int32_t originZ,
+                             const std::string& pieceName,
+                             const std::unordered_map<std::string,std::string>& palette,
+                             int /*variant*/, const GroundFn& ground) const {
+    Writer w{chunk, cx, cz};
+    std::string lp = pieceName;
+    // lower
+    for (auto& c: lp) c = std::tolower(c);
+    if (lp.find("village")!=std::string::npos || lp.find("house")!=std::string::npos || lp.find("farm")!=std::string::npos || lp.find("church")!=std::string::npos) {
+        std::string plankName = "minecraft:oak_planks";
+        if (auto it = palette.find("plank"); it!=palette.end()) plankName = it->second;
+        else if (auto it2 = palette.find("planks"); it2!=palette.end()) plankName = it2->second;
+        const auto planks = B(plankName.c_str()) ? B(plankName.c_str())->defaultState : B("minecraft:oak_planks")->defaultState;
+        const auto log = stateByPalette(palette, "log", "minecraft:oak_log");
+        const auto glass = stateByPalette(palette, "glass", "minecraft:glass");
+        const auto chestS = stateByPalette(palette, "chest", "minecraft:chest");
+        const auto torchS = stateByPalette(palette, "torch", "minecraft:torch");
+        int gy = ground ? ground(originX+3, originZ+3) : 64;
+        bool isFarm = lp.find("farm")!=std::string::npos;
+        bool isChurch = lp.find("church")!=std::string::npos;
+        if (isFarm) {
+            const auto farmland = B("minecraft:farmland") ? B("minecraft:farmland")->defaultState : planks;
+            const auto wheat = B("minecraft:wheat") ? B("minecraft:wheat")->defaultState : 0;
+            const auto waterS = static_cast<std::uint16_t>(gen::stateWithPropsList("minecraft:water", {{"level","0"}}));
+            for (int dzz=1; dzz<6; ++dzz) for(int dxx=1; dxx<7; ++dxx){ bool wc = dxx==4&&dzz==3; w.set(originX+dxx, gy, originZ+dzz, wc?waterS:farmland, true); if(!wc) w.set(originX+dxx, gy+1, originZ+dzz, wheat); }
+            w.set(originX+2, gy+1, originZ+2, chestS, true);
+            enqueuePendingLoot(originX+2, gy+1, originZ+2, "minecraft:chests/village/village_plains_house");
+            enqueuePendingMob(originX+3, gy+1, originZ+3, "minecraft:villager", 1);
+        } else if (isChurch) {
+            const auto cobble = stateByPalette(palette, "cobble", "minecraft:cobblestone");
+            for (int dy=0; dy<=5; ++dy) for(int dz=0; dz<7; ++dz) for(int dx=0; dx<7; ++dx){ bool wall = dx==0||dx==6||dz==0||dz==6||dy==5||dy==0; if(!wall) continue; w.set(originX+dx, gy+1+dy, originZ+dz, cobble); }
+            w.set(originX+3, gy+1, originZ, 0, true); w.set(originX+3, gy+2, originZ, 0, true);
+            w.set(originX+3, gy+3, originZ+3, torchS, true);
+            w.set(originX, gy+3, originZ+3, glass); w.set(originX+6, gy+3, originZ+3, glass);
+            w.set(originX+3, gy+1, originZ+3, chestS, true);
+            enqueuePendingLoot(originX+3, gy+1, originZ+3, "minecraft:chests/village/village_taiga_house");
+            enqueuePendingMob(originX+2, gy+1, originZ+2, "minecraft:villager", 1);
+            enqueuePendingMob(originX+4, gy+1, originZ+4, "minecraft:iron_golem", 1);
+        } else {
+            for (int dy=0; dy<=3; ++dy) for(int dzz=0; dzz<5; ++dzz) for(int dxx=0; dxx<5; ++dxx){ bool wall = dxx==0||dxx==4||dzz==0||dzz==4||dy==3||dy==0; if(!wall) continue; auto mat = dy==0||dy==3?log:planks; w.set(originX+dxx, gy+1+dy, originZ+dzz, mat); }
+            w.set(originX+2, gy+1, originZ, 0, true); w.set(originX+2, gy+2, originZ, 0, true);
+            w.set(originX, gy+2, originZ+2, glass); w.set(originX+4, gy+2, originZ+2, glass);
+            w.set(originX+2, gy+1, originZ+2, chestS, true);
+            enqueuePendingLoot(originX+2, gy+1, originZ+2, "minecraft:chests/village/village_plains_house");
+            enqueuePendingMob(originX+2, gy+1, originZ+2, "minecraft:villager", 2);
+        }
+        // also enqueue extra iron_golem for village
+        if (lp.find("village")!=std::string::npos) enqueuePendingMob(originX+6, gy+1, originZ+6, "minecraft:iron_golem", 1);
+        (void)glass; (void)torchS;
+    } else if (lp.find("ancient_city")!=std::string::npos) {
+        const auto deepslate = stateByPalette(palette, "deepslate", "minecraft:deepslate_bricks");
+        const auto chestS = stateByPalette(palette, "chest", "minecraft:chest");
+        const auto sculk = stateByPalette(palette, "sculk", "minecraft:sculk");
+        int baseY = ground ? ground(originX+4, originZ+4) : 64;
+        baseY = std::clamp(baseY - 8, -50, 30);
+        bool isCenter = lp.find("center")!=std::string::npos;
+        bool isWing = lp.find("wing")!=std::string::npos;
+        int w2 = isWing ? 12 : 9;
+        int h = isCenter ? 6 : 3;
+        for (int dx=0; dx<w2; ++dx) for(int dz=0; dz<w2; ++dz) w.set(originX+dx, baseY, originZ+dz, deepslate, true);
+        for (int dx=0; dx<w2; ++dx){ w.set(originX+dx, baseY+1, originZ, deepslate, true); w.set(originX+dx, baseY+1, originZ+w2-1, deepslate, true); }
+        for (int dz=0; dz<w2; ++dz){ w.set(originX, baseY+1, originZ+dz, deepslate, true); w.set(originX+w2-1, baseY+1, originZ+dz, deepslate, true); }
+        for(int dy=2; dy<=h; ++dy){ w.set(originX+w2/2, baseY+dy, originZ+w2/2, sculk, true); }
+        w.set(originX+4, baseY+1, originZ+4, chestS, true);
+        enqueuePendingLoot(originX+4, baseY+1, originZ+4, "minecraft:chests/ancient_city");
+        w.set(originX+w2-3, baseY+1, originZ+w2-3, chestS, true);
+        enqueuePendingLoot(originX+w2-3, baseY+1, originZ+w2-3, "minecraft:chests/ancient_city_ice_box");
+        enqueuePendingMob(originX+5, baseY+1, originZ+5, "minecraft:warden", 1);
+        if (isCenter){ w.set(originX+6, baseY+1, originZ+6, chestS, true); enqueuePendingLoot(originX+6, baseY+1, originZ+6, "minecraft:chests/ancient_city"); }
+    } else if (lp.find("mansion")!=std::string::npos) {
+        const auto planks = stateByPalette(palette, "planks", "minecraft:dark_oak_planks");
+        const auto log = stateByPalette(palette, "log", "minecraft:dark_oak_log");
+        const auto chestS = stateByPalette(palette, "chest", "minecraft:chest");
+        int surfaceY = ground ? ground(originX+20, originZ+20) : 70;
+        int baseY = std::clamp(surfaceY+1, 70, 85);
+        int sz = (lp.find("wing")!=std::string::npos ? 20 : 40);
+        for(int dx=0; dx<sz; ++dx) for(int dz=0; dz<sz; ++dz){ int wx=originX+dx, wz=originZ+dz; bool edge = dx==0||dx==sz-1||dz==0||dz==sz-1; w.set(wx, baseY, wz, planks, true); if(edge){ for(int dy=1; dy<=6; ++dy) w.set(wx, baseY+dy, wz, log, true);} }
+        w.set(originX+5, baseY+1, originZ+5, chestS, true);
+        enqueuePendingLoot(originX+5, baseY+1, originZ+5, "minecraft:chests/woodland_mansion");
+        enqueuePendingMob(originX+8, baseY+1, originZ+8, "minecraft:vindicator", 1);
+        enqueuePendingMob(originX+12, baseY+1, originZ+12, "minecraft:evoker", 1);
+    } else {
+        // generic fallback: small palette hut 5x5
+        const auto mat = stateByPalette(palette, "plank", "minecraft:oak_planks");
+        const auto mat2 = stateByPalette(palette, "log", "minecraft:oak_log");
+        const auto chestS = stateByPalette(palette, "chest", "minecraft:chest");
+        int gy = ground ? ground(originX+2, originZ+2) : 64;
+        for(int dy=0; dy<=3; ++dy) for(int dz=0; dz<5; ++dz) for(int dx=0; dx<5; ++dx){ bool wall = dx==0||dx==4||dz==0||dz==4||dy==3||dy==0; if(!wall) continue; w.set(originX+dx, gy+1+dy, originZ+dz, dy==0||dy==3?mat2:mat); }
+        w.set(originX+2, gy+1, originZ, 0, true); w.set(originX+2, gy+2, originZ, 0, true);
+        w.set(originX+2, gy+1, originZ+2, chestS, true);
+        enqueuePendingLoot(originX+2, gy+1, originZ+2, "minecraft:chests/simple_dungeon");
+        // enqueue mob based on pieceName
+        if (lp.find("monument")!=std::string::npos) enqueuePendingMob(originX+2, gy+1, originZ+2, "minecraft:guardian", 2);
+        else if (lp.find("outpost")!=std::string::npos) enqueuePendingMob(originX+2, gy+1, originZ+2, "minecraft:pillager", 2);
+        else if (lp.find("temple")!=std::string::npos) enqueuePendingMob(originX+2, gy+1, originZ+2, "minecraft:skeleton", 1);
+        else enqueuePendingMob(originX+2, gy+1, originZ+2, "minecraft:zombie", 1);
+    }
+}
+
 void StructureManager::generate(Chunk& chunk, std::int32_t cx,
                                        std::int32_t cz, const GroundFn& ground) const {
     if (placer_) {
@@ -835,6 +1079,31 @@ void StructureManager::generate(Chunk& chunk, std::int32_t cx,
             for (auto& want : s.biomes)
                 if (picked.find(want) != std::string::npos) { ok = true; break; }
             if (!ok) continue;
+        }
+        // plan36 palette-driven path: if placer has palette for this structure, use it
+        if (placer_) {
+            if (auto* cf = placer_->getConfigured(s.name); cf && !cf->palette.empty() && !cf->pieces.empty()) {
+                int variant = int(smStructureHash(seed_, at.originX, at.originZ, s.salt ^ 0xBEEFULL) * (double)cf->pieces.size());
+                if (variant < 0) variant = 0;
+                if (variant >= (int)cf->pieces.size()) variant = (int)cf->pieces.size()-1;
+                const std::string& pieceName = cf->pieces[variant].first;
+                auto itv = cf->variants.find(pieceName);
+                std::unordered_map<std::string,std::string> pal = (itv != cf->variants.end() ? itv->second : cf->palette);
+                // enqueue loot/mobs defined in JSON (defer)
+                int baseY = ground ? ground(at.originX+8, at.originZ+8) : 64;
+                for (auto& mb : cf->mobs) enqueuePendingMob(at.originX + mb.pos[0], baseY + mb.pos[1], at.originZ + mb.pos[2], mb.mob, mb.count);
+                for (auto& lb : cf->lootByPos) {
+                    // lb.first is "x,y,z"
+                    int lx=0, ly=0, lz=0;
+                    if (sscanf(lb.first.c_str(), "%d,%d,%d", &lx,&ly,&lz)==3) enqueuePendingLoot(at.originX+lx, baseY+ly, at.originZ+lz, lb.second);
+                }
+                if (s.name.find("trial_chambers")!=std::string::npos || s.name.find("trial_chamber")!=std::string::npos) {
+                    placeTrialChambersPalette(chunk, cx, cz, at.originX, at.originZ, pieceName, pal, variant, ground);
+                } else {
+                    placeGenericPalette(chunk, cx, cz, at.originX, at.originZ, pieceName, pal, variant, ground);
+                }
+                continue;
+            }
         }
         const std::string name = s.name;
         if (name.find("village") != std::string::npos)
@@ -881,6 +1150,37 @@ void StructureManager::generate(Chunk& chunk, std::int32_t cx,
         } else if (name.find("stronghold") != std::string::npos)
             strongholdPiece(chunk, cx, cz, at.originX, at.originZ, ground);
         else continue;
+    }
+    // plan36: placer-only structures (extra 20 JSONs beyond sets_ 20) — generate via palette path
+    if (placer_) {
+        for (auto& [pname, pf] : placer_->allPlaced()) {
+            bool already = false;
+            for (auto& s : sets_) if (s.name == pname) { already = true; break; }
+            if (already) continue;
+            // placement check: origin within 3 chunks
+            std::int32_t oCx=0, oCz=0;
+            bool hasOrigin = placer_->findOrigin(pf, cx, cz, oCx, oCz);
+            bool should = false;
+            if (hasOrigin) should = placer_->shouldPlaceAt(pf, oCx, oCz);
+            else should = placer_->shouldPlaceAt(pf, cx, cz);
+            if (!should && !hasOrigin) continue;
+            std::int32_t originX = hasOrigin ? oCx*16 : cx*16;
+            std::int32_t originZ = hasOrigin ? oCz*16 : cz*16;
+            // biome gate via sets? use pf spacing only
+            auto* cf = placer_->getConfigured(pname);
+            if (!cf || cf->palette.empty() || cf->pieces.empty()) continue;
+            int variant = int(smStructureHash(seed_, originX, originZ, pf.salt ^ 0xBEEFULL) * (double)cf->pieces.size());
+            if (variant < 0) variant = 0;
+            if (variant >= (int)cf->pieces.size()) variant = (int)cf->pieces.size()-1;
+            const std::string& pieceName = cf->pieces[variant].first;
+            auto itv = cf->variants.find(pieceName);
+            std::unordered_map<std::string,std::string> pal = (itv != cf->variants.end() ? itv->second : cf->palette);
+            int baseY = ground ? ground(originX+8, originZ+8) : 64;
+            for (auto& mb : cf->mobs) enqueuePendingMob(originX + mb.pos[0], baseY + mb.pos[1], originZ + mb.pos[2], mb.mob, mb.count);
+            for (auto& lb : cf->lootByPos) { int lx=0,ly=0,lz=0; if (sscanf(lb.first.c_str(), "%d,%d,%d",&lx,&ly,&lz)==3) enqueuePendingLoot(originX+lx, baseY+ly, originZ+lz, lb.second); }
+            if (pname.find("trial_chambers")!=std::string::npos) placeTrialChambersPalette(chunk, cx, cz, originX, originZ, pieceName, pal, variant, ground);
+            else placeGenericPalette(chunk, cx, cz, originX, originZ, pieceName, pal, variant, ground);
+        }
     }
 }
 
