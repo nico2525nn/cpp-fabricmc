@@ -1,0 +1,29 @@
+{
+  "display": {
+    "icon": {
+      "item": "minecraft:blackstone"
+    },
+    "title": "Those Were the Days",
+    "description": "Find a Bastion Remnant",
+    "frame": "task",
+    "show_toast": true,
+    "announce_to_chat": true,
+    "hidden": false
+  },
+  "parent": "minecraft:nether/root",
+  "criteria": {
+    "located": {
+      "trigger": "minecraft:location",
+      "conditions": {
+        "location": {
+          "biome": "minecraft:nether_wastes"
+        }
+      }
+    }
+  },
+  "requirements": [
+    [
+      "located"
+    ]
+  ]
+}

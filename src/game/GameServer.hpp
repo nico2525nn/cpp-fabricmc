@@ -780,6 +780,10 @@ public:
     void evaluateTickAdvancements(Player& p);
     void evaluateInventoryChanged(Player& p, const ItemStack& s);
     void evaluatePlayerKilledEntity(Player& p, MobKind kind);
+    // plan37 §3: additional triggers (location/placed_block/consume_item)
+    void evaluateLocationTrigger(Player& p);
+    void onPlacedBlock(Player& p, int x, int y, int z, std::uint16_t state);
+    void onConsumeItem(Player& p, const ItemStack& stack);
     std::vector<AdvancementDefOwned> getMergedAdvancements();
 private:
     // plan35 cached merged advancements (story 30 + cppfm 9)

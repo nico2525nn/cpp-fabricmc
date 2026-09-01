@@ -1,0 +1,29 @@
+{
+  "display": {
+    "icon": {
+      "item": "minecraft:crossbow"
+    },
+    "title": "Two Birds, One Arrow",
+    "description": "Kill two Phantoms with piercing arrow",
+    "frame": "challenge",
+    "show_toast": true,
+    "announce_to_chat": true,
+    "hidden": false
+  },
+  "parent": "minecraft:adventure/sniper_duel",
+  "criteria": {
+    "killed_phantom": {
+      "trigger": "minecraft:player_killed_entity",
+      "conditions": {
+        "entity": {
+          "type": "minecraft:phantom"
+        }
+      }
+    }
+  },
+  "requirements": [
+    [
+      "killed_phantom"
+    ]
+  ]
+}
