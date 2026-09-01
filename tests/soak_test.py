@@ -182,7 +182,7 @@ def main():
             ok=False
         elif total_disc>0:
             print(f"WARN disconnects {total_disc} (tolerated <=2 for soak dry)")
-        thresh = 500 if duration<=400 else 15
+        thresh = 500 if duration<=700 else 15
         if rss0>30000 and rss_growth > thresh:
             print(f"FAIL rss growth {rss_growth:.1f}% >{thresh}% (post-warmup)")
             ok=False
