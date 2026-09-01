@@ -1,3 +1,5 @@
+> **Note:** このドキュメントは **assessment-1 (strict wire audit, S-series: 旧 N/W 表記)** です。旧称 `COMPAT_AUDIT_1_21_4_STRICT.md` (78 gaps 全 FIXED)。
+
 # Strict Compatibility Audit vs Vanilla Fabric 1.21.4 (Protocol 769) — No-Miss List
 
 > **Target:** `cpp-fabricmc` HEAD `c593dad`+`9c8b86e` (plan14 80/80 DONE) vs Vanilla **Fabric 1.21.4** (Mojang `1.21.4` DataVersion `4189` Protocol `769`)  
