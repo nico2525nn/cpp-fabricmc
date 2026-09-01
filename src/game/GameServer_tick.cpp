@@ -198,6 +198,8 @@ void GameServer::tickOnce() {
     if (tickNo_ % 20 == 0) trySpawnMobs();
     mark('M');
     mobsTick();
+    // plan36 §5: drain StructureManager pending loot/mobs (world defer -> tick evaluate)
+    drainPendingStructureQueues();
     mark('R'); // rails (plan14 §5)
     minecartsTick(); // plan14 §5: powered_rail 0.06
     boatsTick(); // plan14 §5: boat friction 0.9 water / 0.6 land, buoyancy 0.04, max 0.4
@@ -279,6 +281,74 @@ void GameServer::tickOnce() {
             flushBlockBatches();
         }
     }
+}
+void GameServer::drainPendingStructureQueues() {
+    auto process = [&](World& w){
+        auto* sm = w.structureManager();
+        if(!sm) return;
+        std::vector<worldgen::StructureManager::PendingLoot> loots;
+        sm->drainPendingLoot(loots);
+        for(auto &pl : loots){
+            auto drops = lootTables_.evaluate(pl.lootTable);
+            int x=pl.pos[0], y=pl.pos[1], z=pl.pos[2];
+            auto* be = blockEntities_.getAt(x,y,z);
+            if(!be){
+                be = &blockEntities_.create(posKey(x,y,z), BlockEntity::Kind::Chest);
+            } else if(be->kind != BlockEntity::Kind::Chest){
+                be->kind = BlockEntity::Kind::Chest;
+                for(int i=0;i<ChestData::kSlots;++i) be->chest.slots[i]=ItemStack::air();
+            }
+            for(int i=0;i<ChestData::kSlots;++i) be->chest.slots[i]=ItemStack::air();
+            if(drops.empty()){
+                std::fprintf(stderr,"[cppfm] pending loot %s at %d %d %d => 0 drops\n", pl.lootTable.c_str(), x,y,z);
+            }
+            std::unordered_set<int> used;
+            for(auto &st : drops){
+                if(st.empty()) continue;
+                int slot=-1;
+                for(int attempt=0; attempt<10; ++attempt){
+                    int cand = rand() % ChestData::kSlots;
+                    if(!used.count(cand)){ slot=cand; break; }
+                }
+                if(slot==-1) slot = rand()%ChestData::kSlots;
+                used.insert(slot);
+                be->chest.slots[slot]=st;
+            }
+            blockEntities_.dirty_.insert(posKey(x,y,z));
+            if(!drops.empty())
+                std::fprintf(stderr,"[cppfm] pending loot %s at %d %d %d => %zu stacks\n", pl.lootTable.c_str(), x,y,z, drops.size());
+        }
+        std::vector<worldgen::StructureManager::PendingMob> mobs;
+        sm->drainPendingMobs(mobs);
+        for(auto &pm : mobs){
+            MobKind kind = MobKind::Zombie;
+            bool found=false;
+            for(int i=0;i<149;++i){ if(std::string(mobStats(static_cast<MobKind>(i)).name)==pm.mob){ kind=static_cast<MobKind>(i); found=true; break; } }
+            if(!found){
+                std::fprintf(stderr,"[cppfm] pending mob unknown %s\n", pm.mob.c_str());
+                continue;
+            }
+            for(int c=0;c<pm.count;++c){
+                auto mob = std::make_shared<MobEntity>();
+                mob->entityId = nextEntityId();
+                mob->kind = kind;
+                mob->health = mobStats(kind).maxHealth;
+                mob->x = pm.pos[0] + 0.5;
+                mob->y = pm.pos[1] + 0.5;
+                mob->z = pm.pos[2] + 0.5;
+                mob->lastSeenMs = nowMs();
+                {
+                    std::lock_guard<std::mutex> lk(entsMtx_);
+                    mobs_.push_back(mob);
+                }
+                broadcastMobSpawn(*mob);
+                std::fprintf(stderr,"[cppfm] pending mob %s at %d %d %d id %d\n", pm.mob.c_str(), pm.pos[0], pm.pos[1], pm.pos[2], mob->entityId);
+            }
+        }
+    };
+    process(world_);
+    if(netherWorld_) process(*netherWorld_);
+    if(endWorld_) process(*endWorld_);
 }
 bool GameServer::isChunkInSimulationDistance(std::int32_t cx, std::int32_t cz) const {
     // Spawn chunk loader: forced chunks / SPAWN ticket level 31 are always in simulation distance (ChunkTicket)

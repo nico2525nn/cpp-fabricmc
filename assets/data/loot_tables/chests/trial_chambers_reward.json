@@ -3,27 +3,27 @@
     {
       "rolls": {
         "min": 3,
-        "max": 8
+        "max": 6
       },
       "entries": [
         {
           "type": "minecraft:item",
-          "name": "minecraft:iron_ingot",
-          "weight": 10,
+          "name": "minecraft:diamond",
+          "weight": 8,
           "functions": [
             {
               "function": "minecraft:set_count",
               "count": {
                 "min": 1,
-                "max": 4
+                "max": 2
               }
             }
           ]
         },
         {
           "type": "minecraft:item",
-          "name": "minecraft:gold_ingot",
-          "weight": 5,
+          "name": "minecraft:emerald",
+          "weight": 10,
           "functions": [
             {
               "function": "minecraft:set_count",
@@ -36,47 +36,27 @@
         },
         {
           "type": "minecraft:item",
-          "name": "minecraft:bread",
+          "name": "minecraft:trial_key",
+          "weight": 10
+        },
+        {
+          "type": "minecraft:item",
+          "name": "minecraft:iron_ingot",
           "weight": 10,
           "functions": [
             {
               "function": "minecraft:set_count",
-              "count": 1
+              "count": {
+                "min": 1,
+                "max": 3
+              }
             }
           ]
         },
         {
           "type": "minecraft:item",
-          "name": "minecraft:diamond",
+          "name": "minecraft:ominous_trial_key",
           "weight": 2
-        },
-        {
-          "type": "minecraft:item",
-          "name": "minecraft:coal",
-          "weight": 8,
-          "functions": [
-            {
-              "function": "minecraft:set_count",
-              "count": {
-                "min": 1,
-                "max": 4
-              }
-            }
-          ]
-        },
-        {
-          "type": "minecraft:item",
-          "name": "minecraft:gunpowder",
-          "weight": 5,
-          "functions": [
-            {
-              "function": "minecraft:set_count",
-              "count": {
-                "min": 1,
-                "max": 2
-              }
-            }
-          ]
         }
       ]
     }
