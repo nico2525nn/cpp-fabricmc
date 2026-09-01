@@ -335,6 +335,9 @@ void GameServer::evaluateTickAdvancements(Player& p) {
                     ctx.world = &worldFor(p.dimension);
                     ctx.gamerules = &gamerules_;
                     ctx.player = &p;
+                    ctx.playerName = p.name;
+                    if (p.heldSlot>=0 && p.heldSlot<9) { auto &hs = p.inv[36+p.heldSlot]; if (!hs.empty()) ctx.heldItemName = hs.name(); }
+                    ctx.scoreboard = &scoreboard;
                     ctx.x = static_cast<int32_t>(p.x);
                     ctx.y = static_cast<int32_t>(p.y);
                     ctx.z = static_cast<int32_t>(p.z);
@@ -390,6 +393,9 @@ void GameServer::evaluateInventoryChanged(Player& p, const ItemStack& s) {
                     ctx.world = &worldFor(p.dimension);
                     ctx.gamerules = &gamerules_;
                     ctx.player = &p;
+                    ctx.playerName = p.name;
+                    if (p.heldSlot>=0 && p.heldSlot<9) { auto &hs = p.inv[36+p.heldSlot]; if (!hs.empty()) ctx.heldItemName = hs.name(); }
+                    ctx.scoreboard = &scoreboard;
                     ctx.x = static_cast<int32_t>(p.x);
                     ctx.y = static_cast<int32_t>(p.y);
                     ctx.z = static_cast<int32_t>(p.z);
@@ -435,6 +441,9 @@ void GameServer::evaluatePlayerKilledEntity(Player& p, MobKind kind) {
                     ctx.world = &worldFor(p.dimension);
                     ctx.gamerules = &gamerules_;
                     ctx.player = &p;
+                    ctx.playerName = p.name;
+                    if (p.heldSlot>=0 && p.heldSlot<9) { auto &hs = p.inv[36+p.heldSlot]; if (!hs.empty()) ctx.heldItemName = hs.name(); }
+                    ctx.scoreboard = &scoreboard;
                     ctx.entity = &victimTmp;
                     ctx.x = static_cast<int32_t>(p.x);
                     ctx.y = static_cast<int32_t>(p.y);
@@ -492,6 +501,9 @@ void GameServer::evaluateLocationTrigger(Player& p) {
     ctx.world = &worldFor(p.dimension);
     ctx.gamerules = &gamerules_;
     ctx.player = &p;
+    ctx.playerName = p.name;
+    if (p.heldSlot>=0 && p.heldSlot<9) { auto &hs = p.inv[36+p.heldSlot]; if (!hs.empty()) ctx.heldItemName = hs.name(); }
+    ctx.scoreboard = &scoreboard;
     ctx.x = static_cast<int32_t>(p.x);
     ctx.y = static_cast<int32_t>(p.y);
     ctx.z = static_cast<int32_t>(p.z);
@@ -536,6 +548,9 @@ void GameServer::onPlacedBlock(Player& p, int x, int y, int z, std::uint16_t sta
     ctx.world = &worldFor(p.dimension);
     ctx.gamerules = &gamerules_;
     ctx.player = &p;
+    ctx.playerName = p.name;
+    if (p.heldSlot>=0 && p.heldSlot<9) { auto &hs = p.inv[36+p.heldSlot]; if (!hs.empty()) ctx.heldItemName = hs.name(); }
+    ctx.scoreboard = &scoreboard;
     ctx.x = x; ctx.y = y; ctx.z = z;
     ctx.dayTime = dayTime();
     ctx.raining = raining();
@@ -574,6 +589,9 @@ void GameServer::onConsumeItem(Player& p, const ItemStack& stack) {
     ctx.world = &worldFor(p.dimension);
     ctx.gamerules = &gamerules_;
     ctx.player = &p;
+    ctx.playerName = p.name;
+    ctx.heldItemName = itemName;
+    ctx.scoreboard = &scoreboard;
     ctx.x = static_cast<int32_t>(p.x);
     ctx.y = static_cast<int32_t>(p.y);
     ctx.z = static_cast<int32_t>(p.z);
@@ -617,6 +635,173 @@ void GameServer::onConsumeItem(Player& p, const ItemStack& stack) {
                 }
             } else ok = true;
             if (ok) { grantAdvancement(p, adv.id); break; }
+        }
+    }
+}
+// plan38 B-13: 4 new triggers 6->10
+void GameServer::onBredAnimals(Player* p) {
+    if (!p || !p->advancements) return;
+    auto merged = getMergedAdvancements();
+    PredicateContext ctx;
+    ctx.world = &worldFor(p->dimension);
+    ctx.gamerules = &gamerules_;
+    ctx.player = p;
+    ctx.playerName = p->name;
+    if (p->heldSlot>=0 && p->heldSlot<9) { auto &hs = p->inv[36+p->heldSlot]; if (!hs.empty()) ctx.heldItemName = hs.name(); }
+    ctx.scoreboard = &scoreboard;
+    ctx.x = static_cast<int32_t>(p->x);
+    ctx.y = static_cast<int32_t>(p->y);
+    ctx.z = static_cast<int32_t>(p->z);
+    ctx.dayTime = dayTime();
+    ctx.raining = raining();
+    ctx.thundering = thundering();
+    for (auto& adv : merged) {
+        if (p->advancements->has(adv.id)) continue;
+        for (auto& tr : adv.triggers) {
+            if (tr.trigger!="minecraft:bred_animals" && tr.trigger!="bred_animals") continue;
+            bool ok = true;
+            if (!tr.conditions.isNull() && tr.conditions.isObj() && tr.conditions.find("condition")) {
+                if (!datapackManager_.evaluatePredicateValue(tr.conditions, ctx)) ok=false;
+            }
+            if (ok) { grantAdvancement(*p, adv.id); break; }
+        }
+    }
+}
+void GameServer::onEnterBlock(Player* p, int x, int y, int z) {
+    if (!p || !p->advancements) return;
+    auto merged = getMergedAdvancements();
+    PredicateContext ctx;
+    ctx.world = &worldFor(p->dimension);
+    ctx.gamerules = &gamerules_;
+    ctx.player = p;
+    ctx.playerName = p->name;
+    if (p->heldSlot>=0 && p->heldSlot<9) { auto &hs = p->inv[36+p->heldSlot]; if (!hs.empty()) ctx.heldItemName = hs.name(); }
+    ctx.scoreboard = &scoreboard;
+    ctx.x = x; ctx.y = y; ctx.z = z;
+    ctx.dayTime = dayTime();
+    ctx.raining = raining();
+    ctx.thundering = thundering();
+    std::uint16_t st = worldFor(p->dimension).getBlock(x,y,z);
+    std::string haveBlock;
+    if (auto* bd = gen::blockByState(st)) haveBlock = bd->name;
+    else haveBlock = "minecraft:air";
+    for (auto& adv : merged) {
+        if (p->advancements->has(adv.id)) continue;
+        for (auto& tr : adv.triggers) {
+            if (tr.trigger!="minecraft:enter_block" && tr.trigger!="enter_block") continue;
+            bool ok = true;
+            if (!tr.conditions.isNull() && tr.conditions.isObj()) {
+                if (auto* blk = tr.conditions.find("block")) {
+                    std::string want = blk->asStr();
+                    if (!want.empty() && want[0]!='#') {
+                        std::string wn = want.find(':')==std::string::npos ? "minecraft:"+want : want;
+                        std::string hn = haveBlock.find(':')==std::string::npos ? "minecraft:"+haveBlock : haveBlock;
+                        if (wn != hn) ok=false;
+                    }
+                }
+                if (ok && tr.conditions.find("condition")) {
+                    if (!datapackManager_.evaluatePredicateValue(tr.conditions, ctx)) ok=false;
+                }
+            }
+            if (ok) { grantAdvancement(*p, adv.id); break; }
+        }
+    }
+}
+void GameServer::onItemUsedOnBlock(Player* p, int x, int y, int z, const ItemStack& item) {
+    if (!p || !p->advancements) return;
+    std::string itemName = item.name();
+    if (itemName.empty()) itemName = "minecraft:air";
+    auto merged = getMergedAdvancements();
+    PredicateContext ctx;
+    ctx.world = &worldFor(p->dimension);
+    ctx.gamerules = &gamerules_;
+    ctx.player = p;
+    ctx.playerName = p->name;
+    ctx.heldItemName = itemName;
+    ctx.scoreboard = &scoreboard;
+    ctx.x = x; ctx.y = y; ctx.z = z;
+    ctx.dayTime = dayTime();
+    ctx.raining = raining();
+    ctx.thundering = thundering();
+    for (auto& adv : merged) {
+        if (p->advancements->has(adv.id)) continue;
+        for (auto& tr : adv.triggers) {
+            if (tr.trigger!="minecraft:item_used_on_block" && tr.trigger!="item_used_on_block") continue;
+            bool ok = true;
+            if (!tr.conditions.isNull() && tr.conditions.isObj()) {
+                if (auto* it = tr.conditions.find("item")) {
+                    std::vector<std::string> wants;
+                    if (it->isStr()) wants.push_back(it->asStr());
+                    else if (it->isObj()) {
+                        if (auto* items = it->find("items")) {
+                            if (items->isStr()) wants.push_back(items->asStr());
+                            else if (items->isArr()) for (auto &v: items->arr) if (v.isStr()) wants.push_back(v.asStr());
+                        } else if (auto* id = it->find("id")) wants.push_back(id->asStr());
+                    }
+                    if (!wants.empty()) {
+                        bool any=false;
+                        for (auto &w: wants) {
+                            std::string wn = w.find(':')==std::string::npos ? "minecraft:"+w : w;
+                            std::string hn = itemName.find(':')==std::string::npos ? "minecraft:"+itemName : itemName;
+                            if (wn==hn) { any=true; break; }
+                        }
+                        if (!any) ok=false;
+                    }
+                }
+                if (ok && tr.conditions.find("condition")) {
+                    if (!datapackManager_.evaluatePredicateValue(tr.conditions, ctx)) ok=false;
+                }
+            }
+            if (ok) { grantAdvancement(*p, adv.id); break; }
+        }
+    }
+}
+void GameServer::onEffectsChanged(Player* p) {
+    if (!p || !p->advancements) return;
+    auto merged = getMergedAdvancements();
+    PredicateContext ctx;
+    ctx.world = &worldFor(p->dimension);
+    ctx.gamerules = &gamerules_;
+    ctx.player = p;
+    ctx.playerName = p->name;
+    if (p->heldSlot>=0 && p->heldSlot<9) { auto &hs = p->inv[36+p->heldSlot]; if (!hs.empty()) ctx.heldItemName = hs.name(); }
+    ctx.scoreboard = &scoreboard;
+    ctx.x = static_cast<int32_t>(p->x);
+    ctx.y = static_cast<int32_t>(p->y);
+    ctx.z = static_cast<int32_t>(p->z);
+    ctx.dayTime = dayTime();
+    ctx.raining = raining();
+    ctx.thundering = thundering();
+    for (auto& adv : merged) {
+        if (p->advancements->has(adv.id)) continue;
+        for (auto& tr : adv.triggers) {
+            if (tr.trigger!="minecraft:effects_changed" && tr.trigger!="effects_changed") continue;
+            bool ok = true;
+            if (!tr.conditions.isNull() && tr.conditions.isObj()) {
+                if (auto* effs = tr.conditions.find("effects")) {
+                    if (effs->isArr()) {
+                        for (auto &e : effs->arr) if (e.isObj()) {
+                            if (auto* eff = e.find("effect")) {
+                                std::string want = eff->asStr();
+                                bool found=false;
+                                for (auto &pe: p->effects) {
+                                    std::string have = effects::nameOf(pe.type);
+                                    if (want==have) { found=true; break; }
+                                    if (want.find(':')==std::string::npos) {
+                                        std::string shortHave = have.substr(have.find(':')+1);
+                                        if (want==shortHave) found=true;
+                                    }
+                                }
+                                if (!found) { ok=false; break; }
+                            }
+                        }
+                    }
+                }
+                if (ok && tr.conditions.find("condition")) {
+                    if (!datapackManager_.evaluatePredicateValue(tr.conditions, ctx)) ok=false;
+                }
+            }
+            if (ok) { grantAdvancement(*p, adv.id); break; }
         }
     }
 }

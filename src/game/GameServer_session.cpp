@@ -2837,6 +2837,10 @@ void Session::onUseItemOn(ReadBuffer& in) {
     const InvSlot& heldItem =
         (self_->heldSlot >= 0 && self_->heldSlot < 9)
             ? self_->inv[36 + self_->heldSlot] : airSlot;
+    // plan38 B-13: item_used_on_block trigger
+    if (!heldItem.empty()) {
+        srv_.onItemUsedOnBlock(self_.get(), x, y, z, heldItem);
+    }
 
     // ---- portal ignition (plan5): flint_and_steel / fire_charge on obsidian frame 4x5 -> nether portal
     {
