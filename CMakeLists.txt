@@ -194,3 +194,7 @@ set_tests_properties(fuzz PROPERTIES TIMEOUT 30)
 add_test(NAME soak2h COMMAND python3 tests/soak_test.py --duration 7200 --binary $<TARGET_FILE:cppfm> WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(soak2h PROPERTIES TIMEOUT 8000 LABELS nightly)
 
+# plan39 C-03 weak_zero gate — grep 0 strict
+add_test(NAME weak_zero COMMAND sh -c "test $(grep -rn '|| true' ${CMAKE_SOURCE_DIR}/tests --include='*.cpp' | wc -l) -eq 0")
+set_tests_properties(weak_zero PROPERTIES TIMEOUT 10)
+
