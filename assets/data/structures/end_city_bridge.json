@@ -1,0 +1,38 @@
+{
+  "name": "minecraft:end_city_bridge",
+  "type": "minecraft:end_city",
+  "placement": {
+    "spacing": 20,
+    "separation": 11,
+    "salt": 10387317,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:end_city/bridge",
+      "weight": 6
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:purpur_block",
+    "log": "minecraft:end_stone_bricks",
+    "chest": "minecraft:chest"
+  },
+  "mobs": [
+    {
+      "pos": [
+        3,
+        1,
+        3
+      ],
+      "mob": "minecraft:shulker",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "3,1,3",
+      "table": "minecraft:chests/end_city_treasure"
+    }
+  ]
+}

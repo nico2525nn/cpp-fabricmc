@@ -1,0 +1,38 @@
+{
+  "name": "minecraft:woodland_mansion_corridor",
+  "type": "minecraft:mansion",
+  "placement": {
+    "spacing": 80,
+    "separation": 20,
+    "salt": 10387322,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:mansion/corridor",
+      "weight": 6
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:dark_oak_planks",
+    "log": "minecraft:dark_oak_log",
+    "chest": "minecraft:chest"
+  },
+  "mobs": [
+    {
+      "pos": [
+        4,
+        1,
+        4
+      ],
+      "mob": "minecraft:evoker",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "4,1,4",
+      "table": "minecraft:chests/woodland_mansion"
+    }
+  ]
+}

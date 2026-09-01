@@ -1,0 +1,38 @@
+{
+  "name": "minecraft:ancient_city_ice_box",
+  "type": "minecraft:ancient_city",
+  "placement": {
+    "spacing": 24,
+    "separation": 8,
+    "salt": 20083238,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:ancient_city/ice_box",
+      "weight": 6
+    }
+  ],
+  "palette": {
+    "deepslate": "minecraft:packed_ice",
+    "chest": "minecraft:chest",
+    "sculk": "minecraft:sculk"
+  },
+  "mobs": [
+    {
+      "pos": [
+        3,
+        1,
+        3
+      ],
+      "mob": "minecraft:warden",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "3,1,3",
+      "table": "minecraft:chests/ancient_city_ice_box"
+    }
+  ]
+}

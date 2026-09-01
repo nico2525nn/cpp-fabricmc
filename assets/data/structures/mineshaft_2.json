@@ -1,0 +1,38 @@
+{
+  "name": "minecraft:mineshaft_2",
+  "type": "minecraft:mineshaft",
+  "placement": {
+    "spacing": 1,
+    "separation": 0,
+    "salt": 123457,
+    "frequency": 0.8
+  },
+  "pieces": [
+    {
+      "name": "minecraft:mineshaft/corridor_2",
+      "weight": 8
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:oak_planks",
+    "log": "minecraft:oak_fence",
+    "chest": "minecraft:chest"
+  },
+  "mobs": [
+    {
+      "pos": [
+        3,
+        1,
+        3
+      ],
+      "mob": "minecraft:cave_spider",
+      "count": 2
+    }
+  ],
+  "loot": [
+    {
+      "pos": "3,1,3",
+      "table": "minecraft:chests/abandoned_mineshaft"
+    }
+  ]
+}

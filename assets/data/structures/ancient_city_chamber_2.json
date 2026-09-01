@@ -1,0 +1,38 @@
+{
+  "name": "minecraft:ancient_city_chamber_2",
+  "type": "minecraft:ancient_city",
+  "placement": {
+    "spacing": 24,
+    "separation": 8,
+    "salt": 20083239,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:ancient_city/chamber_2",
+      "weight": 6
+    }
+  ],
+  "palette": {
+    "deepslate": "minecraft:polished_deepslate",
+    "chest": "minecraft:chest",
+    "sculk": "minecraft:sculk_shrieker"
+  },
+  "mobs": [
+    {
+      "pos": [
+        5,
+        1,
+        5
+      ],
+      "mob": "minecraft:warden",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "5,1,5",
+      "table": "minecraft:chests/ancient_city"
+    }
+  ]
+}
