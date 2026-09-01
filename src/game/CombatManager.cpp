@@ -10,6 +10,7 @@
 #include "GameServer.hpp"
 #include "Entities.hpp"
 #include "Attributes.hpp"
+#include "EnchantmentHelper.hpp"
 #include "../generated/ItemIds.hpp"
 #include <algorithm>
 #include <cmath>
@@ -29,44 +30,24 @@ int CombatManager::totalArmorForMob(const MobEntity& m) {
 }
 
 int CombatManager::computeEPF(const DamageSource& ds, const Player& p) {
+    // plan40 C-08: single source via EnchantmentHelper::getProtectionEPF (weight 1/2/2/3 caps 30/20)
     if (ds.bypassEnchant || ds.isDrown() || ds.isStarveFlag || ds.isSonic()) return 0;
     int total = 0;
     for (int i = 5; i <= 8; ++i) {
         if (i < 0 || i >= 46 || p.inv[i].empty()) continue;
-        const auto& s = p.inv[i];
-        int prot = std::max(s.enchantLevel("protection"), s.enchantLevel("minecraft:protection"));
-        int fire = std::max(s.enchantLevel("fire_protection"), s.enchantLevel("minecraft:fire_protection"));
-        int blast = std::max(s.enchantLevel("blast_protection"), s.enchantLevel("minecraft:blast_protection"));
-        int proj = std::max(s.enchantLevel("projectile_protection"), s.enchantLevel("minecraft:projectile_protection"));
-        int feather = std::max(s.enchantLevel("feather_falling"), s.enchantLevel("minecraft:feather_falling"));
-        // plan19 strict E7: Protection weight 1 for all (was prot*2 for fire/explosion/projectile over-protects)
-        total += prot;
-        if (ds.isFire()) total += fire * 2;
-        if (ds.isExplosion()) total += blast * 2;
-        if (ds.isProjectile()) total += proj * 2;
-        if (ds.isFall()) total += feather * 3;
+        total += EnchantmentHelper::getProtectionEPF(ds, p.inv[i]);
     }
     if (total > 20) total = 20;
     return total;
 }
 
 int CombatManager::computeEPF(const DamageSource& ds, const MobEntity& m) {
+    // plan40 C-08: single source via EnchantmentHelper::getProtectionEPF
     if (ds.bypassEnchant || ds.isDrown() || ds.isStarveFlag || ds.isSonic()) return 0;
     int total = 0;
     for (int i = 2; i < 6; ++i) {
         if (m.equipment[i].empty()) continue;
-        const auto& s = m.equipment[i];
-        int prot = std::max(s.enchantLevel("protection"), s.enchantLevel("minecraft:protection"));
-        int fire = std::max(s.enchantLevel("fire_protection"), s.enchantLevel("minecraft:fire_protection"));
-        int blast = std::max(s.enchantLevel("blast_protection"), s.enchantLevel("minecraft:blast_protection"));
-        int proj = std::max(s.enchantLevel("projectile_protection"), s.enchantLevel("minecraft:projectile_protection"));
-        int feather = std::max(s.enchantLevel("feather_falling"), s.enchantLevel("minecraft:feather_falling"));
-        // plan19 strict E7: Protection weight 1 for all (was prot*2 for fire/explosion/projectile over-protects)
-        total += prot;
-        if (ds.isFire()) total += fire * 2;
-        if (ds.isExplosion()) total += blast * 2;
-        if (ds.isProjectile()) total += proj * 2;
-        if (ds.isFall()) total += feather * 3;
+        total += EnchantmentHelper::getProtectionEPF(ds, m.equipment[i]);
     }
     if (total > 20) total = 20;
     return total;
