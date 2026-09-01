@@ -35,6 +35,12 @@ struct PredicateContext {
     MobEntity* entity = nullptr;
     int32_t x = 0, y = -64, z = 0;
     float explosionRadius = 0.f;
+    // plan37 §4: additional context for predicate 8->12
+    int64_t dayTime = 0;
+    bool raining = false;
+    bool thundering = false;
+    int fortuneLevel = 0;
+    bool silkTouch = false;
 };
 
 class DatapackManager {
@@ -407,12 +413,61 @@ public:
                     }
                     return true;
                 } else if (c == "minecraft:weather_check" || c == "weather_check") {
+                    if (auto* r = v.find("raining")) if (r->isBool()) { if (r->boolean != ctx.raining) return false; }
+                    if (auto* t = v.find("thundering")) if (t->isBool()) { if (t->boolean != ctx.thundering) return false; }
                     return true;
                 } else if (c == "minecraft:time_check" || c == "time_check") {
+                    int period = 24000;
+                    if (auto* p = v.find("period")) period = p->asInt(24000);
+                    if (period <= 0) period = 24000;
+                    long t = (long)(ctx.dayTime % period);
+                    if (auto* val = v.find("value")) {
+                        if (val->isNum()) { if (t != val->asInt((int)t)) return false; }
+                        else if (val->isObj()) {
+                            int mn = val->find("min") ? val->find("min")->asInt(0) : 0;
+                            int mx = val->find("max") ? val->find("max")->asInt(period) : period;
+                            if (t < mn || t > mx) return false;
+                        }
+                    }
                     return true;
-                } else if (c == "minecraft:block_state_property" || c == "block_state_property" ||
-                           c == "minecraft:damage_source_properties" || c == "damage_source_properties" ||
+                } else if (c == "minecraft:block_state_property" || c == "block_state_property") {
+                    if (auto* blk = v.find("block")) {
+                        std::string want = blk->asStr();
+                        if (!want.empty() && want[0] != '#') {
+                            std::string have;
+                            try {
+                                if (ctx.world) {
+                                    std::uint16_t st = ctx.world->getBlock(ctx.x, ctx.y, ctx.z);
+                                    if (auto* bd = gen::blockByState(st)) have = bd->name;
+                                    else have = "minecraft:air";
+                                } else have = "minecraft:air";
+                            } catch (...) { have = "minecraft:air"; }
+                            std::string wantN = want.find(':')==std::string::npos ? "minecraft:"+want : want;
+                            std::string haveN = have.find(':')==std::string::npos ? "minecraft:"+have : have;
+                            if (wantN != haveN) return false;
+                        }
+                    }
+                    // properties ignored (stub true)
+                    return true;
+                } else if (c == "minecraft:damage_source_properties" || c == "damage_source_properties" ||
                            c == "minecraft:match_tool" || c == "match_tool") {
+                    if (c.find("match_tool")!=std::string::npos) {
+                        if (auto* pred = v.find("predicate")) {
+                            if (auto* ench = pred->find("enchantments")) {
+                                if (ench->isArr()) {
+                                    for (auto& e : ench->arr) if (e.isObj()) {
+                                        if (auto* en = e.find("enchantment")) {
+                                            std::string enStr = en->asStr();
+                                            bool wantSilk = enStr.find("silk_touch")!=std::string::npos;
+                                            bool wantFortune = enStr.find("fortune")!=std::string::npos;
+                                            if (wantSilk && !ctx.silkTouch) return false;
+                                            if (wantFortune && ctx.fortuneLevel==0) return false;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     return true;
                 } else if (c == "minecraft:killed_by_player" || c == "killed_by_player" ||
                            c == "minecraft:survives_explosion" || c == "survives_explosion" ||

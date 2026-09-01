@@ -116,7 +116,34 @@ int FunctionEvaluator::executeLine(const std::string& line, brigadier::CommandSo
     return res.value;
 }
 
+std::string FunctionEvaluator::expandMacro(const std::string& line, const std::map<std::string,std::string>& args) {
+    if (args.empty()) return line;
+    std::string out = line;
+    for (auto& [k, v] : args) {
+        // $var and $(var) forms (plan37 §4)
+        std::string pat1 = "$" + k;
+        std::string pat2 = "$(" + k + ")";
+        size_t pos = 0;
+        while ((pos = out.find(pat1, pos)) != std::string::npos) {
+            // avoid replacing prefix of pat2 twice: check if pat2 already handled
+            // but replace both; prefer pat2 first
+            out.replace(pos, pat1.size(), v);
+            pos += v.size();
+        }
+        pos = 0;
+        while ((pos = out.find(pat2, pos)) != std::string::npos) {
+            out.replace(pos, pat2.size(), v);
+            pos += v.size();
+        }
+    }
+    return out;
+}
+
 int FunctionEvaluator::executeFunction(const std::string& id, brigadier::CommandSource src) {
+    return executeFunction(id, std::move(src), {});
+}
+
+int FunctionEvaluator::executeFunction(const std::string& id, brigadier::CommandSource src, const std::map<std::string,std::string>& args) {
     if (recursionDepth_ >= kMaxRecursion) {
         std::fprintf(stderr, "[cppfm] function recursion limit reached for %s\n", id.c_str());
         return 0;
@@ -129,8 +156,9 @@ int FunctionEvaluator::executeFunction(const std::string& id, brigadier::Command
     recursionDepth_++;
     clearReturn();
     int lastResult = 0;
-    for (auto& line : lines) {
+    for (auto line : lines) {
         if (line.empty()) continue;
+        line = expandMacro(line, args);
         // Prepare source for each line (copy)
         brigadier::CommandSource lineSrc = src;
         // If hasReturn, break (return command stops function)

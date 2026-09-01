@@ -484,6 +484,142 @@ void GameServer::onMobKilledBy(Player& p, MobKind kind) {
     if (MobEntity::isHostile(kind)) grantAdvancement(p, "cppfm:hunter");
     evaluatePlayerKilledEntity(p, kind);
 }
+// plan37 §3: location / placed_block / consume_item triggers
+void GameServer::evaluateLocationTrigger(Player& p) {
+    if (!p.advancements) return;
+    auto merged = getMergedAdvancements();
+    PredicateContext ctx;
+    ctx.world = &worldFor(p.dimension);
+    ctx.gamerules = &gamerules_;
+    ctx.player = &p;
+    ctx.x = static_cast<int32_t>(p.x);
+    ctx.y = static_cast<int32_t>(p.y);
+    ctx.z = static_cast<int32_t>(p.z);
+    ctx.dayTime = dayTime();
+    ctx.raining = raining();
+    ctx.thundering = thundering();
+    for (auto& adv : merged) {
+        if (p.advancements->has(adv.id)) continue;
+        for (auto& tr : adv.triggers) {
+            if (tr.trigger != "minecraft:location" && tr.trigger != "location") continue;
+            bool ok = true;
+            if (!tr.conditions.isNull() && tr.conditions.isObj()) {
+                // if conditions has a "condition" predicate, evaluate via predicate engine
+                // otherwise treat as location predicate {location:{biome,...}}
+                if (tr.conditions.find("condition")) {
+                    if (!datapackManager_.evaluatePredicateValue(tr.conditions, ctx)) ok = false;
+                } else {
+                    // try location_check wrapping
+                    json::Value wrapped = json::Value::object();
+                    wrapped.set("condition", json::Value::ofString("minecraft:location_check"));
+                    wrapped.set("predicate", tr.conditions);
+                    bool foundLocation = tr.conditions.find("location") != nullptr;
+                    if (foundLocation) {
+                        if (!datapackManager_.evaluatePredicateValue(wrapped, ctx)) ok = false;
+                    } else {
+                        // generic predicate evaluation
+                        if (!datapackManager_.evaluatePredicateValue(tr.conditions, ctx)) ok = false;
+                    }
+                }
+            }
+            if (ok) { grantAdvancement(p, adv.id); break; }
+        }
+    }
+}
+void GameServer::onPlacedBlock(Player& p, int x, int y, int z, std::uint16_t state) {
+    if (!p.advancements) return;
+    std::string placedName;
+    if (auto* bd = gen::blockByState(state)) placedName = bd->name;
+    if (placedName.empty()) return;
+    auto merged = getMergedAdvancements();
+    PredicateContext ctx;
+    ctx.world = &worldFor(p.dimension);
+    ctx.gamerules = &gamerules_;
+    ctx.player = &p;
+    ctx.x = x; ctx.y = y; ctx.z = z;
+    ctx.dayTime = dayTime();
+    ctx.raining = raining();
+    ctx.thundering = thundering();
+    for (auto& adv : merged) {
+        if (p.advancements->has(adv.id)) continue;
+        for (auto& tr : adv.triggers) {
+            if (tr.trigger != "minecraft:placed_block" && tr.trigger != "placed_block") continue;
+            bool ok = true;
+            if (!tr.conditions.isNull() && tr.conditions.isObj()) {
+                if (auto* blk = tr.conditions.find("block")) {
+                    std::string want = blk->asStr();
+                    if (!want.empty() && want[0] != '#') {
+                        std::string wantN = want.find(':')==std::string::npos ? "minecraft:"+want : want;
+                        std::string haveN = placedName.find(':')==std::string::npos ? "minecraft:"+placedName : placedName;
+                        if (wantN != haveN) ok = false;
+                    }
+                }
+                if (ok && tr.conditions.find("condition")) {
+                    if (!datapackManager_.evaluatePredicateValue(tr.conditions, ctx)) ok = false;
+                } else if (ok && !tr.conditions.isNull()) {
+                    // evaluate other predicates like location_check inside placed_block
+                    // try generic evaluation but ignore block which already checked
+                    // only evaluate if condition key present
+                }
+            }
+            if (ok) { grantAdvancement(p, adv.id); break; }
+        }
+    }
+}
+void GameServer::onConsumeItem(Player& p, const ItemStack& stack) {
+    if (!p.advancements || stack.empty()) return;
+    std::string itemName = stack.name();
+    auto merged = getMergedAdvancements();
+    PredicateContext ctx;
+    ctx.world = &worldFor(p.dimension);
+    ctx.gamerules = &gamerules_;
+    ctx.player = &p;
+    ctx.x = static_cast<int32_t>(p.x);
+    ctx.y = static_cast<int32_t>(p.y);
+    ctx.z = static_cast<int32_t>(p.z);
+    ctx.dayTime = dayTime();
+    ctx.raining = raining();
+    ctx.thundering = thundering();
+    for (auto& adv : merged) {
+        if (p.advancements->has(adv.id)) continue;
+        for (auto& tr : adv.triggers) {
+            if (tr.trigger != "minecraft:consume_item" && tr.trigger != "consume_item") continue;
+            bool ok = false;
+            if (tr.conditions.isNull()) ok = true;
+            else if (tr.conditions.isObj()) {
+                if (auto* item = tr.conditions.find("item")) {
+                    // item = {items:["minecraft:apple"]} or {item:"minecraft:apple"} or string
+                    std::vector<std::string> wants;
+                    if (item->isStr()) wants.push_back(item->asStr());
+                    else if (item->isObj()) {
+                        if (auto* items = item->find("items")) {
+                            if (items->isStr()) wants.push_back(items->asStr());
+                            else if (items->isArr()) for (auto& v : items->arr) if (v.isStr()) wants.push_back(v.asStr());
+                        } else if (auto* it = item->find("item")) {
+                            if (it->isStr()) wants.push_back(it->asStr());
+                        } else if (auto* id = item->find("id")) {
+                            if (id->isStr()) wants.push_back(id->asStr());
+                        }
+                    } else if (item->isArr()) {
+                        for (auto& v : item->arr) if (v.isStr()) wants.push_back(v.asStr());
+                    }
+                    if (wants.empty()) ok = true;
+                    else for (auto& w : wants) {
+                        std::string wn = w.find(':')==std::string::npos ? "minecraft:"+w : w;
+                        std::string hn = itemName.find(':')==std::string::npos ? "minecraft:"+itemName : itemName;
+                        if (wn == hn) { ok = true; break; }
+                    }
+                } else {
+                    ok = true;
+                }
+                if (ok && tr.conditions.find("condition")) {
+                    if (!datapackManager_.evaluatePredicateValue(tr.conditions, ctx)) ok = false;
+                }
+            } else ok = true;
+            if (ok) { grantAdvancement(p, adv.id); break; }
+        }
+    }
+}
 bool GameServer::spawnMobByTypeName(const std::string& name, double x, double y,
                                      double z) {
     // Plan8: handle lightning_bolt via strikeLightning (charged creeper)

@@ -1,0 +1,29 @@
+{
+  "display": {
+    "icon": {
+      "item": "minecraft:diamond_boots"
+    },
+    "title": "Adventuring Time",
+    "description": "Explore all biomes",
+    "frame": "goal",
+    "show_toast": true,
+    "announce_to_chat": true,
+    "hidden": false
+  },
+  "parent": "minecraft:adventure/root",
+  "criteria": {
+    "biomes": {
+      "trigger": "minecraft:location",
+      "conditions": {
+        "location": {
+          "biome": "minecraft:plains"
+        }
+      }
+    }
+  },
+  "requirements": [
+    [
+      "biomes"
+    ]
+  ]
+}
