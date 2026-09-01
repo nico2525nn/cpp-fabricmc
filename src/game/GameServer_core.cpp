@@ -352,6 +352,30 @@ void GameServer::evaluateTickAdvancements(Player& p) {
 void GameServer::evaluateInventoryChanged(Player& p, const ItemStack& s) {
     if (!p.advancements || s.empty()) return;
     std::string itemName = s.name();
+    // normalize itemName for tag lookup
+    std::string normHave = itemName.find(':')==std::string::npos ? "minecraft:"+itemName : itemName;
+    auto norm = [](const std::string& s2){ return s2.find(':')==std::string::npos ? "minecraft:"+s2 : s2; };
+    auto hasTagItem = [&](const std::string& tag, const std::string& haveNorm)->bool{
+        // tag is like "minecraft:logs" (without #)
+        std::string t = tag.find(':')==std::string::npos ? "minecraft:"+tag : tag;
+        auto it = datapackManager_.tagManager.itemTags.find(t);
+        if(it==datapackManager_.tagManager.itemTags.end()){
+            // also try without minecraft: prefix
+            auto it2 = datapackManager_.tagManager.itemTags.find(tag);
+            if(it2==datapackManager_.tagManager.itemTags.end()) return false;
+            it = it2;
+        }
+        auto iidIt = gen::itemIdByName().find(haveNorm);
+        if(iidIt==gen::itemIdByName().end()){
+            // fallback string contains
+            for(auto id: it->second){
+                // try reverse lookup via itemId? just string compare
+                (void)id;
+            }
+            return false;
+        }
+        return it->second.count(iidIt->second)>0;
+    };
     auto merged = getMergedAdvancements();
     for (auto& adv : merged) {
         if (p.advancements->has(adv.id)) continue;
@@ -359,7 +383,6 @@ void GameServer::evaluateInventoryChanged(Player& p, const ItemStack& s) {
             if (tr.trigger != "minecraft:inventory_changed" && tr.trigger != "inventory_changed") continue;
             bool match = false;
             if (tr.conditions.isNull() || tr.conditions.isObj()==false) {
-                // no conditions -> any item triggers
                 match = true;
             } else {
                 if (auto* items = tr.conditions.find("items")) {
@@ -373,16 +396,36 @@ void GameServer::evaluateInventoryChanged(Player& p, const ItemStack& s) {
                                     else if (in->isArr() && !in->arr.empty() && in->arr[0].isStr()) want = in->arr[0].asStr();
                                 } else if (auto* it2 = it.find("item")) want = it2->asStr();
                                 else if (auto* id2 = it.find("id")) want = id2->asStr();
+                                else if (auto* tag = it.find("tag")) {
+                                    std::string tagStr=tag->asStr();
+                                    if(!tagStr.empty() && tagStr[0]=='#') tagStr=tagStr.substr(1);
+                                    if(hasTagItem(tagStr, normHave)) { match=true; break; }
+                                    continue;
+                                }
                             }
-                            if (!want.empty() && want == itemName) { match = true; break; }
-                            // tag handling: #minecraft:logs etc — treat as substring match for now
-                            if (!want.empty() && want[0]=='#' && itemName.find(want.substr(want.find(':')+1))!=std::string::npos) { match = true; break; }
+                            if (!want.empty()){
+                                if(want[0]=='#'){
+                                    std::string tag = want.substr(1);
+                                    if(hasTagItem(tag, normHave)) { match = true; break; }
+                                } else if (norm(want)==normHave) { match = true; break; }
+                            }
                         }
                     } else if (items->isStr()) {
-                        if (items->asStr() == itemName) match = true;
+                        std::string want=items->asStr();
+                        if(want[0]=='#'){
+                            if(hasTagItem(want.substr(1), normHave)) match = true;
+                        } else if (norm(want)==normHave) match = true;
+                    } else if (items->isObj()) {
+                        if(auto* tag = items->find("tag")){
+                            std::string tagStr=tag->asStr();
+                            if(!tagStr.empty() && tagStr[0]=='#') tagStr=tagStr.substr(1);
+                            if(hasTagItem(tagStr, normHave)) match=true;
+                        } else if(auto* inn = items->find("items")){
+                            if(inn->isStr() && norm(inn->asStr())==normHave) match=true;
+                            else if(inn->isArr()) for(auto& e: inn->arr) if(e.isStr() && norm(e.asStr())==normHave) { match=true; break; }
+                        }
                     }
                 } else {
-                    // no items filter -> any
                     match = true;
                 }
             }
@@ -802,6 +845,116 @@ void GameServer::onEffectsChanged(Player* p) {
                 }
             }
             if (ok) { grantAdvancement(*p, adv.id); break; }
+        }
+    }
+}
+void GameServer::onItemEnchanted(Player& p, const std::string& itemName, int levels){
+    if(!p.advancements) return;
+    auto merged=getMergedAdvancements();
+    std::string normHave = itemName.find(':')==std::string::npos ? "minecraft:"+itemName : itemName;
+    for(auto& adv: merged){
+        if(p.advancements->has(adv.id)) continue;
+        for(auto& tr: adv.triggers){
+            if(tr.trigger!="minecraft:enchanted_item" && tr.trigger!="enchanted_item") continue;
+            bool ok=true;
+            if(!tr.conditions.isNull() && tr.conditions.isObj()){
+                if(auto* it=tr.conditions.find("item")){
+                    std::vector<std::string> wants;
+                    if(it->isStr()) wants.push_back(it->asStr());
+                    else if(it->isObj()){
+                        if(auto* items=it->find("items")){
+                            if(items->isStr()) wants.push_back(items->asStr());
+                            else if(items->isArr()) for(auto& v: items->arr) if(v.isStr()) wants.push_back(v.asStr());
+                        } else if(auto* id=it->find("id")) wants.push_back(id->asStr());
+                    } else if(it->isArr()){
+                        for(auto& v: it->arr) if(v.isStr()) wants.push_back(v.asStr());
+                    }
+                    if(!wants.empty()){
+                        bool any=false;
+                        for(auto& w: wants){
+                            std::string wn=w.find(':')==std::string::npos?"minecraft:"+w:w;
+                            if(wn==normHave) { any=true; break; }
+                        }
+                        if(!any) ok=false;
+                    }
+                }
+                if(ok) if(auto* lv=tr.conditions.find("levels")){
+                    int mn=1, mx=30;
+                    if(lv->isNum()) mn=mx=lv->asInt(levels);
+                    else if(lv->isObj()){
+                        if(auto* mnV=lv->find("min")) mn=mnV->asInt(mn);
+                        if(auto* mxV=lv->find("max")) mx=mxV->asInt(mx);
+                    }
+                    if(levels < mn || levels > mx) ok=false;
+                }
+            }
+            if(ok){ grantAdvancement(p, adv.id); break; }
+        }
+    }
+}
+void GameServer::onBucketFilled(Player& p, const std::string& filledName){
+    if(!p.advancements) return;
+    auto merged=getMergedAdvancements();
+    std::string normHave=filledName.find(':')==std::string::npos?"minecraft:"+filledName:filledName;
+    for(auto& adv: merged){
+        if(p.advancements->has(adv.id)) continue;
+        for(auto& tr: adv.triggers){
+            if(tr.trigger!="minecraft:filled_bucket" && tr.trigger!="filled_bucket") continue;
+            bool ok=true;
+            if(!tr.conditions.isNull() && tr.conditions.isObj()){
+                if(auto* it=tr.conditions.find("item")){
+                    std::string want;
+                    if(it->isStr()) want=it->asStr();
+                    else if(it->isObj()){
+                        if(auto* items=it->find("items")){
+                            if(items->isStr()) want=items->asStr();
+                            else if(items->isArr() && !items->arr.empty() && items->arr[0].isStr()) want=items->arr[0].asStr();
+                        } else if(auto* id=it->find("id")) want=id->asStr();
+                    }
+                    if(!want.empty()){
+                        std::string wn=want.find(':')==std::string::npos?"minecraft:"+want:want;
+                        if(wn!=normHave) ok=false;
+                    }
+                }
+            }
+            if(ok){ grantAdvancement(p, adv.id); break; }
+        }
+    }
+}
+void GameServer::onVillagerTraded(Player& p, const std::string& soldId, int count){
+    if(!p.advancements) return;
+    auto merged=getMergedAdvancements();
+    std::string normHave=soldId.find(':')==std::string::npos?"minecraft:"+soldId:soldId;
+    for(auto& adv: merged){
+        if(p.advancements->has(adv.id)) continue;
+        for(auto& tr: adv.triggers){
+            if(tr.trigger!="minecraft:villager_trade" && tr.trigger!="villager_trade") continue;
+            bool ok=true;
+            if(!tr.conditions.isNull() && tr.conditions.isObj()){
+                if(auto* it=tr.conditions.find("item")){
+                    if(it->isObj()){
+                        if(auto* items=it->find("items")){
+                            bool any=false;
+                            if(items->isStr()){
+                                std::string wn=items->asStr(); if(wn.find(':')==std::string::npos) wn="minecraft:"+wn; if(wn==normHave) any=true;
+                            } else if(items->isArr()){
+                                for(auto& v: items->arr) if(v.isStr()){
+                                    std::string wn=v.asStr(); if(wn.find(':')==std::string::npos) wn="minecraft:"+wn; if(wn==normHave) { any=true; break; }
+                                }
+                            }
+                            if(!any) ok=false;
+                        }
+                        if(ok) if(auto* cnt=it->find("count")) if(cnt->isObj()){
+                            int mn=cnt->find("min")?cnt->at("min").asInt(1):1;
+                            if(count < mn) ok=false;
+                        }
+                    } else if(it->isStr()){
+                        std::string wn=it->asStr(); if(wn.find(':')==std::string::npos) wn="minecraft:"+wn;
+                        if(wn!=normHave) ok=false;
+                    }
+                }
+            }
+            if(ok){ grantAdvancement(p, adv.id); break; }
         }
     }
 }

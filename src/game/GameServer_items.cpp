@@ -973,6 +973,12 @@ bool GameServer::selectTrade(Player& p, std::int32_t index) {
     addToInventory(p, t.outItem, t.outCount);
     resendInventory(p);
     spawnXpOrbs(p.x, p.y + 1, p.z, 2, &p);
+    // plan40 C-06: villager_trade advancement trigger
+    {
+        std::string soldName = "minecraft:emerald";
+        for(auto& kv: gen::itemIdByName()) if(kv.second==t.inItem) { soldName=kv.first; break; }
+        onVillagerTraded(p, soldName, t.inCount);
+    }
     broadcastSound("minecraft:entity.villager.yes", p.x, p.y, p.z,
                    .8f, 1.f, "neutral");
     // Plan16: Villager XP, Gossip, level 1..5, restock 2/day (vanilla: 2 restocks per day at work site)

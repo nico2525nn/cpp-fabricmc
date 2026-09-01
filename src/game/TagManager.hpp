@@ -18,6 +18,7 @@ public:
     using IdSet = std::unordered_set<std::uint32_t>;
     std::unordered_map<std::string, IdSet> itemTags;
     std::unordered_map<std::string, IdSet> blockTags;
+    std::unordered_map<std::string, std::unordered_set<std::string>> biomeTags;
 
     void loadDirectory(const std::string& base) {
         namespace fs = std::filesystem;
@@ -27,7 +28,10 @@ public:
         // also try assets/data/tags directly
         loadTagsFrom(root, "item", itemTags, true);
         loadTagsFrom(root, "block", blockTags, false);
+        // plan40 C-07: also load biome tags (worldgen/biome/is_overworld etc)
+        loadBiomeTags(root);
         if (itemTags.empty()) ensureDefaults();
+        if (biomeTags.empty()) ensureBiomeDefaults();
     }
 
     const IdSet* getItemTag(const std::string& name) const {
@@ -161,6 +165,67 @@ private:
             std::string dyn="minecraft:block_dynamic_"+std::to_string(out.size());
             out.emplace(dyn, IdSet{});
         }
+    }
+    void loadBiomeTags(const std::string& root){
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        // Try root + "/worldgen/biome" (assets/data/tags/worldgen/biome) and also root + "/biome"
+        std::vector<std::string> dirs = {root + "/worldgen/biome", root + "/biome"};
+        for(auto& dir: dirs){
+            if(!fs::exists(dir, ec)) continue;
+            for(auto& e: fs::recursive_directory_iterator(dir, ec)){
+                if(!e.is_regular_file() || e.path().extension() != ".json") continue;
+                try{
+                    FILE* f = fopen(e.path().string().c_str(),"rb");
+                    if(!f) continue;
+                    std::string text; char buf[4096]; size_t n;
+                    while((n=fread(buf,1,sizeof buf,f))>0) text.append(buf,n);
+                    fclose(f);
+                    const json::Value v = json::Value::parse(text);
+                    std::string rel = fs::relative(e.path(), dir, ec).string();
+                    if(rel.size()>5 && rel.substr(rel.size()-5)==".json") rel = rel.substr(0, rel.size()-5);
+                    for(auto& c: rel) if(c=='\\') c='/';
+                    std::string tagName = "minecraft:" + rel;
+                    std::unordered_set<std::string> set;
+                    const auto& vals = v.at("values");
+                    if(vals.isArr()){
+                        for(auto& elem: vals.arr){
+                            std::string idStr;
+                            if(elem.isStr()) idStr = elem.asStr();
+                            else if(elem.isObj()) idStr = elem.at("id").asStr();
+                            if(!idStr.empty()){
+                                if(idStr[0]=='#'){
+                                    std::string ref = idStr.substr(1);
+                                    auto it = biomeTags.find(ref);
+                                    if(it != biomeTags.end()) for(auto& id: it->second) set.insert(id);
+                                } else {
+                                    set.insert(idStr);
+                                    // also store without prefix for lenient match
+                                    if(idStr.find(':')!=std::string::npos) set.insert(idStr.substr(idStr.find(':')+1));
+                                }
+                            }
+                        }
+                    }
+                    auto it2 = biomeTags.find(tagName);
+                    if(it2==biomeTags.end()) biomeTags.emplace(tagName, std::move(set));
+                    else for(auto& id:set) it2->second.insert(id);
+                } catch(...){}
+            }
+        }
+    }
+    void ensureBiomeDefaults(){
+        auto add=[&](const std::string& tag, std::initializer_list<const char*> biomes){
+            if(biomeTags.count(tag)) return;
+            std::unordered_set<std::string> s;
+            for(auto* n: biomes) s.insert(n);
+            if(!s.empty()) biomeTags.emplace(tag, std::move(s));
+        };
+        add("minecraft:is_overworld", {"minecraft:plains","minecraft:desert","minecraft:forest","minecraft:mountains","minecraft:swamp","minecraft:taiga","minecraft:savanna","minecraft:jungle","minecraft:beach","minecraft:ocean"});
+        add("minecraft:is_nether", {"minecraft:nether_wastes","minecraft:soul_sand_valley","minecraft:crimson_forest","minecraft:warped_forest","minecraft:basalt_deltas"});
+        add("minecraft:is_end", {"minecraft:end_highlands","minecraft:end_midlands","minecraft:small_end_islands","minecraft:end_barrens","minecraft:the_end"});
+        add("minecraft:is_mountain", {"minecraft:mountains","minecraft:wooded_mountains","minecraft:snowy_mountains"});
+        add("minecraft:is_beach", {"minecraft:beach","minecraft:snowy_beach"});
+        add("minecraft:is_forest", {"minecraft:forest","minecraft:wooded_hills","minecraft:birch_forest","minecraft:dark_forest"});
     }
 };
 

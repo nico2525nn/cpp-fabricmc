@@ -1,0 +1,25 @@
+{
+  "display": {
+    "icon": {
+      "item": "minecraft:bone"
+    },
+    "title": "The Whole Pack",
+    "description": "Collect all dog variants",
+    "frame": "goal",
+    "show_toast": true,
+    "announce_to_chat": true,
+    "hidden": false
+  },
+  "parent": "minecraft:husbandry/root",
+  "criteria": {
+    "tame": {
+      "trigger": "minecraft:tame_an_animal",
+      "conditions": {}
+    }
+  },
+  "requirements": [
+    [
+      "tame"
+    ]
+  ]
+}

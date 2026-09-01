@@ -1,0 +1,25 @@
+{
+  "display": {
+    "icon": {
+      "item": "minecraft:wolf_spawn_egg"
+    },
+    "title": "Collar Remix",
+    "description": "Tame a wolf variant",
+    "frame": "task",
+    "show_toast": true,
+    "announce_to_chat": true,
+    "hidden": false
+  },
+  "parent": "minecraft:husbandry/root",
+  "criteria": {
+    "tame_wolf": {
+      "trigger": "minecraft:tame_an_animal",
+      "conditions": {}
+    }
+  },
+  "requirements": [
+    [
+      "tame_wolf"
+    ]
+  ]
+}

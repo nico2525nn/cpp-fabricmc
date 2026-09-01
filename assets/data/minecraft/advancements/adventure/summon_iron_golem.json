@@ -1,0 +1,27 @@
+{
+  "display": {
+    "icon": {
+      "item": "minecraft:iron_block"
+    },
+    "title": "Hired Help",
+    "description": "Summon an Iron Golem to help defend a village",
+    "frame": "task",
+    "show_toast": true,
+    "announce_to_chat": true,
+    "hidden": false
+  },
+  "parent": "minecraft:adventure/root",
+  "criteria": {
+    "summoned": {
+      "trigger": "minecraft:placed_block",
+      "conditions": {
+        "block": "minecraft:iron_block"
+      }
+    }
+  },
+  "requirements": [
+    [
+      "summoned"
+    ]
+  ]
+}

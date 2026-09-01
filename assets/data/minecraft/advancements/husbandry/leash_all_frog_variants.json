@@ -1,0 +1,25 @@
+{
+  "display": {
+    "icon": {
+      "item": "minecraft:frog_spawn_egg"
+    },
+    "title": "Frogs of differently",
+    "description": "Collect all frog variants",
+    "frame": "task",
+    "show_toast": true,
+    "announce_to_chat": true,
+    "hidden": false
+  },
+  "parent": "minecraft:husbandry/root",
+  "criteria": {
+    "tame": {
+      "trigger": "minecraft:tame_an_animal",
+      "conditions": {}
+    }
+  },
+  "requirements": [
+    [
+      "tame"
+    ]
+  ]
+}
