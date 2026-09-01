@@ -1,0 +1,27 @@
+{
+  "display": {
+    "icon": {
+      "item": "minecraft:leather_boots"
+    },
+    "title": "Light as a Rabbit",
+    "description": "Walk on powder snow with leather boots",
+    "frame": "task",
+    "show_toast": true,
+    "announce_to_chat": true,
+    "hidden": false
+  },
+  "parent": "minecraft:adventure/root",
+  "criteria": {
+    "walk": {
+      "trigger": "minecraft:enter_block",
+      "conditions": {
+        "block": "minecraft:powder_snow"
+      }
+    }
+  },
+  "requirements": [
+    [
+      "walk"
+    ]
+  ]
+}
