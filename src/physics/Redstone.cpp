@@ -496,6 +496,12 @@ void RedstoneEngine::onBlockChanged(std::int32_t x, std::int32_t y,
     // Pistons react at changed pos and neighbors
     handlePiston(x,y,z);
     for (int d=0; d<6; ++d) handlePiston(x+DX[d], y+DY[d], z+DZ[d]);
+    // QC hook (plan38 B-08): piston at y-1 sees y powered via isQuasiPowered(y-1) → y
+    // The 6-neighbor loop already covers y±1, but explicit QC y+1 evaluation ensures
+    // non-adjacent power (lever on block above piston) propagates even if recomputeAround
+    // misses due to wire flood-fill order. Re-evaluate one above/below for QC.
+    handlePiston(x, y - 1, z);
+    handlePiston(x, y + 1, z);
     // Doors react to redstone (powered & hinge already handled at placement, here update powered/open)
     handleDoor(x,y,z);
     for (int d=0; d<6; ++d) handleDoor(x+DX[d], y+DY[d], z+DZ[d]);
@@ -773,9 +779,7 @@ void RedstoneEngine::handlePiston(std::int32_t x, std::int32_t y, std::int32_t z
         if (k=="facing") facing=std::string(v);
         if (k=="extended") extended = (v=="true");
     }
-    bool powered = isPoweredHere(x,y,z);
-    // quasi-connectivity (JE): piston also powered if block above is powered
-    if(!powered) powered = isPoweredHere(x, y+1, z);
+    bool powered = isQuasiPowered(x,y,z);
     bool wantExtend = powered;
     if (wantExtend == extended) {
         // cancel any pending piston if state already matches
