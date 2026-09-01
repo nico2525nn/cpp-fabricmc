@@ -345,6 +345,17 @@ public:
         chunks_.erase(it);
         return true;
     }
+    // B-07 async I/O: install a fully decoded chunk from ioPool worker (tick thread only)
+    void setChunk(std::int32_t cx, std::int32_t cz, Chunk chunk) {
+        std::unique_lock lock(mutex_);
+        auto key = chunkKey(cx, cz);
+        auto ptr = std::make_unique<Chunk>(std::move(chunk));
+        // revision bump ensures cache invalidation (ChunkCache uses rev)
+        ++ptr->revision;
+        chunks_[key] = std::move(ptr);
+        lock.unlock();
+        if (onEdit_) onEdit_(cx, cz);
+    }
     std::size_t loadedChunkCount() const {
         std::shared_lock lock(mutex_);
         return chunks_.size();
