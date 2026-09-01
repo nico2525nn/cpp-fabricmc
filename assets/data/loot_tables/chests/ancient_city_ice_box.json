@@ -2,53 +2,23 @@
   "pools": [
     {
       "rolls": {
-        "min": 3,
-        "max": 8
+        "min": 2,
+        "max": 5
       },
       "entries": [
         {
           "type": "minecraft:item",
-          "name": "minecraft:iron_ingot",
+          "name": "minecraft:snowball",
           "weight": 10,
           "functions": [
             {
               "function": "minecraft:set_count",
               "count": {
-                "min": 1,
-                "max": 4
+                "min": 2,
+                "max": 6
               }
             }
           ]
-        },
-        {
-          "type": "minecraft:item",
-          "name": "minecraft:gold_ingot",
-          "weight": 5,
-          "functions": [
-            {
-              "function": "minecraft:set_count",
-              "count": {
-                "min": 1,
-                "max": 3
-              }
-            }
-          ]
-        },
-        {
-          "type": "minecraft:item",
-          "name": "minecraft:bread",
-          "weight": 10,
-          "functions": [
-            {
-              "function": "minecraft:set_count",
-              "count": 1
-            }
-          ]
-        },
-        {
-          "type": "minecraft:item",
-          "name": "minecraft:diamond",
-          "weight": 2
         },
         {
           "type": "minecraft:item",
@@ -66,8 +36,8 @@
         },
         {
           "type": "minecraft:item",
-          "name": "minecraft:gunpowder",
-          "weight": 5,
+          "name": "minecraft:iron_ingot",
+          "weight": 6,
           "functions": [
             {
               "function": "minecraft:set_count",
@@ -77,6 +47,11 @@
               }
             }
           ]
+        },
+        {
+          "type": "minecraft:item",
+          "name": "minecraft:emerald",
+          "weight": 4
         }
       ]
     }

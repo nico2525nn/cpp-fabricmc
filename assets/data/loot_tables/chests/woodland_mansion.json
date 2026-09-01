@@ -3,7 +3,7 @@
     {
       "rolls": {
         "min": 3,
-        "max": 8
+        "max": 6
       },
       "entries": [
         {
@@ -15,7 +15,7 @@
               "function": "minecraft:set_count",
               "count": {
                 "min": 1,
-                "max": 4
+                "max": 3
               }
             }
           ]
@@ -29,45 +29,20 @@
               "function": "minecraft:set_count",
               "count": {
                 "min": 1,
-                "max": 3
+                "max": 2
               }
             }
           ]
         },
         {
           "type": "minecraft:item",
-          "name": "minecraft:bread",
-          "weight": 10,
-          "functions": [
-            {
-              "function": "minecraft:set_count",
-              "count": 1
-            }
-          ]
+          "name": "minecraft:enchanted_book",
+          "weight": 4
         },
         {
           "type": "minecraft:item",
-          "name": "minecraft:diamond",
-          "weight": 2
-        },
-        {
-          "type": "minecraft:item",
-          "name": "minecraft:coal",
-          "weight": 8,
-          "functions": [
-            {
-              "function": "minecraft:set_count",
-              "count": {
-                "min": 1,
-                "max": 4
-              }
-            }
-          ]
-        },
-        {
-          "type": "minecraft:item",
-          "name": "minecraft:gunpowder",
-          "weight": 5,
+          "name": "minecraft:emerald",
+          "weight": 6,
           "functions": [
             {
               "function": "minecraft:set_count",

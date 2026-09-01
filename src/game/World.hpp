@@ -606,6 +606,10 @@ public:
     std::unique_ptr<worldgen::StructureGenerator> structures_;
     std::unique_ptr<worldgen::StructureManager> structureManager_;
     std::unique_ptr<worldgen::ChunkGenerator> generator_;
+public:
+    worldgen::StructureManager* structureManager() { return structureManager_.get(); }
+    const worldgen::StructureManager* structureManager() const { return structureManager_.get(); }
+private:
     std::function<bool(std::int32_t,std::int32_t)> simCallback_;
     int simulationDistance_ = 10;
     std::vector<std::pair<const char*, float>> oreTableV3_;   // name, rarity
