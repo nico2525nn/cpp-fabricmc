@@ -131,6 +131,28 @@ bool GameServer::tryBreedFeed(Player& p, MobEntity& m) {
     return false;
 }
 void GameServer::weatherTick() {
+    // B-12 thunder lightning: 0.01/tick (~1%) while thundering (approx: raining && tick%6000<500)
+    // Use strikeLightning for visuals + creeper charging + sound; also broadcast via thundering() for channeling gate
+    if (thundering() && (rand() % 100) == 0) {
+        auto players = playersSnapshot();
+        if (!players.empty()) {
+            auto* pl = players[rand() % players.size()].get();
+            if (pl && pl->inPlay) {
+                int lx = static_cast<int>(pl->x) + (rand() % 16 - 8);
+                int lz = static_cast<int>(pl->z) + (rand() % 16 - 8);
+                int ly = static_cast<int>(pl->y);
+                // find ground just above top non-air (scan down from MaxY)
+                bool found = false;
+                for (int y = constants::kMaxY - 1; y >= constants::kMinY; --y) {
+                    std::uint16_t st = worldFor(pl->dimension).getBlock(lx, y, lz);
+                    if (st != 0) { ly = y + 1; found = true; break; }
+                }
+                if (!found) ly = static_cast<int>(pl->y);
+                strikeLightning(lx + 0.5, ly, lz + 0.5);
+                std::fprintf(stderr, "[cppfm] thunder lightning at %d %d %d dim %d\n", lx, ly, lz, (int)pl->dimension);
+            }
+        }
+    }
     if (!gamerules_.getBool("doWeatherCycle")) return;
     if (tickNo_ < weatherUntilTick_) return;
     setWeather(raining() ? Weather::Clear : Weather::Rain,

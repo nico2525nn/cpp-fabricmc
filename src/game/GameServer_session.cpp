@@ -1202,7 +1202,13 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
     menu->windowId = ++menuWindowCounter_;
     menu->blockKey = posKey(x, y, z);
 
-    if (name.find("chest") != std::string::npos &&
+    if (name == "minecraft:ender_chest") {
+        // B-14 EnderItems: per-player 27 slots, not per-block (vanilla EnderChest)
+        menu->type = MenuType::Chest;
+        menu->container = self_->enderItems.data();
+        menu->containerCount = 27;
+        menu->blockEntity = nullptr;
+    } else if (name.find("chest") != std::string::npos &&
         name.find("ender") == std::string::npos) {
         auto* be = srv_.blockEntities().getAt(x, y, z);
         if (!be)
