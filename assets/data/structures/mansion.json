@@ -1,0 +1,66 @@
+{
+  "name": "minecraft:mansion",
+  "type": "minecraft:mansion",
+  "placement": {
+    "spacing": 80,
+    "separation": 20,
+    "salt": 10387319,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:mansion/entrance",
+      "weight": 10
+    },
+    {
+      "name": "minecraft:mansion/wing_east",
+      "weight": 8
+    },
+    {
+      "name": "minecraft:mansion/wing_west",
+      "weight": 6
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:dark_oak_planks",
+    "log": "minecraft:dark_oak_log",
+    "chest": "minecraft:chest"
+  },
+  "variants": {
+    "minecraft:mansion/entrance": {
+      "plank": "minecraft:dark_oak_planks"
+    },
+    "minecraft:mansion/wing_east": {
+      "plank": "minecraft:oak_planks"
+    },
+    "minecraft:mansion/wing_west": {
+      "plank": "minecraft:spruce_planks"
+    }
+  },
+  "mobs": [
+    {
+      "pos": [
+        8,
+        1,
+        8
+      ],
+      "mob": "minecraft:vindicator",
+      "count": 1
+    },
+    {
+      "pos": [
+        12,
+        1,
+        12
+      ],
+      "mob": "minecraft:evoker",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "5,1,5",
+      "table": "minecraft:chests/woodland_mansion"
+    }
+  ]
+}

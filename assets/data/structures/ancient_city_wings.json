@@ -1,0 +1,47 @@
+{
+  "name": "minecraft:ancient_city_wings",
+  "type": "minecraft:ancient_city_wings",
+  "placement": {
+    "spacing": 24,
+    "separation": 8,
+    "salt": 20083234,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:ancient_city/wing_1",
+      "weight": 10
+    },
+    {
+      "name": "minecraft:ancient_city/wing_2",
+      "weight": 8
+    },
+    {
+      "name": "minecraft:ancient_city/corridor",
+      "weight": 6
+    }
+  ],
+  "palette": {
+    "deepslate": "minecraft:cobbled_deepslate",
+    "chest": "minecraft:chest",
+    "sculk": "minecraft:sculk_sensor"
+  },
+  "variants": {},
+  "mobs": [
+    {
+      "pos": [
+        5,
+        1,
+        5
+      ],
+      "mob": "minecraft:warden",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "5,1,5",
+      "table": "minecraft:chests/ancient_city_ice_box"
+    }
+  ]
+}

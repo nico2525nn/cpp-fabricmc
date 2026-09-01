@@ -166,6 +166,17 @@ public:
 
     void setBiomeSource(std::shared_ptr<MultiNoiseBiomeSource> b) { biomes_ = std::move(b); }
 
+    // plan36: pending structure mobs/loot defer queue (world side defer, network evaluates later)
+    struct PendingMob { std::array<int,3> pos; std::string mob; int count=1; };
+    struct PendingLoot { std::array<int,3> pos; std::string lootTable; };
+    void drainPendingMobs(std::vector<PendingMob>& out) const;
+    void drainPendingLoot(std::vector<PendingLoot>& out) const;
+    std::vector<PendingMob> takePendingMobs() const;
+    std::vector<PendingLoot> takePendingLoot() const;
+    size_t pendingMobCount() const;
+    size_t pendingLootCount() const;
+    void clearPending() const;
+
 private:
     void villagePiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
                       std::int32_t originX, std::int32_t originZ,
@@ -234,10 +245,30 @@ private:
                         std::int32_t originX, std::int32_t originZ,
                         const GroundFn& ground) const;
 
+    // plan36 palette-driven helpers
+    void placeTrialChambersPalette(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+                                   std::int32_t originX, std::int32_t originZ,
+                                   const std::string& pieceName,
+                                   const std::unordered_map<std::string,std::string>& palette,
+                                   int variant, const GroundFn& ground) const;
+    void placeGenericPalette(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+                             std::int32_t originX, std::int32_t originZ,
+                             const std::string& pieceName,
+                             const std::unordered_map<std::string,std::string>& palette,
+                             int variant, const GroundFn& ground) const;
+    static std::uint16_t resolvePaletteState(const std::unordered_map<std::string,std::string>& pal,
+                                             const std::string& key,
+                                             const std::string& fallback);
+    void enqueuePendingMob(int x,int y,int z, const std::string& mob, int count) const;
+    void enqueuePendingLoot(int x,int y,int z, const std::string& loot) const;
+
     std::uint64_t seed_;
     std::shared_ptr<MultiNoiseBiomeSource> biomes_;
     std::vector<SMStructureSet> sets_;
     std::unique_ptr<StructurePlacer> placer_;
+    mutable std::mutex pendingMtx_;
+    mutable std::vector<PendingMob> pendingMobs_;
+    mutable std::vector<PendingLoot> pendingLoot_;
 };
 
 } // namespace cppfm::worldgen

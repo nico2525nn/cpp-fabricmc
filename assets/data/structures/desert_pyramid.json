@@ -1,0 +1,47 @@
+{
+  "name": "minecraft:desert_pyramid",
+  "type": "minecraft:desert_pyramid",
+  "placement": {
+    "spacing": 32,
+    "separation": 8,
+    "salt": 14357617,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:desert_pyramid/pyramid",
+      "weight": 10
+    },
+    {
+      "name": "minecraft:desert_pyramid/hidden_chamber",
+      "weight": 6
+    },
+    {
+      "name": "minecraft:desert_pyramid/tower",
+      "weight": 4
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:sandstone",
+    "log": "minecraft:sandstone",
+    "chest": "minecraft:chest"
+  },
+  "variants": {},
+  "mobs": [
+    {
+      "pos": [
+        2,
+        1,
+        2
+      ],
+      "mob": "minecraft:husk",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "2,1,2",
+      "table": "minecraft:chests/desert_pyramid"
+    }
+  ]
+}

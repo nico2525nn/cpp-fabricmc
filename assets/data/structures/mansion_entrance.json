@@ -1,0 +1,47 @@
+{
+  "name": "minecraft:mansion_entrance",
+  "type": "minecraft:mansion_entrance",
+  "placement": {
+    "spacing": 80,
+    "separation": 20,
+    "salt": 10387321,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:mansion/entrance",
+      "weight": 10
+    },
+    {
+      "name": "minecraft:mansion/hall",
+      "weight": 6
+    },
+    {
+      "name": "minecraft:mansion/library",
+      "weight": 4
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:oak_planks",
+    "log": "minecraft:oak_log",
+    "chest": "minecraft:chest"
+  },
+  "variants": {},
+  "mobs": [
+    {
+      "pos": [
+        5,
+        1,
+        5
+      ],
+      "mob": "minecraft:evoker",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "5,1,5",
+      "table": "minecraft:chests/woodland_mansion"
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "name": "minecraft:mansion_wing",
+  "type": "minecraft:mansion_wing",
+  "placement": {
+    "spacing": 80,
+    "separation": 20,
+    "salt": 10387320,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:mansion/wing_east",
+      "weight": 10
+    },
+    {
+      "name": "minecraft:mansion/wing_west",
+      "weight": 8
+    },
+    {
+      "name": "minecraft:mansion/corridor",
+      "weight": 6
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:dark_oak_planks",
+    "log": "minecraft:dark_oak_log",
+    "chest": "minecraft:chest"
+  },
+  "variants": {},
+  "mobs": [
+    {
+      "pos": [
+        8,
+        1,
+        8
+      ],
+      "mob": "minecraft:vindicator",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "5,1,5",
+      "table": "minecraft:chests/woodland_mansion"
+    }
+  ]
+}

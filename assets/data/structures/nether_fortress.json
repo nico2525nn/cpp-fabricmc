@@ -1,0 +1,47 @@
+{
+  "name": "minecraft:nether_fortress",
+  "type": "minecraft:nether_fortress",
+  "placement": {
+    "spacing": 27,
+    "separation": 4,
+    "salt": 30084233,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:nether_fortress/bridge",
+      "weight": 10
+    },
+    {
+      "name": "minecraft:nether_fortress/corridor",
+      "weight": 8
+    },
+    {
+      "name": "minecraft:nether_fortress/tower",
+      "weight": 6
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:nether_bricks",
+    "log": "minecraft:nether_bricks",
+    "chest": "minecraft:chest"
+  },
+  "variants": {},
+  "mobs": [
+    {
+      "pos": [
+        3,
+        1,
+        3
+      ],
+      "mob": "minecraft:blaze",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "3,1,3",
+      "table": "minecraft:chests/nether_bridge"
+    }
+  ]
+}
