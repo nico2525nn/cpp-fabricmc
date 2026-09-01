@@ -32,9 +32,21 @@ struct LootEntry {
     bool countIsBinomial = false;
     int countBinomN = 3;
     double countBinomP = 0.5;
+    // plan37 B-05: 3 new functions
+    bool enchantRandomly = false;
+    std::vector<std::string> enchantOptions;
+    bool fillPlayerHead = false;
+    bool applyBonusOre = false;
+    std::string applyBonusFormula;
+    std::string applyBonusEnchant;
+    bool lootingEnchant = false;
+    int lootingMin = 0, lootingMax = 1;
 };
 struct LootContext {
     float explosionRadius = 0.f;
+    int fortuneLevel = 0;
+    int lootingLevel = 0;
+    std::string killerName;
     // future: BlockEntity*, killer etc — plan35 §2 needs explosionRadius only
 };
 
@@ -177,18 +189,43 @@ public:
     std::vector<ItemStack> evaluate(const std::string& blockName, const ItemStack& tool = {}) const {
         return evaluateWithContext(blockName, tool, nullptr);
     }
+    // plan37 B-05: entity loot evaluate (for mob drops)
+    std::vector<ItemStack> evaluateEntity(const std::string& entityName, const LootContext* ctx = nullptr) const {
+        std::string base = entityName.find(':')!=std::string::npos ? entityName.substr(entityName.find(':')+1) : entityName;
+        std::string id = "minecraft:entities/" + base;
+        auto it = tables_.find(id);
+        if (it==tables_.end()) it=tables_.find(entityName);
+        if (it==tables_.end()) it=tables_.find("minecraft:" + base);
+        if (it==tables_.end()) return {};
+        LootContext dummy;
+        const LootContext* c = ctx ? ctx : &dummy;
+        return evaluateTable(it->second, ItemStack{}, c, base);
+    }
     std::vector<ItemStack> evaluateWithContext(const std::string& blockName, const ItemStack& tool, const LootContext* ctx) const {
         std::string base = blockName.find(':')!=std::string::npos ? blockName.substr(blockName.find(':')+1) : blockName;
         std::string id = "minecraft:blocks/" + base;
         auto it = tables_.find(id);
         if (it==tables_.end()) it=tables_.find(blockName);
         if (it==tables_.end()) {
-            // also try direct id without blocks prefix (for chest tables etc)
-            auto it2 = tables_.find("minecraft:" + base);
-            if (it2!=tables_.end()) it=it2;
-            else if (it==tables_.end()) return {};
+            // also try entities prefix (for mob drops via blockName)
+            auto itE = tables_.find("minecraft:entities/" + base);
+            if (itE!=tables_.end()) it=itE;
+            else {
+                auto it2 = tables_.find("minecraft:" + base);
+                if (it2!=tables_.end()) it=it2;
+                else if (it==tables_.end()) return {};
+            }
         }
-        const LootTable& tbl=it->second;
+        LootContext dummy;
+        if (!ctx) { dummy = {}; ctx = &dummy; }
+        // propagate fortune from tool if ctx has zero
+        LootContext eff = *ctx;
+        if (eff.fortuneLevel==0 && tool.itemId!=0) eff.fortuneLevel = tool.fortuneLevel();
+        if (eff.lootingLevel==0 && tool.itemId!=0) eff.lootingLevel = tool.fortuneLevel();
+        return evaluateTable(it->second, tool, &eff, base);
+    }
+    std::vector<ItemStack> evaluateTable(const LootTable& tbl, const ItemStack& tool, const LootContext* ctx, const std::string& base) const {
+        (void)tool;
         std::vector<ItemStack> out;
         for (auto& pool: tbl.pools) {
             int rolls=pool.rolls;
@@ -212,27 +249,64 @@ public:
                     std::string sm = smeltResultFor(dropName);
                     if (!sm.empty()) dropName = sm;
                 }
-                // copy_components: no wire effect for drops, just flag passes
                 auto iidIt=gen::itemIdByName().find(dropName);
                 if(iidIt==gen::itemIdByName().end()) continue;
                 int cnt=chosen->countMin;
                 if (chosen->countIsBinomial) {
                     cnt=0;
                     for(int i=0;i<chosen->countBinomN;++i) if((rand()/(double)RAND_MAX) < chosen->countBinomP) ++cnt;
-                    if(cnt<=0 && chosen->countMin>0) cnt=1; // ensure at least 1 if binomial zero? vanilla may zero
+                    if(cnt<=0 && chosen->countMin>0) cnt=1;
                 } else if(chosen->countMax>chosen->countMin) cnt=chosen->countMin + rand()%(chosen->countMax-chosen->countMin+1);
-                // fortune bonus for ores (simplified vanilla bonus_ore_drops)
-                if(tool.itemId!=0){
-                    int fortune=tool.fortuneLevel();
-                    if(fortune>0 && (dropName.find("ore")!=std::string::npos || base.find("ore")!=std::string::npos)){
+                // plan37 B-05: looting_enchant
+                if (chosen->lootingEnchant && ctx) {
+                    int looting = ctx->lootingLevel;
+                    if (looting>0) {
+                        int extra = chosen->lootingMin + (chosen->lootingMax>chosen->lootingMin ? rand()%(chosen->lootingMax-chosen->lootingMin+1) : 0);
+                        // vanilla looting_enchant count: uniform 0..looting
+                        cnt += rand()%(looting+1) + extra;
+                    }
+                }
+                // plan37 B-05: apply_bonus ore_drops (fortune)
+                if (chosen->applyBonusOre && ctx) {
+                    int fortune = ctx->fortuneLevel;
+                    if (fortune>0) {
+                        int bonus=0;
+                        if(fortune==1) bonus = rand()%2;
+                        else if(fortune==2) bonus = rand()%3;
+                        else if(fortune>=3) bonus = rand()%4;
+                        cnt += bonus;
+                        if(cnt>64) cnt=64;
+                    }
+                } else if (ctx && (dropName.find("ore")!=std::string::npos || base.find("ore")!=std::string::npos)) {
+                    int fortune = ctx->fortuneLevel;
+                    if(fortune>0){
+                        // fallback generic fortune for ores when no explicit apply_bonus (plan35 simplified)
                         int bonus=rand()%(fortune+1);
                         cnt+=bonus;
                     }
                 }
-                if(cnt<=0) cnt=1;
+                if(cnt<=0) {
+                    // allow zero count for some pools (vanilla 0-2). Skip if zero.
+                    if(chosen->countMin==0) continue;
+                    cnt=1;
+                }
                 auto st = ItemStack::of(iidIt->second, static_cast<int16_t>(cnt));
-                // copy_components: attach dummy component if flagged (simulation)
-                // real copy would need BlockEntity source, but we note flag
+                // plan37 B-05: enchant_randomly
+                if (chosen->enchantRandomly) {
+                    std::string pick;
+                    if(!chosen->enchantOptions.empty()) pick = chosen->enchantOptions[rand()%chosen->enchantOptions.size()];
+                    else {
+                        static const char* enchants[]={"minecraft:sharpness","minecraft:protection","minecraft:efficiency","minecraft:unbreaking","minecraft:fortune","minecraft:power","minecraft:looting"};
+                        pick = enchants[rand() % (sizeof(enchants)/sizeof(*enchants))];
+                    }
+                    int lvl = 1 + rand()%3;
+                    ItemStack::addEnchant(st, pick, lvl);
+                }
+                // plan37 B-05: fill_player_head — keep count 1, skull owner would be killerName (stub)
+                if (chosen->fillPlayerHead) {
+                    st.count = 1;
+                    (void)ctx; // killerName would set SkullOwner component
+                }
                 (void)chosen->copyComponents;
                 out.push_back(std::move(st));
             }
@@ -280,6 +354,32 @@ private:
                         if(ent.countMax<ent.countMin) ent.countMax=ent.countMin;
                     }
                 }
+            } else if(ftype.find("enchant_randomly")!=std::string::npos){
+                ent.enchantRandomly = true;
+                if(auto* opts=fn.find("options")) if(opts->isArr()) for(auto& o: opts->arr) if(o.isStr()) ent.enchantOptions.push_back(o.asStr());
+            } else if(ftype.find("fill_player_head")!=std::string::npos){
+                ent.fillPlayerHead = true;
+            } else if(ftype.find("apply_bonus")!=std::string::npos){
+                ent.applyBonusOre = true;
+                if(auto* f=fn.find("formula")) ent.applyBonusFormula = f->asStr();
+                if(auto* e=fn.find("enchantment")) ent.applyBonusEnchant = e->asStr();
+                if(ent.applyBonusFormula.empty()) if(auto* pf=fn.find("parameters")) if(auto* bm=pf->find("bonusMultiplier")) (void)bm;
+            } else if(ftype.find("looting_enchant")!=std::string::npos){
+                ent.lootingEnchant = true;
+                if(auto* cnt=fn.find("count")){
+                    if(cnt->isNum()) ent.lootingMin=ent.lootingMax=cnt->asInt(1);
+                    else if(cnt->isObj()){
+                        if(auto* mn=cnt->find("min")) ent.lootingMin=mn->asInt(0);
+                        if(auto* mx=cnt->find("max")) ent.lootingMax=mx->asInt(1);
+                        if(auto* c=cnt->find("count")) { ent.lootingMin=ent.lootingMax=c->asInt(1); }
+                    }
+                } else {
+                    ent.lootingMin=0; ent.lootingMax=1;
+                }
+            } else if(ftype.find("enchant_with_levels")!=std::string::npos){
+                ent.enchantRandomly = true;
+            } else if(ftype.find("limit_count")!=std::string::npos){
+                // stub: handled as min/max clamp in evaluate
             }
         }
     }

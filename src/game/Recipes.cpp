@@ -1,5 +1,6 @@
 // Recipes implementation: built-in clean-room recipe table + JSON loader.
 #include "Recipes.hpp"
+#include "TagManager.hpp"
 #include <algorithm>
 #include <filesystem>
 #include <cstdio>
@@ -30,15 +31,32 @@ Ingredient RecipeManager::makeIngredient(const json::Value& v) const {
     return {};
 }
 
+std::vector<std::string> Recipe::trimBlankRows(const std::vector<std::string>& rows) {
+    size_t first = 0, last = rows.size();
+    while (first < last && rows[first].find_first_not_of(' ') == std::string::npos) ++first;
+    while (last > first && rows[last - 1].find_first_not_of(' ') == std::string::npos) --last;
+    if (first >= last) return {};
+    std::vector<std::string> out(rows.begin() + first, rows.begin() + last);
+    size_t w = 0;
+    for (auto& r : out) w = std::max(w, r.size());
+    for (auto& r : out) if (r.size() < w) r += std::string(w - r.size(), ' ');
+    return out;
+}
+void RecipeManager::syncTagsFrom(const TagManager& tm) {
+    tm.applyToRecipeTags(tags_);
+    if (auto* p = tm.getItemTag("minecraft:planks")) tagPlanks_ = *p;
+}
 void RecipeManager::addShaped(const std::string& id, const std::string& outName,
                               int count, const std::vector<std::string>& rows,
                               const std::unordered_map<char, std::string>& keys) {
+    auto norm = Recipe::trimBlankRows(rows);
     Recipe r;
     r.kind = Recipe::Kind::Shaped;
     r.id = id;
-    r.height = static_cast<int>(rows.size());
-    r.width = rows.empty() ? 0 : static_cast<int>(rows[0].size());
-    for (const auto& row : rows)
+    r.height = static_cast<int>(norm.size());
+    r.width = norm.empty() ? 0 : static_cast<int>(norm[0].size());
+    if (norm.empty()) return;
+    for (const auto& row : norm)
         for (char c : row) {
             if (c == ' ') { r.cells.push_back(Ingredient{}); continue; }
             auto it = keys.find(c);
@@ -184,6 +202,11 @@ void RecipeManager::loadDirectory(const std::string& dir) {
                 std::vector<std::string> rows;
                 for (auto& rv : v.at("pattern").arr)
                     if (rv.isStr()) rows.push_back(rv.asStr());
+                rows = Recipe::trimBlankRows(rows);
+                if (rows.empty()) {
+                    std::fprintf(stderr,"[cppfm] recipe %s empty pattern after trim, skipped\n", path.string().c_str());
+                    continue;
+                }
                 std::unordered_map<char, std::string> keys;
                 for (auto& [k, def] : v.at("key").obj) {
                     if (def.isStr()) keys[k[0]] = normalizeName(def.asStr());
