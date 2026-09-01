@@ -79,6 +79,8 @@ public:
     static bool ingredientAccepts(const Ingredient& ing, std::uint32_t itemId) {
         return ing.accepts(itemId);
     }
+    // plan37 B-03: trim blank rows helper
+    static std::vector<std::string> trimBlankRows(const std::vector<std::string>& rows);
 
 private:
     // Checks pattern placement at (ox,oy) with every grid cell outside the
@@ -104,11 +106,11 @@ private:
     }
     bool matchShaped(const std::vector<ItemStack>& grid, int gw, int gh) const {
         if (width > gw || height > gh) return false;
-        for (int ox = 0; ox <= gw - width; ++ox)
-            for (int oy = 0; oy <= gh - height; ++oy)
-                if (fitsVariant(grid, gw, gh, ox, oy, false) ||
-                    fitsVariant(grid, gw, gh, ox, oy, true))
-                    return true;
+        // plan37 B-03: triple loop oy->ox->mirrored (vanilla ShapedRecipe#matches order)
+        for (int oy = 0; oy <= gh - height; ++oy)
+            for (int ox = 0; ox <= gw - width; ++ox)
+                for (bool mirrored : {false, true})
+                    if (fitsVariant(grid, gw, gh, ox, oy, mirrored)) return true;
         return false;
     }
     bool matchShapeless(const std::vector<ItemStack>& grid) const {
@@ -166,6 +168,9 @@ protected:
     }
 
 public:
+    // plan37 B-03: tag sync with TagManager (double sync design)
+    void syncTagsFrom(const class TagManager& tm);
+
     // Tag expansion used by both JSON loading and the built-in table.
     std::unordered_map<std::string, std::unordered_set<std::uint32_t>> tags_;
     std::unordered_set<std::uint32_t> tagPlanks_;

@@ -72,6 +72,7 @@ public:
         tagManager.loadDirectory(assetsBase + "/tags");
         if (tagManager.itemTags.empty()) tagManager.loadDirectory("assets/data/tags");
         tagManager.applyToRecipeTags(recipes.tags_);
+        recipes.syncTagsFrom(tagManager); // plan37 B-03 double sync (1) before recipes
         lootTables.loadDirectory(assetsBase + "/loot_tables");
         if (lootTables.size() == 0) lootTables.loadDirectory("assets/data/loot_tables");
 
@@ -98,12 +99,16 @@ public:
                 for (auto& [k,v] : extra.itemTags) for (auto id: v) tagManager.itemTags[k].insert(id);
                 for (auto& [k,v] : extra.blockTags) for (auto id: v) tagManager.blockTags[k].insert(id);
                 tagManager.applyToRecipeTags(recipes.tags_);
+                recipes.syncTagsFrom(tagManager); // plan37 B-03 double sync (2) datapack tags
                 lootTables.loadDirectory(base + "/loot_tables");
                 loadPackDirectory(base, packName);
             }
         }
         // ensure enabled contains at least vanilla
         if (enabledPacks.empty()) enabledPacks.insert("vanilla");
+        // final double sync after all datapacks merged
+        tagManager.applyToRecipeTags(recipes.tags_);
+        recipes.syncTagsFrom(tagManager);
     }
 
     void loadPackDirectory(const std::string& base, const std::string& packName) {

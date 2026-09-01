@@ -361,11 +361,15 @@ public:
         }
         tagManager_.loadDirectory("assets/data/tags");
         tagManager_.applyToRecipeTags(recipes_.tags_);
+        recipes_.syncTagsFrom(tagManager_); // plan37 B-03 double sync before recipes (also after loadDirectory)
         lootTables_.loadDirectory("assets/data/loot_tables");
         // Plan13 datapackmanager (advancements/predicates/item_modifiers/functions)
         datapackManager_.loadAll(recipes_, "assets/data", cfg_.worldDir + "/datapacks");
         tagManager_ = datapackManager_.tagManager;
         lootTables_ = datapackManager_.lootTables;
+        // final double sync after DatapackManager merged (covers world/datapacks tags)
+        tagManager_.applyToRecipeTags(recipes_.tags_);
+        recipes_.syncTagsFrom(tagManager_);
         functionEvaluator_.setServer(this);
         initCommands();
         lightEngine_ = std::make_unique<LightEngine>(world_);
