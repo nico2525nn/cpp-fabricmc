@@ -16,6 +16,7 @@
 #include "../core/Json.hpp"
 #include "Items.hpp"
 #include "GameRules.hpp"
+#include "Scoreboard.hpp"
 // PredicateContext deps — World/Entities for location/entity checks (plan35 §3)
 #include "Entities.hpp"
 struct Player; // forward (GameServer.hpp defines struct Player, avoid circular)
@@ -31,7 +32,7 @@ namespace cppfm {
 struct PredicateContext {
     World* world = nullptr;
     GameRuleManager* gamerules = nullptr;
-    Player* player = nullptr;
+    struct Player* player = nullptr;
     MobEntity* entity = nullptr;
     int32_t x = 0, y = -64, z = 0;
     float explosionRadius = 0.f;
@@ -41,6 +42,12 @@ struct PredicateContext {
     bool thundering = false;
     int fortuneLevel = 0;
     bool silkTouch = false;
+    // plan38 B-13: Scoreboard lookup for entity_scores + generic value for value_check
+    Scoreboard* scoreboard = nullptr;
+    int valueCheckValue = 0;
+    bool hasValueCheck = false;
+    std::string playerName;
+    std::string heldItemName;
 };
 
 class DatapackManager {
@@ -454,38 +461,120 @@ public:
                     }
                     // properties ignored (stub true)
                     return true;
-                } else if (c == "minecraft:damage_source_properties" || c == "damage_source_properties" ||
-                           c == "minecraft:match_tool" || c == "match_tool") {
-                    if (c.find("match_tool")!=std::string::npos) {
-                        if (auto* pred = v.find("predicate")) {
-                            if (auto* ench = pred->find("enchantments")) {
-                                if (ench->isArr()) {
-                                    for (auto& e : ench->arr) if (e.isObj()) {
-                                        if (auto* en = e.find("enchantment")) {
-                                            std::string enStr = en->asStr();
-                                            bool wantSilk = enStr.find("silk_touch")!=std::string::npos;
-                                            bool wantFortune = enStr.find("fortune")!=std::string::npos;
-                                            if (wantSilk && !ctx.silkTouch) return false;
-                                            if (wantFortune && ctx.fortuneLevel==0) return false;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                } else if (c == "minecraft:damage_source_properties" || c == "damage_source_properties") {
                     return true;
                 } else if (c == "minecraft:killed_by_player" || c == "killed_by_player" ||
                            c == "minecraft:survives_explosion" || c == "survives_explosion" ||
                            c == "minecraft:table_bonus" || c == "table_bonus") {
                     return true;
-                } else if (c == "minecraft:entity_scores" || c == "entity_scores" ||
-                           c == "minecraft:reference" || c == "reference") {
+                } else if (c == "minecraft:entity_scores" || c == "entity_scores") {
+                    if (ctx.playerName.empty() && !ctx.entity) return true;
+                    // scores: {objective: {min,max} or number}
+                    if (auto* scores = v.find("scores")) {
+                        if (scores->isObj()) {
+                            for (auto& kv : scores->obj) {
+                                const std::string& obj = kv.first;
+                                const json::Value& range = kv.second;
+                                int have = 0;
+                                if (ctx.scoreboard && !ctx.playerName.empty()) have = ctx.scoreboard->getScore(obj, ctx.playerName);
+                                else if (ctx.scoreboard && ctx.entity) have = ctx.scoreboard->getScore(obj, std::to_string(ctx.entity->entityId));
+                                if (range.isNum()) {
+                                    if (have != range.asInt(have)) return false;
+                                } else if (range.isObj()) {
+                                    if (auto* mn = range.find("min")) if (have < mn->asInt(mn->number)) return false;
+                                    if (auto* mx = range.find("max")) if (have > mx->asInt(mx->number)) return false;
+                                }
+                            }
+                        }
+                    }
+                    return true;
+                } else if (c == "minecraft:reference" || c == "reference") {
                     if (auto* name = v.find("name")) {
                         std::string ref = name->asStr();
                         if (!ref.empty()) return testPredicate(ref, ctx, depth+1);
                     }
                     return true;
                 } else if (c == "minecraft:value_check" || c == "value_check") {
+                    int have = ctx.hasValueCheck ? ctx.valueCheckValue : ctx.fortuneLevel;
+                    if (auto* val = v.find("value")) {
+                        if (val->isNum()) have = val->asInt(have);
+                        else if (val->isObj()) {
+                            // value as range {min,max} — check have in range directly
+                            if (auto* mn = val->find("min")) if (have < mn->asInt(mn->number)) return false;
+                            if (auto* mx = val->find("max")) if (have > mx->asInt(mx->number)) return false;
+                            // if value was range, also check optional "range"
+                            if (val->find("min") || val->find("max")) {
+                                if (auto* rng = v.find("range")) {
+                                    if (rng->isObj()) {
+                                        if (auto* mn2 = rng->find("min")) if (have < mn2->asInt(mn2->number)) return false;
+                                        if (auto* mx2 = rng->find("max")) if (have > mx2->asInt(mx2->number)) return false;
+                                    }
+                                }
+                                return true;
+                            }
+                        }
+                    }
+                    if (auto* rng = v.find("range")) {
+                        if (rng->isNum()) { if (have != rng->asInt(have)) return false; }
+                        else if (rng->isObj()) {
+                            if (auto* mn = rng->find("min")) if (have < mn->asInt(mn->number)) return false;
+                            if (auto* mx = rng->find("max")) if (have > mx->asInt(mx->number)) return false;
+                        }
+                    }
+                    return true;
+                } else if (c == "minecraft:match_tool" || c == "match_tool" || c == "minecraft:enchantment_active" || c == "enchantment_active") {
+                    // match_tool predicate: check held tool items/enchantments if player context present
+                    if (ctx.playerName.empty() && !ctx.player) return true;
+                    // items check
+                    if (auto* pred = v.find("predicate")) {
+                        if (auto* items = pred->find("items")) {
+                            bool any = false;
+                            std::string haveItemName = ctx.heldItemName.empty() ? "minecraft:air" : ctx.heldItemName;
+                            if (items->isStr()) {
+                                std::string want = items->asStr();
+                                std::string wn = want.find(':')==std::string::npos ? "minecraft:"+want : want;
+                                std::string hn = haveItemName.find(':')==std::string::npos ? "minecraft:"+haveItemName : haveItemName;
+                                if (wn==hn) any = true;
+                            } else if (items->isArr()) {
+                                for (auto &it : items->arr) if (it.isStr()) {
+                                    std::string want = it.asStr();
+                                    std::string wn = want.find(':')==std::string::npos ? "minecraft:"+want : want;
+                                    std::string hn = haveItemName.find(':')==std::string::npos ? "minecraft:"+haveItemName : haveItemName;
+                                    if (wn==hn) { any=true; break; }
+                                }
+                            }
+                            if (!any) return false;
+                        }
+                        if (auto* ench = pred->find("enchantments")) {
+                            if (ench->isArr()) {
+                                for (auto& e : ench->arr) if (e.isObj()) {
+                                    if (auto* en = e.find("enchantment")) {
+                                        std::string enStr = en->asStr();
+                                        bool wantSilk = enStr.find("silk_touch")!=std::string::npos;
+                                        bool wantFortune = enStr.find("fortune")!=std::string::npos;
+                                        if (wantSilk && !ctx.silkTouch) return false;
+                                        if (wantFortune && ctx.fortuneLevel==0) return false;
+                                        if (auto* lv = e.find("levels")) {
+                                            int haveLv = wantSilk ? (ctx.silkTouch?1:0) : ctx.fortuneLevel;
+                                            if (lv->isNum()) { if (haveLv != lv->asInt(haveLv)) return false; }
+                                            else if (lv->isObj()) {
+                                                if (auto* mn = lv->find("min")) if (haveLv < mn->asInt(mn->number)) return false;
+                                                if (auto* mx = lv->find("max")) if (haveLv > mx->asInt(mx->number)) return false;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (c.find("enchantment_active")!=std::string::npos) {
+                        // enchantment_active checks if player has active enchantment: use same silk/fortune check
+                        if (auto* ench = v.find("enchantment")) {
+                            std::string enStr = ench->asStr();
+                            bool wantSilk = enStr.find("silk_touch")!=std::string::npos;
+                            if (wantSilk && !ctx.silkTouch) return false;
+                        }
+                    }
                     return true;
                 } else {
                     return false;

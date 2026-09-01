@@ -222,6 +222,17 @@ bool BreedGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
         WriteBuffer st2; st2.i32(partner->entityId); st2.i8(18);
         ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::EntityEvent, st2);
     }
+    // plan38 B-13: bred_animals trigger for nearest player
+    {
+        auto nearby = ctx.srv->playersSnapshot();
+        Player* best = nullptr; double bestDist=64;
+        for (auto &pp: nearby) if (pp->inPlay) {
+            double dx=pp->x-bx, dz=pp->z-bz;
+            double d2=dx*dx+dz*dz;
+            if (d2<bestDist*bestDist) { bestDist=std::sqrt(d2); best=pp.get(); }
+        }
+        if (best) ctx.srv->onBredAnimals(best);
+    }
     return false;
 }
 
