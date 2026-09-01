@@ -1,0 +1,38 @@
+{
+  "name": "minecraft:igloo_basement",
+  "type": "minecraft:igloo",
+  "placement": {
+    "spacing": 32,
+    "separation": 8,
+    "salt": 14357624,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:igloo/basement",
+      "weight": 6
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:snow_block",
+    "log": "minecraft:stone_bricks",
+    "chest": "minecraft:chest"
+  },
+  "mobs": [
+    {
+      "pos": [
+        2,
+        1,
+        2
+      ],
+      "mob": "minecraft:zombie",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "2,1,2",
+      "table": "minecraft:chests/igloo_chest"
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "name": "minecraft:bastion_bridge",
+  "type": "minecraft:bastion_remnant",
+  "placement": {
+    "spacing": 27,
+    "separation": 4,
+    "salt": 30084235,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:bastion/bridge",
+      "weight": 10
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:blackstone",
+    "log": "minecraft:polished_blackstone",
+    "chest": "minecraft:chest"
+  },
+  "mobs": [
+    {
+      "pos": [
+        4,
+        2,
+        4
+      ],
+      "mob": "minecraft:piglin",
+      "count": 3
+    }
+  ],
+  "loot": [
+    {
+      "pos": "4,1,4",
+      "table": "minecraft:chests/bastion_treasure"
+    }
+  ]
+}

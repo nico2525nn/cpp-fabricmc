@@ -1,0 +1,38 @@
+{
+  "name": "minecraft:bastion_hoglin_stable",
+  "type": "minecraft:bastion_remnant",
+  "placement": {
+    "spacing": 27,
+    "separation": 4,
+    "salt": 30084237,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:bastion/hoglin_stable",
+      "weight": 6
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:polished_blackstone_bricks",
+    "log": "minecraft:blackstone",
+    "chest": "minecraft:chest"
+  },
+  "mobs": [
+    {
+      "pos": [
+        5,
+        2,
+        5
+      ],
+      "mob": "minecraft:hoglin",
+      "count": 2
+    }
+  ],
+  "loot": [
+    {
+      "pos": "5,1,5",
+      "table": "minecraft:chests/bastion_other"
+    }
+  ]
+}

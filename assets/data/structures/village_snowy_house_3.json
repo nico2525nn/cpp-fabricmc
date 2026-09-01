@@ -1,0 +1,38 @@
+{
+  "name": "minecraft:village_snowy_house_3",
+  "type": "minecraft:village",
+  "placement": {
+    "spacing": 34,
+    "separation": 8,
+    "salt": 10387342,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:village/snowy/house_3",
+      "weight": 6
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:packed_ice",
+    "log": "minecraft:snow_block",
+    "chest": "minecraft:chest"
+  },
+  "mobs": [
+    {
+      "pos": [
+        2,
+        1,
+        2
+      ],
+      "mob": "minecraft:villager",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "2,1,2",
+      "table": "minecraft:chests/village/village_snowy_house"
+    }
+  ]
+}

@@ -17,7 +17,15 @@
       "weight": 12
     },
     {
-      "name": "minecraft:trial_chambers/chamber_4",
+      "name": "minecraft:trial_chambers/spawner",
+      "weight": 10
+    },
+    {
+      "name": "minecraft:trial_chambers/intersection",
+      "weight": 6
+    },
+    {
+      "name": "minecraft:trial_chambers/atrium",
       "weight": 6
     }
   ],
@@ -35,12 +43,20 @@
       "tuff": "minecraft:tuff",
       "tuff_bricks": "minecraft:tuff_bricks"
     },
-    "minecraft:trial_chambers/chamber_4": {
-      "tuff": "minecraft:polished_tuff",
-      "chest": "minecraft:chest"
-    },
     "minecraft:trial_chambers/chamber_1": {
       "tuff": "minecraft:tuff_bricks",
+      "chest": "minecraft:chest"
+    },
+    "minecraft:trial_chambers/spawner": {
+      "tuff": "minecraft:polished_tuff",
+      "copper_bulb": "minecraft:exposed_copper_bulb"
+    },
+    "minecraft:trial_chambers/intersection": {
+      "tuff": "minecraft:tuff_bricks",
+      "chest": "minecraft:chest"
+    },
+    "minecraft:trial_chambers/atrium": {
+      "tuff": "minecraft:chiseled_tuff_bricks",
       "chest": "minecraft:chest"
     }
   },

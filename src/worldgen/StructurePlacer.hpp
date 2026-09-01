@@ -52,6 +52,7 @@ public:
                     std::int32_t& outOriginCx, std::int32_t& outOriginCz) const;
     const std::unordered_map<std::string, ConfiguredFeature>& allConfigured() const { return configured_; }
     const std::unordered_map<std::string, PlacedFeature>& allPlaced() const { return placed_; }
+    std::uint16_t stateFor(const ConfiguredFeature& cf, const std::string& piece, const std::string& key, const std::string& fallback) const;
 
 private:
     std::uint64_t seed_;

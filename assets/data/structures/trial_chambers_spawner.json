@@ -1,0 +1,54 @@
+{
+  "name": "minecraft:trial_chambers_spawner",
+  "type": "minecraft:trial_chambers",
+  "placement": {
+    "spacing": 34,
+    "separation": 12,
+    "salt": 94251328,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:trial_chambers/spawner",
+      "weight": 10
+    }
+  ],
+  "palette": {
+    "tuff": "minecraft:tuff",
+    "tuff_bricks": "minecraft:tuff_bricks",
+    "spawner": "minecraft:trial_spawner",
+    "copper_bulb": "minecraft:copper_bulb",
+    "chest": "minecraft:chest"
+  },
+  "variants": {
+    "minecraft:trial_chambers/spawner": {
+      "copper_bulb": "minecraft:exposed_copper_bulb"
+    }
+  },
+  "mobs": [
+    {
+      "pos": [
+        4,
+        2,
+        4
+      ],
+      "mob": "minecraft:breeze",
+      "count": 2
+    },
+    {
+      "pos": [
+        4,
+        2,
+        8
+      ],
+      "mob": "minecraft:zombie",
+      "count": 3
+    }
+  ],
+  "loot": [
+    {
+      "pos": "4,1,4",
+      "table": "minecraft:chests/trial_chambers/corridor"
+    }
+  ]
+}
