@@ -67,6 +67,7 @@ void GameServer::syncEquipmentOnChange(Player& p){
 }
 void GameServer::handleMoveVehicle(Player& p, double x, double y, double z, float yaw, float pitch) {
     // plan14 §5: MoveVehicle 0x20 – update boat/minecart pos, clamp to WorldBorder, broadcast teleport
+    // plan41 C-10: also broadcast VehicleMove 0x33 (x f64 y f64 z f64 yaw f32 pitch f32) for smooth vehicle movement
     if (p.vehicleId==-1) return;
     std::shared_ptr<MobEntity> veh;
     {
@@ -91,6 +92,11 @@ void GameServer::handleMoveVehicle(Player& p, double x, double y, double z, floa
     tp.f64(x); tp.f64(y); tp.f64(z);
     tp.f32(yaw); tp.f32(pitch); tp.boolean(true);
     broadcastPacketExcept(nullptr, proto::pl::sc::EntityTeleport, tp);
+    // plan41 C-10 VehicleMove 0x33 broadcast (server→client) for boat/minecart smooth movement
+    WriteBuffer vm;
+    vm.f64(x); vm.f64(y); vm.f64(z);
+    vm.f32(yaw); vm.f32(pitch);
+    broadcastPacketExcept(&p, proto::pl::sc::VehicleMove, vm);
 }
 void GameServer::handleHorseJump(Player& p, int power) {
     if (p.vehicleId==-1) return;
