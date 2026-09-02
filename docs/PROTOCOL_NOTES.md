@@ -112,3 +112,50 @@ Bundle coalescing: `0x49` and `0x68` are single-byte varint ids, `dataLength` <2
   `Ack Block Change (0x05)` or clients stall their prediction queue.
 - System chat content is anonymous-NBT text components; `{text:"…"}` suffices.
 - `PlayerChat 0x3B` vs `SystemChat 0x73`: when `chatPubKey` valid, server verifies RSA-SHA256 and relays as `PlayerChat`; else `enforcesSecureChat:false` falls back to `SystemChat`. `MessageAck 0x04` is sunk.
+
+## Unsent play toClient reclassification (plan41 C-10 — 21 before, 19 after horse/vehicle)
+
+`minecraft-data 1.21.4 protocol.json` 131 `toClient` vs `Ids.hpp` mapper. Plan34 sent 6 (`0x18 ChatSuggestions, 0x20 SyncEntityPosition, 0x25 HurtAnimation, 0x50 ServerData, 0x51 ActionBar, 0x6E EntitySoundEffect`), plan41 sent 2 (`0x24 OpenHorseWindow, 0x33 VehicleMove`) → 131-104 sent=27 before plan34, 27-6=21 before plan41, 21-2=19 after plan41. Prismarine `protocol.json` types cited for each.
+
+Tri-classification (plan41 §2): (a)implemented/now sent, (b)omitted/confirmed — alternative exists, not sent `not sent, see …`, (c)future/deferred — feature not yet implemented, deferred to 91, not sent.
+
+| # | Packet | Id | Class | Vanilla 可視性 | 90必須? | 備考 / alternative |
+|---|--------|----|-------|---------------|---------|---------------------|
+| 1 | ChunkBiomes | 0x0E | (b) omitted | 低 | No | not sent, see LevelChunkWithLight 0x28 biomes paletted (included) |
+| 2 | DebugSample | 0x1B | (b) omitted | 低 (debug) | No | not sent, see alternative none (debug sample, no player-visible) |
+| 3 | HideMessage | 0x1C | (b) omitted | 低 (chat hide) | No | not sent, see SystemChat 0x73 |
+| 4 | ProfilelessChat | 0x1E | (b) omitted | 低 | No | not sent, see SystemChat 0x73 (enforcesSecureChat false) |
+| 5 | **OpenHorseWindow** | **0x24** | **(a) implemented** | **高: horse/乗馬でwindow** | **Yes (90 plan41)** | **implemented plan41: windowId varint + slotCount varint + entityId varint** |
+| 6 | MapData | 0x2D | (c) future | 高: filled_map 白紙 | No (91) | not sent — map item (MapState) not yet implemented, see ContainerSetContent 0x13 (give filled_map gives empty) |
+| 7 | MoveMinecart | 0x31 | (c) future | 中: minecart旋回補間 | No (91) | not sent, see VehicleMove 0x33 alternative (lerpSteps varint + pos + yaw/pitch/headYaw) |
+| 8 | **VehicleMove** | **0x33** | **(a) implemented** | **高: boat/minecart滑らか** | **Yes (90 plan41)** | **implemented plan41: x f64 + y f64 + z f64 + yaw f32 + pitch f32 (server→client)** |
+| 9 | OpenBook | 0x34 | (b) omitted | 中: book open | No | not sent, see alternative none (item use) |
+| 10 | OpenSignEntity | 0x36 | (b) omitted | 中: sign edit | No | not sent, see BlockEntityData 0x07 |
+| 11 | EndCombatEvent | 0x3C | (b) omitted | 低: combat | No | not sent, see HurtAnimation 0x25 + DamageEvent 0x1A |
+| 12 | EnterCombatEvent | 0x3D | (b) omitted | 低 | No | not sent, see HurtAnimation 0x25 + DamageEvent 0x1A |
+| 13 | DeathCombatEvent | 0x3E | (b) omitted | 低 | No | not sent, see HurtAnimation 0x25 + DamageEvent 0x1A |
+| 14 | FacePlayer | 0x41 | (b) omitted | 中: /face | No | not sent — future `/face` command, 91 |
+| 15 | PlayerRotation | 0x43 | (b) omitted | 中: rotation | No | not sent, see PlayerPosition 0x42 + EntityLook 0x32 |
+| 16 | PlayRemoveResourcePack | 0x4A | (b) omitted | 低: pack | No | not sent, see cf:sc RemoveResourcePack 0x08 (configuration) |
+| 17 | PlayAddResourcePack | 0x4B | (b) omitted | 低 | No | not sent, see cf:sc AddResourcePack 0x09 (configuration) |
+| 18 | SelectAdvancementTab | 0x4F | (b) omitted | 低: UI tab 演出 | No | not sent, see UpdateAdvancements 0x7B (tab is client UI) |
+| 19 | UpdateViewDistance | 0x59 | (b) omitted | 中: F3 viewDistance | No | not sent, see Login 0x2C viewDistance + SimulationDistance 0x69 (F3 dummy) |
+| 20 | AttachEntity | 0x5E | (b) omitted | 中: leash | No | not sent, see SetPassengers 0x65 (holdingId + passengers[]) |
+| 21 | SetPlayerInventory | 0x66 | (b) omitted | 低: slot | No | not sent, see ContainerSetContent 0x13 windowId 0 |
+| 22 | StartConfiguration | 0x70 | (b) omitted | 低: config | No | not sent, see Transfer 0x7A (configuration) |
+| 23 | SetTikingState | 0x78 | (b) omitted | 低: 20t fixed | No | not sent, 20t fixed (GameServer_tick.cpp 50ms) |
+| 24 | StepTick | 0x79 | (b) omitted | 低 | No | not sent, 20t fixed |
+| 25 | SetProjectilePower | 0x80 | (c) future | 中: 弓引き演出 | No (91) | not sent — bow pull power, deferred to 91 (EntityVelocity 0x5F etc) |
+| 26 | CustomReportDetails | 0x81 | (b) omitted | 低: report | No | not sent |
+| 27 | ServerLinks | 0x82 | (b) omitted | 低: links | No | not sent, see ServerData 0x50 |
+
+Already sent (plan34, not in 21 strict but in 33 mapper):
+| | ChatSuggestions | 0x18 | (a) sent | — | — | sent plan34: chat_suggestions action+entries |
+| | SyncEntityPosition | 0x20 | (a) sent | — | — | sent plan34: sync_entity_position 10 fields |
+| | HurtAnimation | 0x25 | (a) sent | — | — | sent plan34: hurt_animation eid+yaw |
+| | ServerData | 0x50 | (a) sent | — | — | sent plan34: server_data motd+iconBytes |
+| | ActionBar | 0x51 | (a) sent | — | — | sent plan34: action_bar anonymousNbt |
+| | EntitySoundEffect | 0x6E | (a) sent | — | — | sent plan34: entity_sound_effect |
+
+Strict unsent after plan41: **19** (27 rows -2 implemented -6 already sent =19 strict; 21 before plan41). `grep -c "not sent, see" docs/PROTOCOL_NOTES.md` should be 19+ uses → 21 before including horse/vehicle now sent are excluded.
+Wire: `OpenHorseWindow 0x24 {windowId varint, slotCount varint, entityId varint}` / `VehicleMove 0x33 {x double, y double, z double, yaw float, pitch float}` per `minecraft-data 1.21.4 protocol.json`.

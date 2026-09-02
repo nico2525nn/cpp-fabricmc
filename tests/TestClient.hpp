@@ -48,6 +48,8 @@ public:
     void sendChatCommand(const std::string& command);
     void sendDig(std::int32_t x, std::int32_t y, std::int32_t z, std::int32_t seq);
     void sendUseItemOn(std::int32_t x, std::int32_t y, std::int32_t z, int face=1, std::int32_t seq=1);
+    void sendUseEntity(std::int32_t entityId, int action, bool sneaking=false); // plan41 C-10 horse window
+    void sendMoveVehicle(double x, double y, double z, float yaw, float pitch); // plan41 C-10 VehicleMove
     void sendRespawnRequest();
     void respondKeepAlive(std::int64_t id);
     void sendPlayerLoadedOnce();

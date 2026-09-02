@@ -5308,6 +5308,62 @@ void GameServer::initCommands() {
             d.root->then(msgLit);
         }
     }
+    // plan41 C-10 test helper: /plan41test <horse|vehicle> — spawns entity and sends packet for smoke verification
+    {
+        auto n = CommandNode::literal("plan41test");
+        auto sub = CommandNode::argument("type", args::stringWord());
+        sub->executable = true;
+        sub->action = [this](CommandContext& c) -> int {
+            Player* p = static_cast<Player*>(c.source.player);
+            if (!p) throw std::runtime_error("player only");
+            std::string t = c.arg("type").asStr();
+            if (t == "horse") {
+                double x = p->x, y = p->y, z = p->z;
+                bool ok = spawnMobByTypeName("minecraft:horse", x, y, z);
+                std::shared_ptr<MobEntity> horse;
+                {
+                    std::lock_guard<std::mutex> lk(entsMtx_);
+                    for (auto it = mobs_.rbegin(); it != mobs_.rend(); ++it) if ((*it)->kind == MobKind::Horse) { horse = *it; break; }
+                }
+                if (horse) {
+                    int windowId = 1;
+                    WriteBuffer ow; ow.varint(windowId); ow.varint(15); ow.varint(horse->entityId);
+                    try { p->conn->sendPacket(proto::pl::sc::OpenHorseWindow, ow); } catch(...) {}
+                    WriteBuffer cc; cc.varint(windowId); cc.varint(++p->invStateId); cc.varint(15);
+                    for (int i=0;i<15;++i) ItemStack::air().write(cc);
+                    ItemStack::air().write(cc);
+                    try { p->conn->sendPacket(proto::pl::sc::ContainerSetContent, cc); } catch(...) {}
+                    sendFeedback(p, "plan41 horse window sent eid=" + std::to_string(horse->entityId));
+                    return 1;
+                }
+                sendFeedback(p, "horse spawn failed");
+                return 0;
+            } else if (t == "vehicle") {
+                double x = p->x, y = p->y, z = p->z;
+                bool ok = spawnMobByTypeName("minecraft:oak_boat", x, y, z);
+                std::shared_ptr<MobEntity> boat;
+                {
+                    std::lock_guard<std::mutex> lk(entsMtx_);
+                    for (auto it = mobs_.rbegin(); it != mobs_.rend(); ++it) if (MobEntity::isBoat((*it)->kind)) { boat = *it; break; }
+                }
+                if (boat) {
+                    p->vehicleId = boat->entityId;
+                    boat->riderEntityId = p->entityId;
+                    broadcastSetPassengers(boat->entityId);
+                    WriteBuffer vm; vm.f64(x+2); vm.f64(y); vm.f64(z+2); vm.f32(45.0f); vm.f32(5.0f);
+                    broadcastPacketExcept(p, proto::pl::sc::VehicleMove, vm);
+                    sendFeedback(p, "plan41 vehicle move sent boat eid=" + std::to_string(boat->entityId));
+                    return 1;
+                }
+                sendFeedback(p, "boat spawn failed");
+                return 0;
+            }
+            sendFeedback(p, "unknown plan41test type (horse|vehicle)");
+            return 0;
+        };
+        n->then(sub);
+        d.root->then(n);
+    }
 }
 
 }
