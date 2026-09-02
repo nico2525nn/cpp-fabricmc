@@ -28,7 +28,8 @@ struct Packet {
 class TestClient {
 public:
     bool connect(const std::string& host, std::uint16_t port, int timeoutSec = 15);
-    void close();
+    void close() noexcept;
+    ~TestClient() noexcept { try { close(); } catch (...) {} }
 
     // ---- flow -------------------------------------------------------------
     // handshake -> status request -> parse json-ish (returns raw body) -> ping

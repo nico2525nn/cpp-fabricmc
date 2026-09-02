@@ -126,23 +126,23 @@ public:
     double f64() { std::uint64_t u = u64(); double f; std::memcpy(&f, &u, 8); return f; }
 
     std::int32_t varint() {
-        std::int32_t result = 0;
+        std::uint32_t result = 0;
         int shift = 0;
         while (true) {
             std::uint8_t b = u8();
-            result |= static_cast<std::int32_t>(b & 0x7F) << shift;
-            if (!(b & 0x80)) return result;
+            result |= static_cast<std::uint32_t>(b & 0x7F) << shift;
+            if (!(b & 0x80)) return static_cast<std::int32_t>(result);
             shift += 7;
             if (shift >= 35) throw std::runtime_error("varint too large");
         }
     }
     std::int64_t varlong() {
-        std::int64_t result = 0;
+        std::uint64_t result = 0;
         int shift = 0;
         while (true) {
             std::uint8_t b = u8();
-            result |= static_cast<std::int64_t>(b & 0x7F) << shift;
-            if (!(b & 0x80)) return result;
+            result |= static_cast<std::uint64_t>(b & 0x7F) << shift;
+            if (!(b & 0x80)) return static_cast<std::int64_t>(result);
             shift += 7;
             if (shift >= 70) throw std::runtime_error("varlong too large");
         }
