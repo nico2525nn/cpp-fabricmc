@@ -157,7 +157,13 @@ def main():
             if rss>rss_max: rss_max=rss
             # early fail if process died
             if proc.poll() is not None:
-                print(f"server died exit={proc.returncode}", file=sys.stderr); break
+                rc = proc.returncode
+                if rc in (134, -6, -11, -4):
+                    sig = {134:"SIGABRT",-6:"SIGABRT",-11:"SIGSEGV",-4:"SIGILL"}.get(rc, str(rc))
+                    print(f"server died exit={rc} ({sig}) — test crashed with {sig} (ASan/UBSan?)", file=sys.stderr)
+                else:
+                    print(f"server died exit={rc}", file=sys.stderr)
+                break
         for b in bots: b.join(timeout=5)
         rss1=get_rss_kb(proc.pid)
         if rss1==0: rss1=rss_max

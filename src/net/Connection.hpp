@@ -41,16 +41,18 @@ public:
         decCtx_->initDecrypt(sharedSecret);
         encrypted_ = true;
     }
-    ~Connection() { close(); }
+    ~Connection() noexcept { try { close(); } catch (...) {} }
     Connection(const Connection&) = delete;
     Connection& operator=(const Connection&) = delete;
 
     int fd() const { return fd_; }
     bool isOpen() const { return fd_ >= 0; }
 
-    void close() {
-        std::lock_guard lk(tx_);
-        if (fd_ >= 0) { ::shutdown(fd_, SHUT_RDWR); ::close(fd_); fd_ = -1; }
+    void close() noexcept {
+        try {
+            std::lock_guard lk(tx_);
+            if (fd_ >= 0) { ::shutdown(fd_, SHUT_RDWR); ::close(fd_); fd_ = -1; }
+        } catch (...) {}
     }
     void setNoDelay() {
         int one = 1;
@@ -88,16 +90,17 @@ public:
             len = readVarintStream(5);
         } else {
             // varint bytes are encrypted: read/decrypt one at a time
-            len = 0; int shift = 0;
+            std::uint32_t ulen = 0; int shift = 0;
             for (int i = 0; i < 5; ++i) {
                 std::uint8_t e[1];
                 readExact(e, 1);
                 decCtx_->crypt(e, 1, e);
-                len |= static_cast<std::int32_t>(e[0] & 0x7F) << shift;
+                ulen |= static_cast<std::uint32_t>(e[0] & 0x7F) << shift;
                 if (!(e[0] & 0x80)) break;
                 shift += 7;
             }
             if (shift >= 35) throw std::runtime_error("varint overflow");
+            len = static_cast<std::int32_t>(ulen);
         }
         if (len <= 0 || static_cast<std::uint32_t>(len) > kMaxFrame)
             throw std::runtime_error("frame length out of range: " + std::to_string(len));
@@ -152,12 +155,12 @@ private:
     int compressionThreshold_ = -1;
 
     std::int32_t readVarintStream(int maxBytes) {
-        std::int32_t result = 0; int shift = 0;
+        std::uint32_t result = 0; int shift = 0;
         for (int i = 0; i < maxBytes; ++i) {
             std::uint8_t b;
             readExact(&b, 1);
-            result |= static_cast<std::int32_t>(b & 0x7F) << shift;
-            if (!(b & 0x80)) return result;
+            result |= static_cast<std::uint32_t>(b & 0x7F) << shift;
+            if (!(b & 0x80)) return static_cast<std::int32_t>(result);
             shift += 7;
         }
         throw std::runtime_error("varint overflow in frame length");
