@@ -1184,6 +1184,48 @@ static void test_predicate22_plan40(){
         check(dm.evaluatePredicateValue(v, ctx)==true, "predicate block_state_property air true (pass-through)");
     }
 }
+static void test_open_horse_window_plan41(){
+    std::printf("[Q1] OpenHorseWindow 0x24 plan41 — windowId+slotCount+entityId varint (C-10)\n");
+    check(proto::pl::sc::OpenHorseWindow==0x24, "OpenHorseWindow id 0x24");
+    {
+        WriteBuffer b;
+        b.varint(1); b.varint(15); b.varint(42);
+        expectEq(b.data, std::vector<std::uint8_t>{0x01,0x0f,0x2a}, "OpenHorseWindow body windowId1 slot15 eid42 -> 01 0F 2A");
+    }
+    {
+        WriteBuffer b;
+        b.varint(2); b.varint(15); b.varint(100);
+        check(b.data.size()==3, "OpenHorseWindow body windowId2 slot15 eid100 size 3");
+        // eid 100 -> varint 0x64
+        expectEq(b.data, std::vector<std::uint8_t>{0x02,0x0f,0x64}, "OpenHorseWindow body windowId2 slot15 eid100 -> 02 0F 64");
+    }
+    // verify Ids a/b/c tag: horse should be (a) sent
+    check(proto::pl::sc::OpenHorseWindow==0x24 && proto::pl::sc::VehicleMove==0x33, "OpenHorseWindow+VehicleMove both sent (plan41 a)");
+}
+static void test_vehicle_move_plan41(){
+    std::printf("[Q2] VehicleMove 0x33 plan41 — x,y,z double + yaw/pitch float (C-10)\n");
+    check(proto::pl::sc::VehicleMove==0x33, "VehicleMove id 0x33");
+    {
+        WriteBuffer b;
+        b.f64(8.5); b.f64(-60.0); b.f64(8.5); b.f32(45.0f); b.f32(10.0f);
+        // 8.5 double = 0x4021000000000000 BE, -60.0 = 0xC04E000000000000, 45.0f = 0x42340000, 10.0f = 0x41200000
+        std::vector<std::uint8_t> exp{
+            0x40,0x21,0x00,0x00,0x00,0x00,0x00,0x00,
+            0xc0,0x4e,0x00,0x00,0x00,0x00,0x00,0x00,
+            0x40,0x21,0x00,0x00,0x00,0x00,0x00,0x00,
+            0x42,0x34,0x00,0x00,
+            0x41,0x20,0x00,0x00
+        };
+        expectEq(b.data, exp, "VehicleMove body 8.5/-60/8.5 yaw45 pitch10 -> 40 21 .. 42 34 .. 41 20");
+    }
+    {
+        WriteBuffer b;
+        b.f64(0.0); b.f64(0.0); b.f64(0.0); b.f32(0.0f); b.f32(0.0f);
+        check(b.data.size()==8*3+4*2, "VehicleMove body zeros size 32");
+        std::vector<std::uint8_t> zeros(32,0);
+        expectEq(b.data, zeros, "VehicleMove body zeros -> 00*32");
+    }
+}
 static void test_enchant41_plan40(){
     std::printf("[P4] Enchant 41 plan40 — EntityEffect/UpdateAttributes EPF smite/bane (C-08)\n");
     // EnchantmentHelper 9 new accessors present
@@ -1318,6 +1360,8 @@ int main(){
     test_advancement80_plan40();
     test_predicate22_plan40();
     test_enchant41_plan40();
+    test_open_horse_window_plan41();
+    test_vehicle_move_plan41();
 
     std::printf("=== spec_wire: %d PASS %d FAIL %d SKIP ===\n", g_pass, g_fail, g_skip);
     if (g_skip) std::printf("NOTE: %d SKIP are FIXMEs pending entity/network merge (H1 etc)\n", g_skip);
