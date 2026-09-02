@@ -887,7 +887,7 @@ void GameServer::initCommands() {
             if (!def) throw std::runtime_error("unknown block: " + name);
             std::uint16_t state = static_cast<std::uint16_t>(def->defaultState);
             if (!propsStr.empty()) {
-                std::vector<std::pair<std::string_view,std::string_view>> props;
+                std::vector<std::pair<std::string,std::string>> props;
                 size_t pos2=0;
                 while(pos2<propsStr.size()){
                     size_t eq=propsStr.find('=',pos2);
@@ -898,25 +898,14 @@ void GameServer::initCommands() {
                     // trim
                     auto trim=[](std::string s){ size_t a=s.find_first_not_of(" \t"); size_t b=s.find_last_not_of(" \t"); return a==std::string::npos?s:s.substr(a,b-a+1); };
                     k=trim(k); v=trim(v);
-                    props.emplace_back(k,v);
+                    props.emplace_back(std::move(k), std::move(v));
                     if(comma==std::string::npos) break;
                     pos2=comma+1;
                 }
                 if(!props.empty()){
-                    // try to resolve with props
-                    // need to keep original props + new props (override)
-                    std::vector<std::pair<std::string_view,std::string_view>> merged;
-                    // start from def's default props? Use stateWithProps with supplied props plus defaults
-                    // Simplistic: use stateWithProps with supplied props (will fill missing with defaults)
-                    // We need to build string_views that live long enough: use static storage via string copy
-                    // Instead, use gen::stateWithPropsList helper alternative
-                    std::vector<std::pair<std::string,std::string>> tmp;
-                    for(auto &pr: props) tmp.emplace_back(std::string(pr.first), std::string(pr.second));
-                    // Convert to string_view vector that points to tmp's strings (need lifetime during call)
                     std::vector<std::pair<std::string_view,std::string_view>> sv;
-                    for(auto &pr: tmp) sv.emplace_back(pr.first, pr.second);
-                    // Actually gen::stateWithProps expects BlockDef and props; it will search exact match
-                    // Use a map approach: try stateWithProps, fallback to default
+                    sv.reserve(props.size());
+                    for(auto &pr: props) sv.emplace_back(pr.first, pr.second);
                     uint32_t cand = gen::stateWithProps(*def, sv);
                     if(cand!=0) state = static_cast<std::uint16_t>(cand);
                     else {
