@@ -221,3 +221,7 @@ set_tests_properties(gameplay_full PROPERTIES TIMEOUT 60)
 add_test(NAME weak_zero COMMAND sh -c "test $(grep -rn '|| true' ${CMAKE_SOURCE_DIR}/tests --include='*.cpp' | wc -l) -eq 0")
 set_tests_properties(weak_zero PROPERTIES TIMEOUT 10)
 
+# plan41 C-09 bench strict gate — p50<5 p95<10 hit>80
+add_test(NAME bench COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/bench_chunk_gen.py --view-distance 32 --chunks 100 --dry --strict)
+set_tests_properties(bench PROPERTIES TIMEOUT 30 LABELS bench)
+
