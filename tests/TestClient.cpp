@@ -585,6 +585,25 @@ void TestClient::sendUseItemOn(std::int32_t x, std::int32_t y, std::int32_t z, i
     b.varint(seq);
     conn_->sendPacket(proto::pl::cs::UseItemOn, b);
 }
+void TestClient::sendUseEntity(std::int32_t entityId, int action, bool sneaking) {
+    WriteBuffer b;
+    b.varint(entityId);
+    b.varint(action);
+    if (action == 2) { b.f32(0.5f); b.f32(0.5f); b.f32(0.5f); }
+    if (action != 1) {
+        // hand varint + sneaking; server reads single varint as sneaking flag (simplified)
+        b.varint(sneaking ? 1 : 0);
+    } else {
+        b.varint(0); // hand for attack (ignored)
+    }
+    conn_->sendPacket(proto::pl::cs::UseEntity, b);
+}
+void TestClient::sendMoveVehicle(double x, double y, double z, float yaw, float pitch) {
+    WriteBuffer b;
+    b.f64(x); b.f64(y); b.f64(z);
+    b.f32(yaw); b.f32(pitch);
+    conn_->sendPacket(proto::pl::cs::MoveVehicle, b);
+}
 void TestClient::sendRespawnRequest() {
     WriteBuffer b; b.varint(0);
     conn_->sendPacket(proto::pl::cs::ClientCommand, b);

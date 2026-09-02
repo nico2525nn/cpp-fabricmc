@@ -3844,7 +3844,7 @@ void Session::onUseEntity(ReadBuffer& in) {
     if (mouse != 1) {
         // INTERACT (0) / INTERACT_AT (2)
         if (mouse == 0 || mouse == 2) {
-            (void)in.varint();                        // sneaking flag
+            int sneaking = in.varint();                        // sneaking flag (0/1)
             // check shear and riding before trading
             {
                 std::lock_guard lk(srv_.entsMtx_);
@@ -3883,6 +3883,32 @@ void Session::onUseEntity(ReadBuffer& in) {
                                 held = ItemStack::air();
                             }
                             srv_.resendInventory(*self_);
+                            return;
+                        }
+                    }
+                    // plan41 C-10 OpenHorseWindow 0x24 — horse-like interact opens horse inventory window
+                    bool isHorseLike = (m->kind == MobKind::Horse || m->kind == MobKind::Donkey || m->kind == MobKind::Mule
+                                        || m->kind == MobKind::Llama || m->kind == MobKind::TraderLlama || m->kind == MobKind::Camel
+                                        || m->kind == MobKind::SkeletonHorse || m->kind == MobKind::ZombieHorse);
+                    if (isHorseLike) {
+                        // If already riding this horse, or sneaking, open horse window instead of mounting
+                        if (self_->vehicleId == m->entityId || sneaking != 0) {
+                            int slotCount = 15; // horse 15 slots (vanilla HorseScreenHandler 15)
+                            int windowId = ++menuWindowCounter_;
+                            if (windowId == 0 || windowId > 100) { menuWindowCounter_ = 1; windowId = 1; }
+                            WriteBuffer ow;
+                            ow.varint(windowId);
+                            ow.varint(slotCount);
+                            ow.varint(m->entityId);
+                            try { conn_->sendPacket(proto::pl::sc::OpenHorseWindow, ow); } catch (...) {}
+                            // Also send ContainerSetContent for the horse window's 15 slots (empty for now)
+                            WriteBuffer cc;
+                            cc.varint(windowId);
+                            cc.varint(++self_->invStateId);
+                            cc.varint(slotCount);
+                            for (int i = 0; i < slotCount; ++i) ItemStack::air().write(cc);
+                            ItemStack::air().write(cc); // carried
+                            try { conn_->sendPacket(proto::pl::sc::ContainerSetContent, cc); } catch (...) {}
                             return;
                         }
                     }
