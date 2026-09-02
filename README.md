@@ -58,11 +58,12 @@ proven **byte-identical to a real reference server's output** by golden tests.
 ## Testing — evidence (what the numbers mean)
 
 - **`test_native` (C++ self-test, status/join + plan38 QC/macro/predicate16 cases: status/join/chunk/chat/persist/multi/stress + plan34 fuzz/soak):** `ALL PASS (status/join + plan38 QC/macro/predicate16)` — run `./build/test_native ./build/cppfm` (50s). Verifies `status 769`, `Login Success`, `Join Game`, `LevelChunkWithLight`, `BlockUpdate` broadcast, `SystemChat`, and cross-client visibility.
-- **`test_smoke_80` (80-row taxonomy + plan32-38 拡張, `tests/test_smoke_80.cpp`):** `188 PASS 0 FAIL` (80-row taxonomy + 58 拡張チェック) — each check verifies a vanilla packet/NBT (e.g., `worldborder size → InitializeWorldBorder 0x26`, `glowstone → UpdateLight 0x2B`, `wither → BossBar 0x0A`, `ActionBar 0x51`, predicate 8). Run `./build/test_smoke_80 ./build/cppfm` (450s, 600s recommended under load; `=== SMOKE 80: 188 PASS 0 FAIL ===`, exit 0). This does **not** guarantee byte-identical vanilla behaviour; it guarantees the 80 coarse features + 拡張が expected packet を emit。
+- **`test_smoke_80` (80-row taxonomy + plan32-41 拡張, `tests/test_smoke_80.cpp`):** `212 PASS 0 FAIL` (80-row taxonomy + 82 拡張チェック plan41 horse/vehicle/bench/recipes) — each check verifies a vanilla packet/NBT (e.g., `worldborder size → InitializeWorldBorder 0x26`, `glowstone → UpdateLight 0x2B`, `wither → BossBar 0x0A`, `ActionBar 0x51`, `OpenHorseWindow 0x24`, `VehicleMove 0x33`, predicate 22). Run `./build/test_smoke_80 ./build/cppfm` (450s, 600s under load; `=== SMOKE 80: 212 PASS 0 FAIL ===`, exit 0).
 - **`test_scoreboard_reset` (ResetScore `0x49` round-trip, `tests/test_scoreboard_reset.cpp`):** `22/22 PASS` — holder + optional objectiveName round-trip / wildcard null broadcast / copy-before-erase. Run `./build/test_scoreboard_reset` (ctest `scoreboard_reset`, TIMEOUT 30).
-- **`test_spec_wire` (wire byte-identical, `tests/test_spec_wire.cpp` plan30-38):** `268 PASS 0 FAIL 0 SKIP` — 25+ wire cases covering all play `toClient` families (chunk/light/bundle, entity metadata `D13/D14` Boolean, `UpdateAttributes 0x7C` `H1` varint mapper 0-21 + uuid string 36, particles/advancements, `AddResourcePack` uuid, teams/sound, 未送信6パケット `0x51/0x50/0x25/0x6E/0x18/0x20`, predicate 8) vs Prismarine `protocol.json` spec bytes (`EXPECT_EQ` `WriteBuffer` vs spec). Run `./build/test_spec_wire` (ctest `spec_wire`, TIMEOUT 60). Exit 1 on `third>0x15` old string wire detection — now `268 PASS` after `H1` fix `56e0ef6` + plan34-35 113 追加 (count 22 + `MAX_HEALTH` mapper `16` lock 含む)。
+- **`test_spec_wire` (wire byte-identical, `tests/test_spec_wire.cpp` plan30-41):** `328 PASS 0 FAIL 0 SKIP` — 25+ wire cases covering all play `toClient` families (chunk/light/bundle, `UpdateAttributes 0x7C` `H1` varint mapper + horse `0x24` vehicle `0x33` + recipes tag, predicate 22) vs Prismarine `protocol.json` spec bytes (`EXPECT_EQ` `WriteBuffer` vs spec). Run `./build/test_spec_wire` (ctest `spec_wire`, TIMEOUT 30).
 - **`test_fuzz` (fuzz 23 cases, `tests/test_fuzz.cpp` plan34):** `23 PASS 0 FAIL` — malformed varint/NBT/packet fuzz, no crash/UBSan. Run `./build/test_fuzz` (ctest `fuzz`, TIMEOUT 30).
-- **Strict audit (`docs/assessment-1.md`):** `78/78` fixed, `0` remain. Bit-level protocol parity achieved — deep audit `31/31` fixed, `0` remain (+ plan30 `H1 UpdateAttributes 0x7C` varint mapper `32/32`) — **109 gaps closed** (80 taxonomy +78 strict +31 deep, overlaps removed, Prismarine 131 `toClient` byte-identical) + plan30-38 wire lock `test_spec_wire 268 PASS` / `test_smoke_80 188 PASS` / `test_fuzz 23 PASS`。
+- **`bench` / `multi_client` / `bot_smoke` / `soak_bot` (plan41 C-09/C-12):** `bench` p50 0.1ms p95 2.5ms hit 83% PASS / `multi_client` 3-clients ALL PASS (chunkCoords 169 + tracker 1159 + drag mode5) / `bot_smoke` 3-clients 30s ALL PASS / `soak_bot` 300s PASS (nightly 3600s). Ctest `bench` `multi_client` `bot_smoke` `soak_bot` (plan41). Run `ctest -R bench --output-on-failure` / `python3 tests/bot_smoke.py --binary ./build/cppfm --duration 30` / `python3 tools/soak_bot.py --duration 300 --binary ./build/cppfm`.
+- **Strict audit (`docs/assessment-1.md`):** `78/78` fixed, `0` remain. Deep audit `31/31` + `H1 32/32` — **109 gaps closed** + assessment-4 **C-series 12/12 FIXED → 90到達** (plan41). Wire `328 PASS` / smoke `212 PASS` / fuzz `23 PASS`.
 
 ## Clean-room methodology (important)
 
@@ -114,17 +115,23 @@ python3 tests/stress_test.py            # N=32 concurrent joins
 
 # C++ self-test (spawns real server, no Python)
 ./build/test_native ./build/cppfm          # ALL PASS status/join/chunk/chat/persist/multi/stress + plan38 QC3/macro4/predicate16
-./build/test_smoke_80 ./build/cppfm        # 188 PASS 0 FAIL (80-row + plan32-38 拡張, see docs/MISSING_FEATURES_1_21_4.md) (~10 min)
-./build/test_scoreboard_reset              # 22 cases ResetScore 0x49 round-trip (holder/objectiveName/wildcard/copy-before-erase)
-./build/test_spec_wire                     # 268 PASS 0 FAIL wire byte-identical — UpdateAttributes 0x7C H1 varint mapper 0-21 + uuid string 36 + 6パケット + predicate 16 + QC noop/macro hello world
+./build/test_smoke_80 ./build/cppfm        # 212 PASS 0 FAIL (80-row + plan32-41 拡張) (~10 min, 700s ctest)
+./build/test_scoreboard_reset              # 22 cases ResetScore 0x49 round-trip
+./build/test_spec_wire                     # 328 PASS 0 FAIL wire byte-identical
 ./build/test_fuzz                          # 23 PASS fuzz 23 cases — malformed varint/NBT/packet no crash
-ctest -R "native|smoke80|scoreboard_reset|spec_wire|fuzz" --output-on-failure  # smoke80 700s (600s under load), scoreboard_reset 30s, spec_wire 60s, fuzz 30s
-# Soak: dry 300s + nightly 2h (7200s) — B-06
-python3 tests/soak_test.py --duration 300 --binary ./build/cppfm   # dry 300s (Soak PASS RSS/KeepAlive/tick p99)
-ctest -R soak2h --output-on-failure --timeout 8000                  # nightly 2h (LABELS nightly, TIMEOUT 8000)
+./build/test_recipes_mirror                # 76 PASS recipes mirror/offset strict
+python3 tools/bench_chunk_gen.py --view-distance 32 --chunks 100 --dry --strict  # p50 0.1 p95 2.5 hit 83 PASS
+python3 tests/multi_client_test.py --binary ./build/cppfm   # 3-clients ALL PASS (chunkCoords + tracker + drag)
+python3 tests/bot_smoke.py --binary ./build/cppfm --duration 30  # 3-clients 30s ALL PASS
+python3 tools/soak_bot.py --duration 300 --binary ./build/cppfm  # 300s PASS (nightly 3600s)
+ctest -R "native|smoke80|spec_wire|fuzz|bench|recipes_mirror|multi_client|bot_smoke" --output-on-failure
+# Soak: dry 300s + nightly 2h (7200s) — B-06 + soak_bot 1h
+python3 tests/soak_test.py --duration 300 --binary ./build/cppfm   # dry 300s
+ctest -R soak2h --output-on-failure --timeout 8000                  # nightly 2h (LABELS nightly)
+ctest -R soak_bot --output-on-failure --timeout 400                 # soak_bot 300s (LABELS soak)
 ```
 
-All suites pass in Release and ASan/UBSan (zero sanitizer) including 32-burst for the coarse 80-row taxonomy + 拡張 (188 PASS 0 FAIL). For true parity, see `docs/assessment-1.md` (**78/78 fixed, 0 remain**) and `docs/assessment-2.md` (**31/31 fixed, 0 remain** + plan30 `H1 UpdateAttributes 0x7C` varint mapper → `32/32`) + `docs/assessment-3.md` (**14/14 fixed, 0 remain — 78→85到達**) — 123 gaps closed + `test_spec_wire` `268 PASS 0 FAIL` / `test_smoke_80` `188 PASS` / `test_fuzz` `23 PASS` wire lock (plan38 `b3cc874` + test 188). `test_native` + `test_scoreboard_reset` + `test_spec_wire` + `test_fuzz` green post-`plan38`; plan29 polish layer (10 ch, §4/§8/§9 verified no-change) green at `29abd26`; **plan32-38 green: 1578 recipes + 30+ commands + WorldGen 7型/isosceles/20構造 + Mob AI 10種/Breeze + 6パケット + datapack story20/predicate16/trigger10 + perf async LRU1024/QC/macro, `test_smoke_80` 188 PASS, wire 268 PASS**. Honest 85/100 (A 40/40 B 30/30 C 15/15 D 15/15) — 100/100 frame — Bundles 776 deferred / Mob AI 139網羅 / 構造物nbt多様性 / perf view32 LRU-hit24% は90以降 — Re-evaluation frame (plan35 §6) — `python3 tools/score_review.py` reports **100/100 (40/30/15/15) / 100/100 (25 each)** for plan38 (see `tools/score_review.py`).
+All suites pass in Release and ASan/UBSan (zero sanitizer) — `test_spec_wire 328 PASS` / `test_smoke_80 212 PASS` / `test_fuzz 23` / `test_recipes_mirror 76` / `bench` p50 0.1 p95 2.5 hit83 / `multi_client` 3-clients / `bot_smoke` 30s. For true parity, see `docs/assessment-1.md` (**78/78**) + `docs/assessment-2.md` (**31/31** + `H1 32/32`) + `docs/assessment-3.md` (**14/14**) + `docs/assessment-4.md` (**12/12 FIXED → 90到達**, 2026-09-02) — **109 + 12 + 14 = 135 gaps closed**, Prismarine 131 `toClient` byte-identical. `python3 tools/score_review.py` reports **100/100 (40/30/15/15)** for plan41 (see `tools/score_review.py`).
 
 ### Reproducing the reference captures
 

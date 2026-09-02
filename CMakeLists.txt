@@ -225,6 +225,16 @@ set_tests_properties(weak_zero PROPERTIES TIMEOUT 10)
 add_test(NAME bench COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/bench_chunk_gen.py --view-distance 32 --chunks 100 --dry --strict)
 set_tests_properties(bench PROPERTIES TIMEOUT 30 LABELS bench)
 
+# plan41 C-12 bot verification — 3-clients + soak (python, no binary deps)
+add_test(NAME multi_client COMMAND python3 ${CMAKE_SOURCE_DIR}/tests/multi_client_test.py --binary $<TARGET_FILE:cppfm>)
+set_tests_properties(multi_client PROPERTIES TIMEOUT 120 LABELS "multi;network" WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
+add_test(NAME bot_smoke COMMAND python3 ${CMAKE_SOURCE_DIR}/tests/bot_smoke.py --duration 30 --binary $<TARGET_FILE:cppfm>)
+set_tests_properties(bot_smoke PROPERTIES TIMEOUT 120 LABELS "bot;smoke" WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
+add_test(NAME soak_bot COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/soak_bot.py --duration 300 --binary $<TARGET_FILE:cppfm>)
+set_tests_properties(soak_bot PROPERTIES TIMEOUT 400 LABELS "soak;nightly" WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
 
 # plan41 C-11 recipes mirror/offset strict (20+ cases) — inventory
 add_executable(test_recipes_mirror
