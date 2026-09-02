@@ -225,3 +225,15 @@ set_tests_properties(weak_zero PROPERTIES TIMEOUT 10)
 add_test(NAME bench COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/bench_chunk_gen.py --view-distance 32 --chunks 100 --dry --strict)
 set_tests_properties(bench PROPERTIES TIMEOUT 30 LABELS bench)
 
+
+# plan41 C-11 recipes mirror/offset strict (20+ cases) — inventory
+add_executable(test_recipes_mirror
+    tests/test_recipes_mirror.cpp
+    src/core/NBT.cpp
+    src/game/Recipes.cpp)
+target_include_directories(test_recipes_mirror PRIVATE src src/generated)
+find_package(ZLIB REQUIRED)
+find_package(OpenSSL REQUIRED)
+target_link_libraries(test_recipes_mirror PRIVATE ZLIB::ZLIB OpenSSL::Crypto)
+add_test(NAME recipes_mirror COMMAND test_recipes_mirror WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(recipes_mirror PROPERTIES TIMEOUT 30 LABELS inventory)
