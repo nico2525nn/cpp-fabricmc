@@ -17,6 +17,7 @@
 #include <array>
 #include <future>
 #include "../net/Connection.hpp"
+#include "../net/RateLimiter.hpp"   // plan46 §1: SpamTracker (O-13 A3)
 #include "../proto/Ids.hpp"
 #include "World.hpp"
 #include "ChunkCodec.hpp"
@@ -326,6 +327,9 @@ private:
 
     // send helpers
     void disconnectIn(const char* jsonReason);   // uses current state_
+    // plan46 §1 W-16: kick with a state-correct Disconnect + short grace +
+    // abortive close (peer observes the reason, then a dead socket).
+    void kickPlay(const char* jsonReason);
     void sendSystemText(const std::string& text);
     void sendJoinGame();
     void sendTeleport(double x, double y, double z, float yaw, float pitch);
@@ -383,6 +387,9 @@ private:
     // open container menu (chest/furnace/crafting) when any
     std::unique_ptr<Menu> openMenu_;
     ItemStack cursorItem_;
+    // plan46 §1 O-13 A3: vanilla chat-spam throttle (200式) + flood log gate.
+    SpamTracker spam_;
+    RateLimitedLog playLogGate_;
     std::int32_t menuWindowCounter_ = 0;
     std::int32_t villagerWindowSeq_ = 100;
     std::int32_t tradingVillager_ = -1;  // villager entity id while trading
@@ -1382,6 +1389,8 @@ private:
     void pollPendingLoads(); // B-07: drain ready futures and install chunks (defined in GameServer_tick.cpp)
     std::atomic<bool> running_{true};
     int listenFd_ = -1;
+    // plan46 §1 A5: global accept gate (20 conn/s, excess refused w/o thread).
+    AcceptGate acceptGate_{20};
     std::int32_t entityIdCounter_ = 1;
     std::atomic<int> nextMapId_{1}; // plan42 MapData allocation
 };

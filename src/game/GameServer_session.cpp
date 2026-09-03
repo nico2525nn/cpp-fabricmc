@@ -128,9 +128,27 @@ void Session::run() {
             }
         }
     } catch (const SocketClosedError&) {
+    } catch (const PacketDecoder::OversizeError& e) {
+        // plan46 §1 W-16: oversize in pre-play stages gets a Disconnect kick
+        // (vanilla closes with a reason). Status/handshake have no disconnect
+        // packet type — just close there.
+        std::fprintf(stderr, "[cppfm] session %s oversize: %s\n",
+                     conn_->peer().c_str(), e.what());
+        if (state_ == State::Login || state_ == State::Configuration ||
+            state_ == State::Play) {
+            try { disconnectIn("{\"text\":\"Packet too large\"}"); } catch (...) {}
+        }
+        state_ = State::Done;
     } catch (const std::exception& e) {
         std::fprintf(stderr, "[cppfm] session %s error: %s\n",
                      conn_->peer().c_str(), e.what());
+        // plan46 §1 W-16: no more silent drops — attempt a state-correct
+        // Disconnect kick (already-dead sockets are guarded).
+        if ((state_ == State::Login || state_ == State::Configuration ||
+             state_ == State::Play) && conn_->isOpen()) {
+            try { disconnectIn("{\"text\":\"Internal server error\"}"); } catch (...) {}
+        }
+        state_ = State::Done;
     }
     if (registered_) {
         api::PlayerQuitEvent qev;
@@ -291,6 +309,15 @@ void Session::disconnectIn(const char* textJson) {
     case State::Configuration: conn_->sendPacket(cf::sc::Disconnect, body); break;
     default:                   conn_->sendPacket(lo::sc::Disconnect, body); break;
     }
+}
+// plan46 §1 W-16: kick with a state-correct Disconnect, a short grace so the
+// peer reads the reason, then an abortive close (dead socket observable).
+void Session::kickPlay(const char* jsonReason) {
+    if (state_ == State::Done) return;
+    try { disconnectIn(jsonReason); } catch (...) {}
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    try { conn_->abort(); } catch (...) {}
+    state_ = State::Done;
 }
 void Session::handleLogin() {
     auto frame = conn_->readFrame();
@@ -2208,6 +2235,10 @@ void Session::ack(std::int32_t sequence) {
 }
 void Session::handlePlay() {
     for (;;) {
+        // plan46 §1 W-16/A4: per-packet isolation. A malformed packet kills
+        // only itself (rate-limited log + continue); oversize kicks with a
+        // Disconnect; only a dead socket ends the session quietly.
+        try {
         auto frame = conn_->readFrame();
         ReadBuffer in(frame);
         self_->lastSeenMs = nowMs();
@@ -2232,6 +2263,11 @@ void Session::handlePlay() {
         }
         case pl::cs::ChatMessage:         onChatMessage(in); break;
         case pl::cs::ChatCommandSigned: {             // signed command (spec shape)
+            // plan46 §1 A3: signed commands share the spam counter.
+            if (spam_.onChat(srv_.tickNow())) {
+                kickPlay("{\"translate\":\"disconnect.spam\"}");
+                return;
+            }
             // plan43 W-03: vanilla sends command/i64/salt/array{argumentName +
             // fixed-256B signature}/messageCount/acknowledged[3] — no booleans,
             // no variable-length signatures. enforcesSecureChat=false so the
@@ -2844,11 +2880,29 @@ void Session::handlePlay() {
             break;
         }
         default:
-            // Unknown packets: skip payload to stay aligned, but log loudly.
-            std::fprintf(stderr, "[cppfm] unknown play packet from %s\n",
-                         conn_->peer().c_str());
+            // Unknown packets: skip payload to stay aligned. plan46 §1 W-16:
+            // unknown play = ignore + log (rate-limited under flood), while
+            // unknown login/config = kick + Disconnect (thrown by their
+            // handlers, kicked by Session::run). Policy: docs/RATE_LIMITS.md.
+            if (playLogGate_.shouldLog(nowMs()))
+                std::fprintf(stderr, "[cppfm] unknown play packet from %s\n",
+                             conn_->peer().c_str());
             in.skipRest();
             break;
+        }
+        } catch (const SocketClosedError&) {
+            throw;
+        } catch (const PacketDecoder::OversizeError& e) {
+            if (playLogGate_.shouldLog(nowMs()))
+                std::fprintf(stderr, "[cppfm] %s oversize kick: %s\n",
+                             conn_->peer().c_str(), e.what());
+            kickPlay("{\"text\":\"Packet too large\"}");
+            return;
+        } catch (const std::exception& e) {
+            if (playLogGate_.shouldLog(nowMs()))
+                std::fprintf(stderr, "[cppfm] play packet ignored (%s): %s\n",
+                             conn_->peer().c_str(), e.what());
+            continue;
         }
     }
 }
@@ -3216,6 +3270,11 @@ void Session::broadcastMovement() {
     hasSent_ = true;
 }
 void Session::onChatMessage(ReadBuffer& in) {
+    // plan46 §1 A3: vanilla 200式 throttle (chat + commands share it).
+    if (spam_.onChat(srv_.tickNow())) {
+        kickPlay("{\"translate\":\"disconnect.spam\"}");
+        return;
+    }
     const std::string msg = in.string(256);
     std::int64_t timestamp = in.i64();
     std::int64_t salt = in.i64();
@@ -3258,6 +3317,11 @@ void Session::onChatMessage(ReadBuffer& in) {
     }
 }
 void Session::onChatCommand(ReadBuffer& in) {
+    // plan46 §1 A3: unsigned commands share the spam counter.
+    if (spam_.onChat(srv_.tickNow())) {
+        kickPlay("{\"translate\":\"disconnect.spam\"}");
+        return;
+    }
     const std::string cmd = in.string(256);
     dispatchCommand(cmd);
 }

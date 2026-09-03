@@ -29,6 +29,18 @@ struct DecodedPacket {
 class PacketDecoder {
 public:
     static constexpr std::uint32_t kMaxFrame = 8u * 1024 * 1024;
+    // plan46 §1 W-14(a)/O-13 A2: declared-size budget. kMaxFrame (8MB) stays
+    // as the outer frame cap, but a declared decompressed size above 2MB is
+    // a kick (OversizeError) — vanilla-equivalent operational cap that makes
+    // zlib-bomb declarations (small wire bytes, huge declared size) cheap to
+    // reject BEFORE any large allocation.
+    static constexpr std::uint32_t kMaxDeclared = 2u * 1024 * 1024;
+
+    // plan46 §1 W-16: oversize is a kick (Disconnect + close), not a silent
+    // drop — Session::run/handlePlay branch on this type.
+    struct OversizeError : std::runtime_error {
+        explicit OversizeError(const std::string& w) : std::runtime_error(w) {}
+    };
 
     // Decode a raw outer frame (length varint already stripped) ? Actually frame_
     // is the content after outer length varint (and after decryption). If
@@ -44,12 +56,28 @@ public:
         std::int32_t dataLen = in.varint();
         std::size_t left = in.remaining();
         if (dataLen == 0) {
+            // plan46 §1 A8: threshold=0 means all-packets-compressed; an
+            // uncompressed (dataLength=0) frame is invalid in that mode.
+            if (compressionThreshold == 0)
+                throw std::runtime_error("uncompressed frame with threshold=0");
             return std::vector<std::uint8_t>(in.p + in.off, in.p + in.off + left);
         }
+        // plan46 §1 W-14/A7: negative declarations and dataLength forgeries
+        // (non-zero dataLen below a positive threshold can never be produced
+        // by a conforming encoder) are rejected before any allocation.
+        if (dataLen < 0)
+            throw std::runtime_error("negative declared size");
+        if (compressionThreshold > 0 &&
+            static_cast<std::uint32_t>(dataLen) <
+                static_cast<std::uint32_t>(compressionThreshold))
+            throw std::runtime_error("forged dataLength below threshold");
+        if (static_cast<std::uint32_t>(dataLen) > kMaxDeclared)
+            throw OversizeError("declared size exceeds 2MB budget");
         if (static_cast<std::uint32_t>(dataLen) > kMaxFrame)
-            throw std::runtime_error("declared size out of range");
+            throw OversizeError("declared size out of range");
         std::vector<std::uint8_t> out;
-        decompressRaw(in.p + in.off, left, static_cast<std::size_t>(dataLen), out);
+        // plan46 §1 W-14(b): strict inflate — trailing garbage rejected.
+        decompressChecked(in.p + in.off, left, static_cast<std::size_t>(dataLen), out);
         return out;
     }
 
