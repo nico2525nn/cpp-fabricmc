@@ -5087,7 +5087,6 @@ void Session::onUseEntity(ReadBuffer& in) {
                 baby->entityId = srv_.nextEntityId();
                 baby->kind = victim->kind;
                 baby->slimeSize = victim->slimeSize - 1;
-                const auto& bs = mobStats(baby->kind);
                 baby->health = MobEntity::slimeHealthForSize(baby->slimeSize);
                 if (baby->health < 1.f) baby->health = 1.f;
                 baby->x = victim->x + (rand()/(double)RAND_MAX - 0.5) * 0.5;

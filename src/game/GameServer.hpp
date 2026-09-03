@@ -403,10 +403,11 @@ public:
     enum class Dim : std::int8_t { Overworld = 0, Nether = -1, End = 1 };
 
     explicit GameServer(ServerConfig cfg)
-        : cfg_(cfg), startTime_(cfg.startTime),
+        : cfg_(cfg),
           world_(cfg_.worldBiome,
                  cfg.levelType == "normal" ? LevelType::Normal : LevelType::Flat,
-                 cfg.seed) {
+                 cfg.seed),
+          startTime_(cfg.startTime) {
         netherWorld_ = std::make_unique<World>(
             "minecraft:nether_wastes", LevelType::Nether, cfg.seed ^ 0x4E37ULL);
         endWorld_ = std::make_unique<World>(

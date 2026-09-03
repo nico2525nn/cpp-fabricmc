@@ -18,11 +18,6 @@ static void onSignal(int) {
     if (g_server) g_server->requestStop();   // async-signal-safe subset
 }
 
-static std::string trim(std::string s) {
-    while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' ')) s.pop_back();
-    return s;
-}
-
 // Minimal server.properties reader (subset, vanilla-compatible keys) – now via ServerProperties (plan7)
 static void loadProperties(ServerConfig& c, const std::string& path) {
     ServerProperties props;

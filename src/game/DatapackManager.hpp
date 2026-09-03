@@ -921,7 +921,7 @@ public:
             std::vector<json::Value> funcs;
             if (v.isArr()) funcs = v.arr;
             else if (v.isObj()) {
-                if (auto* fn = v.find("function")) {
+                if (v.find("function") != nullptr) {
                     funcs.push_back(v);
                 } else if (auto* fns = v.find("functions")) {
                     if (fns->isArr()) funcs = fns->arr;
@@ -970,7 +970,7 @@ public:
                         stack.displayNameLoot = tag->asStr();
                     }
                 } else if (func == "minecraft:set_lore" || func == "set_lore") {
-                    if(auto* lore=f.find("lore")) if(lore->isArr()) for(auto& l: lore->arr) if(l.isStr()) stack.lore.push_back(l.asStr()); else if(l.isObj()) stack.lore.push_back(l.dump());
+                    if (auto* lore=f.find("lore")) { if (lore->isArr()) for (auto& l: lore->arr) { if (l.isStr()) stack.lore.push_back(l.asStr()); else if (l.isObj()) stack.lore.push_back(l.dump()); } }
                 } else if (func == "minecraft:set_name" || func == "set_name" || func == "minecraft:set_custom_name" || func == "set_custom_name") {
                     if(auto* nm=f.find("name")) stack.displayNameLoot=nm->asStr(); else if(auto* v=f.find("value")) stack.displayNameLoot=v->asStr();
                 } else if (func == "minecraft:set_attributes" || func == "set_attributes") {
@@ -981,7 +981,8 @@ public:
                         int mn=1,mx=64;
                         if(lim->isNum()) mn=mx=lim->asInt(1);
                         else if(lim->isObj()){ if(auto* x=lim->find("min")) mn=x->asInt(1); if(auto* y=lim->find("max")) mx=y->asInt(64); }
-                        if(stack.count < mn) stack.count=(int16_t)mn; if(stack.count > mx) stack.count=(int16_t)mx;
+                        if (stack.count < mn) stack.count=(int16_t)mn;
+                        if (stack.count > mx) stack.count=(int16_t)mx;
                     }
                 } else if (func == "minecraft:copy_components" || func == "copy_components") {
                     // copy_components no-op (already handled in loot)

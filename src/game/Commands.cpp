@@ -181,27 +181,6 @@ static void sendFeedback(Player* p, const std::string& msg) {
     }
 }
 
-static std::vector<Player*> expandTargets(GameServer& srv, CommandContext& ctx,
-                                          Player* source, const char* argName) {
-    const std::string raw = ctx.arg(argName).asStr().empty()
-        ? std::string()
-        : std::string();     // selectors were resolved during parse; re-derive:
-    (void)raw;
-    std::vector<Player*> out;
-    // The parser stored a SelectorResult; use it when present.
-    const auto sel = ctx.arg(argName).asSelector();
-    for (auto& n : sel.playerNames) {
-        if (n == "@a" || n == "@e" || n == "@p") {   // unresolved fallback
-            for (auto& p : srv.playersSnapshot())
-                if (p->inPlay && !p->dead) out.push_back(p.get());
-            return out;
-        }
-        if (Player* p = findPlayer(srv, n)) out.push_back(p);
-    }
-    if (out.empty() && source) out.push_back(source);
-    return out;
-}
-
 // ------------------------------------------------------------ registration --
 
 void GameServer::initCommands() {
@@ -483,7 +462,6 @@ void GameServer::initCommands() {
             return std::vector<std::string>{"day", "noon", "night", "midnight"};
         };
         named->action = [this](CommandContext& c) {
-            Player* src = static_cast<Player*>(c.source.player);
             const std::string v = c.arg("named").asStr();
             std::int64_t t = 1000;
             if (v == "day") t = 1000;
@@ -1035,7 +1013,6 @@ void GameServer::initCommands() {
             return std::vector<std::string>{"clear", "rain", "thunder"};
         };
         kind->action = [this](CommandContext& c) {
-            Player* src = static_cast<Player*>(c.source.player);
             const std::string k = c.arg("kind").asStr();
             if (k == "clear") setWeather(Weather::Clear, 6000 * 20);
             else setWeather(Weather::Rain,
@@ -1546,7 +1523,6 @@ void GameServer::initCommands() {
                                             "hard"};
         };
         lvl->action = [this](CommandContext& c) {
-            Player* src = static_cast<Player*>(c.source.player);
             const std::string lv = c.arg("level").asStr();
             // plan42 R3 network (E-15): vanilla only accepts the 4 literals;
             // anything else (e.g. "impossible") must error, not succeed.
@@ -1955,8 +1931,6 @@ void GameServer::initCommands() {
             return res.ok?res.value:0;
         };
         execRunLit->then(execRunCmd);
-        // helper to add run child to any node
-        auto addRun = [&](NodePtr n){ n->then(execRunLit); };
 
         // ---- as <entity> ----
         {
@@ -3179,7 +3153,6 @@ void GameServer::initCommands() {
                 for(auto smode: {"force","move","normal"}){
                     auto smLit = CommandNode::literal(smode);
                     smLit->executable=true;
-                    bool isMove = std::string(smode)=="move";
                     smLit->action=[this,doClone](CommandContext& c){
                         std::string f=c.arg("filter").asStr();
                         bool isMove2 = c.input.find(" move")!=std::string::npos;
@@ -4444,7 +4417,7 @@ void GameServer::initCommands() {
             std::string name = c.arg("targets").asStr();
             bannedPlayers_.insert(name);
             saveBans();
-            if (Player* t = findPlayer(*this, name)) kickPlayer(name, "Banned by an operator.");
+            if (Player* t = findPlayer(*this, name)) { (void)t; kickPlayer(name, "Banned by an operator."); }
             sendFeedback(src, "Banned " + name);
             return 1;
         };
@@ -4456,7 +4429,7 @@ void GameServer::initCommands() {
             std::string reason = c.arg("reason").asStr();
             bannedPlayers_.insert(name);
             saveBans();
-            if (Player* t = findPlayer(*this, name)) kickPlayer(name, reason);
+            if (Player* t = findPlayer(*this, name)) { (void)t; kickPlayer(name, reason); }
             sendFeedback(src, "Banned " + name + ": " + reason);
             return 1;
         };
@@ -4772,7 +4745,7 @@ void GameServer::initCommands() {
                 try { criterion = c.arg("criterion").asStr(); } catch(...) {}
                 Player* src = static_cast<Player*>(c.source.player);
                 if(mode=="everything"){
-                    int total=0, already=0;
+                    int total=0;
                     for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)){
                         auto ids = expandAdv("", "everything");
                         int granted=0;
@@ -5126,7 +5099,6 @@ void GameServer::initCommands() {
             return nullptr;
         };
         auto slotToBlockStack = [this](const brigadier::BlockPosI& pos, const std::string& slot)->ItemStack*{
-            int64_t key = posKey(pos.x,pos.y,pos.z);
             auto* be = blockEntities_.getAt(pos.x,pos.y,pos.z);
             if(!be) {
                 // create chest if missing for convenience?
@@ -5478,7 +5450,7 @@ void GameServer::initCommands() {
             std::string t = c.arg("type").asStr();
             if (t == "horse") {
                 double x = p->x, y = p->y, z = p->z;
-                bool ok = spawnMobByTypeName("minecraft:horse", x, y, z);
+                spawnMobByTypeName("minecraft:horse", x, y, z);
                 std::shared_ptr<MobEntity> horse;
                 {
                     std::lock_guard<std::mutex> lk(entsMtx_);
@@ -5499,7 +5471,7 @@ void GameServer::initCommands() {
                 return 0;
             } else if (t == "vehicle") {
                 double x = p->x, y = p->y, z = p->z;
-                bool ok = spawnMobByTypeName("minecraft:oak_boat", x, y, z);
+                spawnMobByTypeName("minecraft:oak_boat", x, y, z);
                 std::shared_ptr<MobEntity> boat;
                 {
                     std::lock_guard<std::mutex> lk(entsMtx_);

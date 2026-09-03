@@ -466,7 +466,6 @@ std::string GameServer::dispatchConsole(const std::string& line) {
     // plan42 R3 (E-19): capture console feedback so RCON returns actual command
     // output (vanilla: `seed` -> `Seed: [...]`), not fixed "ok".
     std::string captured;
-    std::string* prev = consoleCapture_;
     consoleCapture_ = &captured;
     const auto res = commands_.execute(line, std::move(src));
     // plan42 R3: Source RCON expects an "OK"-style ack (test_server_full
