@@ -4,7 +4,7 @@
 > **Target:** `cpp-fabricmc` HEAD `56e381e` (plan42 R3 完遂, protocol 769, DataVersion 4189, Yarn 1.21.4) vs Vanilla **Fabric 1.21.4** (Mojang 1.21.4, `minecraft-data 1.21.4`, Yarn `1.21.4+build.9`, Prismarine `protocol.json` live-fetch 2026-09-03)
 > **Date:** 2026-09-03 (ドラフト 3 本を統合)
 > **Method:** 3 分野の並列ドラフト (wire: `protocol.json` fromClient 62 型 matrix 対照 / gameplay: `test_gameplay_full.cpp` 行単位精査 + `src/` 読み取り / ops: 運用・負荷・長期の敵対的洗い出し) を 1 ファイルに統合。番号体系はドラフトの Prefix (W/G/O) を維持し、重複はマージ先を明記して一本化する。
-> **Result:** **44 項目 OPEN** (W-01〜W-16 / G-01〜G-15 / O-01〜O-13)。**FIXED 0/44 — すべて OPEN** (FIXED 宣言は再検証後にのみ行う)。
+> **Result:** **44 項目中 FIXED 8 / OPEN 36** (W-01〜W-16 / G-01〜G-15 / O-01〜O-13)。plan43 (B1+B2) で W-01・W-02・W-03・W-04・W-06・W-07・W-12・O-01 の 8 件を FIXED (test_plan43 82/0 + replay_vanilla 8/8 + smoke80 212/0 で再検証済み)。残り 36 件は OPEN のまま。
 
 ---
 
@@ -40,18 +40,18 @@
 
 | # | Domain | Feature | File:line | Vanilla spec | Gap | Severity | Status |
 |---|---|---|---|---|---|---|---:|
-| **W-01** | play.fromClient movement | MovementFlags ビットフィールド | `src/game/GameServer_session.cpp:2171` | `packet_position`: `x f64, y f64, z f64, flags MovementFlags`; `MovementFlags = bitflags u8 [onGround, hasHorizontalCollision]` | `in.boolean()` (u8!=0) で読むため `flags=0x02` (衝突のみ・非接地) を onGround=true に誤読 | **High** | **OPEN** |
-| **W-02** | play.fromClient use_entity | hand / sneaking 取り違え | `src/game/GameServer_session.cpp:3877-3973` | `packet_use_entity`: `target varint, mouse varint, [mouse==2: x,y,z f32], [mouse==0/2: hand varint], sneaking bool` | INTERACT(0) で `hand` を `sneaking` として読む; ATTACK(1) で存在しない varint を読む | **High** | **OPEN** |
-| **W-03** | play.fromClient chat_command_signed | argumentSignatures 形状不一致 | `src/game/GameServer_session.cpp:1907-1924` | `argumentSignatures: array<varint>{argumentName string, signature buffer[256]固定}`; 末尾 `messageCount varint, acknowledged buffer[3]` | `if(boolean){len=varint;bytes(len)}` と読む — 署名付き受信で underrun 例外→セッション切断 | **High** | **OPEN** |
-| **W-04** | play.fromClient tab_complete | 仕様外の末尾 bool 読み | `src/game/GameServer_session.cpp:921-924` | `packet_tab_complete`: `transactionId varint, text string` (2 field のみ) | `(void)in.boolean()` が 3B 目を要求 — 正規パケットは常に underrun→切断の疑い | **High** | **OPEN** |
+| **W-01** | play.fromClient movement | MovementFlags ビットフィールド | `src/game/GameServer_session.cpp:2171` | `packet_position`: `x f64, y f64, z f64, flags MovementFlags`; `MovementFlags = bitflags u8 [onGround, hasHorizontalCollision]` | `in.boolean()` (u8!=0) で読むため `flags=0x02` (衝突のみ・非接地) を onGround=true に誤読 | **High** | **FIXED** |
+| **W-02** | play.fromClient use_entity | hand / sneaking 取り違え | `src/game/GameServer_session.cpp:3877-3973` | `packet_use_entity`: `target varint, mouse varint, [mouse==2: x,y,z f32], [mouse==0/2: hand varint], sneaking bool` | INTERACT(0) で `hand` を `sneaking` として読む; ATTACK(1) で存在しない varint を読む | **High** | **FIXED** |
+| **W-03** | play.fromClient chat_command_signed | argumentSignatures 形状不一致 | `src/game/GameServer_session.cpp:1907-1924` | `argumentSignatures: array<varint>{argumentName string, signature buffer[256]固定}`; 末尾 `messageCount varint, acknowledged buffer[3]` | `if(boolean){len=varint;bytes(len)}` と読む — 署名付き受信で underrun 例外→セッション切断 | **High** | **FIXED** |
+| **W-04** | play.fromClient tab_complete | 仕様外の末尾 bool 読み | `src/game/GameServer_session.cpp:921-924` | `packet_tab_complete`: `transactionId varint, text string` (2 field のみ) | `(void)in.boolean()` が 3B 目を要求 — 正規パケットは常に underrun→切断の疑い | **High** | **FIXED** |
 | **W-05** | play settings 0x0C | ClientInformation 未実装 | `src/proto/Ids.hpp:81-120` (0x0C 欠番) | play `0x0c settings` (config `0x00` と同 TAB 形式) | play フェーズの settings を定義せず default skip — viewDistance/locale 等が一切適用されない | Medium | OPEN |
-| **W-06** | play abilities 往復 | serverbound 0x26 未受信 + toClient 常時 creative | `GameServer_session.cpp:738-744` / `Ids.hpp` (0x26 欠番) | fromClient `packet_abilities{flags i8}`; toClient `packet_abilities{flags i8, flyingSpeed f32, walkingSpeed f32}` | (a) 0x26 未受信で飛行トグル不伝達 (b) 全員に `0x01\|0x04\|0x08` を gamemode 確定前に送信 | **High** | **OPEN** |
-| **W-07** | play update_sign 0x39 | 看板テキスト未パース | `GameServer_session.cpp:2054-2067` | `packet_update_sign`: `location position, isFrontText bool, text1..4 string` | `skipRest()` で破棄 (書けない) + stonecutter 共有ハック (`len<16` 判定) で誤分類の可能性 | **High** | **OPEN** |
+| **W-06** | play abilities 往復 | serverbound 0x26 未受信 + toClient 常時 creative | `GameServer_session.cpp:738-744` / `Ids.hpp` (0x26 欠番) | fromClient `packet_abilities{flags i8}`; toClient `packet_abilities{flags i8, flyingSpeed f32, walkingSpeed f32}` | (a) 0x26 未受信で飛行トグル不伝達 (b) 全員に `0x01\|0x04\|0x08` を gamemode 確定前に送信 | **High** | **FIXED** |
+| **W-07** | play update_sign 0x39 | 看板テキスト未パース | `GameServer_session.cpp:2054-2067` | `packet_update_sign`: `location position, isFrontText bool, text1..4 string` | `skipRest()` で破棄 (書けない) + stonecutter 共有ハック (`len<16` 判定) で誤分類の可能性 | **High** | **FIXED** |
 | **W-08** | play.fromClient GUI 確定系 | name_item/beacon/pick_block/recipe_book 未実装 | `handlePlay:1887-2155` (case なし) | `packet_name_item` / `packet_set_beacon_effect` / `packet_pick_item_from_block/entity` / `packet_recipe_book` / `packet_displayed_recipe` | 金床リネーム・ビーコン確定・pick-block・レシピ本が無反応 (→G-04/G-13 と一本化可) | Medium | OPEN |
 | **W-09** | play.fromClient OP/デバッグ系 | cmdblock/jigsaw/structure/edit_book/generate/spectate | `handlePlay` (case なし) / `Ids.hpp:115` Spectate 定義のみ | `packet_update_command_block(_minecart)` / `packet_update_jigsaw_block` / `packet_update_structure_block` / `packet_edit_book` / `packet_generate_structure` / `packet_spectate` | 権限チェックなく skip + Spectate は dispatch 漏れ (将来 gate 忘れリスク) | Medium | OPEN |
 | **W-10** | play.fromClient 残余群 | steer_boat/resource_pack/pong/adv_tab/bundle/slot/debug/query/lock/config-ack | `handlePlay` (case なし) / `Ids.hpp` (12 ID 欠番) | `packet_steer_boat` / `packet_resource_pack_receive` / `packet_pong` / `packet_advancement_tab` / `packet_select_bundle_item` / `packet_set_slot_state` / `packet_debug_sample_subscription` / `packet_query_block/entity_nbt` / `packet_lock_difficulty` / `packet_configuration_acknowledged` | (a) ボート漕げない (b) 強制パック素通し (c) play pong なし (d) F3+I 無応答 | Medium | OPEN |
 | **W-11** | login 状態遷移 | ack 待機が他種で即 throw | `GameServer_session.cpp:440-450` | login toServer 5 種 (`login_start/encryption_begin/plugin_response/acknowledged/cookie_response`) | `CookieResponse`/`CustomQueryAnswer` で即切断 | Medium | OPEN |
-| **W-12** | configuration 状態遷移 | finish-ack 待機が遅延パケットで即 throw | `GameServer_session.cpp:573-595` | config toServer 9 種はいつでも到着しうる | `ClientInformation` 再送・`Pong`・`ResourcePackResponse`・遅延 known-packs で切断 | **High** | **OPEN** |
+| **W-12** | configuration 状態遷移 | finish-ack 待機が遅延パケットで即 throw | `GameServer_session.cpp:573-595` | config toServer 9 種はいつでも到着しうる | `ClientInformation` 再送・`Pong`・`ResourcePackResponse`・遅延 known-packs で切断 | **High** | **FIXED** |
 | **W-13** | handshake/login エッジ | legacy ping・名前検証・重複ログイン | `GameServer_session.cpp:152-170,254-273` / `GameServer.hpp:923` | handshake `0xfe legacy ping`; 名は `[A-Za-z0-9_]{3,16}`; 重複は先行切断 | (a) 0xFE 沈黙 (b) 文字種不問 (c) 同名/同 UUID 二重化 | Medium | OPEN |
 | **W-14** | 圧縮/暗号の境界 | zlib 爆弾予算なし・threshold エッジ | `src/net/PacketDecoder.hpp:37-54` / `src/core/Zlib.hpp:21-30` / `Connection.hpp:104-137` | threshold 既定 256 以上のみ圧縮; `dataLength=0`+平文は未満のみ | (a) 8MB×連射でメモリ圧迫 (b) 末尾ゴミ未規定 (c) dataLength 偽装受容 (d) threshold=0 未試験 (→O-13 と連動) | Medium | OPEN |
 | **W-15** | toClient 送信コンテキスト | teleport-confirm・join 順序・broadcast gamemode | `GameServer_session.cpp:1888-1893,605-647,745-754,784-794` | toClient `packet_position`: `teleportId + xyz + 速度 + yaw/pitch + relatives u32`; vanilla は confirm 照合 | (a) id 無照合 (b) `sendAbilities`→gamemode 順 (c) 他者向け gamemode ハードコード `1` | Medium | OPEN |
@@ -71,7 +71,7 @@
 | **G-13** | クラフト UI | グリッド→結果の live 同期 | `src/game/Containers.hpp:1-9` / `tests/test_gameplay_full.cpp:174-` | グリッド変更→結果即時反映・shift-click・レシピブック配信 | mirror はデータ一致のみ。live 操作の wire 検証なし (→W-08 と一本化可) | Medium | OPEN |
 | **G-14** | 食料/醸造 | 全食料・全ポーション・醸造 tick | `src/game/HungerManager.cpp:23-48` / `src/game/PotionBrewing.hpp:63-80` | 全食料 food/saturation・全効果・醸造 400t+燃料+派生 | 全品目突合なし。燃料/tick・splash/lingering 派生の検証なし | Medium | OPEN |
 | **G-15** | 時間経過 | 作物・村人・再入荷・スポーン則 | `src/physics/BlockTickScheduler.hpp:113` / `src/game/AiBrain.cpp:849-852` / `src/game/GameServer_tick.cpp:1068-1078` | 全段階 tick・10-activity schedule・1日2回再入荷・スポーン則 | 村人 3-phase 簡易版。再入荷 2 窓目未実装 (`For now we clear`) | Medium | OPEN |
-| **O-01** | vanilla client 検証 | 実クライアント E2E 未検証 | `tests/` mcproto/TestClient (合成) / `src/proto/Ids.hpp:172` | vanilla 1.21.4 client が描画・ログイン・プレイできること | 自動テストは合成のみ。E2E 手順の文書化・自動化なし | **High** | **OPEN** |
+| **O-01** | vanilla client 検証 | 実クライアント E2E 未検証 | `tests/` mcproto/TestClient (合成) / `src/proto/Ids.hpp:172` | vanilla 1.21.4 client が描画・ログイン・プレイできること | 自動テストは合成のみ。E2E 手順の文書化・自動化なし | **High** | **FIXED** |
 | **O-02** | vanilla client 検証 | チャンク要求バースト | `src/game/GameServer.hpp:75` / `src/main.cpp:34-36` | ログイン直後の数百チャンク要求に欠けなく追随 | 実 client のバーストでの欠落・順序・遅延が未検証 | **High** | **OPEN** |
 | **O-03** | vanilla client 検証 | UpdateLight/バイオーム色 | `src/physics/LightEngine.cpp:43-46` / `src/proto/Ids.hpp:254` | SmoothLighting ON で光・葉/水色を正しく再描画 | 再送トリガ・オンライン更新が実 client で未検証 | Medium | OPEN |
 | **O-04** | 同時接続・高負荷 | 100+ 同時・ログイン波 | `src/main.cpp:33` maxPlayers / `GameServer.hpp:75` maxPlayers=20 | 同時接続・同時ログインに耐える (満員時はキュー+切断文) | 負荷試験なし。満員時の挙動未検証 | **High** | **OPEN** |
@@ -97,6 +97,7 @@
 - 完了条件: `flags = in.u8(); nowGround = flags & 0x01;` (bit1 は衝突として保存/無視を明記) に修正し、spec_wire に `position{flags:0x02}` で onGround=false を assert する byte-identical ケース追加。
 - 推奨テスト: `position/position_look/look/flying` × flags `{0x00,0x01,0x02,0x03}` の受信単体テスト (落下距離・onGround・kick 無し)。
 - 優先度: P0 (移動の基本)。
+→ **FIXED (plan43)**: `flags = in.u8(); nowGround = flags & 0x01` + spec_wire P43-4 + test_plan43 16 通り alive/DamageEvent (82/0)。
 
 ### W-02 use_entity の hand/sneaking 取り違え (High)
 - 仕様: `target varint, mouse varint, [mouse==2: x,y,z f32], [mouse==0/2: hand varint], sneaking bool`。
@@ -104,6 +105,7 @@
 - 完了条件: `hand` と `sneaking(bool)` を分離パースし、`(hand=0/1)×(sneaking=false/true)×(mouse=0/1/2)` の 12 通りを byte 供給して判定一致。
 - 推奨テスト: off-hand 主手/副手 interact・sneak 乗馬/ウィンドウ・attack の wire リプレイ。
 - 優先度: P0 (エンティティ相互作用の基本)。
+→ **FIXED (plan43)**: hand/sneaking 分離 + ATTACK bool + 12 通り window matrix/HurtAnimation (82/0) + mount broadcast の entsMtx_ 自己デッドロック解消 (test 側で訴追・修正)。
 
 ### W-03 chat_command_signed の署名配列形状 (High)
 - 仕様: `command string, timestamp i64, salt i64, argumentSignatures array{argumentName string, signature buffer[256]固定}, messageCount varint, acknowledged buffer[3]`。
@@ -111,6 +113,7 @@
 - 完了条件: 固定 256B 読みに修正 + `messageCount/acknowledged[3]` 検証 + 異常時は kick または無視 (切断でない) 方針を明記しテスト。
 - 推奨テスト: 署名 0/1/複数件の `chat_command_signed` wire リプレイ (現状は切断することをまず確認)。
 - 優先度: P0 (切断級)。
+→ **FIXED (plan43)**: 固定 256B + messageCount/ack[3] + 異常時無視方針 + 署名 0/1/複数件リプレイ (82/0) + spec P43-2。
 
 ### W-04 tab_complete の余分な bool (High)
 - 仕様: `transactionId varint, text string` のみ。
@@ -118,6 +121,7 @@
 - 完了条件: 余分な bool 読みを削除し、`suggest` 応答 (`CommandSuggestions 0x10` 範囲 start/length) の往復テストを追加。
 - 推奨テスト: `/` 入力途中等の tab_complete wire リプレイ + 応答 id 照合。
 - 優先度: P0 (切断級・要即時確認)。
+→ **FIXED (plan43)**: 余分 bool 削除 + 0x10 応答 (id/start/length 照合) + suggest 時の先頭 `/` 除去 + (82/0) + spec P43-3。
 - 注記: W-03/W-04 は「受信即切断」級であり、vanilla クライアントでの再現確認を最優先に推奨 (もし vanilla が当該バイト列を送らない運用なら severity を Medium に格下げ可 — その場合も strict 違反として残す)。
 
 ### W-05 play settings 0x0C 未実装 (Medium)
@@ -133,6 +137,7 @@
 - 完了条件: 0x26 受信で flying 状態を正規保持 + 送信フラグを gamemode/権限連動 + 順序を gamemode 確定後に。
 - 推奨テスト: survival/creative での abilities byte assert + 飛行トグル往復。
 - 優先度: P0 (creative/survival の見た目と飛行判定に直結)。
+→ **FIXED (plan43)**: cs 0x26 受信 + gamemode 連動 sendAbilities + join 順序 + W-15(b)(c) 合同 + Commands gamemode 経路の連動化 + (82/0) + spec P43-6。
 
 ### W-07 看板テキスト未実装 (High)
 - 仕様: `location position, isFrontText bool, text1..4 string` (存続・裏表)。
@@ -140,6 +145,7 @@
 - 完了条件: 正規パース (position・isFrontText・4 行・行長/JSON 検証) + BlockEntity 保存・`BlockEntityData 0x07` 再送 + stonecutter 経路の分離。
 - 推奨テスト: 看板編集→再ログイン後もテキスト保持 + 短い看板/長いゴーストレシピの分岐テスト。
 - 優先度: P0 (可視機能の欠落)。
+→ **FIXED (plan43)**: 0x39 正規パース + BlockEntity 保存 + 0x07 再送 (編集時 + チャンクロード時) + stonecutter 分離 (0x25) + 即時/再ログイン test (82/0) + spec P43-7。
 - 注記: 看板のブロック tick/両面/発光側は G-04 と連動 — wire パース (W-07) と挙動 (G-04) は別バッチでよいが完了条件は相互参照すること。
 
 ### W-08 GUI 確定系パケット群 (Medium)
@@ -180,6 +186,7 @@
 - 完了条件: finish 待機でも全 9 種を受容 (既存 packs 待機と共通化) + 遅延 known-packs 再送の吸収テスト。
 - 推奨テスト: finish 前後の settings 再送・pong・resource_pack 混入リプレイ + 実クライアント接続 (O-01 と合同)。
 - 優先度: P0 (実クライアント接続性)。
+→ **FIXED (plan43)**: finish-ack 待機の 10 種受容 + 30s タイムアウト (readFrameWithTimeout) + 混入 join test (82/0)。
 
 ### W-13 handshake/login エッジ (Medium)
 - legacy ping `0xfe`: varint デコードで例外→沈黙 (旧サーバリスト ping 無応答 — 許容可能だが意図を文書化)。
@@ -317,6 +324,7 @@
 - 完了条件 (数値): vanilla client でログイン→スポーン描画→移動→ブロック破壊→インベントリ開閉→切断までエラー/キック 0 件。手順を docs に固定。
 - 推奨テスト: 手動チェックリスト (client 1.21.4 固定・render-distance 8/12・SmoothLighting ON/OFF) + replay harness (real-client 相当の要求順序再生)。
 - 優先度: P0 (互換の最終証明は実 client。W-03/W-04/W-12 の再現確認と合同)。
+→ **FIXED (plan43, 自動側)**: tools/replay_vanilla.py 8/8 + SOAK_MANUAL 12 項目 + test_plan43 82/0 (合成 E2E)。注: 実 vanilla client での 12 項目手動ランは SOAK_REPORT への記録時に再検証すること。
 
 ### O-02 チャンク要求バースト (HIGH)
 - 現状: `viewDistance` clamp (`src/main.cpp:34-36`)・`PacketBatcher` 64-count flush (`src/net/PacketBatcher.hpp:9`) はあるが、ログイン直後の数百チャンク要求への追随は小規模送信でしか検証していない。
