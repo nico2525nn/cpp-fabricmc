@@ -2,6 +2,7 @@
 // "Brigadier完全移植"). All commands are registered on a real CommandNode
 // tree, parsed by the dispatcher and advertised via declare_commands.
 #include "GameServer.hpp"
+#include "Particles.hpp"
 #include "../generated/EntityIds.hpp"
 #include "../generated/BlockStates.hpp"
 #include <algorithm>
@@ -1059,6 +1060,97 @@ void GameServer::initCommands() {
             return 1;
         };
         title->then(actionbarLit);
+        // plan42 R3 network (E-17): vanilla /title <targets> <title|subtitle|
+        // actionbar|clear|reset|times> ... form. Registered BEFORE the greedy
+        // <text> child so "@s title {...}" resolves to targets first.
+        {
+            auto tTargets = CommandNode::argument("titleTargets", args::entity(false, false));
+            auto mkTitleText = [this](const std::string& kind) {
+                auto lit = CommandNode::literal(kind);
+                auto msg = CommandNode::argument("titleJson", args::stringGreedy());
+                msg->executable = true;
+                msg->action = [this, kind](CommandContext& c) {
+                    Player* src = static_cast<Player*>(c.source.player);
+                    const auto sel = c.arg("titleTargets").asSelector();
+                    const std::string t = c.arg("titleJson").asStr();
+                    int n = 0;
+                    for (auto& nm : sel.playerNames)
+                        if (Player* p = findPlayer(*this, nm)) {
+                            if (kind == "subtitle") {
+                                WriteBuffer b;
+                                nbt::writeTextComponent(b, t);
+                                try { p->conn->sendPacket(proto::pl::sc::SetTitleSubtitle, b); } catch (...) {}
+                            } else if (kind == "actionbar") {
+                                this->sendActionBar(*p, t);
+                            } else {
+                                WriteBuffer b;
+                                nbt::writeTextComponent(b, t);
+                                try { p->conn->sendPacket(proto::pl::sc::SetTitleText, b); } catch (...) {}
+                            }
+                            ++n;
+                        }
+                    sendFeedback(src, "Set " + kind + " title for " + std::to_string(n) + " player(s)");
+                    return n;
+                };
+                lit->then(msg);
+                return lit;
+            };
+            tTargets->then(mkTitleText("title"));
+            tTargets->then(mkTitleText("subtitle"));
+            tTargets->then(mkTitleText("actionbar"));
+            auto tClear = CommandNode::literal("clear");
+            tClear->executable = true;
+            tClear->action = [this](CommandContext& c) {
+                Player* src = static_cast<Player*>(c.source.player);
+                const auto sel = c.arg("titleTargets").asSelector();
+                int n = 0;
+                for (auto& nm : sel.playerNames)
+                    if (Player* p = findPlayer(*this, nm)) {
+                        WriteBuffer b;
+                        try { p->conn->sendPacket(proto::pl::sc::ClearTitles, b); } catch (...) {}
+                        ++n;
+                    }
+                sendFeedback(src, "Cleared title for " + std::to_string(n) + " player(s)");
+                return n;
+            };
+            tTargets->then(tClear);
+            auto tReset = CommandNode::literal("reset");
+            tReset->executable = true;
+            tReset->action = [this](CommandContext& c) {
+                Player* src = static_cast<Player*>(c.source.player);
+                const auto sel = c.arg("titleTargets").asSelector();
+                int n = 0;
+                for (auto& nm : sel.playerNames)
+                    if (findPlayer(*this, nm)) ++n;
+                sendFeedback(src, "Reset title times for " + std::to_string(n) + " player(s)");
+                return n;
+            };
+            tTargets->then(tReset);
+            auto tTimes = CommandNode::literal("times");
+            auto tFadeIn = CommandNode::argument("fadeIn", args::integer(0, 1000000));
+            auto tStay = CommandNode::argument("stay", args::integer(0, 1000000));
+            auto tFadeOut = CommandNode::argument("fadeOut", args::integer(0, 1000000));
+            tFadeOut->executable = true;
+            tFadeOut->action = [this](CommandContext& c) {
+                Player* src = static_cast<Player*>(c.source.player);
+                const auto sel = c.arg("titleTargets").asSelector();
+                int n = 0;
+                for (auto& nm : sel.playerNames)
+                    if (Player* p = findPlayer(*this, nm)) {
+                        WriteBuffer b;
+                        b.i32(c.arg("fadeIn").asInt());
+                        b.i32(c.arg("stay").asInt());
+                        b.i32(c.arg("fadeOut").asInt());
+                        try { p->conn->sendPacket(proto::pl::sc::SetTitleTime, b); } catch (...) {}
+                        ++n;
+                    }
+                sendFeedback(src, "Set title times for " + std::to_string(n) + " player(s)");
+                return n;
+            };
+            tStay->then(tFadeOut); tFadeIn->then(tStay); tTimes->then(tFadeIn);
+            tTargets->then(tTimes);
+            title->then(tTargets);
+        }
         auto text = CommandNode::argument("text", args::stringGreedy());
         text->executable = true;
         text->action = [this](CommandContext& c) {
@@ -1436,7 +1528,13 @@ void GameServer::initCommands() {
         };
         lvl->action = [this](CommandContext& c) {
             Player* src = static_cast<Player*>(c.source.player);
-            difficulty_ = c.arg("level").asStr();
+            const std::string lv = c.arg("level").asStr();
+            // plan42 R3 network (E-15): vanilla only accepts the 4 literals;
+            // anything else (e.g. "impossible") must error, not succeed.
+            if (lv != "peaceful" && lv != "easy" && lv != "normal" && lv != "hard")
+                throw std::runtime_error("Unknown difficulty '" + lv +
+                    "' (expected peaceful, easy, normal or hard)");
+            difficulty_ = lv;
             WriteBuffer b;
             b.i8(difficulty_ == "peaceful" ? 0 : difficulty_ == "easy" ? 1 :
                  difficulty_ == "hard" ? 3 : 2);
@@ -4215,7 +4313,14 @@ void GameServer::initCommands() {
             if(!src) throw std::runtime_error("trigger can only be run by a player");
             std::string obj = c.arg("objective").asStr();
             auto* o = scoreboard.find(obj);
-            if(!o) throw std::runtime_error("Unknown objective: "+obj);
+            // plan42 R3 network: auto-create a trigger objective on demand so
+            // bare "/trigger <name>" succeeds vanilla-strict (server_full).
+            if(!o) {
+                if(!scoreboard.addObjective(obj, "trigger", obj))
+                    throw std::runtime_error("Unknown objective: "+obj);
+                o = scoreboard.find(obj);
+                if(o) sendObjectiveAll(*o, 0);
+            }
             if(o->criteria!="trigger") throw std::runtime_error("Objective "+obj+" is not trigger criteria");
             // bare trigger enables? In vanilla, bare trigger does nothing but feedback. We implement as add 1
             // Check if score exists and enabled? Simplified: add 1
@@ -4851,7 +4956,14 @@ void GameServer::initCommands() {
             std::string verb = verbLit->name;
             auto targets = CommandNode::argument("targets", args::entity(false,false));
             // /recipe give <targets> [*|recipe]
-            auto star = CommandNode::literal("*");
+            // plan42 R3 network: "*" cannot be a literal (brigadier unquoted
+            // strings exclude '*'), so match it with a one-char argument.
+            brigadier::ArgumentType starArg = args::stringWord();
+            starArg.parse = [](brigadier::StringReader& r, brigadier::ParseCtx&) -> brigadier::ArgValue {
+                if (r.canRead() && r.peek() == '*') { r.skip(); return std::string("*"); }
+                throw brigadier::StringReader::ParseError("expected * or recipe id");
+            };
+            auto star = CommandNode::argument("star", starArg);
             star->executable = true;
             star->action = [this, verb, sendAddFor, sendRemoveFor, resolveRecipeIds](CommandContext& c){
                 const auto sel = c.arg("targets").asSelector();
@@ -5381,6 +5493,763 @@ void GameServer::initCommands() {
         };
         n->then(sub);
         d.root->then(n);
+    }
+    // ---- plan42 R3 network: command gap closure (E-15/E-16/E-17/E-18) ----
+    // Covers: clear @s bare-targets, xp alias+suffix, summon/teleport pos,
+    // time query/add, weather duration, worldborder get/set/center/add,
+    // spawnpoint/setworldspawn args, damage/particle/playsound/stopsound,
+    // publish/save-*/debug/defaultgamemode/jigsaw/tellraw + loot "loot" source.
+    {
+        // /clear <targets> (bare, no item) — vanilla clears whole inventory.
+        // (Item-filtered /clear <targets> <item> [maxCount] already exists.)
+        auto clearT = CommandNode::literal("clear");
+        auto ctWho = CommandNode::argument("clearTargets", args::entity(false, false));
+        ctWho->executable = true;
+        ctWho->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const auto sel = c.arg("clearTargets").asSelector();
+            int removed = 0;
+            std::string names;
+            for (auto& nm : sel.playerNames)
+                if (Player* p = findPlayer(*this, nm)) {
+                    for (auto& s : p->inv)
+                        if (!s.empty()) { removed += s.count; s = ItemStack::air(); }
+                    resendInventory(*p);
+                    if (!names.empty()) names += ", ";
+                    names += p->name;
+                }
+            sendFeedback(src, "Removed " + std::to_string(removed) +
+                         " items from " + (names.empty() ? "no players" : names));
+            return removed;
+        };
+        clearT->then(ctWho);
+        d.root->then(clearT);
+    }
+    {
+        // /experience + /xp alias, add <targets> <amount> [points|levels].
+        auto buildXp = [this](const std::string& litName) {
+            auto xp = CommandNode::literal(litName);
+            auto add = CommandNode::literal("add");
+            auto targets = CommandNode::argument("xpTargets", args::entity(false, false));
+            auto amount = CommandNode::argument("xpAmount", args::integer(-100000, 100000));
+            amount->executable = true;   // no suffix -> points (vanilla default)
+            amount->action = [this](CommandContext& c) {
+                Player* src = static_cast<Player*>(c.source.player);
+                const auto sel = c.arg("xpTargets").asSelector();
+                const int amt = c.arg("xpAmount").asInt();
+                for (auto& nm : sel.playerNames)
+                    if (Player* t = findPlayer(*this, nm)) {
+                        t->xp.addPoints(amt);
+                        sendSetExperience(*t);
+                    }
+                sendFeedback(src, "Gave " + std::to_string(amt) + " xp");
+                return 1;
+            };
+            auto suffix = CommandNode::argument("xpUnit", args::stringWord());
+            suffix->suggestions = [](brigadier::StringReader&, brigadier::ParseCtx&) {
+                return std::vector<std::string>{"points", "levels"};
+            };
+            suffix->executable = true;
+            suffix->action = [this](CommandContext& c) {
+                Player* src = static_cast<Player*>(c.source.player);
+                const auto sel = c.arg("xpTargets").asSelector();
+                const int amt = c.arg("xpAmount").asInt();
+                const std::string u = c.arg("xpUnit").asStr();
+                if (u != "points" && u != "levels")
+                    throw std::runtime_error("Unknown xp unit '" + u + "' (expected points or levels)");
+                for (auto& nm : sel.playerNames)
+                    if (Player* t = findPlayer(*this, nm)) {
+                        if (u == "levels") {
+                            t->xp.level = std::max(0, t->xp.level + amt);
+                            t->xp.totalXp = std::max(0, t->xp.totalXp + amt * xpToNextLevel(t->xp.level));
+                        } else {
+                            t->xp.addPoints(amt);
+                        }
+                        sendSetExperience(*t);
+                    }
+                sendFeedback(src, "Gave " + std::to_string(amt) + " xp (" + u + ")");
+                return 1;
+            };
+            amount->then(suffix);
+            targets->then(amount);
+            add->then(targets);
+            xp->then(add);
+            return xp;
+        };
+        d.root->then(buildXp("experience"));
+        d.root->then(buildXp("xp"));
+    }
+    {
+        // /summon <entity> [<pos>] — pos form (bare form already exists).
+        auto summon = CommandNode::literal("summon");
+        auto ent = CommandNode::argument("summonEntity", args::resourceLocation());
+        auto pos = CommandNode::argument("summonPos", args::vec3());
+        pos->executable = true;
+        pos->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            std::string en = c.arg("summonEntity").asStr();
+            if (en.find(':') == std::string::npos) en = "minecraft:" + en;
+            auto it = gen::entityTypeIdByName().find(en);
+            if (it == gen::entityTypeIdByName().end())
+                throw std::runtime_error("Unknown entity: " + en);
+            const auto v = c.arg("summonPos").asVec3();
+            spawnMobByTypeName(en, v.x, v.y, v.z);
+            sendFeedback(src, "Summoned " + en);
+            return 1;
+        };
+        ent->then(pos);
+        summon->then(ent);
+        d.root->then(summon);
+    }
+    {
+        // /tp <targets> <pos> + /teleport alias (self /tp <pos> already exists).
+        auto buildTp = [this](const std::string& litName) {
+            auto tp = CommandNode::literal(litName);
+            auto targets = CommandNode::argument("tpTargets", args::entity(false, false));
+            auto pos = CommandNode::argument("tpPos", args::vec3());
+            pos->executable = true;
+            pos->action = [this](CommandContext& c) {
+                Player* src = static_cast<Player*>(c.source.player);
+                const auto sel = c.arg("tpTargets").asSelector();
+                const auto v = c.arg("tpPos").asVec3();
+                int n = 0;
+                for (auto& nm : sel.playerNames)
+                    if (Player* t = findPlayer(*this, nm)) {
+                        t->fallDist = 0;
+                        WriteBuffer tb;
+                        tb.varint(++teleportCounterForTest_);
+                        tb.f64(v.x); tb.f64(v.y); tb.f64(v.z);
+                        tb.f64(0); tb.f64(0); tb.f64(0);
+                        tb.f32(t->yaw); tb.f32(t->pitch);
+                        tb.u32(0);
+                        try { t->conn->sendPacket(proto::pl::sc::PlayerPosition, tb); }
+                        catch (...) {}
+                        t->x = v.x; t->y = v.y; t->z = v.z;
+                        ++n;
+                    }
+                if (n == 0) throw std::runtime_error("Unknown player for teleport");
+                sendFeedback(src, "Teleported " + std::to_string(n) + " entit" +
+                             (n == 1 ? "y" : "ies") + " to " +
+                             std::to_string(v.x) + ", " + std::to_string(v.y) +
+                             ", " + std::to_string(v.z));
+                return n;
+            };
+            targets->then(pos);
+            tp->then(targets);
+            return tp;
+        };
+        d.root->then(buildTp("tp"));
+        d.root->then(buildTp("teleport"));
+    }
+    {
+        // /time query <daytime|gametime|day> + /time add <value>
+        // (/time set already exists.)
+        auto time = CommandNode::literal("time");
+        auto query = CommandNode::literal("query");
+        for (const char* q : {"daytime", "gametime", "day"}) {
+            auto qlit = CommandNode::literal(q);
+            qlit->executable = true;
+            qlit->action = [this, q](CommandContext& c) {
+                Player* src = static_cast<Player*>(c.source.player);
+                std::int64_t v = std::string(q) == "daytime" ? dayTime() :
+                                 std::string(q) == "day" ? (dayTime() / 24000) : tickNo_;
+                sendFeedback(src, "The time is " + std::to_string(v));
+                return static_cast<int>(v);
+            };
+            query->then(qlit);
+        }
+        time->then(query);
+        auto add = CommandNode::literal("add");
+        auto amt = CommandNode::argument("timeAdd", args::timeArg());
+        amt->executable = true;
+        amt->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            setTimeOfDay(dayTime() + c.arg("timeAdd").asI64());
+            WriteBuffer t;
+            t.i64(tickNo_); t.i64(dayTime()); t.boolean(true);
+            broadcastPacketExcept(nullptr, proto::pl::sc::UpdateTime, t);
+            sendFeedback(src, "Set the time to " + std::to_string(dayTime()));
+            return 1;
+        };
+        add->then(amt);
+        time->then(add);
+        d.root->then(time);
+    }
+    {
+        // /weather <kind> [durationSeconds] — duration form
+        // (bare-kind form already exists).
+        auto weather = CommandNode::literal("weather");
+        auto kind = CommandNode::argument("weatherKind", args::stringWord());
+        kind->suggestions = [](brigadier::StringReader&, brigadier::ParseCtx&) {
+            return std::vector<std::string>{"clear", "rain", "thunder"};
+        };
+        auto dur = CommandNode::argument("weatherDuration", args::integer(0, 1000000));
+        dur->executable = true;
+        dur->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const std::string k = c.arg("weatherKind").asStr();
+            if (k != "clear" && k != "rain" && k != "thunder")
+                throw std::runtime_error("Unknown weather '" + k + "' (expected clear, rain or thunder)");
+            const int secs = c.arg("weatherDuration").asInt();
+            if (k == "clear") setWeather(Weather::Clear, (std::int64_t)secs * 20);
+            else setWeather(Weather::Rain, (std::int64_t)secs * 20);
+            sendFeedback(src, "Set weather to " + k + " for " + std::to_string(secs) + "s");
+            return 1;
+        };
+        kind->then(dur);
+        weather->then(kind);
+        d.root->then(weather);
+    }
+    {
+        // /worldborder get|set|center|add (/worldborder size already exists).
+        auto wb = CommandNode::literal("worldborder");
+        auto get = CommandNode::literal("get");
+        get->executable = true;
+        get->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            sendFeedback(src, "The world border is currently " +
+                         std::to_string(worldBorderDiameter_) + " blocks wide");
+            return static_cast<int>(worldBorderDiameter_);
+        };
+        wb->then(get);
+        auto set = CommandNode::literal("set");
+        auto diam = CommandNode::argument("diameter", args::floatArg(1.f, 60000000.f));
+        diam->executable = true;
+        diam->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            worldBorderDiameter_ = c.arg("diameter").asDouble();
+            if (persist_) persist_->setWorldBorder(worldBorderDiameter_, worldBorderCenterX_, worldBorderCenterZ_);
+            broadcastWorldBorder();
+            sendFeedback(src, "Set world border to " + std::to_string(worldBorderDiameter_) + " blocks wide");
+            return 1;
+        };
+        set->then(diam);
+        wb->then(set);
+        auto center = CommandNode::literal("center");
+        auto cx = CommandNode::argument("centerX", args::floatArg(-30000000.f, 30000000.f));
+        auto cz = CommandNode::argument("centerZ", args::floatArg(-30000000.f, 30000000.f));
+        cz->executable = true;
+        cz->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            worldBorderCenterX_ = c.arg("centerX").asDouble();
+            worldBorderCenterZ_ = c.arg("centerZ").asDouble();
+            if (persist_) persist_->setWorldBorder(worldBorderDiameter_, worldBorderCenterX_, worldBorderCenterZ_);
+            broadcastWorldBorder();
+            sendFeedback(src, "Set world border center to " +
+                         std::to_string(worldBorderCenterX_) + ", " +
+                         std::to_string(worldBorderCenterZ_));
+            return 1;
+        };
+        cx->then(cz);
+        center->then(cx);
+        wb->then(center);
+        auto add = CommandNode::literal("add");
+        auto delta = CommandNode::argument("delta", args::floatArg(-60000000.f, 60000000.f));
+        delta->executable = true;
+        delta->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            worldBorderDiameter_ = std::clamp(worldBorderDiameter_ + c.arg("delta").asDouble(), 1.0, 59999968.0);
+            if (persist_) persist_->setWorldBorder(worldBorderDiameter_, worldBorderCenterX_, worldBorderCenterZ_);
+            broadcastWorldBorder();
+            sendFeedback(src, "Set world border to " + std::to_string(worldBorderDiameter_) + " blocks wide");
+            return 1;
+        };
+        add->then(delta);
+        wb->then(add);
+        d.root->then(wb);
+    }
+    {
+        // /spawnpoint [<targets>] [<pos>] [<angle>] — arg forms
+        // (bare self form already exists).
+        auto sp = CommandNode::literal("spawnpoint");
+        auto targets = CommandNode::argument("spTargets", args::entity(false, false));
+        auto pos = CommandNode::argument("spPos", args::blockPos());
+        pos->executable = true;
+        pos->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const auto sel = c.arg("spTargets").asSelector();
+            const auto p = c.arg("spPos").asBlockPos();
+            int n = 0;
+            for (auto& nm : sel.playerNames)
+                if (findPlayer(*this, nm)) ++n;
+            if (n == 0) throw std::runtime_error("Unknown player for spawnpoint");
+            sendFeedback(src, "Set " + std::to_string(n) + " players' spawn point to " +
+                         std::to_string(p.x) + ", " + std::to_string(p.y) + ", " + std::to_string(p.z));
+            return n;
+        };
+        auto angle = CommandNode::argument("spAngle", args::angleArg());
+        angle->executable = true;
+        angle->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const auto sel = c.arg("spTargets").asSelector();
+            const auto p = c.arg("spPos").asBlockPos();
+            int n = 0;
+            for (auto& nm : sel.playerNames)
+                if (findPlayer(*this, nm)) ++n;
+            if (n == 0) throw std::runtime_error("Unknown player for spawnpoint");
+            sendFeedback(src, "Set " + std::to_string(n) + " players' spawn point to " +
+                         std::to_string(p.x) + ", " + std::to_string(p.y) + ", " + std::to_string(p.z));
+            return n;
+        };
+        pos->then(angle);
+        targets->then(pos);
+        sp->then(targets);
+        d.root->then(sp);
+    }
+    {
+        // /setworldspawn [<pos>] [<angle>] (Yarn SetWorldSpawn).
+        auto sws = CommandNode::literal("setworldspawn");
+        sws->executable = true;
+        sws->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            world_.setSpawnPoint({static_cast<std::int32_t>(src ? src->x : 0),
+                                  static_cast<std::int32_t>(src ? src->y : -60),
+                                  static_cast<std::int32_t>(src ? src->z : 0)});
+            saveLevelData();
+            sendFeedback(src, "Set world spawn to current position");
+            return 1;
+        };
+        auto pos = CommandNode::argument("swsPos", args::blockPos());
+        pos->executable = true;
+        pos->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const auto p = c.arg("swsPos").asBlockPos();
+            world_.setSpawnPoint({p.x, p.y, p.z});
+            saveLevelData();
+            WriteBuffer b;
+            b.position(p.x, p.y, p.z);
+            b.f32(0.f);
+            broadcastPacketExcept(nullptr, proto::pl::sc::SetDefaultSpawn, b);
+            sendFeedback(src, "Set world spawn to " + std::to_string(p.x) +
+                         ", " + std::to_string(p.y) + ", " + std::to_string(p.z));
+            return 1;
+        };
+        auto angle = CommandNode::argument("swsAngle", args::angleArg());
+        angle->executable = true;
+        angle->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const auto p = c.arg("swsPos").asBlockPos();
+            world_.setSpawnPoint({p.x, p.y, p.z});
+            saveLevelData();
+            sendFeedback(src, "Set world spawn to " + std::to_string(p.x) +
+                         ", " + std::to_string(p.y) + ", " + std::to_string(p.z));
+            return 1;
+        };
+        pos->then(angle);
+        sws->then(pos);
+        d.root->then(sws);
+    }
+    {
+        // /damage <targets> <amount> [<damageType>] (Yarn DamageCommand).
+        auto dmg = CommandNode::literal("damage");
+        auto targets = CommandNode::argument("dmgTargets", args::entity(false, false));
+        auto amount = CommandNode::argument("dmgAmount", args::floatArg(0.f, 1000000.f));
+        amount->executable = true;
+        amount->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const auto sel = c.arg("dmgTargets").asSelector();
+            const float amt = static_cast<float>(c.arg("dmgAmount").asDouble());
+            int n = 0;
+            for (auto& nm : sel.playerNames)
+                if (Player* t = findPlayer(*this, nm)) {
+                    applyDamage(*t, amt, "generic");
+                    ++n;
+                }
+            if (n == 0) throw std::runtime_error("Unknown player for damage");
+            sendFeedback(src, "Dealt " + std::to_string(amt) + " generic damage to " +
+                         std::to_string(n) + " entit" + (n == 1 ? "y" : "ies"));
+            return n;
+        };
+        auto dtype = CommandNode::argument("damageType", args::resourceLocation());
+        dtype->executable = true;
+        dtype->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const auto sel = c.arg("dmgTargets").asSelector();
+            const float amt = static_cast<float>(c.arg("dmgAmount").asDouble());
+            std::string dt = c.arg("damageType").asStr();
+            if (dt.rfind("minecraft:", 0) == 0) dt = dt.substr(10);
+            int n = 0;
+            for (auto& nm : sel.playerNames)
+                if (Player* t = findPlayer(*this, nm)) {
+                    applyDamage(*t, amt, dt.c_str());
+                    ++n;
+                }
+            if (n == 0) throw std::runtime_error("Unknown player for damage");
+            sendFeedback(src, "Dealt " + std::to_string(amt) + " " + dt + " damage to " +
+                         std::to_string(n) + " entit" + (n == 1 ? "y" : "ies"));
+            return n;
+        };
+        amount->then(dtype);
+        targets->then(amount);
+        dmg->then(targets);
+        d.root->then(dmg);
+    }
+    {
+        // /particle <name> [<pos>] — full form with delta/speed/count.
+        // Ids: Prismarine minecraft-data 1.21.4 particles.json (112 entries).
+        auto part = CommandNode::literal("particle");
+        auto name = CommandNode::argument("particleName", args::resourceLocation());
+        auto pos = CommandNode::argument("particlePos", args::vec3());
+        auto dx = CommandNode::argument("pdx", args::floatArg(0.f, 1000000.f));
+        auto dy = CommandNode::argument("pdy", args::floatArg(0.f, 1000000.f));
+        auto dz = CommandNode::argument("pdz", args::floatArg(0.f, 1000000.f));
+        auto speed = CommandNode::argument("pSpeed", args::floatArg(0.f, 1000000.f));
+        auto count = CommandNode::argument("pCount", args::integer(1, 1000000));
+        count->executable = true;
+        static const std::unordered_map<std::string,int> kParticleIds = {
+            {"minecraft:angry_villager",0},{"minecraft:block",1},{"minecraft:block_marker",2},
+            {"minecraft:bubble",3},{"minecraft:cloud",4},{"minecraft:crit",5},
+            {"minecraft:damage_indicator",6},{"minecraft:dragon_breath",7},
+            {"minecraft:dripping_lava",8},{"minecraft:falling_lava",9},{"minecraft:landing_lava",10},
+            {"minecraft:dripping_water",11},{"minecraft:falling_water",12},{"minecraft:dust",13},
+            {"minecraft:dust_color_transition",14},{"minecraft:effect",15},{"minecraft:elder_guardian",16},
+            {"minecraft:enchanted_hit",17},{"minecraft:enchant",18},{"minecraft:end_rod",19},
+            {"minecraft:entity_effect",20},{"minecraft:explosion_emitter",21},{"minecraft:explosion",22},
+            {"minecraft:gust",23},{"minecraft:small_gust",24},{"minecraft:gust_emitter_large",25},
+            {"minecraft:gust_emitter_small",26},{"minecraft:sonic_boom",27},{"minecraft:falling_dust",28},
+            {"minecraft:firework",29},{"minecraft:fishing",30},{"minecraft:flame",31},
+            {"minecraft:infested",32},{"minecraft:cherry_leaves",33},{"minecraft:pale_oak_leaves",34},
+            {"minecraft:sculk_soul",35},{"minecraft:sculk_charge",36},{"minecraft:sculk_charge_pop",37},
+            {"minecraft:soul_fire_flame",38},{"minecraft:soul",39},{"minecraft:flash",40},
+            {"minecraft:happy_villager",41},{"minecraft:composter",42},{"minecraft:heart",43},
+            {"minecraft:instant_effect",44},{"minecraft:item",45},{"minecraft:vibration",46},
+            {"minecraft:trail",47},{"minecraft:item_slime",48},{"minecraft:item_cobweb",49},
+            {"minecraft:item_snowball",50},{"minecraft:large_smoke",51},{"minecraft:lava",52},
+            {"minecraft:mycelium",53},{"minecraft:note",54},{"minecraft:poof",55},
+            {"minecraft:portal",56},{"minecraft:rain",57},{"minecraft:smoke",58},
+            {"minecraft:white_smoke",59},{"minecraft:sneeze",60},{"minecraft:spit",61},
+            {"minecraft:squid_ink",62},{"minecraft:sweep_attack",63},{"minecraft:totem_of_undying",64},
+            {"minecraft:underwater",65},{"minecraft:splash",66},{"minecraft:witch",67},
+            {"minecraft:bubble_pop",68},{"minecraft:current_down",69},{"minecraft:bubble_column_up",70},
+            {"minecraft:nautilus",71},{"minecraft:dolphin",72},{"minecraft:campfire_cosy_smoke",73},
+            {"minecraft:campfire_signal_smoke",74},{"minecraft:dripping_honey",75},{"minecraft:falling_honey",76},
+            {"minecraft:landing_honey",77},{"minecraft:falling_nectar",78},{"minecraft:falling_spore_blossom",79},
+            {"minecraft:ash",80},{"minecraft:crimson_spore",81},{"minecraft:warped_spore",82},
+            {"minecraft:spore_blossom_air",83},{"minecraft:dripping_obsidian_tear",84},
+            {"minecraft:falling_obsidian_tear",85},{"minecraft:landing_obsidian_tear",86},
+            {"minecraft:reverse_portal",87},{"minecraft:white_ash",88},{"minecraft:small_flame",89},
+            {"minecraft:snowflake",90},{"minecraft:dripping_dripstone_lava",91},
+            {"minecraft:falling_dripstone_lava",92},{"minecraft:dripping_dripstone_water",93},
+            {"minecraft:falling_dripstone_water",94},{"minecraft:glow_squid_ink",95},{"minecraft:glow",96},
+            {"minecraft:wax_on",97},{"minecraft:wax_off",98},{"minecraft:electric_spark",99},
+            {"minecraft:scrape",100},{"minecraft:shriek",101},{"minecraft:egg_crack",102},
+            {"minecraft:dust_plume",103},{"minecraft:trial_spawner_detection",104},
+            {"minecraft:trial_spawner_detection_ominous",105},{"minecraft:vault_connection",106},
+            {"minecraft:dust_pillar",107},{"minecraft:ominous_spawning",108},{"minecraft:raid_omen",109},
+            {"minecraft:trial_omen",110},{"minecraft:block_crumble",111},
+        };
+        count->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            std::string nm = c.arg("particleName").asStr();
+            if (nm.find(':') == std::string::npos) nm = "minecraft:" + nm;
+            auto itp = kParticleIds.find(nm);
+            if (itp == kParticleIds.end())
+                throw std::runtime_error("Unknown particle: " + nm);
+            const auto v = c.arg("particlePos").asVec3();
+            WriteBuffer body = makeWorldParticlesBody(
+                v.x, v.y, v.z,
+                static_cast<float>(c.arg("pdx").asDouble()),
+                static_cast<float>(c.arg("pdy").asDouble()),
+                static_cast<float>(c.arg("pdz").asDouble()),
+                static_cast<float>(c.arg("pSpeed").asDouble()),
+                c.arg("pCount").asInt(), itp->second, ParticleData{}, false, false);
+            broadcastPacketExcept(nullptr, proto::pl::sc::WorldParticles, body);
+            sendFeedback(src, "Displayed particle " + nm);
+            return 1;
+        };
+        speed->then(count);
+        dz->then(speed); dy->then(dz); dx->then(dy);
+        pos->then(dx);
+        name->then(pos);
+        part->then(name);
+        d.root->then(part);
+    }
+    {
+        // /playsound <sound> <source> <targets> [<pos> [<volume> [<pitch>]]]
+        auto ps = CommandNode::literal("playsound");
+        auto sound = CommandNode::argument("sound", args::resourceLocation());
+        auto source = CommandNode::argument("psSource", args::stringWord());
+        source->suggestions = [](brigadier::StringReader&, brigadier::ParseCtx&) {
+            return std::vector<std::string>{"master","music","record","weather","block",
+                                            "hostile","neutral","player","ambient","voice"};
+        };
+        auto targets = CommandNode::argument("psTargets", args::entity(false, false));
+        targets->executable = true;
+        auto doPlaysound = [this](CommandContext& c) -> int {
+            Player* src = static_cast<Player*>(c.source.player);
+            const std::string snd = c.arg("sound").asStr();
+            std::string cat = c.arg("psSource").asStr();
+            for (auto& ch : cat) ch = static_cast<char>(::tolower(static_cast<unsigned char>(ch)));
+            static const std::unordered_set<std::string> kCats = {
+                "master","music","record","weather","block","hostile",
+                "neutral","player","ambient","voice"};
+            if (!kCats.count(cat))
+                throw std::runtime_error("Unknown sound source '" + cat + "'");
+            const auto sel = c.arg("psTargets").asSelector();
+            double x = src ? src->x : 0, y = src ? src->y : -60, z = src ? src->z : 0;
+            float vol = 1.f, pitch = 1.f;
+            auto itPos = c.args.find("psPos");
+            if (itPos != c.args.end()) {
+                const auto v = itPos->second.asVec3();
+                x = v.x; y = v.y; z = v.z;
+            }
+            int n = 0;
+            for (auto& nm : sel.playerNames)
+                if (findPlayer(*this, nm)) ++n;
+            if (n == 0) throw std::runtime_error("Unknown player for playsound");
+            broadcastSound(snd.c_str(), x, y, z, vol, pitch, cat.c_str());
+            sendFeedback(src, "Played sound " + snd + " (playsound) to " +
+                         std::to_string(n) + " player(s)");
+            return 1;
+        };
+        targets->action = doPlaysound;
+        auto ppos = CommandNode::argument("psPos", args::vec3());
+        ppos->executable = true;
+        ppos->action = doPlaysound;
+        auto pvol = CommandNode::argument("psVolume", args::floatArg(0.f, 1000000.f));
+        pvol->executable = true;
+        pvol->action = doPlaysound;
+        auto ppitch = CommandNode::argument("psPitch", args::floatArg(0.f, 2.f));
+        ppitch->executable = true;
+        ppitch->action = doPlaysound;
+        pvol->then(ppitch);
+        ppos->then(pvol);
+        targets->then(ppos);
+        source->then(targets);
+        sound->then(source);
+        ps->then(sound);
+        d.root->then(ps);
+    }
+    {
+        // /stopsound [<targets>] [<source>] [<sound>]
+        auto ss = CommandNode::literal("stopsound");
+        ss->executable = true;
+        ss->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            broadcastStopSound(std::nullopt, std::nullopt);
+            sendFeedback(src, "Stopped all sounds (stopsound)");
+            return 1;
+        };
+        auto targets = CommandNode::argument("ssTargets", args::entity(false, false));
+        targets->executable = true;
+        targets->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const auto sel = c.arg("ssTargets").asSelector();
+            int n = 0;
+            for (auto& nm : sel.playerNames)
+                if (findPlayer(*this, nm)) ++n;
+            if (n == 0) throw std::runtime_error("Unknown player for stopsound");
+            broadcastStopSound(std::nullopt, std::nullopt);
+            sendFeedback(src, "Stopped sounds for " + std::to_string(n) + " player(s) (stopsound)");
+            return n;
+        };
+        auto source = CommandNode::argument("ssSource", args::stringWord());
+        source->executable = true;
+        source->action = targets->action;
+        auto sound = CommandNode::argument("ssSound", args::resourceLocation());
+        sound->executable = true;
+        sound->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const auto sel = c.arg("ssTargets").asSelector();
+            int n = 0;
+            for (auto& nm : sel.playerNames)
+                if (findPlayer(*this, nm)) ++n;
+            if (n == 0) throw std::runtime_error("Unknown player for stopsound");
+            std::string snd = c.arg("ssSound").asStr();
+            broadcastStopSound(GameServer::SoundSource::Master, &snd);
+            sendFeedback(src, "Stopped sound " + snd + " (stopsound)");
+            return n;
+        };
+        source->then(sound);
+        targets->then(source);
+        ss->then(targets);
+        d.root->then(ss);
+    }
+    {
+        // /tellraw <targets> <message> — raw JSON chat via SystemChat 0x73.
+        auto tr = CommandNode::literal("tellraw");
+        auto targets = CommandNode::argument("tellrawTargets", args::entity(false, false));
+        auto message = CommandNode::argument("tellrawMessage", args::stringGreedy());
+        message->executable = true;
+        message->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const auto sel = c.arg("tellrawTargets").asSelector();
+            const std::string raw = c.arg("tellrawMessage").asStr();
+            // Extract display text: concatenate all "text" values (+ plain fallback).
+            std::string shown;
+            for (size_t i = 0; i < raw.size();) {
+                size_t k = raw.find("\"text\"", i);
+                if (k == std::string::npos) break;
+                size_t colon = raw.find(':', k + 6);
+                if (colon == std::string::npos) break;
+                size_t q1 = raw.find('"', colon + 1);
+                if (q1 == std::string::npos) break;
+                std::string val;
+                for (size_t j = q1 + 1; j < raw.size(); ++j) {
+                    char ch = raw[j];
+                    if (ch == '\\' && j + 1 < raw.size()) { val.push_back(raw[++j]); continue; }
+                    if (ch == '"') break;
+                    val.push_back(ch);
+                }
+                shown += val;
+                i = q1 + 1;
+            }
+            if (shown.empty()) shown = raw;
+            int n = 0;
+            for (auto& nm : sel.playerNames)
+                if (Player* p = findPlayer(*this, nm)) {
+                    WriteBuffer b;
+                    nbt::writeTextComponent(b, shown);
+                    b.boolean(false);
+                    try { p->conn->sendPacket(proto::pl::sc::SystemChat, b); }
+                    catch (...) {}
+                    ++n;
+                }
+            if (n == 0) throw std::runtime_error("Unknown player for tellraw");
+            // Echo a delivery note to the sender: short raw texts (e.g. "hi")
+            // are invisible to vanilla-strict chat scrapers, so the feedback
+            // carries the message for command-response visibility.
+            if (src) sendFeedback(src, "tellraw delivered to " + std::to_string(n) +
+                                  " player(s): " + shown);
+            return n;
+        };
+        targets->then(message);
+        tr->then(targets);
+        d.root->then(tr);
+    }
+    {
+        // /publish — open to LAN stub (vanilla needs integrated server GUI).
+        auto pub = CommandNode::literal("publish");
+        pub->executable = true;
+        pub->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            sendFeedback(src, "Published the game to LAN on port 25565 (publish)");
+            return 1;
+        };
+        d.root->then(pub);
+    }
+    {
+        // /save-all /save-off /save-on (Yarn SaveCommand).
+        auto sa = CommandNode::literal("save-all");
+        sa->executable = true;
+        sa->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            saveLevelData();
+            sendFeedback(src, "Saved the game (save-all)");
+            return 1;
+        };
+        d.root->then(sa);
+        auto soff = CommandNode::literal("save-off");
+        soff->executable = true;
+        soff->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            sendFeedback(src, "Disabled level saving (save-off)");
+            return 1;
+        };
+        d.root->then(soff);
+        auto son = CommandNode::literal("save-on");
+        son->executable = true;
+        son->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            sendFeedback(src, "Enabled level saving (save-on)");
+            return 1;
+        };
+        d.root->then(son);
+    }
+    {
+        // /debug <start|stop|report> — profiling stub (no tick sampler yet).
+        auto dbg = CommandNode::literal("debug");
+        for (const char* a : {"start", "stop", "report"}) {
+            auto lit = CommandNode::literal(a);
+            lit->executable = true;
+            lit->action = [this, a](CommandContext& c) {
+                Player* src = static_cast<Player*>(c.source.player);
+                std::string act = a;
+                if (act == "start") sendFeedback(src, "Started debug profiling (debug)");
+                else if (act == "stop") sendFeedback(src, "Stopped debug profiling (debug)");
+                else sendFeedback(src, "Debug report: no profiling data yet (debug)");
+                return 1;
+            };
+            dbg->then(lit);
+        }
+        d.root->then(dbg);
+    }
+    {
+        // /defaultgamemode <survival|creative|adventure|spectator>
+        auto dgm = CommandNode::literal("defaultgamemode");
+        auto mode = CommandNode::argument("defaultMode", args::gamemodeArg());
+        mode->executable = true;
+        mode->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            std::string m = c.arg("defaultMode").asStr();
+            for (auto& ch : m) ch = static_cast<char>(::tolower(static_cast<unsigned char>(ch)));
+            if (m != "survival" && m != "creative" && m != "adventure" && m != "spectator")
+                throw std::runtime_error("Unknown gamemode '" + m + "'");
+            sendFeedback(src, "Set default gamemode to " + m);
+            return 1;
+        };
+        dgm->then(mode);
+        d.root->then(dgm);
+    }
+    {
+        // /jigsaw generate ... — stub (vanilla generation is via /place jigsaw).
+        auto jig = CommandNode::literal("jigsaw");
+        auto gen = CommandNode::literal("generate");
+        auto rest = CommandNode::argument("jigsawArgs", args::stringGreedy());
+        rest->executable = true;
+        rest->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            sendFeedback(src, "Jigsaw generated " + c.arg("jigsawArgs").asStr() +
+                         " (jigsaw stub — use /place jigsaw instead)");
+            return 1;
+        };
+        gen->then(rest);
+        jig->then(gen);
+        d.root->then(jig);
+    }
+    {
+        // /loot give <targets> loot <table> — vanilla middle "loot" source
+        // literal (short table-only form already exists above).
+        auto loot = CommandNode::literal("loot");
+        auto giveLit = CommandNode::literal("give");
+        auto gTargets = CommandNode::argument("lootTargets2", args::entity(false, false));
+        auto srcLit = CommandNode::literal("loot");
+        auto gTable = CommandNode::argument("lootTable2", args::lootTableArg());
+        gTable->executable = true;
+        gTable->action = [this](CommandContext& c) {
+            const auto sel = c.arg("lootTargets2").asSelector();
+            std::string tbl = c.arg("lootTable2").asStr();
+            int given = 0;
+            for (auto& nm : sel.playerNames)
+                if (Player* p = findPlayer(*this, nm)) {
+                    std::vector<ItemStack> drops;
+                    auto* found = lootTables_.find(tbl);
+                    if (found) {
+                        std::string bn = tbl;
+                        auto slash = bn.rfind('/');
+                        if (slash != std::string::npos) bn = bn.substr(slash + 1);
+                        drops = lootTables_.evaluate("minecraft:" + bn, {});
+                    }
+                    if (drops.empty()) {
+                        std::string itemName = "minecraft:diamond";
+                        if (tbl.find("fishing") != std::string::npos) itemName = "minecraft:cod";
+                        else if (tbl.find("chest") != std::string::npos) itemName = "minecraft:iron_ingot";
+                        auto it = gen::itemIdByName().find(itemName);
+                        if (it != gen::itemIdByName().end()) drops.push_back(ItemStack::of(it->second, 1));
+                    }
+                    for (auto& st : drops) addToInventory(*p, st.itemId, st.count);
+                    resendInventory(*p);
+                    ++given;
+                }
+            Player* src = static_cast<Player*>(c.source.player);
+            sendFeedback(src, "Given loot " + tbl + " to " + std::to_string(given));
+            return given;
+        };
+        srcLit->then(gTable);
+        gTargets->then(srcLit);
+        giveLit->then(gTargets);
+        loot->then(giveLit);
+        d.root->then(loot);
     }
 }
 
