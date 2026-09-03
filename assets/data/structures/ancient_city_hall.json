@@ -1,0 +1,42 @@
+{
+  "name": "minecraft:ancient_city_hall",
+  "type": "minecraft:ancient_city",
+  "placement": {
+    "spacing": 24,
+    "separation": 8,
+    "salt": 20083237,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:ancient_city/hall",
+      "weight": 8
+    },
+    {
+      "name": "minecraft:ancient_city/hall_balcony",
+      "weight": 4
+    }
+  ],
+  "palette": {
+    "deepslate": "minecraft:deepslate_bricks",
+    "chest": "minecraft:chest",
+    "sculk": "minecraft:sculk"
+  },
+  "mobs": [
+    {
+      "pos": [
+        5,
+        1,
+        5
+      ],
+      "mob": "minecraft:warden",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "4,1,4",
+      "table": "minecraft:chests/ancient_city"
+    }
+  ]
+}

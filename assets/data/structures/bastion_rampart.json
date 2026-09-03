@@ -1,0 +1,54 @@
+{
+  "name": "minecraft:bastion_rampart",
+  "type": "minecraft:bastion_remnant",
+  "placement": {
+    "spacing": 27,
+    "separation": 4,
+    "salt": 30084237,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:bastion/rampart",
+      "weight": 8
+    },
+    {
+      "name": "minecraft:bastion/rampart_corner",
+      "weight": 5
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:blackstone",
+    "log": "minecraft:polished_blackstone",
+    "glass": "minecraft:air",
+    "chest": "minecraft:chest",
+    "gold": "minecraft:gold_block",
+    "wall": "minecraft:polished_blackstone_wall"
+  },
+  "mobs": [
+    {
+      "pos": [
+        3,
+        1,
+        3
+      ],
+      "mob": "minecraft:piglin",
+      "count": 2
+    },
+    {
+      "pos": [
+        5,
+        1,
+        5
+      ],
+      "mob": "minecraft:hoglin",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "3,1,3",
+      "table": "minecraft:chests/bastion_other"
+    }
+  ]
+}

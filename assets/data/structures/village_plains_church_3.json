@@ -1,0 +1,53 @@
+{
+  "name": "minecraft:village_plains_church_3",
+  "type": "minecraft:village",
+  "placement": {
+    "spacing": 34,
+    "separation": 8,
+    "salt": 10387348,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:village/plains/church_3",
+      "weight": 6
+    },
+    {
+      "name": "minecraft:village/plains/library",
+      "weight": 4
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:oak_planks",
+    "log": "minecraft:cobblestone",
+    "glass": "minecraft:glass",
+    "chest": "minecraft:chest",
+    "cobble": "minecraft:cobblestone"
+  },
+  "mobs": [
+    {
+      "pos": [
+        2,
+        1,
+        2
+      ],
+      "mob": "minecraft:villager",
+      "count": 1
+    },
+    {
+      "pos": [
+        4,
+        1,
+        4
+      ],
+      "mob": "minecraft:iron_golem",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "3,1,3",
+      "table": "minecraft:chests/village/village_taiga_house"
+    }
+  ]
+}

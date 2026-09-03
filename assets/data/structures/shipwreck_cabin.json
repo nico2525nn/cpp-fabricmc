@@ -1,0 +1,32 @@
+{
+  "name": "minecraft:shipwreck_cabin",
+  "type": "minecraft:shipwreck",
+  "placement": {
+    "spacing": 24,
+    "separation": 4,
+    "salt": 165745297,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:shipwreck/cabin",
+      "weight": 8
+    },
+    {
+      "name": "minecraft:shipwreck/hold",
+      "weight": 5
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:oak_planks",
+    "log": "minecraft:oak_log",
+    "glass": "minecraft:air",
+    "chest": "minecraft:chest"
+  },
+  "loot": [
+    {
+      "pos": "3,1,1",
+      "table": "minecraft:chests/shipwreck_supply"
+    }
+  ]
+}

@@ -393,6 +393,12 @@ public:
         std::lock_guard lk(dirtyMtx_);
         return dirty_.count(chunkKey(cx, cz)) != 0;
     }
+    // plan42 R2 (E-13): drop the dirty bit without writing (caller persisted
+    // the chunk itself, e.g. GameServer::saveChunkAsync via ioPool_).
+    void markClean(std::int32_t cx, std::int32_t cz) {
+        std::lock_guard lk(dirtyMtx_);
+        dirty_.erase(chunkKey(cx, cz));
+    }
     bool flushChunk(std::int32_t cx, std::int32_t cz) {
         {
             std::lock_guard lk(dirtyMtx_);
