@@ -97,6 +97,10 @@ void GameServer::handleMoveVehicle(Player& p, double x, double y, double z, floa
     vm.f64(x); vm.f64(y); vm.f64(z);
     vm.f32(yaw); vm.f32(pitch);
     broadcastPacketExcept(&p, proto::pl::sc::VehicleMove, vm);
+    // plan42 R1: MoveMinecart 0x31 for minecart kinds (lerp steps)
+    if (veh->kind==MobKind::Minecart || veh->kind==MobKind::ChestMinecart || veh->kind==MobKind::FurnaceMinecart || veh->kind==MobKind::TntMinecart || veh->kind==MobKind::HopperMinecart || veh->kind==MobKind::CommandBlockMinecart || veh->kind==MobKind::SpawnerMinecart) {
+        broadcastMoveMinecart(veh->entityId, x, y, z, yaw, pitch, &p);
+    }
 }
 void GameServer::handleHorseJump(Player& p, int power) {
     if (p.vehicleId==-1) return;

@@ -659,4 +659,75 @@ void GameServer::broadcastSyncEntityPosition(const MobEntity& mob, Player* excep
     float yawf = 0, pitchf = 0;
     broadcastSyncEntityPosition(mob.entityId, mob.x, mob.y, mob.z, 0, 0, 0, yawf, pitchf, true, except);
 }
+// plan42 R1 wire: MapData 0x2D MoveMinecart 0x31 SelectAdvancementTab 0x4F
+void GameServer::sendMapData(Player& p, int mapId, uint8_t scale, bool locked) {
+    if (!p.conn) return;
+    WriteBuffer b;
+    b.varint(mapId);
+    b.i8((int8_t)scale);
+    b.boolean(locked);
+    b.boolean(false); // icons absent (option<array> false)
+    b.u8(0); // columns 0 => no rows/x/y/data
+    try { p.conn->sendPacket(proto::pl::sc::MapData, b); } catch (...) {}
+}
+void GameServer::sendMapData(Player& p, int mapId, const std::array<uint8_t,16384>& colors, uint8_t scale) {
+    if (!p.conn) return;
+    WriteBuffer b;
+    b.varint(mapId);
+    b.i8((int8_t)scale);
+    b.boolean(false);
+    b.boolean(false);
+    b.u8(128); // columns 128
+    b.u8(128); // rows 128
+    b.u8(0); // x 0
+    b.u8(0); // y 0
+    b.varint(16384);
+    b.raw(colors.data(), 16384);
+    try { p.conn->sendPacket(proto::pl::sc::MapData, b); } catch (...) {}
+}
+void GameServer::broadcastMapData(int mapId, uint8_t scale, bool locked, Player* except) {
+    WriteBuffer b;
+    b.varint(mapId);
+    b.i8((int8_t)scale);
+    b.boolean(locked);
+    b.boolean(false);
+    b.u8(0);
+    broadcastPacketExcept(except, proto::pl::sc::MapData, b);
+}
+void GameServer::sendMoveMinecart(Player& p, std::int32_t entityId, double x, double y, double z, float yaw, float pitch) {
+    if (!p.conn) return;
+    WriteBuffer b;
+    b.varint(entityId);
+    b.varint(1); // one lerp step
+    b.f32((float)x); b.f32((float)y); b.f32((float)z);
+    b.f32(0.f); b.f32(0.f); b.f32(0.f);
+    b.f32(yaw); b.f32(pitch); b.f32(1.f);
+    try { p.conn->sendPacket(proto::pl::sc::MoveMinecart, b); } catch (...) {}
+}
+void GameServer::broadcastMoveMinecart(std::int32_t entityId, double x, double y, double z, float yaw, float pitch, Player* except) {
+    WriteBuffer b;
+    b.varint(entityId);
+    b.varint(1);
+    b.f32((float)x); b.f32((float)y); b.f32((float)z);
+    b.f32(0.f); b.f32(0.f); b.f32(0.f);
+    b.f32(yaw); b.f32(pitch); b.f32(1.f);
+    broadcastPacketExcept(except, proto::pl::sc::MoveMinecart, b);
+}
+void GameServer::sendSelectAdvancementTab(Player& p, const std::string& tabId) {
+    if (!p.conn) return;
+    WriteBuffer b;
+    if (tabId.empty()) {
+        b.boolean(false);
+    } else {
+        b.boolean(true);
+        b.string(tabId);
+    }
+    try { p.conn->sendPacket(proto::pl::sc::SelectAdvancementTab, b); } catch (...) {}
+}
+void GameServer::broadcastSelectAdvancementTab(const std::string& tabId, Player* except) {
+    WriteBuffer b;
+    if (tabId.empty()) b.boolean(false);
+    else { b.boolean(true); b.string(tabId); }
+    broadcastPacketExcept(except, proto::pl::sc::SelectAdvancementTab, b);
+}
 } // namespace cppfm

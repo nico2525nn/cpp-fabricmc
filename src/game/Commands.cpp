@@ -357,14 +357,33 @@ void GameServer::initCommands() {
             int given = 0;
             for (auto& n : sel.playerNames)
                 if (Player* t = findPlayer(*this, n)) {
-                    // try to add stack preserving trim
-                    bool placed=false;
-                    for(int i: {36,37,38,39,40,41,42,43,44,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35}){
-                        auto &s = t->inv[i];
-                        if (s.empty()) { s = stack; placed=true; break; }
+                    // plan42 R1: filled_map map_id component + MapData 0x2D
+                    ItemStack toGive = stack;
+                    if (base=="minecraft:filled_map" || base=="minecraft:map") {
+                        int mapId = nextMapId_.fetch_add(1);
+                        WriteBuffer tmp; tmp.varint(mapId);
+                        toGive.components.erase(std::remove_if(toGive.components.begin(), toGive.components.end(), [](auto &pr){return pr.first==36;}), toGive.components.end());
+                        toGive.components.emplace_back(36, std::vector<uint8_t>(tmp.data.begin(), tmp.data.end()));
+                        toGive.count = 1;
+                        bool placed=false;
+                        for(int i: {36,37,38,39,40,41,42,43,44,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35}){
+                            auto &s = t->inv[i];
+                            if (s.empty()) { s = toGive; placed=true; break; }
+                        }
+                        if(!placed) { addToInventory(*t, toGive.itemId, 1); // fallback add without map_id already handled via inventory scan
+                            for(int i: {36,37,38,39,40,41,42,43,44,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35}) if(!t->inv[i].empty() && t->inv[i].itemId==toGive.itemId) { t->inv[i]=toGive; break; }
+                        }
+                        resendInventory(*t);
+                        sendMapData(*t, mapId);
+                    } else {
+                        bool placed=false;
+                        for(int i: {36,37,38,39,40,41,42,43,44,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35}){
+                            auto &s = t->inv[i];
+                            if (s.empty()) { s = toGive; placed=true; break; }
+                        }
+                        if(!placed) addToInventory(*t, it->second, 1);
+                        resendInventory(*t);
                     }
-                    if(!placed) addToInventory(*t, it->second, 1);
-                    resendInventory(*t);
                     // if armor slot, sync equipment (plan13)
                     if (base.find("_helmet")!=std::string::npos||base.find("_chestplate")!=std::string::npos||base.find("_leggings")!=std::string::npos||base.find("_boots")!=std::string::npos)
                         syncEquipmentOnChange(*t);
@@ -405,13 +424,23 @@ void GameServer::initCommands() {
                         std::string mat = extract("material");
                         if (!pat.empty()) { ItemStack::ArmorTrim tr; tr.has=true; tr.pattern=pat; tr.material= mat.empty()?"minecraft:iron":mat; stack.setTrim(tr); }
                     }
+                    bool isMap = (base=="minecraft:filled_map" || base=="minecraft:map");
                     for(int k=0;k<n2;k++){
+                        ItemStack toGive = stack;
+                        int curMapId = -1;
+                        if (isMap) {
+                            curMapId = nextMapId_.fetch_add(1);
+                            WriteBuffer tmp; tmp.varint(curMapId);
+                            toGive.components.erase(std::remove_if(toGive.components.begin(), toGive.components.end(), [](auto &pr){return pr.first==36;}), toGive.components.end());
+                            toGive.components.emplace_back(36, std::vector<uint8_t>(tmp.data.begin(), tmp.data.end()));
+                        }
                         bool placed=false;
                         for(int i: {36,37,38,39,40,41,42,43,44,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35}){
                             auto &s = t->inv[i];
-                            if (s.empty()) { s = stack; placed=true; break; }
+                            if (s.empty()) { s = toGive; placed=true; break; }
                         }
-                        if(!placed) addToInventory(*t, it->second, 1);
+                        if(!placed) addToInventory(*t, toGive.itemId, 1);
+                        if (isMap && curMapId>=0) sendMapData(*t, curMapId);
                     }
                     resendInventory(*t);
                     ++given;
