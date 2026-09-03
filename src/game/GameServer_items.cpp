@@ -138,7 +138,7 @@ void GameServer::broadcastSetPassengers(std::int32_t vehicleId) {
     broadcastPacketExcept(nullptr, proto::pl::sc::SetPassengers, b);
 }
 void GameServer::hoppersTick() {
-    if (tickNo_ % 8 != 0) return;
+    if (tickNo_ % HOPPER_TRANSFER_INTERVAL_TICKS != 0) return;
     std::vector<std::pair<std::int64_t, BlockEntity>> snapshot;
     blockEntities_.forEach([&](std::int64_t k, BlockEntity& be) {
         if (be.kind == BlockEntity::Kind::Hopper ||
