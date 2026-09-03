@@ -2,6 +2,7 @@
 #pragma once
 #include <atomic>
 #include <fstream>
+#include <functional>
 #include <mutex>
 #include <netinet/in.h>
 #include <set>
@@ -48,7 +49,9 @@ public:
     }
     void stop() {
         running_ = false;
-        if (fd_ >= 0) { ::close(fd_); fd_ = -1; }
+        // plan46 §2 (O-09): shutdown() wakes a worker blocked in accept();
+        // close() alone does not reliably interrupt it on Linux.
+        if (fd_ >= 0) { ::shutdown(fd_, SHUT_RDWR); ::close(fd_); fd_ = -1; }
         if (worker_.joinable()) worker_.join();
     }
 

@@ -321,4 +321,35 @@ target_link_libraries(test_recipes_mirror PRIVATE ZLIB::ZLIB OpenSSL::Crypto)
 add_test(NAME recipes_mirror COMMAND test_recipes_mirror WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(recipes_mirror PROPERTIES TIMEOUT 30 LABELS inventory)
 
+# plan46 §2 recovery (O-07/O-08): offline world-integrity checker
+add_executable(check_world
+    tools/check_world.cpp
+    src/core/NBT.cpp)
+target_include_directories(check_world PRIVATE src src/generated)
+find_package(ZLIB REQUIRED)
+target_link_libraries(check_world PRIVATE ZLIB::ZLIB)
+
+# plan46 §2 recovery (O-07/O-08): loadWithRecovery matrix + quarantine + session.lock
+add_executable(test_recovery tests/test_recovery.cpp
+    src/core/NBT.cpp
+    src/game/WorldGen.cpp
+    src/worldgen/DensityFunction.cpp src/worldgen/MultiNoise.cpp
+    src/worldgen/Structures.cpp src/worldgen/StructurePlacer.cpp
+    src/worldgen/ChunkGenerator.cpp src/worldgen/StructureManager.cpp
+    src/game/WorldDataManager.cpp)
+target_include_directories(test_recovery PRIVATE src src/generated)
+find_package(ZLIB REQUIRED)
+find_package(OpenSSL REQUIRED)
+target_link_libraries(test_recovery PRIVATE ZLIB::ZLIB OpenSSL::Crypto)
+add_test(NAME recovery COMMAND test_recovery WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(recovery PROPERTIES TIMEOUT 120 LABELS recovery)
+
+# plan46 §2 (O-09): 5x concurrent RCON + 10x wrong-pass harness (in-process)
+add_executable(test_rcon_multi tests/test_rcon_multi.cpp)
+target_include_directories(test_rcon_multi PRIVATE src src/generated)
+find_package(Threads REQUIRED)
+target_link_libraries(test_rcon_multi PRIVATE Threads::Threads)
+add_test(NAME rcon_multi COMMAND test_rcon_multi WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(rcon_multi PROPERTIES TIMEOUT 60 LABELS recovery)
+
 # plan44 G-05 mob attributes 149 species (world) — header-only, reads docs/mob_stats_149.csv
