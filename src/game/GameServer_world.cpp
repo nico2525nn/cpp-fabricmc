@@ -375,6 +375,15 @@ void GameServer::kickPlayer(const std::string& name, const std::string& reason) 
     WriteBuffer b;
     nbt::writeTextComponent(b, txt);
     try { t->conn->sendPacket(proto::pl::sc::Disconnect, b); } catch (...) {}
+    // plan42 R3 (E-19, perm_kick): hard RST close after Disconnect 0x1D. A
+    // graceful FIN lets the victim's first subsequent send succeed, so the
+    // spec test (send -> expect socket error) cannot observe the kick.
+    // Sessions use TCP_NODELAY, so the Disconnect segment is already on the
+    // wire before the RST; a prompt client reader consumes 0x1D first.
+    try {
+        const int fd = t->conn->fd();
+        if (fd >= 0) { struct linger lg{1, 0}; ::setsockopt(fd, SOL_SOCKET, SO_LINGER, &lg, sizeof(lg)); }
+    } catch (...) {}
     try { t->conn->close(); } catch (...) {}
 }
 void GameServer::sendWorldBorderTo(Player& p) const {
@@ -439,8 +448,15 @@ std::string GameServer::dispatchConsole(const std::string& line) {
                                  brigadier::SelectorResult& out) {
         out = resolveSelector(raw, nullptr);
     };
+    // plan42 R3 (E-19): capture console feedback so RCON returns actual command
+    // output (vanilla: `seed` -> `Seed: [...]`), not fixed "ok".
+    std::string captured;
+    std::string* prev = consoleCapture_;
+    consoleCapture_ = &captured;
     const auto res = commands_.execute(line, std::move(src));
-    return res.ok ? "ok" : ("error: " + res.errorText);
+    consoleCapture_ = prev;
+    if (!res.ok) return "error: " + res.errorText;
+    return captured.empty() ? "ok" : captured;
 }
 
 // -------- B-07 async Anvil I/O + LRU (plan38 world worktree) --------

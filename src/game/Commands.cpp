@@ -170,6 +170,12 @@ static void sendFeedback(Player* p, const std::string& msg) {
         b.boolean(false);
         try { p->conn->sendPacket(proto::pl::sc::SystemChat, b); } catch (...) {}
     } else {
+        // plan42 R3 (E-19): capture console feedback for RCON responses
+        // (dispatchConsole returns it instead of fixed "ok").
+        if (GameServer::consoleCapture_) {
+            if (!GameServer::consoleCapture_->empty()) *GameServer::consoleCapture_ += "\n";
+            *GameServer::consoleCapture_ += msg;
+        }
         std::fprintf(stderr, "[cppfm] %s\n", msg.c_str());
     }
 }
@@ -4504,6 +4510,11 @@ void GameServer::initCommands() {
         wlOn->executable = true;
         wlOn->action = [this](CommandContext& c){
             Player* src = static_cast<Player*>(c.source.player);
+            // plan42 R3 (E-19) anti-lockout: a player enabler joins the list so
+            // they can rejoin to disable later (ops bypass anyway; console has
+            // no name to add). Without this, `whitelist off` becomes
+            // unreachable once enforcement starts.
+            if (src && !src->name.empty()) whitelist_.insert(src->name);
             whitelist_.setEnabled(true);
             sendFeedback(src, "Whitelist is now on");
             return 1;
