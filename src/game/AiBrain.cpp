@@ -169,7 +169,8 @@ bool MeleeAttackGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (!tgt) return false;
     const double dx = tgt->x - m.x, dz = tgt->z - m.z;
     const double dist = std::sqrt(dx * dx + dz * dz);
-    if (dist > 24) return false;
+    // plan44 G-05: pursuit radius follows vanilla follow_range (legacy floor 24).
+    if (dist > std::max(24.0, perceiveDist(m.kind))) return false;
     if (dist < 1.9) {
         if (now % 20 == 0) ctx.srv->mobAttackPlayer(m, *tgt);
         return true;
@@ -464,7 +465,8 @@ bool RangedAttackGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     const double dy = (tgt->y + 1.0) - (m.y + 1.6);
     const double dist = std::sqrt(dx * dx + dz * dz);
     if (dist < 5) return false;                       // melee goal takes over
-    if (dist > 16) { m.hasTarget = false; return true; }
+    // plan44 G-05: lose target beyond vanilla follow_range (ghast 100 keeps range).
+    if (dist > perceiveDist(m.kind)) { m.hasTarget = false; return true; }
     // face the target
     m.yaw = static_cast<float>(std::atan2(dz, dx) * 180.0 / 3.14159 - 90.0);
     // fire every 2 s with a short warm-up
@@ -637,7 +639,7 @@ bool BreezeWindChargeGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) 
     if (!t) return false;
     double dx=t->x - m.x, dy=(t->y+1.0)-(m.y+1.2), dz=t->z - m.z;
     double d=std::sqrt(dx*dx+dz*dz);
-    if (d>16) return false;
+    if (d > perceiveDist(MobKind::Breeze)) return false; // plan44 G-05 follow_range
     double inv=1.0/(d+1e-6);
     double vx=dx*inv*1.15, vz=dz*inv*1.15, vy=dy*inv*0.2 + 0.12;
     if (ctx.srv) {
@@ -696,7 +698,7 @@ bool ArmadilloRollUpGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
 bool WitchPotionThrowGoal::shouldStart(MobEntity& m, AiContext& ctx) {
     if (m.kind != MobKind::Witch) return false;
     if (!ctx.nearestPlayer) return false;
-    if (ctx.nearestPlayerDist2 > 16*16) return false;
+    if (ctx.nearestPlayerDist2 > perceptionRange2(MobKind::Witch)) return false; // plan44 G-05
     if (ctx.srv && ctx.srv->tickNoForTest() < m.witchPotionCooldown) return false;
     return true;
 }
@@ -829,7 +831,7 @@ bool WolfAngerGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
 bool DrownedTridentGoal::shouldStart(MobEntity& m, AiContext& ctx) {
     if (m.kind != MobKind::Drowned) return false;
     if (!ctx.nearestPlayer) return false;
-    if (ctx.nearestPlayerDist2 > 16*16) return false;
+    if (ctx.nearestPlayerDist2 > perceptionRange2(MobKind::Drowned)) return false; // plan44 G-05
     if (ctx.srv && ctx.srv->tickNoForTest() < m.drownedTridentCooldown) return false;
     return true;
 }
@@ -837,7 +839,7 @@ bool DrownedTridentGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (m.kind != MobKind::Drowned) return false;
     Player* t=ctx.nearestPlayer; if(!t) return false;
     double dx=t->x - m.x, dy=(t->y+1.0)-(m.y+1.6), dz=t->z - m.z; double d=std::sqrt(dx*dx+dz*dz)+1e-6;
-    if (d>16) return false;
+    if (d > perceiveDist(MobKind::Drowned)) return false; // plan44 G-05
     if (d<5) return false; // melee takes over
     if (ctx.srv) {
         ctx.srv->spawnProjectile(ProjectileKind::Trident, m.x, m.y+1.6, m.z, dx/d*1.2, dy/d*0.2+0.15, dz/d*1.2, m.entityId, false);
@@ -1065,7 +1067,7 @@ bool EndermanTeleportGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
 }
 bool ShulkerPeekGoal::shouldStart(MobEntity& m, AiContext& ctx){
     if(m.kind!=MobKind::Shulker) return false;
-    return ctx.nearestPlayer && ctx.nearestPlayerDist2 < 16*16;
+    return ctx.nearestPlayer && ctx.nearestPlayerDist2 < perceptionRange2(MobKind::Shulker); // plan44 G-05
 }
 bool ShulkerPeekGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(m.kind!=MobKind::Shulker) return false;
@@ -1090,7 +1092,7 @@ bool ShulkerPeekGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
 }
 bool GuardianBeamGoal::shouldStart(MobEntity& m, AiContext& ctx){
     if(m.kind!=MobKind::Guardian && m.kind!=MobKind::ElderGuardian) return false;
-    return ctx.nearestPlayer && ctx.nearestPlayerDist2 < 16*16;
+    return ctx.nearestPlayer && ctx.nearestPlayerDist2 < perceptionRange2(m.kind); // plan44 G-05
 }
 bool GuardianBeamGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(m.kind!=MobKind::Guardian && m.kind!=MobKind::ElderGuardian) return false;
@@ -1184,13 +1186,13 @@ bool VindicatorAxeGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     m.vindicatorJohnnyUntil=now+20;
     return true;
 }
-bool PillagerCrossbowGoal::shouldStart(MobEntity& m, AiContext& ctx){ if(m.kind!=MobKind::Pillager) return false; return ctx.nearestPlayer && ctx.nearestPlayerDist2 < 16*16; }
+bool PillagerCrossbowGoal::shouldStart(MobEntity& m, AiContext& ctx){ if(m.kind!=MobKind::Pillager) return false; return ctx.nearestPlayer && ctx.nearestPlayerDist2 < perceptionRange2(MobKind::Pillager); } // plan44 G-05
 bool PillagerCrossbowGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(m.kind!=MobKind::Pillager) return false;
     if(now < m.pillagerCrossbowCooldown) return false;
     Player* t=ctx.nearestPlayer; if(!t) return false;
     double dx=t->x-m.x, dy=(t->y+1)-(m.y+1.6), dz=t->z-m.z; double d=std::sqrt(dx*dx+dz*dz)+1e-6;
-    if(d<5 || d>16) { // patrol approach
+    if(d<5 || d > perceiveDist(MobKind::Pillager)) { // patrol approach (plan44 G-05 follow_range)
         m.x+=dx/d*0.09; m.z+=dz/d*0.09; m.yaw=(float)(std::atan2(dz,dx)*180/3.14159-90); return true;
     }
     if(ctx.srv) ctx.srv->spawnProjectile(ProjectileKind::Arrow, m.x, m.y+1.6, m.z, dx/d*1.4, dy/d*0.2+0.12, dz/d*1.4, m.entityId, false);
@@ -1544,13 +1546,13 @@ bool AllayDuplicateGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     m.allayDuplicateCooldown=now+120;
     return true;
 }
-bool BoggedPoisonGoal::shouldStart(MobEntity& m, AiContext& ctx){ if(m.kind!=MobKind::Bogged) return false; return ctx.nearestPlayer && ctx.nearestPlayerDist2 < 16*16; }
+bool BoggedPoisonGoal::shouldStart(MobEntity& m, AiContext& ctx){ if(m.kind!=MobKind::Bogged) return false; return ctx.nearestPlayer && ctx.nearestPlayerDist2 < perceptionRange2(MobKind::Bogged); } // plan44 G-05
 bool BoggedPoisonGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(m.kind!=MobKind::Bogged) return false;
     if(now < m.boggedPoisonCooldown) return false;
     Player* t=ctx.nearestPlayer; if(!t) return false;
     double dx=t->x-m.x, dy=(t->y+1)-(m.y+1.6), dz=t->z-m.z; double d=std::sqrt(dx*dx+dz*dz)+1e-6;
-    if(d<5 || d>16) return false;
+    if(d<5 || d > perceiveDist(MobKind::Bogged)) return false; // plan44 G-05 follow_range
     if(ctx.srv){
         ctx.srv->spawnProjectile(ProjectileKind::Arrow, m.x, m.y+1.6, m.z, dx/d*1.2, dy/d*0.2+0.12, dz/d*1.2, m.entityId, false);
         WriteBuffer eff; eff.varint(t->entityId); eff.varint(19); eff.i8(0); eff.varint(160); eff.u8(0x01);
@@ -1608,7 +1610,7 @@ bool MinecartRollGoal::tick(MobEntity& m, AiContext&, std::int64_t) {
 }
 bool VexChargeGoal::shouldStart(MobEntity& m, AiContext& ctx) {
     if (m.kind != MobKind::Vex) return false;
-    return ctx.nearestPlayer && ctx.nearestPlayerDist2 < 16*16;
+    return ctx.nearestPlayer && ctx.nearestPlayerDist2 < perceptionRange2(MobKind::Vex); // plan44 G-05
 }
 bool VexChargeGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (m.kind != MobKind::Vex) return false;
