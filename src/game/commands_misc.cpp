@@ -171,6 +171,87 @@ void GameServer::initMiscCommands() {
         }
         d.root->then(dbg);
     }
+    // /testargs — DeclareCommands arg-type coverage helper (test helper, like plan41test).
+    {
+        auto ta = CommandNode::literal("testargs");
+        // block predicate
+        auto bpLit = CommandNode::literal("blockpred");
+        auto bpArg = CommandNode::argument("val", args::blockPredicateArg());
+        bpArg->executable = true;
+        bpArg->action = [this](CommandContext& c){
+            Player* src=static_cast<Player*>(c.source.player);
+            sendFeedback(src,"blockpred "+c.arg("val").asStr());
+            return 1;
+        };
+        bpLit->then(bpArg);
+        ta->then(bpLit);
+        // item predicate
+        auto ipLit = CommandNode::literal("itempred");
+        auto ipArg = CommandNode::argument("val", args::itemPredicateArg());
+        ipArg->executable = true;
+        ipArg->action = [this](CommandContext& c){
+            Player* src=static_cast<Player*>(c.source.player);
+            sendFeedback(src,"itempred "+c.arg("val").asStr());
+            return 1;
+        };
+        ipLit->then(ipArg);
+        ta->then(ipLit);
+        // nbt
+        auto nbtLit = CommandNode::literal("nbt");
+        auto nbtArg = CommandNode::argument("val", args::nbtArg());
+        nbtArg->executable = true;
+        nbtArg->action = [this](CommandContext& c){
+            Player* src=static_cast<Player*>(c.source.player);
+            sendFeedback(src,"nbt "+c.arg("val").asStr());
+            return 1;
+        };
+        nbtLit->then(nbtArg);
+        ta->then(nbtLit);
+        // nbt compound tag
+        auto nbtcLit = CommandNode::literal("nbtc");
+        auto nbtcArg = CommandNode::argument("val", args::nbtCompoundTagArg());
+        nbtcArg->executable = true;
+        nbtcArg->action = [this](CommandContext& c){
+            Player* src=static_cast<Player*>(c.source.player);
+            sendFeedback(src,"nbtc "+c.arg("val").asStr());
+            return 1;
+        };
+        nbtcLit->then(nbtcArg);
+        ta->then(nbtcLit);
+        // objective (already covered but ensure)
+        auto objLit = CommandNode::literal("objective");
+        auto objArg = CommandNode::argument("val", args::objectiveArg());
+        objArg->suggestions = [this](brigadier::StringReader&, brigadier::ParseCtx&){
+            std::vector<std::string> v;
+            for(auto& o: scoreboard.objectives) v.push_back(o.name);
+            return v;
+        };
+        objArg->executable = true;
+        objArg->action = [this](CommandContext& c){
+            Player* src=static_cast<Player*>(c.source.player);
+            sendFeedback(src,"objective "+c.arg("val").asStr());
+            return 1;
+        };
+        objLit->then(objArg);
+        ta->then(objLit);
+        // team
+        auto teamLit = CommandNode::literal("team");
+        auto teamArg = CommandNode::argument("val", args::teamArg());
+        teamArg->suggestions = [this](brigadier::StringReader&, brigadier::ParseCtx&){
+            std::vector<std::string> v;
+            for(auto& kv: teams.teams) v.push_back(kv.first);
+            return v;
+        };
+        teamArg->executable = true;
+        teamArg->action = [this](CommandContext& c){
+            Player* src=static_cast<Player*>(c.source.player);
+            sendFeedback(src,"team "+c.arg("val").asStr());
+            return 1;
+        };
+        teamLit->then(teamArg);
+        ta->then(teamLit);
+        d.root->then(ta);
+    }
 }
 
 } // namespace cppfm

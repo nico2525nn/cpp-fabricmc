@@ -29,13 +29,7 @@
 using namespace cppfm;
 using namespace cpptest;
 
-static int g_pass = 0, g_fail = 0;
-#define CHECK(cond, msg) do { \
-    bool c_ = static_cast<bool>(cond); \
-    std::printf("  %s  %s\n", c_ ? " ok " : "FAIL", msg); \
-    if (c_) ++g_pass; else ++g_fail; \
-} while (0)
-#define SECTION(name) std::printf("\n[%s]\n", name)
+#include "Harness.hpp"
 
 // ---- unit: RateLimiter (A1) ------------------------------------------------
 static void unitRateLimiter() {
