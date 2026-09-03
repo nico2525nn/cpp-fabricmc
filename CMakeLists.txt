@@ -181,6 +181,17 @@ add_test(NAME smoke80 COMMAND test_smoke_80 $<TARGET_FILE:cppfm>
          WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(smoke80 PROPERTIES TIMEOUT 700)
 
+# plan43 B1+B2 live-server tests (assessment-6 W-01..W-07, W-12) — TestClient + cppfm
+add_executable(test_plan43
+    tests/TestClient.cpp
+    tests/test_plan43.cpp
+    src/core/NBT.cpp)
+target_include_directories(test_plan43 PRIVATE src src/generated tests)
+target_link_libraries(test_plan43 PRIVATE Threads::Threads ZLIB::ZLIB OpenSSL::Crypto)
+add_test(NAME plan43 COMMAND test_plan43 $<TARGET_FILE:cppfm>
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(plan43 PROPERTIES TIMEOUT 300)
+
 add_executable(test_fuzz tests/test_fuzz.cpp
     src/core/NBT.cpp)
 target_include_directories(test_fuzz PRIVATE src src/generated)

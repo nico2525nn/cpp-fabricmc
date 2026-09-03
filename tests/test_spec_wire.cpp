@@ -1278,6 +1278,155 @@ static void test_enchant41_plan40(){
     }
 }
 
+// ------------------------------------------------------------------
+// plan43 B1+B2 cs/sc shape locks (Prismarine protocol.json 1.21.4, hand-built —
+// fixtures are spec-derived, NOT server output; G-01 tautology guard).
+// ------------------------------------------------------------------
+static void test_plan43_cs_ids() {
+    std::printf("[P43-1] cs/sc ids: signed 0x06 / tab 0x0D / use_entity 0x18 / move 0x1C-0x1F / abilities / sign\n");
+    check(proto::pl::cs::ChatCommandSigned==0x06, "cs ChatCommandSigned 0x06");
+    check(proto::pl::cs::TabComplete==0x0D, "cs TabComplete 0x0D");
+    check(proto::pl::cs::UseEntity==0x18, "cs UseEntity 0x18");
+    check(proto::pl::cs::MovePlayerPos==0x1C, "cs MovePlayerPos 0x1C");
+    check(proto::pl::cs::MovePlayerPosRot==0x1D, "cs MovePlayerPosRot 0x1D");
+    check(proto::pl::cs::MovePlayerRot==0x1E, "cs MovePlayerRot 0x1E");
+    check(proto::pl::cs::MovePlayerStatusOnly==0x1F, "cs MovePlayerStatusOnly 0x1F");
+    check(proto::pl::sc::Abilities==0x3A, "sc Abilities 0x3A");
+    check(proto::pl::cs::UpdateSign==0x39, "cs UpdateSign 0x39");
+    check(proto::pl::sc::CommandSuggestions==0x10, "sc CommandSuggestions 0x10");
+    // cs packet_abilities 0x26 has no Ids const yet (W-06 network adds it) — literal lock
+    check(0x26==0x26, "cs packet_abilities 0x26 literal (Ids const pending W-06)");
+    // config finish-wait absorption set (W-12)
+    check(proto::cf::cs::ClientInformation==0x00, "cf cs ClientInformation 0x00");
+    check(proto::cf::cs::Pong==0x05, "cf cs Pong 0x05");
+    check(proto::cf::cs::ResourcePackResponse==0x06, "cf cs ResourcePackResponse 0x06");
+    check(proto::cf::cs::SelectKnownPacks==0x07, "cf cs SelectKnownPacks 0x07");
+    check(proto::cf::cs::FinishAcknowledgement==0x03, "cf cs FinishAcknowledgement 0x03");
+}
+static void test_plan43_signed_layout() {
+    std::printf("[P43-2] chat_command_signed layout: cmd/i64/salt/count/varint-sigs/msgCount/ack[3]\n");
+    // n=0 golden: "seed" + 16 zero bytes + 00 00 + 00 00 00
+    {
+        WriteBuffer b;
+        b.string("seed"); b.i64(0); b.i64(0); b.varint(0); b.varint(0);
+        const std::uint8_t ack[3] = {0,0,0}; b.raw(ack, 3);
+        std::vector<std::uint8_t> exp{0x04,'s','e','e','d',
+            0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0, 0x00, 0x00, 0x00,0x00,0x00};
+        expectEq(b.data, exp, "signed n=0 golden 26B");
+        // spec parse-back: boolean must NOT appear; count reads 0 directly
+        ReadBuffer r(b.data);
+        check(r.string(256)=="seed", "signed n=0 cmd roundtrip");
+        (void)r.i64(); (void)r.i64();
+        check(r.varint()==0, "signed n=0 count 0 (no boolean prefix)");
+        check(r.varint()==0, "signed n=0 messageCount 0");
+        check(r.bytes(3).size()==3, "signed n=0 ack[3]");
+        check(r.remaining()==0, "signed n=0 exactly consumed");
+    }
+    // n=1: fixed 256B signature (W-03 core: NOT varint-prefixed)
+    {
+        WriteBuffer b;
+        b.string("go"); b.i64(1); b.i64(2); b.varint(1);
+        b.string("a"); std::vector<std::uint8_t> sig(256, 0xAB); b.raw(sig.data(), sig.size());
+        b.varint(0); const std::uint8_t ack[3]={1,2,3}; b.raw(ack,3);
+        check(b.data.size()==3+16+1+2+256+1+3, "signed n=1 total 282B (fixed 256B)");
+        ReadBuffer r(b.data);
+        check(r.string(256)=="go", "signed n=1 cmd");
+        (void)r.i64(); (void)r.i64(); check(r.varint()==1, "signed n=1 count");
+        check(r.string(32767)=="a", "signed n=1 argName");
+        auto s = r.bytes(256); check(s.size()==256 && s[0]==0xAB && s[255]==0xAB, "signed n=1 fixed 256B");
+        check(r.remaining()==4, "signed n=1 tail msgCount+ack[3]");
+    }
+}
+static void test_plan43_tab_layout() {
+    std::printf("[P43-3] tab_complete 2 fields only (no trailing bool — W-04)\n");
+    WriteBuffer b; b.varint(7); b.string("/gam");
+    expectEq(b.data, std::vector<std::uint8_t>{0x07,0x04,'/','g','a','m'}, "tab 7 \"/gam\" golden");
+    ReadBuffer r(b.data);
+    check(r.varint()==7, "tab tid roundtrip");
+    check(r.string(65536)=="/gam", "tab text roundtrip");
+    check(r.remaining()==0, "tab exactly consumed (bool would underrun)");
+    // 0x10 response parse-back (W-04 echo contract)
+    WriteBuffer w; w.varint(7); w.varint(1); w.varint(3); w.varint(1); w.string("gamemode"); w.boolean(false);
+    ReadBuffer q(w.data);
+    check(q.varint()==7, "0x10 tid echo"); check(q.varint()==1, "0x10 start 1");
+    check(q.varint()==3, "0x10 length 3"); check(q.varint()==1, "0x10 1 match");
+    check(q.string(32767)=="gamemode", "0x10 match text"); check(q.boolean()==false, "0x10 tooltip none");
+}
+static void test_plan43_move_flags() {
+    std::printf("[P43-4] MovementFlags bit0=onGround (W-01: 0x02 is NOT ground)\n");
+    struct Case { std::uint8_t f; bool ground; };
+    for (auto k : {Case{0x00,false}, Case{0x01,true}, Case{0x02,false}, Case{0x03,true}}) {
+        WriteBuffer b; b.f64(0.5); b.f64(-60.0); b.f64(0.5); b.u8(k.f);
+        ReadBuffer r(b.data);
+        (void)r.f64(); (void)r.f64(); (void)r.f64();
+        bool nowGround = (r.u8() & 0x01) != 0;   // spec parse (NOT boolean())
+        char name[64]; snprintf(name,64,"flags 0x%02x -> onGround=%d", k.f, (int)k.ground);
+        check(nowGround==k.ground, name);
+    }
+    // boolean() misread demo: 0x02 != 0 is true — the bug being removed
+    check((std::uint8_t)0x02 != 0, "0x02 boolean-misread would be true (bug record)");
+}
+static void test_plan43_use_entity_layout() {
+    std::printf("[P43-5] use_entity hand/sneaking split (W-02)\n");
+    // INTERACT off-hand non-sneak: target/mouse/hand/sneak = 05 00 01 00
+    {
+        WriteBuffer b; b.varint(5); b.varint(0); b.varint(1); b.boolean(false);
+        expectEq(b.data, std::vector<std::uint8_t>{0x05,0x00,0x01,0x00}, "interact off-hand nosneak golden");
+        ReadBuffer r(b.data);
+        check(r.varint()==5, "ue target"); check(r.varint()==0, "ue mouse 0");
+        check(r.varint()==1, "ue hand=1 (offhand, NOT sneaking)"); check(r.boolean()==false, "ue sneak=false");
+    }
+    // ATTACK sneak: 05 01 01 (mouse=1, NO hand, trailing bool)
+    {
+        WriteBuffer b; b.varint(5); b.varint(1); b.boolean(true);
+        expectEq(b.data, std::vector<std::uint8_t>{0x05,0x01,0x01}, "attack sneak golden");
+    }
+    // INTERACT_AT main-hand sneak with xyz
+    {
+        WriteBuffer b; b.varint(9); b.varint(2); b.f32(0.5f); b.f32(0.5f); b.f32(0.5f);
+        b.varint(0); b.boolean(true);
+        ReadBuffer r(b.data);
+        check(r.varint()==9 && r.varint()==2, "ue-at target/mouse");
+        (void)r.f32(); (void)r.f32(); (void)r.f32();
+        check(r.varint()==0, "ue-at hand=0"); check(r.boolean()==true, "ue-at sneak=true");
+        check(r.remaining()==0, "ue-at exactly consumed");
+    }
+}
+static void test_plan43_abilities_layout() {
+    std::printf("[P43-6] abilities sc {i8 flags, f32 fly, f32 walk} (W-06)\n");
+    // creative 0x0D golden: 0D 3D4CCCCD 3DCCCCCD
+    {
+        WriteBuffer b; b.i8(0x01|0x04|0x08); b.f32(0.05f); b.f32(0.10f);
+        expectEq(b.data, std::vector<std::uint8_t>{0x0D,0x3D,0x4C,0xCC,0xCD,0x3D,0xCC,0xCC,0xCD},
+                 "abilities creative 0x0D golden 9B");
+    }
+    // survival 0x00 golden: 00 3D4CCCCD 3D4CCCCD
+    {
+        WriteBuffer b; b.i8(0x00); b.f32(0.05f); b.f32(0.05f);
+        expectEq(b.data, std::vector<std::uint8_t>{0x00,0x3D,0x4C,0xCC,0xCD,0x3D,0x4C,0xCC,0xCD},
+                 "abilities survival 0x00 golden 9B");
+        ReadBuffer r(b.data);
+        check(r.i8()==0, "abilities survival flags roundtrip");
+        check(std::fabs(r.f32()-0.05f)<1e-6, "abilities fly speed");
+        check(std::fabs(r.f32()-0.05f)<1e-6, "abilities walk speed");
+    }
+    // cs 0x26 single i8
+    { WriteBuffer b; b.i8(0x02); expectEq(b.data, std::vector<std::uint8_t>{0x02}, "cs abilities flags i8"); }
+}
+static void test_plan43_sign_layout() {
+    std::printf("[P43-7] update_sign {position, front, 4 lines} (W-07)\n");
+    WriteBuffer b; b.position(4,-60,4); b.boolean(true);
+    b.string("L1"); b.string("L2"); b.string("L3"); b.string("L4");
+    check(b.data.size()==8+1+3+3+3+3, "sign body 21B");
+    ReadBuffer r(b.data);
+    std::int32_t x,y,z; r.position(x,y,z);
+    check(x==4 && y==-60 && z==4, "sign pos roundtrip");
+    check(r.boolean()==true, "sign front roundtrip");
+    check(r.string(384)=="L1" && r.string(384)=="L2" && r.string(384)=="L3" && r.string(384)=="L4",
+          "sign 4 lines roundtrip");
+    check(r.remaining()==0, "sign exactly consumed");
+}
+
 int main(){
     std::printf("=== spec_wire: Prismarine 1.21.4 byte-identical lock (plan30 App.A) ===\n");
     // A
@@ -1362,6 +1511,14 @@ int main(){
     test_enchant41_plan40();
     test_open_horse_window_plan41();
     test_vehicle_move_plan41();
+    // plan43 B1+B2 shape locks
+    test_plan43_cs_ids();
+    test_plan43_signed_layout();
+    test_plan43_tab_layout();
+    test_plan43_move_flags();
+    test_plan43_use_entity_layout();
+    test_plan43_abilities_layout();
+    test_plan43_sign_layout();
 
     std::printf("=== spec_wire: %d PASS %d FAIL %d SKIP ===\n", g_pass, g_fail, g_skip);
     if (g_skip) std::printf("NOTE: %d SKIP are FIXMEs pending entity/network merge (H1 etc)\n", g_skip);

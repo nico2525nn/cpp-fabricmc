@@ -28,7 +28,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import mcproto
-from mcproto import Conn, write_varint, read_varint, pack_string, unpack_string, PROTOCOL
+from mcproto import Conn, write_varint, read_varint, pack_string, unpack_string, unpack_position, PROTOCOL
 
 # ------------------------------------------------------------------ config
 VANILLA = "1.21.4"
@@ -1150,6 +1150,269 @@ def suite_persistence(host, port, world_dir):
         check(False, f"persist: reader threw {e}", "test_server_full.py:persist_exc")
 
 # ------------------------------------------------------------------ main
+def pack_pos_block(x: int, y: int, z: int) -> bytes:
+    v = ((x & 0x3FFFFFF) << 38) | ((z & 0x3FFFFFF) << 12) | (y & 0xFFF)
+    return struct.pack(">Q", v)
+
+def unpack_pos_block(data: bytes) -> tuple[int, int, int]:
+    (v,) = struct.unpack(">Q", data[:8])
+    return unpack_position(v)
+
+# ------------------------------------------------------------------ plan43 B1+B2
+# assessment-6 W-01..W-07 + W-12 wire replays (Prismarine protocol.json 1.21.4
+# hand-built fixtures). Stage-merge: FAIL on pre-fix server, PASS post-fix.
+# Mirrors tests/test_plan43.cpp (C++ TestClient); python mcproto gives an
+# independent framing implementation (tautology guard).
+def _p43_drain(c: Conn, secs=1.0):
+    """pump play packets, auto-answer keepalive/teleport; returns [(pid,data)]."""
+    out = []
+    t_end = time.time() + secs
+    c.sock.settimeout(0.3)
+    while time.time() < t_end:
+        try:
+            pid, data = c.recv_packet()
+        except Exception:
+            continue
+        if pid == 0x27:
+            try: c.send_packet_raw(0x1A, data)
+            except Exception: pass
+        elif pid == 0x42:
+            try:
+                bio = io.BytesIO(data); tid, _ = read_varint(bio)
+                c.send_packet_raw(0x00, write_varint(tid))
+            except Exception: pass
+        else:
+            out.append((pid, data))
+    try: c.sock.settimeout(8)
+    except Exception: pass
+    return out
+
+def _p43_chat_texts(pkts):
+    txts = []
+    for pid, data in pkts:
+        if pid != 0x73:
+            continue
+        try:
+            strs = re.findall(b'[\\x20-\\x7e]{4,}', data)
+            txts.append(b" ".join(strs).decode(errors="ignore"))
+        except Exception:
+            pass
+    return txts
+
+def _p43_signed(cmd: str, n: int, sig_byte: int = 0xAB) -> bytes:
+    p = pack_string(cmd) + struct.pack(">q", 0) + struct.pack(">q", 0)
+    p += write_varint(n)
+    for i in range(n):
+        p += pack_string(f"arg{i}") + bytes([sig_byte]) * 256
+    p += write_varint(0) + b"\x00\x00\x00"
+    return p
+
+def _p43_expect_chat(c: Conn, needle: str, secs=4.0) -> bool:
+    t_end = time.time() + secs
+    while time.time() < t_end:
+        for t in _p43_chat_texts(_p43_drain(c, 0.8)):
+            if needle in t:
+                return True
+    return False
+
+def suite_plan43_b1b2(host, port):
+    print("\n[9] plan43 B1+B2 — assessment-6 W-01..W-07 + W-12 wire replays")
+    # ---- W-03 signed command ----
+    for cmd, n, needle in [("seed", 0, "Seed:"), ("list", 1, "Players online"), ("seed", 2, "Seed:")]:
+        try:
+            c = persistent_join(host, port, f"P43S{n}")
+            c.send_packet_raw(0x06, _p43_signed(cmd, n))
+            ok = _p43_expect_chat(c, needle, 4.0)
+            check(ok, f"plan43 W-03 signed n={n} executed (chat '{needle}')", "test_server_full.py:p43_signed")
+            # alive? (pre-fix: underrun kills session)
+            try:
+                pkts = _p43_drain(c, 0.5)
+                alive = not any(p == 0x1D for p, _ in pkts)
+                c.send_packet_raw(0x05, pack_string("list"))
+                alive = alive and _p43_expect_chat(c, "Players online", 3.0)
+            except Exception:
+                alive = False
+            check(alive, f"plan43 W-03 signed n={n} no disconnect", "test_server_full.py:p43_signed_alive")
+            c.close()
+        except Exception as e:
+            check(False, f"plan43 W-03 signed n={n} throws: {e}", "test_server_full.py:p43_signed_exc")
+    # ---- W-04 tab complete ----
+    try:
+        c = persistent_join(host, port, "P43Tab")
+        c.send_packet_raw(0x0D, write_varint(7) + pack_string("/gam"))
+        got = None
+        t_end = time.time() + 5
+        while time.time() < t_end and got is None:
+            for pid, data in _p43_drain(c, 0.8):
+                if pid == 0x10:
+                    bio = io.BytesIO(data)
+                    tid, _ = read_varint(bio); st, _ = read_varint(bio); ln, _ = read_varint(bio)
+                    nm, _ = read_varint(bio)
+                    got = (tid, st, ln, nm)
+        check(got is not None and got[0] == 7, "plan43 W-04 0x10 echoes transactionId 7", "test_server_full.py:p43_tab")
+        check(got is not None and (got[1], got[2]) == (1, 3), "plan43 W-04 start=1 length=3", "test_server_full.py:p43_tab_range")
+        check(got is not None and got[3] > 0, "plan43 W-04 matches non-empty", "test_server_full.py:p43_tab_matches")
+        c.close()
+    except Exception as e:
+        check(False, f"plan43 W-04 throws: {e}", "test_server_full.py:p43_tab_exc")
+    # ---- W-12 contaminated finish ----
+    try:
+        c = Conn(host, port, timeout=8)
+        c.login("P43Fin")
+        # config: answer normally until FinishConfiguration, then contaminate
+        c.sock.settimeout(8)
+        deadline = time.time() + 15
+        finished = False
+        while time.time() < deadline and not finished:
+            pid, data = c.recv_packet()
+            if pid == 0x0E: c.send_packet_raw(0x07, write_varint(0))
+            elif pid == 0x03: finished = True
+            elif pid == 0x04: c.send_packet_raw(0x04, data)
+            elif pid == 0x05: c.send_packet_raw(0x05, data)
+        ok = finished
+        if finished:
+            c.send_packet_raw(0x00, pack_string("en_us") + b"\x08" + write_varint(0) + b"\x01\x7f" + write_varint(0) + b"\x00\x01")
+            c.send_packet_raw(0x05, struct.pack(">i", 1234))
+            c.send_packet_raw(0x06, b"\x00" * 16 + write_varint(0))
+            c.send_packet_raw(0x07, write_varint(0))
+            c.send_packet_raw(0x03, b"")
+            deadline = time.time() + 12
+            while time.time() < deadline:
+                try: pid, data = c.recv_packet()
+                except Exception: break
+                if pid == 0x2C: break
+                if pid == 0x02: break
+            else:
+                ok = False
+            ok = ok and pid == 0x2C
+        check(ok, "plan43 W-12 contaminated finish reaches play", "test_server_full.py:p43_finish")
+        c.close()
+    except Exception as e:
+        check(False, f"plan43 W-12 throws: {e}", "test_server_full.py:p43_finish_exc")
+    # ---- W-01 movement flags 16 combos + fall damage ----
+    try:
+        c = persistent_join(host, port, "P43Mov")
+        base = None
+        for pid, data in _p43_drain(c, 1.0):
+            pass
+        # 16 combos: just stay alive (no kick); strict fall-damage case follows
+        px, py, pz = 0.5, -60.0, 0.5
+        for kind in (0x1C, 0x1D, 0x1E, 0x1F):
+            for f in (0x00, 0x01, 0x02, 0x03):
+                if kind == 0x1C: pay = struct.pack(">ddd", px, py, pz) + bytes([f])
+                elif kind == 0x1D: pay = struct.pack(">ddd", px, py, pz) + struct.pack(">ff", 0.0, 0.0) + bytes([f])
+                elif kind == 0x1E: pay = struct.pack(">ff", 0.0, 0.0) + bytes([f])
+                else: pay = bytes([f])
+                c.send_packet_raw(kind, pay)
+        pkts = _p43_drain(c, 1.0)
+        check(not any(p == 0x1D for p, _ in pkts), "plan43 W-01 16 combos no kick", "test_server_full.py:p43_move16")
+        # fall damage: survival + rise/fall with 0x02 + land
+        c.send_packet_raw(0x05, pack_string("gamemode survival"))
+        _p43_drain(c, 1.0)
+        for i in range(1, 11):
+            c.send_packet_raw(0x1C, struct.pack(">ddd", px, py + i * 2.0, pz) + b"\x00")
+            time.sleep(0.05)
+        for i in range(9, -1, -1):
+            c.send_packet_raw(0x1C, struct.pack(">ddd", px, py + i * 2.0, pz) + b"\x02")
+            time.sleep(0.05)
+        c.send_packet_raw(0x1C, struct.pack(">ddd", px, py, pz) + b"\x01")
+        hurt = False
+        t_end = time.time() + 5
+        while time.time() < t_end and not hurt:
+            hurt = any(p == 0x1A for p, _ in _p43_drain(c, 0.8))
+        check(hurt, "plan43 W-01 0x02 fall deals DamageEvent", "test_server_full.py:p43_fall")
+        c.close()
+    except Exception as e:
+        check(False, f"plan43 W-01 throws: {e}", "test_server_full.py:p43_move_exc")
+    # ---- W-02 use_entity (trimmed 6 combos; full 12 in test_plan43) ----
+    try:
+        for idx, (mouse, hand, sneak, expect_win) in enumerate(
+                [(0, 0, False, False), (0, 1, False, False), (0, 0, True, True),
+                 (0, 1, True, True), (1, 0, False, False), (1, 0, True, False)]):
+            c = persistent_join(host, port, f"P43U{idx}")
+            known = set()
+            for pid, data in _p43_drain(c, 1.0):
+                if pid != 0x01:
+                    continue
+                try:
+                    bio = io.BytesIO(data)
+                    eid, _ = read_varint(bio); u = bio.read(16); typ, _ = read_varint(bio)
+                    if typ == 63:
+                        known.add(eid)
+                except Exception:
+                    pass
+            c.send_packet_raw(0x05, pack_string("summon minecraft:horse"))
+            horse = None
+            t_end = time.time() + 6
+            while time.time() < t_end and horse is None:
+                for pid, data in _p43_drain(c, 0.8):
+                    if pid != 0x01:
+                        continue
+                    try:
+                        bio = io.BytesIO(data)
+                        eid, _ = read_varint(bio); u = bio.read(16); typ, _ = read_varint(bio)
+                        if typ == 63 and eid not in known:
+                            horse = eid
+                    except Exception:
+                        pass
+            check(horse is not None, f"plan43 W-02 combo{idx} horse eid", "test_server_full.py:p43_use_eid")
+            if horse is not None:
+                pay = write_varint(horse) + write_varint(mouse)
+                if mouse == 2: pay += struct.pack(">fff", 0.5, 0.5, 0.5)
+                if mouse in (0, 2): pay += write_varint(hand)
+                pay += b"\x01" if sneak else b"\x00"
+                w0 = 0
+                c.send_packet_raw(0x18, pay)
+                win = False
+                t_end = time.time() + 3
+                while time.time() < t_end and not win:
+                    win = any(p == 0x24 for p, _ in _p43_drain(c, 0.8))
+                check(win == expect_win, f"plan43 W-02 m{mouse}/h{hand}/s{int(sneak)} window={expect_win}", "test_server_full.py:p43_use")
+            c.close()
+    except Exception as e:
+        check(False, f"plan43 W-02 throws: {e}", "test_server_full.py:p43_use_exc")
+    # ---- W-06 abilities ----
+    try:
+        c = persistent_join(host, port, "P43Abil")
+        pkts = _p43_drain(c, 1.5)
+        ab = [d for p, d in pkts if p == 0x3A]
+        check(len(ab) > 0 and ab[0][0] == 0x0D, "plan43 W-06 creative join 0x0D", "test_server_full.py:p43_abil_join")
+        c.send_packet_raw(0x05, pack_string("gamemode survival"))
+        got00 = False
+        t_end = time.time() + 5
+        while time.time() < t_end and not got00:
+            got00 = any(p == 0x3A and d and d[0] == 0x00 for p, d in _p43_drain(c, 0.8))
+        check(got00, "plan43 W-06 survival flags 0x00", "test_server_full.py:p43_abil_surv")
+        c.send_packet_raw(0x26, b"\x02")
+        pkts = _p43_drain(c, 1.0)
+        check(not any(p == 0x1D for p, _ in pkts), "plan43 W-06 cs 0x26 no kick", "test_server_full.py:p43_abil_cs")
+        c.close()
+    except Exception as e:
+        check(False, f"plan43 W-06 throws: {e}", "test_server_full.py:p43_abil_exc")
+    # ---- W-07 sign ----
+    try:
+        c = persistent_join(host, port, "P43Sign")
+        sx, sy, sz = 10, -60, 8
+        c.send_packet_raw(0x05, pack_string(f"setblock {sx} {sy} {sz} minecraft:oak_sign"))
+        placed = False
+        t_end = time.time() + 6
+        while time.time() < t_end and not placed:
+            for pid, data in _p43_drain(c, 0.8):
+                if pid == 0x09 and len(data) >= 8 and unpack_pos_block(data) == (sx, sy, sz):
+                    placed = True
+        check(placed, "plan43 W-07 sign placed", "test_server_full.py:p43_sign_place")
+        lines = ["P43-L1", "P43-L2", "P43-L3", "P43-L4"]
+        pay = pack_pos_block(sx, sy, sz) + b"\x01" + b"".join(pack_string(l) for l in lines)
+        c.send_packet_raw(0x39, pay)
+        got07 = False
+        t_end = time.time() + 5
+        while time.time() < t_end and not got07:
+            got07 = any(p == 0x07 and b"P43-L1" in d for p, d in _p43_drain(c, 0.8))
+        check(got07, "plan43 W-07 BlockEntityData carries line 1", "test_server_full.py:p43_sign")
+        c.close()
+    except Exception as e:
+        check(False, f"plan43 W-07 throws: {e}", "test_server_full.py:p43_sign_exc")
+
 def main():
     ap=argparse.ArgumentParser()
     ap.add_argument("--binary", default="./build/cppfm", help="cppfm binary")
@@ -1191,6 +1454,7 @@ def main():
         print(f"[info] server pid {proc.pid} ready")
 
         suite_connection_flow(host, port)
+        suite_plan43_b1b2(host, port)
         suite_commands(host, port, proc)
         # ensure server still alive, restart if needed for remaining suites
         if not _is_server_alive(proc):
