@@ -372,7 +372,7 @@ void scenarioWorldGenParity(){
     // MultiNoise isosceles
     {
         MultiNoiseBiomeSource src(0);
-        CHECK(src.hypercubeEntryCount() == src.biomeEntryCount(), "MultiNoise hypercubes == points (43)");
+        CHECK(src.hypercubeEntryCount() == src.biomeEntryCount(), "MultiNoise hypercubes == points (65)");
         ClimateParams mid{}; mid.temperature=0.1; mid.humidity=0.25; mid.continentalness=0.12; mid.erosion=0.10; mid.depth=0.0; mid.weirdness=0.0;
         // nearest via isosceles should be plains or forest; check stable selection
         const std::string& k = src.sampleByClimate(mid);

@@ -24,6 +24,7 @@ struct ClimateParams {
 struct BiomeEntry {
     std::string key;                 // e.g. minecraft:plains
     ClimateParams target;
+    std::uint8_t dim = 0;            // BiomeDimension (0=overworld,1=nether,2=end,3=special)
 };
 
 struct ParameterRange {
@@ -35,7 +36,13 @@ struct NoiseHypercube {
     ParameterRange temperature, humidity, continentalness, erosion, depth, weirdness;
     float offset = 0.f;
 };
-struct HypercubeEntry { std::string key; NoiseHypercube cube; };
+struct HypercubeEntry { std::string key; NoiseHypercube cube; std::uint8_t dim = 0; };
+
+// plan45 G-11: dimension tag for the 65-biome table. Overworld sampling
+// (sample()) only searches dim 0, so nether/end additions can never leak
+// into overworld chunks. Nether/end emit paths use sampleNether/sampleEnd.
+// Special (the_void) is registry-only and excluded from all sampling.
+enum class BiomeDimension : std::uint8_t { Overworld = 0, Nether = 1, End = 2, Special = 3 };
 
 class MultiNoiseBiomeSource {
 public:
@@ -47,7 +54,10 @@ public:
 
     // Register an authored biome point.
     void add(const std::string& key, const ClimateParams& p) {
-        entries_.push_back({key, p});
+        addDim(key, p, BiomeDimension::Overworld);
+    }
+    void addDim(const std::string& key, const ClimateParams& p, BiomeDimension dim) {
+        entries_.push_back({key, p, static_cast<std::uint8_t>(dim)});
         // also register hypercube ±0.05 width for isosceles parity
         NoiseHypercube cube;
         auto r = [&](double v){ return ParameterRange{float(v-0.05), float(v+0.05)}; };
@@ -57,12 +67,25 @@ public:
         cube.erosion = r(p.erosion);
         cube.depth = r(p.depth);
         cube.weirdness = r(p.weirdness);
-        entriesCube_.push_back({key, cube});
+        entriesCube_.push_back({key, cube, static_cast<std::uint8_t>(dim)});
+    }
+    // plan45 G-11: dimension-specific emit helpers (vanilla 65-biome table).
+    void addNether(const std::string& key, double t, double h, double c,
+                   double e, double d, double w) {
+        addDim(key, ClimateParams{t, h, c, e, d, w}, BiomeDimension::Nether);
+    }
+    void addEnd(const std::string& key, double t, double h, double c,
+                double e, double d, double w) {
+        addDim(key, ClimateParams{t, h, c, e, d, w}, BiomeDimension::End);
+    }
+    // the_void: registry presence only (vanilla default for Y<-64 / ungenerated).
+    void addSpecial(const std::string& key) {
+        addDim(key, ClimateParams{}, BiomeDimension::Special);
     }
     // Test helpers: hypercube direct
     void clear() { entries_.clear(); entriesCube_.clear(); }
     void addCube(const std::string& key, const NoiseHypercube& cube) {
-        entriesCube_.push_back({key, cube});
+        entriesCube_.push_back({key, cube, 0});
         // also keep point entry for legacy dist2 fallback
         ClimateParams mid{};
         mid.temperature = (cube.temperature.min + cube.temperature.max) * 0.5;
@@ -71,7 +94,7 @@ public:
         mid.erosion = (cube.erosion.min + cube.erosion.max) * 0.5;
         mid.depth = (cube.depth.min + cube.depth.max) * 0.5;
         mid.weirdness = (cube.weirdness.min + cube.weirdness.max) * 0.5;
-        entries_.push_back({key, mid});
+        entries_.push_back({key, mid, 0});
     }
     void addCubePoint(const std::string& key, double t,double h,double c,double e,double d,double w){
         NoiseHypercube cube;
@@ -82,9 +105,31 @@ public:
     }
 
     // Sample climate at world coordinates and resolve to a biome key.
+    // Overworld only (dim 0) — nether/end entries never leak here.
     const std::string& sample(double x, double y, double z) const {
         ClimateParams c = climateAt(x, y, z);
-        return nearest(c);
+        return nearestDim(c, static_cast<std::uint8_t>(BiomeDimension::Overworld));
+    }
+    // plan45 G-11: dimension emit paths (search only the dimension subset).
+    const std::string& sampleNether(double x, double y, double z) const {
+        ClimateParams c = climateAt(x, y, z);
+        return nearestDim(c, static_cast<std::uint8_t>(BiomeDimension::Nether));
+    }
+    const std::string& sampleEnd(double x, double y, double z) const {
+        ClimateParams c = climateAt(x, y, z);
+        return nearestDim(c, static_cast<std::uint8_t>(BiomeDimension::End));
+    }
+    // plan45 G-11: registry presence (covers Special/the_void too).
+    bool contains(const std::string& key) const {
+        for (const auto& e : entries_)
+            if (e.key == key) return true;
+        return false;
+    }
+    std::size_t dimensionEntryCount(BiomeDimension dim) const {
+        const auto d = static_cast<std::uint8_t>(dim);
+        std::size_t n = 0;
+        for (const auto& e : entries_) if (e.dim == d) ++n;
+        return n;
     }
 
     // Exposed for tests / structure placement rules.
@@ -146,6 +191,9 @@ public:
     }
     // test helper — plan20 entity regression for pale_garden weighting (public for unit tests)
     const std::string& sampleByClimate(const ClimateParams& c) const { return nearest(c); }
+    const std::string& sampleByClimateDim(const ClimateParams& c, BiomeDimension dim) const {
+        return nearestDim(c, static_cast<std::uint8_t>(dim));
+    }
     std::size_t biomeEntryCount() const { return entries_.size(); }
     std::size_t hypercubeEntryCount() const { return entriesCube_.size(); }
     const std::vector<HypercubeEntry>& hypercubes() const { return entriesCube_; }
@@ -154,22 +202,49 @@ private:
     const std::string& nearest(const ClimateParams& c) const {
         // Prefer hypercube isosceles if available (vanilla SearchTree parity)
         if (!entriesCube_.empty()) {
-            const HypercubeEntry* best = &entriesCube_.front();
+            const HypercubeEntry* best = nullptr;
             double bestD = 1e300;
             for (const auto& e : entriesCube_) {
+                if (e.dim != 0) continue; // overworld-only legacy path
                 const double d = isoscelesWeight(e.cube, c);
                 if (d < bestD) { bestD = d; best = &e; }
             }
-            return best->key;
+            if (best) return best->key;
         }
         if (entries_.empty()) { static const std::string fallback = "minecraft:plains"; return fallback; }
-        const std::string* best = &entries_.front().key;
+        const std::string* best = nullptr;
         double bestD = 1e300;
         for (const auto& e : entries_) {
+            if (e.dim != 0) continue;
             const double d = dist2(e.target, c);
             if (d < bestD) { bestD = d; best = &e.key; }
         }
-        return *best;
+        if (best) return *best;
+        { static const std::string fallback = "minecraft:plains"; return fallback; }
+    }
+    // plan45 G-11: dimension-filtered nearest (Special dim never sampled —
+    // callers must use contains() for the_void registry presence).
+    const std::string& nearestDim(const ClimateParams& c, std::uint8_t dim) const {
+        if (!entriesCube_.empty()) {
+            const HypercubeEntry* best = nullptr;
+            double bestD = 1e300;
+            for (const auto& e : entriesCube_) {
+                if (e.dim != dim) continue;
+                const double d = isoscelesWeight(e.cube, c);
+                if (d < bestD) { bestD = d; best = &e; }
+            }
+            if (best) return best->key;
+        }
+        const std::string* best = nullptr;
+        double bestD = 1e300;
+        for (const auto& e : entries_) {
+            if (e.dim != dim) continue;
+            const double d = dist2(e.target, c);
+            if (d < bestD) { bestD = d; best = &e.key; }
+        }
+        if (best) return *best;
+        // empty dimension subset: fall back to overworld plains (never the_void)
+        { static const std::string fallback = "minecraft:plains"; return fallback; }
     }
     void buildDefaultTable();                        // authored points (.cpp)
 
