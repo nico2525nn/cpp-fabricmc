@@ -252,3 +252,20 @@ spread/frequency values verified equal to jar JSON. 34 structures each map to
 a set (locked in `test_gameplay_full`). Remaining honest gap: nether
 fortress/bastion share placeholder pieces (weights 2:3 applied), not vanilla
 jigsaw pools.
+
+## plan46 §1 (W-16) disconnect/error policy — flood & malformed input
+
+Full spec: `docs/RATE_LIMITS.md`. Summary of the unified wire policy
+(vanilla: violations close with a state-correct Disconnect, never silently):
+
+- Oversize (frame >8MB, declared >2MB, bandwidth 2MB-burst/1MB/s breach, any
+  stage): kick + state-correct Disconnect (`Packet too large`).
+- Malformed/unknown in play: ignore + continue (rate-limited log, 1/s);
+  unknown login/config: kick + Disconnect; `Session::run` unexpected:
+  best-effort `Internal server error` Disconnect.
+- Chat/command spam (shared 200式 counter, +20/msg −1/tick): kick with
+  `{"translate":"disconnect.spam"}` (vanilla reason).
+- Compression strictness (threshold T>0): `dataLength` 0 or ≥T only;
+  `threshold=0` ⇒ all-compressed; trailing deflate garbage rejected.
+- Slow peer: `SO_RCVTIMEO=30s` → timed-out close (keepalive 10s cadence
+  keeps conforming clients alive); accept bursts over 20/s refused pre-thread.

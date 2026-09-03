@@ -107,10 +107,20 @@ void GameServer::acceptLoop() {
             break;
         }
         std::fprintf(stderr, "[cppfm] accepted fd=%d\n", fd);
+        // plan46 §1 A5: refuse accept-bursts above 20/s without spawning a
+        // session thread (login waves / connection floods).
+        if (!acceptGate_.allow(steadyNowMs())) {
+            std::fprintf(stderr, "[cppfm] accept gate: refusing fd=%d (rate)\n", fd);
+            ::close(fd);
+            continue;
+        }
         std::thread([this, fd] {
             auto conn = std::make_unique<Connection>(fd);
             conn->setNoDelay();
             conn->setSendTimeout(15);
+            // plan46 §1 A6/A1: slow-loris guard + bandwidth budget.
+            conn->setRecvTimeout(30);
+            conn->enableFloodBudget(true);
             Session s(*this, std::move(conn));
             s.run();
         }).detach();

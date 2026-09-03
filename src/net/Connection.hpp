@@ -17,6 +17,7 @@
 #include "../net/Crypto.hpp"
 #include "PacketEncoder.hpp"
 #include "PacketDecoder.hpp"
+#include "RateLimiter.hpp"
 #include <chrono>
 #include <cstdlib>
 #include <cstdio>
@@ -82,6 +83,19 @@ public:
         timeval tv{seconds, 0};
         setsockopt(fd_, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
     }
+    // plan46 §1 A6 (slow-loris guard): bound every blocking recv. On expiry
+    // readExact throws SocketClosedError with timedOut=true so the session
+    // can kick with a Disconnect first and free the thread. Safe in play:
+    // the server keepalive pings every 10s and TestClient/vanilla answer.
+    void setRecvTimeout(unsigned seconds) {
+        timeval tv{seconds, 0};
+        setsockopt(fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    }
+    // plan46 §1 A1: per-connection bandwidth budget (token bucket, 2MB burst
+    // / 1MB/s sustain). Opt-in: the server enables it on accepted sockets;
+    // test clients leave it off so bulk server->client streaming (chunks,
+    // registries) is never throttled on the receiving side.
+    void enableFloodBudget(bool on) { floodBudget_ = on; }
     // plan45 B6 W-13(a): peek the first pending byte (MSG_PEEK) so the
     // handshake state can detect a pre-1.7 legacy ping (0xFE) without
     // consuming modern length-prefixed frames. Returns -1 on timeout/empty.
@@ -148,7 +162,15 @@ public:
             len = static_cast<std::int32_t>(ulen);
         }
         if (len <= 0 || static_cast<std::uint32_t>(len) > kMaxFrame)
-            throw std::runtime_error("frame length out of range: " + std::to_string(len));
+            throw PacketDecoder::OversizeError(
+                "frame length out of range: " + std::to_string(len));
+        // plan46 §1 A1: charge the bandwidth budget BEFORE resize — the
+        // allocation that follows is attacker-sized, so the budget decision
+        // must precede it. Any single frame over the 2MB burst, or a
+        // sustained rate over 1MB/s, is a kick (OversizeError -> Disconnect).
+        if (floodBudget_ &&
+            !bw_.consume(static_cast<double>(len), steadyNowMs()))
+            throw PacketDecoder::OversizeError("connection bandwidth budget exceeded");
         frame_.resize(static_cast<std::size_t>(len));
         readExact(frame_.data(), frame_.size());
         if (encrypted_) decCtx_->crypt(frame_.data(), frame_.size(), frame_.data());
@@ -214,6 +236,9 @@ private:
     bool encrypted_ = false;
     std::unique_ptr<crypto::AesCfb8> encCtx_, decCtx_;
     int compressionThreshold_ = -1;
+    // plan46 §1 A1: bandwidth budget (server-side accepted sockets only).
+    bool floodBudget_ = false;
+    RateLimiter bw_;
 
     std::int32_t readVarintStream(int maxBytes) {
         std::uint32_t result = 0; int shift = 0;
