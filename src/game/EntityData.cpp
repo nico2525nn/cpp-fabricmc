@@ -140,7 +140,13 @@ void EntityDataLoader::loadDirectory(const std::string& dir){
                 const auto &ll=sp.at("light_level");
                 if(ll.type==json::Value::Type::Obj){ d.lightMin=ll.at("min").asInt(-1); d.lightMax=ll.at("max").asInt(-1); }
                 else if(ll.isNum()) d.lightMax=ll.asInt(-1);
-                const auto &st=sp.at("structures"); if(st.type==json::Value::Type::Arr) for(auto &ee: st.arr) if(ee.isStr()) d.structures.push_back(ee.asStr()); else if(st.isStr()) d.structures.push_back(st.asStr());
+                const auto &st=sp.at("structures");
+                if(st.type==json::Value::Type::Arr) {
+                    for(auto &ee: st.arr) {
+                        if(ee.isStr()) d.structures.push_back(ee.asStr());
+                        else if(st.isStr()) d.structures.push_back(st.asStr());
+                    }
+                }
                 if(auto* w=sp.find("weight")) d.spawnWeight=w->asInt(10);
                 if(auto* g=sp.find("group")) d.spawnGroup=g->asStr();
                 if(auto* mn=sp.find("minCount")) d.spawnMinCount=mn->asInt(1);

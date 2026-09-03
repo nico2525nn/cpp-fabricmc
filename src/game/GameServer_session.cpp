@@ -56,7 +56,7 @@ static WriteBuffer makeSpawnEntity(const Player& p) {
     b.uuid(p.uuid.data());
     b.varint(static_cast<std::int32_t>(gen::kPlayerEntityTypeId));
     b.f64(p.x); b.f64(p.y); b.f64(p.z);
-    const auto toAngle = [](float deg) { return static_cast<std::uint8_t>(deg * 256.f / 360.f); };
+    const auto toAngle = [](float deg) { return static_cast<std::uint8_t>(deg * constants::kAngleScaleNum / constants::kAngleScaleDen); };
     b.i8(static_cast<std::int8_t>(toAngle(p.pitch)));
     b.i8(static_cast<std::int8_t>(toAngle(p.yaw)));
     b.i8(static_cast<std::int8_t>(toAngle(p.yaw)));
@@ -538,7 +538,7 @@ void Session::handleLogin() {
             }
             break;                                       // tolerated, no server use
         case lo::cs::CookieResponse: {                   // 0x04 cookie
-            const std::string key = in2.string(256);
+            const std::string key = in2.string(constants::kMaxStringLength);
             if (in2.boolean()) {
                 const auto len = in2.varint();
                 if (len >= 0 && len <= 4096)
@@ -592,13 +592,13 @@ Session::ConfigWaitResult Session::handleOneConfigPacket(ReadBuffer& in) {
         return ConfigWaitResult::Continue;
     }
     case cf::cs::CustomPayload: {                   // plugin channels (config)
-        const std::string channel = in.string(256);
+        const std::string channel = in.string(constants::kMaxStringLength);
         api::ChannelRegistry::Payload body(in.p + in.off, in.p + in.len);
         onPluginPayload(channel, body, 0);
         return ConfigWaitResult::Continue;
     }
     case cf::cs::CookieResponse: {
-        const std::string key = in.string(256);
+        const std::string key = in.string(constants::kMaxStringLength);
         if (in.boolean()) {
             const auto len = in.varint();
             self_->cookies[key] = in.bytes(static_cast<std::size_t>(len));
@@ -1014,7 +1014,7 @@ void Session::answerEntityNbt(std::int32_t transactionId, std::int32_t entityId)
 void Session::onNameItem(const std::string& name) {
     if (!openMenu_ || openMenu_->type != MenuType::Anvil) return;
     Menu& m = *openMenu_;
-    m.anvilRename = name.size() > 50 ? name.substr(0, 50) : name;
+    m.anvilRename = name.size() > constants::kMaxRenameLength ? name.substr(0, constants::kMaxRenameLength) : name;
     if (auto* logic = getMenuLogic(m.type)) logic->onContentChanged(m, *self_);
     {
         const std::string rename = m.anvilRename;
@@ -2105,16 +2105,16 @@ void Session::onPluginPayload(const std::string& channel,
             try {
                 if (!body.empty()) {
                     ReadBuffer rb(body.data(), body.size());
-                    rename = rb.string(256);
+                    rename = rb.string(constants::kMaxStringLength);
                     if (rb.remaining() > 0) {
                         ReadBuffer rb2(body.data(), body.size());
                         int win = rb2.varint();
                         (void)win;
-                        if (rb2.remaining() > 0) rename = rb2.string(256);
+                        if (rb2.remaining() > 0) rename = rb2.string(constants::kMaxStringLength);
                     }
                 }
             } catch (...) { rename = ""; }
-            if (rename.size() > 50) rename = rename.substr(0, 50);
+            if (rename.size() > constants::kMaxRenameLength) rename = rename.substr(0, constants::kMaxRenameLength);
             openMenu_->anvilRename = rename;
             if (auto* al = getMenuLogic(MenuType::Anvil)) {
                 al->onContentChanged(*openMenu_, *self_);
@@ -2291,13 +2291,13 @@ void Session::handlePlay() {
             // no variable-length signatures. enforcesSecureChat=false so the
             // signatures are shape-checked, not cryptographically verified.
             try {
-                const std::string cmd = in.string(256);
+                const std::string cmd = in.string(constants::kMaxStringLength);
                 (void)in.i64(); (void)in.i64();        // timestamp, salt
                 const auto n = in.varint();            // argumentSignatures count
                 if (n < 0 || n > 16) break;            // absurd count: ignore, stay connected
                 for (std::int32_t q = 0; q < n; ++q) {
                     (void)in.string(32767);            // argumentName
-                    in.bytes(256);                     // signature: fixed 256B
+                    in.bytes(constants::kChatSignatureBytes);  // signature: fixed 256B
                 }
                 (void)in.varint();                     // messageCount
                 in.bytes(3);                           // acknowledged[3] (was 60B over-read)
@@ -2322,7 +2322,7 @@ void Session::handlePlay() {
         }
         case pl::cs::MessageAck: in.skipRest(); break;
         case pl::cs::CookieResponse: {                // plan3 Cookie
-            const std::string key = in.string(256);
+            const std::string key = in.string(constants::kMaxStringLength);
             if (in.boolean()) {
                 const auto len = in.varint();
                 self_->cookies[key] =
@@ -2334,7 +2334,7 @@ void Session::handlePlay() {
             break;
         }
         case pl::cs::CustomPayload: {                 // plugin messaging API
-            const std::string channel = in.string(256);
+            const std::string channel = in.string(constants::kMaxStringLength);
             api::ChannelRegistry::Payload body(
                 in.p + in.off, in.p + in.len);
             onPluginPayload(channel, body, 1);
@@ -3293,7 +3293,7 @@ void Session::onChatMessage(ReadBuffer& in) {
         kickPlay("{\"translate\":\"disconnect.spam\"}");
         return;
     }
-    const std::string msg = in.string(256);
+    const std::string msg = in.string(constants::kMaxStringLength);
     std::int64_t timestamp = in.i64();
     std::int64_t salt = in.i64();
     std::vector<std::uint8_t> signature;
@@ -3340,7 +3340,7 @@ void Session::onChatCommand(ReadBuffer& in) {
         kickPlay("{\"translate\":\"disconnect.spam\"}");
         return;
     }
-    const std::string cmd = in.string(256);
+    const std::string cmd = in.string(constants::kMaxStringLength);
     dispatchCommand(cmd);
 }
 void Session::dispatchCommand(const std::string& line) {

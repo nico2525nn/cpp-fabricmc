@@ -103,7 +103,7 @@ public:
                 // try to ensure safe: generate chunk and check; if solid below missing, place platform?
                 toWorld.generateChunkIfMissing(outX >> 4, outZ >> 4);
                 // fallback scan for ground
-                for (int y = 80; y >= -64; --y) {
+                for (int y = 80; y >= kMinY; --y) {
                     if (toWorld.getBlock(outX, y, outZ) != 0 && toWorld.getBlock(outX, y+1, outZ)==0 && toWorld.getBlock(outX, y+2, outZ)==0) { outY = y+1; break; }
                 }
                 found = true;

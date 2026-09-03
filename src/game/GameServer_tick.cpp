@@ -1111,7 +1111,7 @@ void GameServer::mobsTick() {
                 b.i16((std::int16_t)((m->x-m->sentX) * 4096));
                 b.i16((std::int16_t)((m->y-m->sentY) * 4096));
                 b.i16((std::int16_t)((m->z-m->sentZ) * 4096));
-                b.i8((std::int8_t)(m->yaw * 256.f/360.f));
+                b.i8((std::int8_t)(m->yaw * constants::kAngleScaleNum / constants::kAngleScaleDen));
                 b.i8(0);
                 b.boolean(true);
                 moves.emplace_back(m, std::move(b));

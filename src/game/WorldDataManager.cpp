@@ -71,9 +71,9 @@ bool WorldDataManager::saveLevelDataWithProviders(std::int64_t worldTicks, std::
             // W17 strict: SPAWN (spawn chunk loader) must NOT be persisted here; only FORCED from /forceload.
             // forcedChunkKeys() already returns only FORCED (addSpawnTicket no longer pollutes set).
             auto forced = world.forcedChunkKeys();
-            if (forced.size() > 256) {
-                std::fprintf(stderr, "[WorldDataManager] ForcedChunks %zu >256, truncating to 256 (vanilla limit)\n", forced.size());
-                forced.resize(256);
+            if (forced.size() > constants::kMaxForcedChunks) {
+                std::fprintf(stderr, "[WorldDataManager] ForcedChunks %zu >%d, truncating to %d (vanilla limit)\n", forced.size(), constants::kMaxForcedChunks, constants::kMaxForcedChunks);
+                forced.resize(constants::kMaxForcedChunks);
             }
             for (auto k : forced) fc.list.push_back(nbt::Value::makeLong(k));
             // Note: spawn 5x5 SPAWN tickets are recreated on startup via GameServer::init (SPAWN level 31)
@@ -202,12 +202,12 @@ bool WorldDataManager::tryLoadFile(const std::string& path, World& world, std::s
         // ForcedChunks — Yarn ForcedChunkState: restore LongSet with 256 cap and sign-correct ChunkPos.toLong
         if (const auto* fc = d->get("ForcedChunks")) {
             world.clearForcedChunks();
-            if (fc->list.size() > 256) {
-                std::fprintf(stderr, "[WorldDataManager] load ForcedChunks %zu >256, truncating to 256\n", fc->list.size());
+            if (fc->list.size() > constants::kMaxForcedChunks) {
+                std::fprintf(stderr, "[WorldDataManager] load ForcedChunks %zu >%d, truncating to %d\n", fc->list.size(), constants::kMaxForcedChunks, constants::kMaxForcedChunks);
             }
             size_t count = 0;
             for (auto &v : fc->list) {
-                if (count >= 256) break;
+                if (count >= constants::kMaxForcedChunks) break;
                 std::int64_t key = 0;
                 if (v.tag == nbt::Long) key = v.l;
                 else if (v.tag == nbt::Int) key = v.i;

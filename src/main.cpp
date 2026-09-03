@@ -27,7 +27,7 @@ static void loadProperties(ServerConfig& c, const std::string& path) {
         if (props.has("server-port")) c.port = static_cast<std::uint16_t>(props.get<int>("server-port", c.port));
         if (props.has("max-players")) c.maxPlayers = props.get<int>("max-players", c.maxPlayers);
         c.viewDistance = props.get<int>("view-distance", c.viewDistance);
-        c.viewDistance = std::clamp(c.viewDistance, 2, 32);
+        c.viewDistance = std::clamp(c.viewDistance, constants::kViewDistanceMin, constants::kViewDistanceMax);
         c.simulationDistance = props.get<int>("simulation-distance", c.simulationDistance);
         c.simulationDistance = std::clamp(c.simulationDistance, 2, 32);
         if (props.has("motd")) c.motd = props.get<std::string>("motd", c.motd);
@@ -77,7 +77,7 @@ int main(int argc, char** argv) {
     auto apply = [&](const std::string& k, const std::string& v) {
         try {
             if (k == "port") cfg.port = static_cast<std::uint16_t>(std::stoi(v));
-            else if (k == "view-distance") cfg.viewDistance = std::clamp(std::stoi(v), 2, 32);
+            else if (k == "view-distance") cfg.viewDistance = std::clamp(std::stoi(v), constants::kViewDistanceMin, constants::kViewDistanceMax);
             else if (k == "assets") cfg.assetsDir = v;
             else if (k == "motd") cfg.motd = v;
             else if (k == "world-dir") cfg.worldDir = v;

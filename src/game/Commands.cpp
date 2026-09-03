@@ -2069,7 +2069,7 @@ void GameServer::initCommands() {
                 double ox = src?src->x:0, oz = src?src->z:0;
                 // find top non-air at ox,oz (simple scan)
                 int topY=64;
-                for(int y=319;y>=-64;--y){ if(world_.getBlock((int)ox,y,(int)oz)!=0){ topY=y+1; break; } }
+                for(int y=kMaxY-1;y>=kMinY;--y){ if(world_.getBlock((int)ox,y,(int)oz)!=0){ topY=y+1; break; } }
                 brigadier::CommandSource tsrc;
                 if(src){ tsrc.player=src; tsrc.name=src->name; }
                 tsrc.srcX=ox; tsrc.srcY=topY; tsrc.srcZ=oz;
@@ -3571,7 +3571,7 @@ void GameServer::initCommands() {
                                     // Y: use surface estimate
                                     bestY = world_.sampledBiome(bestX,64,bestZ).empty() ? 64 : world_.surfaceFeetY(bestX, bestZ);
                                     if(bestY < -60) bestY = 64;
-                                    if(bestY > 320) bestY = 64;
+                                    if(bestY > kMaxY) bestY = 64;
                                     bestName = set->name;
                                     found=true;
                                 }
@@ -3914,7 +3914,7 @@ void GameServer::initCommands() {
                 auto findY = [&](double x, double z)->double{
                     int ix=(int)std::floor(x), iz=(int)std::floor(z);
                     // scan from top down for solid
-                    for(int y=320; y>=-64; --y){
+                    for(int y=kMaxY; y>=kMinY; --y){
                         uint16_t st = world_.getBlock(ix,y,iz);
                         uint16_t above = world_.getBlock(ix,y+1,iz);
                         uint16_t above2 = world_.getBlock(ix,y+2,iz);

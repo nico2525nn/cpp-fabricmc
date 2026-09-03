@@ -109,7 +109,6 @@ void World::fillTerrainV3(Chunk& c, std::int32_t cx, std::int32_t cz) const {
     const std::uint16_t SAND = id("minecraft:sand");
     const std::uint16_t WATER = id("minecraft:water");
     const std::uint16_t BEDROCK = id("minecraft:bedrock");
-    const std::uint16_t GRAVEL = id("minecraft:gravel");
     constexpr int kSea = TerrainGenerator::kSeaLevelNormal;
 
     // ------------------------------------------------------ biome assignment
@@ -154,9 +153,7 @@ void World::fillTerrainV3(Chunk& c, std::int32_t cx, std::int32_t cz) const {
         slot = st;
     };
 
-    const ImprovedNoise* caveA = nullptr;
     thread_local ImprovedNoise caveANoise(srv_seed ^ 0xA24BAED4963EE407ULL);
-    caveA = &caveANoise;
     thread_local ImprovedNoise caveBNoise(srv_seed ^ 0x9FB21C651E98DF25ULL);
 
     for (int lz = 0; lz < 16; ++lz)
@@ -326,7 +323,6 @@ void World::fillTerrainV3(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                 if (c.blocks[Chunk::index(gyR>>4, gyR&15, wz&15, wx&15)] != GRASS) continue;
                 const int trunkH = 5 + static_cast<int>(TerrainGenerator::posHash(srv_seed, wx, 557, wz)*3);
                 bool hasHeart = TerrainGenerator::posHash(srv_seed ^ 0xC14E, wx, wz, 77) < 0.20;
-                int heartY = col.surf + 2;
                 for (int t=0; t<trunkH; ++t){
                     int py = col.surf + t;
                     if (hasHeart && t==2 && CREAKING_HEART) setIfIn(wx, py, wz, CREAKING_HEART, true);
@@ -367,7 +363,6 @@ void World::fillTerrainV3(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                     const std::int32_t px=wx+dx, pz=wz+dz;
                     const std::int32_t ccx=px>>4, ccz=pz>>4; if(ccx!=cx||ccz!=cz) continue;
                     // need grass below carpet
-                    int gy = col.surf -1;
                     // sample col for neighbor? use cols approx for interior, else skip if different biome chunk border
                     // just check we are in pale_garden by re-sampling biome at px,pz
                     const std::string& b2 = biomeSource_->sample(px+2, 63, pz+2);

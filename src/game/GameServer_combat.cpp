@@ -178,7 +178,7 @@ void GameServer::weatherTick() {
                 int ly = static_cast<int>(pl->y);
                 // find ground just above top non-air (scan down from MaxY)
                 bool found = false;
-                for (int y = constants::kMaxY - 1; y >= constants::kMinY; --y) {
+                for (int y = kMaxY - 1; y >= kMinY; --y) {
                     std::uint16_t st = worldFor(pl->dimension).getBlock(lx, y, lz);
                     if (st != 0) { ly = y + 1; found = true; break; }
                 }
