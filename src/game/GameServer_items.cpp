@@ -1019,8 +1019,9 @@ bool GameServer::selectTrade(Player& p, std::int32_t index) {
                     m->restockUntil = (curDay+1)*24000 + 2000;
                 } else {
                     if (m->restockUntil < tickNo_) {
-                        // schedule next restock in 6000 ticks (quarter day) so 2/day reachable
-                        m->restockUntil = tickNo_ + 6000 + (rand()%2000);
+                        // schedule next restock window (plan46 G-15: 2nd window
+                        // auto-scheduled so 2/day is reachable without new trades)
+                        m->restockUntil = tickNo_ + MobEntity::kRestockSecondWindowTicks + (rand()%2000);
                     }
                 }
                 break;
@@ -1369,7 +1370,7 @@ void GameServer::furnacesTick() {
     });
 }
 void GameServer::brewingTick() {
-    // Brewing stand: fuel (blaze powder -> 20 fuel) + brewTime 400 ticks.
+    // Brewing stand: fuel (blaze powder -> kFuelPerBlaze) + brewTime kBrewTicks.
     const auto itBlaze = gen::itemIdByName().find("minecraft:blaze_powder");
     const std::uint32_t blazeId = itBlaze != gen::itemIdByName().end() ? itBlaze->second : 0;
     blockEntities_.forEach([&](std::int64_t key, BlockEntity& be) {
@@ -1378,7 +1379,7 @@ void GameServer::brewingTick() {
         // replenish fuel from blaze powder in slot 4
         if (b.fuel <= 0 && !b.slots[4].empty() && (blazeId == 0 || b.slots[4].itemId == blazeId)) {
             if (--b.slots[4].count <= 0) b.slots[4] = ItemStack::air();
-            b.fuel = 20;
+            b.fuel = BrewingData::kFuelPerBlaze;
             blockEntities_.dirty_.insert(key);
         }
         if (b.brewTime > 0) {
@@ -1460,7 +1461,7 @@ void GameServer::brewingTick() {
             if (hasIngredient && hasPotion && b.fuel > 0) {
                 // consume 1 fuel per operation
                 --b.fuel;
-                b.brewTime = 400;
+                b.brewTime = BrewingData::kBrewTicks;
                 blockEntities_.dirty_.insert(key);
             }
         }

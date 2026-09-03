@@ -841,6 +841,14 @@ void Session::sendJoinGame() {
     }
     b.boolean(false);                              // enforces secure chat
     conn_->sendPacket(pl::sc::Login, b);
+    // plan46 O-03: initial UpdateViewDistance 0x59 so the client render distance
+    // tracks the server-clamped value from login (also re-sent on every
+    // Settings 0x0C change via applyClientSettings).
+    try {
+        WriteBuffer vd;
+        vd.varint(c.viewDistance);
+        conn_->sendPacket(pl::sc::UpdateViewDistance, vd);
+    } catch (...) {}
 }
 void Session::sendAbilities() {
     // plan43 W-06: flags follow gamemode (vanilla PlayerAbilities bits:
@@ -904,6 +912,14 @@ void Session::sendSignBlockEntity(std::int32_t x, std::int32_t y, std::int32_t z
 void Session::applyClientSettings(Player::ClientSettings s) {
     if (s.locale.empty()) s.locale = "en_us";
     self_->clientSettings = s;
+    // plan46 O-03: confirm the effective view distance back to the client
+    // (vanilla UpdateViewDistance 0x59). The value is the server-clamped one
+    // the chunk sender actually uses (tickChunksAround min()).
+    try {
+        WriteBuffer b;
+        b.varint(std::min({srv_.config().viewDistance, s.viewDistance, 32}));
+        conn_->sendPacket(pl::sc::UpdateViewDistance, b);
+    } catch (...) {}
 }
 // plan45 B6 W-09: op/creative gate for debug editors. "Unimplemented=deny":
 // the gate shape stays even where storage is deferred, so a future feature

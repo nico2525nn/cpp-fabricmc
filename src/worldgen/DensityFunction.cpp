@@ -1,5 +1,6 @@
 // DensityFunction JSON builder.
 #include "DensityFunction.hpp"
+#include <algorithm>
 #include <cstdlib>
 
 namespace cppfm::worldgen {
@@ -216,16 +217,74 @@ NodePtr DensityPipeline::parse(const json::Value& v, std::string* err) const {
         }
         return n;
     }
-    if (type == "cache_2d" || type == "flat_cache") {
+    if (type == "cache_2d") {
         auto inner = parse(v.at("input"), err);
         if (!inner) return nullptr;
         auto c = std::make_shared<detail::Cache2d>();
         c->in = inner;
         return c;
     }
-    // pass-through aliases for forward compatibility
-    if (type == "interpolated" || type == "cache_once")
-        return parse(v.at("input"), err);
+    // plan46 G-10: flat_cache is its own node type (single-position memo).
+    // cache_2d stays column-memoized; both are collected for beginPass resets.
+    if (type == "flat_cache") {
+        auto n = std::make_shared<detail::FlatCache>();
+        n->in = parse(v.at("input"), err);
+        if (!n->in) n->in = parse(v.at("argument"), err);
+        if (!n->in) return fail("flat_cache missing input");
+        return n;
+    }
+    // plan46 G-10: cache_once evaluates its input once per pass.
+    if (type == "cache_once") {
+        auto n = std::make_shared<detail::CacheOnce>();
+        n->in = parse(v.at("input"), err);
+        if (!n->in) n->in = parse(v.at("argument"), err);
+        if (!n->in) return fail("cache_once missing input");
+        return n;
+    }
+    // plan46 G-10: interpolated is an explicit node (direct-eval approx).
+    if (type == "interpolated") {
+        auto n = std::make_shared<detail::Interpolated>();
+        n->in = parse(v.at("input"), err);
+        if (!n->in) n->in = parse(v.at("argument"), err);
+        if (!n->in) return fail("interpolated missing input");
+        return n;
+    }
+    // plan46 G-10: spline — cubic Hermite over (location, value, derivative).
+    // Accepts both {"spline":{...}} wrapper and bare {"coordinate","points"}.
+    // NOTE: json::Value::at() returns null instead of throwing, so the
+    // wrapper is detected with find(), not try/at.
+    if (type == "spline") {
+        auto n = std::make_shared<detail::Spline>();
+        const json::Value* body = &v;
+        if (const json::Value* sub = v.find("spline"))
+            if (sub->isObj()) body = sub;
+        try {
+            const auto& coord = body->at("coordinate");
+            n->coordinate = parse(coord, err);
+        } catch (...) { n->coordinate = nullptr; }
+        try {
+            for (auto& pv : body->at("points").arr) {
+                detail::Spline::Point p{0, 0, 0};
+                p.loc = pv.at("location").asFloat(0.0);
+                // value: float or nested function evaluated at (loc,0,0)
+                try {
+                    const auto& vv = pv.at("value");
+                    if (vv.isNum()) p.val = vv.asFloat(0.0);
+                    else if (auto fn = parse(vv, err)) p.val = fn->eval({p.loc, 0, 0});
+                } catch (...) {}
+                try {
+                    const auto& dv = pv.at("derivative");
+                    if (dv.isNum()) p.der = dv.asFloat(0.0);
+                    else if (auto fn = parse(dv, err)) p.der = fn->eval({p.loc, 0, 0});
+                } catch (...) { p.der = 0; }
+                n->points.push_back(p);
+            }
+        } catch (...) { return fail("spline missing points"); }
+        if (n->points.empty()) return fail("spline has no points");
+        std::sort(n->points.begin(), n->points.end(),
+                  [](const auto& a, const auto& b){ return a.loc < b.loc; });
+        return n;
+    }
     if (err)
         *err = "unknown density function type: " + type;
     return nullptr;
@@ -235,7 +294,9 @@ bool DensityPipeline::buildFromJson(const json::Value& root,
                                      std::string* err) {
     root_ = parse(root, err);
     caches_.clear();
-    if (root_) detail::collectCaches(root_, caches_);
+    flatCaches_.clear();
+    onceCaches_.clear();
+    if (root_) detail::collectCaches(root_, caches_, &flatCaches_, &onceCaches_);
     return valid();
 }
 
