@@ -10,14 +10,25 @@ Emits:
     (block, properties) <-> exact global state id.
 """
 import json, os, sys
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from mining_fields import derive
 
 PRISMA_BLOCKS = os.environ.get("BLOCKS_JSON", "/tmp/opencode/blocks.json")
 MCMETA_BLOCKS = os.environ.get("MCMETA_BLOCKS", "/tmp/opencode/mcmeta_blocks.json")
+PRISMA_ITEMS = os.environ.get("ITEMS_JSON", "/tmp/opencode/items.json")
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "..", "src", "generated", "BlockStates.hpp")
 
 data = json.load(open(PRISMA_BLOCKS))
 mcmeta = json.load(open(MCMETA_BLOCKS))
+try:
+    items_data = json.load(open(PRISMA_ITEMS))
+    ITEM_BY_ID = {str(i["id"]): i["name"] for i in items_data}
+except OSError:
+    print("WARN items.json missing (%s): toolMask/needsTier default 0" % PRISMA_ITEMS,
+          file=sys.stderr)
+    ITEM_BY_ID = {}
 
 # ---------------------------------------------------------------- legacy rows
 rows = []
@@ -105,6 +116,11 @@ for b in data:
         "emit": int(b.get("emitLight", 0)),
         "transparent": bool(b.get("transparent", False)),
         "props": plist,
+        # plan44 G-03: mining fields mechanically derived from blocks.json
+        # (tools/mining_fields.py:derive). %.2f: all 32 distinct hardness and
+        # all 34 distinct resistance values are exact at 2 decimals (%.1f
+        # rounded 0.25->0.2 / 1.25->1.2 on 23 blocks, fixed here).
+        "mining": derive(b, ITEM_BY_ID),
     })
 blocks_full.sort(key=lambda x: x["min"])
 
@@ -115,8 +131,9 @@ for bd in blocks_full:
     prop_run.extend(bd["props"])
 
 block_def_rows = "\n".join(
-    '  {"%s", %d, %d, %d, %.1ff, %d, %d, %s, %d, %d},' % (
+    '  {"%s", %d, %d, %d, %.2ff, %.2ff, %d, %d, %d, %d, %d, %s, %d, %d},' % (
         bd["name"], bd["min"], bd["max"], bd["def"], bd["hardness"],
+        bd["mining"][3], bd["mining"][0], bd["mining"][1], bd["mining"][2],
         bd["filter"], bd["emit"], "true" if bd["transparent"] else "false",
         bd["propsOff"], bd["propCount"])
     for bd in blocks_full)
@@ -175,10 +192,20 @@ inline constexpr std::array<PropDef, %(n_props)d> kPropDefs = {{
 }};
 
 // One definition per block, sorted by minState (binary-searchable by state id).
+// Mining fields (plan44 G-03, mechanically derived from blocks.json):
+//   blastResistance: explosion resistance (TNT math)
+//   toolMask: REQUIRED tool bits for harvest (0 = hand harvests)
+//   effMask: tools mining faster (destroy speed > 1)
+//   needsTier: min harvest level (0 none, 1 wooden+, 2 stone+, 3 iron+, 4 diamond+)
+// Tool bits: bit0 pickaxe, bit1 axe, bit2 shovel, bit3 hoe, bit4 sword, bit5 shears.
 struct BlockDef {
   std::string_view name;
   std::uint32_t minState, maxState, defaultState;
   float hardness;
+  float blastResistance;
+  std::uint8_t toolMask;
+  std::uint8_t effMask;
+  std::uint8_t needsTier;
   std::uint8_t filterLight;   // 15 = opaque
   std::uint8_t emitLight;
   bool transparent;
