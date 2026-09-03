@@ -195,6 +195,12 @@ struct Player {
     std::shared_ptr<Connection> conn;
     // PVP knockback / invuln (items 42)
     std::int32_t hurtCooldown = 0;
+    // plan44 §3 G-07/G-08: melee cooldown (Yarn PlayerEntity.attack, T=20/attack_speed),
+    // shield blocking ticks (5t to activate) + axe disable timer (100t)
+    std::int32_t attackCooldownTicks = 20; // start fully charged
+    std::int32_t blockingTicks = 0;
+    std::int32_t shieldDisableTicks = 0;
+    bool isBlocking = false; // set while holding UseItem with shield (see onUseItem)
     std::int32_t vehicleId = -1; // riding
     std::int32_t arrowsStuck = 0;
     std::int64_t lastEnderPearlTick = -10000;
@@ -757,7 +763,7 @@ public:
     void mobsTick();
     void drainPendingStructureQueues(); // plan36 §5: drain StructureManager pending loot/mobs tick
     void applyDamageToMob(MobEntity& m, float amount, const char* cause);
-    void applyDamageToMob(MobEntity& m, float amount, const DamageSource& src);
+    void applyDamageToMob(MobEntity& m, float amount, const DamageSource& src, int breachLv = 0);
     void growResinNearHeart(int hx,int hy,int hz);
     // Spawn a mob of `kind` at position and broadcast it.
     void spawnMob(MobKind kind, double x, double y, double z);
@@ -780,7 +786,8 @@ public:
                      Player* directTo);
     void xpOrbsTick();
     // Projectiles (arrows / snowballs / pearls) — plan4 P1-A
-    void spawnProjectile(ProjectileKind kind, double x, double y, double z,
+    // plan44 G-09: returns the spawned entity so callers can tag piercing/loyalty
+    std::shared_ptr<ProjectileEntity> spawnProjectile(ProjectileKind kind, double x, double y, double z,
                          double vx, double vy, double vz,
                          std::int32_t ownerId, bool ownerIsPlayer, bool charged = false);
     void projectilesTick();
@@ -885,7 +892,7 @@ public:
     void sendSetHealth(Player& p);
 
     void applyDamage(Player& p, float amount, const char* cause);
-    void applyDamage(Player& p, float amount, const DamageSource& src);
+    void applyDamage(Player& p, float amount, const DamageSource& src, int breachLv = 0);
     void killPlayer(Player& p, const char* cause);
     void syncPlayerArmorAttributes(Player& p);
     void addHungerExhaustion(Player& p, float amount);

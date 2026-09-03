@@ -14,6 +14,8 @@ namespace ParticleId {
     constexpr int angry_villager = 0;
     constexpr int block = 1;
     constexpr int block_marker = 2;
+    constexpr int crit = 5;               // vanilla crit (melee critical particles)
+    constexpr int damage_indicator = 6;   // vanilla damage_indicator (sweep/thorns ticks)
     constexpr int dust = 13;
     constexpr int dust_color_transition = 14;
     constexpr int entity_effect = 20;
@@ -27,6 +29,8 @@ namespace ParticleId {
     constexpr int vibration = 46;
     constexpr int trail = 47;
     constexpr int portal = 56;
+    constexpr int sweep_attack = 63;      // vanilla sweep_attack (sweeping edge particles)
+    constexpr int enchanted_hit = 17;     // vanilla enchanted_hit (thorns/crit feedback)
     constexpr int dust_pillar = 107;
     constexpr int block_crumble = 111;
 }

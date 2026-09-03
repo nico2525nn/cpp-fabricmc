@@ -17,6 +17,8 @@
 #include "EquipmentComponent.hpp"
 #include "DamageComponent.hpp"
 #include "EnchantmentHelper.hpp"
+#include "MeleeHelper.hpp"
+#include "CombatManager.hpp"
 #include "MobSpawner.hpp"
 #include "BossAI.hpp"
 #include "MenuLogic.hpp"
@@ -3826,6 +3828,12 @@ void Session::onUseItem(ReadBuffer& in) {
     (void)in.f32(); (void)in.f32();
     if (self_->heldSlot >= 0 && self_->heldSlot < 9) {
         auto& sl = self_->inv[36 + self_->heldSlot];
+        // plan44 §3 G-08: raising a shield (main hand or offhand) starts the block posture (5t to activate)
+        {
+            bool shieldHeld = (!sl.empty() && sl.name().find("shield") != std::string::npos) ||
+                              (!self_->inv[45].empty() && self_->inv[45].name().find("shield") != std::string::npos);
+            if (shieldHeld && self_->shieldDisableTicks <= 0) self_->isBlocking = true;
+        }
         // plan13 §7: trident channeling/riptide – spawn trident projectile or riptide boost on use (plan37 B-11)
         if (!sl.empty() && sl.name().find("trident")!=std::string::npos) {
             // plan37 B-11 riptide gate: raining/thundering or in water
@@ -3875,7 +3883,8 @@ void Session::onUseItem(ReadBuffer& in) {
             double vx = -std::sin(yawRad)*std::cos(pitchRad)*1.5;
             double vy = -std::sin(pitchRad)*1.5;
             double vz =  std::cos(yawRad)*std::cos(pitchRad)*1.5;
-            srv_.spawnProjectile(ProjectileKind::Trident, self_->x, self_->y+1.6, self_->z, vx, vy, vz, self_->entityId, true);
+            auto trident = srv_.spawnProjectile(ProjectileKind::Trident, self_->x, self_->y+1.6, self_->z, vx, vy, vz, self_->entityId, true);
+            if (trident) trident->loyaltyLevel = EnchantmentHelper::getLoyalty(sl); // plan44 G-09: loyalty return
             if (self_->gamemode==0 && ItemStack::maxDamageFor(sl.itemId)>0) {
                 if (sl.applyDamage(1)) sl = ItemStack::air();
                 srv_.resendInventory(*self_);
@@ -3919,6 +3928,45 @@ void Session::onUseItem(ReadBuffer& in) {
                     auto &arr = self_->inv[arrowSlot];
                     if(--arr.count<=0) arr = ItemStack::air();
                 }
+            }
+            srv_.resendInventory(*self_);
+            ack(sequence);
+            return;
+        }
+        // plan44 §3 G-09: crossbow via UseItem (instant loose; multishot 3-way spread, piercing tagged,
+        // durability cost of 1 — quickcharge has no live load timer here, see quickChargeLoadTime)
+        if (!sl.empty() && sl.name()=="minecraft:crossbow") {
+            bool isCreative = self_->gamemode==1;
+            int arrowSlot = -1;
+            for(int i=9;i<=44;++i){
+                if(self_->inv[i].empty()) continue;
+                std::string an = self_->inv[i].name();
+                if(an.find("arrow")!=std::string::npos){ arrowSlot=i; break; }
+            }
+            if(arrowSlot==-1 && !self_->inv[45].empty() && self_->inv[45].name().find("arrow")!=std::string::npos) arrowSlot=45;
+            bool hasArrow = arrowSlot!=-1 && self_->inv[arrowSlot].count>0;
+            if(!hasArrow && !isCreative){
+                ack(sequence); return;
+            }
+            int shots = EnchantmentHelper::multishotShots(sl);
+            int pierce = EnchantmentHelper::getPiercing(sl);
+            double yawRad = self_->yaw * 3.14159265/180.0;
+            double pitchRad = self_->pitch * 3.14159265/180.0;
+            for (int s = 0; s < shots; ++s) {
+                double spread = (shots == 1) ? 0.0 : (s == 0 ? 0.0 : (s == 1 ? 0.17 : -0.17)); // ±10deg
+                double yr = yawRad + spread;
+                double vx = -std::sin(yr)*std::cos(pitchRad)*2.0;
+                double vy = -std::sin(pitchRad)*2.0 + 0.15;
+                double vz =  std::cos(yr)*std::cos(pitchRad)*2.0;
+                auto pr = srv_.spawnProjectile(ProjectileKind::Arrow, self_->x, self_->y+1.6, self_->z, vx, vy, vz, self_->entityId, true);
+                if (pr) pr->piercingLevel = pierce;
+            }
+            if (self_->gamemode==0 && ItemStack::maxDamageFor(sl.itemId)>0) {
+                if (DamageComponent::applyDamage(sl, 1)) sl = ItemStack::air(); // multishot costs 1 durability
+            }
+            if(!isCreative && hasArrow){
+                auto &arr = self_->inv[arrowSlot];
+                if(--arr.count<=0) arr = ItemStack::air();
             }
             srv_.resendInventory(*self_);
             ack(sequence);
@@ -4144,6 +4192,32 @@ void Session::onUseEntity(ReadBuffer& in) {
     float dmg = baseDmg + meleeDamageBonusFor(self_->effects);
     // attack exhaustion (plan7 hunger)
     srv_.addHungerExhaustion(*self_, 0.1f);
+    // plan44 §3 G-07/G-08: cooldown-gated crit + sweep state (Yarn PlayerEntity.attack).
+    // E-06 wire compat: base mapping above is untouched; crit/sweep only scale the result.
+    bool charged = isChargedAttack(self_->attackCooldownTicks);
+    bool falling = !self_->onGround && self_->fallDist > 0;
+    bool weaponIsSword = !weaponStack.empty() && isSwordItem(weaponStack.name());
+    bool weaponIsAxe = !weaponStack.empty() && isAxeItem(weaponStack.name());
+    bool weaponIsMace = !weaponStack.empty() && isMaceItem(weaponStack.name());
+    bool attackerInWater = false;
+    {
+        uint16_t bst = srv_.world().getBlock((int)std::floor(self_->x), (int)std::floor(self_->y), (int)std::floor(self_->z));
+        if (auto* bd = gen::blockByState(bst)) attackerInWater = std::string(bd->name).find("water") != std::string::npos;
+    }
+    bool riding = self_->vehicleId != -1;
+    bool crit = isCritAttack(self_->onGround, falling, self_->isSprinting, charged,
+                             attackerInWater, false, riding, false);
+    bool doSweep = isSweepAttack(weaponIsSword, self_->onGround, self_->isSprinting, charged);
+    int breachLv = weaponStack.empty() ? 0 : EnchantmentHelper::getBreach(weaponStack);
+    int fireAspectLv = weaponStack.empty() ? 0 : EnchantmentHelper::getFireAspect(weaponStack);
+    self_->attackCooldownTicks = 0; // swing resets cooldown
+    self_->isBlocking = false; self_->blockingTicks = 0; // swinging lowers a raised shield
+    auto broadcastCritParticles = [&](double x, double y, double z) {
+        if (!crit) return;
+        WriteBuffer pb = makeWorldParticlesBody(x, y + 1.0, z, 0.2f, 0.2f, 0.2f, 0.3f, 8,
+                                                ParticleId::crit, {}, false, false);
+        srv_.broadcastPacketExcept(nullptr, pl::sc::WorldParticles, pb);
+    };
 
     // ---- PVP: check player victims first (items 76-80 combat)
     // plan35 §5 pvp=false gate — player vs player damage disabled (mob vs player unaffected)
@@ -4155,8 +4229,22 @@ void Session::onUseEntity(ReadBuffer& in) {
             // PvP disabled: suppress damage, optionally notify
             return;
         }
+        // plan44 §3 G-08: shield blocks frontal melee (axe disables 100t instead, damage passes)
+        {
+            DamageSource psrc("player");
+            if (CombatManager::tryShieldBlock(srv_, *victimP, psrc, self_->x, self_->z, weaponIsAxe)) return;
+        }
+        float pvpDmg = dmg;
+        if (crit) pvpDmg = applyCrit(pvpDmg); // plan44 G-07: falling x1.5
+        if (weaponIsMace) // plan44 G-09: density smash bonus also applies in PVP
+            pvpDmg += EnchantmentHelper::densityBonus((int)std::floor(self_->fallDist), weaponStack);
         float before = victimP->health;
-        srv_.applyDamage(*victimP, dmg, "player");
+        DamageSource psrc2("player");
+        srv_.applyDamage(*victimP, pvpDmg, psrc2, breachLv);
+        broadcastCritParticles(victimP->x, victimP->y, victimP->z);
+        if (fireAspectLv > 0) victimP->fireTicks = 100; // plan44 G-09: fire aspect ignites PVP victims
+        // plan44 §3 G-09: victim thorns reflects to the attacker
+        if (victimP->health < before) CombatManager::applyThornsReflection(srv_, *victimP, nullptr, self_.get());
         // knockback impulse
         double dx = victimP->x - self_->x;
         double dz = victimP->z - self_->z;
@@ -4179,6 +4267,7 @@ void Session::onUseEntity(ReadBuffer& in) {
     std::shared_ptr<MobEntity> victim;
     bool hitMob = false;
     MobEntity* hitPtr = nullptr;
+    float attackDmgNoCrit = dmg; // plan44 G-07: sweep uses enchanted AD without crit
     int flameLvl = 0; int punchLvl = 0; int kbLvl = 0;
     if (!weaponStack.empty()) {
         flameLvl = EnchantmentHelper::getFlame(weaponStack);
@@ -4205,7 +4294,18 @@ void Session::onUseEntity(ReadBuffer& in) {
                     }(), weaponStack, m->kind);
                 mobDmg += meleeDamageBonusFor(self_->effects);
             }
-            srv_.applyDamageToMob(*m, mobDmg, "player");
+            // plan44 §3 G-09: impaling (JE aquatic +2.5/lv) + density (mace fall bonus)
+            if (!weaponStack.empty()) {
+                mobDmg += EnchantmentHelper::impalingBonusFor(weaponStack, m->kind);
+                if (weaponIsMace)
+                    mobDmg += EnchantmentHelper::densityBonus((int)std::floor(self_->fallDist), weaponStack);
+            }
+            float attackDmgNoCritInner = mobDmg; // sweep uses enchanted AD without crit (vanilla)
+            attackDmgNoCrit = attackDmgNoCritInner;
+            if (crit) mobDmg = applyCrit(mobDmg); // plan44 G-07: falling x1.5 (main target only)
+            DamageSource msrc("player");
+            srv_.applyDamageToMob(*m, mobDmg, msrc, breachLv);
+            broadcastCritParticles(m->x, m->y, m->z);
             // flame 100t
             if (flameLvl>0) {
                 m->onFireTicks = 100;
@@ -4221,6 +4321,55 @@ void Session::onUseEntity(ReadBuffer& in) {
             hitPtr = m.get();
             if (m->dead) { killed = true; victim = m; }
             break;
+        }
+    }
+    // plan44 §3 G-07 sweep: standing sword hit splashes nearby mobs (2m, sweep formula + KB + fire aspect).
+    // plan44 §3 G-09 wind burst: mace smash (fall>1.5) launches the attacker.
+    if (hitMob && hitPtr) {
+        if (doSweep) {
+            int sweepLv = weaponStack.empty() ? 0 : EnchantmentHelper::getSweepingEdge(weaponStack);
+            float sweepDmg = sweepingEdgeDamage(attackDmgNoCrit, sweepLv);
+            std::vector<std::shared_ptr<MobEntity>> splash;
+            {
+                std::lock_guard lk(srv_.entsMtx_);
+                for (auto& m : srv_.mobsForTest()) {
+                    if (m->entityId == target || m->dead) continue;
+                    if (inSweepRange(hitPtr->x, hitPtr->y, hitPtr->z, m->x, m->y, m->z)) splash.push_back(m);
+                }
+            }
+            DamageSource ssrc("player");
+            for (auto& m : splash) {
+                srv_.applyDamageToMob(*m, sweepDmg, ssrc, breachLv);
+                if (fireAspectLv > 0 || flameLvl > 0) m->onFireTicks = 100; // MC-93669: sweep ignites
+                double dx = m->x - self_->x, dz = m->z - self_->z;
+                double len = std::sqrt(dx*dx + dz*dz);
+                if (len < 0.01) { dx = 0.5; dz = 0.0; len = 0.5; }
+                WriteBuffer vel;
+                vel.varint(m->entityId);
+                vel.i16(static_cast<std::int16_t>(dx / len * 400));
+                vel.i16(static_cast<std::int16_t>(300));
+                vel.i16(static_cast<std::int16_t>(dz / len * 400));
+                srv_.broadcastPacketExcept(nullptr, pl::sc::EntityVelocity, vel);
+            }
+            if (!splash.empty()) {
+                WriteBuffer pb = makeWorldParticlesBody(hitPtr->x, hitPtr->y + 1.0, hitPtr->z,
+                                                        0.3f, 0.2f, 0.3f, 0.2f, 6,
+                                                        ParticleId::sweep_attack, {}, false, false);
+                srv_.broadcastPacketExcept(nullptr, pl::sc::WorldParticles, pb);
+                srv_.broadcastSound("minecraft:entity.player.attack.sweep", hitPtr->x, hitPtr->y, hitPtr->z, 1.f, 1.f, "player");
+            }
+        }
+        if (weaponIsMace && self_->fallDist > 1.5) {
+            int wb = weaponStack.empty() ? 0 : EnchantmentHelper::getWindBurst(weaponStack);
+            if (wb > 0) {
+                WriteBuffer wv;
+                wv.varint(self_->entityId);
+                wv.i16(0);
+                wv.i16(static_cast<std::int16_t>(windBurstLaunchVy(wb) * 8000));
+                wv.i16(0);
+                try { if (self_->conn) self_->conn->sendPacket(pl::sc::EntityVelocity, wv); } catch (...) {}
+                srv_.broadcastPacketExcept(self_.get(), pl::sc::EntityVelocity, wv);
+            }
         }
     }
     // durability on held item (attack) – Plan8 DamageComponent with Unbreaking
@@ -4270,10 +4419,15 @@ void Session::onUseEntity(ReadBuffer& in) {
         srv_.sendScoreAll("kills", self_->name,
                           srv_.scoreboard.getScore("kills", self_->name));
         const auto drop = MobEntity::dropFor(victim->kind);
-        if (drop.itemId)
-            srv_.spawnItemDrop(victim->x, victim->y + 0.4, victim->z, drop.itemId, drop.count,
+        if (drop.itemId) {
+            // plan44 §3 G-09: looting adds up to +lv extra drops
+            int lootLv = weaponStack.empty() ? 0 : EnchantmentHelper::getLooting(weaponStack);
+            int cnt = drop.count;
+            if (lootLv > 0) cnt = std::min(64, cnt + (rand() % (lootLv + 1)));
+            srv_.spawnItemDrop(victim->x, victim->y + 0.4, victim->z, drop.itemId, (std::uint8_t)cnt,
                                (rand()/(double)RAND_MAX-.5)*.15, .1,
                                (rand()/(double)RAND_MAX-.5)*.15);
+        }
         srv_.spawnXpOrbs(victim->x, victim->y + 0.5, victim->z,
                          mobStats(victim->kind).xpDrop, self_.get());
         // slime split on player kill

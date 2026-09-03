@@ -17,6 +17,8 @@
 #include "EquipmentComponent.hpp"
 #include "DamageComponent.hpp"
 #include "EnchantmentHelper.hpp"
+#include "MeleeHelper.hpp"
+#include "CombatManager.hpp"
 #include "MobSpawner.hpp"
 #include "BossAI.hpp"
 #include "MenuLogic.hpp"
@@ -1571,7 +1573,7 @@ void GameServer::xpOrbsTick() {
             xpOrbs_.end());
     }
 }
-void GameServer::spawnProjectile(ProjectileKind kind, double x, double y,
+std::shared_ptr<ProjectileEntity> GameServer::spawnProjectile(ProjectileKind kind, double x, double y,
                                  double z, double vx, double vy, double vz,
                                  std::int32_t ownerId, bool ownerIsPlayer, bool charged) {
     auto e = std::make_shared<ProjectileEntity>();
@@ -1609,6 +1611,7 @@ void GameServer::spawnProjectile(ProjectileKind kind, double x, double y,
     b.i16(static_cast<std::int16_t>(vy * 8000));
     b.i16(static_cast<std::int16_t>(vz * 8000));
     broadcastPacketExcept(nullptr, pl::sc::SpawnEntity, b);
+    return e;
 }
 void GameServer::projectilesTick() {
     struct Hit { std::shared_ptr<ProjectileEntity> p; Player* player; std::shared_ptr<MobEntity> mob; float dmg; };
@@ -1622,6 +1625,34 @@ void GameServer::projectilesTick() {
                 despawn.push_back(pr->entityId);
                 it = projectiles_.erase(it);
                 continue;
+            }
+            // plan44 §3 G-09 loyalty: returning trident homes to its owner (passes through blocks)
+            if (pr->returningToOwner && pr->kind == ProjectileKind::Trident) {
+                double tx=0, ty=0, tz=0; bool found=false;
+                if (pr->ownerIsPlayer) {
+                    for (auto& pp : playersSnapshot())
+                        if (pp->entityId == pr->ownerId && !pp->dead) { tx=pp->x; ty=pp->y+1.0; tz=pp->z; found=true; break; }
+                } else {
+                    std::lock_guard lk2(entsMtx_);
+                    for (auto& mb : mobs_)
+                        if (mb->entityId == pr->ownerId && !mb->dead) { tx=mb->x; ty=mb->y+0.8; tz=mb->z; found=true; break; }
+                }
+                if (found) {
+                    double dx=tx-pr->x, dy=ty-pr->y, dz=tz-pr->z;
+                    double d = std::sqrt(dx*dx+dy*dy+dz*dz);
+                    if (d < 1.5) { // caught by owner (thrown trident used durability, not consumed)
+                        broadcastSound("minecraft:item.trident.return", tx, ty, tz, 1.f, 1.f, "player");
+                        despawn.push_back(pr->entityId);
+                        it = projectiles_.erase(it);
+                        continue;
+                    }
+                    double sp = std::min(d, 1.5);
+                    pr->vx = dx/d*sp; pr->vy = dy/d*sp; pr->vz = dz/d*sp;
+                    pr->x += pr->vx; pr->y += pr->vy; pr->z += pr->vz;
+                    ++it;
+                    continue;
+                }
+                // owner gone: fall through to normal physics (ages out)
             }
             if (!pr->stuck) {
                 // plan16: Fireball gravity 0 (vanilla FireballEntity, WitherSkull, DragonFireball have no gravity)
@@ -1646,12 +1677,14 @@ void GameServer::projectilesTick() {
                 world_.generateChunkIfMissing(
                     static_cast<std::int32_t>(pr->x) >> 4,
                     static_cast<std::int32_t>(pr->z) >> 4);
-                // block collision
-                if (world_.getBlock(static_cast<std::int32_t>(pr->x),
+                // block collision (plan44 G-09: returning loyalty tridents pass through blocks)
+                if (!pr->returningToOwner && world_.getBlock(static_cast<std::int32_t>(pr->x),
                                     static_cast<std::int32_t>(pr->y),
                                     static_cast<std::int32_t>(pr->z)) != 0) {
                     if (pr->kind == ProjectileKind::Arrow) {
                         pr->stuck = true;
+                    } else if (pr->kind == ProjectileKind::Trident && pr->loyaltyLevel > 0) {
+                        pr->returningToOwner = true; // loyalty: bounce off blocks back to owner
                     } else if (pr->kind == ProjectileKind::EnderPearl) {
                         // pearl teleport: find owner player and teleport
                         Player* owner = nullptr;
@@ -1712,10 +1745,22 @@ void GameServer::projectilesTick() {
                         const double dy = pp->y + 0.9 - pr->y;
                         const double dz = pp->z - pr->z;
                         if (dx*dx + dy*dy + dz*dz < 0.55) {
+                            // plan44 §3 G-08: shield blocks frontal arrows/tridents (piercing bypasses shields)
+                            if ((pr->kind == ProjectileKind::Arrow || pr->kind == ProjectileKind::Trident) && pr->piercingLevel <= 0) {
+                                DamageSource asrc(pr->kind == ProjectileKind::Arrow ? "arrow" : "trident");
+                                if (CombatManager::tryShieldBlock(*this, *pp, asrc, pr->x, pr->z, false)) {
+                                    hitSomething = true; break;
+                                }
+                            }
+                            // plan44 §3 G-09: no double-hit while piercing through
+                            if (std::find(pr->piercedIds.begin(), pr->piercedIds.end(), pp->entityId) != pr->piercedIds.end())
+                                continue;
                             float dmg = 0;
                             if (pr->kind == ProjectileKind::Arrow) {
                                 float base=6.f;
                                 dmg = base * static_cast<float>(std::min(1.0, std::sqrt(pr->vx*pr->vx+pr->vy*pr->vy+pr->vz*pr->vz)/2.0));
+                            } else if (pr->kind == ProjectileKind::Trident) {
+                                dmg = 8.f; // plan44 G-09: vanilla thrown-trident damage vs players
                             } else if (pr->kind==ProjectileKind::BreezeWindCharge || pr->kind==ProjectileKind::WindCharge) {
                                 dmg = 1.f;
                             }
@@ -1734,6 +1779,12 @@ void GameServer::projectilesTick() {
                                 WriteBuffer vel; vel.varint(pp->entityId); vel.i16((int16_t)(kx*8000)); vel.i16((int16_t)(0.35*8000)); vel.i16((int16_t)(kz*8000));
                                 try{ pp->conn->sendPacket(proto::pl::sc::EntityVelocity, vel);}catch(...){}
                             }
+                            // plan44 §3 G-09 piercing: arrows pass through (level = entity count), keep flying
+                            if (pr->kind == ProjectileKind::Arrow && pr->piercingLevel > 0) {
+                                pr->piercedIds.push_back(pp->entityId);
+                                pr->piercingLevel--;
+                                continue;
+                            }
                             hitSomething = true;
                             break;
                         }
@@ -1747,15 +1798,30 @@ void GameServer::projectilesTick() {
                             const double dy = m->y + 0.8 - pr->y;
                             const double dz = m->z - pr->z;
                             if (dx*dx + dy*dy + dz*dz < 0.55) {
+                                // plan44 §3 G-09: no double-hit while piercing through
+                                if (std::find(pr->piercedIds.begin(), pr->piercedIds.end(), m->entityId) != pr->piercedIds.end())
+                                    continue;
                                 float dmg = 5.f;
                                 if (pr->kind==ProjectileKind::BreezeWindCharge || pr->kind==ProjectileKind::WindCharge) dmg=1.f;
                                 hits.push_back({pr, nullptr, m, dmg});
+                                // plan44 §3 G-09 piercing: arrows pass through mobs too, keep flying
+                                if (pr->kind == ProjectileKind::Arrow && pr->piercingLevel > 0) {
+                                    pr->piercedIds.push_back(m->entityId);
+                                    pr->piercingLevel--;
+                                    continue;
+                                }
                                 hitSomething = true;
                                 break;
                             }
                         }
                     }
                     if (hitSomething) {
+                        // plan44 §3 G-09 loyalty: trident returns to owner instead of despawning on entity hit
+                        if (pr->kind == ProjectileKind::Trident && pr->loyaltyLevel > 0 && !pr->returningToOwner) {
+                            pr->returningToOwner = true;
+                            ++it;
+                            continue;
+                        }
                         despawn.push_back(pr->entityId);
                         it = projectiles_.erase(it);
                         continue;

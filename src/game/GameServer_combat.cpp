@@ -17,6 +17,8 @@
 #include "EquipmentComponent.hpp"
 #include "DamageComponent.hpp"
 #include "EnchantmentHelper.hpp"
+#include "MeleeHelper.hpp"
+#include "CombatManager.hpp"
 #include "MobSpawner.hpp"
 #include "BossAI.hpp"
 #include <fstream>
@@ -35,12 +37,13 @@ void GameServer::syncPlayerArmorAttributes(Player& p) {
     // modular split: delegate to CombatManager (plan8)
     CombatManager::syncPlayerArmor(*this, p);
 }
-void GameServer::applyDamage(Player& p, float amount, const DamageSource& src) {
+void GameServer::applyDamage(Player& p, float amount, const DamageSource& src, int breachLv) {
     if (p.gamemode == 1 || p.gamemode == 3) return;
     if (amount <= 0 || p.dead) return;
     syncPlayerArmorAttributes(p);
     int armor = (int)std::round(p.attributes.getValue(Attribute::ARMOR));
     if (armor == 0) armor = totalArmorPoints(p.inv);
+    armor = breachAdjustedArmor(armor, breachLv); // plan44 G-09: breach pre-discounts armor (formula untouched)
     double toughness = p.attributes.getValue(Attribute::ARMOR_TOUGHNESS);
     int epf = CombatManager::computeEPF(src, p);
     float finalAmt = DamageCalculator::calculate(amount, src, armor, toughness, epf, p.effects);
@@ -133,7 +136,15 @@ void GameServer::mobAttackPlayer(MobEntity& m, Player& target) {
     std::string cause = MobEntity::kindName(m.kind);   // e.g. minecraft:zombie
     const auto slash = cause.find(':');
     if (slash != std::string::npos) cause = cause.substr(slash + 1);
+    // plan44 §3 G-08: shield blocks frontal melee (vindicator swings an axe -> 100t disable)
+    {
+        DamageSource msrc(cause);
+        bool axeMob = (m.kind == MobKind::Vindicator); // vanilla vindicator carries an iron axe
+        if (CombatManager::tryShieldBlock(*this, target, msrc, m.x, m.z, axeMob)) return;
+    }
     applyDamage(target, dmg, cause.c_str());
+    // plan44 §3 G-09: thorns reflects to the mob attacker
+    if (target.health < before) CombatManager::applyThornsReflection(*this, target, &m, nullptr);
     if (before != target.health) m.angerTargetEntityId = target.entityId;
 }
 bool GameServer::tryBreedFeed(Player& p, MobEntity& m) {
@@ -315,8 +326,12 @@ void GameServer::explodeAt(double x, double y, double z, float power) {
         if (dist > power * 2) continue;
         const float dmg =
             (power * power - static_cast<float>(dist)) / power * 8.f;
-        if (dmg > 0)
+        if (dmg > 0) {
+            // plan44 §3 G-08: shield blocks frontal explosions (blockable per Blocking wiki)
+            DamageSource esrc("explosion");
+            if (CombatManager::tryShieldBlock(*this, *p, esrc, x, z, false)) continue;
             applyDamage(*p, dmg, "explosion");
+        }
         // knockback
         const double inv = 1.0 / std::max(1.0, dist);
         WriteBuffer v;
@@ -473,7 +488,7 @@ void GameServer::strikeLightning(double x, double y, double z) {
     }
     // Also handle Enderman damage via lightning? vanilla: enderman takes damage but teleports – already via applyDamage.
 }
-void GameServer::applyDamageToMob(MobEntity& m, float amount, const DamageSource& src) {
+void GameServer::applyDamageToMob(MobEntity& m, float amount, const DamageSource& src, int breachLv) {
     if (amount <= 0 || m.dead) return;
     // plan29 §3 Creaking invulnerable when transient (heart-linked) except void/kill
     if (m.kind==MobKind::Creaking && m.creakingTransient) {
@@ -495,6 +510,7 @@ void GameServer::applyDamageToMob(MobEntity& m, float amount, const DamageSource
         m.armadilloDangerDetectedUntil = std::max(m.armadilloDangerDetectedUntil, tickNo_ + 80);
     }
     int armor = totalArmorPoints(m);
+    armor = breachAdjustedArmor(armor, breachLv); // plan44 G-09: breach pre-discounts armor (formula untouched)
     int epf = CombatManager::computeEPF(src, m);
     // mobs have no toughness in current formula; pass 0
     float finalAmt = DamageCalculator::calculate(amount, src, armor, 0.0, epf, {});

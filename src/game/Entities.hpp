@@ -74,6 +74,11 @@ struct ProjectileEntity {
     std::int64_t stuckTicks = 0;
     std::int32_t stuckBlockX=0, stuckBlockY=0, stuckBlockZ=0;
     bool charged = false; // for WitherSkull blue (charged) variant
+    // plan44 §3 G-09: crossbow piercing (pass-through count), trident loyalty return
+    int piercingLevel = 0;
+    int loyaltyLevel = 0;
+    bool returningToOwner = false;
+    std::vector<std::int32_t> piercedIds; // entities already hit (no double-hit while piercing)
 };
 
 struct LightningBoltEntity {
