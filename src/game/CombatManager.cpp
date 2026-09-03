@@ -11,9 +11,12 @@
 #include "Entities.hpp"
 #include "Attributes.hpp"
 #include "EnchantmentHelper.hpp"
+#include "MeleeHelper.hpp"
+#include "DamageComponent.hpp"
 #include "../generated/ItemIds.hpp"
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 
 namespace cppfm {
 
@@ -124,6 +127,60 @@ void CombatManager::applyToMob(GameServer& srv, MobEntity& m, float amount, cons
     m.hurtCooldown = 10;
     if (m.health <= 0) m.dead = true;
     (void)srv;
+}
+
+// plan44 §3 G-08 shield block — vanilla Blocking (100% frontal negate; assessment-6 "5 軽減" is the
+// legacy 1.8 value, 1.21.4 wiki value 100% is implemented here)
+static ItemStack* shieldStackFor(Player& p) {
+    if (p.heldSlot >= 0 && p.heldSlot < 9) {
+        auto& mh = p.inv[36 + p.heldSlot];
+        if (!mh.empty() && mh.name().find("shield") != std::string::npos) return &mh;
+    }
+    auto& off = p.inv[45];
+    if (!off.empty() && off.name().find("shield") != std::string::npos) return &off;
+    return nullptr;
+}
+bool CombatManager::tryShieldBlock(GameServer& srv, Player& victim, const DamageSource& src,
+                                   double attackerX, double attackerZ, bool attackerWeaponIsAxe) {
+    if (src.bypassShield || src.isMagic()) return false; // sonic/magic pierce (guardian beam direct only)
+    if (!isShieldBlocking(victim)) return false;
+    if (!isFrontal(victim, attackerX, attackerZ)) return false;
+    ItemStack* shield = shieldStackFor(victim);
+    if (!shield) return false;
+    if (attackerWeaponIsAxe) {
+        // vanilla: axe disables shield 100t (5s); the disabling blow deals damage
+        victim.shieldDisableTicks = 100;
+        victim.blockingTicks = 0;
+        if (DamageComponent::applyDamage(*shield, 1)) *shield = ItemStack::air();
+        srv.resendInventory(victim);
+        srv.broadcastEntitySound(victim.entityId, "minecraft:item.shield.break", 1.f, 1.f, GameServer::SoundSource::Player);
+        return false;
+    }
+    if (DamageComponent::applyDamage(*shield, 1)) *shield = ItemStack::air();
+    srv.resendInventory(victim);
+    srv.broadcastEntitySound(victim.entityId, "minecraft:item.shield.block", 1.f, 1.f, GameServer::SoundSource::Player);
+    return true;
+}
+// plan44 §3 G-09 thorns — per-piece independent lv*15% proc, reflect uniform 1..4 + armor cost 2
+void CombatManager::applyThornsReflection(GameServer& srv, Player& victim,
+                                          MobEntity* attackerMob, Player* attackerPlayer) {
+    if (!attackerMob && !attackerPlayer) return;
+    DamageSource thorns("thorns");
+    for (int i = 5; i <= 8; ++i) {
+        auto& piece = victim.inv[i];
+        if (piece.empty()) continue;
+        int lv = EnchantmentHelper::getThorns(piece);
+        if (lv <= 0) continue;
+        float roll = static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
+        if (!thornsProcs(lv, roll)) continue;
+        float rollD = static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
+        int reflected = thornsDamage(rollD);
+        if (attackerMob && !attackerMob->dead) srv.applyDamageToMob(*attackerMob, static_cast<float>(reflected), thorns);
+        else if (attackerPlayer && !attackerPlayer->dead && attackerPlayer != &victim)
+            srv.applyDamage(*attackerPlayer, static_cast<float>(reflected), thorns);
+        if (DamageComponent::applyDamage(piece, 2)) piece = ItemStack::air();
+        srv.resendInventory(victim);
+    }
 }
 
 } // namespace cppfm
