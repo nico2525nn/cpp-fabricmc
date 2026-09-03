@@ -9,6 +9,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <poll.h>
 #include <unistd.h>
 #include <arpa/inet.h>
 #include "../core/ByteBuffer.hpp"
@@ -134,6 +135,22 @@ public:
                              frame_.size());
         }
         return PacketDecoder::decodeFrame(frame_, compressionThreshold_);
+    }
+    // plan43 W-12: frame read with a deadline. Only the wait for the first
+    // byte is bounded (slow-loris guard for the finish-ack wait); once data
+    // is ready the remainder blocks as usual. Throws SocketClosedError with
+    // timedOut=true on expiry so callers can kick with a Disconnect first.
+    std::vector<std::uint8_t> readFrameWithTimeout(std::chrono::milliseconds timeout) {
+        pollfd pfd{};
+        pfd.fd = fd_;
+        pfd.events = POLLIN;
+        for (;;) {
+            const int r = ::poll(&pfd, 1, static_cast<int>(timeout.count()));
+            if (r > 0) return readFrame();
+            if (r == 0) throw SocketClosedError("read timeout", true);
+            if (errno == EINTR) continue;
+            throw SocketClosedError(std::string("poll: ") + strerror(errno));
+        }
     }
     void writeFrameRaw(const std::uint8_t* body, std::size_t n) {
         sendFramed(body, n);

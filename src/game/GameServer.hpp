@@ -247,6 +247,10 @@ private:
     void handleLogin();
     void handleConfiguration();
     void handlePlay();
+    // plan43 W-12: configuration packets may arrive at any time; both wait
+    // loops (packs + finish-ack) share this helper. Only unknown ids throw.
+    enum class ConfigWaitResult { Continue, FinishAck, PacksDone };
+    ConfigWaitResult handleOneConfigPacket(ReadBuffer& in);
     void onEnterPlay();
     void tickChunksAround(double px, double pz);
 
@@ -284,6 +288,8 @@ private:
     void broadcastPlayerInfoAdd(Player* about);
     void sendStarterInventory();
     void sendAbilities();
+    // plan43 W-07: re-send stored sign text as BlockEntityData 0x07.
+    void sendSignBlockEntity(std::int32_t x, std::int32_t y, std::int32_t z);
     void ack(std::int32_t sequence);
     // container menus (chest/furnace/crafting)
     void onCloseContainer();

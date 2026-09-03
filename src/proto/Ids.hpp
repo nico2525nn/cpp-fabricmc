@@ -57,6 +57,10 @@ constexpr std::uint8_t KeepAlive = 0x04;
 constexpr std::uint8_t Pong = 0x05;
 constexpr std::uint8_t ResourcePackResponse = 0x06;
 constexpr std::uint8_t SelectKnownPacks = 0x07;
+// plan43 W-12: configuration toServer mapper full set (protocol.json 1.21.4:
+// 0x08 custom_report_details, 0x09 server_links) — tolerated via skipRest.
+constexpr std::uint8_t CustomReportDetails = 0x08;
+constexpr std::uint8_t ServerLinks = 0x09;
 }
 namespace sc {
 constexpr std::uint8_t CookieRequest = 0x00;
@@ -105,6 +109,7 @@ constexpr std::uint8_t MovePlayerStatusOnly = 0x1F;
 constexpr std::uint8_t MoveVehicle = 0x20;
 constexpr std::uint8_t PingRequest = 0x24;
 constexpr std::uint8_t PlaceRecipe = 0x25;        // craft_recipe_request
+constexpr std::uint8_t Abilities = 0x26;          // plan43 W-06: serverbound player_abilities {flags i8}
 constexpr std::uint8_t PlayerAction = 0x27;       // block dig
 constexpr std::uint8_t EntityAction = 0x28;       // sneak/sprint/...
 constexpr std::uint8_t PlayerInput = 0x29;
