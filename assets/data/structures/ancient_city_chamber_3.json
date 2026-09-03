@@ -1,0 +1,42 @@
+{
+  "name": "minecraft:ancient_city_chamber_3",
+  "type": "minecraft:ancient_city",
+  "placement": {
+    "spacing": 24,
+    "separation": 8,
+    "salt": 20083234,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:ancient_city/chamber_3",
+      "weight": 8
+    },
+    {
+      "name": "minecraft:ancient_city/chamber_4",
+      "weight": 6
+    }
+  ],
+  "palette": {
+    "deepslate": "minecraft:deepslate_bricks",
+    "chest": "minecraft:chest",
+    "sculk": "minecraft:sculk"
+  },
+  "mobs": [
+    {
+      "pos": [
+        5,
+        1,
+        5
+      ],
+      "mob": "minecraft:warden",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "4,1,4",
+      "table": "minecraft:chests/ancient_city"
+    }
+  ]
+}

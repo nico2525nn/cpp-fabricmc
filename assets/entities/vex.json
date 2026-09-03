@@ -1,0 +1,41 @@
+{
+  "type": "minecraft:vex",
+  "attributes": {
+    "max_health": 14.0,
+    "movement_speed": 0.12,
+    "attack_damage": 5.0
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:plains"
+    ],
+    "light_level": {
+      "max": 7
+    },
+    "weight": 5
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:vex_charge",
+        "priority": 2
+      },
+      {
+        "type": "minecraft:melee_attack",
+        "priority": 3
+      },
+      {
+        "type": "minecraft:wander",
+        "priority": 6
+      },
+      {
+        "type": "minecraft:look_at_player",
+        "priority": 7
+      }
+    ],
+    "sensors": [
+      "minecraft:nearest_players",
+      "minecraft:hurt_by"
+    ]
+  }
+}

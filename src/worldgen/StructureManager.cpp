@@ -2,6 +2,7 @@
 #include "StructureManager.hpp"
 #include "../game/World.hpp"
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <cmath>
@@ -1087,12 +1088,46 @@ void StructureManager::generate(Chunk& chunk, std::int32_t cx,
                 if (picked.find(want) != std::string::npos) { ok = true; break; }
             if (!ok) continue;
         }
-        // plan36 palette-driven path: if placer has palette for this structure, use it
+        // plan36 palette-driven path (+plan42 R2 E-12 variant pools):
+        // primary configured feature plus every JSON whose type == s.name
+        // (e.g. village biome variants). Biome-aware filter keeps the primary
+        // always eligible and admits variants sharing a token with the sampled
+        // biome (snowy variant in snowy_plains). Deterministic: sorted pool.
         if (placer_) {
-            if (auto* cf = placer_->getConfigured(s.name); cf && !cf->palette.empty() && !cf->pieces.empty()) {
-                int variant = int(smStructureHash(seed_, at.originX, at.originZ, s.salt ^ 0xBEEFULL) * (double)cf->pieces.size());
-                if (variant < 0) variant = 0;
-                if (variant >= (int)cf->pieces.size()) variant = (int)cf->pieces.size()-1;
+            if (auto* primary = placer_->getConfigured(s.name);
+                primary && !primary->palette.empty() && !primary->pieces.empty()) {
+                const ConfiguredFeature* cf = primary;
+                {
+                    std::vector<const ConfiguredFeature*> cands;
+                    for (auto* c : placer_->configuredWithType(s.name))
+                        if (!c->palette.empty() && !c->pieces.empty()) cands.push_back(c);
+                    if (cands.size() > 1) {
+                        const std::string& bio = biomes_->sample(at.originX + 8, 63, at.originZ + 8);
+                        std::string short_ = bio;
+                        if (short_.rfind("minecraft:", 0) == 0) short_ = short_.substr(10);
+                        std::vector<std::string> toks;
+                        { std::string cur; for (char ch : short_) { if (ch=='_') { if(!cur.empty()) toks.push_back(cur); cur.clear(); } else cur.push_back((char)std::tolower(ch)); } if(!cur.empty()) toks.push_back(cur); }
+                        std::vector<const ConfiguredFeature*> matched;
+                        for (auto* c : cands) {
+                            if (c->name == s.name) { matched.push_back(c); continue; }
+                            std::string ln = c->name;
+                            for (auto& ch : ln) ch = (char)std::tolower(ch);
+                            for (auto& t : toks)
+                                if (t.size() >= 3 && ln.find(t) != std::string::npos) { matched.push_back(c); break; }
+                        }
+                        const bool usePool = matched.size() > 1 ||
+                            (matched.size() == 1 && matched[0]->name != s.name);
+                        if (usePool) {
+                            const auto& use = matched.empty() ? cands : matched;
+                            double rp = smStructureHash(seed_, at.originX, at.originZ, s.salt ^ 0xBEEFULL);
+                            std::size_t pi = (std::size_t)(rp * (double)use.size());
+                            if (pi >= use.size()) pi = use.size() - 1;
+                            cf = use[pi];
+                        }
+                    }
+                }
+                double r = smStructureHash(seed_, at.originX, at.originZ, s.salt ^ 0xBEEFULL);
+                const std::size_t variant = StructurePlacer::pickWeightedPiece(*cf, r);
                 const std::string& pieceName = cf->pieces[variant].first;
                 auto itv = cf->variants.find(pieceName);
                 std::unordered_map<std::string,std::string> pal = cf->palette;
@@ -1106,9 +1141,9 @@ void StructureManager::generate(Chunk& chunk, std::int32_t cx,
                     if (sscanf(lb.first.c_str(), "%d,%d,%d", &lx,&ly,&lz)==3) enqueuePendingLoot(at.originX+lx, baseY+ly, at.originZ+lz, lb.second);
                 }
                 if (s.name.find("trial_chambers")!=std::string::npos || s.name.find("trial_chamber")!=std::string::npos) {
-                    placeTrialChambersPalette(chunk, cx, cz, at.originX, at.originZ, pieceName, pal, variant, ground);
+                    placeTrialChambersPalette(chunk, cx, cz, at.originX, at.originZ, pieceName, pal, (int)variant, ground);
                 } else {
-                    placeGenericPalette(chunk, cx, cz, at.originX, at.originZ, pieceName, pal, variant, ground);
+                    placeGenericPalette(chunk, cx, cz, at.originX, at.originZ, pieceName, pal, (int)variant, ground);
                 }
                 continue;
             }
@@ -1177,9 +1212,8 @@ void StructureManager::generate(Chunk& chunk, std::int32_t cx,
             // biome gate via sets? use pf spacing only
             auto* cf = placer_->getConfigured(pname);
             if (!cf || cf->palette.empty() || cf->pieces.empty()) continue;
-            int variant = int(smStructureHash(seed_, originX, originZ, pf.salt ^ 0xBEEFULL) * (double)cf->pieces.size());
-            if (variant < 0) variant = 0;
-            if (variant >= (int)cf->pieces.size()) variant = (int)cf->pieces.size()-1;
+            double rp2 = smStructureHash(seed_, originX, originZ, pf.salt ^ 0xBEEFULL);
+            int variant = (int)StructurePlacer::pickWeightedPiece(*cf, rp2);
             const std::string& pieceName = cf->pieces[variant].first;
             auto itv = cf->variants.find(pieceName);
             std::unordered_map<std::string,std::string> pal = cf->palette;

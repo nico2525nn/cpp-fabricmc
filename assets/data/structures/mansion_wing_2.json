@@ -1,0 +1,51 @@
+{
+  "name": "minecraft:mansion_wing_2",
+  "type": "minecraft:mansion",
+  "placement": {
+    "spacing": 80,
+    "separation": 20,
+    "salt": 10387324,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:mansion/wing_2",
+      "weight": 8
+    },
+    {
+      "name": "minecraft:mansion/corridor_2",
+      "weight": 5
+    }
+  ],
+  "palette": {
+    "planks": "minecraft:dark_oak_planks",
+    "log": "minecraft:dark_oak_log",
+    "chest": "minecraft:chest"
+  },
+  "mobs": [
+    {
+      "pos": [
+        8,
+        1,
+        8
+      ],
+      "mob": "minecraft:vindicator",
+      "count": 1
+    },
+    {
+      "pos": [
+        12,
+        1,
+        12
+      ],
+      "mob": "minecraft:evoker",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "5,1,5",
+      "table": "minecraft:chests/woodland_mansion"
+    }
+  ]
+}

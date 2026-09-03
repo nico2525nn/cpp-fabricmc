@@ -1,0 +1,43 @@
+{
+  "name": "minecraft:ancient_city_library",
+  "type": "minecraft:ancient_city",
+  "placement": {
+    "spacing": 24,
+    "separation": 8,
+    "salt": 20083240,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:ancient_city/library",
+      "weight": 7
+    },
+    {
+      "name": "minecraft:ancient_city/reading_nook",
+      "weight": 5
+    }
+  ],
+  "palette": {
+    "deepslate": "minecraft:deepslate_bricks",
+    "chest": "minecraft:chest",
+    "sculk": "minecraft:sculk",
+    "shelf": "minecraft:bookshelf"
+  },
+  "mobs": [
+    {
+      "pos": [
+        5,
+        1,
+        5
+      ],
+      "mob": "minecraft:warden",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "4,1,4",
+      "table": "minecraft:chests/ancient_city"
+    }
+  ]
+}

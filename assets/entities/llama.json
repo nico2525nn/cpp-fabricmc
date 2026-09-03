@@ -17,6 +17,14 @@
       {
         "type": "minecraft:wander",
         "priority": "priority"
+      },
+      {
+        "type": "minecraft:llama_spit",
+        "priority": 3
+      },
+      {
+        "type": "minecraft:graze",
+        "priority": 5
       }
     ],
     "sensors": [

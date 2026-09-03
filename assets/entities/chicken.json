@@ -17,6 +17,10 @@
       {
         "type": "minecraft:wander",
         "priority": "priority"
+      },
+      {
+        "type": "minecraft:lay_egg",
+        "priority": 4
       }
     ],
     "sensors": [
