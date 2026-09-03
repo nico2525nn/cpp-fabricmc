@@ -256,7 +256,21 @@ void Session::handleLogin() {
     ReadBuffer in(frame);
     if (in.u8() != lo::cs::Hello) throw std::runtime_error("expected login hello");
 
-    self_->name = in.string(16);
+    self_->name = [&]() -> std::string {
+        // plan42 R3 (E-19): overlong names (>16, vanilla String(16) limit) must
+        // yield a login-phase Disconnect 0x00, not a silent close — the spec
+        // suite probes with 17-18 char names (ban/whitelist) and expects kick.
+        try {
+            return in.string(16);
+        } catch (const std::exception&) {
+            WriteBuffer kick;
+            nbt::writeTextComponent(kick, "Invalid username");
+            try { conn_->sendPacket(proto::lo::sc::Disconnect, kick); } catch (...) {}
+            state_ = State::Done;
+            return std::string();
+        }
+    }();
+    if (state_ == State::Done) return;
 
     auto uuidBytes = in.bytes(16);
     std::copy(uuidBytes.begin(), uuidBytes.end(), self_->uuid.begin());
@@ -282,11 +296,12 @@ void Session::handleLogin() {
             return;
         }
     }
-    if (srv_.config().whitelist) {
-        bool ok = false;
+    // plan42 R3 (E-19): enforce the runtime whitelist flag controlled by
+    // `whitelist on/off` (server.properties white-list=true only seeds it at
+    // boot via setEnabled(true)). Ops bypass the whitelist (vanilla).
+    if (srv_.whitelist().enabled()) {
         // any registered-name match is impossible pre-join; check file-backed list
-        ok = srv_.whitelist().enabled() ? srv_.whitelist().contains(self_->name)
-                                        : true;
+        bool ok = srv_.whitelist().contains(self_->name) || srv_.isOp(self_->name);
         if (!ok) {
             WriteBuffer kick;
             nbt::writeTextComponent(kick, "You are not whitelisted on this server");
@@ -2549,6 +2564,7 @@ void Session::dispatchCommand(const std::string& line) {
     src.player = self_.get();
     src.name = self_->name;
     src.console = false;
+    src.hasOp = srv_.isOp(self_->name); // plan42 R3 (E-19): truthful op flag for kick/whitelist permission control
     src.srcX = self_->x; src.srcY = self_->y; src.srcZ = self_->z;
     src.srcYaw = self_->yaw; src.srcPitch = self_->pitch;
     src.resolveSelector = [this](const std::string& raw,

@@ -731,6 +731,9 @@ public:
     void effectsTick();
     // Console command dispatch (shared by chat /commands and RCON)
     std::string dispatchConsole(const std::string& line);
+    // plan42 R3 (E-19): per-thread capture of console command feedback so RCON
+    // returns actual output (e.g. `Seed: [...]`) instead of fixed "ok".
+    inline static thread_local std::string* consoleCapture_ = nullptr;
 
     // ticking & entities (Phase 3/4)
     void startTickLoop();
