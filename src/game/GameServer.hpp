@@ -55,6 +55,7 @@
 #include "Attributes.hpp"
 #include "DamageSource.hpp"
 #include "ServerProperties.hpp"
+#include "SessionLock.hpp"
 #include "BossAI.hpp"
 #include "MenuLogic.hpp"
 #include "WorldManager.hpp"
@@ -541,6 +542,8 @@ public:
         });
         // plan6 §9: seed persistence with current border/difficulty
         spawnProtection_ = cfg_.spawnProtection;
+        // plan46 §2 (O-08): session.lock — stale lock warns, live holder warns loudly.
+        { bool live = false; sessionLock_.acquire(cfg_.worldDir, live); (void)live; }
         persist_ = std::make_unique<Persistence>(world_, cfg_.worldDir, cfg_.worldBiome);
         persist_->setDifficulty(difficulty_);
         persist_->setWorldBorder(worldBorderDiameter_, worldBorderCenterX_, worldBorderCenterZ_);
@@ -707,6 +710,7 @@ public:
         for (auto& d : dimPersist_) if (d) d->stop();
         std::fprintf(stderr, "[cppfm] closing listen fd\n");
         if (listenFd_ >= 0) { ::close(listenFd_); listenFd_ = -1; }
+        sessionLock_.release(); // plan46 §2 (O-08)
         std::fprintf(stderr, "[cppfm] stopped cleanly\n");
     }
     Persistence& persistence() { return *persist_; }
@@ -1169,6 +1173,7 @@ private:
     std::thread tickThread_;
     std::unique_ptr<Persistence> persist_;
     std::unique_ptr<Persistence> dimPersist_[2];
+    SessionLock sessionLock_; // plan46 §2 (O-08): world/session.lock guard
     Whitelist whitelist_;
     std::unique_ptr<RconServer> rconServer_;
     crypto::RsaKeyPair loginKeys_;

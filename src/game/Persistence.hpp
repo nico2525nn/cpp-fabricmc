@@ -213,6 +213,9 @@ public:
         double lerpTgt = worldBorderDiameter_;
         std::int64_t lerpMs = 0;
         bool ok = worldDataManager_.loadLevelData(world_, difficulty_, worldBorderDiameter_, worldBorderCenterX_, worldBorderCenterZ_, &lerpTgt, &lerpMs);
+        // plan46 §2 O-07(c): always surface which stage supplied the level.
+        for (const auto& ln : worldDataManager_.lastRecovery().logLines)
+            std::fprintf(stderr, "[cppfm]%s\n", ln.c_str());
         if (ok) {
             worldBorderLerpFrom_ = worldBorderDiameter_;
             worldBorderLerpTo_ = lerpTgt;
