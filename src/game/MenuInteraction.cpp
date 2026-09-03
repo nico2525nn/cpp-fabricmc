@@ -544,20 +544,19 @@ bool isFuelItem(std::uint32_t itemId) {
 }
 int furnaceFuelTicks(std::uint32_t itemId) {
     if (itemId == 0) return 0;
-    static thread_local int coalId = static_cast<int>(
+    static thread_local std::uint32_t coalId = static_cast<std::uint32_t>(
         gen::itemIdByName().at("minecraft:coal"));
-    static thread_local int charcoalId = static_cast<int>(
+    static thread_local std::uint32_t charcoalId = static_cast<std::uint32_t>(
         gen::itemIdByName().at("minecraft:charcoal"));
-    static thread_local int coalBlockId = static_cast<int>(
+    static thread_local std::uint32_t coalBlockId = static_cast<std::uint32_t>(
         gen::itemIdByName().at("minecraft:coal_block"));
-    static thread_local int lavaBucketId = static_cast<int>(
+    static thread_local std::uint32_t lavaBucketId = static_cast<std::uint32_t>(
         gen::itemIdByName().at("minecraft:lava_bucket"));
-    static thread_local int blazeRodId = static_cast<int>(
+    static thread_local std::uint32_t blazeRodId = static_cast<std::uint32_t>(
         gen::itemIdByName().at("minecraft:blaze_rod"));
-    static thread_local int stickId = static_cast<int>(
+    static thread_local std::uint32_t stickId = static_cast<std::uint32_t>(
         gen::itemIdByName().at("minecraft:stick"));
-    static thread_local int plankTag = 0; (void)plankTag;
-    static thread_local int driedKelpId = static_cast<int>(
+    static thread_local std::uint32_t driedKelpId = static_cast<std::uint32_t>(
         gen::itemIdByName().at("minecraft:dried_kelp_block"));
     if (itemId == coalId || itemId == charcoalId) return 1600;
     if (itemId == coalBlockId) return 16000;

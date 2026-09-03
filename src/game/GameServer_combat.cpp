@@ -17,7 +17,6 @@
 #include "EquipmentComponent.hpp"
 #include "DamageComponent.hpp"
 #include "EnchantmentHelper.hpp"
-#include "MeleeHelper.hpp"
 #include "CombatManager.hpp"
 #include "MobSpawner.hpp"
 #include "BossAI.hpp"

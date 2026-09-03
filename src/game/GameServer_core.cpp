@@ -508,7 +508,7 @@ void GameServer::evaluatePlayerKilledEntity(Player& p, MobKind kind) {
                         if (ent->asStr()==killed) match=true;
                     }
                 } else if (auto* pred = tr.conditions.find("predicate")) {
-                    if (auto* tp = pred->find("type")) if (tp->asStr()==killed) match=true; else match=true;
+                    if (auto* tp = pred->find("type")) { if (tp->asStr()==killed) match=true; else match=true; }
                 } else {
                     match = true;
                 }

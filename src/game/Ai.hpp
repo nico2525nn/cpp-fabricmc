@@ -32,7 +32,7 @@ inline bool isPassableState(std::uint16_t state) {
     const std::string_view n = b->name;
     return n == "minecraft:water" || n == "minecraft:lava" ||
            n.find("sapling") != std::string::npos ||
-           n.find("grass") != std::string::npos && n != "minecraft:grass_block";
+           (n.find("grass") != std::string::npos && n != "minecraft:grass_block");
 }
 
 inline bool isSolidGround(std::uint16_t state) {

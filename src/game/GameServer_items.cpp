@@ -501,17 +501,9 @@ void GameServer::hoppersTick() {
                                         if(eslot>=2 && eslot<=5 && m->equipment[eslot].empty()){
                                             m->equipment[eslot]=ItemStack::of(s.itemId,1);
                                             equipped=true;
-                                            // broadcast SetEquipment for mob (slot mapping: 5 head 4 chest 3 legs 2 feet -> protocol 3,2,1,0? simplified use generic)
-                                            {
-                                                WriteBuffer eq;
-                                                eq.varint(m->entityId);
-                                                // Vanilla SetEquipment 0x60: varint entity id, then bytes for equipment slots bitmask? Simplified send one entry
-                                                // We'll send armor stand style: slot id 2=feet,3=legs,4=chest,5=head
-                                                eq.varint(eslot==5?3: eslot==4?2: eslot==3?1:0); // map to 3 head,2 chest,1 legs,0 feet per spec?
-                                                m->equipment[eslot].write(eq);
-                                                eq.varint(0xFF); // terminator? Actually protocol uses 0xFF end? We'll just broadcast SetEquipment with our helper
-                                                // Instead use broadcast for mob equipment: iterate via GameServer helper if exists
-                                            }
+                                            // NOTE(cleanup): mob SetEquipment 0x60 broadcast deferred
+                                            // (no helper yet — state change above is authoritative; the
+                                            // previously built-but-unsent WriteBuffer was dead code).
                                             break;
                                         }
                                     }
@@ -1358,7 +1350,8 @@ void GameServer::furnacesTick() {
 
         // lit-state block update (vanilla swaps furnace[lit=...])
         static const gen::BlockDef* fdef = gen::blockByName("minecraft:furnace");
-        if (fdef && stateHere == fdef->defaultState || stateHere == 4351) {
+        if ((fdef && stateHere == fdef->defaultState) || stateHere == 4351) {
+            // NOTE(cleanup): parenthesized as evaluated — (fdef && stateHere == default) || stateHere == 4351.
             const std::uint16_t want = gen::stateWithPropsList("minecraft:furnace",
                 {{"lit", burning ? "true" : "false"}});
             if (stateHere != want) {
@@ -1622,7 +1615,7 @@ void GameServer::projectilesTick() {
         for (auto it = projectiles_.begin(); it != projectiles_.end();) {
             auto& pr = *it;
             ++pr->ageTicks;
-            if (pr->ageTicks > 1200 || pr->stuck && pr->ageTicks > 600 + 1200) {
+            if ((pr->ageTicks > 1200) || (pr->stuck && pr->ageTicks > 600 + 1200)) {
                 despawn.push_back(pr->entityId);
                 it = projectiles_.erase(it);
                 continue;
