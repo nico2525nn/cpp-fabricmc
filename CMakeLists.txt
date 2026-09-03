@@ -217,6 +217,17 @@ target_link_libraries(test_wire_full PRIVATE ZLIB::ZLIB OpenSSL::Crypto)
 add_test(NAME wire_full COMMAND test_wire_full)
 set_tests_properties(wire_full PROPERTIES TIMEOUT 30)
 
+# plan45 B6: remaining fromClient (W-05/W-08/W-09/W-10/W-11/W-13) + G-13 network side
+add_executable(test_wire_b6 tests/test_wire_b6.cpp
+    src/core/NBT.cpp
+    src/game/Recipes.cpp src/game/Containers.cpp src/game/MenuInteraction.cpp)
+target_include_directories(test_wire_b6 PRIVATE src src/generated)
+find_package(ZLIB REQUIRED)
+find_package(OpenSSL REQUIRED)
+target_link_libraries(test_wire_b6 PRIVATE ZLIB::ZLIB OpenSSL::Crypto)
+add_test(NAME wire_b6 COMMAND test_wire_b6)
+set_tests_properties(wire_b6 PROPERTIES TIMEOUT 60)
+
 # plan36 soak 2h nightly (300s dry + 7200s full) — B-06
 add_test(NAME soak2h COMMAND python3 tests/soak_test.py --duration 7200 --binary $<TARGET_FILE:cppfm> WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(soak2h PROPERTIES TIMEOUT 8000 LABELS nightly)

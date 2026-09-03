@@ -113,6 +113,57 @@ Bundle coalescing: `0x49` and `0x68` are single-byte varint ids, `dataLength` <2
 - System chat content is anonymous-NBT text components; `{text:"…"}` suffices.
 - `PlayerChat 0x3B` vs `SystemChat 0x73`: when `chatPubKey` valid, server verifies RSA-SHA256 and relays as `PlayerChat`; else `enforcesSecureChat:false` falls back to `SystemChat`. `MessageAck 0x04` is sunk.
 
+## B6 remaining fromClient (plan45 — W-05/W-08/W-09/W-10/W-11/W-13, G-13 net side)
+
+Shapes below are Prismarine `protocol.json` 1.21.4 live-fetch 2026-09-04
+(play toServer 62 ids; `settings` maps to `packet_common_settings` in `types`).
+
+- W-05 `settings 0x0C` = `packet_common_settings` (locale, viewDistance **i8**,
+  chatFlags, chatColors, skinParts, mainHand, textFiltering, serverListing,
+  particleStatus 0/1/2): parsed, viewDistance clamped 2..32, send radius =
+  min(server view-distance, client viewDistance). Config `0x00` shares the shape.
+- W-08 `name_item 0x2E{name}` → anvil `Menu::anvilRename` + output recompute
+  (cost `ContainerSetData` + `SetSlot(2)` + full resync — G-13 joint).
+  `set_beacon_effect 0x32{option,option}` → validity-checked
+  (primary ∈ {1,3,11,8,5}, secondary 10 or primary for tier II) + `EntityEffect`
+  30s grant. Beacon-block persistence is G-04 territory (no BE kind yet).
+  `pick_item_from_block 0x22{position,includeData}` → block→item direct lookup
+  + `addToInventory` + resync (BE-copy detail deferred). `pick_item_from_entity
+  0x23{entityId,includeData}` → `<kind>_spawn_egg` when the id exists.
+  `recipe_book 0x2C{bookId,bookOpen,filterActive}` / `displayed_recipe
+  0x2D{recipeId}` → per-player display state kept (unlock distribution stays
+  `UpdateRecipes`/`RecipeBookAdd`).
+- W-09 all debug editors parse the full shape behind `requireOp` (ops.json +
+  creative; unimplemented = deny + log, so future features inherit the gate):
+  `update_command_block 0x34` / `_minecart 0x35` / `update_jigsaw_block 0x37`
+  (8 fields) / `update_structure_block 0x38` (16 fields) / `generate_structure
+  0x19` — storage deferred (no command-block BE / structure-gen API yet).
+  `edit_book 0x16{hand,pages[≤100,≤2MB],title?}` → recorded; signing a held
+  writable book converts it to written + title. `spectate 0x3B{UUID}` →
+  spectator-only teleport + `Camera`; mob UUIDs unsupported (mobs carry no UUID).
+- W-10(a) `steer_boat 0x21` → held paddle state (physics stays G-05).
+  (b) `resource_pack_receive 0x2F{uuid,result}`: result 1 declined / 2 failed +
+  forced pack → play kick. (c) `pong 0x2B{i32}` → last-pong id/ms (RTT source
+  shared with O-02). (d) `advancement_tab 0x30{action,tabId?}` → open echoes
+  `SelectAdvancementTab 0x4F`; `query_block_nbt 0x01` → `TagQueryResponse 0x75`
+  with real sign NBT, empty compound otherwise (no BE serializer yet);
+  `query_entity_nbt 0x17` → empty compound echo (entity NBT deferred);
+  `select_bundle_item 0x02` → cursor index kept; `set_slot_state 0x12` →
+  parsed, no server state (client ghost hint); `debug_sample_subscription 0x15`
+  → no-op; `lock_difficulty 0x1B` → op-only latch; `configuration_acknowledged
+  0x0E` (empty) → future transfer hook.
+- W-11 login ack wait accepts all 5 toServer kinds (cookie values kept, plugin
+  answers tolerated); only unknown ids throw.
+- W-13(a) legacy `0xFE` list ping → `0xFF`/UCS-2
+  `§1\0proto\0ver\0motd\0online\0max` reply (unframed). (b) names enforced
+  `[A-Za-z0-9_]{3,16}` ("Invalid username" kick). (c) duplicate UUID/name →
+  older session gets a play Disconnect + registry drop (vanilla behavior).
+- G-13 net side: `PlaceRecipe 0x25` windowId is ContainerID(**varint**), u8
+  fallback kept for proxies; grid clicks already re-run `refreshCraftResult` +
+  full resync (live result reflection), shift-click via `quickMove` —
+  `test_wire_b6` locks 10 round-trips + batch + separation at Menu level
+  (live 2-client `test_crafting_live` stays inventory worktree).
+
 ## Unsent play toClient reclassification (plan41 C-10 — 21 before, 19 after horse/vehicle)
 
 `minecraft-data 1.21.4 protocol.json` 131 `toClient` vs `Ids.hpp` mapper. Plan34 sent 6 (`0x18 ChatSuggestions, 0x20 SyncEntityPosition, 0x25 HurtAnimation, 0x50 ServerData, 0x51 ActionBar, 0x6E EntitySoundEffect`), plan41 sent 2 (`0x24 OpenHorseWindow, 0x33 VehicleMove`) → 131-104 sent=27 before plan34, 27-6=21 before plan41, 21-2=19 after plan41. Prismarine `protocol.json` types cited for each.
