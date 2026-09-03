@@ -1,0 +1,37 @@
+{
+  "type": "minecraft:trader_llama",
+  "attributes": {
+    "max_health": 14.0,
+    "movement_speed": 0.09,
+    "attack_damage": 3.0
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:plains"
+    ],
+    "light_level": {
+      "max": 9
+    },
+    "weight": 2
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:llama_spit",
+        "priority": 3
+      },
+      {
+        "type": "minecraft:graze",
+        "priority": 5
+      },
+      {
+        "type": "minecraft:wander",
+        "priority": 6
+      }
+    ],
+    "sensors": [
+      "minecraft:nearest_players",
+      "minecraft:hurt_by"
+    ]
+  }
+}
