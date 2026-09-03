@@ -82,6 +82,33 @@ public:
         timeval tv{seconds, 0};
         setsockopt(fd_, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
     }
+    // plan45 B6 W-13(a): peek the first pending byte (MSG_PEEK) so the
+    // handshake state can detect a pre-1.7 legacy ping (0xFE) without
+    // consuming modern length-prefixed frames. Returns -1 on timeout/empty.
+    int peekFirstByte(int timeoutMs) const {
+        if (fd_ < 0) return -1;
+        pollfd pfd{};
+        pfd.fd = fd_;
+        pfd.events = POLLIN;
+        const int r = ::poll(&pfd, 1, timeoutMs);
+        if (r <= 0) return -1;
+        std::uint8_t b = 0;
+        const ssize_t n = ::recv(fd_, &b, 1, MSG_PEEK);
+        if (n != 1) return -1;
+        return static_cast<int>(b);
+    }
+    // plan45 B6 W-13(a): raw unframed write (legacy ping reply bypasses
+    // length-prefix/compression/encryption — pre-1.7 clients speak no framing).
+    void sendRaw(const std::uint8_t* d, std::size_t n) {
+        std::lock_guard lk(tx_);
+        if (!isOpen()) throw SocketClosedError("closed");
+        std::size_t off = 0;
+        while (off < n) {
+            const ssize_t w = ::send(fd_, d + off, n - off, MSG_NOSIGNAL);
+            if (w <= 0) throw SocketClosedError("send failed");
+            off += static_cast<std::size_t>(w);
+        }
+    }
     std::uint16_t peerPort() const {
         sockaddr_in addr{}; socklen_t sl = sizeof(addr);
         if (getpeername(fd_, reinterpret_cast<sockaddr*>(&addr), &sl) != 0) return 0;

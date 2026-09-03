@@ -210,6 +210,45 @@ struct Player {
     bool isFlying = false;
     std::int32_t flyingTicks = 0;
     AttributeManager attributes;
+    // plan45 B6: play client settings (W-05 packet_common_settings) — kept
+    // per-player; viewDistance narrows the chunk send radius (min with server vd).
+    struct ClientSettings {
+        std::string locale = "en_us";
+        std::int32_t viewDistance = 6;   // clamped 2..32 (i8 on the wire)
+        std::int32_t chatFlags = 0;
+        bool chatColors = true;
+        std::uint8_t skinParts = 0x7F;
+        std::int32_t mainHand = 1;
+        bool textFiltering = false;
+        bool serverListing = true;
+        std::int32_t particleStatus = 0; // 0 all / 1 decreased / 2 minimal
+    } clientSettings;
+    // plan45 B6 W-10(a): boat paddle input (receive+hold; physics stays G-05).
+    bool boatLeftPaddle = false, boatRightPaddle = false;
+    // plan45 B6 W-08/G-13: recipe-book open state (server keeps display state;
+    // unlock distribution stays UpdateRecipes/RecipeBookAdd).
+    std::int32_t recipeBookId = 0;
+    bool recipeBookOpen = false, recipeBookFilter = false;
+    std::int32_t displayedRecipe = -1;
+    // plan45 B6 W-10(d): advancement tab / bundle cursor / difficulty lock.
+    std::int32_t advancementTabAction = -1;
+    std::string advancementTabId;
+    std::int32_t bundleSelectedIndex = 0;
+    bool difficultyLocked = false;
+    // plan45 B6 W-10(c): last play pong (RTT bookkeeping shared with O-02).
+    std::int32_t lastPlayPongId = 0;
+    std::int64_t lastPlayPongMs = 0;
+    // plan45 B6 W-09: spectate target (gm3) / beacon selection / book edit.
+    std::array<std::uint8_t,16> spectateTarget{};
+    bool hasSpectateTarget = false;
+    std::optional<std::int32_t> beaconPrimary, beaconSecondary;
+    struct BookEdit {
+        std::int32_t hand = 0;
+        std::vector<std::string> pages;
+        std::string title;
+        bool signedCopy = false;
+    };
+    BookEdit lastBookEdit;
     // plan32 combat: per-player recipe unlocks for /recipe give|take
     std::unordered_set<std::string> combatRecipeUnlocks;
 };
@@ -249,6 +288,8 @@ public:
 
 private:
     void handleHandshake(ReadBuffer& in);
+    // plan45 B6 W-13(a): pre-1.7 legacy server-list ping (0xFE) reply.
+    void answerLegacyPing();
     void handleStatus();
     void handleLogin();
     void handleConfiguration();
@@ -309,6 +350,19 @@ private:
     void closeOpenMenu(bool sendPacket);
     void onWindowClick(ReadBuffer& in);
     void onEnchantItem(ReadBuffer& in);
+    // plan45 B6: W-05 settings parse (shared play 0x0C / config 0x00 shape).
+    void applyClientSettings(Player::ClientSettings s);
+    // plan45 B6 W-09: op/creative gate for debug editors (unimplemented=deny).
+    bool requireOp(int level, const char* what);
+    // plan45 B6 W-10(d): F3+I answers (TagQueryResponse 0x75).
+    void sendTagQueryResponse(std::int32_t transactionId, const WriteBuffer& nbt);
+    void answerBlockNbt(std::int32_t transactionId, std::int32_t x, std::int32_t y, std::int32_t z);
+    void answerEntityNbt(std::int32_t transactionId, std::int32_t entityId);
+    // plan45 B6 W-08: anvil rename (NameItem 0x2E) + beacon apply.
+    void onNameItem(const std::string& name);
+    void onBeaconEffect(std::optional<std::int32_t> primary, std::optional<std::int32_t> secondary);
+    // plan45 B6 W-09: spectate teleport (gm3).
+    void onSpectate(const std::array<std::uint8_t,16>& target);
 
     GameServer& srv_;
     // plan42 R3: shared with Player::conn (see above) so cross-thread
@@ -935,7 +989,41 @@ public:
         return players_.size();
     }
     std::int32_t nextEntityId() { return entityIdCounter_++; }
-    void addPlayer(PlayerRef p) { std::lock_guard lk(playersMtx_); players_.push_back(std::move(p)); }
+    void addPlayer(PlayerRef p) {
+        kickDuplicate(*p);   // plan45 B6 W-13(c): vanilla kicks the older session
+        std::lock_guard lk(playersMtx_);
+        players_.push_back(std::move(p));
+    }
+    // plan45 B6 W-13(c): same UUID or same name already online → kick the
+    // older side with a play Disconnect and drop it from the registry so
+    // broadcast/score/tab never double-count. Called with the newcomer NOT
+    // yet in players_ (addPlayer) or directly in tests.
+    void kickDuplicate(const Player& incoming) {
+        std::vector<PlayerRef> victims;
+        {
+            std::lock_guard lk(playersMtx_);
+            for (auto& e : players_) {
+                if (e.get() == &incoming) continue;
+                if (e->uuid == incoming.uuid || e->name == incoming.name)
+                    victims.push_back(e);
+            }
+        }
+        for (auto& v : victims) {
+            WriteBuffer kick;
+            nbt::writeTextComponent(kick, "You logged in from another location");
+            try { if (v->conn) v->conn->sendPacket(proto::pl::sc::Disconnect, kick); }
+            catch (...) {}
+            std::fprintf(stderr, "[cppfm] duplicate login %s: kicked older session\n",
+                         v->name.c_str());
+        }
+        if (!victims.empty()) {
+            std::lock_guard lk(playersMtx_);
+            std::erase_if(players_, [&](const PlayerRef& e) {
+                if (e.get() == &incoming) return false;
+                return e->uuid == incoming.uuid || e->name == incoming.name;
+            });
+        }
+    }
     void removePlayer(const Player* p) {
         std::lock_guard lk(playersMtx_);
         std::erase_if(players_, [p](const PlayerRef& e) { return e.get() == p; });
@@ -1190,6 +1278,25 @@ public:
         return std::max(dx, dz) <= spawnProtection_;
     }
     bool isOp(const std::string& name) const { return ops_.count(name) > 0; }
+    // plan45 B6 W-13(b): vanilla usernames are [A-Za-z0-9_] of length 3..16
+    // (Yarn StringHelper / mojang auth rules). Overlong names are already
+    // rejected by string(16) in handleLogin; this covers charset + empties.
+    static bool isValidPlayerName(const std::string& n) {
+        if (n.size() < 3 || n.size() > 16) return false;
+        for (char c : n) {
+            const bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                            (c >= '0' && c <= '9') || c == '_';
+            if (!ok) return false;
+        }
+        return true;
+    }
+    // plan45 B6 W-05: settings viewDistance rides as i8 (negative possible) —
+    // clamp to the vanilla 2..32 window before it touches chunk logic.
+    static int clampClientViewDistance(int v) {
+        if (v < 2) return 2;
+        if (v > 32) return 32;
+        return v;
+    }
     void loadOps();
     void saveOps() const;
     bool isBanned(const std::string& name) const { return bannedPlayers_.count(name) > 0; }
