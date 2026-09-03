@@ -1,4 +1,5 @@
 #include "GameServer.hpp"
+#include "PlayerDataRecovery.hpp"
 #include "BlockEvent.hpp"
 #include "MetadataTypes.hpp"
 #include "../physics/LightEngine.hpp"
@@ -255,13 +256,20 @@ void GameServer::savePlayerData(const std::string& uuidHex, Player& p) {
     savePlayerNBT(cfg_.worldDir + "/playerdata/" + uuidHex + ".dat", p);
 }
 bool GameServer::loadPlayerData(const std::string& uuidHex, Player& p) {
-    return loadPlayerNBT(cfg_.worldDir + "/playerdata/" + uuidHex + ".dat", p);
+    // plan46 §2 O-07(b): corrupt playerdata is quarantined to *.dat.corrupt and
+    // the player starts fresh; neighbours and startup are unaffected.
+    return loadPlayerDataIsolated(cfg_.worldDir + "/playerdata/" + uuidHex + ".dat",
+                                  [&](const std::string& path) {
+                                      return loadPlayerNBT(path, p);
+                                  });
 }
 void GameServer::loadOps() {
     ops_.clear();
+    bool sawFile = false; // plan46 §2 O-07(c): corrupt admin files warn, never crash startup
     try {
         std::ifstream f("ops.json");
         if (f) {
+            sawFile = true;
             std::string txt((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
             auto v = json::Value::parse(txt);
             if (v.isArr()) {
@@ -274,7 +282,9 @@ void GameServer::loadOps() {
                 for (auto& [k,_] : v.obj) ops_.insert(k);
             }
         }
-    } catch (...) {}
+    } catch (...) {
+        if (sawFile) std::fprintf(stderr, "[cppfm] ops.json corrupt, starting with empty ops\n");
+    }
     // also allow ops.txt one name per line fallback
     try {
         std::ifstream f2("ops.txt");
@@ -301,9 +311,11 @@ void GameServer::saveOps() const {
 }
 void GameServer::loadBans() {
     bannedPlayers_.clear();
+    bool sawFile = false; // plan46 §2 O-07(c)
     try {
         std::ifstream f("banned-players.json");
         if (!f) return;
+        sawFile = true;
         std::string txt((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
         auto v = json::Value::parse(txt);
         if (v.isArr()) {
@@ -315,7 +327,9 @@ void GameServer::loadBans() {
         } else if (v.isObj()) {
             for (auto& [k,_] : v.obj) bannedPlayers_.insert(k);
         }
-    } catch (...) {}
+    } catch (...) {
+        if (sawFile) std::fprintf(stderr, "[cppfm] banned-players.json corrupt, starting with empty bans\n");
+    }
 }
 void GameServer::saveBans() const {
     try {
@@ -333,9 +347,11 @@ void GameServer::saveBans() const {
 }
 void GameServer::loadBannedIps() {
     bannedIps_.clear();
+    bool sawFile = false; // plan46 §2 O-07(c)
     try {
         std::ifstream f("banned-ips.json");
         if (!f) return;
+        sawFile = true;
         std::string txt((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
         auto v = json::Value::parse(txt);
         if (v.isArr()) {
@@ -348,7 +364,9 @@ void GameServer::loadBannedIps() {
         } else if (v.isObj()) {
             for (auto& [k,_] : v.obj) bannedIps_.insert(k);
         }
-    } catch (...) {}
+    } catch (...) {
+        if (sawFile) std::fprintf(stderr, "[cppfm] banned-ips.json corrupt, starting with empty ip bans\n");
+    }
 }
 void GameServer::saveBannedIps() const {
     try {
