@@ -449,6 +449,72 @@ void Session::handleLogin() {
         }
     }
 }
+// plan43 W-12: one configuration packet during a wait loop. Configuration
+// packets (settings resends, pongs, late resource-pack answers, delayed
+// known-packs) may arrive at any time, so both wait loops (packs + finish-ack)
+// share this helper. Only truly unknown ids throw.
+Session::ConfigWaitResult Session::handleOneConfigPacket(ReadBuffer& in) {
+    const std::uint8_t kpid = in.u8();
+    switch (kpid) {
+    case cf::cs::FinishAcknowledgement:
+        return ConfigWaitResult::FinishAck;
+    case cf::cs::SelectKnownPacks: {
+        const std::int32_t n = in.varint();
+        for (std::int32_t i = 0; i < n; ++i) {
+            (void)in.string();                      // namespace
+            (void)in.string();                      // id
+            (void)in.string();                      // version
+        }
+        return ConfigWaitResult::PacksDone;
+    }
+    case cf::cs::KeepAlive: {                       // echo
+        WriteBuffer e; e.raw(in.p + in.off, in.remaining());
+        conn_->sendPacket(cf::sc::KeepAlive, e);
+        return ConfigWaitResult::Continue;
+    }
+    case cf::cs::ClientInformation: {               // settings resend: parse & ignore
+        (void)in.string();                          // locale
+        (void)in.i8();                              // view distance
+        (void)in.varint();                          // chat mode
+        (void)in.boolean();                         // chat colors
+        (void)in.u8();                              // skin parts
+        (void)in.varint();                          // main hand
+        (void)in.boolean();                         // text filtering
+        (void)in.boolean();                         // allow server listings
+        return ConfigWaitResult::Continue;
+    }
+    case cf::cs::CustomPayload: {                   // plugin channels (config)
+        const std::string channel = in.string(256);
+        api::ChannelRegistry::Payload body(in.p + in.off, in.p + in.len);
+        onPluginPayload(channel, body, 0);
+        return ConfigWaitResult::Continue;
+    }
+    case cf::cs::CookieResponse: {
+        const std::string key = in.string(256);
+        if (in.boolean()) {
+            const auto len = in.varint();
+            self_->cookies[key] = in.bytes(static_cast<std::size_t>(len));
+            srv_.storeCookie(self_->uuid, key, self_->cookies[key]);
+        } else srv_.eraseCookie(self_->uuid, key);
+        return ConfigWaitResult::Continue;
+    }
+    case cf::cs::ResourcePackResponse:
+        (void)in.u8(); (void)in.varint();
+        return ConfigWaitResult::Continue;
+    case cf::cs::Pong:
+        (void)in.i32();
+        return ConfigWaitResult::Continue;
+    case cf::cs::CustomReportDetails:
+    case cf::cs::ServerLinks:
+        in.skipRest();                              // tolerated, no server state
+        return ConfigWaitResult::Continue;
+    default:
+        throw std::runtime_error("unexpected packet 0x" + [&]{
+            char b[3]; snprintf(b,3,"%02x", kpid); return std::string(b); }() +
+            " while awaiting configuration reply");
+    }
+}
+
 void Session::handleConfiguration() {
     // 0. resource pack (plan3 Resource Pack) — configured via server.properties
     // 1.21.4: AddResourcePack = UUID + url + hash + forced + hasPrompt (no message) — UUID required (strict N13)
@@ -488,62 +554,20 @@ void Session::handleConfiguration() {
         conn_->sendPacket(cf::sc::SelectKnownPacks, b);
     }
     // 3. wait for the client's SelectKnownPacks answer (server hangs otherwise!)
+    // plan43 W-12: shared helper — an out-of-order FinishAcknowledgement is
+    // recorded but we keep waiting for packs (the client will ack again after
+    // it receives our FinishConfiguration).
+    bool finishAckEarly = false;
     for (;;) {
         auto frame = conn_->readFrame();
         ReadBuffer in(frame);
-        const std::uint8_t kpid = in.u8();
-        switch (kpid) {
-        case cf::cs::SelectKnownPacks: {
-            const std::int32_t n = in.varint();
-            for (std::int32_t i = 0; i < n; ++i) {
-                (void)in.string();                  // namespace
-                (void)in.string();                  // id
-                (void)in.string();                  // version
-            }
-            goto packsDone;
-        }
-        case cf::cs::KeepAlive: {                   // echo
-            WriteBuffer e; e.raw(in.p + in.off, in.remaining());
-            conn_->sendPacket(cf::sc::KeepAlive, e);
-            break;
-        }
-        case cf::cs::ClientInformation: {           // settings: parse & ignore
-            (void)in.string();                      // locale
-            (void)in.i8();                          // view distance
-            (void)in.varint();                      // chat mode
-            (void)in.boolean();                     // chat colors
-            (void)in.u8();                          // skin parts
-            (void)in.varint();                      // main hand
-            (void)in.boolean();                     // text filtering
-            (void)in.boolean();                     // allow server listings
-            break;
-        }
-        case cf::cs::CustomPayload: {                 // plugin channels (config)
-            const std::string channel = in.string(256);
-            api::ChannelRegistry::Payload body(in.p + in.off, in.p + in.len);
-            onPluginPayload(channel, body, 0);
-            break;
-        }
-        case cf::cs::CookieResponse: {
-            const std::string key = in.string(256);
-            if (in.boolean()) {
-                const auto len = in.varint();
-                self_->cookies[key] = in.bytes(static_cast<std::size_t>(len));
-                srv_.storeCookie(self_->uuid, key, self_->cookies[key]);
-            } else srv_.eraseCookie(self_->uuid, key);
-            break;
-        }
-        case cf::cs::ResourcePackResponse:
-            (void)in.u8(); (void)in.varint();
-            break;
-        case cf::cs::Pong:
-            (void)in.i32();
-            break;
-        default:
-            throw std::runtime_error("unexpected packet 0x" + [&]{ 
-                char b[3]; snprintf(b,3,"%02x", kpid); return std::string(b); }() + " while awaiting known-packs reply");
-        }
+        auto r = handleOneConfigPacket(in);
+        if (r == ConfigWaitResult::PacksDone) break;
+        if (r == ConfigWaitResult::FinishAck) finishAckEarly = true;
     }
+    if (finishAckEarly)
+        std::fprintf(stderr, "[cppfm] %s: early finish-ack during packs wait (tolerated)\n",
+                     self_->name.c_str());
 packsDone:
     // 4. registry blobs, verbatim wire order — D10 lock: exactly 12 in PROTOCOL_NOTES order
     {
@@ -569,29 +593,33 @@ packsDone:
         conn_->sendRawBody(pkt.data);
     }
     // 6. finish & await acknowledgement
+    // plan43 W-12: absorb every configuration packet that may arrive around
+    // finish (settings resends, pongs, late pack answers, delayed known-packs
+    // retransmits). 30s without any packet = kick (slow-loris guard).
     conn_->sendPacket(cf::sc::FinishConfiguration, {});
     for (;;) {
-        auto frame = conn_->readFrame();
+        std::vector<std::uint8_t> frame;
+        try {
+            frame = conn_->readFrameWithTimeout(std::chrono::seconds(30));
+        } catch (const SocketClosedError& e) {
+            if (e.timedOut) {
+                WriteBuffer kick;
+                nbt::writeTextComponent(kick, "Took too long to acknowledge configuration");
+                try { conn_->sendPacket(cf::sc::Disconnect, kick); } catch (...) {}
+            }
+            throw;
+        }
         ReadBuffer in(frame);
-        switch (in.u8()) {
-        case cf::cs::FinishAcknowledgement:
+        auto r = handleOneConfigPacket(in);
+        if (r == ConfigWaitResult::FinishAck) {
             std::fprintf(stderr, "[cppfm] %s: finish ack at %.2f\n", self_->name.c_str(),
                          std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count());
             state_ = State::Play;
             onEnterPlay();
             std::fprintf(stderr, "[cppfm] %s: onEnterPlay done\n", self_->name.c_str());
             return;
-        case cf::cs::KeepAlive: {
-            WriteBuffer e; e.raw(in.p + in.off, in.remaining());
-            conn_->sendPacket(cf::sc::KeepAlive, e);
-            break;
         }
-        case cf::cs::CustomPayload:
-            (void)in.string(); in.skipRest();
-            break;
-        default:
-            throw std::runtime_error("unexpected packet during finish-ack wait");
-        }
+        // PacksDone here = late select_known_packs retransmit: absorbed.
     }
 }
 void Session::onEnterPlay() {
@@ -602,7 +630,6 @@ void Session::onEnterPlay() {
     sendJoinGame();
     // plan34 network: ServerData 0x50 right after JoinGame (Prismarine packet_server_data {motd:anonymousNbt, iconBytes:option<ByteArray>})
     srv_.sendServerData(*self_);
-    sendAbilities();
     // plan6 §7: send InitializeWorldBorder on join
     srv_.sendWorldBorderTo(*self_);
 
@@ -654,6 +681,9 @@ void Session::onEnterPlay() {
     }
 
     srv_.loadPlayerData(GameServer::uuidToHex(self_->uuid), *self_);
+    // plan43 W-06 + W-15(b): abilities are sent only after gamemode is final
+    // (the old call site ran before gamemode was even assigned).
+    sendAbilities();
     // cookies from disk (plan3 Cookie persistence)
     if (!self_->cookies.empty()) {}                    // populated on demand
     self_->prevFeetY = self_->y;
@@ -736,11 +766,60 @@ void Session::sendJoinGame() {
     conn_->sendPacket(pl::sc::Login, b);
 }
 void Session::sendAbilities() {
+    // plan43 W-06: flags follow gamemode (vanilla PlayerAbilities bits:
+    // 0x01 invulnerable, 0x02 flying, 0x04 allowFlying, 0x08 creative).
+    // Survival/adventure get 0x00 — the old code dealt 0x01|0x04|0x08 to
+    // everyone (free fly + godmode + instabuild for survival joiners).
+    std::uint8_t f = 0;
+    if (self_->gamemode == 1) f |= 0x01 | 0x04 | 0x08;   // creative
+    else if (self_->gamemode == 3) f |= 0x02 | 0x04;     // spectator flies
+    if (self_->isFlying && !(f & 0x04)) self_->isFlying = false; // revoke unpermitted flight
+    if (self_->isFlying) f |= 0x02;
     WriteBuffer b;
-    b.i8(0x01 | 0x04 | 0x08);                      // invulnerable, allow flying, instant build
-    b.f32(0.05f);
-    b.f32(0.10f);
+    b.i8(static_cast<std::int8_t>(f));
+    b.f32(0.05f);                                       // flyingSpeed (vanilla default)
+    b.f32(0.10f);                                       // walkingSpeed (vanilla default)
     conn_->sendPacket(pl::sc::Abilities, b);
+}
+// plan43 W-07: re-send the stored sign text as BlockEntityData 0x07
+// (position + block-entity-type varint + NBT). Type ids follow the vanilla
+// minecraft:block_entity_type registry order (sign=7, hanging_sign=8).
+// Non-sign blocks are ignored, mirroring vanilla's block-entity lookup.
+void Session::sendSignBlockEntity(std::int32_t x, std::int32_t y, std::int32_t z) {
+    bool hanging = false;
+    {
+        World& w = srv_.worldFor(self_->dimension);
+        const auto* d = gen::blockByState(w.getBlock(x, y, z));
+        if (!d || d->name.find("sign") == std::string::npos) {
+            std::fprintf(stderr, "[cppfm] sign resend at %d,%d,%d ignored (not a sign block)\n",
+                         x, y, z);
+            return;
+        }
+        hanging = (d->name.find("hanging_sign") != std::string::npos);
+    }
+    BlockEntity* be = srv_.blockEntities().getAt(x, y, z);
+    if (!be || be->kind != BlockEntity::Kind::Sign) return;
+    WriteBuffer b;
+    b.position(x, y, z);
+    b.varint(hanging ? 8 : 7);
+    nbt::Writer w(b);
+    w.rootCompound();
+    w.namedString("id", hanging ? "minecraft:hanging_sign" : "minecraft:sign");
+    w.namedInt("x", x); w.namedInt("y", y); w.namedInt("z", z);
+    w.namedByte("is_waxed", 0);
+    auto side = [&](const char* key, const std::string lines[4]) {
+        w.beginCompound(key);
+        w.beginList("messages", nbt::String, 4);
+        for (int i = 0; i < 4; ++i) w.bareString(lines[i]);
+        w.namedString("color", "black");
+        w.namedByte("has_glowing_text", 0);
+        w.endCompound();
+    };
+    side("front_text", be->sign.front);
+    side("back_text", be->sign.back);
+    w.endCompound();
+    try { conn_->sendPacket(pl::sc::BlockEntityData, b); } catch (...) {}
+    srv_.broadcastPacketExcept(self_.get(), pl::sc::BlockEntityData, b);
 }
 void Session::sendTeleport(double x, double y, double z, float yaw, float pitch) {
     self_->x = x; self_->y = y; self_->z = z;
@@ -788,7 +867,8 @@ void Session::broadcastPlayerInfoAdd(Player* about) {
     add.uuid(about->uuid.data());
     add.string(about->name);
     add.varint(0);
-    add.varint(1);
+    // plan43 W-15(c): onlookers must see the real gamemode (was hardcoded 1).
+    add.varint(about->gamemode);
     add.varint(1);
     srv_.broadcastPacketExcept(about, pl::sc::PlayerInfoUpdate, add);
 }
@@ -921,7 +1001,9 @@ void Session::onEnchantItem(ReadBuffer& in) {
 void Session::onTabComplete(ReadBuffer& in) {
     const auto transactionId = in.varint();
     const std::string text = in.string(65536);
-    (void)in.boolean();                               // assume command
+    // plan43 W-04: spec is 2 fields only (transactionId + text) — the old
+    // (void)in.boolean() ("assume command") required a 3rd byte and cut
+    // every legitimate tab-complete with an underrun. Deleted.
 
     brigadier::CommandSource src;
     src.player = self_.get();
@@ -1904,22 +1986,26 @@ void Session::handlePlay() {
             break;
         }
         case pl::cs::ChatMessage:         onChatMessage(in); break;
-        case pl::cs::ChatCommandSigned: {             // signed command: parse
-            const std::string cmd = in.string(256);
-            (void)in.i64(); (void)in.i64();
-            if (in.boolean()) in.bytes(256);
-            // argument signatures list
-            const auto n = in.varint();
-            for (std::int32_t q = 0; q < n; ++q) {
-                (void)in.string(16);
-                if (in.boolean()) {
-                    const auto len = in.varint();
-                    in.bytes(static_cast<std::size_t>(len));
+        case pl::cs::ChatCommandSigned: {             // signed command (spec shape)
+            // plan43 W-03: vanilla sends command/i64/salt/array{argumentName +
+            // fixed-256B signature}/messageCount/acknowledged[3] — no booleans,
+            // no variable-length signatures. enforcesSecureChat=false so the
+            // signatures are shape-checked, not cryptographically verified.
+            try {
+                const std::string cmd = in.string(256);
+                (void)in.i64(); (void)in.i64();        // timestamp, salt
+                const auto n = in.varint();            // argumentSignatures count
+                if (n < 0 || n > 16) break;            // absurd count: ignore, stay connected
+                for (std::int32_t q = 0; q < n; ++q) {
+                    (void)in.string(32767);            // argumentName
+                    in.bytes(256);                     // signature: fixed 256B
                 }
+                (void)in.varint();                     // messageCount
+                in.bytes(3);                           // acknowledged[3] (was 60B over-read)
+                dispatchCommand(cmd);
+            } catch (const std::exception& e) {
+                std::fprintf(stderr, "[cppfm] signed-cmd parse ignored: %s\n", e.what());
             }
-            (void)in.varint();                        // offset
-            in.bytes(3 * 20);                         // lastSeen acknowledgements
-            dispatchCommand(cmd);
             break;
         }
         case pl::cs::ChatSessionUpdate: {             // plan3 Chat signing
@@ -1985,6 +2071,17 @@ void Session::handlePlay() {
             break;
         }
         case pl::cs::ClientTickEnd: break;
+        case pl::cs::Abilities: {                       // 0x26 serverbound {flags i8}
+            // plan43 W-06: client flight toggle. Only creative/spectator may
+            // fly; anything else is revoked and echoed back so the client
+            // stays in sync (vanilla never trusts the flying bit alone).
+            const std::int8_t f = in.i8();
+            const bool wantFly = (f & 0x02) != 0;
+            const bool canFly = (self_->gamemode == 1 || self_->gamemode == 3);
+            self_->isFlying = wantFly && canFly;
+            sendAbilities();
+            break;
+        }
         case pl::cs::PlayerLoaded:                    // 0x2a
             if (!chunksStreamed_) streamInitialChunks();
             break;
@@ -2051,17 +2148,32 @@ void Session::handlePlay() {
             }catch(...){ in.skipRest(); }
             break;
         }
-        case pl::cs::SignUpdate: { // 0x39 - also PlaceGhostRecipe for stonecutter
-            if (openMenu_ && openMenu_->type == MenuType::Stonecutter && in.len - in.off < 16) {
-                // treat as PlaceGhostRecipe: windowId + recipeId
-                try {
-                    std::uint8_t win = in.u8();
-                    std::int32_t rid = in.varint();
-                    (void)win;
-                    handlePlaceGhostRecipe(rid);
-                } catch (...) {}
-            } else {
-                in.skipRest();
+        case pl::cs::SignUpdate: { // 0x39 — always a sign edit
+            // plan43 W-07: spec is position + isFrontText + 4 lines. The old
+            // len<16 stonecutter heuristic is gone: ghost recipes arrive via
+            // the separate PlaceRecipe 0x25 id, so 0x39 is unambiguous.
+            // Lines are stored verbatim (plain text or JSON components —
+            // vanilla renders both leniently) and re-sent as BlockEntityData.
+            try {
+                std::int32_t sx, sy, sz;
+                in.position(sx, sy, sz);
+                const bool front = in.boolean();
+                std::string lines[4];
+                for (int i = 0; i < 4; ++i) lines[i] = in.string(384);
+                const std::int64_t key = posKey(sx, sy, sz);
+                BlockEntity* bep = srv_.blockEntities().get(key);
+                if (bep && bep->kind != BlockEntity::Kind::Sign) {
+                    std::fprintf(stderr, "[cppfm] sign update at %d,%d,%d ignored (not a sign block entity)\n",
+                                 sx, sy, sz);
+                } else {
+                    if (!bep) bep = &srv_.blockEntities().create(key, BlockEntity::Kind::Sign);
+                    std::string* dst = front ? bep->sign.front : bep->sign.back;
+                    for (int i = 0; i < 4; ++i) dst[i] = lines[i];
+                    if (front) bep->sign.hasFront = true; else bep->sign.hasBack = true;
+                    sendSignBlockEntity(sx, sy, sz);
+                }
+            } catch (const std::exception& e) {
+                std::fprintf(stderr, "[cppfm] sign update ignored: %s\n", e.what());
             }
             break;
         }
@@ -2168,7 +2280,12 @@ void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
         self_->yaw = in.f32();
         self_->pitch = in.f32();
     }
-    const bool nowGround = in.boolean();
+    // plan43 W-01: trailing byte is MovementFlags bitflags u8
+    // (bit0 onGround, bit1 hasHorizontalCollision) — NOT a boolean.
+    // flags=0x02 (wall bump, airborne) must NOT read as on-ground.
+    const std::uint8_t moveFlags = in.u8();
+    const bool nowGround = (moveFlags & 0x01) != 0;
+    // bit1 hasHorizontalCollision: no consumer yet (future wall-kick etc.).
     if (hasPos) {
         if (self_->y < -2048.0 || self_->y > 2048.0)
             throw std::runtime_error("player moved out of world bounds");
@@ -3880,7 +3997,16 @@ void Session::onUseEntity(ReadBuffer& in) {
     if (mouse != 1) {
         // INTERACT (0) / INTERACT_AT (2)
         if (mouse == 0 || mouse == 2) {
-            int sneaking = in.varint();                        // sneaking flag (0/1)
+            // plan43 W-02: hand (varint: 0 mainhand / 1 offhand) and the true
+            // sneaking flag (bool) are separate fields — the old code read
+            // hand as "sneaking", so every off-hand interact looked sneaking.
+            const int hand = in.varint();
+            const bool sneaking = in.boolean();
+            // NOTE(plan43 W-02): hand selects the used held stack (0 main /
+            // 1 off); current entity logic always resolves the main-hand
+            // stack, so hand is wire-consumed here and hand-specific item
+            // resolution stays a behavior refinement.
+            (void)hand;
             // check shear and riding before trading
             {
                 std::lock_guard lk(srv_.entsMtx_);
@@ -3928,7 +4054,7 @@ void Session::onUseEntity(ReadBuffer& in) {
                                         || m->kind == MobKind::SkeletonHorse || m->kind == MobKind::ZombieHorse);
                     if (isHorseLike) {
                         // If already riding this horse, or sneaking, open horse window instead of mounting
-                        if (self_->vehicleId == m->entityId || sneaking != 0) {
+                        if (self_->vehicleId == m->entityId || sneaking) {
                             int slotCount = 15; // horse 15 slots (vanilla HorseScreenHandler 15)
                             int windowId = ++menuWindowCounter_;
                             if (windowId == 0 || windowId > 100) { menuWindowCounter_ = 1; windowId = 1; }
@@ -3968,10 +4094,15 @@ void Session::onUseEntity(ReadBuffer& in) {
                 }
             }
         } else {
-            (void)in.varint();
+            // plan43 W-02: mouse outside {0,1,2} is unreachable via vanilla —
+            // consume defensively instead of guessing a field shape.
+            in.skipRest();
         }
         return;
     }
+    // plan43 W-02: ATTACK (mouse==1) carries no hand but DOES carry the
+    // trailing sneaking bool (present on all mouse kinds per spec).
+    (void)in.boolean();
 
     float baseDmg = 1.f;
     ItemStack weaponStack;
