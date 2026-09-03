@@ -50,6 +50,25 @@ public:
     void sendDig(std::int32_t x, std::int32_t y, std::int32_t z, std::int32_t seq);
     void sendUseItemOn(std::int32_t x, std::int32_t y, std::int32_t z, int face=1, std::int32_t seq=1);
     void sendUseEntity(std::int32_t entityId, int action, bool sneaking=false); // plan41 C-10 horse window
+    // plan43 B1+B2: spec-exact send helpers (protocol.json 1.21.4 hand-built)
+    void sendSignedCommand(const std::string& command, int nSignatures, std::uint8_t sigByte=0xAB); // cs 0x06
+    void sendTabComplete(std::int32_t transactionId, const std::string& text);                       // cs 0x0D (2 fields, no bool)
+    void sendMovePlayerFlags(double x, double y, double z, std::uint8_t flags);                      // cs 0x1C raw flags
+    void sendMovePlayerPosRotFlags(double x, double y, double z, float yaw, float pitch, std::uint8_t flags); // cs 0x1D
+    void sendMovePlayerRotFlags(float yaw, float pitch, std::uint8_t flags);                                 // cs 0x1E
+    void sendFlyingFlags(std::uint8_t flags);                                                       // cs 0x1F raw flags
+    void sendUseEntityFull(std::int32_t target, int mouse, int hand, bool sneaking);                 // cs 0x18 spec layout
+    void sendAbilitiesFlags(std::int8_t flags);                                                     // cs 0x26
+    void sendSignUpdate(std::int32_t x, std::int32_t y, std::int32_t z, bool front,
+                        const std::string lines[4]);                                                // cs 0x39
+    void sendRawPlay(std::uint8_t pid, const WriteBuffer& body);                                    // escape hatch
+    bool joinWithFinishContamination(const std::string& name); // plan43 W-12: settings/pong/pack/known-packs before finish-ack
+    bool alive() const { return running_.load(); }
+    struct Suggestion { std::string match; };
+    struct SuggestionsResp { std::int32_t transactionId=-1, start=0, length=0; std::vector<Suggestion> matches; };
+    bool waitSuggestions(std::int32_t transactionId, SuggestionsResp& out, int timeoutMs=5000);
+    struct Spawned { std::int32_t eid=0; std::int32_t type=0; std::string kind; double x=0,y=0,z=0; };
+    std::vector<Spawned> spawns() const;
     void sendMoveVehicle(double x, double y, double z, float yaw, float pitch); // plan41 C-10 VehicleMove
     void sendRespawnRequest();
     void respondKeepAlive(std::int64_t id);

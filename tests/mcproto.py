@@ -148,7 +148,11 @@ class Conn:
         body = write_varint(pid) + payload
         if self.compression_threshold >= 0:
             if len(body) >= self.compression_threshold:
-                frame = write_varint(len(body)) + body
+                # compressed: frame = varint(dlen) + zlib(body) (plan43: mcproto
+                # previously sent dlen + RAW body, which the server rightly
+                # rejects — first exercised by >=256B signed commands)
+                comp = zlib.compress(body)
+                frame = write_varint(len(body)) + comp
                 pkt = write_varint(len(frame)) + frame
             else:
                 frame = write_varint(0) + body
