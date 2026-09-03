@@ -309,6 +309,49 @@ private:
     void onUseItemOn(ReadBuffer& in);
     void onUseItem(ReadBuffer& in);
     void onHeldSlot(ReadBuffer& in);
+    // Play-packet bodies extracted from handlePlay (cleanup P3(d)).
+    void onAcceptTeleportation(ReadBuffer& in);
+    void onKeepAlivePacket(ReadBuffer& in);
+    bool onChatCommandSignedPacket(ReadBuffer& in);
+    void onChatSessionUpdate(ReadBuffer& in);
+    void onCookieResponse(ReadBuffer& in);
+    void onCustomPayload(ReadBuffer& in);
+    void onPlaceRecipePacket(ReadBuffer& in);
+    void onSelectTrade(ReadBuffer& in);
+    void onPingRequest(ReadBuffer& in);
+    void onPlayerAbilities(ReadBuffer& in);
+    void onPlayerLoadedPacket(ReadBuffer& in);
+    void onSetCreativeModeSlot(ReadBuffer& in);
+    void onClientCommand(ReadBuffer& in);
+    void onPlayerInput(ReadBuffer& in);
+    void onMoveVehicle(ReadBuffer& in);
+    void onSignUpdate(ReadBuffer& in);
+    void onEntityAction(ReadBuffer& in);
+    void onClientSettings(ReadBuffer& in);
+    void onNameItemPacket(ReadBuffer& in);
+    void onBeaconEffectPacket(ReadBuffer& in);
+    void onPickItemFromBlock(ReadBuffer& in);
+    void onPickItemFromEntity(ReadBuffer& in);
+    void onRecipeBookPacket(ReadBuffer& in);
+    void onDisplayedRecipe(ReadBuffer& in);
+    void onSteerBoat(ReadBuffer& in);
+    bool onResourcePackReceive(ReadBuffer& in);
+    void onPong(ReadBuffer& in);
+    void onAdvancementTab(ReadBuffer& in);
+    void onSelectBundleItem(ReadBuffer& in);
+    void onSetSlotState(ReadBuffer& in);
+    void onDebugSampleSubscription(ReadBuffer& in);
+    void onQueryBlockEntityTag(ReadBuffer& in);
+    void onQueryEntityNbt(ReadBuffer& in);
+    void onLockDifficulty(ReadBuffer& in);
+    void onEditBook(ReadBuffer& in);
+    void onGenerateStructure(ReadBuffer& in);
+    void onUpdateCommandBlock(ReadBuffer& in);
+    void onUpdateCommandBlockMinecart(ReadBuffer& in);
+    void onUpdateJigsaw(ReadBuffer& in);
+    void onUpdateStructureBlock(ReadBuffer& in);
+    void onSpectatePacket(ReadBuffer& in);
+    void onPlayerLoadedPacket();
     void onUseEntity(ReadBuffer& in);
     void handleRespawnRequest();
     void sendDeclareCommands();
@@ -786,6 +829,14 @@ public:
     RecipeManager& recipes() { return recipes_; }
     brigadier::CommandDispatcher& commands() { return commands_; }
     void initCommands();                             // builds command tree
+    void initChatCommands();
+    void initAdminCommands();
+    void initWorldCommands();
+    void initPlayerCommands();
+    void initDataCommands();
+    void initMiscCommands();
+    void initExecuteCommands();
+    void initScoreboardCommands();
     api::ServerEvents& events() { return api::events(); }
     LightEngine& lights() { return *lightEngine_; }
     GameRuleManager& gameRules() { return gamerules_; }

@@ -22,6 +22,14 @@ add_executable(cppfm
     src/game/Recipes.cpp
     src/game/MenuInteraction.cpp
     src/game/Commands.cpp
+    src/game/commands_chat.cpp
+    src/game/commands_admin.cpp
+    src/game/commands_world.cpp
+    src/game/commands_player.cpp
+    src/game/commands_data.cpp
+    src/game/commands_misc.cpp
+    src/game/commands_execute.cpp
+    src/game/commands_scoreboard.cpp
     src/game/Containers.cpp
     src/physics/LightEngine.cpp
     src/physics/Fluids.cpp
@@ -82,6 +90,14 @@ add_executable(test_native
     src/game/MenuInteraction.cpp
     src/game/Containers.cpp
     src/game/Commands.cpp
+    src/game/commands_chat.cpp
+    src/game/commands_admin.cpp
+    src/game/commands_world.cpp
+    src/game/commands_player.cpp
+    src/game/commands_data.cpp
+    src/game/commands_misc.cpp
+    src/game/commands_execute.cpp
+    src/game/commands_scoreboard.cpp
     src/game/AiBrain.cpp
     src/game/Stats.cpp
     src/physics/LightEngine.cpp
@@ -151,6 +167,14 @@ add_executable(test_smoke_80
     src/game/MenuInteraction.cpp
     src/game/Containers.cpp
     src/game/Commands.cpp
+    src/game/commands_chat.cpp
+    src/game/commands_admin.cpp
+    src/game/commands_world.cpp
+    src/game/commands_player.cpp
+    src/game/commands_data.cpp
+    src/game/commands_misc.cpp
+    src/game/commands_execute.cpp
+    src/game/commands_scoreboard.cpp
     src/game/AiBrain.cpp
     src/game/Stats.cpp
     src/physics/LightEngine.cpp
