@@ -1855,7 +1855,7 @@ void GameServer::projectilesTick() {
                             else {
                                 // fallback: scan up to maxY for non-air
                                 bool blocked=false;
-                                for(int y2=ty+1; y2<320; ++y2){
+                                for(int y2=ty+1; y2<kMaxY; ++y2){
                                     if(world_.getBlock(tx, y2, tz)!=0){ blocked=true; break; }
                                 }
                                 canSeeSky = !blocked;
