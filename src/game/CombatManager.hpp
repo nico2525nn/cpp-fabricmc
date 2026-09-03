@@ -9,6 +9,8 @@
 #include <vector>
 #include "DamageSource.hpp"
 #include "MobEffects.hpp"
+#include "Items.hpp"
+#include "MeleeHelper.hpp"
 
 namespace cppfm {
 struct Player;
@@ -37,6 +39,18 @@ public:
     // High-level apply (includes armor sync, exhaustion, health, packets)
     static void applyToPlayer(GameServer& srv, Player& p, float amount, const DamageSource& src);
     static void applyToMob(GameServer& srv, MobEntity& m, float amount, const DamageSource& src);
+
+    // plan44 §3 G-08 shield block (vanilla Blocking: 100% frontal negate after 5t, axe 100t disable)
+    // defined in CombatShield.cpp (standalone TU: no GameServer methods, unit-linkable)
+    static bool holdsShield(const Player& p);
+    static bool isShieldBlocking(const Player& p);
+    static bool isFrontal(const Player& victim, double ax, double az);
+    // true = damage fully negated (durability consumed); axe attacks disable instead and pass through
+    static bool tryShieldBlock(GameServer& srv, Player& victim, const DamageSource& src,
+                               double attackerX, double attackerZ, bool attackerWeaponIsAxe);
+    // plan44 §3 G-09 thorns: reflect to melee attacker from victim armor (per-piece lv*15%)
+    static void applyThornsReflection(GameServer& srv, Player& victim,
+                                      MobEntity* attackerMob, Player* attackerPlayer);
 
     // Attribute sync for armor
     static void syncPlayerArmor(GameServer& srv, Player& p);

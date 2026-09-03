@@ -523,6 +523,20 @@ void GameServer::survivalTick() {
     for (auto& pp : playersSnapshot()) {
         auto* p = pp.get();
         if (!p->inPlay || !p->spawned || p->dead) continue;
+        // plan44 §3 G-07/G-08: combat counters tick for all inPlay players (any gamemode)
+        if (p->attackCooldownTicks < 1000000) p->attackCooldownTicks++;
+        if (p->shieldDisableTicks > 0) p->shieldDisableTicks--;
+        {
+            bool holdsShield = false;
+            if (p->heldSlot >= 0 && p->heldSlot < 9) {
+                const auto& mh = p->inv[36 + p->heldSlot];
+                if (!mh.empty() && mh.name().find("shield") != std::string::npos) holdsShield = true;
+            }
+            if (!p->inv[45].empty() && p->inv[45].name().find("shield") != std::string::npos) holdsShield = true;
+            if (!holdsShield) { p->isBlocking = false; p->blockingTicks = 0; }
+            else if ((p->isSneaking || p->isBlocking) && p->shieldDisableTicks <= 0) p->blockingTicks++;
+            else p->blockingTicks = 0;
+        }
         if (p->gamemode != 0) continue;                  // survival only
 
         // exhaustion -> saturation/food (modular: HungerManager)
