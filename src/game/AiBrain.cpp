@@ -101,6 +101,28 @@ Brain::Brain() {
     goals_.push_back(std::make_unique<CamelDashGoal>());
     goals_.push_back(std::make_unique<AllayDuplicateGoal>());
     goals_.push_back(std::make_unique<BoggedPoisonGoal>());
+    // plan42 R2 E-11: 19 species/group-default goals (Brain 59->78, 139-species cover)
+    goals_.push_back(std::make_unique<VexChargeGoal>());
+    goals_.push_back(std::make_unique<PiglinBruteAttackGoal>());
+    goals_.push_back(std::make_unique<ZombieVillagerCureGoal>());
+    goals_.push_back(std::make_unique<ZombifiedPiglinAngerGoal>());
+    goals_.push_back(std::make_unique<SkeletonHorseTrapGoal>());
+    goals_.push_back(std::make_unique<GiantStompGoal>());
+    goals_.push_back(std::make_unique<LlamaSpitGoal>());
+    goals_.push_back(std::make_unique<ChickenLayEggGoal>());
+    goals_.push_back(std::make_unique<HuskHungerGoal>());
+    goals_.push_back(std::make_unique<PolarBearDefendGoal>());
+    goals_.push_back(std::make_unique<PufferfishPuffGoal>());
+    goals_.push_back(std::make_unique<EvokerFangsSnapGoal>());
+    goals_.push_back(std::make_unique<EndCrystalHoverGoal>());
+    goals_.push_back(std::make_unique<TntFuseGoal>());
+    goals_.push_back(std::make_unique<FishSwimGoal>());
+    goals_.push_back(std::make_unique<GrazeGoal>());
+    goals_.push_back(std::make_unique<BoatDriftGoal>());
+    goals_.push_back(std::make_unique<MinecartRollGoal>());
+    goals_.push_back(std::make_unique<ProjectileFlyGoal>());
+    goals_.push_back(std::make_unique<BatRoostGoal>());
+    goals_.push_back(std::make_unique<AmbientObjectGoal>());
 }
 
 void NearestPlayerSensor::update(MobEntity& m, AiContext& ctx) {
@@ -1537,6 +1559,446 @@ bool BoggedPoisonGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     }
     m.boggedPoisonCooldown=now+40;
     return true;
+}
+// plan42 R2 E-11: 19 species/group-default goals (60->139).
+// Group gates share one class per movement family (Fish/Graze/Boat/Minecart/
+// Projectile); the rest gate a single notable kind. All ticks reuse the same
+// server APIs (mobAttackPlayer/broadcastSound/spawnProjectile/spawnItemDrop/
+// explodeAt/strikeLightning) as the existing 59 goals.
+bool FishSwimGoal::shouldStart(MobEntity& m, AiContext&) { return MobEntity::isFishKind(m.kind); }
+bool FishSwimGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (!MobEntity::isFishKind(m.kind)) return false;
+    // vanilla FishSwimGoal: drift in water, speed from mobStats moveSpeed
+    if (now - m.nextWanderAt > 60 || !m.hasTarget) {
+        double ang = (rand()/(double)RAND_MAX)*6.28318;
+        m.tx = m.x + std::cos(ang)*4.0; m.tz = m.z + std::sin(ang)*4.0;
+        m.hasTarget = true; m.nextWanderAt = now;
+    }
+    double dx = m.tx - m.x, dz = m.tz - m.z;
+    double d = std::sqrt(dx*dx+dz*dz)+1e-6;
+    if (d < 0.4) { m.hasTarget = false; return true; }
+    float sp = mobStats(m.kind).moveSpeed;
+    m.yaw = static_cast<float>(std::atan2(dz,dx)*180.0/3.14159-90.0);
+    m.x += dx/d*sp; m.z += dz/d*sp;
+    (void)ctx;
+    return true;
+}
+bool GrazeGoal::shouldStart(MobEntity& m, AiContext&) { return MobEntity::isGrazerKind(m.kind); }
+bool GrazeGoal::tick(MobEntity& m, AiContext&, std::int64_t now) {
+    if (!MobEntity::isGrazerKind(m.kind)) return false;
+    // vanilla EatGrassGoal: head-down pause ~40t every ~120t cycle
+    return (now % 120) < 40;
+}
+bool BoatDriftGoal::shouldStart(MobEntity& m, AiContext&) { return MobEntity::isBoat(m.kind); }
+bool BoatDriftGoal::tick(MobEntity& m, AiContext&, std::int64_t now) {
+    if (!MobEntity::isBoat(m.kind)) return false;
+    // vanilla Boat: water bob + slow drift along heading
+    m.y += std::sin(now*0.15)*0.004;
+    double rad = (m.yaw+90.0)*3.14159/180.0;
+    m.x += std::cos(rad)*0.01; m.z += std::sin(rad)*0.01;
+    return true;
+}
+bool MinecartRollGoal::shouldStart(MobEntity& m, AiContext&) { return MobEntity::isMinecartKind(m.kind); }
+bool MinecartRollGoal::tick(MobEntity& m, AiContext&, std::int64_t) {
+    if (!MobEntity::isMinecartKind(m.kind)) return false;
+    // roll with latched velocity (friction), else hold on rails
+    m.x += m.velX*0.98; m.z += m.velZ*0.98;
+    m.velX *= 0.98; m.velZ *= 0.98;
+    return true;
+}
+bool VexChargeGoal::shouldStart(MobEntity& m, AiContext& ctx) {
+    if (m.kind != MobKind::Vex) return false;
+    return ctx.nearestPlayer && ctx.nearestPlayerDist2 < 16*16;
+}
+bool VexChargeGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (m.kind != MobKind::Vex) return false;
+    if (now < m.vexChargeCooldown) return false;
+    Player* t = ctx.nearestPlayer; if (!t) return false;
+    double dx=t->x-m.x, dy=(t->y+1)-(m.y+1), dz=t->z-m.z;
+    double d=std::sqrt(dx*dx+dz*dz)+1e-6;
+    if (d < 1.9) {
+        if (now%20==0 && ctx.srv) {
+            ctx.srv->mobAttackPlayer(m,*t);
+            ctx.srv->broadcastSound("minecraft:entity.vex.charge", m.x,m.y,m.z,1.f,1.f,"hostile");
+        }
+        m.vexChargeCooldown = now+20;
+        return true;
+    }
+    // charge through air at 0.3 (vex ignores gravity while charging)
+    m.x += dx/d*0.30; m.z += dz/d*0.30; m.y += dy*0.05;
+    m.yaw = static_cast<float>(std::atan2(dz,dx)*180.0/3.14159-90.0);
+    m.vexChargeCooldown = now+5;
+    return true;
+}
+bool PiglinBruteAttackGoal::shouldStart(MobEntity& m, AiContext& ctx) {
+    if (m.kind != MobKind::PiglinBrute) return false;
+    return ctx.nearestPlayer && ctx.nearestPlayerDist2 < 24*24;
+}
+bool PiglinBruteAttackGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (m.kind != MobKind::PiglinBrute) return false;
+    Player* t = ctx.nearestPlayer; if (!t) return false;
+    double dx=t->x-m.x, dz=t->z-m.z;
+    double d=std::sqrt(dx*dx+dz*dz)+1e-6;
+    // brute never barters; enrages (1.5x speed) for 100t after being hurt
+    bool enraged = ctx.srv && (ctx.srv->tickNoForTest()-ctx.lastHurtTick < 100);
+    if (enraged) m.piglinBruteEnrageUntil = now+100;
+    double sp = (now < m.piglinBruteEnrageUntil) ? 0.15 : 0.10;
+    if (d < 1.9) {
+        if (now%20==0 && ctx.srv) {
+            ctx.srv->mobAttackPlayer(m,*t);
+            ctx.srv->broadcastSound("minecraft:entity.piglin_brute.angry", m.x,m.y,m.z,1.f,1.f,"hostile");
+        }
+        return true;
+    }
+    m.x += dx/d*sp; m.z += dz/d*sp;
+    m.yaw = static_cast<float>(std::atan2(dz,dx)*180.0/3.14159-90.0);
+    if (ctx.world) ctx.world->generateChunkIfMissing((int)m.x>>4,(int)m.z>>4);
+    return true;
+}
+bool ZombieVillagerCureGoal::shouldStart(MobEntity& m, AiContext&) {
+    if (m.kind != MobKind::ZombieVillager) return false;
+    return m.zombieVillagerCureUntil != 0;
+}
+bool ZombieVillagerCureGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (m.kind != MobKind::ZombieVillager) return false;
+    if (m.zombieVillagerCureUntil == 0) {
+        // start shaking cure cycle every ~10min like vanilla weakness+apple cure window
+        if (now%12000==0) m.zombieVillagerCureUntil = now+200;
+        else return false;
+    }
+    if (now >= m.zombieVillagerCureUntil) { m.zombieVillagerCureUntil = 0; return false; }
+    // shaking: hold still + shake sound
+    if (ctx.srv && now%40==0)
+        ctx.srv->broadcastSound("minecraft:entity.zombie_villager.cure", m.x,m.y,m.z,1.f,1.f,"hostile");
+    return true;
+}
+bool ZombifiedPiglinAngerGoal::shouldStart(MobEntity& m, AiContext& ctx) {
+    if (m.kind != MobKind::ZombifiedPiglin) return false;
+    return ctx.srv && (ctx.srv->tickNoForTest()-ctx.lastHurtTick < 200);
+}
+bool ZombifiedPiglinAngerGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (m.kind != MobKind::ZombifiedPiglin) return false;
+    Player* t = ctx.nearestPlayer; if (!t) return false;
+    double dx=t->x-m.x, dz=t->z-m.z;
+    double d=std::sqrt(dx*dx+dz*dz)+1e-6;
+    if (d < 1.9) {
+        if (now%20==0 && ctx.srv) ctx.srv->mobAttackPlayer(m,*t);
+        return true;
+    }
+    // pack anger: nearby zombified piglins converge (vanilla anger propagation)
+    if (ctx.srv) for (auto& mm : ctx.srv->mobsForTest()) {
+        if (mm.get()==&m || mm->kind!=MobKind::ZombifiedPiglin || mm->dead) continue;
+        double ox=mm->x-m.x, oz=mm->z-m.z;
+        if (ox*ox+oz*oz < 16*16) { mm->x += dx/d*0.08; mm->z += dz/d*0.08; }
+    }
+    m.x += dx/d*0.11; m.z += dz/d*0.11;
+    m.yaw = static_cast<float>(std::atan2(dz,dx)*180.0/3.14159-90.0);
+    if (ctx.world) ctx.world->generateChunkIfMissing((int)m.x>>4,(int)m.z>>4);
+    return true;
+}
+bool SkeletonHorseTrapGoal::shouldStart(MobEntity& m, AiContext& ctx) {
+    if (m.kind != MobKind::SkeletonHorse) return false;
+    if (!ctx.srv || ctx.srv->tickNoForTest() < m.skeletonHorseTrapCooldown) return false;
+    return ctx.nearestPlayer && ctx.nearestPlayerDist2 < 10*10;
+}
+bool SkeletonHorseTrapGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (m.kind != MobKind::SkeletonHorse) return false;
+    if (now < m.skeletonHorseTrapCooldown) return false;
+    if (ctx.srv) {
+        // vanilla skeleton trap: lightning strike on approach
+        ctx.srv->strikeLightning(m.x, m.y, m.z);
+        ctx.srv->broadcastSound("minecraft:entity.skeleton_horse.ambient", m.x,m.y,m.z,1.f,1.f,"neutral");
+    }
+    m.skeletonHorseTrapCooldown = now+1200;
+    return true;
+}
+bool GiantStompGoal::shouldStart(MobEntity& m, AiContext& ctx) {
+    if (m.kind != MobKind::Giant) return false;
+    return ctx.nearestPlayer && ctx.nearestPlayerDist2 < 24*24;
+}
+bool GiantStompGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (m.kind != MobKind::Giant) return false;
+    if (now < m.giantStompCooldown) return false;
+    Player* t = ctx.nearestPlayer; if (!t) return false;
+    double dx=t->x-m.x, dz=t->z-m.z;
+    double d=std::sqrt(dx*dx+dz*dz)+1e-6;
+    if (d < 2.5) {
+        if (ctx.srv) {
+            ctx.srv->mobAttackPlayer(m,*t);
+            WriteBuffer vel; vel.varint(t->entityId);
+            vel.i16((int16_t)(dx/d*1.2*8000)); vel.i16((int16_t)(0.5*8000)); vel.i16((int16_t)(dz/d*1.2*8000));
+            ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::EntityVelocity, vel);
+            ctx.srv->broadcastSound("minecraft:entity.giant.stomp", m.x,m.y,m.z,1.f,1.f,"hostile");
+        }
+        m.giantStompCooldown = now+40;
+        return true;
+    }
+    m.x += dx/d*0.08; m.z += dz/d*0.08;
+    m.yaw = static_cast<float>(std::atan2(dz,dx)*180.0/3.14159-90.0);
+    if (ctx.world) ctx.world->generateChunkIfMissing((int)m.x>>4,(int)m.z>>4);
+    return true;
+}
+bool LlamaSpitGoal::shouldStart(MobEntity& m, AiContext& ctx) {
+    if (m.kind != MobKind::Llama && m.kind != MobKind::TraderLlama) return false;
+    if (!ctx.srv || ctx.srv->tickNoForTest() < m.llamaSpitCooldown) return false;
+    return ctx.nearestPlayer && ctx.nearestPlayerDist2 > 4*4 && ctx.nearestPlayerDist2 < 16*16;
+}
+bool LlamaSpitGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (m.kind != MobKind::Llama && m.kind != MobKind::TraderLlama) return false;
+    if (now < m.llamaSpitCooldown) return false;
+    Player* t = ctx.nearestPlayer; if (!t) return false;
+    // no LlamaSpit projectile kind exists yet: direct 1-damage spit + sound at range
+    if (ctx.srv) {
+        ctx.srv->applyDamage(*t, 1.f, "mob");
+        ctx.srv->broadcastSound("minecraft:entity.llama.spit", m.x,m.y,m.z,1.f,1.f,"neutral");
+    }
+    m.llamaSpitCooldown = now+40;
+    return true;
+}
+bool ChickenLayEggGoal::shouldStart(MobEntity& m, AiContext& ctx) {
+    if (m.kind != MobKind::Chicken) return false;
+    return ctx.srv && ctx.srv->tickNoForTest() >= m.chickenLayCooldown;
+}
+bool ChickenLayEggGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (m.kind != MobKind::Chicken) return false;
+    if (!ctx.srv || now < m.chickenLayCooldown) return false;
+    auto it = gen::itemIdByName().find("minecraft:egg");
+    if (it != gen::itemIdByName().end())
+        ctx.srv->spawnItemDrop(m.x, m.y, m.z, it->second, 1);
+    if (ctx.srv) ctx.srv->broadcastSound("minecraft:entity.chicken.egg", m.x,m.y,m.z,1.f,1.f,"neutral");
+    m.chickenLayCooldown = now+6000+(rand()%6000); // vanilla 5-10min
+    return true;
+}
+bool HuskHungerGoal::shouldStart(MobEntity& m, AiContext& ctx) {
+    if (m.kind != MobKind::Husk) return false;
+    return ctx.nearestPlayer && ctx.nearestPlayerDist2 < 3*3;
+}
+bool HuskHungerGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (m.kind != MobKind::Husk) return false;
+    if (now < m.huskHungerCooldown) return false;
+    Player* t = ctx.nearestPlayer; if (!t) return false;
+    if (ctx.srv) {
+        ctx.srv->mobAttackPlayer(m,*t);
+        // vanilla husk inflicts Hunger (effect id 9) on hit
+        WriteBuffer eff; eff.varint(t->entityId); eff.varint(9); eff.i8(0); eff.varint(140); eff.u8(0x01);
+        ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::EntityEffect, eff);
+        ctx.srv->broadcastSound("minecraft:entity.husk.ambient", m.x,m.y,m.z,1.f,1.f,"hostile");
+    }
+    m.huskHungerCooldown = now+40;
+    return true;
+}
+bool PolarBearDefendGoal::shouldStart(MobEntity& m, AiContext& ctx) {
+    if (m.kind != MobKind::PolarBear) return false;
+    return ctx.nearestPlayer && ctx.nearestPlayerDist2 < 8*8;
+}
+bool PolarBearDefendGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (m.kind != MobKind::PolarBear) return false;
+    Player* t = ctx.nearestPlayer; if (!t) return false;
+    double dx=t->x-m.x, dz=t->z-m.z;
+    double d=std::sqrt(dx*dx+dz*dz)+1e-6;
+    m.polarBearDefendUntil = now+20; // standing/defending posture window
+    if (d < 1.9) {
+        if (now%20==0 && ctx.srv) {
+            ctx.srv->mobAttackPlayer(m,*t);
+            ctx.srv->broadcastSound("minecraft:entity.polar_bear.warning", m.x,m.y,m.z,1.f,1.f,"neutral");
+        }
+        return true;
+    }
+    m.x += dx/d*0.10; m.z += dz/d*0.10;
+    m.yaw = static_cast<float>(std::atan2(dz,dx)*180.0/3.14159-90.0);
+    if (ctx.world) ctx.world->generateChunkIfMissing((int)m.x>>4,(int)m.z>>4);
+    return true;
+}
+bool PufferfishPuffGoal::shouldStart(MobEntity& m, AiContext& ctx) {
+    if (m.kind != MobKind::Pufferfish) return false;
+    return ctx.nearestPlayer && ctx.nearestPlayerDist2 < 4*4;
+}
+bool PufferfishPuffGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (m.kind != MobKind::Pufferfish) return false;
+    m.pufferfishPuffUntil = now+40; // inflated while threatened
+    Player* t = ctx.nearestPlayer;
+    if (t && ctx.srv) {
+        double dx=t->x-m.x, dz=t->z-m.z;
+        if (dx*dx+dz*dz < 1.5*1.5) {
+            // vanilla contact poison (effect id 19, like bogged arrow)
+            ctx.srv->applyDamage(*t, 3.f, "mob");
+            WriteBuffer eff; eff.varint(t->entityId); eff.varint(19); eff.i8(0); eff.varint(120); eff.u8(0x01);
+            ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::EntityEffect, eff);
+            ctx.srv->broadcastSound("minecraft:entity.puffer_fish.blow_up", m.x,m.y,m.z,1.f,1.f,"neutral");
+        } else if (now%40==0) {
+            ctx.srv->broadcastSound("minecraft:entity.puffer_fish.blow_up", m.x,m.y,m.z,0.5f,1.f,"neutral");
+        }
+    }
+    return true;
+}
+bool ProjectileFlyGoal::shouldStart(MobEntity& m, AiContext&) { return MobEntity::isProjectileKind(m.kind); }
+bool ProjectileFlyGoal::tick(MobEntity& m, AiContext&, std::int64_t) {
+    if (!MobEntity::isProjectileKind(m.kind)) return false;
+    // ballistic hold: projectiles keep latched velocity (set by thrower systems)
+    // instead of wandering randomly. Returning true claims the tick so the
+    // generic WanderAroundGoal never steers a flying projectile.
+    m.x += m.projectileVx; m.y += m.projectileVy; m.z += m.projectileVz;
+    m.projectileVy -= 0.02; // mild gravity like vanilla thrown projectiles
+    return true;
+}
+bool EvokerFangsSnapGoal::shouldStart(MobEntity& m, AiContext& ctx) {
+    if (m.kind != MobKind::EvokerFangs) return false;
+    if (!ctx.srv || ctx.srv->tickNoForTest() < m.evokerFangsSnapCooldown) return false;
+    return ctx.nearestPlayer && ctx.nearestPlayerDist2 < 2*2;
+}
+bool EvokerFangsSnapGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (m.kind != MobKind::EvokerFangs) return false;
+    if (now < m.evokerFangsSnapCooldown) return false;
+    Player* t = ctx.nearestPlayer; if (!t) return false;
+    if (ctx.srv) {
+        ctx.srv->applyDamage(*t, 6.f, "magic");
+        ctx.srv->broadcastSound("minecraft:entity.evoker_fangs.attack", m.x,m.y,m.z,1.f,1.f,"hostile");
+    }
+    m.evokerFangsSnapCooldown = now+40;
+    return true;
+}
+bool EndCrystalHoverGoal::shouldStart(MobEntity& m, AiContext&) { return m.kind==MobKind::EnderCrystal; }
+bool EndCrystalHoverGoal::tick(MobEntity& m, AiContext&, std::int64_t) {
+    if (m.kind != MobKind::EnderCrystal) return false;
+    // vanilla crystal: bedrock-hover + spin, never wanders
+    m.yaw += 5.0f;
+    if (m.yaw >= 360.f) m.yaw -= 360.f;
+    return true;
+}
+bool TntFuseGoal::shouldStart(MobEntity& m, AiContext& ctx) {
+    if (m.kind != MobKind::Tnt) return false;
+    (void)ctx;
+    return !m.dead;
+}
+bool TntFuseGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (m.kind != MobKind::Tnt || m.dead) return false;
+    if (m.tntFuseStartedAt < 0) {
+        m.tntFuseStartedAt = now;
+        if (ctx.srv) ctx.srv->broadcastSound("minecraft:entity.tnt.primed", m.x,m.y,m.z,1.f,1.f,"block");
+        return true;
+    }
+    if (now - m.tntFuseStartedAt >= 80) { // vanilla 80t fuse
+        if (ctx.srv) ctx.srv->explodeAt(m.x, m.y, m.z, 4.0f);
+        m.dead = true;
+        return false;
+    }
+    return true; // hold still while fusing
+}
+bool BatRoostGoal::shouldStart(MobEntity& m, AiContext&) { return m.kind==MobKind::Bat; }
+bool BatRoostGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (m.kind != MobKind::Bat) return false;
+    // vanilla Bat: roosts hanging upside-down when idle (day), flies at night.
+    // Day branch holds still (roosting); night falls through to FlyWander json.
+    bool night = ctx.srv ? ctx.srv->isNight() : (now%24000 > 13000);
+    if (!night) return true; // roosting: hang still
+    return false; // night: let fly_wander behavior drive
+}
+bool AmbientObjectGoal::shouldStart(MobEntity& m, AiContext&) { return MobEntity::isAmbientObjectKind(m.kind); }
+bool AmbientObjectGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (!MobEntity::isAmbientObjectKind(m.kind)) return false;
+    switch (m.kind) {
+    case MobKind::ExperienceOrb:
+    case MobKind::Item: {
+        // vanilla magnet: drift toward nearest player within 8 (XP) / 3 (item)
+        Player* t = ctx.nearestPlayer;
+        double range = (m.kind==MobKind::ExperienceOrb) ? 8.0 : 3.0;
+        if (t && ctx.nearestPlayerDist2 < range*range) {
+            double dx=t->x-m.x, dz=t->z-m.z;
+            double d=std::sqrt(dx*dx+dz*dz)+1e-6;
+            m.x += dx/d*0.12; m.z += dz/d*0.12;
+        }
+        m.y += std::sin(now*0.2)*0.003; // bob
+        return true;
+    }
+    case MobKind::FallingBlock:
+        m.y -= 0.15; // gravity fall (landing handled by block tick systems)
+        return true;
+    case MobKind::LightningBolt:
+        if (!m.lightningStruck && ctx.srv) {
+            ctx.srv->strikeLightning(m.x, m.y, m.z);
+            ctx.srv->broadcastSound("minecraft:entity.lightning_bolt.thunder", m.x,m.y,m.z,2.f,1.f,"weather");
+            m.lightningStruck = true;
+        }
+        m.dead = true; // instant strike entity, vanilla despawns after the flash
+        return false;
+    case MobKind::OminousItemSpawner:
+        if (ctx.srv && now%100==0)
+            ctx.srv->broadcastSound("minecraft:block.trial_spawner.ominous_activate", m.x,m.y,m.z,0.5f,1.f,"block");
+        return true; // hold, ominous idle
+    case MobKind::ArmorStand:
+    default:
+        return true; // pose hold, never wanders
+    }
+}
+bool Brain::coversKind(MobKind k) {
+    // plan42 group-default goals first (84 kinds: fish/graze/boat/minecart/
+    // projectile/ambient + 13 singles); pre-existing specific goals below.
+    if (MobEntity::hasSpeciesGoal(k)) return true;
+    // Any non-generic goal that explicitly gates k (group gates count).
+    // Generic fallback (Melee/Wander/LookAt/Panic/Tempt/Breed/Avoid) excluded.
+    switch (k) {
+    case MobKind::Creeper: case MobKind::Armadillo: case MobKind::IronGolem:
+    case MobKind::Witch: case MobKind::Ravager: case MobKind::Evoker:
+    case MobKind::Wolf: case MobKind::Drowned: case MobKind::Bee:
+    case MobKind::Villager: case MobKind::WanderingTrader: case MobKind::Piglin:
+    case MobKind::Cat: case MobKind::Fox: case MobKind::Panda:
+    case MobKind::Dolphin: case MobKind::Breeze: case MobKind::Phantom:
+    case MobKind::Warden: case MobKind::Enderman: case MobKind::Shulker:
+    case MobKind::Guardian: case MobKind::ElderGuardian: case MobKind::Slime:
+    case MobKind::MagmaCube: case MobKind::Silverfish: case MobKind::Endermite:
+    case MobKind::Vindicator: case MobKind::Pillager: case MobKind::Hoglin:
+    case MobKind::Zoglin: case MobKind::WitherSkeleton: case MobKind::Goat:
+    case MobKind::Axolotl: case MobKind::Frog: case MobKind::Turtle:
+    case MobKind::Parrot: case MobKind::Ocelot: case MobKind::SnowGolem:
+    case MobKind::Wither: case MobKind::EnderDragon: case MobKind::Strider:
+    case MobKind::Illusioner: case MobKind::Sniffer: case MobKind::Camel:
+    case MobKind::Allay: case MobKind::Bogged: case MobKind::Creaking:
+    case MobKind::Skeleton: case MobKind::Stray: case MobKind::Spider:
+    case MobKind::CaveSpider: case MobKind::Zombie: case MobKind::Husk:
+    case MobKind::Blaze: case MobKind::Ghast: case MobKind::PiglinBrute:
+        return true; // pre-existing specific goals (Swell/Ranged/Leap/FleeSun/...)
+    case MobKind::Cod: case MobKind::Salmon: case MobKind::TropicalFish:
+    case MobKind::Pufferfish: case MobKind::Tadpole: case MobKind::Squid:
+    case MobKind::GlowSquid:
+        return true; // plan42 FishSwimGoal
+    case MobKind::Horse: case MobKind::Donkey: case MobKind::Mule:
+    case MobKind::Llama: case MobKind::TraderLlama: case MobKind::Cow:
+    case MobKind::Sheep: case MobKind::Mooshroom: case MobKind::Pig:
+    case MobKind::Rabbit: case MobKind::ZombieHorse:
+        return true; // plan42 GrazeGoal (+LlamaSpit/ChickenLayEgg below)
+    case MobKind::Chicken:
+        return true; // plan42 ChickenLayEggGoal
+    case MobKind::Vex:
+        return true; // plan42 VexChargeGoal
+    case MobKind::ZombieVillager:
+        return true; // plan42 ZombieVillagerCureGoal
+    case MobKind::ZombifiedPiglin:
+        return true; // plan42 ZombifiedPiglinAngerGoal
+    case MobKind::SkeletonHorse:
+        return true; // plan42 SkeletonHorseTrapGoal
+    case MobKind::Giant:
+        return true; // plan42 GiantStompGoal
+    case MobKind::PolarBear:
+        return true; // plan42 PolarBearDefendGoal
+    case MobKind::EvokerFangs:
+        return true; // plan42 EvokerFangsSnapGoal
+    case MobKind::EnderCrystal:
+        return true; // plan42 EndCrystalHoverGoal
+    case MobKind::Tnt:
+        return true; // plan42 TntFuseGoal
+    case MobKind::Arrow: case MobKind::SpectralArrow: case MobKind::Trident:
+    case MobKind::Snowball: case MobKind::Egg: case MobKind::EnderPearl:
+    case MobKind::Fireball: case MobKind::SmallFireball: case MobKind::DragonFireball:
+    case MobKind::WindCharge: case MobKind::BreezeWindCharge: case MobKind::ShulkerBullet:
+    case MobKind::LlamaSpit: case MobKind::Potion: case MobKind::ExperienceBottle:
+    case MobKind::FireworkRocket: case MobKind::FishingBobber: case MobKind::EyeOfEnder:
+        return true; // plan42 ProjectileFlyGoal
+    default:
+        break;
+    }
+    if (MobEntity::isBoat(k)) return true; // plan42 BoatDriftGoal (21 kinds)
+    if (MobEntity::isMinecartKind(k)) return true; // plan42 MinecartRollGoal (7 kinds)
+    return false;
 }
 // -------------------------------------------------------- ranged attacks --
 

@@ -1,0 +1,37 @@
+{
+  "type": "minecraft:creaking",
+  "attributes": {
+    "max_health": 1.0,
+    "movement_speed": 0.08,
+    "attack_damage": 7.0
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:plains"
+    ],
+    "light_level": {
+      "max": 7
+    },
+    "weight": 3
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:creaking_heart_link",
+        "priority": 2
+      },
+      {
+        "type": "minecraft:wander",
+        "priority": 6
+      },
+      {
+        "type": "minecraft:look_at_player",
+        "priority": 7
+      }
+    ],
+    "sensors": [
+      "minecraft:nearest_players",
+      "minecraft:hurt_by"
+    ]
+  }
+}

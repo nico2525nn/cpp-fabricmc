@@ -1,0 +1,23 @@
+{
+  "type": "minecraft:minecart",
+  "attributes": {
+    "max_health": 6.0,
+    "movement_speed": 0.1,
+    "attack_damage": 0.0
+  },
+  "spawning": {
+    "biomes": [],
+    "weight": 0
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:minecart_roll",
+        "priority": 5
+      }
+    ],
+    "sensors": [
+      "minecraft:nearest_players"
+    ]
+  }
+}

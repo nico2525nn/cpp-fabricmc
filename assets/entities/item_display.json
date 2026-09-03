@@ -1,0 +1,23 @@
+{
+  "type": "minecraft:item_display",
+  "attributes": {
+    "max_health": 1.0,
+    "movement_speed": 0.1,
+    "attack_damage": 0.0
+  },
+  "spawning": {
+    "biomes": [],
+    "weight": 0
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:stationary_object",
+        "priority": 7
+      }
+    ],
+    "sensors": [
+      "minecraft:nearest_players"
+    ]
+  }
+}

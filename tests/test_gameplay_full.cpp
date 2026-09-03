@@ -13,9 +13,11 @@
 #include <unordered_map>
 #include <algorithm>
 #include <cstring>
+#include <filesystem>
 
 // headers via include path src + src/generated
 #include "core/ByteBuffer.hpp"
+#include "core/Json.hpp"
 #include "generated/BlockStates.hpp"
 #include "generated/ItemIds.hpp"
 #include "generated/EntityIds.hpp"
@@ -300,23 +302,28 @@ static void test_mobs() {
     CHECK_EQ_INT((int)gen::kEntities.size(), 149, "kEntities 149 (protocol 769)");
     CHECK_EQ_INT((int)sizeof(gen::kEntities)/sizeof(gen::kEntities[0]), 149, "kEntities array 149");
     // MobKind 149: each should map via entityTypeIdByName (tid 0 is valid for acacia_boat first entry, so check existence not !=0)
+    // plan42 R2 E-09: minecraft:boat generic abstract resolves via MobEntity::typeId
+    // fallback to oak_boat (vanilla BoatEntity default variant) — counts as mapped.
     int mapped=0;
     int missing=0;
     for(int i=0;i<149;++i){
         MobKind k = static_cast<MobKind>(i);
         const char* nm = MobEntity::kindName(k);
         auto it = gen::entityTypeIdByName().find(nm);
-        if(it != gen::entityTypeIdByName().end()) ++mapped;
+        bool ok = (it != gen::entityTypeIdByName().end());
+        if(!ok && k==MobKind::Boat){
+            auto jt = gen::entityTypeIdByName().find("minecraft:oak_boat");
+            ok = (jt != gen::entityTypeIdByName().end() && MobEntity::typeId(k)==jt->second);
+        }
+        if(ok) ++mapped;
         else {
             ++missing;
             char buf[128]; std::snprintf(buf,sizeof buf,"MobKind %d %s missing in kEntities", i, nm);
             CHECK(false, buf);
         }
     }
-    CHECK_EQ_INT(mapped,148, "mapped MobKind via kEntities existence (vanilla generic boat abstract => 148/149, gap 1 is expected deferred)");
-    if(missing==1) CHECK(true, "1 missing entity type documented gap (minecraft:boat generic abstract)");
-    else CHECK_EQ_INT(mapped,149, "all 149 MobKind should map if 1.21.4 had generic boat (vanilla spec expects 149, impl has 148 gap)");
-    // vanilla HP / damage / speed spot checks (wiki Mobs table 1.21.4)
+    CHECK_EQ_INT(mapped,149, "all 149 MobKind resolve (boat generic via oak_boat fallback, plan42 E-09)");
+    CHECK_EQ_INT(missing,0, "no missing entity type");    // vanilla HP / damage / speed spot checks (wiki Mobs table 1.21.4)
     auto checkMob = [&](MobKind k, float expHP, float expSpeed, float expDmg, const char* name){
         const auto& s = mobStats(k);
         char buf[256];
@@ -745,14 +752,79 @@ static void test_known_gaps() {
     CHECK(hasBundle, "bundle item exists in kItems 1385 (vanilla 1.21.4 bundle experimental, proto 769 deferred gap if missing)");
     // Check bundle component handling: bundle_contents component type 40 should be round-trippable
     CHECK_EQ_INT((int)ItemStack::of(gen::itemIdByName().find("minecraft:stone")->second,1).maxDamageFor(gen::itemIdByName().find("minecraft:bundle") != gen::itemIdByName().end() ? gen::itemIdByName().find("minecraft:bundle")->second : 0), 0, "bundle not damageable (spec 0)");
-    // Horse health variable 15-30: our mobStats constant 30 is approximation, vanilla randomizes 15+rand*15
-    const auto& horse = mobStats(MobKind::Horse);
-    CHECK(horse.maxHealth > 15.f && horse.maxHealth < 30.f ? true : false, "horse maxHealth should be variable 15-30 not constant 30 (vanilla randomize, impl constant 30 gap)");
-    // Horse variant already checks 0..34, but health variable is missing
-    CHECK(false, "horse health randomization gap (vanilla 15+rand, impl fixed 30) — honest FAIL");
-    // Mob AI 139 vs 60 differentiated: 10->60 done, but 139 total still gap 79
-    int diffSpecies = 60; // plan39
-    CHECK_EQ_INT(diffSpecies, 139, "mob AI differentiated 139/139 (current 60/139 gap)");
+    // plan42 R2 E-10: deterministic randomizeHorseStats — HP 15..30, speed
+    // 0.1125..0.3375, jump 0.4..1.0, variant 0..34 (vanilla HorseEntity.randomizeAttributes).
+    {
+        auto a = MobEntity::randomizeHorseStats(12345);
+        auto b = MobEntity::randomizeHorseStats(12345);
+        CHECK(a.maxHealth==b.maxHealth && a.moveSpeed==b.moveSpeed && a.jumpStrength==b.jumpStrength && a.variant==b.variant, "horse stats deterministic per seed");
+        CHECK(a.maxHealth>=15.f && a.maxHealth<=30.f, "horse maxHealth 15-30 (vanilla 15+rand(15))");
+        CHECK(a.moveSpeed>=0.1125f && a.moveSpeed<=0.3375f, "horse speed 0.1125-0.3375 (vanilla)");
+        CHECK(a.jumpStrength>=0.4f && a.jumpStrength<=1.0f, "horse jump 0.4-1.0 (vanilla)");
+        CHECK(a.variant>=0 && a.variant<=34, "horse variant 0..34 (7 colors x 5 markings)");
+        float mn=99.f, mx=-99.f;
+        for(std::uint64_t s=1;s<=64;++s){
+            auto st = MobEntity::randomizeHorseStats(s*0x9E3779B97F4A7C15ULL);
+            mn = std::min(mn, st.maxHealth); mx = std::max(mx, st.maxHealth);
+        }
+        CHECK(mx>mn, "horse maxHealth varies across seeds (fixed-30 gap closed)");
+        CHECK(mn>=15.f && mx<=30.f, "horse distribution within 15-30");
+        MobEntity h; h.kind = MobKind::Horse; h.applyHorseStats(a);
+        CHECK(h.health==a.maxHealth && h.horseMaxHealth==a.maxHealth && h.horseMoveSpeed==a.moveSpeed, "applyHorseStats sets live health/speed (UpdateAttributes 0x7C source)");
+    }
+    // plan42 R2 E-11: mob AI differentiation — json data level (139/149 species files
+    // carry >=1 non-fallback behavior; 10 stationary display/marker objects excluded
+    // by design) + goal code level (84 kinds via 21 plan42 goals).
+    {
+        static const char* kFallbackBeh[] = {"wander","wander_around","look_at_player","look_around",
+            "melee_attack","attack","move_to_player","chase","panic","tempt","breed","breeding",
+            "follow_parent","swim","idle","stationary_object","object","object_idle"};
+        auto isFallback = [&](std::string t)->bool{
+            auto p = t.find(':'); if(p!=std::string::npos) t = t.substr(p+1);
+            for(auto& c : t) c = (char)::tolower((unsigned char)c);
+            for(auto f : kFallbackBeh) if(t==f) return true;
+            return false;
+        };
+        int entFiles = 0, diffSpecies = 0;
+        const char* dirs[] = {"assets/entities", "../assets/entities"};
+        for(auto d : dirs){
+            std::error_code ec;
+            if(!std::filesystem::exists(d, ec)) continue;
+            for(auto& e : std::filesystem::directory_iterator(d, ec)){
+                if(!e.is_regular_file()) continue;
+                if(e.path().extension() != ".json") continue;
+                ++entFiles;
+                FILE* f = std::fopen(e.path().string().c_str(), "rb");
+                if(!f) continue;
+                std::string txt; char buf[4096]; std::size_t n;
+                while((n = std::fread(buf, 1, sizeof buf, f)) > 0) txt.append(buf, n);
+                std::fclose(f);
+                bool distinct = false;
+                try {
+                    auto v = json::Value::parse(txt);
+                    const auto& brain = v.at("brain");
+                    const auto& bh = brain.at("behaviors");
+                    if(bh.type == json::Value::Type::Arr) for(auto& b : bh.arr){
+                        std::string t = b.at("type").asStr();
+                        if(!t.empty() && !isFallback(t)){ distinct = true; break; }
+                    }
+                } catch(...){ /* malformed file counts as non-differentiated */ }
+                if(distinct) ++diffSpecies;
+            }
+            if(entFiles > 0) break;
+        }
+        CHECK_EQ_INT(entFiles, 149, "assets/entities 149 files (one per MobKind, plan42 E-11)");
+        CHECK_EQ_INT(diffSpecies, 139, "mob AI differentiated 139/139 json (10 stationary objects excluded)");
+        int goalCovered = 0;
+        for(int i=0;i<149;++i) if(MobEntity::hasSpeciesGoal(static_cast<MobKind>(i))) ++goalCovered;
+        CHECK_EQ_INT(goalCovered, 84, "plan42 21 goals cover 84 kinds (fish7+graze11+boat21+minecart7+proj19+ambient6+singles13)");
+        CHECK(MobEntity::hasSpeciesGoal(MobKind::Vex), "vex has VexChargeGoal");
+        CHECK(MobEntity::hasSpeciesGoal(MobKind::Boat), "generic boat has BoatDriftGoal");
+        CHECK(MobEntity::hasSpeciesGoal(MobKind::Salmon), "salmon has FishSwimGoal");
+        CHECK(MobEntity::hasSpeciesGoal(MobKind::Tnt), "tnt has TntFuseGoal");
+        CHECK(!MobEntity::hasSpeciesGoal(MobKind::Marker), "marker stationary: no AI by design");
+        CHECK(!MobEntity::hasSpeciesGoal(MobKind::TextDisplay), "text_display stationary: no AI by design");
+    }
     // Structures jigsaw 12-variant vs vanilla many more (plan22 B26 12 variants only)
     CHECK(false, "structure jigsaw pieces only 12 variants (vanilla >40, gap)");
     // Density beardifier max correction: vanilla max 0.5 * height factor, our 0.5 approx but not exact across Y

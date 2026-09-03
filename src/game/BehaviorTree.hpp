@@ -245,6 +245,51 @@ inline std::unique_ptr<BehaviorNode> createNodeForType(const std::string& rawTyp
     if (t=="evoker_fang"||t=="fang"||t=="evoker_attack") return std::make_unique<EvokerFangAction>();
     if (t=="breed_action") return std::make_unique<BreedAction>();
     if (t=="trade"||t=="trade_goal") return std::make_unique<TradeAction>();
+    // plan42 R2 E-11: aliases for the 79 new + 23 fixed species jsons.
+    // Real per-species logic lives in AiBrain goals (FishSwim/Graze/BoatDrift/
+    // MinecartRoll/VexCharge/...); BT layer maps to the closest generic action
+    // so unknown strings never break tree builds (same policy as plan34 §2-3).
+    if (t=="swim_wander"||t=="fish_swim"||t=="fly_wander"||t=="bat_roost") return std::make_unique<WanderAction>();
+    if (t=="graze"||t=="eat_grass"||t=="nibble_carrots"||t=="raid_crops") return std::make_unique<WanderAction>();
+    if (t=="boat_drift"||t=="boat_float") return std::make_unique<WanderAction>();
+    if (t=="minecart_roll") return std::make_unique<WanderAction>();
+    if (t=="projectile_fly") return std::make_unique<WanderAction>();
+    if (t=="crystal_hover") return std::make_unique<WanderAction>();
+    if (t=="tnt_fuse") return std::make_unique<WanderAction>();
+    if (t=="stationary_object"||t=="object_idle") return std::make_unique<WanderAction>();
+    if (t=="creaking_heart_link") return std::make_unique<WanderAction>();
+    if (t=="cure_shake") return std::make_unique<WanderAction>();
+    if (t=="trap_spawn") return std::make_unique<WanderAction>();
+    if (t=="lay_egg") return std::make_unique<WanderAction>();
+    if (t=="puff_defense") return std::make_unique<WanderAction>();
+    if (t=="allay_duplicate") return std::make_unique<WanderAction>();
+    if (t=="bat_roost") return std::make_unique<WanderAction>();
+    if (t=="armor_stand_pose"||t=="ominous_spawn") return std::make_unique<WanderAction>();
+    if (t=="xp_magnet"||t=="item_magnet") return std::make_unique<WanderAction>();
+    if (t=="falling_gravity") return std::make_unique<WanderAction>();
+    if (t=="lightning_strike") return std::make_unique<WanderAction>();
+    if (t=="hoglin_repel"||t=="repel") return std::make_unique<WanderAction>();
+    if (t=="magma_cube_jump"||t=="magma_jump") return std::make_unique<WanderAction>();
+    if (t=="silverfish_infest"||t=="infest") return std::make_unique<WanderAction>();
+    if (t=="slime_hop"||t=="slime") return std::make_unique<WanderAction>();
+    if (t=="snow_trail"||t=="turtle_home") return std::make_unique<WanderAction>();
+    if (t=="vex_charge"||t=="vex_attack") return std::make_unique<AttackPlayerAction>();
+    if (t=="brute_attack"||t=="piglin_brute_attack") return std::make_unique<AttackPlayerAction>();
+    if (t=="pack_anger"||t=="zombified_anger") return std::make_unique<AttackPlayerAction>();
+    if (t=="stomp"||t=="giant_stomp") return std::make_unique<AttackPlayerAction>();
+    if (t=="husk_hunger"||t=="husk_attack") return std::make_unique<AttackPlayerAction>();
+    if (t=="bear_defend"||t=="polar_bear_defend") return std::make_unique<AttackPlayerAction>();
+    if (t=="fangs_snap"||t=="evoker_fangs_snap") return std::make_unique<AttackPlayerAction>();
+    if (t=="vindicator_axe"||t=="axe_attack") return std::make_unique<AttackPlayerAction>();
+    if (t=="zoglin_frenzy"||t=="frenzy") return std::make_unique<AttackPlayerAction>();
+    if (t=="llama_spit"||t=="spit") return std::make_unique<GenericRangedAttackAction>();
+    // plan42 R2 E-11: pre-existing Goal-layer types (real logic in AiBrain goals,
+    // BT fallback wander — same policy as the plan34 §2-3 block above).
+    if (t=="axolotl_play_dead"||t=="bogged_poison"||t=="camel_dash") return std::make_unique<WanderAction>();
+    if (t=="endermite_teleport"||t=="frog_tongue"||t=="goat_ram") return std::make_unique<WanderAction>();
+    if (t=="illusioner_invis"||t=="ocelot_trust"||t=="panda_roll") return std::make_unique<WanderAction>();
+    if (t=="parrot_dance"||t=="sniffer_dig"||t=="strider_lava_walk") return std::make_unique<WanderAction>();
+    if (t=="wither_skeleton_effect"||t=="tempt") return std::make_unique<WanderAction>();
     if (t=="wander"||t=="wander_around") return std::make_unique<WanderAction>();
     // composite keys fallback to selector/sequence (handled in EntityData parsing)
     if (t=="selector"||t=="sequence") return nullptr;
