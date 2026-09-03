@@ -50,6 +50,10 @@ struct FurnaceData {
 
 struct BrewingData {
     static constexpr int kSlots = 5;
+    // plan46 G-14: vanilla BrewingStandBlockEntity constants (1.21.4):
+    // one brew step is 400 ticks; one blaze powder fuels 20 steps.
+    static constexpr int kBrewTicks = 400;
+    static constexpr int kFuelPerBlaze = 20;
     ItemStack slots[kSlots];
     std::int16_t brewTime = 0;
     std::int16_t fuel = 0;

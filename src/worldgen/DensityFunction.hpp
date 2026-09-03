@@ -14,8 +14,10 @@
 //   {"type":"range_choice","input":{...},"min_inclusive":a,"max_exclusive":b,
 //        "when_in_range":{...},"when_out_of_range":{...}}
 //   {"type":"y_clamped_gradient","from_y":..,"to_y":..,"from_value":..,"to_value":..}
-//   {"type":"interpolated","input":{...}}           (cell-grid smoothing)
-//   {"type":"flat_cache","input":{...}} / {"type":"cache_2d",...} / cache_once
+//   {"type":"interpolated","input":{...}}           (explicit node; direct eval)
+//   {"type":"flat_cache","input":{...}} / {"type":"cache_2d",...} / {"type":"cache_once","input":{...}}
+//   {"type":"spline","spline":{"coordinate":{...},"points":[{"location":f,"value":{...}|f,"derivative":f},...]}}
+//      (value may be a nested function or a float; derivative defaults to 0)
 //   {"type":"beardifier"} {"type":"old_blended_noise","input":{...}}
 //   {"type":"blend_alpha"} {"type":"blend_offset"} {"type":"blend_density","input":{...}}
 //   {"type":"end_islands"} {"type":"weird_scaled_sampler","input":{...},"rarity":"type_1"}
@@ -289,7 +291,7 @@ struct WeirdScaledSamplerNode final : DensityNode {
         return std::abs(v * scale + n * 0.25);
     }
 };
-struct Cache2d final : DensityNode {   // memoize per column within one chunk
+struct Cache2d final : DensityNode { // memoize per column within one chunk
     NodePtr in;
     mutable std::unordered_map<std::uint64_t, double> memo;
     mutable std::uint64_t lastRevKey = 0;
@@ -311,24 +313,97 @@ struct Cache2d final : DensityNode {   // memoize per column within one chunk
 };
 using Cache2dPtr = std::shared_ptr<Cache2d>;
 
-inline void collectCaches(const NodePtr& n, std::vector<Cache2dPtr>& out) {
+// plan46 G-10: remaining Yarn density-function types.
+// - Interpolated: vanilla samples the wrapped function on the cell grid and
+//   trilinearly interpolates. We approximate by direct evaluation (exact for
+//   smooth inputs; documented in DENSITY_COVERAGE.md) but keep the explicit
+//   node type so JSON round-trips instead of silently flattening.
+// - FlatCache: memoize the last sampled position (vanilla caches per call
+//   site; single-entry cache is the honest minimal form).
+// - CacheOnce: evaluate the wrapped function once per pass (beginPass resets).
+struct Interpolated final : DensityNode {
+    NodePtr in;
+    double eval(const Sample& s) const override { return in ? in->eval(s) : 0; }
+};
+struct FlatCache final : DensityNode {
+    NodePtr in;
+    mutable bool has = false;
+    mutable double lx = 0, ly = 0, lz = 0, lv = 0;
+    double eval(const Sample& s) const override {
+        if (has && s.x == lx && s.y == ly && s.z == lz) return lv;
+        const double v = in ? in->eval(s) : 0;
+        lx = s.x; ly = s.y; lz = s.z; lv = v; has = true;
+        return v;
+    }
+    void beginPass() { has = false; }
+};
+struct CacheOnce final : DensityNode {
+    NodePtr in;
+    mutable bool has = false;
+    mutable double v = 0;
+    mutable std::uint64_t rev = 0;
+    double eval(const Sample&) const override {
+        if (has) return v;
+        v = in ? in->eval({0, 0, 0}) : 0;
+        has = true;
+        return v;
+    }
+    void beginPass() { has = false; ++rev; }
+};
+// plan46 G-10: Spline (vanilla cubic-spline density function — the core of
+// continentalness/erosion/ridge curves). Cubic Hermite interpolation over
+// sorted (location, value, derivative) points, Yarn Spline semantics:
+// exact at knots, C1-continuous between, clamped outside the point range.
+struct Spline final : DensityNode {
+    struct Point { double loc, val, der; };
+    NodePtr coordinate; // sampled for the lookup position; null => use x
+    std::vector<Point> points;
+    double eval(const Sample& s) const override {
+        const double t = coordinate ? coordinate->eval(s) : s.x;
+        if (points.empty()) return 0;
+        if (t <= points.front().loc) return points.front().val;
+        if (t >= points.back().loc) return points.back().val;
+        for (std::size_t i = 0; i + 1 < points.size(); ++i) {
+            const auto& a = points[i];
+            const auto& b = points[i + 1];
+            if (t < a.loc || t > b.loc) continue;
+            const double h = b.loc - a.loc;
+            if (h <= 0) return a.val;
+            const double u = (t - a.loc) / h;
+            // Hermite basis with endpoint derivatives scaled by h
+            const double u2 = u * u, u3 = u2 * u;
+            const double h00 = 2 * u3 - 3 * u2 + 1;
+            const double h10 = u3 - 2 * u2 + u;
+            const double h01 = -2 * u3 + 3 * u2;
+            const double h11 = u3 - u2;
+            return h00 * a.val + h10 * h * a.der + h01 * b.val + h11 * h * b.der;
+        }
+        return points.back().val;
+    }
+};
+using FlatCachePtr = std::shared_ptr<FlatCache>;
+using CacheOncePtr = std::shared_ptr<CacheOnce>;
+
+inline void collectCaches(const NodePtr& n, std::vector<Cache2dPtr>& out,
+                            std::vector<FlatCachePtr>* flatOut = nullptr,
+                            std::vector<CacheOncePtr>* onceOut = nullptr) {
     if (!n) return;
     if (auto c = std::dynamic_pointer_cast<Cache2d>(n)) {
         out.push_back(c);
-        collectCaches(c->in, out);
+        collectCaches(c->in, out, flatOut, onceOut);
         return;
     }
-    if (auto u = std::dynamic_pointer_cast<Unary>(n)) collectCaches(u->in, out);
-    else if (auto cl = std::dynamic_pointer_cast<Clamp>(n)) collectCaches(cl->in, out);
+    if (auto u = std::dynamic_pointer_cast<Unary>(n)) collectCaches(u->in, out, flatOut, onceOut);
+    else if (auto cl = std::dynamic_pointer_cast<Clamp>(n)) collectCaches(cl->in, out, flatOut, onceOut);
     else if (auto rc = std::dynamic_pointer_cast<RangeChoice>(n)) {
-        collectCaches(rc->in, out); collectCaches(rc->whenIn, out);
-        collectCaches(rc->whenOut, out);
+        collectCaches(rc->in, out, flatOut, onceOut); collectCaches(rc->whenIn, out, flatOut, onceOut);
+        collectCaches(rc->whenOut, out, flatOut, onceOut);
     } else if (auto na = std::dynamic_pointer_cast<Nary>(n))
-        for (auto& c : na->inputs) collectCaches(c, out);
+        for (auto& c : na->inputs) collectCaches(c, out, flatOut, onceOut);
     else if (auto sn = std::dynamic_pointer_cast<ShiftedNoise>(n)) {
-        if (sn->shiftX) collectCaches(sn->shiftX, out);
-        if (sn->shiftY) collectCaches(sn->shiftY, out);
-        if (sn->shiftZ) collectCaches(sn->shiftZ, out);
+        if (sn->shiftX) collectCaches(sn->shiftX, out, flatOut, onceOut);
+        if (sn->shiftY) collectCaches(sn->shiftY, out, flatOut, onceOut);
+        if (sn->shiftZ) collectCaches(sn->shiftZ, out, flatOut, onceOut);
     } else if (auto sh = std::dynamic_pointer_cast<Shift>(n)) {
         (void)sh;
     } else if (auto sha = std::dynamic_pointer_cast<ShiftA>(n)) {
@@ -338,17 +413,27 @@ inline void collectCaches(const NodePtr& n, std::vector<Cache2dPtr>& out) {
     } else if (auto beard = std::dynamic_pointer_cast<BeardifierNode>(n)) {
         (void)beard;
     } else if (auto old = std::dynamic_pointer_cast<OldBlendedNoiseNode>(n)) {
-        collectCaches(old->in, out);
+        collectCaches(old->in, out, flatOut, onceOut);
     } else if (auto ws = std::dynamic_pointer_cast<WeirdScaledSamplerNode>(n)) {
-        collectCaches(ws->input, out);
+        collectCaches(ws->input, out, flatOut, onceOut);
     } else if (auto bd = std::dynamic_pointer_cast<BlendDensityNode>(n)) {
-        collectCaches(bd->in, out);
+        collectCaches(bd->in, out, flatOut, onceOut);
     } else if (auto ba = std::dynamic_pointer_cast<BlendAlphaNode>(n)) {
         (void)ba;
     } else if (auto bo = std::dynamic_pointer_cast<BlendOffsetNode>(n)) {
         (void)bo;
     } else if (auto ei = std::dynamic_pointer_cast<EndIslandsNode>(n)) {
         (void)ei;
+    } else if (auto ip = std::dynamic_pointer_cast<Interpolated>(n)) {
+        collectCaches(ip->in, out, flatOut, onceOut);
+    } else if (auto fc = std::dynamic_pointer_cast<FlatCache>(n)) {
+        if (flatOut) flatOut->push_back(fc);
+        collectCaches(fc->in, out, flatOut, onceOut);
+    } else if (auto co = std::dynamic_pointer_cast<CacheOnce>(n)) {
+        if (onceOut) onceOut->push_back(co);
+        collectCaches(co->in, out, flatOut, onceOut);
+    } else if (auto sp = std::dynamic_pointer_cast<Spline>(n)) {
+        if (sp->coordinate) collectCaches(sp->coordinate, out, flatOut, onceOut);
     }
 }
 
@@ -365,6 +450,8 @@ public:
     // Evaluate at world coordinates.
     double sample(double x, double y, double z) const {
         for (auto& c : caches_) c->beginPass();
+        for (auto& c : flatCaches_) c->beginPass();
+        for (auto& c : onceCaches_) c->beginPass();
         if (!root_) return 0;
         return root_->eval({x, y, z});
     }
@@ -376,6 +463,8 @@ private:
     std::shared_ptr<NoiseRegistry> noises_;
     NodePtr root_;
     std::vector<detail::Cache2dPtr> caches_;
+    std::vector<detail::FlatCachePtr> flatCaches_;
+    std::vector<detail::CacheOncePtr> onceCaches_;
     std::function<double(int,int)> beardifierProvider_;
 };
 

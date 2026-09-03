@@ -701,7 +701,7 @@ void GameServer::survivalTick() {
 }
 namespace {
 enum SpawnGroupIdx{ SG_MONSTER=0, SG_CREATURE=1, SG_AMBIENT=2, SG_WATER_CREATURE=3, SG_WATER_AMBIENT=4, SG_UNDERGROUND=5, SG_AXOLOTLS=6 };
-const std::array<int,7> kSpawnCaps{70,10,15,5,20,5,5};
+// (plan46 G-15: caps live in GameServer::spawnGroupCaps — single source for tests.)
 inline SpawnGroupIdx groupForKind(MobKind k){
     if(MobEntity::isHostile(k)) return SG_MONSTER;
     if(k==MobKind::Bat) return SG_AMBIENT;
@@ -726,7 +726,7 @@ void GameServer::trySpawnMobs() {
         std::fprintf(stderr, "[cppfm] mob-spawn tick: night=%d mobs=%zu\n", (int)isNight(), mobs_.size());
     }
     // snapshot caps
-    std::array<int,7> caps = kSpawnCaps;
+    std::array<int,7> caps = spawnGroupCaps();
     if (difficulty()=="peaceful") caps[SG_MONSTER]=0;
     std::array<int,7> cnts; { std::lock_guard lk(entsMtx_); cnts = countMobsByGroup(mobs_); }
     for (auto& pp : playersSnapshot()) {
@@ -1087,15 +1087,21 @@ void GameServer::mobsTick() {
                 if (tickNo_ >= m->restockUntil && m->restockUntil!=0) {
                     if (m->villagerRestocksToday < 2) {
                         m->villagerRestocksToday++;
+                        m->villagerLastRestockTick = tickNo_;
                         broadcastSound("minecraft:entity.villager.work_farm", m->x,m->y,m->z,1.f,1.f,"neutral");
-                        // if first restock today and trades still need restock, schedule second window in 6000 ticks
-                        // For now we clear; next trade will schedule if needed, or auto-schedule second if still under limit and pending
+                        // plan46 G-15: auto-schedule the 2nd window of the day
+                        // (vanilla: up to twice per day on work-site visits).
+                        // Old code left restockUntil=0 here ("For now we clear"),
+                        // which silently dropped the 2nd restock.
                         if (m->villagerRestocksToday < 2) {
-                            // keep restock pending for second restock after short delay if needed
-                            // we leave restockUntil 0; next trade or tick will reschedule
+                            m->restockUntil = tickNo_ + MobEntity::kRestockSecondWindowTicks
+                                + (rand() % 2000);
+                        } else {
+                            m->restockUntil = 0;
                         }
+                    } else {
+                        m->restockUntil = 0;
                     }
-                    m->restockUntil = 0;
                 }
                 if (tickNo_%100==0) m->gossip.tickDecay();
             }
