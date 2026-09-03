@@ -159,3 +159,45 @@ Already sent (plan34, not in 21 strict but in 33 mapper):
 
 Strict unsent after plan41: **19** (27 rows -2 implemented -6 already sent =19 strict; 21 before plan41). `grep -c "not sent, see" docs/PROTOCOL_NOTES.md` should be 19+ uses → 21 before including horse/vehicle now sent are excluded.
 Wire: `OpenHorseWindow 0x24 {windowId varint, slotCount varint, entityId varint}` / `VehicleMove 0x33 {x double, y double, z double, yaw float, pitch float}` per `minecraft-data 1.21.4 protocol.json`.
+
+## Seed parity / worldgen RNG (plan45 G-11 — L3 difference declaration)
+
+Vanilla 1.21.4 worldgen RNG is **Xoroshiro128++ / LegacyRand** (`WorldgenRandom`,
+`LegacyRand`). Ours is **xorshift64** (`WorldGen.cpp rng64`: `s^=s<<13; s^=s>>7;
+s^=s<<17`) + splitmix-style `smStructureHash` (`StructureManager.hpp:34-42`).
+Therefore **the same seed does NOT produce vanilla-identical terrain/structure
+placement** — this is an honest, declared gap (same class as E-14), NOT a bug.
+Per plan45 §1 the xorshift implementation is intentionally kept (L3 declaration,
+no Xoroshiro replacement).
+
+What IS guaranteed (regression-locked by `tests/test_seed_parity` + `tools/seed_parity_check.py`):
+- **L1 self-consistency (15+4 cases):** `smStructureHash`/`triangularOffsetRaw`/
+  `smStructureAtChunk` outputs equal the independent Python hand-calculation
+  (no shared code — G-01 tautology guard). 5 sets x 3 seeds exact origins +
+  pillager frequency raw hash + triangular spot.
+- **L2 determinism (50 chunks):** same seed → byte-identical biome sampling
+  (overworld/nether/end emit paths) and structure placement across two
+  independent `MultiNoiseBiomeSource`/`StructureManager` instances.
+
+## Biome / structure-set correspondence (plan45 G-11 — jar-verified)
+
+Vanilla 1.21.4 client jar (`data/minecraft/worldgen/`, piston-meta 1.21.4,
+sha1-verified 2026-09-04): **65 biome files, 20 structure_set files,
+34 structure files**. Our `MultiNoise` table is 65 (54 overworld + 5 nether +
+5 end + `the_void` registry-only); `StructureManager` keeps 20 sets with
+plan33 singular統合名 mapping 1:1 to jar plural ids (`village`→`villages`,
+`desert_pyramid`→`desert_pyramids`, `jungle_temple`→`jungle_temples`
+(structure `jungle_pyramid`), `monument`→`ocean_monuments`,
+`mansion`→`woodland_mansions`, `ruined_portal`→`ruined_portals` (7 structures),
+`shipwreck`→`shipwrecks` (2), `ocean_ruins`→`ocean_ruins` (cold+warm),
+`mineshaft`→`mineshafts` (2), `stronghold`→`strongholds`,
+`ancient_city`→`ancient_cities`, `trail_ruins`→`trail_ruins`,
+`trial_chambers`→`trial_chambers`, `nether_complexes`→`nether_complexes`
+(fortress w2 / bastion_remnant w3), `nether_fossil`→`nether_fossils`,
+`end_city`→`end_cities` (triangular), `pillager_outpost`→`pillager_outposts`
+(freq 0.2), `buried_treasure`→`buried_treasures` (freq 0.01),
+`igloo`→`igloos`, `swamp_hut`→`swamp_huts`). All spacing/separation/salt/
+spread/frequency values verified equal to jar JSON. 34 structures each map to
+a set (locked in `test_gameplay_full`). Remaining honest gap: nether
+fortress/bastion share placeholder pieces (weights 2:3 applied), not vanilla
+jigsaw pools.
