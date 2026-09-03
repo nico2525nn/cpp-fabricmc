@@ -84,6 +84,31 @@ void MultiNoiseBiomeSource::buildDefaultTable() {
     // badlands variants
     add("minecraft:eroded_badlands", 1.0,-0.5, 0.10, -0.30, 0.10,-0.2);
     add("minecraft:wooded_badlands", 1.0,-0.4, 0.10, -0.20, 0.10, 0.0);
+    // ---- plan45 G-11: vanilla 65-biome table completion (54 -> 65).
+    // Missing 11 = nether 5 + end 5 + the_void 1, verified against vanilla
+    // 1.21.4 client jar data/minecraft/worldgen/biome/*.json (65 files,
+    // piston-meta 1.21.4, sha1-verified download 2026-09-04).
+    // Nether/end entries carry a dimension tag: sample() still searches the
+    // overworld subset only, so these can never leak into overworld chunks.
+    // Emit paths: sampleNether()/sampleEnd(). Climate points are clean-room
+    // distinct points in the vanilla nether/end parameter style
+    // (temperature/humidity-driven, cf. vanilla NetherBiomeSource).
+    // nether (temperature x humidity grid, depth fixed by terrain)
+    addNether("minecraft:nether_wastes",    0.0,  0.0, 0.0, 0.0, 0.0, 0.0);
+    addNether("minecraft:soul_sand_valley",-0.5,  0.0, 0.0, 0.0, 0.0, 0.0);
+    addNether("minecraft:crimson_forest",   0.4,  0.0, 0.0, 0.0, 0.0, 0.0);
+    addNether("minecraft:warped_forest",    0.0,  0.5, 0.0, 0.0, 0.0, 0.0);
+    addNether("minecraft:basalt_deltas",    0.5,  0.3, 0.0, 0.0, 0.0, 0.0);
+    // end (radial layout in fillEnd stays authoritative for terrain;
+    // these points back the sampleEnd() emit path for biome queries)
+    addEnd("minecraft:the_end",            0.0,  0.0, 0.0, 0.0, 0.0, 0.0);
+    addEnd("minecraft:end_barrens",        0.0, -0.5, 0.0, 0.0, 0.0, 0.0);
+    addEnd("minecraft:end_highlands",      0.5,  0.0, 0.0, 0.0, 0.0, 0.0);
+    addEnd("minecraft:end_midlands",      -0.5,  0.0, 0.0, 0.0, 0.0, 0.0);
+    addEnd("minecraft:small_end_islands",  0.0,  0.5, 0.0, 0.0, 0.0, 0.0);
+    // the_void: registry presence only (vanilla default for Y<-64 /
+    // ungenerated chunks). Excluded from all sampling by dimension filter.
+    addSpecial("minecraft:the_void");
 }
 
 } // namespace cppfm::worldgen

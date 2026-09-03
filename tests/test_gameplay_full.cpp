@@ -40,6 +40,7 @@
 #include "worldgen/DensityFunction.hpp"
 #include "worldgen/MultiNoise.hpp"
 #include "worldgen/Structures.hpp"
+#include "worldgen/StructureManager.hpp"
 #include "worldgen/StructurePlacer.hpp"
 #include "game/GameServer.hpp"
 #include "game/World.hpp"
@@ -737,8 +738,33 @@ static void test_worldgen() {
         // weights 1.5 for C/E
         CHECK_NEAR(MultiNoiseBiomeSource::kW_C,1.5,1e-9,"isosceles weight C 1.5");
         CHECK_NEAR(MultiNoiseBiomeSource::kW_E,1.5,1e-9,"isosceles weight E 1.5");
-        CHECK(src.biomeEntryCount()>=43, "biomeEntryCount >=43 (vanilla 63+? we have 43)");
-        CHECK(src.hypercubeEntryCount()>=43, "hypercubeEntryCount >=43");
+        CHECK(src.biomeEntryCount()==65, "biomeEntryCount ==65 (vanilla 1.21.4 jar worldgen/biome 65 files)");
+        CHECK(src.hypercubeEntryCount()==65, "hypercubeEntryCount ==65");
+        CHECK_EQ_INT((int)src.dimensionEntryCount(cppfm::worldgen::BiomeDimension::Overworld),54,"overworld dim 54");
+        CHECK_EQ_INT((int)src.dimensionEntryCount(cppfm::worldgen::BiomeDimension::Nether),5,"nether dim 5");
+        CHECK_EQ_INT((int)src.dimensionEntryCount(cppfm::worldgen::BiomeDimension::End),5,"end dim 5");
+        CHECK_EQ_INT((int)src.dimensionEntryCount(cppfm::worldgen::BiomeDimension::Special),1,"special dim 1 (the_void)");
+        // plan45 G-11: all 65 vanilla keys present (jar-verified list)
+        {
+            const char* keys65[] = {"minecraft:badlands","minecraft:bamboo_jungle","minecraft:basalt_deltas","minecraft:beach","minecraft:birch_forest","minecraft:cherry_grove","minecraft:cold_ocean","minecraft:crimson_forest","minecraft:dark_forest","minecraft:deep_cold_ocean","minecraft:deep_dark","minecraft:deep_frozen_ocean","minecraft:deep_lukewarm_ocean","minecraft:deep_ocean","minecraft:desert","minecraft:dripstone_caves","minecraft:end_barrens","minecraft:end_highlands","minecraft:end_midlands","minecraft:eroded_badlands","minecraft:flower_forest","minecraft:forest","minecraft:frozen_ocean","minecraft:frozen_peaks","minecraft:frozen_river","minecraft:grove","minecraft:ice_spikes","minecraft:jagged_peaks","minecraft:jungle","minecraft:lukewarm_ocean","minecraft:lush_caves","minecraft:mangrove_swamp","minecraft:meadow","minecraft:mushroom_fields","minecraft:nether_wastes","minecraft:ocean","minecraft:old_growth_birch_forest","minecraft:old_growth_pine_taiga","minecraft:old_growth_spruce_taiga","minecraft:pale_garden","minecraft:plains","minecraft:river","minecraft:savanna","minecraft:savanna_plateau","minecraft:small_end_islands","minecraft:snowy_beach","minecraft:snowy_plains","minecraft:snowy_slopes","minecraft:snowy_taiga","minecraft:soul_sand_valley","minecraft:sparse_jungle","minecraft:stony_peaks","minecraft:stony_shore","minecraft:sunflower_plains","minecraft:swamp","minecraft:taiga","minecraft:the_end","minecraft:the_void","minecraft:warm_ocean","minecraft:warped_forest","minecraft:windswept_forest","minecraft:windswept_gravelly_hills","minecraft:windswept_hills","minecraft:windswept_savanna","minecraft:wooded_badlands"};
+            int missing = 0;
+            for (auto* k : keys65) if (!src.contains(k)) { ++missing; char buf[256]; std::snprintf(buf,sizeof buf,"biome present %s",k); CHECK(false,buf); }
+            CHECK_EQ_INT(missing,0,"all 65 vanilla biome keys present");
+        }
+        // plan45 G-11: nether/end emit paths resolve within their dimension
+        {
+            std::string nb = src.sampleNether(0,64,0);
+            CHECK(nb=="minecraft:nether_wastes"||nb=="minecraft:soul_sand_valley"||nb=="minecraft:crimson_forest"||nb=="minecraft:warped_forest"||nb=="minecraft:basalt_deltas","sampleNether returns nether biome");
+            std::string eb = src.sampleEnd(0,64,0);
+            CHECK(eb=="minecraft:the_end"||eb=="minecraft:end_barrens"||eb=="minecraft:end_highlands"||eb=="minecraft:end_midlands"||eb=="minecraft:small_end_islands","sampleEnd returns end biome");
+            // dimension isolation: overworld sampling never emits nether/end/void
+            bool leak = false;
+            for (int i = 0; i < 200 && !leak; ++i) {
+                std::string b = src.sample(i*13.7, 64, i*29.3);
+                if (b=="minecraft:nether_wastes"||b=="minecraft:basalt_deltas"||b=="minecraft:crimson_forest"||b=="minecraft:warped_forest"||b=="minecraft:soul_sand_valley"||b=="minecraft:the_end"||b=="minecraft:end_barrens"||b=="minecraft:end_highlands"||b=="minecraft:end_midlands"||b=="minecraft:small_end_islands"||b=="minecraft:the_void") leak = true;
+            }
+            CHECK(!leak, "overworld sample() never emits nether/end/void (dim isolation)");
+        }
         // sample returns non-empty
         std::string biome = src.sample(0,64,0);
         CHECK(!biome.empty(), "MultiNoise sample non-empty");
@@ -747,8 +773,11 @@ static void test_worldgen() {
     // Structures 20 sets with spacing/salt vanilla values
     {
         // via StructureManager sets (plan33) – fallback to legacy structureSets header
+        // plan45 G-11: vanilla 1.21.4 jar has EXACTLY 20 structure_set files
+        // (plural ids: villages/pillager_outposts/.../woodland_mansions);
+        // ours keep plan33 singular統合名 1:1 (see PROTOCOL_NOTES.md G-11 table).
         const auto& sets = worldgen::structureSets();
-        CHECK_EQ_INT((int)sets.size(), 20, "structureSets 20 (vanilla)");
+        CHECK_EQ_INT((int)sets.size(), 20, "structureSets 20 (vanilla jar: exactly 20 sets)");
         auto findSet = [&](const char* n)->const StructureSet*{
             for(auto &s: sets) if(std::string(s.name)==n) return &s;
             return nullptr;
@@ -759,6 +788,35 @@ static void test_worldgen() {
         if(auto s=findSet("minecraft:mansion")){ CHECK_EQ_INT(s->spacing,80,"mansion spacing 80"); CHECK_EQ_INT(s->separation,20,"mansion sep 20"); }
         if(auto s=findSet("minecraft:end_city")){ CHECK_EQ_INT(s->spacing,20,"end_city spacing 20"); }
         if(auto s=findSet("minecraft:monument")){ CHECK_EQ_INT(s->spacing,32,"monument spacing 32"); CHECK_EQ_INT(s->separation,5,"monument sep5"); }
+        // plan45 G-11: StructureManager jar-verified values (vanilla 1.21.4
+        // structure_set/*.json live-extracted 2026-09-04) + 34-structure coverage.
+        {
+            StructureManager mgr(1378645410614731511ULL);
+            const auto& msets = mgr.sets();
+            CHECK_EQ_INT((int)msets.size(),20,"StructureManager 20 sets (jar: 20 files)");
+            auto mfind = [&](const char* n)->const SMStructureSet*{
+                for(auto &s: msets) if(s.name==n) return &s;
+                return nullptr;
+            };
+            if(auto s=mfind("minecraft:end_city")){ CHECK(s->spread==SMStructureSet::Triangular,"end_city triangular (jar end_cities.json spread_type)"); CHECK_EQ_INT(s->separation,11,"end_city sep 11 (jar)"); }
+            if(auto s=mfind("minecraft:pillager_outpost")){ CHECK_NEAR(s->frequency,0.2,1e-6,"pillager_outpost frequency 0.2 (jar legacy_type_1)"); CHECK_EQ_INT(s->exclusionCount,10,"pillager exclusion 10 (jar villages)"); CHECK(s->exclusionOther=="minecraft:village","pillager exclusion other villages"); }
+            if(auto s=mfind("minecraft:monument")){ CHECK(s->spread==SMStructureSet::Triangular,"monument triangular (jar)"); }
+            if(auto s=mfind("minecraft:mansion")){ CHECK(s->spread==SMStructureSet::Triangular,"mansion triangular (jar)"); }
+            if(auto s=mfind("minecraft:nether_complexes")){ int fw=0,bw=0; for(auto& pr: s->structures){ if(pr.first=="minecraft:fortress") fw=pr.second; if(pr.first=="minecraft:bastion_remnant") bw=pr.second; } CHECK_EQ_INT(fw,2,"fortress weight 2 (jar)"); CHECK_EQ_INT(bw,3,"bastion weight 3 (jar)"); }
+            if(auto s=mfind("minecraft:stronghold")){ CHECK(s->concentric.enabled,"stronghold concentric (jar)"); CHECK_EQ_INT(s->concentric.distance,32,"stronghold distance 32"); CHECK_EQ_INT(s->concentric.count,128,"stronghold count 128"); CHECK_EQ_INT(s->concentric.spread,3,"stronghold spread 3"); }
+            if(auto s=mfind("minecraft:buried_treasure")){ CHECK_NEAR(s->frequency,0.01,1e-6,"buried freq 0.01 (jar)"); CHECK_EQ_INT(s->locateOffsetX,9,"buried locate offset X 9 (jar)"); }
+            if(auto s=mfind("minecraft:mineshaft")){ CHECK_NEAR(s->frequency,0.004,1e-9,"mineshaft freq 0.004 (jar)"); }
+            // 34 vanilla structures (worldgen/structure/*.json, jar) each map to a set.
+            const char* structs34[] = {"minecraft:ancient_city","minecraft:bastion_remnant","minecraft:buried_treasure","minecraft:desert_pyramid","minecraft:end_city","minecraft:fortress","minecraft:igloo","minecraft:jungle_pyramid","minecraft:mansion","minecraft:mineshaft","minecraft:mineshaft_mesa","minecraft:monument","minecraft:nether_fossil","minecraft:ocean_ruin_cold","minecraft:ocean_ruin_warm","minecraft:pillager_outpost","minecraft:ruined_portal","minecraft:ruined_portal_desert","minecraft:ruined_portal_jungle","minecraft:ruined_portal_mountain","minecraft:ruined_portal_nether","minecraft:ruined_portal_ocean","minecraft:ruined_portal_swamp","minecraft:shipwreck","minecraft:shipwreck_beached","minecraft:stronghold","minecraft:swamp_hut","minecraft:trail_ruins","minecraft:trial_chambers","minecraft:village_desert","minecraft:village_plains","minecraft:village_savanna","minecraft:village_snowy","minecraft:village_taiga"};
+            const char* structSet34[] = {"ancient_city","nether_complexes","buried_treasure","desert_pyramid","end_city","nether_complexes","igloo","jungle_temple","mansion","mineshaft","mineshaft","monument","nether_fossil","ocean_ruins","ocean_ruins","pillager_outpost","ruined_portal","ruined_portal","ruined_portal","ruined_portal","ruined_portal","ruined_portal","ruined_portal","shipwreck","shipwreck","stronghold","swamp_hut","trail_ruins","trial_chambers","village","village","village","village","village"};
+            int unmapped = 0;
+            for (int i = 0; i < 34; ++i) {
+                std::string want = std::string("minecraft:") + structSet34[i];
+                bool ok = mfind(want.c_str()) != nullptr;
+                if (!ok) { ++unmapped; char buf[256]; std::snprintf(buf,sizeof buf,"structure %s -> set %s",structs34[i],want.c_str()); CHECK(false,buf); }
+            }
+            CHECK_EQ_INT(unmapped,0,"all 34 vanilla structures map to a set");
+        }
         // deterministic placement test: same seed same chunk => same origin
         StructureAt a = worldgen::structureAtChunk(*findSet("minecraft:village"), 12345, 0,0);
         StructureAt b = worldgen::structureAtChunk(*findSet("minecraft:village"), 12345, 0,0);
