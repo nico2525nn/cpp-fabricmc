@@ -190,12 +190,12 @@ void GameServer::spawnMob(MobKind kind, double x, double y, double z) {
         mob->health = MobEntity::slimeHealthForSize(mob->slimeSize);
     }
     // plan16: Horse variant random (vanilla HorseEntity random health 15-30, variant 0..34 = 7 colors *5 markings) — plan18 polish strict 35
+    // plan42 R2 E-10: deterministic randomizeHorseStats(worldSeed ^ pos) replaces rand():
+    // HP 15+rand(15) + speed 0.1125+rand*0.225 + jump 0.4+rand*0.6, synced via UpdateAttributes 0x7C.
     if (kind==MobKind::Horse) {
-        int color = rand() % 7; // 0..6
-        int marking = rand() % 5; // 0..4
-        mob->horseVariant = color * 5 + marking; // 0..34
-        mob->horseJumpStrength = 0.4f + (rand()/(float)RAND_MAX)*0.6f; // 0.4..1.0
-        mob->health = 15.0f + (rand() % 16); // 15..30 vanilla random
+        std::uint64_t hseed = cfg_.seed ^ (static_cast<std::uint64_t>(static_cast<std::int32_t>(std::floor(x)))<<32)
+            ^ static_cast<std::uint64_t>(static_cast<std::int32_t>(std::floor(z))) ^ (static_cast<std::uint64_t>(mob->entityId)*0x9E3779B97F4A7C15ULL);
+        mob->applyHorseStats(MobEntity::randomizeHorseStats(hseed));
     }
     // plan14 §4: VillagerData init (profession/level/type) — plan18 polish: NITWIT 1/12 random per Yarn VillagerProfession NITWIT
     if (kind==MobKind::Villager) {
@@ -240,6 +240,17 @@ void GameServer::broadcastMobSpawn(const MobEntity& mob) {
     b.varint(0); b.i16(0); b.i16(0); b.i16(0);
     broadcastPacketExcept(nullptr, pl::sc::SpawnEntity, b);
     sendEquipment(mob);
+    // plan42 R2 E-10: sync randomized horse attributes (MAX_HEALTH/MOVEMENT_SPEED/
+    // JUMP_STRENGTH) via UpdateAttributes 0x7C so clients see 15-30 HP, not the static default.
+    if (mob.kind == MobKind::Horse) {
+        AttributeManager am;
+        am.setBase(Attribute::MAX_HEALTH, mob.horseMaxHealth);
+        am.setBase(Attribute::MOVEMENT_SPEED, mob.horseMoveSpeed);
+        am.setBase(Attribute::JUMP_STRENGTH, mob.horseJumpStrength);
+        WriteBuffer ab;
+        am.writeUpdate(ab, mob.entityId);
+        broadcastPacketExcept(nullptr, pl::sc::UpdateAttributes, ab);
+    }
 }
 void GameServer::broadcastSetPassengersEmpty(std::int32_t vehicleId) {
     WriteBuffer b;

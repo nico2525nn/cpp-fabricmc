@@ -390,6 +390,34 @@ struct MobEntity {
     // plan16: horse variant random (color/markings/health 15-30) — plan17 §10 E11 strict horse variant 0..34 (color 7 * markings 5)
     int horseVariant = 0; // 0..34 variant (color 0..6 + markings 0..4), randomized on spawn
     float horseJumpStrength = 0.0f; // randomized jump
+    // plan42 R2 E-10: per-instance randomized horse attributes (vanilla HorseEntity.randomizeAttributes).
+    // mobStats(Horse) keeps the 30.f base default; live values come from randomizeHorseStats().
+    float horseMaxHealth = 30.f; // 15..30 after randomizeHorseStats
+    float horseMoveSpeed = 0.12f; // 0.1125..0.3375 after randomizeHorseStats
+    struct HorseStats { float maxHealth; float moveSpeed; float jumpStrength; int variant; };
+    // Deterministic splitmix64 stream: same seed => same stats (testable, no rand()).
+    static inline std::uint64_t horseSplitmix(std::uint64_t& s) {
+        std::uint64_t z = (s += 0x9E3779B97F4A7C15ULL);
+        z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+        z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+        return z ^ (z >> 31);
+    }
+    static inline HorseStats randomizeHorseStats(std::uint64_t seed) {
+        // vanilla: health 15+nextInt(15) (15..29, wiki documents 15..30),
+        // speed 0.1125+nextDouble*0.225, jump 0.4+nextDouble*0.6, variant 0..34
+        std::uint64_t s = seed ? seed : 0xC0FFEEULL;
+        HorseStats out;
+        out.maxHealth = 15.f + static_cast<float>(horseSplitmix(s) % 16); // 15..30
+        out.moveSpeed = 0.1125f + static_cast<float>(horseSplitmix(s) % 10000) / 10000.f * 0.225f;
+        out.jumpStrength = 0.4f + static_cast<float>(horseSplitmix(s) % 10000) / 10000.f * 0.6f;
+        out.variant = static_cast<int>(horseSplitmix(s) % 35); // 0..34 (7 colors x 5 markings)
+        return out;
+    }
+    void applyHorseStats(const HorseStats& st) {
+        horseMaxHealth = st.maxHealth; horseMoveSpeed = st.moveSpeed;
+        horseJumpStrength = st.jumpStrength; horseVariant = st.variant;
+        health = st.maxHealth;
+    }
     std::int32_t hurtCooldown = 0;
     std::int32_t onFireTicks = 0; // plan40 C-08 flame 100t
     std::int32_t leashHolder = -1;
@@ -481,12 +509,36 @@ struct MobEntity {
     std::int64_t allayDuplicateCooldown = 0;
     std::int64_t boggedPoisonCooldown = 0;
     std::int64_t slimeJumpCooldown = 0;
+    // plan42 R2 E-11: per-species state for the 19 new goals (fish/vex/brute/cure/spit/egg/stomp/drift/roll/projectile/fangs/crystal/tnt)
+    std::int64_t vexChargeCooldown = 0;
+    std::int64_t piglinBruteEnrageUntil = 0;
+    std::int64_t zombieVillagerCureUntil = 0;
+    std::int64_t skeletonHorseTrapCooldown = 0;
+    std::int64_t giantStompCooldown = 0;
+    std::int64_t llamaSpitCooldown = 0;
+    std::int64_t chickenLayCooldown = 0;
+    std::int64_t huskHungerCooldown = 0;
+    std::int64_t polarBearDefendUntil = 0;
+    std::int64_t pufferfishPuffUntil = 0;
+    std::int64_t evokerFangsSnapCooldown = 0;
+    std::int64_t endCrystalHoverPhase = 0;
+    std::int64_t tntFuseStartedAt = -1;
+    bool lightningStruck = false; // plan42 R2 E-11: one-shot flag for AmbientObjectGoal lightning strike
+    double projectileVx = 0, projectileVy = 0, projectileVz = 0; // plan42 R2 E-11: latched velocity for ProjectileFlyGoal
 
     static const char* kindName(MobKind k) { return mobStats(k).name; }
     static std::uint32_t typeId(MobKind k) {
         const auto& m = gen::entityTypeIdByName();
         auto it = m.find(kindName(k));
-        return it != m.end() ? it->second : 0;
+        if (it != m.end()) return it->second;
+        // plan42 R2 E-09: minecraft:boat is vanilla's abstract base (no registry id).
+        // BoatEntity defaults to the OAK variant, so resolve generic Boat to oak_boat's
+        // id instead of the accidental 0 (acacia_boat). kEntities 149 stays untouched.
+        if (k == MobKind::Boat) {
+            auto jt = m.find("minecraft:oak_boat");
+            if (jt != m.end()) return jt->second;
+        }
+        return 0;
     }
     static bool isHostile(MobKind k) { return mobStats(k).hostile; }
     static bool isBaby(const MobEntity& e) { return e.age < 0; }
@@ -497,6 +549,56 @@ struct MobEntity {
             || k==MobKind::PaleOakBoat || k==MobKind::BambooRaft || k==MobKind::OakChestBoat || k==MobKind::SpruceChestBoat
             || k==MobKind::BirchChestBoat || k==MobKind::JungleChestBoat || k==MobKind::AcaciaChestBoat || k==MobKind::DarkOakChestBoat
             || k==MobKind::MangroveChestBoat || k==MobKind::CherryChestBoat || k==MobKind::PaleOakChestBoat || k==MobKind::BambooChestRaft;
+    }
+    // plan42 R2 E-11: species movement-family groups for the group-default goals
+    // (FishSwim/Graze/BoatDrift/MinecartRoll/ProjectileFly/AmbientObject). Header-inline
+    // so both AiBrain goals and header-only tests share one definition.
+    static bool isFishKind(MobKind k) {
+        return k==MobKind::Cod || k==MobKind::Salmon || k==MobKind::TropicalFish
+            || k==MobKind::Pufferfish || k==MobKind::Tadpole
+            || k==MobKind::Squid || k==MobKind::GlowSquid;
+    }
+    static bool isGrazerKind(MobKind k) {
+        return k==MobKind::Horse || k==MobKind::Donkey || k==MobKind::Mule
+            || k==MobKind::Llama || k==MobKind::TraderLlama || k==MobKind::Cow
+            || k==MobKind::Sheep || k==MobKind::Mooshroom || k==MobKind::Pig
+            || k==MobKind::Rabbit || k==MobKind::ZombieHorse;
+    }
+    static bool isMinecartKind(MobKind k) {
+        return k==MobKind::Minecart || k==MobKind::ChestMinecart || k==MobKind::FurnaceMinecart
+            || k==MobKind::HopperMinecart || k==MobKind::CommandBlockMinecart
+            || k==MobKind::SpawnerMinecart || k==MobKind::TntMinecart;
+    }
+    static bool isProjectileKind(MobKind k) {
+        return k==MobKind::Arrow || k==MobKind::SpectralArrow || k==MobKind::Trident
+            || k==MobKind::Snowball || k==MobKind::Egg || k==MobKind::EnderPearl
+            || k==MobKind::Fireball || k==MobKind::SmallFireball || k==MobKind::DragonFireball
+            || k==MobKind::WindCharge || k==MobKind::BreezeWindCharge || k==MobKind::ShulkerBullet
+            || k==MobKind::LlamaSpit || k==MobKind::Potion || k==MobKind::ExperienceBottle
+            || k==MobKind::FireworkRocket || k==MobKind::FishingBobber || k==MobKind::EyeOfEnder
+            || k==MobKind::WitherSkull;
+    }
+    static bool isAmbientObjectKind(MobKind k) {
+        // non-living ticked objects with micro-behavior (AmbientObjectGoal);
+        // the 10 stationary display/marker kinds are NOT here (no AI by design).
+        return k==MobKind::ArmorStand || k==MobKind::ExperienceOrb || k==MobKind::FallingBlock
+            || k==MobKind::LightningBolt || k==MobKind::OminousItemSpawner || k==MobKind::Item;
+    }
+    // Union of the 21 plan42 goals' kind coverage (7 fish + 11 grazers + 21 boats +
+    // 7 minecarts + 19 projectiles + 6 ambient objects + 13 singles = 84 kinds).
+    static bool hasSpeciesGoal(MobKind k) {
+        if (isFishKind(k) || isGrazerKind(k) || isBoat(k) || isMinecartKind(k)
+            || isProjectileKind(k) || isAmbientObjectKind(k)) return true;
+        switch (k) {
+        case MobKind::Vex: case MobKind::Chicken: case MobKind::Husk:
+        case MobKind::PolarBear: case MobKind::EvokerFangs: case MobKind::EnderCrystal:
+        case MobKind::Tnt: case MobKind::ZombieVillager: case MobKind::ZombifiedPiglin:
+        case MobKind::SkeletonHorse: case MobKind::Giant: case MobKind::Bat:
+        case MobKind::PiglinBrute:
+            return true;
+        default: break;
+        }
+        return false;
     }
 
     struct Drop { std::uint32_t itemId; std::uint8_t count; };

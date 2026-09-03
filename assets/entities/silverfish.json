@@ -31,6 +31,10 @@
       {
         "type": "minecraft:look_at_player",
         "priority": 7
+      },
+      {
+        "type": "minecraft:silverfish_infest",
+        "priority": 2
       }
     ],
     "sensors": [

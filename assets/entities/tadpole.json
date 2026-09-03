@@ -1,0 +1,29 @@
+{
+  "type": "minecraft:tadpole",
+  "attributes": {
+    "max_health": 6.0,
+    "movement_speed": 0.09,
+    "attack_damage": 0.0
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:plains"
+    ],
+    "light_level": {
+      "max": 12
+    },
+    "weight": 8
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:swim_wander",
+        "priority": 5
+      }
+    ],
+    "sensors": [
+      "minecraft:nearest_players",
+      "minecraft:hurt_by"
+    ]
+  }
+}
