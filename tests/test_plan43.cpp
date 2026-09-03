@@ -15,6 +15,7 @@
 #include <chrono>
 #include <thread>
 #include <cmath>
+#include <unordered_set>
 
 using namespace cppfm;
 using namespace cpptest;
@@ -210,37 +211,21 @@ static std::int32_t summonHorseNear(TestClient& c, const char* who) {
     // NOTE: /summon takes NO position args (server spawns at player+(2,1,2));
     // extra tokens fail brigadier parse, so send the bare command.
     (void)who;
+    // snapshot known horse eids BEFORE summoning (a warm server answers in
+    // <ms; snapshotting after the send would swallow our own horse).
+    std::unordered_set<std::int32_t> known;
+    for (auto& s : c.spawns()) if (s.type == 63) known.insert(s.eid);
     c.sendChatCommand("summon minecraft:horse");
-    std::int32_t maxEid = -1;
-    for (auto& s : c.spawns()) maxEid = std::max(maxEid, s.eid);
     auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(6000);
     while (std::chrono::steady_clock::now() < deadline) {
         auto ss = c.spawns();
         std::int32_t found = -1;
         for (auto& s : ss)
-            if (s.type == 63 && s.eid > maxEid) found = s.eid; // newest horse birth wins
+            if (s.type == 63 && !known.count(s.eid)) found = s.eid; // newest birth wins
         if (found >= 0) return found;
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     return -1;
-}
-
-// BlockUpdate 0x09 at exact pos (placement proof)
-static bool waitBlockUpdateAt(TestClient& c, int x, int y, int z, int ms=5000) {
-    Packet p;
-    if (!c.waitFor([&](const Packet& q){ return q.id == proto::pl::sc::BlockUpdate; }, ms, &p))
-        return false;
-    // scan all recent BlockUpdates for the pos (first match may be older traffic)
-    std::lock_guard lk(c.mtx_public());
-    for (auto& q : c.recentPublic()) {
-        if (q.id != proto::pl::sc::BlockUpdate) continue;
-        try {
-            ReadBuffer in(q.body);
-            std::int32_t bx, by, bz; in.position(bx, by, bz);
-            if (bx == x && by == y && bz == z) return true;
-        } catch (...) {}
-    }
-    return false;
 }
 
 static bool waitCountGrow(TestClient& c, std::uint8_t id, std::size_t before, int ms) {
@@ -356,8 +341,10 @@ static void tSign(ServerProc& srv) {
     char cmd[128];
     snprintf(cmd, sizeof(cmd), "setblock %d %d %d minecraft:oak_sign", sx, sy, sz);
     c.sendChatCommand(cmd);
-    char msg[128]; snprintf(msg, sizeof(msg), "W-07 sign placed (BlockUpdate %d,%d,%d)", sx, sy, sz);
-    CHECK(waitBlockUpdateAt(c, sx, sy, sz), msg);
+    // placement proof: setblock chat feedback (BlockUpdate may arrive batched as
+    // MultiBlockChange, so the feedback string is the robust signal here)
+    char msg[128]; snprintf(msg, sizeof(msg), "W-07 sign placed (setblock %d,%d,%d ack)", sx, sy, sz);
+    CHECK(waitChat(c, "Changed the block", 8000), msg);
     const std::string lines[4] = {"P43-L1", "P43-L2", "P43-L3", "P43-L4"};
     c.sendSignUpdate(sx, sy, sz, true, lines);
     Packet p;
@@ -368,9 +355,15 @@ static void tSign(ServerProc& srv) {
         CHECK(raw.find("P43-L1") != std::string::npos, "W-07 0x07 carries line 1 text");
     } else CHECK(false, "W-07 0x07 carries line 1 text");
     c.close();
-    // relogin persistence: same offline uuid -> chunk resend must still carry the text
+    // relogin persistence: same offline uuid -> move to trigger chunk
+    // (re)stream (chunks only stream on movement), then the chunk-load 0x07
+    // resend must still carry the text
     TestClient d;
     CHECK(d.connect("127.0.0.1", srv.port) && d.join("P43Sign"), "W-07 relogin join");
+    for (int i = 0; i < 4; ++i) {
+        d.sendMovePlayerFlags(d.x, d.y, d.z, 0x01);
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    }
     bool persist = false;
     {
         auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(8000);

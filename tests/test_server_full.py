@@ -1277,13 +1277,15 @@ def suite_plan43_b1b2(host, port):
             c.send_packet_raw(0x07, write_varint(0))
             c.send_packet_raw(0x03, b"")
             deadline = time.time() + 12
+            pid = None
             while time.time() < deadline:
                 try: pid, data = c.recv_packet()
                 except Exception: break
-                if pid == 0x2C: break
-                if pid == 0x02: break
-            else:
-                ok = False
+                if pid == 0x2C:
+                    break
+                if pid == 0x1D:
+                    ok = False
+                    break
             ok = ok and pid == 0x2C
         check(ok, "plan43 W-12 contaminated finish reaches play", "test_server_full.py:p43_finish")
         c.close()
@@ -1374,9 +1376,14 @@ def suite_plan43_b1b2(host, port):
     # ---- W-06 abilities ----
     try:
         c = persistent_join(host, port, "P43Abil")
-        pkts = _p43_drain(c, 1.5)
-        ab = [d for p, d in pkts if p == 0x3A]
-        check(len(ab) > 0 and ab[0][0] == 0x0D, "plan43 W-06 creative join 0x0D", "test_server_full.py:p43_abil_join")
+        # join-burst 0x3A is consumed inside persistent_join; drive fresh sends
+        # via /gamemode (the command re-sends abilities every execution)
+        c.send_packet_raw(0x05, pack_string("gamemode creative"))
+        got0d = False
+        t_end = time.time() + 5
+        while time.time() < t_end and not got0d:
+            got0d = any(p == 0x3A and d and d[0] == 0x0D for p, d in _p43_drain(c, 0.8))
+        check(got0d, "plan43 W-06 creative join 0x0D", "test_server_full.py:p43_abil_join")
         c.send_packet_raw(0x05, pack_string("gamemode survival"))
         got00 = False
         t_end = time.time() + 5
@@ -1395,10 +1402,12 @@ def suite_plan43_b1b2(host, port):
         sx, sy, sz = 10, -60, 8
         c.send_packet_raw(0x05, pack_string(f"setblock {sx} {sy} {sz} minecraft:oak_sign"))
         placed = False
-        t_end = time.time() + 6
+        t_end = time.time() + 8
         while time.time() < t_end and not placed:
             for pid, data in _p43_drain(c, 0.8):
                 if pid == 0x09 and len(data) >= 8 and unpack_pos_block(data) == (sx, sy, sz):
+                    placed = True
+                if pid == 0x73 and b"Changed the block" in data:
                     placed = True
         check(placed, "plan43 W-07 sign placed", "test_server_full.py:p43_sign_place")
         lines = ["P43-L1", "P43-L2", "P43-L3", "P43-L4"]

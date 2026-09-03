@@ -290,9 +290,16 @@ void GameServer::initCommands() {
             ge.u8(4); ge.f32(static_cast<float>(m));
             try { src->conn->sendPacket(proto::pl::sc::GameEvent, ge); }
             catch (...) {}
-            // abilities follow the mode
+            // abilities follow the mode (plan43 W-06: same gamemode-linked
+            // flags as Session::sendAbilities — survival/adventure get 0x00,
+            // not the old hardcoded 0x01 invulnerable)
+            std::uint8_t af = 0;
+            if (m == 1) af |= 0x01 | 0x04 | 0x08;
+            else if (m == 3) af |= 0x02 | 0x04;
+            if (src->isFlying && !(af & 0x04)) src->isFlying = false;
+            if (src->isFlying) af |= 0x02;
             WriteBuffer ab;
-            ab.i8(m == 1 ? 0x01 | 0x04 | 0x08 : (m == 3 ? 0x01 | 0x08 : 0x01));
+            ab.i8(static_cast<std::int8_t>(af));
             ab.f32(0.05f); ab.f32(m == 1 ? 0.10f : 0.05f);
             try { src->conn->sendPacket(proto::pl::sc::Abilities, ab); } catch (...) {}
             sendFeedback(src, "Set own game mode to " + c.arg("mode").asStr());
@@ -310,8 +317,14 @@ void GameServer::initCommands() {
             for (auto& name : sel.playerNames)
                 if (Player* t = findPlayer(*this, name)) {
                     t->gamemode = static_cast<std::uint8_t>(m);
+                    // plan43 W-06: gamemode-linked flags (see self-target above)
+                    std::uint8_t taf = 0;
+                    if (m == 1) taf |= 0x01 | 0x04 | 0x08;
+                    else if (m == 3) taf |= 0x02 | 0x04;
+                    if (t->isFlying && !(taf & 0x04)) t->isFlying = false;
+                    if (t->isFlying) taf |= 0x02;
                     WriteBuffer ab;
-                    ab.i8(m == 1 ? 0x01 | 0x04 | 0x08 : (m == 3 ? 0x01 | 0x08 : 0x01));
+                    ab.i8(static_cast<std::int8_t>(taf));
                     ab.f32(0.05f); ab.f32(m == 1 ? 0.10f : 0.05f);
                     try { t->conn->sendPacket(proto::pl::sc::Abilities, ab); } catch (...) {}
                     ++count;

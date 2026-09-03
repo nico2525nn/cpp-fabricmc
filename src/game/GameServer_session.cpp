@@ -1015,7 +1015,12 @@ void Session::onTabComplete(ReadBuffer& in) {
         out = srv_.resolveSelector(raw, self_.get());
     };
 
-    const auto suggestions = srv_.commands().suggest(text, std::move(src));
+    // plan43 W-04: tab text is the raw chat-box content, including a leading
+    // '/' for commands; the brigadier tree matches bare literals, so strip one
+    // leading '/' for completion (start/length still count it, see below).
+    std::string query = text;
+    if (!query.empty() && query[0] == '/') query = query.substr(1);
+    const auto suggestions = srv_.commands().suggest(query, std::move(src));
 
     // Strict token start: replace only the current token, not whole line.
     // Vanilla CommandSuggestions range is [start, start+length) covering the token being completed.
@@ -1890,6 +1895,16 @@ void Session::sendChunk(std::int32_t cx, std::int32_t cz) {
         body = fresh;
     }
     conn_->sendPacketBuf(pl::sc::LevelChunkWithLight, *body);
+    // plan43 W-07: re-send sign BlockEntityData for signs in this chunk so a
+    // (re)login restores sign text (vanilla emits 0x07 per block entity on
+    // chunk load; edit-time resend alone does not survive chunk re-stream).
+    // forEach over all BEs per chunk is O(BE); BE counts are tiny in practice.
+    srv_.blockEntities().forEach([&](std::int64_t k, BlockEntity& be) {
+        if (be.kind != BlockEntity::Kind::Sign) return;
+        const std::int32_t bx = posKeyUnpackX(k), by = posKeyUnpackY(k), bz = posKeyUnpackZ(k);
+        if ((bx >> 4) != cx || (bz >> 4) != cz) return;
+        sendSignBlockEntity(bx, by, bz);
+    });
     sentChunks_.insert(chunkKey(cx, cz));
 }
 void Session::streamInitialChunks() {
@@ -4008,10 +4023,19 @@ void Session::onUseEntity(ReadBuffer& in) {
             // resolution stays a behavior refinement.
             (void)hand;
             // check shear and riding before trading
+            // plan43 W-02 deadlock fix: resolve the target under the lock, then
+            // act WITHOUT holding entsMtx_ — the actions below (mount broadcast,
+            // trading, breeding, shear drops) take the lock themselves, so holding
+            // it across them self-deadlocks the session thread (mount path hung
+            // every non-sneak horse interact with the socket left open).
+            std::shared_ptr<MobEntity> targetMob;
             {
                 std::lock_guard lk(srv_.entsMtx_);
-                for (auto& m : srv_.mobsForTest()) {
-                    if (m->entityId != target) continue;
+                for (auto& m : srv_.mobsForTest())
+                    if (m->entityId == target) { targetMob = m; break; }
+            }
+            if (targetMob) {
+                auto& m = targetMob;
                     // shear sheep
                     if (m->kind == MobKind::Sheep && !m->sheared) {
                         auto &held = self_->inv[36 + self_->heldSlot];
@@ -4090,9 +4114,7 @@ void Session::onUseEntity(ReadBuffer& in) {
                         tradingVillager_ = target;
                         openMenu_ = nullptr;
                     }
-                    break;
                 }
-            }
         } else {
             // plan43 W-02: mouse outside {0,1,2} is unreachable via vanilla —
             // consume defensively instead of guessing a field shape.
