@@ -14,5 +14,7 @@ NEXT_STEPS.md
 Testing/
 .VSCodeCounter/
 .vscode/
-.idea/banned-*.json
+.idea/
+banned-*.json
+ops.json
 ops.json
