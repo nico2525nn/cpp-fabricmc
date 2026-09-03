@@ -1037,6 +1037,38 @@ def suite_rcon(host, port, world_dir, rcon_port, rcon_pass):
         check(js is not None, "rcon: oversized frame does not crash server", "test_server_full.py:rcon_oversize")
     except Exception as e:
         check(False, f"rcon: oversize check threw {e}", "test_server_full.py:rcon_oversize_exc")
+    # plan46 §2 (O-09): 5 simultaneous RCON sessions — all commands answered
+    try:
+        import threading as _th
+        results=[]
+        def one_session(i):
+            try:
+                ok,body=rcon_client(host,rcon_port,rcon_pass,f"list sess{i}",timeout=4)
+                results.append((ok,body))
+            except Exception as e:
+                results.append((False,f"exc:{e}"))
+        ths=[_th.Thread(target=one_session,args=(i,)) for i in range(5)]
+        for t in ths: t.start()
+        for t in ths: t.join(timeout=10)
+        check(len(results)==5 and all(r[0] for r in results), f"rcon: 5 simultaneous sessions all answered ({len(results)}/5)", "test_server_full.py:rcon_multi5")
+    except Exception as e:
+        check(False, f"rcon: multi5 threw {e}", "test_server_full.py:rcon_multi5_exc")
+    # plan46 §2 (O-09): 10 consecutive wrong passwords — rejected, server alive
+    try:
+        rej=0
+        for i in range(10):
+            try:
+                ok,_=rcon_client(host,rcon_port,"wrongpass123", "list", timeout=3)
+                if not ok: rej+=1
+            except Exception:
+                rej+=1  # closed connection also counts as rejected
+        check(rej==10, f"rcon: 10x wrong password rejected ({rej}/10)", "test_server_full.py:rcon_wrong10")
+        js=wait_for_status(host,port,timeout=5)
+        check(js is not None, "rcon: server tick alive after auth flood", "test_server_full.py:rcon_tick_alive")
+        ok,_=rcon_client(host,rcon_port,rcon_pass,"list",timeout=3)
+        check(ok, "rcon: correct auth works after flood", "test_server_full.py:rcon_post_flood")
+    except Exception as e:
+        check(False, f"rcon: wrong10 threw {e}", "test_server_full.py:rcon_wrong10_exc")
 
 def suite_persistence(host, port, world_dir):
     print("\n[8] Persistence — edit survives restart")
@@ -1150,6 +1182,67 @@ def suite_persistence(host, port, world_dir):
         check(False, f"persist: reader threw {e}", "test_server_full.py:persist_exc")
 
 # ------------------------------------------------------------------ main
+def suite_restart_persist(binary, proc, host, port, world_dir, extra):
+    """plan46 §2 (O-10): ban/ops survive a full server restart (same worldDir+cwd)."""
+    print("\n[9] Restart persistence — ban/ops JSON survive restart")
+    try:
+        send_command_and_collect(host,port,"RestartAdmin","ban RestartVictim Banned across restart",timeout=1.5)
+        send_command_and_collect(host,port,"RestartOp","op RestartOp",timeout=1.5)
+        time.sleep(0.5)
+        ops_txt=Path("ops.json").read_text() if Path("ops.json").exists() else ""
+        bans_txt=Path("banned-players.json").read_text() if Path("banned-players.json").exists() else ""
+        check("RestartOp" in ops_txt, "restart: ops.json has RestartOp before restart", "test_server_full.py:restart_op_pre")
+        check("RestartVictim" in bans_txt, "restart: banned-players.json has RestartVictim before restart", "test_server_full.py:restart_ban_pre")
+    except Exception as e:
+        check(False, f"restart: pre-restart setup threw {e}", "test_server_full.py:restart_pre_exc")
+        return proc
+    try:
+        kill_server(proc)
+        time.sleep(1.0)
+        proc=launch_server(binary, port, world_dir, extra_args=extra)
+        host="127.0.0.1"
+        print(f"[info] restarted server pid {proc.pid} for restart-persist checks")
+    except Exception as e:
+        check(False, f"restart: relaunch threw {e}", "test_server_full.py:restart_relaunch_exc")
+        return proc
+    try:
+        ops_txt=Path("ops.json").read_text() if Path("ops.json").exists() else ""
+        bans_txt=Path("banned-players.json").read_text() if Path("banned-players.json").exists() else ""
+        check("RestartOp" in ops_txt, "restart: ops.json still has RestartOp after restart", "test_server_full.py:restart_op_post")
+        check("RestartVictim" in bans_txt, "restart: banned-players.json still has RestartVictim after restart", "test_server_full.py:restart_ban_post")
+    except Exception as e:
+        check(False, f"restart: post file check threw {e}", "test_server_full.py:restart_post_exc")
+    # banned victim must still be rejected at login
+    try:
+        c=Conn(host,port,timeout=8)
+        c.login("RestartVictim")
+        kicked=False
+        deadline=time.time()+8
+        while time.time()<deadline and not kicked:
+            try: pid,data=c.recv_packet()
+            except: break
+            if pid==0x1D: kicked=True; break
+        try: c.close()
+        except: pass
+        check(kicked, "restart: banned player still rejected after restart", "test_server_full.py:restart_ban_login")
+    except Exception as e:
+        # mcproto raises "kicked at login: ...You are banned..." when the server
+        # rejects during handshake — that IS the expected rejection (O-10).
+        msg=str(e)
+        check("kicked at login" in msg and "banned" in msg.lower(), f"restart: banned player still rejected after restart (via {msg[:60]})", "test_server_full.py:restart_ban_login")
+    # ops dynamic reflection: deop then op again without restart
+    try:
+        send_command_and_collect(host,port,"RestartAdmin","deop RestartOp",timeout=1.2)
+        time.sleep(0.3)
+        ops_txt=Path("ops.json").read_text() if Path("ops.json").exists() else ""
+        check("RestartOp" not in ops_txt, "restart: deop removes RestartOp live (dynamic)", "test_server_full.py:restart_deop")
+        send_command_and_collect(host,port,"RestartAdmin","op RestartOp",timeout=1.2)
+        time.sleep(0.3)
+        ops_txt=Path("ops.json").read_text() if Path("ops.json").exists() else ""
+        check("RestartOp" in ops_txt, "restart: op re-adds RestartOp live (dynamic)", "test_server_full.py:restart_reop")
+    except Exception as e:
+        check(False, f"restart: dynamic op threw {e}", "test_server_full.py:restart_dynop_exc")
+    return proc
 def pack_pos_block(x: int, y: int, z: int) -> bytes:
     v = ((x & 0x3FFFFFF) << 38) | ((z & 0x3FFFFFF) << 12) | (y & 0xFFF)
     return struct.pack(">Q", v)
@@ -1427,9 +1520,12 @@ def main():
     ap.add_argument("--binary", default="./build/cppfm", help="cppfm binary")
     ap.add_argument("--port", type=int, default=0, help="port 0=auto")
     ap.add_argument("--keep-running", action="store_true", help="do not kill server after")
+    ap.add_argument("--suites", default="", help="comma list to run subset (e.g. rcon,restart); default=all") # plan46 §2
     args=ap.parse_args()
 
     binary=str(args.binary)
+    _suites=set(s.strip() for s in str(args.suites).split(",") if s.strip())
+    def _run(name): return (not _suites) or (name in _suites)
     if not Path(binary).exists():
         # try build
         print(f"[info] binary {binary} missing, attempting build...")
@@ -1462,9 +1558,9 @@ def main():
         host="127.0.0.1"
         print(f"[info] server pid {proc.pid} ready")
 
-        suite_connection_flow(host, port)
-        suite_plan43_b1b2(host, port)
-        suite_commands(host, port, proc)
+        suite_connection_flow(host, port) if _run("conn") else None
+        suite_plan43_b1b2(host, port) if _run("plan43") else None
+        suite_commands(host, port, proc) if _run("commands") else None
         # ensure server still alive, restart if needed for remaining suites
         if not _is_server_alive(proc):
             print("[warn] server died during commands — restarting for remaining suites")
@@ -1477,12 +1573,13 @@ def main():
             except Exception as e:
                 print(f"[fatal] restart failed: {e}")
                 # continue with whatever we have
-        suite_permissions(host, port, world_dir)
-        suite_chat(host, port)
-        suite_datapack(host, port)
-        suite_stability(host, port)
-        suite_rcon(host, port, world_dir, rcon_port, rcon_pass)
-        suite_persistence(host, port, world_dir)
+        if _run("permissions"): suite_permissions(host, port, world_dir)
+        if _run("chat"): suite_chat(host, port)
+        if _run("datapack"): suite_datapack(host, port)
+        if _run("stability"): suite_stability(host, port)
+        if _run("rcon"): suite_rcon(host, port, world_dir, rcon_port, rcon_pass)
+        if _run("persistence"): suite_persistence(host, port, world_dir)
+        if _run("restart"): proc = suite_restart_persist(binary, proc, host, port, world_dir, extra)
 
     finally:
         try: os.chdir(orig_cwd_before)

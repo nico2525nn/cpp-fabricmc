@@ -138,13 +138,23 @@ bool WorldDataManager::saveLevelDataWithProviders(std::int64_t worldTicks, std::
     } catch (...) { return false; }
 }
 
-bool WorldDataManager::loadLevelData(World& world, std::string& difficultyOut,
+bool WorldDataManager::tryLoadFile(const std::string& path, World& world, std::string& difficultyOut,
                        double& borderDiameterOut, double& borderCXOut, double& borderCZOut,
                        double* borderLerpTargetOut, std::int64_t* borderLerpMsOut) {
     try {
-        nbt::Value root;
-        if (!loadRaw(root)) return false;
+        std::ifstream f(path, std::ios::binary);
+        if (!f) return false;
+        std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(f)),
+                                         std::istreambuf_iterator<char>());
+        if (bytes.empty()) return false;
+        ReadBuffer in(bytes);
+        nbt::Parser parser(in);
+        nbt::Value root = parser.readFileRoot();
         const auto* d = root.get("Data");
+        if (!d) return false;
+        // version check (DataFixerUpper-like bump, in-memory only)
+        checkAndFixVersion(root);
+        d = root.get("Data");
         if (!d) return false;
         if (const auto* sx = d->get("SpawnX"))
             if (const auto* sy = d->get("SpawnY"))
@@ -215,6 +225,75 @@ bool WorldDataManager::loadLevelData(World& world, std::string& difficultyOut,
         }
         return true;
     } catch (...) { return false; }
+}
+
+// plan46 §2 (O-07): 3-stage recovery. Never throws.
+bool WorldDataManager::loadWithRecovery(World& world, std::string& difficultyOut,
+                          double& borderDiameterOut, double& borderCXOut, double& borderCZOut,
+                          double* borderLerpTargetOut, std::int64_t* borderLerpMsOut,
+                          RecoveryResult& out) {
+    out = RecoveryResult{};
+    const std::string dat = dir_ + "/level.dat";
+    const std::string old = dir_ + "/level.dat_old";
+    char line[256];
+    if (tryLoadFile(dat, world, difficultyOut, borderDiameterOut, borderCXOut, borderCZOut,
+                    borderLerpTargetOut, borderLerpMsOut)) {
+        out.src = LevelSource::Dat;
+        out.ok = true;
+        std::snprintf(line, sizeof(line), "[recovery] level source=%s ok=1", levelSourceName(out.src));
+        out.logLines.emplace_back(line);
+        lastRecovery_ = out;
+        return true;
+    }
+    std::snprintf(line, sizeof(line), "[recovery] level.dat unreadable, trying level.dat_old");
+    out.logLines.emplace_back(line);
+    std::fprintf(stderr, "[cppfm] level.dat corrupt, trying level.dat_old\n");
+    if (tryLoadFile(old, world, difficultyOut, borderDiameterOut, borderCXOut, borderCZOut,
+                    borderLerpTargetOut, borderLerpMsOut)) {
+        out.src = LevelSource::DatOld;
+        out.ok = true;
+        std::snprintf(line, sizeof(line), "[recovery] level source=%s ok=1 (dat quarantined below)",
+                      levelSourceName(out.src));
+        out.logLines.emplace_back(line);
+        // preserve the corrupt level.dat for forensics (never overwrite-silent)
+        try {
+            if (std::filesystem::exists(dat)) {
+                std::error_code ec;
+                std::filesystem::rename(dat, dat + ".corrupt", ec);
+                if (!ec) {
+                    std::snprintf(line, sizeof(line), "[recovery] quarantined level.dat -> level.dat.corrupt");
+                    out.logLines.emplace_back(line);
+                }
+            }
+        } catch (...) {}
+        lastRecovery_ = out;
+        return true;
+    }
+    std::snprintf(line, sizeof(line), "[recovery] both level.dat and level.dat_old unreadable, generating fresh");
+    out.logLines.emplace_back(line);
+    std::fprintf(stderr, "[cppfm] both level.dat and _old unreadable, generating fresh\n");
+    try {
+        if (std::filesystem::exists(dat)) {
+            std::error_code ec;
+            std::filesystem::rename(dat, dat + ".corrupt", ec);
+        }
+        if (std::filesystem::exists(old)) {
+            std::error_code ec;
+            std::filesystem::rename(old, old + ".corrupt", ec);
+        }
+    } catch (...) {}
+    out.src = LevelSource::Fresh;
+    out.ok = false; // caller generates a fresh world
+    lastRecovery_ = out;
+    return false;
+}
+
+bool WorldDataManager::loadLevelData(World& world, std::string& difficultyOut,
+                       double& borderDiameterOut, double& borderCXOut, double& borderCZOut,
+                       double* borderLerpTargetOut, std::int64_t* borderLerpMsOut) {
+    RecoveryResult r;
+    return loadWithRecovery(world, difficultyOut, borderDiameterOut, borderCXOut, borderCZOut,
+                            borderLerpTargetOut, borderLerpMsOut, r);
 }
 
 } // namespace cppfm

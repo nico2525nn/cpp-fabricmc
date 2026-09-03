@@ -5,11 +5,30 @@
 #include <filesystem>
 #include <fstream>
 #include <cstdio>
+#include <vector>
 #include "../core/NBTValue.hpp"
 
 namespace cppfm {
 
 constexpr std::int32_t kCurrentDataVersion = 4189;
+
+// plan46 §2 (O-07 crash recovery): 3-stage level.dat load order, mirroring
+// vanilla LevelStorage (level.dat -> level.dat_old -> fresh generation).
+enum class LevelSource { Dat, DatOld, Fresh };
+struct RecoveryResult {
+    LevelSource src = LevelSource::Fresh;
+    bool ok = false;                       // true if a usable level was loaded
+    std::vector<std::string> logLines;     // human-readable startup log lines
+    std::vector<std::string> droppedChunks;      // filled by chunk-level recovery
+    std::vector<std::string> quarantinedPlayers; // filled by playerdata isolation
+};
+inline const char* levelSourceName(LevelSource s) {
+    switch (s) {
+        case LevelSource::Dat: return "level.dat";
+        case LevelSource::DatOld: return "level.dat_old";
+        default: return "fresh";
+    }
+}
 
 class WorldDataManager {
 public:
@@ -109,6 +128,20 @@ public:
                        double& borderDiameterOut, double& borderCXOut, double& borderCZOut,
                        double* borderLerpTargetOut = nullptr, std::int64_t* borderLerpMsOut = nullptr);
 
+    // plan46 §2 (O-07): single-file load attempt (no fallback). Returns false
+    // on missing/unparsable/incomplete file.
+    bool tryLoadFile(const std::string& path, class World& world, std::string& difficultyOut,
+                     double& borderDiameterOut, double& borderCXOut, double& borderCZOut,
+                     double* borderLerpTargetOut = nullptr, std::int64_t* borderLerpMsOut = nullptr);
+    // plan46 §2 (O-07): 3-stage recovery — level.dat -> level.dat_old ->
+    // fresh. Corrupt survivors are preserved as *.corrupt for forensics, never
+    // silently overwritten. Always fills `out` (O-07(c) explicit logging).
+    bool loadWithRecovery(class World& world, std::string& difficultyOut,
+                          double& borderDiameterOut, double& borderCXOut, double& borderCZOut,
+                          double* borderLerpTargetOut, std::int64_t* borderLerpMsOut,
+                          RecoveryResult& out);
+    const RecoveryResult& lastRecovery() const { return lastRecovery_; }
+
     // Raw load for testing: returns root
     bool loadRaw(nbt::Value& outRoot) const {
         try {
@@ -130,6 +163,7 @@ private:
     std::string dir_;
     std::function<void(nbt::Value&)> provide_;
     std::function<void(const nbt::Value&)> consume_;
+    RecoveryResult lastRecovery_;
 };
 
 } // namespace cppfm
