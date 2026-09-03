@@ -195,6 +195,18 @@ add_test(NAME plan43 COMMAND test_plan43 $<TARGET_FILE:cppfm>
          WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(plan43 PROPERTIES TIMEOUT 300)
 
+# plan46 §1 (O-13/W-14/W-16) flood/defense: unit (budgets/throttle/gate) +
+# live-server (fork cppfm, raw sockets + TestClient) A1–A8 scenarios.
+add_executable(test_flood_net
+    tests/TestClient.cpp
+    tests/test_flood_net.cpp
+    src/core/NBT.cpp)
+target_include_directories(test_flood_net PRIVATE src src/generated tests)
+target_link_libraries(test_flood_net PRIVATE Threads::Threads ZLIB::ZLIB OpenSSL::Crypto)
+add_test(NAME flood_net COMMAND test_flood_net $<TARGET_FILE:cppfm>
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(flood_net PROPERTIES TIMEOUT 300)
+
 add_executable(test_fuzz tests/test_fuzz.cpp
     src/core/NBT.cpp)
 target_include_directories(test_fuzz PRIVATE src src/generated)
