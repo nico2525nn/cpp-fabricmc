@@ -203,6 +203,27 @@ public: DrownedTridentGoal(): Goal(3) {}
 class VillagerScheduleGoal final : public Goal {
 public: VillagerScheduleGoal(): Goal(6) {}
     bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override;
+    // plan46 G-15: vanilla Villager §Schedules 10-activity mapping.
+    // Returns one of: sleep/work/gather/mingle/wander/play/idle/home/rest/core.
+    // work is tick 2000-9000 (wiki-confirmed); night 14000-24000+0-2000 is sleep.
+    // Pure (no server access) so unit tests can pin the table without AiBrain.cpp.
+    static const char* activityFor(int tod) {
+        int t = ((tod % 24000) + 24000) % 24000;
+        if (t < 2000) return "sleep";    // 0-2000 night tail
+        if (t < 9000) return "work";     // 2000-9000 work (Trading restock window)
+        if (t < 10000) return "gather";  // 9000-10000 midday gather
+        if (t < 11000) return "mingle";  // 10000-11000 gossip/mingle
+        if (t < 12000) return "wander";  // 11000-12000 wander
+        if (t < 12500) return "play";    // 12000-12500 babies play
+        if (t < 13000) return "idle";    // 12500-13000 dusk idle
+        if (t < 14000) return "home";    // 13000-14000 return home
+        if (t < 23000) return "sleep";   // 14000-23000 night sleep
+        return "rest";                   // 23000-24000 pre-dawn rest
+    }
+    static bool isWorkTime(int tod) {
+        int t = ((tod % 24000) + 24000) % 24000;
+        return t >= 2000 && t < 9000;
+    }
 };
 class PiglinBarterGoal final : public Goal {
 public: PiglinBarterGoal(): Goal(3) {}

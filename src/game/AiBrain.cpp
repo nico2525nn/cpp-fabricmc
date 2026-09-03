@@ -4,6 +4,7 @@
 #include "BehaviorTree.hpp"
 #include "GameServer.hpp"
 #include "MetadataTypes.hpp"
+#include "MobBehaviorSpec.hpp"
 #include "../proto/Ids.hpp"
 #include "../generated/BlockStates.hpp"
 
@@ -705,7 +706,10 @@ bool WitchPotionThrowGoal::shouldStart(MobEntity& m, AiContext& ctx) {
 bool WitchPotionThrowGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (m.kind != MobKind::Witch) return false;
     Player* t = ctx.nearestPlayer; if (!t) return false;
-    double dx=t->x - m.x, dz=t->z - m.z; double d2=dx*dx+dz*dz; if (d2>256) return false;
+    // plan46 G-06: interval/range single-sourced from MobBehaviorSpec (witch row).
+    const MobBehaviorSpec* wspec = mobBehaviorSpec(MobKind::Witch);
+    const double wrange = wspec ? wspec->rangeBlocks : 16.0;
+    double dx=t->x - m.x, dz=t->z - m.z; double d2=dx*dx+dz*dz; if (d2>wrange*wrange) return false;
     if (now < m.witchPotionCooldown) return false;
     double d=std::sqrt(d2)+1e-6;
     if (ctx.srv) {
@@ -723,7 +727,7 @@ bool WitchPotionThrowGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) 
             ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);
         }
     }
-    m.witchPotionCooldown = now + 40 + (rand()%20);
+    m.witchPotionCooldown = now + (wspec ? wspec->intervalTicks : 40) + (rand()%20);
     return true;
 }
 bool RavagerRoarGoal::shouldStart(MobEntity& m, AiContext& ctx) {
@@ -851,14 +855,16 @@ bool DrownedTridentGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
 bool VillagerScheduleGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (m.kind != MobKind::Villager && m.kind != MobKind::WanderingTrader) return false;
     int tod = (int)(ctx.srv ? ctx.srv->dayTime()%24000 : now%24000);
-    // work 0-12000 wander, gather 12000-18000, rest 18000-24000
-    if (tod < 12000) {
+    const char* act = activityFor(tod);
+    std::string a(act);
+    if (a == "work") {
         if (rand()%40==0 && ctx.srv) ctx.srv->broadcastSound("minecraft:entity.villager.work", m.x,m.y,m.z,0.5f,1.f,"neutral");
-    } else if (tod < 18000) {
-        // gather: move slowly
-        if (rand()%20==0){ double ang=rand()/(double)RAND_MAX*6.28; m.x+=std::cos(ang)*0.04; m.z+=std::sin(ang)*0.04; }
+    } else if (a == "gather" || a == "mingle" || a == "wander" || a == "play") {
+        // midday/afternoon movement: gather/mingle/play drift, wander wider
+        if (rand()%20==0){ double ang=rand()/(double)RAND_MAX*6.28; double st=(a=="wander"?0.08:0.04); m.x+=std::cos(ang)*st; m.z+=std::sin(ang)*st; }
+        if (a == "mingle" && rand()%60==0 && ctx.srv) ctx.srv->broadcastSound("minecraft:entity.villager.ambient", m.x,m.y,m.z,0.4f,1.f,"neutral");
     } else {
-        // rest: stay
+        // sleep/rest/home/idle: stay (restock tick already in mobsTick)
     }
     // restock tick already in mobsTick
     return true;
@@ -1098,14 +1104,17 @@ bool GuardianBeamGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(m.kind!=MobKind::Guardian && m.kind!=MobKind::ElderGuardian) return false;
     if(now < m.guardianBeamCooldown) return false;
     Player* t=ctx.nearestPlayer; if(!t) return false;
-    double dx=t->x-m.x, dz=t->z-m.z; double d=std::sqrt(dx*dx+dz*dz); if(d>15) return false;
+    // plan46 G-06: interval/range/magnitude single-sourced from MobBehaviorSpec.
+    const MobBehaviorSpec* gspec = mobBehaviorSpec(MobKind::Guardian);
+    const double grange = gspec ? gspec->rangeBlocks : 15.0;
+    double dx=t->x-m.x, dz=t->z-m.z; double d=std::sqrt(dx*dx+dz*dz); if(d>grange) return false;
     if(ctx.srv){
-        float dmg = (m.kind==MobKind::ElderGuardian?8.f:6.f);
+        float dmg = (m.kind==MobKind::ElderGuardian?8.f:(gspec ? (float)gspec->magnitude : 6.f));
         ctx.srv->applyDamage(*t, dmg, DamageSource::magic());
         ctx.srv->broadcastSound("minecraft:entity.guardian.attack", m.x,m.y,m.z,1.f,1.f,"hostile");
         ctx.srv->broadcastEntitySound(m.entityId, "minecraft:entity.guardian.attack", 1.f, 1.f, GameServer::SoundSource::Hostile);
     }
-    m.guardianBeamCooldown=now+60;
+    m.guardianBeamCooldown=now+(gspec ? gspec->intervalTicks : 60);
     return true;
 }
 bool SlimeSplitGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
