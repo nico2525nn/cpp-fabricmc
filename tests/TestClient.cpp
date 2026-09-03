@@ -611,8 +611,216 @@ void TestClient::sendUseEntity(std::int32_t entityId, int action, bool sneaking)
     }
     try { conn_->sendPacket(proto::pl::cs::UseEntity, b); } catch (...) {}
 }
-void TestClient::sendMoveVehicle(double x, double y, double z, float yaw, float pitch) {
+// plan43 B1+B2 spec-exact sends (Prismarine protocol.json 1.21.4 hand-built,
+// NOT copied from server WriteBuffer output — tautology guard).
+void TestClient::sendSignedCommand(const std::string& command, int nSignatures, std::uint8_t sigByte) {
     if (!conn_) return;
+    WriteBuffer b;
+    b.string(command);
+    b.i64(0); b.i64(0);                                  // timestamp, salt
+    b.varint(nSignatures);                               // argumentSignatures count (no boolean)
+    for (int i = 0; i < nSignatures; ++i) {
+        b.string("arg" + std::to_string(i));             // argumentName
+        std::vector<std::uint8_t> sig(256, sigByte);     // fixed 256B buffer
+        b.raw(sig.data(), sig.size());
+    }
+    b.varint(0);                                         // messageCount
+    const std::uint8_t ack[3] = {0, 0, 0};               // acknowledged[3]
+    b.raw(ack, 3);
+    try { conn_->sendPacket(proto::pl::cs::ChatCommandSigned, b); } catch (...) {}
+}
+void TestClient::sendTabComplete(std::int32_t transactionId, const std::string& text) {
+    if (!conn_) return;
+    WriteBuffer b;
+    b.varint(transactionId);
+    b.string(text);                                      // spec: 2 fields only, no trailing bool
+    try { conn_->sendPacket(proto::pl::cs::TabComplete, b); } catch (...) {}
+}
+void TestClient::sendMovePlayerFlags(double px, double py, double pz, std::uint8_t flags) {
+    x = px; y = py; z = pz;
+    if (!conn_) return;
+    WriteBuffer b;
+    b.f64(px); b.f64(py); b.f64(pz);
+    b.u8(flags);                                         // MovementFlags bitfield (bit0 onGround)
+    try { conn_->sendPacket(proto::pl::cs::MovePlayerPos, b); } catch (...) {}
+}
+void TestClient::sendMovePlayerPosRotFlags(double px, double py, double pz, float yaw, float pitch, std::uint8_t flags) {
+    x = px; y = py; z = pz;
+    if (!conn_) return;
+    WriteBuffer b;
+    b.f64(px); b.f64(py); b.f64(pz); b.f32(yaw); b.f32(pitch);
+    b.u8(flags);
+    try { conn_->sendPacket(proto::pl::cs::MovePlayerPosRot, b); } catch (...) {}
+}
+void TestClient::sendMovePlayerRotFlags(float yaw, float pitch, std::uint8_t flags) {
+    if (!conn_) return;
+    WriteBuffer b;
+    b.f32(yaw); b.f32(pitch);
+    b.u8(flags);
+    try { conn_->sendPacket(proto::pl::cs::MovePlayerRot, b); } catch (...) {}
+}
+void TestClient::sendFlyingFlags(std::uint8_t flags) {
+    if (!conn_) return;
+    WriteBuffer b;
+    b.u8(flags);
+    try { conn_->sendPacket(proto::pl::cs::MovePlayerStatusOnly, b); } catch (...) {}
+}
+void TestClient::sendUseEntityFull(std::int32_t target, int mouse, int hand, bool sneaking) {
+    if (!conn_) return;
+    WriteBuffer b;
+    b.varint(target);
+    b.varint(mouse);
+    if (mouse == 2) { b.f32(0.5f); b.f32(0.5f); b.f32(0.5f); }
+    if (mouse == 0 || mouse == 2) b.varint(hand);         // hand (0 main/1 off)
+    b.boolean(sneaking);                                 // trailing bool for ALL mouse kinds
+    try { conn_->sendPacket(proto::pl::cs::UseEntity, b); } catch (...) {}
+}
+void TestClient::sendAbilitiesFlags(std::int8_t flags) {
+    if (!conn_) return;
+    WriteBuffer b;
+    b.i8(flags);
+    try { conn_->sendPacket(0x26, b); } catch (...) {}    // cs packet_abilities (no Ids const yet)
+}
+void TestClient::sendSignUpdate(std::int32_t sx, std::int32_t sy, std::int32_t sz, bool front,
+                                const std::string lines[4]) {
+    if (!conn_) return;
+    WriteBuffer b;
+    b.position(sx, sy, sz);
+    b.boolean(front);
+    for (int i = 0; i < 4; ++i) b.string(lines[i]);
+    try { conn_->sendPacket(proto::pl::cs::UpdateSign, b); } catch (...) {}
+}
+void TestClient::sendRawPlay(std::uint8_t pid, const WriteBuffer& body) {
+    if (!conn_) return;
+    try { conn_->sendPacket(pid, body); } catch (...) {}
+}
+bool TestClient::joinWithFinishContamination(const std::string& name) {
+    // plan43 W-12: vanilla-style join that re-sends ClientInformation, Pong,
+    // ResourcePackResponse and SelectKnownPacks right BEFORE FinishAcknowledgement.
+    // Pre-fix server throws ("unexpected packet during finish-ack wait") -> join fails.
+    WriteBuffer hb;
+    hb.varint(proto::kProtocolVersion);
+    hb.string("127.0.0.1");
+    hb.u16(25565);
+    hb.varint(2);
+    conn_->sendPacket(proto::hb::cs::Intention, hb);
+    std::uint8_t uuid[16];
+    md5("OfflinePlayer:" + name, uuid);
+    WriteBuffer hello;
+    hello.string(name);
+    hello.uuid(uuid);
+    conn_->sendPacket(proto::lo::cs::Hello, hello);
+    bool sawSuccess = false;
+    for (int guard = 0; guard < 50 && !sawSuccess; ++guard) {
+        Packet p;
+        try { p.body = conn_->readFrame(); }
+        catch (const std::exception& e) { lastError = e.what(); return false; }
+        ReadBuffer in(p.body);
+        switch (in.u8()) {
+        case proto::lo::sc::SetCompression: conn_->setCompression(in.varint()); break;
+        case proto::lo::sc::GameProfile: sawSuccess = true; break;
+        default: lastError = "unexpected login packet"; return false;
+        }
+    }
+    if (!sawSuccess) { lastError = "no success"; return false; }
+    conn_->sendPacket(proto::lo::cs::LoginAcknowledged, {});
+    bool finishSeen = false;
+    for (int guard = 0; guard < 400 && !finishSeen; ++guard) {
+        Packet p;
+        try { p.body = conn_->readFrame(); }
+        catch (const std::exception& e) { lastError = e.what(); return false; }
+        ReadBuffer in(p.body);
+        switch (in.u8()) {
+        case proto::cf::sc::CustomPayload: in.string(); break;
+        case proto::cf::sc::SelectKnownPacks: {
+            const std::int32_t n = in.varint();
+            for (std::int32_t i = 0; i < n; ++i) { (void)in.string(); (void)in.string(); (void)in.string(); }
+            WriteBuffer reply; reply.varint(0);
+            conn_->sendPacket(proto::cf::cs::SelectKnownPacks, reply);
+            break;
+        }
+        case proto::cf::sc::KeepAlive: {
+            WriteBuffer echo; echo.raw(in.p + in.off, in.remaining());
+            conn_->sendPacket(proto::cf::cs::KeepAlive, echo);
+            break;
+        }
+        case proto::cf::sc::FinishConfiguration: finishSeen = true; break;
+        case proto::cf::sc::Disconnect: lastError = "kicked at config"; return false;
+        default: break;
+        }
+    }
+    if (!finishSeen) { lastError = "no finish_configuration"; return false; }
+    // --- contaminate the finish-ack wait, then ack ---
+    {   // ClientInformation resend (config 0x00 layout: locale/i8/varint/bool/u8/varint/bool/bool)
+        WriteBuffer s;
+        s.string("en_us"); s.i8(8); s.varint(0); s.boolean(true);
+        s.u8(0x7f); s.varint(0); s.boolean(false); s.boolean(true);
+        conn_->sendPacket(proto::cf::cs::ClientInformation, s);
+    }
+    { WriteBuffer p; p.i32(1234); conn_->sendPacket(proto::cf::cs::Pong, p); }
+    {   // ResourcePackResponse (uuid + result varint)
+        WriteBuffer r;
+        std::uint8_t z[16] = {};
+        r.uuid(z); r.varint(0);
+        conn_->sendPacket(proto::cf::cs::ResourcePackResponse, r);
+    }
+    { WriteBuffer k; k.varint(0); conn_->sendPacket(proto::cf::cs::SelectKnownPacks, k); }
+    conn_->sendPacket(proto::cf::cs::FinishAcknowledgement, {});
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(8000);
+    bool gotLogin = false;
+    while (!gotLogin && std::chrono::steady_clock::now() < deadline) {
+        Packet p;
+        try { p.body = conn_->readFrame(); }
+        catch (const std::exception& e) { lastError = std::string("post-finish: ") + e.what(); return false; }
+        ReadBuffer in(p.body);
+        p.id = in.u8();
+        if (p.id == proto::pl::sc::KeepAlive) respondKeepAlive(in.i64());
+        if (p.id == proto::pl::sc::Disconnect) { lastError = "kicked at play-enter"; return false; }
+        handleIncoming(p.id, std::vector<std::uint8_t>(in.p + in.off, in.p + in.len));
+        gotLogin = count(proto::pl::sc::Login) > 0;
+    }
+    if (!gotLogin) { lastError = "no join game after contaminated finish"; return false; }
+    running_ = true;
+    reader_ = std::thread([this]{ readerLoop(); });
+    return true;
+}
+bool TestClient::waitSuggestions(std::int32_t transactionId, SuggestionsResp& out, int timeoutMs) {
+    Packet p;
+    if (!waitFor([&](const Packet& q){ return q.id == proto::pl::sc::CommandSuggestions; }, timeoutMs, &p))
+        return false;
+    try {
+        ReadBuffer in(p.body);
+        out.transactionId = in.varint();
+        out.start = in.varint();
+        out.length = in.varint();
+        const auto n = in.varint();
+        for (std::int32_t i = 0; i < n; ++i) {
+            Suggestion s; s.match = in.string(32767);
+            (void)in.boolean();                          // tooltip present=false
+            out.matches.push_back(std::move(s));
+        }
+    } catch (...) { return false; }
+    return out.transactionId == transactionId;
+}
+std::vector<TestClient::Spawned> TestClient::spawns() const {
+    std::lock_guard lk(mtx_);
+    std::vector<Spawned> out;
+    for (auto& p : recent_) {
+        if (p.id != proto::pl::sc::SpawnEntity) continue;
+        try {
+            ReadBuffer in(p.body);
+            Spawned s;
+            s.eid = in.varint();
+            (void)in.bytes(16);
+            s.type = in.varint();
+            (void)in.varint();                           // type id
+            s.x = in.f64(); s.y = in.f64(); s.z = in.f64();
+            out.push_back(s);
+        } catch (...) {}
+    }
+    return out;
+}
+void TestClient::sendMoveVehicle(double x, double y, double z, float yaw, float pitch) {    if (!conn_) return;
     WriteBuffer b;
     b.f64(x); b.f64(y); b.f64(z);
     b.f32(yaw); b.f32(pitch);
