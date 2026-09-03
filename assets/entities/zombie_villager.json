@@ -1,0 +1,41 @@
+{
+  "type": "minecraft:zombie_villager",
+  "attributes": {
+    "max_health": 20.0,
+    "movement_speed": 0.085,
+    "attack_damage": 3.0
+  },
+  "spawning": {
+    "biomes": [
+      "minecraft:plains"
+    ],
+    "light_level": {
+      "max": 7
+    },
+    "weight": 5
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:cure_shake",
+        "priority": 2
+      },
+      {
+        "type": "minecraft:melee_attack",
+        "priority": 3
+      },
+      {
+        "type": "minecraft:wander",
+        "priority": 6
+      },
+      {
+        "type": "minecraft:look_at_player",
+        "priority": 7
+      }
+    ],
+    "sensors": [
+      "minecraft:nearest_players",
+      "minecraft:hurt_by"
+    ]
+  }
+}

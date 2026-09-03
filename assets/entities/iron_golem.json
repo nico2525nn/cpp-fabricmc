@@ -14,11 +14,26 @@
   },
   "brain": {
     "behaviors": [
-      { "type": "minecraft:melee_attack", "priority": 2 },
-      { "type": "minecraft:wander", "priority": 6 },
-      { "type": "minecraft:look_at_player", "priority": 7 }
+      {
+        "type": "minecraft:melee_attack",
+        "priority": 2
+      },
+      {
+        "type": "minecraft:wander",
+        "priority": 6
+      },
+      {
+        "type": "minecraft:look_at_player",
+        "priority": 7
+      },
+      {
+        "type": "minecraft:defend_village",
+        "priority": 2
+      }
     ],
-    "sensors": ["minecraft:nearest_players"]
+    "sensors": [
+      "minecraft:nearest_players"
+    ]
   },
   "equipment": {
     "mainhand": "minecraft:poppy"

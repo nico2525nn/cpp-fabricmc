@@ -1,0 +1,23 @@
+{
+  "type": "minecraft:experience_orb",
+  "attributes": {
+    "max_health": 10.0,
+    "movement_speed": 0.1,
+    "attack_damage": 0.0
+  },
+  "spawning": {
+    "biomes": [],
+    "weight": 0
+  },
+  "brain": {
+    "behaviors": [
+      {
+        "type": "minecraft:xp_magnet",
+        "priority": 5
+      }
+    ],
+    "sensors": [
+      "minecraft:nearest_players"
+    ]
+  }
+}
