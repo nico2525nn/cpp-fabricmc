@@ -1,0 +1,22 @@
+{
+  "name": "minecraft:nether_fossil_3",
+  "type": "minecraft:nether_fossil",
+  "placement": {
+    "spacing": 2,
+    "separation": 1,
+    "salt": 14357923,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:fossil/spine_3",
+      "weight": 8
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:bone_block",
+    "log": "minecraft:quartz_block",
+    "glass": "minecraft:air",
+    "chest": "minecraft:chest"
+  }
+}

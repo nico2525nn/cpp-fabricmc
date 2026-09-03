@@ -1775,6 +1775,10 @@ void Session::sendSystemText(const std::string& text) {
 }
 void Session::sendChunk(std::int32_t cx, std::int32_t cz) {
     static const std::uint32_t biomeIdx = srv_.data().biomeIndex(srv_.config().worldBiome);
+    // plan42 R2 (E-13): warm the async RegionFile read path (ioPool_ ThreadPool 4).
+    // Ready futures are installed into the world by the tick thread via
+    // pollPendingLoads(); the sync generate below remains the fallback.
+    srv_.demandChunkAsync(cx, cz);
     GameServer::ChunkBodyRef body;
     if (!srv_.getCachedChunk(cx, cz, biomeIdx, body)) {
         auto fresh = std::make_shared<const std::vector<std::uint8_t>>([&]{

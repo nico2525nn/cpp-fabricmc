@@ -1,0 +1,53 @@
+{
+  "name": "minecraft:bastion_roof",
+  "type": "minecraft:bastion_remnant",
+  "placement": {
+    "spacing": 27,
+    "separation": 4,
+    "salt": 30084238,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:bastion/roof",
+      "weight": 7
+    },
+    {
+      "name": "minecraft:bastion/roof_tower",
+      "weight": 4
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:blackstone",
+    "log": "minecraft:polished_blackstone",
+    "glass": "minecraft:air",
+    "chest": "minecraft:chest",
+    "gold": "minecraft:gold_block"
+  },
+  "mobs": [
+    {
+      "pos": [
+        3,
+        1,
+        3
+      ],
+      "mob": "minecraft:piglin",
+      "count": 2
+    },
+    {
+      "pos": [
+        5,
+        1,
+        5
+      ],
+      "mob": "minecraft:hoglin",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "3,1,3",
+      "table": "minecraft:chests/bastion_bridge"
+    }
+  ]
+}
