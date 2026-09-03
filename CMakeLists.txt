@@ -233,6 +233,13 @@ target_link_libraries(test_gameplay_full PRIVATE ZLIB::ZLIB OpenSSL::Crypto)
 add_test(NAME gameplay_full COMMAND test_gameplay_full)
 set_tests_properties(gameplay_full PROPERTIES TIMEOUT 60)
 
+# plan45 G-11 — seed parity L1/L2 (independent Python hand-calc + determinism)
+add_executable(test_seed_parity tests/test_seed_parity.cpp
+    src/worldgen/DensityFunction.cpp src/worldgen/MultiNoise.cpp src/worldgen/Structures.cpp src/worldgen/StructurePlacer.cpp src/worldgen/StructureManager.cpp)
+target_include_directories(test_seed_parity PRIVATE src src/generated)
+add_test(NAME seed_parity COMMAND test_seed_parity)
+set_tests_properties(seed_parity PROPERTIES TIMEOUT 120)
+
 # plan44 G-02/G-03 — hardness 1095 lock + mining calculator (generated worktree)
 add_executable(test_block_hardness_full tests/test_block_hardness_full.cpp)
 target_include_directories(test_block_hardness_full PRIVATE src tests)

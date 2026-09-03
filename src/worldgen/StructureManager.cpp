@@ -61,7 +61,21 @@ StructureManager::StructureManager(std::uint64_t seed, std::shared_ptr<MultiNois
 
 void StructureManager::ensureDefaults() {
     if (!sets_.empty()) return;
-    // 20 sets per plan33 §4 wiki Structure set table (spacing, separation, salt, spread, frequency, maxHoriz)
+    // 20 sets, jar-verified against vanilla 1.21.4 client
+    // data/minecraft/worldgen/structure_set/*.json (exactly 20 files;
+    // set ids are plural there, e.g. "villages" — ours keep the plan33
+    // singular統合名 and map 1:1, see docs/PROTOCOL_NOTES.md G-11 table).
+    // Verified values: villages 34/8/10387312 (5 structures), pillager
+    // 32/8/165745296 freq 0.2, desert_pyramids 32/8/14357617, jungle
+    // 32/8/14357619 (structure minecraft:jungle_pyramid), swamp 32/8/14357620,
+    // igloos 32/8/14357618, monuments 32/5/10387313 triangular, mansions
+    // 80/20/10387319 triangular, ruined_portals 40/15/34222645 (7 structures),
+    // shipwrecks 24/4/165745295 (2), ocean_ruins 20/8/14357621 (cold+warm),
+    // buried 1/0/0 freq 0.01, mineshafts 1/0/0 freq 0.004 (2 structures),
+    // strongholds concentric 32/128/3, ancient 24/8/20083232, trail 34/8/
+    // 83469867, trial 34/12/94251327, nether_complexes 27/4/30084232
+    // (fortress w2 / bastion_remnant w3), nether_fossils 2/1/14357921,
+    // end_cities 20/11/10387313 triangular.
     SMStructureSet stronghold;
     stronghold.name = "minecraft:stronghold";
     stronghold.spacing = 32; stronghold.separation = 0; stronghold.salt = 0;
@@ -97,6 +111,11 @@ void StructureManager::ensureDefaults() {
     // adjust mansion/monument to triangular
     for (auto& s : sets_) {
         if (s.name == "minecraft:monument" || s.name == "minecraft:mansion") s.spread = SMStructureSet::Triangular;
+        // plan45 G-11 (jar-verified vanilla 1.21.4 structure_set/*.json):
+        // end_cities.json has "spread_type": "triangular".
+        if (s.name == "minecraft:end_city") s.spread = SMStructureSet::Triangular;
+        // pillager_outposts.json has "frequency": 0.2 (legacy_type_1).
+        if (s.name == "minecraft:pillager_outpost") s.frequency = 0.2;
         if (s.name == "minecraft:trial_chambers") { s.maxHoriz = 5; s.maxVert = 12; }
         if (s.name == "minecraft:monument") { s.maxHoriz = 4; s.maxVert = 8; }
         if (s.name == "minecraft:mansion") { s.maxHoriz = 3; s.maxVert = 12; }
@@ -108,9 +127,10 @@ void StructureManager::ensureDefaults() {
         if (s.name == "minecraft:trail_ruins") s.maxHoriz = 3;
         if (s.name == "minecraft:nether_complexes") s.maxHoriz = 3;
     }
-    // nether_complexes weight 40/60
+    // nether_complexes weight fortress 2 / bastion_remnant 3 (jar-verified
+    // nether_complexes.json structures[] weights; ratio 40/60 as before).
     for (auto& s : sets_) if (s.name == "minecraft:nether_complexes") {
-        s.structures = {{"minecraft:fortress",40},{"minecraft:bastion_remnant",60}};
+        s.structures = {{"minecraft:fortress",2},{"minecraft:bastion_remnant",3}};
     }
     // verify size 20
 }
@@ -1179,7 +1199,7 @@ void StructureManager::generate(Chunk& chunk, std::int32_t cx,
             ruinedPortalPiece(chunk, cx, cz, at.originX, at.originZ, ground);
         else if (name.find("shipwreck") != std::string::npos)
             shipwreckPiece(chunk, cx, cz, at.originX, at.originZ, ground);
-        else if (name.find("ocean_ruins") != std::string::npos)
+        else if (name.find("ocean_ruins") != std::string::npos || name.find("ocean_ruin_") != std::string::npos)
             oceanRuinsPiece(chunk, cx, cz, at.originX, at.originZ, ground);
         else if (name.find("nether_fossil") != std::string::npos)
             netherFossilPiece(chunk, cx, cz, at.originX, at.originZ, ground);
