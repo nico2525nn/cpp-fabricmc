@@ -75,6 +75,7 @@
 - 同一worktreeで2つのエージェントを同時に動かさない。
 - 研究が終わる前に実装を開始しない。
 - `plan/*.md` を `git add -f` で追跡しない (無視のまま)。
+- **曖昧な `pkill` は禁止** (2026-09-03 事故: `pkill -9 c++` が「c」を含む全プロセスを kill)。`pkill` は完全名 (`pkill -x cppfm`) または明確なフルコマンドパターン (`pkill -9 -f "cppfm --port"`) のみ。kill 前に対象確認 (`pgrep -a`) を必ず行うこと。
 
 ## 4. Plan Numbering
 
