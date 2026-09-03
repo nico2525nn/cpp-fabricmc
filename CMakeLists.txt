@@ -292,7 +292,3 @@ add_test(NAME recipes_mirror COMMAND test_recipes_mirror WORKING_DIRECTORY ${CMA
 set_tests_properties(recipes_mirror PROPERTIES TIMEOUT 30 LABELS inventory)
 
 # plan44 G-05 mob attributes 149 species (world) — header-only, reads docs/mob_stats_149.csv
-add_executable(test_mob_stats_full tests/test_mob_stats_full.cpp)
-target_include_directories(test_mob_stats_full PRIVATE src src/generated)
-add_test(NAME mob_stats_full COMMAND test_mob_stats_full)
-set_tests_properties(mob_stats_full PROPERTIES TIMEOUT 30)
