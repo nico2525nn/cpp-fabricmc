@@ -54,6 +54,23 @@ public:
             if (fd_ >= 0) { ::shutdown(fd_, SHUT_RDWR); ::close(fd_); fd_ = -1; }
         } catch (...) {}
     }
+    // plan42 R3: abortive close (RST) for kicks — a graceful FIN lets the
+    // peer's next send() succeed once, so kick tests observe a live socket.
+    // Call only after the Disconnect packet has been flushed + a short grace
+    // delay so the peer can read it first.
+    void abort() noexcept {
+        try {
+            std::lock_guard lk(tx_);
+            if (fd_ >= 0) {
+                // FIN first (reliably delivered/retransmitted), then RST.
+                ::shutdown(fd_, SHUT_RDWR);
+                struct linger l{};
+                l.l_onoff = 1; l.l_linger = 0;
+                ::setsockopt(fd_, SOL_SOCKET, SO_LINGER, &l, sizeof(l));
+                ::close(fd_); fd_ = -1;
+            }
+        } catch (...) {}
+    }
     void setNoDelay() {
         int one = 1;
         setsockopt(fd_, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));

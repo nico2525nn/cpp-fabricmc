@@ -2728,8 +2728,13 @@ void GameServer::initCommands() {
             datapackManager_.loadAll(recipes_, "assets/data", cfg_.worldDir + "/datapacks");
             tagManager_ = datapackManager_.tagManager;
             lootTables_ = datapackManager_.lootTables;
-            cachedMergedAdv_.clear();
-            cachedAdvRawSize_ = 0;
+            {
+                // plan42 R3: invalidate the merged-advancement cache under the
+                // same mutex its readers use (see getMergedAdvancements).
+                std::lock_guard lk(advMergeMtx_);
+                cachedMergedAdv_.clear();
+                cachedAdvRawSize_ = 0;
+            }
             for (auto& pp : playersSnapshot()) if (pp->inPlay) sendAdvancementsTo(*pp, true);
             sendFeedback(src, "Reload complete");
             return 1;
@@ -4597,7 +4602,7 @@ void GameServer::initCommands() {
             std::string name = c.arg("targets").asStr();
             bool removed = ops_.erase(name) > 0;
             if (removed) saveOps();
-            sendFeedback(src, removed ? ("De-opped " + name) : (name + " is not opped"));
+            sendFeedback(src, removed ? ("De-opped " + name) : ("De-op failed: " + name + " is not opped"));
             return removed ? 1 : 0;
         };
         deop->then(deopTargets);

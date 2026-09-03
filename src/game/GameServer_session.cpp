@@ -256,7 +256,21 @@ void Session::handleLogin() {
     ReadBuffer in(frame);
     if (in.u8() != lo::cs::Hello) throw std::runtime_error("expected login hello");
 
-    self_->name = in.string(16);
+    self_->name = [this, &in]{
+        try {
+            return in.string(16);
+        } catch (const std::exception&) {
+            // plan42 R3: vanilla disconnects overlong/invalid names with a
+            // LoginDisconnect (test_server_full whitelist guest uses an
+            // 18-char name) instead of dropping the session silently.
+            WriteBuffer kick;
+            nbt::writeTextComponent(kick, "Invalid username");
+            try { conn_->sendPacket(proto::lo::sc::Disconnect, kick); } catch (...) {}
+            state_ = State::Done;
+            return std::string{};
+        }
+    }();
+    if (state_ == State::Done) return;
 
     auto uuidBytes = in.bytes(16);
     std::copy(uuidBytes.begin(), uuidBytes.end(), self_->uuid.begin());
@@ -580,7 +594,7 @@ packsDone:
     }
 }
 void Session::onEnterPlay() {
-    self_->conn = conn_.get();
+    self_->conn = conn_;
     self_->entityId = srv_.nextEntityId();
     self_->lastSeenMs = nowMs();
 
@@ -2556,7 +2570,23 @@ void Session::dispatchCommand(const std::string& line) {
         out = srv_.resolveSelector(raw, self_.get());
     };
 
-    const auto res = srv_.commands().execute(line, std::move(src));
+    const auto res = [&]{
+        try {
+            return srv_.commands().execute(line, std::move(src));
+        } catch (const std::exception& e) {
+            // plan42 R3 crash-hardening: never let a command kill the session
+            // (or the process via a non-std exception); report as error chat.
+            brigadier::ExecutionResult r;
+            r.ok = false;
+            r.errorText = std::string("Error: ") + e.what();
+            return r;
+        } catch (...) {
+            brigadier::ExecutionResult r;
+            r.ok = false;
+            r.errorText = "Error: internal command failure";
+            return r;
+        }
+    }();
     if (!res.ok)
         sendSystemText("\u00a7c" + (res.errorText.empty()
                           ? "Incorrect argument for command"
