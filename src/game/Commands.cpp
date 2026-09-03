@@ -2,6 +2,7 @@
 // "Brigadier完全移植"). All commands are registered on a real CommandNode
 // tree, parsed by the dispatcher and advertised via declare_commands.
 #include "GameServer.hpp"
+#include "Messages.hpp"
 #include "Particles.hpp"
 #include "../generated/EntityIds.hpp"
 #include "../generated/BlockStates.hpp"
@@ -183,6 +184,13 @@ static void sendFeedback(Player* p, const std::string& msg) {
 
 // ------------------------------------------------------------ registration --
 
+// Recipe-book UpdateRecipes SlotDisplay writer: varint presence (2 = item)
+// + item id. Single truth (was a lambda inside the recipe block, used 10x).
+static void writeSlotDisplayItem(WriteBuffer& bb, std::uint32_t itemId) {
+    bb.varint(itemId ? 2 : 0);
+    if (itemId) bb.varint(static_cast<std::int32_t>(itemId));
+}
+
 void GameServer::initCommands() {
     using NodePtr = brigadier::NodePtr;
     auto& d = commands_;
@@ -204,9 +212,9 @@ void GameServer::initCommands() {
         n->executable = true;
         n->action = [this](CommandContext& c) {
             Player* p = static_cast<Player*>(c.source.player);
-            sendFeedback(p, "\u00a77Commands: /help /ping /gamemode /give /time "
+            sendFeedback(p, (msg::kGray + "Commands: /help /ping /gamemode /give /time "
                             "/tp /kill /list /say /seed /gamerule /effect /xp "
-                            "/setblock /summon /clear /spawnpoint /kick");
+                            "/setblock /summon /clear /spawnpoint /kick"));
             return 1;
         };
         d.root->then(n);
@@ -219,8 +227,8 @@ void GameServer::initCommands() {
             Player* p = static_cast<Player*>(c.source.player);
             std::string names;
             for (auto& pl : playersSnapshot()) names += pl->name + " ";
-            sendFeedback(p, "\u00a77Players online (" +
-                         std::to_string(playerCount()) + "): " + names);
+            sendFeedback(p, (msg::kGray + "Players online (" +
+                         std::to_string(playerCount()) + "): " + names));
             return playerCount();
         };
         d.root->then(n);
@@ -242,7 +250,7 @@ void GameServer::initCommands() {
         auto msg = CommandNode::argument("message", args::stringGreedy());
         msg->executable = true;
         msg->action = [this](CommandContext& c) {
-            broadcastSystemText("\u00a7d[Server] " + c.arg("message").asStr());
+            broadcastSystemText((msg::kPink + "[Server] " + c.arg("message").asStr()));
             return 1;
         };
         say->then(msg);
@@ -365,18 +373,18 @@ void GameServer::initCommands() {
                         toGive.components.emplace_back(36, std::vector<uint8_t>(tmp.data.begin(), tmp.data.end()));
                         toGive.count = 1;
                         bool placed=false;
-                        for(int i: {36,37,38,39,40,41,42,43,44,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35}){
+                        for(int i: kMainInventoryOrder){
                             auto &s = t->inv[i];
                             if (s.empty()) { s = toGive; placed=true; break; }
                         }
                         if(!placed) { addToInventory(*t, toGive.itemId, 1); // fallback add without map_id already handled via inventory scan
-                            for(int i: {36,37,38,39,40,41,42,43,44,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35}) if(!t->inv[i].empty() && t->inv[i].itemId==toGive.itemId) { t->inv[i]=toGive; break; }
+                            for(int i: kMainInventoryOrder) if(!t->inv[i].empty() && t->inv[i].itemId==toGive.itemId) { t->inv[i]=toGive; break; }
                         }
                         resendInventory(*t);
                         sendMapData(*t, mapId);
                     } else {
                         bool placed=false;
-                        for(int i: {36,37,38,39,40,41,42,43,44,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35}){
+                        for(int i: kMainInventoryOrder){
                             auto &s = t->inv[i];
                             if (s.empty()) { s = toGive; placed=true; break; }
                         }
@@ -434,7 +442,7 @@ void GameServer::initCommands() {
                             toGive.components.emplace_back(36, std::vector<uint8_t>(tmp.data.begin(), tmp.data.end()));
                         }
                         bool placed=false;
-                        for(int i: {36,37,38,39,40,41,42,43,44,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35}){
+                        for(int i: kMainInventoryOrder){
                             auto &s = t->inv[i];
                             if (s.empty()) { s = toGive; placed=true; break; }
                         }
@@ -470,7 +478,7 @@ void GameServer::initCommands() {
             else if (v == "midnight") t = 18000;
             else throw std::runtime_error("unknown time of day");
             setTimeOfDay(t);
-            broadcastSystemText("\u00a77Time set to " + v);
+            broadcastSystemText((msg::kGray + "Time set to " + v));
             return 1;
         };
         auto ticks = CommandNode::argument("ticks", args::integer(0, 24000));
@@ -566,9 +574,9 @@ void GameServer::initCommands() {
         rule->action = [this](CommandContext& c) {
             Player* src = static_cast<Player*>(c.source.player);
             const std::string r = c.arg("rule").asStr();
-            if (!gamerules_.contains(r)) { sendFeedback(src, "\u00a7cUnknown gamerule: " + r); return 0; }
+            if (!gamerules_.contains(r)) { sendFeedback(src, (msg::kRed + "Unknown gamerule: " + r)); return 0; }
             std::string cur = gamerules_.get(r);
-            sendFeedback(src, "\u00a77" + r + " = " + cur);
+            sendFeedback(src, (msg::kGray + r + " = " + cur));
             return 1;
         };
         auto value = CommandNode::argument("value", args::stringWord());
@@ -592,10 +600,10 @@ void GameServer::initCommands() {
             const std::string v = c.arg("value").asStr();
             std::string err;
             if (!gamerules_.setValidated(r, v, &err)) {
-                sendFeedback(src, "\u00a7c" + err);
+                sendFeedback(src, (msg::kRed + err));
                 return 0;
             }
-            broadcastSystemText("\u00a77Gamerule " + r + " is now " + v);
+            broadcastSystemText((msg::kGray + "Gamerule " + r + " is now " + v));
             return 1;
         };
         rule->then(value);
@@ -1017,7 +1025,7 @@ void GameServer::initCommands() {
             if (k == "clear") setWeather(Weather::Clear, 6000 * 20);
             else setWeather(Weather::Rain,
                             (k == "thunder" ? 3000 : 6000) * 20LL);
-            broadcastSystemText("\u00a77Weather set to " + k);
+            broadcastSystemText((msg::kGray + "Weather set to " + k));
             return 1;
         };
         weather->then(kind);
@@ -1535,7 +1543,7 @@ void GameServer::initCommands() {
                  difficulty_ == "hard" ? 3 : 2);
             b.boolean(false);
             broadcastPacketExcept(nullptr, proto::pl::sc::ChangeDifficulty, b);
-            broadcastSystemText("\u00a77Difficulty set to " + difficulty_);
+            broadcastSystemText((msg::kGray + "Difficulty set to " + difficulty_));
             return 1;
         };
         diff->then(lvl);
@@ -4898,7 +4906,6 @@ void GameServer::initCommands() {
             const auto tableItem = gen::itemIdByName().at("minecraft:crafting_table");
             const auto furnaceItem = gen::itemIdByName().at("minecraft:furnace");
             const auto& all = recipes_.all();
-            auto writeSlotDisplayItem = [&](WriteBuffer& bb, std::uint32_t itemId){ bb.varint(itemId?2:0); if(itemId) bb.varint(static_cast<std::int32_t>(itemId)); };
             for(int id : idxs){
                 if(id<0 || (size_t)id >= all.size()) continue;
                 const auto &r = all[(size_t)id];

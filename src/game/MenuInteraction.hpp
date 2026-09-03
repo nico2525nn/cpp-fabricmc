@@ -20,6 +20,7 @@ bool isTakeOnlySlot(const Menu& m, int slot);
 bool isFuelItem(std::uint32_t itemId);
 int furnaceFuelTicks(std::uint32_t itemId);
 int maxStackFor(const ItemStack& s);             // 64 / 16 / 1 by item class
+int maxStackForId(std::uint32_t itemId);         // id form (single truth for MenuLogic)
 
 class ClickLogic {
 public:

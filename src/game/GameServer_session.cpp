@@ -1,4 +1,5 @@
 #include "GameServer.hpp"
+#include "Messages.hpp"
 #include "BlockEvent.hpp"
 #include "MetadataTypes.hpp"
 #include "../physics/LightEngine.hpp"
@@ -155,7 +156,7 @@ void Session::run() {
         qev.player = self_.get();
         srv_.events().quit.fire(qev);
         srv_.savePlayerProgress(*self_);
-        srv_.broadcastSystemText("\u00a7e" + self_->name + " left the game", nullptr);
+        srv_.broadcastSystemText((msg::kYellow + self_->name + " left the game"), nullptr);
         WriteBuffer rm;
         rm.varint(1);
         rm.uuid(self_->uuid.data());
@@ -256,10 +257,13 @@ void Session::handleStatus() {
                     const std::string prefix = "data:image/png;base64,";
                     size_t i = 0;
                     while (i < bytes.size()) {
+                        // NOTE(cleanup): explicit & 0xFF — bytes is char (signed);
+                        // all downstream uses mask to <=6 bits, so values are
+                        // unchanged (silences -Wnarrowing, bit-identical output).
                         const uint32_t chunk[3] = {
-                            bytes[i],
-                            i + 1 < bytes.size() ? bytes[i + 1] : 0,
-                            i + 2 < bytes.size() ? bytes[i + 2] : 0};
+                            static_cast<std::uint8_t>(bytes[i]),
+                            i + 1 < bytes.size() ? static_cast<std::uint8_t>(bytes[i + 1]) : 0u,
+                            i + 2 < bytes.size() ? static_cast<std::uint8_t>(bytes[i + 2]) : 0u};
                         favicon += b64[(chunk[0] >> 2) & 0x3F];
                         favicon += b64[((chunk[0] & 0x03) << 4) |
                                        ((chunk[1] >> 4) & 0x0F)];
@@ -672,7 +676,6 @@ void Session::handleConfiguration() {
     if (finishAckEarly)
         std::fprintf(stderr, "[cppfm] %s: early finish-ack during packs wait (tolerated)\n",
                      self_->name.c_str());
-packsDone:
     // 4. registry blobs, verbatim wire order — D10 lock: exactly 12 in PROTOCOL_NOTES order
     {
         const auto& regs = srv_.data().registries();
@@ -810,7 +813,7 @@ void Session::onEnterPlay() {
         conn_->sendPacket(pl::sc::SetHealth, b);
     }
 
-    srv_.broadcastSystemText("\u00a7e" + self_->name + " joined the game", nullptr);
+    srv_.broadcastSystemText((msg::kYellow + self_->name + " joined the game"), nullptr);
     // plan34 network: ChatSuggestions 0x18 (Prismarine packet_chat_suggestions {action:varint, entries:array<string>}) - sync player names for chat tab
     {
         std::vector<std::string> all;
@@ -821,7 +824,7 @@ void Session::onEnterPlay() {
         std::vector<std::string> one{self_->name};
         srv_.broadcastChatSuggestions(0, one, self_.get());
     }
-    sendSystemText("\u00a77Welcome to \u00a7bCppFabricMC\u00a77! Build with the hotbar, chat freely.");
+    sendSystemText((msg::kGray + "Welcome to " + msg::kAqua + "CppFabricMC" + msg::kGray + "! Build with the hotbar, chat freely."));
     if (srv_.bossAI()) srv_.bossAI()->onPlayerJoin(*self_);
 }
 void Session::sendDeclareCommands() {
@@ -1590,7 +1593,6 @@ void Session::sendMenuContent(Menu& m) {
 }
 void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
                          std::uint16_t stateOfBlock) {
-    using BD = cppfm::gen::BlockDef;
     const gen::BlockDef* def = gen::blockByState(stateOfBlock);
     if (!def) return;
     const std::string name(def->name);
@@ -3372,9 +3374,9 @@ void Session::dispatchCommand(const std::string& line) {
         }
     }();
     if (!res.ok)
-        sendSystemText("\u00a7c" + (res.errorText.empty()
+        sendSystemText((msg::kRed + (res.errorText.empty()
                           ? "Incorrect argument for command"
-                          : res.errorText));
+                          : res.errorText)));
 }
 void Session::onHeldSlot(ReadBuffer& in) {
     const std::int16_t slot = in.i16();
@@ -3393,7 +3395,7 @@ void Session::onPlayerAction(ReadBuffer& in) {
         const std::uint16_t cur = srv_.world().getBlock(x, y, z);
         WriteBuffer rb; rb.position(x,y,z); rb.varint(cur);
         try { conn_->sendPacket(proto::pl::sc::BlockUpdate, rb); } catch(...) {}
-        sendSystemText("\u00a7cSpawn protection prevents building here");
+        sendSystemText((msg::kRed + "Spawn protection prevents building here"));
         ack(sequence);
         self_->digActive=false;
         return;
@@ -3564,7 +3566,7 @@ void Session::onUseItemOn(ReadBuffer& in) {
         const bool isBlockPlace = (self_->heldSlot>=0 && self_->heldSlot<9 && !self_->inv[36+self_->heldSlot].empty()
             && gen::blockByName(self_->inv[36+self_->heldSlot].name()) != nullptr);
         if (isBlockPlace) {
-            sendSystemText("\u00a7cSpawn protection prevents building here");
+            sendSystemText((msg::kRed + "Spawn protection prevents building here"));
             ack(sequence);
             return;
         }
@@ -3627,7 +3629,7 @@ void Session::onUseItemOn(ReadBuffer& in) {
                 bn.rfind("minecraft:", 0) == 0 && bn != "minecraft:bedrock") {
                 const bool night = srv_.isNight();
                 if (!night) {
-                    sendSystemText("\u00a77You can only sleep at night");
+                    sendSystemText((msg::kGray + "You can only sleep at night"));
                     ack(sequence);
                     return;
                 }
@@ -3661,11 +3663,11 @@ void Session::onUseItemOn(ReadBuffer& in) {
                                       proto::pl::sc::PlayerPosition, tb); }
                             catch (...) {}
                         }
-                    srv_.broadcastSystemText("\u00a77Good morning!");
+                    srv_.broadcastSystemText((msg::kGray + "Good morning!"));
                 } else {
-                    sendSystemText("\u00a77Sleeping... (" +
+                    sendSystemText((msg::kGray + "Sleeping... (" +
                                    std::to_string(sleepingCount) + "/" +
-                                   std::to_string(survivalCount) + ")");
+                                   std::to_string(survivalCount) + ")"));
                 }
                 ack(sequence);
                 return;

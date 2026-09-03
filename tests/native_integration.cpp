@@ -415,8 +415,6 @@ void scenarioWorldGenParity(){
         // triangular offset check: monument linear vs triangular differ
         if (mon) {
             SMStructureSet linear=*mon; linear.spread=SMStructureSet::Linear;
-            auto a1 = smStructureAtChunk(linear, 0, 0, 0);
-            auto a2 = smStructureAtChunk(*mon, 0, 0, 0);
             // triangular uses average, usually different offset (not strictly > but at least one differs over several cells)
             bool diff=false;
             for(int cx=0;cx<4;++cx) for(int cz=0;cz<4;++cz){ auto b1=smStructureAtChunk(linear,0,cx,cz); auto b2=smStructureAtChunk(*mon,0,cx,cz); if(b1.originCx!=b2.originCx||b1.originCz!=b2.originCz) diff=true; }
@@ -716,7 +714,8 @@ void scenarioLootFunctions(){
     {
         LootContext ctx; ctx.fortuneLevel=0;
         auto drops = eval.evaluateEntity("minecraft:zombie", &ctx);
-        CHECK(drops.size()>=0, "loot zombie evaluate no crash");
+        (void)drops.size(); // evaluate must not crash; size itself is informational
+        CHECK(true, "loot zombie evaluate no crash");
         CHECK(true,"loot zombie dummy 2");
         CHECK(true,"loot zombie dummy 3");
     }
