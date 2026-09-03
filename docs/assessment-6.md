@@ -4,7 +4,7 @@
 > **Target:** `cpp-fabricmc` HEAD `56e381e` (plan42 R3 完遂, protocol 769, DataVersion 4189, Yarn 1.21.4) vs Vanilla **Fabric 1.21.4** (Mojang 1.21.4, `minecraft-data 1.21.4`, Yarn `1.21.4+build.9`, Prismarine `protocol.json` live-fetch 2026-09-03)
 > **Date:** 2026-09-03 (ドラフト 3 本を統合)
 > **Method:** 3 分野の並列ドラフト (wire: `protocol.json` fromClient 62 型 matrix 対照 / gameplay: `test_gameplay_full.cpp` 行単位精査 + `src/` 読み取り / ops: 運用・負荷・長期の敵対的洗い出し) を 1 ファイルに統合。番号体系はドラフトの Prefix (W/G/O) を維持し、重複はマージ先を明記して一本化する。
-> **Result:** **44 項目中 FIXED 8 / OPEN 36** (W-01〜W-16 / G-01〜G-15 / O-01〜O-13)。plan43 (B1+B2) で W-01・W-02・W-03・W-04・W-06・W-07・W-12・O-01 の 8 件を FIXED (test_plan43 82/0 + replay_vanilla 8/8 + smoke80 212/0 で再検証済み)。残り 36 件は OPEN のまま。
+> **Result:** **44 項目中 FIXED 16 / OPEN 28** (W-01〜W-16 / G-01〜G-15 / O-01〜O-13)。plan43 (B1+B2) で W-01・W-02・W-03・W-04・W-06・W-07・W-12・O-01 の 8 件を FIXED (test_plan43 82/0 + replay_vanilla 8/8 + smoke80 212/0 で再検証済み)。plan44 (B3/B4) で G-01・G-02・G-03・G-05・G-07・G-08・G-09・G-12 の 8 件を FIXED (tautology_lint 0 件 + block_hardness_full 1095 mismatch 0 + mining_full + mob_stats_full 149 + redstone_engine_full + combat sweep/crit/shield gameplay asserts で再検証済み — 各節の FIXED 注記参照)。残り 28 件は OPEN のまま (G-04/G-11 等のワールド系と O-02/O-04/O-05/O-06/O-11 の負荷系は plan45 worldgen/ops が担当 — 本更新では OPEN 維持)。
 
 ---
 
@@ -36,7 +36,7 @@
 
 ---
 
-## Summary Table (44 gaps — W/G/O-series, all OPEN)
+## Summary Table (44 gaps — W/G/O-series, FIXED 16 / OPEN 28)
 
 | # | Domain | Feature | File:line | Vanilla spec | Gap | Severity | Status |
 |---|---|---|---|---|---|---|---:|
@@ -44,48 +44,48 @@
 | **W-02** | play.fromClient use_entity | hand / sneaking 取り違え | `src/game/GameServer_session.cpp:3877-3973` | `packet_use_entity`: `target varint, mouse varint, [mouse==2: x,y,z f32], [mouse==0/2: hand varint], sneaking bool` | INTERACT(0) で `hand` を `sneaking` として読む; ATTACK(1) で存在しない varint を読む | **High** | **FIXED** |
 | **W-03** | play.fromClient chat_command_signed | argumentSignatures 形状不一致 | `src/game/GameServer_session.cpp:1907-1924` | `argumentSignatures: array<varint>{argumentName string, signature buffer[256]固定}`; 末尾 `messageCount varint, acknowledged buffer[3]` | `if(boolean){len=varint;bytes(len)}` と読む — 署名付き受信で underrun 例外→セッション切断 | **High** | **FIXED** |
 | **W-04** | play.fromClient tab_complete | 仕様外の末尾 bool 読み | `src/game/GameServer_session.cpp:921-924` | `packet_tab_complete`: `transactionId varint, text string` (2 field のみ) | `(void)in.boolean()` が 3B 目を要求 — 正規パケットは常に underrun→切断の疑い | **High** | **FIXED** |
-| **W-05** | play settings 0x0C | ClientInformation 未実装 | `src/proto/Ids.hpp:81-120` (0x0C 欠番) | play `0x0c settings` (config `0x00` と同 TAB 形式) | play フェーズの settings を定義せず default skip — viewDistance/locale 等が一切適用されない | Medium | OPEN |
+| **W-05** | play settings 0x0C | ClientInformation 未実装 | `src/proto/Ids.hpp:81-120` (0x0C 欠番) | play `0x0c settings` (config `0x00` と同 TAB 形式) | play フェーズの settings を定義せず default skip — viewDistance/locale 等が一切適用されない | Medium | **OPEN** |
 | **W-06** | play abilities 往復 | serverbound 0x26 未受信 + toClient 常時 creative | `GameServer_session.cpp:738-744` / `Ids.hpp` (0x26 欠番) | fromClient `packet_abilities{flags i8}`; toClient `packet_abilities{flags i8, flyingSpeed f32, walkingSpeed f32}` | (a) 0x26 未受信で飛行トグル不伝達 (b) 全員に `0x01\|0x04\|0x08` を gamemode 確定前に送信 | **High** | **FIXED** |
 | **W-07** | play update_sign 0x39 | 看板テキスト未パース | `GameServer_session.cpp:2054-2067` | `packet_update_sign`: `location position, isFrontText bool, text1..4 string` | `skipRest()` で破棄 (書けない) + stonecutter 共有ハック (`len<16` 判定) で誤分類の可能性 | **High** | **FIXED** |
-| **W-08** | play.fromClient GUI 確定系 | name_item/beacon/pick_block/recipe_book 未実装 | `handlePlay:1887-2155` (case なし) | `packet_name_item` / `packet_set_beacon_effect` / `packet_pick_item_from_block/entity` / `packet_recipe_book` / `packet_displayed_recipe` | 金床リネーム・ビーコン確定・pick-block・レシピ本が無反応 (→G-04/G-13 と一本化可) | Medium | OPEN |
-| **W-09** | play.fromClient OP/デバッグ系 | cmdblock/jigsaw/structure/edit_book/generate/spectate | `handlePlay` (case なし) / `Ids.hpp:115` Spectate 定義のみ | `packet_update_command_block(_minecart)` / `packet_update_jigsaw_block` / `packet_update_structure_block` / `packet_edit_book` / `packet_generate_structure` / `packet_spectate` | 権限チェックなく skip + Spectate は dispatch 漏れ (将来 gate 忘れリスク) | Medium | OPEN |
-| **W-10** | play.fromClient 残余群 | steer_boat/resource_pack/pong/adv_tab/bundle/slot/debug/query/lock/config-ack | `handlePlay` (case なし) / `Ids.hpp` (12 ID 欠番) | `packet_steer_boat` / `packet_resource_pack_receive` / `packet_pong` / `packet_advancement_tab` / `packet_select_bundle_item` / `packet_set_slot_state` / `packet_debug_sample_subscription` / `packet_query_block/entity_nbt` / `packet_lock_difficulty` / `packet_configuration_acknowledged` | (a) ボート漕げない (b) 強制パック素通し (c) play pong なし (d) F3+I 無応答 | Medium | OPEN |
-| **W-11** | login 状態遷移 | ack 待機が他種で即 throw | `GameServer_session.cpp:440-450` | login toServer 5 種 (`login_start/encryption_begin/plugin_response/acknowledged/cookie_response`) | `CookieResponse`/`CustomQueryAnswer` で即切断 | Medium | OPEN |
+| **W-08** | play.fromClient GUI 確定系 | name_item/beacon/pick_block/recipe_book 未実装 | `handlePlay:1887-2155` (case なし) | `packet_name_item` / `packet_set_beacon_effect` / `packet_pick_item_from_block/entity` / `packet_recipe_book` / `packet_displayed_recipe` | 金床リネーム・ビーコン確定・pick-block・レシピ本が無反応 (→G-04/G-13 と一本化可) | Medium | **OPEN** |
+| **W-09** | play.fromClient OP/デバッグ系 | cmdblock/jigsaw/structure/edit_book/generate/spectate | `handlePlay` (case なし) / `Ids.hpp:115` Spectate 定義のみ | `packet_update_command_block(_minecart)` / `packet_update_jigsaw_block` / `packet_update_structure_block` / `packet_edit_book` / `packet_generate_structure` / `packet_spectate` | 権限チェックなく skip + Spectate は dispatch 漏れ (将来 gate 忘れリスク) | Medium | **OPEN** |
+| **W-10** | play.fromClient 残余群 | steer_boat/resource_pack/pong/adv_tab/bundle/slot/debug/query/lock/config-ack | `handlePlay` (case なし) / `Ids.hpp` (12 ID 欠番) | `packet_steer_boat` / `packet_resource_pack_receive` / `packet_pong` / `packet_advancement_tab` / `packet_select_bundle_item` / `packet_set_slot_state` / `packet_debug_sample_subscription` / `packet_query_block/entity_nbt` / `packet_lock_difficulty` / `packet_configuration_acknowledged` | (a) ボート漕げない (b) 強制パック素通し (c) play pong なし (d) F3+I 無応答 | Medium | **OPEN** |
+| **W-11** | login 状態遷移 | ack 待機が他種で即 throw | `GameServer_session.cpp:440-450` | login toServer 5 種 (`login_start/encryption_begin/plugin_response/acknowledged/cookie_response`) | `CookieResponse`/`CustomQueryAnswer` で即切断 | Medium | **OPEN** |
 | **W-12** | configuration 状態遷移 | finish-ack 待機が遅延パケットで即 throw | `GameServer_session.cpp:573-595` | config toServer 9 種はいつでも到着しうる | `ClientInformation` 再送・`Pong`・`ResourcePackResponse`・遅延 known-packs で切断 | **High** | **FIXED** |
-| **W-13** | handshake/login エッジ | legacy ping・名前検証・重複ログイン | `GameServer_session.cpp:152-170,254-273` / `GameServer.hpp:923` | handshake `0xfe legacy ping`; 名は `[A-Za-z0-9_]{3,16}`; 重複は先行切断 | (a) 0xFE 沈黙 (b) 文字種不問 (c) 同名/同 UUID 二重化 | Medium | OPEN |
-| **W-14** | 圧縮/暗号の境界 | zlib 爆弾予算なし・threshold エッジ | `src/net/PacketDecoder.hpp:37-54` / `src/core/Zlib.hpp:21-30` / `Connection.hpp:104-137` | threshold 既定 256 以上のみ圧縮; `dataLength=0`+平文は未満のみ | (a) 8MB×連射でメモリ圧迫 (b) 末尾ゴミ未規定 (c) dataLength 偽装受容 (d) threshold=0 未試験 (→O-13 と連動) | Medium | OPEN |
-| **W-15** | toClient 送信コンテキスト | teleport-confirm・join 順序・broadcast gamemode | `GameServer_session.cpp:1888-1893,605-647,745-754,784-794` | toClient `packet_position`: `teleportId + xyz + 速度 + yaw/pitch + relatives u32`; vanilla は confirm 照合 | (a) id 無照合 (b) `sendAbilities`→gamemode 順 (c) 他者向け gamemode ハードコード `1` | Medium | OPEN |
-| **W-16** | 切断/デシンク条件 | handler 例外の非対称処理 | `GameServer_session.cpp:121-125,1882-2157,2149-2154` / `ByteBuffer.hpp:99-101,128-138` | 壊 packet は切断表示つき kick; varint 最大 5B・frame 上限 | (a) play 例外は沈黙切断 (b) 未知 packet 方針が状態で非対称 (c) `readExact` タイムアウトなし | Medium | OPEN |
-| **G-01** | テスト方法論 | tautological assertion が多数 | `tests/test_gameplay_full.cpp:130-165` (`CHECK_EQ_INT(15,15)` 他) | テストは実装を検証しなければならない | 定数同士比較・`CHECK(true==true)` が PASS 数に混入 | **High** | **OPEN** |
-| **G-02** | ブロック硬度 | kBlockDefs 1095 の硬度 5 件のみ | `tests/test_gameplay_full.cpp:95-102` / `src/generated/BlockStates.hpp:1399` | `blocks.json` hardness 全 1095 件と一致 | 1090 件未突合。生成器と同入力のため転写ミス検出不能 | **High** | **OPEN** |
-| **G-03** | ブロック採掘 | ツール要件・耐爆・音が BlockDef に不在 | `src/generated/BlockStates.hpp:1389-1398` | mineable タグ・blast resistance・sound・map color | `BlockDef` は hardness/filterLight/emitLight/transparent のみ | **High** | **OPEN** |
+| **W-13** | handshake/login エッジ | legacy ping・名前検証・重複ログイン | `GameServer_session.cpp:152-170,254-273` / `GameServer.hpp:923` | handshake `0xfe legacy ping`; 名は `[A-Za-z0-9_]{3,16}`; 重複は先行切断 | (a) 0xFE 沈黙 (b) 文字種不問 (c) 同名/同 UUID 二重化 | Medium | **OPEN** |
+| **W-14** | 圧縮/暗号の境界 | zlib 爆弾予算なし・threshold エッジ | `src/net/PacketDecoder.hpp:37-54` / `src/core/Zlib.hpp:21-30` / `Connection.hpp:104-137` | threshold 既定 256 以上のみ圧縮; `dataLength=0`+平文は未満のみ | (a) 8MB×連射でメモリ圧迫 (b) 末尾ゴミ未規定 (c) dataLength 偽装受容 (d) threshold=0 未試験 (→O-13 と連動) | Medium | **OPEN** |
+| **W-15** | toClient 送信コンテキスト | teleport-confirm・join 順序・broadcast gamemode | `GameServer_session.cpp:1888-1893,605-647,745-754,784-794` | toClient `packet_position`: `teleportId + xyz + 速度 + yaw/pitch + relatives u32`; vanilla は confirm 照合 | (a) id 無照合 (b) `sendAbilities`→gamemode 順 (c) 他者向け gamemode ハードコード `1` | Medium | **OPEN** |
+| **W-16** | 切断/デシンク条件 | handler 例外の非対称処理 | `GameServer_session.cpp:121-125,1882-2157,2149-2154` / `ByteBuffer.hpp:99-101,128-138` | 壊 packet は切断表示つき kick; varint 最大 5B・frame 上限 | (a) play 例外は沈黙切断 (b) 未知 packet 方針が状態で非対称 (c) `readExact` タイムアウトなし | Medium | **OPEN** |
+| **G-01** | テスト方法論 | tautological assertion が多数 | `tests/test_gameplay_full.cpp:130-165` (`CHECK_EQ_INT(15,15)` 他) | テストは実装を検証しなければならない | 定数同士比較・`CHECK(true==true)` が PASS 数に混入 | **High** | **FIXED** |
+| **G-02** | ブロック硬度 | kBlockDefs 1095 の硬度 5 件のみ | `tests/test_gameplay_full.cpp:95-102` / `src/generated/BlockStates.hpp:1399` | `blocks.json` hardness 全 1095 件と一致 | 1090 件未突合。生成器と同入力のため転写ミス検出不能 | **High** | **FIXED** |
+| **G-03** | ブロック採掘 | ツール要件・耐爆・音が BlockDef に不在 | `src/generated/BlockStates.hpp:1389-1398` | mineable タグ・blast resistance・sound・map color | `BlockDef` は hardness/filterLight/emitLight/transparent のみ | **High** | **FIXED** |
 | **G-04** | 特殊ブロック | 看板/ベッド/かまど/醸造/音符/ポータル等 | `src/game/BlockEntities.hpp:37-76` / `src/physics/Redstone.hpp:156-165` | vanilla 各ブロックの tick/相互作用仕様 | 調理 tick・pitch・cooldown 等の wire-level 検証なし (→W-07 看板と連動) | **High** | **OPEN** |
-| **G-05** | mob 属性 | 149 種中 16 種のみ・追跡/XP/loot 未検証 | `tests/test_gameplay_full.cpp:334-350` / `src/game/Entities.hpp:123-133` | wiki/Yarn の HP・速度・攻撃・follow_range・loot・xp 全種一致 | `MobStats` に followRange なし。133 種未突合 | **High** | **OPEN** |
-| **G-06** | mob 個別挙動 | 種固有 AI の間隔・効果量未突合 | `src/game/Entities.hpp:458-486` / `src/game/AiBrain.cpp:70` | vanilla 種固有 tick 仕様 | フィールドはあるが vanilla 突合なし (witch/guardian/strider/frog/camel/sniffer/breeze/creaking/bogged 等) | Medium | OPEN |
-| **G-07** | 戦闘 | スイープ・クリティカル不在 | `src/game/GameServer_combat.cpp` / `CombatManager.cpp` (該当なし) | sweep (50/67/75% + KB)・crit (落下中 +150%) | `sweep\|crit` 実装ヒットなし | **High** | **OPEN** |
-| **G-08** | 戦闘 | 盾ブロック不在 | `src/game/CombatManager.cpp` / `DamageSource.hpp:37` | 盾構えで 5 軽減・KB 無効・耐久消費・斧で 5t 無効化 | `shield\|isBlocking` 適用ロジックなし | **High** | **OPEN** |
-| **G-09** | エンチャント | 41 種の適用効果欠落 | `src/game/EnchantmentHelper.hpp:132-147` / `GameServer_session.cpp:2336-2366` | vanilla 各エンチャント発動仕様 | getter のみで適用側なし (thorns/multishot/piercing/loyalty/riptide/wind_burst 等) | **High** | **OPEN** |
-| **G-10** | ワールド生成 | DensityFunction 残り型 | `src/worldgen/DensityFunction.hpp:67-292` (約16型) | Yarn density function 型 (~25 型) | `Spline`・`Interpolated`・`FlatCache`・`CacheOnce`・`Max/Min` 等の型レベル不在 | Medium | OPEN |
+| **G-05** | mob 属性 | 149 種中 16 種のみ・追跡/XP/loot 未検証 | `tests/test_gameplay_full.cpp:334-350` / `src/game/Entities.hpp:123-133` | wiki/Yarn の HP・速度・攻撃・follow_range・loot・xp 全種一致 | `MobStats` に followRange なし。133 種未突合 | **High** | **FIXED** |
+| **G-06** | mob 個別挙動 | 種固有 AI の間隔・効果量未突合 | `src/game/Entities.hpp:458-486` / `src/game/AiBrain.cpp:70` | vanilla 種固有 tick 仕様 | フィールドはあるが vanilla 突合なし (witch/guardian/strider/frog/camel/sniffer/breeze/creaking/bogged 等) | Medium | **OPEN** |
+| **G-07** | 戦闘 | スイープ・クリティカル不在 | `src/game/GameServer_combat.cpp` / `CombatManager.cpp` (該当なし) | sweep (50/67/75% + KB)・crit (落下中 +150%) | `sweep\|crit` 実装ヒットなし | **High** | **FIXED** |
+| **G-08** | 戦闘 | 盾ブロック不在 | `src/game/CombatManager.cpp` / `DamageSource.hpp:37` | 盾構えで 5 軽減・KB 無効・耐久消費・斧で 5t 無効化 | `shield\|isBlocking` 適用ロジックなし | **High** | **FIXED** |
+| **G-09** | エンチャント | 41 種の適用効果欠落 | `src/game/EnchantmentHelper.hpp:132-147` / `GameServer_session.cpp:2336-2366` | vanilla 各エンチャント発動仕様 | getter のみで適用側なし (thorns/multishot/piercing/loyalty/riptide/wind_burst 等) | **High** | **FIXED** |
+| **G-10** | ワールド生成 | DensityFunction 残り型 | `src/worldgen/DensityFunction.hpp:67-292` (約16型) | Yarn density function 型 (~25 型) | `Spline`・`Interpolated`・`FlatCache`・`CacheOnce`・`Max/Min` 等の型レベル不在 | Medium | **OPEN** |
 | **G-11** | ワールド生成 | バイオーム・構造物・装飾・シードパリティ | `tests/test_gameplay_full.cpp:589-594` / `src/game/WorldGen.cpp:24-33` | バイオーム 65・構造物セット 42+・ore 分布・同一 seed 同一ワールド | テスト敷居 `>=43` (主張 54 とも不一致)。構造物 20 vs 42+。seed parity 手順なし | **High** | **OPEN** |
-| **G-12** | レッドストーン | 減衰・コンパレータ・ロック等の実装検証 | `tests/test_gameplay_full.cpp:138-165` / `src/physics/Redstone.hpp:153-165` | wire 減衰・comparator・repeater ロック・target・全レール・QC | テストが算術/lambda のみで engine 出力を叩いていない (→G-01 と合流) | **High** | **OPEN** |
-| **G-13** | クラフト UI | グリッド→結果の live 同期 | `src/game/Containers.hpp:1-9` / `tests/test_gameplay_full.cpp:174-` | グリッド変更→結果即時反映・shift-click・レシピブック配信 | mirror はデータ一致のみ。live 操作の wire 検証なし (→W-08 と一本化可) | Medium | OPEN |
-| **G-14** | 食料/醸造 | 全食料・全ポーション・醸造 tick | `src/game/HungerManager.cpp:23-48` / `src/game/PotionBrewing.hpp:63-80` | 全食料 food/saturation・全効果・醸造 400t+燃料+派生 | 全品目突合なし。燃料/tick・splash/lingering 派生の検証なし | Medium | OPEN |
-| **G-15** | 時間経過 | 作物・村人・再入荷・スポーン則 | `src/physics/BlockTickScheduler.hpp:113` / `src/game/AiBrain.cpp:849-852` / `src/game/GameServer_tick.cpp:1068-1078` | 全段階 tick・10-activity schedule・1日2回再入荷・スポーン則 | 村人 3-phase 簡易版。再入荷 2 窓目未実装 (`For now we clear`) | Medium | OPEN |
+| **G-12** | レッドストーン | 減衰・コンパレータ・ロック等の実装検証 | `tests/test_gameplay_full.cpp:138-165` / `src/physics/Redstone.hpp:153-165` | wire 減衰・comparator・repeater ロック・target・全レール・QC | テストが算術/lambda のみで engine 出力を叩いていない (→G-01 と合流) | **High** | **FIXED** |
+| **G-13** | クラフト UI | グリッド→結果の live 同期 | `src/game/Containers.hpp:1-9` / `tests/test_gameplay_full.cpp:174-` | グリッド変更→結果即時反映・shift-click・レシピブック配信 | mirror はデータ一致のみ。live 操作の wire 検証なし (→W-08 と一本化可) | Medium | **OPEN** |
+| **G-14** | 食料/醸造 | 全食料・全ポーション・醸造 tick | `src/game/HungerManager.cpp:23-48` / `src/game/PotionBrewing.hpp:63-80` | 全食料 food/saturation・全効果・醸造 400t+燃料+派生 | 全品目突合なし。燃料/tick・splash/lingering 派生の検証なし | Medium | **OPEN** |
+| **G-15** | 時間経過 | 作物・村人・再入荷・スポーン則 | `src/physics/BlockTickScheduler.hpp:113` / `src/game/AiBrain.cpp:849-852` / `src/game/GameServer_tick.cpp:1068-1078` | 全段階 tick・10-activity schedule・1日2回再入荷・スポーン則 | 村人 3-phase 簡易版。再入荷 2 窓目未実装 (`For now we clear`) | Medium | **OPEN** |
 | **O-01** | vanilla client 検証 | 実クライアント E2E 未検証 | `tests/` mcproto/TestClient (合成) / `src/proto/Ids.hpp:172` | vanilla 1.21.4 client が描画・ログイン・プレイできること | 自動テストは合成のみ。E2E 手順の文書化・自動化なし | **High** | **FIXED** |
 | **O-02** | vanilla client 検証 | チャンク要求バースト | `src/game/GameServer.hpp:75` / `src/main.cpp:34-36` | ログイン直後の数百チャンク要求に欠けなく追随 | 実 client のバーストでの欠落・順序・遅延が未検証 | **High** | **OPEN** |
-| **O-03** | vanilla client 検証 | UpdateLight/バイオーム色 | `src/physics/LightEngine.cpp:43-46` / `src/proto/Ids.hpp:254` | SmoothLighting ON で光・葉/水色を正しく再描画 | 再送トリガ・オンライン更新が実 client で未検証 | Medium | OPEN |
+| **O-03** | vanilla client 検証 | UpdateLight/バイオーム色 | `src/physics/LightEngine.cpp:43-46` / `src/proto/Ids.hpp:254` | SmoothLighting ON で光・葉/水色を正しく再描画 | 再送トリガ・オンライン更新が実 client で未検証 | Medium | **OPEN** |
 | **O-04** | 同時接続・高負荷 | 100+ 同時・ログイン波 | `src/main.cpp:33` maxPlayers / `GameServer.hpp:75` maxPlayers=20 | 同時接続・同時ログインに耐える (満員時はキュー+切断文) | 負荷試験なし。満員時の挙動未検証 | **High** | **OPEN** |
 | **O-05** | 同時接続・高負荷 | tick 遅延・生成バースト限界 | `src/main.cpp:67` autoCap / `src/net/PacketBatcher.hpp:9` | 20 TPS 維持・MSPT < 50 | 生成バースト時の MSPT/tick 遅延の上限測定なし | **High** | **OPEN** |
 | **O-06** | 長時間 | 6h+/24h soak・メモリリーク | `src/game/GameServer_world.cpp:254-258` / `WorldDataManager.hpp:25` | 24h で RSS 横ばい・tick 安定・保存整合 | soak は 300s/2h まで。長期証拠なし | **High** | **OPEN** |
 | **O-07** | 保存/復元 | クラッシュ時リカバリ | `src/game/WorldDataManager.hpp:36-40` / `Persistence.hpp:194` / `GameServer_world.cpp:254` | 壊リージョンは当該チャンクのみ切捨て・他は復旧 | 破損入力からの復旧手順・テストなし | **High** | **OPEN** |
-| **O-08** | 保存/復元 | バックアップ・整合検証 | `src/game/WorldDataManager.hpp:25` | 安全なバックアップ・リストア・整合検証 (session.lock 相当) | 手順書・チェッカ・排他ロックなし | Medium | OPEN |
-| **O-09** | サーバー管理 | RCON 同時・認証・権限境界 | `src/net/Rcon.hpp:1,21` / `src/game/GameServer.hpp:608-613` | 複数同時・誤パス拒否・権限が vanilla 同等 | 同時接続・誤認証 rate・権限境界の試験なし | Medium | OPEN |
-| **O-10** | サーバー管理 | whitelist/ops/ban 動的変更 | `src/game/Commands.cpp:4384,4618-4679` / `GameServer_world.cpp:263-337` | 接続中 kick/ban 即時切断・whitelist 即時反映・再起動後も永続 | 即時反映・永続の E2E 未検証 | Medium | OPEN |
+| **O-08** | 保存/復元 | バックアップ・整合検証 | `src/game/WorldDataManager.hpp:25` | 安全なバックアップ・リストア・整合検証 (session.lock 相当) | 手順書・チェッカ・排他ロックなし | Medium | **OPEN** |
+| **O-09** | サーバー管理 | RCON 同時・認証・権限境界 | `src/net/Rcon.hpp:1,21` / `src/game/GameServer.hpp:608-613` | 複数同時・誤パス拒否・権限が vanilla 同等 | 同時接続・誤認証 rate・権限境界の試験なし | Medium | **OPEN** |
+| **O-10** | サーバー管理 | whitelist/ops/ban 動的変更 | `src/game/Commands.cpp:4384,4618-4679` / `GameServer_world.cpp:263-337` | 接続中 kick/ban 即時切断・whitelist 即時反映・再起動後も永続 | 即時反映・永続の E2E 未検証 | Medium | **OPEN** |
 | **O-11** | パフォーマンス限界 | view 32 全生成・メモリ上限 | `src/main.cpp:34-36` / `Constants.hpp:23` / `World.hpp:478-503` | view 32 (約 4k chunks) で破綻なく動作 | bench は 100 chunks のみ。上限測定なし | **High** | **OPEN** |
-| **O-12** | パフォーマンス限界 | entity 1000+・レッドストーン活性 | `src/physics/Redstone.cpp:1295` / `BlockTickScheduler.cpp:36` | 大量 entity・大規模回路でも MSPT 予算内 | tick 時間上限が未測定 | Medium | OPEN |
+| **O-12** | パフォーマンス限界 | entity 1000+・レッドストーン活性 | `src/physics/Redstone.cpp:1295` / `BlockTickScheduler.cpp:36` | 大量 entity・大規模回路でも MSPT 予算内 | tick 時間上限が未測定 | Medium | **OPEN** |
 | **O-13** | 不正・悪意入力 | flood・巨大/malformed・rate limit | fuzz 23 (unit のみ) / `Connection.hpp:59` / `AiBrain.cpp:982` | 巨大切断・スパム抑制・flood 耐性 (256文字・throttle・構成上限) | 実サーバーへの flood 試験なし (→W-14 と連動) | **High** | **OPEN** |
 
-> **Note on numbering:** 本表は 3 ドラフトの番号 (W-01〜W-16 / G-01〜G-15 / O-01〜O-13) をそのまま維持する。**High 計: W 7 (W-01〜W-04,W-06,W-07,W-12) + G 10 (G-01〜G-05,G-07〜G-09,G-11,G-12) + O 8 (O-01,O-02,O-04〜O-07,O-11,O-13) = 25。Medium 19。** W-10 内訳に High 寄り 2 件 (steer_boat・resource_pack 強制) を含む旨は §10 に記録。
+> **Note on numbering:** 本表は 3 ドラフトの番号 (W-01〜W-16 / G-01〜G-15 / O-01〜O-13) をそのまま維持する。**High 計: W 7 (W-01〜W-04,W-06,W-07,W-12) + G 10 (G-01〜G-05,G-07〜G-09,G-11,G-12) + O 8 (O-01,O-02,O-04〜O-07,O-11,O-13) = 25。Medium 19。** W-10 内訳に High 寄り 2 件 (steer_boat・resource_pack 強制) を含む旨は §10 に記録。plan44 時点で High の FIXED は W 7 + G 8 (G-01/G-02/G-03/G-05/G-07/G-08/G-09/G-12) + O 1 (O-01) = **16/25**。残 High 9 = G-04/G-11 + O-02/O-04/O-05/O-06/O-07/O-11/O-13 (plan45 B5 + plan46 以降)。
 
 ---
 
@@ -227,6 +227,7 @@
 - 完了条件 (数値): 上記の自己言及 CHECK を全て「実装の出力を assert する形」に置換し、置換前後で PASS 数を再集計する。tautology 0 件 (`grep -n "CHECK_EQ_INT([0-9]"` で定数-定数比較 0 件、`CHECK(true` 0 件)。
 - 推奨テスト: 各定数を engine 経由で取得するヘルパー (例: wire に 15 を注入→5 ブロック先の power を read) に置換。tautology 検出の lint (`CHECK` 引数に識別子が含まれない行を列挙する script) を CI に追加。
 - 優先度: P0 (G-02〜G-15 の全ての PASS 数の信頼性に関わる。282 のうち何件が tautology かの計数が先決)。
+- → **FIXED (plan44)**: 自己言及 CHECK を engine 経由 assert に全置換 (`grep -c 'CHECK_EQ_INT([0-9]'` = 0、`CHECK(true` = 0) + `tools/tautology_lint.py` 新設 (CI 追加) + `HungerManager` の foodTable 突合も同バッチで実施。証拠は `wt44/test` マージ (`5249f60`)。
 
 ### G-02 kBlockDefs 1095 硬度の全件突合なし (HIGH)
 - 現状: 硬度テストは 5 件のみ (`stone 1.5`・`obsidian 50`・`bedrock -1`・`glass 0.3`・`oak_planks 2.0`、`test_gameplay_full.cpp:95-102`)。`kBlockDefs` (`src/generated/BlockStates.hpp:1399`、1095 件) の残り 1090 件は未検証。
@@ -234,12 +235,14 @@
 - 完了条件 (数値): 全 1095 件の hardness が `blocks.json` と一致するテスト (`mismatch 0`)。nullable 規約の文書化。
 - 推奨テスト: `test_block_hardness_full` 新設。不一致は FAIL (spec 優先、現 impl への緩和禁止)。
 - 優先度: P0 (採掘時間の全ブロックへの波及)。
+- → **FIXED (plan44)**: `tests/test_block_hardness_full.cpp` 新設 — 全 1095 件の hardness が `blocks.json` と一致 (`mismatch 0`) + nullable 規約 (`-1` bedrock / `100` water 相当) を文書化・独立実装で転写ミス検出可能に。証拠は `wt44/generated` マージ (`465fcb1`)。
 
 ### G-03 採掘の基盤不在 — ツール要件・耐爆・音 (HIGH)
 - 現状: `struct BlockDef` (`src/generated/BlockStates.hpp:1389-1398`) のフィールドは `name/minState/maxState/defaultState/hardness/filterLight/emitLight/transparent/propsOff/propCount` のみ。適正ツールタグ (`mineable/*`・`needs_*_tool`)・`blast_resistance`・`sound`・`map_color` が型レベルで存在しない。
 - 完了条件 (数値): (1) `BlockDef` (または外部タグテーブル) に `toolMask` + `needsToolLevel` + `blastResistance` を追加し全 1095 件を充填。(2) 採掘時間テスト: 適正ツールあり/なし × 主要 50 ブロックで vanilla 式と一致 (誤差 1 tick 以内)。(3) TNT 爆破テスト: 耐爆 0.5 破壊・obsidian (1200) 残存等 10 ケース PASS。
 - 推奨テスト: `blocks.json` (`harvestTools`/`material` 相当) + Yarn tag 突合。
 - 優先度: P0 (サバイバルプレイの根幹)。
+- → **FIXED (plan44)**: `BlockDef` に `toolMask` + `needsToolLevel` + `blastResistance` を追加し全 1095 件充填 (`src/generated/BlockStates.hpp:1399-1400`) + `tests/test_mining_full.cpp` 新設 (適正ツールあり/なし × 主要ブロックの vanilla 式一致 + TNT 耐爆ケース)。証拠は `wt44/generated` マージ (`465fcb1`)。音・map_color の残差は plan46 以降の G-03 追補として記録する。
 
 ### G-04 特殊ブロックの個別挙動 (HIGH)
 - 現状: `BlockEntities.hpp:37-76` に kind はあるが、以下は wire-level 未検証: 看板 (両面・発光・waxed・編集 UI) / ベッド (スポーン・爆発・昼スキップ人数) / かまど系 (200t/100t/100t・燃料別 burn・経験値・ホッパー入出力) / 醸造台 (400t・燃料・3 瓶並列 — G-14 と重複、こちらは tick 側) / 音符 (16 音階×楽器・ミュート・入力) / トラップチェスト・ジュークボックス・スカルク系 (warden 召喚カウント)・trial_spawner/vault (存在確認のみ) / ネザーポータル (生成条件・冷却・`PortalHandler` 検証)。
@@ -253,6 +256,7 @@
 - 完了条件 (数値): (1) 全 149 種の HP/速度/攻撃が wiki/Yarn と一致 (mismatch 0、slime 系はサイズ別表)。(2) `followRange` を追加し全 149 件充填 + テスト。(3) 経験値: 主要 30 種で一致。(4) loot: 主要 30 種で期待品目を含むテスト。
 - 推奨テスト: `test_mob_stats_full` (期待値 CSV 読込)。
 - 優先度: P0 (戦闘・スポーン・AI の全ての入力値)。
+- → **FIXED (plan44)**: `MobStats` に `followRange` を追加し全 149 件充填 (`src/game/Entities.hpp` + `docs/mob_stats_149.csv`) + `tests/test_mob_stats_full.cpp` (149 行の name/HP/速度/攻撃/followRange 一致 + slime サイズ別表 + 主要種の XP/loot)。証拠は `wt44/world` マージ (`1941662`)。
 
 ### G-06 mob 種固有挙動の未突合 (MEDIUM)
 - 現状: 種固有フィールドは存在する (`witchPotionCooldown`・`wardenSonicCooldown`・`guardianBeamCooldown`・`armadilloRolledUp` 等) が発動間隔・効果量の vanilla 突合なし。未検証: ウィッチ (間隔・薬選択・飲薬) / ガーディアン (チャージ約 2s・DPS・棘)・エルダー (Fatigue III・50B・60s) / ストライダー (冷え・鞍) / カエル (舌・マグマキューブ→froglight) / ラクダ (ダッシュ・2 人乗り) / スニッファー (発掘 tick) / アルマジロ (roll-up 条件) / ブリーズ (反射・跳躍) / クリーキング (heart 紐付け・視線外可動・昼解体) / ボグド (毒矢) / ファントム (不眠 3 日・成長)。
@@ -265,18 +269,21 @@
 - 完了条件 (数値): (1) スイープ: 剣 standing 攻撃で近接 mob に `base×0.5/0.67/0.75` + KB (5 ケース)。(2) クリティカル: 落下中 ×1.5 (3 ケース)。(3) ダメージ粒子パケット送出確認。
 - 推奨テスト: `test_combat_sweep_crit` で 8 ケース。
 - 優先度: P0 (近接戦闘の基本)。
+- → **FIXED (plan44)**: `MeleeHelper.hpp` 新設 + `CombatManager` に sweep (剣 standing・`sweeping_edge` +50/67/75% + KB) / crit (落下中 ×1.5 + 粒子) 経路を追加 + `test_gameplay_full.cpp` に 8 ケース assert。証拠は `wt44/combat` マージ (`8b22921`)。
 
 ### G-08 盾ブロックの全面欠落 (HIGH)
 - 現状: 盾の適用ロジックなし。`DamageSource` 側には `bypassShield` (`DamageSource.hpp:37`) があるが読む側 (構え判定・5 軽減・KB 無効・耐久消費・斧による 5 秒無効化) が存在しない。
 - 完了条件 (数値): (1) 構え中の正面攻撃を 5 軽減 + KB 0 + 耐久消費 (6 ケース)。(2) 斧で 100t 無効化 (2 ケース)。(3) bypass 系が貫通 (2 ケース)。計 10 ケース PASS。
 - 推奨テスト: `CombatManager::calculatePlayerDamage` に shield 経路を追加後、`test_combat_shield` で 10 ケース。
 - 優先度: P0。
+- → **FIXED (plan44)**: `CombatShield.cpp` 新設 — 構え中正面 5 軽減 + KB 無効 + 耐久消費 + 斧 100t 無効化 + bypass 貫通の 10 ケース assert。証拠は `wt44/combat` マージ (`8b22921`)。
 
 ### G-09 エンチャント適用効果の欠落 (HIGH)
 - 現状: `EnchantmentHelper` (`:132-147`) は level getter のみで適用側なし。`frost_walker`/`soul_speed` は移動系のみ部分実装。欠落: thorns (反射・耐久) / multishot (3 発・耐久 1 発分) / piercing (貫通=レベル) / frost 水面凍結 (半径 2+レベル・melt tick) / soul 靴耐久消費 / loyalty 帰還・impaling・riptide・channeling / wind_burst・breach・density / swift_sneak・depth_strider・respiration・aqua_affinity 等の棚卸し。
 - 完了条件 (数値): 41 エンチャントの「効果/未実装/対象外」対応表を作成し、効果あり全種に engine 経由テスト (各 2+ assert)。「未実装」0 件 (対象外は根拠付き除外)。
 - 推奨テスト: `test_enchant_effects_full`。投擲物系は tick 駆動 (発射→貫通数→帰還の 3 assert)。
 - 優先度: P0 (装備ビルドの核心)。
+- → **FIXED (plan44)**: `EnchantmentHelper` に適用側を追加 (thorns 反射・multishot 3 発・piercing 貫通・loyalty/riptide/channeling 等、41 種の「効果/対象外」対応表付き) + engine 経由テスト。証拠は `wt44/combat` マージ (`8b22921`)。
 
 ### G-10 DensityFunction 残り型 (MEDIUM)
 - 現状: 実装は約 16 型。Yarn 1.21.4 (~25 型) に対する残り候補: `Spline` (大陸/高度カーブの核心)・`Interpolated`・`FlatCache`・`CacheOnce`・`Max/Min`・`HalfNegative/QuarterNegative`・surface 系 (別パイプラインの可能性あり — 要確認)。
@@ -295,6 +302,7 @@
 - 完了条件 (数値): 7 カテゴリ × 最低 3 assert (入力→tick→出力 read) = 21+ assert の engine 経由テスト PASS。tautology 置換 (G-01) と合流。
 - 推奨テスト: `test_redstone_engine_full` (回路組立て→tick→信号 read の定型 harness)。QC は Yarn `PistonBlock` で確認後に assert。
 - 優先度: P0 (現状「handlers はあるが正しさ不明」)。
+- → **FIXED (plan44)**: `tests/test_redstone_engine_full.cpp` 新設 (312 行 — 7 カテゴリ × 3+ assert の wire 減衰/comparator/repeater ロック/target/レール/dispenser-QC を engine 経由で検証) + G-01 の tautology 置換と合流。証拠は `wt44/test` マージ (`5249f60`)。
 
 ### G-13 クラフト UI の live 同期 (MEDIUM)
 - 現状: `test_recipes` は mirror (データ一致) であり live コンテナ操作は未検証。グリッド変更→結果即時反映・shift-click・ホットバー入替・レシピ残量・複数プレイヤーの state 分離の wire 検証なし。
