@@ -35,6 +35,7 @@
 #include "game/Xp.hpp"
 #include "game/HungerManager.hpp"
 #include "game/EnchantmentHelper.hpp"
+#include "game/MeleeHelper.hpp"
 #include "game/GameRules.hpp"
 #include "worldgen/DensityFunction.hpp"
 #include "worldgen/MultiNoise.hpp"
@@ -911,6 +912,171 @@ static void test_enchants() {
     }
 }
 
+static void test_combat_sweep_crit_shield() {
+    curSection = "COMBAT-SWEEP-CRIT-SHIELD";
+    std::printf("\n[4b] COMBAT sweep/crit/shield/enchant-effects (plan44 G-07/G-08/G-09 vanilla)\n");
+    // ---- G-07 sweep formula: round(1 + AD*lv/(lv+1)); lv0 => 1 (Sweeping_Edge wiki)
+    CHECK_NEAR(sweepingEdgeDamage(6.f, 0), 1.0, 1e-4, "sweep lv0 => 1");
+    CHECK_NEAR(sweepingEdgeDamage(6.f, 1), 4.0, 1e-4, "sweep I base6 => round(1+3)=4 (+50% class)");
+    CHECK_NEAR(sweepingEdgeDamage(6.f, 2), 5.0, 1e-4, "sweep II base6 => round(1+4)=5 (+67% class)");
+    CHECK_NEAR(sweepingEdgeDamage(6.f, 3), 6.0, 1e-4, "sweep III base6 => round(1+4.5)=6 (+75% class)");
+    CHECK_NEAR(sweepingEdgeDamage(10.f, 3), 9.0, 1e-4, "sweep III base10 => round(1+7.5)=9");
+    // sweep trigger: sword + onGround + !sprint + charged
+    CHECK(isSweepAttack(true, true, false, true), "sweep triggers: sword/grounded/charged");
+    CHECK(!isSweepAttack(true, true, true, true), "sweep denied while sprinting");
+    CHECK(!isSweepAttack(true, false, false, true), "sweep denied while airborne");
+    CHECK(!isSweepAttack(true, true, false, false), "sweep denied when uncharged");
+    CHECK(!isSweepAttack(false, true, false, true), "sweep denied for non-sword");
+    // sweep range: 2m horizontal, +-1 vertical
+    CHECK(inSweepRange(0,0,0, 1,0,0), "sweep range 1m true");
+    CHECK(inSweepRange(0,0,0, 2,0,0), "sweep range 2m edge true");
+    CHECK(!inSweepRange(0,0,0, 2.5,0,0), "sweep range 2.5m false");
+    CHECK(!inSweepRange(0,0,0, 0,2,0), "sweep range dy=2 false");
+    // cooldown: T=20/4=5t, charged at 84.8%+
+    CHECK_NEAR(cooldownProgress(4), 0.9, 1e-4, "cooldown 4t => 0.9");
+    CHECK(isChargedAttack(4), "charged at 4t (0.9>=0.848)");
+    CHECK(!isChargedAttack(3), "not charged at 3t (0.7)");
+    CHECK(!isChargedAttack(0), "not charged at 0t (0.1)");
+    // ---- G-07 crit: falling + !ground + !sprint + charged; water/blind/ride/climb negate
+    CHECK(isCritAttack(false,true,false,true,false,false,false,false), "crit: falling charged");
+    CHECK(!isCritAttack(true,false,false,true,false,false,false,false), "crit denied on ground");
+    CHECK(!isCritAttack(false,false,false,true,false,false,false,false), "crit denied when not falling");
+    CHECK(!isCritAttack(false,true,true,true,false,false,false,false), "crit denied while sprinting");
+    CHECK(!isCritAttack(false,true,false,false,false,false,false,false), "crit denied when uncharged");
+    CHECK(!isCritAttack(false,true,false,true,true,false,false,false), "crit denied in water");
+    CHECK(!isCritAttack(false,true,false,true,false,true,false,false), "crit denied when blind");
+    CHECK(!isCritAttack(false,true,false,true,false,false,true,false), "crit denied when riding");
+    CHECK(!isCritAttack(false,true,false,true,false,false,false,true), "crit denied when climbing");
+    CHECK_NEAR(applyCrit(6.f), 9.0, 1e-4, "crit x1.5: 6=>9");
+    CHECK_NEAR(applyCrit(10.f), 15.0, 1e-4, "crit x1.5: 10=>15");
+    // weapon tier table (fallback keeps legacy flat 6/7 for E-06 wire compat)
+    CHECK_NEAR(swordBaseDamage("minecraft:diamond_sword"), 7.0, 1e-4, "diamond sword 7");
+    CHECK_NEAR(swordBaseDamage("minecraft:iron_sword"), 6.0, 1e-4, "iron sword 6 (legacy flat)");
+    CHECK_NEAR(axeBaseDamage("minecraft:iron_axe"), 9.0, 1e-4, "iron axe 9");
+    // ---- G-08 shield: active after 5t, axe 100t disable; frontal half-circle (pitch ignored)
+    CHECK(isShieldActive(true, 5, 0), "shield active at 5t");
+    CHECK(isShieldActive(true, 10, 0), "shield stays active");
+    CHECK(!isShieldActive(true, 4, 0), "shield inactive before 5t");
+    CHECK(!isShieldActive(true, 10, 1), "shield inactive while axe-disabled");
+    CHECK(!isShieldActive(false, 10, 0), "shield inactive without shield/posture");
+    CHECK(isFrontalAttack(0.f, 0,0, 0,5), "frontal: attacker ahead (+z, yaw 0)");
+    CHECK(!isFrontalAttack(0.f, 0,0, 0,-5), "not frontal: attacker behind");
+    CHECK(isFrontalAttack(180.f, 0,0, 0,-5), "frontal: yaw 180 faces -z attacker");
+    CHECK(DamageSource::sonicBoom().bypassShield, "sonic_boom bypassShield (pierces)");
+    CHECK(!DamageSource::generic().bypassShield, "generic does not bypassShield");
+    CHECK(DamageSource("magic").isMagic(), "magic classified (shield cannot block magic)");
+    // CombatManager shield posture (sneak + shield + 5t, no disable)
+    {
+        cppfm::Player p;
+        CHECK(!CombatManager::holdsShield(p), "empty hands hold no shield");
+        p.inv[45] = ItemStack::of(gen::itemIdByName().find("minecraft:shield")->second, 1);
+        CHECK(CombatManager::holdsShield(p), "offhand shield held");
+        CHECK(!CombatManager::isShieldBlocking(p), "not blocking without posture");
+        p.isSneaking = true; p.blockingTicks = 5;
+        CHECK(CombatManager::isShieldBlocking(p), "sneak+shield+5t blocks");
+        p.blockingTicks = 4;
+        CHECK(!CombatManager::isShieldBlocking(p), "4t not yet active");
+        p.blockingTicks = 5; p.shieldDisableTicks = 100;
+        CHECK(!CombatManager::isShieldBlocking(p), "axe-disabled 100t cannot block");
+        p.shieldDisableTicks = 0; p.yaw = 0; p.x = 0; p.z = 0;
+        CHECK(CombatManager::isFrontal(p, 0, 5), "CombatManager frontal ahead");
+        CHECK(!CombatManager::isFrontal(p, 0, -5), "CombatManager not frontal behind");
+    }
+    // ---- G-09 thorns: lv*15% per piece, reflect 1..4
+    CHECK_NEAR(thornsProcChance(1), 0.15, 1e-4, "thorns I 15%");
+    CHECK_NEAR(thornsProcChance(4), 0.60, 1e-4, "thorns IV 60%");
+    CHECK(thornsProcs(1, 0.10f), "thorns I procs at roll 0.10");
+    CHECK(!thornsProcs(1, 0.20f), "thorns I no proc at roll 0.20");
+    CHECK(!thornsProcs(0, 0.0f), "thorns 0 never procs");
+    CHECK_EQ_INT(thornsDamage(0.0f), 1, "thorns damage roll 0 => 1");
+    CHECK_EQ_INT(thornsDamage(0.5f), 3, "thorns damage roll 0.5 => 3");
+    CHECK_EQ_INT(thornsDamage(0.999f), 4, "thorns damage roll ~1 => 4");
+    {
+        ItemStack chest = ItemStack::of(gen::itemIdByName().find("minecraft:diamond_chestplate")->second, 1);
+        ItemStack::addEnchant(chest, "minecraft:thorns", 4);
+        CHECK_EQ_INT(EnchantmentHelper::getThorns(chest), 4, "thorns getter 4");
+        CHECK_EQ_INT(EnchantmentHelper::thornsReflect(chest, 0.10f, 0.5f), 3, "thorns reflect procs => 3");
+        CHECK_EQ_INT(EnchantmentHelper::thornsReflect(chest, 0.90f, 0.5f), 0, "thorns reflect no proc => 0");
+    }
+    // ---- G-09 breach: armor * (1-0.15*lv)
+    CHECK_EQ_INT(breachAdjustedArmor(20, 0), 20, "breach 0 => 20");
+    CHECK_EQ_INT(breachAdjustedArmor(20, 1), 17, "breach I 20 => 17");
+    CHECK_EQ_INT(breachAdjustedArmor(20, 2), 14, "breach II 20 => 14");
+    CHECK_EQ_INT(breachAdjustedArmor(20, 4), 8, "breach IV 20 => 8");
+    // ---- G-09 density: 0.5*0.25*fall*lv
+    CHECK_NEAR(densitySmashBonus(10, 3), 3.75, 1e-4, "density III fall10 => 3.75");
+    CHECK_NEAR(densitySmashBonus(0, 3), 0.0, 1e-4, "density no fall => 0");
+    CHECK_NEAR(densitySmashBonus(10, 0), 0.0, 1e-4, "density 0 => 0");
+    // ---- G-09 wind burst: KB 1.15+0.35*lv
+    CHECK_NEAR(windBurstKBFactor(1), 1.5, 1e-4, "windburst I KB 1.5");
+    CHECK_NEAR(windBurstKBFactor(3), 2.2, 1e-4, "windburst III KB 2.2");
+    CHECK_NEAR(windBurstLaunchVy(1), 0.75, 1e-4, "windburst I launch 0.75");
+    // ---- G-09 crossbow/trident/frost/power/impaling pure effects
+    CHECK_EQ_INT(multishotArrowCount(1), 3, "multishot => 3 arrows");
+    CHECK_EQ_INT(multishotArrowCount(0), 1, "no multishot => 1 arrow");
+    CHECK_NEAR(quickChargeLoadTime(1.25f, 2), 0.75, 1e-4, "quickcharge II 1.25=>0.75s");
+    CHECK_NEAR(riptideLaunchBlocks(1), 9.0, 1e-4, "riptide I 9 blocks");
+    CHECK_NEAR(riptideLaunchBlocks(2), 15.0, 1e-4, "riptide II 15 blocks");
+    CHECK_NEAR(riptideLaunchBlocks(3), 21.0, 1e-4, "riptide III 21 blocks");
+    CHECK(channelingShouldStrike(true, true, 1), "channeling strikes in thunder + sky");
+    CHECK(!channelingShouldStrike(false, true, 1), "channeling needs thunder");
+    CHECK(!channelingShouldStrike(true, false, 1), "channeling needs sky");
+    CHECK_EQ_INT(frostRadius(0), 2, "frost radius base 2");
+    CHECK_EQ_INT(frostRadius(2), 4, "frost II radius 4 (2+lv)");
+    CHECK_NEAR(powerBonus(5), 1.5, 1e-4, "power 5 => 1.5");
+    CHECK_NEAR(impalingBonus(3), 7.5, 1e-4, "impaling III => +7.5");
+    CHECK(EnchantmentHelper::isAquatic(MobKind::Drowned), "drowned aquatic for impaling");
+    CHECK(EnchantmentHelper::isAquatic(MobKind::Squid), "squid aquatic for impaling");
+    CHECK(!EnchantmentHelper::isAquatic(MobKind::Zombie), "zombie not aquatic");
+    {
+        ItemStack sword = ItemStack::of(gen::itemIdByName().find("minecraft:diamond_sword")->second, 1);
+        ItemStack::addEnchant(sword, "minecraft:sweeping_edge", 3);
+        CHECK_EQ_INT(EnchantmentHelper::getSweepingEdge(sword), 3, "sweeping_edge getter 3");
+        CHECK_NEAR(EnchantmentHelper::sweepingDamage(6.f, sword), 6.0, 1e-4, "sweepingDamage base6 III => 6");
+        ItemStack::addEnchant(sword, "minecraft:fire_aspect", 2);
+        CHECK_EQ_INT(EnchantmentHelper::getFireAspect(sword), 2, "fire_aspect getter 2");
+        ItemStack::addEnchant(sword, "minecraft:looting", 3);
+        CHECK_EQ_INT(EnchantmentHelper::getLooting(sword), 3, "looting getter 3");
+        ItemStack::addEnchant(sword, "minecraft:breach", 2);
+        CHECK_EQ_INT(EnchantmentHelper::breachArmor(20, sword), 14, "breachArmor II 20 => 14");
+        ItemStack::addEnchant(sword, "minecraft:density", 5);
+        CHECK_NEAR(EnchantmentHelper::densityBonus(8, sword), 5.0, 1e-4, "densityBonus V fall8 => 5.0");
+        ItemStack::addEnchant(sword, "minecraft:wind_burst", 1);
+        CHECK_EQ_INT(EnchantmentHelper::getWindBurst(sword), 1, "wind_burst getter 1");
+        CHECK_EQ_INT(EnchantmentHelper::getDepthStrider(
+            ItemStack::of(gen::itemIdByName().find("minecraft:diamond_boots")->second, 1)), 0, "depth_strider default 0");
+    }
+    {
+        ItemStack tri = ItemStack::of(gen::itemIdByName().find("minecraft:trident")->second, 1);
+        ItemStack::addEnchant(tri, "minecraft:loyalty", 3);
+        ItemStack::addEnchant(tri, "minecraft:riptide", 2);
+        ItemStack::addEnchant(tri, "minecraft:channeling", 1);
+        ItemStack::addEnchant(tri, "minecraft:impaling", 5);
+        CHECK_EQ_INT(EnchantmentHelper::getLoyalty(tri), 3, "loyalty getter 3");
+        CHECK_EQ_INT(EnchantmentHelper::getRiptide(tri), 2, "riptide getter 2");
+        CHECK_EQ_INT(EnchantmentHelper::getChanneling(tri), 1, "channeling getter 1");
+        CHECK_NEAR(EnchantmentHelper::riptideBlocks(tri), 15.0, 1e-4, "riptideBlocks II => 15");
+        CHECK_NEAR(EnchantmentHelper::impalingBonusFor(tri, MobKind::Drowned), 12.5, 1e-4, "impaling V vs drowned +12.5");
+        CHECK_NEAR(EnchantmentHelper::impalingBonusFor(tri, MobKind::Zombie), 0.0, 1e-4, "impaling vs zombie 0");
+    }
+    {
+        ItemStack bow = ItemStack::of(gen::itemIdByName().find("minecraft:crossbow")->second, 1);
+        ItemStack::addEnchant(bow, "minecraft:multishot", 1);
+        ItemStack::addEnchant(bow, "minecraft:piercing", 4);
+        ItemStack::addEnchant(bow, "minecraft:quick_charge", 3);
+        CHECK_EQ_INT(EnchantmentHelper::multishotShots(bow), 3, "crossbow multishot => 3 shots");
+        CHECK_EQ_INT(EnchantmentHelper::getPiercing(bow), 4, "piercing getter 4 (pass-through count)");
+        CHECK_EQ_INT(EnchantmentHelper::getQuickCharge(bow), 3, "quick_charge getter 3");
+    }
+    {
+        ItemStack boots = ItemStack::of(gen::itemIdByName().find("minecraft:diamond_boots")->second, 1);
+        ItemStack::addEnchant(boots, "minecraft:depth_strider", 3);
+        ItemStack::addEnchant(boots, "minecraft:frost_walker", 2);
+        CHECK_EQ_INT(EnchantmentHelper::getDepthStrider(boots), 3, "depth_strider getter 3");
+        CHECK_EQ_INT(EnchantmentHelper::frostRadiusFor(boots), 4, "frostRadiusFor II => 4");
+    }
+}
+
 static void test_known_gaps() {
     curSection = "GAPS";
     std::printf("\n[8] KNOWN GAPS (honest 100//100 gaps — these SHOULD FAIL until fixed)\n");
@@ -1104,6 +1270,7 @@ int main(){
     test_recipes();
     test_mobs();
     test_combat();
+    test_combat_sweep_crit_shield(); // plan44 G-07/G-08/G-09
     test_worldgen();
     test_weather_time_diff();
     test_enchants();

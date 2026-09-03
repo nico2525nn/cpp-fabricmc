@@ -10,6 +10,7 @@
 #include "Items.hpp"
 #include "DamageSource.hpp"
 #include "Entities.hpp"
+#include "MeleeHelper.hpp"
 
 namespace cppfm {
 
@@ -146,6 +147,64 @@ public:
     static int getMultishot(const ItemStack& s){ return std::max(s.enchantLevel("multishot"), s.enchantLevel("minecraft:multishot")); }
     static int getPiercing(const ItemStack& s){ return std::max(s.enchantLevel("piercing"), s.enchantLevel("minecraft:piercing")); }
     static int getQuickCharge(const ItemStack& s){ return std::max(s.enchantLevel("quick_charge"), s.enchantLevel("minecraft:quick_charge")); }
+    // plan44 §3 G-09: remaining effect getters (41/41 coverage — vanilla 1.21.4 has 42 incl. breach/density/wind_burst)
+    static int getSweepingEdge(const ItemStack& s){ return std::max(s.enchantLevel("sweeping_edge"), s.enchantLevel("minecraft:sweeping_edge")); }
+    static int getThorns(const ItemStack& s){ return std::max(s.enchantLevel("thorns"), s.enchantLevel("minecraft:thorns")); }
+    static int getDepthStrider(const ItemStack& s){ return std::max(s.enchantLevel("depth_strider"), s.enchantLevel("minecraft:depth_strider")); }
+    static int getBreach(const ItemStack& s){ return std::max(s.enchantLevel("breach"), s.enchantLevel("minecraft:breach")); }
+    static int getDensity(const ItemStack& s){ return std::max(s.enchantLevel("density"), s.enchantLevel("minecraft:density")); }
+    static int getWindBurst(const ItemStack& s){ return std::max(s.enchantLevel("wind_burst"), s.enchantLevel("minecraft:wind_burst")); }
+    static int getFireAspect(const ItemStack& s){ return std::max(s.enchantLevel("fire_aspect"), s.enchantLevel("minecraft:fire_aspect")); }
+    static int getLooting(const ItemStack& s){ return std::max(s.enchantLevel("looting"), s.enchantLevel("minecraft:looting")); }
+    // plan44 §3 G-09 effect functions (pure, delegate to MeleeHelper formulas):
+    // sweep victims take round(1 + AD*lv/(lv+1)); lv0 => 1
+    static float sweepingDamage(float attackDamage, const ItemStack& weapon) {
+        return sweepingEdgeDamage(attackDamage, getSweepingEdge(weapon));
+    }
+    // breach pre-discounts armor input (DamageCalculator formula untouched — E-06 lock)
+    static int breachArmor(int armor, const ItemStack& weapon) {
+        return breachAdjustedArmor(armor, getBreach(weapon));
+    }
+    // density mace smash bonus from attacker fall distance
+    static float densityBonus(int fallBlocks, const ItemStack& weapon) {
+        return densitySmashBonus(fallBlocks, getDensity(weapon));
+    }
+    static bool isAquatic(MobKind k) {
+        switch (k) {
+            case MobKind::Drowned: case MobKind::Guardian: case MobKind::ElderGuardian:
+            case MobKind::Squid: case MobKind::GlowSquid: case MobKind::Turtle:
+            case MobKind::Axolotl: case MobKind::Cod: case MobKind::Salmon:
+            case MobKind::Pufferfish: case MobKind::TropicalFish: case MobKind::Dolphin:
+            case MobKind::Frog: case MobKind::Tadpole: return true;
+            default: return false;
+        }
+    }
+    // impaling +2.5/lv vs aquatic mobs (JE)
+    static float impalingBonusFor(const ItemStack& weapon, MobKind victimKind) {
+        if (!isAquatic(victimKind)) return 0.f;
+        return 2.5f * static_cast<float>(getImpaling(weapon));
+    }
+    // thorns reflect roll: returns reflected damage (0 = no proc); per-piece independent
+    static int thornsReflect(const ItemStack& armorPiece, float rollProc, float rollDmg) {
+        int lv = std::max(armorPiece.enchantLevel("thorns"), armorPiece.enchantLevel("minecraft:thorns"));
+        if (lv <= 0 || rollProc >= 0.15f * static_cast<float>(lv)) return 0;
+        int d = 1 + static_cast<int>(rollDmg * 4.f);
+        return std::clamp(d, 1, 4);
+    }
+    // riptide launch distance in blocks (9/15/21 for I/II/III)
+    static float riptideBlocks(const ItemStack& trident) {
+        int lv = getRiptide(trident);
+        if (lv <= 0) return 0.f;
+        return 3.f + 6.f * static_cast<float>(std::min(lv, 3));
+    }
+    // multishot: 3 arrows, durability cost of 1 (plan44 §3)
+    static int multishotShots(const ItemStack& crossbow) {
+        return getMultishot(crossbow) > 0 ? 3 : 1;
+    }
+    static int frostRadiusFor(const ItemStack& boots) {
+        int lv = frostWalkerLevel(boots);
+        return 2 + std::max(0, lv);
+    }
 
     // plan40 C-08: undead / arthropod helpers for smite/bane
     static bool isUndead(MobKind k){

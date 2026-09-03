@@ -45,6 +45,7 @@ add_executable(cppfm
     src/game/MobSpawner.cpp
     src/game/HungerManager.cpp
     src/game/CombatManager.cpp
+    src/game/CombatShield.cpp
     src/game/InventoryController.cpp
     src/game/FunctionEvaluator.cpp
 )
@@ -102,6 +103,7 @@ add_executable(test_native
     src/game/MobSpawner.cpp
     src/game/HungerManager.cpp
     src/game/CombatManager.cpp
+    src/game/CombatShield.cpp
     src/game/InventoryController.cpp
     src/game/FunctionEvaluator.cpp)
 target_include_directories(test_native PRIVATE src src/generated tests)
@@ -170,6 +172,7 @@ add_executable(test_smoke_80
     src/game/MobSpawner.cpp
     src/game/HungerManager.cpp
     src/game/CombatManager.cpp
+    src/game/CombatShield.cpp
     src/game/InventoryController.cpp
     src/game/FunctionEvaluator.cpp)
 target_include_directories(test_smoke_80 PRIVATE src src/generated tests)
@@ -221,6 +224,7 @@ set_tests_properties(soak2h PROPERTIES TIMEOUT 8000 LABELS nightly)
 add_executable(test_gameplay_full tests/test_gameplay_full.cpp
     src/core/NBT.cpp
     src/physics/Redstone.cpp
+    src/game/CombatShield.cpp
     src/worldgen/DensityFunction.cpp src/worldgen/MultiNoise.cpp src/worldgen/Structures.cpp src/worldgen/StructurePlacer.cpp src/worldgen/ChunkGenerator.cpp src/worldgen/StructureManager.cpp src/game/WorldGen.cpp src/game/WorldDataManager.cpp)
 target_include_directories(test_gameplay_full PRIVATE src src/generated)
 find_package(ZLIB REQUIRED)
