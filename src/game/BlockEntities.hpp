@@ -69,14 +69,24 @@ struct MovingPistonData {
     std::int64_t finishTick = 0;
 };
 
+// plan43 W-07: sign texts (vanilla SignText front/back, 4 lines each as raw
+// strings — plain text or JSON components, stored verbatim).
+struct SignData {
+    std::string front[4];
+    std::string back[4];
+    bool hasFront = false;
+    bool hasBack = false;
+};
+
 struct BlockEntity {
-    enum class Kind { Chest, Furnace, Hopper, Dispenser, Dropper, Barrel, ShulkerBox, Brewing, MovingPiston };
+    enum class Kind { Chest, Furnace, Hopper, Dispenser, Dropper, Barrel, ShulkerBox, Brewing, MovingPiston, Sign };
     Kind kind = Kind::Chest;
     ChestData chest{};
     FurnaceData furnace{};
     GenericContainerData generic{};
     BrewingData brewing{};
     MovingPistonData movingPiston{};
+    SignData sign{};
     bool isDropper() const { return kind == Kind::Dropper; }
     bool isDispenser() const { return kind == Kind::Dispenser; }
 };
@@ -141,6 +151,22 @@ public:
                 writeItems(e, be.brewing.slots, BrewingData::kSlots, "Items");
                 e.set("BrewTime", nbt::Value::makeShort(be.brewing.brewTime));
                 e.set("Fuel", nbt::Value::makeByte(static_cast<std::int8_t>(be.brewing.fuel)));
+            } else if (be.kind == BlockEntity::Kind::Sign) {
+                // plan43 W-07: vanilla SignBlockEntity shape (front_text/back_text).
+                e.set("id", nbt::Value::makeString("minecraft:sign"));
+                e.set("is_waxed", nbt::Value::makeByte(0));
+                auto writeSide = [&](const char* key, const std::string lines[4]) {
+                    nbt::Value t = nbt::Value::makeCompound();
+                    nbt::Value msgs = nbt::Value::makeList(nbt::String, 4);
+                    for (int i = 0; i < 4; ++i)
+                        msgs.list.push_back(nbt::Value::makeString(lines[i]));
+                    t.set("messages", std::move(msgs));
+                    t.set("color", nbt::Value::makeString("black"));
+                    t.set("has_glowing_text", nbt::Value::makeByte(0));
+                    e.set(key, std::move(t));
+                };
+                writeSide("front_text", be.sign.front);
+                writeSide("back_text", be.sign.back);
             } else {
                 e.set("id", nbt::Value::makeString("minecraft:furnace"));
                 writeFurnaceItems(e, be.furnace);
@@ -217,6 +243,23 @@ private:
             if (const auto* b = e.get("BurnTime")) be.furnace.burnTicks = b->s;
             if (const auto* c = e.get("CookTime")) be.furnace.cookProgress = c->s;
             if (const auto* t = e.get("CookTimeTotal")) be.furnace.cookTotal = t->s;
+            dirty_.insert(key);
+        } else if (id == "minecraft:sign" || id == "minecraft:hanging_sign") {
+            // plan43 W-07: reload persisted sign texts (matches writeChunkNbt shape).
+            BlockEntity& be = map_[key];
+            be = BlockEntity{};
+            be.kind = BlockEntity::Kind::Sign;
+            auto readSide = [&](const char* side, std::string out[4], bool& has) {
+                const auto* t = e.get(side);
+                if (!t || t->tag != nbt::Compound) return;
+                const auto* m = t->get("messages");
+                if (!m || m->tag != nbt::List) return;
+                for (int i = 0; i < 4 && i < static_cast<int>(m->list.size()); ++i)
+                    if (m->list[i].tag == nbt::String) out[i] = m->list[i].str;
+                has = true;
+            };
+            readSide("front_text", be.sign.front, be.sign.hasFront);
+            readSide("back_text", be.sign.back, be.sign.hasBack);
             dirty_.insert(key);
         }
     }
