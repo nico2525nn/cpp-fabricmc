@@ -313,7 +313,20 @@ void GameServer::sendAdvancementsTo(Player& p, bool reset) {
 }
 void GameServer::grantAdvancement(Player& p, const std::string& id) {
     if (!p.advancements) return;
-    if (p.advancements->grant(id)) sendAdvancementsTo(p, false);
+    if (p.advancements->grant(id)) {
+        sendAdvancementsTo(p, false);
+        // plan42 R1: SelectAdvancementTab 0x4F sync tab selection
+        std::string tab = id;
+        auto slash = tab.find("/");
+        if (slash!=std::string::npos) tab = tab.substr(0, slash);
+        if (tab.find(":")==std::string::npos) tab = "minecraft:" + tab;
+        // special: cppfm:root -> minecraft:story/root tab, vanilla story root
+        if (id=="cppfm:root") tab = "minecraft:story/root";
+        else if (tab=="minecraft:story" || tab=="minecraft:adventure" || tab=="minecraft:nether" || tab=="minecraft:end" || tab=="minecraft:husbandry") { /* keep tab */ }
+        else if (id.rfind("minecraft:",0)==0) tab = id;
+        else tab = id;
+        sendSelectAdvancementTab(p, tab);
+    }
 }
 std::vector<AdvancementDefOwned> GameServer::getMergedAdvancements() {
     size_t cur = datapackManager_.advancements.size();

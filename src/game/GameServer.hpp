@@ -842,6 +842,14 @@ public:
     void broadcastSyncEntityPosition(std::int32_t entityId, double x, double y, double z, double dx=0, double dy=0, double dz=0, float yaw=0, float pitch=0, bool onGround=true, Player* except=nullptr);
     void sendSyncEntityPosition(Player& p, const MobEntity& mob);
     void broadcastSyncEntityPosition(const MobEntity& mob, Player* except=nullptr);
+    // plan42 R1 wire: MapData 0x2D MoveMinecart 0x31 SelectAdvancementTab 0x4F
+    void sendMapData(Player& p, int mapId, uint8_t scale=2, bool locked=false);
+    void sendMapData(Player& p, int mapId, const std::array<uint8_t,16384>& colors, uint8_t scale=2);
+    void broadcastMapData(int mapId, uint8_t scale, bool locked, Player* except=nullptr);
+    void sendMoveMinecart(Player& p, std::int32_t entityId, double x, double y, double z, float yaw, float pitch);
+    void broadcastMoveMinecart(std::int32_t entityId, double x, double y, double z, float yaw, float pitch, Player* except=nullptr);
+    void sendSelectAdvancementTab(Player& p, const std::string& tabId);
+    void broadcastSelectAdvancementTab(const std::string& tabId, Player* except=nullptr);
     void itemsTick();
     void trySpawnMobs();
     void spawnItemDrop(double x,double y,double z,std::uint32_t itemId,std::uint8_t cnt,
@@ -1239,6 +1247,7 @@ private:
     std::atomic<bool> running_{true};
     int listenFd_ = -1;
     std::int32_t entityIdCounter_ = 1;
+    std::atomic<int> nextMapId_{1}; // plan42 MapData allocation
 };
 
 } // namespace cppfm
