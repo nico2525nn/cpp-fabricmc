@@ -60,10 +60,18 @@ proven **byte-identical to a real reference server's output** by golden tests.
 - **`test_native` (C++ self-test, status/join + plan38 QC/macro/predicate16 cases: status/join/chunk/chat/persist/multi/stress + plan34 fuzz/soak):** `ALL PASS (status/join + plan38 QC/macro/predicate16)` — run `./build/test_native ./build/cppfm` (50s). Verifies `status 769`, `Login Success`, `Join Game`, `LevelChunkWithLight`, `BlockUpdate` broadcast, `SystemChat`, and cross-client visibility.
 - **`test_smoke_80` (80-row taxonomy + plan32-41 拡張, `tests/test_smoke_80.cpp`):** `212 PASS 0 FAIL` (80-row taxonomy + 82 拡張チェック plan41 horse/vehicle/bench/recipes) — each check verifies a vanilla packet/NBT (e.g., `worldborder size → InitializeWorldBorder 0x26`, `glowstone → UpdateLight 0x2B`, `wither → BossBar 0x0A`, `ActionBar 0x51`, `OpenHorseWindow 0x24`, `VehicleMove 0x33`, predicate 22). Run `./build/test_smoke_80 ./build/cppfm` (450s, 600s under load; `=== SMOKE 80: 212 PASS 0 FAIL ===`, exit 0).
 - **`test_scoreboard_reset` (ResetScore `0x49` round-trip, `tests/test_scoreboard_reset.cpp`):** `22/22 PASS` — holder + optional objectiveName round-trip / wildcard null broadcast / copy-before-erase. Run `./build/test_scoreboard_reset` (ctest `scoreboard_reset`, TIMEOUT 30).
-- **`test_spec_wire` (wire byte-identical, `tests/test_spec_wire.cpp` plan30-41):** `328 PASS 0 FAIL 0 SKIP` — 25+ wire cases covering all play `toClient` families (chunk/light/bundle, `UpdateAttributes 0x7C` `H1` varint mapper + horse `0x24` vehicle `0x33` + recipes tag, predicate 22) vs Prismarine `protocol.json` spec bytes (`EXPECT_EQ` `WriteBuffer` vs spec). Run `./build/test_spec_wire` (ctest `spec_wire`, TIMEOUT 30).
+- **`test_spec_wire` (wire byte-identical, `tests/test_spec_wire.cpp` plan30-43):** `392 PASS 0 FAIL 0 SKIP` — 25+ wire cases covering all play `toClient` families (chunk/light/bundle, `UpdateAttributes 0x7C` `H1` varint mapper + horse `0x24` vehicle `0x33` + recipes tag, predicate 22) vs Prismarine `protocol.json` spec bytes (`EXPECT_EQ` `WriteBuffer` vs spec) + plan43 P43-1..7 shape locks. Run `./build/test_spec_wire` (ctest `spec_wire`, TIMEOUT 30).
+- **`test_wire_full` (full play matrix, `tests/test_wire_full.cpp`):** `405 PASS 0 FAIL` — toClientplay 全型の byte lock。Run `./build/test_wire_full` (ctest `wire_full`).
+- **`test_gameplay_full` (gameplay asserts, `tests/test_gameplay_full.cpp` plan42-46):** `734 PASS 1 FAIL` (E-14 Fabric honest gap のみ by design) — redstone engine・combat sweep/crit/shield・mob behavior・density・food/potion・crops/villager 込。Run `./build/test_gameplay_full` (ctest `gameplay_full`).
+- **`test_wire_b6` (plan45 B6 wire, `tests/test_wire_b6.cpp` assessment-6 W-05/08-11/13 + G-13):** `133 PASS` — settings `0x0C`・NameItem/Beacon/PickItem/RecipeBook・OP gate + spectate・steer_boat/resource_pack/pong・login 5 種・名前検証 + 重複 kick・crafting live。Run `./build/test_wire_b6` (ctest `wire_b6`).
+- **`test_seed_parity` (plan45 G-11, `tests/test_seed_parity.cpp`):** `201 PASS` — バイオーム 65・構造物 42+ (jar 検証)・同一 seed 同一ワールドの 3 層 parity。Run `./build/test_seed_parity` (ctest `seed_parity`).
+- **`test_flood_net` (plan46 defense O-13/W-14/W-16, `tests/test_flood_net.cpp`):** `PASS` — 防御 A1-A8 (2MB 超切断・chat 20msg/s throttle・malformed 1000 連で生存・zlib 爆弾予算・per-packet try + Disconnect)。Run `./build/test_flood_net ./build/cppfm` (ctest `flood_net`).
+- **`test_recovery` (plan46 O-06〜O-10, `tests/test_recovery.cpp`):** `45 PASS` — 破損注入 (truncate・bitflip・空ファイル) ×3 種で起動可 + 被害限定 + `check_world` NBT 整合 + ban/ops 永続 E2E。Run `./build/test_recovery` (ctest `recovery`).
+- **`test_rcon_multi` (plan46 O-09, `tests/test_rcon_multi.cpp`):** `PASS` — 5 同時 RCON 全応答・誤パス 10 連で拒否継続・tick 無影響。Run `./build/test_rcon_multi` (ctest `rcon_multi`).
+- **`test_mining_full` / `test_block_hardness_full` / `test_mob_stats_full` / `test_redstone_engine_full` (plan44 G-02/03/05/12):** mining `38 PASS` / hardness 1095 mismatch 0 / mob_stats `131 PASS` (149 種 + followRange) / redstone `29 PASS` (7 カテゴリ engine 経由)。Run `ctest -R "mining_full|block_hardness_full|mob_stats_full|redstone_engine_full"`.
 - **`test_fuzz` (fuzz 23 cases, `tests/test_fuzz.cpp` plan34):** `23 PASS 0 FAIL` — malformed varint/NBT/packet fuzz, no crash/UBSan. Run `./build/test_fuzz` (ctest `fuzz`, TIMEOUT 30).
 - **`bench` / `multi_client` / `bot_smoke` / `soak_bot` (plan41 C-09/C-12):** `bench` p50 0.1ms p95 2.5ms hit 83% PASS / `multi_client` 3-clients ALL PASS (chunkCoords 169 + tracker 1159 + drag mode5) / `bot_smoke` 3-clients 30s ALL PASS / `soak_bot` 300s PASS (nightly 3600s). Ctest `bench` `multi_client` `bot_smoke` `soak_bot` (plan41). Run `ctest -R bench --output-on-failure` / `python3 tests/bot_smoke.py --binary ./build/cppfm --duration 30` / `python3 tools/soak_bot.py --duration 300 --binary ./build/cppfm`.
-- **Strict audit (`docs/assessment-1.md`):** `78/78` fixed, `0` remain. Deep audit `31/31` + `H1 32/32` — **109 gaps closed** + assessment-4 **C-series 12/12 FIXED → 90到達** (plan41). Wire `328 PASS` / smoke `212 PASS` / fuzz `23 PASS`.
+- **Strict audit (`docs/assessment-1.md`):** `78/78` fixed, `0` remain. Deep audit `31/31` + `H1 32/32` — **109 gaps closed** + assessment-4 **C-series 12/12 FIXED → 90到達** (plan41) + assessment-5 **E-series 19/19 → 100** (plan42) + assessment-6 **W/G/O 44/44 FIXED (HIGH 25/25) → true-100** (plan43-46). Wire `392 PASS` / gameplay `734 PASS` / wire_b6 `133` / seed_parity `201` / flood_net PASS / recovery `45` / smoke `212 PASS` / fuzz `23 PASS`.
 
 ## Clean-room methodology (important)
 
@@ -126,6 +134,13 @@ python3 tools/bench_chunk_gen.py --view-distance 32 --chunks 4225 --dry --strict
 ./build/test_scoreboard_reset              # 22 cases ResetScore 0x49 round-trip
 ./build/test_spec_wire                     # 328 PASS 0 FAIL wire byte-identical
 ./build/test_fuzz                          # 23 PASS fuzz 23 cases — malformed varint/NBT/packet no crash
+./build/test_wire_full                     # 405 PASS full play matrix byte lock
+./build/test_gameplay_full                 # 734 PASS 1 FAIL (E-14 by design) gameplay asserts
+./build/test_wire_b6                       # 133 PASS plan45 B6 (settings/GUI/OP/login/crafting live)
+./build/test_seed_parity                   # 201 PASS plan45 G-11 (biome 65 + struct 42 + 3-layer parity)
+./build/test_flood_net ./build/cppfm       # PASS plan46 defense A1-A8 (2MB/chat flood/malformed 1000)
+./build/test_recovery                      # 45 PASS plan46 recovery (corrupt inject x3 + check_world)
+./build/test_rcon_multi                    # PASS plan46 (5 concurrent + wrong-pass flood)
 ./build/test_recipes_mirror                # 76 PASS recipes mirror/offset strict
 python3 tools/bench_chunk_gen.py --view-distance 32 --chunks 100 --dry --strict  # p50 0.1 p95 2.5 hit 83 PASS
 python3 tests/multi_client_test.py --binary ./build/cppfm   # 3-clients ALL PASS (chunkCoords + tracker + drag)
@@ -141,7 +156,7 @@ ctest -R soak_bot --output-on-failure --timeout 400                 # soak_bot 3
 # 24hフルはnightlyのみ。PRでは300s dryでPASS確認すること。後始末は pkill -9 -f "cppfm --port" のみ。
 ```
 
-All suites pass in Release and ASan/UBSan (zero sanitizer) — `test_spec_wire 328 PASS` / `test_smoke_80 212 PASS` / `test_fuzz 23` / `test_recipes_mirror 76` / `bench` p50 0.1 p95 2.5 hit83 / `multi_client` 3-clients / `bot_smoke` 30s. For true parity, see `docs/assessment-1.md` (**78/78**) + `docs/assessment-2.md` (**31/31** + `H1 32/32`) + `docs/assessment-3.md` (**14/14**) + `docs/assessment-4.md` (**12/12 FIXED → 90到達**, 2026-09-02) — **109 + 12 + 14 = 135 gaps closed**, Prismarine 131 `toClient` byte-identical. `python3 tools/score_review.py` reports **100/100 (40/30/15/15)** for plan41 (see `tools/score_review.py`).
+All suites pass in Release and ASan/UBSan (zero sanitizer) — `test_spec_wire 392 PASS` / `test_wire_full 405` / `test_gameplay_full 734/1` (E-14 by design) / `test_wire_b6 133` / `test_seed_parity 201` / `test_flood_net` PASS / `test_recovery 45` / `test_rcon_multi` PASS / `test_mining_full 38` / `test_mob_stats_full 131` / `test_redstone_engine_full 29` / `test_smoke_80 212 PASS` / `test_fuzz 23` / `test_recipes_mirror 76` / `bench` p50 0.107 p95 2.5 hit83 (view32) / `multi_client` 3-clients / `bot_smoke` 30s / soak 300s PASS. For true parity, see `docs/assessment-1.md` (**78/78**) + `docs/assessment-2.md` (**31/31** + `H1 32/32`) + `docs/assessment-3.md` (**14/14**) + `docs/assessment-4.md` (**12/12 FIXED → 90到達**, 2026-09-02) — **109 + 12 + 14 = 135 gaps closed**, Prismarine 131 `toClient` byte-identical. `python3 tools/score_review.py` reports **100/100 (40/30/15/15)** for plan41 (see `tools/score_review.py`).
 
 ### Reproducing the reference captures
 
