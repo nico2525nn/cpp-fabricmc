@@ -111,6 +111,7 @@ static int stackLimit(std::uint32_t itemId) {
     return limit;
 }
 int maxStackFor(const ItemStack& s) { return s.empty() ? 64 : stackLimit(s.itemId); }
+int maxStackForId(std::uint32_t itemId) { return stackLimit(itemId); }
 
 bool isTakeOnlySlot(const Menu& m, int slot) {
     if (m.type == MenuType::Crafting && slot == 0) return true;

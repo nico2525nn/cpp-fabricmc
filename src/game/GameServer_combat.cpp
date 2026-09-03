@@ -1,4 +1,5 @@
 #include "GameServer.hpp"
+#include "Messages.hpp"
 #include "BlockEvent.hpp"
 #include "MetadataTypes.hpp"
 #include "../physics/LightEngine.hpp"
@@ -84,7 +85,7 @@ void GameServer::killPlayer(Player& p, const char* cause) {
     scoreboard.addScore("deaths", p.name, 1);
     sendScoreAll("deaths", p.name,
                  scoreboard.getScore("deaths", p.name));
-    broadcastSystemText(std::string("\u00a7c") + p.name + " died (" + cause + ")", &p);
+    broadcastSystemText((msg::kRed + p.name + " died (" + cause + ")"), &p);
     // plan37 B-11 vanishing_curse: drop inventory except vanishing, respect keepInventory gamerule
     {
         bool keepInv = false;
