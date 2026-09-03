@@ -266,6 +266,32 @@ class SnifferDigGoal final : public Goal { public: SnifferDigGoal(): Goal(3) {} 
 class CamelDashGoal final : public Goal { public: CamelDashGoal(): Goal(2) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
 class AllayDuplicateGoal final : public Goal { public: AllayDuplicateGoal(): Goal(3) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
 class BoggedPoisonGoal final : public Goal { public: BoggedPoisonGoal(): Goal(2) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+// plan42 R2 E-11: 19 species/group-default goals closing 60->139.
+// Design (§5): explicit per-species default Goal sets with kind parameters
+// (speed/sight/range via mobStats) + specific behavior for 10-15 notable kinds.
+// Group gates (Fish/Graze/Boat/Minecart/Projectile) share one class per movement
+// family instead of 79 near-identical classes; existing 59 goals untouched.
+class FishSwimGoal final : public Goal { public: FishSwimGoal(): Goal(5) {} bool shouldStart(MobEntity& m, AiContext&) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class GrazeGoal final : public Goal { public: GrazeGoal(): Goal(5) {} bool shouldStart(MobEntity& m, AiContext&) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class BoatDriftGoal final : public Goal { public: BoatDriftGoal(): Goal(5) {} bool shouldStart(MobEntity& m, AiContext&) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class MinecartRollGoal final : public Goal { public: MinecartRollGoal(): Goal(5) {} bool shouldStart(MobEntity& m, AiContext&) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class VexChargeGoal final : public Goal { public: VexChargeGoal(): Goal(2) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class PiglinBruteAttackGoal final : public Goal { public: PiglinBruteAttackGoal(): Goal(2) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class ZombieVillagerCureGoal final : public Goal { public: ZombieVillagerCureGoal(): Goal(3) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class ZombifiedPiglinAngerGoal final : public Goal { public: ZombifiedPiglinAngerGoal(): Goal(2) {} bool shouldStart(MobEntity& m, AiContext&) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class SkeletonHorseTrapGoal final : public Goal { public: SkeletonHorseTrapGoal(): Goal(2) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class GiantStompGoal final : public Goal { public: GiantStompGoal(): Goal(2) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class LlamaSpitGoal final : public Goal { public: LlamaSpitGoal(): Goal(3) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class ChickenLayEggGoal final : public Goal { public: ChickenLayEggGoal(): Goal(4) {} bool shouldStart(MobEntity& m, AiContext&) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class HuskHungerGoal final : public Goal { public: HuskHungerGoal(): Goal(3) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class PolarBearDefendGoal final : public Goal { public: PolarBearDefendGoal(): Goal(2) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class PufferfishPuffGoal final : public Goal { public: PufferfishPuffGoal(): Goal(2) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class ProjectileFlyGoal final : public Goal { public: ProjectileFlyGoal(): Goal(5) {} bool shouldStart(MobEntity& m, AiContext&) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class EvokerFangsSnapGoal final : public Goal { public: EvokerFangsSnapGoal(): Goal(1) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class EndCrystalHoverGoal final : public Goal { public: EndCrystalHoverGoal(): Goal(5) {} bool shouldStart(MobEntity& m, AiContext&) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class TntFuseGoal final : public Goal { public: TntFuseGoal(): Goal(1) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class BatRoostGoal final : public Goal { public: BatRoostGoal(): Goal(4) {} bool shouldStart(MobEntity& m, AiContext&) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
+class AmbientObjectGoal final : public Goal { public: AmbientObjectGoal(): Goal(5) {} bool shouldStart(MobEntity& m, AiContext&) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
 
 // ---------------------------------------------------------------- brain ---
 
@@ -278,6 +304,10 @@ public:
     void setBehaviorTree(std::unique_ptr<BehaviorTree> t);
     bool hasBehaviorTree() const;
     void tick(MobEntity& m, AiContext& ctx, std::int64_t now);
+    std::size_t goalCount() const { return goals_.size(); }
+    // plan42 R2 E-11: true if any non-generic goal explicitly gates kind k
+    // (group gates: Fish/Graze/Boat/Minecart/Projectile/Ambient families + 13 singles).
+    static bool coversKind(MobKind k);
 
 private:
     std::vector<std::unique_ptr<Goal>> goals_;

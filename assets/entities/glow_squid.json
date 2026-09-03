@@ -17,6 +17,10 @@
       {
         "type": "minecraft:wander",
         "priority": "priority"
+      },
+      {
+        "type": "minecraft:swim_wander",
+        "priority": 5
       }
     ],
     "sensors": [

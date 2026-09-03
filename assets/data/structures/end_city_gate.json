@@ -1,0 +1,48 @@
+{
+  "name": "minecraft:end_city_gate",
+  "type": "minecraft:end_city",
+  "placement": {
+    "spacing": 20,
+    "separation": 11,
+    "salt": 10387322,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:end_city/gate",
+      "weight": 6
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:end_stone_bricks",
+    "log": "minecraft:purpur_block",
+    "glass": "minecraft:purpur_pillar",
+    "chest": "minecraft:chest"
+  },
+  "mobs": [
+    {
+      "pos": [
+        4,
+        1,
+        4
+      ],
+      "mob": "minecraft:shulker",
+      "count": 1
+    },
+    {
+      "pos": [
+        2,
+        1,
+        2
+      ],
+      "mob": "minecraft:enderman",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "4,1,4",
+      "table": "minecraft:chests/end_city_treasure"
+    }
+  ]
+}

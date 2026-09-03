@@ -17,6 +17,14 @@
       {
         "type": "minecraft:wander",
         "priority": "priority"
+      },
+      {
+        "type": "minecraft:bat_roost",
+        "priority": 4
+      },
+      {
+        "type": "minecraft:fly_wander",
+        "priority": 5
       }
     ],
     "sensors": [

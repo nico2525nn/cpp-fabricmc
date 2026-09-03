@@ -1,0 +1,43 @@
+{
+  "name": "minecraft:desert_pyramid_trap",
+  "type": "minecraft:desert_pyramid",
+  "placement": {
+    "spacing": 32,
+    "separation": 8,
+    "salt": 14357622,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:desert_pyramid/trap",
+      "weight": 8
+    },
+    {
+      "name": "minecraft:desert_pyramid/crypt",
+      "weight": 5
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:sandstone",
+    "log": "minecraft:chiseled_sandstone",
+    "glass": "minecraft:air",
+    "chest": "minecraft:chest"
+  },
+  "mobs": [
+    {
+      "pos": [
+        2,
+        1,
+        2
+      ],
+      "mob": "minecraft:skeleton",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "2,1,2",
+      "table": "minecraft:chests/desert_pyramid"
+    }
+  ]
+}
