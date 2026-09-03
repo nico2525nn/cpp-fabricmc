@@ -834,15 +834,14 @@ static void test_0x58_SetCenterChunk(){
     std::printf("[P58] SetCenterChunk 0x58 varint varint\n");
     WriteBuffer b; b.varint(0); b.varint(0); expectEq(b.data, std::vector<uint8_t>{0x00,0x00}, "SetCenterChunk 0,0");
 }
-// 0x59 UpdateViewDistance — omitted (use Login 0x2C viewDistance + SimulationDistance 0x69)
-// Vanilla: UpdateViewDistance 0x59 (varint viewDistance) は Login 0x2C の viewDistance + SimulationDistance 0x69 で代替。
-// 動的 viewDistance変更は 90→100演出外だが体験担保。
+// 0x59 UpdateViewDistance — sent (plan46 O-03: login + Settings 0x0C confirm, server-clamped vd).
+// Body: varint viewDistance (Login 0x2C viewDistance + SimulationDistance 0x69 carry the same value at join).
 static void test_0x59_UpdateViewDistance_gap(){
-    std::printf("[P59] UpdateViewDistance 0x59 omitted — Login/SimulationDistance alternative\n");
-    check(proto::pl::sc::UpdateViewDistance==0x59, "UpdateViewDistance 0x59 id lock (omitted)");
+    std::printf("[P59] UpdateViewDistance 0x59 sent (plan46 O-03)\n");
+    check(proto::pl::sc::UpdateViewDistance==0x59, "UpdateViewDistance 0x59 id lock (sent)");
     check(proto::pl::sc::Login==0x2C && proto::pl::sc::SimulationDistance==0x69,
-          "Login 0x2C + SimulationDistance 0x69 alternative for UpdateViewDistance");
-    WriteBuffer b; b.varint(8); check(b.data.size()==1 && b.data[0]==0x08, "SimulationDistance 0x69 body alternative present");
+          "Login 0x2C + SimulationDistance 0x69 carry view distance at join");
+    WriteBuffer b; b.varint(6); check(b.data.size()==1 && b.data[0]==0x06, "UpdateViewDistance 0x59 body varint vd");
 }
 // 0x5A SetCursorItem — Slot
 static void test_0x5A_SetCursorItem(){

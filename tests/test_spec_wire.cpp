@@ -755,7 +755,7 @@ static void test_unsent_27_verify(){
     check(proto::pl::sc::SelectAdvancementTab==0x4F,"SelectAdvancementTab 0x4F unsent");
     check(proto::pl::sc::ServerData==0x50,"ServerData 0x50 unsent");
     check(proto::pl::sc::ActionBar==0x51,"ActionBar 0x51 unsent");
-    check(proto::pl::sc::UpdateViewDistance==0x59,"UpdateViewDistance 0x59 unsent");
+    check(proto::pl::sc::UpdateViewDistance==0x59,"UpdateViewDistance 0x59 (sent: plan46 O-03 login+settings)");
     check(proto::pl::sc::AttachEntity==0x5E,"AttachEntity 0x5E unsent");
     check(proto::pl::sc::SetPlayerInventory==0x66,"SetPlayerInventory 0x66 unsent");
     check(proto::pl::sc::EntitySoundEffect==0x6E,"EntitySoundEffect 0x6E unsent");

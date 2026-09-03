@@ -946,6 +946,18 @@ public:
     void broadcastSelectAdvancementTab(const std::string& tabId, Player* except=nullptr);
     void itemsTick();
     void trySpawnMobs();
+    // plan46 G-15: spawn-rule spec pins (pure, unit-testable).
+    // Group caps mirror vanilla (monster 70 / creature 10 / ambient 15 /
+    // water_creature 5 / water_ambient 20 / underground 5 / axolotls 5).
+    static std::array<int,7> spawnGroupCaps() { return {70,10,15,5,20,5,5}; }
+    // Hostile gate as implemented in trySpawnMobs: effLight<=7 at night/rain/
+    // thunder, never on peaceful. (Vanilla uses light 0; the <=7 band is a
+    // documented simplification — see test_time_growth + SOAK_24H notes.)
+    static bool hostileSpawnLightOk(double effLight, bool night, bool rain,
+                                    bool thunder, const std::string& difficulty) {
+        if (difficulty == "peaceful") return false;
+        return effLight <= 7.0 && (night || rain || thunder);
+    }
     void spawnItemDrop(double x,double y,double z,std::uint32_t itemId,std::uint8_t cnt,
                        double vx=0,double vy=0,double vz=0);
     // D11 (plan26 §4): ItemStack overload preserves components (enchant/trim/damage) for Slot type 7

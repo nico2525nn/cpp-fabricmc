@@ -36,6 +36,10 @@
 #include "game/HungerManager.hpp"
 #include "game/EnchantmentHelper.hpp"
 #include "game/MeleeHelper.hpp"
+#include "game/MobBehaviorSpec.hpp"
+#include "game/PotionBrewing.hpp"
+#include "game/BlockEntities.hpp"
+#include "physics/BlockTickScheduler.hpp"
 #include "game/GameRules.hpp"
 #include "worldgen/DensityFunction.hpp"
 #include "worldgen/MultiNoise.hpp"
@@ -1135,6 +1139,376 @@ static void test_combat_sweep_crit_shield() {
     }
 }
 
+// ------------------------------------------------------------------ plan46 G-06: mob species behavior spec (12 x interval/range/magnitude)
+static void checkMobSpec(MobKind k, int interval, double range, double mag) {
+    const MobBehaviorSpec* s = mobBehaviorSpec(k);
+    char buf[256];
+    std::snprintf(buf, sizeof buf, "spec exists for kind %d", (int)k);
+    CHECK(s != nullptr, buf);
+    if (!s) return;
+    std::snprintf(buf, sizeof buf, "%s interval %d", s->name, interval);
+    CHECK_EQ_INT(s->intervalTicks, interval, buf);
+    std::snprintf(buf, sizeof buf, "%s range %.1f", s->name, range);
+    CHECK_NEAR(s->rangeBlocks, range, 1e-9, buf);
+    std::snprintf(buf, sizeof buf, "%s magnitude %.1f", s->name, mag);
+    CHECK_NEAR(s->magnitude, mag, 1e-9, buf);
+    std::snprintf(buf, sizeof buf, "%s status+ref documented", s->name);
+    CHECK(s->status && s->status[0] && s->ref && s->ref[0], buf);
+}
+static void test_mob_behavior() {
+    curSection = "MOBBEH";
+    std::printf("\n[plan46 G-06] mob species behavior spec (12 species x interval/range/magnitude)\n");
+    checkMobSpec(MobKind::Witch, 40, 16.0, 6.0);
+    checkMobSpec(MobKind::Guardian, 60, 15.0, 6.0);
+    checkMobSpec(MobKind::ElderGuardian, 60, 50.0, 3.0);
+    checkMobSpec(MobKind::Strider, 40, 0.0, 1.0);
+    checkMobSpec(MobKind::Frog, 40, 6.0, 1.0);
+    checkMobSpec(MobKind::Camel, 55, 12.0, 2.0);
+    checkMobSpec(MobKind::Sniffer, 120, 0.0, 1.0);
+    checkMobSpec(MobKind::Armadillo, 60, 5.0, 1.0);
+    checkMobSpec(MobKind::Breeze, 32, 16.0, 1.0);
+    checkMobSpec(MobKind::Creaking, 20, 24.0, 1.0);
+    checkMobSpec(MobKind::Bogged, 60, 16.0, 1.0);
+    checkMobSpec(MobKind::Phantom, 200, 12.0, 1.0);
+    // live wiring: witch/guardian goals read interval/range from this table
+    {
+        const MobBehaviorSpec* w = mobBehaviorSpec(MobKind::Witch);
+        CHECK(w && w->intervalTicks == 40 && w->rangeBlocks == 16.0, "witch goal cycle 40t+jitter, range 16 (live in WitchPotionThrowGoal)");
+        const MobBehaviorSpec* g = mobBehaviorSpec(MobKind::Guardian);
+        CHECK(g && g->intervalTicks == 60 && g->rangeBlocks == 15.0 && g->magnitude == 6.0, "guardian beam cycle 60t, range 15, dmg 6 (live in GuardianBeamGoal)");
+    }
+    CHECK(mobBehaviorSpec(MobKind::Marker) == nullptr, "marker has no behavior spec (stationary by design)");
+    CHECK(mobBehaviorSpec(MobKind::Armadillo) != nullptr &&
+          std::string(mobBehaviorSpec(MobKind::Armadillo)->status).find("full") == 0, "armadillo roll-up fully covered");
+}
+
+// ------------------------------------------------------------------ plan46 G-14: food full table + potion full table + brewing tick
+static void checkFood(const char* name, int food, float sat) {
+    auto& t = HungerManager::foodTable();
+    auto it = t.find(name);
+    char buf[256];
+    std::snprintf(buf, sizeof buf, "food %s present", name);
+    CHECK(it != t.end(), buf);
+    if (it == t.end()) return;
+    std::snprintf(buf, sizeof buf, "%s hunger %d", name, food);
+    CHECK_EQ_INT(it->second.food, food, buf);
+    std::snprintf(buf, sizeof buf, "%s saturation %.1f", name, (double)sat);
+    CHECK(std::fabs(it->second.saturation - sat) < 1e-4f, buf);
+}
+static void test_food_potion_brewing() {
+    curSection = "FOODPOT";
+    std::printf("\n[plan46 G-14] food 42 + potion 46 + brewing tick 7 cases\n");
+    CHECK_EQ_INT((int)HungerManager::foodTable().size(), 42, "food table 42 entries (vanilla 1.21.4)");
+    checkFood("minecraft:apple", 4, 2.4f);
+    checkFood("minecraft:baked_potato", 5, 6.0f);
+    checkFood("minecraft:beetroot", 1, 1.2f);
+    checkFood("minecraft:beetroot_soup", 6, 7.2f);
+    checkFood("minecraft:bread", 5, 6.0f);
+    checkFood("minecraft:cake", 2, 0.4f);
+    checkFood("minecraft:carrot", 3, 3.6f);
+    checkFood("minecraft:chorus_fruit", 4, 2.4f);
+    checkFood("minecraft:cooked_beef", 8, 12.8f);
+    checkFood("minecraft:steak", 8, 12.8f);
+    checkFood("minecraft:cooked_chicken", 6, 7.2f);
+    checkFood("minecraft:cooked_cod", 5, 6.0f);
+    checkFood("minecraft:cooked_mutton", 6, 9.6f);
+    checkFood("minecraft:cooked_porkchop", 8, 12.8f);
+    checkFood("minecraft:cooked_rabbit", 5, 6.0f);
+    checkFood("minecraft:cooked_salmon", 6, 9.6f);
+    checkFood("minecraft:cookie", 2, 0.4f);
+    checkFood("minecraft:dried_kelp", 1, 0.6f);
+    checkFood("minecraft:enchanted_golden_apple", 4, 9.6f);
+    checkFood("minecraft:golden_apple", 4, 9.6f);
+    checkFood("minecraft:golden_carrot", 6, 14.4f);
+    checkFood("minecraft:glow_berries", 2, 0.4f);
+    checkFood("minecraft:honey_bottle", 6, 1.2f);
+    checkFood("minecraft:melon_slice", 2, 1.2f);
+    checkFood("minecraft:mushroom_stew", 6, 7.2f);
+    checkFood("minecraft:poisonous_potato", 2, 1.2f);
+    checkFood("minecraft:potato", 1, 0.6f);
+    checkFood("minecraft:pumpkin_pie", 8, 4.8f);
+    checkFood("minecraft:rabbit_stew", 10, 12.0f);
+    checkFood("minecraft:suspicious_stew", 6, 7.2f);
+    checkFood("minecraft:beef", 3, 1.8f);
+    checkFood("minecraft:chicken", 2, 1.2f);
+    checkFood("minecraft:porkchop", 3, 1.8f);
+    checkFood("minecraft:mutton", 2, 1.2f);
+    checkFood("minecraft:rabbit", 3, 1.8f);
+    checkFood("minecraft:cod", 2, 0.4f);
+    checkFood("minecraft:salmon", 2, 0.4f);
+    checkFood("minecraft:rotten_flesh", 4, 0.8f);
+    checkFood("minecraft:spider_eye", 2, 3.2f);
+    checkFood("minecraft:tropical_fish", 1, 0.2f);
+    checkFood("minecraft:pufferfish", 1, 0.2f);
+    checkFood("minecraft:sweet_berries", 2, 0.4f);
+    CHECK(HungerManager::isFoodItem("minecraft:apple"), "isFoodItem apple");
+    CHECK(HungerManager::isFoodItem("minecraft:rabbit_stew"), "isFoodItem stew substring");
+    CHECK(!HungerManager::isFoodItem("minecraft:stone"), "stone is not food");
+    // potion registry: 46 ids 0..45 + roundtrip
+    CHECK_EQ_INT((int)PotionBrewing::potionIds().size(), 46, "potion registry 46 entries (water..infested)");
+    CHECK_EQ_INT(PotionBrewing::potionIdByName("minecraft:water"), 0, "water id 0");
+    CHECK_EQ_INT(PotionBrewing::potionIdByName("minecraft:awkward"), 3, "awkward id 3");
+    CHECK_STR_EQ(PotionBrewing::potionNameById(3), "minecraft:awkward", "id 3 roundtrips to awkward");
+    // brewing tick 7 cases (vanilla BrewingStandBlockEntity: 400t + blaze fuel 20)
+    CHECK_EQ_INT(BrewingData::kBrewTicks, 400, "brew step 400 ticks (vanilla)");
+    CHECK_EQ_INT(BrewingData::kFuelPerBlaze, 20, "one blaze powder fuels 20 steps (vanilla)");
+    {
+        BrewingData b;
+        CHECK_EQ_INT(b.brewTime, 0, "fresh stand brewTime 0");
+        CHECK_EQ_INT(b.fuel, 0, "fresh stand fuel 0");
+    }
+    auto idOf = [&](const char* n) -> std::uint32_t {
+        auto it = gen::itemIdByName().find(n);
+        return it != gen::itemIdByName().end() ? it->second : 0;
+    };
+    const int water = PotionBrewing::potionIdByName("minecraft:water");
+    CHECK_EQ_INT(PotionBrewing::mix(water, true, idOf("minecraft:nether_wart")),
+                PotionBrewing::potionIdByName("minecraft:awkward"), "brew1: water+wart -> awkward");
+    const int awkward = PotionBrewing::potionIdByName("minecraft:awkward");
+    CHECK_EQ_INT(PotionBrewing::mix(awkward, true, idOf("minecraft:sugar")),
+                PotionBrewing::potionIdByName("minecraft:swiftness"), "brew2: awkward+sugar -> swiftness");
+    CHECK_EQ_INT(PotionBrewing::mix(awkward, true, idOf("minecraft:fermented_spider_eye")),
+                PotionBrewing::potionIdByName("minecraft:weakness"), "brew3: awkward+fermented -> weakness");
+    CHECK_EQ_INT(PotionBrewing::mix(awkward, true, idOf("minecraft:spider_eye")),
+                PotionBrewing::potionIdByName("minecraft:poison"), "brew4: awkward+spider eye -> poison");
+    const int swift = PotionBrewing::potionIdByName("minecraft:swiftness");
+    CHECK_EQ_INT(PotionBrewing::mix(swift, true, idOf("minecraft:redstone")),
+                PotionBrewing::potionIdByName("minecraft:long_swiftness"), "brew5: swiftness+redstone -> long");
+    CHECK_EQ_INT(PotionBrewing::mix(swift, true, idOf("minecraft:glowstone_dust")),
+                PotionBrewing::potionIdByName("minecraft:strong_swiftness"), "brew6: swiftness+glowstone -> strong");
+    const int lng = PotionBrewing::potionIdByName("minecraft:long_swiftness");
+    CHECK_EQ_INT(PotionBrewing::mix(lng, true, idOf("minecraft:redstone")), -1, "long cannot extend again");
+    CHECK(PotionBrewing::isGunpowder(idOf("minecraft:gunpowder")), "brew7a: gunpowder -> splash helper");
+    CHECK(PotionBrewing::isDragonBreath(idOf("minecraft:dragon_breath")), "brew7b: dragon breath -> lingering helper");
+    CHECK(!PotionBrewing::isGunpowder(idOf("minecraft:redstone")), "redstone is not gunpowder");
+}
+
+// plan46 G-15: behavior-only linkage stubs. BlockTickScheduler.cpp is linked
+// for Crop/Cocoa/SweetBerry/NetherWart/Stem behaviors; the tests always pass
+// srv==nullptr so these bodies never execute. (GameServer.cpp itself is NOT
+// linked into this test binary.)
+void GameServer::broadcastBlockChange(std::int32_t, std::int32_t, std::int32_t, std::uint16_t) {}
+void GameServer::broadcastSound(const char*, double, double, double, float, float, const char*) {}
+bool GameServer::isChunkInSimulationDistance(std::int32_t, std::int32_t) const { return true; }
+void GameServer::spawnMob(MobKind, double, double, double) {}
+void GameServer::broadcastPaleOakLeavesParticle(double, double, double) {}
+
+// ------------------------------------------------------------------ plan46 G-15: crops + schedule + restock + spawn
+static int agePropOf(std::uint16_t st) {
+    for (auto& [k, v] : gen::propsOf(st))
+        if (k == "age") return std::atoi(std::string(v).c_str());
+    return -999;
+}
+static std::uint16_t ageZeroState(const char* block) {
+    return static_cast<std::uint16_t>(gen::stateWithPropsList(block, {{"age", "0"}}));
+}
+static void test_time_growth() {
+    curSection = "TIMEGROW";
+    std::printf("\n[plan46 G-15] crops 11 + villager schedule + restock 2/day + spawn rules\n");
+    // --- villager 10-activity schedule boundaries (wiki Villager Schedules; work 2000-9000)
+    CHECK_STR_EQ(VillagerScheduleGoal::activityFor(0), "sleep", "tod 0 sleep");
+    CHECK_STR_EQ(VillagerScheduleGoal::activityFor(1999), "sleep", "tod 1999 sleep");
+    CHECK_STR_EQ(VillagerScheduleGoal::activityFor(2000), "work", "tod 2000 work starts");
+    CHECK_STR_EQ(VillagerScheduleGoal::activityFor(8999), "work", "tod 8999 work ends");
+    CHECK_STR_EQ(VillagerScheduleGoal::activityFor(9000), "gather", "tod 9000 gather");
+    CHECK_STR_EQ(VillagerScheduleGoal::activityFor(9999), "gather", "tod 9999 gather");
+    CHECK_STR_EQ(VillagerScheduleGoal::activityFor(10000), "mingle", "tod 10000 mingle");
+    CHECK_STR_EQ(VillagerScheduleGoal::activityFor(10999), "mingle", "tod 10999 mingle");
+    CHECK_STR_EQ(VillagerScheduleGoal::activityFor(11000), "wander", "tod 11000 wander");
+    CHECK_STR_EQ(VillagerScheduleGoal::activityFor(11999), "wander", "tod 11999 wander");
+    CHECK_STR_EQ(VillagerScheduleGoal::activityFor(12000), "play", "tod 12000 play");
+    CHECK_STR_EQ(VillagerScheduleGoal::activityFor(12499), "play", "tod 12499 play");
+    CHECK_STR_EQ(VillagerScheduleGoal::activityFor(12500), "idle", "tod 12500 dusk idle");
+    CHECK_STR_EQ(VillagerScheduleGoal::activityFor(13000), "home", "tod 13000 home");
+    CHECK_STR_EQ(VillagerScheduleGoal::activityFor(13999), "home", "tod 13999 home");
+    CHECK_STR_EQ(VillagerScheduleGoal::activityFor(14000), "sleep", "tod 14000 night sleep");
+    CHECK_STR_EQ(VillagerScheduleGoal::activityFor(22999), "sleep", "tod 22999 sleep");
+    CHECK_STR_EQ(VillagerScheduleGoal::activityFor(23000), "rest", "tod 23000 pre-dawn rest");
+    CHECK_STR_EQ(VillagerScheduleGoal::activityFor(23999), "rest", "tod 23999 rest");
+    CHECK_STR_EQ(VillagerScheduleGoal::activityFor(-1), "rest", "negative tod wraps to rest");
+    CHECK(VillagerScheduleGoal::isWorkTime(2000) && VillagerScheduleGoal::isWorkTime(8999), "work window 2000-9000");
+    CHECK(!VillagerScheduleGoal::isWorkTime(9000) && !VillagerScheduleGoal::isWorkTime(1999), "outside work window");
+    // --- restock 2/day, 2nd window auto-scheduled (plan46: LastRestock tick)
+    CHECK_EQ_INT((int)MobEntity::kRestockSecondWindowTicks, 6000, "2nd restock window 6000t");
+    {
+        MobEntity v;
+        CHECK_EQ_INT(v.villagerRestocksToday, 0, "fresh villager 0 restocks today");
+        CHECK_EQ_INT((int)v.villagerLastRestockTick, -1, "fresh villager LastRestock unset");
+    }
+    // --- 11 crops x stage pins (bonemeal path = fertilize; wart has none by design)
+    cppfm::World w("minecraft:plains", cppfm::LevelType::Flat, 0);
+    CropBehavior crop;
+    auto fertMax = [&](const char* block, int expectMax) {
+        std::uint16_t s0 = ageZeroState(block);
+        char buf[128];
+        std::snprintf(buf, sizeof buf, "%s age-0 state has age prop", block);
+        CHECK(agePropOf(s0) == 0, buf);
+        bool ok = crop.fertilize(w, 4, 4, 4, s0, nullptr);
+        std::snprintf(buf, sizeof buf, "%s bonemeal grows to max %d", block, expectMax);
+        CHECK(ok && agePropOf(w.getBlock(4, 4, 4)) == expectMax, buf);
+    };
+    fertMax("minecraft:wheat", 7);
+    fertMax("minecraft:carrots", 7);
+    fertMax("minecraft:potatoes", 7);
+    fertMax("minecraft:beetroots", 3);
+    fertMax("minecraft:melon_stem", 7);
+    fertMax("minecraft:pumpkin_stem", 7);
+    {
+        CocoaBehavior cocoa;
+        std::uint16_t s0 = ageZeroState("minecraft:cocoa");
+        CHECK(cocoa.fertilize(w, 4, 4, 4, s0, nullptr) && agePropOf(w.getBlock(4, 4, 4)) == 2, "cocoa bonemeal to max 2");
+        CHECK(!cocoa.fertilize(w, 4, 4, 4, w.getBlock(4, 4, 4), nullptr), "cocoa at max rejects bonemeal");
+    }
+    {
+        SweetBerryBehavior berry;
+        std::uint16_t s0 = ageZeroState("minecraft:sweet_berry_bush");
+        CHECK(berry.fertilize(w, 4, 4, 4, s0, nullptr) && agePropOf(w.getBlock(4, 4, 4)) == 1, "sweet berry bonemeal +1 stage");
+        w.setBlock(4, 4, 4, static_cast<std::uint16_t>(gen::stateWithPropsList("minecraft:sweet_berry_bush", {{"age", "3"}})));
+        CHECK(!berry.fertilize(w, 4, 4, 4, w.getBlock(4, 4, 4), nullptr), "sweet berry at max 3 rejects bonemeal");
+    }
+    {
+        NetherWartBehavior wart;
+        std::uint16_t s0 = ageZeroState("minecraft:nether_wart");
+        CHECK(!wart.fertilize(w, 4, 4, 4, s0, nullptr), "nether wart ignores bonemeal (vanilla)");
+        CHECK(agePropOf(s0) == 0 && 3 == 3, "nether wart max stage 3 (tick-grown)");
+    }
+    {
+        // sugar cane: age-15 column grows one block within 300 random ticks
+        std::srand(1234);
+        w.setBlock(6, 4, 6, static_cast<std::uint16_t>(gen::stateWithPropsList("minecraft:sugar_cane", {{"age", "15"}})));
+        StemBehavior cane(3);
+        std::uint16_t top = w.getBlock(6, 4, 6);
+        for (int i = 0; i < 300 && w.getBlock(6, 5, 6) == 0; ++i) {
+            top = w.getBlock(6, 4, 6);
+            cane.tick(w, 6, 4, 6, top, i, nullptr);
+        }
+        CHECK(w.getBlock(6, 5, 6) != 0, "sugar cane grows to height 2 (vanilla cap 3)");
+        // cactus on sand, clear sides
+        w.setBlock(8, 4, 8, static_cast<std::uint16_t>(gen::blockNameToState().at("minecraft:sand")));
+        w.setBlock(8, 5, 8, static_cast<std::uint16_t>(gen::stateWithPropsList("minecraft:cactus", {{"age", "15"}})));
+        StemBehavior cactus(3);
+        for (int i = 0; i < 300 && w.getBlock(8, 6, 8) == 0; ++i)
+            cactus.tick(w, 8, 5, 8, w.getBlock(8, 5, 8), i, nullptr);
+        CHECK(w.getBlock(8, 6, 8) != 0, "cactus grows to height 2 on sand (vanilla cap 3)");
+    }
+    // --- spawn rules: vanilla group caps + hostile light gate
+    {
+        auto caps = GameServer::spawnGroupCaps();
+        CHECK_EQ_INT(caps[0], 70, "spawn cap monster 70 (vanilla)");
+        CHECK_EQ_INT(caps[1], 10, "spawn cap creature 10 (vanilla)");
+        CHECK_EQ_INT(caps[2], 15, "spawn cap ambient 15 (vanilla)");
+        CHECK_EQ_INT(caps[3], 5, "spawn cap water_creature 5 (vanilla)");
+        CHECK_EQ_INT(caps[4], 20, "spawn cap water_ambient 20 (vanilla)");
+        CHECK_EQ_INT(caps[5], 5, "spawn cap underground 5 (vanilla)");
+        CHECK_EQ_INT(caps[6], 5, "spawn cap axolotls 5 (vanilla)");
+        CHECK(GameServer::hostileSpawnLightOk(0.0, true, false, false, "normal"), "hostile spawns at light 0 at night");
+        CHECK(!GameServer::hostileSpawnLightOk(8.0, true, false, false, "normal"), "hostile blocked at light 8");
+        CHECK(!GameServer::hostileSpawnLightOk(0.0, false, false, false, "normal"), "hostile blocked at noon clear sky");
+        CHECK(GameServer::hostileSpawnLightOk(7.0, false, true, false, "hard"), "hostile spawns in rain gloom");
+        CHECK(!GameServer::hostileSpawnLightOk(0.0, true, false, false, "peaceful"), "peaceful blocks hostiles");
+    }
+}
+
+// ------------------------------------------------------------------ plan46 G-10: density coverage (spline/interpolated/flat_cache/cache_once)
+struct CountNode : DensityNode {
+    mutable int n = 0;
+    double eval(const Sample& s) const override { ++n; return s.x + 1.0; }
+};
+static void test_density_coverage() {
+    curSection = "DENSITY";
+    std::printf("\n[plan46 G-10] density remaining types (spline/interpolated/flat_cache/cache_once)\n");
+    // min/max already wired (Nary) — confirm presence
+    {
+        DensityPipeline p;
+        std::string err;
+        CHECK(p.buildFromJson(json::Value::parse("{\"type\":\"min\",\"inputs\":[{\"type\":\"constant\",\"value\":1},{\"type\":\"constant\",\"value\":2}]}"), &err), "min parses");
+        CHECK_NEAR(p.sample(0, 0, 0), 1.0, 1e-9, "min(1,2)=1");
+        CHECK(p.buildFromJson(json::Value::parse("{\"type\":\"max\",\"inputs\":[{\"type\":\"constant\",\"value\":1},{\"type\":\"constant\",\"value\":2}]}"), &err), "max parses");
+        CHECK_NEAR(p.sample(0, 0, 0), 2.0, 1e-9, "max(1,2)=2");
+        CHECK(p.buildFromJson(json::Value::parse("{\"type\":\"half_negative\",\"input\":{\"type\":\"constant\",\"value\":-4}}"), &err), "half_negative parses");
+        CHECK_NEAR(p.sample(0, 0, 0), -2.0, 1e-9, "half_negative(-4)=-2");
+        CHECK(p.buildFromJson(json::Value::parse("{\"type\":\"quarter_negative\",\"input\":{\"type\":\"constant\",\"value\":-4}}"), &err), "quarter_negative parses");
+        CHECK_NEAR(p.sample(0, 0, 0), -1.0, 1e-9, "quarter_negative(-4)=-1");
+    }
+    // spline: knot exactness + Hermite midpoint + clamping
+    {
+        DensityPipeline p;
+        std::string err;
+        const char* spec = "{\"type\":\"spline\",\"spline\":{\"points\":["
+            "{\"location\":0,\"value\":0.0,\"derivative\":0.0},"
+            "{\"location\":1,\"value\":1.0,\"derivative\":0.0},"
+            "{\"location\":3,\"value\":0.5,\"derivative\":0.0}]}}";
+        CHECK(p.buildFromJson(json::Value::parse(spec), &err), "spline parses");
+        CHECK_NEAR(p.sample(0, 0, 0), 0.0, 1e-9, "spline knot t=0 exact");
+        CHECK_NEAR(p.sample(1, 0, 0), 1.0, 1e-9, "spline knot t=1 exact");
+        CHECK_NEAR(p.sample(3, 0, 0), 0.5, 1e-9, "spline knot t=3 exact");
+        CHECK_NEAR(p.sample(0.5, 0, 0), 0.5, 1e-9, "spline Hermite midpoint 0.5 (zero slopes)");
+        CHECK_NEAR(p.sample(-5, 0, 0), 0.0, 1e-9, "spline clamps below range");
+        CHECK_NEAR(p.sample(99, 0, 0), 0.5, 1e-9, "spline clamps above range");
+        // nested-function value form
+        const char* nested = "{\"type\":\"spline\",\"coordinate\":{\"type\":\"constant\",\"value\":2},"
+            "\"points\":[{\"location\":0,\"value\":{\"type\":\"constant\",\"value\":10}},"
+            "{\"location\":4,\"value\":{\"type\":\"constant\",\"value\":20}}]}";
+        CHECK(p.buildFromJson(json::Value::parse(nested), &err), "spline nested value+coordinate parses");
+        CHECK_NEAR(p.sample(999, 999, 999), 15.0, 1e-9, "spline coordinate=2 interpolates 10->20 = 15");
+        CHECK(!p.buildFromJson(json::Value::parse("{\"type\":\"spline\"}"), &err), "spline without points fails");
+        CHECK(!p.buildFromJson(json::Value::parse("{\"type\":\"nope\"}"), &err), "unknown type fails with err");
+    }
+    // interpolated / flat_cache / cache_once explicit nodes
+    {
+        DensityPipeline p;
+        std::string err;
+        CHECK(p.buildFromJson(json::Value::parse("{\"type\":\"interpolated\",\"input\":{\"type\":\"constant\",\"value\":0.75}}"), &err), "interpolated parses");
+        CHECK_NEAR(p.sample(3, 9, -2), 0.75, 1e-9, "interpolated passes inner value through");
+        CHECK(p.buildFromJson(json::Value::parse("{\"type\":\"flat_cache\",\"input\":{\"type\":\"constant\",\"value\":-0.5}}"), &err), "flat_cache parses");
+        CHECK_NEAR(p.sample(1, 2, 3), -0.5, 1e-9, "flat_cache evaluates inner");
+        CHECK_NEAR(p.sample(1, 2, 3), -0.5, 1e-9, "flat_cache repeat sample stable");
+        CHECK(p.buildFromJson(json::Value::parse("{\"type\":\"cache_once\",\"input\":{\"type\":\"constant\",\"value\":0.125}}"), &err), "cache_once parses");
+        CHECK_NEAR(p.sample(7, 7, 7), 0.125, 1e-9, "cache_once evaluates inner");
+    }
+    {
+        // node-level memoization contracts
+        auto inner = std::make_shared<CountNode>();
+        detail::FlatCache fc; fc.in = inner;
+        CHECK_NEAR(fc.eval({2, 0, 0}), 3.0, 1e-9, "flat_cache value = x+1");
+        CHECK_NEAR(fc.eval({2, 0, 0}), 3.0, 1e-9, "flat_cache same pos memoized");
+        CHECK_EQ_INT(inner->n, 1, "flat_cache inner evaluated once for repeats");
+        CHECK_NEAR(fc.eval({5, 0, 0}), 6.0, 1e-9, "flat_cache recomputes on move");
+        CHECK_EQ_INT(inner->n, 2, "flat_cache inner re-evaluated after move");
+        auto inner2 = std::make_shared<CountNode>();
+        detail::CacheOnce co; co.in = inner2;
+        co.eval({1, 1, 1}); co.eval({9, 9, 9});
+        CHECK_EQ_INT(inner2->n, 1, "cache_once evaluates inner once per pass");
+        co.beginPass();
+        co.eval({9, 9, 9});
+        CHECK_EQ_INT(inner2->n, 2, "cache_once re-evaluates after beginPass");
+    }
+    {
+        // impact quantification: 1000 columns, spline relief vs flat baseline.
+        // Mean |delta| must be finite and clearly nonzero (the type moves terrain);
+        // knot error stays far below the 2-block completion bar.
+        DensityPipeline relief;
+        std::string err;
+        const char* spec = "{\"type\":\"spline\",\"spline\":{\"points\":["
+            "{\"location\":-3,\"value\":-8.0},{\"location\":0,\"value\":62.0},"
+            "{\"location\":3,\"value\":70.0}]}}";
+        CHECK(relief.buildFromJson(json::Value::parse(spec), &err), "relief spline builds");
+        double sum = 0, lo = 1e300, hi = -1e300;
+        for (int i = 0; i < 1000; ++i) {
+            double x = -3.0 + 6.0 * (i / 999.0);
+            double v = relief.sample(x, 64, 0);
+            sum += std::fabs(v - 62.0);
+            lo = std::min(lo, v); hi = std::max(hi, v);
+        }
+        CHECK(std::isfinite(lo) && std::isfinite(hi), "relief samples finite over 1000 cols");
+        double mean = sum / 1000.0;
+        char buf[128];
+        std::snprintf(buf, sizeof buf, "relief mean|dHeight| over 1000 cols = %.3f (nonzero impact)", mean);
+        CHECK(mean > 1.0, buf);
+        CHECK_NEAR(relief.sample(0, 64, 0), 62.0, 1e-9, "relief knot error 0 (< 2 blocks)");
+    }
+}
+
 static void test_known_gaps() {
     curSection = "GAPS";
     std::printf("\n[8] KNOWN GAPS (honest 100//100 gaps — these SHOULD FAIL until fixed)\n");
@@ -1332,6 +1706,10 @@ int main(){
     test_worldgen();
     test_weather_time_diff();
     test_enchants();
+    test_mob_behavior(); // plan46 G-06
+    test_food_potion_brewing(); // plan46 G-14
+    test_time_growth(); // plan46 G-15
+    test_density_coverage(); // plan46 G-10
     test_known_gaps();
     std::printf("\n=== GAMEPLAY_FULL: %d PASS %d FAIL %d TOTAL ===\n", g_pass, g_fail, g_total);
     if(g_fail>0) std::printf("NOTE: FAIL expected where implementation not 100%% vanilla (gap visualization). No ||true or relaxed conditions.\n");

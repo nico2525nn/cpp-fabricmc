@@ -455,6 +455,13 @@ struct MobEntity {
     // plan16: villager restock 2/day (vanilla: 2 restocks per in-game day)
     int villagerRestocksToday = 0;
     std::int64_t villagerLastRestockDay = -1;
+    // plan46 G-15: 10-minute window semantics (wiki Trading §Supply: restocks
+    // occur during work visits, up to twice per day). LastRestock tick lets the
+    // tick loop auto-schedule the 2nd window instead of dropping it.
+    std::int64_t villagerLastRestockTick = -1;
+    // Delay between the 1st and auto-scheduled 2nd restock window (~5 min at
+    // 20 TPS; vanilla fires on the next work-site visit inside the work shift).
+    static constexpr std::int64_t kRestockSecondWindowTicks = 6000;
     void syncVillagerLevel(){ villagerData.level = std::clamp(villagerLevel,1,5); }
     void setVillagerLevel(int lvl){ villagerLevel = std::clamp(lvl,1,5); villagerData.level = villagerLevel; }
     std::int64_t witherSkullCooldown = 0;
