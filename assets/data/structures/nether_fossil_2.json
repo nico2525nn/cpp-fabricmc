@@ -1,0 +1,26 @@
+{
+  "name": "minecraft:nether_fossil_2",
+  "type": "minecraft:nether_fossil",
+  "placement": {
+    "spacing": 2,
+    "separation": 1,
+    "salt": 14357922,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:fossil/skull_2",
+      "weight": 8
+    },
+    {
+      "name": "minecraft:fossil/ribcage",
+      "weight": 6
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:bone_block",
+    "log": "minecraft:quartz_block",
+    "glass": "minecraft:air",
+    "chest": "minecraft:chest"
+  }
+}

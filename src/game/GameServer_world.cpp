@@ -469,34 +469,44 @@ void GameServer::demandChunkAsync(std::int32_t cx, std::int32_t cz) {
     }
 }
 void GameServer::saveChunkAsync(std::int32_t cx, std::int32_t cz) {
-    // Serialize NBT on tick thread, then offload zlib + file write to ioPool (fire-and-forget)
-    Chunk tmp;
-    bool has = false;
-    world_.withChunk(cx, cz, [&](const Chunk& c){ tmp = c; has = true; });
-    if (!has) return;
-    // Build NBT bytes on tick thread (cheap: chunkToNBT without compression)
-    nbt::Value root = chunkToNBT(cx, cz, tmp, world_.biomeKey(), nullptr);
-    WriteBuffer out;
-    nbt::writeFileRoot(out, root);
-    std::vector<std::uint8_t> nbtBytes = out.data;
-    std::string path = cfg_.worldDir + "/region/r." + std::to_string(cx >> 5) + "." + std::to_string(cz >> 5) + ".mca";
-    // cache body update (tick thread)
-    {
-        static const std::uint32_t biomeIdx = 0;
-        auto body = std::make_shared<const std::vector<std::uint8_t>>([&]{
-            WriteBuffer wb;
-            world_.withChunk(cx, cz, [&](const Chunk& c){ serializeLevelChunkBody(wb, cx, cz, c, biomeIdx); });
-            return wb.data;
-        }());
-        storeChunk(cx, cz, tmp.revision, body);
-    }
-    ioPool_.submit([path, cx, cz, nbtBytes = std::move(nbtBytes)]() mutable {
-        try {
-            RegionFile rf(path);
-            rf.store(cx & 31, cz & 31, nbtBytes);
-        } catch (...) {}
-    });
-    if (ioPool_.pending() > 64) pollPendingLoads();
+    // plan42 R2 (E-13): serialize NBT on tick thread (block-entity extras +
+    // biome codec, same content as Persistence::flushChunk), then offload
+    // zlib + RegionFile write to ioPool_ (ThreadPool 4, Yarn
+    // ThreadedAnvilChunkStorage parity). Fire-and-forget, never throws.
+    try {
+        Chunk tmp;
+        bool has = false;
+        world_.withChunk(cx, cz, [&](const Chunk& c){ tmp = c; has = true; });
+        if (!has) return;
+        std::unordered_map<std::uint16_t, std::string> idxToKey;
+        { const auto& order = gameData_.order("minecraft:worldgen/biome");
+          for (std::size_t i = 0; i < order.size(); ++i)
+              idxToKey.emplace(static_cast<std::uint16_t>(i), order[i]); }
+        // Build NBT bytes on tick thread (cheap: chunkToNBT without compression)
+        nbt::Value root = chunkToNBT(cx, cz, tmp, world_.biomeKey(), &idxToKey);
+        { nbt::Value list = nbt::Value::makeList(nbt::Compound);
+          blockEntities_.writeChunkNbt(cx, cz, list);
+          if (!list.list.empty()) root.set("block_entities", list); }
+        WriteBuffer out;
+        nbt::writeFileRoot(out, root);
+        std::vector<std::uint8_t> nbtBytes = out.data;
+        std::string path = cfg_.worldDir + "/region/r." + std::to_string(cx >> 5) + "." + std::to_string(cz >> 5) + ".mca";
+        // cache body update (tick thread) with the real biome index
+        { const std::uint32_t biomeIdx = data_.biomeIndex(cfg_.worldBiome);
+          auto body = std::make_shared<const std::vector<std::uint8_t>>([&]{
+              WriteBuffer wb;
+              world_.withChunk(cx, cz, [&](const Chunk& c){ serializeLevelChunkBody(wb, cx, cz, c, biomeIdx); });
+              return wb.data;
+          }());
+          storeChunk(cx, cz, tmp.revision, body); }
+        ioPool_.submit([path, cx, cz, nbtBytes = std::move(nbtBytes)]() mutable {
+            try {
+                RegionFile rf(path);
+                rf.store(cx & 31, cz & 31, nbtBytes);
+            } catch (...) {}
+        });
+        if (ioPool_.pending() > 64) pollPendingLoads();
+    } catch (...) {}
 }
 void GameServer::pollPendingLoads() {
     // Tick-thread only: drain ready futures (LightUpdateQueue pattern)

@@ -3,6 +3,8 @@
 // falls back to hardcoded defaults. Provides deterministic placement checks.
 #pragma once
 #include <array>
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -52,6 +54,34 @@ public:
                     std::int32_t& outOriginCx, std::int32_t& outOriginCz) const;
     const std::unordered_map<std::string, ConfiguredFeature>& allConfigured() const { return configured_; }
     const std::unordered_map<std::string, PlacedFeature>& allPlaced() const { return placed_; }
+    // plan42 R2 (E-12): variant-pool support — all configured features sharing a
+    // structure-set type (e.g. type minecraft:village), sorted by name for
+    // deterministic selection. Includes the primary (name == type) itself.
+    std::vector<const ConfiguredFeature*> configuredWithType(const std::string& type) const {
+        std::vector<const ConfiguredFeature*> out;
+        for (auto& [n, cf] : configured_)
+            if (cf.type == type || n == type) out.push_back(&cf);
+        std::sort(out.begin(), out.end(),
+                  [](const ConfiguredFeature* a, const ConfiguredFeature* b){ return a->name < b->name; });
+        return out;
+    }
+    // plan42 R2 (E-12): vanilla StructurePool-style weight-proportional jigsaw
+    // piece pick. r in [0,1). Falls back to uniform index for empty weights.
+    static std::size_t pickWeightedPiece(const ConfiguredFeature& cf, double r) {
+        if (cf.pieces.empty()) return 0;
+        long total = 0;
+        for (auto& p : cf.pieces) total += p.second > 0 ? p.second : 1;
+        if (total <= 0) return 0;
+        if (r < 0) r = 0;
+        if (r >= 1) r = std::nextafter(1.0, 0.0);
+        long acc = 0;
+        const long target = (long)(r * (double)total);
+        for (std::size_t i = 0; i < cf.pieces.size(); ++i) {
+            acc += cf.pieces[i].second > 0 ? cf.pieces[i].second : 1;
+            if (target < acc) return i;
+        }
+        return cf.pieces.size() - 1;
+    }
     std::uint16_t stateFor(const ConfiguredFeature& cf, const std::string& piece, const std::string& key, const std::string& fallback) const;
 
 private:

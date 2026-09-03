@@ -1,0 +1,43 @@
+{
+  "name": "minecraft:jungle_temple_room",
+  "type": "minecraft:jungle_temple",
+  "placement": {
+    "spacing": 32,
+    "separation": 8,
+    "salt": 14357623,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:jungle_temple/room",
+      "weight": 8
+    },
+    {
+      "name": "minecraft:jungle_temple/puzzle",
+      "weight": 5
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:mossy_cobblestone",
+    "log": "minecraft:cobblestone",
+    "glass": "minecraft:air",
+    "chest": "minecraft:chest"
+  },
+  "mobs": [
+    {
+      "pos": [
+        2,
+        1,
+        2
+      ],
+      "mob": "minecraft:skeleton",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "2,1,2",
+      "table": "minecraft:chests/jungle_temple"
+    }
+  ]
+}

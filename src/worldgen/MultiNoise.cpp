@@ -51,6 +51,39 @@ void MultiNoiseBiomeSource::buildDefaultTable() {
     // rivers
     add("minecraft:river",        0.0,  0.0, -0.10,  0.35,-0.15, 0.0);
     add("minecraft:frozen_river",-0.8,  0.0, -0.10,  0.35,-0.15, 0.0);
+    // ---- plan42 R2 (E-10): vanilla 1.21.4 biome parity 31->54 (registry order
+    // EmbeddedData minecraft:worldgen/biome 65; all keys below verified present).
+    // oceans (temperature-split variants)
+    add("minecraft:lukewarm_ocean", 0.5, 0.1, -0.28, -0.10, 0.20, 0.1);
+    add("minecraft:cold_ocean",  -0.5,  0.1, -0.28, -0.10, 0.20,-0.1);
+    add("minecraft:deep_lukewarm_ocean", 0.5, 0.1, -0.45, -0.20, 0.35, 0.1);
+    add("minecraft:deep_cold_ocean", -0.5, 0.1, -0.45, -0.20, 0.35,-0.1);
+    add("minecraft:deep_frozen_ocean", -0.85, 0.1, -0.45, -0.20, 0.35,-0.3);
+    add("minecraft:mushroom_fields", 0.2, 0.8, -0.35, -0.10, 0.10, 0.6);
+    // jungle variants
+    add("minecraft:bamboo_jungle", 0.9, 0.9, 0.10, -0.10, 0.00, 0.5);
+    add("minecraft:sparse_jungle", 0.9, 0.7, 0.12, 0.10, 0.00,-0.2);
+    // forest old-growth + flower variants
+    add("minecraft:flower_forest", 0.1, 0.6, 0.12, 0.10, 0.00, 0.7);
+    add("minecraft:old_growth_birch_forest", -0.1, 0.7, 0.14, 0.05, 0.00, 0.6);
+    add("minecraft:old_growth_pine_taiga", -0.5, 0.7, 0.16, 0.00, 0.00, 0.3);
+    add("minecraft:old_growth_spruce_taiga", -0.5, 0.7, 0.16, 0.00, 0.00,-0.3);
+    add("minecraft:windswept_forest", 0.1,-0.1, 0.20, -0.40,-0.10, 0.3);
+    // savanna plateau variants
+    add("minecraft:savanna_plateau", 0.8,-0.2, 0.16, -0.30,-0.20, 0.2);
+    add("minecraft:windswept_savanna", 0.8,-0.2, 0.18, -0.40,-0.10,-0.2);
+    // snowy mountain variants
+    add("minecraft:snowy_slopes",-0.7,  0.3,  0.20, -0.35,-0.40,-0.2);
+    add("minecraft:ice_spikes", -0.9, -0.2,  0.14,  0.20, 0.00, 0.5);
+    // swamp variant
+    add("minecraft:mangrove_swamp", 0.6, 0.95, 0.02, 0.30,-0.10, 0.3);
+    // cave biomes (depth>0 separates from surface points)
+    add("minecraft:dripstone_caves", 0.2, 0.2, 0.12, 0.10, 0.30, 0.0);
+    add("minecraft:lush_caves", 0.3, 0.8, 0.10, 0.20, 0.30, 0.2);
+    add("minecraft:deep_dark",  0.0,  0.2,  0.10,  0.00, 0.50,-0.2);
+    // badlands variants
+    add("minecraft:eroded_badlands", 1.0,-0.5, 0.10, -0.30, 0.10,-0.2);
+    add("minecraft:wooded_badlands", 1.0,-0.4, 0.10, -0.20, 0.10, 0.0);
 }
 
 } // namespace cppfm::worldgen
