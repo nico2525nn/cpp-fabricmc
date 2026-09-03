@@ -1,0 +1,52 @@
+{
+  "name": "minecraft:nether_fortress_tower",
+  "type": "minecraft:nether_fortress",
+  "placement": {
+    "spacing": 27,
+    "separation": 4,
+    "salt": 30084240,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:fortress/tower",
+      "weight": 8
+    },
+    {
+      "name": "minecraft:fortress/balcony",
+      "weight": 4
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:nether_bricks",
+    "log": "minecraft:nether_brick_fence",
+    "glass": "minecraft:air",
+    "chest": "minecraft:chest"
+  },
+  "mobs": [
+    {
+      "pos": [
+        3,
+        1,
+        3
+      ],
+      "mob": "minecraft:blaze",
+      "count": 1
+    },
+    {
+      "pos": [
+        5,
+        1,
+        5
+      ],
+      "mob": "minecraft:wither_skeleton",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "3,1,3",
+      "table": "minecraft:chests/nether_bridge"
+    }
+  ]
+}

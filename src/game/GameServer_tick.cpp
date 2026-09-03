@@ -413,7 +413,11 @@ void GameServer::chunksUnloadTick() {
             for (auto &pl : players) if (pl->inPlay && pl->dimension == dim) { anyInDim = true; break; }
             if (!anyInDim && (w.isForced(cx, cz) || w.ticketLevel(cx, cz) <= constants::kTicketLevelSpawn)) continue;
             if (pp && pp->isDirty(cx, cz)) {
-                pp->flushChunk(cx, cz);
+                // plan42 R2 (E-13): unload saves go through ioPool_ (zlib +
+                // RegionFile write off tick thread); dirty bit cleared after
+                // the async save captured the chunk contents.
+                saveChunkAsync(cx, cz);
+                pp->markClean(cx, cz);
             }
             toErase.push_back(k);
             invalidateChunkCache(cx, cz);

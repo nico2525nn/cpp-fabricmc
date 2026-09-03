@@ -1,0 +1,52 @@
+{
+  "name": "minecraft:mansion_library",
+  "type": "minecraft:mansion",
+  "placement": {
+    "spacing": 80,
+    "separation": 20,
+    "salt": 10387325,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:mansion/library",
+      "weight": 7
+    },
+    {
+      "name": "minecraft:mansion/secret_room",
+      "weight": 3
+    }
+  ],
+  "palette": {
+    "planks": "minecraft:dark_oak_planks",
+    "log": "minecraft:dark_oak_log",
+    "chest": "minecraft:chest",
+    "shelf": "minecraft:bookshelf"
+  },
+  "mobs": [
+    {
+      "pos": [
+        8,
+        1,
+        8
+      ],
+      "mob": "minecraft:vindicator",
+      "count": 1
+    },
+    {
+      "pos": [
+        12,
+        1,
+        12
+      ],
+      "mob": "minecraft:evoker",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "5,1,5",
+      "table": "minecraft:chests/woodland_mansion"
+    }
+  ]
+}

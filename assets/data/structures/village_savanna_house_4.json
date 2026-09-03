@@ -1,0 +1,43 @@
+{
+  "name": "minecraft:village_savanna_house_4",
+  "type": "minecraft:village",
+  "placement": {
+    "spacing": 34,
+    "separation": 8,
+    "salt": 10387345,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:village/savanna/house_4",
+      "weight": 10
+    },
+    {
+      "name": "minecraft:village/savanna/butcher",
+      "weight": 5
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:acacia_planks",
+    "log": "minecraft:acacia_log",
+    "glass": "minecraft:glass",
+    "chest": "minecraft:chest"
+  },
+  "mobs": [
+    {
+      "pos": [
+        2,
+        1,
+        2
+      ],
+      "mob": "minecraft:villager",
+      "count": 2
+    }
+  ],
+  "loot": [
+    {
+      "pos": "2,1,2",
+      "table": "minecraft:chests/village/village_savanna_house"
+    }
+  ]
+}

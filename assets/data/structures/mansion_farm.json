@@ -1,0 +1,42 @@
+{
+  "name": "minecraft:mansion_farm",
+  "type": "minecraft:mansion",
+  "placement": {
+    "spacing": 80,
+    "separation": 20,
+    "salt": 10387326,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:mansion/farm",
+      "weight": 6
+    },
+    {
+      "name": "minecraft:mansion/stable",
+      "weight": 4
+    }
+  ],
+  "palette": {
+    "planks": "minecraft:dark_oak_planks",
+    "log": "minecraft:dark_oak_log",
+    "chest": "minecraft:chest"
+  },
+  "mobs": [
+    {
+      "pos": [
+        8,
+        1,
+        8
+      ],
+      "mob": "minecraft:vindicator",
+      "count": 1
+    }
+  ],
+  "loot": [
+    {
+      "pos": "5,1,5",
+      "table": "minecraft:chests/woodland_mansion"
+    }
+  ]
+}

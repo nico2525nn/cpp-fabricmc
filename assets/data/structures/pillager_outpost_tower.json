@@ -1,0 +1,43 @@
+{
+  "name": "minecraft:pillager_outpost_tower",
+  "type": "minecraft:pillager_outpost",
+  "placement": {
+    "spacing": 32,
+    "separation": 8,
+    "salt": 165745298,
+    "frequency": 1.0
+  },
+  "pieces": [
+    {
+      "name": "minecraft:outpost/tower",
+      "weight": 8
+    },
+    {
+      "name": "minecraft:outpost/tent",
+      "weight": 5
+    }
+  ],
+  "palette": {
+    "plank": "minecraft:dark_oak_planks",
+    "log": "minecraft:dark_oak_log",
+    "glass": "minecraft:air",
+    "chest": "minecraft:chest"
+  },
+  "mobs": [
+    {
+      "pos": [
+        2,
+        1,
+        2
+      ],
+      "mob": "minecraft:pillager",
+      "count": 2
+    }
+  ],
+  "loot": [
+    {
+      "pos": "2,10,2",
+      "table": "minecraft:chests/pillager_outpost"
+    }
+  ]
+}
