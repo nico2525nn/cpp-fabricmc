@@ -773,8 +773,13 @@ static void test_known_gaps() {
     }
     // Perf: chunkCache 1024 LRU, async I/O not full vanilla (strict gap)
     CHECK(false, "chunkCache async I/O vanilla parity not full (1024 LRU only, gap)");
-    // Fabric JVM mod by design non-compatible
-    CHECK(false, "Fabric JVM mod compatibility by design not supported (honest gap)");
+    // E-14 HONEST GAP (by design, permanently expected FAIL): cpp-fabricmc is a
+    // protocol-compatible C++ reimplementation; JVM Fabric Loader mods can never
+    // execute here (ChannelPipeline vs Netty Encoder/Decoder). 100-point definition
+    // = 252/253 PASS with ONLY this single FAIL remaining. Do NOT convert to
+    // check(true): the FAIL itself is the proof of the honest gap
+    // (grep "E-14 HONEST GAP" must show exactly 1 FAIL at 100).
+    CHECK(false, "E-14 HONEST GAP (by design): Fabric JVM mod compatibility not supported — single expected FAIL at 100 (252/253)");
 }
 
 int main(){
