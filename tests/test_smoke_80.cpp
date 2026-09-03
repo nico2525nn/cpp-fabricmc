@@ -27,14 +27,7 @@
 using namespace cppfm;
 using namespace cpptest;
 
-static int g_fail = 0;
-static int g_pass = 0;
-#define CHECK(cond, msg) do { \
-    bool c_ = static_cast<bool>(cond); \
-    std::printf("  %s  %s\n", c_ ? " ok " : "FAIL", msg); \
-    if (c_) ++g_pass; else ++g_fail; \
-} while (0)
-#define SECTION(name) std::printf("\n[%s]\n", name)
+#include "Harness.hpp"
 
 static bool waitPort(std::uint16_t port, int timeoutMs) {
     for (int i = 0; i < timeoutMs / 100; ++i) {

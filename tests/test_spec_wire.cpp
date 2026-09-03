@@ -321,7 +321,8 @@ static void test_update_attributes_wire() {
         std::vector<std::uint8_t> specExp{0x01,0x01,0x08,0x40,0x00,0x00,0x00,0x00,0x00,0x00,0x00};
         // We don't expectEq against old b; just show spec would be 08 for armor
         std::printf("       SPEC expected for armor 2.0: ");
-        for(auto v: specExp) std::printf("%02x ",v); std::printf("(key varint 08 = generic.armor)\n");
+        for(auto v: specExp) std::printf("%02x ",v);
+        std::printf("(key varint 08 = generic.armor)\n");
         return;
     }
     // New wire path: verify spec (H1 merged 56e0ef6 — 22 attrs filtered, first MAX_HEALTH 16)

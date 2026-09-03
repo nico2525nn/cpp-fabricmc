@@ -18,12 +18,7 @@
 
 using namespace cppfm;
 
-static int g_fail = 0;
-static int g_pass = 0;
-#define CHECK(cond, msg) do { \
-    const bool c_ = static_cast<bool>(cond); \
-    std::printf("  %s  %s\n", c_ ? " ok " : "FAIL", msg); \
-    if (c_) ++g_pass; else ++g_fail; } while (0)
+#include "Harness.hpp"
 
 static std::uint16_t freePort() {
     int s = ::socket(AF_INET, SOCK_STREAM, 0);
