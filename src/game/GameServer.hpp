@@ -729,7 +729,9 @@ public:
     // Furnace smelting tick (called once per game tick).
     void furnacesTick();
     void brewingTick();
-    // Hopper item movement + dispenser ejection (every 8 ticks).
+    // Hopper item movement + dispenser ejection (every HOPPER_TRANSFER_INTERVAL_TICKS).
+    // plan44 G-01: interval as named constant so unit tests pin the impl value.
+    static constexpr int HOPPER_TRANSFER_INTERVAL_TICKS = 8;
     void hoppersTick();
     // Chunk LRU / simulation distance (plan5 items 6,7,8)
     bool isChunkInSimulationDistance(std::int32_t cx, std::int32_t cz) const;
