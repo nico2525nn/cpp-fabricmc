@@ -603,12 +603,12 @@ void TestClient::sendUseEntity(std::int32_t entityId, int action, bool sneaking)
     b.varint(entityId);
     b.varint(action);
     if (action == 2) { b.f32(0.5f); b.f32(0.5f); b.f32(0.5f); }
-    if (action != 1) {
-        // hand varint + sneaking; server reads single varint as sneaking flag (simplified)
-        b.varint(sneaking ? 1 : 0);
-    } else {
-        b.varint(0); // hand for attack (ignored)
-    }
+    // plan43 W-02: spec layout — hand varint (mainhand default) for INTERACT/
+    // INTERACT_AT only, then trailing sneaking bool for ALL mouse kinds.
+    // (The old shape wrote sneaking as varint and no trailing bool, which the
+    // fixed server reads as underrun -> disconnect.)
+    if (action != 1) b.varint(0);                            // hand = mainhand
+    b.boolean(sneaking);
     try { conn_->sendPacket(proto::pl::cs::UseEntity, b); } catch (...) {}
 }
 // plan43 B1+B2 spec-exact sends (Prismarine protocol.json 1.21.4 hand-built,
@@ -679,7 +679,7 @@ void TestClient::sendAbilitiesFlags(std::int8_t flags) {
     if (!conn_) return;
     WriteBuffer b;
     b.i8(flags);
-    try { conn_->sendPacket(0x26, b); } catch (...) {}    // cs packet_abilities (no Ids const yet)
+    try { conn_->sendPacket(proto::pl::cs::Abilities, b); } catch (...) {}    // cs packet_abilities 0x26 (W-06)
 }
 void TestClient::sendSignUpdate(std::int32_t sx, std::int32_t sy, std::int32_t sz, bool front,
                                 const std::string lines[4]) {
@@ -785,22 +785,31 @@ bool TestClient::joinWithFinishContamination(const std::string& name) {
     return true;
 }
 bool TestClient::waitSuggestions(std::int32_t transactionId, SuggestionsResp& out, int timeoutMs) {
-    Packet p;
-    if (!waitFor([&](const Packet& q){ return q.id == proto::pl::sc::CommandSuggestions; }, timeoutMs, &p))
-        return false;
-    try {
-        ReadBuffer in(p.body);
-        out.transactionId = in.varint();
-        out.start = in.varint();
-        out.length = in.varint();
-        const auto n = in.varint();
-        for (std::int32_t i = 0; i < n; ++i) {
-            Suggestion s; s.match = in.string(32767);
-            (void)in.boolean();                          // tooltip present=false
-            out.matches.push_back(std::move(s));
-        }
-    } catch (...) { return false; }
-    return out.transactionId == transactionId;
+    // match by transactionId INSIDE the wait (stale 0x10 responses from earlier
+    // cases must not satisfy a later wait — same-tick double-tab guard).
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+    while (std::chrono::steady_clock::now() < deadline) {
+        Packet p;
+        if (!waitFor([&](const Packet& q){ return q.id == proto::pl::sc::CommandSuggestions; }, 200, &p))
+            continue;
+        try {
+            ReadBuffer in(p.body);
+            SuggestionsResp r;
+            r.transactionId = in.varint();
+            if (r.transactionId != transactionId) continue;   // stale response, keep waiting
+            r.start = in.varint();
+            r.length = in.varint();
+            const auto n = in.varint();
+            for (std::int32_t i = 0; i < n; ++i) {
+                Suggestion s; s.match = in.string(32767);
+                (void)in.boolean();                          // tooltip present=false
+                r.matches.push_back(std::move(s));
+            }
+            out = std::move(r);
+            return true;
+        } catch (...) {}
+    }
+    return false;
 }
 std::vector<TestClient::Spawned> TestClient::spawns() const {
     std::lock_guard lk(mtx_);
