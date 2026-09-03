@@ -375,6 +375,12 @@ void GameServer::kickPlayer(const std::string& name, const std::string& reason) 
     WriteBuffer b;
     nbt::writeTextComponent(b, txt);
     try { t->conn->sendPacket(proto::pl::sc::Disconnect, b); } catch (...) {}
+    // plan42 R3: abortive close (RST) IMMEDIATELY after Disconnect, in the
+    // same instant — a graceful FIN would let the victim's next send succeed
+    // once, and any delay (even 150ms) opens a window for chunk streaming to
+    // grab tx_ and defer the RST past the client's check. In-flight Disconnect
+    // bytes are still delivered to the peer despite the RST.
+    try { t->conn->abort(); } catch (...) {}
     try { t->conn->close(); } catch (...) {}
 }
 void GameServer::sendWorldBorderTo(Player& p) const {
@@ -440,7 +446,9 @@ std::string GameServer::dispatchConsole(const std::string& line) {
         out = resolveSelector(raw, nullptr);
     };
     const auto res = commands_.execute(line, std::move(src));
-    return res.ok ? "ok" : ("error: " + res.errorText);
+    // plan42 R3: Source RCON expects an "OK"-style ack (test_server_full
+    // rcon_seed accepts "OK"); error text preserved on failure.
+    return res.ok ? "OK" : ("error: " + res.errorText);
 }
 
 // -------- B-07 async Anvil I/O + LRU (plan38 world worktree) --------

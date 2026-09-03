@@ -105,6 +105,15 @@ public:
             } catch (const std::runtime_error& e) {
                 res.ok = false;
                 res.errorText = e.what();
+            } catch (const std::exception& e) {
+                // plan42 R3 crash-hardening: non-runtime_error (bad_variant_access,
+                // out_of_range, ...) must also become error chat, never escape to
+                // the session thread (which would drop the player) or terminate.
+                res.ok = false;
+                res.errorText = std::string("Error: ") + e.what();
+            } catch (...) {
+                res.ok = false;
+                res.errorText = "Error: internal command failure";
             }
             return true;
         }

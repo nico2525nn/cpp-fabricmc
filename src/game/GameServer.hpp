@@ -188,7 +188,11 @@ struct Player {
     std::int32_t bedX=0, bedY=0, bedZ=0;
     // client-declared plugin channels
     std::unordered_set<std::string> clientChannels;
-    Connection* conn = nullptr;
+    // plan42 R3: shared ownership with Session::conn_ — broadcasts hold
+    // Player refs across threads; a raw pointer here dangles when the
+    // session tears down its Connection (ASan-proven heap-use-after-free
+    // in broadcastPacketExcept vs Session::~Session).
+    std::shared_ptr<Connection> conn;
     // PVP knockback / invuln (items 42)
     std::int32_t hurtCooldown = 0;
     std::int32_t vehicleId = -1; // riding
@@ -295,7 +299,9 @@ private:
     void onEnchantItem(ReadBuffer& in);
 
     GameServer& srv_;
-    std::unique_ptr<Connection> conn_;
+    // plan42 R3: shared with Player::conn (see above) so cross-thread
+    // broadcasts never touch a freed Connection.
+    std::shared_ptr<Connection> conn_;
     enum class State { Handshake, Status, Login, Configuration, Play, Done };
 
     State state_ = State::Handshake;
@@ -802,6 +808,11 @@ public:
     std::vector<AdvancementDefOwned> getMergedAdvancements();
 private:
     // plan35 cached merged advancements (story 30 + cppfm 9)
+    // plan42 R3: guarded by advMergeMtx_ — concurrent player joins
+    // (onEnterPlay -> sendAdvancementsTo) copy this vector while /reload
+    // move-assigns it; unguarded that is a heap-use-after-free (ASan-proven
+    // flaky server death, e.g. mid command-suite).
+    mutable std::mutex advMergeMtx_;
     std::vector<AdvancementDefOwned> cachedMergedAdv_;
     size_t cachedAdvRawSize_ = 0;
 public:

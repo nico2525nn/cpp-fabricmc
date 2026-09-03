@@ -340,6 +340,7 @@ void GameServer::grantAdvancement(Player& p, const std::string& id) {
     }
 }
 std::vector<AdvancementDefOwned> GameServer::getMergedAdvancements() {
+    std::lock_guard lk(advMergeMtx_);
     size_t cur = datapackManager_.advancements.size();
     if (!cachedMergedAdv_.empty() && cachedAdvRawSize_ == cur) return cachedMergedAdv_;
     cachedMergedAdv_ = mergedAdvancements(datapackManager_.advancements);
