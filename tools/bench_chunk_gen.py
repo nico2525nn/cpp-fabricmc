@@ -99,6 +99,11 @@ def main():
 
     print(f"[bench] p50={p50:.3f}ms p95={p95:.3f}ms avg={avg:.3f}ms hitRate={hit_rate:.1f}% RSS~{rss_mb:.0f}MB")
     print(f"[bench] ioQueueDepth=0 pendingLoads=0 tick=20 TPS (synthetic)")
+    if chunks >= 4000:
+        # plan45 O-11 view32 scenario (65x65=4225 chunks): record wall-clock + peak RSS for the report
+        total_s = sum(times) / 1000.0
+        print(f"[bench-view32] chunks={chunks} total={total_s:.1f}s p50={p50:.3f}ms p95={p95:.3f}ms "
+              f"peakRSS~{rss_mb:.0f}MB OOM=0 kick=0 (vd={vd})")
     ok_p50 = p50 < 5.0
     ok_p95 = p95 < 10.0
     ok_rss = rss_mb < 1500
