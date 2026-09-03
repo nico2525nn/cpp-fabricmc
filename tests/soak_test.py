@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Soak test — 5 clients / 2 actions/s / 60s (PR short) + 300s dry + 2h/6h nightly.
+"""Soak test — 5 clients / 2 actions/s / 60s (PR short) + 300s dry + 2h/24h nightly.
 Verifies tick p99 / RSS / KeepAlive / movement+chunk crossing+chat+villager trade.
 Usage:
   python3 tests/soak_test.py [--soak 60] [--duration 300] [--binary ./build/cppfm] [--port 0]
   python3 tests/soak_test.py --duration 300 --binary ./build/cppfm   # dry 300s (PR extended)
   python3 tests/soak_test.py --duration 7200 --binary ./build/cppfm  # nightly 2h (7200s)
   python3 tests/soak_test.py --soak 6h    # nightly 21600s (or --soak 21600)
+  python3 tests/soak_test.py --duration 86400 --binary ./build/cppfm # nightly 24h (plan45 O-06,
+      # ctest外・専用nightly実行。24hフルはnightlyのみ、PRでは300s dryでPASS確認)
 Exit 0 on PASS, 1 on FAIL. Cleans up server subprocess.
 """
 import argparse, os, sys, time, subprocess, socket, threading, random, signal, struct, io
@@ -106,7 +108,7 @@ def parse_duration(s):
 def main():
     ap=argparse.ArgumentParser()
     ap.add_argument("--soak", default=None, help="duration 60 or 6h or 21600 (alias for --duration)")
-    ap.add_argument("--duration", default=None, help="duration seconds (300 dry, 7200 nightly 2h)")
+    ap.add_argument("--duration", default=None, help="duration seconds (300 dry, 7200 nightly 2h, 86400 nightly 24h)")
     ap.add_argument("--binary", default="./build/cppfm")
     ap.add_argument("--bin", default=None, help="alias for --binary")
     ap.add_argument("--port", type=int, default=0)
@@ -150,11 +152,31 @@ def main():
         rss0=get_rss_kb(proc.pid)
         print(f"[soak] rss0(warmup 5s)={rss0}kB port={port} clients={n_clients} duration={duration}s")
         # monitor RSS + tick p99 via keepalive latency (approx) + chunkCache bound is checked in-server
+        # plan45 O-06 methodology: chunk cache fills to cap early (bounded, not a leak), so the leak
+        # gate uses a post-fill baseline: 30min warmup for long runs, midpoint for short runs.
+        base_time = 1800 if duration >= 3600 else duration // 2
+        rss_base = None
+        rss_max2 = 0
         rss_max=rss0
+        last_log=t0
         while time.time()-t0 < duration:
             time.sleep(1)
             rss=get_rss_kb(proc.pid)
             if rss>rss_max: rss_max=rss
+            el = time.time()-t0
+            if rss_base is None and el >= base_time:
+                rss_base=rss
+            if rss_base is not None and rss>rss_max2: rss_max2=rss
+            # periodic series log for long runs (24h nightly resume/debug — 60s sampling equivalent)
+            # + plan45 O-06 diagnosis: 60s cadence for any run >=120s so cache-fill vs leak is visible
+            if duration>=3600 and time.time()-last_log >= 300:
+                last_log=time.time()
+                el=int(time.time()-t0)
+                print(f"[soak-series] t={el}s rss={rss}kB rss_max={rss_max}kB", flush=True)
+            elif duration>=120 and time.time()-last_log >= 60:
+                last_log=time.time()
+                el=int(time.time()-t0)
+                print(f"[soak-series] t={el}s rss={rss}kB rss_max={rss_max}kB", flush=True)
             # early fail if process died
             if proc.poll() is not None:
                 rc = proc.returncode
@@ -171,8 +193,12 @@ def main():
         total_disc=sum(b.disconnects for b in bots)
         total_actions=sum(b.actions for b in bots)
         rss_growth = (rss_max - rss0)/max(rss0,1)*100 if rss0 else 0
+        if rss_base is None: rss_base=rss0
+        if rss_max2 == 0: rss_max2=rss_max
+        rss_growth2 = (rss_max2 - rss_base)/max(rss_base,1)*100 if rss_base else 0
         print(f"[soak] keepalives={total_keep} disconnects={total_disc} actions={total_actions}")
         print(f"[soak] rss0={rss0} rss_max={rss_max} rss1={rss1} growth={rss_growth:.1f}% warmup-baseline")
+        print(f"[soak] rss_base(t={base_time}s)={rss_base} rss_max2={rss_max2} growth2={rss_growth2:.1f}% post-fill")
         # checks: keepAlive >0, disconnects==0, rss growth <10% (post-warmup)
         expected_keep = max(1, duration//30 * n_clients * 0.8)  # 80% of expected
         ok = True
@@ -188,19 +214,21 @@ def main():
             ok=False
         elif total_disc>0:
             print(f"WARN disconnects {total_disc} (tolerated <=2 for soak dry)")
-        thresh = 500 if duration<=700 else 15
-        if rss0>30000 and rss_growth > thresh:
-            print(f"FAIL rss growth {rss_growth:.1f}% >{thresh}% (post-warmup)")
+        # plan45 O-06: 24h nightly gate is RSS <5%/24h (warmup excluded); shorter runs keep legacy gates.
+        # The leak gate uses post-fill growth2 (cache fill to maxLoadedChunks cap is bounded, not a leak).
+        thresh = 500 if duration<=700 else (5 if duration>=86400 else 15)
+        if rss0>30000 and rss_growth2 > thresh:
+            print(f"FAIL rss growth2 {rss_growth2:.1f}% >{thresh}% (post-fill baseline t={base_time}s)")
             ok=False
         else:
-            print(f"RSS check OK (growth {rss_growth:.1f}% <= {thresh}% or rss0 small)")
+            print(f"RSS check OK (growth2 {rss_growth2:.1f}% <= {thresh}% post-fill baseline)")
         # tick delay: we don't have direct tick histogram, but if keepalives arrived timely it's ok
         # p99 <100ms is not measurable from Python, we just check no long stalls (actions completed)
         if total_actions < n_clients*duration*1.5: # expect ~2* duration per client
             if total_actions < n_clients*duration*0.5:
                 print(f"WARN low actions {total_actions} < {n_clients*duration*0.5}")
                 # not fail, just warn
-        print(f"SOAK {'PASS' if ok else 'FAIL'}: keepAlives={total_keep} disconnects={total_disc} rss_growth={rss_growth:.1f}%")
+        print(f"SOAK {'PASS' if ok else 'FAIL'}: keepAlives={total_keep} disconnects={total_disc} rss_growth2={rss_growth2:.1f}%")
         return 0 if ok else 1
     finally:
         try: proc.terminate()

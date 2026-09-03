@@ -111,7 +111,14 @@ Join with any 1.21.4 client in offline mode, e.g. a launcher profile pointing at
 # integration (full join flow vs OUR server), multi-client, stress
 python3 tests/integration_client.py     # env CPPFM_PORT
 python3 tests/multi_client_test.py      # two bots, cross-broadcasts
-python3 tests/stress_test.py            # N=32 concurrent joins
+python3 tests/stress_test.py            # N=32 concurrent joins (attach CPPFM_HOST/PORT)
+# Load (plan45 O-04/O-02 — spawns server, 120 clients wave ramp 10/2s)
+timeout --foreground --kill-after=5 600 python3 tests/stress_test.py --clients 120 --binary ./build/cppfm
+pkill -9 -f "cppfm --port" 2>/dev/null; sleep 1
+# Soak 300s dry (plan45 O-05/O-06 short gate)
+timeout --foreground --kill-after=5 400 python3 tests/soak_test.py --duration 300 --binary ./build/cppfm
+# Bench view32 scenario (plan45 O-11 — 65x65=4225 chunks p50/p95 + peak RSS)
+python3 tools/bench_chunk_gen.py --view-distance 32 --chunks 4225 --dry --strict
 
 # C++ self-test (spawns real server, no Python)
 ./build/test_native ./build/cppfm          # ALL PASS status/join/chunk/chat/persist/multi/stress + plan38 QC3/macro4/predicate16
@@ -125,10 +132,13 @@ python3 tests/multi_client_test.py --binary ./build/cppfm   # 3-clients ALL PASS
 python3 tests/bot_smoke.py --binary ./build/cppfm --duration 30  # 3-clients 30s ALL PASS
 python3 tools/soak_bot.py --duration 300 --binary ./build/cppfm  # 300s PASS (nightly 3600s)
 ctest -R "native|smoke80|spec_wire|fuzz|bench|recipes_mirror|multi_client|bot_smoke" --output-on-failure
-# Soak: dry 300s + nightly 2h (7200s) — B-06 + soak_bot 1h
+# Soak: dry 300s + nightly 2h (7200s) + nightly 24h (86400s, plan45 O-06) — B-06 + soak_bot 1h
 python3 tests/soak_test.py --duration 300 --binary ./build/cppfm   # dry 300s
 ctest -R soak2h --output-on-failure --timeout 8000                  # nightly 2h (LABELS nightly)
 ctest -R soak_bot --output-on-failure --timeout 400                 # soak_bot 300s (LABELS soak)
+# Nightly 24h soak (plan45 O-06 — ctest外、専用実行。gate: RSS <5%/24h warmup除外 + TPS 20 + NBT整合)
+# nohup python3 tests/soak_test.py --duration 86400 --binary ./build/cppfm > /tmp/soak24h.log 2>&1 &
+# 24hフルはnightlyのみ。PRでは300s dryでPASS確認すること。後始末は pkill -9 -f "cppfm --port" のみ。
 ```
 
 All suites pass in Release and ASan/UBSan (zero sanitizer) — `test_spec_wire 328 PASS` / `test_smoke_80 212 PASS` / `test_fuzz 23` / `test_recipes_mirror 76` / `bench` p50 0.1 p95 2.5 hit83 / `multi_client` 3-clients / `bot_smoke` 30s. For true parity, see `docs/assessment-1.md` (**78/78**) + `docs/assessment-2.md` (**31/31** + `H1 32/32`) + `docs/assessment-3.md` (**14/14**) + `docs/assessment-4.md` (**12/12 FIXED → 90到達**, 2026-09-02) — **109 + 12 + 14 = 135 gaps closed**, Prismarine 131 `toClient` byte-identical. `python3 tools/score_review.py` reports **100/100 (40/30/15/15)** for plan41 (see `tools/score_review.py`).

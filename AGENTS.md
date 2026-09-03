@@ -92,6 +92,11 @@ timeout --foreground --kill-after=5 60 ./build/test_spec_wire                   
 timeout --foreground --kill-after=5 30 ./build/test_fuzz                          # 23 PASS 0 FAIL (fuzz 23 cases, TIMEOUT 30)
 timeout --foreground --kill-after=5 450 ./build/test_smoke_80 ./build/cppfm        # 212 PASS 0 FAIL (実績は CURRENT_STATE §2) — 450s (600s under load)
 pkill -9 -f "cppfm --port" 2>/dev/null; sleep 1
+timeout --foreground --kill-after=5 600 python3 tests/stress_test.py --clients 120 --binary ./build/cppfm  # plan45 O-04 dry 120 PASS
+pkill -9 -f "cppfm --port" 2>/dev/null; sleep 1
+timeout --foreground --kill-after=5 400 python3 tests/soak_test.py --duration 300 --binary ./build/cppfm    # plan45 O-05/O-06 short gate
+timeout --foreground --kill-after=5 60 python3 tools/bench_chunk_gen.py --view-distance 32 --chunks 4225 --dry --strict  # plan45 O-11 view32
+# nightly 24h (plan45 O-06 — ctest外): nohup python3 tests/soak_test.py --duration 86400 --binary ./build/cppfm > /tmp/soak24h.log 2>&1 &
 ctest -R "native|scoreboard_reset|spec_wire|fuzz" --output-on-failure --timeout 60
 ctest -R smoke80 --output-on-failure --timeout 450   # 600 under load
 ```
