@@ -239,6 +239,22 @@ target_include_directories(test_block_hardness_full PRIVATE src tests)
 add_test(NAME block_hardness_full COMMAND test_block_hardness_full)
 set_tests_properties(block_hardness_full PROPERTIES TIMEOUT 60)
 
+# plan44 G-12: redstone engine verification (World + RedstoneEngine public API) — restored after merge conflict
+add_executable(test_redstone_engine_full tests/test_redstone_engine_full.cpp
+    src/core/NBT.cpp
+    src/physics/Redstone.cpp
+    src/worldgen/DensityFunction.cpp src/worldgen/MultiNoise.cpp src/worldgen/Structures.cpp src/worldgen/StructurePlacer.cpp src/worldgen/ChunkGenerator.cpp src/worldgen/StructureManager.cpp src/game/WorldGen.cpp src/game/WorldDataManager.cpp)
+target_include_directories(test_redstone_engine_full PRIVATE src src/generated)
+target_link_libraries(test_redstone_engine_full PRIVATE ZLIB::ZLIB OpenSSL::Crypto)
+add_test(NAME redstone_engine_full COMMAND test_redstone_engine_full)
+set_tests_properties(redstone_engine_full PROPERTIES TIMEOUT 60)
+
+# plan44 G-05: mob stats 149 lock — restored after merge conflict
+add_executable(test_mob_stats_full tests/test_mob_stats_full.cpp)
+target_include_directories(test_mob_stats_full PRIVATE src src/generated)
+add_test(NAME mob_stats_full COMMAND test_mob_stats_full)
+set_tests_properties(mob_stats_full PROPERTIES TIMEOUT 30)
+
 add_executable(test_mining_full tests/test_mining_full.cpp)
 target_include_directories(test_mining_full PRIVATE src tests)
 add_test(NAME mining_full COMMAND test_mining_full)
