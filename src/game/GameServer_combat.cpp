@@ -1,4 +1,5 @@
 #include "GameServer.hpp"
+#include "Messages.hpp"
 #include "BlockEvent.hpp"
 #include "MetadataTypes.hpp"
 #include "../physics/LightEngine.hpp"
@@ -17,7 +18,6 @@
 #include "EquipmentComponent.hpp"
 #include "DamageComponent.hpp"
 #include "EnchantmentHelper.hpp"
-#include "MeleeHelper.hpp"
 #include "CombatManager.hpp"
 #include "MobSpawner.hpp"
 #include "BossAI.hpp"
@@ -85,7 +85,7 @@ void GameServer::killPlayer(Player& p, const char* cause) {
     scoreboard.addScore("deaths", p.name, 1);
     sendScoreAll("deaths", p.name,
                  scoreboard.getScore("deaths", p.name));
-    broadcastSystemText(std::string("\u00a7c") + p.name + " died (" + cause + ")", &p);
+    broadcastSystemText((msg::kRed + p.name + " died (" + cause + ")"), &p);
     // plan37 B-11 vanishing_curse: drop inventory except vanishing, respect keepInventory gamerule
     {
         bool keepInv = false;
@@ -178,7 +178,7 @@ void GameServer::weatherTick() {
                 int ly = static_cast<int>(pl->y);
                 // find ground just above top non-air (scan down from MaxY)
                 bool found = false;
-                for (int y = constants::kMaxY - 1; y >= constants::kMinY; --y) {
+                for (int y = kMaxY - 1; y >= kMinY; --y) {
                     std::uint16_t st = worldFor(pl->dimension).getBlock(lx, y, lz);
                     if (st != 0) { ly = y + 1; found = true; break; }
                 }

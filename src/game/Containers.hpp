@@ -9,6 +9,7 @@
 //   furnace     : 0 input, 1 fuel, 2 output, 3..29 main inv, 30..38 hotbar
 //   crafting    : 0 result, 1..9 grid, 10..36 main inv, 37..45 hotbar
 #pragma once
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <vector>
@@ -28,6 +29,14 @@ constexpr int kGeneric9x1 = 0, kGeneric9x2 = 1, kGeneric9x3 = 2,
               kLoom = 18, kMerchant = 19, kShulkerBox = 20, kSmithing = 21,
               kSmoker = 22, kCartographyTable = 23, kStonecutter = 24;
 }
+
+// Main-inventory scan order over Player::inv (hotbar 36..44 first, then
+// storage 9..35) — vanilla give/clear fill order. Single truth (was a
+// 36-element literal repeated 4x in Commands.cpp give/clear).
+inline constexpr std::array<int, 36> kMainInventoryOrder = {
+    36, 37, 38, 39, 40, 41, 42, 43, 44,
+    9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+    26, 27, 28, 29, 30, 31, 32, 33, 34, 35};
 
 // 25 vanilla MenuType entries (1.21.4 protocol 769) + Barrel alias for block-entity distinction (same wire id as Generic9x3)
 // Count must be 25 to match Yarn `ScreenHandlerType` / `MenuRegistry` (1.21.4) : 0 generic_9x1 .. 24 stonecutter.

@@ -321,7 +321,8 @@ static void test_update_attributes_wire() {
         std::vector<std::uint8_t> specExp{0x01,0x01,0x08,0x40,0x00,0x00,0x00,0x00,0x00,0x00,0x00};
         // We don't expectEq against old b; just show spec would be 08 for armor
         std::printf("       SPEC expected for armor 2.0: ");
-        for(auto v: specExp) std::printf("%02x ",v); std::printf("(key varint 08 = generic.armor)\n");
+        for(auto v: specExp) std::printf("%02x ",v);
+        std::printf("(key varint 08 = generic.armor)\n");
         return;
     }
     // New wire path: verify spec (H1 merged 56e0ef6 — 22 attrs filtered, first MAX_HEALTH 16)
@@ -554,6 +555,7 @@ static void test_world_border_wire() {
     b.varint(0); b.varint(29999984); b.varint(15); b.varint(5);
     check(b.data.size()==32+1+4+1+1, "InitializeWorldBorder size 39 (32+7)");
     ReadBuffer r(b.data); double x=r.f64(), z=r.f64(), oldD=r.f64(), newD=r.f64();
+    (void)x; (void)z;
     check(oldD==59999968 && newD==59999968, "diameters 59999968");
     // verify f64 59999968 hex = 0x41980E... let's just check not 29999984
     // 59999968 f64 bytes: 41 8E...; 29999984 would be 41 7E...
