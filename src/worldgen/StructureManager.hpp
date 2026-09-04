@@ -1,4 +1,4 @@
-// generate() Originally in Structures.cpp; now data-driven via JSON.
+// Data-driven structure-set loading and deterministic chunk-local generation.
 #pragma once
 #include <cstdint>
 #include <functional>

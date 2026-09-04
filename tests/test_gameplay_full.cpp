@@ -37,7 +37,6 @@
 #include "game/GameRules.hpp"
 #include "worldgen/DensityFunction.hpp"
 #include "worldgen/MultiNoise.hpp"
-#include "worldgen/Structures.hpp"
 #include "worldgen/StructureManager.hpp"
 #include "worldgen/StructurePlacer.hpp"
 #include "game/GameServer.hpp"
@@ -660,10 +659,11 @@ static void test_worldgen() {
         CHECK(biome.rfind("minecraft:",0)==0, "biome key starts minecraft:");
     }
     {
-        const auto& sets = worldgen::structureSets();
+        StructureManager canonical(0);
+        const auto& sets = canonical.sets();
         CHECK_EQ_INT((int)sets.size(), 20, "structureSets 20 (vanilla jar: exactly 20 sets)");
-        auto findSet = [&](const char* n)->const StructureSet*{
-            for(auto &s: sets) if(std::string(s.name)==n) return &s;
+        auto findSet = [&](const char* n)->const SMStructureSet*{
+            for(auto &s: sets) if(s.name==n) return &s;
             return nullptr;
         };
         if(auto s=findSet("minecraft:village")){ CHECK_EQ_INT(s->spacing,34,"village spacing 34"); CHECK_EQ_INT(s->separation,8,"village sep 8"); CHECK_EQ_INT((int)s->salt,10387312,"village salt 10387312"); }
@@ -698,20 +698,20 @@ static void test_worldgen() {
             }
             CHECK_EQ_INT(unmapped,0,"all 34 vanilla structures map to a set");
         }
-        StructureAt a = worldgen::structureAtChunk(*findSet("minecraft:village"), 12345, 0,0);
-        StructureAt b = worldgen::structureAtChunk(*findSet("minecraft:village"), 12345, 0,0);
+        SMStructureAt a = worldgen::smStructureAtChunk(*findSet("minecraft:village"), 12345, 0,0);
+        SMStructureAt b = worldgen::smStructureAtChunk(*findSet("minecraft:village"), 12345, 0,0);
         CHECK(a.present==b.present && a.originCx==b.originCx && a.originCz==b.originCz, "structureAtChunk deterministic (same seed same result)");
         int presentNear = 0;
         const int qxs[] = {10, 20, 30, 40};
         for (int qx : qxs) {
             for (auto &s: sets) {
-                StructureAt at = worldgen::structureAtChunk(s, 0, qx, qx);
+                SMStructureAt at = worldgen::smStructureAtChunk(s, 0, qx, qx);
                 if (!at.present) continue;
                 ++presentNear;
                 bool inRange = std::abs(at.originCx - qx) <= s.spacing && std::abs(at.originCz - qx) <= s.spacing;
                 if (!inRange) {
                     char buf[256]; std::snprintf(buf, sizeof buf, "structureAtChunk %s origin (%d,%d) within spacing %d of (%d,%d)",
-                        s.name, at.originCx, at.originCz, s.spacing, qx, qx);
+                        s.name.c_str(), at.originCx, at.originCz, s.spacing, qx, qx);
                     CHECK(false, buf);
                 }
             }
