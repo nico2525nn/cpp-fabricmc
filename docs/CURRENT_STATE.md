@@ -13,6 +13,8 @@
 | `updated` | `2026-09-04` |
 | `implementation_baseline` | `f21e42327342fe1e8486960f2c43805711280ffd` |
 | `implementation_baseline_short` | `f21e423` |
+| `documentation_commit` | `4fa4845d40035e503ec6c54d83acc14e1c138674` |
+| `main_integration_merge` | `8bb716beefe6c6eebb55e6024af23241be9c411e` |
 | `plan` | `plan48` |
 | `phase` | `final-gates` |
 | `phase_status` | `RECORDED` |
@@ -21,9 +23,11 @@
 
 The baseline is the implementation merge that includes cleanup commit
 `db12df96093a0869e958f62b11f9a9cd68ba3ef1` and safety commit
-`4526dfe4f7112b1fe744a83484ef5ef40176d481`. This final documentation commit changes
-canonical Markdown only; it does not change source, tests, tools, CMake, generated
-data, or the `docs-legacy/` archive.
+`4526dfe4f7112b1fe744a83484ef5ef40176d481`. The documentation refresh is
+`4fa4845d40035e503ec6c54d83acc14e1c138674`, integrated into main by merge
+`8bb716beefe6c6eebb55e6024af23241be9c411e`. The refresh changes canonical Markdown
+only; it does not change source, tests, tools, CMake, generated data, or the
+`docs-legacy/` archive.
 
 ## 2. Plan48 and cleanup record
 
