@@ -24,17 +24,13 @@ Historical text must not override current source definitions or fresh test outpu
 
 ## Archive boundary
 
-The six links intentionally target the future repository path
-`docs-legacy/assessment-1.md` through `docs-legacy/assessment-6.md`. This
-canonical-only commit does **not** create, move, or rewrite that archive. A local
-Markdown checker must therefore allowlist exactly these six links while requiring
-every other local target and anchor to exist. They are `HISTORICAL`, not current
-evidence, and their absence is a declared archive-boundary limitation rather than a
-reason to copy their contents into the canonical documents.
-
-The old assessment files currently retained at `docs/assessment-1.md` through
-`docs/assessment-6.md` are not modified by this commit. A future archive migration
-must preserve their bytes and history before changing those paths.
+The six links intentionally target the immutable repository path
+`docs-legacy/assessment-1.md` through `docs-legacy/assessment-6.md`. The
+compatibility entry points at `docs/assessment-1.md` through
+`docs/assessment-6.md` point to these archive files and to the current canonical
+contracts; they do not duplicate historical bodies. A local Markdown checker must
+require every target and anchor to exist. The archived documents are `HISTORICAL`,
+not current evidence, and must not override the canonical specifications.
 
 ## Evidence routing
 
