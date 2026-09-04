@@ -38,10 +38,7 @@ struct NoiseHypercube {
 };
 struct HypercubeEntry { std::string key; NoiseHypercube cube; std::uint8_t dim = 0; };
 
-// plan45 G-11: dimension tag for the 65-biome table. Overworld sampling
-// (sample()) only searches dim 0, so nether/end additions can never leak
-// into overworld chunks. Nether/end emit paths use sampleNether/sampleEnd.
-// Special (the_void) is registry-only and excluded from all sampling.
+// plan45 G-11: biome dimension tags (overworld sample searches dim 0 only; the_void registry-only).
 enum class BiomeDimension : std::uint8_t { Overworld = 0, Nether = 1, End = 2, Special = 3 };
 
 class MultiNoiseBiomeSource {
@@ -104,8 +101,7 @@ public:
         addCube(key, cube);
     }
 
-    // Sample climate at world coordinates and resolve to a biome key.
-    // Overworld only (dim 0) — nether/end entries never leak here.
+    // Sample climate at world coordinates and resolve to a biome key. Overworld only (dim 0) — nether/end entries never leak here.
     const std::string& sample(double x, double y, double z) const {
         ClimateParams c = climateAt(x, y, z);
         return nearestDim(c, static_cast<std::uint8_t>(BiomeDimension::Overworld));
@@ -222,8 +218,7 @@ private:
         if (best) return *best;
         { static const std::string fallback = "minecraft:plains"; return fallback; }
     }
-    // plan45 G-11: dimension-filtered nearest (Special dim never sampled —
-    // callers must use contains() for the_void registry presence).
+    // plan45 G-11: dimension-filtered nearest (Special dim never sampled — callers must use contains() for the_void registry presence).
     const std::string& nearestDim(const ClimateParams& c, std::uint8_t dim) const {
         if (!entriesCube_.empty()) {
             const HypercubeEntry* best = nullptr;

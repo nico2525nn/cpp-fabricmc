@@ -307,13 +307,11 @@ void StructureGenerator::strongholdPiece(Chunk& chunk, std::int32_t cx, std::int
     // underground room at y ~ -10 to -5 (or ground-35)
     int surfaceY = ground(ox+1, oz+1);
     int baseY = std::clamp(surfaceY - 30, kMinY+5, 40);
-    // Use placer-configured pieces weighting if available, else simple 3x3 room
-    // 5x5 outer, 3x3 inner air
+    // Use placer-configured pieces weighting if available, else simple 3x3 room 5x5 outer, 3x3 inner air
     for (int dx=-1; dx<=4; ++dx) for (int dz=-1; dz<=4; ++dz){
         int x = ox+dx, z = oz+dz;
         bool edge = dx==-1||dx==4||dz==-1||dz==4;
         bool corner = (std::abs(dx)==1 && std::abs(dz)==1 && false);
-        (void)corner;
         // floor
         w.set(x, baseY, z, edge ? mossy : stoneBricks, true);
         // walls 3 high
@@ -376,7 +374,6 @@ void StructureGenerator::monumentPiece(Chunk& chunk, std::int32_t cx, std::int32
     const auto gold = B("minecraft:gold_block") ? B("minecraft:gold_block")->defaultState : prismarine;
     const auto water = static_cast<std::uint16_t>(gen::stateWithPropsList("minecraft:water", {{"level","0"}}));
     int baseY = 39;
-    (void)ground;
     for (int dx=0; dx<58; ++dx) for (int dz=0; dz<58; ++dz) {
         int wx = ox + dx, wz = oz + dz;
         bool edge = dx==0||dx==57||dz==0||dz==57;
@@ -439,7 +436,6 @@ void StructureGenerator::trialChambersPiece(Chunk& chunk, std::int32_t cx, std::
     const auto tuff = B("minecraft:tuff") ? B("minecraft:tuff")->defaultState : B("minecraft:stone_bricks")->defaultState;
     const auto tuffBricks = B("minecraft:tuff_bricks") ? B("minecraft:tuff_bricks")->defaultState : tuff;
     const auto chiseledTuff = B("minecraft:chiseled_tuff") ? B("minecraft:chiseled_tuff")->defaultState : tuffBricks;
-    const auto chiseledBricks = B("minecraft:chiseled_tuff_bricks") ? B("minecraft:chiseled_tuff_bricks")->defaultState : chiseledTuff;
     const auto waxedChiseled = B("minecraft:waxed_chiseled_copper") ? B("minecraft:waxed_chiseled_copper")->defaultState : chiseledTuff;
     const auto copperBulb = B("minecraft:copper_bulb") ? B("minecraft:copper_bulb")->defaultState : tuffBricks;
     const auto waxedBulb = B("minecraft:waxed_copper_bulb") ? B("minecraft:waxed_copper_bulb")->defaultState : copperBulb;
@@ -462,7 +458,6 @@ void StructureGenerator::trialChambersPiece(Chunk& chunk, std::int32_t cx, std::
         }
         w.set(cxo+2, baseY+1, czo+2, dispenser, true);
         w.set(cxo+sz-3, baseY+1, czo+sz-3, copperBulb, true);
-        (void)chiseledBricks;
     };
     auto straightCorridor = [&](int cxo,int czo,int len,int dir){
         for(int i=0;i<len;++i){ int wx=cxo+(dir==0?i:dir==1?-i:0); int wz=czo+(dir==2?i:dir==3?-i:0);

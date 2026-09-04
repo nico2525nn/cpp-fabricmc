@@ -1,8 +1,4 @@
-// plan46 §1 (O-13/W-14/W-16): flood defense primitives — header-only.
-// RateLimiter: per-connection token bucket (bytes). SpamTracker: vanilla
-// chat-spam throttle (ServerPlayNetworkHandler: +20/msg, -1/tick, >200 kick).
-// AcceptGate: global accept rate gate. RateLimitedLog: 1/s log throttle so
-// flood-time logging cannot disk-fill (plan46 §1 注意点).
+// plan46 §1: flood-defense primitives — RateLimiter (bytes), SpamTracker (+20/msg,>200 kick), AcceptGate, RateLimitedLog.
 
 #pragma once
 #include <algorithm>
@@ -12,9 +8,8 @@
 
 namespace cppfm {
 
-// ---- bandwidth token bucket (O-13 A1/A5) ---------------------------------
-// capacity = max burst (bytes), refillPerSec = sustained rate (bytes/s).
-// Session-thread only (no locking); Connection owns one instance.
+// ---- bandwidth token bucket (O-13 A1/A5) --------------------------------- capacity = max burst (bytes), refillPerSec = sustained rate
+// (bytes/s). Session-thread only (no locking); Connection owns one instance.
 struct RateLimiter {
     double tokens;
     double capacity;
@@ -41,11 +36,9 @@ struct RateLimiter {
     void reset(std::int64_t nowMs) { tokens = capacity; lastMs = nowMs; }
 };
 
-// ---- vanilla chat-spam throttle (O-13 A3) ---------------------------------
-// Mirrors ServerPlayNetworkHandler.chatSpamThresholdCount = 200:
-// every chat/command adds 20, every server tick removes 1 (lazy decay).
-// onChat returns true when the peer must be kicked (disconnect.spam).
-// Driven by server tickNo (not wall-clock) so tests stay deterministic.
+// ---- vanilla chat-spam throttle (O-13 A3) --------------------------------- Mirrors ServerPlayNetworkHandler.chatSpamThresholdCount =
+// 200: every chat/command adds 20, every server tick removes 1 (lazy decay). onChat returns true when the peer must be kicked
+// (disconnect.spam). Driven by server tickNo (not wall-clock) so tests stay deterministic.
 struct SpamTracker {
     int count = 0;
     std::int64_t lastTick = 0;

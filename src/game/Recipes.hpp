@@ -83,8 +83,7 @@ public:
     static std::vector<std::string> trimBlankRows(const std::vector<std::string>& rows);
 
 private:
-    // Checks pattern placement at (ox,oy) with every grid cell outside the
-    // pattern box required to be empty (vanilla shaped semantics).
+    // Checks pattern placement at (ox,oy) with every grid cell outside the pattern box required to be empty (vanilla shaped semantics).
     bool fitsVariant(const std::vector<ItemStack>& grid, int gw, int gh,
                      int ox, int oy, bool mirrored) const {
         for (int gy = 0; gy < gh; ++gy)

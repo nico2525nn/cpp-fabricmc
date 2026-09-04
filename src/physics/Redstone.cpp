@@ -3,6 +3,7 @@
 #include "../game/BlockEntities.hpp"
 #include "../generated/ItemIds.hpp"
 #include "../generated/BlockStates.hpp"
+#include "../game/MenuInteraction.hpp" // maxStackForId single truth
 #include <unordered_map>
 #include <unordered_set>
 #include <cstdlib>
@@ -12,56 +13,6 @@
 
 namespace cppfm {
 
-// strict audit B22: comparator maxStack helper (16/1) — plan19 §10 accurate via prismarine 1.21.4 (47×16, 203×1)
-static int maxStackForItemComp(uint32_t itemId) {
-    static std::unordered_map<uint32_t,int> cache;
-    auto itc = cache.find(itemId);
-    if(itc!=cache.end()) return itc->second;
-    std::string n;
-    for(auto &e: gen::kItems) if(e.second==itemId){ n=std::string(e.first); break; }
-    if(n.empty()) { cache.emplace(itemId,64); return 64; }
-    static const std::unordered_set<std::string> k16 = {
-        "minecraft:acacia_hanging_sign", "minecraft:acacia_sign", "minecraft:armor_stand", "minecraft:bamboo_hanging_sign", "minecraft:bamboo_sign", "minecraft:birch_hanging_sign", "minecraft:birch_sign", "minecraft:black_banner",
-        "minecraft:blue_banner", "minecraft:brown_banner", "minecraft:bucket", "minecraft:cherry_hanging_sign", "minecraft:cherry_sign", "minecraft:crimson_hanging_sign", "minecraft:crimson_sign", "minecraft:cyan_banner",
-        "minecraft:dark_oak_hanging_sign", "minecraft:dark_oak_sign", "minecraft:egg", "minecraft:ender_pearl", "minecraft:gray_banner", "minecraft:green_banner", "minecraft:honey_bottle", "minecraft:jungle_hanging_sign",
-        "minecraft:jungle_sign", "minecraft:light_blue_banner", "minecraft:light_gray_banner", "minecraft:lime_banner", "minecraft:magenta_banner", "minecraft:mangrove_hanging_sign", "minecraft:mangrove_sign", "minecraft:oak_hanging_sign",
-        "minecraft:oak_sign", "minecraft:orange_banner", "minecraft:pale_oak_hanging_sign", "minecraft:pale_oak_sign", "minecraft:pink_banner", "minecraft:purple_banner", "minecraft:red_banner", "minecraft:snowball",
-        "minecraft:spruce_hanging_sign", "minecraft:spruce_sign", "minecraft:warped_hanging_sign", "minecraft:warped_sign", "minecraft:white_banner", "minecraft:written_book", "minecraft:yellow_banner"
-    };
-    static const std::unordered_set<std::string> k1 = {
-        "minecraft:acacia_boat", "minecraft:acacia_chest_boat", "minecraft:axolotl_bucket", "minecraft:bamboo_chest_raft", "minecraft:bamboo_raft", "minecraft:beetroot_soup", "minecraft:birch_boat", "minecraft:birch_chest_boat",
-        "minecraft:black_bed", "minecraft:black_bundle", "minecraft:black_shulker_box", "minecraft:blue_bed", "minecraft:blue_bundle", "minecraft:blue_shulker_box", "minecraft:bordure_indented_banner_pattern", "minecraft:bow",
-        "minecraft:brown_bed", "minecraft:brown_bundle", "minecraft:brown_shulker_box", "minecraft:brush", "minecraft:bundle", "minecraft:cake", "minecraft:carrot_on_a_stick", "minecraft:chainmail_boots",
-        "minecraft:chainmail_chestplate", "minecraft:chainmail_helmet", "minecraft:chainmail_leggings", "minecraft:cherry_boat", "minecraft:cherry_chest_boat", "minecraft:chest_minecart", "minecraft:cod_bucket", "minecraft:command_block_minecart",
-        "minecraft:creeper_banner_pattern", "minecraft:crossbow", "minecraft:cyan_bed", "minecraft:cyan_bundle", "minecraft:cyan_shulker_box", "minecraft:dark_oak_boat", "minecraft:dark_oak_chest_boat", "minecraft:debug_stick",
-        "minecraft:diamond_axe", "minecraft:diamond_boots", "minecraft:diamond_chestplate", "minecraft:diamond_helmet", "minecraft:diamond_hoe", "minecraft:diamond_horse_armor", "minecraft:diamond_leggings", "minecraft:diamond_pickaxe",
-        "minecraft:diamond_shovel", "minecraft:diamond_sword", "minecraft:elytra", "minecraft:enchanted_book", "minecraft:field_masoned_banner_pattern", "minecraft:fishing_rod", "minecraft:flint_and_steel", "minecraft:flow_banner_pattern",
-        "minecraft:flower_banner_pattern", "minecraft:furnace_minecart", "minecraft:globe_banner_pattern", "minecraft:goat_horn", "minecraft:golden_axe", "minecraft:golden_boots", "minecraft:golden_chestplate", "minecraft:golden_helmet",
-        "minecraft:golden_hoe", "minecraft:golden_horse_armor", "minecraft:golden_leggings", "minecraft:golden_pickaxe", "minecraft:golden_shovel", "minecraft:golden_sword", "minecraft:gray_bed", "minecraft:gray_bundle",
-        "minecraft:gray_shulker_box", "minecraft:green_bed", "minecraft:green_bundle", "minecraft:green_shulker_box", "minecraft:guster_banner_pattern", "minecraft:hopper_minecart", "minecraft:iron_axe", "minecraft:iron_boots",
-        "minecraft:iron_chestplate", "minecraft:iron_helmet", "minecraft:iron_hoe", "minecraft:iron_horse_armor", "minecraft:iron_leggings", "minecraft:iron_pickaxe", "minecraft:iron_shovel", "minecraft:iron_sword",
-        "minecraft:jungle_boat", "minecraft:jungle_chest_boat", "minecraft:knowledge_book", "minecraft:lava_bucket", "minecraft:leather_boots", "minecraft:leather_chestplate", "minecraft:leather_helmet", "minecraft:leather_horse_armor",
-        "minecraft:leather_leggings", "minecraft:light_blue_bed", "minecraft:light_blue_bundle", "minecraft:light_blue_shulker_box", "minecraft:light_gray_bed", "minecraft:light_gray_bundle", "minecraft:light_gray_shulker_box", "minecraft:lime_bed",
-        "minecraft:lime_bundle", "minecraft:lime_shulker_box", "minecraft:lingering_potion", "minecraft:mace", "minecraft:magenta_bed", "minecraft:magenta_bundle", "minecraft:magenta_shulker_box", "minecraft:mangrove_boat",
-        "minecraft:mangrove_chest_boat", "minecraft:milk_bucket", "minecraft:minecart", "minecraft:mojang_banner_pattern", "minecraft:mushroom_stew", "minecraft:music_disc_11", "minecraft:music_disc_13", "minecraft:music_disc_5",
-        "minecraft:music_disc_blocks", "minecraft:music_disc_cat", "minecraft:music_disc_chirp", "minecraft:music_disc_creator", "minecraft:music_disc_creator_music_box", "minecraft:music_disc_far", "minecraft:music_disc_mall", "minecraft:music_disc_mellohi",
-        "minecraft:music_disc_otherside", "minecraft:music_disc_pigstep", "minecraft:music_disc_precipice", "minecraft:music_disc_relic", "minecraft:music_disc_stal", "minecraft:music_disc_strad", "minecraft:music_disc_wait", "minecraft:music_disc_ward",
-        "minecraft:netherite_axe", "minecraft:netherite_boots", "minecraft:netherite_chestplate", "minecraft:netherite_helmet", "minecraft:netherite_hoe", "minecraft:netherite_leggings", "minecraft:netherite_pickaxe", "minecraft:netherite_shovel",
-        "minecraft:netherite_sword", "minecraft:oak_boat", "minecraft:oak_chest_boat", "minecraft:orange_bed", "minecraft:orange_bundle", "minecraft:orange_shulker_box", "minecraft:pale_oak_boat", "minecraft:pale_oak_chest_boat",
-        "minecraft:piglin_banner_pattern", "minecraft:pink_bed", "minecraft:pink_bundle", "minecraft:pink_shulker_box", "minecraft:potion", "minecraft:powder_snow_bucket", "minecraft:pufferfish_bucket", "minecraft:purple_bed",
-        "minecraft:purple_bundle", "minecraft:purple_shulker_box", "minecraft:rabbit_stew", "minecraft:red_bed", "minecraft:red_bundle", "minecraft:red_shulker_box", "minecraft:saddle", "minecraft:salmon_bucket",
-        "minecraft:shears", "minecraft:shield", "minecraft:shulker_box", "minecraft:skull_banner_pattern", "minecraft:splash_potion", "minecraft:spruce_boat", "minecraft:spruce_chest_boat", "minecraft:spyglass",
-        "minecraft:stone_axe", "minecraft:stone_hoe", "minecraft:stone_pickaxe", "minecraft:stone_shovel", "minecraft:stone_sword", "minecraft:suspicious_stew", "minecraft:tadpole_bucket", "minecraft:tnt_minecart",
-        "minecraft:totem_of_undying", "minecraft:trident", "minecraft:tropical_fish_bucket", "minecraft:turtle_helmet", "minecraft:warped_fungus_on_a_stick", "minecraft:water_bucket", "minecraft:white_bed", "minecraft:white_bundle",
-        "minecraft:white_shulker_box", "minecraft:wolf_armor", "minecraft:wooden_axe", "minecraft:wooden_hoe", "minecraft:wooden_pickaxe", "minecraft:wooden_shovel", "minecraft:wooden_sword", "minecraft:writable_book",
-        "minecraft:yellow_bed", "minecraft:yellow_bundle", "minecraft:yellow_shulker_box"
-    };
-    int limit=64;
-    if(k16.find(n)!=k16.end()) limit=16;
-    else if(k1.find(n)!=k1.end()) limit=1;
-    cache.emplace(itemId,limit);
-    return limit;
-}
 
 // ------------------------------------------------------------------ IRedstoneBehavior / RedstoneComponent (plan7)
 
@@ -239,7 +190,7 @@ int RedstoneEngine::analogOutputForContainer(BlockEntity* be) {
         slots = 27;
         for (int i=0;i<27;++i) {
             auto &s = be->chest.slots[i];
-            if (!s.empty()) { ++filled; fillSum += double(s.count)/double(maxStackForItemComp(s.itemId)); }
+            if (!s.empty()) { ++filled; fillSum += double(s.count)/double(maxStackForId(s.itemId)); }
         }
         break;
     }
@@ -248,7 +199,7 @@ int RedstoneEngine::analogOutputForContainer(BlockEntity* be) {
         slots = 27;
         for (int i=0;i<27;++i) {
             auto &s = be->chest.slots[i];
-            if (!s.empty()) { ++filled; fillSum += double(s.count)/double(maxStackForItemComp(s.itemId)); }
+            if (!s.empty()) { ++filled; fillSum += double(s.count)/double(maxStackForId(s.itemId)); }
         }
         break;
     }
@@ -256,7 +207,7 @@ int RedstoneEngine::analogOutputForContainer(BlockEntity* be) {
         slots = 3;
         for (int i=0;i<3;++i) {
             auto &s = be->furnace.slots[i];
-            if (!s.empty()) { ++filled; fillSum += double(s.count)/double(maxStackForItemComp(s.itemId)); }
+            if (!s.empty()) { ++filled; fillSum += double(s.count)/double(maxStackForId(s.itemId)); }
         }
         break;
     }
@@ -264,7 +215,7 @@ int RedstoneEngine::analogOutputForContainer(BlockEntity* be) {
         slots = 5;
         for (int i=0;i<5;++i) {
             auto &s = be->generic.slots[i];
-            if (!s.empty()) { ++filled; fillSum += double(s.count)/double(maxStackForItemComp(s.itemId)); }
+            if (!s.empty()) { ++filled; fillSum += double(s.count)/double(maxStackForId(s.itemId)); }
         }
         break;
     }
@@ -273,7 +224,7 @@ int RedstoneEngine::analogOutputForContainer(BlockEntity* be) {
         slots = 9;
         for (int i=0;i<9;++i) {
             auto &s = be->generic.slots[i];
-            if (!s.empty()) { ++filled; fillSum += double(s.count)/double(maxStackForItemComp(s.itemId)); }
+            if (!s.empty()) { ++filled; fillSum += double(s.count)/double(maxStackForId(s.itemId)); }
         }
         break;
     }
@@ -281,7 +232,7 @@ int RedstoneEngine::analogOutputForContainer(BlockEntity* be) {
         slots = 5;
         for (int i=0;i<5;++i) {
             auto &s = be->brewing.slots[i];
-            if (!s.empty()) { ++filled; fillSum += double(s.count)/double(maxStackForItemComp(s.itemId)); }
+            if (!s.empty()) { ++filled; fillSum += double(s.count)/double(maxStackForId(s.itemId)); }
         }
         break;
     }
@@ -350,9 +301,8 @@ int RedstoneEngine::emissionLevel(std::uint16_t state, std::int32_t x, std::int3
             if (k=="mode") mode=std::string(v);
         }
         if (!powered) {
-            // Even if not powered property, we compute analog but need to decide: vanilla comparator powered indicates output>0
-            // We will compute analog and consider powered = output>0
-            // So compute output first
+            // Even if not powered property, we compute analog but need to decide: vanilla comparator powered indicates output>0 We will
+            // compute analog and consider powered = output>0 So compute output first
         }
         int bx=x, by=y, bz=z;
         if (facing=="north") bz+=1;
@@ -361,8 +311,7 @@ int RedstoneEngine::emissionLevel(std::uint16_t state, std::int32_t x, std::int3
         else if (facing=="east") bx-=1;
         else if (facing=="up") by-=1;
         else if (facing=="down") by+=1;
-        // Rear can be container or redstone dust; take max per plan11 §3 — plan18 §5 adds conductive throughput
-        // 1) direct container
+        // Rear can be container or redstone dust; take max per plan11 §3 — plan18 §5 adds conductive throughput 1) direct container
         int directContainerSig = analogOutputAt(bx,by,bz);
         BlockEntity* rearBE = beStore_ ? beStore_->getAt(bx,by,bz) : nullptr;
         bool hasDirectContainer = (rearBE != nullptr && directContainerSig>=0) ? true : (rearBE!=nullptr);
@@ -498,10 +447,9 @@ void RedstoneEngine::onBlockChanged(std::int32_t x, std::int32_t y,
     // Pistons react at changed pos and neighbors
     handlePiston(x,y,z);
     for (int d=0; d<6; ++d) handlePiston(x+DX[d], y+DY[d], z+DZ[d]);
-    // QC hook (plan38 B-08): piston at y-1 sees y powered via isQuasiPowered(y-1) → y
-    // The 6-neighbor loop already covers y±1, but explicit QC y+1 evaluation ensures
-    // non-adjacent power (lever on block above piston) propagates even if recomputeAround
-    // misses due to wire flood-fill order. Re-evaluate one above/below for QC.
+    // QC hook (plan38 B-08): piston at y-1 sees y powered via isQuasiPowered(y-1) → y The 6-neighbor loop already covers y±1, but explicit
+    // QC y+1 evaluation ensures non-adjacent power (lever on block above piston) propagates even if recomputeAround misses due to wire
+    // flood-fill order. Re-evaluate one above/below for QC.
     handlePiston(x, y - 1, z);
     handlePiston(x, y + 1, z);
     // Doors react to redstone (powered & hinge already handled at placement, here update powered/open)
@@ -538,13 +486,11 @@ void RedstoneEngine::onBlockChanged(std::int32_t x, std::int32_t y,
             if (it != observerPrev_.end()) prev = it->second;
             // if same state as before, still trigger? We'll trigger anyway but update prev
             observerPrev_[key] = world_.getBlock(x,y,z);
-            (void)prev;
             std::int64_t now = tickRef_ ? *tickRef_ : 0;
             handleObserverTrigger(ox,oy,oz, now);
         }
     }
-    // store current state for observers front check future
-    // also handle comparator update
+    // store current state for observers front check future also handle comparator update
     handleComparator(x,y,z);
     for (int d=0; d<6; ++d) handleComparator(x+DX[d], y+DY[d], z+DZ[d]);
 
@@ -618,10 +564,9 @@ void RedstoneEngine::handleRepeaterDelay(std::int32_t x, std::int32_t y, std::in
     else if (facing=="east") bx-=1;
     // check if input is powered
     bool inputPowered = isPoweredHere(bx,by,bz);
-    // also check if block behind is directly powered source or wire
-    // isPoweredHere already checks adjacent, but we need power at input position towards repeater?
-    // We'll approximate: if input block is powered, then repeater should eventually be powered
-    // Determine desired powered state = inputPowered
+    // also check if block behind is directly powered source or wire isPoweredHere already checks adjacent, but we need power at input
+    // position towards repeater? We'll approximate: if input block is powered, then repeater should eventually be powered Determine desired
+    // powered state = inputPowered
     bool wantPowered = inputPowered;
     if (wantPowered == curPowered) {
         // cancel pending if any?
@@ -644,16 +589,14 @@ void RedstoneEngine::recomputeRailShape(std::int32_t x, std::int32_t y, std::int
     std::string name(b->name);
     bool isRail = (name=="minecraft:rail" || name=="minecraft:powered_rail" || name=="minecraft:detector_rail" || name=="minecraft:activator_rail");
     if (!isRail) return;
-    // determine shape based on neighbors
-    // For rail, powered_rail etc have shape property; for regular rail also shape
+    // determine shape based on neighbors For rail, powered_rail etc have shape property; for regular rail also shape
     bool hasShape = false;
     for (int i=0;i<b->propCount;++i) {
         const auto& pd = gen::kPropDefs[gen::kBlockPropsRun[b->propsOff+i]];
         if (pd.name=="shape") hasShape=true;
     }
     if (!hasShape) return;
-    // simple stub: if neighbor rail at same y, set straight, else ascending
-    // Check neighbors east/west etc for rail presence
+    // simple stub: if neighbor rail at same y, set straight, else ascending Check neighbors east/west etc for rail presence
     auto isRailAt = [&](int nx,int ny,int nz)->bool{
         const gen::BlockDef* nb = gen::blockByState(world_.getBlock(nx,ny,nz));
         if (!nb) return false;
@@ -889,7 +832,6 @@ void RedstoneEngine::handleDoor(std::int32_t x, std::int32_t y, std::int32_t z) 
     bool curPowered=false, curOpen=false;
     std::string facing, hinge;
     for(auto& [k,v]: gen::propsOf(lowerSt)){ if(k=="powered") curPowered=(v=="true"); if(k=="open") curOpen=(v=="true"); if(k=="facing") facing=std::string(v); if(k=="hinge") hinge=std::string(v); }
-    (void)curOpen;
     bool powered = isPoweredHere(lx,ly,lz) || isPoweredHere(lx,ly+1,lz);
     // QC for doors? also check above
     if(!powered) powered = isPoweredHere(lx,ly+1,lz);
@@ -975,8 +917,7 @@ void RedstoneEngine::processPendingPistonCommits(std::int64_t now) {
                 // ensure block is cleared before placing shifted (already moving_piston)
                 setBlockAndBroadcast(e.x,e.y,e.z, 0);
             }
-            // place shifted blocks farthest first
-            // entries are original positions; shifted = entry + delta
+            // place shifted blocks farthest first entries are original positions; shifted = entry + delta
             std::vector<typename PendingPistonCommit::Entry> sorted = it->entries;
             std::sort(sorted.begin(), sorted.end(), [&](const auto &a, const auto &b){
                 int da=std::abs(a.x-it->pistonX)+std::abs(a.y-it->pistonY)+std::abs(a.z-it->pistonZ);
@@ -998,8 +939,7 @@ void RedstoneEngine::processPendingPistonCommits(std::int64_t now) {
                 setBlockAndBroadcast(it->hx,it->hy,it->hz, headSt);
             }
         } else {
-            // retract: head was moving_piston at hx,hy,hz
-            // clear head moving_piston
+            // retract: head was moving_piston at hx,hy,hz clear head moving_piston
             if (beStore_) beStore_->remove(posKey(it->hx,it->hy,it->hz));
             setBlockAndBroadcast(it->hx,it->hy,it->hz, 0);
             // handle sticky pull entries (original pullEntries holds original positions+states)
@@ -1284,14 +1224,7 @@ void RedstoneEngine::handlePistonScheduled(std::int32_t x, std::int32_t y, std::
     }
 }
 void RedstoneEngine::processPistonQueue(std::int64_t now) {
-    // plan28 finish: drain by index — handlePistonScheduled pushes NEW entries
-    // (pistonQueue_.push_back) via its block-update callbacks, which can
-    // reallocate the vector and invalidate a range-for/iterator loop (observed
-    // livelock: tick stuck for minutes at now=416, smoke test redstone piston).
-    // Index-based drain keeps the loop valid across recursive pushes; fresh
-    // entries have dueTick=now+2 and are skipped this round. A per-tick budget
-    // additionally caps a pathological self-oscillating piston (power flapping
-    // + head/wire feedback) from flooding the tick and starving sessions.
+    // plan28 finish: index-based piston drain (push_back realloc invalidates iterators; observed livelock) + per-tick budget.
     const int budget = 32;
     int done = 0;
     for (std::size_t i = 0; i < pistonQueue_.size() && done < budget; ) {
@@ -1308,11 +1241,7 @@ void RedstoneEngine::processPistonQueue(std::int64_t now) {
 void RedstoneEngine::tick(std::int64_t now) {
     processPistonQueue(now);
     processPendingPistonCommits(now);
-    // plan28 finish: a redstone feedback cascade (wire/piston/repeater updates
-    // re-queuing immediate dueTick<=now entries) could starve the game tick
-    // forever — the smoke test observed the tick stuck for minutes. Bound the
-    // per-tick drain (vanilla processes redstone updates with per-tick limits
-    // too); leftover work drains on subsequent ticks (queue_ persists).
+    // plan28 finish: bound per-tick redstone drain (feedback cascades starved the tick); leftovers drain later.
     int budget = 4096;
     while (!queue_.empty() && queue_.top().dueTick <= now && --budget > 0) {
         const RedstoneTick t = queue_.top();
@@ -1481,7 +1410,6 @@ void RedstoneEngine::reactToPower(std::int32_t x, std::int32_t y,
         bool curPowered=false;
         for (auto& [k,v] : gen::propsOf(st)) if (k=="powered" && v=="true") curPowered=true;
         // No minecart check, just propagate power inversion? Keep as is
-        (void)curPowered;
     }
 }
 

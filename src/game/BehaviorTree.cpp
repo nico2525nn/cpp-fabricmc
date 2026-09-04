@@ -205,8 +205,7 @@ BTStatus StareAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (p->gamemode==1 || p->gamemode==3) return BTStatus::Failure;
     bool hasPumpkin=false;
     if (p->inv.size()>=9) {
-        // head slot 8 is helmet (player inv 5-8 armor, 8 = head)
-        // we check all armor slots for pumpkin to be safe
+        // head slot 8 is helmet (player inv 5-8 armor, 8 = head) we check all armor slots for pumpkin to be safe
         for(int i=5;i<=8;i++) if(!p->inv[i].empty()){
             std::string n = p->inv[i].name();
             if(n=="minecraft:carved_pumpkin") {hasPumpkin=true;break;}
@@ -238,10 +237,7 @@ BTStatus WitherSkullAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now)
     double d = std::sqrt(dx*dx+dz*dz);
     if (d>32) return BTStatus::Failure;
     double inv = 1.0/ (d+1e-6);
-    // plan21 E3: Wither skull 3-burst (vanilla WitherEntity shoots 3 skulls per attack, central + 2 side heads with spread)
-    // plan21 adds charged (blue) skull when health <= half (150) for head 0, with 3-burst and armor bypass via projectile
-    // plan24 combat polish: 3-burst verified after wt24 merges; plan25 verify 3-burst intact after W16-W19 world changes
-    // plan26 combat polish: verify 3-burst intact after D5/D6/D10/D11/D16/D17/D19/D20/D22/D25 merges; EPF weight1, sonic 15x20 bypass intact.
+    // plan21/24/26 E3: wither 3-burst skulls (+charged blue at half HP); verified intact across merges.
     if (ctx.srv) {
         const float maxH = mobStats(m.kind).maxHealth;
         bool halfHealth = m.health <= maxH * 0.5f;
@@ -497,7 +493,6 @@ BTStatus WardenSonicBoomAction::tick(MobEntity& m, AiContext& ctx, std::int64_t 
             p.f32(0); p.f32(0); p.f32(0); p.f32(0.1f);
             p.varint(27); // sonic_boom (plan26 D17: was 0 placeholder)
             // not broadcasting particle id strictly, but keep for compat
-            (void)p;
         }
     }
     m.witherSkullCooldown = (int)(now + 80);

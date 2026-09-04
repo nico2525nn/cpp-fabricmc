@@ -96,8 +96,7 @@ void Session::run() {
         while (state_ != State::Done && srv_.running()) {
             switch (state_) {
             case State::Handshake: {
-                // plan45 B6 W-13(a): a pre-1.7 legacy list ping starts with
-                // 0xFE and speaks no framing — answer in the legacy form.
+                // plan45 B6 W-13(a): a pre-1.7 legacy list ping starts with 0xFE and speaks no framing — answer in the legacy form.
                 if (conn_->peekFirstByte(50) == 0xFE) {
                     answerLegacyPing();
                     state_ = State::Done;
@@ -130,9 +129,7 @@ void Session::run() {
         }
     } catch (const SocketClosedError&) {
     } catch (const PacketDecoder::OversizeError& e) {
-        // plan46 §1 W-16: oversize in pre-play stages gets a Disconnect kick
-        // (vanilla closes with a reason). Status/handshake have no disconnect
-        // packet type — just close there.
+        // plan46 §1 W-16: oversize pre-play gets a Disconnect kick (status/handshake just close).
         std::fprintf(stderr, "[cppfm] session %s oversize: %s\n",
                      conn_->peer().c_str(), e.what());
         if (state_ == State::Login || state_ == State::Configuration ||
@@ -143,8 +140,7 @@ void Session::run() {
     } catch (const std::exception& e) {
         std::fprintf(stderr, "[cppfm] session %s error: %s\n",
                      conn_->peer().c_str(), e.what());
-        // plan46 §1 W-16: no more silent drops — attempt a state-correct
-        // Disconnect kick (already-dead sockets are guarded).
+        // plan46 §1 W-16: no more silent drops — attempt a state-correct Disconnect kick (already-dead sockets are guarded).
         if ((state_ == State::Login || state_ == State::Configuration ||
              state_ == State::Play) && conn_->isOpen()) {
             try { disconnectIn("{\"text\":\"Internal server error\"}"); } catch (...) {}
@@ -177,9 +173,7 @@ srv_.removePlayer(self_.get());
         registered_ = false;
     }
 }
-// plan45 B6 W-13(a): legacy list ping (MC|PingHost era, 0xFE 0x01[ FA ...]).
-// Answers 0xFF + uint16 length + UTF-16BE "§1\0proto\0ver\0motd\0online\0max"
-// and lets the session close. No framing/compression/encryption applies.
+// plan45 B6 W-13(a): legacy 0xFE ping — answer 0xFF UTF-16BE status, then close (no framing).
 void Session::answerLegacyPing() {
     const std::string body = std::string("\u00a71") + '\0' +
         std::to_string(kProtocolVersion) + '\0' + std::string(kMinecraftVersion) + '\0' +
@@ -332,9 +326,7 @@ void Session::handleLogin() {
         try {
             return in.string(16);
         } catch (const std::exception&) {
-            // plan42 R3: vanilla disconnects overlong/invalid names with a
-            // LoginDisconnect (test_server_full whitelist guest uses an
-            // 18-char name) instead of dropping the session silently.
+            // plan42 R3: overlong/invalid names get LoginDisconnect (not silent drop).
             WriteBuffer kick;
             nbt::writeTextComponent(kick, "Invalid username");
             try { conn_->sendPacket(proto::lo::sc::Disconnect, kick); } catch (...) {}
@@ -344,8 +336,7 @@ void Session::handleLogin() {
     }();
     if (state_ == State::Done) return;
 
-    // plan45 B6 W-13(b): vanilla charset [A-Za-z0-9_] (overlong names were
-    // already kicked above via string(16)).
+    // plan45 B6 W-13(b): vanilla charset [A-Za-z0-9_] (overlong names were already kicked above via string(16)).
     if (!GameServer::isValidPlayerName(self_->name)) {
         WriteBuffer kick;
         nbt::writeTextComponent(kick, "Invalid username");
@@ -378,9 +369,7 @@ void Session::handleLogin() {
             return;
         }
     }
-    // plan42 R3 (E-19): enforce the runtime whitelist flag controlled by
-    // `whitelist on/off` (server.properties white-list=true only seeds it at
-    // boot via setEnabled(true)). Ops bypass the whitelist (vanilla).
+    // plan42 R3 (E-19): enforce runtime whitelist flag; ops bypass (vanilla).
     if (srv_.whitelist().enabled()) {
         // any registered-name match is impossible pre-join; check file-backed list
         bool ok = srv_.whitelist().contains(self_->name) || srv_.isOp(self_->name);
@@ -518,11 +507,7 @@ void Session::handleLogin() {
     }
     conn_->sendPacket(lo::sc::GameProfile, ok);
 
-    // wait for LoginAcknowledged.
-    // plan45 B6 W-11: accept all 5 login toServer kinds (protocol.json 1.21.4:
-    // 0x00 login_start / 0x01 encryption_begin / 0x02 login_plugin_response /
-    // 0x03 login_acknowledged / 0x04 cookie_response). Cookie values are kept;
-    // plugin answers are parsed + tolerated; only truly unknown ids throw.
+    // wait for LoginAcknowledged. plan45 B6 W-11: accept all 5 login toServer kinds; only truly unknown ids throw.
     for (;;) {
         auto f2 = conn_->readFrame();
         ReadBuffer in2(f2);
@@ -557,10 +542,7 @@ void Session::handleLogin() {
         }
     }
 }
-// plan43 W-12: one configuration packet during a wait loop. Configuration
-// packets (settings resends, pongs, late resource-pack answers, delayed
-// known-packs) may arrive at any time, so both wait loops (packs + finish-ack)
-// share this helper. Only truly unknown ids throw.
+// plan43 W-12: config packets may arrive anytime — both wait loops share this helper.
 Session::ConfigWaitResult Session::handleOneConfigPacket(ReadBuffer& in) {
     const std::uint8_t kpid = in.u8();
     switch (kpid) {
@@ -662,9 +644,7 @@ void Session::handleConfiguration() {
         conn_->sendPacket(cf::sc::SelectKnownPacks, b);
     }
     // 3. wait for the client's SelectKnownPacks answer (server hangs otherwise!)
-    // plan43 W-12: shared helper — an out-of-order FinishAcknowledgement is
-    // recorded but we keep waiting for packs (the client will ack again after
-    // it receives our FinishConfiguration).
+    // plan43 W-12: out-of-order FinishAck is recorded; keep waiting for packs.
     bool finishAckEarly = false;
     for (;;) {
         auto frame = conn_->readFrame();
@@ -699,10 +679,7 @@ void Session::handleConfiguration() {
         pkt.raw(srv_.data().tags().data(), srv_.data().tags().size());
         conn_->sendRawBody(pkt.data);
     }
-    // 6. finish & await acknowledgement
-    // plan43 W-12: absorb every configuration packet that may arrive around
-    // finish (settings resends, pongs, late pack answers, delayed known-packs
-    // retransmits). 30s without any packet = kick (slow-loris guard).
+    // 6. finish & await acknowledgement plan43 W-12: absorb stray config packets around finish; 30s silence = kick.
     conn_->sendPacket(cf::sc::FinishConfiguration, {});
     for (;;) {
         std::vector<std::uint8_t> frame;
@@ -788,8 +765,7 @@ void Session::onEnterPlay() {
     }
 
     srv_.loadPlayerData(GameServer::uuidToHex(self_->uuid), *self_);
-    // plan43 W-06 + W-15(b): abilities are sent only after gamemode is final
-    // (the old call site ran before gamemode was even assigned).
+    // plan43 W-06 + W-15(b): abilities are sent only after gamemode is final (the old call site ran before gamemode was even assigned).
     sendAbilities();
     // cookies from disk (plan3 Cookie persistence)
     if (!self_->cookies.empty()) {}                    // populated on demand
@@ -829,9 +805,8 @@ void Session::onEnterPlay() {
 }
 void Session::sendDeclareCommands() {
     WriteBuffer b;
-    // Strict 1.21.4: serialize the full Brigadier dispatcher tree (not minimal 3-node stub).
-    // Commands.cpp builds 20+ commands via initCommands(); dispatcher.writeDeclareCommands
-    // emits flattened nodes with parser ids 0-53 matching protocol.json (N9/N10).
+    // Strict 1.21.4: serialize the full Brigadier dispatcher tree (not minimal 3-node stub). Commands.cpp builds 20+ commands via
+    // initCommands(); dispatcher.writeDeclareCommands emits flattened nodes with parser ids 0-53 matching protocol.json (N9/N10).
     srv_.commands().writeDeclareCommands(b);
     conn_->sendPacket(pl::sc::DeclareCommands, b);
 }
@@ -871,9 +846,7 @@ void Session::sendJoinGame() {
     }
     b.boolean(false);                              // enforces secure chat
     conn_->sendPacket(pl::sc::Login, b);
-    // plan46 O-03: initial UpdateViewDistance 0x59 so the client render distance
-    // tracks the server-clamped value from login (also re-sent on every
-    // Settings 0x0C change via applyClientSettings).
+    // plan46 O-03: initial UpdateViewDistance 0x59 (re-sent on Settings 0x0C change).
     try {
         WriteBuffer vd;
         vd.varint(c.viewDistance);
@@ -881,10 +854,7 @@ void Session::sendJoinGame() {
     } catch (...) {}
 }
 void Session::sendAbilities() {
-    // plan43 W-06: flags follow gamemode (vanilla PlayerAbilities bits:
-    // 0x01 invulnerable, 0x02 flying, 0x04 allowFlying, 0x08 creative).
-    // Survival/adventure get 0x00 — the old code dealt 0x01|0x04|0x08 to
-    // everyone (free fly + godmode + instabuild for survival joiners).
+    // plan43 W-06: ability flags follow gamemode (survival/adventure get 0x00).
     std::uint8_t f = 0;
     if (self_->gamemode == 1) f |= 0x01 | 0x04 | 0x08;   // creative
     else if (self_->gamemode == 3) f |= 0x02 | 0x04;     // spectator flies
@@ -896,10 +866,7 @@ void Session::sendAbilities() {
     b.f32(0.10f);                                       // walkingSpeed (vanilla default)
     conn_->sendPacket(pl::sc::Abilities, b);
 }
-// plan43 W-07: re-send the stored sign text as BlockEntityData 0x07
-// (position + block-entity-type varint + NBT). Type ids follow the vanilla
-// minecraft:block_entity_type registry order (sign=7, hanging_sign=8).
-// Non-sign blocks are ignored, mirroring vanilla's block-entity lookup.
+// plan43 W-07: re-send stored sign text as BlockEntityData 0x07 (sign=7, hanging_sign=8).
 void Session::sendSignBlockEntity(std::int32_t x, std::int32_t y, std::int32_t z) {
     bool hanging = false;
     {
@@ -936,24 +903,18 @@ void Session::sendSignBlockEntity(std::int32_t x, std::int32_t y, std::int32_t z
     try { conn_->sendPacket(pl::sc::BlockEntityData, b); } catch (...) {}
     srv_.broadcastPacketExcept(self_.get(), pl::sc::BlockEntityData, b);
 }
-// plan45 B6 W-05: play settings 0x0C (packet_common_settings — config 0x00
-// shares the shape). Locale/skin/etc. are kept; viewDistance narrows the
-// chunk send radius via tickChunksAround (min with the server setting).
+// plan45 B6 W-05: play settings 0x0C (shared shape with config 0x00); viewDistance narrows send radius.
 void Session::applyClientSettings(Player::ClientSettings s) {
     if (s.locale.empty()) s.locale = "en_us";
     self_->clientSettings = s;
-    // plan46 O-03: confirm the effective view distance back to the client
-    // (vanilla UpdateViewDistance 0x59). The value is the server-clamped one
-    // the chunk sender actually uses (tickChunksAround min()).
+    // plan46 O-03: confirm effective (server-clamped) view distance via UpdateViewDistance 0x59.
     try {
         WriteBuffer b;
         b.varint(std::min({srv_.config().viewDistance, s.viewDistance, 32}));
         conn_->sendPacket(pl::sc::UpdateViewDistance, b);
     } catch (...) {}
 }
-// plan45 B6 W-09: op/creative gate for debug editors. "Unimplemented=deny":
-// the gate shape stays even where storage is deferred, so a future feature
-// cannot forget the permission check (privilege-escalation prevention).
+// plan45 B6 W-09: op/creative gate for debug editors ("unimplemented=deny" prevents privilege gaps).
 bool Session::requireOp(int level, const char* what) {
     (void)level; // levels collapse to ops.json membership + creative (documented)
     if (srv_.isOp(self_->name) && self_->gamemode == 1) return true;
@@ -1185,7 +1146,6 @@ void Session::onWindowClick(ReadBuffer& in) {
             try { stateId = in.varint(); } catch (...) { stateId = 0; }
         }
     }
-    (void)stateId;
     const auto slotIdx = in.i16();
     const auto button = in.i8();
     const auto mode = in.varint();
@@ -1196,8 +1156,7 @@ void Session::onWindowClick(ReadBuffer& in) {
         (void)in.i16();
         ItemStack::read(in);
     }
-    ItemStack clientCursor = ItemStack::read(in);
-    (void)clientCursor;
+    ItemStack::read(in); // discard client cursor (server-authoritative)
 
     if (windowId != 0 && openMenu_ && openMenu_->windowId == windowId) {
         handleMenuClick(*openMenu_, slotIdx, button, mode);
@@ -1217,8 +1176,7 @@ void Session::onWindowClick(ReadBuffer& in) {
                 return;
             }
         }
-        // player-inventory clicks: trust the predicted slots, then resync.
-        // (Full authoritative cursor handling lives in the menu path.)
+        // player-inventory clicks: trust the predicted slots, then resync. (Full authoritative cursor handling lives in the menu path.)
         srv_.resendInventory(*self_);
         srv_.syncEquipmentOnChange(*self_);
     }
@@ -1275,9 +1233,7 @@ void Session::onEnchantItem(ReadBuffer& in) {
 void Session::onTabComplete(ReadBuffer& in) {
     const auto transactionId = in.varint();
     const std::string text = in.string(65536);
-    // plan43 W-04: spec is 2 fields only (transactionId + text) — the old
-    // (void)in.boolean() ("assume command") required a 3rd byte and cut
-    // every legitimate tab-complete with an underrun. Deleted.
+    // plan43 W-04: tab-complete spec is 2 fields (transactionId + text); no 3rd byte.
 
     brigadier::CommandSource src;
     src.player = self_.get();
@@ -1289,9 +1245,7 @@ void Session::onTabComplete(ReadBuffer& in) {
         out = srv_.resolveSelector(raw, self_.get());
     };
 
-    // plan43 W-04: tab text is the raw chat-box content, including a leading
-    // '/' for commands; the brigadier tree matches bare literals, so strip one
-    // leading '/' for completion (start/length still count it, see below).
+    // plan43 W-04: strip one leading '/' for completion (start/length still count it).
     std::string query = text;
     if (!query.empty() && query[0] == '/') query = query.substr(1);
     const auto suggestions = srv_.commands().suggest(query, std::move(src));
@@ -1441,8 +1395,8 @@ void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
     }
     // crafting result refresh before interaction
     m.refreshCraftResult(srv_.recipes());
-    const bool changed = ClickLogic::apply(m, *self_, srv_.recipes(),
-                                           slot, button, mode, cursorItem_, io);
+    (void)ClickLogic::apply(m, *self_, srv_.recipes(),
+                            slot, button, mode, cursorItem_, io);
     if (m.type == MenuType::Crafting) m.refreshCraftResult(srv_.recipes());
     // Also notify MenuLogic of content change for result recomputation (e.g., Anvil)
     if (auto* logic2 = getMenuLogic(m.type)) logic2->onContentChanged(m, *self_);
@@ -1576,7 +1530,6 @@ void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
             }
         }
     }
-    (void)changed;
 }
 void Session::sendMenuContent(Menu& m) {
     WriteBuffer b;
@@ -1976,7 +1929,6 @@ void Session::handlePlaceRecipe(std::int32_t recipeId, bool makeAll) {
         srv_.resendInventory(*self_);
         sendMenuContent(m);
         syncCursorItem();
-        (void)makeAll;
         return;
     } else if (m.type == MenuType::Furnace) {
         if (r.kind != Recipe::Kind::Smelting) return;
@@ -2017,7 +1969,6 @@ void Session::handlePlaceRecipe(std::int32_t recipeId, bool makeAll) {
             pb.i16(f.cookProgress);
             try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
         }
-        (void)makeAll;
         return;
     } else if (m.type == MenuType::Stonecutter) {
         if (r.kind != Recipe::Kind::Stonecutting) return;
@@ -2044,11 +1995,9 @@ void Session::handlePlaceRecipe(std::int32_t recipeId, bool makeAll) {
         sendMenuContent(m);
         srv_.resendInventory(*self_);
         syncCursorItem();
-        (void)makeAll;
         return;
     }
     // For other containers (Enchantment, Anvil, Brewing, etc.), PlaceRecipe is no-op but we still ack
-    (void)makeAll;
 }
 void Session::handlePlaceGhostRecipe(std::int32_t recipeId) {
     if (!openMenu_ || openMenu_->type != MenuType::Stonecutter) return;
@@ -2108,8 +2057,7 @@ void Session::onPluginPayload(const std::string& channel,
                     rename = rb.string(constants::kMaxStringLength);
                     if (rb.remaining() > 0) {
                         ReadBuffer rb2(body.data(), body.size());
-                        int win = rb2.varint();
-                        (void)win;
+                        (void)rb2.varint();
                         if (rb2.remaining() > 0) rename = rb2.string(constants::kMaxStringLength);
                     }
                 }
@@ -2150,9 +2098,7 @@ void Session::sendSystemText(const std::string& text) {
 }
 void Session::sendChunk(std::int32_t cx, std::int32_t cz) {
     static const std::uint32_t biomeIdx = srv_.data().biomeIndex(srv_.config().worldBiome);
-    // plan42 R2 (E-13): warm the async RegionFile read path (ioPool_ ThreadPool 4).
-    // Ready futures are installed into the world by the tick thread via
-    // pollPendingLoads(); the sync generate below remains the fallback.
+    // plan42 R2 (E-13): warm async RegionFile reads (tick installs them; sync generate is fallback).
     srv_.demandChunkAsync(cx, cz);
     GameServer::ChunkBodyRef body;
     if (!srv_.getCachedChunk(cx, cz, biomeIdx, body)) {
@@ -2168,10 +2114,7 @@ void Session::sendChunk(std::int32_t cx, std::int32_t cz) {
         body = fresh;
     }
     conn_->sendPacketBuf(pl::sc::LevelChunkWithLight, *body);
-    // plan43 W-07: re-send sign BlockEntityData for signs in this chunk so a
-    // (re)login restores sign text (vanilla emits 0x07 per block entity on
-    // chunk load; edit-time resend alone does not survive chunk re-stream).
-    // forEach over all BEs per chunk is O(BE); BE counts are tiny in practice.
+    // plan43 W-07: re-send sign BlockEntityData per chunk (edit-time resend alone misses re-stream).
     srv_.blockEntities().forEach([&](std::int64_t k, BlockEntity& be) {
         if (be.kind != BlockEntity::Kind::Sign) return;
         const std::int32_t bx = posKeyUnpackX(k), by = posKeyUnpackY(k), bz = posKeyUnpackZ(k);
@@ -2186,12 +2129,7 @@ void Session::streamInitialChunks() {
     tickChunksAround(self_->x, self_->z);
 }
 void Session::tickChunksAround(double px, double pz) {
-    // plan11 §1 #6: simulation distance culling vs view distance — viewDistance controls chunk SENDING (render)
-    // simulationDistance controls TICKING via World::isChunkInSimulationDistance for all subsystems
-    // (FluidSim, Redstone, LightEngine, BlockTickScheduler). They are distinguished here: this function uses viewDistance for
-    // client chunk batch, while server tick uses simulationDistance via isChunkInSimulationDistance + ChunkTicket SPAWN.
-    // plan45 B6 W-05: the send radius also honors the client's own settings
-    // viewDistance (min with the server setting — a low-end client receives less).
+    // plan11 §1 #6 + plan45 B6 W-05: viewDistance controls chunk SENDING (min of server/client); simulationDistance controls TICKING.
     const int vd = std::min({srv_.config().viewDistance, self_->clientSettings.viewDistance, 12});
     const int sd = std::min(srv_.config().simulationDistance, 12);
     (void)sd; // ticking distance is checked in engines, not here; view vs sim are distinguished as required
@@ -2253,9 +2191,7 @@ void Session::ack(std::int32_t sequence) {
 }
 void Session::handlePlay() {
     for (;;) {
-        // plan46 §1 W-16/A4: per-packet isolation. A malformed packet kills
-        // only itself (rate-limited log + continue); oversize kicks with a
-        // Disconnect; only a dead socket ends the session quietly.
+        // plan46 §1 W-16/A4: per-packet isolation — malformed kills only itself; oversize kicks.
         try {
         auto frame = conn_->readFrame();
         ReadBuffer in(frame);
@@ -2298,10 +2234,9 @@ void Session::handlePlay() {
         case pl::cs::MoveVehicle: onMoveVehicle(in); break;
         case pl::cs::SignUpdate: onSignUpdate(in); break; // 0x39 — always a sign edit
         case pl::cs::EntityAction: onEntityAction(in); break;
-        // ============ plan45 B6: remaining fromClient (W-05/W-08/W-09/W-10) ====
-        // Shapes verified against Prismarine protocol.json 1.21.4 (2026-09-04).
-        // Each case is self-guarded: a malformed body is logged + skipped so
-        // one bad packet never kills the session (W-16 per-packet policy).
+        // ============ plan45 B6: remaining fromClient (W-05/W-08/W-09/W-10) ==== Shapes verified against Prismarine protocol.json 1.21.4
+        // (2026-09-04). Each case is self-guarded: a malformed body is logged + skipped so one bad packet never kills the session (W-16
+        // per-packet policy).
         case pl::cs::Settings: onClientSettings(in); break; // 0x0C W-05
         case pl::cs::NameItem: onNameItemPacket(in); break; // 0x2E W-08
         case pl::cs::SetBeaconEffect: onBeaconEffectPacket(in); break; // 0x32 W-08
@@ -2331,10 +2266,8 @@ void Session::handlePlay() {
         case pl::cs::UpdateStructureBlock: onUpdateStructureBlock(in); break; // 0x38 W-09
         case pl::cs::Spectate: onSpectatePacket(in); break; // 0x3B W-09
         default:
-            // Unknown packets: skip payload to stay aligned. plan46 §1 W-16:
-            // unknown play = ignore + log (rate-limited under flood), while
-            // unknown login/config = kick + Disconnect (thrown by their
-            // handlers, kicked by Session::run). Policy: docs/RATE_LIMITS.md.
+            // Unknown packets: skip payload to stay aligned. plan46 §1 W-16: unknown play = ignore + log (rate-limited under flood), while
+            // unknown login/config = kick + Disconnect (thrown by their handlers, kicked by Session::run). Policy: docs/RATE_LIMITS.md.
             if (playLogGate_.shouldLog(nowMs()))
                 std::fprintf(stderr, "[cppfm] unknown play packet from %s\n",
                              conn_->peer().c_str());
@@ -2364,8 +2297,7 @@ void Session::onAcceptTeleportation(ReadBuffer& in) {
     if (!chunksStreamed_) streamInitialChunks();
 }
 void Session::onKeepAlivePacket(ReadBuffer& in) {
-    // Client's response: just clear the pending flag. Sending anything
-    // here creates an infinite keepalive ping-pong.
+    // Client's response: just clear the pending flag. Sending anything here creates an infinite keepalive ping-pong.
     const std::int64_t id = in.i64();
     if (self_->pendingKeepAlive == 0 || id == self_->pendingKeepAlive)
         self_->pendingKeepAlive = 0;
@@ -2376,10 +2308,7 @@ bool Session::onChatCommandSignedPacket(ReadBuffer& in) {
         kickPlay("{\"translate\":\"disconnect.spam\"}");
         return true;
     }
-    // plan43 W-03: vanilla sends command/i64/salt/array{argumentName +
-    // fixed-256B signature}/messageCount/acknowledged[3] — no booleans,
-    // no variable-length signatures. enforcesSecureChat=false so the
-    // signatures are shape-checked, not cryptographically verified.
+    // plan43 W-03: chat signature shape (256B fixed, no booleans); shape-checked, not crypto-verified.
     try {
         const std::string cmd = in.string(constants::kMaxStringLength);
         (void)in.i64(); (void)in.i64();        // timestamp, salt
@@ -2427,16 +2356,13 @@ void Session::onCustomPayload(ReadBuffer& in) {
     onPluginPayload(channel, body, 1);
 }
 void Session::onPlaceRecipePacket(ReadBuffer& in) {
-    // plan45 B6/G-13: windowId is ContainerID(varint) per protocol.json
-    // (was u8 — strict violation at 128+). Keep a u8 fallback for
-    // lenient proxies, mirroring onWindowClick/onEnchantItem.
+    // plan45 B6/G-13: windowId is varint ContainerID (u8 fallback for lenient proxies).
     int windowId = 0;
     {
         const std::size_t mark = in.off;
         try { windowId = in.varint(); }
         catch (...) { in.off = mark; windowId = in.u8(); }
     }
-    (void)windowId;
     const auto recipeId = in.varint();
     const auto makeAll = in.boolean();
     handlePlaceRecipe(recipeId, makeAll);
@@ -2451,9 +2377,7 @@ void Session::onPingRequest(ReadBuffer& in) {
     conn_->sendPacket(0x38 /*ping response*/, b);
 }
 void Session::onPlayerAbilities(ReadBuffer& in) {
-    // plan43 W-06: client flight toggle. Only creative/spectator may
-    // fly; anything else is revoked and echoed back so the client
-    // stays in sync (vanilla never trusts the flying bit alone).
+    // plan43 W-06: flight toggle only for creative/spectator; revoked + echoed otherwise.
     const std::int8_t f = in.i8();
     const bool wantFly = (f & 0x02) != 0;
     const bool canFly = (self_->gamemode == 1 || self_->gamemode == 3);
@@ -2518,11 +2442,7 @@ void Session::onMoveVehicle(ReadBuffer& in) {
     }catch(...){ in.skipRest(); }
 }
 void Session::onSignUpdate(ReadBuffer& in) {
-    // plan43 W-07: spec is position + isFrontText + 4 lines. The old
-    // len<16 stonecutter heuristic is gone: ghost recipes arrive via
-    // the separate PlaceRecipe 0x25 id, so 0x39 is unambiguous.
-    // Lines are stored verbatim (plain text or JSON components —
-    // vanilla renders both leniently) and re-sent as BlockEntityData.
+    // plan43 W-07: sign edit is position + isFrontText + 4 verbatim lines (ghost recipes use 0x25).
     try {
         std::int32_t sx, sy, sz;
         in.position(sx, sy, sz);
@@ -2623,7 +2543,6 @@ void Session::onEntityAction(ReadBuffer& in) {
             srv_.broadcastPacketExcept(self_.get(), pl::sc::SetEntityMetadata, je);
         }
     }
-    (void)wasSprint;
 }
 void Session::onClientSettings(ReadBuffer& in) {
     try {
@@ -2733,10 +2652,8 @@ bool Session::onResourcePackReceive(ReadBuffer& in) {
         auto ub = in.bytes(16);
         std::copy(ub.begin(), ub.end(), uuid.begin());
         const std::int32_t result = in.varint();
-        (void)uuid;
-        // vanilla PackResult: 0 loaded, 1 declined, 2 failed_download,
-        // 3 accepted, 4 downloaded... A forced pack that is
-        // declined/failed must kick.
+        // vanilla PackResult: 0 loaded, 1 declined, 2 failed_download, 3 accepted, 4 downloaded... A forced pack that is declined/failed
+        // must kick.
         if (srv_.config().resourcePackForced && (result == 1 || result == 2)) {
             disconnectIn("{\"text\":\"Server resource pack declined\"}");
             state_ = State::Done;
@@ -2829,8 +2746,7 @@ void Session::onEditBook(ReadBuffer& in) {
         const bool hasTitle = in.boolean();
         const std::string title = hasTitle ? in.string(128) : std::string{};
         self_->lastBookEdit = {hand, pages, title, hasTitle};
-        // Real effect: signing (title present) converts a held
-        // writable book into a written book carrying the title.
+        // Real effect: signing (title present) converts a held writable book into a written book carrying the title.
         if (hasTitle && (hand == 0 || hand == 1)) {
             ItemStack* held = (hand == 0) ? &self_->inv[36 + self_->heldSlot]
                                           : &self_->inv[45];
@@ -2942,9 +2858,7 @@ void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
         self_->yaw = in.f32();
         self_->pitch = in.f32();
     }
-    // plan43 W-01: trailing byte is MovementFlags bitflags u8
-    // (bit0 onGround, bit1 hasHorizontalCollision) — NOT a boolean.
-    // flags=0x02 (wall bump, airborne) must NOT read as on-ground.
+    // plan43 W-01: trailing byte is MovementFlags bitflags (not boolean); 0x02 is not on-ground.
     const std::uint8_t moveFlags = in.u8();
     const bool nowGround = (moveFlags & 0x01) != 0;
     // bit1 hasHorizontalCollision: no consumer yet (future wall-kick etc.).
@@ -3544,14 +3458,10 @@ void Session::onUseItemOn(ReadBuffer& in) {
     (void)in.boolean();                                 // world border hit
     const std::int32_t sequence = in.varint();
 
-    static constexpr int DX[] = {0, 0, 0, 0, -1, 1};
-    static constexpr int DY[] = {1, -1, 0, 0, 0, 0};    // face: -Y? order below
-    static constexpr int DZ[] = {0, 0, 1, -1, 0, 0};
     // vanilla face ids: 0 bottom(-Y), 1 top(+Y), 2 north(-Z), 3 south(+Z), 4 west(-X), 5 east(+X)
     static constexpr int FX[] = {0, 0, 0, 0, -1, 1};
     static constexpr int FY[] = {-1, 1, 0, 0, 0, 0};
     static constexpr int FZ[] = {0, 0, -1, 1, 0, 0};
-    (void)DX; (void)DY; (void)DZ;
     const int d = (dir >= 0 && dir < 6) ? dir : 0;
     const std::int32_t tx = x + FX[d], ty = y + FY[d], tz = z + FZ[d];
     // --- ItemUseContext (plan6) ---
@@ -4226,9 +4136,7 @@ void Session::onUseItemOn(ReadBuffer& in) {
             // handled via trySpawnEgg above
         }
     }
-    // plan23 §3: Boat variants 20 distinct — place boat/raft item spawns correct variant (E2)
-    // Vanilla: right-click water with boat spawns variant matching item; typeId via MobKind::typeId.
-    // Intercept before generic block placement (boat items are not block items).
+    // plan23 §3: boat/raft items spawn the matching variant (intercept before block placement).
     {
         if (!heldItem.empty()) {
             std::string hName = heldItem.name();
@@ -4279,7 +4187,6 @@ void Session::onUseItemOn(ReadBuffer& in) {
         return;
     }
     std::vector<std::pair<std::string_view, std::string_view>> props;
-    (void)props;
     {
         // context-aware placement using ItemUseContext (plan6 item 11/15)
         float yaw = ctx.yaw;
@@ -4715,22 +4622,13 @@ void Session::onUseEntity(ReadBuffer& in) {
     if (mouse != 1) {
         // INTERACT (0) / INTERACT_AT (2)
         if (mouse == 0 || mouse == 2) {
-            // plan43 W-02: hand (varint: 0 mainhand / 1 offhand) and the true
-            // sneaking flag (bool) are separate fields — the old code read
-            // hand as "sneaking", so every off-hand interact looked sneaking.
+            // plan43 W-02: hand varint and sneaking bool are separate fields (old code conflated them).
             const int hand = in.varint();
-            const bool sneaking = in.boolean();
-            // NOTE(plan43 W-02): hand selects the used held stack (0 main /
-            // 1 off); current entity logic always resolves the main-hand
-            // stack, so hand is wire-consumed here and hand-specific item
-            // resolution stays a behavior refinement.
             (void)hand;
-            // check shear and riding before trading
-            // plan43 W-02 deadlock fix: resolve the target under the lock, then
-            // act WITHOUT holding entsMtx_ — the actions below (mount broadcast,
-            // trading, breeding, shear drops) take the lock themselves, so holding
-            // it across them self-deadlocks the session thread (mount path hung
-            // every non-sneak horse interact with the socket left open).
+            const bool sneaking = in.boolean();
+            // NOTE(plan43 W-02): hand selects the used held stack (0 main / 1 off); current entity logic always resolves the main-hand
+            // stack, so hand is wire-consumed here and hand-specific item resolution stays a behavior refinement. check shear and riding
+            // before trading plan43 W-02: resolve target under the lock, then act WITHOUT it (actions re-lock; else self-deadlock).
             std::shared_ptr<MobEntity> targetMob;
             {
                 std::lock_guard lk(srv_.entsMtx_);
@@ -4819,14 +4717,12 @@ void Session::onUseEntity(ReadBuffer& in) {
                     }
                 }
         } else {
-            // plan43 W-02: mouse outside {0,1,2} is unreachable via vanilla —
-            // consume defensively instead of guessing a field shape.
+            // plan43 W-02: mouse outside {0,1,2} is unreachable via vanilla — consume defensively instead of guessing a field shape.
             in.skipRest();
         }
         return;
     }
-    // plan43 W-02: ATTACK (mouse==1) carries no hand but DOES carry the
-    // trailing sneaking bool (present on all mouse kinds per spec).
+    // plan43 W-02: ATTACK (mouse==1) carries no hand but DOES carry the trailing sneaking bool (present on all mouse kinds per spec).
     (void)in.boolean();
 
     float baseDmg = 1.f;
@@ -4914,7 +4810,6 @@ void Session::onUseEntity(ReadBuffer& in) {
         vel.i16(static_cast<std::int16_t>(nz * 400));
         try { victimP->conn->sendPacket(pl::sc::EntityVelocity, vel); } catch (...) {}
         srv_.broadcastPacketExcept(victimP, pl::sc::EntityVelocity, vel);
-        (void)before;
         return;
     }
 

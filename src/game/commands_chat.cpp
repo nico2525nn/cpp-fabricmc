@@ -1,6 +1,4 @@
-// Commands.cpp: Brigadier command tree + selector resolution (plan3.md
-// "Brigadier完全移植"). All commands are registered on a real CommandNode
-// tree, parsed by the dispatcher and advertised via declare_commands.
+// commands_chat.cpp: Brigadier command tree nodes (plan3 port): registered, parsed, advertised.
 #include "GameServer.hpp"
 #include "Messages.hpp"
 #include "Particles.hpp"
@@ -65,9 +63,7 @@ void GameServer::initChatCommands() {
             return 1;
         };
         title->then(actionbarLit);
-        // plan42 R3 network (E-17): vanilla /title <targets> <title|subtitle|
-        // actionbar|clear|reset|times> ... form. Registered BEFORE the greedy
-        // <text> child so "@s title {...}" resolves to targets first.
+        // plan42 R3 (E-17): vanilla /title form; registered before greedy <text> child.
         {
             auto tTargets = CommandNode::argument("titleTargets", args::entity(false, false));
             auto mkTitleText = [this](const std::string& kind) {
@@ -276,9 +272,8 @@ void GameServer::initChatCommands() {
                     ++n;
                 }
             if (n == 0) throw std::runtime_error("Unknown player for tellraw");
-            // Echo a delivery note to the sender: short raw texts (e.g. "hi")
-            // are invisible to vanilla-strict chat scrapers, so the feedback
-            // carries the message for command-response visibility.
+            // Echo a delivery note to the sender: short raw texts (e.g. "hi") are invisible to vanilla-strict chat scrapers, so the
+            // feedback carries the message for command-response visibility.
             if (src) sendFeedback(src, "tellraw delivered to " + std::to_string(n) +
                                   " player(s): " + shown);
             return n;

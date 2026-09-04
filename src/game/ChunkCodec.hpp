@@ -73,9 +73,8 @@ inline void writePackedEntries(WriteBuffer& out, int bits, Fn&& valueAt) {
     writePackedEntries(out, bits, 4096, std::forward<Fn>(valueAt));
 }
 
-// Getter maps linear index 0..entryCount-1 -> state id (blocks: global id; biomes: registry index).
-// entryCount 4096 for blocks, 64 for biomes (D1 fix).
-// D5: global bits from live registry size (fallback 27865→15). D6: deterministic palette (vector linear, no hash salt).
+// Getter maps linear index 0..entryCount-1 -> state id (blocks: global id; biomes: registry index). entryCount 4096 for blocks, 64 for
+// biomes (D1 fix). D5: global bits from live registry size (fallback 27865→15). D6: deterministic palette (vector linear, no hash salt).
 template <typename Getter>
 inline void writePalettedContainer(WriteBuffer& out, Getter&& get, const PaletteSpec& spec, int entryCount = 4096) {
     // D6: deterministic palette — first-appearance order via linear search (palette ≤256, no hash salt)
@@ -121,9 +120,8 @@ inline int columnSurface(const Chunk& c, int lx, int lz) {
     return 0;
 }
 
-// D2: MOTION_BLOCKING vs WORLD_SURFACE distinction.
-// WORLD_SURFACE = highest non-air (columnSurface)
-// MOTION_BLOCKING = highest block that blocks motion or contains fluid (vanilla Heightmap.Type)
+// D2: MOTION_BLOCKING vs WORLD_SURFACE distinction. WORLD_SURFACE = highest non-air (columnSurface) MOTION_BLOCKING = highest block that
+// blocks motion or contains fluid (vanilla Heightmap.Type)
 inline bool isMotionBlocking(std::uint32_t stateId) {
     if (stateId == 0) return false;
     // void/cave air (13971,13972) are air variants
@@ -272,9 +270,8 @@ inline void packHeightmapsNbt(WriteBuffer& out, const Chunk* chunk) {
     w.endCompound();
 }
 
-// Light payload shared by LevelChunkWithLight and UpdateLight packets.
-// Uses engine-maintained arrays when available; falls back to the column
-// heuristic for sky light and zeros for block light.
+// Light payload shared by LevelChunkWithLight and UpdateLight packets. Uses engine-maintained arrays when available; falls back to the
+// column heuristic for sky light and zeros for block light.
 inline void serializeLightPayload(WriteBuffer& out, const Chunk& chunk) {
     std::vector<std::int64_t> skyMask((kSectionsPerChunk + 63) / 64, 0);
     std::vector<std::int64_t> blockMask((kSectionsPerChunk + 63) / 64, 0);
@@ -358,8 +355,7 @@ inline void serializeUpdateLightBody(WriteBuffer& out, std::int32_t cx,
     serializeLightPayload(out, chunk);
 }
 
-// Serializes LevelChunkWithLight body (packet id excluded).
-// biomeRegistryIndex: this world's biome id inside the synced registry order.
+// Serializes LevelChunkWithLight body (packet id excluded). biomeRegistryIndex: this world's biome id inside the synced registry order.
 // Full LevelChunkWithLight body given an already-locked chunk reference.
 inline void serializeLevelChunkBody(WriteBuffer& out, std::int32_t cx, std::int32_t cz,
                                     const Chunk& chunk, std::uint32_t biomeRegistryIndex) {
@@ -381,7 +377,6 @@ inline void serializeLevelChunkBody(WriteBuffer& out, std::int32_t cx, std::int3
 inline void serializeLevelChunk(WriteBuffer& out, std::int32_t cx, std::int32_t cz,
                                 const World& world, std::uint32_t biomeRegistryIndex,
                                 const std::string& biomeKeyForDebug = {}) {
-    (void)biomeKeyForDebug;
     world.generateChunkIfMissing(cx, cz);
     world.withChunk(cx, cz, [&](const Chunk& chunk) {
         serializeLevelChunkBody(out, cx, cz, chunk, biomeRegistryIndex);

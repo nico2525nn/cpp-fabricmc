@@ -115,8 +115,7 @@ int FunctionEvaluator::executeLine(const std::string& line, brigadier::CommandSo
             return 0;
         }
     }
-    // Handle schedule inside function? schedule is top-level but can be executed as line
-    // Dispatch via server's dispatcher
+    // Handle schedule inside function? schedule is top-level but can be executed as line Dispatch via server's dispatcher
     auto res = server_->commands().execute(line, std::move(src));
     if (!res.ok) {
         // if command failed, return 0? but still propagate

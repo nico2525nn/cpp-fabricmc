@@ -68,8 +68,6 @@ void GameServer::tickDigs() {
                 // BlockEvent: fire onBlockBreak (plan7)
                 {
                     blockEventDispatcher().onBlockBreak(p->digX, p->digY, p->digZ, oldState, p);
-                    api::BlockBreakEvent bev2; bev2.player=p; bev2.x=p->digX; bev2.y=p->digY; bev2.z=p->digZ; bev2.oldState=oldState;
-                    (void)bev2;
                 }
                 onBlockMined(*p, oldState);
                 // plan17 §7: TNT unstable punch — prime on break if unstable or flint_and_steel (Yarn TntBlock.onBlockBreak)
@@ -413,9 +411,7 @@ void GameServer::chunksUnloadTick() {
             for (auto &pl : players) if (pl->inPlay && pl->dimension == dim) { anyInDim = true; break; }
             if (!anyInDim && (w.isForced(cx, cz) || w.ticketLevel(cx, cz) <= constants::kTicketLevelSpawn)) continue;
             if (pp && pp->isDirty(cx, cz)) {
-                // plan42 R2 (E-13): unload saves go through ioPool_ (zlib +
-                // RegionFile write off tick thread); dirty bit cleared after
-                // the async save captured the chunk contents.
+                // plan42 R2 (E-13): unload saves via ioPool_ (off tick thread); dirty cleared after capture.
                 saveChunkAsync(cx, cz);
                 pp->markClean(cx, cz);
             }
@@ -423,10 +419,7 @@ void GameServer::chunksUnloadTick() {
             invalidateChunkCache(cx, cz);
         }
         // W19 cap-based LRU: if still over maxLoadedChunks, evict farthest beyond cap (Chebyshev)
-        // plan21 §3 polish: cap auto max(8192, viewDist²*4), cap=0 unlimited, clamp 1 when configured 0,
-        // and per-tick burst limit 16 to avoid UpdateLight storms.
-        // NOTE plan35 §5: this is NOT a simple clear(); it is Chebyshev-distance sorted LRU with
-        // forced/spawn ticket protection and burst 16/tick. Documented as compliant (not TODO).
+        // plan21 §3 + plan35 §5: Chebyshev-sorted LRU unload (ticket-protected, burst 16/tick).
         if (cfg_.maxLoadedChunks > 0) {
             size_t remaining = keys.size() > toErase.size() ? keys.size() - toErase.size() : 0;
             if (remaining > (size_t)cfg_.maxLoadedChunks) {
@@ -519,7 +512,6 @@ void GameServer::flushBlockBatches() {
     lastBlockBatchFlushMs_ = now;
 }
 void GameServer::survivalTick() {
-    const auto now = nowMs();
     for (auto& pp : playersSnapshot()) {
         auto* p = pp.get();
         if (!p->inPlay || !p->spawned || p->dead) continue;
@@ -682,9 +674,8 @@ void GameServer::survivalTick() {
                 double perBlock = worldBorderDamagePerBlock(); // 0.2
                 double effective = outside - buffer;
                 if (effective < 0) effective = 0;
-                // vanilla: damage = effective * perBlock per second, but we tick per second
-                // ensure at least 1 dmg when outside > buffer and also >0 outside without buffer? Keep buffer logic
-                // If effective ==0 but outside>0 then still 0 damage inside buffer zone
+                // vanilla: damage = effective * perBlock per second, but we tick per second ensure at least 1 dmg when outside > buffer and
+                // also >0 outside without buffer? Keep buffer logic If effective ==0 but outside>0 then still 0 damage inside buffer zone
                 if (effective > 0 && tickNo_ % 20 == 0) {
                     float dmg = static_cast<float>(effective * perBlock);
                     // vanilla also clamps? ensure minimum 1 when just beyond buffer? at least 1 if >0
@@ -696,7 +687,6 @@ void GameServer::survivalTick() {
                 }
             }
         }
-        (void)now;
     }
 }
 namespace {
@@ -821,6 +811,25 @@ void GameServer::trySpawnMobs() {
         }
     }
 }
+void GameServer::spawnSlimeSplit(MobEntity& m) {
+    if ((m.kind == MobKind::Slime || m.kind == MobKind::MagmaCube) && m.slimeSize > 0) {
+        int n = 2 + (rand() % 3);
+        for (int s = 0; s < n; ++s) {
+            auto baby = std::make_shared<MobEntity>();
+            baby->entityId = nextEntityId();
+            baby->kind = m.kind;
+            baby->slimeSize = m.slimeSize - 1;
+            baby->health = MobEntity::slimeHealthForSize(baby->slimeSize);
+            if (baby->health < 1.f) baby->health = 1.f;
+            baby->x = m.x + (rand()/(double)RAND_MAX - 0.5) * 0.5;
+            baby->y = m.y;
+            baby->z = m.z + (rand()/(double)RAND_MAX - 0.5) * 0.5;
+            baby->lastSeenMs = nowMs();
+            mobs_.push_back(baby);
+            broadcastMobSpawn(*baby);
+        }
+    }
+}
 void GameServer::mobsTick() {
     std::vector<std::pair<std::shared_ptr<MobEntity>, WriteBuffer>> moves;
     std::vector<std::int32_t> despawn;
@@ -867,23 +876,7 @@ void GameServer::mobsTick() {
                 drops.push_back(m);
                 if (MobEntity::isBoss(m->kind) && bossAI_) bossAI_->onDeath(*m);
                 // slime / magma cube split
-                if ((m->kind == MobKind::Slime || m->kind == MobKind::MagmaCube) && m->slimeSize > 0) {
-                    int n = 2 + (rand() % 3);
-                    for (int s=0; s<n; ++s) {
-                        auto baby = std::make_shared<MobEntity>();
-                        baby->entityId = nextEntityId();
-                        baby->kind = m->kind;
-                        baby->slimeSize = m->slimeSize - 1;
-                        baby->health = MobEntity::slimeHealthForSize(baby->slimeSize);
-                        if (baby->health < 1.f) baby->health = 1.f;
-                        baby->x = m->x + (rand()/(double)RAND_MAX - 0.5) * 0.5;
-                        baby->y = m->y;
-                        baby->z = m->z + (rand()/(double)RAND_MAX - 0.5) * 0.5;
-                        baby->lastSeenMs = nowMs();
-                        mobs_.push_back(baby);
-                        broadcastMobSpawn(*baby);
-                    }
-                }
+                spawnSlimeSplit(*m);
                 mobAi_.erase(m->entityId);
                 it = mobs_.erase(it); continue;
             }
@@ -905,23 +898,7 @@ void GameServer::mobsTick() {
                     applyDamageToMob(*m, 1.f, "burned to death");
                     if (m->dead) {
                         deadIds.push_back(m->entityId); drops.push_back(m);
-                        if ((m->kind == MobKind::Slime || m->kind == MobKind::MagmaCube) && m->slimeSize > 0) {
-                            int n = 2 + (rand() % 3);
-                            for (int s=0; s<n; ++s) {
-                                auto baby = std::make_shared<MobEntity>();
-                                baby->entityId = nextEntityId();
-                                baby->kind = m->kind;
-                                baby->slimeSize = m->slimeSize - 1;
-                                baby->health = MobEntity::slimeHealthForSize(baby->slimeSize);
-                                if (baby->health < 1.f) baby->health = 1.f;
-                                baby->x = m->x + (rand()/(double)RAND_MAX - 0.5) * 0.5;
-                                baby->y = m->y;
-                                baby->z = m->z + (rand()/(double)RAND_MAX - 0.5) * 0.5;
-                                baby->lastSeenMs = nowMs();
-                                mobs_.push_back(baby);
-                                broadcastMobSpawn(*baby);
-                            }
-                        }
+                        spawnSlimeSplit(*m);
                         mobAi_.erase(m->entityId);
                         it = mobs_.erase(it); continue;
                     }
@@ -1050,23 +1027,7 @@ void GameServer::mobsTick() {
                 if (sky >= 14) applyDamageToMob(*m, 1.f, "burned to death");
                 if (m->dead) {
                     deadIds.push_back(m->entityId); drops.push_back(m);
-                    if ((m->kind == MobKind::Slime || m->kind == MobKind::MagmaCube) && m->slimeSize > 0) {
-                        int n = 2 + (rand() % 3);
-                        for (int s=0; s<n; ++s) {
-                            auto baby = std::make_shared<MobEntity>();
-                            baby->entityId = nextEntityId();
-                            baby->kind = m->kind;
-                            baby->slimeSize = m->slimeSize - 1;
-                            baby->health = MobEntity::slimeHealthForSize(baby->slimeSize);
-                            if (baby->health < 1.f) baby->health = 1.f;
-                            baby->x = m->x + (rand()/(double)RAND_MAX - 0.5) * 0.5;
-                            baby->y = m->y;
-                            baby->z = m->z + (rand()/(double)RAND_MAX - 0.5) * 0.5;
-                            baby->lastSeenMs = nowMs();
-                            mobs_.push_back(baby);
-                            broadcastMobSpawn(*baby);
-                        }
-                    }
+                    spawnSlimeSplit(*m);
                     mobAi_.erase(m->entityId);
                     it = mobs_.erase(it); continue;
                 }
@@ -1085,10 +1046,7 @@ void GameServer::mobsTick() {
                         m->villagerRestocksToday++;
                         m->villagerLastRestockTick = tickNo_;
                         broadcastSound("minecraft:entity.villager.work_farm", m->x,m->y,m->z,1.f,1.f,"neutral");
-                        // plan46 G-15: auto-schedule the 2nd window of the day
-                        // (vanilla: up to twice per day on work-site visits).
-                        // Old code left restockUntil=0 here ("For now we clear"),
-                        // which silently dropped the 2nd restock.
+                        // plan46 G-15: auto-schedule the 2nd daily restock window (old code dropped it).
                         if (m->villagerRestocksToday < 2) {
                             m->restockUntil = tickNo_ + MobEntity::kRestockSecondWindowTicks
                                 + (rand() % 2000);
@@ -1101,9 +1059,8 @@ void GameServer::mobsTick() {
                 }
                 if (tickNo_%100==0) m->gossip.tickDecay();
             }
-            // Enderman: occasional random block pickup via BehaviorTree is primary, but ensure carriedBlock persistence
-            // (handled in PickupBlockAction)
-            // delta broadcast
+            // Enderman: occasional random block pickup via BehaviorTree is primary, but ensure carriedBlock persistence (handled in
+            // PickupBlockAction) delta broadcast
             if (!m->hasSent ||
                 std::abs(m->x-m->sentX)+std::abs(m->y-m->sentY)+std::abs(m->z-m->sentZ) > 0.03) {
                 WriteBuffer b;

@@ -66,8 +66,7 @@ static void loadProperties(ServerConfig& c, const std::string& path) {
         if (props.has("pvp")) c.pvp = props.get<bool>("pvp", c.pvp);
         if (props.has("allow-flight")) c.allowFlight = props.get<bool>("allow-flight", c.allowFlight);
         if (props.has("hardcore")) c.hardcore = props.get<bool>("hardcore", c.hardcore);
-        // max-players already handled above; keep fallback for hyphen variant
-        // online-mode / enforce-secure-profile already handled above
+        // max-players already handled above; keep fallback for hyphen variant online-mode / enforce-secure-profile already handled above
     } catch (...) {}
 }
 
@@ -111,9 +110,8 @@ int main(int argc, char** argv) {
 
     GameServer server(cfg);
     g_server = &server;
-    // POSIX signal handling — SIGINT/SIGTERM via std::signal. POSIX-dependent; on Windows
-    // SIGTERM is not reliably generated and signal() semantics differ. Use SetConsoleCtrlHandler
-    // for full Windows support (future work). Current handler sets atomic flag + requestStop().
+    // POSIX signal handling — SIGINT/SIGTERM via std::signal. POSIX-dependent; on Windows SIGTERM is not reliably generated and signal()
+    // semantics differ. Use SetConsoleCtrlHandler for full Windows support (future work). Current handler sets atomic flag + requestStop().
     std::signal(SIGINT, onSignal);
     std::signal(SIGTERM, onSignal);
 

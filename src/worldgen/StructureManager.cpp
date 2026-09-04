@@ -111,8 +111,7 @@ void StructureManager::ensureDefaults() {
     // adjust mansion/monument to triangular
     for (auto& s : sets_) {
         if (s.name == "minecraft:monument" || s.name == "minecraft:mansion") s.spread = SMStructureSet::Triangular;
-        // plan45 G-11 (jar-verified vanilla 1.21.4 structure_set/*.json):
-        // end_cities.json has "spread_type": "triangular".
+        // plan45 G-11 (jar-verified vanilla 1.21.4 structure_set/*.json): end_cities.json has "spread_type": "triangular".
         if (s.name == "minecraft:end_city") s.spread = SMStructureSet::Triangular;
         // pillager_outposts.json has "frequency": 0.2 (legacy_type_1).
         if (s.name == "minecraft:pillager_outpost") s.frequency = 0.2;
@@ -521,7 +520,6 @@ void StructureManager::monumentPiece(Chunk& chunk, std::int32_t cx, std::int32_t
     // Elder guardian placeholder: would spawn mobs, but just place sponge cluster
     const auto sponge = B("minecraft:sponge") ? B("minecraft:sponge")->defaultState : prismarine;
     w.set(ox+28, baseY+10, oz+28, sponge, true);
-    (void)ground;
 }
 void StructureManager::mansionPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
                                       std::int32_t ox, std::int32_t oz,
@@ -612,7 +610,6 @@ void StructureManager::trialChambersPiece(Chunk& chunk, std::int32_t cx, std::in
         // copper bulb + dispenser in corners for extra decoration
         w.set(ox+2, baseY+1, oz+2, dispenser, true);
         w.set(ox+sz-3, baseY+1, oz+sz-3, copperBulb, true);
-        (void)chiseledBricks;
     };
     auto straightCorridor = [&](int ox, int oz, int len, int dir) {
         // dir 0=+x 1=-x 2=+z 3=-z : 3-wide corridor with slices
@@ -943,7 +940,6 @@ void StructureManager::placeTrialChambersPalette(Chunk& chunk, std::int32_t cx, 
         w.set(originX+sz-3, baseY+1, originZ+sz-3, vault, true);
         w.set(originX+sz/2, baseY+1, originZ+sz/2, chestS, true);
         enqueuePendingLoot(originX+sz/2, baseY+1, originZ+sz/2, "minecraft:chests/trial_chambers/chamber");
-        (void)chiseledBricks;
     } else if (isSpawner) {
         for (int dx=-4; dx<=4; ++dx) for (int dz=-4; dz<=4; ++dz){
             int wx=originX+dx, wz=originZ+dz;
@@ -1108,11 +1104,7 @@ void StructureManager::generate(Chunk& chunk, std::int32_t cx,
                 if (picked.find(want) != std::string::npos) { ok = true; break; }
             if (!ok) continue;
         }
-        // plan36 palette-driven path (+plan42 R2 E-12 variant pools):
-        // primary configured feature plus every JSON whose type == s.name
-        // (e.g. village biome variants). Biome-aware filter keeps the primary
-        // always eligible and admits variants sharing a token with the sampled
-        // biome (snowy variant in snowy_plains). Deterministic: sorted pool.
+        // plan36 + plan42 R2 E-12: palette path with biome-aware variant pools (deterministic sorted).
         if (placer_) {
             if (auto* primary = placer_->getConfigured(s.name);
                 primary && !primary->palette.empty() && !primary->pieces.empty()) {

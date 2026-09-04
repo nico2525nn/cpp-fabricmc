@@ -1,6 +1,4 @@
-// Commands.cpp: Brigadier command tree + selector resolution (plan3.md
-// "Brigadier完全移植"). All commands are registered on a real CommandNode
-// tree, parsed by the dispatcher and advertised via declare_commands.
+// commands_execute.cpp: Brigadier command tree nodes (plan3 port): registered, parsed, advertised.
 #include "GameServer.hpp"
 #include "Messages.hpp"
 #include "Particles.hpp"
@@ -340,7 +338,6 @@ void GameServer::initExecuteCommands() {
                 else tsrc.console=true;
                 tsrc.resolveSelector=[this,src](const std::string& raw, brigadier::SelectorResult& out){ out=resolveSelector(raw,src); };
                 // dimension stored implicitly; just feedback
-                (void)dim;
                 auto res=commands_.execute(inner,std::move(tsrc));
                 return res.ok?res.value:0;
             };

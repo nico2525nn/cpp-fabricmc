@@ -1,5 +1,4 @@
-// Scoreboard: objectives, scores, display slots and minimal teams
-// (plan4 P1-D). Server-side model + packet builders; commands live in
+// Scoreboard: objectives, scores, display slots and minimal teams (plan4 P1-D). Server-side model + packet builders; commands live in
 // Commands.cpp.
 #pragma once
 #include <algorithm>

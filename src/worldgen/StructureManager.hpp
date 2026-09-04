@@ -1,6 +1,5 @@
-// StructureManager: data-driven structure placement (plan7 World Management)
-// Holds StructureSet list and generates structures per chunk via generate()
-// Originally in Structures.cpp; now data-driven via JSON.
+// StructureManager: data-driven structure placement (plan7 World Management) Holds StructureSet list and generates structures per chunk via
+// generate() Originally in Structures.cpp; now data-driven via JSON.
 #pragma once
 #include <cstdint>
 #include <functional>

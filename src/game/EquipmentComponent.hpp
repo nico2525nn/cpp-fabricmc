@@ -1,6 +1,5 @@
-// EquipmentComponent — plan8 entity section
-// Encapsulates mob equipment (6 slots) and synchronizes via SetEquipment 0x60.
-// Provides armor calculation and EquipmentComponent-driven state sync.
+// EquipmentComponent — plan8 entity section Encapsulates mob equipment (6 slots) and synchronizes via SetEquipment 0x60. Provides armor
+// calculation and EquipmentComponent-driven state sync.
 #pragma once
 #include <array>
 #include <cstdint>
@@ -78,6 +77,5 @@ private:
     std::array<ItemStack,6> slots_{};
 };
 
-// Helper to sync equipment to all tracking players (broadcast SetEquipment)
-// Implemented in GameServer.cpp via GameServer::sendEquipment
+// Helper to sync equipment to all tracking players (broadcast SetEquipment) Implemented in GameServer.cpp via GameServer::sendEquipment
 } // namespace cppfm

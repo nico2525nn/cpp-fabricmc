@@ -1,6 +1,5 @@
-// DatapackManager: lightweight wrapper over TagManager and LootTableEvaluator
-// plus advancements/predicates/item_modifiers registries and function storage.
-// Plan13 §10: supports /datapack list/enable/disable and tab completion for functions.
+// DatapackManager: lightweight wrapper over TagManager and LootTableEvaluator plus advancements/predicates/item_modifiers registries and
+// function storage. Plan13 §10: supports /datapack list/enable/disable and tab completion for functions.
 #pragma once
 #include <algorithm>
 #include <filesystem>
@@ -114,9 +113,8 @@ public:
         enabledPacks.insert("cppfm");
     }
 
-    // Load all datapack content. `assetsBase` is the base directory containing
-    // tags/ and loot_tables/ (default "assets/data"). `worldDatapacks` is the
-    // per-world datapack root (default "world/datapacks"); scanned if present.
+    // Load all datapack content. `assetsBase` is the base directory containing tags/ and loot_tables/ (default "assets/data").
+    // `worldDatapacks` is the per-world datapack root (default "world/datapacks"); scanned if present.
     void loadAll(RecipeManager& recipes,
                  const std::string& assetsBase = "assets/data",
                  const std::string& worldDatapacks = "world/datapacks") {
@@ -168,10 +166,8 @@ public:
     void loadPackDirectory(const std::string& base, const std::string& packName) {
         namespace fs = std::filesystem;
         std::error_code ec;
-        // advancements: <base>/<ns>/advancements/*.json
-        // predicates: <base>/<ns>/predicates/*.json
-        // item_modifiers: <base>/<ns>/item_modifiers/*.json
-        // functions: <base>/<ns>/functions/*.mcfunction
+        // advancements: <base>/<ns>/advancements/*.json predicates: <base>/<ns>/predicates/*.json item_modifiers:
+        // <base>/<ns>/item_modifiers/*.json functions: <base>/<ns>/functions/*.mcfunction
         if (!fs::exists(base, ec)) return;
         for (auto& nsEntry : fs::directory_iterator(base, ec)) {
             if (!nsEntry.is_directory(ec)) continue;
@@ -195,8 +191,7 @@ public:
             std::string funcDir2 = nsEntry.path().string() + "/function";
             if (fs::exists(funcDir2, ec)) scanFunctionDir(funcDir2, ns, packName);
         }
-        // also support flat layout: base/functions etc without ns?
-        // check base/advancements flat?
+        // also support flat layout: base/functions etc without ns? check base/advancements flat?
     }
 
     void scanJsonDir(const std::string& dir, const std::string& ns,
@@ -215,7 +210,6 @@ public:
                 std::ifstream f(e.path());
                 std::string txt((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
                 out[id] = txt;
-                (void)packName;
             } catch (...) {}
         }
     }
@@ -239,7 +233,6 @@ public:
                     lines.push_back(line);
                 }
                 functions[id] = std::move(lines);
-                (void)packName;
             } catch (...) {}
         }
     }
@@ -307,11 +300,7 @@ public:
         auto [it, inserted] = enabledPacks.insert(name);
         return inserted;
     }
-    // plan35 §4 datapack enable/disable policy:
-    // - recipes/tags are pack-aware (loadAll merges only enabled packs' tags/loot).
-    // - advancements/predicates are always active regardless of enabled state (lightweight).
-    //   disablePack only affects recipes/tags; advancements remain visible to avoid UpdateAdvancements
-    //   churn (removed identifiers handling would require progress reset). Policy documented per §4 "removed方針".
+    // plan35 §4: disablePack affects recipes/tags only; advancements/predicates stay active.
     bool disablePack(const std::string& name) {
         if (enabledPacks.find(name) == enabledPacks.end()) return false;
         if (name == "vanilla") return false;
@@ -323,9 +312,7 @@ public:
     size_t predicateCount() const { return predicates.size(); }
     size_t itemModifierCount() const { return itemModifiers.size(); }
 
-    // plan35 §3/§4: PredicateContext-aware predicate evaluation
-    // Supports check_gamerule (via GameRuleManager), location_check (biome/block/position/light via World), entity_properties (type via MobEntity/Player)
-    // Fallbacks to true when context absent (audit strictness) and propagates ctx through any_of/all_of/inverted/reference.
+    // plan35 §3/§4: PredicateContext-aware predicate evaluation (gamerule/location/entity_properties).
     bool evaluatePredicateValue(const json::Value& v, const PredicateContext& ctx, int depth = 0) const {
         if (depth > 5) return false; // cycle guard for reference
         if (v.isObj()) {
@@ -948,10 +935,9 @@ public:
                         }
                     }
                 } else if (func == "minecraft:set_damage" || func == "set_damage") {
-                    if (auto* dmg = f.find("damage")) {
+                    if (f.find("damage")) {
                         // ItemStack damage handling via components — store as damage component if present
                         // For strict audit, just ensure it doesn't crash; count remains
-                        (void)dmg;
                     }
                 } else if (func == "minecraft:enchant_randomly" || func == "enchant_randomly" ||
                            func == "minecraft:enchant_with_levels" || func == "enchant_with_levels") {

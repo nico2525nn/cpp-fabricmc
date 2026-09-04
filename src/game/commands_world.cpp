@@ -1,6 +1,4 @@
-// Commands.cpp: Brigadier command tree + selector resolution (plan3.md
-// "Brigadier完全移植"). All commands are registered on a real CommandNode
-// tree, parsed by the dispatcher and advertised via declare_commands.
+// commands_world.cpp: Brigadier command tree nodes (plan3 port): registered, parsed, advertised.
 #include "GameServer.hpp"
 #include "Messages.hpp"
 #include "Particles.hpp"
@@ -74,13 +72,10 @@ void GameServer::initWorldCommands() {
         auto value = CommandNode::argument("value", args::stringWord());
         value->executable = true;
         value->suggestions = [this](brigadier::StringReader& reader, brigadier::ParseCtx&) {
-            // W18 polish: suggest true/false for Boolean, numeric hints for Int
-            // Peek already-typed rule prefix: try to infer via token
+            // W18 polish: suggest true/false for Boolean, numeric hints for Int Peek already-typed rule prefix: try to infer via token
             std::string token = reader.canRead() ? reader.readUnquotedString() : std::string();
-            // fallback: offer both
-            (void)token;
-            // use last parsed rule if available; brigadier context would have it, but we approximate
-            // Offer boolean choices; int rules also accept true/false as invalid but hint numbers
+            // fallback: offer both use last parsed rule if available; brigadier context would have it, but we approximate Offer boolean
+            // choices; int rules also accept true/false as invalid but hint numbers
             std::vector<std::string> opts = {"true","false"};
             // also suggest common int values for int rules
             opts.push_back("0"); opts.push_back("1"); opts.push_back("10");
@@ -492,9 +487,8 @@ void GameServer::initWorldCommands() {
         target->then(makeLeaf("replace",false,false));
         target->then(makeLeaf("masked",true,false));
         target->then(makeLeaf("filtered",false,true));
-        // also allow suffix force/move/normal directly without mode? handled via mode's children
-        // Clone move as shorthand: clone <from> <to> <target> move  -> treated as replace move
-        // We'll add a direct move under target as alias
+        // also allow suffix force/move/normal directly without mode? handled via mode's children Clone move as shorthand: clone <from> <to>
+        // <target> move -> treated as replace move We'll add a direct move under target as alias
         {
             auto moveLit = CommandNode::literal("move");
             moveLit->executable=true;
@@ -569,9 +563,8 @@ void GameServer::initWorldCommands() {
                             for(auto* set : candidates){
                                 auto at = worldgen::smStructureAtChunk(*set, cfg_.seed, cx, cz);
                                 if(!at.present) continue;
-                                // Check biome filter similar to generate() to avoid false positives
-                                // For trial_chambers reject deep_dark biomes if needed (approx)
-                                // Use world sampler for biome check if available
+                                // Check biome filter similar to generate() to avoid false positives For trial_chambers reject deep_dark
+                                // biomes if needed (approx) Use world sampler for biome check if available
                                 if(!set->biomes.empty()){
                                     std::string bio = world_.sampledBiome(at.originX+8, 64, at.originZ+8);
                                     bool ok=false;
@@ -854,8 +847,7 @@ void GameServer::initWorldCommands() {
                     Player* src = static_cast<Player*>(c.source.player);
                     std::string pool = c.arg("jigsawPool").asStr();
                     std::string target = c.arg("jigsawTarget").asStr();
-                    int depth = c.arg("jigsawDepth").asInt();
-                    (void)depth;
+                    (void)c.arg("jigsawDepth").asInt();
                     sendFeedback(src, "Jigsaw place not yet implemented (pool="+pool+" target="+target+") — use /place structure instead");
                     return 0;
                 };
@@ -1051,8 +1043,7 @@ void GameServer::initWorldCommands() {
         d.root->then(enchant);
     }
     {
-        // /time query <daytime|gametime|day> + /time add <value>
-        // (/time set already exists.)
+        // /time query <daytime|gametime|day> + /time add <value> (/time set already exists.)
         auto time = CommandNode::literal("time");
         auto query = CommandNode::literal("query");
         for (const char* q : {"daytime", "gametime", "day"}) {
@@ -1085,8 +1076,7 @@ void GameServer::initWorldCommands() {
         d.root->then(time);
     }
     {
-        // /weather <kind> [durationSeconds] — duration form
-        // (bare-kind form already exists).
+        // /weather <kind> [durationSeconds] — duration form (bare-kind form already exists).
         auto weather = CommandNode::literal("weather");
         auto kind = CommandNode::argument("weatherKind", args::stringWord());
         kind->suggestions = [](brigadier::StringReader&, brigadier::ParseCtx&) {
