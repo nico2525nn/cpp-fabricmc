@@ -354,6 +354,8 @@ static bool raycastObstructed(World* w, double x0,double y0,double z0, double x1
 }
 static bool isPlayerLookingAtCreaking(Player* p, MobEntity& cr, World* w) {
     if (!p) return false;
+    const MobBehaviorSpec* spec = mobBehaviorSpec(MobKind::Creaking);
+    if (!spec) return false;
     if (p->gamemode==1 || p->gamemode==3) return false;
     for (int i=5;i<=8;++i) if (i>=0 && i < (int)p->inv.size() && !p->inv[i].empty()) {
         if (p->inv[i].name()=="minecraft:carved_pumpkin") return false;
@@ -362,21 +364,24 @@ static bool isPlayerLookingAtCreaking(Player* p, MobEntity& cr, World* w) {
     double dy = (cr.y+0.9) - (p->y+1.62);
     double dz = cr.z - p->z;
     double dist = std::sqrt(dx*dx+dy*dy+dz*dz);
-    if (dist > 32 || dist < 0.1) return false;
+    const double gazeMinimumDistance = spec->gazeMinimumDistance();
+    if (dist <= 0.0 || !spec->withinAuxiliaryRange(dist) || dist < gazeMinimumDistance) return false;
     double yawToMob = std::atan2(dz,dx)*180.0/3.1415926535 - 90.0;
     double pitchToMob = -std::asin(dy/dist)*180.0/3.1415926535;
     double dYaw = std::abs(wrapDegrees((float)(yawToMob - p->yaw)));
     double dPitch = std::abs((float)(pitchToMob - p->pitch));
-    if (dYaw > 60 || dPitch > 60) return false;
+    const double gazeAngle = spec->gazeAngle();
+    if (gazeAngle == 0.0 || dYaw > gazeAngle || dPitch > gazeAngle) return false;
     if (raycastObstructed(w, p->x, p->y+1.62, p->z, cr.x, cr.y+0.9, cr.z)) return false;
     return true;
 }
 bool CreakingGoal::shouldStart(MobEntity& m, AiContext&) {
-    return m.kind == MobKind::Creaking;
+    return m.kind == MobKind::Creaking && mobBehaviorSpec(m.kind) != nullptr;
 }
 bool CreakingGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (m.kind != MobKind::Creaking) return false;
-    if (!ctx.srv || !ctx.world) return false;
+    const MobBehaviorSpec* spec = mobBehaviorSpec(m.kind);
+    if (!spec || !ctx.srv || !ctx.world) return false;
     // check any player looking => frozen
     bool frozen = false;
     for (auto& pp : ctx.srv->playersSnapshot()) {
@@ -384,7 +389,7 @@ bool CreakingGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
         if (isPlayerLookingAtCreaking(pp.get(), m, ctx.world)) { frozen = true; break; }
     }
     m.creakingFrozen = frozen;
-    m.creakingAlerted = (ctx.nearestPlayer && ctx.nearestPlayerDist2 < 12*12);
+    m.creakingAlerted = (ctx.nearestPlayer && spec->withinSecondaryThresholdSquared(ctx.nearestPlayerDist2));
     if (frozen) {
         // immobile, cannot be pushed/knocked; also do not attack
         return true;
@@ -393,11 +398,12 @@ bool CreakingGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (!tgt) return false;
     double dx = tgt->x - m.x, dz = tgt->z - m.z;
     double d = std::sqrt(dx*dx+dz*dz);
-    if (d < 1.9) {
-        if (now % 20 == 0) ctx.srv->mobAttackPlayer(m, *tgt);
+    const double attackThreshold = spec->actionThreshold();
+    if (attackThreshold != 0.0 && d < attackThreshold) {
+        if (now % spec->actionCooldown() == 0) ctx.srv->mobAttackPlayer(m, *tgt);
         return true;
     }
-    if (d > 24) return false;
+    if (!spec->withinActionRange(d)) return false;
     // pathfind occasionally
     if (ctx.pathIdx >= ctx.path.size() ||
         std::abs(ctx.path.back().x - (int)std::floor(tgt->x)) > 3 ||
@@ -598,12 +604,14 @@ bool LeapAtTargetGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t) {
 
 bool BreezeJumpGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (m.kind != MobKind::Breeze) return false;
+    const MobBehaviorSpec* spec = mobBehaviorSpec(m.kind);
+    if (!spec) return false;
     if (m.breezeJumpCooldown > now) return false;
     Player* t = ctx.nearestPlayer;
     if (!t) return false;
     double dx=t->x - m.x, dz=t->z - m.z;
     double d=std::sqrt(dx*dx+dz*dz);
-    if (d < 4) return false;
+    if (!spec->beyondActionThreshold(d)) return false;
     double inv=1.0/(d+1e-6);
     // vanilla breeze jump 15h/5v, simplified to 0.7h + 0.45v scaled; pass via position delta + velocity
     double jx = dx*inv * 0.55;
@@ -613,7 +621,7 @@ bool BreezeJumpGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     // avoid jumping too high if already high
     if (m.y > t->y + 6) jy = 0.15;
     m.x += jx * 2.2; m.z += jz * 2.2; m.y += jy * 3.0;
-    m.breezeJumpCooldown = now + 40;
+    m.breezeJumpCooldown = now + spec->secondaryCooldown();
     m.breezeLastJumpTick = now;
     if (ctx.srv) {
         WriteBuffer vel; vel.varint(m.entityId); vel.i16((int16_t)(jx*8000*2)); vel.i16((int16_t)(jy*8000)); vel.i16((int16_t)(jz*8000*2));
@@ -625,12 +633,14 @@ bool BreezeJumpGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
 }
 bool BreezeWindChargeGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (m.kind != MobKind::Breeze) return false;
+    const MobBehaviorSpec* spec = mobBehaviorSpec(m.kind);
+    if (!spec) return false;
     if (m.breezeWindChargeCooldown > now) return false;
     Player* t = ctx.nearestPlayer;
     if (!t) return false;
     double dx=t->x - m.x, dy=(t->y+1.0)-(m.y+1.2), dz=t->z - m.z;
     double d=std::sqrt(dx*dx+dz*dz);
-    if (d > perceiveDist(MobKind::Breeze)) return false; // plan44 G-05 follow_range
+    if (!spec->withinActionRange(d)) return false;
     double inv=1.0/(d+1e-6);
     double vx=dx*inv*1.15, vz=dz*inv*1.15, vy=dy*inv*0.2 + 0.12;
     if (ctx.srv) {
@@ -639,17 +649,20 @@ bool BreezeWindChargeGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) 
         ctx.srv->spawnProjectile(ProjectileKind::BreezeWindCharge, m.x, m.y+1.2, m.z, vx, vy, vz, m.entityId, false);
         ctx.srv->broadcastSound("minecraft:entity.breeze.wind_burst", m.x, m.y, m.z, 1.f, 1.f, "hostile");
     }
-    m.breezeWindChargeCooldown = now + 32;
+    m.breezeWindChargeCooldown = now + spec->actionCooldown();
     return true;
 }
 
 bool ArmadilloRollUpGoal::shouldStart(MobEntity& m, AiContext& ctx) {
     if (m.kind != MobKind::Armadillo) return false;
-    // scanRate 5: only check every 5 ticks; danger flag from AiContext or pending until
+    if (!mobBehaviorSpec(m.kind)) return false;
+    // Scan at the descriptor's configured cadence; danger comes from AiContext or pending TTL.
     return ctx.dangerDetectedRecently || m.armadilloDangerDetectedUntil > 0;
 }
 bool ArmadilloRollUpGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (m.kind != MobKind::Armadillo) return false;
+    const MobBehaviorSpec* spec = mobBehaviorSpec(m.kind);
+    if (!spec) return false;
     bool danger = ctx.dangerDetectedRecently || now < m.armadilloDangerDetectedUntil;
     // water check: immediate unroll if in water (simplified: y below sea or block water)
     if (ctx.world) {
@@ -659,7 +672,7 @@ bool ArmadilloRollUpGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     }
     if (danger && !m.armadilloRolledUp) {
         m.armadilloRolledUp = true;
-        m.armadilloRollUpUntil = now + 60;
+        m.armadilloRollUpUntil = now + spec->actionCooldown();
         if (ctx.srv) {
             WriteBuffer md; md.varint(m.entityId); meta::writeMetaByte(md, 16, 1); md.u8(255);
             ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);
@@ -677,7 +690,7 @@ bool ArmadilloRollUpGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
                 }
                 return false;
             } else {
-                m.armadilloRollUpUntil = now + 20;
+                m.armadilloRollUpUntil = now + spec->secondaryCooldown();
             }
         }
         return true;
@@ -687,23 +700,27 @@ bool ArmadilloRollUpGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
 
 bool WitchPotionThrowGoal::shouldStart(MobEntity& m, AiContext& ctx) {
     if (m.kind != MobKind::Witch) return false;
+    const MobBehaviorSpec* spec = mobBehaviorSpec(m.kind);
+    if (!spec) return false;
     if (!ctx.nearestPlayer) return false;
-    if (ctx.nearestPlayerDist2 > perceptionRange2(MobKind::Witch)) return false; // plan44 G-05
+    if (!spec->withinActionRangeSquared(ctx.nearestPlayerDist2)) return false;
     if (ctx.srv && ctx.srv->tickNoForTest() < m.witchPotionCooldown) return false;
     return true;
 }
 bool WitchPotionThrowGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (m.kind != MobKind::Witch) return false;
+    const MobBehaviorSpec* wspec = mobBehaviorSpec(m.kind);
+    if (!wspec) return false;
     Player* t = ctx.nearestPlayer; if (!t) return false;
-    const MobBehaviorSpec* wspec = mobBehaviorSpec(MobKind::Witch);
-    const double wrange = wspec ? wspec->rangeBlocks : 16.0;
-    double dx=t->x - m.x, dz=t->z - m.z; double d2=dx*dx+dz*dz; if (d2>wrange*wrange) return false;
+    double dx=t->x - m.x, dz=t->z - m.z; double d2=dx*dx+dz*dz;
+    if (!wspec->withinActionRangeSquared(d2)) return false;
     if (now < m.witchPotionCooldown) return false;
     double d=std::sqrt(d2)+1e-6;
     if (ctx.srv) {
         // heal if low health
         if (m.health < 13) {
-            m.health = std::min(m.health+6.f, (double)mobStats(m.kind).maxHealth);
+            m.health = std::min(m.health + wspec->actionMagnitude(),
+                                (double)mobStats(m.kind).maxHealth);
             ctx.srv->broadcastSound("minecraft:entity.witch.drink", m.x,m.y,m.z,1.f,1.f,"hostile");
             WriteBuffer md; md.varint(m.entityId); meta::writeMetaBool(md,16,true); md.u8(255);
             ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);
@@ -715,7 +732,7 @@ bool WitchPotionThrowGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) 
             ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);
         }
     }
-    m.witchPotionCooldown = now + (wspec ? wspec->intervalTicks : 40) + (rand()%20);
+    m.witchPotionCooldown = now + wspec->actionCooldown() + (rand()%20);
     return true;
 }
 bool RavagerRoarGoal::shouldStart(MobEntity& m, AiContext& ctx) {
@@ -971,25 +988,33 @@ bool DrownedSwimGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t){
     if(ctx.world) ctx.world->generateChunkIfMissing((int)m.x>>4,(int)m.z>>4);
     return true;
 }
-bool PhantomCircleGoal::shouldStart(MobEntity& m, AiContext&){ return m.kind==MobKind::Phantom; }
+bool PhantomCircleGoal::shouldStart(MobEntity& m, AiContext&){
+    return m.kind==MobKind::Phantom && mobBehaviorSpec(m.kind) != nullptr;
+}
 bool PhantomCircleGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(m.kind!=MobKind::Phantom) return false;
-    if(ctx.srv && ctx.srv->tickNoForTest()%5!=0 && now - m.phantomLastSwoop < 180) { /* throttle */ }
+    const MobBehaviorSpec* spec = mobBehaviorSpec(m.kind);
+    if (!spec) return false;
     Player* t=ctx.nearestPlayer;
-    if(t){ m.phantomOrbitCenter={t->x, t->y+12, t->z}; }
+    if(t){ m.phantomOrbitCenter={t->x, t->y+spec->auxiliaryOffset(), t->z}; }
     m.phantomOrbitAngle += 0.08;
-    double r = 12 + (m.phantomSize%8);
+    double r = spec->actionRange() + (m.phantomSize % spec->variantRangeModulo());
     double nx = m.phantomOrbitCenter.x + std::cos(m.phantomOrbitAngle)*r;
     double nz = m.phantomOrbitCenter.z + std::sin(m.phantomOrbitAngle)*r;
     double ny = m.phantomOrbitCenter.y + std::sin(now*0.02)*2;
-    if(now - m.phantomLastSwoop > 200 && t){
+    if(now - m.phantomLastSwoop >= spec->actionCooldown() && t){
         nx = t->x; nz = t->z; ny = t->y;
-        if(std::hypot(nx-m.x,nz-m.z)<1.5){ m.phantomLastSwoop=now; if(ctx.srv) ctx.srv->mobAttackPlayer(m,*t); }
+        const double attackThreshold = spec->actionThreshold();
+        if(attackThreshold != 0.0 && std::hypot(nx-m.x,nz-m.z) < attackThreshold){
+            m.phantomLastSwoop=now;
+            if(ctx.srv) ctx.srv->mobAttackPlayer(m,*t);
+        }
     }
     double dx=nx-m.x, dy=ny-m.y, dz=nz-m.z; double d=std::sqrt(dx*dx+dy*dy+dz*dz)+1e-6;
     m.x+=dx/d*0.16; m.y+=dy/d*0.10; m.z+=dz/d*0.16;
     m.yaw=(float)(std::atan2(dz,dx)*180/3.14159-90);
-    if(m.y < 60) m.y=60;
+    const double altitudeFloor = spec->altitudeFloor();
+    if(altitudeFloor != 0.0 && m.y < altitudeFloor) m.y=altitudeFloor;
     if(ctx.world) ctx.world->generateChunkIfMissing((int)m.x>>4,(int)m.z>>4);
     return true;
 }
@@ -1084,22 +1109,26 @@ bool ShulkerPeekGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
 }
 bool GuardianBeamGoal::shouldStart(MobEntity& m, AiContext& ctx){
     if(m.kind!=MobKind::Guardian && m.kind!=MobKind::ElderGuardian) return false;
-    return ctx.nearestPlayer && ctx.nearestPlayerDist2 < perceptionRange2(m.kind); // plan44 G-05
+    const MobBehaviorSpec* spec = mobBehaviorSpec(m.kind);
+    return spec && ctx.nearestPlayer && spec->withinActionRangeSquared(ctx.nearestPlayerDist2);
 }
 bool GuardianBeamGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(m.kind!=MobKind::Guardian && m.kind!=MobKind::ElderGuardian) return false;
+    const MobBehaviorSpec* spec = mobBehaviorSpec(m.kind);
+    if (!spec) return false;
     if(now < m.guardianBeamCooldown) return false;
     Player* t=ctx.nearestPlayer; if(!t) return false;
-    const MobBehaviorSpec* gspec = mobBehaviorSpec(MobKind::Guardian);
-    const double grange = gspec ? gspec->rangeBlocks : 15.0;
-    double dx=t->x-m.x, dz=t->z-m.z; double d=std::sqrt(dx*dx+dz*dz); if(d>grange) return false;
+    double dx=t->x-m.x, dz=t->z-m.z; double d=std::sqrt(dx*dx+dz*dz);
+    if (!spec->withinActionRange(d)) return false;
     if(ctx.srv){
-        float dmg = (m.kind==MobKind::ElderGuardian?8.f:(gspec ? (float)gspec->magnitude : 6.f));
+        const double magnitude = m.kind == MobKind::ElderGuardian
+            ? spec->secondaryActionMagnitude() : spec->actionMagnitude();
+        float dmg = static_cast<float>(magnitude);
         ctx.srv->applyDamage(*t, dmg, DamageSource::magic());
         ctx.srv->broadcastSound("minecraft:entity.guardian.attack", m.x,m.y,m.z,1.f,1.f,"hostile");
         ctx.srv->broadcastEntitySound(m.entityId, "minecraft:entity.guardian.attack", 1.f, 1.f, GameServer::SoundSource::Hostile);
     }
-    m.guardianBeamCooldown=now+(gspec ? gspec->intervalTicks : 60);
+    m.guardianBeamCooldown=now+spec->actionCooldown();
     return true;
 }
 bool SlimeSplitGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
@@ -1279,32 +1308,42 @@ bool AxolotlPlayDeadGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     }
     return true;
 }
-bool FrogTongueGoal::shouldStart(MobEntity& m, AiContext& ctx){ if(m.kind!=MobKind::Frog) return false; if(ctx.srv && ctx.srv->tickNoForTest()<m.frogTongueCooldown) return false; return true; }
+bool FrogTongueGoal::shouldStart(MobEntity& m, AiContext& ctx){
+    if(m.kind!=MobKind::Frog) return false;
+    const MobBehaviorSpec* spec = mobBehaviorSpec(m.kind);
+    if (!spec) return false;
+    if(ctx.srv && ctx.srv->tickNoForTest()<m.frogTongueCooldown) return false;
+    return true;
+}
 bool FrogTongueGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(m.kind!=MobKind::Frog) return false;
+    const MobBehaviorSpec* spec = mobBehaviorSpec(m.kind);
+    if (!spec) return false;
     if(now < m.frogTongueCooldown) return false;
-    // find slime small within 6
+    // Find a small slime/magma cube within the spec's action range.
     if(ctx.srv){
         std::shared_ptr<MobEntity> prey;
-        double best=36;
+        double best=0.0;
         for(auto& mm: ctx.srv->mobsForTest()) if((mm->kind==MobKind::Slime || mm->kind==MobKind::MagmaCube) && mm->slimeSize==0 && !mm->dead){
-            double dx=mm->x-m.x, dz=mm->z-m.z; double d2=dx*dx+dz*dz; if(d2<best){best=d2; prey=mm;}
+            double dx=mm->x-m.x, dz=mm->z-m.z; double d2=dx*dx+dz*dz;
+            if(spec->withinActionRangeSquared(d2) && (!prey || d2<best)){best=d2; prey=mm;}
         }
-        if(prey && best < 36){
+        if(prey){
             double dx=prey->x-m.x, dz=prey->z-m.z; double d=std::sqrt(dx*dx+dz*dz)+1e-6;
-            if(d<1.5){
+            if(!spec->beyondActionThreshold(d)){
                 prey->dead=true;
                 ctx.srv->broadcastSound("minecraft:entity.frog.eat", m.x,m.y,m.z,1.f,1.f,"neutral");
-                ctx.srv->spawnItemDrop(m.x,m.y,m.z, gen::itemIdByName().at("minecraft:slime_ball"), 1);
+                ctx.srv->spawnItemDrop(m.x,m.y,m.z, gen::itemIdByName().at("minecraft:slime_ball"),
+                                       static_cast<int>(spec->actionMagnitude()));
             } else {
                 m.x+=dx/d*0.12; m.z+=dz/d*0.12;
                 ctx.srv->broadcastSound("minecraft:entity.frog.tongue", m.x,m.y,m.z,1.f,1.f,"neutral");
             }
-        } else if(rand()%40==0){
+        } else if(rand()%spec->randomDenominator()==0){
             ctx.srv->broadcastSound("minecraft:entity.frog.ambient", m.x,m.y,m.z,1.f,1.f,"neutral");
         }
     }
-    m.frogTongueCooldown=now+40;
+    m.frogTongueCooldown=now+spec->actionCooldown();
     return true;
 }
 bool TurtleEggLayGoal::shouldStart(MobEntity& m, AiContext&){ if(m.kind!=MobKind::Turtle) return false; return m.turtleHomePos[0]!=INT_MAX; }
@@ -1447,16 +1486,20 @@ bool EnderDragonPerchGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     m.yaw=(float)(now*0.8);
     return true;
 }
-bool StriderLavaWalkGoal::shouldStart(MobEntity& m, AiContext&){ return m.kind==MobKind::Strider; }
+bool StriderLavaWalkGoal::shouldStart(MobEntity& m, AiContext&){
+    return m.kind == MobKind::Strider && mobBehaviorSpec(m.kind) != nullptr;
+}
 bool StriderLavaWalkGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(m.kind!=MobKind::Strider) return false;
+    const MobBehaviorSpec* spec = mobBehaviorSpec(m.kind);
+    if (!spec) return false;
     if(!ctx.world) return false;
     uint16_t st=ctx.world->getBlock((int)std::floor(m.x),(int)std::floor(m.y)-1,(int)std::floor(m.z));
     auto* bd=gen::blockByState(st);
     bool onLava = bd && std::string(bd->name).find("lava")!=std::string::npos;
     if(!onLava){
         // shiver when cold
-        if(!m.striderShivering){ m.striderShivering=true; m.striderShiverUntil=now+40; if(ctx.srv) ctx.srv->broadcastSound("minecraft:entity.strider.ambient", m.x,m.y,m.z,0.5f,1.f,"neutral"); }
+        if(!m.striderShivering){ m.striderShivering=true; m.striderShiverUntil=now+spec->actionCooldown(); if(ctx.srv) ctx.srv->broadcastSound("minecraft:entity.strider.ambient", m.x,m.y,m.z,0.5f,1.f,"neutral"); }
         m.y -= 0.02;
     } else {
         m.striderShivering=false;
@@ -1480,39 +1523,50 @@ bool IllusionerInvisGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     }
     return true;
 }
-bool SnifferDigGoal::shouldStart(MobEntity& m, AiContext&){ return m.kind==MobKind::Sniffer; }
+bool SnifferDigGoal::shouldStart(MobEntity& m, AiContext&){
+    return m.kind==MobKind::Sniffer && mobBehaviorSpec(m.kind) != nullptr;
+}
 bool SnifferDigGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(m.kind!=MobKind::Sniffer) return false;
+    const MobBehaviorSpec* spec = mobBehaviorSpec(m.kind);
+    if (!spec) return false;
     if(now < m.snifferDigCooldown) return false;
-    if(rand()%120!=0) return false;
+    if(rand()%spec->actionInterval()!=0) return false;
     // sniff 6s -> dig
     if(ctx.srv) ctx.srv->broadcastSound("minecraft:entity.sniffer.scenting", m.x,m.y,m.z,1.f,1.f,"neutral");
-    m.snifferDigCooldown=now+120;
+    m.snifferDigCooldown=now+spec->actionCooldown();
     // after sniff, dig ancient seed after 6s simplified to immediate drop
-    if(rand()%3==0 && ctx.srv){
+    if(rand()%spec->randomDenominator()==0 && ctx.srv){
         // drop torchflower seeds
         auto it = gen::itemIdByName().find("minecraft:torchflower_seeds");
-        if(it!=gen::itemIdByName().end()) ctx.srv->spawnItemDrop(m.x,m.y,m.z, it->second, 1);
+        if(it!=gen::itemIdByName().end())
+            ctx.srv->spawnItemDrop(m.x,m.y,m.z, it->second, static_cast<int>(spec->actionMagnitude()));
         ctx.srv->broadcastSound("minecraft:entity.sniffer.digging", m.x,m.y,m.z,1.f,1.f,"neutral");
         WriteBuffer md; md.varint(m.entityId); meta::writeMetaBool(md,16,true); md.u8(255);
         ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);
     }
     return true;
 }
-bool CamelDashGoal::shouldStart(MobEntity& m, AiContext& ctx){ if(m.kind!=MobKind::Camel) return false; return ctx.nearestPlayer && ctx.nearestPlayerDist2 < 12*12; }
+bool CamelDashGoal::shouldStart(MobEntity& m, AiContext& ctx){
+    if(m.kind!=MobKind::Camel) return false;
+    const MobBehaviorSpec* spec = mobBehaviorSpec(m.kind);
+    return spec && ctx.nearestPlayer && spec->withinActionRangeSquared(ctx.nearestPlayerDist2);
+}
 bool CamelDashGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(m.kind!=MobKind::Camel) return false;
+    const MobBehaviorSpec* spec = mobBehaviorSpec(m.kind);
+    if (!spec) return false;
     if(now < m.camelDashCooldown) return false;
     Player* t=ctx.nearestPlayer; if(!t) return false;
     double dx=t->x-m.x, dz=t->z-m.z; double d=std::sqrt(dx*dx+dz*dz)+1e-6;
-    if(d>12 || d<4) return false;
+    if(!spec->withinActionRange(d) || !spec->beyondActionThreshold(d)) return false;
     m.x+=dx/d*0.42*10*0.1; m.z+=dz/d*0.42*10*0.1; // dash ~4.2 blocks scaled by tick
     if(ctx.srv){
         WriteBuffer vel; vel.varint(m.entityId); vel.i16((int16_t)(dx/d*0.42*8000)); vel.i16(0); vel.i16((int16_t)(dz/d*0.42*8000));
         ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::EntityVelocity, vel);
         ctx.srv->broadcastSound("minecraft:entity.camel.dash", m.x,m.y,m.z,1.f,1.f,"neutral");
     }
-    m.camelDashCooldown=now+55;
+    m.camelDashCooldown=now+spec->actionCooldown();
     return true;
 }
 bool AllayDuplicateGoal::shouldStart(MobEntity& m, AiContext& ctx){
@@ -1540,20 +1594,26 @@ bool AllayDuplicateGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     m.allayDuplicateCooldown=now+120;
     return true;
 }
-bool BoggedPoisonGoal::shouldStart(MobEntity& m, AiContext& ctx){ if(m.kind!=MobKind::Bogged) return false; return ctx.nearestPlayer && ctx.nearestPlayerDist2 < perceptionRange2(MobKind::Bogged); } // plan44 G-05
+bool BoggedPoisonGoal::shouldStart(MobEntity& m, AiContext& ctx){
+    if(m.kind!=MobKind::Bogged) return false;
+    const MobBehaviorSpec* spec = mobBehaviorSpec(m.kind);
+    return spec && ctx.nearestPlayer && spec->withinActionRangeSquared(ctx.nearestPlayerDist2);
+}
 bool BoggedPoisonGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(m.kind!=MobKind::Bogged) return false;
+    const MobBehaviorSpec* spec = mobBehaviorSpec(m.kind);
+    if (!spec) return false;
     if(now < m.boggedPoisonCooldown) return false;
     Player* t=ctx.nearestPlayer; if(!t) return false;
     double dx=t->x-m.x, dy=(t->y+1)-(m.y+1.6), dz=t->z-m.z; double d=std::sqrt(dx*dx+dz*dz)+1e-6;
-    if(d<5 || d > perceiveDist(MobKind::Bogged)) return false; // plan44 G-05 follow_range
+    if(!spec->withinActionRange(d) || !spec->beyondActionThreshold(d)) return false;
     if(ctx.srv){
         ctx.srv->spawnProjectile(ProjectileKind::Arrow, m.x, m.y+1.6, m.z, dx/d*1.2, dy/d*0.2+0.12, dz/d*1.2, m.entityId, false);
         WriteBuffer eff; eff.varint(t->entityId); eff.varint(19); eff.i8(0); eff.varint(160); eff.u8(0x01);
         ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::EntityEffect, eff);
         ctx.srv->broadcastSound("minecraft:entity.bogged.shoot", m.x,m.y,m.z,1.f,1.f,"hostile");
     }
-    m.boggedPoisonCooldown=now+40;
+    m.boggedPoisonCooldown=now+spec->actionCooldown();
     return true;
 }
 bool FishSwimGoal::shouldStart(MobEntity& m, AiContext&) { return MobEntity::isFishKind(m.kind); }
@@ -1995,16 +2055,22 @@ bool Brain::hasBehaviorTree() const { return behaviorTree_ != nullptr; }
 void Brain::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     NearestPlayerSensor::update(m, ctx);
     if (m.kind == MobKind::Armadillo) {
-        if (now - m.armadilloLastScanTick >= 5) {
+        const MobBehaviorSpec* spec = mobBehaviorSpec(m.kind);
+        if (spec && now - m.armadilloLastScanTick >= spec->scanInterval()) {
             m.armadilloLastScanTick = now;
             bool danger = false;
-            if (ctx.nearestPlayer && ctx.nearestPlayerDist2 < 7*7) {
+            const bool playerInRange = ctx.nearestPlayer &&
+                spec->withinActionRangeSquared(ctx.nearestPlayerDist2);
+            const bool recentlyHurt = spec->alertDuration() != 0 &&
+                now - ctx.lastHurtTick < spec->alertDuration();
+            if (playerInRange) {
                 if (ctx.nearestPlayer->isSprinting) danger = true;
-                else if (now - ctx.lastHurtTick < 80) danger = true;
+                else if (recentlyHurt) danger = true;
                 else if (m.health < mobStats(m.kind).maxHealth) danger = true;
-                else if (ctx.nearestPlayerDist2 < 3*3) danger = true;
-            } else if (now - ctx.lastHurtTick < 80) danger = true;
-            if (danger) m.armadilloDangerDetectedUntil = now + 80;
+                else if (spec->withinSecondaryThresholdSquared(ctx.nearestPlayerDist2)) danger = true;
+            } else if (recentlyHurt) danger = true;
+            if (danger && spec->alertDuration() != 0)
+                m.armadilloDangerDetectedUntil = now + spec->alertDuration();
         }
         ctx.dangerDetectedRecently = now < m.armadilloDangerDetectedUntil;
         // also water immediate danger clear handled in goal tick, but keep TTL
