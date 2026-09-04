@@ -1,4 +1,3 @@
-// MultiNoise: climate-parameter biome selection (plan3.md
 // "MultiNoiseバイオームのアーキテクチャ").
 //
 // Each biome is a point in 6-D climate space (temperature, humidity,
@@ -38,7 +37,6 @@ struct NoiseHypercube {
 };
 struct HypercubeEntry { std::string key; NoiseHypercube cube; std::uint8_t dim = 0; };
 
-// plan45 G-11: biome dimension tags (overworld sample searches dim 0 only; the_void registry-only).
 enum class BiomeDimension : std::uint8_t { Overworld = 0, Nether = 1, End = 2, Special = 3 };
 
 class MultiNoiseBiomeSource {
@@ -66,7 +64,6 @@ public:
         cube.weirdness = r(p.weirdness);
         entriesCube_.push_back({key, cube, static_cast<std::uint8_t>(dim)});
     }
-    // plan45 G-11: dimension-specific emit helpers (vanilla 65-biome table).
     void addNether(const std::string& key, double t, double h, double c,
                    double e, double d, double w) {
         addDim(key, ClimateParams{t, h, c, e, d, w}, BiomeDimension::Nether);
@@ -83,7 +80,6 @@ public:
     void clear() { entries_.clear(); entriesCube_.clear(); }
     void addCube(const std::string& key, const NoiseHypercube& cube) {
         entriesCube_.push_back({key, cube, 0});
-        // also keep point entry for legacy dist2 fallback
         ClimateParams mid{};
         mid.temperature = (cube.temperature.min + cube.temperature.max) * 0.5;
         mid.humidity = (cube.humidity.min + cube.humidity.max) * 0.5;
@@ -106,7 +102,6 @@ public:
         ClimateParams c = climateAt(x, y, z);
         return nearestDim(c, static_cast<std::uint8_t>(BiomeDimension::Overworld));
     }
-    // plan45 G-11: dimension emit paths (search only the dimension subset).
     const std::string& sampleNether(double x, double y, double z) const {
         ClimateParams c = climateAt(x, y, z);
         return nearestDim(c, static_cast<std::uint8_t>(BiomeDimension::Nether));
@@ -115,7 +110,6 @@ public:
         ClimateParams c = climateAt(x, y, z);
         return nearestDim(c, static_cast<std::uint8_t>(BiomeDimension::End));
     }
-    // plan45 G-11: registry presence (covers Special/the_void too).
     bool contains(const std::string& key) const {
         for (const auto& e : entries_)
             if (e.key == key) return true;
@@ -154,7 +148,6 @@ public:
         return base;
     }
 
-    // plan20 §4 W6: vanilla MultiNoiseUtil isosceles weighting — continentalness/erosion 1.5× (biome borders ±2%)
     static constexpr double kW_T = 1.0, kW_H = 1.0, kW_C = 1.5, kW_E = 1.5, kW_D = 1.0, kW_W = 1.0;
     static double dist2(const ClimateParams& a, const ClimateParams& b) {
         const double t = a.temperature - b.temperature;
@@ -185,7 +178,6 @@ public:
         d += cube.offset;
         return d;
     }
-    // test helper — plan20 entity regression for pale_garden weighting (public for unit tests)
     const std::string& sampleByClimate(const ClimateParams& c) const { return nearest(c); }
     const std::string& sampleByClimateDim(const ClimateParams& c, BiomeDimension dim) const {
         return nearestDim(c, static_cast<std::uint8_t>(dim));
@@ -218,7 +210,6 @@ private:
         if (best) return *best;
         { static const std::string fallback = "minecraft:plains"; return fallback; }
     }
-    // plan45 G-11: dimension-filtered nearest (Special dim never sampled — callers must use contains() for the_void registry presence).
     const std::string& nearestDim(const ClimateParams& c, std::uint8_t dim) const {
         if (!entriesCube_.empty()) {
             const HypercubeEntry* best = nullptr;

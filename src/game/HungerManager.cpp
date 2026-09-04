@@ -20,7 +20,6 @@ void HungerManager::addFoodAndSaturation(Player& p, int food, float sat) {
     if (p.saturation > static_cast<float>(p.food)) p.saturation = static_cast<float>(p.food);
 }
 
-// (plan44 G-01: foodTable()/isFoodItem moved inline to HungerManager.hpp; bodies removed here.)
 
 void HungerManager::handleFoodConsume(Player& p, const std::string& itemName, GameServer& srv) {
     auto it = foodTable().find(itemName);
@@ -87,7 +86,6 @@ void HungerManager::tickExhaustion(Player& p, GameServer& srv) {
 }
 
 void HungerManager::tickRegenAndStarve(Player& p, int64_t tickNo, GameServer& srv) {
-    // plan23 §7 strict: per-player foodTickTimer + fast heal 10t (food 20 + saturation>0) + slow heal 80t (food>=18) + starve difficulty + naturalRegeneration gate
     bool naturalRegeneration = true;
     if (srv.gameRules().contains("naturalRegeneration")) naturalRegeneration = srv.gameRules().getBool("naturalRegeneration");
     std::string diff = "normal";
@@ -120,7 +118,6 @@ void HungerManager::tickRegenAndStarve(Player& p, int64_t tickNo, GameServer& sr
     if (p.food <= STARVING_FOOD_LEVEL) {
         ++p.foodTickTimer;
         if (p.foodTickTimer >= SLOW_HEALING_INTERVAL) {
-            // plan44 G-01: gate extracted to pure canStarveForDifficulty (behavior identical)
             bool canStarve = canStarveForDifficulty(diff, p.health);
             if (canStarve) {
                 p.health = std::max(0.f, p.health - 1.f);

@@ -1,5 +1,3 @@
-// BossAI + BossBarManager (plan7 entity section) Data-driven boss combat phases and synchronized BossBar UI. Sends BossBar
-// ADD/HEALTH/REMOVE packets (0x0A) on spawn/damage/death. plan28 entity polish: verify BossAI/BossBar handling orthogonal to Scoreboard
 // ResetScore 0x49 (D26) — Wither 300HP 3-burst, Dragon phases, BossBar 0x0A ADD/HEALTH verified intact after deep 31 merges.
 #pragma once
 #include <array>
@@ -47,7 +45,6 @@ public:
     void onPlayerJoin(GameServer& srv, Player& p);
     void removeIfExists(GameServer& srv, std::int32_t entityId) { onBossRemove(srv, entityId); }
 
-    // Command-created bars (plan10 §6 bossbar add/remove)
     void addCommandBar(std::int32_t key, const BossBar& bar) { bars_[key] = bar; }
     void removeCommandBar(std::int32_t key) { bars_.erase(key); }
     void updateHealthForCommandBar(std::int32_t key, float health) {
@@ -57,7 +54,6 @@ public:
 
     bool hasBar(std::int32_t eid) const { return bars_.find(eid)!=bars_.end(); }
     size_t size() const { return bars_.size(); }
-    // plan17 LOW: BossBar TITLE update (action 3) for lerp
     void updateTitle(GameServer& srv, std::int32_t eid, const std::string& title);
 
 private:

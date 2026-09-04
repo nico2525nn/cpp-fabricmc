@@ -1,4 +1,3 @@
-// commands_world.cpp: Brigadier command tree nodes (plan3 port): registered, parsed, advertised.
 #include "GameServer.hpp"
 #include "Messages.hpp"
 #include "Particles.hpp"
@@ -17,9 +16,35 @@ namespace cppfm {
 using brigadier::CommandNode;
 using brigadier::CommandContext;
 namespace args = brigadier::args;
+using NodePtr = brigadier::NodePtr;
 
 void GameServer::initWorldCommands() {
-    using NodePtr = brigadier::NodePtr;
+    initWorldCommandsPart01();
+    initWorldCommandsPart02();
+    initWorldCommandsPart03();
+    initWorldCommandsPart04();
+    initWorldCommandsPart05();
+    initWorldCommandsPart06();
+    initWorldCommandsPart07();
+    initWorldCommandsPart08();
+    initWorldCommandsPart09();
+    auto locate = CommandNode::literal("locate");
+    initWorldCommandsPart10(locate);
+    initWorldCommandsPart11(locate);
+    initWorldCommandsPart12(locate);
+    commands_.root->then(locate);
+    initWorldCommandsPart13();
+    initWorldCommandsPart14();
+    initWorldCommandsPart15();
+    initWorldCommandsPart16();
+    initWorldCommandsPart17();
+    initWorldCommandsPart18();
+    initWorldCommandsPart19();
+    initWorldCommandsPart20();
+    initWorldCommandsPart21();
+}
+
+void GameServer::initWorldCommandsPart01() {
     auto& d = commands_;
     {
         auto time = CommandNode::literal("time");
@@ -54,6 +79,10 @@ void GameServer::initWorldCommands() {
         time->then(set);
         d.root->then(time);
     }
+}
+
+void GameServer::initWorldCommandsPart02() {
+    auto& d = commands_;
     {
         auto gr = CommandNode::literal("gamerule");
         auto rule = CommandNode::argument("rule", args::stringWord());
@@ -97,6 +126,10 @@ void GameServer::initWorldCommands() {
         gr->then(rule);
         d.root->then(gr);
     }
+}
+
+void GameServer::initWorldCommandsPart03() {
+    auto& d = commands_;
     {
         auto fl = CommandNode::literal("forceload");
         // query
@@ -173,6 +206,10 @@ void GameServer::initWorldCommands() {
         };
         d.root->then(fl);
     }
+}
+
+void GameServer::initWorldCommandsPart04() {
+    auto& d = commands_;
     {
         auto sb = CommandNode::literal("setblock");
         auto pos = CommandNode::argument("pos", args::blockPos());
@@ -250,6 +287,10 @@ void GameServer::initWorldCommands() {
         sb->then(pos);
         d.root->then(sb);
     }
+}
+
+void GameServer::initWorldCommandsPart05() {
+    auto& d = commands_;
     {
         auto weather = CommandNode::literal("weather");
         auto kind = CommandNode::argument("kind", args::stringWord());
@@ -268,6 +309,10 @@ void GameServer::initWorldCommands() {
         weather->then(kind);
         d.root->then(weather);
     }
+}
+
+void GameServer::initWorldCommandsPart06() {
+    auto& d = commands_;
     {
         auto wb = CommandNode::literal("worldborder");
         auto size = CommandNode::literal("size");
@@ -275,7 +320,6 @@ void GameServer::initWorldCommands() {
         sz->executable = true;
         sz->action = [this](CommandContext& c) {
             worldBorderDiameter_ = c.arg("diameter").asDouble();
-            // persist and broadcast (plan6 §10)
             if (persist_) persist_->setWorldBorder(worldBorderDiameter_, worldBorderCenterX_, worldBorderCenterZ_);
             broadcastWorldBorder();
             // also send Center and LerpSize for spec compliance
@@ -288,6 +332,10 @@ void GameServer::initWorldCommands() {
         wb->then(size);
         d.root->then(wb);
     }
+}
+
+void GameServer::initWorldCommandsPart07() {
+    auto& d = commands_;
     {
         auto diff = CommandNode::literal("difficulty");
         auto lvl = CommandNode::argument("level", args::stringWord());
@@ -298,7 +346,6 @@ void GameServer::initWorldCommands() {
         };
         lvl->action = [this](CommandContext& c) {
             const std::string lv = c.arg("level").asStr();
-            // plan42 R3 network (E-15): vanilla only accepts the 4 literals;
             // anything else (e.g. "impossible") must error, not succeed.
             if (lv != "peaceful" && lv != "easy" && lv != "normal" && lv != "hard")
                 throw std::runtime_error("Unknown difficulty '" + lv +
@@ -315,6 +362,10 @@ void GameServer::initWorldCommands() {
         diff->then(lvl);
         d.root->then(diff);
     }
+}
+
+void GameServer::initWorldCommandsPart08() {
+    auto& d = commands_;
     {
         auto fill = CommandNode::literal("fill");
         auto from = CommandNode::argument("from", args::blockPos());
@@ -394,6 +445,10 @@ void GameServer::initWorldCommands() {
         fill->then(from);
         d.root->then(fill);
     }
+}
+
+void GameServer::initWorldCommandsPart09() {
+    auto& d = commands_;
     {
         auto clone = CommandNode::literal("clone");
         auto from = CommandNode::argument("from", args::blockPos());
@@ -500,9 +555,9 @@ void GameServer::initWorldCommands() {
         clone->then(from);
         d.root->then(clone);
     }
-        // /locate <structure|biome|poi> <id>
-        auto locate = CommandNode::literal("locate");
-        // locate structure <structure>
+}
+
+void GameServer::initWorldCommandsPart10(const brigadier::NodePtr& locate) {
         {
             auto structureLit = CommandNode::literal("structure");
             auto structArg = CommandNode::argument("locateStructureId", args::resourceLocation());
@@ -604,7 +659,9 @@ void GameServer::initWorldCommands() {
             structureLit->then(structArg);
             locate->then(structureLit);
         }
-        // locate biome <biome>
+}
+
+void GameServer::initWorldCommandsPart11(const brigadier::NodePtr& locate) {
         {
             auto biomeLit = CommandNode::literal("biome");
             auto biomeArg = CommandNode::argument("locateBiomeId", args::resourceLocation());
@@ -664,7 +721,9 @@ void GameServer::initWorldCommands() {
             biomeLit->then(biomeArg);
             locate->then(biomeLit);
         }
-        // locate poi <poi> -> stub
+}
+
+void GameServer::initWorldCommandsPart12(const brigadier::NodePtr& locate) {
         {
             auto poiLit = CommandNode::literal("poi");
             auto poiArg = CommandNode::argument("locatePoiId", args::resourceLocation());
@@ -678,8 +737,10 @@ void GameServer::initWorldCommands() {
             poiLit->then(poiArg);
             locate->then(poiLit);
         }
-        d.root->then(locate);
-        // /place feature|jigsaw|structure
+}
+
+void GameServer::initWorldCommandsPart13() {
+    auto& d = commands_;
         {
             auto place = CommandNode::literal("place");
             // place feature <feature> [pos]
@@ -858,7 +919,10 @@ void GameServer::initWorldCommands() {
             }
             d.root->then(place);
         }
-        // /spreadplayers <center> <spreadDistance> <maxRange> <respectTeams> <targets>
+}
+
+void GameServer::initWorldCommandsPart14() {
+    auto& d = commands_;
         {
             auto sp = CommandNode::literal("spreadplayers");
             auto center = CommandNode::argument("spCenter", args::vec2Arg());
@@ -977,7 +1041,10 @@ void GameServer::initWorldCommands() {
             sp->then(center);
             d.root->then(sp);
         }
-    // /enchant <targets> <enchantment> [<level>] (plan32 entity — Yarn EnchantCommand)
+}
+
+void GameServer::initWorldCommandsPart15() {
+    auto& d = commands_;
     {
         auto enchant = CommandNode::literal("enchant");
         auto targets = CommandNode::argument("targets", args::entity(false,false));
@@ -1042,6 +1109,10 @@ void GameServer::initWorldCommands() {
         enchant->then(targets);
         d.root->then(enchant);
     }
+}
+
+void GameServer::initWorldCommandsPart16() {
+    auto& d = commands_;
     {
         // /time query <daytime|gametime|day> + /time add <value> (/time set already exists.)
         auto time = CommandNode::literal("time");
@@ -1075,6 +1146,10 @@ void GameServer::initWorldCommands() {
         time->then(add);
         d.root->then(time);
     }
+}
+
+void GameServer::initWorldCommandsPart17() {
+    auto& d = commands_;
     {
         // /weather <kind> [durationSeconds] — duration form (bare-kind form already exists).
         auto weather = CommandNode::literal("weather");
@@ -1099,6 +1174,10 @@ void GameServer::initWorldCommands() {
         weather->then(kind);
         d.root->then(weather);
     }
+}
+
+void GameServer::initWorldCommandsPart18() {
+    auto& d = commands_;
     {
         // /worldborder get|set|center|add (/worldborder size already exists).
         auto wb = CommandNode::literal("worldborder");
@@ -1157,6 +1236,10 @@ void GameServer::initWorldCommands() {
         wb->then(add);
         d.root->then(wb);
     }
+}
+
+void GameServer::initWorldCommandsPart19() {
+    auto& d = commands_;
     {
         // /setworldspawn [<pos>] [<angle>] (Yarn SetWorldSpawn).
         auto sws = CommandNode::literal("setworldspawn");
@@ -1200,6 +1283,10 @@ void GameServer::initWorldCommands() {
         sws->then(pos);
         d.root->then(sws);
     }
+}
+
+void GameServer::initWorldCommandsPart20() {
+    auto& d = commands_;
     {
         // /defaultgamemode <survival|creative|adventure|spectator>
         auto dgm = CommandNode::literal("defaultgamemode");
@@ -1217,6 +1304,10 @@ void GameServer::initWorldCommands() {
         dgm->then(mode);
         d.root->then(dgm);
     }
+}
+
+void GameServer::initWorldCommandsPart21() {
+    auto& d = commands_;
     {
         // /jigsaw generate ... — stub (vanilla generation is via /place jigsaw).
         auto jig = CommandNode::literal("jigsaw");
@@ -1234,5 +1325,6 @@ void GameServer::initWorldCommands() {
         d.root->then(jig);
     }
 }
+
 
 } // namespace cppfm

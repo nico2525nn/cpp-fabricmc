@@ -1,4 +1,3 @@
-// ChunkGenerator: abstract base for world generation (plan7 World Management)
 // Mirrors net.minecraft.world.level.chunk.ChunkGenerator: fills chunk, populates noise/structures
 #pragma once
 #include <cstdint>

@@ -1,5 +1,4 @@
 // MobEffects: vanilla status-effect registry (numeric ids are the jar's
-// plan22/23 combat: poison 25/wither 40 tick split; effect registry order + EffectInstance model.
 #pragma once
 #include <cstdint>
 #include <string>
@@ -160,7 +159,6 @@ inline float absorptionFor(const std::vector<EffectInstance>& list) {
 inline bool isInvisible(const std::vector<EffectInstance>& list) { return hasEffect(list, effects::Invisibility); }
 inline bool isGlowing(const std::vector<EffectInstance>& list) { return hasEffect(list, effects::Glowing); }
 // Hunger effect adds exhaustion per tick; saturation effect restores food
-// plan29 §6 polish: vanilla 0.005 per tick per level (was 0.005*20 per 30t = 20x over)
 inline float hungerExhaustionPerTick(const std::vector<EffectInstance>& list) {
     int amp = amplifierFor(list, effects::Hunger);
     if (amp < 0) return 0.f;
@@ -202,7 +200,6 @@ inline bool shouldApplyWither(const std::vector<EffectInstance>& list, int tickN
     int period = std::max(1, 40 >> amp);
     return tickNo % period == 0;
 }
-// Plan8: effect tick helper — returns true if effect should apply damage/heal this tick
 inline bool isBeneficial(std::uint8_t id) {
     switch(id){
         case effects::Speed: case effects::Haste: case effects::Strength:

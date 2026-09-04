@@ -1,11 +1,9 @@
 #pragma once
 #include <cstdint>
 
-// Game constants — plan31 phase3 R9: centralize magic numbers that were scattered as literals.
 // All values are wire / gameplay behavior preserving (constexpr replacement only).
 namespace cppfm::constants {
 
-// WorldBorder — Yarn WorldBorder.DEFAULT 5.9999968E7, diameter 59999968 (plan13 W13, 29999984 was half)
 constexpr std::int64_t kWorldBorderDiameter = 59999968;
 constexpr std::int64_t kWorldBorderRadius   = kWorldBorderDiameter / 2; // 29999984
 

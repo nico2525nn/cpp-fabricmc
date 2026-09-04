@@ -1,4 +1,3 @@
-// BlockTickScheduler: random + scheduled ticks (plan5 item 12-15).
 #pragma once
 #include <cstdint>
 #include <queue>
@@ -33,7 +32,6 @@ public:
     virtual int getSpreadChance() const { return 0; }
 };
 
-// RandomTickScheduler (plan7): multiset queue sorted by dueTick with scheduleRandomTick/tick
 struct RandomTickEntry {
     std::int32_t x = 0, y = 0, z = 0;
     std::int64_t dueTick = 0;
@@ -86,7 +84,6 @@ public:
         return it == behaviors_.end() ? nullptr : it->second.get();
     }
 
-    // RandomTickScheduler integration (plan7)
     void scheduleRandomTick(std::int32_t x, std::int32_t y, std::int32_t z, std::int64_t delay) {
         randomScheduler_.scheduleRandomTick(x, y, z, delay);
     }
@@ -223,7 +220,6 @@ public:
               std::uint16_t state, std::int64_t now, GameServer* srv) override;
 };
 
-// --- plan13 §1 polish: bamboo leaves/stage + snowy + stem polish ---
 class BambooBehavior : public IBlockBehavior {
 public:
     void tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
@@ -244,7 +240,6 @@ public:
                     std::uint16_t state, std::int64_t now, GameServer* srv) override;
 };
 
-// plan26 D19: pale_oak_leaves ambience particle 34 (Simple, count 1, 2% per randomTick)
 class PaleOakLeavesBehavior : public IBlockBehavior {
 public:
     void tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
@@ -253,7 +248,6 @@ public:
                     std::uint16_t state, std::int64_t now, GameServer* srv) override;
 };
 
-// plan29 §3 CreakingHeart: active toggle (natural+night+logs) + spawn 1 creaking/heart within 16/8
 class CreakingHeartBehavior : public IBlockBehavior {
 public:
     void tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,

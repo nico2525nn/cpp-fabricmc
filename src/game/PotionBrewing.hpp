@@ -1,4 +1,3 @@
-// PotionBrewing — plan23 §5 I7 brewing transform (water->awkward etc) Vanilla 1.21.4 PotionBrewingRegistry: nether_wart + water -> awkward,
 // awkward + sugar -> mundane etc is stub Full mapping: awkward + <effect ingredient> -> effect potion, awkward + fermented -> weakness,
 // awkw + gunpowder -> splash This helper centralizes transform logic for brewingTick and tests.
 #pragma once

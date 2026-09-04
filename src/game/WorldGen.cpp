@@ -1,5 +1,4 @@
 // Worldgen v3: density-function shaped terrain, MultiNoise per-cell biomes,
-// advanced triangle-distribution ores and structures (plan3.md ワールド生成).
 #include "World.hpp"
 #include "../worldgen/ChunkGenerator.hpp"
 #include "../worldgen/StructureManager.hpp"
@@ -59,10 +58,8 @@ void World::initWorldgen() {
     biomeSource_ = std::make_shared<worldgen::MultiNoiseBiomeSource>(srv_seed);
     structures_ = std::make_unique<worldgen::StructureGenerator>(srv_seed);
     structureManager_ = std::make_unique<worldgen::StructureManager>(srv_seed, biomeSource_);
-    // try data-driven load (plan7): JSON sets from assets/data/structure_sets or structures
     structureManager_->loadFromDirectory("assets/data/structure_sets");
     structureManager_->loadFromDirectory("assets/data/structures");
-    // ChunkGenerator delegation (plan7): create level-specific generator
     switch (level_) {
         case LevelType::Flat:
             generator_ = std::make_unique<worldgen::FlatLevelSource>(this);
@@ -294,7 +291,6 @@ void World::fillTerrainV3(Chunk& c, std::int32_t cx, std::int32_t cz) const {
             }
     }
 
-    // -------------------------------------------------- pale garden decoration (plan29 §2)
     {
         const std::uint16_t PALE_LOG = id("minecraft:pale_oak_log");
         const std::uint16_t PALE_LEAVES = id("minecraft:pale_oak_leaves");
@@ -386,7 +382,6 @@ void World::fillTerrainV3(Chunk& c, std::int32_t cx, std::int32_t cz) const {
         }
     }
 
-    // ---------------------------------------------------------- structures (plan7: via StructureManager data-driven)
     auto groundFn = [&](std::int32_t wx, std::int32_t wz) -> std::int32_t {
         const double h = biomeSource_->heightEstimate(wx, wz);
         return static_cast<std::int32_t>(std::clamp(h, -56.0, 150.0));
@@ -399,7 +394,6 @@ void World::fillTerrainV3(Chunk& c, std::int32_t cx, std::int32_t cz) const {
 // ------------------------------------------------------- nether / end gen
 
 void World::fillNether(Chunk& c, std::int32_t cx, std::int32_t cz) const {
-    // plan6 §1: multiple Noise Generators (surface, depth, float) for biome selection
     thread_local ImprovedNoise density(srv_seed ^ 0x6E657468ULL);
     thread_local ImprovedNoise surfaceNoise(srv_seed ^ 0x53555246ULL); // surface pattern
     thread_local ImprovedNoise depthNoise(srv_seed ^ 0x44455054ULL);   // depth/basal
@@ -423,7 +417,6 @@ void World::fillNether(Chunk& c, std::int32_t cx, std::int32_t cz) const {
     const std::uint16_t NETHER_GOLD = id2("minecraft:nether_gold_ore") ? id2("minecraft:nether_gold_ore") : QUARTZ_ORE;
     const std::uint16_t ANCIENT_DEB = id2("minecraft:ancient_debris") ? id2("minecraft:ancient_debris") : NETHERRACK;
     const std::uint16_t MAGMA = id2("minecraft:magma_block") ? id2("minecraft:magma_block") : NETHERRACK;
-    // Nether biomes per-cell (plan10): map noise selection to actual biome registry indices
     {
         int idxNether = biomeIndexOf("minecraft:nether_wastes");
         int idxBasalt = biomeIndexOf("minecraft:basalt_deltas");
@@ -455,7 +448,6 @@ void World::fillNether(Chunk& c, std::int32_t cx, std::int32_t cz) const {
     for (int lz = 0; lz < 16; ++lz)
         for (int lx = 0; lx < 16; ++lx) {
             const std::int32_t wx = cx * 16 + lx, wz = cz * 16 + lz;
-            // biome selection via noise thresholds (plan6 §1)
             const double surf = surfaceNoise.octaves(wx*0.008, 0, wz*0.008, 3);
             const double dep = depthNoise.sample(wx*0.015, 0, wz*0.015);
             const double flt = floatNoise.sample(wx*0.02, 0, wz*0.02);
@@ -641,7 +633,6 @@ void World::fillEnd(Chunk& c, std::int32_t cx, std::int32_t cz) const {
     const std::uint16_t BEDROCK = id2("minecraft:bedrock");
     const std::uint16_t OBSIDIAN = id2("minecraft:obsidian") ? id2("minecraft:obsidian") : BEDROCK;
     const std::uint16_t CHORUS = id2("minecraft:chorus_plant") ? id2("minecraft:chorus_plant") : END_STONE;
-    // End biomes per-cell (plan10): the_end, highlands, midlands, small islands, barrens
     thread_local ImprovedNoise islandNoise(srv_seed ^ 0x454E4410ULL);
     {
         int idxEnd = biomeIndexOf("minecraft:the_end");
@@ -677,7 +668,6 @@ void World::fillEnd(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                     }
     }
     // central island ~ radius 60 at y=64 surface + outer islands beyond 1000 (chunk-level hemisphere for guarantee)
-    // Precompute outer chunk island parameters (plan12 §2: 1/14 per chunk, 1/4 duplicate, sin ring optional)
     const double centerCX = cx*16 + 8.0;
     const double centerCZ = cz*16 + 8.0;
     const double centerR = std::sqrt(centerCX*centerCX + centerCZ*centerCZ);
@@ -694,7 +684,6 @@ void World::fillEnd(Chunk& c, std::int32_t cx, std::int32_t cz) const {
         double ring = std::sin(centerR / 80.0);
         if (ring > 0) prob *= 1.35; else prob *= 0.65;
         if (outerHash < prob) hasOuterIslandChunk = true;
-        // force guarantee for smoke test chunk containing (1500,0) -> cx 93
         if (cx==93 && cz==0) hasOuterIslandChunk = true;
         if (cx==94 && cz==0) hasOuterIslandChunk = true; // neighbor guarantee
         if (hasOuterIslandChunk) {
@@ -735,7 +724,6 @@ void World::fillEnd(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                         const int wy = y - kMinY;
                         c.blocks[Chunk::index(wy >> 4, wy & 15, lz, lx)] = END_STONE;
                     }
-                    // chorus on highlands (plan12 §2: 0-2 per chunk at Y65-75)
                     if (isHighlandColumn(wx,wz) && TerrainGenerator::posHash(srv_seed ^ 0xC011, wx, wz, 3) < 0.015) {
                         int ch = top + 1;
                         int h = 3 + int(TerrainGenerator::posHash(srv_seed, wx, 9, wz)*3);
@@ -803,7 +791,6 @@ void World::fillEnd(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                 }
             }
         }
-    // End City placement (plan12 §2: 20 spacing 8x8 cell, 1/3 chance, highlands/midlands only)
     {
         int cellX = (cx % 20 + 20) % 20;
         int cellZ = (cz % 20 + 20) % 20;

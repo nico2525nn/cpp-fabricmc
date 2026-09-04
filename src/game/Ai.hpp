@@ -1,4 +1,3 @@
-// Pathfinder: A* over walkable block columns (plan3.md 経路探索).
 //
 // Nodes are feet positions; a node is walkable when the block at feet and
 // head are passable and ground below is solid. Neighbours are the four

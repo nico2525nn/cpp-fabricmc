@@ -29,7 +29,6 @@ inline void decompressRaw(const std::uint8_t* src, std::size_t n,
     out.resize(dst);
 }
 
-// plan46 §1 W-14(b): strict inflate — stream must consume exactly input/output sizes (reject trailing junk).
 inline void decompressChecked(const std::uint8_t* src, std::size_t n,
                               std::size_t expected,
                               std::vector<std::uint8_t>& out) {

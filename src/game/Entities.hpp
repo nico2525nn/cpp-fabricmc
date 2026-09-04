@@ -1,6 +1,4 @@
 // Entities: item drops + mobs with data-driven stats (plan.md Phase 3/4 +
-// plan3.md "74種類のモブ" registry approach). Expanded to 40 kinds for items 30-47.
-// plan28 entity polish: verify entity metadata handling orthogonal to Scoreboard ResetScore 0x49 (D26) — Creeper IGNITED/CHARGED Boolean 8, Enderman carried block Optional, Sheep sheared/wool, Slime size, Warden sonic_boom 27, pale_oak_leaves 34 verified intact after deep 31 merges.
 #pragma once
 #include <cstdint>
 #include <memory>
@@ -31,7 +29,6 @@ struct ItemEntity {
     std::int32_t entityId = 0;
     std::uint32_t itemId = 0;
     std::uint8_t count = 1;
-    // D11 (plan26 §4): full ItemStack with components for Slot type 7 preservation.
     // If `stack` is non-empty it overrides itemId/count and carries enchant/trim/damage.
     ItemStack stack{};
     double x=0, y=0, z=0;
@@ -70,11 +67,9 @@ struct ProjectileEntity {
     bool ownerIsPlayer = false;
     std::int64_t ageTicks = 0;
     bool stuck = false;
-    // for arrow stuck & retrieval
     std::int64_t stuckTicks = 0;
     std::int32_t stuckBlockX=0, stuckBlockY=0, stuckBlockZ=0;
     bool charged = false; // for WitherSkull blue (charged) variant
-    // plan44 §3 G-09: crossbow piercing (pass-through count), trident loyalty return
     int piercingLevel = 0;
     int loyaltyLevel = 0;
     bool returningToOwner = false;
@@ -107,16 +102,13 @@ enum class MobKind : std::uint16_t {
     Squid, GlowSquid, // extra to reach 40, harmless
     Warden, Phantom, IronGolem, Allay, Shulker,
     Boat, Minecart,
-    // plan25 E1 strict audit HIGH: expand 48->149 via gen (armadillo/beebogged/breeze/creaking etc) — 101 missing fixed, 149 = kEntities 149
     Armadillo, Bee, Bogged, Breeze, Camel, Cat, CaveSpider, Creaking,
     Donkey, Drowned, Endermite, Husk, Illusioner, Mooshroom, Mule, Ocelot,
     Parrot, PiglinBrute, Pillager, PolarBear, Ravager, Silverfish, SkeletonHorse, ZombieHorse, Sniffer,
     SnowGolem, Stray, Strider, Tadpole, TraderLlama, Vindicator, WanderingTrader, Wolf,
     Zoglin, ZombieVillager, ZombifiedPiglin, Giant, EvokerFangs, EnderCrystal,
-    // plan19 strict E2: Boat variants 10+10 distinct (was generic Boat)
     OakBoat, SpruceBoat, BirchBoat, JungleBoat, AcaciaBoat, DarkOakBoat, MangroveBoat, CherryBoat, PaleOakBoat, BambooRaft,
     OakChestBoat, SpruceChestBoat, BirchChestBoat, JungleChestBoat, AcaciaChestBoat, DarkOakChestBoat, MangroveChestBoat, CherryChestBoat, PaleOakChestBoat, BambooChestRaft,
-    // plan21 E1: expand 107->149 (add 42 missing entity types from kEntities 149, exclude player for MobKind)
     AreaEffectCloud, ArmorStand, Arrow, BlockDisplay, BreezeWindCharge, ChestMinecart, CommandBlockMinecart, DragonFireball, Egg, EnderPearl,
     ExperienceBottle, ExperienceOrb, EyeOfEnder, FallingBlock, Fireball, FireworkRocket, FishingBobber, FurnaceMinecart, GlowItemFrame, HopperMinecart,
     Interaction, Item, ItemDisplay, ItemFrame, LeashKnot, LightningBolt, LlamaSpit, Marker, OminousItemSpawner, Painting,
@@ -124,7 +116,6 @@ enum class MobKind : std::uint16_t {
     WindCharge, WitherSkull
 };
 
-// Static per-kind gameplay table (clean-room values approximating vanilla). plan44 G-05: followRange = vanilla generic.follow_range
 // (blocks). 0 = non-perceiving (vehicle/projectile/display/hazard). Living default 16.0; see docs/mob_stats_149.csv and docs/SPEC_GAMEPLAY.md.
 struct MobStats {
     const char* name;
@@ -140,7 +131,6 @@ struct MobStats {
     std::uint32_t xpDrop;
 };
 
-// plan14 §4: VillagerData profession/level/type (1-5, 7 types, 15 professions) + NITWIT plan17 LOW
 struct VillagerData {
     enum Type : std::uint8_t { PLAINS=0, DESERT, SAVANNA, SNOW, SWAMP, JUNGLE, TAIGA };
     enum Profession : std::uint8_t { NONE=0, ARMORER, BUTCHER, CARTOGRAPHER, CLERIC, FARMER, FISHERMAN, FLETCHER, LEATHERWORKER, LIBRARIAN, MASON, SHEPHERD, TOOLSMITH, WEAPONSMITH, NITWIT };
@@ -149,7 +139,6 @@ struct VillagerData {
     Profession profession = FARMER;
 };
 
-// plan14 §4: Gossip reputation per UUID (trading discounts, hero_of_village)
 struct Gossip {
     std::unordered_map<std::string,int> rep; // hex uuid -> reputation
     void add(const std::array<std::uint8_t,16>& uuid, int delta){
@@ -262,7 +251,6 @@ inline const MobStats& mobStats(MobKind k) {
         {"minecraft:giant",         100.f, 0.08f,10.f, 16.0f, true, false,nullptr,0,0,nullptr,                                    10},
         {"minecraft:evoker_fangs",    1.f, 0.00f, 6.f, 0.0f, true, false,nullptr,0,0,nullptr,                                     0},
         {"minecraft:end_crystal",     1.f, 0.00f, 0.f, 0.0f, false,false,nullptr,0,0,nullptr,                                     0},
-        // plan19 E2 boat variants (all 6HP, same physics, distinct typeId)
         {"minecraft:oak_boat",        6.f,0.10f, 0.f, 0.0f, false,false,nullptr,0,0,nullptr,                                     0},
         {"minecraft:spruce_boat",     6.f,0.10f, 0.f, 0.0f, false,false,nullptr,0,0,nullptr,                                     0},
         {"minecraft:birch_boat",      6.f,0.10f, 0.f, 0.0f, false,false,nullptr,0,0,nullptr,                                     0},
@@ -283,7 +271,6 @@ inline const MobStats& mobStats(MobKind k) {
         {"minecraft:cherry_chest_boat",6.f,0.10f,0.f, 0.0f,false,false,nullptr,0,0,nullptr,                                      0},
         {"minecraft:pale_oak_chest_boat",6.f,0.10f,0.f, 0.0f,false,false,nullptr,0,0,nullptr,                                    0},
         {"minecraft:bamboo_chest_raft",6.f,0.10f,0.f, 0.0f,false,false,nullptr,0,0,nullptr,                                      0},
-        // plan21 E1: 42 missing entity types (149 total, exclude player)
         {"minecraft:area_effect_cloud", 1.f, 0.10f, 0.f, 0.0f, false, false, nullptr, 0,0,nullptr, 0},
         {"minecraft:armor_stand", 20.f, 0.10f, 0.f, 0.0f, false, false, nullptr, 0,0,nullptr, 0},
         {"minecraft:arrow", 1.f, 0.10f, 0.f, 0.0f, false, false, nullptr, 0,0,nullptr, 0},
@@ -330,7 +317,6 @@ inline const MobStats& mobStats(MobKind k) {
     static_assert(sizeof(table)/sizeof(table[0]) == 149, "table size must match MobKind count");
     return table[static_cast<int>(k)];
 }
-// plan17 §10 E10: size-aware slime/magma health (size²) and attack — vanilla SlimeEntity size*size, MagmaCube size+2 attack and size*3 armor
 inline MobStats mobStats(MobKind k, int slimeSize) {
     if (k == MobKind::Slime || k == MobKind::MagmaCube) {
         int s = 1 << std::clamp(slimeSize, 0, 2); // 1,2,4
@@ -343,7 +329,6 @@ inline MobStats mobStats(MobKind k, int slimeSize) {
     }
     return mobStats(k);
 }
-// plan44 G-05: follow-range accessors for AiBrain (raw value; legacy 16 fallback; squared form).
 inline float followRangeFor(MobKind k) { return mobStats(k).followRange; }
 inline double perceiveDist(MobKind k) {
     float f = mobStats(k).followRange;
@@ -377,7 +362,6 @@ struct MobEntity {
     std::int64_t lastSeenMs = 0;
     // equipment slots: 0 mainhand 1 offhand 2 boots 3 leggings 4 chest 5 head
     std::array<ItemStack,6> equipment{};
-    // plan13 §2: HandDropChances (0.085F default) for loot drop on death
     std::array<float,2> handDropChances{0.085f,0.085f};
     std::array<float,4> armorDropChances{0.085f,0.085f,0.085f,0.085f};
     std::int32_t riderEntityId = -1; // passenger entity id riding this mob
@@ -386,17 +370,14 @@ struct MobEntity {
     std::uint8_t woolColor = 0; // 0 white
     std::uint32_t carriedBlock = 0; // enderman: block state id, 0 = empty (plan13 §6)
     bool creeperCharged = false;
-    // plan16: creeper ignited fuse (separate from nextWanderAt)
     bool creeperIgnited = false;
     std::int64_t creeperFuseStart = -1;
     static constexpr int CREEPER_FUSE_TICKS = 30;
     int slimeSize = 2; // 2 large 1 medium 0 small
-    // plan16: slime health size² helper (vanilla: (1<<size)² => 1,4,16)
     static inline float slimeHealthForSize(int sz){
         int s = (1 << std::clamp(sz,0,2));
         return static_cast<float>(s * s);
     }
-    // plan17 §10 E10: slime dimensions 0.52*size and magma armor size*3
     static inline float slimeWidthForSize(int sz){
         return ::cppfm::slimeWidthForSize(sz); // delegate to free fn, de-duplicate (plan18 polish)
     }
@@ -404,10 +385,8 @@ struct MobEntity {
         int s = (1 << std::clamp(sz,0,2));
         return s * 3; // vanilla MagmaCube armor = size*3
     }
-    // plan16: horse variant random (color/markings/health 15-30) — plan17 §10 E11 strict horse variant 0..34 (color 7 * markings 5)
     int horseVariant = 0; // 0..34 variant (color 0..6 + markings 0..4), randomized on spawn
     float horseJumpStrength = 0.0f; // randomized jump
-    // plan42 R2 E-10: per-instance randomized horse attributes (vanilla HorseEntity.randomizeAttributes).
     // mobStats(Horse) keeps the 30.f base default; live values come from randomizeHorseStats().
     float horseMaxHealth = 30.f; // 15..30 after randomizeHorseStats
     float horseMoveSpeed = 0.12f; // 0.1125..0.3375 after randomizeHorseStats
@@ -441,16 +420,13 @@ struct MobEntity {
     std::int64_t lastTeleportTick = -10000;
     bool isBabyVal = false;
     std::unordered_set<std::string> tags;        // /tag (plan10 §6)
-    // plan14 §4: Villager trading profession/level/restock/Gossip
     VillagerData villagerData;
     std::int32_t villagerXp = 0;
     std::int32_t villagerLevel = 1; // mirror villagerData.level for compat
     Gossip gossip;
     std::int64_t restockUntil = 0;
-    // plan16: villager restock 2/day (vanilla: 2 restocks per in-game day)
     int villagerRestocksToday = 0;
     std::int64_t villagerLastRestockDay = -1;
-    // plan46 G-15: villager restock tick (up to 2 work-visit windows/day).
     std::int64_t villagerLastRestockTick = -1;
     // Delay between the 1st and auto-scheduled 2nd restock window (~5 min at
     // 20 TPS; vanilla fires on the next work-site visit inside the work shift).
@@ -460,16 +436,13 @@ struct MobEntity {
     std::int64_t witherSkullCooldown = 0;
     int dragonPhase = 0; // 0 circling, 1 approaching, 2 perching/breath, 3 takeoff
     std::int64_t dragonPhaseUntil = 0;
-    // minecart/vehicle physics (plan11 §3)
     double velX = 0, velY = 0, velZ = 0;
-    // plan29 §3 Creaking heart linkage (transient creaking spawned by heart)
     int creakingHeartX = 0, creakingHeartY = 0, creakingHeartZ = 0;
     bool hasCreakingHeart = false;
     bool creakingTransient = false;
     bool creakingFrozen = false;
     bool creakingAlerted = false;
     int creakingSameBlockTicks = 0;
-    // plan34 §3 Armadillo roll-up (80 tick TTL, scanRate 5) / Breeze wind_charge & jump
     bool armadilloRolledUp = false;
     std::int64_t armadilloRollUpUntil = 0;
     std::int64_t armadilloDangerDetectedUntil = 0;
@@ -477,7 +450,6 @@ struct MobEntity {
     std::int64_t breezeWindChargeCooldown = 0;
     std::int64_t breezeJumpCooldown = 0;
     std::int64_t breezeLastJumpTick = -10000;
-    // plan36 §1 30 species fields (witch/ravager/bee/iron_golem/wolf/drowned/villager/piglin/etc)
     std::int64_t witchPotionCooldown = 0;
     std::int64_t ravagerRoarCooldown = 0;
     std::int64_t ravagerStunUntil = 0;
@@ -497,7 +469,6 @@ struct MobEntity {
     std::int64_t dolphinPlayCooldown = 0;
     std::int64_t evokerFangCooldown = 0;
     std::int64_t hoglinRetreatUntil = 0;
-    // plan39 C-01: 30 species extra differentiation fields (60 species)
     std::int64_t wardenSonicCooldown = 0;
     int wardenAnger = 0;
     int phantomSize = 0;
@@ -531,7 +502,6 @@ struct MobEntity {
     std::int64_t allayDuplicateCooldown = 0;
     std::int64_t boggedPoisonCooldown = 0;
     std::int64_t slimeJumpCooldown = 0;
-    // plan42 R2 E-11: per-species state for the 19 new goals (fish/vex/brute/cure/spit/egg/stomp/drift/roll/projectile/fangs/crystal/tnt)
     std::int64_t vexChargeCooldown = 0;
     std::int64_t piglinBruteEnrageUntil = 0;
     std::int64_t zombieVillagerCureUntil = 0;
@@ -553,7 +523,6 @@ struct MobEntity {
         const auto& m = gen::entityTypeIdByName();
         auto it = m.find(kindName(k));
         if (it != m.end()) return it->second;
-        // plan42 R2 E-09: generic Boat resolves to oak_boat id (abstract base has no registry id).
         if (k == MobKind::Boat) {
             auto jt = m.find("minecraft:oak_boat");
             if (jt != m.end()) return jt->second;
@@ -570,7 +539,6 @@ struct MobEntity {
             || k==MobKind::BirchChestBoat || k==MobKind::JungleChestBoat || k==MobKind::AcaciaChestBoat || k==MobKind::DarkOakChestBoat
             || k==MobKind::MangroveChestBoat || k==MobKind::CherryChestBoat || k==MobKind::PaleOakChestBoat || k==MobKind::BambooChestRaft;
     }
-    // plan42 R2 E-11: species movement-family groups (header-inline for goals + tests).
     static bool isFishKind(MobKind k) {
         return k==MobKind::Cod || k==MobKind::Salmon || k==MobKind::TropicalFish
             || k==MobKind::Pufferfish || k==MobKind::Tadpole
@@ -602,7 +570,6 @@ struct MobEntity {
         return k==MobKind::ArmorStand || k==MobKind::ExperienceOrb || k==MobKind::FallingBlock
             || k==MobKind::LightningBolt || k==MobKind::OminousItemSpawner || k==MobKind::Item;
     }
-    // Union of the 21 plan42 goals' kind coverage (7 fish + 11 grazers + 21 boats +
     // 7 minecarts + 19 projectiles + 6 ambient objects + 13 singles = 84 kinds).
     static bool hasSpeciesGoal(MobKind k) {
         if (isFishKind(k) || isGrazerKind(k) || isBoat(k) || isMinecartKind(k)

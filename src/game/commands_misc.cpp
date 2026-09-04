@@ -1,4 +1,3 @@
-// commands_misc.cpp: Brigadier command tree nodes (plan3 port): registered, parsed, advertised.
 #include "GameServer.hpp"
 #include "Messages.hpp"
 #include "Particles.hpp"
@@ -17,8 +16,20 @@ namespace cppfm {
 using brigadier::CommandNode;
 using brigadier::CommandContext;
 namespace args = brigadier::args;
+using NodePtr = brigadier::NodePtr;
 
 void GameServer::initMiscCommands() {
+    initMiscCommandsPart01();
+    initMiscCommandsPart02();
+    initMiscCommandsPart03();
+    initMiscCommandsPart04();
+    initMiscCommandsPart05();
+    initMiscCommandsPart06();
+    initMiscCommandsPart07();
+    initMiscCommandsPart08();
+}
+
+void GameServer::initMiscCommandsPart01() {
     auto& d = commands_;
     {
         auto n = CommandNode::literal("ping");
@@ -30,6 +41,10 @@ void GameServer::initMiscCommands() {
         };
         d.root->then(n);
     }
+}
+
+void GameServer::initMiscCommandsPart02() {
+    auto& d = commands_;
     {
         auto n = CommandNode::literal("help");
         n->executable = true;
@@ -42,6 +57,10 @@ void GameServer::initMiscCommands() {
         };
         d.root->then(n);
     }
+}
+
+void GameServer::initMiscCommandsPart03() {
+    auto& d = commands_;
     {
         auto n = CommandNode::literal("list");
         n->executable = true;
@@ -55,6 +74,10 @@ void GameServer::initMiscCommands() {
         };
         d.root->then(n);
     }
+}
+
+void GameServer::initMiscCommandsPart04() {
+    auto& d = commands_;
     {
         auto n = CommandNode::literal("seed");
         n->executable = true;
@@ -65,6 +88,10 @@ void GameServer::initMiscCommands() {
         };
         d.root->then(n);
     }
+}
+
+void GameServer::initMiscCommandsPart05() {
+    auto& d = commands_;
     {
         auto st = CommandNode::literal("stats");
         st->executable = true;
@@ -95,7 +122,10 @@ void GameServer::initMiscCommands() {
         };
         d.root->then(st);
     }
-    // plan41 C-10 test helper: /plan41test <horse|vehicle> — spawns entity and sends packet for smoke verification
+}
+
+void GameServer::initMiscCommandsPart06() {
+    auto& d = commands_;
     {
         auto n = CommandNode::literal("plan41test");
         auto sub = CommandNode::argument("type", args::stringWord());
@@ -151,6 +181,10 @@ void GameServer::initMiscCommands() {
         n->then(sub);
         d.root->then(n);
     }
+}
+
+void GameServer::initMiscCommandsPart07() {
+    auto& d = commands_;
     {
         // /debug <start|stop|report> — profiling stub (no tick sampler yet).
         auto dbg = CommandNode::literal("debug");
@@ -169,7 +203,10 @@ void GameServer::initMiscCommands() {
         }
         d.root->then(dbg);
     }
-    // /testargs — DeclareCommands arg-type coverage helper (test helper, like plan41test).
+}
+
+void GameServer::initMiscCommandsPart08() {
+    auto& d = commands_;
     {
         auto ta = CommandNode::literal("testargs");
         // block predicate
@@ -251,5 +288,6 @@ void GameServer::initMiscCommands() {
         d.root->then(ta);
     }
 }
+
 
 } // namespace cppfm

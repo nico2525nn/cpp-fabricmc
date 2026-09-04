@@ -96,7 +96,6 @@ void Session::run() {
         while (state_ != State::Done && srv_.running()) {
             switch (state_) {
             case State::Handshake: {
-                // plan45 B6 W-13(a): a pre-1.7 legacy list ping starts with 0xFE and speaks no framing — answer in the legacy form.
                 if (conn_->peekFirstByte(50) == 0xFE) {
                     answerLegacyPing();
                     state_ = State::Done;
@@ -129,7 +128,6 @@ void Session::run() {
         }
     } catch (const SocketClosedError&) {
     } catch (const PacketDecoder::OversizeError& e) {
-        // plan46 §1 W-16: oversize pre-play gets a Disconnect kick (status/handshake just close).
         std::fprintf(stderr, "[cppfm] session %s oversize: %s\n",
                      conn_->peer().c_str(), e.what());
         if (state_ == State::Login || state_ == State::Configuration ||
@@ -140,7 +138,6 @@ void Session::run() {
     } catch (const std::exception& e) {
         std::fprintf(stderr, "[cppfm] session %s error: %s\n",
                      conn_->peer().c_str(), e.what());
-        // plan46 §1 W-16: no more silent drops — attempt a state-correct Disconnect kick (already-dead sockets are guarded).
         if ((state_ == State::Login || state_ == State::Configuration ||
              state_ == State::Play) && conn_->isOpen()) {
             try { disconnectIn("{\"text\":\"Internal server error\"}"); } catch (...) {}
@@ -161,7 +158,6 @@ void Session::run() {
         ent.varint(1);
         ent.varint(self_->entityId);
         srv_.broadcastPacketExcept(nullptr, pl::sc::RemoveEntities, ent);
-        // plan34 network: ChatSuggestions remove (action 1) for disconnected player
         srv_.broadcastChatSuggestions(1, std::vector<std::string>{self_->name}, nullptr);
         // D26: wildcard reset_score 0x49 for disconnecting holder to clear sidebar ghosts
         {
@@ -173,7 +169,6 @@ srv_.removePlayer(self_.get());
         registered_ = false;
     }
 }
-// plan45 B6 W-13(a): legacy 0xFE ping — answer 0xFF UTF-16BE status, then close (no framing).
 void Session::answerLegacyPing() {
     const std::string body = std::string("\u00a71") + '\0' +
         std::to_string(kProtocolVersion) + '\0' + std::string(kMinecraftVersion) + '\0' +
@@ -190,7 +185,6 @@ void Session::answerLegacyPing() {
     for (char c : body) {
         const unsigned char uc = static_cast<unsigned char>(c);
         // § arrived as UTF-8 (0xC2 0xA7) — emit the single U+00A7 unit instead.
-        // Other non-latin1 bytes degrade to '?' (legacy UCS-2 has no room).
         if (uc == 0xC2) continue;
         const std::uint16_t unit = (uc == 0xA7) ? 0x00A7 : (uc < 0x80 ? uc : '?');
         out.push_back(static_cast<std::uint8_t>(unit >> 8));
@@ -308,7 +302,6 @@ void Session::disconnectIn(const char* textJson) {
     default:                   conn_->sendPacket(lo::sc::Disconnect, body); break;
     }
 }
-// plan46 §1 W-16: kick with a state-correct Disconnect, a short grace so the
 // peer reads the reason, then an abortive close (dead socket observable).
 void Session::kickPlay(const char* jsonReason) {
     if (state_ == State::Done) return;
@@ -326,7 +319,6 @@ void Session::handleLogin() {
         try {
             return in.string(16);
         } catch (const std::exception&) {
-            // plan42 R3: overlong/invalid names get LoginDisconnect (not silent drop).
             WriteBuffer kick;
             nbt::writeTextComponent(kick, "Invalid username");
             try { conn_->sendPacket(proto::lo::sc::Disconnect, kick); } catch (...) {}
@@ -336,7 +328,6 @@ void Session::handleLogin() {
     }();
     if (state_ == State::Done) return;
 
-    // plan45 B6 W-13(b): vanilla charset [A-Za-z0-9_] (overlong names were already kicked above via string(16)).
     if (!GameServer::isValidPlayerName(self_->name)) {
         WriteBuffer kick;
         nbt::writeTextComponent(kick, "Invalid username");
@@ -369,7 +360,6 @@ void Session::handleLogin() {
             return;
         }
     }
-    // plan42 R3 (E-19): enforce runtime whitelist flag; ops bypass (vanilla).
     if (srv_.whitelist().enabled()) {
         // any registered-name match is impossible pre-join; check file-backed list
         bool ok = srv_.whitelist().contains(self_->name) || srv_.isOp(self_->name);
@@ -381,7 +371,6 @@ void Session::handleLogin() {
             return;
         }
     }
-    // plan35 §5 max-players gate (0 = unlimited, vanilla semantics)
     if (srv_.config().maxPlayers > 0 && (int)srv_.playerCount() >= srv_.config().maxPlayers) {
         WriteBuffer kick;
         nbt::writeTextComponent(kick, "Server is full");
@@ -507,7 +496,6 @@ void Session::handleLogin() {
     }
     conn_->sendPacket(lo::sc::GameProfile, ok);
 
-    // wait for LoginAcknowledged. plan45 B6 W-11: accept all 5 login toServer kinds; only truly unknown ids throw.
     for (;;) {
         auto f2 = conn_->readFrame();
         ReadBuffer in2(f2);
@@ -542,7 +530,6 @@ void Session::handleLogin() {
         }
     }
 }
-// plan43 W-12: config packets may arrive anytime — both wait loops share this helper.
 Session::ConfigWaitResult Session::handleOneConfigPacket(ReadBuffer& in) {
     const std::uint8_t kpid = in.u8();
     switch (kpid) {
@@ -606,7 +593,6 @@ Session::ConfigWaitResult Session::handleOneConfigPacket(ReadBuffer& in) {
 }
 
 void Session::handleConfiguration() {
-    // 0. resource pack (plan3 Resource Pack) — configured via server.properties
     // 1.21.4: AddResourcePack = UUID + url + hash + forced + hasPrompt (no message) — UUID required (strict N13)
     if (!srv_.config().resourcePackUrl.empty()) {
         WriteBuffer b;
@@ -644,7 +630,6 @@ void Session::handleConfiguration() {
         conn_->sendPacket(cf::sc::SelectKnownPacks, b);
     }
     // 3. wait for the client's SelectKnownPacks answer (server hangs otherwise!)
-    // plan43 W-12: out-of-order FinishAck is recorded; keep waiting for packs.
     bool finishAckEarly = false;
     for (;;) {
         auto frame = conn_->readFrame();
@@ -679,7 +664,6 @@ void Session::handleConfiguration() {
         pkt.raw(srv_.data().tags().data(), srv_.data().tags().size());
         conn_->sendRawBody(pkt.data);
     }
-    // 6. finish & await acknowledgement plan43 W-12: absorb stray config packets around finish; 30s silence = kick.
     conn_->sendPacket(cf::sc::FinishConfiguration, {});
     for (;;) {
         std::vector<std::uint8_t> frame;
@@ -712,9 +696,7 @@ void Session::onEnterPlay() {
     self_->lastSeenMs = nowMs();
 
     sendJoinGame();
-    // plan34 network: ServerData 0x50 right after JoinGame (Prismarine packet_server_data {motd:anonymousNbt, iconBytes:option<ByteArray>})
     srv_.sendServerData(*self_);
-    // plan6 §7: send InitializeWorldBorder on join
     srv_.sendWorldBorderTo(*self_);
 
     {   // brand again in play phase (vanilla does both)
@@ -758,16 +740,13 @@ void Session::onEnterPlay() {
     self_->gamemode = 1;   // creative default for building comfort
     self_->health = 20; self_->food = 20; self_->saturation = 5;
     self_->exhaustion = 0; self_->fallDist = 0; self_->dead = false;
-    // plan17 LOW I5: init seeded enchanting RNG if not loaded from persistence
     if (self_->enchantmentSeed == 0) {
         self_->enchantmentSeed = static_cast<std::int32_t>(self_->entityId * 0x9e3779b9u ^ srv_.config().hashedSeed ^ 0x27d4eb2du);
         if (self_->enchantmentSeed == 0) self_->enchantmentSeed = 0x5a5a5a5a;
     }
 
     srv_.loadPlayerData(GameServer::uuidToHex(self_->uuid), *self_);
-    // plan43 W-06 + W-15(b): abilities are sent only after gamemode is final (the old call site ran before gamemode was even assigned).
     sendAbilities();
-    // cookies from disk (plan3 Cookie persistence)
     if (!self_->cookies.empty()) {}                    // populated on demand
     self_->prevFeetY = self_->y;
 
@@ -790,7 +769,6 @@ void Session::onEnterPlay() {
     }
 
     srv_.broadcastSystemText((msg::kYellow + self_->name + " joined the game"), nullptr);
-    // plan34 network: ChatSuggestions 0x18 (Prismarine packet_chat_suggestions {action:varint, entries:array<string>}) - sync player names for chat tab
     {
         std::vector<std::string> all;
         for (auto& pl : srv_.playersSnapshot()) all.push_back(pl->name);
@@ -846,7 +824,6 @@ void Session::sendJoinGame() {
     }
     b.boolean(false);                              // enforces secure chat
     conn_->sendPacket(pl::sc::Login, b);
-    // plan46 O-03: initial UpdateViewDistance 0x59 (re-sent on Settings 0x0C change).
     try {
         WriteBuffer vd;
         vd.varint(c.viewDistance);
@@ -854,7 +831,6 @@ void Session::sendJoinGame() {
     } catch (...) {}
 }
 void Session::sendAbilities() {
-    // plan43 W-06: ability flags follow gamemode (survival/adventure get 0x00).
     std::uint8_t f = 0;
     if (self_->gamemode == 1) f |= 0x01 | 0x04 | 0x08;   // creative
     else if (self_->gamemode == 3) f |= 0x02 | 0x04;     // spectator flies
@@ -866,7 +842,6 @@ void Session::sendAbilities() {
     b.f32(0.10f);                                       // walkingSpeed (vanilla default)
     conn_->sendPacket(pl::sc::Abilities, b);
 }
-// plan43 W-07: re-send stored sign text as BlockEntityData 0x07 (sign=7, hanging_sign=8).
 void Session::sendSignBlockEntity(std::int32_t x, std::int32_t y, std::int32_t z) {
     bool hanging = false;
     {
@@ -903,18 +878,15 @@ void Session::sendSignBlockEntity(std::int32_t x, std::int32_t y, std::int32_t z
     try { conn_->sendPacket(pl::sc::BlockEntityData, b); } catch (...) {}
     srv_.broadcastPacketExcept(self_.get(), pl::sc::BlockEntityData, b);
 }
-// plan45 B6 W-05: play settings 0x0C (shared shape with config 0x00); viewDistance narrows send radius.
 void Session::applyClientSettings(Player::ClientSettings s) {
     if (s.locale.empty()) s.locale = "en_us";
     self_->clientSettings = s;
-    // plan46 O-03: confirm effective (server-clamped) view distance via UpdateViewDistance 0x59.
     try {
         WriteBuffer b;
         b.varint(std::min({srv_.config().viewDistance, s.viewDistance, 32}));
         conn_->sendPacket(pl::sc::UpdateViewDistance, b);
     } catch (...) {}
 }
-// plan45 B6 W-09: op/creative gate for debug editors ("unimplemented=deny" prevents privilege gaps).
 bool Session::requireOp(int level, const char* what) {
     (void)level; // levels collapse to ops.json membership + creative (documented)
     if (srv_.isOp(self_->name) && self_->gamemode == 1) return true;
@@ -923,7 +895,6 @@ bool Session::requireOp(int level, const char* what) {
                  srv_.isOp(self_->name) ? "non-creative" : "non-op");
     return false;
 }
-// plan45 B6 W-10(d): F3+I answers. TagQueryResponse 0x75 {transactionId, nbt}.
 void Session::sendTagQueryResponse(std::int32_t transactionId, const WriteBuffer& nbt) {
     WriteBuffer b;
     b.varint(transactionId);
@@ -970,7 +941,6 @@ void Session::answerEntityNbt(std::int32_t transactionId, std::int32_t entityId)
     wr.endCompound();
     sendTagQueryResponse(transactionId, nbt);
 }
-// plan45 B6 W-08/G-13: anvil rename (NameItem 0x2E). Feeds Menu::anvilRename
 // and recomputes the output exactly like a grid click does (live sync).
 void Session::onNameItem(const std::string& name) {
     if (!openMenu_ || openMenu_->type != MenuType::Anvil) return;
@@ -999,7 +969,6 @@ void Session::onNameItem(const std::string& name) {
     sendMenuContent(m);
     syncCursorItem();
 }
-// plan45 B6 W-08: beacon confirm. Vanilla primaries {speed,haste,resistance,
 // jump_boost,strength} + secondary regeneration (or primary for tier II).
 void Session::onBeaconEffect(std::optional<std::int32_t> primary,
                             std::optional<std::int32_t> secondary) {
@@ -1037,7 +1006,6 @@ void Session::onBeaconEffect(std::optional<std::int32_t> primary,
     b.u8(effectFlags(e));
     try { self_->conn->sendPacket(proto::pl::sc::EntityEffect, b); } catch (...) {}
 }
-// plan45 B6 W-09: spectate teleport (gm3 only — anything else is ignored).
 void Session::onSpectate(const std::array<std::uint8_t,16>& target) {
     if (self_->gamemode != 3) {
         std::fprintf(stderr, "[cppfm] spectate from non-spectator %s ignored\n",
@@ -1102,7 +1070,6 @@ void Session::broadcastPlayerInfoAdd(Player* about) {
     add.uuid(about->uuid.data());
     add.string(about->name);
     add.varint(0);
-    // plan43 W-15(c): onlookers must see the real gamemode (was hardcoded 1).
     add.varint(about->gamemode);
     add.varint(1);
     srv_.broadcastPacketExcept(about, pl::sc::PlayerInfoUpdate, add);
@@ -1128,7 +1095,6 @@ void Session::sendStarterInventory() {
 }
 void Session::onWindowClick(ReadBuffer& in) {
     // Strict 1.21.4 (protocol 769) : `window_click` 0x10 windowId VarInt + stateId VarInt (I12).
-    // Lenient fallback to u8 for proxies that still send u8 windowId (vanilla 1.21.4 sends VarInt, plan20 inventory polish).
     int windowId = 0;
     int stateId = 0;
     size_t mark = in.off;
@@ -1160,12 +1126,10 @@ void Session::onWindowClick(ReadBuffer& in) {
 
     if (windowId != 0 && openMenu_ && openMenu_->windowId == windowId) {
         handleMenuClick(*openMenu_, slotIdx, button, mode);
-        // plan13 §2: equipment may have changed via menu interaction (armor)
         srv_.syncEquipmentOnChange(*self_);
         return;
     }
     if (windowId == 0) {
-        // plan37 B-11 binding_curse: in survival inventory window, prevent removing cursed armor
         // slotIdx 5..8 correspond to armor (boots/leggings/chest/head) in our 46-slot layout
         if (slotIdx>=5 && slotIdx<=8 && !self_->inv[slotIdx].empty() && EnchantmentHelper::hasBindingCurse(self_->inv[slotIdx])) {
             // any click that would empty the slot: mode 0 pickup, mode 1 quickMove, mode 2 hotbar, mode 4 throw
@@ -1182,7 +1146,6 @@ void Session::onWindowClick(ReadBuffer& in) {
     }
 }
 void Session::onEnchantItem(ReadBuffer& in) {
-    // Plan7 Enchantment table handling via EnchantmentMenuLogic
     // Packet `enchant_item` 0x0F: `windowId` VarInt (protocol.json 1.21.4, strict) + `button` VarInt.
     // Yarn `EnchantmentScreenHandler` uses VarInt for windowId; retain u8 fallback for leniency (vanilla client sends VarInt, some proxies u8).
     int windowId = 0;
@@ -1213,7 +1176,6 @@ void Session::onEnchantItem(ReadBuffer& in) {
         void itemSmelted(Player& p, const ItemStack& result) override { s.server().onItemObtained(p,result,"smelted"); }
     } io(*this);
     if (ench->onEnchantButton(*openMenu_, *self_, button, io)) {
-        // plan40 C-06: enchanted_item trigger (levels from button 0->1, 1->2, 2->3 -> 10-30)
         if(self_){
             int levels = (button+1)*10; // approximate vanilla 5-30 mapping
             std::string enchItemName="minecraft:diamond_sword";
@@ -1233,7 +1195,6 @@ void Session::onEnchantItem(ReadBuffer& in) {
 void Session::onTabComplete(ReadBuffer& in) {
     const auto transactionId = in.varint();
     const std::string text = in.string(65536);
-    // plan43 W-04: tab-complete spec is 2 fields (transactionId + text); no 3rd byte.
 
     brigadier::CommandSource src;
     src.player = self_.get();
@@ -1245,7 +1206,6 @@ void Session::onTabComplete(ReadBuffer& in) {
         out = srv_.resolveSelector(raw, self_.get());
     };
 
-    // plan43 W-04: strip one leading '/' for completion (start/length still count it).
     std::string query = text;
     if (!query.empty() && query[0] == '/') query = query.substr(1);
     const auto suggestions = srv_.commands().suggest(query, std::move(src));
@@ -1315,7 +1275,6 @@ void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
             return;
         }
     }
-    // Anvil output take (slot 2) - charge XP, consume inputs (plan13 §4 Too Expensive 39)
     if (m.type == MenuType::Anvil && slot == 2 && mode == 0 && button == 0) {
         ItemStack* out = &m.extraSlots[2];
         if (!out->empty()) {
@@ -1347,7 +1306,6 @@ void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
             }
         }
     }
-    // plan22 inventory polish: Cartography Table output take (slot 2) — map duplication (vanilla CartographyTableScreenHandler)
     // Yarn `CartographyTableScreenHandler` slots: 0 map, 1 paper, 2 result (filled_map clone). Take result consumes paper.
     if (m.type == MenuType::CartographyTable && slot == 2 && mode == 0 && button == 0) {
         ItemStack* mapIn = m.container ? &m.container[0] : &m.extraSlots[0];
@@ -1378,7 +1336,6 @@ void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
         }
     }
     SessionMenuIo io(*this);
-    // Plan7 MenuLogic dispatch — per-menu-type object-oriented handling for Anvil/Enchantment/Brewing etc.
     if (auto* logic = getMenuLogic(m.type)) {
         // Check if click is within container region; let logic handle it, fallback to generic for player inv
         int cont = m.totalSlots() - 36;
@@ -1415,7 +1372,6 @@ void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
         }
         sendSetSlot(m.windowId, self_->invStateId, 1, *out);
     }
-    // plan22 inventory polish: Cartography Table ghost output — map clone preview (I10)
     // vanilla: filled_map + paper -> filled_map copy (count 1); paper consumed on take, map preserved
     if (m.type == MenuType::CartographyTable) {
         ItemStack* mapIn = m.container ? &m.container[0] : &m.extraSlots[0];
@@ -1507,7 +1463,6 @@ void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
         }
     }
     // Strict audit MEDIUM: Crafter triggered toggle (1.21.4 crafter `triggered` only; stonecutter has no triggered property — crafter parity)
-    // Yarn `CrafterBlock` `triggered` boolean toggles on every interaction; stonecutter is stateless. Previous `Stonecutter||Crafter` was spurious.
     if (m.type == MenuType::Crafter && m.blockKey >= 0) {
         int bx = posKeyUnpackX(m.blockKey);
         int by = posKeyUnpackY(m.blockKey);
@@ -1669,7 +1624,6 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
         menu->containerCount = 1;
     } else return;
 
-    // Open Screen packet — plan7 MenuLogic: proper titles for Enchantment/Anvil/Brewing etc.
     {
         WriteBuffer b;
         b.varint(menu->windowId);
@@ -1705,7 +1659,6 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
     openMenu_ = std::move(menu);
     openMenu_->refreshCraftResult(srv_.recipes());
     sendMenuContent(*openMenu_);
-    // Send initial ContainerSetData for menus that need it — plan23 §5 seeded RNG + air-gap bookshelf count
     if (openMenu_->type == MenuType::Enchantment) {
         int bs = 0;
         if (openMenu_->blockKey >= 0) {
@@ -1758,7 +1711,6 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
 }
 void Session::closeOpenMenu(bool sendPacketToClient) {
     if (!openMenu_) return;
-    // return crafting-grid contents to the player (or drop when full)
     if (openMenu_->type == MenuType::Crafting) {
         for (auto& s : openMenu_->craftGrid) {
             if (s.empty()) continue;
@@ -1891,7 +1843,6 @@ void Session::handlePlaceRecipe(std::int32_t recipeId, bool makeAll) {
     };
 
     if (m.type == MenuType::Crafting) {
-        // return current grid contents to inventory first
         for (auto& s : m.craftGrid) {
             if (!s.empty()) {
                 srv_.addToInventory(*self_, s.itemId, s.count);
@@ -1935,7 +1886,6 @@ void Session::handlePlaceRecipe(std::int32_t recipeId, bool makeAll) {
         // Place ingredient into input slot 0, and if needed fuel into slot 1
         ItemStack* input = m.container ? &m.container[0] : &m.extraSlots[0];
         ItemStack* fuel = m.container ? &m.container[1] : &m.extraSlots[1];
-        // if input already occupied, return it first
         if (!input->empty()) {
             srv_.addToInventory(*self_, input->itemId, input->count);
             *input = ItemStack::air();
@@ -2047,7 +1997,6 @@ void Session::onPluginPayload(const std::string& channel,
         self_->clientChannels.erase(joined);
         return;
     }
-    // Anvil rename via CustomPayload MC|ItemName / minecraft:item_name (plan13 inventory)
     if ((channel == "MC|ItemName" || channel == "minecraft:item_name") && phase == 1) {
         if (openMenu_ && openMenu_->type == MenuType::Anvil) {
             std::string rename;
@@ -2098,7 +2047,6 @@ void Session::sendSystemText(const std::string& text) {
 }
 void Session::sendChunk(std::int32_t cx, std::int32_t cz) {
     static const std::uint32_t biomeIdx = srv_.data().biomeIndex(srv_.config().worldBiome);
-    // plan42 R2 (E-13): warm async RegionFile reads (tick installs them; sync generate is fallback).
     srv_.demandChunkAsync(cx, cz);
     GameServer::ChunkBodyRef body;
     if (!srv_.getCachedChunk(cx, cz, biomeIdx, body)) {
@@ -2114,7 +2062,6 @@ void Session::sendChunk(std::int32_t cx, std::int32_t cz) {
         body = fresh;
     }
     conn_->sendPacketBuf(pl::sc::LevelChunkWithLight, *body);
-    // plan43 W-07: re-send sign BlockEntityData per chunk (edit-time resend alone misses re-stream).
     srv_.blockEntities().forEach([&](std::int64_t k, BlockEntity& be) {
         if (be.kind != BlockEntity::Kind::Sign) return;
         const std::int32_t bx = posKeyUnpackX(k), by = posKeyUnpackY(k), bz = posKeyUnpackZ(k);
@@ -2129,7 +2076,6 @@ void Session::streamInitialChunks() {
     tickChunksAround(self_->x, self_->z);
 }
 void Session::tickChunksAround(double px, double pz) {
-    // plan11 §1 #6 + plan45 B6 W-05: viewDistance controls chunk SENDING (min of server/client); simulationDistance controls TICKING.
     const int vd = std::min({srv_.config().viewDistance, self_->clientSettings.viewDistance, 12});
     const int sd = std::min(srv_.config().simulationDistance, 12);
     (void)sd; // ticking distance is checked in engines, not here; view vs sim are distinguished as required
@@ -2166,7 +2112,6 @@ void Session::tickChunksAround(double px, double pz) {
         } catch (...) {}
     }
 
-    // forget distant chunks
     std::vector<std::int64_t> forget;
     for (auto k : sentChunks_) {
         auto [cx, cz] = chunkKeyDecode(k);
@@ -2191,7 +2136,6 @@ void Session::ack(std::int32_t sequence) {
 }
 void Session::handlePlay() {
     for (;;) {
-        // plan46 §1 W-16/A4: per-packet isolation — malformed kills only itself; oversize kicks.
         try {
         auto frame = conn_->readFrame();
         ReadBuffer in(frame);
@@ -2234,7 +2178,6 @@ void Session::handlePlay() {
         case pl::cs::MoveVehicle: onMoveVehicle(in); break;
         case pl::cs::SignUpdate: onSignUpdate(in); break; // 0x39 — always a sign edit
         case pl::cs::EntityAction: onEntityAction(in); break;
-        // ============ plan45 B6: remaining fromClient (W-05/W-08/W-09/W-10) ==== Shapes verified against Prismarine protocol.json 1.21.4
         // (2026-09-04). Each case is self-guarded: a malformed body is logged + skipped so one bad packet never kills the session (W-16
         // per-packet policy).
         case pl::cs::Settings: onClientSettings(in); break; // 0x0C W-05
@@ -2266,7 +2209,6 @@ void Session::handlePlay() {
         case pl::cs::UpdateStructureBlock: onUpdateStructureBlock(in); break; // 0x38 W-09
         case pl::cs::Spectate: onSpectatePacket(in); break; // 0x3B W-09
         default:
-            // Unknown packets: skip payload to stay aligned. plan46 §1 W-16: unknown play = ignore + log (rate-limited under flood), while
             // unknown login/config = kick + Disconnect (thrown by their handlers, kicked by Session::run). Policy: docs/SPEC_OPS.md#rate-limits-and-disconnect-policy.
             if (playLogGate_.shouldLog(nowMs()))
                 std::fprintf(stderr, "[cppfm] unknown play packet from %s\n",
@@ -2303,12 +2245,10 @@ void Session::onKeepAlivePacket(ReadBuffer& in) {
         self_->pendingKeepAlive = 0;
 }
 bool Session::onChatCommandSignedPacket(ReadBuffer& in) {
-    // plan46 §1 A3: signed commands share the spam counter.
     if (spam_.onChat(srv_.tickNow())) {
         kickPlay("{\"translate\":\"disconnect.spam\"}");
         return true;
     }
-    // plan43 W-03: chat signature shape (256B fixed, no booleans); shape-checked, not crypto-verified.
     try {
         const std::string cmd = in.string(constants::kMaxStringLength);
         (void)in.i64(); (void)in.i64();        // timestamp, salt
@@ -2356,7 +2296,6 @@ void Session::onCustomPayload(ReadBuffer& in) {
     onPluginPayload(channel, body, 1);
 }
 void Session::onPlaceRecipePacket(ReadBuffer& in) {
-    // plan45 B6/G-13: windowId is varint ContainerID (u8 fallback for lenient proxies).
     int windowId = 0;
     {
         const std::size_t mark = in.off;
@@ -2377,7 +2316,6 @@ void Session::onPingRequest(ReadBuffer& in) {
     conn_->sendPacket(0x38 /*ping response*/, b);
 }
 void Session::onPlayerAbilities(ReadBuffer& in) {
-    // plan43 W-06: flight toggle only for creative/spectator; revoked + echoed otherwise.
     const std::int8_t f = in.i8();
     const bool wantFly = (f & 0x02) != 0;
     const bool canFly = (self_->gamemode == 1 || self_->gamemode == 3);
@@ -2388,7 +2326,6 @@ void Session::onSetCreativeModeSlot(ReadBuffer& in) {
     const std::int16_t slot = in.i16();
     const auto stack = ItemStack::read(in);
     if (slot >= 0 && slot < 46) {
-        // plan37 B-11 binding_curse: prevent removing armor with curse (creative also respects)
         if ((slot==5||slot==6||slot==7||slot==8) && !self_->inv[slot].empty() && stack.empty()) {
             if (EnchantmentHelper::hasBindingCurse(self_->inv[slot])) {
                 srv_.resendInventory(*self_);
@@ -2396,7 +2333,6 @@ void Session::onSetCreativeModeSlot(ReadBuffer& in) {
             }
         }
         self_->inv[slot] = stack;
-        // plan13 §2: dynamic SetEquipment sync for creative armor/hand changes
         if (slot==5||slot==6||slot==7||slot==8||slot==45||(slot>=36&&slot<=44)) {
             srv_.syncEquipmentOnChange(*self_);
         }
@@ -2409,7 +2345,6 @@ void Session::onClientCommand(ReadBuffer& in) {
     if (action == 0) handleRespawnRequest();
 }
 void Session::onPlayerInput(ReadBuffer& in) {
-    // plan13 §3: PlayerInput 0x29 – flags: bit0 jump, bit1 shift (sneak) for dismount
     try{
         float sideways=0, forward=0;
         uint8_t flags=0;
@@ -2434,7 +2369,6 @@ void Session::onPlayerInput(ReadBuffer& in) {
     }catch(...){ in.skipRest(); }
 }
 void Session::onMoveVehicle(ReadBuffer& in) {
-    // plan13 §3: MoveVehicle 0x20 – x double, y double, z double, yaw float, pitch float
     try{
         double x=in.f64(), y=in.f64(), z=in.f64();
         float yaw=in.f32(), pitch=in.f32();
@@ -2442,7 +2376,6 @@ void Session::onMoveVehicle(ReadBuffer& in) {
     }catch(...){ in.skipRest(); }
 }
 void Session::onSignUpdate(ReadBuffer& in) {
-    // plan43 W-07: sign edit is position + isFrontText + 4 verbatim lines (ghost recipes use 0x25).
     try {
         std::int32_t sx, sy, sz;
         in.position(sx, sy, sz);
@@ -2476,7 +2409,6 @@ void Session::onEntityAction(ReadBuffer& in) {
     else if (action == 1) self_->isSneaking = false;
     else if (action == 3) self_->isSprinting = true;
     else if (action == 4) self_->isSprinting = false;
-    // plan16 strict: sneak pose 5/0 + sprint flag 0x08 combined, broadcast on either change
     if (wasSneak != self_->isSneaking || wasSprint != self_->isSprinting) {
         if (wasSneak != self_->isSneaking) {
             // pose metadata index 6 varint: 5 crouching, 0 standing
@@ -2498,7 +2430,6 @@ void Session::onEntityAction(ReadBuffer& in) {
             fl.u8(255);
             srv_.broadcastPacketExcept(self_.get(), pl::sc::SetEntityMetadata, fl);
         }
-        // plan13 §5 SwiftSneak – sync MovementSpeed when sneaking
         {
             int swiftLvl=0;
             for(int i=5;i<=8;++i) if(!self_->inv[i].empty()){
@@ -2516,7 +2447,6 @@ void Session::onEntityAction(ReadBuffer& in) {
                 srv_.broadcastPacketExcept(self_.get(), proto::pl::sc::UpdateAttributes, ab);
             }
         }
-        // Plan8 EquipmentComponent/EntityAction: sneak dismount from vehicle (horse/llama/pig)
         // Vanilla sends EntityAction 0x28 with action 0 for sneak start; if player is riding, dismount.
         if (self_->isSneaking && self_->vehicleId != -1) {
             int veh = self_->vehicleId;
@@ -2530,7 +2460,6 @@ void Session::onEntityAction(ReadBuffer& in) {
             srv_.broadcastSetPassengersEmpty(veh);
         }
     }
-    // Plan13 §3: horse jump action 7, plus 5/6 legacy
     if (action==7) {
         if (self_->vehicleId != -1) {
             srv_.handleHorseJump(*self_, jumpBoost);
@@ -2858,7 +2787,6 @@ void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
         self_->yaw = in.f32();
         self_->pitch = in.f32();
     }
-    // plan43 W-01: trailing byte is MovementFlags bitflags (not boolean); 0x02 is not on-ground.
     const std::uint8_t moveFlags = in.u8();
     const bool nowGround = (moveFlags & 0x01) != 0;
     // bit1 hasHorizontalCollision: no consumer yet (future wall-kick etc.).
@@ -2886,7 +2814,6 @@ void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
             return false;
         };
         if (nowGround && !self_->onGround) {
-            // Farmland trample (plan19 §5 B10/B11 strict: mobGriefing + 0.512 + LevelEvent 2001, was sound)
             if (self_->fallDist > 0.5 && !self_->isSneaking) {
                 // 0.512 small mob check: width*width*height >0.512 (player 0.6*0.6*1.8=0.648 passes, small mobs like rabbit 0.4*0.4*0.5=0.08 fails)
                 float entityVolume = 0.6f * 0.6f * 1.8f; // player bounding box volume; mobs would use their own dims but Session is player
@@ -2953,7 +2880,6 @@ void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
                 }
                 } // end entityVolume else
             }
-            // BlockEvent: onEntityLand (plan7) – fire when entity lands on block
             {
                 int lbx = static_cast<int>(std::floor(self_->x));
                 int lby = static_cast<int>(std::floor(self_->y - 0.2));
@@ -2980,7 +2906,6 @@ void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
             }
         }
         if (nowGround) self_->fallDist = 0;
-        // exhaustion: sprint / jump / walk — plan16 strict: walk 0 (was 0.01)
         if (self_->gamemode == 0) {
             const double hdx = self_->x - oldX, hdz = self_->z - oldZ;
             double hDist = std::sqrt(hdx*hdx + hdz*hdz);
@@ -3001,10 +2926,8 @@ void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
         else tickChunksAround(self_->x, self_->z);
     }
     self_->onGround = nowGround;
-    // plan35 §5 allow-flight tracking: simple airborne ticks (creative/spectator exempt)
     {
         if (!self_->onGround && self_->gamemode == 0) {
-            // if player is not on ground for a while, consider flying (vanilla allowFlight check is per-tick)
             // Use vertical drift check: not falling and not in water/lava
             if (self_->fallDist < 0.5) {
                 self_->flyingTicks++;
@@ -3023,7 +2946,6 @@ void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
             self_->isFlying = false;
         }
     }
-    // Plan8 EnchantmentHelper: Frost Walker – freeze water around feet when on ground (plan13 §5 polish)
     if (self_->onGround && hasPos) {
         bool hasFrost = false;
         for (int i=5;i<=8;++i) if (!self_->inv[i].empty() && EnchantmentHelper::hasFrostWalker(self_->inv[i])) { hasFrost=true; break; }
@@ -3056,7 +2978,6 @@ void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
             }
         }
     }
-    // plan13 §5: SoulSpeed / SwiftSneak – attribute sync + soul damage
     {
         World& w = srv_.worldFor(self_->dimension);
         int bx = (int)std::floor(self_->x);
@@ -3095,7 +3016,6 @@ void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
         }
     }
     broadcastMovement();
-    // portal step-in teleport (plan5)
     {
         if (srv_.tickNow() > self_->portalCooldownUntilTick) {
             World& curW = srv_.worldFor(self_->dimension);
@@ -3207,7 +3127,6 @@ void Session::broadcastMovement() {
     hasSent_ = true;
 }
 void Session::onChatMessage(ReadBuffer& in) {
-    // plan46 §1 A3: vanilla 200式 throttle (chat + commands share it).
     if (spam_.onChat(srv_.tickNow())) {
         kickPlay("{\"translate\":\"disconnect.spam\"}");
         return;
@@ -3219,7 +3138,6 @@ void Session::onChatMessage(ReadBuffer& in) {
     if (in.boolean()) signature = in.bytes(256);
     (void)in.varint();                               // offset
     in.bytes(3);                                     // acknowledged
-    // plan35 §5 enforce-secure-profile: when online-mode true + enforcesSecureChat, require signature
     if (srv_.config().onlineMode && srv_.config().enforcesSecureChat) {
         if (signature.empty()) {
             WriteBuffer kick;
@@ -3254,7 +3172,6 @@ void Session::onChatMessage(ReadBuffer& in) {
     }
 }
 void Session::onChatCommand(ReadBuffer& in) {
-    // plan46 §1 A3: unsigned commands share the spam counter.
     if (spam_.onChat(srv_.tickNow())) {
         kickPlay("{\"translate\":\"disconnect.spam\"}");
         return;
@@ -3279,7 +3196,6 @@ void Session::dispatchCommand(const std::string& line) {
         try {
             return srv_.commands().execute(line, std::move(src));
         } catch (const std::exception& e) {
-            // plan42 R3 crash-hardening: never let a command kill the session
             // (or the process via a non-std exception); report as error chat.
             brigadier::ExecutionResult r;
             r.ok = false;
@@ -3308,7 +3224,6 @@ void Session::onPlayerAction(ReadBuffer& in) {
     (void)in.i8();                                    // face
     const std::int32_t sequence = in.varint();
 
-    // spawn-protection check (plan6 §9 + plan11 §1 #5): non-OP cannot break within spawnProtection_ in overworld only
     if ((status==0 || status==2) && self_->dimension==0 && srv_.isSpawnProtected(x, z) && !srv_.isOp(self_->name)) {
         // cancel: re-send block and ack
         const std::uint16_t cur = srv_.world().getBlock(x, y, z);
@@ -3352,7 +3267,6 @@ void Session::onPlayerAction(ReadBuffer& in) {
                     auto it = i2n.find(sl.itemId);
                     return it != i2n.end() && it->second.find("pickaxe") != std::string::npos;
                 }();
-            // plan13 §5 Efficiency + toolSpeed + haste
             float speed = 1.f;
             if (self_->heldSlot >=0 && self_->heldSlot <9) {
                 auto &held = self_->inv[36 + self_->heldSlot];
@@ -3372,7 +3286,6 @@ void Session::onPlayerAction(ReadBuffer& in) {
                     speed *= mult;
                 }
             }
-            // plan40 C-08: aqua_affinity underwater mining 0.2 without helm
             {
                 // underwater check: head in water?
                 auto isWaterAt2 = [&](int bx,int by,int bz)->bool{
@@ -3445,49 +3358,31 @@ void Session::onPlayerAction(ReadBuffer& in) {
     }
     ack(sequence);                                      // ALWAYS ack sequences
 }
-void Session::onUseItemOn(ReadBuffer& in) {
-    (void)in.varint();                                  // hand
-    std::int32_t x, y, z;
-    in.position(x, y, z);
-    const std::int32_t dir = in.varint();
-    const float cursorX = in.f32();
-    const float cursorY = in.f32();
-    const float cursorZ = in.f32();
-    (void)cursorX; (void)cursorZ;
-    (void)in.boolean();                                 // inside block
-    (void)in.boolean();                                 // world border hit
-    const std::int32_t sequence = in.varint();
+struct Session::UseItemOnRequest {
+    std::int32_t x, y, z, tx, ty, tz;
+    int face;
+    bool survival;
+    ItemUseContext context;
+};
 
-    // vanilla face ids: 0 bottom(-Y), 1 top(+Y), 2 north(-Z), 3 south(+Z), 4 west(-X), 5 east(+X)
-    static constexpr int FX[] = {0, 0, 0, 0, -1, 1};
-    static constexpr int FY[] = {-1, 1, 0, 0, 0, 0};
-    static constexpr int FZ[] = {0, 0, -1, 1, 0, 0};
-    const int d = (dir >= 0 && dir < 6) ? dir : 0;
-    const std::int32_t tx = x + FX[d], ty = y + FY[d], tz = z + FZ[d];
-    // --- ItemUseContext (plan6) ---
-    ItemUseContext ctx;
-    ctx.player = self_.get();
-    ctx.world = &srv_.worldFor(self_->dimension);
-    ctx.hitPos = {x, y, z};
-    ctx.placePos = {tx, ty, tz};
-    ctx.face = d;
-    ctx.cursor = {static_cast<double>(cursorX), static_cast<double>(cursorY), static_cast<double>(cursorZ)};
-    ctx.yaw = self_->yaw;
-    ctx.isSneaking = self_->isSneaking;
-
-    // spawn-protection for placement (plan6 §9 + plan11 §1 #5: ChunkTicket/ForcedChunks spawn-protection, overworld only)
+bool Session::handleUseItemOnInteractions(const UseItemOnRequest& request) {
+    const auto x = request.x;
+    const auto y = request.y;
+    const auto z = request.z;
+    const auto tx = request.tx;
+    const auto tz = request.tz;
+    const auto d = request.face;
+    const auto& ctx = request.context;
     if (self_->dimension==0 && srv_.isSpawnProtected(tx, tz) && !srv_.isOp(self_->name)) {
         // check if placing a block (held is block item) – cancel
         const bool isBlockPlace = (self_->heldSlot>=0 && self_->heldSlot<9 && !self_->inv[36+self_->heldSlot].empty()
             && gen::blockByName(self_->inv[36+self_->heldSlot].name()) != nullptr);
         if (isBlockPlace) {
             sendSystemText((msg::kRed + "Spawn protection prevents building here"));
-            ack(sequence);
-            return;
+            return true;
         }
     }
 
-    // BlockEvent: fire onBlockClicked for every right-click (plan7)
     {
         const std::uint16_t _clickedSt = srv_.worldFor(self_->dimension).getBlock(x, y, z);
         blockEventDispatcher().onBlockClicked(x, y, z, _clickedSt, d, self_.get());
@@ -3495,7 +3390,6 @@ void Session::onUseItemOn(ReadBuffer& in) {
         api::events().blockClicked.fire(_bcev);
     }
     // right-click on interactive blocks opens menus (vanilla behaviour)
-    // right-click on interactive blocks opens menus (vanilla behaviour) — plan7 MenuLogic: Enchantment/Anvil/Brewing etc.
     {
         const std::uint16_t clickedState = srv_.world().getBlock(x, y, z);
         const gen::BlockDef* bdef = gen::blockByState(clickedState);
@@ -3526,8 +3420,7 @@ void Session::onUseItemOn(ReadBuffer& in) {
                     // sneaking still places block, so skip menu
                 } else {
                     openMenuAt(x, y, z, clickedState);
-                    ack(sequence);
-                    return;
+                    return true;
                 }
             }
             if (d == 1) {
@@ -3536,17 +3429,14 @@ void Session::onUseItemOn(ReadBuffer& in) {
                 bn.find("_button") != std::string::npos ||
                 bn.find("comparator") != std::string::npos) {
                 srv_.redstone_->onInteract(x, y, z, srv_.tickNoForTest());
-                ack(sequence);
-                return;
+                return true;
             }
-            // beds: sleep through the night (plan4 P1-C)
             if (bn.find("_bed") != std::string::npos &&
                 bn.rfind("minecraft:", 0) == 0 && bn != "minecraft:bedrock") {
                 const bool night = srv_.isNight();
                 if (!night) {
                     sendSystemText((msg::kGray + "You can only sleep at night"));
-                    ack(sequence);
-                    return;
+                    return true;
                 }
                 self_->sleeping = true;
                 self_->bedX = x; self_->bedY = y; self_->bedZ = z;
@@ -3584,34 +3474,31 @@ void Session::onUseItemOn(ReadBuffer& in) {
                                    std::to_string(sleepingCount) + "/" +
                                    std::to_string(survivalCount) + ")"));
                 }
-                ack(sequence);
-                return;
+                return true;
             }
         }
     }
 
-    // cake slice eat (plan7 hunger): right-click cake block consumes slice
     {
         World& ww = srv_.worldFor(self_->dimension);
         uint16_t cst = ww.getBlock(x,y,z);
         auto* cdef = gen::blockByState(cst);
         if (cdef && std::string(cdef->name)=="minecraft:cake") {
-            if (handleCakeBlockConsume(srv_, *self_, x,y,z)) { ack(sequence); return; }
+            if (handleCakeBlockConsume(srv_, *self_, x,y,z)) { return true; }
         }
     }
-
-    // Place the actually-held block item (vanilla semantics).
-    static const InvSlot airSlot = InvSlot::air();
-    const bool survival = self_->gamemode == 0;
-    const InvSlot& heldItem =
-        (self_->heldSlot >= 0 && self_->heldSlot < 9)
-            ? self_->inv[36 + self_->heldSlot] : airSlot;
-    // plan38 B-13: item_used_on_block trigger
-    if (!heldItem.empty()) {
-        srv_.onItemUsedOnBlock(self_.get(), x, y, z, heldItem);
     }
 
-    // ---- portal ignition (plan5): flint_and_steel / fire_charge on obsidian frame 4x5 -> nether portal
+    return false;
+}
+bool Session::handleUseItemOnToolActions(const UseItemOnRequest& request, const InvSlot& heldItem) {
+    const auto x = request.x;
+    const auto y = request.y;
+    const auto z = request.z;
+    const auto tx = request.tx;
+    const auto ty = request.ty;
+    const auto tz = request.tz;
+    const auto survival = request.survival;
     {
         InvSlot heldCopy = (self_->heldSlot >= 0 && self_->heldSlot < 9) ? self_->inv[36 + self_->heldSlot] : InvSlot::air();
         const std::string heldNameForPortal = heldCopy.empty() ? std::string() : heldCopy.name();
@@ -3644,7 +3531,6 @@ void Session::onUseItemOn(ReadBuffer& in) {
                         int32_t wy = oy+dy;
                         w.setBlock(wx, wy, wz, portalState);
                         srv_.broadcastBlockChange(wx, wy, wz, portalState);
-                        // nether portal block tick (age random) — schedule via BlockTickScheduler (plan11 §2 #3)
                         if (srv_.blockTicks()) srv_.blockTicks()->schedule(wx, wy, wz, srv_.tickNow() + 1 + (rand()%20));
                     }
                     int32_t cxp = ox+1 + (orient==0?1:0);
@@ -3701,14 +3587,12 @@ void Session::onUseItemOn(ReadBuffer& in) {
                             srv_.resendInventory(*self_);
                         }
                     }
-                    ack(sequence);
-                    return;
+                    return true;
                 }
             }
         }
     }
 
-    // ---- TNT prime via flint_and_steel / fire_charge on TNT (plan17 §7, Yarn TntBlock.onUse)
     if (!heldItem.empty() && (heldItem.name()=="minecraft:flint_and_steel" || heldItem.name()=="minecraft:fire_charge")) {
         std::uint16_t clickedSt = srv_.worldFor(self_->dimension).getBlock(x,y,z);
         const gen::BlockDef* cbd = gen::blockByState(clickedSt);
@@ -3723,12 +3607,10 @@ void Session::onUseItemOn(ReadBuffer& in) {
                 else { if (--mh.count <= 0) mh = ItemStack::air(); }
                 srv_.resendInventory(*self_);
             }
-            ack(sequence);
-            return;
+            return true;
         }
     }
 
-    // ---- buckets: water/lava placement and pickup (plan5 items 48-51)
     if (!heldItem.empty()) {
         const std::string heldName = heldItem.name();
         if (heldName == "minecraft:water_bucket" || heldName == "minecraft:lava_bucket") {
@@ -3750,8 +3632,7 @@ void Session::onUseItemOn(ReadBuffer& in) {
                     srv_.resendInventory(*self_);
                 }
                 srv_.broadcastSound("minecraft:item.bucket.empty", tx+0.5, ty+0.5, tz+0.5, 1.f, 1.f, "block");
-                ack(sequence);
-                return;
+                return true;
             }
         } else if (heldName == "minecraft:bucket") {
             auto tryPick = [&](std::int32_t px,std::int32_t py,std::int32_t pz)->bool{
@@ -3781,8 +3662,7 @@ void Session::onUseItemOn(ReadBuffer& in) {
                 return true;
             };
             if (tryPick(x,y,z) || tryPick(tx,ty,tz)) {
-                ack(sequence);
-                return;
+                return true;
             }
         } else if (heldName == "minecraft:flint_and_steel" || heldName == "minecraft:fire_charge") {
             std::uint16_t target = srv_.world().getBlock(tx, ty, tz);
@@ -3790,7 +3670,6 @@ void Session::onUseItemOn(ReadBuffer& in) {
                 bool canPlace = true;
                 if (srv_.gameRules().contains("doFireTick") && !srv_.gameRules().getBool("doFireTick")) canPlace = false;
                 if (canPlace) {
-                    // plan19 §6 B12/B13 fire strict: soul_fire/infiniburn via tag per dimension (was hard-coded 19/2)
                     std::uint16_t belowSt = srv_.world().getBlock(tx, ty-1, tz);
                     const gen::BlockDef* belowDef = gen::blockByState(belowSt);
                     bool soulBase = false;
@@ -3827,8 +3706,7 @@ void Session::onUseItemOn(ReadBuffer& in) {
                         srv_.broadcastSound("minecraft:item.flintandsteel.use", tx+0.5, ty+0.5, tz+0.5, 1.f, 1.f, "block");
                     }
                 }
-                ack(sequence);
-                return;
+                return true;
             }
         }
     }
@@ -3850,14 +3728,28 @@ void Session::onUseItemOn(ReadBuffer& in) {
                         if (--mh->count <= 0) *mh = InvSlot::air();
                         srv_.resendInventory(*self_);
                     }
-                    ack(sequence);
-                    return;
+                    return true;
                 }
             }
         }
     }
 
-    // ---- doors: two-block placement + hinge & powered (plan19 §4 B5/B6 strict: hinge via solid faces, powered via isPoweredHere, iron hand-open false)
+    return false;
+}
+bool Session::handleUseItemOnDoorAndSlab(const UseItemOnRequest& request, const InvSlot& heldItem) {
+    const auto x = request.x;
+    const auto y = request.y;
+    const auto z = request.z;
+    const auto tx = request.tx;
+    const auto ty = request.ty;
+    const auto tz = request.tz;
+    const auto d = request.face;
+    const auto dir = request.face;
+    const auto survival = request.survival;
+    const auto& ctx = request.context;
+    static constexpr int FX[] = {0, 0, 0, 0, -1, 1};
+    static constexpr int FY[] = {-1, 1, 0, 0, 0, 0};
+    static constexpr int FZ[] = {0, 0, -1, 1, 0, 0};
     if (!heldItem.empty()) {
         const std::string heldName = heldItem.name();
         if (heldName.size() > 5 && heldName.rfind("_door", heldName.size() - 5) != std::string::npos) {
@@ -3945,13 +3837,11 @@ void Session::onUseItemOn(ReadBuffer& in) {
                         srv_.resendInventory(*self_);
                     }
                 }
-                ack(sequence);
-                return;
+                return true;
             }
         }
     }
 
-    // plan19 §2 B2 slab strict: top+top must not double, require opposite half per Yarn SlabBlock (plan12 §4 + plan17 §1)
     if (!heldItem.empty()) {
         std::string hName = heldItem.name();
         if (hName.find("_slab") != std::string::npos) {
@@ -3981,8 +3871,7 @@ void Session::onUseItemOn(ReadBuffer& in) {
                                 if(--mh->count<=0) *mh=ItemStack::air();
                                 srv_.resendInventory(*self_);
                             }
-                            ack(sequence);
-                            return;
+                            return true;
                         }
                     } else {
                         // same half → try adjacent placement (vanilla places single slab at offset)
@@ -4013,14 +3902,12 @@ void Session::onUseItemOn(ReadBuffer& in) {
                                         if(--mh->count<=0) *mh=ItemStack::air();
                                         srv_.resendInventory(*self_);
                                     }
-                                    ack(sequence);
-                                    return;
+                                    return true;
                                 }
                             }
                         }
                         // same half but adjacent blocked → do not make double, fall through to normal handling (will ack without placing)
-                        ack(sequence);
-                        return;
+                        return true;
                     }
                 }
             }
@@ -4052,25 +3939,30 @@ void Session::onUseItemOn(ReadBuffer& in) {
                             if(--mh->count<=0) *mh=ItemStack::air();
                             srv_.resendInventory(*self_);
                         }
-                        ack(sequence);
-                        return;
+                        return true;
                     }
                 }
             }
         }
     }
 
+    return false;
+}
+bool Session::handleUseItemOnOccupied(const UseItemOnRequest& request, const InvSlot& heldItem) {
+    const auto x = request.x;
+    const auto y = request.y;
+    const auto z = request.z;
+    const auto tx = request.tx;
+    const auto ty = request.ty;
+    const auto tz = request.tz;
     if (srv_.world().getBlock(tx, ty, tz) != 0 || heldItem.empty()) {
-        // toggling an existing door? (plan19 §4 B5/B6 strict: hinge & powered — plan18 §1 iron hand-open false)
         const std::uint16_t clickedState = srv_.world().getBlock(x, y, z);
         const gen::BlockDef* cdef = gen::blockByState(clickedState);
         if (cdef && cdef->name.size() > 5 &&
             cdef->name.rfind("_door", cdef->name.size() - 5) != std::string::npos) {
-            // plan18 §1 Door powered: BlockSetType.IRON (iron_door) cannot be opened by hand, copper can (BlockSetType.COPPER)
             bool isIron = std::string(cdef->name) == "minecraft:iron_door";
             if(isIron){
-                ack(sequence);
-                return;
+                return true;
             }
             bool open = false, upperHalf = false;
             bool powered = false;
@@ -4104,12 +3996,21 @@ void Session::onUseItemOn(ReadBuffer& in) {
                                 x + .5, y + .5, z + .5, 1.f,
                                 open ? 0.7f : 0.9f);
         }
-        ack(sequence);
-        return;
+        return true;
     }
+    return false;
+}
+bool Session::handleUseItemOnEntityItems(const UseItemOnRequest& request, const InvSlot& heldItem) {
+    const auto x = request.x;
+    const auto y = request.y;
+    const auto z = request.z;
+    const auto tx = request.tx;
+    const auto ty = request.ty;
+    const auto tz = request.tz;
+    const auto d = request.face;
+    const auto survival = request.survival;
     // item id -> block name (block items share the name)
     std::string itemName = heldItem.name();
-    // plan14 §2 Spawn eggs UseItemOn: trySpawnEgg handling (itemName endsWith _spawn_egg, spawnPos=pos.offset(face), check air, spawnMobByTypeName, consume if not creative)
     {
         BlockPos hitPos{x, y, z};
         if (self_->heldSlot >= 0 && self_->heldSlot < 9) {
@@ -4120,13 +4021,11 @@ void Session::onUseItemOn(ReadBuffer& in) {
                 World& w = srv_.worldFor(self_->dimension);
                 if (w.getBlock(spawnPos.x, spawnPos.y, spawnPos.z) == 0) {
                     if (srv_.trySpawnEgg(*self_, stk, hitPos, d)) {
-                        ack(sequence);
-                        return;
+                        return true;
                     }
                 } else {
                     if (srv_.trySpawnEgg(*self_, stk, hitPos, d)) {
-                        ack(sequence);
-                        return;
+                        return true;
                     }
                 }
             }
@@ -4136,7 +4035,6 @@ void Session::onUseItemOn(ReadBuffer& in) {
             // handled via trySpawnEgg above
         }
     }
-    // plan23 §3: boat/raft items spawn the matching variant (intercept before block placement).
     {
         if (!heldItem.empty()) {
             std::string hName = heldItem.name();
@@ -4173,22 +4071,29 @@ void Session::onUseItemOn(ReadBuffer& in) {
                         if (--mh->count <= 0) *mh = ItemStack::air();
                         srv_.resendInventory(*self_);
                     }
-                    ack(sequence);
-                    return;
+                    return true;
                 }
             }
         }
     }
+    return false;
+}
+void Session::placeUseItemOnBlock(const UseItemOnRequest& request, const InvSlot& heldItem) {
+    const auto tx = request.tx;
+    const auto ty = request.ty;
+    const auto tz = request.tz;
+    const auto survival = request.survival;
+    const auto& ctx = request.context;
+    const std::string itemName = heldItem.name();
     std::uint16_t newState = 0;
     const gen::BlockDef* bdef2 = gen::blockByName(itemName);
     if (!bdef2) {                                          // not a placeable block
         // special items handled elsewhere (food via UseItem); nothing to do
-        ack(sequence);
+
         return;
     }
     std::vector<std::pair<std::string_view, std::string_view>> props;
     {
-        // context-aware placement using ItemUseContext (plan6 item 11/15)
         float yaw = ctx.yaw;
         const char* facing = "north";
         if (yaw >= 45.f && yaw < 135.f) facing = "east";
@@ -4206,7 +4111,6 @@ void Session::onUseItemOn(ReadBuffer& in) {
             if (pd.name == "axis") hasAxis = true;
         }
         if (hasFacing) props.emplace_back("facing", facing);
-        // stairs/slab half based on face and cursor.y (plan6)
         if (hasHalf) {
             const char* half = "bottom";
             if (ctx.face == 0) half = "top";
@@ -4216,7 +4120,6 @@ void Session::onUseItemOn(ReadBuffer& in) {
             }
             props.emplace_back("half", half);
         }
-        // stairs shape: compute per plan12 §4 via neighbor stairs
         if (hasShape) {
             std::string facingStr = std::string(facing);
             std::string halfStr = "bottom";
@@ -4224,7 +4127,6 @@ void Session::onUseItemOn(ReadBuffer& in) {
             std::string shape = computeStairsShape(*ctx.world, ctx.placePos.x, ctx.placePos.y, ctx.placePos.z, facingStr, halfStr);
             props.emplace_back("shape", shape);
         }
-        // waterlogged: check FluidState still water level 0 (plan19 §2 B2 slab strict: FluidState.isStillWater vs find("water"), plan17 §2)
         if (hasWaterlogged) {
             bool waterlogged = false;
             auto fluid = FluidSim::getFluidState(*ctx.world, ctx.placePos.x, ctx.placePos.y, ctx.placePos.z);
@@ -4236,7 +4138,6 @@ void Session::onUseItemOn(ReadBuffer& in) {
             props.emplace_back("waterlogged", waterlogged ? "true" : "false");
         }
         if (hasSnowy) {
-            // plan19 §3 B4 grass snowy strict: snow/snow_block/powder_snow above per Wiki (was only snow)
             bool snowy = false;
             std::uint16_t above = ctx.world->getBlock(ctx.placePos.x, ctx.placePos.y + 1, ctx.placePos.z);
             const gen::BlockDef* ad = gen::blockByState(above);
@@ -4264,7 +4165,6 @@ void Session::onUseItemOn(ReadBuffer& in) {
             props.emplace_back("type", type);
         }
         newState = static_cast<std::uint16_t>(gen::stateWithProps(*bdef2, props));
-        // plan29 §3 creaking_heart player placement: natural=false active=false (worldgen uses natural=true)
         if (std::string(bdef2->name)=="minecraft:creaking_heart") {
             std::string axis="y"; for(auto& pr: props) if(pr.first=="axis") axis=std::string(pr.second);
             std::vector<std::pair<std::string_view,std::string_view>> cprops;
@@ -4279,11 +4179,10 @@ void Session::onUseItemOn(ReadBuffer& in) {
     ev.player = self_.get();
     ev.x = tx; ev.y = ty; ev.z = tz;
     ev.newState = newState;
-    if (!srv_.events().blockPlace.fire(ev)) { ack(sequence); return; }
+    if (!srv_.events().blockPlace.fire(ev)) {  return; }
 
     srv_.world().setBlock(tx, ty, tz, newState);
     srv_.broadcastBlockChange(tx, ty, tz, newState);
-    // plan13 §1 bamboo polish: ensure stage/leaves/age correct and update column leaves
     if (std::string(bdef2->name)=="minecraft:bamboo") {
         auto* bambooDef = gen::blockByName("minecraft:bamboo");
         if (bambooDef) {
@@ -4353,7 +4252,6 @@ void Session::onUseItemOn(ReadBuffer& in) {
         }
     }
     srv_.world().scheduleNeighborUpdates(tx, ty, tz);
-    // plan12 §4: update neighbor stairs shapes after placement
     if (std::string(bdef2->name).find("_stairs") != std::string::npos) {
         updateNeighborStairsShapes(srv_.world(), srv_, tx, ty, tz);
         // schedule fluid tick if waterlogged
@@ -4365,12 +4263,10 @@ void Session::onUseItemOn(ReadBuffer& in) {
         std::string wl = getPropStr(newState, "waterlogged");
         if (wl=="true" && srv_.fluidSim_) srv_.fluidSim_->touch(tx,ty,tz);
     }
-    // BlockEvent: fire onBlockPlace (plan7) after successful placement
     {
         std::uint16_t oldSt = 0; // air before
         blockEventDispatcher().onBlockPlace(tx, ty, tz, oldSt, newState, self_.get());
     }
-    // plan37 §3: placed_block trigger
     srv_.onPlacedBlock(*self_, tx, ty, tz, newState);
     if (survival) {
         auto mutableHeld = &self_->inv[36 + self_->heldSlot];
@@ -4381,8 +4277,61 @@ void Session::onUseItemOn(ReadBuffer& in) {
         }
         srv_.resendInventory(*self_);
     }
-    ack(sequence);
 }
+void Session::onUseItemOn(ReadBuffer& in) {
+    (void)in.varint();                                  // hand
+    std::int32_t x, y, z;
+    in.position(x, y, z);
+    const std::int32_t dir = in.varint();
+    const float cursorX = in.f32();
+    const float cursorY = in.f32();
+    const float cursorZ = in.f32();
+    (void)cursorX; (void)cursorZ;
+    (void)in.boolean();                                 // inside block
+    (void)in.boolean();                                 // world border hit
+    const std::int32_t sequence = in.varint();
+
+    // vanilla face ids: 0 bottom(-Y), 1 top(+Y), 2 north(-Z), 3 south(+Z), 4 west(-X), 5 east(+X)
+    static constexpr int FX[] = {0, 0, 0, 0, -1, 1};
+    static constexpr int FY[] = {-1, 1, 0, 0, 0, 0};
+    static constexpr int FZ[] = {0, 0, -1, 1, 0, 0};
+    const int d = (dir >= 0 && dir < 6) ? dir : 0;
+    const std::int32_t tx = x + FX[d], ty = y + FY[d], tz = z + FZ[d];
+
+    ItemUseContext ctx;
+    ctx.player = self_.get();
+    ctx.world = &srv_.worldFor(self_->dimension);
+    ctx.hitPos = {x, y, z};
+    ctx.placePos = {tx, ty, tz};
+    ctx.face = d;
+    ctx.cursor = {static_cast<double>(cursorX), static_cast<double>(cursorY), static_cast<double>(cursorZ)};
+    ctx.yaw = self_->yaw;
+    ctx.isSneaking = self_->isSneaking;
+
+    const UseItemOnRequest request{x, y, z, tx, ty, tz, d,
+                                  self_->gamemode == 0, ctx};
+    if (handleUseItemOnInteractions(request)) {
+        ack(sequence);
+        return;
+    }
+
+    static const InvSlot airSlot = InvSlot::air();
+    const InvSlot& heldItem =
+        (self_->heldSlot >= 0 && self_->heldSlot < 9)
+            ? self_->inv[36 + self_->heldSlot] : airSlot;
+    if (!heldItem.empty()) {
+        srv_.onItemUsedOnBlock(self_.get(), x, y, z, heldItem);
+    }
+    if (handleUseItemOnToolActions(request, heldItem) ||
+        handleUseItemOnDoorAndSlab(request, heldItem) ||
+        handleUseItemOnOccupied(request, heldItem) ||
+        handleUseItemOnEntityItems(request, heldItem)) {
+        ack(sequence);
+        return;
+    }
+
+    placeUseItemOnBlock(request, heldItem);
+    ack(sequence);
 }
 void Session::onUseItem(ReadBuffer& in) {
     (void)in.varint();
@@ -4390,15 +4339,12 @@ void Session::onUseItem(ReadBuffer& in) {
     (void)in.f32(); (void)in.f32();
     if (self_->heldSlot >= 0 && self_->heldSlot < 9) {
         auto& sl = self_->inv[36 + self_->heldSlot];
-        // plan44 §3 G-08: raising a shield (main hand or offhand) starts the block posture (5t to activate)
         {
             bool shieldHeld = (!sl.empty() && sl.name().find("shield") != std::string::npos) ||
                               (!self_->inv[45].empty() && self_->inv[45].name().find("shield") != std::string::npos);
             if (shieldHeld && self_->shieldDisableTicks <= 0) self_->isBlocking = true;
         }
-        // plan13 §7: trident channeling/riptide – spawn trident projectile or riptide boost on use (plan37 B-11)
         if (!sl.empty() && sl.name().find("trident")!=std::string::npos) {
-            // plan37 B-11 riptide gate: raining/thundering or in water
             int riptideLvl = EnchantmentHelper::getRiptide(sl);
             bool isInWater = false;
             {
@@ -4454,7 +4400,6 @@ void Session::onUseItem(ReadBuffer& in) {
             ack(sequence);
             return;
         }
-        // plan37 B-11 infinity bow: handle bow shoot via UseItem (simplified immediate shoot)
         if (!sl.empty() && sl.name()=="minecraft:bow") {
             bool hasInfinity = EnchantmentHelper::hasInfinity(sl);
             bool isCreative = self_->gamemode==1;
@@ -4495,7 +4440,6 @@ void Session::onUseItem(ReadBuffer& in) {
             ack(sequence);
             return;
         }
-        // plan44 §3 G-09: crossbow via UseItem (instant loose; multishot 3-way spread, piercing tagged,
         // durability cost of 1 — quickcharge has no live load timer here, see quickChargeLoadTime)
         if (!sl.empty() && sl.name()=="minecraft:crossbow") {
             bool isCreative = self_->gamemode==1;
@@ -4534,7 +4478,6 @@ void Session::onUseItem(ReadBuffer& in) {
             ack(sequence);
             return;
         }
-        // plan18 polish: throwable projectiles via UseItem (snowball/egg/ender_pearl) — vanilla UseItem right-click air
         if (!sl.empty()) {
             std::string n = sl.name();
             bool isPearl = n.find("ender_pearl")!=std::string::npos;
@@ -4588,7 +4531,6 @@ void Session::onUseItem(ReadBuffer& in) {
             if (isFood) {
                 // exhaustion for eating: 0.05? vanilla 0.005 per food?
                 srv_.addHungerExhaustion(*self_, 0.005f);
-                // plan37 §3: consume_item trigger before decrement (preserve itemName)
                 {
                     ItemStack consumed = sl;
                     consumed.count = 1;
@@ -4622,13 +4564,10 @@ void Session::onUseEntity(ReadBuffer& in) {
     if (mouse != 1) {
         // INTERACT (0) / INTERACT_AT (2)
         if (mouse == 0 || mouse == 2) {
-            // plan43 W-02: hand varint and sneaking bool are separate fields (old code conflated them).
             const int hand = in.varint();
             (void)hand;
             const bool sneaking = in.boolean();
-            // NOTE(plan43 W-02): hand selects the used held stack (0 main / 1 off); current entity logic always resolves the main-hand
             // stack, so hand is wire-consumed here and hand-specific item resolution stays a behavior refinement. check shear and riding
-            // before trading plan43 W-02: resolve target under the lock, then act WITHOUT it (actions re-lock; else self-deadlock).
             std::shared_ptr<MobEntity> targetMob;
             {
                 std::lock_guard lk(srv_.entsMtx_);
@@ -4673,7 +4612,6 @@ void Session::onUseEntity(ReadBuffer& in) {
                             return;
                         }
                     }
-                    // plan41 C-10 OpenHorseWindow 0x24 — horse-like interact opens horse inventory window
                     bool isHorseLike = (m->kind == MobKind::Horse || m->kind == MobKind::Donkey || m->kind == MobKind::Mule
                                         || m->kind == MobKind::Llama || m->kind == MobKind::TraderLlama || m->kind == MobKind::Camel
                                         || m->kind == MobKind::SkeletonHorse || m->kind == MobKind::ZombieHorse);
@@ -4699,7 +4637,6 @@ void Session::onUseEntity(ReadBuffer& in) {
                             return;
                         }
                     }
-                    // riding: horse/llama/pig + boat/minecart (plan13 §3)
                     if (m->kind == MobKind::Horse || m->kind == MobKind::Llama || m->kind == MobKind::Pig || MobEntity::isBoat(m->kind) || m->kind == MobKind::Minecart) {
                         if (self_->vehicleId == -1 && m->riderEntityId == -1) {
                             self_->vehicleId = m->entityId;
@@ -4717,12 +4654,10 @@ void Session::onUseEntity(ReadBuffer& in) {
                     }
                 }
         } else {
-            // plan43 W-02: mouse outside {0,1,2} is unreachable via vanilla — consume defensively instead of guessing a field shape.
             in.skipRest();
         }
         return;
     }
-    // plan43 W-02: ATTACK (mouse==1) carries no hand but DOES carry the trailing sneaking bool (present on all mouse kinds per spec).
     (void)in.boolean();
 
     float baseDmg = 1.f;
@@ -4741,9 +4676,7 @@ void Session::onUseEntity(ReadBuffer& in) {
         }
     }
     float dmg = baseDmg + meleeDamageBonusFor(self_->effects);
-    // attack exhaustion (plan7 hunger)
     srv_.addHungerExhaustion(*self_, 0.1f);
-    // plan44 §3 G-07/G-08: cooldown-gated crit + sweep state (Yarn PlayerEntity.attack).
     // E-06 wire compat: base mapping above is untouched; crit/sweep only scale the result.
     bool charged = isChargedAttack(self_->attackCooldownTicks);
     bool falling = !self_->onGround && self_->fallDist > 0;
@@ -4771,7 +4704,6 @@ void Session::onUseEntity(ReadBuffer& in) {
     };
 
     // ---- PVP: check player victims first (items 76-80 combat)
-    // plan35 §5 pvp=false gate — player vs player damage disabled (mob vs player unaffected)
     for (auto &pp : srv_.playersSnapshot()) {
         auto *victimP = pp.get();
         if (victimP->entityId != target || victimP->dead) continue;
@@ -4780,7 +4712,6 @@ void Session::onUseEntity(ReadBuffer& in) {
             // PvP disabled: suppress damage, optionally notify
             return;
         }
-        // plan44 §3 G-08: shield blocks frontal melee (axe disables 100t instead, damage passes)
         {
             DamageSource psrc("player");
             if (CombatManager::tryShieldBlock(srv_, *victimP, psrc, self_->x, self_->z, weaponIsAxe)) return;
@@ -4794,7 +4725,6 @@ void Session::onUseEntity(ReadBuffer& in) {
         srv_.applyDamage(*victimP, pvpDmg, psrc2, breachLv);
         broadcastCritParticles(victimP->x, victimP->y, victimP->z);
         if (fireAspectLv > 0) victimP->fireTicks = 100; // plan44 G-09: fire aspect ignites PVP victims
-        // plan44 §3 G-09: victim thorns reflects to the attacker
         if (victimP->health < before) CombatManager::applyThornsReflection(srv_, *victimP, nullptr, self_.get());
         // knockback impulse
         double dx = victimP->x - self_->x;
@@ -4828,7 +4758,6 @@ void Session::onUseEntity(ReadBuffer& in) {
         std::lock_guard lk(srv_.entsMtx_);
         for (auto& m : srv_.mobsForTest()) {
             if (m->entityId != target || m->dead) continue;
-            // plan40 C-08: smite/bane per victim kind
             float mobDmg = dmg;
             if (!weaponStack.empty()) {
                 mobDmg = baseDmg; // reset to base without generic sharpness double count? baseDmg already includes sharpness
@@ -4844,7 +4773,6 @@ void Session::onUseEntity(ReadBuffer& in) {
                     }(), weaponStack, m->kind);
                 mobDmg += meleeDamageBonusFor(self_->effects);
             }
-            // plan44 §3 G-09: impaling (JE aquatic +2.5/lv) + density (mace fall bonus)
             if (!weaponStack.empty()) {
                 mobDmg += EnchantmentHelper::impalingBonusFor(weaponStack, m->kind);
                 if (weaponIsMace)
@@ -4873,8 +4801,6 @@ void Session::onUseEntity(ReadBuffer& in) {
             break;
         }
     }
-    // plan44 §3 G-07 sweep: standing sword hit splashes nearby mobs (2m, sweep formula + KB + fire aspect).
-    // plan44 §3 G-09 wind burst: mace smash (fall>1.5) launches the attacker.
     if (hitMob && hitPtr) {
         if (doSweep) {
             int sweepLv = weaponStack.empty() ? 0 : EnchantmentHelper::getSweepingEdge(weaponStack);
@@ -4922,7 +4848,6 @@ void Session::onUseEntity(ReadBuffer& in) {
             }
         }
     }
-    // durability on held item (attack) – Plan8 DamageComponent with Unbreaking
     if (self_->heldSlot >=0 && self_->heldSlot < 9) {
         auto &held = self_->inv[36 + self_->heldSlot];
         if (!held.empty() && ItemStack::maxDamageFor(held.itemId) > 0) {
@@ -4931,7 +4856,6 @@ void Session::onUseEntity(ReadBuffer& in) {
             srv_.resendInventory(*self_);
         }
     }
-    // PVP knockback for mob victim (even if not killed) — plan40 C-08 punch 0.5+0.4*lvl + knockback 0.4*lvl
     if (hitMob && hitPtr) {
         double dx = hitPtr->x - self_->x;
         double dz = hitPtr->z - self_->z;
@@ -4970,7 +4894,6 @@ void Session::onUseEntity(ReadBuffer& in) {
                           srv_.scoreboard.getScore("kills", self_->name));
         const auto drop = MobEntity::dropFor(victim->kind);
         if (drop.itemId) {
-            // plan44 §3 G-09: looting adds up to +lv extra drops
             int lootLv = weaponStack.empty() ? 0 : EnchantmentHelper::getLooting(weaponStack);
             int cnt = drop.count;
             if (lootLv > 0) cnt = std::min(64, cnt + (rand() % (lootLv + 1)));
@@ -5005,7 +4928,6 @@ void Session::onUseEntity(ReadBuffer& in) {
             std::remove_if(srv_.mobsForTest().begin(), srv_.mobsForTest().end(),
                 [&](const std::shared_ptr<MobEntity>& x){ return x.get()==victim.get(); }),
             srv_.mobsForTest().end());
-        // dismount if victim was vehicle
         if (self_->vehicleId == target) {
             self_->vehicleId = -1;
             srv_.broadcastSetPassengersEmpty(target);

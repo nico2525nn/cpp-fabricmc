@@ -1,4 +1,3 @@
-// GameRules: vanilla-style rule storage persisted inside level.dat (plan3.md 永続化拡張). Values kept as strings like vanilla NBT. W18 strict:
 // 37 Yarn keys + aliases, Boolean vs Int typed with validation (Yarn GameRules Type<T>)
 #pragma once
 #include <string>
@@ -12,9 +11,6 @@ namespace cppfm {
 class GameRuleManager {
 public:
     GameRuleManager() {
-        // vanilla defaults — 37+ rules (plan20 W18 strict: mobExplosion/tnt/waterSource/lavaSource/globalSound/snowAccum/commandBlockLimit etc)
-        // Yarn 1.21.4 GameRules: 45+ registered, we persist 50+ to satisfy strict audit (was 14, now 37+)
-        // plan20 combat polish: verify gamerule-driven combat (naturalRegeneration, fallDamage etc) plus explosion/waterSource parity
         set("doFireTick", "true", false);
         set("mobGriefing", "true", false);
         set("keepInventory", "false", false);
@@ -52,7 +48,6 @@ public:
         set("universalAnger", "false", false);
         set("playersSleepingPercentage", "100", false);
         set("blockExplosionDropDecay", "true", false);
-        // plan20 W18: 1.19.3+ additions (were 23 missing)
         set("mobExplosionDropDecay", "true", false);
         set("tntExplosionDropDecay", "false", false);
         set("waterSourceConversion", "true", false);
@@ -68,7 +63,6 @@ public:
         set("playersNetherPortalCreativeDelay", "0", false);
         set("disablePlayerMovementCheck", "false", false);
         set("spawnChunkRadius", "2", false);
-        // plan21 W18 aliases: ensure 50+ to cover Yarn 37 + Paper aliases (strict audit 50/78)
         set("maxBlockModifications", "32768", false);
         set("spawnerBlocksEnabled", "true", false);
     }
@@ -119,7 +113,6 @@ public:
         rules_[nk] = value;
         if (markDirty) dirty_ = true;
     }
-    // Overload for legacy int NBT handling: allow direct string normalized
     void setNormalized(const std::string& key, const std::string& value, bool markDirty=true){
         rules_[key]=value;
         if(markDirty) dirty_=true;

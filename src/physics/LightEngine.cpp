@@ -40,7 +40,6 @@ std::uint8_t LightEngine::blockLightAt(std::int32_t x, std::int32_t y,
 void LightEngine::onBlockChanged(std::int32_t x, std::int32_t y,
                                  std::int32_t z, std::uint16_t oldState,
                                  std::uint16_t newState) {
-    // Simulation distance culling for all subsystems via isChunkInSimulationDistance (plan11 §1 #6)
     // Block-light propagation is simulation-culled; sky rebuilds are also culled via isChunkInSimulationDistance.
     // For spawn chunks (forced / ChunkTicket SPAWN level 31) we always tick even outside player simulation radius.
     if (!world_.isChunkInSimulationDistance(x >> 4, z >> 4) && !world_.isPositionInSimulationDistance(x, z)) {
@@ -77,8 +76,6 @@ void LightEngine::onBlockChanged(std::int32_t x, std::int32_t y,
                 addQueue_.push({nx, ny, nz, nl});
             }
         }
-        // schedule sky-light rebuild for this chunk and neighbors (cull via World simulation check plan7)
-        // plan20 W10: single 3×3 batch — diagonal loop already covers all 8 neighbors, so the 6-dir
         // orthogonal neighbor loop is redundant and caused double scheduling. Keep only the 3×3.
         auto schedSky = [&](std::int32_t cxx, std::int32_t czz) {
             if (!world_.isChunkInSimulationDistance(cxx, czz)) return;
@@ -149,8 +146,6 @@ LightUpdateBatch LightEngine::drain() {
         }
     }
 
-    // sky light: rebuild caches for touched chunks (bounded work per tick) — single 3x3 (strict plan20 W10)
-    // plan20 W10: previously double 3×3 (snapshot expansion + skyRebuildSet re-merge + queue.mark).
     // Now single unified expansion via base → expanded with hasChunk||hasSkyLightCache guard, matching Yarn LevelLightEngine.
     {
         std::unordered_set<std::int64_t> skyRebuildSet;
@@ -163,7 +158,6 @@ LightUpdateBatch LightEngine::drain() {
             auto [skx, skz] = chunkKeyDecode(k);
             ensureSkyLight(skx, skz);
         }
-        // base = dirtyChunks (now includes block-light dirty) ∪ skyDirtyExtra (cross-chunk BFS) ∪ skyRebuildSet (pending)
         std::unordered_set<std::int64_t> base;
         base.reserve(batch.dirtyChunks.size() + skyRebuildSet.size() + skyDirtyExtra_.size() + 8);
         for (auto k : batch.dirtyChunks) base.insert(k);

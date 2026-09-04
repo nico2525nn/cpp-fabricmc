@@ -1,4 +1,3 @@
-// SessionLock: world/session.lock exclusive startup guard (plan46 §2, O-08). Vanilla LevelStorage writes session.lock at startup (own PID +
 // timestamp) and refuses a second live server on the same world. Our policy is availability- first: a lock held by a *live* PID is logged
 // loudly (and reported by tools/check_world); a stale lock (dead PID, e.g. crash / SIGKILL / Docker restart with PID reuse risk) only warns
 // and startup continues. The lock is always (re)written by the starting server and removed on clean shutdown.

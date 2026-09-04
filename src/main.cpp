@@ -18,11 +18,9 @@ static void onSignal(int) {
     if (g_server) g_server->requestStop();   // async-signal-safe subset
 }
 
-// Minimal server.properties reader (subset, vanilla-compatible keys) – now via ServerProperties (plan7)
 static void loadProperties(ServerConfig& c, const std::string& path) {
     ServerProperties props;
     if (!props.load(path)) return;
-    // keep legacy manual handling for compatibility, but prefer typed get<>
     try {
         if (props.has("server-port")) c.port = static_cast<std::uint16_t>(props.get<int>("server-port", c.port));
         if (props.has("max-players")) c.maxPlayers = props.get<int>("max-players", c.maxPlayers);
@@ -53,7 +51,6 @@ static void loadProperties(ServerConfig& c, const std::string& path) {
         if (props.has("network-compression-threshold") || props.has("compression-threshold")) {
             c.compressionThreshold = props.get<int>("network-compression-threshold", props.get<int>("compression-threshold", c.compressionThreshold));
         }
-        // W19 maxLoadedChunks: respect explicit max-loaded-chunks else auto max(8192, viewDist²*4) (plan21 §3)
         // Note: current implementation in GameServer_tick.cpp:334-399 is NOT a simple clear(); it does
         // Chebyshev distance sort + burst limit 16/tick with forced/spawn ticket protection. See GameServer_tick.cpp.
         if (props.has("max-loaded-chunks") || props.has("maxLoadedChunks")) {

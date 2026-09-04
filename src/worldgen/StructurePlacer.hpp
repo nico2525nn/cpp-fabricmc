@@ -1,4 +1,3 @@
-// StructurePlacer: ConfiguredFeature/PlacedFeature + Jigsaw helper (plan6 §2). Reads JSON definitions from assets/data/structures/*.json if
 // present, otherwise falls back to hardcoded defaults. Provides deterministic placement checks.
 #pragma once
 #include <array>
@@ -19,7 +18,6 @@ struct ConfiguredFeature {
     json::Value config = json::Value::object();
     // jigsaw pieces (name, weight)
     std::vector<std::pair<std::string,int>> pieces;
-    // plan36 palette extension
     std::unordered_map<std::string,std::string> palette; // logical -> minecraft name
     std::unordered_map<std::string,std::unordered_map<std::string,std::string>> variants; // pieceName -> palette override
     std::vector<std::pair<std::string,std::string>> lootByPos; // "x,y,z" -> loot table id
@@ -53,7 +51,6 @@ public:
                     std::int32_t& outOriginCx, std::int32_t& outOriginCz) const;
     const std::unordered_map<std::string, ConfiguredFeature>& allConfigured() const { return configured_; }
     const std::unordered_map<std::string, PlacedFeature>& allPlaced() const { return placed_; }
-    // plan42 R2 (E-12): variant pools — same-type features sorted by name (primary included).
     std::vector<const ConfiguredFeature*> configuredWithType(const std::string& type) const {
         std::vector<const ConfiguredFeature*> out;
         for (auto& [n, cf] : configured_)
@@ -62,7 +59,6 @@ public:
                   [](const ConfiguredFeature* a, const ConfiguredFeature* b){ return a->name < b->name; });
         return out;
     }
-    // plan42 R2 (E-12): vanilla StructurePool-style weight-proportional jigsaw
     // piece pick. r in [0,1). Falls back to uniform index for empty weights.
     static std::size_t pickWeightedPiece(const ConfiguredFeature& cf, double r) {
         if (cf.pieces.empty()) return 0;

@@ -1,4 +1,3 @@
-// CostCalculator: enchanting and anvil cost logic (plan6 items 47,48) — plan23 §5 seeded RNG
 #pragma once
 #include <algorithm>
 #include <array>
@@ -14,7 +13,6 @@ struct Player;
 
 class CostCalculator {
 public:
-    // plan23 §5 I5: seeded RNG (player.enchantmentSeed ^ bookshelves); vanilla base/level formula.
     static std::uint32_t splitmix32(std::uint32_t x) {
         x += 0x9e3779b9u;
         x = (x ^ (x >> 16u)) * 0x85ebca6bu;
@@ -25,7 +23,6 @@ public:
         int bs = std::clamp(bookshelves, 0, 15);
         std::uint32_t seed = static_cast<std::uint32_t>(player.enchantmentSeed);
         if (seed == 0) seed = static_cast<std::uint32_t>(player.entityId * 0x9e3779b9u ^ 0x85ebca6bu ^ (bs * 0x27d4eb2du));
-        // plan23: use mt19937 seeded by player seed for vanilla parity (Random.create(seed))
         std::mt19937 rng(seed);
         int base = 1 + static_cast<int>(rng() % 8u); // 1..8
         base += bs / 2;
@@ -53,7 +50,6 @@ public:
         // For bs ==0, ensure at least 1..8 range; for bs 15, c0 tends to 30
         return c;
     }
-    // Deterministic helper for tests: costsFor with explicit seed (plan23 §5 test)
     static std::array<int,3> costsFor(int bookshelves, std::uint32_t seed){
         std::mt19937 rng(seed);
         int bs = std::clamp(bookshelves, 0, 15);
@@ -104,7 +100,6 @@ public:
         return count;
     }
 
-    // Anvil: plan13 §4 vanilla accurate: prior work penalty + enchant cost + rename, Too Expensive 39 limit Returns -1 if name too long
     // (invalid), otherwise returns total cost (may be >=40 for Too Expensive). Callers must check >=40 to block.
     static int anvilCost(const ItemStack& left, const ItemStack& right, const std::string& newName) {
         if (newName.size() > 50) return -1;
@@ -118,11 +113,9 @@ public:
         }
         int enchantCost = 0;
         if (!right.empty()) {
-            // use binary decode (handles both binary and legacy textual)
             for (auto &pr: right.components) if(pr.first==ItemStack::kEnchantmentsComponentId || pr.first==33 || pr.first==21){
                 auto ench = ItemStack::decodeEnchants(pr.second);
                 for (auto &e: ench) enchantCost += e.second;
-                // also try legacy fallback if decode empty but textual present
                 if (ench.empty()) {
                     std::string txt(pr.second.begin(), pr.second.end());
                     size_t pos=0;
@@ -136,7 +129,6 @@ public:
                 }
                 break;
             }
-            // if no enchants but same item repair, add base 2 for durability repair
             if (enchantCost==0 && ItemStack::maxDamageFor(left.itemId)>0 && right.itemId==left.itemId) {
                 enchantCost = 2;
             } else if (enchantCost==0 && !right.empty()) {

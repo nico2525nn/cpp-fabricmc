@@ -1,5 +1,3 @@
-// EnchantmentHelper — plan8 entity section
-// plan22/28 combat: EPF weights (prot 1, others per vanilla), sonic bypass; centralizes enchant math.
 #pragma once
 #include <string>
 #include <algorithm>
@@ -17,7 +15,6 @@ public:
     // EPF weighting: protection=1, fire/blast/projectile=2 when matching damage type, feather=3 for fall.
     static int getProtectionEPF(const DamageSource& ds, const ItemStack& stack) {
         if (ds.bypassEnchant || ds.isDrown() || ds.isStarveFlag) return 0;
-        // plan22 combat polish: sonic_boom bypasses all enchantments (including protection)
         if (ds.isSonic()) return 0;
         int prot = std::max(stack.enchantLevel("protection"), stack.enchantLevel("minecraft:protection"));
         int fire = std::max(stack.enchantLevel("fire_protection"), stack.enchantLevel("minecraft:fire_protection"));
@@ -25,7 +22,6 @@ public:
         int proj = std::max(stack.enchantLevel("projectile_protection"), stack.enchantLevel("minecraft:projectile_protection"));
         int feather= std::max(stack.enchantLevel("feather_falling"), stack.enchantLevel("minecraft:feather_falling"));
         int total=0;
-        // plan22 E7 strict: Protection weight 1 for all (was prot*2 for fire/explosion/projectile)
         total += prot;
         if (ds.isFire()) total += fire*2;
         if (ds.isExplosion()) total += blast*2;
@@ -48,7 +44,6 @@ public:
         return 0.25f * (lvl+1);
     }
 
-    // Efficiency: mining speed multiplier (vanilla: lvl^2 +1, plan13 §5)
     static float getEfficiencyMultiplier(const ItemStack& stack) {
         int lvl = efficiencyLevel(stack);
         if (lvl<=0) return 1.f;
@@ -96,7 +91,6 @@ public:
     static bool hasMending(const ItemStack& stack) {
         return stack.hasEnchant("mending") || stack.hasEnchant("minecraft:mending");
     }
-    // plan37 B-11: 7 new enchants (32/41) — mending already, infinity/silk/fortune/channeling/riptide/curses
     static bool hasInfinity(const ItemStack& stack) {
         return stack.hasEnchant("infinity") || stack.hasEnchant("minecraft:infinity");
     }
@@ -126,11 +120,9 @@ public:
     static int getMending(const ItemStack& stack) {
         return std::max(stack.enchantLevel("mending"), stack.enchantLevel("minecraft:mending"));
     }
-    // additional enchants to reach 32/41 coverage (plan37 B-11 remaining 2 to fill 25→32)
     static int getLoyalty(const ItemStack& s) { return std::max(s.enchantLevel("loyalty"), s.enchantLevel("minecraft:loyalty")); }
     static int getImpaling(const ItemStack& s) { return std::max(s.enchantLevel("impaling"), s.enchantLevel("minecraft:impaling")); }
 
-    // plan40 C-08: 9 new accessors (smite/bane/punch/flame/knockback/luck/lure/aqua/respiration)
     static bool hasAquaAffinity(const ItemStack& s){ return s.hasEnchant("aqua_affinity")||s.hasEnchant("minecraft:aqua_affinity"); }
     static int getRespiration(const ItemStack& s){ return std::max(s.enchantLevel("respiration"), s.enchantLevel("minecraft:respiration")); }
     static int getSmite(const ItemStack& s){ return std::max(s.enchantLevel("smite"), s.enchantLevel("minecraft:smite")); }
@@ -144,7 +136,6 @@ public:
     static int getMultishot(const ItemStack& s){ return std::max(s.enchantLevel("multishot"), s.enchantLevel("minecraft:multishot")); }
     static int getPiercing(const ItemStack& s){ return std::max(s.enchantLevel("piercing"), s.enchantLevel("minecraft:piercing")); }
     static int getQuickCharge(const ItemStack& s){ return std::max(s.enchantLevel("quick_charge"), s.enchantLevel("minecraft:quick_charge")); }
-    // plan44 §3 G-09: remaining effect getters (41/41 coverage — vanilla 1.21.4 has 42 incl. breach/density/wind_burst)
     static int getSweepingEdge(const ItemStack& s){ return std::max(s.enchantLevel("sweeping_edge"), s.enchantLevel("minecraft:sweeping_edge")); }
     static int getThorns(const ItemStack& s){ return std::max(s.enchantLevel("thorns"), s.enchantLevel("minecraft:thorns")); }
     static int getDepthStrider(const ItemStack& s){ return std::max(s.enchantLevel("depth_strider"), s.enchantLevel("minecraft:depth_strider")); }
@@ -153,7 +144,6 @@ public:
     static int getWindBurst(const ItemStack& s){ return std::max(s.enchantLevel("wind_burst"), s.enchantLevel("minecraft:wind_burst")); }
     static int getFireAspect(const ItemStack& s){ return std::max(s.enchantLevel("fire_aspect"), s.enchantLevel("minecraft:fire_aspect")); }
     static int getLooting(const ItemStack& s){ return std::max(s.enchantLevel("looting"), s.enchantLevel("minecraft:looting")); }
-    // plan44 §3 G-09 effect functions (pure, delegate to MeleeHelper formulas): sweep victims take round(1 + AD*lv/(lv+1)); lv0 => 1
     static float sweepingDamage(float attackDamage, const ItemStack& weapon) {
         return sweepingEdgeDamage(attackDamage, getSweepingEdge(weapon));
     }
@@ -193,7 +183,6 @@ public:
         if (lv <= 0) return 0.f;
         return 3.f + 6.f * static_cast<float>(std::min(lv, 3));
     }
-    // multishot: 3 arrows, durability cost of 1 (plan44 §3)
     static int multishotShots(const ItemStack& crossbow) {
         return getMultishot(crossbow) > 0 ? 3 : 1;
     }
@@ -202,7 +191,6 @@ public:
         return 2 + std::max(0, lv);
     }
 
-    // plan40 C-08: undead / arthropod helpers for smite/bane
     static bool isUndead(MobKind k){
         switch(k){
             case MobKind::Zombie: case MobKind::Skeleton: case MobKind::WitherSkeleton:
@@ -227,7 +215,6 @@ public:
     static float meleeDamageWithEnchant(float base, const ItemStack& weapon) {
         return base + getSharpnessBonus(weapon);
     }
-    // plan40 C-08: victim-aware melee (sharp + smite 2.5*lvl vs undead + bane 2.5*lvl vs arthropod)
     static float meleeDamageWithEnchant(float base, const ItemStack& weapon, MobKind victimKind) {
         float bonus = getSharpnessBonus(weapon);
         if (isUndead(victimKind)) bonus += 2.5f * getSmite(weapon);

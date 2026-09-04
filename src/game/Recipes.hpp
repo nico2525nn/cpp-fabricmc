@@ -1,5 +1,4 @@
 // Recipes: data-driven crafting/smelting recipes loaded from JSON
-// (plan3.md "クラフトレシピのアーキテクチャ").
 //
 // Supported JSON shapes (authored clean-room under assets/data/recipes/):
 //   { "type":"crafting_shaped", "pattern":["XX","XX"], "key":{"X":{"item":...}},
@@ -79,7 +78,6 @@ public:
     static bool ingredientAccepts(const Ingredient& ing, std::uint32_t itemId) {
         return ing.accepts(itemId);
     }
-    // plan37 B-03: trim blank rows helper
     static std::vector<std::string> trimBlankRows(const std::vector<std::string>& rows);
 
 private:
@@ -105,7 +103,6 @@ private:
     }
     bool matchShaped(const std::vector<ItemStack>& grid, int gw, int gh) const {
         if (width > gw || height > gh) return false;
-        // plan37 B-03: triple loop oy->ox->mirrored (vanilla ShapedRecipe#matches order)
         for (int oy = 0; oy <= gh - height; ++oy)
             for (int ox = 0; ox <= gw - width; ++ox)
                 for (bool mirrored : {false, true})
@@ -143,7 +140,6 @@ public:
     std::size_t size() const { return recipes_.size(); }
     const std::vector<Recipe>& all() const { return recipes_; }
     const std::unordered_set<std::uint32_t>& planksTag() const { return tagPlanks_; }
-    // plan41 C-11: test helper — lookup by full id (minecraft:xxx)
     const Recipe* findById(const std::string& id) const {
         for (auto& r : recipes_) if (r.id == id) return &r;
         return nullptr;
@@ -172,7 +168,6 @@ protected:
     }
 
 public:
-    // plan37 B-03: tag sync with TagManager (double sync design)
     void syncTagsFrom(const class TagManager& tm);
 
     // Tag expansion used by both JSON loading and the built-in table.

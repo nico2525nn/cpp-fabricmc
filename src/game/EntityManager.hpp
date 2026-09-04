@@ -1,4 +1,3 @@
-// EntityManager: extracted entity / mob / projectile / XP responsibility (plan8 modular split)
 // Hosts mob lifecycle, projectile, XP, and combat helpers (DamageCalculator).
 #pragma once
 #include <cstdint>

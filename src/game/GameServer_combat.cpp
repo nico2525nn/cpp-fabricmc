@@ -34,7 +34,6 @@
 namespace cppfm {
 using namespace proto;
 void GameServer::syncPlayerArmorAttributes(Player& p) {
-    // modular split: delegate to CombatManager (plan8)
     CombatManager::syncPlayerArmor(*this, p);
 }
 void GameServer::applyDamage(Player& p, float amount, const DamageSource& src, int breachLv) {
@@ -66,7 +65,6 @@ void GameServer::applyDamage(Player& p, float amount, const DamageSource& src, i
         try { p.conn->sendPacket(pl::sc::DamageEvent, de); } catch (...) {}
         broadcastPacketExcept(&p, pl::sc::DamageEvent, de);
     }
-    // plan34 network: HurtAnimation 0x25 (yaw 0 when attacker unknown) + EntitySoundEffect 0x6E for player hurt
     {
         float yaw = 0.f;
         broadcastHurtAnimation(p.entityId, yaw, nullptr);
@@ -86,7 +84,6 @@ void GameServer::killPlayer(Player& p, const char* cause) {
     sendScoreAll("deaths", p.name,
                  scoreboard.getScore("deaths", p.name));
     broadcastSystemText((msg::kRed + p.name + " died (" + cause + ")"), &p);
-    // plan37 B-11 vanishing_curse: drop inventory except vanishing, respect keepInventory gamerule
     {
         bool keepInv = false;
         try { keepInv = gamerules_.getBool("keepInventory"); } catch (...) {}
@@ -110,7 +107,6 @@ void GameServer::killPlayer(Player& p, const char* cause) {
             if (!p.inv[45].empty() && EnchantmentHelper::hasVanishingCurse(p.inv[45])) p.inv[45]=ItemStack::air();
         }
     }
-    // plan35 §5 hardcore: ban on death when hardcore=true (vanilla hardcore -> spectator + world delete, here ban)
     if (cfg_.hardcore) {
         bannedPlayers_.insert(p.name);
         try { saveBans(); } catch (...) {}
@@ -125,7 +121,6 @@ void GameServer::killPlayer(Player& p, const char* cause) {
 }
 void GameServer::mobAttackPlayer(MobEntity& m, Player& target) {
     float dmg = mobStats(m.kind).attackDamage;
-    // plan29 §3 Creaking difficulty scaling Easy 2.5 / Normal 3 / Hard 4.5 (was generic 7)
     if (m.kind==MobKind::Creaking) {
         if (difficulty_=="easy") dmg=2.5f;
         else if (difficulty_=="hard") dmg=4.5f;
@@ -136,14 +131,12 @@ void GameServer::mobAttackPlayer(MobEntity& m, Player& target) {
     std::string cause = MobEntity::kindName(m.kind);   // e.g. minecraft:zombie
     const auto slash = cause.find(':');
     if (slash != std::string::npos) cause = cause.substr(slash + 1);
-    // plan44 §3 G-08: shield blocks frontal melee (vindicator swings an axe -> 100t disable)
     {
         DamageSource msrc(cause);
         bool axeMob = (m.kind == MobKind::Vindicator); // vanilla vindicator carries an iron axe
         if (CombatManager::tryShieldBlock(*this, target, msrc, m.x, m.z, axeMob)) return;
     }
     applyDamage(target, dmg, cause.c_str());
-    // plan44 §3 G-09: thorns reflects to the mob attacker
     if (target.health < before) CombatManager::applyThornsReflection(*this, target, &m, nullptr);
     if (before != target.health) m.angerTargetEntityId = target.entityId;
 }
@@ -283,8 +276,6 @@ void GameServer::broadcastDustParticle(double x, double y, double z, std::int32_
 void GameServer::explodeAt(double x, double y, double z, float power) {
     const int r = static_cast<int>(std::ceil(power));
     // block destruction sphere with randomised edges
-    // plan21 combat polish: wire blockExplosionDropDecay/mobExplosionDropDecay/tntExplosionDropDecay (W18)
-    // vanilla: when gamerule false, 100% drops; when true (default), decay (30% loss). Keep default true == old no-drop decay path.
     bool blockDecay = true, mobDecay = true, tntDecay = false;
     if (gamerules_.contains("blockExplosionDropDecay")) blockDecay = gamerules_.getBool("blockExplosionDropDecay");
     if (gamerules_.contains("mobExplosionDropDecay")) mobDecay = gamerules_.getBool("mobExplosionDropDecay");
@@ -317,7 +308,6 @@ void GameServer::explodeAt(double x, double y, double z, float power) {
                 changed.push_back({bx, by, bz});
             }
     // W18 gamerule wiring: blockDecay/mobDecay/tntDecay read above; actual drop spawning deferred to avoid deadlock with mobsTick's entsMtx_ lock.
-    // When doDecay==false (gamerule false), vanilla spawns 100% drops; when true, decay (30% loss). Keep old no-drop behaviour for test stability.
     (void)doDecay; (void)blockDecay; (void)mobDecay; (void)tntDecay;
     // entity damage: distance-scaled
     for (auto& p : playersSnapshot()) {
@@ -327,7 +317,6 @@ void GameServer::explodeAt(double x, double y, double z, float power) {
         const float dmg =
             (power * power - static_cast<float>(dist)) / power * 8.f;
         if (dmg > 0) {
-            // plan44 §3 G-08: shield blocks frontal explosions (blockable per Blocking wiki)
             DamageSource esrc("explosion");
             if (CombatManager::tryShieldBlock(*this, *p, esrc, x, z, false)) continue;
             applyDamage(*p, dmg, "explosion");
@@ -375,7 +364,6 @@ void GameServer::explodeAt(double x, double y, double z, float power) {
                         mobs_.end());
         }
     }
-    // visuals & audio - plan26 D20: correct wire (bool bool f64 f32 f32 f32 f32 i32 amount + particle)
     for (int i = 0; i < 4; ++i) {
         int pid = (i == 0 ? ParticleId::explosion_emitter : ParticleId::explosion); // 21/22, Simple
         auto body = makeWorldParticlesBody(x + (rand()%7 - 3) * 0.5,
@@ -490,7 +478,6 @@ void GameServer::strikeLightning(double x, double y, double z) {
 }
 void GameServer::applyDamageToMob(MobEntity& m, float amount, const DamageSource& src, int breachLv) {
     if (amount <= 0 || m.dead) return;
-    // plan29 §3 Creaking invulnerable when transient (heart-linked) except void/kill
     if (m.kind==MobKind::Creaking && m.creakingTransient) {
         std::string low = src.type;
         std::transform(low.begin(), low.end(), low.begin(), ::tolower);
@@ -502,7 +489,6 @@ void GameServer::applyDamageToMob(MobEntity& m, float amount, const DamageSource
             return;
         }
     }
-    // plan34 §3 Armadillo roll-up damage reduction (dmg-1)/2 while rolled, before armor
     if (m.kind==MobKind::Armadillo && m.armadilloRolledUp) {
         amount = (amount - 1.0f) * 0.5f;
         if (amount < 0) amount = 0;
@@ -518,7 +504,6 @@ void GameServer::applyDamageToMob(MobEntity& m, float amount, const DamageSource
     if (finalAmt <= 0) return;
     m.health -= finalAmt;
     m.hurtCooldown = 10;
-    // plan34 §3 Armadillo scare on damage + generic lastHurt for sensor
     {
         auto it = mobAi_.find(m.entityId);
         if (it!=mobAi_.end() && it->second.ctx) {
@@ -529,7 +514,6 @@ void GameServer::applyDamageToMob(MobEntity& m, float amount, const DamageSource
             m.armadilloDangerDetectedUntil = tickNo_ + 80;
         }
     }
-    // Plan8 Enderman: damage triggers teleport (hurt condition already in BehaviorTree, but also instant chance)
     if (m.kind==MobKind::Enderman && !m.dead) {
         // 50% chance to teleport when hurt, respecting cooldown
         if (rand()%2==0 && tickNo_ - m.lastTeleportTick > 20) {
@@ -543,13 +527,11 @@ void GameServer::applyDamageToMob(MobEntity& m, float amount, const DamageSource
             }
         }
     }
-    // Plan8 Charged Creeper: lightning handled separately; charged state persists
     if (MobEntity::isBoss(m.kind) && bossAI_) {
         if (m.health > 0) bossAI_->onDamage(m);
         else bossAI_->onDeath(m);
     }
     if (m.health <= 0) m.dead = true;
-    // plan34 network: HurtAnimation 0x25 + EntitySoundEffect 0x6E
     {
         float yaw = 0.f;
         // try to compute yaw if attacker is nearest player (best effort)
@@ -581,7 +563,6 @@ void GameServer::applyDamageToMob(MobEntity& m, float amount, const char* cause)
     DamageSource src(cause ? std::string(cause) : std::string("generic"));
     applyDamageToMob(m, amount, src);
 }
-// plan34 network: 6 toClient helpers
 void GameServer::sendActionBar(Player& p, const std::string& text) {
     if (!p.conn) return;
     WriteBuffer b; nbt::writeTextComponent(b, text);
@@ -675,7 +656,6 @@ void GameServer::broadcastSyncEntityPosition(const MobEntity& mob, Player* excep
     float yawf = 0, pitchf = 0;
     broadcastSyncEntityPosition(mob.entityId, mob.x, mob.y, mob.z, 0, 0, 0, yawf, pitchf, true, except);
 }
-// plan42 R1 wire: MapData 0x2D MoveMinecart 0x31 SelectAdvancementTab 0x4F
 void GameServer::sendMapData(Player& p, int mapId, uint8_t scale, bool locked) {
     if (!p.conn) return;
     WriteBuffer b;

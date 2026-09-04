@@ -107,7 +107,6 @@ void GameServer::acceptLoop() {
             break;
         }
         std::fprintf(stderr, "[cppfm] accepted fd=%d\n", fd);
-        // plan46 §1 A5: refuse accept-bursts above 20/s without spawning a session thread (login waves / connection floods).
         if (!acceptGate_.allow(steadyNowMs())) {
             std::fprintf(stderr, "[cppfm] accept gate: refusing fd=%d (rate)\n", fd);
             ::close(fd);
@@ -117,7 +116,6 @@ void GameServer::acceptLoop() {
             auto conn = std::make_unique<Connection>(fd);
             conn->setNoDelay();
             conn->setSendTimeout(15);
-            // plan46 §1 A6/A1: slow-loris guard + bandwidth budget.
             conn->setRecvTimeout(30);
             conn->enableFloodBudget(true);
             Session s(*this, std::move(conn));
@@ -140,7 +138,6 @@ void GameServer::sendSetHealth(Player& p) {
     try { p.conn->sendPacket(pl::sc::SetHealth, b); } catch (...) {}
 }
 void GameServer::addHungerExhaustion(Player& p, float amount) {
-    // modular split: delegate to HungerManager (plan8)
     HungerManager::addExhaustion(p, amount);
 }
 void GameServer::addFoodAndSaturation(Player& p, int food, float sat) {
@@ -148,7 +145,6 @@ void GameServer::addFoodAndSaturation(Player& p, int food, float sat) {
     sendSetHealth(p);
 }
 void GameServer::handleFoodConsume(Player& p, const std::string& itemName) {
-    // modular split: delegate to HungerManager (plan8)
     HungerManager::handleFoodConsume(p, itemName, *this);
 }
 void GameServer::broadcastPlayerChat(Player& sender, const std::string& message, int64_t timestamp) {
@@ -168,7 +164,6 @@ void GameServer::broadcastPlayerChat(Player& sender, const std::string& message,
     broadcastPacketExcept(nullptr, proto::pl::sc::PlayerChat, b);
 }
 bool GameServer::validateFeatureFlags(const std::vector<std::array<std::string,3>>& clientPacks) {
-    // plan22 network: FeatureFlags 0x0C vanilla + SelectKnownPacks core 1.21.4 (lenient to modded).
     if (clientPacks.empty()) return true;
     for (auto &p : clientPacks) if (p[0]=="minecraft" && (p[1]=="core" || p[1]=="vanilla")) return true;
     return true; // lenient accept (was false for non-empty, too strict)
@@ -192,17 +187,14 @@ void GameServer::spawnMob(MobKind kind, double x, double y, double z) {
             // slimeSize from def? use max_health scaling if present
         }
     }
-    // plan16: Slime health scaling size² (vanilla: health = size², size=4 =>16, 2=>4,1=>1)
     if (kind==MobKind::Slime || kind==MobKind::MagmaCube) {
         mob->health = MobEntity::slimeHealthForSize(mob->slimeSize);
     }
-    // plan16/18 + plan42 R2 E-10: deterministic horse stats (worldSeed ^ pos), synced via 0x7C.
     if (kind==MobKind::Horse) {
         std::uint64_t hseed = cfg_.seed ^ (static_cast<std::uint64_t>(static_cast<std::int32_t>(std::floor(x)))<<32)
             ^ static_cast<std::uint64_t>(static_cast<std::int32_t>(std::floor(z))) ^ (static_cast<std::uint64_t>(mob->entityId)*0x9E3779B97F4A7C15ULL);
         mob->applyHorseStats(MobEntity::randomizeHorseStats(hseed));
     }
-    // plan14 §4: VillagerData init (profession/level/type) — plan18 polish: NITWIT 1/12 random per Yarn VillagerProfession NITWIT
     if (kind==MobKind::Villager) {
         mob->villagerData.type = static_cast<VillagerData::Type>(rand()%7);
         if (rand() % 12 == 0) mob->villagerData.profession = VillagerData::NITWIT;
@@ -214,7 +206,6 @@ void GameServer::spawnMob(MobKind kind, double x, double y, double z) {
         mob->villagerLastRestockDay = -1;
         mob->restockUntil = 0;
     }
-    // plan17 LOW: sheep woolColor random per wiki 81.8% white, 5% black/gray/light_gray, 3% brown, 0.164% pink (was always white) — plan18 polish refine
     if (kind==MobKind::Sheep) {
         int r = rand() % 1000;
         if (r < 818) mob->woolColor = 0; // white 81.8%
@@ -245,7 +236,6 @@ void GameServer::broadcastMobSpawn(const MobEntity& mob) {
     b.varint(0); b.i16(0); b.i16(0); b.i16(0);
     broadcastPacketExcept(nullptr, pl::sc::SpawnEntity, b);
     sendEquipment(mob);
-    // plan42 R2 E-10: sync randomized horse attributes (MAX_HEALTH/MOVEMENT_SPEED/
     // JUMP_STRENGTH) via UpdateAttributes 0x7C so clients see 15-30 HP, not the static default.
     if (mob.kind == MobKind::Horse) {
         AttributeManager am;
@@ -269,7 +259,6 @@ GameServer::MobAiEntry& GameServer::aiFor(const std::shared_ptr<MobEntity>& m) {
         MobAiEntry e;
         e.brain = std::make_unique<Brain>();
         e.ctx = std::make_unique<AiContext>();
-        // Plan8 BehaviorTreeParser: data-driven BehaviorTree from EntityDataDef (Selector/Sequence/Condition/Action via JSON)
         // Parser is now BehaviorTreeParser::parse which delegates to EntityDataLoader for backward compat.
         if (auto* def = entityDataLoader_.get(MobEntity::kindName(m->kind))) {
             auto fresh = BehaviorTreeParser::parse(*def);
@@ -331,7 +320,6 @@ void GameServer::grantAdvancement(Player& p, const std::string& id) {
     if (!p.advancements) return;
     if (p.advancements->grant(id)) {
         sendAdvancementsTo(p, false);
-        // plan42 R1: SelectAdvancementTab 0x4F sync tab selection
         std::string tab = id;
         auto slash = tab.find("/");
         if (slash!=std::string::npos) tab = tab.substr(0, slash);
@@ -372,7 +360,6 @@ void GameServer::evaluateTickAdvancements(Player& p) {
         if (p.advancements->has(adv.id)) continue;
         for (auto& tr : adv.triggers) {
             if (tr.trigger == "minecraft:tick" || tr.trigger == "tick") {
-                // plan35 §3: gate tick trigger via PredicateContext if conditions contain check_gamerule/location etc
                 if (!tr.conditions.isNull() && tr.conditions.isObj()) {
                     PredicateContext ctx = basePredicateContext(p);
                     if (!datapackManager_.evaluatePredicateValue(tr.conditions, ctx)) continue;
@@ -460,7 +447,6 @@ void GameServer::evaluateInventoryChanged(Player& p, const ItemStack& s) {
                 }
             }
             if (match) {
-                // plan35 §3: additional predicate gating via PredicateContext (check_gamerule/location_check)
                 if (!tr.conditions.isNull() && tr.conditions.isObj() && tr.conditions.find("condition")) {
                     PredicateContext ctx = basePredicateContext(p);
                     if (!datapackManager_.evaluatePredicateValue(tr.conditions, ctx)) match = false;
@@ -499,7 +485,6 @@ void GameServer::evaluatePlayerKilledEntity(Player& p, MobKind kind) {
                     match = true;
                 }
                 if (!tr.conditions.find("entity") && !tr.conditions.find("predicate")) match = true;
-                // plan35 §3: gate with PredicateContext if conditions contain check_gamerule/location_check/entity_properties
                 if (match && tr.conditions.isObj() && tr.conditions.find("condition")) {
                     PredicateContext ctx = basePredicateContext(p);
                     ctx.entity = &victimTmp;
@@ -520,7 +505,6 @@ void GameServer::onBlockMined(Player& p, std::uint16_t oldState) {
     p.stats->add("minecraft:mined|" + name);
     if (name == "minecraft:oak_log") grantAdvancement(p, "cppfm:wood");
     if (name == "minecraft:stone") { /* stone age analog */ }
-    // plan35 §1: also trigger story mine_stone via inventory change path? onBlockMined doesn't give item, but mining still may count; evaluate via dummy stack
     ItemStack dummy = ItemStack::ofName(name,1);
     if (!dummy.empty()) evaluateInventoryChanged(p, dummy);
 }
@@ -548,7 +532,6 @@ void GameServer::onMobKilledBy(Player& p, MobKind kind) {
     if (MobEntity::isHostile(kind)) grantAdvancement(p, "cppfm:hunter");
     evaluatePlayerKilledEntity(p, kind);
 }
-// plan37 §3: location / placed_block / consume_item triggers
 void GameServer::evaluateLocationTrigger(Player& p) {
     if (!p.advancements) return;
     auto merged = getMergedAdvancements();
@@ -562,7 +545,6 @@ void GameServer::evaluateLocationTrigger(Player& p) {
             if (tr.trigger != "minecraft:location" && tr.trigger != "location") continue;
             bool ok = true;
             if (!tr.conditions.isNull() && tr.conditions.isObj()) {
-                // if conditions has a "condition" predicate, evaluate via predicate engine
                 // otherwise treat as location predicate {location:{biome,...}}
                 if (tr.conditions.find("condition")) {
                     if (!datapackManager_.evaluatePredicateValue(tr.conditions, ctx)) ok = false;
@@ -637,7 +619,6 @@ void GameServer::onConsumeItem(Player& p, const ItemStack& stack) {
             if (tr.conditions.isNull()) ok = true;
             else if (tr.conditions.isObj()) {
                 if (auto* item = tr.conditions.find("item")) {
-                    // item = {items:["minecraft:apple"]} or {item:"minecraft:apple"} or string
                     std::vector<std::string> wants;
                     if (item->isStr()) wants.push_back(item->asStr());
                     else if (item->isObj()) {
@@ -669,7 +650,6 @@ void GameServer::onConsumeItem(Player& p, const ItemStack& stack) {
         }
     }
 }
-// plan38 B-13: 4 new triggers 6->10
 void GameServer::onBredAnimals(Player* p) {
     if (!p || !p->advancements) return;
     auto merged = getMergedAdvancements();
@@ -919,8 +899,6 @@ void GameServer::onVillagerTraded(Player& p, const std::string& soldId, int coun
 }
 bool GameServer::spawnMobByTypeName(const std::string& name, double x, double y,
                                      double z) {
-    // Plan8: handle lightning_bolt via strikeLightning (charged creeper)
-    // plan22 inventory polish: expand 107->149 (MobKind 149, Yarn EntityType parity E1) for SpawnEgg linkage
     // Use dynamic count via MobKind::WitherSkull+1 so future 149+ stays correct; also handle bare name + prefix fallback
     if (name=="minecraft:lightning_bolt" || name=="lightning_bolt" || name=="minecraft:lightning") {
         strikeLightning(x,y,z);
@@ -978,7 +956,6 @@ bool GameServer::trySpawnEgg(Player& p, ItemStack& stack, BlockPos hitPos, int f
     if (!n.ends_with("_spawn_egg")) return false;
     BlockPos spawnPos = hitPos.offset(face);
     World& w = worldFor(p.dimension);
-    // plan17 LOW: vanilla isSpaceEmpty(entity bbox) – check air + replaceable (tall_grass, snow etc) not just air
     {
         std::uint16_t st = w.getBlock(spawnPos.x, spawnPos.y, spawnPos.z);
         if (st != 0) {

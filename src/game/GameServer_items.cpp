@@ -32,7 +32,6 @@
 namespace cppfm {
 using namespace proto;
 void GameServer::sendEquipment(const MobEntity& mob) {
-    // Plan13 §2: EquipmentComponent with ArmorTrim + HandDropChances, 0x80 grouping
     EquipmentComponent comp(mob.equipment);
     if (!comp.hasAny()) return;
     WriteBuffer b;
@@ -68,8 +67,6 @@ void GameServer::syncEquipmentOnChange(Player& p){
     broadcastPlayerEquipment(p);
 }
 void GameServer::handleMoveVehicle(Player& p, double x, double y, double z, float yaw, float pitch) {
-    // plan14 §5: MoveVehicle 0x20 – update boat/minecart pos, clamp to WorldBorder, broadcast teleport
-    // plan41 C-10: also broadcast VehicleMove 0x33 (x f64 y f64 z f64 yaw f32 pitch f32) for smooth vehicle movement
     if (p.vehicleId==-1) return;
     std::shared_ptr<MobEntity> veh;
     {
@@ -94,12 +91,10 @@ void GameServer::handleMoveVehicle(Player& p, double x, double y, double z, floa
     tp.f64(x); tp.f64(y); tp.f64(z);
     tp.f32(yaw); tp.f32(pitch); tp.boolean(true);
     broadcastPacketExcept(nullptr, proto::pl::sc::EntityTeleport, tp);
-    // plan41 C-10 VehicleMove 0x33 broadcast (server→client) for boat/minecart smooth movement
     WriteBuffer vm;
     vm.f64(x); vm.f64(y); vm.f64(z);
     vm.f32(yaw); vm.f32(pitch);
     broadcastPacketExcept(&p, proto::pl::sc::VehicleMove, vm);
-    // plan42 R1: MoveMinecart 0x31 for minecart kinds (lerp steps)
     if (veh->kind==MobKind::Minecart || veh->kind==MobKind::ChestMinecart || veh->kind==MobKind::FurnaceMinecart || veh->kind==MobKind::TntMinecart || veh->kind==MobKind::HopperMinecart || veh->kind==MobKind::CommandBlockMinecart || veh->kind==MobKind::SpawnerMinecart) {
         broadcastMoveMinecart(veh->entityId, x, y, z, yaw, pitch, &p);
     }
@@ -151,7 +146,6 @@ void GameServer::hoppersTick() {
         const std::int32_t x = posKeyUnpackX(key);
         const std::int32_t y = posKeyUnpackY(key);
         const std::int32_t z = posKeyUnpackZ(key);
-        // hopper lock: when powered by redstone, skip transfer (plan8 hopper fix)
         if (be.kind == BlockEntity::Kind::Hopper && redstone_ && redstone_->isPoweredHere(x, y, z)) continue;
         ItemStack* slots = be.generic.slots;
         const int count = be.kind == BlockEntity::Kind::Hopper ? 5 : 9;
@@ -252,7 +246,6 @@ void GameServer::hoppersTick() {
             }
         }
 
-        // ---- dispenser/dropper: eject when powered (edge-triggered) per-item plan12 §9/§10 + QC (plan38 B-08 isQuasiPowered)
         if (be.kind == BlockEntity::Kind::Dispenser) {
             bool powered = redstone_->isQuasiPowered(x, y, z);
             bool& was = dispenserPower_[key];
@@ -292,7 +285,6 @@ void GameServer::hoppersTick() {
                     auto doDropperInsert = [&]() -> bool {
                         auto* beT = blockEntities_.getAt(tx,ty,tz);
                         if(!beT) return false;
-                        // plan18 §7: furnace top ingredient / side fuel + barrel/shulker/brewing etc
                         std::string insertDir;
                         if(facing=="north") insertDir="south";
                         else if(facing=="south") insertDir="north";
@@ -372,7 +364,6 @@ void GameServer::hoppersTick() {
                         blockEntities_.dirty_.insert(key);
                     } else {
                         bool handled = false;
-                        // plan18 §6: shulker_box place (dispenser exception) — 16 colors, facing, container copy
                         if (iname.find("shulker_box") != std::string::npos) {
                             uint16_t tSt = world_.getBlock(tx,ty,tz);
                             if (tSt==0) {
@@ -502,7 +493,6 @@ void GameServer::hoppersTick() {
                                             m->equipment[eslot]=ItemStack::of(s.itemId,1);
                                             equipped=true;
                                             // NOTE(cleanup): mob SetEquipment 0x60 broadcast deferred (no helper yet — state change above
-                                            // is authoritative; the previously built-but-unsent WriteBuffer was dead code).
                                             break;
                                         }
                                     }
@@ -713,7 +703,6 @@ const std::vector<TradeOffer>& GameServer::tradeTable() {
     }();
     return table;
 }
-// B-10: 13 professions x 5 levels (minecraft-data villagerTrades -> plan37 §6)
 static std::string professionToString(VillagerData::Profession p){
     switch(p){
         case VillagerData::ARMORER: return "minecraft:armorer";
@@ -743,7 +732,6 @@ static const std::unordered_map<std::string, std::array<std::vector<TradeOffer>,
         return it!=gen::itemIdByName().end()? it->second : 0u;
     };
     auto emerald=id("minecraft:emerald");
-    // farmer 13x5 example from plan37 §6
     m["minecraft:farmer"] = {{
         std::vector<TO>{{emerald,1,0,0,id("minecraft:bread"),6,16,2,0.05f},{id("minecraft:wheat"),20,0,0,emerald,1,16,2,0.05f}},
         std::vector<TO>{{id("minecraft:pumpkin"),6,0,0,emerald,1,16,5,0.05f},{emerald,1,0,0,id("minecraft:pumpkin_pie"),4,12,5,0.05f}},
@@ -845,7 +833,6 @@ bool GameServer::openTrading(Player& p, MobEntity& v) {
     b.varint(menus::kMerchant);
     nbt::writeTextComponent(b, "Villager");
     try { p.conn->sendPacket(proto::pl::sc::OpenScreen, b); } catch (...) {}
-    // Trade List payload (plan37 B-10: profession 13x5, 2*level offers, Gossip priceMultiplier 0.05)
     WriteBuffer tl;
     tl.varint(windowId);
     // NITWIT: no trades
@@ -867,7 +854,6 @@ bool GameServer::openTrading(Player& p, MobEntity& v) {
     if (it != pt.end()) {
         offersPtr = &it->second[lvl-1];
     } else {
-        // fallback to legacy table slice (should not happen)
         const auto& t = tradeTable();
         int num = std::min<int>((int)t.size(), lvl*2);
         if (num==0) num = std::min<int>((int)t.size(), 2);
@@ -881,7 +867,6 @@ bool GameServer::openTrading(Player& p, MobEntity& v) {
     int gossipRep = v.gossip.get(p.uuid);
     for (int i=0;i<num;++i) {
         const auto& t = offers[i];
-        // Gossip priceMultiplier: 0.05 discount scaled by gossip (plan37 §6: min 0.5 cap)
         float baseMult = t.priceMultiplier;
         float gossipDiscount = std::min(0.5f, gossipRep * 0.02f);
         // villager Workaround: priceMult stays baseMult, specialPrice carries discount
@@ -975,7 +960,6 @@ bool GameServer::selectTrade(Player& p, std::int32_t index) {
     addToInventory(p, t.outItem, t.outCount);
     resendInventory(p);
     spawnXpOrbs(p.x, p.y + 1, p.z, 2, &p);
-    // plan40 C-06: villager_trade advancement trigger
     {
         std::string soldName = "minecraft:emerald";
         for(auto& kv: gen::itemIdByName()) if(kv.second==t.inItem) { soldName=kv.first; break; }
@@ -983,7 +967,6 @@ bool GameServer::selectTrade(Player& p, std::int32_t index) {
     }
     broadcastSound("minecraft:entity.villager.yes", p.x, p.y, p.z,
                    .8f, 1.f, "neutral");
-    // Plan16: Villager XP, Gossip, level 1..5, restock 2/day (vanilla: 2 restocks per day at work site)
     {
         std::lock_guard lk(entsMtx_);
         for (auto& m : mobs_) if (m->kind==MobKind::Villager) {
@@ -1009,7 +992,6 @@ bool GameServer::selectTrade(Player& p, std::int32_t index) {
                     m->restockUntil = (curDay+1)*24000 + 2000;
                 } else {
                     if (m->restockUntil < tickNo_) {
-                        // schedule next restock window (plan46 G-15: 2nd window auto-scheduled so 2/day is reachable without new trades)
                         m->restockUntil = tickNo_ + MobEntity::kRestockSecondWindowTicks + (rand()%2000);
                     }
                 }
@@ -1138,8 +1120,6 @@ void GameServer::broadcastSpawnItem(const ItemEntity& it) {
     b.i16(static_cast<std::int16_t>(it.vy*8000));
     b.i16(static_cast<std::int16_t>(it.vz*8000));
     broadcastPacketExcept(nullptr, pl::sc::SpawnEntity, b);
-    // D11 (plan26 §4): metadata index 8 type 7 Slot must carry full ItemStack payload via ItemStack::write (count,varint itemId, added,
-    // removed, components). Old code wrote minimal `0,0` and mishandled air (count 0 wrote itemId 0).
     WriteBuffer md;
     md.varint(it.entityId);
     md.u8(8); md.u8(7);
@@ -1219,7 +1199,6 @@ void GameServer::effectsTick() {
             if (it->type == effects::Regeneration &&
                 tickNo_ % std::max(1, 50 >> it->amplifier) == 0)
                 p->health = std::min(20.f, p->health + 1.f), sendSetHealth(*p);
-            // plan23 §7 strict: poison 25>>amp (was 40), wither 40>>amp, poison does not kill below 1
             if (it->type == effects::Poison &&
                 tickNo_ % std::max(1, 25 >> it->amplifier) == 0) {
                 if (p->health > 1.0f) applyDamage(*p, 1.f, "poison");
@@ -1237,7 +1216,6 @@ void GameServer::effectsTick() {
         }
         if (changed) onEffectsChanged(p);
         // per-tick metadata effects: invisibility/glowing/levitation/slow-falling
-        // plan29 §7 polish: vanilla Levitation vy = 0.05*(amp+1) with lerp 0.2, fallDistance reset, ignore when swimming/riding
         {
             static thread_local std::unordered_map<std::int32_t,double> levVy;
             int levAmp = amplifierFor(p->effects, effects::Levitation);
@@ -1374,7 +1352,6 @@ void GameServer::brewingTick() {
             blockEntities_.dirty_.insert(key);
             if (b.brewTime == 0) {
                 // brew complete: consume ingredient slot 3 and transform potions (strict audit MEDIUM I7)
-                // plan19 inventory: full PotionBrewing transforms (water->awkward, awkward->effect, splash/lingering, redstone/glowstone)
                 if (!b.slots[3].empty()) {
                     std::uint32_t ingId = b.slots[3].itemId;
                     if (--b.slots[3].count <= 0) b.slots[3] = ItemStack::air();
@@ -1419,7 +1396,6 @@ void GameServer::brewingTick() {
                         }
                         bool isPotionItem = (stk.itemId == potionId || stk.itemId == splashId || stk.itemId == lingeringId);
                         if (!isPotionItem) continue;
-                        // plan23 §5 I7: use PotionBrewing::mix for transform (water->awkward, awkward->effect, redstone/glowstone)
                         int curId = stk.getPotionId();
                         bool hasContents = stk.hasPotionContents();
                         int target = PotionBrewing::mix(curId, hasContents, ingId);
@@ -1455,7 +1431,6 @@ void GameServer::brewingTick() {
 }
 void GameServer::spawnXpOrbs(double x, double y, double z, int totalPoints,
                              Player* directTo) {
-    // split into vanilla-ish orb sizes (plan16: include 2477 for dragon 12000)
     static const int kSizes[] = {1, 3, 7, 17, 37, 73, 149, 307, 617, 1237, 2477};
     std::vector<int> orbs;
     while (totalPoints > 0) {
@@ -1528,7 +1503,6 @@ void GameServer::xpOrbsTick() {
     for (auto& pk : pickups) {
         Player& p = *pk.p;
         int xp = pk.orb->value;
-        // plan13 §4: Mending – repair equipped item with Mending before adding to XP
         {
             std::vector<int> mendingSlots;
             for (int i=0;i<46;++i) if(!p.inv[i].empty() && p.inv[i].mendingLevel()>0 && p.inv[i].getDamage()>0) mendingSlots.push_back(i);
@@ -1572,7 +1546,6 @@ std::shared_ptr<ProjectileEntity> GameServer::spawnProjectile(ProjectileKind kin
     e->ownerIsPlayer = ownerIsPlayer;
     e->charged = charged;
     projectiles_.push_back(e);
-    // plan28 finish: no entsMtx_ here — caller (mobsTick) already holds it; re-lock self-deadlocks.
     const auto& types = gen::entityTypeIdByName();
     static const char* kNames[] = {"minecraft:arrow", "minecraft:snowball",
                                    "minecraft:egg", "minecraft:ender_pearl",
@@ -1609,7 +1582,6 @@ void GameServer::projectilesTick() {
                 it = projectiles_.erase(it);
                 continue;
             }
-            // plan44 §3 G-09 loyalty: returning trident homes to its owner (passes through blocks)
             if (pr->returningToOwner && pr->kind == ProjectileKind::Trident) {
                 double tx=0, ty=0, tz=0; bool found=false;
                 if (pr->ownerIsPlayer) {
@@ -1638,12 +1610,9 @@ void GameServer::projectilesTick() {
                 // owner gone: fall through to normal physics (ages out)
             }
             if (!pr->stuck) {
-                // plan16: Fireball gravity 0 (vanilla FireballEntity, WitherSkull, DragonFireball have no gravity)
-                // plan34 §3 wind_charge / breeze_wind_charge gravity 0 + breeze deflect
                 double g = 0.03;
                 if (pr->kind == ProjectileKind::Arrow) g = 0.05;
                 else if (pr->kind == ProjectileKind::Fireball || pr->kind == ProjectileKind::WitherSkull || pr->kind == ProjectileKind::DragonFireball || pr->kind == ProjectileKind::WindCharge || pr->kind == ProjectileKind::BreezeWindCharge) g = 0.0;
-                // plan34 breeze deflect: reverse non-wind projectiles within 1.5 of a breeze
                 if (pr->kind != ProjectileKind::BreezeWindCharge && pr->kind != ProjectileKind::WindCharge) {
                     std::lock_guard lk2(entsMtx_);
                     for (auto& mb : mobs_) if (mb->kind==MobKind::Breeze) {
@@ -1660,7 +1629,6 @@ void GameServer::projectilesTick() {
                 world_.generateChunkIfMissing(
                     static_cast<std::int32_t>(pr->x) >> 4,
                     static_cast<std::int32_t>(pr->z) >> 4);
-                // block collision (plan44 G-09: returning loyalty tridents pass through blocks)
                 if (!pr->returningToOwner && world_.getBlock(static_cast<std::int32_t>(pr->x),
                                     static_cast<std::int32_t>(pr->y),
                                     static_cast<std::int32_t>(pr->z)) != 0) {
@@ -1700,7 +1668,6 @@ void GameServer::projectilesTick() {
                             }
                             applyDamage(*owner, 5.f, "fall");
                             owner->lastEnderPearlTick = tickNo_;
-                            // cooldown packet plan17 LOW: vanilla 20t (1 sec), was 60
                             if (owner->conn) {
                                 auto pid = gen::itemIdByName().find("minecraft:ender_pearl");
                                 if (pid != gen::itemIdByName().end()) {
@@ -1728,14 +1695,12 @@ void GameServer::projectilesTick() {
                         const double dy = pp->y + 0.9 - pr->y;
                         const double dz = pp->z - pr->z;
                         if (dx*dx + dy*dy + dz*dz < 0.55) {
-                            // plan44 §3 G-08: shield blocks frontal arrows/tridents (piercing bypasses shields)
                             if ((pr->kind == ProjectileKind::Arrow || pr->kind == ProjectileKind::Trident) && pr->piercingLevel <= 0) {
                                 DamageSource asrc(pr->kind == ProjectileKind::Arrow ? "arrow" : "trident");
                                 if (CombatManager::tryShieldBlock(*this, *pp, asrc, pr->x, pr->z, false)) {
                                     hitSomething = true; break;
                                 }
                             }
-                            // plan44 §3 G-09: no double-hit while piercing through
                             if (std::find(pr->piercedIds.begin(), pr->piercedIds.end(), pp->entityId) != pr->piercedIds.end())
                                 continue;
                             float dmg = 0;
@@ -1762,7 +1727,6 @@ void GameServer::projectilesTick() {
                                 WriteBuffer vel; vel.varint(pp->entityId); vel.i16((int16_t)(kx*8000)); vel.i16((int16_t)(0.35*8000)); vel.i16((int16_t)(kz*8000));
                                 try{ pp->conn->sendPacket(proto::pl::sc::EntityVelocity, vel);}catch(...){}
                             }
-                            // plan44 §3 G-09 piercing: arrows pass through (level = entity count), keep flying
                             if (pr->kind == ProjectileKind::Arrow && pr->piercingLevel > 0) {
                                 pr->piercedIds.push_back(pp->entityId);
                                 pr->piercingLevel--;
@@ -1781,13 +1745,11 @@ void GameServer::projectilesTick() {
                             const double dy = m->y + 0.8 - pr->y;
                             const double dz = m->z - pr->z;
                             if (dx*dx + dy*dy + dz*dz < 0.55) {
-                                // plan44 §3 G-09: no double-hit while piercing through
                                 if (std::find(pr->piercedIds.begin(), pr->piercedIds.end(), m->entityId) != pr->piercedIds.end())
                                     continue;
                                 float dmg = 5.f;
                                 if (pr->kind==ProjectileKind::BreezeWindCharge || pr->kind==ProjectileKind::WindCharge) dmg=1.f;
                                 hits.push_back({pr, nullptr, m, dmg});
-                                // plan44 §3 G-09 piercing: arrows pass through mobs too, keep flying
                                 if (pr->kind == ProjectileKind::Arrow && pr->piercingLevel > 0) {
                                     pr->piercedIds.push_back(m->entityId);
                                     pr->piercingLevel--;
@@ -1799,7 +1761,6 @@ void GameServer::projectilesTick() {
                         }
                     }
                     if (hitSomething) {
-                        // plan44 §3 G-09 loyalty: trident returns to owner instead of despawning on entity hit
                         if (pr->kind == ProjectileKind::Trident && pr->loyaltyLevel > 0 && !pr->returningToOwner) {
                             pr->returningToOwner = true;
                             ++it;
@@ -1815,7 +1776,6 @@ void GameServer::projectilesTick() {
         }
     }
     for (auto& h : hits) {
-        // plan13 §7: Channeling trident spawns lightning when thundering and target in water/rain (plan37 B-11 thunder gate + canSeeSky)
         if (h.p->kind == ProjectileKind::Trident) {
             bool isThundering = thundering();
             if (isThundering) {
@@ -1829,7 +1789,6 @@ void GameServer::projectilesTick() {
                     // also check held trident directly if owner inventory not found via helper already, but also direct check
                     break;
                 }
-                // plan37: channeling requires thundering && canSeeSky && hasChannel
                 if (hasChannel && isThundering) {
                     // canSeeSky: check sky light or no opaque blocks above target
                     bool canSeeSky = false;
@@ -1890,7 +1849,6 @@ void GameServer::projectilesTick() {
     }
 }
 void GameServer::minecartsTick() {
-    // plan14 §5: minecart rail physics – powered_rail boost 0.06, detector/activator, gravity/friction
     std::vector<std::shared_ptr<MobEntity>> carts;
     {
         std::lock_guard lk(entsMtx_);
@@ -1955,7 +1913,6 @@ void GameServer::minecartsTick() {
                 bool powered=false;
                 for (auto &pr : gen::propsOf(railState)) if (pr.first=="powered" && pr.second=="true") powered=true;
                 if (powered) {
-                    // plan14 §5: accelerate along rail axis by 0.06 (powered_rail)
                     double ax=0, az=0;
                     if (railShape=="north_south" || railShape=="ascending_north" || railShape=="ascending_south") {
                         // Z axis
@@ -1978,7 +1935,6 @@ void GameServer::minecartsTick() {
                     // clamp speed
                     double speed = std::sqrt(cart->velX*cart->velX + cart->velZ*cart->velZ);
                     if (speed > 0.4) { double f=0.4/speed; cart->velX*=f; cart->velZ*=f; }
-                    // broadcast velocity for powered boost (plan11 spec EntityVelocity 0x5F)
                     {
                         WriteBuffer vb;
                         vb.varint(cart->entityId);
@@ -2028,7 +1984,6 @@ void GameServer::minecartsTick() {
             // Snap X/Z to rail center for straight rails
             if (railShape=="north_south") cart->x = rx + 0.5;
             else if (railShape=="east_west") cart->z = rz + 0.5;
-            // for ascending, keep center as well
             if (railShape=="ascending_east" || railShape=="ascending_west") cart->z = rz + 0.5;
             if (railShape=="ascending_north" || railShape=="ascending_south") cart->x = rx + 0.5;
         }
@@ -2084,7 +2039,6 @@ void GameServer::minecartsTick() {
     }
 }
 void GameServer::boatsTick() {
-    // plan17 LOW: buoyancy 0.05 per Yarn BoatEntity (was 0.04), water friction 0.9 land 0.6 max 0.4
     std::vector<std::shared_ptr<MobEntity>> boats;
     {
         std::lock_guard lk(entsMtx_);
@@ -2095,7 +2049,6 @@ void GameServer::boatsTick() {
         int bx=(int)std::floor(b->x), by=(int)std::floor(b->y), bz=(int)std::floor(b->z);
         auto stBelow = world_.getBlock(bx, by-1, bz);
         const gen::BlockDef* dBelow = gen::blockByState(stBelow);
-        // plan23 §3: use FluidState.isWater() for water detection (was block name string, fails for waterlogged/flowing)
         bool inWater = FluidSim::getFluidState(world_, bx, by, bz).isWater();
         bool onLand = false;
         if (!inWater && dBelow && dBelow->name!="minecraft:air" && dBelow->name!="minecraft:water") onLand=true;

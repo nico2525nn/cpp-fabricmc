@@ -4,7 +4,6 @@
 //   x: i32, z: i32
 //   heightmaps: anonymous NBT compound { MOTION_BLOCKING: long[], WORLD_SURFACE: long[] }
 //   dataLen: varint, data blob:
-//       for each of 24 sections:
 //         blockCount: i16
 //         blocks: paletted container (min indirect bits = 4)
 //         biomes: paletted container (min indirect bits = 1)

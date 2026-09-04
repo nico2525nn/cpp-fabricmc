@@ -1,4 +1,3 @@
-// WorldDataManager: level.dat handling with atomic rename and DataFixerUpper version check (plan7)
 #pragma once
 #include <string>
 #include <functional>
@@ -12,7 +11,6 @@ namespace cppfm {
 
 constexpr std::int32_t kCurrentDataVersion = 4189;
 
-// plan46 §2 (O-07 crash recovery): 3-stage level.dat load order, mirroring
 // vanilla LevelStorage (level.dat -> level.dat_old -> fresh generation).
 enum class LevelSource { Dat, DatOld, Fresh };
 struct RecoveryResult {
@@ -126,11 +124,9 @@ public:
                        double& borderDiameterOut, double& borderCXOut, double& borderCZOut,
                        double* borderLerpTargetOut = nullptr, std::int64_t* borderLerpMsOut = nullptr);
 
-    // plan46 §2 (O-07): single-file load attempt (no fallback). Returns false on missing/unparsable/incomplete file.
     bool tryLoadFile(const std::string& path, class World& world, std::string& difficultyOut,
                      double& borderDiameterOut, double& borderCXOut, double& borderCZOut,
                      double* borderLerpTargetOut = nullptr, std::int64_t* borderLerpMsOut = nullptr);
-    // plan46 §2 (O-07): 3-stage recovery (dat -> dat_old -> fresh); corrupt kept as *.corrupt.
     bool loadWithRecovery(class World& world, std::string& difficultyOut,
                           double& borderDiameterOut, double& borderCXOut, double& borderCZOut,
                           double* borderLerpTargetOut, std::int64_t* borderLerpMsOut,

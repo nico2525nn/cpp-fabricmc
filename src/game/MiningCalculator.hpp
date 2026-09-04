@@ -1,4 +1,3 @@
-// MiningCalculator: plan44 G-02/G-03 — vanilla survival mining math. Pure functions over gen::BlockDef
 // (toolMask/effMask/needsTier/blastResistance). Spec: minecraft.wiki/w/Breaking (Calculation) + Yarn Tier harvest levels. speedMultiplier:
 // Hand 1 / Wood 2 / Stone 4 / Copper 5 / Iron 6 / Diamond 8 / Netherite 9 / Gold 12. Sword 1 (15 on cobweb). Shears 15 on cobweb, 5 on
 // wool/leaves/vines, else 1. efficiency (speed>1 only): speed += eff*eff + 1. Haste: speed *= 1 + 0.2*lv. MiningFatigue: speed *=

@@ -76,7 +76,6 @@ void AdvancementManager::save() {
     } catch (...) {}
 }
 
-// plan35 §1: helpers for owned advancements
 std::vector<AdvancementDefOwned> buildOwnedFromRaw(const std::unordered_map<std::string,std::string>& rawAdv) {
     std::vector<AdvancementDefOwned> out;
     out.reserve(rawAdv.size());
@@ -282,7 +281,6 @@ void writeAdvancementsPacket(
     out.varint(static_cast<std::int32_t>(done.size()));
     for (const auto* d : done) {
         out.string(d->id);
-        // if requirements defined, use first criterion else done
         std::string crit = "done";
         if (!d->requirements.empty() && !d->requirements[0].empty()) crit = d->requirements[0][0];
         out.varint(1);

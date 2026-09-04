@@ -1,5 +1,4 @@
 // FunctionEvaluator: executes datapack functions with store/score/return/schedule
-// Plan13 §10: handles execute store/score, return value propagation, and scheduled execution.
 #pragma once
 #include <string>
 #include <vector>
@@ -34,7 +33,6 @@ public:
     // Execute a function by id, with given source. Returns result value (from return command) or last command result.
     // Handles recursion limit (max 10).
     int executeFunction(const std::string& id, brigadier::CommandSource src);
-    // plan37 macro minimal: $var replacement with args map (for `function <id> {arg: value}`)
     int executeFunction(const std::string& id, brigadier::CommandSource src, const std::map<std::string,std::string>& args);
     // helper for macro expansion
     static std::string expandMacro(const std::string& line, const std::map<std::string,std::string>& args);

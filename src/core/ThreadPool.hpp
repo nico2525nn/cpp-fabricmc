@@ -1,4 +1,3 @@
-// ThreadPool: fixed-size worker pool for async chunk I/O (plan21 W19). Mirrors Yarn ThreadedAnvilChunkStorage's mainThreadExecutor +
 // workerExecutor split: RegionFile read/write (zlib) is offloaded to workers, main thread polls futures.
 #pragma once
 #include <condition_variable>

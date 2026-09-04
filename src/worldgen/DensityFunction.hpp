@@ -1,4 +1,3 @@
-// DensityFunction: vanilla-style density-function pipeline (plan3.md
 // "密度関数パイプラインのアーキテクチャ").
 //
 // A tree of nodes evaluated per (x,y,z) sample point. Nodes are built from
@@ -247,7 +246,6 @@ struct BlendAlphaNode final : DensityNode {
 };
 struct BlendOffsetNode final : DensityNode {
     double eval(const Sample& s) const override {
-        // old-new height diff approximated via offset; mimic vanilla blend offset near chunk edges
         const double cx = std::fmod(std::abs(s.x), 16.0), cz = std::fmod(std::abs(s.z), 16.0);
         const double d = std::min({cx, 16 - cx, cz, 16 - cz});
         const double alpha = std::clamp(d / 8.0, 0.0, 1.0);
@@ -313,7 +311,6 @@ struct Cache2d final : DensityNode { // memoize per column within one chunk
 };
 using Cache2dPtr = std::shared_ptr<Cache2d>;
 
-// plan46 G-10: Interpolated (direct-eval approx, see docs/SPEC_GAMEPLAY.md#worldgen-density-and-seed-limits), FlatCache, CacheOnce node types.
 struct Interpolated final : DensityNode {
     NodePtr in;
     double eval(const Sample& s) const override { return in ? in->eval(s) : 0; }
@@ -343,7 +340,6 @@ struct CacheOnce final : DensityNode {
     }
     void beginPass() { has = false; ++rev; }
 };
-// plan46 G-10: Spline (Yarn cubic Hermite: exact at knots, C1 between, clamped outside).
 struct Spline final : DensityNode {
     struct Point { double loc, val, der; };
     NodePtr coordinate; // sampled for the lookup position; null => use x

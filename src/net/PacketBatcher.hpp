@@ -1,7 +1,5 @@
 // PacketBatcher: coalesces block updates into BundleDelimiter / MultiBlockChange.
-// - BundleDelimiter 0x00 wraps heterogeneous packets (strict 1.21.4, PLAN10 §3).
 // - MultiBlockChange 0x4E coalesces same-section BlockUpdate 0x09, axis pack
-//   (state<<12)|(x<<8)|(z<<4)|y (plan28 y/x-swap fix). Threadsafe: session threads
 //   queue (queueBlockChange), tick flushes; mtx_ guards queue, lastFlushMs atomic.
 // - 64-count flush threshold (50ms), per-section grouping, last-write-wins.
 // ChatMessageProcessor: RSA-SHA256 verifies PlayerChat 0x07 with a ChatSession,

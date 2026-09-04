@@ -72,7 +72,6 @@ static std::unique_ptr<BehaviorNode> nodeFromBehavior(const EntityDataDef::Behav
         }
         return seq;
     }
-    // If behavior has children but type is not selector/sequence, treat as sequence of condition + action? For example old flat behaviors
     // with priority: just leaf. If leaf has children, wrap as sequence where first children are conditions and last is action.
     if (!beh.children.empty()) {
         // Build a sequence where children nodes are ticked in order and finally this behavior leaf

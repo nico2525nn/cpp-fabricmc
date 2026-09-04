@@ -105,7 +105,6 @@ public:
                 res.ok = false;
                 res.errorText = e.what();
             } catch (const std::exception& e) {
-                // plan42 R3: non-runtime_error also becomes error chat (never drop player/terminate).
                 res.ok = false;
                 res.errorText = std::string("Error: ") + e.what();
             } catch (...) {

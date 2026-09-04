@@ -1,4 +1,3 @@
-// StructureManager: data-driven structure placement (plan7 World Management) Holds StructureSet list and generates structures per chunk via
 // generate() Originally in Structures.cpp; now data-driven via JSON.
 #pragma once
 #include <cstdint>
@@ -13,7 +12,6 @@ namespace cppfm { struct Chunk; }
 
 namespace cppfm::worldgen {
 
-// Use distinct names to avoid clash with legacy Structures.hpp which also defines StructureSet
 struct SMStructureSet {
     std::string name;            // e.g. minecraft:village
     int spacing = 32;
@@ -165,7 +163,6 @@ public:
 
     void setBiomeSource(std::shared_ptr<MultiNoiseBiomeSource> b) { biomes_ = std::move(b); }
 
-    // plan36: pending structure mobs/loot defer queue (world side defer, network evaluates later)
     struct PendingMob { std::array<int,3> pos; std::string mob; int count=1; };
     struct PendingLoot { std::array<int,3> pos; std::string lootTable; };
     void drainPendingMobs(std::vector<PendingMob>& out) const;
@@ -244,7 +241,6 @@ private:
                         std::int32_t originX, std::int32_t originZ,
                         const GroundFn& ground) const;
 
-    // plan36 palette-driven helpers
     void placeTrialChambersPalette(Chunk& chunk, std::int32_t cx, std::int32_t cz,
                                    std::int32_t originX, std::int32_t originZ,
                                    const std::string& pieceName,

@@ -1,4 +1,3 @@
-// commands_admin.cpp: Brigadier command tree nodes (plan3 port): registered, parsed, advertised.
 #include "GameServer.hpp"
 #include "Messages.hpp"
 #include "Particles.hpp"
@@ -17,10 +16,24 @@ namespace cppfm {
 using brigadier::CommandNode;
 using brigadier::CommandContext;
 namespace args = brigadier::args;
+using NodePtr = brigadier::NodePtr;
 
 void GameServer::initAdminCommands() {
+    initAdminCommandsPart01();
+    initAdminCommandsPart02();
+    initAdminCommandsPart03();
+    initAdminCommandsPart04();
+    initAdminCommandsPart05();
+    initAdminCommandsPart06();
+    initAdminCommandsPart07();
+    initAdminCommandsPart08();
+    initAdminCommandsPart09();
+    initAdminCommandsPart10();
+    initAdminCommandsPart11();
+}
+
+void GameServer::initAdminCommandsPart01() {
     auto& d = commands_;
-    // plan32 block: ban/op/whitelist/kick admin commands
     {
         // /kick <targets> [<reason>]
         auto kick = CommandNode::literal("kick");
@@ -60,6 +73,10 @@ void GameServer::initAdminCommands() {
         kick->then(kickTargets);
         d.root->then(kick);
     }
+}
+
+void GameServer::initAdminCommandsPart02() {
+    auto& d = commands_;
     {
         // /ban <targets> [<reason>]
         auto ban = CommandNode::literal("ban");
@@ -90,6 +107,10 @@ void GameServer::initAdminCommands() {
         ban->then(banTargets);
         d.root->then(ban);
     }
+}
+
+void GameServer::initAdminCommandsPart03() {
+    auto& d = commands_;
     {
         auto pardon = CommandNode::literal("pardon");
         auto pardonTargets = CommandNode::argument("targets", args::gameProfileArg());
@@ -105,6 +126,10 @@ void GameServer::initAdminCommands() {
         pardon->then(pardonTargets);
         d.root->then(pardon);
     }
+}
+
+void GameServer::initAdminCommandsPart04() {
+    auto& d = commands_;
     {
         auto banIp = CommandNode::literal("ban-ip");
         auto banIpTarget = CommandNode::argument("target", args::stringWord());
@@ -118,7 +143,6 @@ void GameServer::initAdminCommands() {
             Player* src = static_cast<Player*>(c.source.player);
             std::string raw = c.arg("target").asStr();
             std::string ip = raw;
-            // if raw looks like player name and that player is online, use their IP
             if (raw.find('.') == std::string::npos) {
                 if (Player* t = findPlayer(*this, raw)) {
                     std::string peer = t->conn ? t->conn->peer() : "";
@@ -174,6 +198,10 @@ void GameServer::initAdminCommands() {
         banIp->then(banIpTarget);
         d.root->then(banIp);
     }
+}
+
+void GameServer::initAdminCommandsPart05() {
+    auto& d = commands_;
     {
         auto pardonIp = CommandNode::literal("pardon-ip");
         auto pardonIpTarget = CommandNode::argument("target", args::stringWord());
@@ -189,6 +217,10 @@ void GameServer::initAdminCommands() {
         pardonIp->then(pardonIpTarget);
         d.root->then(pardonIp);
     }
+}
+
+void GameServer::initAdminCommandsPart06() {
+    auto& d = commands_;
     {
         auto banlist = CommandNode::literal("banlist");
         banlist->executable = true;
@@ -223,6 +255,10 @@ void GameServer::initAdminCommands() {
         banlist->then(banlistPlayers);
         d.root->then(banlist);
     }
+}
+
+void GameServer::initAdminCommandsPart07() {
+    auto& d = commands_;
     {
         auto op = CommandNode::literal("op");
         auto opTargets = CommandNode::argument("targets", args::gameProfileArg());
@@ -238,6 +274,10 @@ void GameServer::initAdminCommands() {
         op->then(opTargets);
         d.root->then(op);
     }
+}
+
+void GameServer::initAdminCommandsPart08() {
+    auto& d = commands_;
     {
         auto deop = CommandNode::literal("deop");
         auto deopTargets = CommandNode::argument("targets", args::gameProfileArg());
@@ -253,13 +293,16 @@ void GameServer::initAdminCommands() {
         deop->then(deopTargets);
         d.root->then(deop);
     }
+}
+
+void GameServer::initAdminCommandsPart09() {
+    auto& d = commands_;
     {
         auto wl = CommandNode::literal("whitelist");
         auto wlOn = CommandNode::literal("on");
         wlOn->executable = true;
         wlOn->action = [this](CommandContext& c){
             Player* src = static_cast<Player*>(c.source.player);
-            // plan42 R3 (E-19) anti-lockout: player enabler joins the list (else `whitelist off` unreachable).
             if (src && !src->name.empty()) whitelist_.insert(src->name);
             whitelist_.setEnabled(true);
             sendFeedback(src, "Whitelist is now on");
@@ -317,6 +360,10 @@ void GameServer::initAdminCommands() {
         wl->then(wlOn); wl->then(wlOff); wl->then(wlList); wl->then(wlAdd); wl->then(wlRemove); wl->then(wlReload);
         d.root->then(wl);
     }
+}
+
+void GameServer::initAdminCommandsPart10() {
+    auto& d = commands_;
     {
         // /publish — open to LAN stub (vanilla needs integrated server GUI).
         auto pub = CommandNode::literal("publish");
@@ -328,6 +375,10 @@ void GameServer::initAdminCommands() {
         };
         d.root->then(pub);
     }
+}
+
+void GameServer::initAdminCommandsPart11() {
+    auto& d = commands_;
     {
         // /save-all /save-off /save-on (Yarn SaveCommand).
         auto sa = CommandNode::literal("save-all");
@@ -357,5 +408,6 @@ void GameServer::initAdminCommands() {
         d.root->then(son);
     }
 }
+
 
 } // namespace cppfm

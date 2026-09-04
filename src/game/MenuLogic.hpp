@@ -1,4 +1,3 @@
-// MenuLogic — plan7 entity section Object-oriented GUI processing: per-menu-type logic for inventory containers. Each MenuLogic handles
 // slot clicks for its container type (Anvil, Enchantment, Brewing, etc.) Replaces giant switch in MenuInteraction with polymorphic
 // dispatch.
 #pragma once
@@ -54,7 +53,6 @@ public:
     bool onEnchantButton(Menu& menu, Player& player, int buttonId, MenuIo& io, int bookshelves);
 };
 
-// Brewing stand: potion brewing logic (plan6)
 class BrewingMenuLogic final : public MenuLogic {
 public:
     bool onSlotClick(Menu& menu, Player& player, int slotId, int button, int mode,

@@ -1,5 +1,4 @@
 #pragma once
-// StairsHelper — plan31 R6: stairs shape helpers extracted from GameServer.cpp (120-180 lines) Pure helpers + GameServer/world dependent
 // helper, wire-unchanged. Yarn StairsBlock#getStairsShape + isDifferentOrientation strict (front+opposite only, no 4-dir side loop).
 #include "GameServer.hpp"
 #include "../generated/BlockStates.hpp"
@@ -8,7 +7,6 @@
 
 namespace cppfm {
 
-// plan19 §1 B1 stairs strict: only front+opposite per Yarn StairsBlock#getStairsShape
 inline bool isStairsBlock(const gen::BlockDef* d){
     if(!d) return false;
     std::string n(d->name);
@@ -18,7 +16,6 @@ inline std::string getPropStr(std::uint16_t state, const char* key){
     for(auto&[k,v]: gen::propsOf(state)) if(k==key) return std::string(v);
     return "";
 }
-// plan19 §1 B1 stairs strict: isDifferentOrientation per Yarn StairsBlock#isDifferentOrientation (vanilla 1.21.4)
 inline bool isDifferentOrientation(World& w, int x,int y,int z, const std::string& stateFacing, const std::string& dir){
     int nx=x, nz=z;
     if(dir=="north") nz-=1;

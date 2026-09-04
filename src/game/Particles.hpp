@@ -1,5 +1,3 @@
-// Particles: world_particles 0x2A wire helpers (plan26 D19/D20).
-// plan28: particle wire (packet_world_particles shape + type-switch payloads, e.g. dust/block/item).
 #pragma once
 #include <cstdint>
 #include "../core/ByteBuffer.hpp"
@@ -33,21 +31,14 @@ namespace ParticleId {
 }
 
 struct ParticleData {
-    // for block / falling_dust / block_marker / dust_pillar / block_crumble
     std::uint32_t blockState = 0;
-    // for dust (13)
     float r = 1.0f, g = 0.0f, b = 0.0f;
     float scale = 1.0f;
-    // for dust_color_transition (14)
     float fromR = 1.0f, fromG = 0.0f, fromB = 0.0f;
     float toR = 0.0f, toG = 1.0f, toB = 0.0f;
-    // for entity_effect (20)
     std::int32_t color = 0;
-    // for sculk_charge (36)
     float roll = 0.0f;
-    // for shriek (101)
     std::int32_t shriekDelay = 0;
-    // for item (45) - caller should write Slot manually if needed; we keep raw bytes vibration/trail are complex; handled as no-op if not
     // provided convenience: set dust from ARGB 0xAARRGGBB
     void setDustFromARGB(std::int32_t argb, float s = 1.0f){
         float rf = ((argb >> 16) & 0xFF) / 255.0f;

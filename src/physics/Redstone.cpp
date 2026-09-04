@@ -14,7 +14,6 @@
 namespace cppfm {
 
 
-// ------------------------------------------------------------------ IRedstoneBehavior / RedstoneComponent (plan7)
 
 int RedstoneComponent::calculateOutputSignal(World& world, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state) {
     (void)world; (void)x; (void)y; (void)z;
@@ -244,7 +243,6 @@ int RedstoneEngine::analogOutputForContainer(BlockEntity* be) {
     }
     if (slots==0) return 0;
     if (filled==0) return 0;
-    // Vanilla comparator formula (plan11 §3): signal = floor(1 + (fillSum/slots)*14)
     // where fillSum = sum(count/maxStack) and filled>0 gives at least 1
     double avg = fillSum / double(slots);
     int sig = static_cast<int>(std::floor(1.0 + avg * 14.0));
@@ -254,7 +252,6 @@ int RedstoneEngine::analogOutputForContainer(BlockEntity* be) {
     return sig;
 }
 
-// plan18 §5: conductive block helper — comparator can read through opaque solid block
 static bool isConductiveBlock(std::uint16_t st) {
     if (st==0) return false;
     const gen::BlockDef* bd = gen::blockByState(st);
@@ -311,14 +308,12 @@ int RedstoneEngine::emissionLevel(std::uint16_t state, std::int32_t x, std::int3
         else if (facing=="east") bx-=1;
         else if (facing=="up") by-=1;
         else if (facing=="down") by+=1;
-        // Rear can be container or redstone dust; take max per plan11 §3 — plan18 §5 adds conductive throughput 1) direct container
         int directContainerSig = analogOutputAt(bx,by,bz);
         BlockEntity* rearBE = beStore_ ? beStore_->getAt(bx,by,bz) : nullptr;
         bool hasDirectContainer = (rearBE != nullptr && directContainerSig>=0) ? true : (rearBE!=nullptr);
         // actually analogOutputAt returns 0 both for empty container and no container, so check BE presence
         if (rearBE && directContainerSig==0) {
             // distinguish empty container (filled==0) vs no container: analogOutputForContainer returns 0 for empty, but BE exists -> treat as container present with signal 0
-            // hasDirectContainer = true
         } else if (!rearBE) {
             hasDirectContainer = false;
         }
@@ -369,7 +364,6 @@ int RedstoneEngine::emissionLevel(std::uint16_t state, std::int32_t x, std::int3
         int out;
         if (overPowered) out = 15;
         else out = std::max(containerSig, rearDust);
-        // handle compare/subtract side power (plan9 #22) — plan18 §5 keeps subtract/compare semantics
         auto sidePower = [&](int sx, int sz)->int {
             std::uint16_t sst = world_.getBlock(sx, y, sz);
             Comp sc = classify(sst);
@@ -434,7 +428,6 @@ bool RedstoneEngine::isPoweredHere(std::int32_t x, std::int32_t y,
 
 void RedstoneEngine::onBlockChanged(std::int32_t x, std::int32_t y,
                                     std::int32_t z) {
-    // Simulation-distance culling for all subsystems via isChunkInSimulationDistance (plan11 §1 #6)
     // Includes ChunkTicket SPAWN forced always-tick for spawn chunks.
     if (!world_.isChunkInSimulationDistance(x >> 4, z >> 4) && !world_.isPositionInSimulationDistance(x, z)) return;
     recomputeAround(x, y, z);
@@ -447,7 +440,6 @@ void RedstoneEngine::onBlockChanged(std::int32_t x, std::int32_t y,
     // Pistons react at changed pos and neighbors
     handlePiston(x,y,z);
     for (int d=0; d<6; ++d) handlePiston(x+DX[d], y+DY[d], z+DZ[d]);
-    // QC hook (plan38 B-08): piston at y-1 sees y powered via isQuasiPowered(y-1) → y The 6-neighbor loop already covers y±1, but explicit
     // QC y+1 evaluation ensures non-adjacent power (lever on block above piston) propagates even if recomputeAround misses due to wire
     // flood-fill order. Re-evaluate one above/below for QC.
     handlePiston(x, y - 1, z);
@@ -484,7 +476,6 @@ void RedstoneEngine::onBlockChanged(std::int32_t x, std::int32_t y,
             std::uint16_t prev = 0;
             auto it = observerPrev_.find(key);
             if (it != observerPrev_.end()) prev = it->second;
-            // if same state as before, still trigger? We'll trigger anyway but update prev
             observerPrev_[key] = world_.getBlock(x,y,z);
             std::int64_t now = tickRef_ ? *tickRef_ : 0;
             handleObserverTrigger(ox,oy,oz, now);
@@ -667,7 +658,6 @@ void RedstoneEngine::recomputeRailShape(std::int32_t x, std::int32_t y, std::int
     world_.setBlock(x,y,z, ns);
 }
 
-// plan25 B17 glazed terracotta PUSH_ONLY — does not stick to slime/honey, can be pushed but not pulled
 static bool isStickyBlock(const std::string& name) {
     // glazed is explicitly not sticky (Yarn GlazedTerracottaBlock PUSH_ONLY)
     if(name.find("glazed_terracotta")!=std::string::npos) return false;
@@ -734,7 +724,6 @@ void RedstoneEngine::handlePiston(std::int32_t x, std::int32_t y, std::int32_t z
     std::int64_t now = tickRef_ ? *tickRef_ : 0;
     int face=0;
     if (facing=="down") face=0; else if (facing=="up") face=1; else if (facing=="north") face=2; else if (facing=="south") face=3; else if (facing=="west") face=4; else if (facing=="east") face=5;
-    // Validate push feasibility with honey/slime stickiness and 12-block limit (plan10 §4)
     if (wantExtend) {
         int dx=0,dy=0,dz=0;
         if (facing=="north") dz=-1; else if (facing=="south") dz=1; else if (facing=="west") dx=-1; else if (facing=="east") dx=1; else if (facing=="up") dy=1; else if (facing=="down") dy=-1;
@@ -804,7 +793,6 @@ void RedstoneEngine::handlePiston(std::int32_t x, std::int32_t y, std::int32_t z
             std::uint16_t dst=world_.getBlock(nx,ny,nz);
             if (dst==0) continue;
             if (visited.count(key3(nx,ny,nz))) continue; // will be moved away (overlap)
-            // if destination is beyond 12 range and not air, need to check if it can be pushed as well but we already limited
             // Any non-air destination not in set means blocked
             fail=true; break;
         }
@@ -883,7 +871,6 @@ bool RedstoneEngine::onInteract(std::int32_t x, std::int32_t y,
         return true;
     }
     if (b->name.find("comparator") != std::string::npos) {
-        // Toggle mode compare <-> subtract per plan11 §3
         std::string curMode="compare";
         for (auto& [k,v] : gen::propsOf(st)) if (k=="mode") curMode=std::string(v);
         std::string newMode = (curMode=="compare"?"subtract":"compare");
@@ -912,7 +899,6 @@ void RedstoneEngine::processPendingPistonCommits(std::int64_t now) {
         if (it->extend) {
             // clear moving_piston blocks (their BEs still hold state)
             for (auto &e : it->entries) {
-                // remove moving_piston BE and clear block (was moving_piston)
                 if (beStore_) beStore_->remove(posKey(e.x,e.y,e.z));
                 // ensure block is cleared before placing shifted (already moving_piston)
                 setBlockAndBroadcast(e.x,e.y,e.z, 0);
@@ -939,7 +925,6 @@ void RedstoneEngine::processPendingPistonCommits(std::int64_t now) {
                 setBlockAndBroadcast(it->hx,it->hy,it->hz, headSt);
             }
         } else {
-            // retract: head was moving_piston at hx,hy,hz clear head moving_piston
             if (beStore_) beStore_->remove(posKey(it->hx,it->hy,it->hz));
             setBlockAndBroadcast(it->hx,it->hy,it->hz, 0);
             // handle sticky pull entries (original pullEntries holds original positions+states)
@@ -1020,7 +1005,6 @@ void RedstoneEngine::handlePistonScheduled(std::int32_t x, std::int32_t y, std::
     std::int32_t hx=x+dx, hy=y+dy, hz=z+dz;
     std::int64_t now = tickRef_ ? *tickRef_ : 0;
     if (extendNow) {
-        // Collect blocks to push with sticky expansion (plan21 B17/B18: glazed PUSH_ONLY, 12 limit)
         struct Pos{int x,y,z;};
         std::vector<Pos> toPush;
         std::unordered_set<std::int64_t> visited;
@@ -1084,7 +1068,6 @@ void RedstoneEngine::handlePistonScheduled(std::int32_t x, std::int32_t y, std::
             setBlockAndBroadcast(x,y,z, st);
             return;
         }
-        // plan19 §8: moving_piston BE 2-tick — create moving_piston at each original pos and defer commit 2 ticks
         PendingPistonCommit commit;
         commit.pistonX=x; commit.pistonY=y; commit.pistonZ=z;
         commit.hx=hx; commit.hy=hy; commit.hz=hz;
@@ -1147,7 +1130,6 @@ void RedstoneEngine::handlePistonScheduled(std::int32_t x, std::int32_t y, std::
                     setBlockAndBroadcast(hx,hy,hz, mvSt);
                 }
             }
-            // plan25 B18 sticky pull 12-chain B17 glazed PUSH_ONLY — BFS 12 sticky retract
             if (c==Comp::StickyPiston) {
                 std::int32_t px=hx+dx, py=hy+dy, pz=hz+dz;
                 std::uint16_t frontSt = world_.getBlock(px,py,pz);
@@ -1224,7 +1206,6 @@ void RedstoneEngine::handlePistonScheduled(std::int32_t x, std::int32_t y, std::
     }
 }
 void RedstoneEngine::processPistonQueue(std::int64_t now) {
-    // plan28 finish: index-based piston drain (push_back realloc invalidates iterators; observed livelock) + per-tick budget.
     const int budget = 32;
     int done = 0;
     for (std::size_t i = 0; i < pistonQueue_.size() && done < budget; ) {
@@ -1241,7 +1222,6 @@ void RedstoneEngine::processPistonQueue(std::int64_t now) {
 void RedstoneEngine::tick(std::int64_t now) {
     processPistonQueue(now);
     processPendingPistonCommits(now);
-    // plan28 finish: bound per-tick redstone drain (feedback cascades starved the tick); leftovers drain later.
     int budget = 4096;
     while (!queue_.empty() && queue_.top().dueTick <= now && --budget > 0) {
         const RedstoneTick t = queue_.top();

@@ -1,6 +1,4 @@
-// Attributes: attribute system (plan8 Combat/Survival — full AttributeManager) Each attribute has base value +
 // vector<Modifier{uuid,amount,operation}> Operations: 0 add, 1 multiply_base, 2 multiply_total — order is add -> multiply_base ->
-// multiply_total Vanilla 1.21.4 attributes: see net.minecraft.world.entity.ai.attributes.Attributes plan15/21-23 combat: 32 attributes per
 // Yarn 1.21.4, caps 30/20, sync via UpdateAttributes 0x7C.
 #pragma once
 #include <string>
@@ -15,7 +13,6 @@ namespace cppfm {
 enum class Attribute : uint8_t {
     MOVEMENT_SPEED=0, MAX_HEALTH, KNOCKBACK_RESISTANCE, ARMOR, ARMOR_TOUGHNESS,
     ATTACK_DAMAGE, ATTACK_SPEED, FLYING_SPEED, FOLLOW_RANGE, MAX_ABSORPTION, STEP_HEIGHT,
-    // plan15 strict 21 additions for Yarn 1.21.4 32 total
     ATTACK_KNOCKBACK, BLOCK_BREAK_SPEED, BLOCK_INTERACTION_RANGE, BURNING_TIME,
     ENTITY_INTERACTION_RANGE, EXPLOSION_KNOCKBACK_RESISTANCE, FALL_DAMAGE_MULTIPLIER,
     GRAVITY, JUMP_STRENGTH, LUCK, MINING_EFFICIENCY, MOVEMENT_EFFICIENCY, OXYGEN_BONUS,
@@ -114,7 +111,6 @@ public:
         setBase(Attribute::ARMOR_TOUGHNESS,0); setBase(Attribute::ATTACK_DAMAGE,1);
         setBase(Attribute::ATTACK_SPEED,4); setBase(Attribute::FLYING_SPEED,0.02); setBase(Attribute::FOLLOW_RANGE,32);
         setBase(Attribute::MAX_ABSORPTION,0); setBase(Attribute::STEP_HEIGHT,0.6);
-        // plan15 strict defaults per Yarn 1.21.4 + wiki
         setBase(Attribute::ATTACK_KNOCKBACK,0);
         setBase(Attribute::BLOCK_BREAK_SPEED,1);
         setBase(Attribute::BLOCK_INTERACTION_RANGE,4.5);
@@ -138,7 +134,6 @@ public:
         setBase(Attribute::WATER_MOVEMENT_EFFICIENCY,0);
     }
     void setBase(Attribute a,double v){
-        // plan23 edge: clamp NaN/Inf and vanilla bounds (gravity >=0, scale 0.0625-16, armor 30 toughness 20)
         if (!std::isfinite(v)) v = 0;
         if (a == Attribute::GRAVITY) v = std::max(0.0, v);
         else if (a == Attribute::SCALE) v = std::clamp(v, 0.0625, 16.0);
@@ -181,7 +176,6 @@ public:
         if (abs > 0) addModifier(Attribute::MAX_ABSORPTION, {"effect_absorption", double(abs), 0});
         // Attack speed from Haste/MiningFatigue not vanilla but we keep digSpeed separate
     }
-    // ARMOR sync helpers (plan7): derive armor/toughness/kb from equipped items
     void syncArmor(int armor, int toughness, float kbResist){
         setBase(Attribute::ARMOR, double(armor));
         setBase(Attribute::ARMOR_TOUGHNESS, double(toughness));
@@ -192,7 +186,6 @@ public:
             || getBase(Attribute::ARMOR_TOUGHNESS) != double(toughness)
             || getBase(Attribute::KNOCKBACK_RESISTANCE) != double(kbResist);
     }
-    // plan13 §5: SoulSpeed / SwiftSneak movement modifiers
     void applySoulSpeed(int lvl){
         removeModifier(Attribute::MOVEMENT_SPEED, "soul_speed");
         if(lvl>0){
@@ -219,7 +212,6 @@ public:
         if(isSneaking && swiftLvl>0) applySwiftSneak(swiftLvl); else removeModifier(Attribute::MOVEMENT_SPEED, "swift_sneak");
     }
     template<typename W> void writeUpdate(W& out,int32_t eid) const{
-        // plan30 H1: UpdateAttributes key is varint 0-21 (not string); modifier uuid is 36-char string.
         static const Attribute orderAll[] = {
             Attribute::MAX_HEALTH, Attribute::MOVEMENT_SPEED, Attribute::ATTACK_DAMAGE,
             Attribute::ARMOR, Attribute::ARMOR_TOUGHNESS, Attribute::KNOCKBACK_RESISTANCE,

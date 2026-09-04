@@ -1,5 +1,4 @@
 // DatapackManager: lightweight wrapper over TagManager and LootTableEvaluator plus advancements/predicates/item_modifiers registries and
-// function storage. Plan13 §10: supports /datapack list/enable/disable and tab completion for functions.
 #pragma once
 #include <algorithm>
 #include <filesystem>
@@ -17,7 +16,6 @@
 #include "GameRules.hpp"
 #include "Scoreboard.hpp"
 #include "DamageSource.hpp"
-// PredicateContext deps — World/Entities for location/entity checks (plan35 §3)
 #include "Entities.hpp"
 struct Player; // forward (GameServer.hpp defines struct Player, avoid circular)
 class World;   // forward for location checks; included conditionally below
@@ -27,7 +25,6 @@ class World;   // forward for location checks; included conditionally below
 
 namespace cppfm {
 
-// plan40 §3 helper: json subset for nbt predicate
 inline bool jsonSubset(const json::Value& want, const json::Value& have){
     if(want.isObj()){
         if(!have.isObj()) return false;
@@ -62,7 +59,6 @@ inline std::string entityNbtDump(const MobEntity* e){
     return o.dump();
 }
 
-// plan35 §3: PredicateContext — bridges gamerule (GameRules), location (World biome/pos/light) and entity (MobEntity/Player) references
 // Used by evaluatePredicateValue(ctx) to give context-aware results instead of true-fixed stubs.
 struct PredicateContext {
     World* world = nullptr;
@@ -71,19 +67,16 @@ struct PredicateContext {
     MobEntity* entity = nullptr;
     int32_t x = 0, y = -64, z = 0;
     float explosionRadius = 0.f;
-    // plan37 §4: additional context for predicate 8->12
     int64_t dayTime = 0;
     bool raining = false;
     bool thundering = false;
     int fortuneLevel = 0;
     bool silkTouch = false;
-    // plan38 B-13: Scoreboard lookup for entity_scores + generic value for value_check
     Scoreboard* scoreboard = nullptr;
     int valueCheckValue = 0;
     bool hasValueCheck = false;
     std::string playerName;
     std::string heldItemName;
-    // plan40 §3 C-07: additional for nbt/type_specific/location dimension
     DamageSource* damageSource = nullptr;
     std::string nbt;
     std::unordered_set<std::string> advancements;
@@ -95,7 +88,6 @@ public:
     TagManager tagManager;
     LootTableEvaluator lootTables;
 
-    // Registries (plan13)
     std::unordered_map<std::string, std::string> advancements;   // id -> raw json
     std::unordered_map<std::string, std::string> predicates;     // id -> raw json
     std::unordered_map<std::string, std::string> itemModifiers;  // id -> raw json
@@ -130,7 +122,6 @@ public:
 
         // scan assetsBase for advancements/predicates/item_modifiers/functions
         loadPackDirectory(assetsBase, "vanilla");
-        // also scan assets/data directly if assetsBase was different
         if (assetsBase != "assets/data") loadPackDirectory("assets/data", "vanilla");
 
         // scan world/datapacks/*/data/** if present
@@ -143,7 +134,6 @@ public:
                 availablePacks.insert(packName);
                 // default enable newly discovered packs if not already disabled
                 if (enabledPacks.find(packName) == enabledPacks.end()) {
-                    // auto-enable unless explicitly disabled before; for simplicity enable
                     enabledPacks.insert(packName);
                 }
                 TagManager extra;
@@ -251,7 +241,6 @@ public:
         return out;
     }
 
-    // Plan14 §6 verification helper: ensure brigadier BlockState (id 12) and DatapackManager are consistent
     bool verify() const {
         // tag counts should meet vanilla 67/20 minimums (TagManager ensures defaults)
         if (tagManager.itemTags.size() < 67 || tagManager.blockTags.size() < 20) return false;
@@ -276,7 +265,6 @@ public:
         tagManager.applyToRecipeTags(recipes.tags_);
     }
 
-    // Pack management (plan13)
     std::vector<std::string> listAvailable() const {
         std::vector<std::string> v(availablePacks.begin(), availablePacks.end());
         std::sort(v.begin(), v.end());
@@ -300,7 +288,6 @@ public:
         auto [it, inserted] = enabledPacks.insert(name);
         return inserted;
     }
-    // plan35 §4: disablePack affects recipes/tags only; advancements/predicates stay active.
     bool disablePack(const std::string& name) {
         if (enabledPacks.find(name) == enabledPacks.end()) return false;
         if (name == "vanilla") return false;
@@ -312,7 +299,6 @@ public:
     size_t predicateCount() const { return predicates.size(); }
     size_t itemModifierCount() const { return itemModifiers.size(); }
 
-    // plan35 §3/§4: PredicateContext-aware predicate evaluation (gamerule/location/entity_properties).
     bool evaluatePredicateValue(const json::Value& v, const PredicateContext& ctx, int depth = 0) const {
         if (depth > 5) return false; // cycle guard for reference
         if (v.isObj()) {
@@ -444,7 +430,6 @@ public:
                                     else if (r->isObj()) {
                                         int mn = r->find("min") ? r->find("min")->asInt(posVal) : posVal;
                                         int mx = r->find("max") ? r->find("max")->asInt(posVal) : posVal;
-                                        // if only min or max present, use them
                                         if (auto* mnV = r->find("min")) mn = mnV->asInt(mn);
                                         if (auto* mxV = r->find("max")) mx = mxV->asInt(mx);
                                         if (posVal < mn || posVal > mx) return false;
@@ -648,7 +633,6 @@ public:
                 } else if (c == "minecraft:survives_explosion" || c == "survives_explosion") {
                     return true;
                 } else if (c == "minecraft:table_bonus" || c == "table_bonus") {
-                    // fortune-indexed chance
                     if(ctx.fortuneLevel>=0){
                         double ch=0.5;
                         if(auto* chances=v.find("chances")){
@@ -696,7 +680,6 @@ public:
                             // value as range {min,max} — check have in range directly
                             if (auto* mn = val->find("min")) if (have < mn->asInt(mn->number)) return false;
                             if (auto* mx = val->find("max")) if (have > mx->asInt(mx->number)) return false;
-                            // if value was range, also check optional "range"
                             if (val->find("min") || val->find("max")) {
                                 if (auto* rng = v.find("range")) {
                                     if (rng->isObj()) {
@@ -867,7 +850,6 @@ public:
             return true;
         }
     }
-    // legacy overload keeps audit strictness
     bool evaluatePredicateValue(const json::Value& v) const {
         return evaluatePredicateValue(v, PredicateContext{}, 0);
     }
@@ -941,7 +923,6 @@ public:
                     }
                 } else if (func == "minecraft:enchant_randomly" || func == "enchant_randomly" ||
                            func == "minecraft:enchant_with_levels" || func == "enchant_with_levels") {
-                    // plan40: actually apply random enchant
                     std::string pick = "minecraft:sharpness";
                     if(auto* opts=f.find("options")) if(opts->isArr() && !opts->arr.empty() && opts->arr[0].isStr()) pick=opts->arr[0].asStr();
                     ItemStack::addEnchant(stack, pick, 1);

@@ -71,7 +71,6 @@ BTStatus AttackPlayerAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now
 BTStatus TeleportRandomAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (now - m.lastTeleportTick < 20) return BTStatus::Failure;
     if (!ctx.world) return BTStatus::Failure;
-    // plan13 §6: 32-block radius, 64 attempts, y = m.y + rand(32)-16
     for (int attempt=0; attempt<64; ++attempt) {
         double nx = m.x + (rand()/(double)RAND_MAX*64 -32);
         double nz = m.z + (rand()/(double)RAND_MAX*64 -32);
@@ -147,9 +146,7 @@ BTStatus TeleportRandomAction::tick(MobEntity& m, AiContext& ctx, std::int64_t n
 BTStatus PickupBlockAction::tick(MobEntity& m, AiContext& ctx, std::int64_t) {
     if (m.carriedBlock !=0) return BTStatus::Failure;
     if (!ctx.world) return BTStatus::Failure;
-    // plan13 §6: 1/1000 chance per tick, only holdable blocks (grass/dirt/sand/gravel etc.)
     if (rand()%1000 != 0) return BTStatus::Failure;
-    // plan16: enderman_holdable tag ~70 blocks (vanilla Yarn enderman_holdable, 1.21.4 70 entries)
     static const char* holdable[] = {
         "minecraft:grass_block","minecraft:dirt","minecraft:coarse_dirt","minecraft:podzol","minecraft:rooted_dirt",
         "minecraft:dirt_path","minecraft:mud","minecraft:clay","minecraft:sand","minecraft:red_sand",
@@ -201,7 +198,6 @@ BTStatus PickupBlockAction::tick(MobEntity& m, AiContext& ctx, std::int64_t) {
 BTStatus StareAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     Player* p = ctx.nearestPlayer;
     if (!p) return BTStatus::Failure;
-    // plan13 §6: stare anger – check helmet not carved_pumpkin, not creative/spectator
     if (p->gamemode==1 || p->gamemode==3) return BTStatus::Failure;
     bool hasPumpkin=false;
     if (p->inv.size()>=9) {
@@ -218,7 +214,6 @@ BTStatus StareAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     m.angerTargetEntityId = p->entityId;
     m.angryUntilTick = now + 100 + rand()%100;
     if (ctx.srv) {
-        // metadata angry flag (Yarn EndermanEntity CREEPY Boolean 16, was 15 Byte)
         WriteBuffer md;
         md.varint(m.entityId);
         meta::writeMetaBool(md, 16, true);
@@ -237,7 +232,6 @@ BTStatus WitherSkullAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now)
     double d = std::sqrt(dx*dx+dz*dz);
     if (d>32) return BTStatus::Failure;
     double inv = 1.0/ (d+1e-6);
-    // plan21/24/26 E3: wither 3-burst skulls (+charged blue at half HP); verified intact across merges.
     if (ctx.srv) {
         const float maxH = mobStats(m.kind).maxHealth;
         bool halfHealth = m.health <= maxH * 0.5f;
@@ -324,7 +318,6 @@ BTStatus BreedAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     m.inLove=false; partner->inLove=false;
     m.breedCooldownUntil = now + 6000;
     partner->breedCooldownUntil = now + 6000;
-    // plan38 B-13: bred_animals for nearest player
     {
         auto nearby = ctx.srv->playersSnapshot();
         Player* best=nullptr; double bestD=64;
@@ -373,7 +366,6 @@ BTStatus WanderAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     return BTStatus::Running;
 }
 
-// ---------- plan7 extended actions ----------
 
 BTStatus BlazeFireballAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (m.kind != MobKind::Blaze) return BTStatus::Failure;
@@ -459,7 +451,6 @@ BTStatus WardenSonicBoomAction::tick(MobEntity& m, AiContext& ctx, std::int64_t 
     if (m.witherSkullCooldown > now) return BTStatus::Failure;
     Player* t = ctx.nearestPlayer;
     if (!t) return BTStatus::Failure;
-    // plan22 network polish: sonic boom 15×20 cylinder (independent horiz 15, vert 20, inclusive), armor+enchant bypass, through walls, 10 damage (15 hard)
     auto isInSonicBoomRange = [](double wx, double wy, double wz, double tx, double ty, double tz) -> bool {
         double dx = tx - wx, dz = tz - wz, dy = ty - wy;
         double horiz2 = dx*dx + dz*dz;
@@ -478,14 +469,12 @@ BTStatus WardenSonicBoomAction::tick(MobEntity& m, AiContext& ctx, std::int64_t 
     }
     if (ctx.srv) {
         // strict audit HIGH: sonic boom bypasses armor+enchant (bypassArmor/bypassEnchant=true) 15×20 cylinder, 10 damage (15 hard), no knockback, pierces shields
-        // plan26 combat polish: verify sonic 15x20 cylinder (D17) with bypassArmor/bypassEnchant/bypassShield, particle 27 sonic_boom intact after entity D17 fix.
         float dmg = 10.0f;
         if (ctx.srv->difficulty() == "hard") dmg = 15.0f;
         ctx.srv->applyDamage(*t, dmg, DamageSource::sonicBoom());
         ctx.srv->broadcastSound("minecraft:entity.warden.sonic_boom", m.x,m.y,m.z,2.f,1.f,"hostile");
         // vanilla sonic boom has no knockback; do not send EntityVelocity
         // spawn sonic_boom particle (optional, not required for audit but helps wire capture)
-        // plan26 D17: particle id 27 sonic_boom (was 0 placeholder angry_villager); verified SimpleParticleType no extra data.
         {
             WriteBuffer p;
             p.boolean(true); p.boolean(false);

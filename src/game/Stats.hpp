@@ -1,4 +1,3 @@
-// Stats & Advancements (plan3.md 永続化拡張).
 //
 // * StatsManager: per-player counters persisted to world/stats/<uuid>.json in
 //   a vanilla-shaped JSON layout; surfaced via /stats.
@@ -81,7 +80,6 @@ inline const std::vector<AdvancementDef>& advancementDefs() {
     return defs;
 }
 
-// plan35 §1: owned advancement with parsed vanilla JSON (story tree)
 struct AdvancementTriggerInfo {
     std::string trigger;
     json::Value conditions;
@@ -116,7 +114,6 @@ inline AdvancementDefOwned AdvancementDefToOwned(const AdvancementDef& d) {
 }
 
 // Build owned advancements from datapack raw json map (minecraft:story/* etc.)
-// Filters to story/adventure/husbandry/adventure but plan35 limits to story first.
 std::vector<AdvancementDefOwned> buildOwnedFromRaw(const std::unordered_map<std::string,std::string>& rawAdv);
 std::vector<AdvancementDefOwned> mergedAdvancements(const std::unordered_map<std::string,std::string>& rawAdv);
 
@@ -138,7 +135,6 @@ public:
         dirty_ = true;
         return true;
     }
-    // plan32 combat: revoke advancement (Yarn AdvancementCommand revoke)
     bool revoke(const std::string& id) {
         if (!has(id)) return false;
         unlocked_.erase(id);

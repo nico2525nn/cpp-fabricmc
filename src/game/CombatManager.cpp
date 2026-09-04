@@ -1,5 +1,3 @@
-// CombatManager — plan19 combat polish: EPF weight 1 verified, armor+toughness single formula 30/20, E7 strict.
-// plan20-26 combat: regression-verify combat formulas across merges (EPF w1, sonic bypass, caps 30/20).
 #include "CombatManager.hpp"
 #include "GameServer.hpp"
 #include "Entities.hpp"
@@ -27,7 +25,6 @@ int CombatManager::totalArmorForMob(const MobEntity& m) {
 }
 
 int CombatManager::computeEPF(const DamageSource& ds, const Player& p) {
-    // plan40 C-08: single source via EnchantmentHelper::getProtectionEPF (weight 1/2/2/3 caps 30/20)
     if (ds.bypassEnchant || ds.isDrown() || ds.isStarveFlag || ds.isSonic()) return 0;
     int total = 0;
     for (int i = 5; i <= 8; ++i) {
@@ -39,7 +36,6 @@ int CombatManager::computeEPF(const DamageSource& ds, const Player& p) {
 }
 
 int CombatManager::computeEPF(const DamageSource& ds, const MobEntity& m) {
-    // plan40 C-08: single source via EnchantmentHelper::getProtectionEPF
     if (ds.bypassEnchant || ds.isDrown() || ds.isStarveFlag || ds.isSonic()) return 0;
     int total = 0;
     for (int i = 2; i < 6; ++i) {
@@ -122,8 +118,6 @@ void CombatManager::applyToMob(GameServer& srv, MobEntity& m, float amount, cons
     if (m.health <= 0) m.dead = true;
 }
 
-// plan44 §3 G-08 shield block — vanilla Blocking (100% frontal negate; the historical "5 軽減" is the
-// legacy 1.8 value, 1.21.4 wiki value 100% is implemented here; see docs/SPEC_GAMEPLAY.md)
 static ItemStack* shieldStackFor(Player& p) {
     if (p.heldSlot >= 0 && p.heldSlot < 9) {
         auto& mh = p.inv[36 + p.heldSlot];
@@ -154,7 +148,6 @@ bool CombatManager::tryShieldBlock(GameServer& srv, Player& victim, const Damage
     srv.broadcastEntitySound(victim.entityId, "minecraft:item.shield.block", 1.f, 1.f, GameServer::SoundSource::Player);
     return true;
 }
-// plan44 §3 G-09 thorns — per-piece independent lv*15% proc, reflect uniform 1..4 + armor cost 2
 void CombatManager::applyThornsReflection(GameServer& srv, Player& victim,
                                           MobEntity* attackerMob, Player* attackerPlayer) {
     if (!attackerMob && !attackerPlayer) return;

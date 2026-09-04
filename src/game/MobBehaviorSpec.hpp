@@ -1,5 +1,3 @@
-// MobBehaviorSpec — plan46 G-06: vanilla 1.21.4 spec pins for the 12
-// previously-unmapped species (witch/guardian/elder/strider/frog/camel/
 // sniffer/armadillo/breeze/creaking/bogged/phantom).
 //
 // Each row is the "interval / range / magnitude" triple from docs/SPEC_GAMEPLAY.md

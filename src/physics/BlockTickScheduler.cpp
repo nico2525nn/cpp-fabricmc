@@ -11,7 +11,6 @@
 
 namespace cppfm {
 
-// RandomTickScheduler (plan7): multiset queue sorted by dueTick
 void RandomTickScheduler::scheduleRandomTick(std::int32_t x, std::int32_t y, std::int32_t z, std::int64_t delay) {
     queue_.insert({x, y, z, delay});
 }
@@ -48,7 +47,6 @@ void BlockTickScheduler::schedule(std::int32_t x, std::int32_t y, std::int32_t z
 }
 
 void BlockTickScheduler::tick(std::int64_t now) {
-    // plan13 §1: lazy register grass_block snowy behavior if not already registered (avoids editing GameServer.hpp)
     if (!behaviorFor("minecraft:grass_block")) {
         registerBehavior("minecraft:grass_block", std::make_unique<GrassBlockBehavior>());
     }
@@ -198,7 +196,6 @@ static bool isCropBlock(const gen::BlockDef* d) {
     return n.find("wheat")!=std::string::npos || n.find("carrots")!=std::string::npos ||
            n.find("potatoes")!=std::string::npos || n.find("beetroots")!=std::string::npos;
 }
-// plan25 B7 farming growthSpeed strict: Yarn CropBlock.getAvailableMoisture — hydrated 3.0 vs dry 1.0, /4 off-center, crop density /2 (not /4+2)
 static float growthSpeed(World& w, std::int32_t x, std::int32_t y, std::int32_t z) {
     float f = 1.0f;
     for (int dx=-1; dx<=1; ++dx) for (int dz=-1; dz<=1; ++dz) {
@@ -307,7 +304,6 @@ bool SaplingBehavior::fertilize(World& w, std::int32_t x, std::int32_t y, std::i
     return true;
 }
 
-// -------------------------------------------------------- Stem (bamboo/sugar_cane/cactus) — plan13 §1 polish bamboo: stage 0→1,
 // stage1+age0+h<12+airAbove → grow height 1→16, leaves on top 3, age thick >=4 cactus: sand/red_sand/cactus below, horizontal !transparent,
 // age 0-15, height 3→4 max sugar_cane: age 0-15, height <3 (vanilla) but allow 4 per task, no water check
 
@@ -405,7 +401,6 @@ void StemBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
     if (name.find("cactus")!=std::string::npos) vanillaLimit = 3;
     if (columnHeight >= vanillaLimit && columnHeight >= maxH_) return;
     if (columnHeight >= vanillaLimit) {
-        // if vanillaLimit < maxH (e.g., 3 vs 4), we allow up to maxH if task says 4, but keep vanilla 3 as soft.
         // For now enforce vanillaLimit to keep vanilla behavior; 4 would overgrow. Keep 3.
         // To satisfy task 4/16, we allow up to maxH if maxH>vanillaLimit and columnHeight < maxH but >=vanillaLimit → still allow? We'll allow up to maxH.
         if (columnHeight >= maxH_) return;
@@ -460,7 +455,6 @@ std::int32_t BambooBehavior::findBaseY(const World& w, std::int32_t x, std::int3
 void GrassBlockBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state, std::int64_t now, GameServer* srv) {
     randomTick(w,x,y,z,state,now,srv);
 }
-// plan19 §3 B4 grass snowy strict: snow/snow_block/powder_snow (was only snow)
 void GrassBlockBehavior::randomTick(World& w, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state, std::int64_t now, GameServer* srv) {
     if (srv) {
         if (srv->gameRules().getInt("randomTickSpeed",3)==0) return;
@@ -489,7 +483,6 @@ void GrassBlockBehavior::randomTick(World& w, std::int32_t x, std::int32_t y, st
     }
 }
 
-// -------------------------------------------------------- PaleOakLeaves (plan26 D19: pale_oak_leaves 34 ambience, 2% per randomTick)
 void PaleOakLeavesBehavior::randomTick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
                                        std::uint16_t state, std::int64_t now, GameServer* srv) {
     (void)w; (void)state; (void)now;
@@ -504,7 +497,6 @@ void PaleOakLeavesBehavior::randomTick(World& w, std::int32_t x, std::int32_t y,
     srv->broadcastPaleOakLeavesParticle(x + 0.5, y + 0.5, z + 0.5);
 }
 
-// plan29 §3 CreakingHeart: active toggle + spawn
 static bool isPaleOakLogBlock(std::uint16_t st) {
     auto* bd = gen::blockByState(st);
     if (!bd) return false;
@@ -620,7 +612,6 @@ void FarmlandBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32
         moist = want;
     }
     if (moist==0) {
-        // if no crop above and no water, revert to dirt
         bool hasCrop = false;
         std::uint16_t above = w.getBlock(x,y+1,z);
         if (above!=0) {
@@ -675,7 +666,6 @@ void SweetBerryBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int
     (void)now;(void)srv;
     int age=0; for(auto&[k,v]: gen::propsOf(state)) if(k=="age") age=std::atoi(std::string(v).c_str());
     if(age>=3) return;
-    // plan17 §3: 33.33% (1/3) via rand()%3, not 33/100. Keep 50% for mature stage if age==2
     if(age<2){
         if((rand()%3)!=0) return;
     } else {
@@ -716,7 +706,6 @@ void ChorusFlowerBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::i
                                 std::uint16_t state, std::int64_t now, GameServer* srv){
     int age=0; for(auto&[k,v]: gen::propsOf(state)) if(k=="age") age=std::atoi(std::string(v).c_str());
     if(age>=5) return;
-    // plan17 §4 Highlands gate
     if(!w.isEndHighlandsAt(x,z)) return;
     if((rand()%5)!=0) return;
     const gen::BlockDef* d=gen::blockByState(state); if(!d) return;
@@ -823,7 +812,6 @@ void ChorusFlowerBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::i
 bool ChorusFlowerBehavior::fertilize(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
                                      std::uint16_t state, GameServer* srv){ (void)w;(void)x;(void)y;(void)z;(void)state;(void)srv; return false; }
 
-// plan25 B26 kelp 14% age25 — seagrass never grows via KelpBehavior (vanilla TallSeagrass has no randomTick)
 void KelpBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
                         std::uint16_t state, std::int64_t now, GameServer* srv){
     const gen::BlockDef* d=gen::blockByState(state); if(!d) return;
@@ -988,7 +976,6 @@ bool FireBehavior::isFlammable(const std::string& blockName) const {
     return false;
 }
 
-// plan19 §6 B12/B13 fire strict: infiniburn via TagManager per dimension (was hard-coded 19)
 static bool isInfiniburnBlock(const World& w, std::int32_t x, std::int32_t y, std::int32_t z, GameServer* srv){
     std::uint16_t below = w.getBlock(x, y-1, z);
     if(below==0) return false;
@@ -997,7 +984,6 @@ static bool isInfiniburnBlock(const World& w, std::int32_t x, std::int32_t y, st
     std::string name(bd->name);
     if(srv){
         auto checkTag = [&](const std::string& tag)->bool{ return srv->tagManager_.isBlockInTag(tag, name); };
-        // plan17 §6: per-dimension tag check (vanilla FireBlock isInfiniteBurn per dim)
         std::int8_t dim = w.dimensionId();
         if(dim==0){
             if(checkTag("minecraft:infiniburn_overworld")) return true;
@@ -1018,7 +1004,6 @@ static bool isInfiniburnBlock(const World& w, std::int32_t x, std::int32_t y, st
     if(w.dimensionId()==1 && name=="minecraft:bedrock") return true;
     return false;
 }
-// plan19 §6 B13 soul fire strict: via soul_fire_base_blocks tag (was hard-coded 2)
 static bool isSoulBaseBlock(const World& w, std::int32_t x, std::int32_t y, std::int32_t z, GameServer* srv){
     std::uint16_t below = w.getBlock(x, y-1, z);
     if(below==0) return false;
@@ -1052,7 +1037,6 @@ void FireBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
         int nx = x + DIRS[di][0];
         int ny = y + DIRS[di][1];
         int nz = z + DIRS[di][2];
-        // for up direction, scan 4 blocks up
         int scan = (di==4 ? 4 : 1);
         for (int sy=0; sy<scan; ++sy) {
             int sx = nx, sy2 = ny + (di==4 ? sy : 0), sz = nz;
@@ -1060,7 +1044,6 @@ void FireBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
             std::uint16_t ns = w.getBlock(sx,sy2,sz);
             const gen::BlockDef* nd = gen::blockByState(ns);
             if (!nd) continue;
-            // if target is air, check if adjacent to flammable?
             if (ns==0) {
                 // check if flammable neighbor exists for ignition
                 bool canIgnite=false;
@@ -1076,7 +1059,6 @@ void FireBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
                     if (fireIt != gen::blockNameToState().end() && w.getBlock(sx,sy2,sz)==0) w.setBlock(sx,sy2,sz, fireIt->second);
                 }
             } else {
-                // if neighbor is flammable, try to ignite it directly
                 auto opt = reg.get(std::string(nd->name));
                 if (!opt) continue;
                 int igniteOdds = opt->igniteOdds;
@@ -1089,8 +1071,6 @@ void FireBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
                     }
                     const auto fireIt = gen::blockNameToState().find("minecraft:fire");
                     if (fireIt != gen::blockNameToState().end()) {
-                        // if target block is flammable, replace it with fire (if not solid? )
-                        // Keep simple: if flammable, set adjacent air to fire was already. If direct, set itself to fire after a check
                         if ((rand()%2)==0) w.setBlock(sx,sy2,sz, fireIt->second);
                     }
                 }
@@ -1119,7 +1099,6 @@ void FireBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
     {
         const gen::BlockDef* d = gen::blockByState(state);
         if (d) {
-            // polish: removed placeholder isFlammable check (was unused); use correct neighbor check below
             // Instead compute correctly via neighbor check
             bool north = false, south=false, east=false, west=false, up=false;
             auto isFlamAt = [&](int ox,int oy,int oz){ auto* bd=gen::blockByState(w.getBlock(x+ox,y+oy,z+oz)); return bd && isFlammable(std::string(bd->name)); };
@@ -1128,7 +1107,6 @@ void FireBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
             east = isFlamAt(1,0,0);
             west = isFlamAt(-1,0,0);
             up = isFlamAt(0,1,0);
-            // if any flammable, ensure corresponding bool prop true; vanilla updates shape, but we keep age only
             // we could set block state with those props if fire has them
             bool hasNorth=false, hasSouth=false, hasEast=false, hasWest=false, hasUp=false;
             for(auto& [k,v]: gen::propsOf(state)){
@@ -1166,7 +1144,6 @@ void FireBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
     }
 }
 
-// -------------------------------------------------------- PortalAge (plan6 §3)
 
 void PortalAgeBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
                              std::uint16_t state, std::int64_t now, GameServer* srv) {

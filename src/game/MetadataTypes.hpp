@@ -1,7 +1,6 @@
 #pragma once
 // MetadataTypes: entity metadata type ids per 1.21.4 protocol.json entityMetadataLoop Verified against Prismarine minecraft-data 1.21.4
 // proto.yml entityMetadataEntry type varint and Yarn 1.21.4 TrackedDataHandlerRegistry (BOOLEAN=8, BYTE=0, OPTIONAL_BLOCK_STATE=15). Used
-// by Creeper (D13/D14) and Enderman (D15) fixes — plan24 §4/§5.
 #include <cstdint>
 #include <optional>
 #include "../core/ByteBuffer.hpp"

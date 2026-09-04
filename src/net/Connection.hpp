@@ -1,5 +1,4 @@
 // Connection: blocking TCP client connection + packet framing.
-// plan25 network polish: verified readFrame/writeFrame varint+compression+AES-CFB8 parity (plan23 online-mode), strict 78/78 green, deep D10/D11 deferred.
 #pragma once
 #include <cstdint>
 #include <string>
@@ -56,7 +55,6 @@ public:
             if (fd_ >= 0) { ::shutdown(fd_, SHUT_RDWR); ::close(fd_); fd_ = -1; }
         } catch (...) {}
     }
-    // plan42 R3: abortive close (RST) for kicks; call after Disconnect flush + grace delay.
     void abort() noexcept {
         try {
             std::lock_guard lk(tx_);
@@ -80,14 +78,11 @@ public:
         timeval tv{seconds, 0};
         setsockopt(fd_, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
     }
-    // plan46 §1 A6 (slow-loris guard): bound blocking recvs; on expiry kick with Disconnect.
     void setRecvTimeout(unsigned seconds) {
         timeval tv{seconds, 0};
         setsockopt(fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     }
-    // plan46 §1 A1: per-connection bandwidth budget (2MB burst/1MB/s); opt-in so tests stay unthrottled.
     void enableFloodBudget(bool on) { floodBudget_ = on; }
-    // plan45 B6 W-13(a): MSG_PEEK first byte to detect legacy 0xFE ping (-1 on timeout).
     int peekFirstByte(int timeoutMs) const {
         if (fd_ < 0) return -1;
         pollfd pfd{};
@@ -100,7 +95,6 @@ public:
         if (n != 1) return -1;
         return static_cast<int>(b);
     }
-    // plan45 B6 W-13(a): raw unframed write (legacy ping reply bypasses
     // length-prefix/compression/encryption — pre-1.7 clients speak no framing).
     void sendRaw(const std::uint8_t* d, std::size_t n) {
         std::lock_guard lk(tx_);
@@ -117,7 +111,6 @@ public:
         if (getpeername(fd_, reinterpret_cast<sockaddr*>(&addr), &sl) != 0) return 0;
         return ntohs(addr.sin_port);
     }
-    // returns peer ip:port string (best effort)
     std::string peer() const {
         sockaddr_in addr{}; socklen_t sl = sizeof(addr);
         if (getpeername(fd_, reinterpret_cast<sockaddr*>(&addr), &sl) != 0) return "?";
@@ -152,7 +145,6 @@ public:
         if (len <= 0 || static_cast<std::uint32_t>(len) > kMaxFrame)
             throw PacketDecoder::OversizeError(
                 "frame length out of range: " + std::to_string(len));
-        // plan46 §1 A1: charge bandwidth budget BEFORE the attacker-sized allocation.
         if (floodBudget_ &&
             !bw_.consume(static_cast<double>(len), steadyNowMs()))
             throw PacketDecoder::OversizeError("connection bandwidth budget exceeded");
@@ -170,7 +162,6 @@ public:
         }
         return PacketDecoder::decodeFrame(frame_, compressionThreshold_);
     }
-    // plan43 W-12: frame read with first-byte deadline (slow-loris guard); then blocks as usual.
     std::vector<std::uint8_t> readFrameWithTimeout(std::chrono::milliseconds timeout) {
         pollfd pfd{};
         pfd.fd = fd_;
@@ -218,7 +209,6 @@ private:
     bool encrypted_ = false;
     std::unique_ptr<crypto::AesCfb8> encCtx_, decCtx_;
     int compressionThreshold_ = -1;
-    // plan46 §1 A1: bandwidth budget (server-side accepted sockets only).
     bool floodBudget_ = false;
     RateLimiter bw_;
 

@@ -56,8 +56,15 @@ class Bot(threading.Thread):
                         mv_range = 500 if self.duration >= 300 else 20
                         if self.duration >= 7200:
                             mv_range = 3000
-                        x = random.uniform(-mv_range, mv_range)
-                        z = random.uniform(-mv_range, mv_range)
+                        # Walk between adjacent positions rather than teleporting
+                        # across the whole range; this still crosses chunks while
+                        # avoiding a synchronous generation storm in the server.
+                        step = 2.0 if self.duration < 7200 else 8.0
+                        span = max(1, int(mv_range / step))
+                        phase = (self.actions + span) % (2 * span)
+                        offset = phase * step if phase <= span else (2 * span - phase) * step
+                        x = offset - mv_range
+                        z = 0.0
                         c.send_packet_raw(0x1c, struct.pack(">ddd", x, -60.0, z) + b"\x01")
                         # chat / villager trade / summon etc (plan36 §4 actions)
                         r = random.random()

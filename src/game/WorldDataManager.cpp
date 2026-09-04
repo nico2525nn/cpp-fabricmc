@@ -97,7 +97,6 @@ bool WorldDataManager::saveLevelDataWithProviders(std::int64_t worldTicks, std::
             dragon.set("ExitPortalLocation", std::move(exitPos));
             data.set("DragonFight", std::move(dragon));
         }
-        // GameRules: ensure all vanilla rules present — 37+ defaults (plan20 W18 strict, was 14)
         auto ensureGr = [&](nbt::Value &gr){
             auto ensure = [&](const char* k, const char* v){ if (!gr.get(k)) gr.set(k, nbt::Value::makeString(v)); };
             ensure("doFireTick","true"); ensure("mobGriefing","true"); ensure("keepInventory","false");
@@ -113,7 +112,6 @@ bool WorldDataManager::saveLevelDataWithProviders(std::int64_t worldTicks, std::
             ensure("doPatrolSpawning","true"); ensure("doTraderSpawning","true"); ensure("doWardenSpawning","true");
             ensure("forgiveDeadPlayers","true"); ensure("universalAnger","false"); ensure("playersSleepingPercentage","100");
             ensure("blockExplosionDropDecay","true");
-            // plan20 W18: 1.19.3+ additions
             ensure("mobExplosionDropDecay","true"); ensure("tntExplosionDropDecay","false");
             ensure("waterSourceConversion","true"); ensure("lavaSourceConversion","false");
             ensure("globalSoundEvents","true"); ensure("snowAccumulationHeight","1");
@@ -225,7 +223,6 @@ bool WorldDataManager::tryLoadFile(const std::string& path, World& world, std::s
     } catch (...) { return false; }
 }
 
-// plan46 §2 (O-07): 3-stage recovery. Never throws.
 bool WorldDataManager::loadWithRecovery(World& world, std::string& difficultyOut,
                           double& borderDiameterOut, double& borderCXOut, double& borderCZOut,
                           double* borderLerpTargetOut, std::int64_t* borderLerpMsOut,

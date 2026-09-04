@@ -44,7 +44,6 @@ public:
             biomeKeyToIdx_.emplace(v, k);
     }
 
-    // plan6 §9: full persistence setters
     void setDifficulty(const std::string& d) { difficulty_ = d; }
     void setWorldBorder(double diameter, double cx=0, double cz=0) {
         worldBorderDiameter_ = diameter; worldBorderCenterX_=cx; worldBorderCenterZ_=cz;
@@ -83,14 +82,12 @@ public:
     std::int64_t worldBorderLerpMs() const { return worldBorderLerpMs_; }
     std::int64_t worldBorderLerpRemainingTicks() const { return worldBorderLerpRemainingTicks_; }
 
-    // ---- level.dat ---- plan5/6/7: level.dat persistence (delegated to WorldDataManager; atomic rename + version check).
     void saveLevelData(std::int64_t worldTicks = 0, std::int64_t dayTime = 0) {
         // W16 single level.dat: DIM dirs must not own level.dat
         if (dir_.find("DIM") != std::string::npos) return;
         // Use WorldDataManager for atomic write + version handling
         worldDataManager_.setDirectory(dir_);
         worldDataManager_.setLevelStateProvider(provideLevelState_, consumeLevelState_);
-        // Keep legacy inline fallback if manager fails, but primary is manager
         double lerpTgt = worldBorderLerpRemainingTicks_ > 0 ? worldBorderLerpTo_ : worldBorderDiameter_;
         std::int64_t lerpMs = worldBorderLerpMs_;
         bool ok = worldDataManager_.saveLevelDataWithProviders(worldTicks, dayTime, world_,
@@ -98,7 +95,6 @@ public:
                                                                worldBorderCenterX_, worldBorderCenterZ_,
                                                                lerpTgt, lerpMs);
         if (!ok) {
-            // fallback: old direct write (should not happen)
             namespace nv = nbt;
             try {
                 nv::Value root = nv::Value::makeCompound();
@@ -210,7 +206,6 @@ public:
         double lerpTgt = worldBorderDiameter_;
         std::int64_t lerpMs = 0;
         bool ok = worldDataManager_.loadLevelData(world_, difficulty_, worldBorderDiameter_, worldBorderCenterX_, worldBorderCenterZ_, &lerpTgt, &lerpMs);
-        // plan46 §2 O-07(c): always surface which stage supplied the level.
         for (const auto& ln : worldDataManager_.lastRecovery().logLines)
             std::fprintf(stderr, "[cppfm]%s\n", ln.c_str());
         if (ok) {
@@ -222,7 +217,6 @@ public:
             if (lerpMs == 0) { worldBorderLerpFrom_ = worldBorderDiameter_; worldBorderLerpTo_ = worldBorderDiameter_; }
             return;
         }
-        // fallback legacy read
         try {
             std::ifstream f(dir_ + "/level.dat", std::ios::binary);
             if (!f) return;
@@ -317,8 +311,6 @@ public:
         if (worker_.joinable()) worker_.join();
         flushOnce();                                   // final save
     }
-    // Plan28 finish: worker_/cv_/cvMtx_ must never be destroyed while the worker thread may still touch them (reverse member order would
-    // destroy cv_/cvMtx_ before worker_ for instances where stop() was never called, e.g. nether/end dimPersist_ during server shutdown ->
     // futex livelock). stop() is idempotent.
     ~Persistence() { stop(); }
 
@@ -392,7 +384,6 @@ public:
         std::lock_guard lk(dirtyMtx_);
         return dirty_.count(chunkKey(cx, cz)) != 0;
     }
-    // plan42 R2 (E-13): drop the dirty bit without writing (caller persisted
     // the chunk itself, e.g. GameServer::saveChunkAsync via ioPool_).
     void markClean(std::int32_t cx, std::int32_t cz) {
         std::lock_guard lk(dirtyMtx_);

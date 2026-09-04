@@ -63,7 +63,6 @@ void StructureManager::ensureDefaults() {
     if (!sets_.empty()) return;
     // 20 sets, jar-verified against vanilla 1.21.4 client
     // data/minecraft/worldgen/structure_set/*.json (exactly 20 files;
-    // set ids are plural there, e.g. "villages" — ours keep the plan33
     // singular統合名 and map 1:1, see docs/SPEC_GAMEPLAY.md#worldgen-density-and-seed-limits G-11 table).
     // Verified values: villages 34/8/10387312 (5 structures), pillager
     // 32/8/165745296 freq 0.2, desert_pyramids 32/8/14357617, jungle
@@ -111,7 +110,6 @@ void StructureManager::ensureDefaults() {
     // adjust mansion/monument to triangular
     for (auto& s : sets_) {
         if (s.name == "minecraft:monument" || s.name == "minecraft:mansion") s.spread = SMStructureSet::Triangular;
-        // plan45 G-11 (jar-verified vanilla 1.21.4 structure_set/*.json): end_cities.json has "spread_type": "triangular".
         if (s.name == "minecraft:end_city") s.spread = SMStructureSet::Triangular;
         // pillager_outposts.json has "frequency": 0.2 (legacy_type_1).
         if (s.name == "minecraft:pillager_outpost") s.frequency = 0.2;
@@ -226,7 +224,6 @@ int StructureManager::loadFromDirectory(const std::string& dir) {
             if (sets_.empty()) sets_ = std::move(loaded);
             ensureDefaults();
         }
-        // if we loaded some, keep them; otherwise restore
         if (total==0 && !loaded.empty() && sets_.empty()) sets_=loaded;
     } catch (...) {}
     ensureDefaults();
@@ -1104,7 +1101,6 @@ void StructureManager::generate(Chunk& chunk, std::int32_t cx,
                 if (picked.find(want) != std::string::npos) { ok = true; break; }
             if (!ok) continue;
         }
-        // plan36 + plan42 R2 E-12: palette path with biome-aware variant pools (deterministic sorted).
         if (placer_) {
             if (auto* primary = placer_->getConfigured(s.name);
                 primary && !primary->palette.empty() && !primary->pieces.empty()) {
@@ -1206,7 +1202,6 @@ void StructureManager::generate(Chunk& chunk, std::int32_t cx,
             strongholdPiece(chunk, cx, cz, at.originX, at.originZ, ground);
         else continue;
     }
-    // plan36: placer-only structures (extra 20 JSONs beyond sets_ 20) — generate via palette path
     if (placer_) {
         for (auto& [pname, pf] : placer_->allPlaced()) {
             bool already = false;

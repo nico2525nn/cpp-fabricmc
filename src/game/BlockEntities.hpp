@@ -1,5 +1,3 @@
-// BlockEntities: chest/furnace state stored per block position (plan3.md "チェスト/かまどUI" data side). Serialized into Anvil `block_entities`
-// compounds so a vanilla server reads our chests and vice versa. plan28 block polish: verify BlockEntities remain decoupled from Scoreboard
 // ResetScore 0x49 (D26) — BE tick/save/load paths verified intact after scoreboard reset hardening; no BE state touches Scoreboard scores.
 #pragma once
 #include <cstdint>
@@ -49,7 +47,6 @@ struct FurnaceData {
 
 struct BrewingData {
     static constexpr int kSlots = 5;
-    // plan46 G-14: vanilla BrewingStandBlockEntity constants (1.21.4): one brew step is 400 ticks; one blaze powder fuels 20 steps.
     static constexpr int kBrewTicks = 400;
     static constexpr int kFuelPerBlaze = 20;
     ItemStack slots[kSlots];
@@ -71,7 +68,6 @@ struct MovingPistonData {
     std::int64_t finishTick = 0;
 };
 
-// plan43 W-07: sign texts (vanilla SignText front/back, 4 lines each as raw strings — plain text or JSON components, stored verbatim).
 struct SignData {
     std::string front[4];
     std::string back[4];
@@ -153,7 +149,6 @@ public:
                 e.set("BrewTime", nbt::Value::makeShort(be.brewing.brewTime));
                 e.set("Fuel", nbt::Value::makeByte(static_cast<std::int8_t>(be.brewing.fuel)));
             } else if (be.kind == BlockEntity::Kind::Sign) {
-                // plan43 W-07: vanilla SignBlockEntity shape (front_text/back_text).
                 e.set("id", nbt::Value::makeString("minecraft:sign"));
                 e.set("is_waxed", nbt::Value::makeByte(0));
                 auto writeSide = [&](const char* key, const std::string lines[4]) {
@@ -246,7 +241,6 @@ private:
             if (const auto* t = e.get("CookTimeTotal")) be.furnace.cookTotal = t->s;
             dirty_.insert(key);
         } else if (id == "minecraft:sign" || id == "minecraft:hanging_sign") {
-            // plan43 W-07: reload persisted sign texts (matches writeChunkNbt shape).
             BlockEntity& be = map_[key];
             be = BlockEntity{};
             be.kind = BlockEntity::Kind::Sign;
