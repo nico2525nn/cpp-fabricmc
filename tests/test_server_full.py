@@ -175,7 +175,7 @@ def kill_server(proc):
             proc._logf.close()
     except: pass
     # also pkill orphan
-    try: subprocess.run(["pkill","-9","-f",f"cppfm --port"], timeout=2, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try: subprocess.run(["pkill","-9","-f",f"cppfm --por[t]"], timeout=2, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except: pass
 
 def raw_conn(host, port, timeout=5):
@@ -1592,7 +1592,7 @@ def main():
         # cleanup world_dir? keep for inspection
         # shutil.rmtree(world_dir, ignore_errors=True)
         # also kill any leftover cppfm
-        try: subprocess.run(["pkill","-9","-f","cppfm --port"], timeout=2, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try: subprocess.run(["pkill","-9","-f","cppfm --por[t]"], timeout=2, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except: pass
 
     summary_and_exit()
