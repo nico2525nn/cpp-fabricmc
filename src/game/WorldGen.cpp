@@ -56,7 +56,6 @@ World::~World() = default;
 
 void World::initWorldgen() {
     biomeSource_ = std::make_shared<worldgen::MultiNoiseBiomeSource>(srv_seed);
-    structures_ = std::make_unique<worldgen::StructureGenerator>(srv_seed);
     structureManager_ = std::make_unique<worldgen::StructureManager>(srv_seed, biomeSource_);
     structureManager_->loadFromDirectory("assets/data/structure_sets");
     structureManager_->loadFromDirectory("assets/data/structures");
@@ -386,8 +385,7 @@ void World::fillTerrainV3(Chunk& c, std::int32_t cx, std::int32_t cz) const {
         const double h = biomeSource_->heightEstimate(wx, wz);
         return static_cast<std::int32_t>(std::clamp(h, -56.0, 150.0));
     };
-    if (structureManager_) structureManager_->generate(c, cx, cz, groundFn);
-    else structures_->generateChunk(c, cx, cz, groundFn);
+    structureManager_->generate(c, cx, cz, groundFn);
 }
 
 

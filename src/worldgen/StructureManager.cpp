@@ -230,8 +230,6 @@ int StructureManager::loadFromDirectory(const std::string& dir) {
     return total;
 }
 
-// Piece implementations (copied from Structures.cpp, now const)
-
 void StructureManager::villageHouse(Chunk& chunk, std::int32_t cx, std::int32_t cz,
                                       std::int32_t bx, std::int32_t bz, int gy) const {
     Writer w{chunk, cx, cz};
