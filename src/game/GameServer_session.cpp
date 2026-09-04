@@ -1,4 +1,5 @@
 #include "GameServer.hpp"
+#include "Messages.hpp"
 #include "BlockEvent.hpp"
 #include "MetadataTypes.hpp"
 #include "../physics/LightEngine.hpp"
@@ -55,7 +56,7 @@ static WriteBuffer makeSpawnEntity(const Player& p) {
     b.uuid(p.uuid.data());
     b.varint(static_cast<std::int32_t>(gen::kPlayerEntityTypeId));
     b.f64(p.x); b.f64(p.y); b.f64(p.z);
-    const auto toAngle = [](float deg) { return static_cast<std::uint8_t>(deg * 256.f / 360.f); };
+    const auto toAngle = [](float deg) { return static_cast<std::uint8_t>(deg * constants::kAngleScaleNum / constants::kAngleScaleDen); };
     b.i8(static_cast<std::int8_t>(toAngle(p.pitch)));
     b.i8(static_cast<std::int8_t>(toAngle(p.yaw)));
     b.i8(static_cast<std::int8_t>(toAngle(p.yaw)));
@@ -155,7 +156,7 @@ void Session::run() {
         qev.player = self_.get();
         srv_.events().quit.fire(qev);
         srv_.savePlayerProgress(*self_);
-        srv_.broadcastSystemText("\u00a7e" + self_->name + " left the game", nullptr);
+        srv_.broadcastSystemText((msg::kYellow + self_->name + " left the game"), nullptr);
         WriteBuffer rm;
         rm.varint(1);
         rm.uuid(self_->uuid.data());
@@ -256,10 +257,13 @@ void Session::handleStatus() {
                     const std::string prefix = "data:image/png;base64,";
                     size_t i = 0;
                     while (i < bytes.size()) {
+                        // NOTE(cleanup): explicit & 0xFF — bytes is char (signed);
+                        // all downstream uses mask to <=6 bits, so values are
+                        // unchanged (silences -Wnarrowing, bit-identical output).
                         const uint32_t chunk[3] = {
-                            bytes[i],
-                            i + 1 < bytes.size() ? bytes[i + 1] : 0,
-                            i + 2 < bytes.size() ? bytes[i + 2] : 0};
+                            static_cast<std::uint8_t>(bytes[i]),
+                            i + 1 < bytes.size() ? static_cast<std::uint8_t>(bytes[i + 1]) : 0u,
+                            i + 2 < bytes.size() ? static_cast<std::uint8_t>(bytes[i + 2]) : 0u};
                         favicon += b64[(chunk[0] >> 2) & 0x3F];
                         favicon += b64[((chunk[0] & 0x03) << 4) |
                                        ((chunk[1] >> 4) & 0x0F)];
@@ -534,7 +538,7 @@ void Session::handleLogin() {
             }
             break;                                       // tolerated, no server use
         case lo::cs::CookieResponse: {                   // 0x04 cookie
-            const std::string key = in2.string(256);
+            const std::string key = in2.string(constants::kMaxStringLength);
             if (in2.boolean()) {
                 const auto len = in2.varint();
                 if (len >= 0 && len <= 4096)
@@ -588,13 +592,13 @@ Session::ConfigWaitResult Session::handleOneConfigPacket(ReadBuffer& in) {
         return ConfigWaitResult::Continue;
     }
     case cf::cs::CustomPayload: {                   // plugin channels (config)
-        const std::string channel = in.string(256);
+        const std::string channel = in.string(constants::kMaxStringLength);
         api::ChannelRegistry::Payload body(in.p + in.off, in.p + in.len);
         onPluginPayload(channel, body, 0);
         return ConfigWaitResult::Continue;
     }
     case cf::cs::CookieResponse: {
-        const std::string key = in.string(256);
+        const std::string key = in.string(constants::kMaxStringLength);
         if (in.boolean()) {
             const auto len = in.varint();
             self_->cookies[key] = in.bytes(static_cast<std::size_t>(len));
@@ -672,7 +676,6 @@ void Session::handleConfiguration() {
     if (finishAckEarly)
         std::fprintf(stderr, "[cppfm] %s: early finish-ack during packs wait (tolerated)\n",
                      self_->name.c_str());
-packsDone:
     // 4. registry blobs, verbatim wire order — D10 lock: exactly 12 in PROTOCOL_NOTES order
     {
         const auto& regs = srv_.data().registries();
@@ -810,7 +813,7 @@ void Session::onEnterPlay() {
         conn_->sendPacket(pl::sc::SetHealth, b);
     }
 
-    srv_.broadcastSystemText("\u00a7e" + self_->name + " joined the game", nullptr);
+    srv_.broadcastSystemText((msg::kYellow + self_->name + " joined the game"), nullptr);
     // plan34 network: ChatSuggestions 0x18 (Prismarine packet_chat_suggestions {action:varint, entries:array<string>}) - sync player names for chat tab
     {
         std::vector<std::string> all;
@@ -821,7 +824,7 @@ void Session::onEnterPlay() {
         std::vector<std::string> one{self_->name};
         srv_.broadcastChatSuggestions(0, one, self_.get());
     }
-    sendSystemText("\u00a77Welcome to \u00a7bCppFabricMC\u00a77! Build with the hotbar, chat freely.");
+    sendSystemText((msg::kGray + "Welcome to " + msg::kAqua + "CppFabricMC" + msg::kGray + "! Build with the hotbar, chat freely."));
     if (srv_.bossAI()) srv_.bossAI()->onPlayerJoin(*self_);
 }
 void Session::sendDeclareCommands() {
@@ -1011,7 +1014,7 @@ void Session::answerEntityNbt(std::int32_t transactionId, std::int32_t entityId)
 void Session::onNameItem(const std::string& name) {
     if (!openMenu_ || openMenu_->type != MenuType::Anvil) return;
     Menu& m = *openMenu_;
-    m.anvilRename = name.size() > 50 ? name.substr(0, 50) : name;
+    m.anvilRename = name.size() > constants::kMaxRenameLength ? name.substr(0, constants::kMaxRenameLength) : name;
     if (auto* logic = getMenuLogic(m.type)) logic->onContentChanged(m, *self_);
     {
         const std::string rename = m.anvilRename;
@@ -1590,7 +1593,6 @@ void Session::sendMenuContent(Menu& m) {
 }
 void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
                          std::uint16_t stateOfBlock) {
-    using BD = cppfm::gen::BlockDef;
     const gen::BlockDef* def = gen::blockByState(stateOfBlock);
     if (!def) return;
     const std::string name(def->name);
@@ -2103,16 +2105,16 @@ void Session::onPluginPayload(const std::string& channel,
             try {
                 if (!body.empty()) {
                     ReadBuffer rb(body.data(), body.size());
-                    rename = rb.string(256);
+                    rename = rb.string(constants::kMaxStringLength);
                     if (rb.remaining() > 0) {
                         ReadBuffer rb2(body.data(), body.size());
                         int win = rb2.varint();
                         (void)win;
-                        if (rb2.remaining() > 0) rename = rb2.string(256);
+                        if (rb2.remaining() > 0) rename = rb2.string(constants::kMaxStringLength);
                     }
                 }
             } catch (...) { rename = ""; }
-            if (rename.size() > 50) rename = rename.substr(0, 50);
+            if (rename.size() > constants::kMaxRenameLength) rename = rename.substr(0, constants::kMaxRenameLength);
             openMenu_->anvilRename = rename;
             if (auto* al = getMenuLogic(MenuType::Anvil)) {
                 al->onContentChanged(*openMenu_, *self_);
@@ -2259,85 +2261,18 @@ void Session::handlePlay() {
         ReadBuffer in(frame);
         self_->lastSeenMs = nowMs();
         switch (in.u8()) {
-        case pl::cs::AcceptTeleportation: {
-            in.varint();
-            self_->spawned = true;
-            if (!chunksStreamed_) streamInitialChunks();
-            break;
-        }
+        case pl::cs::AcceptTeleportation: onAcceptTeleportation(in); break;
         case pl::cs::MovePlayerPos:       onMovement(in, true, false); break;
         case pl::cs::MovePlayerPosRot:    onMovement(in, true, true);  break;
         case pl::cs::MovePlayerRot:       onMovement(in, false, true); break;
         case pl::cs::MovePlayerStatusOnly:onMovement(in, false, false);break;
-        case pl::cs::KeepAlive: {
-            // Client's response: just clear the pending flag. Sending anything
-            // here creates an infinite keepalive ping-pong.
-            const std::int64_t id = in.i64();
-            if (self_->pendingKeepAlive == 0 || id == self_->pendingKeepAlive)
-                self_->pendingKeepAlive = 0;
-            break;
-        }
+        case pl::cs::KeepAlive: onKeepAlivePacket(in); break;
         case pl::cs::ChatMessage:         onChatMessage(in); break;
-        case pl::cs::ChatCommandSigned: {             // signed command (spec shape)
-            // plan46 §1 A3: signed commands share the spam counter.
-            if (spam_.onChat(srv_.tickNow())) {
-                kickPlay("{\"translate\":\"disconnect.spam\"}");
-                return;
-            }
-            // plan43 W-03: vanilla sends command/i64/salt/array{argumentName +
-            // fixed-256B signature}/messageCount/acknowledged[3] — no booleans,
-            // no variable-length signatures. enforcesSecureChat=false so the
-            // signatures are shape-checked, not cryptographically verified.
-            try {
-                const std::string cmd = in.string(256);
-                (void)in.i64(); (void)in.i64();        // timestamp, salt
-                const auto n = in.varint();            // argumentSignatures count
-                if (n < 0 || n > 16) break;            // absurd count: ignore, stay connected
-                for (std::int32_t q = 0; q < n; ++q) {
-                    (void)in.string(32767);            // argumentName
-                    in.bytes(256);                     // signature: fixed 256B
-                }
-                (void)in.varint();                     // messageCount
-                in.bytes(3);                           // acknowledged[3] (was 60B over-read)
-                dispatchCommand(cmd);
-            } catch (const std::exception& e) {
-                std::fprintf(stderr, "[cppfm] signed-cmd parse ignored: %s\n", e.what());
-            }
-            break;
-        }
-        case pl::cs::ChatSessionUpdate: {             // plan3 Chat signing
-            self_->chatPubKey.clear();
-            std::array<std::uint8_t, 16> sid{};
-            auto sb = in.bytes(16);
-            std::copy(sb.begin(), sb.end(), sid.begin());
-            self_->chatSessionExpiry = in.i64();
-            const auto pkLen = in.varint();
-            self_->chatPubKey = in.bytes(static_cast<std::size_t>(pkLen));
-            const auto sigLen = in.varint();
-            in.bytes(static_cast<std::size_t>(sigLen));
-            self_->hasChatSession = pkLen > 0;
-            break;
-        }
+        case pl::cs::ChatCommandSigned: if (onChatCommandSignedPacket(in)) return; break; // signed command (spec shape)
+        case pl::cs::ChatSessionUpdate: onChatSessionUpdate(in); break; // plan3 Chat signing
         case pl::cs::MessageAck: in.skipRest(); break;
-        case pl::cs::CookieResponse: {                // plan3 Cookie
-            const std::string key = in.string(256);
-            if (in.boolean()) {
-                const auto len = in.varint();
-                self_->cookies[key] =
-                    in.bytes(static_cast<std::size_t>(len));
-                srv_.storeCookie(self_->uuid, key, self_->cookies[key]);
-            } else {
-                srv_.eraseCookie(self_->uuid, key);
-            }
-            break;
-        }
-        case pl::cs::CustomPayload: {                 // plugin messaging API
-            const std::string channel = in.string(256);
-            api::ChannelRegistry::Payload body(
-                in.p + in.off, in.p + in.len);
-            onPluginPayload(channel, body, 1);
-            break;
-        }
+        case pl::cs::CookieResponse: onCookieResponse(in); break; // plan3 Cookie
+        case pl::cs::CustomPayload: onCustomPayload(in); break; // plugin messaging API
         case pl::cs::UseEntity:           onUseEntity(in); break;
         case pl::cs::ChatCommand:         onChatCommand(in); break;
         case pl::cs::PlayerAction:        onPlayerAction(in); break;
@@ -2347,554 +2282,54 @@ void Session::handlePlay() {
         case pl::cs::HeldItemSlot:        onHeldSlot(in); break;
         case pl::cs::WindowClick:         onWindowClick(in); break;   // 0x10
         case pl::cs::CloseContainer:      onCloseContainer(); break;  // 0x11
-        case pl::cs::PlaceRecipe: {                                   // 0x25
-            // plan45 B6/G-13: windowId is ContainerID(varint) per protocol.json
-            // (was u8 — strict violation at 128+). Keep a u8 fallback for
-            // lenient proxies, mirroring onWindowClick/onEnchantItem.
-            int windowId = 0;
-            {
-                const std::size_t mark = in.off;
-                try { windowId = in.varint(); }
-                catch (...) { in.off = mark; windowId = in.u8(); }
-            }
-            (void)windowId;
-            const auto recipeId = in.varint();
-            const auto makeAll = in.boolean();
-            handlePlaceRecipe(recipeId, makeAll);
-            break;
-        }
+        case pl::cs::PlaceRecipe: onPlaceRecipePacket(in); break; // 0x25
         case pl::cs::TabComplete:         onTabComplete(in); break;
-        case pl::cs::SelectTrade: {                                   // 0x31
-            const auto idx = in.varint();
-            if (tradingVillager_ >= 0) srv_.selectTrade(*self_, idx);
-            break;
-        }
+        case pl::cs::SelectTrade: onSelectTrade(in); break; // 0x31
         case pl::cs::ChunkBatchReceived:  in.f32(); break;
-        case pl::cs::PingRequest: {
-            const std::int64_t id = in.i64();
-            WriteBuffer b; b.i64(id);
-            conn_->sendPacket(0x38 /*ping response*/, b);
-            break;
-        }
+        case pl::cs::PingRequest: onPingRequest(in); break;
         case pl::cs::ClientTickEnd: break;
-        case pl::cs::Abilities: {                       // 0x26 serverbound {flags i8}
-            // plan43 W-06: client flight toggle. Only creative/spectator may
-            // fly; anything else is revoked and echoed back so the client
-            // stays in sync (vanilla never trusts the flying bit alone).
-            const std::int8_t f = in.i8();
-            const bool wantFly = (f & 0x02) != 0;
-            const bool canFly = (self_->gamemode == 1 || self_->gamemode == 3);
-            self_->isFlying = wantFly && canFly;
-            sendAbilities();
-            break;
-        }
-        case pl::cs::PlayerLoaded:                    // 0x2a
-            if (!chunksStreamed_) streamInitialChunks();
-            break;
+        case pl::cs::Abilities: onPlayerAbilities(in); break; // 0x26 serverbound {flags i8}
+        case pl::cs::PlayerLoaded: onPlayerLoadedPacket(); break; // 0x2a
         case pl::cs::Swing: break;
-        case pl::cs::SetCreativeModeSlot: {
-            const std::int16_t slot = in.i16();
-            const auto stack = ItemStack::read(in);
-            if (slot >= 0 && slot < 46) {
-                // plan37 B-11 binding_curse: prevent removing armor with curse (creative also respects)
-                if ((slot==5||slot==6||slot==7||slot==8) && !self_->inv[slot].empty() && stack.empty()) {
-                    if (EnchantmentHelper::hasBindingCurse(self_->inv[slot])) {
-                        srv_.resendInventory(*self_);
-                        break;
-                    }
-                }
-                self_->inv[slot] = stack;
-                // plan13 §2: dynamic SetEquipment sync for creative armor/hand changes
-                if (slot==5||slot==6||slot==7||slot==8||slot==45||(slot>=36&&slot<=44)) {
-                    srv_.syncEquipmentOnChange(*self_);
-                }
-            } else if (slot == -1 && stack.empty()) {
-                // cursor clear - ignore
-            }
-            break;
-        }
+        case pl::cs::SetCreativeModeSlot: onSetCreativeModeSlot(in); break;
         case pl::cs::SetDifficulty: (void)in.u8(); break;
-        case pl::cs::ClientCommand: {
-            const std::int32_t action = in.varint();
-            if (action == 0) handleRespawnRequest();
-            break;
-        }
-        case pl::cs::PlayerInput: {
-            // plan13 §3: PlayerInput 0x29 – flags: bit0 jump, bit1 shift (sneak) for dismount
-            try{
-                float sideways=0, forward=0;
-                uint8_t flags=0;
-                if(in.remaining()>=9){ sideways=in.f32(); forward=in.f32(); flags=in.u8(); }
-                else if(in.remaining()>=1){ flags=in.u8(); }
-                else { in.skipRest(); break; }
-                bool wantSneak = (flags & 0x02) !=0;
-                bool wantJump = (flags & 0x01) !=0;
-                if(wantSneak && self_->vehicleId!=-1){
-                    int veh=self_->vehicleId;
-                    self_->vehicleId=-1;
-                    {
-                        std::lock_guard lk(srv_.entsMtx_);
-                        for(auto &m: srv_.mobsForTest()) if(m->entityId==veh) m->riderEntityId=-1;
-                    }
-                    srv_.broadcastSetPassengersEmpty(veh);
-                }
-                if(wantJump && self_->vehicleId!=-1){
-                    srv_.handleHorseJump(*self_, 80);
-                }
-                (void)sideways;(void)forward;
-            }catch(...){ in.skipRest(); }
-            break;
-        }
-        case pl::cs::MoveVehicle: {
-            // plan13 §3: MoveVehicle 0x20 – x double, y double, z double, yaw float, pitch float
-            try{
-                double x=in.f64(), y=in.f64(), z=in.f64();
-                float yaw=in.f32(), pitch=in.f32();
-                srv_.handleMoveVehicle(*self_, x,y,z,yaw,pitch);
-            }catch(...){ in.skipRest(); }
-            break;
-        }
-        case pl::cs::SignUpdate: { // 0x39 — always a sign edit
-            // plan43 W-07: spec is position + isFrontText + 4 lines. The old
-            // len<16 stonecutter heuristic is gone: ghost recipes arrive via
-            // the separate PlaceRecipe 0x25 id, so 0x39 is unambiguous.
-            // Lines are stored verbatim (plain text or JSON components —
-            // vanilla renders both leniently) and re-sent as BlockEntityData.
-            try {
-                std::int32_t sx, sy, sz;
-                in.position(sx, sy, sz);
-                const bool front = in.boolean();
-                std::string lines[4];
-                for (int i = 0; i < 4; ++i) lines[i] = in.string(384);
-                const std::int64_t key = posKey(sx, sy, sz);
-                BlockEntity* bep = srv_.blockEntities().get(key);
-                if (bep && bep->kind != BlockEntity::Kind::Sign) {
-                    std::fprintf(stderr, "[cppfm] sign update at %d,%d,%d ignored (not a sign block entity)\n",
-                                 sx, sy, sz);
-                } else {
-                    if (!bep) bep = &srv_.blockEntities().create(key, BlockEntity::Kind::Sign);
-                    std::string* dst = front ? bep->sign.front : bep->sign.back;
-                    for (int i = 0; i < 4; ++i) dst[i] = lines[i];
-                    if (front) bep->sign.hasFront = true; else bep->sign.hasBack = true;
-                    sendSignBlockEntity(sx, sy, sz);
-                }
-            } catch (const std::exception& e) {
-                std::fprintf(stderr, "[cppfm] sign update ignored: %s\n", e.what());
-            }
-            break;
-        }
-        case pl::cs::EntityAction: {
-            const std::int32_t eid = in.varint();
-            const std::int32_t action = in.varint();
-            const std::int32_t jumpBoost = in.varint();
-            (void)eid; (void)jumpBoost;
-            bool wasSneak = self_->isSneaking;
-            bool wasSprint = self_->isSprinting;
-            if (action == 0) self_->isSneaking = true;
-            else if (action == 1) self_->isSneaking = false;
-            else if (action == 3) self_->isSprinting = true;
-            else if (action == 4) self_->isSprinting = false;
-            // plan16 strict: sneak pose 5/0 + sprint flag 0x08 combined, broadcast on either change
-            if (wasSneak != self_->isSneaking || wasSprint != self_->isSprinting) {
-                if (wasSneak != self_->isSneaking) {
-                    // pose metadata index 6 varint: 5 crouching, 0 standing
-                    WriteBuffer md;
-                    md.varint(self_->entityId);
-                    md.u8(6); md.varint(1); md.varint(self_->isSneaking ? 5 : 0);
-                    md.u8(255);
-                    srv_.broadcastPacketExcept(self_.get(), pl::sc::SetEntityMetadata, md);
-                }
-                // flags byte index 0: 0x02 sneak + 0x08 sprint (combined)
-                {
-                    WriteBuffer fl;
-                    fl.varint(self_->entityId);
-                    fl.u8(0); fl.varint(0);
-                    uint8_t flags = 0;
-                    if (self_->isSneaking) flags |= 0x02;
-                    if (self_->isSprinting) flags |= 0x08;
-                    fl.u8(flags);
-                    fl.u8(255);
-                    srv_.broadcastPacketExcept(self_.get(), pl::sc::SetEntityMetadata, fl);
-                }
-                // plan13 §5 SwiftSneak – sync MovementSpeed when sneaking
-                {
-                    int swiftLvl=0;
-                    for(int i=5;i<=8;++i) if(!self_->inv[i].empty()){
-                        std::string n=self_->inv[i].name();
-                        if(n.find("leggings")!=std::string::npos) swiftLvl = std::max(swiftLvl, EnchantmentHelper::swiftSneakLevel(self_->inv[i]));
-                    }
-                    if(swiftLvl==0) for(int i=5;i<=8;++i) if(!self_->inv[i].empty()) swiftLvl = std::max(swiftLvl, EnchantmentHelper::swiftSneakLevel(self_->inv[i]));
-                    double before = self_->attributes.getValue(Attribute::MOVEMENT_SPEED);
-                    if(self_->isSneaking && swiftLvl>0) self_->attributes.applySwiftSneak(swiftLvl);
-                    else self_->attributes.removeModifier(Attribute::MOVEMENT_SPEED, "swift_sneak");
-                    double after = self_->attributes.getValue(Attribute::MOVEMENT_SPEED);
-                    if(std::abs(before-after)>1e-9){
-                        WriteBuffer ab; self_->attributes.writeUpdate(ab, self_->entityId);
-                        try{ self_->conn->sendPacket(proto::pl::sc::UpdateAttributes, ab);}catch(...){}
-                        srv_.broadcastPacketExcept(self_.get(), proto::pl::sc::UpdateAttributes, ab);
-                    }
-                }
-                // Plan8 EquipmentComponent/EntityAction: sneak dismount from vehicle (horse/llama/pig)
-                // Vanilla sends EntityAction 0x28 with action 0 for sneak start; if player is riding, dismount.
-                if (self_->isSneaking && self_->vehicleId != -1) {
-                    int veh = self_->vehicleId;
-                    // clear player vehicle
-                    self_->vehicleId = -1;
-                    // clear mob rider
-                    {
-                        std::lock_guard lk(srv_.entsMtx_);
-                        for (auto& m : srv_.mobsForTest()) if (m->entityId==veh) m->riderEntityId=-1;
-                    }
-                    srv_.broadcastSetPassengersEmpty(veh);
-                }
-            }
-            // Plan13 §3: horse jump action 7, plus 5/6 legacy
-            if (action==7) {
-                if (self_->vehicleId != -1) {
-                    srv_.handleHorseJump(*self_, jumpBoost);
-                }
-            } else if (action==5 || action==6) {
-                // horse jump start/stop – broadcast to tracking players if riding
-                if (self_->vehicleId != -1) {
-                    WriteBuffer je;
-                    je.varint(self_->entityId); je.varint(action);
-                    srv_.broadcastPacketExcept(self_.get(), pl::sc::SetEntityMetadata, je);
-                }
-            }
-            (void)wasSprint;
-            break;
-        }
+        case pl::cs::ClientCommand: onClientCommand(in); break;
+        case pl::cs::PlayerInput: onPlayerInput(in); break;
+        case pl::cs::MoveVehicle: onMoveVehicle(in); break;
+        case pl::cs::SignUpdate: onSignUpdate(in); break; // 0x39 — always a sign edit
+        case pl::cs::EntityAction: onEntityAction(in); break;
         // ============ plan45 B6: remaining fromClient (W-05/W-08/W-09/W-10) ====
         // Shapes verified against Prismarine protocol.json 1.21.4 (2026-09-04).
         // Each case is self-guarded: a malformed body is logged + skipped so
         // one bad packet never kills the session (W-16 per-packet policy).
-        case pl::cs::Settings: {                                    // 0x0C W-05
-            try {
-                Player::ClientSettings s;
-                s.locale = in.string(64);
-                s.viewDistance = GameServer::clampClientViewDistance(in.i8());
-                s.chatFlags = in.varint();
-                s.chatColors = in.boolean();
-                s.skinParts = in.u8();
-                s.mainHand = in.varint();
-                s.textFiltering = in.boolean();
-                s.serverListing = in.boolean();
-                s.particleStatus = in.varint();
-                if (s.particleStatus < 0 || s.particleStatus > 2) s.particleStatus = 0;
-                applyClientSettings(s);
-            } catch (const std::exception& e) {
-                std::fprintf(stderr, "[cppfm] settings from %s ignored: %s\n",
-                             self_->name.c_str(), e.what());
-                in.skipRest();
-            }
-            break;
-        }
-        case pl::cs::NameItem: {                                    // 0x2E W-08
-            try { onNameItem(in.string(50)); }
-            catch (const std::exception& e) {
-                std::fprintf(stderr, "[cppfm] name_item ignored: %s\n", e.what());
-                in.skipRest();
-            }
-            break;
-        }
-        case pl::cs::SetBeaconEffect: {                             // 0x32 W-08
-            try {
-                std::optional<std::int32_t> prim, sec;
-                if (in.boolean()) prim = in.varint();
-                if (in.boolean()) sec = in.varint();
-                onBeaconEffect(prim, sec);
-            } catch (const std::exception& e) {
-                std::fprintf(stderr, "[cppfm] beacon effect ignored: %s\n", e.what());
-                in.skipRest();
-            }
-            break;
-        }
-        case pl::cs::PickItemFromBlock: {                           // 0x22 W-08
-            try {
-                std::int32_t bx, by, bz;
-                in.position(bx, by, bz);
-                const bool includeData = in.boolean();
-                (void)includeData; // BE-copy detail deferred (PROTOCOL_NOTES B6)
-                World& w = srv_.worldFor(self_->dimension);
-                const std::uint16_t st = w.getBlock(bx, by, bz);
-                if (st == 0) break;
-                const auto* bd = gen::blockByState(st);
-                if (!bd) break;
-                const auto it = gen::itemIdByName().find(std::string(bd->name));
-                if (it == gen::itemIdByName().end()) break;
-                if (!srv_.addToInventory(*self_, it->second, 1)) break;
-                srv_.resendInventory(*self_);
-            } catch (const std::exception& e) {
-                std::fprintf(stderr, "[cppfm] pick-block ignored: %s\n", e.what());
-                in.skipRest();
-            }
-            break;
-        }
-        case pl::cs::PickItemFromEntity: {                          // 0x23 W-08
-            try {
-                const std::int32_t eid = in.varint();
-                const bool includeData = in.boolean();
-                (void)includeData;
-                std::string egg;
-                {
-                    std::lock_guard lk(srv_.entsMtx_);
-                    for (auto& m : srv_.mobsForTest()) {
-                        if (m->entityId != eid) continue;
-                        egg = std::string(MobEntity::kindName(m->kind)) + "_spawn_egg";
-                        break;
-                    }
-                }
-                if (egg.empty()) break;
-                const auto it = gen::itemIdByName().find(egg);
-                if (it == gen::itemIdByName().end()) break;
-                if (!srv_.addToInventory(*self_, it->second, 1)) break;
-                srv_.resendInventory(*self_);
-            } catch (const std::exception& e) {
-                std::fprintf(stderr, "[cppfm] pick-entity ignored: %s\n", e.what());
-                in.skipRest();
-            }
-            break;
-        }
-        case pl::cs::RecipeBook: {                                  // 0x2C W-08
-            try {
-                self_->recipeBookId = in.varint();
-                self_->recipeBookOpen = in.boolean();
-                self_->recipeBookFilter = in.boolean();
-            } catch (const std::exception& e) {
-                std::fprintf(stderr, "[cppfm] recipe_book ignored: %s\n", e.what());
-                in.skipRest();
-            }
-            break;
-        }
-        case pl::cs::DisplayedRecipe: {                             // 0x2D W-08
-            try { self_->displayedRecipe = in.varint(); }
-            catch (...) { in.skipRest(); }
-            break;
-        }
-        case pl::cs::SteerBoat: {                                   // 0x21 W-10(a)
-            try {
-                self_->boatLeftPaddle = in.boolean();
-                self_->boatRightPaddle = in.boolean();
-            } catch (...) { in.skipRest(); }
-            break;
-        }
-        case pl::cs::ResourcePackReceive: {                         // 0x2F W-10(b)
-            try {
-                std::array<std::uint8_t,16> uuid{};
-                auto ub = in.bytes(16);
-                std::copy(ub.begin(), ub.end(), uuid.begin());
-                const std::int32_t result = in.varint();
-                (void)uuid;
-                // vanilla PackResult: 0 loaded, 1 declined, 2 failed_download,
-                // 3 accepted, 4 downloaded... A forced pack that is
-                // declined/failed must kick.
-                if (srv_.config().resourcePackForced && (result == 1 || result == 2)) {
-                    disconnectIn("{\"text\":\"Server resource pack declined\"}");
-                    state_ = State::Done;
-                    return;
-                }
-            } catch (const std::exception& e) {
-                std::fprintf(stderr, "[cppfm] resource_pack_receive ignored: %s\n", e.what());
-                in.skipRest();
-            }
-            break;
-        }
-        case pl::cs::Pong: {                                        // 0x2B W-10(c)
-            try {
-                self_->lastPlayPongId = in.i32();
-                self_->lastPlayPongMs = nowMs();
-            } catch (...) { in.skipRest(); }
-            break;
-        }
-        case pl::cs::AdvancementTab: {                              // 0x30 W-10(d)
-            try {
-                const std::int32_t action = in.varint();
-                self_->advancementTabAction = action;
-                self_->advancementTabId.clear();
-                if (action == 0) self_->advancementTabId = in.string(512);
-                if (action == 0) srv_.sendSelectAdvancementTab(*self_, self_->advancementTabId);
-            } catch (const std::exception& e) {
-                std::fprintf(stderr, "[cppfm] advancement_tab ignored: %s\n", e.what());
-                in.skipRest();
-            }
-            break;
-        }
-        case pl::cs::SelectBundleItem: {                            // 0x02 W-10(d)
-            try {
-                const std::int32_t slotId = in.varint();
-                const std::int32_t idx = in.varint();
-                if (slotId >= 0 && idx >= 0) self_->bundleSelectedIndex = idx;
-            } catch (...) { in.skipRest(); }
-            break;
-        }
-        case pl::cs::SetSlotState: {                                // 0x12 W-10(d)
-            try { (void)in.varint(); (void)in.varint(); (void)in.boolean(); }
-            catch (...) { in.skipRest(); }
-            // No server-side slot-enable state exists (client-side crafting
-            // ghost slot hint) — parsed and intentionally ignored (PROTOCOL_NOTES B6).
-            break;
-        }
-        case pl::cs::DebugSampleSubscription: {                     // 0x15 W-10(d)
-            try { (void)in.varint(); } catch (...) { in.skipRest(); }
-            break; // debug profiler subscription — no server effect (PROTOCOL_NOTES B6).
-        }
-        case pl::cs::QueryBlockEntityTag: {                         // 0x01 W-10(d)
-            try {
-                const std::int32_t tx = in.varint();
-                std::int32_t bx, by, bz;
-                in.position(bx, by, bz);
-                answerBlockNbt(tx, bx, by, bz);
-            } catch (const std::exception& e) {
-                std::fprintf(stderr, "[cppfm] query_block_nbt ignored: %s\n", e.what());
-                in.skipRest();
-            }
-            break;
-        }
-        case pl::cs::QueryEntityNbt: {                              // 0x17 W-10(d)
-            try {
-                const std::int32_t tx = in.varint();
-                const std::int32_t eid = in.varint();
-                answerEntityNbt(tx, eid);
-            } catch (const std::exception& e) {
-                std::fprintf(stderr, "[cppfm] query_entity_nbt ignored: %s\n", e.what());
-                in.skipRest();
-            }
-            break;
-        }
-        case pl::cs::LockDifficulty: {                              // 0x1B W-10(d)
-            try {
-                const bool locked = in.boolean();
-                if (srv_.isOp(self_->name)) self_->difficultyLocked = locked;
-                else std::fprintf(stderr, "[cppfm] lock_difficulty from non-op %s denied\n",
-                                  self_->name.c_str());
-            } catch (...) { in.skipRest(); }
-            break;
-        }
+        case pl::cs::Settings: onClientSettings(in); break; // 0x0C W-05
+        case pl::cs::NameItem: onNameItemPacket(in); break; // 0x2E W-08
+        case pl::cs::SetBeaconEffect: onBeaconEffectPacket(in); break; // 0x32 W-08
+        case pl::cs::PickItemFromBlock: onPickItemFromBlock(in); break; // 0x22 W-08
+        case pl::cs::PickItemFromEntity: onPickItemFromEntity(in); break; // 0x23 W-08
+        case pl::cs::RecipeBook: onRecipeBookPacket(in); break; // 0x2C W-08
+        case pl::cs::DisplayedRecipe: onDisplayedRecipe(in); break; // 0x2D W-08
+        case pl::cs::SteerBoat: onSteerBoat(in); break; // 0x21 W-10(a)
+        case pl::cs::ResourcePackReceive: if (onResourcePackReceive(in)) return; break; // 0x2F W-10(b)
+        case pl::cs::Pong: onPong(in); break; // 0x2B W-10(c)
+        case pl::cs::AdvancementTab: onAdvancementTab(in); break; // 0x30 W-10(d)
+        case pl::cs::SelectBundleItem: onSelectBundleItem(in); break; // 0x02 W-10(d)
+        case pl::cs::SetSlotState: onSetSlotState(in); break; // 0x12 W-10(d)
+        case pl::cs::DebugSampleSubscription: onDebugSampleSubscription(in); break; // 0x15 W-10(d)
+        case pl::cs::QueryBlockEntityTag: onQueryBlockEntityTag(in); break; // 0x01 W-10(d)
+        case pl::cs::QueryEntityNbt: onQueryEntityNbt(in); break; // 0x17 W-10(d)
+        case pl::cs::LockDifficulty: onLockDifficulty(in); break; // 0x1B W-10(d)
         case pl::cs::ConfigurationAcknowledged:                     // 0x0E W-10(d)
             // Play-phase ack of a play→config reversal (transfer). No config
             // stack exists yet — parsed (empty body) and kept as the future hook.
             break;
-        case pl::cs::EditBook: {                                    // 0x16 W-09
-            try {
-                const std::int32_t hand = in.varint();
-                const std::int32_t n = in.varint();
-                if (n < 0 || n > 100) { in.skipRest(); break; } // W-14 page budget
-                std::vector<std::string> pages;
-                pages.reserve(static_cast<std::size_t>(n));
-                std::size_t total = 0;
-                for (std::int32_t i = 0; i < n; ++i) {
-                    pages.push_back(in.string(32767));
-                    total += pages.back().size();
-                    if (total > 2 * 1024 * 1024) { in.skipRest(); pages.clear(); break; }
-                }
-                if (pages.empty() && n > 0) break;
-                const bool hasTitle = in.boolean();
-                const std::string title = hasTitle ? in.string(128) : std::string{};
-                self_->lastBookEdit = {hand, pages, title, hasTitle};
-                // Real effect: signing (title present) converts a held
-                // writable book into a written book carrying the title.
-                if (hasTitle && (hand == 0 || hand == 1)) {
-                    ItemStack* held = (hand == 0) ? &self_->inv[36 + self_->heldSlot]
-                                                  : &self_->inv[45];
-                    if (held && (held->name() == "minecraft:writable_book" ||
-                                 held->name() == "minecraft:written_book")) {
-                        auto it = gen::itemIdByName().find("minecraft:written_book");
-                        if (it != gen::itemIdByName().end()) {
-                            held->itemId = it->second;
-                            if (!title.empty()) held->setCustomName(title);
-                            srv_.resendInventory(*self_);
-                        }
-                    }
-                }
-            } catch (const std::exception& e) {
-                std::fprintf(stderr, "[cppfm] edit_book ignored: %s\n", e.what());
-                in.skipRest();
-            }
-            break;
-        }
-        case pl::cs::GenerateStructure: {                           // 0x19 W-09
-            try {
-                std::int32_t gx, gy, gz;
-                in.position(gx, gy, gz);
-                (void)in.varint(); (void)in.boolean();
-                if (!requireOp(2, "generate_structure")) break;
-                std::fprintf(stderr, "[cppfm] generate_structure at %d,%d,%d denied-by-deferral (no structure gen API yet)\n",
-                             gx, gy, gz);
-            } catch (const std::exception& e) {
-                std::fprintf(stderr, "[cppfm] generate_structure ignored: %s\n", e.what());
-                in.skipRest();
-            }
-            break;
-        }
-        case pl::cs::UpdateCommandBlock: {                          // 0x34 W-09
-            try {
-                std::int32_t cx, cy, cz;
-                in.position(cx, cy, cz);
-                (void)in.string(32767); (void)in.varint(); (void)in.u8();
-                if (!requireOp(2, "update_command_block")) break;
-                std::fprintf(stderr, "[cppfm] update_command_block at %d,%d,%d denied-by-deferral (no command-block BE yet)\n",
-                             cx, cy, cz);
-            } catch (const std::exception& e) {
-                std::fprintf(stderr, "[cppfm] update_command_block ignored: %s\n", e.what());
-                in.skipRest();
-            }
-            break;
-        }
-        case pl::cs::UpdateCommandBlockMinecart: {                  // 0x35 W-09
-            try {
-                const std::int32_t eid = in.varint();
-                (void)in.string(32767); (void)in.boolean();
-                if (!requireOp(2, "update_command_block_minecart")) break;
-                std::fprintf(stderr, "[cppfm] update_command_block_minecart eid=%d denied-by-deferral\n", eid);
-            } catch (const std::exception& e) {
-                std::fprintf(stderr, "[cppfm] update_command_block_minecart ignored: %s\n", e.what());
-                in.skipRest();
-            }
-            break;
-        }
-        case pl::cs::UpdateJigsaw: {                                // 0x37 W-09
-            try {
-                std::int32_t jx, jy, jz;
-                in.position(jx, jy, jz);
-                for (int i = 0; i < 5; ++i) (void)in.string(512);
-                (void)in.varint(); (void)in.varint();
-                if (!requireOp(2, "update_jigsaw")) break;
-                std::fprintf(stderr, "[cppfm] update_jigsaw at %d,%d,%d denied-by-deferral\n", jx, jy, jz);
-            } catch (const std::exception& e) {
-                std::fprintf(stderr, "[cppfm] update_jigsaw ignored: %s\n", e.what());
-                in.skipRest();
-            }
-            break;
-        }
-        case pl::cs::UpdateStructureBlock: {                        // 0x38 W-09
-            try {
-                std::int32_t ux, uy, uz;
-                in.position(ux, uy, uz);
-                (void)in.varint(); (void)in.varint(); (void)in.string(512);
-                (void)in.i8(); (void)in.i8(); (void)in.i8();
-                (void)in.i8(); (void)in.i8(); (void)in.i8();
-                (void)in.varint(); (void)in.varint(); (void)in.string(512);
-                (void)in.f32(); (void)in.varint(); (void)in.u8();
-                if (!requireOp(2, "update_structure_block")) break;
-                std::fprintf(stderr, "[cppfm] update_structure_block at %d,%d,%d denied-by-deferral\n", ux, uy, uz);
-            } catch (const std::exception& e) {
-                std::fprintf(stderr, "[cppfm] update_structure_block ignored: %s\n", e.what());
-                in.skipRest();
-            }
-            break;
-        }
-        case pl::cs::Spectate: {                                    // 0x3B W-09
-            try {
-                std::array<std::uint8_t,16> target{};
-                auto tb = in.bytes(16);
-                std::copy(tb.begin(), tb.end(), target.begin());
-                onSpectate(target);
-            } catch (const std::exception& e) {
-                std::fprintf(stderr, "[cppfm] spectate ignored: %s\n", e.what());
-                in.skipRest();
-            }
-            break;
-        }
+        case pl::cs::EditBook: onEditBook(in); break; // 0x16 W-09
+        case pl::cs::GenerateStructure: onGenerateStructure(in); break; // 0x19 W-09
+        case pl::cs::UpdateCommandBlock: onUpdateCommandBlock(in); break; // 0x34 W-09
+        case pl::cs::UpdateCommandBlockMinecart: onUpdateCommandBlockMinecart(in); break; // 0x35 W-09
+        case pl::cs::UpdateJigsaw: onUpdateJigsaw(in); break; // 0x37 W-09
+        case pl::cs::UpdateStructureBlock: onUpdateStructureBlock(in); break; // 0x38 W-09
+        case pl::cs::Spectate: onSpectatePacket(in); break; // 0x3B W-09
         default:
             // Unknown packets: skip payload to stay aligned. plan46 §1 W-16:
             // unknown play = ignore + log (rate-limited under flood), while
@@ -2921,6 +2356,578 @@ void Session::handlePlay() {
             continue;
         }
     }
+}
+
+void Session::onAcceptTeleportation(ReadBuffer& in) {
+    in.varint();
+    self_->spawned = true;
+    if (!chunksStreamed_) streamInitialChunks();
+}
+void Session::onKeepAlivePacket(ReadBuffer& in) {
+    // Client's response: just clear the pending flag. Sending anything
+    // here creates an infinite keepalive ping-pong.
+    const std::int64_t id = in.i64();
+    if (self_->pendingKeepAlive == 0 || id == self_->pendingKeepAlive)
+        self_->pendingKeepAlive = 0;
+}
+bool Session::onChatCommandSignedPacket(ReadBuffer& in) {
+    // plan46 §1 A3: signed commands share the spam counter.
+    if (spam_.onChat(srv_.tickNow())) {
+        kickPlay("{\"translate\":\"disconnect.spam\"}");
+        return true;
+    }
+    // plan43 W-03: vanilla sends command/i64/salt/array{argumentName +
+    // fixed-256B signature}/messageCount/acknowledged[3] — no booleans,
+    // no variable-length signatures. enforcesSecureChat=false so the
+    // signatures are shape-checked, not cryptographically verified.
+    try {
+        const std::string cmd = in.string(constants::kMaxStringLength);
+        (void)in.i64(); (void)in.i64();        // timestamp, salt
+        const auto n = in.varint();            // argumentSignatures count
+        if (n < 0 || n > 16) return false;            // absurd count: ignore, stay connected
+        for (std::int32_t q = 0; q < n; ++q) {
+            (void)in.string(32767);            // argumentName
+            in.bytes(constants::kChatSignatureBytes);  // signature: fixed 256B
+        }
+        (void)in.varint();                     // messageCount
+        in.bytes(3);                           // acknowledged[3] (was 60B over-read)
+        dispatchCommand(cmd);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[cppfm] signed-cmd parse ignored: %s\n", e.what());
+    }
+    return false;
+}
+void Session::onChatSessionUpdate(ReadBuffer& in) {
+    self_->chatPubKey.clear();
+    std::array<std::uint8_t, 16> sid{};
+    auto sb = in.bytes(16);
+    std::copy(sb.begin(), sb.end(), sid.begin());
+    self_->chatSessionExpiry = in.i64();
+    const auto pkLen = in.varint();
+    self_->chatPubKey = in.bytes(static_cast<std::size_t>(pkLen));
+    const auto sigLen = in.varint();
+    in.bytes(static_cast<std::size_t>(sigLen));
+    self_->hasChatSession = pkLen > 0;
+}
+void Session::onCookieResponse(ReadBuffer& in) {
+    const std::string key = in.string(constants::kMaxStringLength);
+    if (in.boolean()) {
+        const auto len = in.varint();
+        self_->cookies[key] =
+            in.bytes(static_cast<std::size_t>(len));
+        srv_.storeCookie(self_->uuid, key, self_->cookies[key]);
+    } else {
+        srv_.eraseCookie(self_->uuid, key);
+    }
+}
+void Session::onCustomPayload(ReadBuffer& in) {
+    const std::string channel = in.string(constants::kMaxStringLength);
+    api::ChannelRegistry::Payload body(
+        in.p + in.off, in.p + in.len);
+    onPluginPayload(channel, body, 1);
+}
+void Session::onPlaceRecipePacket(ReadBuffer& in) {
+    // plan45 B6/G-13: windowId is ContainerID(varint) per protocol.json
+    // (was u8 — strict violation at 128+). Keep a u8 fallback for
+    // lenient proxies, mirroring onWindowClick/onEnchantItem.
+    int windowId = 0;
+    {
+        const std::size_t mark = in.off;
+        try { windowId = in.varint(); }
+        catch (...) { in.off = mark; windowId = in.u8(); }
+    }
+    (void)windowId;
+    const auto recipeId = in.varint();
+    const auto makeAll = in.boolean();
+    handlePlaceRecipe(recipeId, makeAll);
+}
+void Session::onSelectTrade(ReadBuffer& in) {
+    const auto idx = in.varint();
+    if (tradingVillager_ >= 0) srv_.selectTrade(*self_, idx);
+}
+void Session::onPingRequest(ReadBuffer& in) {
+    const std::int64_t id = in.i64();
+    WriteBuffer b; b.i64(id);
+    conn_->sendPacket(0x38 /*ping response*/, b);
+}
+void Session::onPlayerAbilities(ReadBuffer& in) {
+    // plan43 W-06: client flight toggle. Only creative/spectator may
+    // fly; anything else is revoked and echoed back so the client
+    // stays in sync (vanilla never trusts the flying bit alone).
+    const std::int8_t f = in.i8();
+    const bool wantFly = (f & 0x02) != 0;
+    const bool canFly = (self_->gamemode == 1 || self_->gamemode == 3);
+    self_->isFlying = wantFly && canFly;
+    sendAbilities();
+}
+void Session::onSetCreativeModeSlot(ReadBuffer& in) {
+    const std::int16_t slot = in.i16();
+    const auto stack = ItemStack::read(in);
+    if (slot >= 0 && slot < 46) {
+        // plan37 B-11 binding_curse: prevent removing armor with curse (creative also respects)
+        if ((slot==5||slot==6||slot==7||slot==8) && !self_->inv[slot].empty() && stack.empty()) {
+            if (EnchantmentHelper::hasBindingCurse(self_->inv[slot])) {
+                srv_.resendInventory(*self_);
+                return;
+            }
+        }
+        self_->inv[slot] = stack;
+        // plan13 §2: dynamic SetEquipment sync for creative armor/hand changes
+        if (slot==5||slot==6||slot==7||slot==8||slot==45||(slot>=36&&slot<=44)) {
+            srv_.syncEquipmentOnChange(*self_);
+        }
+    } else if (slot == -1 && stack.empty()) {
+        // cursor clear - ignore
+    }
+}
+void Session::onClientCommand(ReadBuffer& in) {
+    const std::int32_t action = in.varint();
+    if (action == 0) handleRespawnRequest();
+}
+void Session::onPlayerInput(ReadBuffer& in) {
+    // plan13 §3: PlayerInput 0x29 – flags: bit0 jump, bit1 shift (sneak) for dismount
+    try{
+        float sideways=0, forward=0;
+        uint8_t flags=0;
+        if(in.remaining()>=9){ sideways=in.f32(); forward=in.f32(); flags=in.u8(); }
+        else if(in.remaining()>=1){ flags=in.u8(); }
+        else { in.skipRest(); return; }
+        bool wantSneak = (flags & 0x02) !=0;
+        bool wantJump = (flags & 0x01) !=0;
+        if(wantSneak && self_->vehicleId!=-1){
+            int veh=self_->vehicleId;
+            self_->vehicleId=-1;
+            {
+                std::lock_guard lk(srv_.entsMtx_);
+                for(auto &m: srv_.mobsForTest()) if(m->entityId==veh) m->riderEntityId=-1;
+            }
+            srv_.broadcastSetPassengersEmpty(veh);
+        }
+        if(wantJump && self_->vehicleId!=-1){
+            srv_.handleHorseJump(*self_, 80);
+        }
+        (void)sideways;(void)forward;
+    }catch(...){ in.skipRest(); }
+}
+void Session::onMoveVehicle(ReadBuffer& in) {
+    // plan13 §3: MoveVehicle 0x20 – x double, y double, z double, yaw float, pitch float
+    try{
+        double x=in.f64(), y=in.f64(), z=in.f64();
+        float yaw=in.f32(), pitch=in.f32();
+        srv_.handleMoveVehicle(*self_, x,y,z,yaw,pitch);
+    }catch(...){ in.skipRest(); }
+}
+void Session::onSignUpdate(ReadBuffer& in) {
+    // plan43 W-07: spec is position + isFrontText + 4 lines. The old
+    // len<16 stonecutter heuristic is gone: ghost recipes arrive via
+    // the separate PlaceRecipe 0x25 id, so 0x39 is unambiguous.
+    // Lines are stored verbatim (plain text or JSON components —
+    // vanilla renders both leniently) and re-sent as BlockEntityData.
+    try {
+        std::int32_t sx, sy, sz;
+        in.position(sx, sy, sz);
+        const bool front = in.boolean();
+        std::string lines[4];
+        for (int i = 0; i < 4; ++i) lines[i] = in.string(384);
+        const std::int64_t key = posKey(sx, sy, sz);
+        BlockEntity* bep = srv_.blockEntities().get(key);
+        if (bep && bep->kind != BlockEntity::Kind::Sign) {
+            std::fprintf(stderr, "[cppfm] sign update at %d,%d,%d ignored (not a sign block entity)\n",
+                         sx, sy, sz);
+        } else {
+            if (!bep) bep = &srv_.blockEntities().create(key, BlockEntity::Kind::Sign);
+            std::string* dst = front ? bep->sign.front : bep->sign.back;
+            for (int i = 0; i < 4; ++i) dst[i] = lines[i];
+            if (front) bep->sign.hasFront = true; else bep->sign.hasBack = true;
+            sendSignBlockEntity(sx, sy, sz);
+        }
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[cppfm] sign update ignored: %s\n", e.what());
+    }
+}
+void Session::onEntityAction(ReadBuffer& in) {
+    const std::int32_t eid = in.varint();
+    const std::int32_t action = in.varint();
+    const std::int32_t jumpBoost = in.varint();
+    (void)eid; (void)jumpBoost;
+    bool wasSneak = self_->isSneaking;
+    bool wasSprint = self_->isSprinting;
+    if (action == 0) self_->isSneaking = true;
+    else if (action == 1) self_->isSneaking = false;
+    else if (action == 3) self_->isSprinting = true;
+    else if (action == 4) self_->isSprinting = false;
+    // plan16 strict: sneak pose 5/0 + sprint flag 0x08 combined, broadcast on either change
+    if (wasSneak != self_->isSneaking || wasSprint != self_->isSprinting) {
+        if (wasSneak != self_->isSneaking) {
+            // pose metadata index 6 varint: 5 crouching, 0 standing
+            WriteBuffer md;
+            md.varint(self_->entityId);
+            md.u8(6); md.varint(1); md.varint(self_->isSneaking ? 5 : 0);
+            md.u8(255);
+            srv_.broadcastPacketExcept(self_.get(), pl::sc::SetEntityMetadata, md);
+        }
+        // flags byte index 0: 0x02 sneak + 0x08 sprint (combined)
+        {
+            WriteBuffer fl;
+            fl.varint(self_->entityId);
+            fl.u8(0); fl.varint(0);
+            uint8_t flags = 0;
+            if (self_->isSneaking) flags |= 0x02;
+            if (self_->isSprinting) flags |= 0x08;
+            fl.u8(flags);
+            fl.u8(255);
+            srv_.broadcastPacketExcept(self_.get(), pl::sc::SetEntityMetadata, fl);
+        }
+        // plan13 §5 SwiftSneak – sync MovementSpeed when sneaking
+        {
+            int swiftLvl=0;
+            for(int i=5;i<=8;++i) if(!self_->inv[i].empty()){
+                std::string n=self_->inv[i].name();
+                if(n.find("leggings")!=std::string::npos) swiftLvl = std::max(swiftLvl, EnchantmentHelper::swiftSneakLevel(self_->inv[i]));
+            }
+            if(swiftLvl==0) for(int i=5;i<=8;++i) if(!self_->inv[i].empty()) swiftLvl = std::max(swiftLvl, EnchantmentHelper::swiftSneakLevel(self_->inv[i]));
+            double before = self_->attributes.getValue(Attribute::MOVEMENT_SPEED);
+            if(self_->isSneaking && swiftLvl>0) self_->attributes.applySwiftSneak(swiftLvl);
+            else self_->attributes.removeModifier(Attribute::MOVEMENT_SPEED, "swift_sneak");
+            double after = self_->attributes.getValue(Attribute::MOVEMENT_SPEED);
+            if(std::abs(before-after)>1e-9){
+                WriteBuffer ab; self_->attributes.writeUpdate(ab, self_->entityId);
+                try{ self_->conn->sendPacket(proto::pl::sc::UpdateAttributes, ab);}catch(...){}
+                srv_.broadcastPacketExcept(self_.get(), proto::pl::sc::UpdateAttributes, ab);
+            }
+        }
+        // Plan8 EquipmentComponent/EntityAction: sneak dismount from vehicle (horse/llama/pig)
+        // Vanilla sends EntityAction 0x28 with action 0 for sneak start; if player is riding, dismount.
+        if (self_->isSneaking && self_->vehicleId != -1) {
+            int veh = self_->vehicleId;
+            // clear player vehicle
+            self_->vehicleId = -1;
+            // clear mob rider
+            {
+                std::lock_guard lk(srv_.entsMtx_);
+                for (auto& m : srv_.mobsForTest()) if (m->entityId==veh) m->riderEntityId=-1;
+            }
+            srv_.broadcastSetPassengersEmpty(veh);
+        }
+    }
+    // Plan13 §3: horse jump action 7, plus 5/6 legacy
+    if (action==7) {
+        if (self_->vehicleId != -1) {
+            srv_.handleHorseJump(*self_, jumpBoost);
+        }
+    } else if (action==5 || action==6) {
+        // horse jump start/stop – broadcast to tracking players if riding
+        if (self_->vehicleId != -1) {
+            WriteBuffer je;
+            je.varint(self_->entityId); je.varint(action);
+            srv_.broadcastPacketExcept(self_.get(), pl::sc::SetEntityMetadata, je);
+        }
+    }
+    (void)wasSprint;
+}
+void Session::onClientSettings(ReadBuffer& in) {
+    try {
+        Player::ClientSettings s;
+        s.locale = in.string(64);
+        s.viewDistance = GameServer::clampClientViewDistance(in.i8());
+        s.chatFlags = in.varint();
+        s.chatColors = in.boolean();
+        s.skinParts = in.u8();
+        s.mainHand = in.varint();
+        s.textFiltering = in.boolean();
+        s.serverListing = in.boolean();
+        s.particleStatus = in.varint();
+        if (s.particleStatus < 0 || s.particleStatus > 2) s.particleStatus = 0;
+        applyClientSettings(s);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[cppfm] settings from %s ignored: %s\n",
+                     self_->name.c_str(), e.what());
+        in.skipRest();
+    }
+}
+void Session::onNameItemPacket(ReadBuffer& in) {
+    try { onNameItem(in.string(50)); }
+    catch (const std::exception& e) {
+        std::fprintf(stderr, "[cppfm] name_item ignored: %s\n", e.what());
+        in.skipRest();
+    }
+}
+void Session::onBeaconEffectPacket(ReadBuffer& in) {
+    try {
+        std::optional<std::int32_t> prim, sec;
+        if (in.boolean()) prim = in.varint();
+        if (in.boolean()) sec = in.varint();
+        onBeaconEffect(prim, sec);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[cppfm] beacon effect ignored: %s\n", e.what());
+        in.skipRest();
+    }
+}
+void Session::onPickItemFromBlock(ReadBuffer& in) {
+    try {
+        std::int32_t bx, by, bz;
+        in.position(bx, by, bz);
+        const bool includeData = in.boolean();
+        (void)includeData; // BE-copy detail deferred (PROTOCOL_NOTES B6)
+        World& w = srv_.worldFor(self_->dimension);
+        const std::uint16_t st = w.getBlock(bx, by, bz);
+        if (st == 0) return;
+        const auto* bd = gen::blockByState(st);
+        if (!bd) return;
+        const auto it = gen::itemIdByName().find(std::string(bd->name));
+        if (it == gen::itemIdByName().end()) return;
+        if (!srv_.addToInventory(*self_, it->second, 1)) return;
+        srv_.resendInventory(*self_);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[cppfm] pick-block ignored: %s\n", e.what());
+        in.skipRest();
+    }
+}
+void Session::onPickItemFromEntity(ReadBuffer& in) {
+    try {
+        const std::int32_t eid = in.varint();
+        const bool includeData = in.boolean();
+        (void)includeData;
+        std::string egg;
+        {
+            std::lock_guard lk(srv_.entsMtx_);
+            for (auto& m : srv_.mobsForTest()) {
+                if (m->entityId != eid) continue;
+                egg = std::string(MobEntity::kindName(m->kind)) + "_spawn_egg";
+                break;
+            }
+        }
+        if (egg.empty()) return;
+        const auto it = gen::itemIdByName().find(egg);
+        if (it == gen::itemIdByName().end()) return;
+        if (!srv_.addToInventory(*self_, it->second, 1)) return;
+        srv_.resendInventory(*self_);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[cppfm] pick-entity ignored: %s\n", e.what());
+        in.skipRest();
+    }
+}
+void Session::onRecipeBookPacket(ReadBuffer& in) {
+    try {
+        self_->recipeBookId = in.varint();
+        self_->recipeBookOpen = in.boolean();
+        self_->recipeBookFilter = in.boolean();
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[cppfm] recipe_book ignored: %s\n", e.what());
+        in.skipRest();
+    }
+}
+void Session::onDisplayedRecipe(ReadBuffer& in) {
+    try { self_->displayedRecipe = in.varint(); }
+    catch (...) { in.skipRest(); }
+}
+void Session::onSteerBoat(ReadBuffer& in) {
+    try {
+        self_->boatLeftPaddle = in.boolean();
+        self_->boatRightPaddle = in.boolean();
+    } catch (...) { in.skipRest(); }
+}
+bool Session::onResourcePackReceive(ReadBuffer& in) {
+    try {
+        std::array<std::uint8_t,16> uuid{};
+        auto ub = in.bytes(16);
+        std::copy(ub.begin(), ub.end(), uuid.begin());
+        const std::int32_t result = in.varint();
+        (void)uuid;
+        // vanilla PackResult: 0 loaded, 1 declined, 2 failed_download,
+        // 3 accepted, 4 downloaded... A forced pack that is
+        // declined/failed must kick.
+        if (srv_.config().resourcePackForced && (result == 1 || result == 2)) {
+            disconnectIn("{\"text\":\"Server resource pack declined\"}");
+            state_ = State::Done;
+            return true;
+        }
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[cppfm] resource_pack_receive ignored: %s\n", e.what());
+        in.skipRest();
+    }
+    return false;
+}
+void Session::onPong(ReadBuffer& in) {
+    try {
+        self_->lastPlayPongId = in.i32();
+        self_->lastPlayPongMs = nowMs();
+    } catch (...) { in.skipRest(); }
+}
+void Session::onAdvancementTab(ReadBuffer& in) {
+    try {
+        const std::int32_t action = in.varint();
+        self_->advancementTabAction = action;
+        self_->advancementTabId.clear();
+        if (action == 0) self_->advancementTabId = in.string(512);
+        if (action == 0) srv_.sendSelectAdvancementTab(*self_, self_->advancementTabId);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[cppfm] advancement_tab ignored: %s\n", e.what());
+        in.skipRest();
+    }
+}
+void Session::onSelectBundleItem(ReadBuffer& in) {
+    try {
+        const std::int32_t slotId = in.varint();
+        const std::int32_t idx = in.varint();
+        if (slotId >= 0 && idx >= 0) self_->bundleSelectedIndex = idx;
+    } catch (...) { in.skipRest(); }
+}
+void Session::onSetSlotState(ReadBuffer& in) {
+    try { (void)in.varint(); (void)in.varint(); (void)in.boolean(); }
+    catch (...) { in.skipRest(); }
+    // No server-side slot-enable state exists (client-side crafting
+    // ghost slot hint) — parsed and intentionally ignored (PROTOCOL_NOTES B6).
+}
+void Session::onDebugSampleSubscription(ReadBuffer& in) {
+    try { (void)in.varint(); } catch (...) { in.skipRest(); }
+    return; // debug profiler subscription — no server effect (PROTOCOL_NOTES B6).
+}
+void Session::onQueryBlockEntityTag(ReadBuffer& in) {
+    try {
+        const std::int32_t tx = in.varint();
+        std::int32_t bx, by, bz;
+        in.position(bx, by, bz);
+        answerBlockNbt(tx, bx, by, bz);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[cppfm] query_block_nbt ignored: %s\n", e.what());
+        in.skipRest();
+    }
+}
+void Session::onQueryEntityNbt(ReadBuffer& in) {
+    try {
+        const std::int32_t tx = in.varint();
+        const std::int32_t eid = in.varint();
+        answerEntityNbt(tx, eid);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[cppfm] query_entity_nbt ignored: %s\n", e.what());
+        in.skipRest();
+    }
+}
+void Session::onLockDifficulty(ReadBuffer& in) {
+    try {
+        const bool locked = in.boolean();
+        if (srv_.isOp(self_->name)) self_->difficultyLocked = locked;
+        else std::fprintf(stderr, "[cppfm] lock_difficulty from non-op %s denied\n",
+                          self_->name.c_str());
+    } catch (...) { in.skipRest(); }
+}
+void Session::onEditBook(ReadBuffer& in) {
+    try {
+        const std::int32_t hand = in.varint();
+        const std::int32_t n = in.varint();
+        if (n < 0 || n > 100) { in.skipRest(); return; } // W-14 page budget
+        std::vector<std::string> pages;
+        pages.reserve(static_cast<std::size_t>(n));
+        std::size_t total = 0;
+        for (std::int32_t i = 0; i < n; ++i) {
+            pages.push_back(in.string(32767));
+            total += pages.back().size();
+            if (total > 2 * 1024 * 1024) { in.skipRest(); pages.clear(); break; }
+        }
+        if (pages.empty() && n > 0) return;
+        const bool hasTitle = in.boolean();
+        const std::string title = hasTitle ? in.string(128) : std::string{};
+        self_->lastBookEdit = {hand, pages, title, hasTitle};
+        // Real effect: signing (title present) converts a held
+        // writable book into a written book carrying the title.
+        if (hasTitle && (hand == 0 || hand == 1)) {
+            ItemStack* held = (hand == 0) ? &self_->inv[36 + self_->heldSlot]
+                                          : &self_->inv[45];
+            if (held && (held->name() == "minecraft:writable_book" ||
+                         held->name() == "minecraft:written_book")) {
+                auto it = gen::itemIdByName().find("minecraft:written_book");
+                if (it != gen::itemIdByName().end()) {
+                    held->itemId = it->second;
+                    if (!title.empty()) held->setCustomName(title);
+                    srv_.resendInventory(*self_);
+                }
+            }
+        }
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[cppfm] edit_book ignored: %s\n", e.what());
+        in.skipRest();
+    }
+}
+void Session::onGenerateStructure(ReadBuffer& in) {
+    try {
+        std::int32_t gx, gy, gz;
+        in.position(gx, gy, gz);
+        (void)in.varint(); (void)in.boolean();
+        if (!requireOp(2, "generate_structure")) return;
+        std::fprintf(stderr, "[cppfm] generate_structure at %d,%d,%d denied-by-deferral (no structure gen API yet)\n",
+                     gx, gy, gz);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[cppfm] generate_structure ignored: %s\n", e.what());
+        in.skipRest();
+    }
+}
+void Session::onUpdateCommandBlock(ReadBuffer& in) {
+    try {
+        std::int32_t cx, cy, cz;
+        in.position(cx, cy, cz);
+        (void)in.string(32767); (void)in.varint(); (void)in.u8();
+        if (!requireOp(2, "update_command_block")) return;
+        std::fprintf(stderr, "[cppfm] update_command_block at %d,%d,%d denied-by-deferral (no command-block BE yet)\n",
+                     cx, cy, cz);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[cppfm] update_command_block ignored: %s\n", e.what());
+        in.skipRest();
+    }
+}
+void Session::onUpdateCommandBlockMinecart(ReadBuffer& in) {
+    try {
+        const std::int32_t eid = in.varint();
+        (void)in.string(32767); (void)in.boolean();
+        if (!requireOp(2, "update_command_block_minecart")) return;
+        std::fprintf(stderr, "[cppfm] update_command_block_minecart eid=%d denied-by-deferral\n", eid);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[cppfm] update_command_block_minecart ignored: %s\n", e.what());
+        in.skipRest();
+    }
+}
+void Session::onUpdateJigsaw(ReadBuffer& in) {
+    try {
+        std::int32_t jx, jy, jz;
+        in.position(jx, jy, jz);
+        for (int i = 0; i < 5; ++i) (void)in.string(512);
+        (void)in.varint(); (void)in.varint();
+        if (!requireOp(2, "update_jigsaw")) return;
+        std::fprintf(stderr, "[cppfm] update_jigsaw at %d,%d,%d denied-by-deferral\n", jx, jy, jz);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[cppfm] update_jigsaw ignored: %s\n", e.what());
+        in.skipRest();
+    }
+}
+void Session::onUpdateStructureBlock(ReadBuffer& in) {
+    try {
+        std::int32_t ux, uy, uz;
+        in.position(ux, uy, uz);
+        (void)in.varint(); (void)in.varint(); (void)in.string(512);
+        (void)in.i8(); (void)in.i8(); (void)in.i8();
+        (void)in.i8(); (void)in.i8(); (void)in.i8();
+        (void)in.varint(); (void)in.varint(); (void)in.string(512);
+        (void)in.f32(); (void)in.varint(); (void)in.u8();
+        if (!requireOp(2, "update_structure_block")) return;
+        std::fprintf(stderr, "[cppfm] update_structure_block at %d,%d,%d denied-by-deferral\n", ux, uy, uz);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[cppfm] update_structure_block ignored: %s\n", e.what());
+        in.skipRest();
+    }
+}
+void Session::onSpectatePacket(ReadBuffer& in) {
+    try {
+        std::array<std::uint8_t,16> target{};
+        auto tb = in.bytes(16);
+        std::copy(tb.begin(), tb.end(), target.begin());
+        onSpectate(target);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[cppfm] spectate ignored: %s\n", e.what());
+        in.skipRest();
+    }
+}
+void Session::onPlayerLoadedPacket() {
+    if (!chunksStreamed_) streamInitialChunks();
 }
 void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
     const double oldX = self_->x, oldY = self_->y, oldZ = self_->z;
@@ -3291,7 +3298,7 @@ void Session::onChatMessage(ReadBuffer& in) {
         kickPlay("{\"translate\":\"disconnect.spam\"}");
         return;
     }
-    const std::string msg = in.string(256);
+    const std::string msg = in.string(constants::kMaxStringLength);
     std::int64_t timestamp = in.i64();
     std::int64_t salt = in.i64();
     std::vector<std::uint8_t> signature;
@@ -3338,7 +3345,7 @@ void Session::onChatCommand(ReadBuffer& in) {
         kickPlay("{\"translate\":\"disconnect.spam\"}");
         return;
     }
-    const std::string cmd = in.string(256);
+    const std::string cmd = in.string(constants::kMaxStringLength);
     dispatchCommand(cmd);
 }
 void Session::dispatchCommand(const std::string& line) {
@@ -3372,9 +3379,9 @@ void Session::dispatchCommand(const std::string& line) {
         }
     }();
     if (!res.ok)
-        sendSystemText("\u00a7c" + (res.errorText.empty()
+        sendSystemText((msg::kRed + (res.errorText.empty()
                           ? "Incorrect argument for command"
-                          : res.errorText));
+                          : res.errorText)));
 }
 void Session::onHeldSlot(ReadBuffer& in) {
     const std::int16_t slot = in.i16();
@@ -3393,7 +3400,7 @@ void Session::onPlayerAction(ReadBuffer& in) {
         const std::uint16_t cur = srv_.world().getBlock(x, y, z);
         WriteBuffer rb; rb.position(x,y,z); rb.varint(cur);
         try { conn_->sendPacket(proto::pl::sc::BlockUpdate, rb); } catch(...) {}
-        sendSystemText("\u00a7cSpawn protection prevents building here");
+        sendSystemText((msg::kRed + "Spawn protection prevents building here"));
         ack(sequence);
         self_->digActive=false;
         return;
@@ -3564,7 +3571,7 @@ void Session::onUseItemOn(ReadBuffer& in) {
         const bool isBlockPlace = (self_->heldSlot>=0 && self_->heldSlot<9 && !self_->inv[36+self_->heldSlot].empty()
             && gen::blockByName(self_->inv[36+self_->heldSlot].name()) != nullptr);
         if (isBlockPlace) {
-            sendSystemText("\u00a7cSpawn protection prevents building here");
+            sendSystemText((msg::kRed + "Spawn protection prevents building here"));
             ack(sequence);
             return;
         }
@@ -3627,7 +3634,7 @@ void Session::onUseItemOn(ReadBuffer& in) {
                 bn.rfind("minecraft:", 0) == 0 && bn != "minecraft:bedrock") {
                 const bool night = srv_.isNight();
                 if (!night) {
-                    sendSystemText("\u00a77You can only sleep at night");
+                    sendSystemText((msg::kGray + "You can only sleep at night"));
                     ack(sequence);
                     return;
                 }
@@ -3661,11 +3668,11 @@ void Session::onUseItemOn(ReadBuffer& in) {
                                       proto::pl::sc::PlayerPosition, tb); }
                             catch (...) {}
                         }
-                    srv_.broadcastSystemText("\u00a77Good morning!");
+                    srv_.broadcastSystemText((msg::kGray + "Good morning!"));
                 } else {
-                    sendSystemText("\u00a77Sleeping... (" +
+                    sendSystemText((msg::kGray + "Sleeping... (" +
                                    std::to_string(sleepingCount) + "/" +
-                                   std::to_string(survivalCount) + ")");
+                                   std::to_string(survivalCount) + ")"));
                 }
                 ack(sequence);
                 return;
@@ -5087,7 +5094,6 @@ void Session::onUseEntity(ReadBuffer& in) {
                 baby->entityId = srv_.nextEntityId();
                 baby->kind = victim->kind;
                 baby->slimeSize = victim->slimeSize - 1;
-                const auto& bs = mobStats(baby->kind);
                 baby->health = MobEntity::slimeHealthForSize(baby->slimeSize);
                 if (baby->health < 1.f) baby->health = 1.f;
                 baby->x = victim->x + (rand()/(double)RAND_MAX - 0.5) * 0.5;

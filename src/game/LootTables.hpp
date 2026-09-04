@@ -133,8 +133,10 @@ public:
                                             for (auto& ee: chEntries.arr) if(ee.at("name").isStr()){
                                                 LootEntry ent; ent.name=ee.at("name").asStr();
                                                 if(auto* w2=ee.find("weight")) if(w2->isNum()) ent.weight=w2->asInt(1);
-                                                if(auto* f2=ee.find("functions")) if(f2->isArr()) applyFunctions(*f2,ent);
-                                                else if(auto* cl=e.find("conditions")) (void)cl;
+                                                if (auto* f2=ee.find("functions")) {
+                                                    if (f2->isArr()) applyFunctions(*f2,ent);
+                                                    else if (auto* cl=e.find("conditions")) (void)cl;
+                                                }
                                                 pool.entries.push_back(std::move(ent));
                                             }
                                         } else if (ch.at("name").isStr()){

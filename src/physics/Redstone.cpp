@@ -288,6 +288,8 @@ int RedstoneEngine::analogOutputForContainer(BlockEntity* be) {
     case BlockEntity::Kind::MovingPiston: {
         return 0;
     }
+    case BlockEntity::Kind::Sign:
+        break; // signs hold no items: 0 output (same as unlisted kinds)
     }
     if (slots==0) return 0;
     if (filled==0) return 0;
@@ -757,10 +759,7 @@ static PistonBehavior getPistonBehavior(std::uint16_t st){
     if(std::string(bd->name).find("shulker")!=std::string::npos) return PistonBehavior::BLOCK;
     return PistonBehavior::NORMAL;
 }
-static bool isUnpushable(std::uint16_t st) {
-    return getPistonBehavior(st)==PistonBehavior::BLOCK;
-}
-// B17 PUSH_ONLY: glazed can be pushed (retract==false) but not pulled (retract==true)
+ // B17 PUSH_ONLY: glazed can be pushed (retract==false) but not pulled (retract==true)
 static bool isMovable(std::uint16_t st, bool retract){
     auto beh=getPistonBehavior(st);
     if(beh==PistonBehavior::BLOCK) return false;

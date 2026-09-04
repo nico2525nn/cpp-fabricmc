@@ -30,12 +30,19 @@ constexpr int kViewDistanceMax = 32;
 constexpr uint8_t kMetadataTerminator = 0xFF; // entityMetadataLoop terminator index 0xFF
 constexpr int kMaxStringLength = 256;          // ReadBuffer string max (in.string(256))
 
-// Light / chunk
-constexpr int kSectionsPerChunk = 24;
-constexpr int kMinY = -64;
-constexpr int kMaxY = 320;
+// Light / chunk (Y geometry canonical home is cppfm::kMinY/kMaxY/kSectionsPerChunk
+// in World.hpp — kept single-sourced there, not duplicated here.)
 
 // Misc gameplay
 constexpr int kMaxRenameLength = 50; // anvil rename limit
+// Forced chunks — Yarn ForcedChunkState vanilla cap (World + WorldDataManager).
+constexpr int kMaxForcedChunks = 256;
+// Chat signatures — fixed bytes per signature entry (ChatCommandSigned).
+constexpr int kChatSignatureBytes = 256;
+// Protocol angle scale — yaw/pitch degrees to byte. Kept as numerator/denominator
+// pair (not a precomputed quotient) so `deg * kAngleScaleNum / kAngleScaleDen`
+// stays bit-identical to the previous `deg * 256.f / 360.f` (float rounding).
+constexpr float kAngleScaleNum = 256.0f;
+constexpr float kAngleScaleDen = 360.0f;
 
 } // namespace cppfm::constants

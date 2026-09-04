@@ -497,7 +497,6 @@ BTStatus WardenSonicBoomAction::tick(MobEntity& m, AiContext& ctx, std::int64_t 
             p.f32(0); p.f32(0); p.f32(0); p.f32(0.1f);
             p.varint(27); // sonic_boom (plan26 D17: was 0 placeholder)
             // not broadcasting particle id strictly, but keep for compat
-            // ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::WorldParticles, p);
             (void)p;
         }
     }

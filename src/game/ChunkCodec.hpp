@@ -286,8 +286,6 @@ inline void serializeLightPayload(WriteBuffer& out, const Chunk& chunk) {
 
     for (int s = 0; s < kSectionsPerChunk; ++s) {
         const std::size_t base = static_cast<std::size_t>(s) * 4096;
-        bool anyBlock = false;
-        if (haveSky || true) {}
         // scan arrays (or heuristic) per section
         int minH = INT_MAX, maxH = INT_MIN;
         for (int z = 0; z < 16; ++z)

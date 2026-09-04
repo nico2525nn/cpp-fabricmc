@@ -828,7 +828,6 @@ void GameServer::mobsTick() {
     std::vector<std::shared_ptr<MobEntity>> drops;
     {
         std::lock_guard lk(entsMtx_);
-        const auto now = nowMs();
         for (auto it = mobs_.begin(); it != mobs_.end();) {
             auto& m = *it;
             bool nearPlayer = false;
@@ -875,7 +874,6 @@ void GameServer::mobsTick() {
                         baby->entityId = nextEntityId();
                         baby->kind = m->kind;
                         baby->slimeSize = m->slimeSize - 1;
-                        const auto& bs = mobStats(baby->kind);
                         baby->health = MobEntity::slimeHealthForSize(baby->slimeSize);
                         if (baby->health < 1.f) baby->health = 1.f;
                         baby->x = m->x + (rand()/(double)RAND_MAX - 0.5) * 0.5;
@@ -914,7 +912,6 @@ void GameServer::mobsTick() {
                                 baby->entityId = nextEntityId();
                                 baby->kind = m->kind;
                                 baby->slimeSize = m->slimeSize - 1;
-                                const auto& bs = mobStats(baby->kind);
                                 baby->health = MobEntity::slimeHealthForSize(baby->slimeSize);
                                 if (baby->health < 1.f) baby->health = 1.f;
                                 baby->x = m->x + (rand()/(double)RAND_MAX - 0.5) * 0.5;
@@ -1060,7 +1057,6 @@ void GameServer::mobsTick() {
                             baby->entityId = nextEntityId();
                             baby->kind = m->kind;
                             baby->slimeSize = m->slimeSize - 1;
-                            const auto& bs = mobStats(baby->kind);
                             baby->health = MobEntity::slimeHealthForSize(baby->slimeSize);
                             if (baby->health < 1.f) baby->health = 1.f;
                             baby->x = m->x + (rand()/(double)RAND_MAX - 0.5) * 0.5;
@@ -1115,7 +1111,7 @@ void GameServer::mobsTick() {
                 b.i16((std::int16_t)((m->x-m->sentX) * 4096));
                 b.i16((std::int16_t)((m->y-m->sentY) * 4096));
                 b.i16((std::int16_t)((m->z-m->sentZ) * 4096));
-                b.i8((std::int8_t)(m->yaw * 256.f/360.f));
+                b.i8((std::int8_t)(m->yaw * constants::kAngleScaleNum / constants::kAngleScaleDen));
                 b.i8(0);
                 b.boolean(true);
                 moves.emplace_back(m, std::move(b));

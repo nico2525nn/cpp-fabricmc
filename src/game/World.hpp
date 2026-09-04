@@ -21,6 +21,7 @@
 #include "../worldgen/ChunkGenerator.hpp"
 #include "../worldgen/StructureManager.hpp"
 #include "ChunkTicket.hpp"
+#include "Constants.hpp"
 
 namespace cppfm {
 
@@ -434,12 +435,12 @@ public:
     }
     void truncateForcedChunksIfNeeded(){
         std::unique_lock lock(mutex_);
-        if(forcedChunks_.size()<=256) return;
-        std::fprintf(stderr,"[World] ForcedChunks %zu >256, truncating to 256 (vanilla limit)\n", forcedChunks_.size());
+        if(forcedChunks_.size()<=constants::kMaxForcedChunks) return;
+        std::fprintf(stderr,"[World] ForcedChunks %zu >%d, truncating to %d (vanilla limit)\n", forcedChunks_.size(), constants::kMaxForcedChunks, constants::kMaxForcedChunks);
         std::unordered_set<std::int64_t> truncated;
-        truncated.reserve(256);
+        truncated.reserve(constants::kMaxForcedChunks);
         int c=0;
-        for(auto k: forcedChunks_){ if(c++>=256) break; truncated.insert(k); }
+        for(auto k: forcedChunks_){ if(c++>=constants::kMaxForcedChunks) break; truncated.insert(k); }
         forcedChunks_.swap(truncated);
     }
 

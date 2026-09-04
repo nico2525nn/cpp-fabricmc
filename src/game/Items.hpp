@@ -7,6 +7,7 @@
 // as bare varint typeId. Yarn `SlotComponentType` 1.21.4: `damage 3`, `repair_cost 17`, `enchantments 10`,
 // `trim 45` (strict audit HIGH I6/I11). We keep unknown payloads verbatim for round-trip.
 #pragma once
+#include "Constants.hpp"
 #include <cstdint>
 #include <string>
 #include <unordered_map>
@@ -408,10 +409,10 @@ struct ItemStack {
                 // Legacy binary: varint patLen, pat bytes, varint matLen, mat bytes, bool
                 ReadBuffer rb(payload.data(), payload.size());
                 int patLen = rb.varint();
-                if (patLen <0 || patLen>256 || (size_t)rb.remaining() < (size_t)patLen) throw std::runtime_error("patLen");
+                if (patLen <0 || patLen>constants::kMaxStringLength || (size_t)rb.remaining() < (size_t)patLen) throw std::runtime_error("patLen");
                 std::string pat(reinterpret_cast<const char*>(rb.p + rb.off), patLen); rb.off+=patLen;
                 int matLen = rb.varint();
-                if (matLen <0 || matLen>256 || (size_t)rb.remaining() < (size_t)matLen) throw std::runtime_error("matLen");
+                if (matLen <0 || matLen>constants::kMaxStringLength || (size_t)rb.remaining() < (size_t)matLen) throw std::runtime_error("matLen");
                 std::string mat(reinterpret_cast<const char*>(rb.p + rb.off), matLen); rb.off+=matLen;
                 bool show = true;
                 if (rb.remaining()>0) show = rb.boolean();
