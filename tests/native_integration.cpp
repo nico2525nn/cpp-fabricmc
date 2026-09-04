@@ -6,7 +6,6 @@
 #include "../src/worldgen/DensityFunction.hpp"
 #include "../src/worldgen/MultiNoise.hpp"
 #include "../src/worldgen/StructureManager.hpp"
-#include "../src/worldgen/Structures.hpp"
 #include "../src/game/DatapackManager.hpp"
 #include "../src/game/GameRules.hpp"
 #include "../src/game/World.hpp"
@@ -427,10 +426,11 @@ void scenarioWorldGenParity(){
         auto pos = smStructureAtChunk(mgr2.sets()[0], 12345, 0, 0);
         CHECK(pos.present || !pos.present, "locate golden village present strict (C-03 env: sparse not guaranteed, no-crash)");
     }
-    // legacy Structures.hpp deprecated still 20
+    // Canonical structure manager still exposes all 20 vanilla sets.
     {
-        auto& ls = cppfm::worldgen::structureSets();
-        CHECK(ls.size()==20, "legacy Structures.hpp 20 sets");
+        StructureManager canonical(0);
+        auto& sets = canonical.sets();
+        CHECK(sets.size()==20, "canonical StructureManager 20 sets");
     }
 }
 

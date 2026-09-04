@@ -17,7 +17,7 @@ void NormalLevelSource::populateNoise(Chunk& c, int cx, int cz) const {
     (void)c; (void)cx; (void)cz;
 }
 void NormalLevelSource::populateStructures(Chunk& c, int cx, int cz) const {
-    // structures stage already inside fillTerrainV3 via StructureGenerator
+    // structures stage already runs inside fillTerrainV3 via StructureManager
     (void)c; (void)cx; (void)cz;
 }
 

@@ -16,7 +16,6 @@
 #include "generated/BlockStates.hpp"
 #include "TerrainGen.hpp"
 #include "../worldgen/MultiNoise.hpp"
-#include "../worldgen/Structures.hpp"
 #include "../worldgen/ChunkGenerator.hpp"
 #include "../worldgen/StructureManager.hpp"
 #include "ChunkTicket.hpp"
@@ -609,7 +608,6 @@ public:
     std::int32_t defaultBiomeIndex_ = 40;
     std::int8_t dimensionId_ = 0;
     std::shared_ptr<worldgen::MultiNoiseBiomeSource> biomeSource_;
-    std::unique_ptr<worldgen::StructureGenerator> structures_;
     std::unique_ptr<worldgen::StructureManager> structureManager_;
     std::unique_ptr<worldgen::ChunkGenerator> generator_;
 public:
