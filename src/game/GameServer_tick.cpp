@@ -23,144 +23,169 @@
 #include "CostCalculator.hpp"
 #include "PotionBrewing.hpp"
 #include "Particles.hpp"
+#include "MiningCalculator.hpp"
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
 namespace cppfm {
 using namespace proto;
+
+namespace {
+void cancelMiningDig(GameServer& server, Player& player) {
+    if (player.digActive) server.broadcastDigStage(player, -1);
+    player.digActive = false;
+    player.digTotalTicks = 0;
+    player.digLastStage = 255;
+}
+} // namespace
+
 void GameServer::tickDigs() {
     for (auto& pp : playersSnapshot()) {
         auto* p = pp.get();
         if (!p->digActive || !p->inPlay) continue;
-        const std::int64_t elapsed = tickNo_ - p->digStartTick;
-        if (p->digTotalTicks <= 0) continue;
+        if (p->gamemode != 0) {
+            // A survival dig cannot outlive a gamemode change.
+            cancelMiningDig(*this, *p);
+            continue;
+        }
+        const std::int64_t elapsed = tickNo_ -
+            MiningCalculator::unpackDigStartTick(p->digStartTick);
+        if (p->digTotalTicks <= 0) {
+            cancelMiningDig(*this, *p);
+            continue;
+        }
+        const bool canHarvest = MiningCalculator::digCanHarvest(p->digLastStage);
+        const std::uint8_t previousStage =
+            MiningCalculator::unpackDigStage(p->digLastStage);
         const std::int64_t stage64 = elapsed * 10 / p->digTotalTicks;
-        const std::uint8_t stage = static_cast<std::uint8_t>(std::min<std::int64_t>(9, stage64));
-        if (stage != p->digLastStage) {
-            p->digLastStage = stage;
+        const std::uint8_t stage = static_cast<std::uint8_t>(std::clamp<std::int64_t>(stage64, 0, 9));
+        if (stage != previousStage) {
+            p->digLastStage = MiningCalculator::packDigStage(stage, canHarvest);
             broadcastDigStage(*p, static_cast<std::int8_t>(stage));
         }
         if (elapsed >= p->digTotalTicks) {
             // server-authoritative completion
-            const std::uint16_t oldState = world_.getBlock(p->digX, p->digY, p->digZ);
+            World& world = worldFor(p->dimension);
+            const std::uint16_t oldState = world.getBlock(p->digX, p->digY, p->digZ);
             std::fprintf(stderr, "[cppfm] DIG COMPLETE at (%d,%d,%d) oldState=%u\n",
                          p->digX, p->digY, p->digZ, oldState);
-            if (oldState != 0) {
-                api::BlockBreakEvent ev;
-                ev.player = p;
-                ev.x = p->digX; ev.y = p->digY; ev.z = p->digZ;
-                ev.oldState = oldState;
-                if (!events().blockBreak.fire(ev)) {
-                    // cancelled: restore + stop animating
-                    WriteBuffer rb;
-                    rb.position(p->digX, p->digY, p->digZ);
-                    rb.varint(oldState);
-                    broadcastPacketExcept(nullptr, proto::pl::sc::BlockUpdate, rb);
-                    p->digActive = false;
-                    broadcastDigStage(*p, -1);
-                    continue;
-                }
-                world_.setBlock(p->digX, p->digY, p->digZ, 0);
-                broadcastBlockChange(p->digX, p->digY, p->digZ, 0);
-                if (p->gamemode == 0) HungerManager::onBlockBreak(*p, *this);
-                {
-                    blockEventDispatcher().onBlockBreak(p->digX, p->digY, p->digZ, oldState, p);
-                }
-                onBlockMined(*p, oldState);
-                {
-                    const std::string _bn = blockNameByState(oldState);
-                    if (_bn == "minecraft:tnt") {
-                        std::string unstableVal;
-                        for (auto& [k,v] : gen::propsOf(oldState)) if (k=="unstable") unstableVal = std::string(v);
-                        bool isUnstable = (unstableVal == "true");
-                        bool isCreative = (p->gamemode == 1);
-                        bool hasFlint = false;
-                        if (p->heldSlot >=0 && p->heldSlot <9) {
-                            const auto& _held = p->inv[36 + p->heldSlot];
-                            if (!_held.empty() && _held.name() == "minecraft:flint_and_steel") hasFlint = true;
-                        }
-                        if (hasFlint) {
-                            spawnPrimedTnt(p->digX + 0.5, p->digY + 0.5, p->digZ + 0.5, 0, 0.2, 0, 80);
-                            broadcastSound("minecraft:entity.tnt.primed", p->digX+0.5, p->digY+0.5, p->digZ+0.5, 1.f, 1.f, "block");
-                            if (!isCreative && p->heldSlot>=0 && p->heldSlot<9) {
-                                auto& _h = p->inv[36 + p->heldSlot];
-                                if (_h.applyDamage(1)) _h = ItemStack::air();
-                                resendInventory(*p);
-                            }
-                            p->digActive = false;
-                            broadcastDigStage(*p, -1);
-                            continue;
-                        } else if (isUnstable && !isCreative) {
-                            spawnPrimedTnt(p->digX + 0.5, p->digY + 0.5, p->digZ + 0.5, 0, 0.2, 0, 80);
-                            broadcastSound("minecraft:entity.tnt.primed", p->digX+0.5, p->digY+0.5, p->digZ+0.5, 1.f, 1.f, "block");
-                            p->digActive = false;
-                            broadcastDigStage(*p, -1);
-                            continue;
-                        }
+            const gen::BlockDef* def = gen::blockByState(oldState);
+            if (oldState != MiningCalculator::digStartingState(p->digStartTick) ||
+                oldState == 0 || !def || def->hardness < 0.f) {
+                // The target changed or disappeared while mining; never turn
+                // a stale progress record into a break of another block.
+                WriteBuffer rb;
+                rb.position(p->digX, p->digY, p->digZ);
+                rb.varint(oldState);
+                broadcastPacketExcept(nullptr, proto::pl::sc::BlockUpdate, rb);
+                cancelMiningDig(*this, *p);
+                continue;
+            }
+
+            api::BlockBreakEvent ev;
+            ev.player = p;
+            ev.x = p->digX; ev.y = p->digY; ev.z = p->digZ;
+            ev.oldState = oldState;
+            if (!events().blockBreak.fire(ev)) {
+                // cancelled: restore + stop animating
+                WriteBuffer rb;
+                rb.position(p->digX, p->digY, p->digZ);
+                rb.varint(oldState);
+                broadcastPacketExcept(nullptr, proto::pl::sc::BlockUpdate, rb);
+                cancelMiningDig(*this, *p);
+                continue;
+            }
+            if (world.getBlock(p->digX, p->digY, p->digZ) != oldState) {
+                // Event listeners may synchronously replace the target.
+                // Revalidate before mutating, durability, or drops.
+                WriteBuffer rb;
+                rb.position(p->digX, p->digY, p->digZ);
+                rb.varint(world.getBlock(p->digX, p->digY, p->digZ));
+                broadcastPacketExcept(nullptr, proto::pl::sc::BlockUpdate, rb);
+                cancelMiningDig(*this, *p);
+                continue;
+            }
+            world.setBlock(p->digX, p->digY, p->digZ, 0);
+            broadcastBlockChange(p->digX, p->digY, p->digZ, 0);
+            HungerManager::onBlockBreak(*p, *this);
+            blockEventDispatcher().onBlockBreak(p->digX, p->digY, p->digZ, oldState, p);
+            onBlockMined(*p, oldState);
+            {
+                const std::string _bn = blockNameByState(oldState);
+                if (_bn == "minecraft:tnt") {
+                    std::string unstableVal;
+                    for (auto& [k,v] : gen::propsOf(oldState)) if (k=="unstable") unstableVal = std::string(v);
+                    const bool isUnstable = (unstableVal == "true");
+                    const bool isCreative = (p->gamemode == 1);
+                    bool hasFlint = false;
+                    if (p->heldSlot >=0 && p->heldSlot <9) {
+                        const auto& _held = p->inv[36 + p->heldSlot];
+                        if (!_held.empty() && _held.name() == "minecraft:flint_and_steel") hasFlint = true;
                     }
-                }
-                if (p->gamemode == 0 && p->heldSlot >=0 && p->heldSlot <9) {
-                    auto &held = p->inv[36 + p->heldSlot];
-                    if (!held.empty() && ItemStack::maxDamageFor(held.itemId) > 0) {
-                        if (DamageComponent::applyDamage(held, 1)) held = ItemStack::air();
-                        resendInventory(*p);
-                    }
-                }
-                if (!ev.dropItems) { p->digActive = false;
-                    broadcastDigStage(*p, -1); continue; }
-                if (p->gamemode == 0) {
-                    const std::string bn = blockNameByState(oldState);
-                    const BlockMineInfo* mi = mineInfo(bn);
-                    const bool canHarvest = !mi || !mi->requiresPickaxe ||
-                        [&]{
-                            if (p->heldSlot < 0 || p->heldSlot >= 9) return false;
-                            const auto& sl = p->inv[36 + p->heldSlot];
-                            if (sl.count <= 0) return false;
-                            static thread_local std::unordered_map<std::uint32_t,std::string> i2n;
-                            if (i2n.empty()) for (auto& e : gen::kItems) i2n.emplace(e.second, std::string(e.first));
-                            auto it = i2n.find(sl.itemId);
-                            return it != i2n.end() && it->second.find("pickaxe") != std::string::npos;
-                        }();
-                    if (canHarvest) {
-                        ItemStack heldStack;
-                        if (p->heldSlot >= 0 && p->heldSlot < 9) heldStack = p->inv[36 + p->heldSlot];
-                        std::vector<ItemStack> drops;
-                        if (heldStack.hasSilkTouch()) {
-                            if (bn != "minecraft:air") {
-                                auto ii = gen::itemIdByName().find(bn);
-                                if (ii != gen::itemIdByName().end())
-                                    drops.push_back(ItemStack::of(ii->second, 1));
-                            }
-                        } else {
-                            if (bn == "minecraft:glass") {
-                                // no drop without silk touch
-                            } else {
-                                drops = lootTables_.evaluate(bn, heldStack);
-                                if (drops.empty()) {
-                                    static const std::unordered_map<std::string,std::string> kOv{
-                                        {"minecraft:grass_block","minecraft:dirt"},
-                                        {"minecraft:stone","minecraft:cobblestone"}};
-                                    auto ov = kOv.find(bn);
-                                    const std::string dn = ov!=kOv.end()?ov->second:bn;
-                                    auto ii = gen::itemIdByName().find(dn);
-                                    if (ii != gen::itemIdByName().end())
-                                        drops.push_back(ItemStack::of(ii->second, 1));
-                                }
-                            }
+                    if (hasFlint) {
+                        spawnPrimedTnt(p->digX + 0.5, p->digY + 0.5, p->digZ + 0.5, 0, 0.2, 0, 80);
+                        broadcastSound("minecraft:entity.tnt.primed", p->digX+0.5, p->digY+0.5, p->digZ+0.5, 1.f, 1.f, "block");
+                        if (!isCreative && p->heldSlot>=0 && p->heldSlot<9) {
+                            auto& _h = p->inv[36 + p->heldSlot];
+                            if (_h.applyDamage(1)) _h = ItemStack::air();
+                            resendInventory(*p);
                         }
-                        for (auto &st : drops) {
-                            if (st.empty()) continue;
-                            spawnItemDrop(p->digX+.5, p->digY+.25, p->digZ+.5,
-                                          st,
-                                          (rand()/(double)RAND_MAX-.5)*.15, .12,
-                                          (rand()/(double)RAND_MAX-.5)*.15);
-                        }
+                        cancelMiningDig(*this, *p);
+                        continue;
+                    } else if (isUnstable && !isCreative) {
+                        spawnPrimedTnt(p->digX + 0.5, p->digY + 0.5, p->digZ + 0.5, 0, 0.2, 0, 80);
+                        broadcastSound("minecraft:entity.tnt.primed", p->digX+0.5, p->digY+0.5, p->digZ+0.5, 1.f, 1.f, "block");
+                        cancelMiningDig(*this, *p);
+                        continue;
                     }
                 }
             }
-            p->digActive = false;
-            broadcastDigStage(*p, -1);
+            if (p->heldSlot >=0 && p->heldSlot <9) {
+                auto &held = p->inv[36 + p->heldSlot];
+                if (!held.empty() && ItemStack::maxDamageFor(held.itemId) > 0) {
+                    if (DamageComponent::applyDamage(held, 1)) held = ItemStack::air();
+                    resendInventory(*p);
+                }
+            }
+            if (!ev.dropItems) {
+                cancelMiningDig(*this, *p);
+                continue;
+            }
+
+            const std::string bn = blockNameByState(oldState);
+            if (canHarvest) {
+                ItemStack heldStack;
+                if (p->heldSlot >= 0 && p->heldSlot <9) heldStack = p->inv[36 + p->heldSlot];
+                std::vector<ItemStack> drops;
+                if (heldStack.hasSilkTouch()) {
+                    if (bn != "minecraft:air") {
+                        auto ii = gen::itemIdByName().find(bn);
+                        if (ii != gen::itemIdByName().end())
+                            drops.push_back(ItemStack::of(ii->second, 1));
+                    }
+                } else if (bn != "minecraft:glass") {
+                    drops = lootTables_.evaluate(bn, heldStack);
+                    if (drops.empty()) {
+                        static const std::unordered_map<std::string,std::string> kOv{
+                            {"minecraft:grass_block","minecraft:dirt"},
+                            {"minecraft:stone","minecraft:cobblestone"}};
+                        auto ov = kOv.find(bn);
+                        const std::string dn = ov!=kOv.end()?ov->second:bn;
+                        auto ii = gen::itemIdByName().find(dn);
+                        if (ii != gen::itemIdByName().end())
+                            drops.push_back(ItemStack::of(ii->second, 1));
+                    }
+                }
+                for (auto &st : drops) {
+                    if (st.empty()) continue;
+                    spawnItemDrop(p->digX+.5, p->digY+.25, p->digZ+.5,
+                                  st,
+                                  (rand()/(double)RAND_MAX-.5)*.15, .12,
+                                  (rand()/(double)RAND_MAX-.5)*.15);
+                }
+            }
+            cancelMiningDig(*this, *p);
         }
     }
 }

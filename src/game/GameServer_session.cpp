@@ -26,12 +26,56 @@
 #include "CostCalculator.hpp"
 #include "PotionBrewing.hpp"
 #include "Particles.hpp"
+#include "MiningCalculator.hpp"
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
 namespace cppfm {
 using namespace proto;
+
+namespace {
+const ItemStack* heldMiningItem(const Player& player) {
+    if (player.heldSlot < 0 || player.heldSlot >= 9) return nullptr;
+    const auto& held = player.inv[36 + player.heldSlot];
+    return held.empty() ? nullptr : &held;
+}
+
+bool waterAtEyeLevel(const GameServer& server, const Player& player) {
+    const auto& world = server.worldFor(player.dimension);
+    const int x = static_cast<int>(std::floor(player.x));
+    const int y = static_cast<int>(std::floor(player.y + 1.62));
+    const int z = static_cast<int>(std::floor(player.z));
+    const auto* def = gen::blockByState(world.getBlock(x, y, z));
+    return def && def->name == "minecraft:water";
+}
+
+MiningContext miningContextFor(const GameServer& server, const Player& player) {
+    MiningContext context;
+    const ItemStack* held = heldMiningItem(player);
+    const std::string itemName = held ? held->name() : "minecraft:air";
+    context.tool = MiningCalculator::toolKindFromItemName(itemName);
+    context.tier = MiningCalculator::toolTierFromItemName(itemName);
+    context.efficiency = held ? held->efficiencyLevel() : 0;
+
+    const int hasteAmp = amplifierFor(player.effects, effects::Haste);
+    const int fatigueAmp = amplifierFor(player.effects, effects::MiningFatigue);
+    context.haste = hasteAmp >= 0 ? hasteAmp + 1 : 0;
+    context.fatigue = fatigueAmp >= 0 ? fatigueAmp + 1 : 0;
+    context.inWater = waterAtEyeLevel(server, player);
+    if (context.inWater) {
+        for (int slot = 5; slot <= 8; ++slot) {
+            if (!player.inv[slot].empty() &&
+                EnchantmentHelper::hasAquaAffinity(player.inv[slot])) {
+                context.aquaAffinity = true;
+                break;
+            }
+        }
+    }
+    context.onGround = player.onGround;
+    return context;
+}
+} // namespace
 
 bool handleCakeBlockConsume(GameServer& srv, Player& p, std::int32_t x, std::int32_t y, std::int32_t z){
     return HungerManager::handleCakeBlockConsume(srv, p, x, y, z);
@@ -3045,6 +3089,12 @@ void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
             if (target != 127) {
                 bool ok = PortalHandler::tryTeleport(srv_, *self_, target);
                 if (ok) {
+                    // Portal transfer changes the world used by tickDigs. Do
+                    // not let an old-dimension dig continue at the same XYZ.
+                    if (self_->digActive) srv_.broadcastDigStage(*self_, -1);
+                    self_->digActive = false;
+                    self_->digTotalTicks = 0;
+                    self_->digLastStage = 255;
                     sentChunks_.clear();
                     lastCx_ = INT32_MAX; lastCz_ = INT32_MAX;
                     try { tickChunksAround(self_->x, self_->z); } catch (...) {}
@@ -3224,136 +3274,102 @@ void Session::onPlayerAction(ReadBuffer& in) {
     (void)in.i8();                                    // face
     const std::int32_t sequence = in.varint();
 
-    if ((status==0 || status==2) && self_->dimension==0 && srv_.isSpawnProtected(x, z) && !srv_.isOp(self_->name)) {
-        // cancel: re-send block and ack
-        const std::uint16_t cur = srv_.world().getBlock(x, y, z);
-        WriteBuffer rb; rb.position(x,y,z); rb.varint(cur);
-        try { conn_->sendPacket(proto::pl::sc::BlockUpdate, rb); } catch(...) {}
-        sendSystemText((msg::kRed + "Spawn protection prevents building here"));
+    World& world = srv_.worldFor(self_->dimension);
+    auto sendAuthoritativeBlock = [&](std::int32_t bx, std::int32_t by,
+                                      std::int32_t bz, std::uint16_t state) {
+        WriteBuffer rb;
+        rb.position(bx, by, bz);
+        rb.varint(state);
+        try { conn_->sendPacket(proto::pl::sc::BlockUpdate, rb); } catch (...) {}
+    };
+    auto cancelDig = [&]() {
+        if (self_->digActive) srv_.broadcastDigStage(*self_, -1);
+        self_->digActive = false;
+        self_->digTotalTicks = 0;
+        self_->digLastStage = 255;
+    };
+
+    // BlockDig status 1 is an independent abort action. It must be handled
+    // before the start/finish path so it cannot be hidden by that condition.
+    if (status == 1) {
+        cancelDig();
         ack(sequence);
-        self_->digActive=false;
         return;
     }
 
-    if (status == 0 || status == 2) {                   // start / finish dig
-        const std::uint16_t oldState = srv_.world().getBlock(x, y, z);
-        const std::string bn = blockNameByState(oldState);
-        const BlockMineInfo* mi = mineInfo(bn);
-        const bool unbreakable = mi && mi->hardness < 0;
+    if ((status==0 || status==2) && self_->dimension==0 && srv_.isSpawnProtected(x, z) && !srv_.isOp(self_->name)) {
+        // cancel: re-send block and ack
+        const std::uint16_t cur = world.getBlock(x, y, z);
+        cancelDig();
+        sendAuthoritativeBlock(x, y, z, cur);
+        sendSystemText((msg::kRed + "Spawn protection prevents building here"));
+        ack(sequence);
+        return;
+    }
 
-        if (status == 0 && self_->gamemode != 0) {          // creative: instant break
+    if (status == 0) {                                // start dig
+        const std::uint16_t oldState = world.getBlock(x, y, z);
+        if (self_->digActive) cancelDig();
+
+        if (self_->gamemode != 0) {                   // creative/adventure: existing behavior
             if (oldState != 0) {
                 api::BlockBreakEvent ev;
                 ev.player = self_.get();
                 ev.x = x; ev.y = y; ev.z = z;
                 ev.oldState = oldState;
-                if (!srv_.events().blockBreak.fire(ev)) { ack(sequence); return; }
-                srv_.world().setBlock(x, y, z, 0);
+                if (!srv_.events().blockBreak.fire(ev)) {
+                    ack(sequence);
+                    return;
+                }
+                world.setBlock(x, y, z, 0);
                 srv_.broadcastBlockChange(x, y, z, 0);
-                srv_.world().scheduleNeighborUpdates(x, y, z);
+                world.scheduleNeighborUpdates(x, y, z);
             }
-        } else if (status == 0 && self_->gamemode == 0 && !unbreakable && oldState != 0) {
-            // begin tracked dig
-            self_->digActive = true;
-            self_->digX=x; self_->digY=y; self_->digZ=z;
-            self_->digStartTick = srv_.tickNoForTest();
-            const bool canHarvest = !mi || !mi->requiresPickaxe ||
-                [&]{
-                    if (self_->heldSlot < 0 || self_->heldSlot >= 9) return false;
-                    const auto& sl = self_->inv[36 + self_->heldSlot];
-                    if (sl.count <= 0) return false;
-                    static thread_local std::unordered_map<std::uint32_t,std::string> i2n;
-                    if (i2n.empty()) for (auto& e : gen::kItems) i2n.emplace(e.second, std::string(e.first));
-                    auto it = i2n.find(sl.itemId);
-                    return it != i2n.end() && it->second.find("pickaxe") != std::string::npos;
-                }();
-            float speed = 1.f;
-            if (self_->heldSlot >=0 && self_->heldSlot <9) {
-                auto &held = self_->inv[36 + self_->heldSlot];
-                if (!held.empty()) {
-                    speed = toolSpeed(held.name(), true);
-                    int eff = held.efficiencyLevel();
-                    if (eff>0) speed *= EnchantmentHelper::miningSpeedBonus(eff);
+        } else if (oldState != 0) {
+            const gen::BlockDef* def = gen::blockByState(oldState);
+            if (def && def->hardness >= 0.f) {
+                const MiningContext context = miningContextFor(srv_, *self_);
+                const MiningResult result = MiningCalculator::calculate(*def, context);
+                if (result.ticks != MiningCalculator::kUnbreakable) {
+                    self_->digActive = true;
+                    self_->digX = x; self_->digY = y; self_->digZ = z;
+                    self_->digStartTick = MiningCalculator::packDigStartTick(
+                        srv_.tickNoForTest(), oldState);
+                    // Survival blocks with a zero-tick result still complete in
+                    // the authoritative tick loop, never in the packet handler.
+                    self_->digTotalTicks = std::max(1, result.ticks);
+                    self_->digLastStage = MiningCalculator::packDigStage(0, result.harvest);
+                    srv_.broadcastDigStage(*self_, 0);
                 }
             }
-            {
-                int hasteAmp = amplifierFor(self_->effects, effects::Haste);
-                if (hasteAmp>=0) speed *= (1.0f + 0.20f * float(hasteAmp+1));
-                int fatigueAmp = amplifierFor(self_->effects, effects::MiningFatigue);
-                if (fatigueAmp>=0) {
-                    float mult = 0.3f;
-                    for(int i=0;i<fatigueAmp;i++) mult *= 0.7f;
-                    speed *= mult;
-                }
+        }
+    } else if (status == 2) {                         // finish (client-side timing)
+        const std::uint16_t oldState = world.getBlock(x, y, z);
+        const gen::BlockDef* def = gen::blockByState(oldState);
+        const bool sameTarget = self_->digActive &&
+            self_->digX == x && self_->digY == y && self_->digZ == z;
+        const bool sameState = self_->digActive &&
+            MiningCalculator::digStartingState(self_->digStartTick) == oldState;
+
+        if (self_->gamemode != 0) {
+            // A gamemode change must not let a survival dig complete later.
+            cancelDig();
+        } else if (!sameTarget || !sameState || oldState == 0 || !def || def->hardness < 0.f) {
+            // Finish is never an implicit start. Reject untracked/wrong-target
+            // packets and re-synchronise the requested block.
+            cancelDig();
+            sendAuthoritativeBlock(x, y, z, oldState);
+        } else {
+            const std::int64_t elapsed = srv_.tickNoForTest() -
+                MiningCalculator::unpackDigStartTick(self_->digStartTick);
+            if (elapsed < self_->digTotalTicks) {
+                // Do not shorten the stored server timing, even for a finish
+                // packet that is only a few ticks early.
+                cancelDig();
+                sendAuthoritativeBlock(x, y, z, oldState);
             }
-            {
-                // underwater check: head in water?
-                auto isWaterAt2 = [&](int bx,int by,int bz)->bool{
-                    uint16_t st = srv_.worldFor(self_->dimension).getBlock(bx,by,bz);
-                    auto *d = gen::blockByState(st);
-                    return d && std::string(d->name)=="minecraft:water";
-                };
-                int hx=(int)std::floor(self_->x); int hy=(int)std::floor(self_->y+1.0); int hz=(int)std::floor(self_->z);
-                bool headInWater = isWaterAt2(hx,hy,hz);
-                if (headInWater) {
-                    ItemStack helm = self_->inv[8];
-                    bool hasAqua = EnchantmentHelper::hasAquaAffinity(helm);
-                    if (!hasAqua) {
-                        // also scan any armor helm fallback for test
-                        for(int i=5;i<=8;++i) if(!self_->inv[i].empty() && EnchantmentHelper::hasAquaAffinity(self_->inv[i])){ hasAqua=true; break; }
-                    }
-                    if (!hasAqua) speed *= 0.2f;
-                }
-                // on ground check for soul_speed/swift_sneak already handled elsewhere (attributes)
-            }
-            if (speed < 0.1f) speed = 0.1f;
-            const float h = mi ? mi->hardness : 1.f;
-            const float denom = canHarvest ? 30.f : 100.f;
-            self_->digTotalTicks = h <= 0 ? 1 :
-                static_cast<std::int32_t>(std::ceil(h * denom / std::max(1.f, speed)));
-            self_->digLastStage = 255;
-            srv_.broadcastDigStage(*self_, 0);
-        } else if (status == 1) {                        // cancelled
-            if (self_->digActive) srv_.broadcastDigStage(*self_, -1);
-            self_->digActive = false;
-        } else if (status == 2) {                        // finished (client-side timing)
-            if (self_->gamemode == 0) {
-                if (unbreakable || oldState == 0) {
-                    // reject: re-send authoritative block
-                    WriteBuffer rb;
-                    rb.position(x, y, z);
-                    rb.varint(oldState);
-                    conn_->sendPacket(proto::pl::sc::BlockUpdate, rb);
-                } else if (!self_->digActive ||
-                           self_->digX!=x || self_->digY!=y || self_->digZ!=z) {
-                    // no tracked dig (or wrong spot): trust client, break now
-                    srv_.world().setBlock(x,y,z,0);
-                    srv_.broadcastBlockChange(x,y,z,0);
-                    if (self_->heldSlot>=0 && self_->heldSlot<9) {
-                        auto &held = self_->inv[36 + self_->heldSlot];
-                        if (!held.empty() && ItemStack::maxDamageFor(held.itemId)>0) {
-                            if (held.applyDamage(1)) held = ItemStack::air();
-                            srv_.resendInventory(*self_);
-                        }
-                    }
-                } else {
-                    const std::int64_t elapsed = srv_.tickNoForTest() - self_->digStartTick;
-                    if (elapsed + 4 >= self_->digTotalTicks) {
-                        // let tick completion fire naturally this tick or force now
-                        self_->digTotalTicks = std::min(self_->digTotalTicks,
-                            static_cast<std::int32_t>(elapsed + 1));
-                    } else {
-                        // too fast: revert
-                        WriteBuffer rb;
-                        rb.position(x, y, z);
-                        rb.varint(oldState);
-                        conn_->sendPacket(proto::pl::sc::BlockUpdate, rb);
-                        self_->digActive = false;
-                        srv_.broadcastDigStage(*self_, -1);
-                    }
-                }
-            }
-            // tick loop completes survival digs via digActive
+            // At/after the authoritative deadline, tickDigs owns mutation,
+            // event dispatch, durability, and drops.
         }
     }
     ack(sequence);                                      // ALWAYS ack sequences
