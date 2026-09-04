@@ -313,7 +313,7 @@ struct Cache2d final : DensityNode { // memoize per column within one chunk
 };
 using Cache2dPtr = std::shared_ptr<Cache2d>;
 
-// plan46 G-10: Interpolated (direct-eval approx, see DENSITY_COVERAGE.md), FlatCache, CacheOnce node types.
+// plan46 G-10: Interpolated (direct-eval approx, see docs/SPEC_GAMEPLAY.md#worldgen-density-and-seed-limits), FlatCache, CacheOnce node types.
 struct Interpolated final : DensityNode {
     NodePtr in;
     double eval(const Sample& s) const override { return in ? in->eval(s) : 0; }

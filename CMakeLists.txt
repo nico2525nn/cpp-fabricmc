@@ -208,7 +208,7 @@ add_test(NAME smoke80 COMMAND test_smoke_80 $<TARGET_FILE:cppfm>
          WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(smoke80 PROPERTIES TIMEOUT 700)
 
-# plan43 B1+B2 live-server tests (assessment-6 W-01..W-07, W-12) — TestClient + cppfm
+# plan43 B1+B2 live-server tests (W-01..W-07, W-12; see docs/VERIFICATION.md) — TestClient + cppfm
 add_executable(test_plan43
     tests/TestClient.cpp
     tests/test_plan43.cpp
@@ -379,4 +379,4 @@ target_link_libraries(test_rcon_multi PRIVATE Threads::Threads)
 add_test(NAME rcon_multi COMMAND test_rcon_multi WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(rcon_multi PROPERTIES TIMEOUT 60 LABELS recovery)
 
-# plan44 G-05 mob attributes 149 species (world) — header-only, reads docs/mob_stats_149.csv
+# plan44 G-05 mob attributes 149 species (world; see docs/SPEC_GAMEPLAY.md) — header-only, reads docs/mob_stats_149.csv

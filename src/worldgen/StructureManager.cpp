@@ -64,7 +64,7 @@ void StructureManager::ensureDefaults() {
     // 20 sets, jar-verified against vanilla 1.21.4 client
     // data/minecraft/worldgen/structure_set/*.json (exactly 20 files;
     // set ids are plural there, e.g. "villages" — ours keep the plan33
-    // singular統合名 and map 1:1, see docs/PROTOCOL_NOTES.md G-11 table).
+    // singular統合名 and map 1:1, see docs/SPEC_GAMEPLAY.md#worldgen-density-and-seed-limits G-11 table).
     // Verified values: villages 34/8/10387312 (5 structures), pillager
     // 32/8/165745296 freq 0.2, desert_pyramids 32/8/14357617, jungle
     // 32/8/14357619 (structure minecraft:jungle_pyramid), swamp 32/8/14357620,

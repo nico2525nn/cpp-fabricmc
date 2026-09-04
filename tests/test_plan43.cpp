@@ -1,4 +1,4 @@
-// test_plan43.cpp — plan43 B1+B2 live-server tests (assessment-6 W-01..W-07, W-12).
+// test_plan43.cpp — plan43 B1+B2 live-server tests (docs/VERIFICATION.md, W-01..W-07, W-12).
 // Each case is spec-driven (Prismarine protocol.json 1.21.4 hand-built fixtures,
 // NOT copied from server output — G-01 tautology guard).
 // Stage-merge design: cases FAIL on pre-fix server (disconnect/misread), PASS post-fix.
