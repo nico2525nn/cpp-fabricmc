@@ -1,6 +1,4 @@
-// Commands.cpp: Brigadier command tree + selector resolution (plan3.md
-// "Brigadier完全移植"). All commands are registered on a real CommandNode
-// tree, parsed by the dispatcher and advertised via declare_commands.
+// commands_data.cpp: Brigadier command tree nodes (plan3 port): registered, parsed, advertised.
 #include "GameServer.hpp"
 #include "Messages.hpp"
 #include "Particles.hpp"
@@ -195,8 +193,7 @@ void GameServer::initDataCommands() {
             tagManager_ = datapackManager_.tagManager;
             lootTables_ = datapackManager_.lootTables;
             {
-                // plan42 R3: invalidate the merged-advancement cache under the
-                // same mutex its readers use (see getMergedAdvancements).
+                // plan42 R3: invalidate the merged-advancement cache under the same mutex its readers use (see getMergedAdvancements).
                 std::lock_guard lk(advMergeMtx_);
                 cachedMergedAdv_.clear();
                 cachedAdvRawSize_ = 0;
@@ -408,11 +405,9 @@ void GameServer::initDataCommands() {
                     pathArg->then(setLit); pathArg->then(mergeLit); pathArg->then(appendLit); pathArg->then(insertLit);
                     // remove (no value)
                     auto removeLit = CommandNode::literal("remove");
-                    // need to make pathArg's remove path executable: we add a child literal remove under path
-                    // Actually structure is modify block <pos> <path> remove
-                    // So add remove as child of pathArg
-                    // But we need pathArg executable false; remove as executable
-                    // Create a separate executable node for remove
+                    // need to make pathArg's remove path executable: we add a child literal remove under path Actually structure is modify
+                    // block <pos> <path> remove So add remove as child of pathArg But we need pathArg executable false; remove as
+                    // executable Create a separate executable node for remove
                     auto remExec = CommandNode::literal("remove");
                     remExec->executable=false; // will add a dummy? Instead make a leaf
                     // For simplicity, add a branch where path -> remove literal executable
@@ -786,8 +781,7 @@ void GameServer::initDataCommands() {
                     if(advId.empty()) throw std::runtime_error("advancement id required");
                     std::string full = advId;
                     if(full.find(':')==std::string::npos) full="minecraft:"+full;
-                    // allow cppfm: ids as is; if not found treat as full
-                    // check existence: must be in defs or datapack or allow wildcard *
+                    // allow cppfm: ids as is; if not found treat as full check existence: must be in defs or datapack or allow wildcard *
                     if(full!="*" && full.find('*')==std::string::npos){
                         bool found=false;
                         for(auto &d: advancementDefs()) if(d.id==full || d.id==advId) found=true;
@@ -974,9 +968,8 @@ void GameServer::initDataCommands() {
         for(auto verbLit : std::vector<NodePtr>{giveLit, takeLit}){
             std::string verb = verbLit->name;
             auto targets = CommandNode::argument("targets", args::entity(false,false));
-            // /recipe give <targets> [*|recipe]
-            // plan42 R3 network: "*" cannot be a literal (brigadier unquoted
-            // strings exclude '*'), so match it with a one-char argument.
+            // /recipe give <targets> [*|recipe] plan42 R3 network: "*" cannot be a literal (brigadier unquoted strings exclude '*'), so
+            // match it with a one-char argument.
             brigadier::ArgumentType starArg = args::stringWord();
             starArg.parse = [](brigadier::StringReader& r, brigadier::ParseCtx&) -> brigadier::ArgValue {
                 if (r.canRead() && r.peek() == '*') { r.skip(); return std::string("*"); }
@@ -1397,8 +1390,7 @@ void GameServer::initDataCommands() {
         d.root->then(item);
     }
     {
-        // /loot give <targets> loot <table> — vanilla middle "loot" source
-        // literal (short table-only form already exists above).
+        // /loot give <targets> loot <table> — vanilla middle "loot" source literal (short table-only form already exists above).
         auto loot = CommandNode::literal("loot");
         auto giveLit = CommandNode::literal("give");
         auto gTargets = CommandNode::argument("lootTargets2", args::entity(false, false));

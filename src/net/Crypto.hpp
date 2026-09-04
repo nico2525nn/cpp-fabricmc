@@ -73,8 +73,7 @@ inline Bytes rsaDecryptP(EVP_PKEY* kp, const std::uint8_t* ct, std::size_t n) {
     return pt;
 }
 
-// Minecraft's serverId hash: SHA1(serverId || sharedSecret || publicKey),
-// rendered as a Java BigInteger.toString(16)-style hex string.
+// Minecraft's serverId hash: SHA1(serverId || sharedSecret || publicKey), rendered as a Java BigInteger.toString(16)-style hex string.
 inline std::string mcSha1Hex(const std::string& serverId,
                              const Bytes& sharedSecret,
                              const Bytes& publicKey) {

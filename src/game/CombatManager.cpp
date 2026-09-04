@@ -1,11 +1,5 @@
 // CombatManager — plan19 combat polish: EPF weight 1 verified, armor+toughness single formula 30/20, E7 strict.
-// plan20 combat polish: verify no world-density changes affect combat; GameRules 37+ expansion covered in GameRules.hpp.
-// plan21 combat polish: wire blockExplosionDropDecay/mob/tntExplosionDropDecay (W18) into explodeAt; verify fall/sonic armor bypass, naturalRegeneration parity, hunger per-player timer (retry).
-// plan22 combat polish: E7 weight 1 (prot*1 not *2), sonic_boom bypassEnchant/bypassShield 15x20, E6 single formula caps 30/20, E8 fall bypassArmor.
-// plan23 combat polish: verify E7 weight1, E8 fall bypassArmor, E9 Unbreaking 60%+ via DamageComponent, armor single formula 30/20 (verify).
-// plan24 combat polish: verify E7 weight1, E8 fall bypassArmor, naturalRegeneration gate, blockExplosionDropDecay intact after wt24 inventory/network merges.
-// plan25 combat polish: verify no regressions from W16-W19 world changes (single level.dat, ForcedChunks ticket, GameRules 37, maxLoadedChunks async) + B7 farming + E1 MobKind 149 + E3 wither burst 3; EPF weight1, sonic 15x20 bypass, fall bypassArmor, single formula caps 30/20 intact.
-// plan26 combat polish: verify no regressions from D5/D6 palette determinism + D10 registry 12 + D11 item slot + D16 sheep + D17 sonic_boom 27 + D19/D20 particles + D22 StopSound + D25 scoreboard numberFormat; EPF weight1, sonic 15x20 bypassArmor/bypassEnchant/bypassShield, fall bypassArmor, single formula caps 30/20 intact.
+// plan20-26 combat: regression-verify combat formulas across merges (EPF w1, sonic bypass, caps 30/20).
 #include "CombatManager.hpp"
 #include "GameServer.hpp"
 #include "Entities.hpp"
@@ -126,7 +120,6 @@ void CombatManager::applyToMob(GameServer& srv, MobEntity& m, float amount, cons
     m.health -= finalAmt;
     m.hurtCooldown = 10;
     if (m.health <= 0) m.dead = true;
-    (void)srv;
 }
 
 // plan44 §3 G-08 shield block — vanilla Blocking (100% frontal negate; assessment-6 "5 軽減" is the

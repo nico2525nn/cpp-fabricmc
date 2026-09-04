@@ -1,8 +1,5 @@
 // MobEffects: vanilla status-effect registry (numeric ids are the jar's
-// plan22 combat polish: poison 25>>amp / wither 40>>amp split (was both 40), hunger/regeneration parity
-// plan23 combat polish: verify poison 25>>amp (was 40), wither 40>>amp, regen 50>>amp, saturation 2>>amp, hunger 40 (verify).
-// registration order; mob_effect is not a network-synced registry) and the
-// per-entity EffectInstance model with tick handling hooks.
+// plan22/23 combat: poison 25/wither 40 tick split; effect registry order + EffectInstance model.
 #pragma once
 #include <cstdint>
 #include <string>

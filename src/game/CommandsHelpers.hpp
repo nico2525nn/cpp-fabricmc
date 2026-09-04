@@ -1,6 +1,5 @@
 #pragma once
-// CommandsHelpers — shared command helpers (single truth).
-// Extracted from Commands.cpp initCommands surroundings (cleanup P3).
+// CommandsHelpers — shared command helpers (single truth). Extracted from Commands.cpp initCommands surroundings (cleanup P3).
 #include <map>
 #include <string>
 #include "GameServer.hpp"
@@ -76,8 +75,7 @@ inline void sendFeedback(Player* p, const std::string& msg) {
         b.boolean(false);
         try { p->conn->sendPacket(proto::pl::sc::SystemChat, b); } catch (...) {}
     } else {
-        // plan42 R3 (E-19): capture console feedback for RCON responses
-        // (dispatchConsole returns it instead of fixed "ok").
+        // plan42 R3 (E-19): capture console feedback for RCON responses (dispatchConsole returns it instead of fixed "ok").
         if (GameServer::consoleCapture_) {
             if (!GameServer::consoleCapture_->empty()) *GameServer::consoleCapture_ += "\n";
             *GameServer::consoleCapture_ += msg;

@@ -1,16 +1,7 @@
-// DamageSource: typed damage with category flags for enchant EPF weighting (plan8 Combat)
-// EPF categories: protection(1), fire(2), explosion(2), projectile(2), fall(feather_falling*3)
-// bypassArmor: drown/starve; bypassEnchant: drown/starve
-// + DamageCalculator: vanilla armor/EPF/resistance pipeline (armor 5..20 -> 4%..80% reduce)
-// plan19 combat polish: verified single formula f=2+t/4 g=clamp(a-dmg/f,a*0.2,20) caps 30/20, fall bypassArmor true (feather still applies).
-// plan20 combat polish: world-density (W2/W3) does not affect DamageSource; verify gamerule damage gates still use getBool.
-// plan21 combat polish: sonic_boom armor bypass (E4) + fall bypassArmor true, EPF weight 1, Resistance after armor, retry wiring.
-// plan22 combat polish: sonic_boom bypassArmor+bypassEnchant+bypassShield 15x20 ovoid, E6 armor+toughness f=2+t/4 caps 30/20, E7 weight 1, E8 fall bypassArmor true, Resistance after armor.
-// plan23 combat polish: verify E5 32 attrs, E6 single formula caps 30/20, E7 weight1, E8 fall bypassArmor, E9 Unbreaking 60%+ (verify).
-// plan24 combat polish: verify caps 30/20, E7 weight1, E8 fall bypassArmor, Resistance after armor, Unbreaking parity after wt24 merges.
-// plan25 combat polish: verify no regressions from W16-W19 + B7/B17/B18/B26 + E1 149 + E3 burst 3; single formula caps 30/20, E7 weight1, E8 fall bypassArmor, sonic 15x20 bypass, Resistance after armor intact.
-// plan26 combat polish: verify no regressions from D5/D6 palette + D10 registry 12 + D11 slot + D16 sheep + D17 sonic_boom 27 + D19/D20 particles + D22 StopSound + D25 scoreboard; single formula caps 30/20, E7 weight1, E8 fall bypassArmor, sonic 15x20 bypassArmor/bypassEnchant/bypassShield intact.
-// plan28 combat polish: verify combat pipeline remains orthogonal to Scoreboard ResetScore 0x49 (D26) — single formula f=2+t/4 caps 30/20, fall bypassArmor true (feather_falling×3), sonic_boom 15x20 bypassArmor/bypassEnchant/bypassShield, EPF weight 1, Resistance after armor verified intact after deep 31 merges.
+// DamageSource: typed damage with category flags for enchant EPF weighting (plan8 Combat) EPF categories: protection(1), fire(2),
+// explosion(2), projectile(2), fall(feather_falling*3) bypassArmor: drown/starve; bypassEnchant: drown/starve + DamageCalculator: vanilla
+// armor/EPF/resistance pipeline (armor 5..20 -> 4%..80% reduce) plan19-28 combat: single armor formula f=2+t/4 caps 30/20, fall
+// bypassArmor, sonic 15x20 bypass, EPF w1.
 #pragma once
 #include <string>
 #include <algorithm>
@@ -125,7 +116,6 @@ struct DamageCalculator {
         return applyArmorAndToughness(dmg, static_cast<float>(armor), 0.f);
     }
     static float applyToughness(float dmgAfterArmor, float original, double toughness) {
-        (void)original;
         if (toughness <= 0) return dmgAfterArmor;
         // approximate legacy: re-derive via single formula ratio
         return dmgAfterArmor;

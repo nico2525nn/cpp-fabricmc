@@ -83,10 +83,7 @@ public:
     std::int64_t worldBorderLerpMs() const { return worldBorderLerpMs_; }
     std::int64_t worldBorderLerpRemainingTicks() const { return worldBorderLerpRemainingTicks_; }
 
-    // ---- level.dat ----
-    // plan5 §1: full level.dat persistence — spawn, time, gamerules, weather.
-    // plan6 §9: add Difficulty, WorldBorder, Version, WanderingTrader etc.
-    // plan7: delegated to WorldDataManager with atomic rename + DataFixerUpper version check
+    // ---- level.dat ---- plan5/6/7: level.dat persistence (delegated to WorldDataManager; atomic rename + version check).
     void saveLevelData(std::int64_t worldTicks = 0, std::int64_t dayTime = 0) {
         // W16 single level.dat: DIM dirs must not own level.dat
         if (dir_.find("DIM") != std::string::npos) return;
@@ -320,10 +317,9 @@ public:
         if (worker_.joinable()) worker_.join();
         flushOnce();                                   // final save
     }
-    // Plan28 finish: worker_/cv_/cvMtx_ must never be destroyed while the worker
-    // thread may still touch them (reverse member order would destroy cv_/cvMtx_
-    // before worker_ for instances where stop() was never called, e.g. nether/end
-    // dimPersist_ during server shutdown -> futex livelock). stop() is idempotent.
+    // Plan28 finish: worker_/cv_/cvMtx_ must never be destroyed while the worker thread may still touch them (reverse member order would
+    // destroy cv_/cvMtx_ before worker_ for instances where stop() was never called, e.g. nether/end dimPersist_ during server shutdown ->
+    // futex livelock). stop() is idempotent.
     ~Persistence() { stop(); }
 
     // World loader: read chunk from its region file; false = not stored.

@@ -155,9 +155,8 @@ private:
     bool dirty_ = false;
 };
 
-// Wire helpers --------------------------------------------------------------
-// Serializes the Update Advancements packet body advertising `defs` with the
-// player's unlocked set and criterion timestamps.
+// Wire helpers -------------------------------------------------------------- Serializes the Update Advancements packet body advertising
+// `defs` with the player's unlocked set and criterion timestamps.
 void writeAdvancementsPacket(
     WriteBuffer& out, bool reset,
     const std::vector<AdvancementDef>& defs,

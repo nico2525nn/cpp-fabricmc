@@ -1,6 +1,5 @@
-// PacketDecoder: converts framed wire bytes to packet id + ByteBuffer payload.
-// Handles VarInt length prefix, AES-CFB8 decryption and zlib decompression.
-// Provides ByteBuffer conversion helpers.
+// PacketDecoder: converts framed wire bytes to packet id + ByteBuffer payload. Handles VarInt length prefix, AES-CFB8 decryption and zlib
+// decompression. Provides ByteBuffer conversion helpers.
 #pragma once
 #include <cstdint>
 #include <vector>
@@ -29,23 +28,16 @@ struct DecodedPacket {
 class PacketDecoder {
 public:
     static constexpr std::uint32_t kMaxFrame = 8u * 1024 * 1024;
-    // plan46 §1 W-14(a)/O-13 A2: declared-size budget. kMaxFrame (8MB) stays
-    // as the outer frame cap, but a declared decompressed size above 2MB is
-    // a kick (OversizeError) — vanilla-equivalent operational cap that makes
-    // zlib-bomb declarations (small wire bytes, huge declared size) cheap to
-    // reject BEFORE any large allocation.
+    // plan46 §1 W-14(a): declared decompressed size above 2MB is a kick (rejects zlib bombs pre-alloc).
     static constexpr std::uint32_t kMaxDeclared = 2u * 1024 * 1024;
 
-    // plan46 §1 W-16: oversize is a kick (Disconnect + close), not a silent
-    // drop — Session::run/handlePlay branch on this type.
+    // plan46 §1 W-16: oversize is a kick (Disconnect + close), not a silent drop — Session::run/handlePlay branch on this type.
     struct OversizeError : std::runtime_error {
         explicit OversizeError(const std::string& w) : std::runtime_error(w) {}
     };
 
-    // Decode a raw outer frame (length varint already stripped) ? Actually frame_
-    // is the content after outer length varint (and after decryption). If
-    // compressionThreshold <0, frame is id+payload directly.
-    // Otherwise frame = varint dataLength + (compressed|raw) body.
+    // Decode a raw outer frame (length varint already stripped) ? Actually frame_ is the content after outer length varint (and after
+    // decryption). If compressionThreshold <0, frame is id+payload directly. Otherwise frame = varint dataLength + (compressed|raw) body.
     static std::vector<std::uint8_t> decodeFrame(const std::vector<std::uint8_t>& frame,
                                                  int compressionThreshold) {
         if (compressionThreshold < 0) {
@@ -56,15 +48,12 @@ public:
         std::int32_t dataLen = in.varint();
         std::size_t left = in.remaining();
         if (dataLen == 0) {
-            // plan46 §1 A8: threshold=0 means all-packets-compressed; an
-            // uncompressed (dataLength=0) frame is invalid in that mode.
+            // plan46 §1 A8: threshold=0 means all-packets-compressed; an uncompressed (dataLength=0) frame is invalid in that mode.
             if (compressionThreshold == 0)
                 throw std::runtime_error("uncompressed frame with threshold=0");
             return std::vector<std::uint8_t>(in.p + in.off, in.p + in.off + left);
         }
-        // plan46 §1 W-14/A7: negative declarations and dataLength forgeries
-        // (non-zero dataLen below a positive threshold can never be produced
-        // by a conforming encoder) are rejected before any allocation.
+        // plan46 §1 W-14/A7: negative/forged dataLength declarations rejected pre-allocation.
         if (dataLen < 0)
             throw std::runtime_error("negative declared size");
         if (compressionThreshold > 0 &&
@@ -81,9 +70,8 @@ public:
         return out;
     }
 
-    // Full outer decode: outer = varint(length) + frame (possibly encrypted).
-    // If dec != nullptr, decrypts in-place before parsing.
-    // Returns id+payload body.
+    // Full outer decode: outer = varint(length) + frame (possibly encrypted). If dec != nullptr, decrypts in-place before parsing. Returns
+    // id+payload body.
     static std::vector<std::uint8_t> decodeOuter(std::vector<std::uint8_t> outer,
                                                   int compressionThreshold,
                                                   crypto::AesCfb8* dec = nullptr) {

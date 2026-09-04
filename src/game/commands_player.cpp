@@ -1,6 +1,4 @@
-// Commands.cpp: Brigadier command tree + selector resolution (plan3.md
-// "Brigadier完全移植"). All commands are registered on a real CommandNode
-// tree, parsed by the dispatcher and advertised via declare_commands.
+// commands_player.cpp: Brigadier command tree nodes (plan3 port): registered, parsed, advertised.
 #include "GameServer.hpp"
 #include "Messages.hpp"
 #include "Particles.hpp"
@@ -42,8 +40,7 @@ void GameServer::initPlayerCommands() {
             ge.u8(4); ge.f32(static_cast<float>(m));
             try { src->conn->sendPacket(proto::pl::sc::GameEvent, ge); }
             catch (...) {}
-            // abilities follow the mode (plan43 W-06: same gamemode-linked
-            // flags as Session::sendAbilities — survival/adventure get 0x00,
+            // abilities follow the mode (plan43 W-06: same gamemode-linked flags as Session::sendAbilities — survival/adventure get 0x00,
             // not the old hardcoded 0x01 invulnerable)
             std::uint8_t af = 0;
             if (m == 1) af |= 0x01 | 0x04 | 0x08;
@@ -293,6 +290,24 @@ void GameServer::initPlayerCommands() {
     }
     {
         auto effect = CommandNode::literal("effect");
+        // Shared effect store+send tail (was 4x copy-paste): replace same-type effect, store, broadcast EntityEffect. ampWire is the raw
+        // amplifier byte on the wire (site 1 sends e.amplifier, others the raw arg).
+        auto storeEffect = [](Player& t, EffectInstance e, int ampWire) {
+            t.effects.erase(
+                std::remove_if(t.effects.begin(), t.effects.end(),
+                               [&](const EffectInstance& x)
+                                   { return x.type == e.type; }),
+                t.effects.end());
+            t.effects.push_back(e);
+            WriteBuffer b;
+            b.varint(t.entityId);
+            b.varint(e.type);
+            b.varint(ampWire);
+            b.varint(e.durationTicks);
+            b.u8(effectFlags(e));
+            try { t.conn->sendPacket(proto::pl::sc::EntityEffect, b); }
+            catch (...) {}
+        };
         auto give = CommandNode::literal("give");
         auto targets = CommandNode::argument("targets",
                                              args::entity(false, false));
@@ -304,7 +319,7 @@ void GameServer::initPlayerCommands() {
                 v.emplace_back(effects::nameOf(static_cast<std::uint8_t>(i)));
             return v;
         };
-        eff->action = [this](CommandContext& c) {
+        eff->action = [this, storeEffect](CommandContext& c) {
             Player* src = static_cast<Player*>(c.source.player);
             const std::string en = c.arg("effect").asStr();
             auto it = effects::byName().find(en);
@@ -317,20 +332,7 @@ void GameServer::initPlayerCommands() {
                     EffectInstance e;
                     e.type = it->second;
                     e.durationTicks = 30 * 20;
-                    t->effects.erase(
-                        std::remove_if(t->effects.begin(), t->effects.end(),
-                                       [&](const EffectInstance& x)
-                                           { return x.type == e.type; }),
-                        t->effects.end());
-                    t->effects.push_back(e);
-                    WriteBuffer b;
-                    b.varint(t->entityId);
-                    b.varint(e.type);
-                    b.varint(e.amplifier);
-                    b.varint(e.durationTicks);
-                    b.u8(effectFlags(e));
-                    try { t->conn->sendPacket(proto::pl::sc::EntityEffect, b); }
-                    catch (...) {}
+                    storeEffect(*t, e, e.amplifier);
                     ++applied;
                 }
             sendFeedback(src, "Applied " + en + " to " +
@@ -339,7 +341,7 @@ void GameServer::initPlayerCommands() {
         };
         auto secs = CommandNode::argument("seconds", args::integer(1, 1000000));
         secs->executable = true;
-        secs->action = [this](CommandContext& c) {
+        secs->action = [this, storeEffect](CommandContext& c) {
             Player* src = static_cast<Player*>(c.source.player);
             const std::string en = c.arg("effect").asStr();
             auto it = effects::byName().find(en);
@@ -352,31 +354,16 @@ void GameServer::initPlayerCommands() {
                     EffectInstance e;
                     e.type = it->second;
                     e.durationTicks = dur * 20;
-                    t->effects.erase(
-                        std::remove_if(t->effects.begin(), t->effects.end(),
-                                       [&](const EffectInstance& x)
-                                           { return x.type == e.type; }),
-                        t->effects.end());
-                    t->effects.push_back(e);
-                    WriteBuffer b;
-                    b.varint(t->entityId);
-                    b.varint(e.type);
-                    b.varint(e.amplifier);
-                    b.varint(e.durationTicks);
-                    b.u8(effectFlags(e));
-                    try { t->conn->sendPacket(proto::pl::sc::EntityEffect, b); }
-                    catch (...) {}
+                    storeEffect(*t, e, e.amplifier);
                 }
             sendFeedback(src, "Applied " + en + " (" +
                          std::to_string(dur) + "s)");
             return 1;
         };
-        // plan28 finish: amplifier argument was missing — `effect give <p> <eff>
-        // 10 1` left "1" as an extra token → parse error → no EntityEffect 0x5E.
-        // Vanilla: amplifier 0..255, sent as the varint after the effect id.
+        // plan28 finish: amplifier 0..255 arg (missing it broke `effect give <p> <eff> 10 1`).
         auto amp = CommandNode::argument("amplifier", args::integer(0, 255));
         amp->executable = true;
-        amp->action = [this](CommandContext& c) {
+        amp->action = [this, storeEffect](CommandContext& c) {
             Player* src = static_cast<Player*>(c.source.player);
             const std::string en = c.arg("effect").asStr();
             auto it = effects::byName().find(en);
@@ -391,20 +378,7 @@ void GameServer::initPlayerCommands() {
                     e.type = it->second;
                     e.durationTicks = dur * 20;
                     e.amplifier = static_cast<std::int8_t>(ampv); // level-1 model
-                    t->effects.erase(
-                        std::remove_if(t->effects.begin(), t->effects.end(),
-                                       [&](const EffectInstance& x)
-                                           { return x.type == e.type; }),
-                        t->effects.end());
-                    t->effects.push_back(e);
-                    WriteBuffer b;
-                    b.varint(t->entityId);
-                    b.varint(e.type);
-                    b.varint(ampv);          // raw 0..255 (int8_t wraps >127)
-                    b.varint(e.durationTicks);
-                    b.u8(effectFlags(e));
-                    try { t->conn->sendPacket(proto::pl::sc::EntityEffect, b); }
-                    catch (...) {}
+                    storeEffect(*t, e, ampv); // raw 0..255 (int8_t wraps >127)
                 }
             sendFeedback(src, "Applied " + en + " (" +
                          std::to_string(dur) + "s, amplifier " +
@@ -414,7 +388,7 @@ void GameServer::initPlayerCommands() {
         // vanilla optional <hideParticles> boolean (low priority completion)
         auto hide = CommandNode::argument("hideParticles", args::boolean());
         hide->executable = true;
-        hide->action = [this](CommandContext& c) {
+        hide->action = [this, storeEffect](CommandContext& c) {
             Player* src = static_cast<Player*>(c.source.player);
             const std::string en = c.arg("effect").asStr();
             auto it = effects::byName().find(en);
@@ -431,20 +405,7 @@ void GameServer::initPlayerCommands() {
                     e.durationTicks = dur * 20;
                     e.amplifier = static_cast<std::int8_t>(ampv);
                     e.showParticles = !hidep;
-                    t->effects.erase(
-                        std::remove_if(t->effects.begin(), t->effects.end(),
-                                       [&](const EffectInstance& x)
-                                           { return x.type == e.type; }),
-                        t->effects.end());
-                    t->effects.push_back(e);
-                    WriteBuffer b;
-                    b.varint(t->entityId);
-                    b.varint(e.type);
-                    b.varint(ampv);
-                    b.varint(e.durationTicks);
-                    b.u8(effectFlags(e));
-                    try { t->conn->sendPacket(proto::pl::sc::EntityEffect, b); }
-                    catch (...) {}
+                    storeEffect(*t, e, ampv);
                 }
             sendFeedback(src, "Applied " + en + " (" +
                          std::to_string(dur) + "s, amplifier " +
@@ -668,17 +629,21 @@ void GameServer::initPlayerCommands() {
             WriteBuffer ab; p.attributes.writeUpdate(ab, p.entityId);
             try{ p.conn->sendPacket(proto::pl::sc::UpdateAttributes, ab); }catch(...){}
         };
+        // Shared attribute-command prologue (was 10x copy-paste): resolve source + attribute.
+        auto attrHead = [this, resolveAttr](CommandContext& c) -> std::pair<Player*, Attribute> {
+            Player* src = static_cast<Player*>(c.source.player);
+            std::string attrRaw = c.arg("attribute").asStr();
+            auto aopt = resolveAttr(attrRaw);
+            if(!aopt) throw std::runtime_error("Unknown attribute: "+attrRaw);
+            return {src, *aopt};
+        };
         // attribute <target> <attribute> get [<scale>]
         {
             auto getLit = CommandNode::literal("get");
             getLit->executable = true;
-            getLit->action = [this, resolveAttr](CommandContext& c){
-                Player* src = static_cast<Player*>(c.source.player);
+            getLit->action = [this, attrHead](CommandContext& c){
+                auto [src, at] = attrHead(c);
                 const auto sel = c.arg("target").asSelector();
-                std::string attrRaw = c.arg("attribute").asStr();
-                auto aopt = resolveAttr(attrRaw);
-                if(!aopt) throw std::runtime_error("Unknown attribute: "+attrRaw);
-                Attribute at = *aopt;
                 std::vector<Player*> targets;
                 for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)) targets.push_back(p);
                 if(targets.empty() && src) targets.push_back(src);
@@ -689,13 +654,9 @@ void GameServer::initPlayerCommands() {
             };
             auto scaleArg = CommandNode::argument("scale", args::floatArg(-1e9f, 1e9f));
             scaleArg->executable = true;
-            scaleArg->action = [this, resolveAttr](CommandContext& c){
-                Player* src = static_cast<Player*>(c.source.player);
+            scaleArg->action = [this, attrHead](CommandContext& c){
+                auto [src, at] = attrHead(c);
                 const auto sel = c.arg("target").asSelector();
-                std::string attrRaw = c.arg("attribute").asStr();
-                auto aopt = resolveAttr(attrRaw);
-                if(!aopt) throw std::runtime_error("Unknown attribute: "+attrRaw);
-                Attribute at = *aopt;
                 double scale = c.arg("scale").asDouble();
                 std::vector<Player*> targets;
                 for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)) targets.push_back(p);
@@ -714,13 +675,9 @@ void GameServer::initPlayerCommands() {
             auto baseSet = CommandNode::literal("set");
             auto baseVal = CommandNode::argument("value", args::floatArg(-1e9f, 1e9f));
             baseVal->executable = true;
-            baseVal->action = [this, resolveAttr, sendAttrUpdate](CommandContext& c){
-                Player* src = static_cast<Player*>(c.source.player);
+            baseVal->action = [this, sendAttrUpdate, attrHead](CommandContext& c){
+                auto [src, at] = attrHead(c);
                 const auto sel = c.arg("target").asSelector();
-                std::string attrRaw = c.arg("attribute").asStr();
-                auto aopt = resolveAttr(attrRaw);
-                if(!aopt) throw std::runtime_error("Unknown attribute: "+attrRaw);
-                Attribute at = *aopt;
                 double v = c.arg("value").asDouble();
                 int cnt=0;
                 for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)){
@@ -736,13 +693,9 @@ void GameServer::initPlayerCommands() {
             baseLit->then(baseSet);
             auto baseGet = CommandNode::literal("get");
             baseGet->executable = true;
-            baseGet->action = [this, resolveAttr](CommandContext& c){
-                Player* src = static_cast<Player*>(c.source.player);
+            baseGet->action = [this, attrHead](CommandContext& c){
+                auto [src, at] = attrHead(c);
                 const auto sel = c.arg("target").asSelector();
-                std::string attrRaw = c.arg("attribute").asStr();
-                auto aopt = resolveAttr(attrRaw);
-                if(!aopt) throw std::runtime_error("Unknown attribute: "+attrRaw);
-                Attribute at = *aopt;
                 std::vector<Player*> targets;
                 for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)) targets.push_back(p);
                 if(targets.empty() && src) targets.push_back(src);
@@ -753,13 +706,9 @@ void GameServer::initPlayerCommands() {
             };
             auto baseGetScale = CommandNode::argument("scale", args::floatArg(-1e9f, 1e9f));
             baseGetScale->executable = true;
-            baseGetScale->action = [this, resolveAttr](CommandContext& c){
-                Player* src = static_cast<Player*>(c.source.player);
+            baseGetScale->action = [this, attrHead](CommandContext& c){
+                auto [src, at] = attrHead(c);
                 const auto sel = c.arg("target").asSelector();
-                std::string attrRaw = c.arg("attribute").asStr();
-                auto aopt = resolveAttr(attrRaw);
-                if(!aopt) throw std::runtime_error("Unknown attribute: "+attrRaw);
-                Attribute at = *aopt;
                 double scale = c.arg("scale").asDouble();
                 std::vector<Player*> targets;
                 for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)) targets.push_back(p);
@@ -772,13 +721,9 @@ void GameServer::initPlayerCommands() {
             baseLit->then(baseGet);
             auto baseReset = CommandNode::literal("reset");
             baseReset->executable = true;
-            baseReset->action = [this, resolveAttr, sendAttrUpdate](CommandContext& c){
-                Player* src = static_cast<Player*>(c.source.player);
+            baseReset->action = [this, sendAttrUpdate, attrHead](CommandContext& c){
+                auto [src, at] = attrHead(c);
                 const auto sel = c.arg("target").asSelector();
-                std::string attrRaw = c.arg("attribute").asStr();
-                auto aopt = resolveAttr(attrRaw);
-                if(!aopt) throw std::runtime_error("Unknown attribute: "+attrRaw);
-                Attribute at = *aopt;
                 // reset to default base per AttributeManager defaults
                 AttributeManager defaults;
                 double def = defaults.getBase(at);
@@ -801,13 +746,9 @@ void GameServer::initPlayerCommands() {
             auto opArg = CommandNode::argument("operation", args::stringWord());
             opArg->suggestions = [](brigadier::StringReader&, brigadier::ParseCtx&){ return std::vector<std::string>{"add_value","add_multiplied_base","add_multiplied_total","0","1","2"}; };
             opArg->executable = true;
-            opArg->action = [this, resolveAttr, sendAttrUpdate](CommandContext& c){
-                Player* src = static_cast<Player*>(c.source.player);
+            opArg->action = [this, sendAttrUpdate, attrHead](CommandContext& c){
+                auto [src, at] = attrHead(c);
                 const auto sel = c.arg("target").asSelector();
-                std::string attrRaw = c.arg("attribute").asStr();
-                auto aopt = resolveAttr(attrRaw);
-                if(!aopt) throw std::runtime_error("Unknown attribute: "+attrRaw);
-                Attribute at = *aopt;
                 std::string uuid = c.arg("uuid").asStr();
                 std::string opStr = c.arg("operation").asStr();
                 double amount = c.arg("value").asDouble();
@@ -835,13 +776,9 @@ void GameServer::initPlayerCommands() {
             auto remLit = CommandNode::literal("remove");
             auto remUuid = CommandNode::argument("uuid", args::stringWord());
             remUuid->executable = true;
-            remUuid->action = [this, resolveAttr, sendAttrUpdate](CommandContext& c){
-                Player* src = static_cast<Player*>(c.source.player);
+            remUuid->action = [this, sendAttrUpdate, attrHead](CommandContext& c){
+                auto [src, at] = attrHead(c);
                 const auto sel = c.arg("target").asSelector();
-                std::string attrRaw = c.arg("attribute").asStr();
-                auto aopt = resolveAttr(attrRaw);
-                if(!aopt) throw std::runtime_error("Unknown attribute: "+attrRaw);
-                Attribute at = *aopt;
                 std::string uuid = c.arg("uuid").asStr();
                 int cnt=0;
                 for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)){ p->attributes.removeModifier(at, uuid); sendAttrUpdate(*p); ++cnt; }
@@ -856,13 +793,9 @@ void GameServer::initPlayerCommands() {
             auto valGetKw = CommandNode::literal("get");
             auto vgUuid = CommandNode::argument("uuid", args::stringWord());
             vgUuid->executable = true;
-            vgUuid->action = [this, resolveAttr](CommandContext& c){
-                Player* src = static_cast<Player*>(c.source.player);
+            vgUuid->action = [this, attrHead](CommandContext& c){
+                auto [src, at] = attrHead(c);
                 const auto sel = c.arg("target").asSelector();
-                std::string attrRaw = c.arg("attribute").asStr();
-                auto aopt = resolveAttr(attrRaw);
-                if(!aopt) throw std::runtime_error("Unknown attribute: "+attrRaw);
-                Attribute at = *aopt;
                 std::string uuid = c.arg("uuid").asStr();
                 std::vector<Player*> targets;
                 for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)) targets.push_back(p);
@@ -876,13 +809,9 @@ void GameServer::initPlayerCommands() {
             };
             auto vgScale = CommandNode::argument("scale", args::floatArg(-1e9f, 1e9f));
             vgScale->executable = true;
-            vgScale->action = [this, resolveAttr](CommandContext& c){
-                Player* src = static_cast<Player*>(c.source.player);
+            vgScale->action = [this, attrHead](CommandContext& c){
+                auto [src, at] = attrHead(c);
                 const auto sel = c.arg("target").asSelector();
-                std::string attrRaw = c.arg("attribute").asStr();
-                auto aopt = resolveAttr(attrRaw);
-                if(!aopt) throw std::runtime_error("Unknown attribute: "+attrRaw);
-                Attribute at = *aopt;
                 double scale = c.arg("scale").asDouble();
                 std::string uuid = c.arg("uuid").asStr();
                 std::vector<Player*> targets;
@@ -920,8 +849,7 @@ void GameServer::initPlayerCommands() {
             if(!src) throw std::runtime_error("trigger can only be run by a player");
             std::string obj = c.arg("objective").asStr();
             auto* o = scoreboard.find(obj);
-            // plan42 R3 network: auto-create a trigger objective on demand so
-            // bare "/trigger <name>" succeeds vanilla-strict (server_full).
+            // plan42 R3 network: auto-create a trigger objective on demand so bare "/trigger <name>" succeeds vanilla-strict (server_full).
             if(!o) {
                 if(!scoreboard.addObjective(obj, "trigger", obj))
                     throw std::runtime_error("Unknown objective: "+obj);
@@ -977,11 +905,9 @@ void GameServer::initPlayerCommands() {
         trigger->then(objective);
         d.root->then(trigger);
     }
-    // ---- plan42 R3 network: command gap closure (E-15/E-16/E-17/E-18) ----
-    // Covers: clear @s bare-targets, xp alias+suffix, summon/teleport pos,
-    // time query/add, weather duration, worldborder get/set/center/add,
-    // spawnpoint/setworldspawn args, damage/particle/playsound/stopsound,
-    // publish/save-*/debug/defaultgamemode/jigsaw/tellraw + loot "loot" source.
+    // ---- plan42 R3 network: command gap closure (E-15/E-16/E-17/E-18) ---- Covers: clear @s bare-targets, xp alias+suffix,
+    // summon/teleport pos, time query/add, weather duration, worldborder get/set/center/add, spawnpoint/setworldspawn args,
+    // damage/particle/playsound/stopsound, publish/save-*/debug/defaultgamemode/jigsaw/tellraw + loot "loot" source.
     {
         // /clear <targets> (bare, no item) — vanilla clears whole inventory.
         // (Item-filtered /clear <targets> <item> [maxCount] already exists.)
@@ -1125,8 +1051,7 @@ void GameServer::initPlayerCommands() {
         d.root->then(buildTp("teleport"));
     }
     {
-        // /spawnpoint [<targets>] [<pos>] [<angle>] — arg forms
-        // (bare self form already exists).
+        // /spawnpoint [<targets>] [<pos>] [<angle>] — arg forms (bare self form already exists).
         auto sp = CommandNode::literal("spawnpoint");
         auto targets = CommandNode::argument("spTargets", args::entity(false, false));
         auto pos = CommandNode::argument("spPos", args::blockPos());
@@ -1208,8 +1133,7 @@ void GameServer::initPlayerCommands() {
         d.root->then(dmg);
     }
     {
-        // /particle <name> [<pos>] — full form with delta/speed/count.
-        // Ids: Prismarine minecraft-data 1.21.4 particles.json (112 entries).
+        // /particle <name> [<pos>] — full form with delta/speed/count. Ids: Prismarine minecraft-data 1.21.4 particles.json (112 entries).
         auto part = CommandNode::literal("particle");
         auto name = CommandNode::argument("particleName", args::resourceLocation());
         auto pos = CommandNode::argument("particlePos", args::vec3());

@@ -246,7 +246,6 @@ static int getLight(World& w, std::int32_t x, std::int32_t y, std::int32_t z){
 
 void CropBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
                         std::uint16_t state, std::int64_t now, GameServer* srv) {
-    (void)now;
     if (srv) {
         auto* gr = &srv->gameRules();
         if (gr && gr->getInt("randomTickSpeed",3)==0) return;
@@ -274,7 +273,6 @@ bool CropBehavior::fertilize(World& w, std::int32_t x, std::int32_t y, std::int3
     if (std::string(d->name).find("beetroots")!=std::string::npos) maxAge=3;
     if (age >= maxAge) return false;
     w.setBlock(x,y,z, withAge(d, state, maxAge));
-    (void)srv;
     return true;
 }
 
@@ -282,14 +280,12 @@ bool CropBehavior::fertilize(World& w, std::int32_t x, std::int32_t y, std::int3
 
 void SaplingBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
                            std::uint16_t state, std::int64_t now, GameServer* srv) {
-    (void)now;
     if (srv && srv->gameRules().getInt("randomTickSpeed",3)==0) return;
     if ((rand() % 100) < 5) fertilize(w,x,y,z,state,srv);
 }
 
 bool SaplingBehavior::fertilize(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
                                 std::uint16_t state, GameServer* srv) {
-    (void)srv;
     const gen::BlockDef* d = gen::blockByState(state);
     if (!d) return false;
     const std::uint16_t below = w.getBlock(x, y-1, z);
@@ -311,14 +307,12 @@ bool SaplingBehavior::fertilize(World& w, std::int32_t x, std::int32_t y, std::i
     return true;
 }
 
-// -------------------------------------------------------- Stem (bamboo/sugar_cane/cactus) — plan13 §1 polish
-// bamboo: stage 0→1, stage1+age0+h<12+airAbove → grow height 1→16, leaves on top 3, age thick >=4
-// cactus: sand/red_sand/cactus below, horizontal !transparent, age 0-15, height 3→4 max
-// sugar_cane: age 0-15, height <3 (vanilla) but allow 4 per task, no water check
+// -------------------------------------------------------- Stem (bamboo/sugar_cane/cactus) — plan13 §1 polish bamboo: stage 0→1,
+// stage1+age0+h<12+airAbove → grow height 1→16, leaves on top 3, age thick >=4 cactus: sand/red_sand/cactus below, horizontal !transparent,
+// age 0-15, height 3→4 max sugar_cane: age 0-15, height <3 (vanilla) but allow 4 per task, no water check
 
 void StemBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
                         std::uint16_t state, std::int64_t now, GameServer* srv) {
-    (void)now;
     // gates: randomTickSpeed 0 and simulation distance (also gated in BlockTickScheduler::tick but keep here for direct calls)
     if (srv) {
         if (srv->gameRules().getInt("randomTickSpeed",3)==0) return;
@@ -329,8 +323,7 @@ void StemBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
     if (!d) return;
     std::string name(d->name);
     if (name.find("bamboo")!=std::string::npos) {
-        // delegate to bamboo logic (stage/leaves)
-        // use BambooBehavior randomTick semantics
+        // delegate to bamboo logic (stage/leaves) use BambooBehavior randomTick semantics
         int stage = getStage(state);
         int age = getAge(state);
         // stage 0 -> stage 1
@@ -389,7 +382,6 @@ void StemBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
             if (!nbd->transparent) return;
         }
     } else if (name.find("sugar_cane")!=std::string::npos) {
-        (void)bbd;
     }
     // height check: columnHeight includes this block plus continuous same blocks below+above
     int columnHeight = 1;
@@ -470,7 +462,6 @@ void GrassBlockBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int
 }
 // plan19 §3 B4 grass snowy strict: snow/snow_block/powder_snow (was only snow)
 void GrassBlockBehavior::randomTick(World& w, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state, std::int64_t now, GameServer* srv) {
-    (void)now;
     if (srv) {
         if (srv->gameRules().getInt("randomTickSpeed",3)==0) return;
         if (!srv->isChunkInSimulationDistance(x>>4, z>>4)) return;
@@ -566,7 +557,6 @@ static void trySpawnCreakingForHeart(World& w, std::int32_t hx, std::int32_t hy,
     }
 }
 void CreakingHeartBehavior::randomTick(World& w, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state, std::int64_t now, GameServer* srv) {
-    (void)now;
     if (!srv) return;
     if (!srv->isChunkInSimulationDistance(x>>4, z>>4)) return;
     const gen::BlockDef* d = gen::blockByState(state);
@@ -601,7 +591,6 @@ void CreakingHeartBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::
 
 void FarmlandBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
                             std::uint16_t state, std::int64_t now, GameServer* srv) {
-    (void)now;
     if (srv && srv->gameRules().getInt("randomTickSpeed",3)==0) return;
     int moist = getMoisture(state);
     bool hasWater = false;
@@ -725,7 +714,6 @@ void NetherWartBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int
 }
 void ChorusFlowerBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
                                 std::uint16_t state, std::int64_t now, GameServer* srv){
-    (void)now;
     int age=0; for(auto&[k,v]: gen::propsOf(state)) if(k=="age") age=std::atoi(std::string(v).c_str());
     if(age>=5) return;
     // plan17 §4 Highlands gate
@@ -801,8 +789,7 @@ void ChorusFlowerBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::i
             uint16_t b = w.getBlock(nx,y-1,nz);
             auto* bd = gen::blockByState(b);
             if(bd && std::string(bd->name)=="minecraft:chorus_plant") cnt++;
-            // source at (x,y,z) is still flower, not plant, so cnt should be 0 or 1 depending on column below source
-            // allow cnt<=1
+            // source at (x,y,z) is still flower, not plant, so cnt should be 0 or 1 depending on column below source allow cnt<=1
             if(cnt>1) continue;
             // success: place new flower with age+1
             std::vector<std::pair<std::string_view,std::string_view>> props;
@@ -839,7 +826,6 @@ bool ChorusFlowerBehavior::fertilize(World& w, std::int32_t x, std::int32_t y, s
 // plan25 B26 kelp 14% age25 — seagrass never grows via KelpBehavior (vanilla TallSeagrass has no randomTick)
 void KelpBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
                         std::uint16_t state, std::int64_t now, GameServer* srv){
-    (void)now;
     const gen::BlockDef* d=gen::blockByState(state); if(!d) return;
     if (std::string(d->name)!="minecraft:kelp") return; // B26: seagrass excluded
     int age=0; for(auto&[k,v]: gen::propsOf(state)) if(k=="age") age=std::atoi(std::string(v).c_str());
@@ -1045,7 +1031,6 @@ static bool isSoulBaseBlock(const World& w, std::int32_t x, std::int32_t y, std:
 
 void FireBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
                         std::uint16_t state, std::int64_t now, GameServer* srv) {
-    (void)now;
     if (srv) {
         auto* gr = &srv->gameRules();
         if (gr && !gr->getBool("doFireTick")) return;
@@ -1057,9 +1042,7 @@ void FireBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
         age++;
         state = w.getBlock(x,y,z);
     }
-    // rain extinguishes 1/3
-    // simplified: if raining, 33% chance to extinguish
-    // we approximate via random; if we had raining flag, use it
+    // rain extinguishes 1/3 simplified: if raining, 33% chance to extinguish we approximate via random; if we had raining flag, use it
     // (check gamerule raining via world? skip)
 
     // spread to 5 directions + up 4 blocks

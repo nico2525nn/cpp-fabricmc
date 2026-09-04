@@ -1,6 +1,5 @@
-// GameRules: vanilla-style rule storage persisted inside level.dat
-// (plan3.md 永続化拡張). Values kept as strings like vanilla NBT.
-// W18 strict: 37 Yarn keys + aliases, Boolean vs Int typed with validation (Yarn GameRules Type<T>)
+// GameRules: vanilla-style rule storage persisted inside level.dat (plan3.md 永続化拡張). Values kept as strings like vanilla NBT. W18 strict:
+// 37 Yarn keys + aliases, Boolean vs Int typed with validation (Yarn GameRules Type<T>)
 #pragma once
 #include <string>
 #include <unordered_map>

@@ -41,8 +41,7 @@ inline constexpr std::pair<std::int32_t,std::int32_t> chunkKeyDecode(std::int64_
 struct Chunk {
     // layout: [section][yInSection][z][x]
     std::array<std::uint16_t, kSectionsPerChunk * 4096> blocks{};
-    // Per-cell biomes: 24 sections × 64 cells (4×4×4), values are the
-    // synced biome-registry indices used directly on the wire.
+    // Per-cell biomes: 24 sections × 64 cells (4×4×4), values are the synced biome-registry indices used directly on the wire.
     std::array<std::uint16_t, kSectionsPerChunk * 64> biomes{};
     // Block light, 4 bits per block (same index layout as `blocks`).
     std::array<std::uint8_t, (kSectionsPerChunk * 4096 + 1) / 2> blockLightNib{};
@@ -114,8 +113,7 @@ public:
         return kMinY + col;
     }
 
-    // NOTE: logically const (lazy generation); mutex is mutable
-    // Loader hook: return true if it filled the chunk (e.g., from disk).
+    // NOTE: logically const (lazy generation); mutex is mutable Loader hook: return true if it filled the chunk (e.g., from disk).
     void setLoader(std::function<bool(std::int32_t, std::int32_t, Chunk&)> l) { loader_ = std::move(l); }
     void setOnEdit(std::function<void(std::int32_t, std::int32_t)> cb) { onEdit_ = std::move(cb); }
     // Per-block change hook (x,y,z,old,new) used by the light/fluid engines.
@@ -254,8 +252,7 @@ private:
         else fillTerrainV3(c, cx, cz);
     }
 public:
-    // Runs fn(chunk) while holding the world read lock. Use for any access that
-    // must not race with chunk replacement or edits.
+    // Runs fn(chunk) while holding the world read lock. Use for any access that must not race with chunk replacement or edits.
     template <typename Fn>
     bool withChunk(std::int32_t cx, std::int32_t cz, Fn&& fn) const {
         std::shared_lock lock(mutex_);
@@ -446,8 +443,7 @@ public:
 
     const std::string& biomeKey() const { return biome_; }
 
-    // Biome codec wiring: resolve biome key <-> synced registry index.
-    // Must be installed before any chunk generation (GameServer::init).
+    // Biome codec wiring: resolve biome key <-> synced registry index. Must be installed before any chunk generation (GameServer::init).
     void setDimensionId(std::int8_t d) { dimensionId_ = d; }
     std::int8_t dimensionId() const { return dimensionId_; }
     void setBiomeCodec(std::function<std::int32_t(const std::string&)> toIndex,
@@ -473,9 +469,8 @@ public:
         return bio=="minecraft:end_highlands" || bio=="minecraft:end_midlands";
     }
 
-    // ---- World responsibility: simulation distance (plan7) ------------
-    // Spawn chunks (forced / SPAWN ticket level 31) are always considered in simulation distance
-    // per vanilla ChunkTicket SPWAN behavior: they tick even without nearby players.
+    // ---- World responsibility: simulation distance (plan7) ------------ Spawn chunks (forced / SPAWN ticket level 31) are always
+    // considered in simulation distance per vanilla ChunkTicket SPWAN behavior: they tick even without nearby players.
     bool isPositionInSimulationDistance(std::int32_t x, std::int32_t z) const {
         std::int32_t cx = x >> 4, cz = z >> 4;
         {

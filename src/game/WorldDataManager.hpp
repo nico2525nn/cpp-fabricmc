@@ -59,7 +59,6 @@ public:
                     // level.dat -> level.dat_old (append _old)
                     std::error_code ec;
                     std::filesystem::copy_file(path, old, std::filesystem::copy_options::overwrite_existing, ec);
-                    (void)ec;
                 }
             } catch (...) {}
             // atomic rename
@@ -82,7 +81,6 @@ public:
         if (!data) return;
         // In real DFU, would apply schemata. Here we just ensure DataVersion is updated.
         // Caller will set DataVersion to current before save.
-        (void)fromVersion;
     }
 
     bool checkAndFixVersion(nbt::Value& root) const {
@@ -128,14 +126,11 @@ public:
                        double& borderDiameterOut, double& borderCXOut, double& borderCZOut,
                        double* borderLerpTargetOut = nullptr, std::int64_t* borderLerpMsOut = nullptr);
 
-    // plan46 §2 (O-07): single-file load attempt (no fallback). Returns false
-    // on missing/unparsable/incomplete file.
+    // plan46 §2 (O-07): single-file load attempt (no fallback). Returns false on missing/unparsable/incomplete file.
     bool tryLoadFile(const std::string& path, class World& world, std::string& difficultyOut,
                      double& borderDiameterOut, double& borderCXOut, double& borderCZOut,
                      double* borderLerpTargetOut = nullptr, std::int64_t* borderLerpMsOut = nullptr);
-    // plan46 §2 (O-07): 3-stage recovery — level.dat -> level.dat_old ->
-    // fresh. Corrupt survivors are preserved as *.corrupt for forensics, never
-    // silently overwritten. Always fills `out` (O-07(c) explicit logging).
+    // plan46 §2 (O-07): 3-stage recovery (dat -> dat_old -> fresh); corrupt kept as *.corrupt.
     bool loadWithRecovery(class World& world, std::string& difficultyOut,
                           double& borderDiameterOut, double& borderCXOut, double& borderCZOut,
                           double* borderLerpTargetOut, std::int64_t* borderLerpMsOut,

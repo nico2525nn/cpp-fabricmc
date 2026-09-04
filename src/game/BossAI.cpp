@@ -64,7 +64,6 @@ void BossBarManager::sendAdd(GameServer& srv, const BossBar& bar) {
     srv.broadcastPacketExcept(nullptr, proto::pl::sc::BossBar, b);
 }
 void BossBarManager::sendAddToPlayer(GameServer& srv, const BossBar& bar, Player& p) {
-    (void)srv;
     if (!p.conn) return;
     WriteBuffer b;
     b.uuid(bar.uuid.data());
@@ -168,7 +167,6 @@ void WitherBossAI::tick(GameServer& srv, MobEntity& mob, AiContext& ctx, std::in
 }
 
 void DragonBossAI::onSpawn(GameServer& srv, MobEntity& mob) {
-    (void)srv;
     mob.dragonPhase = 0;
     mob.dragonPhaseUntil = srv.tickNow() + 120;
 }

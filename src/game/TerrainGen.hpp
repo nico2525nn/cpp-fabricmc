@@ -1,8 +1,6 @@
-// TerrainGen: noise-based overworld-style generation (plan.md Phase 2).
-// Deterministic per seed; classic Perlin octaves shaped like Minecraft's
-// continentalness/erosion/peaks blend. Not byte-compatible with vanilla
-// worldgen (that requires the full density-function pipeline) but produces
-// natural rolling terrain, mountains, beaches and oceans.
+// TerrainGen: noise-based overworld-style generation (plan.md Phase 2). Deterministic per seed; classic Perlin octaves shaped like
+// Minecraft's continentalness/erosion/peaks blend. Not byte-compatible with vanilla worldgen (that requires the full density-function
+// pipeline) but produces natural rolling terrain, mountains, beaches and oceans.
 #pragma once
 #include <algorithm>
 #include <cstdint>

@@ -1,10 +1,7 @@
-// SessionLock: world/session.lock exclusive startup guard (plan46 §2, O-08).
-// Vanilla LevelStorage writes session.lock at startup (own PID + timestamp) and
-// refuses a second live server on the same world. Our policy is availability-
-// first: a lock held by a *live* PID is logged loudly (and reported by
-// tools/check_world); a stale lock (dead PID, e.g. crash / SIGKILL / Docker
-// restart with PID reuse risk) only warns and startup continues. The lock is
-// always (re)written by the starting server and removed on clean shutdown.
+// SessionLock: world/session.lock exclusive startup guard (plan46 §2, O-08). Vanilla LevelStorage writes session.lock at startup (own PID +
+// timestamp) and refuses a second live server on the same world. Our policy is availability- first: a lock held by a *live* PID is logged
+// loudly (and reported by tools/check_world); a stale lock (dead PID, e.g. crash / SIGKILL / Docker restart with PID reuse risk) only warns
+// and startup continues. The lock is always (re)written by the starting server and removed on clean shutdown.
 #pragma once
 #include <chrono>
 #include <cstdio>
@@ -45,7 +42,6 @@ public:
         if (::kill(static_cast<pid_t>(pid), 0) == 0) return true;
         return errno != ESRCH; // EPERM => exists but not ours
 #else
-        (void)pid;
         return false;
 #endif
     }
@@ -64,10 +60,9 @@ public:
             .count();
     }
 
-    // Acquire the lock. Never throws. Returns true when startup may proceed
-    // (always true today — live-holder case is a loud warning, not a refusal,
-    // so crash-recovery/restart harnesses can never deadlock on it).
-    // `heldByLiveOther` is set when another live process appears to own it.
+    // Acquire the lock. Never throws. Returns true when startup may proceed (always true today — live-holder case is a loud warning, not a
+    // refusal, so crash-recovery/restart harnesses can never deadlock on it). `heldByLiveOther` is set when another live process appears to
+    // own it.
     bool acquire(const std::string& worldDir, bool& heldByLiveOther) {
         heldByLiveOther = false;
         dir_ = worldDir;

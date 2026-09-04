@@ -1,13 +1,5 @@
-// Containers: server-authoritative menus (chest / furnace / crafting table)
-// with vanilla click-mode handling (plan3.md "チェスト/かまどUI").
-// plan28 inventory polish: verify container menus remain orthogonal to Scoreboard ResetScore 0x49 (D26) — generic_9x3/furnace/crafting/crafter/cartography MenuType 25 and slot layouts verified intact after deep 31 merges; container open/close does not touch Scoreboard state.
-//
-// Strict 1.21.4 (protocol 769) parity: Yarn `ScreenHandlerType` 25 entries
-// (generic_9x1..9x6, crafter 7, cartography 23, etc.) + MenuType 25 audit HIGH I1/I9/I10.
-// Menu slot layout follows the vanilla protocol tables:
-//   generic_9x3 : 0..26 container rows, 27..53 main inv, 54..62 hotbar
-//   furnace     : 0 input, 1 fuel, 2 output, 3..29 main inv, 30..38 hotbar
-//   crafting    : 0 result, 1..9 grid, 10..36 main inv, 37..45 hotbar
+// Containers: server-authoritative menus (chest / furnace / crafting table) with vanilla click-mode handling (plan3.md "チェスト/かまどUI").
+// plan28 inventory: 25 MenuTypes per Yarn ScreenHandlerType + vanilla slot layouts (see tables in git history).
 #pragma once
 #include <array>
 #include <cstdint>
@@ -30,8 +22,7 @@ constexpr int kGeneric9x1 = 0, kGeneric9x2 = 1, kGeneric9x3 = 2,
               kSmoker = 22, kCartographyTable = 23, kStonecutter = 24;
 }
 
-// Main-inventory scan order over Player::inv (hotbar 36..44 first, then
-// storage 9..35) — vanilla give/clear fill order. Single truth (was a
+// Main-inventory scan order over Player::inv (hotbar 36..44 first, then storage 9..35) — vanilla give/clear fill order. Single truth (was a
 // 36-element literal repeated 4x in Commands.cpp give/clear).
 inline constexpr std::array<int, 36> kMainInventoryOrder = {
     36, 37, 38, 39, 40, 41, 42, 43, 44,
@@ -67,8 +58,7 @@ public:
     ItemStack craftResult;                       // cached result
     ItemStack extraSlots[27];                    // generic storage for menus without BE
 
-    // transient view of the owning player's inventory is external (Player.inv)
-    // drag paint transient (mode 5)
+    // transient view of the owning player's inventory is external (Player.inv) drag paint transient (mode 5)
     std::vector<int> dragSlots;
     int dragButton = -1;                 // initial button for drag type
     // anvil rename text (per-menu, not singleton)
