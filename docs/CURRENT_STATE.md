@@ -1,10 +1,10 @@
 # CURRENT_STATE.md — cpp-fabricmc final-gates state tracker
 
-> This is the stable tracker for the plan48 documentation refresh. It records the
-> implementation baseline and the exact final-gates evidence supplied for the main
-> checkout. It is not a release sign-off: `publication_status` remains `BLOCKED`, and
-> a historical taxonomy `DONE` or a focused PASS does not become a universal parity
-> claim.
+> This is the stable tracker for the plan48 runtime/final-gates snapshot and the
+> plan49 documentation handoff. It records the implementation baseline and the exact
+> final-gates evidence supplied for the main checkout. It is not a release sign-off:
+> `publication_status` remains `BLOCKED`, and a historical taxonomy `DONE` or a
+> focused PASS does not become a universal parity claim.
 
 ## 1. Snapshot
 
@@ -20,6 +20,12 @@
 | `phase_status` | `RECORDED` |
 | `publication_status` | `BLOCKED` |
 | `runtime_reference_snapshot` | `f21e42327342fe1e8486960f2c43805711280ffd` |
+| `canonical_workflow` | `docs/DEVELOPMENT.md#research-workflow` |
+| `research_entrypoint` | `docs/research-prompt.md` is a legacy redirect only |
+| `research_viewpoints` | `16` current viewpoints; old `13` wording is historical |
+| `taxonomy_snapshot` | MISSING `#1–#90`; historical matrix counts `DONE=90, PARTIAL=0, TODO=0` |
+| `strict_assessment_1` | `78 gaps`; `HISTORICAL` archive label, not a current aggregate |
+| `next_plan` | `plan49`; research is recorded, runtime implementation is not yet reflected here |
 
 The baseline is the implementation merge that includes cleanup commit
 `db12df96093a0869e958f62b11f9a9cd68ba3ef1` and safety commit
@@ -56,6 +62,10 @@ explicit rather than being converted into a broad PASS:
 | session mining versus `MiningCalculator` | `OPEN` / `DECLARED-LIMITATION` | measured semantic differences remain; unification requires a gameplay plan, not a cleanup-only edit |
 | `MobBehaviorSpec` coverage | `PARTIAL` / `OPEN` | the table is only partially wired to live behavior; broader species parity remains future work |
 | retained marker/comment inventory | `NOT-FULLY-MEASURED` | the cleanup grep was `0` for legacy references, but no complete zero-marker inventory was proven; do not claim one |
+| `tools/soak_bot.py --duration 300` | `FAIL` / `PUBLICATION-BLOCKER` | keepAlives `3 (<7)`, kicks `0`, chunks `182`, time updates `23`; the separate synthetic soak PASS does not waive this failure |
+| accepted 2-hour/24-hour evidence | `ABSENT` / `DECLARED-LIMITATION` | no accepted long-run artifact exists; procedures are not results |
+| current real-client/GUI evidence | `ABSENT` / `DECLARED-LIMITATION` | no current official-client capture is available; bot/synthetic output is not a real-client proof |
+| `wt48/cleanup` worktree | `DIRTY` / `PRESERVE-REVIEW` | branch `wt48/cleanup`, HEAD `5f82ac0b4448f76f98753d18c83bbcd9736da61c`, 19 changed paths, `+74/-840`; contains source/tests/tools and is not an approved merge or removal target |
 
 The `RESOLVED` Structures API row does not close the structure-generation parity
 boundary. In particular, vanilla Xoroshiro L3 byte parity is not independently
@@ -83,9 +93,9 @@ These are the exact main-checkout results supplied for baseline `f21e423` on
 | `test_redstone_engine_full` | `29 PASS 0 FAIL` | `PASS` |
 | `test_recipes_mirror` | `76 PASS 0 FAIL` | `PASS` |
 | `test_native` | `ALL PASS` in `2.33s` | `PASS`; no invented aggregate count |
-| `test_plan43` | `82/0` in `25.01s` | `PASS` |
-| `test_smoke_80` | `212/0` in `161.33s` | `PASS` |
-| `test_server_full` | `234/0` in `273.79s` | `PASS` |
+| `test_plan43` | `82 PASS 0 FAIL` in `25.01s` | `PASS` |
+| `test_smoke_80` | `212 PASS 0 FAIL` in `161.33s` | `PASS` |
+| `test_server_full` | `234 PASS 0 FAIL` in `273.79s` | `PASS` |
 | multi-client | `ALL PASS` in `17.83s` | `PASS` |
 | bot smoke | `ALL PASS` in `20.65s` | `PASS` |
 | view32 dry benchmark | `PASS` for 4,225 chunks in `1.74s`; p50 `0.108ms`, p95 `2.331ms`, peak RSS ~`95MB`, hit rate `84.6%` | synthetic dry result |
@@ -132,3 +142,19 @@ real-client artifact into a pass.
 Next actions are to investigate `soak_bot`, keep the E-14 assertion unchanged, and
 address the mining/MobBehaviorSpec residuals and long-run/real-client evidence only
 under separately owned work.
+
+## 8. Plan49 pre-implementation handoff
+
+This tracker records the plan49 documentation handoff before any plan49 runtime
+implementation is reflected in the snapshot. The following rules apply when the
+implementation work finishes:
+
+| handoff item | current state | update rule |
+|---|---|---|
+| workflow authority | `RECORDED` | keep `DEVELOPMENT.md#research-workflow` canonical; the legacy stub remains a pointer |
+| packet map | `RECORDED` | recheck `src/proto/Ids.hpp` and named wire vectors; do not change IDs by prose |
+| evidence counts | `UNCHANGED` | replace only with a closed run artifact; never infer PASS from a procedure or old count |
+| strict 78-gap history | `HISTORICAL` | do not merge it into the 90-row taxonomy count |
+| `AGENTS.md` handover | `PRESERVED` | out of scope for this docs commit; any old 13-viewpoint/ID/328 text does not override canonical docs |
+| wt48 residual | `PRESERVE-REVIEW` | review/preserve the dirty patch before any exact-path removal or selective reimplementation |
+| publication | `BLOCKED` | remains blocked until the failing soak_bot gate and missing evidence classes are resolved by fresh evidence |

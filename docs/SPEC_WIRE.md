@@ -12,6 +12,12 @@ classification below. **Limitations:** a protocol-compatible implementation is n
 a JVM Fabric mod host; protocol 776 and unverified vanilla RNG parity are outside the
 boundary.
 
+The archived assessment-1 strict audit is a historical record labelled 78 gaps; it
+is not a current packet count or a fresh parity result. The current numbered matrix
+is separate: MISSING **#1–#90** reports the historical taxonomy count `DONE=90`.
+Neither label overrides the current evidence table or the `BLOCKED` publication
+status.
+
 ## 1. Feature overview
 
 Targets are MISSING **#71–#79**, with related packet behavior in **#30, #54, #56,
@@ -119,6 +125,7 @@ The current definitions and tests, not old comments, are authoritative:
 LevelChunkWithLight  = 0x28
 UpdateLight          = 0x2B
 KeepAlive (Play S→C) = 0x27
+KeepAlive (Play C→S) = 0x1A
 OpenScreen           = 0x35
 TradeList            = 0x2E
 ContainerSetContent  = 0x13
@@ -271,7 +278,9 @@ limit.
 - A single-valued paletted container writes `value` **and then `longCount=0`**.
 - `UpdateLight` chunk coordinates are VarInts, while LevelChunk coordinates are i32.
 - `ContainerSetContent` and `OpenScreen` IDs in old notes (`0x12` and `0x34`) are
-  stale; use the table above.
+  stale; use the table above. The same applies to old `TradeList 0x2D` and Play
+  KeepAlive `0x26` notes. Historical values may remain only in archive provenance,
+  not in a current packet contract.
 - `UpdateAttributes` mapper IDs and slot component IDs must not be inferred from an
   older release.
 - The current header comment in `src/proto/Ids.hpp` contains an old axis sentence;
@@ -324,6 +333,13 @@ Fresh byte-lock evidence at the snapshot:
 | `test_wire_b6` | `133 PASS 0 FAIL` |
 | `test_scoreboard_reset` | `22 PASS 0 FAIL` |
 | `test_fuzz` | `23 PASS 0 FAIL` |
+
+These are named current-snapshot results, not inherited values from the handover or
+historical audits. In particular, the old `test_spec_wire` value `328` is stale;
+the current value is `392`. `test_native` is intentionally recorded as `ALL PASS`
+without an invented aggregate count. A passing wire lock also does not clear the
+`soak_bot` publication blocker, the intentional E-14 failure, or missing
+real-client/long-run evidence.
 
 Named vectors include:
 

@@ -25,6 +25,13 @@ The canonical specification owners are [SPEC_WIRE.md](SPEC_WIRE.md),
 [SPEC_GAMEPLAY.md](SPEC_GAMEPLAY.md), [SPEC_OPS.md](SPEC_OPS.md), and
 [VERIFICATION.md](VERIFICATION.md).
 
+The legacy entry point [research-prompt.md](research-prompt.md) has one
+responsibility: redirect readers to this guide's canonical
+[research workflow](DEVELOPMENT.md#research-workflow). It is not a second workflow,
+plan format, or evidence authority. Current research plans and canonical documents
+use the sixteen viewpoints in §§1–16; an older ``13 viewpoints`` label is historical
+wording and is not a current acceptance count.
+
 ## 2. Reference and clean-room provenance
 
 Use public, version-pinned material only for the clean-room contract:
@@ -68,8 +75,9 @@ When an extension emits or consumes bytes, update the WIRE contract first:
    the field table.
 
 Do not add a parallel constexpr ID registry. In particular, preserve
-`LevelChunkWithLight 0x28`, `UpdateLight 0x2B`, `KeepAlive 0x27`, `OpenScreen 0x35`,
-`TradeList 0x2E`, `ContainerSetContent 0x13`, and MultiBlockChange
+`LevelChunkWithLight 0x28`, `UpdateLight 0x2B`, `KeepAlive S→C 0x27`,
+`KeepAlive C→S 0x1A`, `OpenScreen 0x35`, `TradeList 0x2E`,
+`ContainerSetContent 0x13`, and MultiBlockChange
 `(state << 12) | (x << 8) | (z << 4) | y`.
 
 ## 5. Events and review checkpoints
@@ -116,9 +124,25 @@ A failed state cannot be promoted by changing prose, counts, or assertions.
 6. Run static → unit → wire/gameplay → integration/ops gates.
 7. Review behavior diff, docs references, and declared limitations before commit.
 
-The final plan48 documentation refresh is restricted to the permitted canonical
-Markdown files; it does not archive legacy docs, move the CSV, or change
-source/tests/tools/CMake.
+For a research plan, put the applicable MISSING target at the start of each chapter
+and cover all sixteen viewpoints: feature overview, vanilla/reference specification,
+classes and data structures, packets or observable I/O, events/checkpoints, state
+transitions, implementation/reproduction flow, C++ design example, class/source
+composition, module split and ownership, cautions, performance, thread safety,
+edge cases, test method, and implementation priority/status. A plan that says
+``13 viewpoints`` is using the old schema and must not be treated as complete.
+
+The plan48 snapshot remains the runtime baseline. A plan49 documentation
+reconciliation is limited to the permitted canonical Markdown files; it does not
+edit `AGENTS.md`, `research-prompt.md`, source, tests, tools, CMake, generated data,
+or ignored `plan/` files. It also does not promote a failed gate by changing prose,
+counts, or assertions.
+
+The pre-existing `AGENTS.md` handover is preserved by this scope. If it still carries
+the old ``13 viewpoints`` wording, old packet IDs, or the old `test_spec_wire` count
+of 328, those are handover residue rather than current authority; use this guide,
+the WIRE contract, and CURRENT_STATE for new work. Updating the handover requires a
+separately scoped change.
 
 ## 8. C++ design example
 
@@ -172,6 +196,9 @@ One claim has one canonical owner. A link is preferable to a copied table.
 ## 11. Cautions
 
 - Preserve MISSING numbering: base 80 plus extension 10 equals 90 numbered rows.
+- Keep the historical assessment-1 strict-audit label of 78 gaps separate from the
+  current 90-row taxonomy and its historical `DONE=90` count; neither is a current
+  release sign-off by itself.
 - Never copy old IDs, HEADs, PASS counts, or line-only citations without rechecking
   the current source and test.
 - Keep `docs/mob_stats_149.csv` at its stable default runtime path.
@@ -224,6 +251,11 @@ Use the CMake/CTest registration as authority. Representative commands (all
 timeout-wrapped) are listed in [VERIFICATION.md#reproducible-commands](VERIFICATION.md#reproducible-commands).
 At minimum, a source extension should add or update a focused test before relying on
 `test_native` or `test_smoke_80` as evidence.
+
+Published counts are named snapshots from [CURRENT_STATE.md](CURRENT_STATE.md) and
+the corresponding run output. Do not import the old `test_spec_wire` count of 328;
+the current snapshot is 392, and `test_native` is recorded as `ALL PASS` without
+inventing an aggregate count.
 
 Required evidence classes are:
 

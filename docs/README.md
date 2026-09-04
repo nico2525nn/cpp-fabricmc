@@ -41,6 +41,16 @@ that path. It remains byte-identical to `docs-legacy/mob_stats_149.csv`, with SH
 `b75697102502385b6aee913f0aca80b86cce323a4994b16a29baf408b5ef2f6f` and `149` data
 rows / `11` columns.
 
+## Research entry point and viewpoint schema
+
+[research-prompt.md](research-prompt.md) is a legacy three-line entry-point stub.
+Its only responsibility is to redirect to the canonical
+[DEVELOPMENT.md#research-workflow](DEVELOPMENT.md#research-workflow) procedure; it
+does not own a second plan schema, source map, or evidence gate. Current research
+chapters use sixteen viewpoints, matching the numbered sections in the canonical
+documents. Any older ``13 viewpoints`` wording is historical and is not a current
+completion criterion.
+
 ## Evidence labels
 
 Every normative statement in the canonical specifications should be read with one of
@@ -57,8 +67,9 @@ these provenance labels:
 
 The source-of-truth rule is simple: current definitions and fresh tests outrank stale
 comments or historical prose. In particular, current `src/proto/Ids.hpp` and the
-wire tests establish `LevelChunkWithLight 0x28`, `UpdateLight 0x2B`, `KeepAlive
-0x27`, `OpenScreen 0x35`, `TradeList 0x2E`, `ContainerSetContent 0x13`, and the
+wire tests establish `LevelChunkWithLight 0x28`, `UpdateLight 0x2B`,
+`KeepAlive S→C 0x27`, `KeepAlive C→S 0x1A`, `OpenScreen 0x35`,
+`TradeList 0x2E`, `ContainerSetContent 0x13`, and the
 MultiBlockChange packing documented in [SPEC_WIRE.md](SPEC_WIRE.md#bundle-and-block-updates).
 
 ## Server lifecycle
@@ -157,10 +168,23 @@ classification. `DONE` is not a promise that every unlisted Fabric JVM or future
 protocol feature is supported; the declared limitations and final-gate failures
 remain explicit.
 
-## Plan48 viewpoint coverage
+The historical strict audit and the current taxonomy are different ledgers and must
+not be added together or substituted for one another:
 
-The five detailed canonical documents each use the same sixteen viewpoint sections,
-so a claim can be reviewed consistently:
+| ledger | cardinality | current interpretation |
+|---|---:|---|
+| MISSING numbered taxonomy | 90 rows (`#1–#90`) | historical matrix classification `DONE=90`; not a release sign-off |
+| assessment-1 strict wire audit | 78 gaps | `HISTORICAL` archive label; its old-target result is not a current aggregate or fresh client proof |
+
+The archive index at [audit/README.md](audit/README.md) is the authority for the
+historical label. Current packet, gameplay, and operations claims come from the
+canonical documents and named evidence below.
+
+## Research viewpoint coverage (current: 16)
+
+The five detailed canonical documents and new research plans use the same sixteen
+viewpoint sections, so a claim can be reviewed consistently. The current schema is
+not the old 13-viewpoint shorthand:
 
 | # | viewpoint | owner sections |
 |---:|---|---|
