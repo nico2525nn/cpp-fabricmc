@@ -4,7 +4,7 @@
 // Citation: types varint/varlong/UUID/pstring/bool/f32/f64/i8/i16/i32/i64/buffer/array/option/bitfield/anonymousNbt/registryEntryHolder/mapper/entityMetadataLoop
 // verified via curl -s ... | python3 -c "import json; data=json.load(open('/tmp/protocol_1_21_4.json')); print(data['play']['toClient']['types'].keys())"
 // 123 packet_* containers in protocol.json + 8 bundle/chunk aliases = 131 play toClient per Ids.hpp 769
-// Ids verified: src/proto/Ids.hpp (kProtocolVersion 769, docs/PROTOCOL_NOTES.md) — byte-identical to Prismarine packet ids
+// Ids verified: src/proto/Ids.hpp (kProtocolVersion 769, docs/SPEC_WIRE.md) — byte-identical to Prismarine packet ids
 // Field order locked per protocol.json container field list; any reorder => FAIL.
 // Policy: vanilla-exact expectations; unimplemented / unsent packets => explicit FAIL (gap visibility). Full PASS == 100pt.
 // Independent of tests/test_spec_wire.cpp (not modified). Unit-form, server-free, <30s.
@@ -675,7 +675,7 @@ static void test_0x3B_PlayerChat(){
 }
 // 0x3C EndCombatEvent — omitted (use HurtAnimation 0x25 + DamageEvent 0x1A + SystemChat 0x73)
 // Vanilla CombatManager enter/end/death は HurtAnimation 0x25 + DamageEvent 0x1A + SystemChat death message で代替。
-// statistics damage_dealt の UI通知のみ欠くが体験担保。PROTOCOL_NOTES.mdで代替明記。
+// statistics damage_dealt の UI通知のみ欠くが体験担保。docs/SPEC_WIRE.mdで代替明記。
 static void test_0x3C_EndCombat_gap(){
     std::printf("[P3C] EndCombatEvent 0x3C omitted — HurtAnimation 0x25 alternative\n");
     check(proto::pl::sc::EndCombatEvent==0x3C && proto::pl::sc::HurtAnimation==0x25 && proto::pl::sc::DamageEvent==0x1A,

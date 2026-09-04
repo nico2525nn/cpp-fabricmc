@@ -122,8 +122,8 @@ void CombatManager::applyToMob(GameServer& srv, MobEntity& m, float amount, cons
     if (m.health <= 0) m.dead = true;
 }
 
-// plan44 §3 G-08 shield block — vanilla Blocking (100% frontal negate; assessment-6 "5 軽減" is the
-// legacy 1.8 value, 1.21.4 wiki value 100% is implemented here)
+// plan44 §3 G-08 shield block — vanilla Blocking (100% frontal negate; the historical "5 軽減" is the
+// legacy 1.8 value, 1.21.4 wiki value 100% is implemented here; see docs/SPEC_GAMEPLAY.md)
 static ItemStack* shieldStackFor(Player& p) {
     if (p.heldSlot >= 0 && p.heldSlot < 9) {
         auto& mh = p.inv[36 + p.heldSlot];

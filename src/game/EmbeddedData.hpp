@@ -6,7 +6,7 @@
 // from the same blobs, keeping everything self-consistent.
 //
 // D10 (plan26 §3): registry set exactness & order lock — 12 `minecraft:*` registries
-// must match PROTOCOL_NOTES.md:24-32 exactly in count and wire order, otherwise client
+// must match docs/SPEC_WIRE.md configuration registry order exactly in count and wire order, otherwise client
 // kicks with `unknown registry`. See `kRegistrySpec`.
 #pragma once
 #include <string>
@@ -27,7 +27,7 @@ struct RegistryBlob { std::string key; std::vector<std::uint8_t> body; };
 class EmbeddedData {
 public:
     // D10 lock: exact 12 registries and counts as captured from vanilla 1.21.4 reference server
-    // PROTOCOL_NOTES.md:24-32 — order is wire order, must not be re-sorted
+    // docs/SPEC_WIRE.md — configuration registry order is wire order, must not be re-sorted
     static constexpr std::array<std::pair<std::string_view,int>,12> kRegistrySpec{{
         {"minecraft:worldgen/biome",65},
         {"minecraft:chat_type",7},

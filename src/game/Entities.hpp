@@ -125,7 +125,7 @@ enum class MobKind : std::uint16_t {
 };
 
 // Static per-kind gameplay table (clean-room values approximating vanilla). plan44 G-05: followRange = vanilla generic.follow_range
-// (blocks). 0 = non-perceiving (vehicle/projectile/display/hazard). Living default 16.0; see docs/mob_stats_149.csv.
+// (blocks). 0 = non-perceiving (vehicle/projectile/display/hazard). Living default 16.0; see docs/mob_stats_149.csv and docs/SPEC_GAMEPLAY.md.
 struct MobStats {
     const char* name;
     float maxHealth;
