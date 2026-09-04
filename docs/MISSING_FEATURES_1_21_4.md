@@ -13,6 +13,9 @@
 - `historical_matrix_status_counts: DONE=90, PARTIAL=0, TODO=0` at this taxonomy
   granularity. These values describe the archived gap classification, not universal
   vanilla internals, current long-run reliability, or Fabric JVM-mod support.
+- `strict_assessment_1_gap_count: 78` is a separate historical audit label. Its
+  archive result is not a current aggregate, and it must not be added to or
+  substituted for the 90-row taxonomy count.
 - Current publication state is `BLOCKED`: the final-gates record includes
   `tools/soak_bot.py` `FAIL` (`keepAlives 3 (<7)`, kicks 0, chunks 182, time updates
   23), while `tests/soak_test.py` passed its 300-second run. `test_gameplay_full`
@@ -26,7 +29,7 @@ Every numbered table row has one ASCII `Status` token; compound values such as
 
 | token | meaning in this matrix |
 |---|---|
-| `DONE` | the feature was closed in the historical 80-row taxonomy; this is not a universal parity claim |
+| `DONE` | the feature was closed in the historical numbered taxonomy (#1–#80 plus #81–#90); this is not a universal parity claim |
 | `PARTIAL` | implementation exists but the numbered feature remains incomplete |
 | `TODO` | the numbered feature was not started |
 | `DECLARED-LIMITATION` | intentionally unsupported or not independently verified; not counted as `DONE` |
@@ -142,9 +145,9 @@ Canonical behavior, wire ownership, and evidence interpretation live in
 | 73 | Compression/Encryption | DONE | `Connection.hpp:29` | `setCompression 256` `zlib` `dataLength 0` vs `>0` decompress, `readFrame` length varint byte-by-byte decrypt via `AesCfb8 0x80`, `setSendTimeout 15`. |
 | 74 | Chat signing `PlayerChat 0x3B` | DONE | `GameServer.cpp:3046` + `net/Crypto.hpp` | `ChatMessageProcessor::verify RSA-SHA256` `ChatMessage 0x07 timestamp/salt/signature` + `MessageAck 0x04` + `shouldUsePlayerChat` → `PlayerChat 0x3B` when key valid else `SystemChat 0x73`; `enforcesSecureChat:false` verified. |
 | 75 | Bundle `0x00` + `MultiBlockChange 0x4E` | DONE | `PacketBatcher.cpp:17` | `queuePacket`/`flush` true `BundleDelimiter 0x00 start/end` + `MultiBlockChange 0x4E` coalescing per chunk-section `tryFlushAsMultiBlockChange` dedup last-wins; grouped by section, solo `BlockUpdate 0x09` still via `Bundle`. |
-| 76 | KeepAlive `0x26` / `Cookie` / `ResourcePack` | DONE | `GameServer.cpp:80` | `KeepAlive` 10s send `i64`, 30s timeout `Disconnect Timed out`, 60s idle sweep, `StoreCookie 0x0A/0x72` + `CookieRequest 0x00/0x16` with `world/data/cookies` persistence, `AddResourcePack 0x09` `url/sha1/forced` (SHA1 not verified, forced kick not). |
+| 76 | KeepAlive S→C `0x27` / C→S `0x1A`, `Cookie`, `ResourcePack` | DONE | `GameServer.cpp:80` | `KeepAlive` 10s send `i64`, 30s timeout `Disconnect Timed out`, 60s idle sweep, `StoreCookie 0x0A/0x72` + `CookieRequest 0x00/0x16` with `world/data/cookies` persistence, `AddResourcePack 0x09` `url/sha1/forced` (SHA1 not verified, forced kick not). |
 | 77 | `DeclareCommands 0x11` | DONE | `Tree.hpp:193` `writeDeclareCommands` | Flatten DFS, flags `0x01 literal,0x02 arg,0x04 exec,0x08 redirect`, `parserId` 0-48. |
-| 78 | `ChunkData` + `UpdateLight` | DONE | `ChunkCodec.hpp:182` | `LevelChunkWithLight 0x27` `writePalettedContainer` longCount even for single palette, `biome` 40/desert 14 etc., `UpdateLight 0x25` via `serializeUpdateLightBody`. |
+| 78 | `LevelChunkWithLight 0x28` + `UpdateLight 0x2B` | DONE | `ChunkCodec.hpp:182` | `writePalettedContainer` longCount even for single palette, `biome` 40/desert 14 etc., `serializeUpdateLightBody`; current IDs are owned by SPEC_WIRE and the wire vectors. |
 | 79 | `BossBar 0x0A` / `Teams 0x67` | DONE | `Ids.hpp:129` + `Teams.hpp:1` + `Scoreboard.hpp:169` | `ScoreboardObjective 0x64`/`Score 0x68`/`Reset 0x49`/`Display 0x5C` + `BossBar 0x0A ADD/HEALTH/TITLE` (`BossAI` `wither/dragon`) + `Teams 0x67 create/remove/join` via `Commands.cpp:872` + `GameServer.hpp:586` sync on join + `ResetScore 0x49 wildcard` via `Commands.cpp:1131` `players reset` + `GameServer.cpp:3098` `onPlayerLeave` + `FunctionEvaluator.cpp:68`. |
 
 ## Base taxonomy #80: Combat & Survival (1 row)
@@ -168,6 +171,18 @@ Canonical behavior, wire ownership, and evidence interpretation live in
 | 89 | XP `SetExperience 0x5B` | DONE | `GameServer.cpp:372` `xpOrbsTick` | `SpawnExperienceOrb 0x02` sizes `{1,3,7,17...}`, `mobsTick` `spawnXpOrbs` on kill, `sendSetExperience` level curve. |
 | 90 | Effects `EntityEffect 0x5E` | DONE | `MobEffects.hpp:14` + `GameServer.cpp:2265` | `Speed/Slowness→MOVEMENT_SPEED` + `HealthBoost→MAX_HEALTH` + `Invisibility/Glowing/Levitation` via `SetEntityMetadata 0x5D` flags + `UpdateAttributes 0x7C` 20t `applyEffectModifiers`; **plan29 §7 polish DONE:** `Levitation` `vy += (0.05*(amp+1)-vy)*0.2`, `fallDistance=0`, `swimming/vehicle` gate (`GameServer.cpp`); §5 `MobEffects.hpp` adds `bad_omen/raid_omen/trial_omen` alias + `TRIAL_OMEN_PER_LEVEL 18000` / `RAID_OMEN_DURATION 600`. |
 
+## Current residuals and publication boundary (outside #1–#90)
+
+These rows are current residuals or evidence blockers. They do not alter the
+numbered taxonomy status and must not be converted to PASS by documentation edits.
+
+| item | status | current record / next owner |
+|---|---|---|
+| `tools/soak_bot.py --duration 300` | `FAIL` / `PUBLICATION-BLOCKER` | keepAlives `3 (<7)`, kicks `0`, chunks `182`, time updates `23`; plan49 §1 owner |
+| accepted 2-hour/24-hour run | `ABSENT` / `DECLARED-LIMITATION` | no accepted artifact; plan49 §4 owner |
+| current real-client/GUI capture | `ABSENT` / `DECLARED-LIMITATION` | no current official-client artifact; bot/synthetic evidence is separate; plan49 §4 owner |
+| `wt48/cleanup` | `DIRTY` / `PRESERVE-REVIEW` | branch `wt48/cleanup`, HEAD `5f82ac0b4448f76f98753d18c83bbcd9736da61c`, 19 changed paths, `+74/-840`; plan49 §6 safety review |
+
 ## Declared limitations (outside #1–#90; not counted as `DONE`)
 
 These are intentional boundaries or unverified claims. They are kept in a separate
@@ -180,6 +195,9 @@ table rather than being hidden inside a numbered `DONE` row.
 | Vanilla Xoroshiro seed parity at L3 | DECLARED-LIMITATION | L1/L2 determinism is covered, but exact vanilla RNG byte parity is not independently proven. |
 | Protocol 776 / 1.21.5 Bundle item behavior | DECLARED-LIMITATION | This matrix is protocol 769 / Minecraft 1.21.4 and does not claim the later Bundle item contract. |
 | Real-client GUI and 24-hour/nightly evidence | DECLARED-LIMITATION | Procedures and bot/synthetic evidence do not substitute for a retained current real-client or long-run artifact. |
+| Session mining versus `MiningCalculator` | DECLARED-LIMITATION | `OPEN` residual: measured semantic differences remain; no unification or parity claim is made. |
+| `MobBehaviorSpec` live coverage | DECLARED-LIMITATION | `PARTIAL`/`OPEN` residual: descriptor coverage is not equivalent to live behavior coverage. |
+| Retained marker/comment inventory | DECLARED-LIMITATION | The legacy-reference grep was zero, but a complete zero-marker inventory was not proven. |
 
 ## Non-numbered supported capabilities (separate from limitations)
 
@@ -192,7 +210,10 @@ table rather than being hidden inside a numbered `DONE` row.
 
 `tests/test_smoke_80.cpp` exercises the base taxonomy and its historical extension
 checks. A test result is evidence for a named run, not a replacement for the matrix
-status. The final-gates record includes `test_smoke_80` `212 PASS 0 FAIL`,
+status. Current named wire counts are `test_spec_wire` `392 PASS 0 FAIL 0 SKIP`,
+`test_wire_full` `405 PASS 0 FAIL 0 SKIP`, and `test_wire_b6` `133 PASS 0 FAIL`;
+the old handover value `328` is stale. `test_native` remains `ALL PASS` without an
+invented aggregate count. The final-gates record includes `test_smoke_80` `212 PASS 0 FAIL`,
 `test_gameplay_full` `734 PASS / 1 intentional E-14 FAIL / 735` (exit 1), and a
 passing `tests/soak_test.py --duration 300` run, but `tools/soak_bot.py --duration 300`
 failed (`keepAlives 3 (<7)`). Therefore no final publication gate is claimed green by
