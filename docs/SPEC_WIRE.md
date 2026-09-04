@@ -1,10 +1,11 @@
 # SPEC_WIRE — Minecraft 1.21.4 / protocol 769
 
 This is the byte-level source of truth for the current C++ implementation. Snapshot:
-`f5987c585e81afdd78adb3ad818a0e43b1697bbe`, rechecked 2026-09-04. Scope is Java
-Edition 1.21.4, protocol `769`, DataVersion `4189`, with an unmodified Fabric 1.21.4
-server as the behavioral reference. `docs/MISSING_FEATURES_1_21_4.md` targets are
-identified in every contract; this file does not change their status.
+merge baseline `f21e42327342fe1e8486960f2c43805711280ffd`, rechecked 2026-09-04. Scope
+is Java Edition 1.21.4, protocol `769`, DataVersion `4189`, with an unmodified Fabric
+1.21.4 server as the behavioral reference. `docs/MISSING_FEATURES_1_21_4.md` targets
+are identified in every contract; this file does not change their status or the
+publication status, which remains `BLOCKED`.
 
 **Status:** current wire contract, with the implementation/omitted/deferred
 classification below. **Limitations:** a protocol-compatible implementation is not

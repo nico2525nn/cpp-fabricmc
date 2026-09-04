@@ -2,7 +2,8 @@
 
 This document is the verification contract for the canonical snapshot of Minecraft
 Java Edition **1.21.4**, protocol **769**, and DataVersion **4189**. The source snapshot
-is commit `f5987c585e81afdd78adb3ad818a0e43b1697bbe`, rechecked on **2026-09-04**.
+is merge baseline `f21e42327342fe1e8486960f2c43805711280ffd`, rechecked on
+**2026-09-04**.
 The test matrix verifies the current C++ implementation; it does not silently turn
 an approximation into vanilla parity.
 
@@ -12,8 +13,8 @@ audit identifiers. This document owns evidence and status interpretation; featur
 behavior belongs in [SPEC_GAMEPLAY.md](SPEC_GAMEPLAY.md), packet bytes in
 [SPEC_WIRE.md](SPEC_WIRE.md), and operational limits in [SPEC_OPS.md](SPEC_OPS.md).
 
-**Status:** the documented baseline is recorded evidence, not a promise that every
-test has been rerun in every environment. **Limitations:** arbitrary Fabric JVM mods
+**Status:** final-gates evidence is recorded against the named baseline, but
+publication remains `BLOCKED`. **Limitations:** arbitrary Fabric JVM mods
 (E-14), exact vanilla Xoroshiro byte parity (world-generation L3), protocol 776, and
 real-client/24-hour evidence are separate boundaries. Any unverified assertion uses
 `DECLARED-LIMITATION` rather than an inferred pass.
@@ -69,6 +70,9 @@ or enum existing without an observable test is not counted as full verification.
 
 The CSV is a runtime fixture, not disposable documentation. Its default path and
 `MOB_STATS_CSV` override are both part of the verification contract.
+The final fixture check remains byte-identical to `docs-legacy/mob_stats_149.csv`:
+SHA-256 `b75697102502385b6aee913f0aca80b86cce323a4994b16a29baf408b5ef2f6f`, with
+`149` data rows and `11` columns.
 
 ## 4. Packet and wire evidence
 
@@ -199,8 +203,8 @@ tables, thresholds, or long audit prose into another document.
 - Dry, synthetic, bot, real-client, nightly, and 24-hour evidence are different
   classes. A procedure is not a completed run.
 - The six `docs-legacy/assessment-*.md` links in [audit/README.md](audit/README.md)
-  are intentional future-archive links and are the only missing local links allowed
-  by the canonical-only scope.
+  point at the existing archive and must resolve locally; no missing archive-link
+  exception is allowed.
 - Never use a broad process-kill pattern. Inspect exact command lines and terminate
   only test-owned PIDs.
 
@@ -210,22 +214,28 @@ Verification records a measurement only with commit, date, host, options, warm-u
 sample count, and run ID. The operational contract is in
 [SPEC_OPS.md#performance-and-load](SPEC_OPS.md#performance-and-load).
 
-The 2026-09-04 local reruns below use host `nico`, snapshot
-`f5987c585e81afdd78adb3ad818a0e43b1697bbe`, UTC date `2026-09-04`, and run ID
-`plan48-canonical-20260904`. The command and options identify each sub-run. No
-runtime or test artifact is added by this canonical-only commit.
+The 2026-09-04 local reruns below use host `nico`, merge baseline
+`f21e42327342fe1e8486960f2c43805711280ffd`, UTC date `2026-09-04`, and run ID
+`plan48-final-20260904`. The command and options identify each sub-run. No runtime
+or test artifact is added by this documentation-only commit.
 
 | workload | gate/acceptance contract | status semantics |
 |---|---|---|
-| configure/build | timeout and successful target completion | measured per checkout |
-| view distance 32 | 4,225-chunk dry strict benchmark | `PASS` on 2026-09-04: p50 0.108 ms, p95 2.332 ms, peak RSS ~95 MB, hit rate 84.6% |
-| 120 clients | stress script completes with owned process cleanup | `PASS` on 2026-09-04: 120/120 joined |
+| configure/build | timeout and successful target completion | completed after a filesystem-slow initial 300s outer timeout; resumed build completed `104/104` |
+| incremental Ninja build | no source changes remain | `ninja: no work to do` in `0.05s` |
+| view distance 32 | 4,225-chunk dry strict benchmark | `PASS` in `1.74s`: p50 0.108 ms, p95 2.331 ms, peak RSS ~95 MB, hit rate 84.6% |
+| 120 clients | stress script completes with owned process cleanup | `PASS` in `69.11s`: 120/120 joined |
+| multi-client integration | cross-client visibility and state | `ALL PASS` in `17.83s` |
+| bot smoke | short bot lifecycle | `ALL PASS` in `20.65s` |
 | entity/redstone load | P95 MSPT/TPS and bounded RSS | run-specific; no unlabelled claim |
-| 60 s soak | short operational gate | `PASS` on 2026-09-04: 30 keepalives, 0 disconnects, post-fill RSS growth 0.7% |
-| 300 s soak | extended dry run | `FAIL` on 2026-09-04: 31 keepalives, 5 disconnects; not accepted as a green long-run result |
-| 2 h/nightly or 24 h | dedicated run with integrity logs | `DECLARED-LIMITATION` unless artifact exists |
+| `tests/soak_test.py --duration 300` | short synthetic soak | `PASS` in `301.18s`: 150 keepalives, 0 disconnects, actions 2930, post-fill RSS growth 14.5% |
+| `tools/soak_bot.py --duration 300` | bot soak gate | `FAIL` in `301.89s`: keepAlives 3 (<7), kicks 0, chunks 182, time updates 23; blocks publication |
+| 2 h/nightly or 24 h | dedicated run with integrity logs | no accepted artifact; `DECLARED-LIMITATION` |
+| real-client/GUI | manual capture with client metadata | no current artifact; `DECLARED-LIMITATION` |
 
-This document and the other six allowed new files do not change runtime performance.
+This document and the other permitted canonical documentation files do not change
+runtime performance. Publication remains `BLOCKED`; the E-14 failure is intentional,
+but the `soak_bot` failure is not waived.
 
 ## 13. Thread safety and process ownership
 
@@ -273,9 +283,10 @@ Allowed status vocabulary is:
 
 ### Static gate
 
-The static gate checks required files, links/anchors, source references, the stable CSV,
-MISSING consistency, and canonical-only scope. The six future archive links are an
-explicit allowlist; every other local link must resolve.
+The static gate checks required files, links/anchors (including explicit `<a id>`
+anchors), source references, the stable CSV, MISSING consistency, and canonical-only
+scope. The six `docs-legacy/assessment-*.md` archive links now have local targets;
+every local link and anchor must resolve.
 
 ### Wire gate
 
@@ -296,7 +307,7 @@ publication.
 
 | target | recorded result | interpretation |
 |---|---|---|
-| `test_gameplay_full` | `734 PASS 1 FAIL / 735` | the one failure is intentional E-14; no other failure allowed |
+| `test_gameplay_full` | `734 PASS / 1 intentional E-14 FAIL / 735` (exit 1) | the one failure is intentional E-14; no other failure allowed |
 | `test_smoke_80` | `212 PASS 0 FAIL` | base taxonomy plus extension checks |
 | `test_seed_parity` | `201 PASS 0 FAIL` | L1/L2 deterministic evidence; vanilla RNG L3 remains declared |
 | `test_mining_full` | `38/38 passed` | mining behavior |
@@ -304,32 +315,35 @@ publication.
 | `test_mob_stats_full` | `131 PASS 0 FAIL` | fixture/stat checks |
 | `test_redstone_engine_full` | `29 PASS 0 FAIL` | engine categories |
 | `test_recipes_mirror` | `76 PASS 0 FAIL` | recipe mirror/offset checks |
-| `test_plan43` | `82 PASS 0 FAIL` | plan43 integration assertions |
+| `test_plan43` | `82 PASS 0 FAIL` in 25.01s | plan43 integration assertions |
 
 The gameplay table does not claim exact vanilla behavior for an untested internal. A
 new failure beyond E-14 is a publication blocker.
 
 ### Operations gate
 
-The following are required operational checks for a release candidate. A result is
-only current when the run metadata and cleanup artifact are retained.
+The following are required operational checks for a release candidate. The exact
+final-gates results below are tied to the named baseline/run; a result without its
+metadata and cleanup artifact is not a new claim.
 
 | target/procedure | purpose | status at this document snapshot |
 |---|---|---|
-| `test_flood_net` | frame/decompression/chat/accept defense | `PASS` on 2026-09-04: 57 PASS, 0 FAIL |
-| `test_recovery` | level/region/player/session-lock recovery | `PASS` on 2026-09-04: 45 PASS, 0 FAIL |
-| `test_rcon_multi` | concurrent auth/response and tick isolation | `PASS` on 2026-09-04: 6 PASS, 0 FAIL |
+| `test_flood_net` / `test_recovery` / `test_rcon_multi` | frame, recovery, and RCON focused targets | no new result supplied for this final-gates record; prior evidence is historical |
 | `check_world` | offline NBT/world integrity | run-specific; no standalone run recorded here |
-| view32 dry benchmark | 4,225 chunk load contract | `PASS` on 2026-09-04; synthetic dry result |
-| stress 120 | concurrent connection load | `PASS` on 2026-09-04: 120/120 joined |
-| soak 60 s | short stability | `PASS` on 2026-09-04; not a long-run substitute |
-| soak 300 s | extended stability | `FAIL` on 2026-09-04: 31 keepalives, 5 disconnects |
-| soak nightly/24 h | long-run stability | `DECLARED-LIMITATION`; no accepted run artifact |
+| view32 dry benchmark | 4,225 chunk load contract | `PASS` in 1.74s: p50 0.108 ms, p95 2.331 ms, peak RSS ~95 MB, hit rate 84.6% |
+| stress 120 | concurrent connection load | `PASS` in 69.11s: 120/120 joined |
+| multi-client integration | cross-client behavior | `ALL PASS` in 17.83s |
+| bot smoke | short bot lifecycle | `ALL PASS` in 20.65s |
+| `tests/soak_test.py --duration 300` | short synthetic stability | `PASS` in 301.18s: 150 keepalives, 0 disconnects, actions 2930, post-fill RSS growth 14.5% |
+| `tools/soak_bot.py --duration 300` | extended bot stability | `FAIL` in 301.89s: keepAlives 3 (<7), kicks 0, chunks 182, time updates 23 |
+| soak nightly/24 h | long-run stability | `DECLARED-LIMITATION`; no accepted 2h/24h artifact |
+| real-client/GUI | manual client evidence | `DECLARED-LIMITATION`; no current artifact |
 
-The recorded 300-second failure is not hidden or converted to a pass. It blocks a
-release-candidate operations gate until a separately investigated run passes; the
-canonical documentation itself records the failure and keeps the long-run claim
-explicitly limited.
+The recorded `soak_bot` failure is not hidden or converted to a pass. It blocks a
+release-candidate operations gate; the separate passing `tests/soak_test.py` run does
+not waive it. The canonical documentation keeps the E-14 expected failure, missing
+vanilla Xoroshiro L3 proof, protocol 776 boundary, and missing long-run/real-client
+artifacts explicitly limited.
 
 ### Reproducible commands
 
@@ -345,18 +359,22 @@ timeout --foreground --kill-after=5 30 test -s docs/SPEC_GAMEPLAY.md
 timeout --foreground --kill-after=5 30 test -s docs/SPEC_OPS.md
 timeout --foreground --kill-after=5 30 test -s docs/DEVELOPMENT.md
 timeout --foreground --kill-after=5 30 test -s docs/VERIFICATION.md
+timeout --foreground --kill-after=5 30 test -s docs/CURRENT_STATE.md
+timeout --foreground --kill-after=5 30 test -s docs/MISSING_FEATURES_1_21_4.md
+timeout --foreground --kill-after=5 30 test -s docs/audit/README.md
 timeout --foreground --kill-after=5 30 test -s docs/mob_stats_149.csv
 timeout --foreground --kill-after=5 30 awk -F, 'BEGIN { n=0; bad=0 } /^[[:space:]]*#/ || NF==0 { next } /^name,/ { next } { if (NF != 11) bad=1; n++ } END { if (n != 149 || bad) exit 1; print n " rows / 11 columns" }' docs/mob_stats_149.csv
 timeout --foreground --kill-after=5 30 sha256sum docs/mob_stats_149.csv
-timeout --foreground --kill-after=5 120 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+timeout --foreground --kill-after=5 300 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
 timeout --foreground --kill-after=5 300 cmake --build build -j2
+timeout --foreground --kill-after=5 30 ninja -C build
 timeout --foreground --kill-after=5 60 ./build/test_native ./build/cppfm
 timeout --foreground --kill-after=5 30 ./build/test_scoreboard_reset
 timeout --foreground --kill-after=5 30 ./build/test_spec_wire
 timeout --foreground --kill-after=5 60 ./build/test_wire_full
 timeout --foreground --kill-after=5 60 ./build/test_wire_b6
 timeout --foreground --kill-after=5 30 ./build/test_fuzz
-timeout --foreground --kill-after=5 60 ./build/test_gameplay_full
+timeout --foreground --kill-after=5 60 ./build/test_gameplay_full  # expected exit 1: E-14 only
 timeout --foreground --kill-after=5 120 ./build/test_seed_parity
 timeout --foreground --kill-after=5 60 ./build/test_mining_full
 timeout --foreground --kill-after=5 60 ./build/test_block_hardness_full
@@ -365,13 +383,14 @@ timeout --foreground --kill-after=5 60 ./build/test_redstone_engine_full
 timeout --foreground --kill-after=5 30 ./build/test_recipes_mirror
 timeout --foreground --kill-after=5 300 ./build/test_plan43 ./build/cppfm
 timeout --foreground --kill-after=5 450 ./build/test_smoke_80 ./build/cppfm
-timeout --foreground --kill-after=5 300 ./build/test_flood_net ./build/cppfm
-timeout --foreground --kill-after=5 180 ./build/test_recovery
-timeout --foreground --kill-after=5 120 ./build/test_rcon_multi
 timeout --foreground --kill-after=5 60 python3 tools/bench_chunk_gen.py --view-distance 32 --chunks 4225 --dry --strict
 timeout --foreground --kill-after=5 600 python3 tests/stress_test.py --clients 120 --binary ./build/cppfm
 timeout --foreground --kill-after=5 400 python3 tests/soak_test.py --duration 300 --binary ./build/cppfm
-timeout --foreground --kill-after=5 120 ctest --test-dir build -R 'native|scoreboard_reset|spec_wire|fuzz|wire_full|wire_b6|gameplay_full|seed_parity|mining_full|block_hardness_full|mob_stats_full|redstone_engine_full|recipes_mirror|flood_net|recovery|rcon_multi' --output-on-failure --timeout 120
+timeout --foreground --kill-after=5 450 python3 tests/test_server_full.py --binary ./build/cppfm
+timeout --foreground --kill-after=5 120 python3 tests/multi_client_test.py --binary ./build/cppfm
+timeout --foreground --kill-after=5 120 python3 tests/bot_smoke.py --binary ./build/cppfm --duration 30
+timeout --foreground --kill-after=5 400 python3 tools/soak_bot.py --duration 300 --binary ./build/cppfm
+timeout --foreground --kill-after=5 120 ctest --test-dir build -R 'native|scoreboard_reset|spec_wire|plan43|flood_net|fuzz|wire_full|gameplay_full|seed_parity|block_hardness_full|redstone_engine_full|mob_stats_full|mining_full|weak_zero|bench|multi_client|bot_smoke|recipes_mirror|recovery|rcon_multi' --output-on-failure --timeout 120  # 20 tests; rc 8 from expected E-14
 timeout --foreground --kill-after=5 600 ctest --test-dir build -R smoke80 --output-on-failure --timeout 450
 ```
 
@@ -391,9 +410,11 @@ If a confirmed test-owned PID remains, repeat the command-line inspection and is
 ## 16. Priority, status, and rollback
 
 **Priority: highest for publication.** Static/schema/scope checks precede expensive
-server runs. The canonical snapshot is acceptable only when the seven allowed files
-are the only additions, the CSV is unchanged, links pass with the six-item archive
-allowlist, and no executable behavior or assertion changed.
+server runs. The canonical snapshot is acceptable only when the permitted canonical
+documentation files are the only changes, the CSV is unchanged, all archive links
+resolve, and no executable behavior or assertion changed. The final-gates status is
+`BLOCKED` by the `soak_bot` failure; E-14 remains the single intentional gameplay
+expected failure.
 
 Rollback applies only to a migration commit owned by the operator. Use an explicit
 inverse or `git revert` of that commit; never reset, checkout, delete broadly, or
