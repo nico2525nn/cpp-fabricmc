@@ -19,6 +19,14 @@ import zlib
 
 PROTOCOL = 769
 
+# Play packet ids for the small clients in this tree.  Keep the direction in
+# the name: 0x27 is server -> client and 0x1A is client -> server.
+PLAY_CLIENTBOUND_KEEP_ALIVE = 0x27
+PLAY_SERVERBOUND_KEEP_ALIVE = 0x1A
+PLAY_CLIENTBOUND_DISCONNECT = 0x1D
+PLAY_CLIENTBOUND_LEVEL_CHUNK_WITH_LIGHT = 0x28
+PLAY_CLIENTBOUND_UPDATE_TIME = 0x6B
+
 
 # ---------------------------------------------------------------- primitives
 def write_varint(value: int) -> bytes:
@@ -56,6 +64,25 @@ def read_varint(data: io.BytesIO | bytes, offset: int = 0) -> tuple[int, int]:
         shift += 7
         if shift >= 35:
             raise ValueError("varint too big")
+
+
+def _try_read_varint(data: bytes | bytearray, offset: int = 0) -> tuple[int, int] | None:
+    """Return a complete VarInt without consuming *data*, or ``None``.
+
+    A stream parser must be able to distinguish an incomplete VarInt from a
+    malformed one.  In particular, a socket timeout after the first byte must
+    leave that byte available for the next receive attempt.
+    """
+    result = 0
+    for index in range(5):
+        pos = offset + index
+        if pos >= len(data):
+            return None
+        byte = data[pos]
+        result |= (byte & 0x7F) << (index * 7)
+        if not (byte & 0x80):
+            return result, pos + 1
+    raise ValueError("varint too big")
 
 
 def pack_string(s: str) -> bytes:
@@ -101,28 +128,59 @@ class Conn:
             pass
 
     # -- low level -----------------------------------------------------
+    def _recv_more(self):
+        """Append one socket read, preserving ``rxbuf`` on timeout/EOF."""
+        chunk = self.sock.recv(65536)
+        if not chunk:
+            raise EOFError("socket closed")
+        self.rxbuf += chunk
+
     def _recv_exact(self, n: int) -> bytes:
         while len(self.rxbuf) < n:
-            chunk = self.sock.recv(65536)
-            if not chunk:
-                raise EOFError("socket closed")
-            self.rxbuf += chunk
+            self._recv_more()
         out, self.rxbuf = self.rxbuf[:n], self.rxbuf[n:]
         return out
 
     def recv_frame(self) -> tuple[int, bytes]:
         """returns (packet_id, payload) fully decompressed"""
-        ln, p = read_varint(self._recv_exact(5), 0)
-        # careful: read_varint above may have consumed from a fresh buffer;
-        # implement manual incremental varint instead
-        raise RuntimeError("unused")
+        return self.recv_packet()
 
-    def recv_packet(self) -> tuple[int, bytes]:
-        # read frame length (incremental varint across recv boundary)
-        length = self._read_varint_stream()
-        data = self._recv_exact(length)
+    def _buffered_frame(self) -> tuple[int, int] | None:
+        """Return ``(payload_offset, frame_end)`` when a full frame is ready."""
+        parsed = _try_read_varint(self.rxbuf)
+        if parsed is None:
+            return None
+        length, payload_offset = parsed
+        frame_end = payload_offset + length
+        if len(self.rxbuf) < frame_end:
+            return None
+        return payload_offset, frame_end
+
+    def has_buffered_packet(self) -> bool:
+        """Whether ``recv_packet(wait=False)`` can return without reading."""
+        return self._buffered_frame() is not None
+
+    def recv_packet(self, wait: bool = True) -> tuple[int, bytes]:
+        """Return one complete packet, retaining partial frames on timeout.
+
+        The frame length VarInt and frame body are parsed only after they are
+        both present in ``rxbuf``.  Therefore ``socket.timeout`` can safely be
+        handled by a caller and the next call resumes at the same byte, rather
+        than interpreting a partial frame as the next frame length.  With
+        ``wait=False`` only already-buffered complete packets are considered.
+        """
+        while True:
+            span = self._buffered_frame()
+            if span is not None:
+                payload_offset, frame_end = span
+                data = self.rxbuf[payload_offset:frame_end]
+                self.rxbuf = self.rxbuf[frame_end:]
+                break
+            if not wait:
+                raise socket.timeout("no complete packet available")
+            self._recv_more()
+
         if self.compression_threshold >= 0:
-            bio = io.BytesIO(data)
             dlen, off = read_varint(data, 0)
             body = data[off:]
             if dlen == 0:
@@ -135,14 +193,13 @@ class Conn:
         return pid, data[off:]
 
     def _read_varint_stream(self) -> int:
-        result = 0
-        shift = 0
         while True:
-            b = self._recv_exact(1)[0]
-            result |= (b & 0x7F) << shift
-            if not (b & 0x80):
+            parsed = _try_read_varint(self.rxbuf)
+            if parsed is not None:
+                result, end = parsed
+                self.rxbuf = self.rxbuf[end:]
                 return result
-            shift += 7
+            self._recv_more()
 
     def send_packet_raw(self, pid: int, payload: bytes):
         body = write_varint(pid) + payload
