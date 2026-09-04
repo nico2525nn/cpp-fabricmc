@@ -25,7 +25,7 @@ Start with the [canonical documentation index](docs/README.md). The current sour
 
 Historical assessment text is indexed from the audit page and is not a current specification.
 
-## What works today (HEAD f5987c5 — 90/90 numbered feature rows DONE)
+## What works today (implementation baseline `f21e423` — 2026-09-04 final-gates snapshot)
 
 | Area | Status |
 |---|---|
@@ -57,34 +57,37 @@ Historical assessment text is indexed from the audit page and is not a current s
 | 20 TPS loop + `simulationDistance` tick culling + `chunksUnloadTick` LRU + `level.dat` periodic 6000/1200t | ✅ |
 | Admin: `/ban`/`ban-ip`/`pardon`/`op`/`deop`/`whitelist`/`kick` + `Rcon` + `whitelist.json`/`ops.json` enforcement | ✅ |
 
-Verified by the wire, gameplay, integration, and operations evidence in *Testing* below. Chunk serialization is
-proven **byte-identical to a real reference server's output** by golden tests.
+The focused wire, gameplay, integration, and operations evidence below is tied to the
+named baseline and its final-gates record. Chunk serialization is proven **byte-identical
+to a real reference server's output** by golden tests; this does not make every gameplay
+or long-run behavior a universal vanilla-parity claim.
 
 ## Boundaries and declared limitations
 
-- **Feature/status matrix:** [`docs/MISSING_FEATURES_1_21_4.md`](docs/MISSING_FEATURES_1_21_4.md) records the 80-row base taxonomy plus 10 numbered extension rows; all 90 are DONE.
+- **Feature/status matrix:** [`docs/MISSING_FEATURES_1_21_4.md`](docs/MISSING_FEATURES_1_21_4.md) retains the 80-row base taxonomy plus 10 numbered extension rows; the historical taxonomy classification is 90/90 `DONE`, not a universal parity claim.
 - **Audit history:** the audit index records the completed assessment series, including **assessment-6 44/44 FIXED (HIGH 25/25)**. Historical audits are evidence, not the current specification.
 - **Version and parity boundaries:** protocol 776 bundle-item behavior, broader vanilla RNG/structure-NBT parity, and other future compatibility work remain separately documented in the canonical specifications.
-- **Gameplay boundary:** `test_gameplay_full` has **734 PASS / 1 FAIL**; the single E-14 Fabric JVM-mod gap is intentional and by design.
+- **Gameplay boundary:** `test_gameplay_full` has **734 PASS / 1 intentional E-14 FAIL / 735** and exits 1; the Fabric JVM-mod gap is intentional and by design.
 - **Fabric mods cannot run inside a C++ process.** Mods are JVM bytecode loaded through the Fabric Loader; "Fabric-compatible" here means *protocol-compatible with what an unmodded Fabric server puts on the wire*.
+- **Publication remains `BLOCKED`:** the 300-second `tools/soak_bot.py` run failed, no accepted 2-hour/24-hour artifact exists, and no current real-client/GUI artifact exists.
 
 ## Testing — evidence (what the numbers mean)
 
-- **`test_native` (C++ self-test, status/join + plan38 QC/macro/predicate16 cases: status/join/chunk/chat/persist/multi/stress + plan34 fuzz/soak):** `ALL PASS (status/join + plan38 QC/macro/predicate16)` — run `./build/test_native ./build/cppfm` (50s). Verifies `status 769`, `Login Success`, `Join Game`, `LevelChunkWithLight`, `BlockUpdate` broadcast, `SystemChat`, and cross-client visibility.
-- **`test_server_full` (full live-server protocol/gameplay/admin suite):** `234 PASS 0 FAIL` — run the current server-full harness as described in [Verification](docs/VERIFICATION.md).
+- **`test_native` (C++ self-test, status/join + plan38 QC/macro/predicate16 cases: status/join/chunk/chat/persist/multi/stress + plan34 fuzz/soak):** `ALL PASS`, 2.33s — run `./build/test_native ./build/cppfm`. Verifies `status 769`, `Login Success`, `Join Game`, `LevelChunkWithLight`, `BlockUpdate` broadcast, `SystemChat`, and cross-client visibility.
+- **`test_server_full` (full live-server protocol/gameplay/admin suite):** `234 PASS 0 FAIL`, 273.79s — run the current server-full harness as described in [Verification](docs/VERIFICATION.md).
 - **`test_smoke_80` (80-row taxonomy + plan32-41 拡張, `tests/test_smoke_80.cpp`):** `212 PASS 0 FAIL` (80-row taxonomy + 82 拡張チェック plan41 horse/vehicle/bench/recipes) — each check verifies a vanilla packet/NBT (e.g., `worldborder size → InitializeWorldBorder 0x26`, `glowstone → UpdateLight 0x2B`, `wither → BossBar 0x0A`, `ActionBar 0x51`, `OpenHorseWindow 0x24`, `VehicleMove 0x33`, predicate 22). Run `./build/test_smoke_80 ./build/cppfm` (450s, 600s under load; `=== SMOKE 80: 212 PASS 0 FAIL ===`, exit 0).
 - **`test_scoreboard_reset` (ResetScore `0x49` round-trip, `tests/test_scoreboard_reset.cpp`):** `22/22 PASS` — holder + optional objectiveName round-trip / wildcard null broadcast / copy-before-erase. Run `./build/test_scoreboard_reset` (ctest `scoreboard_reset`, TIMEOUT 30).
 - **`test_spec_wire` (wire byte-identical, `tests/test_spec_wire.cpp` plan30-43):** `392 PASS 0 FAIL 0 SKIP` — 25+ wire cases covering all play `toClient` families (chunk/light/bundle, `UpdateAttributes 0x7C` `H1` varint mapper + horse `0x24` vehicle `0x33` + recipes tag, predicate 22) vs Prismarine `protocol.json` spec bytes (`EXPECT_EQ` `WriteBuffer` vs spec) + plan43 P43-1..7 shape locks. Run `./build/test_spec_wire` (ctest `spec_wire`, TIMEOUT 30).
 - **`test_wire_full` (full play matrix, `tests/test_wire_full.cpp`):** `405 PASS 0 FAIL` — toClientplay 全型の byte lock。Run `./build/test_wire_full` (ctest `wire_full`).
-- **`test_gameplay_full` (gameplay asserts, `tests/test_gameplay_full.cpp` plan42-46):** `734 PASS 1 FAIL` (E-14 Fabric honest gap のみ by design) — redstone engine・combat sweep/crit/shield・mob behavior・density・food/potion・crops/villager 込。Run `./build/test_gameplay_full` (ctest `gameplay_full`).
+- **`test_gameplay_full` (gameplay asserts, `tests/test_gameplay_full.cpp` plan42-46):** `734 PASS / 1 intentional E-14 FAIL / 735`, exit 1 — redstone engine・combat sweep/crit/shield・mob behavior・density・food/potion・crops/villager 込。Run `./build/test_gameplay_full` (ctest `gameplay_full`).
 - **`test_wire_b6` (plan45 B6 wire, `tests/test_wire_b6.cpp` assessment-6 W-05/08-11/13 + G-13):** `133 PASS` — settings `0x0C`・NameItem/Beacon/PickItem/RecipeBook・OP gate + spectate・steer_boat/resource_pack/pong・login 5 種・名前検証 + 重複 kick・crafting live。Run `./build/test_wire_b6` (ctest `wire_b6`).
 - **`test_seed_parity` (plan45 G-11, `tests/test_seed_parity.cpp`):** `201 PASS` — バイオーム 65・構造物 42+ (jar 検証)・同一 seed 同一ワールドの 3 層 parity。Run `./build/test_seed_parity` (ctest `seed_parity`).
-- **`test_flood_net` (plan46 defense O-13/W-14/W-16, `tests/test_flood_net.cpp`):** `PASS` — 防御 A1-A8 (2MB 超切断・chat 20msg/s throttle・malformed 1000 連で生存・zlib 爆弾予算・per-packet try + Disconnect)。Run `./build/test_flood_net ./build/cppfm` (ctest `flood_net`).
-- **`test_recovery` (plan46 O-06〜O-10, `tests/test_recovery.cpp`):** `45 PASS` — 破損注入 (truncate・bitflip・空ファイル) ×3 種で起動可 + 被害限定 + `check_world` NBT 整合 + ban/ops 永続 E2E。Run `./build/test_recovery` (ctest `recovery`).
-- **`test_rcon_multi` (plan46 O-09, `tests/test_rcon_multi.cpp`):** `PASS` — 5 同時 RCON 全応答・誤パス 10 連で拒否継続・tick 無影響。Run `./build/test_rcon_multi` (ctest `rcon_multi`).
+- **`test_flood_net` / `test_recovery` / `test_rcon_multi`:** registered focused targets with prior evidence; no new result for these targets is asserted in the supplied final-gates record. Run them separately before treating their status as current.
 - **`test_mining_full` / `test_block_hardness_full` / `test_mob_stats_full` / `test_redstone_engine_full` (plan44 G-02/03/05/12):** mining `38 PASS` / hardness 1095 mismatch 0 / mob_stats `131 PASS` (149 種 + followRange) / redstone `29 PASS` (7 カテゴリ engine 経由)。Run `ctest -R "mining_full|block_hardness_full|mob_stats_full|redstone_engine_full"`.
 - **`test_fuzz` (fuzz 23 cases, `tests/test_fuzz.cpp` plan34):** `23 PASS 0 FAIL` — malformed varint/NBT/packet fuzz, no crash/UBSan. Run `./build/test_fuzz` (ctest `fuzz`, TIMEOUT 30).
-- **`bench` / `multi_client` / `bot_smoke` / `soak_bot` (plan41 C-09/C-12):** `bench` p50 0.1ms p95 2.5ms hit 83% PASS / `multi_client` 3-clients ALL PASS (chunkCoords 169 + tracker 1159 + drag mode5) / `bot_smoke` 3-clients 30s ALL PASS / `soak_bot` 300s PASS (nightly 3600s). Ctest `bench` `multi_client` `bot_smoke` `soak_bot` (plan41). Run `ctest -R bench --output-on-failure` / `python3 tests/bot_smoke.py --binary ./build/cppfm --duration 30` / `python3 tools/soak_bot.py --duration 300 --binary ./build/cppfm`.
+- **`multi_client` / `bot_smoke` / `soak_bot`:** `multi_client` ALL PASS in 17.83s / `bot_smoke` ALL PASS in 20.65s / `soak_bot` **FAIL** in 301.89s (`keepAlives 3 (<7)`, kicks 0, chunks 182, time updates 23). The bot soak failure remains a publication blocker.
+- **`tests/soak_test.py --duration 300`:** `PASS` in 301.18s (`150 keepalives`, `0 disconnects`, `actions 2930`, post-fill RSS growth `14.5%`). This is not a 2-hour or 24-hour result.
+- **view-distance-32 dry benchmark:** `PASS` in 1.74s for 4,225 chunks; p50 `0.108ms`, p95 `2.331ms`, peak RSS ~`95MB`, hit rate `84.6%`.
 - **Audit/evidence baseline:** assessment-6 is **44/44 FIXED (HIGH 25/25)**. The earlier strict/deep and assessment-series evidence is indexed in [Audit and history](docs/audit/README.md); current test meanings and release gates live in [Verification](docs/VERIFICATION.md).
 
 ## Clean-room methodology (important)
@@ -134,43 +137,51 @@ Join with any 1.21.4 client in offline mode, e.g. a launcher profile pointing at
 python3 tests/integration_client.py     # env CPPFM_PORT
 python3 tests/multi_client_test.py      # two bots, cross-broadcasts
 python3 tests/stress_test.py            # N=32 concurrent joins (attach CPPFM_HOST/PORT)
-# Load (plan45 O-04/O-02 — spawns server, 120 clients wave ramp 10/2s)
+# Load (final-gates run — spawns server, 120 clients wave ramp 10/2s)
 timeout --foreground --kill-after=5 600 python3 tests/stress_test.py --clients 120 --binary ./build/cppfm
-pkill -9 -f "cppfm --port" 2>/dev/null; sleep 1
-# Soak 300s dry (plan45 O-05/O-06 short gate)
+pgrep -a -f 'cppfm --por[t]' || true
+# Soak 300s dry
 timeout --foreground --kill-after=5 400 python3 tests/soak_test.py --duration 300 --binary ./build/cppfm
-# Bench view32 scenario (plan45 O-11 — 65x65=4225 chunks p50/p95 + peak RSS)
+# Bench view32 scenario (65x65=4225 chunks p50/p95 + peak RSS)
 python3 tools/bench_chunk_gen.py --view-distance 32 --chunks 4225 --dry --strict
 
 # C++ self-test (spawns real server, no Python)
 ./build/test_native ./build/cppfm          # ALL PASS status/join/chunk/chat/persist/multi/stress + plan38 QC3/macro4/predicate16
-./build/test_smoke_80 ./build/cppfm        # 212 PASS 0 FAIL (80-row + plan32-41 拡張) (~10 min, 700s ctest)
-./build/test_scoreboard_reset              # 22 cases ResetScore 0x49 round-trip
-./build/test_spec_wire                     # 392 PASS 0 FAIL wire byte-identical
-./build/test_fuzz                          # 23 PASS fuzz 23 cases — malformed varint/NBT/packet no crash
-./build/test_wire_full                     # 405 PASS full play matrix byte lock
-./build/test_gameplay_full                 # 734 PASS 1 FAIL (E-14 by design) gameplay asserts
-./build/test_wire_b6                       # 133 PASS plan45 B6 (settings/GUI/OP/login/crafting live)
-./build/test_seed_parity                   # 201 PASS plan45 G-11 (biome 65 + struct 42 + 3-layer parity)
-./build/test_flood_net ./build/cppfm       # PASS plan46 defense A1-A8 (2MB/chat flood/malformed 1000)
-./build/test_recovery                      # 45 PASS plan46 recovery (corrupt inject x3 + check_world)
-./build/test_rcon_multi                    # PASS plan46 (5 concurrent + wrong-pass flood)
-./build/test_recipes_mirror                # 76 PASS recipes mirror/offset strict
-python3 tools/bench_chunk_gen.py --view-distance 32 --chunks 100 --dry --strict  # p50 0.1 p95 2.5 hit 83 PASS
-python3 tests/multi_client_test.py --binary ./build/cppfm   # 3-clients ALL PASS (chunkCoords + tracker + drag)
-python3 tests/bot_smoke.py --binary ./build/cppfm --duration 30  # 3-clients 30s ALL PASS
-python3 tools/soak_bot.py --duration 300 --binary ./build/cppfm  # 300s PASS (nightly 3600s)
-ctest -R "native|smoke80|spec_wire|fuzz|bench|recipes_mirror|multi_client|bot_smoke" --output-on-failure
-# Soak: dry 300s + nightly 2h (7200s) + nightly 24h (86400s, plan45 O-06) — B-06 + soak_bot 1h
-python3 tests/soak_test.py --duration 300 --binary ./build/cppfm   # dry 300s
+# Results from the supplied final-gates run:
+./build/test_smoke_80 ./build/cppfm        # 212 PASS 0 FAIL
+./build/test_scoreboard_reset              # 22 PASS 0 FAIL
+./build/test_spec_wire                     # 392 PASS 0 FAIL 0 SKIP
+./build/test_fuzz                          # 23 PASS 0 FAIL
+./build/test_wire_full                     # 405 PASS 0 FAIL 0 SKIP
+./build/test_gameplay_full                 # 734 PASS / 1 intentional E-14 FAIL / 735 (exit 1)
+./build/test_wire_b6                       # 133 PASS 0 FAIL
+./build/test_seed_parity                   # 201 PASS 0 FAIL
+./build/test_recipes_mirror                # 76 PASS 0 FAIL
+python3 tools/bench_chunk_gen.py --view-distance 32 --chunks 4225 --dry --strict  # PASS, p50 0.108 p95 2.331 hit 84.6%
+python3 tests/multi_client_test.py --binary ./build/cppfm   # ALL PASS in 17.83s
+python3 tests/bot_smoke.py --binary ./build/cppfm --duration 30  # ALL PASS in 20.65s
+python3 tests/soak_test.py --duration 300 --binary ./build/cppfm   # PASS: 150 keepalives, 0 disconnects, 2930 actions, RSS +14.5%
+python3 tools/soak_bot.py --duration 300 --binary ./build/cppfm  # FAIL: keepAlives 3 (<7), kicks 0, chunks 182, time updates 23
+# Focused CTest: 20 tests excluding smoke80, soak2h, and soak_bot.
+# Result: 19 passed plus gameplay_full's intentional E-14 failure; CTest rc 8.
 ctest -R soak2h --output-on-failure --timeout 8000                  # nightly 2h (LABELS nightly)
 ctest -R soak_bot --output-on-failure --timeout 400                 # soak_bot 300s (LABELS soak)
 # Nightly 24h soak (plan45 O-06 — ctest外、専用実行。gate: RSS <5%/24h warmup除外 + TPS 20 + NBT整合)
 # nohup python3 tests/soak_test.py --duration 86400 --binary ./build/cppfm > /tmp/soak24h.log 2>&1 &
-# 24hフルはnightlyのみ。PRでは300s dryでPASS確認すること。後始末は pkill -9 -f "cppfm --port" のみ。
+# 24hフルはnightlyのみ。現時点で受理済みの2h/24h artifactはない。後始末は `cppfm --por[t]` を確認して所有PIDだけを終了する。
 ```
 
-Release and ASan/UBSan runs show no sanitizer findings; the only expected gameplay failure is E-14: `test_spec_wire 392 PASS` / `test_wire_full 405` / `test_gameplay_full 734 PASS / 1 FAIL` / `test_server_full 234 PASS / 0 FAIL` / `test_wire_b6 133` / `test_seed_parity 201` / `test_flood_net` PASS / `test_recovery 45` / `test_rcon_multi` PASS / `test_mining_full 38` / `test_mob_stats_full 131` / `test_redstone_engine_full 29` / `test_smoke_80 212 PASS` / `test_fuzz 23` / `test_recipes_mirror 76` / `bench` p50 0.107 p95 2.5 hit83 (view32) / `multi_client` 3-clients / `bot_smoke` 30s / soak 300s PASS. For current interpretation, see [Verification](docs/VERIFICATION.md), [Current state](docs/CURRENT_STATE.md), and the [audit history index](docs/audit/README.md). `python3 tools/score_review.py` reports **100/100 (40/30/15/15)**.
+The final-gates record at `f21e42327342fe1e8486960f2c43805711280ffd` keeps the only
+allowed gameplay failure visible: `test_spec_wire` `392 PASS 0 FAIL 0 SKIP`,
+`test_wire_full` `405 PASS 0 FAIL 0 SKIP`, `test_wire_b6` `133 PASS 0 FAIL`,
+`test_gameplay_full` `734 PASS / 1 intentional E-14 FAIL / 735` (exit 1),
+`test_server_full` `234 PASS 0 FAIL`, `test_seed_parity` `201 PASS 0 FAIL`,
+`test_mining_full` `38/38`, `test_block_hardness_full` `16/16` with `1095 mismatch=0`,
+`test_mob_stats_full` `131 PASS 0 FAIL`, `test_redstone_engine_full` `29 PASS 0 FAIL`,
+and `test_recipes_mirror` `76 PASS 0 FAIL`. The separate `soak_bot` failure keeps
+publication `BLOCKED`; no accepted 2-hour/24-hour run or current real-client/GUI
+artifact is claimed. For current interpretation, see [Verification](docs/VERIFICATION.md),
+[Current state](docs/CURRENT_STATE.md), and the [audit history index](docs/audit/README.md).
 
 ### Reproducing the reference captures
 
@@ -217,7 +228,7 @@ src/
 │   ├── GameServer (split plan31: GameServer.cpp 35 + _tick 980 + _combat 455 + _items 1831 + _world 216 + _session 3805 + _core 492 = 7714 + Helpers 61 + StairsHelper 192 + Constants 41) / Session (HANDSHAKE→STATUS/LOGIN→CONFIG→PLAY, dimension worlds[3], tickOnce 20 TPS)
 │   └── Helpers: StairsHelper (isStairsBlock/getPropStr/computeStairsShape), GameServerHelpers (nowMs/packUuidFromUrl/kKit/blockNameByState/savePlayerNBT...), Constants (kWorldBorderDiameter 59999968 / kTicketLevelSpawn 31 / kBlockBatchFlushMs 50)
 │   └── Managers: WorldManager/EntityManager/InventoryController/NetworkManager (forwarders, plan6 §6)
-├── worldgen/      DensityFunction, MultiNoise, Structures, StructurePlacer, PortalHandler (8× + findSafeSpawn 6-up/down + PortalAge + Abilities reset)
+├── worldgen/      DensityFunction, MultiNoise, StructureManager, StructurePlacer, PortalHandler (8× + findSafeSpawn 6-up/down + PortalAge + Abilities reset)
 ├── brigadier/     Tree (CommandNode 48 parsers, writeDeclareCommands 0x11)
 └── generated/     kBlocks 1095, kItems 1385, kEntities 149 (prismarineJS)
 ```

@@ -4,6 +4,8 @@
 > the original taxonomy IDs without renumbering: base rows **#1–#80** and extension
 > rows **#81–#90**. The restored matrix is a historical taxonomy baseline; it is not
 > a release gate and does not make the current cleanup or operations audit green.
+>
+> Current implementation/evidence baseline: merge `f21e42327342fe1e8486960f2c43805711280ffd`.
 
 ## Summary
 
@@ -11,10 +13,11 @@
 - `historical_matrix_status_counts: DONE=90, PARTIAL=0, TODO=0` at this taxonomy
   granularity. These values describe the archived gap classification, not universal
   vanilla internals, current long-run reliability, or Fabric JVM-mod support.
-- Current publication state is `BLOCKED`: the latest extended soak recorded
-  `31 keepalives, 5 disconnects` (`FAIL`), and `test_gameplay_full` retains its one
-  intentional E-14 expected failure. See [CURRENT_STATE.md](CURRENT_STATE.md) and
-  [VERIFICATION.md](VERIFICATION.md) for gate semantics.
+- Current publication state is `BLOCKED`: the final-gates record includes
+  `tools/soak_bot.py` `FAIL` (`keepAlives 3 (<7)`, kicks 0, chunks 182, time updates
+  23), while `tests/soak_test.py` passed its 300-second run. `test_gameplay_full`
+  retains its one intentional E-14 expected failure. See [CURRENT_STATE.md](CURRENT_STATE.md)
+  and [VERIFICATION.md](VERIFICATION.md) for gate semantics.
 
 ## Machine-readable status rules
 
@@ -46,7 +49,7 @@ Canonical behavior, wire ownership, and evidence interpretation live in
 | 5 | Spawn chunk loader | DONE | `World.hpp:347` `ChunkTicket.hpp:1` | 5×5 `ForcedChunks` with `ChunkTicketType::SPAWN level 31` + `level.dat: ForcedChunks long[]` + `server.properties spawn-protection 16` + `isSpawnProtected` gate + `/forceload` support. |
 | 6 | Simulation distance culling | DONE | `World.hpp:422` `isChunkInSimulationDistance` | `viewDistance` vs `simulationDistance` distinguished; `Fluids.cpp:77`, `Redstone.cpp:370`, `LightEngine.cpp:46`, `BlockTickScheduler.cpp:59` all gated by `isChunkInSimulationDistance`; `PlayerChunk` send uses `shouldSend` (view), tick uses `shouldTick` (sim). |
 | 7 | Chunk unload LRU | DONE | `World.hpp:278` `allChunkKeys`/`eraseChunk`, `GameServer.cpp:401` `chunksUnloadTick` | 100t LRU, `isDirty` flush, `forced` keep, per-dim check. Works but no `maxLoadedChunks` cap, no async I/O. |
-| 8 | Structures | DONE | `StructureManager.cpp:66` (`Structures.hpp:43`) + `StructurePlacer.cpp:18` + `WorldGen.cpp:fillTerrainV3` | **plan12 §3 DONE; plan29 §1/§2 polish DONE; plan32 world DONE:** `StructureSet {spacing,separation,salt,Linear/Triangular}` — `stronghold 32/5`, `mineshaft 10/5`, `monument 32/5 salt 10387313`, `mansion 80/20 salt 10387319`, `end_city 20/11`; template pieces `portal_room/corridor/prismarine 58×58×23/mansion 40×40`; **plan29 §1:** `trial_chambers` `spacing 34 separation 12 salt 942731826` (8→12 fix) + jigsaw fallback 12 variants (corridor/end, straight slices 10+8, chamber 18/14/22, intersection 8×8, atrium 13×13, hallway, trial_spawner/vault/dispenser/copper) + `deep_dark` origin reject (biome gate); **plan29 §2:** `Pale Garden` decoration in `fillTerrainV3` — `pale_oak` 2-4/chunk (20% `creaking_heart` in trunk), `pale_hanging_moss` under leaves, 5×5 `pale_moss_block/carpet` patches + 5% `eyeblossom`; **plan32 world:** `/locate structure/biome/poi` + `/place feature/structure/jigsaw` + `/spreadplayers` (Commands.cpp:3243 locate via `StructureManager tmpMgr(seed)` + biome gate); **plan33 scheduled: 10→20 sets (spacing/salt parity), triangular/concentric, max_distance_from_center footprint, /locate 20-set** (see `plan/plan33.md`). MultiNoise climate Yarn-identical (no change, plan33 §3 isosceles). |
+| 8 | Structures | DONE | `StructureManager.cpp:66` + `StructurePlacer.cpp:18` + `WorldGen.cpp:fillTerrainV3` | **plan12 §3 DONE; plan29 §1/§2 polish DONE; plan32 world DONE:** `StructureSet {spacing,separation,salt,Linear/Triangular}` — `stronghold 32/5`, `mineshaft 10/5`, `monument 32/5 salt 10387313`, `mansion 80/20 salt 10387319`, `end_city 20/11`; template pieces `portal_room/corridor/prismarine 58×58×23/mansion 40×40`; **plan29 §1:** `trial_chambers` `spacing 34 separation 12 salt 942731826` (8→12 fix) + jigsaw fallback 12 variants (corridor/end, straight slices 10+8, chamber 18/14/22, intersection 8×8, atrium 13×13, hallway, trial_spawner/vault/dispenser/copper) + `deep_dark` origin reject (biome gate); **plan29 §2:** `Pale Garden` decoration in `fillTerrainV3` — `pale_oak` 2-4/chunk (20% `creaking_heart` in trunk), `pale_hanging_moss` under leaves, 5×5 `pale_moss_block/carpet` patches + 5% `eyeblossom`; **plan32 world:** `/locate structure/biome/poi` + `/place feature/structure/jigsaw` + `/spreadplayers` (Commands.cpp:3243 locate via `StructureManager tmpMgr(seed)` + biome gate); **plan33 scheduled: 10→20 sets (spacing/salt parity), triangular/concentric, max_distance_from_center footprint, /locate 20-set** (see `plan/plan33.md`). MultiNoise climate Yarn-identical (no change, plan33 §3 isosceles). |
 | 9 | `level.dat` full | DONE | `WorldDataManager.hpp:26` + `Persistence.hpp:69` | `DataVersion 4189` + `Difficulty` + `WorldBorder` + `Version` + `ForcedChunks` atomic `rename`, per-dim `DIM-1/DIM1 level.dat` `dragonFight` NBT `Gateways` 12. |
 | 10 | WorldBorder damage | DONE | `GameServer.hpp:852` `isInsideBorder` | `InitializeWorldBorder 0x26` + `WorldBorderCenter/LerpSize`, `isInsideBorder` check in `onMovement` + per-tick `damageOutsideBorder` 0.2/half-sec outside `diameter*0.5`, `damageAmount` `Buffer`. |
 
@@ -189,15 +192,17 @@ table rather than being hidden inside a numbered `DONE` row.
 
 `tests/test_smoke_80.cpp` exercises the base taxonomy and its historical extension
 checks. A test result is evidence for a named run, not a replacement for the matrix
-status. The historical baseline included `test_smoke_80` `212 PASS 0 FAIL`, while the
-latest cleanup audit recorded `test_gameplay_full` `734 PASS 1 FAIL` (intentional E-14)
-and the extended 300-second soak `31 keepalives, 5 disconnects` (`FAIL`). Therefore no
-final gate is claimed green by this matrix.
+status. The final-gates record includes `test_smoke_80` `212 PASS 0 FAIL`,
+`test_gameplay_full` `734 PASS / 1 intentional E-14 FAIL / 735` (exit 1), and a
+passing `tests/soak_test.py --duration 300` run, but `tools/soak_bot.py --duration 300`
+failed (`keepAlives 3 (<7)`). Therefore no final publication gate is claimed green by
+this matrix.
 
 | evidence class | status | interpretation |
 |---|---|---|
 | historical numbered-matrix baseline | HISTORICAL | 90 rows classified `DONE` at taxonomy granularity; not a current release result |
-| latest extended soak | FAIL | 5 disconnects block the extended operations gate |
+| `tools/soak_bot.py` 300-second run | FAIL | keepAlives 3 (<7), kicks 0, chunks 182, time updates 23; blocks publication |
+| `tests/soak_test.py` 300-second run | PASS | 150 keepalives, 0 disconnects, 2930 actions, RSS growth 14.5%; not a long-run substitute |
 | E-14 gameplay assertion | EXPECTED-FAIL-E14 | Intentional JVM-mod boundary; keep the failure visible |
 | nightly/24-hour and real-client evidence | DECLARED-LIMITATION | No accepted current artifact is recorded here |
 
