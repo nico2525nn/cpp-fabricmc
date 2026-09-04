@@ -979,10 +979,23 @@ static void checkMobSpec(MobKind k, int interval, double range, double mag) {
     if (!s) return;
     std::snprintf(buf, sizeof buf, "%s interval %d", s->name, interval);
     CHECK_EQ_INT(s->intervalTicks, interval, buf);
+    std::snprintf(buf, sizeof buf, "%s action interval accessor %d", s->name, interval);
+    CHECK_EQ_INT(s->actionInterval(), interval, buf);
     std::snprintf(buf, sizeof buf, "%s range %.1f", s->name, range);
     CHECK_NEAR(s->rangeBlocks, range, 1e-9, buf);
+    std::snprintf(buf, sizeof buf, "%s action range accessor %.1f", s->name, range);
+    CHECK_NEAR(s->actionRange(), range, 1e-9, buf);
     std::snprintf(buf, sizeof buf, "%s magnitude %.1f", s->name, mag);
     CHECK_NEAR(s->magnitude, mag, 1e-9, buf);
+    std::snprintf(buf, sizeof buf, "%s action magnitude accessor %.1f", s->name, mag);
+    CHECK_NEAR(s->actionMagnitude(), mag, 1e-9, buf);
+    std::snprintf(buf, sizeof buf, "%s safe range semantics", s->name);
+    const bool safeRange = !s->withinActionRange(-1.0) &&
+        (range == 0.0 ? s->withinActionRange(1000000.0)
+                      : s->withinActionRange(range) && !s->withinActionRange(range + 0.001));
+    CHECK(safeRange, buf);
+    std::snprintf(buf, sizeof buf, "%s action cooldown is positive", s->name);
+    CHECK(s->actionCooldown() > 0, buf);
     std::snprintf(buf, sizeof buf, "%s status+ref documented", s->name);
     CHECK(s->status && s->status[0] && s->ref && s->ref[0], buf);
 }
@@ -1003,9 +1016,27 @@ static void test_mob_behavior() {
     checkMobSpec(MobKind::Phantom, 200, 12.0, 1.0);
     {
         const MobBehaviorSpec* w = mobBehaviorSpec(MobKind::Witch);
-        CHECK(w && w->intervalTicks == 40 && w->rangeBlocks == 16.0, "witch goal cycle 40t+jitter, range 16 (live in WitchPotionThrowGoal)");
+        CHECK(w && w->actionInterval() == 40 && w->actionCooldown() == 40 && w->withinActionRange(16.0), "witch goal cycle/range use the live spec (WitchPotionThrowGoal)");
         const MobBehaviorSpec* g = mobBehaviorSpec(MobKind::Guardian);
-        CHECK(g && g->intervalTicks == 60 && g->rangeBlocks == 15.0 && g->magnitude == 6.0, "guardian beam cycle 60t, range 15, dmg 6 (live in GuardianBeamGoal)");
+        CHECK(g && g->actionInterval() == 60 && g->actionCooldown() == 60 && g->withinActionRange(15.0) && g->actionMagnitude() == 6.0, "guardian beam cycle/range/dmg use the live spec (GuardianBeamGoal)");
+        const MobBehaviorSpec* e = mobBehaviorSpec(MobKind::ElderGuardian);
+        CHECK(e && e->actionRange() == 50.0 && e->actionCooldown() == 60 && e->actionMagnitude() == 3.0 && e->secondaryActionMagnitude() == 8.0, "elder guardian keeps effect magnitude separate from beam damage");
+        const MobBehaviorSpec* b = mobBehaviorSpec(MobKind::Breeze);
+        CHECK(b && b->actionCooldown() == 32 && b->secondaryCooldown() == 40 && b->actionThreshold() == 4.0, "breeze jump/wind timing and threshold use the live spec");
+        const MobBehaviorSpec* a = mobBehaviorSpec(MobKind::Armadillo);
+        CHECK(a && a->scanInterval() == 5 && a->actionCooldown() == 60 && a->secondaryCooldown() == 20 && a->alertDuration() == 80 && a->secondaryThreshold() == 3.0, "armadillo scan/roll/alert tuning uses the live spec");
+        const MobBehaviorSpec* c = mobBehaviorSpec(MobKind::Creaking);
+        CHECK(c && c->actionCooldown() == 20 && c->actionThreshold() == 1.9 && c->secondaryThreshold() == 12.0 && c->auxiliaryRange() == 32.0 && c->gazeMinimumDistance() == 0.1 && c->gazeAngle() == 60.0, "creaking gaze/alert/attack tuning uses the live spec");
+        const MobBehaviorSpec* f = mobBehaviorSpec(MobKind::Frog);
+        CHECK(f && f->actionCooldown() == 40 && f->randomDenominator() == 40 && f->actionThreshold() == 1.5, "frog prey threshold and cadence use the live spec");
+        const MobBehaviorSpec* sn = mobBehaviorSpec(MobKind::Sniffer);
+        CHECK(sn && sn->actionCooldown() == 120 && sn->randomDenominator() == 3 && sn->actionMagnitude() == 1.0, "sniffer sniff cadence/chance/drop magnitude use the live spec");
+        const MobBehaviorSpec* ca = mobBehaviorSpec(MobKind::Camel);
+        CHECK(ca && ca->actionCooldown() == 55 && ca->actionThreshold() == 4.0, "camel follow threshold and cadence use the live spec");
+        const MobBehaviorSpec* bo = mobBehaviorSpec(MobKind::Bogged);
+        CHECK(bo && bo->actionCooldown() == 40 && bo->actionThreshold() == 5.0, "bogged attack threshold and cadence use the live spec");
+        const MobBehaviorSpec* p = mobBehaviorSpec(MobKind::Phantom);
+        CHECK(p && p->actionCooldown() == 200 && p->actionThreshold() == 1.5 && p->variantRangeModulo() == 8 && p->auxiliaryOffset() == 12.0 && p->altitudeFloor() == 60.0, "phantom swoop/orbit tuning uses the live spec");
     }
     CHECK(mobBehaviorSpec(MobKind::Marker) == nullptr, "marker has no behavior spec (stationary by design)");
     CHECK(mobBehaviorSpec(MobKind::Armadillo) != nullptr &&
