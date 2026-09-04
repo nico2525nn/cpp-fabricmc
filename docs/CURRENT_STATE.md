@@ -1,138 +1,130 @@
-# CURRENT_STATE.md — cpp-fabricmc dynamic state tracker
+# CURRENT_STATE.md — cpp-fabricmc final-gates state tracker
 
-> This is the stable, current tracker for the plan48 documentation migration. It
-> records the repository state at the start of the state-gap-fixture phase and the
-> evidence that is actually current. It is not a release sign-off, and it does not
-> promote a historical PASS or a declared limitation to a green final gate.
+> This is the stable tracker for the plan48 documentation refresh. It records the
+> implementation baseline and the exact final-gates evidence supplied for the main
+> checkout. It is not a release sign-off: `publication_status` remains `BLOCKED`, and
+> a historical taxonomy `DONE` or a focused PASS does not become a universal parity
+> claim.
 
 ## 1. Snapshot
 
 | field | value |
 |---|---|
 | `updated` | `2026-09-04` |
-| `parent_head` | `5f82ac0b4448f76f98753d18c83bbcd9736da61c` |
-| `parent_head_short` | `5f82ac0` |
+| `implementation_baseline` | `f21e42327342fe1e8486960f2c43805711280ffd` |
+| `implementation_baseline_short` | `f21e423` |
 | `plan` | `plan48` |
-| `phase` | `state-gap-fixture` |
-| `phase_status` | `ACTIVE` |
+| `phase` | `final-gates` |
+| `phase_status` | `RECORDED` |
 | `publication_status` | `BLOCKED` |
-| `runtime_reference_snapshot` | `f5987c585e81afdd78adb3ad818a0e43b1697bbe` |
+| `runtime_reference_snapshot` | `f21e42327342fe1e8486960f2c43805711280ffd` |
 
-`parent_head` is the HEAD before this commit. The runtime reference snapshot is
-the plan48 canonical-document source snapshot; the parent HEAD additionally contains
-the plan48 archive, canonical-document, and reference-path migration commits. This
-phase adds only the two stable trackers and the stable CSV fixture.
+The baseline is the implementation merge that includes cleanup commit
+`db12df96093a0869e958f62b11f9a9cd68ba3ef1` and safety commit
+`4526dfe4f7112b1fe744a83484ef5ef40176d481`. This final documentation commit changes
+canonical Markdown only; it does not change source, tests, tools, CMake, generated
+data, or the `docs-legacy/` archive.
 
-## 2. Plan48 documentation migration
+## 2. Plan48 and cleanup record
 
-| phase | state at `parent_head` | state after this phase |
+| item | state at this tracker | evidence / scope |
 |---|---|---|
-| plan48 archive | `DONE` — legacy material is under `docs-legacy/` | unchanged |
-| plan48 canonical specifications | `DONE` — `docs/README.md`, `SPEC_*.md`, `DEVELOPMENT.md`, `VERIFICATION.md`, and `audit/README.md` exist | unchanged |
-| plan48 reference-path updates | `DONE` — callers point at canonical documentation | unchanged |
-| plan48 state-gap-fixture | `ACTIVE` — `docs/CURRENT_STATE.md`, `docs/MISSING_FEATURES_1_21_4.md`, and `docs/mob_stats_149.csv` were missing at entry | restore stable files and verify them |
+| canonical specifications | `REFRESHED` | canonical index and WIRE/GAMEPLAY/OPS/DEVELOPMENT/VERIFICATION docs point at the merge baseline |
+| archive | `DONE` | historical assessment files are present under `docs-legacy/` and their index links resolve |
+| stable tracker and fixture | `CURRENT` | this tracker and `docs/mob_stats_149.csv` retain their stable paths and checksum |
+| final-gates evidence | `RECORDED` | exact results in §4; no failure is hidden or averaged away |
+| publication | `BLOCKED` | `soak_bot` failed; E-14 is the intentional allowed gameplay failure, not a general waiver |
 
-The archive is read-only for this phase. No file under `docs-legacy/`, and no source,
-test, assertion, README, or compatibility stub, is part of this change.
+The cleanup commit `db12df96093a0869e958f62b11f9a9cd68ba3ef1` removed the legacy
+Structures API: 10 files, `+22/-787`, with source/test legacy-reference grep `0`.
+The safety commit `4526dfe4f7112b1fe744a83484ef5ef40176d481` made cleanup patterns
+self-safe with `cppfm --por[t]` in `tests/test_server_full.py` and
+`tools/replay_vanilla.py`.
 
-## 3. Plan47 residual cleanup
+## 3. Residual cleanup and parity boundaries
 
-Plan47 cleanup is merged, but its cleanup audit is not equivalent to a complete
-vanilla-parity or release gate. The following residuals remain explicitly open:
+Plan47 cleanup is not a complete vanilla-parity or release audit. Residuals are kept
+explicit rather than being converted into a broad PASS:
 
 | residual | status | reason / next owner |
 |---|---|---|
-| `Structures.hpp` legacy table | `DECLARED-LIMITATION` | runtime and tests still consume it; deleting it would change behavior rather than perform a safe cleanup |
-| session mining versus `MiningCalculator` | `DECLARED-LIMITATION` | the two paths have measured semantic differences; unifying them requires a gameplay plan, not a cleanup-only edit |
-| `MobBehaviorSpec` coverage | `PARTIAL` | the table is only partially wired to live behavior; broader species parity remains future work |
-| retained marker/comment inventory | `HISTORICAL` | plan47 triage kept wire-justified and historical comments; a zero-text-marker result is not evidence of zero limitations |
+| `Structures.hpp` legacy API | `RESOLVED` | removed by `db12df96093a0869e958f62b11f9a9cd68ba3ef1`; `StructureManager`/`StructurePlacer` remain the current structure owners |
+| session mining versus `MiningCalculator` | `OPEN` / `DECLARED-LIMITATION` | measured semantic differences remain; unification requires a gameplay plan, not a cleanup-only edit |
+| `MobBehaviorSpec` coverage | `PARTIAL` / `OPEN` | the table is only partially wired to live behavior; broader species parity remains future work |
+| retained marker/comment inventory | `NOT-FULLY-MEASURED` | the cleanup grep was `0` for legacy references, but no complete zero-marker inventory was proven; do not claim one |
 
-Plan47’s behavior-preserving claims are retained as historical evidence below. They
-do not close these residuals or make the current publication status green.
+The `RESOLVED` Structures API row does not close the structure-generation parity
+boundary. In particular, vanilla Xoroshiro L3 byte parity is not independently
+proven, and historical numbered-row `DONE` values are not universal parity claims.
 
-## 4. Evidence ledger
+## 4. Exact final-gates evidence
 
-### 4.1 `HISTORICAL` baseline evidence
+These are the exact main-checkout results supplied for baseline `f21e423` on
+2026-09-04. They are not averages with older runs:
 
-The following numbers were recorded by the plan47/plan48 canonical work before this
-state tracker was restored. They are retained for comparison only; they are not fresh
-results for `parent_head` and do not override the failures in §4.2.
-
-| target | recorded result | evidence_status |
+| target | result | status / consequence |
 |---|---|---|
-| `test_spec_wire` | `392 PASS 0 FAIL 0 SKIP` | `HISTORICAL` |
-| `test_wire_full` | `405 PASS 0 FAIL 0 SKIP` | `HISTORICAL` |
-| `test_wire_b6` | `133 PASS 0 FAIL` | `HISTORICAL` |
-| `test_scoreboard_reset` | `22 PASS 0 FAIL` | `HISTORICAL` |
-| `test_fuzz` | `23 PASS 0 FAIL` | `HISTORICAL` |
-| `test_native` | all displayed checks passed; no stable aggregate total | `HISTORICAL` |
-| `test_smoke_80` | `212 PASS 0 FAIL` | `HISTORICAL` |
-| `test_gameplay_full` | `734 PASS 1 FAIL / 735`; the one failure was E-14 | `HISTORICAL` |
-| `test_seed_parity` | `201 PASS 0 FAIL` for L1/L2; L3 is not proven | `HISTORICAL` |
-| `test_mob_stats_full` | `131 PASS 0 FAIL` | `HISTORICAL` |
-| `test_redstone_engine_full` | `29 PASS 0 FAIL` | `HISTORICAL` |
-| `test_recovery` | `45 PASS 0 FAIL` | `HISTORICAL` |
-| view-distance-32 dry benchmark | `PASS`; 4,225 chunks, p50 0.108 ms, p95 2.332 ms | `HISTORICAL` |
-| 120-client stress | `120/120 joined` | `HISTORICAL` |
+| configure/build | completed after a filesystem-slow initial 300s outer timeout; resumed build completed `104/104` | `PASS` |
+| incremental Ninja build | `ninja: no work to do` in `0.05s` | `PASS` |
+| `test_scoreboard_reset` | `22 PASS 0 FAIL` | `PASS` |
+| `test_spec_wire` | `392 PASS 0 FAIL 0 SKIP` | `PASS` |
+| `test_wire_full` | `405 PASS 0 FAIL 0 SKIP` | `PASS` |
+| `test_wire_b6` | `133 PASS 0 FAIL` | `PASS` |
+| `test_fuzz` | `23 PASS 0 FAIL` | `PASS` |
+| `test_gameplay_full` | `734 PASS / 1 intentional E-14 FAIL / 735` (exit 1) | `EXPECTED-FAIL-E14`; remains visible |
+| `test_seed_parity` | `201 PASS 0 FAIL` | L1/L2 evidence only; L3 remains unproven |
+| `test_mining_full` | `38/38` | `PASS` |
+| `test_block_hardness_full` | `16/16`, `1095 mismatch=0` | `PASS` |
+| `test_mob_stats_full` | `131 PASS 0 FAIL` | `PASS` |
+| `test_redstone_engine_full` | `29 PASS 0 FAIL` | `PASS` |
+| `test_recipes_mirror` | `76 PASS 0 FAIL` | `PASS` |
+| `test_native` | `ALL PASS` in `2.33s` | `PASS`; no invented aggregate count |
+| `test_plan43` | `82/0` in `25.01s` | `PASS` |
+| `test_smoke_80` | `212/0` in `161.33s` | `PASS` |
+| `test_server_full` | `234/0` in `273.79s` | `PASS` |
+| multi-client | `ALL PASS` in `17.83s` | `PASS` |
+| bot smoke | `ALL PASS` in `20.65s` | `PASS` |
+| view32 dry benchmark | `PASS` for 4,225 chunks in `1.74s`; p50 `0.108ms`, p95 `2.331ms`, peak RSS ~`95MB`, hit rate `84.6%` | synthetic dry result |
+| 120-client stress | `120/120 joined PASS` in `69.11s` | `PASS` |
+| `tests/soak_test.py --duration 300` | `PASS` in `301.18s`; 150 keepalives, 0 disconnects, actions `2930`, post-fill RSS growth `14.5%` | short synthetic soak; not 2h/24h |
+| `tools/soak_bot.py --duration 300` | `FAIL` in `301.89s`; keepAlives `3 (<7)`, kicks `0`, chunks `182`, time updates `23` | blocks publication |
+| focused CTest | 20 tests excluding `soak2h`, `soak_bot`, and `smoke80`: 19 passed plus gameplay_full's single intentional E-14 failure; CTest rc `8` | not a green aggregate |
 
-The historical assessment-6 result was `44/44 FIXED` (`HIGH 25/25`). That is an
-archived baseline, not a current assertion that all audit or operational gates pass.
+The result for `tests/soak_test.py` does not override the failing `tools/soak_bot.py`
+gate. No accepted 2-hour or 24-hour run artifact exists, and no current real-client
+or GUI artifact exists.
 
-### 4.2 Latest cleanup-audit failures and blockers
+## 5. Declared limitations
 
-These failures remain visible and are intentionally not rewritten as PASS:
+- **E-14 Fabric JVM-mod boundary:** arbitrary Fabric JVM bytecode and the Fabric
+  event-bus runtime cannot execute inside `cppfm`; the one gameplay failure is
+  intentional and must remain an expected failure.
+- **Vanilla Xoroshiro L3:** `test_seed_parity` proves the stated L1/L2 evidence, but
+  exact vanilla Xoroshiro byte parity is not independently proven.
+- **Protocol 776:** 1.21.5 and its later Bundle-item behavior are outside the
+  protocol-769/1.21.4 scope.
+- **Long-run evidence:** no accepted 2-hour or 24-hour run exists. The 300-second
+  bot-soak failure remains a blocker even though the separate `soak_test.py` run
+  passed.
+- **Real-client evidence:** no current real-client/GUI artifact is available; bot and
+  synthetic evidence is not a real-client capture.
 
-| gate | latest observed result | status | consequence |
-|---|---|---|---|
-| extended 300-second soak | `31 keepalives, 5 disconnects` | `FAIL` | blocks the extended operations gate; investigate before release publication |
-| `test_gameplay_full` | `734 PASS, 1 FAIL / 735` at E-14 | `EXPECTED-FAIL-E14` | intentional Fabric JVM-mod boundary; the assertion must remain visible |
-| nightly/24-hour soak | no accepted run artifact | `DECLARED-LIMITATION` | procedure existence is not a completed long-run result |
-| real-client/GUI evidence | no current artifact in this phase | `DECLARED-LIMITATION` | bot/synthetic evidence is not a real-client capture |
-| vanilla Xoroshiro L3 parity | not independently proven | `DECLARED-LIMITATION` | L1/L2 determinism must not be called vanilla byte parity |
+## 6. Fixture
 
-At phase entry, the static migration audit also reported missing stable files:
-`docs/CURRENT_STATE.md`, `docs/MISSING_FEATURES_1_21_4.md`, and
-`docs/mob_stats_149.csv`. Restoring them is the scope of this phase; it is not
-evidence that the runtime, integration, or long-run gates are green. The current
-publication status therefore remains `BLOCKED` until the required gates are rerun
-and the 300-second failure is resolved or explicitly accepted by a later plan.
-
-## 5. Stable gap matrix and fixture
-
-- `docs/MISSING_FEATURES_1_21_4.md` retains the original IDs: base taxonomy `#1–#80`
-  plus extension rows `#81–#90`. Matrix status and declared limitations are separate
-  concepts; the matrix does not silently turn an operational failure into `DONE`.
-- `docs/mob_stats_149.csv` is the runtime-default fixture, copied byte-for-byte from
-  `docs-legacy/mob_stats_149.csv`. It must contain 149 data rows and 11 columns.
+- `docs/mob_stats_149.csv` remains the runtime-default fixture and is byte-identical
+  to `docs-legacy/mob_stats_149.csv`.
 - `fixture_sha256: b75697102502385b6aee913f0aca80b86cce323a4994b16a29baf408b5ef2f6f`.
-- `fixture_shape: PASS` — `149` data rows / `11` columns after the phase check.
-- The fixture check for this phase is current only after the checksum, row/column,
-  and scope commands in §7 complete successfully.
+- `fixture_shape: PASS` — `149` data rows / `11` columns.
 
-## 6. Next steps
+## 7. Final documentation checks
 
-1. Re-run the canonical static/link/schema checks and all required runtime gates from
-   `docs/VERIFICATION.md`, preserving exact process ownership and artifacts.
-2. Investigate the latest 300-second soak disconnects; do not weaken assertions or
-   relabel the E-14 expected failure.
-3. Finish plan47 residual cleanup only under a separately approved behavior-safe or
-   gameplay plan.
-4. Keep plan48’s canonical documents, stable trackers, and fixture paths synchronized
-   without rewriting `docs-legacy/`.
+The timeout-wrapped pre-commit validation passed for Markdown links and anchors
+(including explicit `<a id="…">` anchors), required files and schema, the fixture
+checksum/shape, stale-hash and stale-claim grep, scope, and `git diff --check`.
+These checks validate publication hygiene only; they do not turn the runtime
+`soak_bot` failure, E-14, missing L3 proof, missing long-run artifact, or missing
+real-client artifact into a pass.
 
-## 7. Checks performed for this phase
-
-All commands used for this phase are timeout-wrapped. The final commit is permitted
-only when the following are successful:
-
-```bash
-timeout --foreground --kill-after=5 30 git diff --check
-timeout --foreground --kill-after=5 30 cmp -- docs/mob_stats_149.csv docs-legacy/mob_stats_149.csv
-timeout --foreground --kill-after=5 30 sha256sum docs/mob_stats_149.csv
-timeout --foreground --kill-after=5 30 awk -F, 'BEGIN { n=0; bad=0 } /^[[:space:]]*#/ || NF==0 { next } /^name,/ { next } { if (NF != 11) bad=1; n++ } END { if (n != 149 || bad) exit 1; print n " rows / 11 columns" }' docs/mob_stats_149.csv
-timeout --foreground --kill-after=5 30 git status --short --untracked-files=all
-```
-
-These are state/fixture checks only. They do not constitute a green final runtime
-gate; the `FAIL`, `EXPECTED-FAIL-E14`, and `DECLARED-LIMITATION` entries above remain
-part of the current state.
+Next actions are to investigate `soak_bot`, keep the E-14 assertion unchanged, and
+address the mining/MobBehaviorSpec residuals and long-run/real-client evidence only
+under separately owned work.

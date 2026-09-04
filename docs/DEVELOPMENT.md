@@ -2,8 +2,8 @@
 
 This guide is for the clean-room C++ implementation of Minecraft Java 1.21.4,
 protocol 769, DataVersion 4189. The source snapshot for this canonical document is
-`f5987c585e81afdd78adb3ad818a0e43b1697bbe` (2026-09-04). Fabric Loader 0.16.9 is a
-version/reference boundary; it is not embedded as a JVM runtime.
+merge baseline `f21e42327342fe1e8486960f2c43805711280ffd` (2026-09-04). Fabric Loader
+0.16.9 is a version/reference boundary; it is not embedded as a JVM runtime.
 
 **Status:** development map and extension contract. **Limitations:** this file does
 not grant permission to change runtime behavior, alter test assertions, claim
@@ -116,8 +116,9 @@ A failed state cannot be promoted by changing prose, counts, or assertions.
 6. Run static → unit → wire/gameplay → integration/ops gates.
 7. Review behavior diff, docs references, and declared limitations before commit.
 
-The current canonical-doc task is restricted to seven new Markdown files; it does
-not archive legacy docs, move the CSV, or change source/tests/tools/CMake.
+The final plan48 documentation refresh is restricted to the permitted canonical
+Markdown files; it does not archive legacy docs, move the CSV, or change
+source/tests/tools/CMake.
 
 ## 8. C++ design example
 
@@ -149,8 +150,12 @@ generated/assets → game and protocol data consumers
 tests/tools       → evidence and operational harnesses
 ```
 
-The plan47 cleanup already split command/session helpers and removed dead code; a
-future plan must not re-propose those completed refactors as documentation work.
+The plan47 cleanup already split command/session helpers and removed dead code. The
+merge baseline also records `db12df96093a0869e958f62b11f9a9cd68ba3ef1` (legacy
+Structures API removed, 10 files, +22/-787, source/test legacy-reference grep 0) and
+`4526dfe4f7112b1fe744a83484ef5ef40176d481` (self-safe `cppfm --por[t]` cleanup in
+`test_server_full.py` and `replay_vanilla.py`). A future plan must not re-propose
+those completed refactors as documentation work.
 
 ## 10. Module split and ownership rules
 
