@@ -38,7 +38,6 @@ add_executable(cppfm
     src/game/WorldGen.cpp
     src/worldgen/DensityFunction.cpp
     src/worldgen/MultiNoise.cpp
-    src/worldgen/Structures.cpp
     src/worldgen/StructurePlacer.cpp
     src/worldgen/ChunkGenerator.cpp
     src/worldgen/StructureManager.cpp
@@ -66,7 +65,7 @@ target_link_libraries(cppfm PRIVATE Threads::Threads ZLIB::ZLIB OpenSSL::SSL Ope
 add_executable(test_golden tests/test_golden.cpp src/core/NBT.cpp
     src/game/WorldGen.cpp
     src/worldgen/DensityFunction.cpp src/worldgen/MultiNoise.cpp
-    src/worldgen/Structures.cpp src/worldgen/StructurePlacer.cpp
+    src/worldgen/StructurePlacer.cpp
     src/worldgen/ChunkGenerator.cpp src/worldgen/StructureManager.cpp src/game/WorldDataManager.cpp)
 target_include_directories(test_golden PRIVATE src src/generated)
 find_package(ZLIB REQUIRED)
@@ -106,7 +105,6 @@ add_executable(test_native
     src/physics/BlockTickScheduler.cpp
     src/worldgen/DensityFunction.cpp
     src/worldgen/MultiNoise.cpp
-    src/worldgen/Structures.cpp
     src/worldgen/StructurePlacer.cpp
     src/worldgen/ChunkGenerator.cpp
     src/worldgen/StructureManager.cpp
@@ -142,7 +140,7 @@ set_tests_properties(scoreboard_reset PROPERTIES TIMEOUT 30)
 add_executable(test_spec_wire tests/test_spec_wire.cpp
     src/core/NBT.cpp src/game/Stats.cpp
     src/game/WorldGen.cpp src/worldgen/DensityFunction.cpp src/worldgen/MultiNoise.cpp
-    src/worldgen/Structures.cpp src/worldgen/StructurePlacer.cpp
+    src/worldgen/StructurePlacer.cpp
     src/worldgen/ChunkGenerator.cpp src/worldgen/StructureManager.cpp src/game/WorldDataManager.cpp)
 target_include_directories(test_spec_wire PRIVATE src src/generated)
 find_package(ZLIB REQUIRED)
@@ -183,7 +181,6 @@ add_executable(test_smoke_80
     src/physics/BlockTickScheduler.cpp
     src/worldgen/DensityFunction.cpp
     src/worldgen/MultiNoise.cpp
-    src/worldgen/Structures.cpp
     src/worldgen/StructurePlacer.cpp
     src/worldgen/ChunkGenerator.cpp
     src/worldgen/StructureManager.cpp
@@ -244,7 +241,7 @@ set_tests_properties(fuzz PROPERTIES TIMEOUT 30)
 add_executable(test_wire_full tests/test_wire_full.cpp
     src/core/NBT.cpp src/game/Stats.cpp
     src/game/WorldGen.cpp src/worldgen/DensityFunction.cpp src/worldgen/MultiNoise.cpp
-    src/worldgen/Structures.cpp src/worldgen/StructurePlacer.cpp
+    src/worldgen/StructurePlacer.cpp
     src/worldgen/ChunkGenerator.cpp src/worldgen/StructureManager.cpp src/game/WorldDataManager.cpp)
 target_include_directories(test_wire_full PRIVATE src src/generated)
 find_package(ZLIB REQUIRED)
@@ -274,7 +271,7 @@ add_executable(test_gameplay_full tests/test_gameplay_full.cpp
     src/game/MenuInteraction.cpp src/game/Containers.cpp src/game/Recipes.cpp
     src/physics/BlockTickScheduler.cpp
     src/game/CombatShield.cpp
-    src/worldgen/DensityFunction.cpp src/worldgen/MultiNoise.cpp src/worldgen/Structures.cpp src/worldgen/StructurePlacer.cpp src/worldgen/ChunkGenerator.cpp src/worldgen/StructureManager.cpp src/game/WorldGen.cpp src/game/WorldDataManager.cpp)
+    src/worldgen/DensityFunction.cpp src/worldgen/MultiNoise.cpp src/worldgen/StructurePlacer.cpp src/worldgen/ChunkGenerator.cpp src/worldgen/StructureManager.cpp src/game/WorldGen.cpp src/game/WorldDataManager.cpp)
 target_include_directories(test_gameplay_full PRIVATE src src/generated)
 find_package(ZLIB REQUIRED)
 find_package(OpenSSL REQUIRED)
@@ -284,7 +281,7 @@ set_tests_properties(gameplay_full PROPERTIES TIMEOUT 60)
 
 # plan45 G-11 — seed parity L1/L2 (independent Python hand-calc + determinism)
 add_executable(test_seed_parity tests/test_seed_parity.cpp
-    src/worldgen/DensityFunction.cpp src/worldgen/MultiNoise.cpp src/worldgen/Structures.cpp src/worldgen/StructurePlacer.cpp src/worldgen/StructureManager.cpp)
+    src/worldgen/DensityFunction.cpp src/worldgen/MultiNoise.cpp src/worldgen/StructurePlacer.cpp src/worldgen/StructureManager.cpp)
 target_include_directories(test_seed_parity PRIVATE src src/generated)
 add_test(NAME seed_parity COMMAND test_seed_parity)
 set_tests_properties(seed_parity PROPERTIES TIMEOUT 120)
@@ -300,7 +297,7 @@ add_executable(test_redstone_engine_full tests/test_redstone_engine_full.cpp
     src/core/NBT.cpp
     src/physics/Redstone.cpp
     src/game/MenuInteraction.cpp src/game/Containers.cpp src/game/Recipes.cpp
-    src/worldgen/DensityFunction.cpp src/worldgen/MultiNoise.cpp src/worldgen/Structures.cpp src/worldgen/StructurePlacer.cpp src/worldgen/ChunkGenerator.cpp src/worldgen/StructureManager.cpp src/game/WorldGen.cpp src/game/WorldDataManager.cpp)
+    src/worldgen/DensityFunction.cpp src/worldgen/MultiNoise.cpp src/worldgen/StructurePlacer.cpp src/worldgen/ChunkGenerator.cpp src/worldgen/StructureManager.cpp src/game/WorldGen.cpp src/game/WorldDataManager.cpp)
 target_include_directories(test_redstone_engine_full PRIVATE src src/generated)
 target_link_libraries(test_redstone_engine_full PRIVATE ZLIB::ZLIB OpenSSL::Crypto)
 add_test(NAME redstone_engine_full COMMAND test_redstone_engine_full)
@@ -361,7 +358,7 @@ add_executable(test_recovery tests/test_recovery.cpp
     src/core/NBT.cpp
     src/game/WorldGen.cpp
     src/worldgen/DensityFunction.cpp src/worldgen/MultiNoise.cpp
-    src/worldgen/Structures.cpp src/worldgen/StructurePlacer.cpp
+    src/worldgen/StructurePlacer.cpp
     src/worldgen/ChunkGenerator.cpp src/worldgen/StructureManager.cpp
     src/game/WorldDataManager.cpp)
 target_include_directories(test_recovery PRIVATE src src/generated)
