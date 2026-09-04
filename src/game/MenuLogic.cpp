@@ -16,12 +16,10 @@ static bool isSameForMerge(const ItemStack& a, const ItemStack& b) {
     return !a.empty() && !b.empty() && a.itemId == b.itemId &&
            a.components == b.components && a.removedComponents == b.removedComponents;
 }
-// Max stack size by item id — single-sourced from MenuInteraction::stackLimit
-// via maxStackForId (identical 47x16 / 203x1 tables, mechanically verified).
-// NOTE: the merge PREDICATE here (isSameForMerge: components must be EQUAL)
-// intentionally differs from MenuInteraction click merging (both components
-// must be EMPTY) — result-slot merging (anvil/enchant) vs click merging have
-// different vanilla semantics. Only the limit lookup is unified.
+// Max stack size by item id — single-sourced from MenuInteraction::stackLimit via maxStackForId (identical 47x16 / 203x1 tables,
+// mechanically verified). NOTE: the merge PREDICATE here (isSameForMerge: components must be EQUAL) intentionally differs from
+// MenuInteraction click merging (both components must be EMPTY) — result-slot merging (anvil/enchant) vs click merging have different
+// vanilla semantics. Only the limit lookup is unified.
 static int maxStackForMerge(std::uint32_t id) { return maxStackForId(id); }
 static bool mergeStack(ItemStack& from, ItemStack& to) {
     if (from.empty()) return false;
@@ -90,7 +88,6 @@ void AnvilMenuLogic::recomputeResult(Menu& menu) {
 }
 
 void AnvilMenuLogic::onContentChanged(Menu& menu, Player& player) {
-    (void)player;
     recomputeResult(menu);
 }
 
@@ -164,10 +161,8 @@ bool AnvilMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, int but
 // ---------------- Enchantment ----------------
 
 void EnchantmentMenuLogic::onContentChanged(Menu& menu, Player& player) {
-    (void)player;
-    // slots: 0 item, 1 lapis
-    // Could compute enchantment offerings and send ContainerSetData (window property)
-    // For now, no-op; actual enchanting via onEnchantButton
+    // slots: 0 item, 1 lapis Could compute enchantment offerings and send ContainerSetData (window property) For now, no-op; actual
+    // enchanting via onEnchantButton
     ItemStack* item = menu.container ? &menu.container[0] : &menu.extraSlots[0];
     ItemStack* lapis = menu.container ? &menu.container[1] : &menu.extraSlots[1];
     if (item->empty() || lapis->empty()) return;
@@ -246,8 +241,7 @@ bool BrewingMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, int b
         ItemStack* target = menu.container ? &menu.container[slotId] : &menu.extraSlots[slotId];
         bool changed=false;
         if (mode==1) { // quick move
-            // shift-click: move to player inv or from player to brewing
-            // simplified: swap with cursor
+            // shift-click: move to player inv or from player to brewing simplified: swap with cursor
             std::swap(cursor, *target);
             changed=true;
         } else if (button==0) {
@@ -281,8 +275,7 @@ bool StonecutterMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, i
         else if (cursor.itemId==result->itemId && cursor.count<64) {
             int take = std::min<int>(result->count, 64-cursor.count);
             cursor.count+=take; result->count-=take; if(result->count<=0) *result=ItemStack::air();
-            // already handled
-            // need to consume input
+            // already handled need to consume input
         } else return false;
         // consume input (one)
         ItemStack* input = menu.container ? &menu.container[0] : &menu.extraSlots[0];
@@ -290,8 +283,7 @@ bool StonecutterMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, i
         // result already taken
         if (button==1) {} // right click similar
         result->count=0; *result=ItemStack::air(); // after taking, clear? Actually we already moved
-        // For simplicity after taking, keep result if input remains? Should recompute ghost recipe
-        // Use recipes stonecutting
+        // For simplicity after taking, keep result if input remains? Should recompute ghost recipe Use recipes stonecutting
         if (!input->empty()) {
             auto* r = recipes.findStonecutting(input->itemId);
             if (r) *result = r->result;
@@ -381,7 +373,6 @@ void CartographyMenuLogic::recomputeResult(Menu& menu) {
 }
 
 void CartographyMenuLogic::onContentChanged(Menu& menu, Player& player) {
-    (void)player;
     recomputeResult(menu);
 }
 

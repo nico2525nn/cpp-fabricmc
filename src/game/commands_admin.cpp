@@ -1,6 +1,4 @@
-// Commands.cpp: Brigadier command tree + selector resolution (plan3.md
-// "Brigadier完全移植"). All commands are registered on a real CommandNode
-// tree, parsed by the dispatcher and advertised via declare_commands.
+// commands_admin.cpp: Brigadier command tree nodes (plan3 port): registered, parsed, advertised.
 #include "GameServer.hpp"
 #include "Messages.hpp"
 #include "Particles.hpp"
@@ -261,10 +259,7 @@ void GameServer::initAdminCommands() {
         wlOn->executable = true;
         wlOn->action = [this](CommandContext& c){
             Player* src = static_cast<Player*>(c.source.player);
-            // plan42 R3 (E-19) anti-lockout: a player enabler joins the list so
-            // they can rejoin to disable later (ops bypass anyway; console has
-            // no name to add). Without this, `whitelist off` becomes
-            // unreachable once enforcement starts.
+            // plan42 R3 (E-19) anti-lockout: player enabler joins the list (else `whitelist off` unreachable).
             if (src && !src->name.empty()) whitelist_.insert(src->name);
             whitelist_.setEnabled(true);
             sendFeedback(src, "Whitelist is now on");

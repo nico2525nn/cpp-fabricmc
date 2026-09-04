@@ -87,7 +87,6 @@ void HungerManager::tickExhaustion(Player& p, GameServer& srv) {
 }
 
 void HungerManager::tickRegenAndStarve(Player& p, int64_t tickNo, GameServer& srv) {
-    (void)tickNo;
     // plan23 §7 strict: per-player foodTickTimer + fast heal 10t (food 20 + saturation>0) + slow heal 80t (food>=18) + starve difficulty + naturalRegeneration gate
     bool naturalRegeneration = true;
     if (srv.gameRules().contains("naturalRegeneration")) naturalRegeneration = srv.gameRules().getBool("naturalRegeneration");
@@ -155,28 +154,23 @@ void HungerManager::onPlayerJump(Player& p, bool wasOnGround, bool nowOnGround, 
     if (wasOnGround && !nowOnGround && dy > 0.05) {
         float cost = isSprinting ? EXHAUST_SPRINT_JUMP : EXHAUST_JUMP;
         addExhaustion(p, cost);
-        (void)srv;
     }
 }
 
 void HungerManager::onPlayerAttack(Player& p, GameServer& srv) {
     addExhaustion(p, EXHAUST_ATTACK);
-    (void)srv;
 }
 
 void HungerManager::onBowUse(Player& p, GameServer& srv) {
     if (EXHAUST_BOW != 0.f) addExhaustion(p, EXHAUST_BOW);
-    (void)srv;
 }
 
 void HungerManager::onBlockBreak(Player& p, GameServer& srv) {
     addExhaustion(p, EXHAUST_BLOCK_BREAK);
-    (void)srv;
 }
 
 void HungerManager::onDamageTaken(Player& p, GameServer& srv) {
     addExhaustion(p, EXHAUST_DAMAGE_TAKEN);
-    (void)srv;
 }
 
 } // namespace cppfm

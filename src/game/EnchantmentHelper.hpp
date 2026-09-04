@@ -1,8 +1,5 @@
 // EnchantmentHelper — plan8 entity section
-// plan22 combat polish: E7 strict weight 1 for Protection (was 2 for fire/explosion/projectile), sonic_boom bypass all
-// plan28 combat polish: verify EnchantmentHelper remains orthogonal to Scoreboard ResetScore 0x49 (D26) — EPF weight 1 (protection=1, fire/blast/proj=2, feather=3), sonic_boom bypassEnchant, sharpness/efficiency formulas verified intact after deep 31 merges.
-// Centralizes enchantment calculations: protection EPF, sharpness, efficiency, etc.
-// Vanilla formulas referenced from plan8.md § Enchant effects.
+// plan22/28 combat: EPF weights (prot 1, others per vanilla), sonic bypass; centralizes enchant math.
 #pragma once
 #include <string>
 #include <algorithm>
@@ -156,8 +153,7 @@ public:
     static int getWindBurst(const ItemStack& s){ return std::max(s.enchantLevel("wind_burst"), s.enchantLevel("minecraft:wind_burst")); }
     static int getFireAspect(const ItemStack& s){ return std::max(s.enchantLevel("fire_aspect"), s.enchantLevel("minecraft:fire_aspect")); }
     static int getLooting(const ItemStack& s){ return std::max(s.enchantLevel("looting"), s.enchantLevel("minecraft:looting")); }
-    // plan44 §3 G-09 effect functions (pure, delegate to MeleeHelper formulas):
-    // sweep victims take round(1 + AD*lv/(lv+1)); lv0 => 1
+    // plan44 §3 G-09 effect functions (pure, delegate to MeleeHelper formulas): sweep victims take round(1 + AD*lv/(lv+1)); lv0 => 1
     static float sweepingDamage(float attackDamage, const ItemStack& weapon) {
         return sweepingEdgeDamage(attackDamage, getSweepingEdge(weapon));
     }

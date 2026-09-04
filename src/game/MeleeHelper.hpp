@@ -1,7 +1,6 @@
-// MeleeHelper — plan44 §3 G-07/G-08/G-09 combat pure functions (header-only, unit-testable).
-// Vanilla sources: minecraft.wiki Sweeping_Edge / Melee_attack#Critical_hit / Blocking,
-// Yarn PlayerEntity.attack (cooldown 84.8%+, T=20/attack_speed), wiki Thorns/Density/Breach/Wind_Burst/Riptide.
-// Wire policy: pure math here; GameServer_session onUseEntity + CombatManager consume it.
+// MeleeHelper — plan44 §3 G-07/G-08/G-09 combat pure functions (header-only, unit-testable). Vanilla sources: minecraft.wiki Sweeping_Edge
+// / Melee_attack#Critical_hit / Blocking, Yarn PlayerEntity.attack (cooldown 84.8%+, T=20/attack_speed), wiki
+// Thorns/Density/Breach/Wind_Burst/Riptide. Wire policy: pure math here; GameServer_session onUseEntity + CombatManager consume it.
 // E-06/E-07/E-08 lock (DamageCalculator single formula caps 30/20, EPF weights) is NOT touched.
 #pragma once
 #include <string>

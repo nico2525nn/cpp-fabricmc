@@ -132,9 +132,8 @@ void RecipeManager::loadDefaults() {
     fillTag("stone", {"minecraft:stone", "minecraft:granite", "minecraft:diorite",
                       "minecraft:andesite"});
     tagPlanks_ = tags_["minecraft:planks"];
-    // NOTE: built-in shaped/shapeless/smelting/stonecutting and synthetic filler
-    // are now JSON-driven via assets/data/recipes/*.json (plan32 §3).
-    // loadDirectory will populate recipes_; no built-in registration here.
+    // NOTE: built-in shaped/shapeless/smelting/stonecutting and synthetic filler are now JSON-driven via assets/data/recipes/*.json (plan32
+    // §3). loadDirectory will populate recipes_; no built-in registration here.
 }
 
 // ------------------------------------------------------------------ json io

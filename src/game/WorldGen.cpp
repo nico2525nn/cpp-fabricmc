@@ -225,8 +225,7 @@ void World::fillTerrainV3(Chunk& c, std::int32_t cx, std::int32_t cz) const {
         for (int a = 0; a < attempts; ++a) {
             const int baseX = static_cast<int>(rng64(oreRng) % 16);
             const int baseZ = static_cast<int>(rng64(oreRng) % 16);
-            // pick Y by sampling the triangle CDF (rejection-free): choose
-            // proportional to weight at integer steps.
+            // pick Y by sampling the triangle CDF (rejection-free): choose proportional to weight at integer steps.
             int py = rule.peakY;
             {
                 double totalW = 0;
@@ -362,9 +361,8 @@ void World::fillTerrainV3(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                 for(int dz=-2; dz<=2; ++dz) for(int dx=-2; dx<=2; ++dx){
                     const std::int32_t px=wx+dx, pz=wz+dz;
                     const std::int32_t ccx=px>>4, ccz=pz>>4; if(ccx!=cx||ccz!=cz) continue;
-                    // need grass below carpet
-                    // sample col for neighbor? use cols approx for interior, else skip if different biome chunk border
-                    // just check we are in pale_garden by re-sampling biome at px,pz
+                    // need grass below carpet sample col for neighbor? use cols approx for interior, else skip if different biome chunk
+                    // border just check we are in pale_garden by re-sampling biome at px,pz
                     const std::string& b2 = biomeSource_->sample(px+2, 63, pz+2);
                     if(b2!="minecraft:pale_garden") continue;
                     // place moss block occasionally, else carpet
@@ -643,9 +641,6 @@ void World::fillEnd(Chunk& c, std::int32_t cx, std::int32_t cz) const {
     const std::uint16_t BEDROCK = id2("minecraft:bedrock");
     const std::uint16_t OBSIDIAN = id2("minecraft:obsidian") ? id2("minecraft:obsidian") : BEDROCK;
     const std::uint16_t CHORUS = id2("minecraft:chorus_plant") ? id2("minecraft:chorus_plant") : END_STONE;
-    const std::uint16_t PORTAL = id2("minecraft:end_portal")
-                                     ? id2("minecraft:end_portal")
-                                     : BEDROCK;
     // End biomes per-cell (plan10): the_end, highlands, midlands, small islands, barrens
     thread_local ImprovedNoise islandNoise(srv_seed ^ 0x454E4410ULL);
     {
@@ -880,7 +875,6 @@ void World::fillEnd(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                                           0, 0)] = BEDROCK;
                 }
             }
-        (void)PORTAL;
     }
     // obsidian pillars for end gateways (like vanilla outer end pillars)
     if (std::abs(cx) < 3 && std::abs(cz) < 3 && (cx!=0 || cz!=0)) {

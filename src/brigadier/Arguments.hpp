@@ -105,9 +105,8 @@ struct ParseCtx;                                     // fwd (Tree.hpp provides)
 using ParseFn = std::function<ArgValue(StringReader&, ParseCtx&)>;
 using SuggestFn = std::function<std::vector<std::string>(StringReader&, ParseCtx&)>;
 
-// Forward declaration of the per-command parse environment. Defined in
-// Tree.hpp to avoid a circular include; parsers receive it for context like
-// the command source position (relative coordinates).
+// Forward declaration of the per-command parse environment. Defined in Tree.hpp to avoid a circular include; parsers receive it for context
+// like the command source position (relative coordinates).
 struct ParseCtx {
     // source position for relative coordinates (~ / ~3)
     double srcX = 0, srcY = 0, srcZ = 0;
@@ -196,8 +195,7 @@ inline ArgumentType stringGreedy() {
     return a;
 }
 
-// ---- positions ------------------------------------------------------------
-// Reads one coordinate token supporting ~ relative notation.
+// ---- positions ------------------------------------------------------------ Reads one coordinate token supporting ~ relative notation.
 inline double readCoord(StringReader& r, ParseCtx& ctx, char axis, bool& relativeOut) {
     bool rel = false;
     double v = 0;
@@ -291,9 +289,8 @@ inline ArgumentType resourceLocation() {
     return a;
 }
 
-// ---- entities / game types -------------------------------------------------
-// Entity selector: @p/@a/@r/@e/@s plus optional [type=...,limit=...,name=...].
-// Raw text is stored in SelectorResult via ctx.resolveSelector hook.
+// ---- entities / game types ------------------------------------------------- Entity selector: @p/@a/@r/@e/@s plus optional
+// [type=...,limit=...,name=...]. Raw text is stored in SelectorResult via ctx.resolveSelector hook.
 inline ArgumentType entity(bool playersOnly, bool single) {
     ArgumentType a;
     a.id = ParserId::Entity;
@@ -304,8 +301,7 @@ inline ArgumentType entity(bool playersOnly, bool single) {
         const std::size_t start = r.cursor();
         if (r.peek() == '@') {
             r.skip();
-            const char k = r.read();                  // a p r e s
-            (void)k;
+            (void)r.read(); // a p r e s (selector kind char)
             if (r.peek() == '[') {                    // filter args
                 int depth = 0;
                 while (r.canRead()) {
@@ -377,9 +373,8 @@ inline ArgumentType messageArg() {
     return a;
 }
 
-// minecraft:item_stack: `minecraft:item_id` or `id[comp=value,...]`.
-// We parse and keep the item id + raw component text (components applied by
-// the game layer).
+// minecraft:item_stack: `minecraft:item_id` or `id[comp=value,...]`. We parse and keep the item id + raw component text (components applied
+// by the game layer).
 inline ArgumentType itemStackArg() {
     ArgumentType a;
     a.id = ParserId::ItemStack;

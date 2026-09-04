@@ -1,6 +1,5 @@
-// StructurePlacer: ConfiguredFeature/PlacedFeature + Jigsaw helper (plan6 §2).
-// Reads JSON definitions from assets/data/structures/*.json if present, otherwise
-// falls back to hardcoded defaults. Provides deterministic placement checks.
+// StructurePlacer: ConfiguredFeature/PlacedFeature + Jigsaw helper (plan6 §2). Reads JSON definitions from assets/data/structures/*.json if
+// present, otherwise falls back to hardcoded defaults. Provides deterministic placement checks.
 #pragma once
 #include <array>
 #include <algorithm>
@@ -54,9 +53,7 @@ public:
                     std::int32_t& outOriginCx, std::int32_t& outOriginCz) const;
     const std::unordered_map<std::string, ConfiguredFeature>& allConfigured() const { return configured_; }
     const std::unordered_map<std::string, PlacedFeature>& allPlaced() const { return placed_; }
-    // plan42 R2 (E-12): variant-pool support — all configured features sharing a
-    // structure-set type (e.g. type minecraft:village), sorted by name for
-    // deterministic selection. Includes the primary (name == type) itself.
+    // plan42 R2 (E-12): variant pools — same-type features sorted by name (primary included).
     std::vector<const ConfiguredFeature*> configuredWithType(const std::string& type) const {
         std::vector<const ConfiguredFeature*> out;
         for (auto& [n, cf] : configured_)

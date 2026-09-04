@@ -14,11 +14,7 @@ struct Player;
 
 class CostCalculator {
 public:
-    // plan23 §5 I5: seeded deterministic RNG (Yarn EnchantmentScreenHandler seed) — replaces std::rand()
-    // Yarn `EnchantmentScreenHandler` uses `Random.create(seed)` where seed = player.enchantmentSeed.
-    // Vanilla 1.21.4 formula: enchantmentPower = bs; base = 1 + rand(0,7) + bs/2 + rand(0,bs)
-    // then three levels: c0 = base + rand(0,base/4) + rand(0,base/4), c1 = c0/3+1, c2 = c0  (clamped 1..30)
-    // We use std::mt19937 seeded by player.enchantmentSeed ^ bookshelves for determinism.
+    // plan23 §5 I5: seeded RNG (player.enchantmentSeed ^ bookshelves); vanilla base/level formula.
     static std::uint32_t splitmix32(std::uint32_t x) {
         x += 0x9e3779b9u;
         x = (x ^ (x >> 16u)) * 0x85ebca6bu;
@@ -108,9 +104,8 @@ public:
         return count;
     }
 
-    // Anvil: plan13 §4 vanilla accurate: prior work penalty + enchant cost + rename, Too Expensive 39 limit
-    // Returns -1 if name too long (invalid), otherwise returns total cost (may be >=40 for Too Expensive).
-    // Callers must check >=40 to block.
+    // Anvil: plan13 §4 vanilla accurate: prior work penalty + enchant cost + rename, Too Expensive 39 limit Returns -1 if name too long
+    // (invalid), otherwise returns total cost (may be >=40 for Too Expensive). Callers must check >=40 to block.
     static int anvilCost(const ItemStack& left, const ItemStack& right, const std::string& newName) {
         if (newName.size() > 50) return -1;
         if (left.empty()) return 0;

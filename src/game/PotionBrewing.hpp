@@ -1,7 +1,6 @@
-// PotionBrewing — plan23 §5 I7 brewing transform (water->awkward etc)
-// Vanilla 1.21.4 PotionBrewingRegistry: nether_wart + water -> awkward, awkward + sugar -> mundane etc is stub
-// Full mapping: awkward + <effect ingredient> -> effect potion, awkward + fermented -> weakness, awkw + gunpowder -> splash
-// This helper centralizes transform logic for brewingTick and tests.
+// PotionBrewing — plan23 §5 I7 brewing transform (water->awkward etc) Vanilla 1.21.4 PotionBrewingRegistry: nether_wart + water -> awkward,
+// awkward + sugar -> mundane etc is stub Full mapping: awkward + <effect ingredient> -> effect potion, awkward + fermented -> weakness,
+// awkw + gunpowder -> splash This helper centralizes transform logic for brewingTick and tests.
 #pragma once
 #include <cstdint>
 #include <string>
@@ -11,9 +10,8 @@
 namespace cppfm {
 
 struct PotionBrewing {
-    // Registry-aware potion ids (minecraft:potion 45 entries, 1.21.4):
-    // water 0, mundane 1, thick 2, awkward 3, night_vision 4, ... wind_charged 42 etc.
-    // Full map duplicated from Items::potionIds for standalone header.
+    // Registry-aware potion ids (minecraft:potion 45 entries, 1.21.4): water 0, mundane 1, thick 2, awkward 3, night_vision 4, ...
+    // wind_charged 42 etc. Full map duplicated from Items::potionIds for standalone header.
     static const std::unordered_map<std::string,int>& potionIds() {
         static const std::unordered_map<std::string,int> m{
             {"minecraft:water",0},{"minecraft:mundane",1},{"minecraft:thick",2},{"minecraft:awkward",3},

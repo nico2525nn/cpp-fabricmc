@@ -1,13 +1,11 @@
-// MultiNoise authored biome climate table (clean-room approximations of the
-// vanilla overworld layout: hot/dry -> desert/savanna, cold -> snowy,
-// continentalness drives oceans vs inland, weirdness splits variants).
+// MultiNoise authored biome climate table (clean-room approximations of the vanilla overworld layout: hot/dry -> desert/savanna, cold ->
+// snowy, continentalness drives oceans vs inland, weirdness splits variants).
 #include "MultiNoise.hpp"
 
 namespace cppfm::worldgen {
 
 void MultiNoiseBiomeSource::buildDefaultTable() {
-    // Default overworld biome points (name + 6 climate params).
-    // Single truth (was 54 positional add() calls); values untouched.
+    // Default overworld biome points (name + 6 climate params). Single truth (was 54 positional add() calls); values untouched.
     struct BiomePoint { const char* key; double temp, humid, continent, erosion, depth, weird; };
     static constexpr BiomePoint kPoints[] = {
         {"minecraft:deep_ocean", 0.0, 0.0, -0.45, -0.2, 0.35, 0.0},
@@ -45,9 +43,8 @@ void MultiNoiseBiomeSource::buildDefaultTable() {
         // rivers
         {"minecraft:river", 0.0, 0.0, -0.10, 0.35, -0.15, 0.0},
         {"minecraft:frozen_river", -0.8, 0.0, -0.10, 0.35, -0.15, 0.0},
-        // ---- plan42 R2 (E-10): vanilla 1.21.4 biome parity 31->54 (registry order
-        // EmbeddedData minecraft:worldgen/biome 65; all keys below verified present).
-        // oceans (temperature-split variants)
+        // ---- plan42 R2 (E-10): vanilla 1.21.4 biome parity 31->54 (registry order EmbeddedData minecraft:worldgen/biome 65; all keys
+        // below verified present). oceans (temperature-split variants)
         {"minecraft:lukewarm_ocean", 0.5, 0.1, -0.28, -0.10, 0.20, 0.1},
         {"minecraft:cold_ocean", -0.5, 0.1, -0.28, -0.10, 0.20, -0.1},
         {"minecraft:deep_lukewarm_ocean", 0.5, 0.1, -0.45, -0.20, 0.35, 0.1},
@@ -78,15 +75,11 @@ void MultiNoiseBiomeSource::buildDefaultTable() {
         // badlands variants
         {"minecraft:eroded_badlands", 1.0, -0.5, 0.10, -0.30, 0.10, -0.2},
         {"minecraft:wooded_badlands", 1.0, -0.4, 0.10, -0.20, 0.10, 0.0},
-        // ---- plan45 G-11: vanilla 65-biome table completion (54 -> 65).
-        // Missing 11 = nether 5 + end 5 + the_void 1, verified against vanilla
-        // 1.21.4 client jar data/minecraft/worldgen/biome/*.json (65 files,
-        // piston-meta 1.21.4, sha1-verified download 2026-09-04).
-        // Nether/end entries carry a dimension tag: sample() still searches the
-        // overworld subset only, so these can never leak into overworld chunks.
-        // Emit paths: sampleNether()/sampleEnd(). Climate points are clean-room
-        // distinct points in the vanilla nether/end parameter style
-        // (temperature/humidity-driven, cf. vanilla NetherBiomeSource).
+        // ---- plan45 G-11: vanilla 65-biome table completion (54 -> 65). Missing 11 = nether 5 + end 5 + the_void 1, verified against
+        // vanilla 1.21.4 client jar data/minecraft/worldgen/biome/*.json (65 files, piston-meta 1.21.4, sha1-verified download 2026-09-04).
+        // Nether/end entries carry a dimension tag: sample() still searches the overworld subset only, so these can never leak into
+        // overworld chunks. Emit paths: sampleNether()/sampleEnd(). Climate points are clean-room distinct points in the vanilla nether/end
+        // parameter style (temperature/humidity-driven, cf. vanilla NetherBiomeSource).
     };
     for (const auto& bp : kPoints) {
         entries_.push_back({bp.key, {bp.temp, bp.humid, bp.continent, bp.erosion, bp.depth, bp.weird}});
@@ -109,8 +102,7 @@ void MultiNoiseBiomeSource::buildDefaultTable() {
     addEnd("minecraft:end_highlands",      0.5,  0.0, 0.0, 0.0, 0.0, 0.0);
     addEnd("minecraft:end_midlands",      -0.5,  0.0, 0.0, 0.0, 0.0, 0.0);
     addEnd("minecraft:small_end_islands",  0.0,  0.5, 0.0, 0.0, 0.0, 0.0);
-    // the_void: registry presence only (vanilla default for Y<-64 /
-    // ungenerated chunks). Excluded from all sampling by dimension filter.
+    // the_void: registry presence only (vanilla default for Y<-64 / ungenerated chunks). Excluded from all sampling by dimension filter.
     addSpecial("minecraft:the_void");
 }
 

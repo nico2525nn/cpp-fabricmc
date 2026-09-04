@@ -1,7 +1,6 @@
-// MenuLogic — plan7 entity section
-// Object-oriented GUI processing: per-menu-type logic for inventory containers.
-// Each MenuLogic handles slot clicks for its container type (Anvil, Enchantment, Brewing, etc.)
-// Replaces giant switch in MenuInteraction with polymorphic dispatch.
+// MenuLogic — plan7 entity section Object-oriented GUI processing: per-menu-type logic for inventory containers. Each MenuLogic handles
+// slot clicks for its container type (Anvil, Enchantment, Brewing, etc.) Replaces giant switch in MenuInteraction with polymorphic
+// dispatch.
 #pragma once
 #include <cstdint>
 #include <string>

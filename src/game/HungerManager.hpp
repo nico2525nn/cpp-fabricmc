@@ -1,11 +1,6 @@
-// HungerManager: extracted hunger/saturation/exhaustion logic (plan8 modular split)
-// Owns food table, exhaustion constants, and per-tick handling.
-// Pure helpers are testable; GameServer delegates to this manager.
-// plan19 combat polish: verified per-player foodTickTimer, FAST 10 / SLOW 80, naturalRegeneration, starve diff, EPF weight 1.
-// plan20 combat polish: verify hunger unchanged by world-density/light changes; GameRules expanded to 50+ (W18) for naturalRegeneration parity.
-// plan21 combat polish: retry verify EXHAUST_WALK 0 vs 0.01, per-player foodTickTimer, FAST 10/SLOW 80, starve diff hard/easy/normal, naturalRegeneration gate.
-// plan22 combat polish: verify EXHAUST_WALK 0 (strict E5), food table 40, FAST 10/SLOW 80 per-player timer, naturalRegeneration gate, poison 25/with 40 split.
-// plan23 combat polish: walk 0 strict verify, food table 40 (15 missing fixed), per-player 10/80 timer, starve difficulty gate, poison 25>>amp / wither 40>>amp parity (verify).
+// HungerManager: extracted hunger/saturation/exhaustion logic (plan8 modular split) Owns food table, exhaustion constants, and per-tick
+// handling. Pure helpers are testable; GameServer delegates to this manager. plan19-23 combat: hunger parity (per-player 10/80 timer,
+// FAST/SLOW, starve gates, food table).
 #pragma once
 #include <cstdint>
 #include <string>
@@ -40,9 +35,7 @@ public:
     static constexpr int STARVING_FOOD_LEVEL = 0;
     static constexpr float EXHAUSTION_PER_HEAL = 6.0f;
 
-    // plan44 G-01: pure starvation difficulty gate extracted for unit testing.
-    // Behavior identical to the inline chain in tickRegenAndStarve (Yarn:
-    // PEACEFUL never starves, EASY health>10, NORMAL health>1, HARD health>0).
+    // plan44 G-01: pure starvation difficulty gate (PEACEFUL never, EASY>10, NORMAL>1, HARD>0).
     static inline bool canStarveForDifficulty(const std::string& diff, float health) {
         if (diff == "hard") return health > 0.f;
         if (diff == "easy") return health > 10.f;
@@ -72,9 +65,7 @@ public:
     static void onBlockBreak(Player& p, GameServer& srv);
     static void onDamageTaken(Player& p, GameServer& srv);
 
-    // plan44 G-01: vanilla Java 1.21.4 food table (42 entries incl. steak alias
-    // + sweet_berries; spec minimum 40). Moved inline from HungerManager.cpp
-    // so light unit tests can assert impl data without linking GameServer.
+    // plan44 G-01: vanilla 1.21.4 food table, header-inline for light unit tests.
     static inline const std::unordered_map<std::string, FoodInfo>& foodTable() {
         static const std::unordered_map<std::string, FoodInfo> k = {
             {"minecraft:apple", {4, 2.4f}},

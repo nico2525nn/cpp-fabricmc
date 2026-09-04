@@ -66,10 +66,9 @@ bool WorldDataManager::saveLevelDataWithProviders(std::int64_t worldTicks, std::
         // ForcedChunks — Yarn ForcedChunkState: only ticket FORCED set, truncate 256 (W17 strict)
         {
             nbt::Value fc = nbt::Value::makeList(nbt::Long);
-            // W17: persist ticketManager forced set via World::forcedChunkKeys(), not allChunkKeys scan.
-            // Vanilla ForcedChunkState stores ChunkPos.toLong(x,z) long[] with 256 limit.
-            // W17 strict: SPAWN (spawn chunk loader) must NOT be persisted here; only FORCED from /forceload.
-            // forcedChunkKeys() already returns only FORCED (addSpawnTicket no longer pollutes set).
+            // W17: persist ticketManager forced set via World::forcedChunkKeys(), not allChunkKeys scan. Vanilla ForcedChunkState stores
+            // ChunkPos.toLong(x,z) long[] with 256 limit. W17 strict: SPAWN (spawn chunk loader) must NOT be persisted here; only FORCED
+            // from /forceload. forcedChunkKeys() already returns only FORCED (addSpawnTicket no longer pollutes set).
             auto forced = world.forcedChunkKeys();
             if (forced.size() > constants::kMaxForcedChunks) {
                 std::fprintf(stderr, "[WorldDataManager] ForcedChunks %zu >%d, truncating to %d (vanilla limit)\n", forced.size(), constants::kMaxForcedChunks, constants::kMaxForcedChunks);
@@ -80,9 +79,8 @@ bool WorldDataManager::saveLevelDataWithProviders(std::int64_t worldTicks, std::
             // and are NOT persisted here (W17) to avoid inflating maxLoadedChunks (W19) with implicit forced.
             data.set("ForcedChunks", fc);
         }
-        // W16 single level.dat: DragonFight Gateways 12 intact (vanilla 1.21.4 Data.DragonFight)
-        // Yarn PrimaryLevelData EnderDragonFight.Data 12 Gateways, single world/level.dat
-        // 26.1 moves to ender_dragon_fight.dat, but 1.21.4 keeps it in level.dat.
+        // W16 single level.dat: DragonFight Gateways 12 intact (vanilla 1.21.4 Data.DragonFight) Yarn PrimaryLevelData
+        // EnderDragonFight.Data 12 Gateways, single world/level.dat 26.1 moves to ender_dragon_fight.dat, but 1.21.4 keeps it in level.dat.
         {
             nbt::Value dragon = nbt::Value::makeCompound();
             dragon.set("DragonKilled", nbt::Value::makeByte(0));

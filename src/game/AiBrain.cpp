@@ -1025,7 +1025,6 @@ bool WardenSonicBoomGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
             ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::EntityVelocity, vel);
             // particle 27 sonic_boom
             WriteBuffer p; p.boolean(true); p.boolean(false); p.f64(m.x); p.f64(m.y+1.6); p.f64(m.z); p.f32(0);p.f32(0);p.f32(0);p.f32(0.1f); p.varint(27);
-            (void)p;
         }
     }
     m.wardenSonicCooldown=now+34;
@@ -1571,11 +1570,7 @@ bool BoggedPoisonGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     m.boggedPoisonCooldown=now+40;
     return true;
 }
-// plan42 R2 E-11: 19 species/group-default goals (60->139).
-// Group gates share one class per movement family (Fish/Graze/Boat/Minecart/
-// Projectile); the rest gate a single notable kind. All ticks reuse the same
-// server APIs (mobAttackPlayer/broadcastSound/spawnProjectile/spawnItemDrop/
-// explodeAt/strikeLightning) as the existing 59 goals.
+// plan42 R2 E-11: 19 species/group-default goals (60->139) reusing the server APIs.
 bool FishSwimGoal::shouldStart(MobEntity& m, AiContext&) { return MobEntity::isFishKind(m.kind); }
 bool FishSwimGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (!MobEntity::isFishKind(m.kind)) return false;
@@ -1591,7 +1586,6 @@ bool FishSwimGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     float sp = mobStats(m.kind).moveSpeed;
     m.yaw = static_cast<float>(std::atan2(dz,dx)*180.0/3.14159-90.0);
     m.x += dx/d*sp; m.z += dz/d*sp;
-    (void)ctx;
     return true;
 }
 bool GrazeGoal::shouldStart(MobEntity& m, AiContext&) { return MobEntity::isGrazerKind(m.kind); }
@@ -1845,9 +1839,8 @@ bool PufferfishPuffGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
 bool ProjectileFlyGoal::shouldStart(MobEntity& m, AiContext&) { return MobEntity::isProjectileKind(m.kind); }
 bool ProjectileFlyGoal::tick(MobEntity& m, AiContext&, std::int64_t) {
     if (!MobEntity::isProjectileKind(m.kind)) return false;
-    // ballistic hold: projectiles keep latched velocity (set by thrower systems)
-    // instead of wandering randomly. Returning true claims the tick so the
-    // generic WanderAroundGoal never steers a flying projectile.
+    // ballistic hold: projectiles keep latched velocity (set by thrower systems) instead of wandering randomly. Returning true claims the
+    // tick so the generic WanderAroundGoal never steers a flying projectile.
     m.x += m.projectileVx; m.y += m.projectileVy; m.z += m.projectileVz;
     m.projectileVy -= 0.02; // mild gravity like vanilla thrown projectiles
     return true;
@@ -1878,7 +1871,6 @@ bool EndCrystalHoverGoal::tick(MobEntity& m, AiContext&, std::int64_t) {
 }
 bool TntFuseGoal::shouldStart(MobEntity& m, AiContext& ctx) {
     if (m.kind != MobKind::Tnt) return false;
-    (void)ctx;
     return !m.dead;
 }
 bool TntFuseGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {

@@ -1,7 +1,6 @@
-// PacketEncoder: converts packet id + ByteBuffer payload to framed wire bytes.
-// Handles VarInt length prefix, optional zlib compression and AES-CFB8 encryption
-// mirroring the logic in Connection::sendFramed. Also provides ByteBuffer helpers.
-// plan25 network polish: verified outer length varint + dataLength 0 path (no compression) and AES-CFB8 crypt parity; no wire change, strict 78/78 locked.
+// PacketEncoder: converts packet id + ByteBuffer payload to framed wire bytes. Handles VarInt length prefix, optional zlib compression and
+// AES-CFB8 encryption mirroring the logic in Connection::sendFramed. Also provides ByteBuffer helpers. plan25 network polish: verified
+// outer length varint + dataLength 0 path (no compression) and AES-CFB8 crypt parity; no wire change, strict 78/78 locked.
 #pragma once
 #include <cstdint>
 #include <vector>
@@ -13,9 +12,8 @@ namespace cppfm {
 
 class PacketEncoder {
 public:
-    // Encode id + payload (WriteBuffer) into a length-prefixed frame.
-    // If compressionThreshold >=0, compresses when total >= threshold.
-    // If enc != nullptr, encrypts the outer buffer (length+frame) with AES-CFB8.
+    // Encode id + payload (WriteBuffer) into a length-prefixed frame. If compressionThreshold >=0, compresses when total >= threshold. If
+    // enc != nullptr, encrypts the outer buffer (length+frame) with AES-CFB8.
     static std::vector<std::uint8_t> encode(uint8_t id, const WriteBuffer& payload,
                                             int compressionThreshold = -1,
                                             crypto::AesCfb8* enc = nullptr) {

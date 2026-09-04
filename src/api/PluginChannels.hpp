@@ -1,10 +1,7 @@
-// PluginChannels: registry for custom-payload channels (plan2.md,
-// "カスタムネットワーキング"). Mirrors Fabric's ServerPlayNetworking /
-// ServerConfigurationNetworking shape:
-//   * register a receiver per channel (play and/or configuration phase)
-//   * send(channel, payload) to any connection
-// Unknown inbound channels are delivered to a fallback hook so future
-// extensions never break the session.
+// PluginChannels: custom-payload registry (plan2 "カスタムネットワーキング"); mirrors Fabric networking.
+// * register a receiver per channel (play and/or configuration phase)
+// * send(channel, payload) to any connection. Unknown inbound channels go to a
+//   fallback hook so future extensions never break the session.
 #pragma once
 #include <cstdint>
 #include <functional>

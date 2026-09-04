@@ -124,9 +124,8 @@ enum class MobKind : std::uint16_t {
     WindCharge, WitherSkull
 };
 
-// Static per-kind gameplay table (clean-room values approximating vanilla).
-// plan44 G-05: followRange = vanilla generic.follow_range (blocks). 0 = non-perceiving
-// (vehicle/projectile/display/hazard). Living default 16.0; see docs/mob_stats_149.csv.
+// Static per-kind gameplay table (clean-room values approximating vanilla). plan44 G-05: followRange = vanilla generic.follow_range
+// (blocks). 0 = non-perceiving (vehicle/projectile/display/hazard). Living default 16.0; see docs/mob_stats_149.csv.
 struct MobStats {
     const char* name;
     float maxHealth;
@@ -344,11 +343,7 @@ inline MobStats mobStats(MobKind k, int slimeSize) {
     }
     return mobStats(k);
 }
-// plan44 G-05: follow-range accessors for AiBrain target acquisition.
-// followRangeFor returns the raw vanilla value (0 = non-perceiving).
-// perceiveDist applies the pre-plan44 legacy fallback (16) used by goals for
-// kinds without perception (vehicles/projectiles/displays, followRange 0).
-// perceptionRange2 is the squared form for nearestPlayerDist2 comparisons.
+// plan44 G-05: follow-range accessors for AiBrain (raw value; legacy 16 fallback; squared form).
 inline float followRangeFor(MobKind k) { return mobStats(k).followRange; }
 inline double perceiveDist(MobKind k) {
     float f = mobStats(k).followRange;
@@ -455,9 +450,7 @@ struct MobEntity {
     // plan16: villager restock 2/day (vanilla: 2 restocks per in-game day)
     int villagerRestocksToday = 0;
     std::int64_t villagerLastRestockDay = -1;
-    // plan46 G-15: 10-minute window semantics (wiki Trading §Supply: restocks
-    // occur during work visits, up to twice per day). LastRestock tick lets the
-    // tick loop auto-schedule the 2nd window instead of dropping it.
+    // plan46 G-15: villager restock tick (up to 2 work-visit windows/day).
     std::int64_t villagerLastRestockTick = -1;
     // Delay between the 1st and auto-scheduled 2nd restock window (~5 min at
     // 20 TPS; vanilla fires on the next work-site visit inside the work shift).
@@ -560,9 +553,7 @@ struct MobEntity {
         const auto& m = gen::entityTypeIdByName();
         auto it = m.find(kindName(k));
         if (it != m.end()) return it->second;
-        // plan42 R2 E-09: minecraft:boat is vanilla's abstract base (no registry id).
-        // BoatEntity defaults to the OAK variant, so resolve generic Boat to oak_boat's
-        // id instead of the accidental 0 (acacia_boat). kEntities 149 stays untouched.
+        // plan42 R2 E-09: generic Boat resolves to oak_boat id (abstract base has no registry id).
         if (k == MobKind::Boat) {
             auto jt = m.find("minecraft:oak_boat");
             if (jt != m.end()) return jt->second;
@@ -579,9 +570,7 @@ struct MobEntity {
             || k==MobKind::BirchChestBoat || k==MobKind::JungleChestBoat || k==MobKind::AcaciaChestBoat || k==MobKind::DarkOakChestBoat
             || k==MobKind::MangroveChestBoat || k==MobKind::CherryChestBoat || k==MobKind::PaleOakChestBoat || k==MobKind::BambooChestRaft;
     }
-    // plan42 R2 E-11: species movement-family groups for the group-default goals
-    // (FishSwim/Graze/BoatDrift/MinecartRoll/ProjectileFly/AmbientObject). Header-inline
-    // so both AiBrain goals and header-only tests share one definition.
+    // plan42 R2 E-11: species movement-family groups (header-inline for goals + tests).
     static bool isFishKind(MobKind k) {
         return k==MobKind::Cod || k==MobKind::Salmon || k==MobKind::TropicalFish
             || k==MobKind::Pufferfish || k==MobKind::Tadpole
@@ -648,8 +637,7 @@ struct MobEntity {
 };
 
 inline int armorPointsForItem(std::uint32_t itemId) {
-    // map ItemId name suffix to armor points (approximate vanilla)
-    // we resolve name lazily
+    // map ItemId name suffix to armor points (approximate vanilla) we resolve name lazily
     static std::unordered_map<std::uint32_t,int> cache;
     auto itc = cache.find(itemId);
     if (itc != cache.end()) return itc->second;

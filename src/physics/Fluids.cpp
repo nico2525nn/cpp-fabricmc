@@ -214,7 +214,6 @@ void FluidSim::apply(std::int32_t x, std::int32_t y, std::int32_t z,
             world_.setBlock(x, y, z, fluidState(kind, want));
             level = want;
         }
-        (void)fedByFall;
     }
 
     if (isSource || level < maxLevel || level == 8) {

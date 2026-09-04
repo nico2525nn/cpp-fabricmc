@@ -245,10 +245,7 @@ inline std::unique_ptr<BehaviorNode> createNodeForType(const std::string& rawTyp
     if (t=="evoker_fang"||t=="fang"||t=="evoker_attack") return std::make_unique<EvokerFangAction>();
     if (t=="breed_action") return std::make_unique<BreedAction>();
     if (t=="trade"||t=="trade_goal") return std::make_unique<TradeAction>();
-    // plan42 R2 E-11: aliases for the 79 new + 23 fixed species jsons.
-    // Real per-species logic lives in AiBrain goals (FishSwim/Graze/BoatDrift/
-    // MinecartRoll/VexCharge/...); BT layer maps to the closest generic action
-    // so unknown strings never break tree builds (same policy as plan34 §2-3).
+    // plan42 R2 E-11: BT aliases for new species jsons map to closest generic action (never break builds).
     if (t=="swim_wander"||t=="fish_swim"||t=="fly_wander"||t=="bat_roost") return std::make_unique<WanderAction>();
     if (t=="graze"||t=="eat_grass"||t=="nibble_carrots"||t=="raid_crops") return std::make_unique<WanderAction>();
     if (t=="boat_drift"||t=="boat_float") return std::make_unique<WanderAction>();
@@ -310,8 +307,7 @@ private:
     std::unique_ptr<BehaviorNode> root_;
 };
 
-// Build tree from a list of behavior type strings with priorities.
-// Root is Selector ordered by priority (lowest priority number first).
+// Build tree from a list of behavior type strings with priorities. Root is Selector ordered by priority (lowest priority number first).
 inline std::unique_ptr<BehaviorTree> buildBehaviorTreeFromTypes(const std::vector<std::pair<std::string,int>>& entries) {
     if (entries.empty()) return nullptr;
     auto sorted = entries;

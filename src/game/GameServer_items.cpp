@@ -501,9 +501,8 @@ void GameServer::hoppersTick() {
                                         if(eslot>=2 && eslot<=5 && m->equipment[eslot].empty()){
                                             m->equipment[eslot]=ItemStack::of(s.itemId,1);
                                             equipped=true;
-                                            // NOTE(cleanup): mob SetEquipment 0x60 broadcast deferred
-                                            // (no helper yet — state change above is authoritative; the
-                                            // previously built-but-unsent WriteBuffer was dead code).
+                                            // NOTE(cleanup): mob SetEquipment 0x60 broadcast deferred (no helper yet — state change above
+                                            // is authoritative; the previously built-but-unsent WriteBuffer was dead code).
                                             break;
                                         }
                                     }
@@ -877,8 +876,7 @@ bool GameServer::openTrading(Player& p, MobEntity& v) {
     }
     const auto& offers = *offersPtr;
     int num = (int)offers.size();
-    // lvl*2 slicing is already per-level vector size <=2*lvl, but enforce min 2 for lvl1 fallback display
-    // For farmer lvl1 size 2 already OK
+    // lvl*2 slicing is already per-level vector size <=2*lvl, but enforce min 2 for lvl1 fallback display For farmer lvl1 size 2 already OK
     tl.varint(static_cast<std::int32_t>(num));
     int gossipRep = v.gossip.get(p.uuid);
     for (int i=0;i<num;++i) {
@@ -1011,8 +1009,7 @@ bool GameServer::selectTrade(Player& p, std::int32_t index) {
                     m->restockUntil = (curDay+1)*24000 + 2000;
                 } else {
                     if (m->restockUntil < tickNo_) {
-                        // schedule next restock window (plan46 G-15: 2nd window
-                        // auto-scheduled so 2/day is reachable without new trades)
+                        // schedule next restock window (plan46 G-15: 2nd window auto-scheduled so 2/day is reachable without new trades)
                         m->restockUntil = tickNo_ + MobEntity::kRestockSecondWindowTicks + (rand()%2000);
                     }
                 }
@@ -1141,9 +1138,8 @@ void GameServer::broadcastSpawnItem(const ItemEntity& it) {
     b.i16(static_cast<std::int16_t>(it.vy*8000));
     b.i16(static_cast<std::int16_t>(it.vz*8000));
     broadcastPacketExcept(nullptr, pl::sc::SpawnEntity, b);
-    // D11 (plan26 §4): metadata index 8 type 7 Slot must carry full ItemStack payload
-    // via ItemStack::write (count,varint itemId, added, removed, components).
-    // Old code wrote minimal `0,0` and mishandled air (count 0 wrote itemId 0).
+    // D11 (plan26 §4): metadata index 8 type 7 Slot must carry full ItemStack payload via ItemStack::write (count,varint itemId, added,
+    // removed, components). Old code wrote minimal `0,0` and mishandled air (count 0 wrote itemId 0).
     WriteBuffer md;
     md.varint(it.entityId);
     md.u8(8); md.u8(7);
@@ -1301,7 +1297,6 @@ void GameServer::effectsTick() {
     }
 }
 void GameServer::furnacesTick() {
-    const auto& items = gen::itemIdByName();
     blockEntities_.forEach([&](std::int64_t key, BlockEntity& be) {
         if (be.kind != BlockEntity::Kind::Furnace) return;
         FurnaceData& f = be.furnace;
@@ -1359,7 +1354,6 @@ void GameServer::furnacesTick() {
                 broadcastBlockChange(x, y, z, want);
             }
         }
-        (void)items;
     });
 }
 void GameServer::brewingTick() {
@@ -1438,13 +1432,12 @@ void GameServer::brewingTick() {
                     // no ingredient but timer expired? just reset
                     b.brewTime = 0;
                 }
-                // send ContainerSetData to viewers of this brewing stand
-                // fuel and brewTime will be synced via dirty flag and next interaction,
-                // but also broadcast to any player with menu open on this block
+                // send ContainerSetData to viewers of this brewing stand fuel and brewTime will be synced via dirty flag and next
+                // interaction, but also broadcast to any player with menu open on this block
                 for (auto& p : playersSnapshot()) {
+                    (void)p;
                     // find sessions? we broadcast via block entity dirty; menu content sync
                     // will happen on next click; for now we just mark dirty.
-                    (void)p;
                 }
             }
         } else {
@@ -1579,11 +1572,7 @@ std::shared_ptr<ProjectileEntity> GameServer::spawnProjectile(ProjectileKind kin
     e->ownerIsPlayer = ownerIsPlayer;
     e->charged = charged;
     projectiles_.push_back(e);
-    // plan28 finish: this was an EMPTY entsMtx_ lock_guard — spawnProjectile is
-    // called from BehaviorTree actions while GameServer::mobsTick already holds
-    // entsMtx_ (mob AI runs under it); re-locking the non-recursive mutex was a
-    // SELF-DEADLOCK that froze the tick forever (dragon breath -> fireball).
-    // projectiles_ is only mutated on the tick thread (spawn + projectilesTick).
+    // plan28 finish: no entsMtx_ here — caller (mobsTick) already holds it; re-lock self-deadlocks.
     const auto& types = gen::entityTypeIdByName();
     static const char* kNames[] = {"minecraft:arrow", "minecraft:snowball",
                                    "minecraft:egg", "minecraft:ender_pearl",
@@ -2108,11 +2097,6 @@ void GameServer::boatsTick() {
         const gen::BlockDef* dBelow = gen::blockByState(stBelow);
         // plan23 §3: use FluidState.isWater() for water detection (was block name string, fails for waterlogged/flowing)
         bool inWater = FluidSim::getFluidState(world_, bx, by, bz).isWater();
-        auto st = world_.getBlock(bx, by, bz);
-        bool underWater = inWater && [&]{
-            for(auto &pr: gen::propsOf(st)) if(pr.first=="level" && pr.second=="0") return true;
-            return false;
-        }();
         bool onLand = false;
         if (!inWater && dBelow && dBelow->name!="minecraft:air" && dBelow->name!="minecraft:water") onLand=true;
         if (inWater) {
@@ -2145,7 +2129,6 @@ void GameServer::boatsTick() {
             broadcastPacketExcept(nullptr, proto::pl::sc::MoveEntityPosRot, pkt);
             b->sentX=b->x; b->sentY=b->y; b->sentZ=b->z; b->hasSent=true;
         }
-        (void)underWater;
     }
 }
 } // namespace cppfm

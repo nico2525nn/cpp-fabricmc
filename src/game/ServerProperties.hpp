@@ -113,8 +113,7 @@ public:
         else props[key]= std::to_string(value);
     }
 
-    // Convenience typed getters matching spec: get<int>(key), get<bool>(key)
-    // Usage: props.get<int>("viewDistance") etc.
+    // Convenience typed getters matching spec: get<int>(key), get<bool>(key) Usage: props.get<int>("viewDistance") etc.
 
     // Apply to ServerConfig helpers
     int viewDistance() const { return get<int>("view-distance", get<int>("viewDistance", 6)); }

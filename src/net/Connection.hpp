@@ -56,10 +56,7 @@ public:
             if (fd_ >= 0) { ::shutdown(fd_, SHUT_RDWR); ::close(fd_); fd_ = -1; }
         } catch (...) {}
     }
-    // plan42 R3: abortive close (RST) for kicks — a graceful FIN lets the
-    // peer's next send() succeed once, so kick tests observe a live socket.
-    // Call only after the Disconnect packet has been flushed + a short grace
-    // delay so the peer can read it first.
+    // plan42 R3: abortive close (RST) for kicks; call after Disconnect flush + grace delay.
     void abort() noexcept {
         try {
             std::lock_guard lk(tx_);
@@ -83,22 +80,14 @@ public:
         timeval tv{seconds, 0};
         setsockopt(fd_, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
     }
-    // plan46 §1 A6 (slow-loris guard): bound every blocking recv. On expiry
-    // readExact throws SocketClosedError with timedOut=true so the session
-    // can kick with a Disconnect first and free the thread. Safe in play:
-    // the server keepalive pings every 10s and TestClient/vanilla answer.
+    // plan46 §1 A6 (slow-loris guard): bound blocking recvs; on expiry kick with Disconnect.
     void setRecvTimeout(unsigned seconds) {
         timeval tv{seconds, 0};
         setsockopt(fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     }
-    // plan46 §1 A1: per-connection bandwidth budget (token bucket, 2MB burst
-    // / 1MB/s sustain). Opt-in: the server enables it on accepted sockets;
-    // test clients leave it off so bulk server->client streaming (chunks,
-    // registries) is never throttled on the receiving side.
+    // plan46 §1 A1: per-connection bandwidth budget (2MB burst/1MB/s); opt-in so tests stay unthrottled.
     void enableFloodBudget(bool on) { floodBudget_ = on; }
-    // plan45 B6 W-13(a): peek the first pending byte (MSG_PEEK) so the
-    // handshake state can detect a pre-1.7 legacy ping (0xFE) without
-    // consuming modern length-prefixed frames. Returns -1 on timeout/empty.
+    // plan45 B6 W-13(a): MSG_PEEK first byte to detect legacy 0xFE ping (-1 on timeout).
     int peekFirstByte(int timeoutMs) const {
         if (fd_ < 0) return -1;
         pollfd pfd{};
@@ -140,9 +129,8 @@ public:
     // ---- framed io -------------------------------------------------------
     void setCompression(int threshold) { compressionThreshold_ = threshold; }
 
-    // Reads one frame payload (length-prefixed, optionally compressed).
-    // Returns the packet body (packet id + payload). Throws SocketClosedError on EOF.
-    // Delegates decompression to PacketDecoder for ByteBuffer handling.
+    // Reads one frame payload (length-prefixed, optionally compressed). Returns the packet body (packet id + payload). Throws
+    // SocketClosedError on EOF. Delegates decompression to PacketDecoder for ByteBuffer handling.
     std::vector<std::uint8_t> readFrame() {
         std::int32_t len;
         if (!encrypted_) {
@@ -164,10 +152,7 @@ public:
         if (len <= 0 || static_cast<std::uint32_t>(len) > kMaxFrame)
             throw PacketDecoder::OversizeError(
                 "frame length out of range: " + std::to_string(len));
-        // plan46 §1 A1: charge the bandwidth budget BEFORE resize — the
-        // allocation that follows is attacker-sized, so the budget decision
-        // must precede it. Any single frame over the 2MB burst, or a
-        // sustained rate over 1MB/s, is a kick (OversizeError -> Disconnect).
+        // plan46 §1 A1: charge bandwidth budget BEFORE the attacker-sized allocation.
         if (floodBudget_ &&
             !bw_.consume(static_cast<double>(len), steadyNowMs()))
             throw PacketDecoder::OversizeError("connection bandwidth budget exceeded");
@@ -185,10 +170,7 @@ public:
         }
         return PacketDecoder::decodeFrame(frame_, compressionThreshold_);
     }
-    // plan43 W-12: frame read with a deadline. Only the wait for the first
-    // byte is bounded (slow-loris guard for the finish-ack wait); once data
-    // is ready the remainder blocks as usual. Throws SocketClosedError with
-    // timedOut=true on expiry so callers can kick with a Disconnect first.
+    // plan43 W-12: frame read with first-byte deadline (slow-loris guard); then blocks as usual.
     std::vector<std::uint8_t> readFrameWithTimeout(std::chrono::milliseconds timeout) {
         pollfd pfd{};
         pfd.fd = fd_;

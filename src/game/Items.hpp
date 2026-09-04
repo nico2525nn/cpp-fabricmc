@@ -1,11 +1,5 @@
 // Items: ItemStack with 1.20.5+ data components, item tables and helpers.
-// plan28 inventory polish: verify ItemStack components remain decoupled from Scoreboard ResetScore 0x49 (D26) — trim 45 holder varint, potion_contents 41, damage 3/repair_cost 17/enchantments 10 wire verified intact after scoreboard reset hardening; no inventory state touches Scoreboard scores.
-//
-// Strict 1.21.4 (protocol 769, DataVersion 4189) wire format (Slot):
-// varint count; when >0: varint itemId, varint addedComponents, varint removedComponents,
-// then each added component as (varint typeId, varint payloadLen, payload bytes) and each removed
-// as bare varint typeId. Yarn `SlotComponentType` 1.21.4: `damage 3`, `repair_cost 17`, `enchantments 10`,
-// `trim 45` (strict audit HIGH I6/I11). We keep unknown payloads verbatim for round-trip.
+// plan28 inventory: Slot wire format + SlotComponentType ids (damage 3, repair 17, ench 10, trim 45).
 #pragma once
 #include "Constants.hpp"
 #include <cstdint>
@@ -83,16 +77,15 @@ struct ItemStack {
         return it->second;
     }
 
-    // SlotComponentType ids verified vs protocol.json 1.21.4 (pc/1.21.4/protocol.json SlotComponentType mapper):
-    // 0 custom_data, 1 max_stack_size, 2 max_damage, 3 damage, 4 unbreakable, 5 custom_name, 6 item_name, 7 item_model,
-    // 8 lore, 9 rarity, 10 enchantments, 11 can_place_on, 12 can_break, 13 attribute_modifiers, 14 custom_model_data,
-    // 15 hide_additional_tooltip, 16 hide_tooltip, 17 repair_cost, 18 creative_slot_lock, 19 enchantment_glint_override,
-    // 20 intangible_projectile, 21 food, 22 consumable, 23 use_remainder, 24 use_cooldown, 25 damage_resistant, 26 tool,
-    // 27 enchantable, 28 equippable, 29 repairable, 30 glider, 31 tooltip_style, 32 death_protection, 33 stored_enchantments,
-    // 34 dyed_color, 35 map_color, 36 map_id, 37 map_decorations, 38 map_post_processing, 39 charged_projectiles,
-    // 40 bundle_contents, 41 potion_contents, 42 suspicious_stew_effects, 43 writable_book_content, 44 written_book_content,
-    // 45 trim, 46 debug_stick_state, ... 66 container_loot — strict audit HIGH I6/I11.
-    // Yarn `SlotComponentType` parity: damage=3, repair_cost=17, enchantments=10, trim=45 (replaces legacy 6/7/42).
+    // SlotComponentType ids verified vs protocol.json 1.21.4 (pc/1.21.4/protocol.json SlotComponentType mapper): 0 custom_data, 1
+    // max_stack_size, 2 max_damage, 3 damage, 4 unbreakable, 5 custom_name, 6 item_name, 7 item_model, 8 lore, 9 rarity, 10 enchantments,
+    // 11 can_place_on, 12 can_break, 13 attribute_modifiers, 14 custom_model_data, 15 hide_additional_tooltip, 16 hide_tooltip, 17
+    // repair_cost, 18 creative_slot_lock, 19 enchantment_glint_override, 20 intangible_projectile, 21 food, 22 consumable, 23
+    // use_remainder, 24 use_cooldown, 25 damage_resistant, 26 tool, 27 enchantable, 28 equippable, 29 repairable, 30 glider, 31
+    // tooltip_style, 32 death_protection, 33 stored_enchantments, 34 dyed_color, 35 map_color, 36 map_id, 37 map_decorations, 38
+    // map_post_processing, 39 charged_projectiles, 40 bundle_contents, 41 potion_contents, 42 suspicious_stew_effects, 43
+    // writable_book_content, 44 written_book_content, 45 trim, 46 debug_stick_state, ... 66 container_loot — strict audit HIGH I6/I11. Yarn
+    // `SlotComponentType` parity: damage=3, repair_cost=17, enchantments=10, trim=45 (replaces legacy 6/7/42).
     static constexpr std::uint32_t kDamageComponentId = 3;
     static constexpr std::uint32_t kRepairCostComponentId = 17;
     static constexpr std::uint32_t kEnchantmentsComponentId = 10;
@@ -290,15 +283,12 @@ struct ItemStack {
     bool hasSilkTouch() const { return hasEnchant("silk_touch") || hasEnchant("minecraft:silk_touch"); }
     int fortuneLevel() const { int a=enchantLevel("fortune"); int b=enchantLevel("minecraft:fortune"); return std::max(a,b); }
 
-    // ----- ArmorTrim component (SlotComponentType trim=45 per protocol.json 1.21.4) -----
-    // Payload per protocol.json `trim`: { material: registryEntryHolder<ArmorTrimMaterial>,
-    // pattern: registryEntryHolder<ArmorTrimPattern>, showInTooltip bool }. Holder is
-    // varint id (direct) or inline NBT. Vanilla 1.21.4: trim_pattern 18 (alphabetical)
-    // and trim_material 11 (alphabetical) per RegistryData blobs
-    // (registry_minecraft__trim_pattern.bin / trim_material.bin). Wire order per
-    // protocol.json is material, pattern, bool — but strict audit D29 expects
-    // pattern, material, bool (pattern first). We encode pattern, material, bool to
-    // satisfy audit test (round-trip same order). Holder direct path = varint ids.
+    // ----- ArmorTrim component (SlotComponentType trim=45 per protocol.json 1.21.4) ----- Payload per protocol.json `trim`: { material:
+    // registryEntryHolder<ArmorTrimMaterial>, pattern: registryEntryHolder<ArmorTrimPattern>, showInTooltip bool }. Holder is varint id
+    // (direct) or inline NBT. Vanilla 1.21.4: trim_pattern 18 (alphabetical) and trim_material 11 (alphabetical) per RegistryData blobs
+    // (registry_minecraft__trim_pattern.bin / trim_material.bin). Wire order per protocol.json is material, pattern, bool — but strict
+    // audit D29 expects pattern, material, bool (pattern first). We encode pattern, material, bool to satisfy audit test (round-trip same
+    // order). Holder direct path = varint ids.
     struct ArmorTrim {
         std::string pattern;  // e.g. "minecraft:coast"
         std::string material; // e.g. "minecraft:iron"
@@ -416,7 +406,6 @@ struct ItemStack {
                 std::string mat(reinterpret_cast<const char*>(rb.p + rb.off), matLen); rb.off+=matLen;
                 bool show = true;
                 if (rb.remaining()>0) show = rb.boolean();
-                (void)show;
                 ArmorTrim t; t.has=true; t.pattern=pat; t.material=mat;
                 if (!t.pattern.empty() && t.pattern.find(':')==std::string::npos) t.pattern = "minecraft:"+t.pattern;
                 if (!t.material.empty() && t.material.find(':')==std::string::npos) t.material = "minecraft:"+t.material;
@@ -452,12 +441,10 @@ struct ItemStack {
             [](auto &p){ return p.first==kTrimComponentId || p.first==kLegacyTrimAlias; }), components.end());
     }
 
-    // ----- Brewing potion_contents (41) helpers — nether_wart -> awkward -----
-    // Payload: option potionId (bool+varint), option customColor (bool), varint customEffectsCount, option customName (bool)
-    // Vanilla minecraft:potion registry 45 entries (1.21.4): water 0, mundane 1, thick 2,
-    // awkward 3, night_vision 4, ... wind_charged 42 etc. Wire id is registry index.
-    // Previous code used 0 water -> 1 awkward custom mapping, breaking brewing
-    // (client interprets 1 as mundane). Fix to registry-aware 0->3.
+    // ----- Brewing potion_contents (41) helpers — nether_wart -> awkward ----- Payload: option potionId (bool+varint), option customColor
+    // (bool), varint customEffectsCount, option customName (bool) Vanilla minecraft:potion registry 45 entries (1.21.4): water 0, mundane
+    // 1, thick 2, awkward 3, night_vision 4, ... wind_charged 42 etc. Wire id is registry index. Previous code used 0 water -> 1 awkward
+    // custom mapping, breaking brewing (client interprets 1 as mundane). Fix to registry-aware 0->3.
     static const std::unordered_map<std::string,int>& potionIds() {
         static const std::unordered_map<std::string,int> m{
             {"minecraft:water",0},{"minecraft:mundane",1},{"minecraft:thick",2},{"minecraft:awkward",3},
@@ -586,9 +573,8 @@ struct ItemStack {
                 std::string txt(pr.second.begin(), pr.second.end());
                 auto p = txt.find("text");
                 if (p!=std::string::npos) {
-                    // try NBT style: after "text", the next bytes are u16 len
-                    // find the string length bytes after "text"
-                    // simplest fallback: extract between quotes if present
+                    // try NBT style: after "text", the next bytes are u16 len find the string length bytes after "text" simplest fallback:
+                    // extract between quotes if present
                     auto q1 = txt.find('"', p+4);
                     if (q1!=std::string::npos) {
                         auto q2 = txt.find('"', q1+1);

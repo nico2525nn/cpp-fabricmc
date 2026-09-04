@@ -138,8 +138,7 @@ const char* Menu::slotRegion(int slot) const {
 
 void Menu::refreshCraftResult(const RecipeManager& recipes) {
     if (type != MenuType::Crafting) return;
-    // 2x2 grid when only rows 0-1/cols 0-1 used is handled naturally by the
-    // matcher scanning the full 3x3.
+    // 2x2 grid when only rows 0-1/cols 0-1 used is handled naturally by the matcher scanning the full 3x3.
     const Recipe* r = recipes.findCrafting(
         std::vector<ItemStack>(std::begin(craftGrid), std::end(craftGrid)), 3, 3);
     craftResult = r ? r->result : ItemStack::air();

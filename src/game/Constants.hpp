@@ -39,9 +39,8 @@ constexpr int kMaxRenameLength = 50; // anvil rename limit
 constexpr int kMaxForcedChunks = 256;
 // Chat signatures — fixed bytes per signature entry (ChatCommandSigned).
 constexpr int kChatSignatureBytes = 256;
-// Protocol angle scale — yaw/pitch degrees to byte. Kept as numerator/denominator
-// pair (not a precomputed quotient) so `deg * kAngleScaleNum / kAngleScaleDen`
-// stays bit-identical to the previous `deg * 256.f / 360.f` (float rounding).
+// Protocol angle scale — yaw/pitch degrees to byte. Kept as numerator/denominator pair (not a precomputed quotient) so `deg *
+// kAngleScaleNum / kAngleScaleDen` stays bit-identical to the previous `deg * 256.f / 360.f` (float rounding).
 constexpr float kAngleScaleNum = 256.0f;
 constexpr float kAngleScaleDen = 360.0f;
 

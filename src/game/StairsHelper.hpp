@@ -1,7 +1,6 @@
 #pragma once
-// StairsHelper — plan31 R6: stairs shape helpers extracted from GameServer.cpp (120-180 lines)
-// Pure helpers + GameServer/world dependent helper, wire-unchanged.
-// Yarn StairsBlock#getStairsShape + isDifferentOrientation strict (front+opposite only, no 4-dir side loop).
+// StairsHelper — plan31 R6: stairs shape helpers extracted from GameServer.cpp (120-180 lines) Pure helpers + GameServer/world dependent
+// helper, wire-unchanged. Yarn StairsBlock#getStairsShape + isDifferentOrientation strict (front+opposite only, no 4-dir side loop).
 #include "GameServer.hpp"
 #include "../generated/BlockStates.hpp"
 #include <string>
@@ -61,13 +60,6 @@ inline std::string computeStairsShape(World& w, int x,int y,int z, const std::st
         if(f=="east") return "north";
         return f;
     };
-    auto rotateCW = [](const std::string& f)->std::string{
-        if(f=="north") return "east";
-        if(f=="east") return "south";
-        if(f=="south") return "west";
-        if(f=="west") return "north";
-        return f;
-    };
     auto opposite = [](const std::string& f)->std::string{
         if(f=="north") return "south";
         if(f=="south") return "north";
@@ -77,7 +69,6 @@ inline std::string computeStairsShape(World& w, int x,int y,int z, const std::st
         if(f=="down") return "up";
         return f;
     };
-    (void)rotateCW;
     {
         int nx=x, nz=z;
         if(facing=="north") nz-=1; else if(facing=="south") nz+=1;

@@ -1,7 +1,6 @@
-// DamageComponent — plan8 entity section
-// Handles item durability (minecraft:damage component) with Unbreaking and Mending.
-// Vanilla logic: tools 1/(lvl+1) chance to damage, armor 60%+40%/(lvl+1) ignore per Yarn EnchantmentHelper.shouldDamage.
-// plan23 combat polish: thread_local mt19937 for Unbreaking (was rand), armor 60%+ verify, tool 1/(lvl+1) verify.
+// DamageComponent — plan8 entity section Handles item durability (minecraft:damage component) with Unbreaking and Mending. Vanilla logic:
+// tools 1/(lvl+1) chance to damage, armor 60%+40%/(lvl+1) ignore per Yarn EnchantmentHelper.shouldDamage. plan23 combat polish:
+// thread_local mt19937 for Unbreaking (was rand), armor 60%+ verify, tool 1/(lvl+1) verify.
 #pragma once
 #include <cstdint>
 #include <random>
@@ -18,9 +17,8 @@ public:
             || n.find("turtle_helmet")!=std::string::npos || n.find("elytra")!=std::string::npos
             || n.find("horse_armor")!=std::string::npos;
     }
-    // Apply damage to a stack, respecting Unbreaking enchantment.
-    // Returns true if the stack was destroyed (damage >= max).
-    // Vanilla Yarn: armor 0.6+0.4/(lvl+1) ignore, tools 1/(lvl+1) damage.
+    // Apply damage to a stack, respecting Unbreaking enchantment. Returns true if the stack was destroyed (damage >= max). Vanilla Yarn:
+    // armor 0.6+0.4/(lvl+1) ignore, tools 1/(lvl+1) damage.
     static bool applyDamage(ItemStack& stack, int amount) {
         if (stack.empty() || amount<=0) return false;
         int maxd = ItemStack::maxDamageFor(stack.itemId);
@@ -71,8 +69,7 @@ public:
         return intDist(rng) == 0;
     }
 
-    // Repair via Mending: consume XP to repair one durability point.
-    // Returns true if repaired.
+    // Repair via Mending: consume XP to repair one durability point. Returns true if repaired.
     static bool mend(ItemStack& stack, int xp) {
         if (stack.empty()) return false;
         int dmg = stack.getDamage();

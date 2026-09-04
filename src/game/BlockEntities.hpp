@@ -1,7 +1,6 @@
-// BlockEntities: chest/furnace state stored per block position (plan3.md
-// "チェスト/かまどUI" data side). Serialized into Anvil `block_entities`
-// compounds so a vanilla server reads our chests and vice versa.
-// plan28 block polish: verify BlockEntities remain decoupled from Scoreboard ResetScore 0x49 (D26) — BE tick/save/load paths verified intact after scoreboard reset hardening; no BE state touches Scoreboard scores.
+// BlockEntities: chest/furnace state stored per block position (plan3.md "チェスト/かまどUI" data side). Serialized into Anvil `block_entities`
+// compounds so a vanilla server reads our chests and vice versa. plan28 block polish: verify BlockEntities remain decoupled from Scoreboard
+// ResetScore 0x49 (D26) — BE tick/save/load paths verified intact after scoreboard reset hardening; no BE state touches Scoreboard scores.
 #pragma once
 #include <cstdint>
 #include <unordered_map>
@@ -50,8 +49,7 @@ struct FurnaceData {
 
 struct BrewingData {
     static constexpr int kSlots = 5;
-    // plan46 G-14: vanilla BrewingStandBlockEntity constants (1.21.4):
-    // one brew step is 400 ticks; one blaze powder fuels 20 steps.
+    // plan46 G-14: vanilla BrewingStandBlockEntity constants (1.21.4): one brew step is 400 ticks; one blaze powder fuels 20 steps.
     static constexpr int kBrewTicks = 400;
     static constexpr int kFuelPerBlaze = 20;
     ItemStack slots[kSlots];
@@ -73,8 +71,7 @@ struct MovingPistonData {
     std::int64_t finishTick = 0;
 };
 
-// plan43 W-07: sign texts (vanilla SignText front/back, 4 lines each as raw
-// strings — plain text or JSON components, stored verbatim).
+// plan43 W-07: sign texts (vanilla SignText front/back, 4 lines each as raw strings — plain text or JSON components, stored verbatim).
 struct SignData {
     std::string front[4];
     std::string back[4];

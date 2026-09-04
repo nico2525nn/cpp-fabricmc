@@ -1,6 +1,5 @@
-// Anvil region file (.mca) reader/writer.
-// Layout: 1024 x 4B sector offsets, 1024 x 4B epoch timestamps,
-// then chunks: [length u32 incl. compression byte][compression byte=2 zlib][data].
+// Anvil region file (.mca) reader/writer. Layout: 1024 x 4B sector offsets, 1024 x 4B epoch timestamps, then chunks: [length u32 incl.
+// compression byte][compression byte=2 zlib][data].
 #pragma once
 #include <cstdint>
 #include <cstdio>

@@ -313,14 +313,7 @@ struct Cache2d final : DensityNode { // memoize per column within one chunk
 };
 using Cache2dPtr = std::shared_ptr<Cache2d>;
 
-// plan46 G-10: remaining Yarn density-function types.
-// - Interpolated: vanilla samples the wrapped function on the cell grid and
-//   trilinearly interpolates. We approximate by direct evaluation (exact for
-//   smooth inputs; documented in DENSITY_COVERAGE.md) but keep the explicit
-//   node type so JSON round-trips instead of silently flattening.
-// - FlatCache: memoize the last sampled position (vanilla caches per call
-//   site; single-entry cache is the honest minimal form).
-// - CacheOnce: evaluate the wrapped function once per pass (beginPass resets).
+// plan46 G-10: Interpolated (direct-eval approx, see DENSITY_COVERAGE.md), FlatCache, CacheOnce node types.
 struct Interpolated final : DensityNode {
     NodePtr in;
     double eval(const Sample& s) const override { return in ? in->eval(s) : 0; }
@@ -350,10 +343,7 @@ struct CacheOnce final : DensityNode {
     }
     void beginPass() { has = false; ++rev; }
 };
-// plan46 G-10: Spline (vanilla cubic-spline density function — the core of
-// continentalness/erosion/ridge curves). Cubic Hermite interpolation over
-// sorted (location, value, derivative) points, Yarn Spline semantics:
-// exact at knots, C1-continuous between, clamped outside the point range.
+// plan46 G-10: Spline (Yarn cubic Hermite: exact at knots, C1 between, clamped outside).
 struct Spline final : DensityNode {
     struct Point { double loc, val, der; };
     NodePtr coordinate; // sampled for the lookup position; null => use x
@@ -404,27 +394,20 @@ inline void collectCaches(const NodePtr& n, std::vector<Cache2dPtr>& out,
         if (sn->shiftX) collectCaches(sn->shiftX, out, flatOut, onceOut);
         if (sn->shiftY) collectCaches(sn->shiftY, out, flatOut, onceOut);
         if (sn->shiftZ) collectCaches(sn->shiftZ, out, flatOut, onceOut);
-    } else if (auto sh = std::dynamic_pointer_cast<Shift>(n)) {
-        (void)sh;
-    } else if (auto sha = std::dynamic_pointer_cast<ShiftA>(n)) {
-        (void)sha;
-    } else if (auto shb = std::dynamic_pointer_cast<ShiftB>(n)) {
-        (void)shb;
-    } else if (auto beard = std::dynamic_pointer_cast<BeardifierNode>(n)) {
-        (void)beard;
-    } else if (auto old = std::dynamic_pointer_cast<OldBlendedNoiseNode>(n)) {
+    } else if (std::dynamic_pointer_cast<Shift>(n)) {}
+    else if (std::dynamic_pointer_cast<ShiftA>(n)) {}
+    else if (std::dynamic_pointer_cast<ShiftB>(n)) {}
+    else if (std::dynamic_pointer_cast<BeardifierNode>(n)) {}
+    else if (auto old = std::dynamic_pointer_cast<OldBlendedNoiseNode>(n)) {
         collectCaches(old->in, out, flatOut, onceOut);
     } else if (auto ws = std::dynamic_pointer_cast<WeirdScaledSamplerNode>(n)) {
         collectCaches(ws->input, out, flatOut, onceOut);
     } else if (auto bd = std::dynamic_pointer_cast<BlendDensityNode>(n)) {
         collectCaches(bd->in, out, flatOut, onceOut);
-    } else if (auto ba = std::dynamic_pointer_cast<BlendAlphaNode>(n)) {
-        (void)ba;
-    } else if (auto bo = std::dynamic_pointer_cast<BlendOffsetNode>(n)) {
-        (void)bo;
-    } else if (auto ei = std::dynamic_pointer_cast<EndIslandsNode>(n)) {
-        (void)ei;
-    } else if (auto ip = std::dynamic_pointer_cast<Interpolated>(n)) {
+    } else if (std::dynamic_pointer_cast<BlendAlphaNode>(n)) {}
+    else if (std::dynamic_pointer_cast<BlendOffsetNode>(n)) {}
+    else if (std::dynamic_pointer_cast<EndIslandsNode>(n)) {}
+    else if (auto ip = std::dynamic_pointer_cast<Interpolated>(n)) {
         collectCaches(ip->in, out, flatOut, onceOut);
     } else if (auto fc = std::dynamic_pointer_cast<FlatCache>(n)) {
         if (flatOut) flatOut->push_back(fc);

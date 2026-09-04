@@ -33,8 +33,7 @@ struct Packet {
     }
 };
 
-// IPacketHandler: per-packet handler interface.
-// Implement handle(packet, connection) for each packet type.
+// IPacketHandler: per-packet handler interface. Implement handle(packet, connection) for each packet type.
 class IPacketHandler {
 public:
     virtual ~IPacketHandler() = default;
