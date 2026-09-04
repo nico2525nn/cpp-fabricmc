@@ -1,4 +1,3 @@
-// MeleeHelper — plan44 §3 G-07/G-08/G-09 combat pure functions (header-only, unit-testable). Vanilla sources: minecraft.wiki Sweeping_Edge
 // / Melee_attack#Critical_hit / Blocking, Yarn PlayerEntity.attack (cooldown 84.8%+, T=20/attack_speed), wiki
 // Thorns/Density/Breach/Wind_Burst/Riptide. Wire policy: pure math here; GameServer_session onUseEntity + CombatManager consume it.
 // E-06/E-07/E-08 lock (DamageCalculator single formula caps 30/20, EPF weights) is NOT touched.
@@ -100,7 +99,6 @@ inline int breachAdjustedArmor(int armor, int breachLv) {
     float f = 1.f - 0.15f * static_cast<float>(std::min(breachLv, 4));
     return static_cast<int>(std::round(static_cast<float>(armor) * std::max(0.f, f)));
 }
-// ---- G-09 density (mace): +0.5HP x 0.25 per block fallen per level (plan44 §3) ----
 inline float densitySmashBonus(int fallBlocks, int densityLv) {
     if (densityLv <= 0 || fallBlocks <= 0) return 0.f;
     return 0.5f * 0.25f * static_cast<float>(fallBlocks) * static_cast<float>(densityLv);

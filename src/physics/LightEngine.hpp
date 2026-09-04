@@ -1,4 +1,3 @@
-// LightEngine: incremental Minecraft-style lighting (plan3.md
 // "完全な明るさ伝播（BFS）").
 //
 // * Block light: classic two-queue BFS (removal queue + addition queue)
@@ -17,9 +16,6 @@
 
 namespace cppfm {
 
-// LightUpdateQueue: batching for cross-chunk light updates (plan10 §2, plan20 §5 W10) Collects dirty chunk keys and expands once to 3×3
-// neighbourhood (single expansion, was double). vanilla LevelLightEngine queues dirty and expands once; LightEngine::drain() now unifies
-// base = dirtyChunks ∪ pendingSkyRebuild_ ∪ skyDirtyExtra_ and expands once via hasChunk||hasSkyLightCache. markAndNeighbors is legacy
 // helper kept for callers that need immediate 3×3 (drain uses unified expanded set).
 struct LightUpdateQueue {
     std::unordered_set<std::int64_t> dirty;
@@ -35,7 +31,6 @@ struct LightUpdateQueue {
 struct LightUpdateBatch {
     // Chunks whose serialized light payload must be re-sent.
     std::unordered_set<std::int64_t> dirtyChunks;
-    // LightUpdateQueue for batch emission (plan10 §2)
     LightUpdateQueue queue;
 };
 

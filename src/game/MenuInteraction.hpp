@@ -25,7 +25,6 @@ int maxStackForId(std::uint32_t itemId);         // id form (single truth for Me
 class ClickLogic {
 public:
     // Applies one client click. Returns true when the menu contents changed
-    // (caller re-syncs slots); false when the click was rejected/no-op.
     static bool apply(Menu& m, Player& p, const RecipeManager& recipes,
                       int clickedSlot, int button, int mode,
                       ItemStack& cursor, MenuIo& io);

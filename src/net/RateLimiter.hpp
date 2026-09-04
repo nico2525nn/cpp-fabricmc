@@ -1,4 +1,3 @@
-// plan46 §1: flood-defense primitives — RateLimiter (bytes), SpamTracker (+20/msg,>200 kick), AcceptGate, RateLimitedLog.
 
 #pragma once
 #include <algorithm>

@@ -1,4 +1,3 @@
-// Redstone: wire-network power propagation with tick-delayed updates (plan3.md "レッドストーン"). Devices modelled: * redstone_block – constant
 // power source (15) * lever – toggleable source, right-click interaction * button – pulsed source (30 ticks), right-click interaction *
 // redstone_wire – conducts 15 → 1 across a connected network * redstone_torch – source; turns OFF when the block it stands on is strongly
 // powered by an adjacent wire/lamp chain * redstone_lamp – lights while any adjacent wire carries power * repeater – output-only booster
@@ -15,7 +14,6 @@
 #include "../game/World.hpp"
 #include "../game/BlockEntities.hpp"
 
-// RedstoneComponent / IRedstoneBehavior (plan7): component delegate for redstone behaviors
 namespace cppfm {
 
 class IRedstoneBehavior {
@@ -92,7 +90,6 @@ struct RedstoneTick {
     bool operator>(const RedstoneTick& o) const { return dueTick > o.dueTick; }
 };
 
-// MovingPiston entity (plan6 item 19): piston animation with progress 0-1
 struct PistonEntity {
     std::int32_t x=0, y=0, z=0;
     float progress = 0.f; // 0-1

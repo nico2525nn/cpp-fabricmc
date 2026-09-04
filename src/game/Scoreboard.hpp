@@ -1,4 +1,3 @@
-// Scoreboard: objectives, scores, display slots and minimal teams (plan4 P1-D). Server-side model + packet builders; commands live in
 // Commands.cpp.
 #pragma once
 #include <algorithm>
@@ -54,7 +53,6 @@ public:
 
     // ---------------------------------------------------------------- model
     std::vector<Objective> objectives;
-    // key = objective name; inner: holder -> score
     std::unordered_map<std::string, std::map<std::string, std::int32_t>> scores;
     std::int8_t displayedSlot = -1;              // sidebar slot(1); -1 none
     std::string displayedObjective;

@@ -15,6 +15,7 @@
 #include <vector>
 #include <array>
 #include <future>
+#include <functional>
 #include "../net/Connection.hpp"
 #include "../net/RateLimiter.hpp"   // plan46 §1: SpamTracker (O-13 A3)
 #include "../proto/Ids.hpp"
@@ -166,22 +167,17 @@ struct Player {
     std::uint8_t digLastStage = 255;
     double sentX = 0, sentY = 0, sentZ = 0;   // last broadcast to others
     float  sentYaw = 0, sentPitch = 0;
-    // experience (plan3 経験値システム)
     XpState xp{};
     // stats + advancements
     std::unique_ptr<StatsManager> stats;
     std::unique_ptr<AdvancementManager> advancements;
     std::int64_t joinTick = 0;
-    // active status effects (plan3 ポーション)
     std::vector<EffectInstance> effects;
-    // chat signing session (plan3 Chat signing)
     bool hasChatSession = false;
     std::vector<std::uint8_t> chatPubKey;
     std::int64_t chatSessionExpiry = 0;
     std::vector<uint8_t> lastSeenSignatures;
-    // cookies (plan3 Cookie) — opaque server-defined blobs
     std::unordered_map<std::string, std::vector<std::uint8_t>> cookies;
-    // current dimension: 0=overworld, -1=nether, 1=end (plan5 §1)
     std::int8_t dimension = 0;
     std::int64_t portalCooldownUntilTick = -100000;
     // sleeping state (bed)
@@ -189,11 +185,9 @@ struct Player {
     std::int32_t bedX=0, bedY=0, bedZ=0;
     // client-declared plugin channels
     std::unordered_set<std::string> clientChannels;
-    // plan42 R3: shared Connection ownership (raw ptr dangles across threads; ASan-proven UAF).
     std::shared_ptr<Connection> conn;
     // PVP knockback / invuln (items 42)
     std::int32_t hurtCooldown = 0;
-    // plan44 §3 G-07/G-08: melee cooldown (Yarn PlayerEntity.attack, T=20/attack_speed),
     // shield blocking ticks (5t to activate) + axe disable timer (100t)
     std::int32_t attackCooldownTicks = 20; // start fully charged
     std::int32_t blockingTicks = 0;
@@ -204,11 +198,9 @@ struct Player {
     std::int64_t lastEnderPearlTick = -10000;
     std::int64_t invulnUntilTick = 0;
     std::int32_t enchantmentSeed = 0; // plan17 LOW I5: seeded enchanting RNG (Yarn EnchantmentScreenHandler seed)
-    // plan35 §5: flight tracking for allow-flight=false kick (simple onGround-based)
     bool isFlying = false;
     std::int32_t flyingTicks = 0;
     AttributeManager attributes;
-    // plan45 B6: play client settings (W-05 packet_common_settings) — kept
     // per-player; viewDistance narrows the chunk send radius (min with server vd).
     struct ClientSettings {
         std::string locale = "en_us";
@@ -221,22 +213,17 @@ struct Player {
         bool serverListing = true;
         std::int32_t particleStatus = 0; // 0 all / 1 decreased / 2 minimal
     } clientSettings;
-    // plan45 B6 W-10(a): boat paddle input (receive+hold; physics stays G-05).
     bool boatLeftPaddle = false, boatRightPaddle = false;
-    // plan45 B6 W-08/G-13: recipe-book open state (server keeps display state;
     // unlock distribution stays UpdateRecipes/RecipeBookAdd).
     std::int32_t recipeBookId = 0;
     bool recipeBookOpen = false, recipeBookFilter = false;
     std::int32_t displayedRecipe = -1;
-    // plan45 B6 W-10(d): advancement tab / bundle cursor / difficulty lock.
     std::int32_t advancementTabAction = -1;
     std::string advancementTabId;
     std::int32_t bundleSelectedIndex = 0;
     bool difficultyLocked = false;
-    // plan45 B6 W-10(c): last play pong (RTT bookkeeping shared with O-02).
     std::int32_t lastPlayPongId = 0;
     std::int64_t lastPlayPongMs = 0;
-    // plan45 B6 W-09: spectate target (gm3) / beacon selection / book edit.
     std::array<std::uint8_t,16> spectateTarget{};
     bool hasSpectateTarget = false;
     std::optional<std::int32_t> beaconPrimary, beaconSecondary;
@@ -247,13 +234,11 @@ struct Player {
         bool signedCopy = false;
     };
     BookEdit lastBookEdit;
-    // plan32 combat: per-player recipe unlocks for /recipe give|take
     std::unordered_set<std::string> combatRecipeUnlocks;
 };
 
 struct BlockPos {
     std::int32_t x=0, y=0, z=0;
-    // plan14 §2: offset by face (0:down -Y, 1:up +Y, 2:north -Z, 3:south +Z, 4:west -X, 5:east +X)
     BlockPos offset(int face) const {
         static constexpr int FX[] = {0, 0, 0, 0, -1, 1};
         static constexpr int FY[] = {-1, 1, 0, 0, 0, 0};
@@ -286,13 +271,11 @@ public:
 
 private:
     void handleHandshake(ReadBuffer& in);
-    // plan45 B6 W-13(a): pre-1.7 legacy server-list ping (0xFE) reply.
     void answerLegacyPing();
     void handleStatus();
     void handleLogin();
     void handleConfiguration();
     void handlePlay();
-    // plan43 W-12: configuration packets may arrive at any time; both wait
     // loops (packs + finish-ack) share this helper. Only unknown ids throw.
     enum class ConfigWaitResult { Continue, FinishAck, PacksDone };
     ConfigWaitResult handleOneConfigPacket(ReadBuffer& in);
@@ -303,6 +286,18 @@ private:
     void onChatMessage(ReadBuffer& in);
     void onPlayerAction(ReadBuffer& in);
     void onUseItemOn(ReadBuffer& in);
+    struct UseItemOnRequest;
+    bool handleUseItemOnInteractions(const UseItemOnRequest& request);
+    bool handleUseItemOnToolActions(const UseItemOnRequest& request,
+                                    const InvSlot& heldItem);
+    bool handleUseItemOnDoorAndSlab(const UseItemOnRequest& request,
+                                    const InvSlot& heldItem);
+    bool handleUseItemOnOccupied(const UseItemOnRequest& request,
+                                 const InvSlot& heldItem);
+    bool handleUseItemOnEntityItems(const UseItemOnRequest& request,
+                                    const InvSlot& heldItem);
+    void placeUseItemOnBlock(const UseItemOnRequest& request,
+                             const InvSlot& heldItem);
     void onUseItem(ReadBuffer& in);
     void onHeldSlot(ReadBuffer& in);
     // Play-packet bodies extracted from handlePlay (cleanup P3(d)).
@@ -367,7 +362,6 @@ private:
 
     // send helpers
     void disconnectIn(const char* jsonReason);   // uses current state_
-    // plan46 §1 W-16: kick with a state-correct Disconnect + short grace + abortive close (peer observes the reason, then a dead socket).
     void kickPlay(const char* jsonReason);
     void sendSystemText(const std::string& text);
     void sendJoinGame();
@@ -378,7 +372,6 @@ private:
     void broadcastPlayerInfoAdd(Player* about);
     void sendStarterInventory();
     void sendAbilities();
-    // plan43 W-07: re-send stored sign text as BlockEntityData 0x07.
     void sendSignBlockEntity(std::int32_t x, std::int32_t y, std::int32_t z);
     void ack(std::int32_t sequence);
     // container menus (chest/furnace/crafting)
@@ -393,22 +386,16 @@ private:
     void closeOpenMenu(bool sendPacket);
     void onWindowClick(ReadBuffer& in);
     void onEnchantItem(ReadBuffer& in);
-    // plan45 B6: W-05 settings parse (shared play 0x0C / config 0x00 shape).
     void applyClientSettings(Player::ClientSettings s);
-    // plan45 B6 W-09: op/creative gate for debug editors (unimplemented=deny).
     bool requireOp(int level, const char* what);
-    // plan45 B6 W-10(d): F3+I answers (TagQueryResponse 0x75).
     void sendTagQueryResponse(std::int32_t transactionId, const WriteBuffer& nbt);
     void answerBlockNbt(std::int32_t transactionId, std::int32_t x, std::int32_t y, std::int32_t z);
     void answerEntityNbt(std::int32_t transactionId, std::int32_t entityId);
-    // plan45 B6 W-08: anvil rename (NameItem 0x2E) + beacon apply.
     void onNameItem(const std::string& name);
     void onBeaconEffect(std::optional<std::int32_t> primary, std::optional<std::int32_t> secondary);
-    // plan45 B6 W-09: spectate teleport (gm3).
     void onSpectate(const std::array<std::uint8_t,16>& target);
 
     GameServer& srv_;
-    // plan42 R3: shared with Player::conn (see above) so cross-thread broadcasts never touch a freed Connection.
     std::shared_ptr<Connection> conn_;
     enum class State { Handshake, Status, Login, Configuration, Play, Done };
 
@@ -425,7 +412,6 @@ private:
     // open container menu (chest/furnace/crafting) when any
     std::unique_ptr<Menu> openMenu_;
     ItemStack cursorItem_;
-    // plan46 §1 O-13 A3: vanilla chat-spam throttle (200式) + flood log gate.
     SpamTracker spam_;
     RateLimitedLog playLogGate_;
     std::int32_t menuWindowCounter_ = 0;
@@ -487,7 +473,6 @@ public:
         tagManager_.applyToRecipeTags(recipes_.tags_);
         recipes_.syncTagsFrom(tagManager_); // plan37 B-03 double sync before recipes (also after loadDirectory)
         lootTables_.loadDirectory("assets/data/loot_tables");
-        // Plan13 datapackmanager (advancements/predicates/item_modifiers/functions)
         datapackManager_.loadAll(recipes_, "assets/data", cfg_.worldDir + "/datapacks");
         tagManager_ = datapackManager_.tagManager;
         lootTables_ = datapackManager_.lootTables;
@@ -525,8 +510,6 @@ public:
         blockTicks_->registerBehavior("minecraft:chorus_flower", std::make_unique<ChorusFlowerBehavior>());
         blockTicks_->registerBehavior("minecraft:kelp", std::make_unique<KelpBehavior>());
         blockTicks_->registerBehavior("minecraft:seagrass", std::make_unique<SeagrassBehavior>());
-        // kelp_plant has no randomTick (vanilla KelpPlant) — not registered (plan22 B26) tall_seagrass has no randomTick — vanilla
-        // TallSeagrass has no randomTick (plan17 §9 B26) bone meal growth for kelp/seagrass via fertilize() (plan29 §10 tall_seagrass)
         blockTicks_->registerBehavior("minecraft:fire", std::make_unique<FireBehavior>());
         blockTicks_->registerBehavior("minecraft:soul_fire", std::make_unique<SoulFireBehavior>());
         blockTicks_->registerBehavior("minecraft:campfire", std::make_unique<CampfireBehavior>());
@@ -536,14 +519,12 @@ public:
         blockTicks_->registerBehavior("minecraft:pitcher_crop", std::make_unique<CropBehavior>());
         blockTicks_->registerBehavior("minecraft:pale_oak_leaves", std::make_unique<PaleOakLeavesBehavior>());
         blockTicks_->registerBehavior("minecraft:creaking_heart", std::make_unique<CreakingHeartBehavior>());
-        // plan7: ServerProperties typed loading (viewDistance, spawn-protection, etc.)
         {
             ServerProperties sp;
             if (sp.load("server.properties")) {
                 cfg_.viewDistance = std::clamp(sp.get<int>("view-distance", cfg_.viewDistance), 2, 32);
                 cfg_.simulationDistance = std::clamp(sp.get<int>("simulation-distance", cfg_.simulationDistance), 2, 32);
                 cfg_.spawnProtection = std::max(0, sp.get<int>("spawn-protection", cfg_.spawnProtection));
-                // W19 maxLoadedChunks polish (plan21 §3): auto max(8192, viewDist²*4) when not configured
                 if (sp.has("max-loaded-chunks") || sp.has("maxLoadedChunks")) {
                     cfg_.maxLoadedChunks = std::max(0, sp.get<int>("max-loaded-chunks", sp.get<int>("maxLoadedChunks", cfg_.maxLoadedChunks)));
                 } else {
@@ -555,7 +536,6 @@ public:
                 if (endWorld_) endWorld_->setSimulationDistance(cfg_.simulationDistance);
             }
         }
-        // plan7: World simulation-distance responsibility – engines use World::isPositionInSimulationDistance
         world_.setSimulationDistance(cfg_.simulationDistance);
         if (netherWorld_) netherWorld_->setSimulationDistance(cfg_.simulationDistance);
         if (endWorld_) endWorld_->setSimulationDistance(cfg_.simulationDistance);
@@ -584,9 +564,7 @@ public:
                 fluidSim_->touch(x + DX[d], y + DY[d], z + DZ[d]);
             redstone_->onBlockChanged(x, y, z);
         });
-        // plan6 §9: seed persistence with current border/difficulty
         spawnProtection_ = cfg_.spawnProtection;
-        // plan46 §2 (O-08): session.lock — stale lock warns, live holder warns loudly.
         { bool live = false; sessionLock_.acquire(cfg_.worldDir, live); (void)live; }
         persist_ = std::make_unique<Persistence>(world_, cfg_.worldDir, cfg_.worldBiome);
         persist_->setDifficulty(difficulty_);
@@ -678,7 +656,6 @@ public:
                 }
             });
         persist_->loadLevelData();
-        // W16 single level.dat migration: remove legacy DIM level.dat files (strict)
         for (auto sub : {"DIM-1", "DIM1"}) {
             std::string p = cfg_.worldDir + "/" + std::string(sub) + "/level.dat";
             if (std::filesystem::exists(p)) {
@@ -698,7 +675,6 @@ public:
         worldBorderLerpMs_ = persist_->worldBorderLerpMs();
         worldBorderLerpRemainingTicks_ = persist_->worldBorderLerpRemainingTicks();
         worldBorderLerpTotalTicks_ = worldBorderLerpRemainingTicks_;
-        // plan5 §1: spawn-chunk loader — generate a 5x5 area around spawn with ChunkTicket SPAWN level 31 (ForcedChunks NBT)
         {
             const auto sp = world_.spawnPoint();
             for (int dz = -2; dz <= 2; ++dz)
@@ -710,7 +686,6 @@ public:
                 }
         }
         persist_->start();
-        // plan5 §1: per-dimension persistence (DIM-1 / DIM1)
         for (int d = 0; d < 2; ++d) {
             auto& pw = dimPersist_[d];
             const char* sub = d == 0 ? "DIM-1" : "DIM1";
@@ -724,11 +699,9 @@ public:
         std::fprintf(stderr, "[cppfm] RCON %s (enabled=%d port=%u)\n",
                      rconUp ? "listening" : "not started", (int)cfg_.rcon.enabled,
                      cfg_.rcon.port);
-        // Plan8 modular split: instantiate managers (facade)
         worldMgr_ = std::make_unique<WorldManager>(world_, *netherWorld_, *endWorld_);
         entityMgr_ = std::make_unique<EntityManager>();
         networkMgr_ = std::make_unique<NetworkManager>(batcher_);
-        // HungerManager/CombatManager are stateless, no instance needed Plan7 BossAI
         bossAI_ = std::make_unique<BossAIManager>(*this);
     }
     void runForever();
@@ -747,7 +720,6 @@ public:
         if (rconServer_) rconServer_->stop();
         std::fprintf(stderr, "[cppfm] stopping persistence\n");
         if (persist_) persist_->stop();
-        // plan28 finish: stop nether/end persistence workers here (avoids ~GameServer futex livelock).
         for (auto& d : dimPersist_) if (d) d->stop();
         std::fprintf(stderr, "[cppfm] closing listen fd\n");
         if (listenFd_ >= 0) { ::close(listenFd_); listenFd_ = -1; }
@@ -759,7 +731,6 @@ public:
     bool loadPlayerData(const std::string& uuidHex, Player& p);
     void saveLevelData();
     void loadLevelData();
-    // Cookie persistence (plan3 Cookie): world/data/cookies/<uuid>/<key>
     void storeCookie(const std::array<std::uint8_t, 16>& uuid,
                      const std::string& key,
                      const std::vector<std::uint8_t>& value);
@@ -837,16 +808,13 @@ public:
                                               Player* source);
     // Spawn a mob by "minecraft:zombie"-style name at position.
     bool spawnMobByTypeName(const std::string& name, double x, double y, double z);
-    // plan14 §2 Spawn eggs UseItemOn: trySpawnEgg handling (itemName endsWith _spawn_egg, spawnPos=pos.offset(face), check air, spawnMobByTypeName, consume if not creative)
     bool trySpawnEgg(Player& p, ItemStack& stack, BlockPos hitPos, int face);
     // Furnace smelting tick (called once per game tick).
     void furnacesTick();
     void brewingTick();
     // Hopper item movement + dispenser ejection (every HOPPER_TRANSFER_INTERVAL_TICKS).
-    // plan44 G-01: interval as named constant so unit tests pin the impl value.
     static constexpr int HOPPER_TRANSFER_INTERVAL_TICKS = 8;
     void hoppersTick();
-    // Chunk LRU / simulation distance (plan5 items 6,7,8)
     bool isChunkInSimulationDistance(std::int32_t cx, std::int32_t cz) const;
     void chunksUnloadTick();
     // Direct inventory access helpers used by the hopper simulation.
@@ -858,8 +826,6 @@ public:
     void effectsTick();
     // Console command dispatch (shared by chat /commands and RCON)
     std::string dispatchConsole(const std::string& line);
-    // plan42 R3 (E-19): per-thread capture of console command feedback so RCON
-    // returns actual output (e.g. `Seed: [...]`) instead of fixed "ok".
     inline static thread_local std::string* consoleCapture_ = nullptr;
 
     // ticking & entities (Phase 3/4)
@@ -880,7 +846,6 @@ public:
     void mobAttackPlayer(MobEntity& m, Player& target);
     // Feed-to-breed handling when a player right-clicks an animal with food.
     bool tryBreedFeed(Player& p, MobEntity& m);
-    // Equipment / riding sync (plan5 30-47) — plan13 §2 dynamic sync, ArmorTrim, HandDropChances
     void sendEquipment(const MobEntity& mob);
     void sendEquipmentSlot(const MobEntity& mob, int slot);
     void broadcastPlayerEquipment(const Player& p);
@@ -893,15 +858,12 @@ public:
     void spawnXpOrbs(double x, double y, double z, int totalPoints,
                      Player* directTo);
     void xpOrbsTick();
-    // Projectiles (arrows / snowballs / pearls) — plan4 P1-A plan44 G-09: returns the spawned entity so callers can tag piercing/loyalty
     std::shared_ptr<ProjectileEntity> spawnProjectile(ProjectileKind kind, double x, double y, double z,
                          double vx, double vy, double vz,
                          std::int32_t ownerId, bool ownerIsPlayer, bool charged = false);
     void projectilesTick();
-    // Rails / minecart physics (plan11 §3) + boat physics (plan13 §3)
     void minecartsTick();
     void boatsTick();
-    // Villager trading (plan4 P1-B)
     static const std::vector<struct TradeOffer>& tradeTable();
     bool openTrading(Player& p, MobEntity& villager);
     bool selectTrade(Player& p, std::int32_t index);
@@ -913,28 +875,141 @@ public:
     void onBlockMined(Player& p, std::uint16_t oldState);
     void onItemObtained(Player& p, const ItemStack& s, const char* how);
     void onMobKilledBy(Player& p, MobKind kind);
-    // plan35 §1: trigger evaluation helpers
     void evaluateTickAdvancements(Player& p);
     void evaluateInventoryChanged(Player& p, const ItemStack& s);
     void evaluatePlayerKilledEntity(Player& p, MobKind kind);
-    // Single-sourced PredicateContext base (was 9x copy-paste in GameServer_core.cpp).
     PredicateContext basePredicateContext(Player& p);
-    // plan37 §3: additional triggers (location/placed_block/consume_item)
     void evaluateLocationTrigger(Player& p);
     void onPlacedBlock(Player& p, int x, int y, int z, std::uint16_t state);
     void onConsumeItem(Player& p, const ItemStack& stack);
-    // plan38 B-13: 6->10 triggers
     void onBredAnimals(Player* p);
     void onEnterBlock(Player* p, int x, int y, int z);
     void onItemUsedOnBlock(Player* p, int x, int y, int z, const ItemStack& item);
     void onEffectsChanged(Player* p);
-    // plan40 §2 C-06: 10->13 triggers (inventory_changed tag + enchanted_item + filled_bucket + villager_trade/player_killed_entity refinement)
     void onItemEnchanted(Player& p, const std::string& itemName, int levels);
     void onBucketFilled(Player& p, const std::string& filledName);
     void onVillagerTraded(Player& p, const std::string& soldId, int count);
     std::vector<AdvancementDefOwned> getMergedAdvancements();
-private:
-    // plan35 cached merged advancements; plan42 R3: mutex-guarded (ASan-proven join/reload UAF).
+ private:
+    // Command registration is kept private and split by tree branch so each
+    // registration unit remains reviewable without changing the public API.
+    void initChatCommandsPart01();
+    void initChatCommandsPart02();
+    void initChatCommandsPart03();
+    void initChatCommandsPart04();
+    void initAdminCommandsPart01();
+    void initAdminCommandsPart02();
+    void initAdminCommandsPart03();
+    void initAdminCommandsPart04();
+    void initAdminCommandsPart05();
+    void initAdminCommandsPart06();
+    void initAdminCommandsPart07();
+    void initAdminCommandsPart08();
+    void initAdminCommandsPart09();
+    void initAdminCommandsPart10();
+    void initAdminCommandsPart11();
+    void initMiscCommandsPart01();
+    void initMiscCommandsPart02();
+    void initMiscCommandsPart03();
+    void initMiscCommandsPart04();
+    void initMiscCommandsPart05();
+    void initMiscCommandsPart06();
+    void initMiscCommandsPart07();
+    void initMiscCommandsPart08();
+    void initWorldCommandsPart01();
+    void initWorldCommandsPart02();
+    void initWorldCommandsPart03();
+    void initWorldCommandsPart04();
+    void initWorldCommandsPart05();
+    void initWorldCommandsPart06();
+    void initWorldCommandsPart07();
+    void initWorldCommandsPart08();
+    void initWorldCommandsPart09();
+    void initWorldCommandsPart10(const brigadier::NodePtr& locate);
+    void initWorldCommandsPart11(const brigadier::NodePtr& locate);
+    void initWorldCommandsPart12(const brigadier::NodePtr& locate);
+    void initWorldCommandsPart13();
+    void initWorldCommandsPart14();
+    void initWorldCommandsPart15();
+    void initWorldCommandsPart16();
+    void initWorldCommandsPart17();
+    void initWorldCommandsPart18();
+    void initWorldCommandsPart19();
+    void initWorldCommandsPart20();
+    void initWorldCommandsPart21();
+    void initPlayerCommandsPart01();
+    void initPlayerCommandsPart02();
+    void initPlayerCommandsPart03();
+    void initPlayerCommandsPart04();
+    void initPlayerCommandsPart05();
+    void initPlayerCommandsPart06();
+    void initPlayerCommandsPart07();
+    void initPlayerCommandsPart08();
+    void initPlayerCommandsPart09();
+    void initPlayerCommandsPart10();
+    void initPlayerCommandsPart11();
+    void initPlayerCommandsPart13();
+    void initPlayerCommandsPart14();
+    void initPlayerCommandsPart15();
+    void initPlayerCommandsPart16();
+    void initPlayerCommandsPart17();
+    void initPlayerCommandsPart18();
+    void initPlayerCommandsPart19();
+    void initPlayerCommandsPart20();
+    void initPlayerCommandsPart21();
+    void initPlayerCommandsPart22();
+    void initPlayerAttributeCommands();
+    std::optional<Attribute> resolveAttributeCommand(const std::string& raw) const;
+    std::pair<Player*, Attribute> attributeCommandHead(brigadier::CommandContext& c);
+    void sendAttributeCommandUpdate(Player& p);
+    void initAttributeGetCommands(const brigadier::NodePtr& attrArg);
+    void initAttributeBaseCommands(const brigadier::NodePtr& attrArg);
+    void initAttributeModifierCommands(const brigadier::NodePtr& attrArg);
+    void initDataFunctionCommands();
+    void initDataDatapackCommands();
+    void initDataReloadCommands();
+    void initDataScheduleCommands();
+    void initDataReturnCommands();
+    void initDataStorageCommands();
+    void initDataGetCommands(const brigadier::NodePtr& data);
+    void initDataModifyCommands(const brigadier::NodePtr& data);
+    void initDataRemoveCommands(const brigadier::NodePtr& data);
+    void initDataMergeCommands(const brigadier::NodePtr& data,
+                               const brigadier::NodePtr& merge);
+    void initDataLootCommands();
+    void initDataAdvancementCommands();
+    void initDataRecipeCommands();
+    void initDataItemCommands();
+    void initDataLootSourceCommands();
+    void initDataItemReplaceCommands(
+        const brigadier::NodePtr& replaceLit,
+        const std::function<ItemStack*(Player&, const std::string&)>& slotToPlayerStack,
+        const std::function<ItemStack*(const brigadier::BlockPosI&, const std::string&)>& slotToBlockStack,
+        const std::function<ItemStack(const std::string&, int)>& parseItemStack);
+    void initDataItemModifyCommands(
+        const brigadier::NodePtr& modifyLit,
+        const std::function<ItemStack*(const brigadier::BlockPosI&, const std::string&)>& slotToBlockStack);
+    void initDataItemRemoveCommands(
+        const brigadier::NodePtr& removeLit,
+        const std::function<ItemStack*(const brigadier::BlockPosI&, const std::string&)>& slotToBlockStack);
+    void initExecuteRunCommands(const brigadier::NodePtr& exec);
+    void initExecuteAsCommands(const brigadier::NodePtr& exec);
+    void initExecuteAtCommands(const brigadier::NodePtr& exec);
+    void initExecutePositionedCommands(const brigadier::NodePtr& exec);
+    void initExecuteAnchoredCommands(const brigadier::NodePtr& exec);
+    void initExecuteRotatedCommands(const brigadier::NodePtr& exec);
+    void initExecuteFacingCommands(const brigadier::NodePtr& exec);
+    void initExecuteInCommands(const brigadier::NodePtr& exec);
+    void initExecuteAlignCommands(const brigadier::NodePtr& exec);
+    void initExecuteConditionCommands(const brigadier::NodePtr& exec,
+                                      const std::string& word, bool isUnless);
+    void initExecuteStoreCommands(const brigadier::NodePtr& exec);
+    void initScoreboardObjectiveCommands(const brigadier::NodePtr& obj);
+    void initScoreboardPlayerCommands(const brigadier::NodePtr& players);
+    void initScoreboardObjectiveRemoveCommands(const brigadier::NodePtr& obj);
+    void initScoreboardCommandsPart2();
+    void initScoreboardCommandsPart3();
+    void initScoreboardCommandsPart4();
     mutable std::mutex advMergeMtx_;
     std::vector<AdvancementDefOwned> cachedMergedAdv_;
     size_t cachedAdvRawSize_ = 0;
@@ -943,7 +1018,6 @@ public:
     void explodeAt(double x, double y, double z, float power);
     void spawnPrimedTnt(double x,double y,double z,double vx,double vy,double vz,int fuse=80);
     void tntTick();
-    // Lightning strike: charges creepers, spawns bolt visuals (plan8)
     void strikeLightning(double x, double y, double z);
     // Direct-named sound + particle broadcast helpers.
     void broadcastSound(const char* name, double x, double y, double z,
@@ -957,11 +1031,9 @@ public:
     void broadcastStopSound(SoundSource source);
     void stopRecord(const std::string& discNameWithoutPrefix); // record category
     void broadcastWorldEvent(std::int32_t eventId, std::int32_t x, std::int32_t y, std::int32_t z, std::int32_t data, bool disableRelativeVolume = false);
-    // plan26 D20: per-type particle helpers (block/dust/pale_oak_leaves etc) - correct wire (amount + switch)
     void broadcastBlockParticle(double x, double y, double z, std::uint32_t blockState, int count = 10);
     void broadcastDustParticle(double x, double y, double z, std::int32_t rgb, float scale = 1.0f);
     void broadcastPaleOakLeavesParticle(double x, double y, double z); // D19 helper
-    // plan34 network: 6 toClient (ActionBar 0x51 prismarine packet_action_bar {text:anonymousNbt}, ServerData 0x50 {motd:anonymousNbt,iconBytes:option<ByteArray>}, HurtAnimation 0x25 {entityId:varint,yaw:f32}, EntitySoundEffect 0x6E {sound:ItemSoundHolder,soundCategory:varint,entityId:varint,volume:f32,pitch:f32,seed:i64}, ChatSuggestions 0x18 {action:varint,entries:array<string>}, SyncEntityPosition 0x20 {entityId:varint,x:f64,y:f64,z:f64,dx:f64,dy:f64,dz:f64,yaw:f32,pitch:f32,onGround:bool})
     void sendActionBar(Player& p, const std::string& text);
     void broadcastActionBar(const std::string& text, Player* except = nullptr);
     void sendServerData(Player& p);
@@ -976,7 +1048,6 @@ public:
     void broadcastSyncEntityPosition(std::int32_t entityId, double x, double y, double z, double dx=0, double dy=0, double dz=0, float yaw=0, float pitch=0, bool onGround=true, Player* except=nullptr);
     void sendSyncEntityPosition(Player& p, const MobEntity& mob);
     void broadcastSyncEntityPosition(const MobEntity& mob, Player* except=nullptr);
-    // plan42 R1 wire: MapData 0x2D MoveMinecart 0x31 SelectAdvancementTab 0x4F
     void sendMapData(Player& p, int mapId, uint8_t scale=2, bool locked=false);
     void sendMapData(Player& p, int mapId, const std::array<uint8_t,16384>& colors, uint8_t scale=2);
     void broadcastMapData(int mapId, uint8_t scale, bool locked, Player* except=nullptr);
@@ -986,7 +1057,6 @@ public:
     void broadcastSelectAdvancementTab(const std::string& tabId, Player* except=nullptr);
     void itemsTick();
     void trySpawnMobs();
-    // plan46 G-15: vanilla spawn group caps (70/10/15/5/20/5/5); pure for tests.
     static std::array<int,7> spawnGroupCaps() { return {70,10,15,5,20,5,5}; }
     // Hostile gate as implemented in trySpawnMobs: effLight<=7 at night/rain/ thunder, never on peaceful. (Vanilla uses light 0; the <=7
     // band is a documented simplification — see test_time_growth + SOAK_24H notes.)
@@ -997,7 +1067,6 @@ public:
     }
     void spawnItemDrop(double x,double y,double z,std::uint32_t itemId,std::uint8_t cnt,
                        double vx=0,double vy=0,double vz=0);
-    // D11 (plan26 §4): ItemStack overload preserves components (enchant/trim/damage) for Slot type 7
     void spawnItemDrop(double x,double y,double z,const ItemStack& stack,
                        double vx=0,double vy=0,double vz=0);
     void broadcastSpawnItem(const ItemEntity& it);
@@ -1054,7 +1123,6 @@ public:
         std::lock_guard lk(playersMtx_);
         players_.push_back(std::move(p));
     }
-    // plan45 B6 W-13(c): kick duplicate UUID/name side so broadcast/score/tab never double-count.
     void kickDuplicate(const Player& incoming) {
         std::vector<PlayerRef> victims;
         {
@@ -1105,9 +1173,7 @@ public:
     void flushBlockBatches();
     void broadcastPlayerChat(Player& sender, const std::string& message, std::int64_t timestamp);
     bool validateFeatureFlags(const std::vector<std::array<std::string,3>>& clientPacks);
-    // Serialized-chunk cache: LRU 1024 (plan38 B-07) — Chebyshev-aware eviction via MRU list
     using ChunkBodyRef = std::shared_ptr<const std::vector<std::uint8_t>>;
-    // plan41 C-09: LRU stats (atomic hits/misses, p50<5/p95<10/hit>80 strict)
     struct ChunkCacheStats {
         std::size_t hits = 0, misses = 0, size = 0;
         static constexpr std::size_t kMax = 1024;
@@ -1174,7 +1240,6 @@ public:
         chunkCache_.clear();
         chunkCacheLru_.clear();
     }
-    // B-07 async I/O helpers (plan38 world worktree) — demand/ save via ioPool
     void demandChunkAsync(std::int32_t cx, std::int32_t cz);
     void saveChunkAsync(std::int32_t cx, std::int32_t cz);
     std::size_t chunkCacheSize() const {
@@ -1186,7 +1251,6 @@ public:
         std::lock_guard lk(pendingLoadsMtx_);
         return pendingLoads_.size();
     }
-    // plan41 C-09: aliases for bench (ChunkCacheStats already provides size)
     std::size_t chunkCacheHits() const { return cacheHits_.load(std::memory_order_relaxed); }
     std::size_t chunkCacheMisses() const { return cacheMisses_.load(std::memory_order_relaxed); }
 
@@ -1260,7 +1324,6 @@ private:
     int wanderingTraderSpawnChance_ = 25;
 
 public:
-    // WorldBorder helpers (plan6 §10) — diameter 59999968, Chebyshev square
     bool isInsideBorder(double x, double z) const {
         double half = worldBorderDiameter_ * 0.5;
         return std::abs(x - worldBorderCenterX_) <= half && std::abs(z - worldBorderCenterZ_) <= half;
@@ -1292,9 +1355,7 @@ public:
     void tickWanderingTrader() {
         // vanilla WanderingTraderManager: gated by doTraderSpawning (or doMobSpawning)
         if (!gamerules_.getBool("doTraderSpawning")) {
-            // fallback check legacy name variant
             if (gamerules_.contains("doTraderSpawning") && !gamerules_.getBool("doTraderSpawning")) return;
-            // if gamerule missing, default true, so only return when explicitly false
             // also respect doMobSpawning as global kill-switch per audit
             if (gamerules_.contains("doMobSpawning") && !gamerules_.getBool("doMobSpawning")) return;
         }
@@ -1335,7 +1396,6 @@ public:
         return std::max(dx, dz) <= spawnProtection_;
     }
     bool isOp(const std::string& name) const { return ops_.count(name) > 0; }
-    // plan45 B6 W-13(b): vanilla username charset [A-Za-z0-9_] 3..16 (length enforced in handleLogin).
     static bool isValidPlayerName(const std::string& n) {
         if (n.size() < 3 || n.size() > 16) return false;
         for (char c : n) {
@@ -1345,7 +1405,6 @@ public:
         }
         return true;
     }
-    // plan45 B6 W-05: settings viewDistance rides as i8 (negative possible) —
     // clamp to the vanilla 2..32 window before it touches chunk logic.
     static int clampClientViewDistance(int v) {
         if (v < 2) return 2;
@@ -1368,7 +1427,6 @@ public:
     void kickPlayer(const std::string& name, const std::string& reason);
     void sendWorldBorderTo(Player& p) const;
     void broadcastWorldBorder();
-    // Plan7 BossBar
     BossAIManager* bossAI() { return bossAI_.get(); }
     const BossAIManager* bossAI() const { return bossAI_.get(); }
     BossBarManager* bossBars() { return bossAI_ ? &bossAI_->bars() : nullptr; }
@@ -1377,15 +1435,12 @@ private:
     std::unique_ptr<FluidSim> fluidSim_;
     std::unique_ptr<RedstoneEngine> redstone_;
     std::unique_ptr<BlockTickScheduler> blockTicks_;
-    // Plan8 modular managers (thin wrappers, keep GameServer as facade)
     // WorldManager/EntityManager/InventoryController/NetworkManager already header-only;
     // HungerManager/CombatManager are real classes with .cpp
     std::unique_ptr<WorldManager> worldMgr_;
     std::unique_ptr<EntityManager> entityMgr_;
     std::unique_ptr<NetworkManager> networkMgr_;
-    // Plan7 BossAI / BossBar
     std::unique_ptr<BossAIManager> bossAI_;
-    // Block Event Bus (plan6): simple vector of handlers in GameServer
     std::vector<std::function<void(std::int32_t,std::int32_t,std::int32_t,std::uint16_t,std::uint16_t)>> onBlockPlaceHandlers_;
     std::vector<std::function<void(std::int32_t,std::int32_t,std::int32_t,std::uint16_t,std::uint16_t)>> onBlockBreakHandlers_;
     std::vector<std::function<void(std::int32_t,std::int32_t,std::int32_t,std::uint16_t)>> onBlockNeighborChangeHandlers_;
@@ -1413,14 +1468,12 @@ private:
     void setWeather(Weather w, std::int64_t durationTicks);
 public:
     void forceWeatherClear() { setWeather(Weather::Clear, 6000 * 20); }
-    // plan14 §6: datapack and function evaluator (schedule tick)
     DatapackManager datapackManager_;
     FunctionEvaluator functionEvaluator_;
     DatapackManager& datapackManager() { return datapackManager_; }
     const DatapackManager& datapackManager() const { return datapackManager_; }
     FunctionEvaluator& functionEvaluator() { return functionEvaluator_; }
     const FunctionEvaluator& functionEvaluator() const { return functionEvaluator_; }
-    // plan14 §6: called each tick from tickOnce to run due scheduled functions
     void tickScheduledFunctions() { functionEvaluator_.tick(tickNo_); }
 private:
     struct CachedChunk { std::uint64_t rev; ChunkBodyRef body; std::list<std::int64_t>::iterator it; };
@@ -1437,7 +1490,6 @@ private:
     void pollPendingLoads(); // B-07: drain ready futures and install chunks (defined in GameServer_tick.cpp)
     std::atomic<bool> running_{true};
     int listenFd_ = -1;
-    // plan46 §1 A5: global accept gate (20 conn/s, excess refused w/o thread).
     AcceptGate acceptGate_{20};
     std::int32_t entityIdCounter_ = 1;
     std::atomic<int> nextMapId_{1}; // plan42 MapData allocation

@@ -132,7 +132,6 @@ void RecipeManager::loadDefaults() {
     fillTag("stone", {"minecraft:stone", "minecraft:granite", "minecraft:diorite",
                       "minecraft:andesite"});
     tagPlanks_ = tags_["minecraft:planks"];
-    // NOTE: built-in shaped/shapeless/smelting/stonecutting and synthetic filler are now JSON-driven via assets/data/recipes/*.json (plan32
     // §3). loadDirectory will populate recipes_; no built-in registration here.
 }
 
@@ -162,7 +161,6 @@ void RecipeManager::loadDirectory(const std::string& dir) {
                 v.at("type").isStr()
                     ? v.at("type").asStr()
                     : std::string();
-            // normalize "minecraft:" prefix per plan18 §8 (vanilla json uses it)
             if (type.rfind("minecraft:",0)==0) type = type.substr(10);
             std::string rid = path.stem().string();
             std::string group = v.at("group").isStr() ? v.at("group").asStr() : "";
@@ -296,7 +294,6 @@ void RecipeManager::loadDirectory(const std::string& dir) {
                 r.group = group;
                 r.category = categoryInt;
                 auto it = gen::itemIdByName().find(outId.empty() ? "minecraft:firework_rocket" : outId);
-                // for special without result, use firework_rocket as placeholder if outId missing
                 std::string ridOut = outId.empty() ? std::string("minecraft:firework_rocket") : outId;
                 auto it2 = gen::itemIdByName().find(ridOut);
                 if (it2 != gen::itemIdByName().end()) r.result = ItemStack::of(it2->second, outCount);

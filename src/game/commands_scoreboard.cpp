@@ -1,4 +1,3 @@
-// commands_scoreboard.cpp: Brigadier command tree nodes (plan3 port): registered, parsed, advertised.
 #include "GameServer.hpp"
 #include "Messages.hpp"
 #include "Particles.hpp"
@@ -17,12 +16,26 @@ namespace cppfm {
 using brigadier::CommandNode;
 using brigadier::CommandContext;
 namespace args = brigadier::args;
+using NodePtr = brigadier::NodePtr;
+
 
 void GameServer::initScoreboardCommands() {
     auto& d = commands_;
-    {
-        auto sb = CommandNode::literal("scoreboard");
-        auto obj = CommandNode::literal("objectives");
+    auto sb = CommandNode::literal("scoreboard");
+    auto obj = CommandNode::literal("objectives");
+    initScoreboardObjectiveCommands(obj);
+    auto players = CommandNode::literal("players");
+    initScoreboardPlayerCommands(players);
+    initScoreboardObjectiveRemoveCommands(obj);
+    sb->then(obj);
+    sb->then(players);
+    d.root->then(sb);
+    initScoreboardCommandsPart2();
+    initScoreboardCommandsPart3();
+    initScoreboardCommandsPart4();
+}
+
+void GameServer::initScoreboardObjectiveCommands(const brigadier::NodePtr& obj) {
         auto add = CommandNode::literal("add");
         auto name = CommandNode::argument("name", args::objectiveArg());
         name->suggestions = [this](brigadier::StringReader&, brigadier::ParseCtx&) {
@@ -170,7 +183,9 @@ void GameServer::initScoreboardCommands() {
         modify->then(modTarget);
         obj->then(add); obj->then(list2); obj->then(setd); obj->then(modify);
 
-        auto players = CommandNode::literal("players");
+}
+
+void GameServer::initScoreboardPlayerCommands(const brigadier::NodePtr& players) {
         auto set = CommandNode::literal("set");
         auto who = CommandNode::argument("player", args::stringWord());
         auto oname = CommandNode::argument("objective", args::objectiveArg());
@@ -246,8 +261,9 @@ void GameServer::initScoreboardCommands() {
             resetLit->then(resetWho);
             players->then(resetLit);
         }
-        // D26: /scoreboard objectives remove <name> with reset_score per holder + display clear
-        {
+}
+
+void GameServer::initScoreboardObjectiveRemoveCommands(const brigadier::NodePtr& obj) {
             auto rem = CommandNode::literal("remove");
             auto remName = CommandNode::argument("name", args::objectiveArg());
             remName->suggestions = [this](brigadier::StringReader&, brigadier::ParseCtx&) {
@@ -277,9 +293,9 @@ void GameServer::initScoreboardCommands() {
             rem->then(remName);
             obj->then(rem);
         }
-        sb->then(obj); sb->then(players);
-        d.root->then(sb);
-    }
+
+void GameServer::initScoreboardCommandsPart2() {
+    auto& d = commands_;
     {
         auto team = CommandNode::literal("team");
         // /team add <team> [displayName]
@@ -393,6 +409,10 @@ void GameServer::initScoreboardCommands() {
         team->then(tAdd); team->then(tRemove); team->then(tJoin); team->then(tLeave); team->then(tList);
         d.root->then(team);
     }
+}
+
+void GameServer::initScoreboardCommandsPart3() {
+    auto& d = commands_;
     {
         auto bb = CommandNode::literal("bossbar");
         // add
@@ -512,6 +532,10 @@ void GameServer::initScoreboardCommands() {
         bb->then(add); bb->then(rem); bb->then(set); bb->then(get);
         d.root->then(bb);
     }
+}
+
+void GameServer::initScoreboardCommandsPart4() {
+    auto& d = commands_;
     {
         auto tag = CommandNode::literal("tag");
         auto targets = CommandNode::argument("targets", args::entity(false, false));
@@ -566,5 +590,6 @@ void GameServer::initScoreboardCommands() {
         d.root->then(tag);
     }
 }
+
 
 } // namespace cppfm

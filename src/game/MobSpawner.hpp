@@ -1,4 +1,3 @@
-// MobSpawner — plan8 entity section Central service for spawning mobs from spawn eggs, commands, dispensers. Extracted from GameServer
 // spawning logic to allow Item/Command/Dispenser to share.
 #pragma once
 #include <string>

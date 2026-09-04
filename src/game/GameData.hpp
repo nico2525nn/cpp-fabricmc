@@ -1,4 +1,3 @@
-// GameData: runtime views over the synced registries (plan2.md "登録情報同期").
 //
 // The captured registry blobs are replayed verbatim during configuration; this
 // module additionally parses their entry keys in wire order so gameplay code

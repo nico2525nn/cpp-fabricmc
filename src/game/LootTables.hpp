@@ -20,7 +20,6 @@ struct LootEntry {
     std::string name; // e.g. minecraft:cobblestone
     int weight = 1;
     int countMin = 1, countMax = 1;
-    // plan35 §2: extended loot functions
     bool explosionDecay = false;
     bool furnaceSmelt = false;
     struct CopyComponents {
@@ -32,7 +31,6 @@ struct LootEntry {
     bool countIsBinomial = false;
     int countBinomN = 3;
     double countBinomP = 0.5;
-    // plan37 B-05: 3 new functions
     bool enchantRandomly = false;
     std::vector<std::string> enchantOptions;
     bool fillPlayerHead = false;
@@ -41,7 +39,6 @@ struct LootEntry {
     std::string applyBonusEnchant;
     bool lootingEnchant = false;
     int lootingMin = 0, lootingMax = 1;
-    // plan40 C-05: extended functions
     bool hasLimit = false; int limitMin = 1, limitMax = 64;
     bool hasApplyBonusBinomial = false, hasApplyBonusUniform = false;
     int applyBonusN = 1; double applyBonusP = 0.33; double bonusMultiplier = 1.0; double applyBonusExtra = 0;
@@ -57,7 +54,6 @@ struct LootContext {
     int lootingLevel = 0;
     std::string killerName;
     bool isPlayerKill = false;
-    // future: BlockEntity*, killer etc — plan35 §2 needs explosionRadius only
 };
 
 struct LootPool {
@@ -115,7 +111,6 @@ public:
                         pool.rollsIsRange=true; pool.rollsMin=mn; pool.rollsMax=mx;
                         pool.rolls=static_cast<int>((mn+mx)/2+0.5); if(pool.rolls<1) pool.rolls=1;
                     }
-                    // plan40: pool-level conditions
                     if(auto* conds=poolV.find("conditions")) if(conds->isArr()) pool.conditionsJson = *conds;
                     const auto& entries = poolV.at("entries");
                     if (entries.isArr()) {
@@ -211,7 +206,6 @@ public:
     std::vector<ItemStack> evaluate(const std::string& blockName, const ItemStack& tool = {}) const {
         return evaluateWithContext(blockName, tool, nullptr);
     }
-    // plan37 B-05: entity loot evaluate (for mob drops)
     std::vector<ItemStack> evaluateEntity(const std::string& entityName, const LootContext* ctx = nullptr) const {
         std::string base = entityName.find(':')!=std::string::npos ? entityName.substr(entityName.find(':')+1) : entityName;
         std::string id = "minecraft:entities/" + base;
@@ -249,7 +243,6 @@ public:
     std::vector<ItemStack> evaluateTable(const LootTable& tbl, const ItemStack& tool, const LootContext* ctx, const std::string& base) const {
         std::vector<ItemStack> out;
         for (auto& pool: tbl.pools) {
-            // plan40 C-05: pool conditions (random_chance/killed_by_player/survives_explosion)
             bool poolSkip=false;
             if(pool.conditionsJson.isArr()){
                 for(auto& cond: pool.conditionsJson.arr){
@@ -279,13 +272,11 @@ public:
                 const LootEntry* chosen=nullptr;
                 for(auto& e:pool.entries){ if(pick<e.weight){chosen=&e;break;} pick-=e.weight; }
                 if(!chosen) chosen=&pool.entries.back();
-                // plan35 §2: explosion_decay — 1/radius vanish (entry-level)
                 if (chosen->explosionDecay && ctx && ctx->explosionRadius > 0.f) {
                     double vanish = 1.0 / ctx->explosionRadius;
                     if ((rand()/(double)RAND_MAX) < vanish) continue;
                 }
                 std::string dropName = chosen->name;
-                // plan35 §2: furnace_smelt — convert via smelting map
                 if (chosen->furnaceSmelt) {
                     std::string sm = smeltResultFor(dropName);
                     if (!sm.empty()) dropName = sm;
@@ -298,7 +289,6 @@ public:
                     for(int i=0;i<chosen->countBinomN;++i) if((rand()/(double)RAND_MAX) < chosen->countBinomP) ++cnt;
                     if(cnt<=0 && chosen->countMin>0) cnt=1;
                 } else if(chosen->countMax>chosen->countMin) cnt=chosen->countMin + rand()%(chosen->countMax-chosen->countMin+1);
-                // plan37 B-05: looting_enchant
                 if (chosen->lootingEnchant && ctx) {
                     int looting = ctx->lootingLevel;
                     if (looting>0) {
@@ -306,7 +296,6 @@ public:
                         cnt += rand()%(looting+1) + extra;
                     }
                 }
-                // plan40 C-05: apply_bonus 3 formulas (ore_drops binomial p=0.33, uniform, binomial)
                 if (chosen->applyBonusOre && ctx) {
                     int fortune = ctx->fortuneLevel;
                     if (fortune>0) {
@@ -335,14 +324,12 @@ public:
                         cnt+=bonus;
                     }
                 }
-                // plan40: limit_count clamp after bonus
                 if(chosen->hasLimit){ if(cnt < chosen->limitMin) cnt=chosen->limitMin; if(cnt > chosen->limitMax) cnt=chosen->limitMax; }
                 if(cnt<=0) {
                     if(chosen->countMin==0) continue;
                     cnt=1;
                 }
                 auto st = ItemStack::of(iidIt->second, static_cast<int16_t>(cnt));
-                // plan40: set_damage
                 if(chosen->hasSetDamage){
                     float dmg = (float)chosen->setDamageMin + (float)rand()/(float)RAND_MAX * (float)(chosen->setDamageMax - chosen->setDamageMin);
                     int maxDmg = ItemStack::maxDamageFor(dropName.find(':')!=std::string::npos? gen::itemIdByName().at(dropName) : 0);
@@ -352,7 +339,6 @@ public:
                 }
                 if(!chosen->setLore.empty()) st.lore = chosen->setLore;
                 if(!chosen->setName.empty()) st.displayNameLoot = chosen->setName;
-                // plan37 B-05: enchant_randomly
                 if (chosen->enchantRandomly) {
                     std::string pick;
                     if(!chosen->enchantOptions.empty()) pick = chosen->enchantOptions[rand()%chosen->enchantOptions.size()];

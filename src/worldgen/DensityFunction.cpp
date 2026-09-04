@@ -66,7 +66,6 @@ NodePtr DensityPipeline::parse(const json::Value& v, std::string* err) const {
         n->shiftX = parseChild("shift_x", "shiftX");
         n->shiftY = parseChild("shift_y", "shiftY");
         n->shiftZ = parseChild("shift_z", "shiftZ");
-        // noise key - plan21 W2: handle both string and object form for robustness
         std::string nk;
         const auto& noiseVal = v.at("noise");
         if (noiseVal.isStr()) nk = noiseVal.asStr();
@@ -224,7 +223,6 @@ NodePtr DensityPipeline::parse(const json::Value& v, std::string* err) const {
         c->in = inner;
         return c;
     }
-    // plan46 G-10: flat_cache is its own node type (single-position memo).
     // cache_2d stays column-memoized; both are collected for beginPass resets.
     if (type == "flat_cache") {
         auto n = std::make_shared<detail::FlatCache>();
@@ -233,7 +231,6 @@ NodePtr DensityPipeline::parse(const json::Value& v, std::string* err) const {
         if (!n->in) return fail("flat_cache missing input");
         return n;
     }
-    // plan46 G-10: cache_once evaluates its input once per pass.
     if (type == "cache_once") {
         auto n = std::make_shared<detail::CacheOnce>();
         n->in = parse(v.at("input"), err);
@@ -241,7 +238,6 @@ NodePtr DensityPipeline::parse(const json::Value& v, std::string* err) const {
         if (!n->in) return fail("cache_once missing input");
         return n;
     }
-    // plan46 G-10: interpolated is an explicit node (direct-eval approx).
     if (type == "interpolated") {
         auto n = std::make_shared<detail::Interpolated>();
         n->in = parse(v.at("input"), err);
@@ -249,7 +245,6 @@ NodePtr DensityPipeline::parse(const json::Value& v, std::string* err) const {
         if (!n->in) return fail("interpolated missing input");
         return n;
     }
-    // plan46 G-10: spline Hermite parse (accepts wrapper or bare form; detect via find(), at() is null-safe).
     if (type == "spline") {
         auto n = std::make_shared<detail::Spline>();
         const json::Value* body = &v;

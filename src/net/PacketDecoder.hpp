@@ -28,10 +28,8 @@ struct DecodedPacket {
 class PacketDecoder {
 public:
     static constexpr std::uint32_t kMaxFrame = 8u * 1024 * 1024;
-    // plan46 §1 W-14(a): declared decompressed size above 2MB is a kick (rejects zlib bombs pre-alloc).
     static constexpr std::uint32_t kMaxDeclared = 2u * 1024 * 1024;
 
-    // plan46 §1 W-16: oversize is a kick (Disconnect + close), not a silent drop — Session::run/handlePlay branch on this type.
     struct OversizeError : std::runtime_error {
         explicit OversizeError(const std::string& w) : std::runtime_error(w) {}
     };
@@ -48,12 +46,10 @@ public:
         std::int32_t dataLen = in.varint();
         std::size_t left = in.remaining();
         if (dataLen == 0) {
-            // plan46 §1 A8: threshold=0 means all-packets-compressed; an uncompressed (dataLength=0) frame is invalid in that mode.
             if (compressionThreshold == 0)
                 throw std::runtime_error("uncompressed frame with threshold=0");
             return std::vector<std::uint8_t>(in.p + in.off, in.p + in.off + left);
         }
-        // plan46 §1 W-14/A7: negative/forged dataLength declarations rejected pre-allocation.
         if (dataLen < 0)
             throw std::runtime_error("negative declared size");
         if (compressionThreshold > 0 &&
@@ -65,7 +61,6 @@ public:
         if (static_cast<std::uint32_t>(dataLen) > kMaxFrame)
             throw OversizeError("declared size out of range");
         std::vector<std::uint8_t> out;
-        // plan46 §1 W-14(b): strict inflate — trailing garbage rejected.
         decompressChecked(in.p + in.off, left, static_cast<std::size_t>(dataLen), out);
         return out;
     }

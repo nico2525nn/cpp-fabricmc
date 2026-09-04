@@ -1,5 +1,4 @@
 // Structures: deterministic structure placement + village generation
-// (plan3.md "構造物（村など）の配置アーキテクチャ").
 //
 // Placement mirrors vanilla's random-spread layout: for each structure a grid
 // of `spacing` chunks with `separation` jitter, selected by a salted hash so
@@ -124,14 +123,12 @@ public:
     void generateChunk(Chunk& chunk, std::int32_t cx, std::int32_t cz,
                        const GroundFn& ground);
 
-    // ConfiguredFeature/PlacedFeature access (plan6 §2)
     const StructurePlacer& placer() const { return *placer_; }
 
 private:
     void villagePiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
                       std::int32_t originX, std::int32_t originZ,
                       const GroundFn& ground);
-    // Jigsaw-like recursive village (plan6 §2)
     void villageJigsaw(Chunk& chunk, std::int32_t cx, std::int32_t cz,
                        std::int32_t ox, std::int32_t oz, int depth,
                        const GroundFn& ground);

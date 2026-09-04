@@ -1,4 +1,3 @@
-// commands_data.cpp: Brigadier command tree nodes (plan3 port): registered, parsed, advertised.
 #include "GameServer.hpp"
 #include "Messages.hpp"
 #include "Particles.hpp"
@@ -17,9 +16,24 @@ namespace cppfm {
 using brigadier::CommandNode;
 using brigadier::CommandContext;
 namespace args = brigadier::args;
+using NodePtr = brigadier::NodePtr;
+
 
 void GameServer::initDataCommands() {
-    using NodePtr = brigadier::NodePtr;
+    initDataFunctionCommands();
+    initDataDatapackCommands();
+    initDataReloadCommands();
+    initDataScheduleCommands();
+    initDataReturnCommands();
+    initDataStorageCommands();
+    initDataLootCommands();
+    initDataAdvancementCommands();
+    initDataRecipeCommands();
+    initDataItemCommands();
+    initDataLootSourceCommands();
+}
+
+void GameServer::initDataFunctionCommands() {
     auto& d = commands_;
     {
         auto func = CommandNode::literal("function");
@@ -45,7 +59,6 @@ void GameServer::initDataCommands() {
             if (argsMap.empty()) executed = functionEvaluator_.executeFunction(norm, fsrc);
             else executed = functionEvaluator_.executeFunction(norm, fsrc, argsMap);
             if (executed==0) {
-                // Fallback: try direct file read (legacy) - also handle macro if args present
                 auto colon = norm.find(':');
                 std::string ns = colon!=std::string::npos?norm.substr(0,colon):"minecraft";
                 std::string path = colon!=std::string::npos?norm.substr(colon+1):norm;
@@ -113,6 +126,10 @@ void GameServer::initDataCommands() {
         func->then(nameArg);
         d.root->then(func);
     }
+}
+
+void GameServer::initDataDatapackCommands() {
+    auto& d = commands_;
     {
         auto dp = CommandNode::literal("datapack");
         auto list = CommandNode::literal("list");
@@ -170,12 +187,15 @@ void GameServer::initDataCommands() {
         dp->then(list); dp->then(enable); dp->then(disable);
         d.root->then(dp);
     }
+}
+
+void GameServer::initDataReloadCommands() {
+    auto& d = commands_;
     {
         auto reload = CommandNode::literal("reload");
         reload->executable = true;
         reload->action = [this](CommandContext& c){
             Player* src = static_cast<Player*>(c.source.player);
-            // clear so deleted files disappear (plan35 §4 note: loadAll alone would leave stale entries)
             datapackManager_.advancements.clear();
             datapackManager_.predicates.clear();
             datapackManager_.itemModifiers.clear();
@@ -193,7 +213,6 @@ void GameServer::initDataCommands() {
             tagManager_ = datapackManager_.tagManager;
             lootTables_ = datapackManager_.lootTables;
             {
-                // plan42 R3: invalidate the merged-advancement cache under the same mutex its readers use (see getMergedAdvancements).
                 std::lock_guard lk(advMergeMtx_);
                 cachedMergedAdv_.clear();
                 cachedAdvRawSize_ = 0;
@@ -204,6 +223,10 @@ void GameServer::initDataCommands() {
         };
         d.root->then(reload);
     }
+}
+
+void GameServer::initDataScheduleCommands() {
+    auto& d = commands_;
     {
         auto sched = CommandNode::literal("schedule");
         auto funcLit = CommandNode::literal("function");
@@ -249,6 +272,10 @@ void GameServer::initDataCommands() {
         sched->then(funcLit);
         d.root->then(sched);
     }
+}
+
+void GameServer::initDataReturnCommands() {
+    auto& d = commands_;
     {
         auto ret = CommandNode::literal("return");
         auto val = CommandNode::argument("value", args::integer(INT32_MIN, INT32_MAX));
@@ -271,8 +298,19 @@ void GameServer::initDataCommands() {
         };
         d.root->then(ret);
     }
-    {
-        auto data = CommandNode::literal("data");
+}
+
+void GameServer::initDataStorageCommands() {
+    auto data = CommandNode::literal("data");
+    auto merge = CommandNode::literal("merge");
+    initDataGetCommands(data);
+    initDataModifyCommands(data);
+    initDataRemoveCommands(data);
+    initDataMergeCommands(data, merge);
+    commands_.root->then(data);
+}
+
+void GameServer::initDataGetCommands(const brigadier::NodePtr& data) {
         auto get = CommandNode::literal("get");
         auto block = CommandNode::literal("block");
         auto pos = CommandNode::argument("pos", args::blockPos());
@@ -347,7 +385,9 @@ void GameServer::initDataCommands() {
         get->then(getEntity);
         get->then(getStorage);
         data->then(get);
-        // modify
+}
+
+void GameServer::initDataModifyCommands(const brigadier::NodePtr& data) {
         {
             auto modify = CommandNode::literal("modify");
             for(auto targetName: {"block","entity","storage"}){
@@ -508,8 +548,9 @@ void GameServer::initDataCommands() {
             }
             data->then(modify2);
         }
-        // remove
-        {
+}
+
+void GameServer::initDataRemoveCommands(const brigadier::NodePtr& data) {
             auto rem = CommandNode::literal("remove");
             for(auto tt: {"block","entity","storage"}){
                 auto tLit = CommandNode::literal(tt);
@@ -533,10 +574,10 @@ void GameServer::initDataCommands() {
                 rem->then(tLit);
             }
             data->then(rem);
-        }
-        // merge
-        {
-            auto merge = CommandNode::literal("merge");
+}
+
+void GameServer::initDataMergeCommands(const brigadier::NodePtr& data,
+                                       const brigadier::NodePtr& merge) {
             auto bLit = CommandNode::literal("block");
             auto bPos = CommandNode::argument("mergePos", args::blockPos());
             auto nbtArg = CommandNode::argument("mergeNbt", args::nbtCompoundTagArg());
@@ -550,9 +591,10 @@ void GameServer::initDataCommands() {
             eNbt->executable=true; eNbt->action=[this](CommandContext& c){ sendFeedback(static_cast<Player*>(c.source.player),"Merged entity "+c.arg("mergeNbt2").asStr()); return 1; };
             eArg->then(eNbt); eLit->then(eArg); merge->then(eLit);
             data->then(merge);
-        }
-        d.root->then(data);
-    }
+}
+
+void GameServer::initDataLootCommands() {
+    auto& d = commands_;
     {
         auto loot = CommandNode::literal("loot");
         // loot give <players> <lootTable>
@@ -680,14 +722,14 @@ void GameServer::initDataCommands() {
         }
         d.root->then(loot);
     }
-    // ---------------------------------------------------------------- plan32 combat: advancement/recipe/item/me/msg
-    // New additions only – other worktrees (world/entity/block) also extend Commands.cpp
-    // ---------------------------------------------------------------- advancement
+}
+
+void GameServer::initDataAdvancementCommands() {
+    auto& d = commands_;
     {
         auto advancement = CommandNode::literal("advancement");
         auto grantLit = CommandNode::literal("grant");
         auto revokeLit = CommandNode::literal("revoke");
-        // helper to expand advancement ids for mode (recursive via std::function)
         std::function<std::vector<std::string>(const std::string&,const std::string&)> expandAdv;
         expandAdv = [this, &expandAdv](const std::string& base, const std::string& mode) -> std::vector<std::string> {
             std::vector<std::string> out;
@@ -763,7 +805,6 @@ void GameServer::initDataCommands() {
                         auto ids = expandAdv("", "everything");
                         int granted=0;
                         for(auto &id: ids){
-                            // existence check: allow any id that is in defs or datapack; still grant for copy fallback
                             bool known=false;
                             for(auto &d: advancementDefs()) if(d.id==id) known=true;
                             if(!known && datapackManager_.advancements.find(id)==datapackManager_.advancements.end() && id.rfind("cppfm:",0)!=0) known=false; else known=true;
@@ -772,7 +813,6 @@ void GameServer::initDataCommands() {
                         }
                         if(granted>0) sendAdvancementsTo(*p,false);
                         total+=granted;
-                        // feedback
                         if(granted>0) sendFeedback(src, "Granted "+std::to_string(granted)+" advancements to "+p->name);
                         else sendFeedback(src, p->name+" already had all advancements");
                     }
@@ -781,21 +821,15 @@ void GameServer::initDataCommands() {
                     if(advId.empty()) throw std::runtime_error("advancement id required");
                     std::string full = advId;
                     if(full.find(':')==std::string::npos) full="minecraft:"+full;
-                    // allow cppfm: ids as is; if not found treat as full check existence: must be in defs or datapack or allow wildcard *
                     if(full!="*" && full.find('*')==std::string::npos){
                         bool found=false;
                         for(auto &d: advancementDefs()) if(d.id==full || d.id==advId) found=true;
                         if(!found && datapackManager_.advancements.find(full)!=datapackManager_.advancements.end()) found=true;
                         if(!found && datapackManager_.advancements.find(advId)!=datapackManager_.advancements.end()) found=true;
-                        // also allow minecraft: fallback for cppfm? not strict
                         if(!found){
-                            // try raw advId as stored
                             for(auto &d: advancementDefs()) if(std::string(d.id)==advId) { found=true; full=d.id; break; }
                         }
-                        // if still not found, treat as unknown -> error feedback but still grant as cppfm custom?
                         if(!found){
-                            // For combat worktree, allow granting even unknown as if it were cppfm custom advancement
-                            // but we will still report and attempt grant
                         }
                     }
                     std::vector<std::string> ids;
@@ -860,17 +894,14 @@ void GameServer::initDataCommands() {
                 }
             };
         };
-        // Build tree: /advancement grant|revoke <targets> everything|only|from|until|through <adv> [criterion]
         for(auto outerLit : std::vector<NodePtr>{grantLit, revokeLit}){
             std::string outer = outerLit->name; // "grant" or "revoke"
             auto targets = CommandNode::argument("targets", args::entity(false,false));
-            // everything (no adv arg)
             auto everything = CommandNode::literal("everything");
             everything->executable = true;
             if(outer=="grant") everything->action = makeGrantAction("everything");
             else everything->action = makeRevokeAction("everything");
             targets->then(everything);
-            // only / from / until / through <adv> [criterion]
             for(auto modeStr : {"only","from","until","through"}){
                 auto modeLit = CommandNode::literal(modeStr);
                 auto advArg = CommandNode::argument("advId", args::resourceLocation());
@@ -878,7 +909,6 @@ void GameServer::initDataCommands() {
                 advArg->executable = true;
                 if(outer=="grant") advArg->action = makeGrantAction(modeStr);
                 else advArg->action = makeRevokeAction(modeStr);
-                // optional criterion stringWord
                 auto critArg = CommandNode::argument("criterion", args::stringWord());
                 critArg->executable = true;
                 if(outer=="grant") critArg->action = makeGrantAction(modeStr);
@@ -892,7 +922,10 @@ void GameServer::initDataCommands() {
         }
         d.root->then(advancement);
     }
-    // ---------------------------------------------------------------- recipe
+}
+
+void GameServer::initDataRecipeCommands() {
+    auto& d = commands_;
     {
         auto recipe = CommandNode::literal("recipe");
         auto giveLit = CommandNode::literal("give");
@@ -968,7 +1001,6 @@ void GameServer::initDataCommands() {
         for(auto verbLit : std::vector<NodePtr>{giveLit, takeLit}){
             std::string verb = verbLit->name;
             auto targets = CommandNode::argument("targets", args::entity(false,false));
-            // /recipe give <targets> [*|recipe] plan42 R3 network: "*" cannot be a literal (brigadier unquoted strings exclude '*'), so
             // match it with a one-char argument.
             brigadier::ArgumentType starArg = args::stringWord();
             starArg.parse = [](brigadier::StringReader& r, brigadier::ParseCtx&) -> brigadier::ArgValue {
@@ -1078,13 +1110,14 @@ void GameServer::initDataCommands() {
         }
         d.root->then(recipe);
     }
-    // ---------------------------------------------------------------- item
-    {
-        auto item = CommandNode::literal("item");
-        auto replaceLit = CommandNode::literal("replace");
-        auto modifyLit = CommandNode::literal("modify");
-        auto removeLit = CommandNode::literal("remove");
-        // helpers
+}
+
+void GameServer::initDataItemCommands() {
+    auto& d = commands_;
+    auto item = CommandNode::literal("item");
+    auto replaceLit = CommandNode::literal("replace");
+    auto modifyLit = CommandNode::literal("modify");
+    auto removeLit = CommandNode::literal("remove");
         auto slotToPlayerStack = [](Player& p, const std::string& slot)->ItemStack*{
             if(slot=="weapon.mainhand") return &p.inv[36];
             if(slot=="weapon.offhand") return &p.inv[45];
@@ -1140,8 +1173,16 @@ void GameServer::initDataCommands() {
             if(count>64) count=64;
             return ItemStack::of(it->second, (std::int16_t)count);
         };
-        // ----- replace
-        {
+    initDataItemReplaceCommands(replaceLit, slotToPlayerStack, slotToBlockStack, parseItemStack);
+    initDataItemModifyCommands(modifyLit, slotToBlockStack);
+    initDataItemRemoveCommands(removeLit, slotToBlockStack);
+    item->then(replaceLit);
+    item->then(modifyLit);
+    item->then(removeLit);
+    d.root->then(item);
+}
+
+void GameServer::initDataItemReplaceCommands(const brigadier::NodePtr& replaceLit, const std::function<ItemStack*(Player&, const std::string&)>& slotToPlayerStack, const std::function<ItemStack*(const brigadier::BlockPosI&, const std::string&)>& slotToBlockStack, const std::function<ItemStack(const std::string&, int)>& parseItemStack) {
             // replace block <pos> <slot> with <item> [count]
             auto blockLit = CommandNode::literal("block");
             auto posArg = CommandNode::argument("pos", args::blockPos());
@@ -1241,9 +1282,9 @@ void GameServer::initDataCommands() {
             targets->then(eSlot);
             entityLit->then(targets);
             replaceLit->then(entityLit);
-        }
-        // ----- modify
-        {
+}
+
+void GameServer::initDataItemModifyCommands(const brigadier::NodePtr& modifyLit, const std::function<ItemStack*(const brigadier::BlockPosI&, const std::string&)>& slotToBlockStack) {
             // modify block <pos> <slot> <modifier>
             auto blockLit = CommandNode::literal("block");
             auto posArg = CommandNode::argument("pos", args::blockPos());
@@ -1326,10 +1367,9 @@ void GameServer::initDataCommands() {
             targets->then(eSlot);
             entityLit->then(targets);
             modifyLit->then(entityLit);
-        }
-        // ----- remove style: item remove block|entity ... (and also support replace-style rm?)
-        {
-            // legacy remove as sibling of replace/modify
+}
+
+void GameServer::initDataItemRemoveCommands(const brigadier::NodePtr& removeLit, const std::function<ItemStack*(const brigadier::BlockPosI&, const std::string&)>& slotToBlockStack) {
             auto blockLit = CommandNode::literal("block");
             auto posArg = CommandNode::argument("pos", args::blockPos());
             auto slotArg = CommandNode::argument("slot", args::stringWord());
@@ -1382,14 +1422,10 @@ void GameServer::initDataCommands() {
             targets->then(eSlot);
             entityLit->then(targets);
             removeLit->then(entityLit);
-        }
-        // wire up
-        item->then(replaceLit);
-        item->then(modifyLit);
-        item->then(removeLit);
-        d.root->then(item);
-    }
-    {
+}
+
+void GameServer::initDataLootSourceCommands() {
+    auto& d = commands_;
         // /loot give <targets> loot <table> — vanilla middle "loot" source literal (short table-only form already exists above).
         auto loot = CommandNode::literal("loot");
         auto giveLit = CommandNode::literal("give");
@@ -1431,7 +1467,7 @@ void GameServer::initDataCommands() {
         giveLit->then(gTargets);
         loot->then(giveLit);
         d.root->then(loot);
-    }
 }
+
 
 } // namespace cppfm

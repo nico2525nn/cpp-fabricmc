@@ -1,4 +1,3 @@
-// commands_player.cpp: Brigadier command tree nodes (plan3 port): registered, parsed, advertised.
 #include "GameServer.hpp"
 #include "Messages.hpp"
 #include "Particles.hpp"
@@ -17,8 +16,35 @@ namespace cppfm {
 using brigadier::CommandNode;
 using brigadier::CommandContext;
 namespace args = brigadier::args;
+using NodePtr = brigadier::NodePtr;
+
 
 void GameServer::initPlayerCommands() {
+    initPlayerCommandsPart01();
+    initPlayerCommandsPart02();
+    initPlayerCommandsPart03();
+    initPlayerCommandsPart04();
+    initPlayerCommandsPart05();
+    initPlayerCommandsPart06();
+    initPlayerCommandsPart07();
+    initPlayerCommandsPart08();
+    initPlayerCommandsPart09();
+    initPlayerCommandsPart10();
+    initPlayerCommandsPart11();
+    initPlayerAttributeCommands();
+    initPlayerCommandsPart13();
+    initPlayerCommandsPart14();
+    initPlayerCommandsPart15();
+    initPlayerCommandsPart16();
+    initPlayerCommandsPart17();
+    initPlayerCommandsPart18();
+    initPlayerCommandsPart19();
+    initPlayerCommandsPart20();
+    initPlayerCommandsPart21();
+    initPlayerCommandsPart22();
+}
+
+void GameServer::initPlayerCommandsPart01() {
     auto& d = commands_;
     {
         auto gm = CommandNode::literal("gamemode");
@@ -40,8 +66,6 @@ void GameServer::initPlayerCommands() {
             ge.u8(4); ge.f32(static_cast<float>(m));
             try { src->conn->sendPacket(proto::pl::sc::GameEvent, ge); }
             catch (...) {}
-            // abilities follow the mode (plan43 W-06: same gamemode-linked flags as Session::sendAbilities — survival/adventure get 0x00,
-            // not the old hardcoded 0x01 invulnerable)
             std::uint8_t af = 0;
             if (m == 1) af |= 0x01 | 0x04 | 0x08;
             else if (m == 3) af |= 0x02 | 0x04;
@@ -66,7 +90,6 @@ void GameServer::initPlayerCommands() {
             for (auto& name : sel.playerNames)
                 if (Player* t = findPlayer(*this, name)) {
                     t->gamemode = static_cast<std::uint8_t>(m);
-                    // plan43 W-06: gamemode-linked flags (see self-target above)
                     std::uint8_t taf = 0;
                     if (m == 1) taf |= 0x01 | 0x04 | 0x08;
                     else if (m == 3) taf |= 0x02 | 0x04;
@@ -85,6 +108,10 @@ void GameServer::initPlayerCommands() {
         gm->then(modeArg);
         d.root->then(gm);
     }
+}
+
+void GameServer::initPlayerCommandsPart02() {
+    auto& d = commands_;
     {
         auto give = CommandNode::literal("give");
         auto who = CommandNode::argument("target", args::entity(true, false));
@@ -102,7 +129,6 @@ void GameServer::initPlayerCommands() {
             auto it = gen::itemIdByName().find(base);
             if (it == gen::itemIdByName().end())
                 throw std::runtime_error("Unknown item: " + base);
-            // build stack with trim if present (plan13 §2)
             ItemStack stack = ItemStack::of(it->second, 1);
             if (!compPart.empty() && compPart.find("trim")!=std::string::npos) {
                 // naive extract pattern and material strings
@@ -125,7 +151,6 @@ void GameServer::initPlayerCommands() {
             int given = 0;
             for (auto& n : sel.playerNames)
                 if (Player* t = findPlayer(*this, n)) {
-                    // plan42 R1: filled_map map_id component + MapData 0x2D
                     ItemStack toGive = stack;
                     if (base=="minecraft:filled_map" || base=="minecraft:map") {
                         int mapId = nextMapId_.fetch_add(1);
@@ -152,7 +177,6 @@ void GameServer::initPlayerCommands() {
                         if(!placed) addToInventory(*t, it->second, 1);
                         resendInventory(*t);
                     }
-                    // if armor slot, sync equipment (plan13)
                     if (base.find("_helmet")!=std::string::npos||base.find("_chestplate")!=std::string::npos||base.find("_leggings")!=std::string::npos||base.find("_boots")!=std::string::npos)
                         syncEquipmentOnChange(*t);
                     ++given;
@@ -221,6 +245,10 @@ void GameServer::initPlayerCommands() {
         give->then(who);
         d.root->then(give);
     }
+}
+
+void GameServer::initPlayerCommandsPart03() {
+    auto& d = commands_;
     {
         auto tp = CommandNode::literal("tp");
         auto pos = CommandNode::argument("pos", args::vec3());
@@ -249,6 +277,10 @@ void GameServer::initPlayerCommands() {
         tp->then(pos);
         d.root->then(tp);
     }
+}
+
+void GameServer::initPlayerCommandsPart04() {
+    auto& d = commands_;
     {
         auto kill = CommandNode::literal("kill");
         kill->executable = true;
@@ -288,9 +320,12 @@ void GameServer::initPlayerCommands() {
         kill->then(targets);
         d.root->then(kill);
     }
+}
+
+void GameServer::initPlayerCommandsPart05() {
+    auto& d = commands_;
     {
         auto effect = CommandNode::literal("effect");
-        // Shared effect store+send tail (was 4x copy-paste): replace same-type effect, store, broadcast EntityEffect. ampWire is the raw
         // amplifier byte on the wire (site 1 sends e.amplifier, others the raw arg).
         auto storeEffect = [](Player& t, EffectInstance e, int ampWire) {
             t.effects.erase(
@@ -360,7 +395,6 @@ void GameServer::initPlayerCommands() {
                          std::to_string(dur) + "s)");
             return 1;
         };
-        // plan28 finish: amplifier 0..255 arg (missing it broke `effect give <p> <eff> 10 1`).
         auto amp = CommandNode::argument("amplifier", args::integer(0, 255));
         amp->executable = true;
         amp->action = [this, storeEffect](CommandContext& c) {
@@ -421,6 +455,10 @@ void GameServer::initPlayerCommands() {
         effect->then(give);
         d.root->then(effect);
     }
+}
+
+void GameServer::initPlayerCommandsPart06() {
+    auto& d = commands_;
     {
         auto xpCmd = CommandNode::literal("xp");
         auto add = CommandNode::literal("add");
@@ -445,6 +483,10 @@ void GameServer::initPlayerCommands() {
         xpCmd->then(add);
         d.root->then(xpCmd);
     }
+}
+
+void GameServer::initPlayerCommandsPart07() {
+    auto& d = commands_;
     {
         auto summon = CommandNode::literal("summon");
         auto ent = CommandNode::argument("entity", args::resourceLocation());
@@ -465,6 +507,10 @@ void GameServer::initPlayerCommands() {
         summon->then(ent);
         d.root->then(summon);
     }
+}
+
+void GameServer::initPlayerCommandsPart08() {
+    auto& d = commands_;
     {
         auto clear = CommandNode::literal("clear");
         clear->executable = true;
@@ -480,6 +526,10 @@ void GameServer::initPlayerCommands() {
         };
         d.root->then(clear);
     }
+}
+
+void GameServer::initPlayerCommandsPart09() {
+    auto& d = commands_;
     {
         auto sp = CommandNode::literal("spawnpoint");
         sp->executable = true;
@@ -494,6 +544,10 @@ void GameServer::initPlayerCommands() {
         };
         d.root->then(sp);
     }
+}
+
+void GameServer::initPlayerCommandsPart10() {
+    auto& d = commands_;
     {
         auto sp2 = CommandNode::literal("spectate");
         sp2->executable = true;
@@ -526,6 +580,10 @@ void GameServer::initPlayerCommands() {
         sp2->then(who);
         d.root->then(sp2);
     }
+}
+
+void GameServer::initPlayerCommandsPart11() {
+    auto& d = commands_;
     {
         // extend /clear to support predicate filtering: /clear <targets> <item> [maxCount]
         auto clear2 = CommandNode::literal("clear");
@@ -597,11 +655,12 @@ void GameServer::initPlayerCommands() {
         clear2->then(who);
         d.root->then(clear2);
     }
-    // /attribute <target> <attribute> get|base set|modifier add|modifier remove|modifier value get (plan32 entity — Yarn AttributeCommand)
-    {
-        auto attribute = CommandNode::literal("attribute");
-        auto target = CommandNode::argument("target", args::entity(true,false));
-        auto attrArg = CommandNode::argument("attribute", args::resourceLocation());
+}
+
+void GameServer::initPlayerAttributeCommands() {
+    auto attribute = CommandNode::literal("attribute");
+    auto target = CommandNode::argument("target", args::entity(true,false));
+    auto attrArg = CommandNode::argument("attribute", args::resourceLocation());
         attrArg->suggestions = [](brigadier::StringReader&, brigadier::ParseCtx&){
             std::vector<std::string> v;
             for(auto a: {Attribute::MAX_HEALTH, Attribute::MOVEMENT_SPEED, Attribute::ATTACK_DAMAGE, Attribute::ARMOR, Attribute::ARMOR_TOUGHNESS, Attribute::KNOCKBACK_RESISTANCE, Attribute::ATTACK_SPEED, Attribute::ATTACK_KNOCKBACK, Attribute::BLOCK_BREAK_SPEED, Attribute::BLOCK_INTERACTION_RANGE, Attribute::ENTITY_INTERACTION_RANGE, Attribute::FALL_DAMAGE_MULTIPLIER, Attribute::FLYING_SPEED, Attribute::FOLLOW_RANGE, Attribute::GRAVITY, Attribute::JUMP_STRENGTH, Attribute::LUCK, Attribute::MAX_ABSORPTION, Attribute::SAFE_FALL_DISTANCE, Attribute::SCALE, Attribute::STEP_HEIGHT, Attribute::SPAWN_REINFORCEMENTS, Attribute::TEMPT_RANGE, Attribute::WATER_MOVEMENT_EFFICIENCY}){
@@ -611,38 +670,46 @@ void GameServer::initPlayerCommands() {
             v.push_back("minecraft:generic.max_health"); v.push_back("minecraft:generic.movement_speed");
             return v;
         };
-        auto resolveAttr = [](const std::string& raw) -> std::optional<Attribute> {
-            std::string id = raw;
-            if(id.find(':')==std::string::npos) id="minecraft:"+id;
-            // direct mapped keys
-            for(auto a: {Attribute::MOVEMENT_SPEED, Attribute::MAX_HEALTH, Attribute::KNOCKBACK_RESISTANCE, Attribute::ARMOR, Attribute::ARMOR_TOUGHNESS, Attribute::ATTACK_DAMAGE, Attribute::ATTACK_SPEED, Attribute::FLYING_SPEED, Attribute::FOLLOW_RANGE, Attribute::MAX_ABSORPTION, Attribute::STEP_HEIGHT, Attribute::ATTACK_KNOCKBACK, Attribute::BLOCK_BREAK_SPEED, Attribute::BLOCK_INTERACTION_RANGE, Attribute::BURNING_TIME, Attribute::ENTITY_INTERACTION_RANGE, Attribute::EXPLOSION_KNOCKBACK_RESISTANCE, Attribute::FALL_DAMAGE_MULTIPLIER, Attribute::GRAVITY, Attribute::JUMP_STRENGTH, Attribute::LUCK, Attribute::MINING_EFFICIENCY, Attribute::MOVEMENT_EFFICIENCY, Attribute::OXYGEN_BONUS, Attribute::SAFE_FALL_DISTANCE, Attribute::SCALE, Attribute::SNEAKING_SPEED, Attribute::SPAWN_REINFORCEMENTS, Attribute::SUBMERGED_MINING_SPEED, Attribute::SWEEPING_DAMAGE_RATIO, Attribute::TEMPT_RANGE, Attribute::WATER_MOVEMENT_EFFICIENCY}){
-                if(std::string(attributeKey(a))==id) return a;
-            }
-            // aliases: allow "generic.max_health" etc to map to same
-            std::string low=id;
-            for(char &c: low) c=tolower((unsigned char)c);
-            if(low=="minecraft:generic.max_health" || low=="generic.max_health" || low=="max_health") return Attribute::MAX_HEALTH;
-            if(low=="minecraft:generic.movement_speed" || low=="generic.movement_speed" || low=="movement_speed") return Attribute::MOVEMENT_SPEED;
-            return std::nullopt;
-        };
-        auto sendAttrUpdate = [this](Player& p){
-            WriteBuffer ab; p.attributes.writeUpdate(ab, p.entityId);
-            try{ p.conn->sendPacket(proto::pl::sc::UpdateAttributes, ab); }catch(...){}
-        };
-        // Shared attribute-command prologue (was 10x copy-paste): resolve source + attribute.
-        auto attrHead = [this, resolveAttr](CommandContext& c) -> std::pair<Player*, Attribute> {
-            Player* src = static_cast<Player*>(c.source.player);
-            std::string attrRaw = c.arg("attribute").asStr();
-            auto aopt = resolveAttr(attrRaw);
-            if(!aopt) throw std::runtime_error("Unknown attribute: "+attrRaw);
-            return {src, *aopt};
-        };
-        // attribute <target> <attribute> get [<scale>]
-        {
+    initAttributeGetCommands(attrArg);
+    initAttributeBaseCommands(attrArg);
+    initAttributeModifierCommands(attrArg);
+    target->then(attrArg);
+    attribute->then(target);
+    commands_.root->then(attribute);
+}
+
+std::optional<Attribute> GameServer::resolveAttributeCommand(const std::string& raw) const {
+    std::string id = raw;
+    if (id.find(':') == std::string::npos) id = "minecraft:" + id;
+    for (auto a : {Attribute::MOVEMENT_SPEED, Attribute::MAX_HEALTH, Attribute::KNOCKBACK_RESISTANCE, Attribute::ARMOR, Attribute::ARMOR_TOUGHNESS, Attribute::ATTACK_DAMAGE, Attribute::ATTACK_SPEED, Attribute::FLYING_SPEED, Attribute::FOLLOW_RANGE, Attribute::MAX_ABSORPTION, Attribute::STEP_HEIGHT, Attribute::ATTACK_KNOCKBACK, Attribute::BLOCK_BREAK_SPEED, Attribute::BLOCK_INTERACTION_RANGE, Attribute::BURNING_TIME, Attribute::ENTITY_INTERACTION_RANGE, Attribute::EXPLOSION_KNOCKBACK_RESISTANCE, Attribute::FALL_DAMAGE_MULTIPLIER, Attribute::GRAVITY, Attribute::JUMP_STRENGTH, Attribute::LUCK, Attribute::MINING_EFFICIENCY, Attribute::MOVEMENT_EFFICIENCY, Attribute::OXYGEN_BONUS, Attribute::SAFE_FALL_DISTANCE, Attribute::SCALE, Attribute::SNEAKING_SPEED, Attribute::SPAWN_REINFORCEMENTS, Attribute::SUBMERGED_MINING_SPEED, Attribute::SWEEPING_DAMAGE_RATIO, Attribute::TEMPT_RANGE, Attribute::WATER_MOVEMENT_EFFICIENCY}) {
+        if (std::string(attributeKey(a)) == id) return a;
+    }
+    std::string low = id;
+    for (char& c : low) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+    if (low == "minecraft:generic.max_health" || low == "generic.max_health" || low == "max_health") return Attribute::MAX_HEALTH;
+    if (low == "minecraft:generic.movement_speed" || low == "generic.movement_speed" || low == "movement_speed") return Attribute::MOVEMENT_SPEED;
+    return std::nullopt;
+}
+
+std::pair<Player*, Attribute> GameServer::attributeCommandHead(brigadier::CommandContext& c) {
+    Player* src = static_cast<Player*>(c.source.player);
+    const std::string attrRaw = c.arg("attribute").asStr();
+    auto aopt = resolveAttributeCommand(attrRaw);
+    if (!aopt) throw std::runtime_error("Unknown attribute: " + attrRaw);
+    return {src, *aopt};
+}
+
+void GameServer::sendAttributeCommandUpdate(Player& p) {
+    WriteBuffer ab;
+    p.attributes.writeUpdate(ab, p.entityId);
+    try { p.conn->sendPacket(proto::pl::sc::UpdateAttributes, ab); } catch (...) {}
+}
+
+void GameServer::initAttributeGetCommands(const brigadier::NodePtr& attrArg) {
             auto getLit = CommandNode::literal("get");
             getLit->executable = true;
-            getLit->action = [this, attrHead](CommandContext& c){
-                auto [src, at] = attrHead(c);
+            getLit->action = [this](CommandContext& c){
+                auto [src, at] = attributeCommandHead(c);
                 const auto sel = c.arg("target").asSelector();
                 std::vector<Player*> targets;
                 for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)) targets.push_back(p);
@@ -654,8 +721,8 @@ void GameServer::initPlayerCommands() {
             };
             auto scaleArg = CommandNode::argument("scale", args::floatArg(-1e9f, 1e9f));
             scaleArg->executable = true;
-            scaleArg->action = [this, attrHead](CommandContext& c){
-                auto [src, at] = attrHead(c);
+            scaleArg->action = [this](CommandContext& c){
+                auto [src, at] = attributeCommandHead(c);
                 const auto sel = c.arg("target").asSelector();
                 double scale = c.arg("scale").asDouble();
                 std::vector<Player*> targets;
@@ -668,24 +735,24 @@ void GameServer::initPlayerCommands() {
             };
             getLit->then(scaleArg);
             attrArg->then(getLit);
-        }
-        // base branch: base set <value> | base get [<scale>] | base reset
-        {
+         }
+
+void GameServer::initAttributeBaseCommands(const brigadier::NodePtr& attrArg) {
             auto baseLit = CommandNode::literal("base");
             auto baseSet = CommandNode::literal("set");
             auto baseVal = CommandNode::argument("value", args::floatArg(-1e9f, 1e9f));
             baseVal->executable = true;
-            baseVal->action = [this, sendAttrUpdate, attrHead](CommandContext& c){
-                auto [src, at] = attrHead(c);
+            baseVal->action = [this](CommandContext& c){
+                auto [src, at] = attributeCommandHead(c);
                 const auto sel = c.arg("target").asSelector();
                 double v = c.arg("value").asDouble();
                 int cnt=0;
                 for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)){
                     p->attributes.setBase(at, v);
-                    sendAttrUpdate(*p);
+                    sendAttributeCommandUpdate(*p);
                     ++cnt;
                 }
-                if(cnt==0 && src){ src->attributes.setBase(at, v); sendAttrUpdate(*src); cnt=1; }
+                if(cnt==0 && src){ src->attributes.setBase(at, v); sendAttributeCommandUpdate(*src); cnt=1; }
                 sendFeedback(src, std::string(attributeKey(at))+" base set to "+std::to_string(v));
                 return cnt;
             };
@@ -693,8 +760,8 @@ void GameServer::initPlayerCommands() {
             baseLit->then(baseSet);
             auto baseGet = CommandNode::literal("get");
             baseGet->executable = true;
-            baseGet->action = [this, attrHead](CommandContext& c){
-                auto [src, at] = attrHead(c);
+            baseGet->action = [this](CommandContext& c){
+                auto [src, at] = attributeCommandHead(c);
                 const auto sel = c.arg("target").asSelector();
                 std::vector<Player*> targets;
                 for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)) targets.push_back(p);
@@ -706,8 +773,8 @@ void GameServer::initPlayerCommands() {
             };
             auto baseGetScale = CommandNode::argument("scale", args::floatArg(-1e9f, 1e9f));
             baseGetScale->executable = true;
-            baseGetScale->action = [this, attrHead](CommandContext& c){
-                auto [src, at] = attrHead(c);
+            baseGetScale->action = [this](CommandContext& c){
+                auto [src, at] = attributeCommandHead(c);
                 const auto sel = c.arg("target").asSelector();
                 double scale = c.arg("scale").asDouble();
                 std::vector<Player*> targets;
@@ -721,22 +788,22 @@ void GameServer::initPlayerCommands() {
             baseLit->then(baseGet);
             auto baseReset = CommandNode::literal("reset");
             baseReset->executable = true;
-            baseReset->action = [this, sendAttrUpdate, attrHead](CommandContext& c){
-                auto [src, at] = attrHead(c);
+            baseReset->action = [this](CommandContext& c){
+                auto [src, at] = attributeCommandHead(c);
                 const auto sel = c.arg("target").asSelector();
                 // reset to default base per AttributeManager defaults
                 AttributeManager defaults;
                 double def = defaults.getBase(at);
                 int cnt=0;
-                for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)){ p->attributes.setBase(at, def); sendAttrUpdate(*p); ++cnt; }
+                for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)){ p->attributes.setBase(at, def); sendAttributeCommandUpdate(*p); ++cnt; }
                 sendFeedback(src, std::string(attributeKey(at))+" base reset");
                 return cnt;
             };
             baseLit->then(baseReset);
             attrArg->then(baseLit);
-        }
-        // modifier branch
-        {
+         }
+
+void GameServer::initAttributeModifierCommands(const brigadier::NodePtr& attrArg) {
             auto modLit = CommandNode::literal("modifier");
             // add <uuid> <name> <value> <operation>
             auto addLit = CommandNode::literal("add");
@@ -746,8 +813,8 @@ void GameServer::initPlayerCommands() {
             auto opArg = CommandNode::argument("operation", args::stringWord());
             opArg->suggestions = [](brigadier::StringReader&, brigadier::ParseCtx&){ return std::vector<std::string>{"add_value","add_multiplied_base","add_multiplied_total","0","1","2"}; };
             opArg->executable = true;
-            opArg->action = [this, sendAttrUpdate, attrHead](CommandContext& c){
-                auto [src, at] = attrHead(c);
+            opArg->action = [this](CommandContext& c){
+                auto [src, at] = attributeCommandHead(c);
                 const auto sel = c.arg("target").asSelector();
                 std::string uuid = c.arg("uuid").asStr();
                 std::string opStr = c.arg("operation").asStr();
@@ -760,10 +827,10 @@ void GameServer::initPlayerCommands() {
                 int cnt=0;
                 for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)){
                     p->attributes.addModifier(at, {uuid, amount, op});
-                    sendAttrUpdate(*p);
+                    sendAttributeCommandUpdate(*p);
                     ++cnt;
                 }
-                if(cnt==0 && src){ src->attributes.addModifier(at, {uuid, amount, op}); sendAttrUpdate(*src); cnt=1; }
+                if(cnt==0 && src){ src->attributes.addModifier(at, {uuid, amount, op}); sendAttributeCommandUpdate(*src); cnt=1; }
                 sendFeedback(src, "Added modifier "+uuid+" to "+std::string(attributeKey(at)));
                 return cnt;
             };
@@ -776,13 +843,13 @@ void GameServer::initPlayerCommands() {
             auto remLit = CommandNode::literal("remove");
             auto remUuid = CommandNode::argument("uuid", args::stringWord());
             remUuid->executable = true;
-            remUuid->action = [this, sendAttrUpdate, attrHead](CommandContext& c){
-                auto [src, at] = attrHead(c);
+            remUuid->action = [this](CommandContext& c){
+                auto [src, at] = attributeCommandHead(c);
                 const auto sel = c.arg("target").asSelector();
                 std::string uuid = c.arg("uuid").asStr();
                 int cnt=0;
-                for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)){ p->attributes.removeModifier(at, uuid); sendAttrUpdate(*p); ++cnt; }
-                if(cnt==0 && src){ src->attributes.removeModifier(at, uuid); sendAttrUpdate(*src); cnt=1; }
+                for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)){ p->attributes.removeModifier(at, uuid); sendAttributeCommandUpdate(*p); ++cnt; }
+                if(cnt==0 && src){ src->attributes.removeModifier(at, uuid); sendAttributeCommandUpdate(*src); cnt=1; }
                 sendFeedback(src, "Removed modifier "+uuid);
                 return cnt;
             };
@@ -793,8 +860,8 @@ void GameServer::initPlayerCommands() {
             auto valGetKw = CommandNode::literal("get");
             auto vgUuid = CommandNode::argument("uuid", args::stringWord());
             vgUuid->executable = true;
-            vgUuid->action = [this, attrHead](CommandContext& c){
-                auto [src, at] = attrHead(c);
+            vgUuid->action = [this](CommandContext& c){
+                auto [src, at] = attributeCommandHead(c);
                 const auto sel = c.arg("target").asSelector();
                 std::string uuid = c.arg("uuid").asStr();
                 std::vector<Player*> targets;
@@ -809,8 +876,8 @@ void GameServer::initPlayerCommands() {
             };
             auto vgScale = CommandNode::argument("scale", args::floatArg(-1e9f, 1e9f));
             vgScale->executable = true;
-            vgScale->action = [this, attrHead](CommandContext& c){
-                auto [src, at] = attrHead(c);
+            vgScale->action = [this](CommandContext& c){
+                auto [src, at] = attributeCommandHead(c);
                 const auto sel = c.arg("target").asSelector();
                 double scale = c.arg("scale").asDouble();
                 std::string uuid = c.arg("uuid").asStr();
@@ -829,12 +896,10 @@ void GameServer::initPlayerCommands() {
             valGetLit->then(valGetKw);
             modLit->then(valGetLit);
             attrArg->then(modLit);
-        }
-        target->then(attrArg);
-        attribute->then(target);
-        d.root->then(attribute);
-    }
-    // /trigger <objective> [add|set <value>] (plan32 entity — Yarn TriggerCommand)
+         }
+
+void GameServer::initPlayerCommandsPart13() {
+    auto& d = commands_;
     {
         auto trigger = CommandNode::literal("trigger");
         auto objective = CommandNode::argument("objective", args::objectiveArg());
@@ -849,7 +914,6 @@ void GameServer::initPlayerCommands() {
             if(!src) throw std::runtime_error("trigger can only be run by a player");
             std::string obj = c.arg("objective").asStr();
             auto* o = scoreboard.find(obj);
-            // plan42 R3 network: auto-create a trigger objective on demand so bare "/trigger <name>" succeeds vanilla-strict (server_full).
             if(!o) {
                 if(!scoreboard.addObjective(obj, "trigger", obj))
                     throw std::runtime_error("Unknown objective: "+obj);
@@ -905,9 +969,10 @@ void GameServer::initPlayerCommands() {
         trigger->then(objective);
         d.root->then(trigger);
     }
-    // ---- plan42 R3 network: command gap closure (E-15/E-16/E-17/E-18) ---- Covers: clear @s bare-targets, xp alias+suffix,
-    // summon/teleport pos, time query/add, weather duration, worldborder get/set/center/add, spawnpoint/setworldspawn args,
-    // damage/particle/playsound/stopsound, publish/save-*/debug/defaultgamemode/jigsaw/tellraw + loot "loot" source.
+}
+
+void GameServer::initPlayerCommandsPart14() {
+    auto& d = commands_;
     {
         // /clear <targets> (bare, no item) — vanilla clears whole inventory.
         // (Item-filtered /clear <targets> <item> [maxCount] already exists.)
@@ -934,6 +999,10 @@ void GameServer::initPlayerCommands() {
         clearT->then(ctWho);
         d.root->then(clearT);
     }
+}
+
+void GameServer::initPlayerCommandsPart15() {
+    auto& d = commands_;
     {
         // /experience + /xp alias, add <targets> <amount> [points|levels].
         auto buildXp = [this](const std::string& litName) {
@@ -988,6 +1057,10 @@ void GameServer::initPlayerCommands() {
         d.root->then(buildXp("experience"));
         d.root->then(buildXp("xp"));
     }
+}
+
+void GameServer::initPlayerCommandsPart16() {
+    auto& d = commands_;
     {
         // /summon <entity> [<pos>] — pos form (bare form already exists).
         auto summon = CommandNode::literal("summon");
@@ -1010,6 +1083,10 @@ void GameServer::initPlayerCommands() {
         summon->then(ent);
         d.root->then(summon);
     }
+}
+
+void GameServer::initPlayerCommandsPart17() {
+    auto& d = commands_;
     {
         // /tp <targets> <pos> + /teleport alias (self /tp <pos> already exists).
         auto buildTp = [this](const std::string& litName) {
@@ -1050,6 +1127,10 @@ void GameServer::initPlayerCommands() {
         d.root->then(buildTp("tp"));
         d.root->then(buildTp("teleport"));
     }
+}
+
+void GameServer::initPlayerCommandsPart18() {
+    auto& d = commands_;
     {
         // /spawnpoint [<targets>] [<pos>] [<angle>] — arg forms (bare self form already exists).
         auto sp = CommandNode::literal("spawnpoint");
@@ -1087,6 +1168,10 @@ void GameServer::initPlayerCommands() {
         sp->then(targets);
         d.root->then(sp);
     }
+}
+
+void GameServer::initPlayerCommandsPart19() {
+    auto& d = commands_;
     {
         // /damage <targets> <amount> [<damageType>] (Yarn DamageCommand).
         auto dmg = CommandNode::literal("damage");
@@ -1132,6 +1217,10 @@ void GameServer::initPlayerCommands() {
         dmg->then(targets);
         d.root->then(dmg);
     }
+}
+
+void GameServer::initPlayerCommandsPart20() {
+    auto& d = commands_;
     {
         // /particle <name> [<pos>] — full form with delta/speed/count. Ids: Prismarine minecraft-data 1.21.4 particles.json (112 entries).
         auto part = CommandNode::literal("particle");
@@ -1211,6 +1300,10 @@ void GameServer::initPlayerCommands() {
         part->then(name);
         d.root->then(part);
     }
+}
+
+void GameServer::initPlayerCommandsPart21() {
+    auto& d = commands_;
     {
         // /playsound <sound> <source> <targets> [<pos> [<volume> [<pitch>]]]
         auto ps = CommandNode::literal("playsound");
@@ -1267,6 +1360,10 @@ void GameServer::initPlayerCommands() {
         ps->then(sound);
         d.root->then(ps);
     }
+}
+
+void GameServer::initPlayerCommandsPart22() {
+    auto& d = commands_;
     {
         // /stopsound [<targets>] [<source>] [<sound>]
         auto ss = CommandNode::literal("stopsound");
@@ -1313,5 +1410,6 @@ void GameServer::initPlayerCommands() {
         d.root->then(ss);
     }
 }
+
 
 } // namespace cppfm

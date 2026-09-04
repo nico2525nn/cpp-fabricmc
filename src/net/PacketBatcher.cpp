@@ -15,7 +15,6 @@ static int64_t nowMsLocal() {
 }
 
 void PacketBatcher::flush(GameServer& srv, const Player* except) {
-    // Plan28 finish: swap the queue under the lock so the game-tick thread can
     // flush while a Session thread (chat command / block change) keeps queuing.
     std::vector<Queued> q;
     {
@@ -30,7 +29,6 @@ void PacketBatcher::flush(GameServer& srv, const Player* except) {
         bool allBlockUpdate = true;
         for (auto &queued : q) if (queued.id != proto::pl::sc::BlockUpdate) { allBlockUpdate = false; break; }
         if (allBlockUpdate) {
-            // Try grouped MultiBlockChange optimization (plan10 §3): group by SectionPos
             // Deduplicate same pos -> keep last state (last write wins)
             struct Rec { int32_t x,y,z; uint16_t state; };
             // dedup map: key = (x,y,z) packed

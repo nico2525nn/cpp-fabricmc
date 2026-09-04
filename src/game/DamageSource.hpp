@@ -1,6 +1,4 @@
-// DamageSource: typed damage with category flags for enchant EPF weighting (plan8 Combat) EPF categories: protection(1), fire(2),
 // explosion(2), projectile(2), fall(feather_falling*3) bypassArmor: drown/starve; bypassEnchant: drown/starve + DamageCalculator: vanilla
-// armor/EPF/resistance pipeline (armor 5..20 -> 4%..80% reduce) plan19-28 combat: single armor formula f=2+t/4 caps 30/20, fall
 // bypassArmor, sonic 15x20 bypass, EPF w1.
 #pragma once
 #include <string>
@@ -76,7 +74,6 @@ struct DamageSource {
         if (lower == "lightning" || lower == "lightningbolt") isLightningFlag = true;
         if (lower == "cramming" || lower.find("cram") != std::string::npos) isCrammingFlag = true;
         if (lower == "sonic_boom" || lower == "sonicboom" || lower.find("sonic") != std::string::npos) { isSonicFlag = true; bypassArmor = true; bypassEnchant = true; bypassShield = true; }
-        // plan15 strict: fall bypasses armor (bypassArmor true) but not enchant (feather_falling still applies) per DamageSource bypasses_armor tag
     }
 
     static DamageSource fire() { DamageSource s("onFire"); s.isFireFlag = true; return s; }
@@ -96,10 +93,8 @@ struct DamageSource {
 };
 
 // DamageCalculator: vanilla armor + toughness + EPF + Resistance pipeline
-// plan15 strict: single formula caps 30/20 per DamageUtil.getDamageLeft: f=2+tough/4, g=clamp(armor - dmg/f, armor*0.2, 20), dmg*=1-g/25
 // All calculations are pure functions so they can be unit-tested independently.
 struct DamageCalculator {
-    // vanilla single armor+toughness formula (caps 30/20) — plan23 edge: NaN/Inf guard
     static float applyArmorAndToughness(float dmg, float armor, float toughness) {
         if (dmg <= 0 || !std::isfinite(dmg)) return 0.f;
         if (!std::isfinite(armor)) armor = 0.f;
@@ -111,13 +106,11 @@ struct DamageCalculator {
         float g = std::clamp(a - dmg / f, a * 0.2f, 20.f);
         return dmg * (1.f - g / 25.f);
     }
-    // legacy split helpers kept for compat but delegate to single formula
     static float applyArmorReduction(float dmg, int armor) {
         return applyArmorAndToughness(dmg, static_cast<float>(armor), 0.f);
     }
     static float applyToughness(float dmgAfterArmor, float original, double toughness) {
         if (toughness <= 0) return dmgAfterArmor;
-        // approximate legacy: re-derive via single formula ratio
         return dmgAfterArmor;
     }
     static float applyEnchantProtection(float dmg, int epf) {

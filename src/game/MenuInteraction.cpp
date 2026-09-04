@@ -1,7 +1,6 @@
 // MenuInteraction implementation (vanilla click semantics, 1.21.4 protocol 769).
 // Strict audit: I13 swapWithHotbar all-slots (Yarn `ScreenHandler` Slot 0..n), I14 throwSlot all-slots (chest/generic),
 // windowId VarInt (I12) with u8 fallback, drag paint 5-mode, pickupAll. Yarn 1.21.4 `ScreenHandler` parity.
-// Inventory polish (plan21): VarInt windowId leniency, drag distribution even/left, maxStackFor bundle-aware.
 #include "MenuInteraction.hpp"
 #include "GameServer.hpp"
 #include <unordered_map>
@@ -55,7 +54,6 @@ static bool addToPlayerInv(Player& p, const ItemStack& stack) {
     return false;
 }
 
-// Minimal per-item max stack table — plan19 §10 accurate via prismarine 1.21.4 (47×16, 203×1)
 static int stackLimit(std::uint32_t itemId) {
     static thread_local std::unordered_map<std::uint32_t, int> cache;
     auto it = cache.find(itemId);

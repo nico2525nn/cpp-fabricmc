@@ -1,5 +1,3 @@
-// BehaviorTreeParser — plan8 entity section Data-driven parser that converts EntityDataDef.behaviors JSON array into a BehaviorTree.
-// Mirrors the data-driven AI composition philosophy described in plan8.md § Entity AI. Supports Selector/Sequence/Condition/Action nodes
 // via type strings and children recursion.
 #pragma once
 #include <memory>
@@ -21,7 +19,6 @@ public:
         return EntityDataLoader::buildUniqueTreeFor(def);
     }
 
-    // Build from raw behavior entries (type + priority) — legacy flat list.
     static std::unique_ptr<BehaviorTree> parseFlat(const std::vector<std::pair<std::string,int>>& entries) {
         return buildBehaviorTreeFromTypes(entries);
     }

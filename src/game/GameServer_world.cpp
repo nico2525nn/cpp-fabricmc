@@ -225,8 +225,6 @@ static bool loadPlayerNBT(const std::string& path, Player& p) {
                         }
                     }
                 }
-                // legacy single field components (e.g., old Damage tag) fallback – check if no components list but has raw fields
-                // old saves stored Damage as Int? Not needed – new write supersedes
                 dst[slot] = std::move(st);
             }
         };
@@ -256,7 +254,6 @@ void GameServer::savePlayerData(const std::string& uuidHex, Player& p) {
     savePlayerNBT(cfg_.worldDir + "/playerdata/" + uuidHex + ".dat", p);
 }
 bool GameServer::loadPlayerData(const std::string& uuidHex, Player& p) {
-    // plan46 §2 O-07(b): corrupt playerdata is quarantined to *.dat.corrupt and
     // the player starts fresh; neighbours and startup are unaffected.
     return loadPlayerDataIsolated(cfg_.worldDir + "/playerdata/" + uuidHex + ".dat",
                                   [&](const std::string& path) {
@@ -393,7 +390,6 @@ void GameServer::kickPlayer(const std::string& name, const std::string& reason) 
     WriteBuffer b;
     nbt::writeTextComponent(b, txt);
     try { t->conn->sendPacket(proto::pl::sc::Disconnect, b); } catch (...) {}
-    // plan42 R3: abortive close (RST) immediately after Disconnect (a FIN/delay lets victim sends succeed).
     try { t->conn->abort(); } catch (...) {}
     try { t->conn->close(); } catch (...) {}
 }
@@ -409,8 +405,6 @@ void GameServer::sendWorldBorderTo(Player& p) const {
         oldSize = worldBorderDiameter_;
         newSize = worldBorderLerpTo_;
         lerpMs = worldBorderLerpMs_;
-        // if at start, oldSize should be lerpFrom (diameter is from) current diameter already interpolates, so oldSize is current but for
-        // packet spec, we send current->target with remaining time maintain vanilla: old = current, new = target
     }
     i.f64(oldSize); i.f64(newSize);
     i.varlong(lerpMs);
@@ -457,15 +451,12 @@ std::string GameServer::dispatchConsole(const std::string& line) {
                                  brigadier::SelectorResult& out) {
         out = resolveSelector(raw, nullptr);
     };
-    // plan42 R3 (E-19): capture console feedback so RCON returns actual command output (vanilla: `seed` -> `Seed: [...]`), not fixed "ok".
     std::string captured;
     consoleCapture_ = &captured;
     const auto res = commands_.execute(line, std::move(src));
-    // plan42 R3: Source RCON expects an "OK"-style ack (test_server_full rcon_seed accepts "OK"); error text preserved on failure.
     return res.ok ? "OK" : ("error: " + res.errorText);
 }
 
-// -------- B-07 async Anvil I/O + LRU (plan38 world worktree) --------
 void GameServer::demandChunkAsync(std::int32_t cx, std::int32_t cz) {
     const std::int64_t k = chunkKey(cx, cz);
     {
@@ -491,7 +482,6 @@ void GameServer::demandChunkAsync(std::int32_t cx, std::int32_t cz) {
     }
 }
 void GameServer::saveChunkAsync(std::int32_t cx, std::int32_t cz) {
-    // plan42 R2 (E-13): NBT on tick thread, zlib+RegionFile write offloaded to ioPool_ (fire-and-forget).
     try {
         Chunk tmp;
         bool has = false;

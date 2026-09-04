@@ -5,7 +5,6 @@
 // We replay them verbatim; ids used elsewhere (biome index in chunks) are derived
 // from the same blobs, keeping everything self-consistent.
 //
-// D10 (plan26 §3): registry set exactness & order lock — 12 `minecraft:*` registries
 // must match docs/SPEC_WIRE.md configuration registry order exactly in count and wire order, otherwise client
 // kicks with `unknown registry`. See `kRegistrySpec`.
 #pragma once

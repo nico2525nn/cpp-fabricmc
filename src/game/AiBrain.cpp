@@ -71,7 +71,6 @@ Brain::Brain() {
     goals_.push_back(std::make_unique<VillagerScheduleGoal>());
     goals_.push_back(std::make_unique<WanderAroundGoal>());
     goals_.push_back(std::make_unique<LookAtPlayerGoal>());
-    // plan39 C-01: 30 new goals (60 species)
     goals_.push_back(std::make_unique<DrownedSwimGoal>());
     goals_.push_back(std::make_unique<PhantomCircleGoal>());
     goals_.push_back(std::make_unique<WardenSonicBoomGoal>());
@@ -102,7 +101,6 @@ Brain::Brain() {
     goals_.push_back(std::make_unique<CamelDashGoal>());
     goals_.push_back(std::make_unique<AllayDuplicateGoal>());
     goals_.push_back(std::make_unique<BoggedPoisonGoal>());
-    // plan42 R2 E-11: 19 species/group-default goals (Brain 59->78, 139-species cover)
     goals_.push_back(std::make_unique<VexChargeGoal>());
     goals_.push_back(std::make_unique<PiglinBruteAttackGoal>());
     goals_.push_back(std::make_unique<ZombieVillagerCureGoal>());
@@ -170,7 +168,6 @@ bool MeleeAttackGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (!tgt) return false;
     const double dx = tgt->x - m.x, dz = tgt->z - m.z;
     const double dist = std::sqrt(dx * dx + dz * dz);
-    // plan44 G-05: pursuit radius follows vanilla follow_range (legacy floor 24).
     if (dist > std::max(24.0, perceiveDist(m.kind))) return false;
     if (dist < 1.9) {
         if (now % 20 == 0) ctx.srv->mobAttackPlayer(m, *tgt);
@@ -222,7 +219,6 @@ bool BreedGoal::shouldStart(MobEntity& m, AiContext& ctx) {
     if (!m.inLove || ctx.srv==nullptr) return false;
     if (ctx.srv->tickNoForTest() < m.breedCooldownUntil) return false;
     if (MobEntity::isBaby(m)) return false;
-    // plan14 §3: require love partner within 8 blocks sameKind & inLove
     return ctx.srv->findLovePartner(m) != nullptr;
 }
 
@@ -252,7 +248,6 @@ bool BreedGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
         partner->x += -dx/d * 0.04; partner->z += -dz/d * 0.04; // partner slowly approaches
         return true;
     }
-    // breed: spawn baby at mid pos (plan14 §3: age -24000, love reset, cooldown 6000, xp 1-7)
     const double bx = (m.x + partner->x) / 2.0;
     const double bz = (m.z + partner->z) / 2.0;
     auto baby = std::make_shared<MobEntity>();
@@ -277,7 +272,6 @@ bool BreedGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
         WriteBuffer st2; st2.i32(partner->entityId); st2.i8(18);
         ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::EntityEvent, st2);
     }
-    // plan38 B-13: bred_animals trigger for nearest player
     {
         auto nearby = ctx.srv->playersSnapshot();
         Player* best = nullptr; double bestDist=64;
@@ -336,7 +330,6 @@ bool LookAtPlayerGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     return ctx.nearestPlayerDist2 < 8 * 8;
 }
 
-// plan29 §3 Creaking freeze when looked at (60° yaw/pitch + raycast), else chase 0.30 + attack 2.5/3/4.5
 static float wrapDegrees(float v) {
     while (v <= -180) v += 360;
     while (v > 180) v -= 360;
@@ -466,7 +459,6 @@ bool RangedAttackGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     const double dy = (tgt->y + 1.0) - (m.y + 1.6);
     const double dist = std::sqrt(dx * dx + dz * dz);
     if (dist < 5) return false;                       // melee goal takes over
-    // plan44 G-05: lose target beyond vanilla follow_range (ghast 100 keeps range).
     if (dist > perceiveDist(m.kind)) { m.hasTarget = false; return true; }
     // face the target
     m.yaw = static_cast<float>(std::atan2(dz, dx) * 180.0 / 3.14159 - 90.0);
@@ -487,7 +479,6 @@ bool RangedAttackGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     return true;
 }
 
-// ------------------------------------------------- plan34 §2-3 new goals --
 
 bool SwellGoal::shouldStart(MobEntity& m, AiContext& ctx) {
     if (m.kind != MobKind::Creeper || m.dead) return false;
@@ -500,7 +491,6 @@ bool SwellGoal::shouldStart(MobEntity& m, AiContext& ctx) {
 bool SwellGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (m.kind != MobKind::Creeper || m.dead) return false;
     if (!ctx.nearestPlayer) {
-        // if ignited but player left far, let GameServer_tick handle defuse; hold still until fuse handled
         return m.creeperIgnited;
     }
     double dx = ctx.nearestPlayer->x - m.x, dz = ctx.nearestPlayer->z - m.z;
@@ -695,7 +685,6 @@ bool ArmadilloRollUpGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     return false;
 }
 
-// -------------------------------------------------------- plan36 30 species goals --
 bool WitchPotionThrowGoal::shouldStart(MobEntity& m, AiContext& ctx) {
     if (m.kind != MobKind::Witch) return false;
     if (!ctx.nearestPlayer) return false;
@@ -706,7 +695,6 @@ bool WitchPotionThrowGoal::shouldStart(MobEntity& m, AiContext& ctx) {
 bool WitchPotionThrowGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (m.kind != MobKind::Witch) return false;
     Player* t = ctx.nearestPlayer; if (!t) return false;
-    // plan46 G-06: interval/range single-sourced from MobBehaviorSpec (witch row).
     const MobBehaviorSpec* wspec = mobBehaviorSpec(MobKind::Witch);
     const double wrange = wspec ? wspec->rangeBlocks : 16.0;
     double dx=t->x - m.x, dz=t->z - m.z; double d2=dx*dx+dz*dz; if (d2>wrange*wrange) return false;
@@ -966,7 +954,6 @@ bool EvokerFangGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
 }
 
 static bool nowIn(AiContext& ctx, std::int64_t cd){ return ctx.srv && ctx.srv->tickNoForTest() < cd; }
-// plan39 C-01: 30 new goals implementations
 bool DrownedSwimGoal::shouldStart(MobEntity& m, AiContext& ctx){
     if(m.kind!=MobKind::Drowned) return false;
     if(!ctx.world) return false;
@@ -1103,7 +1090,6 @@ bool GuardianBeamGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(m.kind!=MobKind::Guardian && m.kind!=MobKind::ElderGuardian) return false;
     if(now < m.guardianBeamCooldown) return false;
     Player* t=ctx.nearestPlayer; if(!t) return false;
-    // plan46 G-06: interval/range/magnitude single-sourced from MobBehaviorSpec.
     const MobBehaviorSpec* gspec = mobBehaviorSpec(MobKind::Guardian);
     const double grange = gspec ? gspec->rangeBlocks : 15.0;
     double dx=t->x-m.x, dz=t->z-m.z; double d=std::sqrt(dx*dx+dz*dz); if(d>grange) return false;
@@ -1570,7 +1556,6 @@ bool BoggedPoisonGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     m.boggedPoisonCooldown=now+40;
     return true;
 }
-// plan42 R2 E-11: 19 species/group-default goals (60->139) reusing the server APIs.
 bool FishSwimGoal::shouldStart(MobEntity& m, AiContext&) { return MobEntity::isFishKind(m.kind); }
 bool FishSwimGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (!MobEntity::isFishKind(m.kind)) return false;
@@ -1934,7 +1919,6 @@ bool AmbientObjectGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     }
 }
 bool Brain::coversKind(MobKind k) {
-    // plan42 group-default goals first (84 kinds: fish/graze/boat/minecart/
     // projectile/ambient + 13 singles); pre-existing specific goals below.
     if (MobEntity::hasSpeciesGoal(k)) return true;
     // Any non-generic goal that explicitly gates k (group gates count).
@@ -2010,7 +1994,6 @@ void Brain::setBehaviorTree(std::unique_ptr<BehaviorTree> t) { behaviorTree_ = s
 bool Brain::hasBehaviorTree() const { return behaviorTree_ != nullptr; }
 void Brain::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     NearestPlayerSensor::update(m, ctx);
-    // plan34 §3 ArmadilloScareDetectedSensor scanRate 5 / 80 TTL
     if (m.kind == MobKind::Armadillo) {
         if (now - m.armadilloLastScanTick >= 5) {
             m.armadilloLastScanTick = now;
@@ -2026,13 +2009,11 @@ void Brain::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
         ctx.dangerDetectedRecently = now < m.armadilloDangerDetectedUntil;
         // also water immediate danger clear handled in goal tick, but keep TTL
     }
-    // BehaviorTree evaluation (plan6 item 29)
     if (behaviorTree_) {
         BTStatus s = behaviorTree_->tick(m, ctx, now);
         if (s == BTStatus::Running || s == BTStatus::Success) {
             // tree handled this tick; still allow fallback if tree returned Failure
             if (s == BTStatus::Running) return;
-            // if Success, we consider tree consumed tick
             return;
         }
         // Failure -> fall through to Goal logic

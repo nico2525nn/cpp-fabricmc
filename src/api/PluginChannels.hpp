@@ -1,4 +1,3 @@
-// PluginChannels: custom-payload registry (plan2 "カスタムネットワーキング"); mirrors Fabric networking.
 // * register a receiver per channel (play and/or configuration phase)
 // * send(channel, payload) to any connection. Unknown inbound channels go to a
 //   fallback hook so future extensions never break the session.

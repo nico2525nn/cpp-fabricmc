@@ -48,7 +48,6 @@ public:
     }
     void stop() {
         running_ = false;
-        // plan46 §2 (O-09): shutdown() wakes a worker blocked in accept();
         // close() alone does not reliably interrupt it on Linux.
         if (fd_ >= 0) { ::shutdown(fd_, SHUT_RDWR); ::close(fd_); fd_ = -1; }
         if (worker_.joinable()) worker_.join();

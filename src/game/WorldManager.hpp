@@ -1,4 +1,3 @@
-// WorldManager: extracted world / chunk / block responsibility (plan8 modular split) Owns chunk lifecycle, block change batching,
 // light/fluid/redstone hooks. Delegates to World; GameServer owns one manager per dimension.
 #pragma once
 #include <cstdint>
@@ -34,7 +33,6 @@ public:
     World& nether() { return nether_; }
     World& end() { return end_; }
 
-    // forwarding hooks (implemented in GameServer via delegation) — Chebyshev per Yarn ServerChunkManager
     bool isChunkInSimulationDistance(std::int32_t cx, std::int32_t cz, double playerX, double playerZ, int simDistance) const {
         if (simDistance <= 0) return true;
         double limit = simDistance * 16.0;

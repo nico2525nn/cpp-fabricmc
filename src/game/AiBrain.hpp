@@ -1,4 +1,3 @@
-// Brain/Goal/Sensor framework (plan3.md "Brain-Goal-Sensorフレームワーク").
 //
 // Each mob owns a Brain with a priority-sorted Goal list and Sensors that
 // refresh shared AiContext knowledge. Every tick the Brain picks the highest
@@ -24,7 +23,6 @@ struct AiContext {
     Player* temptingPlayer = nullptr;      // holding breeding food
     std::int32_t lastHurtByEntityId = -1;
     std::int64_t lastHurtTick = -1000;
-    // plan34 §3 armadillo scare sensor state
     bool dangerDetectedRecently = false;
     // active path
     std::vector<ai::PathNode> path;
@@ -72,7 +70,6 @@ public:
     bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override;
 };
 
-// Ranged attack for skeletons (plan4 P1-A) — plan34 §2 extends to Stray/Bogged/Piglin/Brute/Blaze/Ghast/SnowGolem
 class RangedAttackGoal final : public Goal {
 public:
     RangedAttackGoal() : Goal(3) {}
@@ -87,7 +84,6 @@ public:
     bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override;
 };
 
-// plan34 §2 five new Goal nodes
 class SwellGoal final : public Goal {
 public:
     SwellGoal() : Goal(1) {}
@@ -115,7 +111,6 @@ public:
     bool shouldStart(MobEntity& m, AiContext& ctx) override;
     bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override;
 };
-// plan34 §3 Breeze / Armadillo goals
 class BreezeJumpGoal final : public Goal {
 public:
     BreezeJumpGoal() : Goal(1) {}
@@ -169,7 +164,6 @@ public:
     bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override;
 };
 
-// plan36 §1 12-15 new Goals for 30 species
 class WitchPotionThrowGoal final : public Goal {
 public: WitchPotionThrowGoal(): Goal(2) {}
     bool shouldStart(MobEntity& m, AiContext& ctx) override;
@@ -203,7 +197,6 @@ public: DrownedTridentGoal(): Goal(3) {}
 class VillagerScheduleGoal final : public Goal {
 public: VillagerScheduleGoal(): Goal(6) {}
     bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override;
-    // plan46 G-15: villager 10-activity schedule (work 2000-9000, sleep at night); pure for tests.
     static const char* activityFor(int tod) {
         int t = ((tod % 24000) + 24000) % 24000;
         if (t < 2000) return "sleep";    // 0-2000 night tail
@@ -253,7 +246,6 @@ public: EvokerFangGoal(): Goal(2) {}
     bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override;
 };
 
-// plan39 C-01: 30 new goals (60 species)
 class DrownedSwimGoal final : public Goal { public: DrownedSwimGoal(): Goal(1) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
 class PhantomCircleGoal final : public Goal { public: PhantomCircleGoal(): Goal(2) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
 class WardenSonicBoomGoal final : public Goal { public: WardenSonicBoomGoal(): Goal(1) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
@@ -284,7 +276,6 @@ class SnifferDigGoal final : public Goal { public: SnifferDigGoal(): Goal(3) {} 
 class CamelDashGoal final : public Goal { public: CamelDashGoal(): Goal(2) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
 class AllayDuplicateGoal final : public Goal { public: AllayDuplicateGoal(): Goal(3) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
 class BoggedPoisonGoal final : public Goal { public: BoggedPoisonGoal(): Goal(2) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
-// plan42 R2 E-11: per-species default Goal sets (params via mobStats); family gates share classes.
 class FishSwimGoal final : public Goal { public: FishSwimGoal(): Goal(5) {} bool shouldStart(MobEntity& m, AiContext&) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
 class GrazeGoal final : public Goal { public: GrazeGoal(): Goal(5) {} bool shouldStart(MobEntity& m, AiContext&) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
 class BoatDriftGoal final : public Goal { public: BoatDriftGoal(): Goal(5) {} bool shouldStart(MobEntity& m, AiContext&) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
@@ -319,7 +310,6 @@ public:
     bool hasBehaviorTree() const;
     void tick(MobEntity& m, AiContext& ctx, std::int64_t now);
     std::size_t goalCount() const { return goals_.size(); }
-    // plan42 R2 E-11: true if any non-generic goal explicitly gates kind k
     // (group gates: Fish/Graze/Boat/Minecart/Projectile/Ambient families + 13 singles).
     static bool coversKind(MobKind k);
 

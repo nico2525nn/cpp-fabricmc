@@ -67,7 +67,6 @@ void FluidSim::checkInteraction(World& w, std::int32_t x, std::int32_t y, std::i
 }
 
 bool FluidSim::canConvertToSource(std::int32_t x, std::int32_t y, std::int32_t z) {
-    // vanilla WaterFluid.canConvertToSource: >=2 adjacent water source blocks horizontally (plan19 §9 B21)
     int sources = 0;
     static constexpr int DX[4] = {1,-1,0,0};
     static constexpr int DZ[4] = {0,0,1,-1};
@@ -107,7 +106,6 @@ void FluidSim::apply(std::int32_t x, std::int32_t y, std::int32_t z,
     const bool isNether = world_.dimensionId() == -1;
     const int interval = kind == Kind::Water ? kWaterInterval : (isNether ? 10 : kLavaInterval);
     const int maxLevel = (kind == Kind::Lava ? (isNether ? 7 : 6) : 7);
-    // plan19 §9 B21: water infinite source 2→1 (WaterFluid.canConvertToSource) — flowing level 1 with 2 adjacent sources becomes source
     if (kind == Kind::Water && !isSource && level != 8 && level != -1) {
         if (canConvertToSource(x, y, z)) {
             world_.setBlock(x, y, z, fluidState(Kind::Water, 0));
@@ -131,7 +129,6 @@ void FluidSim::apply(std::int32_t x, std::int32_t y, std::int32_t z,
         const std::uint16_t cobble = static_cast<std::uint16_t>(gen::blockNameToState().at("minecraft:cobblestone"));
         const std::uint16_t obsidian = static_cast<std::uint16_t>(gen::blockNameToState().at("minecraft:obsidian"));
         const std::uint16_t stone = static_cast<std::uint16_t>(gen::blockNameToState().at("minecraft:stone"));
-        // plan17 §8: strict vertical stone — only lava falling (8) + water source (0) vertical => stone
         const bool isFalling = (level == 8);
         const bool otherIsSource = (nl == 0);
         const bool otherIsFalling = (nl == 8);
@@ -248,7 +245,6 @@ void FluidSim::apply(std::int32_t x, std::int32_t y, std::int32_t z,
                     continue;
                 }
                 if (world_.getBlock(nx, y, nz)==0) {
-                    // plan19 §9: if new flowing water would have 2 adjacent sources, place source directly (instant infinite)
                     int placeLevel = nextLevel;
                     if (kind == Kind::Water && nextLevel == 1 && canConvertToSource(nx, y, nz)) {
                         placeLevel = 0;

@@ -1,4 +1,3 @@
-// commands_execute.cpp: Brigadier command tree nodes (plan3 port): registered, parsed, advertised.
 #include "GameServer.hpp"
 #include "Messages.hpp"
 #include "Particles.hpp"
@@ -17,11 +16,27 @@ namespace cppfm {
 using brigadier::CommandNode;
 using brigadier::CommandContext;
 namespace args = brigadier::args;
+using NodePtr = brigadier::NodePtr;
+
 
 void GameServer::initExecuteCommands() {
-    auto& d = commands_;
-    {
-        auto exec = CommandNode::literal("execute");
+    auto exec = CommandNode::literal("execute");
+    initExecuteRunCommands(exec);
+    initExecuteAsCommands(exec);
+    initExecuteAtCommands(exec);
+    initExecutePositionedCommands(exec);
+    initExecuteAnchoredCommands(exec);
+    initExecuteRotatedCommands(exec);
+    initExecuteFacingCommands(exec);
+    initExecuteInCommands(exec);
+    initExecuteAlignCommands(exec);
+    initExecuteConditionCommands(exec, "if", false);
+    initExecuteConditionCommands(exec, "unless", true);
+    initExecuteStoreCommands(exec);
+    commands_.root->then(exec);
+}
+
+void GameServer::initExecuteRunCommands(const brigadier::NodePtr& exec) {
         auto execRunLit = CommandNode::literal("run");
         auto execRunCmd = CommandNode::argument("command", args::stringGreedy());
         execRunCmd->executable = true;
@@ -41,7 +56,10 @@ void GameServer::initExecuteCommands() {
             return res.ok?res.value:0;
         };
         execRunLit->then(execRunCmd);
+        exec->then(execRunLit);
+}
 
+void GameServer::initExecuteAsCommands(const brigadier::NodePtr& exec) {
         // ---- as <entity> ----
         {
             auto asLit = CommandNode::literal("as");
@@ -74,6 +92,9 @@ void GameServer::initExecuteCommands() {
             asLit->then(asEntity);
             exec->then(asLit);
         }
+}
+
+void GameServer::initExecuteAtCommands(const brigadier::NodePtr& exec) {
         // ---- at <entity> ----
         {
             auto atLit = CommandNode::literal("at");
@@ -106,6 +127,9 @@ void GameServer::initExecuteCommands() {
             atLit->then(atEnt);
             exec->then(atLit);
         }
+}
+
+void GameServer::initExecutePositionedCommands(const brigadier::NodePtr& exec) {
         // ---- positioned <pos> / positioned as <entity> / positioned over <heightmap> ----
         {
             auto posLit = CommandNode::literal("positioned");
@@ -185,6 +209,9 @@ void GameServer::initExecuteCommands() {
             posLit->then(overLit);
             exec->then(posLit);
         }
+}
+
+void GameServer::initExecuteAnchoredCommands(const brigadier::NodePtr& exec) {
         // ---- anchored <eyes|feet> ----
         {
             auto ancLit = CommandNode::literal("anchored");
@@ -208,6 +235,9 @@ void GameServer::initExecuteCommands() {
             ancLit->then(ancArg);
             exec->then(ancLit);
         }
+}
+
+void GameServer::initExecuteRotatedCommands(const brigadier::NodePtr& exec) {
         // ---- rotated <yaw pitch> / rotated as <entity> ----
         {
             auto rotLit = CommandNode::literal("rotated");
@@ -259,6 +289,9 @@ void GameServer::initExecuteCommands() {
             rotLit->then(rotAsLit);
             exec->then(rotLit);
         }
+}
+
+void GameServer::initExecuteFacingCommands(const brigadier::NodePtr& exec) {
         // ---- facing <pos> / facing entity <targets> <anchor> ----
         {
             auto faceLit = CommandNode::literal("facing");
@@ -321,6 +354,9 @@ void GameServer::initExecuteCommands() {
             faceLit->then(faceEntLit);
             exec->then(faceLit);
         }
+}
+
+void GameServer::initExecuteInCommands(const brigadier::NodePtr& exec) {
         // ---- in <dimension> ----
         {
             auto inLit = CommandNode::literal("in");
@@ -346,6 +382,9 @@ void GameServer::initExecuteCommands() {
             inLit->then(dimArg);
             exec->then(inLit);
         }
+}
+
+void GameServer::initExecuteAlignCommands(const brigadier::NodePtr& exec) {
         // ---- align <swizzle> ----
         {
             auto alignLit = CommandNode::literal("align");
@@ -374,10 +413,10 @@ void GameServer::initExecuteCommands() {
             alignLit->then(swiz);
             exec->then(alignLit);
         }
-        // ---- if / unless conditions ----
-        auto addCondition = [&](const std::string& word, bool isUnless){
+}
+
+void GameServer::initExecuteConditionCommands(const brigadier::NodePtr& exec, const std::string& word, bool isUnless) {
             auto condLit = CommandNode::literal(word);
-            // if block <pos> <block>
             {
                 auto blockLit = CommandNode::literal("block");
                 auto bpos = CommandNode::argument("condBlockPos", args::blockPos());
@@ -413,7 +452,6 @@ void GameServer::initExecuteCommands() {
                 blockLit->then(bpos);
                 condLit->then(blockLit);
             }
-            // if entity <targets>
             {
                 auto entLit = CommandNode::literal("entity");
                 auto entArg = CommandNode::argument("condEntity", args::entity(false,false));
@@ -446,7 +484,6 @@ void GameServer::initExecuteCommands() {
                 entLit->then(entArg);
                 condLit->then(entLit);
             }
-            // if score <target> <objective> matches <range>  /  <target> <objective> <op> <target> <objective>
             {
                 auto scoreLit2 = CommandNode::literal("score");
                 auto scTarget = CommandNode::argument("scTarget", args::scoreHolderArg());
@@ -507,7 +544,6 @@ void GameServer::initExecuteCommands() {
                 scoreLit2->then(scTarget);
                 condLit->then(scoreLit2);
             }
-            // if predicate <id>
             {
                 auto predLit = CommandNode::literal("predicate");
                 auto predArg = CommandNode::argument("predicateId", args::resourceLocation());
@@ -534,7 +570,6 @@ void GameServer::initExecuteCommands() {
                 predLit->then(predArg);
                 condLit->then(predLit);
             }
-            // if dimension <dim>
             {
                 auto dimLit = CommandNode::literal("dimension");
                 auto dimArg = CommandNode::argument("condDimension", args::dimensionArg());
@@ -566,10 +601,9 @@ void GameServer::initExecuteCommands() {
                 condLit->then(dimLit);
             }
             exec->then(condLit);
-        };
-        addCondition("if", false);
-        addCondition("unless", true);
-        // ---- store result|success ----
+}
+
+void GameServer::initExecuteStoreCommands(const brigadier::NodePtr& exec) {
         {
             auto storeLit = CommandNode::literal("store");
             for(auto storeType: {"result","success"}){
@@ -630,7 +664,6 @@ void GameServer::initExecuteCommands() {
                         if(bossAI_){
                             int key=(int)std::hash<std::string>{}(bid);
                             float hf = std::clamp(storeVal/100.f,0.f,1.f);
-                            // if bossbar exists, update health; else create? just update
                             bossAI_->bars().updateHealthForCommandBar(key, hf);
                             // broadcast health if needed
                             uint32_t h=(uint32_t)key*0x9e3779b1u ^ 0x85ebca6bu;
@@ -652,10 +685,7 @@ void GameServer::initExecuteCommands() {
             }
             exec->then(storeLit);
         }
-        // bare run
-        exec->then(execRunLit);
-        d.root->then(exec);
-    }
 }
+
 
 } // namespace cppfm

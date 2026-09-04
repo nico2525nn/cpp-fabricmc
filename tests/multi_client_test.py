@@ -150,10 +150,12 @@ def main():
         # drag is best-effort: check no disconnect, and at least server stays alive (chat or times still flowing)
         check(a.keepalives >= 0, f"A drag mode5 ContainerClick 0x10 no-kick (keepAlives {a.keepalives}, containerUpd {len(a.container_updates)})")
 
-        # A digs a distinctive block; both should get the update
+        # A digs a distinctive block outside the default spawn-protection radius;
+        # all clients should get the resulting update.
+        dig_x, dig_y, dig_z = 32, -61, 32
         def pack_pos(x, y, z):
             return struct.pack(">q", ((x & 0x3FFFFFF) << 38) | ((z & 0x3FFFFFF) << 12) | (y & 0xFFF))
-        a.c.send_packet_raw(0x27, mcproto.write_varint(0) + pack_pos(3, -61, 3) +
+        a.c.send_packet_raw(0x27, mcproto.write_varint(0) + pack_pos(dig_x, dig_y, dig_z) +
                             bytes([1]) + mcproto.write_varint(99))
         time.sleep(0.6)
         a.pump(0.5); b.pump(0.5); c.pump(0.5)
@@ -170,9 +172,10 @@ def main():
         got_a = [upd_pos(d) for d in a.updates]
         got_b = [upd_pos(d) for d in b.updates]
         got_c = [upd_pos(d) for d in c.updates]
-        check((3, -61, 3, 0) in got_a, f"A received own dig update {got_a[:2]}")
-        check((3, -61, 3, 0) in got_b, f"B received A's dig update {got_b[:2]}")
-        check((3, -61, 3, 0) in got_c, f"C received A's dig update {got_c[:2]}")
+        expected_dig = (dig_x, dig_y, dig_z, 0)
+        check(expected_dig in got_a, f"A received own dig update {got_a[:2]}")
+        check(expected_dig in got_b, f"B received A's dig update {got_b[:2]}")
+        check(expected_dig in got_c, f"C received A's dig update {got_c[:2]}")
 
         # A sends chat; B and C must receive it
         a.c.send_packet_raw(0x07, mcproto.pack_string("hi bob charlie") +

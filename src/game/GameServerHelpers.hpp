@@ -1,5 +1,4 @@
 #pragma once
-// GameServerHelpers — plan31 phase4: shared static helpers extracted from GameServer.cpp to allow split files to share them.
 // Wire-unchanged, inline helpers.
 
 #include <array>
@@ -52,7 +51,6 @@ inline const struct { const char* name; int cnt; } kKit[] = {
     {"minecraft:dirt",64},
 };
 
-// plan31 R5: O(1095)->O(1) via gen::blockByState
 inline std::string blockNameByState(std::uint16_t sid) {
     if (auto* d = gen::blockByState(sid)) return std::string(d->name);
     return "minecraft:air";

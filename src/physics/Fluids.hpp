@@ -1,4 +1,3 @@
-// Fluids: event-driven water/lava simulation (plan3.md "水流シミュレーション").
 #pragma once
 #include <cstdint>
 #include <queue>

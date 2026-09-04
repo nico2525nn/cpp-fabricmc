@@ -63,14 +63,11 @@ void GameServer::tickDigs() {
                 }
                 world_.setBlock(p->digX, p->digY, p->digZ, 0);
                 broadcastBlockChange(p->digX, p->digY, p->digZ, 0);
-                // plan29 §6 polish: breaking block adds 0.005 exhaustion (vanilla Hunger per block)
                 if (p->gamemode == 0) HungerManager::onBlockBreak(*p, *this);
-                // BlockEvent: fire onBlockBreak (plan7)
                 {
                     blockEventDispatcher().onBlockBreak(p->digX, p->digY, p->digZ, oldState, p);
                 }
                 onBlockMined(*p, oldState);
-                // plan17 §7: TNT unstable punch — prime on break if unstable or flint_and_steel (Yarn TntBlock.onBlockBreak)
                 {
                     const std::string _bn = blockNameByState(oldState);
                     if (_bn == "minecraft:tnt") {
@@ -103,7 +100,6 @@ void GameServer::tickDigs() {
                         }
                     }
                 }
-                // durability: damage held tool if it has durability – Plan8 DamageComponent (Unbreaking)
                 if (p->gamemode == 0 && p->heldSlot >=0 && p->heldSlot <9) {
                     auto &held = p->inv[36 + p->heldSlot];
                     if (!held.empty() && ItemStack::maxDamageFor(held.itemId) > 0) {
@@ -196,7 +192,6 @@ void GameServer::tickOnce() {
     if (tickNo_ % 20 == 0) trySpawnMobs();
     mark('M');
     mobsTick();
-    // plan36 §5: drain StructureManager pending loot/mobs (world defer -> tick evaluate)
     drainPendingStructureQueues();
     mark('R'); // rails (plan14 §5)
     minecartsTick(); // plan14 §5: powered_rail 0.06
@@ -245,7 +240,6 @@ void GameServer::tickOnce() {
             if (p->advancements) p->advancements->save();
         }
     }
-    // chunk LRU unload every 100 ticks (plan5 items 6,7)
     if (tickNo_ % 100 == 0) chunksUnloadTick();
     // level.dat periodic save every 6000 ticks (~5 min) + also 1200 (~1 min) for safety — single level.dat (W16)
     if (tickNo_ % 6000 == 0 && tickNo_ != 0) {
@@ -267,15 +261,11 @@ void GameServer::tickOnce() {
     tickWanderingTrader();
     // B-12 thunder lightning + weather cycle (doWeatherCycle gate inside weatherTick)
     weatherTick();
-    // plan14 §6: scheduled function tick (schedule) – execute due scheduled functions each tick
     tickScheduledFunctions();
-    // plan35 §1: tick trigger for advancements (minecraft:tick)
     for (auto& pp : playersSnapshot()) if (pp->inPlay) evaluateTickAdvancements(*pp);
-    // plan37 §3: location trigger every 20 ticks (0.5 Hz like vanilla)
     if (tickNo_ % 20 == 0) {
         for (auto& pp : playersSnapshot()) if (pp->inPlay) evaluateLocationTrigger(*pp);
     }
-    // plan38 B-13: enter_block every 20 ticks
     if (tickNo_ % 20 == 0) {
         for (auto& pp : playersSnapshot()) if (pp->inPlay) {
             int bx = static_cast<int>(std::floor(pp->x));
@@ -411,7 +401,6 @@ void GameServer::chunksUnloadTick() {
             for (auto &pl : players) if (pl->inPlay && pl->dimension == dim) { anyInDim = true; break; }
             if (!anyInDim && (w.isForced(cx, cz) || w.ticketLevel(cx, cz) <= constants::kTicketLevelSpawn)) continue;
             if (pp && pp->isDirty(cx, cz)) {
-                // plan42 R2 (E-13): unload saves via ioPool_ (off tick thread); dirty cleared after capture.
                 saveChunkAsync(cx, cz);
                 pp->markClean(cx, cz);
             }
@@ -419,7 +408,6 @@ void GameServer::chunksUnloadTick() {
             invalidateChunkCache(cx, cz);
         }
         // W19 cap-based LRU: if still over maxLoadedChunks, evict farthest beyond cap (Chebyshev)
-        // plan21 §3 + plan35 §5: Chebyshev-sorted LRU unload (ticket-protected, burst 16/tick).
         if (cfg_.maxLoadedChunks > 0) {
             size_t remaining = keys.size() > toErase.size() ? keys.size() - toErase.size() : 0;
             if (remaining > (size_t)cfg_.maxLoadedChunks) {
@@ -464,7 +452,6 @@ void GameServer::chunksUnloadTick() {
                     });
                     size_t need = remaining - (size_t)cfg_.maxLoadedChunks;
                     if (need > candidates.size()) need = candidates.size();
-                    // burst limit: evict at most 16 per tick, remainder next tick (plan21 perf)
                     constexpr size_t kMaxUnloadPerTick = 16;
                     if (need > kMaxUnloadPerTick) need = kMaxUnloadPerTick;
                     for (size_t i=0;i<need;++i) {
@@ -515,7 +502,6 @@ void GameServer::survivalTick() {
     for (auto& pp : playersSnapshot()) {
         auto* p = pp.get();
         if (!p->inPlay || !p->spawned || p->dead) continue;
-        // plan44 §3 G-07/G-08: combat counters tick for all inPlay players (any gamemode)
         if (p->attackCooldownTicks < 1000000) p->attackCooldownTicks++;
         if (p->shieldDisableTicks > 0) p->shieldDisableTicks--;
         {
@@ -538,7 +524,6 @@ void GameServer::survivalTick() {
         // void damage
         if (p->y < kMinY - 16) applyDamage(*p, 4.f, "fell out of the world");
 
-        // ---- drowning (plan5 76) + plan40 C-08 respiration (helmet only, air 300→1200, interval 1+lvl)
         {
             bool hasWaterBreathing = false;
             for (auto &e : p->effects) if (e.type == effects::WaterBreathing) { hasWaterBreathing = true; break; }
@@ -553,7 +538,6 @@ void GameServer::survivalTick() {
             };
             double headY = p->y + 1.62;
             bool headInWater = isWaterAt(p->x, headY, p->z);
-            // plan40: respiration level from helmet (slot 8 head)
             int respLvl = 0;
             if (p->inv[8].isArmor() || !p->inv[8].empty()) respLvl = EnchantmentHelper::getRespiration(p->inv[8]);
             else {
@@ -578,7 +562,6 @@ void GameServer::survivalTick() {
                 }
             }
         }
-        // ---- freeze (powder snow) 77 — plan16 strict: leather immunity, 40t damage, -2 decay
         {
             auto isPowderSnowAt = [&](int bx,int by,int bz)->bool {
                 uint16_t st = worldFor(p->dimension).getBlock(bx,by,bz);
@@ -612,7 +595,6 @@ void GameServer::survivalTick() {
                 p->freezeTicks = std::max(0, p->freezeTicks - 2);
             }
         }
-        // ---- fire / lava 77-78 — plan16 strict: lava 300, fire 160
         {
             auto isFireOrLavaAt = [&](double px,double py,double pz)->bool {
                 int bx=(int)std::floor(px); int by=(int)std::floor(py); int bz=(int)std::floor(pz);
@@ -662,7 +644,6 @@ void GameServer::survivalTick() {
                 }
             }
         }
-        // ---- world border damage (plan6 §10) — 0.2*blocksOutside buffer 5.0 Chebyshev
         {
             double half = worldBorderDiameter_ * 0.5;
             double dx = std::abs(p->x - worldBorderCenterX_);
@@ -691,7 +672,6 @@ void GameServer::survivalTick() {
 }
 namespace {
 enum SpawnGroupIdx{ SG_MONSTER=0, SG_CREATURE=1, SG_AMBIENT=2, SG_WATER_CREATURE=3, SG_WATER_AMBIENT=4, SG_UNDERGROUND=5, SG_AXOLOTLS=6 };
-// (plan46 G-15: caps live in GameServer::spawnGroupCaps — single source for tests.)
 inline SpawnGroupIdx groupForKind(MobKind k){
     if(MobEntity::isHostile(k)) return SG_MONSTER;
     if(k==MobKind::Bat) return SG_AMBIENT;
@@ -700,7 +680,6 @@ inline SpawnGroupIdx groupForKind(MobKind k){
     return SG_CREATURE;
 }
 } // namespace
-// plan36 natural spawn helper: count mobs by group
 static std::array<int,7> countMobsByGroup(const std::vector<std::shared_ptr<MobEntity>>& mobs){
     std::array<int,7> c{}; for(auto& m: mobs) c[(int)groupForKind(m->kind)]++; return c;
 }
@@ -852,7 +831,6 @@ void GameServer::mobsTick() {
             }
 
             const auto& stats = mobStats(m->kind);
-            // plan40 C-08 flame: onFireTicks 100t burns 1 per 20t
             if (m->onFireTicks > 0) {
                 if (tickNo_ % 20 == 0) applyDamageToMob(*m, 1.f, "onFire");
                 if (--m->onFireTicks <= 0) m->onFireTicks = 0;
@@ -905,7 +883,6 @@ void GameServer::mobsTick() {
                 }
             }
 
-            // plan29 §3 Creaking despawn / 32-block radius / heart break
             if (m->kind == MobKind::Creaking && m->creakingTransient) {
                 if (!isNight()) {
                     despawn.push_back(m->entityId);
@@ -961,7 +938,6 @@ void GameServer::mobsTick() {
                 }
             }
 
-            // ---- Brain-Goal-Sensor AI tick (plan3) + BossAI (plan7)
             auto& ai = aiFor(m);
             ai.ctx->srv = this;
             ai.ctx->world = &world_;
@@ -970,7 +946,6 @@ void GameServer::mobsTick() {
             brainTickGuard_ = nullptr;
             if (MobEntity::isBoss(m->kind) && bossAI_) bossAI_->tick(*m, *ai.ctx, tickNo_);
 
-            // ---- creeper fuse & explosion (plan16: ignited fuse separate field, 30 ticks, metadata)
             if (m->kind == MobKind::Creeper && ai.ctx->nearestPlayer) {
                 const double cdx = ai.ctx->nearestPlayer->x - m->x;
                 const double cdy = ai.ctx->nearestPlayer->y - m->y;
@@ -996,7 +971,6 @@ void GameServer::mobsTick() {
                         broadcastPacketExcept(nullptr, pl::sc::RemoveEntities, rm);
                         mobAi_.erase(eid);
                         it = mobs_.erase(it);
-                        // Plan8: Charged Creeper explodes with power 6.0 (vs 3.0 normal)
                         explodeAt(cxp, cyp + 0.5, czp, m->creeperCharged ? 6.f : 3.f);
                         continue;
                     }
@@ -1032,8 +1006,6 @@ void GameServer::mobsTick() {
                     it = mobs_.erase(it); continue;
                 }
             }
-            // ---- Plan14 §3/§4: Villager/Enderman tick (aging already handled above single increment)
-            // Villager restock & gossip decay (plan16: 2/day restock, Gossip decay)
             if (m->kind==MobKind::Villager) {
                 // day rollover for 2/day limit (vanilla: 2 restocks per in-game day)
                 std::int64_t curDay = tickNo_ / 24000;
@@ -1046,7 +1018,6 @@ void GameServer::mobsTick() {
                         m->villagerRestocksToday++;
                         m->villagerLastRestockTick = tickNo_;
                         broadcastSound("minecraft:entity.villager.work_farm", m->x,m->y,m->z,1.f,1.f,"neutral");
-                        // plan46 G-15: auto-schedule the 2nd daily restock window (old code dropped it).
                         if (m->villagerRestocksToday < 2) {
                             m->restockUntil = tickNo_ + MobEntity::kRestockSecondWindowTicks
                                 + (rand() % 2000);
@@ -1083,7 +1054,6 @@ void GameServer::mobsTick() {
         broadcastPacketExcept(nullptr, pl::sc::RemoveEntities, b);
     }
     for (auto& m : drops) {
-        // plan37 B-05: entity loot tables (10 species) via LootTableEvaluator, fallback to legacy dropFor
         bool spawnedViaLoot = false;
         {
             std::string kindName = MobEntity::kindName(m->kind);
@@ -1111,7 +1081,6 @@ void GameServer::mobsTick() {
                               (rand()/(double)RAND_MAX-.5)*.15, .1,
                               (rand()/(double)RAND_MAX-.5)*.15);
         }
-        // plan17 LOW: equipment drop based on HandDropChances/ArmorDropChances (was never serialized/dropped)
         for (int es=0; es<6; ++es) {
             if (m->equipment[es].empty()) continue;
             float chance = 0.085f;

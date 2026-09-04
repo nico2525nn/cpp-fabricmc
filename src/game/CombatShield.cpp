@@ -1,4 +1,3 @@
-// CombatShield — plan44 §3 G-08 shield posture helpers (standalone TU). No GameServer methods are used here, so test_gameplay_full can link
 // this file alone. tryShieldBlock / applyThornsReflection (need GameServer) live in CombatManager.cpp.
 #include "CombatManager.hpp"
 #include "GameServer.hpp"

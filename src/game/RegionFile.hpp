@@ -70,7 +70,6 @@ public:
 
         const std::size_t needSectors = (payload.size() + 4095) / 4096;
 
-        // find space: reuse old run if large enough; else append
         std::uint32_t newOff = oldOff;
         if (oldOff == 0 || needSectors > oldCnt) {
             // append at end of used region

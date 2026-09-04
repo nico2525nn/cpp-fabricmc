@@ -37,7 +37,6 @@ static bool mergeStack(ItemStack& from, ItemStack& to) {
 // ---------------- Anvil ----------------
 
 void AnvilMenuLogic::recomputeResult(Menu& menu) {
-    // slots: 0 left, 1 right, 2 result (plan13 §4)
     ItemStack* left = menu.container ? &menu.container[0] : &menu.extraSlots[0];
     ItemStack* right = menu.container ? &menu.container[1] : &menu.extraSlots[1];
     ItemStack* result = menu.container ? &menu.container[2] : &menu.extraSlots[2];
@@ -51,7 +50,6 @@ void AnvilMenuLogic::recomputeResult(Menu& menu) {
     ItemStack out = *left;
     // repair: reduce damage if both are same item or right is repair material
     if (!right->empty()) {
-        // if same item type, repair 25% of max durability
         if (right->itemId == left->itemId) {
             int maxD = ItemStack::maxDamageFor(left->itemId);
             if (maxD>0) {
@@ -214,7 +212,6 @@ bool EnchantmentMenuLogic::onEnchantButton(Menu& menu, Player& player, int butto
         player.xp.level = std::max(0, player.xp.level - levelCost);
         GameServer::sendSetExperience(player);
     }
-    // Apply enchant(s) — deterministic seeded RNG per Yarn EnchantmentScreenHandler (plan23 §5 seeded Random)
     // Yarn `EnchantmentHelper.generateEnchantments` uses Random.create(seed) where seed = player.enchantmentSeed
     const char* enchants[] = {"minecraft:protection","minecraft:sharpness","minecraft:efficiency","minecraft:unbreaking"};
     const char* chosen = enchants[buttonId % 4];

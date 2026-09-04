@@ -1,5 +1,4 @@
 // Items: ItemStack with 1.20.5+ data components, item tables and helpers.
-// plan28 inventory: Slot wire format + SlotComponentType ids (damage 3, repair 17, ench 10, trim 45).
 #pragma once
 #include "Constants.hpp"
 #include <cstdint>
@@ -85,14 +84,12 @@ struct ItemStack {
     // tooltip_style, 32 death_protection, 33 stored_enchantments, 34 dyed_color, 35 map_color, 36 map_id, 37 map_decorations, 38
     // map_post_processing, 39 charged_projectiles, 40 bundle_contents, 41 potion_contents, 42 suspicious_stew_effects, 43
     // writable_book_content, 44 written_book_content, 45 trim, 46 debug_stick_state, ... 66 container_loot — strict audit HIGH I6/I11. Yarn
-    // `SlotComponentType` parity: damage=3, repair_cost=17, enchantments=10, trim=45 (replaces legacy 6/7/42).
     static constexpr std::uint32_t kDamageComponentId = 3;
     static constexpr std::uint32_t kRepairCostComponentId = 17;
     static constexpr std::uint32_t kEnchantmentsComponentId = 10;
     static constexpr std::uint32_t kTrimComponentIdReal = 45;
     static constexpr std::uint32_t kCustomNameComponentId = 5;
     static constexpr std::uint32_t kPotionContentsComponentId = 41;
-    // legacy ids for read-compat
     static constexpr std::uint32_t kLegacyDamageAlias = 6;
     static constexpr std::uint32_t kLegacyRepairAlias = 7;
     static constexpr std::uint32_t kLegacyTrimAlias = 42;
@@ -114,7 +111,6 @@ struct ItemStack {
         WriteBuffer tmp; tmp.varint(dmg);
         components.emplace_back(kDamageComponentId, std::vector<std::uint8_t>(tmp.data.begin(), tmp.data.end()));
     }
-    // returns true if item should be destroyed (damage >= max)
     bool applyDamage(int amount) {
         if (empty()) return false;
         int maxd = maxDamageFor(itemId);
@@ -184,15 +180,12 @@ struct ItemStack {
         if (id<0 || id>= (int)rev.size()) return "";
         return "minecraft:"+rev[id];
     }
-    // Decode binary enchant payload to vector; if legacy textual, fallback to parsing
     static std::vector<std::pair<int,int>> decodeEnchants(const std::vector<std::uint8_t>& payload) {
         std::vector<std::pair<int,int>> out;
         if (payload.empty()) return out;
-        // heuristic: textual contains ':' or ',' -> parse legacy
         bool maybeText=false;
         for (auto b: payload) if (b==':' || b==',') { maybeText=true; break; }
         if (maybeText) {
-            // legacy "name:lvl," format
             std::string txt(payload.begin(), payload.end());
             size_t pos=0;
             while (pos < txt.size()) {
@@ -245,7 +238,6 @@ struct ItemStack {
         bool found=false;
         for (auto &pr: cur) if (pr.first==id) { pr.second = std::max(pr.second, lvl); found=true; break; }
         if (!found) cur.emplace_back(id,lvl);
-        // remove old (both 10 and legacy 21 and stored 33 variants)
         s.components.erase(std::remove_if(s.components.begin(), s.components.end(),
             [](auto &p){ return p.first==kEnchantmentsComponentId || p.first==33 || p.first==21; }), s.components.end());
         s.components.emplace_back(kEnchantmentsComponentId, encodeEnchants(cur));
@@ -265,7 +257,6 @@ struct ItemStack {
             for(auto &e: v) if(e.first==id) return true;
             // also textual fallback inside decode already handled
             if (!v.empty()) continue;
-            // if decode empty but payload textual direct search
             std::string txt(pr.second.begin(), pr.second.end());
             if(txt.find(enchName)!=std::string::npos) return true;
         }
@@ -365,7 +356,6 @@ struct ItemStack {
                 } catch (...) {}
             }
             // Also try holder for any size where first two varints are valid and payload is 3 bytes
-            // (pattern, material, bool) — legacy string payload is larger (>10 bytes)
             if (payload.size() >= 2 && payload.size() <= 5) {
                 try {
                     ReadBuffer rb2(payload.data(), payload.size());
@@ -381,7 +371,6 @@ struct ItemStack {
                     }
                 } catch (...) {}
             }
-            // Legacy textual 'pattern|material' (contains '|' or ',')
             try {
                 bool looksTextual = false;
                 for (auto b : payload) if (b=='|'||b==',') { looksTextual=true; break; }
@@ -396,7 +385,6 @@ struct ItemStack {
                     if (!t.material.empty() && t.material.find(':')==std::string::npos) t.material = "minecraft:"+t.material;
                     return t;
                 }
-                // Legacy binary: varint patLen, pat bytes, varint matLen, mat bytes, bool
                 ReadBuffer rb(payload.data(), payload.size());
                 int patLen = rb.varint();
                 if (patLen <0 || patLen>constants::kMaxStringLength || (size_t)rb.remaining() < (size_t)patLen) throw std::runtime_error("patLen");
@@ -511,7 +499,6 @@ struct ItemStack {
     }
     bool isAwkwardPotion() const { return getPotionId()==potionIdByName("minecraft:awkward"); }
 
-    // ---- plan13 §4/§5 helpers ----
     bool isArmor() const {
         std::string n=name();
         return n.find("helmet")!=std::string::npos || n.find("chestplate")!=std::string::npos ||
@@ -591,7 +578,6 @@ struct ItemStack {
         components.erase(std::remove_if(components.begin(), components.end(),
             [](auto &p){ return p.first==kCustomNameComponentId; }), components.end());
         if(n.empty()) return;
-        // Plan18 §9 binary: store as anonymous NBT TextComponent compound {text:"n"} per wiki Item_components
         WriteBuffer wb;
         nbt::writeTextComponent(wb, n);
         components.emplace_back(kCustomNameComponentId, std::vector<std::uint8_t>(wb.data.begin(), wb.data.end()));
@@ -602,7 +588,6 @@ struct ItemStack {
     int swiftSneakLevel() const { return std::max(enchantLevel("swift_sneak"), enchantLevel("minecraft:swift_sneak")); }
     int unbreakingLevel() const { return std::max(enchantLevel("unbreaking"), enchantLevel("minecraft:unbreaking")); }
     int mendingLevel() const { return std::max(enchantLevel("mending"), enchantLevel("minecraft:mending")); }
-    // plan40 C-05: loot lore/display extensions (non-wire, for set_lore/set_name functions)
     std::vector<std::string> lore;
     std::string displayNameLoot;
 };

@@ -10,7 +10,6 @@ namespace cppfm {
 std::vector<std::string> FunctionEvaluator::getFunctionLines(const std::string& id) {
     std::string norm = id;
     if (norm.find(':') == std::string::npos) norm = "minecraft:" + norm;
-    // plan14 §6: first try DatapackManager (in-memory functions from datapack loadAll)
     if (server_) {
         if (auto* fn = server_->datapackManager().getFunction(norm)) {
             // trim comments and leading slash like filesystem path
@@ -89,7 +88,6 @@ int FunctionEvaluator::executeLine(const std::string& line, brigadier::CommandSo
             return cnt;
         }
     }
-    // Handle return command directly — plan38 B-13: return run <command> propagation
     if (line.rfind("return ", 0) == 0) {
         std::string rest = line.substr(7);
         size_t s = rest.find_first_not_of(" \t");
@@ -118,10 +116,8 @@ int FunctionEvaluator::executeLine(const std::string& line, brigadier::CommandSo
     // Handle schedule inside function? schedule is top-level but can be executed as line Dispatch via server's dispatcher
     auto res = server_->commands().execute(line, std::move(src));
     if (!res.ok) {
-        // if command failed, return 0? but still propagate
         return 0;
     }
-    // If this command was a function call that set return, propagate
     if (hasReturn()) return getReturnValue();
     return res.value;
 }
@@ -142,7 +138,6 @@ std::string FunctionEvaluator::expandMacro(const std::string& line, const std::m
             pos += v.size();
         }
     }
-    // 2) $var legacy
     for (auto& [k, v] : args) {
         std::string pat1 = "$" + k;
         size_t pos = 0;
@@ -166,7 +161,6 @@ int FunctionEvaluator::executeFunction(const std::string& id, brigadier::Command
     }
     auto lines = getFunctionLines(id);
     if (lines.empty()) {
-        // plan14 §6: function not found in datapack or filesystem -> error
         return 0;
     }
     recursionDepth_++;

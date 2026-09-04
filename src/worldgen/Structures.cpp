@@ -502,7 +502,6 @@ void StructureGenerator::endCityPiece(Chunk& chunk, std::int32_t cx, std::int32_
 
 void StructureGenerator::generateChunk(Chunk& chunk, std::int32_t cx,
                                        std::int32_t cz, const GroundFn& ground) {
-    // plan6 §2: try StructurePlacer first (ConfiguredFeature/PlacedFeature JSON)
     if (placer_) {
         // stronghold via placer
         if (auto* pf = placer_->getPlaced("minecraft:stronghold")) {

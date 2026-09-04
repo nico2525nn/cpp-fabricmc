@@ -1,5 +1,4 @@
 // ByteBuffer: read/write primitives for Minecraft Java 1.21.4 protocol 769. Clean-room implementation based on publicly documented wire
-// formats (wiki.vg + PrismarineJS minecraft-data 1.21.4 protocol.json). Big-endian for fixed types, VarInt/VarLong for protocol, Position
 // 26-12-26 pack per wiki.vg/NBT. Strict overflow checks: varint >5 bytes / varlong >10 bytes throws.
 #pragma once
 #include <cstdint>

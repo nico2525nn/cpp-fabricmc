@@ -2,7 +2,6 @@
 //
 // Parser ids match Minecraft Java 1.21.4 vanilla registry order 0-53 (verified
 // against PrismarineJS minecraft-data 1.21.4 protocol.json + Yarn 1.21.4).
-// Strict mapping (plan15): 17 Style=18 / Message=19 / Nbt=20 / NbtTag=21 etc
 // through 48 Heightmap=49 / LootTable=50 / LootPredicate=51 / LootModifier=52.
 // Each ArgumentType knows how to:
 //   1. write its declare_commands property blob (writeProps), and
@@ -38,7 +37,6 @@ enum class ParserId : std::uint8_t {
     Resource = 45, ResourceKey = 46, TemplateMirror = 47,
     TemplateRotation = 48, Heightmap = 49, LootTable = 50, LootPredicate = 51,
     LootModifier = 52, Uuid = 53,
-    // Legacy aliases for existing code
     NbtCompoundTag = Nbt,
     MobEffect = ItemSlots,
     FunctionTag = Function,
@@ -395,7 +393,6 @@ inline ArgumentType itemStackArg() {
     return a;
 }
 
-// ---- extended arg types (plan13 §10) -----------------------------------
 // BlockState parser id 12: `minecraft:stone` or `minecraft:oak_stairs[facing=north,half=top]`
 inline ArgumentType blockStateArg() {
     ArgumentType a;

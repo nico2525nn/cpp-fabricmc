@@ -1,4 +1,3 @@
-// InventoryController: extracted inventory / container / recipe / hunger (plan8 modular split)
 // Delegates hunger to HungerManager; inventory helpers mirror GameServer logic but are testable.
 #pragma once
 #include <cstdint>
@@ -34,7 +33,6 @@ public:
     static bool addToInventory(Player& p, std::uint32_t itemId, std::uint16_t count);
     static void resendInventory(Player& p);
 
-    // food table (shared with GameServer::handleFoodConsume) — plan23 §7 strict: 40 entries mirroring HungerManager (cake 2/0.4, pumpkin_pie 8/4.8, cooked_chicken 6/7.2 etc)
     struct FoodInfo { int food; float saturation; };
     static const std::unordered_map<std::string, FoodInfo>& foodTable() {
         static const std::unordered_map<std::string, FoodInfo> k = {

@@ -1,4 +1,3 @@
-// NetworkManager: extracted packet batching / broadcast / keepalive (plan8 modular split)
 // Wraps PacketBatcher + broadcast helpers; GameServer owns one instance.
 #pragma once
 #include <cstdint>

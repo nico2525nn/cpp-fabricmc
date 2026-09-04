@@ -1,7 +1,5 @@
-// BehaviorTree engine (plan6 item 29,39,40,43,44,35)
 // Data-driven behavior tree with Selector/Sequence/Condition/Action nodes.
 // Factory builds tree from EntityDataDef.behaviors JSON array.
-// plan28 entity polish: verify BehaviorTree actions remain orthogonal to Scoreboard ResetScore 0x49 (D26) — WitherSkull/DragonBreath/WardenSonicBoom actions, BreedGoal, Brain behaviors verified intact after scoreboard reset hardening.
 #pragma once
 #include <memory>
 #include <vector>
@@ -146,7 +144,6 @@ public:
     BTStatus tick(MobEntity& m, AiContext& ctx, std::int64_t) override ;
 };
 
-// Plan7 extended boss/utility actions (data-driven via JSON)
 class BlazeFireballAction : public BehaviorNode {
 public:
     BTStatus tick(MobEntity& m, AiContext& ctx, std::int64_t now) override ;
@@ -181,7 +178,6 @@ class WanderAction : public BehaviorNode {
 public:
     BTStatus tick(MobEntity& m, AiContext& ctx, std::int64_t now) override ;
 };
-// plan36 new BT actions (12)
 class WitchPotionAction : public BehaviorNode { public: BTStatus tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
 class RavagerRoarAction : public BehaviorNode { public: BTStatus tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
 class IronGolemDefendAction : public BehaviorNode { public: BTStatus tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
@@ -195,7 +191,6 @@ class FoxPounceAction : public BehaviorNode { public: BTStatus tick(MobEntity& m
 class DolphinPlayAction : public BehaviorNode { public: BTStatus tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
 class EvokerFangAction : public BehaviorNode { public: BTStatus tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
 
-// Factory helper — plan7 data-driven: handles Condition/Action/Selector/Sequence via type string
 inline std::unique_ptr<BehaviorNode> createNodeForType(const std::string& rawType) {
     std::string t = rawType;
     // strip prefix minecraft:
@@ -214,7 +209,6 @@ inline std::unique_ptr<BehaviorNode> createNodeForType(const std::string& rawTyp
     if (t=="teleport_random"||t=="teleport") return std::make_unique<TeleportRandomAction>();
     if (t=="pickup_block"||t=="pickup") return std::make_unique<PickupBlockAction>();
     if (t=="stare") return std::make_unique<StareAction>();
-    // boss + special actions (plan7, plan14 §1 fix: wither_skull/dragon_breath/warden_sonic_boom orphaned -> map explicitly)
     if (t=="wither_skull"||t=="wither_skull_attack"||t=="wither_shoot") return std::make_unique<WitherSkullAction>();
     if (t=="dragon_breath"||t=="dragon_breath_attack"||t=="dragon_fireball") return std::make_unique<DragonBreathAction>();
     if (t=="blaze_fireball"||t=="blaze_shoot"||t=="blaze_attack") return std::make_unique<BlazeFireballAction>();
@@ -224,7 +218,6 @@ inline std::unique_ptr<BehaviorNode> createNodeForType(const std::string& rawTyp
     if (t=="shulker_bullet"||t=="shulker_shoot") return std::make_unique<ShulkerBulletAction>();
     if (t=="warden_sonic_boom"||t=="sonic_boom"||t=="warden_attack") return std::make_unique<WardenSonicBoomAction>();
     if (t=="ranged_attack"||t=="shoot"||t=="fireball") return std::make_unique<GenericRangedAttackAction>();
-    // plan34 §2-3 aliases for JSON-driven differentiation (swell/avoid/flee_sun/leap/breeze/armadillo)
     if (t=="swell"||t=="creeper_swell"||t=="swell_goal") return std::make_unique<WanderAction>(); // swell is Goal-layer (AiBrain::SwellGoal), BT fallback wander
     if (t=="avoid_entity"||t=="avoid") return std::make_unique<WanderAction>();
     if (t=="flee_sun"||t=="flee_sunlight") return std::make_unique<WanderAction>();
@@ -245,7 +238,6 @@ inline std::unique_ptr<BehaviorNode> createNodeForType(const std::string& rawTyp
     if (t=="evoker_fang"||t=="fang"||t=="evoker_attack") return std::make_unique<EvokerFangAction>();
     if (t=="breed_action") return std::make_unique<BreedAction>();
     if (t=="trade"||t=="trade_goal") return std::make_unique<TradeAction>();
-    // plan42 R2 E-11: BT aliases for new species jsons map to closest generic action (never break builds).
     if (t=="swim_wander"||t=="fish_swim"||t=="fly_wander"||t=="bat_roost") return std::make_unique<WanderAction>();
     if (t=="graze"||t=="eat_grass"||t=="nibble_carrots"||t=="raid_crops") return std::make_unique<WanderAction>();
     if (t=="boat_drift"||t=="boat_float") return std::make_unique<WanderAction>();
@@ -280,8 +272,6 @@ inline std::unique_ptr<BehaviorNode> createNodeForType(const std::string& rawTyp
     if (t=="vindicator_axe"||t=="axe_attack") return std::make_unique<AttackPlayerAction>();
     if (t=="zoglin_frenzy"||t=="frenzy") return std::make_unique<AttackPlayerAction>();
     if (t=="llama_spit"||t=="spit") return std::make_unique<GenericRangedAttackAction>();
-    // plan42 R2 E-11: pre-existing Goal-layer types (real logic in AiBrain goals,
-    // BT fallback wander — same policy as the plan34 §2-3 block above).
     if (t=="axolotl_play_dead"||t=="bogged_poison"||t=="camel_dash") return std::make_unique<WanderAction>();
     if (t=="endermite_teleport"||t=="frog_tongue"||t=="goat_ram") return std::make_unique<WanderAction>();
     if (t=="illusioner_invis"||t=="ocelot_trust"||t=="panda_roll") return std::make_unique<WanderAction>();

@@ -1,6 +1,5 @@
 #pragma once
 // Server chat style constants - section-sign prefixes for broadcast/feedback texts. Text CONTENT is unchanged (wire-identical); only the
-// repeated style prefixes are single-sourced here (cleanup P1-B4: was scattered section-sign literals).
 #include <string>
 
 namespace cppfm::msg {

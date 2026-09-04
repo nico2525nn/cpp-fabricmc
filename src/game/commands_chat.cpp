@@ -1,4 +1,3 @@
-// commands_chat.cpp: Brigadier command tree nodes (plan3 port): registered, parsed, advertised.
 #include "GameServer.hpp"
 #include "Messages.hpp"
 #include "Particles.hpp"
@@ -17,8 +16,16 @@ namespace cppfm {
 using brigadier::CommandNode;
 using brigadier::CommandContext;
 namespace args = brigadier::args;
+using NodePtr = brigadier::NodePtr;
 
 void GameServer::initChatCommands() {
+    initChatCommandsPart01();
+    initChatCommandsPart02();
+    initChatCommandsPart03();
+    initChatCommandsPart04();
+}
+
+void GameServer::initChatCommandsPart01() {
     auto& d = commands_;
     {
         auto say = CommandNode::literal("say");
@@ -31,6 +38,10 @@ void GameServer::initChatCommands() {
         say->then(msg);
         d.root->then(say);
     }
+}
+
+void GameServer::initChatCommandsPart02() {
+    auto& d = commands_;
     {
         auto title = CommandNode::literal("title");
         auto clear = CommandNode::literal("clear");
@@ -44,7 +55,6 @@ void GameServer::initChatCommands() {
             return 1;
         };
         title->then(clear);
-        // plan34 network: /title <text> existing + /title actionbar <text> -> ActionBar 0x51 (Prismarine packet_action_bar {text:anonymousNbt})
         auto actionbarLit = CommandNode::literal("actionbar");
         auto abText = CommandNode::argument("ab_text", args::stringGreedy());
         abText->executable = true;
@@ -63,7 +73,6 @@ void GameServer::initChatCommands() {
             return 1;
         };
         title->then(actionbarLit);
-        // plan42 R3 (E-17): vanilla /title form; registered before greedy <text> child.
         {
             auto tTargets = CommandNode::argument("titleTargets", args::entity(false, false));
             auto mkTitleText = [this](const std::string& kind) {
@@ -171,7 +180,10 @@ void GameServer::initChatCommands() {
         title->then(text);
         d.root->then(title);
     }
-    // ---------------------------------------------------------------- me / msg / tell / w
+}
+
+void GameServer::initChatCommandsPart03() {
+    auto& d = commands_;
     {
         auto me = CommandNode::literal("me");
         auto act = CommandNode::argument("action", args::stringGreedy());
@@ -231,6 +243,10 @@ void GameServer::initChatCommands() {
             d.root->then(msgLit);
         }
     }
+}
+
+void GameServer::initChatCommandsPart04() {
+    auto& d = commands_;
     {
         // /tellraw <targets> <message> — raw JSON chat via SystemChat 0x73.
         auto tr = CommandNode::literal("tellraw");
@@ -283,5 +299,6 @@ void GameServer::initChatCommands() {
         d.root->then(tr);
     }
 }
+
 
 } // namespace cppfm

@@ -1,6 +1,5 @@
 // World: superflat world storage, generation, block get/set.
 // Chunk model: 24 sections of 16x16x16 block state ids (flat arrays; simple & fast).
-// plan28 block polish: verify World block get/set paths are orthogonal to Scoreboard ResetScore 0x49 (D26) — piston QC, moving_piston 2-tick, ChunkCodec 64 vs 4096 verified intact after deep 31 merges.
 #pragma once
 #include <array>
 #include <cstdint>
@@ -116,13 +115,11 @@ public:
     // NOTE: logically const (lazy generation); mutex is mutable Loader hook: return true if it filled the chunk (e.g., from disk).
     void setLoader(std::function<bool(std::int32_t, std::int32_t, Chunk&)> l) { loader_ = std::move(l); }
     void setOnEdit(std::function<void(std::int32_t, std::int32_t)> cb) { onEdit_ = std::move(cb); }
-    // Per-block change hook (x,y,z,old,new) used by the light/fluid engines.
     void setOnBlockChanged(std::function<void(std::int32_t, std::int32_t,
                                                std::int32_t, std::uint16_t,
                                                std::uint16_t)> cb) {
         onBlockChanged_ = std::move(cb);
     }
-    // Block Event Bus (plan6): onBlockPlace, onBlockBreak, onBlockNeighborChange
     void setOnBlockPlace(std::function<void(std::int32_t, std::int32_t, std::int32_t, std::uint16_t, std::uint16_t)> cb) { onBlockPlace_ = std::move(cb); }
     void setOnBlockBreak(std::function<void(std::int32_t, std::int32_t, std::int32_t, std::uint16_t, std::uint16_t)> cb) { onBlockBreak_ = std::move(cb); }
     void setOnBlockNeighborChange(std::function<void(std::int32_t, std::int32_t, std::int32_t, std::uint16_t)> cb) { onBlockNeighborChange_ = std::move(cb); }
@@ -215,7 +212,6 @@ public:
         static const uint16_t sand  = (uint16_t)names.at("minecraft:sand");
         static const uint16_t gravel= (uint16_t)names.at("minecraft:gravel");
         if (above == sand || above == gravel) {
-            // make it fall: remove from old pos, find ground, place
             setBlockInternal(x, y+1, z, 0);
             int fallY = y;
             while (fallY > kMinY && getBlock(x, fallY-1, z) == 0) --fallY;
@@ -405,7 +401,6 @@ public:
         forcedChunks_.insert(chunkKey(cx, cz));
         ticketManager_.addTicket(cx, cz, TicketType::FORCED, 31, 0);
     }
-    // W17 strict: ForcedChunkState helpers (Yarn ForcedChunkState/PersistentState) — alias to chunkKey for uniformity (plan31 R1)
     struct ForcedChunkState {
         static inline std::int64_t toLong(int cx,int cz){ return chunkKey(cx,cz); }
         static inline std::pair<int,int> fromLong(std::int64_t k){ return chunkKeyDecode(k); }
@@ -469,7 +464,6 @@ public:
         return bio=="minecraft:end_highlands" || bio=="minecraft:end_midlands";
     }
 
-    // ---- World responsibility: simulation distance (plan7) ------------ Spawn chunks (forced / SPAWN ticket level 31) are always
     // considered in simulation distance per vanilla ChunkTicket SPWAN behavior: they tick even without nearby players.
     bool isPositionInSimulationDistance(std::int32_t x, std::int32_t z) const {
         std::int32_t cx = x >> 4, cz = z >> 4;
@@ -638,7 +632,6 @@ private:
     std::vector<std::function<void(std::int32_t, std::int32_t, std::int32_t, std::uint16_t)>> blockNeighborChangeListeners_;
 };
 
-// BlockNeighborUpdater system (plan7): event-driven neighbor propagation
 class BlockNeighborUpdater {
 public:
     static void updateNeighbors(World& world, std::int32_t x, std::int32_t y, std::int32_t z) {

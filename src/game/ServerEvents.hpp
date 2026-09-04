@@ -1,4 +1,3 @@
-// ServerEvents: concrete event types fired through the EventBus (plan2.md "イベントバス"). Systems and future mods subscribe via api::EventHook.
 #pragma once
 #include "../api/EventBus.hpp"
 

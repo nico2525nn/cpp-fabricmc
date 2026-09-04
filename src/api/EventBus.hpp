@@ -1,6 +1,5 @@
 // EventBus: typed publish/subscribe events with priority + cancellation.
 //
-// This is the C++ counterpart of Fabric API's event model (plan2.md,
 // "Modding API基盤の設計"): server internals fire strongly-typed events at
 // well-defined points and listeners (built-in systems or future "mods") may
 // observe or cancel them. Handlers run on the firing thread; ordering is by
@@ -62,7 +61,6 @@ public:
         detail::BusBase& bus = detail::BusBase::get(typeid(Ev));
         bus.addRaw(priority, [h = std::move(handler)](void* raw) { h(*static_cast<Ev*>(raw)); });
     }
-    // Fire the event; returns false when a cancellable event was cancelled.
     bool fire(Ev& ev) const {
         for (auto& fn : detail::BusBase::get(typeid(Ev)).snapshot()) fn(&ev);
         if constexpr (std::is_base_of_v<Cancelable, Ev>) return !ev.cancelled;

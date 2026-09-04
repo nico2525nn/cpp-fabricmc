@@ -1,4 +1,3 @@
-// Commands.cpp: Brigadier command tree nodes (plan3 port): registered, parsed, advertised.
 #include "GameServer.hpp"
 #include "Messages.hpp"
 #include "Particles.hpp"
@@ -17,7 +16,6 @@ using brigadier::CommandNode;
 using brigadier::CommandContext;
 namespace args = brigadier::args;
 
-// plan38 B-13: helper to parse inline NBT {k:v,...} into map<string,string> without suffixes
 
 // ---------------------------------------------------------------- selectors
 
@@ -110,10 +108,8 @@ brigadier::SelectorResult GameServer::resolveSelector(
 // ------------------------------------------------------------ registration --
 
 // Recipe-book UpdateRecipes SlotDisplay writer: varint presence (2 = item)
-// + item id. Single truth (was a lambda inside the recipe block, used 10x).
 
 void GameServer::initCommands() {
-    // Dispatcher (cleanup P3): department registration lives in commands_{chat,admin,world,player,data,misc,execute,scoreboard}.cpp (was
     // one 6076-line function).
     initChatCommands();
     initAdminCommands();

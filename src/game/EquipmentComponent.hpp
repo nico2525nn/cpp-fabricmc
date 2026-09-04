@@ -1,4 +1,3 @@
-// EquipmentComponent — plan8 entity section Encapsulates mob equipment (6 slots) and synchronizes via SetEquipment 0x60. Provides armor
 // calculation and EquipmentComponent-driven state sync.
 #pragma once
 #include <array>
@@ -39,7 +38,6 @@ public:
         return tot;
     }
 
-    // Hand drop chances (plan13 §2): 0.085F default, 1.0F for player-given.
     std::array<float,2> handDropChances{0.085f,0.085f};
     std::array<float,4> armorDropChances{0.085f,0.085f,0.085f,0.085f};
 

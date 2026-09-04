@@ -1,4 +1,3 @@
-// PlayerDataRecovery: isolated playerdata load with quarantine (plan46 §2, O-07(b)). A corrupt player .dat must never prevent startup nor
 // wipe neighbours: the bad file is renamed to *.dat.corrupt (forensics) and the player starts fresh. Header-only + loader-injected so unit
 // tests can exercise it without GameServer.
 #pragma once
