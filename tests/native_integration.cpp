@@ -186,7 +186,7 @@ static void scenarioJoinBuildChat(ServerProc& srv) {
     CHECK(a.declares >= 1, "A received command tree");
 
     // dig the grass under spawn column and verify echo + ack + persistence bytes
-    // regression fix: 0,-61,0 is inside spawn-protection=16, use 30,-61,0 outside (see MISSING_FEATURES #5)
+    // regression fix: 0,-61,0 is inside spawn-protection=16, use 30,-61,0 outside (see docs/SPEC_OPS.md spawn-protection policy)
     a.sendPosition(30.5, -60.0, 0.5);
     a.pump(150);
     a.sendDig(30, -61, 0, 7);                    // break a surface grass block outside spawn protection

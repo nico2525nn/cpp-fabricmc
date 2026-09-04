@@ -779,7 +779,7 @@ static void test_worldgen() {
         // via StructureManager sets (plan33) – fallback to legacy structureSets header
         // plan45 G-11: vanilla 1.21.4 jar has EXACTLY 20 structure_set files
         // (plural ids: villages/pillager_outposts/.../woodland_mansions);
-        // ours keep plan33 singular統合名 1:1 (see PROTOCOL_NOTES.md G-11 table).
+        // ours keep plan33 singular統合名 1:1 (see docs/SPEC_GAMEPLAY.md#worldgen-density-and-seed-limits G-11 table).
         const auto& sets = worldgen::structureSets();
         CHECK_EQ_INT((int)sets.size(), 20, "structureSets 20 (vanilla jar: exactly 20 sets)");
         auto findSet = [&](const char* n)->const StructureSet*{

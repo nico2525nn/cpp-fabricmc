@@ -627,7 +627,7 @@ void Session::handleConfiguration() {
         b.raw(payload.data.data(), payload.data.size());
         conn_->sendPacket(cf::sc::CustomPayload, b);
     }
-    // 1b. FeatureFlags 0x0C — vanilla 1.21.4 sends ["minecraft:vanilla"] (PROTOCOL_NOTES 12 registries + feature_flags)
+    // 1b. FeatureFlags 0x0C — vanilla 1.21.4 sends ["minecraft:vanilla"] (docs/SPEC_WIRE.md configuration registry order + feature_flags)
     {
         WriteBuffer b;
         b.varint(1);
@@ -656,7 +656,7 @@ void Session::handleConfiguration() {
     if (finishAckEarly)
         std::fprintf(stderr, "[cppfm] %s: early finish-ack during packs wait (tolerated)\n",
                      self_->name.c_str());
-    // 4. registry blobs, verbatim wire order — D10 lock: exactly 12 in PROTOCOL_NOTES order
+    // 4. registry blobs, verbatim wire order — D10 lock: exactly 12 in docs/SPEC_WIRE.md order
     {
         const auto& regs = srv_.data().registries();
         if (regs.size() != EmbeddedData::kRegistrySpec.size()) {
@@ -955,7 +955,7 @@ void Session::answerBlockNbt(std::int32_t transactionId, std::int32_t x, std::in
         wr.endCompound();
     } else {
         // Other block entities have no NBT serializer yet — echo the
-        // transaction with an empty compound (documented stub, PROTOCOL_NOTES B6).
+        // transaction with an empty compound (documented stub, docs/SPEC_WIRE.md).
         nbt::Writer wr(nbt);
         wr.rootCompound();
         wr.endCompound();
@@ -963,7 +963,7 @@ void Session::answerBlockNbt(std::int32_t transactionId, std::int32_t x, std::in
     sendTagQueryResponse(transactionId, nbt);
 }
 void Session::answerEntityNbt(std::int32_t transactionId, std::int32_t entityId) {
-    (void)entityId; // entity NBT serialization deferred — echo empty (PROTOCOL_NOTES B6)
+    (void)entityId; // entity NBT serialization deferred — echo empty (docs/SPEC_WIRE.md)
     WriteBuffer nbt;
     nbt::Writer wr(nbt);
     wr.rootCompound();
@@ -2267,7 +2267,7 @@ void Session::handlePlay() {
         case pl::cs::Spectate: onSpectatePacket(in); break; // 0x3B W-09
         default:
             // Unknown packets: skip payload to stay aligned. plan46 §1 W-16: unknown play = ignore + log (rate-limited under flood), while
-            // unknown login/config = kick + Disconnect (thrown by their handlers, kicked by Session::run). Policy: docs/RATE_LIMITS.md.
+            // unknown login/config = kick + Disconnect (thrown by their handlers, kicked by Session::run). Policy: docs/SPEC_OPS.md#rate-limits-and-disconnect-policy.
             if (playLogGate_.shouldLog(nowMs()))
                 std::fprintf(stderr, "[cppfm] unknown play packet from %s\n",
                              conn_->peer().c_str());
@@ -2587,7 +2587,7 @@ void Session::onPickItemFromBlock(ReadBuffer& in) {
         std::int32_t bx, by, bz;
         in.position(bx, by, bz);
         const bool includeData = in.boolean();
-        (void)includeData; // BE-copy detail deferred (PROTOCOL_NOTES B6)
+        (void)includeData; // BE-copy detail deferred (docs/SPEC_WIRE.md)
         World& w = srv_.worldFor(self_->dimension);
         const std::uint16_t st = w.getBlock(bx, by, bz);
         if (st == 0) return;
@@ -2694,11 +2694,11 @@ void Session::onSetSlotState(ReadBuffer& in) {
     try { (void)in.varint(); (void)in.varint(); (void)in.boolean(); }
     catch (...) { in.skipRest(); }
     // No server-side slot-enable state exists (client-side crafting
-    // ghost slot hint) — parsed and intentionally ignored (PROTOCOL_NOTES B6).
+    // ghost slot hint) — parsed and intentionally ignored (docs/SPEC_WIRE.md).
 }
 void Session::onDebugSampleSubscription(ReadBuffer& in) {
     try { (void)in.varint(); } catch (...) { in.skipRest(); }
-    return; // debug profiler subscription — no server effect (PROTOCOL_NOTES B6).
+    return; // debug profiler subscription — no server effect (docs/SPEC_WIRE.md).
 }
 void Session::onQueryBlockEntityTag(ReadBuffer& in) {
     try {
