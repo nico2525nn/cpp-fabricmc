@@ -57,7 +57,7 @@ int main() {
     CHECK(rm.size() >= 1570 && rm.size() <= 1600, "RecipeManager size 1570-1600 (~1578)");
     CHECK(rm.size() == 1578, "RecipeManager size ==1578 exact (trimBlankRows 3除外)");
     std::printf("  info: loaded %zu recipes from %s\n", rm.size(), recPath.c_str());
-    // 1581 vs 1578 note is documented in MISSING_FEATURES; also verify trimBlankRows contract
+    // 1581 vs 1578 note is documented in docs/MISSING_FEATURES_1_21_4.md; also verify trimBlankRows contract
     {
         auto r1 = Recipe::trimBlankRows({"   ", " A ", "AAA"});
         CHECK(r1.size() == 2 && r1[0] == " A " && r1[1] == "AAA", "trimBlankRows [   , A ,AAA]->2 rows");

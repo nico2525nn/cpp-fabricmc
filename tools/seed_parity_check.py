@@ -8,7 +8,7 @@
 #
 # Vanilla parity note (L3): vanilla uses Xoroshiro128++/LegacyRand, so this
  # checks SELF-consistency (hash hand-calc == generate() placement) and
- # determinism, NOT vanilla seed equality. See docs/PROTOCOL_NOTES.md.
+ # determinism, NOT vanilla seed equality. See docs/SPEC_GAMEPLAY.md#worldgen-density-and-seed-limits.
 #
 # Usage: python3 tools/seed_parity_check.py  (prints C++ CHECK lines)
 import math

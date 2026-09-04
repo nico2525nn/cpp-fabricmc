@@ -1,7 +1,7 @@
 // Packet IDs for Minecraft Java 1.21.4 (protocol 769). Verified against PrismarineJS minecraft-data 1.21.4 protocol.json (version- pinned)
-// + live wire captures (docs/PROTOCOL_NOTES.md). Strict 1.21.4: TradeList 0x2E (not 0x2D), ContainerSetContent 0x13 (not 0x12), OpenScreen
+// + live wire captures (docs/SPEC_WIRE.md). Strict 1.21.4: TradeList 0x2E (not 0x2D), ContainerSetContent 0x13 (not 0x12), OpenScreen
 // 0x35 (not 0x34), KeepAlive 0x27 (not 0x26), UpdateLight 0x2B, LevelChunkWithLight 0x28 — fixed plan23 network (prism verified). Login
-// EncryptionRequest includes shouldAuthenticate bool true (N5). Play BundleDelimiter 0x00 + MultiBlockChange 0x4E with ly<<8|lz<<4|lx (N7).
+// EncryptionRequest includes shouldAuthenticate bool true (N5). Play BundleDelimiter 0x00 + MultiBlockChange 0x4E with localX<<8|localZ<<4|localY; see docs/SPEC_WIRE.md#bundle-and-section-blocks.
 #pragma once
 #include <cstdint>
 
@@ -252,7 +252,7 @@ constexpr std::uint8_t SetTime = UpdateTime;
 // enumerates the full 131 toClient mapper; code can reference the id without reintroducing a magic number. Tri-classification (plan41 §2
 // C-10): (a) implemented — now sent, (b) omitted/confirmed — not sent, see alternative, (c) future/deferred — not sent, see 91. 33 entries
 // documented: plan34 sent 6 (0x18,0x20,0x25,0x50,0x51,0x6E), plan41 sent 2 (0x24,0x33) → 33-8=25 remaining listed below but strict unsent
-// before plan34 was 27 (131-104); after plan34 27-6=21, after plan41 21-2=19 strict unsent (see table in PROTOCOL_NOTES.md §Unsent). This
+// before plan34 was 27 (131-104); after plan34 27-6=21, after plan41 21-2=19 strict unsent (see docs/SPEC_WIRE.md unsent matrix). This
 // header keeps all 33 for mapper completeness; per-entry comments below carry (a)/(b)/(c) tags.
 constexpr std::uint8_t ChunkBiomes = 0x0E;            // (b) not sent — included in LevelChunkWithLight 0x28 biomes paletted
 constexpr std::uint8_t ChatSuggestions = 0x18;        // sent (plan34 network: chat_suggestions action+entries)

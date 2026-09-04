@@ -2,7 +2,7 @@
 // previously-unmapped species (witch/guardian/elder/strider/frog/camel/
 // sniffer/armadillo/breeze/creaking/bogged/phantom).
 //
-// Each row is the "interval / range / magnitude" triple from assessment-6
+// Each row is the "interval / range / magnitude" triple from docs/SPEC_GAMEPLAY.md
 // G-06, mirrored from the live goal implementation in AiBrain.cpp (cited per
 // row) plus the vanilla reference (wiki/Yarn). `status` marks how much of the
 // vanilla behavior the goal actually covers — partial rows stay honest and

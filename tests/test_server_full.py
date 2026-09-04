@@ -1252,7 +1252,7 @@ def unpack_pos_block(data: bytes) -> tuple[int, int, int]:
     return unpack_position(v)
 
 # ------------------------------------------------------------------ plan43 B1+B2
-# assessment-6 W-01..W-07 + W-12 wire replays (Prismarine protocol.json 1.21.4
+# docs/VERIFICATION.md W-01..W-07 + W-12 wire replays (Prismarine protocol.json 1.21.4
 # hand-built fixtures). Stage-merge: FAIL on pre-fix server, PASS post-fix.
 # Mirrors tests/test_plan43.cpp (C++ TestClient); python mcproto gives an
 # independent framing implementation (tautology guard).

@@ -7,7 +7,7 @@ Scenario (mirrors plan43 §3 SCENARIO):
   BEFORE finish-ack: W-12) -> play move (W-01) -> tab (W-04) -> signed-cmd
   n=0/1 (W-03) -> sign update (W-07) -> abilities (W-06).
 
-What it canNOT verify (stays manual in SOAK_MANUAL.md): rendering, colors,
+What it canNOT verify (stays manual in docs/SPEC_OPS.md#real-client-and-gui-verification): rendering, colors,
 lighting look, GUI feel, 1h random-walk rare disconnects.
 
 Usage:

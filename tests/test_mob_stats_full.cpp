@@ -1,5 +1,5 @@
-// test_mob_stats_full — plan44 G-05 (assessment-6 G-05 mob attributes 149 species).
-// Reads docs/mob_stats_149.csv (single source of truth, plan44 §5) and verifies
+// test_mob_stats_full — plan44 G-05 (docs/SPEC_GAMEPLAY.md mob attributes, 149 species).
+// Reads docs/mob_stats_149.csv (stable runtime fixture; see docs/SPEC_GAMEPLAY.md) and verifies
 // every one of the 149 kMobStats rows: name order, HP/speed/attack/followRange,
 // XP, loot item/range, breeding item. mismatch must be 0.
 // Plus hand-written vanilla spot checks (independent of the CSV/table):
