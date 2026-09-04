@@ -73,6 +73,64 @@ int main() {
 
   curSection = "ticks";
   using MC = MiningCalculator;
+  CHECK(MC::toolKindFromItemName("minecraft:iron_pickaxe") == ToolKind::Pickaxe,
+        "item mapping: iron pickaxe kind");
+  CHECK(MC::toolTierFromItemName("minecraft:iron_pickaxe") == ToolTier::Iron,
+        "item mapping: iron pickaxe tier");
+  CHECK(MC::toolKindFromItemName("minecraft:golden_axe") == ToolKind::Axe,
+        "item mapping: golden axe kind");
+  CHECK(MC::toolTierFromItemName("minecraft:golden_axe") == ToolTier::Gold,
+        "item mapping: golden axe tier");
+  CHECK(MC::toolKindFromItemName("minecraft:netherite_shovel") == ToolKind::Shovel,
+        "item mapping: netherite shovel kind");
+  CHECK(MC::toolTierFromItemName("minecraft:netherite_shovel") == ToolTier::Netherite,
+        "item mapping: netherite shovel tier");
+  CHECK(MC::toolKindFromItemName("minecraft:shears") == ToolKind::Shears,
+        "item mapping: shears kind");
+  CHECK(MC::toolTierFromItemName("minecraft:shears") == ToolTier::None_,
+        "item mapping: shears tier");
+  CHECK(MC::toolKindFromItemName("minecraft:stone") == ToolKind::Hand,
+        "item mapping: block item is hand");
+
+  MiningContext miningContext;
+  miningContext.tool = ToolKind::Pickaxe;
+  miningContext.tier = ToolTier::Iron;
+  MiningResult miningResult = MC::calculate(*stone, miningContext);
+  CHECK(miningResult.harvest, "calculate: iron pick harvests stone");
+  CHECK_EQ_INT(miningResult.ticks, 8, "calculate: iron pick stone 8t");
+  miningContext.tool = ToolKind::Hand;
+  miningContext.tier = ToolTier::None_;
+  miningResult = MC::calculateMining(*stone, miningContext);
+  CHECK(!miningResult.harvest, "calculate: hand cannot harvest stone");
+  CHECK_EQ_INT(miningResult.ticks, 150, "calculateMining: hand stone 150t");
+  miningContext.tool = ToolKind::Pickaxe;
+  miningContext.tier = ToolTier::Diamond;
+  miningContext.efficiency = 5;
+  miningContext.haste = 2;
+  miningContext.fatigue = 3;
+  miningContext.inWater = true;
+  miningContext.aquaAffinity = false;
+  miningContext.onGround = false;
+  miningResult = MC::calculate(*stone, miningContext);
+  CHECK(miningResult.harvest, "calculate: harvest is independent of speed modifiers");
+  CHECK(miningResult.speed > 0.f, "calculate: modifiers retain positive speed");
+  CHECK_EQ_INT(miningResult.ticks,
+               MC::breakTicks(*stone, ToolKind::Pickaxe, ToolTier::Diamond,
+                               5, 2, 3, true, false, false),
+               "calculate: ticks use the same modifier formula");
+
+  CHECK(MC::unpackDigStage(MC::packDigStage(7, true)) == 7,
+        "dig state: progress round-trips");
+  CHECK(MC::digCanHarvest(MC::packDigStage(7, true)),
+        "dig state: harvest decision round-trips");
+  CHECK(!MC::digCanHarvest(MC::packDigStage(7, false)),
+        "dig state: no-harvest decision round-trips");
+  const auto packedStart = MC::packDigStartTick(123456, 4321);
+  CHECK_EQ_INT(static_cast<int>(MC::unpackDigStartTick(packedStart)), 123456,
+               "dig state: start tick round-trips");
+  CHECK_EQ_INT(static_cast<int>(MC::digStartingState(packedStart)), 4321,
+               "dig state: block state round-trips");
+
   CHECK_EQ_INT(MC::breakTicks(*stone, ToolKind::Pickaxe, ToolTier::Iron), 8,
                "iron-pick stone 8t (0.4s wiki)");
   CHECK_EQ_INT(MC::breakTicks(*obsidian, ToolKind::Pickaxe, ToolTier::Diamond), 188,

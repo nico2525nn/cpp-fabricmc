@@ -6,6 +6,7 @@
 #pragma once
 #include <cmath>
 #include <cstdint>
+#include <string_view>
 #include "../generated/BlockStates.hpp"
 
 namespace cppfm {
@@ -22,8 +23,94 @@ enum class ToolKind : std::uint8_t { Hand, Pickaxe, Axe, Shovel, Hoe, Sword, She
 // Harvest ranks (Yarn Tier.java): gold harvests like wood.
 enum class ToolTier : std::uint8_t { None_, Wood, Stone, Gold, Iron, Diamond, Netherite };
 
+struct MiningContext {
+  ToolKind tool = ToolKind::Hand;
+  ToolTier tier = ToolTier::None_;
+  int efficiency = 0;
+  int haste = 0;
+  int fatigue = 0;
+  bool inWater = false;
+  bool aquaAffinity = false;
+  bool onGround = true;
+};
+
+struct MiningResult {
+  bool harvest = false;
+  float speed = 1.f;
+  int ticks = 0;
+};
+
 struct MiningCalculator {
   static constexpr int kUnbreakable = -1;
+  // Player has no spare mining-result field in the protocol-facing state. The
+  // high bit of digLastStage carries the start-time harvest decision; the low
+  // nibble remains the client-visible 0..9 progress stage. The upper 16 bits
+  // of digStartTick carry the exact starting block state (the lower 48 bits
+  // retain the tick), so a replacement block cannot consume stale progress.
+  static constexpr std::uint8_t kDigNoHarvestFlag = 0x80;
+  static constexpr std::uint8_t kDigStageMask = 0x0F;
+  static constexpr std::uint64_t kDigTickMask = (std::uint64_t{1} << 48) - 1;
+
+  static std::uint8_t packDigStage(std::uint8_t stage, bool harvest) {
+    return static_cast<std::uint8_t>((stage & kDigStageMask) |
+                                     (harvest ? 0 : kDigNoHarvestFlag));
+  }
+
+  static std::uint8_t unpackDigStage(std::uint8_t packed) {
+    return static_cast<std::uint8_t>(packed & kDigStageMask);
+  }
+
+  static bool digCanHarvest(std::uint8_t packed) {
+    return (packed & kDigNoHarvestFlag) == 0;
+  }
+
+  static std::int64_t packDigStartTick(std::int64_t tick,
+                                       std::uint16_t state) {
+    const auto rawTick = static_cast<std::uint64_t>(tick) & kDigTickMask;
+    return static_cast<std::int64_t>(rawTick |
+                                     (static_cast<std::uint64_t>(state) << 48));
+  }
+
+  static std::int64_t unpackDigStartTick(std::int64_t packed) {
+    return static_cast<std::int64_t>(static_cast<std::uint64_t>(packed) &
+                                     kDigTickMask);
+  }
+
+  static std::uint16_t digStartingState(std::int64_t packed) {
+    return static_cast<std::uint16_t>(static_cast<std::uint64_t>(packed) >> 48);
+  }
+
+  static std::string_view itemPath(std::string_view itemName) {
+    const auto colon = itemName.rfind(':');
+    if (colon == std::string_view::npos) return itemName;
+    return itemName.substr(colon + 1);
+  }
+
+  // Keep the item-name policy in one place for both mining timing and drops.
+  // Unknown/empty items intentionally map to the hand tier.
+  static ToolKind toolKindFromItemName(std::string_view itemName) {
+    const auto path = itemPath(itemName);
+    if (path == "shears") return ToolKind::Shears;
+    if (path.ends_with("_pickaxe")) return ToolKind::Pickaxe;
+    if (path.ends_with("_axe")) return ToolKind::Axe;
+    if (path.ends_with("_shovel")) return ToolKind::Shovel;
+    if (path.ends_with("_hoe")) return ToolKind::Hoe;
+    if (path.ends_with("_sword")) return ToolKind::Sword;
+    return ToolKind::Hand;
+  }
+
+  static ToolTier toolTierFromItemName(std::string_view itemName) {
+    const auto path = itemPath(itemName);
+    if (toolKindFromItemName(itemName) == ToolKind::Hand)
+      return ToolTier::None_;
+    if (path.starts_with("wooden_")) return ToolTier::Wood;
+    if (path.starts_with("stone_")) return ToolTier::Stone;
+    if (path.starts_with("golden_")) return ToolTier::Gold;
+    if (path.starts_with("iron_")) return ToolTier::Iron;
+    if (path.starts_with("diamond_")) return ToolTier::Diamond;
+    if (path.starts_with("netherite_")) return ToolTier::Netherite;
+    return ToolTier::None_;
+  }
 
   static int tierRank(ToolTier t) {
     switch (t) {
@@ -118,6 +205,21 @@ struct MiningCalculator {
     const float speed = effectiveSpeed(def, kind, tier, efficiencyLv, hasteLv,
                                        fatigueLv, inWater, aquaAffinity, onGround);
     return breakTicks(def, speed, canHarvest(def, kind, tier));
+  }
+
+  static MiningResult calculate(const gen::BlockDef& def,
+                                const MiningContext& ctx) {
+    const bool harvest = canHarvest(def, ctx.tool, ctx.tier);
+    const float speed = effectiveSpeed(def, ctx.tool, ctx.tier,
+                                      ctx.efficiency, ctx.haste, ctx.fatigue,
+                                      ctx.inWater, ctx.aquaAffinity,
+                                      ctx.onGround);
+    return {harvest, speed, breakTicks(def, speed, harvest)};
+  }
+
+  static MiningResult calculateMining(const gen::BlockDef& def,
+                                      const MiningContext& ctx) {
+    return calculate(def, ctx);
   }
 
   // Explosion (TNT power 4 / creeper 3): deterministic roll/exposure form of
