@@ -294,44 +294,44 @@ static void testCommandsDatapack(ServerProc& srv){
     c.pump(800);
     CHECK(c.declares>=1,"declare_commands received (Brigadier tree)");
     // /give
-    c.sendChatCommand("give CmdTester minecraft:stone 5");
+    c.sendChatCommand("give CmdTester minecraft:stone 5"); c.pump(250); // pacing: vanilla 200-budget spam throttle kicks 12-chat bursts on fast hosts
     CHECK(waitChat(c,"Given")||c.count(proto::pl::sc::SystemChat)>0,"/give");
     // /summon
-    c.sendChatCommand("summon minecraft:zombie");
+    c.sendChatCommand("summon minecraft:zombie"); c.pump(250); // pacing: vanilla 200-budget spam throttle kicks 12-chat bursts on fast hosts
     CHECK(waitChat(c,"Summoned")||c.spawnsReceived>0,"/summon");
     // /setblock
-    c.sendChatCommand("setblock 40 -60 0 minecraft:stone");
+    c.sendChatCommand("setblock 40 -60 0 minecraft:stone"); c.pump(250); // pacing: vanilla 200-budget spam throttle kicks 12-chat bursts on fast hosts
     CHECK(waitBlockPos(c,40,-60,0,2000),"setblock 40,-60,0 stone (any state)");
     // /fill
-    c.sendChatCommand("fill 41 -60 0 43 -60 2 minecraft:stone");
+    c.sendChatCommand("fill 41 -60 0 43 -60 2 minecraft:stone"); c.pump(250); // pacing: vanilla 200-budget spam throttle kicks 12-chat bursts on fast hosts
     bool gotFill=false;
     auto dl=std::chrono::steady_clock::now()+std::chrono::milliseconds(1500);
     while(std::chrono::steady_clock::now()<dl){ c.pump(40); for(auto &u:c.blockUpdates) if(u.x>=41&&u.x<=43) gotFill=true; }
     CHECK(gotFill,"/fill 3x3 area");
     // /gamerule
-    c.sendChatCommand("gamerule randomTickSpeed 10");
+    c.sendChatCommand("gamerule randomTickSpeed 10"); c.pump(250); // pacing: vanilla 200-budget spam throttle kicks 12-chat bursts on fast hosts
     CHECK(waitChat(c,"randomTickSpeed"),"gamerule randomTickSpeed 10");
     // /time
-    c.sendChatCommand("time set day");
+    c.sendChatCommand("time set day"); c.pump(250); // pacing: vanilla 200-budget spam throttle kicks 12-chat bursts on fast hosts
     CHECK(waitChat(c,"day")||c.count(proto::pl::sc::UpdateTime)>0,"/time set day");
     // /weather
-    c.sendChatCommand("weather clear");
+    c.sendChatCommand("weather clear"); c.pump(250); // pacing: vanilla 200-budget spam throttle kicks 12-chat bursts on fast hosts
     CHECK(waitChat(c,"Weather"),"weather clear");
     // /execute
-    c.sendChatCommand("execute as @p run say executed");
+    c.sendChatCommand("execute as @p run say executed"); c.pump(250); // pacing: vanilla 200-budget spam throttle kicks 12-chat bursts on fast hosts
     CHECK(waitChat(c,"executed"),"execute as @p run say executed");
     // /function
-    c.sendChatCommand("function minecraft:tick");
+    c.sendChatCommand("function minecraft:tick"); c.pump(250); // pacing: vanilla 200-budget spam throttle kicks 12-chat bursts on fast hosts
     CHECK(true,"/function (stub, should not crash)");
     // /reload
-    c.sendChatCommand("reload");
+    c.sendChatCommand("reload"); c.pump(250); // pacing: vanilla 200-budget spam throttle kicks 12-chat bursts on fast hosts
     // actual feedback is "Reloaded whitelist" (capital R), and datapack reload is no-op; check case-insensitive or whitelist
     CHECK(waitChat(c,"Reload") || waitChat(c,"whitelist") || c.count(proto::pl::sc::SystemChat)>0,"reload (whitelist reload)");
     // tags: check that #minecraft:planks ingredient matches (via crafting)
-    c.sendChatCommand("give CmdTester minecraft:oak_planks 3");
+    c.sendChatCommand("give CmdTester minecraft:oak_planks 3"); c.pump(250); // pacing: vanilla 200-budget spam throttle kicks 12-chat bursts on fast hosts
     CHECK(true,"tag ingredient #minecraft:planks");
     // loot tables: break stone should drop cobblestone via loot
-    c.sendChatCommand("setblock 44 -60 0 minecraft:stone");
+    c.sendChatCommand("setblock 44 -60 0 minecraft:stone"); c.pump(250); // pacing: vanilla 200-budget spam throttle kicks 12-chat bursts on fast hosts
     c.sendPosition(44.5,-60,0.5);
     c.sendDig(44,-60,0,5);
     c.pump(1000);
