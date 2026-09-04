@@ -1,8 +1,8 @@
 # SPEC_GAMEPLAY — world and behavior contract
 
 This document describes the current behavior surface for Minecraft Java 1.21.4,
-protocol 769, and DataVersion 4189 at commit
-`f5987c585e81afdd78adb3ad818a0e43b1697bbe` (rechecked 2026-09-04). It covers
+protocol 769, and DataVersion 4189 at merge baseline
+`f21e42327342fe1e8486960f2c43805711280ffd` (rechecked 2026-09-04). It covers
 MISSING **#1–#70**, **#80–#90**, the Fabric-specific rows, and the world-generation
 G-10/G-11 evidence. Packet fields remain in
 [SPEC_WIRE.md](SPEC_WIRE.md); operational thresholds remain in
@@ -52,7 +52,7 @@ only says “the class exists” is not treated as full vanilla parity.
 | world/chunk | `src/game/World.hpp::World`, `Chunk` | dimension, seed, block/biome arrays, revision | lazy chunk generation, block lookup and edits | `IMPLEMENTATION` |
 | persistence | `src/game/WorldDataManager.*`, `Persistence.hpp`, `Anvil.hpp`, `RegionFile.hpp` | NBT, region entries, DataVersion | level/region/player state | `IMPLEMENTATION` + `test_recovery` |
 | block/physics | `src/physics/BlockTickScheduler.*`, `Fluids.*`, `Redstone.*`, `LightEngine.*` | state changes, tick number, gamerules | scheduled updates, light, redstone/fluid consequences | `IMPLEMENTATION` + focused tests |
-| worldgen | `src/worldgen/DensityFunction.*`, `MultiNoise.*`, `Structures.*`, `StructureManager.*`, `StructurePlacer.*` | seed, coordinates, dimension | biome and structure decisions | L1/L2 `IMPLEMENTATION`; L3 `DECLARED-LIMITATION` |
+| worldgen | `src/worldgen/DensityFunction.*`, `MultiNoise.*`, `StructureManager.*`, `StructurePlacer.*` | seed, coordinates, dimension | biome and structure decisions | L1/L2 `IMPLEMENTATION`; L3 `DECLARED-LIMITATION` |
 | entity | `src/game/Entities.hpp`, `EntityData.*`, `BehaviorTree.*`, `AiBrain.*`, `MobSpawner.*` | entity state and tick context | AI, movement, spawn, metadata, drops | `IMPLEMENTATION` + gameplay/smoke |
 | mob fixture | `docs/mob_stats_149.csv`, `Entities.hpp::MobStats` | 11 CSV columns, MobKind index | 149-row table and stat lookup | `IMPLEMENTATION` + `test_mob_stats_full` |
 | inventory | `src/game/Items.hpp`, `Containers.*`, `MenuInteraction.*`, `InventoryController.*` | Slot/components, menu click | authoritative inventory and sync trigger | `IMPLEMENTATION` + wire/gameplay |
@@ -183,6 +183,8 @@ evidence, not a gameplay module.
 - `DECLARED-LIMITATION`: arbitrary Fabric Loader/JVM mods and Fabric event-bus
   bytecode are not executable in `cppfm` (E-14).
 - Protocol 776's later Bundle item is outside this 1.21.4 contract.
+- No current real-client/GUI artifact or accepted 2-hour/24-hour run is available;
+  bot and synthetic evidence remain separately labelled.
 
 ## 12. Performance
 
@@ -225,7 +227,7 @@ Fresh focused results:
 
 | target | result |
 |---|---|
-| `test_gameplay_full` | `734 PASS 1 FAIL / 735`; one intentional E-14 failure |
+| `test_gameplay_full` | `734 PASS / 1 intentional E-14 FAIL / 735`, exit 1 |
 | `test_smoke_80` | `212 PASS 0 FAIL` |
 | `test_seed_parity` | `201 PASS 0 FAIL` (L1 independent hand-calc plus L2 deterministic 50-chunk comparison) |
 | `test_mining_full` | `38/38 passed` |
@@ -233,7 +235,13 @@ Fresh focused results:
 | `test_mob_stats_full` | `131 PASS 0 FAIL` |
 | `test_redstone_engine_full` | `29 PASS 0 FAIL` |
 | `test_recipes_mirror` | `76 PASS 0 FAIL` |
-| `test_native` | all displayed checks passed |
+| `test_plan43` | `82 PASS 0 FAIL` in 25.01s |
+| `test_native` | `ALL PASS` in 2.33s |
+| `test_server_full` | `234 PASS 0 FAIL` in 273.79s |
+| `multi_client` | `ALL PASS` in 17.83s |
+| `bot_smoke` | `ALL PASS` in 20.65s |
+| `tests/soak_test.py --duration 300` | `PASS` in 301.18s; 150 keepalives, 0 disconnects, actions 2930, RSS growth 14.5% |
+| `tools/soak_bot.py --duration 300` | `FAIL` in 301.89s; keepAlives 3 (<7), kicks 0, chunks 182, time updates 23 |
 | `test_recovery` | registered evidence for the recovery matrix; rerun status is recorded separately in VERIFICATION |
 
 The E-14 assertion is intentionally `CHECK(false, ...)` in
@@ -246,5 +254,7 @@ commands and the allowed-failure policy are in
 **Priority: highest after WIRE.** World/block/entity/inventory/command/combat paths
 are current implementation contracts where source and tests say so. `DONE` in the
 legacy gap matrix is not expanded into “all vanilla internals are identical.” The
-three declared boundaries—Fabric JVM mods, vanilla RNG L3, and protocol 776—remain
-visible and must be addressed by a separately approved plan if the scope changes.
+declared boundaries—Fabric JVM mods, vanilla RNG L3, protocol 776, and missing
+long-run/real-client evidence—remain visible; the final-gates publication status is
+`BLOCKED` by the failing `soak_bot` run and must be addressed by a separately
+approved plan if the scope changes.

@@ -1,7 +1,7 @@
 # SPEC_OPS — operations, limits, and recovery
 
 This is the operational contract for Minecraft 1.21.4 / protocol 769 / DataVersion
-4189 at snapshot commit `f5987c585e81afdd78adb3ad818a0e43b1697bbe`, rechecked
+4189 at merge baseline `f21e42327342fe1e8486960f2c43805711280ffd`, rechecked on
 2026-09-04. It covers MISSING **#7–#10**, operational aspects of **#71–#79**,
 **#88–#90**, Fabric server-property/RCON rows, and assessment history IDs
 B-06/B-07/C-04/C-09/C-12/E-13/O-01–O-13/W-14/W-16.
@@ -194,6 +194,29 @@ commit, host, options, warm-up, and sample count is not a fresh measurement.
 The current source clamps configured view/simulation distance to `2..32`; the session
 uses the minimum of server and client view distance for sending.
 
+### Final-gates measurements
+
+The following exact main-checkout results are recorded against merge baseline
+`f21e42327342fe1e8486960f2c43805711280ffd` on 2026-09-04. They are not averaged with
+older runs:
+
+| workload | result |
+|---|---|
+| configure/build | completed after a filesystem-slow initial 300s outer timeout; resumed build completed `104/104` |
+| incremental Ninja build | `ninja: no work to do` in `0.05s` |
+| view32 dry benchmark | `PASS` in `1.74s`; 4,225 chunks, p50 `0.108ms`, p95 `2.331ms`, peak RSS ~`95MB`, hit rate `84.6%` |
+| 120-client stress | `120/120 joined; PASS` in `69.11s` |
+| multi-client integration | `ALL PASS` in `17.83s` |
+| bot smoke | `ALL PASS` in `20.65s` |
+| `tests/soak_test.py --duration 300` | `PASS` in `301.18s`; 150 keepalives, 0 disconnects, actions 2930, post-fill RSS growth `14.5%` |
+| `tools/soak_bot.py --duration 300` | `FAIL` in `301.89s`; keepAlives 3 (<7), kicks 0, chunks 182, time updates 23 |
+| accepted 2h/24h run | none |
+| current real-client/GUI artifact | none |
+
+The passing `tests/soak_test.py` run does not clear the failing `soak_bot` gate.
+The latter remains a publication blocker; no vanilla Xoroshiro L3 parity claim is
+made, and protocol 776 remains outside scope.
+
 ## 13. Thread safety
 
 - one connection/session thread owns a connection's read side; `Connection::tx_`
@@ -262,11 +285,13 @@ summary, cleanup result, and any allowed limitation.
 
 The current canonical evidence table and exact timeout commands are maintained in
 [VERIFICATION.md#operations-gate](VERIFICATION.md#operations-gate). This document
-does not claim a nightly or 24-hour result merely because a procedure exists.
+does not claim an accepted 2-hour or 24-hour result merely because a procedure exists.
 
 ## 16. Priority, status, and rollback
 
 **Priority: high.** Static, fixture, recovery, and flood gates precede expensive load
 runs. Any failure in scope, child cleanup, checksum, recovery, or a new test FAIL
-blocks publication. Roll back only a migration commit owned by the operator, using
-an explicit inverse or `git revert`; never reset or discard unrelated user changes.
+blocks publication. The final-gates status is `BLOCKED` by `soak_bot`'s failure;
+E-14 remains the intentional Fabric JVM-mod boundary. Roll back only a migration
+commit owned by the operator, using an explicit inverse or `git revert`; never reset
+or discard unrelated user changes.

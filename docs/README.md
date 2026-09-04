@@ -2,9 +2,10 @@
 
 This directory is the current specification index for the clean-room C++ server. The
 canonical snapshot is for **Minecraft Java Edition 1.21.4**, **protocol 769**, and
-**DataVersion 4189**. It describes the behavior of the implementation at commit
-`f5987c585e81afdd78adb3ad818a0e43b1697bbe` as rechecked on 2026-09-04. Documentation
-does not change the executable, packet registry, test assertions, or generated data.
+**DataVersion 4189**. It describes the behavior of the implementation baseline at
+merge commit `f21e42327342fe1e8486960f2c43805711280ffd` as rechecked on 2026-09-04.
+Documentation does not change the executable, packet registry, test assertions, or
+generated data.
 
 ## Version boundary and scope
 
@@ -36,7 +37,9 @@ The existing [gap/status matrix](MISSING_FEATURES_1_21_4.md) and
 the canonical documents, not replacements for the detailed contracts above. The
 machine-readable fixture remains at [docs/mob_stats_149.csv](mob_stats_149.csv);
 the default lookup in `tests/test_mob_stats_full.cpp::csvPath` must continue to find
-that path.
+that path. It remains byte-identical to `docs-legacy/mob_stats_149.csv`, with SHA-256
+`b75697102502385b6aee913f0aca80b86cce323a4994b16a29baf408b5ef2f6f` and `149` data
+rows / `11` columns.
 
 ## Evidence labels
 
@@ -94,15 +97,17 @@ Failure stops publication; it does not turn an unverified claim into `DONE`.
 This is a documentation map, not a new C++ class hierarchy or a second packet-ID
 registry.
 
-## Current measured evidence
+## Current measured evidence — final-gates snapshot
 
-The following results were freshly recorded for this canonical snapshot. Counts are
-not inherited from the stale `CURRENT_STATE.md` prose and must not be inflated to
-make a gate pass.
+The following exact results were freshly recorded in the main checkout at the named
+baseline. Counts are not inherited from stale prose and must not be inflated or
+averaged to make a gate pass.
 
 | command/target | result |
 |---|---|
-| configure, Ninja build (`-j2`) | completed successfully |
+| configure/build | completed after a filesystem-slow initial 300s outer timeout; resumed build completed `104/104` |
+| incremental Ninja build | `ninja: no work to do` in `0.05s` |
+| `test_native` | `ALL PASS` in `2.33s` |
 | `test_spec_wire` | `392 PASS 0 FAIL 0 SKIP` |
 | `test_wire_full` | `405 PASS 0 FAIL 0 SKIP` |
 | `test_wire_b6` | `133 PASS 0 FAIL` |
@@ -115,18 +120,22 @@ make a gate pass.
 | `test_seed_parity` | `201 PASS 0 FAIL` |
 | `test_recipes_mirror` | `76 PASS 0 FAIL` |
 | `test_plan43` | `82 PASS 0 FAIL` |
-| `test_native` | all displayed checks passed; this binary prints no aggregate total |
 | `test_smoke_80` | `212 PASS 0 FAIL` |
-| `test_gameplay_full` | `734 PASS 1 FAIL / 735`; the one failure is the intentional E-14 Fabric JVM-mod gap |
-| `test_flood_net` | `57 PASS 0 FAIL` |
-| `test_recovery` | `45 PASS 0 FAIL` |
-| `test_rcon_multi` | `6 PASS 0 FAIL` |
-| view32 dry benchmark | `PASS`; 4,225 chunks, p50 0.108 ms, p95 2.332 ms, peak RSS ~95 MB, hit rate 84.6% |
-| 120-client stress | `120/120 joined; PASS` |
-| 60-second soak | `PASS`; 30 keepalives, 0 disconnects, post-fill RSS growth 0.7% |
-| 300-second soak | `FAIL` on this run (31 keepalives, 5 disconnects); long-run status remains `DECLARED-LIMITATION` |
+| `test_gameplay_full` | `734 PASS / 1 intentional E-14 FAIL / 735`, exit 1 |
+| `test_server_full` | `234 PASS 0 FAIL` in `273.79s` |
+| `multi_client` | `ALL PASS` in `17.83s` |
+| `bot_smoke` | `ALL PASS` in `20.65s` |
+| view32 dry benchmark | `PASS` in `1.74s`; 4,225 chunks, p50 0.108 ms, p95 2.331 ms, peak RSS ~95 MB, hit rate 84.6% |
+| 120-client stress | `120/120 joined; PASS` in `69.11s` |
+| `tests/soak_test.py --duration 300` | `PASS` in `301.18s`; 150 keepalives, 0 disconnects, actions 2930, post-fill RSS growth 14.5% |
+| `tools/soak_bot.py --duration 300` | `FAIL` in `301.89s`; keepAlives 3 (<7), kicks 0, chunks 182, time updates 23 |
+| focused CTest | 20 tests excluding `soak2h`, `soak_bot`, and `smoke80`: 19 passed plus gameplay_full's intentional E-14 failure; rc 8 |
+| accepted 2h/24h artifact | none |
+| current real-client/GUI artifact | none |
 
-`test_gameplay_full` is deliberately not changed to hide E-14. See
+`test_gameplay_full` is deliberately not changed to hide E-14. Publication remains
+`BLOCKED` because `soak_bot` failed; the pass from `tests/soak_test.py` is not a
+long-run substitute. See
 [SPEC_GAMEPLAY.md#declared-limitations](SPEC_GAMEPLAY.md#declared-limitations) and
 [VERIFICATION.md#gameplay-gate](VERIFICATION.md#gameplay-gate).
 
@@ -143,9 +152,10 @@ owners cite the original numbers:
 | #7–#10, #71–#79 operational controls and Fabric server-property rows | [SPEC_OPS.md](SPEC_OPS.md) |
 | test/audit meaning for all rows | [VERIFICATION.md](VERIFICATION.md) |
 
-The `Status` cells in `MISSING_FEATURES_1_21_4.md` are not rewritten by this
-canonical-doc commit. `DONE` is not a promise that every unlisted Fabric JVM or
-future protocol feature is supported; the declared limitations remain explicit.
+The `Status` cells in `MISSING_FEATURES_1_21_4.md` retain the historical taxonomy
+classification. `DONE` is not a promise that every unlisted Fabric JVM or future
+protocol feature is supported; the declared limitations and final-gate failures
+remain explicit.
 
 ## Plan48 viewpoint coverage
 
@@ -173,8 +183,7 @@ so a claim can be reviewed consistently:
 
 ## History boundary
 
-The audit index at [audit/README.md](audit/README.md) contains only history pointers
-for assessment 1–6. The archive paths are intentionally not created or moved by
-this canonical-only change; a separate archive migration must create them before
-those six relative history links can resolve locally. Historical assessment text
-must not be treated as current packet or gameplay authority.
+The audit index at [audit/README.md](audit/README.md) contains history pointers for
+assessment 1–6, and the archive files now exist under `docs-legacy/`; all six relative
+history links resolve locally. Historical assessment text must not be treated as
+current packet or gameplay authority.
