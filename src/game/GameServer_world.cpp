@@ -393,11 +393,7 @@ void GameServer::kickPlayer(const std::string& name, const std::string& reason) 
     WriteBuffer b;
     nbt::writeTextComponent(b, txt);
     try { t->conn->sendPacket(proto::pl::sc::Disconnect, b); } catch (...) {}
-    // plan42 R3: abortive close (RST) IMMEDIATELY after Disconnect, in the
-    // same instant — a graceful FIN would let the victim's next send succeed
-    // once, and any delay (even 150ms) opens a window for chunk streaming to
-    // grab tx_ and defer the RST past the client's check. In-flight Disconnect
-    // bytes are still delivered to the peer despite the RST.
+    // plan42 R3: abortive close (RST) immediately after Disconnect (a FIN/delay lets victim sends succeed).
     try { t->conn->abort(); } catch (...) {}
     try { t->conn->close(); } catch (...) {}
 }
@@ -413,10 +409,8 @@ void GameServer::sendWorldBorderTo(Player& p) const {
         oldSize = worldBorderDiameter_;
         newSize = worldBorderLerpTo_;
         lerpMs = worldBorderLerpMs_;
-        // if at start, oldSize should be lerpFrom (diameter is from)
-        // current diameter already interpolates, so oldSize is current
-        // but for packet spec, we send current->target with remaining time
-        // maintain vanilla: old = current, new = target
+        // if at start, oldSize should be lerpFrom (diameter is from) current diameter already interpolates, so oldSize is current but for
+        // packet spec, we send current->target with remaining time maintain vanilla: old = current, new = target
     }
     i.f64(oldSize); i.f64(newSize);
     i.varlong(lerpMs);
@@ -463,13 +457,11 @@ std::string GameServer::dispatchConsole(const std::string& line) {
                                  brigadier::SelectorResult& out) {
         out = resolveSelector(raw, nullptr);
     };
-    // plan42 R3 (E-19): capture console feedback so RCON returns actual command
-    // output (vanilla: `seed` -> `Seed: [...]`), not fixed "ok".
+    // plan42 R3 (E-19): capture console feedback so RCON returns actual command output (vanilla: `seed` -> `Seed: [...]`), not fixed "ok".
     std::string captured;
     consoleCapture_ = &captured;
     const auto res = commands_.execute(line, std::move(src));
-    // plan42 R3: Source RCON expects an "OK"-style ack (test_server_full
-    // rcon_seed accepts "OK"); error text preserved on failure.
+    // plan42 R3: Source RCON expects an "OK"-style ack (test_server_full rcon_seed accepts "OK"); error text preserved on failure.
     return res.ok ? "OK" : ("error: " + res.errorText);
 }
 
@@ -499,10 +491,7 @@ void GameServer::demandChunkAsync(std::int32_t cx, std::int32_t cz) {
     }
 }
 void GameServer::saveChunkAsync(std::int32_t cx, std::int32_t cz) {
-    // plan42 R2 (E-13): serialize NBT on tick thread (block-entity extras +
-    // biome codec, same content as Persistence::flushChunk), then offload
-    // zlib + RegionFile write to ioPool_ (ThreadPool 4, Yarn
-    // ThreadedAnvilChunkStorage parity). Fire-and-forget, never throws.
+    // plan42 R2 (E-13): NBT on tick thread, zlib+RegionFile write offloaded to ioPool_ (fire-and-forget).
     try {
         Chunk tmp;
         bool has = false;

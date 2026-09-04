@@ -203,10 +203,7 @@ public: DrownedTridentGoal(): Goal(3) {}
 class VillagerScheduleGoal final : public Goal {
 public: VillagerScheduleGoal(): Goal(6) {}
     bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override;
-    // plan46 G-15: vanilla Villager §Schedules 10-activity mapping.
-    // Returns one of: sleep/work/gather/mingle/wander/play/idle/home/rest/core.
-    // work is tick 2000-9000 (wiki-confirmed); night 14000-24000+0-2000 is sleep.
-    // Pure (no server access) so unit tests can pin the table without AiBrain.cpp.
+    // plan46 G-15: villager 10-activity schedule (work 2000-9000, sleep at night); pure for tests.
     static const char* activityFor(int tod) {
         int t = ((tod % 24000) + 24000) % 24000;
         if (t < 2000) return "sleep";    // 0-2000 night tail
@@ -287,11 +284,7 @@ class SnifferDigGoal final : public Goal { public: SnifferDigGoal(): Goal(3) {} 
 class CamelDashGoal final : public Goal { public: CamelDashGoal(): Goal(2) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
 class AllayDuplicateGoal final : public Goal { public: AllayDuplicateGoal(): Goal(3) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
 class BoggedPoisonGoal final : public Goal { public: BoggedPoisonGoal(): Goal(2) {} bool shouldStart(MobEntity& m, AiContext& ctx) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
-// plan42 R2 E-11: 19 species/group-default goals closing 60->139.
-// Design (§5): explicit per-species default Goal sets with kind parameters
-// (speed/sight/range via mobStats) + specific behavior for 10-15 notable kinds.
-// Group gates (Fish/Graze/Boat/Minecart/Projectile) share one class per movement
-// family instead of 79 near-identical classes; existing 59 goals untouched.
+// plan42 R2 E-11: per-species default Goal sets (params via mobStats); family gates share classes.
 class FishSwimGoal final : public Goal { public: FishSwimGoal(): Goal(5) {} bool shouldStart(MobEntity& m, AiContext&) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
 class GrazeGoal final : public Goal { public: GrazeGoal(): Goal(5) {} bool shouldStart(MobEntity& m, AiContext&) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };
 class BoatDriftGoal final : public Goal { public: BoatDriftGoal(): Goal(5) {} bool shouldStart(MobEntity& m, AiContext&) override; bool tick(MobEntity& m, AiContext& ctx, std::int64_t now) override; };

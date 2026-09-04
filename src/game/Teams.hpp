@@ -1,8 +1,6 @@
-// Teams.hpp: vanilla Teams 0x67 - minimal create/remove/join/leave (plan10 §6).
-// Implements subset of 1.21.4 Teams packet needed for smoke80 #79.
-// Packet layout verified via minecraft-data 1.21.4 & Yarn Team.java.
-// Methods: 0 create, 1 remove, 2 update info, 3 add entities, 4 remove entities.
-// For minimal parity we implement create/remove/join/leave + update via method 2.
+// Teams.hpp: vanilla Teams 0x67 - minimal create/remove/join/leave (plan10 §6). Implements subset of 1.21.4 Teams packet needed for smoke80
+// #79. Packet layout verified via minecraft-data 1.21.4 & Yarn Team.java. Methods: 0 create, 1 remove, 2 update info, 3 add entities, 4
+// remove entities. For minimal parity we implement create/remove/join/leave + update via method 2.
 #pragma once
 #include <string>
 #include <unordered_map>

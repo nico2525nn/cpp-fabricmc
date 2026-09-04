@@ -1,6 +1,4 @@
-// Commands.cpp: Brigadier command tree + selector resolution (plan3.md
-// "Brigadier完全移植"). All commands are registered on a real CommandNode
-// tree, parsed by the dispatcher and advertised via declare_commands.
+// Commands.cpp: Brigadier command tree nodes (plan3 port): registered, parsed, advertised.
 #include "GameServer.hpp"
 #include "Messages.hpp"
 #include "Particles.hpp"
@@ -115,9 +113,8 @@ brigadier::SelectorResult GameServer::resolveSelector(
 // + item id. Single truth (was a lambda inside the recipe block, used 10x).
 
 void GameServer::initCommands() {
-    // Dispatcher (cleanup P3): department registration lives in
-    // commands_{chat,admin,world,player,data,misc,execute,scoreboard}.cpp
-    // (was one 6076-line function).
+    // Dispatcher (cleanup P3): department registration lives in commands_{chat,admin,world,player,data,misc,execute,scoreboard}.cpp (was
+    // one 6076-line function).
     initChatCommands();
     initAdminCommands();
     initWorldCommands();

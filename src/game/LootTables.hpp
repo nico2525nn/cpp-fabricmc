@@ -1,7 +1,6 @@
-// LootTables: JSON evaluator for block drops (issue 65)
-// Replaces hard-coded mineInfo drop with data-driven LootTableEvaluator.
-// Supports vanilla loot_tables/blocks/*.json subset: pools, rolls, entries, weight, set_count.
-// Used in tickDigs to produce drops from lootTables_ instead of kOv map.
+// LootTables: JSON evaluator for block drops (issue 65) Replaces hard-coded mineInfo drop with data-driven LootTableEvaluator. Supports
+// vanilla loot_tables/blocks/*.json subset: pools, rolls, entries, weight, set_count. Used in tickDigs to produce drops from lootTables_
+// instead of kOv map.
 #pragma once
 #include <cstdint>
 #include <string>
@@ -248,7 +247,6 @@ public:
         return evaluateTable(it->second, tool, &eff, base);
     }
     std::vector<ItemStack> evaluateTable(const LootTable& tbl, const ItemStack& tool, const LootContext* ctx, const std::string& base) const {
-        (void)tool;
         std::vector<ItemStack> out;
         for (auto& pool: tbl.pools) {
             // plan40 C-05: pool conditions (random_chance/killed_by_player/survives_explosion)
@@ -367,7 +365,6 @@ public:
                 }
                 if (chosen->fillPlayerHead) {
                     st.count = 1;
-                    (void)ctx;
                 }
                 (void)chosen->copyComponents;
                 (void)chosen->setAttributes;

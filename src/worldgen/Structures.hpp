@@ -66,8 +66,7 @@ inline double structHash(std::uint64_t seed, std::int64_t gx, std::int64_t gz,
     return (h >> 11) / double(1ULL << 53);
 }
 
-// If chunk (cx,cz) intersects a structure whose origin is within range,
-// returns true and fills originChunk/originBlock.
+// If chunk (cx,cz) intersects a structure whose origin is within range, returns true and fills originChunk/originBlock.
 struct StructureAt {
     bool present = false;
     const StructureSet* set = nullptr;
@@ -121,8 +120,7 @@ public:
     }
 
     using GroundFn = std::function<std::int32_t(std::int32_t, std::int32_t)>;
-    // `ground`: world Y of the first solid block top for a column (from the
-    // terrain generator), used so structures sit on the surface.
+    // `ground`: world Y of the first solid block top for a column (from the terrain generator), used so structures sit on the surface.
     void generateChunk(Chunk& chunk, std::int32_t cx, std::int32_t cz,
                        const GroundFn& ground);
 

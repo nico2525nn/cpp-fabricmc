@@ -271,6 +271,7 @@ set_tests_properties(soak2h PROPERTIES TIMEOUT 8000 LABELS nightly)
 add_executable(test_gameplay_full tests/test_gameplay_full.cpp
     src/core/NBT.cpp
     src/physics/Redstone.cpp
+    src/game/MenuInteraction.cpp src/game/Containers.cpp src/game/Recipes.cpp
     src/physics/BlockTickScheduler.cpp
     src/game/CombatShield.cpp
     src/worldgen/DensityFunction.cpp src/worldgen/MultiNoise.cpp src/worldgen/Structures.cpp src/worldgen/StructurePlacer.cpp src/worldgen/ChunkGenerator.cpp src/worldgen/StructureManager.cpp src/game/WorldGen.cpp src/game/WorldDataManager.cpp)
@@ -298,6 +299,7 @@ set_tests_properties(block_hardness_full PROPERTIES TIMEOUT 60)
 add_executable(test_redstone_engine_full tests/test_redstone_engine_full.cpp
     src/core/NBT.cpp
     src/physics/Redstone.cpp
+    src/game/MenuInteraction.cpp src/game/Containers.cpp src/game/Recipes.cpp
     src/worldgen/DensityFunction.cpp src/worldgen/MultiNoise.cpp src/worldgen/Structures.cpp src/worldgen/StructurePlacer.cpp src/worldgen/ChunkGenerator.cpp src/worldgen/StructureManager.cpp src/game/WorldGen.cpp src/game/WorldDataManager.cpp)
 target_include_directories(test_redstone_engine_full PRIVATE src src/generated)
 target_link_libraries(test_redstone_engine_full PRIVATE ZLIB::ZLIB OpenSSL::Crypto)

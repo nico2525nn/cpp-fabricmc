@@ -1,6 +1,5 @@
-// Json: minimal self-contained JSON value + parser + serializer.
-// Used by: recipe loading, worldgen definitions, stats/advancement persistence,
-// server-list ping responses, plugin payloads. Clean-room implementation.
+// Json: minimal self-contained JSON value + parser + serializer. Used by: recipe loading, worldgen definitions, stats/advancement
+// persistence, server-list ping responses, plugin payloads. Clean-room implementation.
 #pragma once
 #include <cmath>
 #include <cstdint>

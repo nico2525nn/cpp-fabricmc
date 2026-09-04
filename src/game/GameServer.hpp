@@ -1,5 +1,4 @@
-// GameServer: protocol state machine (HANDSHAKE→STATUS/LOGIN→CONFIGURATION→PLAY),
-// player registry, world interaction, broadcasting.
+// GameServer: protocol state machine (HANDSHAKE→STATUS/LOGIN→CONFIGURATION→PLAY), player registry, world interaction, broadcasting.
 #pragma once
 #include <algorithm>
 #include <atomic>
@@ -190,10 +189,7 @@ struct Player {
     std::int32_t bedX=0, bedY=0, bedZ=0;
     // client-declared plugin channels
     std::unordered_set<std::string> clientChannels;
-    // plan42 R3: shared ownership with Session::conn_ — broadcasts hold
-    // Player refs across threads; a raw pointer here dangles when the
-    // session tears down its Connection (ASan-proven heap-use-after-free
-    // in broadcastPacketExcept vs Session::~Session).
+    // plan42 R3: shared Connection ownership (raw ptr dangles across threads; ASan-proven UAF).
     std::shared_ptr<Connection> conn;
     // PVP knockback / invuln (items 42)
     std::int32_t hurtCooldown = 0;
@@ -371,8 +367,7 @@ private:
 
     // send helpers
     void disconnectIn(const char* jsonReason);   // uses current state_
-    // plan46 §1 W-16: kick with a state-correct Disconnect + short grace +
-    // abortive close (peer observes the reason, then a dead socket).
+    // plan46 §1 W-16: kick with a state-correct Disconnect + short grace + abortive close (peer observes the reason, then a dead socket).
     void kickPlay(const char* jsonReason);
     void sendSystemText(const std::string& text);
     void sendJoinGame();
@@ -413,8 +408,7 @@ private:
     void onSpectate(const std::array<std::uint8_t,16>& target);
 
     GameServer& srv_;
-    // plan42 R3: shared with Player::conn (see above) so cross-thread
-    // broadcasts never touch a freed Connection.
+    // plan42 R3: shared with Player::conn (see above) so cross-thread broadcasts never touch a freed Connection.
     std::shared_ptr<Connection> conn_;
     enum class State { Handshake, Status, Login, Configuration, Play, Done };
 
@@ -531,9 +525,8 @@ public:
         blockTicks_->registerBehavior("minecraft:chorus_flower", std::make_unique<ChorusFlowerBehavior>());
         blockTicks_->registerBehavior("minecraft:kelp", std::make_unique<KelpBehavior>());
         blockTicks_->registerBehavior("minecraft:seagrass", std::make_unique<SeagrassBehavior>());
-        // kelp_plant has no randomTick (vanilla KelpPlant) — not registered (plan22 B26)
-        // tall_seagrass has no randomTick — vanilla TallSeagrass has no randomTick (plan17 §9 B26)
-        // bone meal growth for kelp/seagrass via fertilize() (plan29 §10 tall_seagrass)
+        // kelp_plant has no randomTick (vanilla KelpPlant) — not registered (plan22 B26) tall_seagrass has no randomTick — vanilla
+        // TallSeagrass has no randomTick (plan17 §9 B26) bone meal growth for kelp/seagrass via fertilize() (plan29 §10 tall_seagrass)
         blockTicks_->registerBehavior("minecraft:fire", std::make_unique<FireBehavior>());
         blockTicks_->registerBehavior("minecraft:soul_fire", std::make_unique<SoulFireBehavior>());
         blockTicks_->registerBehavior("minecraft:campfire", std::make_unique<CampfireBehavior>());
@@ -735,8 +728,7 @@ public:
         worldMgr_ = std::make_unique<WorldManager>(world_, *netherWorld_, *endWorld_);
         entityMgr_ = std::make_unique<EntityManager>();
         networkMgr_ = std::make_unique<NetworkManager>(batcher_);
-        // HungerManager/CombatManager are stateless, no instance needed
-        // Plan7 BossAI
+        // HungerManager/CombatManager are stateless, no instance needed Plan7 BossAI
         bossAI_ = std::make_unique<BossAIManager>(*this);
     }
     void runForever();
@@ -755,9 +747,7 @@ public:
         if (rconServer_) rconServer_->stop();
         std::fprintf(stderr, "[cppfm] stopping persistence\n");
         if (persist_) persist_->stop();
-        // plan28 finish: nether/end persistence workers were never stopped; their
-        // ~Persistence (cv_ destroyed before worker_ in reverse member order) then
-        // livelocked on the futex during ~GameServer. Stop (and save) them here.
+        // plan28 finish: stop nether/end persistence workers here (avoids ~GameServer futex livelock).
         for (auto& d : dimPersist_) if (d) d->stop();
         std::fprintf(stderr, "[cppfm] closing listen fd\n");
         if (listenFd_ >= 0) { ::close(listenFd_); listenFd_ = -1; }
@@ -878,6 +868,7 @@ public:
     void tickOnce();
     void survivalTick();
     void mobsTick();
+    void spawnSlimeSplit(MobEntity& m); // slime/magma-cube death split (was 3x copy-paste)
     void drainPendingStructureQueues(); // plan36 §5: drain StructureManager pending loot/mobs tick
     void applyDamageToMob(MobEntity& m, float amount, const char* cause);
     void applyDamageToMob(MobEntity& m, float amount, const DamageSource& src, int breachLv = 0);
@@ -902,8 +893,7 @@ public:
     void spawnXpOrbs(double x, double y, double z, int totalPoints,
                      Player* directTo);
     void xpOrbsTick();
-    // Projectiles (arrows / snowballs / pearls) — plan4 P1-A
-    // plan44 G-09: returns the spawned entity so callers can tag piercing/loyalty
+    // Projectiles (arrows / snowballs / pearls) — plan4 P1-A plan44 G-09: returns the spawned entity so callers can tag piercing/loyalty
     std::shared_ptr<ProjectileEntity> spawnProjectile(ProjectileKind kind, double x, double y, double z,
                          double vx, double vy, double vz,
                          std::int32_t ownerId, bool ownerIsPlayer, bool charged = false);
@@ -927,6 +917,8 @@ public:
     void evaluateTickAdvancements(Player& p);
     void evaluateInventoryChanged(Player& p, const ItemStack& s);
     void evaluatePlayerKilledEntity(Player& p, MobKind kind);
+    // Single-sourced PredicateContext base (was 9x copy-paste in GameServer_core.cpp).
+    PredicateContext basePredicateContext(Player& p);
     // plan37 §3: additional triggers (location/placed_block/consume_item)
     void evaluateLocationTrigger(Player& p);
     void onPlacedBlock(Player& p, int x, int y, int z, std::uint16_t state);
@@ -942,11 +934,7 @@ public:
     void onVillagerTraded(Player& p, const std::string& soldId, int count);
     std::vector<AdvancementDefOwned> getMergedAdvancements();
 private:
-    // plan35 cached merged advancements (story 30 + cppfm 9)
-    // plan42 R3: guarded by advMergeMtx_ — concurrent player joins
-    // (onEnterPlay -> sendAdvancementsTo) copy this vector while /reload
-    // move-assigns it; unguarded that is a heap-use-after-free (ASan-proven
-    // flaky server death, e.g. mid command-suite).
+    // plan35 cached merged advancements; plan42 R3: mutex-guarded (ASan-proven join/reload UAF).
     mutable std::mutex advMergeMtx_;
     std::vector<AdvancementDefOwned> cachedMergedAdv_;
     size_t cachedAdvRawSize_ = 0;
@@ -998,13 +986,10 @@ public:
     void broadcastSelectAdvancementTab(const std::string& tabId, Player* except=nullptr);
     void itemsTick();
     void trySpawnMobs();
-    // plan46 G-15: spawn-rule spec pins (pure, unit-testable).
-    // Group caps mirror vanilla (monster 70 / creature 10 / ambient 15 /
-    // water_creature 5 / water_ambient 20 / underground 5 / axolotls 5).
+    // plan46 G-15: vanilla spawn group caps (70/10/15/5/20/5/5); pure for tests.
     static std::array<int,7> spawnGroupCaps() { return {70,10,15,5,20,5,5}; }
-    // Hostile gate as implemented in trySpawnMobs: effLight<=7 at night/rain/
-    // thunder, never on peaceful. (Vanilla uses light 0; the <=7 band is a
-    // documented simplification — see test_time_growth + SOAK_24H notes.)
+    // Hostile gate as implemented in trySpawnMobs: effLight<=7 at night/rain/ thunder, never on peaceful. (Vanilla uses light 0; the <=7
+    // band is a documented simplification — see test_time_growth + SOAK_24H notes.)
     static bool hostileSpawnLightOk(double effLight, bool night, bool rain,
                                     bool thunder, const std::string& difficulty) {
         if (difficulty == "peaceful") return false;
@@ -1069,10 +1054,7 @@ public:
         std::lock_guard lk(playersMtx_);
         players_.push_back(std::move(p));
     }
-    // plan45 B6 W-13(c): same UUID or same name already online → kick the
-    // older side with a play Disconnect and drop it from the registry so
-    // broadcast/score/tab never double-count. Called with the newcomer NOT
-    // yet in players_ (addPlayer) or directly in tests.
+    // plan45 B6 W-13(c): kick duplicate UUID/name side so broadcast/score/tab never double-count.
     void kickDuplicate(const Player& incoming) {
         std::vector<PlayerRef> victims;
         {
@@ -1156,7 +1138,6 @@ public:
         chunkCacheLru_.splice(chunkCacheLru_.begin(), chunkCacheLru_, it->second.it);
         it->second.it = chunkCacheLru_.begin();
         out = it->second.body;
-        (void)biomeIdx;
         return true;
     }
     void storeChunk(std::int32_t cx, std::int32_t cz, std::uint64_t rev, ChunkBodyRef body) {
@@ -1354,9 +1335,7 @@ public:
         return std::max(dx, dz) <= spawnProtection_;
     }
     bool isOp(const std::string& name) const { return ops_.count(name) > 0; }
-    // plan45 B6 W-13(b): vanilla usernames are [A-Za-z0-9_] of length 3..16
-    // (Yarn StringHelper / mojang auth rules). Overlong names are already
-    // rejected by string(16) in handleLogin; this covers charset + empties.
+    // plan45 B6 W-13(b): vanilla username charset [A-Za-z0-9_] 3..16 (length enforced in handleLogin).
     static bool isValidPlayerName(const std::string& n) {
         if (n.size() < 3 || n.size() > 16) return false;
         for (char c : n) {

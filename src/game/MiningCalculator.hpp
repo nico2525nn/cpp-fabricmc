@@ -1,15 +1,9 @@
-// MiningCalculator: plan44 G-02/G-03 — vanilla survival mining math.
-// Pure functions over gen::BlockDef (toolMask/effMask/needsTier/blastResistance).
-// Spec: minecraft.wiki/w/Breaking (Calculation) + Yarn Tier harvest levels.
-//   speedMultiplier: Hand 1 / Wood 2 / Stone 4 / Copper 5 / Iron 6 /
-//     Diamond 8 / Netherite 9 / Gold 12. Sword 1 (15 on cobweb).
-//     Shears 15 on cobweb, 5 on wool/leaves/vines, else 1.
-//   efficiency (speed>1 only): speed += eff*eff + 1.
-//   Haste: speed *= 1 + 0.2*lv. MiningFatigue: speed *= 0.3^min(lv,4).
-//   Submerged (no aqua affinity): speed *= 0.2. Not on ground: speed /= 5.
-//   damage = speed / hardness / (canHarvest ? 30 : 100).
-//   ticks = damage>=1 ? 0 (instant) : ceil(1/damage).
-//   hardness<0 (bedrock etc.) -> kUnbreakable (-1 ticks).
+// MiningCalculator: plan44 G-02/G-03 — vanilla survival mining math. Pure functions over gen::BlockDef
+// (toolMask/effMask/needsTier/blastResistance). Spec: minecraft.wiki/w/Breaking (Calculation) + Yarn Tier harvest levels. speedMultiplier:
+// Hand 1 / Wood 2 / Stone 4 / Copper 5 / Iron 6 / Diamond 8 / Netherite 9 / Gold 12. Sword 1 (15 on cobweb). Shears 15 on cobweb, 5 on
+// wool/leaves/vines, else 1. efficiency (speed>1 only): speed += eff*eff + 1. Haste: speed *= 1 + 0.2*lv. MiningFatigue: speed *=
+// 0.3^min(lv,4). Submerged (no aqua affinity): speed *= 0.2. Not on ground: speed /= 5. damage = speed / hardness / (canHarvest ? 30 :
+// 100). ticks = damage>=1 ? 0 (instant) : ceil(1/damage). hardness<0 (bedrock etc.) -> kUnbreakable (-1 ticks).
 #pragma once
 #include <cmath>
 #include <cstdint>
@@ -44,8 +38,7 @@ struct MiningCalculator {
     }
   }
 
-  // Harvest level of a held tool (needsTier scale: 0 none, 1 wooden+, ...).
-  // tierRank is 0-based (wood=0); harvest levels are 1-based.
+  // Harvest level of a held tool (needsTier scale: 0 none, 1 wooden+, ...). tierRank is 0-based (wood=0); harvest levels are 1-based.
   static int harvestLevel(ToolTier t) {
     return t == ToolTier::None_ ? 0 : tierRank(t) + 1;
   }
@@ -62,8 +55,7 @@ struct MiningCalculator {
     }
   }
 
-  // Correct tool for HARVEST (drop): required mask match + tier sufficiency.
-  // toolMask==0 blocks (dirt/planks/torch) harvest by hand.
+  // Correct tool for HARVEST (drop): required mask match + tier sufficiency. toolMask==0 blocks (dirt/planks/torch) harvest by hand.
   static bool canHarvest(const gen::BlockDef& def, ToolKind kind, ToolTier tier) {
     if (def.toolMask == 0) return true;
     if ((maskOf(kind) & def.toolMask) == 0) return false;
@@ -110,10 +102,8 @@ struct MiningCalculator {
     return speed;
   }
 
-  // Ticks to break (0 = instant, kUnbreakable = survival-impossible).
-  // Double arithmetic with a 1e-7 relative guard so exact tick boundaries
-  // (wooden-pick/obsidian = 2500t, hand/glass = 9t per wiki) don't ceil up
-  // on float32 noise from 2-decimal hardness literals (e.g. 0.3f).
+  // Ticks to break (0 = instant, kUnbreakable = survival-impossible). Double arithmetic with a 1e-7 relative guard so exact tick boundaries
+  // (wooden-pick/obsidian = 2500t, hand/glass = 9t per wiki) don't ceil up on float32 noise from 2-decimal hardness literals (e.g. 0.3f).
   static int breakTicks(const gen::BlockDef& def, float speed, bool harvest) {
     if (def.hardness < 0.f) return kUnbreakable;
     if (def.hardness <= 0.f) return 0;

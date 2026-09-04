@@ -202,8 +202,7 @@ void LightEngine::ensureSkyLight(std::int32_t cx, std::int32_t cz) {
 
     const int top = kMaxY - 1;
 
-    // Heightmap of first light-blocking block per column (with 1-block margin
-    // so boundary detection at chunk edges is accurate).
+    // Heightmap of first light-blocking block per column (with 1-block margin so boundary detection at chunk edges is accurate).
     int surf[18][18];
     auto columnBlocker = [&](std::int64_t wx, std::int64_t wz) -> int {
         for (int y = top; y >= kMinY; --y)
@@ -221,8 +220,7 @@ void LightEngine::ensureSkyLight(std::int32_t cx, std::int32_t cz) {
     constexpr int DX[4] = {1,-1,0,0};
     constexpr int DZ[4] = {0,0,1,-1};
 
-    // pass 1: vertical fill — full light from sky down to the blocker
-    // Clear shadowed region first so stale light does not persist
+    // pass 1: vertical fill — full light from sky down to the blocker Clear shadowed region first so stale light does not persist
     for (int lz = 0; lz < 16; ++lz)
         for (int lx = 0; lx < 16; ++lx) {
             const std::int32_t wx = cx * 16 + lx, wz = cz * 16 + lz;

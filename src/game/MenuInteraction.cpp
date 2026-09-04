@@ -24,8 +24,7 @@ bool sameItem(const ItemStack& a, const ItemStack& b) {
 
 // Maps a player-inventory region protocol slot onto Player::inv storage.
 static int containerSlotCount(const Menu& m) {
-    // crafting and other menus: totalSlots includes container+36
-    // For all types totalSlots() = container + 36
+    // crafting and other menus: totalSlots includes container+36 For all types totalSlots() = container + 36
     return m.totalSlots() - 36;
 }
 static ItemStack* playerInvSlot(const Menu& m, int slot, Player& p) {
@@ -36,8 +35,7 @@ static ItemStack* playerInvSlot(const Menu& m, int slot, Player& p) {
 
 bool isFuelItem(std::uint32_t itemId);
 
-// Adds an ItemStack to the player's inventory (merge then empty slots).
-// Returns true when fully absorbed.
+// Adds an ItemStack to the player's inventory (merge then empty slots). Returns true when fully absorbed.
 static bool addToPlayerInv(Player& p, const ItemStack& stack) {
     if (stack.empty()) return true;
     ItemStack remaining = stack;
@@ -200,7 +198,6 @@ bool ClickLogic::pickupPlace(Menu& m, Player&, int slot, int button,
 
 bool ClickLogic::quickMove(Menu& m, Player& p, const RecipeManager& recipes,
                            int slot, ItemStack& cursor, MenuIo& io) {
-    (void)cursor;
     ItemStack* src = nullptr;
     bool fromPlayer = false;
     if (m.type == MenuType::Crafting) {
@@ -285,7 +282,6 @@ bool ClickLogic::quickMove(Menu& m, Player& p, const RecipeManager& recipes,
 
 bool ClickLogic::swapWithHotbar(Menu& m, Player& p, int slot, int button,
                                  ItemStack& cursor, MenuIo& io) {
-    (void)cursor;
     if (button < 0 || button > 8) return false;
     ItemStack* hotbar = &p.inv[36 + button];
     ItemStack* target = nullptr;
@@ -314,7 +310,6 @@ bool ClickLogic::swapWithHotbar(Menu& m, Player& p, int slot, int button,
 
 bool ClickLogic::throwSlot(Menu& m, Player& p, int slot, int button,
                             ItemStack& cursor, MenuIo& io) {
-    (void)p;
     ItemStack dropped;
     if (slot == -999) {
         if (cursor.empty()) return false;
@@ -348,7 +343,6 @@ bool ClickLogic::throwSlot(Menu& m, Player& p, int slot, int button,
 
 bool ClickLogic::pickupAll(Menu& m, Player& p, int slot, ItemStack& cursor,
                            MenuIo& io) {
-    (void)p;
     if (cursor.empty()) return false;
     int collected = 0;
     auto gather = [&](ItemStack* arr, int count) {

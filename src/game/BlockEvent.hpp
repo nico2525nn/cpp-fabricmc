@@ -74,7 +74,6 @@ public:
     }
     void onEntityLand(void* entity, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t blockState, double fallDistance = 0) {
         BlockEvent ev; ev.type = BlockEvent::Type::EntityLand; ev.x=x; ev.y=y; ev.z=z; ev.oldState=blockState; ev.entity=entity; ev.face=0;
-        (void)fallDistance;
         for (auto& h : landHandlers_) h(ev);
         EntityLandEvent lev; lev.entity=entity; lev.x=x; lev.y=y; lev.z=z; lev.blockState=blockState; lev.fallDistance=fallDistance;
         landHook_.fire(lev);

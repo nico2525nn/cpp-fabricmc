@@ -19,8 +19,7 @@ struct RconConfig {
     std::string password;
 };
 
-// Minimal Source-RCON server. Commands are dispatched to a callback that
-// returns the response text.
+// Minimal Source-RCON server. Commands are dispatched to a callback that returns the response text.
 class RconServer {
 public:
     using Handler = std::function<std::string(const std::string&)>;

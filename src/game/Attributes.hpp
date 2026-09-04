@@ -1,12 +1,7 @@
-// Attributes: attribute system (plan8 Combat/Survival — full AttributeManager)
-// Each attribute has base value + vector<Modifier{uuid,amount,operation}>
-// Operations: 0 add, 1 multiply_base, 2 multiply_total — order is add -> multiply_base -> multiply_total
-// Vanilla 1.21.4 attributes: see net.minecraft.world.entity.ai.attributes.Attributes
-// plan15 combat strict: expanded 11→32 per Yarn 1.21.4 EntityAttributes (attack_knockback/block_break_speed/gravity etc)
-// + ARMOR/TOUGHNESS/KB_RESIST sync via UpdateAttributes 0x7C — caps 30/20 verified 2026-08-28
-// plan21 combat polish: 32 attributes retry verify, ARMOR 30/TOUGHNESS 20 caps, GRAVITY 0.08 etc, sync via 0x7C (retry).
-// plan22 combat polish: verify 32 attributes (E5) with correct bases, caps 30/20, ovoid 15x20 sonic boom連携
-// plan23 combat polish: 32 attributes verify (11→32), gravity 0.08 scale 1.0 safe_fall 3, armor single formula f=2+t/4 caps 30/20 wire 0x7C (verify).
+// Attributes: attribute system (plan8 Combat/Survival — full AttributeManager) Each attribute has base value +
+// vector<Modifier{uuid,amount,operation}> Operations: 0 add, 1 multiply_base, 2 multiply_total — order is add -> multiply_base ->
+// multiply_total Vanilla 1.21.4 attributes: see net.minecraft.world.entity.ai.attributes.Attributes plan15/21-23 combat: 32 attributes per
+// Yarn 1.21.4, caps 30/20, sync via UpdateAttributes 0x7C.
 #pragma once
 #include <string>
 #include <unordered_map>
@@ -64,15 +59,13 @@ inline const char* attributeKey(Attribute a){
         default: return "minecraft:generic.movement_speed";
     }
 }
-// 1.21.4 UpdateAttributes mapper varint 0-21 per Prismarine protocol.json packet_entity_update_attributes
-// Fetch: https://raw.githubusercontent.com/PrismarineJS/minecraft-data/master/data/pc/1.21.4/protocol.json
-// Verified 2026-08-31: 0 generic.armor, 1 generic.armor_toughness, 2 generic.attack_damage,
-// 3 generic.attack_knockback, 4 generic.attack_speed, 5 player.block_break_speed,
-// 6 player.block_interaction_range, 7 player.entity_interaction_range, 8 generic.fall_damage_multiplier,
-// 9 generic.flying_speed, 10 generic.follow_range, 11 generic.gravity, 12 generic.jump_strength,
-// 13 generic.knockback_resistance, 14 generic.luck, 15 generic.max_absorption, 16 generic.max_health,
-// 17 generic.movement_speed, 18 generic.safe_fall_distance, 19 generic.scale,
-// 20 zombie.spawn_reinforcements, 21 generic.step_height
+// 1.21.4 UpdateAttributes mapper varint 0-21 per Prismarine protocol.json packet_entity_update_attributes Fetch:
+// https://raw.githubusercontent.com/PrismarineJS/minecraft-data/master/data/pc/1.21.4/protocol.json Verified 2026-08-31: 0 generic.armor, 1
+// generic.armor_toughness, 2 generic.attack_damage, 3 generic.attack_knockback, 4 generic.attack_speed, 5 player.block_break_speed, 6
+// player.block_interaction_range, 7 player.entity_interaction_range, 8 generic.fall_damage_multiplier, 9 generic.flying_speed, 10
+// generic.follow_range, 11 generic.gravity, 12 generic.jump_strength, 13 generic.knockback_resistance, 14 generic.luck, 15
+// generic.max_absorption, 16 generic.max_health, 17 generic.movement_speed, 18 generic.safe_fall_distance, 19 generic.scale, 20
+// zombie.spawn_reinforcements, 21 generic.step_height
 inline int attributeMapperId(Attribute a){
     switch(a){
         case Attribute::ARMOR: return 0;
@@ -210,8 +203,7 @@ public:
     void applySwiftSneak(int lvl){
         removeModifier(Attribute::MOVEMENT_SPEED, "swift_sneak");
         if(lvl>0){
-            // vanilla reduces sneak penalty: sneak speed 0.3 -> ~0.9 at lvl3
-            // we model as multiply_total boost so sneaking feels faster
+            // vanilla reduces sneak penalty: sneak speed 0.3 -> ~0.9 at lvl3 we model as multiply_total boost so sneaking feels faster
             double boost = 0.15 * double(lvl); // lvl3 => 0.45
             addModifier(Attribute::MOVEMENT_SPEED, {"swift_sneak", boost, 2});
         }
@@ -227,9 +219,7 @@ public:
         if(isSneaking && swiftLvl>0) applySwiftSneak(swiftLvl); else removeModifier(Attribute::MOVEMENT_SPEED, "swift_sneak");
     }
     template<typename W> void writeUpdate(W& out,int32_t eid) const{
-        // plan30 H1: 1.21.4 UpdateAttributes key is varint mapper 0-21 per Prismarine protocol.json
-        // packet_entity_update_attributes {key mapper varint 0-21, value f64, modifiers [{uuid string 36 chars, amount f64, operation i8}]}
-        // Previous code sent string "minecraft:generic.armor" and uuid 16 bytes — both wrong (1.21.2+ mapped varint + string uuid).
+        // plan30 H1: UpdateAttributes key is varint 0-21 (not string); modifier uuid is 36-char string.
         static const Attribute orderAll[] = {
             Attribute::MAX_HEALTH, Attribute::MOVEMENT_SPEED, Attribute::ATTACK_DAMAGE,
             Attribute::ARMOR, Attribute::ARMOR_TOUGHNESS, Attribute::KNOCKBACK_RESISTANCE,

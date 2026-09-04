@@ -249,10 +249,7 @@ NodePtr DensityPipeline::parse(const json::Value& v, std::string* err) const {
         if (!n->in) return fail("interpolated missing input");
         return n;
     }
-    // plan46 G-10: spline — cubic Hermite over (location, value, derivative).
-    // Accepts both {"spline":{...}} wrapper and bare {"coordinate","points"}.
-    // NOTE: json::Value::at() returns null instead of throwing, so the
-    // wrapper is detected with find(), not try/at.
+    // plan46 G-10: spline Hermite parse (accepts wrapper or bare form; detect via find(), at() is null-safe).
     if (type == "spline") {
         auto n = std::make_shared<detail::Spline>();
         const json::Value* body = &v;

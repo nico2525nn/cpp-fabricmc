@@ -141,7 +141,6 @@ private:
             if (r.key != "minecraft:worldgen/biome") continue;
             ReadBuffer in(r.body);
             const std::string key = in.string();
-            (void)key;
             const std::int32_t n = in.varint();
             for (std::int32_t i = 0; i < n; ++i) {
                 std::string ek = in.string();

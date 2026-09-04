@@ -107,8 +107,7 @@ void GameServer::acceptLoop() {
             break;
         }
         std::fprintf(stderr, "[cppfm] accepted fd=%d\n", fd);
-        // plan46 §1 A5: refuse accept-bursts above 20/s without spawning a
-        // session thread (login waves / connection floods).
+        // plan46 §1 A5: refuse accept-bursts above 20/s without spawning a session thread (login waves / connection floods).
         if (!acceptGate_.allow(steadyNowMs())) {
             std::fprintf(stderr, "[cppfm] accept gate: refusing fd=%d (rate)\n", fd);
             ::close(fd);
@@ -169,9 +168,7 @@ void GameServer::broadcastPlayerChat(Player& sender, const std::string& message,
     broadcastPacketExcept(nullptr, proto::pl::sc::PlayerChat, b);
 }
 bool GameServer::validateFeatureFlags(const std::vector<std::array<std::string,3>>& clientPacks) {
-    // plan22 network polish: FeatureFlags 0x0C vanilla ["minecraft:vanilla"] + SelectKnownPacks core 1.21.4.
-    // Accept empty (vanilla fallback) and any pack containing minecraft:core or minecraft:vanilla.
-    // Lenient: also accept unknown packs to avoid kicking modded clients; strict would reject non-vanilla.
+    // plan22 network: FeatureFlags 0x0C vanilla + SelectKnownPacks core 1.21.4 (lenient to modded).
     if (clientPacks.empty()) return true;
     for (auto &p : clientPacks) if (p[0]=="minecraft" && (p[1]=="core" || p[1]=="vanilla")) return true;
     return true; // lenient accept (was false for non-empty, too strict)
@@ -199,9 +196,7 @@ void GameServer::spawnMob(MobKind kind, double x, double y, double z) {
     if (kind==MobKind::Slime || kind==MobKind::MagmaCube) {
         mob->health = MobEntity::slimeHealthForSize(mob->slimeSize);
     }
-    // plan16: Horse variant random (vanilla HorseEntity random health 15-30, variant 0..34 = 7 colors *5 markings) — plan18 polish strict 35
-    // plan42 R2 E-10: deterministic randomizeHorseStats(worldSeed ^ pos) replaces rand():
-    // HP 15+rand(15) + speed 0.1125+rand*0.225 + jump 0.4+rand*0.6, synced via UpdateAttributes 0x7C.
+    // plan16/18 + plan42 R2 E-10: deterministic horse stats (worldSeed ^ pos), synced via 0x7C.
     if (kind==MobKind::Horse) {
         std::uint64_t hseed = cfg_.seed ^ (static_cast<std::uint64_t>(static_cast<std::int32_t>(std::floor(x)))<<32)
             ^ static_cast<std::uint64_t>(static_cast<std::int32_t>(std::floor(z))) ^ (static_cast<std::uint64_t>(mob->entityId)*0x9E3779B97F4A7C15ULL);
@@ -357,6 +352,19 @@ std::vector<AdvancementDefOwned> GameServer::getMergedAdvancements() {
     cachedAdvRawSize_ = cur;
     return cachedMergedAdv_;
 }
+PredicateContext GameServer::basePredicateContext(Player& p) {
+    PredicateContext ctx;
+    ctx.world = &worldFor(p.dimension);
+    ctx.gamerules = &gamerules_;
+    ctx.player = &p;
+    ctx.playerName = p.name;
+    if (p.heldSlot>=0 && p.heldSlot<9) { auto &hs = p.inv[36+p.heldSlot]; if (!hs.empty()) ctx.heldItemName = hs.name(); }
+    ctx.scoreboard = &scoreboard;
+    ctx.x = static_cast<int32_t>(p.x);
+    ctx.y = static_cast<int32_t>(p.y);
+    ctx.z = static_cast<int32_t>(p.z);
+    return ctx;
+}
 void GameServer::evaluateTickAdvancements(Player& p) {
     if (!p.advancements) return;
     auto merged = getMergedAdvancements();
@@ -366,16 +374,7 @@ void GameServer::evaluateTickAdvancements(Player& p) {
             if (tr.trigger == "minecraft:tick" || tr.trigger == "tick") {
                 // plan35 §3: gate tick trigger via PredicateContext if conditions contain check_gamerule/location etc
                 if (!tr.conditions.isNull() && tr.conditions.isObj()) {
-                    PredicateContext ctx;
-                    ctx.world = &worldFor(p.dimension);
-                    ctx.gamerules = &gamerules_;
-                    ctx.player = &p;
-                    ctx.playerName = p.name;
-                    if (p.heldSlot>=0 && p.heldSlot<9) { auto &hs = p.inv[36+p.heldSlot]; if (!hs.empty()) ctx.heldItemName = hs.name(); }
-                    ctx.scoreboard = &scoreboard;
-                    ctx.x = static_cast<int32_t>(p.x);
-                    ctx.y = static_cast<int32_t>(p.y);
-                    ctx.z = static_cast<int32_t>(p.z);
+                    PredicateContext ctx = basePredicateContext(p);
                     if (!datapackManager_.evaluatePredicateValue(tr.conditions, ctx)) continue;
                 }
                 grantAdvancement(p, adv.id);
@@ -403,10 +402,6 @@ void GameServer::evaluateInventoryChanged(Player& p, const ItemStack& s) {
         auto iidIt = gen::itemIdByName().find(haveNorm);
         if(iidIt==gen::itemIdByName().end()){
             // fallback string contains
-            for(auto id: it->second){
-                // try reverse lookup via itemId? just string compare
-                (void)id;
-            }
             return false;
         }
         return it->second.count(iidIt->second)>0;
@@ -467,16 +462,7 @@ void GameServer::evaluateInventoryChanged(Player& p, const ItemStack& s) {
             if (match) {
                 // plan35 §3: additional predicate gating via PredicateContext (check_gamerule/location_check)
                 if (!tr.conditions.isNull() && tr.conditions.isObj() && tr.conditions.find("condition")) {
-                    PredicateContext ctx;
-                    ctx.world = &worldFor(p.dimension);
-                    ctx.gamerules = &gamerules_;
-                    ctx.player = &p;
-                    ctx.playerName = p.name;
-                    if (p.heldSlot>=0 && p.heldSlot<9) { auto &hs = p.inv[36+p.heldSlot]; if (!hs.empty()) ctx.heldItemName = hs.name(); }
-                    ctx.scoreboard = &scoreboard;
-                    ctx.x = static_cast<int32_t>(p.x);
-                    ctx.y = static_cast<int32_t>(p.y);
-                    ctx.z = static_cast<int32_t>(p.z);
+                    PredicateContext ctx = basePredicateContext(p);
                     if (!datapackManager_.evaluatePredicateValue(tr.conditions, ctx)) match = false;
                 }
                 if (match) { grantAdvancement(p, adv.id); break; }
@@ -515,17 +501,8 @@ void GameServer::evaluatePlayerKilledEntity(Player& p, MobKind kind) {
                 if (!tr.conditions.find("entity") && !tr.conditions.find("predicate")) match = true;
                 // plan35 §3: gate with PredicateContext if conditions contain check_gamerule/location_check/entity_properties
                 if (match && tr.conditions.isObj() && tr.conditions.find("condition")) {
-                    PredicateContext ctx;
-                    ctx.world = &worldFor(p.dimension);
-                    ctx.gamerules = &gamerules_;
-                    ctx.player = &p;
-                    ctx.playerName = p.name;
-                    if (p.heldSlot>=0 && p.heldSlot<9) { auto &hs = p.inv[36+p.heldSlot]; if (!hs.empty()) ctx.heldItemName = hs.name(); }
-                    ctx.scoreboard = &scoreboard;
+                    PredicateContext ctx = basePredicateContext(p);
                     ctx.entity = &victimTmp;
-                    ctx.x = static_cast<int32_t>(p.x);
-                    ctx.y = static_cast<int32_t>(p.y);
-                    ctx.z = static_cast<int32_t>(p.z);
                     if (!datapackManager_.evaluatePredicateValue(tr.conditions, ctx)) match = false;
                 }
             }
@@ -575,16 +552,7 @@ void GameServer::onMobKilledBy(Player& p, MobKind kind) {
 void GameServer::evaluateLocationTrigger(Player& p) {
     if (!p.advancements) return;
     auto merged = getMergedAdvancements();
-    PredicateContext ctx;
-    ctx.world = &worldFor(p.dimension);
-    ctx.gamerules = &gamerules_;
-    ctx.player = &p;
-    ctx.playerName = p.name;
-    if (p.heldSlot>=0 && p.heldSlot<9) { auto &hs = p.inv[36+p.heldSlot]; if (!hs.empty()) ctx.heldItemName = hs.name(); }
-    ctx.scoreboard = &scoreboard;
-    ctx.x = static_cast<int32_t>(p.x);
-    ctx.y = static_cast<int32_t>(p.y);
-    ctx.z = static_cast<int32_t>(p.z);
+    PredicateContext ctx = basePredicateContext(p);
     ctx.dayTime = dayTime();
     ctx.raining = raining();
     ctx.thundering = thundering();
@@ -622,13 +590,7 @@ void GameServer::onPlacedBlock(Player& p, int x, int y, int z, std::uint16_t sta
     if (auto* bd = gen::blockByState(state)) placedName = bd->name;
     if (placedName.empty()) return;
     auto merged = getMergedAdvancements();
-    PredicateContext ctx;
-    ctx.world = &worldFor(p.dimension);
-    ctx.gamerules = &gamerules_;
-    ctx.player = &p;
-    ctx.playerName = p.name;
-    if (p.heldSlot>=0 && p.heldSlot<9) { auto &hs = p.inv[36+p.heldSlot]; if (!hs.empty()) ctx.heldItemName = hs.name(); }
-    ctx.scoreboard = &scoreboard;
+    PredicateContext ctx = basePredicateContext(p);
     ctx.x = x; ctx.y = y; ctx.z = z;
     ctx.dayTime = dayTime();
     ctx.raining = raining();
@@ -650,9 +612,8 @@ void GameServer::onPlacedBlock(Player& p, int x, int y, int z, std::uint16_t sta
                 if (ok && tr.conditions.find("condition")) {
                     if (!datapackManager_.evaluatePredicateValue(tr.conditions, ctx)) ok = false;
                 } else if (ok && !tr.conditions.isNull()) {
-                    // evaluate other predicates like location_check inside placed_block
-                    // try generic evaluation but ignore block which already checked
-                    // only evaluate if condition key present
+                    // evaluate other predicates like location_check inside placed_block try generic evaluation but ignore block which
+                    // already checked only evaluate if condition key present
                 }
             }
             if (ok) { grantAdvancement(p, adv.id); break; }
@@ -663,16 +624,8 @@ void GameServer::onConsumeItem(Player& p, const ItemStack& stack) {
     if (!p.advancements || stack.empty()) return;
     std::string itemName = stack.name();
     auto merged = getMergedAdvancements();
-    PredicateContext ctx;
-    ctx.world = &worldFor(p.dimension);
-    ctx.gamerules = &gamerules_;
-    ctx.player = &p;
-    ctx.playerName = p.name;
+    PredicateContext ctx = basePredicateContext(p);
     ctx.heldItemName = itemName;
-    ctx.scoreboard = &scoreboard;
-    ctx.x = static_cast<int32_t>(p.x);
-    ctx.y = static_cast<int32_t>(p.y);
-    ctx.z = static_cast<int32_t>(p.z);
     ctx.dayTime = dayTime();
     ctx.raining = raining();
     ctx.thundering = thundering();
@@ -720,16 +673,7 @@ void GameServer::onConsumeItem(Player& p, const ItemStack& stack) {
 void GameServer::onBredAnimals(Player* p) {
     if (!p || !p->advancements) return;
     auto merged = getMergedAdvancements();
-    PredicateContext ctx;
-    ctx.world = &worldFor(p->dimension);
-    ctx.gamerules = &gamerules_;
-    ctx.player = p;
-    ctx.playerName = p->name;
-    if (p->heldSlot>=0 && p->heldSlot<9) { auto &hs = p->inv[36+p->heldSlot]; if (!hs.empty()) ctx.heldItemName = hs.name(); }
-    ctx.scoreboard = &scoreboard;
-    ctx.x = static_cast<int32_t>(p->x);
-    ctx.y = static_cast<int32_t>(p->y);
-    ctx.z = static_cast<int32_t>(p->z);
+    PredicateContext ctx = basePredicateContext(*p);
     ctx.dayTime = dayTime();
     ctx.raining = raining();
     ctx.thundering = thundering();
@@ -748,13 +692,7 @@ void GameServer::onBredAnimals(Player* p) {
 void GameServer::onEnterBlock(Player* p, int x, int y, int z) {
     if (!p || !p->advancements) return;
     auto merged = getMergedAdvancements();
-    PredicateContext ctx;
-    ctx.world = &worldFor(p->dimension);
-    ctx.gamerules = &gamerules_;
-    ctx.player = p;
-    ctx.playerName = p->name;
-    if (p->heldSlot>=0 && p->heldSlot<9) { auto &hs = p->inv[36+p->heldSlot]; if (!hs.empty()) ctx.heldItemName = hs.name(); }
-    ctx.scoreboard = &scoreboard;
+    PredicateContext ctx = basePredicateContext(*p);
     ctx.x = x; ctx.y = y; ctx.z = z;
     ctx.dayTime = dayTime();
     ctx.raining = raining();
@@ -790,13 +728,8 @@ void GameServer::onItemUsedOnBlock(Player* p, int x, int y, int z, const ItemSta
     std::string itemName = item.name();
     if (itemName.empty()) itemName = "minecraft:air";
     auto merged = getMergedAdvancements();
-    PredicateContext ctx;
-    ctx.world = &worldFor(p->dimension);
-    ctx.gamerules = &gamerules_;
-    ctx.player = p;
-    ctx.playerName = p->name;
+    PredicateContext ctx = basePredicateContext(*p);
     ctx.heldItemName = itemName;
-    ctx.scoreboard = &scoreboard;
     ctx.x = x; ctx.y = y; ctx.z = z;
     ctx.dayTime = dayTime();
     ctx.raining = raining();
@@ -837,16 +770,7 @@ void GameServer::onItemUsedOnBlock(Player* p, int x, int y, int z, const ItemSta
 void GameServer::onEffectsChanged(Player* p) {
     if (!p || !p->advancements) return;
     auto merged = getMergedAdvancements();
-    PredicateContext ctx;
-    ctx.world = &worldFor(p->dimension);
-    ctx.gamerules = &gamerules_;
-    ctx.player = p;
-    ctx.playerName = p->name;
-    if (p->heldSlot>=0 && p->heldSlot<9) { auto &hs = p->inv[36+p->heldSlot]; if (!hs.empty()) ctx.heldItemName = hs.name(); }
-    ctx.scoreboard = &scoreboard;
-    ctx.x = static_cast<int32_t>(p->x);
-    ctx.y = static_cast<int32_t>(p->y);
-    ctx.z = static_cast<int32_t>(p->z);
+    PredicateContext ctx = basePredicateContext(*p);
     ctx.dayTime = dayTime();
     ctx.raining = raining();
     ctx.thundering = thundering();

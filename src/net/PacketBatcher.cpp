@@ -83,9 +83,8 @@ void PacketBatcher::flush(GameServer& srv, const Player* except) {
                     b.varint(static_cast<int32_t>(vec.size()));
                     for (auto &r : vec) {
                         int32_t lx = r.x & 15, ly = r.y & 15, lz = r.z & 15;
-                        // vanilla/Prismarine: (state<<12)|(localX<<8)|(localZ<<4)|localY
-                        // (not y<<8|z<<4|x — that swap placed blocks at wrong section-local
-                        // coords, plan28 finish fix, see assessment-1 S07 (old N7))
+                        // vanilla/Prismarine: (state<<12)|(localX<<8)|(localZ<<4)|localY (not y<<8|z<<4|x — that swap placed blocks at
+                        // wrong section-local coords, plan28 finish fix, see assessment-1 S07 (old N7))
                         int32_t enc = (static_cast<int32_t>(r.state) << 12) | (lx << 8) | (lz << 4) | ly;
                         b.varint(enc);
                     }

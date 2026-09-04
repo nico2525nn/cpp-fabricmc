@@ -89,9 +89,8 @@ public:
         return children.back();
     }
 
-    // ---------------------------------------------------------- execution --
-    // Depth-first match; executes the deepest executable node that consumes
-    // the whole line. `isFirstToken` permits a leading token without space.
+    // ---------------------------------------------------------- execution -- Depth-first match; executes the deepest executable node that
+    // consumes the whole line. `isFirstToken` permits a leading token without space.
     bool executeAt(StringReader& reader, CommandContext& ctx,
                    ExecutionResult& res, bool isFirstToken = true) const {
         const std::string rest = reader.remainingText();
@@ -106,9 +105,7 @@ public:
                 res.ok = false;
                 res.errorText = e.what();
             } catch (const std::exception& e) {
-                // plan42 R3 crash-hardening: non-runtime_error (bad_variant_access,
-                // out_of_range, ...) must also become error chat, never escape to
-                // the session thread (which would drop the player) or terminate.
+                // plan42 R3: non-runtime_error also becomes error chat (never drop player/terminate).
                 res.ok = false;
                 res.errorText = std::string("Error: ") + e.what();
             } catch (...) {
@@ -290,7 +287,6 @@ public:
             if (descended) { firstToken = false; continue; }
             break;
         }
-        (void)firstToken;
         std::sort(out.begin(), out.end(),
                   [](auto& a, auto& b) { return a.match < b.match; });
         out.erase(std::unique(out.begin(), out.end(),
