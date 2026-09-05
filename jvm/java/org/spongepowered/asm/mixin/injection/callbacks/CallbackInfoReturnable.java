@@ -7,7 +7,7 @@ public class CallbackInfoReturnable<T> extends CallbackInfo {
         this(id, cancellable); this.returnValue = returnValue;
     }
     public T getReturnValue() { return returnValue; }
-    public void setReturnValue(T value) { cancel(); returnValue = value; }
+    public void setReturnValue(T value) { returnValue = value; cancel(); }
     public byte getReturnValueB() { return ((Number)returnValue).byteValue(); }
     public char getReturnValueC() { return (Character)returnValue; }
     public double getReturnValueD() { return ((Number)returnValue).doubleValue(); }
