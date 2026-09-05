@@ -7,4 +7,5 @@ public interface PacketSender {
     void sendPacket(Packet<?> packet);
     default void sendPacket(net.minecraft.util.Identifier channel, net.minecraft.network.PacketByteBuf payload) { }
     default void send(net.minecraft.network.packet.CustomPayload payload) { }
+    default void sendPacket(net.minecraft.network.packet.CustomPayload payload) { send(payload); }
 }

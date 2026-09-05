@@ -12,6 +12,8 @@ public final class EventFactory {
         return new Event<>(null, type, emptyInvoker, invokerFactory);
     }
     public static <T> Event<T> createWithPhases(Class<T> type, Function<T[], T> invokerFactory, net.minecraft.util.Identifier... phases) {
-        return new Event<>(type, invokerFactory);
+        Event<T> event = new Event<>(type, invokerFactory);
+        if (phases != null) for (net.minecraft.util.Identifier phase : phases) event.declarePhase(phase);
+        return event;
     }
 }

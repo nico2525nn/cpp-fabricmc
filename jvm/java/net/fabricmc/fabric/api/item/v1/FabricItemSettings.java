@@ -13,4 +13,5 @@ public class FabricItemSettings extends Item.Settings {
     @Override public FabricItemSettings food(FoodComponent food) { super.food(food); return this; }
     @Override public FabricItemSettings recipeRemainder(Item item) { super.recipeRemainder(item); return this; }
     @Override public <T> FabricItemSettings component(net.minecraft.component.DataComponentType<T> type, T value) { super.component(type, value); return this; }
+    @Override public FabricItemSettings attributeModifiers(Object modifiers) { super.attributeModifiers(modifiers); return this; }
 }

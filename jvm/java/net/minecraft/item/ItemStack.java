@@ -25,6 +25,7 @@ public class ItemStack {
 
     private ItemStack(Item item, int count, boolean ignored) {
         this.item = item == null ? Items.AIR : item; this.count = Math.max(0, count);
+        if (this.item.getSettings() != null) components.putAll(this.item.getSettings().components());
     }
     public ItemStack(Item item) { this(item, 1); }
     public ItemStack(Item item, int count) { this(item, count, false); }
@@ -76,7 +77,10 @@ public class ItemStack {
     public int getDamage() { return getOrDefault(DataComponentTypes.DAMAGE, 0); }
     public void setDamage(int value) { set(DataComponentTypes.DAMAGE, Math.max(0, Math.min(value, item.getMaxDamage()))); }
     public boolean isDamaged() { return getDamage() > 0; }
-    public boolean hasGlint() { return false; }
+    public boolean hasGlint() {
+        return contains(new DataComponentType<Boolean>("minecraft:enchantment_glint_override"))
+            || contains(new DataComponentType<Boolean>("minecraft:enchantments"));
+    }
     public boolean isEnchantable() { return !isEmpty(); }
     public <T> T get(DataComponentType<T> type) { return type == null ? null : cast(components.get(type)); }
     public <T> T getOrDefault(DataComponentType<T> type, T fallback) { T value = get(type); return value == null ? fallback : value; }
