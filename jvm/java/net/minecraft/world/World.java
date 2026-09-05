@@ -4,18 +4,40 @@ import cppfm.bridge.NativeBridge;
 import cppfm.bridge.MixinHooks;
 import cppfm.bridge.WrapperCache;
 import net.minecraft.block.BlockState;
+import net.minecraft.block.Blocks;
+import net.minecraft.block.entity.BlockEntity;
+import net.minecraft.entity.Entity;
+import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.util.NativeAccess;
 import net.minecraft.registry.RegistryKey;
 import net.minecraft.util.Identifier;
+import net.minecraft.util.math.Box;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.ChunkPos;
+import net.minecraft.util.math.Vec3d;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Random;
+import java.util.function.Predicate;
 
-public class World {
+public class World implements BlockView, WorldView, WorldAccess {
     protected final long nativeHandle;
     protected final boolean client;
+    private final Map<Long, BlockState> localBlocks = new HashMap<>();
+    private final WorldBorder border = new WorldBorder();
+    private final Random random = new Random(0L);
+    private final GameRules gameRules = new GameRules();
+    private final DimensionType dimensionType;
 
     protected World(long nativeHandle, boolean client) {
         this.nativeHandle = nativeHandle;
         this.client = client;
+        this.dimensionType = DimensionType.OVERWORLD;
     }
     public static World of(long handle) {
         return WrapperCache.get(World.class, handle, h -> new World(h, false));
@@ -29,8 +51,8 @@ public class World {
         CallbackInfoReturnable<BlockState> head = MixinHooks.invokeHeadReturn(
             this, "getBlockState", null, pos);
         if (head.isCancelled()) return head.getReturnValue();
-        BlockState nativeState = new BlockState(NativeBridge.nativeWorldBlock(
-            nativeHandle, pos.getX(), pos.getY(), pos.getZ()));
+        BlockState nativeState = nativeHandle == 0 ? localBlocks.getOrDefault(pos.asLong(), Blocks.AIR.getDefaultState())
+            : new BlockState(NativeAccess.worldBlock(nativeHandle, pos.getX(), pos.getY(), pos.getZ()));
         CallbackInfoReturnable<BlockState> tail = MixinHooks.invokeTailReturn(
             this, "getBlockState", nativeState, pos);
         if (tail.isCancelled()) return tail.getReturnValue();
@@ -46,8 +68,8 @@ public class World {
         CallbackInfoReturnable<Boolean> head = MixinHooks.invokeHeadReturn(
             this, "setBlockState", false, pos, state, flags);
         if (head.isCancelled()) return Boolean.TRUE.equals(head.getReturnValue());
-        boolean changed = NativeBridge.nativeWorldSetBlock(
-            nativeHandle, pos.getX(), pos.getY(), pos.getZ(), state.getRawState());
+        boolean changed = nativeHandle == 0 ? localBlocks.put(pos.asLong(), state) != state
+            : NativeAccess.setWorldBlock(nativeHandle, pos.getX(), pos.getY(), pos.getZ(), state.getRawState());
         CallbackInfoReturnable<Boolean> tail = MixinHooks.invokeTailReturn(
             this, "setBlockState", changed, pos, state, flags);
         if (tail.isCancelled()) return Boolean.TRUE.equals(tail.getReturnValue());
@@ -57,13 +79,40 @@ public class World {
     }
     @SuppressWarnings("unchecked")
     public RegistryKey<World> getRegistryKey() {
-        String name = NativeBridge.nativeWorldName(nativeHandle);
+        String name = NativeAccess.worldName(nativeHandle);
         return new RegistryKey<>(Identifier.tryParse(name == null || name.isEmpty() ? "minecraft:overworld" : name));
     }
-    public long getTime() { return NativeBridge.currentTick(); }
+    public long getTime() { return NativeAccess.currentTick(); }
     public long getTimeOfDay() { return getTime(); }
-    public int getBottomY() { return -64; }
-    public int getTopY() { return 320; }
-    public boolean isChunkLoaded(int chunkX, int chunkZ) { return true; }
+    public int getBottomY() { return dimensionType.minY(); }
+    public int getTopY() { return dimensionType.minY() + dimensionType.height(); }
+    public boolean isChunkLoaded(int chunkX, int chunkZ) { return nativeHandle != 0 || !localBlocks.isEmpty(); }
+    public boolean isInBuildLimit(BlockPos pos) { return pos != null && pos.getY() >= getBottomY() && pos.getY() < getTopY(); }
+    public boolean isAir(BlockPos pos) { return getBlockState(pos).isAir(); }
+    public boolean breakBlock(BlockPos pos, boolean drop) { if (isAir(pos)) return false; return setBlockState(pos, Blocks.AIR.getDefaultState()); }
+    public boolean removeBlock(BlockPos pos, boolean move) { return breakBlock(pos, move); }
+    @Override public BlockEntity getBlockEntity(BlockPos pos) { return null; }
+    public List<Entity> getEntities() { return getEntitiesByClass(Entity.class, new Box(-3.0E7, getBottomY(), -3.0E7, 3.0E7, getTopY(), 3.0E7), entity -> true); }
+    public <T extends Entity> List<T> getEntitiesByClass(Class<T> type, Box box, Predicate<? super T> predicate) {
+        List<T> result = new ArrayList<>();
+        if (type == null || predicate == null) return result;
+        MinecraftServer server = getServer();
+        if (server != null) for (ServerPlayerEntity player : server.getPlayerManager().getPlayerList()) {
+            if (type.isInstance(player) && (box == null || box.contains(player.getPos())) && predicate.test(type.cast(player))) result.add(type.cast(player));
+        }
+        return result;
+    }
+    public List<ServerPlayerEntity> getPlayers() { return getPlayers(player -> true); }
+    public List<ServerPlayerEntity> getPlayers(Predicate<ServerPlayerEntity> predicate) {
+        List<ServerPlayerEntity> result = new ArrayList<>(); MinecraftServer server = getServer();
+        if (server == null || predicate == null) return result;
+        for (ServerPlayerEntity player : server.getPlayerManager().getPlayerList()) if (predicate.test(player)) result.add(player);
+        return result;
+    }
+    public Random getRandom() { return random; }
+    public WorldBorder getWorldBorder() { return border; }
+    public GameRules getGameRules() { return gameRules; }
+    public DimensionType getDimension() { return dimensionType; }
+    public ChunkPos getChunkPos(BlockPos pos) { return new ChunkPos(pos == null ? new BlockPos(0, 0, 0) : pos); }
     public net.minecraft.server.MinecraftServer getServer() { return null; }
 }
