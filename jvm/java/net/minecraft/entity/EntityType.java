@@ -43,6 +43,9 @@ public class EntityType<T extends Entity> {
             net.minecraft.registry.Registries.ENTITY_TYPE.getEntry((EntityType<?>) this).orElse(null);
         return entry;
     }
+    public net.minecraft.registry.entry.RegistryEntry<EntityType<T>> getCanonicalRegistryEntry() {
+        return getRegistryEntry();
+    }
     @Override public boolean equals(Object other) { return other instanceof EntityType<?> t && id.equals(t.id); }
     @Override public int hashCode() { return Objects.hash(id); }
     @Override public String toString() { return id.toString(); }

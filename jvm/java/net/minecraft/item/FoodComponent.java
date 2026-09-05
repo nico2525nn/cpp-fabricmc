@@ -1,16 +1,10 @@
 package net.minecraft.item;
 
-public final class FoodComponent {
-    private final int hunger;
-    private final float saturation;
-    private final boolean alwaysEdible;
-    public FoodComponent(int hunger, float saturation) { this(hunger, saturation, false); }
+/** @deprecated use {@link net.minecraft.component.type.FoodComponent}. */
+@Deprecated
+public class FoodComponent extends net.minecraft.component.type.FoodComponent {
+    public FoodComponent(int hunger, float saturation) { super(hunger, saturation); }
     public FoodComponent(int hunger, float saturation, boolean alwaysEdible) {
-        this.hunger = hunger; this.saturation = saturation; this.alwaysEdible = alwaysEdible;
+        super(hunger, saturation, alwaysEdible);
     }
-    public int nutrition() { return hunger; }
-    public int getNutrition() { return hunger; }
-    public float saturationModifier() { return saturation; }
-    public float getSaturationModifier() { return saturation; }
-    public boolean isAlwaysEdible() { return alwaysEdible; }
 }

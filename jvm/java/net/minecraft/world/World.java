@@ -29,15 +29,15 @@ public class World implements BlockView, WorldView, WorldAccess {
     protected final long nativeHandle;
     protected final boolean client;
     private final Map<Long, BlockState> localBlocks = new HashMap<>();
-    private final WorldBorder border = new WorldBorder();
+    private final net.minecraft.world.border.WorldBorder border = new net.minecraft.world.border.WorldBorder();
     private final Random random = new Random(0L);
     private final GameRules gameRules = new GameRules();
-    private final DimensionType dimensionType;
+    private final net.minecraft.world.dimension.DimensionType dimensionType;
 
     protected World(long nativeHandle, boolean client) {
         this.nativeHandle = nativeHandle;
         this.client = client;
-        this.dimensionType = DimensionType.OVERWORLD;
+        this.dimensionType = net.minecraft.world.dimension.DimensionType.OVERWORLD;
     }
     public static World of(long handle) {
         return WrapperCache.get(World.class, handle, h -> new World(h, false));
@@ -111,9 +111,11 @@ public class World implements BlockView, WorldView, WorldAccess {
         return result;
     }
     public Random getRandom() { return random; }
-    public WorldBorder getWorldBorder() { return border; }
+    public net.minecraft.world.border.WorldBorder getWorldBorder() { return border; }
     public GameRules getGameRules() { return gameRules; }
-    public DimensionType getDimension() { return dimensionType; }
+    public net.minecraft.world.dimension.DimensionType getDimension() { return dimensionType; }
     public ChunkPos getChunkPos(BlockPos pos) { return new ChunkPos(pos == null ? new BlockPos(0, 0, 0) : pos); }
-    public net.minecraft.server.MinecraftServer getServer() { return null; }
+    public net.minecraft.server.MinecraftServer getServer() {
+        return nativeHandle == 0 ? null : MinecraftServer.of(NativeAccess.serverHandle());
+    }
 }

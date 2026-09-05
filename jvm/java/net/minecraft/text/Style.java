@@ -12,6 +12,10 @@ public final class Style {
         this.formatting = formatting; this.color = color; this.insertion = insertion; this.bold = bold; this.italic = italic; this.underlined = underlined; this.strikethrough = strikethrough;
     }
     public Style withColor(Formatting value) { return new Style(value, value == null ? null : value.getColorValue(), insertion, bold, italic, underlined, strikethrough); }
+    public Style withColor(net.minecraft.util.Formatting value) {
+        return new Style(null, value == null ? null : value.getColorValue(), insertion,
+            bold, italic, underlined, strikethrough);
+    }
     public Style withColor(Integer value) { return new Style(formatting, value, insertion, bold, italic, underlined, strikethrough); }
     public Style withBold(Boolean value) { return new Style(formatting, color, insertion, Boolean.TRUE.equals(value), italic, underlined, strikethrough); }
     public Style withItalic(Boolean value) { return new Style(formatting, color, insertion, bold, Boolean.TRUE.equals(value), underlined, strikethrough); }
