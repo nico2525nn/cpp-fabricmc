@@ -3,7 +3,7 @@
 This directory is the current specification index for the clean-room C++ server. The
 canonical snapshot is for **Minecraft Java Edition 1.21.4**, **protocol 769**, and
 **DataVersion 4189**. It describes the behavior of the integrated implementation at
-runtime snapshot `74bd5ffbda03f30bc5af0c96a11ec3416bf1a827`, rechecked on 2026-09-05.
+runtime snapshot `ddb15090190d1ff879cc140912579e56e94d44cb`, rechecked on 2026-09-05.
 Documentation does not change the executable, packet registry, test assertions, or
 generated data.
 
@@ -116,7 +116,7 @@ registry.
 
 The following exact native results were carried forward from runtime snapshot
 `17ab09f`; plan51 boundary results were rechecked against integrated baseline
-`74bd5ff`. Counts are not inherited from stale prose and must not be inflated or
+`ddb1509`. Counts are not inherited from stale prose and must not be inflated or
 averaged to make a gate pass.
 
 | command/target | result |

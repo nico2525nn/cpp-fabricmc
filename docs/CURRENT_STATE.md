@@ -11,15 +11,15 @@
 | field | value |
 |---|---|
 | `updated` | `2026-09-05` |
-| `implementation_baseline` | `74bd5ffbda03f30bc5af0c96a11ec3416bf1a827` |
-| `implementation_baseline_short` | `74bd5ff` |
-| `documentation_commit` | `29026029eb211a51429ecb6733eeaf35d3c8247f` |
-| `main_integration_merge` | `74bd5ffbda03f30bc5af0c96a11ec3416bf1a827` |
+| `implementation_baseline` | `ddb15090190d1ff879cc140912579e56e94d44cb` |
+| `implementation_baseline_short` | `ddb1509` |
+| `documentation_commit` | `ddb15090190d1ff879cc140912579e56e94d44cb` |
+| `main_integration_merge` | `ddb15090190d1ff879cc140912579e56e94d44cb` |
 | `plan` | `plan51` |
 | `phase` | `embedded-jvm-boundary` |
 | `phase_status` | `IMPLEMENTED_WITH_DECLARED_LIMITATIONS` |
 | `publication_status` | `BLOCKED` |
-| `runtime_reference_snapshot` | `74bd5ffbda03f30bc5af0c96a11ec3416bf1a827` |
+| `runtime_reference_snapshot` | `ddb15090190d1ff879cc140912579e56e94d44cb` |
 | `canonical_workflow` | `docs/DEVELOPMENT.md#research-workflow` |
 | `research_entrypoint` | `docs/research-prompt.md` is a legacy redirect only |
 | `research_viewpoints` | `16` current viewpoints; old `13` wording is historical |

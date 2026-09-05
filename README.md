@@ -181,7 +181,7 @@ ctest -R soak_bot --output-on-failure --timeout 400                 # soak_bot 3
 # 24hフルはnightlyのみ。現時点で受理済みの2h/24h artifactはない。後始末は `cppfm --por[t]` を確認して所有PIDだけを終了する。
 ```
 
-The current integrated baseline is `74bd5ffbda03f30bc5af0c96a11ec3416bf1a827`.
+The current integrated baseline is `ddb15090190d1ff879cc140912579e56e94d44cb`.
 The carried-forward native runtime record at `17ab09f5220bf99203d2aea2b2c9d65f763f433b`
 keeps the only allowed gameplay failure visible: `test_spec_wire` `392 PASS 0 FAIL 0 SKIP`,
 `test_wire_full` `405 PASS 0 FAIL 0 SKIP`, `test_wire_b6` `133 PASS 0 FAIL`,

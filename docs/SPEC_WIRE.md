@@ -1,7 +1,7 @@
 # SPEC_WIRE — Minecraft 1.21.4 / protocol 769
 
 This is the byte-level source of truth for the current C++ implementation. Snapshot:
-runtime snapshot `74bd5ffbda03f30bc5af0c96a11ec3416bf1a827`, rechecked 2026-09-05. Scope
+runtime snapshot `ddb15090190d1ff879cc140912579e56e94d44cb`, rechecked 2026-09-05. Scope
 is Java Edition 1.21.4, protocol `769`, DataVersion `4189`, with an unmodified Fabric
 1.21.4 server as the behavioral reference. `docs/MISSING_FEATURES_1_21_4.md` targets
 are identified in every contract; this file does not change their status or the
