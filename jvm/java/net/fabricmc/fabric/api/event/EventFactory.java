@@ -9,6 +9,9 @@ public final class EventFactory {
     }
     public static <T> Event<T> createArrayBacked(Class<T> type, T emptyInvoker,
                                                   Function<T[], T> invokerFactory) {
+        return new Event<>(null, type, emptyInvoker, invokerFactory);
+    }
+    public static <T> Event<T> createWithPhases(Class<T> type, Function<T[], T> invokerFactory, net.minecraft.util.Identifier... phases) {
         return new Event<>(type, invokerFactory);
     }
 }

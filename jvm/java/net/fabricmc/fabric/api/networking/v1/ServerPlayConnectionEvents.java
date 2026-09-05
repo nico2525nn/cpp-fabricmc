@@ -13,7 +13,7 @@ public final class ServerPlayConnectionEvents {
     @FunctionalInterface public interface Disconnect {
         void onPlayDisconnect(ServerPlayNetworkHandler handler, MinecraftServer server);
     }
-    public static final Event<Join> JOIN = new Event<>(CppModRuntime::registerPlayerJoin);
-    public static final Event<Disconnect> DISCONNECT = new Event<>(CppModRuntime::registerPlayerQuit);
+    public static final Event<Join> JOIN = new Event<>(CppModRuntime::registerPlayerJoin, Join.class, callbacks -> (handler, sender, server) -> { for (Join callback : callbacks) callback.onPlayReady(handler, sender, server); });
+    public static final Event<Disconnect> DISCONNECT = new Event<>(CppModRuntime::registerPlayerQuit, Disconnect.class, callbacks -> (handler, server) -> { for (Disconnect callback : callbacks) callback.onPlayDisconnect(handler, server); });
     public static void clear() { JOIN.clear(); DISCONNECT.clear(); }
 }

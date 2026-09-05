@@ -26,15 +26,9 @@ public final class StringArgumentType implements ArgumentType<String> {
     public boolean isGreedy() { return type == StringType.GREEDY_PHRASE; }
 
     @Override public String parse(StringReader reader) throws CommandSyntaxException {
-        String remaining = reader.getRemaining();
-        if (type == StringType.GREEDY_PHRASE) {
-            reader.setCursor(reader.getString().length());
-            return remaining;
-        }
-        int end = 0;
-        while (end < remaining.length() && !Character.isWhitespace(remaining.charAt(end))) ++end;
-        if (end == 0) throw new CommandSyntaxException("expected string");
-        reader.setCursor(reader.getCursor() + end);
-        return remaining.substring(0, end);
+        reader.skipWhitespace();
+        if (type == StringType.GREEDY_PHRASE) { String value = reader.getRemaining(); reader.setCursor(reader.getString().length()); return value; }
+        return type == StringType.QUOTABLE_PHRASE ? reader.readString() : reader.readUnquotedString();
     }
+    @Override public java.util.Collection<String> getExamples() { return java.util.List.of("word", "\"quoted phrase\""); }
 }
