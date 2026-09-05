@@ -28,9 +28,45 @@ public class LivingEntity extends Entity {
     }
     public void setMaxHealth(float value) { maxHealth = Math.max(0.0f, value); setHealth(health); }
     public boolean damage(net.minecraft.entity.damage.DamageSource source, float amount) {
-        if (!isAlive() || amount <= 0.0f || isInvulnerableTo(source)) return false;
-        setHealth(health - amount);
-        if (health <= 0.0f) remove(RemovalReason.KILLED);
+        if (!isAlive() || !Float.isFinite(amount) || amount <= 0.0f || isInvulnerableTo(source)) return false;
+        net.minecraft.entity.damage.DamageSource damageSource = source == null
+            ? new net.minecraft.entity.damage.DamageSource("generic") : source;
+        if (!net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.ALLOW_DAMAGE.invoker()
+                .allowDamage(this, damageSource, amount)) return false;
+        net.minecraft.entity.DamageSource legacySource = new net.minecraft.entity.DamageSource(
+            damageSource.getName(), damageSource.getSource(), damageSource.getAttacker());
+        if (!net.fabricmc.fabric.api.event.lifecycle.v1.ServerLivingEntityEvents.ALLOW_DAMAGE.invoker()
+                .allowDamage(this, legacySource, amount)) return false;
+        float before = health;
+        if (nativeHandle != 0 && !NativeAccess.entityDead(nativeHandle)) {
+            float observed = getHealth();
+            if (observed > 0.0f) before = observed;
+        }
+        float next = Math.max(0.0f, before - amount);
+        setHealth(next);
+        boolean died = next <= 0.0f;
+        if (died) {
+            boolean allowed = net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.ALLOW_DEATH.invoker()
+                .allowDeath(this, damageSource, amount);
+            allowed &= net.fabricmc.fabric.api.event.lifecycle.v1.ServerLivingEntityEvents.ALLOW_DEATH.invoker()
+                .allowDeath(this, legacySource, amount);
+            if (this instanceof net.minecraft.server.network.ServerPlayerEntity player)
+                allowed &= net.fabricmc.fabric.api.entity.event.v1.ServerPlayerEvents.ALLOW_DEATH.invoker()
+                    .allowDeath(player, damageSource, amount);
+            if (allowed) remove(RemovalReason.KILLED);
+            else { died = false; setHealth(Math.max(1.0f, Math.min(maxHealth, before))); }
+        }
+        final boolean blocked = false;
+        net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.AFTER_DAMAGE.invoker()
+            .afterDamage(this, damageSource, amount, Math.max(0.0f, before - getHealth()), blocked);
+        net.fabricmc.fabric.api.event.lifecycle.v1.ServerLivingEntityEvents.AFTER_DAMAGE.invoker()
+            .afterDamage(this, legacySource, amount, Math.max(0.0f, before - getHealth()), blocked);
+        if (died) {
+            net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.AFTER_DEATH.invoker()
+                .afterDeath(this, damageSource);
+            net.fabricmc.fabric.api.event.lifecycle.v1.ServerLivingEntityEvents.AFTER_DEATH.invoker()
+                .afterDeath(this, legacySource);
+        }
         return true;
     }
     /** Legacy package overload retained for source compatibility. */

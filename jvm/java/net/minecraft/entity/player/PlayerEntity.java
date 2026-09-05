@@ -56,8 +56,12 @@ public class PlayerEntity extends LivingEntity {
     }
     @Override public void equipStack(net.minecraft.entity.EquipmentSlot slot, ItemStack stack) {
         if (slot == null) return;
+        ItemStack previous = getEquippedStack(slot);
         int index = switch (slot) { case MAINHAND -> inventory.selectedSlot; case OFFHAND -> 40; case FEET -> 36; case LEGS -> 37; case CHEST -> 38; case HEAD -> 39; };
-        inventory.setStack(index, stack == null ? ItemStack.EMPTY : stack);
+        ItemStack current = stack == null ? ItemStack.EMPTY : stack;
+        inventory.setStack(index, current);
+        net.fabricmc.fabric.api.event.lifecycle.v1.ServerEntityEvents.EQUIPMENT_CHANGE.invoker()
+            .onChange(this, slot, previous, current);
     }
     public Arm getMainArm() { return Arm.RIGHT; }
     public BlockPos getSpawnPointPosition() { return getBlockPos(); }

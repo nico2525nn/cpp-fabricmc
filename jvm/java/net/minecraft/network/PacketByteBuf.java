@@ -27,9 +27,20 @@ public class PacketByteBuf {
     public PacketByteBuf writeDouble(double value) { return writeLong(Double.doubleToLongBits(value)); }
     public PacketByteBuf writeVarInt(int value) { while ((value & ~0x7F) != 0) { writeByte((value & 0x7F) | 0x80); value >>>= 7; } return writeByte(value); }
     public PacketByteBuf writeVarLong(long value) { while ((value & ~0x7FL) != 0) { writeByte((int) (value & 0x7F) | 0x80); value >>>= 7; } return writeByte((int) value); }
-    public PacketByteBuf writeBytes(byte[] bytes) { if (bytes != null) output.writeBytes(bytes); input = null; return this; }
+    public PacketByteBuf writeBytes(byte[] bytes) { return writeBytes(bytes, 0, bytes == null ? 0 : bytes.length); }
+    public PacketByteBuf writeBytes(byte[] bytes, int offset, int length) {
+        if (bytes == null) { if (offset != 0 || length != 0) throw new NullPointerException("bytes"); return this; }
+        if (offset < 0 || length < 0 || offset > bytes.length - length)
+            throw new IndexOutOfBoundsException("offset/length");
+        output.write(bytes, offset, length); input = null; return this;
+    }
+    public PacketByteBuf writeBytes(PacketByteBuf value) {
+        return value == null ? this : writeBytes(value.data(), value.readerIndex(), value.readableBytes());
+    }
     public PacketByteBuf writeByteArray(byte[] bytes) { byte[] value = bytes == null ? new byte[0] : bytes; writeVarInt(value.length); return writeBytes(value); }
     public PacketByteBuf writeString(String value) { byte[] bytes = (value == null ? "" : value).getBytes(StandardCharsets.UTF_8); if (bytes.length > 32767 * 4) throw new IllegalArgumentException("string too long"); writeVarInt(bytes.length); return writeBytes(bytes); }
+    /** Alias used by the 1.21.4 packet codec API. */
+    public PacketByteBuf writeUtf(String value) { return writeString(value); }
     public PacketByteBuf writeUuid(UUID value) { UUID uuid = value == null ? new UUID(0L, 0L) : value; return writeLong(uuid.getMostSignificantBits()).writeLong(uuid.getLeastSignificantBits()); }
     public PacketByteBuf writeIdentifier(Identifier value) { return writeString(value == null ? "minecraft:air" : value.toString()); }
     public PacketByteBuf writeBlockPos(BlockPos value) { return writeLong(value == null ? 0L : value.asLong()); }
@@ -49,11 +60,41 @@ public class PacketByteBuf {
     public byte[] readByteArray() { int length = readVarInt(); if (length < 0 || length > readableBytes()) throw new IllegalArgumentException("invalid byte array length"); return readRawBytes(length); }
     public String readString() { return readString(32767); }
     public String readString(int maxLength) { int length = readVarInt(); if (length < 0 || length > maxLength * 4 || length > readableBytes()) throw new IllegalArgumentException("invalid string length"); String value = new String(readRawBytes(length), StandardCharsets.UTF_8); if (value.length() > maxLength) throw new IllegalArgumentException("string too long"); return value; }
+    /** Alias used by the 1.21.4 packet codec API. */
+    public String readUtf() { return readString(); }
+    public String readUtf(int maxLength) { return readString(maxLength); }
     public UUID readUuid() { return new UUID(readLong(), readLong()); }
     public Identifier readIdentifier() { Identifier id = Identifier.tryParse(readString()); if (id == null) throw new IllegalArgumentException("invalid identifier"); return id; }
     public BlockPos readBlockPos() { return BlockPos.fromLong(readLong()); }
     public ItemStack readItemStack() { return readBoolean() ? new ItemStack(net.minecraft.item.Item.fromRaw(0, readIdentifier().toString()), readUnsignedByte()) : ItemStack.EMPTY; }
     public int readableBytes() { return data().length - readerIndex; }
+    public int writerIndex() { return data().length; }
+    public PacketByteBuf writerIndex(int index) {
+        byte[] current = data();
+        if (index < 0 || index > current.length) throw new IndexOutOfBoundsException(index);
+        if (index != current.length) {
+            output.reset();
+            output.write(current, 0, index);
+            input = null;
+        }
+        if (readerIndex > index) readerIndex = index;
+        if (markedReaderIndex > index) markedReaderIndex = index;
+        return this;
+    }
+    public int capacity() { return writerIndex(); }
+    public boolean isReadable(int length) { return length >= 0 && readableBytes() >= length; }
+    public PacketByteBuf skipBytes(int length) {
+        if (length < 0 || !isReadable(length)) throw new IndexOutOfBoundsException("length");
+        readerIndex += length; return this;
+    }
+    public byte getByte(int index) {
+        if (index < 0 || index >= writerIndex()) throw new IndexOutOfBoundsException(index);
+        return data()[index];
+    }
+    public byte[] readBytes(int length) {
+        if (length < 0 || !isReadable(length)) throw new IndexOutOfBoundsException("length");
+        return readRawBytes(length);
+    }
     public int readerIndex() { return readerIndex; }
     public PacketByteBuf readerIndex(int index) { if (index < 0 || index > data().length) throw new IndexOutOfBoundsException(index); readerIndex = index; return this; }
     public void markReaderIndex() { markedReaderIndex = readerIndex; }

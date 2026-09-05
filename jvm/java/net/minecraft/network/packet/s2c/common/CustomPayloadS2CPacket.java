@@ -10,5 +10,7 @@ public class CustomPayloadS2CPacket extends net.minecraft.network.packet.CustomP
     public CustomPayloadS2CPacket(CustomPayload.Id<? extends CustomPayload> id, PacketByteBuf data) {
         super(id, data);
     }
-    public CustomPayload payload() { return null; }
+    public CustomPayloadS2CPacket(CustomPayload payload) { super(payload); }
+    public CustomPayloadS2CPacket(CustomPayload payload, PacketByteBuf data) { super(payload, data); }
+    @Override public CustomPayload payload() { return super.payload(); }
 }

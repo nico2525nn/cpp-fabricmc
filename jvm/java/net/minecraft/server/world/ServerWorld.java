@@ -4,7 +4,11 @@ import cppfm.bridge.WrapperCache;
 import net.minecraft.entity.Entity;
 import cppfm.bridge.CppModRuntime;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Set;
 import java.util.function.Predicate;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.server.MinecraftServer;
@@ -51,19 +55,23 @@ public class ServerWorld extends World {
                                                          Predicate<? super T> predicate) {
         if (type == null) return List.of();
         List<T> result = new ArrayList<>();
+        Set<Long> seen = new HashSet<>();
+        Map<Long, ServerPlayerEntity> playersByHandle = new HashMap<>();
+        for (ServerPlayerEntity player : getPlayers()) {
+            seen.add(player.nativeHandle());
+            playersByHandle.put(player.nativeHandle(), player);
+            if (type.equals(player.getType()) && (box == null || box.contains(player.getPos())) &&
+                    (predicate == null || predicate.test((T) player))) result.add((T) player);
+        }
         int count = (int) Math.min(Integer.MAX_VALUE, NativeAccess.entityCount());
         for (int index = 0; index < count; index++) {
             long handle = NativeAccess.entityHandle(index);
             if (handle == 0L) continue;
-            Entity entity = null;
-            for (ServerPlayerEntity player : getPlayers()) if (player.nativeHandle() == handle) { entity = player; break; }
+            if (!seen.add(handle)) continue;
+            Entity entity = playersByHandle.get(handle);
             if (entity == null) entity = Entity.of(handle);
             if (type.equals(entity.getType()) && (box == null || box.contains(entity.getPos()))
                     && (predicate == null || predicate.test((T) entity))) result.add((T) entity);
-        }
-        for (ServerPlayerEntity player : getPlayers()) {
-            if (type.equals(player.getType()) && (box == null || box.contains(player.getPos())) &&
-                (predicate == null || predicate.test((T) player))) result.add((T) player);
         }
         return List.copyOf(result);
     }

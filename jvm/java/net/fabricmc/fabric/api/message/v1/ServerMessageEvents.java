@@ -22,20 +22,44 @@ public final class ServerMessageEvents {
                            MessageType.Parameters params);
     }
     @FunctionalInterface public interface AllowGameMessage {
-        boolean allowGameMessage(MinecraftServer server, ServerPlayerEntity sender,
-                                 Text message, boolean overlay);
+        boolean allowGameMessage(MinecraftServer server, Text message, boolean overlay);
+
+        /** Compatibility overload used by the native callback, which also has a sender handle. */
+        default boolean allowGameMessage(MinecraftServer server, ServerPlayerEntity sender,
+                                         Text message, boolean overlay) {
+            return allowGameMessage(server, message, overlay);
+        }
     }
     @FunctionalInterface public interface GameMessage {
-        void onGameMessage(MinecraftServer server, ServerPlayerEntity sender,
-                           Text message, boolean overlay);
+        void onGameMessage(MinecraftServer server, Text message, boolean overlay);
+
+        /** Compatibility overload used by the native callback, which also has a sender handle. */
+        default void onGameMessage(MinecraftServer server, ServerPlayerEntity sender,
+                                   Text message, boolean overlay) {
+            onGameMessage(server, message, overlay);
+        }
     }
     @FunctionalInterface public interface AllowCommandMessage {
-        boolean allowCommandMessage(SignedMessage message, ServerPlayerEntity sender,
+        boolean allowCommandMessage(SignedMessage message,
+                                    net.minecraft.server.command.ServerCommandSource source,
                                     MessageType.Parameters params);
+
+        /** Compatibility overload used by the native command boundary. */
+        default boolean allowCommandMessage(SignedMessage message, ServerPlayerEntity sender,
+                                            MessageType.Parameters params) {
+            return allowCommandMessage(message, commandSource(sender), params);
+        }
     }
     @FunctionalInterface public interface CommandMessage {
-        void onCommandMessage(SignedMessage message, ServerPlayerEntity sender,
+        void onCommandMessage(SignedMessage message,
+                              net.minecraft.server.command.ServerCommandSource source,
                               MessageType.Parameters params);
+
+        /** Compatibility overload used by the native command boundary. */
+        default void onCommandMessage(SignedMessage message, ServerPlayerEntity sender,
+                                      MessageType.Parameters params) {
+            onCommandMessage(message, commandSource(sender), params);
+        }
     }
 
     public static final Event<AllowChatMessage> ALLOW_CHAT_MESSAGE = new Event<>(CppModRuntime::registerAllowChatMessage,
@@ -48,13 +72,13 @@ public final class ServerMessageEvents {
             for (ChatMessage callback : callbacks) callback.onChatMessage(message, sender, params);
         });
     public static final Event<AllowGameMessage> ALLOW_GAME_MESSAGE = EventFactory.createArrayBacked(
-        AllowGameMessage.class, callbacks -> (server, sender, message, overlay) -> {
-            for (AllowGameMessage callback : callbacks) if (!callback.allowGameMessage(server, sender, message, overlay)) return false;
+        AllowGameMessage.class, callbacks -> (server, message, overlay) -> {
+            for (AllowGameMessage callback : callbacks) if (!callback.allowGameMessage(server, message, overlay)) return false;
             return true;
         });
     public static final Event<GameMessage> GAME_MESSAGE = EventFactory.createArrayBacked(
-        GameMessage.class, callbacks -> (server, sender, message, overlay) -> {
-            for (GameMessage callback : callbacks) callback.onGameMessage(server, sender, message, overlay);
+        GameMessage.class, callbacks -> (server, message, overlay) -> {
+            for (GameMessage callback : callbacks) callback.onGameMessage(server, message, overlay);
         });
     public static final Event<AllowCommandMessage> ALLOW_COMMAND_MESSAGE = EventFactory.createArrayBacked(
         AllowCommandMessage.class, callbacks -> (message, sender, params) -> {
@@ -69,5 +93,10 @@ public final class ServerMessageEvents {
     public static void clear() {
         ALLOW_CHAT_MESSAGE.clear(); CHAT_MESSAGE.clear(); ALLOW_GAME_MESSAGE.clear();
         GAME_MESSAGE.clear(); ALLOW_COMMAND_MESSAGE.clear(); COMMAND_MESSAGE.clear();
+    }
+
+    private static net.minecraft.server.command.ServerCommandSource commandSource(ServerPlayerEntity sender) {
+        return sender == null ? null : new net.minecraft.server.command.ServerCommandSource(
+            sender, sender.getServer());
     }
 }

@@ -35,5 +35,5 @@ public class ServerPlayerEntity extends PlayerEntity {
     public boolean sendPluginMessage(Identifier channel, byte[] payload) {
         return NativeAccess.sendPluginMessage(nativeHandle, channel == null ? "" : channel.toString(), payload, 1);
     }
-    public boolean isDisconnected() { return false; }
+    public boolean isDisconnected() { return networkHandler == null || networkHandler.isDisconnected(); }
 }
