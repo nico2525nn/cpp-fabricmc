@@ -1,0 +1,159 @@
+{
+  "schema": 1,
+  "game": {
+    "id": "minecraft",
+    "version": "1.21.4",
+    "protocol": 769,
+    "dataVersion": 4189
+  },
+  "loader": {
+    "version": "0.16.9",
+    "mixinVersion": "0.15.4+mixin.0.8.7"
+  },
+  "profile": {
+    "url": "https://meta.fabricmc.net/v2/versions/loader/1.21.4/0.16.9/server/json",
+    "sha256": "91828815ffb4a0e8d5b814009a71229d7ef96673b31fc56b25558f4b8c963c1c",
+    "size": 2800,
+    "cachePath": "meta/fabric-loader-0.16.9-1.21.4-server.json",
+    "mainClass": "net.fabricmc.loader.impl.launch.knot.KnotServer"
+  },
+  "artifacts": [
+    {
+      "coordinates": "net.fabricmc:fabric-loader:0.16.9",
+      "url": "https://maven.fabricmc.net/net/fabricmc/fabric-loader/0.16.9/fabric-loader-0.16.9.jar",
+      "path": "net/fabricmc/fabric-loader/0.16.9/fabric-loader-0.16.9.jar",
+      "sha256": "b1b1d05e9ee52c6bb968fecf4f7e0e4ead8ec890ba9503c213df0daa8431f1fa",
+      "size": 1387357,
+      "license": "Apache-2.0",
+      "licenseUrl": "https://github.com/FabricMC/fabric-loader/blob/0.16.9/LICENSE",
+      "sourceUrl": "https://github.com/FabricMC/fabric-loader/tree/0.16.9",
+      "role": "loader-knot",
+      "requiredClasses": [
+        "net/fabricmc/loader/impl/game/GameProvider.class",
+        "net/fabricmc/loader/impl/launch/knot/Knot.class",
+        "net/fabricmc/loader/impl/launch/knot/KnotServer.class",
+        "net/fabricmc/loader/api/FabricLoader.class"
+      ],
+      "requiredServices": [
+        "META-INF/services/net.fabricmc.loader.impl.game.GameProvider",
+        "META-INF/services/org.spongepowered.asm.service.IGlobalPropertyService",
+        "META-INF/services/org.spongepowered.asm.service.IMixinService"
+      ],
+      "embedded": [
+        {
+          "path": "META-INF/jars/mixinextras-fabric-0.4.1.jar",
+          "sha256": "bb7042dd915cad67dc7c2ad0a4c0eabe6e097123785d7877beded6e0700f92ef",
+          "size": 202066,
+          "license": "MIT",
+          "licenseUrl": "https://github.com/LlamaLad7/MixinExtras/blob/0.4.1/LICENSE",
+          "sourceUrl": "https://github.com/LlamaLad7/MixinExtras/tree/0.4.1",
+          "requiredClasses": [
+            "com/llamalad7/mixinextras/MixinExtrasBootstrap.class"
+          ]
+        }
+      ]
+    },
+    {
+      "coordinates": "net.fabricmc:sponge-mixin:0.15.4+mixin.0.8.7",
+      "url": "https://maven.fabricmc.net/net/fabricmc/sponge-mixin/0.15.4%2Bmixin.0.8.7/sponge-mixin-0.15.4%2Bmixin.0.8.7.jar",
+      "path": "net/fabricmc/sponge-mixin/0.15.4+mixin.0.8.7/sponge-mixin-0.15.4+mixin.0.8.7.jar",
+      "sha256": "4631f67da980ae2ac9e6e285a7df4680645e2f37a6a14acc775f97982162c2a2",
+      "size": 1494834,
+      "license": "MIT",
+      "licenseUrl": "https://raw.githubusercontent.com/FabricMC/Mixin/main/LICENSE.txt",
+      "sourceUrl": "https://github.com/FabricMC/Mixin",
+      "role": "mixin-runtime",
+      "requiredClasses": [
+        "org/spongepowered/asm/mixin/Mixin.class",
+        "org/spongepowered/asm/mixin/transformer/MixinTransformer.class",
+        "org/spongepowered/asm/launch/MixinBootstrap.class",
+        "org/spongepowered/asm/service/IMixinService.class"
+      ]
+    },
+    {
+      "coordinates": "org.ow2.asm:asm:9.7.1",
+      "url": "https://maven.fabricmc.net/org/ow2/asm/asm/9.7.1/asm-9.7.1.jar",
+      "path": "org/ow2/asm/asm/9.7.1/asm-9.7.1.jar",
+      "sha256": "8cadd43ac5eb6d09de05faecca38b917a040bb9139c7edeb4cc81c740b713281",
+      "size": 126093,
+      "license": "BSD-3-Clause",
+      "licenseUrl": "https://asm.ow2.io/license.html",
+      "sourceUrl": "https://asm.ow2.io/",
+      "role": "mixin-dependency",
+      "requiredClasses": [
+        "org/objectweb/asm/ClassReader.class",
+        "org/objectweb/asm/ClassWriter.class"
+      ]
+    },
+    {
+      "coordinates": "org.ow2.asm:asm-analysis:9.7.1",
+      "url": "https://maven.fabricmc.net/org/ow2/asm/asm-analysis/9.7.1/asm-analysis-9.7.1.jar",
+      "path": "org/ow2/asm/asm-analysis/9.7.1/asm-analysis-9.7.1.jar",
+      "sha256": "85b29371884ba31bb76edf22323c2c24e172c3267a67152eba3d1ccc2e041ef2",
+      "size": 35126,
+      "license": "BSD-3-Clause",
+      "licenseUrl": "https://asm.ow2.io/license.html",
+      "sourceUrl": "https://asm.ow2.io/",
+      "role": "mixin-dependency",
+      "requiredClasses": [
+        "org/objectweb/asm/tree/analysis/Analyzer.class"
+      ]
+    },
+    {
+      "coordinates": "org.ow2.asm:asm-commons:9.7.1",
+      "url": "https://maven.fabricmc.net/org/ow2/asm/asm-commons/9.7.1/asm-commons-9.7.1.jar",
+      "path": "org/ow2/asm/asm-commons/9.7.1/asm-commons-9.7.1.jar",
+      "sha256": "9a579b54d292ad9be171d4313fd4739c635592c2b5ac3a459bbd1049cddec6a0",
+      "size": 73459,
+      "license": "BSD-3-Clause",
+      "licenseUrl": "https://asm.ow2.io/license.html",
+      "sourceUrl": "https://asm.ow2.io/",
+      "role": "mixin-dependency",
+      "requiredClasses": [
+        "org/objectweb/asm/commons/ClassRemapper.class"
+      ]
+    },
+    {
+      "coordinates": "org.ow2.asm:asm-tree:9.7.1",
+      "url": "https://maven.fabricmc.net/org/ow2/asm/asm-tree/9.7.1/asm-tree-9.7.1.jar",
+      "path": "org/ow2/asm/asm-tree/9.7.1/asm-tree-9.7.1.jar",
+      "sha256": "9929881f59eb6b840e86d54570c77b59ce721d104e6dfd7a40978991c2d3b41f",
+      "size": 51939,
+      "license": "BSD-3-Clause",
+      "licenseUrl": "https://asm.ow2.io/license.html",
+      "sourceUrl": "https://asm.ow2.io/",
+      "role": "mixin-dependency",
+      "requiredClasses": [
+        "org/objectweb/asm/tree/ClassNode.class"
+      ]
+    },
+    {
+      "coordinates": "org.ow2.asm:asm-util:9.7.1",
+      "url": "https://maven.fabricmc.net/org/ow2/asm/asm-util/9.7.1/asm-util-9.7.1.jar",
+      "path": "org/ow2/asm/asm-util/9.7.1/asm-util-9.7.1.jar",
+      "sha256": "f885be71b5c90556f5f1ad1c4f9276b29b96057c497d46666fe4ddbec3cb43c6",
+      "size": 94519,
+      "license": "BSD-3-Clause",
+      "licenseUrl": "https://asm.ow2.io/license.html",
+      "sourceUrl": "https://asm.ow2.io/",
+      "role": "mixin-dependency",
+      "requiredClasses": [
+        "org/objectweb/asm/util/CheckClassAdapter.class"
+      ]
+    },
+    {
+      "coordinates": "net.fabricmc:intermediary:1.21.4",
+      "url": "https://maven.fabricmc.net/net/fabricmc/intermediary/1.21.4/intermediary-1.21.4.jar",
+      "path": "net/fabricmc/intermediary/1.21.4/intermediary-1.21.4.jar",
+      "sha256": "6aea9971d72e14f03f2c167ee2c24edd5eb0a59fc3eaedcbdf5c2ad0f0c36786",
+      "size": 701826,
+      "license": "UNSPECIFIED (POM has no license element)",
+      "licenseUrl": "https://github.com/FabricMC/intermediary",
+      "sourceUrl": "https://github.com/FabricMC/intermediary",
+      "role": "intermediary-mappings",
+      "requiredClasses": [
+        "mappings/mappings.tiny"
+      ]
+    }
+  ]
+}
