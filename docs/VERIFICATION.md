@@ -2,7 +2,7 @@
 
 This document is the verification contract for the canonical snapshot of Minecraft
 Java Edition **1.21.4**, protocol **769**, and DataVersion **4189**. The source snapshot
-is integrated runtime `ddb15090190d1ff879cc140912579e56e94d44cb`, rechecked on
+is integrated runtime `c3a5e49e41261dacb4b9454c538aa87575fa9546`, rechecked on
 **2026-09-05**.
 The test matrix verifies the current C++ implementation; it does not silently turn
 an approximation into vanilla parity.
@@ -336,10 +336,12 @@ new failure beyond E-14 is a publication blocker.
 | target | recorded result | interpretation |
 |---|---|---|
 | `test_jvm_handles` | `PASS` | opaque handle invalidation/address-reuse and selective routing invariants |
-| `jvm_manifest` | `PASS` | protocol-769 shadow ABI manifest is reproducible; 14 methods, 9 structured methods, 10 injection points, and 9 transformer names are declared |
+| `jvm_manifest` | `PASS` | protocol-769 shadow ABI manifest is reproducible; 82 methods (52 native + 30 wrapper), 9 structured methods, 10 injection points, and 9 transformer names are declared |
 | `jvm_runtime` | `PASS` | embedded HotSpot, fixture entrypoint, World API, command registration, lifecycle, selected Mixin hooks, and owned clean shutdown |
 | `jvm_transformer` | `PASS` | pre-definition class-file transformation, verifier-safe stack/local preservation, and transform-order contract |
 | `jvm_compatibility` | `PASS` | all 25 dependency-free fixture cases pass in one `cppfm` process |
+| `jvm_corpus` | `PASS` | the 25-case compatibility corpus passes through the executable corpus harness |
+| `jvm_contract_audit` | `PASS` | every declared ABI method has exactly one native or wrapper backend classification |
 | official Loader/Knot probe | `PASS / DECLARED-LIMITATION` | pinned Loader 0.16.9/Knot/Mixin/ASM/intermediary starts with the shadow provider and emits all seven expected markers |
 
 This gate proves only the bounded plan51 compatibility layer and its pinned offline

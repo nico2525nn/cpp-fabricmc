@@ -2,7 +2,7 @@
 
 This document describes the current behavior surface for Minecraft Java 1.21.4,
 protocol 769, and DataVersion 4189 at runtime snapshot
-`ddb15090190d1ff879cc140912579e56e94d44cb` (rechecked 2026-09-05). It covers
+`c3a5e49e41261dacb4b9454c538aa87575fa9546` (rechecked 2026-09-05). It covers
 MISSING **#1–#70**, **#80–#90**, the Fabric-specific rows, and the world-generation
 G-10/G-11 evidence. Packet fields remain in
 [SPEC_WIRE.md](SPEC_WIRE.md); operational thresholds remain in

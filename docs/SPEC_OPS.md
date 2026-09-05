@@ -1,7 +1,7 @@
 # SPEC_OPS — operations, limits, and recovery
 
 This is the operational contract for Minecraft 1.21.4 / protocol 769 / DataVersion
-4189 at runtime snapshot `ddb15090190d1ff879cc140912579e56e94d44cb`, rechecked on
+4189 at runtime snapshot `c3a5e49e41261dacb4b9454c538aa87575fa9546`, rechecked on
 2026-09-05. It covers MISSING **#7–#10**, operational aspects of **#71–#79**,
 **#88–#90**, Fabric server-property/RCON rows, and assessment history IDs
 B-06/B-07/C-04/C-09/C-12/E-13/O-01–O-13/W-14/W-16.
