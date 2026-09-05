@@ -96,6 +96,15 @@ void GameServer::tickDigs() {
                 cancelMiningDig(*this, *p);
                 continue;
             }
+            if (jvmRuntime_ && !jvmRuntime_->onBlockBreak(*p, p->digX, p->digY,
+                                                          p->digZ, oldState)) {
+                WriteBuffer rb;
+                rb.position(p->digX, p->digY, p->digZ);
+                rb.varint(oldState);
+                broadcastPacketExcept(nullptr, proto::pl::sc::BlockUpdate, rb);
+                cancelMiningDig(*this, *p);
+                continue;
+            }
             if (world.getBlock(p->digX, p->digY, p->digZ) != oldState) {
                 // Event listeners may synchronously replace the target.
                 // Revalidate before mutating, durability, or drops.
@@ -195,6 +204,7 @@ void GameServer::tickOnce() {
     pollPendingLoads(); // W19 async I/O: poll Chunk futures (ThreadPool 4) without blocking (MC-177729)
     api::ServerTickEvent ev{tickNo_};
     events().serverTick.fire(ev);
+    if (jvmRuntime_) jvmRuntime_->onServerTick(tickNo_);
     mark('F');
     fluidSim_->tick(tickNo_);
     mark('R');
@@ -365,6 +375,8 @@ void GameServer::drainPendingStructureQueues() {
                 mob->y = pm.pos[1] + 0.5;
                 mob->z = pm.pos[2] + 0.5;
                 mob->lastSeenMs = nowMs();
+                if (jvmRuntime_ && !jvmRuntime_->onMobSpawn(*mob, mob->x, mob->y, mob->z))
+                    continue;
                 {
                     std::lock_guard<std::mutex> lk(entsMtx_);
                     mobs_.push_back(mob);
@@ -800,6 +812,7 @@ void GameServer::trySpawnMobs() {
                 MobKind picked = hostilesTab[rand()%5];
                 auto mob=std::make_shared<MobEntity>(); mob->entityId=nextEntityId(); mob->kind=picked; mob->health=mobStats(picked).maxHealth;
                 mob->x=wx+0.5; mob->y=groundY+1.0; mob->z=wz+0.5; mob->lastSeenMs=nowMs();
+                if (jvmRuntime_ && !jvmRuntime_->onMobSpawn(*mob, mob->x, mob->y, mob->z)) continue;
                 { std::lock_guard lk(entsMtx_); if(cnts[SG_MONSTER] >= caps[SG_MONSTER]) continue; mobs_.push_back(mob); cnts[SG_MONSTER]++; }
                 broadcastMobSpawn(*mob); continue;
             } else if(wantCreature && !creatureEntries.empty()){
@@ -811,6 +824,7 @@ void GameServer::trySpawnMobs() {
                 MobKind picked=passive[rand()%5];
                 auto mob=std::make_shared<MobEntity>(); mob->entityId=nextEntityId(); mob->kind=picked; mob->health=mobStats(picked).maxHealth;
                 mob->x=wx+0.5; mob->y=groundY+1.0; mob->z=wz+0.5; mob->lastSeenMs=nowMs();
+                if (jvmRuntime_ && !jvmRuntime_->onMobSpawn(*mob, mob->x, mob->y, mob->z)) continue;
                 { std::lock_guard lk(entsMtx_); if(cnts[SG_CREATURE] >= caps[SG_CREATURE]) continue; mobs_.push_back(mob); cnts[SG_CREATURE]++; }
                 broadcastMobSpawn(*mob); continue;
             } else continue;
@@ -828,6 +842,7 @@ void GameServer::trySpawnMobs() {
             auto mob=std::make_shared<MobEntity>(); mob->entityId=nextEntityId(); mob->kind=pickedKind; mob->health=mobStats(pickedKind).maxHealth;
             if(pickedDef->max_health>0) mob->health=pickedDef->max_health;
             mob->x=wx+0.5; mob->y=groundY+1.0; mob->z=wz+0.5; mob->lastSeenMs=nowMs();
+            if (jvmRuntime_ && !jvmRuntime_->onMobSpawn(*mob, mob->x, mob->y, mob->z)) continue;
             { std::lock_guard lk(entsMtx_); if(cnts[(int)groupForKind(pickedKind)] >= caps[(int)groupForKind(pickedKind)]) continue; mobs_.push_back(mob); cnts[(int)groupForKind(pickedKind)]++; }
             broadcastMobSpawn(*mob);
         }
@@ -847,6 +862,7 @@ void GameServer::spawnSlimeSplit(MobEntity& m) {
             baby->y = m.y;
             baby->z = m.z + (rand()/(double)RAND_MAX - 0.5) * 0.5;
             baby->lastSeenMs = nowMs();
+            if (jvmRuntime_ && !jvmRuntime_->onMobSpawn(*baby, baby->x, baby->y, baby->z)) continue;
             mobs_.push_back(baby);
             broadcastMobSpawn(*baby);
         }

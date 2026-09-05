@@ -68,6 +68,7 @@
 #include "DatapackManager.hpp"
 #include "FunctionEvaluator.hpp"
 #include "../core/ThreadPool.hpp"
+#include "../jvm/JvmRuntime.hpp"
 #include <list>
 
 namespace cppfm {
@@ -101,6 +102,15 @@ struct ServerConfig {
     bool pvp = true;                  // plan35 §5: server.properties pvp (default true)
     bool allowFlight = false;         // plan35 §5: server.properties allow-flight (default false)
     bool hardcore = false;            // plan35 §5: server.properties hardcore (default false)
+    // Optional embedded Java/Fabric compatibility boundary (plan51).  The
+    // native server remains the default and authoritative path.
+    bool jvmEnabled = false;
+    bool jvmStrict = false;
+    std::string jvmClassesDir;
+    std::string jvmModsDir = "mods";
+    std::string jvmConfigDir = "config";
+    std::string jvmJavaHome;
+    std::string jvmLibrary;
 };
 
 // Player inventory slot = full ItemStack (components preserved end-to-end).
@@ -703,6 +713,24 @@ public:
         entityMgr_ = std::make_unique<EntityManager>();
         networkMgr_ = std::make_unique<NetworkManager>(batcher_);
         bossAI_ = std::make_unique<BossAIManager>(*this);
+        if (cfg_.jvmEnabled) {
+            jvm::JvmConfig jvmConfig;
+            jvmConfig.enabled = true;
+            jvmConfig.strict = cfg_.jvmStrict;
+            jvmConfig.classesDir = cfg_.jvmClassesDir;
+            jvmConfig.modsDir = cfg_.jvmModsDir;
+            jvmConfig.configDir = cfg_.jvmConfigDir;
+            jvmConfig.javaHome = cfg_.jvmJavaHome;
+            jvmConfig.jvmLibrary = cfg_.jvmLibrary;
+            jvmRuntime_ = std::make_unique<jvm::JvmRuntime>(*this, std::move(jvmConfig));
+            std::string jvmError;
+            if (!jvmRuntime_->start(&jvmError)) {
+                std::fprintf(stderr, "[cppfm][jvm] disabled after startup failure: %s\n",
+                             jvmError.c_str());
+                if (cfg_.jvmStrict)
+                    throw std::runtime_error("strict JVM startup failed: " + jvmError);
+            }
+        }
     }
     void runForever();
     void requestStop() {                 // async-signal-safe minimal path
@@ -716,6 +744,10 @@ public:
         requestStop();
         std::fprintf(stderr, "[cppfm] stopping tick loop\n");
         stopTickLoop();
+        if (jvmRuntime_) {
+            std::fprintf(stderr, "[cppfm] stopping embedded JVM\n");
+            jvmRuntime_->stop();
+        }
         std::fprintf(stderr, "[cppfm] stopping rcon\n");
         if (rconServer_) rconServer_->stop();
         std::fprintf(stderr, "[cppfm] stopping persistence\n");
@@ -1102,6 +1134,8 @@ public:
     void tickDigs();
 
     const ServerConfig& config() const { return cfg_; }
+    jvm::JvmRuntime* jvmRuntime() { return jvmRuntime_.get(); }
+    const jvm::JvmRuntime* jvmRuntime() const { return jvmRuntime_.get(); }
     World& world() { return world_; }
     World& worldByDim(std::int8_t d) { return worldFor(d); }
     EmbeddedData& data() { return data_; }
@@ -1448,6 +1482,7 @@ private:
     std::unique_ptr<EntityManager> entityMgr_;
     std::unique_ptr<NetworkManager> networkMgr_;
     std::unique_ptr<BossAIManager> bossAI_;
+    std::unique_ptr<jvm::JvmRuntime> jvmRuntime_;
     std::vector<std::function<void(std::int32_t,std::int32_t,std::int32_t,std::uint16_t,std::uint16_t)>> onBlockPlaceHandlers_;
     std::vector<std::function<void(std::int32_t,std::int32_t,std::int32_t,std::uint16_t,std::uint16_t)>> onBlockBreakHandlers_;
     std::vector<std::function<void(std::int32_t,std::int32_t,std::int32_t,std::uint16_t)>> onBlockNeighborChangeHandlers_;

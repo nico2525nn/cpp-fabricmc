@@ -63,6 +63,14 @@ static void loadProperties(ServerConfig& c, const std::string& path) {
         if (props.has("pvp")) c.pvp = props.get<bool>("pvp", c.pvp);
         if (props.has("allow-flight")) c.allowFlight = props.get<bool>("allow-flight", c.allowFlight);
         if (props.has("hardcore")) c.hardcore = props.get<bool>("hardcore", c.hardcore);
+        if (props.has("jvm") || props.has("jvm-enabled"))
+            c.jvmEnabled = props.get<bool>("jvm", props.get<bool>("jvm-enabled", c.jvmEnabled));
+        if (props.has("jvm-strict")) c.jvmStrict = props.get<bool>("jvm-strict", c.jvmStrict);
+        if (props.has("jvm-classes")) c.jvmClassesDir = props.get<std::string>("jvm-classes", c.jvmClassesDir);
+        if (props.has("jvm-mods")) c.jvmModsDir = props.get<std::string>("jvm-mods", c.jvmModsDir);
+        if (props.has("jvm-config")) c.jvmConfigDir = props.get<std::string>("jvm-config", c.jvmConfigDir);
+        if (props.has("jvm-java-home")) c.jvmJavaHome = props.get<std::string>("jvm-java-home", c.jvmJavaHome);
+        if (props.has("jvm-library")) c.jvmLibrary = props.get<std::string>("jvm-library", c.jvmLibrary);
         // max-players already handled above; keep fallback for hyphen variant online-mode / enforce-secure-profile already handled above
     } catch (...) {}
 }
@@ -94,6 +102,13 @@ int main(int argc, char** argv) {
             else if (k == "allow-flight") cfg.allowFlight = (v == "true");
             else if (k == "hardcore") cfg.hardcore = (v == "true");
             else if (k == "max-players") cfg.maxPlayers = std::max(0, std::stoi(v));
+            else if (k == "jvm" || k == "jvm-enabled") cfg.jvmEnabled = (v == "true" || v == "1" || v == "yes");
+            else if (k == "jvm-strict") cfg.jvmStrict = (v == "true" || v == "1" || v == "yes");
+            else if (k == "jvm-classes") cfg.jvmClassesDir = v;
+            else if (k == "jvm-mods") cfg.jvmModsDir = v;
+            else if (k == "jvm-config") cfg.jvmConfigDir = v;
+            else if (k == "jvm-java-home") cfg.jvmJavaHome = v;
+            else if (k == "jvm-library") cfg.jvmLibrary = v;
         } catch (...) {}
     };
     for (int i = 1; i < argc; ++i) {

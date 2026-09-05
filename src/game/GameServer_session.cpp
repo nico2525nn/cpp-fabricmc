@@ -189,6 +189,7 @@ void Session::run() {
         state_ = State::Done;
     }
     if (registered_) {
+        if (srv_.jvmRuntime()) srv_.jvmRuntime()->onPlayerQuit(*self_);
         api::PlayerQuitEvent qev;
         qev.player = self_.get();
         srv_.events().quit.fire(qev);
@@ -797,6 +798,7 @@ void Session::onEnterPlay() {
     api::PlayerJoinEvent jev;
     jev.player = self_.get();
     srv_.events().join.fire(jev);
+    if (srv_.jvmRuntime()) srv_.jvmRuntime()->onPlayerJoin(*self_);
     srv_.initPlayerProgress(*self_);
     srv_.sendAdvancementsTo(*self_, true);
 
@@ -3203,6 +3205,7 @@ void Session::onChatMessage(ReadBuffer& in) {
     ev.player = self_.get();
     ev.message = msg;
     if (!srv_.events().chat.fire(ev)) return;
+    if (srv_.jvmRuntime() && !srv_.jvmRuntime()->onChat(*self_, ev.message)) return;
 
     if (!ev.message.empty() && ev.message[0] == '/')
         return dispatchCommand(ev.message.substr(1));
@@ -3230,6 +3233,8 @@ void Session::onChatCommand(ReadBuffer& in) {
     dispatchCommand(cmd);
 }
 void Session::dispatchCommand(const std::string& line) {
+    std::string command = line;
+    if (srv_.jvmRuntime() && !srv_.jvmRuntime()->onCommand(self_.get(), command)) return;
     brigadier::CommandSource src;
     src.player = self_.get();
     src.name = self_->name;
@@ -3244,7 +3249,7 @@ void Session::dispatchCommand(const std::string& line) {
 
     const auto res = [&]{
         try {
-            return srv_.commands().execute(line, std::move(src));
+            return srv_.commands().execute(command, std::move(src));
         } catch (const std::exception& e) {
             // (or the process via a non-std exception); report as error chat.
             brigadier::ExecutionResult r;
@@ -3318,6 +3323,11 @@ void Session::onPlayerAction(ReadBuffer& in) {
                 ev.x = x; ev.y = y; ev.z = z;
                 ev.oldState = oldState;
                 if (!srv_.events().blockBreak.fire(ev)) {
+                    ack(sequence);
+                    return;
+                }
+                if (srv_.jvmRuntime() &&
+                    !srv_.jvmRuntime()->onBlockBreak(*self_, x, y, z, oldState)) {
                     ack(sequence);
                     return;
                 }
@@ -3403,7 +3413,8 @@ bool Session::handleUseItemOnInteractions(const UseItemOnRequest& request) {
         const std::uint16_t _clickedSt = srv_.worldFor(self_->dimension).getBlock(x, y, z);
         blockEventDispatcher().onBlockClicked(x, y, z, _clickedSt, d, self_.get());
         api::BlockClickedEvent _bcev; _bcev.player=self_.get(); _bcev.x=x; _bcev.y=y; _bcev.z=z; _bcev.state=_clickedSt; _bcev.face=d;
-        api::events().blockClicked.fire(_bcev);
+        if (!api::events().blockClicked.fire(_bcev)) return true;
+        if (srv_.jvmRuntime() && !srv_.jvmRuntime()->onBlockClicked(*self_, x, y, z, _clickedSt, d)) return true;
     }
     // right-click on interactive blocks opens menus (vanilla behaviour)
     {
@@ -4196,6 +4207,7 @@ void Session::placeUseItemOnBlock(const UseItemOnRequest& request, const InvSlot
     ev.x = tx; ev.y = ty; ev.z = tz;
     ev.newState = newState;
     if (!srv_.events().blockPlace.fire(ev)) {  return; }
+    if (srv_.jvmRuntime() && !srv_.jvmRuntime()->onBlockPlace(*self_, tx, ty, tz, newState)) return;
 
     srv_.world().setBlock(tx, ty, tz, newState);
     srv_.broadcastBlockChange(tx, ty, tz, newState);
@@ -4921,7 +4933,7 @@ void Session::onUseEntity(ReadBuffer& in) {
                          mobStats(victim->kind).xpDrop, self_.get());
         // slime split on player kill
         if ((victim->kind == MobKind::Slime || victim->kind == MobKind::MagmaCube) && victim->slimeSize > 0) {
-            std::lock_guard lk(srv_.entsMtx_);
+            std::vector<std::shared_ptr<MobEntity>> babies;
             int n = 2 + (rand() % 3);
             for (int s=0; s<n; ++s) {
                 auto baby = std::make_shared<MobEntity>();
@@ -4934,9 +4946,16 @@ void Session::onUseEntity(ReadBuffer& in) {
                 baby->y = victim->y;
                 baby->z = victim->z + (rand()/(double)RAND_MAX - 0.5) * 0.5;
                 baby->lastSeenMs = 0;
-                srv_.mobsForTest().push_back(baby);
-                srv_.broadcastMobSpawn(*baby);
+                if (srv_.jvmRuntime() &&
+                    !srv_.jvmRuntime()->onMobSpawn(*baby, baby->x, baby->y, baby->z))
+                    continue;
+                babies.push_back(std::move(baby));
             }
+            {
+                std::lock_guard lk(srv_.entsMtx_);
+                for (auto& baby : babies) srv_.mobsForTest().push_back(baby);
+            }
+            for (auto& baby : babies) srv_.broadcastMobSpawn(*baby);
         }
         std::lock_guard lk(srv_.entsMtx_);
         srv_.mobAi_.erase(target);

@@ -14,12 +14,13 @@ generated data.
 | Minecraft | `1.21.4` | Java Edition protocol behavior |
 | protocol | `769` | Handshake, state/direction IDs, and field encodings |
 | world data | `4189` | `level.dat`, Anvil, and chunk persistence |
-| reference platform | Fabric Loader `0.16.9`, unmodded server behavior | Fabric API is provenance, not an in-process JVM runtime |
-| excluded | JVM Fabric mods, proven vanilla Xoroshiro byte parity | tracked as declared limitations, not silently supported |
+| reference platform | Fabric Loader `0.16.9`, unmodded server behavior | Fabric API is provenance; plan51 adds only a bounded optional JVM bridge |
+| excluded | official Fabric Loader/Knot, arbitrary JVM mods, proven vanilla Xoroshiro byte parity | tracked as declared limitations, not silently supported |
 
 `Fabric-compatible` means compatible with the protocol and observable behavior of an
-unmodified Fabric 1.21.4 server. It does **not** mean that arbitrary Fabric JVM
-bytecode can run inside `cppfm`.
+unmodified Fabric 1.21.4 server. The optional plan51 runtime executes the repository's
+bounded shadow ABI and fixture, but it does **not** mean that arbitrary Fabric JVM
+bytecode or the official Loader/Knot can run inside `cppfm`.
 
 ## Read in this order
 
@@ -30,7 +31,8 @@ bytecode can run inside `cppfm`.
    procedures.
 4. [DEVELOPMENT.md](DEVELOPMENT.md) — module ownership, clean-room workflow, and
    extension rules.
-5. [VERIFICATION.md](VERIFICATION.md) — reproducible gates and evidence semantics.
+5. [PLAN51_JVM.md](PLAN51_JVM.md) — optional embedded JVM boundary and exact limits.
+6. [VERIFICATION.md](VERIFICATION.md) — reproducible gates and evidence semantics.
 
 The existing [gap/status matrix](MISSING_FEATURES_1_21_4.md) and
 [dynamic tracker](CURRENT_STATE.md) retain their stable paths. They are inputs to
@@ -102,6 +104,7 @@ Failure stops publication; it does not turn an unverified claim into `DONE`.
 | world and persistence | `src/game/World.hpp`, `WorldDataManager.*`, `Persistence.hpp`, `src/game/RegionFile.hpp` | [SPEC_GAMEPLAY.md](SPEC_GAMEPLAY.md), [SPEC_OPS.md](SPEC_OPS.md) |
 | physics and world generation | `src/physics/`, `src/worldgen/`, `src/game/WorldGen.cpp` | [SPEC_GAMEPLAY.md](SPEC_GAMEPLAY.md) |
 | entities and inventory | `src/game/Entities.hpp`, `Items.hpp`, `Containers.hpp`, `Recipes.*`, `BehaviorTree.*` | [SPEC_GAMEPLAY.md](SPEC_GAMEPLAY.md) |
+| bounded JVM extension bridge | `src/jvm/`, `jvm/java/`, `jvm/shadow_api.json` | [PLAN51_JVM.md](PLAN51_JVM.md) |
 | limits and administration | `src/net/RateLimiter.hpp`, `src/net/Rcon.hpp`, `src/game/SessionLock.hpp`, `tools/`, `tests/` | [SPEC_OPS.md](SPEC_OPS.md) |
 | build and evidence | `CMakeLists.txt`, `tests/`, `tools/` | [DEVELOPMENT.md](DEVELOPMENT.md), [VERIFICATION.md](VERIFICATION.md) |
 
@@ -133,6 +136,7 @@ averaged to make a gate pass.
 | `test_plan43` | `82 PASS 0 FAIL` |
 | `test_smoke_80` | `212 PASS 0 FAIL` |
 | `test_gameplay_full` | `803 PASS / 1 intentional E-14 FAIL / 804`, exit 1 |
+| `test_jvm_handles` / `jvm_manifest` / `jvm_runtime` | `PASS` / `PASS` / `PASS`; see [PLAN51_JVM.md](PLAN51_JVM.md) |
 | `test_server_full` | `234 PASS 0 FAIL` |
 | `multi_client` | `ALL PASS` in `17.83s` |
 | `bot_smoke` | `ALL PASS` in `20.65s` |
@@ -150,8 +154,8 @@ averaged to make a gate pass.
 `test_gameplay_full` is deliberately not changed to hide E-14. The former `soak_bot`
 blocker is resolved by three integrated 300-second runs. The attempted 7200-second
 soak was interrupted above its RSS gate and is not a pass. Publication remains
-`BLOCKED` only for declared boundaries (E-14, vanilla RNG L3, and missing accepted
-2-hour/24-hour/real-client evidence). See
+`BLOCKED` for declared boundaries (arbitrary Fabric JVM compatibility, vanilla RNG
+L3, and missing accepted 2-hour/24-hour/real-client evidence). See
 [SPEC_GAMEPLAY.md#declared-limitations](SPEC_GAMEPLAY.md#declared-limitations) and
 [VERIFICATION.md#gameplay-gate](VERIFICATION.md#gameplay-gate).
 

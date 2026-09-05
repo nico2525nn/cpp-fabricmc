@@ -9,6 +9,85 @@ endif()
 
 add_compile_options(-Wall -Wextra -Wpedantic -Wno-unused-parameter -pipe)
 
+# plan51: Java shadow ABI and optional embedded HotSpot boundary.  JNI is
+# deliberately optional at configure time so the native-only build remains
+# portable, while javac output is deterministic and available to --jvm=true.
+find_package(JNI QUIET)
+find_program(CPPFM_JAVAC NAMES javac)
+find_package(Python3 COMPONENTS Interpreter QUIET)
+
+set(CPPFM_JVM_SHADOW_SPEC "${CMAKE_CURRENT_SOURCE_DIR}/jvm/shadow_api.json")
+set(CPPFM_JVM_MANIFEST "${CMAKE_CURRENT_BINARY_DIR}/jvm/compatibility-manifest.json")
+if(Python3_Interpreter_FOUND)
+    add_custom_command(
+        OUTPUT "${CPPFM_JVM_MANIFEST}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_shadow.py"
+                --input "${CPPFM_JVM_SHADOW_SPEC}" --output "${CPPFM_JVM_MANIFEST}"
+        DEPENDS "${CPPFM_JVM_SHADOW_SPEC}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_shadow.py"
+        VERBATIM)
+    add_custom_target(cppfm_jvm_manifest ALL DEPENDS "${CPPFM_JVM_MANIFEST}")
+endif()
+file(GLOB_RECURSE CPPFM_JAVA_SOURCES CONFIGURE_DEPENDS
+     "${CMAKE_CURRENT_SOURCE_DIR}/jvm/java/*.java")
+set(CPPFM_JVM_CLASSES_DIR "${CMAKE_CURRENT_BINARY_DIR}/jvm/classes")
+if(CPPFM_JAVAC AND CPPFM_JAVA_SOURCES)
+    set(CPPFM_JVM_STAMP "${CPPFM_JVM_CLASSES_DIR}/.stamp")
+    add_custom_command(
+        OUTPUT "${CPPFM_JVM_STAMP}"
+        COMMAND ${CMAKE_COMMAND} -E rm -rf "${CPPFM_JVM_CLASSES_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CPPFM_JVM_CLASSES_DIR}"
+        COMMAND "${CPPFM_JAVAC}" --release 17 -encoding UTF-8
+                -d "${CPPFM_JVM_CLASSES_DIR}" ${CPPFM_JAVA_SOURCES}
+        COMMAND ${CMAKE_COMMAND} -E touch "${CPPFM_JVM_STAMP}"
+        DEPENDS ${CPPFM_JAVA_SOURCES}
+        VERBATIM)
+    add_custom_target(cppfm_jvm_classes ALL DEPENDS "${CPPFM_JVM_STAMP}")
+
+    set(CPPFM_JVM_FIXTURE_SOURCE
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/jvm_fixture/src/cppfm/fixture/FixtureMod.java"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/jvm_fixture/src/cppfm/fixture/mixin/ServerMixin.java")
+    set(CPPFM_JVM_FIXTURE_METADATA
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/jvm_fixture/fabric.mod.json")
+    set(CPPFM_JVM_FIXTURE_DIR
+        "${CMAKE_CURRENT_BINARY_DIR}/jvm/fixture-mods/cppfm_fixture")
+    set(CPPFM_JVM_FIXTURE_STAMP "${CPPFM_JVM_FIXTURE_DIR}/.stamp")
+    add_custom_command(
+        OUTPUT "${CPPFM_JVM_FIXTURE_STAMP}"
+        COMMAND ${CMAKE_COMMAND} -E rm -rf "${CPPFM_JVM_FIXTURE_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CPPFM_JVM_FIXTURE_DIR}"
+        COMMAND "${CPPFM_JAVAC}" --release 17 -encoding UTF-8
+                -cp "${CPPFM_JVM_CLASSES_DIR}" -d "${CPPFM_JVM_FIXTURE_DIR}"
+                ${CPPFM_JVM_FIXTURE_SOURCE}
+        COMMAND ${CMAKE_COMMAND} -E copy "${CPPFM_JVM_FIXTURE_METADATA}"
+                "${CPPFM_JVM_FIXTURE_DIR}/fabric.mod.json"
+        COMMAND ${CMAKE_COMMAND} -E copy
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/jvm_fixture/cppfm_fixture.mixins.json"
+                "${CPPFM_JVM_FIXTURE_DIR}/cppfm_fixture.mixins.json"
+        COMMAND ${CMAKE_COMMAND} -E touch "${CPPFM_JVM_FIXTURE_STAMP}"
+        DEPENDS cppfm_jvm_classes "${CPPFM_JVM_FIXTURE_SOURCE}"
+                "${CPPFM_JVM_FIXTURE_METADATA}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/jvm_fixture/cppfm_fixture.mixins.json"
+        VERBATIM)
+    add_custom_target(cppfm_jvm_fixture DEPENDS "${CPPFM_JVM_FIXTURE_STAMP}")
+endif()
+
+set(CPPFM_JVM_NATIVE_SOURCES
+    src/jvm/JavaObjectCache.cpp
+    src/jvm/JvmRuntime.cpp
+    src/jvm/ModRoutingTable.cpp
+    src/jvm/NativeHandleTable.cpp)
+
+function(cppfm_configure_jvm_target target)
+    target_sources(${target} PRIVATE ${CPPFM_JVM_NATIVE_SOURCES})
+    target_link_libraries(${target} PRIVATE ${CMAKE_DL_LIBS})
+    if(JNI_FOUND)
+        target_include_directories(${target} PRIVATE ${JNI_INCLUDE_DIRS})
+        target_compile_definitions(${target} PRIVATE CPPFM_HAS_JNI=1
+            CPPFM_DEFAULT_JVM_CLASSES="${CPPFM_JVM_CLASSES_DIR}")
+    endif()
+endfunction()
+
 add_executable(cppfm
     src/main.cpp
     src/core/NBT.cpp
@@ -61,6 +140,15 @@ target_include_directories(cppfm PRIVATE src src/generated)
 find_package(Threads REQUIRED)
 find_package(ZLIB REQUIRED)
 target_link_libraries(cppfm PRIVATE Threads::Threads ZLIB::ZLIB OpenSSL::SSL OpenSSL::Crypto)
+if(TARGET cppfm_jvm_classes)
+    add_dependencies(cppfm cppfm_jvm_classes)
+endif()
+if(TARGET cppfm_jvm_fixture)
+    add_dependencies(cppfm cppfm_jvm_fixture)
+endif()
+if(TARGET cppfm_jvm_manifest)
+    add_dependencies(cppfm cppfm_jvm_manifest)
+endif()
 
 add_executable(test_golden tests/test_golden.cpp src/core/NBT.cpp
     src/game/WorldGen.cpp
@@ -204,6 +292,36 @@ target_link_libraries(test_smoke_80 PRIVATE Threads::Threads ZLIB::ZLIB OpenSSL:
 add_test(NAME smoke80 COMMAND test_smoke_80 $<TARGET_FILE:cppfm>
          WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(smoke80 PROPERTIES TIMEOUT 700)
+
+# plan51 §1–2: generation-safe handle and selective routing invariants.
+add_executable(test_jvm_handles
+    tests/test_jvm_handles.cpp
+    src/jvm/NativeHandleTable.cpp
+    src/jvm/ModRoutingTable.cpp)
+target_include_directories(test_jvm_handles PRIVATE src)
+add_test(NAME jvm_handles COMMAND test_jvm_handles)
+set_tests_properties(jvm_handles PROPERTIES TIMEOUT 30)
+
+if(TARGET cppfm_jvm_fixture AND JNI_FOUND)
+    add_test(NAME jvm_runtime
+        COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/jvm_runtime_smoke.py"
+                --binary $<TARGET_FILE:cppfm>
+                --classes "${CPPFM_JVM_CLASSES_DIR}"
+                --mods "${CMAKE_CURRENT_BINARY_DIR}/jvm/fixture-mods")
+    set_tests_properties(jvm_runtime PROPERTIES TIMEOUT 60
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+endif()
+if(TARGET cppfm_jvm_manifest)
+    add_test(NAME jvm_manifest
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_shadow.py"
+                --check --input "${CPPFM_JVM_SHADOW_SPEC}" --output "${CPPFM_JVM_MANIFEST}")
+    set_tests_properties(jvm_manifest PROPERTIES TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+endif()
+
+cppfm_configure_jvm_target(cppfm)
+cppfm_configure_jvm_target(test_native)
+cppfm_configure_jvm_target(test_smoke_80)
 
 # plan43 B1+B2 live-server tests (W-01..W-07, W-12; see docs/VERIFICATION.md) — TestClient + cppfm
 add_executable(test_plan43
