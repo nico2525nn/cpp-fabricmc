@@ -6,7 +6,7 @@
 > a release gate and does not make the current cleanup or operations audit green.
 >
 > Current implementation/evidence baseline: integrated runtime snapshot
-> `74bd5ffbda03f30bc5af0c96a11ec3416bf1a827`.
+> `ddb15090190d1ff879cc140912579e56e94d44cb`.
 
 ## Summary
 
