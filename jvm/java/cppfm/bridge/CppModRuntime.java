@@ -68,7 +68,7 @@ public final class CppModRuntime {
     private static final List<AttackBlockCallback> ATTACK_BLOCK = new ArrayList<>();
     private static final List<PlayerBlockBreakEvents.Before> BEFORE_BREAK = new ArrayList<>();
     private static final List<CommandRegistrationCallback> COMMAND_REGISTRATION = new ArrayList<>();
-    private static URLClassLoader modLoader;
+    private static ClassLoader modLoader;
     private static MinecraftServer server;
     private static boolean bootstrapped;
 
@@ -77,9 +77,8 @@ public final class CppModRuntime {
     public static synchronized boolean bootstrap(String modsDir, String configDir) {
         if (bootstrapped) return true;
         try {
-            server = MinecraftServer.of(NativeBridge.serverHandle());
-            log("WARN", "using cppfm compatibility loader fallback; Fabric Loader/Knot is not embedded");
             loadMods(Paths.get(modsDir));
+            if (server == null) server = MinecraftServer.of(NativeBridge.serverHandle());
             bootstrapped = true;
             for (ServerLifecycleEvents.ServerStarting callback : snapshot(SERVER_STARTING))
                 invokeSafely(() -> callback.onServerStarting(server), "server starting");
@@ -365,9 +364,23 @@ public final class CppModRuntime {
 
         List<URL> urls = new ArrayList<>();
         for (Candidate candidate : candidates) urls.add(candidate.path.toUri().toURL());
-        modLoader = new URLClassLoader(urls.toArray(URL[]::new), CppModRuntime.class.getClassLoader());
+        // KnotLauncher puts the compatibility classes and mod roots under one
+        // child-first loader.  Reusing it is essential: transformed target
+        // bytecode and entrypoints must resolve the same mixin class object,
+        // not two copies split across sibling URLClassLoaders.  The ordinary
+        // invocation fallback still gets an isolated URLClassLoader.
+        ClassLoader parent = CppModRuntime.class.getClassLoader();
+        if (parent != null && parent.getClass().getName().startsWith("cppfm.loader."))
+            modLoader = parent;
+        else
+            modLoader = new URLClassLoader(urls.toArray(URL[]::new), parent);
         int initializedEntrypoints = 0;
+        // Mixin metadata must be registered before the first target class is
+        // resolved.  The KnotClassLoader created by KnotLauncher has already
+        // indexed these configs, so target definitions can be transformed on
+        // their first load rather than being patched after the fact.
         registerMixins(order);
+        server = MinecraftServer.of(NativeBridge.serverHandle());
         for (Candidate candidate : order) initializedEntrypoints += initialize(candidate);
         for (CommandRegistrationCallback callback : snapshot(COMMAND_REGISTRATION))
             invokeSafely(() -> callback.register(server.getCommandManager().getDispatcher(),
@@ -490,8 +503,12 @@ public final class CppModRuntime {
     }
 
     private static void closeModLoader() {
-        if (modLoader == null) return;
-        try { modLoader.close(); } catch (IOException e) { log("WARN", "mod classloader close failed: " + e); }
+        if (!(modLoader instanceof URLClassLoader urls) ||
+            modLoader == CppModRuntime.class.getClassLoader()) {
+            modLoader = null;
+            return;
+        }
+        try { urls.close(); } catch (IOException e) { log("WARN", "mod classloader close failed: " + e); }
         modLoader = null;
     }
 
