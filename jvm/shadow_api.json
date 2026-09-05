@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "gameVersion": "1.21.4",
+  "protocol": 769,
+  "dataVersion": 4189,
+  "classes": [
+    {
+      "name": "net.minecraft.server.MinecraftServer",
+      "nativeHandle": "server",
+      "methods": ["getTicks()I", "setTick(J)V", "getTickTime()J", "getOverworld()Lnet/minecraft/server/world/ServerWorld;", "execute(Ljava/lang/Runnable;)V"],
+      "mixinLevels": {
+        "getTicks()I": ["TAIL", "RETURN"],
+        "setTick(J)V": ["HEAD", "TAIL"],
+        "getTickTime()J": ["OVERWRITE"]
+      }
+    },
+    {
+      "name": "net.minecraft.server.world.ServerWorld",
+      "nativeHandle": "world",
+      "methods": ["getBlockState(Lnet/minecraft/util/math/BlockPos;)Lnet/minecraft/block/BlockState;", "setBlockState(Lnet/minecraft/util/math/BlockPos;Lnet/minecraft/block/BlockState;)Z"],
+      "mixinLevels": {
+        "getBlockState(Lnet/minecraft/util/math/BlockPos;)Lnet/minecraft/block/BlockState;": ["HEAD", "TAIL", "RETURN", "OVERWRITE"],
+        "setBlockState(Lnet/minecraft/util/math/BlockPos;Lnet/minecraft/block/BlockState;)Z": ["HEAD", "TAIL", "RETURN", "OVERWRITE"]
+      }
+    },
+    {
+      "name": "net.minecraft.server.network.ServerPlayerEntity",
+      "nativeHandle": "player",
+      "methods": ["sendMessage(Lnet/minecraft/text/Text;)V", "getServerWorld()Lnet/minecraft/server/world/ServerWorld;", "getInventory()Lnet/minecraft/entity/player/PlayerInventory;"]
+    }
+  ],
+  "events": [
+    "CommandRegistrationCallback",
+    "ServerLifecycleEvents",
+    "ServerTickEvents",
+    "ServerWorldEvents",
+    "ServerPlayConnectionEvents",
+    "ServerPlayNetworking",
+    "UseBlockCallback",
+    "AttackBlockCallback",
+    "PlayerBlockBreakEvents"
+  ],
+  "mixin": {
+    "execution": "bounded-hook-shell",
+    "supportedInjectionPoints": ["HEAD", "TAIL", "RETURN"],
+    "supportedTransformers": ["Inject", "Overwrite"],
+    "declaredButNotTransformed": ["Shadow", "Accessor", "Invoker", "Redirect", "ModifyArg", "ModifyConstant", "ModifyVariable"]
+  },
+  "limitations": [
+    "The embedded fallback loader is not Fabric Loader/Knot.",
+    "The compatibility classes are a generated shadow ABI, not Mojang bytecode.",
+    "Arbitrary JVM bytecode transformation and client-only mixins are unsupported."
+  ]
+}

@@ -9,7 +9,10 @@ publication status, which remains `BLOCKED`.
 
 **Status:** current wire contract, with the implementation/omitted/deferred
 classification below. **Limitations:** a protocol-compatible implementation is not
-a JVM Fabric mod host; unverified vanilla RNG parity is outside the boundary.
+the official Fabric JVM runtime. Plan51's optional embedded layer is a bounded
+server-side shadow-ABI bridge and does not alter packet IDs or provide arbitrary mod,
+client GUI, or vanilla RNG parity; unverified vanilla RNG parity remains outside the
+boundary. See [PLAN51_JVM.md](PLAN51_JVM.md).
 
 The archived assessment-1 strict audit is a historical record labelled 78 gaps; it
 is not a current packet count or a fresh parity result. The current numbered matrix

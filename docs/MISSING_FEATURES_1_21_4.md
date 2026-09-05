@@ -181,8 +181,8 @@ numbered taxonomy status and must not be converted to PASS by documentation edit
 | item | status | current record / next owner |
 |---|---|---|
 | `tools/soak_bot.py --duration 300` | `RESOLVED` | three integrated main runs passed; each had KeepAlive `30`, chunks `182`, time updates `300`, all error counters `0`, and cleanup PASS; plan49 §1 |
-| accepted 2-hour/24-hour run | `INTERRUPTED / ABSENT` | the 7200-second synthetic attempt was interrupted at recorded `t=3361s`; post-fill RSS was `160388→191612kB` (`+19.5%`), above the `15%` gate; no accepted 2-hour/24-hour artifact exists; plan50 follow-up |
-| current real-client/GUI capture | `ABSENT` / `DECLARED-LIMITATION` | no current official-client artifact; bot/synthetic evidence is separate; plan50 follow-up owner |
+| accepted 2-hour/24-hour run | `INTERRUPTED / ABSENT` | the 7200-second synthetic attempt was interrupted at recorded `t=3361s`; post-fill RSS was `160388→191612kB` (`+19.5%`), above the `15%` gate; no accepted 2-hour/24-hour artifact exists; plan51 keeps this boundary explicit |
+| current real-client/GUI capture | `ABSENT` / `DECLARED-LIMITATION` | no current official-client artifact; bot/synthetic evidence is separate; plan51 JVM boundary does not provide a GUI/client artifact |
 | `wt48/cleanup` | `DIRTY` / `PRESERVE-REVIEW` | branch `wt48/cleanup`, HEAD `5f82ac0b4448f76f98753d18c83bbcd9736da61c`, 19 changed paths, `+74/-840`; plan49 §6 safety review |
 
 ## Declared limitations (outside #1–#90; not counted as `DONE`)
@@ -193,7 +193,7 @@ table rather than being hidden inside a numbered `DONE` row.
 | Feature / boundary | Status | Notes |
 |---|---|---|
 | Fabric `Netty` `ChannelPipeline` `Codec` abstraction | DECLARED-LIMITATION | The implementation uses manual `WriteBuffer`/`ReadBuffer`; it is not a JVM Netty channel pipeline. |
-| Fabric Loader JVM mods and Fabric event-bus bytecode | DECLARED-LIMITATION | JVM bytecode cannot execute inside the C++ process; compatibility means the observable protocol behavior of an unmodified 1.21.4 server. This is the intentional E-14 boundary. |
+| Fabric Loader JVM mods and Fabric event-bus bytecode | DECLARED-LIMITATION | plan51 adds an opt-in embedded HotSpot/JNI compatibility layer with a dependency-free shadow ABI, fallback metadata loader, selected events, and a bounded Mixin hook shell. It does not embed official Fabric Loader/Knot, transform arbitrary bytecode, or make arbitrary mods compatible; the E-14 boundary remains. |
 | Vanilla Xoroshiro seed parity at L3 | DECLARED-LIMITATION | L1/L2 determinism is covered, but exact vanilla RNG byte parity is not independently proven. |
 | Real-client GUI and 24-hour/nightly evidence | DECLARED-LIMITATION | Procedures and bot/synthetic evidence do not substitute for a retained current real-client or long-run artifact. |
 | Session mining versus `MiningCalculator` | IMPLEMENTED | plan49 unifies session start/finish and tick completion through shared context/results; `test_mining_full` `59/59` plus live smoke/server paths pass. |
