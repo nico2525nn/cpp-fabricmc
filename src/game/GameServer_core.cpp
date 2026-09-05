@@ -218,6 +218,7 @@ void GameServer::spawnMob(MobKind kind, double x, double y, double z) {
     }
     mob->x = x; mob->y = y; mob->z = z;
     mob->lastSeenMs = nowMs();
+    if (jvmRuntime_ && !jvmRuntime_->onMobSpawn(*mob, x, y, z)) return;
     {
         std::lock_guard lk(entsMtx_);
         mobs_.push_back(mob);

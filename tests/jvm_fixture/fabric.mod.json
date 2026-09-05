@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "cppfm_fixture",
+  "version": "1.0.0",
+  "name": "cppfm JVM fixture",
+  "environment": "*",
+  "mixins": ["cppfm_fixture.mixins.json"],
+  "entrypoints": {
+    "server": ["cppfm.fixture.FixtureMod"]
+  }
+}

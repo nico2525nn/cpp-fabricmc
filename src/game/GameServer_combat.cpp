@@ -39,6 +39,7 @@ void GameServer::syncPlayerArmorAttributes(Player& p) {
 void GameServer::applyDamage(Player& p, float amount, const DamageSource& src, int breachLv) {
     if (p.gamemode == 1 || p.gamemode == 3) return;
     if (amount <= 0 || p.dead) return;
+    if (jvmRuntime_ && !jvmRuntime_->onEntityDamage(&p, nullptr, amount, src.type)) return;
     syncPlayerArmorAttributes(p);
     int armor = (int)std::round(p.attributes.getValue(Attribute::ARMOR));
     if (armor == 0) armor = totalArmorPoints(p.inv);
@@ -478,6 +479,7 @@ void GameServer::strikeLightning(double x, double y, double z) {
 }
 void GameServer::applyDamageToMob(MobEntity& m, float amount, const DamageSource& src, int breachLv) {
     if (amount <= 0 || m.dead) return;
+    if (jvmRuntime_ && !jvmRuntime_->onEntityDamage(nullptr, &m, amount, src.type)) return;
     if (m.kind==MobKind::Creaking && m.creakingTransient) {
         std::string low = src.type;
         std::transform(low.begin(), low.end(), low.begin(), ::tolower);

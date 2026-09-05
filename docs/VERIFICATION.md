@@ -14,10 +14,12 @@ behavior belongs in [SPEC_GAMEPLAY.md](SPEC_GAMEPLAY.md), packet bytes in
 [SPEC_WIRE.md](SPEC_WIRE.md), and operational limits in [SPEC_OPS.md](SPEC_OPS.md).
 
 **Status:** final-gates evidence is recorded against the named baseline, but
-publication remains `BLOCKED`. **Limitations:** arbitrary Fabric JVM mods
-(E-14), exact vanilla Xoroshiro byte parity (world-generation L3), and
-real-client/24-hour evidence are separate boundaries. Any unverified assertion uses
-`DECLARED-LIMITATION` rather than an inferred pass.
+publication remains `BLOCKED`. **Limitations:** plan51's optional embedded JVM
+passes a bounded fixture/bridge gate, while official Fabric Loader/Knot and arbitrary
+Fabric JVM mods remain outside the supported boundary (E-14); exact vanilla Xoroshiro
+byte parity (world-generation L3), and real-client/24-hour evidence are separate
+boundaries. Any unverified assertion uses `DECLARED-LIMITATION` rather than an
+inferred pass. See [PLAN51_JVM.md](PLAN51_JVM.md).
 
 ## 1. Feature overview
 
@@ -65,6 +67,7 @@ or enum existing without an observable test is not counted as full verification.
 | chunk/light | `src/game/ChunkCodec.hpp`, `src/physics/LightEngine.*` | 24 sections, masks, palettes | chunk/update-light bytes | `IMPLEMENTATION` + `test_spec_wire` |
 | gameplay | `src/game/World.hpp`, `Entities.hpp`, `Containers.hpp`, `Recipes.*` | world/entity/menu/data state | behavior assertions and packet consequences | `IMPLEMENTATION` |
 | persistence | `src/game/WorldDataManager.*`, `Persistence.hpp`, `RegionFile.hpp` | NBT, regions, session lock | recovery and integrity result | `IMPLEMENTATION` + `test_recovery` |
+| JVM boundary | `src/jvm/`, `jvm/java/`, `jvm/shadow_api.json` | VM, handles, shadow ABI, selected callbacks | `test_jvm_handles`, `jvm_manifest`, `jvm_runtime` | `IMPLEMENTATION` / bounded fixture |
 | fixture | `docs/mob_stats_149.csv`, `Entities.hpp::MobStats` | 149 data rows, 11 columns | row/schema/checksum result | `IMPLEMENTATION` |
 | build registry | `CMakeLists.txt::add_executable/add_test` | source and test targets | configured/buildable target set | `IMPLEMENTATION` |
 
@@ -175,6 +178,7 @@ source path/symbol, evidence, provenance, version boundary, status, and limitati
 | persistence/security | `tests/test_recovery.cpp`, `test_flood_net.cpp`, `test_rcon_multi.cpp` |
 | fixture | `tests/test_mob_stats_full.cpp` and `docs/mob_stats_149.csv` |
 | load | `tests/stress_test.py`, `tests/soak_test.py`, `tools/bench_chunk_gen.py` |
+| JVM fixture | `tests/jvm_runtime_smoke.py`, `tests/test_jvm_handles.cpp`, `tools/generate_shadow.py` |
 | manual/replay | GUI checklist and replay tools, separately labelled |
 
 CTest target names and executable names are recorded separately; renaming either is
@@ -195,8 +199,9 @@ tables, thresholds, or long audit prose into another document.
 
 ## 11. Cautions
 
-- `test_gameplay_full` contains one intentional E-14 failure for Fabric JVM-mod
-  execution. It must remain visible and must not be converted into a passing assertion.
+- `test_gameplay_full` contains one intentional E-14 failure for arbitrary Fabric
+  JVM-mod execution. It must remain visible and must not be converted into a passing
+  assertion; the separate plan51 fixture gate does not close E-14.
 - `test_native` prints individual checks rather than a stable aggregate count; report
   its observed output rather than inventing a total.
 - A stale `CURRENT_STATE.md`, old packet comment, or old README count is historical
@@ -269,7 +274,7 @@ The checker must cover:
   zlib trailing data, and oversize declarations;
 - stale/live session locks, corrupt level/region/player data, orphan servers, and port
   reuse; and
-- intentional E-14, seed RNG L3, JVM Fabric mods, and unavailable
+- intentional E-14, official/arbitrary JVM Fabric mods beyond plan51, seed RNG L3, and unavailable
   external/manual/nightly evidence.
 
 Allowed status vocabulary is:
@@ -324,6 +329,18 @@ publication.
 The gameplay table does not claim exact vanilla behavior for an untested internal. A
 new failure beyond E-14 is a publication blocker.
 
+### JVM boundary gate
+
+| target | recorded result | interpretation |
+|---|---|---|
+| `test_jvm_handles` | `PASS` | opaque handle invalidation/address-reuse and selective routing invariants |
+| `jvm_manifest` | `PASS` | protocol-769 shadow ABI manifest is reproducible; `structuredBytecode=false` is intentional |
+| `jvm_runtime` | `PASS` | embedded HotSpot, fixture entrypoint, World API, command registration, lifecycle, selected Mixin hooks, and owned clean shutdown |
+
+This gate proves only the bounded plan51 compatibility layer. It does not prove
+official Fabric Loader/Knot behavior, arbitrary mod loading, general JVM bytecode
+transformation, client/GUI behavior, or protocol/RNG parity.
+
 ### Operations gate
 
 The following are required operational checks for a release candidate. The exact
@@ -374,6 +391,9 @@ timeout --foreground --kill-after=5 30 sha256sum docs/mob_stats_149.csv
 timeout --foreground --kill-after=5 300 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
 timeout --foreground --kill-after=5 300 cmake --build build -j2
 timeout --foreground --kill-after=5 30 ninja -C build
+timeout --foreground --kill-after=5 90 cmake --build build --target cppfm_jvm_classes cppfm_jvm_fixture test_jvm_handles -j4
+timeout --foreground --kill-after=5 90 python3 tests/jvm_runtime_smoke.py --binary ./build/cppfm --classes ./build/jvm/classes --mods ./build/jvm/fixture-mods
+timeout --foreground --kill-after=5 90 ctest --test-dir build -R 'jvm_handles|jvm_manifest|jvm_runtime' --output-on-failure --timeout 60
 timeout --foreground --kill-after=5 60 ./build/test_native ./build/cppfm
 timeout --foreground --kill-after=5 30 ./build/test_scoreboard_reset
 timeout --foreground --kill-after=5 30 ./build/test_spec_wire

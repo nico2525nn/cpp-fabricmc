@@ -8,8 +8,9 @@ B-06/B-07/C-04/C-09/C-12/E-13/O-01–O-13/W-14/W-16.
 
 **Status:** current runbook and declared-budget contract. **Limitations:** thresholds
 are implementation safety budgets unless marked as a vanilla observable; a dry or
-synthetic run is not a real-client/24-hour result. Fabric JVM mods remain outside the
-platform boundary.
+synthetic run is not a real-client/24-hour result. Plan51's optional embedded JVM is a
+bounded compatibility layer; official Fabric Loader/Knot and arbitrary Fabric JVM
+mods remain outside the platform boundary. See [PLAN51_JVM.md](PLAN51_JVM.md).
 
 ## 1. Feature overview
 
@@ -51,6 +52,7 @@ all vanilla servers.
 | throttles | `RateLimiter`, `SpamTracker`, `AcceptGate` | tokens, chat score, accepted/shed connections | flood tests |
 | RCON | `src/net/Rcon.hpp::RconServer` | local listener, authentication, handler response | `test_rcon_multi` |
 | measurement | `tests/stress_test.py`, `tests/soak_test.py`, `tools/bench_chunk_gen.py` | MSPT/TPS/RSS, queue depth, integrity | run ID required |
+| JVM startup/cleanup | `src/jvm/JvmRuntime.*`, `tests/jvm_runtime_smoke.py` | VM start, owned process, clean shutdown | `jvm_runtime`; bounded fixture only |
 
 ## 4. Packet-facing operations
 

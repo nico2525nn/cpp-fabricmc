@@ -9,10 +9,11 @@ G-10/G-11 evidence. Packet fields remain in
 [SPEC_OPS.md](SPEC_OPS.md).
 
 **Status:** source-backed behavior contract, not a claim of universal vanilla
-byte-identical gameplay. **Limitations:** Fabric JVM mods cannot execute in the C++
-process; world-generation seed parity is self-consistent L1/L2 but vanilla Xoroshiro
-byte parity is not proven (L3); simplified features are called out with
-`DECLARED-LIMITATION`.
+byte-identical gameplay. **Limitations:** plan51 provides an optional bounded embedded
+JVM/shadow-ABI path, but official Fabric Loader/Knot and arbitrary Fabric JVM mods
+cannot execute as native-equivalent server extensions; world-generation seed parity
+is self-consistent L1/L2 but vanilla Xoroshiro byte parity is not proven (L3);
+simplified features are called out with `DECLARED-LIMITATION`.
 
 ## 1. Feature overview
 
@@ -80,7 +81,9 @@ description from accidentally reviving an old packet ID.
 
 ## 5. Events and ordering
 
-The current event hooks are explicit C++ callbacks, not a Fabric JVM event bus.
+The native event hooks remain explicit C++ callbacks. With `--jvm=true`, selected
+server-side lifecycle/player/block/damage/spawn events are synchronously mirrored to
+the bounded Java compatibility layer; this is not the official Fabric event bus.
 
 1. `World::setBlock` writes the state, calls `onBlockChanged`, emits place/break or
    replacement hooks, notifies six neighbors, and marks the chunk edited.
@@ -180,8 +183,10 @@ evidence, not a gameplay module.
 - Worldgen MultiNoise/structure placement is deterministic and independently
   cross-checked, but exact vanilla Xoroshiro sequence parity is a
   `DECLARED-LIMITATION` (L3), not a hidden pass.
-- `DECLARED-LIMITATION`: arbitrary Fabric Loader/JVM mods and Fabric event-bus
-  bytecode are not executable in `cppfm` (E-14).
+- `DECLARED-LIMITATION`: plan51's optional JVM layer is a dependency-free fallback
+  loader over a shadow ABI with selected manually wired callbacks. Official Fabric
+  Loader/Knot, arbitrary JVM mods, and general event-bus bytecode transformation are
+  not executable in `cppfm` (E-14). See [PLAN51_JVM.md](PLAN51_JVM.md).
 - No current real-client/GUI artifact or accepted 2-hour/24-hour run is available;
   bot and synthetic evidence remain separately labelled.
 
@@ -197,8 +202,9 @@ Gameplay owns the cost boundaries, not the measured operational budget:
 
 Measurements, thresholds, and run IDs belong in
 [SPEC_OPS.md#performance-and-load](SPEC_OPS.md#performance-and-load). The
-plan50 runtime changes are already captured by the named implementation snapshot;
-this specification refresh does not change gameplay behavior.
+plan50 runtime changes are captured by the prior named implementation snapshot;
+plan51's JVM boundary is separately recorded in [PLAN51_JVM.md](PLAN51_JVM.md) and
+does not change the native gameplay contract when disabled.
 
 ## 13. Thread safety
 
