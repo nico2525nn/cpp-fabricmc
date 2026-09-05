@@ -57,7 +57,9 @@
         "cppfm",
         "cache",
         "fabricRuntime",
-        "java"
+        "java",
+        "preflight",
+        "decision"
       ],
       "properties": {
         "networkAccessed": {"const": false},
@@ -66,17 +68,29 @@
         "cppfm": {"type": "object"},
         "cache": {"type": "object"},
         "fabricRuntime": {"type": "object"},
-        "java": {"type": "object"}
+        "java": {"type": "object"},
+        "preflight": {"$ref": "#/$defs/gate"},
+        "decision": {
+          "type": "object",
+          "required": ["status", "metadata", "runtime"],
+          "properties": {
+            "status": {"enum": ["PASS", "FAIL", "SKIP"]},
+            "metadata": {"$ref": "#/$defs/gate"},
+            "runtime": {"$ref": "#/$defs/gate"}
+          }
+        }
       }
     },
     "summary": {
       "type": "object",
-      "required": ["total", "passed", "failed", "skipped"],
+      "required": ["total", "passed", "failed", "skipped", "metadata", "runtime"],
       "properties": {
         "total": {"const": 3},
         "passed": {"type": "integer", "minimum": 0},
         "failed": {"type": "integer", "minimum": 0},
-        "skipped": {"type": "integer", "minimum": 0}
+        "skipped": {"type": "integer", "minimum": 0},
+        "metadata": {"$ref": "#/$defs/statusSummary"},
+        "runtime": {"$ref": "#/$defs/statusSummary"}
       }
     },
     "artifacts": {
@@ -94,6 +108,24 @@
     }
   },
   "$defs": {
+    "gate": {
+      "type": "object",
+      "required": ["status", "reason"],
+      "properties": {
+        "status": {"enum": ["PASS", "FAIL", "SKIP"]},
+        "reason": {"type": "string", "minLength": 1}
+      }
+    },
+    "statusSummary": {
+      "type": "object",
+      "required": ["status", "passed", "failed", "skipped"],
+      "properties": {
+        "status": {"enum": ["PASS", "FAIL", "SKIP"]},
+        "passed": {"type": "integer", "minimum": 0},
+        "failed": {"type": "integer", "minimum": 0},
+        "skipped": {"type": "integer", "minimum": 0}
+      }
+    },
     "phase": {
       "type": "object",
       "required": ["status", "reason"],
@@ -122,11 +154,13 @@
     },
     "case": {
       "type": "object",
-      "required": ["id", "status", "metadata", "reference", "cppfm"],
+      "required": ["id", "status", "metadata", "runtimeStatus", "runtimeReason", "reference", "cppfm"],
       "properties": {
         "id": {"type": "string", "minLength": 1},
         "status": {"enum": ["PASS", "FAIL", "SKIP"]},
         "metadata": {"type": "object"},
+        "runtimeStatus": {"enum": ["PASS", "FAIL", "SKIP"]},
+        "runtimeReason": {"type": "string", "minLength": 1},
         "reference": {"$ref": "#/$defs/side"},
         "cppfm": {"$ref": "#/$defs/side"}
       }
