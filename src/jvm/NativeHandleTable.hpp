@@ -9,6 +9,7 @@
 #include <optional>
 #include <stdexcept>
 #include <unordered_map>
+#include <utility>
 
 namespace cppfm::jvm {
 
@@ -30,11 +31,42 @@ struct HandleRecord {
 
 class NativeHandleTable {
 public:
+    // Holds the table mutex for the complete native borrow.  Invalidation
+    // therefore waits for an in-flight C++ access before the owning game
+    // shared_ptr is allowed to disappear.  The raw address remains private to
+    // native code and is never returned to Java.
+    class ScopedResolution {
+    public:
+        ScopedResolution() = default;
+        ScopedResolution(const ScopedResolution&) = delete;
+        ScopedResolution& operator=(const ScopedResolution&) = delete;
+        ScopedResolution(ScopedResolution&&) noexcept = default;
+        ScopedResolution& operator=(ScopedResolution&&) noexcept = default;
+
+        void* get() const noexcept { return address_; }
+        HandleKind kind() const noexcept { return kind_; }
+        explicit operator bool() const noexcept { return address_ != nullptr; }
+
+    private:
+        friend class NativeHandleTable;
+        ScopedResolution(std::unique_lock<std::mutex>&& lock,
+                         const HandleRecord& record) noexcept
+            : lock_(std::move(lock)), address_(record.address), kind_(record.kind) {}
+
+        std::unique_lock<std::mutex> lock_;
+        void* address_ = nullptr;
+        HandleKind kind_ = HandleKind::Unknown;
+    };
+
     // The returned value is opaque to Java.  Registering the same address and
     // kind while it is alive returns the same handle.
     std::uint64_t registerObject(void* address, HandleKind kind);
     bool invalidate(void* address, HandleKind kind);
     bool invalidateHandle(std::uint64_t handle);
+    std::optional<std::uint64_t> findHandle(void* address,
+                                            HandleKind kind) const;
+    ScopedResolution acquire(std::uint64_t handle,
+                             HandleKind expected = HandleKind::Unknown) const;
 
     void* resolve(std::uint64_t handle,
                   HandleKind expected = HandleKind::Unknown) const;
