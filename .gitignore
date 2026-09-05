@@ -2,9 +2,12 @@ build*
 build-asan/
 *.o
 server.properties
-world/
-world_nether/
-world_the_end/
+# Keep runtime world directories ignored at the repository root.  An
+# unanchored `world/` pattern also hides Java package trees such as
+# `jvm/java/net/minecraft/world/**`.
+/world/
+/world_nether/
+/world_the_end/
 __pycache__/
 captures/
 plan/
@@ -15,6 +18,7 @@ Testing/
 .VSCodeCounter/
 .vscode/
 .idea/
+**/.audit-cache/
 banned-*.json
 ops.json
 ops.json
