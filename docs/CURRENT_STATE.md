@@ -11,9 +11,9 @@
 | field | value |
 |---|---|
 | `updated` | `2026-09-05` |
-| `implementation_baseline` | `ddb15090190d1ff879cc140912579e56e94d44cb` |
-| `implementation_baseline_short` | `ddb1509` |
-| `documentation_commit` | `ddb15090190d1ff879cc140912579e56e94d44cb` |
+| `implementation_baseline` | `db51642` |
+| `implementation_baseline_short` | `db51642` |
+| `documentation_commit` | `db51642` |
 | `main_integration_merge` | `ddb15090190d1ff879cc140912579e56e94d44cb` |
 | `plan` | `plan51` |
 | `phase` | `embedded-jvm-boundary` |
@@ -113,6 +113,7 @@ same evidence ledger and are identified by their target names:
 | focused executable regression suite | wire/gameplay/ops executables all pass except gameplay's single intentional E-14; no unexpected FAIL | no aggregate invented |
 | `test_jvm_handles` | `PASS` | generation-safe opaque handle invalidation/address reuse and selective native/JVM routing |
 | `cppfm_jvm_classes` / `cppfm_jvm_fixture` | `PASS` | Java shadow ABI and deterministic server-side fixture compile |
+| JVM fixture ABI invalidation | `PASS` | CMake now depends on the Java classes stamp, so a changed shadow annotation/API recompiles the fixture instead of reusing stale bytecode |
 | `jvm_runtime` | `PASS` | embedded HotSpot, entrypoint, command registration, World API, lifecycle, Mixin HEAD/RETURN/Overwrite, tick, and owned clean shutdown |
 | `jvm_transformer` | `PASS` | pre-definition transformer contract, verifier-safe bytecode rewrite, callback/local preservation, and transform-order checks |
 | `jvm_compatibility` | `PASS` | all 25 plan51 fixture cases pass in one `cppfm` process; report status `PASS`, 25/25 fixtures, 0 errors |
