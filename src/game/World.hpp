@@ -597,6 +597,11 @@ public:
     }
 
     mutable std::shared_mutex mutex_;
+    // Serializes the expensive missing-chunk generation path.  Several session
+    // threads can request the same edge chunk at once while a player crosses a
+    // chunk boundary; without this gate each thread builds a full ~0.6 MiB
+    // Chunk before try_emplace discards all but one copy.
+    mutable std::mutex generationMtx_;
     mutable std::unordered_map<std::int64_t, std::unique_ptr<Chunk>> chunks_;
     mutable std::unordered_set<std::int64_t> forcedChunks_;
     mutable ChunkTicketManager ticketManager_;

@@ -401,7 +401,11 @@ bool GameServer::isChunkInSimulationDistance(std::int32_t cx, std::int32_t cz) c
 void GameServer::chunksUnloadTick() {
     const int sim = cfg_.simulationDistance;
     const int view = cfg_.viewDistance;
-    const int unloadDist = std::max(sim, view) * 16 + 32;
+    // Keep chunks through the configured view/simulation radius, but do not
+    // retain an extra two-block ring (32 blocks) after it leaves that radius.
+    // The old margin made a long straight traversal accumulate roughly 500
+    // live 384-high chunks even though only the configured radius was active.
+    const int unloadDist = std::max(sim, view) * 16;
     auto doWorld = [&](World &w, Persistence *pp, std::int8_t dim) {
         auto keys = w.allChunkKeys();
         std::vector<std::int64_t> toErase;
@@ -494,6 +498,20 @@ void GameServer::chunksUnloadTick() {
                 std::fprintf(stderr, "[cppfm] unload chunk dim=%d %d,%d (dist>%d) remaining=%zu\n",
                              (int)dim, cx, cz, unloadDist, w.loadedChunkCount());
             }
+        }
+        if (std::getenv("CPPFM_CHUNK_STATS") && tickNo_ % 1000 == 0) {
+            std::size_t structurePending = 0;
+            if (auto* sm = w.structureManager())
+                structurePending = sm->pendingMobCount() + sm->pendingLootCount();
+            std::fprintf(stderr, "[cppfm] chunk-stats dim=%d loaded=%zu cache=%zu cacheBytes=%zu pending=%zu io=%zu mobs=%zu mobAi=%zu items=%zu xp=%zu proj=%zu tnt=%zu be=%zu beDirty=%zu fluid=%zu light=%zu sky=%zu redstone=%zu blockTicks=%zu randomTicks=%zu structure=%zu\n",
+                         (int)dim, w.loadedChunkCount(), chunkCacheSize(),
+                         chunkCacheBytes(), pendingLoadsSize(), ioQueueDepth(),
+                         mobs_.size(), mobAi_.size(), itemDrops_.size(), xpOrbs_.size(),
+                         projectiles_.size(), tntEntities_.size(), blockEntities_.size(),
+                         blockEntities_.dirty_.size(), fluidSim_->pending(),
+                         lightEngine_->pendingNodeCount(), lightEngine_->pendingSkyCount(),
+                         redstone_->pendingCount(), blockTicks_->pendingCount(),
+                         blockTicks_->randomTicks().size(), structurePending);
         }
     };
     doWorld(world_, persist_.get(), 0);

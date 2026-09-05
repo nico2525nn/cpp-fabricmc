@@ -1246,6 +1246,13 @@ public:
         std::lock_guard lk(chunkCacheMtx_);
         return chunkCache_.size();
     }
+    std::size_t chunkCacheBytes() const {
+        std::lock_guard lk(chunkCacheMtx_);
+        std::size_t total = 0;
+        for (const auto& [key, entry] : chunkCache_)
+            if (entry.body) total += entry.body->size();
+        return total;
+    }
     std::size_t ioQueueDepth() const { return ioPool_.pending(); }
     std::size_t pendingLoadsSize() const {
         std::lock_guard lk(pendingLoadsMtx_);

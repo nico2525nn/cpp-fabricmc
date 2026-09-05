@@ -75,6 +75,7 @@ public:
 
     void schedule(std::int32_t x, std::int32_t y, std::int32_t z, std::int64_t dueTick);
     void tick(std::int64_t now);
+    std::size_t pendingCount() const { return queue_.size() + pendingPos_.size(); }
 
     void registerBehavior(const std::string& blockName, std::unique_ptr<IBlockBehavior> b) {
         behaviors_[blockName] = std::move(b);

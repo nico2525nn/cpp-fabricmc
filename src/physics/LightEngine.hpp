@@ -47,6 +47,8 @@ public:
 
     std::uint8_t blockLightAt(std::int32_t x, std::int32_t y,
                               std::int32_t z) const;
+    std::size_t pendingNodeCount() const { return addQueue_.size() + removeQueue_.size(); }
+    std::size_t pendingSkyCount() const { return pendingSkyRebuild_.size() + skyDirtyExtra_.size(); }
     // Recompute sky-light BFS cache for a whole chunk (used by serializers).
     void ensureSkyLight(std::int32_t cx, std::int32_t cz);
 
