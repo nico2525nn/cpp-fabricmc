@@ -78,7 +78,17 @@ public final class MixinConfiguration {
         for (Object item : list) {
             if (!(item instanceof String name) || name.isEmpty()) continue;
             String qualified = name.replace('/', '.');
-            if (!qualified.contains(".") && !getPackage().isEmpty()) qualified = getPackage() + "." + qualified;
+            String basePackage = getPackage().replace('/', '.');
+            // Mixin config entries are package-relative even when they use
+            // dots for nested packages (Lithium, for example, declares
+            // "ai.pathing.BlockStateBaseMixin").  Only an already package-
+            // qualified entry is absolute; testing for a dot alone loses the
+            // configured package and makes the class resource unresolvable.
+            if (!basePackage.isEmpty()
+                && !qualified.equals(basePackage)
+                && !qualified.startsWith(basePackage + ".")) {
+                qualified = basePackage + "." + qualified;
+            }
             if (!output.contains(qualified)) output.add(qualified);
         }
     }

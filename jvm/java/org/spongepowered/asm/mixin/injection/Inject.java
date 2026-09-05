@@ -16,6 +16,7 @@ public @interface Inject {
     LocalCapture locals() default LocalCapture.NO_CAPTURE;
     int require() default -1;
     int expect() default 1;
+    int allow() default -1;
     int order() default 1000;
     boolean remap() default true;
     String constraints() default "";
