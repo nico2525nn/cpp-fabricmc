@@ -342,6 +342,7 @@ void GameServer::explodeAt(double x, double y, double z, float power) {
         de.boolean(false);
         try { p->conn->sendPacket(pl::sc::DamageEvent, de); } catch (...) {}
     }
+    std::vector<std::shared_ptr<MobEntity>> removed;
     {
         std::lock_guard lk(entsMtx_);
         std::vector<std::shared_ptr<MobEntity>> dead;
@@ -363,8 +364,10 @@ void GameServer::explodeAt(double x, double y, double z, float power) {
             mobAi_.erase(m->entityId);
             mobs_.erase(std::remove(mobs_.begin(), mobs_.end(), m),
                         mobs_.end());
+            removed.push_back(m);
         }
     }
+    for (const auto& mob : removed) invalidateJvmMob(mob);
     for (int i = 0; i < 4; ++i) {
         int pid = (i == 0 ? ParticleId::explosion_emitter : ParticleId::explosion); // 21/22, Simple
         auto body = makeWorldParticlesBody(x + (rand()%7 - 3) * 0.5,

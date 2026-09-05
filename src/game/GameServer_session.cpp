@@ -2025,6 +2025,11 @@ void Session::handlePlaceGhostRecipe(std::int32_t recipeId) {
 void Session::onPluginPayload(const std::string& channel,
                               const api::ChannelRegistry::Payload& body,
                               int phase) {
+    // Forward every payload, including register/unregister, before the
+    // built-in channel bookkeeping.  The optional JVM hook is guarded and
+    // reentrant-safe; a failed hook does not make the native path unavailable.
+    if (srv_.jvmRuntime())
+        srv_.jvmRuntime()->onPluginMessage(*self_, phase, channel, body);
     if (channel == "minecraft:register") {
         // NUL-separated channel list
         std::string joined(body.begin(), body.end());
@@ -4957,12 +4962,15 @@ void Session::onUseEntity(ReadBuffer& in) {
             }
             for (auto& baby : babies) srv_.broadcastMobSpawn(*baby);
         }
-        std::lock_guard lk(srv_.entsMtx_);
-        srv_.mobAi_.erase(target);
-        srv_.mobsForTest().erase(
-            std::remove_if(srv_.mobsForTest().begin(), srv_.mobsForTest().end(),
-                [&](const std::shared_ptr<MobEntity>& x){ return x.get()==victim.get(); }),
-            srv_.mobsForTest().end());
+        {
+            std::lock_guard lk(srv_.entsMtx_);
+            srv_.mobAi_.erase(target);
+            srv_.mobsForTest().erase(
+                std::remove_if(srv_.mobsForTest().begin(), srv_.mobsForTest().end(),
+                    [&](const std::shared_ptr<MobEntity>& x){ return x.get()==victim.get(); }),
+                srv_.mobsForTest().end());
+        }
+        srv_.invalidateJvmMob(victim);
         if (self_->vehicleId == target) {
             self_->vehicleId = -1;
             srv_.broadcastSetPassengersEmpty(target);
