@@ -1175,6 +1175,20 @@ public final class MixinHooks {
         return returnable(result, method + ":TAIL", value);
     }
 
+    /**
+     * Tail hook carrying the verifier-visible locals at the injection site.
+     * This is the manual/shadow equivalent of a structural TAIL injection
+     * with {@code LocalCapture}; keeping the values explicit also covers a
+     * target class that was defined before its mixin configuration arrived.
+     */
+    public static <T> CallbackInfoReturnable<T> invokeTailReturnWithLocals(
+            Object target, String method, T value, Object[] locals, Object... args) {
+        InvocationSite.Builder builder = InvocationSite.builder(target, method).at("TAIL")
+            .returnValue(value).arguments(args);
+        if (locals != null) builder.locals(locals);
+        return returnable(dispatch(builder.build()), method + ":TAIL", value);
+    }
+
     /** Invoke the highest-priority overwrite, returning null when none exists. */
     public static <T> T invokeOverwrite(Object target, String method, Object... args) {
         return invokeOverwriteWithDescriptor(target, method, "*", args);

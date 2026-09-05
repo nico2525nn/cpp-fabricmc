@@ -142,7 +142,16 @@ def main() -> int:
                      if isinstance(item, dict) and item.get("structuredBytecode"))
     native = sum(1 for item in coverage or []
                  if isinstance(item, dict) and item.get("nativeBackend"))
-    check(native == len(coverage or []), "every declared method must have a native backend")
+    wrapper = sum(1 for item in coverage or []
+                  if isinstance(item, dict) and item.get("wrapperBackend"))
+    backend_complete = all(
+        isinstance(item, dict)
+        and item.get("backend") in {"native", "wrapper"}
+        and bool(item.get("nativeBackend")) != bool(item.get("wrapperBackend"))
+        for item in coverage or []
+    )
+    check(backend_complete,
+          "every declared method must have exactly one native or wrapper backend")
     if coverage and "structuredBytecodeRate" in manifest:
         declared_rate = manifest.get("structuredBytecodeRate")
         actual_rate = structured / len(coverage)
@@ -176,7 +185,7 @@ def main() -> int:
         for failure in failures:
             print(f"- {failure}")
         return 1
-    print(f"PLAN51 CONTRACT AUDIT: PASS ({passed} checks; {structured} structured/{len(coverage or [])} methods, {native} native)")
+    print(f"PLAN51 CONTRACT AUDIT: PASS ({passed} checks; {structured} structured/{len(coverage or [])} methods, {native} native/{wrapper} wrapper)")
     return 0
 
 

@@ -1,6 +1,8 @@
 package cppfm.transform;
 
 import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
@@ -9,6 +11,7 @@ import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /** JVM instruction decoding, relocation and insertion utilities. */
 final class BytecodeInstructions {
@@ -225,6 +228,11 @@ final class BytecodeInstructions {
             return result;
         }
 
+        /** Allocate a label which can be used as a generated branch target. */
+        Instruction newLabel() {
+            return Instruction.label(-1);
+        }
+
         void insertBefore(Instruction anchor, List<Instruction> additions) {
             int index = instructions.indexOf(anchor);
             if (index < 0) throw new TransformException("instruction anchor disappeared");
@@ -291,6 +299,190 @@ final class BytecodeInstructions {
             NestedAttributeRelocator.relocate(code.attributes, pool, assembly.oldOffsets);
             writeOrigins(pool, assembly);
         }
+
+        /**
+         * Recompute full StackMapTable frames after introducing conditional
+         * control flow.  Existing frame encodings are relative to one
+         * another, so inserting a single full frame into the old table is not
+         * sufficient: every later append/chop frame would use the wrong
+         * predecessor.  The conservative analyzer already has the exact
+         * state at each branch target, therefore rebuilding every target as a
+         * full frame is both simpler and verifier-safe.
+         */
+        void rebuildStackMapFrames(ClassFileModel owner, MemberModel method) {
+            List<Instruction> decoded = decode(code.code);
+            Map<Integer, Instruction> byOffset = new HashMap<>();
+            Set<Integer> targets = new java.util.TreeSet<>();
+            for (Instruction instruction : decoded) {
+                byOffset.put(instruction.oldOffset, instruction);
+                if (instruction.branchTarget >= 0) targets.add(instruction.branchTarget);
+                if (instruction.defaultTarget >= 0) targets.add(instruction.defaultTarget);
+                if (instruction.switchTargets != null)
+                    for (int target : instruction.switchTargets) targets.add(target);
+            }
+            for (CodeModel.ExceptionHandler handler : code.exceptionHandlers)
+                targets.add(handler.handlerPc);
+            targets.remove(0);
+            if (targets.isEmpty()) return;
+            StackAnalyzer.Analysis analysis = StackAnalyzer.analyze(owner, method, code);
+            ArrayList<StackMapFrame> frames = new ArrayList<>();
+            for (int target : targets) {
+                Instruction instruction = byOffset.get(target);
+                if (instruction == null) throw new TransformException("stack-map target has no instruction: " + target);
+                frames.add(StackMapFrame.full(target,
+                    verificationLocals(analysis.localsBefore(instruction), owner.pool),
+                    verificationStack(analysis.before(instruction), owner.pool)));
+            }
+            try {
+                ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+                DataOutputStream output = new DataOutputStream(bytes);
+                output.writeShort(frames.size());
+                int previous = -1;
+                for (StackMapFrame frame : frames) {
+                    int delta = frame.offset - previous - 1;
+                    if (delta < 0 || delta > 65535)
+                        throw new TransformException("invalid rebuilt StackMapTable frame order");
+                    writeStackMapFrame(output, frame, delta);
+                    previous = frame.offset;
+                }
+                output.flush();
+                code.attributes.removeIf(attribute -> {
+                    String name = attribute.name(owner.pool);
+                    return name.equals("StackMapTable") || name.equals("StackMap");
+                });
+                code.attributes.add(new AttributeModel(owner.pool.addUtf8("StackMapTable"), bytes.toByteArray()));
+            } catch (IOException failure) {
+                throw new TransformException("cannot rebuild StackMapTable", failure);
+            }
+        }
+
+        private static VerificationType[] verificationLocals(Map<Integer, StackAnalyzer.Value> values,
+                                                              ConstantPool pool) {
+            if (values.isEmpty()) return new VerificationType[0];
+            int max = 0;
+            for (Map.Entry<Integer, StackAnalyzer.Value> entry : values.entrySet()) {
+                if (entry.getKey() < 0 || entry.getValue() == null)
+                    throw new TransformException("invalid generated frame local");
+                max = Math.max(max, entry.getKey() + entry.getValue().slots);
+            }
+            VerificationType[] slots = new VerificationType[max];
+            boolean[] wideTail = new boolean[max];
+            for (Map.Entry<Integer, StackAnalyzer.Value> entry : values.entrySet()) {
+                int slot = entry.getKey();
+                StackAnalyzer.Value value = entry.getValue();
+                if (value.isUninitialized())
+                    throw new TransformException("uninitialized local in generated stack-map frame");
+                slots[slot] = verification(value.descriptor, pool);
+                if (value.slots == 2) wideTail[slot + 1] = true;
+            }
+            int last = slots.length - 1;
+            while (last >= 0 && slots[last] == null && !wideTail[last]) --last;
+            if (last < 0) return new VerificationType[0];
+            ArrayList<VerificationType> result = new ArrayList<>();
+            for (int slot = 0; slot <= last; ++slot) {
+                if (wideTail[slot]) continue;
+                result.add(slots[slot] == null ? new VerificationType(0, -1) : slots[slot]);
+            }
+            return result.toArray(VerificationType[]::new);
+        }
+
+        private static VerificationType[] verificationStack(List<StackAnalyzer.Value> values,
+                                                             ConstantPool pool) {
+            ArrayList<VerificationType> result = new ArrayList<>();
+            for (StackAnalyzer.Value value : values) {
+                if (value == null || value.isUninitialized())
+                    throw new TransformException("uninitialized value in generated stack-map frame");
+                result.add(verification(value.descriptor, pool));
+            }
+            return result.toArray(VerificationType[]::new);
+        }
+
+        private static VerificationType verification(String descriptor, ConstantPool pool) {
+            if (descriptor == null || descriptor.isEmpty())
+                throw new TransformException("empty generated frame descriptor");
+            return switch (descriptor.charAt(0)) {
+                case 'Z', 'B', 'C', 'S', 'I' -> new VerificationType(1, -1);
+                case 'F' -> new VerificationType(2, -1);
+                case 'D' -> new VerificationType(3, -1);
+                case 'J' -> new VerificationType(4, -1);
+                case 'L' -> {
+                    if (!descriptor.endsWith(";")) throw new TransformException("invalid frame reference " + descriptor);
+                    yield new VerificationType(7, pool.addClass(descriptor.substring(1, descriptor.length() - 1)));
+                }
+                case '[' -> new VerificationType(7, pool.addClass(descriptor));
+                default -> throw new TransformException("invalid generated frame descriptor " + descriptor);
+            };
+        }
+
+        private static void writeStackMapFrame(DataOutputStream output, StackMapFrame frame,
+                                               int delta) throws IOException {
+            if (frame.kind == FrameKind.SAME) {
+                if (delta <= 63) output.writeByte(delta);
+                else { output.writeByte(251); output.writeShort(delta); }
+            } else if (frame.kind == FrameKind.SAME_ONE) {
+                if (delta <= 63 && frame.stack.length == 1) {
+                    output.writeByte(64 + delta);
+                    writeVerification(output, frame.stack[0]);
+                } else {
+                    output.writeByte(247); output.writeShort(delta);
+                    for (VerificationType value : frame.stack) writeVerification(output, value);
+                }
+            } else if (frame.kind == FrameKind.CHOP) {
+                output.writeByte(251 - frame.chop); output.writeShort(delta);
+            } else if (frame.kind == FrameKind.APPEND && frame.locals.length >= 1 && frame.locals.length <= 3) {
+                output.writeByte(251 + frame.locals.length); output.writeShort(delta);
+                for (VerificationType value : frame.locals) writeVerification(output, value);
+            } else {
+                output.writeByte(255); output.writeShort(delta);
+                output.writeShort(frame.locals.length);
+                for (VerificationType value : frame.locals) writeVerification(output, value);
+                output.writeShort(frame.stack.length);
+                for (VerificationType value : frame.stack) writeVerification(output, value);
+            }
+        }
+
+        private static void writeVerification(DataOutputStream output, VerificationType value)
+                throws IOException {
+            output.writeByte(value.tag);
+            if (value.tag == 7 || value.tag == 8) output.writeShort(value.index);
+        }
+
+        private enum FrameKind { SAME, SAME_ONE, CHOP, APPEND, FULL }
+
+        private static final class StackMapFrame {
+            int offset;
+            final FrameKind kind;
+            final int chop;
+            final VerificationType[] locals;
+            final VerificationType[] stack;
+
+            private StackMapFrame(int offset, FrameKind kind, int chop,
+                                  VerificationType[] locals, VerificationType[] stack) {
+                this.offset = offset; this.kind = kind; this.chop = chop;
+                this.locals = locals; this.stack = stack;
+            }
+            static StackMapFrame same(int offset) {
+                return new StackMapFrame(offset, FrameKind.SAME, 0,
+                    new VerificationType[0], new VerificationType[0]);
+            }
+            static StackMapFrame sameOne(int offset, VerificationType stack) {
+                return new StackMapFrame(offset, FrameKind.SAME_ONE, 0,
+                    new VerificationType[0], new VerificationType[] { stack });
+            }
+            static StackMapFrame chop(int offset, int count) {
+                return new StackMapFrame(offset, FrameKind.CHOP, count,
+                    new VerificationType[0], new VerificationType[0]);
+            }
+            static StackMapFrame append(int offset, VerificationType[] locals) {
+                return new StackMapFrame(offset, FrameKind.APPEND, 0, locals,
+                    new VerificationType[0]);
+            }
+            static StackMapFrame full(int offset, VerificationType[] locals, VerificationType[] stack) {
+                return new StackMapFrame(offset, FrameKind.FULL, 0, locals, stack);
+            }
+        }
+
+        private record VerificationType(int tag, int index) { }
 
         private void writeOrigins(ConstantPool pool, Assembly assembly) {
             ArrayList<Instruction> encoded = new ArrayList<>();

@@ -131,7 +131,7 @@ def compile_mod(
         raise ValueError(f"staged mod directory is duplicated: {target_name}")
     copy_mod_resources(source_dir, target_dir)
     result = run_checked(
-        [javac, "--release", "17", "-cp", str(classes), "-d", str(target_dir),
+        [javac, "--release", "17", "-g", "-cp", str(classes), "-d", str(target_dir),
          *(str(source) for source in sources)],
         cwd=source_dir,
     )

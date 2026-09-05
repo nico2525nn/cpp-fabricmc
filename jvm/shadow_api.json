@@ -44,6 +44,7 @@
       "nativeHandle": "server",
       "methods": ["getTicks()I", "setTick(J)V", "getTickTime()J", "getOverworld()Lnet/minecraft/server/world/ServerWorld;", "getWorld(Lnet/minecraft/registry/RegistryKey;)Lnet/minecraft/server/world/ServerWorld;", "execute(Ljava/lang/Runnable;)V", "getPlayerManager()Lnet/minecraft/server/PlayerManager;", "getGameRules()Lnet/minecraft/world/GameRules;"],
       "nativeMethods": ["getOverworld()Lnet/minecraft/server/world/ServerWorld;", "getWorld(Lnet/minecraft/registry/RegistryKey;)Lnet/minecraft/server/world/ServerWorld;"],
+      "wrapperMethods": ["getTicks()I", "setTick(J)V", "getTickTime()J", "execute(Ljava/lang/Runnable;)V", "getPlayerManager()Lnet/minecraft/server/PlayerManager;", "getGameRules()Lnet/minecraft/world/GameRules;"],
       "structuredBytecodeMethods": ["getTicks()I", "setTick(J)V", "getTickTime()J", "getOverworld()Lnet/minecraft/server/world/ServerWorld;", "getWorld(Lnet/minecraft/registry/RegistryKey;)Lnet/minecraft/server/world/ServerWorld;"],
       "mixinLevels": {
         "getTicks()I": ["TAIL", "RETURN", "FIELD"],
@@ -68,13 +69,15 @@
       "name": "net.minecraft.server.network.ServerPlayerEntity",
       "nativeHandle": "player",
       "methods": ["sendMessage(Lnet/minecraft/text/Text;)V", "getServerWorld()Lnet/minecraft/server/world/ServerWorld;", "getInventory()Lnet/minecraft/entity/player/PlayerInventory;"],
-      "nativeMethods": ["sendMessage(Lnet/minecraft/text/Text;)V", "getServerWorld()Lnet/minecraft/server/world/ServerWorld;"]
+      "nativeMethods": ["sendMessage(Lnet/minecraft/text/Text;)V", "getServerWorld()Lnet/minecraft/server/world/ServerWorld;"],
+      "wrapperMethods": ["getInventory()Lnet/minecraft/entity/player/PlayerInventory;"]
     },
     {
       "name": "net.minecraft.world.World",
       "nativeHandle": "world",
       "methods": ["getBlockState(Lnet/minecraft/util/math/BlockPos;)Lnet/minecraft/block/BlockState;", "setBlockState(Lnet/minecraft/util/math/BlockPos;Lnet/minecraft/block/BlockState;)Z", "getBottomY()I", "getWorldBorder()Lnet/minecraft/world/border/WorldBorder;", "getDimension()Lnet/minecraft/world/dimension/DimensionType;", "getServer()Lnet/minecraft/server/MinecraftServer;"],
       "nativeMethods": ["getBlockState(Lnet/minecraft/util/math/BlockPos;)Lnet/minecraft/block/BlockState;", "setBlockState(Lnet/minecraft/util/math/BlockPos;Lnet/minecraft/block/BlockState;)Z", "getServer()Lnet/minecraft/server/MinecraftServer;"],
+      "wrapperMethods": ["getBottomY()I", "getWorldBorder()Lnet/minecraft/world/border/WorldBorder;", "getDimension()Lnet/minecraft/world/dimension/DimensionType;"],
       "structuredBytecodeMethods": ["getBlockState(Lnet/minecraft/util/math/BlockPos;)Lnet/minecraft/block/BlockState;", "getBottomY()I"],
       "mixinLevels": {
         "getBlockState(Lnet/minecraft/util/math/BlockPos;)Lnet/minecraft/block/BlockState;": ["TAIL", "INVOKE"],
@@ -101,12 +104,14 @@
     {
       "name": "net.minecraft.entity.player.PlayerEntity",
       "methods": ["getInventory()Lnet/minecraft/entity/player/PlayerInventory;", "getMainHandStack()Lnet/minecraft/item/ItemStack;", "getOffHandStack()Lnet/minecraft/item/ItemStack;", "getStackInHand(Lnet/minecraft/util/Hand;)Lnet/minecraft/item/ItemStack;", "isSneaking()Z"],
-      "nativeMethods": ["isSneaking()Z", "getMainHandStack()Lnet/minecraft/item/ItemStack;", "getOffHandStack()Lnet/minecraft/item/ItemStack;"]
+      "nativeMethods": ["isSneaking()Z", "getMainHandStack()Lnet/minecraft/item/ItemStack;", "getOffHandStack()Lnet/minecraft/item/ItemStack;"],
+      "wrapperMethods": ["getInventory()Lnet/minecraft/entity/player/PlayerInventory;", "getStackInHand(Lnet/minecraft/util/Hand;)Lnet/minecraft/item/ItemStack;"]
     },
     {
       "name": "net.minecraft.entity.player.PlayerInventory",
       "methods": ["size()I", "getStack(I)Lnet/minecraft/item/ItemStack;", "setStack(ILnet/minecraft/item/ItemStack;)V", "getMainHandStack()Lnet/minecraft/item/ItemStack;", "getOffHandStack()Lnet/minecraft/item/ItemStack;"],
-      "nativeMethods": ["getStack(I)Lnet/minecraft/item/ItemStack;", "setStack(ILnet/minecraft/item/ItemStack;)V", "getMainHandStack()Lnet/minecraft/item/ItemStack;", "getOffHandStack()Lnet/minecraft/item/ItemStack;"]
+      "nativeMethods": ["getStack(I)Lnet/minecraft/item/ItemStack;", "setStack(ILnet/minecraft/item/ItemStack;)V", "getMainHandStack()Lnet/minecraft/item/ItemStack;", "getOffHandStack()Lnet/minecraft/item/ItemStack;"],
+      "wrapperMethods": ["size()I"]
     },
     {
       "name": "net.minecraft.item.BlockItem",
@@ -115,12 +120,14 @@
     {
       "name": "net.minecraft.item.Item",
       "methods": ["getDefaultStack()Lnet/minecraft/item/ItemStack;", "getName(Lnet/minecraft/item/ItemStack;)Lnet/minecraft/text/Text;", "getCanonicalFoodComponent()Lnet/minecraft/component/type/FoodComponent;", "getCanonicalRarity(Lnet/minecraft/item/ItemStack;)Lnet/minecraft/util/Rarity;", "getCanonicalUseAction(Lnet/minecraft/item/ItemStack;)Lnet/minecraft/item/consume/UseAction;"],
-      "nativeMethods": []
+      "nativeMethods": [],
+      "wrapperMethods": ["getDefaultStack()Lnet/minecraft/item/ItemStack;", "getName(Lnet/minecraft/item/ItemStack;)Lnet/minecraft/text/Text;", "getCanonicalFoodComponent()Lnet/minecraft/component/type/FoodComponent;", "getCanonicalRarity(Lnet/minecraft/item/ItemStack;)Lnet/minecraft/util/Rarity;", "getCanonicalUseAction(Lnet/minecraft/item/ItemStack;)Lnet/minecraft/item/consume/UseAction;"]
     },
     {
       "name": "net.minecraft.item.ItemStack",
       "methods": ["getItem()Lnet/minecraft/item/Item;", "getCount()I", "setCount(I)V", "getName()Lnet/minecraft/text/Text;", "isEmpty()Z"],
-      "nativeMethods": ["setCount(I)V"]
+      "nativeMethods": ["setCount(I)V"],
+      "wrapperMethods": ["getItem()Lnet/minecraft/item/Item;", "getCount()I", "getName()Lnet/minecraft/text/Text;", "isEmpty()Z"]
     },
     {
       "name": "net.minecraft.network.packet.s2c.common.CustomPayloadS2CPacket",
@@ -141,7 +148,8 @@
     {
       "name": "net.minecraft.world.border.WorldBorder",
       "methods": ["contains(Lnet/minecraft/util/math/BlockPos;)Z", "contains(Lnet/minecraft/util/math/Vec3d;)Z", "contains(Lnet/minecraft/util/math/ChunkPos;)Z", "contains(Lnet/minecraft/util/math/Box;)Z", "clampFloored(Lnet/minecraft/util/math/BlockPos;)Lnet/minecraft/util/math/BlockPos;", "clamp(Lnet/minecraft/util/math/Vec3d;)Lnet/minecraft/util/math/Vec3d;", "getDistanceInsideBorder(DD)D", "getStage()Lnet/minecraft/world/border/WorldBorderStage;"],
-      "nativeMethods": []
+      "nativeMethods": [],
+      "wrapperMethods": ["contains(Lnet/minecraft/util/math/BlockPos;)Z", "contains(Lnet/minecraft/util/math/Vec3d;)Z", "contains(Lnet/minecraft/util/math/ChunkPos;)Z", "contains(Lnet/minecraft/util/math/Box;)Z", "clampFloored(Lnet/minecraft/util/math/BlockPos;)Lnet/minecraft/util/math/BlockPos;", "clamp(Lnet/minecraft/util/math/Vec3d;)Lnet/minecraft/util/math/Vec3d;", "getDistanceInsideBorder(DD)D", "getStage()Lnet/minecraft/world/border/WorldBorderStage;"]
     },
     {
       "name": "net.minecraft.world.dimension.DimensionType",

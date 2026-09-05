@@ -195,6 +195,7 @@ def manifest_checks(corpus: dict[str, Any], manifest: dict[str, Any]) -> tuple[d
     metrics = {
         "methodCoverage": len(coverage),
         "nativeBackend": sum(1 for item in coverage if item.get("nativeBackend") is True),
+        "wrapperBackend": sum(1 for item in coverage if item.get("wrapperBackend") is True),
         "structuredBytecode": structured_entries,
         "structuredBytecodeRate": (structured_entries / len(coverage)) if coverage else 0.0,
         "requiredMixinPoints": list(corpus.get("requiredMixinPoints", [])),
