@@ -42,8 +42,8 @@ the Mojang server jar into this repository.
 | Lifecycle and Fabric-style events | `IMPLEMENTED-PARTIAL` | server/tick/world/player/block/damage/spawn callbacks; networking send is an explicit no-op transport boundary |
 | Commands | `IMPLEMENTED-PARTIAL` | minimal Brigadier tree/literal/string/integer execution and registration; redirects, suggestions, and full parser parity are absent |
 | Mixin `HEAD`/`TAIL`/`RETURN`/simple `Overwrite` | `IMPLEMENTED-PARTIAL` | pre-definition transformer plus native routing; corpus cases 11, 12, and 16 pass, with manual hooks retained only as fallback |
-| Accessor/Invoker/Shadow/Redirect/Modify* | `IMPLEMENTED-PARTIAL` | structural transformer and corpus cases 09, 10, 15, and 17–20 pass; unsupported constructor/frame cases remain fail-closed |
-| Structured class-file bytecode transformation | `IMPLEMENTED-PARTIAL` | `25/25` fixture cases pass; manifest covers `9/14` declared methods (`64.3%`) and all 10 declared injection-point names |
+| Accessor/Invoker/Shadow/Redirect/Modify* | `IMPLEMENTED-PARTIAL` | structural transformer and corpus cases 09, 10, 15, and 17–20 pass; unsupported constructor/verifier-state cases remain fail-closed |
+| Structured class-file bytecode transformation | `IMPLEMENTED-PARTIAL` | `25/25` fixture cases pass; manifest covers 82 declared methods (52 native + 30 wrapper), with 9 structured methods (`11.0%`) and all 10 declared injection-point names |
 | Official Fabric Loader/Knot probe | `PROBE-PASS / DECLARED-LIMITATION` | pinned Loader `0.16.9`, Knot, Sponge Mixin, ASM, and intermediary artifacts pass `tools/verify_fabric_runtime.py --offline --probe`; the production runtime is not the Mojang provider |
 
 ## Source ownership
@@ -88,8 +88,11 @@ cppfm_jvm_fixture       PASS
 test_jvm_handles        PASS
 jvm_runtime             PASS
 jvm_transformer         PASS
+jvm_api                 PASS
 jvm_compatibility       PASS (25/25)
+jvm_corpus              PASS (25/25)
 jvm_manifest            PASS
+jvm_contract_audit       PASS
 official_loader_probe   PASS (pinned 0.16.9/Knot/Mixin)
 ```
 
@@ -104,9 +107,11 @@ isolation, and two-mod ordering. The official probe records
 `CPPFM_OFFICIAL_ENTRYPOINTS_DONE` and `CPPFM_OFFICIAL_MIXIN_RETURN`; these are
 boundary tests, not evidence of arbitrary mod or client compatibility.
 
-The generated manifest reports `methodCoverage=14`, `nativeBackend=14`, and
-`structuredBytecode=9` (`64.3%`). Its structural declaration covers the 10 named
-injection points and 9 transformer names exercised by the corpus.
+The generated manifest reports 82 method entries: `nativeBackend=52` and
+`wrapperBackend=30`. Nine entries have `structuredBytecode` coverage (`9/82`,
+`11.0%`). Its structural declaration covers the 10 named injection points and 9
+transformer names exercised by the corpus; `jvm_contract_audit` verifies that every
+declared method has exactly one backend classification.
 
 ## Explicit non-goals
 
@@ -118,6 +123,6 @@ no other protocol version is part of this implementation.
 Further Mixin coverage requires additional versioned bytecode cases and a real mod
 corpus. Further API coverage requires per-method ABI/evidence entries; adding names
 to the shadow package alone is not sufficient. The current implementation remains
-bounded: cancellable injections that need new StackMapTable frames, constructor
-uninitialized-object flow, client-only mixins, and universal arbitrary Fabric mod
-compatibility are intentionally not claimed.
+bounded: constructor uninitialized-object flow, unverifiable or unsupported frame
+states, client-only mixins, and universal arbitrary Fabric mod compatibility are
+intentionally not claimed.

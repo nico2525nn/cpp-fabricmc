@@ -11,15 +11,15 @@
 | field | value |
 |---|---|
 | `updated` | `2026-09-05` |
-| `implementation_baseline` | `db5164248fe011ecf9293449aec3925578d7cc3e` |
-| `implementation_baseline_short` | `db51642` |
-| `documentation_commit` | `db5164248fe011ecf9293449aec3925578d7cc3e` |
-| `main_integration_merge` | `ddb15090190d1ff879cc140912579e56e94d44cb` |
+| `implementation_baseline` | `c3a5e49e41261dacb4b9454c538aa87575fa9546` |
+| `implementation_baseline_short` | `c3a5e49` |
+| `documentation_commit` | `c3a5e49e41261dacb4b9454c538aa87575fa9546` (documentation synchronized to this source snapshot) |
+| `main_integration_merge` | `b399a68` |
 | `plan` | `plan51` |
 | `phase` | `embedded-jvm-boundary` |
 | `phase_status` | `IMPLEMENTED_WITH_DECLARED_LIMITATIONS` |
 | `publication_status` | `BLOCKED` |
-| `runtime_reference_snapshot` | `ddb15090190d1ff879cc140912579e56e94d44cb` |
+| `runtime_reference_snapshot` | `c3a5e49e41261dacb4b9454c538aa87575fa9546` |
 | `canonical_workflow` | `docs/DEVELOPMENT.md#research-workflow` |
 | `research_entrypoint` | `docs/research-prompt.md` is a legacy redirect only |
 | `research_viewpoints` | `16` current viewpoints; old `13` wording is historical |
@@ -76,10 +76,10 @@ proven, and historical numbered-row `DONE` values are not universal parity claim
 
 ## 4. Exact final-gates evidence
 
-These are the carried-forward exact main-checkout results recorded for runtime
-snapshot `17ab09f` on 2026-09-05. The post-fix wide soak is listed separately from
-the carried-forward focused gates. The plan51 boundary results are appended to the
-same evidence ledger and are identified by their target names:
+These are the carried-forward exact main-checkout results plus the plan51 rerun
+against implementation snapshot `c3a5e49` on 2026-09-05. The post-fix wide soak is
+listed separately from the focused gates. Results are identified by their target
+names:
 
 | target | result | status / consequence |
 |---|---|---|
@@ -116,8 +116,11 @@ same evidence ledger and are identified by their target names:
 | JVM fixture ABI invalidation | `PASS` | CMake now depends on the Java classes stamp, so a changed shadow annotation/API recompiles the fixture instead of reusing stale bytecode |
 | `jvm_runtime` | `PASS` | embedded HotSpot, entrypoint, command registration, World API, lifecycle, Mixin HEAD/RETURN/Overwrite, tick, and owned clean shutdown |
 | `jvm_transformer` | `PASS` | pre-definition transformer contract, verifier-safe bytecode rewrite, callback/local preservation, and transform-order checks |
+| `jvm_api` | `PASS` | Fabric-style event, command, registry, and networking callback surface contract |
 | `jvm_compatibility` | `PASS` | all 25 plan51 fixture cases pass in one `cppfm` process; report status `PASS`, 25/25 fixtures, 0 errors |
-| `jvm_manifest` | `PASS` | declarative protocol-769 ABI manifest reproducibly generated; 14 methods, 9 structured methods, 10 injection points, 9 transformer names |
+| `jvm_corpus` | `PASS` | executable 25-case compatibility corpus passes end-to-end |
+| `jvm_manifest` | `PASS` | declarative protocol-769 ABI manifest reproducibly generated; 82 methods (52 native + 30 wrapper), 9 structured methods, 10 injection points, 9 transformer names |
+| `jvm_contract_audit` | `PASS` | every declared ABI method has exactly one native or wrapper backend classification |
 | official Loader/Knot probe | `PASS / DECLARED-LIMITATION` | offline pinned Loader 0.16.9/Knot/Mixin probe records all seven expected markers; no Mojang server/provider is shipped |
 
 The three `soak_bot` runs close the former bot-soak blocker. The chunk memory/generation
@@ -164,8 +167,9 @@ proof, missing long-run artifact, or missing real-client artifact into a pass.
 
 Next actions are to keep the E-14 assertion unchanged, retain the interrupted 7200s
 soak as a negative diagnostic artifact, and retain the long-run/real-client evidence
-boundaries. Broader API, constructor/frame, real-mod, or universal compatibility work
-requires a new authorized plan after the bounded plan51 evidence is reviewed.
+boundaries. Broader API, remaining constructor/verifier-state, real-mod, or universal
+compatibility work requires a new authorized plan after the bounded plan51 evidence is
+reviewed.
 
 ## 8. Plan49 implementation and evidence handoff
 

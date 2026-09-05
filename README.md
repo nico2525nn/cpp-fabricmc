@@ -76,7 +76,7 @@ or long-run behavior a universal vanilla-parity claim.
 ## Testing — evidence (what the numbers mean)
 
 - **`test_native` (C++ self-test, status/join + plan38 QC/macro/predicate16 cases: status/join/chunk/chat/persist/multi/stress + plan34 fuzz/soak):** `ALL PASS`, 2.33s — run `./build/test_native ./build/cppfm`. Verifies `status 769`, `Login Success`, `Join Game`, `LevelChunkWithLight`, `BlockUpdate` broadcast, `SystemChat`, and cross-client visibility.
-- **Plan51 JVM boundary (`test_jvm_handles`, `jvm_manifest`, `jvm_runtime`, `jvm_transformer`, `jvm_compatibility`):** all `PASS` — opaque-handle/routing invariants, reproducible protocol-769 shadow manifest, process-level HotSpot fixture, structural transformer contract, and `25/25` compatibility corpus. The offline official Loader/Knot probe also passes. See [PLAN51_JVM.md](docs/PLAN51_JVM.md).
+- **Plan51 JVM boundary (`test_jvm_handles`, `jvm_manifest`, `jvm_runtime`, `jvm_transformer`, `jvm_api`, `jvm_compatibility`, `jvm_corpus`, `jvm_contract_audit`):** all `PASS` — opaque-handle/routing invariants, reproducible protocol-769 shadow manifest (82 methods: 52 native + 30 wrapper), process-level HotSpot fixture, structural transformer contract, and `25/25` compatibility corpus. The offline official Loader/Knot probe also passes. See [PLAN51_JVM.md](docs/PLAN51_JVM.md).
 - **`test_server_full` (full live-server protocol/gameplay/admin suite):** `234 PASS 0 FAIL` — run the current server-full harness as described in [Verification](docs/VERIFICATION.md).
 - **`test_smoke_80` (80-row taxonomy + plan32-41 拡張, `tests/test_smoke_80.cpp`):** `212 PASS 0 FAIL` (80-row taxonomy + 82 拡張チェック plan41 horse/vehicle/bench/recipes) — each check verifies a vanilla packet/NBT (e.g., `worldborder size → InitializeWorldBorder 0x26`, `glowstone → UpdateLight 0x2B`, `wither → BossBar 0x0A`, `ActionBar 0x51`, `OpenHorseWindow 0x24`, `VehicleMove 0x33`, predicate 22). Run `./build/test_smoke_80 ./build/cppfm` (450s, 600s under load; `=== SMOKE 80: 212 PASS 0 FAIL ===`, exit 0).
 - **`test_scoreboard_reset` (ResetScore `0x49` round-trip, `tests/test_scoreboard_reset.cpp`):** `22/22 PASS` — holder + optional objectiveName round-trip / wildcard null broadcast / copy-before-erase. Run `./build/test_scoreboard_reset` (ctest `scoreboard_reset`, TIMEOUT 30).
@@ -181,7 +181,7 @@ ctest -R soak_bot --output-on-failure --timeout 400                 # soak_bot 3
 # 24hフルはnightlyのみ。現時点で受理済みの2h/24h artifactはない。後始末は `cppfm --por[t]` を確認して所有PIDだけを終了する。
 ```
 
-The current integrated baseline is `ddb15090190d1ff879cc140912579e56e94d44cb`.
+The current integrated baseline is `c3a5e49e41261dacb4b9454c538aa87575fa9546`.
 The carried-forward native runtime record at `17ab09f5220bf99203d2aea2b2c9d65f763f433b`
 keeps the only allowed gameplay failure visible: `test_spec_wire` `392 PASS 0 FAIL 0 SKIP`,
 `test_wire_full` `405 PASS 0 FAIL 0 SKIP`, `test_wire_b6` `133 PASS 0 FAIL`,

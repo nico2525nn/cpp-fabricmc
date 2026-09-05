@@ -3,7 +3,7 @@
 This directory is the current specification index for the clean-room C++ server. The
 canonical snapshot is for **Minecraft Java Edition 1.21.4**, **protocol 769**, and
 **DataVersion 4189**. It describes the behavior of the integrated implementation at
-runtime snapshot `ddb15090190d1ff879cc140912579e56e94d44cb`, rechecked on 2026-09-05.
+runtime snapshot `c3a5e49e41261dacb4b9454c538aa87575fa9546`, rechecked on 2026-09-05.
 Documentation does not change the executable, packet registry, test assertions, or
 generated data.
 
@@ -116,7 +116,7 @@ registry.
 
 The following exact native results were carried forward from runtime snapshot
 `17ab09f`; plan51 boundary results were rechecked against integrated baseline
-`ddb1509`. Counts are not inherited from stale prose and must not be inflated or
+`c3a5e49`. Counts are not inherited from stale prose and must not be inflated or
 averaged to make a gate pass.
 
 | command/target | result |
@@ -138,8 +138,8 @@ averaged to make a gate pass.
 | `test_plan43` | `82 PASS 0 FAIL` |
 | `test_smoke_80` | `212 PASS 0 FAIL` |
 | `test_gameplay_full` | `803 PASS / 1 intentional E-14 FAIL / 804`, exit 1 |
-| `test_jvm_handles` / `jvm_manifest` / `jvm_runtime` | `PASS` / `PASS` / `PASS`; see [PLAN51_JVM.md](PLAN51_JVM.md) |
-| `jvm_transformer` / `jvm_compatibility` | `PASS` / `PASS`; transformer contract and all `25/25` fixture cases pass |
+| `test_jvm_handles` / `jvm_manifest` / `jvm_runtime` | `PASS` / `PASS` / `PASS`; manifest covers 82 methods (52 native + 30 wrapper), see [PLAN51_JVM.md](PLAN51_JVM.md) |
+| `jvm_transformer` / `jvm_api` / `jvm_compatibility` / `jvm_corpus` / `jvm_contract_audit` | all `PASS`; transformer/API contracts, all `25/25` fixture cases, and exact backend classification pass |
 | official Loader/Knot probe | `PASS`; pinned Loader `0.16.9`, Knot/Mixin, ASM, intermediary, and shadow target markers verified offline; no Mojang provider |
 | `test_server_full` | `234 PASS 0 FAIL` |
 | `multi_client` | `ALL PASS` in `17.83s` |
