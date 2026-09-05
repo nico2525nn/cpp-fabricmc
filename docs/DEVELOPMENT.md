@@ -2,7 +2,7 @@
 
 This guide is for the clean-room C++ implementation of Minecraft Java 1.21.4,
 protocol 769, DataVersion 4189. The source snapshot for this canonical document is
-runtime snapshot `17ab09f5220bf99203d2aea2b2c9d65f763f433b` (2026-09-05). Fabric Loader
+runtime snapshot `74bd5ffbda03f30bc5af0c96a11ec3416bf1a827` (2026-09-05). Fabric Loader
 0.16.9 is a version/reference boundary; plan51 adds an optional bounded embedded JVM,
 but does not embed the official Loader/Knot.
 

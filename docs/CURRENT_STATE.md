@@ -11,15 +11,15 @@
 | field | value |
 |---|---|
 | `updated` | `2026-09-05` |
-| `implementation_baseline` | `plan51 integration commit (recorded after merge)` |
-| `implementation_baseline_short` | `plan51` |
-| `documentation_commit` | `955acdfe652d3ea7fb625850acbd43f75b947599` |
-| `main_integration_merge` | `d1c6a7fa2263da669c670e7bc9c6182113cd299c` |
+| `implementation_baseline` | `74bd5ffbda03f30bc5af0c96a11ec3416bf1a827` |
+| `implementation_baseline_short` | `74bd5ff` |
+| `documentation_commit` | `74bd5ffbda03f30bc5af0c96a11ec3416bf1a827` |
+| `main_integration_merge` | `74bd5ffbda03f30bc5af0c96a11ec3416bf1a827` |
 | `plan` | `plan51` |
 | `phase` | `embedded-jvm-boundary` |
 | `phase_status` | `IMPLEMENTED_WITH_DECLARED_LIMITATIONS` |
 | `publication_status` | `BLOCKED` |
-| `runtime_reference_snapshot` | `17ab09f5220bf99203d2aea2b2c9d65f763f433b` |
+| `runtime_reference_snapshot` | `74bd5ffbda03f30bc5af0c96a11ec3416bf1a827` |
 | `canonical_workflow` | `docs/DEVELOPMENT.md#research-workflow` |
 | `research_entrypoint` | `docs/research-prompt.md` is a legacy redirect only |
 | `research_viewpoints` | `16` current viewpoints; old `13` wording is historical |
@@ -33,8 +33,7 @@ The previous baseline was the plan50 runtime follow-up after the plan49 implemen
 the main graph: docs `e978dc6`, network `7894a4c`, block `20113bf`, and entity
 `e0ca08e` (historical plan49 merges). Plan51 adds an optional embedded JVM boundary
 without changing generated data, protocol 769, or the `docs-legacy/` archive. The
-plan51 merge hash is recorded in this table once the dedicated implementation branch
-is integrated.
+plan51 implementation and its no-ff integration are recorded above.
 
 ## 2. Prior plan48 and cleanup record
 
