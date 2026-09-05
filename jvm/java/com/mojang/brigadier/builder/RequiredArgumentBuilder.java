@@ -2,6 +2,7 @@ package com.mojang.brigadier.builder;
 
 import com.mojang.brigadier.arguments.ArgumentType;
 import com.mojang.brigadier.tree.ArgumentCommandNode;
+import com.mojang.brigadier.tree.CommandNode;
 import com.mojang.brigadier.suggestion.SuggestionProvider;
 
 public class RequiredArgumentBuilder<S, T> extends ArgumentBuilder<S, RequiredArgumentBuilder<S, T>> {
@@ -22,8 +23,9 @@ public class RequiredArgumentBuilder<S, T> extends ArgumentBuilder<S, RequiredAr
     public SuggestionProvider<S> getSuggestionsProvider() { return suggestions; }
     @Override public ArgumentCommandNode<S, T> build() {
         ArgumentCommandNode<S, T> node = new ArgumentCommandNode<>(
-            name, type, command, requirement, null, null, false, suggestions);
+            name, type, command, requirement, redirect, redirectModifier, forks, suggestions);
         for (ArgumentBuilder<S, ?> child : children) node.addChild(child.build());
+        for (CommandNode<S> child : childNodes) node.addChild(child);
         return node;
     }
 }

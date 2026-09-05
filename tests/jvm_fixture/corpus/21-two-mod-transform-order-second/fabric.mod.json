@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "corpus21b_two_mod_transform_order",
+  "version": "1.0.0",
+  "name": "cppfm corpus 21 second transform mod",
+  "environment": "server",
+  "depends": {
+    "corpus20_local_capture": "*",
+    "corpus21_two_mod_transform_order": "*"
+  },
+  "mixins": ["corpus21b.mixins.json"]
+}

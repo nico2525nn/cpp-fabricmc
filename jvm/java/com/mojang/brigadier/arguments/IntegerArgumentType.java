@@ -29,18 +29,10 @@ public final class IntegerArgumentType implements ArgumentType<Integer> {
     public int getMaximum() { return maximum; }
 
     @Override public Integer parse(StringReader reader) throws CommandSyntaxException {
-        String remaining = reader.getRemaining();
-        int end = 0;
-        while (end < remaining.length() && !Character.isWhitespace(remaining.charAt(end))) ++end;
-        if (end == 0) throw new CommandSyntaxException("expected integer");
-        final int value;
-        try { value = Integer.parseInt(remaining.substring(0, end)); }
-        catch (NumberFormatException failure) {
-            throw new CommandSyntaxException("invalid integer", failure);
-        }
+        final int value = reader.readInt();
         if (value < minimum || value > maximum)
             throw new CommandSyntaxException("integer outside range");
-        reader.setCursor(reader.getCursor() + end);
         return value;
     }
+    @Override public java.util.Collection<String> getExamples() { return java.util.List.of("0", "1", "-1"); }
 }

@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "corpus15_redirect",
+  "version": "1.0.0",
+  "name": "cppfm corpus 15 redirect",
+  "environment": "server",
+  "depends": {"corpus14_inject_field": "*"},
+  "mixins": ["corpus15.mixins.json"],
+  "entrypoints": {"server": ["cppfm.corpus.fixture15.RedirectFixture"]}
+}

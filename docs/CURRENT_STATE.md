@@ -25,7 +25,7 @@
 | `research_viewpoints` | `16` current viewpoints; old `13` wording is historical |
 | `taxonomy_snapshot` | MISSING `#1–#90`; historical matrix counts `DONE=90, PARTIAL=0, TODO=0` |
 | `strict_assessment_1` | `78 gaps`; `HISTORICAL` archive label, not a current aggregate |
-| `next_plan` | `plan52` only if separately authorized for structured transformation or remaining declared boundaries; not started |
+| `next_plan` | `plan52` only if separately authorized for broader API/arbitrary-mod coverage or remaining declared boundaries; not started |
 
 The previous baseline was the plan50 runtime follow-up after the plan49 implementation integration and cleanup commit
 `db12df96093a0869e958f62b11f9a9cd68ba3ef1` and safety commit
@@ -62,7 +62,7 @@ explicit rather than being converted into a broad PASS:
 | `Structures.hpp` legacy API | `RESOLVED` | removed by `db12df96093a0869e958f62b11f9a9cd68ba3ef1`; `StructureManager`/`StructurePlacer` remain the current structure owners |
 | session mining versus `MiningCalculator` | `RESOLVED (plan49 scope)` | session start/finish and tick completion now share `MiningCalculator` context/results; `test_mining_full` is `59/59` and live smoke/server paths pass |
 | `MobBehaviorSpec` coverage | `RESOLVED (plan49 scope)` / `DECLARED-LIMITATION` | 12 descriptor rows are wired to live AI and gameplay assertions; broader species-wide vanilla equivalence remains outside this targeted plan |
-| plan51 embedded JVM boundary | `IMPLEMENTED-PARTIAL` | optional HotSpot/JNI bridge, shadow ABI, fallback metadata loader, selected events, and bounded Mixin hook shell pass focused evidence; official Fabric Loader/Knot, arbitrary JVM mods, and general bytecode transformation remain unsupported; see [PLAN51_JVM.md](PLAN51_JVM.md) |
+| plan51 embedded JVM boundary | `IMPLEMENTED-PARTIAL` | optional HotSpot/JNI bridge, shadow ABI, selected events, version-locked pre-definition transformer, selective routing, 25/25 corpus, and official Loader/Knot probe pass; arbitrary JVM mods and universal bytecode compatibility remain declared limitations; see [PLAN51_JVM.md](PLAN51_JVM.md) |
 | retained marker/comment inventory | `NOT-FULLY-MEASURED` | the cleanup grep was `0` for legacy references, but no complete zero-marker inventory was proven; do not claim one |
 | `tools/soak_bot.py --duration 300` | `RESOLVED` | three integrated main runs passed; each had KeepAlive `30`, chunks `182`, time updates `300`, kicks/EOF/server-exit/transport/protocol errors `0`, and owned cleanup PASS |
 | chunk generation/save/unload memory | `IMPLEMENTED; 30M DIAGNOSTIC PASS / 2H NOT-ACCEPTED` | generation is serialized per world; async save no longer copies a full `Chunk`; eviction no longer adds an extra 32-block ring; bounded allocation reuse is in `17ab09f`; the 1800s run passes at `114504→128868kB` (`+12.5%`), while the earlier 7200s attempt on parent `d1c6a7f` was not accepted at `+19.5%` |
@@ -114,7 +114,10 @@ same evidence ledger and are identified by their target names:
 | `test_jvm_handles` | `PASS` | generation-safe opaque handle invalidation/address reuse and selective native/JVM routing |
 | `cppfm_jvm_classes` / `cppfm_jvm_fixture` | `PASS` | Java shadow ABI and deterministic server-side fixture compile |
 | `jvm_runtime` | `PASS` | embedded HotSpot, entrypoint, command registration, World API, lifecycle, Mixin HEAD/RETURN/Overwrite, tick, and owned clean shutdown |
-| `jvm_manifest` | `PASS` | declarative protocol-769 ABI manifest reproducibly generated; structured bytecode is explicitly reported unavailable |
+| `jvm_transformer` | `PASS` | pre-definition transformer contract, verifier-safe bytecode rewrite, callback/local preservation, and transform-order checks |
+| `jvm_compatibility` | `PASS` | all 25 plan51 fixture cases pass in one `cppfm` process; report status `PASS`, 25/25 fixtures, 0 errors |
+| `jvm_manifest` | `PASS` | declarative protocol-769 ABI manifest reproducibly generated; 14 methods, 9 structured methods, 10 injection points, 9 transformer names |
+| official Loader/Knot probe | `PASS / DECLARED-LIMITATION` | offline pinned Loader 0.16.9/Knot/Mixin probe records all seven expected markers; no Mojang server/provider is shipped |
 
 The three `soak_bot` runs close the former bot-soak blocker. The chunk memory/generation
 follow-up is covered by the passing 600-second wide soak and the new 1800-second
@@ -126,11 +129,13 @@ real-client/GUI artifact exists.
 ## 5. Declared limitations
 
 - **E-14 Fabric JVM-mod boundary:** plan51 now executes a bounded dependency-free
-  shadow ABI through optional embedded HotSpot/JNI, with selected callbacks and a
-  manually wired Mixin hook shell. Official Fabric Loader/Knot, arbitrary Fabric JVM
-  mods, and general class-file transformation still cannot execute as supported
-  server extensions inside `cppfm`; the one gameplay failure is intentional and must
-  remain an expected failure.
+  shadow ABI through optional embedded HotSpot/JNI, with selected callbacks, a
+  version-locked pre-definition class-file transformer, and selective native/JVM
+  routing. The 25-case dependency-free corpus passes, and the pinned official
+  Loader/Knot stack passes a separate offline probe. The production path is still
+  not the Mojang GameProvider; arbitrary Fabric JVM mods and universal bytecode
+  compatibility remain unsupported. The one gameplay failure is intentional and
+  must remain an expected failure.
 - **Vanilla Xoroshiro L3:** `test_seed_parity` proves the stated L1/L2 evidence, but
   exact vanilla Xoroshiro byte parity is not independently proven.
 - **Long-run evidence:** the three 300-second bot runs, the 300-second synthetic soak,
@@ -158,8 +163,8 @@ proof, missing long-run artifact, or missing real-client artifact into a pass.
 
 Next actions are to keep the E-14 assertion unchanged, retain the interrupted 7200s
 soak as a negative diagnostic artifact, and retain the long-run/real-client evidence
-boundaries. Any structured transformer or broader Fabric API work requires a new
-authorized plan after the bounded plan51 evidence is reviewed.
+boundaries. Broader API, constructor/frame, real-mod, or universal compatibility work
+requires a new authorized plan after the bounded plan51 evidence is reviewed.
 
 ## 8. Plan49 implementation and evidence handoff
 

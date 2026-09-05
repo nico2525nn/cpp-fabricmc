@@ -4,12 +4,13 @@ This guide is for the clean-room C++ implementation of Minecraft Java 1.21.4,
 protocol 769, DataVersion 4189. The source snapshot for this canonical document is
 runtime snapshot `74bd5ffbda03f30bc5af0c96a11ec3416bf1a827` (2026-09-05). Fabric Loader
 0.16.9 is a version/reference boundary; plan51 adds an optional bounded embedded JVM,
-but does not embed the official Loader/Knot.
+a version-locked class-file transformer, and a separate offline official Loader/Knot
+probe. The production path does not ship the Mojang GameProvider/server jar.
 
 **Status:** development map and extension contract. **Limitations:** this file does
 not grant permission to change runtime behavior, alter test assertions, or expand the
-plan51 JVM boundary. Further Fabric API, class-file transformer, or arbitrary-mod
-work requires a separately versioned plan and fresh evidence.
+plan51 JVM boundary. Further Fabric API, transformer coverage, or arbitrary-mod work
+requires a separately versioned plan and fresh evidence.
 
 ## 1. Feature overview
 
@@ -59,7 +60,7 @@ Use `DECLARED-LIMITATION` when a claim has not been independently verified.
 | gameplay | `src/game/Entities`, `BehaviorTree`, `AiBrain`, `CombatManager`, `HungerManager` | entities, AI, damage, survival |
 | data/UI | `Items`, `Containers`, `MenuInteraction`, `Recipes`, `DatapackManager`, `src/brigadier` | components, menus, recipes, commands |
 | persistence | `WorldDataManager`, `Persistence`, `Anvil`, `RegionFile`, `SessionLock` | DataVersion 4189 and recovery |
-| JVM boundary | `src/jvm/`, `jvm/java/`, `jvm/shadow_api.json` | optional JNI/HotSpot bridge; [PLAN51_JVM.md](PLAN51_JVM.md) |
+| JVM boundary | `src/jvm/`, `jvm/java/`, `jvm/shadow_api.json`, `jvm/vendor/` | optional JNI/HotSpot bridge, structural transformer, and pinned official-loader probe; [PLAN51_JVM.md](PLAN51_JVM.md) |
 
 Generated IDs under `src/generated/` and assets under `assets/` are inputs, not
 handwritten canonical tables.
@@ -204,8 +205,9 @@ One claim has one canonical owner. A link is preferable to a copied table.
   the current source and test.
 - Keep `docs/mob_stats_149.csv` at its stable default runtime path.
 - Do not change `CHECK(false, "E-14 HONEST GAP...")` to make a test exit zero.
-- Do not call arbitrary JVM mod execution, official Fabric Loader/Knot execution, or
-  vanilla RNG L3 parity “supported” without a new versioned contract and evidence.
+- Do not call arbitrary JVM mod execution, Mojang GameProvider execution, or vanilla
+  RNG L3 parity “supported” without a new versioned contract and evidence. The
+  official Loader/Knot result is an offline probe against the shadow provider.
 - Do not use broad process-kill patterns in development or test cleanup.
 
 ## 12. Performance

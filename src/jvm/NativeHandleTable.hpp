@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <unordered_map>
 
 namespace cppfm::jvm {
@@ -40,6 +41,7 @@ public:
     std::optional<HandleRecord> describe(std::uint64_t handle) const;
     bool valid(std::uint64_t handle,
                HandleKind expected = HandleKind::Unknown) const;
+    HandleKind kind(std::uint64_t handle) const noexcept;
     std::size_t size() const;
     void clear();
 
@@ -68,6 +70,10 @@ private:
     mutable std::mutex mutex_;
     std::unordered_map<Key, std::uint64_t, KeyHash> byAddress_;
     std::unordered_map<std::uint64_t, HandleRecord> byHandle_;
+    // Keep a generation per address/kind even though object ids are monotonic.
+    // This makes the stale-handle invariant explicit and protects a future id
+    // allocator change from silently re-validating an old Java wrapper.
+    std::unordered_map<Key, std::uint16_t, KeyHash> generations_;
     std::uint64_t nextId_ = 1;
 };
 
