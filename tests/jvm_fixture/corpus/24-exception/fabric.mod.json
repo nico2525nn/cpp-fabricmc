@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "id": "corpus24_exception",
+  "version": "1.0.0",
+  "name": "cppfm corpus 24 exception isolation",
+  "environment": "server",
+  "depends": {"corpus23_threading": "*"},
+  "entrypoints": {"server": ["cppfm.corpus.fixture24.ExceptionIsolation"]}
+}

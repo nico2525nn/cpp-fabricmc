@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "corpus11_inject_head",
+  "version": "1.0.0",
+  "name": "cppfm corpus 11 inject head",
+  "environment": "server",
+  "depends": {"corpus10_invoker_mixin": "*"},
+  "mixins": ["corpus11.mixins.json"],
+  "entrypoints": {"server": ["cppfm.corpus.fixture11.InjectHead"]}
+}

@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "id": "corpus22_reentrant_callback",
+  "version": "1.0.0",
+  "name": "cppfm corpus 22 reentrant callback",
+  "environment": "server",
+  "depends": {"corpus21_two_mod_transform_order": "*"},
+  "entrypoints": {"server": ["cppfm.corpus.fixture22.ReentrantCallback"]}
+}

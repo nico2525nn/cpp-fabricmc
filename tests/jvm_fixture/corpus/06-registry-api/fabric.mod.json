@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "id": "corpus06_registry_api",
+  "version": "1.0.0",
+  "name": "cppfm corpus 06 registry API",
+  "environment": "server",
+  "depends": {"corpus05_entity_api": "*"},
+  "entrypoints": {"server": ["cppfm.corpus.fixture06.RegistryApi"]}
+}

@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "corpus16_overwrite",
+  "version": "1.0.0",
+  "name": "cppfm corpus 16 overwrite",
+  "environment": "server",
+  "depends": {"corpus15_redirect": "*"},
+  "mixins": ["corpus16.mixins.json"],
+  "entrypoints": {"server": ["cppfm.corpus.fixture16.OverwriteFixture"]}
+}
