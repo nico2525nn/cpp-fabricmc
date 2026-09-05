@@ -873,6 +873,7 @@ void GameServer::mobsTick() {
     std::vector<std::int32_t> despawn;
     std::vector<std::int32_t> deadIds;
     std::vector<std::shared_ptr<MobEntity>> drops;
+    std::vector<std::shared_ptr<MobEntity>> removed;
     {
         std::lock_guard lk(entsMtx_);
         for (auto it = mobs_.begin(); it != mobs_.end();) {
@@ -886,6 +887,7 @@ void GameServer::mobsTick() {
                 despawn.push_back(m->entityId);
                 if (MobEntity::isBoss(m->kind) && bossAI_) bossAI_->onDeath(*m);
                 mobAi_.erase(m->entityId);
+                removed.push_back(m);
                 it = mobs_.erase(it); continue;
             }
 
@@ -904,6 +906,7 @@ void GameServer::mobsTick() {
                 if (m->dead) {
                     deadIds.push_back(m->entityId); drops.push_back(m);
                     mobAi_.erase(m->entityId);
+                    removed.push_back(m);
                     it = mobs_.erase(it); continue;
                 }
             }
@@ -915,6 +918,7 @@ void GameServer::mobsTick() {
                 // slime / magma cube split
                 spawnSlimeSplit(*m);
                 mobAi_.erase(m->entityId);
+                removed.push_back(m);
                 it = mobs_.erase(it); continue;
             }
             // aging: babies grow up
@@ -937,6 +941,7 @@ void GameServer::mobsTick() {
                         deadIds.push_back(m->entityId); drops.push_back(m);
                         spawnSlimeSplit(*m);
                         mobAi_.erase(m->entityId);
+                        removed.push_back(m);
                         it = mobs_.erase(it); continue;
                     }
                 }
@@ -946,6 +951,7 @@ void GameServer::mobsTick() {
                 if (!isNight()) {
                     despawn.push_back(m->entityId);
                     mobAi_.erase(m->entityId);
+                    removed.push_back(m);
                     it = mobs_.erase(it); continue;
                 }
                 if (m->hasCreakingHeart) {
@@ -967,6 +973,7 @@ void GameServer::mobsTick() {
                     if (m->dead) {
                         deadIds.push_back(m->entityId); drops.push_back(m);
                         mobAi_.erase(m->entityId);
+                        removed.push_back(m);
                         it = mobs_.erase(it); continue;
                     }
                     // same-block 5s respawn near heart (vanilla softlock): if within same block as player >5s, respawn near heart
@@ -1026,11 +1033,13 @@ void GameServer::mobsTick() {
                     } else if (tickNo_ - m->creeperFuseStart >= MobEntity::CREEPER_FUSE_TICKS) {
                         const double cxp = m->x, cyp = m->y, czp = m->z;
                         const std::int32_t eid = m->entityId;
+                        const bool charged = m->creeperCharged;
                         WriteBuffer rm; rm.varint(1); rm.varint(eid);
                         broadcastPacketExcept(nullptr, pl::sc::RemoveEntities, rm);
                         mobAi_.erase(eid);
+                        removed.push_back(m);
                         it = mobs_.erase(it);
-                        explodeAt(cxp, cyp + 0.5, czp, m->creeperCharged ? 6.f : 3.f);
+                        explodeAt(cxp, cyp + 0.5, czp, charged ? 6.f : 3.f);
                         continue;
                     }
                 } else if (m->creeperIgnited && cd2 > 16) {
@@ -1062,6 +1071,7 @@ void GameServer::mobsTick() {
                     deadIds.push_back(m->entityId); drops.push_back(m);
                     spawnSlimeSplit(*m);
                     mobAi_.erase(m->entityId);
+                    removed.push_back(m);
                     it = mobs_.erase(it); continue;
                 }
             }
@@ -1107,6 +1117,10 @@ void GameServer::mobsTick() {
             ++it;
         }
     }
+    // Native/JVM callbacks may synchronously inspect the server.  Do not
+    // invoke them while entsMtx_ is held; Java re-entry must see a quiescent
+    // entity container and cannot deadlock behind the tick lock.
+    for (const auto& mob : removed) invalidateJvmMob(mob);
     for (auto id : despawn) {
         WriteBuffer b;
         b.varint(1); b.varint(id);

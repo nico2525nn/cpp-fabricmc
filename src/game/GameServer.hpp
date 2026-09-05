@@ -1146,6 +1146,10 @@ public:
         std::lock_guard lk(playersMtx_);
         return players_;
     }
+    std::vector<std::shared_ptr<MobEntity>> mobsSnapshot() const {
+        std::lock_guard lk(entsMtx_);
+        return mobs_;
+    }
     std::int64_t tickNoForTest() const { return tickNo_; }
     std::size_t playerCount() {
         std::lock_guard lk(playersMtx_);
@@ -1297,6 +1301,7 @@ public:
 
 private:
     void acceptLoop();
+    void invalidateJvmMob(const std::shared_ptr<MobEntity>& mob);
 
     ServerConfig cfg_;
     EntityDataLoader entityDataLoader_;
@@ -1304,7 +1309,7 @@ private:
     std::unique_ptr<World> netherWorld_, endWorld_;
     World* worlds_[3] = {};
     // entities
-    std::mutex entsMtx_;
+    mutable std::mutex entsMtx_;
     struct MobAiEntry {
         std::unique_ptr<Brain> brain;
         std::unique_ptr<AiContext> ctx;

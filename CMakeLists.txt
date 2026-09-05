@@ -302,6 +302,17 @@ target_include_directories(test_jvm_handles PRIVATE src)
 add_test(NAME jvm_handles COMMAND test_jvm_handles)
 set_tests_properties(jvm_handles PROPERTIES TIMEOUT 30)
 
+# plan51 §4/7/8/14/15/20–23: native ABI, generation, and dynamic-routing
+# invariants.  This test deliberately avoids starting a JVM so it remains
+# usable on build hosts without a Java fixture.
+add_executable(test_jvm_native_bridge
+    tests/test_jvm_native_bridge.cpp
+    src/jvm/NativeHandleTable.cpp
+    src/jvm/ModRoutingTable.cpp)
+target_include_directories(test_jvm_native_bridge PRIVATE src)
+add_test(NAME jvm_native_bridge COMMAND test_jvm_native_bridge)
+set_tests_properties(jvm_native_bridge PROPERTIES TIMEOUT 30)
+
 if(TARGET cppfm_jvm_fixture AND JNI_FOUND)
     add_test(NAME jvm_runtime
         COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/jvm_runtime_smoke.py"

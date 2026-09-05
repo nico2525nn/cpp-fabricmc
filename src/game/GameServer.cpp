@@ -32,4 +32,7 @@ namespace cppfm {
 std::atomic<bool> g_stopRequested{false};
 using namespace proto;
 // helpers (nowMs, packUuidFromUrl, kKit, blockNameByState) are in GameServerHelpers.hpp
+void GameServer::invalidateJvmMob(const std::shared_ptr<MobEntity>& mob) {
+    if (jvmRuntime_ && mob) jvmRuntime_->invalidateEntity(*mob);
+}
 } // namespace cppfm
