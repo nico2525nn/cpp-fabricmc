@@ -103,6 +103,13 @@ public final class CppModRuntime {
     private static ClassLoader modLoader;
     private static MinecraftServer server;
     private static boolean bootstrapped;
+    // These ids are supplied by the game/loader environment rather than by a
+    // jar under the configured mods directory.  Treating them as ordinary
+    // candidates makes otherwise valid Fabric metadata fail before an
+    // entrypoint can be initialized (for example `minecraft` and
+    // `fabricloader` in the public Carpet/FerriteCore jars).
+    private static final Set<String> BUILTIN_DEPENDENCIES =
+        Set.of("fabricloader", "minecraft", "java");
 
     private CppModRuntime() {}
 
@@ -554,8 +561,15 @@ public final class CppModRuntime {
         if (!(value instanceof List<?> list)) return;
         for (Object entry : list) {
             if (!(entry instanceof String name) || name.isEmpty()) continue;
-            if (name.indexOf('.') >= 0) output.add(name);
-            else output.add(prefix.isEmpty() ? name : prefix + "." + name);
+            String qualified = name.replace('/', '.');
+            // Mixin entries are package-relative paths, not Java binary names:
+            // names such as "ai.pathing.BlockStateBaseMixin" still belong
+            // below the config package.  Avoid adding the prefix twice when a
+            // producer has already emitted a qualified name.
+            if (!prefix.isEmpty() && !qualified.equals(prefix)
+                && !qualified.startsWith(prefix + "."))
+                qualified = prefix + "." + qualified;
+            output.add(qualified);
         }
     }
 
@@ -640,6 +654,7 @@ public final class CppModRuntime {
         if (visited.contains(candidate.id)) return;
         if (!visiting.add(candidate.id)) throw new IllegalArgumentException("cyclic mod dependency at " + candidate.id);
         for (String dependency : candidate.dependencies) {
+            if (BUILTIN_DEPENDENCIES.contains(dependency)) continue;
             Candidate required = byId.get(dependency);
             if (required == null) throw new IllegalArgumentException(candidate.id + " requires missing mod " + dependency);
             visit(required, byId, visiting, visited, order);
