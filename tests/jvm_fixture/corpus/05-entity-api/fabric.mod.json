@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "id": "corpus05_entity_api",
+  "version": "1.0.0",
+  "name": "cppfm corpus 05 entity API",
+  "environment": "server",
+  "depends": {"corpus04_world_api": "*"},
+  "entrypoints": {"server": ["cppfm.corpus.fixture05.EntityApi"]}
+}

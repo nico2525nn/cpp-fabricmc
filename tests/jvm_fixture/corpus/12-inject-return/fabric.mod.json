@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "corpus12_inject_return",
+  "version": "1.0.0",
+  "name": "cppfm corpus 12 inject return",
+  "environment": "server",
+  "depends": {"corpus11_inject_head": "*"},
+  "mixins": ["corpus12.mixins.json"],
+  "entrypoints": {"server": ["cppfm.corpus.fixture12.InjectReturn"]}
+}

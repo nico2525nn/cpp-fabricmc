@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "id": "corpus01_loader_entrypoint",
+  "version": "1.0.0",
+  "name": "cppfm corpus 01 loader entrypoint",
+  "environment": "server",
+  "entrypoints": {"server": ["cppfm.corpus.fixture01.LoaderEntrypoint"]}
+}
