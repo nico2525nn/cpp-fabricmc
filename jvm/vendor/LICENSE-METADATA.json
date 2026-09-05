@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "policy": "License and source URLs are recorded for every pinned runtime artifact. The intermediary POM does not declare a license, so it is intentionally not relabeled here.",
+  "artifacts": [
+    {
+      "coordinates": "net.fabricmc:fabric-loader:0.16.9",
+      "license": "Apache-2.0",
+      "licenseUrl": "https://github.com/FabricMC/fabric-loader/blob/0.16.9/LICENSE",
+      "sourceUrl": "https://github.com/FabricMC/fabric-loader/tree/0.16.9"
+    },
+    {
+      "coordinates": "net.fabricmc:sponge-mixin:0.15.4+mixin.0.8.7",
+      "license": "MIT",
+      "licenseUrl": "https://raw.githubusercontent.com/FabricMC/Mixin/main/LICENSE.txt",
+      "sourceUrl": "https://github.com/FabricMC/Mixin"
+    },
+    {
+      "coordinates": "org.ow2.asm:asm:9.7.1",
+      "license": "BSD-3-Clause",
+      "licenseUrl": "https://asm.ow2.io/license.html",
+      "sourceUrl": "https://asm.ow2.io/"
+    },
+    {
+      "coordinates": "org.ow2.asm:asm-analysis:9.7.1",
+      "license": "BSD-3-Clause",
+      "licenseUrl": "https://asm.ow2.io/license.html",
+      "sourceUrl": "https://asm.ow2.io/"
+    },
+    {
+      "coordinates": "org.ow2.asm:asm-commons:9.7.1",
+      "license": "BSD-3-Clause",
+      "licenseUrl": "https://asm.ow2.io/license.html",
+      "sourceUrl": "https://asm.ow2.io/"
+    },
+    {
+      "coordinates": "org.ow2.asm:asm-tree:9.7.1",
+      "license": "BSD-3-Clause",
+      "licenseUrl": "https://asm.ow2.io/license.html",
+      "sourceUrl": "https://asm.ow2.io/"
+    },
+    {
+      "coordinates": "org.ow2.asm:asm-util:9.7.1",
+      "license": "BSD-3-Clause",
+      "licenseUrl": "https://asm.ow2.io/license.html",
+      "sourceUrl": "https://asm.ow2.io/"
+    },
+    {
+      "coordinates": "net.fabricmc:intermediary:1.21.4",
+      "license": "UNSPECIFIED (POM has no license element)",
+      "licenseUrl": "https://github.com/FabricMC/intermediary",
+      "sourceUrl": "https://github.com/FabricMC/intermediary"
+    },
+    {
+      "coordinates": "io.github.llamalad7:mixinextras-fabric:0.4.1 (embedded in fabric-loader)",
+      "license": "MIT",
+      "licenseUrl": "https://github.com/LlamaLad7/MixinExtras/blob/0.4.1/LICENSE",
+      "sourceUrl": "https://github.com/LlamaLad7/MixinExtras/tree/0.4.1"
+    }
+  ]
+}
