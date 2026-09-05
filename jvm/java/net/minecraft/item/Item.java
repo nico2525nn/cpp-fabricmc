@@ -1,6 +1,8 @@
 package net.minecraft.item;
 
 import java.util.Objects;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import net.minecraft.block.BlockState;
 import net.minecraft.registry.RegistryEntry;
@@ -26,6 +28,8 @@ public class Item {
         private Rarity rarity = Rarity.COMMON;
         private FoodComponent food;
         private Item recipeRemainder;
+        private final Map<net.minecraft.component.DataComponentType<?>, Object> components = new LinkedHashMap<>();
+        private Object attributeModifiers;
         public Settings maxCount(int count) { if (count < 1) throw new IllegalArgumentException("maxCount must be positive"); maxCount = count; maxDamage = 0; return this; }
         public Settings maxDamage(int damage) { if (damage < 1) throw new IllegalArgumentException("maxDamage must be positive"); maxDamage = damage; maxCount = 1; return this; }
         public Settings fireproof() { fireproof = true; return this; }
@@ -41,21 +45,23 @@ public class Item {
             return this;
         }
         public Settings recipeRemainder(Item value) { recipeRemainder = value; return this; }
-        public <T> Settings component(net.minecraft.component.DataComponentType<T> type, T value) { return this; }
-        public Settings attributeModifiers(Object modifiers) { return this; }
+        public <T> Settings component(net.minecraft.component.DataComponentType<T> type, T value) { if (type != null) components.put(type, value); return this; }
+        public Settings attributeModifiers(Object modifiers) { attributeModifiers = modifiers; return this; }
         public int maxCount() { return maxCount; }
         public int maxDamage() { return maxDamage; }
         public boolean isFireproof() { return fireproof; }
         public Rarity rarity() { return rarity; }
         public FoodComponent food() { return food; }
         public Item recipeRemainder() { return recipeRemainder; }
+        public Map<net.minecraft.component.DataComponentType<?>, Object> components() { return Map.copyOf(components); }
+        public Object attributeModifiers() { return attributeModifiers; }
     }
 
     public Item() { this(Identifier.of("minecraft", "air"), 0, new Settings()); }
     public Item(Identifier id) { this(id, 0, new Settings()); }
     public Item(Identifier id, int rawState) { this(id, rawState, new Settings()); }
     public Item(Identifier id, Settings settings) { this(id, NEXT_CUSTOM_ID.getAndIncrement(), settings); }
-    private Item(Identifier id, int rawState, Settings settings) {
+    protected Item(Identifier id, int rawState, Settings settings) {
         this.id = id == null ? Identifier.of("minecraft", "air") : id;
         this.rawState = Math.max(0, rawState);
         this.settings = settings == null ? new Settings() : settings;

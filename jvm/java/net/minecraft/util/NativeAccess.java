@@ -154,6 +154,120 @@ public final class NativeAccess {
         catch (LinkageError | RuntimeException ignored) { return false; }
     }
 
+    public static String entityType(long handle) {
+        if (!usable(handle)) return "minecraft:unknown";
+        try {
+            String value = NativeBridge.nativeEntityType(handle);
+            return value == null || value.isEmpty() ? "minecraft:unknown" : value;
+        } catch (LinkageError | RuntimeException ignored) { return "minecraft:unknown"; }
+    }
+
+    public static int entityTypeId(long handle) {
+        if (!usable(handle)) return -1;
+        try { return NativeBridge.nativeEntityTypeId(handle); }
+        catch (LinkageError | RuntimeException ignored) { return -1; }
+    }
+
+    public static float entityHealth(long handle) {
+        if (!usable(handle)) return 0.0f;
+        try { return Math.max(0.0f, NativeBridge.nativeEntityHealth(handle)); }
+        catch (LinkageError | RuntimeException ignored) { return 0.0f; }
+    }
+
+    public static boolean setEntityHealth(long handle, float health) {
+        if (!usable(handle) || !Float.isFinite(health) || health < 0.0f) return false;
+        try { return NativeBridge.nativeEntitySetHealth(handle, health); }
+        catch (LinkageError | RuntimeException ignored) { return false; }
+    }
+
+    public static boolean entityDead(long handle) {
+        if (!usable(handle)) return false;
+        try { return NativeBridge.nativeEntityDead(handle); }
+        catch (LinkageError | RuntimeException ignored) { return false; }
+    }
+
+    public static long entityWorld(long handle) {
+        if (!usable(handle)) return 0L;
+        try { return NativeBridge.nativeEntityWorld(handle); }
+        catch (LinkageError | RuntimeException ignored) { return 0L; }
+    }
+
+    public static long entityCount() {
+        try { return Math.max(0, NativeBridge.nativeEntityCount()); }
+        catch (LinkageError | RuntimeException ignored) { return 0L; }
+    }
+
+    public static long entityHandle(int index) {
+        if (index < 0) return 0L;
+        try { return NativeBridge.nativeEntityHandle(index); }
+        catch (LinkageError | RuntimeException ignored) { return 0L; }
+    }
+
+    public static long worldTime(long handle) {
+        if (!usable(handle)) return 0L;
+        try { return NativeBridge.nativeWorldTime(handle); }
+        catch (LinkageError | RuntimeException ignored) { return 0L; }
+    }
+
+    public static int registryItemId(String name) {
+        if (name == null || name.isEmpty()) return -1;
+        try { return NativeBridge.nativeRegistryItemId(name); }
+        catch (LinkageError | RuntimeException ignored) { return -1; }
+    }
+
+    public static String registryItemName(int id) {
+        if (id < 0) return "";
+        try { return valueOrEmpty(NativeBridge.nativeRegistryItemName(id)); }
+        catch (LinkageError | RuntimeException ignored) { return ""; }
+    }
+
+    public static int registryBlockState(String name) {
+        if (name == null || name.isEmpty()) return -1;
+        try { return NativeBridge.nativeRegistryBlockState(name); }
+        catch (LinkageError | RuntimeException ignored) { return -1; }
+    }
+
+    public static String registryBlockName(int state) {
+        if (state < 0) return "";
+        try { return valueOrEmpty(NativeBridge.nativeRegistryBlockName(state)); }
+        catch (LinkageError | RuntimeException ignored) { return ""; }
+    }
+
+    public static int registryEntryCount(String registry) {
+        if (registry == null || registry.isEmpty()) return 0;
+        try { return Math.max(0, NativeBridge.nativeRegistryEntryCount(registry)); }
+        catch (LinkageError | RuntimeException ignored) { return 0; }
+    }
+
+    public static String registryEntryName(String registry, int id) {
+        if (registry == null || registry.isEmpty() || id < 0) return "";
+        try { return valueOrEmpty(NativeBridge.nativeRegistryEntryName(registry, id)); }
+        catch (LinkageError | RuntimeException ignored) { return ""; }
+    }
+
+    public static boolean sendPluginMessage(long handle, String channel, byte[] payload, int phase) {
+        if (!usable(handle) || channel == null || channel.isEmpty()) return false;
+        try { return NativeBridge.nativePlayerSendPluginMessage(handle, channel,
+            payload == null ? new byte[0] : payload.clone(), phase); }
+        catch (LinkageError | RuntimeException ignored) { return false; }
+    }
+
+    public static String serverSetting(String key) {
+        if (key == null || key.isEmpty()) return "";
+        try { return valueOrEmpty(NativeBridge.nativeServerSetting(key)); }
+        catch (LinkageError | RuntimeException ignored) { return ""; }
+    }
+
+    public static int routePath(String owner, String name, String descriptor) {
+        try { return NativeBridge.nativeRoutePath(owner, name, descriptor); }
+        catch (LinkageError | RuntimeException ignored) { return 0; }
+    }
+
+    public static long routeHash(String owner, String name, String descriptor) {
+        try { return NativeBridge.nativeRouteHash(owner, name, descriptor); }
+        catch (LinkageError | RuntimeException ignored) { return 0L; }
+    }
+
     public static boolean executeCommand(String command) {
         if (command == null || command.isBlank()) return false;
         try { return NativeBridge.nativeExecuteCommand(command); }

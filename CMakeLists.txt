@@ -101,6 +101,29 @@ if(CPPFM_JAVAC AND CPPFM_JAVA_SOURCES)
         add_custom_target(cppfm_jvm_transformer ALL
                           DEPENDS "${CPPFM_JVM_TRANSFORMER_STAMP}")
     endif()
+
+    # plan52: executable Fabric API/event/command contract fixture.  Keep it
+    # separate from the historical 25-mod corpus so the corpus count and its
+    # reports remain stable while the newly implemented surface gets a direct
+    # JVM-side execution gate.
+    file(GLOB_RECURSE CPPFM_JVM_API_SOURCES CONFIGURE_DEPENDS
+         "${CMAKE_CURRENT_SOURCE_DIR}/tests/jvm_api/*.java")
+    if(CPPFM_JAVA AND CPPFM_JVM_API_SOURCES)
+        set(CPPFM_JVM_API_DIR "${CMAKE_CURRENT_BINARY_DIR}/jvm/api-test")
+        set(CPPFM_JVM_API_STAMP "${CPPFM_JVM_API_DIR}/.stamp")
+        add_custom_command(
+            OUTPUT "${CPPFM_JVM_API_STAMP}"
+            COMMAND ${CMAKE_COMMAND} -E rm -rf "${CPPFM_JVM_API_DIR}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${CPPFM_JVM_API_DIR}"
+            COMMAND timeout --foreground --kill-after=5 90
+                    "${CPPFM_JAVAC}" --release 17 -encoding UTF-8
+                    -cp "${CPPFM_JVM_CLASSES_DIR}" -d "${CPPFM_JVM_API_DIR}"
+                    ${CPPFM_JVM_API_SOURCES}
+            COMMAND ${CMAKE_COMMAND} -E touch "${CPPFM_JVM_API_STAMP}"
+            DEPENDS cppfm_jvm_classes ${CPPFM_JVM_API_SOURCES}
+            VERBATIM)
+        add_custom_target(cppfm_jvm_api_test ALL DEPENDS "${CPPFM_JVM_API_STAMP}")
+    endif()
 endif()
 
 set(CPPFM_JVM_NATIVE_SOURCES
@@ -359,6 +382,15 @@ if(TARGET cppfm_jvm_transformer AND CPPFM_JAVA)
                 -cp "${CPPFM_JVM_CLASSES_DIR}:${CPPFM_JVM_TRANSFORMER_DIR}"
                 cppfm.transformer_fixture.TransformerContractTest)
     set_tests_properties(jvm_transformer PROPERTIES TIMEOUT 60
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+endif()
+if(TARGET cppfm_jvm_api_test AND CPPFM_JAVA)
+    add_test(NAME jvm_api
+        COMMAND timeout --foreground --kill-after=5 60
+                "${CPPFM_JAVA}" -ea
+                -cp "${CPPFM_JVM_CLASSES_DIR}:${CPPFM_JVM_API_DIR}"
+                cppfm.api_fixture.ApiSurfaceContractTest)
+    set_tests_properties(jvm_api PROPERTIES TIMEOUT 90
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 endif()
 if(TARGET cppfm_jvm_classes AND TARGET cppfm_jvm_manifest AND JNI_FOUND

@@ -12,7 +12,25 @@ public class FabricBlockSettings extends AbstractBlock.Settings {
     public FabricBlockSettings() { super(); }
 
     public static FabricBlockSettings create() { return new FabricBlockSettings(); }
-    public static FabricBlockSettings copyOf(Block block) { return new FabricBlockSettings(); }
+    public static FabricBlockSettings copyOf(Block block) {
+        FabricBlockSettings result = new FabricBlockSettings();
+        if (block == null || block.getSettings() == null) return result;
+        AbstractBlock.Settings source = block.getSettings();
+        result.strength(source.hardness(), source.resistance())
+            .luminance(source.luminance())
+            .collidable(source.collidableValue())
+            .slipperiness(source.slipperiness())
+            .velocityMultiplier(source.velocityMultiplier())
+            .sounds(source.sounds())
+            .mapColor(source.mapColor())
+            .pistonBehavior(source.pistonBehavior());
+        if (source.requiresToolValue()) result.requiresTool();
+        if (!source.opaqueValue()) result.nonOpaque();
+        if (source.dropsNothingValue()) result.dropsNothing();
+        if (source.randomTicks()) result.ticksRandomly();
+        if (source.isBurnable()) result.burnable();
+        return result;
+    }
     public FabricBlockSettings strength(float hardness) { super.strength(hardness); return this; }
     public FabricBlockSettings strength(float hardness, float resistance) {
         super.strength(hardness, resistance); return this;

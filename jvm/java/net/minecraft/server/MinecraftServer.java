@@ -28,7 +28,9 @@ public class MinecraftServer {
         this.playerManager = new PlayerManager();
     }
     public static MinecraftServer of(long handle) {
-        return WrapperCache.get(MinecraftServer.class, handle, MinecraftServer::new);
+        return handle == 0L
+            ? WrapperCache.getAllowZero(MinecraftServer.class, MinecraftServer::new)
+            : WrapperCache.get(MinecraftServer.class, handle, MinecraftServer::new);
     }
     public long nativeHandle() { return nativeHandle; }
     public int getTicks() {
