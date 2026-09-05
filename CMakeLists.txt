@@ -102,6 +102,51 @@ if(CPPFM_JAVAC AND CPPFM_JAVA_SOURCES)
                           DEPENDS "${CPPFM_JVM_TRANSFORMER_STAMP}")
     endif()
 
+    # plan51 §26: the Access Widener fixture is a focused byte-and-execution
+    # gate.  Keep its source set independent of the optional intermediary
+    # loader so a namespace mismatch cannot be hidden by that integration.
+    file(GLOB_RECURSE CPPFM_JVM_ACCESS_WIDENER_CORE_SOURCES CONFIGURE_DEPENDS
+         "${CMAKE_CURRENT_SOURCE_DIR}/jvm/java/cppfm/transform/*.java"
+         "${CMAKE_CURRENT_SOURCE_DIR}/jvm/java/org/spongepowered/asm/mixin/*.java")
+    list(APPEND CPPFM_JVM_ACCESS_WIDENER_CORE_SOURCES
+         "${CMAKE_CURRENT_SOURCE_DIR}/jvm/java/cppfm/bridge/NativeBridge.java"
+         "${CMAKE_CURRENT_SOURCE_DIR}/jvm/java/net/fabricmc/api/DedicatedServerModInitializer.java")
+    set(CPPFM_JVM_ACCESS_WIDENER_FIXTURE_SOURCES
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/jvm_fixture/corpus/08-access-widener/src/cppfm/corpus/fixture08/AccessWidener.java"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/jvm_fixture/corpus/08-access-widener/src/cppfm/corpus/fixture08/AccessTarget.java"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/jvm_fixture/corpus/08-access-widener/AccessWidenerContractTest.java")
+    set(CPPFM_JVM_ACCESS_WIDENER_RESOURCE
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/jvm_fixture/corpus/08-access-widener/fixture08.accesswidener")
+    set(CPPFM_JVM_ACCESS_WIDENER_METADATA
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/jvm_fixture/corpus/08-access-widener/fabric.mod.json")
+    if(CPPFM_JAVA AND CPPFM_JVM_ACCESS_WIDENER_CORE_SOURCES)
+        set(CPPFM_JVM_ACCESS_WIDENER_DIR
+            "${CMAKE_CURRENT_BINARY_DIR}/jvm/access-widener-test")
+        set(CPPFM_JVM_ACCESS_WIDENER_STAMP
+            "${CPPFM_JVM_ACCESS_WIDENER_DIR}/.stamp")
+        add_custom_command(
+            OUTPUT "${CPPFM_JVM_ACCESS_WIDENER_STAMP}"
+            COMMAND ${CMAKE_COMMAND} -E rm -rf "${CPPFM_JVM_ACCESS_WIDENER_DIR}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${CPPFM_JVM_ACCESS_WIDENER_DIR}"
+            COMMAND timeout --foreground --kill-after=5 90
+                    "${CPPFM_JAVAC}" --release 17 -encoding UTF-8 -g
+                    -d "${CPPFM_JVM_ACCESS_WIDENER_DIR}"
+                    ${CPPFM_JVM_ACCESS_WIDENER_CORE_SOURCES}
+                    ${CPPFM_JVM_ACCESS_WIDENER_FIXTURE_SOURCES}
+            COMMAND ${CMAKE_COMMAND} -E copy "${CPPFM_JVM_ACCESS_WIDENER_RESOURCE}"
+                    "${CPPFM_JVM_ACCESS_WIDENER_DIR}/fixture08.accesswidener"
+            COMMAND ${CMAKE_COMMAND} -E copy "${CPPFM_JVM_ACCESS_WIDENER_METADATA}"
+                    "${CPPFM_JVM_ACCESS_WIDENER_DIR}/fabric.mod.json"
+            COMMAND ${CMAKE_COMMAND} -E touch "${CPPFM_JVM_ACCESS_WIDENER_STAMP}"
+            DEPENDS ${CPPFM_JVM_ACCESS_WIDENER_CORE_SOURCES}
+                    ${CPPFM_JVM_ACCESS_WIDENER_FIXTURE_SOURCES}
+                    "${CPPFM_JVM_ACCESS_WIDENER_RESOURCE}"
+                    "${CPPFM_JVM_ACCESS_WIDENER_METADATA}"
+            VERBATIM)
+        add_custom_target(cppfm_jvm_access_widener ALL
+                          DEPENDS "${CPPFM_JVM_ACCESS_WIDENER_STAMP}")
+    endif()
+
     # plan52: executable Fabric API/event/command contract fixture.  Keep it
     # separate from the historical 25-mod corpus so the corpus count and its
     # reports remain stable while the newly implemented surface gets a direct
@@ -382,6 +427,15 @@ if(TARGET cppfm_jvm_transformer AND CPPFM_JAVA)
                 -cp "${CPPFM_JVM_CLASSES_DIR}:${CPPFM_JVM_TRANSFORMER_DIR}"
                 cppfm.transformer_fixture.TransformerContractTest)
     set_tests_properties(jvm_transformer PROPERTIES TIMEOUT 60
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+endif()
+if(TARGET cppfm_jvm_access_widener AND CPPFM_JAVA)
+    add_test(NAME jvm_access_widener
+        COMMAND timeout --foreground --kill-after=5 120
+                "${CPPFM_JAVA}" -ea
+                -cp "${CPPFM_JVM_ACCESS_WIDENER_DIR}"
+                cppfm.accesswidener_fixture.AccessWidenerContractTest)
+    set_tests_properties(jvm_access_widener PROPERTIES TIMEOUT 150
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 endif()
 if(TARGET cppfm_jvm_api_test AND CPPFM_JAVA)
