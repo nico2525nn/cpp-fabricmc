@@ -89,7 +89,7 @@ void World::generateChunkIfMissing(std::int32_t cx, std::int32_t cz) const {
         std::shared_lock lock(mutex_);
         if (chunks_.count(chunkKey(cx, cz))) return;
     }
-    auto c = std::make_unique<Chunk>();
+    auto c = acquireChunk();
     const bool loaded = loader_ && loader_(cx, cz, *c);
     if (!loaded) {
         if (generator_) generator_->fillChunk(*c, cx, cz);

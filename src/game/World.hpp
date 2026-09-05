@@ -48,6 +48,17 @@ struct Chunk {
                                (kSectionsPerChunk * 4096 + 1) / 2>> skyLight;
     std::uint64_t revision = 0;
 
+    // Clear all state before recycling an unloaded chunk allocation.  Keeping
+    // a small bounded pool avoids repeated malloc/free page churn during long
+    // traversals without keeping the chunk logically loaded in `chunks_`.
+    void resetForReuse() {
+        blocks.fill(0);
+        biomes.fill(0);
+        blockLightNib.fill(0);
+        skyLight.reset();
+        revision = 0;
+    }
+
     static constexpr std::size_t index(int section, int yIn, int z, int x) {
         return (static_cast<std::size_t>(section) * 4096)
              + (static_cast<std::size_t>(yIn) * 256)
@@ -226,6 +237,22 @@ public:
     }
 
 private:
+    static constexpr std::size_t kMaxRecycledChunks = 128;
+
+    std::unique_ptr<Chunk> acquireChunk() const {
+        if (recycledChunks_.empty()) return std::make_unique<Chunk>();
+        auto out = std::move(recycledChunks_.back());
+        recycledChunks_.pop_back();
+        out->resetForReuse();
+        return out;
+    }
+
+    void recycleChunk(std::unique_ptr<Chunk> chunk) const {
+        if (!chunk || recycledChunks_.size() >= kMaxRecycledChunks) return;
+        chunk->resetForReuse();
+        recycledChunks_.push_back(std::move(chunk));
+    }
+
     void setBlockInternal(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state) {
         if (y < kMinY || y >= kMaxY) return;
         generateChunkIfMissing(x >> 4, z >> 4);
@@ -332,10 +359,18 @@ public:
     }
 
     bool eraseChunk(std::int32_t cx, std::int32_t cz) {
-        std::unique_lock lock(mutex_);
-        auto it = chunks_.find(chunkKey(cx, cz));
-        if (it == chunks_.end()) return false;
-        chunks_.erase(it);
+        // Keep generation and eviction in the same order so a concurrent
+        // border crossing cannot race the bounded allocation pool.
+        std::lock_guard generationLock(generationMtx_);
+        std::unique_ptr<Chunk> reclaimed;
+        {
+            std::unique_lock lock(mutex_);
+            auto it = chunks_.find(chunkKey(cx, cz));
+            if (it == chunks_.end()) return false;
+            reclaimed = std::move(it->second);
+            chunks_.erase(it);
+        }
+        recycleChunk(std::move(reclaimed));
         return true;
     }
     // B-07 async I/O: install a fully decoded chunk from ioPool worker (tick thread only)
@@ -603,6 +638,7 @@ public:
     // Chunk before try_emplace discards all but one copy.
     mutable std::mutex generationMtx_;
     mutable std::unordered_map<std::int64_t, std::unique_ptr<Chunk>> chunks_;
+    mutable std::vector<std::unique_ptr<Chunk>> recycledChunks_;
     mutable std::unordered_set<std::int64_t> forcedChunks_;
     mutable ChunkTicketManager ticketManager_;
     std::string biome_;
