@@ -7,17 +7,21 @@
     {
       "name": "net.minecraft.server.MinecraftServer",
       "nativeHandle": "server",
-      "methods": ["getTicks()I", "setTick(J)V", "getTickTime()J", "getOverworld()Lnet/minecraft/server/world/ServerWorld;", "execute(Ljava/lang/Runnable;)V"],
+      "methods": ["getTicks()I", "setTick(J)V", "getTickTime()J", "getOverworld()Lnet/minecraft/server/world/ServerWorld;", "getWorld(Lnet/minecraft/registry/RegistryKey;)Lnet/minecraft/server/world/ServerWorld;", "execute(Ljava/lang/Runnable;)V"],
+      "structuredBytecodeMethods": ["getTicks()I", "setTick(J)V", "getTickTime()J", "getOverworld()Lnet/minecraft/server/world/ServerWorld;", "getWorld(Lnet/minecraft/registry/RegistryKey;)Lnet/minecraft/server/world/ServerWorld;"],
       "mixinLevels": {
-        "getTicks()I": ["TAIL", "RETURN"],
-        "setTick(J)V": ["HEAD", "TAIL"],
-        "getTickTime()J": ["OVERWRITE"]
+        "getTicks()I": ["TAIL", "RETURN", "FIELD"],
+        "setTick(J)V": ["HEAD", "TAIL", "INVOKE"],
+        "getTickTime()J": ["OVERWRITE"],
+        "getOverworld()Lnet/minecraft/server/world/ServerWorld;": ["INVOKE"],
+        "getWorld(Lnet/minecraft/registry/RegistryKey;)Lnet/minecraft/server/world/ServerWorld;": ["INVOKE"]
       }
     },
     {
       "name": "net.minecraft.server.world.ServerWorld",
       "nativeHandle": "world",
       "methods": ["getBlockState(Lnet/minecraft/util/math/BlockPos;)Lnet/minecraft/block/BlockState;", "setBlockState(Lnet/minecraft/util/math/BlockPos;Lnet/minecraft/block/BlockState;)Z"],
+      "structuredBytecodeMethods": ["getBlockState(Lnet/minecraft/util/math/BlockPos;)Lnet/minecraft/block/BlockState;", "setBlockState(Lnet/minecraft/util/math/BlockPos;Lnet/minecraft/block/BlockState;)Z"],
       "mixinLevels": {
         "getBlockState(Lnet/minecraft/util/math/BlockPos;)Lnet/minecraft/block/BlockState;": ["HEAD", "TAIL", "RETURN", "OVERWRITE"],
         "setBlockState(Lnet/minecraft/util/math/BlockPos;Lnet/minecraft/block/BlockState;)Z": ["HEAD", "TAIL", "RETURN", "OVERWRITE"]
@@ -27,6 +31,16 @@
       "name": "net.minecraft.server.network.ServerPlayerEntity",
       "nativeHandle": "player",
       "methods": ["sendMessage(Lnet/minecraft/text/Text;)V", "getServerWorld()Lnet/minecraft/server/world/ServerWorld;", "getInventory()Lnet/minecraft/entity/player/PlayerInventory;"]
+    },
+    {
+      "name": "net.minecraft.world.World",
+      "nativeHandle": "world",
+      "methods": ["getBlockState(Lnet/minecraft/util/math/BlockPos;)Lnet/minecraft/block/BlockState;", "setBlockState(Lnet/minecraft/util/math/BlockPos;Lnet/minecraft/block/BlockState;)Z", "getBottomY()I"],
+      "structuredBytecodeMethods": ["getBlockState(Lnet/minecraft/util/math/BlockPos;)Lnet/minecraft/block/BlockState;", "getBottomY()I"],
+      "mixinLevels": {
+        "getBlockState(Lnet/minecraft/util/math/BlockPos;)Lnet/minecraft/block/BlockState;": ["TAIL", "INVOKE"],
+        "getBottomY()I": ["CONSTANT"]
+      }
     }
   ],
   "events": [
@@ -41,14 +55,17 @@
     "PlayerBlockBreakEvents"
   ],
   "mixin": {
-    "execution": "bounded-hook-shell",
-    "supportedInjectionPoints": ["HEAD", "TAIL", "RETURN"],
-    "supportedTransformers": ["Inject", "Overwrite"],
-    "declaredButNotTransformed": ["Shadow", "Accessor", "Invoker", "Redirect", "ModifyArg", "ModifyConstant", "ModifyVariable"]
+    "execution": "pre-definition-class-file-transformer",
+    "transformer": "cppfm.transform.MixinClassTransformer",
+    "structuredBytecode": true,
+    "supportedInjectionPoints": ["HEAD", "TAIL", "RETURN", "INVOKE", "FIELD", "NEW", "JUMP", "CONSTANT", "LOAD", "STORE"],
+    "supportedTransformers": ["Inject", "Overwrite", "Accessor", "Invoker", "Shadow", "Redirect", "ModifyArg", "ModifyConstant", "ModifyVariable"],
+    "declaredButNotTransformed": []
   },
   "limitations": [
-    "The embedded fallback loader is not Fabric Loader/Knot.",
+    "The production embedded path is a version-locked Knot-compatible loader; the pinned official Loader/Knot artifacts are verified by the offline probe but the Mojang server/provider is not shipped.",
     "The compatibility classes are a generated shadow ABI, not Mojang bytecode.",
-    "Arbitrary JVM bytecode transformation and client-only mixins are unsupported."
+    "Cancellable injections requiring new StackMapTable frame synthesis, constructors with uninitialized-object flow, and client-only mixins remain unsupported.",
+    "Arbitrary Fabric JVM mods and universal bytecode compatibility are not implied by the bounded transformer corpus."
   ]
 }

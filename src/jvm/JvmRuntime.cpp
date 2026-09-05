@@ -92,6 +92,10 @@ struct JvmRuntime::Impl {
 namespace {
 
 std::atomic<JvmRuntime*> g_activeRuntime{nullptr};
+// Read by Java-created worker threads while the server thread is inside a
+// callback.  The callback path holds callMutex, so routing this read through
+// NativeCallGuard would deadlock a worker that is joined by that callback.
+std::atomic<std::int64_t> g_currentTick{0};
 
 #if defined(CPPFM_HAS_JNI)
 
@@ -366,10 +370,11 @@ JNIEXPORT jlong JNICALL nativeServerHandle(JNIEnv* env, jclass) {
 }
 
 JNIEXPORT jlong JNICALL nativeCurrentTick(JNIEnv* env, jclass) {
-    return withNativeRuntime<jlong>(env, "nativeCurrentTick", 0,
-                                    [](JvmRuntime& runtime) {
-        return static_cast<jlong>(runtime.nativeCurrentTick());
-    });
+    // This is deliberately a lock-free, snapshot-only bridge operation.  A
+    // Java-created thread can call it while the main callback owns the
+    // serialized JNI call lock and waits for that thread to join.
+    if (!g_activeRuntime.load(std::memory_order_acquire)) return 0;
+    return static_cast<jlong>(g_currentTick.load(std::memory_order_acquire));
 }
 
 JNIEXPORT jstring JNICALL nativePlayerName(JNIEnv* env, jclass, jlong handle) {
@@ -1660,6 +1665,7 @@ void deleteLocalReferences(JNIEnv* env, std::vector<jobject>& references) {
 
 bool JvmRuntime::onServerTick(std::int64_t tick) {
     impl_->ticks.fetch_add(1, std::memory_order_relaxed);
+    g_currentTick.store(tick, std::memory_order_release);
 #if defined(CPPFM_HAS_JNI)
     return invokeVoid(*this, [&](JNIEnv* env) {
         env->CallStaticVoidMethod(impl_->dispatchClass, impl_->serverTick,

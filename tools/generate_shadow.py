@@ -39,24 +39,30 @@ def load_spec(path: Path) -> dict:
             if method not in methods or not isinstance(levels, list) or not all(
                     isinstance(level, str) for level in levels):
                 raise ValueError(f"invalid mixin levels for {name}::{method}")
+        structured_methods = entry.get("structuredBytecodeMethods", [])
+        if not isinstance(structured_methods, list) or not all(
+                isinstance(item, str) and item in methods for item in structured_methods):
+            raise ValueError(f"invalid structured bytecode method list for {name}")
     return value
 
 
 def render(spec: dict) -> str:
+    mixin = spec.get("mixin", {})
+    if not isinstance(mixin, dict):
+        raise ValueError("mixin section must be an object")
+    execution = mixin.get("execution", "abi-only")
     method_coverage = []
     for entry in sorted(spec["classes"], key=lambda item: item["name"]):
+        structured_methods = set(entry.get("structuredBytecodeMethods", []))
         for method in entry.get("methods", []):
+            structured = method in structured_methods
             method_coverage.append({
                 "class": entry["name"],
                 "method": method,
                 "abi": True,
                 "nativeBackend": True,
-                # The current bridge exposes manually wired hook sites.  It
-                # does not transform JVM bytecode, so this must stay false
-                # until a real class-file transformer is implemented and
-                # covered by evidence.
-                "structuredBytecode": False,
-                "structuredBytecodeMode": "manual-hook-shell",
+                "structuredBytecode": structured,
+                "structuredBytecodeMode": execution if structured else "abi-only",
                 "mixinLevels": entry.get("mixinLevels", {}).get(method, []),
             })
     manifest = {
@@ -68,7 +74,7 @@ def render(spec: dict) -> str:
         "classes": sorted(spec["classes"], key=lambda item: item["name"]),
         "methodCoverage": method_coverage,
         "events": sorted(spec.get("events", [])),
-        "mixin": spec.get("mixin", {}),
+        "mixin": mixin,
         "limitations": list(spec.get("limitations", [])),
     }
     return json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=False) + "\n"

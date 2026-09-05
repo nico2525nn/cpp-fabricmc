@@ -373,9 +373,16 @@ final class ConstantPool {
                 String name = source.memberName(sourceIndex);
                 String descriptor = source.memberDescriptor(sourceIndex);
                 boolean own = owner.equals(sourceOwner);
-                String remappedOwner = own ? targetOwner : owner;
                 String memberKey = name + descriptor;
-                if (own) {
+                // An ordinary static helper field belongs to the mixin class
+                // and is initialized by that class' <clinit>.  An empty
+                // field-rename value is the explicit preserve-owner marker;
+                // shadow/instance fields still move onto the target class.
+                boolean preserveHelperField = own && sourceEntry.tag == 9
+                    && fieldRenames.containsKey(memberKey)
+                    && fieldRenames.get(memberKey).isEmpty();
+                String remappedOwner = own && !preserveHelperField ? targetOwner : owner;
+                if (own && !preserveHelperField) {
                     if (sourceEntry.tag == 9) name = fieldRenames.getOrDefault(memberKey, name);
                     else name = methodRenames.getOrDefault(memberKey, name);
                 }

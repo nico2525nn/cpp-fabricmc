@@ -14,6 +14,7 @@ add_compile_options(-Wall -Wextra -Wpedantic -Wno-unused-parameter -pipe)
 # portable, while javac output is deterministic and available to --jvm=true.
 find_package(JNI QUIET)
 find_program(CPPFM_JAVAC NAMES javac)
+find_program(CPPFM_JAVA NAMES java)
 find_package(Python3 COMPONENTS Interpreter QUIET)
 
 set(CPPFM_JVM_SHADOW_SPEC "${CMAKE_CURRENT_SOURCE_DIR}/jvm/shadow_api.json")
@@ -70,6 +71,32 @@ if(CPPFM_JAVAC AND CPPFM_JAVA_SOURCES)
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/jvm_fixture/cppfm_fixture.mixins.json"
         VERBATIM)
     add_custom_target(cppfm_jvm_fixture DEPENDS "${CPPFM_JVM_FIXTURE_STAMP}")
+
+    # plan51 §12/26: compile and execute the structural transformer contract
+    # in the same Java class tree used by the embedded runtime.  Keeping this
+    # as a build target makes defineClass/verifier coverage reproducible from
+    # a clean checkout instead of relying on an ad-hoc temporary javac run.
+    file(GLOB CPPFM_JVM_TRANSFORMER_SOURCES CONFIGURE_DEPENDS
+         "${CMAKE_CURRENT_SOURCE_DIR}/tests/jvm_transformer/*.java")
+    if(CPPFM_JAVA AND CPPFM_JVM_TRANSFORMER_SOURCES)
+        set(CPPFM_JVM_TRANSFORMER_DIR
+            "${CMAKE_CURRENT_BINARY_DIR}/jvm/transformer-test")
+        set(CPPFM_JVM_TRANSFORMER_STAMP
+            "${CPPFM_JVM_TRANSFORMER_DIR}/.stamp")
+        add_custom_command(
+            OUTPUT "${CPPFM_JVM_TRANSFORMER_STAMP}"
+            COMMAND ${CMAKE_COMMAND} -E rm -rf "${CPPFM_JVM_TRANSFORMER_DIR}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${CPPFM_JVM_TRANSFORMER_DIR}"
+            COMMAND "${CPPFM_JAVAC}" --release 17 -encoding UTF-8
+                    -cp "${CPPFM_JVM_CLASSES_DIR}"
+                    -d "${CPPFM_JVM_TRANSFORMER_DIR}"
+                    ${CPPFM_JVM_TRANSFORMER_SOURCES}
+            COMMAND ${CMAKE_COMMAND} -E touch "${CPPFM_JVM_TRANSFORMER_STAMP}"
+            DEPENDS cppfm_jvm_classes ${CPPFM_JVM_TRANSFORMER_SOURCES}
+            VERBATIM)
+        add_custom_target(cppfm_jvm_transformer ALL
+                          DEPENDS "${CPPFM_JVM_TRANSFORMER_STAMP}")
+    endif()
 endif()
 
 set(CPPFM_JVM_NATIVE_SOURCES
@@ -320,6 +347,25 @@ if(TARGET cppfm_jvm_fixture AND JNI_FOUND)
                 --classes "${CPPFM_JVM_CLASSES_DIR}"
                 --mods "${CMAKE_CURRENT_BINARY_DIR}/jvm/fixture-mods")
     set_tests_properties(jvm_runtime PROPERTIES TIMEOUT 60
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+endif()
+if(TARGET cppfm_jvm_transformer AND CPPFM_JAVA)
+    add_test(NAME jvm_transformer
+        COMMAND "${CPPFM_JAVA}" -ea
+                -cp "${CPPFM_JVM_CLASSES_DIR}:${CPPFM_JVM_TRANSFORMER_DIR}"
+                cppfm.transformer_fixture.TransformerContractTest)
+    set_tests_properties(jvm_transformer PROPERTIES TIMEOUT 60
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+endif()
+if(TARGET cppfm_jvm_classes AND TARGET cppfm_jvm_manifest AND JNI_FOUND
+   AND Python3_Interpreter_FOUND)
+    add_test(NAME jvm_compatibility
+        COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/jvm_compatibility_smoke.py"
+                --binary $<TARGET_FILE:cppfm>
+                --classes "${CPPFM_JVM_CLASSES_DIR}"
+                --manifest "${CPPFM_JVM_MANIFEST}")
+    set_tests_properties(jvm_compatibility PROPERTIES TIMEOUT 300
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 endif()
 if(TARGET cppfm_jvm_manifest)

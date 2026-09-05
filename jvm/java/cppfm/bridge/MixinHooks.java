@@ -20,6 +20,7 @@ import java.util.Set;
 import java.util.WeakHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
+import cppfm.transform.MixinDispatch;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Overwrite;
 import org.spongepowered.asm.mixin.Shadow;
@@ -1191,6 +1192,7 @@ public final class MixinHooks {
                                                         String descriptor, Object... args) {
         InvocationSite site = InvocationSite.builder(target, method).descriptor(descriptor)
             .at("OVERWRITE").arguments(args).build();
+        if (isStructurallyTransformed(site)) return new DispatchResult(site, false);
         ExecutionFrame frame = activeFrame(site);
         if (frame != null) {
             DispatchResult cached = frame.result(site.marker());
@@ -1217,6 +1219,11 @@ public final class MixinHooks {
     /** Dispatch any generated/manual instruction site. */
     public static DispatchResult dispatch(InvocationSite site) {
         if (site == null) throw new NullPointerException("site");
+        // A pre-definition class-file transform is the authoritative path.
+        // The shadow classes still contain manual hook calls for standalone
+        // fallback mode, but running both paths would invoke every handler
+        // twice and cannot provide structural locals to @Inject.
+        if (isStructurallyTransformed(site)) return new DispatchResult(site, site.hasReturnValue());
         ExecutionFrame frame = activeFrame(site);
         if (frame != null) {
             DispatchResult cached = frame.result(site.marker());
@@ -1294,6 +1301,17 @@ public final class MixinHooks {
             case MODIFY_VARIABLE -> dispatchModifyVariable(handler, result);
             case ACCESSOR, INVOKER, SHADOW, OVERWRITE -> { }
         }
+    }
+
+    private static boolean isStructurallyTransformed(InvocationSite site) {
+        String owner = site.owner();
+        if (owner != null && !owner.isEmpty() && MixinDispatch.isAnyTransformed(owner, site.method())) return true;
+        Object target = site.target();
+        if (target != null) {
+            for (String candidate : ownerCandidates(target, ""))
+                if (MixinDispatch.isAnyTransformed(candidate, site.method())) return true;
+        }
+        return false;
     }
 
     private static void dispatchInject(Handler handler, DispatchResult result)

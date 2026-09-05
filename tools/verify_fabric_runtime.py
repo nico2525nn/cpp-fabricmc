@@ -143,12 +143,21 @@ def _classpath(paths: list[Path]) -> str:
     return os.pathsep.join(str(path) for path in paths)
 
 
-def _canonical(text: str, work_dir: Path, shadow_classes: Path, game_dir: Path) -> str:
-    return (
+def _canonical(
+    text: str,
+    work_dir: Path,
+    shadow_classes: Path,
+    game_dir: Path,
+    cache_dir: Path | None = None,
+) -> str:
+    value = (
         text.replace(str(work_dir), "<probe-workdir>")
         .replace(str(shadow_classes), "<shadow-classes>")
         .replace(str(game_dir), "<game-dir>")
     )
+    if cache_dir is not None:
+        value = value.replace(str(cache_dir), "<fabric-runtime-cache>")
+    return value
 
 
 def _stage_shadow_classes(source: Path, destination: Path) -> None:
@@ -177,11 +186,12 @@ def _probe_evidence(
     work_dir: Path | None = None,
     shadow_classes: Path | None = None,
     game_dir: Path | None = None,
+    cache_dir: Path | None = None,
 ) -> dict[str, Any]:
     def clean(value: str) -> str:
         if work_dir is None or shadow_classes is None or game_dir is None:
             return value
-        return _canonical(value, work_dir, shadow_classes, game_dir)
+        return _canonical(value, work_dir, shadow_classes, game_dir, cache_dir)
 
     evidence: dict[str, Any] = {
         "schema": 1,
@@ -229,6 +239,7 @@ def run_probe(
     evidence_path: Path,
     timeout: float,
     keep_workdir: bool,
+    cache_dir: Path | None = None,
 ) -> dict[str, Any]:
     shadow_classes = shadow_classes.resolve()
     if not shadow_classes.is_dir():
@@ -386,6 +397,7 @@ def run_probe(
                 work_dir,
                 probe_shadow_classes,
                 game_dir,
+                cache_dir,
             )
             _write_evidence(evidence_path, evidence)
             raise VerificationError(evidence["failureReason"])
@@ -400,6 +412,7 @@ def run_probe(
             work_dir=work_dir,
             shadow_classes=probe_shadow_classes,
             game_dir=game_dir,
+            cache_dir=cache_dir,
         )
         _write_evidence(evidence_path, evidence)
         return evidence
@@ -415,6 +428,7 @@ def run_probe(
             work_dir=work_dir,
             shadow_classes=probe_shadow_classes,
             game_dir=game_dir,
+            cache_dir=cache_dir,
         )
         _write_evidence(evidence_path, evidence)
         raise VerificationError(evidence["failureReason"]) from exc
@@ -452,6 +466,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.evidence,
                 args.timeout,
                 args.keep_workdir,
+                args.cache_dir.resolve(),
             )
             print(f"probe {evidence['status']}; evidence={args.evidence.resolve()}")
             return 0 if evidence["status"] == "passed" else 2

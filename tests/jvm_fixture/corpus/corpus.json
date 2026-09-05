@@ -37,7 +37,7 @@
     {"class": "net.minecraft.server.MinecraftServer", "method": "getOverworld()Lnet/minecraft/server/world/ServerWorld;", "mixinLevels": ["INVOKE"], "structuredBytecode": true},
     {"class": "net.minecraft.server.MinecraftServer", "method": "getWorld(Lnet/minecraft/registry/RegistryKey;)Lnet/minecraft/server/world/ServerWorld;", "mixinLevels": ["INVOKE"], "structuredBytecode": true},
     {"class": "net.minecraft.server.world.ServerWorld", "method": "getBlockState(Lnet/minecraft/util/math/BlockPos;)Lnet/minecraft/block/BlockState;", "mixinLevels": ["HEAD", "TAIL", "RETURN", "OVERWRITE"]},
-    {"class": "net.minecraft.world.World", "method": "getBlockState(Lnet.minecraft/util/math/BlockPos;)Lnet.minecraft/block/BlockState;", "mixinLevels": ["TAIL", "INVOKE"], "structuredBytecode": true},
+    {"class": "net.minecraft.world.World", "method": "getBlockState(Lnet/minecraft/util/math/BlockPos;)Lnet/minecraft/block/BlockState;", "mixinLevels": ["TAIL", "INVOKE"], "structuredBytecode": true},
     {"class": "net.minecraft.world.World", "method": "getBottomY()I", "mixinLevels": ["CONSTANT"], "structuredBytecode": true}
   ],
   "requiredStructuredBytecodeCases": ["09-accessor-mixin", "10-invoker-mixin", "13-inject-invoke", "14-inject-field", "15-redirect", "17-modify-arg", "18-modify-constant", "19-modify-variable", "20-local-capture"],

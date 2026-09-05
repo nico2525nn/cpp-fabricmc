@@ -15,8 +15,10 @@ behavior belongs in [SPEC_GAMEPLAY.md](SPEC_GAMEPLAY.md), packet bytes in
 
 **Status:** final-gates evidence is recorded against the named baseline, but
 publication remains `BLOCKED`. **Limitations:** plan51's optional embedded JVM
-passes a bounded fixture/bridge gate, while official Fabric Loader/Knot and arbitrary
-Fabric JVM mods remain outside the supported boundary (E-14); exact vanilla Xoroshiro
+passes a bounded fixture/bridge and structural-transformer gate, while the Mojang
+GameProvider and arbitrary Fabric JVM mods remain outside the supported boundary
+(E-14). A separate offline probe covers the pinned official Loader/Knot/Mixin API
+against the shadow provider; it is not a full Mojang runtime. Exact vanilla Xoroshiro
 byte parity (world-generation L3), and real-client/24-hour evidence are separate
 boundaries. Any unverified assertion uses `DECLARED-LIMITATION` rather than an
 inferred pass. See [PLAN51_JVM.md](PLAN51_JVM.md).
@@ -67,7 +69,7 @@ or enum existing without an observable test is not counted as full verification.
 | chunk/light | `src/game/ChunkCodec.hpp`, `src/physics/LightEngine.*` | 24 sections, masks, palettes | chunk/update-light bytes | `IMPLEMENTATION` + `test_spec_wire` |
 | gameplay | `src/game/World.hpp`, `Entities.hpp`, `Containers.hpp`, `Recipes.*` | world/entity/menu/data state | behavior assertions and packet consequences | `IMPLEMENTATION` |
 | persistence | `src/game/WorldDataManager.*`, `Persistence.hpp`, `RegionFile.hpp` | NBT, regions, session lock | recovery and integrity result | `IMPLEMENTATION` + `test_recovery` |
-| JVM boundary | `src/jvm/`, `jvm/java/`, `jvm/shadow_api.json` | VM, handles, shadow ABI, selected callbacks | `test_jvm_handles`, `jvm_manifest`, `jvm_runtime` | `IMPLEMENTATION` / bounded fixture |
+| JVM boundary | `src/jvm/`, `jvm/java/`, `jvm/shadow_api.json`, `jvm/vendor/` | VM, handles, shadow ABI, selected callbacks, structural transformer, official-loader probe | `test_jvm_handles`, `jvm_manifest`, `jvm_runtime`, `jvm_transformer`, `jvm_compatibility`, `verify_fabric_runtime.py --offline --probe` | `IMPLEMENTATION` / bounded fixture + probe |
 | fixture | `docs/mob_stats_149.csv`, `Entities.hpp::MobStats` | 149 data rows, 11 columns | row/schema/checksum result | `IMPLEMENTATION` |
 | build registry | `CMakeLists.txt::add_executable/add_test` | source and test targets | configured/buildable target set | `IMPLEMENTATION` |
 
@@ -334,12 +336,16 @@ new failure beyond E-14 is a publication blocker.
 | target | recorded result | interpretation |
 |---|---|---|
 | `test_jvm_handles` | `PASS` | opaque handle invalidation/address-reuse and selective routing invariants |
-| `jvm_manifest` | `PASS` | protocol-769 shadow ABI manifest is reproducible; `structuredBytecode=false` is intentional |
+| `jvm_manifest` | `PASS` | protocol-769 shadow ABI manifest is reproducible; 14 methods, 9 structured methods, 10 injection points, and 9 transformer names are declared |
 | `jvm_runtime` | `PASS` | embedded HotSpot, fixture entrypoint, World API, command registration, lifecycle, selected Mixin hooks, and owned clean shutdown |
+| `jvm_transformer` | `PASS` | pre-definition class-file transformation, verifier-safe stack/local preservation, and transform-order contract |
+| `jvm_compatibility` | `PASS` | all 25 dependency-free fixture cases pass in one `cppfm` process |
+| official Loader/Knot probe | `PASS / DECLARED-LIMITATION` | pinned Loader 0.16.9/Knot/Mixin/ASM/intermediary starts with the shadow provider and emits all seven expected markers |
 
-This gate proves only the bounded plan51 compatibility layer. It does not prove
-official Fabric Loader/Knot behavior, arbitrary mod loading, general JVM bytecode
-transformation, client/GUI behavior, or protocol/RNG parity.
+This gate proves only the bounded plan51 compatibility layer and its pinned offline
+official-loader probe. It does not prove Mojang GameProvider behavior, arbitrary mod
+loading, universal JVM bytecode compatibility, client/GUI behavior, or protocol/RNG
+parity.
 
 ### Operations gate
 
