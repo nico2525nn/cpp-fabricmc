@@ -30,6 +30,7 @@ DEFAULT_CACHE = ROOT / "build/real-mod-corpus"
 ALLOWED_ARTIFACT_HOSTS = {"cdn.modrinth.com", "piston-data.mojang.com"}
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+EXPECTED_JAVA_MAJOR = 21
 
 
 class CorpusError(RuntimeError):
@@ -159,6 +160,9 @@ def validate_lock(lock: dict[str, Any]) -> None:
     for key in ("loaderVersion", "mixinVersion", "fabricRuntimeLock", "referenceMainClass"):
         if not isinstance(runtime.get(key), str) or not runtime[key]:
             _die(f"runtime.{key}: missing non-empty string")
+    runtime_lock = _safe_relative(runtime["fabricRuntimeLock"], "runtime.fabricRuntimeLock")
+    if runtime_lock.suffix != ".json":
+        _die("runtime.fabricRuntimeLock must name a JSON lock file")
     java_major = runtime.get("javaMajor")
     if (
         not isinstance(java_major, dict)
@@ -168,6 +172,8 @@ def validate_lock(lock: dict[str, Any]) -> None:
         or java_major["maximum"] < java_major["minimum"]
     ):
         _die("runtime.javaMajor must contain a valid minimum/maximum")
+    if java_major["minimum"] != EXPECTED_JAVA_MAJOR or java_major["maximum"] != EXPECTED_JAVA_MAJOR:
+        _die(f"runtime.javaMajor must pin Java {EXPECTED_JAVA_MAJOR}")
     server = runtime.get("referenceServer")
     if not isinstance(server, dict):
         _die("runtime.referenceServer must be an object")
@@ -275,6 +281,8 @@ def verify_cache(lock: dict[str, Any], cache_dir: Path) -> dict[str, Any]:
         path = cache_path(cache_dir, artifact)
         paths[label] = path
         if not path.exists():
+            if path.is_symlink():
+                _die(f"cache item is a broken symlink for {label}: {path}")
             missing.append(f"{label}: {path}")
     if missing:
         raise MissingCache(
@@ -355,7 +363,7 @@ def _download(
             "--max-time",
             str(max(1.0, timeout)),
             "--user-agent",
-            "cpp-fabricmc-plan52-real-corpus/1",
+            "cpp-fabricmc-plan51-real-corpus/1",
             "--output",
             temp_name,
             "--write-out",
@@ -422,7 +430,12 @@ def provision(lock: dict[str, Any], cache_dir: Path, timeout: float, force: bool
     return network_accessed
 
 
-def _summary(lock: dict[str, Any], cache_dir: Path, network_accessed: bool) -> dict[str, Any]:
+def _summary(
+    lock: dict[str, Any],
+    lock_path: Path,
+    cache_dir: Path,
+    network_accessed: bool,
+) -> dict[str, Any]:
     verified = verify_cache(lock, cache_dir)
     return {
         "schema": "cppfm.real-mod-corpus.cache.v1",
@@ -430,7 +443,8 @@ def _summary(lock: dict[str, Any], cache_dir: Path, network_accessed: bool) -> d
         "networkAccessed": network_accessed,
         "game": lock["game"],
         "lock": {
-            "path": str(DEFAULT_LOCK),
+            "path": str(lock_path.resolve()),
+            "sha256": _digest(lock_path)[2],
             "modCount": len(lock["mods"]),
         },
         "cache": verified,
@@ -463,7 +477,12 @@ def main(argv: list[str] | None = None) -> int:
         network_accessed = False
         if args.provision:
             network_accessed = provision(lock, cache_dir, args.timeout, args.force)
-        summary = _summary(lock, cache_dir, network_accessed=network_accessed)
+        summary = _summary(
+            lock,
+            args.lock.resolve(),
+            cache_dir,
+            network_accessed=network_accessed,
+        )
         if args.json:
             print(json.dumps(summary, sort_keys=True, indent=2))
         else:

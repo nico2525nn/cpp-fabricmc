@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Self-test the plan52 real-mod corpus gates without network or JAR writes.
+"""Self-test the plan51 real-mod corpus gates without network or JAR writes.
 
 This test deliberately keeps the historical 25-case synthetic corpus separate
 from the real-mod report.  It proves two contracts:
@@ -31,6 +31,8 @@ TOOLS = ROOT / "tools"
 REAL_LOCK = ROOT / "tests/real_mod_corpus/corpus.lock.json"
 REAL_COMPARE = TOOLS / "compare_real_mod_corpus.py"
 REAL_FETCH = TOOLS / "fetch_real_mod_corpus.py"
+GENERATE_SHADOW = TOOLS / "generate_shadow.py"
+SHADOW_SPEC = ROOT / "jvm/shadow_api.json"
 SYNTHETIC_CORPUS = ROOT / "tests/jvm_fixture/corpus/corpus.json"
 SYNTHETIC_REPORT = TOOLS / "jvm_compatibility_report.py"
 
@@ -65,7 +67,7 @@ def load(path: Path) -> dict[str, Any]:
 
 
 def assert_real_missing_cache_is_skip() -> None:
-    with tempfile.TemporaryDirectory(prefix="cppfm-plan52-selftest-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="cppfm-plan51-selftest-") as temporary:
         root = Path(temporary)
         cache = root / "empty-cache"
         report = root / "report.json"
@@ -91,7 +93,12 @@ def assert_real_missing_cache_is_skip() -> None:
         assert payload["execution"]["networkAccessed"] is False, payload
         assert payload["execution"]["executionAttempted"] is False, payload
         assert all(case["status"] == "SKIP" for case in payload["artifacts"]), payload
+        assert all(case["metadata"]["status"] == "SKIP" for case in payload["artifacts"]), payload
+        assert payload["execution"]["decision"]["status"] == "SKIP", payload
+        assert payload["execution"]["decision"]["metadata"]["status"] == "SKIP", payload
+        assert payload["execution"]["decision"]["runtime"]["status"] == "SKIP", payload
         assert payload["combined"]["status"] == "SKIP", payload
+        assert payload["combined"]["metadata"]["status"] == "SKIP", payload
 
         fetch = run_bounded([
             sys.executable,
@@ -105,6 +112,109 @@ def assert_real_missing_cache_is_skip() -> None:
         fetch_payload = json.loads(fetch.stdout)
         assert fetch_payload["status"] == "SKIP", fetch.stdout
         assert fetch_payload["networkAccessed"] is False, fetch.stdout
+
+
+def assert_explicit_java_failure_is_fail_fast() -> None:
+    """An explicitly selected non-Java-21 launcher is a FAIL, never a false SKIP."""
+    with tempfile.TemporaryDirectory(prefix="cppfm-plan51-java-selection-") as temporary:
+        root = Path(temporary)
+        fake_java = root / "java-25"
+        fake_java.write_text(
+            "#!/bin/sh\n"
+            "echo 'openjdk version \"25.0.4\"' >&2\n",
+            encoding="utf-8",
+        )
+        fake_java.chmod(0o755)
+        report = root / "report.json"
+        result = run_bounded([
+            sys.executable,
+            str(REAL_COMPARE),
+            "--lock", str(REAL_LOCK),
+            "--cache-dir", str(root / "empty-cache"),
+            "--fabric-cache", str(root / "empty-fabric-cache"),
+            "--java", str(fake_java),
+            "--report-output", str(report),
+            "--evidence-dir", str(root / "evidence"),
+            "--timeout", "2",
+        ])
+        assert result.returncode == 1, result.stdout
+        payload = load(report)
+        sys.path.insert(0, str(TOOLS))
+        import compare_real_mod_corpus as real_compare  # noqa: PLC0415
+
+        errors = real_compare.validate_report(payload)
+        assert not errors, errors
+        assert payload["status"] == "FAIL", payload
+        assert payload["execution"]["executionAttempted"] is False, payload
+        assert payload["execution"]["java"]["status"] == "FAIL", payload
+        assert payload["execution"]["java"]["major"] == 25, payload
+        assert "--java-home" in payload["execution"]["java"]["reason"], payload
+        assert payload["execution"]["decision"]["runtime"]["status"] == "FAIL", payload
+        assert all(case["metadata"]["status"] == "SKIP" for case in payload["artifacts"]), payload
+
+
+def assert_execution_decision_matrix() -> None:
+    """Exercise the gate matrix independently of optional JAR/runtime caches."""
+    sys.path.insert(0, str(TOOLS))
+    import compare_real_mod_corpus as real_compare  # noqa: PLC0415
+
+    cases = [
+        ("PASS", "PASS", False, "READY"),
+        ("PASS", "SKIP", False, "SKIP"),
+        ("PASS", "FAIL", False, "FAIL"),
+        ("SKIP", "PASS", False, "SKIP"),
+        ("FAIL", "PASS", False, "SKIP"),
+        ("PASS", "PASS", True, "SKIP"),
+    ]
+    for metadata_status, preflight_status, metadata_only, expected in cases:
+        actual, reason = real_compare._runtime_gate_decision(
+            metadata_status,
+            {
+                "status": preflight_status,
+                "failures": ["invalid explicit input"] if preflight_status == "FAIL" else [],
+                "unavailable": ["missing optional input"] if preflight_status == "SKIP" else [],
+            },
+            metadata_only,
+        )
+        assert actual == expected, (metadata_status, preflight_status, metadata_only, actual)
+        assert reason, (metadata_status, preflight_status, metadata_only)
+
+
+def assert_shadow_manifest_regeneration() -> None:
+    """Keep the generated ABI manifest reproducible after shadow source edits."""
+    with tempfile.TemporaryDirectory(prefix="cppfm-plan51-manifest-") as temporary:
+        output = Path(temporary) / "compatibility-manifest.json"
+        regenerate = run_bounded([
+            sys.executable,
+            str(GENERATE_SHADOW),
+            "--input", str(SHADOW_SPEC),
+            "--output", str(output),
+        ])
+        assert regenerate.returncode == 0, regenerate.stdout
+        assert output.is_file(), output
+        check = run_bounded([
+            sys.executable,
+            str(GENERATE_SHADOW),
+            "--check",
+            "--input", str(SHADOW_SPEC),
+            "--output", str(output),
+        ])
+        assert check.returncode == 0, check.stdout
+        manifest = load(output)
+        assert manifest["manifestVersion"] == 1, manifest
+        assert manifest["gameVersion"] == "1.21.4", manifest
+        assert manifest["protocol"] == 769, manifest
+
+        build_manifest = ROOT / "build/jvm/compatibility-manifest.json"
+        if build_manifest.is_file():
+            current = run_bounded([
+                sys.executable,
+                str(GENERATE_SHADOW),
+                "--check",
+                "--input", str(SHADOW_SPEC),
+                "--output", str(build_manifest),
+            ])
+            assert current.returncode == 0, current.stdout
 
 
 def synthetic_manifest(corpus: dict[str, Any]) -> dict[str, Any]:
@@ -145,7 +255,7 @@ def synthetic_evidence(corpus: dict[str, Any]) -> str:
 
 def assert_synthetic_requires_behavior_assertions() -> None:
     corpus = load(SYNTHETIC_CORPUS)
-    with tempfile.TemporaryDirectory(prefix="cppfm-plan52-synthetic-contract-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="cppfm-plan51-synthetic-contract-") as temporary:
         root = Path(temporary)
         corpus_copy = root / "corpus.json"
         manifest = root / "manifest.json"
@@ -190,9 +300,15 @@ def assert_synthetic_requires_behavior_assertions() -> None:
 
 def main() -> int:
     assert_real_missing_cache_is_skip()
+    assert_explicit_java_failure_is_fail_fast()
+    assert_execution_decision_matrix()
+    assert_shadow_manifest_regeneration()
     assert_synthetic_requires_behavior_assertions()
     print("real-mod corpus harness self-test: PASS")
     print("offline missing-cache: SKIP (no false PASS)")
+    print("explicit Java 25 selection: FAIL (actionable Java 21 diagnostic)")
+    print("runtime decision matrix: PASS")
+    print("shadow manifest regeneration/check: PASS")
     print("synthetic 25-case load-only: FAIL; complete function assertions: PASS")
     return 0
 
