@@ -1,8 +1,8 @@
 # SPEC_GAMEPLAY — world and behavior contract
 
 This document describes the current behavior surface for Minecraft Java 1.21.4,
-protocol 769, and DataVersion 4189 at merge baseline
-`f21e42327342fe1e8486960f2c43805711280ffd` (rechecked 2026-09-04). It covers
+protocol 769, and DataVersion 4189 at runtime snapshot
+`17ab09f5220bf99203d2aea2b2c9d65f763f433b` (rechecked 2026-09-05). It covers
 MISSING **#1–#70**, **#80–#90**, the Fabric-specific rows, and the world-generation
 G-10/G-11 evidence. Packet fields remain in
 [SPEC_WIRE.md](SPEC_WIRE.md); operational thresholds remain in
@@ -49,7 +49,7 @@ only says “the class exists” is not treated as full vanilla parity.
 
 | domain | implementation/data | input/state | output/evidence | status/provenance |
 |---|---|---|---|---|
-| world/chunk | `src/game/World.hpp::World`, `Chunk` | dimension, seed, block/biome arrays, revision | lazy chunk generation, block lookup and edits | `IMPLEMENTATION` |
+| world/chunk | `src/game/World.hpp::World`, `Chunk` | dimension, seed, block/biome arrays, revision | serialized lazy generation, block lookup/edits, snapshot save and configured-radius eviction | `IMPLEMENTATION` |
 | persistence | `src/game/WorldDataManager.*`, `Persistence.hpp`, `Anvil.hpp`, `RegionFile.hpp` | NBT, region entries, DataVersion | level/region/player state | `IMPLEMENTATION` + `test_recovery` |
 | block/physics | `src/physics/BlockTickScheduler.*`, `Fluids.*`, `Redstone.*`, `LightEngine.*` | state changes, tick number, gamerules | scheduled updates, light, redstone/fluid consequences | `IMPLEMENTATION` + focused tests |
 | worldgen | `src/worldgen/DensityFunction.*`, `MultiNoise.*`, `StructureManager.*`, `StructurePlacer.*` | seed, coordinates, dimension | biome and structure decisions | L1/L2 `IMPLEMENTATION`; L3 `DECLARED-LIMITATION` |
@@ -182,7 +182,6 @@ evidence, not a gameplay module.
   `DECLARED-LIMITATION` (L3), not a hidden pass.
 - `DECLARED-LIMITATION`: arbitrary Fabric Loader/JVM mods and Fabric event-bus
   bytecode are not executable in `cppfm` (E-14).
-- Protocol 776's later Bundle item is outside this 1.21.4 contract.
 - No current real-client/GUI artifact or accepted 2-hour/24-hour run is available;
   bot and synthetic evidence remain separately labelled.
 
@@ -192,13 +191,14 @@ Gameplay owns the cost boundaries, not the measured operational budget:
 
 - 20 TPS tick ordering and per-tick scheduled block/entity/projectile work;
 - view-distance sending versus simulation-distance ticking;
-- chunk cache/LRU and generation bursts;
+- chunk cache/LRU, per-world generation serialization, and generation bursts;
 - entity-heavy and active-redstone workloads; and
 - persistence cadence (short safety save, periodic save, and long-run save).
 
 Measurements, thresholds, and run IDs belong in
-[SPEC_OPS.md#performance-and-load](SPEC_OPS.md#performance-and-load). This
-documentation-only commit changes no runtime path.
+[SPEC_OPS.md#performance-and-load](SPEC_OPS.md#performance-and-load). The
+plan50 runtime changes are already captured by the named implementation snapshot;
+this specification refresh does not change gameplay behavior.
 
 ## 13. Thread safety
 
@@ -218,8 +218,7 @@ not add a lock or move a callback to another thread.
   boss and metadata state;
 - menu slot `-1` cursor, drag modes, max stack sizes, empty shaped rows and component
   preservation; and
-- intentional E-14, seed RNG L3, simplified vehicle/worldgen pieces, and protocol
-  776 features.
+- intentional E-14, seed RNG L3, and simplified vehicle/worldgen pieces.
 
 ## 15. Test method and evidence
 
@@ -227,21 +226,25 @@ Fresh focused results:
 
 | target | result |
 |---|---|
-| `test_gameplay_full` | `734 PASS / 1 intentional E-14 FAIL / 735`, exit 1 |
+| `test_gameplay_full` | `803 PASS / 1 intentional E-14 FAIL / 804`, exit 1 |
 | `test_smoke_80` | `212 PASS 0 FAIL` |
 | `test_seed_parity` | `201 PASS 0 FAIL` (L1 independent hand-calc plus L2 deterministic 50-chunk comparison) |
-| `test_mining_full` | `38/38 passed` |
+| `test_mining_full` | `59/59 passed` |
 | `test_block_hardness_full` | `16/16 passed; 1095 mismatch=0` |
 | `test_mob_stats_full` | `131 PASS 0 FAIL` |
 | `test_redstone_engine_full` | `29 PASS 0 FAIL` |
 | `test_recipes_mirror` | `76 PASS 0 FAIL` |
 | `test_plan43` | `82 PASS 0 FAIL` in 25.01s |
 | `test_native` | `ALL PASS` in 2.33s |
-| `test_server_full` | `234 PASS 0 FAIL` in 273.79s |
+| `test_server_full` | `234 PASS 0 FAIL` |
 | `multi_client` | `ALL PASS` in 17.83s |
 | `bot_smoke` | `ALL PASS` in 20.65s |
-| `tests/soak_test.py --duration 300` | `PASS` in 301.18s; 150 keepalives, 0 disconnects, actions 2930, RSS growth 14.5% |
-| `tools/soak_bot.py --duration 300` | `FAIL` in 301.89s; keepAlives 3 (<7), kicks 0, chunks 182, time updates 23 |
+| `tests/soak_test.py --duration 300` | `PASS`; 150 keepalives, 0 disconnects, actions 2932, post-fill RSS growth 7.6% |
+| `tests/soak_test.py --duration 600 --movement-range 3000` | `PASS`; 300 keepalives, 0 disconnects, actions 5707, post-fill RSS growth 6.6% |
+| `tools/soak_bot.py --duration 300` | `3/3 PASS`; each KeepAlive 30, chunks 182, time updates 300, all error counters 0, cleanup PASS |
+| `tests/soak_test.py --duration 1800 --movement-range 3000` | `PASS` on `17ab09f`; 900 keepalives, 0 disconnects, actions 17493, post-fill baseline `114504kB`, max `128868kB`, growth `12.5%`; diagnostic only |
+| `tests/soak_test.py --duration 7200 --movement-range 3000` (parent `d1c6a7f`) | interrupted at recorded `t=3361s`; post-fill RSS `160388→191612kB` (`+19.5%`), above the `15%` gate; not accepted |
+| accepted 2h/24h artifact | none; the 7200s attempt was not accepted and no 24-hour artifact exists |
 | `test_recovery` | registered evidence for the recovery matrix; rerun status is recorded separately in VERIFICATION |
 
 The E-14 assertion is intentionally `CHECK(false, ...)` in
@@ -254,7 +257,8 @@ commands and the allowed-failure policy are in
 **Priority: highest after WIRE.** World/block/entity/inventory/command/combat paths
 are current implementation contracts where source and tests say so. `DONE` in the
 legacy gap matrix is not expanded into “all vanilla internals are identical.” The
-declared boundaries—Fabric JVM mods, vanilla RNG L3, protocol 776, and missing
-long-run/real-client evidence—remain visible; the final-gates publication status is
-`BLOCKED` by the failing `soak_bot` run and must be addressed by a separately
-approved plan if the scope changes.
+declared boundaries—Fabric JVM mods, vanilla RNG L3, and missing long-run/real-client
+evidence—remain visible; the final-gates publication status is `BLOCKED` only by
+those declared boundaries. The attempted 7200-second soak was interrupted above its
+RSS gate and is not a pass. The former `soak_bot` blocker is resolved by three
+integrated 300-second passes.

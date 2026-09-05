@@ -25,7 +25,7 @@ Start with the [canonical documentation index](docs/README.md). The current sour
 
 Historical assessment text is indexed from the audit page and is not a current specification.
 
-## What works today (implementation baseline `f21e423` — 2026-09-04 final-gates snapshot)
+## What works today (implementation baseline `17ab09f` — 2026-09-05 runtime follow-up)
 
 | Area | Status |
 |---|---|
@@ -54,7 +54,7 @@ Historical assessment text is indexed from the audit page and is not a current s
 | Network: cookies, resource packs, transfer, plugin channels, **PacketBatcher** `Bundle 0x00` + `MultiBlockChange 0x4E`, **ChatMessageProcessor** `PlayerChat 0x3B` verify (RSA-SHA256) | ✅ |
 | Event bus (`BlockPlace/Break/NeighborChange`) + `ItemUseContext` + `DamageSource` | ✅ |
 | RCON + whitelist + `spawn-protection` + `WorldBorder` damage | ✅ |
-| 20 TPS loop + `simulationDistance` tick culling + `chunksUnloadTick` LRU + `level.dat` periodic 6000/1200t | ✅ |
+| 20 TPS loop + `simulationDistance` tick culling + configured-radius `chunksUnloadTick` LRU + `level.dat` periodic 6000/1200t | ✅ |
 | Admin: `/ban`/`ban-ip`/`pardon`/`op`/`deop`/`whitelist`/`kick` + `Rcon` + `whitelist.json`/`ops.json` enforcement | ✅ |
 
 The focused wire, gameplay, integration, and operations evidence below is tied to the
@@ -66,28 +66,31 @@ or long-run behavior a universal vanilla-parity claim.
 
 - **Feature/status matrix:** [`docs/MISSING_FEATURES_1_21_4.md`](docs/MISSING_FEATURES_1_21_4.md) retains the 80-row base taxonomy plus 10 numbered extension rows; the historical taxonomy classification is 90/90 `DONE`, not a universal parity claim.
 - **Audit history:** the audit index records the completed assessment series, including **assessment-6 44/44 FIXED (HIGH 25/25)**. Historical audits are evidence, not the current specification.
-- **Version and parity boundaries:** protocol 776 bundle-item behavior, broader vanilla RNG/structure-NBT parity, and other future compatibility work remain separately documented in the canonical specifications.
-- **Gameplay boundary:** `test_gameplay_full` has **734 PASS / 1 intentional E-14 FAIL / 735** and exits 1; the Fabric JVM-mod gap is intentional and by design.
+- **Version and parity boundaries:** the project targets Minecraft Java 1.21.4 / protocol 769; broader vanilla RNG/structure-NBT parity and other unverified behavior remain separately documented in the canonical specifications.
+- **Gameplay boundary:** `test_gameplay_full` has **803 PASS / 1 intentional E-14 FAIL / 804** and exits 1; the Fabric JVM-mod gap is intentional and by design.
 - **Fabric mods cannot run inside a C++ process.** Mods are JVM bytecode loaded through the Fabric Loader; "Fabric-compatible" here means *protocol-compatible with what an unmodded Fabric server puts on the wire*.
-- **Publication remains `BLOCKED`:** the 300-second `tools/soak_bot.py` run failed, no accepted 2-hour/24-hour artifact exists, and no current real-client/GUI artifact exists.
+- **Publication remains `BLOCKED`:** short bot/soak gates pass, but the attempted 2-hour run was interrupted above its RSS gate; no accepted 2-hour/24-hour artifact and no current real-client/GUI artifact exist.
 
 ## Testing — evidence (what the numbers mean)
 
 - **`test_native` (C++ self-test, status/join + plan38 QC/macro/predicate16 cases: status/join/chunk/chat/persist/multi/stress + plan34 fuzz/soak):** `ALL PASS`, 2.33s — run `./build/test_native ./build/cppfm`. Verifies `status 769`, `Login Success`, `Join Game`, `LevelChunkWithLight`, `BlockUpdate` broadcast, `SystemChat`, and cross-client visibility.
-- **`test_server_full` (full live-server protocol/gameplay/admin suite):** `234 PASS 0 FAIL`, 273.79s — run the current server-full harness as described in [Verification](docs/VERIFICATION.md).
+- **`test_server_full` (full live-server protocol/gameplay/admin suite):** `234 PASS 0 FAIL` — run the current server-full harness as described in [Verification](docs/VERIFICATION.md).
 - **`test_smoke_80` (80-row taxonomy + plan32-41 拡張, `tests/test_smoke_80.cpp`):** `212 PASS 0 FAIL` (80-row taxonomy + 82 拡張チェック plan41 horse/vehicle/bench/recipes) — each check verifies a vanilla packet/NBT (e.g., `worldborder size → InitializeWorldBorder 0x26`, `glowstone → UpdateLight 0x2B`, `wither → BossBar 0x0A`, `ActionBar 0x51`, `OpenHorseWindow 0x24`, `VehicleMove 0x33`, predicate 22). Run `./build/test_smoke_80 ./build/cppfm` (450s, 600s under load; `=== SMOKE 80: 212 PASS 0 FAIL ===`, exit 0).
 - **`test_scoreboard_reset` (ResetScore `0x49` round-trip, `tests/test_scoreboard_reset.cpp`):** `22/22 PASS` — holder + optional objectiveName round-trip / wildcard null broadcast / copy-before-erase. Run `./build/test_scoreboard_reset` (ctest `scoreboard_reset`, TIMEOUT 30).
 - **`test_spec_wire` (wire byte-identical, `tests/test_spec_wire.cpp` plan30-43):** `392 PASS 0 FAIL 0 SKIP` — 25+ wire cases covering all play `toClient` families (chunk/light/bundle, `UpdateAttributes 0x7C` `H1` varint mapper + horse `0x24` vehicle `0x33` + recipes tag, predicate 22) vs Prismarine `protocol.json` spec bytes (`EXPECT_EQ` `WriteBuffer` vs spec) + plan43 P43-1..7 shape locks. Run `./build/test_spec_wire` (ctest `spec_wire`, TIMEOUT 30).
 - **`test_wire_full` (full play matrix, `tests/test_wire_full.cpp`):** `405 PASS 0 FAIL` — toClientplay 全型の byte lock。Run `./build/test_wire_full` (ctest `wire_full`).
-- **`test_gameplay_full` (gameplay asserts, `tests/test_gameplay_full.cpp` plan42-46):** `734 PASS / 1 intentional E-14 FAIL / 735`, exit 1 — redstone engine・combat sweep/crit/shield・mob behavior・density・food/potion・crops/villager 込。Run `./build/test_gameplay_full` (ctest `gameplay_full`).
+- **`test_gameplay_full` (gameplay asserts, `tests/test_gameplay_full.cpp` plan42-46):** `803 PASS / 1 intentional E-14 FAIL / 804`, exit 1 — redstone engine・combat sweep/crit/shield・mob behavior・density・food/potion・crops/villager 込。Run `./build/test_gameplay_full` (ctest `gameplay_full`).
 - **`test_wire_b6` (plan45 B6 wire, `tests/test_wire_b6.cpp` assessment-6 W-05/08-11/13 + G-13):** `133 PASS` — settings `0x0C`・NameItem/Beacon/PickItem/RecipeBook・OP gate + spectate・steer_boat/resource_pack/pong・login 5 種・名前検証 + 重複 kick・crafting live。Run `./build/test_wire_b6` (ctest `wire_b6`).
 - **`test_seed_parity` (plan45 G-11, `tests/test_seed_parity.cpp`):** `201 PASS` — バイオーム 65・構造物 42+ (jar 検証)・同一 seed 同一ワールドの 3 層 parity。Run `./build/test_seed_parity` (ctest `seed_parity`).
 - **`test_flood_net` / `test_recovery` / `test_rcon_multi`:** registered focused targets with prior evidence; no new result for these targets is asserted in the supplied final-gates record. Run them separately before treating their status as current.
 - **`test_mining_full` / `test_block_hardness_full` / `test_mob_stats_full` / `test_redstone_engine_full` (plan44 G-02/03/05/12):** mining `38 PASS` / hardness 1095 mismatch 0 / mob_stats `131 PASS` (149 種 + followRange) / redstone `29 PASS` (7 カテゴリ engine 経由)。Run `ctest -R "mining_full|block_hardness_full|mob_stats_full|redstone_engine_full"`.
 - **`test_fuzz` (fuzz 23 cases, `tests/test_fuzz.cpp` plan34):** `23 PASS 0 FAIL` — malformed varint/NBT/packet fuzz, no crash/UBSan. Run `./build/test_fuzz` (ctest `fuzz`, TIMEOUT 30).
-- **`multi_client` / `bot_smoke` / `soak_bot`:** `multi_client` ALL PASS in 17.83s / `bot_smoke` ALL PASS in 20.65s / `soak_bot` **FAIL** in 301.89s (`keepAlives 3 (<7)`, kicks 0, chunks 182, time updates 23). The bot soak failure remains a publication blocker.
-- **`tests/soak_test.py --duration 300`:** `PASS` in 301.18s (`150 keepalives`, `0 disconnects`, `actions 2930`, post-fill RSS growth `14.5%`). This is not a 2-hour or 24-hour result.
-- **view-distance-32 dry benchmark:** `PASS` in 1.74s for 4,225 chunks; p50 `0.108ms`, p95 `2.331ms`, peak RSS ~`95MB`, hit rate `84.6%`.
+- **`multi_client` / `bot_smoke` / `soak_bot`:** `multi_client` ALL PASS in 17.83s / `bot_smoke` ALL PASS in 20.65s / `soak_bot` 3/3 PASS (each KeepAlive 30, chunks 182, time updates 300, error counters 0). The short bot gate is closed.
+- **`tests/soak_test.py --duration 300`:** `PASS` (150 keepalives, `0 disconnects`, actions 2932, post-fill RSS growth `7.6%`). This is not a 2-hour or 24-hour result.
+- **`tests/soak_test.py --duration 600 --movement-range 3000`:** `PASS` (300 keepalives, `0 disconnects`, actions 5707, post-fill RSS growth `6.6%`; wide traversal).
+- **`tests/soak_test.py --duration 1800 --movement-range 3000`:** `PASS` on the allocation-reuse baseline (900-second post-fill baseline `114504kB`, max `128868kB`, growth `12.5%`; 900 keepalives, 0 disconnects, 17493 actions). This is a 30-minute diagnostic, not a 2-hour/24-hour result.
+- **`tests/soak_test.py --duration 7200 --movement-range 3000`:** **not accepted** — interrupted at the recorded `t=3361s` before completion; post-fill baseline `160388kB`, maximum `191612kB` (`+19.5%`), above the `15%` gate. The cache stayed bounded while the five-client spatial working set continued to grow.
+- **view-distance-32 dry benchmark:** `PASS` in 1.74s for 4,225 chunks; p50 `0.108ms`, p95 `2.333ms`, peak RSS ~`95MB`, hit rate `84.6%`.
 - **Audit/evidence baseline:** assessment-6 is **44/44 FIXED (HIGH 25/25)**. The earlier strict/deep and assessment-series evidence is indexed in [Audit and history](docs/audit/README.md); current test meanings and release gates live in [Verification](docs/VERIFICATION.md).
 
 ## Clean-room methodology (important)
@@ -153,17 +156,16 @@ python3 tools/bench_chunk_gen.py --view-distance 32 --chunks 4225 --dry --strict
 ./build/test_spec_wire                     # 392 PASS 0 FAIL 0 SKIP
 ./build/test_fuzz                          # 23 PASS 0 FAIL
 ./build/test_wire_full                     # 405 PASS 0 FAIL 0 SKIP
-./build/test_gameplay_full                 # 734 PASS / 1 intentional E-14 FAIL / 735 (exit 1)
+./build/test_gameplay_full                 # 803 PASS / 1 intentional E-14 FAIL / 804 (exit 1)
 ./build/test_wire_b6                       # 133 PASS 0 FAIL
 ./build/test_seed_parity                   # 201 PASS 0 FAIL
 ./build/test_recipes_mirror                # 76 PASS 0 FAIL
-python3 tools/bench_chunk_gen.py --view-distance 32 --chunks 4225 --dry --strict  # PASS, p50 0.108 p95 2.331 hit 84.6%
+python3 tools/bench_chunk_gen.py --view-distance 32 --chunks 4225 --dry --strict  # PASS, p50 0.108 p95 2.333 hit 84.6%
 python3 tests/multi_client_test.py --binary ./build/cppfm   # ALL PASS in 17.83s
 python3 tests/bot_smoke.py --binary ./build/cppfm --duration 30  # ALL PASS in 20.65s
-python3 tests/soak_test.py --duration 300 --binary ./build/cppfm   # PASS: 150 keepalives, 0 disconnects, 2930 actions, RSS +14.5%
-python3 tools/soak_bot.py --duration 300 --binary ./build/cppfm  # FAIL: keepAlives 3 (<7), kicks 0, chunks 182, time updates 23
-# Focused CTest: 20 tests excluding smoke80, soak2h, and soak_bot.
-# Result: 19 passed plus gameplay_full's intentional E-14 failure; CTest rc 8.
+python3 tests/soak_test.py --duration 300 --binary ./build/cppfm   # PASS: 150 keepalives, 0 disconnects, 2932 actions, RSS +7.6%
+python3 tools/soak_bot.py --duration 300 --binary ./build/cppfm  # 3/3 PASS: KeepAlive 30, chunks 182, time updates 300 each
+# Focused CTest: run targets individually; gameplay_full retains its intentional E-14 failure.
 ctest -R soak2h --output-on-failure --timeout 8000                  # nightly 2h (LABELS nightly)
 ctest -R soak_bot --output-on-failure --timeout 400                 # soak_bot 300s (LABELS soak)
 # Nightly 24h soak (plan45 O-06 — ctest外、専用実行。gate: RSS <5%/24h warmup除外 + TPS 20 + NBT整合)
@@ -171,16 +173,17 @@ ctest -R soak_bot --output-on-failure --timeout 400                 # soak_bot 3
 # 24hフルはnightlyのみ。現時点で受理済みの2h/24h artifactはない。後始末は `cppfm --por[t]` を確認して所有PIDだけを終了する。
 ```
 
-The final-gates record at `f21e42327342fe1e8486960f2c43805711280ffd` keeps the only
+The current runtime record at `17ab09f5220bf99203d2aea2b2c9d65f763f433b` keeps the only
 allowed gameplay failure visible: `test_spec_wire` `392 PASS 0 FAIL 0 SKIP`,
 `test_wire_full` `405 PASS 0 FAIL 0 SKIP`, `test_wire_b6` `133 PASS 0 FAIL`,
-`test_gameplay_full` `734 PASS / 1 intentional E-14 FAIL / 735` (exit 1),
+`test_gameplay_full` `803 PASS / 1 intentional E-14 FAIL / 804` (exit 1),
 `test_server_full` `234 PASS 0 FAIL`, `test_seed_parity` `201 PASS 0 FAIL`,
 `test_mining_full` `38/38`, `test_block_hardness_full` `16/16` with `1095 mismatch=0`,
 `test_mob_stats_full` `131 PASS 0 FAIL`, `test_redstone_engine_full` `29 PASS 0 FAIL`,
-and `test_recipes_mirror` `76 PASS 0 FAIL`. The separate `soak_bot` failure keeps
-publication `BLOCKED`; no accepted 2-hour/24-hour run or current real-client/GUI
-artifact is claimed. For current interpretation, see [Verification](docs/VERIFICATION.md),
+and `test_recipes_mirror` `76 PASS 0 FAIL`. The 300-second bot gate and 10-minute
+wide synthetic soak pass; the attempted 2-hour run was interrupted before completion
+and did not pass its RSS gate. Publication remains `BLOCKED`; no accepted 2-hour/24-hour
+run or current real-client/GUI artifact is claimed. For current interpretation, see [Verification](docs/VERIFICATION.md),
 [Current state](docs/CURRENT_STATE.md), and the [audit history index](docs/audit/README.md).
 
 ### Reproducing the reference captures

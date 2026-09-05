@@ -5,7 +5,8 @@
 > rows **#81–#90**. The restored matrix is a historical taxonomy baseline; it is not
 > a release gate and does not make the current cleanup or operations audit green.
 >
-> Current implementation/evidence baseline: merge `f21e42327342fe1e8486960f2c43805711280ffd`.
+> Current implementation/evidence baseline: integrated runtime snapshot
+> `17ab09f5220bf99203d2aea2b2c9d65f763f433b`.
 
 ## Summary
 
@@ -16,11 +17,12 @@
 - `strict_assessment_1_gap_count: 78` is a separate historical audit label. Its
   archive result is not a current aggregate, and it must not be added to or
   substituted for the 90-row taxonomy count.
-- Current publication state is `BLOCKED`: the final-gates record includes
-  `tools/soak_bot.py` `FAIL` (`keepAlives 3 (<7)`, kicks 0, chunks 182, time updates
-  23), while `tests/soak_test.py` passed its 300-second run. `test_gameplay_full`
-  retains its one intentional E-14 expected failure. See [CURRENT_STATE.md](CURRENT_STATE.md)
-  and [VERIFICATION.md](VERIFICATION.md) for gate semantics.
+- Current publication state is `BLOCKED` only by declared boundaries: three integrated
+  `tools/soak_bot.py --duration 300` runs passed, while the attempted 7200-second soak
+  was interrupted above its RSS gate; accepted 2-hour/24-hour and current real-client
+  evidence remain absent. `test_gameplay_full` retains its one intentional
+  E-14 expected failure. See [CURRENT_STATE.md](CURRENT_STATE.md) and
+  [VERIFICATION.md](VERIFICATION.md) for gate semantics.
 
 ## Machine-readable status rules
 
@@ -51,7 +53,7 @@ Canonical behavior, wire ownership, and evidence interpretation live in
 | 4 | Light cross-chunk | DONE | `LightEngine.cpp:81` + `LightEngine.hpp:20` | **DONE:** block-light global BFS + sky-light BFS with `LightUpdateQueue`, `drain()` expands `dirtyChunks` to 3×3 (182-191), per-chunk `UpdateLight 0x2B` via `serializeUpdateLightBody`; see `PROTOCOL_NOTES.md` empirical §. |
 | 5 | Spawn chunk loader | DONE | `World.hpp:347` `ChunkTicket.hpp:1` | 5×5 `ForcedChunks` with `ChunkTicketType::SPAWN level 31` + `level.dat: ForcedChunks long[]` + `server.properties spawn-protection 16` + `isSpawnProtected` gate + `/forceload` support. |
 | 6 | Simulation distance culling | DONE | `World.hpp:422` `isChunkInSimulationDistance` | `viewDistance` vs `simulationDistance` distinguished; `Fluids.cpp:77`, `Redstone.cpp:370`, `LightEngine.cpp:46`, `BlockTickScheduler.cpp:59` all gated by `isChunkInSimulationDistance`; `PlayerChunk` send uses `shouldSend` (view), tick uses `shouldTick` (sim). |
-| 7 | Chunk unload LRU | DONE | `World.hpp:278` `allChunkKeys`/`eraseChunk`, `GameServer.cpp:401` `chunksUnloadTick` | 100t LRU, `isDirty` flush, `forced` keep, per-dim check. Works but no `maxLoadedChunks` cap, no async I/O. |
+| 7 | Chunk unload LRU | DONE | `World.hpp::allChunkKeys/eraseChunk`, `GameServer_tick.cpp::chunksUnloadTick`, `GameServer_world.cpp::saveChunkAsync` | 100t LRU, dirty flush, forced/spawn-ticket protection, per-dimension checks, `maxLoadedChunks` cap, and Chebyshev-distance eviction. Async save snapshots NBT/wire data without copying a full `Chunk`; the post-fix wide soak is recorded separately. |
 | 8 | Structures | DONE | `StructureManager.cpp:66` + `StructurePlacer.cpp:18` + `WorldGen.cpp:fillTerrainV3` | **plan12 §3 DONE; plan29 §1/§2 polish DONE; plan32 world DONE:** `StructureSet {spacing,separation,salt,Linear/Triangular}` — `stronghold 32/5`, `mineshaft 10/5`, `monument 32/5 salt 10387313`, `mansion 80/20 salt 10387319`, `end_city 20/11`; template pieces `portal_room/corridor/prismarine 58×58×23/mansion 40×40`; **plan29 §1:** `trial_chambers` `spacing 34 separation 12 salt 942731826` (8→12 fix) + jigsaw fallback 12 variants (corridor/end, straight slices 10+8, chamber 18/14/22, intersection 8×8, atrium 13×13, hallway, trial_spawner/vault/dispenser/copper) + `deep_dark` origin reject (biome gate); **plan29 §2:** `Pale Garden` decoration in `fillTerrainV3` — `pale_oak` 2-4/chunk (20% `creaking_heart` in trunk), `pale_hanging_moss` under leaves, 5×5 `pale_moss_block/carpet` patches + 5% `eyeblossom`; **plan32 world:** `/locate structure/biome/poi` + `/place feature/structure/jigsaw` + `/spreadplayers` (Commands.cpp:3243 locate via `StructureManager tmpMgr(seed)` + biome gate); **plan33 scheduled: 10→20 sets (spacing/salt parity), triangular/concentric, max_distance_from_center footprint, /locate 20-set** (see `plan/plan33.md`). MultiNoise climate Yarn-identical (no change, plan33 §3 isosceles). |
 | 9 | `level.dat` full | DONE | `WorldDataManager.hpp:26` + `Persistence.hpp:69` | `DataVersion 4189` + `Difficulty` + `WorldBorder` + `Version` + `ForcedChunks` atomic `rename`, per-dim `DIM-1/DIM1 level.dat` `dragonFight` NBT `Gateways` 12. |
 | 10 | WorldBorder damage | DONE | `GameServer.hpp:852` `isInsideBorder` | `InitializeWorldBorder 0x26` + `WorldBorderCenter/LerpSize`, `isInsideBorder` check in `onMovement` + per-tick `damageOutsideBorder` 0.2/half-sec outside `diameter*0.5`, `damageAmount` `Buffer`. |
@@ -134,7 +136,7 @@ Canonical behavior, wire ownership, and evidence interpretation live in
 | 67 | `LootTableEvaluator` | DONE | `LootTables.hpp:1` `evaluate(bn,tool)` | `pools/rolls/weight/set_count`, `fortune` bonus, `silk_touch` via `tool.hasSilkTouch()` → drop block itself; **plan35 polish:** `set_count`/`looting_enchant`/`enchant_randomly`/`apply_bonus` loot functions 評価追加, `explosion_decay`/`furnace_smelt`/`copy_components` は簡略 (smoke 127 で loot give 検証済み)。 |
 | 68 | `DatapackManager` | DONE | `DatapackManager.hpp:12` | **plan13 §10 DONE; plan35 polish:** scans `assets/data/<ns>/{advancements,predicates,item_modifiers,functions}` + `world/datapacks/*/data` + `listAvailable/enable/disable` for `/datapack`; **plan35:** `PredicateEvaluator` 8種 (`location/bow/distance/...`) + `advancements` story 20 JSON 駆動 (`assets/data/advancements`) + `loot` reload。 |
 | 69 | `FunctionEvaluator` `/function` | DONE | `FunctionEvaluator.hpp:1` + `Commands.cpp:1243` | **plan13 §10 DONE:** `executeFunction` recursion 10 + `return` + `execute store result/success score` + `schedule function` `append/replace` + `tick()` from `GameServer::tickOnce`. |
-| 70 | `/tag` `/team` `/bossbar` | DONE | `Commands.cpp:872` + `Ids.hpp:129` | **plan32 DONE (30+ commands):** `/team add/remove/join/leave` + `Teams 0x67` + `/bossbar add/remove/set` + `BossBar 0x0A ADD/HEALTH` + `/tag add/remove/list`; plus **plan32 30+ commands:** `/execute as/at/positioned/anchored/in/dimension/rotated/facing/if/unless run` modifiers (3af3b98) + `/data get/merge/remove` + `/clone` + `/loot` + `/place feature/structure/jigsaw` + `/locate structure/biome/poi` + `/spreadplayers` (9838189) + `/enchant`/`/attribute`/`/trigger` (2ec9050) + `/ban`/`/op`/`/whitelist`/`/kick` admin (8ddc338) + `/advancement`/`/recipe`/`/item`/`/me`/`/msg` (34ae053) + `/fill`/`/give`/`/summon`/`/setblock`/`/function`/`/reload`; polish: `BossBar TITLE` lerp still client-side (§8 verified), `Bundles` 1.21.5 deferred. |
+| 70 | `/tag` `/team` `/bossbar` | DONE | `Commands.cpp:872` + `Ids.hpp:129` | **plan32 DONE (30+ commands):** `/team add/remove/join/leave` + `Teams 0x67` + `/bossbar add/remove/set` + `BossBar 0x0A ADD/HEALTH` + `/tag add/remove/list`; plus **plan32 30+ commands:** `/execute as/at/positioned/anchored/in/dimension/rotated/facing/if/unless run` modifiers (3af3b98) + `/data get/merge/remove` + `/clone` + `/loot` + `/place feature/structure/jigsaw` + `/locate structure/biome/poi` + `/spreadplayers` (9838189) + `/enchant`/`/attribute`/`/trigger` (2ec9050) + `/ban`/`/op`/`/whitelist`/`/kick` admin (8ddc338) + `/advancement`/`/recipe`/`/item`/`/me`/`/msg` (34ae053) + `/fill`/`/give`/`/summon`/`/setblock`/`/function`/`/reload`; polish: `BossBar TITLE` lerp remains client-side (§8 verified). |
 
 ## Base taxonomy #71–#79: Network & Protocol (9 rows)
 
@@ -178,9 +180,9 @@ numbered taxonomy status and must not be converted to PASS by documentation edit
 
 | item | status | current record / next owner |
 |---|---|---|
-| `tools/soak_bot.py --duration 300` | `FAIL` / `PUBLICATION-BLOCKER` | keepAlives `3 (<7)`, kicks `0`, chunks `182`, time updates `23`; plan49 §1 owner |
-| accepted 2-hour/24-hour run | `ABSENT` / `DECLARED-LIMITATION` | no accepted artifact; plan49 §4 owner |
-| current real-client/GUI capture | `ABSENT` / `DECLARED-LIMITATION` | no current official-client artifact; bot/synthetic evidence is separate; plan49 §4 owner |
+| `tools/soak_bot.py --duration 300` | `RESOLVED` | three integrated main runs passed; each had KeepAlive `30`, chunks `182`, time updates `300`, all error counters `0`, and cleanup PASS; plan49 §1 |
+| accepted 2-hour/24-hour run | `INTERRUPTED / ABSENT` | the 7200-second synthetic attempt was interrupted at recorded `t=3361s`; post-fill RSS was `160388→191612kB` (`+19.5%`), above the `15%` gate; no accepted 2-hour/24-hour artifact exists; plan50 follow-up |
+| current real-client/GUI capture | `ABSENT` / `DECLARED-LIMITATION` | no current official-client artifact; bot/synthetic evidence is separate; plan50 follow-up owner |
 | `wt48/cleanup` | `DIRTY` / `PRESERVE-REVIEW` | branch `wt48/cleanup`, HEAD `5f82ac0b4448f76f98753d18c83bbcd9736da61c`, 19 changed paths, `+74/-840`; plan49 §6 safety review |
 
 ## Declared limitations (outside #1–#90; not counted as `DONE`)
@@ -193,10 +195,9 @@ table rather than being hidden inside a numbered `DONE` row.
 | Fabric `Netty` `ChannelPipeline` `Codec` abstraction | DECLARED-LIMITATION | The implementation uses manual `WriteBuffer`/`ReadBuffer`; it is not a JVM Netty channel pipeline. |
 | Fabric Loader JVM mods and Fabric event-bus bytecode | DECLARED-LIMITATION | JVM bytecode cannot execute inside the C++ process; compatibility means the observable protocol behavior of an unmodified 1.21.4 server. This is the intentional E-14 boundary. |
 | Vanilla Xoroshiro seed parity at L3 | DECLARED-LIMITATION | L1/L2 determinism is covered, but exact vanilla RNG byte parity is not independently proven. |
-| Protocol 776 / 1.21.5 Bundle item behavior | DECLARED-LIMITATION | This matrix is protocol 769 / Minecraft 1.21.4 and does not claim the later Bundle item contract. |
 | Real-client GUI and 24-hour/nightly evidence | DECLARED-LIMITATION | Procedures and bot/synthetic evidence do not substitute for a retained current real-client or long-run artifact. |
-| Session mining versus `MiningCalculator` | DECLARED-LIMITATION | `OPEN` residual: measured semantic differences remain; no unification or parity claim is made. |
-| `MobBehaviorSpec` live coverage | DECLARED-LIMITATION | `PARTIAL`/`OPEN` residual: descriptor coverage is not equivalent to live behavior coverage. |
+| Session mining versus `MiningCalculator` | IMPLEMENTED | plan49 unifies session start/finish and tick completion through shared context/results; `test_mining_full` `59/59` plus live smoke/server paths pass. |
+| `MobBehaviorSpec` live coverage | IMPLEMENTED-PARTIAL | plan49 wires 12 descriptor rows into live AI and gameplay assertions; broader species-wide vanilla equivalence remains a declared boundary. |
 | Retained marker/comment inventory | DECLARED-LIMITATION | The legacy-reference grep was zero, but a complete zero-marker inventory was not proven. |
 
 ## Non-numbered supported capabilities (separate from limitations)
@@ -214,16 +215,18 @@ status. Current named wire counts are `test_spec_wire` `392 PASS 0 FAIL 0 SKIP`,
 `test_wire_full` `405 PASS 0 FAIL 0 SKIP`, and `test_wire_b6` `133 PASS 0 FAIL`;
 the old handover value `328` is stale. `test_native` remains `ALL PASS` without an
 invented aggregate count. The final-gates record includes `test_smoke_80` `212 PASS 0 FAIL`,
-`test_gameplay_full` `734 PASS / 1 intentional E-14 FAIL / 735` (exit 1), and a
-passing `tests/soak_test.py --duration 300` run, but `tools/soak_bot.py --duration 300`
-failed (`keepAlives 3 (<7)`). Therefore no final publication gate is claimed green by
-this matrix.
+`test_gameplay_full` `803 PASS / 1 intentional E-14 FAIL / 804` (exit 1), a passing
+`tests/soak_test.py --duration 300` run, and three passing `tools/soak_bot.py
+--duration 300` runs. No unexpected executable failure remains; the remaining
+publication limitations are recorded separately below.
 
 | evidence class | status | interpretation |
 |---|---|---|
 | historical numbered-matrix baseline | HISTORICAL | 90 rows classified `DONE` at taxonomy granularity; not a current release result |
-| `tools/soak_bot.py` 300-second run | FAIL | keepAlives 3 (<7), kicks 0, chunks 182, time updates 23; blocks publication |
-| `tests/soak_test.py` 300-second run | PASS | 150 keepalives, 0 disconnects, 2930 actions, RSS growth 14.5%; not a long-run substitute |
+| `tools/soak_bot.py` 300-second runs | PASS | 3/3 integrated runs; each KeepAlive 30, chunks 182, time updates 300, all error counters 0, cleanup PASS |
+| `tests/soak_test.py` 300-second run | PASS | 150 keepalives, 0 disconnects, 2932 actions, post-fill RSS growth 7.6%; not a 24-hour substitute |
+| `tests/soak_test.py` 1800-second run | PASS | allocation-reuse baseline `17ab09f`; 900 keepalives, 0 disconnects, 17493 actions, post-fill RSS growth 12.5%; not a 2-hour/24-hour substitute |
+| `tests/soak_test.py` 7200-second attempt | NOT-ACCEPTED | interrupted at recorded `t=3361s`; post-fill RSS `160388→191612kB` (`+19.5%`), above the `15%` gate |
 | E-14 gameplay assertion | EXPECTED-FAIL-E14 | Intentional JVM-mod boundary; keep the failure visible |
 | nightly/24-hour and real-client evidence | DECLARED-LIMITATION | No accepted current artifact is recorded here |
 

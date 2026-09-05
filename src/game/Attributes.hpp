@@ -225,7 +225,7 @@ public:
             Attribute::SWEEPING_DAMAGE_RATIO, Attribute::TEMPT_RANGE, Attribute::WATER_MOVEMENT_EFFICIENCY,
             Attribute::ATTACK_SPEED
         };
-        // Filter to only mapper-known attributes (22); unmapped ones (burning_time etc) are 1.21.5+ and skipped for 1.21.4 wire
+        // Filter to only mapper-known attributes (22); unmapped attributes are skipped for the 1.21.4 wire.
         std::vector<Attribute> order;
         order.reserve(22);
         for(auto a: orderAll){ if(attributeMapperId(a) >= 0) order.push_back(a); }

@@ -1,7 +1,7 @@
 # SPEC_WIRE — Minecraft 1.21.4 / protocol 769
 
 This is the byte-level source of truth for the current C++ implementation. Snapshot:
-merge baseline `f21e42327342fe1e8486960f2c43805711280ffd`, rechecked 2026-09-04. Scope
+runtime snapshot `17ab09f5220bf99203d2aea2b2c9d65f763f433b`, rechecked 2026-09-05. Scope
 is Java Edition 1.21.4, protocol `769`, DataVersion `4189`, with an unmodified Fabric
 1.21.4 server as the behavioral reference. `docs/MISSING_FEATURES_1_21_4.md` targets
 are identified in every contract; this file does not change their status or the
@@ -9,8 +9,7 @@ publication status, which remains `BLOCKED`.
 
 **Status:** current wire contract, with the implementation/omitted/deferred
 classification below. **Limitations:** a protocol-compatible implementation is not
-a JVM Fabric mod host; protocol 776 and unverified vanilla RNG parity are outside the
-boundary.
+a JVM Fabric mod host; unverified vanilla RNG parity is outside the boundary.
 
 The archived assessment-1 strict audit is a historical record labelled 78 gaps; it
 is not a current packet count or a fresh parity result. The current numbered matrix
@@ -273,8 +272,7 @@ limit.
 ## 11. Cautions
 
 - `BundleDelimiter 0x00` is a packet; the `bundle_contents` item component is a
-  different concept and is not a 1.21.4 block/item feature to import from protocol
-  776.
+  different concept and is not part of this 1.21.4 wire contract.
 - A single-valued paletted container writes `value` **and then `longCount=0`**.
 - `UpdateLight` chunk coordinates are VarInts, while LevelChunk coordinates are i32.
 - `ContainerSetContent` and `OpenScreen` IDs in old notes (`0x12` and `0x34`) are
@@ -298,8 +296,9 @@ Serialization performance is not a parity oracle. The observable budgets are:
 | batch | `PacketBatcher` uses the 64-count/50 ms policy documented by the current header and tick integration |
 
 MSPT, RSS, chunk-generation, and soak results are owned by
-[SPEC_OPS.md#performance-and-load](SPEC_OPS.md#performance-and-load). This docs-only
-commit has no runtime performance path.
+[SPEC_OPS.md#performance-and-load](SPEC_OPS.md#performance-and-load). The runtime
+follow-up is identified by the snapshot above; this wire-contract refresh does not
+alter packet encoding or runtime performance paths.
 
 ## 13. Thread safety
 
@@ -338,8 +337,8 @@ These are named current-snapshot results, not inherited values from the handover
 historical audits. In particular, the old `test_spec_wire` value `328` is stale;
 the current value is `392`. `test_native` is intentionally recorded as `ALL PASS`
 without an invented aggregate count. A passing wire lock also does not clear the
-`soak_bot` publication blocker, the intentional E-14 failure, or missing
-real-client/long-run evidence.
+intentional E-14 failure or missing real-client/long-run evidence; the former
+`soak_bot` blocker is resolved by three integrated 300-second passes.
 
 Named vectors include:
 
@@ -358,5 +357,4 @@ The full command matrix and timeout wrappers are in
 **Priority: highest.** Every gameplay and operations claim depends on this contract.
 The current sent paths above are `IMPLEMENTATION`/`WIRE-ORACLE` or `CAPTURED` and are
 locked by tests. Omitted alternatives are not silently promoted to sent packets;
-future/deferred entries and the 1.21.5/protocol-776 bundle item remain
-`DECLARED-LIMITATION`.
+future/deferred entries remain `DECLARED-LIMITATION`.

@@ -2,8 +2,8 @@
 
 This document is the verification contract for the canonical snapshot of Minecraft
 Java Edition **1.21.4**, protocol **769**, and DataVersion **4189**. The source snapshot
-is merge baseline `f21e42327342fe1e8486960f2c43805711280ffd`, rechecked on
-**2026-09-04**.
+is integrated runtime `17ab09f5220bf99203d2aea2b2c9d65f763f433b`, rechecked on
+**2026-09-05**.
 The test matrix verifies the current C++ implementation; it does not silently turn
 an approximation into vanilla parity.
 
@@ -15,7 +15,7 @@ behavior belongs in [SPEC_GAMEPLAY.md](SPEC_GAMEPLAY.md), packet bytes in
 
 **Status:** final-gates evidence is recorded against the named baseline, but
 publication remains `BLOCKED`. **Limitations:** arbitrary Fabric JVM mods
-(E-14), exact vanilla Xoroshiro byte parity (world-generation L3), protocol 776, and
+(E-14), exact vanilla Xoroshiro byte parity (world-generation L3), and
 real-client/24-hour evidence are separate boundaries. Any unverified assertion uses
 `DECLARED-LIMITATION` rather than an inferred pass.
 
@@ -142,7 +142,8 @@ For every new or changed claim:
 6. review the output, scope, cleanup, and provenance before committing.
 
 Do not change test assertions, expected-failure policy, packet IDs, or thresholds to
-make a documentation gate green. This plan48 canonical commit adds documentation only.
+make a documentation gate green. The plan49 record reports implementation and fresh
+evidence; it does not waive the intentional E-14 assertion.
 
 ## 8. C++ evidence-record example
 
@@ -214,28 +215,31 @@ Verification records a measurement only with commit, date, host, options, warm-u
 sample count, and run ID. The operational contract is in
 [SPEC_OPS.md#performance-and-load](SPEC_OPS.md#performance-and-load).
 
-The 2026-09-04 local reruns below use host `nico`, merge baseline
-`f21e42327342fe1e8486960f2c43805711280ffd`, UTC date `2026-09-04`, and run ID
-`plan48-final-20260904`. The command and options identify each sub-run. No runtime
-or test artifact is added by this documentation-only commit.
+The 2026-09-04 local reruns below use host `nico`, runtime snapshot
+`17ab09f5220bf99203d2aea2b2c9d65f763f433b`, UTC date `2026-09-05`, and run ID
+`plan49-integrated-20260904`. The command and options identify each sub-run.
 
 | workload | gate/acceptance contract | status semantics |
 |---|---|---|
 | configure/build | timeout and successful target completion | completed after a filesystem-slow initial 300s outer timeout; resumed build completed `104/104` |
 | incremental Ninja build | no source changes remain | `ninja: no work to do` in `0.05s` |
-| view distance 32 | 4,225-chunk dry strict benchmark | `PASS` in `1.74s`: p50 0.108 ms, p95 2.331 ms, peak RSS ~95 MB, hit rate 84.6% |
-| 120 clients | stress script completes with owned process cleanup | `PASS` in `69.11s`: 120/120 joined |
+| view distance 32 | 4,225-chunk dry strict benchmark | `PASS` in `1.74s`: p50 0.108 ms, p95 2.333 ms, peak RSS ~95 MB, hit rate 84.6% |
+| 120 clients | stress script completes with owned process cleanup | `PASS` in `68.0s`: 120/120 joined |
 | multi-client integration | cross-client visibility and state | `ALL PASS` in `17.83s` |
 | bot smoke | short bot lifecycle | `ALL PASS` in `20.65s` |
 | entity/redstone load | P95 MSPT/TPS and bounded RSS | run-specific; no unlabelled claim |
-| `tests/soak_test.py --duration 300` | short synthetic soak | `PASS` in `301.18s`: 150 keepalives, 0 disconnects, actions 2930, post-fill RSS growth 14.5% |
-| `tools/soak_bot.py --duration 300` | bot soak gate | `FAIL` in `301.89s`: keepAlives 3 (<7), kicks 0, chunks 182, time updates 23; blocks publication |
-| 2 h/nightly or 24 h | dedicated run with integrity logs | no accepted artifact; `DECLARED-LIMITATION` |
+| `tests/soak_test.py --duration 300` | short synthetic soak | `PASS`: 150 keepalives, 0 disconnects, actions 2932, post-fill RSS growth 7.6% |
+| `tests/soak_test.py --duration 600 --movement-range 3000` | wide synthetic soak after chunk-memory fix | `PASS`: 300 keepalives, 0 disconnects, actions 5707, post-fill RSS growth 6.6% |
+| `tools/soak_bot.py --duration 300` | bot soak gate | `3/3 PASS`: each run KeepAlive 30, chunks 182, time updates 300, all error counters 0, cleanup PASS |
+| `tests/soak_test.py --duration 1800 --movement-range 3000` | allocation-reuse diagnostic soak | `PASS` on `17ab09f`: 900 keepalives, 0 disconnects, actions 17493, post-fill baseline `114504kB`, max `128868kB`, growth `12.5%`; not a 2h/24h result |
+| `tests/soak_test.py --duration 7200 --movement-range 3000` (parent `d1c6a7f`) | dedicated long-run attempt with integrity logs | interrupted at recorded `t=3361s`; post-fill RSS `160388→191612kB` (`+19.5%`), above the `15%` gate; not accepted |
+| accepted 2 h/24 h artifact | long-run completion and retained integrity log | none |
 | real-client/GUI | manual capture with client metadata | no current artifact; `DECLARED-LIMITATION` |
 
-This document and the other permitted canonical documentation files do not change
-runtime performance. Publication remains `BLOCKED`; the E-14 failure is intentional,
-but the `soak_bot` failure is not waived.
+The former `soak_bot` blocker is resolved by three fresh integrated runs. The attempted
+7200-second soak was interrupted above its RSS gate and is not a pass. Publication
+remains `BLOCKED` only for E-14, unproven vanilla Xoroshiro L3, and missing accepted
+2-hour/24-hour/real-client evidence.
 
 ## 13. Thread safety and process ownership
 
@@ -265,7 +269,7 @@ The checker must cover:
   zlib trailing data, and oversize declarations;
 - stale/live session locks, corrupt level/region/player data, orphan servers, and port
   reuse; and
-- intentional E-14, seed RNG L3, JVM Fabric mods, protocol 776, and unavailable
+- intentional E-14, seed RNG L3, JVM Fabric mods, and unavailable
   external/manual/nightly evidence.
 
 Allowed status vocabulary is:
@@ -307,10 +311,10 @@ publication.
 
 | target | recorded result | interpretation |
 |---|---|---|
-| `test_gameplay_full` | `734 PASS / 1 intentional E-14 FAIL / 735` (exit 1) | the one failure is intentional E-14; no other failure allowed |
+| `test_gameplay_full` | `803 PASS / 1 intentional E-14 FAIL / 804` (exit 1) | the one failure is intentional E-14; no other failure allowed |
 | `test_smoke_80` | `212 PASS 0 FAIL` | base taxonomy plus extension checks |
 | `test_seed_parity` | `201 PASS 0 FAIL` | L1/L2 deterministic evidence; vanilla RNG L3 remains declared |
-| `test_mining_full` | `38/38 passed` | mining behavior |
+| `test_mining_full` | `59/59 passed` | shared authoritative mining behavior |
 | `test_block_hardness_full` | `16/16 passed; 1095 mismatch=0` | generated block table |
 | `test_mob_stats_full` | `131 PASS 0 FAIL` | fixture/stat checks |
 | `test_redstone_engine_full` | `29 PASS 0 FAIL` | engine categories |
@@ -328,22 +332,24 @@ metadata and cleanup artifact is not a new claim.
 
 | target/procedure | purpose | status at this document snapshot |
 |---|---|---|
-| `test_flood_net` / `test_recovery` / `test_rcon_multi` | frame, recovery, and RCON focused targets | no new result supplied for this final-gates record; prior evidence is historical |
+| `test_flood_net` / `test_recovery` / `test_rcon_multi` | frame, recovery, and RCON focused targets | `57/0`, `45/0`, and `6/0` respectively |
 | `check_world` | offline NBT/world integrity | run-specific; no standalone run recorded here |
-| view32 dry benchmark | 4,225 chunk load contract | `PASS` in 1.74s: p50 0.108 ms, p95 2.331 ms, peak RSS ~95 MB, hit rate 84.6% |
-| stress 120 | concurrent connection load | `PASS` in 69.11s: 120/120 joined |
+| view32 dry benchmark | 4,225 chunk load contract | `PASS` in 1.74s: p50 0.108 ms, p95 2.333 ms, peak RSS ~95 MB, hit rate 84.6% |
+| stress 120 | concurrent connection load | `PASS` in 68.0s: 120/120 joined |
 | multi-client integration | cross-client behavior | `ALL PASS` in 17.83s |
 | bot smoke | short bot lifecycle | `ALL PASS` in 20.65s |
-| `tests/soak_test.py --duration 300` | short synthetic stability | `PASS` in 301.18s: 150 keepalives, 0 disconnects, actions 2930, post-fill RSS growth 14.5% |
-| `tools/soak_bot.py --duration 300` | extended bot stability | `FAIL` in 301.89s: keepAlives 3 (<7), kicks 0, chunks 182, time updates 23 |
-| soak nightly/24 h | long-run stability | `DECLARED-LIMITATION`; no accepted 2h/24h artifact |
+| `tests/soak_test.py --duration 300` | short synthetic stability | `PASS`: 150 keepalives, 0 disconnects, actions 2932, post-fill RSS growth 7.6% |
+| `tests/soak_test.py --duration 600 --movement-range 3000` | wide synthetic stability | `PASS`: 300 keepalives, 0 disconnects, actions 5707, post-fill RSS growth 6.6% |
+| `tools/soak_bot.py --duration 300` | extended bot stability | `3/3 PASS`: each KeepAlive 30, chunks 182, time updates 300, all error counters 0, cleanup PASS |
+| `tests/soak_test.py --duration 1800 --movement-range 3000` | allocation-reuse diagnostic stability | `PASS` on `17ab09f`: 900 keepalives, 0 disconnects, actions 17493, post-fill baseline `114504kB`, max `128868kB`, growth `12.5%`; not a 2h/24h result |
+| `tests/soak_test.py --duration 7200 --movement-range 3000` (parent `d1c6a7f`) | long-run stability attempt | interrupted at recorded `t=3361s`; post-fill RSS `160388→191612kB` (`+19.5%`), above the `15%` gate; not accepted |
+| accepted soak 2 h/24 h | completed long-run artifact | none |
 | real-client/GUI | manual client evidence | `DECLARED-LIMITATION`; no current artifact |
 
-The recorded `soak_bot` failure is not hidden or converted to a pass. It blocks a
-release-candidate operations gate; the separate passing `tests/soak_test.py` run does
-not waive it. The canonical documentation keeps the E-14 expected failure, missing
-vanilla Xoroshiro L3 proof, protocol 776 boundary, and missing long-run/real-client
-artifacts explicitly limited.
+The former `soak_bot` failure is closed by three fresh integrated passes. The
+7200-second soak attempt was interrupted above its RSS gate and is not a pass. The
+canonical documentation keeps the E-14 expected failure, missing vanilla Xoroshiro
+L3 proof and missing long-run/real-client artifacts explicitly limited.
 
 ### Reproducible commands
 
@@ -410,11 +416,12 @@ If a confirmed test-owned PID remains, repeat the command-line inspection and is
 ## 16. Priority, status, and rollback
 
 **Priority: highest for publication.** Static/schema/scope checks precede expensive
-server runs. The canonical snapshot is acceptable only when the permitted canonical
-documentation files are the only changes, the CSV is unchanged, all archive links
-resolve, and no executable behavior or assertion changed. The final-gates status is
-`BLOCKED` by the `soak_bot` failure; E-14 remains the single intentional gameplay
-expected failure.
+server runs. The canonical snapshot is acceptable only when the named runtime,
+test-harness, comment-only, and canonical-documentation changes are reviewed, the
+CSV is unchanged, all archive links resolve, and no assertion is weakened to hide a
+failure. The final-gates status is
+`BLOCKED` only by declared E-14, L3, long-run, and real-client boundaries; E-14
+remains the single intentional gameplay expected failure.
 
 Rollback applies only to a migration commit owned by the operator. Use an explicit
 inverse or `git revert` of that commit; never reset, checkout, delete broadly, or
