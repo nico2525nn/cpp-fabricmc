@@ -39,6 +39,8 @@ public class TransformingClassLoader extends URLClassLoader {
     private final CopyOnWriteArrayList<TransformListener> listeners =
         new CopyOnWriteArrayList<>();
     private final ConcurrentHashMap<String, TransformResult> results = new ConcurrentHashMap<>();
+    private final IntermediaryNamedMappings namespaceMappings;
+    private final ClassFileNamespaceRemapper namespaceRemapper;
     private final MixinClassTransformer mixinTransformer;
     private volatile boolean strict;
 
@@ -51,8 +53,12 @@ public class TransformingClassLoader extends URLClassLoader {
     public TransformingClassLoader(URL[] urls, ClassLoader parent, boolean strict) {
         super(urls == null ? new URL[0] : urls.clone(), parent);
         this.strict = strict;
+        this.namespaceMappings = IntermediaryNamedMappings.discover(urls);
+        this.namespaceRemapper = new ClassFileNamespaceRemapper(namespaceMappings);
         this.mixinTransformer = new MixinClassTransformer(strict);
+        this.mixinTransformer.setDescriptorResolver(namespaceMappings);
         this.mixinTransformer.setMixinClassLoader(this);
+        if (!namespaceMappings.isIdentity()) addTransformer(namespaceRemapper);
         addTransformer(mixinTransformer);
     }
 
@@ -100,7 +106,7 @@ public class TransformingClassLoader extends URLClassLoader {
         try (InputStream stream = getResourceAsStream(normalized)) {
             if (stream == null) throw new TransformException("mixin config not found: " + resourceName);
             String json = new String(readAll(stream), java.nio.charset.StandardCharsets.UTF_8);
-            mixinTransformer.registerConfiguration(MixinConfiguration.parse(json), this);
+            registerMixinConfiguration(MixinConfiguration.parse(json));
         } catch (IOException failure) {
             throw new TransformException("cannot read mixin config: " + resourceName, failure);
         }
@@ -108,7 +114,23 @@ public class TransformingClassLoader extends URLClassLoader {
 
     /** Direct access for launchers that already parsed configuration. */
     public void registerMixinConfiguration(MixinConfiguration configuration) {
-        mixinTransformer.registerConfiguration(configuration, this);
+        if (configuration == null) throw new NullPointerException("configuration");
+        for (String mixin : configuration.serverMixins()) {
+            String resource = mixin.replace('.', '/') + ".class";
+            try (InputStream stream = getResourceAsStream(resource)) {
+                if (stream == null) {
+                    if (configuration.isRequired())
+                        throw new TransformException("mixin class not found: " + mixin);
+                    continue;
+                }
+                byte[] original = readAll(stream);
+                byte[] remapped = namespaceRemapper.remapMixin(mixin, original);
+                mixinTransformer.registerMixin(mixin, remapped);
+            } catch (IOException failure) {
+                if (configuration.isRequired())
+                    throw new TransformException("cannot read mixin class " + mixin, failure);
+            }
+        }
     }
 
     /**
@@ -219,6 +241,11 @@ public class TransformingClassLoader extends URLClassLoader {
     /** Exposes the built-in Mixin transformer for explicit byte registration. */
     public MixinClassTransformer getMixinTransformer() {
         return mixinTransformer;
+    }
+
+    /** Mapping metadata used by the loader's intermediary-to-named edge. */
+    public IntermediaryNamedMappings getNamespaceMappings() {
+        return namespaceMappings;
     }
 
     /**

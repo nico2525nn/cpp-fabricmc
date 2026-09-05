@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "game": {
+    "id": "minecraft",
+    "version": "1.21.4",
+    "protocol": 769
+  },
+  "mapping": {
+    "coordinates": "net.fabricmc:yarn:1.21.4+build.8",
+    "version": "1.21.4+build.8",
+    "sourceNamespace": "intermediary",
+    "targetNamespace": "named",
+    "url": "https://maven.fabricmc.net/net/fabricmc/yarn/1.21.4+build.8/yarn-1.21.4+build.8-v2.jar",
+    "cachePath": "net/fabricmc/yarn/1.21.4+build.8/yarn-1.21.4+build.8-v2.jar",
+    "entry": "mappings/mappings.tiny",
+    "sha256": "a7a042f45ebc0384d5b72c926a435695610380c1a4dab0992fa8dd0aa386f960",
+    "size": 1538386,
+    "license": "CC0-1.0",
+    "licenseUrl": "https://github.com/FabricMC/yarn/blob/1.21.4+build.8/LICENSE",
+    "sourceUrl": "https://github.com/FabricMC/yarn/tree/1.21.4+build.8"
+  },
+  "intermediary": {
+    "coordinates": "net.fabricmc:intermediary:1.21.4",
+    "cachePath": "net/fabricmc/intermediary/1.21.4/intermediary-1.21.4.jar",
+    "sha256": "6aea9971d72e14f03f2c167ee2c24edd5eb0a59fc3eaedcbdf5c2ad0f0c36786",
+    "size": 701826,
+    "entry": "mappings/mappings.tiny",
+    "sourceNamespace": "official",
+    "targetNamespace": "intermediary"
+  }
+}
