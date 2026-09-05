@@ -1,0 +1,186 @@
+{
+  "schemaVersion": 1,
+  "suite": "cppfm-plan51-real-mod-corpus",
+  "game": {
+    "id": "minecraft",
+    "version": "1.21.4",
+    "protocol": 769,
+    "dataVersion": 4189
+  },
+  "source": {
+    "provider": "Modrinth",
+    "versionApi": "https://api.modrinth.com/v2/project/{slug}/version",
+    "retrievedAt": "2026-09-05",
+    "policy": "Public release files are downloaded byte-for-byte and never repackaged or patched."
+  },
+  "runtime": {
+    "loaderVersion": "0.16.9",
+    "mixinVersion": "0.15.4+mixin.0.8.7",
+    "fabricRuntimeLock": "jvm/vendor/fabric-runtime.lock.json",
+    "referenceMainClass": "net.fabricmc.loader.impl.launch.server.FabricServerLauncher",
+    "javaMajor": {
+      "minimum": 21,
+      "maximum": 21
+    },
+    "referenceServer": {
+      "url": "https://piston-data.mojang.com/v1/objects/4707d00eb834b446575d89a61a11b5d548d8c001/server.jar",
+      "cachePath": "reference/minecraft-server-1.21.4.jar",
+      "filename": "minecraft-server-1.21.4.jar",
+      "sha1": "4707d00eb834b446575d89a61a11b5d548d8c001",
+      "sha256": "1066970b09e9c671844572291c4a871cc1ac2b85838bf7004fa0e778e10f1358",
+      "size": 56880250
+    }
+  },
+  "mods": [
+    {
+      "id": "lithium",
+      "projectId": "gvQqBUqZ",
+      "projectSlug": "lithium",
+      "versionId": "u8pHPXJl",
+      "version": "mc1.21.4-0.15.3-fabric",
+      "filename": "lithium-fabric-0.15.3+mc1.21.4.jar",
+      "url": "https://cdn.modrinth.com/data/gvQqBUqZ/versions/u8pHPXJl/lithium-fabric-0.15.3%2Bmc1.21.4.jar",
+      "cachePath": "mods/lithium-fabric-0.15.3+mc1.21.4.jar",
+      "sha1": "b7100505d1178b0f9a1dac4a24472ad1293b890c",
+      "sha256": "153891e8d6988fedffa5098851a725a137c3e5ca04a89a8df409feb313623eb4",
+      "size": 797555,
+      "environment": "client_or_server_prefers_both",
+      "metadata": {
+        "sha256": "f41fa9fce5d850aeb573d7abae4cf9ec64bd9bfa600b921316e04f97fb23858d",
+        "id": "lithium",
+        "version": "0.15.3+mc1.21.4",
+        "environment": "*",
+        "entrypoints": {
+          "main": [
+            "net.caffeinemc.mods.lithium.fabric.LithiumFabricMod"
+          ]
+        },
+        "depends": {
+          "fabricloader": ">=0.15.1",
+          "minecraft": "1.21.4"
+        },
+        "mixins": [
+          "lithium.mixins.json",
+          "lithium-fabric.mixins.json"
+        ],
+        "accessWidener": "lithium.accesswidener"
+      },
+      "behavior": {
+        "majorFunction": "server tick, entity, world and block optimization through Mixin",
+        "initializeLogRegex": [
+          "Loaded configuration file for Lithium:"
+        ],
+        "referenceLogRegex": [
+          "Mixing .* from lithium(?:-fabric)?\\.mixins\\.json into"
+        ],
+        "commands": []
+      }
+    },
+    {
+      "id": "ferritecore",
+      "projectId": "uXXizFIs",
+      "projectSlug": "ferrite-core",
+      "versionId": "IPM0JlHd",
+      "version": "7.1.1-fabric",
+      "filename": "ferritecore-7.1.1-fabric.jar",
+      "url": "https://cdn.modrinth.com/data/uXXizFIs/versions/IPM0JlHd/ferritecore-7.1.1-fabric.jar",
+      "cachePath": "mods/ferritecore-7.1.1-fabric.jar",
+      "sha1": "ee08ca5fd2a7a02dbade048745533b5570a826f0",
+      "sha256": "0dd5e9203552024e38e73a0f5b46a82eb66f0318b23289c6842b268663274a79",
+      "size": 107026,
+      "environment": "client_or_server",
+      "metadata": {
+        "sha256": "efecea966510b3db26cdefb3ceb4b748c14b33b97b2091d1427e27ef8d7224ab",
+        "id": "ferritecore",
+        "version": "7.1.1",
+        "environment": "*",
+        "entrypoints": {},
+        "depends": {
+          "fabricloader": ">=0.14.21",
+          "minecraft": ">=1.21.4 <1.22"
+        },
+        "mixins": [
+          "ferritecore.accessors.mixin.json",
+          "ferritecore.blockstatecache.mixin.json",
+          "ferritecore.dedupmultipart.mixin.json",
+          "ferritecore.fastmap.mixin.json",
+          "ferritecore.mrl.mixin.json",
+          "ferritecore.predicates.mixin.json",
+          "ferritecore.dedupbakedquad.mixin.json",
+          "ferritecore.threaddetec.mixin.json",
+          "ferritecore.modelsides.mixin.json",
+          "ferritecore.fabric.mixin.json"
+        ],
+        "accessWidener": null
+      },
+      "behavior": {
+        "majorFunction": "server memory deduplication and cache optimization through Mixin",
+        "initializeLogRegex": [],
+        "referenceLogRegex": [
+          "Mixing .* from ferritecore\\.[^ ]+\\.json into"
+        ],
+        "commands": []
+      }
+    },
+    {
+      "id": "carpet",
+      "projectId": "TQTTVgYE",
+      "projectSlug": "carpet",
+      "versionId": "aVB2lYQQ",
+      "version": "1.4.161",
+      "filename": "fabric-carpet-1.21.4-1.4.161+v241203.jar",
+      "url": "https://cdn.modrinth.com/data/TQTTVgYE/versions/aVB2lYQQ/fabric-carpet-1.21.4-1.4.161%2Bv241203.jar",
+      "cachePath": "mods/fabric-carpet-1.21.4-1.4.161+v241203.jar",
+      "sha1": "41d979ea73de8cd42383eb461d45f2a434573c4b",
+      "sha256": "03114efd99c597a638643d8eb97b7dc485318c007750775d8a5e8c866b44ed76",
+      "size": 1526554,
+      "environment": "server_only_client_optional",
+      "metadata": {
+        "sha256": "a4a3a32647ecd54233ddcb1b7b8e102cbf8e55327e91c5a0cfbf54c7d6f6d1cd",
+        "id": "carpet",
+        "version": "1.4.161+v241203",
+        "environment": "*",
+        "entrypoints": {
+          "client": [
+            "carpet.CarpetServer::onGameStarted"
+          ],
+          "server": [
+            "carpet.CarpetServer::onGameStarted",
+            "carpet.utils.CarpetRulePrinter"
+          ]
+        },
+        "depends": {
+          "minecraft": ">=1.21.4",
+          "fabricloader": ">=0.16.9",
+          "java": ">=21"
+        },
+        "mixins": [
+          "carpet.mixins.json"
+        ],
+        "accessWidener": "carpet.accesswidener"
+      },
+      "behavior": {
+        "majorFunction": "server-side Carpet rules and command surface",
+        "initializeLogRegex": [
+          "Carpet Mod version: 1\\.4\\.161\\+v241203"
+        ],
+        "referenceLogRegex": [
+          "Mixing .* from carpet\\.mixins\\.json into"
+        ],
+        "commands": [
+          {
+            "input": "carpet",
+            "referenceLogRegex": [
+              "Current Carpet Mod settings:",
+              "Carpet Mod version: 1\\.4\\.161\\+v241203"
+            ],
+            "cppfmResponseRegex": [
+              "Current Carpet Mod settings:",
+              "Carpet Mod version: 1\\.4\\.161\\+v241203"
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
