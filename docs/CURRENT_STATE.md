@@ -13,7 +13,7 @@
 | `updated` | `2026-09-05` |
 | `implementation_baseline` | `17ab09f5220bf99203d2aea2b2c9d65f763f433b` |
 | `implementation_baseline_short` | `17ab09f` |
-| `documentation_commit` | `working tree; finalize after evidence closes` |
+| `documentation_commit` | `955acdfe652d3ea7fb625850acbd43f75b947599` |
 | `main_integration_merge` | `d1c6a7fa2263da669c670e7bc9c6182113cd299c` |
 | `plan` | `plan50` |
 | `phase` | `long-run-follow-up` |
