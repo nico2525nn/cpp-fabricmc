@@ -17,7 +17,12 @@ import java.util.Map;
 
 /** Internal class-file model.  It deliberately keeps unknown attributes opaque. */
 final class ClassFileModel {
+    static final int ACC_PUBLIC = 0x0001;
+    static final int ACC_PRIVATE = 0x0002;
+    static final int ACC_PROTECTED = 0x0004;
+    static final int ACC_FINAL = 0x0010;
     static final int ACC_STATIC = 0x0008;
+    static final int ACC_INTERFACE = 0x0200;
     static final int ACC_NATIVE = 0x0100;
     static final int ACC_ABSTRACT = 0x0400;
     static final int ACC_SYNTHETIC = 0x1000;

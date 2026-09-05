@@ -1,2 +1,15 @@
 accessWidener v2 named
-accessible class net/minecraft/server/MinecraftServer
+
+# The target starts package-private/final and exposes private members only
+# after this file has been applied to its class bytes.
+accessible class cppfm/corpus/fixture08/AccessTarget
+extendable class cppfm/corpus/fixture08/AccessTarget
+
+accessible field cppfm/corpus/fixture08/AccessTarget mutableValue I
+mutable field cppfm/corpus/fixture08/AccessTarget mutableValue I
+accessible field cppfm/corpus/fixture08/AccessTarget accessibleFinal Ljava/lang/Integer;
+
+accessible method cppfm/corpus/fixture08/AccessTarget <init> ()V
+accessible method cppfm/corpus/fixture08/AccessTarget secret (I)I
+extendable method cppfm/corpus/fixture08/AccessTarget overridable (I)I
+transitive-accessible method cppfm/corpus/fixture08/AccessTarget descriptorTarget (Ljava/lang/String;)I
