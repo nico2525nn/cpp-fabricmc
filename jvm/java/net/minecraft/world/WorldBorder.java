@@ -1,6 +1,8 @@
 package net.minecraft.world;
 
-public final class WorldBorder {
+/** @deprecated use {@link net.minecraft.world.border.WorldBorder}. */
+@Deprecated
+public class WorldBorder {
     private double centerX, centerZ;
     private double size = 59999968.0;
     public double getCenterX() { return centerX; }

@@ -4,7 +4,7 @@ import java.util.Objects;
 import java.util.Optional;
 
 /** Stable registry value/reference view. */
-public class RegistryEntry<T> {
+public class RegistryEntry<T> implements net.minecraft.registry.entry.RegistryEntry<T> {
     protected final T value;
     protected final RegistryKey<T> key;
     protected RegistryEntry(T value, RegistryKey<T> key) { this.value = value; this.key = key; }

@@ -1,3 +1,7 @@
 package net.minecraft.server.command;
 
-public class CommandRegistryAccess {}
+/** @deprecated use {@link net.minecraft.command.CommandRegistryAccess}. */
+@Deprecated
+public class CommandRegistryAccess extends net.minecraft.command.CommandRegistryAccess {
+    public CommandRegistryAccess() { super(); }
+}

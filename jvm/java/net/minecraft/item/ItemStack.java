@@ -30,6 +30,12 @@ public class ItemStack {
     public ItemStack(Item item, int count) { this(item, count, false); }
     public ItemStack(RegistryEntry<Item> item) { this(item == null ? Items.AIR : item.value(), 1); }
     public ItemStack(RegistryEntry<Item> item, int count) { this(item == null ? Items.AIR : item.value(), count); }
+    public ItemStack(net.minecraft.registry.entry.RegistryEntry<Item> item) {
+        this(item == null ? Items.AIR : item.value(), 1);
+    }
+    public ItemStack(net.minecraft.registry.entry.RegistryEntry<Item> item, int count) {
+        this(item == null ? Items.AIR : item.value(), count);
+    }
     public static ItemStack fromNative(long playerHandle, int slot) {
         int rawId = NativeAccess.inventoryItemId(playerHandle, slot);
         int nativeCount = NativeAccess.inventoryItemCount(playerHandle, slot);
@@ -71,6 +77,9 @@ public class ItemStack {
     public String getTranslationKey() { return item.getTranslationKey(); }
     public boolean isOf(Item other) { return item.isOf(other); }
     public boolean isIn(TagKey<Item> tag) { return item.getRegistryEntry() != null && item.getRegistryEntry().isIn(tag); }
+    public boolean isIn(net.minecraft.registry.tag.TagKey<Item> tag) {
+        return item.getRegistryEntry() != null && item.getRegistryEntry().isIn(tag);
+    }
     public boolean isStackable() { return getMaxCount() > 1 && !isDamageable(); }
     public boolean isDamageable() { return item.isDamageable(); }
     public int getDamage() { return getOrDefault(DataComponentTypes.DAMAGE, 0); }

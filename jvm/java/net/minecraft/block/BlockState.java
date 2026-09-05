@@ -44,6 +44,9 @@ public class BlockState {
     public boolean isAir() { return rawState == 0 || block == Blocks.AIR; }
     public boolean isOf(Block other) { return other != null && (block == other || rawState == other.getRawState()); }
     public boolean isIn(TagKey<Block> tag) { return block.getRegistryEntry() != null && block.getRegistryEntry().isIn(tag); }
+    public boolean isIn(net.minecraft.registry.tag.TagKey<Block> tag) {
+        return block.getRegistryEntry() != null && block.getRegistryEntry().isIn(tag);
+    }
     public boolean isIn(Set<Block> blocks) { return blocks != null && blocks.contains(block); }
     public Identifier getRegistryId() { return block.getId(); }
     public <T extends Comparable<T>> T get(Property<T> property) {

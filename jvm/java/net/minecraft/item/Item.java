@@ -30,7 +30,16 @@ public class Item {
         public Settings maxDamage(int damage) { if (damage < 1) throw new IllegalArgumentException("maxDamage must be positive"); maxDamage = damage; maxCount = 1; return this; }
         public Settings fireproof() { fireproof = true; return this; }
         public Settings rarity(Rarity value) { rarity = value == null ? Rarity.COMMON : value; return this; }
+        public Settings rarity(net.minecraft.util.Rarity value) {
+            rarity = value == null ? Rarity.COMMON : Rarity.valueOf(value.name());
+            return this;
+        }
         public Settings food(FoodComponent value) { food = value; return this; }
+        public Settings food(net.minecraft.component.type.FoodComponent value) {
+            food = value == null ? null : value instanceof FoodComponent legacy
+                ? legacy : new FoodComponent(value.nutrition(), value.saturationModifier(), value.isAlwaysEdible());
+            return this;
+        }
         public Settings recipeRemainder(Item value) { recipeRemainder = value; return this; }
         public <T> Settings component(net.minecraft.component.DataComponentType<T> type, T value) { return this; }
         public Settings attributeModifiers(Object modifiers) { return this; }
@@ -67,8 +76,14 @@ public class Item {
     public boolean isDamageable() { return getMaxDamage() > 0; }
     public boolean isFood() { return settings.food() != null; }
     public FoodComponent getFoodComponent() { return settings.food(); }
+    /** Canonical package view; the legacy item-package return type is retained above. */
+    public net.minecraft.component.type.FoodComponent getCanonicalFoodComponent() { return settings.food(); }
     public Item getRecipeRemainder() { return settings.recipeRemainder(); }
     public Rarity getRarity(ItemStack stack) { return settings.rarity(); }
+    /** Canonical package view; the legacy item-package return type is retained above. */
+    public net.minecraft.util.Rarity getCanonicalRarity(ItemStack stack) {
+        return net.minecraft.util.Rarity.valueOf(settings.rarity().name());
+    }
     public String getTranslationKey() { return "item." + id.getNamespace() + "." + id.getPath().replace('/', '.'); }
     public Text getName(ItemStack stack) { return Text.translatable(getTranslationKey()); }
     public ItemStack getDefaultStack() { return new ItemStack(this); }
@@ -81,9 +96,16 @@ public class Item {
     public ActionResult place(net.minecraft.item.ItemPlacementContext context) { return ActionResult.PASS; }
     public void inventoryTick(ItemStack stack, World world, net.minecraft.entity.Entity entity, int slot, boolean selected) { }
     public UseAction getUseAction(ItemStack stack) { return isFood() ? UseAction.EAT : UseAction.NONE; }
+    /** Canonical package view; the legacy item-package enum remains available. */
+    public net.minecraft.item.consume.UseAction getCanonicalUseAction(ItemStack stack) {
+        return net.minecraft.item.consume.UseAction.valueOf(getUseAction(stack).name());
+    }
     public int getMaxUseTime(ItemStack stack) { return isFood() ? 32 : 0; }
     public boolean isOf(Item other) { return this == other || (other != null && id.equals(other.id)); }
     public RegistryEntry<Item> getRegistryEntry() { return net.minecraft.registry.Registries.ITEM.getEntry(this).orElse(null); }
+    public net.minecraft.registry.entry.RegistryEntry<Item> getCanonicalRegistryEntry() {
+        return getRegistryEntry();
+    }
     @Override public boolean equals(Object other) { return other instanceof Item item && id.equals(item.id); }
     @Override public int hashCode() { return Objects.hash(id); }
     @Override public String toString() { return id.toString(); }
