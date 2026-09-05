@@ -13,7 +13,7 @@
 | `updated` | `2026-09-05` |
 | `implementation_baseline` | `74bd5ffbda03f30bc5af0c96a11ec3416bf1a827` |
 | `implementation_baseline_short` | `74bd5ff` |
-| `documentation_commit` | `74bd5ffbda03f30bc5af0c96a11ec3416bf1a827` |
+| `documentation_commit` | `29026029eb211a51429ecb6733eeaf35d3c8247f` |
 | `main_integration_merge` | `74bd5ffbda03f30bc5af0c96a11ec3416bf1a827` |
 | `plan` | `plan51` |
 | `phase` | `embedded-jvm-boundary` |
