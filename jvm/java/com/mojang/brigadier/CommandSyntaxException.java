@@ -5,4 +5,6 @@ package com.mojang.brigadier;
 public class CommandSyntaxException
         extends com.mojang.brigadier.exceptions.CommandSyntaxException {
     public CommandSyntaxException(String message) { super(message); }
+    public CommandSyntaxException(String message, Throwable cause) { super(message, cause); }
+    public CommandSyntaxException(String message, StringReader reader, int cursor) { super(message, reader, cursor); }
 }
