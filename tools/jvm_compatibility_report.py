@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Compare plan51 fixture evidence with the generated JVM compatibility manifest.
 
-The report is intentionally strict.  A class being discovered is not evidence
-that its behavior works.  Every corpus case must emit a PASS assertion, and
-the bytecode-sensitive cases must also be represented as structured coverage
-in the generated manifest.  This makes the current manual-hook boundary fail
-cleanly until the transformer work is integrated.
+The report is intentionally strict. A class being discovered is not evidence that
+its behavior works. Every corpus case must emit a PASS assertion, and the
+bytecode-sensitive cases must also be represented as structured coverage in the
+generated manifest. The report therefore locks the bounded transformer contract to
+the cases that have actually executed.
 """
 
 from __future__ import annotations

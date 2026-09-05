@@ -9,8 +9,9 @@ B-06/B-07/C-04/C-09/C-12/E-13/O-01–O-13/W-14/W-16.
 **Status:** current runbook and declared-budget contract. **Limitations:** thresholds
 are implementation safety budgets unless marked as a vanilla observable; a dry or
 synthetic run is not a real-client/24-hour result. Plan51's optional embedded JVM is a
-bounded compatibility layer; official Fabric Loader/Knot and arbitrary Fabric JVM
-mods remain outside the platform boundary. See [PLAN51_JVM.md](PLAN51_JVM.md).
+bounded compatibility layer with a structural transformer; its separate offline
+official Loader/Knot/Mixin probe does not ship the Mojang GameProvider, and arbitrary
+Fabric JVM mods remain outside the platform boundary. See [PLAN51_JVM.md](PLAN51_JVM.md).
 
 ## 1. Feature overview
 

@@ -39,21 +39,26 @@ final class StackAnalyzer {
                 merge(states, queue, index, exception);
             }
         }
-        IdentityHashMap<BytecodeInstructions.Instruction, List<Value>> before = new IdentityHashMap<>();
-        IdentityHashMap<BytecodeInstructions.Instruction, List<Value>> after = new IdentityHashMap<>();
+        // The editor decodes the same Code attribute independently from this
+        // analyzer. Instruction identities therefore differ even though the
+        // original offsets are identical. Use the stable bytecode offset as
+        // the cross-model key so injection sites see their actual stack.
+        HashMap<Integer, List<Value>> before = new HashMap<>();
+        HashMap<Integer, List<Value>> after = new HashMap<>();
         while (!queue.isEmpty()) {
             int index = queue.removeFirst();
             State state = states.get(index);
             BytecodeInstructions.Instruction instruction = instructions.get(index);
-            before.put(instruction, List.copyOf(state.stack));
+            before.put(instruction.oldOffset, List.copyOf(state.stack));
             State next = state.copy();
             execute(owner.pool, instruction, next);
-            after.put(instruction, List.copyOf(next.stack));
+            after.put(instruction.oldOffset, List.copyOf(next.stack));
             for (int successor : successors(instructions, byOffset, index, instruction))
                 merge(states, queue, successor, next);
         }
         for (BytecodeInstructions.Instruction instruction : instructions)
-            if (!before.containsKey(instruction)) throw new TransformException("unreachable/unknown stack state at " + instruction.oldOffset);
+            if (!before.containsKey(instruction.oldOffset))
+                throw new TransformException("unreachable/unknown stack state at " + instruction.oldOffset);
         return new Analysis(before, after);
     }
 
@@ -280,14 +285,18 @@ final class StackAnalyzer {
     }
 
     static final class Analysis {
-        final IdentityHashMap<BytecodeInstructions.Instruction, List<Value>> before;
-        final IdentityHashMap<BytecodeInstructions.Instruction, List<Value>> after;
-        Analysis(IdentityHashMap<BytecodeInstructions.Instruction, List<Value>> before,
-                 IdentityHashMap<BytecodeInstructions.Instruction, List<Value>> after) {
+        final Map<Integer, List<Value>> before;
+        final Map<Integer, List<Value>> after;
+        Analysis(Map<Integer, List<Value>> before,
+                 Map<Integer, List<Value>> after) {
             this.before = before; this.after = after;
         }
-        List<Value> before(BytecodeInstructions.Instruction instruction) { return before.getOrDefault(instruction, List.of()); }
-        List<Value> after(BytecodeInstructions.Instruction instruction) { return after.getOrDefault(instruction, List.of()); }
+        List<Value> before(BytecodeInstructions.Instruction instruction) {
+            return before.getOrDefault(instruction.oldOffset, List.of());
+        }
+        List<Value> after(BytecodeInstructions.Instruction instruction) {
+            return after.getOrDefault(instruction.oldOffset, List.of());
+        }
     }
 
     static final class Value {

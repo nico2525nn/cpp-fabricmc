@@ -8,7 +8,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.world.ServerWorld;
 
-/** The shell must report this point, not pretend to transform bytecode. */
+/** The structural transformer must locate and execute this invocation site. */
 @Mixin(targets = "net.minecraft.server.MinecraftServer")
 public final class InvokeMixin {
     @Inject(method = "getOverworld()Lnet/minecraft/server/world/ServerWorld;",

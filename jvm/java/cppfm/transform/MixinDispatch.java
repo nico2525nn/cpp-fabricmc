@@ -41,6 +41,21 @@ public final class MixinDispatch {
         return TRANSFORMED.contains(key(owner, name, descriptor));
     }
 
+    /**
+     * Check the method-level marker when a legacy/manual hook does not carry
+     * a JVM descriptor.  Shadow source helpers commonly expose only
+     * {@code (target, method, value, args...)}, so an exact descriptor cannot
+     * be reconstructed reliably from a null return value.  The generated
+     * transformer marks all overloads it owns; this name-level check is used
+     * only by those legacy helpers to avoid dispatching the same handler a
+     * second time.
+     */
+    public static boolean isAnyTransformed(String owner, String name) {
+        String prefix = owner.replace('.', '/') + "#" + name;
+        for (String marker : TRANSFORMED) if (marker.startsWith(prefix)) return true;
+        return false;
+    }
+
     /** Alias intended for manual-hook guards. */
     public static boolean isManualHookSuppressed(String owner, String name, String descriptor) {
         return isTransformed(owner, name, descriptor);

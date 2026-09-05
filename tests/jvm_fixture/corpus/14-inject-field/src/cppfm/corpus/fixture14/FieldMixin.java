@@ -6,7 +6,7 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
-/** The shell must report this point, not pretend to transform bytecode. */
+/** The structural transformer must locate and execute this field site. */
 @Mixin(targets = "net.minecraft.server.MinecraftServer")
 public final class FieldMixin {
     @Inject(method = "getTicks()I", at = @At(value = "FIELD", target = "Lnet/minecraft/server/MinecraftServer;tick:J"))

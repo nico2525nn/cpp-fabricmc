@@ -257,7 +257,12 @@ public class TransformingClassLoader extends URLClassLoader {
         return name.startsWith("java.") || name.startsWith("javax.")
             || name.startsWith("jdk.") || name.startsWith("sun.")
             || name.startsWith("com.sun.") || name.startsWith("org.w3c.")
-            || name.startsWith("org.xml.") || name.startsWith("org.slf4j.");
+            || name.startsWith("org.xml.") || name.startsWith("org.slf4j.")
+            // MixinClassTransformer is owned by the application loader when
+            // KnotClassLoader itself is discovered there.  Share this marker
+            // class with that transformer so manual shadow hooks and the
+            // pre-definition path observe one transformed-method registry.
+            || name.equals("cppfm.transform.MixinDispatch");
     }
 
     @Override

@@ -10,7 +10,7 @@ import org.spongepowered.asm.mixin.injection.ModifyArg;
 @Mixin(targets = "net.minecraft.world.World")
 public final class ModifyArgMixin {
     @ModifyArg(method = "getBlockState(Lnet/minecraft/util/math/BlockPos;)Lnet/minecraft/block/BlockState;",
-               at = @At(value = "INVOKE", target = "Lcppfm/bridge/NativeBridge;nativeWorldBlock(JIII)I"),
+               at = @At(value = "INVOKE", target = "Lnet/minecraft/util/NativeAccess;worldBlock(JIII)I"),
                index = 1)
     private static int modifyX(int x) {
         ModifyArgFixture.modified();

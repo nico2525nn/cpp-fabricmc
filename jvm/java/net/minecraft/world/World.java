@@ -84,7 +84,8 @@ public class World implements BlockView, WorldView, WorldAccess {
     }
     public long getTime() { return NativeAccess.currentTick(); }
     public long getTimeOfDay() { return getTime(); }
-    public int getBottomY() { return dimensionType.minY(); }
+    /** 1.21.4 overworld floor; kept literal so constant mixins can target it. */
+    public int getBottomY() { return -64; }
     public int getTopY() { return dimensionType.minY() + dimensionType.height(); }
     public boolean isChunkLoaded(int chunkX, int chunkZ) { return nativeHandle != 0 || !localBlocks.isEmpty(); }
     public boolean isInBuildLimit(BlockPos pos) { return pos != null && pos.getY() >= getBottomY() && pos.getY() < getTopY(); }

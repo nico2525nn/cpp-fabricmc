@@ -14,13 +14,14 @@ generated data.
 | Minecraft | `1.21.4` | Java Edition protocol behavior |
 | protocol | `769` | Handshake, state/direction IDs, and field encodings |
 | world data | `4189` | `level.dat`, Anvil, and chunk persistence |
-| reference platform | Fabric Loader `0.16.9`, unmodded server behavior | Fabric API is provenance; plan51 adds only a bounded optional JVM bridge |
-| excluded | official Fabric Loader/Knot, arbitrary JVM mods, proven vanilla Xoroshiro byte parity | tracked as declared limitations, not silently supported |
+| reference platform | Fabric Loader `0.16.9`, unmodded server behavior | Fabric API is provenance; plan51 adds a bounded optional JVM bridge and an offline official-loader probe |
+| excluded | Mojang GameProvider/server jar, arbitrary JVM mods, proven vanilla Xoroshiro byte parity | tracked as declared limitations, not silently supported |
 
 `Fabric-compatible` means compatible with the protocol and observable behavior of an
 unmodified Fabric 1.21.4 server. The optional plan51 runtime executes the repository's
-bounded shadow ABI and fixture, but it does **not** mean that arbitrary Fabric JVM
-bytecode or the official Loader/Knot can run inside `cppfm`.
+bounded shadow ABI and structural fixture; the separate offline probe starts pinned
+official Loader/Knot/Mixin against those shadow classes. Neither result means that
+arbitrary Fabric JVM bytecode or the Mojang GameProvider runs inside `cppfm`.
 
 ## Read in this order
 
@@ -138,6 +139,8 @@ averaged to make a gate pass.
 | `test_smoke_80` | `212 PASS 0 FAIL` |
 | `test_gameplay_full` | `803 PASS / 1 intentional E-14 FAIL / 804`, exit 1 |
 | `test_jvm_handles` / `jvm_manifest` / `jvm_runtime` | `PASS` / `PASS` / `PASS`; see [PLAN51_JVM.md](PLAN51_JVM.md) |
+| `jvm_transformer` / `jvm_compatibility` | `PASS` / `PASS`; transformer contract and all `25/25` fixture cases pass |
+| official Loader/Knot probe | `PASS`; pinned Loader `0.16.9`, Knot/Mixin, ASM, intermediary, and shadow target markers verified offline; no Mojang provider |
 | `test_server_full` | `234 PASS 0 FAIL` |
 | `multi_client` | `ALL PASS` in `17.83s` |
 | `bot_smoke` | `ALL PASS` in `20.65s` |

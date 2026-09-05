@@ -83,6 +83,7 @@ public final class KnotLauncher {
                                       double.class, double.class);
                 Boolean ok = (Boolean) invoke(runtimeBootstrap, modsDir, configDir);
                 if (!Boolean.TRUE.equals(ok)) throw new IllegalStateException("mod bootstrap returned false");
+                logTransformerDiagnostics();
                 started = true;
                 return true;
             } catch (Throwable failure) {
@@ -276,6 +277,21 @@ public final class KnotLauncher {
         runtimeDamage = null;
         runtimeSpawn = null;
         started = false;
+    }
+
+    /** Surface fail-closed transformer decisions in the native evidence log. */
+    private static void logTransformerDiagnostics() {
+        if (loader == null) return;
+        try {
+            Method diagnostics = loader.getClass().getMethod("getDiagnostics");
+            Object value = diagnostics.invoke(loader);
+            if (value instanceof Iterable<?> entries) {
+                for (Object entry : entries)
+                    NativeBridge.logFallback("WARN", "class transformer: " + entry);
+            }
+        } catch (Throwable failure) {
+            NativeBridge.logFallback("WARN", "class transformer diagnostics unavailable: " + failure);
+        }
     }
 
     private static void closeLoader() {

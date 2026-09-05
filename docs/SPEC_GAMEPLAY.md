@@ -10,10 +10,12 @@ G-10/G-11 evidence. Packet fields remain in
 
 **Status:** source-backed behavior contract, not a claim of universal vanilla
 byte-identical gameplay. **Limitations:** plan51 provides an optional bounded embedded
-JVM/shadow-ABI path, but official Fabric Loader/Knot and arbitrary Fabric JVM mods
-cannot execute as native-equivalent server extensions; world-generation seed parity
-is self-consistent L1/L2 but vanilla Xoroshiro byte parity is not proven (L3);
-simplified features are called out with `DECLARED-LIMITATION`.
+JVM/shadow-ABI path with a version-locked structural transformer; the production path
+does not ship the Mojang GameProvider and arbitrary Fabric JVM mods cannot execute as
+native-equivalent server extensions. Pinned official Loader/Knot/Mixin is covered by a
+separate offline probe. World-generation seed parity is self-consistent L1/L2 but
+vanilla Xoroshiro byte parity is not proven (L3); simplified features are called out
+with `DECLARED-LIMITATION`.
 
 ## 1. Feature overview
 
@@ -183,10 +185,13 @@ evidence, not a gameplay module.
 - Worldgen MultiNoise/structure placement is deterministic and independently
   cross-checked, but exact vanilla Xoroshiro sequence parity is a
   `DECLARED-LIMITATION` (L3), not a hidden pass.
-- `DECLARED-LIMITATION`: plan51's optional JVM layer is a dependency-free fallback
-  loader over a shadow ABI with selected manually wired callbacks. Official Fabric
-  Loader/Knot, arbitrary JVM mods, and general event-bus bytecode transformation are
-  not executable in `cppfm` (E-14). See [PLAN51_JVM.md](PLAN51_JVM.md).
+- `DECLARED-LIMITATION`: plan51's optional JVM layer is a dependency-free
+  Knot-compatible loader over a shadow ABI with selected callbacks, a version-locked
+  pre-definition transformer, and selective routing. Its 25-case dependency-free
+  corpus passes; a separate offline probe verifies pinned official Loader/Knot/Mixin
+  against the shadow provider. The Mojang GameProvider/server jar, arbitrary JVM
+  mods, and universal bytecode compatibility are not claimed (E-14). See
+  [PLAN51_JVM.md](PLAN51_JVM.md).
 - No current real-client/GUI artifact or accepted 2-hour/24-hour run is available;
   bot and synthetic evidence remain separately labelled.
 
