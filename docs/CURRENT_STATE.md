@@ -11,9 +11,9 @@
 | field | value |
 |---|---|
 | `updated` | `2026-09-05` |
-| `implementation_baseline` | `db51642` |
+| `implementation_baseline` | `db5164248fe011ecf9293449aec3925578d7cc3e` |
 | `implementation_baseline_short` | `db51642` |
-| `documentation_commit` | `db51642` |
+| `documentation_commit` | `db5164248fe011ecf9293449aec3925578d7cc3e` |
 | `main_integration_merge` | `ddb15090190d1ff879cc140912579e56e94d44cb` |
 | `plan` | `plan51` |
 | `phase` | `embedded-jvm-boundary` |
