@@ -3,11 +3,13 @@
 This guide is for the clean-room C++ implementation of Minecraft Java 1.21.4,
 protocol 769, DataVersion 4189. The source snapshot for this canonical document is
 runtime snapshot `17ab09f5220bf99203d2aea2b2c9d65f763f433b` (2026-09-05). Fabric Loader
-0.16.9 is a version/reference boundary; it is not embedded as a JVM runtime.
+0.16.9 is a version/reference boundary; plan51 adds an optional bounded embedded JVM,
+but does not embed the official Loader/Knot.
 
 **Status:** development map and extension contract. **Limitations:** this file does
-not grant permission to change runtime behavior, alter test assertions, or implement
-Fabric JVM mods. Such work requires a separate approved plan and fresh evidence.
+not grant permission to change runtime behavior, alter test assertions, or expand the
+plan51 JVM boundary. Further Fabric API, class-file transformer, or arbitrary-mod
+work requires a separately versioned plan and fresh evidence.
 
 ## 1. Feature overview
 
@@ -57,6 +59,7 @@ Use `DECLARED-LIMITATION` when a claim has not been independently verified.
 | gameplay | `src/game/Entities`, `BehaviorTree`, `AiBrain`, `CombatManager`, `HungerManager` | entities, AI, damage, survival |
 | data/UI | `Items`, `Containers`, `MenuInteraction`, `Recipes`, `DatapackManager`, `src/brigadier` | components, menus, recipes, commands |
 | persistence | `WorldDataManager`, `Persistence`, `Anvil`, `RegionFile`, `SessionLock` | DataVersion 4189 and recovery |
+| JVM boundary | `src/jvm/`, `jvm/java/`, `jvm/shadow_api.json` | optional JNI/HotSpot bridge; [PLAN51_JVM.md](PLAN51_JVM.md) |
 
 Generated IDs under `src/generated/` and assets under `assets/` are inputs, not
 handwritten canonical tables.
@@ -131,9 +134,10 @@ composition, module split and ownership, cautions, performance, thread safety,
 edge cases, test method, and implementation priority/status. A plan that says
 ``13 viewpoints`` is using the old schema and must not be treated as complete.
 
-The plan50 runtime follow-up snapshot is the current baseline. Its implementation
-and evidence reconciliation touched the assigned source/tests/tools plus canonical
-Markdown; it does not promote a failed gate by changing prose, counts, or assertions.
+The plan50 runtime follow-up snapshot was the previous baseline. Plan51 is the
+authorized optional JVM-boundary implementation described in
+[PLAN51_JVM.md](PLAN51_JVM.md); its focused evidence does not promote a failed gate
+or convert the bounded fixture into arbitrary Fabric compatibility.
 
 The authorized `AGENTS.md` handover update now points to this canonical workflow,
 the current 16-viewpoint research schema, protocol-769 packet IDs, and timeout-safe
@@ -200,8 +204,8 @@ One claim has one canonical owner. A link is preferable to a copied table.
   the current source and test.
 - Keep `docs/mob_stats_149.csv` at its stable default runtime path.
 - Do not change `CHECK(false, "E-14 HONEST GAP...")` to make a test exit zero.
-- Do not call JVM mod execution or vanilla RNG L3 parity “supported” without a new
-  versioned contract and evidence.
+- Do not call arbitrary JVM mod execution, official Fabric Loader/Knot execution, or
+  vanilla RNG L3 parity “supported” without a new versioned contract and evidence.
 - Do not use broad process-kill patterns in development or test cleanup.
 
 ## 12. Performance

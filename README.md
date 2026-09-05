@@ -20,12 +20,13 @@ Start with the [canonical documentation index](docs/README.md). The current sour
 - [Development guide](docs/DEVELOPMENT.md)
 - [Verification and evidence](docs/VERIFICATION.md)
 - [Current state](docs/CURRENT_STATE.md)
+- [Plan51 JVM boundary](docs/PLAN51_JVM.md)
 - [Feature/status matrix](docs/MISSING_FEATURES_1_21_4.md)
 - [Audit and history index](docs/audit/README.md)
 
 Historical assessment text is indexed from the audit page and is not a current specification.
 
-## What works today (implementation baseline `17ab09f` — 2026-09-05 runtime follow-up)
+## What works today (implementation baseline `plan51` — 2026-09-05 JVM boundary update)
 
 | Area | Status |
 |---|---|
@@ -53,6 +54,7 @@ Historical assessment text is indexed from the audit page and is not a current s
 | Dimensions: **Nether/End** `fillNether`/`fillEnd` + `PortalHandler` 8× + `findSafeSpawn` 6-up/down + `PortalAge` + `Abilities` reset + `Respawn 0x4C` per-dim | ✅ |
 | Network: cookies, resource packs, transfer, plugin channels, **PacketBatcher** `Bundle 0x00` + `MultiBlockChange 0x4E`, **ChatMessageProcessor** `PlayerChat 0x3B` verify (RSA-SHA256) | ✅ |
 | Event bus (`BlockPlace/Break/NeighborChange`) + `ItemUseContext` + `DamageSource` | ✅ |
+| Optional embedded JVM: HotSpot/JNI, opaque handles, shadow API, fallback server-mod loader, selected events, and bounded Mixin hook shell | ⚠️ plan51 focused boundary only; official Fabric Loader/Knot and arbitrary mods are unsupported |
 | RCON + whitelist + `spawn-protection` + `WorldBorder` damage | ✅ |
 | 20 TPS loop + `simulationDistance` tick culling + configured-radius `chunksUnloadTick` LRU + `level.dat` periodic 6000/1200t | ✅ |
 | Admin: `/ban`/`ban-ip`/`pardon`/`op`/`deop`/`whitelist`/`kick` + `Rcon` + `whitelist.json`/`ops.json` enforcement | ✅ |
@@ -67,13 +69,14 @@ or long-run behavior a universal vanilla-parity claim.
 - **Feature/status matrix:** [`docs/MISSING_FEATURES_1_21_4.md`](docs/MISSING_FEATURES_1_21_4.md) retains the 80-row base taxonomy plus 10 numbered extension rows; the historical taxonomy classification is 90/90 `DONE`, not a universal parity claim.
 - **Audit history:** the audit index records the completed assessment series, including **assessment-6 44/44 FIXED (HIGH 25/25)**. Historical audits are evidence, not the current specification.
 - **Version and parity boundaries:** the project targets Minecraft Java 1.21.4 / protocol 769; broader vanilla RNG/structure-NBT parity and other unverified behavior remain separately documented in the canonical specifications.
-- **Gameplay boundary:** `test_gameplay_full` has **803 PASS / 1 intentional E-14 FAIL / 804** and exits 1; the Fabric JVM-mod gap is intentional and by design.
-- **Fabric mods cannot run inside a C++ process.** Mods are JVM bytecode loaded through the Fabric Loader; "Fabric-compatible" here means *protocol-compatible with what an unmodded Fabric server puts on the wire*.
+- **Gameplay boundary:** `test_gameplay_full` has **803 PASS / 1 intentional E-14 FAIL / 804** and exits 1; the arbitrary Fabric JVM-mod gap is intentional and by design. The bounded plan51 fixture is a separate focused gate.
+- **JVM boundary:** `--jvm=true` can start optional embedded HotSpot and execute the repository's shadow ABI/fallback fixture. Official Fabric Loader/Knot, arbitrary JVM mods, and general class-file transformation remain unsupported; "Fabric-compatible" still means *protocol-compatible with what an unmodded Fabric server puts on the wire*.
 - **Publication remains `BLOCKED`:** short bot/soak gates pass, but the attempted 2-hour run was interrupted above its RSS gate; no accepted 2-hour/24-hour artifact and no current real-client/GUI artifact exist.
 
 ## Testing — evidence (what the numbers mean)
 
 - **`test_native` (C++ self-test, status/join + plan38 QC/macro/predicate16 cases: status/join/chunk/chat/persist/multi/stress + plan34 fuzz/soak):** `ALL PASS`, 2.33s — run `./build/test_native ./build/cppfm`. Verifies `status 769`, `Login Success`, `Join Game`, `LevelChunkWithLight`, `BlockUpdate` broadcast, `SystemChat`, and cross-client visibility.
+- **Plan51 JVM boundary (`test_jvm_handles`, `jvm_manifest`, `jvm_runtime`):** all `PASS` — opaque-handle/routing invariants, reproducible protocol-769 shadow manifest, and process-level HotSpot fixture (entrypoint, World API, command registration, lifecycle, Mixin HEAD/TAIL/RETURN/Overwrite, tick, and clean shutdown). See [PLAN51_JVM.md](docs/PLAN51_JVM.md).
 - **`test_server_full` (full live-server protocol/gameplay/admin suite):** `234 PASS 0 FAIL` — run the current server-full harness as described in [Verification](docs/VERIFICATION.md).
 - **`test_smoke_80` (80-row taxonomy + plan32-41 拡張, `tests/test_smoke_80.cpp`):** `212 PASS 0 FAIL` (80-row taxonomy + 82 拡張チェック plan41 horse/vehicle/bench/recipes) — each check verifies a vanilla packet/NBT (e.g., `worldborder size → InitializeWorldBorder 0x26`, `glowstone → UpdateLight 0x2B`, `wither → BossBar 0x0A`, `ActionBar 0x51`, `OpenHorseWindow 0x24`, `VehicleMove 0x33`, predicate 22). Run `./build/test_smoke_80 ./build/cppfm` (450s, 600s under load; `=== SMOKE 80: 212 PASS 0 FAIL ===`, exit 0).
 - **`test_scoreboard_reset` (ResetScore `0x49` round-trip, `tests/test_scoreboard_reset.cpp`):** `22/22 PASS` — holder + optional objectiveName round-trip / wildcard null broadcast / copy-before-erase. Run `./build/test_scoreboard_reset` (ctest `scoreboard_reset`, TIMEOUT 30).
@@ -126,6 +129,11 @@ Configuration: vanilla `server.properties` subset
 `server-port` `max-players` `view-distance` `simulation-distance` `motd` `spawn-protection` (16) `white-list` `online-mode` `level-seed` `level-type` `difficulty` `enforce-secure-profile` `pvp` `allow-flight` `hardcore` `max-players` enforced. `maxLoadedChunks` LRU is Chebyshev-distance sorted with burst 16/tick and forced/spawn ticket protection (not simple `clear()`). Signal handling (`SIGINT`/`SIGTERM` in `main.cpp`) is POSIX-dependent; Windows requires `SetConsoleCtrlHandler` for full support.
 CLI flags override: `--port --view-distance --assets --world-dir --online-mode`.
 `ops.json`/`ops.txt` → `isOp` for `spawn-protection` bypass, `level.dat` `DataVersion 4189` + `Difficulty`/`WorldBorder`/`Version` full, per-dim `DIM-1`/`DIM1` `region/` + `level.dat`.
+
+Optional plan51 JVM boundary: `--jvm=true --jvm-strict=true
+--jvm-classes=build/jvm/classes --jvm-mods=build/jvm/fixture-mods`. A JDK/JNI
+build is required. The fallback loader and shadow classes are intentionally bounded;
+see [PLAN51_JVM.md](docs/PLAN51_JVM.md).
 
 Join with any 1.21.4 client in offline mode, e.g. a launcher profile pointing at
 `127.0.0.1`. You spawn creative-mode on a grass superflat with a building hotbar.
@@ -233,10 +241,11 @@ src/
 │   └── Managers: WorldManager/EntityManager/InventoryController/NetworkManager (forwarders, plan6 §6)
 ├── worldgen/      DensityFunction, MultiNoise, StructureManager, StructurePlacer, PortalHandler (8× + findSafeSpawn 6-up/down + PortalAge + Abilities reset)
 ├── brigadier/     Tree (CommandNode 48 parsers, writeDeclareCommands 0x11)
+├── jvm/           optional JNI/HotSpot runtime, opaque handles, routing table
 └── generated/     kBlocks 1095, kItems 1385, kEntities 149 (prismarineJS)
 ```
 
-One thread per connection; `World` `shared_mutex`; `LightEngine`/`FluidSim`/`Redstone` via `onBlockChanged`; `Persistence` 3s flush + 6000/1200t `level.dat`; `chunkCache` 1024 + LRU `chunksUnloadTick` + `simulationDistance` culling; `PacketBatcher` 50ms / 64-packet coalesce. `GameServer.cpp` split plan31 into 6 topic files (tick/combat/items/world/session/core) + 3 helper headers (Helpers/Stairs/Constants) — header `GameServer.hpp` single (1114) kept, cpp 7843→35 (99.5% dispersed). Data-driven: `EntityData` JSON → `BehaviorTree`, `TagManager` 67/20, `LootTables`, `DatapackManager` `assets/data`.
+One thread per connection; `World` `shared_mutex`; `LightEngine`/`FluidSim`/`Redstone` via `onBlockChanged`; `Persistence` 3s flush + 6000/1200t `level.dat`; `chunkCache` 1024 + LRU `chunksUnloadTick` + `simulationDistance` culling; `PacketBatcher` 50ms / 64-packet coalesce. `GameServer.cpp` split plan31 into 6 topic files (tick/combat/items/world/session/core) + 3 helper headers (Helpers/Stairs/Constants) — header `GameServer.hpp` single (1114) kept, cpp 7843→35 (99.5% dispersed). Data-driven: `EntityData` JSON → `BehaviorTree`, `TagManager` 67/20, `LootTables`, `DatapackManager` `assets/data`. The optional Java side is under `jvm/java/`; its manifest comes from `jvm/shadow_api.json` and does not contain Mojang bytecode.
 
 ## Next steps
 

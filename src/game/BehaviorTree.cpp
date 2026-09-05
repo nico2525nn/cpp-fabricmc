@@ -312,6 +312,9 @@ BTStatus BreedAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     baby->health = mobStats(m.kind).maxHealth;
     baby->age = -24000; // plan14 §3: 20 min
     baby->x = bx; baby->y = m.y; baby->z = bz;
+    if (ctx.srv->jvmRuntime() &&
+        !ctx.srv->jvmRuntime()->onMobSpawn(*baby, baby->x, baby->y, baby->z))
+        return BTStatus::Failure;
     ctx.srv->mobsForTest().push_back(baby);
     ctx.srv->broadcastMobSpawn(*baby);
     ctx.srv->spawnXpOrbs(bx, m.y+0.5, bz, 1 + (rand()%7), nullptr);

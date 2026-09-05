@@ -1,7 +1,7 @@
 # CURRENT_STATE.md — cpp-fabricmc final-gates state tracker
 
-> This is the stable tracker for the plan50 runtime follow-up/final-gates snapshot. It
-> records the integrated main checkout and exact rerun evidence. It is not a release
+> This is the stable tracker for the plan51 embedded-JVM boundary snapshot. It records
+> the integrated main checkout and exact rerun evidence. It is not a release
 > sign-off: `publication_status` remains `BLOCKED` by declared scope/evidence
 > boundaries, and a historical taxonomy `DONE` or a focused PASS does not become a
 > universal parity claim.
@@ -11,13 +11,13 @@
 | field | value |
 |---|---|
 | `updated` | `2026-09-05` |
-| `implementation_baseline` | `17ab09f5220bf99203d2aea2b2c9d65f763f433b` |
-| `implementation_baseline_short` | `17ab09f` |
+| `implementation_baseline` | `plan51 integration commit (recorded after merge)` |
+| `implementation_baseline_short` | `plan51` |
 | `documentation_commit` | `955acdfe652d3ea7fb625850acbd43f75b947599` |
 | `main_integration_merge` | `d1c6a7fa2263da669c670e7bc9c6182113cd299c` |
-| `plan` | `plan50` |
-| `phase` | `long-run-follow-up` |
-| `phase_status` | `GREEN_WITH_DECLARED_LIMITATIONS` |
+| `plan` | `plan51` |
+| `phase` | `embedded-jvm-boundary` |
+| `phase_status` | `IMPLEMENTED_WITH_DECLARED_LIMITATIONS` |
 | `publication_status` | `BLOCKED` |
 | `runtime_reference_snapshot` | `17ab09f5220bf99203d2aea2b2c9d65f763f433b` |
 | `canonical_workflow` | `docs/DEVELOPMENT.md#research-workflow` |
@@ -25,15 +25,16 @@
 | `research_viewpoints` | `16` current viewpoints; old `13` wording is historical |
 | `taxonomy_snapshot` | MISSING `#1–#90`; historical matrix counts `DONE=90, PARTIAL=0, TODO=0` |
 | `strict_assessment_1` | `78 gaps`; `HISTORICAL` archive label, not a current aggregate |
-| `next_plan` | `plan51` only if a new plan is authorized for the remaining declared boundaries; not started |
+| `next_plan` | `plan52` only if separately authorized for structured transformation or remaining declared boundaries; not started |
 
-The baseline is the plan50 runtime follow-up after the plan49 implementation integration and cleanup commit
+The previous baseline was the plan50 runtime follow-up after the plan49 implementation integration and cleanup commit
 `db12df96093a0869e958f62b11f9a9cd68ba3ef1` and safety commit
 `4526dfe4f7112b1fe744a83484ef5ef40176d481`. Its four no-ff merges are recorded in
 the main graph: docs `e978dc6`, network `7894a4c`, block `20113bf`, and entity
-`e0ca08e` (historical plan49 merges). The current documentation update records fresh
-evidence against the runtime snapshot; it does not change generated data or the
-`docs-legacy/` archive.
+`e0ca08e` (historical plan49 merges). Plan51 adds an optional embedded JVM boundary
+without changing generated data, protocol 769, or the `docs-legacy/` archive. The
+plan51 merge hash is recorded in this table once the dedicated implementation branch
+is integrated.
 
 ## 2. Prior plan48 and cleanup record
 
@@ -62,6 +63,7 @@ explicit rather than being converted into a broad PASS:
 | `Structures.hpp` legacy API | `RESOLVED` | removed by `db12df96093a0869e958f62b11f9a9cd68ba3ef1`; `StructureManager`/`StructurePlacer` remain the current structure owners |
 | session mining versus `MiningCalculator` | `RESOLVED (plan49 scope)` | session start/finish and tick completion now share `MiningCalculator` context/results; `test_mining_full` is `59/59` and live smoke/server paths pass |
 | `MobBehaviorSpec` coverage | `RESOLVED (plan49 scope)` / `DECLARED-LIMITATION` | 12 descriptor rows are wired to live AI and gameplay assertions; broader species-wide vanilla equivalence remains outside this targeted plan |
+| plan51 embedded JVM boundary | `IMPLEMENTED-PARTIAL` | optional HotSpot/JNI bridge, shadow ABI, fallback metadata loader, selected events, and bounded Mixin hook shell pass focused evidence; official Fabric Loader/Knot, arbitrary JVM mods, and general bytecode transformation remain unsupported; see [PLAN51_JVM.md](PLAN51_JVM.md) |
 | retained marker/comment inventory | `NOT-FULLY-MEASURED` | the cleanup grep was `0` for legacy references, but no complete zero-marker inventory was proven; do not claim one |
 | `tools/soak_bot.py --duration 300` | `RESOLVED` | three integrated main runs passed; each had KeepAlive `30`, chunks `182`, time updates `300`, kicks/EOF/server-exit/transport/protocol errors `0`, and owned cleanup PASS |
 | chunk generation/save/unload memory | `IMPLEMENTED; 30M DIAGNOSTIC PASS / 2H NOT-ACCEPTED` | generation is serialized per world; async save no longer copies a full `Chunk`; eviction no longer adds an extra 32-block ring; bounded allocation reuse is in `17ab09f`; the 1800s run passes at `114504→128868kB` (`+12.5%`), while the earlier 7200s attempt on parent `d1c6a7f` was not accepted at `+19.5%` |
@@ -75,9 +77,10 @@ proven, and historical numbered-row `DONE` values are not universal parity claim
 
 ## 4. Exact final-gates evidence
 
-These are the exact main-checkout results recorded for runtime snapshot `17ab09f` on
-2026-09-05. The post-fix wide soak is listed separately from the carried-forward
-focused gates:
+These are the carried-forward exact main-checkout results recorded for runtime
+snapshot `17ab09f` on 2026-09-05. The post-fix wide soak is listed separately from
+the carried-forward focused gates. The plan51 boundary results are appended to the
+same evidence ledger and are identified by their target names:
 
 | target | result | status / consequence |
 |---|---|---|
@@ -109,6 +112,10 @@ focused gates:
 | `tests/soak_test.py --duration 7200 --movement-range 3000` (parent `d1c6a7f`) | interrupted/not accepted at recorded `t=3361s`; post-fill baseline `160388kB`, max `191612kB`, growth `19.5%` | exceeded the `15%` post-fill gate before completion; retain as a negative/diagnostic artifact |
 | `tools/soak_bot.py --duration 300` | `3/3 PASS`; each run KeepAlive `30`, chunks `182`, time updates `300`, kicks/EOF/server-exit/transport/protocol errors `0`; cleanup PASS | resolved 300s bot gate |
 | focused executable regression suite | wire/gameplay/ops executables all pass except gameplay's single intentional E-14; no unexpected FAIL | no aggregate invented |
+| `test_jvm_handles` | `PASS` | generation-safe opaque handle invalidation/address reuse and selective native/JVM routing |
+| `cppfm_jvm_classes` / `cppfm_jvm_fixture` | `PASS` | Java shadow ABI and deterministic server-side fixture compile |
+| `jvm_runtime` | `PASS` | embedded HotSpot, entrypoint, command registration, World API, lifecycle, Mixin HEAD/RETURN/Overwrite, tick, and owned clean shutdown |
+| `jvm_manifest` | `PASS` | declarative protocol-769 ABI manifest reproducibly generated; structured bytecode is explicitly reported unavailable |
 
 The three `soak_bot` runs close the former bot-soak blocker. The chunk memory/generation
 follow-up is covered by the passing 600-second wide soak and the new 1800-second
@@ -119,9 +126,12 @@ real-client/GUI artifact exists.
 
 ## 5. Declared limitations
 
-- **E-14 Fabric JVM-mod boundary:** arbitrary Fabric JVM bytecode and the Fabric
-  event-bus runtime cannot execute inside `cppfm`; the one gameplay failure is
-  intentional and must remain an expected failure.
+- **E-14 Fabric JVM-mod boundary:** plan51 now executes a bounded dependency-free
+  shadow ABI through optional embedded HotSpot/JNI, with selected callbacks and a
+  manually wired Mixin hook shell. Official Fabric Loader/Knot, arbitrary Fabric JVM
+  mods, and general class-file transformation still cannot execute as supported
+  server extensions inside `cppfm`; the one gameplay failure is intentional and must
+  remain an expected failure.
 - **Vanilla Xoroshiro L3:** `test_seed_parity` proves the stated L1/L2 evidence, but
   exact vanilla Xoroshiro byte parity is not independently proven.
 - **Long-run evidence:** the three 300-second bot runs, the 300-second synthetic soak,
@@ -149,7 +159,8 @@ proof, missing long-run artifact, or missing real-client artifact into a pass.
 
 Next actions are to keep the E-14 assertion unchanged, retain the interrupted 7200s
 soak as a negative diagnostic artifact, and retain the long-run/real-client evidence
-boundaries unless a future authorized plan closes them.
+boundaries. Any structured transformer or broader Fabric API work requires a new
+authorized plan after the bounded plan51 evidence is reviewed.
 
 ## 8. Plan49 implementation and evidence handoff
 
@@ -164,4 +175,4 @@ targeted issues. The following rules remain in force for future work:
 | strict 78-gap history | `HISTORICAL` | do not merge it into the 90-row taxonomy count |
 | `AGENTS.md` handover | `UPDATED` | the authorized handover change points to the canonical workflow, current 16-viewpoint research, protocol-769 IDs, and timeout-safe process cleanup |
 | wt48 residual | `PRESERVE-REVIEW` | review/preserve the dirty patch before any exact-path removal or selective reimplementation |
-| publication | `BLOCKED` | no unexpected code/test blocker remains; declared E-14/L3/long-run/real-client boundaries still prevent universal release sign-off |
+| publication | `BLOCKED` | no unexpected code/test blocker remains; declared arbitrary-mod/E-14, L3, long-run, and real-client boundaries still prevent universal release sign-off |
