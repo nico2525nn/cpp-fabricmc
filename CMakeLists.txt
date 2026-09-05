@@ -371,6 +371,21 @@ if(TARGET cppfm_jvm_classes AND TARGET cppfm_jvm_manifest AND JNI_FOUND
                 --manifest "${CPPFM_JVM_MANIFEST}")
     set_tests_properties(jvm_compatibility PROPERTIES TIMEOUT 300
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    # plan51 §26/27: the complete directory-mod corpus is a separate gate
+    # from the two-file bootstrap fixture above.  It owns its temporary
+    # staging directory and each server process, so this test can exercise
+    # all 25 cases without changing the production mod directory.
+    add_test(NAME jvm_corpus
+        COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/jvm_compatibility_smoke.py"
+                --binary $<TARGET_FILE:cppfm>
+                --classes "${CPPFM_JVM_CLASSES_DIR}"
+                --manifest "${CPPFM_JVM_MANIFEST}"
+                --corpus "${CMAKE_CURRENT_SOURCE_DIR}/tests/jvm_fixture/corpus"
+                --report-output "${CMAKE_CURRENT_BINARY_DIR}/jvm/corpus-report.json"
+                --evidence-output "${CMAKE_CURRENT_BINARY_DIR}/jvm/corpus-evidence.log")
+    set_tests_properties(jvm_corpus PROPERTIES TIMEOUT 300
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 endif()
 if(TARGET cppfm_jvm_manifest)
     add_test(NAME jvm_manifest
