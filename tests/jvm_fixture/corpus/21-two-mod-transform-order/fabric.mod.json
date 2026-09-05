@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "corpus21_two_mod_transform_order",
+  "version": "1.0.0",
+  "name": "cppfm corpus 21 transform order",
+  "environment": "server",
+  "depends": {"corpus20_local_capture": "*"},
+  "mixins": ["corpus21.mixins.json"],
+  "entrypoints": {"server": ["cppfm.corpus.fixture21.TransformOrderFixture"]}
+}

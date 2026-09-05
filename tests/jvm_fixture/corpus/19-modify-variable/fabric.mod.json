@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "corpus19_modify_variable",
+  "version": "1.0.0",
+  "name": "cppfm corpus 19 modify variable",
+  "environment": "server",
+  "depends": {"corpus18_modify_constant": "*"},
+  "mixins": ["corpus19.mixins.json"],
+  "entrypoints": {"server": ["cppfm.corpus.fixture19.ModifyVariableFixture"]}
+}

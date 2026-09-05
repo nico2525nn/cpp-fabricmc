@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "id": "corpus25_object_identity",
+  "version": "1.0.0",
+  "name": "cppfm corpus 25 object identity",
+  "environment": "server",
+  "depends": {"corpus24_exception": "*"},
+  "entrypoints": {"server": ["cppfm.corpus.fixture25.ObjectIdentity"]}
+}

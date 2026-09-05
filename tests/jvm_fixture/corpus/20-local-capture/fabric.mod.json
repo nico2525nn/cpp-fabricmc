@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "corpus20_local_capture",
+  "version": "1.0.0",
+  "name": "cppfm corpus 20 local capture",
+  "environment": "server",
+  "depends": {"corpus19_modify_variable": "*"},
+  "mixins": ["corpus20.mixins.json"],
+  "entrypoints": {"server": ["cppfm.corpus.fixture20.LocalCaptureFixture"]}
+}

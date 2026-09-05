@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "id": "corpus04_world_api",
+  "version": "1.0.0",
+  "name": "cppfm corpus 04 world API",
+  "environment": "server",
+  "depends": {"corpus03_fabric_api_event": "*"},
+  "entrypoints": {"server": ["cppfm.corpus.fixture04.WorldApi"]}
+}

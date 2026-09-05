@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "id": "corpus23_threading",
+  "version": "1.0.0",
+  "name": "cppfm corpus 23 threading",
+  "environment": "server",
+  "depends": {"corpus22_reentrant_callback": "*"},
+  "entrypoints": {"server": ["cppfm.corpus.fixture23.Threading"]}
+}
