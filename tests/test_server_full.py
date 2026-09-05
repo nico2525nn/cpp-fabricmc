@@ -164,6 +164,12 @@ def launch_server(binary: str, port: int, world_dir: str, extra_env: dict | None
     return proc
 
 def kill_server(proc):
+    """Stop only the process launched by this harness.
+
+    A command-line substring based on the executable and port flags can also
+    match this harness's own arguments and unrelated concurrent test servers.
+    PID-scoped cleanup keeps one test from terminating another test's server.
+    """
     try:
         proc.terminate()
         proc.wait(timeout=5)
@@ -173,9 +179,6 @@ def kill_server(proc):
     try:
         if hasattr(proc, "_logf"):
             proc._logf.close()
-    except: pass
-    # also pkill orphan
-    try: subprocess.run(["pkill","-9","-f",f"cppfm --por[t]"], timeout=2, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except: pass
 
 def raw_conn(host, port, timeout=5):
@@ -1591,10 +1594,6 @@ def main():
             time.sleep(0.5)
         # cleanup world_dir? keep for inspection
         # shutil.rmtree(world_dir, ignore_errors=True)
-        # also kill any leftover cppfm
-        try: subprocess.run(["pkill","-9","-f","cppfm --por[t]"], timeout=2, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except: pass
-
     summary_and_exit()
 
 if __name__=="__main__":

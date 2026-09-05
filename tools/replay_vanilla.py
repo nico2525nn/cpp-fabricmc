@@ -170,9 +170,6 @@ def main() -> int:
             except Exception: pass
         try: proc._logf.close()
         except Exception: pass
-        try: subprocess.run(["pkill", "-9", "-f", "cppfm --por[t]"], timeout=2,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception: pass
     npass = sum(1 for ok, _ in STEPS if ok)
     nfail = len(STEPS) - npass
     print(f"\n=== REPLAY_VANILLA: {npass} PASS {nfail} FAIL / {len(STEPS)} ===")

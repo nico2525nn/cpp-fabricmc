@@ -1,11 +1,11 @@
 # AGENTS.md — cpp-fabricmc Workflow Handover
 
-> **Purpose:** 次セッションのエージェント（人間/サブエージェント）が `cpp-fabricmc` (Fabric 1.21.4 / protocol 769) の改善ループを中断なく引き継ぐための必須情報。`docs/research-prompt.md` が正規手順。**すべてのサブエージェントは muse (`agent: "muse"`) を使用する (グローバル `~/.config/opencode/AGENTS.md` の委任ルール準拠)。** 動的状態 (HEAD・テスト実績・plan 番号・Next Steps) は `docs/CURRENT_STATE.md` を参照。
+> **Purpose:** 次セッションのエージェント（人間/サブエージェント）が `cpp-fabricmc` (Fabric 1.21.4 / protocol 769) の改善ループを中断なく引き継ぐための必須情報。研究手順の正規参照は `docs/DEVELOPMENT.md#research-workflow`（`docs/research-prompt.md` は入口）。動的状態 (HEAD・テスト実績・plan 番号・Next Steps) は `docs/CURRENT_STATE.md` を参照。
 
 ## 1. Project Goal
 
 - Minecraft Fabric 1.21.4 サーバーを C++ で非公式に完全再実装し、**完全な互換性** (protocol-compatible) を目指す。
-- `docs/MISSING_FEATURES_1_21_4.md` の `PARTIAL/TODO` が 0 になるまでループ。`docs/assessment-1.md` の厳密Wire監査 (78 gaps) も 0 まで。
+- `docs/MISSING_FEATURES_1_21_4.md` の numbered matrix と declared limitations を更新しながら、未解決の実装・証跡がなくなるまでループする。現行 matrix の `DONE=90` と、歴史的な `assessment-1` 厳密Wire監査 `78 gaps` は別の指標であり、完了を混同しない。
 
 ## 2. Current State
 
@@ -15,10 +15,10 @@
 ## 3. Improvement Loop Workflow (厳守)
 
 ```
-1. research-prompt.md を **muse サブエージェント** (`agent: "muse"`, グローバル `~/.config/opencode/AGENTS.md` の委任ルール準拠) に投げる
-   → muse が Web Search + Web Fetch 無制限で本家 Mojang/Fabric を検証し、
+1. `docs/research-prompt.md` を サブエージェントに投げる
+   → general が Web Search + Web Fetch 無制限で本家 Mojang/Fabric を検証し、
      plan/planX.md (X = max(plan/plan*.md)+1) を作成。
-     各章13観点 (機能概要/本家仕様/クラス・データ構造・パケット・イベント・状態遷移/
+     各章16観点 (機能概要/本家仕様/クラス・データ構造・パケット・イベント・状態遷移/
      実装フロー/C++設計例/クラス構成/モジュール分割/注意点/パフォーマンス/
      スレッドセーフティ/エッジケース/テスト方法/実装優先度) を必ず含める。
      各章冒頭で `docs/MISSING_FEATURES_1_21_4.md` の対象項目番号を明記。
@@ -30,18 +30,18 @@
      git worktree add -b wtX/$n /tmp/opencode/wtX/$n HEAD
    done
 
-3. サブエージェント (**すべて muse**) を分野別に同時に **バックグラウンド** 起動
-   - 必ず `background: true` かつ `agent: "muse"` で起動:
+3. サブエージェントを分野別に同時に起動
+   - **OpenCodeの場合のみ必見**
+     必ず `background: true` かつ `agent: "general"` で起動:
      {
-       "agent": "muse",
+       "agent": "general",
        "description": "Impl wtX/entity ...",
        "prompt": "Implement planX §... in /tmp/opencode/wtX/entity ... Keep build green: cmake -B build && cmake --build build -j4. Commit \"planX entity: ...\". Work only in wtX/entity. Background.",
        "background": true
      }
-   - `general`/`explore` は使わない (グローバル AGENTS.md: 手を動かす作業は必ず muse に委任)。
    - 同一worktreeでの重複起動は絶対に避ける (被ると競合)。
    - 研究完了前に実装を開始しない。
-    - **すべてのコマンドに確実なタイムアウトを付与** (`test_smoke_80` は子プロセス `cppfm` を fork するため親だけを殺すと孤児化)。例: `timeout --foreground --kill-after=5 120 cmake -B build -G Ninja` / `timeout 300 cmake --build build -j2` / `timeout --foreground --kill-after=5 450 ./build/test_smoke_80 ./build/cppfm 2>&1; echo EXIT:$?; pkill -9 -f "cppfm --port"`。`ctest -R smoke80 --timeout 450` でも可。
+    - **すべてのコマンドに確実なタイムアウトを付与** (`test_smoke_80` は子プロセス `cppfm` を fork するため親だけを殺すと孤児化)。例: `timeout --foreground --kill-after=5 120 cmake -B build -G Ninja` / `timeout --foreground --kill-after=5 300 cmake --build build -j2` / `timeout --foreground --kill-after=5 450 ./build/test_smoke_80 ./build/cppfm`。終了確認は `pgrep -a -f 'cppfm --por[t]'` の後、対象が確認できた場合だけ `timeout --foreground --kill-after=5 10 pkill -9 -f 'cppfm --por[t]'` を使う。`ctest -R smoke80 --timeout 450` でも可。
 
 4. 並行で開発させ、すべてが終わったあと diff をレビューしマージ
    - `git diff main --stat` と `git log --oneline --graph` で確認
@@ -52,11 +52,11 @@
 5. 随時すべてのドキュメントに漏れがないように完璧に更新し続ける
    - `docs/MISSING_FEATURES_1_21_4.md` の Status を DONE/PARTIAL/TODO で正確に更新
    - `docs/assessment-1.md` の厳密Wire監査を更新 (file:line 絶対パス)
-   - `README.md` の What works / Testing — evidence を更新 (80 taxonomy vs 78 strict の数値を明確に)
-   - `docs/PROTOCOL_NOTES.md` の新パケット (Bundle/MultiBlockChange/UpdateLight) を追記
-   - `docs/MIGRATION_GUIDE.md` の Module map を更新
+   - `docs/README.md` の What works / Testing — evidence を更新 (`DONE=90` taxonomy と歴史的 `78 gaps` strict の数値を明確に)
+   - canonical wire contract `docs/SPEC_WIRE.md` に新パケット (Bundle/MultiBlockChange/UpdateLight) を追記
+   - canonical module map `docs/DEVELOPMENT.md` を更新（`docs/PROTOCOL_NOTES.md` / `docs/MIGRATION_GUIDE.md` は案内stubとして維持）
 
-6. MISSING の内容がすべて DONE になるまでループ (厳密監査も 0 まで)。
+6. MISSING の numbered matrix、実装ゲート、証跡、declared limitations をすべて確認し、残課題がないと証明できるまでループする。
 ```
 
 **計画の並列化 (パイプライン・時間短縮 — 2026-09-01 追記):**
@@ -66,13 +66,11 @@
 - **制約**: 同一 worktree の重複実装は禁止 (既存)。研究は常に「読み取り + plan/ への書き込みのみ」であること。実装は常に「研究完了後」 (禁止事項の「研究が終わる前に実装を開始しない」は各アイテム群に対して有効)。
 
 **禁止事項:**
-- サブエージェントは **必ず muse** (`agent: "muse"`) を使う。`general` は使わない。
-- `background: false` (デフォルト) でサブエージェントを起動しない。必ず `background: true`。
 - 同一worktreeで2つのエージェントを同時に動かさない。
 - 研究が終わる前に実装を開始しない。
 - `plan/*.md` を `git add -f` で追跡しない (無視のまま)。
 - **曖昧な `pkill` は禁止** (2026-09-03 事故: `pkill -9 c++` が「c」を含む全プロセスを kill)。`pkill` は完全名 (`pkill -x cppfm`) または明確なフルコマンドパターン (`pkill -9 -f "cppfm --por[t]"` — **自己非マッチ化推奨**: `--port` のままのパターンは実行シェル自身にマッチし自滅する事故が 2026-09-04 に実地確認済み)。kill 前に対象確認 (`pgrep -a`) を必ず行うこと。
-- **サブエージェントの終了規則 (2026-09-04 追記)**: muse へのプロンプトには必ず「**作業が全て完了するまで『完了』と報告しない。途中経過は『経過報告』として出し、作業を継続する。全ゲート green・全作業完了の時のみ『完了』と明記して終了する**」を含める。**サブエージェントが途中で finish してしまった場合は、オーケストレーター (メイン) が `sessionID` を渡して再開メッセージを送ること** (「再開: 残作業を続行し、全て終わるまで『完了』を出さない」)。
+- テストハーネスは `Popen` の所有PIDを `terminate`/`wait` し、他のテストを巻き込む `pkill` を使わない。手動の孤児回収だけは、対象確認後に上記の自己非マッチ化パターンを使う。
 
 ## 4. Plan Numbering
 
@@ -89,12 +87,16 @@ timeout --foreground --kill-after=5 120 cmake -B build -G Ninja -DCMAKE_BUILD_TY
 timeout 300 cmake --build build -j4          # -j2 if OOM on /tmp tmpfs
 timeout --foreground --kill-after=5 60 ./build/test_native ./build/cppfm          # ALL PASS (12+31+10) expected (50s)
 timeout --foreground --kill-after=5 30 ./build/test_scoreboard_reset               # 22/22 PASS expected (ctest scoreboard_reset TIMEOUT 30)
-timeout --foreground --kill-after=5 60 ./build/test_spec_wire                     # 328 PASS 0 FAIL 0 SKIP (wire byte-identical lock; 実績は CURRENT_STATE §2)
+timeout --foreground --kill-after=5 60 ./build/test_spec_wire                     # 392 PASS 0 FAIL 0 SKIP (wire byte-identical lock; 実績は CURRENT_STATE §2)
 timeout --foreground --kill-after=5 30 ./build/test_fuzz                          # 23 PASS 0 FAIL (fuzz 23 cases, TIMEOUT 30)
 timeout --foreground --kill-after=5 450 ./build/test_smoke_80 ./build/cppfm        # 212 PASS 0 FAIL (実績は CURRENT_STATE §2) — 450s (600s under load)
-pkill -9 -f "cppfm --port" 2>/dev/null; sleep 1
+pgrep -a -f 'cppfm --por[t]' || true
+timeout --foreground --kill-after=5 10 pkill -9 -f 'cppfm --por[t]' 2>/dev/null || true
+timeout --foreground --kill-after=5 5 sleep 1
 timeout --foreground --kill-after=5 600 python3 tests/stress_test.py --clients 120 --binary ./build/cppfm  # plan45 O-04 dry 120 PASS
-pkill -9 -f "cppfm --port" 2>/dev/null; sleep 1
+pgrep -a -f 'cppfm --por[t]' || true
+timeout --foreground --kill-after=5 10 pkill -9 -f 'cppfm --por[t]' 2>/dev/null || true
+timeout --foreground --kill-after=5 5 sleep 1
 timeout --foreground --kill-after=5 400 python3 tests/soak_test.py --duration 300 --binary ./build/cppfm    # plan45 O-05/O-06 short gate
 timeout --foreground --kill-after=5 60 python3 tools/bench_chunk_gen.py --view-distance 32 --chunks 4225 --dry --strict  # plan45 O-11 view32
 # nightly 24h (plan45 O-06 — ctest外): nohup python3 tests/soak_test.py --duration 86400 --binary ./build/cppfm > /tmp/soak24h.log 2>&1 &
@@ -117,7 +119,7 @@ ctest -R smoke80 --output-on-failure --timeout 450   # 600 under load
 - `ChunkCodec` single-valued `longCount 0` 必須。
 - `WorldBorder` diameter `59999968` (not `29999984`), lerp `tickWorldBorder()` 要 `50ms` 補間。
 - `SimulationDistance` は Chebyshev `max(|dx|,|dz|)` (not Euclidean)。
-- `Ids` off-by-one: `OpenScreen 0x34` `ContainerSetContent 0x12` `TradeList 0x2D` `KeepAlive 0x26`。
+- `Ids` off-by-one: Play S→C は `OpenScreen 0x35`、`ContainerSetContent 0x13`、`TradeList 0x2E`、`KeepAlive 0x27`。Play C→S KeepAlive は `0x1A`。
 - `Bundle` axis `lx<<8|lz<<4|ly` (vanilla `state<<12|x<<8|z<<4|y`; NOT `ly<<8|lz<<4|lx` — x/y swap was plan28 finish fix, see assessment-1 S07 (old N7)).
 - `SlotComponent` ids `damage 3 repair_cost 17 trim 45` (not 6/7/42)。
 - `DamageCalculator` armor `f=2+t/4 g=clamp(a-dmg/f, a*0.2,20)` caps 30/20。
@@ -126,4 +128,4 @@ ctest -R smoke80 --output-on-failure --timeout 450   # 600 under load
 
 > **Next Steps (進行中作業・次の目標) は docs/CURRENT_STATE.md §4・§5 を参照。ループ完了ごとに更新すること。**
 
-> このファイル自体が引き継ぎのエントリポイント。次回セッション開始時は本書の §3 のコマンドで worktree を再生成し、`plan/` の最新と `MISSING`/`assessment-1/2` を照合して再開すること。サブエージェントはすべて muse を使うこと。
+> このファイル自体が引き継ぎのエントリポイント。次回セッション開始時は本書の §3 のコマンドで worktree を再生成し、`plan/` の最新と `MISSING`/`assessment-1/2` を照合して再開すること。手を動かす作業のサブエージェントはすべて general を使うこと。

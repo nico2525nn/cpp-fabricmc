@@ -1351,7 +1351,7 @@ static void test_known_gaps() {
     curSection = "GAPS";
     std::printf("\n[8] KNOWN GAPS (honest 100//100 gaps — these SHOULD FAIL until fixed)\n");
     bool hasBundle = gen::itemIdByName().find("minecraft:bundle") != gen::itemIdByName().end();
-    CHECK(hasBundle, "bundle item exists in kItems 1385 (vanilla 1.21.4 bundle experimental, proto 769 deferred gap if missing)");
+    CHECK(hasBundle, "bundle item exists in kItems 1385 (vanilla 1.21.4 data)");
     CHECK_EQ_INT((int)ItemStack::of(gen::itemIdByName().find("minecraft:stone")->second,1).maxDamageFor(gen::itemIdByName().find("minecraft:bundle") != gen::itemIdByName().end() ? gen::itemIdByName().find("minecraft:bundle")->second : 0), 0, "bundle not damageable (spec 0)");
     {
         auto a = MobEntity::randomizeHorseStats(12345);

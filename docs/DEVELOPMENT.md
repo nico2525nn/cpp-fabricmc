@@ -2,13 +2,12 @@
 
 This guide is for the clean-room C++ implementation of Minecraft Java 1.21.4,
 protocol 769, DataVersion 4189. The source snapshot for this canonical document is
-merge baseline `f21e42327342fe1e8486960f2c43805711280ffd` (2026-09-04). Fabric Loader
+runtime snapshot `17ab09f5220bf99203d2aea2b2c9d65f763f433b` (2026-09-05). Fabric Loader
 0.16.9 is a version/reference boundary; it is not embedded as a JVM runtime.
 
 **Status:** development map and extension contract. **Limitations:** this file does
-not grant permission to change runtime behavior, alter test assertions, claim
-protocol 776 support, or implement Fabric JVM mods. Such work requires a separate
-approved plan and fresh evidence.
+not grant permission to change runtime behavior, alter test assertions, or implement
+Fabric JVM mods. Such work requires a separate approved plan and fresh evidence.
 
 ## 1. Feature overview
 
@@ -132,17 +131,14 @@ composition, module split and ownership, cautions, performance, thread safety,
 edge cases, test method, and implementation priority/status. A plan that says
 ``13 viewpoints`` is using the old schema and must not be treated as complete.
 
-The plan48 snapshot remains the runtime baseline. A plan49 documentation
-reconciliation is limited to the permitted canonical Markdown files; it does not
-edit `AGENTS.md`, `research-prompt.md`, source, tests, tools, CMake, generated data,
-or ignored `plan/` files. It also does not promote a failed gate by changing prose,
-counts, or assertions.
+The plan50 runtime follow-up snapshot is the current baseline. Its implementation
+and evidence reconciliation touched the assigned source/tests/tools plus canonical
+Markdown; it does not promote a failed gate by changing prose, counts, or assertions.
 
-The pre-existing `AGENTS.md` handover is preserved by this scope. If it still carries
-the old ``13 viewpoints`` wording, old packet IDs, or the old `test_spec_wire` count
-of 328, those are handover residue rather than current authority; use this guide,
-the WIRE contract, and CURRENT_STATE for new work. Updating the handover requires a
-separately scoped change.
+The authorized `AGENTS.md` handover update now points to this canonical workflow,
+the current 16-viewpoint research schema, protocol-769 packet IDs, and timeout-safe
+process cleanup. Use this guide, the WIRE contract, and CURRENT_STATE for new work;
+the handover remains an entrypoint rather than a second specification.
 
 ## 8. C++ design example
 
@@ -177,9 +173,10 @@ tests/tools       → evidence and operational harnesses
 The plan47 cleanup already split command/session helpers and removed dead code. The
 merge baseline also records `db12df96093a0869e958f62b11f9a9cd68ba3ef1` (legacy
 Structures API removed, 10 files, +22/-787, source/test legacy-reference grep 0) and
-`4526dfe4f7112b1fe744a83484ef5ef40176d481` (self-safe `cppfm --por[t]` cleanup in
-`test_server_full.py` and `replay_vanilla.py`). A future plan must not re-propose
-those completed refactors as documentation work.
+`4526dfe4f7112b1fe744a83484ef5ef40176d481` (self-nonmatching cleanup pattern in
+`replay_vanilla.py`). The current `replay_vanilla.py`, `test_server_full.py`, and
+`run_plan43_suite.py` use PID-scoped cleanup as the follow-up ownership rule. A
+future plan must not re-propose those completed refactors as documentation work.
 
 ## 10. Module split and ownership rules
 
@@ -203,8 +200,8 @@ One claim has one canonical owner. A link is preferable to a copied table.
   the current source and test.
 - Keep `docs/mob_stats_149.csv` at its stable default runtime path.
 - Do not change `CHECK(false, "E-14 HONEST GAP...")` to make a test exit zero.
-- Do not call protocol 776 Bundle item, JVM mod execution, or vanilla RNG L3 parity
-  “supported” without a new versioned contract and evidence.
+- Do not call JVM mod execution or vanilla RNG L3 parity “supported” without a new
+  versioned contract and evidence.
 - Do not use broad process-kill patterns in development or test cleanup.
 
 ## 12. Performance
@@ -243,7 +240,7 @@ Review explicitly for:
 - component IDs and empty/removed component lists;
 - malformed/oversize frames, zlib trailing bytes, slow peers, RCON auth flood;
 - corrupt level/region/player files, stale locks, child process orphans; and
-- E-14, protocol 776, seed RNG L3, and any test with an intentional allowed failure.
+- E-14, seed RNG L3, and any test with an intentional allowed failure.
 
 ## 15. Test method
 

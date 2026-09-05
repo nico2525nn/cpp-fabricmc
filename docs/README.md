@@ -2,8 +2,8 @@
 
 This directory is the current specification index for the clean-room C++ server. The
 canonical snapshot is for **Minecraft Java Edition 1.21.4**, **protocol 769**, and
-**DataVersion 4189**. It describes the behavior of the implementation baseline at
-merge commit `f21e42327342fe1e8486960f2c43805711280ffd` as rechecked on 2026-09-04.
+**DataVersion 4189**. It describes the behavior of the integrated implementation at
+runtime snapshot `17ab09f5220bf99203d2aea2b2c9d65f763f433b`, rechecked on 2026-09-05.
 Documentation does not change the executable, packet registry, test assertions, or
 generated data.
 
@@ -15,7 +15,7 @@ generated data.
 | protocol | `769` | Handshake, state/direction IDs, and field encodings |
 | world data | `4189` | `level.dat`, Anvil, and chunk persistence |
 | reference platform | Fabric Loader `0.16.9`, unmodded server behavior | Fabric API is provenance, not an in-process JVM runtime |
-| excluded | 1.21.5 / protocol `776`, JVM Fabric mods, proven vanilla Xoroshiro byte parity | tracked as declared limitations, not silently supported |
+| excluded | JVM Fabric mods, proven vanilla Xoroshiro byte parity | tracked as declared limitations, not silently supported |
 
 `Fabric-compatible` means compatible with the protocol and observable behavior of an
 unmodified Fabric 1.21.4 server. It does **not** mean that arbitrary Fabric JVM
@@ -110,14 +110,14 @@ registry.
 
 ## Current measured evidence — final-gates snapshot
 
-The following exact results were freshly recorded in the main checkout at the named
-baseline. Counts are not inherited from stale prose and must not be inflated or
+The following exact results were freshly recorded in the main checkout at runtime
+snapshot `17ab09f`. Counts are not inherited from stale prose and must not be inflated or
 averaged to make a gate pass.
 
 | command/target | result |
 |---|---|
-| configure/build | completed after a filesystem-slow initial 300s outer timeout; resumed build completed `104/104` |
-| incremental Ninja build | `ninja: no work to do` in `0.05s` |
+| configure/build | integrated RelWithDebInfo configure/build completed |
+| incremental Ninja build | `ninja: no work to do` |
 | `test_native` | `ALL PASS` in `2.33s` |
 | `test_spec_wire` | `392 PASS 0 FAIL 0 SKIP` |
 | `test_wire_full` | `405 PASS 0 FAIL 0 SKIP` |
@@ -126,27 +126,32 @@ averaged to make a gate pass.
 | `test_fuzz` | `23 PASS 0 FAIL` |
 | `test_mob_stats_full` | `131 PASS 0 FAIL` |
 | `test_block_hardness_full` | `16/16 passed; 1095 mismatch=0` |
-| `test_mining_full` | `38/38 passed` |
+| `test_mining_full` | `59/59 passed` |
 | `test_redstone_engine_full` | `29 PASS 0 FAIL` |
 | `test_seed_parity` | `201 PASS 0 FAIL` |
 | `test_recipes_mirror` | `76 PASS 0 FAIL` |
 | `test_plan43` | `82 PASS 0 FAIL` |
 | `test_smoke_80` | `212 PASS 0 FAIL` |
-| `test_gameplay_full` | `734 PASS / 1 intentional E-14 FAIL / 735`, exit 1 |
-| `test_server_full` | `234 PASS 0 FAIL` in `273.79s` |
+| `test_gameplay_full` | `803 PASS / 1 intentional E-14 FAIL / 804`, exit 1 |
+| `test_server_full` | `234 PASS 0 FAIL` |
 | `multi_client` | `ALL PASS` in `17.83s` |
 | `bot_smoke` | `ALL PASS` in `20.65s` |
-| view32 dry benchmark | `PASS` in `1.74s`; 4,225 chunks, p50 0.108 ms, p95 2.331 ms, peak RSS ~95 MB, hit rate 84.6% |
-| 120-client stress | `120/120 joined; PASS` in `69.11s` |
-| `tests/soak_test.py --duration 300` | `PASS` in `301.18s`; 150 keepalives, 0 disconnects, actions 2930, post-fill RSS growth 14.5% |
-| `tools/soak_bot.py --duration 300` | `FAIL` in `301.89s`; keepAlives 3 (<7), kicks 0, chunks 182, time updates 23 |
-| focused CTest | 20 tests excluding `soak2h`, `soak_bot`, and `smoke80`: 19 passed plus gameplay_full's intentional E-14 failure; rc 8 |
-| accepted 2h/24h artifact | none |
+| view32 dry benchmark | `PASS`; 4,225 chunks, p50 0.108 ms, p95 2.333 ms, peak RSS ~95 MB, hit rate 84.6% |
+| 120-client stress | `120/120 joined; PASS` in `68.0s` |
+| `tests/soak_test.py --duration 300` | `PASS`; 150 keepalives, 0 disconnects, actions 2932, post-fill RSS growth 7.6% |
+| `tests/soak_test.py --duration 600 --movement-range 3000` | `PASS`; 300 keepalives, 0 disconnects, actions 5707, post-fill RSS growth 6.6% |
+| `tests/soak_test.py --duration 1800 --movement-range 3000` | `PASS` on `17ab09f`; 900 keepalives, 0 disconnects, actions 17493, post-fill baseline `114504kB`, max `128868kB`, growth `12.5%`; diagnostic only |
+| `tools/soak_bot.py --duration 300` | `3/3 PASS`; each run KeepAlive 30, chunks 182, time updates 300, kicks/EOF/server-exit/transport/protocol errors 0, cleanup PASS |
+| focused executable regression suite | all rerun targets PASS except gameplay_full's one intentional E-14 failure; no unexpected FAIL |
+| `tests/soak_test.py --duration 7200 --movement-range 3000` (parent `d1c6a7f`) | interrupted at recorded `t=3361s`; post-fill RSS `160388→191612kB` (`+19.5%`), above the `15%` gate; not accepted |
+| accepted 2h/24h artifact | none; the 7200s attempt was not accepted and no 24-hour artifact exists |
 | current real-client/GUI artifact | none |
 
-`test_gameplay_full` is deliberately not changed to hide E-14. Publication remains
-`BLOCKED` because `soak_bot` failed; the pass from `tests/soak_test.py` is not a
-long-run substitute. See
+`test_gameplay_full` is deliberately not changed to hide E-14. The former `soak_bot`
+blocker is resolved by three integrated 300-second runs. The attempted 7200-second
+soak was interrupted above its RSS gate and is not a pass. Publication remains
+`BLOCKED` only for declared boundaries (E-14, vanilla RNG L3, and missing accepted
+2-hour/24-hour/real-client evidence). See
 [SPEC_GAMEPLAY.md#declared-limitations](SPEC_GAMEPLAY.md#declared-limitations) and
 [VERIFICATION.md#gameplay-gate](VERIFICATION.md#gameplay-gate).
 

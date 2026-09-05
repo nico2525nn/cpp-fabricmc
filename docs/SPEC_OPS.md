@@ -1,8 +1,8 @@
 # SPEC_OPS — operations, limits, and recovery
 
 This is the operational contract for Minecraft 1.21.4 / protocol 769 / DataVersion
-4189 at merge baseline `f21e42327342fe1e8486960f2c43805711280ffd`, rechecked on
-2026-09-04. It covers MISSING **#7–#10**, operational aspects of **#71–#79**,
+4189 at runtime snapshot `17ab09f5220bf99203d2aea2b2c9d65f763f433b`, rechecked on
+2026-09-05. It covers MISSING **#7–#10**, operational aspects of **#71–#79**,
 **#88–#90**, Fabric server-property/RCON rows, and assessment history IDs
 B-06/B-07/C-04/C-09/C-12/E-13/O-01–O-13/W-14/W-16.
 
@@ -45,7 +45,7 @@ all vanilla servers.
 |---|---|---|---|
 | save | `WorldDataManager::atomicWrite`, `Persistence::saveLevelData` | `.new`, `level.dat_old`, atomic rename | `test_recovery`; `IMPLEMENTATION` |
 | recovery | `WorldDataManager::loadWithRecovery`, `tryLoadFile` | source `Dat`, `DatOld`, or `Fresh`; log lines/quarantine | `test_recovery`; source-backed |
-| chunks | `RegionFile`, `Persistence::loadChunk` | corrupt entry isolated/regenerated | recovery matrix |
+| chunks | `RegionFile`, `Persistence::loadChunk`, `GameServer::saveChunkAsync`, `chunksUnloadTick` | corrupt entry isolated/regenerated; dirty snapshots saved asynchronously before configured-radius eviction | recovery matrix + wide soak |
 | session ownership | `SessionLock::acquire/release` | PID/timestamp, live/stale warning | recovery matrix |
 | frames | `Connection::readFrame`, `PacketDecoder::decodeFrame` | frame/declaration sizes and rejection | `test_flood_net` |
 | throttles | `RateLimiter`, `SpamTracker`, `AcceptGate` | tokens, chat score, accepted/shed connections | flood tests |
@@ -196,26 +196,29 @@ uses the minimum of server and client view distance for sending.
 
 ### Final-gates measurements
 
-The following exact main-checkout results are recorded against merge baseline
-`f21e42327342fe1e8486960f2c43805711280ffd` on 2026-09-04. They are not averaged with
+The following exact main-checkout results are recorded against runtime baseline
+`17ab09f5220bf99203d2aea2b2c9d65f763f433b` on 2026-09-05. They are not averaged with
 older runs:
 
 | workload | result |
 |---|---|
 | configure/build | completed after a filesystem-slow initial 300s outer timeout; resumed build completed `104/104` |
 | incremental Ninja build | `ninja: no work to do` in `0.05s` |
-| view32 dry benchmark | `PASS` in `1.74s`; 4,225 chunks, p50 `0.108ms`, p95 `2.331ms`, peak RSS ~`95MB`, hit rate `84.6%` |
-| 120-client stress | `120/120 joined; PASS` in `69.11s` |
+| view32 dry benchmark | `PASS` in `1.74s`; 4,225 chunks, p50 `0.108ms`, p95 `2.333ms`, peak RSS ~`95MB`, hit rate `84.6%` |
+| 120-client stress | `120/120 joined; PASS` in `68.0s` |
 | multi-client integration | `ALL PASS` in `17.83s` |
 | bot smoke | `ALL PASS` in `20.65s` |
-| `tests/soak_test.py --duration 300` | `PASS` in `301.18s`; 150 keepalives, 0 disconnects, actions 2930, post-fill RSS growth `14.5%` |
-| `tools/soak_bot.py --duration 300` | `FAIL` in `301.89s`; keepAlives 3 (<7), kicks 0, chunks 182, time updates 23 |
-| accepted 2h/24h run | none |
+| `tests/soak_test.py --duration 300` | `PASS`; 150 keepalives, 0 disconnects, actions 2932, post-fill RSS growth `7.6%` |
+| `tools/soak_bot.py --duration 300` | `3/3 PASS`; each KeepAlive 30, chunks 182, time updates 300, all error counters 0, cleanup PASS |
+| `tests/soak_test.py --duration 1800 --movement-range 3000` | `PASS` on `17ab09f`; 900 keepalives, 0 disconnects, actions 17493, post-fill baseline `114504kB`, max `128868kB`, growth `12.5%`; diagnostic only |
+| `tests/soak_test.py --duration 7200 --movement-range 3000` (parent `d1c6a7f`) | interrupted at recorded `t=3361s`; post-fill RSS `160388→191612kB` (`+19.5%`), above the `15%` gate; not accepted |
+| accepted 2h/24h run | none; the 7200s attempt was not accepted and no 24-hour artifact exists |
 | current real-client/GUI artifact | none |
 
-The passing `tests/soak_test.py` run does not clear the failing `soak_bot` gate.
-The latter remains a publication blocker; no vanilla Xoroshiro L3 parity claim is
-made, and protocol 776 remains outside scope.
+The former `soak_bot` blocker is resolved by three integrated passes. The attempted
+7200-second soak was interrupted above its RSS gate and is not a pass. No vanilla
+Xoroshiro L3 parity claim is made, and the accepted long-run/real-client evidence
+boundary remains explicit.
 
 ## 13. Thread safety
 
@@ -291,7 +294,8 @@ does not claim an accepted 2-hour or 24-hour result merely because a procedure e
 
 **Priority: high.** Static, fixture, recovery, and flood gates precede expensive load
 runs. Any failure in scope, child cleanup, checksum, recovery, or a new test FAIL
-blocks publication. The final-gates status is `BLOCKED` by `soak_bot`'s failure;
-E-14 remains the intentional Fabric JVM-mod boundary. Roll back only a migration
+blocks publication. The integrated final-gates status has no unexpected executable
+failure; publication remains `BLOCKED` only for declared boundaries. E-14 remains the
+intentional Fabric JVM-mod boundary. Roll back only a migration
 commit owned by the operator, using an explicit inverse or `git revert`; never reset
 or discard unrelated user changes.
