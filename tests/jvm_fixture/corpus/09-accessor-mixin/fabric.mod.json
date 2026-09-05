@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "corpus09_accessor_mixin",
+  "version": "1.0.0",
+  "name": "cppfm corpus 09 accessor mixin",
+  "environment": "server",
+  "depends": {"corpus08_access_widener": "*"},
+  "mixins": ["corpus09.mixins.json"],
+  "entrypoints": {"server": ["cppfm.corpus.fixture09.AccessorFixture"]}
+}

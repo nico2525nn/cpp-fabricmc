@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "id": "corpus03_fabric_api_event",
+  "version": "1.0.0",
+  "name": "cppfm corpus 03 Fabric API event",
+  "environment": "server",
+  "depends": {"corpus02_dependency": "*"},
+  "entrypoints": {"server": ["cppfm.corpus.fixture03.FabricApiEvent"]}
+}

@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "corpus13_inject_invoke",
+  "version": "1.0.0",
+  "name": "cppfm corpus 13 inject invoke",
+  "environment": "server",
+  "depends": {"corpus12_inject_return": "*"},
+  "mixins": ["corpus13.mixins.json"],
+  "entrypoints": {"server": ["cppfm.corpus.fixture13.InjectInvoke"]}
+}

@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "corpus14_inject_field",
+  "version": "1.0.0",
+  "name": "cppfm corpus 14 inject field",
+  "environment": "server",
+  "depends": {"corpus13_inject_invoke": "*"},
+  "mixins": ["corpus14.mixins.json"],
+  "entrypoints": {"server": ["cppfm.corpus.fixture14.InjectField"]}
+}

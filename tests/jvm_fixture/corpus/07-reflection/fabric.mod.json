@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "id": "corpus07_reflection",
+  "version": "1.0.0",
+  "name": "cppfm corpus 07 reflection",
+  "environment": "server",
+  "depends": {"corpus06_registry_api": "*"},
+  "entrypoints": {"server": ["cppfm.corpus.fixture07.ReflectionApi"]}
+}
