@@ -1,6 +1,9 @@
 package cppfm.bridge;
 
+import java.io.File;
 import java.io.IOException;
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -12,6 +15,7 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -32,7 +36,26 @@ import java.util.jar.JarFile;
  */
 public final class KnotLauncher {
     private static final Object LOCK = new Object();
+    private static final String OFFICIAL_RUNTIME_PROPERTY = "cppfm.fabric-runtime";
+    private static final String OFFICIAL_RUNTIME_ENV = "CPPFM_FABRIC_RUNTIME";
+    private static final String OFFICIAL_PROVIDER_JAR_PROPERTY = "cppfm.fabric-provider-jar";
+    private static final String OFFICIAL_PROVIDER_JAR_ENV = "CPPFM_FABRIC_PROVIDER_JAR";
+    private static final String OFFICIAL_GAME_DIR_PROPERTY = "cppfm.fabric-game-dir";
+    private static final String OFFICIAL_GAME_DIR_ENV = "CPPFM_FABRIC_GAME_DIR";
+    private static final String OFFICIAL_PROVIDER_LAUNCHER =
+        "cppfm.vendor.fabric.CppfmKnotLauncher";
+    private static final String OFFICIAL_ENTRYPOINT =
+        "cppfm.vendor.fabric.ShadowMain";
+
     private static ClassLoader loader;
+    private static ClassLoader officialHost;
+    private static Path officialTempRoot;
+    private static Path officialEmptyMods;
+    private static Path officialConfigDir;
+    private static boolean officialMode;
+    private static boolean officialHandoff;
+    private static boolean officialEventsStarted;
+    private static final Map<String, String> savedOfficialProperties = new LinkedHashMap<>();
     private static Class<?> runtimeType;
     private static Method runtimeBootstrap;
     private static Method runtimeShutdown;
@@ -57,49 +80,175 @@ public final class KnotLauncher {
         synchronized (LOCK) {
             if (started) return true;
             try {
-                List<URL> urls = urls(classesDir, modsDir);
-                loader = makeLoader(urls.toArray(URL[]::new));
-                prepareMixinConfigs(loader, modsDir);
-                Class<?> bridge = Class.forName("cppfm.bridge.NativeBridge", true, loader);
-                if (!installBridge(bridge))
-                    throw new IllegalStateException("native bridge registration failed");
-                runtimeType = Class.forName("cppfm.bridge.CppModRuntime", true, loader);
-                runtimeBootstrap = method(runtimeType, "bootstrap", String.class, String.class);
-                runtimeShutdown = method(runtimeType, "shutdown");
-                runtimeTick = method(runtimeType, "onServerTick", long.class);
-                runtimeJoin = method(runtimeType, "onPlayerJoin", long.class);
-                runtimeQuit = method(runtimeType, "onPlayerQuit", long.class);
-                runtimeChat = method(runtimeType, "onChat", long.class, String.class);
-                runtimeBlockBreak = method(runtimeType, "onBlockBreak", long.class, int.class,
-                                           int.class, int.class, int.class);
-                runtimeBlockPlace = method(runtimeType, "onBlockPlace", long.class, int.class,
-                                           int.class, int.class, int.class);
-                runtimeBlockClicked = method(runtimeType, "onBlockClicked", long.class, int.class,
-                                             int.class, int.class, int.class, int.class);
-                runtimeCommand = method(runtimeType, "onCommand", long.class, String.class);
-                runtimeDamage = method(runtimeType, "onEntityDamage", long.class, long.class,
-                                       float.class, String.class);
-                runtimeSpawn = method(runtimeType, "onMobSpawn", long.class, double.class,
-                                      double.class, double.class);
-                Boolean ok = (Boolean) invoke(runtimeBootstrap, modsDir, configDir);
-                if (!Boolean.TRUE.equals(ok)) throw new IllegalStateException("mod bootstrap returned false");
-                logTransformerDiagnostics();
+                String officialRuntime = configured(OFFICIAL_RUNTIME_PROPERTY, OFFICIAL_RUNTIME_ENV);
+                if (officialRuntime != null) {
+                    bootstrapOfficial(classesDir, modsDir, configDir,
+                                      Paths.get(officialRuntime).toAbsolutePath().normalize());
+                } else {
+                    bootstrapFallback(classesDir, modsDir, configDir);
+                    logTransformerDiagnostics();
+                }
                 started = true;
                 return true;
             } catch (Throwable failure) {
                 closeLoader();
+                closeOfficialResources();
                 clear();
                 Throwable cause = failure instanceof InvocationTargetException ite && ite.getCause() != null
                     ? ite.getCause() : failure;
-                NativeBridge.logFallback("ERROR", "Knot bootstrap failed: " + cause);
+                NativeBridge.logFallback("ERROR", "Knot bootstrap failed:\n" + describeFailure(cause));
                 return false;
             }
+        }
+    }
+
+    /**
+     * Keep the historical dependency-free path intact.  The official path is
+     * selected only by an explicit runtime directory property/environment
+     * variable and never changes this loader's default behavior.
+     */
+    private static void bootstrapFallback(String classesDir, String modsDir,
+                                          String configDir) throws Exception {
+        List<URL> urls = urls(classesDir, modsDir);
+        loader = makeLoader(urls.toArray(URL[]::new));
+        prepareMixinConfigs(loader, modsDir);
+        Class<?> bridge = Class.forName("cppfm.bridge.NativeBridge", true, loader);
+        if (!installBridge(bridge))
+            throw new IllegalStateException("native bridge registration failed");
+        runtimeType = Class.forName("cppfm.bridge.CppModRuntime", true, loader);
+        cacheRuntimeMethods(runtimeType);
+        Boolean ok = (Boolean) invoke(runtimeBootstrap, modsDir, configDir);
+        if (!Boolean.TRUE.equals(ok)) throw new IllegalStateException("mod bootstrap returned false");
+    }
+
+    /**
+     * Start the pinned official Loader/Knot stack in this HotSpot process.
+     * This method is intentionally opt-in: a normal cppfm launch continues to
+     * use the dependency-free compatibility loader above.
+     */
+    private static void bootstrapOfficial(String classesDir, String modsDir,
+                                          String configDir, Path runtimeRoot) throws Exception {
+        if (!Files.isDirectory(runtimeRoot))
+            throw new IOException("official Fabric runtime directory does not exist: " + runtimeRoot);
+
+        Path providerJar = configuredPath(OFFICIAL_PROVIDER_JAR_PROPERTY, OFFICIAL_PROVIDER_JAR_ENV);
+        if (providerJar == null) providerJar = runtimeRoot.resolve("cppfm-provider.jar");
+        providerJar = providerJar.toAbsolutePath().normalize();
+        requireFile(providerJar, "official provider jar");
+
+        List<Path> runtimeJars = List.of(
+            runtimeRoot.resolve("net/fabricmc/fabric-loader/0.16.9/fabric-loader-0.16.9.jar"),
+            runtimeRoot.resolve("net/fabricmc/sponge-mixin/0.15.4+mixin.0.8.7/sponge-mixin-0.15.4+mixin.0.8.7.jar"),
+            runtimeRoot.resolve("org/ow2/asm/asm/9.7.1/asm-9.7.1.jar"),
+            runtimeRoot.resolve("org/ow2/asm/asm-analysis/9.7.1/asm-analysis-9.7.1.jar"),
+            runtimeRoot.resolve("org/ow2/asm/asm-commons/9.7.1/asm-commons-9.7.1.jar"),
+            runtimeRoot.resolve("org/ow2/asm/asm-tree/9.7.1/asm-tree-9.7.1.jar"),
+            runtimeRoot.resolve("org/ow2/asm/asm-util/9.7.1/asm-util-9.7.1.jar"),
+            runtimeRoot.resolve("net/fabricmc/intermediary/1.21.4/intermediary-1.21.4.jar"));
+        for (Path jar : runtimeJars) requireFile(jar, "official runtime artifact");
+
+        Path source = Paths.get(classesDir).toAbsolutePath().normalize();
+        if (!Files.isDirectory(source)) throw new IOException("classes directory is missing: " + source);
+        officialTempRoot = Files.createTempDirectory("cppfm-official-runtime-");
+        Path shadowClasses = officialTempRoot.resolve("shadow-classes");
+        Files.createDirectories(shadowClasses);
+        copyOfficialShadow(source, shadowClasses);
+        officialEmptyMods = officialTempRoot.resolve("empty-mods");
+        Files.createDirectories(officialEmptyMods);
+        officialConfigDir = Paths.get(configDir).toAbsolutePath().normalize();
+        Files.createDirectories(officialConfigDir);
+
+        Path gameDir = configuredPath(OFFICIAL_GAME_DIR_PROPERTY, OFFICIAL_GAME_DIR_ENV);
+        if (gameDir == null) {
+            Path modsPath = Paths.get(modsDir).toAbsolutePath().normalize();
+            gameDir = modsPath.getParent();
+        }
+        if (gameDir == null) gameDir = Paths.get(".").toAbsolutePath().normalize();
+        Files.createDirectories(gameDir);
+
+        officialMode = true;
+        saveOfficialProperty("fabric.development", "true");
+        saveOfficialProperty("fabric.skipMcProvider", "true");
+        saveOfficialProperty("cppfm.game-provider", "shadow");
+        saveOfficialProperty("cppfm.shadow-classes", shadowClasses.toString());
+        saveOfficialProperty("cppfm.game-dir", gameDir.toString());
+        saveOfficialProperty("cppfm.provider.entrypoint", OFFICIAL_ENTRYPOINT);
+        saveOfficialProperty("cppfm.official.embedded", "true");
+        saveOfficialProperty("cppfm.official.empty-mods", officialEmptyMods.toString());
+        saveOfficialProperty("cppfm.official.config-dir", officialConfigDir.toString());
+        saveOfficialProperty("mixin.env.remapRefMap", "false");
+        saveOfficialProperty("mixin.env.disableRefMap", "true");
+        saveOfficialProperty("fabric.loader.useCompatibilityClassLoader", "false");
+
+        List<URL> hostUrls = new ArrayList<>();
+        hostUrls.add(providerJar.toUri().toURL());
+        for (Path jar : runtimeJars) hostUrls.add(jar.toUri().toURL());
+        officialHost = new cppfm.loader.KnotRuntimeClassLoader(
+            hostUrls.toArray(URL[]::new), KnotLauncher.class.getClassLoader());
+
+        // Knot.init() reads java.class.path to build its initial game code
+        // source set.  Mirror the verified local runtime classpath while the
+        // official bootstrap is running, then restore the C++ JVM value only
+        // when the runtime is shut down.
+        List<Path> knotClassPath = new ArrayList<>();
+        knotClassPath.add(providerJar);
+        knotClassPath.addAll(runtimeJars);
+        saveOfficialProperty("java.class.path", joinPaths(knotClassPath));
+
+        invokeMain(officialHost, OFFICIAL_PROVIDER_LAUNCHER,
+                   new String[] {"--gameDir", gameDir.toString()});
+        if (!officialHandoff || runtimeType == null)
+            throw new IllegalStateException("official Knot returned without target NativeBridge handoff");
+    }
+
+    /** Called by the provider entrypoint after Knot has created its target loader. */
+    public static void officialHandoff(ClassLoader target) throws Exception {
+        synchronized (LOCK) {
+            if (!officialMode) throw new IllegalStateException("official handoff outside official bootstrap");
+            if (target == null) throw new IllegalArgumentException("official target classloader is null");
+            if (officialHandoff) {
+                if (loader != target) throw new IllegalStateException("official target classloader changed");
+                return;
+            }
+            Class<?> bridge = Class.forName("cppfm.bridge.NativeBridge", true, target);
+            if (!installBridge(bridge))
+                throw new IllegalStateException("official target native bridge registration failed");
+            loader = target;
+            runtimeType = Class.forName("cppfm.bridge.CppModRuntime", true, target);
+            cacheRuntimeMethods(runtimeType);
+            officialHandoff = true;
+            System.out.println("CPPFM_OFFICIAL_INPROCESS_HANDOFF targetClassLoader="
+                               + target.getClass().getName()
+                               + " bridgeClassLoader=" + bridge.getClassLoader().getClass().getName());
+        }
+    }
+
+    /**
+     * Start only the C++ event facade after official Fabric entrypoints have
+     * initialized.  Passing the private empty mod root prevents a second mod
+     * discovery/initialization pass; actual discovery belongs to Fabric
+     * Loader, while CppModRuntime owns the native event bridge.
+     */
+    public static void officialFinalize() throws Exception {
+        synchronized (LOCK) {
+            if (!officialMode || !officialHandoff)
+                throw new IllegalStateException("official event handoff is not ready");
+            if (officialEventsStarted) return;
+            Boolean ok = (Boolean) invoke(runtimeBootstrap,
+                                          officialEmptyMods.toString(), officialConfigDir.toString());
+            if (!Boolean.TRUE.equals(ok))
+                throw new IllegalStateException("official event bridge bootstrap returned false");
+            officialEventsStarted = true;
+            System.out.println("CPPFM_OFFICIAL_EVENT_BRIDGE_READY classLoader="
+                               + runtimeType.getClassLoader().getClass().getName());
         }
     }
 
     public static void shutdown() {
         synchronized (LOCK) {
             if (!started) {
+                closeLoader();
+                closeOfficialResources();
                 clear();
                 return;
             }
@@ -107,6 +256,7 @@ public final class KnotLauncher {
             catch (Throwable failure) { NativeBridge.logFallback("ERROR", "Knot shutdown failed: " + failure); }
             finally {
                 closeLoader();
+                closeOfficialResources();
                 clear();
             }
         }
@@ -148,7 +298,7 @@ public final class KnotLauncher {
         if (!started || method == null) return null;
         try { return invoke(method, args); }
         catch (Throwable failure) {
-            NativeBridge.logFallback("ERROR", "Knot callback failed: " + failure);
+            NativeBridge.logFallback("ERROR", "Knot callback failed:\n" + describeFailure(failure));
             return null;
         }
     }
@@ -169,6 +319,105 @@ public final class KnotLauncher {
         Method method = type.getMethod(name, parameters);
         method.setAccessible(true);
         return method;
+    }
+
+    private static void cacheRuntimeMethods(Class<?> type) throws NoSuchMethodException {
+        runtimeBootstrap = method(type, "bootstrap", String.class, String.class);
+        runtimeShutdown = method(type, "shutdown");
+        runtimeTick = method(type, "onServerTick", long.class);
+        runtimeJoin = method(type, "onPlayerJoin", long.class);
+        runtimeQuit = method(type, "onPlayerQuit", long.class);
+        runtimeChat = method(type, "onChat", long.class, String.class);
+        runtimeBlockBreak = method(type, "onBlockBreak", long.class, int.class,
+                                   int.class, int.class, int.class);
+        runtimeBlockPlace = method(type, "onBlockPlace", long.class, int.class,
+                                   int.class, int.class, int.class);
+        runtimeBlockClicked = method(type, "onBlockClicked", long.class, int.class,
+                                     int.class, int.class, int.class, int.class);
+        runtimeCommand = method(type, "onCommand", long.class, String.class);
+        runtimeDamage = method(type, "onEntityDamage", long.class, long.class,
+                               float.class, String.class);
+        runtimeSpawn = method(type, "onMobSpawn", long.class, double.class,
+                              double.class, double.class);
+    }
+
+    private static void invokeMain(ClassLoader classLoader, String className,
+                                   String[] args) throws Exception {
+        Thread thread = Thread.currentThread();
+        ClassLoader previous = thread.getContextClassLoader();
+        try {
+            thread.setContextClassLoader(classLoader);
+            Class<?> type = Class.forName(className, true, classLoader);
+            Method main = method(type, "main", String[].class);
+            invoke(main, (Object) args);
+        } finally {
+            thread.setContextClassLoader(previous);
+        }
+    }
+
+    private static String configured(String property, String environment) {
+        String value = System.getProperty(property);
+        if (value == null || value.isBlank()) value = System.getenv(environment);
+        return value == null || value.isBlank() ? null : value.trim();
+    }
+
+    private static Path configuredPath(String property, String environment) {
+        String value = configured(property, environment);
+        return value == null ? null : Paths.get(value).toAbsolutePath().normalize();
+    }
+
+    private static void requireFile(Path path, String label) throws IOException {
+        if (Files.isSymbolicLink(path) || !Files.isRegularFile(path))
+            throw new IOException(label + " is not a regular file: " + path);
+    }
+
+    private static String joinPaths(List<Path> paths) {
+        return String.join(File.pathSeparator, paths.stream().map(Path::toString).toList());
+    }
+
+    private static void saveOfficialProperty(String key, String value) {
+        if (!savedOfficialProperties.containsKey(key))
+            savedOfficialProperties.put(key, System.getProperty(key));
+        if (value == null) System.clearProperty(key);
+        else System.setProperty(key, value);
+    }
+
+    /**
+     * Stage only the C++ shadow namespaces that are not owned by official
+     * Loader/Mixin.  In particular, never let the application-loader stubs
+     * define a second net.fabricmc or org.spongepowered type identity.
+     */
+    private static void copyOfficialShadow(Path source, Path destination) throws IOException {
+        try (var stream = Files.walk(source)) {
+            for (Path item : (Iterable<Path>) stream::iterator) {
+                if (Files.isSymbolicLink(item)) continue;
+                Path relative = source.relativize(item);
+                if (excludedOfficialShadow(relative)) continue;
+                Path target = destination.resolve(relative);
+                if (Files.isDirectory(item)) {
+                    Files.createDirectories(target);
+                } else if (Files.isRegularFile(item)) {
+                    Files.createDirectories(target.getParent());
+                    Files.copy(item, target);
+                }
+            }
+        }
+    }
+
+    private static boolean excludedOfficialShadow(Path relative) {
+        String value = relative.toString().replace(File.separatorChar, '/');
+        return value.startsWith("net/fabricmc/api/")
+            || value.startsWith("net/fabricmc/loader/")
+            || value.startsWith("org/spongepowered/")
+            || value.startsWith("cppfm/loader/")
+            // MixinDispatch is the small shared routing ledger used by the
+            // event facade; the rest of cppfm.transform is the historical
+            // dependency-free transformer and must not be loaded by official
+            // Knot as a second transform chain.
+            || (value.startsWith("cppfm/transform/")
+                && !value.equals("cppfm/transform/MixinDispatch.class"))
+            || value.equals("cppfm/bridge/KnotLauncher.class")
+            || value.startsWith("cppfm/bridge/KnotLauncher$");
     }
 
     private static ClassLoader makeLoader(URL[] urls) throws ReflectiveOperationException {
@@ -263,6 +512,13 @@ public final class KnotLauncher {
 
     private static void clear() {
         loader = null;
+        officialHost = null;
+        officialTempRoot = null;
+        officialEmptyMods = null;
+        officialConfigDir = null;
+        officialMode = false;
+        officialHandoff = false;
+        officialEventsStarted = false;
         runtimeType = null;
         runtimeBootstrap = null;
         runtimeShutdown = null;
@@ -277,6 +533,7 @@ public final class KnotLauncher {
         runtimeDamage = null;
         runtimeSpawn = null;
         started = false;
+        savedOfficialProperties.clear();
     }
 
     /** Surface fail-closed transformer decisions in the native evidence log. */
@@ -294,11 +551,47 @@ public final class KnotLauncher {
         }
     }
 
+    private static String describeFailure(Throwable failure) {
+        StringWriter output = new StringWriter();
+        failure.printStackTrace(new PrintWriter(output));
+        return output.toString();
+    }
+
     private static void closeLoader() {
-        if (!(loader instanceof URLClassLoader urls)) return;
+        if (!(loader instanceof URLClassLoader urls) || loader == officialHost) return;
         try { urls.close(); }
         catch (IOException failure) {
             NativeBridge.logFallback("WARN", "Knot classloader close failed: " + failure);
+        }
+    }
+
+    private static void closeOfficialResources() {
+        if (officialHost instanceof URLClassLoader urls) {
+            try { urls.close(); }
+            catch (IOException failure) {
+                NativeBridge.logFallback("WARN", "official Fabric host close failed: " + failure);
+            }
+        }
+        officialHost = null;
+        for (Map.Entry<String, String> entry : savedOfficialProperties.entrySet()) {
+            if (entry.getValue() == null) System.clearProperty(entry.getKey());
+            else System.setProperty(entry.getKey(), entry.getValue());
+        }
+        savedOfficialProperties.clear();
+        if (officialTempRoot != null) deleteTree(officialTempRoot);
+    }
+
+    private static void deleteTree(Path root) {
+        if (!Files.exists(root)) return;
+        try (var stream = Files.walk(root)) {
+            stream.sorted(Comparator.reverseOrder()).forEach(path -> {
+                try { Files.deleteIfExists(path); }
+                catch (IOException failure) {
+                    NativeBridge.logFallback("WARN", "official runtime cleanup failed: " + path);
+                }
+            });
+        } catch (IOException failure) {
+            NativeBridge.logFallback("WARN", "official runtime cleanup scan failed: " + failure);
         }
     }
 

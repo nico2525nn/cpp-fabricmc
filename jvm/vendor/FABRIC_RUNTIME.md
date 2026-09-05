@@ -48,3 +48,20 @@ path を使い、`net/minecraft/**`、`com/mojang/**`、`cppfm/**` を保持し�
 これは「公式 Loader/Knot の API 境界を検証した」ことを意味し、任意の Fabric mod、
 Mojang server jar、公式 client/GUI、vanilla RNG parity、24 時間運用
 を意味しません。runtime の URL は provision/verify ツールの外へ渡しません。
+
+`--probe` は別 Java プロセスの証跡です。C++ production 経路は次の別ゲートで確認します。
+
+```sh
+timeout --foreground --kill-after=5 180 python3 tools/verify_fabric_runtime.py \
+  --offline --cache-dir build/fabric-runtime \
+  --embedded-binary build/cppfm --embedded-classes build/jvm/classes \
+  --evidence jvm/vendor/embedded-evidence.json --timeout 45
+```
+
+このゲートでは C++ が所有する一つの HotSpot 内で、固定 Loader 0.16.9 / Knot /
+Mixin、`KnotClassLoader` 上の target `NativeBridge`、`named` mapping、fixture Mixin、
+event bridge、clean shutdown を検証します。Mojang の `server.jar` がないため、公式の
+`MinecraftGameProvider` ではなく C++ shadow 用の固定 `GameProvider` adapter を使います。
+従ってこれは in-process 実行経路の証跡であり、「公式完全互換」の宣言ではありません。
+通常起動は fallback のままで、embedded 経路は runtime directory と provider jar を明示
+した場合だけ有効です。
