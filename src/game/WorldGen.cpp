@@ -81,6 +81,14 @@ void World::generateChunkIfMissing(std::int32_t cx, std::int32_t cz) const {
         std::shared_lock lock(mutex_);
         if (chunks_.count(chunkKey(cx, cz))) return;
     }
+    // Double-check after taking the generation gate.  The first check avoids
+    // locking the gate on the hot path; the second prevents duplicate full
+    // chunk allocations when multiple session threads cross the same border.
+    std::lock_guard generationLock(generationMtx_);
+    {
+        std::shared_lock lock(mutex_);
+        if (chunks_.count(chunkKey(cx, cz))) return;
+    }
     auto c = std::make_unique<Chunk>();
     const bool loaded = loader_ && loader_(cx, cz, *c);
     if (!loaded) {

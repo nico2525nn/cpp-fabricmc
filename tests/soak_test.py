@@ -33,9 +33,10 @@ def wait_port(port, timeout=8):
     return False
 
 class Bot(threading.Thread):
-    def __init__(self, idx, host, port, duration):
+    def __init__(self, idx, host, port, duration, movement_range=None):
         super().__init__(daemon=True)
         self.idx=idx; self.host=host; self.port=port; self.duration=duration
+        self.movement_range=movement_range
         self.keepalives=0; self.disconnects=0; self.actions=0
         self.latencies=[]; self.ok=True; self.error=""
     def run(self):
@@ -53,13 +54,15 @@ class Bot(threading.Thread):
                     last_action=now
                     try:
                         # movement + chunk crossing (range scales with duration)
-                        mv_range = 500 if self.duration >= 300 else 20
-                        if self.duration >= 7200:
+                        mv_range = self.movement_range
+                        if mv_range is None:
+                            mv_range = 500 if self.duration >= 300 else 20
+                        if self.duration >= 7200 and self.movement_range is None:
                             mv_range = 3000
                         # Walk between adjacent positions rather than teleporting
                         # across the whole range; this still crosses chunks while
                         # avoiding a synchronous generation storm in the server.
-                        step = 2.0 if self.duration < 7200 else 8.0
+                        step = 2.0 if mv_range < 3000 else 8.0
                         span = max(1, int(mv_range / step))
                         phase = (self.actions + span) % (2 * span)
                         offset = phase * step if phase <= span else (2 * span - phase) * step
@@ -121,6 +124,8 @@ def main():
     ap.add_argument("--port", type=int, default=0)
     ap.add_argument("--view-distance", type=int, default=6)
     ap.add_argument("--clients", type=int, default=5, help="number of bots")
+    ap.add_argument("--movement-range", type=int, default=None,
+                    help="override bot movement half-range in blocks (diagnostic/load runs)")
     args=ap.parse_args()
     raw = args.duration if args.duration is not None else (args.soak if args.soak is not None else "60")
     duration=parse_duration(raw)
@@ -146,14 +151,20 @@ def main():
     os.makedirs(world_dir, exist_ok=True)
     cmd=[binary, f"--port={port}", f"--view-distance={args.view_distance}", f"--world-dir={world_dir}", "--online-mode=false"]
     print(f"[soak] starting server {' '.join(cmd)} for {duration}s")
-    proc=subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    server_log = None
+    log_path = os.environ.get("CPPFM_SOAK_SERVER_LOG")
+    if log_path:
+        server_log = open(log_path, "wb")
+    proc=subprocess.Popen(cmd, stdout=server_log or subprocess.DEVNULL,
+                          stderr=server_log or subprocess.DEVNULL)
     try:
         if not wait_port(port, 8):
             print("FATAL: server not listening", file=sys.stderr); proc.terminate(); return 2
         # warmup: start bots first then let RSS stabilize for 5s before baseline
         t0=time.time()
         n_clients = args.clients
-        bots=[Bot(i, "127.0.0.1", port, duration) for i in range(n_clients)]
+        bots=[Bot(i, "127.0.0.1", port, duration, args.movement_range)
+              for i in range(n_clients)]
         for b in bots: b.start()
         time.sleep(5)
         rss0=get_rss_kb(proc.pid)
@@ -245,6 +256,9 @@ def main():
         import shutil, time as _t; _t.sleep(0.5)
         try: shutil.rmtree(world_dir)
         except: pass
+        if server_log is not None:
+            try: server_log.close()
+            except: pass
 
 if __name__=="__main__":
     sys.exit(main())

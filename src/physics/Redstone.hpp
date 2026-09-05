@@ -110,6 +110,10 @@ public:
                     std::int64_t now);
 
     void tick(std::int64_t now);                         // delayed updates
+    std::size_t pendingCount() const {
+        return pistonQueue_.size() + pendingPistonCommits_.size() + queue_.size()
+             + pendingRepeater_.size() + observerPrev_.size() + observerPulseEnd_.size();
+    }
     // True when any adjacent source/wire carries power (dispenser gates).
     bool isPoweredHere(std::int32_t x, std::int32_t y, std::int32_t z);
     // JE quasi-connectivity: piston/dispenser powered if y+1 would be powered
