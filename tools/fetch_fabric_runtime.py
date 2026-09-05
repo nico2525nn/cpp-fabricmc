@@ -26,6 +26,48 @@ DEFAULT_MANIFEST = ROOT / "jvm/vendor/fabric-runtime.lock.json"
 DEFAULT_CACHE = ROOT / "build/fabric-runtime"
 ALLOWED_HOSTS = {"meta.fabricmc.net", "maven.fabricmc.net"}
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+EXPECTED_GAME_VERSION = "1.21.4"
+EXPECTED_PROTOCOL = 769
+EXPECTED_LOADER_VERSION = "0.16.9"
+EXPECTED_MIXIN_VERSION = "0.15.4+mixin.0.8.7"
+EXPECTED_PROFILE_URL = (
+    "https://meta.fabricmc.net/v2/versions/loader/1.21.4/0.16.9/server/json"
+)
+EXPECTED_PROFILE_MAIN_CLASS = "net.fabricmc.loader.impl.launch.knot.KnotServer"
+EXPECTED_ARTIFACTS = {
+    "net.fabricmc:fabric-loader:0.16.9": {
+        "url": "https://maven.fabricmc.net/net/fabricmc/fabric-loader/0.16.9/fabric-loader-0.16.9.jar",
+        "path": "net/fabricmc/fabric-loader/0.16.9/fabric-loader-0.16.9.jar",
+    },
+    "net.fabricmc:sponge-mixin:0.15.4+mixin.0.8.7": {
+        "url": "https://maven.fabricmc.net/net/fabricmc/sponge-mixin/0.15.4%2Bmixin.0.8.7/sponge-mixin-0.15.4%2Bmixin.0.8.7.jar",
+        "path": "net/fabricmc/sponge-mixin/0.15.4+mixin.0.8.7/sponge-mixin-0.15.4+mixin.0.8.7.jar",
+    },
+    "org.ow2.asm:asm:9.7.1": {
+        "url": "https://maven.fabricmc.net/org/ow2/asm/asm/9.7.1/asm-9.7.1.jar",
+        "path": "org/ow2/asm/asm/9.7.1/asm-9.7.1.jar",
+    },
+    "org.ow2.asm:asm-analysis:9.7.1": {
+        "url": "https://maven.fabricmc.net/org/ow2/asm/asm-analysis/9.7.1/asm-analysis-9.7.1.jar",
+        "path": "org/ow2/asm/asm-analysis/9.7.1/asm-analysis-9.7.1.jar",
+    },
+    "org.ow2.asm:asm-commons:9.7.1": {
+        "url": "https://maven.fabricmc.net/org/ow2/asm/asm-commons/9.7.1/asm-commons-9.7.1.jar",
+        "path": "org/ow2/asm/asm-commons/9.7.1/asm-commons-9.7.1.jar",
+    },
+    "org.ow2.asm:asm-tree:9.7.1": {
+        "url": "https://maven.fabricmc.net/org/ow2/asm/asm-tree/9.7.1/asm-tree-9.7.1.jar",
+        "path": "org/ow2/asm/asm-tree/9.7.1/asm-tree-9.7.1.jar",
+    },
+    "org.ow2.asm:asm-util:9.7.1": {
+        "url": "https://maven.fabricmc.net/org/ow2/asm/asm-util/9.7.1/asm-util-9.7.1.jar",
+        "path": "org/ow2/asm/asm-util/9.7.1/asm-util-9.7.1.jar",
+    },
+    "net.fabricmc:intermediary:1.21.4": {
+        "url": "https://maven.fabricmc.net/net/fabricmc/intermediary/1.21.4/intermediary-1.21.4.jar",
+        "path": "net/fabricmc/intermediary/1.21.4/intermediary-1.21.4.jar",
+    },
+}
 
 
 class RuntimeError_(RuntimeError):
@@ -85,25 +127,29 @@ def load_manifest(path: Path = DEFAULT_MANIFEST) -> dict[str, Any]:
         _die(f"unsupported lock manifest schema in {path}")
 
     game = manifest.get("game")
-    if not isinstance(game, dict) or game.get("id") != "minecraft" or game.get("version") != "1.21.4":
+    if not isinstance(game, dict) or game.get("id") != "minecraft" or game.get("version") != EXPECTED_GAME_VERSION:
         _die("lock manifest must target Minecraft 1.21.4")
-    if game.get("protocol") != 769:
+    if game.get("protocol") != EXPECTED_PROTOCOL:
         _die("lock manifest must target protocol 769")
 
     loader = manifest.get("loader")
-    if not isinstance(loader, dict) or not loader.get("version"):
-        _die("lock manifest has no pinned loader version")
+    if not isinstance(loader, dict) or loader.get("version") != EXPECTED_LOADER_VERSION:
+        _die(f"lock manifest must pin Fabric Loader {EXPECTED_LOADER_VERSION}")
+    if loader.get("mixinVersion") != EXPECTED_MIXIN_VERSION:
+        _die(f"lock manifest must pin Sponge Mixin {EXPECTED_MIXIN_VERSION}")
 
     profile = manifest.get("profile")
     if not isinstance(profile, dict):
         _die("lock manifest has no profile")
+    if profile.get("url") != EXPECTED_PROFILE_URL:
+        _die(f"profile.url must be the pinned Loader {EXPECTED_LOADER_VERSION} URL")
     _validate_https_url(profile.get("url"), "profile.url")
     _validate_sha(profile.get("sha256"), "profile.sha256")
     if not isinstance(profile.get("size"), int) or profile["size"] <= 0:
         _die("profile.size must be a positive integer")
     profile_path = _safe_relative_path(profile.get("cachePath"), "profile.cachePath")
-    if not isinstance(profile.get("mainClass"), str) or not profile["mainClass"]:
-        _die("profile.mainClass is missing")
+    if profile.get("mainClass") != EXPECTED_PROFILE_MAIN_CLASS:
+        _die(f"profile.mainClass must be {EXPECTED_PROFILE_MAIN_CLASS}")
     profile["_cachePath"] = profile_path.as_posix()
 
     artifacts = manifest.get("artifacts")
@@ -118,8 +164,16 @@ def load_manifest(path: Path = DEFAULT_MANIFEST) -> dict[str, Any]:
         if not isinstance(coordinates, str) or not coordinates or coordinates in seen:
             _die(f"{label}: coordinates must be unique and non-empty")
         seen.add(coordinates)
+        expected = EXPECTED_ARTIFACTS.get(coordinates)
+        if expected is None:
+            _die(f"{label}: unsupported artifact for the fixed 1.21.4 official stack: {coordinates}")
+        if artifact.get("url") != expected["url"]:
+            _die(f"{label}.url is not the pinned official URL for {coordinates}")
         _validate_https_url(artifact.get("url"), f"{label}.url")
-        artifact["_cachePath"] = _safe_relative_path(artifact.get("path"), f"{label}.path").as_posix()
+        artifact_path = _safe_relative_path(artifact.get("path"), f"{label}.path")
+        if artifact_path.as_posix() != expected["path"]:
+            _die(f"{label}.path is not the pinned cache path for {coordinates}")
+        artifact["_cachePath"] = artifact_path.as_posix()
         _validate_sha(artifact.get("sha256"), f"{label}.sha256")
         size = artifact.get("size")
         if not isinstance(size, int) or size <= 0:
@@ -134,6 +188,10 @@ def load_manifest(path: Path = DEFAULT_MANIFEST) -> dict[str, Any]:
             embedded_size = embedded.get("size")
             if not isinstance(embedded_size, int) or embedded_size <= 0:
                 _die(f"{label}.embedded[{embedded_index}].size must be positive")
+
+    missing_artifacts = set(EXPECTED_ARTIFACTS) - seen
+    if missing_artifacts:
+        _die("lock manifest is missing fixed official artifacts: " + ", ".join(sorted(missing_artifacts)))
 
     return manifest
 

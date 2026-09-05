@@ -71,4 +71,35 @@ GUI behavior, vanilla RNG parity, 24-hour operation, or automatic
 integration with the existing C++ process. Those boundaries are recorded in
 `probe-evidence.json`.
 
+## Production embedded gate
+
+The process probe above and the production embedded path are separate gates.
+The former starts a new `java` process. The latter starts `cppfm`, lets its JNI
+runtime create one HotSpot, and enables the opt-in official path in
+`KnotLauncher`:
+
+```text
+timeout --foreground --kill-after=5 300 cmake --build build --target cppfm -j4
+timeout --foreground --kill-after=5 180 python3 tools/verify_fabric_runtime.py \
+  --offline --cache-dir build/fabric-runtime \
+  --embedded-binary build/cppfm --embedded-classes build/jvm/classes \
+  --evidence jvm/vendor/embedded-evidence.json --timeout 45
+```
+
+`embedded-evidence.json` is only marked passed when the same process observes
+the official Loader 0.16.9/Knot target loader, `named` mappings, the fixture
+Mixin return, the target `NativeBridge` handoff, the event bridge, and a clean
+server stop. It also rejects callback and strict-startup failure markers. The
+test builds a disposable provider/probe jar; no official jar or generated jar
+is committed.
+
+Normal launches remain on the dependency-free fallback. An explicit production
+launch may opt in with `CPPFM_FABRIC_RUNTIME` and
+`CPPFM_FABRIC_PROVIDER_JAR` (or the equivalent `-Dcppfm.fabric-runtime` and
+`-Dcppfm.fabric-provider-jar` properties). The provider jar must be built from
+the pinned `jvm/vendor/provider` sources; the runtime cache is verified
+offline first. This path uses the C++ shadow `GameProvider`, not Mojang's
+`MinecraftGameProvider`, so it is evidence of the in-process execution chain,
+not official complete Minecraft/Fabric compatibility.
+
 The target here remains Minecraft 1.21.4 and protocol 769.
