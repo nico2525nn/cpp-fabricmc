@@ -10,9 +10,11 @@ import java.lang.annotation.Target;
 public @interface At {
     String value();
     String target() default "";
+    String slice() default "";
     int ordinal() default -1;
     int opcode() default -1;
     Shift shift() default Shift.NONE;
+    int by() default 0;
     String[] args() default {};
     String id() default "";
     boolean remap() default true;

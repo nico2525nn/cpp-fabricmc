@@ -30,14 +30,6 @@ final class StackAnalyzer {
         states.set(0, entry);
         ArrayDeque<Integer> queue = new ArrayDeque<>();
         queue.add(0);
-        for (CodeModel.ExceptionHandler handler : code.exceptionHandlers) {
-            Integer index = byOffset.get(handler.handlerPc);
-            if (index != null) {
-                State exception = new State();
-                exception.stack.add(ref("java/lang/Throwable"));
-                merge(states, queue, index, exception);
-            }
-        }
         // The editor decodes the same Code attribute independently from this
         // analyzer. Instruction identities therefore differ even though the
         // original offsets are identical. Use the stable bytecode offset as
@@ -56,6 +48,23 @@ final class StackAnalyzer {
             execute(owner.pool, instruction, next);
             after.put(instruction.oldOffset, List.copyOf(next.stack));
             localsAfter.put(instruction.oldOffset, Map.copyOf(next.locals));
+            // An exception edge enters with the locals which were live before
+            // the throwing instruction and exactly one Throwable on the
+            // operand stack.  Seeding handlers with empty locals loses valid
+            // constructor/argument state at a merge and can make a rebuilt
+            // StackMapTable unverifiable.  Propagating the edge here also
+            // keeps the result conservative when several protected paths
+            // reach one handler.
+            for (CodeModel.ExceptionHandler handler : code.exceptionHandlers) {
+                if (instruction.oldOffset < handler.startPc || instruction.oldOffset >= handler.endPc)
+                    continue;
+                Integer handlerIndex = byOffset.get(handler.handlerPc);
+                if (handlerIndex == null) throw new TransformException("exception handler has no instruction");
+                State exception = state.copy();
+                exception.stack.clear();
+                exception.stack.add(ref("java/lang/Throwable"));
+                merge(states, queue, handlerIndex, exception);
+            }
             for (int successor : successors(instructions, byOffset, index, instruction))
                 merge(states, queue, successor, next);
         }
@@ -123,9 +132,16 @@ final class StackAnalyzer {
             case 118 -> { pop(state, 1); state.stack.add(FLOAT); }
             case 119 -> { pop(state, 2); state.stack.add(DOUBLE); }
             case 121, 123, 125 -> { pop(state, 3); state.stack.add(LONG); }
-            case 133, 134, 135, 145, 146, 147 -> { pop(state, 1); state.stack.add(opcode == 135 ? DOUBLE : opcode == 134 ? FLOAT : INT); }
+            case 133, 134, 135, 145, 146, 147 -> {
+                pop(state, 1);
+                state.stack.add(opcode == 133 ? LONG : opcode == 134 ? FLOAT
+                    : opcode == 135 ? DOUBLE : INT);
+            }
             case 136, 137, 138 -> { pop(state, 2); state.stack.add(opcode == 138 ? DOUBLE : opcode == 137 ? FLOAT : INT); }
-            case 139, 140, 141 -> { pop(state, 1); state.stack.add(opcode == 141 ? DOUBLE : opcode == 140 ? LONG : FLOAT); }
+            case 139, 140, 141 -> {
+                pop(state, 1);
+                state.stack.add(opcode == 139 ? INT : opcode == 140 ? LONG : DOUBLE);
+            }
             case 142, 143, 144 -> { pop(state, 2); state.stack.add(opcode == 143 ? LONG : opcode == 144 ? FLOAT : INT); }
             case 148, 149, 150, 151, 152 -> { pop(state, 4); state.stack.add(INT); }
             case 153, 154, 155, 156, 157, 158, 198, 199 -> pop(state, 1);

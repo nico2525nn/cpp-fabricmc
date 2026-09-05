@@ -3,6 +3,7 @@ package cppfm.transformer_fixture;
 import cppfm.loader.KnotClassLoader;
 import cppfm.loader.TransformingClassLoader;
 import cppfm.transform.MixinClassTransformer;
+import cppfm.transform.MixinConfiguration;
 import cppfm.transform.MixinDispatch;
 import cppfm.transform.TransformContext;
 import cppfm.transform.TransformException;
@@ -12,6 +13,7 @@ import java.io.InputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.net.URL;
+import java.util.List;
 import java.util.Map;
 
 /** Process-level contract test; run with assertions enabled. */
@@ -61,9 +63,38 @@ public final class TransformerContractTest {
     }
 
     private static void phase7Cases() throws Exception {
+        configurationNameCases();
         advancedInjectionCases();
         crossMixinOrderingCase();
         constructorCases();
+        matchLimitRollbackCase();
+    }
+
+    private static void configurationNameCases() {
+        MixinConfiguration lithium = MixinConfiguration.parse(""
+            + "{\"package\":\"net.caffeinemc.mods.lithium.mixin\","
+            + "\"server\":[\"ai.pathing.BlockStateBaseMixin\","
+            + "\"net.caffeinemc.mods.lithium.mixin.AlreadyQualifiedMixin\","
+            + "\"SimpleMixin\"]}");
+        assert lithium.serverMixins().equals(List.of(
+            "net.caffeinemc.mods.lithium.mixin.ai.pathing.BlockStateBaseMixin",
+            "net.caffeinemc.mods.lithium.mixin.AlreadyQualifiedMixin",
+            "net.caffeinemc.mods.lithium.mixin.SimpleMixin")) : lithium.serverMixins();
+
+        MixinClassTransformer strict = new MixinClassTransformer(true);
+        strict.registerConfiguration(lithium, new ClassLoader(null) { });
+        assert strict.getDiagnostics().size() == 3 : strict.getDiagnostics();
+
+        MixinConfiguration required = MixinConfiguration.parse(""
+            + "{\"package\":\"example.mixin\",\"required\":true,"
+            + "\"server\":[\"missing.NeverPresentMixin\"]}");
+        boolean rejected = false;
+        try {
+            new MixinClassTransformer(true).registerConfiguration(required, new ClassLoader(null) { });
+        } catch (TransformException expected) {
+            rejected = true;
+        }
+        assert rejected : "required missing mixin must remain fatal";
     }
 
     private static void advancedInjectionCases() throws Exception {
@@ -77,6 +108,14 @@ public final class TransformerContractTest {
         mixinType.getField("variableHits").setInt(null, 0);
         mixinType.getField("capturedLocal").setInt(null, 0);
         mixinType.getField("jumpHits").setInt(null, 0);
+        mixinType.getField("namedSliceHits").setInt(null, 0);
+        mixinType.getField("allInvokeHits").setInt(null, 0);
+        mixinType.getField("assignObservedCalls").setInt(null, 0);
+        mixinType.getField("headCancellationHits").setInt(null, 0);
+        mixinType.getField("returnCancellationHits").setInt(null, 0);
+        mixinType.getField("voidCancellationHits").setInt(null, 0);
+        mixinType.getField("capturedWide").setLong(null, 0L);
+        mixinType.getField("capturedReference").set(null, null);
 
         MixinClassTransformer transformer = new MixinClassTransformer(true);
         transformer.registerMixin("cppfm.transformer_fixture.AdvancedMixin", mixin);
@@ -94,12 +133,29 @@ public final class TransformerContractTest {
         assert ((Integer) type.getMethod("modifyVariable", int.class).invoke(instance, 1)) == 12;
         assert ((Integer) type.getMethod("capture", int.class).invoke(instance, 3)) == 7;
         assert ((Integer) type.getMethod("control", int.class).invoke(instance, 4)) == 6;
+        assert ((Integer) type.getMethod("assign", int.class).invoke(instance, 3)) == 8;
+        assert ((Integer) type.getMethod("cancelAtHead", int.class).invoke(instance, 5)) == 99;
+        assert ((Integer) type.getMethod("cancelAtHead", int.class).invoke(instance, 2)) == 12;
+        assert ((Integer) type.getMethod("cancelAtReturn", int.class).invoke(instance, 1)) == 103;
+        type.getMethod("cancelVoid", int.class).invoke(instance, 7);
+        type.getMethod("cancelVoid", int.class).invoke(instance, -1);
+        assert type.getField("voidState").getInt(instance) == 7;
+        assert ((Integer) type.getMethod("mixedCapture", int.class).invoke(instance, 4)) == 14;
 
         assert mixinType.getField("arrayAtHits").getInt(null) == 2;
         assert mixinType.getField("sliceOrdinalHits").getInt(null) == 1;
+        assert mixinType.getField("namedSliceHits").getInt(null) == 1;
+        assert mixinType.getField("allInvokeHits").getInt(null) == 3;
+        assert mixinType.getField("assignObservedCalls").getInt(null) == 4
+            : "assign callback observed " + mixinType.getField("assignObservedCalls").getInt(null);
+        assert mixinType.getField("headCancellationHits").getInt(null) == 2;
+        assert mixinType.getField("returnCancellationHits").getInt(null) == 1;
+        assert mixinType.getField("voidCancellationHits").getInt(null) == 2;
         assert mixinType.getField("constantHits").getInt(null) == 1;
         assert mixinType.getField("variableHits").getInt(null) == 1;
         assert mixinType.getField("capturedLocal").getInt(null) == 6;
+        assert mixinType.getField("capturedWide").getLong(null) == 12L;
+        assert "xy".equals(mixinType.getField("capturedReference").get(null));
         assert mixinType.getField("jumpHits").getInt(null) > 0;
     }
 
@@ -163,6 +219,38 @@ public final class TransformerContractTest {
         byte[] unchanged = lenientTransformer.transform(
             "cppfm.transformer_fixture.ConstructorTarget", target, lenientContext);
         assert java.util.Arrays.equals(target, unchanged);
+        assert !lenientContext.getDiagnostics().isEmpty();
+    }
+
+    private static void matchLimitRollbackCase() throws Exception {
+        byte[] target = resource("cppfm/transformer_fixture/AdvancedTarget.class");
+        byte[] mixin = resource("cppfm/transformer_fixture/MatchLimitMixin.class");
+
+        MixinDispatch.clear();
+        MixinClassTransformer strict = new MixinClassTransformer(true);
+        strict.registerMixin("cppfm.transformer_fixture.MatchLimitMixin", mixin);
+        TransformContext strictContext = new TransformContext(
+            "cppfm.transformer_fixture.AdvancedTarget", target, true);
+        boolean rejected = false;
+        try {
+            strict.transform("cppfm.transformer_fixture.AdvancedTarget", target, strictContext);
+        } catch (TransformException expected) {
+            rejected = true;
+        }
+        assert rejected;
+        assert strictContext.getChangedMethods().isEmpty();
+        assert MixinDispatch.transformedMethods().isEmpty();
+
+        MixinDispatch.clear();
+        MixinClassTransformer lenient = new MixinClassTransformer(false);
+        lenient.registerMixin("cppfm.transformer_fixture.MatchLimitMixin", mixin);
+        TransformContext lenientContext = new TransformContext(
+            "cppfm.transformer_fixture.AdvancedTarget", target, false);
+        byte[] unchanged = lenient.transform(
+            "cppfm.transformer_fixture.AdvancedTarget", target, lenientContext);
+        assert java.util.Arrays.equals(target, unchanged);
+        assert lenientContext.getChangedMethods().isEmpty();
+        assert MixinDispatch.transformedMethods().isEmpty();
         assert !lenientContext.getDiagnostics().isEmpty();
     }
 
