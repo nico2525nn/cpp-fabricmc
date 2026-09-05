@@ -66,7 +66,11 @@ if(CPPFM_JAVAC AND CPPFM_JAVA_SOURCES)
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/jvm_fixture/cppfm_fixture.mixins.json"
                 "${CPPFM_JVM_FIXTURE_DIR}/cppfm_fixture.mixins.json"
         COMMAND ${CMAKE_COMMAND} -E touch "${CPPFM_JVM_FIXTURE_STAMP}"
-        DEPENDS cppfm_jvm_classes "${CPPFM_JVM_FIXTURE_SOURCE}"
+        # Depend on the classes stamp as a file as well as on the target.  The
+        # target dependency only orders the build; the file dependency makes a
+        # changed annotation/API class invalidate the fixture bytecode instead
+        # of reusing a class compiled against an older shadow ABI.
+        DEPENDS "${CPPFM_JVM_STAMP}" "${CPPFM_JVM_FIXTURE_SOURCE}"
                 "${CPPFM_JVM_FIXTURE_METADATA}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/jvm_fixture/cppfm_fixture.mixins.json"
         VERBATIM)
