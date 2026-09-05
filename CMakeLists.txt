@@ -96,7 +96,7 @@ if(CPPFM_JAVAC AND CPPFM_JAVA_SOURCES)
                     -d "${CPPFM_JVM_TRANSFORMER_DIR}"
                     ${CPPFM_JVM_TRANSFORMER_SOURCES}
             COMMAND ${CMAKE_COMMAND} -E touch "${CPPFM_JVM_TRANSFORMER_STAMP}"
-            DEPENDS cppfm_jvm_classes ${CPPFM_JVM_TRANSFORMER_SOURCES}
+            DEPENDS "${CPPFM_JVM_STAMP}" ${CPPFM_JVM_TRANSFORMER_SOURCES}
             VERBATIM)
         add_custom_target(cppfm_jvm_transformer ALL
                           DEPENDS "${CPPFM_JVM_TRANSFORMER_STAMP}")
@@ -120,7 +120,7 @@ if(CPPFM_JAVAC AND CPPFM_JAVA_SOURCES)
                     -cp "${CPPFM_JVM_CLASSES_DIR}" -d "${CPPFM_JVM_API_DIR}"
                     ${CPPFM_JVM_API_SOURCES}
             COMMAND ${CMAKE_COMMAND} -E touch "${CPPFM_JVM_API_STAMP}"
-            DEPENDS cppfm_jvm_classes ${CPPFM_JVM_API_SOURCES}
+            DEPENDS "${CPPFM_JVM_STAMP}" ${CPPFM_JVM_API_SOURCES}
             VERBATIM)
         add_custom_target(cppfm_jvm_api_test ALL DEPENDS "${CPPFM_JVM_API_STAMP}")
     endif()
