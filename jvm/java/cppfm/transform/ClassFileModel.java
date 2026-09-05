@@ -109,6 +109,11 @@ final class ClassFileModel {
         methods.add(method);
     }
 
+    AttributeModel attribute(ConstantPool pool, String name) {
+        for (AttributeModel attribute : attributes) if (name.equals(attribute.name(pool))) return attribute;
+        return null;
+    }
+
     byte[] write() {
         try {
             ByteArrayOutputStream bytes = new ByteArrayOutputStream();
@@ -340,6 +345,11 @@ final class ConstantPool {
     }
     int addMethodType(String descriptor) { return add(new Entry(16, addUtf8(descriptor))); }
 
+    boolean containsTag(int tag) {
+        for (Entry entry : entries) if (entry != null && entry.tag == tag) return true;
+        return false;
+    }
+
     private int add(Entry entry) {
         String key = key(entry);
         Integer existing = interned.get(key);
@@ -355,6 +365,17 @@ final class ConstantPool {
     int importEntry(ConstantPool source, int sourceIndex, String sourceOwner,
                     String targetOwner, Map<String, String> methodRenames,
                     Map<String, String> fieldRenames) {
+        return importEntry(source, sourceIndex, sourceOwner, targetOwner, methodRenames,
+            fieldRenames, 0);
+    }
+
+    /**
+     * Import a reference and relocate CONSTANT_Dynamic/InvokeDynamic bootstrap
+     * indexes by the number of bootstrap methods already present in the target.
+     */
+    int importEntry(ConstantPool source, int sourceIndex, String sourceOwner,
+                    String targetOwner, Map<String, String> methodRenames,
+                    Map<String, String> fieldRenames, int bootstrapOffset) {
         Entry sourceEntry = source.entry(sourceIndex);
         return switch (sourceEntry.tag) {
             case 1 -> addUtf8((String) sourceEntry.value);
@@ -394,13 +415,19 @@ final class ConstantPool {
             case 15 -> {
                 int[] pair = (int[]) sourceEntry.value;
                 yield addMethodHandle(pair[0], importEntry(source, pair[1], sourceOwner, targetOwner,
-                    methodRenames, fieldRenames));
+                    methodRenames, fieldRenames, bootstrapOffset));
             }
             case 16 -> addMethodType(remapDescriptor(source.utf8((Integer) sourceEntry.value), sourceOwner, targetOwner));
             case 17, 18 -> {
                 int[] pair = (int[]) sourceEntry.value;
+                if (bootstrapOffset < 0)
+                    throw new TransformException("dynamic constant is missing BootstrapMethods");
+                int bootstrapIndex = pair[0] + bootstrapOffset;
+                if (bootstrapIndex < 0 || bootstrapIndex > 65535)
+                    throw new TransformException("bootstrap method index out of range: " + bootstrapIndex);
                 yield add(new Entry(sourceEntry.tag, new int[] {
-                    pair[0], importEntry(source, pair[1], sourceOwner, targetOwner, methodRenames, fieldRenames)
+                    bootstrapIndex, importEntry(source, pair[1], sourceOwner, targetOwner,
+                        methodRenames, fieldRenames, bootstrapOffset)
                 }));
             }
             case 19, 20 -> add(new Entry(sourceEntry.tag, addUtf8(source.utf8((Integer) sourceEntry.value))));

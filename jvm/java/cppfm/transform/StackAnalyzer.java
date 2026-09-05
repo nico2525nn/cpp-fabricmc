@@ -4,7 +4,6 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -45,27 +44,34 @@ final class StackAnalyzer {
         // the cross-model key so injection sites see their actual stack.
         HashMap<Integer, List<Value>> before = new HashMap<>();
         HashMap<Integer, List<Value>> after = new HashMap<>();
+        HashMap<Integer, Map<Integer, Value>> localsBefore = new HashMap<>();
+        HashMap<Integer, Map<Integer, Value>> localsAfter = new HashMap<>();
         while (!queue.isEmpty()) {
             int index = queue.removeFirst();
             State state = states.get(index);
             BytecodeInstructions.Instruction instruction = instructions.get(index);
             before.put(instruction.oldOffset, List.copyOf(state.stack));
+            localsBefore.put(instruction.oldOffset, Map.copyOf(state.locals));
             State next = state.copy();
             execute(owner.pool, instruction, next);
             after.put(instruction.oldOffset, List.copyOf(next.stack));
+            localsAfter.put(instruction.oldOffset, Map.copyOf(next.locals));
             for (int successor : successors(instructions, byOffset, index, instruction))
                 merge(states, queue, successor, next);
         }
         for (BytecodeInstructions.Instruction instruction : instructions)
             if (!before.containsKey(instruction.oldOffset))
                 throw new TransformException("unreachable/unknown stack state at " + instruction.oldOffset);
-        return new Analysis(before, after);
+        return new Analysis(before, after, localsBefore, localsAfter);
     }
 
     private static void initializeLocals(State state, ClassFileModel owner, MemberModel method) {
         Descriptor.MethodDesc descriptor = Descriptor.method(method.descriptor(owner.pool));
         int slot = 0;
-        if ((method.access & ClassFileModel.ACC_STATIC) == 0) state.locals.put(slot++, ref(owner.internalName()));
+        if ((method.access & ClassFileModel.ACC_STATIC) == 0) {
+            state.locals.put(slot++, method.name(owner.pool).equals("<init>")
+                ? uninitializedRef(owner.internalName()) : ref(owner.internalName()));
+        }
         for (Descriptor.Type argument : descriptor.arguments) {
             state.locals.put(slot, value(argument));
             slot += argument.slots;
@@ -132,7 +138,7 @@ final class StackAnalyzer {
             case 180 -> { pop(state, 1); state.stack.add(field(pool, instruction)); }
             case 181 -> { Value field = field(pool, instruction); pop(state, field.slots + 1); }
             case 182, 183, 184, 185, 186 -> invoke(pool, instruction, state);
-            case 187 -> state.stack.add(ref(pool.className(BytecodeInstructions.cpIndex(instruction))));
+            case 187 -> state.stack.add(uninitializedRef(pool.className(BytecodeInstructions.cpIndex(instruction))));
             case 188, 189 -> { pop(state, 1); state.stack.add(ref("java/lang/Object")); }
             case 190 -> { pop(state, 1); state.stack.add(INT); }
             case 192 -> { pop(state, 1); state.stack.add(ref(pool.className(BytecodeInstructions.cpIndex(instruction)))); }
@@ -146,6 +152,7 @@ final class StackAnalyzer {
 
     private static void executeWide(ConstantPool pool, BytecodeInstructions.Instruction instruction, State state) {
         int widened = instruction.raw[1] & 0xff;
+        if (widened == 132) return;
         Value type = switch (widened) {
             case 21, 54 -> INT; case 22, 55 -> LONG; case 23, 56 -> FLOAT;
             case 24, 57 -> DOUBLE; case 25, 58 -> ref("java/lang/Object");
@@ -159,8 +166,26 @@ final class StackAnalyzer {
         int cp = BytecodeInstructions.cpIndex(instruction);
         Descriptor.MethodDesc descriptor = Descriptor.method(pool.memberDescriptor(cp));
         for (int i = descriptor.arguments.size() - 1; i >= 0; --i) pop(state, descriptor.arguments.get(i).slots);
-        if (instruction.opcode != 184 && instruction.opcode != 186) pop(state, 1);
+        Value receiver = null;
+        if (instruction.opcode != 184 && instruction.opcode != 186) receiver = popValue(state, 1);
+        if (instruction.opcode == 183 && pool.memberName(cp).equals("<init>") && receiver != null)
+            initialize(state, receiver, pool.memberOwner(cp));
         if (!descriptor.returnType.voidType) state.stack.add(value(descriptor.returnType));
+    }
+
+    /** Replace one uninitialized JVM value after its invokespecial <init>. */
+    private static void initialize(State state, Value receiver, String owner) {
+        if (!receiver.isUninitialized()) return;
+        String receiverOwner = receiver.descriptor;
+        if (!receiverOwner.startsWith("L") || !receiverOwner.endsWith(";"))
+            throw new TransformException("invalid uninitialized receiver descriptor");
+        Value initialized = ref(receiverOwner.substring(1, receiverOwner.length() - 1));
+        for (Map.Entry<Integer, Value> entry : new ArrayList<>(state.locals.entrySet()))
+            if (entry.getValue().uninitializedToken == receiver.uninitializedToken)
+                state.locals.put(entry.getKey(), initialized);
+        for (int i = 0; i < state.stack.size(); ++i)
+            if (state.stack.get(i).uninitializedToken == receiver.uninitializedToken)
+                state.stack.set(i, initialized);
     }
 
     private static Value field(ConstantPool pool, BytecodeInstructions.Instruction instruction) {
@@ -183,7 +208,9 @@ final class StackAnalyzer {
 
     private static void store(State state, BytecodeInstructions.Instruction instruction, Value expected) {
         Value actual = popValue(state, expected.slots);
-        state.locals.put(localIndex(instruction), actual);
+        int index = localIndex(instruction);
+        if (index < 0) throw new TransformException("invalid local store instruction");
+        state.locals.put(index, actual);
     }
 
     private static int localIndex(BytecodeInstructions.Instruction instruction) {
@@ -287,15 +314,26 @@ final class StackAnalyzer {
     static final class Analysis {
         final Map<Integer, List<Value>> before;
         final Map<Integer, List<Value>> after;
+        final Map<Integer, Map<Integer, Value>> localsBefore;
+        final Map<Integer, Map<Integer, Value>> localsAfter;
         Analysis(Map<Integer, List<Value>> before,
-                 Map<Integer, List<Value>> after) {
+                 Map<Integer, List<Value>> after,
+                 Map<Integer, Map<Integer, Value>> localsBefore,
+                 Map<Integer, Map<Integer, Value>> localsAfter) {
             this.before = before; this.after = after;
+            this.localsBefore = localsBefore; this.localsAfter = localsAfter;
         }
         List<Value> before(BytecodeInstructions.Instruction instruction) {
             return before.getOrDefault(instruction.oldOffset, List.of());
         }
         List<Value> after(BytecodeInstructions.Instruction instruction) {
             return after.getOrDefault(instruction.oldOffset, List.of());
+        }
+        Map<Integer, Value> localsBefore(BytecodeInstructions.Instruction instruction) {
+            return localsBefore.getOrDefault(instruction.oldOffset, Map.of());
+        }
+        Map<Integer, Value> localsAfter(BytecodeInstructions.Instruction instruction) {
+            return localsAfter.getOrDefault(instruction.oldOffset, Map.of());
         }
     }
 
@@ -304,9 +342,16 @@ final class StackAnalyzer {
         final int slots;
         final boolean reference;
         final boolean primitive;
+        /** Non-null only for JVM uninitializedThis/new values. */
+        final Object uninitializedToken;
         Value(String descriptor, int slots, boolean reference, boolean primitive) {
-            this.descriptor = descriptor; this.slots = slots; this.reference = reference; this.primitive = primitive;
+            this(descriptor, slots, reference, primitive, null);
         }
+        Value(String descriptor, int slots, boolean reference, boolean primitive, Object uninitializedToken) {
+            this.descriptor = descriptor; this.slots = slots; this.reference = reference;
+            this.primitive = primitive; this.uninitializedToken = uninitializedToken;
+        }
+        boolean isUninitialized() { return uninitializedToken != null; }
     }
 
     private static final Value INT = new Value("I", 1, false, true);
@@ -318,6 +363,9 @@ final class StackAnalyzer {
         return new Value(type.descriptor, type.slots, type.reference, type.primitive);
     }
     private static Value ref(String owner) { return new Value("L" + owner + ";", 1, true, false); }
+    private static Value uninitializedRef(String owner) {
+        return new Value("L" + owner + ";", 1, true, false, new Object());
+    }
 
     private static final class State {
         final ArrayList<Value> stack = new ArrayList<>();
@@ -331,15 +379,25 @@ final class StackAnalyzer {
             for (int key : keys) result.locals.put(key, join(locals.get(key), other.locals.get(key)));
             return result;
         }
-        boolean equalsState(State other) { return stackEquals(stack, other.stack) && locals.equals(other.locals); }
+        boolean equalsState(State other) { return stackEquals(stack, other.stack) && localsEqual(locals, other.locals); }
         private static boolean stackEquals(List<Value> a, List<Value> b) {
             if (a.size() != b.size()) return false;
             for (int i = 0; i < a.size(); ++i) if (!same(a.get(i), b.get(i))) return false;
             return true;
         }
-        private static boolean same(Value a, Value b) { return a.descriptor.equals(b.descriptor) && a.slots == b.slots; }
+        private static boolean localsEqual(Map<Integer, Value> a, Map<Integer, Value> b) {
+            if (!a.keySet().equals(b.keySet())) return false;
+            for (Integer key : a.keySet()) if (!same(a.get(key), b.get(key))) return false;
+            return true;
+        }
+        private static boolean same(Value a, Value b) {
+            return a.descriptor.equals(b.descriptor) && a.slots == b.slots
+                && a.uninitializedToken == b.uninitializedToken;
+        }
         private static Value join(Value a, Value b) {
             if (same(a, b)) return a;
+            if (a.isUninitialized() || b.isUninitialized())
+                throw new TransformException("uninitialized value crosses a control-flow merge");
             if (a.reference && b.reference) return ref("java/lang/Object");
             throw new TransformException("incompatible stack/local types at control-flow merge");
         }

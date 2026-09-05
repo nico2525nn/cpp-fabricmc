@@ -12,6 +12,8 @@ import java.util.Map;
 
 /** JVM instruction decoding, relocation and insertion utilities. */
 final class BytecodeInstructions {
+    private static final String ORIGIN_ATTRIBUTE = "CppFmInstructionOrigins";
+
     private BytecodeInstructions() { }
 
     static List<Instruction> decode(byte[] code) {
@@ -148,13 +150,21 @@ final class BytecodeInstructions {
                                                    ConstantPool targetPool, String sourceOwner,
                                                    String targetOwner, Map<String, String> methodRenames,
                                                    Map<String, String> fieldRenames) {
+        return copyWithConstantPool(source, sourcePool, targetPool, sourceOwner, targetOwner,
+            methodRenames, fieldRenames, 0);
+    }
+
+    static List<Instruction> copyWithConstantPool(List<Instruction> source, ConstantPool sourcePool,
+                                                   ConstantPool targetPool, String sourceOwner,
+                                                   String targetOwner, Map<String, String> methodRenames,
+                                                   Map<String, String> fieldRenames, int bootstrapOffset) {
         ArrayList<Instruction> result = new ArrayList<>();
         for (Instruction instruction : source) {
             Instruction copy = instruction.copy();
             int sourceCp = cpIndex(instruction);
             if (sourceCp > 0) {
                 int targetCp = targetPool.importEntry(sourcePool, sourceCp, sourceOwner, targetOwner,
-                    methodRenames, fieldRenames);
+                    methodRenames, fieldRenames, bootstrapOffset);
                 copy = withCpIndex(copy, targetCp);
             }
             result.add(copy);
@@ -169,10 +179,44 @@ final class BytecodeInstructions {
         int nextLocal;
 
         Editor(CodeModel code) {
+            this(code, null);
+        }
+
+        Editor(CodeModel code, ConstantPool pool) {
             this.code = code;
             this.originalLength = code.code.length;
             this.instructions = new ArrayList<>(decode(code.code));
             this.nextLocal = code.maxLocals;
+            if (pool != null) restoreOrigins(pool);
+        }
+
+        /** Restore provenance after a previous edit was serialized. */
+        private void restoreOrigins(ConstantPool pool) {
+            AttributeModel provenance = null;
+            for (AttributeModel candidate : code.attributes) {
+                if (!candidate.name(pool).equals(ORIGIN_ATTRIBUTE)) continue;
+                if (provenance != null) throw new TransformException("duplicate " + ORIGIN_ATTRIBUTE);
+                provenance = candidate;
+            }
+            if (provenance == null) return;
+            java.nio.ByteBuffer input = java.nio.ByteBuffer.wrap(provenance.info)
+                .order(java.nio.ByteOrder.BIG_ENDIAN);
+            if (input.remaining() < 2) throw new TransformException("truncated " + ORIGIN_ATTRIBUTE);
+            int count = input.getShort() & 0xffff;
+            ArrayList<Instruction> encoded = new ArrayList<>();
+            for (Instruction instruction : instructions) if (!instruction.label) encoded.add(instruction);
+            if (count != encoded.size())
+                throw new TransformException(ORIGIN_ATTRIBUTE + " instruction count mismatch");
+            for (Instruction instruction : encoded) {
+                if (input.remaining() < 4) throw new TransformException("truncated " + ORIGIN_ATTRIBUTE);
+                int offset = input.getShort() & 0xffff;
+                int origin = input.getShort() & 0xffff;
+                if (offset != instruction.oldOffset)
+                    throw new TransformException(ORIGIN_ATTRIBUTE + " offset mismatch at " + instruction.oldOffset);
+                instruction.original = origin != 0xffff;
+                instruction.originalOffset = instruction.original ? origin : -1;
+            }
+            if (input.hasRemaining()) throw new TransformException("trailing " + ORIGIN_ATTRIBUTE + " data");
         }
 
         int allocateLocal(Descriptor.Type type) {
@@ -245,6 +289,34 @@ final class BytecodeInstructions {
                 handler.handlerPc = mapOffset(assembly.oldOffsets, handler.handlerPc);
             }
             NestedAttributeRelocator.relocate(code.attributes, pool, assembly.oldOffsets);
+            writeOrigins(pool, assembly);
+        }
+
+        private void writeOrigins(ConstantPool pool, Assembly assembly) {
+            ArrayList<Instruction> encoded = new ArrayList<>();
+            for (Instruction instruction : instructions) if (!instruction.label) encoded.add(instruction);
+            if (encoded.size() > 65535) throw new TransformException("too many instructions for " + ORIGIN_ATTRIBUTE);
+            java.nio.ByteBuffer output = java.nio.ByteBuffer.allocate(2 + encoded.size() * 4)
+                .order(java.nio.ByteOrder.BIG_ENDIAN);
+            output.putShort((short) encoded.size());
+            for (Instruction instruction : encoded) {
+                Integer current = assembly.offsets.get(instruction);
+                if (current == null || current < 0 || current > 65535)
+                    throw new TransformException("invalid instruction offset for " + ORIGIN_ATTRIBUTE);
+                int origin = instruction.original && instruction.originalOffset >= 0
+                    ? instruction.originalOffset : 0xffff;
+                if (origin != 0xffff && origin > 65534)
+                    throw new TransformException("invalid original instruction offset");
+                output.putShort((short) (int) current);
+                output.putShort((short) origin);
+            }
+            AttributeModel provenance = null;
+            for (AttributeModel candidate : code.attributes) {
+                if (candidate.name(pool).equals(ORIGIN_ATTRIBUTE)) { provenance = candidate; break; }
+            }
+            if (provenance == null)
+                code.attributes.add(new AttributeModel(pool.addUtf8(ORIGIN_ATTRIBUTE), output.array()));
+            else provenance.info = output.array();
         }
 
         private static int mapOffset(Map<Integer, Integer> offsets, int oldOffset) {
@@ -311,6 +383,8 @@ final class BytecodeInstructions {
         int opcode;
         byte[] raw;
         int originalLength;
+        boolean original;
+        int originalOffset = -1;
         int branchTarget = -1;
         Instruction branchTargetInstruction;
         boolean label;
@@ -323,6 +397,8 @@ final class BytecodeInstructions {
         static Instruction raw(int oldOffset, int opcode, byte[] raw) {
             Instruction result = new Instruction();
             result.oldOffset = oldOffset;
+            result.original = oldOffset >= 0;
+            result.originalOffset = oldOffset >= 0 ? oldOffset : -1;
             result.opcode = opcode;
             result.raw = raw;
             result.originalLength = raw.length;
@@ -342,6 +418,7 @@ final class BytecodeInstructions {
         static Instruction label(int oldOffset) {
             Instruction result = new Instruction();
             result.oldOffset = oldOffset;
+            result.originalOffset = -1;
             result.label = true;
             result.opcode = -1;
             result.raw = new byte[0];
@@ -350,6 +427,7 @@ final class BytecodeInstructions {
 
         static Instruction branch(int opcode, Instruction target) {
             Instruction result = new Instruction();
+            result.originalOffset = -1;
             result.opcode = opcode;
             result.raw = new byte[opcode == 200 || opcode == 201 ? 5 : 3];
             result.raw[0] = (byte) opcode;
@@ -364,6 +442,8 @@ final class BytecodeInstructions {
             result.opcode = opcode;
             result.raw = raw == null ? null : raw.clone();
             result.originalLength = originalLength;
+            result.original = original;
+            result.originalOffset = originalOffset;
             result.branchTarget = branchTarget;
             result.branchTargetInstruction = branchTargetInstruction;
             result.label = label;
