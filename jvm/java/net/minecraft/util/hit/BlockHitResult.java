@@ -4,8 +4,7 @@ import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
 
-public class BlockHitResult {
-    private final Vec3d pos;
+public class BlockHitResult extends HitResult {
     private final BlockPos blockPos;
     private final Direction side;
     private final boolean insideBlock;
@@ -19,7 +18,7 @@ public class BlockHitResult {
              side, blockPos, false);
     }
     public BlockHitResult(Vec3d pos, Direction side, BlockPos blockPos, boolean insideBlock) {
-        this.pos = pos == null ? new Vec3d(0, 0, 0) : pos;
+        super(pos);
         this.blockPos = blockPos == null ? new BlockPos(0, 0, 0) : blockPos;
         this.side = side == null ? Direction.UP : side;
         this.insideBlock = insideBlock;
@@ -37,4 +36,5 @@ public class BlockHitResult {
     public BlockHitResult withBlockPos(BlockPos value) {
         return new BlockHitResult(pos, side, value, insideBlock);
     }
+    @Override public Type getType() { return Type.BLOCK; }
 }

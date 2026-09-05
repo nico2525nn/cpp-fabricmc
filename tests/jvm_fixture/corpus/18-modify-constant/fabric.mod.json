@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "corpus18_modify_constant",
+  "version": "1.0.0",
+  "name": "cppfm corpus 18 modify constant",
+  "environment": "server",
+  "depends": {"corpus17_modify_arg": "*"},
+  "mixins": ["corpus18.mixins.json"],
+  "entrypoints": {"server": ["cppfm.corpus.fixture18.ModifyConstantFixture"]}
+}

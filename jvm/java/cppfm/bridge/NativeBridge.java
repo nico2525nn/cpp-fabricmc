@@ -39,4 +39,9 @@ public final class NativeBridge {
 
     public static long serverHandle() { return nativeServerHandle(); }
     public static long currentTick() { return nativeCurrentTick(); }
+
+    /** Bootstrap-safe diagnostics used before RegisterNatives installs this bridge. */
+    static void logFallback(String level, String message) {
+        System.err.println("[cppfm][jvm][" + level + "] " + message);
+    }
 }

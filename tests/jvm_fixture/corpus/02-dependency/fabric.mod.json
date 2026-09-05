@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "id": "corpus02_dependency",
+  "version": "1.0.0",
+  "name": "cppfm corpus 02 dependency",
+  "environment": "server",
+  "depends": {"corpus01_loader_entrypoint": "*"},
+  "entrypoints": {"server": ["cppfm.corpus.fixture02.Dependency"]}
+}

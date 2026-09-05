@@ -20,11 +20,16 @@ Java compatibility classes and an executable fixture. At runtime the bridge:
   registry, and lifecycle surfaces;
 - dispatches selected Fabric-style lifecycle/player/block/damage/spawn events on the
   game thread; and
-- runs a bounded Mixin hook shell for manually exposed `HEAD`, `TAIL`, `RETURN`, and
-  simple `@Overwrite` sites.
+- runs a version-locked, fail-closed class-file transformer before shadow classes are
+  defined. The covered subset includes `HEAD`, `TAIL`, `RETURN`, `INVOKE`, `FIELD`,
+  `NEW`, `JUMP`, `CONSTANT`, `LOAD`, and `STORE`, plus `Accessor`, `Invoker`,
+  `Shadow`, `Redirect`, `ModifyArg`, `ModifyConstant`, `ModifyVariable`, and
+  `@Overwrite`.
 
-The loader message intentionally says `compatibility loader fallback`: Fabric
-Loader/Knot is not embedded by this change.
+The production path is a version-locked Knot-compatible compatibility loader with a
+generated dispatch marker. A separate offline probe also starts the pinned official
+Fabric Loader 0.16.9/Knot/Mixin stack against the shadow classes; it does not package
+the Mojang server jar into this repository.
 
 ## Implemented status
 
@@ -36,17 +41,17 @@ Loader/Knot is not embedded by this change.
 | Inventory and registry/settings surface | `IMPLEMENTED-PARTIAL` | logical PlayerInventory slots, native-backed ItemStack mutation, custom Block registration; data components and every registry are not mirrored |
 | Lifecycle and Fabric-style events | `IMPLEMENTED-PARTIAL` | server/tick/world/player/block/damage/spawn callbacks; networking send is an explicit no-op transport boundary |
 | Commands | `IMPLEMENTED-PARTIAL` | minimal Brigadier tree/literal/string/integer execution and registration; redirects, suggestions, and full parser parity are absent |
-| Mixin `HEAD`/`TAIL`/`RETURN`/simple `Overwrite` | `IMPLEMENTED-PARTIAL` | `MixinHooks` plus manually wired `World`/`MinecraftServer` call sites; fixture proves all four paths |
-| Accessor/Invoker/Shadow/Redirect/Modify* | `ABI-ONLY` | annotations exist for compilation; no transformer or execution implementation |
-| Structured class-file bytecode transformation | `TODO` | manifest reports `structuredBytecode=false` and `manual-hook-shell` |
-| Official Fabric Loader/Knot and arbitrary mod corpus | `DECLARED-LIMITATION` | intentionally not embedded or claimed |
+| Mixin `HEAD`/`TAIL`/`RETURN`/simple `Overwrite` | `IMPLEMENTED-PARTIAL` | pre-definition transformer plus native routing; corpus cases 11, 12, and 16 pass, with manual hooks retained only as fallback |
+| Accessor/Invoker/Shadow/Redirect/Modify* | `IMPLEMENTED-PARTIAL` | structural transformer and corpus cases 09, 10, 15, and 17–20 pass; unsupported constructor/frame cases remain fail-closed |
+| Structured class-file bytecode transformation | `IMPLEMENTED-PARTIAL` | `25/25` fixture cases pass; manifest covers `9/14` declared methods (`64.3%`) and all 10 declared injection-point names |
+| Official Fabric Loader/Knot probe | `PROBE-PASS / DECLARED-LIMITATION` | pinned Loader `0.16.9`, Knot, Sponge Mixin, ASM, and intermediary artifacts pass `tools/verify_fabric_runtime.py --offline --probe`; the production runtime is not the Mojang provider |
 
 ## Source ownership
 
 | concern | owner |
 |---|---|
 | JNI VM, native calls, handle lifetime, routing | `src/jvm/` |
-| Java compatibility API and fallback loader | `jvm/java/` |
+| Java compatibility API, Knot-compatible loader, and transformer | `jvm/java/` |
 | declarative ABI and build manifest | `jvm/shadow_api.json`, `tools/generate_shadow.py` |
 | native integration points | `src/game/GameServer.hpp`, `GameServer_{core,session,tick,combat}.cpp`, `BehaviorTree.cpp` |
 | deterministic fixture | `tests/jvm_fixture/` |
@@ -82,15 +87,26 @@ cppfm_jvm_classes       PASS
 cppfm_jvm_fixture       PASS
 test_jvm_handles        PASS
 jvm_runtime             PASS
+jvm_transformer         PASS
+jvm_compatibility       PASS (25/25)
 jvm_manifest            PASS
+official_loader_probe   PASS (pinned 0.16.9/Knot/Mixin)
 ```
 
 The runtime fixture observed `embedded HotSpot started`, entrypoint initialization,
 command registration and integer-argument execution, World API access,
 `SERVER_STARTED`, `MIXIN_HEAD`, `MIXIN_TAIL`, `MIXIN_RETURN`, `MIXIN_OVERWRITE`, and
 `END_SERVER_TICK`, then terminated its owned server cleanly. It also routed a
-Java-registered command from the native console ingress. These are boundary tests,
-not evidence of arbitrary mod or client compatibility.
+Java-registered command from the native console ingress. The compatibility corpus
+also covers dependency ordering, API/handle identity, Accessor/Invoker, all
+declared structural injection cases, re-entry, attached-thread calls, exception
+isolation, and two-mod ordering. The official probe records
+`CPPFM_OFFICIAL_ENTRYPOINTS_DONE` and `CPPFM_OFFICIAL_MIXIN_RETURN`; these are
+boundary tests, not evidence of arbitrary mod or client compatibility.
+
+The generated manifest reports `methodCoverage=14`, `nativeBackend=14`, and
+`structuredBytecode=9` (`64.3%`). Its structural declaration covers the 10 named
+injection points and 9 transformer names exercised by the corpus.
 
 ## Explicit non-goals
 
@@ -99,6 +115,9 @@ evidence, accepted 2-hour or 24-hour evidence, exact vanilla Xoroshiro L3 byte
 parity, or universal Fabric JVM-mod compatibility. The target remains protocol 769;
 no other protocol version is part of this implementation.
 
-Further Mixin coverage requires a versioned class-file transformer, transformed
-bytecode tests, and a real mod corpus. Further API coverage requires per-method
-ABI/evidence entries; adding names to the shadow package alone is not sufficient.
+Further Mixin coverage requires additional versioned bytecode cases and a real mod
+corpus. Further API coverage requires per-method ABI/evidence entries; adding names
+to the shadow package alone is not sufficient. The current implementation remains
+bounded: cancellable injections that need new StackMapTable frames, constructor
+uninitialized-object flow, client-only mixins, and universal arbitrary Fabric mod
+compatibility are intentionally not claimed.

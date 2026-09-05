@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "corpus17_modify_arg",
+  "version": "1.0.0",
+  "name": "cppfm corpus 17 modify arg",
+  "environment": "server",
+  "depends": {"corpus16_overwrite": "*"},
+  "mixins": ["corpus17.mixins.json"],
+  "entrypoints": {"server": ["cppfm.corpus.fixture17.ModifyArgFixture"]}
+}

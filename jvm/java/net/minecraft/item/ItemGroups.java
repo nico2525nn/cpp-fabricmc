@@ -8,4 +8,8 @@ public final class ItemGroups {
     public static final ItemGroup TOOLS = new ItemGroup("tools");
     public static final ItemGroup COMBAT = new ItemGroup("combat");
     public static final ItemGroup NATURAL = new ItemGroup("natural");
+    public static final ItemGroup REDSTONE = new ItemGroup("redstone");
+    public static final ItemGroup TRANSPORTATION = new ItemGroup("transportation");
+    public static final ItemGroup MISC = new ItemGroup("misc");
+    public static final ItemGroup SPAWN_EGGS = new ItemGroup("spawn_eggs");
 }

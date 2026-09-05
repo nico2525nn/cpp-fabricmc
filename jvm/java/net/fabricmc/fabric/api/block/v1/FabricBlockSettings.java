@@ -21,4 +21,15 @@ public class FabricBlockSettings extends AbstractBlock.Settings {
     public FabricBlockSettings nonOpaque() { super.nonOpaque(); return this; }
     public FabricBlockSettings luminance(int value) { super.luminance(value); return this; }
     public FabricBlockSettings dropsNothing() { super.dropsNothing(); return this; }
+    public FabricBlockSettings breakInstantly() { super.breakInstantly(); return this; }
+    public FabricBlockSettings noCollision() { super.noCollision(); return this; }
+    public FabricBlockSettings opaque() { super.opaque(); return this; }
+    public FabricBlockSettings collidable(boolean value) { super.collidable(value); return this; }
+    public FabricBlockSettings ticksRandomly() { super.ticksRandomly(); return this; }
+    public FabricBlockSettings burnable() { super.burnable(); return this; }
+    public FabricBlockSettings sounds(net.minecraft.block.BlockSoundGroup value) { super.sounds(value); return this; }
+    public FabricBlockSettings mapColor(net.minecraft.block.MapColor value) { super.mapColor(value); return this; }
+    public FabricBlockSettings slipperiness(float value) { super.slipperiness(value); return this; }
+    public FabricBlockSettings velocityMultiplier(float value) { super.velocityMultiplier(value); return this; }
+    public FabricBlockSettings pistonBehavior(net.minecraft.block.PistonBehavior value) { super.pistonBehavior(value); return this; }
 }

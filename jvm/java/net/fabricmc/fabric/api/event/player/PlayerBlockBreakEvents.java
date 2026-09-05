@@ -15,5 +15,14 @@ public final class PlayerBlockBreakEvents {
                                  BlockState state, BlockEntity blockEntity);
     }
     public static final Event<Before> BEFORE = new Event<>(CppModRuntime::registerBeforeBreak);
-    public static void clear() { BEFORE.clear(); }
+    @FunctionalInterface public interface After {
+        void afterBlockBreak(net.minecraft.world.World world, PlayerEntity player, BlockPos pos, BlockState state, BlockEntity blockEntity);
+    }
+    public static final Event<After> AFTER = new Event<>(After.class, callbacks -> (world, player, pos, state, blockEntity) -> {
+        for (After callback : callbacks) callback.afterBlockBreak(world, player, pos, state, blockEntity);
+    });
+    public static final Event<After> CANCELED = new Event<>(After.class, callbacks -> (world, player, pos, state, blockEntity) -> {
+        for (After callback : callbacks) callback.afterBlockBreak(world, player, pos, state, blockEntity);
+    });
+    public static void clear() { BEFORE.clear(); AFTER.clear(); CANCELED.clear(); }
 }

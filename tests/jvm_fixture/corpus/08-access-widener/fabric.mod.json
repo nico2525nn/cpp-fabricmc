@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "corpus08_access_widener",
+  "version": "1.0.0",
+  "name": "cppfm corpus 08 access widener",
+  "environment": "server",
+  "depends": {"corpus07_reflection": "*"},
+  "accessWidener": "fixture08.accesswidener",
+  "entrypoints": {"server": ["cppfm.corpus.fixture08.AccessWidener"]}
+}
