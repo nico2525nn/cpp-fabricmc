@@ -391,7 +391,7 @@ public final class MixinClassTransformer implements ClassFileTransformer {
         Handler handler = prepared.handler(source, target);
         List<String> methodNames = annotation.strings("method");
         if (methodNames.isEmpty()) throw unsupported("@Inject has no target method: " + source.name(prepared.definition.model.pool));
-        AtSpec at = AtSpec.read(annotation.annotation("at"));
+        AtSpec at = AtSpec.read(nestedAnnotation(annotation, "at"));
         List<AnnotationModel> slices = nestedAnnotations(annotation.array("slice"));
         boolean changed = false;
         for (String methodName : methodNames) {
@@ -550,7 +550,7 @@ public final class MixinClassTransformer implements ClassFileTransformer {
     private boolean applyRedirect(ClassFileModel target, PreparedMixin prepared, MemberModel source,
                                   AnnotationModel annotation, TransformContext context) {
         Handler handler = prepared.handler(source, target);
-        AtSpec at = AtSpec.read(annotation.annotation("at"));
+        AtSpec at = AtSpec.read(nestedAnnotation(annotation, "at"));
         if (!(at.value.equals("INVOKE") || at.value.equals("FIELD") || at.value.equals("NEW")))
             throw unsupported("@Redirect requires INVOKE, FIELD or NEW, got " + at.value);
         boolean changed = false;
@@ -661,7 +661,7 @@ public final class MixinClassTransformer implements ClassFileTransformer {
     private boolean applyModifyArg(ClassFileModel target, PreparedMixin prepared, MemberModel source,
                                    AnnotationModel annotation, TransformContext context) {
         Handler handler = prepared.handler(source, target);
-        AtSpec at = AtSpec.read(annotation.annotation("at"));
+        AtSpec at = AtSpec.read(nestedAnnotation(annotation, "at"));
         if (!at.value.equals("INVOKE")) throw unsupported("@ModifyArg requires INVOKE");
         Descriptor.MethodDesc modifier = Descriptor.method(handler.descriptor);
         if (modifier.arguments.size() != 1 || modifier.returnType.voidType)
@@ -767,7 +767,7 @@ public final class MixinClassTransformer implements ClassFileTransformer {
         if (modifier.arguments.size() != 1 || modifier.returnType.voidType
             || !compatible(modifier.arguments.get(0), modifier.returnType))
             throw unsupported("@ModifyVariable handler must be (T)T: " + handler.name + handler.descriptor);
-        AtSpec at = AtSpec.read(annotation.annotation("at"));
+        AtSpec at = AtSpec.read(nestedAnnotation(annotation, "at"));
         if (!at.value.equals("LOAD") && !at.value.equals("STORE"))
             throw unsupported("@ModifyVariable requires LOAD or STORE");
         boolean changed = false;
@@ -1018,6 +1018,19 @@ public final class MixinClassTransformer implements ClassFileTransformer {
         for (AnnotationModel.ElementValue value : values)
             if (value.value instanceof AnnotationModel annotation) output.add(annotation);
         return output;
+    }
+
+    /**
+     * Mixin's {@code @Inject.at} is declared as an annotation array, while
+     * Redirect/ModifyArg/ModifyVariable use a single annotation.  The class
+     * file representation preserves that distinction, so accept both forms
+     * at the transformer boundary.
+     */
+    private AnnotationModel nestedAnnotation(AnnotationModel parent, String name) {
+        AnnotationModel direct = parent.annotation(name);
+        if (direct != null) return direct;
+        List<AnnotationModel> values = nestedAnnotations(parent.array(name));
+        return values.isEmpty() ? null : values.get(0);
     }
 
     private void replaceOrAddGeneratedMethod(ClassFileModel target, String name, int sourceAccess,
