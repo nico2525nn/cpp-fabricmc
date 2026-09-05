@@ -29,8 +29,11 @@ std::uint64_t NativeHandleTable::registerObject(void* address, HandleKind kind) 
     if (const auto it = byAddress_.find(key); it != byAddress_.end())
         return it->second;
 
-    const std::uint64_t id = nextId_++ & 0xFFFFFFFFFFULL;
-    if (id == 0) return 0; // the opaque id space is exhausted; fail closed
+    // Do not mask a wrapped allocator value back into the live id space.  A
+    // reused id could make an old Java wrapper alias a new native object.
+    constexpr std::uint64_t kMaxId = 0xFFFFFFFFFFULL;
+    if (nextId_ == 0 || nextId_ > kMaxId) return 0;
+    const std::uint64_t id = nextId_++;
     // IDs are not recycled during a server lifetime.  This makes a stale Java
     // handle fail closed even if an allocator reuses the same C++ address.
     auto& lastGeneration = generations_[key];
@@ -64,6 +67,32 @@ bool NativeHandleTable::invalidateHandle(std::uint64_t handle) {
     return true;
 }
 
+std::optional<std::uint64_t> NativeHandleTable::findHandle(
+    void* address, HandleKind kind) const {
+    if (!address || kind == HandleKind::Unknown) return std::nullopt;
+    std::lock_guard lock(mutex_);
+    const auto it = byAddress_.find(Key{address, kind});
+    if (it == byAddress_.end()) return std::nullopt;
+    const auto record = byHandle_.find(it->second);
+    if (record == byHandle_.end() || record->second.address != address ||
+        record->second.kind != kind)
+        return std::nullopt;
+    return it->second;
+}
+
+NativeHandleTable::ScopedResolution NativeHandleTable::acquire(
+    std::uint64_t handle, HandleKind expected) const {
+    if (!handle) return {};
+    std::unique_lock lock(mutex_);
+    const auto it = byHandle_.find(handle);
+    if (it == byHandle_.end()) return {};
+    if (idOf(handle) == 0 || kindOf(handle) != it->second.kind ||
+        generationOf(handle) != it->second.generation ||
+        (expected != HandleKind::Unknown && it->second.kind != expected))
+        return {};
+    return ScopedResolution(std::move(lock), it->second);
+}
+
 std::optional<HandleRecord> NativeHandleTable::describe(std::uint64_t handle) const {
     if (!handle) return std::nullopt;
     std::lock_guard lock(mutex_);
@@ -76,19 +105,17 @@ std::optional<HandleRecord> NativeHandleTable::describe(std::uint64_t handle) co
 }
 
 void* NativeHandleTable::resolve(std::uint64_t handle, HandleKind expected) const {
-    const auto record = describe(handle);
-    if (!record || (expected != HandleKind::Unknown && record->kind != expected))
-        return nullptr;
-    return record->address;
+    auto resolution = acquire(handle, expected);
+    return resolution.get();
 }
 
 bool NativeHandleTable::valid(std::uint64_t handle, HandleKind expected) const {
-    return resolve(handle, expected) != nullptr;
+    return static_cast<bool>(acquire(handle, expected));
 }
 
 HandleKind NativeHandleTable::kind(std::uint64_t handle) const noexcept {
-    const auto record = describe(handle);
-    return record ? record->kind : HandleKind::Unknown;
+    const auto resolution = acquire(handle);
+    return resolution ? resolution.kind() : HandleKind::Unknown;
 }
 
 std::size_t NativeHandleTable::size() const {

@@ -4,7 +4,10 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <atomic>
 #include <string>
+#include <thread>
+#include <vector>
 
 using cppfm::jvm::DispatchPath;
 using cppfm::jvm::HandleKind;
@@ -74,6 +77,31 @@ int main() {
               DispatchPath::JvmTransformed,
           "wildcard descriptor route");
     check(routing.transformedCount() == 1, "transformed count tracks exact routes");
+
+    // The registry is read from JNI worker threads while Java bootstrap and
+    // transformed dispatch may publish routes on the server thread.
+    std::atomic<bool> routeReadersOk{true};
+    std::vector<std::thread> readers;
+    for (int worker = 0; worker < 4; ++worker) {
+        readers.emplace_back([&routing, &routeReadersOk] {
+            for (int i = 0; i < 2000; ++i) {
+                const auto path = routing.path(
+                    "net/minecraft/server/MinecraftServer", "tick", "()V");
+                if (path != DispatchPath::NativeFast &&
+                    path != DispatchPath::JvmTransformed)
+                    routeReadersOk.store(false, std::memory_order_relaxed);
+            }
+        });
+    }
+    for (int i = 0; i < 200; ++i) {
+        if ((i & 1) == 0)
+            routing.markTransformed(owner, "tick", descriptor, baseline + 1);
+        else
+            routing.markNative(owner, "tick", descriptor, baseline);
+    }
+    for (auto& reader : readers) reader.join();
+    check(routeReadersOk.load(std::memory_order_relaxed),
+          "route reads remain valid across concurrent publication");
 
     std::printf("JVM native bridge contract/routing checks: %s\n",
                 failures == 0 ? "PASS" : "FAIL");
