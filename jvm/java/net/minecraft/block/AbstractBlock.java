@@ -6,7 +6,18 @@ import java.util.function.ToIntFunction;
 
 /** Mutable construction settings; the native world remains authoritative after registration. */
 public abstract class AbstractBlock {
-    private AbstractBlock() {}
+    /** The construction settings exposed to block subclasses and access wideners. */
+    protected final Settings settings;
+
+    protected AbstractBlock(Settings settings) {
+        this.settings = settings == null ? Settings.create() : settings;
+    }
+
+    /** Compatibility constructor for older shadow subclasses. */
+    @Deprecated
+    protected AbstractBlock() { this(Settings.create()); }
+
+    public Settings getSettings() { return settings; }
 
     public static class Settings {
         private float hardness = 1.0f;
@@ -34,12 +45,23 @@ public abstract class AbstractBlock {
         public Settings ticksRandomly() { randomTicks = true; return this; }
         public Settings burnable() { burnable = true; return this; }
         public Settings sounds(BlockSoundGroup value) { sounds = value == null ? BlockSoundGroup.STONE : value; return this; }
+        /** Canonical 1.21.4 package overload; the block-package alias remains source compatible. */
+        public Settings sounds(net.minecraft.sound.BlockSoundGroup value) {
+            sounds = value instanceof BlockSoundGroup legacy
+                ? legacy : new BlockSoundGroup(value == null ? "stone" : value.name());
+            return this;
+        }
         public Settings mapColor(MapColor value) { mapColor = value == null ? MapColor.CLEAR : value; return this; }
         public Settings mapColor(Function<BlockState, MapColor> value) { return mapColor(MapColor.CLEAR); }
         public Settings slipperiness(float value) { slipperiness = value; return this; }
         public Settings velocityMultiplier(float value) { velocityMultiplier = value; return this; }
         public Settings jumpVelocityMultiplier(float value) { return this; }
         public Settings pistonBehavior(PistonBehavior value) { pistonBehavior = value == null ? PistonBehavior.NORMAL : value; return this; }
+        /** Canonical 1.21.4 package overload; the block-package alias remains source compatible. */
+        public Settings pistonBehavior(net.minecraft.block.piston.PistonBehavior value) {
+            pistonBehavior = value == null ? PistonBehavior.NORMAL : PistonBehavior.valueOf(value.name());
+            return this;
+        }
         public Settings solid() { return this; }
         public Settings suffocates(BiPredicate<BlockState, net.minecraft.world.World> value) { return this; }
         public Settings blocksVision(BiPredicate<BlockState, net.minecraft.world.World> value) { return this; }

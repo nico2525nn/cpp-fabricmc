@@ -1,5 +1,7 @@
 package net.minecraft.entity;
 
+/** @deprecated use {@link net.minecraft.entity.damage.DamageSources}. */
+@Deprecated
 public final class DamageSources {
     private DamageSources() {}
     public static DamageSource generic() { return new DamageSource("generic"); }

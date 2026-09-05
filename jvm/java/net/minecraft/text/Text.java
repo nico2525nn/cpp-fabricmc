@@ -29,8 +29,13 @@ public class Text {
     public MutableText append(String text) { return append(literal(text)); }
     public MutableText styled(UnaryOperator<Style> operator) { return copy().styled(operator); }
     public MutableText formatted(Formatting... formats) { return copy().formatted(formats); }
+    public MutableText formatted(net.minecraft.util.Formatting... formats) { return copy().formatted(formats); }
     protected void appendInternal(Text text) { if (text != null) siblings.add(text); }
     protected void applyStyle(UnaryOperator<Style> operator) { if (operator != null) style = operator.apply(style); }
     protected void applyFormats(Formatting... formats) { if (formats != null) for (Formatting format : formats) if (format != null) style = style.withColor(format); }
+    protected void applyCanonicalFormats(net.minecraft.util.Formatting... formats) {
+        if (formats != null) for (net.minecraft.util.Formatting format : formats)
+            if (format != null) style = style.withColor(format);
+    }
     @Override public String toString() { return getString(); }
 }
