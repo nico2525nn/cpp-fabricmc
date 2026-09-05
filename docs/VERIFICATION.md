@@ -2,7 +2,7 @@
 
 This document is the verification contract for the canonical snapshot of Minecraft
 Java Edition **1.21.4**, protocol **769**, and DataVersion **4189**. The source snapshot
-is integrated runtime `17ab09f5220bf99203d2aea2b2c9d65f763f433b`, rechecked on
+is integrated runtime `74bd5ffbda03f30bc5af0c96a11ec3416bf1a827`, rechecked on
 **2026-09-05**.
 The test matrix verifies the current C++ implementation; it does not silently turn
 an approximation into vanilla parity.
