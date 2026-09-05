@@ -12,6 +12,10 @@ public interface CommandRegistrationCallback {
     void register(CommandDispatcher<ServerCommandSource> dispatcher,
                   CommandRegistryAccess registryAccess,
                   CommandManager.RegistrationEnvironment environment);
-    Event<CommandRegistrationCallback> EVENT = new Event<>(CppModRuntime::registerCommandRegistration);
+    Event<CommandRegistrationCallback> EVENT = new Event<>(CppModRuntime::registerCommandRegistration,
+        CommandRegistrationCallback.class, callbacks -> (dispatcher, registryAccess, environment) -> {
+            for (CommandRegistrationCallback callback : callbacks)
+                callback.register(dispatcher, registryAccess, environment);
+        });
     static void clear() { EVENT.clear(); }
 }

@@ -13,12 +13,23 @@ public final class WrapperCache {
     @SuppressWarnings("unchecked")
     public static synchronized <T> T get(Class<T> type, long handle,
                                           LongFunction<T> factory) {
-        if (handle == 0) return null;
+        if (handle == 0L) return null;
         Map<Long, Object> byHandle = OBJECTS.computeIfAbsent(type, ignored -> new HashMap<>());
         Object existing = byHandle.get(handle);
         if (existing != null) return (T) existing;
         T created = factory.apply(handle);
         byHandle.put(handle, created);
+        return created;
+    }
+
+    /** Return a cached Java-only wrapper when no native handle exists. */
+    @SuppressWarnings("unchecked")
+    public static synchronized <T> T getAllowZero(Class<T> type, LongFunction<T> factory) {
+        Map<Long, Object> byHandle = OBJECTS.computeIfAbsent(type, ignored -> new HashMap<>());
+        Object existing = byHandle.get(0L);
+        if (existing != null) return (T) existing;
+        T created = factory.apply(0L);
+        byHandle.put(0L, created);
         return created;
     }
 

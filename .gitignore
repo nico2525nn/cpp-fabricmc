@@ -1,4 +1,6 @@
-build*
+# Build output lives at the repository root.  Anchor this pattern so a Java
+# package such as `com/mojang/brigadier/builder/` remains visible to Git/tools.
+/build*/
 build-asan/
 *.o
 server.properties

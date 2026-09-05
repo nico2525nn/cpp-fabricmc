@@ -9,6 +9,7 @@ import net.minecraft.util.collection.DefaultedList;
 /** Handle-backed view of the native player's 36 main, armor, and offhand slots. */
 public class PlayerInventory {
     private final long playerHandle;
+    private final ItemStack[] localSlots;
     /** Yarn-compatible selected hotbar slot (0..8), sampled at construction. */
     public int selectedSlot;
     public final DefaultedList<ItemStack> main;
@@ -17,6 +18,8 @@ public class PlayerInventory {
 
     public PlayerInventory(long playerHandle) {
         this.playerHandle = playerHandle;
+        this.localSlots = playerHandle == 0L ? new ItemStack[41] : null;
+        if (localSlots != null) java.util.Arrays.fill(localSlots, ItemStack.EMPTY);
         this.selectedSlot = NativeAccess.heldSlot(playerHandle);
         this.main = DefaultedList.ofSize(36, ItemStack.EMPTY, index -> getStack(index), this::setStack);
         this.armor = DefaultedList.ofSize(4, ItemStack.EMPTY, index -> getStack(36 + index), (index, stack) -> setStack(36 + index, stack));
@@ -29,11 +32,14 @@ public class PlayerInventory {
     }
     public ItemStack getOffHandStack() { return getStack(40); }
     public ItemStack getStack(int slot) {
-        return slot < 0 || slot >= size() ? ItemStack.EMPTY : ItemStack.fromNative(playerHandle, slot);
+        if (slot < 0 || slot >= size()) return ItemStack.EMPTY;
+        return playerHandle == 0L ? localSlots[slot] : ItemStack.fromNative(playerHandle, slot);
     }
     public void setStack(int slot, ItemStack stack) {
         if (slot < 0 || slot >= size()) return;
-        (stack == null ? ItemStack.EMPTY : stack).syncCountToNative(playerHandle, slot);
+        ItemStack value = stack == null ? ItemStack.EMPTY : stack;
+        if (playerHandle == 0L) localSlots[slot] = value;
+        else value.syncCountToNative(playerHandle, slot);
     }
     public ItemStack removeStack(int slot) { ItemStack old = getStack(slot); setStack(slot, ItemStack.EMPTY); return old; }
     public ItemStack removeStack(int slot, int amount) {

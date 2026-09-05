@@ -14,7 +14,10 @@ public final class PlayerBlockBreakEvents {
         boolean beforeBlockBreak(World world, PlayerEntity player, BlockPos pos,
                                  BlockState state, BlockEntity blockEntity);
     }
-    public static final Event<Before> BEFORE = new Event<>(CppModRuntime::registerBeforeBreak);
+    public static final Event<Before> BEFORE = new Event<>(CppModRuntime::registerBeforeBreak, Before.class, callbacks -> (world, player, pos, state, blockEntity) -> {
+        for (Before callback : callbacks) if (!callback.beforeBlockBreak(world, player, pos, state, blockEntity)) return false;
+        return true;
+    });
     @FunctionalInterface public interface After {
         void afterBlockBreak(net.minecraft.world.World world, PlayerEntity player, BlockPos pos, BlockState state, BlockEntity blockEntity);
     }

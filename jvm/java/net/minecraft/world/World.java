@@ -29,6 +29,7 @@ public class World implements BlockView, WorldView, WorldAccess {
     protected final long nativeHandle;
     protected final boolean client;
     private final Map<Long, BlockState> localBlocks = new HashMap<>();
+    private final Map<Long, BlockEntity> localBlockEntities = new HashMap<>();
     private final net.minecraft.world.border.WorldBorder border = new net.minecraft.world.border.WorldBorder();
     private final Random random = new Random(0L);
     private final GameRules gameRules = new GameRules();
@@ -40,7 +41,9 @@ public class World implements BlockView, WorldView, WorldAccess {
         this.dimensionType = net.minecraft.world.dimension.DimensionType.OVERWORLD;
     }
     public static World of(long handle) {
-        return WrapperCache.get(World.class, handle, h -> new World(h, false));
+        return handle == 0L
+            ? WrapperCache.getAllowZero(World.class, h -> new World(h, false))
+            : WrapperCache.get(World.class, handle, h -> new World(h, false));
     }
     public long nativeHandle() { return nativeHandle; }
     public boolean isClient() { return client; }
@@ -82,7 +85,7 @@ public class World implements BlockView, WorldView, WorldAccess {
         String name = NativeAccess.worldName(nativeHandle);
         return new RegistryKey<>(Identifier.tryParse(name == null || name.isEmpty() ? "minecraft:overworld" : name));
     }
-    public long getTime() { return NativeAccess.currentTick(); }
+    public long getTime() { return nativeHandle == 0 ? NativeAccess.currentTick() : NativeAccess.worldTime(nativeHandle); }
     public long getTimeOfDay() { return getTime(); }
     /** 1.21.4 overworld floor; kept literal so constant mixins can target it. */
     public int getBottomY() { return -64; }
@@ -92,7 +95,14 @@ public class World implements BlockView, WorldView, WorldAccess {
     public boolean isAir(BlockPos pos) { return getBlockState(pos).isAir(); }
     public boolean breakBlock(BlockPos pos, boolean drop) { if (isAir(pos)) return false; return setBlockState(pos, Blocks.AIR.getDefaultState()); }
     public boolean removeBlock(BlockPos pos, boolean move) { return breakBlock(pos, move); }
-    @Override public BlockEntity getBlockEntity(BlockPos pos) { return null; }
+    @Override public BlockEntity getBlockEntity(BlockPos pos) {
+        return pos == null ? null : localBlockEntities.get(pos.asLong());
+    }
+    public void setBlockEntity(BlockPos pos, BlockEntity blockEntity) {
+        if (pos == null) return;
+        if (blockEntity == null) localBlockEntities.remove(pos.asLong());
+        else localBlockEntities.put(pos.asLong(), blockEntity);
+    }
     public List<Entity> getEntities() { return getEntitiesByClass(Entity.class, new Box(-3.0E7, getBottomY(), -3.0E7, 3.0E7, getTopY(), 3.0E7), entity -> true); }
     public <T extends Entity> List<T> getEntitiesByClass(Class<T> type, Box box, Predicate<? super T> predicate) {
         List<T> result = new ArrayList<>();
@@ -100,6 +110,15 @@ public class World implements BlockView, WorldView, WorldAccess {
         MinecraftServer server = getServer();
         if (server != null) for (ServerPlayerEntity player : server.getPlayerManager().getPlayerList()) {
             if (type.isInstance(player) && (box == null || box.contains(player.getPos())) && predicate.test(type.cast(player))) result.add(type.cast(player));
+        }
+        int count = (int) Math.min(Integer.MAX_VALUE, NativeAccess.entityCount());
+        for (int index = 0; index < count; index++) {
+            long handle = NativeAccess.entityHandle(index);
+            if (handle == 0L) continue;
+            Entity entity = findPlayer(handle, server);
+            if (entity == null) entity = Entity.of(handle);
+            if (type.isInstance(entity) && (box == null || box.contains(entity.getPos())) && predicate.test(type.cast(entity)))
+                if (!result.contains(entity)) result.add(type.cast(entity));
         }
         return result;
     }
@@ -117,5 +136,12 @@ public class World implements BlockView, WorldView, WorldAccess {
     public ChunkPos getChunkPos(BlockPos pos) { return new ChunkPos(pos == null ? new BlockPos(0, 0, 0) : pos); }
     public net.minecraft.server.MinecraftServer getServer() {
         return nativeHandle == 0 ? null : MinecraftServer.of(NativeAccess.serverHandle());
+    }
+
+    private static Entity findPlayer(long handle, MinecraftServer server) {
+        if (server == null) return null;
+        for (ServerPlayerEntity player : server.getPlayerManager().getPlayerList())
+            if (player.nativeHandle() == handle) return player;
+        return null;
     }
 }
