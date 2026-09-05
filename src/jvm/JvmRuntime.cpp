@@ -36,11 +36,16 @@ struct JvmRuntime::Impl {
     ModRoutingTable routing;
     mutable std::recursive_mutex callMutex;
     std::string lastError;
-    bool started = false;
-    bool stopping = false;
+    std::atomic<bool> started{false};
+    std::atomic<bool> stopping{false};
     bool bootstrapInvoked = false;
     std::uint64_t serverHandle = 0;
-    JvmProvider provider = JvmProvider::None;
+    std::atomic<JvmProvider> provider{JvmProvider::None};
+    // A native bridge call may execute on a Java-created thread while the
+    // server thread is synchronously inside a callback.  This count is the
+    // lifetime fence used by stop(): no JavaVM or global reference is torn
+    // down while a bridge call still has a runtime lease.
+    std::atomic<std::size_t> activeCalls{0};
 
     std::atomic<std::uint64_t> ticks{0};
     std::atomic<std::uint64_t> joins{0};
@@ -92,6 +97,94 @@ struct JvmRuntime::Impl {
 namespace {
 
 std::atomic<JvmRuntime*> g_activeRuntime{nullptr};
+// JNI permits only one invocation VM per process.  Keep an explicit native
+// owner instead of relying on JNI_CreateJavaVM returning JNI_EEXIST: that
+// makes a second JvmRuntime fail before it can touch the process-wide VM.
+std::mutex g_runtimeLifecycleMutex;
+std::condition_variable g_runtimeLifecycleChanged;
+JvmRuntime* g_runtimeOwner = nullptr;
+
+thread_local JvmRuntime* g_callRuntime = nullptr;
+thread_local std::size_t g_callDepth = 0;
+
+bool claimRuntimeOwnership(JvmRuntime* runtime) {
+    std::lock_guard lock(g_runtimeLifecycleMutex);
+    if (g_runtimeOwner && g_runtimeOwner != runtime) return false;
+    g_runtimeOwner = runtime;
+    return true;
+}
+
+void releaseRuntimeOwnership(JvmRuntime* runtime) {
+    std::lock_guard lock(g_runtimeLifecycleMutex);
+    if (g_runtimeOwner == runtime) {
+        g_runtimeOwner = nullptr;
+        g_runtimeLifecycleChanged.notify_all();
+    }
+}
+
+class RuntimeCallLease {
+public:
+    explicit RuntimeCallLease(JvmRuntime* expected = nullptr,
+                              bool allowBootstrap = false) {
+        std::lock_guard lock(g_runtimeLifecycleMutex);
+        runtime_ = g_activeRuntime.load(std::memory_order_acquire);
+        if (!runtime_ || (expected && runtime_ != expected)) {
+            runtime_ = nullptr;
+            return;
+        }
+        auto& impl = runtime_->bridgeImpl();
+        if (impl.stopping.load(std::memory_order_acquire) ||
+            (!allowBootstrap && !impl.started.load(std::memory_order_acquire))) {
+            runtime_ = nullptr;
+            return;
+        }
+#if defined(CPPFM_HAS_JNI)
+        if (!impl.vm) {
+            runtime_ = nullptr;
+            return;
+        }
+#endif
+        impl.activeCalls.fetch_add(1, std::memory_order_acq_rel);
+        if (g_callRuntime == runtime_) {
+            ++g_callDepth;
+        } else {
+            g_callRuntime = runtime_;
+            g_callDepth = 1;
+        }
+    }
+
+    ~RuntimeCallLease() {
+        if (!runtime_) return;
+        auto& impl = runtime_->bridgeImpl();
+        impl.activeCalls.fetch_sub(1, std::memory_order_acq_rel);
+        if (g_callRuntime == runtime_) {
+            if (g_callDepth > 0) --g_callDepth;
+            if (g_callDepth == 0) g_callRuntime = nullptr;
+        }
+        g_runtimeLifecycleChanged.notify_all();
+    }
+
+    RuntimeCallLease(const RuntimeCallLease&) = delete;
+    RuntimeCallLease& operator=(const RuntimeCallLease&) = delete;
+    RuntimeCallLease(RuntimeCallLease&&) = delete;
+    RuntimeCallLease& operator=(RuntimeCallLease&&) = delete;
+
+    JvmRuntime* get() const noexcept { return runtime_; }
+    explicit operator bool() const noexcept { return runtime_ != nullptr; }
+
+private:
+    JvmRuntime* runtime_ = nullptr;
+};
+
+void waitForRuntimeCalls(JvmRuntime* runtime) {
+    auto& impl = runtime->bridgeImpl();
+    const std::size_t ownCalls = g_callRuntime == runtime ? g_callDepth : 0;
+    std::unique_lock lock(g_runtimeLifecycleMutex);
+    g_runtimeLifecycleChanged.wait(lock, [&] {
+        return impl.activeCalls.load(std::memory_order_acquire) <= ownCalls;
+    });
+}
+
 // Read by Java-created worker threads while the server thread is inside a
 // callback.  The callback path holds callMutex, so routing this read through
 // NativeCallGuard would deadlock a worker that is joined by that callback.
@@ -196,21 +289,14 @@ void throwJavaException(JNIEnv* env, const char* className,
 class NativeCallGuard {
 public:
     explicit NativeCallGuard(bool allowBootstrap = false)
-        : runtime_(g_activeRuntime.load(std::memory_order_acquire)) {
-        if (!runtime_) return;
-        auto& impl = runtime_->bridgeImpl();
-        lock_ = std::unique_lock<std::recursive_mutex>(impl.callMutex);
-        if (!impl.vm || impl.stopping || (!allowBootstrap && !impl.started)) {
-            runtime_ = nullptr;
-        }
-    }
+        : lease_(nullptr, allowBootstrap), runtime_(lease_.get()) {}
 
     JvmRuntime* get() const noexcept { return runtime_; }
     explicit operator bool() const noexcept { return runtime_ != nullptr; }
 
 private:
+    RuntimeCallLease lease_;
     JvmRuntime* runtime_ = nullptr;
-    std::unique_lock<std::recursive_mutex> lock_;
 };
 
 std::string dottedClassName(std::string name) {
@@ -372,8 +458,10 @@ JNIEXPORT jlong JNICALL nativeServerHandle(JNIEnv* env, jclass) {
 JNIEXPORT jlong JNICALL nativeCurrentTick(JNIEnv* env, jclass) {
     // This is deliberately a lock-free, snapshot-only bridge operation.  A
     // Java-created thread can call it while the main callback owns the
-    // serialized JNI call lock and waits for that thread to join.
-    if (!g_activeRuntime.load(std::memory_order_acquire)) return 0;
+    // serialized JNI call lock and waits for that thread to join.  The lease
+    // still prevents stop()/DestroyJavaVM from racing this read.
+    NativeCallGuard guard;
+    if (!guard) return 0;
     return static_cast<jlong>(g_currentTick.load(std::memory_order_acquire));
 }
 
@@ -1015,7 +1103,9 @@ bool JvmRuntime::installNativeBridge(void* rawEnv, void* rawClass) {
     auto& impl = *impl_;
     auto* env = static_cast<JNIEnv*>(rawEnv);
     auto bridgeClass = static_cast<jclass>(rawClass);
-    if (!env || !bridgeClass || !impl.vm || impl.stopping) return false;
+    if (!env || !bridgeClass || !impl.vm ||
+        impl.stopping.load(std::memory_order_acquire))
+        return false;
     std::lock_guard lock(impl.callMutex);
     if (impl.bridgeClass) {
         if (isSameClass(env, impl.bridgeClass, bridgeClass)) return true;
@@ -1057,7 +1147,7 @@ bool JvmRuntime::installNativeBridge(void* rawEnv, void* rawClass) {
 bool JvmRuntime::start(std::string* error) {
     auto& impl = *impl_;
     std::lock_guard lock(impl.callMutex);
-    if (impl.started) return true;
+    if (impl.started.load(std::memory_order_acquire)) return true;
     if (!impl.config.enabled) return true;
 
 #if !defined(CPPFM_HAS_JNI)
@@ -1082,15 +1172,23 @@ bool JvmRuntime::start(std::string* error) {
         return false;
     }
 
+    if (!claimRuntimeOwnership(this)) {
+        setError(impl, "another JvmRuntime already owns the process JVM");
+        if (error) *error = impl.lastError;
+        return false;
+    }
+
     const auto library = findJvmLibrary(impl.config);
     if (library.empty()) {
         setError(impl, "HotSpot libjvm.so was not found; set JAVA_HOME or CPPFM_JVM_LIBRARY");
+        releaseRuntimeOwnership(this);
         if (error) *error = impl.lastError;
         return false;
     }
     impl.jvmLibrary = dlopen(library.c_str(), RTLD_NOW | RTLD_LOCAL);
     if (!impl.jvmLibrary) {
         setError(impl, "dlopen(" + library.string() + ") failed: " + dlerror());
+        releaseRuntimeOwnership(this);
         if (error) *error = impl.lastError;
         return false;
     }
@@ -1099,6 +1197,7 @@ bool JvmRuntime::start(std::string* error) {
         setError(impl, "JNI_CreateJavaVM is missing from " + library.string());
         dlclose(impl.jvmLibrary);
         impl.jvmLibrary = nullptr;
+        releaseRuntimeOwnership(this);
         if (error) *error = impl.lastError;
         return false;
     }
@@ -1132,6 +1231,7 @@ bool JvmRuntime::start(std::string* error) {
         if (impl.jvmLibrary) dlclose(impl.jvmLibrary);
         impl.jvmLibrary = nullptr;
         impl.vm = nullptr;
+        releaseRuntimeOwnership(this);
         if (error) *error = impl.lastError;
         return false;
     }
@@ -1157,7 +1257,7 @@ bool JvmRuntime::start(std::string* error) {
     };
 
     if (knotLocal) {
-        impl.provider = JvmProvider::KnotLauncher;
+        impl.provider.store(JvmProvider::KnotLauncher, std::memory_order_release);
         impl.providerClass = static_cast<jclass>(env->NewGlobalRef(knotLocal));
         jobject providerLoaderLocal = classLoaderFor(env, knotLocal);
         if (providerLoaderLocal)
@@ -1181,7 +1281,7 @@ bool JvmRuntime::start(std::string* error) {
         if (!resolveDispatchMethods(env, this, impl.dispatchClass, true))
             return fail("KnotLauncher is missing a required dispatch method");
 
-        impl.started = true;
+        impl.started.store(true, std::memory_order_release);
         impl.bootstrapInvoked = true;
         const jstring classes = toJavaString(env, classesDir.string());
         const jstring mods = toJavaString(env, modsDir.string());
@@ -1196,7 +1296,7 @@ bool JvmRuntime::start(std::string* error) {
         if (!impl.bridgeClass || !impl.runtimeClass)
             return fail("KnotLauncher bootstrap did not install NativeBridge");
     } else {
-        impl.provider = JvmProvider::CompatibilityFallback;
+        impl.provider.store(JvmProvider::CompatibilityFallback, std::memory_order_release);
         jclass bridgeLocal = env->FindClass(contract::NativeBridgeClass);
         if (!bridgeLocal || clearJavaException(env, this, "FindClass NativeBridge"))
             return fail("NativeBridge class is unavailable in JVM classes directory");
@@ -1231,7 +1331,7 @@ bool JvmRuntime::start(std::string* error) {
         if (!impl.bootstrap || !resolveDispatchMethods(env, this, impl.dispatchClass, false))
             return fail("CppModRuntime is missing a required lifecycle method");
 
-        impl.started = true;
+        impl.started.store(true, std::memory_order_release);
         impl.bootstrapInvoked = true;
         const jstring mods = toJavaString(env, modsDir.string());
         const jstring config = toJavaString(env, configDir.string());
@@ -1243,7 +1343,8 @@ bool JvmRuntime::start(std::string* error) {
             return fail("Java mod bootstrap failed");
     }
     std::fprintf(stderr, "[cppfm][jvm] embedded HotSpot started; provider=%d mods=%s classes=%s\n",
-                 static_cast<int>(impl.provider), modsDir.string().c_str(),
+                 static_cast<int>(impl.provider.load(std::memory_order_acquire)),
+                 modsDir.string().c_str(),
                  classesDir.string().c_str());
     return true;
 #endif
@@ -1252,25 +1353,28 @@ bool JvmRuntime::start(std::string* error) {
 void JvmRuntime::stop() {
     auto& impl = *impl_;
     std::lock_guard lock(impl.callMutex);
-    if (!impl.vm) {
-        impl.started = false;
-        return;
-    }
 #if defined(CPPFM_HAS_JNI)
-    // Keep g_activeRuntime published while Java shutdown runs: the Java
-    // provider is allowed to release handles and flush callbacks during its
-    // own shutdown.  The recursive call mutex blocks every other native
-    // caller, and is only marked stopping after that callback returns.
-    {
+    if (impl.vm) {
+        // Keep the runtime published while Java shutdown runs.  A provider is
+        // allowed to release wrapper handles during shutdown, but no new
+        // bridge call may begin once the stop fence is published.
         AttachedEnv attached(impl.vm);
+        if (attached && impl.bootstrapInvoked && impl.dispatchClass && impl.shutdown) {
+            auto* env = attached.get();
+            env->CallStaticVoidMethod(impl.dispatchClass, impl.shutdown);
+            clearJavaException(env, this, "JvmProvider.shutdown");
+        }
+        {
+            std::lock_guard lifecycleLock(g_runtimeLifecycleMutex);
+            impl.stopping.store(true, std::memory_order_release);
+            g_activeRuntime.store(nullptr, std::memory_order_release);
+        }
+        // A worker bridge owns this fence until its JNIEnv/global-reference
+        // work has returned.  Only then is it safe to clear class/wrapper refs
+        // and destroy the process VM.
+        waitForRuntimeCalls(this);
         if (attached) {
             auto* env = attached.get();
-            if (impl.bootstrapInvoked && impl.dispatchClass && impl.shutdown) {
-                env->CallStaticVoidMethod(impl.dispatchClass, impl.shutdown);
-                clearJavaException(env, this, "JvmProvider.shutdown");
-            }
-            impl.stopping = true;
-            g_activeRuntime.store(nullptr, std::memory_order_release);
             impl.objects.clear(env);
             deleteGlobal(env, impl.dispatchClass);
             deleteGlobal(env, impl.runtimeClass);
@@ -1278,33 +1382,42 @@ void JvmRuntime::stop() {
             deleteGlobal(env, impl.providerClass);
             deleteGlobal(env, impl.providerLoader);
             deleteGlobal(env, impl.bridgeLoader);
-        } else {
-            impl.stopping = true;
-            g_activeRuntime.store(nullptr, std::memory_order_release);
         }
+        // DestroyJavaVM must run after all callbacks, attached worker threads,
+        // and global references are gone.
+        impl.vm->DestroyJavaVM();
+        impl.vm = nullptr;
+        if (impl.jvmLibrary) dlclose(impl.jvmLibrary);
+        impl.jvmLibrary = nullptr;
+    } else {
+        std::lock_guard lifecycleLock(g_runtimeLifecycleMutex);
+        g_activeRuntime.store(nullptr, std::memory_order_release);
+        impl.stopping.store(false, std::memory_order_release);
     }
-    // DestroyJavaVM must run after all callbacks, attached worker threads, and
-    // global references are gone.
-    impl.vm->DestroyJavaVM();
-    impl.vm = nullptr;
-    if (impl.jvmLibrary) dlclose(impl.jvmLibrary);
-    impl.jvmLibrary = nullptr;
+#else
+    impl.started.store(false, std::memory_order_release);
 #endif
     impl.handles.clear();
     impl.routing.clear();
     impl.serverHandle = 0;
-    impl.started = false;
-    impl.stopping = false;
+    impl.started.store(false, std::memory_order_release);
+    impl.stopping.store(false, std::memory_order_release);
     impl.bootstrapInvoked = false;
-    impl.provider = JvmProvider::None;
+    impl.provider.store(JvmProvider::None, std::memory_order_release);
+    g_currentTick.store(0, std::memory_order_release);
+    releaseRuntimeOwnership(this);
 }
 
-bool JvmRuntime::started() const noexcept { return impl_->started; }
+bool JvmRuntime::started() const noexcept {
+    return impl_->started.load(std::memory_order_acquire);
+}
 
-JvmProvider JvmRuntime::provider() const noexcept { return impl_->provider; }
+JvmProvider JvmRuntime::provider() const noexcept {
+    return impl_->provider.load(std::memory_order_acquire);
+}
 
 bool JvmRuntime::knotActive() const noexcept {
-    return impl_->provider == JvmProvider::KnotLauncher && impl_->started;
+    return provider() == JvmProvider::KnotLauncher && started();
 }
 
 const std::string& JvmRuntime::lastError() const noexcept { return impl_->lastError; }
@@ -1312,7 +1425,7 @@ const std::string& JvmRuntime::lastError() const noexcept { return impl_->lastEr
 JvmStats JvmRuntime::stats() const {
     const auto& impl = *impl_;
     return JvmStats{
-        impl.started,
+        impl.started.load(std::memory_order_acquire),
         impl.discoveredMods.load(std::memory_order_relaxed),
         impl.initializedEntrypoints.load(std::memory_order_relaxed),
         impl.handles.size(),
@@ -1323,7 +1436,7 @@ JvmStats JvmRuntime::stats() const {
         impl.callbackErrors.load(std::memory_order_relaxed),
         impl.routing.transformedCount(),
         impl.routing.nativeCount(),
-        impl.provider,
+        impl.provider.load(std::memory_order_acquire),
         impl.nativeDispatches.load(std::memory_order_relaxed),
         impl.jvmDispatches.load(std::memory_order_relaxed),
         impl.dispatchFailures.load(std::memory_order_relaxed),
@@ -1338,7 +1451,13 @@ template <typename Call>
 bool invokeVoid(JvmRuntime& runtime, Call&& call, const char* name) {
     auto& impl = runtime.bridgeImpl();
     std::lock_guard lock(impl.callMutex);
-    if (!impl.started || !impl.vm || !impl.dispatchClass) return true;
+    // Take callMutex before the lifecycle lease.  stop() takes the same
+    // locks in this order; reversing them would let a callback wait on
+    // callMutex while stop() waits for its active lease.
+    RuntimeCallLease lease(&runtime);
+    if (!lease) return true;
+    if (!impl.started.load(std::memory_order_acquire) || !impl.vm ||
+        !impl.dispatchClass) return true;
     AttachedEnv attached(impl.vm);
     if (!attached) return false;
     ++impl.callbacks;
@@ -1355,7 +1474,10 @@ bool invokeBoolean(JvmRuntime& runtime, Call&& call, const char* name,
                    bool defaultValue = true) {
     auto& impl = runtime.bridgeImpl();
     std::lock_guard lock(impl.callMutex);
-    if (!impl.started || !impl.vm || !impl.dispatchClass) return defaultValue;
+    RuntimeCallLease lease(&runtime);
+    if (!lease) return defaultValue;
+    if (!impl.started.load(std::memory_order_acquire) || !impl.vm ||
+        !impl.dispatchClass) return defaultValue;
     AttachedEnv attached(impl.vm);
     if (!attached) return false;
     ++impl.callbacks;
@@ -1667,6 +1789,17 @@ bool JvmRuntime::onServerTick(std::int64_t tick) {
     impl_->ticks.fetch_add(1, std::memory_order_relaxed);
     g_currentTick.store(tick, std::memory_order_release);
 #if defined(CPPFM_HAS_JNI)
+    // No Java entrypoint and no transformed method means that this tick has
+    // no observable JVM work.  Keep the C++ tick path hot and account for the
+    // selective NativeFast route; a later transformed registration still
+    // re-enables the Java boundary because the routing table is live.
+    if (impl_->started.load(std::memory_order_acquire) &&
+        impl_->discoveredMods.load(std::memory_order_acquire) == 0 &&
+        impl_->initializedEntrypoints.load(std::memory_order_acquire) == 0 &&
+        impl_->routing.transformedCount() == 0) {
+        impl_->nativeDispatches.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
     return invokeVoid(*this, [&](JNIEnv* env) {
         env->CallStaticVoidMethod(impl_->dispatchClass, impl_->serverTick,
                                   static_cast<jlong>(tick));
@@ -1687,26 +1820,28 @@ std::uint64_t JvmRuntime::worldHandle(World& world) {
 
 void JvmRuntime::invalidatePlayer(Player& player) {
     auto& impl = *impl_;
-    std::lock_guard lock(impl.callMutex);
-    const auto handle = impl.handles.registerObject(&player, HandleKind::Player);
-    impl.handles.invalidateHandle(handle);
+    const auto handle = impl.handles.findHandle(&player, HandleKind::Player);
+    if (!handle) return;
+    impl.handles.invalidateHandle(*handle);
 #if defined(CPPFM_HAS_JNI)
-    if (impl.vm && !impl.stopping) {
+    RuntimeCallLease lease(this);
+    if (lease) {
         AttachedEnv attached(impl.vm);
-        if (attached) impl.objects.erase(attached.get(), handle);
+        if (attached) impl.objects.erase(attached.get(), *handle);
     }
 #endif
 }
 
 void JvmRuntime::invalidateEntity(MobEntity& entity) {
     auto& impl = *impl_;
-    std::lock_guard lock(impl.callMutex);
-    const auto handle = impl.handles.registerObject(&entity, HandleKind::Entity);
-    impl.handles.invalidateHandle(handle);
+    const auto handle = impl.handles.findHandle(&entity, HandleKind::Entity);
+    if (!handle) return;
+    impl.handles.invalidateHandle(*handle);
 #if defined(CPPFM_HAS_JNI)
-    if (impl.vm && !impl.stopping) {
+    RuntimeCallLease lease(this);
+    if (lease) {
         AttachedEnv attached(impl.vm);
-        if (attached) impl.objects.erase(attached.get(), handle);
+        if (attached) impl.objects.erase(attached.get(), *handle);
     }
 #endif
 }
@@ -1741,7 +1876,10 @@ bool JvmRuntime::onChat(Player& player, std::string& message) {
 #if defined(CPPFM_HAS_JNI)
     auto& impl = *impl_;
     std::lock_guard lock(impl.callMutex);
-    if (!impl.started || !impl.vm || !impl.dispatchClass) return true;
+    RuntimeCallLease lease(this);
+    if (!lease) return true;
+    if (!impl.started.load(std::memory_order_acquire) || !impl.vm ||
+        !impl.dispatchClass) return true;
     AttachedEnv attached(impl.vm);
     if (!attached) return true;
     ++impl.callbacks;
@@ -1813,7 +1951,10 @@ bool JvmRuntime::onCommand(Player* player, std::string& command) {
 #if defined(CPPFM_HAS_JNI)
     auto& impl = *impl_;
     std::lock_guard lock(impl.callMutex);
-    if (!impl.started || !impl.vm || !impl.dispatchClass) return true;
+    RuntimeCallLease lease(this);
+    if (!lease) return true;
+    if (!impl.started.load(std::memory_order_acquire) || !impl.vm ||
+        !impl.dispatchClass) return true;
     AttachedEnv attached(impl.vm);
     if (!attached) return true;
     ++impl.callbacks;
@@ -1893,7 +2034,9 @@ bool JvmRuntime::onPluginMessage(Player& player, int phase,
 }
 
 std::uint64_t JvmRuntime::nativeServerHandle() const { return impl_->serverHandle; }
-std::int64_t JvmRuntime::nativeCurrentTick() const { return impl_->server.tickNow(); }
+std::int64_t JvmRuntime::nativeCurrentTick() const {
+    return g_currentTick.load(std::memory_order_acquire);
+}
 
 bool JvmRuntime::nativeHandleValid(std::uint64_t handle,
                                    HandleKind expected) const {
@@ -1906,10 +2049,10 @@ HandleKind JvmRuntime::nativeHandleKind(std::uint64_t handle) const {
 
 bool JvmRuntime::nativeInvalidateHandle(std::uint64_t handle) {
     auto& impl = *impl_;
-    std::lock_guard lock(impl.callMutex);
     const bool invalidated = impl.handles.invalidateHandle(handle);
 #if defined(CPPFM_HAS_JNI)
-    if (invalidated && impl.vm && !impl.stopping) {
+    RuntimeCallLease lease(this);
+    if (invalidated && lease) {
         AttachedEnv attached(impl.vm);
         if (attached) impl.objects.erase(attached.get(), handle);
     }
@@ -1918,68 +2061,92 @@ bool JvmRuntime::nativeInvalidateHandle(std::uint64_t handle) {
 }
 
 std::string JvmRuntime::nativePlayerName(std::uint64_t handle) const {
-    const auto* player = static_cast<const Player*>(impl_->handles.resolve(handle, HandleKind::Player));
-    if (player) return player->name;
-    const auto* mob = static_cast<const MobEntity*>(impl_->handles.resolve(handle, HandleKind::Entity));
-    return mob ? std::string(MobEntity::kindName(mob->kind)) : std::string();
+    if (auto resolution = impl_->handles.acquire(handle, HandleKind::Player);
+        resolution) {
+        return static_cast<const Player*>(resolution.get())->name;
+    }
+    if (auto resolution = impl_->handles.acquire(handle, HandleKind::Entity);
+        resolution) {
+        const auto* mob = static_cast<const MobEntity*>(resolution.get());
+        return std::string(MobEntity::kindName(mob->kind));
+    }
+    return {};
 }
 
 std::string JvmRuntime::nativePlayerUuid(std::uint64_t handle) const {
-    const auto* player = static_cast<const Player*>(impl_->handles.resolve(handle, HandleKind::Player));
-    return player ? GameServer::uuidToDashed(player->uuid) : std::string();
+    if (auto resolution = impl_->handles.acquire(handle, HandleKind::Player);
+        resolution) {
+        return GameServer::uuidToDashed(
+            static_cast<const Player*>(resolution.get())->uuid);
+    }
+    return {};
 }
 
 std::string JvmRuntime::nativeEntityType(std::uint64_t handle) const {
-    const auto* player = static_cast<const Player*>(
-        impl_->handles.resolve(handle, HandleKind::Player));
-    if (player) return "minecraft:player";
-    const auto* mob = static_cast<const MobEntity*>(
-        impl_->handles.resolve(handle, HandleKind::Entity));
-    return mob ? std::string(MobEntity::kindName(mob->kind)) : std::string();
+    if (impl_->handles.valid(handle, HandleKind::Player))
+        return "minecraft:player";
+    if (auto resolution = impl_->handles.acquire(handle, HandleKind::Entity);
+        resolution) {
+        const auto* mob = static_cast<const MobEntity*>(resolution.get());
+        return std::string(MobEntity::kindName(mob->kind));
+    }
+    return {};
 }
 
 std::int32_t JvmRuntime::nativeEntityTypeId(std::uint64_t handle) const {
-    const auto* player = static_cast<const Player*>(
-        impl_->handles.resolve(handle, HandleKind::Player));
-    if (player) return static_cast<std::int32_t>(gen::kPlayerEntityTypeId);
-    const auto* mob = static_cast<const MobEntity*>(
-        impl_->handles.resolve(handle, HandleKind::Entity));
-    return mob ? static_cast<std::int32_t>(MobEntity::typeId(mob->kind)) : -1;
+    if (impl_->handles.valid(handle, HandleKind::Player))
+        return static_cast<std::int32_t>(gen::kPlayerEntityTypeId);
+    if (auto resolution = impl_->handles.acquire(handle, HandleKind::Entity);
+        resolution) {
+        const auto* mob = static_cast<const MobEntity*>(resolution.get());
+        return static_cast<std::int32_t>(MobEntity::typeId(mob->kind));
+    }
+    return -1;
 }
 
 float JvmRuntime::nativeEntityHealth(std::uint64_t handle) const {
-    const auto* player = static_cast<const Player*>(
-        impl_->handles.resolve(handle, HandleKind::Player));
-    if (player) return player->health;
-    const auto* mob = static_cast<const MobEntity*>(
-        impl_->handles.resolve(handle, HandleKind::Entity));
-    return mob ? static_cast<float>(mob->health) : 0.0f;
+    if (auto resolution = impl_->handles.acquire(handle, HandleKind::Player);
+        resolution) {
+        return static_cast<const Player*>(resolution.get())->health;
+    }
+    if (auto resolution = impl_->handles.acquire(handle, HandleKind::Entity);
+        resolution) {
+        return static_cast<const MobEntity*>(resolution.get())->health;
+    }
+    return 0.0f;
 }
 
 bool JvmRuntime::nativeEntitySetHealth(std::uint64_t handle, float health) {
     if (!std::isfinite(health) || health < 0.0f) return false;
-    auto* player = static_cast<Player*>(
-        impl_->handles.resolve(handle, HandleKind::Player));
-    if (player) {
+    if (auto resolution = impl_->handles.acquire(handle, HandleKind::Player);
+        resolution) {
+        auto* player = static_cast<Player*>(resolution.get());
         player->health = health;
         player->dead = health <= 0.0f;
         return true;
     }
-    auto* mob = static_cast<MobEntity*>(
-        impl_->handles.resolve(handle, HandleKind::Entity));
-    if (!mob) return false;
-    mob->health = health;
-    mob->dead = health <= 0.0f;
-    return true;
+    if (auto resolution = impl_->handles.acquire(handle, HandleKind::Entity);
+        resolution) {
+        auto* mob = static_cast<MobEntity*>(resolution.get());
+        mob->health = health;
+        mob->dead = health <= 0.0f;
+        return true;
+    }
+    return false;
 }
 
 bool JvmRuntime::nativeEntityDead(std::uint64_t handle) const {
-    const auto* player = static_cast<const Player*>(
-        impl_->handles.resolve(handle, HandleKind::Player));
-    if (player) return player->dead || player->health <= 0.0f;
-    const auto* mob = static_cast<const MobEntity*>(
-        impl_->handles.resolve(handle, HandleKind::Entity));
-    return !mob || mob->dead || mob->health <= 0.0;
+    if (auto resolution = impl_->handles.acquire(handle, HandleKind::Player);
+        resolution) {
+        const auto* player = static_cast<const Player*>(resolution.get());
+        return player->dead || player->health <= 0.0f;
+    }
+    if (auto resolution = impl_->handles.acquire(handle, HandleKind::Entity);
+        resolution) {
+        const auto* mob = static_cast<const MobEntity*>(resolution.get());
+        return mob->dead || mob->health <= 0.0;
+    }
+    return true;
 }
 
 std::uint64_t JvmRuntime::nativeEntityWorld(std::uint64_t handle) const {
@@ -2013,20 +2180,31 @@ std::uint64_t JvmRuntime::nativeEntityHandle(std::size_t index) {
 }
 
 std::int32_t JvmRuntime::nativePlayerEntityId(std::uint64_t handle) const {
-    const auto* player = static_cast<const Player*>(impl_->handles.resolve(handle, HandleKind::Player));
-    if (player) return player->entityId;
-    const auto* mob = static_cast<const MobEntity*>(impl_->handles.resolve(handle, HandleKind::Entity));
-    return mob ? mob->entityId : -1;
+    if (auto resolution = impl_->handles.acquire(handle, HandleKind::Player);
+        resolution) {
+        return static_cast<const Player*>(resolution.get())->entityId;
+    }
+    if (auto resolution = impl_->handles.acquire(handle, HandleKind::Entity);
+        resolution) {
+        return static_cast<const MobEntity*>(resolution.get())->entityId;
+    }
+    return -1;
 }
 
 std::int32_t JvmRuntime::nativePlayerGameMode(std::uint64_t handle) const {
-    const auto* player = static_cast<const Player*>(impl_->handles.resolve(handle, HandleKind::Player));
-    return player ? static_cast<std::int32_t>(player->gamemode) : 0;
+    if (auto resolution = impl_->handles.acquire(handle, HandleKind::Player);
+        resolution) {
+        return static_cast<std::int32_t>(
+            static_cast<const Player*>(resolution.get())->gamemode);
+    }
+    return 0;
 }
 
 bool JvmRuntime::nativePlayerSneaking(std::uint64_t handle) const {
-    const auto* player = static_cast<const Player*>(impl_->handles.resolve(handle, HandleKind::Player));
-    return player && player->isSneaking;
+    if (auto resolution = impl_->handles.acquire(handle, HandleKind::Player);
+        resolution)
+        return static_cast<const Player*>(resolution.get())->isSneaking;
+    return false;
 }
 
 std::int32_t JvmRuntime::nativeOnlinePlayerCount() const {
@@ -2066,37 +2244,54 @@ InvSlot* nativeInventorySlot(Player* player, int slot) {
 } // namespace
 
 std::int32_t JvmRuntime::nativePlayerHeldSlot(std::uint64_t handle) const {
-    const auto* player = static_cast<const Player*>(impl_->handles.resolve(handle, HandleKind::Player));
-    return player ? std::clamp(player->heldSlot, 0, 8) : 0;
+    if (auto resolution = impl_->handles.acquire(handle, HandleKind::Player);
+        resolution)
+        return std::clamp(
+            static_cast<const Player*>(resolution.get())->heldSlot, 0, 8);
+    return 0;
 }
 
 std::int32_t JvmRuntime::nativePlayerInventoryItemId(std::uint64_t handle,
                                                     std::int32_t slot) const {
-    const auto* player = static_cast<const Player*>(impl_->handles.resolve(handle, HandleKind::Player));
-    const auto* item = nativeInventorySlot(player, slot);
-    return item && !item->empty() ? static_cast<std::int32_t>(item->itemId) : 0;
+    if (auto resolution = impl_->handles.acquire(handle, HandleKind::Player);
+        resolution) {
+        const auto* item = nativeInventorySlot(
+            static_cast<const Player*>(resolution.get()), slot);
+        return item && !item->empty() ? static_cast<std::int32_t>(item->itemId) : 0;
+    }
+    return 0;
 }
 
 std::int32_t JvmRuntime::nativePlayerInventoryItemCount(std::uint64_t handle,
                                                        std::int32_t slot) const {
-    const auto* player = static_cast<const Player*>(impl_->handles.resolve(handle, HandleKind::Player));
-    const auto* item = nativeInventorySlot(player, slot);
-    return item && !item->empty() ? static_cast<std::int32_t>(item->count) : 0;
+    if (auto resolution = impl_->handles.acquire(handle, HandleKind::Player);
+        resolution) {
+        const auto* item = nativeInventorySlot(
+            static_cast<const Player*>(resolution.get()), slot);
+        return item && !item->empty() ? static_cast<std::int32_t>(item->count) : 0;
+    }
+    return 0;
 }
 
 std::string JvmRuntime::nativePlayerInventoryItemName(std::uint64_t handle,
                                                       std::int32_t slot) const {
-    const auto* player = static_cast<const Player*>(impl_->handles.resolve(handle, HandleKind::Player));
-    const auto* item = nativeInventorySlot(player, slot);
-    return item && !item->empty() ? item->name() : std::string("minecraft:air");
+    if (auto resolution = impl_->handles.acquire(handle, HandleKind::Player);
+        resolution) {
+        const auto* item = nativeInventorySlot(
+            static_cast<const Player*>(resolution.get()), slot);
+        return item && !item->empty() ? item->name() : std::string("minecraft:air");
+    }
+    return "minecraft:air";
 }
 
 bool JvmRuntime::nativePlayerSetInventoryItemCount(std::uint64_t handle,
                                                    std::int32_t slot,
                                                    std::int32_t count) {
-    auto* player = static_cast<Player*>(impl_->handles.resolve(handle, HandleKind::Player));
+    auto resolution = impl_->handles.acquire(handle, HandleKind::Player);
+    if (!resolution || count < 0 || count > 99) return false;
+    auto* player = static_cast<Player*>(resolution.get());
     auto* item = nativeInventorySlot(player, slot);
-    if (!item || count < 0 || count > 99) return false;
+    if (!item) return false;
     if (count == 0) *item = ItemStack::air();
     else if (item->empty()) return false;
     else item->count = static_cast<std::int16_t>(count);
@@ -2109,9 +2304,11 @@ bool JvmRuntime::nativePlayerSetInventoryItem(std::uint64_t handle,
                                               std::int32_t slot,
                                               std::int32_t itemId,
                                               std::int32_t count) {
-    auto* player = static_cast<Player*>(impl_->handles.resolve(handle, HandleKind::Player));
+    auto resolution = impl_->handles.acquire(handle, HandleKind::Player);
+    if (!resolution || itemId < 0 || count < 0 || count > 99) return false;
+    auto* player = static_cast<Player*>(resolution.get());
     auto* item = nativeInventorySlot(player, slot);
-    if (!item || itemId < 0 || count < 0 || count > 99) return false;
+    if (!item) return false;
     if (count == 0 || itemId == 0) {
         *item = ItemStack::air();
     } else if (item->itemId == static_cast<std::uint32_t>(itemId)) {
@@ -2126,14 +2323,16 @@ bool JvmRuntime::nativePlayerSetInventoryItem(std::uint64_t handle,
 }
 
 double JvmRuntime::nativePlayerCoordinate(std::uint64_t handle, int axis) const {
-    const auto* player = static_cast<const Player*>(impl_->handles.resolve(handle, HandleKind::Player));
-    if (player) {
+    if (auto resolution = impl_->handles.acquire(handle, HandleKind::Player);
+        resolution) {
+        const auto* player = static_cast<const Player*>(resolution.get());
         if (axis == 0) return player->x;
         if (axis == 1) return player->y;
         if (axis == 2) return player->z;
     }
-    const auto* mob = static_cast<const MobEntity*>(impl_->handles.resolve(handle, HandleKind::Entity));
-    if (mob) {
+    if (auto resolution = impl_->handles.acquire(handle, HandleKind::Entity);
+        resolution) {
+        const auto* mob = static_cast<const MobEntity*>(resolution.get());
         if (axis == 0) return mob->x;
         if (axis == 1) return mob->y;
         if (axis == 2) return mob->z;
@@ -2143,20 +2342,25 @@ double JvmRuntime::nativePlayerCoordinate(std::uint64_t handle, int axis) const 
 
 bool JvmRuntime::nativePlayerSetPosition(std::uint64_t handle, double x, double y,
                                          double z) {
-    auto* player = static_cast<Player*>(impl_->handles.resolve(handle, HandleKind::Player));
-    if (player) {
+    if (auto resolution = impl_->handles.acquire(handle, HandleKind::Player);
+        resolution) {
+        auto* player = static_cast<Player*>(resolution.get());
         player->x = x; player->y = y; player->z = z;
         return true;
     }
-    auto* mob = static_cast<MobEntity*>(impl_->handles.resolve(handle, HandleKind::Entity));
-    if (!mob) return false;
-    mob->x = x; mob->y = y; mob->z = z;
-    return true;
+    if (auto resolution = impl_->handles.acquire(handle, HandleKind::Entity);
+        resolution) {
+        auto* mob = static_cast<MobEntity*>(resolution.get());
+        mob->x = x; mob->y = y; mob->z = z;
+        return true;
+    }
+    return false;
 }
 
 bool JvmRuntime::nativePlayerSendMessage(std::uint64_t handle,
                                          const std::string& text, bool overlay) {
-    auto* player = static_cast<Player*>(impl_->handles.resolve(handle, HandleKind::Player));
+    auto resolution = impl_->handles.acquire(handle, HandleKind::Player);
+    auto* player = static_cast<Player*>(resolution.get());
     if (!player || !player->conn) return false;
     WriteBuffer body;
     nbt::writeTextComponent(body, text);
@@ -2170,11 +2374,24 @@ bool JvmRuntime::nativePlayerSendMessage(std::uint64_t handle,
 }
 
 std::uint64_t JvmRuntime::nativePlayerWorld(std::uint64_t handle) const {
-    const auto* player = static_cast<const Player*>(impl_->handles.resolve(handle, HandleKind::Player));
-    if (player)
-        return const_cast<JvmRuntime*>(this)->worldHandle(impl_->server.worldFor(player->dimension));
-    const auto* mob = static_cast<const MobEntity*>(impl_->handles.resolve(handle, HandleKind::Entity));
-    return mob ? const_cast<JvmRuntime*>(this)->worldHandle(impl_->server.worldFor(0)) : 0;
+    std::optional<std::int8_t> playerDimension;
+    {
+        auto resolution = impl_->handles.acquire(handle, HandleKind::Player);
+        if (resolution)
+            playerDimension = static_cast<const Player*>(resolution.get())->dimension;
+    }
+    if (playerDimension)
+        return const_cast<JvmRuntime*>(this)->worldHandle(
+            impl_->server.worldFor(*playerDimension));
+    bool entityLive = false;
+    {
+        auto resolution = impl_->handles.acquire(handle, HandleKind::Entity);
+        entityLive = static_cast<bool>(resolution);
+    }
+    if (entityLive)
+        return const_cast<JvmRuntime*>(this)->worldHandle(
+            impl_->server.worldFor(0));
+    return 0;
 }
 
 std::uint64_t JvmRuntime::nativeServerWorld(int dimension) const {
@@ -2183,29 +2400,34 @@ std::uint64_t JvmRuntime::nativeServerWorld(int dimension) const {
 }
 
 std::string JvmRuntime::nativeWorldName(std::uint64_t handle) const {
-    const auto* world = static_cast<const World*>(impl_->handles.resolve(handle, HandleKind::World));
-    return world ? world->dimensionKey() : std::string();
+    if (auto resolution = impl_->handles.acquire(handle, HandleKind::World);
+        resolution)
+        return static_cast<const World*>(resolution.get())->dimensionKey();
+    return {};
 }
 
 std::int32_t JvmRuntime::nativeWorldBlock(std::uint64_t handle, std::int32_t x,
                                           std::int32_t y, std::int32_t z) const {
-    const auto* world = static_cast<const World*>(impl_->handles.resolve(handle, HandleKind::World));
-    return world ? static_cast<std::int32_t>(world->getBlock(x, y, z)) : 0;
+    if (auto resolution = impl_->handles.acquire(handle, HandleKind::World);
+        resolution)
+        return static_cast<std::int32_t>(
+            static_cast<const World*>(resolution.get())->getBlock(x, y, z));
+    return 0;
 }
 
 bool JvmRuntime::nativeWorldSetBlock(std::uint64_t handle, std::int32_t x,
                                      std::int32_t y, std::int32_t z,
                                      std::int32_t state) {
-    auto* world = static_cast<World*>(impl_->handles.resolve(handle, HandleKind::World));
-    if (!world || state < 0 || state > 0xFFFF) return false;
+    auto resolution = impl_->handles.acquire(handle, HandleKind::World);
+    if (!resolution || state < 0 || state > 0xFFFF) return false;
+    auto* world = static_cast<World*>(resolution.get());
     world->setBlock(x, y, z, static_cast<std::uint16_t>(state));
     return true;
 }
 
 std::int64_t JvmRuntime::nativeWorldTime(std::uint64_t handle) const {
-    const auto* world = static_cast<const World*>(
-        impl_->handles.resolve(handle, HandleKind::World));
-    return world ? impl_->server.dayTime() : 0;
+    auto resolution = impl_->handles.acquire(handle, HandleKind::World);
+    return resolution ? impl_->server.dayTime() : 0;
 }
 
 std::int32_t JvmRuntime::nativeRegistryItemId(const std::string& name) const {
@@ -2259,8 +2481,8 @@ std::string JvmRuntime::nativeRegistryEntryName(const std::string& registry,
 bool JvmRuntime::nativePlayerSendPluginMessage(
     std::uint64_t handle, const std::string& channel,
     const std::vector<std::uint8_t>& payload, int phase) {
-    auto* player = static_cast<Player*>(
-        impl_->handles.resolve(handle, HandleKind::Player));
+    auto resolution = impl_->handles.acquire(handle, HandleKind::Player);
+    auto* player = static_cast<Player*>(resolution.get());
     if (!player || !player->conn || channel.empty() || (phase != 0 && phase != 1))
         return false;
     WriteBuffer body;
@@ -2392,14 +2614,15 @@ JvmDispatchResult JvmRuntime::dispatchTransformed(
     return result;
 #else
     auto& impl = *impl_;
-    std::lock_guard lock(impl.callMutex);
     auto fail = [&](std::string message) {
         result.success = false;
         result.error = std::move(message);
         impl.dispatchFailures.fetch_add(1, std::memory_order_relaxed);
         return result;
     };
-    if (!impl.started || !impl.vm || !impl.dispatchClass) {
+    RuntimeCallLease lease(this);
+    if (!lease || !impl.started.load(std::memory_order_acquire) ||
+        !impl.vm || !impl.dispatchClass) {
         return fail("JVM transformed dispatch is not active");
     }
     ParsedJvmMethod parsed;
