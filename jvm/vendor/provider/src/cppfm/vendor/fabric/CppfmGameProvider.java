@@ -19,8 +19,8 @@ import net.fabricmc.loader.impl.util.Arguments;
  *
  * This intentionally implements the Loader-internal GameProvider contract,
  * rather than pretending that a C++ shadow is a Mojang server jar.  The
-     * property gate keeps the official MinecraftGameProvider disabled for the
-     * probe, and makes provider selection explicit to a later KnotLauncher.
+ * property gate keeps the official MinecraftGameProvider disabled for the
+ * probe, and makes provider selection explicit to a later KnotLauncher.
  */
 public final class CppfmGameProvider implements GameProvider {
     public static final String SELECTOR_PROPERTY = "cppfm.game-provider";
@@ -130,7 +130,8 @@ public final class CppfmGameProvider implements GameProvider {
         // come from pinned official jars, otherwise Java sees two unrelated
         // ModInitializer/Mixin type identities.  Restrict the remaining
         // shadow source to the namespaces used by this runtime.
-        launcher.setAllowedPrefixes(shadowClasses, "net.minecraft.", "com.mojang.", "cppfm.");
+        launcher.setAllowedPrefixes(shadowClasses, "net.minecraft.", "com.mojang.",
+                "cppfm.", "net.fabricmc.fabric.api.");
         // KnotClassDelegate calls transform() for every transformable class,
         // including a provider with no game patches.  Loader's own
         // GameTransformer initializes its lookup map only through this
@@ -151,7 +152,13 @@ public final class CppfmGameProvider implements GameProvider {
 
     @Override
     public void launch(ClassLoader classLoader) {
+        Thread thread = Thread.currentThread();
+        ClassLoader previous = thread.getContextClassLoader();
         try {
+            // Fabric entrypoints and their reflective lookups must observe the
+            // exact Knot target loader that applied Mixin, including when the
+            // provider is called from the embedded C++ HotSpot thread.
+            thread.setContextClassLoader(classLoader);
             Class<?> mainClass = classLoader.loadClass(entrypoint);
             Method main = mainClass.getMethod("main", String[].class);
             main.invoke(null, (Object) getLaunchArguments(false));
@@ -166,6 +173,8 @@ public final class CppfmGameProvider implements GameProvider {
             throw new RuntimeException("Cppfm provider entrypoint failed", cause);
         } catch (ReflectiveOperationException exception) {
             throw new RuntimeException("Cannot launch Cppfm provider entrypoint " + entrypoint, exception);
+        } finally {
+            thread.setContextClassLoader(previous);
         }
     }
 
