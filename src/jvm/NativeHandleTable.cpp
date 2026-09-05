@@ -29,11 +29,14 @@ std::uint64_t NativeHandleTable::registerObject(void* address, HandleKind kind) 
     if (const auto it = byAddress_.find(key); it != byAddress_.end())
         return it->second;
 
-    std::uint64_t id = nextId_++ & 0xFFFFFFFFFFULL;
-    if (id == 0) id = nextId_++ & 0xFFFFFFFFFFULL;
+    const std::uint64_t id = nextId_++ & 0xFFFFFFFFFFULL;
+    if (id == 0) return 0; // the opaque id space is exhausted; fail closed
     // IDs are not recycled during a server lifetime.  This makes a stale Java
     // handle fail closed even if an allocator reuses the same C++ address.
-    const std::uint16_t generation = 1;
+    auto& lastGeneration = generations_[key];
+    const std::uint16_t generation = lastGeneration == 0 || lastGeneration == 0xFFFF
+        ? 1 : static_cast<std::uint16_t>(lastGeneration + 1);
+    lastGeneration = generation;
     const std::uint64_t handle = encode(id, kind, generation);
     byAddress_.emplace(key, handle);
     byHandle_.emplace(handle, HandleRecord{address, kind, generation});
@@ -83,6 +86,11 @@ bool NativeHandleTable::valid(std::uint64_t handle, HandleKind expected) const {
     return resolve(handle, expected) != nullptr;
 }
 
+HandleKind NativeHandleTable::kind(std::uint64_t handle) const noexcept {
+    const auto record = describe(handle);
+    return record ? record->kind : HandleKind::Unknown;
+}
+
 std::size_t NativeHandleTable::size() const {
     std::lock_guard lock(mutex_);
     return byHandle_.size();
@@ -92,6 +100,7 @@ void NativeHandleTable::clear() {
     std::lock_guard lock(mutex_);
     byAddress_.clear();
     byHandle_.clear();
+    generations_.clear();
 }
 
 } // namespace cppfm::jvm

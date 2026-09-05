@@ -1836,10 +1836,13 @@ void GameServer::projectilesTick() {
                 if (drop.itemId)
                     spawnItemDrop(h.mob->x, h.mob->y + .4, h.mob->z,
                                   drop.itemId, drop.count);
-                std::lock_guard lk(entsMtx_);
-                mobAi_.erase(h.mob->entityId);
-                mobs_.erase(std::remove(mobs_.begin(), mobs_.end(), h.mob),
-                            mobs_.end());
+                {
+                    std::lock_guard lk(entsMtx_);
+                    mobAi_.erase(h.mob->entityId);
+                    mobs_.erase(std::remove(mobs_.begin(), mobs_.end(), h.mob),
+                                mobs_.end());
+                }
+                invalidateJvmMob(h.mob);
             }
         }
     }
