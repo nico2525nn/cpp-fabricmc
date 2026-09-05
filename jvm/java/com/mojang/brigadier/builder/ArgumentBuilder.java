@@ -35,6 +35,6 @@ public abstract class ArgumentBuilder<S, T extends ArgumentBuilder<S, T>> {
     public T redirect(CommandNode<S> target, SingleRedirectModifier<S> modifier) { redirect = target; redirectModifier = modifier == null ? null : context -> java.util.List.of(modifier.apply(context)); forks = false; return (T) this; }
     public T fork(CommandNode<S> target, RedirectModifier<S> modifier) { redirect = target; redirectModifier = modifier; forks = true; return (T) this; }
     public T forward(CommandNode<S> target, RedirectModifier<S> modifier, boolean forks) { redirect = target; redirectModifier = modifier; this.forks = forks; return (T) this; }
-    public CommandNode<S> build() { return null; }
+    public abstract CommandNode<S> build();
     public abstract String getName();
 }

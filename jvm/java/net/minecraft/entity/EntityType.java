@@ -30,6 +30,13 @@ public class EntityType<T extends Entity> {
         this.width = width; this.height = height;
     }
     public Identifier getId() { return id; }
+    public static EntityType<?> byId(String id) {
+        Identifier key = Identifier.tryParse(id);
+        if (key == null) return UNKNOWN;
+        EntityType<?> value = net.minecraft.registry.Registries.ENTITY_TYPE.get(key);
+        return value == null ? UNKNOWN : value;
+    }
+    public static EntityType<?> get(String id) { return byId(id); }
     public float getWidth() { return width; }
     public float getHeight() { return height; }
     public T create(World world) {

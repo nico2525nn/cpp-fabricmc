@@ -1,7 +1,9 @@
 package net.minecraft.entity;
 
+import cppfm.bridge.WrapperCache;
 import net.minecraft.item.ItemStack;
 import net.minecraft.util.Hand;
+import net.minecraft.util.NativeAccess;
 import net.minecraft.util.TypedActionResult;
 import net.minecraft.world.World;
 
@@ -15,9 +17,15 @@ public class LivingEntity extends Entity {
     protected LivingEntity(long nativeHandle) { super(nativeHandle); }
     protected LivingEntity(EntityType<?> type, World world) { super(type, world); }
     protected LivingEntity(long nativeHandle, World world, EntityType<?> type) { super(nativeHandle, world, type); }
-    public float getHealth() { return health; }
+    public static LivingEntity of(long handle) {
+        return WrapperCache.get(LivingEntity.class, handle, LivingEntity::new);
+    }
+    public float getHealth() { return nativeHandle == 0 ? health : NativeAccess.entityHealth(nativeHandle); }
     public float getMaxHealth() { return maxHealth; }
-    public void setHealth(float value) { health = Math.max(0.0f, Math.min(maxHealth, value)); }
+    public void setHealth(float value) {
+        health = Math.max(0.0f, Math.min(maxHealth, value));
+        if (nativeHandle != 0) NativeAccess.setEntityHealth(nativeHandle, health);
+    }
     public void setMaxHealth(float value) { maxHealth = Math.max(0.0f, value); setHealth(health); }
     public boolean damage(DamageSource source, float amount) {
         if (!isAlive() || amount <= 0.0f || isInvulnerableTo(source)) return false;
@@ -27,7 +35,7 @@ public class LivingEntity extends Entity {
     }
     public boolean damage(Object source, float amount) { return damage(source instanceof DamageSource d ? d : DamageSources.generic(), amount); }
     public void heal(float amount) { if (amount > 0.0f) setHealth(health + amount); }
-    public boolean isDead() { return !isAlive() || health <= 0.0f; }
+    public boolean isDead() { return !isAlive() || (nativeHandle == 0 ? health <= 0.0f : NativeAccess.entityDead(nativeHandle)); }
     public boolean isInvulnerable() { return false; }
     public boolean isInvulnerableTo(DamageSource source) { return isInvulnerable(); }
     public boolean isUsingItem() { return usingItem; }

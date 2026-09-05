@@ -6,12 +6,11 @@ import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.function.Consumer;
 import java.util.function.Predicate;
 
 /** Lightweight command-tree node used by the embedded compatibility layer. */
 public abstract class CommandNode<S> {
-    protected final Command<S> command;
+    protected volatile Command<S> command;
     protected final Predicate<S> requirement;
     protected final Map<String, CommandNode<S>> children = new LinkedHashMap<>();
     protected final CommandNode<S> redirect;
@@ -31,15 +30,24 @@ public abstract class CommandNode<S> {
     public Collection<CommandNode<S>> getChildren() { return List.copyOf(children.values()); }
     public CommandNode<S> getChild(String name) { return children.get(name); }
     public void addChild(CommandNode<S> node) { if (node != null) children.put(node.getName(), node); }
-    public boolean canUse(S source) { return requirement.test(source); }
+    public boolean canUse(S source) { return requirement == null || requirement.test(source); }
     public Predicate<S> getRequirement() { return requirement; }
     public CommandNode<S> getRedirect() { return redirect; }
     public RedirectModifier<S> getRedirectModifier() { return redirectModifier; }
     public boolean isFork() { return forks; }
     public Collection<String> getExamples() { return List.of(); }
-    public Collection<CommandNode<S>> getRelevantNodes(com.mojang.brigadier.StringReader input) { return getChildren(); }
+    public Collection<CommandNode<S>> getRelevantNodes(com.mojang.brigadier.StringReader input) {
+        if (input == null) return getChildren();
+        String token = input.getRemaining().trim();
+        List<CommandNode<S>> result = new java.util.ArrayList<>();
+        for (CommandNode<S> child : children.values()) {
+            if (child instanceof LiteralCommandNode<S> literal && literal.getLiteral().startsWith(token)) result.add(child);
+            else if (child instanceof ArgumentCommandNode<?, ?>) result.add(child);
+        }
+        return List.copyOf(result);
+    }
     public void findAmbiguities(Object consumer) { }
-    public void setCommand(Command<S> command) { }
+    public void setCommand(Command<S> command) { this.command = command; }
     public abstract String getName();
     public String getUsageText() { return getName(); }
 }

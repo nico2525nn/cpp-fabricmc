@@ -64,15 +64,22 @@ public class Entity {
             return UUID.nameUUIDFromBytes(("cppfm:entity:" + nativeHandle).getBytes(StandardCharsets.UTF_8));
         }
     }
-    public Text getName() { return Text.literal(NativeAccess.playerName(nativeHandle)); }
+    public Text getName() {
+        String name = NativeAccess.playerName(nativeHandle);
+        if (name.isEmpty()) name = getType().getId().toString();
+        return Text.literal(name);
+    }
     public Text getDisplayName() { return getName(); }
-    public World getWorld() { return world != null ? world : World.of(NativeAccess.playerWorld(nativeHandle)); }
+    public World getWorld() { return world != null ? world : World.of(NativeAccess.entityWorld(nativeHandle)); }
     public World getEntityWorld() { return getWorld(); }
     public MinecraftServer getServer() { World current = getWorld(); return current == null ? null : current.getServer(); }
-    public EntityType<?> getType() { return type == null ? EntityType.UNKNOWN : type; }
+    public EntityType<?> getType() {
+        if (type != null) return type;
+        return EntityType.byId(NativeAccess.entityType(nativeHandle));
+    }
     public void setWorld(World value) { world = value; }
 
-    public boolean isAlive() { return !removed && (nativeHandle != 0 || type != null); }
+    public boolean isAlive() { return !removed && (nativeHandle == 0 ? type != null : !NativeAccess.entityDead(nativeHandle)); }
     public boolean isRemoved() { return removed; }
     public void remove(RemovalReason reason) { removed = true; }
     public void discard() { remove(RemovalReason.DISCARDED); }

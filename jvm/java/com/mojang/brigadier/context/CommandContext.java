@@ -13,7 +13,7 @@ public final class CommandContext<S> {
     private final Map<String, Object> arguments;
     private final List<CommandNode<S>> nodes;
     private final CommandNode<S> rootNode;
-    private final Command<S> command;
+    private Command<S> command;
     private final CommandContext<S> child;
     private final CommandNode<S> redirect;
     private final StringRange range;
@@ -27,7 +27,7 @@ public final class CommandContext<S> {
                           CommandNode<S> redirect, StringRange range) {
         this.source = source; this.input = input == null ? "" : input;
         this.arguments = arguments == null ? new HashMap<>() : new HashMap<>(arguments);
-        this.nodes = nodes == null ? List.of() : List.copyOf(nodes); this.rootNode = rootNode; this.command = command; this.child = child; this.redirect = redirect;
+        this.nodes = nodes == null ? new ArrayList<>() : new ArrayList<>(nodes); this.rootNode = rootNode; this.command = command; this.child = child; this.redirect = redirect;
         this.range = range == null ? StringRange.at(0) : range;
     }
     public S getSource() { return source; }
@@ -37,11 +37,14 @@ public final class CommandContext<S> {
     }
     public <V> V getArgumentOrDefault(String name, Class<V> type, V fallback) { V value = getArgument(name, type); return value == null ? fallback : value; }
     public Map<String, Object> getArguments() { return Map.copyOf(arguments); }
+    public Object getArgumentRaw(String name) { return arguments.get(name); }
     public void putArgument(String name, Object value) { if (name != null) arguments.put(name, value); }
+    public void addNode(CommandNode<S> node) { if (node != null && !nodes.contains(node)) nodes.add(node); }
     public List<CommandNode<S>> getNodes() { return nodes; }
     public boolean hasNodes() { return !nodes.isEmpty(); }
     public CommandNode<S> getRootNode() { return rootNode; }
     public Command<S> getCommand() { return command; }
+    public void setCommand(Command<S> command) { this.command = command; }
     public CommandContext<S> getChild() { return child; }
     public CommandContext<S> getLastChild() { CommandContext<S> current = child; while (current != null && current.child != null) current = current.child; return current; }
     public CommandNode<S> getRedirect() { return redirect; }

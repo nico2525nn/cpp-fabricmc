@@ -7,6 +7,7 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.text.Text;
 import net.minecraft.util.NativeAccess;
+import net.minecraft.util.Identifier;
 import net.minecraft.world.World;
 
 public class ServerPlayerEntity extends PlayerEntity {
@@ -31,5 +32,8 @@ public class ServerPlayerEntity extends PlayerEntity {
     public ServerPlayNetworkHandler getNetworkHandler() { return networkHandler; }
     public void teleport(double x, double y, double z) { super.teleport(x, y, z); }
     public void sendChatMessage(Text message) { sendMessage(message, false); }
+    public boolean sendPluginMessage(Identifier channel, byte[] payload) {
+        return NativeAccess.sendPluginMessage(nativeHandle, channel == null ? "" : channel.toString(), payload, 1);
+    }
     public boolean isDisconnected() { return false; }
 }
