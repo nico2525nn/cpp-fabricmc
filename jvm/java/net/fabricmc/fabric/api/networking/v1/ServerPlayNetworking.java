@@ -9,14 +9,18 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import net.minecraft.network.PacketByteBuf;
+import net.minecraft.network.RegistryByteBuf;
+import net.minecraft.network.PacketCallbacks;
+import net.minecraft.network.codec.PacketCodec;
 import net.minecraft.network.packet.CustomPayload;
-import net.minecraft.network.packet.CustomPayloadS2CPacket;
 import net.minecraft.network.packet.Packet;
+import net.minecraft.network.packet.s2c.common.CustomPayloadS2CPacket;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.network.ServerPlayNetworkHandler;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.NativeAccess;
+import net.minecraft.text.Text;
 
 /**
  * Server play networking adapter with global/per-connection receivers and a
@@ -108,11 +112,23 @@ public final class ServerPlayNetworking {
             handler.receive(payload, context.handler(), context.responseSender()));
     }
 
-    public static PlayChannelHandler unregisterGlobalReceiver(Identifier channel) {
+    public static PlayPayloadHandler<?> unregisterGlobalReceiver(Identifier channel) {
         if (channel == null) return null;
-        PlayChannelHandler removed = GLOBAL_RECEIVERS.remove(channel);
-        GLOBAL_PAYLOAD_RECEIVERS.remove(channel);
-        return removed;
+        PlayPayloadHandler<?> removed = GLOBAL_PAYLOAD_RECEIVERS.remove(channel);
+        PlayChannelHandler legacy = GLOBAL_RECEIVERS.remove(channel);
+        if (removed != null) return removed;
+        if (legacy == null) return null;
+        return new PlayPayloadHandler<CustomPayload>() {
+            @Override public void receive(CustomPayload payload, Context context) {
+                legacy.receive(context.server(), context.player(), context.handler(),
+                    new PacketByteBuf(), context.responseSender());
+            }
+        };
+    }
+
+    /** Removes only a legacy raw-channel receiver. */
+    public static PlayChannelHandler unregisterLegacyGlobalReceiver(Identifier channel) {
+        return channel == null ? null : GLOBAL_RECEIVERS.remove(channel);
     }
 
     public static <T extends CustomPayload> PlayPayloadHandler<T> unregisterGlobalReceiver(CustomPayload.Id<T> id) {
@@ -132,8 +148,36 @@ public final class ServerPlayNetworking {
         return removed;
     }
 
+    public static PlayPayloadHandler<?> unregisterReceiver(ServerPlayNetworkHandler networkHandler,
+                                                           Identifier channel) {
+        if (networkHandler == null || channel == null) return null;
+        Map<Identifier, PlayPayloadHandler<?>> receivers = RECEIVERS.get(networkHandler);
+        if (receivers == null) return null;
+        PlayPayloadHandler<?> removed = receivers.remove(channel);
+        if (receivers.isEmpty()) RECEIVERS.remove(networkHandler, receivers);
+        return removed;
+    }
+
     public static boolean canSend(ServerPlayerEntity player, Identifier channel) {
         return player != null && channel != null && !player.isRemoved();
+    }
+
+    /** Object overload keeps null calls source-compatible while accepting a network handler. */
+    public static boolean canSend(Object connection, Identifier channel) {
+        if (connection instanceof ServerPlayNetworkHandler handler)
+            return handler.isConnectionOpen() && channel != null;
+        return connection instanceof ServerPlayerEntity player && canSend(player, channel);
+    }
+
+    public static boolean canSend(ServerPlayerEntity player, CustomPayload.Id<?> id) {
+        return player != null && id != null && canSend(player, id.id());
+    }
+
+    /** Handler form routed through Object to keep {@code canSend(null, id)} unambiguous. */
+    public static boolean canSend(Object connection, CustomPayload.Id<?> id) {
+        return connection instanceof ServerPlayNetworkHandler handler
+            ? id != null && canSend(handler, id.id())
+            : connection instanceof ServerPlayerEntity player && canSend(player, id);
     }
 
     public static void send(ServerPlayerEntity player, Identifier channel, PacketByteBuf payload) {
@@ -150,8 +194,11 @@ public final class ServerPlayNetworking {
 
     public static <T extends CustomPayload> void send(ServerPlayerEntity player, T payload) {
         if (payload == null || payload.getId() == null || !canSend(player, payload.getId().id())) return;
-        PacketByteBuf data = encode(payload);
-        send(player, payload.getId().id(), data);
+        Packet<?> packet = createS2CPacket(payload);
+        if (!(packet instanceof CustomPayloadS2CPacket customPacket)) return;
+        queue(player, packet);
+        NativeAccess.sendPluginMessage(player.nativeHandle(), payload.getId().id().toString(),
+            customPacket.getData().toByteArray(), 1);
     }
 
     public static Packet<?> createS2CPacket(Identifier channel, PacketByteBuf payload) {
@@ -160,15 +207,25 @@ public final class ServerPlayNetworking {
 
     public static <T extends CustomPayload> Packet<?> createS2CPacket(T payload) {
         if (payload == null || payload.getId() == null) return null;
-        return new CustomPayloadS2CPacket(payload.getId(), encode(payload));
+        return new CustomPayloadS2CPacket(payload, encode(payload));
     }
 
     public static PacketSender getSender(ServerPlayerEntity player) {
+        if (player == null) return PacketSender.NOOP;
         return new PacketSender() {
-            @Override public void sendPacket(Packet<?> packet) { ServerPlayNetworking.send(player, packet); }
+            @Override public Packet<?> createPacket(CustomPayload payload) { return createS2CPacket(payload); }
+            @Override public void sendPacket(Packet<?> packet, PacketCallbacks callback) {
+                ServerPlayNetworking.send(player, packet);
+                if (callback != null) callback.onSuccess();
+            }
             @Override public void sendPacket(Identifier channel, PacketByteBuf payload) { ServerPlayNetworking.send(player, channel, payload); }
             @Override public void send(CustomPayload payload) { ServerPlayNetworking.send(player, payload); }
+            @Override public void disconnect(Text reason) { if (player.getNetworkHandler() != null) player.getNetworkHandler().disconnect(reason); }
         };
+    }
+
+    public static PacketSender getSender(ServerPlayNetworkHandler handler) {
+        return handler == null ? PacketSender.NOOP : getSender(handler.getPlayer());
     }
 
     /** Dispatch a raw channel; true means a receiver accepted/handled it. */
@@ -181,6 +238,15 @@ public final class ServerPlayNetworking {
         if (raw != null) {
             raw.receive(server, player, handler, payload == null ? new PacketByteBuf() : payload.copy(), sender);
             return true;
+        }
+        Object codecValue = PayloadTypeRegistry.playC2S().getCodec(new CustomPayload.Id<>(channel));
+        if (codecValue instanceof PacketCodec<?, ?> codec) {
+            try {
+                RegistryByteBuf data = new RegistryByteBuf(payload == null ? null : payload.toByteArray());
+                Object decoded = decode(codec, data);
+                if (decoded instanceof CustomPayload decodedPayload)
+                    return receive(server, player, handler, decodedPayload);
+            } catch (RuntimeException ignored) { return false; }
         }
         return false;
     }
@@ -209,10 +275,18 @@ public final class ServerPlayNetworking {
         return Set.copyOf(result);
     }
 
+    public static Set<Identifier> getReceived(ServerPlayerEntity player) {
+        return player == null ? Set.of() : getReceived(player.getNetworkHandler());
+    }
+
     public static Set<Identifier> getSendable(ServerPlayNetworkHandler handler) {
         Set<Identifier> result = new LinkedHashSet<>(PayloadTypeRegistry.playS2C().getIds());
         result.addAll(GLOBAL_RECEIVERS.keySet());
         return Set.copyOf(result);
+    }
+
+    public static Set<Identifier> getSendable(ServerPlayerEntity player) {
+        return player == null ? Set.of() : getSendable(player.getNetworkHandler());
     }
 
     public static List<Packet<?>> getOutbound(ServerPlayerEntity player) {
@@ -221,12 +295,16 @@ public final class ServerPlayNetworking {
         return packets == null ? List.of() : List.copyOf(packets);
     }
 
-    public static Map<Identifier, PlayChannelHandler> getGlobalReceivers() {
-        return Map.copyOf(GLOBAL_RECEIVERS);
+    public static Set<Identifier> getGlobalReceivers() {
+        Set<Identifier> result = new LinkedHashSet<>(GLOBAL_RECEIVERS.keySet());
+        result.addAll(GLOBAL_PAYLOAD_RECEIVERS.keySet());
+        return Set.copyOf(result);
     }
 
     public static void clear() {
         GLOBAL_RECEIVERS.clear(); GLOBAL_PAYLOAD_RECEIVERS.clear(); RECEIVERS.clear(); OUTBOUND.clear();
+        PayloadTypeRegistry.playS2C().clear(); PayloadTypeRegistry.playC2S().clear();
+        PayloadTypeRegistry.configurationS2C().clear(); PayloadTypeRegistry.configurationC2S().clear();
     }
 
     private static void queue(ServerPlayerEntity player, Packet<?> packet) {
@@ -236,6 +314,11 @@ public final class ServerPlayNetworking {
 
     private static PacketByteBuf encode(CustomPayload payload) {
         PacketByteBuf data = new PacketByteBuf();
+        Object registered = PayloadTypeRegistry.playS2C().getCodec(payload.getId());
+        if (registered instanceof PacketCodec<?, ?> codec) {
+            encode(codec, new RegistryByteBuf(), payload, data);
+            return data;
+        }
         // Fabric's codec is normally installed in PayloadTypeRegistry. The
         // embedded ABI also accepts the common write(PacketByteBuf) shape.
         try {
@@ -243,6 +326,18 @@ public final class ServerPlayNetworking {
             write.invoke(payload, data);
         } catch (ReflectiveOperationException ignored) { }
         return data;
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static void encode(PacketCodec codec, RegistryByteBuf registryBuffer,
+                               CustomPayload payload, PacketByteBuf output) {
+        codec.encode(registryBuffer, payload);
+        output.writeBytes(registryBuffer);
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static Object decode(PacketCodec codec, RegistryByteBuf buffer) {
+        return codec.decode(buffer);
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
