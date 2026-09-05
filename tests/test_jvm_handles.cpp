@@ -23,13 +23,20 @@ int main() {
     check(player != 0, "register player");
     check(handles.registerObject(&object, HandleKind::Player) == player,
           "same live object has stable identity");
+    check(handles.findHandle(&object, HandleKind::Player).value_or(0) == player,
+          "address lookup returns the live opaque handle");
     check(handles.valid(player, HandleKind::Player), "live handle resolves");
     check(!handles.valid(player, HandleKind::World), "kind mismatch fails closed");
     check(handles.invalidate(&object, HandleKind::Player), "invalidate live handle");
+    check(!handles.findHandle(&object, HandleKind::Player).has_value(),
+          "address lookup is empty after invalidation");
     check(!handles.valid(player), "stale handle fails after invalidation");
     const auto replacement = handles.registerObject(&object, HandleKind::Player);
     check(replacement != player, "address reuse gets a new opaque id");
     check(handles.valid(replacement, HandleKind::Player), "replacement resolves");
+    int neverRegistered = 0;
+    check(!handles.invalidate(&neverRegistered, HandleKind::Entity),
+          "invalidating an unknown address does not mint a handle");
 
     ModRoutingTable routing;
     check(routing.path("net/minecraft/World", "tick", "()V") ==
