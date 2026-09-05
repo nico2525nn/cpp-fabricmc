@@ -19,17 +19,23 @@ public class LivingEntity extends Entity {
     public float getMaxHealth() { return maxHealth; }
     public void setHealth(float value) { health = Math.max(0.0f, Math.min(maxHealth, value)); }
     public void setMaxHealth(float value) { maxHealth = Math.max(0.0f, value); setHealth(health); }
-    public boolean damage(DamageSource source, float amount) {
+    public boolean damage(net.minecraft.entity.damage.DamageSource source, float amount) {
         if (!isAlive() || amount <= 0.0f || isInvulnerableTo(source)) return false;
         setHealth(health - amount);
         if (health <= 0.0f) remove(RemovalReason.KILLED);
         return true;
     }
-    public boolean damage(Object source, float amount) { return damage(source instanceof DamageSource d ? d : DamageSources.generic(), amount); }
+    /** Legacy package overload retained for source compatibility. */
+    public boolean damage(DamageSource source, float amount) { return damage((net.minecraft.entity.damage.DamageSource) source, amount); }
+    public boolean damage(Object source, float amount) {
+        return damage(source instanceof net.minecraft.entity.damage.DamageSource d
+            ? d : new net.minecraft.entity.damage.DamageSource("generic"), amount);
+    }
     public void heal(float amount) { if (amount > 0.0f) setHealth(health + amount); }
     public boolean isDead() { return !isAlive() || health <= 0.0f; }
     public boolean isInvulnerable() { return false; }
-    public boolean isInvulnerableTo(DamageSource source) { return isInvulnerable(); }
+    public boolean isInvulnerableTo(net.minecraft.entity.damage.DamageSource source) { return isInvulnerable(); }
+    public boolean isInvulnerableTo(DamageSource source) { return isInvulnerableTo((net.minecraft.entity.damage.DamageSource) source); }
     public boolean isUsingItem() { return usingItem; }
     public Hand getActiveHand() { return activeHand; }
     public ItemStack getActiveItem() { return getStackInHand(activeHand); }
