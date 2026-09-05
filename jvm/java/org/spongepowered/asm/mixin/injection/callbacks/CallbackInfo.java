@@ -12,10 +12,12 @@ public class CallbackInfo {
     public boolean isCancellable() { return cancellable; }
     public boolean isCancelled() { return cancelled; }
     public void cancel() {
-        if (!cancellable) throw new CancellationException("The callback is not cancellable");
+        if (!cancellable) throw new CancellationException("The call is not cancellable");
         cancelled = true;
     }
     public static class CancellationException extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+        public CancellationException() { super(); }
         public CancellationException(String message) { super(message); }
     }
 }

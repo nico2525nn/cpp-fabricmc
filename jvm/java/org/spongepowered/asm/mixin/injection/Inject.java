@@ -10,7 +10,7 @@ import java.lang.annotation.Target;
 @Target(ElementType.METHOD)
 public @interface Inject {
     String[] method() default {};
-    At at();
+    At[] at();
     boolean cancellable() default false;
     Slice[] slice() default {};
     LocalCapture locals() default LocalCapture.NO_CAPTURE;
