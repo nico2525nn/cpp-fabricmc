@@ -76,6 +76,22 @@ public final class MixinDispatch {
         return Collections.unmodifiableSet(new LinkedHashSet<>(TRANSFORMED));
     }
 
+    /**
+     * Restore the transformed-method ledger to a pre-transform checkpoint.
+     *
+     * <p>A class-file transform is transactional from the loader's point of
+     * view: if bytecode validation fails, the original bytes are returned.
+     * The ledger must obey the same rule or the manual compatibility hooks
+     * would be suppressed even though no transformed bytes were defined.</p>
+     */
+    public static void rollbackTo(Set<String> checkpoint) {
+        if (checkpoint == null) {
+            TRANSFORMED.clear();
+            return;
+        }
+        TRANSFORMED.removeIf(marker -> !checkpoint.contains(marker));
+    }
+
     public static void clear() {
         TRANSFORMED.clear();
         ACTIVE.remove();

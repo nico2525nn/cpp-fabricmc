@@ -56,6 +56,15 @@ public final class TransformContext {
         return Collections.unmodifiableSet(new LinkedHashSet<>(changedMethods));
     }
 
+    /** Restore the method-change ledger when a transformer returns original bytes. */
+    void rollbackChangedMethods(Set<String> checkpoint) {
+        if (checkpoint == null) {
+            changedMethods.clear();
+            return;
+        }
+        changedMethods.removeIf(method -> !checkpoint.contains(method));
+    }
+
     /** Read-only diagnostics in first-seen order. */
     public List<String> getDiagnostics() {
         return Collections.unmodifiableList(new ArrayList<>(diagnostics));

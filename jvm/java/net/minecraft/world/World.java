@@ -56,8 +56,8 @@ public class World implements BlockView, WorldView, WorldAccess {
         if (head.isCancelled()) return head.getReturnValue();
         BlockState nativeState = nativeHandle == 0 ? localBlocks.getOrDefault(pos.asLong(), Blocks.AIR.getDefaultState())
             : new BlockState(NativeAccess.worldBlock(nativeHandle, pos.getX(), pos.getY(), pos.getZ()));
-        CallbackInfoReturnable<BlockState> tail = MixinHooks.invokeTailReturn(
-            this, "getBlockState", nativeState, pos);
+        CallbackInfoReturnable<BlockState> tail = MixinHooks.invokeTailReturnWithLocals(
+            this, "getBlockState", nativeState, new Object[] { nativeState }, pos);
         if (tail.isCancelled()) return tail.getReturnValue();
         CallbackInfoReturnable<BlockState> returned = MixinHooks.invokeReturn(
             this, "getBlockState", tail.getReturnValue(), pos);

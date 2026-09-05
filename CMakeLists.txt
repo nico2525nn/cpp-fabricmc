@@ -38,7 +38,7 @@ if(CPPFM_JAVAC AND CPPFM_JAVA_SOURCES)
         OUTPUT "${CPPFM_JVM_STAMP}"
         COMMAND ${CMAKE_COMMAND} -E rm -rf "${CPPFM_JVM_CLASSES_DIR}"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${CPPFM_JVM_CLASSES_DIR}"
-        COMMAND "${CPPFM_JAVAC}" --release 17 -encoding UTF-8
+        COMMAND "${CPPFM_JAVAC}" --release 17 -encoding UTF-8 -g
                 -d "${CPPFM_JVM_CLASSES_DIR}" ${CPPFM_JAVA_SOURCES}
         COMMAND ${CMAKE_COMMAND} -E touch "${CPPFM_JVM_STAMP}"
         DEPENDS ${CPPFM_JAVA_SOURCES}
@@ -57,7 +57,7 @@ if(CPPFM_JAVAC AND CPPFM_JAVA_SOURCES)
         OUTPUT "${CPPFM_JVM_FIXTURE_STAMP}"
         COMMAND ${CMAKE_COMMAND} -E rm -rf "${CPPFM_JVM_FIXTURE_DIR}"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${CPPFM_JVM_FIXTURE_DIR}"
-        COMMAND "${CPPFM_JAVAC}" --release 17 -encoding UTF-8
+        COMMAND "${CPPFM_JAVAC}" --release 17 -encoding UTF-8 -g
                 -cp "${CPPFM_JVM_CLASSES_DIR}" -d "${CPPFM_JVM_FIXTURE_DIR}"
                 ${CPPFM_JVM_FIXTURE_SOURCE}
         COMMAND ${CMAKE_COMMAND} -E copy "${CPPFM_JVM_FIXTURE_METADATA}"
@@ -91,7 +91,7 @@ if(CPPFM_JAVAC AND CPPFM_JAVA_SOURCES)
             OUTPUT "${CPPFM_JVM_TRANSFORMER_STAMP}"
             COMMAND ${CMAKE_COMMAND} -E rm -rf "${CPPFM_JVM_TRANSFORMER_DIR}"
             COMMAND ${CMAKE_COMMAND} -E make_directory "${CPPFM_JVM_TRANSFORMER_DIR}"
-            COMMAND "${CPPFM_JAVAC}" --release 17 -encoding UTF-8
+            COMMAND "${CPPFM_JAVAC}" --release 17 -encoding UTF-8 -g
                     -cp "${CPPFM_JVM_CLASSES_DIR}"
                     -d "${CPPFM_JVM_TRANSFORMER_DIR}"
                     ${CPPFM_JVM_TRANSFORMER_SOURCES}
@@ -116,7 +116,7 @@ if(CPPFM_JAVAC AND CPPFM_JAVA_SOURCES)
             COMMAND ${CMAKE_COMMAND} -E rm -rf "${CPPFM_JVM_API_DIR}"
             COMMAND ${CMAKE_COMMAND} -E make_directory "${CPPFM_JVM_API_DIR}"
             COMMAND timeout --foreground --kill-after=5 90
-                    "${CPPFM_JAVAC}" --release 17 -encoding UTF-8
+                    "${CPPFM_JAVAC}" --release 17 -encoding UTF-8 -g
                     -cp "${CPPFM_JVM_CLASSES_DIR}" -d "${CPPFM_JVM_API_DIR}"
                     ${CPPFM_JVM_API_SOURCES}
             COMMAND ${CMAKE_COMMAND} -E touch "${CPPFM_JVM_API_STAMP}"

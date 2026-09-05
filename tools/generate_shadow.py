@@ -311,6 +311,12 @@ def load_spec(path: Path) -> dict:
         if not isinstance(native_methods, list) or not all(
                 isinstance(item, str) and item in methods for item in native_methods):
             raise ValueError(f"invalid native method list for {name}")
+        wrapper_methods = entry.get("wrapperMethods", [])
+        if not isinstance(wrapper_methods, list) or not all(
+                isinstance(item, str) and item in methods for item in wrapper_methods):
+            raise ValueError(f"invalid wrapper method list for {name}")
+        if set(native_methods) & set(wrapper_methods):
+            raise ValueError(f"native and wrapper method lists overlap for {name}")
     value["_specPath"] = path.resolve()
     return value
 
@@ -324,13 +330,18 @@ def render(spec: dict, *, classes_dir: Path | None = None) -> str:
     for entry in sorted(spec["classes"], key=lambda item: item["name"]):
         structured_methods = set(entry.get("structuredBytecodeMethods", []))
         native_methods = set(entry.get("nativeMethods", entry.get("methods", [])))
+        wrapper_methods = set(entry.get("wrapperMethods", []))
         for method in entry.get("methods", []):
             structured = method in structured_methods
+            native_backend = method in native_methods
+            wrapper_backend = method in wrapper_methods
             method_coverage.append({
                 "class": entry["name"],
                 "method": method,
                 "abi": True,
-                "nativeBackend": method in native_methods,
+                "nativeBackend": native_backend,
+                "wrapperBackend": wrapper_backend,
+                "backend": "native" if native_backend else "wrapper" if wrapper_backend else "none",
                 "structuredBytecode": structured,
                 "structuredBytecodeMode": execution if structured else "abi-only",
                 "mixinLevels": entry.get("mixinLevels", {}).get(method, []),

@@ -160,6 +160,8 @@ public final class MixinClassTransformer implements ClassFileTransformer {
         if (mixinClassNames.contains(internalName)) return exposeMixinHelperFields(originalBytes);
         List<MixinDefinition> matching = definitions.get(internalName);
         if (matching == null || matching.isEmpty()) return originalBytes;
+        Set<String> dispatchCheckpoint = MixinDispatch.transformedMethods();
+        Set<String> changedMethodCheckpoint = context.getChangedMethods();
         try {
             ClassFileModel target = ClassFileModel.parse(originalBytes);
             if (!normalizeInternal(target.internalName()).equals(internalName))
@@ -196,12 +198,16 @@ public final class MixinClassTransformer implements ClassFileTransformer {
             ClassFileSafety.validateBytes(transformed);
             return transformed;
         } catch (TransformException failure) {
+            MixinDispatch.rollbackTo(dispatchCheckpoint);
+            context.rollbackChangedMethods(changedMethodCheckpoint);
             String message = "left " + binaryName + " untransformed: " + failure.getMessage();
             context.diagnostic(message);
             report(message, false);
             if (strict || context.isStrict()) throw failure;
             return originalBytes;
         } catch (RuntimeException failure) {
+            MixinDispatch.rollbackTo(dispatchCheckpoint);
+            context.rollbackChangedMethods(changedMethodCheckpoint);
             String message = "left " + binaryName + " untransformed after parser failure: " + failure;
             context.diagnostic(message);
             report(message, false);
@@ -548,9 +554,9 @@ public final class MixinClassTransformer implements ClassFileTransformer {
                     if (at.shift == Shift.BY) throw unsupported("@At(shift=BY) requires explicit frame recomputation");
                     boolean returnSite = at.value.equals("RETURN");
                     boolean cancellable = annotation.bool("cancellable", false);
-                    if (cancellable)
-                        throw unsupported("cancellable injection requires cancellation branch/frame synthesis");
-                    StackAnalyzer.Analysis stackAnalysis = (!returnSite || localCapture.requiresAnalysis(handler, target, destination))
+                    StackAnalyzer.Analysis stackAnalysis = (!returnSite
+                        || localCapture.requiresAnalysis(handler, target, destination)
+                        || cancellable)
                         ? StackAnalyzer.analyze(target, destination, code) : null;
                     LocalVariableTable localTable = stackAnalysis == null ? null : LocalVariableTable.read(code, target.pool);
                     int count = 0;
@@ -571,6 +577,7 @@ public final class MixinClassTransformer implements ClassFileTransformer {
                     }
                     if (count == 0) throw unsupported("@Inject made no changes: " + methodName);
                     editor.finish(target.pool);
+                    if (cancellable) editor.rebuildStackMapFrames(target, destination);
                     destination.replaceCode(target.pool, code);
                     mark(context, destination, target);
                     changed = true;
@@ -618,7 +625,29 @@ public final class MixinClassTransformer implements ClassFileTransformer {
         output.addAll(callHandler(target, destination, handler, targetDescriptor, handlerDescriptor,
             callbackIndex, callbackLocal, capturedTypes(capturedLocals), capturedSlots(capturedLocals)));
         if (cancellable) {
-            throw unsupported("cancellable callback branch is intentionally fail-closed until frame synthesis");
+            output.addAll(loadLocal(callbackType, callbackLocal));
+            int cancelled = target.pool.addMethodRef(
+                "org/spongepowered/asm/mixin/injection/callback/CallbackInfo",
+                "isCancelled", "()Z", false);
+            output.add(memberInstruction(182, cancelled));
+            BytecodeInstructions.Instruction continueLabel = editor.newLabel();
+            output.add(BytecodeInstructions.Instruction.branch(153, continueLabel)); // IFEQ
+            if (targetDescriptor.returnType.voidType) {
+                output.add(returnInstruction(targetDescriptor.returnType));
+            } else if (returnable) {
+                output.addAll(loadReturnValue(target, targetDescriptor.returnType, callbackLocal));
+                output.add(returnInstruction(targetDescriptor.returnType));
+            } else if (returnBoundary && !stackTypes.isEmpty()) {
+                Descriptor.Type original = stackTypes.get(stackTypes.size() - 1);
+                if (!compatible(targetDescriptor.returnType, original))
+                    throw unsupported("cancellable TAIL return value does not match target: " + handler.name);
+                output.addAll(loadLocal(original, stackLocals.get(stackLocals.size() - 1)));
+                output.add(returnInstruction(targetDescriptor.returnType));
+            } else {
+                throw unsupported("cancellable non-returnable injection targets a non-void method: "
+                    + destination.name(target.pool));
+            }
+            output.add(continueLabel);
         }
         for (int i = 0; i < stackTypes.size(); ++i)
             output.addAll(loadLocal(stackTypes.get(i), stackLocals.get(i)));
@@ -642,6 +671,17 @@ public final class MixinClassTransformer implements ClassFileTransformer {
                 cancellable, null, editor, callbackLocal));
             output.addAll(callHandler(target, destination, handler, targetDescriptor, handlerDescriptor,
                 callbackIndex, callbackLocal, capturedTypes(capturedLocals), capturedSlots(capturedLocals)));
+            if (cancellable) {
+                output.addAll(loadLocal(callbackType, callbackLocal));
+                int cancelled = target.pool.addMethodRef(
+                    "org/spongepowered/asm/mixin/injection/callback/CallbackInfo",
+                    "isCancelled", "()Z", false);
+                output.add(memberInstruction(182, cancelled));
+                BytecodeInstructions.Instruction continueLabel = editor.newLabel();
+                output.add(BytecodeInstructions.Instruction.branch(153, continueLabel)); // IFEQ
+                output.add(returnInstruction(returnType));
+                output.add(continueLabel);
+            }
             return output;
         }
         int returnLocal = editor.allocateLocal(returnType);
@@ -652,6 +692,25 @@ public final class MixinClassTransformer implements ClassFileTransformer {
             cancellable, returnable ? returnType : null, editor, callbackLocal, returnLocal));
         output.addAll(callHandler(target, destination, handler, targetDescriptor, handlerDescriptor,
             callbackIndex, callbackLocal, capturedTypes(capturedLocals), capturedSlots(capturedLocals)));
+        if (cancellable) {
+            output.addAll(loadLocal(callbackType, callbackLocal));
+            int cancelled = target.pool.addMethodRef(
+                "org/spongepowered/asm/mixin/injection/callback/CallbackInfo",
+                "isCancelled", "()Z", false);
+            output.add(memberInstruction(182, cancelled));
+            BytecodeInstructions.Instruction continueLabel = editor.newLabel();
+            output.add(BytecodeInstructions.Instruction.branch(153, continueLabel)); // IFEQ
+            if (returnType.voidType) {
+                output.add(returnInstruction(returnType));
+            } else if (returnable) {
+                output.addAll(loadReturnValue(target, returnType, callbackLocal));
+                output.add(returnInstruction(returnType));
+            } else {
+                output.addAll(loadLocal(returnType, returnLocal));
+                output.add(returnInstruction(returnType));
+            }
+            output.add(continueLabel);
+        }
         if (returnable) output.addAll(loadReturnValue(target, returnType, callbackLocal));
         else output.addAll(loadLocal(returnType, returnLocal));
         return output;
@@ -1422,26 +1481,48 @@ public final class MixinClassTransformer implements ClassFileTransformer {
             if (value == null) continue;
             if (value.isUninitialized()) throw unsupported("local capture crosses an uninitialized value at " + site.oldOffset);
             Descriptor.Type type = stackType(value);
+            String localName = "";
             if (localTable != null) {
                 LocalVariableTable.Entry entry = localTable.at(site.oldOffset, slot);
                 if (entry != null) {
+                    localName = entry.name();
                     Descriptor.Type debugType = Descriptor.type(entry.descriptor());
                     if (type.reference && debugType.reference) type = debugType;
                     else if (!compatible(type, debugType))
                         throw unsupported("LVT type disagrees with verifier at local " + slot);
                 }
             }
-            available.add(new CapturedLocal(type, slot));
+            available.add(new CapturedLocal(type, slot, localName));
         }
         if (required > available.size())
             throw unsupported("local capture requested " + required + " value(s), only " + available.size() + " live");
         ArrayList<CapturedLocal> output = new ArrayList<>();
         for (int i = 0; i < required; ++i) {
-            CapturedLocal captured = available.get(i);
             Descriptor.Type expected = handlerDescriptor.arguments.get(targetDescriptor.arguments.size() + i);
-            if (!compatible(expected, captured.type))
-                throw unsupported("captured local " + captured.slot + " does not match handler argument " + i);
+            int parameterIndex = targetDescriptor.arguments.size() + i;
+            String parameterName = parameterIndex < handler.parameterNames.size()
+                ? handler.parameterNames.get(parameterIndex) : "";
+            CapturedLocal captured = null;
+            if (!parameterName.isEmpty()) {
+                for (CapturedLocal candidate : available) {
+                    if (parameterName.equals(candidate.name) && compatible(expected, candidate.type)) {
+                        captured = candidate;
+                        break;
+                    }
+                }
+            }
+            if (captured == null) {
+                for (CapturedLocal candidate : available) {
+                    if (compatible(expected, candidate.type)) {
+                        captured = candidate;
+                        break;
+                    }
+                }
+            }
+            if (captured == null)
+                throw unsupported("no captured local matches handler argument " + i);
             output.add(captured);
+            available.remove(captured);
         }
         return output;
     }
@@ -1826,11 +1907,32 @@ public final class MixinClassTransformer implements ClassFileTransformer {
             MemberModel copy = copiedMethods.get(key);
             if (copy == null) throw new TransformException("Mixin handler was not copied: " + key);
             return new Handler(copy.name(target.pool), copy.descriptor(target.pool),
-                (copy.access & ClassFileModel.ACC_STATIC) != 0);
+                (copy.access & ClassFileModel.ACC_STATIC) != 0,
+                handlerParameterNames(source, definition.model));
         }
     }
 
-    private record Handler(String name, String descriptor, boolean isStatic) { }
+    private static List<String> handlerParameterNames(MemberModel source, ClassFileModel owner) {
+        CodeModel code = source.code(owner.pool);
+        if (code == null) return List.of();
+        LocalVariableTable table = LocalVariableTable.read(code, owner.pool);
+        Descriptor.MethodDesc descriptor = Descriptor.method(source.descriptor(owner.pool));
+        ArrayList<String> names = new ArrayList<>();
+        int slot = (source.access & ClassFileModel.ACC_STATIC) == 0 ? 1 : 0;
+        for (Descriptor.Type argument : descriptor.arguments) {
+            LocalVariableTable.Entry entry = table.at(0, slot);
+            names.add(entry == null ? "" : entry.name());
+            slot += argument.slots;
+        }
+        return List.copyOf(names);
+    }
+
+    private record Handler(String name, String descriptor, boolean isStatic,
+                           List<String> parameterNames) {
+        Handler {
+            parameterNames = List.copyOf(parameterNames == null ? List.of() : parameterNames);
+        }
+    }
 
     private enum Shift { NONE, BEFORE, AFTER, BY }
 
@@ -1865,7 +1967,7 @@ public final class MixinClassTransformer implements ClassFileTransformer {
         }
     }
 
-    private record CapturedLocal(Descriptor.Type type, int slot) { }
+    private record CapturedLocal(Descriptor.Type type, int slot, String name) { }
 
     private static final class AtSpec {
         final String value;
