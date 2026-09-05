@@ -94,6 +94,7 @@ jvm_corpus              PASS (25/25)
 jvm_manifest            PASS
 jvm_contract_audit       PASS
 official_loader_probe   PASS (pinned 0.16.9/Knot/Mixin)
+real_mod_corpus         SKIP (Java 25; lock requires Java 21)
 ```
 
 The runtime fixture observed `embedded HotSpot started`, entrypoint initialization,
@@ -112,6 +113,11 @@ The generated manifest reports 82 method entries: `nativeBackend=52` and
 `11.0%`). Its structural declaration covers the 10 named injection points and 9
 transformer names exercised by the corpus; `jvm_contract_audit` verifies that every
 declared method has exactly one backend classification.
+
+The locked real public-mod cache (Lithium, FerriteCore, and Carpet) verifies its
+archives and metadata, but the runtime comparison was not executed on this machine:
+the available Java major is 25 while the corpus lock accepts Java 21 only. It is
+therefore `SKIP`, not evidence of mod compatibility.
 
 ## Explicit non-goals
 

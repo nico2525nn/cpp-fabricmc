@@ -68,6 +68,7 @@ explicit rather than being converted into a broad PASS:
 | chunk generation/save/unload memory | `IMPLEMENTED; 30M DIAGNOSTIC PASS / 2H NOT-ACCEPTED` | generation is serialized per world; async save no longer copies a full `Chunk`; eviction no longer adds an extra 32-block ring; bounded allocation reuse is in `17ab09f`; the 1800s run passes at `114504→128868kB` (`+12.5%`), while the earlier 7200s attempt on parent `d1c6a7f` was not accepted at `+19.5%` |
 | accepted 2-hour/24-hour evidence | `INTERRUPTED / ABSENT` | the 7200s synthetic attempt was not completed or accepted; no accepted 2-hour or 24-hour artifact exists; procedures are not results |
 | current real-client/GUI evidence | `ABSENT` / `DECLARED-LIMITATION` | no current official-client capture is available; bot/synthetic output is not a real-client proof |
+| locked real public-mod corpus | `SKIP / NOT-ACCEPTED` | Lithium, FerriteCore, and Carpet archives/metadata verify, but runtime comparison was not attempted because this machine has Java 25 and the lock requires Java 21; no compatibility PASS is claimed |
 | `wt48/cleanup` worktree | `DIRTY` / `PRESERVE-REVIEW` | branch `wt48/cleanup`, HEAD `5f82ac0b4448f76f98753d18c83bbcd9736da61c`, 19 changed paths, `+74/-840`; contains source/tests/tools and is not an approved merge or removal target |
 
 The `RESOLVED` Structures API row does not close the structure-generation parity

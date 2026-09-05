@@ -343,6 +343,7 @@ new failure beyond E-14 is a publication blocker.
 | `jvm_corpus` | `PASS` | the 25-case compatibility corpus passes through the executable corpus harness |
 | `jvm_contract_audit` | `PASS` | every declared ABI method has exactly one native or wrapper backend classification |
 | official Loader/Knot probe | `PASS / DECLARED-LIMITATION` | pinned Loader 0.16.9/Knot/Mixin/ASM/intermediary starts with the shadow provider and emits all seven expected markers |
+| locked real public-mod corpus | `SKIP / DECLARED-LIMITATION` | cache metadata verifies for Lithium, FerriteCore, and Carpet, but execution is not attempted because available Java 25 is outside the lock's Java 21 range |
 
 This gate proves only the bounded plan51 compatibility layer and its pinned offline
 official-loader probe. It does not prove Mojang GameProvider behavior, arbitrary mod
