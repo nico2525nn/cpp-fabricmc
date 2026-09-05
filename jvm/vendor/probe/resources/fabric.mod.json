@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "id": "cppfm_official_probe",
+  "version": "1.0.0",
+  "name": "CppFabricMC Official Runtime Probe",
+  "description": "Offline Loader/Knot/Mixin compatibility probe for the C++ shadow runtime.",
+  "environment": "server",
+  "license": "MIT",
+  "entrypoints": {
+    "main": [
+      "cppfm.vendor.probe.ProbeMod"
+    ]
+  },
+  "mixins": [
+    "cppfm_official_probe.mixins.json"
+  ]
+}
