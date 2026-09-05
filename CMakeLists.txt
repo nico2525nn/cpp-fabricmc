@@ -379,6 +379,14 @@ if(TARGET cppfm_jvm_manifest)
     set_tests_properties(jvm_manifest PROPERTIES TIMEOUT 30
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 endif()
+if(TARGET cppfm_jvm_manifest AND Python3_Interpreter_FOUND)
+    add_test(NAME jvm_contract_audit
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/plan51_contract_audit.py"
+                --root "${CMAKE_CURRENT_SOURCE_DIR}"
+                --manifest "${CPPFM_JVM_MANIFEST}")
+    set_tests_properties(jvm_contract_audit PROPERTIES TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+endif()
 
 cppfm_configure_jvm_target(cppfm)
 cppfm_configure_jvm_target(test_native)
