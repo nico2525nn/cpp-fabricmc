@@ -36,7 +36,7 @@ final class Descriptor {
         if (kind == '[') {
             ParseResult component = type(descriptor, position + 1);
             return new ParseResult(new Type(descriptor.substring(position, component.next), 1,
-                false, false, false, true), component.next);
+                true, false, false, true), component.next);
         }
         if (kind == 'L') {
             int end = descriptor.indexOf(';', position + 1);

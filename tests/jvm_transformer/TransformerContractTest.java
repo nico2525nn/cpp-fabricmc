@@ -54,17 +54,50 @@ public final class TransformerContractTest {
 
         URL[] empty = new URL[0];
         KnotClassLoader knot = new KnotClassLoader(empty, TransformerContractTest.class.getClassLoader());
+        loaderAccessWidenerCase(knot);
         TransformResult result = knot.transformResult("cppfm.transformer_fixture.BranchTarget", target);
         assert result.getOriginalSha256().length() == 64;
         assert knot.getTransformedMethodHashes() != null;
-        if (!knot.getTransformedMethodDescriptors().isEmpty()) throw new AssertionError("unexpected automatic mixin");
+        if (!result.getModifiedMethodDescriptors().isEmpty())
+            throw new AssertionError("unexpected automatic mixin: " + result.getModifiedMethodDescriptors());
 
         System.out.println("TRANSFORMER CONTRACT PASS");
+    }
+
+    private static void loaderAccessWidenerCase(KnotClassLoader knot) throws Exception {
+        String owner = "cppfm/transformer_fixture/LoaderAccessTarget";
+        String widener = "accessWidener v2 named\n"
+            + "accessible class " + owner + "\n"
+            + "extendable class " + owner + "\n"
+            + "accessible field " + owner + " hidden I\n"
+            + "mutable field " + owner + " hidden I\n"
+            + "accessible method " + owner + " <init> ()V\n"
+            + "accessible method " + owner + " secret (I)I\n";
+        knot.registerAccessWidener(widener.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        assert knot.getAccessWidenerTargetCount() == 4;
+        byte[] original = resource("cppfm/transformer_fixture/LoaderAccessTarget.class");
+        TransformResult result = knot.transformResult(
+            "cppfm.transformer_fixture.LoaderAccessTarget", original);
+        assert result.getModifiedMethodDescriptors().contains("<init>()V");
+        assert result.getModifiedMethodDescriptors().contains("secret(I)I");
+        Class<?> type = new ByteArrayLoader().define(
+            "cppfm.transformer_fixture.LoaderAccessTarget", result.getTransformedBytes());
+        assert java.lang.reflect.Modifier.isPublic(type.getModifiers());
+        assert !java.lang.reflect.Modifier.isFinal(type.getModifiers());
+        java.lang.reflect.Constructor<?> constructor = type.getConstructor();
+        Object instance = constructor.newInstance();
+        java.lang.reflect.Field field = type.getField("hidden");
+        assert !java.lang.reflect.Modifier.isFinal(field.getModifiers());
+        field.setInt(instance, 9);
+        int observed = (Integer) type.getMethod("secret", int.class).invoke(instance, 1);
+        assert observed == 10 : observed;
     }
 
     private static void phase7Cases() throws Exception {
         configurationNameCases();
         advancedInjectionCases();
+        sharedReferenceCase();
+        mixinExtrasOperationCase();
         crossMixinOrderingCase();
         constructorCases();
         matchLimitRollbackCase();
@@ -180,6 +213,47 @@ public final class TransformerContractTest {
         // MixinInfo.compareTo applies lower priorities first; callbacks at the
         // same point therefore retain that application order.
         assert log.equals("LH") : log;
+    }
+
+    private static void sharedReferenceCase() throws Exception {
+        byte[] target = resource("cppfm/transformer_fixture/ShareTarget.class");
+        byte[] mixin = resource("cppfm/transformer_fixture/ShareMixin.class");
+        MixinClassTransformer transformer = new MixinClassTransformer(true);
+        transformer.registerMixin("cppfm.transformer_fixture.ShareMixin", mixin);
+        TransformContext context = new TransformContext(
+            "cppfm.transformer_fixture.ShareTarget", target, true);
+        byte[] transformed = transformer.transform(
+            "cppfm.transformer_fixture.ShareTarget", target, context);
+        assert !java.util.Arrays.equals(target, transformed) : context.getDiagnostics();
+        Class<?> type = new ByteArrayLoader().define(
+            "cppfm.transformer_fixture.ShareTarget", transformed);
+        Object instance = type.getConstructor().newInstance();
+        // input 2 -> local 3; the first hook stores 13 in the shared ref and
+        // the later redirect observes that same object: 3 + 13 = 16.
+        assert ((Integer) type.getMethod("compute", int.class).invoke(instance, 2)) == 16;
+    }
+
+    private static void mixinExtrasOperationCase() throws Exception {
+        byte[] target = resource("cppfm/transformer_fixture/ExtrasTarget.class");
+        byte[] mixin = resource("cppfm/transformer_fixture/ExtrasMixin.class");
+        MixinClassTransformer transformer = new MixinClassTransformer(true);
+        transformer.registerMixin("cppfm.transformer_fixture.ExtrasMixin", mixin);
+        TransformContext context = new TransformContext(
+            "cppfm.transformer_fixture.ExtrasTarget", target, true);
+        byte[] transformed = transformer.transform(
+            "cppfm.transformer_fixture.ExtrasTarget", target, context);
+        assert !java.util.Arrays.equals(target, transformed) : context.getDiagnostics();
+        Class<?> type = new ByteArrayLoader().define(
+            "cppfm.transformer_fixture.ExtrasTarget", transformed);
+        Object instance = type.getConstructor().newInstance();
+        assert ((Integer) type.getMethod("returnValue", int.class).invoke(instance, 2)) == 13;
+        assert ((Integer) type.getMethod("expression", int.class).invoke(instance, 2)) == 7;
+        int conditionalTrue = (Integer) type.getMethod("conditional", int.class).invoke(instance, 3);
+        assert conditionalTrue == 5 : "conditional true=" + conditionalTrue;
+        int conditionalFalse = (Integer) type.getMethod("conditional", int.class).invoke(instance, -1);
+        assert conditionalFalse == 5 : "conditional false=" + conditionalFalse;
+        assert ((Integer) type.getMethod("wrapped", int.class).invoke(instance, 2)) == 9;
+        assert ((Integer) type.getMethod("wrappedMethod", int.class).invoke(instance, 2)) == 26;
     }
 
     private static void constructorCases() throws Exception {

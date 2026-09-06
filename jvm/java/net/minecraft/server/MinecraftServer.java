@@ -24,7 +24,9 @@ public class MinecraftServer {
 
     protected MinecraftServer(long nativeHandle) {
         this.nativeHandle = nativeHandle;
-        this.commandManager = new CommandManager();
+        this.commandManager = new CommandManager(
+            CommandManager.RegistrationEnvironment.DEDICATED,
+            new net.minecraft.command.CommandRegistryAccess());
         this.playerManager = new PlayerManager();
     }
     public static MinecraftServer of(long handle) {
@@ -68,6 +70,31 @@ public class MinecraftServer {
         if (text != null) NativeAccess.log("INFO", text.getString());
     }
     public void execute(Runnable task) { if (task != null) task.run(); }
+    /** Main server tick ABI used by Mojang-mapped mixins. */
+    public void tick(java.util.function.BooleanSupplier shouldKeepTicking) {
+        if (shouldKeepTicking == null || shouldKeepTicking.getAsBoolean()) tick++;
+    }
+    /** Lifecycle hook exposed by the 1.21.4 server mixin surface. */
+    public void loadWorld() { }
+    /** Shutdown lifecycle hook exposed by server mixins. */
+    public void shutdown() { }
+    /** Main server loop entrypoint used by Carpet's tick-speed mixin. */
+    public void runServer() {
+        net.minecraft.util.profiling.Profiler.get();
+    }
+    /** Autosave entrypoint used by Carpet's server-loop instrumentation. */
+    public void runAutosave() {
+        saveAll(false, false, false);
+    }
+    public boolean saveAll(boolean flush, boolean suppressLogs, boolean force) { return true; }
+    /** Mojang-mapped alias retained for mixin targets compiled outside Yarn. */
+    public boolean saveEverything(boolean flush, boolean suppressLogs, boolean force) {
+        return saveAll(flush, suppressLogs, force);
+    }
+    /** Network service tick hook used by Carpet's profiler mixin. */
+    public void tickNetworkIo() { }
+    /** End-of-tick task drain hook used by the 1.21.4 server loop. */
+    public void runTasksTillTickEnd() { }
     public boolean isDedicated() { return true; }
     public CommandManager getCommandManager() { return commandManager; }
     public PlayerManager getPlayerManager() { return playerManager; }
@@ -79,4 +106,10 @@ public class MinecraftServer {
     public void executeSync(Runnable task) { execute(task); }
     public String getVersion() { return "1.21.4"; }
     public String getServerModName() { return "cpp-fabricmc"; }
+    /** Yarn's mapped entrypoint delegates to the metadata builder. */
+    public ServerMetadata.Players buildPlayerStatus() { return createMetadataPlayers(); }
+    /** Mojang-mapped body; Carpet's constant injector targets this method. */
+    public ServerMetadata.Players createMetadataPlayers() {
+        return new ServerMetadata.Players(12, getPlayerManager().getCurrentPlayerCount(), List.of());
+    }
 }

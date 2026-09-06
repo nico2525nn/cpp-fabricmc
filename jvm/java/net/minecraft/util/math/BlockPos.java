@@ -1,22 +1,13 @@
 package net.minecraft.util.math;
 
-import java.util.Objects;
-
 /** Immutable block coordinate used by the cppfm shadow API. */
-public class BlockPos {
-    protected int x;
-    protected int y;
-    protected int z;
+public class BlockPos extends Vec3i {
+
+    public static final BlockPos ORIGIN = new BlockPos(0, 0, 0);
 
     public BlockPos(int x, int y, int z) {
-        this.x = x;
-        this.y = y;
-        this.z = z;
+        super(x, y, z);
     }
-
-    public int getX() { return x; }
-    public int getY() { return y; }
-    public int getZ() { return z; }
     public long asLong() { return asLong(x, y, z); }
     public static long asLong(int x, int y, int z) {
         return ((long) (x & 0x3ffffff) << 38) | ((long) (z & 0x3ffffff) << 12) | (y & 0xfffL);
@@ -38,17 +29,26 @@ public class BlockPos {
         return add(direction.getOffsetX(), direction.getOffsetY(), direction.getOffsetZ());
     }
     public BlockPos up() { return offset(Direction.UP); }
+    @Override public BlockPos up(int distance) { return add(0, distance, 0); }
     public BlockPos down() { return offset(Direction.DOWN); }
+    @Override public BlockPos down(int distance) { return add(0, -distance, 0); }
     public BlockPos north() { return offset(Direction.NORTH); }
+    public BlockPos north(int distance) { return add(0, 0, -distance); }
     public BlockPos south() { return offset(Direction.SOUTH); }
+    public BlockPos south(int distance) { return add(0, 0, distance); }
     public BlockPos east() { return offset(Direction.EAST); }
+    public BlockPos east(int distance) { return add(distance, 0, 0); }
     public BlockPos west() { return offset(Direction.WEST); }
+    public BlockPos west(int distance) { return add(-distance, 0, 0); }
+    /** Yarn 1.21.4 stream helper used by suffocation checks. */
+    public static java.util.stream.Stream<BlockPos> stream(Box box) {
+        return java.util.stream.Stream.empty();
+    }
 
     @Override public boolean equals(Object other) {
         if (!(other instanceof BlockPos pos)) return false;
         return x == pos.x && y == pos.y && z == pos.z;
     }
-    @Override public int hashCode() { return Objects.hash(x, y, z); }
     @Override public String toString() { return "BlockPos{" + x + "," + y + "," + z + "}"; }
 
     public static class Mutable extends BlockPos {

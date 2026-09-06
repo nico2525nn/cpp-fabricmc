@@ -190,6 +190,14 @@ public final class ServerPlayNetworking {
     public static void send(ServerPlayerEntity player, Packet<?> packet) {
         if (player == null || packet == null || player.isRemoved()) return;
         queue(player, packet);
+        // PacketSender exposes the generic Packet<?> overload as well as the
+        // payload-specific helpers below.  Preserve the same native wire
+        // boundary for a CustomPayload packet regardless of which overload a
+        // mod selected; the queue remains the deterministic JVM-side record.
+        if (packet instanceof net.minecraft.network.packet.CustomPayloadS2CPacket custom) {
+            NativeAccess.sendPluginMessage(player.nativeHandle(), custom.getChannel().toString(),
+                custom.getData().toByteArray(), 1);
+        }
     }
 
     public static <T extends CustomPayload> void send(ServerPlayerEntity player, T payload) {

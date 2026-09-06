@@ -49,6 +49,12 @@ public final class MixinConfiguration {
         return value instanceof Boolean booleanValue && booleanValue;
     }
 
+    /** Name of the reference map used to translate annotation targets. */
+    public String refmap() {
+        Object value = values.get("refmap");
+        return value instanceof String string && !string.isBlank() ? string : "";
+    }
+
     /** Return all mixin class names for a server-side environment. */
     public List<String> serverMixins() {
         ArrayList<String> result = new ArrayList<>();

@@ -63,7 +63,12 @@ public class Event<T> {
     public T invoker() { return cachedInvoker; }
     public synchronized List<T> snapshot() { return List.copyOf(flattenListeners()); }
     public synchronized List<T> snapshot(net.minecraft.util.Identifier phase) { return List.copyOf(phaseListeners.getOrDefault(phase == null ? "" : phase.toString(), List.of())); }
-    public synchronized void clear() { phaseListeners.clear(); rebuildInvoker(); }
+    public synchronized void clear() {
+        phaseListeners.clear();
+        declaredPhases.clear();
+        phaseOrdering.clear();
+        rebuildInvoker();
+    }
 
     private void registerInternal(String phase, T listener) {
         synchronized (this) {
@@ -77,7 +82,8 @@ public class Event<T> {
             synchronized (this) {
                 List<T> listeners = phaseListeners.get(phase);
                 if (listeners != null) {
-                    listeners.remove(listener);
+                    int index = listeners.lastIndexOf(listener);
+                    if (index >= 0) listeners.remove(index);
                     if (listeners.isEmpty()) phaseListeners.remove(phase);
                 }
                 rebuildInvoker();

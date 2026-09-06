@@ -111,6 +111,7 @@ public final class KnotLauncher {
                                           String configDir) throws Exception {
         List<URL> urls = urls(classesDir, modsDir);
         loader = makeLoader(urls.toArray(URL[]::new));
+        prepareAccessWideners(loader, modsDir);
         prepareMixinConfigs(loader, modsDir);
         Class<?> bridge = Class.forName("cppfm.bridge.NativeBridge", true, loader);
         if (!installBridge(bridge))
@@ -458,6 +459,52 @@ public final class KnotLauncher {
         for (String resource : resources) register.invoke(target, resource);
     }
 
+    /**
+     * Register mod-declared Access Wideners before mixin classes or target
+     * classes are resolved.  This is kept separate from mixin discovery so a
+     * mod with no mixins still receives its access flags in the production
+     * fallback loader.
+     */
+    private static void prepareAccessWideners(ClassLoader target, String modsDir) throws Exception {
+        Method register;
+        try { register = target.getClass().getMethod("registerAccessWidener", String.class); }
+        catch (NoSuchMethodException ignored) { return; }
+        Set<String> resources = new LinkedHashSet<>();
+        Path directory = modsDir == null || modsDir.isBlank() ? null : Paths.get(modsDir);
+        if (directory != null && Files.isDirectory(directory)) {
+            try (var stream = Files.list(directory)) {
+                List<Path> candidates = stream
+                    .filter(item -> Files.isDirectory(item) || item.toString().endsWith(".jar"))
+                    .sorted(Comparator.comparing(Path::toString)).toList();
+                for (Path candidate : candidates) resources.addAll(accessWidenerResources(candidate));
+            }
+        }
+        for (String resource : resources) register.invoke(target, resource);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<String> accessWidenerResources(Path candidate) throws Exception {
+        String metadata;
+        if (Files.isDirectory(candidate)) {
+            Path file = candidate.resolve("fabric.mod.json");
+            if (!Files.isRegularFile(file)) return List.of();
+            metadata = Files.readString(file);
+        } else {
+            try (JarFile jar = new JarFile(candidate.toFile())) {
+                var entry = jar.getJarEntry("fabric.mod.json");
+                if (entry == null) return List.of();
+                try (var stream = jar.getInputStream(entry)) {
+                    metadata = new String(stream.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+                }
+            }
+        }
+        Object parsed = MiniJson.parse(metadata);
+        if (!(parsed instanceof Map<?, ?> map)) return List.of();
+        Object value = map.get("accessWidener");
+        if (value instanceof String name && !name.isBlank()) return List.of(name);
+        return List.of();
+    }
+
     @SuppressWarnings("unchecked")
     private static List<String> mixinResources(Path candidate) throws Exception {
         String metadata;
@@ -495,6 +542,18 @@ public final class KnotLauncher {
             Path path = Paths.get(classesDir);
             if (!Files.isDirectory(path)) throw new IOException("classes directory is missing: " + path);
             result.add(path.toUri().toURL());
+        }
+        String librariesDir = System.getProperty("cppfm.jvm.libraries");
+        if (librariesDir != null && !librariesDir.isBlank()) {
+            Path path = Paths.get(librariesDir).toAbsolutePath().normalize();
+            if (!Files.isDirectory(path))
+                throw new IOException("JVM libraries directory is missing: " + path);
+            try (var stream = Files.list(path)) {
+                List<Path> libraries = stream
+                    .filter(item -> Files.isDirectory(item) || item.toString().endsWith(".jar"))
+                    .sorted(Comparator.comparing(Path::toString)).toList();
+                for (Path item : libraries) result.add(item.toUri().toURL());
+            } catch (UrlFailure failure) { throw failure.io; }
         }
         if (modsDir != null && !modsDir.isBlank()) {
             Path path = Paths.get(modsDir);
@@ -540,6 +599,16 @@ public final class KnotLauncher {
     private static void logTransformerDiagnostics() {
         if (loader == null) return;
         try {
+            try {
+                Method applied = loader.getClass().getMethod("getAppliedMixins");
+                Object value = applied.invoke(loader);
+                if (value instanceof Iterable<?> entries) {
+                    for (Object entry : entries)
+                        NativeBridge.logFallback("INFO", String.valueOf(entry));
+                }
+            } catch (NoSuchMethodException ignored) {
+                // Older compatibility loaders have no success-evidence API.
+            }
             Method diagnostics = loader.getClass().getMethod("getDiagnostics");
             Object value = diagnostics.invoke(loader);
             if (value instanceof Iterable<?> entries) {

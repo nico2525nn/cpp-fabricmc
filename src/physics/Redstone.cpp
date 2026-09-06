@@ -472,11 +472,6 @@ void RedstoneEngine::onBlockChanged(std::int32_t x, std::int32_t y,
             // trigger only if not already pulsing
             std::int64_t key = posKey(ox,oy,oz);
             if (observerPulseEnd_.count(key)) continue;
-            // check previous state to avoid duplicate triggers for same change? Use stored prev
-            std::uint16_t prev = 0;
-            auto it = observerPrev_.find(key);
-            if (it != observerPrev_.end()) prev = it->second;
-            observerPrev_[key] = world_.getBlock(x,y,z);
             std::int64_t now = tickRef_ ? *tickRef_ : 0;
             handleObserverTrigger(ox,oy,oz, now);
         }
@@ -817,9 +812,9 @@ void RedstoneEngine::handleDoor(std::int32_t x, std::int32_t y, std::int32_t z) 
     const gen::BlockDef* ub = gen::blockByState(upperSt);
     if(!lb || std::string(lb->name).find("_door")==std::string::npos) return;
     if(!ub || std::string(ub->name).find("_door")==std::string::npos) return;
-    bool curPowered=false, curOpen=false;
+    bool curPowered=false;
     std::string facing, hinge;
-    for(auto& [k,v]: gen::propsOf(lowerSt)){ if(k=="powered") curPowered=(v=="true"); if(k=="open") curOpen=(v=="true"); if(k=="facing") facing=std::string(v); if(k=="hinge") hinge=std::string(v); }
+    for(auto& [k,v]: gen::propsOf(lowerSt)){ if(k=="powered") curPowered=(v=="true"); if(k=="facing") facing=std::string(v); if(k=="hinge") hinge=std::string(v); }
     bool powered = isPoweredHere(lx,ly,lz) || isPoweredHere(lx,ly+1,lz);
     // QC for doors? also check above
     if(!powered) powered = isPoweredHere(lx,ly+1,lz);
@@ -1387,8 +1382,6 @@ void RedstoneEngine::reactToPower(std::int32_t x, std::int32_t y,
         }
     } else if (b->name=="minecraft:detector_rail") {
         // detector rail powers when minecart above? For now treat as powered rail same
-        bool curPowered=false;
-        for (auto& [k,v] : gen::propsOf(st)) if (k=="powered" && v=="true") curPowered=true;
         // No minecart check, just propagate power inversion? Keep as is
     }
 }

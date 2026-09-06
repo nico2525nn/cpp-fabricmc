@@ -7,4 +7,5 @@ public interface CommandSource {
     default boolean acceptsSuccess() { return true; }
     default boolean acceptsFailure() { return true; }
     default boolean shouldReceiveFeedback() { return true; }
+    default boolean hasPermissionLevel(int level) { return false; }
 }

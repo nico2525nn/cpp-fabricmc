@@ -236,7 +236,12 @@ final class BytecodeInstructions {
         void insertBefore(Instruction anchor, List<Instruction> additions) {
             int index = instructions.indexOf(anchor);
             if (index < 0) throw new TransformException("instruction anchor disappeared");
-            instructions.addAll(index, attachOldOffset(additions, -1));
+            // A branch targeting the anchor must enter the injected code as
+            // well.  Keeping the old offset on the first generated
+            // instruction makes assemble() relocate that branch to the
+            // insertion point instead of jumping over the callback to the
+            // original instruction.
+            instructions.addAll(index, attachOldOffset(additions, anchor.oldOffset));
         }
 
         void insertAfter(Instruction anchor, List<Instruction> additions) {
@@ -319,6 +324,14 @@ final class BytecodeInstructions {
                 if (instruction.defaultTarget >= 0) targets.add(instruction.defaultTarget);
                 if (instruction.switchTargets != null)
                     for (int target : instruction.switchTargets) targets.add(target);
+                // The fall-through edge of a conditional branch is another
+                // verifier basic-block leader even when it is not an
+                // explicit branch target in the bytecode.
+                if (isConditionalBranch(instruction.opcode)) {
+                    int index = decoded.indexOf(instruction);
+                    if (index + 1 < decoded.size())
+                        targets.add(decoded.get(index + 1).oldOffset);
+                }
             }
             for (CodeModel.ExceptionHandler handler : code.exceptionHandlers)
                 targets.add(handler.handlerPc);
@@ -356,6 +369,10 @@ final class BytecodeInstructions {
             }
         }
 
+        private static boolean isConditionalBranch(int opcode) {
+            return (opcode >= 153 && opcode <= 166) || opcode == 198 || opcode == 199;
+        }
+
         private static VerificationType[] verificationLocals(Map<Integer, StackAnalyzer.Value> values,
                                                               ConstantPool pool) {
             if (values.isEmpty()) return new VerificationType[0];
@@ -370,9 +387,7 @@ final class BytecodeInstructions {
             for (Map.Entry<Integer, StackAnalyzer.Value> entry : values.entrySet()) {
                 int slot = entry.getKey();
                 StackAnalyzer.Value value = entry.getValue();
-                if (value.isUninitialized())
-                    throw new TransformException("uninitialized local in generated stack-map frame");
-                slots[slot] = verification(value.descriptor, pool);
+                slots[slot] = verification(value, pool);
                 if (value.slots == 2) wideTail[slot + 1] = true;
             }
             int last = slots.length - 1;
@@ -390,11 +405,22 @@ final class BytecodeInstructions {
                                                              ConstantPool pool) {
             ArrayList<VerificationType> result = new ArrayList<>();
             for (StackAnalyzer.Value value : values) {
-                if (value == null || value.isUninitialized())
+                if (value == null)
                     throw new TransformException("uninitialized value in generated stack-map frame");
-                result.add(verification(value.descriptor, pool));
+                result.add(verification(value, pool));
             }
             return result.toArray(VerificationType[]::new);
+        }
+
+        private static VerificationType verification(StackAnalyzer.Value value, ConstantPool pool) {
+            if (value.isUninitialized()) {
+                if (value.isUninitializedThis()) return new VerificationType(6, -1);
+                int offset = value.uninitializedOffset();
+                if (offset < 0 || offset > 65535)
+                    throw new TransformException("invalid uninitialized-new offset in generated frame");
+                return new VerificationType(8, offset);
+            }
+            return verification(value.descriptor, pool);
         }
 
         private static VerificationType verification(String descriptor, ConstantPool pool) {

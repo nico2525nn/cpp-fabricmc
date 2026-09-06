@@ -4,6 +4,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -38,6 +39,11 @@ final class StackAnalyzer {
         HashMap<Integer, List<Value>> after = new HashMap<>();
         HashMap<Integer, Map<Integer, Value>> localsBefore = new HashMap<>();
         HashMap<Integer, Map<Integer, Value>> localsAfter = new HashMap<>();
+        // A NEW instruction may be revisited when a predecessor's state
+        // becomes more precise.  Its verifier identity must nevertheless
+        // remain stable across those passes; otherwise the same allocation
+        // is mistaken for two different uninitialized values at a merge.
+        IdentityHashMap<BytecodeInstructions.Instruction, UninitializedToken> newTokens = new IdentityHashMap<>();
         while (!queue.isEmpty()) {
             int index = queue.removeFirst();
             State state = states.get(index);
@@ -45,7 +51,7 @@ final class StackAnalyzer {
             before.put(instruction.oldOffset, List.copyOf(state.stack));
             localsBefore.put(instruction.oldOffset, Map.copyOf(state.locals));
             State next = state.copy();
-            execute(owner.pool, instruction, next);
+            execute(owner.pool, instruction, next, newTokens);
             after.put(instruction.oldOffset, List.copyOf(next.stack));
             localsAfter.put(instruction.oldOffset, Map.copyOf(next.locals));
             // An exception edge enters with the locals which were live before
@@ -68,9 +74,12 @@ final class StackAnalyzer {
             for (int successor : successors(instructions, byOffset, index, instruction))
                 merge(states, queue, successor, next);
         }
-        for (BytecodeInstructions.Instruction instruction : instructions)
-            if (!before.containsKey(instruction.oldOffset))
-                throw new TransformException("unreachable/unknown stack state at " + instruction.oldOffset);
+        // A valid class may contain unreachable instructions after an
+        // unconditional branch (javac commonly leaves the old fall-through
+        // return path behind a loop).  Those instructions do not have a
+        // verifier state and must not make analysis of the reachable branch
+        // targets fail.  Callers that need a state still validate the
+        // requested offset through the Analysis accessors.
         return new Analysis(before, after, localsBefore, localsAfter);
     }
 
@@ -79,7 +88,7 @@ final class StackAnalyzer {
         int slot = 0;
         if ((method.access & ClassFileModel.ACC_STATIC) == 0) {
             state.locals.put(slot++, method.name(owner.pool).equals("<init>")
-                ? uninitializedRef(owner.internalName()) : ref(owner.internalName()));
+                ? uninitializedThis(owner.internalName()) : ref(owner.internalName()));
         }
         for (Descriptor.Type argument : descriptor.arguments) {
             state.locals.put(slot, value(argument));
@@ -87,7 +96,8 @@ final class StackAnalyzer {
         }
     }
 
-    private static void execute(ConstantPool pool, BytecodeInstructions.Instruction instruction, State state) {
+    private static void execute(ConstantPool pool, BytecodeInstructions.Instruction instruction, State state,
+                                IdentityHashMap<BytecodeInstructions.Instruction, UninitializedToken> newTokens) {
         int opcode = instruction.opcode;
         switch (opcode) {
             case 0, 132, 167, 168, 169, 177, 200, 201 -> { }
@@ -154,10 +164,16 @@ final class StackAnalyzer {
             case 180 -> { pop(state, 1); state.stack.add(field(pool, instruction)); }
             case 181 -> { Value field = field(pool, instruction); pop(state, field.slots + 1); }
             case 182, 183, 184, 185, 186 -> invoke(pool, instruction, state);
-            case 187 -> state.stack.add(uninitializedRef(pool.className(BytecodeInstructions.cpIndex(instruction))));
+            case 187 -> state.stack.add(uninitializedRef(
+                pool.className(BytecodeInstructions.cpIndex(instruction)),
+                newTokens.computeIfAbsent(instruction,
+                    ignored -> new UninitializedToken(false, instruction.oldOffset))));
             case 188, 189 -> { pop(state, 1); state.stack.add(ref("java/lang/Object")); }
             case 190 -> { pop(state, 1); state.stack.add(INT); }
-            case 192 -> { pop(state, 1); state.stack.add(ref(pool.className(BytecodeInstructions.cpIndex(instruction)))); }
+            case 192 -> {
+                pop(state, 1);
+                state.stack.add(classValue(pool.className(BytecodeInstructions.cpIndex(instruction))));
+            }
             case 193 -> { pop(state, 1); state.stack.add(INT); }
             case 194, 195 -> pop(state, 1);
             case 196 -> executeWide(pool, instruction, state);
@@ -368,6 +384,12 @@ final class StackAnalyzer {
             this.primitive = primitive; this.uninitializedToken = uninitializedToken;
         }
         boolean isUninitialized() { return uninitializedToken != null; }
+        boolean isUninitializedThis() {
+            return uninitializedToken instanceof UninitializedToken token && token.thisReference;
+        }
+        int uninitializedOffset() {
+            return uninitializedToken instanceof UninitializedToken token ? token.newOffset : -1;
+        }
     }
 
     private static final Value INT = new Value("I", 1, false, true);
@@ -378,10 +400,23 @@ final class StackAnalyzer {
     private static Value value(Descriptor.Type type) {
         return new Value(type.descriptor, type.slots, type.reference, type.primitive);
     }
-    private static Value ref(String owner) { return new Value("L" + owner + ";", 1, true, false); }
-    private static Value uninitializedRef(String owner) {
-        return new Value("L" + owner + ";", 1, true, false, new Object());
+    private static Value ref(String owner) {
+        if (owner != null && owner.startsWith("[")) return value(Descriptor.type(owner));
+        return new Value("L" + owner + ";", 1, true, false);
     }
+    private static Value classValue(String owner) {
+        if (owner != null && owner.startsWith("[")) return value(Descriptor.type(owner));
+        return ref(owner);
+    }
+    private static Value uninitializedRef(String owner, Object token) {
+        return new Value("L" + owner + ";", 1, true, false, token);
+    }
+
+    private static Value uninitializedThis(String owner) {
+        return uninitializedRef(owner, new UninitializedToken(true, -1));
+    }
+
+    private record UninitializedToken(boolean thisReference, int newOffset) { }
 
     private static final class State {
         final ArrayList<Value> stack = new ArrayList<>();

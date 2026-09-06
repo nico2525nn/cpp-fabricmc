@@ -3,6 +3,7 @@ package net.minecraft.block;
 public final class Blocks {
     private Blocks() {}
     public static final Block AIR = new Block(0);
+    public static final Block VOID_AIR = new Block(0, net.minecraft.util.Identifier.of("minecraft", "void_air"));
     public static final Block STONE = new Block(1, net.minecraft.util.Identifier.of("minecraft", "stone"));
     public static final Block GRANITE = new Block(2, net.minecraft.util.Identifier.of("minecraft", "granite"));
     public static final Block DIORITE = new Block(3, net.minecraft.util.Identifier.of("minecraft", "diorite"));
@@ -36,5 +37,8 @@ public final class Blocks {
     public static final Block END_STONE = new Block(31, net.minecraft.util.Identifier.of("minecraft", "end_stone"));
     public static final Block BRICKS = new Block(32, net.minecraft.util.Identifier.of("minecraft", "bricks"));
     public static final Block BOOKSHELF = new Block(33, net.minecraft.util.Identifier.of("minecraft", "bookshelf"));
-    public static Block[] values() { return new Block[] { AIR, STONE, GRANITE, DIORITE, ANDESITE, GRASS_BLOCK, DIRT, COBBLESTONE, BEDROCK, SAND, GRAVEL, OAK_LOG, OAK_PLANKS, OAK_LEAVES, GLASS, WATER, LAVA, CRAFTING_TABLE, FURNACE, CHEST, TORCH, REDSTONE_BLOCK, DIAMOND_BLOCK, IRON_BLOCK, GOLD_BLOCK, EMERALD_BLOCK, OBSIDIAN, SNOW_BLOCK, WHITE_WOOL, NETHERRACK, SOUL_SAND, END_STONE, BRICKS, BOOKSHELF }; }
+    public static final Block STRUCTURE_VOID = new Block(34, net.minecraft.util.Identifier.of("minecraft", "structure_void"));
+    public static final Block PISTON = new PistonBlock(false, AbstractBlock.Settings.create());
+    public static final Block PISTON_HEAD = new PistonHeadBlock(AbstractBlock.Settings.create());
+    public static Block[] values() { return new Block[] { AIR, STONE, GRANITE, DIORITE, ANDESITE, GRASS_BLOCK, DIRT, COBBLESTONE, BEDROCK, SAND, GRAVEL, OAK_LOG, OAK_PLANKS, OAK_LEAVES, GLASS, WATER, LAVA, CRAFTING_TABLE, FURNACE, CHEST, TORCH, REDSTONE_BLOCK, DIAMOND_BLOCK, IRON_BLOCK, GOLD_BLOCK, EMERALD_BLOCK, OBSIDIAN, SNOW_BLOCK, WHITE_WOOL, NETHERRACK, SOUL_SAND, END_STONE, BRICKS, BOOKSHELF, STRUCTURE_VOID, PISTON, PISTON_HEAD }; }
 }

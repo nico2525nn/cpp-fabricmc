@@ -3,9 +3,22 @@ package net.minecraft.block;
 import java.util.function.BiPredicate;
 import java.util.function.Function;
 import java.util.function.ToIntFunction;
+import java.util.function.BiConsumer;
+import java.util.List;
+import net.minecraft.item.ItemStack;
+import net.minecraft.server.world.ServerWorld;
+import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Direction;
+import net.minecraft.util.math.random.Random;
+import net.minecraft.world.World;
+import net.minecraft.world.WorldView;
+import net.minecraft.world.tick.ScheduledTickView;
+import net.minecraft.world.explosion.Explosion;
 
 /** Mutable construction settings; the native world remains authoritative after registration. */
 public abstract class AbstractBlock {
+    /** Vanilla's shared direction table, exposed to Accessor mixins. */
+    private static final Direction[] DIRECTIONS = Direction.values();
     /** The construction settings exposed to block subclasses and access wideners. */
     protected final Settings settings;
 
@@ -18,6 +31,57 @@ public abstract class AbstractBlock {
     protected AbstractBlock() { this(Settings.create()); }
 
     public Settings getSettings() { return settings; }
+
+    /** 1.21.4 neighbour-update hook used by block behaviour mixins. */
+    public BlockState getStateForNeighborUpdate(BlockState state, WorldView world,
+            ScheduledTickView tickView, BlockPos pos, Direction direction,
+            BlockPos neighborPos, BlockState neighborState, Random random) {
+        return state == null ? Blocks.AIR.getDefaultState() : state;
+    }
+
+    /** Explosion drop hook used by Carpet's 1.21.4 server mixins. */
+    public void onExplosionHit(BlockState state, ServerWorld world, BlockPos pos,
+            Explosion explosion, BiConsumer<ItemStack, BlockPos> dropConsumer) { }
+    /** Yarn name for the 1.21.4 explosion callback. */
+    public void onExploded(BlockState state, ServerWorld world, BlockPos pos,
+            Explosion explosion, BiConsumer<ItemStack, BlockPos> dropConsumer) {
+        onExplosionHit(state, world, pos, explosion, dropConsumer);
+    }
+
+    /**
+     * Nested state name present in the 1.21.4 intermediary ABI.  The shadow
+     * world uses the common BlockState implementation, while retaining the
+     * binary relationship required by accessor and optimization mods.
+     */
+    public static class AbstractBlockState extends BlockState {
+        public AbstractBlockState(int rawState) { super(rawState); }
+        protected AbstractBlockState() { this(0); }
+
+        /**
+         * Mojang-mapped name used by FerriteCore's 1.21.4 block-state cache
+         * mixin.  Yarn calls the same lifecycle point initShapeCache; keeping
+         * both names makes the named shadow and intermediary mod bytecode meet
+         * at one real method instead of silently skipping the injection.
+         */
+        public void initCache() { }
+        public void initShapeCache() { initCache(); }
+
+        /** Shadow target for class_4970$class_4971#method_26233/asBlockState. */
+        public BlockState asBlockState() { return this; }
+        public BlockState method_26233() { return asBlockState(); }
+
+        /** Mojang name used by Carpet; Yarn exposes getPistonBehavior. */
+        public net.minecraft.block.piston.PistonBehavior getPistonPushReaction() {
+            return net.minecraft.block.piston.PistonBehavior.NORMAL;
+        }
+        public net.minecraft.block.piston.PistonBehavior getPistonBehavior() {
+            return getPistonPushReaction();
+        }
+        public net.minecraft.block.piston.PistonBehavior method_26223() {
+            return getPistonBehavior();
+        }
+        public Block method_26204() { return getBlock(); }
+    }
 
     public static class Settings {
         private float hardness = 1.0f;

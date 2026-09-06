@@ -2,7 +2,7 @@
 
 This document describes the current behavior surface for Minecraft Java 1.21.4,
 protocol 769, and DataVersion 4189 at runtime snapshot
-`c3a5e49e41261dacb4b9454c538aa87575fa9546` (rechecked 2026-09-05). It covers
+`c3a5e49e41261dacb4b9454c538aa87575fa9546` (rechecked 2026-09-06). It covers
 MISSING **#1–#70**, **#80–#90**, the Fabric-specific rows, and the world-generation
 G-10/G-11 evidence. Packet fields remain in
 [SPEC_WIRE.md](SPEC_WIRE.md); operational thresholds remain in
@@ -245,7 +245,7 @@ Fresh focused results:
 | `test_mob_stats_full` | `131 PASS 0 FAIL` |
 | `test_redstone_engine_full` | `29 PASS 0 FAIL` |
 | `test_recipes_mirror` | `76 PASS 0 FAIL` |
-| `test_plan43` | `82 PASS 0 FAIL` in 25.01s |
+| `test_plan43` | `82 PASS 0 FAIL` in 25.14s after the clean rebuild |
 | `test_native` | `ALL PASS` in 2.33s |
 | `test_server_full` | `234 PASS 0 FAIL` |
 | `multi_client` | `ALL PASS` in 17.83s |

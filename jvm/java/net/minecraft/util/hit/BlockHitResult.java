@@ -23,6 +23,9 @@ public class BlockHitResult extends HitResult {
         this.side = side == null ? Direction.UP : side;
         this.insideBlock = insideBlock;
     }
+    public static BlockHitResult createMissed(Vec3d pos, Direction side, BlockPos blockPos) {
+        return new BlockHitResult(pos, side, blockPos, false);
+    }
     private BlockHitResult(Vec3d pos, BlockPos blockPos, Direction side, boolean insideBlock) {
         this(pos, side, blockPos, insideBlock);
     }

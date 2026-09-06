@@ -9,18 +9,33 @@ import java.util.List;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BooleanSupplier;
 import java.util.function.Predicate;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.World;
 import net.minecraft.util.NativeAccess;
+import java.util.concurrent.Executor;
+import java.io.Writer;
 
-public class ServerWorld extends World {
+public class ServerWorld extends World implements net.minecraft.world.ServerWorldAccess {
     private final MinecraftServer server;
+    private final ServerEntityManager entityManager = new ServerEntityManager();
 
     protected ServerWorld(long nativeHandle, MinecraftServer server) {
         super(nativeHandle, false);
         this.server = server;
+    }
+    public ServerWorld(MinecraftServer server, Executor workerExecutor,
+                       net.minecraft.world.level.storage.LevelStorage.Session session,
+                       net.minecraft.world.level.ServerWorldProperties properties,
+                       net.minecraft.registry.RegistryKey<net.minecraft.world.World> registryKey,
+                       net.minecraft.world.dimension.DimensionOptions dimensionOptions,
+                       net.minecraft.server.WorldGenerationProgressListener progressListener,
+                       boolean debugWorld, long seed, List<?> spawners,
+                       boolean shouldTickTime,
+                       net.minecraft.util.math.random.RandomSequencesState randomSequencesState) {
+        this(0L, server);
     }
     public static ServerWorld of(long handle, MinecraftServer server) {
         return handle == 0L
@@ -85,4 +100,22 @@ public class ServerWorld extends World {
         return null;
     }
     @Override public boolean isChunkLoaded(int chunkX, int chunkZ) { return nativeHandle != 0; }
+    public void tickChunk(net.minecraft.world.chunk.WorldChunk chunk, int randomTickSpeed) { }
+    public void tick(BooleanSupplier shouldKeepTicking) {
+        if (shouldKeepTicking != null && !shouldKeepTicking.getAsBoolean()) return;
+        getWorldBorder().tick();
+    }
+    public void tick() { tick(() -> true); }
+    public void createExplosion(Entity entity, net.minecraft.entity.damage.DamageSource damageSource,
+                                net.minecraft.world.explosion.ExplosionBehavior behavior,
+                                double x, double y, double z, float power, boolean createFire,
+                                net.minecraft.world.World.ExplosionSourceType sourceType,
+                                net.minecraft.particle.ParticleEffect smallParticle,
+                                net.minecraft.particle.ParticleEffect largeParticle,
+                                net.minecraft.registry.entry.RegistryEntry<?> particle) { }
+    public void unloadEntities(net.minecraft.world.chunk.WorldChunk chunk) { }
+    public void updateListeners(net.minecraft.util.math.BlockPos pos,
+                                net.minecraft.block.BlockState oldState,
+                                net.minecraft.block.BlockState newState, int flags) { }
+    public void dumpBlockEntities(Writer writer) { }
 }

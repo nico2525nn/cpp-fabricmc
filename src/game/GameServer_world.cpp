@@ -445,10 +445,12 @@ void GameServer::broadcastWorldBorder() {
 }
 std::string GameServer::dispatchConsole(const std::string& line) {
     std::string command = line;
+    std::string javaResponse;
     // RCON/console is another command ingress.  A Java-registered command is
     // consumed by the embedded bridge; rewritten/unknown commands continue
     // through the authoritative native dispatcher below.
-    if (jvmRuntime_ && !jvmRuntime_->onCommand(nullptr, command)) return "OK";
+    if (jvmRuntime_ && !jvmRuntime_->onCommand(nullptr, command, &javaResponse))
+        return javaResponse.empty() ? "OK" : javaResponse;
     brigadier::CommandSource src;
     src.console = true;
     src.srcX = 0; src.srcY = -60; src.srcZ = 0;

@@ -22,12 +22,16 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Random;
+import java.util.Optional;
 import java.util.function.Predicate;
+import net.minecraft.util.math.random.Random;
+import net.minecraft.util.math.Direction;
 
-public class World implements BlockView, WorldView, WorldAccess {
+public class World implements BlockView, WorldView, WorldAccess, CollisionView, HeightLimitView, RedstoneView {
     protected final long nativeHandle;
     protected final boolean client;
+    /** Owning thread marker exposed to thread-safety mixins. */
+    private final Thread thread = Thread.currentThread();
     private final Map<Long, BlockState> localBlocks = new HashMap<>();
     private final Map<Long, BlockEntity> localBlockEntities = new HashMap<>();
     private final net.minecraft.world.border.WorldBorder border = new net.minecraft.world.border.WorldBorder();
@@ -39,6 +43,12 @@ public class World implements BlockView, WorldView, WorldAccess {
         this.nativeHandle = nativeHandle;
         this.client = client;
         this.dimensionType = net.minecraft.world.dimension.DimensionType.OVERWORLD;
+    }
+    protected World(MutableWorldProperties properties, RegistryKey<World> registryKey,
+                    net.minecraft.registry.DynamicRegistryManager registryManager,
+                    net.minecraft.registry.entry.RegistryEntry<net.minecraft.world.dimension.DimensionType> dimensionType,
+                    boolean isClient, boolean debug, long seed, int ambientLight) {
+        this(0L, isClient);
     }
     public static World of(long handle) {
         return handle == 0L
@@ -64,6 +74,9 @@ public class World implements BlockView, WorldView, WorldAccess {
         return returned.getReturnValue();
     }
     public boolean setBlockState(BlockPos pos, BlockState state) { return setBlockState(pos, state, 3); }
+    public boolean setBlockState(BlockPos pos, BlockState state, int flags, int maxUpdateDepth) {
+        return setBlockState(pos, state, flags);
+    }
     public boolean setBlockState(BlockPos pos, BlockState state, int flags) {
         if (pos == null || state == null) return false;
         Boolean overwritten = MixinHooks.invokeOverwrite(this, "setBlockState", pos, state, flags);
@@ -80,6 +93,38 @@ public class World implements BlockView, WorldView, WorldAccess {
             this, "setBlockState", tail.getReturnValue(), pos, state, flags);
         return Boolean.TRUE.equals(returned.getReturnValue());
     }
+    /** Mojang-mapped alias retained for server mixins. */
+    public boolean setBlock(BlockPos pos, BlockState state, int flags, int recursionLeft) {
+        return setBlockState(pos, state, flags);
+    }
+    public boolean setBlock(BlockPos pos, BlockState state, int flags) {
+        return setBlockState(pos, state, flags);
+    }
+    /** Vanilla block-entity tick hook; native ticking remains authoritative. */
+    public void tickBlockEntities() { }
+    /** Block-entity ticker registration boundary used by 1.21.4 mixins. */
+    public void addBlockEntityTicker(net.minecraft.world.chunk.BlockEntityTickInvoker ticker) { }
+    @Override public Optional<BlockPos> findSupportingBlockPos(Entity entity, Box box) {
+        return Optional.empty();
+    }
+    /** Chunk lookup ABI used by world mixins. */
+    public net.minecraft.world.chunk.WorldChunk getWorldChunk(BlockPos pos) {
+        return new net.minecraft.world.chunk.WorldChunk(this,
+            pos == null ? new ChunkPos(0, 0) : new ChunkPos(pos));
+    }
+    public net.minecraft.world.chunk.WorldChunk getChunk(int chunkX, int chunkZ) {
+        return new net.minecraft.world.chunk.WorldChunk(this, new ChunkPos(chunkX, chunkZ));
+    }
+    public void tickEntity(java.util.function.Consumer<Entity> consumer, Entity entity) {
+        if (consumer != null && entity != null) consumer.accept(entity);
+    }
+    public boolean hasNeighborSignal(BlockPos pos) {
+        return isReceivingRedstonePower(pos);
+    }
+    @Override public boolean isReceivingRedstonePower(BlockPos pos) {
+        return nativeHandle != 0 && pos != null && NativeAccess.worldBlock(nativeHandle,
+            pos.getX(), pos.getY(), pos.getZ()) != 0;
+    }
     @SuppressWarnings("unchecked")
     public RegistryKey<World> getRegistryKey() {
         String name = NativeAccess.worldName(nativeHandle);
@@ -87,12 +132,18 @@ public class World implements BlockView, WorldView, WorldAccess {
     }
     public long getTime() { return nativeHandle == 0 ? NativeAccess.currentTick() : NativeAccess.worldTime(nativeHandle); }
     public long getTimeOfDay() { return getTime(); }
+    public enum ExplosionSourceType { BLOCK, MOB, TNT, TRIGGER }
     /** 1.21.4 overworld floor; kept literal so constant mixins can target it. */
     public int getBottomY() { return -64; }
+    @Override public int getHeight() { return dimensionType.height(); }
     public int getTopY() { return dimensionType.minY() + dimensionType.height(); }
+    public int getTopY(Heightmap.Type type, int x, int z) { return getTopY(); }
     public boolean isChunkLoaded(int chunkX, int chunkZ) { return nativeHandle != 0 || !localBlocks.isEmpty(); }
     public boolean isInBuildLimit(BlockPos pos) { return pos != null && pos.getY() >= getBottomY() && pos.getY() < getTopY(); }
     public boolean isAir(BlockPos pos) { return getBlockState(pos).isAir(); }
+    public net.minecraft.fluid.FluidState getFluidState(BlockPos pos) {
+        return net.minecraft.fluid.Fluids.EMPTY.getDefaultState();
+    }
     public boolean breakBlock(BlockPos pos, boolean drop) { if (isAir(pos)) return false; return setBlockState(pos, Blocks.AIR.getDefaultState()); }
     public boolean removeBlock(BlockPos pos, boolean move) { return breakBlock(pos, move); }
     @Override public BlockEntity getBlockEntity(BlockPos pos) {

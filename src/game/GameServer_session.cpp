@@ -1141,8 +1141,8 @@ void Session::sendStarterInventory() {
 }
 void Session::onWindowClick(ReadBuffer& in) {
     // Strict 1.21.4 (protocol 769) : `window_click` 0x10 windowId VarInt + stateId VarInt (I12).
-    int windowId = 0;
-    int stateId = 0;
+    [[maybe_unused]] int windowId = 0;
+    [[maybe_unused]] int stateId = 0;
     size_t mark = in.off;
     try {
         windowId = in.varint();
@@ -2347,7 +2347,7 @@ void Session::onCustomPayload(ReadBuffer& in) {
     onPluginPayload(channel, body, 1);
 }
 void Session::onPlaceRecipePacket(ReadBuffer& in) {
-    int windowId = 0;
+    [[maybe_unused]] int windowId = 0;
     {
         const std::size_t mark = in.off;
         try { windowId = in.varint(); }

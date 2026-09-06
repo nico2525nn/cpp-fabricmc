@@ -10,7 +10,7 @@
 
 | field | value |
 |---|---|
-| `updated` | `2026-09-05` |
+| `updated` | `2026-09-06` |
 | `implementation_baseline` | `c3a5e49e41261dacb4b9454c538aa87575fa9546` |
 | `implementation_baseline_short` | `c3a5e49` |
 | `documentation_commit` | `c3a5e49e41261dacb4b9454c538aa87575fa9546` (documentation synchronized to this source snapshot) |
@@ -68,7 +68,7 @@ explicit rather than being converted into a broad PASS:
 | chunk generation/save/unload memory | `IMPLEMENTED; 30M DIAGNOSTIC PASS / 2H NOT-ACCEPTED` | generation is serialized per world; async save no longer copies a full `Chunk`; eviction no longer adds an extra 32-block ring; bounded allocation reuse is in `17ab09f`; the 1800s run passes at `114504→128868kB` (`+12.5%`), while the earlier 7200s attempt on parent `d1c6a7f` was not accepted at `+19.5%` |
 | accepted 2-hour/24-hour evidence | `INTERRUPTED / ABSENT` | the 7200s synthetic attempt was not completed or accepted; no accepted 2-hour or 24-hour artifact exists; procedures are not results |
 | current real-client/GUI evidence | `ABSENT` / `DECLARED-LIMITATION` | no current official-client capture is available; bot/synthetic output is not a real-client proof |
-| locked real public-mod corpus | `SKIP / NOT-ACCEPTED` | Lithium, FerriteCore, and Carpet archives/metadata verify, but runtime comparison was not attempted because this machine has Java 25 and the lock requires Java 21; no compatibility PASS is claimed |
+| locked real public-mod corpus | `PASS / BOUNDED` | Lithium, FerriteCore, and Carpet plus the combined run pass with the explicit Java 21 launcher; report retained at `build/real-mod-corpus/real-mod-corpus-report.json`; this does not establish arbitrary-mod compatibility |
 | `wt48/cleanup` worktree | `DIRTY` / `PRESERVE-REVIEW` | branch `wt48/cleanup`, HEAD `5f82ac0b4448f76f98753d18c83bbcd9736da61c`, 19 changed paths, `+74/-840`; contains source/tests/tools and is not an approved merge or removal target |
 
 The `RESOLVED` Structures API row does not close the structure-generation parity
@@ -77,14 +77,14 @@ proven, and historical numbered-row `DONE` values are not universal parity claim
 
 ## 4. Exact final-gates evidence
 
-These are the carried-forward exact main-checkout results plus the plan51 rerun
-against implementation snapshot `c3a5e49` on 2026-09-05. The post-fix wide soak is
+These are the carried-forward exact main-checkout results plus the plan51 and
+real-mod rerun against implementation snapshot `c3a5e49` on 2026-09-06. The post-fix wide soak is
 listed separately from the focused gates. Results are identified by their target
 names:
 
 | target | result | status / consequence |
 |---|---|---|
-| configure/build | configure and integrated RelWithDebInfo build completed; incremental Ninja was then clean | `PASS` |
+| configure/build | clean RelWithDebInfo rebuild completed in two timeout-wrapped invocations (`219/279` before the first outer timeout, then the remaining `60/60` targets) | `PASS` |
 | incremental Ninja build | `ninja: no work to do` | `PASS` |
 | `test_scoreboard_reset` | `22 PASS 0 FAIL` | `PASS` |
 | `test_spec_wire` | `392 PASS 0 FAIL 0 SKIP` | `PASS` |
@@ -99,7 +99,7 @@ names:
 | `test_redstone_engine_full` | `29 PASS 0 FAIL` | `PASS` |
 | `test_recipes_mirror` | `76 PASS 0 FAIL` | `PASS` |
 | `test_native` | `ALL PASS` in `2.33s` | `PASS`; no invented aggregate count |
-| `test_plan43` | `82 PASS 0 FAIL` in `25.01s` | `PASS` |
+| `test_plan43` | `82 PASS 0 FAIL` in `25.14s` after the clean rebuild | `PASS` |
 | `test_smoke_80` | `212 PASS 0 FAIL` | `PASS` |
 | `test_server_full` | `234 PASS 0 FAIL` | `PASS` |
 | multi-client | `ALL PASS` in `17.83s` | `PASS` |
@@ -116,13 +116,14 @@ names:
 | `cppfm_jvm_classes` / `cppfm_jvm_fixture` | `PASS` | Java shadow ABI and deterministic server-side fixture compile |
 | JVM fixture ABI invalidation | `PASS` | CMake now depends on the Java classes stamp, so a changed shadow annotation/API recompiles the fixture instead of reusing stale bytecode |
 | `jvm_runtime` | `PASS` | embedded HotSpot, entrypoint, command registration, World API, lifecycle, Mixin HEAD/RETURN/Overwrite, tick, and owned clean shutdown |
-| `jvm_transformer` | `PASS` | pre-definition transformer contract, verifier-safe bytecode rewrite, callback/local preservation, and transform-order checks |
+| `jvm_transformer` | `PASS` | pre-definition transformer contract, verifier-safe bytecode rewrite, callback/local preservation, transform-order checks, MixinExtras operations, `@Share`, and `@Local` selectors |
 | `jvm_api` | `PASS` | Fabric-style event, command, registry, and networking callback surface contract |
 | `jvm_compatibility` | `PASS` | all 25 plan51 fixture cases pass in one `cppfm` process; report status `PASS`, 25/25 fixtures, 0 errors |
 | `jvm_corpus` | `PASS` | executable 25-case compatibility corpus passes end-to-end |
-| `jvm_manifest` | `PASS` | declarative protocol-769 ABI manifest reproducibly generated; 82 methods (52 native + 30 wrapper), 9 structured methods, 10 injection points, 9 transformer names |
+| `jvm_manifest` | `PASS` | declarative protocol-769 ABI manifest reproducibly generated; 94 methods (47 native + 47 wrapper), 9 structured methods, 10 injection points, 14 transformer names |
 | `jvm_contract_audit` | `PASS` | every declared ABI method has exactly one native or wrapper backend classification |
 | official Loader/Knot probe | `PASS / DECLARED-LIMITATION` | offline pinned Loader 0.16.9/Knot/Mixin probe records all seven expected markers; no Mojang server/provider is shipped |
+| `real_mod_corpus` | `PASS / BOUNDED` | Lithium, FerriteCore, Carpet, and combined runtime probes pass with explicit Java 21; no arbitrary-mod or client/GUI claim |
 
 The three `soak_bot` runs close the former bot-soak blocker. The chunk memory/generation
 follow-up is covered by the passing 600-second wide soak and the new 1800-second
@@ -135,12 +136,12 @@ real-client/GUI artifact exists.
 
 - **E-14 Fabric JVM-mod boundary:** plan51 now executes a bounded dependency-free
   shadow ABI through optional embedded HotSpot/JNI, with selected callbacks, a
-  version-locked pre-definition class-file transformer, and selective native/JVM
-  routing. The 25-case dependency-free corpus passes, and the pinned official
-  Loader/Knot stack passes a separate offline probe. The production path is still
-  not the Mojang GameProvider; arbitrary Fabric JVM mods and universal bytecode
-  compatibility remain unsupported. The one gameplay failure is intentional and
-  must remain an expected failure.
+  version-locked pre-definition class-file transformer, MixinExtras operation
+  support, and selective native/JVM routing. The 25-case dependency-free corpus,
+  pinned official Loader/Knot stack, and three locked real server-side mod cases
+  pass. The production path is still not the Mojang GameProvider; arbitrary Fabric
+  JVM mods and universal bytecode compatibility remain unsupported. The one
+  gameplay failure is intentional and must remain an expected failure.
 - **Vanilla Xoroshiro L3:** `test_seed_parity` proves the stated L1/L2 evidence, but
   exact vanilla Xoroshiro byte parity is not independently proven.
 - **Long-run evidence:** the three 300-second bot runs, the 300-second synthetic soak,
@@ -168,9 +169,8 @@ proof, missing long-run artifact, or missing real-client artifact into a pass.
 
 Next actions are to keep the E-14 assertion unchanged, retain the interrupted 7200s
 soak as a negative diagnostic artifact, and retain the long-run/real-client evidence
-boundaries. Broader API, remaining constructor/verifier-state, real-mod, or universal
-compatibility work requires a new authorized plan after the bounded plan51 evidence is
-reviewed.
+boundaries. Broader API, remaining constructor/verifier-state, or universal
+compatibility work remains outside this bounded plan51 snapshot.
 
 ## 8. Plan49 implementation and evidence handoff
 

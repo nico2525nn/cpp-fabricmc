@@ -39,6 +39,14 @@ int main() {
           "invalidating an unknown address does not mint a handle");
 
     ModRoutingTable routing;
+    const std::string serverOwner = "net.minecraft.server.MinecraftServer";
+    routing.markTransformed(serverOwner, "setTick", "(J)V", 101);
+    check(routing.path("net/minecraft/server/MinecraftServer", "setTick", "(J)V") ==
+              DispatchPath::JvmTransformed,
+          "MinecraftServer tick route selects transformed body");
+    routing.markNative(serverOwner, "setTick", "(J)V", 100);
+    check(routing.path(serverOwner, "setTick", "(J)V") == DispatchPath::NativeFast,
+          "MinecraftServer tick route restores native path");
     check(routing.path("net/minecraft/World", "tick", "()V") ==
               DispatchPath::NativeFast,
           "unmodified method uses native fast path");

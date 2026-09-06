@@ -19,7 +19,7 @@ import java.util.Map;
 public final class AccessWidenerTransformer implements ClassFileTransformer {
     private final String runtimeNamespace;
     private final DescriptorResolver resolver;
-    private final boolean strict;
+    private volatile boolean strict;
     private final Map<String, AccessState> classAccess = new LinkedHashMap<>();
     private final Map<MemberKey, AccessState> fieldAccess = new LinkedHashMap<>();
     private final Map<MemberKey, AccessState> methodAccess = new LinkedHashMap<>();
@@ -59,6 +59,11 @@ public final class AccessWidenerTransformer implements ClassFileTransformer {
 
     public DescriptorResolver getResolver() {
         return resolver;
+    }
+
+    /** Update the loader-wide fail-closed policy for future transformations. */
+    public void setStrict(boolean strict) {
+        this.strict = strict;
     }
 
     public synchronized void register(byte[] content) {

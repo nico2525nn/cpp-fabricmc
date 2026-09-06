@@ -31,7 +31,7 @@ std::string ModRoutingTable::canonicalOwner(std::string owner) {
 
 std::uint64_t ModRoutingTable::stableHash(const std::string& owner,
                                           const std::string& name,
-                                          const std::string& descriptor) noexcept {
+                                          const std::string& descriptor) {
     std::uint64_t hash = 1469598103934665603ULL;
     fnvAppend(hash, canonicalOwner(owner));
     fnvAppend(hash, name);

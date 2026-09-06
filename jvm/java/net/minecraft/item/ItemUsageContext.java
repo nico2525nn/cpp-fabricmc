@@ -4,6 +4,7 @@ import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.util.Hand;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Direction;
 import net.minecraft.world.World;
 
 public class ItemUsageContext {
@@ -17,4 +18,8 @@ public class ItemUsageContext {
     public World getWorld() { return player == null ? null : player.getWorld(); }
     public BlockPos getBlockPos() { return hit == null ? new BlockPos(0, 0, 0) : hit.getBlockPos(); }
     public BlockHitResult getHitResult() { return hit; }
+    public Direction getHorizontalDirection() {
+        return player == null ? Direction.NORTH : player.getHorizontalFacing();
+    }
+    public Direction getHorizontalPlayerFacing() { return getHorizontalDirection(); }
 }

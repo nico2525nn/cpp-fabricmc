@@ -2,6 +2,7 @@ package net.minecraft.world;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import net.minecraft.resource.featuretoggle.FeatureSet;
 
 public final class GameRules {
     public static final Key<BooleanRule> DO_DAYLIGHT_CYCLE = new Key<>("doDaylightCycle");
@@ -10,6 +11,16 @@ public final class GameRules {
     public static final Key<IntRule> RANDOM_TICK_SPEED = new Key<>("randomTickSpeed");
     private final Map<Key<?>, Rule<?>> values = new ConcurrentHashMap<>();
     public GameRules() { values.put(DO_DAYLIGHT_CYCLE, new BooleanRule(true)); values.put(DO_MOB_SPAWNING, new BooleanRule(true)); values.put(KEEP_INVENTORY, new BooleanRule(false)); values.put(RANDOM_TICK_SPEED, new IntRule(3)); }
+    /** 1.21.4 constructor used by the server-rule bootstrap and Access Widener tests. */
+    public GameRules(Map<?, ?> initialValues, FeatureSet features) {
+        this();
+        if (initialValues != null) {
+            for (Map.Entry<?, ?> entry : initialValues.entrySet()) {
+                if (entry.getKey() instanceof Key<?> key && entry.getValue() instanceof Rule<?> rule)
+                    values.put(key, rule);
+            }
+        }
+    }
     @SuppressWarnings("unchecked") public <T extends Rule<T>> T get(Key<T> key) { return (T) values.get(key); }
     public static final class Key<T extends Rule<T>> { private final String id; public Key(String id) { this.id = id; } public String id() { return id; } @Override public String toString() { return id; } }
     public abstract static class Rule<T extends Rule<T>> { public abstract T copy(); }

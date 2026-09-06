@@ -45,6 +45,8 @@ public class PlayerEntity extends LivingEntity {
     public boolean dropItem(ItemStack stack, boolean throwRandomly, boolean retainOwnership) { return stack != null && !stack.isEmpty(); }
     public boolean dropItem(ItemStack stack, boolean throwRandomly) { return dropItem(stack, throwRandomly, false); }
     public ActionResult interact(Entity entity, Hand hand) { return ActionResult.PASS; }
+    /** Server attack hook retained for combat mixins and mapped callers. */
+    public void attack(Entity target) { }
     public TypedActionResult<ItemStack> useItem() { return TypedActionResult.pass(getMainHandStack()); }
     public ItemStack getEquippedStack(net.minecraft.entity.EquipmentSlot slot) {
         if (slot == null) return ItemStack.EMPTY;
@@ -67,10 +69,37 @@ public class PlayerEntity extends LivingEntity {
     public BlockPos getSpawnPointPosition() { return getBlockPos(); }
     public float getBlockBreakingSpeed(net.minecraft.block.BlockState state) { return isCreative() ? 1.0f : 1.0f; }
     public float getLuck() { return 0.0f; }
+    /** Server-world overload present in the 1.21.4 Yarn ABI. */
+    public boolean damage(net.minecraft.server.world.ServerWorld world,
+                          net.minecraft.entity.damage.DamageSource source, float amount) {
+        return damage(source, amount);
+    }
+    /** Server-specific damage phase retained as a distinct Mixin target. */
+    @Override
+    protected void applyDamage(net.minecraft.server.world.ServerWorld world,
+                               net.minecraft.entity.damage.DamageSource source, float amount) {
+        super.applyDamage(world, source, amount);
+    }
+    public boolean checkGliding() { return false; }
+    public boolean canInteractWithBlockAt(BlockPos pos, double distance) {
+        return pos != null && getPos().squaredDistanceTo(Vec3d.ofCenter(pos)) <= distance * distance;
+    }
+    public boolean canInteractWithEntityIn(net.minecraft.util.math.Box box, double distance) {
+        return box != null && getPos().squaredDistanceTo(box.getCenter()) <= distance * distance;
+    }
+    public void collideWithEntity(Entity entity) { }
     public int experienceLevel() { return 0; }
     public ServerCommandSource getCommandSource() {
         net.minecraft.server.MinecraftServer server = getServer();
         return server == null ? null : new ServerCommandSource(this instanceof net.minecraft.server.network.ServerPlayerEntity p ? p : null, server);
     }
     public Vec3d getRotationVec(float tickDelta) { return super.getRotationVec(tickDelta); }
+    /** Yarn's 1.21.4 movement tick hook. */
+    public void tickMovement() { }
+    /** Mojang-mapped compatibility alias used by older server code. */
+    public void aiStep() { tickMovement(); }
+    /** Pose recomputation hook declared by the 1.21.4 player ABI. */
+    public void updatePose() { }
+    /** Common entity tick entrypoint declared on PlayerEntity for mixin ABI. */
+    @Override public void tick() { super.tick(); }
 }

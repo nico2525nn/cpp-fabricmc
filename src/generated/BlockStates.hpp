@@ -2531,11 +2531,11 @@ inline std::vector<std::pair<std::string_view, std::string_view>> propsOf(std::u
   const BlockDef* b = blockByState(state);
   if (!b || !b->propCount) return out;
   std::uint32_t idx = state - b->minState;
-  std::int32_t strides[16]; std::uint8_t nv[16];
+  std::int32_t strides[16];
   std::int32_t stride = 1;
   for (int i = b->propCount - 1; i >= 0; --i) {
     const PropDef& pd = kPropDefs[kBlockPropsRun[b->propsOff + i]];
-    strides[i] = stride; nv[i] = pd.numValues;
+    strides[i] = stride;
     stride *= pd.numValues;
   }
   for (int i = 0; i < b->propCount; ++i) {

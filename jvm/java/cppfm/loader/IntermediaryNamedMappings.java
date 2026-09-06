@@ -186,12 +186,22 @@ public final class IntermediaryNamedMappings implements DescriptorResolver {
 
     /** Map a field reference using its intermediary owner and descriptor. */
     public String mapFieldName(String owner, String name, String descriptor) {
-        return fields.getOrDefault(new MemberKey(owner, name, descriptor), name);
+        String mapped = fields.get(new MemberKey(owner, name, descriptor));
+        if (mapped != null) return mapped;
+        // Refmaps can name the concrete class even when Yarn records the
+        // inherited member on an interface or superclass.  A globally unique
+        // intermediary symbol is safe to resolve in that case.
+        return uniqueFieldNames.getOrDefault(name, name);
     }
 
     /** Map a method reference using its intermediary owner and descriptor. */
     public String mapMethodName(String owner, String name, String descriptor) {
-        return methods.getOrDefault(new MemberKey(owner, name, descriptor), name);
+        String mapped = methods.get(new MemberKey(owner, name, descriptor));
+        if (mapped != null) return mapped;
+        // Refmaps can name the concrete class even when Yarn records the
+        // inherited member on an interface or superclass.  A globally unique
+        // intermediary symbol is safe to resolve in that case.
+        return uniqueMethodNames.getOrDefault(name, name);
     }
 
     /** Map short intermediary symbols used by Mixin annotation strings. */
@@ -215,6 +225,11 @@ public final class IntermediaryNamedMappings implements DescriptorResolver {
     @Override
     public String resolveOwner(String owner) {
         return mapClassName(owner);
+    }
+
+    @Override
+    public String resolveDescriptor(String descriptor) {
+        return mapDescriptor(descriptor);
     }
 
     @Override
@@ -302,9 +317,15 @@ public final class IntermediaryNamedMappings implements DescriptorResolver {
             if (end < 0) break;
             String owner = descriptor.substring(start + 1, end);
             String mapped = mapping.get(owner);
-            if (mapped != null) {
+            if (mapped != null && !mapped.equals(owner)) {
                 if (output == null) output = new StringBuilder(descriptor.length() + 16);
-                output.append(descriptor, index, start + 1).append(mapped).append(';');
+                // `index` advances across unchanged object types before the
+                // first mapped owner.  Copy from zero on that first change;
+                // otherwise a descriptor such as
+                // `(Ljava/util/List;Lnet/minecraft/class_1297;)V` would lose
+                // its opening parenthesis and the unchanged prefix.
+                output.append(descriptor, output.length() == 0 ? 0 : index, start)
+                      .append('L').append(mapped).append(';');
                 index = end + 1;
             } else {
                 if (output != null) output.append(descriptor, index, end + 1);

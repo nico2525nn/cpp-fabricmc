@@ -71,6 +71,7 @@ static void loadProperties(ServerConfig& c, const std::string& path) {
         if (props.has("jvm-config")) c.jvmConfigDir = props.get<std::string>("jvm-config", c.jvmConfigDir);
         if (props.has("jvm-java-home")) c.jvmJavaHome = props.get<std::string>("jvm-java-home", c.jvmJavaHome);
         if (props.has("jvm-library")) c.jvmLibrary = props.get<std::string>("jvm-library", c.jvmLibrary);
+        if (props.has("jvm-libraries")) c.jvmLibrariesDir = props.get<std::string>("jvm-libraries", c.jvmLibrariesDir);
         // max-players already handled above; keep fallback for hyphen variant online-mode / enforce-secure-profile already handled above
     } catch (...) {}
 }
@@ -109,6 +110,7 @@ int main(int argc, char** argv) {
             else if (k == "jvm-config") cfg.jvmConfigDir = v;
             else if (k == "jvm-java-home") cfg.jvmJavaHome = v;
             else if (k == "jvm-library") cfg.jvmLibrary = v;
+            else if (k == "jvm-libraries") cfg.jvmLibrariesDir = v;
         } catch (...) {}
     };
     for (int i = 1; i < argc; ++i) {

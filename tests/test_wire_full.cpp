@@ -46,11 +46,6 @@ static bool expectEq(const std::vector<std::uint8_t>& actual,
 static void check(bool cond, const char* name){
     if(cond){ std::printf("  ok  %s\n", name); ++g_pass; } else { std::printf("  FAIL %s\n", name); ++g_fail; }
 }
-static void checkGap(bool implemented, const char* name){
-    if(implemented){ std::printf("  ok  %s (implemented)\n", name); ++g_pass; }
-    else { std::printf("  FAIL %s — not implemented / unsent (gap)\n", name); ++g_fail; }
-}
-
 static void test_primitives_varint(){
     std::printf("[T01] varint 5-byte boundary (Prismarine varint = zigzag-free 32-bit)\n");
     struct C{int32_t v; std::vector<uint8_t> e;}; std::vector<C> cs={

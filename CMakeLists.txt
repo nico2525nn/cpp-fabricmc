@@ -19,6 +19,8 @@ find_package(Python3 COMPONENTS Interpreter QUIET)
 
 set(CPPFM_JVM_SHADOW_SPEC "${CMAKE_CURRENT_SOURCE_DIR}/jvm/shadow_api.json")
 set(CPPFM_JVM_MANIFEST "${CMAKE_CURRENT_BINARY_DIR}/jvm/compatibility-manifest.json")
+file(GLOB_RECURSE CPPFM_JAVA_SOURCES CONFIGURE_DEPENDS
+     "${CMAKE_CURRENT_SOURCE_DIR}/jvm/java/*.java")
 if(Python3_Interpreter_FOUND)
     add_custom_command(
         OUTPUT "${CPPFM_JVM_MANIFEST}"
@@ -26,11 +28,10 @@ if(Python3_Interpreter_FOUND)
                 --input "${CPPFM_JVM_SHADOW_SPEC}" --output "${CPPFM_JVM_MANIFEST}"
         DEPENDS "${CPPFM_JVM_SHADOW_SPEC}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_shadow.py"
+                ${CPPFM_JAVA_SOURCES}
         VERBATIM)
     add_custom_target(cppfm_jvm_manifest ALL DEPENDS "${CPPFM_JVM_MANIFEST}")
 endif()
-file(GLOB_RECURSE CPPFM_JAVA_SOURCES CONFIGURE_DEPENDS
-     "${CMAKE_CURRENT_SOURCE_DIR}/jvm/java/*.java")
 set(CPPFM_JVM_CLASSES_DIR "${CMAKE_CURRENT_BINARY_DIR}/jvm/classes")
 if(CPPFM_JAVAC AND CPPFM_JAVA_SOURCES)
     set(CPPFM_JVM_STAMP "${CPPFM_JVM_CLASSES_DIR}/.stamp")
@@ -110,7 +111,8 @@ if(CPPFM_JAVAC AND CPPFM_JAVA_SOURCES)
          "${CMAKE_CURRENT_SOURCE_DIR}/jvm/java/org/spongepowered/asm/mixin/*.java")
     list(APPEND CPPFM_JVM_ACCESS_WIDENER_CORE_SOURCES
          "${CMAKE_CURRENT_SOURCE_DIR}/jvm/java/cppfm/bridge/NativeBridge.java"
-         "${CMAKE_CURRENT_SOURCE_DIR}/jvm/java/net/fabricmc/api/DedicatedServerModInitializer.java")
+         "${CMAKE_CURRENT_SOURCE_DIR}/jvm/java/net/fabricmc/api/DedicatedServerModInitializer.java"
+         "${CMAKE_CURRENT_SOURCE_DIR}/jvm/java/com/llamalad7/mixinextras/injector/wrapoperation/Operation.java")
     set(CPPFM_JVM_ACCESS_WIDENER_FIXTURE_SOURCES
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/jvm_fixture/corpus/08-access-widener/src/cppfm/corpus/fixture08/AccessWidener.java"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/jvm_fixture/corpus/08-access-widener/src/cppfm/corpus/fixture08/AccessTarget.java"
@@ -147,7 +149,7 @@ if(CPPFM_JAVAC AND CPPFM_JAVA_SOURCES)
                           DEPENDS "${CPPFM_JVM_ACCESS_WIDENER_STAMP}")
     endif()
 
-    # plan52: executable Fabric API/event/command contract fixture.  Keep it
+    # plan51: executable Fabric API/event/command contract fixture.  Keep it
     # separate from the historical 25-mod corpus so the corpus count and its
     # reports remain stable while the newly implemented surface gets a direct
     # JVM-side execution gate.

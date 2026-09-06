@@ -42,7 +42,7 @@
   ],
   "requiredStructuredBytecodeCases": ["09-accessor-mixin", "10-invoker-mixin", "13-inject-invoke", "14-inject-field", "15-redirect", "17-modify-arg", "18-modify-constant", "19-modify-variable", "20-local-capture"],
   "requiredMixinPoints": ["INVOKE", "FIELD"],
-  "requiredTransformers": ["Accessor", "Invoker", "Redirect", "ModifyArg", "ModifyConstant", "ModifyVariable"],
+  "requiredTransformers": ["Accessor", "Invoker", "Redirect", "ModifyArg", "ModifyConstant", "ModifyVariable", "ModifyReturnValue", "ModifyExpressionValue", "WrapWithCondition", "WrapOperation", "WrapMethod"],
   "observable": ["log", "return-values", "world-state", "callback-order", "event-cancellation", "exception-behavior", "thread-attachment", "object-identity"],
   "notObservable": ["reference-server-diff", "client-packets", "NBT-round-trip", "official-Fabric-Loader-Knot"]
 }

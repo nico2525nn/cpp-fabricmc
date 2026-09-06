@@ -190,12 +190,7 @@ int main() {
     };
     // Use specific file ids that are known to exist (chest_0 pale_oak, crafting_table_0 pale_oak, oak_stairs, stone_slab, furnace_0 cobbled_deepslate, ladder, oak_trapdoor, oak_fence, bread)
     // For each we craft exact pattern at ox0 oy0 in 3x3
-    const uint32_t oakId = idFor("minecraft:oak_planks");
-    const uint32_t paleId = idFor("minecraft:pale_oak_planks");
-    const uint32_t stoneId = idFor("minecraft:stone");
-    const uint32_t cobbleId = idFor("minecraft:cobbled_deepslate");
     const uint32_t stickId = idFor("minecraft:stick");
-    const uint32_t wheatId = idFor("minecraft:wheat");
     // chest_0 pale_oak 3x3 AAA / A A / AAA at 0,0
     testReal("minecraft:chest_0", {"pale_oak_planks","pale_oak_planks","pale_oak_planks","pale_oak_planks","","pale_oak_planks","pale_oak_planks","pale_oak_planks","pale_oak_planks"}, 3,3,true, "chest_0 pale oak 3x3 offset0 true");
     // chest missing one -> false

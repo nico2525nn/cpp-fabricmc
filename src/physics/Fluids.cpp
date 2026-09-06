@@ -182,13 +182,11 @@ void FluidSim::apply(std::int32_t x, std::int32_t y, std::int32_t z,
         static constexpr int DX[4] = {1,-1,0,0};
         static constexpr int DZ[4] = {0,0,1,-1};
         int best = 99;
-        bool fedByFall = false;
         for (int d = 0; d < 4; ++d) {
             const std::uint16_t ns = world_.getBlock(x + DX[d], y, z + DZ[d]);
             int nl = -1;
             const int nk = kindAt(ns, nl);
             if (nk != kindInt) continue;
-            if (nl == 8) fedByFall = true;
             if (nl == 0) best = -1;
             else best = std::min(best, nl);
         }

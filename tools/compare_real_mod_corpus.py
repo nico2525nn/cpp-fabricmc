@@ -784,6 +784,41 @@ def _write_log(evidence_dir: Path, name: str, side: str, lines: list[str]) -> tu
     return filename, hashlib.sha256(data).hexdigest()
 
 
+def _extract_server_libraries(server_jar: Path, destination: Path) -> list[Path]:
+    """Materialize the locked server's bundled Java libraries for cppfm.
+
+    Mojang's server distribution keeps dependency JARs under
+    ``META-INF/libraries`` inside the outer server archive.  The reference
+    launcher understands that layout, while the embedded compatibility loader
+    needs ordinary URL entries.  Extract only those immutable, already-verified
+    members into the per-run temporary directory; never fetch or mutate a
+    dependency here.
+    """
+    destination.mkdir(parents=True, exist_ok=True)
+    libraries: list[Path] = []
+    with zipfile.ZipFile(server_jar) as archive:
+        members = sorted(
+            (
+                info for info in archive.infolist()
+                if info.filename.startswith("META-INF/libraries/")
+                and info.filename.endswith(".jar")
+                and not info.is_dir()
+            ),
+            key=lambda info: info.filename,
+        )
+        for index, info in enumerate(members):
+            filename = Path(info.filename).name
+            if not filename or filename in {".", ".."}:
+                raise HarnessError(f"invalid bundled library member: {info.filename!r}")
+            target = destination / f"{index:04d}-{filename}"
+            with archive.open(info) as source, target.open("wb") as output:
+                shutil.copyfileobj(source, output)
+            libraries.append(target)
+    if not libraries:
+        raise HarnessError("locked server archive contains no META-INF/libraries JARs")
+    return libraries
+
+
 def _process_summary(raw: dict[str, Any], evidence_dir: Path, log_name: str,
                      temp_root: Path, cache_dir: Path) -> dict[str, Any]:
     filename, digest = _write_log(evidence_dir, log_name, raw["side"], raw["lines"])
@@ -928,6 +963,7 @@ def _cppfm_side(
     classes: Path,
     java: Path,
     java_home: Path,
+    libraries_dir: Path,
     temp_root: Path,
     evidence_dir: Path,
     log_name: str,
@@ -951,6 +987,7 @@ def _cppfm_side(
         f"--jvm-java-home={java_home}",
         f"--jvm-classes={classes}",
         f"--jvm-mods={mods_dir}",
+        f"--jvm-libraries={libraries_dir}",
         f"--jvm-config={config_dir}",
         f"--world-dir={world_dir}",
         "--assets=" + str(ROOT / "assets" / "registry"),
@@ -1658,6 +1695,16 @@ def run_harness(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         run_root = Path(tempfile.mkdtemp(prefix="cppfm-real-mod-corpus-"))
         try:
             mod_paths = {str(mod["id"]): paths[str(mod["id"])] for mod in lock["mods"]}
+            runtime_libraries_dir = run_root / "cppfm-runtime-libraries"
+            runtime_libraries = _extract_server_libraries(
+                paths["reference-server"], runtime_libraries_dir
+            )
+            execution["cppfmLibraries"] = {
+                "status": "VERIFIED",
+                "source": _display_path(paths["reference-server"], cache_dir),
+                "memberCount": len(runtime_libraries),
+                "directory": _display_path(runtime_libraries_dir),
+            }
             for index, mod in enumerate(lock["mods"], start=1):
                 scenario = _scenario([mod], mod_paths)
                 name = f"{index:02d}-{mod['id']}"
@@ -1680,6 +1727,7 @@ def run_harness(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                     classes,
                     selected_java,
                     selected_java_home,
+                    runtime_libraries_dir,
                     run_root,
                     evidence_dir,
                     name,
@@ -1710,6 +1758,7 @@ def run_harness(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 classes,
                 selected_java,
                 selected_java_home,
+                runtime_libraries_dir,
                 run_root,
                 evidence_dir,
                 "combined",

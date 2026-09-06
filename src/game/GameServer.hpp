@@ -111,6 +111,7 @@ struct ServerConfig {
     std::string jvmConfigDir = "config";
     std::string jvmJavaHome;
     std::string jvmLibrary;
+    std::string jvmLibrariesDir;
 };
 
 // Player inventory slot = full ItemStack (components preserved end-to-end).
@@ -722,6 +723,7 @@ public:
             jvmConfig.configDir = cfg_.jvmConfigDir;
             jvmConfig.javaHome = cfg_.jvmJavaHome;
             jvmConfig.jvmLibrary = cfg_.jvmLibrary;
+            jvmConfig.jvmLibrariesDir = cfg_.jvmLibrariesDir;
             jvmRuntime_ = std::make_unique<jvm::JvmRuntime>(*this, std::move(jvmConfig));
             std::string jvmError;
             if (!jvmRuntime_->start(&jvmError)) {

@@ -112,7 +112,7 @@ public:
     void tick(std::int64_t now);                         // delayed updates
     std::size_t pendingCount() const {
         return pistonQueue_.size() + pendingPistonCommits_.size() + queue_.size()
-             + pendingRepeater_.size() + observerPrev_.size() + observerPulseEnd_.size();
+             + pendingRepeater_.size() + observerPulseEnd_.size();
     }
     // True when any adjacent source/wire carries power (dispenser gates).
     bool isPoweredHere(std::int32_t x, std::int32_t y, std::int32_t z);
@@ -182,7 +182,6 @@ private:
     std::priority_queue<RedstoneTick, std::vector<RedstoneTick>,
                         std::greater<RedstoneTick>> queue_;
     std::unordered_map<std::int64_t, std::int64_t> pendingRepeater_;
-    std::unordered_map<std::int64_t, std::uint16_t> observerPrev_;
     std::unordered_map<std::int64_t, std::int64_t> observerPulseEnd_;
 };
 
