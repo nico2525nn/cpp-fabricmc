@@ -39,7 +39,7 @@ public:
     static std::string canonicalOwner(std::string owner);
     static std::uint64_t stableHash(const std::string& owner,
                                     const std::string& name,
-                                    const std::string& descriptor) noexcept;
+                                    const std::string& descriptor);
 
     void markTransformed(std::string owner, std::string name,
                          std::string descriptor,

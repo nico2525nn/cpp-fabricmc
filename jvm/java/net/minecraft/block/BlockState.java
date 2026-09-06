@@ -12,6 +12,7 @@ import net.minecraft.util.Identifier;
 import net.minecraft.util.shape.VoxelShape;
 import net.minecraft.util.shape.VoxelShapes;
 import net.minecraft.world.World;
+import net.minecraft.world.BlockView;
 import net.minecraft.util.math.BlockPos;
 
 /** C++-backed raw block-state view with immutable Java property overlays. */
@@ -59,6 +60,33 @@ public class BlockState {
         if (property == null || value == null || !property.getValues().contains(value)) throw new IllegalArgumentException("invalid block property value");
         Map<Property<?>, Comparable<?>> copy = new LinkedHashMap<>(properties); copy.put(property, value); return new BlockState(rawState, block, copy);
     }
+    /** Intermediary bridge retained for mod bytecode whose owner is BlockState
+     * while the canonical implementation is inherited from State. */
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    public Object method_11657(Property property, Comparable value) {
+        return with(property, value);
+    }
+    @SuppressWarnings("rawtypes")
+    public Comparable method_11654(Property property) { return get(property); }
+    public java.util.Map<Property<?>, Comparable<?>> method_11656() { return getEntries(); }
+    public boolean method_28498(Property<?> property) { return contains(property); }
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    public Object method_28493(Property property) { return cycle(property); }
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    public Object method_47968(Property property, Comparable value) {
+        return property == null || value == null ? this : with(property, value);
+    }
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    public Object method_64216(Property property, Comparable value, Comparable oldValue) {
+        return get(property) == oldValue || (oldValue != null && oldValue.equals(get(property)))
+            ? with(property, value) : this;
+    }
+    @SuppressWarnings({"rawtypes"})
+    public java.util.Map<Property<?>, Comparable<?>> method_28499(Property property, Comparable value) {
+        java.util.Map<Property<?>, Comparable<?>> copy = new java.util.LinkedHashMap<>(properties);
+        copy.put(property, value);
+        return copy;
+    }
     public <T extends Comparable<T>> BlockState with(Object property, T value) {
         return property instanceof Property<?> p ? withUnchecked(p, value) : this;
     }
@@ -75,13 +103,21 @@ public class BlockState {
     public Set<Property<?>> getProperties() { return properties.keySet(); }
     public Map<Property<?>, Comparable<?>> getEntries() { return properties; }
     public int getLuminance() { return block.getLuminance(); }
+    public int getOpacity() { return isOpaque() ? 15 : 0; }
     public float getHardness(World world, BlockPos pos) { return block.getHardness(); }
     public boolean isOpaque() { return block.isOpaque(); }
     public boolean isSolidBlock(World world, BlockPos pos) { return !isAir(); }
     public boolean isTransparent() { return isAir(); }
     public BlockRenderType getRenderType() { return isAir() ? BlockRenderType.INVISIBLE : BlockRenderType.MODEL; }
     public VoxelShape getCollisionShape(World world, BlockPos pos) { return isAir() ? VoxelShapes.EMPTY : VoxelShapes.FULL_CUBE; }
+    public VoxelShape method_26220(BlockView world, BlockPos pos) { return getCollisionShape(world, pos, ShapeContext.absent()); }
+    public VoxelShape getCollisionShape(BlockView world, BlockPos pos, ShapeContext context) {
+        return isAir() ? VoxelShapes.EMPTY : VoxelShapes.FULL_CUBE;
+    }
     public VoxelShape getOutlineShape(World world, BlockPos pos) { return getCollisionShape(world, pos); }
+    public VoxelShape getOutlineShape(BlockView world, BlockPos pos, ShapeContext context) {
+        return getCollisionShape(world, pos, context);
+    }
     public FluidState getFluidState() {
         for (Map.Entry<Property<?>, Comparable<?>> entry : properties.entrySet())
             if ("waterlogged".equals(entry.getKey().getName()) && Boolean.TRUE.equals(entry.getValue())) return Fluids.WATER.getDefaultState();

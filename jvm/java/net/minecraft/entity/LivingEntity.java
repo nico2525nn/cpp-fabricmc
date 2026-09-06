@@ -2,15 +2,21 @@ package net.minecraft.entity;
 
 import cppfm.bridge.WrapperCache;
 import net.minecraft.item.ItemStack;
+import net.minecraft.block.BlockState;
+import net.minecraft.registry.entry.RegistryEntry;
 import net.minecraft.util.Hand;
 import net.minecraft.util.NativeAccess;
 import net.minecraft.util.TypedActionResult;
 import net.minecraft.world.World;
+import java.util.Map;
+import java.util.Collections;
 
 public class LivingEntity extends Entity {
     private float health = 20.0f;
     private float maxHealth = 20.0f;
     private boolean usingItem;
+    /** Vanilla first-update flag retained as the FIELD injection anchor. */
+    private boolean firstUpdate;
     private Hand activeHand = Hand.MAIN_HAND;
     private EntityPose pose = EntityPose.STANDING;
 
@@ -80,6 +86,33 @@ public class LivingEntity extends Entity {
     public boolean isInvulnerable() { return false; }
     public boolean isInvulnerableTo(net.minecraft.entity.damage.DamageSource source) { return isInvulnerable(); }
     public boolean isInvulnerableTo(DamageSource source) { return isInvulnerableTo((net.minecraft.entity.damage.DamageSource) source); }
+    /** Canonical 1.21.4 death hook; mixins may override or inject here. */
+    public void onDeath(net.minecraft.entity.damage.DamageSource source) { remove(RemovalReason.KILLED); }
+    /** Damage application phase separated from event dispatch for mixin targets. */
+    protected void applyDamage(net.minecraft.server.world.ServerWorld world,
+                               net.minecraft.entity.damage.DamageSource source, float amount) {
+        setHealth(Math.max(0.0f, getHealth() - Math.max(0.0f, amount)));
+    }
+    public void travelMidAir(net.minecraft.util.math.Vec3d movement) { }
+    public boolean canUsePortals(boolean allowVehicles) { return true; }
+    /** Riding lifecycle hook used by navigation and server mixins. */
+    public void stopRiding() { }
+    /** Landing-state lookup used by powder-snow optimizations. */
+    public BlockState getLandingBlockState() {
+        World currentWorld = getWorld();
+        return currentWorld == null ? net.minecraft.block.Blocks.AIR.getDefaultState()
+            : currentWorld.getBlockState(getBlockPos());
+    }
+    /** Attribute lookup boundary retained for the vanilla movement ABI. */
+    public net.minecraft.entity.attribute.EntityAttributeInstance getAttributeInstance(
+            RegistryEntry<?> attribute) { return null; }
+    /** Powder-snow movement hook used by Lithium's fast check mixin. */
+    public void addPowderSnowSlowIfNeeded() {
+        BlockState state = getLandingBlockState();
+        if (!state.isAir()) return;
+        net.minecraft.entity.attribute.EntityAttributeInstance instance = getAttributeInstance(null);
+        if (instance != null) instance.getValue();
+    }
     public boolean isUsingItem() { return usingItem; }
     public Hand getActiveHand() { return activeHand; }
     public ItemStack getActiveItem() { return getStackInHand(activeHand); }
@@ -93,7 +126,53 @@ public class LivingEntity extends Entity {
     public boolean isSleeping() { return pose == EntityPose.SLEEPING; }
     public float getArmor() { return 0.0f; }
     public float getArmorToughness() { return 0.0f; }
+    /** Vanilla movement attribute hook used by server-side mixins. */
+    public float getMovementSpeed(float base) { return base; }
+    /** Equipment-diff view exposed by Lithium's equipment tracking mixin. */
+    public Map<EquipmentSlot, ItemStack> getEquipmentChanges() {
+        return Collections.emptyMap();
+    }
+    /** Equipment comparison boundary used by Lithium's tracking mixin. */
+    public void sendEquipmentChanges() {
+        checkHandStackSwap(getEquipmentChanges());
+    }
+    public void checkHandStackSwap(Map<EquipmentSlot, ItemStack> changes) { }
+    /** Elytra/gliding tick hook used by movement optimizations. */
+    public void tickGliding() {
+        if (canGlide()) { }
+    }
+    public boolean canGlide() { return false; }
+    /** Hand-swing tick hook used by the fast-hand-swing mixin. */
+    public void tickHandSwing() { }
     public ItemStack getEquippedStack(EquipmentSlot slot) { return ItemStack.EMPTY; }
-    public void equipStack(EquipmentSlot slot, ItemStack stack) { }
+    public void equipStack(EquipmentSlot slot, ItemStack stack) {
+        ItemStack previous = getEquippedStack(slot);
+        boolean wasUsingItem = usingItem;
+        usingItem = false;
+        onEquipStack(slot, previous, stack == null ? ItemStack.EMPTY : stack);
+        usingItem = wasUsingItem;
+    }
+    public void onEquipStack(EquipmentSlot slot, ItemStack oldStack, ItemStack newStack) {
+        // Keep the vanilla first-update field access visible to FIELD injectors.
+        // The actual equipment side effects are handled by the authoritative
+        // native entity; this branch is the stable 1.21.4 bytecode anchor.
+        if (firstUpdate) return;
+    }
+    public void pushEntities() { }
+    /** Vanilla cramming hook; extensions may inject before/after this call. */
+    public void tickCramming() { }
     public TypedActionResult<ItemStack> tryAttack(Entity target) { return TypedActionResult.success(ItemStack.EMPTY); }
+
+    /**
+     * LivingEntity owns this override in the 1.21.4 hierarchy.  Keeping the
+     * server enchantment tick call in the Java shell gives MixinExtras
+     * WrapWithCondition mixins the same invocation anchor as vanilla.
+     */
+    @Override public void baseTick() {
+        super.baseTick();
+        net.minecraft.world.World current = getWorld();
+        net.minecraft.server.world.ServerWorld serverWorld = current instanceof net.minecraft.server.world.ServerWorld sw
+            ? sw : null;
+        net.minecraft.enchantment.EnchantmentHelper.onTick(serverWorld, this);
+    }
 }

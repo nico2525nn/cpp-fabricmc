@@ -3,6 +3,8 @@ package cppfm.bridge;
 import cppfm.api.ModEvents;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.net.URL;
@@ -13,12 +15,13 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.jar.JarFile;
 
 import net.fabricmc.api.DedicatedServerModInitializer;
@@ -30,15 +33,14 @@ import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerWorldEvents;
 import net.fabricmc.fabric.api.event.player.AttackBlockCallback;
-import net.fabricmc.fabric.api.event.player.AttackEntityCallback;
 import net.fabricmc.fabric.api.event.player.PlayerBlockBreakEvents;
 import net.fabricmc.fabric.api.event.player.UseBlockCallback;
 import net.fabricmc.fabric.api.event.player.UseEntityCallback;
 import net.fabricmc.fabric.api.event.player.UseItemCallback;
-import net.fabricmc.fabric.api.networking.v1.PacketSender;
+import net.fabricmc.fabric.api.message.v1.ServerMessageEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
-import net.fabricmc.fabric.api.message.v1.ServerMessageEvents;
+import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.block.BlockState;
 import net.minecraft.entity.DamageSource;
 import net.minecraft.entity.Entity;
@@ -52,6 +54,7 @@ import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.ActionResult;
 import net.minecraft.util.Hand;
 import net.minecraft.util.Identifier;
+import net.minecraft.util.NativeAccess;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.EntityHitResult;
 import net.minecraft.util.math.BlockPos;
@@ -66,40 +69,43 @@ import net.minecraft.util.math.BlockPos;
  * same.
  */
 public final class CppModRuntime {
-    private static final List<ServerLifecycleEvents.ServerStarted> SERVER_STARTED = new ArrayList<>();
-    private static final List<ServerLifecycleEvents.ServerStarting> SERVER_STARTING = new ArrayList<>();
-    private static final List<ServerLifecycleEvents.ServerStopping> SERVER_STOPPING = new ArrayList<>();
-    private static final List<ServerLifecycleEvents.ServerStopped> SERVER_STOPPED = new ArrayList<>();
-    private static final List<ServerTickEvents.Start> TICK_START = new ArrayList<>();
-    private static final List<ServerTickEvents.End> TICK_END = new ArrayList<>();
-    private static final List<ServerTickEvents.StartServerTick> SERVER_TICK_START = new ArrayList<>();
-    private static final List<ServerTickEvents.EndServerTick> SERVER_TICK_END = new ArrayList<>();
-    private static final List<ServerTickEvents.StartWorldTick> WORLD_TICK_START = new ArrayList<>();
-    private static final List<ServerTickEvents.EndWorldTick> WORLD_TICK_END = new ArrayList<>();
-    private static final List<ServerWorldEvents.Load> WORLD_LOAD = new ArrayList<>();
-    private static final List<ServerWorldEvents.Unload> WORLD_UNLOAD = new ArrayList<>();
-    private static final List<ServerPlayConnectionEvents.Join> PLAYER_JOIN = new ArrayList<>();
-    private static final List<ServerPlayConnectionEvents.Disconnect> PLAYER_QUIT = new ArrayList<>();
-    private static final List<ServerPlayerEvents.CopyFrom> PLAYER_COPY_FROM = new ArrayList<>();
-    private static final List<ServerPlayerEvents.AfterRespawn> PLAYER_AFTER_RESPAWN = new ArrayList<>();
-    private static final List<ServerPlayerEvents.Join> PLAYER_JOIN_EVENT = new ArrayList<>();
-    private static final List<ServerPlayerEvents.Leave> PLAYER_LEAVE_EVENT = new ArrayList<>();
-    private static final List<ServerEntityEvents.Load> ENTITY_LOAD = new ArrayList<>();
-    private static final List<ServerEntityEvents.Unload> ENTITY_UNLOAD = new ArrayList<>();
-    private static final List<net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.AllowDamage> ALLOW_DAMAGE = new ArrayList<>();
-    private static final List<net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.AfterDamage> AFTER_DAMAGE = new ArrayList<>();
-    private static final List<net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.AfterDeath> AFTER_DEATH = new ArrayList<>();
-    private static final List<net.fabricmc.fabric.api.event.lifecycle.v1.ServerEntityEvents.Load> LEGACY_ENTITY_LOAD = new ArrayList<>();
-    private static final List<net.fabricmc.fabric.api.event.lifecycle.v1.ServerEntityEvents.Unload> LEGACY_ENTITY_UNLOAD = new ArrayList<>();
-    private static final List<net.fabricmc.fabric.api.event.lifecycle.v1.ServerLivingEntityEvents.AllowDamage> LEGACY_ALLOW_DAMAGE = new ArrayList<>();
-    private static final List<net.fabricmc.fabric.api.event.lifecycle.v1.ServerLivingEntityEvents.AfterDamage> LEGACY_AFTER_DAMAGE = new ArrayList<>();
-    private static final List<net.fabricmc.fabric.api.event.lifecycle.v1.ServerLivingEntityEvents.AfterDeath> LEGACY_AFTER_DEATH = new ArrayList<>();
-    private static final List<ServerMessageEvents.AllowChatMessage> ALLOW_CHAT_MESSAGE = new ArrayList<>();
-    private static final List<ServerMessageEvents.ChatMessage> CHAT_MESSAGE = new ArrayList<>();
-    private static final List<UseBlockCallback> USE_BLOCK = new ArrayList<>();
-    private static final List<AttackBlockCallback> ATTACK_BLOCK = new ArrayList<>();
-    private static final List<PlayerBlockBreakEvents.Before> BEFORE_BREAK = new ArrayList<>();
-    private static final List<CommandRegistrationCallback> COMMAND_REGISTRATION = new ArrayList<>();
+    /** Native onCommand transport marker: the suffix is console feedback. */
+    private static final String HANDLED_COMMAND_PREFIX = "\u0001cppfm-handled:";
+    private static final List<ServerLifecycleEvents.ServerStarted> SERVER_STARTED = new CopyOnWriteArrayList<>();
+    private static final List<ServerLifecycleEvents.ServerStarting> SERVER_STARTING = new CopyOnWriteArrayList<>();
+    private static final List<ServerLifecycleEvents.ServerStopping> SERVER_STOPPING = new CopyOnWriteArrayList<>();
+    private static final List<ServerLifecycleEvents.ServerStopped> SERVER_STOPPED = new CopyOnWriteArrayList<>();
+    private static final List<ServerTickEvents.Start> TICK_START = new CopyOnWriteArrayList<>();
+    private static final List<ServerTickEvents.End> TICK_END = new CopyOnWriteArrayList<>();
+    private static final List<ServerTickEvents.StartServerTick> SERVER_TICK_START = new CopyOnWriteArrayList<>();
+    private static final List<ServerTickEvents.EndServerTick> SERVER_TICK_END = new CopyOnWriteArrayList<>();
+    private static final List<ServerTickEvents.StartWorldTick> WORLD_TICK_START = new CopyOnWriteArrayList<>();
+    private static final List<ServerTickEvents.EndWorldTick> WORLD_TICK_END = new CopyOnWriteArrayList<>();
+    private static final List<ServerWorldEvents.Load> WORLD_LOAD = new CopyOnWriteArrayList<>();
+    private static final List<ServerWorldEvents.Unload> WORLD_UNLOAD = new CopyOnWriteArrayList<>();
+    private static final List<ServerPlayConnectionEvents.Join> PLAYER_JOIN = new CopyOnWriteArrayList<>();
+    private static final List<ServerPlayConnectionEvents.Disconnect> PLAYER_QUIT = new CopyOnWriteArrayList<>();
+    private static final List<ServerPlayerEvents.CopyFrom> PLAYER_COPY_FROM = new CopyOnWriteArrayList<>();
+    private static final List<ServerPlayerEvents.AfterRespawn> PLAYER_AFTER_RESPAWN = new CopyOnWriteArrayList<>();
+    private static final List<ServerPlayerEvents.Join> PLAYER_JOIN_EVENT = new CopyOnWriteArrayList<>();
+    private static final List<ServerPlayerEvents.Leave> PLAYER_LEAVE_EVENT = new CopyOnWriteArrayList<>();
+    private static final List<ServerEntityEvents.Load> ENTITY_LOAD = new CopyOnWriteArrayList<>();
+    private static final List<ServerEntityEvents.Unload> ENTITY_UNLOAD = new CopyOnWriteArrayList<>();
+    private static final List<net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.AllowDamage> ALLOW_DAMAGE = new CopyOnWriteArrayList<>();
+    private static final List<net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.AfterDamage> AFTER_DAMAGE = new CopyOnWriteArrayList<>();
+    private static final List<net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.AfterDeath> AFTER_DEATH = new CopyOnWriteArrayList<>();
+    private static final List<net.fabricmc.fabric.api.event.lifecycle.v1.ServerEntityEvents.Load> LEGACY_ENTITY_LOAD = new CopyOnWriteArrayList<>();
+    private static final List<net.fabricmc.fabric.api.event.lifecycle.v1.ServerEntityEvents.Unload> LEGACY_ENTITY_UNLOAD = new CopyOnWriteArrayList<>();
+    private static final List<net.fabricmc.fabric.api.event.lifecycle.v1.ServerLivingEntityEvents.AllowDamage> LEGACY_ALLOW_DAMAGE = new CopyOnWriteArrayList<>();
+    private static final List<net.fabricmc.fabric.api.event.lifecycle.v1.ServerLivingEntityEvents.AfterDamage> LEGACY_AFTER_DAMAGE = new CopyOnWriteArrayList<>();
+    private static final List<net.fabricmc.fabric.api.event.lifecycle.v1.ServerLivingEntityEvents.AfterDeath> LEGACY_AFTER_DEATH = new CopyOnWriteArrayList<>();
+    private static final List<ServerMessageEvents.AllowChatMessage> ALLOW_CHAT_MESSAGE = new CopyOnWriteArrayList<>();
+    private static final List<ServerMessageEvents.ChatMessage> CHAT_MESSAGE = new CopyOnWriteArrayList<>();
+    private static final List<UseBlockCallback> USE_BLOCK = new CopyOnWriteArrayList<>();
+    private static final List<AttackBlockCallback> ATTACK_BLOCK = new CopyOnWriteArrayList<>();
+    private static final List<PlayerBlockBreakEvents.Before> BEFORE_BREAK = new CopyOnWriteArrayList<>();
+    private static final List<CommandRegistrationCallback> COMMAND_REGISTRATION = new CopyOnWriteArrayList<>();
+    private static final Map<String, String> savedLoaderProperties = new LinkedHashMap<>();
     private static ClassLoader modLoader;
     private static MinecraftServer server;
     private static boolean bootstrapped;
@@ -110,6 +116,10 @@ public final class CppModRuntime {
     // `fabricloader` in the public Carpet/FerriteCore jars).
     private static final Set<String> BUILTIN_DEPENDENCIES =
         Set.of("fabricloader", "minecraft", "java");
+    private static final Map<String, String> BUILTIN_VERSIONS = Map.of(
+        "fabricloader", "0.16.9",
+        "minecraft", "1.21.4",
+        "java", javaMajorVersion());
 
     private CppModRuntime() {}
 
@@ -117,7 +127,7 @@ public final class CppModRuntime {
         if (bootstrapped) return true;
         try {
             loadMods(Paths.get(modsDir));
-            if (server == null) server = MinecraftServer.of(NativeBridge.serverHandle());
+            if (server == null) server = MinecraftServer.of(NativeAccess.serverHandle());
             bootstrapped = true;
             for (ServerLifecycleEvents.ServerStarting callback : snapshot(SERVER_STARTING))
                 invokeSafely(() -> callback.onServerStarting(server), "server starting");
@@ -126,7 +136,14 @@ public final class CppModRuntime {
                 invokeSafely(() -> callback.onServerStarted(server), "server started");
             return true;
         } catch (Throwable failure) {
-            log("ERROR", "mod bootstrap failed: " + failure);
+            Throwable cause = failure;
+            while ((cause instanceof InvocationTargetException
+                    || cause instanceof ExceptionInInitializerError)
+                   && cause.getCause() != null)
+                cause = cause.getCause();
+            StringWriter details = new StringWriter();
+            cause.printStackTrace(new PrintWriter(details));
+            log("ERROR", "mod bootstrap failed:\n" + details);
             if (Boolean.getBoolean("cppfm.jvm.strict")) return false;
             // A malformed optional mod must not make the native server vanish.
             bootstrapped = true;
@@ -145,6 +162,7 @@ public final class CppModRuntime {
         clearRegistrations();
         MixinHooks.clear();
         ModEvents.clearAll();
+        clearLoaderRuntime();
         closeModLoader();
         bootstrapped = false;
         server = null;
@@ -152,7 +170,14 @@ public final class CppModRuntime {
 
     public static void onServerTick(long tick) {
         if (!bootstrapped) return;
-        if (server != null) server.setTick(tick);
+        // JvmRuntime dispatches a transformed setTick(J)V body before this
+        // facade.  Do not call it a second time: a second call would execute
+        // every injected handler twice.  With no transformed route this is
+        // the historical shadow/native path and remains unchanged; the
+        // NativeAccess fallback returns zero for javac-only execution.
+        if (server != null && NativeAccess.routePath(
+                "net/minecraft/server/MinecraftServer", "setTick", "(J)V") == 0)
+            server.setTick(tick);
         for (ModEvents.Tick callback : ModEvents.TICK.snapshot())
             invokeSafely(() -> callback.onTick(server, tick), "cppfm tick");
         for (ServerTickEvents.Start callback : snapshot(TICK_START))
@@ -284,11 +309,39 @@ public final class CppModRuntime {
         // must be consumed here, otherwise the native command dispatcher
         // would run a second, unrelated command tree.
         if (server != null && server.getCommandManager().hasCommand(current)) {
-            server.getCommandManager().execute(
-                current, new net.minecraft.server.command.ServerCommandSource(player, server));
+            StringBuilder commandResponse = new StringBuilder();
+            net.minecraft.server.command.ServerCommandSource commandSource = new net.minecraft.server.command.ServerCommandSource(
+                message -> {
+                    if (message == null) return;
+                    if (player != null) {
+                        player.sendMessage(message);
+                    } else {
+                        if (commandResponse.length() > 0) commandResponse.append('\n');
+                        commandResponse.append(message.getString());
+                    }
+                },
+                player == null ? net.minecraft.util.math.Vec3d.ZERO : player.getPos(),
+                net.minecraft.util.math.Vec2f.ZERO,
+                player == null ? server.getOverworld() : player.getServerWorld(),
+                4,
+                player == null ? "Console" : player.getName().getString(),
+                player == null ? net.minecraft.text.Text.literal("Console") : player.getName(),
+                server,
+                player);
+            try {
+                server.getCommandManager().getDispatcher().execute(current, commandSource);
+            } catch (Throwable failure) {
+                StringWriter details = new StringWriter();
+                failure.printStackTrace(new PrintWriter(details));
+                log("ERROR", "command execution failed:\n" + details);
+                if (commandResponse.length() == 0) {
+                    commandResponse.append("error: ").append(failure.getMessage() == null
+                        ? failure.getClass().getSimpleName() : failure.getMessage());
+                }
+            }
             for (ServerMessageEvents.CommandMessage callback : snapshot(ServerMessageEvents.COMMAND_MESSAGE.snapshot()))
                 invokeSafely(() -> callback.onCommandMessage(commandMessage, player, MessageType.Parameters.EMPTY), "command message");
-            return null;
+            return HANDLED_COMMAND_PREFIX + commandResponse;
         }
         return current;
     }
@@ -428,40 +481,44 @@ public final class CppModRuntime {
             invokeSafely(() -> callback.onUnload(entity, world), "entity unload (legacy)");
     }
 
-    public static void registerServerStarted(ServerLifecycleEvents.ServerStarted callback) { synchronized (SERVER_STARTED) { SERVER_STARTED.add(callback); } }
-    public static void registerServerStarting(ServerLifecycleEvents.ServerStarting callback) { synchronized (SERVER_STARTING) { SERVER_STARTING.add(callback); } }
-    public static void registerServerStopping(ServerLifecycleEvents.ServerStopping callback) { synchronized (SERVER_STOPPING) { SERVER_STOPPING.add(callback); } }
-    public static void registerServerStopped(ServerLifecycleEvents.ServerStopped callback) { synchronized (SERVER_STOPPED) { SERVER_STOPPED.add(callback); } }
-    public static void registerTickStart(ServerTickEvents.Start callback) { synchronized (TICK_START) { TICK_START.add(callback); } }
-    public static void registerTickEnd(ServerTickEvents.End callback) { synchronized (TICK_END) { TICK_END.add(callback); } }
-    public static void registerStartServerTick(ServerTickEvents.StartServerTick callback) { synchronized (SERVER_TICK_START) { SERVER_TICK_START.add(callback); } }
-    public static void registerEndServerTick(ServerTickEvents.EndServerTick callback) { synchronized (SERVER_TICK_END) { SERVER_TICK_END.add(callback); } }
-    public static void registerStartWorldTick(ServerTickEvents.StartWorldTick callback) { synchronized (WORLD_TICK_START) { WORLD_TICK_START.add(callback); } }
-    public static void registerEndWorldTick(ServerTickEvents.EndWorldTick callback) { synchronized (WORLD_TICK_END) { WORLD_TICK_END.add(callback); } }
-    public static void registerWorldLoad(ServerWorldEvents.Load callback) { synchronized (WORLD_LOAD) { WORLD_LOAD.add(callback); } }
-    public static void registerWorldUnload(ServerWorldEvents.Unload callback) { synchronized (WORLD_UNLOAD) { WORLD_UNLOAD.add(callback); } }
-    public static void registerPlayerJoin(ServerPlayConnectionEvents.Join callback) { synchronized (PLAYER_JOIN) { PLAYER_JOIN.add(callback); } }
-    public static void registerPlayerQuit(ServerPlayConnectionEvents.Disconnect callback) { synchronized (PLAYER_QUIT) { PLAYER_QUIT.add(callback); } }
-    public static void registerPlayerCopyFrom(ServerPlayerEvents.CopyFrom callback) { synchronized (PLAYER_COPY_FROM) { PLAYER_COPY_FROM.add(callback); } }
-    public static void registerPlayerAfterRespawn(ServerPlayerEvents.AfterRespawn callback) { synchronized (PLAYER_AFTER_RESPAWN) { PLAYER_AFTER_RESPAWN.add(callback); } }
-    public static void registerPlayerJoinEvent(ServerPlayerEvents.Join callback) { synchronized (PLAYER_JOIN_EVENT) { PLAYER_JOIN_EVENT.add(callback); } }
-    public static void registerPlayerLeaveEvent(ServerPlayerEvents.Leave callback) { synchronized (PLAYER_LEAVE_EVENT) { PLAYER_LEAVE_EVENT.add(callback); } }
-    public static void registerEntityLoad(ServerEntityEvents.Load callback) { synchronized (ENTITY_LOAD) { ENTITY_LOAD.add(callback); } }
-    public static void registerEntityUnload(ServerEntityEvents.Unload callback) { synchronized (ENTITY_UNLOAD) { ENTITY_UNLOAD.add(callback); } }
-    public static void registerAllowDamage(net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.AllowDamage callback) { synchronized (ALLOW_DAMAGE) { ALLOW_DAMAGE.add(callback); } }
-    public static void registerAfterDamage(net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.AfterDamage callback) { synchronized (AFTER_DAMAGE) { AFTER_DAMAGE.add(callback); } }
-    public static void registerAfterDeath(net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.AfterDeath callback) { synchronized (AFTER_DEATH) { AFTER_DEATH.add(callback); } }
-    public static void registerLegacyEntityLoad(net.fabricmc.fabric.api.event.lifecycle.v1.ServerEntityEvents.Load callback) { synchronized (LEGACY_ENTITY_LOAD) { LEGACY_ENTITY_LOAD.add(callback); } }
-    public static void registerLegacyEntityUnload(net.fabricmc.fabric.api.event.lifecycle.v1.ServerEntityEvents.Unload callback) { synchronized (LEGACY_ENTITY_UNLOAD) { LEGACY_ENTITY_UNLOAD.add(callback); } }
-    public static void registerLegacyAllowDamage(net.fabricmc.fabric.api.event.lifecycle.v1.ServerLivingEntityEvents.AllowDamage callback) { synchronized (LEGACY_ALLOW_DAMAGE) { LEGACY_ALLOW_DAMAGE.add(callback); } }
-    public static void registerLegacyAfterDamage(net.fabricmc.fabric.api.event.lifecycle.v1.ServerLivingEntityEvents.AfterDamage callback) { synchronized (LEGACY_AFTER_DAMAGE) { LEGACY_AFTER_DAMAGE.add(callback); } }
-    public static void registerLegacyAfterDeath(net.fabricmc.fabric.api.event.lifecycle.v1.ServerLivingEntityEvents.AfterDeath callback) { synchronized (LEGACY_AFTER_DEATH) { LEGACY_AFTER_DEATH.add(callback); } }
-    public static void registerAllowChatMessage(ServerMessageEvents.AllowChatMessage callback) { synchronized (ALLOW_CHAT_MESSAGE) { ALLOW_CHAT_MESSAGE.add(callback); } }
-    public static void registerChatMessage(ServerMessageEvents.ChatMessage callback) { synchronized (CHAT_MESSAGE) { CHAT_MESSAGE.add(callback); } }
-    public static void registerUseBlock(UseBlockCallback callback) { synchronized (USE_BLOCK) { USE_BLOCK.add(callback); } }
-    public static void registerAttackBlock(AttackBlockCallback callback) { synchronized (ATTACK_BLOCK) { ATTACK_BLOCK.add(callback); } }
-    public static void registerBeforeBreak(PlayerBlockBreakEvents.Before callback) { synchronized (BEFORE_BREAK) { BEFORE_BREAK.add(callback); } }
-    public static void registerCommandRegistration(CommandRegistrationCallback callback) { synchronized (COMMAND_REGISTRATION) { COMMAND_REGISTRATION.add(callback); } }
+    private static <T> void registerCallback(List<T> callbacks, T callback) {
+        callbacks.add(Objects.requireNonNull(callback, "callback"));
+    }
+
+    public static void registerServerStarted(ServerLifecycleEvents.ServerStarted callback) { registerCallback(SERVER_STARTED, callback); }
+    public static void registerServerStarting(ServerLifecycleEvents.ServerStarting callback) { registerCallback(SERVER_STARTING, callback); }
+    public static void registerServerStopping(ServerLifecycleEvents.ServerStopping callback) { registerCallback(SERVER_STOPPING, callback); }
+    public static void registerServerStopped(ServerLifecycleEvents.ServerStopped callback) { registerCallback(SERVER_STOPPED, callback); }
+    public static void registerTickStart(ServerTickEvents.Start callback) { registerCallback(TICK_START, callback); }
+    public static void registerTickEnd(ServerTickEvents.End callback) { registerCallback(TICK_END, callback); }
+    public static void registerStartServerTick(ServerTickEvents.StartServerTick callback) { registerCallback(SERVER_TICK_START, callback); }
+    public static void registerEndServerTick(ServerTickEvents.EndServerTick callback) { registerCallback(SERVER_TICK_END, callback); }
+    public static void registerStartWorldTick(ServerTickEvents.StartWorldTick callback) { registerCallback(WORLD_TICK_START, callback); }
+    public static void registerEndWorldTick(ServerTickEvents.EndWorldTick callback) { registerCallback(WORLD_TICK_END, callback); }
+    public static void registerWorldLoad(ServerWorldEvents.Load callback) { registerCallback(WORLD_LOAD, callback); }
+    public static void registerWorldUnload(ServerWorldEvents.Unload callback) { registerCallback(WORLD_UNLOAD, callback); }
+    public static void registerPlayerJoin(ServerPlayConnectionEvents.Join callback) { registerCallback(PLAYER_JOIN, callback); }
+    public static void registerPlayerQuit(ServerPlayConnectionEvents.Disconnect callback) { registerCallback(PLAYER_QUIT, callback); }
+    public static void registerPlayerCopyFrom(ServerPlayerEvents.CopyFrom callback) { registerCallback(PLAYER_COPY_FROM, callback); }
+    public static void registerPlayerAfterRespawn(ServerPlayerEvents.AfterRespawn callback) { registerCallback(PLAYER_AFTER_RESPAWN, callback); }
+    public static void registerPlayerJoinEvent(ServerPlayerEvents.Join callback) { registerCallback(PLAYER_JOIN_EVENT, callback); }
+    public static void registerPlayerLeaveEvent(ServerPlayerEvents.Leave callback) { registerCallback(PLAYER_LEAVE_EVENT, callback); }
+    public static void registerEntityLoad(ServerEntityEvents.Load callback) { registerCallback(ENTITY_LOAD, callback); }
+    public static void registerEntityUnload(ServerEntityEvents.Unload callback) { registerCallback(ENTITY_UNLOAD, callback); }
+    public static void registerAllowDamage(net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.AllowDamage callback) { registerCallback(ALLOW_DAMAGE, callback); }
+    public static void registerAfterDamage(net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.AfterDamage callback) { registerCallback(AFTER_DAMAGE, callback); }
+    public static void registerAfterDeath(net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.AfterDeath callback) { registerCallback(AFTER_DEATH, callback); }
+    public static void registerLegacyEntityLoad(net.fabricmc.fabric.api.event.lifecycle.v1.ServerEntityEvents.Load callback) { registerCallback(LEGACY_ENTITY_LOAD, callback); }
+    public static void registerLegacyEntityUnload(net.fabricmc.fabric.api.event.lifecycle.v1.ServerEntityEvents.Unload callback) { registerCallback(LEGACY_ENTITY_UNLOAD, callback); }
+    public static void registerLegacyAllowDamage(net.fabricmc.fabric.api.event.lifecycle.v1.ServerLivingEntityEvents.AllowDamage callback) { registerCallback(LEGACY_ALLOW_DAMAGE, callback); }
+    public static void registerLegacyAfterDamage(net.fabricmc.fabric.api.event.lifecycle.v1.ServerLivingEntityEvents.AfterDamage callback) { registerCallback(LEGACY_AFTER_DAMAGE, callback); }
+    public static void registerLegacyAfterDeath(net.fabricmc.fabric.api.event.lifecycle.v1.ServerLivingEntityEvents.AfterDeath callback) { registerCallback(LEGACY_AFTER_DEATH, callback); }
+    public static void registerAllowChatMessage(ServerMessageEvents.AllowChatMessage callback) { registerCallback(ALLOW_CHAT_MESSAGE, callback); }
+    public static void registerChatMessage(ServerMessageEvents.ChatMessage callback) { registerCallback(CHAT_MESSAGE, callback); }
+    public static void registerUseBlock(UseBlockCallback callback) { registerCallback(USE_BLOCK, callback); }
+    public static void registerAttackBlock(AttackBlockCallback callback) { registerCallback(ATTACK_BLOCK, callback); }
+    public static void registerBeforeBreak(PlayerBlockBreakEvents.Before callback) { registerCallback(BEFORE_BREAK, callback); }
+    public static void registerCommandRegistration(CommandRegistrationCallback callback) { registerCallback(COMMAND_REGISTRATION, callback); }
 
     private static void clearRegistrations() {
         SERVER_STARTING.clear();
@@ -517,6 +574,7 @@ public final class CppModRuntime {
         CommandRegistrationCallback.clear();
         ServerPlayNetworking.clear();
         net.fabricmc.fabric.api.itemgroup.v1.ItemGroupEvents.clear();
+        restoreLoaderMetadata();
     }
 
     /**
@@ -545,7 +603,11 @@ public final class CppModRuntime {
                     // server.  `server` is the standard Fabric selector.
                     addMixinNames(classNames, json.get("server"), prefix);
                     for (String className : classNames) {
-                        Class<?> mixinClass = Class.forName(className, true, modLoader);
+                        // Mixin registration must inspect annotations without running
+                        // the mixin's static initializer. Shadow fields are bound when
+                        // the target class is transformed; initializing the mixin here
+                        // would observe them as null.
+                        Class<?> mixinClass = Class.forName(className, false, modLoader);
                         MixinHooks.registerMixinClass(mixinClass);
                     }
                 } catch (Exception failure) {
@@ -580,6 +642,7 @@ public final class CppModRuntime {
     private static void loadMods(Path directory) throws Exception {
         if (!Files.isDirectory(directory)) {
             log("INFO", "mods directory not present: " + directory);
+            configureLoaderMetadata(List.of());
             return;
         }
         List<Candidate> candidates = new ArrayList<>();
@@ -589,7 +652,9 @@ public final class CppModRuntime {
                   .forEach(path -> {
                       try {
                           Candidate candidate = readCandidate(path);
-                          if (candidate != null) candidates.add(candidate);
+                          if (candidate == null) return;
+                          if (candidate.environmentMatchesServer()) candidates.add(candidate);
+                          else log("INFO", "skipping client-only mod " + candidate.id);
                       } catch (Exception e) {
                           log("ERROR", "ignoring invalid mod metadata " + path + ": " + e);
                           if (Boolean.getBoolean("cppfm.jvm.strict"))
@@ -602,6 +667,14 @@ public final class CppModRuntime {
             if (byId.put(candidate.id, candidate) != null)
                 throw new IllegalArgumentException("duplicate mod id: " + candidate.id);
         }
+        for (Candidate candidate : candidates) {
+            for (String provided : candidate.provides) {
+                Candidate previous = byId.putIfAbsent(provided, candidate);
+                if (previous != null && previous != candidate)
+                    throw new IllegalArgumentException("duplicate provided mod id: " + provided);
+            }
+        }
+        validateDependencies(candidates, byId);
         List<Candidate> order = new ArrayList<>();
         Set<String> visiting = new HashSet<>();
         Set<String> visited = new HashSet<>();
@@ -624,9 +697,14 @@ public final class CppModRuntime {
         // resolved.  The KnotClassLoader created by KnotLauncher has already
         // indexed these configs, so target definitions can be transformed on
         // their first load rather than being patched after the fact.
+        configureLoaderMetadata(candidates);
         registerMixins(order);
-        server = MinecraftServer.of(NativeBridge.serverHandle());
+        // Fabric initializes server entrypoints before DedicatedServer creates
+        // its command manager.  Preserve that ordering so constructor-return
+        // mixins (notably Carpet's command registration hook) observe their
+        // initialized mod state instead of an empty settings registry.
         for (Candidate candidate : order) initializedEntrypoints += initialize(candidate);
+        server = MinecraftServer.of(NativeAccess.serverHandle());
         for (CommandRegistrationCallback callback : snapshot(COMMAND_REGISTRATION))
             invokeSafely(() -> callback.register(server.getCommandManager().getDispatcher(),
                 new net.minecraft.server.command.CommandRegistryAccess(),
@@ -637,7 +715,7 @@ public final class CppModRuntime {
     }
 
     private static void fireWorldLoad() {
-        ServerWorld world = ServerWorld.of(NativeBridge.nativeServerWorld(0), server);
+        ServerWorld world = ServerWorld.of(NativeAccess.serverWorld(0), server);
         for (ServerWorldEvents.Load callback : snapshot(WORLD_LOAD))
             invokeSafely(() -> callback.onWorldLoad(server, world), "world load");
     }
@@ -653,7 +731,7 @@ public final class CppModRuntime {
                               List<Candidate> order) {
         if (visited.contains(candidate.id)) return;
         if (!visiting.add(candidate.id)) throw new IllegalArgumentException("cyclic mod dependency at " + candidate.id);
-        for (String dependency : candidate.dependencies) {
+        for (String dependency : candidate.dependencies.keySet()) {
             if (BUILTIN_DEPENDENCIES.contains(dependency)) continue;
             Candidate required = byId.get(dependency);
             if (required == null) throw new IllegalArgumentException(candidate.id + " requires missing mod " + dependency);
@@ -666,8 +744,32 @@ public final class CppModRuntime {
 
     private static int initialize(Candidate candidate) throws Exception {
         int initialized = 0;
-        for (String entrypoint : candidate.entrypoints) {
-            Class<?> type = Class.forName(entrypoint, true, modLoader);
+        for (Entrypoint entrypointDefinition : candidate.entrypoints) {
+            String entrypoint = entrypointDefinition.definition;
+            String className = entrypoint;
+            String methodName = null;
+            int separator = entrypoint.indexOf("::");
+            if (separator >= 0) {
+                className = entrypoint.substring(0, separator);
+                methodName = entrypoint.substring(separator + 2);
+                if (className.isEmpty() || methodName.isEmpty())
+                    throw new IllegalArgumentException("invalid entrypoint: " + entrypoint);
+            }
+            Class<?> type = Class.forName(className, true, modLoader);
+            if (methodName != null) {
+                Method method = type.getDeclaredMethod(methodName);
+                method.setAccessible(true);
+                if (java.lang.reflect.Modifier.isStatic(method.getModifiers()))
+                    method.invoke(null);
+                else {
+                    Object instance = type.getDeclaredConstructor().newInstance();
+                    method.invoke(instance);
+                    registerLoaderEntrypoint(entrypointDefinition.key, instance,
+                        candidate.id, entrypoint);
+                }
+                ++initialized;
+                continue;
+            }
             Object instance = type.getDeclaredConstructor().newInstance();
             if (instance instanceof DedicatedServerModInitializer dedicated)
                 dedicated.onInitializeServer();
@@ -679,6 +781,8 @@ public final class CppModRuntime {
                 method.setAccessible(true);
                 method.invoke(instance);
             }
+            registerLoaderEntrypoint(entrypointDefinition.key, instance,
+                candidate.id, entrypoint);
             ++initialized;
         }
         return initialized;
@@ -712,40 +816,220 @@ public final class CppModRuntime {
         Map<String, Object> json = (Map<String, Object>) raw;
         String id = string(json.get("id"));
         if (id == null || !id.matches("[a-z][a-z0-9_-]{1,63}")) throw new IllegalArgumentException("invalid mod id");
-        List<String> entrypoints = new ArrayList<>();
+        List<Entrypoint> entrypoints = new ArrayList<>();
         Object entrypointObject = json.get("entrypoints");
         if (entrypointObject instanceof Map<?, ?> entries) {
-            addEntrypoints(entrypoints, entries.get("server"));
-            addEntrypoints(entrypoints, entries.get("main"));
+            addEntrypoints(entrypoints, entries.get("server"), "server");
+            addEntrypoints(entrypoints, entries.get("main"), "main");
         }
-        List<String> dependencies = new ArrayList<>();
-        Object dependencyObject = json.get("depends");
-        if (dependencyObject instanceof Map<?, ?> map)
-            for (Object key : map.keySet()) dependencies.add(String.valueOf(key));
+        Map<String, String> dependencies = dependencyMap(json.get("depends"), "depends");
+        Map<String, String> recommends = dependencyMap(json.get("recommends"), "recommends");
+        Map<String, String> suggests = dependencyMap(json.get("suggests"), "suggests");
+        Map<String, String> breaks = dependencyMap(json.get("breaks"), "breaks");
+        Map<String, String> conflicts = dependencyMap(json.get("conflicts"), "conflicts");
+        List<String> provides = stringList(json.get("provides"), "provides");
         List<String> mixinConfigs = new ArrayList<>();
         Object mixins = json.get("mixins");
         if (mixins instanceof String config) mixinConfigs.add(config);
         else if (mixins instanceof List<?> list)
-            for (Object config : list) if (config instanceof String value) mixinConfigs.add(value);
-        return new Candidate(id, path, dependencies, entrypoints, mixinConfigs);
+            for (Object config : list) {
+                if (config instanceof String value) mixinConfigs.add(value);
+                else if (config instanceof Map<?, ?> object && object.get("config") instanceof String value)
+                    mixinConfigs.add(value);
+            }
+        String environment = string(json.get("environment"));
+        if (environment == null || environment.isBlank()) environment = "*";
+        return new Candidate(id, string(json.get("name")), string(json.get("version")),
+            environment, path, dependencies, recommends, suggests, breaks, conflicts,
+            provides, entrypoints, mixinConfigs);
     }
 
-    private static void addEntrypoints(List<String> output, Object value) {
-        if (value instanceof String string) output.add(string);
+    @SuppressWarnings("unchecked")
+    private static Map<String, String> dependencyMap(Object value, String key) {
+        if (value == null) return Map.of();
+        if (!(value instanceof Map<?, ?> raw))
+            throw new IllegalArgumentException(key + " must be an object");
+        LinkedHashMap<String, String> result = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : raw.entrySet()) {
+            if (!(entry.getKey() instanceof String id) || id.isBlank())
+                throw new IllegalArgumentException(key + " contains an invalid mod id");
+            if (!(entry.getValue() instanceof String requirement) || requirement.isBlank())
+                throw new IllegalArgumentException(key + " has an invalid requirement for " + id);
+            result.put(id, requirement);
+        }
+        return Map.copyOf(result);
+    }
+
+    private static List<String> stringList(Object value, String key) {
+        if (value == null) return List.of();
+        if (!(value instanceof List<?> list))
+            throw new IllegalArgumentException(key + " must be an array");
+        ArrayList<String> result = new ArrayList<>();
+        for (Object item : list) {
+            if (!(item instanceof String string) || string.isBlank())
+                throw new IllegalArgumentException(key + " contains a non-string value");
+            result.add(string);
+        }
+        return List.copyOf(result);
+    }
+
+    private static void validateDependencies(List<Candidate> candidates,
+                                             Map<String, Candidate> byId) {
+        for (Candidate candidate : candidates) {
+            for (Map.Entry<String, String> dependency : candidate.dependencies.entrySet()) {
+                String actual = BUILTIN_DEPENDENCIES.contains(dependency.getKey())
+                    ? BUILTIN_VERSIONS.get(dependency.getKey())
+                    : versionOf(byId.get(dependency.getKey()));
+                if (actual == null)
+                    throw new IllegalArgumentException(candidate.id + " requires missing mod " + dependency.getKey());
+                if (!matchesLoaderVersion(actual, dependency.getValue()))
+                    throw new IllegalArgumentException(candidate.id + " requires " + dependency.getKey()
+                        + " " + dependency.getValue() + " but found " + actual);
+            }
+            validateConflicts(candidate, candidate.breaks, byId, "breaks");
+            validateConflicts(candidate, candidate.conflicts, byId, "conflicts");
+        }
+    }
+
+    private static void validateConflicts(Candidate candidate, Map<String, String> conflicts,
+                                          Map<String, Candidate> byId, String kind) {
+        for (Map.Entry<String, String> conflict : conflicts.entrySet()) {
+            String actual = BUILTIN_DEPENDENCIES.contains(conflict.getKey())
+                ? BUILTIN_VERSIONS.get(conflict.getKey())
+                : versionOf(byId.get(conflict.getKey()));
+            if (actual != null && matchesLoaderVersion(actual, conflict.getValue()))
+                throw new IllegalArgumentException(candidate.id + " " + kind + " " + conflict.getKey()
+                    + " " + conflict.getValue() + " (found " + actual + ")");
+        }
+    }
+
+    private static String versionOf(Candidate candidate) {
+        return candidate == null || candidate.version == null || candidate.version.isBlank()
+            ? null : candidate.version;
+    }
+
+    private static String javaMajorVersion() {
+        String value = System.getProperty("java.specification.version", "0");
+        if (value.startsWith("1.")) value = value.substring(2);
+        int dot = value.indexOf('.');
+        return dot < 0 ? value : value.substring(0, dot);
+    }
+
+    private static void addEntrypoints(List<Entrypoint> output, Object value, String key) {
+        if (value instanceof String string) output.add(new Entrypoint(key, string));
         else if (value instanceof List<?> list)
             for (Object entry : list) {
-                if (entry instanceof String string) output.add(string);
+                if (entry instanceof String string) output.add(new Entrypoint(key, string));
                 else if (entry instanceof Map<?, ?> map && map.get("value") instanceof String string)
-                    output.add(string);
+                    output.add(new Entrypoint(key, string));
             }
         else if (value instanceof Map<?, ?> map && map.get("value") instanceof String string)
-            output.add(string);
+            output.add(new Entrypoint(key, string));
     }
 
     private static String string(Object value) { return value instanceof String ? (String) value : null; }
 
+    private static void configureLoaderMetadata(List<Candidate> candidates) {
+        // The fallback loader exposes these registration hooks, while the
+        // opt-in official Loader owns the metadata state itself.  Resolve the
+        // optional hooks reflectively so the same CppModRuntime class can be
+        // defined by either classloader without a NoSuchMethodError.
+        clearLoaderRuntime();
+        Path gameDir = FabricLoader.getInstance().getGameDir();
+        registerLoaderMod("minecraft", "Minecraft", "1.21.4", gameDir, "*", List.of(),
+            Map.of(), Map.of(), Map.of(), Map.of(), Map.of());
+        registerLoaderMod("fabricloader", "Fabric Loader", "0.16.9", gameDir, "*", List.of(),
+            Map.of(), Map.of(), Map.of(), Map.of(), Map.of());
+        LinkedHashMap<String, String> versions = new LinkedHashMap<>();
+        for (Candidate candidate : candidates) {
+            versions.put(candidate.id, candidate.version);
+            registerLoaderMod(candidate.id, candidate.name, candidate.version, candidate.path,
+                candidate.environment, candidate.provides, candidate.dependencies,
+                candidate.recommends, candidate.suggests, candidate.conflicts, candidate.breaks);
+        }
+        saveLoaderProperty("cppfm.loaded.mods", String.join(",", versions.keySet()));
+        for (Map.Entry<String, String> entry : versions.entrySet()) {
+            saveLoaderProperty("cppfm.mod.version." + entry.getKey(), entry.getValue() == null ? "" : entry.getValue());
+            Candidate candidate = candidates.stream().filter(item -> item.id.equals(entry.getKey())).findFirst().orElse(null);
+            if (candidate != null) {
+                saveLoaderProperty("cppfm.mod.name." + candidate.id, candidate.name);
+                saveLoaderProperty("cppfm.mod.root." + candidate.id, candidate.path.toString());
+                saveLoaderProperty("cppfm.mod.environment." + candidate.id, candidate.environment);
+                saveLoaderProperty("cppfm.mod.provides." + candidate.id, String.join(",", candidate.provides));
+            }
+        }
+    }
+
+    private static void saveLoaderProperty(String key, String value) {
+        if (!savedLoaderProperties.containsKey(key)) savedLoaderProperties.put(key, System.getProperty(key));
+        if (value == null) System.clearProperty(key); else System.setProperty(key, value);
+    }
+
+    private static void restoreLoaderMetadata() {
+        for (Map.Entry<String, String> entry : savedLoaderProperties.entrySet()) {
+            if (entry.getValue() == null) System.clearProperty(entry.getKey());
+            else System.setProperty(entry.getKey(), entry.getValue());
+        }
+        savedLoaderProperties.clear();
+    }
+
+    /** Invoke a fallback-only FabricLoader extension when it is present. */
+    private static Object invokeOptionalLoaderStatic(String name, Class<?>[] parameterTypes,
+                                                     Object... arguments) {
+        try {
+            Method method = FabricLoader.class.getMethod(name, parameterTypes);
+            return method.invoke(null, arguments);
+        } catch (NoSuchMethodException ignored) {
+            // The official FabricLoader owns this state and intentionally does
+            // not expose the fallback runtime's registration helpers.
+            return null;
+        } catch (InvocationTargetException failure) {
+            Throwable cause = failure.getCause();
+            if (cause instanceof RuntimeException runtime) throw runtime;
+            if (cause instanceof Error error) throw error;
+            throw new IllegalStateException("FabricLoader." + name + " failed", cause);
+        } catch (ReflectiveOperationException failure) {
+            throw new IllegalStateException("cannot invoke FabricLoader." + name, failure);
+        }
+    }
+
+    private static void clearLoaderRuntime() {
+        invokeOptionalLoaderStatic("clearRuntime", new Class<?>[0]);
+    }
+
+    private static void registerLoaderEntrypoint(String key, Object value,
+                                                 String modId, String definition) {
+        invokeOptionalLoaderStatic("registerEntrypoint",
+            new Class<?>[] {String.class, Object.class, String.class, String.class},
+            key, value, modId, definition);
+    }
+
+    private static void registerLoaderMod(String id, String name, String version, Path root,
+                                          String environment, List<String> provides,
+                                          Map<String, String> depends,
+                                          Map<String, String> recommends,
+                                          Map<String, String> suggests,
+                                          Map<String, String> conflicts,
+                                          Map<String, String> breaks) {
+        invokeOptionalLoaderStatic("registerMod",
+            new Class<?>[] {String.class, String.class, String.class, Path.class,
+                            String.class, List.class, Map.class, Map.class, Map.class,
+                            Map.class, Map.class},
+            id, name, version, root, environment, provides, depends, recommends,
+            suggests, conflicts, breaks);
+    }
+
+    private static boolean matchesLoaderVersion(String actual, String requirement) {
+        Object result = invokeOptionalLoaderStatic("matchesVersion",
+            new Class<?>[] {String.class, String.class}, actual, requirement);
+        // A missing helper means an official Loader is in charge of dependency
+        // resolution; fail closed if this compatibility facade is asked to
+        // validate a candidate anyway.
+        return result instanceof Boolean && (Boolean) result;
+    }
+
     private static <T> List<T> snapshot(List<T> list) {
-        synchronized (list) { return List.copyOf(list); }
+        return List.copyOf(list);
     }
 
     private static void closeModLoader() {
@@ -791,6 +1075,17 @@ public final class CppModRuntime {
         catch (Throwable ignored) { System.err.println("[cppfm][jvm][" + level + "] " + message); }
     }
 
-    private record Candidate(String id, Path path, List<String> dependencies,
-                             List<String> entrypoints, List<String> mixinConfigs) {}
+    private record Candidate(String id, String name, String version, String environment, Path path,
+                             Map<String, String> dependencies, Map<String, String> recommends,
+                             Map<String, String> suggests, Map<String, String> breaks,
+                             Map<String, String> conflicts, List<String> provides,
+                             List<Entrypoint> entrypoints, List<String> mixinConfigs) {
+        private boolean environmentMatchesServer() {
+            return environment == null || environment.equals("*")
+                || environment.equalsIgnoreCase("server")
+                || environment.equalsIgnoreCase("universal");
+        }
+    }
+
+    private record Entrypoint(String key, String definition) {}
 }

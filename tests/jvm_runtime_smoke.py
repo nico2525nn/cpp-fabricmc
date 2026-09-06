@@ -55,6 +55,7 @@ def main() -> int:
                 "fixture MIXIN_TAIL",
                 "fixture MIXIN_RETURN",
                 "fixture MIXIN_OVERWRITE tick=1",
+                "dynamic route JVM_TRANSFORMED owner=net/minecraft/server/MinecraftServer method=setTick descriptor=(J)V tick=1",
                 "fixture COMMAND_REGISTERED",
                 "fixture COMMAND_EXECUTED 7",
                 "fixture WORLD_API",
@@ -68,6 +69,15 @@ def main() -> int:
                 refresh()
                 if not all(any(token in item for item in output) for token in required):
                     print("JVM smoke missing evidence:", file=sys.stderr)
+                    print("\n".join(output[-80:]), file=sys.stderr)
+                    return 1
+                heads = [item for item in output if "fixture MIXIN_HEAD " in item]
+                tails = [item for item in output if "fixture MIXIN_TAIL " in item]
+                end_ticks = [item for item in output if "fixture END_SERVER_TICK" in item]
+                if (len(heads) != 1 or "tick=1 nativeTick=1 count=1" not in heads[0]
+                        or len(tails) != 1 or "tick=1 nativeTick=1 count=1" not in tails[0]
+                        or len(end_ticks) != 1):
+                    print("JVM smoke dynamic route duplicated or lost evidence:", file=sys.stderr)
                     print("\n".join(output[-80:]), file=sys.stderr)
                     return 1
             finally:

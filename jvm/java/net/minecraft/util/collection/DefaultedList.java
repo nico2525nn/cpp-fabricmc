@@ -11,6 +11,8 @@ import java.util.function.IntFunction;
 /** ArrayList-compatible list with a fixed default value, as used by inventories. */
 public class DefaultedList<T> extends AbstractList<T> {
     private final List<T> values;
+    /** Vanilla field name retained for Accessor mixins. */
+    private final List<T> delegate;
     private final T defaultValue;
     private final BiConsumer<Integer, T> setter;
     private final IntFunction<T> loader;
@@ -18,6 +20,7 @@ public class DefaultedList<T> extends AbstractList<T> {
     private DefaultedList(int size, T defaultValue) {
         this.defaultValue = defaultValue;
         this.values = new ArrayList<>(Collections.nCopies(Math.max(0, size), defaultValue));
+        this.delegate = this.values;
         this.setter = null;
         this.loader = null;
     }
@@ -25,6 +28,7 @@ public class DefaultedList<T> extends AbstractList<T> {
     private DefaultedList(int size, T defaultValue, IntFunction<T> loader, BiConsumer<Integer, T> setter) {
         this.defaultValue = defaultValue;
         this.values = new ArrayList<>(Collections.nCopies(Math.max(0, size), defaultValue));
+        this.delegate = this.values;
         this.loader = loader;
         this.setter = setter;
     }

@@ -17,6 +17,8 @@ public final class Box {
     public double getLengthZ() { return maxZ - minZ; }
     public Vec3d getCenter() { return new Vec3d((minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2); }
     public Box offset(double x, double y, double z) { return new Box(minX + x, minY + y, minZ + z, maxX + x, maxY + y, maxZ + z); }
+    /** Yarn 1.21.4 uniform expansion overload. */
+    public Box expand(double value) { return expand(value, value, value); }
     public Box expand(double x, double y, double z) {
         return new Box(x < 0 ? minX + x : minX, y < 0 ? minY + y : minY, z < 0 ? minZ + z : minZ,
                        x > 0 ? maxX + x : maxX, y > 0 ? maxY + y : maxY, z > 0 ? maxZ + z : maxZ);

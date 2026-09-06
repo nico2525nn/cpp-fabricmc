@@ -5,6 +5,9 @@ import net.minecraft.util.NativeAccess;
 import java.util.ArrayList;
 import java.util.List;
 import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.network.ClientConnection;
+import net.minecraft.server.network.ConnectedClientData;
+import java.util.Optional;
 
 /** Native-backed online-player query surface. */
 public final class PlayerManager {
@@ -31,4 +34,29 @@ public final class PlayerManager {
     public int getCurrentPlayerCount() { return getPlayerList().size(); }
     public void broadcast(net.minecraft.text.Text message, boolean overlay) { for (ServerPlayerEntity player : getPlayerList()) player.sendMessage(message, overlay); }
     public void broadcast(net.minecraft.text.Text message) { broadcast(message, false); }
+    public void broadcast(net.minecraft.network.message.SignedMessage message,
+                          ServerPlayerEntity sender,
+                          net.minecraft.network.message.MessageType.Parameters parameters) { }
+    /** Reload callback exposed by the 1.21.4 server player manager. */
+    public void onDataPacksReloaded() { }
+    public void placeNewPlayer(ClientConnection connection, ServerPlayerEntity player,
+                               ConnectedClientData clientData) {
+        if (player != null && !getPlayerList().contains(player))
+            NativeAccess.log("DEBUG", "placeNewPlayer " + player.getName().getString());
+    }
+    /** Yarn name used by the 1.21.4 mapped server mixins. */
+    public void onPlayerConnect(ClientConnection connection, ServerPlayerEntity player,
+                                ConnectedClientData clientData) {
+        placeNewPlayer(connection, player, clientData);
+    }
+    /** World-info synchronization hook retained for server-player mixins. */
+    public void sendWorldInfo(ServerPlayerEntity player, net.minecraft.server.world.ServerWorld world) { }
+    public Optional<net.minecraft.nbt.NbtCompound> loadPlayerData(ServerPlayerEntity player) {
+        return Optional.empty();
+    }
+    public ServerPlayerEntity respawnPlayer(ServerPlayerEntity player, boolean alive,
+                                            net.minecraft.entity.Entity.RemovalReason reason) {
+        if (player != null && reason != null) player.remove(reason);
+        return player;
+    }
 }

@@ -157,7 +157,10 @@
     },
     {
       "name": "net.fabricmc.loader.api.FabricLoader",
-      "methods": ["getInstance()Lnet/fabricmc/loader/api/FabricLoader;", "isModLoaded(Ljava/lang/String;)Z", "getAllMods()Ljava/util/List;", "getModContainer(Ljava/lang/String;)Ljava/util/Optional;", "getMappingResolver()Lnet/fabricmc/loader/api/MappingResolver;"]
+      "methods": ["getInstance()Lnet/fabricmc/loader/api/FabricLoader;", "getEntrypoints(Ljava/lang/String;Ljava/lang/Class;)Ljava/util/List;", "getEntrypointContainers(Ljava/lang/String;Ljava/lang/Class;)Ljava/util/List;", "invokeEntrypoints(Ljava/lang/String;Ljava/lang/Class;Ljava/util/function/Consumer;)V", "getObjectShare()Lnet/fabricmc/loader/api/ObjectShare;", "isModLoaded(Ljava/lang/String;)Z", "isDevelopmentEnvironment()Z", "getEnvironmentType()Lnet/fabricmc/api/EnvType;", "getAllMods()Ljava/util/Collection;", "getModContainer(Ljava/lang/String;)Ljava/util/Optional;", "getMappingResolver()Lnet/fabricmc/loader/api/MappingResolver;", "getGameInstance()Ljava/lang/Object;", "getGameDir()Ljava/nio/file/Path;", "getGameDirectory()Ljava/io/File;", "getConfigDir()Ljava/nio/file/Path;", "getConfigDirectory()Ljava/io/File;", "getLaunchArguments(Z)[Ljava/lang/String;"],
+      "nativeMethods": [],
+      "wrapperMethods": ["getInstance()Lnet/fabricmc/loader/api/FabricLoader;", "getEntrypoints(Ljava/lang/String;Ljava/lang/Class;)Ljava/util/List;", "getEntrypointContainers(Ljava/lang/String;Ljava/lang/Class;)Ljava/util/List;", "invokeEntrypoints(Ljava/lang/String;Ljava/lang/Class;Ljava/util/function/Consumer;)V", "getObjectShare()Lnet/fabricmc/loader/api/ObjectShare;", "isModLoaded(Ljava/lang/String;)Z", "isDevelopmentEnvironment()Z", "getEnvironmentType()Lnet/fabricmc/api/EnvType;", "getAllMods()Ljava/util/Collection;", "getModContainer(Ljava/lang/String;)Ljava/util/Optional;", "getMappingResolver()Lnet/fabricmc/loader/api/MappingResolver;", "getGameInstance()Ljava/lang/Object;", "getGameDir()Ljava/nio/file/Path;", "getGameDirectory()Ljava/io/File;", "getConfigDir()Ljava/nio/file/Path;", "getConfigDirectory()Ljava/io/File;", "getLaunchArguments(Z)[Ljava/lang/String;"],
+      "structuredBytecodeMethods": []
     }
   ],
   "events": [
@@ -176,7 +179,7 @@
     "transformer": "cppfm.transform.MixinClassTransformer",
     "structuredBytecode": true,
     "supportedInjectionPoints": ["HEAD", "TAIL", "RETURN", "INVOKE", "FIELD", "NEW", "JUMP", "CONSTANT", "LOAD", "STORE"],
-    "supportedTransformers": ["Inject", "Overwrite", "Accessor", "Invoker", "Shadow", "Redirect", "ModifyArg", "ModifyConstant", "ModifyVariable"],
+    "supportedTransformers": ["Inject", "Overwrite", "Accessor", "Invoker", "Shadow", "Redirect", "ModifyArg", "ModifyConstant", "ModifyVariable", "ModifyReturnValue", "ModifyExpressionValue", "WrapWithCondition", "WrapOperation", "WrapMethod"],
     "declaredButNotTransformed": []
   },
   "limitations": [

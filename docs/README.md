@@ -1,226 +1,85 @@
-# cpp-fabricmc canonical documentation
+# CppFabricMC documentation
 
-This directory is the current specification index for the clean-room C++ server. The
-canonical snapshot is for **Minecraft Java Edition 1.21.4**, **protocol 769**, and
-**DataVersion 4189**. It describes the behavior of the integrated implementation at
-runtime snapshot `c3a5e49e41261dacb4b9454c538aa87575fa9546`, rechecked on 2026-09-05.
-Documentation does not change the executable, packet registry, test assertions, or
-generated data.
+CppFabricMC is an independent clean-room implementation of the Minecraft: Java
+Edition 1.21.4 server protocol in C++20. This directory collects the public
+technical references for the supported protocol, gameplay, operations, Java
+integration boundary, and verification evidence.
 
-## Version boundary and scope
+## Choose a topic
 
-| item | canonical value | boundary |
+- [Wire specification](SPEC_WIRE.md) — packet formats, identifiers, state
+  transitions, compression, encryption, and byte-level contracts.
+- [Gameplay specification](SPEC_GAMEPLAY.md) — world storage, generation,
+  blocks, entities, inventory, commands, simulation, and known limitations.
+- [Operations specification](SPEC_OPS.md) — configuration, persistence,
+  recovery, resource limits, load behavior, and administration.
+- [Development guide](DEVELOPMENT.md) — source ownership, build conventions,
+  clean-room methodology, and contribution workflow.
+- [Verification](VERIFICATION.md) — reproducible commands, evidence, and the
+  interpretation of passing and bounded results.
+- [Current status](CURRENT_STATE.md) — the latest measured state and remaining
+  limitations.
+
+## Supported target
+
+| Item | Value |
+|---|---|
+| Minecraft | Java Edition 1.21.4 |
+| Protocol | 769 |
+| World data | DataVersion 4189 |
+| Runtime | C++20 server; optional embedded HotSpot/JNI integration |
+
+The optional Java integration is a deliberately bounded extension surface. It
+provides a version-locked shadow API, selected Fabric-style callbacks, and a
+structural bytecode transformer for the tested server-side use cases. It is not
+the official Mojang server runtime and does not claim universal compatibility
+with arbitrary JVM mods, client code, or GUI behavior.
+
+## Implementation map
+
+| Area | Main paths | Reference |
 |---|---|---|
-| Minecraft | `1.21.4` | Java Edition protocol behavior |
-| protocol | `769` | Handshake, state/direction IDs, and field encodings |
-| world data | `4189` | `level.dat`, Anvil, and chunk persistence |
-| reference platform | Fabric Loader `0.16.9`, unmodded server behavior | Fabric API is provenance; plan51 adds a bounded optional JVM bridge and an offline official-loader probe |
-| excluded | Mojang GameProvider/server jar, arbitrary JVM mods, proven vanilla Xoroshiro byte parity | tracked as declared limitations, not silently supported |
+| Encoding and protocol IDs | `src/core/`, `src/proto/` | [Wire specification](SPEC_WIRE.md) |
+| Connections and packets | `src/net/` | [Wire specification](SPEC_WIRE.md) |
+| World and persistence | `src/game/World*`, `src/game/RegionFile.*`, `src/game/WorldDataManager.*` | [Gameplay](SPEC_GAMEPLAY.md), [Operations](SPEC_OPS.md) |
+| Simulation and world generation | `src/physics/`, `src/worldgen/`, `src/game/WorldGen.cpp` | [Gameplay](SPEC_GAMEPLAY.md) |
+| Entities, items, and menus | `src/game/Entities.*`, `Items.*`, `Containers.*`, `Recipes.*` | [Gameplay](SPEC_GAMEPLAY.md) |
+| Commands and administration | `src/game/Commands.*`, `src/game/commands_*.cpp` | [Gameplay](SPEC_GAMEPLAY.md), [Operations](SPEC_OPS.md) |
+| Optional Java integration | `src/jvm/`, `jvm/java/`, `jvm/shadow_api.json` | [Verification](VERIFICATION.md#jvm-boundary-gate) |
+| Tests and tooling | `tests/`, `tools/` | [Verification](VERIFICATION.md) |
 
-`Fabric-compatible` means compatible with the protocol and observable behavior of an
-unmodified Fabric 1.21.4 server. The optional plan51 runtime executes the repository's
-bounded shadow ABI and structural fixture; the separate offline probe starts pinned
-official Loader/Knot/Mixin against those shadow classes. Neither result means that
-arbitrary Fabric JVM bytecode or the Mojang GameProvider runs inside `cppfm`.
+## Verification at a glance
 
-## Read in this order
+The latest recorded evidence includes:
 
-1. [SPEC_WIRE.md](SPEC_WIRE.md) — byte-level protocol and state machine.
-2. [SPEC_GAMEPLAY.md](SPEC_GAMEPLAY.md) — world, blocks, entities, inventory,
-   commands, combat, and the explicit parity boundary.
-3. [SPEC_OPS.md](SPEC_OPS.md) — limits, persistence, recovery, load, and incident
-   procedures.
-4. [DEVELOPMENT.md](DEVELOPMENT.md) — module ownership, clean-room workflow, and
-   extension rules.
-5. [PLAN51_JVM.md](PLAN51_JVM.md) — optional embedded JVM boundary and exact limits.
-6. [VERIFICATION.md](VERIFICATION.md) — reproducible gates and evidence semantics.
+- Native server checks and the ordinary integration suite pass.
+- Wire checks report `392 PASS / 0 FAIL / 0 SKIP` for the specification vectors
+  and `405 PASS / 0 FAIL / 0 SKIP` for the full wire suite.
+- The full server harness reports `234 PASS / 0 FAIL`; the 80-scenario smoke
+  integration test reports `212 PASS / 0 FAIL`.
+- The bounded Java fixture corpus reports `25/25`, and the pinned offline
+  Loader/Knot probe passes.
+- A 120-client synthetic load run and 300-, 600-, and 1800-second diagnostics
+  pass.
 
-The existing [gap/status matrix](MISSING_FEATURES_1_21_4.md) and
-[dynamic tracker](CURRENT_STATE.md) retain their stable paths. They are inputs to
-the canonical documents, not replacements for the detailed contracts above. The
-machine-readable fixture remains at [docs/mob_stats_149.csv](mob_stats_149.csv);
-the default lookup in `tests/test_mob_stats_full.cpp::csvPath` must continue to find
-that path. It remains byte-identical to `docs-legacy/mob_stats_149.csv`, with SHA-256
-`b75697102502385b6aee913f0aca80b86cce323a4994b16a29baf408b5ef2f6f` and `149` data
-rows / `11` columns.
+These are named-scenario results, not a universal compatibility percentage.
+Exact vanilla random-number parity for every generation path, arbitrary Fabric
+JVM mods, accepted two-hour or 24-hour soak evidence, and a real-client/GUI
+artifact remain outside the current claim. See [Verification](VERIFICATION.md)
+for dates, commands, and failure interpretation.
 
-## Research entry point and viewpoint schema
+## Clean-room boundary
 
-[research-prompt.md](research-prompt.md) is a legacy three-line entry-point stub.
-Its only responsibility is to redirect to the canonical
-[DEVELOPMENT.md#research-workflow](DEVELOPMENT.md#research-workflow) procedure; it
-does not own a second plan schema, source map, or evidence gate. Current research
-chapters use sixteen viewpoints, matching the numbered sections in the canonical
-documents. Any older ``13 viewpoints`` wording is historical and is not a current
-completion criterion.
+The implementation is developed from protocol documentation, public API
+documentation, and black-box observations of reference behavior. The
+repository does not contain Mojang or Microsoft source code, assets, decompiled
+code, or obfuscation maps. Captures and golden vectors are used as reproducible
+behavioral evidence.
 
-## Evidence labels
+The machine-readable entity fixture is available at
+[mob_stats_149.csv](mob_stats_149.csv). Build and test prerequisites, generated
+data policy, and contribution rules are described in the [Development
+guide](DEVELOPMENT.md).
 
-Every normative statement in the canonical specifications should be read with one of
-these provenance labels:
-
-| label | meaning |
-|---|---|
-| `WIRE-ORACLE` | 1.21.4 protocol data plus a byte-lock test vector |
-| `CAPTURED` | observation from a reference server/client exchange |
-| `VANILLA-CONCEPT` | concept or rule cross-checked against Yarn, Fabric documentation, or the Minecraft Wiki |
-| `IMPLEMENTATION` | a fact about the current C++ source at the snapshot commit |
-| `DECLARED-LIMITATION` | an intentional difference or a claim not yet independently verified |
-| `HISTORICAL` | an archived audit or old observation; never current authority by itself |
-
-The source-of-truth rule is simple: current definitions and fresh tests outrank stale
-comments or historical prose. In particular, current `src/proto/Ids.hpp` and the
-wire tests establish `LevelChunkWithLight 0x28`, `UpdateLight 0x2B`,
-`KeepAlive S→C 0x27`, `KeepAlive C→S 0x1A`, `OpenScreen 0x35`,
-`TradeList 0x2E`, `ContainerSetContent 0x13`, and the
-MultiBlockChange packing documented in [SPEC_WIRE.md](SPEC_WIRE.md#bundle-and-block-updates).
-
-## Server lifecycle
-
-```text
-HANDSHAKING
-  ├─ Status intention → STATUS → request/ping → response/pong → disconnect
-  └─ Login intention  → LOGIN → (optional encryption/compression)
-                              → CONFIGURATION → known-packs response
-                              → registries/tags/finish
-                              → PLAY → tick, packets, persistence
-                              → DISCONNECT
-```
-
-Operational publication has a separate lifecycle:
-
-```text
-preflight → evidence snapshot → canonical review → static/link gate
-          → build/test gate → scope review → commit
-```
-
-Failure stops publication; it does not turn an unverified claim into `DONE`.
-
-## Source and domain map
-
-| domain | primary implementation paths | canonical owner |
-|---|---|---|
-| encoding and IDs | `src/core/ByteBuffer.hpp`, `src/proto/Ids.hpp` | [SPEC_WIRE.md](SPEC_WIRE.md) |
-| connection and packets | `src/net/Connection.hpp`, `PacketEncoder.hpp`, `PacketDecoder.hpp`, `PacketBatcher.cpp` | [SPEC_WIRE.md](SPEC_WIRE.md) |
-| world and persistence | `src/game/World.hpp`, `WorldDataManager.*`, `Persistence.hpp`, `src/game/RegionFile.hpp` | [SPEC_GAMEPLAY.md](SPEC_GAMEPLAY.md), [SPEC_OPS.md](SPEC_OPS.md) |
-| physics and world generation | `src/physics/`, `src/worldgen/`, `src/game/WorldGen.cpp` | [SPEC_GAMEPLAY.md](SPEC_GAMEPLAY.md) |
-| entities and inventory | `src/game/Entities.hpp`, `Items.hpp`, `Containers.hpp`, `Recipes.*`, `BehaviorTree.*` | [SPEC_GAMEPLAY.md](SPEC_GAMEPLAY.md) |
-| bounded JVM extension bridge | `src/jvm/`, `jvm/java/`, `jvm/shadow_api.json` | [PLAN51_JVM.md](PLAN51_JVM.md) |
-| limits and administration | `src/net/RateLimiter.hpp`, `src/net/Rcon.hpp`, `src/game/SessionLock.hpp`, `tools/`, `tests/` | [SPEC_OPS.md](SPEC_OPS.md) |
-| build and evidence | `CMakeLists.txt`, `tests/`, `tools/` | [DEVELOPMENT.md](DEVELOPMENT.md), [VERIFICATION.md](VERIFICATION.md) |
-
-This is a documentation map, not a new C++ class hierarchy or a second packet-ID
-registry.
-
-## Current measured evidence — final-gates snapshot
-
-The following exact native results were carried forward from runtime snapshot
-`17ab09f`; plan51 boundary results were rechecked against integrated baseline
-`c3a5e49`. Counts are not inherited from stale prose and must not be inflated or
-averaged to make a gate pass.
-
-| command/target | result |
-|---|---|
-| configure/build | integrated RelWithDebInfo configure/build completed |
-| incremental Ninja build | `ninja: no work to do` |
-| `test_native` | `ALL PASS` in `2.33s` |
-| `test_spec_wire` | `392 PASS 0 FAIL 0 SKIP` |
-| `test_wire_full` | `405 PASS 0 FAIL 0 SKIP` |
-| `test_wire_b6` | `133 PASS 0 FAIL` |
-| `test_scoreboard_reset` | `22 PASS 0 FAIL` |
-| `test_fuzz` | `23 PASS 0 FAIL` |
-| `test_mob_stats_full` | `131 PASS 0 FAIL` |
-| `test_block_hardness_full` | `16/16 passed; 1095 mismatch=0` |
-| `test_mining_full` | `59/59 passed` |
-| `test_redstone_engine_full` | `29 PASS 0 FAIL` |
-| `test_seed_parity` | `201 PASS 0 FAIL` |
-| `test_recipes_mirror` | `76 PASS 0 FAIL` |
-| `test_plan43` | `82 PASS 0 FAIL` |
-| `test_smoke_80` | `212 PASS 0 FAIL` |
-| `test_gameplay_full` | `803 PASS / 1 intentional E-14 FAIL / 804`, exit 1 |
-| `test_jvm_handles` / `jvm_manifest` / `jvm_runtime` | `PASS` / `PASS` / `PASS`; manifest covers 82 methods (52 native + 30 wrapper), see [PLAN51_JVM.md](PLAN51_JVM.md) |
-| `jvm_transformer` / `jvm_api` / `jvm_compatibility` / `jvm_corpus` / `jvm_contract_audit` | all `PASS`; transformer/API contracts, all `25/25` fixture cases, and exact backend classification pass |
-| official Loader/Knot probe | `PASS`; pinned Loader `0.16.9`, Knot/Mixin, ASM, intermediary, and shadow target markers verified offline; no Mojang provider |
-| `test_server_full` | `234 PASS 0 FAIL` |
-| `multi_client` | `ALL PASS` in `17.83s` |
-| `bot_smoke` | `ALL PASS` in `20.65s` |
-| view32 dry benchmark | `PASS`; 4,225 chunks, p50 0.108 ms, p95 2.333 ms, peak RSS ~95 MB, hit rate 84.6% |
-| 120-client stress | `120/120 joined; PASS` in `68.0s` |
-| `tests/soak_test.py --duration 300` | `PASS`; 150 keepalives, 0 disconnects, actions 2932, post-fill RSS growth 7.6% |
-| `tests/soak_test.py --duration 600 --movement-range 3000` | `PASS`; 300 keepalives, 0 disconnects, actions 5707, post-fill RSS growth 6.6% |
-| `tests/soak_test.py --duration 1800 --movement-range 3000` | `PASS` on `17ab09f`; 900 keepalives, 0 disconnects, actions 17493, post-fill baseline `114504kB`, max `128868kB`, growth `12.5%`; diagnostic only |
-| `tools/soak_bot.py --duration 300` | `3/3 PASS`; each run KeepAlive 30, chunks 182, time updates 300, kicks/EOF/server-exit/transport/protocol errors 0, cleanup PASS |
-| focused executable regression suite | all rerun targets PASS except gameplay_full's one intentional E-14 failure; no unexpected FAIL |
-| `tests/soak_test.py --duration 7200 --movement-range 3000` (parent `d1c6a7f`) | interrupted at recorded `t=3361s`; post-fill RSS `160388→191612kB` (`+19.5%`), above the `15%` gate; not accepted |
-| accepted 2h/24h artifact | none; the 7200s attempt was not accepted and no 24-hour artifact exists |
-| current real-client/GUI artifact | none |
-
-`test_gameplay_full` is deliberately not changed to hide E-14. The former `soak_bot`
-blocker is resolved by three integrated 300-second runs. The attempted 7200-second
-soak was interrupted above its RSS gate and is not a pass. Publication remains
-`BLOCKED` for declared boundaries (arbitrary Fabric JVM compatibility, vanilla RNG
-L3, and missing accepted 2-hour/24-hour/real-client evidence). See
-[SPEC_GAMEPLAY.md#declared-limitations](SPEC_GAMEPLAY.md#declared-limitations) and
-[VERIFICATION.md#gameplay-gate](VERIFICATION.md#gameplay-gate).
-
-## Gap-number convention
-
-The existing matrix has **base taxonomy #1–#80** plus **extension rows #81–#90**;
-there are 90 numbered rows without renumbering the original taxonomy. The canonical
-owners cite the original numbers:
-
-| range | primary document |
-|---|---|
-| #1–#70, #80–#90 | [SPEC_GAMEPLAY.md](SPEC_GAMEPLAY.md) |
-| #71–#79 and packet columns of related rows | [SPEC_WIRE.md](SPEC_WIRE.md) |
-| #7–#10, #71–#79 operational controls and Fabric server-property rows | [SPEC_OPS.md](SPEC_OPS.md) |
-| test/audit meaning for all rows | [VERIFICATION.md](VERIFICATION.md) |
-
-The `Status` cells in `MISSING_FEATURES_1_21_4.md` retain the historical taxonomy
-classification. `DONE` is not a promise that every unlisted Fabric JVM or future
-protocol feature is supported; the declared limitations and final-gate failures
-remain explicit.
-
-The historical strict audit and the current taxonomy are different ledgers and must
-not be added together or substituted for one another:
-
-| ledger | cardinality | current interpretation |
-|---|---:|---|
-| MISSING numbered taxonomy | 90 rows (`#1–#90`) | historical matrix classification `DONE=90`; not a release sign-off |
-| assessment-1 strict wire audit | 78 gaps | `HISTORICAL` archive label; its old-target result is not a current aggregate or fresh client proof |
-
-The archive index at [audit/README.md](audit/README.md) is the authority for the
-historical label. Current packet, gameplay, and operations claims come from the
-canonical documents and named evidence below.
-
-## Research viewpoint coverage (current: 16)
-
-The five detailed canonical documents and new research plans use the same sixteen
-viewpoint sections, so a claim can be reviewed consistently. The current schema is
-not the old 13-viewpoint shorthand:
-
-| # | viewpoint | owner sections |
-|---:|---|---|
-| 1 | feature overview | each document §1 |
-| 2 | vanilla/reference specification | each document §2 |
-| 3 | classes and data structures | each document §3 |
-| 4 | packets or observable I/O | each document §4 |
-| 5 | events/checkpoints | each document §5 |
-| 6 | state transitions | each document §6 |
-| 7 | implementation/reproduction flow | each document §7 |
-| 8 | C++ design example | each document §8 |
-| 9 | class/source composition | each document §9 |
-| 10 | module split and ownership | each document §10 |
-| 11 | cautions | each document §11 |
-| 12 | performance | each document §12 |
-| 13 | thread safety | each document §13 |
-| 14 | edge cases | each document §14 |
-| 15 | test method | each document §15 |
-| 16 | implementation priority/status | each document §16 |
-
-## History boundary
-
-The audit index at [audit/README.md](audit/README.md) contains history pointers for
-assessment 1–6, and the archive files now exist under `docs-legacy/`; all six relative
-history links resolve locally. Historical assessment text must not be treated as
-current packet or gameplay authority.
+CppFabricMC is not affiliated with Mojang or Microsoft. “Minecraft” is a
+trademark of Mojang AB.

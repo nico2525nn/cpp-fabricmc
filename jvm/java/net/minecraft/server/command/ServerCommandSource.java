@@ -59,6 +59,8 @@ public class ServerCommandSource implements CommandSource {
     public Text getDisplayName() { return displayName; }
     public boolean isExecutedByPlayer() { return player != null; }
     public boolean hasPermissionLevel(int requiredLevel) { return level >= requiredLevel; }
+    /** Intermediary owner-compatibility alias: Yarn declares this on the abstract base. */
+    public boolean method_9259(int requiredLevel) { return hasPermissionLevel(requiredLevel); }
     public boolean isSilent() { return silent; }
     @Override public void sendMessage(Text message) { if (!silent && message != null) feedbackConsumer.accept(message); }
     public void sendFeedback(Consumer<Text> messageConsumer, boolean broadcastToOps) { if (!silent && messageConsumer != null) messageConsumer.accept(displayName); }

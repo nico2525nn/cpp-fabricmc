@@ -21,6 +21,7 @@ public class ItemStack {
     private long nativeOwner;
     private int nativeSlot = -1;
     private final Map<DataComponentType<?>, Object> components = new LinkedHashMap<>();
+    private final Map<net.minecraft.component.ComponentType<?>, Object> legacyComponents = new LinkedHashMap<>();
     private NbtCompound nbt;
 
     private ItemStack(Item item, int count, boolean ignored) {
@@ -50,6 +51,7 @@ public class ItemStack {
     public int getCount() { return count; }
     public void setCount(int count) { this.count = Math.max(0, count); syncCountToNative(nativeOwner, nativeSlot); }
     public int getMaxCount() { return item.getMaxCount(); }
+    public int getMaxStackSize() { return getMaxCount(); }
     public void decrement(int amount) { setCount(Math.max(0, count - Math.max(0, amount))); }
     public void decrementUnlessCreative(int amount, net.minecraft.entity.player.PlayerEntity player) { if (player == null || !player.isCreative()) decrement(amount); }
     public void increment(int amount) { setCount(count + Math.max(0, amount)); }
@@ -96,6 +98,11 @@ public class ItemStack {
     public <T> T set(DataComponentType<T> type, T value) {
         Objects.requireNonNull(type, "type");
         @SuppressWarnings("unchecked") T previous = (T) components.put(type, value); return previous;
+    }
+    /** Pre-renaming component ABI used by Mojang-mapped 1.21.4 mods. */
+    public Object set(net.minecraft.component.ComponentType<?> type, Object value) {
+        Objects.requireNonNull(type, "type");
+        return legacyComponents.put(type, value);
     }
     public <T> T remove(DataComponentType<T> type) {
         @SuppressWarnings("unchecked") T previous = (T) components.remove(type); return previous;

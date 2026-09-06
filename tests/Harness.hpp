@@ -6,13 +6,17 @@
 // wire_b6, gameplay_full, ...) keep their local variants by design (R6:
 // assertion meaning must not change with harnessing).
 #include <cstdio>
+#include <string>
+
+inline const char* checkMessage(const char* message) noexcept { return message; }
+inline const char* checkMessage(const std::string& message) noexcept { return message.c_str(); }
 
 static int g_pass = 0;
 static int g_fail = 0;
 
 #define CHECK(cond, msg) do { \
     bool c_ = static_cast<bool>(cond); \
-    std::printf("  %s  %s\n", c_ ? " ok " : "FAIL", msg); \
+    std::printf("  %s  %s\n", c_ ? " ok " : "FAIL", checkMessage(msg)); \
     if (c_) ++g_pass; else ++g_fail; \
 } while (0)
 #define SECTION(name) std::printf("\n[%s]\n", name)

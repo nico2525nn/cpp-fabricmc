@@ -568,7 +568,6 @@ void StructureManager::trialChambersPiece(Chunk& chunk, std::int32_t cx, std::in
     const auto tuff = B("minecraft:tuff") ? B("minecraft:tuff")->defaultState : B("minecraft:stone_bricks")->defaultState;
     const auto tuffBricks = B("minecraft:tuff_bricks") ? B("minecraft:tuff_bricks")->defaultState : tuff;
     const auto chiseledTuff = B("minecraft:chiseled_tuff") ? B("minecraft:chiseled_tuff")->defaultState : tuffBricks;
-    const auto chiseledBricks = B("minecraft:chiseled_tuff_bricks") ? B("minecraft:chiseled_tuff_bricks")->defaultState : chiseledTuff;
     const auto waxedChiseled = B("minecraft:waxed_chiseled_copper") ? B("minecraft:waxed_chiseled_copper")->defaultState : chiseledTuff;
     const auto copperBulb = B("minecraft:copper_bulb") ? B("minecraft:copper_bulb")->defaultState : tuffBricks;
     const auto waxedBulb = B("minecraft:waxed_copper_bulb") ? B("minecraft:waxed_copper_bulb")->defaultState : copperBulb;
@@ -867,7 +866,6 @@ void StructureManager::placeTrialChambersPalette(Chunk& chunk, std::int32_t cx, 
     const auto tuff = stateByPalette(palette, "tuff", "minecraft:tuff");
     const auto tuffBricks = stateByPalette(palette, "tuff_bricks", "minecraft:tuff_bricks");
     const auto chiseledTuff = stateByPalette(palette, "chiseled_tuff", "minecraft:chiseled_tuff");
-    const auto chiseledBricks = stateByPalette(palette, "chiseled_tuff_bricks", "minecraft:chiseled_tuff_bricks");
     const auto copperBulb = stateByPalette(palette, "copper_bulb", "minecraft:copper_bulb");
     const auto spawner = stateByPalette(palette, "spawner", "minecraft:trial_spawner");
     const auto vault = stateByPalette(palette, "vault", "minecraft:vault");

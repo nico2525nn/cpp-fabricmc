@@ -18,4 +18,9 @@ public final class RegistryKeys {
     public static final RegistryKey<Registry<World>> WORLD = RegistryKey.of(ROOT, Identifier.of("minecraft", "world"));
     public static final RegistryKey<Registry<Object>> BIOME = RegistryKey.of(ROOT, Identifier.of("minecraft", "worldgen/biome"));
     public static final RegistryKey<Registry<Object>> SOUND_EVENT = RegistryKey.of(ROOT, Identifier.of("minecraft", "sound_event"));
+    public static final RegistryKey<Registry<Object>> FEATURE = RegistryKey.of(ROOT, Identifier.of("minecraft", "configured_feature"));
+    public static final RegistryKey<Registry<Object>> STATUS_EFFECT = RegistryKey.of(ROOT, Identifier.of("minecraft", "mob_effect"));
+    public static final RegistryKey<Registry<Object>> ATTRIBUTE = RegistryKey.of(ROOT, Identifier.of("minecraft", "attribute"));
+    public static final RegistryKey<Registry<Object>> ENCHANTMENT = RegistryKey.of(ROOT, Identifier.of("minecraft", "enchantment"));
+    public static final RegistryKey<Registry<Object>> STRUCTURE = RegistryKey.of(ROOT, Identifier.of("minecraft", "structure"));
 }

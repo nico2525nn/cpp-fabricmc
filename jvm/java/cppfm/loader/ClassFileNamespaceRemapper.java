@@ -49,6 +49,15 @@ public final class ClassFileNamespaceRemapper implements ClassFileTransformer {
     /** Remap one class with the class name supplied by the loader. */
     @Override
     public byte[] transform(String binaryName, byte[] originalBytes, TransformContext context) {
+        // The generated Minecraft shadow API is already in Yarn's named
+        // namespace.  Remapping these classes would rewrite compatibility
+        // aliases such as PistonBlock.field_10927 in their constant pool while
+        // leaving the Java declaration untouched, which can turn a legal
+        // <clinit> assignment into an IllegalAccessError against an inherited
+        // final field.  Only mod bytecode (and explicitly registered mixins)
+        // crosses the intermediary -> named edge.
+        if (binaryName != null && binaryName.startsWith("net.minecraft.")
+                && !isMixinClass(binaryName)) return originalBytes;
         return remap(binaryName, originalBytes, isMixinClass(binaryName));
     }
 
@@ -131,6 +140,7 @@ public final class ClassFileNamespaceRemapper implements ClassFileTransformer {
 
         boolean remap(IntermediaryNamedMappings mappings, boolean mixin) {
             boolean changed = false;
+            String selfOwner = pool.utf8((Integer) pool.entries.get(thisClass).a);
             String[] originalUtf8 = pool.snapshotUtf8();
             String[] originalClassNames = new String[pool.entries.size()];
             String[] originalNameTypeNames = new String[pool.entries.size()];
@@ -207,7 +217,14 @@ public final class ClassFileNamespaceRemapper implements ClassFileTransformer {
                 String descriptor = originalNameTypeDescriptors[entry.b];
                 if (name == null || descriptor == null) continue;
                 boolean field = entry.tag == 9;
-                String mappedName = field
+                // A Mixin class is remapped as a real class too.  Its own
+                // declarations are passed through mapSymbol below, so its
+                // self-references must use the same symbol mapping.  Using
+                // only the Minecraft owner/member table here can otherwise
+                // leave PUTSTATIC/INVOKESTATIC pointing at the old
+                // intermediary name after the declaration was renamed.
+                boolean selfReference = mixin && owner.equals(selfOwner);
+                String mappedName = selfReference ? mappings.mapSymbol(name) : field
                     ? mappings.mapFieldName(owner, name, descriptor)
                     : mappings.mapMethodName(owner, name, descriptor);
                 String mappedDescriptor = mappings.mapDescriptor(descriptor);

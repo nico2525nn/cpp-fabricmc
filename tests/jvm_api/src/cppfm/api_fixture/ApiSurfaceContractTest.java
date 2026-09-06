@@ -7,6 +7,10 @@ import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.suggestion.Suggestions;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import net.fabricmc.loader.api.FabricLoader;
+import net.fabricmc.loader.api.ObjectShare;
+import net.fabricmc.loader.api.Version;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.entity.event.v1.ServerEntityEvents;
 import net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents;
@@ -68,11 +72,17 @@ public final class ApiSurfaceContractTest {
         check("blocked".equals(ApiSurfaceFixture.CHAT.get()), "chat callback input");
 
         CommandDispatcher<ServerCommandSource> dispatcher = server.getCommandManager().getDispatcher();
+        ServerCommandSource commandSource = new ServerCommandSource(null, server);
         CommandRegistrationCallback.EVENT.invoker().register(dispatcher,
             new net.minecraft.server.command.CommandRegistryAccess(),
             CommandManager.RegistrationEnvironment.DEDICATED);
-        int commandResult = dispatcher.execute("api_fixture 7", new ServerCommandSource(null, server));
+        int commandResult = dispatcher.execute("api_fixture 7", commandSource);
         check(commandResult == 42 && ApiSurfaceFixture.COMMAND_VALUE.get() == 7, "command execute");
+        var redirectTarget = dispatcher.register(LiteralArgumentBuilder.<ServerCommandSource>literal("api_target")
+            .executes(context -> 17));
+        dispatcher.register(LiteralArgumentBuilder.<ServerCommandSource>literal("api_alias")
+            .redirect(redirectTarget));
+        check(dispatcher.execute("api_alias", commandSource) == 17, "command redirect");
         dispatcher.register(LiteralArgumentBuilder.<ServerCommandSource>literal("api_suggest")
             .then(CommandManager.<ServerCommandSource, String>argument("value", StringArgumentType.word())
                 .suggests((context, builder) -> builder.suggest("alpha").suggest("beta").buildFuture())
@@ -112,6 +122,23 @@ public final class ApiSurfaceContractTest {
         check(ServerPlayNetworking.getOutbound(player).size() == 1, "payload send queue");
         check(((CustomPayloadS2CPacket) ServerPlayNetworking.getOutbound(player).get(0)).getData().readInt() == 42,
             "payload encoding");
+
+        System.setProperty("cppfm.loaded.mods", "api_surface");
+        System.setProperty("cppfm.mod.version.api_surface", "1.2.3");
+        FabricLoader loader = FabricLoader.getInstance();
+        check(loader.isModLoaded("minecraft") && loader.isModLoaded("fabricloader"),
+            "loader builtin ids");
+        check(loader.isModLoaded("api_surface")
+                && loader.getModContainer("api_surface").isPresent(), "loader metadata lookup");
+        check(loader.getModContainer("minecraft").orElseThrow().getMetadata().getVersion()
+                .compareTo(Version.parse("1.21.4")) == 0, "semantic version comparison");
+        check(FabricLoader.matchesVersion("1.21.4", ">=1.21.0 <1.22")
+                && !FabricLoader.matchesVersion("1.22.0", "1.21.x"), "version predicate");
+        ObjectShare share = loader.getObjectShare();
+        AtomicReference<Object> shared = new AtomicReference<>();
+        share.whenAvailable("api_surface", (key, value) -> shared.set(value));
+        check(share.put("api_surface", 9) == null && shared.get().equals(9)
+                && share.putIfAbsent("api_surface", 10).equals(9), "object share");
 
         PlayerBlockBreakEvents.CANCELED.register((w, p, blockPos, state, entity) -> { });
         CppModRuntime.onBlockBreakResult(1L, 1, 2, 3, 1, false);

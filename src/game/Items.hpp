@@ -394,7 +394,7 @@ struct ItemStack {
                 std::string mat(reinterpret_cast<const char*>(rb.p + rb.off), matLen); rb.off+=matLen;
                 bool show = true;
                 if (rb.remaining()>0) show = rb.boolean();
-                ArmorTrim t; t.has=true; t.pattern=pat; t.material=mat;
+                ArmorTrim t; t.has=true; t.showInTooltip=show; t.pattern=pat; t.material=mat;
                 if (!t.pattern.empty() && t.pattern.find(':')==std::string::npos) t.pattern = "minecraft:"+t.pattern;
                 if (!t.material.empty() && t.material.find(':')==std::string::npos) t.material = "minecraft:"+t.material;
                 return t;

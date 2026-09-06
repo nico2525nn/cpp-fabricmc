@@ -75,6 +75,35 @@ final class AnnotationModel {
         return output;
     }
 
+    static List<List<AnnotationModel>> parameterAnnotations(List<AttributeModel> attributes,
+                                                             ConstantPool pool,
+                                                             int parameterCount) {
+        ArrayList<List<AnnotationModel>> output = new ArrayList<>();
+        for (int i = 0; i < parameterCount; ++i) output.add(new ArrayList<>());
+        for (AttributeModel attribute : attributes) {
+            String name = attribute.name(pool);
+            if (!name.equals("RuntimeVisibleParameterAnnotations")
+                && !name.equals("RuntimeInvisibleParameterAnnotations")) continue;
+            try {
+                DataInputStream input = new DataInputStream(new ByteArrayInputStream(attribute.info));
+                int encodedParameterCount = input.readUnsignedByte();
+                for (int parameter = 0; parameter < encodedParameterCount; ++parameter) {
+                    int annotationCount = input.readUnsignedShort();
+                    for (int i = 0; i < annotationCount; ++i) {
+                        AnnotationModel annotation = readAnnotation(input, pool);
+                        if (parameter < output.size()) output.get(parameter).add(annotation);
+                    }
+                }
+            } catch (IOException failure) {
+                throw new TransformException("invalid parameter annotation attribute", failure);
+            }
+        }
+        ArrayList<List<AnnotationModel>> immutable = new ArrayList<>();
+        for (List<AnnotationModel> annotations : output)
+            immutable.add(Collections.unmodifiableList(new ArrayList<>(annotations)));
+        return Collections.unmodifiableList(immutable);
+    }
+
     static AnnotationModel first(List<AttributeModel> attributes, ConstantPool pool, String simpleName) {
         for (AnnotationModel annotation : fromAttributes(attributes, pool))
             if (annotation.simpleName().equals(simpleName)) return annotation;

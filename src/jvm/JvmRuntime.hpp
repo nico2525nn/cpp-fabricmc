@@ -35,6 +35,9 @@ struct JvmConfig {
     std::string configDir = "config";
     std::string javaHome;
     std::string jvmLibrary;
+    // Optional directory of regular dependency JARs used by real Fabric mods
+    // (for example the locked server's fastutil library).
+    std::string jvmLibrariesDir;
     // KnotLauncher is preferred when present; the fallback provider is kept
     // for the dependency-free compatibility fixture.
     bool preferKnot = true;
@@ -126,12 +129,15 @@ public:
     bool started() const noexcept;
     JvmProvider provider() const noexcept;
     bool knotActive() const noexcept;
-    const std::string& lastError() const noexcept;
+    std::string lastError() const;
     JvmStats stats() const;
 
     // Synchronous lifecycle and cancellable event boundaries.  A disabled or
     // unavailable runtime is an allow/no-op result so existing C++ behavior is
-    // unchanged unless the layer is explicitly active.
+    // unchanged unless the layer is explicitly active.  The server tick
+    // boundary selectively routes the shadow MinecraftServer.setTick(J)V body
+    // through dispatchTransformed() when Mixin changed that method; the event
+    // facade then observes the already-applied tick without calling it again.
     bool onServerTick(std::int64_t tick);
     void onPlayerJoin(Player& player);
     void onPlayerQuit(Player& player);
@@ -142,7 +148,11 @@ public:
                       std::int32_t z, std::uint16_t newState);
     bool onBlockClicked(Player& player, std::int32_t x, std::int32_t y,
                         std::int32_t z, std::uint16_t state, int face);
-    bool onCommand(Player* player, std::string& command);
+    // A Java-registered command returns false after it has been consumed.  If
+    // response is supplied, console feedback from that Java command is copied
+    // out for RCON; chat callers may leave it null.
+    bool onCommand(Player* player, std::string& command,
+                   std::string* response = nullptr);
     bool onEntityDamage(Player* victimPlayer, MobEntity* victimMob,
                         float& amount, const std::string& cause);
     bool onMobSpawn(MobEntity& mob, double x, double y, double z);

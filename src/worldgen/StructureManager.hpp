@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <utility>
 #include "MultiNoise.hpp"
 #include "StructurePlacer.hpp"
 
@@ -13,6 +14,12 @@ namespace cppfm { struct Chunk; }
 namespace cppfm::worldgen {
 
 struct SMStructureSet {
+    SMStructureSet() = default;
+    SMStructureSet(std::string name_, int spacing_, int separation_, std::uint64_t salt_,
+                   std::vector<std::string> biomes_)
+        : name(std::move(name_)), spacing(spacing_), separation(separation_), salt(salt_),
+          biomes(std::move(biomes_)) {}
+
     std::string name;            // e.g. minecraft:village
     int spacing = 32;
     int separation = 8;

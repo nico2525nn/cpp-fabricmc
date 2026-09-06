@@ -1,13 +1,17 @@
 package cppfm.loader;
 
+import cppfm.transform.AccessWidener;
+import cppfm.transform.AccessWidenerTransformer;
+import cppfm.transform.ClassFileIntrospection;
 import cppfm.transform.ClassFileTransformer;
+import cppfm.transform.DescriptorResolver;
 import cppfm.transform.MixinClassTransformer;
 import cppfm.transform.MixinConfiguration;
+import cppfm.transform.MixinReferenceMap;
 import cppfm.transform.TransformContext;
+import cppfm.transform.TransformException;
 import cppfm.transform.TransformListener;
 import cppfm.transform.TransformResult;
-import cppfm.transform.TransformException;
-import cppfm.transform.ClassFileIntrospection;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -41,6 +45,8 @@ public class TransformingClassLoader extends URLClassLoader {
     private final ConcurrentHashMap<String, TransformResult> results = new ConcurrentHashMap<>();
     private final IntermediaryNamedMappings namespaceMappings;
     private final ClassFileNamespaceRemapper namespaceRemapper;
+    private final AccessWidenerTransformer namedAccessWidener;
+    private final AccessWidenerTransformer intermediaryAccessWidener;
     private final MixinClassTransformer mixinTransformer;
     private volatile boolean strict;
 
@@ -55,10 +61,21 @@ public class TransformingClassLoader extends URLClassLoader {
         this.strict = strict;
         this.namespaceMappings = IntermediaryNamedMappings.discover(urls);
         this.namespaceRemapper = new ClassFileNamespaceRemapper(namespaceMappings);
+        // Target bytes are in the generated named namespace by the time they
+        // reach the remainder of this chain.  Keep one transformer for each
+        // namespace accepted by Fabric metadata so an intermediary widener
+        // can resolve owners/descriptors through the same mapping edge used by
+        // mod bytecode, while named wideners remain identity-based.
+        this.namedAccessWidener = new AccessWidenerTransformer(
+            "named", DescriptorResolver.IDENTITY, strict);
+        this.intermediaryAccessWidener = new AccessWidenerTransformer(
+            "intermediary", namespaceMappings, strict);
         this.mixinTransformer = new MixinClassTransformer(strict);
         this.mixinTransformer.setDescriptorResolver(namespaceMappings);
         this.mixinTransformer.setMixinClassLoader(this);
         if (!namespaceMappings.isIdentity()) addTransformer(namespaceRemapper);
+        addTransformer(namedAccessWidener);
+        addTransformer(intermediaryAccessWidener);
         addTransformer(mixinTransformer);
     }
 
@@ -90,7 +107,44 @@ public class TransformingClassLoader extends URLClassLoader {
 
     public void setStrict(boolean strict) {
         this.strict = strict;
+        namedAccessWidener.setStrict(strict);
+        intermediaryAccessWidener.setStrict(strict);
         mixinTransformer.setStrict(strict);
+    }
+
+    /**
+     * Register one Fabric Access Widener resource visible from this loader.
+     * The resource is parsed before any target class is defined and is applied
+     * by the fixed pre-definition transformer chain.
+     */
+    public void registerAccessWidener(String resourceName) {
+        if (resourceName == null || resourceName.isEmpty())
+            throw new IllegalArgumentException("access widener resource name is empty");
+        String normalized = resourceName.startsWith("/")
+            ? resourceName.substring(1) : resourceName;
+        try (InputStream stream = getResourceAsStream(normalized)) {
+            if (stream == null)
+                throw new TransformException("access widener not found: " + resourceName);
+            registerAccessWidener(readAll(stream));
+        } catch (IOException failure) {
+            throw new TransformException("cannot read access widener: " + resourceName, failure);
+        }
+    }
+
+    /** Register already-read Access Widener bytes. */
+    public void registerAccessWidener(byte[] content) {
+        AccessWidener widener = AccessWidener.parse(content);
+        switch (widener.getNamespace()) {
+            case "named" -> namedAccessWidener.register(widener);
+            case "intermediary" -> intermediaryAccessWidener.register(widener);
+            default -> throw new TransformException(
+                "unsupported access widener namespace: " + widener.getNamespace());
+        }
+    }
+
+    /** Number of directives registered in the named and intermediary chains. */
+    public int getAccessWidenerTargetCount() {
+        return namedAccessWidener.getTargetCount() + intermediaryAccessWidener.getTargetCount();
     }
 
     /**
@@ -106,7 +160,7 @@ public class TransformingClassLoader extends URLClassLoader {
         try (InputStream stream = getResourceAsStream(normalized)) {
             if (stream == null) throw new TransformException("mixin config not found: " + resourceName);
             String json = new String(readAll(stream), java.nio.charset.StandardCharsets.UTF_8);
-            registerMixinConfiguration(MixinConfiguration.parse(json));
+            registerMixinConfiguration(MixinConfiguration.parse(json), normalized);
         } catch (IOException failure) {
             throw new TransformException("cannot read mixin config: " + resourceName, failure);
         }
@@ -114,7 +168,13 @@ public class TransformingClassLoader extends URLClassLoader {
 
     /** Direct access for launchers that already parsed configuration. */
     public void registerMixinConfiguration(MixinConfiguration configuration) {
+        registerMixinConfiguration(configuration, null);
+    }
+
+    /** Register a configuration and retain its resource name for evidence. */
+    public void registerMixinConfiguration(MixinConfiguration configuration, String resourceName) {
         if (configuration == null) throw new NullPointerException("configuration");
+        MixinReferenceMap referenceMap = loadReferenceMap(configuration, resourceName);
         for (String mixin : configuration.serverMixins()) {
             String resource = mixin.replace('.', '/') + ".class";
             try (InputStream stream = getResourceAsStream(resource)) {
@@ -125,11 +185,33 @@ public class TransformingClassLoader extends URLClassLoader {
                 }
                 byte[] original = readAll(stream);
                 byte[] remapped = namespaceRemapper.remapMixin(mixin, original);
-                mixinTransformer.registerMixin(mixin, remapped);
+                mixinTransformer.registerMixin(mixin, remapped, resourceName, referenceMap);
             } catch (IOException failure) {
                 if (configuration.isRequired())
                     throw new TransformException("cannot read mixin class " + mixin, failure);
             }
+        }
+    }
+
+    private MixinReferenceMap loadReferenceMap(MixinConfiguration configuration, String resourceName) {
+        String refmap = configuration.refmap();
+        if (refmap.isEmpty()) return MixinReferenceMap.EMPTY;
+        String normalized = refmap.startsWith("/") ? refmap.substring(1) : refmap;
+        try (InputStream stream = getResourceAsStream(normalized)) {
+            if (stream == null) {
+                String message = "mixin refmap not found: " + refmap
+                    + (resourceName == null ? "" : " for " + resourceName);
+                if (configuration.isRequired()) throw new TransformException(message);
+                mixinTransformer.addDiagnostic(message);
+                return MixinReferenceMap.EMPTY;
+            }
+            return MixinReferenceMap.parse(
+                new String(readAll(stream), java.nio.charset.StandardCharsets.UTF_8));
+        } catch (IOException failure) {
+            String message = "cannot read mixin refmap: " + refmap;
+            if (configuration.isRequired()) throw new TransformException(message, failure);
+            mixinTransformer.addDiagnostic(message + ": " + failure);
+            return MixinReferenceMap.EMPTY;
         }
     }
 
@@ -228,9 +310,16 @@ public class TransformingClassLoader extends URLClassLoader {
 
     public List<String> getDiagnostics() {
         ArrayList<String> output = new ArrayList<>();
+        output.addAll(namedAccessWidener.getDiagnostics());
+        output.addAll(intermediaryAccessWidener.getDiagnostics());
         output.addAll(mixinTransformer.getDiagnostics());
         for (TransformResult result : results.values()) output.addAll(result.getDiagnostics());
         return Collections.unmodifiableList(output);
+    }
+
+    /** Successful Mixin applications retained for runtime evidence. */
+    public List<String> getAppliedMixins() {
+        return mixinTransformer.getAppliedMixins();
     }
 
     public List<String> getDiagnostics(String binaryName) {

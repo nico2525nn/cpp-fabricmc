@@ -7,6 +7,16 @@ import java.util.Set;
 /** Small lossless compound useful for common item/entity data APIs. */
 public class NbtCompound extends NbtElement {
     private final Map<String, NbtElement> values = new LinkedHashMap<>();
+    /** Constructor shape used by the 1.21.4 Access Widener contract. */
+    public NbtCompound(Map<?, ?> initialValues) {
+        if (initialValues != null) {
+            for (Map.Entry<?, ?> entry : initialValues.entrySet()) {
+                if (entry.getKey() instanceof String key && entry.getValue() instanceof NbtElement value)
+                    values.put(key, value);
+            }
+        }
+    }
+    public NbtCompound() { }
     @Override public byte getType() { return COMPOUND_TYPE; }
     @Override public NbtCompound copy() {
         NbtCompound copy = new NbtCompound();

@@ -26,5 +26,13 @@ public class BlockItem extends Item {
     @Override public ActionResult place(ItemPlacementContext context) {
         return block.getPlacementState(context) == null ? ActionResult.FAIL : ActionResult.SUCCESS;
     }
+    /** Yarn overload used by Carpet's block-placement mixin. */
+    public boolean place(ItemPlacementContext context, BlockState state) {
+        return context != null && context.getWorld() != null && state != null;
+    }
+    /** Placement predicate called by Mojang-mapped mixins. */
+    public boolean canPlace(ItemPlacementContext context, BlockState state) {
+        return place(context, state);
+    }
     @Override public String getTranslationKey() { return block.getTranslationKey(); }
 }

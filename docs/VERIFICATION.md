@@ -3,7 +3,7 @@
 This document is the verification contract for the canonical snapshot of Minecraft
 Java Edition **1.21.4**, protocol **769**, and DataVersion **4189**. The source snapshot
 is integrated runtime `c3a5e49e41261dacb4b9454c538aa87575fa9546`, rechecked on
-**2026-09-05**.
+**2026-09-06**.
 The test matrix verifies the current C++ implementation; it does not silently turn
 an approximation into vanilla parity.
 
@@ -326,7 +326,7 @@ publication.
 | `test_mob_stats_full` | `131 PASS 0 FAIL` | fixture/stat checks |
 | `test_redstone_engine_full` | `29 PASS 0 FAIL` | engine categories |
 | `test_recipes_mirror` | `76 PASS 0 FAIL` | recipe mirror/offset checks |
-| `test_plan43` | `82 PASS 0 FAIL` in 25.01s | plan43 integration assertions |
+| `test_plan43` | `82 PASS 0 FAIL` in 25.14s after the clean rebuild | plan43 integration assertions |
 
 The gameplay table does not claim exact vanilla behavior for an untested internal. A
 new failure beyond E-14 is a publication blocker.
@@ -336,14 +336,14 @@ new failure beyond E-14 is a publication blocker.
 | target | recorded result | interpretation |
 |---|---|---|
 | `test_jvm_handles` | `PASS` | opaque handle invalidation/address-reuse and selective routing invariants |
-| `jvm_manifest` | `PASS` | protocol-769 shadow ABI manifest is reproducible; 82 methods (52 native + 30 wrapper), 9 structured methods, 10 injection points, and 9 transformer names are declared |
+| `jvm_manifest` | `PASS` | protocol-769 shadow ABI manifest is reproducible; 94 methods (47 native + 47 wrapper), 9 structured methods, 10 injection points, and 14 transformer names are declared |
 | `jvm_runtime` | `PASS` | embedded HotSpot, fixture entrypoint, World API, command registration, lifecycle, selected Mixin hooks, and owned clean shutdown |
-| `jvm_transformer` | `PASS` | pre-definition class-file transformation, verifier-safe stack/local preservation, and transform-order contract |
+| `jvm_transformer` | `PASS` | pre-definition class-file transformation, verifier-safe stack/local preservation, transform-order contract, MixinExtras operations, `@Share`, and `@Local` selectors |
 | `jvm_compatibility` | `PASS` | all 25 dependency-free fixture cases pass in one `cppfm` process |
 | `jvm_corpus` | `PASS` | the 25-case compatibility corpus passes through the executable corpus harness |
 | `jvm_contract_audit` | `PASS` | every declared ABI method has exactly one native or wrapper backend classification |
 | official Loader/Knot probe | `PASS / DECLARED-LIMITATION` | pinned Loader 0.16.9/Knot/Mixin/ASM/intermediary starts with the shadow provider and emits all seven expected markers |
-| locked real public-mod corpus | `SKIP / DECLARED-LIMITATION` | cache metadata verifies for Lithium, FerriteCore, and Carpet, but execution is not attempted because available Java 25 is outside the lock's Java 21 range |
+| locked real public-mod corpus | `PASS / BOUNDED` | Lithium, FerriteCore, Carpet, and the combined runtime probe pass with the explicit Java 21 launcher; arbitrary mods and client/GUI remain outside the claim |
 
 This gate proves only the bounded plan51 compatibility layer and its pinned offline
 official-loader probe. It does not prove Mojang GameProvider behavior, arbitrary mod

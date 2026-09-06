@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -40,6 +41,7 @@ public final class MixinClassTransformer implements ClassFileTransformer {
     private final Map<String, List<MixinDefinition>> definitions = new ConcurrentHashMap<>();
     private final Set<String> mixinClassNames = ConcurrentHashMap.newKeySet();
     private final List<String> diagnostics = Collections.synchronizedList(new ArrayList<>());
+    private final List<String> appliedMixins = Collections.synchronizedList(new ArrayList<>());
     private final AtomicLong nextRegistrationOrder = new AtomicLong();
     private volatile boolean strict;
     private volatile DescriptorResolver resolver = DescriptorResolver.IDENTITY;
@@ -84,6 +86,17 @@ public final class MixinClassTransformer implements ClassFileTransformer {
 
     /** Alias used by launchers that call the registration operation directly. */
     public void registerMixin(String binaryName, byte[] bytes) {
+        registerMixin(binaryName, bytes, null);
+    }
+
+    /** Register class bytes while retaining the originating Mixin resource. */
+    public void registerMixin(String binaryName, byte[] bytes, String configName) {
+        registerMixin(binaryName, bytes, configName, MixinReferenceMap.EMPTY);
+    }
+
+    /** Register class bytes with the config's named-to-intermediary refmap. */
+    public void registerMixin(String binaryName, byte[] bytes, String configName,
+                              MixinReferenceMap referenceMap) {
         if (bytes == null) throw new NullPointerException("bytes");
         ClassFileModel model = ClassFileModel.parse(bytes);
         String mixinName = model.binaryName();
@@ -94,28 +107,31 @@ public final class MixinClassTransformer implements ClassFileTransformer {
             report("class is not annotated with @Mixin: " + mixinName, false);
             return;
         }
-        ArrayList<String> targets = new ArrayList<>();
+        LinkedHashSet<String> targetSet = new LinkedHashSet<>();
         for (AnnotationModel.ElementValue value : annotation.array("value")) {
             if (value.value instanceof String descriptor) {
                 String target = classDescriptorToInternal(descriptor);
-                if (!target.isEmpty()) targets.add(target);
+                if (!target.isEmpty()) targetSet.add(target);
             }
         }
         for (String target : annotation.strings("targets")) {
             String normalized = target.replace('.', '/');
             if (normalized.startsWith("L") && normalized.endsWith(";")) normalized = classDescriptorToInternal(normalized);
-            if (!normalized.isEmpty()) targets.add(normalized);
+            if (!normalized.isEmpty()) targetSet.add(normalized);
         }
-        if (targets.isEmpty()) {
+        if (targetSet.isEmpty()) {
             report("mixin has no target: " + mixinName, false);
             return;
         }
+        List<String> targets = List.copyOf(targetSet);
         MixinDefinition definition = new MixinDefinition(mixinName, model, targets,
-            annotation.integer("priority", 1000), nextRegistrationOrder.getAndIncrement());
+            annotation.integer("priority", 1000), nextRegistrationOrder.getAndIncrement(), configName,
+            referenceMap == null ? MixinReferenceMap.EMPTY : referenceMap);
         for (String target : targets) {
-            definitions.computeIfAbsent(normalizeInternal(target), ignored ->
-                Collections.synchronizedList(new ArrayList<>())).add(definition);
-            definitions.get(normalizeInternal(target)).sort(definitionComparator());
+            List<MixinDefinition> targetDefinitions = definitions.computeIfAbsent(
+                normalizeInternal(target), ignored -> new CopyOnWriteArrayList<>());
+            targetDefinitions.add(definition);
+            targetDefinitions.sort(mixinOrder());
         }
     }
 
@@ -123,6 +139,19 @@ public final class MixinClassTransformer implements ClassFileTransformer {
     public void registerConfiguration(MixinConfiguration configuration, ClassLoader loader) {
         if (configuration == null) throw new NullPointerException("configuration");
         if (loader != null) mixinClassLoader = loader;
+        MixinReferenceMap referenceMap = MixinReferenceMap.EMPTY;
+        String refmap = configuration.refmap();
+        if (!refmap.isEmpty() && loader != null) {
+            try (InputStream stream = loader.getResourceAsStream(refmap)) {
+                if (stream != null) referenceMap = MixinReferenceMap.parse(
+                    new String(readAll(stream), java.nio.charset.StandardCharsets.UTF_8));
+                else reportConfigurationResource("mixin refmap not found: " + refmap,
+                    configuration.isRequired());
+            } catch (IOException failure) {
+                reportConfigurationResource("cannot read mixin refmap " + refmap + ": " + failure,
+                    configuration.isRequired());
+            }
+        }
         for (String mixin : configuration.serverMixins()) {
             String resource = mixin.replace('.', '/') + ".class";
             try (InputStream stream = (loader == null ? ClassLoader.getSystemResourceAsStream(resource)
@@ -131,7 +160,7 @@ public final class MixinClassTransformer implements ClassFileTransformer {
                     reportConfigurationResource("mixin class not found: " + mixin, configuration.isRequired());
                     continue;
                 }
-                registerMixin(mixin, readAll(stream));
+                registerMixin(mixin, readAll(stream), null, referenceMap);
             } catch (IOException failure) {
                 reportConfigurationResource("cannot read mixin class " + mixin + ": " + failure,
                     configuration.isRequired());
@@ -145,6 +174,11 @@ public final class MixinClassTransformer implements ClassFileTransformer {
         }
     }
 
+    /** Record a non-fatal loader diagnostic without changing strict policy. */
+    public void addDiagnostic(String message) {
+        if (message != null && !message.isEmpty()) diagnostics.add(message);
+    }
+
     public Map<String, List<String>> registeredTargets() {
         LinkedHashMap<String, List<String>> output = new LinkedHashMap<>();
         for (Map.Entry<String, List<MixinDefinition>> entry : definitions.entrySet()) {
@@ -153,6 +187,13 @@ public final class MixinClassTransformer implements ClassFileTransformer {
             output.put(entry.getKey(), Collections.unmodifiableList(names));
         }
         return Collections.unmodifiableMap(output);
+    }
+
+    /** Successful Mixin applications, in deterministic transformation order. */
+    public List<String> getAppliedMixins() {
+        synchronized (appliedMixins) {
+            return Collections.unmodifiableList(new ArrayList<>(appliedMixins));
+        }
     }
 
     @Override
@@ -173,7 +214,7 @@ public final class MixinClassTransformer implements ClassFileTransformer {
             // later operations still see the already transformed instruction
             // stream and can deliberately replace it.
             List<MixinDefinition> ordered = new ArrayList<>(matching);
-            ordered.sort(applicationComparator());
+            ordered.sort(mixinOrder());
             List<PreparedMixin> prepared = new ArrayList<>();
             for (MixinDefinition definition : ordered) prepared.add(prepare(target, definition));
             List<MixinOperation> operations = new ArrayList<>();
@@ -191,12 +232,27 @@ public final class MixinClassTransformer implements ClassFileTransformer {
                 .thenComparingInt(item -> item.mixin.definition.priority)
                 .thenComparingLong(item -> item.mixin.definition.registrationOrder)
                 .thenComparingInt(item -> item.declarationOrder));
-            for (MixinOperation operation : operations)
-                changed |= applyMixinMethod(target, operation.mixin, operation.method, context);
+            // MixinExtras @Share references live for the duration of one
+            // target-method invocation, not for one injector operation.  Keep
+            // the bindings across the ordered operations so a ModifyVariable
+            // and a Redirect/Inject using the same key see the same object.
+            Map<String, SharedRefBinding> sharedRefs = new HashMap<>();
+            List<String> pendingApplications = new ArrayList<>();
+            for (MixinOperation operation : operations) {
+                boolean operationChanged = applyMixinMethod(target, operation.mixin, operation.method, context,
+                    sharedRefs);
+                changed |= operationChanged;
+                if (operationChanged) {
+                    pendingApplications.add("Mixing " + simpleMixinName(operation.mixin.definition.name)
+                        + " from " + configName(operation.mixin.definition)
+                        + " into " + target.binaryName());
+                }
+            }
             if (!changed) return originalBytes;
             ClassFileSafety.validate(target);
             byte[] transformed = target.write();
             ClassFileSafety.validateBytes(transformed);
+            appliedMixins.addAll(pendingApplications);
             return transformed;
         } catch (TransformException failure) {
             MixinDispatch.rollbackTo(dispatchCheckpoint);
@@ -218,33 +274,51 @@ public final class MixinClassTransformer implements ClassFileTransformer {
     }
 
     private boolean applyMixinMethod(ClassFileModel target, PreparedMixin prepared,
-                                     MemberModel mixinMethod, TransformContext context) {
+                                     MemberModel mixinMethod, TransformContext context,
+                                     Map<String, SharedRefBinding> sharedRefs) {
         boolean changed = false;
-        AnnotationModel overwrite = AnnotationModel.first(mixinMethod.attributes, prepared.definition.model.pool, "Overwrite");
+        ClassFileModel mixin = prepared.definition.model;
+        AnnotationModel overwrite = annotation(mixinMethod, mixin, "Overwrite");
         if (overwrite != null) changed |= applyOverwrite(target, prepared, mixinMethod, context);
-        AnnotationModel accessor = AnnotationModel.first(mixinMethod.attributes, prepared.definition.model.pool, "Accessor");
+        AnnotationModel accessor = annotation(mixinMethod, mixin, "Accessor");
         if (accessor != null) changed |= applyAccessor(target, prepared, mixinMethod, accessor, context);
-        AnnotationModel invoker = AnnotationModel.first(mixinMethod.attributes, prepared.definition.model.pool, "Invoker");
+        AnnotationModel invoker = annotation(mixinMethod, mixin, "Invoker");
         if (invoker != null) changed |= applyInvoker(target, prepared, mixinMethod, invoker, context);
-        AnnotationModel inject = AnnotationModel.first(mixinMethod.attributes, prepared.definition.model.pool, "Inject");
-        if (inject != null) changed |= applyInject(target, prepared, mixinMethod, inject, context);
-        AnnotationModel redirect = AnnotationModel.first(mixinMethod.attributes, prepared.definition.model.pool, "Redirect");
-        if (redirect != null) changed |= applyRedirect(target, prepared, mixinMethod, redirect, context);
-        AnnotationModel modifyArg = AnnotationModel.first(mixinMethod.attributes, prepared.definition.model.pool, "ModifyArg");
+        AnnotationModel inject = annotation(mixinMethod, mixin, "Inject");
+        if (inject != null) changed |= applyInject(target, prepared, mixinMethod, inject, context, sharedRefs);
+        AnnotationModel redirect = annotation(mixinMethod, mixin, "Redirect");
+        if (redirect != null) changed |= applyRedirect(target, prepared, mixinMethod, redirect, context, sharedRefs);
+        AnnotationModel modifyArg = annotation(mixinMethod, mixin, "ModifyArg");
         if (modifyArg != null) changed |= applyModifyArg(target, prepared, mixinMethod, modifyArg, context);
-        AnnotationModel modifyConstant = AnnotationModel.first(mixinMethod.attributes, prepared.definition.model.pool, "ModifyConstant");
+        AnnotationModel modifyConstant = annotation(mixinMethod, mixin, "ModifyConstant");
         if (modifyConstant != null) changed |= applyModifyConstant(target, prepared, mixinMethod, modifyConstant, context);
-        AnnotationModel modifyVariable = AnnotationModel.first(mixinMethod.attributes, prepared.definition.model.pool, "ModifyVariable");
-        if (modifyVariable != null) changed |= applyModifyVariable(target, prepared, mixinMethod, modifyVariable, context);
+        AnnotationModel modifyVariable = annotation(mixinMethod, mixin, "ModifyVariable");
+        if (modifyVariable != null) changed |= applyModifyVariable(target, prepared, mixinMethod, modifyVariable,
+            context, sharedRefs);
+        AnnotationModel modifyReturnValue = annotation(mixinMethod, mixin, "ModifyReturnValue");
+        if (modifyReturnValue != null)
+            changed |= applyModifyReturnValue(target, prepared, mixinMethod, modifyReturnValue, context);
+        AnnotationModel modifyExpressionValue = annotation(mixinMethod, mixin, "ModifyExpressionValue");
+        if (modifyExpressionValue != null)
+            changed |= applyModifyExpressionValue(target, prepared, mixinMethod, modifyExpressionValue, context);
+        AnnotationModel wrapWithCondition = annotation(mixinMethod, mixin, "WrapWithCondition");
+        if (wrapWithCondition != null)
+            changed |= applyWrapWithCondition(target, prepared, mixinMethod, wrapWithCondition, context);
+        AnnotationModel wrapOperation = annotation(mixinMethod, mixin, "WrapOperation");
+        if (wrapOperation != null)
+            changed |= applyWrapOperation(target, prepared, mixinMethod, wrapOperation, context);
+        AnnotationModel wrapMethod = annotation(mixinMethod, mixin, "WrapMethod");
+        if (wrapMethod != null)
+            changed |= applyWrapMethod(target, prepared, mixinMethod, wrapMethod, context);
         return changed;
     }
 
-    private static Comparator<MixinDefinition> definitionComparator() {
-        return Comparator.comparingInt((MixinDefinition item) -> item.priority)
-            .thenComparingLong(item -> item.registrationOrder);
+    private static AnnotationModel annotation(MemberModel method, ClassFileModel owner,
+                                              String simpleName) {
+        return AnnotationModel.first(method.attributes, owner.pool, simpleName);
     }
 
-    private static Comparator<MixinDefinition> applicationComparator() {
+    private static Comparator<MixinDefinition> mixinOrder() {
         return Comparator.comparingInt((MixinDefinition item) -> item.priority)
             .thenComparingLong(item -> item.registrationOrder);
     }
@@ -280,7 +354,7 @@ public final class MixinClassTransformer implements ClassFileTransformer {
                 }
                 String desired = sourceName;
                 int suffix = 0;
-                while (target.field(desired, ConstantPool.remapDescriptor(fieldDescriptor,
+                while (target.field(desired, targetDescriptor(fieldDescriptor,
                         definition.model.internalName(), target.internalName())) != null)
                     desired = "$cppfm$mixin$" + Integer.toHexString(definition.name.hashCode())
                         + "$" + sourceName + "$" + (++suffix);
@@ -288,13 +362,15 @@ public final class MixinClassTransformer implements ClassFileTransformer {
                 MemberModel copy = new MemberModel();
                 copy.access = field.access;
                 copy.nameIndex = target.pool.addUtf8(desired);
-                copy.descriptorIndex = target.pool.addUtf8(ConstantPool.remapDescriptor(
+                copy.descriptorIndex = target.pool.addUtf8(targetDescriptor(
                     fieldDescriptor, definition.model.internalName(), target.internalName()));
                 target.fields.add(copy);
                 continue;
             }
             String prefix = shadow.string("prefix", "shadow$");
             String targetName = sourceName.startsWith(prefix) ? sourceName.substring(prefix.length()) : sourceName;
+            targetName = prepared.fieldName(targetName, targetOwner,
+                targetDescriptor(fieldDescriptor, sourceOwner, targetOwner), resolver);
             List<String> aliases = shadow.strings("aliases");
             if (target.field(targetName, field.descriptor(definition.model.pool)) == null) {
                 for (String alias : aliases) {
@@ -305,6 +381,11 @@ public final class MixinClassTransformer implements ClassFileTransformer {
                 }
             }
             prepared.fieldRenames.put(sourceName + fieldDescriptor, targetName);
+            if (AnnotationModel.first(field.attributes, definition.model.pool, "Mutable") != null) {
+                MemberModel targetField = target.field(targetName,
+                    targetDescriptor(fieldDescriptor, sourceOwner, targetOwner));
+                if (targetField != null) targetField.access &= ~ClassFileModel.ACC_FINAL;
+            }
         }
         for (MemberModel method : definition.model.methods) {
             String name = method.name(definition.model.pool);
@@ -315,7 +396,13 @@ public final class MixinClassTransformer implements ClassFileTransformer {
             AnnotationModel invoker = AnnotationModel.first(method.attributes, definition.model.pool, "Invoker");
             AnnotationModel shadow = AnnotationModel.first(method.attributes, definition.model.pool, "Shadow");
             if (overwrite != null || accessor != null || invoker != null || shadow != null && method.code(definition.model.pool) == null) {
-                prepared.methodRenames.put(name + descriptor, name);
+                String targetName = name;
+                if (shadow != null && overwrite == null && accessor == null && invoker == null) {
+                    String mapped = prepared.memberToken(name + descriptor, targetOwner, resolver);
+                    int open = mapped == null ? -1 : mapped.indexOf('(');
+                    if (open >= 0) targetName = mapped.substring(0, open);
+                }
+                prepared.methodRenames.put(name + descriptor, targetName);
                 continue;
             }
             String desired = name;
@@ -419,13 +506,13 @@ public final class MixinClassTransformer implements ClassFileTransformer {
         MemberModel result = new MemberModel();
         result.access = source.access & ~(ClassFileModel.ACC_ABSTRACT | ClassFileModel.ACC_NATIVE);
         result.nameIndex = target.pool.addUtf8(desired);
-        result.descriptorIndex = target.pool.addUtf8(ConstantPool.remapDescriptor(
+        result.descriptorIndex = target.pool.addUtf8(targetDescriptor(
             source.descriptor(definition.model.pool), definition.model.internalName(), target.internalName()));
         CodeModel sourceCode = source.code(definition.model.pool);
         if (sourceCode != null) {
             CodeModel code = copyCode(sourceCode, definition.model.pool, target.pool,
                 definition.model.internalName(), target.internalName(), prepared.methodRenames,
-                prepared.fieldRenames, prepared.bootstrapOffset);
+                prepared.fieldRenames, prepared.bootstrapOffset, definition.model, source);
             result.attributes.add(new AttributeModel(target.pool.addUtf8("Code"), code.write(target.pool)));
         }
         return result;
@@ -434,32 +521,161 @@ public final class MixinClassTransformer implements ClassFileTransformer {
     private CodeModel copyCode(CodeModel source, ConstantPool sourcePool, ConstantPool targetPool,
                                String sourceOwner, String targetOwner,
                                Map<String, String> methodRenames, Map<String, String> fieldRenames,
-                               int bootstrapOffset) {
+                               int bootstrapOffset, ClassFileModel sourceModel, MemberModel sourceMethod) {
         CodeModel copy = CodeModel.parse(source.write(sourcePool), sourcePool);
+        // Exception-table catch_type is a CONSTANT_Class index, just like
+        // stack-map object types.  CodeModel keeps the raw index, so import
+        // it into the target pool before the copied method is serialized;
+        // leaving the source-pool index in place can make the JVM interpret
+        // an unrelated target-pool entry as the catch class.
+        for (CodeModel.ExceptionHandler handler : copy.exceptionHandlers) {
+            if (handler.catchType == 0) continue; // finally / catch-all
+            handler.catchType = targetPool.importEntry(sourcePool, handler.catchType,
+                sourceOwner, targetOwner, methodRenames, fieldRenames);
+        }
         remapCodeAttributeConstants(copy.attributes, sourcePool, targetPool, sourceOwner, targetOwner,
             methodRenames, fieldRenames);
+        List<BytecodeInstructions.Instruction> sourceInstructions = BytecodeInstructions.decode(copy.code);
         List<BytecodeInstructions.Instruction> mapped = BytecodeInstructions.copyWithConstantPool(
-            BytecodeInstructions.decode(copy.code), sourcePool, targetPool, sourceOwner, targetOwner,
+            sourceInstructions, sourcePool, targetPool, sourceOwner, targetOwner,
             methodRenames, fieldRenames, bootstrapOffset);
         BytecodeInstructions.Editor editor = new BytecodeInstructions.Editor(copy, targetPool);
         editor.instructions.clear();
         editor.instructions.addAll(mapped);
+        insertVerifierCasts(editor, sourceInstructions, sourceModel, sourceMethod,
+            targetPool, sourceOwner, targetOwner);
         editor.finish(targetPool);
         return copy;
     }
 
+    /**
+     * Reconcile the verifier types exposed by a shadow API with the types
+     * expected by a copied Mixin call site.  Real Mixin can use the target
+     * hierarchy while transforming a method; a structural class-file copy
+     * otherwise preserves the mixin method's return descriptor and can leave
+     * a superclass value on the stack where a shadow subclass is required.
+     *
+     * <p>The adaptation is deliberately local to invoke operands.  Values are
+     * spilled and reloaded in their original order, so casts work for any
+     * argument position without changing the surrounding control flow.  A
+     * failed conservative analysis leaves the old copy path intact; strict
+     * transformation still reports the JVM verifier result if that class is
+     * not otherwise valid.</p>
+     */
+    private void insertVerifierCasts(BytecodeInstructions.Editor editor,
+                                     List<BytecodeInstructions.Instruction> sourceInstructions,
+                                     ClassFileModel sourceModel, MemberModel sourceMethod,
+                                     ConstantPool targetPool, String sourceOwner, String targetOwner) {
+        if (sourceModel == null || sourceMethod == null) return;
+        StackAnalyzer.Analysis analysis;
+        try {
+            analysis = StackAnalyzer.analyze(sourceModel, sourceMethod,
+                sourceMethod.code(sourceModel.pool));
+        } catch (TransformException unsupportedAnalysis) {
+            return;
+        }
+        if (sourceInstructions.size() != editor.instructions.size()) return;
+        // Walk backwards because insertBefore changes list indexes.  The
+        // original instruction identity remains stable, while all earlier
+        // indexes still refer to their corresponding source instruction.
+        for (int i = sourceInstructions.size() - 1; i >= 0; --i) {
+            BytecodeInstructions.Instruction sourceInstruction = sourceInstructions.get(i);
+            BytecodeInstructions.Instruction targetInstruction = editor.instructions.get(i);
+            int opcode = targetInstruction.opcode;
+            if (opcode < 182 || opcode > 185) continue;
+            int constant = BytecodeInstructions.cpIndex(targetInstruction);
+            if (constant <= 0) continue;
+            Descriptor.MethodDesc descriptor;
+            try {
+                descriptor = Descriptor.method(targetPool.memberDescriptor(constant));
+            } catch (TransformException unsupportedDescriptor) {
+                continue;
+            }
+            boolean hasReceiver = opcode != 184;
+            int operandCount = descriptor.arguments.size() + (hasReceiver ? 1 : 0);
+            List<StackAnalyzer.Value> before = analysis.before(sourceInstruction);
+            if (before.size() < operandCount) continue;
+            int base = before.size() - operandCount;
+            ArrayList<Descriptor.Type> expected = new ArrayList<>(operandCount);
+            if (hasReceiver) {
+                String owner = targetPool.memberOwner(constant);
+                expected.add(ownerType(owner));
+            }
+            expected.addAll(descriptor.arguments);
+
+            ArrayList<Descriptor.Type> actual = new ArrayList<>(operandCount);
+            boolean needsAdaptation = false;
+            boolean hasUninitialized = false;
+            for (int operand = 0; operand < operandCount; ++operand) {
+                StackAnalyzer.Value value = before.get(base + operand);
+                if (value == null) continue;
+                if (value.isUninitialized()) hasUninitialized = true;
+                Descriptor.Type actualType;
+                try {
+                    actualType = stackType(value);
+                } catch (TransformException invalidValue) {
+                    actualType = null;
+                }
+                if (actualType == null) break;
+                actual.add(actualType);
+                // INVOKESPECIAL uses the current class (or the uninitialized
+                // object being constructed) as its verifier receiver even
+                // when the constant-pool owner names a superclass.  Casting
+                // `this` to that owner would turn a valid super call into an
+                // invalid invokespecial stack shape.
+                boolean specialReceiver = opcode == 183 && operand == 0;
+                if (!specialReceiver && !value.isUninitialized() && expected.get(operand).reference
+                    && actualType.reference
+                    && !isVerifierAssignable(expected.get(operand).descriptor,
+                        ConstantPool.remapDescriptor(actualType.descriptor, sourceOwner, targetOwner)))
+                    needsAdaptation = true;
+            }
+            if (actual.size() != operandCount || !needsAdaptation || hasUninitialized) continue;
+
+            int[] locals = new int[operandCount];
+            ArrayList<BytecodeInstructions.Instruction> additions = new ArrayList<>();
+            for (int operand = operandCount - 1; operand >= 0; --operand) {
+                locals[operand] = editor.allocateLocal(actual.get(operand));
+                additions.addAll(storeLocal(actual.get(operand), locals[operand]));
+            }
+            for (int operand = 0; operand < operandCount; ++operand) {
+                additions.addAll(loadLocal(actual.get(operand), locals[operand]));
+                Descriptor.Type expectedType = expected.get(operand);
+                boolean specialReceiver = opcode == 183 && operand == 0;
+                if (!specialReceiver && expectedType.reference && actual.get(operand).reference
+                    && !isVerifierAssignable(expectedType.descriptor, ConstantPool.remapDescriptor(
+                        actual.get(operand).descriptor, sourceOwner, targetOwner))) {
+                    String castType = expectedType.array ? expectedType.descriptor
+                        : descriptorOwner(expectedType.descriptor);
+                    additions.add(memberInstruction(192, targetPool.addClass(castType)));
+                }
+            }
+            editor.insertBefore(targetInstruction, additions);
+        }
+    }
+
     private boolean applyOverwrite(ClassFileModel target, PreparedMixin prepared,
                                    MemberModel source, TransformContext context) {
-        String descriptor = ConstantPool.remapDescriptor(source.descriptor(prepared.definition.model.pool),
+        String sourceName = source.name(prepared.definition.model.pool);
+        String sourceDescriptor = source.descriptor(prepared.definition.model.pool);
+        String destinationName = sourceName;
+        String descriptor = targetDescriptor(sourceDescriptor,
             prepared.definition.model.internalName(), target.internalName());
-        MemberModel destination = target.method(source.name(prepared.definition.model.pool), descriptor);
+        String mapped = prepared.memberToken(sourceName + sourceDescriptor, target.internalName(), resolver);
+        int mappedOpen = mapped == null ? -1 : mapped.indexOf('(');
+        if (mappedOpen >= 0) {
+            destinationName = mapped.substring(0, mappedOpen);
+            descriptor = targetDescriptor(mapped.substring(mappedOpen),
+                prepared.definition.model.internalName(), target.internalName());
+        }
+        MemberModel destination = target.method(destinationName, descriptor);
         if (destination == null) throw unsupported("@Overwrite target not found: "
-            + source.name(prepared.definition.model.pool) + descriptor);
+            + destinationName + descriptor);
         CodeModel sourceCode = source.code(prepared.definition.model.pool);
         if (sourceCode == null) throw unsupported("@Overwrite has no Code: " + source.name(prepared.definition.model.pool));
         CodeModel code = copyCode(sourceCode, prepared.definition.model.pool, target.pool,
             prepared.definition.model.internalName(), target.internalName(), prepared.methodRenames,
-            prepared.fieldRenames, prepared.bootstrapOffset);
+            prepared.fieldRenames, prepared.bootstrapOffset, prepared.definition.model, source);
         destination.access &= ~(ClassFileModel.ACC_ABSTRACT | ClassFileModel.ACC_NATIVE);
         destination.replaceCode(target.pool, code);
         mark(context, destination, target);
@@ -468,12 +684,15 @@ public final class MixinClassTransformer implements ClassFileTransformer {
 
     private boolean applyAccessor(ClassFileModel target, PreparedMixin prepared, MemberModel source,
                                   AnnotationModel annotation, TransformContext context) {
-        String descriptor = ConstantPool.remapDescriptor(source.descriptor(prepared.definition.model.pool),
+        String descriptor = targetDescriptor(source.descriptor(prepared.definition.model.pool),
             prepared.definition.model.internalName(), target.internalName());
         Descriptor.MethodDesc method = Descriptor.method(descriptor);
         String methodName = source.name(prepared.definition.model.pool);
         String fieldName = annotation.string("value", "");
         if (fieldName.isEmpty()) fieldName = inferMemberName(methodName, "get", "is", "set");
+        fieldName = prepared.fieldName(fieldName, target.internalName(),
+            targetDescriptor(source.descriptor(prepared.definition.model.pool),
+                prepared.definition.model.internalName(), target.internalName()), resolver);
         MemberModel field = target.field(fieldName, method.returnType.descriptor);
         boolean setter = method.returnType.voidType && method.arguments.size() == 1;
         if (setter) field = target.field(fieldName, method.arguments.get(0).descriptor);
@@ -500,12 +719,26 @@ public final class MixinClassTransformer implements ClassFileTransformer {
 
     private boolean applyInvoker(ClassFileModel target, PreparedMixin prepared, MemberModel source,
                                  AnnotationModel annotation, TransformContext context) {
-        String descriptor = ConstantPool.remapDescriptor(source.descriptor(prepared.definition.model.pool),
+        String descriptor = targetDescriptor(source.descriptor(prepared.definition.model.pool),
             prepared.definition.model.internalName(), target.internalName());
         Descriptor.MethodDesc method = Descriptor.method(descriptor);
         String sourceName = source.name(prepared.definition.model.pool);
         String invokedName = annotation.string("value", "");
-        if (invokedName.isEmpty()) invokedName = inferInvokerName(sourceName);
+        if (invokedName.isEmpty()) {
+            String mapped = prepared.memberToken(sourceName, target.internalName(), resolver);
+            if (mapped != null && !mapped.equals(sourceName)) {
+                int open = mapped.indexOf('(');
+                invokedName = open < 0 ? mapped : mapped.substring(0, open);
+            } else {
+                invokedName = inferInvokerName(sourceName);
+            }
+        } else {
+            String mapped = prepared.memberToken(invokedName, target.internalName(), resolver);
+            if (mapped != null && !mapped.equals(invokedName)) {
+                int open = mapped.indexOf('(');
+                invokedName = open < 0 ? mapped : mapped.substring(0, open);
+            }
+        }
         MemberModel destination = target.method(invokedName, descriptor);
         if (destination == null) {
             for (MemberModel candidate : target.methodsNamed(invokedName)) {
@@ -534,11 +767,12 @@ public final class MixinClassTransformer implements ClassFileTransformer {
     }
 
     private boolean applyInject(ClassFileModel target, PreparedMixin prepared, MemberModel source,
-                                 AnnotationModel annotation, TransformContext context) {
+                                 AnnotationModel annotation, TransformContext context,
+                                 Map<String, SharedRefBinding> sharedRefs) {
         Handler handler = prepared.handler(source, target);
-        List<String> methodNames = annotation.strings("method");
+        List<String> methodNames = targetMethodTokens(annotation, prepared, target);
         if (methodNames.isEmpty()) throw unsupported("@Inject has no target method: " + source.name(prepared.definition.model.pool));
-        List<AtSpec> atSpecs = readAtSpecs(annotation, "at");
+        List<AtSpec> atSpecs = readAtSpecs(annotation, "at", prepared, target);
         if (atSpecs.isEmpty()) throw unsupported("@Inject has no @At");
         List<AnnotationModel> slices = nestedAnnotations(annotation, "slice");
         LocalCaptureMode localCapture = LocalCaptureMode.read(annotation);
@@ -549,10 +783,11 @@ public final class MixinClassTransformer implements ClassFileTransformer {
                 for (MemberModel destination : selectMethods(target, methodName, handler.descriptor, true)) {
                     CodeModel code = destination.code(target.pool);
                     if (code == null) throw unsupported("cannot inject into abstract/native method: " + destination.name(target.pool));
-                    rejectUnsafeConstructorInjection(target, destination, at);
                     BytecodeInstructions.Editor editor = new BytecodeInstructions.Editor(code, target.pool);
                     List<BytecodeInstructions.Instruction> sites = findSites(editor.instructions, target.pool, at, slices);
                     if (sites.isEmpty()) continue;
+                    ensureSharedRefs(target, destination, handler, editor, sharedRefs);
+                    validateConstructorInjectionSites(target, destination, at, editor.instructions, sites);
                     if (at.shift == Shift.BY) throw unsupported("@At(shift=BY) requires explicit frame recomputation");
                     boolean returnSite = at.value.equals("RETURN");
                     boolean cancellable = annotation.bool("cancellable", false);
@@ -588,11 +823,12 @@ public final class MixinClassTransformer implements ClassFileTransformer {
                             throw failure;
                         }
                         List<BytecodeInstructions.Instruction> addition = returnSite
-                            ? buildReturnInjection(target, destination, handler, editor, site, cancellable, captured)
+                            ? buildReturnInjection(target, destination, handler, editor, site, cancellable, captured,
+                                sharedRefs)
                             : buildCallbackInjection(target, destination, handler, editor, cancellable,
                                 at.value.equals("TAIL"),
                                 at.shift == Shift.AFTER ? stackAnalysis.after(site) : stackAnalysis.before(site),
-                                captured);
+                                captured, sharedRefs);
                         if (at.shift == Shift.AFTER) editor.insertAfter(site, addition);
                         else editor.insertBefore(site, addition);
                         count++;
@@ -600,7 +836,25 @@ public final class MixinClassTransformer implements ClassFileTransformer {
                     matchedSites += count;
                     if (count == 0) continue;
                     editor.finish(target.pool);
-                    if (cancellable) editor.rebuildStackMapFrames(target, destination);
+                    // Any insertion changes the byte offsets used by the
+                    // existing StackMapTable, including a non-cancellable
+                    // callback inserted immediately before RETURN.  Rebuild
+                    // frames for every @Inject path; restricting this to
+                    // cancellable callbacks leaves valid source methods such
+                    // as MathHelper.<clinit> unverifiable after a tail hook.
+                    try {
+                        editor.rebuildStackMapFrames(target, destination);
+                    } catch (TransformException frameFailure) {
+                        // A conservative stack analysis may refuse an
+                        // optional library call in a generated callback.  A
+                        // stale StackMapTable is never safe after insertion;
+                        // removing it lets HotSpot perform the complete
+                        // verifier pass over the otherwise valid bytecode.
+                        code.stripDebugAndFrames(target.pool);
+                        context.diagnostic("removed stale StackMapTable after @Inject from "
+                            + prepared.definition.name + " at " + destination.name(target.pool)
+                            + " in " + target.binaryName() + ": " + frameFailure.getMessage());
+                    }
                     destination.replaceCode(target.pool, code);
                     mark(context, destination, target);
                     changed = true;
@@ -614,7 +868,8 @@ public final class MixinClassTransformer implements ClassFileTransformer {
     private List<BytecodeInstructions.Instruction> buildCallbackInjection(ClassFileModel target,
             MemberModel destination, Handler handler, BytecodeInstructions.Editor editor,
             boolean cancellable, boolean returnBoundary,
-            List<StackAnalyzer.Value> preservedStack, List<CapturedLocal> capturedLocals) {
+            List<StackAnalyzer.Value> preservedStack, List<CapturedLocal> capturedLocals,
+            Map<String, SharedRefBinding> sharedRefs) {
         Descriptor.MethodDesc targetDescriptor = Descriptor.method(destination.descriptor(target.pool));
         Descriptor.MethodDesc handlerDescriptor = Descriptor.method(handler.descriptor);
         int callbackIndex = callbackIndex(handlerDescriptor);
@@ -647,7 +902,8 @@ public final class MixinClassTransformer implements ClassFileTransformer {
         output.addAll(makeCallbackObject(target, callbackType, destination.name(target.pool) + ":HEAD",
             cancellable, callbackReturnType, editor, callbackLocal, callbackReturnLocal));
         output.addAll(callHandler(target, destination, handler, targetDescriptor, handlerDescriptor,
-            callbackIndex, callbackLocal, capturedTypes(capturedLocals), capturedSlots(capturedLocals)));
+            callbackIndex, callbackLocal, capturedTypes(capturedLocals), capturedSlots(capturedLocals), editor,
+            sharedRefs));
         if (cancellable) {
             output.addAll(loadLocal(callbackType, callbackLocal));
             int cancelled = target.pool.addMethodRef(
@@ -681,7 +937,7 @@ public final class MixinClassTransformer implements ClassFileTransformer {
     private List<BytecodeInstructions.Instruction> buildReturnInjection(ClassFileModel target,
             MemberModel destination, Handler handler, BytecodeInstructions.Editor editor,
             BytecodeInstructions.Instruction site, boolean cancellable,
-            List<CapturedLocal> capturedLocals) {
+            List<CapturedLocal> capturedLocals, Map<String, SharedRefBinding> sharedRefs) {
         Descriptor.MethodDesc targetDescriptor = Descriptor.method(destination.descriptor(target.pool));
         Descriptor.MethodDesc handlerDescriptor = Descriptor.method(handler.descriptor);
         int callbackIndex = callbackIndex(handlerDescriptor);
@@ -694,7 +950,8 @@ public final class MixinClassTransformer implements ClassFileTransformer {
             output.addAll(makeCallbackObject(target, callbackType, destination.name(target.pool) + ":RETURN",
                 cancellable, null, editor, callbackLocal));
             output.addAll(callHandler(target, destination, handler, targetDescriptor, handlerDescriptor,
-                callbackIndex, callbackLocal, capturedTypes(capturedLocals), capturedSlots(capturedLocals)));
+                callbackIndex, callbackLocal, capturedTypes(capturedLocals), capturedSlots(capturedLocals), editor,
+                sharedRefs));
             if (cancellable) {
                 output.addAll(loadLocal(callbackType, callbackLocal));
                 int cancelled = target.pool.addMethodRef(
@@ -715,7 +972,8 @@ public final class MixinClassTransformer implements ClassFileTransformer {
         output.addAll(makeCallbackObject(target, callbackType, destination.name(target.pool) + ":RETURN",
             cancellable, returnable ? returnType : null, editor, callbackLocal, returnLocal));
         output.addAll(callHandler(target, destination, handler, targetDescriptor, handlerDescriptor,
-            callbackIndex, callbackLocal, capturedTypes(capturedLocals), capturedSlots(capturedLocals)));
+            callbackIndex, callbackLocal, capturedTypes(capturedLocals), capturedSlots(capturedLocals), editor,
+            sharedRefs));
         if (cancellable) {
             output.addAll(loadLocal(callbackType, callbackLocal));
             int cancelled = target.pool.addMethodRef(
@@ -774,64 +1032,86 @@ public final class MixinClassTransformer implements ClassFileTransformer {
 
     private List<BytecodeInstructions.Instruction> callHandler(ClassFileModel target, MemberModel destination,
             Handler handler, Descriptor.MethodDesc targetDescriptor, Descriptor.MethodDesc handlerDescriptor,
-            int callbackIndex, int callbackLocal) {
-        return callHandler(target, destination, handler, targetDescriptor, handlerDescriptor,
-            callbackIndex, callbackLocal, List.of(), List.of());
-    }
-
-    private List<BytecodeInstructions.Instruction> callHandler(ClassFileModel target, MemberModel destination,
-            Handler handler, Descriptor.MethodDesc targetDescriptor, Descriptor.MethodDesc handlerDescriptor,
             int callbackIndex, int callbackLocal, List<Descriptor.Type> capturedTypes,
-            List<Integer> capturedLocals) {
+            List<Integer> capturedLocals, BytecodeInstructions.Editor editor,
+            Map<String, SharedRefBinding> sharedRefs) {
         ArrayList<BytecodeInstructions.Instruction> output = new ArrayList<>();
-        if (!handler.isStatic) output.add(bytes(42));
-        int handlerArguments = callbackIndex;
         if (capturedTypes.size() != capturedLocals.size())
             throw unsupported("captured local bookkeeping mismatch");
-        if (handlerArguments > targetDescriptor.arguments.size() + capturedTypes.size())
-            throw unsupported("handler captures unsupported locals: " + handler.name + handler.descriptor);
+        if (!handler.isStatic) output.add(bytes(42));
         int slot = (destination.access & ClassFileModel.ACC_STATIC) != 0 ? 0 : 1;
-        for (int i = 0; i < handlerArguments; ++i) {
+        int[] targetSlots = new int[targetDescriptor.arguments.size()];
+        for (int i = 0; i < targetDescriptor.arguments.size(); ++i) {
+            targetSlots[i] = slot;
+            slot += targetDescriptor.arguments.get(i).slots;
+        }
+        int targetArgument = 0;
+        int captured = 0;
+        for (int i = 0; i < handlerDescriptor.arguments.size(); ++i) {
             Descriptor.Type expected = handlerDescriptor.arguments.get(i);
+            if (i == callbackIndex) {
+                output.addAll(loadLocal(expected, callbackLocal));
+                continue;
+            }
+            if (isSharedRefType(expected)) {
+                SharedRefBinding binding = sharedRefs.get(sharedBindingKey(destination, target.pool,
+                    shareKey(handler, i)));
+                if (binding == null) throw unsupported("missing shared ref binding: " + handler.name);
+                output.addAll(loadLocal(binding.type(), binding.local()));
+                continue;
+            }
+            if (isLocalParameter(handler, i)) {
+                if (captured >= capturedTypes.size())
+                    throw unsupported("handler requests an unavailable @Local: " + handler.name);
+                Descriptor.Type actual = capturedTypes.get(captured);
+                int local = capturedLocals.get(captured++);
+                if (!compatible(expected, actual))
+                    throw unsupported("@Local handler argument does not match captured local: " + handler.name);
+                output.addAll(loadLocal(actual, local));
+                continue;
+            }
             Descriptor.Type actual;
             int local;
-            if (i < targetDescriptor.arguments.size()) {
-                actual = targetDescriptor.arguments.get(i);
-                local = slot;
-                slot += actual.slots;
-            } else {
-                int captured = i - targetDescriptor.arguments.size();
+            if (targetArgument < targetDescriptor.arguments.size()) {
+                actual = targetDescriptor.arguments.get(targetArgument);
+                local = targetSlots[targetArgument++];
+            } else if (captured < capturedTypes.size()) {
                 actual = capturedTypes.get(captured);
-                local = capturedLocals.get(captured);
+                local = capturedLocals.get(captured++);
+            } else {
+                throw unsupported("handler captures unsupported locals: " + handler.name + handler.descriptor);
             }
             if (!compatible(expected, actual)) throw unsupported("handler argument does not match target argument: " + handler.name);
             output.addAll(loadLocal(actual, local));
         }
-        Descriptor.Type callback = new Descriptor.Type(handlerDescriptor.arguments.get(callbackIndex).descriptor,
-            1, true, false, false, false);
-        output.addAll(loadLocal(callback, callbackLocal));
+        // An @Inject handler may intentionally omit trailing target
+        // parameters (the common CallbackInfo-only form).  Every captured
+        // local, however, must have a corresponding handler parameter.
+        if (captured < capturedTypes.size())
+            throw unsupported("handler argument layout does not match target: " + handler.name + handler.descriptor);
         int ref = target.pool.addMethodRef(target.internalName(), handler.name, handler.descriptor, false);
         output.add(memberInstruction(handler.isStatic ? 184 : 182, ref));
         return output;
     }
 
     private boolean applyRedirect(ClassFileModel target, PreparedMixin prepared, MemberModel source,
-                                  AnnotationModel annotation, TransformContext context) {
+                                  AnnotationModel annotation, TransformContext context,
+                                  Map<String, SharedRefBinding> sharedRefs) {
         Handler handler = prepared.handler(source, target);
-        AtSpec at = AtSpec.read(nestedAnnotation(annotation, "at"));
+        AtSpec at = readAtSpec(nestedAnnotation(annotation, "at"), prepared, target);
         if (!(at.value.equals("INVOKE") || at.value.equals("FIELD") || at.value.equals("NEW")))
             throw unsupported("@Redirect requires INVOKE, FIELD or NEW, got " + at.value);
         boolean changed = false;
         int matchedSites = 0;
-        for (String methodName : annotation.strings("method")) {
+        for (String methodName : targetMethodTokens(annotation, prepared, target)) {
             for (MemberModel destination : selectMethods(target, methodName, handler.descriptor, false)) {
                 CodeModel code = destination.code(target.pool);
                 if (code == null) throw unsupported("cannot redirect abstract/native method: " + methodName);
-                rejectUnsafeConstructorInjection(target, destination, at);
                 BytecodeInstructions.Editor editor = new BytecodeInstructions.Editor(code, target.pool);
                 List<BytecodeInstructions.Instruction> sites = findSites(editor.instructions, target.pool, at,
                     nestedAnnotations(annotation, "slice"));
                 if (sites.isEmpty()) continue;
+                ensureSharedRefs(target, destination, handler, editor, sharedRefs);
                 StackAnalyzer.Analysis analysis = StackAnalyzer.analyze(target, destination, code);
                 for (int i = sites.size() - 1; i >= 0; --i) {
                     BytecodeInstructions.Instruction site = sites.get(i);
@@ -840,9 +1120,11 @@ public final class MixinClassTransformer implements ClassFileTransformer {
                     int constructorEnd = -1;
                     if (at.value.equals("NEW")) {
                         constructorEnd = findConstructorEnd(editor.instructions, index, target.pool, analysis);
-                        replacement = buildNewRedirect(target, editor, index, constructorEnd, handler, analysis);
+                        replacement = buildNewRedirect(target, editor, index, constructorEnd, handler, analysis,
+                            destination, sharedRefs);
                     } else {
-                        replacement = buildMemberRedirect(target, editor, site, handler, analysis);
+                        replacement = buildMemberRedirect(target, editor, site, handler, analysis, destination,
+                            sharedRefs);
                     }
                     if (at.value.equals("NEW")) {
                         editor.replaceRange(index, constructorEnd, replacement);
@@ -861,7 +1143,8 @@ public final class MixinClassTransformer implements ClassFileTransformer {
 
     private List<BytecodeInstructions.Instruction> buildMemberRedirect(ClassFileModel target,
             BytecodeInstructions.Editor editor, BytecodeInstructions.Instruction site, Handler handler,
-            StackAnalyzer.Analysis analysis) {
+            StackAnalyzer.Analysis analysis, MemberModel destination,
+            Map<String, SharedRefBinding> sharedRefs) {
         int cp = BytecodeInstructions.cpIndex(site);
         if (cp < 0) throw unsupported("member redirect site has no reference");
         String owner = target.pool.memberOwner(cp);
@@ -871,7 +1154,7 @@ public final class MixinClassTransformer implements ClassFileTransformer {
         boolean isField = BytecodeInstructions.isField(site.opcode);
         boolean staticMember = site.opcode == 178 || site.opcode == 179 || site.opcode == 184;
         if (!staticMember && (isField || BytecodeInstructions.isInvoke(site.opcode)))
-            stackTypes.add(Descriptor.type("L" + owner + ";"));
+            stackTypes.add(ownerType(owner));
         if (isField) {
             Descriptor.Type fieldType = Descriptor.type(descriptor);
             if (site.opcode == 179 || site.opcode == 181) stackTypes.add(fieldType);
@@ -884,12 +1167,13 @@ public final class MixinClassTransformer implements ClassFileTransformer {
             : isField ? Descriptor.type(descriptor) : Descriptor.method(descriptor).returnType;
         requireStackSuffix(analysis.before(site), stackTypes,
             "@Redirect stack shape does not match " + owner + "." + name + descriptor);
-        return spillAndCall(target, editor, stackTypes, handler, stackTypes, expectedReturn);
+        return spillAndCall(target, editor, stackTypes, handler, expectedReturn, destination, sharedRefs);
     }
 
     private List<BytecodeInstructions.Instruction> buildNewRedirect(ClassFileModel target,
             BytecodeInstructions.Editor editor, int index, int end, Handler handler,
-            StackAnalyzer.Analysis analysis) {
+            StackAnalyzer.Analysis analysis, MemberModel destination,
+            Map<String, SharedRefBinding> sharedRefs) {
         BytecodeInstructions.Instruction newInstruction = editor.instructions.get(index);
         int cp = BytecodeInstructions.cpIndex(newInstruction);
         String owner = target.pool.className(cp);
@@ -904,8 +1188,8 @@ public final class MixinClassTransformer implements ClassFileTransformer {
         List<BytecodeInstructions.Instruction> argumentInstructions = new ArrayList<>();
         for (int i = index + 2; i < end; ++i) argumentInstructions.add(editor.instructions.get(i).copy());
         ArrayList<BytecodeInstructions.Instruction> output = new ArrayList<>(argumentInstructions);
-        output.addAll(spillAndCall(target, editor, constructor.arguments, handler, constructor.arguments,
-            Descriptor.type("L" + owner + ";")));
+        output.addAll(spillAndCall(target, editor, constructor.arguments, handler, ownerType(owner), destination,
+            sharedRefs));
         return output;
     }
 
@@ -938,11 +1222,12 @@ public final class MixinClassTransformer implements ClassFileTransformer {
 
     private List<BytecodeInstructions.Instruction> spillAndCall(ClassFileModel target,
             BytecodeInstructions.Editor editor, List<Descriptor.Type> stackTypes,
-            Handler handler, List<Descriptor.Type> handlerTypes, Descriptor.Type expectedReturn) {
+            Handler handler, Descriptor.Type expectedReturn, MemberModel destination,
+            Map<String, SharedRefBinding> sharedRefs) {
         Descriptor.MethodDesc handlerDescriptor = Descriptor.method(handler.descriptor);
-        int expectedArguments = handlerDescriptor.arguments.size();
-        if (expectedArguments != handlerTypes.size())
-            throw unsupported("handler descriptor does not match redirected member: " + handler.name + handler.descriptor);
+        if (handlerDescriptor.arguments.size() < stackTypes.size())
+            throw unsupported("handler descriptor does not match redirected member: "
+                + handler.name + handler.descriptor);
         if (expectedReturn != null && !compatible(expectedReturn, handlerDescriptor.returnType))
             throw unsupported("NEW redirect return type mismatch: " + handler.name);
         ArrayList<Integer> locals = new ArrayList<>();
@@ -950,27 +1235,524 @@ public final class MixinClassTransformer implements ClassFileTransformer {
         ArrayList<BytecodeInstructions.Instruction> output = new ArrayList<>();
         for (int i = stackTypes.size() - 1; i >= 0; --i) output.addAll(storeLocal(stackTypes.get(i), locals.get(i)));
         if (!handler.isStatic) output.add(bytes(42));
-        for (int i = 0; i < stackTypes.size(); ++i) output.addAll(loadLocal(stackTypes.get(i), locals.get(i)));
+        int targetSlot = (destination.access & ClassFileModel.ACC_STATIC) != 0 ? 0 : 1;
+        int targetArgument = 0;
+        for (int i = 0; i < handlerDescriptor.arguments.size(); ++i) {
+            Descriptor.Type expected = handlerDescriptor.arguments.get(i);
+            if (i < stackTypes.size()) {
+                Descriptor.Type actual = stackTypes.get(i);
+                if (!compatible(expected, actual))
+                    throw unsupported("handler descriptor does not match redirected member: "
+                        + handler.name + handler.descriptor);
+                output.addAll(loadLocal(actual, locals.get(i)));
+            } else if (isSharedRefType(expected)) {
+                SharedRefBinding binding = sharedRefs.get(sharedBindingKey(destination, target.pool,
+                    shareKey(handler, i)));
+                if (binding == null) throw unsupported("missing shared ref binding: " + handler.name);
+                output.addAll(loadLocal(binding.type(), binding.local()));
+            } else {
+                Descriptor.MethodDesc targetDescriptor = Descriptor.method(destination.descriptor(target.pool));
+                if (targetArgument >= targetDescriptor.arguments.size())
+                    throw unsupported("handler descriptor does not match redirected member: "
+                        + handler.name + handler.descriptor);
+                Descriptor.Type actual = targetDescriptor.arguments.get(targetArgument);
+                if (!compatible(expected, actual))
+                    throw unsupported("handler context argument does not match target method: "
+                        + handler.name + handler.descriptor);
+                output.addAll(loadLocal(actual, targetSlot));
+                targetSlot += actual.slots;
+                targetArgument++;
+            }
+        }
+        Descriptor.MethodDesc destinationDescriptor = Descriptor.method(destination.descriptor(target.pool));
+        if (targetArgument != destinationDescriptor.arguments.size()
+            && handlerDescriptor.arguments.size() > stackTypes.size()) {
+            // Context arguments are optional for redirect handlers, but once
+            // one ordinary context parameter is present all supplied context
+            // parameters must be consumed in declaration order.
+            boolean hasOrdinaryContext = false;
+            for (int i = stackTypes.size(); i < handlerDescriptor.arguments.size(); ++i)
+                hasOrdinaryContext |= !isSharedRefType(handlerDescriptor.arguments.get(i));
+            if (hasOrdinaryContext)
+                throw unsupported("handler context argument layout does not match target method: "
+                    + handler.name + handler.descriptor);
+        }
         int ref = target.pool.addMethodRef(target.internalName(), handler.name, handler.descriptor, false);
         output.add(memberInstruction(handler.isStatic ? 184 : 182, ref));
         return output;
     }
 
+    /** Apply MixinExtras' value-at-return operation without a callback object. */
+    private boolean applyModifyReturnValue(ClassFileModel target, PreparedMixin prepared, MemberModel source,
+                                           AnnotationModel annotation, TransformContext context) {
+        Handler handler = prepared.handler(source, target);
+        Descriptor.MethodDesc modifier = Descriptor.method(handler.descriptor);
+        if (modifier.arguments.size() != 1 || modifier.returnType.voidType)
+            throw unsupported("@ModifyReturnValue handler must be (T)T: " + handler.name + handler.descriptor);
+        List<AtSpec> atSpecs = readAtSpecs(annotation, "at", prepared, target);
+        if (atSpecs.isEmpty()) throw unsupported("@ModifyReturnValue has no @At");
+        boolean changed = false;
+        int matchedSites = 0;
+        for (AtSpec at : atSpecs) {
+            if (!at.value.equals("RETURN"))
+                throw unsupported("@ModifyReturnValue requires RETURN, got " + at.value);
+            for (String methodName : targetMethodTokens(annotation, prepared, target)) {
+                for (MemberModel destination : selectMethods(target, methodName, handler.descriptor, false)) {
+                    Descriptor.MethodDesc destinationDescriptor = Descriptor.method(destination.descriptor(target.pool));
+                    if (destinationDescriptor.returnType.voidType)
+                        throw unsupported("@ModifyReturnValue cannot target a void method: "
+                            + destination.name(target.pool));
+                    if (!compatible(destinationDescriptor.returnType, modifier.arguments.get(0))
+                        || !compatible(destinationDescriptor.returnType, modifier.returnType))
+                        throw unsupported("@ModifyReturnValue type mismatch: " + handler.name + handler.descriptor);
+                    if (!handler.isStatic && (destination.access & ClassFileModel.ACC_STATIC) != 0)
+                        throw unsupported("non-static @ModifyReturnValue handler targets a static method: " + handler.name);
+                    CodeModel code = destination.code(target.pool);
+                    if (code == null) throw unsupported("cannot modify return value in abstract/native method");
+                    BytecodeInstructions.Editor editor = new BytecodeInstructions.Editor(code, target.pool);
+                    List<BytecodeInstructions.Instruction> sites = findSites(editor.instructions, target.pool, at,
+                        nestedAnnotations(annotation, "slice"));
+                    if (sites.isEmpty()) continue;
+                    for (int i = sites.size() - 1; i >= 0; --i) {
+                        BytecodeInstructions.Instruction site = sites.get(i);
+                        int local = editor.allocateLocal(destinationDescriptor.returnType);
+                        ArrayList<BytecodeInstructions.Instruction> replacement = new ArrayList<>();
+                        replacement.addAll(storeLocal(destinationDescriptor.returnType, local));
+                        if (!handler.isStatic) replacement.add(bytes(42));
+                        replacement.addAll(loadLocal(destinationDescriptor.returnType, local));
+                        replacement.add(memberInstruction(handler.isStatic ? 184 : 182,
+                            target.pool.addMethodRef(target.internalName(), handler.name, handler.descriptor, false)));
+                        replacement.add(returnInstruction(destinationDescriptor.returnType));
+                        editor.replace(site, replacement);
+                    }
+                    editor.finish(target.pool);
+                    destination.replaceCode(target.pool, code);
+                    mark(context, destination, target);
+                    matchedSites += sites.size();
+                    changed = true;
+                }
+            }
+        }
+        validateMatchCount(annotation, matchedSites,
+            "@ModifyReturnValue " + source.name(prepared.definition.model.pool));
+        return changed;
+    }
+
+    /** Apply MixinExtras' expression modifier to an INVOKE or field read. */
+    private boolean applyModifyExpressionValue(ClassFileModel target, PreparedMixin prepared, MemberModel source,
+                                               AnnotationModel annotation, TransformContext context) {
+        Handler handler = prepared.handler(source, target);
+        Descriptor.MethodDesc modifier = Descriptor.method(handler.descriptor);
+        if (modifier.arguments.size() != 1 || modifier.returnType.voidType)
+            throw unsupported("@ModifyExpressionValue handler must be (T)T: " + handler.name + handler.descriptor);
+        List<AtSpec> atSpecs = readAtSpecs(annotation, "at", prepared, target);
+        if (atSpecs.isEmpty()) throw unsupported("@ModifyExpressionValue has no @At");
+        boolean changed = false;
+        int matchedSites = 0;
+        for (AtSpec at : atSpecs) {
+            if (!at.value.equals("INVOKE") && !at.value.equals("FIELD"))
+                throw unsupported("@ModifyExpressionValue requires INVOKE or FIELD, got " + at.value);
+            for (String methodName : targetMethodTokens(annotation, prepared, target)) {
+                for (MemberModel destination : selectMethods(target, methodName, handler.descriptor, false)) {
+                    if (!handler.isStatic && (destination.access & ClassFileModel.ACC_STATIC) != 0)
+                        throw unsupported("non-static @ModifyExpressionValue handler targets a static method: " + handler.name);
+                    CodeModel code = destination.code(target.pool);
+                    if (code == null) throw unsupported("cannot modify expression in abstract/native method");
+                    BytecodeInstructions.Editor editor = new BytecodeInstructions.Editor(code, target.pool);
+                    List<BytecodeInstructions.Instruction> sites = findSites(editor.instructions, target.pool, at,
+                        nestedAnnotations(annotation, "slice"));
+                    if (sites.isEmpty()) continue;
+                    StackAnalyzer.Analysis analysis = StackAnalyzer.analyze(target, destination, code);
+                    for (int i = sites.size() - 1; i >= 0; --i) {
+                        BytecodeInstructions.Instruction site = sites.get(i);
+                        Descriptor.Type result = memberResultType(target, site);
+                        if (result == null || result.voidType)
+                            throw unsupported("@ModifyExpressionValue site has no value at " + site.oldOffset);
+                        if (!compatible(result, modifier.arguments.get(0))
+                            || !compatible(result, modifier.returnType))
+                            throw unsupported("@ModifyExpressionValue type mismatch at " + site.oldOffset);
+                        List<Descriptor.Type> operands = memberOperandTypes(target, site);
+                        requireStackSuffix(analysis.before(site), operands,
+                            "@ModifyExpressionValue stack shape does not match site at " + site.oldOffset);
+                        int local = editor.allocateLocal(result);
+                        ArrayList<BytecodeInstructions.Instruction> replacement = new ArrayList<>();
+                        BytecodeInstructions.Instruction original = generatedMember(site);
+                        replacement.add(original);
+                        replacement.addAll(storeLocal(result, local));
+                        if (!handler.isStatic) replacement.add(bytes(42));
+                        replacement.addAll(loadLocal(result, local));
+                        replacement.add(memberInstruction(handler.isStatic ? 184 : 182,
+                            target.pool.addMethodRef(target.internalName(), handler.name, handler.descriptor, false)));
+                        editor.replace(site, replacement);
+                    }
+                    editor.finish(target.pool);
+                    destination.replaceCode(target.pool, code);
+                    mark(context, destination, target);
+                    matchedSites += sites.size();
+                    changed = true;
+                }
+            }
+        }
+        validateMatchCount(annotation, matchedSites,
+            "@ModifyExpressionValue " + source.name(prepared.definition.model.pool));
+        return changed;
+    }
+
+    /** Conditionally execute an invocation/field operation, preserving its stack result. */
+    private boolean applyWrapWithCondition(ClassFileModel target, PreparedMixin prepared, MemberModel source,
+                                           AnnotationModel annotation, TransformContext context) {
+        Handler handler = prepared.handler(source, target);
+        Descriptor.MethodDesc handlerDescriptor = Descriptor.method(handler.descriptor);
+        if (!handlerDescriptor.returnType.descriptor.equals("Z"))
+            throw unsupported("@WrapWithCondition handler must return boolean: " + handler.name);
+        List<AtSpec> atSpecs = readAtSpecs(annotation, "at", prepared, target);
+        if (atSpecs.isEmpty()) throw unsupported("@WrapWithCondition has no @At");
+        boolean changed = false;
+        int matchedSites = 0;
+        for (AtSpec at : atSpecs) {
+            if (!at.value.equals("INVOKE") && !at.value.equals("FIELD"))
+                throw unsupported("@WrapWithCondition requires INVOKE or FIELD, got " + at.value);
+            for (String methodName : targetMethodTokens(annotation, prepared, target)) {
+                for (MemberModel destination : selectMethods(target, methodName, handler.descriptor, false)) {
+                    if (!handler.isStatic && (destination.access & ClassFileModel.ACC_STATIC) != 0)
+                        throw unsupported("non-static @WrapWithCondition handler targets a static method: " + handler.name);
+                    CodeModel code = destination.code(target.pool);
+                    if (code == null) throw unsupported("cannot wrap operation in abstract/native method");
+                    BytecodeInstructions.Editor editor = new BytecodeInstructions.Editor(code, target.pool);
+                    List<BytecodeInstructions.Instruction> sites = findSites(editor.instructions, target.pool, at,
+                        nestedAnnotations(annotation, "slice"));
+                    if (sites.isEmpty()) continue;
+                    StackAnalyzer.Analysis analysis = StackAnalyzer.analyze(target, destination, code);
+                    for (int i = sites.size() - 1; i >= 0; --i) {
+                        BytecodeInstructions.Instruction site = sites.get(i);
+                        List<Descriptor.Type> operands = memberOperandTypes(target, site);
+                        Descriptor.Type result = memberResultType(target, site);
+                        if (handlerDescriptor.arguments.size() != operands.size())
+                            throw unsupported("@WrapWithCondition handler argument layout does not match site: "
+                                + handler.name + handler.descriptor);
+                        for (int operand = 0; operand < operands.size(); ++operand)
+                            if (!compatible(operands.get(operand), handlerDescriptor.arguments.get(operand)))
+                                throw unsupported("@WrapWithCondition operand type mismatch at " + site.oldOffset);
+                        requireStackSuffix(analysis.before(site), operands,
+                            "@WrapWithCondition stack shape does not match site at " + site.oldOffset);
+                        ArrayList<Integer> locals = allocateLocals(editor, operands);
+                        ArrayList<BytecodeInstructions.Instruction> replacement = new ArrayList<>();
+                        for (int operand = operands.size() - 1; operand >= 0; --operand)
+                            replacement.addAll(storeLocal(operands.get(operand), locals.get(operand)));
+                        if (!handler.isStatic) replacement.add(bytes(42));
+                        for (int operand = 0; operand < operands.size(); ++operand)
+                            replacement.addAll(loadLocal(operands.get(operand), locals.get(operand)));
+                        replacement.add(memberInstruction(handler.isStatic ? 184 : 182,
+                            target.pool.addMethodRef(target.internalName(), handler.name, handler.descriptor, false)));
+                        BytecodeInstructions.Instruction skip = editor.newLabel();
+                        replacement.add(BytecodeInstructions.Instruction.branch(153, skip));
+                        for (int operand = 0; operand < operands.size(); ++operand)
+                            replacement.addAll(loadLocal(operands.get(operand), locals.get(operand)));
+                        replacement.add(generatedMember(site));
+                        if (result != null && !result.voidType) {
+                            BytecodeInstructions.Instruction join = editor.newLabel();
+                            replacement.add(BytecodeInstructions.Instruction.branch(167, join));
+                            replacement.add(skip);
+                            replacement.addAll(defaultValue(result));
+                            replacement.add(join);
+                        } else {
+                            replacement.add(skip);
+                        }
+                        editor.replace(site, replacement);
+                    }
+                    editor.finish(target.pool);
+                    finishControlFlowEdit(target, destination, code, editor, context,
+                        "@WrapWithCondition from " + prepared.definition.name);
+                    destination.replaceCode(target.pool, code);
+                    mark(context, destination, target);
+                    matchedSites += sites.size();
+                    changed = true;
+                }
+            }
+        }
+        validateMatchCount(annotation,
+            matchedSites, "@WrapWithCondition " + source.name(prepared.definition.model.pool));
+        return changed;
+    }
+
+    /** Wrap an operation with the erased MixinExtras Operation interface. */
+    private boolean applyWrapOperation(ClassFileModel target, PreparedMixin prepared, MemberModel source,
+                                       AnnotationModel annotation, TransformContext context) {
+        Handler handler = prepared.handler(source, target);
+        Descriptor.MethodDesc handlerDescriptor = Descriptor.method(handler.descriptor);
+        List<AtSpec> atSpecs = readAtSpecs(annotation, "at", prepared, target);
+        if (atSpecs.isEmpty()) throw unsupported("@WrapOperation has no @At");
+        boolean changed = false;
+        int matchedSites = 0;
+        for (AtSpec at : atSpecs) {
+            if (!at.value.equals("INVOKE") && !at.value.equals("FIELD"))
+                throw unsupported("@WrapOperation requires INVOKE or FIELD, got " + at.value);
+            for (String methodName : targetMethodTokens(annotation, prepared, target)) {
+                for (MemberModel destination : selectMethods(target, methodName, handler.descriptor, false)) {
+                    if (!handler.isStatic && (destination.access & ClassFileModel.ACC_STATIC) != 0)
+                        throw unsupported("non-static @WrapOperation handler targets a static method: " + handler.name);
+                    CodeModel code = destination.code(target.pool);
+                    if (code == null) throw unsupported("cannot wrap operation in abstract/native method");
+                    BytecodeInstructions.Editor editor = new BytecodeInstructions.Editor(code, target.pool);
+                    List<BytecodeInstructions.Instruction> sites = findSites(editor.instructions, target.pool, at,
+                        nestedAnnotations(annotation, "slice"));
+                    if (sites.isEmpty()) continue;
+                    StackAnalyzer.Analysis analysis = StackAnalyzer.analyze(target, destination, code);
+                    for (int i = sites.size() - 1; i >= 0; --i) {
+                        BytecodeInstructions.Instruction site = sites.get(i);
+                        List<Descriptor.Type> operands = memberOperandTypes(target, site);
+                        Descriptor.Type result = memberResultType(target, site);
+                        if (handlerDescriptor.arguments.size() != operands.size() + 1
+                            || !isOperationType(handlerDescriptor.arguments.get(operands.size())))
+                            throw unsupported("@WrapOperation handler must end with Operation and match site: "
+                                + handler.name + handler.descriptor);
+                        for (int operand = 0; operand < operands.size(); ++operand)
+                            if (!compatible(operands.get(operand), handlerDescriptor.arguments.get(operand)))
+                                throw unsupported("@WrapOperation operand type mismatch at " + site.oldOffset);
+                        if (result == null || !compatible(result, handlerDescriptor.returnType))
+                            throw unsupported("@WrapOperation return type mismatch at " + site.oldOffset);
+                        requireStackSuffix(analysis.before(site), operands,
+                            "@WrapOperation stack shape does not match site at " + site.oldOffset);
+                        ArrayList<Integer> locals = allocateLocals(editor, operands);
+                        ArrayList<BytecodeInstructions.Instruction> replacement = new ArrayList<>();
+                        for (int operand = operands.size() - 1; operand >= 0; --operand)
+                            replacement.addAll(storeLocal(operands.get(operand), locals.get(operand)));
+                        if (!handler.isStatic) replacement.add(bytes(42));
+                        for (int operand = 0; operand < operands.size(); ++operand)
+                            replacement.addAll(loadLocal(operands.get(operand), locals.get(operand)));
+                        replacement.addAll(makeOriginalOperation(target, site));
+                        replacement.add(memberInstruction(handler.isStatic ? 184 : 182,
+                            target.pool.addMethodRef(target.internalName(), handler.name, handler.descriptor, false)));
+                        appendReferenceCast(target.pool, result, handlerDescriptor.returnType, replacement);
+                        editor.replace(site, replacement);
+                    }
+                    editor.finish(target.pool);
+                    destination.replaceCode(target.pool, code);
+                    mark(context, destination, target);
+                    matchedSites += sites.size();
+                    changed = true;
+                }
+            }
+        }
+        validateMatchCount(annotation,
+            matchedSites, "@WrapOperation " + source.name(prepared.definition.model.pool));
+        return changed;
+    }
+
+    /** Wrap a complete target method and bind the original implementation. */
+    private boolean applyWrapMethod(ClassFileModel target, PreparedMixin prepared, MemberModel source,
+                                    AnnotationModel annotation, TransformContext context) {
+        Handler handler = prepared.handler(source, target);
+        Descriptor.MethodDesc handlerDescriptor = Descriptor.method(handler.descriptor);
+        if (handlerDescriptor.arguments.isEmpty()
+            || !isOperationType(handlerDescriptor.arguments.get(handlerDescriptor.arguments.size() - 1)))
+            throw unsupported("@WrapMethod handler must end with Operation: " + handler.name + handler.descriptor);
+        boolean changed = false;
+        int matchedMethods = 0;
+        for (String methodName : targetMethodTokens(annotation, prepared, target)) {
+            for (MemberModel destination : selectMethods(target, methodName, handler.descriptor, false)) {
+                String destinationName = destination.name(target.pool);
+                String destinationDescriptorString = destination.descriptor(target.pool);
+                Descriptor.MethodDesc destinationDescriptor = Descriptor.method(destinationDescriptorString);
+                int argumentCount = handlerDescriptor.arguments.size() - 1;
+                if (argumentCount != destinationDescriptor.arguments.size()) {
+                    if (methodName.indexOf('(') < 0) continue;
+                    throw unsupported("@WrapMethod argument layout does not match " + destinationName
+                        + destinationDescriptorString);
+                }
+                if (!compatible(destinationDescriptor.returnType, handlerDescriptor.returnType))
+                    throw unsupported("@WrapMethod return type mismatch: " + handler.name);
+                if (!handler.isStatic && (destination.access & ClassFileModel.ACC_STATIC) != 0)
+                    throw unsupported("non-static @WrapMethod handler targets a static method: " + handler.name);
+                for (int argument = 0; argument < argumentCount; ++argument) {
+                    if (!compatible(destinationDescriptor.arguments.get(argument),
+                                    handlerDescriptor.arguments.get(argument)))
+                        throw unsupported("@WrapMethod argument type mismatch: " + handler.name);
+                }
+
+                String originalName = uniqueWrappedMethodName(target, destinationName,
+                    destinationDescriptorString, handler.name);
+                int originalAccess = destination.access;
+                destination.nameIndex = target.pool.addUtf8(originalName);
+
+                MemberModel wrapper = new MemberModel();
+                wrapper.access = originalAccess & ~(ClassFileModel.ACC_ABSTRACT | ClassFileModel.ACC_NATIVE);
+                wrapper.nameIndex = target.pool.addUtf8(destinationName);
+                wrapper.descriptorIndex = target.pool.addUtf8(destinationDescriptorString);
+                CodeModel wrapperCode = new CodeModel();
+                wrapperCode.maxLocals = (originalAccess & ClassFileModel.ACC_STATIC) != 0 ? 0 : 1;
+                for (Descriptor.Type argument : destinationDescriptor.arguments)
+                    wrapperCode.maxLocals += argument.slots;
+                ArrayList<BytecodeInstructions.Instruction> instructions = new ArrayList<>();
+                if (!handler.isStatic) instructions.add(bytes(42));
+                int slot = (originalAccess & ClassFileModel.ACC_STATIC) != 0 ? 0 : 1;
+                for (Descriptor.Type argument : destinationDescriptor.arguments) {
+                    instructions.addAll(loadLocal(argument, slot));
+                    slot += argument.slots;
+                }
+                instructions.addAll(makeBoundOriginalOperation(target, originalName,
+                    destinationDescriptorString, originalAccess));
+                instructions.add(memberInstruction(handler.isStatic ? 184 : 182,
+                    target.pool.addMethodRef(target.internalName(), handler.name, handler.descriptor, false)));
+                instructions.add(returnInstruction(destinationDescriptor.returnType));
+                wrapperCode.maxStack = 32;
+                wrapperCode.code = BytecodeInstructions.Editor.assembleGenerated(instructions);
+                wrapper.replaceCode(target.pool, wrapperCode);
+                target.methods.add(wrapper);
+                mark(context, destinationName + destinationDescriptorString, target);
+                matchedMethods++;
+                changed = true;
+            }
+        }
+        validateMatchCount(annotation, matchedMethods,
+            "@WrapMethod " + source.name(prepared.definition.model.pool));
+        return changed;
+    }
+
+    private String uniqueWrappedMethodName(ClassFileModel target, String name, String descriptor,
+                                           String handlerName) {
+        String base = "$cppfm$original$" + Integer.toHexString((name + descriptor + handlerName).hashCode());
+        String result = base;
+        int suffix = 0;
+        while (target.method(result, descriptor) != null) result = base + "$" + (++suffix);
+        return result;
+    }
+
+    private List<BytecodeInstructions.Instruction> makeBoundOriginalOperation(ClassFileModel target,
+                                                                               String name,
+                                                                               String descriptor,
+                                                                               int access) {
+        String helper = "cppfm/transform/OriginalOperation";
+        ArrayList<BytecodeInstructions.Instruction> output = new ArrayList<>();
+        output.add(memberInstruction(187, target.pool.addClass(helper)));
+        output.add(bytes(89));
+        if ((access & ClassFileModel.ACC_STATIC) != 0) output.add(bytes(1));
+        else output.add(bytes(42));
+        output.add(ldcString(target.pool, target.internalName()));
+        output.add(ldcString(target.pool, name));
+        output.add(ldcString(target.pool, descriptor));
+        output.add(iconst((access & ClassFileModel.ACC_STATIC) != 0 ? 184 : 182));
+        output.add(memberInstruction(183, target.pool.addMethodRef(helper, "<init>",
+            "(Ljava/lang/Object;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;I)V", false)));
+        return output;
+    }
+
+    private List<Descriptor.Type> memberOperandTypes(ClassFileModel target,
+                                                      BytecodeInstructions.Instruction instruction) {
+        int cp = BytecodeInstructions.cpIndex(instruction);
+        if (cp < 0) throw unsupported("member site has no constant-pool reference");
+        boolean field = BytecodeInstructions.isField(instruction.opcode);
+        boolean staticMember = instruction.opcode == 178 || instruction.opcode == 179 || instruction.opcode == 184;
+        ArrayList<Descriptor.Type> output = new ArrayList<>();
+        String owner = target.pool.memberOwner(cp);
+        if (!staticMember) output.add(ownerType(owner));
+        if (field) {
+            if (instruction.opcode == 179 || instruction.opcode == 181)
+                output.add(Descriptor.type(target.pool.memberDescriptor(cp)));
+        } else {
+            output.addAll(Descriptor.method(target.pool.memberDescriptor(cp)).arguments);
+        }
+        return output;
+    }
+
+    private Descriptor.Type memberResultType(ClassFileModel target,
+                                              BytecodeInstructions.Instruction instruction) {
+        int cp = BytecodeInstructions.cpIndex(instruction);
+        if (cp < 0) throw unsupported("member site has no constant-pool reference");
+        if (BytecodeInstructions.isField(instruction.opcode)) {
+            if (instruction.opcode == 179 || instruction.opcode == 181) return Descriptor.type("V");
+            return Descriptor.type(target.pool.memberDescriptor(cp));
+        }
+        return Descriptor.method(target.pool.memberDescriptor(cp)).returnType;
+    }
+
+    private static ArrayList<Integer> allocateLocals(BytecodeInstructions.Editor editor,
+                                                      List<Descriptor.Type> types) {
+        ArrayList<Integer> output = new ArrayList<>();
+        for (Descriptor.Type type : types) output.add(editor.allocateLocal(type));
+        return output;
+    }
+
+    private static BytecodeInstructions.Instruction generatedMember(BytecodeInstructions.Instruction source) {
+        BytecodeInstructions.Instruction result = source.copy();
+        result.oldOffset = -1;
+        result.original = false;
+        result.originalOffset = -1;
+        result.branchTarget = -1;
+        result.branchTargetInstruction = null;
+        return result;
+    }
+
+    private static boolean isOperationType(Descriptor.Type type) {
+        return type != null && descriptorOwner(type.descriptor).equals(
+            "com/llamalad7/mixinextras/injector/wrapoperation/Operation");
+    }
+
+    private List<BytecodeInstructions.Instruction> makeOriginalOperation(ClassFileModel target,
+                                                                          BytecodeInstructions.Instruction site) {
+        int cp = BytecodeInstructions.cpIndex(site);
+        if (cp < 0) throw unsupported("wrapped member site has no constant-pool reference");
+        String owner = target.pool.memberOwner(cp);
+        String name = target.pool.memberName(cp);
+        String descriptor = target.pool.memberDescriptor(cp);
+        ArrayList<BytecodeInstructions.Instruction> output = new ArrayList<>();
+        String helper = "cppfm/transform/OriginalOperation";
+        output.add(memberInstruction(187, target.pool.addClass(helper)));
+        output.add(bytes(89));
+        output.add(ldcString(target.pool, owner));
+        output.add(ldcString(target.pool, name));
+        output.add(ldcString(target.pool, descriptor));
+        output.add(iconst(site.opcode));
+        output.add(memberInstruction(183, target.pool.addMethodRef(helper, "<init>",
+            "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;I)V", false)));
+        return output;
+    }
+
+    private static void appendReferenceCast(ConstantPool pool, Descriptor.Type expected,
+                                            Descriptor.Type actual,
+                                            List<BytecodeInstructions.Instruction> output) {
+        if (expected == null || expected.voidType || !expected.reference || actual == null || !actual.reference)
+            return;
+        if (expected.descriptor.equals("Ljava/lang/Object;") || expected.descriptor.equals(actual.descriptor)) return;
+        String cast = expected.array ? expected.descriptor : descriptorOwner(expected.descriptor);
+        output.add(memberInstruction(192, pool.addClass(cast)));
+    }
+
+    private static List<BytecodeInstructions.Instruction> defaultValue(Descriptor.Type type) {
+        if (type.reference) return List.of(bytes(1));
+        if (type.descriptor.equals("J")) return List.of(bytes(9));
+        if (type.descriptor.equals("F")) return List.of(bytes(11));
+        if (type.descriptor.equals("D")) return List.of(bytes(14));
+        return List.of(iconst(0));
+    }
+
+    private void finishControlFlowEdit(ClassFileModel target, MemberModel destination, CodeModel code,
+                                       BytecodeInstructions.Editor editor, TransformContext context,
+                                       String origin) {
+        try {
+            editor.rebuildStackMapFrames(target, destination);
+        } catch (TransformException frameFailure) {
+            code.stripDebugAndFrames(target.pool);
+            context.diagnostic("removed stale StackMapTable after " + origin + " at "
+                + destination.name(target.pool) + " in " + target.binaryName() + ": "
+                + frameFailure.getMessage());
+        }
+    }
+
     private boolean applyModifyArg(ClassFileModel target, PreparedMixin prepared, MemberModel source,
                                    AnnotationModel annotation, TransformContext context) {
         Handler handler = prepared.handler(source, target);
-        AtSpec at = AtSpec.read(nestedAnnotation(annotation, "at"));
+        AtSpec at = readAtSpec(nestedAnnotation(annotation, "at"), prepared, target);
         if (!at.value.equals("INVOKE")) throw unsupported("@ModifyArg requires INVOKE");
         Descriptor.MethodDesc modifier = Descriptor.method(handler.descriptor);
         if (modifier.arguments.size() != 1 || modifier.returnType.voidType)
             throw unsupported("@ModifyArg handler must be (T)T: " + handler.name + handler.descriptor);
         boolean changed = false;
         int matchedSites = 0;
-        for (String methodName : annotation.strings("method")) {
+        for (String methodName : targetMethodTokens(annotation, prepared, target)) {
             for (MemberModel destination : selectMethods(target, methodName, handler.descriptor, false)) {
                 CodeModel code = destination.code(target.pool);
                 if (code == null) throw unsupported("cannot modify abstract/native method");
-                rejectUnsafeConstructorInjection(target, destination, at);
                 BytecodeInstructions.Editor editor = new BytecodeInstructions.Editor(code, target.pool);
                 List<BytecodeInstructions.Instruction> sites = findSites(editor.instructions, target.pool, at,
                     nestedAnnotations(annotation, "slice"));
@@ -985,7 +1767,7 @@ public final class MixinClassTransformer implements ClassFileTransformer {
                     boolean staticCall = site.opcode == 184;
                     Descriptor.MethodDesc invocation = Descriptor.method(target.pool.memberDescriptor(cp));
                     ArrayList<Descriptor.Type> stackTypes = new ArrayList<>();
-                    if (!staticCall) stackTypes.add(Descriptor.type("L" + owner + ";"));
+                    if (!staticCall) stackTypes.add(ownerType(owner));
                     stackTypes.addAll(invocation.arguments);
                     int argumentOffset = staticCall ? 0 : 1;
                     int selected = index >= 0 ? index + argumentOffset : selectArgument(invocation.arguments, modifier.arguments.get(0), target.pool, argumentOffset);
@@ -1031,7 +1813,7 @@ public final class MixinClassTransformer implements ClassFileTransformer {
         List<ConstantSpec> constants = readConstantSpecs(annotation);
         boolean changed = false;
         int matchedSites = 0;
-        for (String methodName : annotation.strings("method")) {
+        for (String methodName : targetMethodTokens(annotation, prepared, target)) {
             for (MemberModel destination : selectMethods(target, methodName, handler.descriptor, false)) {
                 CodeModel code = destination.code(target.pool);
                 if (code == null) throw unsupported("cannot modify constant in abstract/native method");
@@ -1071,20 +1853,24 @@ public final class MixinClassTransformer implements ClassFileTransformer {
     }
 
     private boolean applyModifyVariable(ClassFileModel target, PreparedMixin prepared, MemberModel source,
-                                        AnnotationModel annotation, TransformContext context) {
+                                        AnnotationModel annotation, TransformContext context,
+                                        Map<String, SharedRefBinding> sharedRefs) {
         Handler handler = prepared.handler(source, target);
         Descriptor.MethodDesc modifier = Descriptor.method(handler.descriptor);
-        if (modifier.arguments.size() != 1 || modifier.returnType.voidType
+        boolean sharedReference = modifier.arguments.size() == 2
+            && isSharedRefType(modifier.arguments.get(1));
+        if ((!sharedReference && modifier.arguments.size() != 1)
+            || modifier.returnType.voidType
             || !compatible(modifier.arguments.get(0), modifier.returnType))
             throw unsupported("@ModifyVariable handler must be (T)T: " + handler.name + handler.descriptor);
-        AtSpec at = AtSpec.read(nestedAnnotation(annotation, "at"));
+        AtSpec at = readAtSpec(nestedAnnotation(annotation, "at"), prepared, target);
         boolean argsOnly = annotation.bool("argsOnly", false);
         if (at.value.equals("HEAD")) {
             if (!argsOnly) throw unsupported("@ModifyVariable HEAD requires argsOnly=true");
             boolean changed = false;
             int matchedSites = 0;
             int explicitIndex = annotation.integer("index", -1);
-            for (String methodName : annotation.strings("method")) {
+            for (String methodName : targetMethodTokens(annotation, prepared, target)) {
                 for (MemberModel destination : selectMethods(target, methodName, handler.descriptor, false)) {
                     rejectUnsafeConstructorInjection(target, destination, at);
                     Descriptor.MethodDesc destinationDescriptor = Descriptor.method(destination.descriptor(target.pool));
@@ -1120,11 +1906,14 @@ public final class MixinClassTransformer implements ClassFileTransformer {
                 "@ModifyVariable " + source.name(prepared.definition.model.pool));
             return changed;
         }
+        if (sharedReference && at.value.equals("INVOKE"))
+            return applySharedModifyVariable(target, prepared, source, handler, modifier, annotation, at, context,
+                sharedRefs);
         if (!at.value.equals("LOAD") && !at.value.equals("STORE"))
             throw unsupported("@ModifyVariable requires LOAD or STORE");
         boolean changed = false;
         int matchedSites = 0;
-        for (String methodName : annotation.strings("method")) {
+        for (String methodName : targetMethodTokens(annotation, prepared, target)) {
             for (MemberModel destination : selectMethods(target, methodName, handler.descriptor, false)) {
                 CodeModel code = destination.code(target.pool);
                 if (code == null) throw unsupported("cannot modify variable in abstract/native method");
@@ -1173,6 +1962,123 @@ public final class MixinClassTransformer implements ClassFileTransformer {
         return changed;
     }
 
+    /**
+     * MixinExtras extends ModifyVariable with an optional {@code @Share}
+     * reference parameter.  At an INVOKE point the call operands are already
+     * on the operand stack, so the implementation spills that complete stack,
+     * updates the selected live local, substitutes its value in the matching
+     * invocation operand, and restores the remaining operands in order.
+     */
+    private boolean applySharedModifyVariable(ClassFileModel target, PreparedMixin prepared,
+                                              MemberModel source, Handler handler,
+                                              Descriptor.MethodDesc modifier,
+                                              AnnotationModel annotation, AtSpec at,
+                                              TransformContext context,
+                                              Map<String, SharedRefBinding> sharedRefs) {
+        int sharedParameter = -1;
+        for (int index = 0; index < modifier.arguments.size(); ++index) {
+            if (!isSharedRefType(modifier.arguments.get(index))) continue;
+            if (sharedParameter >= 0)
+                throw unsupported("@ModifyVariable supports one @Share parameter: " + handler.name);
+            sharedParameter = index;
+        }
+        if (sharedParameter < 0)
+            throw unsupported("@ModifyVariable shared handler has no reference parameter: " + handler.name);
+        boolean changed = false;
+        int matchedSites = 0;
+        for (String methodName : targetMethodTokens(annotation, prepared, target)) {
+            for (MemberModel destination : selectMethods(target, methodName, handler.descriptor, false)) {
+                CodeModel code = destination.code(target.pool);
+                if (code == null) throw unsupported("cannot modify variable in abstract/native method");
+                rejectUnsafeConstructorInjection(target, destination, at);
+                BytecodeInstructions.Editor editor = new BytecodeInstructions.Editor(code, target.pool);
+                StackAnalyzer.Analysis analysis = StackAnalyzer.analyze(target, destination, code);
+                List<BytecodeInstructions.Instruction> sites = findSites(editor.instructions, target.pool, at,
+                    nestedAnnotations(annotation, "slice"));
+                if (sites.isEmpty()) continue;
+                String shareKey = shareKey(handler, sharedParameter);
+                Descriptor.Type sharedType = modifier.arguments.get(sharedParameter);
+                ensureSharedRefs(target, destination, handler, editor, sharedRefs);
+                SharedRefBinding sharedBinding = sharedRefs.get(sharedBindingKey(destination, target.pool, shareKey));
+                if (sharedBinding == null || !sharedType.descriptor.equals(sharedBinding.type().descriptor))
+                    throw unsupported("shared ref type mismatch: " + handler.name);
+                int sharedLocal = sharedBinding.local();
+
+                for (int i = sites.size() - 1; i >= 0; --i) {
+                    BytecodeInstructions.Instruction site = sites.get(i);
+                    List<StackAnalyzer.Value> before = analysis.before(site);
+                    ArrayList<Descriptor.Type> stackTypes = new ArrayList<>();
+                    for (StackAnalyzer.Value value : before) stackTypes.add(stackType(value));
+                    int cp = BytecodeInstructions.cpIndex(site);
+                    if (cp < 0 || !BytecodeInstructions.isInvoke(site.opcode))
+                        throw unsupported("@ModifyVariable INVOKE site is not an invocation");
+                    ArrayList<Descriptor.Type> invocationTypes = new ArrayList<>();
+                    if (site.opcode != 184) invocationTypes.add(ownerType(target.pool.memberOwner(cp)));
+                    invocationTypes.addAll(Descriptor.method(target.pool.memberDescriptor(cp)).arguments);
+                    if (stackTypes.size() < invocationTypes.size())
+                        throw unsupported("@ModifyVariable INVOKE stack is too shallow at " + site.oldOffset);
+                    int invocationOffset = stackTypes.size() - invocationTypes.size();
+                    int operand = -1;
+                    int compatibleOperand = -1;
+                    for (int position = 0; position < invocationTypes.size(); ++position) {
+                        if (modifier.arguments.get(0).descriptor.equals(invocationTypes.get(position).descriptor)) {
+                            if (operand >= 0)
+                                throw unsupported("@ModifyVariable INVOKE variable operand is ambiguous at " + site.oldOffset);
+                            operand = invocationOffset + position;
+                        } else if (compatibleOperand < 0
+                                   && compatible(modifier.arguments.get(0), invocationTypes.get(position))) {
+                            compatibleOperand = invocationOffset + position;
+                        }
+                    }
+                    if (operand < 0) operand = compatibleOperand;
+                    if (operand < 0)
+                        throw unsupported("@ModifyVariable INVOKE has no matching operand at " + site.oldOffset);
+                    int variable = findLiveLocal(analysis.localsBefore(site), modifier.arguments.get(0),
+                        argumentSlots(destination, target.pool));
+                    if (variable < 0)
+                        throw unsupported("@ModifyVariable cannot find a live local for " + handler.name);
+
+                    ArrayList<Integer> stackLocals = new ArrayList<>();
+                    for (Descriptor.Type type : stackTypes) stackLocals.add(editor.allocateLocal(type));
+                    ArrayList<BytecodeInstructions.Instruction> replacement = new ArrayList<>();
+                    for (int position = stackTypes.size() - 1; position >= 0; --position)
+                        replacement.addAll(storeLocal(stackTypes.get(position), stackLocals.get(position)));
+                    if (!handler.isStatic) replacement.add(bytes(42));
+                    replacement.addAll(loadLocal(modifier.arguments.get(0), variable));
+                    replacement.addAll(loadLocal(sharedType, sharedLocal));
+                    replacement.add(memberInstruction(handler.isStatic ? 184 : 182,
+                        target.pool.addMethodRef(target.internalName(), handler.name, handler.descriptor, false)));
+                    replacement.addAll(storeLocal(modifier.arguments.get(0), variable));
+                    for (int position = 0; position < stackTypes.size(); ++position) {
+                        if (position == operand) replacement.addAll(loadLocal(modifier.arguments.get(0), variable));
+                        else replacement.addAll(loadLocal(stackTypes.get(position), stackLocals.get(position)));
+                    }
+                    editor.insertBefore(site, replacement);
+                    matchedSites++;
+                }
+                editor.finish(target.pool);
+                destination.replaceCode(target.pool, code);
+                mark(context, destination, target);
+                changed = true;
+            }
+        }
+        validateMatchCount(annotation, matchedSites, "@ModifyVariable " + source.name(prepared.definition.model.pool));
+        return changed;
+    }
+
+    private int findLiveLocal(Map<Integer, StackAnalyzer.Value> locals, Descriptor.Type wanted,
+                              Set<Integer> argumentSlots) {
+        ArrayList<Integer> slots = new ArrayList<>(locals.keySet());
+        Collections.sort(slots);
+        for (int slot : slots) {
+            if (argumentSlots.contains(slot)) continue;
+            StackAnalyzer.Value value = locals.get(slot);
+            if (value == null || value.isUninitialized()) continue;
+            if (compatible(wanted, stackType(value))) return slot;
+        }
+        return -1;
+    }
+
     private static int selectVariableArgument(List<Descriptor.Type> arguments, Descriptor.Type type) {
         int selected = -1;
         for (int i = 0; i < arguments.size(); ++i) {
@@ -1218,6 +2124,49 @@ public final class MixinClassTransformer implements ClassFileTransformer {
         }
         if (output.isEmpty()) throw unsupported("target method not found: " + token);
         return output;
+    }
+
+    private List<String> targetMethodTokens(AnnotationModel annotation, PreparedMixin prepared,
+                                            ClassFileModel target) {
+        ArrayList<String> output = new ArrayList<>();
+        for (String source : annotation.strings("method")) {
+            String mapped = prepared.methodToken(source, target.internalName(), resolver);
+            if (mapped != null && !mapped.isEmpty() && !output.contains(mapped)) output.add(mapped);
+        }
+        return output;
+    }
+
+    private AtSpec readAtSpec(AnnotationModel annotation, PreparedMixin prepared,
+                              ClassFileModel target) {
+        AtSpec parsed = AtSpec.read(annotation);
+        if (parsed.target.isEmpty()) return parsed;
+        AtSpec mapped = parsed.withTarget(prepared.atTarget(parsed.target, target.internalName(), resolver));
+        return mapAtTargetNamespace(mapped);
+    }
+
+    /**
+     * Mixin target strings are normally remapped by a refmap.  Intermediary
+     * mixins, however, intentionally omit a refmap and rely on the launcher's
+     * intermediary-to-named edge.  Normalize both forms here so FIELD/INVOKE
+     * matching compares the same namespace as the target class pool.
+     */
+    private AtSpec mapAtTargetNamespace(AtSpec spec) {
+        if (spec.owner.isEmpty()) return spec;
+        String owner = resolver.resolveOwner(spec.owner);
+        String descriptor = spec.descriptor.isEmpty() ? "" : resolver.resolveDescriptor(spec.descriptor);
+        String member = spec.member;
+        if (!member.isEmpty()) {
+            String sourceDescriptor = spec.descriptor.isEmpty() ? "" : spec.descriptor;
+            member = spec.value.equals("FIELD")
+                ? resolver.resolveField(spec.owner, member, sourceDescriptor)
+                : resolver.resolveMethod(spec.owner, member, sourceDescriptor);
+        }
+        String target;
+        if (member.isEmpty()) target = "L" + owner + ";";
+        else if (spec.value.equals("FIELD")) target = "L" + owner + ";" + member
+            + (descriptor.isEmpty() ? "" : ":" + descriptor);
+        else target = "L" + owner + ";" + member + descriptor;
+        return spec.withTarget(target);
     }
 
     private List<BytecodeInstructions.Instruction> findSites(List<BytecodeInstructions.Instruction> instructions,
@@ -1540,10 +2489,122 @@ public final class MixinClassTransformer implements ClassFileTransformer {
     }
 
     private int callbackIndex(Descriptor.MethodDesc descriptor) {
-        if (descriptor.arguments.isEmpty()) return -1;
-        Descriptor.Type last = descriptor.arguments.get(descriptor.arguments.size() - 1);
-        return last.descriptor.startsWith("Lorg/spongepowered/asm/mixin/injection/callback/")
-            ? descriptor.arguments.size() - 1 : -1;
+        for (int index = 0; index < descriptor.arguments.size(); ++index)
+            if (isCallbackInfoType(descriptor.arguments.get(index))) return index;
+        return -1;
+    }
+
+    private static boolean isCallbackInfoType(Descriptor.Type type) {
+        return type != null && descriptorOwner(type.descriptor)
+            .startsWith("org/spongepowered/asm/mixin/injection/callback/");
+    }
+
+    private static boolean isSharedRefType(Descriptor.Type type) {
+        if (type == null) return false;
+        String owner = descriptorOwner(type.descriptor);
+        return owner.startsWith("com/llamalad7/mixinextras/sugar/ref/")
+            && owner.endsWith("Ref");
+    }
+
+    private static boolean isLocalParameter(Handler handler, int parameterIndex) {
+        if (parameterIndex < 0 || parameterIndex >= handler.parameterAnnotations.size()) return false;
+        for (AnnotationModel annotation : handler.parameterAnnotations.get(parameterIndex))
+            if (annotation.simpleName().equals("Local")) return true;
+        return false;
+    }
+
+    private static boolean isArgsOnlyLocal(Handler handler, int parameterIndex) {
+        if (parameterIndex < 0 || parameterIndex >= handler.parameterAnnotations.size()) return false;
+        for (AnnotationModel annotation : handler.parameterAnnotations.get(parameterIndex))
+            if (annotation.simpleName().equals("Local")) return annotation.bool("argsOnly", false);
+        return false;
+    }
+
+    private String shareKey(Handler handler, int parameterIndex) {
+        if (parameterIndex >= 0 && parameterIndex < handler.parameterAnnotations.size()) {
+            for (AnnotationModel annotation : handler.parameterAnnotations.get(parameterIndex)) {
+                if (!annotation.simpleName().equals("Share")) continue;
+                String explicit = annotation.string("value", "");
+                if (!explicit.isEmpty()) return explicit;
+            }
+        }
+        if (parameterIndex < handler.parameterNames.size()) {
+            String name = handler.parameterNames.get(parameterIndex);
+            if (name != null && !name.isEmpty()) return name;
+        }
+        return "$parameter" + parameterIndex;
+    }
+
+    private String sharedBindingKey(MemberModel destination, ConstantPool pool, String shareKey) {
+        return destination.name(pool) + destination.descriptor(pool) + "\u0000" + shareKey;
+    }
+
+    /** Ensure one @Share object exists for this target method and key. */
+    private void ensureSharedRefs(ClassFileModel target, MemberModel destination, Handler handler,
+                                  BytecodeInstructions.Editor editor,
+                                  Map<String, SharedRefBinding> sharedRefs) {
+        Descriptor.MethodDesc handlerDescriptor = Descriptor.method(handler.descriptor);
+        for (int index = 0; index < handlerDescriptor.arguments.size(); ++index) {
+            Descriptor.Type type = handlerDescriptor.arguments.get(index);
+            if (!isSharedRefType(type)) continue;
+            String key = sharedBindingKey(destination, target.pool, shareKey(handler, index));
+            SharedRefBinding existing = sharedRefs.get(key);
+            if (existing != null) {
+                if (!existing.type().descriptor.equals(type.descriptor))
+                    throw unsupported("shared ref type mismatch: " + handler.name);
+                continue;
+            }
+            BytecodeInstructions.Instruction first = firstInstruction(editor.instructions);
+            if (first == null) throw unsupported("cannot create a shared ref in an empty method: "
+                + destination.name(target.pool));
+            int local = editor.allocateLocal(type);
+            editor.insertBefore(first, makeSharedRef(target, type, local));
+            sharedRefs.put(key, new SharedRefBinding(type, local));
+        }
+    }
+
+    /** Create the concrete MixinExtras reference object for one target call. */
+    private List<BytecodeInstructions.Instruction> makeSharedRef(ClassFileModel target,
+                                                                  Descriptor.Type interfaceType,
+                                                                  int local) {
+        String interfaceOwner = descriptorOwner(interfaceType.descriptor);
+        String helperOwner;
+        String constructor;
+        BytecodeInstructions.Instruction initial;
+        if (interfaceOwner.endsWith("LocalBooleanRef")) {
+            helperOwner = "com/llamalad7/mixinextras/sugar/ref/SimpleLocalBooleanRef";
+            constructor = "(Z)V";
+            initial = iconst(0);
+        } else if (interfaceOwner.endsWith("LocalIntRef")) {
+            helperOwner = "com/llamalad7/mixinextras/sugar/ref/SimpleLocalIntRef";
+            constructor = "(I)V";
+            initial = iconst(0);
+        } else if (interfaceOwner.endsWith("LocalLongRef")) {
+            helperOwner = "com/llamalad7/mixinextras/sugar/ref/SimpleLocalLongRef";
+            constructor = "(J)V";
+            initial = bytes(9); // LCONST_0
+        } else if (interfaceOwner.endsWith("LocalFloatRef")) {
+            helperOwner = "com/llamalad7/mixinextras/sugar/ref/SimpleLocalFloatRef";
+            constructor = "(F)V";
+            initial = bytes(11); // FCONST_0
+        } else if (interfaceOwner.endsWith("LocalDoubleRef")) {
+            helperOwner = "com/llamalad7/mixinextras/sugar/ref/SimpleLocalDoubleRef";
+            constructor = "(D)V";
+            initial = bytes(14); // DCONST_0
+        } else if (interfaceOwner.endsWith("LocalRef")) {
+            helperOwner = "com/llamalad7/mixinextras/sugar/ref/SimpleLocalRef";
+            constructor = "(Ljava/lang/Object;)V";
+            initial = bytes(1); // ACONST_NULL
+        } else {
+            throw unsupported("unsupported MixinExtras shared reference: " + interfaceType.descriptor);
+        }
+        ArrayList<BytecodeInstructions.Instruction> output = new ArrayList<>();
+        output.add(memberInstruction(187, target.pool.addClass(helperOwner)));
+        output.add(bytes(89)); // DUP
+        output.add(initial);
+        output.add(memberInstruction(183, target.pool.addMethodRef(helperOwner, "<init>", constructor, false)));
+        output.addAll(storeLocal(interfaceType, local));
+        return output;
     }
 
     private List<AnnotationModel> nestedAnnotations(List<AnnotationModel.ElementValue> values) {
@@ -1560,9 +2621,11 @@ public final class MixinClassTransformer implements ClassFileTransformer {
         return nestedAnnotations(parent.array(name));
     }
 
-    private List<AtSpec> readAtSpecs(AnnotationModel parent, String name) {
+    private List<AtSpec> readAtSpecs(AnnotationModel parent, String name,
+                                     PreparedMixin prepared, ClassFileModel target) {
         ArrayList<AtSpec> output = new ArrayList<>();
-        for (AnnotationModel annotation : nestedAnnotations(parent, name)) output.add(AtSpec.read(annotation));
+        for (AnnotationModel annotation : nestedAnnotations(parent, name))
+            output.add(readAtSpec(annotation, prepared, target));
         return output;
     }
 
@@ -1580,6 +2643,39 @@ public final class MixinClassTransformer implements ClassFileTransformer {
             throw unsupported("constructor injection is only supported at RETURN/TAIL after initialization: @" + at.value);
     }
 
+    /**
+     * Constructor callbacks are legal once the mandatory super/this call has
+     * completed.  The old blanket rejection also discarded real Mixin points
+     * such as WorldChunk's post-allocation INVOKE_ASSIGN.  Validate the
+     * selected anchors against that JVM initialization boundary instead.
+     */
+    private void validateConstructorInjectionSites(ClassFileModel target, MemberModel destination,
+                                                   AtSpec at,
+                                                   List<BytecodeInstructions.Instruction> instructions,
+                                                   List<BytecodeInstructions.Instruction> sites) {
+        if (!destination.name(target.pool).equals("<init>")
+            || at.value.equals("RETURN") || at.value.equals("TAIL")) return;
+        int initialization = -1;
+        for (int index = 0; index < instructions.size(); ++index) {
+            BytecodeInstructions.Instruction instruction = instructions.get(index);
+            if (instruction.opcode != 183) continue;
+            int cp = BytecodeInstructions.cpIndex(instruction);
+            if (cp < 0 || !target.pool.memberName(cp).equals("<init>")) continue;
+            String owner = target.pool.memberOwner(cp);
+            if (owner.equals(target.internalName())
+                || owner.equals(target.pool.className(target.superClass))) {
+                initialization = index;
+                break;
+            }
+        }
+        if (initialization < 0)
+            throw unsupported("constructor has no super/this initialization boundary: @" + at.value);
+        for (BytecodeInstructions.Instruction site : sites) {
+            if (instructions.indexOf(site) <= initialization)
+                throw unsupported("constructor injection crosses uninitialized this: @" + at.value);
+        }
+    }
+
     private void rejectConstructorOperation(ClassFileModel target, MemberModel destination, String operation) {
         if (destination.name(target.pool).equals("<init>"))
             throw unsupported(operation + " cannot transform a constructor safely");
@@ -1593,20 +2689,34 @@ public final class MixinClassTransformer implements ClassFileTransformer {
         Descriptor.MethodDesc handlerDescriptor = Descriptor.method(handler.descriptor);
         int callback = callbackIndex(handlerDescriptor);
         if (callback < 0) return List.of();
-        int required = callback - targetDescriptor.arguments.size();
-        if (required <= 0) return List.of();
-        if (mode == LocalCaptureMode.NO_CAPTURE)
+        ArrayList<Integer> targetParameters = new ArrayList<>();
+        ArrayList<Integer> explicitLocalParameters = new ArrayList<>();
+        for (int index = 0; index < handlerDescriptor.arguments.size(); ++index) {
+            Descriptor.Type argument = handlerDescriptor.arguments.get(index);
+            if (index == callback || isSharedRefType(argument)) continue;
+            if (isLocalParameter(handler, index)) explicitLocalParameters.add(index);
+            else targetParameters.add(index);
+        }
+        ArrayList<Integer> captureParameters = new ArrayList<>(explicitLocalParameters);
+        for (int i = targetDescriptor.arguments.size(); i < targetParameters.size(); ++i)
+            captureParameters.add(targetParameters.get(i));
+        if (captureParameters.isEmpty()) return List.of();
+        if (mode == LocalCaptureMode.NO_CAPTURE && explicitLocalParameters.isEmpty())
             throw unsupported("handler requests local capture without locals=LocalCapture mode: " + handler.name);
 
         Map<Integer, StackAnalyzer.Value> state = after
             ? analysis.localsAfter(site) : analysis.localsBefore(site);
         ArrayList<Integer> slots = new ArrayList<>(state.keySet());
         Collections.sort(slots);
-        int argumentEnd = (destination.access & ClassFileModel.ACC_STATIC) == 0 ? 1 : 0;
+        int argumentStart = (destination.access & ClassFileModel.ACC_STATIC) == 0 ? 1 : 0;
+        int argumentEnd = argumentStart;
         for (Descriptor.Type argument : targetDescriptor.arguments) argumentEnd += argument.slots;
+        boolean includeArguments = !explicitLocalParameters.isEmpty();
         ArrayList<CapturedLocal> available = new ArrayList<>();
         for (int slot : slots) {
-            if (slot < argumentEnd) continue;
+            if (slot < argumentStart) continue;
+            boolean argument = slot < argumentEnd;
+            if (argument && !includeArguments) continue;
             StackAnalyzer.Value value = state.get(slot);
             if (value == null) continue;
             if (value.isUninitialized()) throw unsupported("local capture crosses an uninitialized value at " + site.oldOffset);
@@ -1622,19 +2732,24 @@ public final class MixinClassTransformer implements ClassFileTransformer {
                         throw unsupported("LVT type disagrees with verifier at local " + slot);
                 }
             }
-            available.add(new CapturedLocal(type, slot, localName));
+            available.add(new CapturedLocal(type, slot, localName, argument));
         }
-        if (required > available.size())
-            throw unsupported("local capture requested " + required + " value(s), only " + available.size() + " live");
+        if (captureParameters.size() > available.size())
+            throw unsupported("local capture requested " + captureParameters.size()
+                + " value(s), only " + available.size() + " live");
         ArrayList<CapturedLocal> output = new ArrayList<>();
-        for (int i = 0; i < required; ++i) {
-            Descriptor.Type expected = handlerDescriptor.arguments.get(targetDescriptor.arguments.size() + i);
-            int parameterIndex = targetDescriptor.arguments.size() + i;
+        for (int i = 0; i < captureParameters.size(); ++i) {
+            int parameterIndex = captureParameters.get(i);
+            Descriptor.Type expected = handlerDescriptor.arguments.get(parameterIndex);
             String parameterName = parameterIndex < handler.parameterNames.size()
                 ? handler.parameterNames.get(parameterIndex) : "";
             CapturedLocal captured = null;
+            boolean explicitLocal = isLocalParameter(handler, parameterIndex);
+            boolean argsOnly = isArgsOnlyLocal(handler, parameterIndex);
             if (!parameterName.isEmpty()) {
                 for (CapturedLocal candidate : available) {
+                    if (!explicitLocal && candidate.argument) continue;
+                    if (argsOnly && !candidate.argument) continue;
                     if (parameterName.equals(candidate.name) && compatible(expected, candidate.type)) {
                         captured = candidate;
                         break;
@@ -1642,12 +2757,23 @@ public final class MixinClassTransformer implements ClassFileTransformer {
                 }
             }
             if (captured == null) {
+                AnnotationModel localSpec = parameterAnnotation(handler, parameterIndex, "Local");
+                int requestedIndex = localSpec == null ? -1 : localSpec.integer("index", -1);
+                int requestedOrdinal = localSpec == null ? -1 : localSpec.integer("ordinal", -1);
+                String requestedName = localSpec == null ? "" : localSpec.string("name", "");
+                String requestedType = localSpec == null ? "" : localSpec.string("type", "");
+                ArrayList<CapturedLocal> matching = new ArrayList<>();
                 for (CapturedLocal candidate : available) {
-                    if (compatible(expected, candidate.type)) {
-                        captured = candidate;
-                        break;
-                    }
+                    if (!explicitLocal && candidate.argument) continue;
+                    if (argsOnly && !candidate.argument) continue;
+                    if (requestedIndex >= 0 && candidate.slot != requestedIndex) continue;
+                    if (!requestedName.isEmpty() && !requestedName.equals(candidate.name)) continue;
+                    if (!requestedType.isEmpty() && !localTypeMatches(requestedType, candidate.type)) continue;
+                    if (compatible(expected, candidate.type)) matching.add(candidate);
                 }
+                if (requestedOrdinal >= 0 && requestedOrdinal < matching.size())
+                    captured = matching.get(requestedOrdinal);
+                else if (requestedOrdinal < 0 && !matching.isEmpty()) captured = matching.get(0);
             }
             if (captured == null)
                 throw unsupported("no captured local matches handler argument " + i);
@@ -1655,6 +2781,21 @@ public final class MixinClassTransformer implements ClassFileTransformer {
             available.remove(captured);
         }
         return output;
+    }
+
+    private static AnnotationModel parameterAnnotation(Handler handler, int parameterIndex, String simpleName) {
+        if (parameterIndex < 0 || parameterIndex >= handler.parameterAnnotations.size()) return null;
+        for (AnnotationModel annotation : handler.parameterAnnotations.get(parameterIndex))
+            if (annotation.simpleName().equals(simpleName)) return annotation;
+        return null;
+    }
+
+    private static boolean localTypeMatches(String requested, Descriptor.Type actual) {
+        if (requested.equals(actual.descriptor)) return true;
+        if (requested.startsWith("L") && requested.endsWith(";"))
+            return requested.substring(1, requested.length() - 1).equals(descriptorOwner(actual.descriptor));
+        if (requested.startsWith("[")) return requested.equals(actual.descriptor);
+        return requested.replace('.', '/').equals(descriptorOwner(actual.descriptor));
     }
 
     private static List<Descriptor.Type> capturedTypes(List<CapturedLocal> locals) {
@@ -1827,6 +2968,17 @@ public final class MixinClassTransformer implements ClassFileTransformer {
         if (fatal || strict) throw new TransformException(message);
     }
 
+    private static String simpleMixinName(String binaryName) {
+        if (binaryName == null || binaryName.isEmpty()) return "<unknown>";
+        int separator = Math.max(binaryName.lastIndexOf('/'), binaryName.lastIndexOf('.'));
+        return separator < 0 ? binaryName : binaryName.substring(separator + 1);
+    }
+
+    private static String configName(MixinDefinition definition) {
+        if (definition.configName != null && !definition.configName.isEmpty()) return definition.configName;
+        return "<direct-registration>.mixins.json";
+    }
+
     /**
      * A missing class in an optional config is a bounded capability gap, not
      * evidence that an unrelated target should be transformed incorrectly.
@@ -1846,6 +2998,17 @@ public final class MixinClassTransformer implements ClassFileTransformer {
         int allowed = annotation.integer("allow", -1);
         if (allowed >= 0 && matched > allowed)
             throw unsupported(operation + " matched " + matched + " site(s), allow=" + allowed);
+    }
+
+    /**
+     * Convert a member descriptor from the mixin namespace into the target
+     * class namespace.  ConstantPool relocation only changes the mixin owner;
+     * the resolver supplies the intermediary-to-named mapping for Minecraft
+     * types used by Accessor, Invoker, and Overwrite declarations.
+     */
+    private String targetDescriptor(String descriptor, String sourceOwner, String targetOwner) {
+        String relocated = ConstantPool.remapDescriptor(descriptor, sourceOwner, targetOwner);
+        return resolver.resolveDescriptor(relocated);
     }
 
     private TransformException unsupported(String message) {
@@ -1875,6 +3038,26 @@ public final class MixinClassTransformer implements ClassFileTransformer {
                 changed = true;
             }
         }
+        // Mixin classes are loaded by HotSpot before their handlers are
+        // copied into a target.  A structural transformer must therefore
+        // perform the same local verifier adaptation on the handler class
+        // itself; otherwise a shadow return type mismatch fails class
+        // definition before target injection can even begin.
+        for (MemberModel method : model.methods) {
+            CodeModel code = method.code(model.pool);
+            if (code == null) continue;
+            List<BytecodeInstructions.Instruction> sourceInstructions =
+                BytecodeInstructions.decode(code.code);
+            BytecodeInstructions.Editor editor = new BytecodeInstructions.Editor(code, model.pool);
+            int instructionCount = editor.instructions.size();
+            insertVerifierCasts(editor, sourceInstructions, model, method,
+                model.pool, model.internalName(), model.internalName());
+            if (editor.instructions.size() != instructionCount) {
+                editor.finish(model.pool);
+                method.replaceCode(model.pool, code);
+                changed = true;
+            }
+        }
         if (!changed) return originalBytes;
         byte[] output = model.write();
         ClassFileSafety.validateBytes(output);
@@ -1884,6 +3067,51 @@ public final class MixinClassTransformer implements ClassFileTransformer {
     private static String descriptorOwner(String descriptor) {
         return descriptor.startsWith("L") && descriptor.endsWith(";")
             ? descriptor.substring(1, descriptor.length() - 1) : "";
+    }
+
+    private static Descriptor.Type ownerType(String owner) {
+        return Descriptor.type(owner != null && owner.startsWith("[")
+            ? owner : "L" + owner + ";");
+    }
+
+    /**
+     * Test the verifier's reference widening relation before emitting a
+     * CHECKCAST.  A cast from a known subtype to its supertype is unnecessary
+     * and, when an existing StackMapTable still names the subtype, can make a
+     * copied helper unverifiable.  Reflection is non-initializing and only a
+     * fallback: class definition must remain usable while a target class is
+     * still being defined.
+     */
+    private boolean isVerifierAssignable(String expectedDescriptor, String actualDescriptor) {
+        if (expectedDescriptor == null || actualDescriptor == null) return false;
+        if (expectedDescriptor.equals(actualDescriptor) || "Ljava/lang/Object;".equals(expectedDescriptor)) return true;
+        try {
+            ClassLoader loader = mixinClassLoader == null
+                ? MixinClassTransformer.class.getClassLoader() : mixinClassLoader;
+            Class<?> expected = Class.forName(binaryClassName(expectedDescriptor), false, loader);
+            Class<?> actual = Class.forName(binaryClassName(actualDescriptor), false, loader);
+            return expected.isAssignableFrom(actual);
+        } catch (LinkageError | ClassNotFoundException ignored) {
+            // Keep a small hierarchy fallback for the bootstrap window.  It
+            // covers the common shadow Entity/LivingEntity path without
+            // guessing arbitrary mod class relationships.
+            String expected = descriptorOwner(expectedDescriptor);
+            String actual = descriptorOwner(actualDescriptor);
+            if ("net/minecraft/entity/Entity".equals(expected)
+                && actual.startsWith("net/minecraft/entity/")) return true;
+            if ("net/minecraft/entity/LivingEntity".equals(expected)
+                && (actual.endsWith("/LivingEntity") || actual.endsWith("/MobEntity")
+                    || actual.endsWith("/PlayerEntity") || actual.endsWith("/HostileEntity")
+                    || actual.endsWith("/MerchantEntity"))) return true;
+            return false;
+        }
+    }
+
+    private static String binaryClassName(String descriptor) {
+        if (descriptor.startsWith("[")) return descriptor.replace('/', '.');
+        String owner = descriptorOwner(descriptor);
+        if (owner.isEmpty()) throw new IllegalArgumentException("not a reference descriptor: " + descriptor);
+        return owner.replace('/', '.');
     }
 
     private static String inferMemberName(String name, String... prefixes) {
@@ -1896,7 +3124,10 @@ public final class MixinClassTransformer implements ClassFileTransformer {
 
     private static String inferInvokerName(String name) {
         for (String prefix : new String[] { "call", "invoke", "access$" })
-            if (name.startsWith(prefix) && name.length() > prefix.length()) return name.substring(prefix.length());
+            if (name.startsWith(prefix) && name.length() > prefix.length()) {
+                String suffix = name.substring(prefix.length());
+                return Character.toLowerCase(suffix.charAt(0)) + suffix.substring(1);
+            }
         return name;
     }
 
@@ -1922,7 +3153,13 @@ public final class MixinClassTransformer implements ClassFileTransformer {
 
     private static boolean compatible(Descriptor.Type expected, Descriptor.Type actual) {
         if (expected.descriptor.equals(actual.descriptor)) return true;
-        if (expected.primitive || actual.primitive || expected.voidType || actual.voidType) return false;
+        // JVM bytecode uses the INTEGER verification type for boolean, byte,
+        // char, and short values.  javac still records the source-level
+        // descriptor as Z/B/C/S, so a stack-site comparison must accept any
+        // two of those int-like primitive forms.
+        if (expected.primitive || actual.primitive || expected.voidType || actual.voidType)
+            return expected.primitive && actual.primitive
+                && expected.isIntLike() && actual.isIntLike();
         return expected.reference && actual.reference;
     }
 
@@ -2049,10 +3286,13 @@ public final class MixinClassTransformer implements ClassFileTransformer {
         final List<String> targets;
         final int priority;
         final long registrationOrder;
+        final String configName;
+        final MixinReferenceMap referenceMap;
         MixinDefinition(String name, ClassFileModel model, List<String> targets, int priority,
-                        long registrationOrder) {
+                        long registrationOrder, String configName, MixinReferenceMap referenceMap) {
             this.name = name; this.model = model; this.targets = List.copyOf(new LinkedHashSet<>(targets));
-            this.priority = priority; this.registrationOrder = registrationOrder;
+            this.priority = priority; this.registrationOrder = registrationOrder; this.configName = configName;
+            this.referenceMap = referenceMap == null ? MixinReferenceMap.EMPTY : referenceMap;
         }
     }
 
@@ -2065,6 +3305,18 @@ public final class MixinClassTransformer implements ClassFileTransformer {
         final Map<String, MemberModel> copiedMethods = new LinkedHashMap<>();
         int bootstrapOffset;
         PreparedMixin(MixinDefinition definition) { this.definition = definition; }
+        String methodToken(String source, String targetOwner, DescriptorResolver resolver) {
+            return definition.referenceMap.methodToken(definition.name, source, targetOwner, resolver);
+        }
+        String memberToken(String source, String targetOwner, DescriptorResolver resolver) {
+            return definition.referenceMap.memberToken(definition.name, source, targetOwner, resolver);
+        }
+        String fieldName(String source, String targetOwner, String descriptor, DescriptorResolver resolver) {
+            return definition.referenceMap.fieldName(definition.name, source, targetOwner, descriptor, resolver);
+        }
+        String atTarget(String source, String targetOwner, DescriptorResolver resolver) {
+            return definition.referenceMap.atTarget(definition.name, source, targetOwner, resolver);
+        }
         boolean hasCopy(String name, String descriptor) { return copiedMethods.containsKey(name + descriptor); }
         Handler handler(MemberModel source, ClassFileModel target) {
             String key = source.name(definition.model.pool) + source.descriptor(definition.model.pool);
@@ -2072,7 +3324,8 @@ public final class MixinClassTransformer implements ClassFileTransformer {
             if (copy == null) throw new TransformException("Mixin handler was not copied: " + key);
             return new Handler(copy.name(target.pool), copy.descriptor(target.pool),
                 (copy.access & ClassFileModel.ACC_STATIC) != 0,
-                handlerParameterNames(source, definition.model));
+                handlerParameterNames(source, definition.model),
+                handlerParameterAnnotations(source, definition.model));
         }
     }
 
@@ -2091,12 +3344,25 @@ public final class MixinClassTransformer implements ClassFileTransformer {
         return List.copyOf(names);
     }
 
+    private static List<List<AnnotationModel>> handlerParameterAnnotations(MemberModel source,
+                                                                            ClassFileModel owner) {
+        Descriptor.MethodDesc descriptor = Descriptor.method(source.descriptor(owner.pool));
+        return AnnotationModel.parameterAnnotations(source.attributes, owner.pool,
+            descriptor.arguments.size());
+    }
+
     private record Handler(String name, String descriptor, boolean isStatic,
-                           List<String> parameterNames) {
+                           List<String> parameterNames,
+                           List<List<AnnotationModel>> parameterAnnotations) {
         Handler {
             parameterNames = List.copyOf(parameterNames == null ? List.of() : parameterNames);
+            parameterAnnotations = List.copyOf(parameterAnnotations == null ? List.of()
+                : parameterAnnotations.stream().map(List::copyOf).toList());
         }
     }
+
+    /** One per-injected-method implementation of a MixinExtras @Share value. */
+    private record SharedRefBinding(Descriptor.Type type, int local) { }
 
     private enum Shift { NONE, BEFORE, AFTER, BY }
 
@@ -2120,7 +3386,16 @@ public final class MixinClassTransformer implements ClassFileTransformer {
             Descriptor.MethodDesc targetDescriptor = Descriptor.method(destination.descriptor(target.pool));
             Descriptor.MethodDesc handlerDescriptor = Descriptor.method(handler.descriptor);
             int callback = callbackIndexOf(handlerDescriptor);
-            return callback >= 0 && callback > targetDescriptor.arguments.size();
+            if (callback < 0) return false;
+            int targetParameters = 0;
+            int explicitLocals = 0;
+            for (int index = 0; index < handlerDescriptor.arguments.size(); ++index) {
+                Descriptor.Type argument = handlerDescriptor.arguments.get(index);
+                if (index == callback || isSharedRefType(argument)) continue;
+                if (isLocalParameter(handler, index)) explicitLocals++;
+                else targetParameters++;
+            }
+            return explicitLocals > 0 || targetParameters > targetDescriptor.arguments.size();
         }
 
         boolean isSoft() {
@@ -2128,14 +3403,13 @@ public final class MixinClassTransformer implements ClassFileTransformer {
         }
 
         private static int callbackIndexOf(Descriptor.MethodDesc descriptor) {
-            if (descriptor.arguments.isEmpty()) return -1;
-            int index = descriptor.arguments.size() - 1;
-            return descriptor.arguments.get(index).descriptor.startsWith(
-                "Lorg/spongepowered/asm/mixin/injection/callback/") ? index : -1;
+            for (int index = 0; index < descriptor.arguments.size(); ++index)
+                if (isCallbackInfoType(descriptor.arguments.get(index))) return index;
+            return -1;
         }
     }
 
-    private record CapturedLocal(Descriptor.Type type, int slot, String name) { }
+    private record CapturedLocal(Descriptor.Type type, int slot, String name, boolean argument) { }
 
     private static final class AtSpec {
         final String value;
@@ -2179,6 +3453,11 @@ public final class MixinClassTransformer implements ClassFileTransformer {
             return new AtSpec(annotation.string("value", "HEAD"), annotation.string("target", ""),
                 annotation.integer("ordinal", -1), annotation.integer("opcode", -1),
                 Shift.valueOf(shiftName), annotation.strings("args"), annotation.string("slice", ""));
+        }
+
+        AtSpec withTarget(String mappedTarget) {
+            return new AtSpec(value, mappedTarget == null ? target : mappedTarget,
+                ordinal, opcode, shift, args, sliceId);
         }
     }
 

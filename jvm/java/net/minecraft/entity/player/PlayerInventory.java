@@ -1,13 +1,16 @@
 package net.minecraft.entity.player;
 
 import java.util.List;
+import java.util.Set;
 import net.minecraft.item.ItemStack;
+import net.minecraft.item.Item;
 import net.minecraft.item.Items;
+import net.minecraft.inventory.Inventory;
 import net.minecraft.util.NativeAccess;
 import net.minecraft.util.collection.DefaultedList;
 
 /** Handle-backed view of the native player's 36 main, armor, and offhand slots. */
-public class PlayerInventory {
+public class PlayerInventory implements Inventory {
     private final long playerHandle;
     private final ItemStack[] localSlots;
     /** Yarn-compatible selected hotbar slot (0..8), sampled at construction. */
@@ -74,6 +77,23 @@ public class PlayerInventory {
             if (candidate.isOf(stack.getItem())) total += candidate.getCount();
         }
         return total;
+    }
+    @Override public int count(Item item) {
+        if (item == null) return 0;
+        int total = 0;
+        for (int slot = 0; slot < size(); ++slot) {
+            ItemStack candidate = getStack(slot);
+            if (!candidate.isEmpty() && candidate.isOf(item)) total += candidate.getCount();
+        }
+        return total;
+    }
+    @Override public boolean containsAny(Set<Item> items) {
+        if (items == null || items.isEmpty()) return false;
+        for (int slot = 0; slot < size(); ++slot) {
+            ItemStack candidate = getStack(slot);
+            if (!candidate.isEmpty() && items.contains(candidate.getItem())) return true;
+        }
+        return false;
     }
     public long nativeHandle() { return playerHandle; }
 }

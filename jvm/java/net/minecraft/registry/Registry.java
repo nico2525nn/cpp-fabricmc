@@ -17,7 +17,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Stream;
 
-public class Registry<T> implements Iterable<T> {
+public class Registry<T> implements Iterable<T>, net.minecraft.registry.entry.RegistryEntryOwner<T> {
     private final RegistryKey<?> registryKey;
     private final Map<Identifier, T> values = new java.util.LinkedHashMap<>();
     private final Map<T, Identifier> reverse = new HashMap<>();
@@ -81,6 +81,7 @@ public class Registry<T> implements Iterable<T> {
     public synchronized RegistryEntry<T> getEntryOrThrow(Identifier id) { return getEntry(id).orElseThrow(() -> new IllegalArgumentException("unknown registry id: " + id)); }
     public synchronized RegistryEntry<T> getEntryOrThrow(RegistryKey<T> key) { return getEntryOrThrow(key == null ? null : key.getValue()); }
     public RegistryKey<?> getKey() { return registryKey; }
+    @Override public boolean ownerEquals(net.minecraft.registry.entry.RegistryEntryOwner<T> other) { return this == other; }
     public synchronized Set<Identifier> getIds() {
         LinkedHashSet<Identifier> result = new LinkedHashSet<>(values.keySet());
         int count = nativeSize();

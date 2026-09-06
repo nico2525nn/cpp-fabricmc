@@ -24,7 +24,10 @@ Java compatibility classes and an executable fixture. At runtime the bridge:
   defined. The covered subset includes `HEAD`, `TAIL`, `RETURN`, `INVOKE`, `FIELD`,
   `NEW`, `JUMP`, `CONSTANT`, `LOAD`, and `STORE`, plus `Accessor`, `Invoker`,
   `Shadow`, `Redirect`, `ModifyArg`, `ModifyConstant`, `ModifyVariable`, and
-  `@Overwrite`.
+  `@Overwrite`. MixinExtras operations `ModifyReturnValue`,
+  `ModifyExpressionValue`, `WrapWithCondition`, `WrapOperation`, and `WrapMethod`
+  are covered, including shared locals through `@Share` and indexed/ordinal/name
+  local selection through `@Local`.
 
 The production path is a version-locked Knot-compatible compatibility loader with a
 generated dispatch marker. A separate offline probe also starts the pinned official
@@ -39,11 +42,11 @@ the Mojang server jar into this repository.
 | Opaque object handles and cache | `IMPLEMENTED-PARTIAL` | `NativeHandleTable`, `JavaObjectCache`, `test_jvm_handles`; entity/world lifetime coverage remains bounded to wired server paths |
 | Native server/world/player/entity bridge | `IMPLEMENTED-PARTIAL` | `jvm/java/net/minecraft/**` and JNI methods in `JvmRuntime.cpp`; shadow objects expose only the documented subset |
 | Inventory and registry/settings surface | `IMPLEMENTED-PARTIAL` | logical PlayerInventory slots, native-backed ItemStack mutation, custom Block registration; data components and every registry are not mirrored |
-| Lifecycle and Fabric-style events | `IMPLEMENTED-PARTIAL` | server/tick/world/player/block/damage/spawn callbacks; networking send is an explicit no-op transport boundary |
-| Commands | `IMPLEMENTED-PARTIAL` | minimal Brigadier tree/literal/string/integer execution and registration; redirects, suggestions, and full parser parity are absent |
+| Lifecycle and Fabric-style events | `IMPLEMENTED-PARTIAL` | server/tick/world/player/block/damage/spawn callbacks; CustomPayload send is queued and forwarded through the native custom-payload transport, while real-client packet evidence remains bounded |
+| Commands | `IMPLEMENTED-PARTIAL` | minimal Brigadier tree/literal/string/integer execution and registration, supported redirects, and argument suggestions; full parser parity is absent |
 | Mixin `HEAD`/`TAIL`/`RETURN`/simple `Overwrite` | `IMPLEMENTED-PARTIAL` | pre-definition transformer plus native routing; corpus cases 11, 12, and 16 pass, with manual hooks retained only as fallback |
-| Accessor/Invoker/Shadow/Redirect/Modify* | `IMPLEMENTED-PARTIAL` | structural transformer and corpus cases 09, 10, 15, and 17–20 pass; unsupported constructor/verifier-state cases remain fail-closed |
-| Structured class-file bytecode transformation | `IMPLEMENTED-PARTIAL` | `25/25` fixture cases pass; manifest covers 82 declared methods (52 native + 30 wrapper), with 9 structured methods (`11.0%`) and all 10 declared injection-point names |
+| Accessor/Invoker/Shadow/Redirect/Modify* | `IMPLEMENTED-PARTIAL` | structural transformer and corpus cases 09, 10, 15, and 17–20 pass; MixinExtras operation and `@Share`/`@Local` contract fixtures pass; unsupported constructor/verifier-state cases remain fail-closed |
+| Structured class-file bytecode transformation | `IMPLEMENTED-PARTIAL` | `25/25` compatibility fixture cases pass; transformer contract covers MixinExtras operations and local selectors; manifest covers 94 declared methods (47 native + 47 wrapper), with 9 structured methods (`9.6%`) and all 10 declared injection-point names |
 | Official Fabric Loader/Knot probe | `PROBE-PASS / DECLARED-LIMITATION` | pinned Loader `0.16.9`, Knot, Sponge Mixin, ASM, and intermediary artifacts pass `tools/verify_fabric_runtime.py --offline --probe`; the production runtime is not the Mojang provider |
 
 ## Source ownership
@@ -80,21 +83,21 @@ native server continues. Strict mode makes startup failure visible and fatal.
 
 ## Evidence
 
-The focused plan51 gate was run on 2026-09-05 from the 1.21.4/protocol-769 source:
+The focused plan51 gate was run on 2026-09-06 from the 1.21.4/protocol-769 source:
 
 ```text
 cppfm_jvm_classes       PASS
 cppfm_jvm_fixture       PASS
 test_jvm_handles        PASS
 jvm_runtime             PASS
-jvm_transformer         PASS
+jvm_transformer         PASS (MixinExtras operations, @Share, @Local selectors)
 jvm_api                 PASS
 jvm_compatibility       PASS (25/25)
 jvm_corpus              PASS (25/25)
 jvm_manifest            PASS
 jvm_contract_audit       PASS
 official_loader_probe   PASS (pinned 0.16.9/Knot/Mixin)
-real_mod_corpus         SKIP (Java 25; lock requires Java 21)
+real_mod_corpus         PASS (Lithium, FerriteCore, Carpet, and combined; explicit Java 21)
 ```
 
 The runtime fixture observed `embedded HotSpot started`, entrypoint initialization,
@@ -108,16 +111,18 @@ isolation, and two-mod ordering. The official probe records
 `CPPFM_OFFICIAL_ENTRYPOINTS_DONE` and `CPPFM_OFFICIAL_MIXIN_RETURN`; these are
 boundary tests, not evidence of arbitrary mod or client compatibility.
 
-The generated manifest reports 82 method entries: `nativeBackend=52` and
-`wrapperBackend=30`. Nine entries have `structuredBytecode` coverage (`9/82`,
-`11.0%`). Its structural declaration covers the 10 named injection points and 9
-transformer names exercised by the corpus; `jvm_contract_audit` verifies that every
+The generated manifest reports 94 method entries: `nativeBackend=47` and
+`wrapperBackend=47`. Nine entries have `structuredBytecode` coverage (`9/94`,
+`9.6%`). Its structural declaration covers the 10 named injection points and 14
+transformer names, including the five MixinExtras operations exercised by the
+corpus; `jvm_contract_audit` verifies that every
 declared method has exactly one backend classification.
 
-The locked real public-mod cache (Lithium, FerriteCore, and Carpet) verifies its
-archives and metadata, but the runtime comparison was not executed on this machine:
-the available Java major is 25 while the corpus lock accepts Java 21 only. It is
-therefore `SKIP`, not evidence of mod compatibility.
+The locked real public-mod corpus (Lithium, FerriteCore, and Carpet) verifies its
+archives and metadata and passes individual plus combined runtime probes with the
+explicit `/usr/lib/jvm/java-21-openjdk-amd64/bin/java` launcher. The retained report
+is `build/real-mod-corpus/real-mod-corpus-report.json`; this is evidence for the
+three locked server-side cases, not a claim of arbitrary-mod compatibility.
 
 ## Explicit non-goals
 
@@ -126,8 +131,8 @@ evidence, accepted 2-hour or 24-hour evidence, exact vanilla Xoroshiro L3 byte
 parity, or universal Fabric JVM-mod compatibility. The target remains protocol 769;
 no other protocol version is part of this implementation.
 
-Further Mixin coverage requires additional versioned bytecode cases and a real mod
-corpus. Further API coverage requires per-method ABI/evidence entries; adding names
+Further Mixin coverage requires additional versioned bytecode cases and a broader
+real-mod corpus. Further API coverage requires per-method ABI/evidence entries; adding names
 to the shadow package alone is not sufficient. The current implementation remains
 bounded: constructor uninitialized-object flow, unverifiable or unsupported frame
 states, client-only mixins, and universal arbitrary Fabric mod compatibility are

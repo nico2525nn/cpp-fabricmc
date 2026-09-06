@@ -9,6 +9,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <dlfcn.h>
@@ -19,6 +20,7 @@
 #include <mutex>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -89,6 +91,8 @@ struct JvmRuntime::Impl {
     std::atomic<std::uint64_t> jvmDispatches{0};
     std::atomic<std::uint64_t> dispatchFailures{0};
     std::atomic<std::uint64_t> bridgeExceptions{0};
+    // Keep dynamic-route evidence useful without logging every tick.
+    std::atomic<bool> dynamicRouteReported{false};
 
     explicit Impl(GameServer& s, JvmConfig c)
         : server(s), config(std::move(c)) {}
@@ -106,6 +110,48 @@ JvmRuntime* g_runtimeOwner = nullptr;
 
 thread_local JvmRuntime* g_callRuntime = nullptr;
 thread_local std::size_t g_callDepth = 0;
+
+struct DynamicDispatchKey {
+    JvmRuntime* runtime = nullptr;
+    std::string owner;
+    std::string name;
+    std::string descriptor;
+
+    bool operator==(const DynamicDispatchKey& other) const noexcept {
+        return runtime == other.runtime && owner == other.owner &&
+               name == other.name && descriptor == other.descriptor;
+    }
+};
+
+// A transformed body can call back into native code.  Keep the active method
+// key on the calling thread so an accidental native -> Java -> native route
+// for the same method cannot recursively execute the transformed body twice.
+thread_local std::vector<DynamicDispatchKey> g_dynamicDispatchStack;
+
+class DynamicDispatchScope {
+public:
+    DynamicDispatchScope(JvmRuntime* runtime, std::string owner,
+                         std::string name, std::string descriptor)
+        : key_{runtime, std::move(owner), std::move(name), std::move(descriptor)} {
+        for (const auto& active : g_dynamicDispatchStack) {
+            if (active == key_) return;
+        }
+        g_dynamicDispatchStack.push_back(key_);
+        entered_ = true;
+    }
+
+    ~DynamicDispatchScope() {
+        if (entered_) g_dynamicDispatchStack.pop_back();
+    }
+
+    DynamicDispatchScope(const DynamicDispatchScope&) = delete;
+    DynamicDispatchScope& operator=(const DynamicDispatchScope&) = delete;
+    bool entered() const noexcept { return entered_; }
+
+private:
+    DynamicDispatchKey key_;
+    bool entered_ = false;
+};
 
 bool claimRuntimeOwnership(JvmRuntime* runtime) {
     std::lock_guard lock(g_runtimeLifecycleMutex);
@@ -1206,10 +1252,26 @@ bool JvmRuntime::start(std::string* error) {
         std::filesystem::absolute(impl.config.modsDir, ec);
     const std::filesystem::path configDir =
         std::filesystem::absolute(impl.config.configDir, ec);
+    std::filesystem::path librariesDir = impl.config.jvmLibrariesDir;
+    if (librariesDir.empty()) {
+        if (const auto envPath = envString("CPPFM_JVM_LIBRARIES"); !envPath.empty())
+            librariesDir = envPath;
+    }
+    if (!librariesDir.empty()) {
+        librariesDir = std::filesystem::absolute(librariesDir, ec);
+        if (ec || !std::filesystem::is_directory(librariesDir, ec)) {
+            setError(impl, "JVM libraries directory does not exist: " + librariesDir.string());
+            stop();
+            if (error) *error = impl.lastError;
+            return false;
+        }
+    }
     std::vector<std::string> optionStorage;
     optionStorage.emplace_back("-Djava.class.path=" + classesDir.string());
     optionStorage.emplace_back("-Dcppfm.mods.dir=" + modsDir.string());
     optionStorage.emplace_back("-Dcppfm.config.dir=" + configDir.string());
+    if (!librariesDir.empty())
+        optionStorage.emplace_back("-Dcppfm.jvm.libraries=" + librariesDir.string());
     optionStorage.emplace_back("-Dcppfm.game.version=1.21.4");
     optionStorage.emplace_back("-Dcppfm.protocol=769");
     optionStorage.emplace_back(std::string("-Dcppfm.jvm.strict=") +
@@ -1403,6 +1465,7 @@ void JvmRuntime::stop() {
     impl.started.store(false, std::memory_order_release);
     impl.stopping.store(false, std::memory_order_release);
     impl.bootstrapInvoked = false;
+    impl.dynamicRouteReported.store(false, std::memory_order_release);
     impl.provider.store(JvmProvider::None, std::memory_order_release);
     g_currentTick.store(0, std::memory_order_release);
     releaseRuntimeOwnership(this);
@@ -1420,7 +1483,10 @@ bool JvmRuntime::knotActive() const noexcept {
     return provider() == JvmProvider::KnotLauncher && started();
 }
 
-const std::string& JvmRuntime::lastError() const noexcept { return impl_->lastError; }
+std::string JvmRuntime::lastError() const {
+    std::lock_guard lock(impl_->callMutex);
+    return impl_->lastError;
+}
 
 JvmStats JvmRuntime::stats() const {
     const auto& impl = *impl_;
@@ -1789,6 +1855,40 @@ bool JvmRuntime::onServerTick(std::int64_t tick) {
     impl_->ticks.fetch_add(1, std::memory_order_relaxed);
     g_currentTick.store(tick, std::memory_order_release);
 #if defined(CPPFM_HAS_JNI)
+    constexpr char kServerOwner[] = "net/minecraft/server/MinecraftServer";
+    constexpr char kTickMethod[] = "setTick";
+    constexpr char kTickDescriptor[] = "(J)V";
+
+    // GameServer::tickOnce() remains authoritative.  Only the shadow tick
+    // method whose bytes were changed by Mixin is sent through Java.  The
+    // route lookup is live, so a registration made during bootstrap is seen
+    // without changing the native tick loop or caching a stale decision.
+    const auto tickRoute = impl_->routing.route(
+        kServerOwner, kTickMethod, kTickDescriptor);
+    if (impl_->started.load(std::memory_order_acquire) &&
+        tickRoute && tickRoute->path == DispatchPath::JvmTransformed) {
+        if (!impl_->dynamicRouteReported.exchange(true, std::memory_order_acq_rel)) {
+            std::fprintf(stderr,
+                         "[cppfm][jvm] dynamic route JVM_TRANSFORMED owner=%s method=%s descriptor=%s tick=%lld receiver=%llu\n",
+                         kServerOwner, kTickMethod, kTickDescriptor,
+                         static_cast<long long>(tick),
+                         static_cast<unsigned long long>(impl_->serverHandle));
+        }
+        const auto dispatched = dispatchTransformed(
+            kServerOwner, kTickMethod, kTickDescriptor, impl_->serverHandle,
+            {JvmValue::longInt(tick)});
+        if (!dispatched.success) {
+            impl_->callbackErrors.fetch_add(1, std::memory_order_relaxed);
+            std::fprintf(stderr, "[cppfm][jvm] transformed tick route failed: %s\n",
+                         dispatched.error.c_str());
+            // Never run the unmodified Java/native facade after a transformed
+            // body failed.  Doing so could apply side effects twice and would
+            // hide the original Java failure.  The native game tick remains
+            // authoritative and continues after this fail-closed boundary.
+            return false;
+        }
+    }
+
     // No Java entrypoint and no transformed method means that this tick has
     // no observable JVM work.  Keep the C++ tick path hot and account for the
     // selective NativeFast route; a later transformed registration still
@@ -1946,8 +2046,10 @@ bool JvmRuntime::onBlockClicked(Player& player, std::int32_t x, std::int32_t y,
 #endif
 }
 
-bool JvmRuntime::onCommand(Player* player, std::string& command) {
+bool JvmRuntime::onCommand(Player* player, std::string& command,
+                           std::string* response) {
     const auto handle = player ? playerHandle(*player) : 0;
+    if (response) response->clear();
 #if defined(CPPFM_HAS_JNI)
     auto& impl = *impl_;
     std::lock_guard lock(impl.callMutex);
@@ -1968,8 +2070,18 @@ bool JvmRuntime::onCommand(Player* player, std::string& command) {
         return true;
     }
     if (!output) return false;
-    command = fromJavaString(env, output);
+    const std::string outputText = fromJavaString(env, output);
     env->DeleteLocalRef(output);
+    // CppModRuntime uses a private transport marker for commands that were
+    // executed by the Java Brigadier dispatcher.  Keep the public bool
+    // contract (false means consumed) while allowing console/RCON to receive
+    // the Java feedback text without feeding the marker into native parsing.
+    constexpr std::string_view handledPrefix = "\x01" "cppfm-handled:";
+    if (outputText.rfind(handledPrefix, 0) == 0) {
+        if (response) *response = outputText.substr(handledPrefix.size());
+        return false;
+    }
+    command = outputText;
 #else
     (void)handle;
 #endif
@@ -2600,9 +2712,14 @@ JvmDispatchResult JvmRuntime::dispatchTransformed(
     const std::string& descriptor, std::uint64_t receiverHandle,
     const std::vector<JvmValue>& arguments) {
     JvmDispatchResult result;
-    const auto route = impl_->routing.route(owner, name, descriptor);
+    auto& impl = *impl_;
+    // Keep the same lock order as invokeVoid()/stop(): callMutex first, then
+    // the lifecycle lease.  This prevents DestroyJavaVM or global-reference
+    // teardown from racing a direct native -> transformed Java call.
+    std::lock_guard callLock(impl.callMutex);
+    const auto route = impl.routing.route(owner, name, descriptor);
     if (!route || route->path == DispatchPath::NativeFast) {
-        impl_->nativeDispatches.fetch_add(1, std::memory_order_relaxed);
+        impl.nativeDispatches.fetch_add(1, std::memory_order_relaxed);
         result.success = true;
         return result;
     }
@@ -2610,10 +2727,9 @@ JvmDispatchResult JvmRuntime::dispatchTransformed(
 #if !defined(CPPFM_HAS_JNI)
     result.success = false;
     result.error = "JVM transformed dispatch requested from a non-JNI build";
-    impl_->dispatchFailures.fetch_add(1, std::memory_order_relaxed);
+    impl.dispatchFailures.fetch_add(1, std::memory_order_relaxed);
     return result;
 #else
-    auto& impl = *impl_;
     auto fail = [&](std::string message) {
         result.success = false;
         result.error = std::move(message);
@@ -2635,6 +2751,9 @@ JvmDispatchResult JvmRuntime::dispatchTransformed(
     if (!attached) return fail("could not attach dispatch thread to JVM");
     JNIEnv* env = attached.get();
     const std::string canonicalOwner = ModRoutingTable::canonicalOwner(owner);
+    DynamicDispatchScope dispatchScope(this, canonicalOwner, name, descriptor);
+    if (!dispatchScope.entered())
+        return fail("re-entrant transformed dispatch suppressed");
     jclass ownerClass = loadClassFromLoader(env, impl.bridgeLoader, canonicalOwner);
     if (!ownerClass) return fail("transformed owner class is unavailable: " + canonicalOwner);
     std::vector<jobject> localReferences;
