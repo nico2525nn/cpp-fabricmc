@@ -7,7 +7,11 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE RelWithDebInfo)
 endif()
 
+option(CPPFM_WARNINGS_AS_ERRORS "Treat supported C++ compiler warnings as errors" ON)
 add_compile_options(-Wall -Wextra -Wpedantic -Wno-unused-parameter -pipe)
+if(CPPFM_WARNINGS_AS_ERRORS AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options(-Werror)
+endif()
 
 # plan51: Java shadow ABI and optional embedded HotSpot boundary.  JNI is
 # deliberately optional at configure time so the native-only build remains
@@ -16,6 +20,9 @@ find_package(JNI QUIET)
 find_program(CPPFM_JAVAC NAMES javac)
 find_program(CPPFM_JAVA NAMES java)
 find_package(Python3 COMPONENTS Interpreter QUIET)
+find_package(Threads REQUIRED)
+find_package(ZLIB REQUIRED)
+find_package(OpenSSL REQUIRED)
 
 set(CPPFM_JVM_SHADOW_SPEC "${CMAKE_CURRENT_SOURCE_DIR}/jvm/shadow_api.json")
 set(CPPFM_JVM_MANIFEST "${CMAKE_CURRENT_BINARY_DIR}/jvm/compatibility-manifest.json")
@@ -39,7 +46,8 @@ if(CPPFM_JAVAC AND CPPFM_JAVA_SOURCES)
         OUTPUT "${CPPFM_JVM_STAMP}"
         COMMAND ${CMAKE_COMMAND} -E rm -rf "${CPPFM_JVM_CLASSES_DIR}"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${CPPFM_JVM_CLASSES_DIR}"
-        COMMAND "${CPPFM_JAVAC}" --release 17 -encoding UTF-8 -g
+        COMMAND timeout --foreground --kill-after=5 180
+                "${CPPFM_JAVAC}" --release 17 -encoding UTF-8 -g
                 -d "${CPPFM_JVM_CLASSES_DIR}" ${CPPFM_JAVA_SOURCES}
         COMMAND ${CMAKE_COMMAND} -E touch "${CPPFM_JVM_STAMP}"
         DEPENDS ${CPPFM_JAVA_SOURCES}
@@ -58,7 +66,8 @@ if(CPPFM_JAVAC AND CPPFM_JAVA_SOURCES)
         OUTPUT "${CPPFM_JVM_FIXTURE_STAMP}"
         COMMAND ${CMAKE_COMMAND} -E rm -rf "${CPPFM_JVM_FIXTURE_DIR}"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${CPPFM_JVM_FIXTURE_DIR}"
-        COMMAND "${CPPFM_JAVAC}" --release 17 -encoding UTF-8 -g
+        COMMAND timeout --foreground --kill-after=5 90
+                "${CPPFM_JAVAC}" --release 17 -encoding UTF-8 -g
                 -cp "${CPPFM_JVM_CLASSES_DIR}" -d "${CPPFM_JVM_FIXTURE_DIR}"
                 ${CPPFM_JVM_FIXTURE_SOURCE}
         COMMAND ${CMAKE_COMMAND} -E copy "${CPPFM_JVM_FIXTURE_METADATA}"
@@ -92,7 +101,8 @@ if(CPPFM_JAVAC AND CPPFM_JAVA_SOURCES)
             OUTPUT "${CPPFM_JVM_TRANSFORMER_STAMP}"
             COMMAND ${CMAKE_COMMAND} -E rm -rf "${CPPFM_JVM_TRANSFORMER_DIR}"
             COMMAND ${CMAKE_COMMAND} -E make_directory "${CPPFM_JVM_TRANSFORMER_DIR}"
-            COMMAND "${CPPFM_JAVAC}" --release 17 -encoding UTF-8 -g
+            COMMAND timeout --foreground --kill-after=5 90
+                    "${CPPFM_JAVAC}" --release 17 -encoding UTF-8 -g
                     -cp "${CPPFM_JVM_CLASSES_DIR}"
                     -d "${CPPFM_JVM_TRANSFORMER_DIR}"
                     ${CPPFM_JVM_TRANSFORMER_SOURCES}
@@ -189,8 +199,7 @@ function(cppfm_configure_jvm_target target)
     endif()
 endfunction()
 
-add_executable(cppfm
-    src/main.cpp
+set(CPPFM_SERVER_SOURCES
     src/core/NBT.cpp
     src/game/GameServer.cpp
     src/game/GameServer_tick.cpp
@@ -233,13 +242,11 @@ add_executable(cppfm
     src/game/HungerManager.cpp
     src/game/CombatManager.cpp
     src/game/CombatShield.cpp
-    src/game/InventoryController.cpp
     src/game/FunctionEvaluator.cpp
 )
 
+add_executable(cppfm src/main.cpp ${CPPFM_SERVER_SOURCES})
 target_include_directories(cppfm PRIVATE src src/generated)
-find_package(Threads REQUIRED)
-find_package(ZLIB REQUIRED)
 target_link_libraries(cppfm PRIVATE Threads::Threads ZLIB::ZLIB OpenSSL::SSL OpenSSL::Crypto)
 if(TARGET cppfm_jvm_classes)
     add_dependencies(cppfm cppfm_jvm_classes)
@@ -257,62 +264,12 @@ add_executable(test_golden tests/test_golden.cpp src/core/NBT.cpp
     src/worldgen/StructurePlacer.cpp
     src/worldgen/ChunkGenerator.cpp src/worldgen/StructureManager.cpp src/game/WorldDataManager.cpp)
 target_include_directories(test_golden PRIVATE src src/generated)
-find_package(ZLIB REQUIRED)
-find_package(OpenSSL REQUIRED)
 target_link_libraries(test_golden PRIVATE ZLIB::ZLIB OpenSSL::Crypto)
 
 enable_testing()
-add_executable(test_native
-    tests/TestClient.cpp
-    tests/native_integration.cpp
-    src/core/NBT.cpp
-    src/game/GameServer.cpp
-    src/game/GameServer_tick.cpp
-    src/game/GameServer_combat.cpp
-    src/game/GameServer_items.cpp
-    src/game/GameServer_world.cpp
-    src/game/GameServer_session.cpp
-    src/game/GameServer_core.cpp
-    src/game/WorldGen.cpp
-    src/game/Recipes.cpp
-    src/game/MenuInteraction.cpp
-    src/game/Containers.cpp
-    src/game/Commands.cpp
-    src/game/commands_chat.cpp
-    src/game/commands_admin.cpp
-    src/game/commands_world.cpp
-    src/game/commands_player.cpp
-    src/game/commands_data.cpp
-    src/game/commands_misc.cpp
-    src/game/commands_execute.cpp
-    src/game/commands_scoreboard.cpp
-    src/game/AiBrain.cpp
-    src/game/Stats.cpp
-    src/physics/LightEngine.cpp
-    src/physics/Fluids.cpp
-    src/physics/Redstone.cpp
-    src/physics/BlockTickScheduler.cpp
-    src/worldgen/DensityFunction.cpp
-    src/worldgen/MultiNoise.cpp
-    src/worldgen/StructurePlacer.cpp
-    src/worldgen/ChunkGenerator.cpp
-    src/worldgen/StructureManager.cpp
-    src/game/WorldDataManager.cpp
-    src/net/PacketBatcher.cpp
-    src/game/BehaviorTree.cpp
-    src/game/EntityData.cpp
-    src/game/BossAI.cpp
-    src/game/MenuLogic.cpp
-    src/game/MobSpawner.cpp
-    src/game/HungerManager.cpp
-    src/game/CombatManager.cpp
-    src/game/CombatShield.cpp
-    src/game/InventoryController.cpp
-    src/game/FunctionEvaluator.cpp)
+add_executable(test_native tests/TestClient.cpp tests/native_integration.cpp
+    ${CPPFM_SERVER_SOURCES})
 target_include_directories(test_native PRIVATE src src/generated tests)
-find_package(Threads REQUIRED)
-find_package(ZLIB REQUIRED)
-find_package(OpenSSL REQUIRED)
 target_link_libraries(test_native PRIVATE Threads::Threads ZLIB::ZLIB OpenSSL::Crypto)
 
 # self-contained: spawns the server itself on a random port
@@ -332,63 +289,13 @@ add_executable(test_spec_wire tests/test_spec_wire.cpp
     src/worldgen/StructurePlacer.cpp
     src/worldgen/ChunkGenerator.cpp src/worldgen/StructureManager.cpp src/game/WorldDataManager.cpp)
 target_include_directories(test_spec_wire PRIVATE src src/generated)
-find_package(ZLIB REQUIRED)
-find_package(OpenSSL REQUIRED)
 target_link_libraries(test_spec_wire PRIVATE ZLIB::ZLIB OpenSSL::Crypto)
 add_test(NAME spec_wire COMMAND test_spec_wire)
 set_tests_properties(spec_wire PROPERTIES TIMEOUT 30)
 
-add_executable(test_smoke_80
-    tests/TestClient.cpp
-    tests/test_smoke_80.cpp
-    src/core/NBT.cpp
-    src/game/GameServer.cpp
-    src/game/GameServer_tick.cpp
-    src/game/GameServer_combat.cpp
-    src/game/GameServer_items.cpp
-    src/game/GameServer_world.cpp
-    src/game/GameServer_session.cpp
-    src/game/GameServer_core.cpp
-    src/game/WorldGen.cpp
-    src/game/Recipes.cpp
-    src/game/MenuInteraction.cpp
-    src/game/Containers.cpp
-    src/game/Commands.cpp
-    src/game/commands_chat.cpp
-    src/game/commands_admin.cpp
-    src/game/commands_world.cpp
-    src/game/commands_player.cpp
-    src/game/commands_data.cpp
-    src/game/commands_misc.cpp
-    src/game/commands_execute.cpp
-    src/game/commands_scoreboard.cpp
-    src/game/AiBrain.cpp
-    src/game/Stats.cpp
-    src/physics/LightEngine.cpp
-    src/physics/Fluids.cpp
-    src/physics/Redstone.cpp
-    src/physics/BlockTickScheduler.cpp
-    src/worldgen/DensityFunction.cpp
-    src/worldgen/MultiNoise.cpp
-    src/worldgen/StructurePlacer.cpp
-    src/worldgen/ChunkGenerator.cpp
-    src/worldgen/StructureManager.cpp
-    src/game/WorldDataManager.cpp
-    src/net/PacketBatcher.cpp
-    src/game/BehaviorTree.cpp
-    src/game/EntityData.cpp
-    src/game/BossAI.cpp
-    src/game/MenuLogic.cpp
-    src/game/MobSpawner.cpp
-    src/game/HungerManager.cpp
-    src/game/CombatManager.cpp
-    src/game/CombatShield.cpp
-    src/game/InventoryController.cpp
-    src/game/FunctionEvaluator.cpp)
+add_executable(test_smoke_80 tests/TestClient.cpp tests/test_smoke_80.cpp
+    ${CPPFM_SERVER_SOURCES})
 target_include_directories(test_smoke_80 PRIVATE src src/generated tests)
-find_package(Threads REQUIRED)
-find_package(ZLIB REQUIRED)
-find_package(OpenSSL REQUIRED)
 target_link_libraries(test_smoke_80 PRIVATE Threads::Threads ZLIB::ZLIB OpenSSL::Crypto)
 add_test(NAME smoke80 COMMAND test_smoke_80 $<TARGET_FILE:cppfm>
          WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
@@ -425,7 +332,8 @@ if(TARGET cppfm_jvm_fixture AND JNI_FOUND)
 endif()
 if(TARGET cppfm_jvm_transformer AND CPPFM_JAVA)
     add_test(NAME jvm_transformer
-        COMMAND "${CPPFM_JAVA}" -ea
+        COMMAND timeout --foreground --kill-after=5 60
+                "${CPPFM_JAVA}" -ea
                 -cp "${CPPFM_JVM_CLASSES_DIR}:${CPPFM_JVM_TRANSFORMER_DIR}"
                 cppfm.transformer_fixture.TransformerContractTest)
     set_tests_properties(jvm_transformer PROPERTIES TIMEOUT 60
@@ -521,11 +429,16 @@ set_tests_properties(flood_net PROPERTIES TIMEOUT 300)
 add_executable(test_fuzz tests/test_fuzz.cpp
     src/core/NBT.cpp)
 target_include_directories(test_fuzz PRIVATE src src/generated)
-find_package(ZLIB REQUIRED)
-find_package(OpenSSL REQUIRED)
 target_link_libraries(test_fuzz PRIVATE ZLIB::ZLIB OpenSSL::Crypto)
 add_test(NAME fuzz COMMAND test_fuzz)
 set_tests_properties(fuzz PROPERTIES TIMEOUT 30)
+
+add_executable(test_core_safety tests/test_core_safety.cpp
+    src/core/NBT.cpp)
+target_include_directories(test_core_safety PRIVATE src src/generated)
+target_link_libraries(test_core_safety PRIVATE ZLIB::ZLIB OpenSSL::Crypto Threads::Threads)
+add_test(NAME core_safety COMMAND test_core_safety)
+set_tests_properties(core_safety PROPERTIES TIMEOUT 30)
 
 # wt42/test-wire: exhaustive vanilla-exact wire coverage (131 play toClient, Prismarine protocol.json live-fetch)
 add_executable(test_wire_full tests/test_wire_full.cpp
@@ -534,8 +447,6 @@ add_executable(test_wire_full tests/test_wire_full.cpp
     src/worldgen/StructurePlacer.cpp
     src/worldgen/ChunkGenerator.cpp src/worldgen/StructureManager.cpp src/game/WorldDataManager.cpp)
 target_include_directories(test_wire_full PRIVATE src src/generated)
-find_package(ZLIB REQUIRED)
-find_package(OpenSSL REQUIRED)
 target_link_libraries(test_wire_full PRIVATE ZLIB::ZLIB OpenSSL::Crypto)
 add_test(NAME wire_full COMMAND test_wire_full)
 set_tests_properties(wire_full PROPERTIES TIMEOUT 30)
@@ -545,8 +456,6 @@ add_executable(test_wire_b6 tests/test_wire_b6.cpp
     src/core/NBT.cpp
     src/game/Recipes.cpp src/game/Containers.cpp src/game/MenuInteraction.cpp)
 target_include_directories(test_wire_b6 PRIVATE src src/generated)
-find_package(ZLIB REQUIRED)
-find_package(OpenSSL REQUIRED)
 target_link_libraries(test_wire_b6 PRIVATE ZLIB::ZLIB OpenSSL::Crypto)
 add_test(NAME wire_b6 COMMAND test_wire_b6)
 set_tests_properties(wire_b6 PROPERTIES TIMEOUT 60)
@@ -563,8 +472,6 @@ add_executable(test_gameplay_full tests/test_gameplay_full.cpp
     src/game/CombatShield.cpp
     src/worldgen/DensityFunction.cpp src/worldgen/MultiNoise.cpp src/worldgen/StructurePlacer.cpp src/worldgen/ChunkGenerator.cpp src/worldgen/StructureManager.cpp src/game/WorldGen.cpp src/game/WorldDataManager.cpp)
 target_include_directories(test_gameplay_full PRIVATE src src/generated)
-find_package(ZLIB REQUIRED)
-find_package(OpenSSL REQUIRED)
 target_link_libraries(test_gameplay_full PRIVATE ZLIB::ZLIB OpenSSL::Crypto)
 add_test(NAME gameplay_full COMMAND test_gameplay_full)
 set_tests_properties(gameplay_full PROPERTIES TIMEOUT 60)
@@ -604,9 +511,19 @@ target_include_directories(test_mining_full PRIVATE src tests)
 add_test(NAME mining_full COMMAND test_mining_full)
 set_tests_properties(mining_full PROPERTIES TIMEOUT 60)
 
-# plan39 C-03 weak_zero gate — grep 0 strict
-add_test(NAME weak_zero COMMAND sh -c "test $(grep -rn '|| true' ${CMAKE_SOURCE_DIR}/tests --include='*.cpp' | wc -l) -eq 0")
-set_tests_properties(weak_zero PROPERTIES TIMEOUT 10)
+# Static test-quality gate: reject unconditional PASS and liveness-only
+# fallbacks.  Keep this independent from any one smoke test so every future
+# regression source receives the same review rule.
+if(Python3_Interpreter_FOUND)
+    add_test(NAME quality_audit
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/quality_audit.py"
+                --root "${CMAKE_SOURCE_DIR}/tests"
+                --source-root "${CMAKE_SOURCE_DIR}/src"
+                --python-root "${CMAKE_SOURCE_DIR}/tests"
+                --python-root "${CMAKE_SOURCE_DIR}/tools")
+    set_tests_properties(quality_audit PROPERTIES TIMEOUT 10
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+endif()
 
 # plan41 C-09 bench strict gate — p50<5 p95<10 hit>80
 add_test(NAME bench COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/bench_chunk_gen.py --view-distance 32 --chunks 100 --dry --strict)
@@ -629,8 +546,6 @@ add_executable(test_recipes_mirror
     src/core/NBT.cpp
     src/game/Recipes.cpp)
 target_include_directories(test_recipes_mirror PRIVATE src src/generated)
-find_package(ZLIB REQUIRED)
-find_package(OpenSSL REQUIRED)
 target_link_libraries(test_recipes_mirror PRIVATE ZLIB::ZLIB OpenSSL::Crypto)
 add_test(NAME recipes_mirror COMMAND test_recipes_mirror WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(recipes_mirror PROPERTIES TIMEOUT 30 LABELS inventory)
@@ -640,7 +555,6 @@ add_executable(check_world
     tools/check_world.cpp
     src/core/NBT.cpp)
 target_include_directories(check_world PRIVATE src src/generated)
-find_package(ZLIB REQUIRED)
 target_link_libraries(check_world PRIVATE ZLIB::ZLIB)
 
 # plan46 §2 recovery (O-07/O-08): loadWithRecovery matrix + quarantine + session.lock
@@ -652,8 +566,6 @@ add_executable(test_recovery tests/test_recovery.cpp
     src/worldgen/ChunkGenerator.cpp src/worldgen/StructureManager.cpp
     src/game/WorldDataManager.cpp)
 target_include_directories(test_recovery PRIVATE src src/generated)
-find_package(ZLIB REQUIRED)
-find_package(OpenSSL REQUIRED)
 target_link_libraries(test_recovery PRIVATE ZLIB::ZLIB OpenSSL::Crypto)
 add_test(NAME recovery COMMAND test_recovery WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(recovery PROPERTIES TIMEOUT 120 LABELS recovery)
@@ -661,7 +573,6 @@ set_tests_properties(recovery PROPERTIES TIMEOUT 120 LABELS recovery)
 # plan46 §2 (O-09): 5x concurrent RCON + 10x wrong-pass harness (in-process)
 add_executable(test_rcon_multi tests/test_rcon_multi.cpp)
 target_include_directories(test_rcon_multi PRIVATE src src/generated)
-find_package(Threads REQUIRED)
 target_link_libraries(test_rcon_multi PRIVATE Threads::Threads)
 add_test(NAME rcon_multi COMMAND test_rcon_multi WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(rcon_multi PROPERTIES TIMEOUT 60 LABELS recovery)

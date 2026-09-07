@@ -429,19 +429,32 @@ def _find_java(explicit: Path | None, explicit_home: Path | None = None) -> Path
 
 
 def _java_major(java: Path) -> tuple[int | None, str]:
+    process: subprocess.Popen[str] | None = None
     try:
-        process = subprocess.run(
+        process = subprocess.Popen(
             [str(java), "-version"],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            timeout=10,
             start_new_session=True,
-            check=False,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+        text, _ = process.communicate(timeout=10)
+    except subprocess.TimeoutExpired as exc:
+        if process is not None:
+            _kill_group(process, signal.SIGKILL)
+            try:
+                text, _ = process.communicate(timeout=1)
+            except subprocess.TimeoutExpired as cleanup_exc:
+                for stream in (process.stdout, process.stderr):
+                    if stream is not None:
+                        stream.close()
+                return None, (
+                    f"java -version timed out after 10s and cleanup failed: {cleanup_exc}"
+                )
+        return None, f"java -version timed out after 10s: {exc}"
+    except OSError as exc:
         return None, str(exc)
-    text = process.stdout
+    text = text or ""
     if process.returncode != 0:
         first_line = text.splitlines()[0] if text else "no version output"
         return None, f"{first_line} (exit code {process.returncode})"
@@ -492,8 +505,10 @@ def _kill_group(process: subprocess.Popen[bytes], signal_value: int = signal.SIG
             pass
         try:
             process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
+        except subprocess.TimeoutExpired as cleanup_exc:
+            raise RuntimeError(
+                f"process group {process.pid} did not exit after SIGKILL"
+            ) from cleanup_exc
 
 
 def _drain_queue(output: queue.Queue[str | None], lines: list[str]) -> bool:

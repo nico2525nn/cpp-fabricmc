@@ -1,6 +1,7 @@
 // DatapackManager: lightweight wrapper over TagManager and LootTableEvaluator plus advancements/predicates/item_modifiers registries and
 #pragma once
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <string>
 #include <unordered_map>
@@ -17,8 +18,10 @@
 #include "Scoreboard.hpp"
 #include "DamageSource.hpp"
 #include "Entities.hpp"
+namespace cppfm {
 struct Player; // forward (GameServer.hpp defines struct Player, avoid circular)
 class World;   // forward for location checks; included conditionally below
+}
 // Note: to avoid header cycle with World.hpp (heavy), we include it only if not already included
 // but for predicate evaluation we need full World definition for getBlock/biome — include here
 #include "World.hpp"
@@ -70,6 +73,8 @@ struct PredicateContext {
     int64_t dayTime = 0;
     bool raining = false;
     bool thundering = false;
+    bool hasKiller = false;
+    bool killedByPlayer = false;
     int fortuneLevel = 0;
     bool silkTouch = false;
     Scoreboard* scoreboard = nullptr;
@@ -242,8 +247,19 @@ public:
     }
 
     bool verify() const {
-        // tag counts should meet vanilla 67/20 minimums (TagManager ensures defaults)
-        if (tagManager.itemTags.size() < 67 || tagManager.blockTags.size() < 20) return false;
+        // Verify the tags the server actually relies on. A count threshold
+        // cannot prove compatibility and used to be satisfied by fabricated
+        // dynamic_tag_* entries when the asset directory was absent.
+        const auto hasItem = [this](const char* id) {
+            return tagManager.itemTags.find(id) != tagManager.itemTags.end();
+        };
+        const auto hasBlock = [this](const char* id) {
+            return tagManager.blockTags.find(id) != tagManager.blockTags.end();
+        };
+        if (!hasItem("minecraft:planks") || !hasItem("minecraft:logs") ||
+            !hasItem("minecraft:coals") || !hasItem("minecraft:wool") ||
+            !hasBlock("minecraft:infiniburn_overworld") ||
+            !hasBlock("minecraft:soul_fire_base_blocks")) return false;
         // at least vanilla pack enabled
         if (enabledPacks.find("vanilla") == enabledPacks.end()) return false;
         return true;
@@ -299,6 +315,12 @@ public:
     size_t predicateCount() const { return predicates.size(); }
     size_t itemModifierCount() const { return itemModifiers.size(); }
 
+    bool hasPredicate(const std::string& id) const {
+        if (predicates.find(id) != predicates.end()) return true;
+        return id.find(':') == std::string::npos &&
+               predicates.find("minecraft:" + id) != predicates.end();
+    }
+
     bool evaluatePredicateValue(const json::Value& v, const PredicateContext& ctx, int depth = 0) const {
         if (depth > 5) return false; // cycle guard for reference
         if (v.isObj()) {
@@ -307,21 +329,22 @@ public:
                 if (c == "minecraft:random_chance" || c == "random_chance") {
                     if (auto* chance = v.find("chance")) {
                         double ch = chance->isNum() ? chance->number : 1.0;
+                        if (!chance->isNum() || !std::isfinite(ch)) return false;
                         if (ch >= 1.0) return true;
                         if (ch <= 0.0) return false;
                         return ch >= 0.5;
                     }
-                    return true;
+                    return false;
                 } else if (c == "minecraft:random_chance_with_looting" || c == "random_chance_with_looting") {
                     if (auto* chance = v.find("chance")) {
                         double ch = chance->isNum() ? chance->number : 1.0;
+                        if (!chance->isNum() || !std::isfinite(ch)) return false;
                         return ch >= 0.5;
                     }
-                    return true;
+                    return false;
                 } else if (c == "minecraft:inverted" || c == "inverted") {
                     if (auto* term = v.find("term")) return !evaluatePredicateValue(*term, ctx, depth+1);
-                    if (auto* cond2 = v.find("condition")) return !evaluatePredicateValue(*cond2, ctx, depth+1);
-                    return true;
+                    return false;
                 } else if (c == "minecraft:any_of" || c == "minecraft:alternative" || c == "alternative" || c == "any_of") {
                     if (auto* terms = v.find("terms")) {
                         if (terms->isArr()) { for (auto& t: terms->arr) if (evaluatePredicateValue(t, ctx, depth+1)) return true; return false; }
@@ -350,13 +373,13 @@ public:
                         else expected = true;
                     }
                     if (ctx.gamerules) {
+                        if (rule.empty() || !ctx.gamerules->contains(rule)) return false;
                         bool actual = ctx.gamerules->getBool(rule);
                         return actual == expected;
                     }
-                    // fallback: without gamerules context keep audit pass
-                    return true;
+                    return false;
                 } else if (c == "minecraft:location_check" || c == "location_check") {
-                    if (!ctx.world) return true;
+                    if (!ctx.world) return false;
                     if (auto* pred = v.find("predicate")) {
                         // dimension gate: predicate.dimension == "minecraft:overworld" etc
                         if (auto* dim = pred->find("dimension")) {
@@ -454,8 +477,9 @@ public:
                             }
                         }
                     }
-                    return true;
+                    return v.find("predicate") != nullptr;
                 } else if (c == "minecraft:entity_properties" || c == "entity_properties") {
+                    if (!ctx.entity && !ctx.player) return false;
                     if (auto* pred = v.find("predicate")) {
                         if (auto* tp = pred->find("type")) {
                             std::string want = tp->asStr();
@@ -575,29 +599,47 @@ public:
                     }
                     return true;
                 } else if (c == "minecraft:block_state_property" || c == "block_state_property") {
+                    if (!ctx.world) return false;
+                    const std::uint16_t state = ctx.world->getBlock(ctx.x, ctx.y, ctx.z);
                     if (auto* blk = v.find("block")) {
                         std::string want = blk->asStr();
                         if (!want.empty() && want[0] != '#') {
                             std::string have;
                             try {
-                                if (ctx.world) {
-                                    std::uint16_t st = ctx.world->getBlock(ctx.x, ctx.y, ctx.z);
-                                    if (auto* bd = gen::blockByState(st)) have = bd->name;
-                                    else have = "minecraft:air";
-                                } else have = "minecraft:air";
-                            } catch (...) { have = "minecraft:air"; }
+                                if (auto* bd = gen::blockByState(state)) have = bd->name;
+                                else return false;
+                            } catch (...) { return false; }
                             std::string wantN = want.find(':')==std::string::npos ? "minecraft:"+want : want;
                             std::string haveN = have.find(':')==std::string::npos ? "minecraft:"+have : have;
                             if (wantN != haveN) return false;
+                        } else if (!want.empty() && want[0] == '#') {
+                            const std::string tag = want.substr(1);
+                            auto tagIt = tagManager.blockTags.find(tag);
+                            if (tagIt == tagManager.blockTags.end()) return false;
+                            if (!tagIt->second.count(state)) return false;
+                        }
+                    } else {
+                        return false;
+                    }
+                    if (auto* properties = v.find("properties")) {
+                        if (!properties->isObj()) return false;
+                        const auto actual = gen::propsOf(state);
+                        for (const auto& [key, expected] : properties->obj) {
+                            if (!expected.isStr()) return false;
+                            const auto found = std::find_if(
+                                actual.begin(), actual.end(),
+                                [&](const auto& prop) { return prop.first == key; });
+                            if (found == actual.end() || found->second != expected.asStr())
+                                return false;
                         }
                     }
-                    // properties ignored (stub true)
                     return true;
                 } else if (c == "minecraft:damage_source_properties" || c == "damage_source_properties") {
                     if (auto* pred = v.find("predicate")) {
                         if (auto* tags = pred->find("tags")) {
                             auto checkTag = [&](const json::Value& tag)->bool{
-                                if(!tag.isObj()) return true;
+                                if(!tag.isObj()) return false;
+                                if(!ctx.damageSource) return false;
                                 std::string tagId = tag.find("id") ? tag.at("id").asStr() : "";
                                 bool expected = true;
                                 if(auto* ex = tag.find("expected")){
@@ -605,7 +647,7 @@ public:
                                     else if(ex->isStr()) expected=(ex->asStr()=="true");
                                     else if(ex->isNum()) expected=(ex->number!=0);
                                 }
-                                bool actual=true;
+                                bool actual=false;
                                 if(ctx.damageSource){
                                     if(tagId.find("is_fire")!=std::string::npos) actual=ctx.damageSource->isFire();
                                     else if(tagId.find("is_fall")!=std::string::npos) actual=ctx.damageSource->isFall();
@@ -613,10 +655,7 @@ public:
                                     else if(tagId.find("is_projectile")!=std::string::npos) actual=ctx.damageSource->isProjectile();
                                     else if(tagId.find("is_magic")!=std::string::npos) actual=ctx.damageSource->isMagic();
                                     else if(tagId.find("is_lightning")!=std::string::npos) actual=ctx.damageSource->isLightning();
-                                    else actual=true;
-                                } else {
-                                    // without source, fire/false? treat as true unless expected false with unknown
-                                    actual=true;
+                                    else return false;
                                 }
                                 return actual==expected;
                             };
@@ -627,9 +666,9 @@ public:
                             }
                         }
                     }
-                    return true;
+                    return v.find("predicate") != nullptr;
                 } else if (c == "minecraft:killed_by_player" || c == "killed_by_player") {
-                    return true;
+                    return ctx.hasKiller && ctx.killedByPlayer;
                 } else if (c == "minecraft:survives_explosion" || c == "survives_explosion") {
                     return true;
                 } else if (c == "minecraft:table_bonus" || c == "table_bonus") {
@@ -646,7 +685,7 @@ public:
                     }
                     return true;
                 } else if (c == "minecraft:entity_scores" || c == "entity_scores") {
-                    if (ctx.playerName.empty() && !ctx.entity) return true;
+                    if (ctx.playerName.empty() && !ctx.entity) return false;
                     // scores: {objective: {min,max} or number}
                     if (auto* scores = v.find("scores")) {
                         if (scores->isObj()) {
@@ -665,13 +704,13 @@ public:
                             }
                         }
                     }
-                    return true;
+                    return v.find("scores") != nullptr;
                 } else if (c == "minecraft:reference" || c == "reference") {
                     if (auto* name = v.find("name")) {
                         std::string ref = name->asStr();
                         if (!ref.empty()) return testPredicate(ref, ctx, depth+1);
                     }
-                    return true;
+                    return false;
                 } else if (c == "minecraft:value_check" || c == "value_check") {
                     int have = ctx.hasValueCheck ? ctx.valueCheckValue : ctx.fortuneLevel;
                     if (auto* val = v.find("value")) {
@@ -701,7 +740,7 @@ public:
                     return true;
                 } else if (c == "minecraft:match_tool" || c == "match_tool" || c == "minecraft:enchantment_active" || c == "enchantment_active") {
                     // match_tool predicate: check held tool items/enchantments if player context present
-                    if (ctx.playerName.empty() && !ctx.player) return true;
+                    if (ctx.playerName.empty() && !ctx.player) return false;
                     // items check
                     if (auto* pred = v.find("predicate")) {
                         if (auto* items = pred->find("items")) {
@@ -842,12 +881,12 @@ public:
                     return true;
                 }
             }
-            return true;
+            return !v.obj.empty();
         } else if (v.isArr()) {
             for (auto& e: v.arr) if (!evaluatePredicateValue(e, ctx, depth+1)) return false;
             return true;
         } else {
-            return true;
+            return false;
         }
     }
     bool evaluatePredicateValue(const json::Value& v) const {
@@ -870,7 +909,7 @@ public:
             auto v = json::Value::parse(it->second);
             return evaluatePredicateValue(v, ctx, depth);
         } catch (...) {
-            return it->second.find("\"condition\"") == std::string::npos ? true : false;
+            return false;
         }
     }
     bool testPredicate(const std::string& id) const {

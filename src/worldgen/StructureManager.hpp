@@ -1,5 +1,7 @@
 // Data-driven structure-set loading and deterministic chunk-local generation.
 #pragma once
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -60,26 +62,79 @@ inline int triangularOffsetRaw(std::uint64_t seed, std::int64_t gx, std::int64_t
     int a = int(r1 * range), b = int(r2 * range);
     return (a + b) / 2;
 }
+// Return the deterministic candidate for one structure-set grid cell.  Keep
+// this separate from smStructureAtChunk(): locate can enumerate cells around
+// the source directly instead of asking every chunk in a square to repeat the
+// same nine-cell neighbourhood calculation.
+inline SMStructureAt smStructureAtCell(const SMStructureSet& s,
+                                        std::uint64_t seed,
+                                        std::int64_t cellX,
+                                        std::int64_t cellZ) {
+    SMStructureAt out;
+    out.set = &s;
+    if (s.spacing <= 0) {
+        if (s.frequency < 1.0 &&
+            smStructureHash(seed, cellX, cellZ, s.salt ^ 0xCAFEBABEULL) > s.frequency)
+            return out;
+        out.present = true;
+        out.originCx = static_cast<std::int32_t>(cellX);
+        out.originCz = static_cast<std::int32_t>(cellZ);
+        out.originX = out.originCx * 16 + s.locateOffsetX;
+        out.originZ = out.originCz * 16 + s.locateOffsetZ;
+        return out;
+    }
+
+    const int range = std::max(0, s.spacing - s.separation);
+    std::int64_t offX = 0, offZ = 0;
+    if (s.spread == SMStructureSet::Triangular) {
+        offX = triangularOffsetRaw(seed, cellX, cellZ, s.salt, range);
+        offZ = triangularOffsetRaw(seed, cellX, cellZ,
+                                   s.salt ^ 0xC2B2AE3D27D4EB4FULL, range);
+    } else {
+        offX = static_cast<std::int64_t>(smStructureHash(seed, cellX, cellZ, s.salt) * range);
+        offZ = static_cast<std::int64_t>(smStructureHash(seed, cellX, cellZ,
+                                                          s.salt ^ 0x9E37ULL) * range);
+    }
+    out.originCx = static_cast<std::int32_t>(cellX * s.spacing + offX);
+    out.originCz = static_cast<std::int32_t>(cellZ * s.spacing + offZ);
+    if (s.frequency < 1.0 &&
+        smStructureHash(seed, out.originCx, out.originCz,
+                        s.salt ^ 0xCAFEBABEULL) > s.frequency)
+        return out;
+    out.present = true;
+    out.originX = out.originCx * 16 + s.locateOffsetX;
+    out.originZ = out.originCz * 16 + s.locateOffsetZ;
+    return out;
+}
+
+inline SMStructureAt smConcentricStructureAtIndex(const SMStructureSet& s,
+                                                   std::uint64_t seed,
+                                                   int i) {
+    SMStructureAt out;
+    out.set = &s;
+    if (i < 0 || i >= s.concentric.count) return out;
+    const double angle = smStructureHash(seed, i, 0, s.salt) *
+                         2.0 * 3.141592653589793;
+    const double radiusChunks =
+        s.concentric.distance * (1.0 + (i % 8) * 0.5) +
+        smStructureHash(seed, i, 2, s.salt ^ 0xCAFE) * s.concentric.spread;
+    out.present = true;
+    out.originCx = static_cast<std::int32_t>(std::cos(angle) * radiusChunks);
+    out.originCz = static_cast<std::int32_t>(std::sin(angle) * radiusChunks);
+    out.originX = out.originCx * 16 + s.locateOffsetX;
+    out.originZ = out.originCz * 16 + s.locateOffsetZ;
+    return out;
+}
+
 inline SMStructureAt smStructureAtChunk(const SMStructureSet& s, std::uint64_t seed,
                                     std::int32_t cx, std::int32_t cz) {
     // concentric stronghold: linear approx polar -> skip grid
     if (s.concentric.enabled) {
-        // stronghold has concentric rings: use fixed ring positions derived from seed
-        // Simplified: generate 128 positions via polar distribution distance=32 spread=3
         SMStructureAt out; out.set = &s;
-        // generate deterministic positions: for each ring, compute angle and radius
-        int count = s.concentric.count;
-        int distance = s.concentric.distance;
-        int spread = s.concentric.spread;
-        // Use seed salt to generate positions
-        for (int i = 0; i < count; ++i) {
-            double angle = smStructureHash(seed, i, 0, s.salt) * 2 * 3.141592653589793;
-            // radial distance increases with ring index
-            double radiusChunks = distance + smStructureHash(seed, i, 1, s.salt ^ 0xBEEF) * spread * 6;
-            // approximate ring distribution: radius ~ distance * (1 + i/count)
-            radiusChunks = distance * (1.0 + (i % 8) * 0.5) + smStructureHash(seed, i, 2, s.salt ^ 0xCAFE) * spread;
-            int scx = int(std::cos(angle) * radiusChunks);
-            int scz = int(std::sin(angle) * radiusChunks);
+        for (int i = 0; i < s.concentric.count; ++i) {
+            const auto candidate = smConcentricStructureAtIndex(s, seed, i);
+            const int scx = candidate.originCx;
+            const int scz = candidate.originCz;
             if (cx < scx - s.maxHoriz || cx > scx + s.maxHoriz) continue;
             if (cz < scz - s.maxHoriz || cz > scz + s.maxHoriz) continue;
             if (!out.present || (std::abs(scx - cx) + std::abs(scz - cz)) <
@@ -91,21 +146,7 @@ inline SMStructureAt smStructureAtChunk(const SMStructureSet& s, std::uint64_t s
         }
         return out;
     }
-    if (s.spacing <= 0) {
-        // frequency 1/0 sets (buried_treasure etc): per-chunk probability
-        SMStructureAt out; out.set = &s;
-        if (s.frequency < 1.0) {
-            double r = smStructureHash(seed, cx, cz, s.salt ^ 0xCAFEBABEULL);
-            if (r > s.frequency) return out;
-        }
-        // spacing 1 means every chunk is candidate
-        if (cx < cx - s.maxHoriz || cx > cx + s.maxHoriz) {} // no-op
-        out.present = true;
-        out.originCx = cx; out.originCz = cz;
-        out.originX = cx * 16 + s.locateOffsetX; out.originZ = cz * 16 + s.locateOffsetZ;
-        return out;
-    }
-    const int range = s.spacing - s.separation;
+    if (s.spacing <= 0) return smStructureAtCell(s, seed, cx, cz);
     const std::int64_t gx = std::floor(double(cx) / s.spacing);
     const std::int64_t gz = std::floor(double(cz) / s.spacing);
     SMStructureAt out;
@@ -113,22 +154,10 @@ inline SMStructureAt smStructureAtChunk(const SMStructureSet& s, std::uint64_t s
     for (std::int64_t ox = -1; ox <= 1; ++ox)
         for (std::int64_t oz = -1; oz <= 1; ++oz) {
             const std::int64_t cellX = gx + ox, cellZ = gz + oz;
-            std::int64_t offX, offZ;
-            if (s.spread == SMStructureSet::Triangular) {
-                offX = triangularOffsetRaw(seed, cellX, cellZ, s.salt, range);
-                offZ = triangularOffsetRaw(seed, cellX, cellZ, s.salt ^ 0xC2B2AE3D27D4EB4FULL, range);
-            } else {
-                const double r1 = smStructureHash(seed, cellX, cellZ, s.salt);
-                const double r2 = smStructureHash(seed, cellX, cellZ, s.salt ^ 0x9E37ULL);
-                offX = std::int64_t(r1 * range);
-                offZ = std::int64_t(r2 * range);
-            }
-            const std::int32_t scx = static_cast<std::int32_t>(cellX * s.spacing + offX);
-            const std::int32_t scz = static_cast<std::int32_t>(cellZ * s.spacing + offZ);
-            if (s.frequency < 1.0) {
-                double rf = smStructureHash(seed, scx, scz, s.salt ^ 0xCAFEBABEULL);
-                if (rf > s.frequency) continue;
-            }
+            const auto candidate = smStructureAtCell(s, seed, cellX, cellZ);
+            if (!candidate.present) continue;
+            const std::int32_t scx = candidate.originCx;
+            const std::int32_t scz = candidate.originCz;
             if (cx < scx - s.maxHoriz || cx > scx + s.maxHoriz) continue;
             if (cz < scz - s.maxHoriz || cz > scz + s.maxHoriz) continue;
             // exclusion zone check: skip if near other set (approx, delegate to caller for precise)

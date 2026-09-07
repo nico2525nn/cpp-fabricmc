@@ -13,6 +13,14 @@
 
 namespace cppfm {
 
+namespace {
+std::int64_t redstoneTick(const std::int64_t* plain,
+                          const std::atomic<std::int64_t>* atomic) {
+    if (atomic) return atomic->load(std::memory_order_relaxed);
+    return plain ? *plain : 0;
+}
+}
+
 
 
 int RedstoneComponent::calculateOutputSignal(World& world, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state) {
@@ -472,7 +480,7 @@ void RedstoneEngine::onBlockChanged(std::int32_t x, std::int32_t y,
             // trigger only if not already pulsing
             std::int64_t key = posKey(ox,oy,oz);
             if (observerPulseEnd_.count(key)) continue;
-            std::int64_t now = tickRef_ ? *tickRef_ : 0;
+            std::int64_t now = redstoneTick(tickRef_, atomicTickRef_);
             handleObserverTrigger(ox,oy,oz, now);
         }
     }
@@ -481,8 +489,8 @@ void RedstoneEngine::onBlockChanged(std::int32_t x, std::int32_t y,
     for (int d=0; d<6; ++d) handleComparator(x+DX[d], y+DY[d], z+DZ[d]);
 
     // Repeater delay handling: check repeaters near change
-    handleRepeaterDelay(x,y,z, tickRef_ ? *tickRef_ : 0);
-    for (int d=0; d<6; ++d) handleRepeaterDelay(x+DX[d], y+DY[d], z+DZ[d], tickRef_ ? *tickRef_ : 0);
+    handleRepeaterDelay(x,y,z, redstoneTick(tickRef_, atomicTickRef_));
+    for (int d=0; d<6; ++d) handleRepeaterDelay(x+DX[d], y+DY[d], z+DZ[d], redstoneTick(tickRef_, atomicTickRef_));
 }
 
 void RedstoneEngine::handleObserverTrigger(std::int32_t x, std::int32_t y, std::int32_t z, std::int64_t now) {
@@ -716,7 +724,7 @@ void RedstoneEngine::handlePiston(std::int32_t x, std::int32_t y, std::int32_t z
     }
     // check if already scheduled
     for (auto &pe : pistonQueue_) if (pe.x==x && pe.y==y && pe.z==z) return;
-    std::int64_t now = tickRef_ ? *tickRef_ : 0;
+    std::int64_t now = redstoneTick(tickRef_, atomicTickRef_);
     int face=0;
     if (facing=="down") face=0; else if (facing=="up") face=1; else if (facing=="north") face=2; else if (facing=="south") face=3; else if (facing=="west") face=4; else if (facing=="east") face=5;
     if (wantExtend) {
@@ -963,12 +971,12 @@ void RedstoneEngine::processPendingPistonCommits(std::int64_t now) {
         it = pendingPistonCommits_.erase(it);
     }
     // also tick existing moving_piston BEs progress (0->1 over 2 ticks) for strict audit visibility
-    if (beStore_ && tickRef_) {
+    if (beStore_ && (tickRef_ || atomicTickRef_)) {
         for (auto &kv : beStore_->raw()) {
             auto &be = kv.second;
             if (be.kind != BlockEntity::Kind::MovingPiston) continue;
             if (be.movingPiston.finishTick==0) continue;
-            int64_t rem = be.movingPiston.finishTick - *tickRef_;
+            int64_t rem = be.movingPiston.finishTick - redstoneTick(tickRef_, atomicTickRef_);
             if (rem <0) rem=0;
             float prog = 1.f - float(rem)/2.f;
             if (prog<0) prog=0;
@@ -998,7 +1006,7 @@ void RedstoneEngine::handlePistonScheduled(std::int32_t x, std::int32_t y, std::
     int face=0;
     if(facing=="down") face=0; else if(facing=="up") face=1; else if(facing=="north") face=2; else if(facing=="south") face=3; else if(facing=="west") face=4; else if(facing=="east") face=5;
     std::int32_t hx=x+dx, hy=y+dy, hz=z+dz;
-    std::int64_t now = tickRef_ ? *tickRef_ : 0;
+    std::int64_t now = redstoneTick(tickRef_, atomicTickRef_);
     if (extendNow) {
         struct Pos{int x,y,z;};
         std::vector<Pos> toPush;
@@ -1295,7 +1303,8 @@ void RedstoneEngine::setPoweredAt(std::int32_t x, std::int32_t y,
     std::vector<std::pair<std::string_view, std::string_view>> props;
     for (auto& [k, v] : gen::propsOf(st))
         if (k != "power") props.emplace_back(k, v);
-    props.emplace_back("power", std::to_string(level));
+    const std::string power = std::to_string(level);
+    props.emplace_back("power", power);
     const std::uint16_t ns =
         static_cast<std::uint16_t>(gen::stateWithProps(*b, props));
     if (ns != st) world_.setBlock(x, y, z, ns);

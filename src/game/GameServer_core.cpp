@@ -30,80 +30,137 @@
 namespace cppfm {
 using namespace proto;
 void GameServer::startTickLoop() {
+    if (tickThread_.joinable())
+        throw std::logic_error("tick loop is already running");
     tickThread_ = std::thread([this] {
         using clock = std::chrono::steady_clock;
         auto next = clock::now() + std::chrono::milliseconds(50);
-        while (running_) {
+        while (running_.load(std::memory_order_acquire)) {
             std::this_thread::sleep_until(next);
             next += std::chrono::milliseconds(50);
-            if (!running_) break;
+            if (!running_.load(std::memory_order_acquire)) break;
             ++tickNo_;
-            try { tickOnce(); } catch (...) {}
+            try {
+                tickOnce();
+            } catch (const std::exception& e) {
+                std::fprintf(stderr, "[cppfm] fatal tick %lld: %s\n",
+                             static_cast<long long>(tickNo_), e.what());
+                requestStop();
+                break;
+            } catch (...) {
+                std::fprintf(stderr, "[cppfm] fatal tick %lld: unknown exception\n",
+                             static_cast<long long>(tickNo_));
+                requestStop();
+                break;
+            }
         }
     });
 }
 void GameServer::stopTickLoop() {
     if (tickThread_.joinable()) {
+        if (tickThread_.get_id() == std::this_thread::get_id()) {
+            // Keep ownership in the server.  An external stop/destructor can
+            // join it after the tick callback returns; detaching here would
+            // let the callback outlive the GameServer object.
+            std::fprintf(stderr, "[cppfm] tick thread requested self-stop; deferred join\n");
+            return;
+        }
         std::fprintf(stderr, "[cppfm] joining tick thread\n");
         tickThread_.join();
         std::fprintf(stderr, "[cppfm] tick thread joined\n");
     }
 }
 void GameServer::runForever() {
-    startTickLoop();
-    std::thread janitor([this] {
-        while (running_) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
-            const auto now = nowMs();
-            for (auto& p : playersSnapshot()) {
-                if (!p->inPlay) continue;
-                if (now - p->lastSeenMs > 60000) {           // hard idle sweep
-                    try { p->conn->close(); } catch (...) {}
-                    continue;
-                }
-                if (p->pendingKeepAlive != 0 && now - p->lastSeenMs > 30000) {
-                    WriteBuffer reason;
-                    nbt::writeTextComponent(reason, "Timed out");
-                    try { p->conn->sendPacket(pl::sc::Disconnect, reason); } catch (...) {}
-                    try { p->conn->close(); } catch (...) {}
-                    continue;
-                }
-                if (now - p->lastKeepAliveSentMs >= 10000) {
-                    const std::int64_t id = ++p->keepAliveCounter;
-                    p->pendingKeepAlive = id;
-                    p->lastKeepAliveSentMs = now;
-                    WriteBuffer b;
-                    b.i64(id);
-                    try { p->conn->sendPacket(pl::sc::KeepAlive, b); } catch (...) {}
-                }
-            }
-        }
-    });
-    janitor.detach();
-
-    listenFd_ = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (listenFd_ < 0) throw std::runtime_error("socket() failed");
+    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) throw std::runtime_error("socket() failed");
+    listenFd_.store(fd, std::memory_order_release);
     int one = 1;
-    setsockopt(listenFd_, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
     addr.sin_port = htons(cfg_.port);
-    if (::bind(listenFd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0)
+    if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+        listenFd_.exchange(-1, std::memory_order_acq_rel);
+        ::close(fd);
         throw std::runtime_error(std::string("bind() failed: ") + strerror(errno));
-    if (::listen(listenFd_, 64) != 0)
+    }
+    if (::listen(fd, 64) != 0) {
+        listenFd_.exchange(-1, std::memory_order_acq_rel);
+        ::close(fd);
         throw std::runtime_error("listen() failed");
-    running_ = true;
-
-    acceptLoop();
+    }
+    running_.store(true, std::memory_order_release);
+    try {
+        startTickLoop();
+        janitorThread_ = std::thread([this] {
+            try {
+                std::unique_lock lock(stopCvMtx_);
+                while (running_.load(std::memory_order_acquire)) {
+                    if (stopCv_.wait_for(lock, std::chrono::milliseconds(500), [this] {
+                            return !running_.load(std::memory_order_acquire);
+                        })) break;
+                    lock.unlock();
+                    try {
+                        const auto now = nowMs();
+                        for (auto& p : playersSnapshot()) {
+                            if (!p || !p->inPlay || !p->conn) continue;
+                            if (now - p->lastSeenMs > 60000) { // hard idle sweep
+                                p->conn->close();
+                                continue;
+                            }
+                            if (p->pendingKeepAlive != 0 && now - p->lastSeenMs > 30000) {
+                                WriteBuffer reason;
+                                nbt::writeTextComponent(reason, "Timed out");
+                                p->conn->trySendPacket(pl::sc::Disconnect, reason);
+                                p->conn->close();
+                                continue;
+                            }
+                            if (now - p->lastKeepAliveSentMs >= 10000) {
+                                const std::int64_t id = ++p->keepAliveCounter;
+                                p->pendingKeepAlive = id;
+                                p->lastKeepAliveSentMs = now;
+                                WriteBuffer b;
+                                b.i64(id);
+                                p->conn->trySendPacket(pl::sc::KeepAlive, b);
+                            }
+                        }
+                    } catch (const std::exception& e) {
+                        std::fprintf(stderr, "[cppfm] janitor pass failed: %s\n", e.what());
+                    } catch (...) {
+                        std::fprintf(stderr, "[cppfm] janitor pass failed\n");
+                    }
+                    lock.lock();
+                }
+            } catch (const std::exception& e) {
+                std::fprintf(stderr, "[cppfm] janitor stopped unexpectedly: %s\n", e.what());
+                requestStop();
+            } catch (...) {
+                std::fprintf(stderr, "[cppfm] janitor stopped unexpectedly\n");
+                requestStop();
+            }
+        });
+        acceptLoop();
+        requestStop();
+    } catch (...) {
+        requestStop();
+        stopTickLoop();
+        joinJanitorThread();
+        if (const int opened = listenFd_.exchange(-1, std::memory_order_acq_rel); opened >= 0)
+            ::close(opened);
+        throw;
+    }
 }
 void GameServer::acceptLoop() {
-    while (running_) {
+    while (running_.load(std::memory_order_acquire)) {
         sockaddr_in cli{}; socklen_t cl = sizeof(cli);
-        int fd = ::accept(listenFd_, reinterpret_cast<sockaddr*>(&cli), &cl);
+        const int listenFd = listenFd_.load(std::memory_order_acquire);
+        if (listenFd < 0) break;
+        int fd = ::accept(listenFd, reinterpret_cast<sockaddr*>(&cli), &cl);
         if (fd < 0) {
-            if (g_stopRequested || !running_) break;
-            if (running_) continue;
+            if (g_stopRequested || !running_.load(std::memory_order_acquire)) break;
+            if (errno == EINTR) continue;
+            std::fprintf(stderr, "[cppfm] accept failed: %s\n", strerror(errno));
             break;
         }
         std::fprintf(stderr, "[cppfm] accepted fd=%d\n", fd);
@@ -112,16 +169,126 @@ void GameServer::acceptLoop() {
             ::close(fd);
             continue;
         }
-        std::thread([this, fd] {
-            auto conn = std::make_unique<Connection>(fd);
-            conn->setNoDelay();
-            conn->setSendTimeout(15);
-            conn->setRecvTimeout(30);
-            conn->enableFloodBudget(true);
-            Session s(*this, std::move(conn));
-            s.run();
-        }).detach();
+        try {
+            std::thread worker([this, fd] {
+                std::shared_ptr<Connection> conn;
+                bool registered = false;
+                try {
+                    conn = std::make_shared<Connection>(fd);
+                    registerActiveConnection(conn);
+                    registered = true;
+                    conn->setNoDelay();
+                    conn->setSendTimeout(15);
+                    conn->setRecvTimeout(30);
+                    conn->enableFloodBudget(true);
+                    Session s(*this, conn);
+                    s.run();
+                } catch (const std::exception& e) {
+                    std::fprintf(stderr, "[cppfm] unhandled session exception: %s\n", e.what());
+                } catch (...) {
+                    std::fprintf(stderr, "[cppfm] unhandled session exception\n");
+                }
+                if (registered) {
+                    try {
+                        unregisterActiveConnection(conn);
+                    } catch (...) {
+                        std::fprintf(stderr, "[cppfm] could not unregister session connection\n");
+                    }
+                }
+                if (conn) conn->close();
+                else ::close(fd);
+            });
+            if (!registerSessionThread(std::move(worker))) break;
+        } catch (const std::exception& e) {
+            ::close(fd);
+            std::fprintf(stderr, "[cppfm] could not create session worker: %s\n", e.what());
+            requestStop();
+            break;
+        } catch (...) {
+            ::close(fd);
+            std::fprintf(stderr, "[cppfm] could not create session worker\n");
+            requestStop();
+            break;
+        }
     }
+}
+
+bool GameServer::registerSessionThread(std::thread worker) {
+    bool rejected = false;
+    {
+        std::lock_guard lock(sessionThreadsMtx_);
+        if (sessionThreadsStopping_) {
+            rejected = true;
+        } else {
+            try {
+                sessionThreads_.push_back(std::move(worker));
+            } catch (...) {
+                rejected = true;
+            }
+        }
+    }
+    // Never join a newly-created worker while holding the registry mutex: a
+    // session's final unregisterActiveConnection() needs an unrelated lock
+    // today, but keeping lifecycle locks independent prevents a future
+    // shutdown callback from turning this into a lock inversion.
+    if (rejected && worker.joinable()) worker.join();
+    return !rejected;
+}
+
+void GameServer::joinSessionThreads() {
+    std::vector<std::thread> workers;
+    const auto self = std::this_thread::get_id();
+    {
+        std::lock_guard lock(sessionThreadsMtx_);
+        sessionThreadsStopping_ = true;
+        for (auto it = sessionThreads_.begin(); it != sessionThreads_.end();) {
+            if (it->joinable() && it->get_id() == self) {
+                ++it;
+                continue;
+            }
+            workers.push_back(std::move(*it));
+            it = sessionThreads_.erase(it);
+        }
+    }
+    for (auto& worker : workers) {
+        if (!worker.joinable()) continue;
+        worker.join();
+    }
+    std::lock_guard lock(activeConnectionsMtx_);
+    activeConnections_.clear();
+}
+
+void GameServer::registerActiveConnection(const std::shared_ptr<Connection>& connection) {
+    std::lock_guard lock(activeConnectionsMtx_);
+    activeConnections_.push_back(connection);
+}
+
+void GameServer::unregisterActiveConnection(const std::shared_ptr<Connection>& connection) {
+    std::lock_guard lock(activeConnectionsMtx_);
+    activeConnections_.erase(
+        std::remove(activeConnections_.begin(), activeConnections_.end(), connection),
+        activeConnections_.end());
+}
+
+void GameServer::stopClientConnections() {
+    std::vector<std::shared_ptr<Connection>> connections;
+    {
+        std::lock_guard lock(activeConnectionsMtx_);
+        connections = activeConnections_;
+    }
+    for (auto& connection : connections) {
+        if (connection) connection->abort();
+    }
+}
+
+void GameServer::joinJanitorThread() {
+    if (!janitorThread_.joinable()) return;
+    if (janitorThread_.get_id() == std::this_thread::get_id()) {
+        // See stopTickLoop(): retain the handle for an external join.
+        std::fprintf(stderr, "[cppfm] janitor requested self-stop; deferred join\n");
+        return;
+    }
+    janitorThread_.join();
 }
 void GameServer::broadcastDigStage(Player& p, std::int8_t stage) {
     WriteBuffer b;
@@ -135,7 +302,7 @@ void GameServer::sendSetHealth(Player& p) {
     b.f32(p.health);
     b.varint(p.food);
     b.f32(p.saturation);
-    try { p.conn->sendPacket(pl::sc::SetHealth, b); } catch (...) {}
+    p.conn->trySendPacket(pl::sc::SetHealth, b);
 }
 void GameServer::addHungerExhaustion(Player& p, float amount) {
     HungerManager::addExhaustion(p, amount);
@@ -163,11 +330,6 @@ void GameServer::broadcastPlayerChat(Player& sender, const std::string& message,
     b.boolean(false);
     broadcastPacketExcept(nullptr, proto::pl::sc::PlayerChat, b);
 }
-bool GameServer::validateFeatureFlags(const std::vector<std::array<std::string,3>>& clientPacks) {
-    if (clientPacks.empty()) return true;
-    for (auto &p : clientPacks) if (p[0]=="minecraft" && (p[1]=="core" || p[1]=="vanilla")) return true;
-    return true; // lenient accept (was false for non-empty, too strict)
-}
 void GameServer::spawnMob(MobKind kind, double x, double y, double z) {
     auto mob = std::make_shared<MobEntity>();
     mob->entityId = nextEntityId();
@@ -183,9 +345,6 @@ void GameServer::spawnMob(MobKind kind, double x, double y, double z) {
                 if (it != gen::itemIdByName().end() && slot>=0 && slot<6) mob->equipment[slot] = ItemStack::of(it->second, 1);
             }
         }
-        if (kind==MobKind::Slime || kind==MobKind::MagmaCube) {
-            // slimeSize from def? use max_health scaling if present
-        }
     }
     if (kind==MobKind::Slime || kind==MobKind::MagmaCube) {
         mob->health = MobEntity::slimeHealthForSize(mob->slimeSize);
@@ -196,8 +355,8 @@ void GameServer::spawnMob(MobKind kind, double x, double y, double z) {
         mob->applyHorseStats(MobEntity::randomizeHorseStats(hseed));
     }
     if (kind==MobKind::Villager) {
-        mob->villagerData.type = static_cast<VillagerData::Type>(rand()%7);
-        if (rand() % 12 == 0) mob->villagerData.profession = VillagerData::NITWIT;
+        mob->villagerData.type = static_cast<VillagerData::Type>(nextRandom()%7);
+        if (nextRandom() % 12 == 0) mob->villagerData.profession = VillagerData::NITWIT;
         else mob->villagerData.profession = VillagerData::FARMER;
         mob->villagerData.level = 1;
         mob->villagerLevel = 1;
@@ -207,7 +366,7 @@ void GameServer::spawnMob(MobKind kind, double x, double y, double z) {
         mob->restockUntil = 0;
     }
     if (kind==MobKind::Sheep) {
-        int r = rand() % 1000;
+        int r = nextRandom() % 1000;
         if (r < 818) mob->woolColor = 0; // white 81.8%
         else if (r < 868) mob->woolColor = 15; // black 5%
         else if (r < 918) mob->woolColor = 7; // gray 5%
@@ -291,8 +450,8 @@ std::shared_ptr<MobEntity> GameServer::findLovePartner(const MobEntity& seeker) 
 }
 void GameServer::initPlayerProgress(Player& p) {
     const std::string hex = uuidToHex(p.uuid);
-    p.stats = std::make_unique<StatsManager>();
-    p.advancements = std::make_unique<AdvancementManager>(hex);
+    p.stats = std::make_unique<StatsManager>(cfg_.worldDir);
+    p.advancements = std::make_unique<AdvancementManager>(hex, cfg_.worldDir);
     p.stats->load(hex);
     p.advancements->load();
     p.joinTick = tickNo_;
@@ -315,7 +474,7 @@ void GameServer::sendAdvancementsTo(Player& p, bool reset) {
         [&](const std::string& id) {
             return p.advancements && p.advancements->has(id);
         });
-    try { p.conn->sendPacket(pl::sc::UpdateAdvancements, b); } catch (...) {}
+    p.conn->trySendPacket(pl::sc::UpdateAdvancements, b);
 }
 void GameServer::grantAdvancement(Player& p, const std::string& id) {
     if (!p.advancements) return;
@@ -1034,7 +1193,6 @@ bool GameServer::requestCookie(Player& p, const std::string& key) {
     if (!p.conn) return false;
     WriteBuffer b;
     b.string(key);
-    try { p.conn->sendPacket(proto::pl::sc::CookieRequest, b); } catch (...) {}
-    return true;
+    return p.conn->trySendPacket(proto::pl::sc::CookieRequest, b);
 }
 } // namespace cppfm

@@ -1,4 +1,5 @@
-// TagManager: loads item/block tags from assets/data/tags/**.json (66/67)
+// TagManager: loads item/block tags from assets/data/tags/**.json and supplies
+// a small semantic fallback set when a checkout has no vanilla tag resources.
 // Merges into RecipeManager tags and exposes getItems(tag) for datapack functions.
 #pragma once
 #include <string>
@@ -23,6 +24,10 @@ public:
     void loadDirectory(const std::string& base) {
         namespace fs = std::filesystem;
         std::error_code ec;
+        itemTags.clear();
+        blockTags.clear();
+        biomeTags.clear();
+        pendingRefs_.clear();
         std::string root = base;
         if (fs::exists(base + "/tags", ec)) root = base + "/tags";
         // also try assets/data/tags directly
@@ -96,7 +101,13 @@ private:
                 auto it2 = out.find(tagName);
                 if (it2==out.end()) out.emplace(tagName,std::move(set));
                 else for (auto id:set) it2->second.insert(id);
-            } catch (...) {}
+            } catch (const std::exception& ex) {
+                std::fprintf(stderr, "[TagManager] ignoring malformed tag %s: %s\n",
+                             e.path().c_str(), ex.what());
+            } catch (...) {
+                std::fprintf(stderr, "[TagManager] ignoring malformed tag %s\n",
+                             e.path().c_str());
+            }
         }
         for (auto& [tag, refs] : pendingRefs_) {
             auto itTag = out.find(tag);
@@ -138,10 +149,6 @@ private:
         add("minecraft:wool", {"minecraft:white_wool","minecraft:orange_wool","minecraft:magenta_wool","minecraft:light_blue_wool","minecraft:yellow_wool","minecraft:lime_wool","minecraft:pink_wool","minecraft:gray_wool","minecraft:light_gray_wool","minecraft:cyan_wool","minecraft:purple_wool","minecraft:blue_wool","minecraft:brown_wool","minecraft:green_wool","minecraft:red_wool","minecraft:black_wool"});
         const char* extras[]={"minecraft:stone_bricks","minecraft:fishes","minecraft:flowers","minecraft:arrows","minecraft:boats","minecraft:buttons","minecraft:doors","minecraft:slabs","minecraft:stairs","minecraft:leaves","minecraft:sand","minecraft:anvil","minecraft:banners","minecraft:beds","minecraft:candles","minecraft:carpets","minecraft:coals","minecraft:copper_ores","minecraft:diamond_ores","minecraft:dirt","minecraft:fences","minecraft:hoes","minecraft:pickaxes","minecraft:shovels","minecraft:swords","minecraft:walls","minecraft:wool_carpets","minecraft:music_discs","minecraft:non_flammable_wood","minecraft:logs_that_burn","minecraft:small_flowers","minecraft:soul_fire_base_blocks","minecraft:traps"};
         for (auto* t: extras) if(!out.count(t)) out.emplace(t, IdSet{});
-        while(out.size()<67){
-            std::string dyn="minecraft:dynamic_tag_"+std::to_string(out.size());
-            out.emplace(dyn, IdSet{});
-        }
     }
     void ensureBlockDefaults(std::unordered_map<std::string, IdSet>& out){
         auto add=[&](const std::string& tag, std::initializer_list<const char*> blks){
@@ -159,10 +166,6 @@ private:
         add("minecraft:infiniburn_nether", {"minecraft:netherrack","minecraft:magma_block"});
         add("minecraft:infiniburn_end", {"minecraft:bedrock","minecraft:netherrack","minecraft:magma_block"});
         add("minecraft:soul_fire_base_blocks", {"minecraft:soul_sand","minecraft:soul_soil"});
-        while(out.size()<20){
-            std::string dyn="minecraft:block_dynamic_"+std::to_string(out.size());
-            out.emplace(dyn, IdSet{});
-        }
     }
     void loadBiomeTags(const std::string& root){
         namespace fs = std::filesystem;
@@ -207,7 +210,13 @@ private:
                     auto it2 = biomeTags.find(tagName);
                     if(it2==biomeTags.end()) biomeTags.emplace(tagName, std::move(set));
                     else for(auto& id:set) it2->second.insert(id);
-                } catch(...){}
+                } catch (const std::exception& ex) {
+                    std::fprintf(stderr, "[TagManager] ignoring malformed biome tag %s: %s\n",
+                                 e.path().c_str(), ex.what());
+                } catch (...) {
+                    std::fprintf(stderr, "[TagManager] ignoring malformed biome tag %s\n",
+                                 e.path().c_str());
+                }
             }
         }
     }

@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include "../core/Json.hpp"
+#include "../core/Random.hpp"
 #include "../generated/ItemIds.hpp"
 #include "Items.hpp"
 
@@ -250,31 +251,31 @@ public:
                     if(c.find("random_chance")!=std::string::npos){
                         double ch=1.0;
                         if(auto* v=cond.find("chance")) if(v->isNum()) ch=v->number;
-                        if(ch<1.0 && (rand()/(double)RAND_MAX) >= ch) { poolSkip=true; break; }
+                        if(ch<1.0 && (nextRandom()/(double)RAND_MAX) >= ch) { poolSkip=true; break; }
                     } else if(c.find("killed_by_player")!=std::string::npos){
                         if(ctx && ctx->killerName.empty() && !ctx->isPlayerKill) { poolSkip=true; break; }
                     } else if(c.find("survives_explosion")!=std::string::npos){
                         if(ctx && ctx->explosionRadius>0.f){
                             double vanish=1.0/ctx->explosionRadius;
-                            if((rand()/(double)RAND_MAX) < vanish) { poolSkip=true; break; }
+                            if((nextRandom()/(double)RAND_MAX) < vanish) { poolSkip=true; break; }
                         }
                     }
                 }
             }
             if(poolSkip) continue;
             int rolls=pool.rolls;
-            if(pool.rollsIsRange){ double r=pool.rollsMin + (rand()/(double)RAND_MAX)*(pool.rollsMax-pool.rollsMin); rolls=static_cast<int>(r+0.5); if(rolls<1)rolls=1; }
+            if(pool.rollsIsRange){ double r=pool.rollsMin + (nextRandom()/(double)RAND_MAX)*(pool.rollsMax-pool.rollsMin); rolls=static_cast<int>(r+0.5); if(rolls<1)rolls=1; }
             for(int r=0;r<rolls;++r){
                 if(pool.entries.empty()) continue;
                 int totalW=0; for(auto& e:pool.entries) totalW+=e.weight;
                 if(totalW<=0) totalW=(int)pool.entries.size();
-                int pick=rand()%totalW;
+                int pick=nextRandom()%totalW;
                 const LootEntry* chosen=nullptr;
                 for(auto& e:pool.entries){ if(pick<e.weight){chosen=&e;break;} pick-=e.weight; }
                 if(!chosen) chosen=&pool.entries.back();
                 if (chosen->explosionDecay && ctx && ctx->explosionRadius > 0.f) {
                     double vanish = 1.0 / ctx->explosionRadius;
-                    if ((rand()/(double)RAND_MAX) < vanish) continue;
+                    if ((nextRandom()/(double)RAND_MAX) < vanish) continue;
                 }
                 std::string dropName = chosen->name;
                 if (chosen->furnaceSmelt) {
@@ -286,14 +287,14 @@ public:
                 int cnt=chosen->countMin;
                 if (chosen->countIsBinomial) {
                     cnt=0;
-                    for(int i=0;i<chosen->countBinomN;++i) if((rand()/(double)RAND_MAX) < chosen->countBinomP) ++cnt;
+                    for(int i=0;i<chosen->countBinomN;++i) if((nextRandom()/(double)RAND_MAX) < chosen->countBinomP) ++cnt;
                     if(cnt<=0 && chosen->countMin>0) cnt=1;
-                } else if(chosen->countMax>chosen->countMin) cnt=chosen->countMin + rand()%(chosen->countMax-chosen->countMin+1);
+                } else if(chosen->countMax>chosen->countMin) cnt=chosen->countMin + nextRandom()%(chosen->countMax-chosen->countMin+1);
                 if (chosen->lootingEnchant && ctx) {
                     int looting = ctx->lootingLevel;
                     if (looting>0) {
-                        int extra = chosen->lootingMin + (chosen->lootingMax>chosen->lootingMin ? rand()%(chosen->lootingMax-chosen->lootingMin+1) : 0);
-                        cnt += rand()%(looting+1) + extra;
+                        int extra = chosen->lootingMin + (chosen->lootingMax>chosen->lootingMin ? nextRandom()%(chosen->lootingMax-chosen->lootingMin+1) : 0);
+                        cnt += nextRandom()%(looting+1) + extra;
                     }
                 }
                 if (chosen->applyBonusOre && ctx) {
@@ -301,17 +302,17 @@ public:
                     if (fortune>0) {
                         int bonus=0;
                         if(chosen->applyBonusFormula.find("ore_drops")!=std::string::npos){
-                            for(int i=0;i<fortune;++i) if((rand()/(double)RAND_MAX) < 0.33) ++bonus;
-                            if(fortune>=3 && (rand()/(double)RAND_MAX) < 0.33) ++bonus;
+                            for(int i=0;i<fortune;++i) if((nextRandom()/(double)RAND_MAX) < 0.33) ++bonus;
+                            if(fortune>=3 && (nextRandom()/(double)RAND_MAX) < 0.33) ++bonus;
                         } else if(chosen->hasApplyBonusBinomial){
-                            for(int i=0;i<chosen->applyBonusN;++i) if((rand()/(double)RAND_MAX) < chosen->applyBonusP) ++bonus;
+                            for(int i=0;i<chosen->applyBonusN;++i) if((nextRandom()/(double)RAND_MAX) < chosen->applyBonusP) ++bonus;
                             bonus += fortune;
                         } else if(chosen->hasApplyBonusUniform){
                             bonus = (int)(chosen->applyBonusExtra * fortune);
                         } else {
-                            if(fortune==1) bonus = rand()%2;
-                            else if(fortune==2) bonus = rand()%3;
-                            else if(fortune>=3) bonus = rand()%4;
+                            if(fortune==1) bonus = nextRandom()%2;
+                            else if(fortune==2) bonus = nextRandom()%3;
+                            else if(fortune>=3) bonus = nextRandom()%4;
                         }
                         cnt += bonus;
                         if(cnt>64) cnt=64;
@@ -320,7 +321,7 @@ public:
                     int fortune = ctx->fortuneLevel;
                     if(fortune>0){
                         int bonus=0;
-                        for(int i=0;i<fortune;++i) if((rand()/(double)RAND_MAX) < 0.33) ++bonus;
+                        for(int i=0;i<fortune;++i) if((nextRandom()/(double)RAND_MAX) < 0.33) ++bonus;
                         cnt+=bonus;
                     }
                 }
@@ -331,7 +332,7 @@ public:
                 }
                 auto st = ItemStack::of(iidIt->second, static_cast<int16_t>(cnt));
                 if(chosen->hasSetDamage){
-                    float dmg = (float)chosen->setDamageMin + (float)rand()/(float)RAND_MAX * (float)(chosen->setDamageMax - chosen->setDamageMin);
+                    float dmg = (float)chosen->setDamageMin + (float)nextRandom()/(float)RAND_MAX * (float)(chosen->setDamageMax - chosen->setDamageMin);
                     int maxDmg = ItemStack::maxDamageFor(dropName.find(':')!=std::string::npos? gen::itemIdByName().at(dropName) : 0);
                     // fallback: use iid
                     if(maxDmg==0) maxDmg = ItemStack::maxDamageFor(iidIt->second);
@@ -341,12 +342,12 @@ public:
                 if(!chosen->setName.empty()) st.displayNameLoot = chosen->setName;
                 if (chosen->enchantRandomly) {
                     std::string pick;
-                    if(!chosen->enchantOptions.empty()) pick = chosen->enchantOptions[rand()%chosen->enchantOptions.size()];
+                    if(!chosen->enchantOptions.empty()) pick = chosen->enchantOptions[nextRandom()%chosen->enchantOptions.size()];
                     else {
                         static const char* enchants[]={"minecraft:sharpness","minecraft:protection","minecraft:efficiency","minecraft:unbreaking","minecraft:fortune","minecraft:power","minecraft:looting"};
-                        pick = enchants[rand() % (sizeof(enchants)/sizeof(*enchants))];
+                        pick = enchants[nextRandom() % (sizeof(enchants)/sizeof(*enchants))];
                     }
-                    int lvl = 1 + rand()%3;
+                    int lvl = 1 + nextRandom()%3;
                     ItemStack::addEnchant(st, pick, lvl);
                 }
                 if (chosen->fillPlayerHead) {

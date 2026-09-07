@@ -13,6 +13,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <utility>
 #include "generated/BlockStates.hpp"
 #include "TerrainGen.hpp"
 #include "../worldgen/MultiNoise.hpp"
@@ -36,6 +37,19 @@ inline constexpr std::pair<std::int32_t,std::int32_t> chunkKeyDecode(std::int64_
     return {static_cast<std::int32_t>(k >> 32), static_cast<std::int32_t>(k & 0xFFFFFFFFLL)};
 }
 
+template <typename Callback, typename... Args>
+void invokeWorldHook(Callback& callback, const char* name,
+                     Args&&... args) noexcept {
+    if (!callback) return;
+    try {
+        callback(std::forward<Args>(args)...);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[World] %s failed: %s\n", name, e.what());
+    } catch (...) {
+        std::fprintf(stderr, "[World] %s failed\n", name);
+    }
+}
+
 struct Chunk {
     // layout: [section][yInSection][z][x]
     std::array<std::uint16_t, kSectionsPerChunk * 4096> blocks{};
@@ -46,6 +60,10 @@ struct Chunk {
     // Cached sky light (built lazily by the LightEngine), 4 bits per block.
     std::shared_ptr<std::array<std::uint8_t,
                                (kSectionsPerChunk * 4096 + 1) / 2>> skyLight;
+    // Storage allocation is not the same as a valid lighting calculation.
+    // Keep that distinction explicit so a zero-filled cache is never sent as
+    // authoritative skylight or used for crop light checks.
+    bool skyLightReady = false;
     std::uint64_t revision = 0;
 
     // Clear all state before recycling an unloaded chunk allocation.  Keeping
@@ -56,6 +74,7 @@ struct Chunk {
         biomes.fill(0);
         blockLightNib.fill(0);
         skyLight.reset();
+        skyLightReady = false;
         revision = 0;
     }
 
@@ -122,6 +141,25 @@ public:
         return kMinY + col;
     }
 
+    // Read the surface only when the chunk is already loaded.  Commands such
+    // as /locate must not synchronously create and serialize an arbitrary
+    // structure chunk just to choose a display Y coordinate.
+    std::optional<int> surfaceFeetYIfLoaded(std::int32_t wx,
+                                             std::int32_t wz) const {
+        int col = 4;
+        if (!withChunk(wx >> 4, wz >> 4, [&](const Chunk& c) {
+                for (int ry = kSectionsPerChunk * 16 - 1; ry >= 0; --ry) {
+                    if (c.blocks[Chunk::index(ry >> 4, ry & 15,
+                                               wz & 15, wx & 15)] != 0) {
+                        col = ry + 1;
+                        break;
+                    }
+                }
+            }))
+            return std::nullopt;
+        return kMinY + col;
+    }
+
     // NOTE: logically const (lazy generation); mutex is mutable Loader hook: return true if it filled the chunk (e.g., from disk).
     void setLoader(std::function<bool(std::int32_t, std::int32_t, Chunk&)> l) { loader_ = std::move(l); }
     void setOnEdit(std::function<void(std::int32_t, std::int32_t)> cb) { onEdit_ = std::move(cb); }
@@ -137,16 +175,19 @@ public:
     void addOnBlockBreakListener(std::function<void(std::int32_t, std::int32_t, std::int32_t, std::uint16_t, std::uint16_t)> h) { blockBreakListeners_.push_back(std::move(h)); }
     void addOnBlockNeighborChangeListener(std::function<void(std::int32_t, std::int32_t, std::int32_t, std::uint16_t)> h) { blockNeighborChangeListeners_.push_back(std::move(h)); }
     void fireBlockPlace(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t oldSt, std::uint16_t newSt) {
-        if (onBlockPlace_) onBlockPlace_(x,y,z,oldSt,newSt);
-        for (auto& h : blockPlaceListeners_) h(x,y,z,oldSt,newSt);
+        invokeWorldHook(onBlockPlace_, "block-place hook", x, y, z, oldSt, newSt);
+        for (auto& h : blockPlaceListeners_)
+            invokeWorldHook(h, "block-place listener", x, y, z, oldSt, newSt);
     }
     void fireBlockBreak(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t oldSt, std::uint16_t newSt) {
-        if (onBlockBreak_) onBlockBreak_(x,y,z,oldSt,newSt);
-        for (auto& h : blockBreakListeners_) h(x,y,z,oldSt,newSt);
+        invokeWorldHook(onBlockBreak_, "block-break hook", x, y, z, oldSt, newSt);
+        for (auto& h : blockBreakListeners_)
+            invokeWorldHook(h, "block-break listener", x, y, z, oldSt, newSt);
     }
     void fireBlockNeighborChange(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t neighborState) {
-        if (onBlockNeighborChange_) onBlockNeighborChange_(x,y,z,neighborState);
-        for (auto& h : blockNeighborChangeListeners_) h(x,y,z,neighborState);
+        invokeWorldHook(onBlockNeighborChange_, "neighbor-change hook", x, y, z, neighborState);
+        for (auto& h : blockNeighborChangeListeners_)
+            invokeWorldHook(h, "neighbor-change listener", x, y, z, neighborState);
     }
     void onBlockNeighborChange(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t ns) { fireBlockNeighborChange(x,y,z,ns); }
     void onBlockPlace(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t o, std::uint16_t n) { fireBlockPlace(x,y,z,o,n); }
@@ -180,7 +221,7 @@ public:
         if (y < kMinY || y >= kMaxY) return 0;
         std::shared_lock lock(mutex_);
         auto it = chunks_.find(chunkKey(x >> 4, z >> 4));
-        if (it == chunks_.end() || !it->second->skyLight) return 0;
+        if (it == chunks_.end() || !it->second->skyLight || !it->second->skyLightReady) return 0;
         const int lx = x & 15, lz = z & 15, wy = y - kMinY;
         const std::size_t i = Chunk::index(wy >> 4, wy & 15, lz, lx);
         return Chunk::getNibble(*it->second->skyLight, i);
@@ -188,7 +229,8 @@ public:
     bool hasSkyLightCache(std::int32_t cx, std::int32_t cz) const {
         std::shared_lock lock(mutex_);
         auto it = chunks_.find(chunkKey(cx, cz));
-        return it != chunks_.end() && static_cast<bool>(it->second->skyLight);
+        return it != chunks_.end() && it->second->skyLightReady &&
+               static_cast<bool>(it->second->skyLight);
     }
     void setSkyLightRaw(std::int32_t x, std::int32_t y, std::int32_t z,
                         std::uint8_t v) {
@@ -213,6 +255,16 @@ public:
                 std::make_shared<std::array<std::uint8_t,
                                             (kSectionsPerChunk * 4096 + 1) / 2>>();
     }
+    void invalidateSkyLight(std::int32_t cx, std::int32_t cz) {
+        std::unique_lock lock(mutex_);
+        auto it = chunks_.find(chunkKey(cx, cz));
+        if (it != chunks_.end()) it->second->skyLightReady = false;
+    }
+    void markSkyLightReady(std::int32_t cx, std::int32_t cz) {
+        std::unique_lock lock(mutex_);
+        auto it = chunks_.find(chunkKey(cx, cz));
+        if (it != chunks_.end() && it->second->skyLight) it->second->skyLightReady = true;
+    }
 
     // Block update: check if block above needs to fall (sand/gravel)
     void scheduleNeighborUpdates(std::int32_t x, std::int32_t y, std::int32_t z) {
@@ -226,13 +278,13 @@ public:
             int fallY = y;
             while (fallY > kMinY && getBlock(x, fallY-1, z) == 0) --fallY;
             setBlockInternal(x, fallY, z, above);
-            if (onEdit_) onEdit_(x >> 4, z >> 4);
+            invokeWorldHook(onEdit_, "edit hook", x >> 4, z >> 4);
         }
         // Torch/support blocks pop off if support removed
         static const uint16_t torch = (uint16_t)names.at("minecraft:torch");
         if (above == torch) {
             setBlockInternal(x, y+1, z, 0);
-            if (onEdit_) onEdit_(x >> 4, z >> 4);
+            invokeWorldHook(onEdit_, "edit hook", x >> 4, z >> 4);
         }
     }
 
@@ -257,7 +309,9 @@ private:
         if (y < kMinY || y >= kMaxY) return;
         generateChunkIfMissing(x >> 4, z >> 4);
         std::unique_lock lock(mutex_);
-        auto& c = *chunks_.at(chunkKey(x >> 4, z >> 4));
+        auto it = chunks_.find(chunkKey(x >> 4, z >> 4));
+        if (it == chunks_.end()) return;
+        auto& c = *it->second;
         const int lx = x & 15, lz = z & 15, wy = y - kMinY;
         c.blocks[Chunk::index(wy >> 4, wy & 15, lz, lx)] = state;
         ++c.revision;
@@ -283,6 +337,17 @@ public:
         fn(*it->second);
         return true;
     }
+    // Mutable counterpart for subsystems that update a whole chunk-owned
+    // cache (lighting, for example).  Holding one exclusive lock around the
+    // callback avoids a lock/unlock cycle for every cell in a 384-high chunk.
+    template <typename Fn>
+    bool withChunkMutable(std::int32_t cx, std::int32_t cz, Fn&& fn) {
+        std::unique_lock lock(mutex_);
+        auto it = chunks_.find(chunkKey(cx, cz));
+        if (it == chunks_.end()) return false;
+        fn(*it->second);
+        return true;
+    }
     bool hasChunk(std::int32_t cx, std::int32_t cz) const {
         std::shared_lock lock(mutex_);
         return chunks_.count(chunkKey(cx, cz)) != 0;
@@ -299,16 +364,19 @@ public:
     void setBlock(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state) {
         if (y < kMinY || y >= kMaxY) return;
         generateChunkIfMissing(x >> 4, z >> 4);
-        const std::uint16_t old =
-            getBlock(x, y, z);                       // re-acquires shared lock
+        std::uint16_t old = 0;
         {
             std::unique_lock lock(mutex_);
-            auto& c = *chunks_.at(chunkKey(x >> 4, z >> 4));
+            auto it = chunks_.find(chunkKey(x >> 4, z >> 4));
+            if (it == chunks_.end()) return;
+            auto& c = *it->second;
             const int lx = x & 15, lz = z & 15, wy = y - kMinY;
-            c.blocks[Chunk::index(wy >> 4, wy & 15, lz, lx)] = state;
+            auto& block = c.blocks[Chunk::index(wy >> 4, wy & 15, lz, lx)];
+            old = block;
+            block = state;
             ++c.revision;
         }
-        if (onBlockChanged_) onBlockChanged_(x, y, z, old, state);
+        invokeWorldHook(onBlockChanged_, "block-change hook", x, y, z, old, state);
         // Block Event Bus firing
         if (old == 0 && state != 0) fireBlockPlace(x,y,z,old,state);
         else if (old != 0 && state == 0) fireBlockBreak(x,y,z,old,state);
@@ -323,7 +391,7 @@ public:
         for (int d=0; d<6; ++d) {
             fireBlockNeighborChange(x+DX[d], y+DY[d], z+DZ[d], state);
         }
-        if (onEdit_) onEdit_(x >> 4, z >> 4);
+        invokeWorldHook(onEdit_, "edit hook", x >> 4, z >> 4);
     }
     // BlockNeighborUpdater: updateBlockState loops 6 neighbors and notifies via onBlockNeighborChange
     void updateBlockState(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t newState) {
@@ -339,10 +407,14 @@ public:
     void updateBlockState(BlockPosI pos, std::uint16_t newState) {
         updateBlockState(pos.x, pos.y, pos.z, newState);
     }
-    const Chunk* tryGet(std::int32_t cx, std::int32_t cz) const {
+    // Return a stable snapshot.  Returning a raw pointer after releasing the
+    // world lock allowed eraseChunk() to invalidate it while a caller was
+    // serializing the chunk.
+    std::optional<Chunk> tryGetCopy(std::int32_t cx, std::int32_t cz) const {
         std::shared_lock lock(mutex_);
         auto it = chunks_.find(chunkKey(cx, cz));
-        return it == chunks_.end() ? nullptr : it->second.get();
+        if (it == chunks_.end()) return std::nullopt;
+        return *it->second;
     }
     std::vector<std::int64_t> allChunkKeys() const {
         std::shared_lock lock(mutex_);
@@ -382,7 +454,7 @@ public:
         ++ptr->revision;
         chunks_[key] = std::move(ptr);
         lock.unlock();
-        if (onEdit_) onEdit_(cx, cz);
+        invokeWorldHook(onEdit_, "edit hook", cx, cz);
     }
     std::size_t loadedChunkCount() const {
         std::shared_lock lock(mutex_);
@@ -452,13 +524,11 @@ public:
             return false;
         }
     }
-    const std::unordered_set<std::int64_t>& getForcedChunks() const {
-        return forcedChunks_;
-    }
-    std::vector<std::int64_t> getForcedChunksSnapshot() const {
+    std::vector<std::int64_t> getForcedChunks() const {
         std::shared_lock lock(mutex_);
         return std::vector<std::int64_t>(forcedChunks_.begin(), forcedChunks_.end());
     }
+    std::vector<std::int64_t> getForcedChunksSnapshot() const { return getForcedChunks(); }
     void truncateForcedChunksIfNeeded(){
         std::unique_lock lock(mutex_);
         if(forcedChunks_.size()<=constants::kMaxForcedChunks) return;
@@ -568,7 +638,7 @@ public:
             const auto col = terrain_.column(wx, wz);
             const int surf = col.surfaceY;                       // first air (world y)
             const bool beach = col.ocean || surf <= kSea + 2;
-            for (int y = kMinY; y <= kMaxY && y < surf; ++y) {
+            for (int y = kMinY; y < kMaxY && y < surf; ++y) {
                 std::uint16_t st;
                 if (y == kMinY) st = bedrock;
                 else if (y >= surf - 1) st = beach ? sand : grass;

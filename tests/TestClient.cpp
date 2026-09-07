@@ -1,14 +1,14 @@
 #include "TestClient.hpp"
 #include "../src/core/NBT.hpp"
 #include <cstdlib>
-
-static std::size_t rest_size(cppfm::ReadBuffer& r){ return r.len - r.off; }
+#include <stdexcept>
 #include <sys/socket.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <unistd.h>
 #include <algorithm>
+#include <limits>
 
 namespace cpptest {
 
@@ -27,6 +27,10 @@ static void md5(const std::string& msg, std::uint8_t out[16]) {
                               5,9,14,20,5,9,14,20,5,9,14,20,5,9,14,20,
                               4,11,16,23,4,11,16,23,4,11,16,23,4,11,16,23,
                               6,10,15,21,6,10,15,21,6,10,15,21,6,10,15,21};
+    // This compact helper intentionally supports at most two MD5 blocks.
+    // Login names are much shorter, but rejecting an accidental oversized
+    // test input is preferable to writing past the fixed padding buffer.
+    if (msg.size() > 447) throw std::length_error("test username is too long for MD5 helper");
     std::uint8_t msg2[512]; std::size_t len = msg.size();
     std::memcpy(msg2, msg.data(), len);
     msg2[len++] = 0x80;
@@ -60,6 +64,7 @@ bool TestClient::connect(const std::string& host, std::uint16_t port, int timeou
     if (getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &res) != 0 || !res)
         return false;
     int fd = ::socket(res->ai_family, SOCK_STREAM, 0);
+    if (fd < 0) { freeaddrinfo(res); return false; }
     timeval tv{timeoutSec, 0};
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
@@ -87,11 +92,11 @@ void TestClient::close() noexcept {
     } catch (...) {}
 }
 
-std::string TestClient::queryStatusJson(std::uint16_t) {
+std::string TestClient::queryStatusJson(std::uint16_t portField) {
     WriteBuffer hb;
     hb.varint(proto::kProtocolVersion);
     hb.string("127.0.0.1");
-    hb.u16(25565);
+    hb.u16(portField);
     hb.varint(1);
     conn_->sendPacket(proto::hb::cs::Intention, hb);
     conn_->sendPacket(proto::st::cs::Request, {});
@@ -100,7 +105,7 @@ std::string TestClient::queryStatusJson(std::uint16_t) {
     while (std::chrono::steady_clock::now() < deadline) {
         Packet p;
         try { p.body = conn_->readFrame(); }
-        catch (const std::exception& e) { lastError = e.what(); return {}; }
+        catch (const std::exception& e) { lastError_ = e.what(); return {}; }
         ReadBuffer in(p.body);
         const std::uint8_t pid = in.u8();
         if (pid == proto::st::sc::Response) {
@@ -114,7 +119,7 @@ std::string TestClient::queryStatusJson(std::uint16_t) {
             return js;
         }
     }
-    lastError = "no status response";
+    lastError_ = "no status response";
     return {};
 }
 
@@ -184,18 +189,18 @@ bool TestClient::joinOnline(const std::string& name) {
             sawSuccess = true;
             break;
         default:
-            lastError = "unexpected login packet (online)";
+            lastError_ = "unexpected login packet (online)";
             return false;
         }
     }
-    if (!sawSuccess) { lastError = "no success (online)"; return false; }
+    if (!sawSuccess) { lastError_ = "no success (online)"; return false; }
 
     conn_->sendPacket(proto::lo::cs::LoginAcknowledged, {});
     bool finishSeen = false;
     for (int guard = 0; guard < 400 && !finishSeen; ++guard) {
         Packet p;
         try { p.body = conn_->readFrame(); }
-        catch (const std::exception& e) { lastError = e.what(); return false; }
+        catch (const std::exception& e) { lastError_ = e.what(); return false; }
         ReadBuffer in(p.body);
         switch (in.u8()) {
         case proto::cf::sc::CustomPayload: in.string(); break;
@@ -217,7 +222,7 @@ bool TestClient::joinOnline(const std::string& name) {
         default: break;
         }
     }
-    if (!finishSeen) { lastError = "no finish (online)"; return false; }
+    if (!finishSeen) { lastError_ = "no finish (online)"; return false; }
 
     running_ = true;
     reader_ = std::thread([this]{ readerLoop(); });
@@ -225,8 +230,6 @@ bool TestClient::joinOnline(const std::string& name) {
 }
 
 bool TestClient::join(const std::string& name) {
-    std::fprintf(stderr, "[tc] join(\"%s\") local=%u caller=%p\n",
-                 name.c_str(), localPort_, __builtin_return_address(0));
     WriteBuffer hb;
     hb.varint(proto::kProtocolVersion);
     hb.string("127.0.0.1");
@@ -245,7 +248,7 @@ bool TestClient::join(const std::string& name) {
     for (int guard = 0; guard < 50 && !sawSuccess; ++guard) {
         Packet p;
         try { p.id = 0xFF; auto f = conn_->readFrame(); p.body = std::move(f); }
-        catch (const std::exception& e) { lastError = e.what(); return false; }
+        catch (const std::exception& e) { lastError_ = e.what(); return false; }
         ReadBuffer in(p.body);
         const std::uint8_t pid = in.u8();
         switch (pid) {
@@ -259,10 +262,10 @@ bool TestClient::join(const std::string& name) {
             sawSuccess = true;
             break;
         case proto::lo::sc::Disconnect:
-            lastError = "kicked at login";
+            lastError_ = "kicked at login";
             return false;
         default:
-            lastError = "unexpected login packet";
+            lastError_ = "unexpected login packet";
             return false;
         }
     }
@@ -275,7 +278,7 @@ bool TestClient::join(const std::string& name) {
     for (int guard = 0; guard < 400 && !finishSeen; ++guard) {
         Packet p;
         try { p.id = 0xFF; p.body = conn_->readFrame(); }
-        catch (const std::exception& e) { lastError = e.what(); return false; }
+        catch (const std::exception& e) { lastError_ = e.what(); return false; }
         ReadBuffer in(p.body);
         const std::uint8_t cfgPid = in.u8();
         if (getenv("TC_VERBOSE")) {
@@ -303,12 +306,12 @@ bool TestClient::join(const std::string& name) {
             conn_->sendPacket(proto::cf::cs::FinishAcknowledgement, {});
             break;
         case proto::cf::sc::Disconnect:
-            lastError = "kicked at config";
+            lastError_ = "kicked at config";
             return false;
         default: break;
         }
     }
-    if (!finishSeen) { lastError = "no finish_configuration"; return false; }
+    if (!finishSeen) { lastError_ = "no finish_configuration"; return false; }
 
     // play phase: synchronously process frames until the join game packet has
     // been captured (eliminates any startup race), then hand over to the reader.
@@ -317,14 +320,14 @@ bool TestClient::join(const std::string& name) {
     while (!gotLogin && std::chrono::steady_clock::now() < deadline) {
         Packet p;
         try { p.body = conn_->readFrame(); }
-        catch (const std::exception& e) { lastError = e.what(); return false; }
+        catch (const std::exception& e) { lastError_ = e.what(); return false; }
         ReadBuffer in(p.body);
         p.id = in.u8();
         if (p.id == proto::pl::sc::KeepAlive) respondKeepAlive(in.i64());
         handleIncoming(p.id, std::vector<std::uint8_t>(in.p + in.off, in.p + in.len));
         gotLogin = count(proto::pl::sc::Login) > 0;
     }
-    if (!gotLogin) { lastError = "no join game during startup burst"; return false; }
+    if (!gotLogin) { lastError_ = "no join game during startup burst"; return false; }
 
     running_ = true;
     reader_ = std::thread([this]{ readerLoop(); });
@@ -332,7 +335,10 @@ bool TestClient::join(const std::string& name) {
 }
 
 void TestClient::sendPlayerLoadedOnce() {
-    if (!playerLoadedSent_) { playerLoadedSent_ = true; try { if (conn_) conn_->sendPacket(proto::pl::cs::PlayerLoaded, {}); } catch (...) {} }
+    if (!playerLoadedSent_) {
+        playerLoadedSent_ = true;
+        sendPacketNoexcept(proto::pl::cs::PlayerLoaded, {});
+    }
 }
 
 void TestClient::readerLoop() {
@@ -357,18 +363,6 @@ void TestClient::readerLoop() {
         }
         ReadBuffer in(p.body);
         p.id = in.u8();
-        {   // permanent lightweight trace of the first packets of each reader,
-            // or ALL packets when CPPFM_PKTRACE is set (debug aid)
-            const bool full = std::getenv("CPPFM_PKTRACE") != nullptr;
-            if (full || myFirstPackets < 10) {
-                std::fprintf(stderr, "[tc pid=%d] r#%d filed %02x raw=",(int)getpid(), myId, p.id);
-                const std::size_t n = std::min<std::size_t>(in.len - in.off, full ? 32 : 8);
-                for (std::size_t k = 0; k < n; ++k)
-                    std::fprintf(stderr, "%02x", p.body[k]);
-                std::fprintf(stderr, "\n");
-            }
-            ++myFirstPackets;
-        }
         // automatic server-required responses
         if (p.id == proto::pl::sc::KeepAlive) {
             const std::int64_t id = in.i64();
@@ -384,7 +378,13 @@ void TestClient::handleIncoming(std::uint8_t pid, std::vector<std::uint8_t> body
         if (p.id == proto::pl::sc::PlayerPosition) {   // parse & confirm teleport
             ReadBuffer pin(p.body);
             const std::int32_t tid = pin.varint();
-            x = pin.f64(); y = pin.f64(); z = pin.f64();
+            const double newX = pin.f64();
+            const double newY = pin.f64();
+            const double newZ = pin.f64();
+            {
+                std::lock_guard lk(mtx_);
+                position_ = {newX, newY, newZ};
+            }
             confirmTeleport(tid);
             sendPlayerLoadedOnce();
         } else if (p.id == proto::pl::sc::KeepAlive) {
@@ -405,20 +405,20 @@ void TestClient::filePacket(Packet p) {
         case proto::pl::sc::LevelChunkWithLight: {
             ReadBuffer in(p.body);
             const std::int32_t cx = in.i32(), cz = in.i32();
-            chunkCoords.emplace_back(cx, cz);
-            if (cx == 0 && cz == 0) hasChunk00 = true;
-            rawChunks.push_back(p.body);          // FULL body (helpers parse header)
+            chunkCoords_.emplace_back(cx, cz);
+            if (cx == 0 && cz == 0) counters_.chunk00Received = true;
+            rawChunks_.push_back(p.body);          // complete body (helpers parse header)
             break;
         }
         case proto::pl::sc::BlockUpdate: {
             ReadBuffer in(p.body);
             std::int32_t x,y,z; in.position(x,y,z);
-            blockUpdates.push_back({x,y,z, static_cast<std::uint32_t>(in.varint())});
+            blockUpdates_.push_back({x,y,z, static_cast<std::uint32_t>(in.varint())});
             break;
         }
         case proto::pl::sc::SystemChat: {
             std::string text;
-            if (extractChatText(p.body, text)) chatLines.push_back(text);
+            if (extractChatText(p.body, text)) chatLines_.push_back(text);
             break;
         }
         case proto::pl::sc::PlayerChat: {
@@ -434,7 +434,7 @@ void TestClient::filePacket(Packet p) {
                     if (slen > 0 && slen < 2048) in.bytes((size_t)slen);
                 }
                 std::string msg = in.string(8192);
-                if (!msg.empty()) chatLines.push_back(msg);
+                if (!msg.empty()) chatLines_.push_back(msg);
                 // Also try to capture formatted component later (sender name) if msg empty
                 if (msg.empty()) {
                     // heuristic fallback: search raw payload for printable message
@@ -447,7 +447,7 @@ void TestClient::filePacket(Packet p) {
                 // Keep only printable part
                 std::string filtered;
                 for (unsigned char c : raw) if (c >= 32 && c <= 126) filtered.push_back(c); else filtered.push_back(' ');
-                chatLines.push_back(filtered);
+                chatLines_.push_back(filtered);
             }
             break;
         }
@@ -457,10 +457,10 @@ void TestClient::filePacket(Packet p) {
                 ReadBuffer in(p.body);
                 // first field may be chat component? Try to extract via extractChatText fallback
                 std::string text;
-                if (extractChatText(p.body, text)) chatLines.push_back(text);
+                if (extractChatText(p.body, text)) chatLines_.push_back(text);
                 else {
                     // try to read as string
-                    try { std::string s = in.string(8192); if (!s.empty()) chatLines.push_back(s); } catch(...) {}
+                    try { std::string s = in.string(8192); if (!s.empty()) chatLines_.push_back(s); } catch(...) {}
                 }
             } catch(...) {}
             break;
@@ -486,7 +486,7 @@ void TestClient::filePacket(Packet p) {
                     int32_t x = (baseCx << 4) | lx;
                     int32_t y = (baseSy << 4) | ly;
                     int32_t z = (baseCz << 4) | lz;
-                    blockUpdates.push_back({x,y,z, state});
+                    blockUpdates_.push_back({x,y,z, state});
                 }
             } catch(...) {}
             break;
@@ -499,15 +499,21 @@ void TestClient::filePacket(Packet p) {
         case proto::pl::sc::Teams:
             // keep in recent for count, no extra state needed
             break;
-        case proto::pl::sc::AckBlockChange: acks++; break;
-        case proto::pl::sc::SpawnEntity: spawnsReceived++; break;
+        case proto::pl::sc::AckBlockChange: counters_.acknowledgements++; break;
+        case proto::pl::sc::SpawnEntity: counters_.spawns++; break;
         case proto::pl::sc::MoveEntityPosRot:
         case proto::pl::sc::MoveEntityPos:
-        case proto::pl::sc::EntityTeleport: entityMoves++; break;
-        case proto::pl::sc::UpdateTime: timeUpdates++; break;
-        case proto::pl::sc::DeclareCommands: declares++; break;
-        case proto::pl::sc::Respawn: gotRespawn = true; break;
-        case proto::pl::sc::Login: joinGameBody = p.body; break;
+        case proto::pl::sc::EntityTeleport: counters_.entityMoves++; break;
+        case proto::pl::sc::UpdateTime: counters_.timeUpdates++; break;
+        case proto::pl::sc::DeclareCommands: counters_.declarations++; break;
+        case proto::pl::sc::Respawn: counters_.respawnReceived = true; break;
+        case proto::pl::sc::Login:
+            joinGameBody_ = p.body;
+            if (p.body.size() >= sizeof(std::int32_t)) {
+                ReadBuffer login(p.body);
+                entityId_ = login.i32();
+            }
+            break;
         default: break;
         }
         recent_.push_back(std::move(p));
@@ -518,9 +524,11 @@ void TestClient::filePacket(Packet p) {
 
 bool TestClient::extractChatText(const std::vector<std::uint8_t>& body, std::string& out) {
     // body: anonymous NBT component + overlay bool; supports {"text": "..."} and plain string
-    if (body.size() < 2) return false;
+    if (body.size() < 1) return false;
     if (body[0] == nbt::String) {                     // plain string tag
+        if (body.size() < 3) return false;
         const std::uint16_t n = (body[1] << 8) | body[2];
+        if (n > body.size() - 3) return false;
         out.assign(reinterpret_cast<const char*>(body.data()) + 3, n);
         return true;
     }
@@ -532,6 +540,7 @@ bool TestClient::extractChatText(const std::vector<std::uint8_t>& body, std::str
         i += 3 + nl;
         if (i + 2 > body.size()) return false;
         const std::uint16_t vl = (body[i] << 8) | body[i+1];
+        if (vl > body.size() - (i + 2)) return false;
         if (nl == 4) {
             std::string key(reinterpret_cast<const char*>(body.data()) + i - nl, nl);
             if (key == "text") { out.assign(reinterpret_cast<const char*>(body.data()) + i + 2, vl); return true; }
@@ -541,19 +550,27 @@ bool TestClient::extractChatText(const std::vector<std::uint8_t>& body, std::str
     return false;
 }
 
+void TestClient::sendPacketNoexcept(std::uint8_t id, const WriteBuffer& body) noexcept {
+    if (!conn_) return;
+    try { conn_->sendPacket(id, body); } catch (...) {}
+}
+
 void TestClient::confirmTeleport(std::int32_t teleportId) {
     WriteBuffer b; b.varint(teleportId);
-    try { if (conn_) conn_->sendPacket(proto::pl::cs::AcceptTeleportation, b); } catch (...) {}
+    sendPacketNoexcept(proto::pl::cs::AcceptTeleportation, b);
 }
-void TestClient::sendPlayerLoaded() { try { if (conn_) conn_->sendPacket(proto::pl::cs::PlayerLoaded, {}); } catch (...) {} }
+void TestClient::sendPlayerLoaded() { sendPacketNoexcept(proto::pl::cs::PlayerLoaded, {}); }
 
 void TestClient::sendPosition(double px, double py, double pz, bool onGround) {
-    x = px; y = py; z = pz;
+    {
+        std::lock_guard lk(mtx_);
+        position_ = {px, py, pz};
+    }
     if (!conn_) return;
     WriteBuffer b;
     b.f64(px); b.f64(py); b.f64(pz);
     b.u8(onGround ? 1 : 0);
-    try { conn_->sendPacket(proto::pl::cs::MovePlayerPos, b); } catch (...) {}
+    sendPacketNoexcept(proto::pl::cs::MovePlayerPos, b);
 }
 
 void TestClient::sendChatMessage(const std::string& message) {
@@ -564,13 +581,13 @@ void TestClient::sendChatMessage(const std::string& message) {
     b.boolean(false);
     b.varint(0);
     b.u8(0); b.u8(0); b.u8(0);   // acknowledged bitset
-    try { conn_->sendPacket(proto::pl::cs::ChatMessage, b); } catch (...) {}
+    sendPacketNoexcept(proto::pl::cs::ChatMessage, b);
 }
 
 void TestClient::sendChatCommand(const std::string& command) {
     if (!conn_) return;
     WriteBuffer b; b.string(command);
-    try { conn_->sendPacket(proto::pl::cs::ChatCommand, b); } catch (...) {}
+    sendPacketNoexcept(proto::pl::cs::ChatCommand, b);
 }
 
 static void packPos(WriteBuffer& b, std::int32_t x, std::int32_t y, std::int32_t z) {
@@ -583,7 +600,15 @@ void TestClient::sendDig(std::int32_t x, std::int32_t y, std::int32_t z, std::in
     packPos(b, x, y, z);
     b.i8(1);                     // face
     b.varint(seq);
-    try { conn_->sendPacket(proto::pl::cs::PlayerAction, b); } catch (...) {}
+    sendPacketNoexcept(proto::pl::cs::PlayerAction, b);
+}
+void TestClient::sendEntityAction(std::int32_t action, std::int32_t jumpBoost) {
+    if (!conn_) return;
+    WriteBuffer b;
+    b.varint(entityId_);
+    b.varint(action);
+    b.varint(jumpBoost);
+    sendPacketNoexcept(proto::pl::cs::EntityAction, b);
 }
 void TestClient::sendUseItemOn(std::int32_t x, std::int32_t y, std::int32_t z, int face, std::int32_t seq) {
     if (!conn_) return;
@@ -595,7 +620,7 @@ void TestClient::sendUseItemOn(std::int32_t x, std::int32_t y, std::int32_t z, i
     b.boolean(false); // insideBlock
     b.boolean(false); // worldBorderHit
     b.varint(seq);
-    try { conn_->sendPacket(proto::pl::cs::UseItemOn, b); } catch (...) {}
+    sendPacketNoexcept(proto::pl::cs::UseItemOn, b);
 }
 void TestClient::sendUseEntity(std::int32_t entityId, int action, bool sneaking) {
     if (!conn_) return;
@@ -609,7 +634,7 @@ void TestClient::sendUseEntity(std::int32_t entityId, int action, bool sneaking)
     // fixed server reads as underrun -> disconnect.)
     if (action != 1) b.varint(0);                            // hand = mainhand
     b.boolean(sneaking);
-    try { conn_->sendPacket(proto::pl::cs::UseEntity, b); } catch (...) {}
+    sendPacketNoexcept(proto::pl::cs::UseEntity, b);
 }
 // plan43 B1+B2 spec-exact sends (Prismarine protocol.json 1.21.4 hand-built,
 // NOT copied from server WriteBuffer output — tautology guard).
@@ -627,43 +652,49 @@ void TestClient::sendSignedCommand(const std::string& command, int nSignatures, 
     b.varint(0);                                         // messageCount
     const std::uint8_t ack[3] = {0, 0, 0};               // acknowledged[3]
     b.raw(ack, 3);
-    try { conn_->sendPacket(proto::pl::cs::ChatCommandSigned, b); } catch (...) {}
+    sendPacketNoexcept(proto::pl::cs::ChatCommandSigned, b);
 }
 void TestClient::sendTabComplete(std::int32_t transactionId, const std::string& text) {
     if (!conn_) return;
     WriteBuffer b;
     b.varint(transactionId);
     b.string(text);                                      // spec: 2 fields only, no trailing bool
-    try { conn_->sendPacket(proto::pl::cs::TabComplete, b); } catch (...) {}
+    sendPacketNoexcept(proto::pl::cs::TabComplete, b);
 }
 void TestClient::sendMovePlayerFlags(double px, double py, double pz, std::uint8_t flags) {
-    x = px; y = py; z = pz;
+    {
+        std::lock_guard lk(mtx_);
+        position_ = {px, py, pz};
+    }
     if (!conn_) return;
     WriteBuffer b;
     b.f64(px); b.f64(py); b.f64(pz);
     b.u8(flags);                                         // MovementFlags bitfield (bit0 onGround)
-    try { conn_->sendPacket(proto::pl::cs::MovePlayerPos, b); } catch (...) {}
+    sendPacketNoexcept(proto::pl::cs::MovePlayerPos, b);
 }
 void TestClient::sendMovePlayerPosRotFlags(double px, double py, double pz, float yaw, float pitch, std::uint8_t flags) {
-    x = px; y = py; z = pz;
+    {
+        std::lock_guard lk(mtx_);
+        position_ = {px, py, pz};
+    }
     if (!conn_) return;
     WriteBuffer b;
     b.f64(px); b.f64(py); b.f64(pz); b.f32(yaw); b.f32(pitch);
     b.u8(flags);
-    try { conn_->sendPacket(proto::pl::cs::MovePlayerPosRot, b); } catch (...) {}
+    sendPacketNoexcept(proto::pl::cs::MovePlayerPosRot, b);
 }
 void TestClient::sendMovePlayerRotFlags(float yaw, float pitch, std::uint8_t flags) {
     if (!conn_) return;
     WriteBuffer b;
     b.f32(yaw); b.f32(pitch);
     b.u8(flags);
-    try { conn_->sendPacket(proto::pl::cs::MovePlayerRot, b); } catch (...) {}
+    sendPacketNoexcept(proto::pl::cs::MovePlayerRot, b);
 }
 void TestClient::sendFlyingFlags(std::uint8_t flags) {
     if (!conn_) return;
     WriteBuffer b;
     b.u8(flags);
-    try { conn_->sendPacket(proto::pl::cs::MovePlayerStatusOnly, b); } catch (...) {}
+    sendPacketNoexcept(proto::pl::cs::MovePlayerStatusOnly, b);
 }
 void TestClient::sendUseEntityFull(std::int32_t target, int mouse, int hand, bool sneaking) {
     if (!conn_) return;
@@ -673,13 +704,13 @@ void TestClient::sendUseEntityFull(std::int32_t target, int mouse, int hand, boo
     if (mouse == 2) { b.f32(0.5f); b.f32(0.5f); b.f32(0.5f); }
     if (mouse == 0 || mouse == 2) b.varint(hand);         // hand (0 main/1 off)
     b.boolean(sneaking);                                 // trailing bool for ALL mouse kinds
-    try { conn_->sendPacket(proto::pl::cs::UseEntity, b); } catch (...) {}
+    sendPacketNoexcept(proto::pl::cs::UseEntity, b);
 }
 void TestClient::sendAbilitiesFlags(std::int8_t flags) {
     if (!conn_) return;
     WriteBuffer b;
     b.i8(flags);
-    try { conn_->sendPacket(proto::pl::cs::Abilities, b); } catch (...) {}    // cs packet_abilities 0x26 (W-06)
+    sendPacketNoexcept(proto::pl::cs::Abilities, b);    // cs packet_abilities 0x26 (W-06)
 }
 void TestClient::sendSignUpdate(std::int32_t sx, std::int32_t sy, std::int32_t sz, bool front,
                                 const std::string lines[4]) {
@@ -688,11 +719,38 @@ void TestClient::sendSignUpdate(std::int32_t sx, std::int32_t sy, std::int32_t s
     b.position(sx, sy, sz);
     b.boolean(front);
     for (int i = 0; i < 4; ++i) b.string(lines[i]);
-    try { conn_->sendPacket(proto::pl::cs::UpdateSign, b); } catch (...) {}
+    sendPacketNoexcept(proto::pl::cs::UpdateSign, b);
 }
-void TestClient::sendRawPlay(std::uint8_t pid, const WriteBuffer& body) {
-    if (!conn_) return;
-    try { conn_->sendPacket(pid, body); } catch (...) {}
+bool TestClient::sendRawPlay(std::uint8_t pid, const WriteBuffer& body) {
+    if (!conn_) return false;
+    try {
+        // This escape hatch is used by the flood test to send a deliberately
+        // oversized declared body.  PacketEncoder correctly refuses such a
+        // body, so construct the protocol frame here and let the server's
+        // decoder reject it before allocating the decompressed payload.
+        if (body.data.size() == std::numeric_limits<std::size_t>::max())
+            throw std::length_error("test packet size overflow");
+        const std::size_t bodySize = body.data.size() + 1;
+        if (bodySize <= PacketEncoder::kMaxDeclared) {
+            conn_->sendPacket(pid, body);
+            return true;
+        }
+        if (bodySize > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max()))
+            throw std::length_error("test packet is too large");
+        WriteBuffer packet;
+        packet.u8(pid);
+        packet.raw(body.data.data(), body.data.size());
+        std::vector<std::uint8_t> compressed;
+        compressRaw(packet.data.data(), packet.data.size(), compressed);
+        WriteBuffer frame;
+        frame.varint(static_cast<std::int32_t>(packet.data.size()));
+        frame.raw(compressed.data(), compressed.size());
+        std::vector<std::uint8_t> outer;
+        WriteBuffer::writeVarintTo(outer, static_cast<std::int32_t>(frame.data.size()));
+        outer.insert(outer.end(), frame.data.begin(), frame.data.end());
+        conn_->sendRaw(outer.data(), outer.size());
+        return true;
+    } catch (...) { return false; }
 }
 bool TestClient::joinWithFinishContamination(const std::string& name) {
     // plan43 W-12: vanilla-style join that re-sends ClientInformation, Pong,
@@ -714,21 +772,21 @@ bool TestClient::joinWithFinishContamination(const std::string& name) {
     for (int guard = 0; guard < 50 && !sawSuccess; ++guard) {
         Packet p;
         try { p.body = conn_->readFrame(); }
-        catch (const std::exception& e) { lastError = e.what(); return false; }
+        catch (const std::exception& e) { lastError_ = e.what(); return false; }
         ReadBuffer in(p.body);
         switch (in.u8()) {
         case proto::lo::sc::SetCompression: conn_->setCompression(in.varint()); break;
         case proto::lo::sc::GameProfile: sawSuccess = true; break;
-        default: lastError = "unexpected login packet"; return false;
+        default: lastError_ = "unexpected login packet"; return false;
         }
     }
-    if (!sawSuccess) { lastError = "no success"; return false; }
+    if (!sawSuccess) { lastError_ = "no success"; return false; }
     conn_->sendPacket(proto::lo::cs::LoginAcknowledged, {});
     bool finishSeen = false;
     for (int guard = 0; guard < 400 && !finishSeen; ++guard) {
         Packet p;
         try { p.body = conn_->readFrame(); }
-        catch (const std::exception& e) { lastError = e.what(); return false; }
+        catch (const std::exception& e) { lastError_ = e.what(); return false; }
         ReadBuffer in(p.body);
         switch (in.u8()) {
         case proto::cf::sc::CustomPayload: in.string(); break;
@@ -745,11 +803,11 @@ bool TestClient::joinWithFinishContamination(const std::string& name) {
             break;
         }
         case proto::cf::sc::FinishConfiguration: finishSeen = true; break;
-        case proto::cf::sc::Disconnect: lastError = "kicked at config"; return false;
+        case proto::cf::sc::Disconnect: lastError_ = "kicked at config"; return false;
         default: break;
         }
     }
-    if (!finishSeen) { lastError = "no finish_configuration"; return false; }
+    if (!finishSeen) { lastError_ = "no finish_configuration"; return false; }
     // --- contaminate the finish-ack wait, then ack ---
     {   // ClientInformation resend (config 0x00 layout: locale/i8/varint/bool/u8/varint/bool/bool)
         WriteBuffer s;
@@ -771,15 +829,15 @@ bool TestClient::joinWithFinishContamination(const std::string& name) {
     while (!gotLogin && std::chrono::steady_clock::now() < deadline) {
         Packet p;
         try { p.body = conn_->readFrame(); }
-        catch (const std::exception& e) { lastError = std::string("post-finish: ") + e.what(); return false; }
+        catch (const std::exception& e) { lastError_ = std::string("post-finish: ") + e.what(); return false; }
         ReadBuffer in(p.body);
         p.id = in.u8();
         if (p.id == proto::pl::sc::KeepAlive) respondKeepAlive(in.i64());
-        if (p.id == proto::pl::sc::Disconnect) { lastError = "kicked at play-enter"; return false; }
+        if (p.id == proto::pl::sc::Disconnect) { lastError_ = "kicked at play-enter"; return false; }
         handleIncoming(p.id, std::vector<std::uint8_t>(in.p + in.off, in.p + in.len));
         gotLogin = count(proto::pl::sc::Login) > 0;
     }
-    if (!gotLogin) { lastError = "no join game after contaminated finish"; return false; }
+    if (!gotLogin) { lastError_ = "no join game after contaminated finish"; return false; }
     running_ = true;
     reader_ = std::thread([this]{ readerLoop(); });
     return true;
@@ -822,8 +880,12 @@ std::vector<TestClient::Spawned> TestClient::spawns() const {
             s.eid = in.varint();
             (void)in.bytes(16);
             s.type = in.varint();
-            (void)in.varint();                           // type id
             s.x = in.f64(); s.y = in.f64(); s.z = in.f64();
+            (void)in.i8();                               // pitch
+            (void)in.i8();                               // yaw
+            (void)in.i8();                               // head yaw
+            (void)in.varint();                           // entity data
+            (void)in.i16(); (void)in.i16(); (void)in.i16(); // velocity
             out.push_back(s);
         } catch (...) {}
     }
@@ -833,17 +895,17 @@ void TestClient::sendMoveVehicle(double x, double y, double z, float yaw, float 
     WriteBuffer b;
     b.f64(x); b.f64(y); b.f64(z);
     b.f32(yaw); b.f32(pitch);
-    try { conn_->sendPacket(proto::pl::cs::MoveVehicle, b); } catch (...) {}
+    sendPacketNoexcept(proto::pl::cs::MoveVehicle, b);
 }
 void TestClient::sendRespawnRequest() {
     if (!conn_) return;
     WriteBuffer b; b.varint(0);
-    try { conn_->sendPacket(proto::pl::cs::ClientCommand, b); } catch (...) {}
+    sendPacketNoexcept(proto::pl::cs::ClientCommand, b);
 }
 void TestClient::respondKeepAlive(std::int64_t id) {
     if (!conn_) return;
     WriteBuffer b; b.i64(id);
-    try { conn_->sendPacket(proto::pl::cs::KeepAlive, b); } catch (...) {}
+    sendPacketNoexcept(proto::pl::cs::KeepAlive, b);
 }
 
 void TestClient::pump(int ms) {
@@ -868,6 +930,61 @@ size_t TestClient::count(std::uint8_t id) const {
     size_t n = 0;
     for (auto& p : recent_) if (p.id == id) ++n;
     return n;
+}
+
+std::vector<std::string> TestClient::chatLinesSnapshot() const {
+    std::lock_guard lk(mtx_);
+    return chatLines_;
+}
+
+std::vector<TestClient::BlockUpd> TestClient::blockUpdatesSnapshot() const {
+    std::lock_guard lk(mtx_);
+    return blockUpdates_;
+}
+
+std::vector<std::pair<std::int32_t, std::int32_t>> TestClient::chunkCoordsSnapshot() const {
+    std::lock_guard lk(mtx_);
+    return chunkCoords_;
+}
+
+std::vector<std::vector<std::uint8_t>> TestClient::rawChunksSnapshot() const {
+    std::lock_guard lk(mtx_);
+    return rawChunks_;
+}
+
+std::vector<Packet> TestClient::recentSnapshot() const {
+    std::lock_guard lk(mtx_);
+    return {recent_.begin(), recent_.end()};
+}
+
+std::vector<std::uint8_t> TestClient::joinGameBodySnapshot() const {
+    std::lock_guard lk(mtx_);
+    return joinGameBody_;
+}
+
+std::size_t TestClient::chunkCount() const {
+    std::lock_guard lk(mtx_);
+    return chunkCoords_.size();
+}
+
+std::size_t TestClient::blockUpdateCount() const {
+    std::lock_guard lk(mtx_);
+    return blockUpdates_.size();
+}
+
+TestClient::Counters TestClient::counters() const {
+    std::lock_guard lk(mtx_);
+    return counters_;
+}
+
+TestClient::Position TestClient::positionSnapshot() const {
+    std::lock_guard lk(mtx_);
+    return position_;
+}
+
+void TestClient::clearChatLines() {
+    std::lock_guard lk(mtx_);
+    chatLines_.clear();
 }
 
 } // namespace cpptest

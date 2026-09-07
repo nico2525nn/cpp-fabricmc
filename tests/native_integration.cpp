@@ -2,6 +2,7 @@
 // through TestClient (production framing code). Replaces the Python suites.
 #include "TestClient.hpp"
 #include <map>
+#include "../src/core/Json.hpp"
 #include "../src/core/NBT.hpp"
 #include "../src/worldgen/DensityFunction.hpp"
 #include "../src/worldgen/MultiNoise.hpp"
@@ -26,6 +27,7 @@
 #include "../src/game/Scoreboard.hpp"
 #include <sys/wait.h>
 #include <unistd.h>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -57,11 +59,16 @@ struct ServerProc {
 
     std::string worldDir;
     bool online = false;
-    bool start(const char* serverPath, int viewDistance, bool onlineMode=false) {
+    ~ServerProc() { stop(); }
+    bool start(const char* serverPath, int viewDistance, bool onlineMode=false,
+               const std::string& motd = {}) {
         port = static_cast<std::uint16_t>(26000 + (getpid() % 3000));
         worldDir = "/tmp/opencode/native-world-" + std::to_string(getpid());
-        std::filesystem::remove_all(worldDir);
-        std::filesystem::create_directories(worldDir);
+        std::error_code ec;
+        std::filesystem::remove_all(worldDir, ec);
+        if (ec) return false;
+        std::filesystem::create_directories(worldDir, ec);
+        if (ec) return false;
         // pick a free-ish port by probing
         for (int attempt = 0; attempt < 20; ++attempt) {
             TestClient probe;
@@ -70,37 +77,46 @@ struct ServerProc {
             port = static_cast<std::uint16_t>(port + 1);
         }
         pid = fork();
+        if (pid < 0) return false;
         if (pid == 0) {
             char portArg[32], vdArg[32], wdArg[256];
             snprintf(portArg, sizeof(portArg), "--port=%u", port);
             snprintf(vdArg, sizeof(vdArg), "--view-distance=%d", viewDistance);
             snprintf(wdArg, sizeof(wdArg), "--world-dir=%s", worldDir.c_str());
             const char* omArg = onlineMode ? "--online-mode=true" : "--online-mode=false";
-            execl(serverPath, serverPath, portArg, vdArg, wdArg, omArg, (char*)nullptr);
+            const std::string motdArg = "--motd=" + motd;
+            if (motd.empty())
+                execl(serverPath, serverPath, portArg, vdArg, wdArg, omArg, (char*)nullptr);
+            else
+                execl(serverPath, serverPath, portArg, vdArg, wdArg, omArg,
+                      motdArg.c_str(), (char*)nullptr);
             _exit(127);
         }
-        return waitPort(port, 8000);
+        if (waitPort(port, 8000)) return true;
+        stop();
+        return false;
     }
-    void stop() {
-        if (pid > 0) {
-            kill(pid, SIGTERM);
+    void stop() noexcept {
+        const pid_t child = pid;
+        pid = -1;
+        if (child > 0) {
+            (void)kill(child, SIGTERM);
             int st = 0;
+            bool reaped = false;
             for (int i = 0; i < 20; ++i) {
-                pid_t r = waitpid(pid, &st, WNOHANG);
-                if (r == pid) break;
-                if (r == -1) break;
+                pid_t r = waitpid(child, &st, WNOHANG);
+                if (r == child) { reaped = true; break; }
+                if (r < 0 && errno == ECHILD) { reaped = true; break; }
+                if (r < 0 && errno != EINTR) break;
                 usleep(100 * 1000);
             }
-            if (kill(pid, 0) == 0) {
-                kill(pid, SIGKILL);
-                waitpid(pid, &st, 0);
-            } else {
-                // already reaped in loop
-                if (pid > 0) waitpid(pid, &st, 0);
+            if (!reaped) {
+                (void)kill(child, SIGKILL);
+                while (waitpid(child, &st, 0) < 0 && errno == EINTR) {}
             }
-            pid = -1;
-            std::error_code ec; std::filesystem::remove_all(worldDir, ec);
         }
+        std::error_code ec;
+        std::filesystem::remove_all(worldDir, ec);
     }
 };
 
@@ -156,6 +172,17 @@ static void scenarioStatus(TestClient& c) {
     const std::string js = c.queryStatusJson();
     CHECK(js.find("\"protocol\":769") != std::string::npos, "status advertises protocol 769");
     CHECK(js.find("1.21.4") != std::string::npos, "status advertises 1.21.4");
+    try {
+        const auto status = json::Value::parse(js);
+        CHECK(status.isObj() && status.at("version").at("protocol").asInt(-1) == 769,
+              "status response is valid JSON");
+        CHECK(status.at("description").at("text").asStr() == "status \"quote\" \\ slash",
+              "status escapes and restores MOTD text");
+    } catch (const std::exception& e) {
+        CHECK(false, "status response is valid JSON");
+        std::printf("    [diag] status parse: %s\n", e.what());
+        CHECK(false, "status escapes and restores MOTD text");
+    }
 }
 
 static void scenarioJoinBuildChat(ServerProc& srv) {
@@ -168,9 +195,8 @@ static void scenarioJoinBuildChat(ServerProc& srv) {
     const bool gotJoin = a.waitFor([](const Packet& p){ return p.id == proto::pl::sc::Login; }, 5000, &joinPkt);
     if (!gotJoin) {
         std::string hist;
-        std::lock_guard<std::mutex> lk(a.mtx_public());
         std::map<std::uint8_t,int> m;
-        for (auto& p : a.recentPublic()) ++m[p.id];
+        for (const auto& p : a.recentSnapshot()) ++m[p.id];
         for (auto& [k,v] : m) hist += " " + std::to_string(k) + "x" + std::to_string(v);
         std::printf("    [diag] recent histogram: %s\n", hist.c_str());
     }
@@ -178,11 +204,11 @@ static void scenarioJoinBuildChat(ServerProc& srv) {
 
     // initial chunk flood around spawn (vd=2 -> at least 5x5)
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(8000);
-    while (a.chunkCoords.size() < 25 && std::chrono::steady_clock::now() < deadline) a.pump(50);
-    CHECK(a.chunkCoords.size() >= 25, "A received initial chunks (>=25)");
+    while (a.chunkCount() < 25 && std::chrono::steady_clock::now() < deadline) a.pump(50);
+    CHECK(a.chunkCount() >= 25, "A received initial chunks (>=25)");
 
     // declare_commands should have been advertised
-    CHECK(a.declares >= 1, "A received command tree");
+    CHECK(a.counters().declarations >= 1, "A received command tree");
 
     // dig the grass under spawn column and verify echo + ack + persistence bytes
     // regression fix: 0,-61,0 is inside spawn-protection=16, use 30,-61,0 outside (see docs/SPEC_OPS.md spawn-protection policy)
@@ -193,14 +219,16 @@ static void scenarioJoinBuildChat(ServerProc& srv) {
     const auto dl2 = std::chrono::steady_clock::now() + std::chrono::milliseconds(4000);
     while (std::chrono::steady_clock::now() < dl2 && !(sawAck && sawAirEcho)) {
         a.pump(40);
-        for (auto& u : a.blockUpdates)
+        for (const auto& u : a.blockUpdatesSnapshot())
             if (u.x == 30 && u.y == -61 && u.z == 0 && u.state == 0) sawAirEcho = true;
-        sawAck = a.acks > 0;
+        sawAck = a.counters().acknowledgements > 0;
     }
     CHECK(sawAck, "dig acknowledged (sequence)");
     if (!sawAirEcho) {
-        std::printf("    [diag] blockUpdates=%zu acks=%d\n", a.blockUpdates.size(), a.acks);
-        for (auto& u : a.blockUpdates)
+        const auto updates = a.blockUpdatesSnapshot();
+        const auto observed = a.counters();
+        std::printf("    [diag] blockUpdates=%zu acks=%d\n", updates.size(), observed.acknowledgements);
+        for (const auto& u : updates)
             std::printf("      upd (%d,%d,%d)->%u\n", u.x, u.y, u.z, u.state);
     }
     CHECK(sawAirEcho, "block update broadcast for dug block");
@@ -211,7 +239,7 @@ static void scenarioJoinBuildChat(ServerProc& srv) {
     const auto dl3 = std::chrono::steady_clock::now() + std::chrono::milliseconds(4000);
     while (std::chrono::steady_clock::now() < dl3 && !sawChat) {
         a.pump(40);
-        for (auto& line : a.chatLines) if (line.find("integration-hello") != std::string::npos) sawChat = true;
+        for (const auto& line : a.chatLinesSnapshot()) if (line.find("integration-hello") != std::string::npos) sawChat = true;
     }
     CHECK(sawChat, "chat echoed back through system chat");
 
@@ -228,7 +256,7 @@ static void scenarioJoinBuildChat(ServerProc& srv) {
     bool persisted = false;
     while (std::chrono::steady_clock::now() < dl4 && !persisted) {
         b.pump(50);
-        for (auto& body : b.rawChunks) {
+        for (const auto& body : b.rawChunksSnapshot()) {
             ReadBuffer in(body);
             const std::int32_t cx = in.i32(), cz = in.i32();
             if (cx == 1 && cz == 0) persisted = chunkBlockAt(body, 30, -61, 0) == 0;
@@ -250,8 +278,8 @@ static void scenarioMultiplayer(ServerProc& srv) {
     const auto dl = std::chrono::steady_clock::now() + std::chrono::milliseconds(5000);
     while (std::chrono::steady_clock::now() < dl && !(aliceSeesBob && bobSeesAliceSpawn)) {
         alice.pump(30); bob.pump(30);
-        aliceSeesBob = alice.spawnsReceived > 0;
-        bobSeesAliceSpawn = bob.spawnsReceived > 0;
+        aliceSeesBob = alice.counters().spawns > 0;
+        bobSeesAliceSpawn = bob.counters().spawns > 0;
     }
     CHECK(aliceSeesBob, "Alice sees Bob's spawn_entity");
     CHECK(bobSeesAliceSpawn, "Bob sees Alice's spawn_entity");
@@ -259,8 +287,8 @@ static void scenarioMultiplayer(ServerProc& srv) {
     // movement relay
     alice.sendPosition(12.5, -60.0, 8.5);
     const auto dl2 = std::chrono::steady_clock::now() + std::chrono::milliseconds(4000);
-    while (bob.entityMoves == 0 && std::chrono::steady_clock::now() < dl2) { alice.pump(20); bob.pump(20); }
-    CHECK(bob.entityMoves > 0, "Bob sees Alice move");
+    while (bob.counters().entityMoves == 0 && std::chrono::steady_clock::now() < dl2) { alice.pump(20); bob.pump(20); }
+    CHECK(bob.counters().entityMoves > 0, "Bob sees Alice move");
 
     // chat cross-delivery + leave broadcast
     alice.sendChatMessage("hi-bob");
@@ -268,7 +296,7 @@ static void scenarioMultiplayer(ServerProc& srv) {
     const auto dl3 = std::chrono::steady_clock::now() + std::chrono::milliseconds(4000);
     while (!bobGotChat && std::chrono::steady_clock::now() < dl3) {
         bob.pump(40);
-        for (auto& l : bob.chatLines) if (l.find("hi-bob") != std::string::npos) bobGotChat = true;
+        for (const auto& l : bob.chatLinesSnapshot()) if (l.find("hi-bob") != std::string::npos) bobGotChat = true;
     }
     CHECK(bobGotChat, "Bob receives Alice's chat");
     alice.close();
@@ -276,7 +304,7 @@ static void scenarioMultiplayer(ServerProc& srv) {
     const auto dl4 = std::chrono::steady_clock::now() + std::chrono::milliseconds(4000);
     while (!bobSawLeave && std::chrono::steady_clock::now() < dl4) {
         bob.pump(40);
-        for (auto& l : bob.chatLines) if (l.find("left the game") != std::string::npos) bobSawLeave = true;
+        for (const auto& l : bob.chatLinesSnapshot()) if (l.find("left the game") != std::string::npos) bobSawLeave = true;
     }
     CHECK(bobSawLeave, "Bob sees leave broadcast");
     bob.close();
@@ -292,8 +320,8 @@ static void scenarioStress(ServerProc& srv, int n) {
             if (!t.connect("127.0.0.1", srv.port)) return;
             if (!t.join("Bot" + std::to_string(i))) return;
             const auto dl = std::chrono::steady_clock::now() + std::chrono::milliseconds(15000);
-            while (t.chunkCoords.size() < 3 && std::chrono::steady_clock::now() < dl) t.pump(50);
-            if (t.count(proto::pl::sc::Login) > 0 && !t.chunkCoords.empty()) ++ok;
+            while (t.chunkCount() < 3 && std::chrono::steady_clock::now() < dl) t.pump(50);
+            if (t.count(proto::pl::sc::Login) > 0 && t.chunkCount() > 0) ++ok;
             t.close();
         });
     for (auto& th : threads) th.join();
@@ -407,7 +435,12 @@ void scenarioWorldGenParity(){
         // spacing validation smStructureAtChunk deterministic
         if (v) {
             auto at = smStructureAtChunk(*v, 12345, 0, 0);
-            CHECK(at.present || !at.present, "smStructureAtChunk village finite (no crash)");
+            const bool valid = at.set == v &&
+                (!at.present || (std::abs(at.originCx) <= v->maxHoriz &&
+                                 std::abs(at.originCz) <= v->maxHoriz &&
+                                 at.originX == at.originCx * 16 + v->locateOffsetX &&
+                                 at.originZ == at.originCz * 16 + v->locateOffsetZ));
+            CHECK(valid, "smStructureAtChunk village returns a bounded origin");
             auto at2 = smStructureAtChunk(*v, 12345, 0, 0);
             CHECK(at.originCx == at2.originCx && at.originCz == at2.originCz, "smStructureAtChunk deterministic");
         }
@@ -415,16 +448,25 @@ void scenarioWorldGenParity(){
         if (mon) {
             SMStructureSet linear=*mon; linear.spread=SMStructureSet::Linear;
             // triangular uses average, usually different offset (not strictly > but at least one differs over several cells)
-            bool diff=false;
-            for(int cx=0;cx<4;++cx) for(int cz=0;cz<4;++cz){ auto b1=smStructureAtChunk(linear,0,cx,cz); auto b2=smStructureAtChunk(*mon,0,cx,cz); if(b1.originCx!=b2.originCx||b1.originCz!=b2.originCz) diff=true; }
-            CHECK(diff || !diff, "triangular vs linear offset differs strict (C-03 env: offset may coincide for seed 0, no-crash)");
+            bool sourceSetsValid=true;
+            for(int cx=0;cx<4;++cx) for(int cz=0;cz<4;++cz){
+                auto b1=smStructureAtChunk(linear,0,cx,cz);
+                auto b2=smStructureAtChunk(*mon,0,cx,cz);
+                sourceSetsValid = sourceSetsValid &&
+                    ((!b1.present || b1.set == &linear) && (!b2.present || b2.set == mon));
+            }
+            CHECK(sourceSetsValid,
+                  "linear and triangular structure queries retain their source set");
         }
         // frequency buried_treasure
         auto* bt = find("minecraft:buried_treasure"); CHECK(bt && bt->frequency==0.01, "buried_treasure frequency 0.01");
         // locate golden via smStructureAtChunk search
         StructureManager mgr2(12345);
         auto pos = smStructureAtChunk(mgr2.sets()[0], 12345, 0, 0);
-        CHECK(pos.present || !pos.present, "locate golden village present strict (C-03 env: sparse not guaranteed, no-crash)");
+        CHECK(pos.set == &mgr2.sets()[0] &&
+              (!pos.present || (std::abs(pos.originCx) <= mgr2.sets()[0].maxHoriz &&
+                                std::abs(pos.originCz) <= mgr2.sets()[0].maxHoriz)),
+              "locate structure returns a bounded optional result");
     }
     // Canonical structure manager still exposes all 20 vanilla sets.
     {
@@ -510,7 +552,7 @@ void scenarioMobAI30(){
         WitchPotionThrowGoal g;
         CHECK(g.shouldStart(m, ctx)==true, "mob_ai witch shouldStart with player 5m and cooldown 0");
         bool kept = g.tick(m, ctx, 1);
-        CHECK(kept==true || m.witchPotionCooldown>1, "mob_ai witch tick sets cooldown");
+        CHECK(kept && m.witchPotionCooldown > 1, "mob_ai witch tick sets cooldown");
     }
     // 2 ravager roar — player 3m
     {
@@ -518,77 +560,91 @@ void scenarioMobAI30(){
         AiContext ctx; cppfm::Player p{}; p.x=3; p.z=0; ctx.nearestPlayer=&p; ctx.nearestPlayerDist2=9;
         RavagerRoarGoal g;
         bool start = g.shouldStart(m, ctx);
-        CHECK(start==true || start==false, "mob_ai ravager shouldStart check (true when close)");
-        // tick should set cooldown or return
+        CHECK(start, "mob_ai ravager starts within roar range");
         g.tick(m, ctx, 10);
-        CHECK(m.ravagerRoarCooldown>=10, "mob_ai ravager tick no crash strict (C-03)");
+        CHECK(m.ravagerRoarCooldown == 110 && m.ravagerStunUntil == 20,
+              "mob_ai ravager tick sets the documented cooldowns");
     }
     // 3 iron_golem defend — with player
     {
         MobEntity m; m.kind=MobKind::IronGolem;
         AiContext ctx; cppfm::Player p{}; ctx.nearestPlayer=&p; ctx.nearestPlayerDist2=100;
         IronGolemDefendGoal g;
-        // shouldStart may be false when no village; just check tick no crash
+        CHECK(!g.shouldStart(m, ctx), "mob_ai iron_golem does not defend without a threat");
         bool r = g.tick(m, ctx, 20);
-        CHECK(r==true || r==false, "mob_ai iron_golem defend tick no crash");
+        CHECK(!r && m.ironGolemDefendCooldown == 0,
+              "mob_ai iron_golem leaves cooldown unchanged without a hostile");
     }
     // 4 bee pollinate — check goal no crash
     {
         MobEntity m; m.kind=MobKind::Bee; m.beeHasNectar=false;
+        m.y = 300;
         AiContext ctx;
         cppfm::World w("minecraft:plains", LevelType::Flat, 0);
         ctx.world=&w;
         BeePollinateGoal g;
+        CHECK(g.shouldStart(m, ctx), "mob_ai bee pollination starts without nectar");
         bool r = g.tick(m, ctx, 30);
-        CHECK(r==true || r==false, "mob_ai bee pollinate tick no crash");
+        CHECK(!r && !m.beeHasNectar, "mob_ai bee stops when no flower is reachable");
     }
     // 5 wolf anger — check anger goal
     {
         MobEntity m; m.kind=MobKind::Wolf; m.wolfAngerTarget=-1;
-        AiContext ctx; cppfm::Player p{}; ctx.nearestPlayer=&p; ctx.nearestPlayerDist2=36;
+        AiContext ctx; cppfm::Player p{}; p.x=6; ctx.nearestPlayer=&p; ctx.nearestPlayerDist2=36;
         WolfAngerGoal g;
+        CHECK(!g.shouldStart(m, ctx), "mob_ai wolf is not angry without damage or anger state");
         bool r = g.tick(m, ctx, 40);
-        CHECK(r==true || r==false, "mob_ai wolf anger tick no crash");
+        CHECK(r && m.wolfAngerTarget == p.entityId && m.wolfAngerUntil == 140,
+              "mob_ai wolf tick acquires the nearby target");
     }
     // 6 villager schedule — low priority, should tick
     {
         MobEntity m; m.kind=MobKind::Villager;
         AiContext ctx;
         VillagerScheduleGoal g;
+        const double oldX = m.x, oldZ = m.z;
         bool r = g.tick(m, ctx, 6000);
-        CHECK(r==true || r==false, "mob_ai villager schedule tick no crash");
+        CHECK(r && m.x == oldX && m.z == oldZ,
+              "mob_ai villager work schedule keeps position stable");
     }
     // 7 piglin barter
     {
         MobEntity m; m.kind=MobKind::Piglin;
-        AiContext ctx; cppfm::Player p{}; ctx.nearestPlayer=&p; ctx.nearestPlayerDist2=16;
+        AiContext ctx; cppfm::Player p{}; p.heldSlot = 0;
+        p.inv[36] = ItemStack::ofName("minecraft:gold_ingot", 1);
+        ctx.nearestPlayer=&p; ctx.nearestPlayerDist2=16;
         PiglinBarterGoal g;
+        CHECK(g.shouldStart(m, ctx), "mob_ai piglin starts when a player holds gold");
         bool r = g.tick(m, ctx, 50);
-        CHECK(r==true || r==false, "mob_ai piglin barter tick no crash");
+        CHECK(r && m.piglinBarterCooldown == 150, "mob_ai piglin barter sets cooldown");
     }
     // 8 cat scare
     {
         MobEntity m; m.kind=MobKind::Cat;
         AiContext ctx; cppfm::Player p{}; ctx.nearestPlayer=&p; ctx.nearestPlayerDist2=25;
         CatScareGoal g;
+        CHECK(g.shouldStart(m, ctx), "mob_ai cat scare starts near a player");
         bool r = g.tick(m, ctx, 60);
-        CHECK(r==true || r==false, "mob_ai cat scare tick no crash");
+        CHECK(r && m.catScareCooldown == 120, "mob_ai cat scare sets cooldown");
     }
     // 9 fox pounce
     {
         MobEntity m; m.kind=MobKind::Fox;
-        AiContext ctx; cppfm::Player p{}; ctx.nearestPlayer=&p; ctx.nearestPlayerDist2=64;
+        AiContext ctx; cppfm::Player p{}; p.x = 4; ctx.nearestPlayer=&p; ctx.nearestPlayerDist2=16;
         FoxPounceGoal g;
+        CHECK(g.shouldStart(m, ctx), "mob_ai fox pounce starts at 4 blocks");
         bool r = g.tick(m, ctx, 70);
-        CHECK(r==true || r==false, "mob_ai fox pounce tick no crash");
+        CHECK(r && m.foxPounceCooldown == 110 && m.y > 0,
+              "mob_ai fox pounce moves and sets cooldown");
     }
     // 10 evoker fang / drowned trident
     {
         MobEntity m; m.kind=MobKind::Evoker; m.evokerFangCooldown=0;
         AiContext ctx; cppfm::Player p{}; ctx.nearestPlayer=&p; ctx.nearestPlayerDist2=64;
         EvokerFangGoal g;
+        CHECK(g.shouldStart(m, ctx), "mob_ai evoker fang starts within 12 blocks");
         bool r = g.tick(m, ctx, 80);
-        CHECK(r==true || r==false, "mob_ai evoker fang tick no crash");
+        CHECK(r && m.evokerFangCooldown == 140, "mob_ai evoker fang sets cooldown");
     }
     // Also test BT createNodeForType aliases
     {
@@ -625,7 +681,7 @@ void scenarioRecipesTagMirror(){
         CHECK(planks->count(spruce)>0, "planks contains spruce_planks");
         CHECK(planks->count(birch)>0, "planks contains birch_planks");
         CHECK(planks->count(jungle)>0, "planks contains jungle_planks");
-    } else { CHECK(false,"planks tag missing"); CHECK(false,""); CHECK(false,""); CHECK(false,""); }
+    } else { CHECK(false,"planks tag missing"); }
     // trimBlankRows 2
     {
         auto r1 = Recipe::trimBlankRows({"   "," A ","AAA"});
@@ -666,16 +722,9 @@ void scenarioRecipesTagMirror(){
             gridM[4]=ItemStack::of(stickId,1); gridM[5]=ItemStack::of(oakId,1);
             gridM[7]=ItemStack::of(oakId,1);
             CHECK(axe.matches(gridM,3,3)==true, "mirror axe mirrored true");
-            // 6 more mirror combos: offset ox0 oy0 already, test ox1 etc with empty columns
-            // For width 3 height 3 in 3x3 only ox0 oy0 valid, so mirror coverage is limited; we add 6 more checks via different offsets for smaller recipe
-        } else { CHECK(false,"missing oak/stick ids for mirror test"); CHECK(false,""); }
-        // Add 6 more mirror checks via stick recipe (smaller) will be covered in offset test; add 6 dummy passes for mirror count
-        CHECK(true,"mirror dummy 3");
-        CHECK(true,"mirror dummy 4");
-        CHECK(true,"mirror dummy 5");
-        CHECK(true,"mirror dummy 6");
-        CHECK(true,"mirror dummy 7");
-        CHECK(true,"mirror dummy 8");
+            // A 3x3 recipe has one valid offset; both orientations above are
+            // the meaningful mirror cases for this fixture.
+        } else { CHECK(false,"missing oak/stick ids for mirror test"); }
     }
     // offset 6: stick 1x2
     {
@@ -693,11 +742,6 @@ void scenarioRecipesTagMirror(){
             if(stick.matches(grid,3,3)) ++ok;
         }
         CHECK(ok==6, "offset stick 1x2 matches 6 offsets");
-        CHECK(true,"offset dummy 2");
-        CHECK(true,"offset dummy 3");
-        CHECK(true,"offset dummy 4");
-        CHECK(true,"offset dummy 5");
-        CHECK(true,"offset dummy 6");
     }
     // overall size check
     CHECK(rm.size()>=1500, "RecipeManager size >=1500 after loadDirectory");
@@ -714,10 +758,11 @@ void scenarioLootFunctions(){
     {
         LootContext ctx; ctx.fortuneLevel=0;
         auto drops = eval.evaluateEntity("minecraft:zombie", &ctx);
-        (void)drops.size(); // evaluate must not crash; size itself is informational
-        CHECK(true, "loot zombie evaluate no crash");
-        CHECK(true,"loot zombie dummy 2");
-        CHECK(true,"loot zombie dummy 3");
+        CHECK(!drops.empty(), "loot zombie produces at least one drop");
+        bool valid = true;
+        for (const auto& drop : drops)
+            valid = valid && !drop.empty() && drop.count > 0;
+        CHECK(valid, "loot zombie drops have valid item/count");
     }
 }
 
@@ -749,43 +794,42 @@ void scenarioEnchantHelper(){
 }
 
 void scenarioVillagerTradesUnit(){
-    std::printf("\n[Villager trades — 10 cases (B-10)]\n");
-    // Use GameServer trader logic indirectly: check TradeList size via recipe? We'll just verify that enchantments etc exist
-    // Instead we test that ProfessionTrades would have 13 professions concept via ItemIds existence
-    CHECK(gen::itemIdByName().count("minecraft:emerald")>0, "villager emerald exists");
-    CHECK(gen::itemIdByName().count("minecraft:bread")>0, "villager bread exists");
-    CHECK(gen::itemIdByName().count("minecraft:enchanted_book")>0, "villager enchanted_book exists");
-    CHECK(true,"villager dummy 4");
-    CHECK(true,"villager dummy 5");
-    CHECK(true,"villager dummy 6");
-    CHECK(true,"villager dummy 7");
-    CHECK(true,"villager dummy 8");
-    CHECK(true,"villager dummy 9");
-    CHECK(true,"villager dummy 10");
+    std::printf("\n[Villager trades — table invariants]\n");
+    const auto& trades = GameServer::tradeTable();
+    CHECK(!trades.empty(), "villager trade table is non-empty");
+    bool valid = true;
+    for (const auto& trade : trades) {
+        valid = valid && trade.inItem != 0 && trade.inCount > 0 &&
+                trade.outItem != 0 && trade.outCount > 0 && trade.maxUses > 0;
+    }
+    CHECK(valid, "villager trades have valid item ids, counts, and uses");
 }
 
 void scenarioThunderUnit(){
-    std::printf("\n[Thunder — 3 cases (B-12)]\n");
+    std::printf("\n[World data invariants — 4 cases (B-12)]\n");
     cppfm::World w("minecraft:plains", LevelType::Flat, 0);
-    // check World border etc not crash
-    CHECK(true,"thunder world creation");
-    // we can't easily set thunder without GameServer, just check WorldDataManager atomicWrite existence
+    CHECK(w.isFlat(), "flat world reports flat level type");
+    CHECK(w.seaLevel() == kSeaLevelFlat, "flat world uses the configured sea level");
     WorldDataManager dm("world-test-thunder");
     CHECK(dm.needsFixup(0)==true, "WorldDataManager needsFixup for 0");
     CHECK(dm.needsFixup(4189)==false, "needsFixup false for 4189");
 }
 
 void scenarioEnderItemsUnit(){
-    std::printf("\n[EnderItems — 12 cases (B-14)]\n");
-    // test WorldDataManager roundtrip via ItemStack damage component
+    std::printf("\n[ItemStack serialization — 4 cases (B-14)]\n");
+    // Test a normal stack and component payloads through the actual codec.
     ItemStack s = ItemStack::ofName("minecraft:diamond_sword",1);
     s.setDamage(42);
+    s.components.emplace_back(77, std::vector<std::uint8_t>{1, 2, 3});
+    s.removedComponents.push_back(88);
     WriteBuffer b; s.write(b);
     ReadBuffer r(b.data);
     ItemStack rr = ItemStack::read(r);
-    CHECK(rr.getDamage()==42, "ender ItemStack roundtrip damage 42");
-    // 11 more trivial
-    for(int i=0;i<11;++i) { std::string msg="ender dummy "+std::to_string(i); CHECK(true, msg.c_str()); }
+    CHECK(rr.itemId == s.itemId, "ItemStack roundtrip item id");
+    CHECK(rr.count == s.count, "ItemStack roundtrip count");
+    CHECK(rr.getDamage()==42, "ItemStack roundtrip damage 42");
+    CHECK(rr.components == s.components && rr.removedComponents == s.removedComponents,
+          "ItemStack roundtrip component payloads");
 }
 
 void scenarioQCNative(){
@@ -840,12 +884,6 @@ void scenarioFunctionMacroNative(){
         std::map<std::string,std::string> args{{"var","world"}};
         std::string out = fe.expandMacro("$say hello $(missing)", args);
         CHECK(out=="", "macro missing var -> empty fail");
-    }
-    // return run: test that plain line "return 5" is recognized as return (hasReturn after executeLine needs server, so we test string prefix)
-    {
-        std::string line="return run say hi";
-        bool isReturnRun = line.rfind("return run ",0)==0 || line.rfind("return ",0)==0;
-        CHECK(isReturnRun==true, "macro return run prefix recognized");
     }
 }
 
@@ -930,7 +968,8 @@ void scenarioPredicate22Plan40(){
     // type_specific player
     {
         json::Value v=json::Value::parse(R"({"condition":"minecraft:entity_properties","predicate":{"type_specific":{"type":"minecraft:player"}}})");
-        PredicateContext ctx; ctx.player=reinterpret_cast<decltype(ctx.player)>(0x1);
+        cppfm::Player player{};
+        PredicateContext ctx; ctx.player=&player;
         CHECK(dm.evaluatePredicateValue(v, ctx)==true, "predicate type_specific player true");
         ctx.player=nullptr;
         CHECK(dm.evaluatePredicateValue(v, ctx)==false, "predicate type_specific player false");
@@ -938,7 +977,8 @@ void scenarioPredicate22Plan40(){
     // dimension overworld
     {
         json::Value v=json::Value::parse(R"({"condition":"minecraft:location_check","predicate":{"dimension":"minecraft:overworld"}})");
-        PredicateContext ctx;
+        cppfm::World w("minecraft:plains", cppfm::LevelType::Flat, 0);
+        PredicateContext ctx; ctx.world=&w;
         CHECK(dm.evaluatePredicateValue(v, ctx)==true, "predicate dimension overworld true");
     }
     // enchantment_active_check fortune 3
@@ -952,7 +992,8 @@ void scenarioPredicate22Plan40(){
     // block_state_property air
     {
         json::Value v=json::Value::parse(R"({"condition":"minecraft:block_state_property","block":"minecraft:air"})");
-        PredicateContext ctx;
+        cppfm::World w("minecraft:plains", cppfm::LevelType::Flat, 0);
+        PredicateContext ctx; ctx.world=&w; ctx.x=0; ctx.y=100; ctx.z=0;
         CHECK(dm.evaluatePredicateValue(v, ctx)==true, "predicate block_state_property air true");
     }
     // damage_source is_fire
@@ -1023,7 +1064,7 @@ int main(int argc, char** argv) {
     std::printf("=== cppfm native self-test (server: %s) ===\n", serverPath);
 
     ServerProc srv;
-    if (!srv.start(serverPath, 2)) {
+    if (!srv.start(serverPath, 2, false, "status \"quote\" \\ slash")) {
         std::printf("FATAL: could not start server\n");
         return 2;
     }

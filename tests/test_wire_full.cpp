@@ -25,7 +25,6 @@ using namespace cppfm;
 
 static int g_pass = 0;
 static int g_fail = 0;
-static int g_skip = 0;
 
 static void hexDump(const std::vector<std::uint8_t>& v, size_t limit=48){
     for(size_t i=0;i<v.size() && i<limit;++i) std::printf("%02x ", v[i]);
@@ -377,7 +376,6 @@ static void test_0x1A_DamageEvent(){
 static void test_0x1B_DebugSample_gap(){
     std::printf("[P1B] DebugSample 0x1B omitted — debug non-visible\n");
     check(proto::pl::sc::DebugSample==0x1B, "DebugSample 0x1B id lock (omitted, non-visible)");
-    check(true, "DebugSample omitted — vanilla non-visible alternative (no packet needed)");
 }
 static void test_0x1C_DisguisedChat(){
     std::printf("[P1C] DisguisedChat 0x1C anonymousNbt? (HideMessage alias)\n");
@@ -613,12 +611,10 @@ static void test_0x49_ResetScore(){
 static void test_0x4A_RemoveResourcePack_gap(){
     std::printf("[P4A] PlayRemoveResourcePack 0x4A omitted — cf:sc 0x08 alternative\n");
     check(proto::pl::sc::PlayRemoveResourcePack==0x4A, "PlayRemoveResourcePack 0x4A id lock (omitted)");
-    check(true, "PlayRemoveResourcePack omitted — configuration 0x08 alternative (no player gap)");
 }
 static void test_0x4B_AddResourcePack_gap(){
     std::printf("[P4B] PlayAddResourcePack 0x4B omitted — cf:sc 0x09 alternative\n");
     check(proto::pl::sc::PlayAddResourcePack==0x4B, "PlayAddResourcePack 0x4B id lock (omitted)");
-    check(true, "PlayAddResourcePack omitted — configuration 0x09 alternative");
 }
 static void test_0x4C_Respawn(){
     std::printf("[P4C] Respawn 0x4C minimal\n");
@@ -808,12 +804,10 @@ static void test_0x77_EntityTeleport(){
 static void test_0x78_SetTikingState_gap(){
     std::printf("[P78] SetTikingState 0x78 omitted — 20t fixed (tick freeze debug)\n");
     check(proto::pl::sc::SetTikingState==0x78, "SetTikingState 0x78 id lock (omitted, 20t fixed)");
-    check(true, "SetTikingState omitted — vanilla 20t fixed alternative (no gap)");
 }
 static void test_0x79_StepTick_gap(){
     std::printf("[P79] StepTick 0x79 omitted — 20t fixed\n");
     check(proto::pl::sc::StepTick==0x79, "StepTick 0x79 id lock (omitted, 20t fixed)");
-    check(true, "StepTick omitted — 20t fixed alternative");
 }
 static void test_0x7A_Transfer(){
     std::printf("[P7A] Transfer 0x7A string varint\n");
@@ -855,7 +849,6 @@ static void test_0x80_SetProjectilePower_gap(){
 static void test_0x81_CustomReportDetails_gap(){
     std::printf("[P81] CustomReportDetails 0x81 omitted — void report\n");
     check(proto::pl::sc::CustomReportDetails==0x81, "CustomReportDetails 0x81 id lock (omitted, void)");
-    check(true, "CustomReportDetails omitted — void, no alternative needed");
 }
 static void test_0x82_ServerLinks_gap(){
     std::printf("[P82] ServerLinks 0x82 omitted — ServerData 0x50 alternative\n");
@@ -1009,6 +1002,6 @@ int main(){
     test_0x82_ServerLinks_gap();
     test_field_order_strict();
 
-    std::printf("=== test_wire_full: %d PASS %d FAIL %d SKIP ===\n", g_pass, g_fail, g_skip);
+    std::printf("=== test_wire_full: %d PASS %d FAIL ===\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

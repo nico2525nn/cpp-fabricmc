@@ -365,13 +365,14 @@ void GameServer::initAdminCommandsPart09() {
 void GameServer::initAdminCommandsPart10() {
     auto& d = commands_;
     {
-        // /publish — open to LAN stub (vanilla needs integrated server GUI).
+        // Dedicated servers are already reachable through their configured
+        // listening port; vanilla /publish is an integrated-server action.
         auto pub = CommandNode::literal("publish");
         pub->executable = true;
         pub->action = [this](CommandContext& c) {
             Player* src = static_cast<Player*>(c.source.player);
-            sendFeedback(src, "Published the game to LAN on port 25565 (publish)");
-            return 1;
+            sendFeedback(src, "Publish to LAN is unavailable on a dedicated server; use the configured server port");
+            return 0;
         };
         d.root->then(pub);
     }

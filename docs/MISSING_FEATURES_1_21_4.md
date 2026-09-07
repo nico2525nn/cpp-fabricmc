@@ -5,8 +5,8 @@
 > rows **#81–#90**. The restored matrix is a historical taxonomy baseline; it is not
 > a release gate and does not make the current cleanup or operations audit green.
 >
-> Current implementation/evidence baseline: integrated runtime snapshot
-> `c3a5e49e41261dacb4b9454c538aa87575fa9546`.
+> Current implementation/evidence baseline: `main` HEAD `abcdc6b` plus the
+> current uncommitted review/cleanup worktree (rechecked 2026-09-07).
 
 ## Summary
 
@@ -20,8 +20,8 @@
 - Current publication state is `BLOCKED` only by declared boundaries: three integrated
   `tools/soak_bot.py --duration 300` runs passed, while the attempted 7200-second soak
   was interrupted above its RSS gate; accepted 2-hour/24-hour and current real-client
-  evidence remain absent. `test_gameplay_full` retains its one intentional
-  E-14 expected failure. See [CURRENT_STATE.md](CURRENT_STATE.md) and
+  evidence remain absent. The E-14 arbitrary-JVM-mod boundary is informational and
+  remains explicitly declared. See [CURRENT_STATE.md](CURRENT_STATE.md) and
   [VERIFICATION.md](VERIFICATION.md) for gate semantics.
 
 ## Machine-readable status rules
@@ -211,11 +211,11 @@ table rather than being hidden inside a numbered `DONE` row.
 
 `tests/test_smoke_80.cpp` exercises the base taxonomy and its historical extension
 checks. A test result is evidence for a named run, not a replacement for the matrix
-status. Current named wire counts are `test_spec_wire` `392 PASS 0 FAIL 0 SKIP`,
-`test_wire_full` `405 PASS 0 FAIL 0 SKIP`, and `test_wire_b6` `133 PASS 0 FAIL`;
+status. Current named wire counts are `test_spec_wire` `395 PASS 0 FAIL`,
+`test_wire_full` `399 PASS 0 FAIL`, and `test_wire_b6` `133 PASS 0 FAIL`;
 the old handover value `328` is stale. `test_native` remains `ALL PASS` without an
-invented aggregate count. The final-gates record includes `test_smoke_80` `212 PASS 0 FAIL`,
-`test_gameplay_full` `803 PASS / 1 intentional E-14 FAIL / 804` (exit 1), a passing
+invented aggregate count. The final-gates record includes `test_smoke_80` `223 PASS 0 FAIL`,
+`test_gameplay_full` `804 PASS / 0 FAIL / 804`, a passing
 `tests/soak_test.py --duration 300` run, and three passing `tools/soak_bot.py
 --duration 300` runs. No unexpected executable failure remains; the remaining
 publication limitations are recorded separately below.

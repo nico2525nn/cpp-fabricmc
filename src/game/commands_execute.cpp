@@ -551,14 +551,26 @@ void GameServer::initExecuteConditionCommands(const brigadier::NodePtr& exec, co
                 auto cmd = CommandNode::argument("command", args::stringGreedy());
                 cmd->executable = true;
                 cmd->action = [this, isUnless](CommandContext& c){
-                    // simplified: always true unless predicate id contains "false"
                     std::string pid=c.arg("predicateId").asStr();
-                    bool val = pid.find("false")==std::string::npos;
+                    Player* src=static_cast<Player*>(c.source.player);
+                    PredicateContext predicateContext;
+                    if (src) {
+                        predicateContext = basePredicateContext(*src);
+                    } else {
+                        predicateContext.gamerules = &gamerules_;
+                        predicateContext.dayTime = dayTime();
+                        predicateContext.raining = raining();
+                        predicateContext.thundering = thundering();
+                    }
+                    if (!datapackManager_.hasPredicate(pid)) {
+                        sendFeedback(src, "Unknown predicate: " + pid);
+                        return 0;
+                    }
+                    const bool val = datapackManager_.testPredicate(pid, predicateContext);
                     bool pass = isUnless ? !val : val;
                     if(!pass) return 0;
                     std::string inner=c.arg("command").asStr();
                     if(!inner.empty()&&inner.front()=='/') inner=inner.substr(1);
-                    Player* src=static_cast<Player*>(c.source.player);
                     brigadier::CommandSource tsrc;
                     if(src){ tsrc.player=src; tsrc.name=src->name; }
                     tsrc.resolveSelector=[this,src](const std::string& raw, brigadier::SelectorResult& out){ out=resolveSelector(raw,src); };

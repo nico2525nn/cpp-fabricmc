@@ -11,6 +11,7 @@
 #include <memory>
 #include <vector>
 #include <functional>
+#include <atomic>
 #include "../game/World.hpp"
 #include "../game/BlockEntities.hpp"
 
@@ -124,7 +125,8 @@ public:
     }
 
     void setBlockEntityStore(BlockEntityStore* s) { beStore_ = s; }
-    void setTickRef(std::int64_t* t) { tickRef_ = t; }
+    void setTickRef(std::int64_t* t) { tickRef_ = t; atomicTickRef_ = nullptr; }
+    void setTickRef(const std::atomic<std::int64_t>* t) { atomicTickRef_ = t; tickRef_ = nullptr; }
     void setBlockTickScheduler(BlockTickScheduler* bts) { blockTicks_ = bts; }
     void setGameServer(void* srv) { gameServer_ = srv; }
     void setBroadcastFn(std::function<void(std::int32_t,std::int32_t,std::int32_t,std::uint16_t)> fn) { broadcastFn_ = std::move(fn); }
@@ -161,6 +163,7 @@ private:
     World& world_;
     BlockEntityStore* beStore_ = nullptr;
     std::int64_t* tickRef_ = nullptr;
+    const std::atomic<std::int64_t>* atomicTickRef_ = nullptr;
     BlockTickScheduler* blockTicks_ = nullptr;
     void* gameServer_ = nullptr;
     std::function<void(std::int32_t,std::int32_t,std::int32_t,std::uint16_t)> broadcastFn_;

@@ -5,12 +5,23 @@
 
 namespace cppfm {
 
+namespace {
+bool isDimensionStoragePath(const std::string& path) {
+    const std::filesystem::path candidate(path);
+    for (const auto& component : candidate) {
+        const auto name = component.string();
+        if (name == "DIM-1" || name == "DIM1") return true;
+    }
+    return false;
+}
+}
+
 bool WorldDataManager::saveLevelDataWithProviders(std::int64_t worldTicks, std::int64_t dayTime, World& world,
                                     const std::string& difficulty,
                                     double borderDiameter, double borderCX, double borderCZ,
                                     double borderLerpTarget, std::int64_t borderLerpMs) {
     // W16 single level.dat: DIM dirs must not own level.dat
-    if (dir_.find("DIM") != std::string::npos) return false;
+    if (isDimensionStoragePath(dir_)) return false;
     try {
         nbt::Value root = nbt::Value::makeCompound();
         nbt::Value data = nbt::Value::makeCompound();
@@ -126,12 +137,18 @@ bool WorldDataManager::saveLevelDataWithProviders(std::int64_t worldTicks, std::
             ensureGr(gr);
             data.set("GameRules", gr);
         } else {
-            if (auto* gr = data.get("GameRules")) ensureGr(*const_cast<nbt::Value*>(gr));
+            if (auto* gr = data.get("GameRules")) ensureGr(*gr);
         }
         if (provide_) provide_(data);
         root.set("Data", data);
         return saveLevelData(root);
-    } catch (...) { return false; }
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[WorldDataManager] level data save failed: %s\n", e.what());
+        return false;
+    } catch (...) {
+        std::fprintf(stderr, "[WorldDataManager] level data save failed\n");
+        return false;
+    }
 }
 
 bool WorldDataManager::tryLoadFile(const std::string& path, World& world, std::string& difficultyOut,
@@ -140,9 +157,19 @@ bool WorldDataManager::tryLoadFile(const std::string& path, World& world, std::s
     try {
         std::ifstream f(path, std::ios::binary);
         if (!f) return false;
+        std::error_code sizeError;
+        const auto size = std::filesystem::file_size(path, sizeError);
+        if (!sizeError && size > WorldDataManager::kMaxLevelDataBytes) {
+            std::fprintf(stderr, "[WorldDataManager] refusing oversized level data: %s\n",
+                         path.c_str());
+            return false;
+        }
         std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(f)),
                                          std::istreambuf_iterator<char>());
-        if (bytes.empty()) return false;
+        // istreambuf_iterator reaches EOF without necessarily setting eofbit;
+        // badbit is the meaningful signal for an I/O failure here.
+        if (bytes.empty() || bytes.size() > WorldDataManager::kMaxLevelDataBytes || f.bad())
+            return false;
         ReadBuffer in(bytes);
         nbt::Parser parser(in);
         nbt::Value root = parser.readFileRoot();
@@ -220,7 +247,14 @@ bool WorldDataManager::tryLoadFile(const std::string& path, World& world, std::s
             if (ds2->tag==nbt::String) difficultyOut = ds2->str;
         }
         return true;
-    } catch (...) { return false; }
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[WorldDataManager] level data load failed (%s): %s\n",
+                     path.c_str(), e.what());
+        return false;
+    } catch (...) {
+        std::fprintf(stderr, "[WorldDataManager] level data load failed (%s)\n", path.c_str());
+        return false;
+    }
 }
 
 bool WorldDataManager::loadWithRecovery(World& world, std::string& difficultyOut,

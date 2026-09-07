@@ -9,6 +9,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <cstdio>
+#include <cerrno>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -38,34 +39,69 @@ static bool waitPort(std::uint16_t port, int timeoutMs) {
 }
 struct ServerProc {
     pid_t pid=-1; std::uint16_t port=0; std::string worldDir;
+    ~ServerProc() { stop(); }
     bool start(const char* bin) {
         port = static_cast<std::uint16_t>(27000 + (getpid()%2000));
         worldDir = "/tmp/plan43-" + std::to_string(getpid());
         std::filesystem::remove_all(worldDir); std::filesystem::create_directories(worldDir);
         for(int a=0;a<20;++a){ TestClient pr; if(!pr.connect("127.0.0.1",port,1)) break; pr.close(); port++; }
         pid = fork();
+        if (pid < 0) {
+            std::error_code ec;
+            std::filesystem::remove_all(worldDir, ec);
+            return false;
+        }
         if(pid==0){
             char pa[32], wa[256];
             snprintf(pa,sizeof(pa),"--port=%u",port);
             snprintf(wa,sizeof(wa),"--world-dir=%s",worldDir.c_str());
             execl(bin,bin,pa,"--view-distance=4",wa,"--online-mode=false",(char*)nullptr); _exit(127);
         }
-        return waitPort(port,8000);
+        if (waitPort(port,8000)) return true;
+        stop();
+        return false;
     }
-    void stop(){ if(pid>0){ kill(pid,SIGTERM); int st=0; for(int i=0;i<25;++i){ pid_t r=waitpid(pid,&st,WNOHANG); if(r==pid||r==-1) break; usleep(100*1000); } if(kill(pid,0)==0){ kill(pid,SIGKILL); waitpid(pid,&st,0); } else if(pid>0){ waitpid(pid,&st,WNOHANG); } pid=-1; std::filesystem::remove_all(worldDir); } }
+    void stop() noexcept {
+        if (pid <= 0) return;
+        const pid_t child = pid;
+        int status = 0;
+        bool reaped = false;
+        for (int i = 0; i < 600; ++i) {
+            const pid_t result = waitpid(child, &status, WNOHANG);
+            if (result == child) { reaped = true; break; }
+            if (result < 0) {
+                if (errno == EINTR) { --i; continue; }
+                reaped = errno == ECHILD;
+                break;
+            }
+            if (i == 0) (void)kill(child, SIGTERM);
+            usleep(100 * 1000);
+        }
+        if (!reaped) {
+            (void)kill(child, SIGKILL);
+            for (;;) {
+                const pid_t result = waitpid(child, &status, 0);
+                if (result == child || (result < 0 && errno == ECHILD)) break;
+                if (result < 0 && errno == EINTR) continue;
+                break;
+            }
+        }
+        pid = -1;
+        std::error_code ec;
+        std::filesystem::remove_all(worldDir, ec);
+    }
 };
 
 static bool waitChat(TestClient& c, const std::string& substr, int ms=5000){
     Packet p;
     auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
     while (std::chrono::steady_clock::now() < deadline) {
-        for (auto& line : c.chatLines)
+        for (const auto& line : c.chatLinesSnapshot())
             if (line.find(substr) != std::string::npos) return true;
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
     // also scan raw recent packets for the substring (fallback for unparsed formats)
-    std::lock_guard lk(c.mtx_public());
-    for (auto& q : c.recentPublic()) {
+    for (const auto& q : c.recentSnapshot()) {
         std::string raw(reinterpret_cast<const char*>(q.body.data()), q.body.size());
         if (raw.find(substr) != std::string::npos) return true;
     }
@@ -74,8 +110,8 @@ static bool waitChat(TestClient& c, const std::string& substr, int ms=5000){
 
 // last sc Abilities 0x3A flags byte (-1 if none yet)
 static int lastAbilitiesFlags(TestClient& c) {
-    std::lock_guard lk(c.mtx_public());
-    for (auto it = c.recentPublic().rbegin(); it != c.recentPublic().rend(); ++it) {
+    const auto recent = c.recentSnapshot();
+    for (auto it = recent.rbegin(); it != recent.rend(); ++it) {
         if (it->id == proto::pl::sc::Abilities && !it->body.empty())
             return static_cast<std::int8_t>(it->body[0]);
     }
@@ -129,7 +165,7 @@ static void tTab(ServerProc& srv) {
     c.sendTabComplete(7, "/gam");
     TestClient::SuggestionsResp r;
     CHECK(c.waitSuggestions(7, r, 5000), "W-04 0x10 response echoes transactionId 7");
-    CHECK(c.alive(), "W-04 alive after tab (no underrun disconnect)");
+    CHECK(c.alive(), "W-04 alive after tab (no underrun disconnect) [liveness]");
     if (r.transactionId == 7) {
         CHECK(r.start == 1, "W-04 start==1 (token after '/')");
         CHECK(r.length == 3, "W-04 length==3 (\"gam\")");
@@ -143,7 +179,7 @@ static void tTab(ServerProc& srv) {
     c.sendTabComplete(8, "");
     TestClient::SuggestionsResp r2;
     CHECK(c.waitSuggestions(8, r2, 5000), "W-04 empty text still answers 0x10");
-    CHECK(c.alive(), "W-04 alive after empty tab");
+    CHECK(c.alive(), "W-04 alive after empty tab [liveness]");
     c.close();
 }
 
@@ -155,7 +191,7 @@ static void tFinish(ServerProc& srv) {
     CHECK(c.joinWithFinishContamination("P43Fin"), "W-12 contaminated finish still joins play");
     if (c.alive()) {
         c.sendChatCommand("list");
-        CHECK(waitChat(c, "Players") || c.count(proto::pl::sc::SystemChat) > 0 || c.alive(),
+        CHECK(waitChat(c, "Players"),
               "W-12 play usable after contaminated finish");
     } else {
         CHECK(false, "W-12 play usable after contaminated finish");
@@ -168,7 +204,8 @@ static void tMoveFlags(ServerProc& srv) {
     SECTION("W-01 MovementFlags u8 bit0=onGround (16 combos alive)");
     TestClient c;
     CHECK(c.connect("127.0.0.1", srv.port) && c.join("P43Mov"), "W-01 join");
-    double bx = c.x, by = c.y, bz = c.z;
+    const auto startPosition = c.positionSnapshot();
+    double bx = startPosition.x, by = startPosition.y, bz = startPosition.z;
     const std::uint8_t flags[] = {0x00, 0x01, 0x02, 0x03};
     for (auto f : flags) {
         c.sendMovePlayerFlags(bx, by, bz, f);
@@ -177,7 +214,7 @@ static void tMoveFlags(ServerProc& srv) {
         c.sendFlyingFlags(f);
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(800));
-    CHECK(c.alive(), "W-01 16 combos (4 kinds x 4 flags) no kick");
+    CHECK(c.alive(), "W-01 16 combos (4 kinds x 4 flags) no kick [liveness]");
     CHECK(c.count(proto::pl::sc::Disconnect) == 0, "W-01 no Disconnect sent");
     c.close();
 }
@@ -188,7 +225,8 @@ static void tFallDamage(ServerProc& srv) {
     CHECK(c.connect("127.0.0.1", srv.port) && c.join("P43Fall"), "W-01 fall join");
     c.sendChatCommand("gamemode survival");
     std::this_thread::sleep_for(std::chrono::milliseconds(800));
-    double bx = c.x, by = c.y, bz = c.z;
+    const auto startPosition = c.positionSnapshot();
+    double bx = startPosition.x, by = startPosition.y, bz = startPosition.z;
     // rise 20 blocks as airborne (client-authoritative positions)
     for (int i = 1; i <= 10; ++i) {
         c.sendMovePlayerFlags(bx, by + i * 2.0, bz, 0x00);
@@ -202,7 +240,7 @@ static void tFallDamage(ServerProc& srv) {
     c.sendMovePlayerFlags(bx, by, bz, 0x01); // land
     bool hurt = c.waitFor([](const Packet& q){ return q.id == proto::pl::sc::DamageEvent; }, 5000);
     CHECK(hurt, "W-01 20-block 0x02 fall deals fall damage (DamageEvent)");
-    CHECK(c.alive(), "W-01 alive after fall");
+    CHECK(c.alive(), "W-01 alive after fall [liveness]");
     c.close();
 }
 
@@ -241,8 +279,7 @@ static bool waitHurtFor(TestClient& c, std::int32_t eid, std::size_t, int ms) {
     auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
     while (std::chrono::steady_clock::now() < deadline) {
         {
-            std::lock_guard lk(c.mtx_public());
-            for (auto& q : c.recentPublic()) {
+            for (const auto& q : c.recentSnapshot()) {
                 if (q.id != proto::pl::sc::HurtAnimation) continue;
                 try {
                     ReadBuffer in(q.body);
@@ -284,7 +321,7 @@ static void tUseEntity(ServerProc& srv) {
             snprintf(msg, sizeof(msg), "W-02 %s window %s", k.label, k.expectWindow ? "opens" : "stays shut");
             CHECK(window == k.expectWindow, msg);
         }
-        CHECK(c.alive(), "W-02 alive");
+        CHECK(c.alive(), "W-02 alive [liveness]");
         c.close();
     }
     // ATTACK x2 (mouse=1, no hand, trailing sneak bool): must land (HurtAnimation
@@ -308,7 +345,7 @@ static void tUseEntity(ServerProc& srv) {
             snprintf(msg, sizeof(msg), "W-02 atk%d no window", s);
             CHECK(c.count(proto::pl::sc::OpenHorseWindow) == w0, msg);
         }
-        CHECK(c.alive(), "W-02 atk alive");
+        CHECK(c.alive(), "W-02 atk alive [liveness]");
         c.close();
     }
 }
@@ -328,7 +365,7 @@ static void tAbilities(ServerProc& srv) {
     CHECK(waitAbilitiesFlags(c, 0x00, 5000), "W-06 survival re-confirmed");
     c.sendAbilitiesFlags(0x02); // claim flying without permission
     std::this_thread::sleep_for(std::chrono::milliseconds(800));
-    CHECK(c.alive(), "W-06 abilities 0x26 received without kick");
+    CHECK(c.alive(), "W-06 abilities 0x26 received without kick [liveness]");
     c.close();
 }
 
@@ -337,7 +374,8 @@ static void tSign(ServerProc& srv) {
     SECTION("W-07 update_sign 0x39 -> BlockEntityData 0x07 + relogin persist");
     TestClient c;
     CHECK(c.connect("127.0.0.1", srv.port) && c.join("P43Sign"), "W-07 join");
-    int sx = (int)std::floor(c.x) + 2, sy = (int)std::floor(c.y), sz = (int)std::floor(c.z);
+    const auto position = c.positionSnapshot();
+    int sx = (int)std::floor(position.x) + 2, sy = (int)std::floor(position.y), sz = (int)std::floor(position.z);
     char cmd[128];
     snprintf(cmd, sizeof(cmd), "setblock %d %d %d minecraft:oak_sign", sx, sy, sz);
     c.sendChatCommand(cmd);
@@ -361,15 +399,15 @@ static void tSign(ServerProc& srv) {
     TestClient d;
     CHECK(d.connect("127.0.0.1", srv.port) && d.join("P43Sign"), "W-07 relogin join");
     for (int i = 0; i < 4; ++i) {
-        d.sendMovePlayerFlags(d.x, d.y, d.z, 0x01);
+        const auto position = d.positionSnapshot();
+        d.sendMovePlayerFlags(position.x, position.y, position.z, 0x01);
         std::this_thread::sleep_for(std::chrono::milliseconds(300));
     }
     bool persist = false;
     {
         auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(8000);
         while (std::chrono::steady_clock::now() < deadline && !persist) {
-            std::lock_guard lk(d.mtx_public());
-            for (auto& q : d.recentPublic()) {
+            for (const auto& q : d.recentSnapshot()) {
                 if (q.id != proto::pl::sc::BlockEntityData) continue;
                 std::string raw(reinterpret_cast<const char*>(q.body.data()), q.body.size());
                 if (raw.find("P43-L1") != std::string::npos) { persist = true; break; }

@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <cstdint>
 #include <queue>
 #include <set>
@@ -79,6 +80,7 @@ public:
 
     void registerBehavior(const std::string& blockName, std::unique_ptr<IBlockBehavior> b) {
         behaviors_[blockName] = std::move(b);
+        rebuildStateBehaviorIndex();
     }
     IBlockBehavior* behaviorFor(const std::string& blockName) {
         auto it = behaviors_.find(blockName);
@@ -95,11 +97,28 @@ public:
     const RandomTickScheduler& randomTicks() const { return randomScheduler_; }
 
 private:
+    void rebuildStateBehaviorIndex() {
+        stateBehaviors_.fill(nullptr);
+        for (const auto& [name, behavior] : behaviors_) {
+            const auto* block = gen::blockByName(name);
+            if (!block || !behavior) continue;
+            for (std::uint32_t state = block->minState;
+                 state <= block->maxState && state < stateBehaviors_.size(); ++state) {
+                stateBehaviors_[state] = behavior.get();
+            }
+        }
+    }
+
+    IBlockBehavior* behaviorForState(std::uint16_t state) const {
+        return stateBehaviors_[state];
+    }
+
     World& world_;
     GameRuleManager* rules_;
     GameServer* srv_;
     std::priority_queue<ScheduledTick, std::vector<ScheduledTick>, std::greater<ScheduledTick>> queue_;
     std::unordered_map<std::string, std::unique_ptr<IBlockBehavior>> behaviors_;
+    std::array<IBlockBehavior*, 65536> stateBehaviors_{};
     std::unordered_set<std::int64_t> pendingPos_;
     RandomTickScheduler randomScheduler_;
     static std::int64_t posKey3(std::int32_t x, std::int32_t y, std::int32_t z) {

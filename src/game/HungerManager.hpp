@@ -107,7 +107,7 @@ public:
         return k;
     }
 
-    // Helpers for inventory: same table as InventoryController (inline for light unit tests)
+    // Food values live here so consumption and movement exhaustion share one source of truth.
     static inline bool isFoodItem(const std::string& name) {
         return foodTable().find(name) != foodTable().end()
             || name.find("stew") != std::string::npos

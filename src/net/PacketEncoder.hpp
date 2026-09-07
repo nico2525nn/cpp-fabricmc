@@ -2,6 +2,8 @@
 // outer length varint + dataLength 0 path (no compression) and AES-CFB8 crypt parity; no wire change, strict 78/78 locked.
 #pragma once
 #include <cstdint>
+#include <limits>
+#include <stdexcept>
 #include <vector>
 #include "../core/ByteBuffer.hpp"
 #include "../core/Zlib.hpp"
@@ -11,6 +13,10 @@ namespace cppfm {
 
 class PacketEncoder {
 public:
+    static constexpr std::size_t kMaxFrame = 8u * 1024u * 1024u;
+    // Keep the encoder and decoder symmetric.  The decoder rejects a
+    // compressed packet whose uncompressed size exceeds this limit.
+    static constexpr std::size_t kMaxDeclared = 2u * 1024u * 1024u;
     // Encode id + payload (WriteBuffer) into a length-prefixed frame. If compressionThreshold >=0, compresses when total >= threshold. If
     // enc != nullptr, encrypts the outer buffer (length+frame) with AES-CFB8.
     static std::vector<std::uint8_t> encode(uint8_t id, const WriteBuffer& payload,
@@ -33,19 +39,34 @@ public:
                                                const std::uint8_t* b, std::size_t nb,
                                                int compressionThreshold,
                                                crypto::AesCfb8* enc) {
+        if ((na != 0 && a == nullptr) || (nb != 0 && b == nullptr))
+            throw std::invalid_argument("null packet segment");
+        if (nb > std::numeric_limits<std::size_t>::max() - na)
+            throw std::length_error("packet size overflow");
         const std::size_t total = na + nb;
+        if (total == 0 || total > kMaxFrame)
+            throw std::length_error("packet body is outside the frame budget");
+        if (total > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max()))
+            throw std::length_error("packet body is too large for a VarInt length");
         std::vector<std::uint8_t> frame;
         frame.reserve(total + 5);
 
+        const auto append = [](std::vector<std::uint8_t>& dst,
+                               const std::uint8_t* data, std::size_t size) {
+            if (size != 0) dst.insert(dst.end(), data, data + size);
+        };
+
         if (compressionThreshold >= 0) {
             if (total >= static_cast<std::size_t>(compressionThreshold)) {
+                if (total > kMaxDeclared)
+                    throw std::length_error("compressed packet exceeds declared-size budget");
                 WriteBuffer::writeVarintTo(frame, static_cast<std::int32_t>(total));
                 std::vector<std::uint8_t> comp;
                 if (b && nb) {
                     std::vector<std::uint8_t> joined;
                     joined.reserve(total);
-                    joined.insert(joined.end(), a, a + na);
-                    joined.insert(joined.end(), b, b + nb);
+                    append(joined, a, na);
+                    append(joined, b, nb);
                     compressRaw(joined.data(), joined.size(), comp);
                 } else {
                     compressRaw(a, na, comp);
@@ -53,13 +74,17 @@ public:
                 frame.insert(frame.end(), comp.begin(), comp.end());
             } else {
                 frame.push_back(0); // dataLength 0 = not compressed
-                frame.insert(frame.end(), a, a + na);
-                if (b && nb) frame.insert(frame.end(), b, b + nb);
+                append(frame, a, na);
+                append(frame, b, nb);
             }
         } else {
-            frame.insert(frame.end(), a, a + na);
-            if (b && nb) frame.insert(frame.end(), b, b + nb);
+            append(frame, a, na);
+            append(frame, b, nb);
         }
+
+        if (frame.empty() || frame.size() > kMaxFrame ||
+            frame.size() > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max()))
+            throw std::length_error("encoded frame is outside the frame budget");
 
         std::vector<std::uint8_t> outer;
         outer.reserve(frame.size() + 5);

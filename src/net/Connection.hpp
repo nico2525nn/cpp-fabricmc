@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <mutex>
+#include <atomic>
 #include <stdexcept>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -18,8 +19,6 @@
 #include "PacketDecoder.hpp"
 #include "RateLimiter.hpp"
 #include <chrono>
-#include <cstdlib>
-#include <cstdio>
 
 namespace cppfm {
 
@@ -42,78 +41,94 @@ public:
         decCtx_->initDecrypt(sharedSecret);
         encrypted_ = true;
     }
-    ~Connection() noexcept { try { close(); } catch (...) {} }
+    ~Connection() noexcept { close(); }
     Connection(const Connection&) = delete;
     Connection& operator=(const Connection&) = delete;
 
-    int fd() const { return fd_; }
-    bool isOpen() const { return fd_ >= 0; }
+    int fd() const { return fd_.load(std::memory_order_acquire); }
+    bool isOpen() const { return fd() >= 0; }
 
     void close() noexcept {
         try {
             std::lock_guard lk(tx_);
-            if (fd_ >= 0) { ::shutdown(fd_, SHUT_RDWR); ::close(fd_); fd_ = -1; }
+            const int fd = fd_.exchange(-1, std::memory_order_acq_rel);
+            if (fd >= 0) { ::shutdown(fd, SHUT_RDWR); ::close(fd); }
         } catch (...) {}
     }
     void abort() noexcept {
         try {
             std::lock_guard lk(tx_);
-            if (fd_ >= 0) {
+            const int fd = fd_.exchange(-1, std::memory_order_acq_rel);
+            if (fd >= 0) {
                 // FIN first (reliably delivered/retransmitted), then RST.
-                ::shutdown(fd_, SHUT_RDWR);
+                ::shutdown(fd, SHUT_RDWR);
                 struct linger l{};
                 l.l_onoff = 1; l.l_linger = 0;
-                ::setsockopt(fd_, SOL_SOCKET, SO_LINGER, &l, sizeof(l));
-                ::close(fd_); fd_ = -1;
+                ::setsockopt(fd, SOL_SOCKET, SO_LINGER, &l, sizeof(l));
+                ::close(fd);
             }
         } catch (...) {}
     }
     void setNoDelay() {
+        const int fd = fd_.load(std::memory_order_acquire);
+        if (fd < 0) return;
         int one = 1;
-        setsockopt(fd_, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+        (void)setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
     }
     // A send that cannot complete within this many seconds means the peer went
     // away without closing (or is maliciously stalling us); fail the session.
     void setSendTimeout(unsigned seconds) {
+        const int fd = fd_.load(std::memory_order_acquire);
+        if (fd < 0) return;
         timeval tv{seconds, 0};
-        setsockopt(fd_, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+        (void)setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
     }
     void setRecvTimeout(unsigned seconds) {
+        const int fd = fd_.load(std::memory_order_acquire);
+        if (fd < 0) return;
         timeval tv{seconds, 0};
-        setsockopt(fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     }
     void enableFloodBudget(bool on) { floodBudget_ = on; }
     int peekFirstByte(int timeoutMs) const {
-        if (fd_ < 0) return -1;
+        const int fd = fd_.load(std::memory_order_acquire);
+        if (fd < 0) return -1;
         pollfd pfd{};
-        pfd.fd = fd_;
+        pfd.fd = fd;
         pfd.events = POLLIN;
         const int r = ::poll(&pfd, 1, timeoutMs);
         if (r <= 0) return -1;
         std::uint8_t b = 0;
-        const ssize_t n = ::recv(fd_, &b, 1, MSG_PEEK);
+        const ssize_t n = ::recv(fd, &b, 1, MSG_PEEK);
         if (n != 1) return -1;
         return static_cast<int>(b);
     }
     // length-prefix/compression/encryption — pre-1.7 clients speak no framing).
     void sendRaw(const std::uint8_t* d, std::size_t n) {
+        if (n != 0 && d == nullptr) throw std::invalid_argument("null send buffer");
         std::lock_guard lk(tx_);
-        if (!isOpen()) throw SocketClosedError("closed");
-        std::size_t off = 0;
-        while (off < n) {
-            const ssize_t w = ::send(fd_, d + off, n - off, MSG_NOSIGNAL);
-            if (w <= 0) throw SocketClosedError("send failed");
-            off += static_cast<std::size_t>(w);
+        sendAll(d, n);
+    }
+    bool trySendRaw(const std::uint8_t* data, std::size_t size) noexcept {
+        try {
+            sendRaw(data, size);
+            return true;
+        } catch (...) {
+            return false;
         }
     }
     std::uint16_t peerPort() const {
+        const int fd = fd_.load(std::memory_order_acquire);
+        if (fd < 0) return 0;
         sockaddr_in addr{}; socklen_t sl = sizeof(addr);
-        if (getpeername(fd_, reinterpret_cast<sockaddr*>(&addr), &sl) != 0) return 0;
+        if (getpeername(fd, reinterpret_cast<sockaddr*>(&addr), &sl) != 0) return 0;
         return ntohs(addr.sin_port);
     }
     std::string peer() const {
+        const int fd = fd_.load(std::memory_order_acquire);
+        if (fd < 0) return "?";
         sockaddr_in addr{}; socklen_t sl = sizeof(addr);
-        if (getpeername(fd_, reinterpret_cast<sockaddr*>(&addr), &sl) != 0) return "?";
+        if (getpeername(fd, reinterpret_cast<sockaddr*>(&addr), &sl) != 0) return "?";
         char buf[64];
         inet_ntop(AF_INET, &addr.sin_addr, buf, sizeof(buf));
         return std::string(buf) + ":" + std::to_string(ntohs(addr.sin_port));
@@ -125,22 +140,25 @@ public:
     // Reads one frame payload (length-prefixed, optionally compressed). Returns the packet body (packet id + payload). Throws
     // SocketClosedError on EOF. Delegates decompression to PacketDecoder for ByteBuffer handling.
     std::vector<std::uint8_t> readFrame() {
-        std::int32_t len;
+        std::int32_t len = 0;
         if (!encrypted_) {
             len = readVarintStream(5);
         } else {
             // varint bytes are encrypted: read/decrypt one at a time
-            std::uint32_t ulen = 0; int shift = 0;
+            std::uint32_t ulen = 0;
             for (int i = 0; i < 5; ++i) {
                 std::uint8_t e[1];
                 readExact(e, 1);
                 decCtx_->crypt(e, 1, e);
-                ulen |= static_cast<std::uint32_t>(e[0] & 0x7F) << shift;
-                if (!(e[0] & 0x80)) break;
-                shift += 7;
+                if (i == 4 && (e[0] & 0xF0u) != 0)
+                    throw std::runtime_error("varint overflow");
+                ulen |= static_cast<std::uint32_t>(e[0] & 0x7F) << (i * 7);
+                if ((e[0] & 0x80u) == 0) {
+                    len = static_cast<std::int32_t>(ulen);
+                    break;
+                }
+                if (i == 4) throw std::runtime_error("varint overflow");
             }
-            if (shift >= 35) throw std::runtime_error("varint overflow");
-            len = static_cast<std::int32_t>(ulen);
         }
         if (len <= 0 || static_cast<std::uint32_t>(len) > kMaxFrame)
             throw PacketDecoder::OversizeError(
@@ -153,18 +171,12 @@ public:
         if (encrypted_) decCtx_->crypt(frame_.data(), frame_.size(), frame_.data());
         if (compressionThreshold_ < 0) return frame_;
         // Delegate to PacketDecoder for ByteBuffer conversion + decompression
-        {
-            static const bool tr = getenv("CPPFM_TRACE") != nullptr;
-            if (tr)
-                std::fprintf(stderr, "[recv pid=%d] fd=%d first=%02x framelen=%zu\n",
-                             (int)getpid(), fd_, frame_[static_cast<std::size_t>(compressionThreshold_ >= 0 ? 1 : 0)],
-                             frame_.size());
-        }
         return PacketDecoder::decodeFrame(frame_, compressionThreshold_);
     }
     std::vector<std::uint8_t> readFrameWithTimeout(std::chrono::milliseconds timeout) {
         pollfd pfd{};
-        pfd.fd = fd_;
+        pfd.fd = fd_.load(std::memory_order_acquire);
+        if (pfd.fd < 0) throw SocketClosedError("closed");
         pfd.events = POLLIN;
         for (;;) {
             const int r = ::poll(&pfd, 1, static_cast<int>(timeout.count()));
@@ -183,11 +195,6 @@ public:
                     const std::uint8_t* b = nullptr, std::size_t nb = 0) {
         std::lock_guard lk(tx_);
         if (!isOpen()) throw SocketClosedError("closed");
-        static const bool trace = getenv("CPPFM_TRACE") != nullptr;
-        if (trace && na > 0)
-            std::fprintf(stderr, "[send] t=%.3f fd=%d peer=%u id=%02x bytes=%zu\n",
-                std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(),
-                fd_, peerPort(), a[0], na + nb);
         auto outer = PacketEncoder::encodeRaw(a, na, b, nb,
                                               compressionThreshold_,
                                               encrypted_ ? encCtx_.get() : nullptr);
@@ -198,6 +205,17 @@ public:
     }
     void sendPacket(std::uint8_t id, const WriteBuffer& payload) {
         sendPacketBuf(id, payload.data);
+    }
+    // Best-effort notifications must not obscure the required send path with
+    // repeated catch-all blocks.  Handshake/state transitions use sendPacket
+    // directly and still surface transport errors to their owner.
+    bool trySendPacket(std::uint8_t id, const WriteBuffer& payload) noexcept {
+        try {
+            sendPacket(id, payload);
+            return true;
+        } catch (...) {
+            return false;
+        }
     }
     void sendRawBody(const std::vector<std::uint8_t>& idAndBody) { // replay helper
         sendFramed(idAndBody.data(), idAndBody.size());
@@ -213,20 +231,25 @@ private:
     RateLimiter bw_;
 
     std::int32_t readVarintStream(int maxBytes) {
-        std::uint32_t result = 0; int shift = 0;
+        if (maxBytes <= 0 || maxBytes > 5) throw std::invalid_argument("invalid VarInt limit");
+        std::uint32_t result = 0;
         for (int i = 0; i < maxBytes; ++i) {
             std::uint8_t b;
             readExact(&b, 1);
-            result |= static_cast<std::uint32_t>(b & 0x7F) << shift;
-            if (!(b & 0x80)) return static_cast<std::int32_t>(result);
-            shift += 7;
+            if (i == 4 && (b & 0xF0u) != 0)
+                throw std::runtime_error("varint overflow in frame length");
+            result |= static_cast<std::uint32_t>(b & 0x7F) << (i * 7);
+            if ((b & 0x80u) == 0) return static_cast<std::int32_t>(result);
         }
         throw std::runtime_error("varint overflow in frame length");
     }
     void readExact(void* dst, std::size_t n) {
+        if (n != 0 && dst == nullptr) throw std::invalid_argument("null receive buffer");
         auto* p = static_cast<std::uint8_t*>(dst);
         while (n > 0) {
-            ssize_t r = ::recv(fd_, p, n, 0);
+            const int fd = fd_.load(std::memory_order_acquire);
+            if (fd < 0) throw SocketClosedError("closed");
+            ssize_t r = ::recv(fd, p, n, 0);
             if (r == 0) throw SocketClosedError("peer closed");
             if (r < 0) {
                 if (errno == EINTR) continue;
@@ -237,8 +260,11 @@ private:
         }
     }
     void sendAll(const std::uint8_t* p, std::size_t n) {
+        if (n != 0 && p == nullptr) throw std::invalid_argument("null send buffer");
+        const int fd = fd_.load(std::memory_order_acquire);
+        if (fd < 0) throw SocketClosedError("closed");
         while (n > 0) {
-            ssize_t r = ::send(fd_, p, n, MSG_NOSIGNAL);
+            ssize_t r = ::send(fd, p, n, MSG_NOSIGNAL);
             if (r < 0) {
                 if (errno == EINTR) continue;
                 throw SocketClosedError(std::string("send: ") + strerror(errno));
@@ -248,7 +274,7 @@ private:
         }
     }
 
-    int fd_;
+    std::atomic<int> fd_;
     std::mutex tx_;   // serialize writes from multiple threads
 };
 

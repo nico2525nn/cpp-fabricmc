@@ -5,7 +5,9 @@
 #include <future>
 #include <mutex>
 #include <queue>
+#include <stdexcept>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace cppfm::core {
@@ -14,29 +16,38 @@ class ThreadPool {
 public:
     explicit ThreadPool(std::size_t threads = 4) : stop_(false) {
         if (threads == 0) threads = 2;
-        for (std::size_t i = 0; i < threads; ++i) {
-            workers_.emplace_back([this] {
-                for (;;) {
-                    std::function<void()> task;
-                    {
-                        std::unique_lock<std::mutex> lk(mu_);
-                        cv_.wait(lk, [this] { return stop_ || !tasks_.empty(); });
-                        if (stop_ && tasks_.empty()) return;
-                        task = std::move(tasks_.front());
-                        tasks_.pop();
+        try {
+            for (std::size_t i = 0; i < threads; ++i) {
+                workers_.emplace_back([this] {
+                    for (;;) {
+                        std::function<void()> task;
+                        {
+                            std::unique_lock<std::mutex> lk(mu_);
+                            cv_.wait(lk, [this] { return stop_ || !tasks_.empty(); });
+                            if (stop_ && tasks_.empty()) return;
+                            task = std::move(tasks_.front());
+                            tasks_.pop();
+                        }
+                        task();
                     }
-                    task();
-                }
-            });
+                });
+            }
+        } catch (...) {
+            shutdown();
+            throw;
         }
     }
-    ~ThreadPool() {
+    ~ThreadPool() { shutdown(); }
+
+    void shutdown() {
         {
             std::lock_guard<std::mutex> lk(mu_);
+            if (stop_ && workers_.empty()) return;
             stop_ = true;
         }
         cv_.notify_all();
         for (auto& t : workers_) if (t.joinable()) t.join();
+        workers_.clear();
     }
     ThreadPool(const ThreadPool&) = delete;
     ThreadPool& operator=(const ThreadPool&) = delete;

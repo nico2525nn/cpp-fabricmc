@@ -72,9 +72,9 @@ BTStatus TeleportRandomAction::tick(MobEntity& m, AiContext& ctx, std::int64_t n
     if (now - m.lastTeleportTick < 20) return BTStatus::Failure;
     if (!ctx.world) return BTStatus::Failure;
     for (int attempt=0; attempt<64; ++attempt) {
-        double nx = m.x + (rand()/(double)RAND_MAX*64 -32);
-        double nz = m.z + (rand()/(double)RAND_MAX*64 -32);
-        double ny = m.y + (rand()/(double)RAND_MAX*32 -16);
+        double nx = m.x + (nextRandom()/(double)RAND_MAX*64 -32);
+        double nz = m.z + (nextRandom()/(double)RAND_MAX*64 -32);
+        double ny = m.y + (nextRandom()/(double)RAND_MAX*32 -16);
         int ix = (int)std::floor(nx);
         int iz = (int)std::floor(nz);
         int iy = (int)std::floor(ny);
@@ -102,9 +102,9 @@ BTStatus TeleportRandomAction::tick(MobEntity& m, AiContext& ctx, std::int64_t n
                     for(int i=0;i<8;i++){
                         WriteBuffer pt;
                         pt.boolean(true); pt.boolean(false);
-                        pt.f64(ox + (rand()/(double)RAND_MAX-0.5)*1.5);
-                        pt.f64(oy + rand()/(double)RAND_MAX*2.0);
-                        pt.f64(oz + (rand()/(double)RAND_MAX-0.5)*1.5);
+                        pt.f64(ox + (nextRandom()/(double)RAND_MAX-0.5)*1.5);
+                        pt.f64(oy + nextRandom()/(double)RAND_MAX*2.0);
+                        pt.f64(oz + (nextRandom()/(double)RAND_MAX-0.5)*1.5);
                         pt.f32(0);pt.f32(0);pt.f32(0);pt.f32(0.1f);
                         pt.varint(15); // portal
                         ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::WorldParticles, pt);
@@ -146,7 +146,7 @@ BTStatus TeleportRandomAction::tick(MobEntity& m, AiContext& ctx, std::int64_t n
 BTStatus PickupBlockAction::tick(MobEntity& m, AiContext& ctx, std::int64_t) {
     if (m.carriedBlock !=0) return BTStatus::Failure;
     if (!ctx.world) return BTStatus::Failure;
-    if (rand()%1000 != 0) return BTStatus::Failure;
+    if (nextRandom()%1000 != 0) return BTStatus::Failure;
     static const char* holdable[] = {
         "minecraft:grass_block","minecraft:dirt","minecraft:coarse_dirt","minecraft:podzol","minecraft:rooted_dirt",
         "minecraft:dirt_path","minecraft:mud","minecraft:clay","minecraft:sand","minecraft:red_sand",
@@ -171,9 +171,9 @@ BTStatus PickupBlockAction::tick(MobEntity& m, AiContext& ctx, std::int64_t) {
     };
     // try nearby positions
     for(int tries=0; tries<8; ++tries){
-        int bx=(int)std::floor(m.x)+(rand()%5-2);
-        int by=(int)std::floor(m.y)+(rand()%3-1);
-        int bz=(int)std::floor(m.z)+(rand()%5-2);
+        int bx=(int)std::floor(m.x)+(nextRandom()%5-2);
+        int by=(int)std::floor(m.y)+(nextRandom()%3-1);
+        int bz=(int)std::floor(m.z)+(nextRandom()%5-2);
         std::uint16_t st = ctx.world->getBlock(bx, by, bz);
         if (st==0) continue;
         auto* def = gen::blockByState(st);
@@ -212,7 +212,7 @@ BTStatus StareAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     m.yaw = (float)(std::atan2(dz,dx)*180.0/3.1415926535 - 90.0);
     // set anger
     m.angerTargetEntityId = p->entityId;
-    m.angryUntilTick = now + 100 + rand()%100;
+    m.angryUntilTick = now + 100 + nextRandom()%100;
     if (ctx.srv) {
         WriteBuffer md;
         md.varint(m.entityId);
@@ -241,9 +241,9 @@ BTStatus WitherSkullAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now)
             double yawRad = m.yaw * 3.1415926535 / 180.0;
             double offX = std::cos(yawRad)*spreadX - std::sin(yawRad)*spreadZ;
             double offZ = std::sin(yawRad)*spreadX + std::cos(yawRad)*spreadZ;
-            double vx = dx*inv*1.1 + (rand()/(double)RAND_MAX-0.5)*0.08;
-            double vz = dz*inv*1.1 + (rand()/(double)RAND_MAX-0.5)*0.08;
-            double vy = dy*inv*0.6 + 0.2 + (rand()/(double)RAND_MAX-0.5)*0.05;
+            double vx = dx*inv*1.1 + (nextRandom()/(double)RAND_MAX-0.5)*0.08;
+            double vz = dz*inv*1.1 + (nextRandom()/(double)RAND_MAX-0.5)*0.08;
+            double vy = dy*inv*0.6 + 0.2 + (nextRandom()/(double)RAND_MAX-0.5)*0.05;
             double sx = m.x + offX;
             double sz = m.z + offZ;
             bool charged = halfHealth && burst==0; // head 0 charged (blue) when <= half health
@@ -251,14 +251,14 @@ BTStatus WitherSkullAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now)
         }
         ctx.srv->broadcastSound("minecraft:entity.wither.shoot", m.x, m.y, m.z, 1.0f, 1.0f, "hostile");
     }
-    m.witherSkullCooldown = (int)(now + 40 + rand()%40);
+    m.witherSkullCooldown = (int)(now + 40 + nextRandom()%40);
     return BTStatus::Success;
 }
 
 BTStatus DragonBreathAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (m.kind != MobKind::EnderDragon) return BTStatus::Failure;
     if (m.dragonPhase == 0 && now > m.dragonPhaseUntil) {
-        if (rand()%100 < 12) { m.dragonPhase = 1; m.dragonPhaseUntil = now + 40; }
+        if (nextRandom()%100 < 12) { m.dragonPhase = 1; m.dragonPhaseUntil = now + 40; }
     }
     if (m.dragonPhase == 1) {
         double dx=-m.x, dz=-m.z;
@@ -272,7 +272,7 @@ BTStatus DragonBreathAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now
     }
     if (m.dragonPhase == 2) {
         if (now % 20 == 0 && ctx.srv) {
-            ctx.srv->spawnProjectile(ProjectileKind::DragonFireball, m.x, m.y, m.z, (rand()/(double)RAND_MAX-0.5)*0.6, -0.3, (rand()/(double)RAND_MAX-0.5)*0.6, m.entityId, false);
+            ctx.srv->spawnProjectile(ProjectileKind::DragonFireball, m.x, m.y, m.z, (nextRandom()/(double)RAND_MAX-0.5)*0.6, -0.3, (nextRandom()/(double)RAND_MAX-0.5)*0.6, m.entityId, false);
             ctx.srv->broadcastSound("minecraft:entity.ender_dragon.shoot", m.x,m.y,m.z,2.f,1.f,"hostile");
         }
         if (now > m.dragonPhaseUntil) { m.dragonPhase=3; m.dragonPhaseUntil=now+30; }
@@ -283,7 +283,7 @@ BTStatus DragonBreathAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now
         double rx = std::cos(ang)*32, rz = std::sin(ang)*32;
         double dx=rx-m.x, dz=rz-m.z;
         m.x += dx*0.08; m.z += dz*0.08; m.y += (70-m.y)*0.05;
-        if (now > m.dragonPhaseUntil) { m.dragonPhase=0; m.dragonPhaseUntil=now+120+rand()%120; }
+        if (now > m.dragonPhaseUntil) { m.dragonPhase=0; m.dragonPhaseUntil=now+120+nextRandom()%120; }
         return BTStatus::Running;
     }
     double ang = now * 0.03;
@@ -291,7 +291,7 @@ BTStatus DragonBreathAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now
     double dx=rx - m.x, dz=rz - m.z;
     m.x += dx*0.04; m.z += dz*0.04; m.y += (68 - m.y)*0.02;
     m.yaw = (float)(std::atan2(dz,dx)*180/3.14159 -90);
-    if (rand()%80==0 && ctx.srv) {
+    if (nextRandom()%80==0 && ctx.srv) {
         ctx.srv->broadcastSound("minecraft:entity.ender_dragon.flap", m.x,m.y,m.z,1.f,1.f,"hostile");
     }
     return BTStatus::Running;
@@ -317,7 +317,7 @@ BTStatus BreedAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
         return BTStatus::Failure;
     ctx.srv->mobsForTest().push_back(baby);
     ctx.srv->broadcastMobSpawn(*baby);
-    ctx.srv->spawnXpOrbs(bx, m.y+0.5, bz, 1 + (rand()%7), nullptr);
+    ctx.srv->spawnXpOrbs(bx, m.y+0.5, bz, 1 + (nextRandom()%7), nullptr);
     m.inLove=false; partner->inLove=false;
     m.breedCooldownUntil = now + 6000;
     partner->breedCooldownUntil = now + 6000;
@@ -345,12 +345,12 @@ BTStatus TradeAction::tick(MobEntity& m, AiContext& ctx, std::int64_t) {
 
 BTStatus WanderAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (!m.hasTarget) {
-        double ang = (rand()/(double)RAND_MAX)*6.28318;
-        double dist = 4 + (rand()%8);
+        double ang = (nextRandom()/(double)RAND_MAX)*6.28318;
+        double dist = 4 + (nextRandom()%8);
         m.tx = m.x + std::cos(ang)*dist;
         m.tz = m.z + std::sin(ang)*dist;
         m.hasTarget=true;
-        m.nextWanderAt = now + 3000 + rand()%4000;
+        m.nextWanderAt = now + 3000 + nextRandom()%4000;
     }
     double dx=m.tx-m.x, dz=m.tz-m.z;
     double d=std::sqrt(dx*dx+dz*dz);
@@ -381,7 +381,7 @@ BTStatus BlazeFireballAction::tick(MobEntity& m, AiContext& ctx, std::int64_t no
     double inv = 1.0/(d+1e-6);
     double vx = dx*inv*1.0, vz = dz*inv*1.0, vy = dy*inv*0.2 + 0.1;
     if (ctx.srv) ctx.srv->spawnProjectile(ProjectileKind::Fireball, m.x, m.y+1.0, m.z, vx, vy, vz, m.entityId, false);
-    m.witherSkullCooldown = (int)(now + 30 + rand()%30);
+    m.witherSkullCooldown = (int)(now + 30 + nextRandom()%30);
     return BTStatus::Success;
 }
 
@@ -412,7 +412,7 @@ BTStatus GhastFireballAction::tick(MobEntity& m, AiContext& ctx, std::int64_t no
     double inv=1.0/(d+1e-6);
     double vx=dx*inv*1.0, vz=dz*inv*1.0, vy=dy*inv*0.2;
     if (ctx.srv) ctx.srv->spawnProjectile(ProjectileKind::Fireball, m.x, m.y+1.5, m.z, vx, vy, vz, m.entityId, false);
-    m.witherSkullCooldown = (int)(now + 80 + rand()%40);
+    m.witherSkullCooldown = (int)(now + 80 + nextRandom()%40);
     return BTStatus::Success;
 }
 
@@ -444,7 +444,7 @@ BTStatus ShulkerBulletAction::tick(MobEntity& m, AiContext& ctx, std::int64_t no
     double dx=t->x-m.x, dy=(t->y+0.5)-m.y, dz=t->z-m.z;
     double inv=1.0/(d+1e-6);
     if (ctx.srv) ctx.srv->spawnProjectile(ProjectileKind::Arrow, m.x, m.y+0.5, m.z, dx*inv*0.7, dy*inv*0.7+0.1, dz*inv*0.7, m.entityId, false);
-    m.witherSkullCooldown = (int)(now + 60 + rand()%40);
+    m.witherSkullCooldown = (int)(now + 60 + nextRandom()%40);
     if (ctx.srv) ctx.srv->broadcastSound("minecraft:entity.shulker.shoot", m.x,m.y,m.z,1.f,1.f,"hostile");
     return BTStatus::Success;
 }
@@ -500,7 +500,7 @@ BTStatus GenericRangedAttackAction::tick(MobEntity& m, AiContext& ctx, std::int6
     if (d<4 || d>16) return BTStatus::Failure;
     double inv=1.0/(d+1e-6);
     if (ctx.srv) ctx.srv->spawnProjectile(ProjectileKind::Arrow, m.x, m.y+1.6, m.z, dx*inv*1.2, dy*inv+0.15, dz*inv*1.2, m.entityId, false);
-    m.witherSkullCooldown=(int)(now+40+rand()%30);
+    m.witherSkullCooldown=(int)(now+40+nextRandom()%30);
     return BTStatus::Success;
 }
 BTStatus WitchPotionAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
@@ -508,8 +508,21 @@ BTStatus WitchPotionAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now)
     if(now < m.witchPotionCooldown) return BTStatus::Failure;
     Player* t=ctx.nearestPlayer; if(!t) return BTStatus::Failure;
     double d2=(t->x-m.x)*(t->x-m.x)+(t->z-m.z)*(t->z-m.z); if(d2>256) return BTStatus::Failure;
-    if(ctx.srv){ double d=std::sqrt(d2)+1e-6; double vx=(t->x-m.x)/d*0.9, vz=(t->z-m.z)/d*0.9; ctx.srv->spawnProjectile(ProjectileKind::Potion, m.x, m.y+1.6, m.z, vx, 0.12, vz, m.entityId, false); ctx.srv->broadcastSound("minecraft:entity.witch.throw", m.x,m.y,m.z,1.f,1.f,"hostile"); }
-    m.witchPotionCooldown = now + 40 + rand()%20; return BTStatus::Success;
+    if(ctx.srv){
+        double d=std::sqrt(d2)+1e-6;
+        double vx=(t->x-m.x)/d*0.9, vz=(t->z-m.z)/d*0.9;
+        ctx.srv->spawnProjectile(ProjectileKind::Potion, m.x, m.y+1.6, m.z,
+                                 vx, 0.12, vz, m.entityId, false);
+        ctx.srv->broadcastSound("minecraft:entity.witch.throw", m.x,m.y,m.z,
+                                1.f,1.f,"hostile");
+        WriteBuffer md;
+        md.varint(m.entityId);
+        meta::writeMetaBool(md, 16, false); // witch is not drinking
+        md.u8(255);
+        ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata,
+                                       md);
+    }
+    m.witchPotionCooldown = now + 40 + nextRandom()%20; return BTStatus::Success;
 }
 BTStatus RavagerRoarAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(m.kind!=MobKind::Ravager) return BTStatus::Failure;

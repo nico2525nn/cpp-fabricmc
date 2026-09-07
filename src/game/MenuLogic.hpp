@@ -68,7 +68,7 @@ public:
     const char* name() const override { return "Stonecutter"; }
 };
 
-// Crafter: 3x3 crafting grid stub (1.21 crafter block) — disabled slots handled as normal container
+// Crafter: partial 3x3 interaction (1.21 crafter block); redstone automation remains unsupported.
 class CrafterMenuLogic final : public MenuLogic {
 public:
     bool onSlotClick(Menu& menu, Player& player, int slotId, int button, int mode,
@@ -76,7 +76,7 @@ public:
     const char* name() const override { return "Crafter"; }
 };
 
-// Cartography Table: map cloning / extension stub (3 slots: map, paper, result)
+// Cartography Table: partial map cloning/extension interaction (3 slots: map, paper, result).
 class CartographyMenuLogic final : public MenuLogic {
 public:
     bool onSlotClick(Menu& menu, Player& player, int slotId, int button, int mode,

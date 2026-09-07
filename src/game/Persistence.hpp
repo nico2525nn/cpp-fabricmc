@@ -9,9 +9,14 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <filesystem>
+#include <memory>
+#include <mutex>
 #include <set>
 #include <thread>
+#include <unordered_map>
+#include <utility>
 
 namespace cppfm {
 
@@ -40,8 +45,9 @@ public:
                        std::int32_t defaultIdx) {
         biomeIdxToKey_ = std::move(idxToKey);
         defaultBiomeIndex_ = defaultIdx;
+        biomeKeyToIdx_.clear();
         for (auto& [k, v] : biomeIdxToKey_)
-            biomeKeyToIdx_.emplace(v, k);
+            biomeKeyToIdx_[v] = k;
     }
 
     void setDifficulty(const std::string& d) { difficulty_ = d; }
@@ -84,7 +90,7 @@ public:
 
     void saveLevelData(std::int64_t worldTicks = 0, std::int64_t dayTime = 0) {
         // W16 single level.dat: DIM dirs must not own level.dat
-        if (dir_.find("DIM") != std::string::npos) return;
+        if (isDimensionDirectory()) return;
         // Use WorldDataManager for atomic write + version handling
         worldDataManager_.setDirectory(dir_);
         worldDataManager_.setLevelStateProvider(provideLevelState_, consumeLevelState_);
@@ -94,112 +100,12 @@ public:
                                                                difficulty_, worldBorderDiameter_,
                                                                worldBorderCenterX_, worldBorderCenterZ_,
                                                                lerpTgt, lerpMs);
-        if (!ok) {
-            namespace nv = nbt;
-            try {
-                nv::Value root = nv::Value::makeCompound();
-                nv::Value data = nv::Value::makeCompound();
-                data.set("DataVersion", nv::Value::makeInt(kCurrentDataVersion));
-                auto spawn = world_.spawnPoint();
-                data.set("SpawnX", nv::Value::makeInt(spawn.x));
-                data.set("SpawnY", nv::Value::makeInt(spawn.y));
-                data.set("SpawnZ", nv::Value::makeInt(spawn.z));
-                data.set("Time", nv::Value::makeLong(worldTicks));
-                data.set("DayTime", nv::Value::makeLong(dayTime));
-                data.set("LevelName", nv::Value::makeString("CppFabricMC World"));
-                data.set("raining", nv::Value::makeByte(0));
-                data.set("thundering", nv::Value::makeByte(0));
-                {
-                    int diffByte = 2;
-                    if (difficulty_=="peaceful") diffByte=0;
-                    else if (difficulty_=="easy") diffByte=1;
-                    else if (difficulty_=="normal") diffByte=2;
-                    else if (difficulty_=="hard") diffByte=3;
-                    data.set("Difficulty", nv::Value::makeByte((std::int8_t)diffByte));
-                    data.set("DifficultyLocked", nv::Value::makeByte(0));
-                }
-                {
-                    nv::Value ver = nv::Value::makeCompound();
-                    ver.set("Name", nv::Value::makeString("1.21.4"));
-                    ver.set("Id", nv::Value::makeInt(kCurrentDataVersion));
-                    ver.set("Snapshot", nv::Value::makeByte(0));
-                    ver.set("Series", nv::Value::makeString("main"));
-                    data.set("Version", ver);
-                }
-                {
-                    nv::Value wb = nv::Value::makeCompound();
-                    wb.set("CenterX", nv::Value::makeDouble(worldBorderCenterX_));
-                    wb.set("CenterZ", nv::Value::makeDouble(worldBorderCenterZ_));
-                    wb.set("Size", nv::Value::makeDouble(worldBorderDiameter_));
-                    wb.set("SizeLerpTarget", nv::Value::makeDouble(worldBorderLerpRemainingTicks_ > 0 ? worldBorderLerpTo_ : worldBorderDiameter_));
-                    wb.set("SizeLerpTime", nv::Value::makeLong(worldBorderLerpMs_));
-                    wb.set("SafeZone", nv::Value::makeDouble(5.0));
-                    wb.set("DamagePerBlock", nv::Value::makeDouble(0.2));
-                    wb.set("DamageBuffer", nv::Value::makeDouble(5.0));
-                    wb.set("WarningBlocks", nv::Value::makeInt(5));
-                    wb.set("WarningTime", nv::Value::makeInt(15));
-                    data.set("WorldBorder", wb);
-                }
-                data.set("WanderingTraderSpawnDelay", nv::Value::makeInt(0));
-                data.set("WanderingTraderSpawnChance", nv::Value::makeInt(25));
-                data.set("WanderingTraderId", nv::Value::makeCompound());
-                data.set("WasModded", nv::Value::makeByte(0));
-                data.set("allowCommands", nv::Value::makeByte(1));
-                data.set("GameType", nv::Value::makeInt(1));
-                // W17 strict: ForcedChunks via World::forcedChunkKeys() + ticket FORCED, truncate 256 (no spawn synthesis)
-                {
-                    nv::Value fc = nv::Value::makeList(nbt::Long);
-                    auto forced = world_.forcedChunkKeys();
-                    if (forced.size() > 256) {
-                        std::fprintf(stderr, "[Persistence] ForcedChunks %zu >256, truncating\n", forced.size());
-                        forced.resize(256);
-                    }
-                    for (auto k : forced) fc.list.push_back(nv::Value::makeLong(k));
-                    data.set("ForcedChunks", fc);
-                }
-                // W16 single level.dat: DragonFight Gateways 12
-                {
-                    nbt::Value dragon = nbt::Value::makeCompound();
-                    dragon.set("DragonKilled", nbt::Value::makeByte(0));
-                    dragon.set("PreviouslyKilled", nbt::Value::makeByte(0));
-                    nbt::Value gw = nbt::Value::makeList(nbt::Int);
-                    gw.list.reserve(12);
-                    for (int i=0;i<12;++i) gw.list.push_back(nbt::Value::makeInt(0));
-                    dragon.set("Gateways", std::move(gw));
-                    dragon.set("NeedsStateScanning", nbt::Value::makeByte(0));
-                    nbt::Value exitPos = nbt::Value::makeCompound();
-                    exitPos.set("X", nbt::Value::makeInt(0));
-                    exitPos.set("Y", nbt::Value::makeInt(65));
-                    exitPos.set("Z", nbt::Value::makeInt(0));
-                    dragon.set("ExitPortalLocation", std::move(exitPos));
-                    data.set("DragonFight", std::move(dragon));
-                }
-                if (provideLevelState_) provideLevelState_(data);
-                root.set("Data", data);
-                WriteBuffer out;
-                nv::writeFileRoot(out, root);
-                std::filesystem::create_directories(dir_);
-                std::string tmp = dir_ + "/level.dat.new";
-                {
-                    std::ofstream tf(tmp, std::ios::binary | std::ios::trunc);
-                    tf.write(reinterpret_cast<const char*>(out.data.data()), out.data.size());
-                }
-                // W16: backup level.dat_old before rename
-                try {
-                    std::string dst = dir_ + "/level.dat";
-                    std::string old = dst + "_old";
-                    if (std::filesystem::exists(dst)) {
-                        std::error_code ec;
-                        std::filesystem::copy_file(dst, old, std::filesystem::copy_options::overwrite_existing, ec);
-                    }
-                } catch (...) {}
-                std::filesystem::rename(tmp, dir_ + "/level.dat");
-            } catch (...) {}
-        }
+        if (!ok)
+            std::fprintf(stderr, "[Persistence] level.dat save was rejected by WorldDataManager\n");
     }
     void loadLevelData() {
         // W16: DIM dirs never own level.dat
-        if (dir_.find("DIM") != std::string::npos) return;
+        if (isDimensionDirectory()) return;
         worldDataManager_.setDirectory(dir_);
         worldDataManager_.setLevelStateProvider(provideLevelState_, consumeLevelState_);
         // try via manager (handles DataFixerUpper version check + atomic read) — include lerp
@@ -217,101 +123,43 @@ public:
             if (lerpMs == 0) { worldBorderLerpFrom_ = worldBorderDiameter_; worldBorderLerpTo_ = worldBorderDiameter_; }
             return;
         }
-        try {
-            std::ifstream f(dir_ + "/level.dat", std::ios::binary);
-            if (!f) return;
-            std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(f)),
-                                             std::istreambuf_iterator<char>());
-            ReadBuffer in(bytes);
-            nbt::Parser parser(in);
-            nbt::Value root = parser.readFileRoot();
-            const auto* d = root.get("Data");
-            if (!d) return;
-            if (const auto* sx = d->get("SpawnX"))
-                if (const auto* sy = d->get("SpawnY"))
-                    if (const auto* sz = d->get("SpawnZ"))
-                        world_.setSpawnPoint({sx->i, sy->i, sz->i});
-            if (const auto* diff = d->get("Difficulty")) {
-                int v = diff->b;
-                if (v==0) difficulty_="peaceful";
-                else if (v==1) difficulty_="easy";
-                else if (v==2) difficulty_="normal";
-                else if (v==3) difficulty_="hard";
-                else if (diff->tag==nbt::String) difficulty_=diff->str;
-            }
-            if (const auto* wb = d->get("WorldBorder")) {
-                if (auto* cx = wb->get("CenterX")) worldBorderCenterX_ = cx->d;
-                if (auto* cz = wb->get("CenterZ")) worldBorderCenterZ_ = cz->d;
-                if (auto* sz = wb->get("Size")) {
-                    if (sz->tag==nbt::Double) worldBorderDiameter_ = sz->d;
-                    else if (sz->tag==nbt::Float) worldBorderDiameter_ = sz->f;
-                    else if (sz->tag==nbt::Int) worldBorderDiameter_ = sz->i;
-                    else if (sz->tag==nbt::Long) worldBorderDiameter_ = (double)sz->l;
-                }
-                // lerp state — vanilla WorldBorder SizeLerpTarget/Time
-                double lerpTarget = worldBorderDiameter_;
-                std::int64_t lerpMs = 0;
-                if (auto* lt = wb->get("SizeLerpTarget")) {
-                    if (lt->tag==nbt::Double) lerpTarget = lt->d;
-                    else if (lt->tag==nbt::Float) lerpTarget = lt->f;
-                    else if (lt->tag==nbt::Int) lerpTarget = lt->i;
-                    else if (lt->tag==nbt::Long) lerpTarget = (double)lt->l;
-                }
-                if (auto* lm = wb->get("SizeLerpTime")) {
-                    if (lm->tag==nbt::Long) lerpMs = lm->l;
-                    else if (lm->tag==nbt::Int) lerpMs = lm->i;
-                    else if (lm->tag==nbt::Double) lerpMs = (std::int64_t)lm->d;
-                }
-                worldBorderLerpFrom_ = worldBorderDiameter_;
-                worldBorderLerpTo_ = lerpTarget;
-                worldBorderLerpMs_ = lerpMs;
-                worldBorderLerpRemainingTicks_ = (lerpMs + 49) / 50;
-                worldBorderLerpTotalTicks_ = worldBorderLerpRemainingTicks_;
-                if (lerpMs == 0) { worldBorderLerpFrom_ = worldBorderDiameter_; worldBorderLerpTo_ = worldBorderDiameter_; }
-            }
-            if (const auto* ds = d->get("Difficulty")) {
-                if (ds->tag==nbt::String) difficulty_ = ds->str;
-            }
-            // ForcedChunks fallback: restore with 256 cap and sign-correct toLong
-            if (const auto* fc = d->get("ForcedChunks")) {
-                if (fc->list.size() > 256) std::fprintf(stderr, "[Persistence] load ForcedChunks %zu >256, truncating\n", fc->list.size());
-                world_.clearForcedChunks();
-                size_t cnt=0;
-                for (auto &v : fc->list) {
-                    if (cnt>=256) break;
-                    std::int64_t key = 0;
-                    if (v.tag == nbt::Long) key = v.l;
-                    else if (v.tag == nbt::Int) key = v.i;
-                    else continue;
-                    std::int32_t cx = static_cast<std::int32_t>(key >> 32);
-                    std::int32_t cz = static_cast<std::int32_t>(key & 0xFFFFFFFFLL);
-                    world_.restoreForcedChunk(cx, cz);
-                    ++cnt;
-                }
-            }
-            if (consumeLevelState_) consumeLevelState_(*d);
-            if (const auto* ds2 = d->get("Difficulty")) {
-                if (ds2->tag==nbt::String) difficulty_ = ds2->str;
-            }
-        } catch (...) {}
     }
 
     void start() {
         std::filesystem::create_directories(dir_ + "/region");
+        if (running_.load(std::memory_order_acquire) || worker_.joinable()) return;
         world_.setLoader([this](std::int32_t cx, std::int32_t cz, Chunk& c) {
             return loadChunk(cx, cz, c);
         });
         world_.setOnEdit([this](std::int32_t cx, std::int32_t cz) { markDirty(cx, cz); });
-        running_ = true;
-        worker_ = std::thread([this] { loop(); });
+        running_.store(true, std::memory_order_release);
+        try {
+            worker_ = std::thread([this] { loop(); });
+        } catch (...) {
+            running_.store(false, std::memory_order_release);
+            throw;
+        }
     }
-    void stop() {
-        if (!running_.exchange(false)) return;
+    void stop() noexcept {
+        const bool wasRunning = running_.exchange(false, std::memory_order_acq_rel);
         cv_.notify_all();
         if (worker_.joinable()) worker_.join();
-        flushOnce();                                   // final save
+        bool pending = false;
+        {
+            std::lock_guard lk(dirtyMtx_);
+            pending = !dirty_.empty();
+        }
+        if (wasRunning || pending) {
+            try {
+                flushOnce(); // final save
+            } catch (const std::exception& e) {
+                std::fprintf(stderr, "[Persistence] final flush failed: %s\n", e.what());
+            } catch (...) {
+                std::fprintf(stderr, "[Persistence] final flush failed\n");
+            }
+        }
     }
-    // futex livelock). stop() is idempotent.
+    // stop() is idempotent and flushes the final dirty batch.
     ~Persistence() { stop(); }
 
     // World loader: read chunk from its region file; false = not stored.
@@ -337,7 +185,11 @@ public:
             }
             if (readExtras_) readExtras_(root);
             return true;
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "[Persistence] load chunk %d,%d failed: %s\n", cx, cz, e.what());
+            return false;                              // corrupt/foreign chunk: regenerate
         } catch (...) {
+            std::fprintf(stderr, "[Persistence] load chunk %d,%d failed\n", cx, cz);
             return false;                              // corrupt/foreign chunk: regenerate
         }
     }
@@ -363,7 +215,8 @@ public:
                 std::lock_guard lk(bioMtx_);
                 return biomeOverride_.value_or(biome_);
             }();
-            world_.withChunk(cx, cz, [&](const Chunk& c) {
+            bool saveFailed = false;
+            const bool found = world_.withChunk(cx, cz, [&](const Chunk& c) {
                 try {
                     nbt::Value root = chunkToNBT(cx, cz, c, bio,
                                                  &biomeIdxToKey_);
@@ -375,16 +228,23 @@ public:
                     std::fprintf(stderr, "[cppfm] saved r.%d.%d mca (%zu bytes nbt)\n",
                                  cx >> 5, cz >> 5, out.data.size());
                 } catch (const std::exception& e) {
+                    saveFailed = true;
                     std::fprintf(stderr, "[cppfm] SAVE ERROR chunk %d,%d: %s\n", cx, cz, e.what());
+                } catch (...) {
+                    saveFailed = true;
+                    std::fprintf(stderr, "[cppfm] SAVE ERROR chunk %d,%d: unknown error\n", cx, cz);
                 }
             });
+            if (found && saveFailed) {
+                std::lock_guard lock(dirtyMtx_);
+                dirty_.insert(k);
+            }
         }
     }
     bool isDirty(std::int32_t cx, std::int32_t cz) {
         std::lock_guard lk(dirtyMtx_);
         return dirty_.count(chunkKey(cx, cz)) != 0;
     }
-    // the chunk itself, e.g. GameServer::saveChunkAsync via ioPool_).
     void markClean(std::int32_t cx, std::int32_t cz) {
         std::lock_guard lk(dirtyMtx_);
         dirty_.erase(chunkKey(cx, cz));
@@ -399,7 +259,7 @@ public:
             return biomeOverride_.value_or(biome_);
         }();
         bool ok = false;
-        world_.withChunk(cx, cz, [&](const Chunk& c) {
+        const bool found = world_.withChunk(cx, cz, [&](const Chunk& c) {
             try {
                 nbt::Value root = chunkToNBT(cx, cz, c, bio, &biomeIdxToKey_);
                 if (writeExtras_) writeExtras_(cx, cz, root);
@@ -411,19 +271,39 @@ public:
                 std::fprintf(stderr, "[cppfm] flushChunk %d,%d (%zu bytes)\n", cx, cz, out.data.size());
             } catch (const std::exception& e) {
                 std::fprintf(stderr, "[cppfm] FLUSH CHUNK ERROR %d,%d: %s\n", cx, cz, e.what());
+            } catch (...) {
+                std::fprintf(stderr, "[cppfm] FLUSH CHUNK ERROR %d,%d\n", cx, cz);
             }
         });
+        if (found && !ok) {
+            std::lock_guard lk(dirtyMtx_);
+            dirty_.insert(chunkKey(cx, cz));
+        }
         return ok;
     }
 
 private:
     void loop() {
         std::unique_lock lk(cvMtx_);
-        while (running_) {
+        while (running_.load(std::memory_order_acquire)) {
             cv_.wait_for(lk, std::chrono::seconds(3));
-            if (!running_) break;
-            flushOnce();
+            if (!running_.load(std::memory_order_acquire)) break;
+            try {
+                flushOnce();
+            } catch (const std::exception& e) {
+                std::fprintf(stderr, "[Persistence] background flush failed: %s\n", e.what());
+            } catch (...) {
+                std::fprintf(stderr, "[Persistence] background flush failed\n");
+            }
         }
+    }
+    bool isDimensionDirectory() const {
+        const auto path = std::filesystem::path(dir_);
+        for (const auto& component : path) {
+            const auto name = component.string();
+            if (name == "DIM-1" || name == "DIM1") return true;
+        }
+        return false;
     }
     std::string regionPath(std::int32_t cx, std::int32_t cz) const {
         return dir_ + "/region/r." + std::to_string(cx >> 5) + "." +

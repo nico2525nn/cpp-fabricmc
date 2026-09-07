@@ -10,7 +10,7 @@ Usage:
       # ctest外・専用nightly実行。24hフルはnightlyのみ、PRでは300s dryでPASS確認)
 Exit 0 on PASS, 1 on FAIL. Cleans up server subprocess.
 """
-import argparse, os, sys, time, subprocess, socket, threading, random, signal, struct, io
+import argparse, os, sys, time, subprocess, socket, threading, random, signal, struct, io, tempfile, shutil
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mcproto
 from mcproto import Conn, read_varint
@@ -21,35 +21,76 @@ def get_rss_kb(pid):
             for line in f:
                 if line.startswith("VmRSS:"):
                     return int(line.split()[1])
-    except: return 0
+    except (OSError, ValueError, IndexError):
+        return 0
     return 0
 
-def wait_port(port, timeout=8):
-    for _ in range(int(timeout*10)):
+def wait_for_server(proc, host, port, timeout=15):
+    """Wait for a real status response from the owned server process."""
+    deadline = time.monotonic() + timeout
+    last_error = None
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            raise RuntimeError(f"server exited before readiness probe (exit={proc.returncode})")
+        client = None
         try:
-            s=socket.create_connection(("127.0.0.1", port), timeout=1)
-            s.close(); return True
-        except: time.sleep(0.1)
-    return False
+            client = Conn(host, port, timeout=1)
+            client.status()
+            return
+        except (OSError, EOFError, ValueError, RuntimeError) as exc:
+            last_error = exc
+            time.sleep(0.1)
+        finally:
+            if client is not None:
+                client.close()
+    detail = f": {last_error}" if last_error else ""
+    raise TimeoutError(f"server readiness probe timed out on {host}:{port}{detail}")
+
+
+def stop_process(proc, timeout=10):
+    """Stop the server process group and reap its leader before cleanup."""
+    if proc is None:
+        return
+    if proc.poll() is None:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    try:
+        proc.wait(timeout=timeout)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    if proc.poll() is None:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"server pid {proc.pid} did not exit after SIGKILL")
 
 class Bot(threading.Thread):
-    def __init__(self, idx, host, port, duration, movement_range=None):
-        super().__init__(daemon=True)
+    def __init__(self, idx, host, port, duration, movement_range=None, stop_event=None):
+        super().__init__(daemon=False)
         self.idx=idx; self.host=host; self.port=port; self.duration=duration
         self.movement_range=movement_range
+        self.stop_event = stop_event or threading.Event()
         self.keepalives=0; self.disconnects=0; self.actions=0
-        self.latencies=[]; self.ok=True; self.error=""
+        self.ok=True; self.error=""
     def run(self):
+        c = None
         try:
             c=Conn(self.host, self.port, timeout=15)
             c.login(f"Soak{self.idx}")
             c.config_finish(sink=lambda p,d: None, max_seconds=15)
-            t_end=time.time()+self.duration
+            t_end=time.monotonic()+self.duration
             last_action=0
             # pump loop with non-blocking-like handling: use socket timeout 1s for recv
             c.sock.settimeout(1.0)
-            while time.time()<t_end:
-                now=time.time()
+            while not self.stop_event.is_set() and time.monotonic()<t_end:
+                now=time.monotonic()
                 if now - last_action >= 0.5:  # 2 actions/s
                     last_action=now
                     try:
@@ -76,7 +117,6 @@ class Bot(threading.Thread):
                             c.send_packet_raw(0x05, mcproto.pack_string(cmd))
                         elif r < 0.20:
                             c.send_packet_raw(0x07, mcproto.pack_string(f"soak chat {self.idx} {self.actions}") + struct.pack(">qq",0,0) + b"\x00\x00\x00\x00\x00")
-                            # fallback to ChatMessage raw (pid 0x07): string + timestamps etc - best effort
                         elif r < 0.25:
                             # villager trade / summon variety for B-01/B-09 coverage
                             mob = random.choice(["minecraft:villager","minecraft:witch","minecraft:ravager","minecraft:bee","minecraft:zombie"])
@@ -84,29 +124,42 @@ class Bot(threading.Thread):
                         elif r < 0.28:
                             c.send_packet_raw(0x05, mcproto.pack_string("time set midnight" if random.random()<0.5 else "time set day"))
                         self.actions+=1
-                    except: break
+                    except Exception as exc:
+                        self.ok = False
+                        self.error = f"action: {exc}"
+                        break
                 try:
                     pid, data = c.recv_packet()
                     if pid==0x27: # KeepAlive sc 0x27 -> reply
-                        t_recv=time.time()
                         c.send_packet_raw(0x1a, data)
                         self.keepalives+=1
-                        # keepalive latency approximated as 0 for now
                     elif pid==0x1d: # disconnect
                         self.disconnects+=1
                         break
-                    elif pid==0x02: pass
+                    elif pid==0x02:
+                        continue
                 except socket.timeout:
                     continue
-                except Exception as e:
-                    # EOF or other
-                    if "closed" in str(e).lower() or isinstance(e, OSError):
-                        break
-                    continue
-            try: c.close()
-            except: pass
+                except EOFError as exc:
+                    self.ok = False
+                    self.error = f"receive: {exc or 'peer closed'}"
+                    break
+                except OSError as exc:
+                    self.ok = False
+                    self.error = f"receive: {exc}"
+                    break
+                except Exception as exc:
+                    self.ok = False
+                    self.error = f"protocol: {exc}"
+                    break
         except Exception as e:
             self.ok=False; self.error=str(e)
+        finally:
+            if c is not None:
+                try:
+                    c.close()
+                except OSError:
+                    pass
 
 def parse_duration(s):
     if isinstance(s, int): return s
@@ -134,7 +187,8 @@ def main():
     # clamp PR short default 60s for safety if called without args
     binary=args.binary
     if not os.path.exists(binary):
-        # try fallback
+        # Use the repository build path when the caller supplied a relative
+        # path that is resolved from another working directory.
         alt=os.path.join(os.getcwd(), "build/cppfm")
         if os.path.exists(alt): binary=alt
         else:
@@ -146,30 +200,36 @@ def main():
         for _ in range(20):
             s=socket.socket()
             try: s.bind(("127.0.0.1", port)); s.close(); break
-            except: s.close(); port+=1
-    world_dir=f"/tmp/soak-{os.getpid()}"
-    os.makedirs(world_dir, exist_ok=True)
+            except OSError: s.close(); port+=1
+    world_dir=tempfile.mkdtemp(prefix=f"cppfm-soak-{os.getpid()}-")
     cmd=[binary, f"--port={port}", f"--view-distance={args.view_distance}", f"--world-dir={world_dir}", "--online-mode=false"]
     print(f"[soak] starting server {' '.join(cmd)} for {duration}s")
     server_log = None
+    stop_event = threading.Event()
     log_path = os.environ.get("CPPFM_SOAK_SERVER_LOG")
     if log_path:
         server_log = open(log_path, "wb")
-    proc=subprocess.Popen(cmd, stdout=server_log or subprocess.DEVNULL,
-                          stderr=server_log or subprocess.DEVNULL)
+    proc = None
     try:
-        if not wait_port(port, 8):
-            print("FATAL: server not listening", file=sys.stderr); proc.terminate(); return 2
+        try:
+            proc=subprocess.Popen(cmd, stdout=server_log or subprocess.DEVNULL,
+                                  stderr=server_log or subprocess.DEVNULL,
+                                  start_new_session=True)
+        except OSError as error:
+            print(f"[soak] could not start server: {error}", file=sys.stderr)
+            return 2
+        wait_for_server(proc, "127.0.0.1", port)
         # warmup: start bots first then let RSS stabilize for 5s before baseline
-        t0=time.time()
+        t0=time.monotonic()
         n_clients = args.clients
-        bots=[Bot(i, "127.0.0.1", port, duration, args.movement_range)
+        bots=[Bot(i, "127.0.0.1", port, duration, args.movement_range, stop_event)
               for i in range(n_clients)]
         for b in bots: b.start()
         time.sleep(5)
         rss0=get_rss_kb(proc.pid)
         print(f"[soak] rss0(warmup 5s)={rss0}kB port={port} clients={n_clients} duration={duration}s")
-        # monitor RSS + tick p99 via keepalive latency (approx) + chunkCache bound is checked in-server
+        # Monitor RSS and connection liveness; the in-process tick budget is
+        # checked by the server-side tests rather than guessed from KeepAlive.
         # plan45 O-06 methodology: chunk cache fills to cap early (bounded, not a leak), so the leak
         # gate uses a post-fill baseline: 30min warmup for long runs, midpoint for short runs.
         base_time = 1800 if duration >= 3600 else duration // 2
@@ -177,26 +237,27 @@ def main():
         rss_max2 = 0
         rss_max=rss0
         last_log=t0
-        while time.time()-t0 < duration:
+        while time.monotonic()-t0 < duration:
             time.sleep(1)
             rss=get_rss_kb(proc.pid)
             if rss>rss_max: rss_max=rss
-            el = time.time()-t0
+            el = time.monotonic()-t0
             if rss_base is None and el >= base_time:
                 rss_base=rss
             if rss_base is not None and rss>rss_max2: rss_max2=rss
             # periodic series log for long runs (24h nightly resume/debug — 60s sampling equivalent)
             # + plan45 O-06 diagnosis: 60s cadence for any run >=120s so cache-fill vs leak is visible
-            if duration>=3600 and time.time()-last_log >= 300:
-                last_log=time.time()
-                el=int(time.time()-t0)
+            if duration>=3600 and time.monotonic()-last_log >= 300:
+                last_log=time.monotonic()
+                el=int(time.monotonic()-t0)
                 print(f"[soak-series] t={el}s rss={rss}kB rss_max={rss_max}kB", flush=True)
-            elif duration>=120 and time.time()-last_log >= 60:
-                last_log=time.time()
-                el=int(time.time()-t0)
+            elif duration>=120 and time.monotonic()-last_log >= 60:
+                last_log=time.monotonic()
+                el=int(time.monotonic()-t0)
                 print(f"[soak-series] t={el}s rss={rss}kB rss_max={rss_max}kB", flush=True)
             # early fail if process died
             if proc.poll() is not None:
+                stop_event.set()
                 rc = proc.returncode
                 if rc in (134, -6, -11, -4):
                     sig = {134:"SIGABRT",-6:"SIGABRT",-11:"SIGSEGV",-4:"SIGILL"}.get(rc, str(rc))
@@ -204,22 +265,38 @@ def main():
                 else:
                     print(f"server died exit={rc}", file=sys.stderr)
                 break
-        for b in bots: b.join(timeout=5)
+        # Do not remove the world while a bot can still be writing to it.
+        stop_event.set()
+        for b in bots:
+            b.join(timeout=5)
+            if b.is_alive():
+                b.ok = False
+                b.error = b.error or "bot thread did not stop within 5s"
         rss1=get_rss_kb(proc.pid)
         if rss1==0: rss1=rss_max
         total_keep=sum(b.keepalives for b in bots)
         total_disc=sum(b.disconnects for b in bots)
         total_actions=sum(b.actions for b in bots)
+        failed_bots = [
+            (b.idx, b.error or "connection ended unexpectedly")
+            for b in bots
+            if not b.ok
+        ]
         rss_growth = (rss_max - rss0)/max(rss0,1)*100 if rss0 else 0
         if rss_base is None: rss_base=rss0
         if rss_max2 == 0: rss_max2=rss_max
         rss_growth2 = (rss_max2 - rss_base)/max(rss_base,1)*100 if rss_base else 0
         print(f"[soak] keepalives={total_keep} disconnects={total_disc} actions={total_actions}")
+        if failed_bots:
+            print(f"[soak] bot failures={failed_bots}", file=sys.stderr)
         print(f"[soak] rss0={rss0} rss_max={rss_max} rss1={rss1} growth={rss_growth:.1f}% warmup-baseline")
         print(f"[soak] rss_base(t={base_time}s)={rss_base} rss_max2={rss_max2} growth2={rss_growth2:.1f}% post-fill")
         # checks: keepAlive >0, disconnects==0, rss growth <10% (post-warmup)
         expected_keep = max(1, duration//30 * n_clients * 0.8)  # 80% of expected
         ok = True
+        if failed_bots:
+            print(f"FAIL bot failures {len(failed_bots)}")
+            ok = False
         if total_keep < expected_keep and duration>=30:
             if duration==60 and total_keep==0:
                 print(f"FAIL keepalives {total_keep} < expected {expected_keep}")
@@ -249,16 +326,12 @@ def main():
         print(f"SOAK {'PASS' if ok else 'FAIL'}: keepAlives={total_keep} disconnects={total_disc} rss_growth2={rss_growth2:.1f}%")
         return 0 if ok else 1
     finally:
-        try: proc.terminate()
-        except: pass
-        try: proc.wait(timeout=5)
-        except: proc.kill()
-        import shutil, time as _t; _t.sleep(0.5)
-        try: shutil.rmtree(world_dir)
-        except: pass
+        stop_event.set()
+        stop_process(proc)
+        shutil.rmtree(world_dir, ignore_errors=True)
         if server_log is not None:
             try: server_log.close()
-            except: pass
+            except OSError: pass
 
 if __name__=="__main__":
     sys.exit(main())

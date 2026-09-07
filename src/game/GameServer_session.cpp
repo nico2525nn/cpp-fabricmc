@@ -114,7 +114,7 @@ static void sendSkinMetadata(Player& to, std::int32_t entityId) {
     md.u8(17); md.u8(0);
     md.u8(0x7F);
     md.u8(255);
-    try { to.conn->sendPacket(pl::sc::SetEntityMetadata, md); } catch (...) {}
+    to.conn->trySendPacket(pl::sc::SetEntityMetadata, md);
 }
 struct SessionMenuIo : MenuIo {
     Session& s;
@@ -189,44 +189,155 @@ void Session::run() {
         state_ = State::Done;
     }
     if (registered_) {
-        if (srv_.jvmRuntime()) srv_.jvmRuntime()->onPlayerQuit(*self_);
-        api::PlayerQuitEvent qev;
-        qev.player = self_.get();
-        srv_.events().quit.fire(qev);
-        srv_.savePlayerProgress(*self_);
-        srv_.broadcastSystemText((msg::kYellow + self_->name + " left the game"), nullptr);
-        WriteBuffer rm;
-        rm.varint(1);
-        rm.uuid(self_->uuid.data());
-        srv_.broadcastPacketExcept(nullptr, pl::sc::PlayerInfoRemove, rm);
-        WriteBuffer ent;
-        ent.varint(1);
-        ent.varint(self_->entityId);
-        srv_.broadcastPacketExcept(nullptr, pl::sc::RemoveEntities, ent);
-        srv_.broadcastChatSuggestions(1, std::vector<std::string>{self_->name}, nullptr);
-        // D26: wildcard reset_score 0x49 for disconnecting holder to clear sidebar ghosts
-        {
-            auto affected = srv_.scoreboard.resetAllScores(self_->name);
-            if (!affected.empty()) srv_.sendResetScoreAllWildcard(self_->name);
-        }
-                srv_.savePlayerData(GameServer::uuidToHex(self_->uuid), *self_);
-srv_.removePlayer(self_.get());
+        // Cleanup runs after the main session loop and must not leave a stale
+        // player in the global roster when a hook or persistence operation
+        // fails.  Each step is isolated so later removal/broadcast work still
+        // happens, while failures remain visible in the server log.
         registered_ = false;
+        // Stop using this player for simulation-distance decisions immediately.
+        // Persistence and quit hooks may take longer than one tick, and keeping
+        // a disconnected player active during that window expands random ticks
+        // and entity work around a position nobody can observe anymore.
+        self_->inPlay = false;
+        const auto cleanupStep = [this](const char* name, auto&& step) {
+            try {
+                step();
+            } catch (const std::exception& e) {
+                std::fprintf(stderr, "[cppfm] session cleanup (%s) failed: %s\n",
+                             name, e.what());
+            } catch (...) {
+                std::fprintf(stderr, "[cppfm] session cleanup (%s) failed\n", name);
+            }
+        };
+        cleanupStep("JVM quit hook", [this] {
+            if (srv_.jvmRuntime()) srv_.jvmRuntime()->onPlayerQuit(*self_);
+        });
+        cleanupStep("player quit event", [this] {
+            api::PlayerQuitEvent qev;
+            qev.player = self_.get();
+            srv_.events().quit.fire(qev);
+        });
+        cleanupStep("progress save", [this] { srv_.savePlayerProgress(*self_); });
+        cleanupStep("leave message", [this] {
+            srv_.broadcastSystemText((msg::kYellow + self_->name + " left the game"), nullptr);
+        });
+        cleanupStep("player list removal", [this] {
+            WriteBuffer rm;
+            rm.varint(1);
+            rm.uuid(self_->uuid.data());
+            srv_.broadcastPacketExcept(nullptr, pl::sc::PlayerInfoRemove, rm);
+        });
+        cleanupStep("entity removal", [this] {
+            WriteBuffer ent;
+            ent.varint(1);
+            ent.varint(self_->entityId);
+            srv_.broadcastPacketExcept(nullptr, pl::sc::RemoveEntities, ent);
+        });
+        cleanupStep("chat suggestions", [this] {
+            srv_.broadcastChatSuggestions(1, std::vector<std::string>{self_->name}, nullptr);
+        });
+        cleanupStep("score reset", [this] {
+            // D26: wildcard reset_score 0x49 for disconnecting holder to clear sidebar ghosts
+            const auto affected = srv_.scoreboard.resetAllScores(self_->name);
+            if (!affected.empty()) srv_.sendResetScoreAllWildcard(self_->name);
+        });
+        cleanupStep("player save", [this] {
+            srv_.savePlayerData(GameServer::uuidToHex(self_->uuid), *self_);
+        });
+        cleanupStep("roster removal", [this] { srv_.removePlayer(self_.get()); });
     }
 }
+
+namespace {
+constexpr std::size_t kMaxLegacyPingBytes = 0xFFFFu;
+constexpr std::size_t kMaxServerIconBytes = 512u * 1024u;
+
+std::string readServerIconBase64() {
+    std::ifstream file("server-icon.png", std::ios::binary | std::ios::ate);
+    if (!file) return {};
+
+    const std::streampos end = file.tellg();
+    if (end < 0 || static_cast<std::uintmax_t>(end) > kMaxServerIconBytes) {
+        std::fprintf(stderr, "[cppfm] ignoring server-icon.png larger than %zu bytes\n",
+                     kMaxServerIconBytes);
+        return {};
+    }
+    const auto size = static_cast<std::size_t>(end);
+    file.seekg(0, std::ios::beg);
+    std::string bytes(size, '\0');
+    if (size != 0 && !file.read(bytes.data(), static_cast<std::streamsize>(size)))
+        return {};
+
+    static constexpr char kBase64[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string encoded;
+    encoded.reserve(21 + ((bytes.size() + 2) / 3) * 4);
+    encoded = "data:image/png;base64,";
+    for (std::size_t i = 0; i < bytes.size(); i += 3) {
+        const std::uint32_t b0 = static_cast<std::uint8_t>(bytes[i]);
+        const std::uint32_t b1 = i + 1 < bytes.size()
+                                     ? static_cast<std::uint8_t>(bytes[i + 1]) : 0;
+        const std::uint32_t b2 = i + 2 < bytes.size()
+                                     ? static_cast<std::uint8_t>(bytes[i + 2]) : 0;
+        encoded.push_back(kBase64[(b0 >> 2) & 0x3F]);
+        encoded.push_back(kBase64[((b0 & 0x03) << 4) | ((b1 >> 4) & 0x0F)]);
+        encoded.push_back(i + 1 < bytes.size()
+                             ? kBase64[((b1 & 0x0F) << 2) | ((b2 >> 6) & 0x03)] : '=');
+        encoded.push_back(i + 2 < bytes.size() ? kBase64[b2 & 0x3F] : '=');
+    }
+    return encoded;
+}
+
+std::string makeStatusJson(const GameServer& server,
+                           const std::vector<GameServer::PlayerRef>& players) {
+    json::Value root = json::Value::object();
+
+    json::Value version = json::Value::object();
+    version.set("name", json::Value::ofString(kMinecraftVersion));
+    version.set("protocol", json::Value::ofNumber(kProtocolVersion));
+    root.set("version", std::move(version));
+
+    json::Value playerInfo = json::Value::object();
+    playerInfo.set("max", json::Value::ofNumber(server.config().maxPlayers));
+    playerInfo.set("online", json::Value::ofNumber(
+        static_cast<double>(players.size())));
+    json::Value sample = json::Value::array();
+    for (std::size_t i = 0; i < players.size() && i < 2; ++i) {
+        if (!players[i]) continue;
+        json::Value entry = json::Value::object();
+        entry.set("name", json::Value::ofString(players[i]->name));
+        entry.set("id", json::Value::ofString(GameServer::uuidToDashed(players[i]->uuid)));
+        sample.push(std::move(entry));
+    }
+    playerInfo.set("sample", std::move(sample));
+    root.set("players", std::move(playerInfo));
+
+    json::Value description = json::Value::object();
+    description.set("text", json::Value::ofString(server.config().motd));
+    root.set("description", std::move(description));
+    root.set("enforcesSecureChat", json::Value::ofBool(false));
+
+    const std::string favicon = readServerIconBase64();
+    if (!favicon.empty()) root.set("favicon", json::Value::ofString(favicon));
+    return root.dump();
+}
+} // namespace
+
 void Session::answerLegacyPing() {
     const std::string body = std::string("\u00a71") + '\0' +
         std::to_string(kProtocolVersion) + '\0' + std::string(kMinecraftVersion) + '\0' +
         srv_.config().motd + '\0' + std::to_string(srv_.playerCount()) + '\0' +
         std::to_string(srv_.config().maxPlayers);
+    if (body.size() > kMaxLegacyPingBytes) {
+        std::fprintf(stderr, "[cppfm] legacy ping response exceeds UTF-16 length limit\n");
+        return;
+    }
     // UTF-16BE encode (all chars here are BMP; § is U+00A7).
     std::vector<std::uint8_t> out;
     out.reserve(3 + body.size() * 2);
     out.push_back(0xFF);
-    // count UTF-16 code units (= bytes of latin-1 body here, NULs included)
-    const std::uint16_t n = static_cast<std::uint16_t>(body.size());
-    out.push_back(static_cast<std::uint8_t>(n >> 8));
-    out.push_back(static_cast<std::uint8_t>(n & 0xFF));
+    out.push_back(0);
+    out.push_back(0);
     for (char c : body) {
         const unsigned char uc = static_cast<unsigned char>(c);
         // § arrived as UTF-8 (0xC2 0xA7) — emit the single U+00A7 unit instead.
@@ -236,10 +347,15 @@ void Session::answerLegacyPing() {
         out.push_back(static_cast<std::uint8_t>(unit & 0xFF));
     }
     // fix the length prefix for the folded § byte
-    const std::uint16_t real = static_cast<std::uint16_t>((out.size() - 3) / 2);
+    const auto codeUnits = (out.size() - 3) / 2;
+    if (codeUnits > kMaxLegacyPingBytes) {
+        std::fprintf(stderr, "[cppfm] legacy ping response exceeds UTF-16 length limit\n");
+        return;
+    }
+    const std::uint16_t real = static_cast<std::uint16_t>(codeUnits);
     out[1] = static_cast<std::uint8_t>(real >> 8);
     out[2] = static_cast<std::uint8_t>(real & 0xFF);
-    try { conn_->sendRaw(out.data(), out.size()); } catch (...) {}
+    conn_->trySendRaw(out.data(), out.size());
     std::fprintf(stderr, "[cppfm] legacy ping answered (0xFE)\n");
 }
 void Session::handleHandshake(ReadBuffer& in) {
@@ -267,61 +383,8 @@ void Session::handleStatus() {
         ReadBuffer in(frame);
         switch (in.u8()) {
         case st::cs::Request: {
-            std::string sample;
-            {
-                int n = 0;
-                for (auto& p : srv_.playersSnapshot()) {
-                    if (n++ >= 2) break;
-                    sample += (n > 1 ? "," : "");
-                    sample += "{\"name\":\"" + p->name +
-                              "\",\"id\":\"" +
-                              GameServer::uuidToDashed(p->uuid) + "\"}";
-                }
-            }
-            std::string favicon;
-            {   // optional icon.png next to server.properties
-                std::ifstream f("server-icon.png", std::ios::binary);
-                if (f) {
-                    std::string bytes((std::istreambuf_iterator<char>(f)),
-                                      std::istreambuf_iterator<char>());
-                    static const char* b64 =
-                        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-                        "0123456789+/";
-                    const std::string prefix = "data:image/png;base64,";
-                    size_t i = 0;
-                    while (i < bytes.size()) {
-                        // NOTE(cleanup): explicit & 0xFF — bytes is char (signed);
-                        // all downstream uses mask to <=6 bits, so values are
-                        // unchanged (silences -Wnarrowing, bit-identical output).
-                        const uint32_t chunk[3] = {
-                            static_cast<std::uint8_t>(bytes[i]),
-                            i + 1 < bytes.size() ? static_cast<std::uint8_t>(bytes[i + 1]) : 0u,
-                            i + 2 < bytes.size() ? static_cast<std::uint8_t>(bytes[i + 2]) : 0u};
-                        favicon += b64[(chunk[0] >> 2) & 0x3F];
-                        favicon += b64[((chunk[0] & 0x03) << 4) |
-                                       ((chunk[1] >> 4) & 0x0F)];
-                        favicon += i + 1 < bytes.size()
-                                       ? b64[((chunk[1] & 0x0F) << 2) |
-                                             ((chunk[2] >> 6) & 0x03)]
-                                       : '=';
-                        favicon += i + 2 < bytes.size()
-                                       ? b64[chunk[2] & 0x3F]
-                                       : '=';
-                        i += 3;
-                    }
-                    favicon.insert(0, prefix);
-                }
-            }
-            std::string json =
-                "{\"version\":{\"name\":\"" + std::string(kMinecraftVersion) +
-                "\",\"protocol\":" + std::to_string(kProtocolVersion) +
-                "},\"players\":{\"max\":" + std::to_string(srv_.config().maxPlayers) +
-                ",\"online\":" + std::to_string(srv_.playerCount() + 0) +
-                ",\"sample\":[" + sample + "]}" +
-                (favicon.empty() ? "" :
-                 ",\"favicon\":\"" + favicon + "\"") +
-                ",\"description\":{\"text\":\"" + srv_.config().motd +
-                "\"},\"enforcesSecureChat\":false}";
+            const auto players = srv_.playersSnapshot();
+            const std::string json = makeStatusJson(srv_, players);
             WriteBuffer body;
             body.string(json);
             conn_->sendPacket(st::sc::Response, body);
@@ -352,7 +415,7 @@ void Session::kickPlay(const char* jsonReason) {
     if (state_ == State::Done) return;
     try { disconnectIn(jsonReason); } catch (...) {}
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    try { conn_->abort(); } catch (...) {}
+    conn_->abort();
     state_ = State::Done;
 }
 void Session::handleLogin() {
@@ -366,7 +429,7 @@ void Session::handleLogin() {
         } catch (const std::exception&) {
             WriteBuffer kick;
             nbt::writeTextComponent(kick, "Invalid username");
-            try { conn_->sendPacket(proto::lo::sc::Disconnect, kick); } catch (...) {}
+            conn_->trySendPacket(proto::lo::sc::Disconnect, kick);
             state_ = State::Done;
             return std::string{};
         }
@@ -376,7 +439,7 @@ void Session::handleLogin() {
     if (!GameServer::isValidPlayerName(self_->name)) {
         WriteBuffer kick;
         nbt::writeTextComponent(kick, "Invalid username");
-        try { conn_->sendPacket(proto::lo::sc::Disconnect, kick); } catch (...) {}
+        conn_->trySendPacket(proto::lo::sc::Disconnect, kick);
         state_ = State::Done;
         return;
     }
@@ -451,11 +514,8 @@ void Session::handleLogin() {
         conn_->sendPacket(proto::lo::sc::EncryptionRequest, er);
 
         auto pbody = conn_->readFrame();
-        const bool traceLogin = std::getenv("CPPFM_TRACE") != nullptr;
-        if (traceLogin) std::fprintf(stderr, "[cppfm] ONLINE: got response frame %zu bytes\n", pbody.size());
         ReadBuffer rin(pbody);
         const auto respPid = rin.u8();
-        if (traceLogin) std::fprintf(stderr, "[cppfm] ONLINE: response pid=%02x\n", respPid);
         if (respPid != proto::lo::cs::Key) throw std::runtime_error("expected encryption response");
         try {
         const auto slen = rin.varint();
@@ -468,8 +528,6 @@ void Session::handleLogin() {
         if (tokenBack != srv_.loginVerifyToken_)
             throw std::runtime_error("verify token mismatch");
         if (secret.size() != 16) throw std::runtime_error("bad shared secret size");
-        if (traceLogin) std::fprintf(stderr, "[cppfm] ONLINE: decrypt ok\n");
-
         // Mojang session-server authentication
         std::string hash = crypto::mcSha1Hex("", secret, srv_.loginKeys_.publicDer);
         bool authOk = false;
@@ -718,7 +776,7 @@ void Session::handleConfiguration() {
             if (e.timedOut) {
                 WriteBuffer kick;
                 nbt::writeTextComponent(kick, "Took too long to acknowledge configuration");
-                try { conn_->sendPacket(cf::sc::Disconnect, kick); } catch (...) {}
+                conn_->trySendPacket(cf::sc::Disconnect, kick);
             }
             throw;
         }
@@ -870,11 +928,9 @@ void Session::sendJoinGame() {
     }
     b.boolean(false);                              // enforces secure chat
     conn_->sendPacket(pl::sc::Login, b);
-    try {
-        WriteBuffer vd;
-        vd.varint(c.viewDistance);
-        conn_->sendPacket(pl::sc::UpdateViewDistance, vd);
-    } catch (...) {}
+    WriteBuffer vd;
+    vd.varint(c.viewDistance);
+    conn_->sendPacket(pl::sc::UpdateViewDistance, vd);
 }
 void Session::sendAbilities() {
     std::uint8_t f = 0;
@@ -921,17 +977,15 @@ void Session::sendSignBlockEntity(std::int32_t x, std::int32_t y, std::int32_t z
     side("front_text", be->sign.front);
     side("back_text", be->sign.back);
     w.endCompound();
-    try { conn_->sendPacket(pl::sc::BlockEntityData, b); } catch (...) {}
+    conn_->trySendPacket(pl::sc::BlockEntityData, b);
     srv_.broadcastPacketExcept(self_.get(), pl::sc::BlockEntityData, b);
 }
 void Session::applyClientSettings(Player::ClientSettings s) {
     if (s.locale.empty()) s.locale = "en_us";
     self_->clientSettings = s;
-    try {
-        WriteBuffer b;
-        b.varint(std::min({srv_.config().viewDistance, s.viewDistance, 32}));
-        conn_->sendPacket(pl::sc::UpdateViewDistance, b);
-    } catch (...) {}
+    WriteBuffer b;
+    b.varint(std::min({srv_.config().viewDistance, s.viewDistance, 32}));
+    conn_->trySendPacket(pl::sc::UpdateViewDistance, b);
 }
 bool Session::requireOp(int level, const char* what) {
     (void)level; // levels collapse to ops.json membership + creative (documented)
@@ -945,7 +999,7 @@ void Session::sendTagQueryResponse(std::int32_t transactionId, const WriteBuffer
     WriteBuffer b;
     b.varint(transactionId);
     b.raw(nbt.data.data(), nbt.data.size());
-    try { conn_->sendPacket(pl::sc::TagQueryResponse, b); } catch (...) {}
+    conn_->trySendPacket(pl::sc::TagQueryResponse, b);
 }
 void Session::answerBlockNbt(std::int32_t transactionId, std::int32_t x, std::int32_t y, std::int32_t z) {
     BlockEntity* be = srv_.blockEntities().getAt(x, y, z);
@@ -1000,7 +1054,7 @@ void Session::onNameItem(const std::string& name) {
         pb.varint(m.windowId);
         pb.i16(0);
         pb.i16(static_cast<std::int16_t>(cost < 0 ? 0 : cost));
-        try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
+        conn_->trySendPacket(pl::sc::ContainerSetData, pb);
         const bool tooExp = CostCalculator::isTooExpensive(cost, self_->gamemode == 1);
         if (!m.extraSlots[0].empty() && cost > 0 && !tooExp) {
             m.extraSlots[2] = m.extraSlots[0];
@@ -1050,7 +1104,7 @@ void Session::onBeaconEffect(std::optional<std::int32_t> primary,
     b.varint(e.amplifier);
     b.varint(e.durationTicks);
     b.u8(effectFlags(e));
-    try { self_->conn->sendPacket(proto::pl::sc::EntityEffect, b); } catch (...) {}
+    self_->conn->trySendPacket(proto::pl::sc::EntityEffect, b);
 }
 void Session::onSpectate(const std::array<std::uint8_t,16>& target) {
     if (self_->gamemode != 3) {
@@ -1065,7 +1119,7 @@ void Session::onSpectate(const std::array<std::uint8_t,16>& target) {
         sendTeleport(other->x, other->y, other->z, self_->yaw, self_->pitch);
         WriteBuffer cam;
         cam.varint(other->entityId);
-        try { conn_->sendPacket(pl::sc::Camera, cam); } catch (...) {}
+        conn_->trySendPacket(pl::sc::Camera, cam);
         return;
     }
     std::fprintf(stderr, "[cppfm] spectate target not found (mob UUIDs unsupported)\n");
@@ -1083,19 +1137,14 @@ void Session::sendTeleport(double x, double y, double z, float yaw, float pitch)
 }
 void Session::broadcastSpawnEntity(Player* about) {
     WriteBuffer b = makeSpawnEntity(*about);
-    if (getenv("CPPFM_TRACE"))
-        std::fprintf(stderr, "[cppfm] spawn-broadcast of %s (eid=%d)\n",
-                     about->name.c_str(), about->entityId);
     srv_.broadcastPacketExcept(about, pl::sc::SpawnEntity, b);
     sendSkinMetadata(*about, about->entityId);
     // also tell the newcomer about everyone else
     for (auto& other : srv_.playersSnapshot()) {
         if (other.get() == about || !other->inPlay) continue;
         WriteBuffer ob = makeSpawnEntity(*other);
-        try {
-            about->conn->sendPacket(pl::sc::SpawnEntity, ob);
-            sendSkinMetadata(*about, other->entityId);
-        } catch (...) {}
+        about->conn->trySendPacket(pl::sc::SpawnEntity, ob);
+        sendSkinMetadata(*about, other->entityId);
     }
 }
 void Session::sendPlayerInfoAddSelf() {
@@ -1284,7 +1333,7 @@ void Session::onTabComplete(ReadBuffer& in) {
         b.string(match);
         b.boolean(false);
     }
-    try { conn_->sendPacket(pl::sc::CommandSuggestions, b); } catch (...) {}
+    conn_->trySendPacket(pl::sc::CommandSuggestions, b);
 }
 void Session::sendSetSlot(std::int32_t windowId, std::int32_t stateId,
                           std::int16_t slot, const ItemStack& s) {
@@ -1293,12 +1342,12 @@ void Session::sendSetSlot(std::int32_t windowId, std::int32_t stateId,
     b.varint(stateId);
     b.i16(slot);
     s.write(b);
-    try { conn_->sendPacket(pl::sc::ContainerSetSlot, b); } catch (...) {}
+    conn_->trySendPacket(pl::sc::ContainerSetSlot, b);
 }
 void Session::syncCursorItem() {
     WriteBuffer b;
     cursorItem_.write(b);
-    try { conn_->sendPacket(pl::sc::SetCursorItem, b); } catch (...) {}
+    conn_->trySendPacket(pl::sc::SetCursorItem, b);
 }
 void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
     // Stonecutter output take (slot 1) - consume input, give result
@@ -1345,7 +1394,7 @@ void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
                 pb.varint(m.windowId);
                 pb.i16(0);
                 pb.i16(static_cast<std::int16_t>(newCost < 0 ? 0 : newCost));
-                try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
+                conn_->trySendPacket(pl::sc::ContainerSetData, pb);
                 sendMenuContent(m);
                 syncCursorItem();
                 return;
@@ -1448,7 +1497,7 @@ void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
         pb.varint(m.windowId);
         pb.i16(0);
         pb.i16(static_cast<std::int16_t>(cost < 0 ? 0 : cost));
-        try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
+        conn_->trySendPacket(pl::sc::ContainerSetData, pb);
         bool tooExp = CostCalculator::isTooExpensive(cost, self_->gamemode==1);
         if (!m.extraSlots[0].empty() && cost > 0 && !tooExp) {
             m.extraSlots[2] = m.extraSlots[0];
@@ -1480,7 +1529,7 @@ void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
             pb.varint(m.windowId);
             pb.i16(static_cast<std::int16_t>(i));
             pb.i16(static_cast<std::int16_t>(costs[i]));
-            try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
+            conn_->trySendPacket(pl::sc::ContainerSetData, pb);
         }
     }
     if (m.type == MenuType::Brewing) {
@@ -1491,7 +1540,7 @@ void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
                 pb.varint(m.windowId);
                 pb.i16(static_cast<std::int16_t>(prop));
                 pb.i16(prop == 0 ? b.brewTime : b.fuel);
-                try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
+                conn_->trySendPacket(pl::sc::ContainerSetData, pb);
             }
         }
     }
@@ -1504,7 +1553,7 @@ void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
                 pb.varint(m.windowId);
                 pb.i16(static_cast<std::int16_t>(prop));
                 pb.i16(static_cast<std::int16_t>(props[prop]));
-                try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
+                conn_->trySendPacket(pl::sc::ContainerSetData, pb);
             }
         }
     }
@@ -1543,7 +1592,7 @@ void Session::sendMenuContent(Menu& m) {
         else ItemStack::air().write(b);
     }
     cursorItem_.write(b);
-    try { conn_->sendPacket(pl::sc::ContainerSetContent, b); } catch (...) {}
+    conn_->trySendPacket(pl::sc::ContainerSetContent, b);
 }
 void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
                          std::uint16_t stateOfBlock) {
@@ -1719,7 +1768,7 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
             pb.varint(openMenu_->windowId);
             pb.i16(static_cast<std::int16_t>(i));
             pb.i16(static_cast<std::int16_t>(costs[i]));
-            try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
+            conn_->trySendPacket(pl::sc::ContainerSetData, pb);
         }
     } else if (openMenu_->type == MenuType::Anvil) {
         ItemStack left = openMenu_->extraSlots[0];
@@ -1729,7 +1778,7 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
         pb.varint(openMenu_->windowId);
         pb.i16(0);
         pb.i16(static_cast<std::int16_t>(cost < 0 ? 0 : cost));
-        try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
+        conn_->trySendPacket(pl::sc::ContainerSetData, pb);
     } else if (openMenu_->type == MenuType::Brewing) {
         if (openMenu_->blockEntity && openMenu_->blockEntity->kind == BlockEntity::Kind::Brewing) {
             auto &b = openMenu_->blockEntity->brewing;
@@ -1738,7 +1787,7 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
                 pb.varint(openMenu_->windowId);
                 pb.i16(static_cast<std::int16_t>(prop));
                 pb.i16(prop == 0 ? b.brewTime : b.fuel);
-                try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
+                conn_->trySendPacket(pl::sc::ContainerSetData, pb);
             }
         }
     } else if (openMenu_->type == MenuType::Furnace || openMenu_->type == MenuType::BlastFurnace || openMenu_->type == MenuType::Smoker) {
@@ -1750,7 +1799,7 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
                 pb.varint(openMenu_->windowId);
                 pb.i16(static_cast<std::int16_t>(prop));
                 pb.i16(static_cast<std::int16_t>(props[prop]));
-                try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
+                conn_->trySendPacket(pl::sc::ContainerSetData, pb);
             }
         }
     }
@@ -1774,7 +1823,7 @@ void Session::closeOpenMenu(bool sendPacketToClient) {
     if (sendPacketToClient) {
         WriteBuffer b;
         b.varint(0);
-        try { conn_->sendPacket(pl::sc::CloseContainer, b); } catch (...) {}
+        conn_->trySendPacket(pl::sc::CloseContainer, b);
     }
 }
 void Session::onCloseContainer() {
@@ -1868,7 +1917,7 @@ void Session::sendRecipeBook() {
         ++displayId;
     }
     b.boolean(true);                           // replace=true
-    try { conn_->sendPacket(pl::sc::RecipeBookAdd, b); } catch (...) {}
+    conn_->trySendPacket(pl::sc::RecipeBookAdd, b);
 }
 void Session::handlePlaceRecipe(std::int32_t recipeId, bool makeAll) {
     if (!openMenu_) return;
@@ -1963,7 +2012,7 @@ void Session::handlePlaceRecipe(std::int32_t recipeId, bool makeAll) {
             pb.varint(m.windowId);
             pb.i16(0);
             pb.i16(f.cookProgress);
-            try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
+            conn_->trySendPacket(pl::sc::ContainerSetData, pb);
         }
         return;
     } else if (m.type == MenuType::Stonecutter) {
@@ -1984,7 +2033,7 @@ void Session::handlePlaceRecipe(std::int32_t recipeId, bool makeAll) {
             WriteBuffer b;
             b.varint(m.windowId);
             b.varint(recipeId);
-            try { conn_->sendPacket(pl::sc::PlaceGhostRecipe, b); } catch (...) {}
+            conn_->trySendPacket(pl::sc::PlaceGhostRecipe, b);
         }
         // also send ContainerSetSlot for output
         sendSetSlot(m.windowId, self_->invStateId + 1, 1, *output);
@@ -2020,7 +2069,7 @@ void Session::handlePlaceGhostRecipe(std::int32_t recipeId) {
     WriteBuffer b;
     b.varint(m.windowId);
     b.varint(recipeId);
-    try { conn_->sendPacket(pl::sc::PlaceGhostRecipe, b); } catch (...) {}
+    conn_->trySendPacket(pl::sc::PlaceGhostRecipe, b);
 }
 void Session::onPluginPayload(const std::string& channel,
                               const api::ChannelRegistry::Payload& body,
@@ -2073,7 +2122,7 @@ void Session::onPluginPayload(const std::string& channel,
             pb.varint(openMenu_->windowId);
             pb.i16(0);
             pb.i16(static_cast<std::int16_t>(cost < 0 ? 0 : cost));
-            try { conn_->sendPacket(pl::sc::ContainerSetData, pb); } catch (...) {}
+            conn_->trySendPacket(pl::sc::ContainerSetData, pb);
             sendSetSlot(openMenu_->windowId, self_->invStateId, 2, openMenu_->extraSlots[2]);
             sendMenuContent(*openMenu_);
         }
@@ -2088,7 +2137,7 @@ void Session::sendPluginPayload(int phase, const std::string& channel,
     b.raw(body.data(), body.size());
     const std::uint8_t id = phase == 0 ? cf::sc::CustomPayload
                                        : pl::sc::CustomPayload;
-    try { conn_->sendPacket(id, b); } catch (...) {}
+    conn_->trySendPacket(id, b);
 }
 void Session::sendSystemText(const std::string& text) {
     WriteBuffer body;
@@ -2137,7 +2186,7 @@ void Session::tickChunksAround(double px, double pz) {
         WriteBuffer center;
         center.varint(pcx);
         center.varint(pcz);
-        try { conn_->sendPacket(pl::sc::SetCenterChunk, center); } catch (...) {}
+        conn_->trySendPacket(pl::sc::SetCenterChunk, center);
         lastCx_ = pcx; lastCz_ = pcz;
     }
 
@@ -2175,7 +2224,7 @@ void Session::tickChunksAround(double px, double pz) {
             WriteBuffer f;
             f.i32(fcz);   // z first per schema!
             f.i32(fcx);
-            try { conn_->sendPacket(pl::sc::ForgetLevelChunk, f); } catch (...) {}
+            conn_->trySendPacket(pl::sc::ForgetLevelChunk, f);
             sentChunks_.erase(k);
         }
     }
@@ -2461,13 +2510,19 @@ void Session::onEntityAction(ReadBuffer& in) {
     else if (action == 3) self_->isSprinting = true;
     else if (action == 4) self_->isSprinting = false;
     if (wasSneak != self_->isSneaking || wasSprint != self_->isSprinting) {
+        const auto sendMetadata = [&](const WriteBuffer& body) {
+            // The tracking broadcast excludes the source player, but the
+            // source client also needs the authoritative pose/flags update.
+            conn_->trySendPacket(pl::sc::SetEntityMetadata, body);
+            srv_.broadcastPacketExcept(self_.get(), pl::sc::SetEntityMetadata, body);
+        };
         if (wasSneak != self_->isSneaking) {
             // pose metadata index 6 varint: 5 crouching, 0 standing
             WriteBuffer md;
             md.varint(self_->entityId);
             md.u8(6); md.varint(1); md.varint(self_->isSneaking ? 5 : 0);
             md.u8(255);
-            srv_.broadcastPacketExcept(self_.get(), pl::sc::SetEntityMetadata, md);
+            sendMetadata(md);
         }
         // flags byte index 0: 0x02 sneak + 0x08 sprint (combined)
         {
@@ -2479,7 +2534,7 @@ void Session::onEntityAction(ReadBuffer& in) {
             if (self_->isSprinting) flags |= 0x08;
             fl.u8(flags);
             fl.u8(255);
-            srv_.broadcastPacketExcept(self_.get(), pl::sc::SetEntityMetadata, fl);
+            sendMetadata(fl);
         }
         {
             int swiftLvl=0;
@@ -2494,7 +2549,7 @@ void Session::onEntityAction(ReadBuffer& in) {
             double after = self_->attributes.getValue(Attribute::MOVEMENT_SPEED);
             if(std::abs(before-after)>1e-9){
                 WriteBuffer ab; self_->attributes.writeUpdate(ab, self_->entityId);
-                try{ self_->conn->sendPacket(proto::pl::sc::UpdateAttributes, ab);}catch(...){}
+                self_->conn->trySendPacket(proto::pl::sc::UpdateAttributes, ab);
                 srv_.broadcastPacketExcept(self_.get(), proto::pl::sc::UpdateAttributes, ab);
             }
         }
@@ -2887,7 +2942,7 @@ void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
                         // mob griefing disabled -> skip
                     } else {
                     float prob = std::clamp((float)(self_->fallDist - 0.5), 0.f, 1.f);
-                    bool doTrample = (prob >= 1.0f) || ((rand()/(float)RAND_MAX) < prob);
+                    bool doTrample = (prob >= 1.0f) || ((nextRandom()/(float)RAND_MAX) < prob);
                     if (doTrample) {
                         bool hasMoisture = false;
                         for (auto& [k,v] : gen::propsOf(st)) if (k=="moisture") hasMoisture=true;
@@ -2940,9 +2995,6 @@ void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
                 api::EntityLandEvent lev; lev.entity=self_.get(); lev.x=lbx; lev.y=lby; lev.z=lbz; lev.blockState=lst; lev.fallDistance=self_->fallDist;
                 api::events().entityLand.fire(lev);
             }
-            if (getenv("CPPFM_TRACE"))
-                std::fprintf(stderr, "[cppfm] %s landed fallDist=%.2f gm=%u\n",
-                             self_->name.c_str(), self_->fallDist, self_->gamemode);
             bool mitigated = false;
             if (self_->fallDist > 3.0) mitigated = isFallMitigated();
             if (mitigated) {
@@ -2989,8 +3041,8 @@ void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
             if (!srv_.config().allowFlight && self_->flyingTicks > 80) {
                 WriteBuffer kick;
                 nbt::writeTextComponent(kick, "Flying is not enabled on this server");
-                try { self_->conn->sendPacket(proto::pl::sc::Disconnect, kick); } catch (...) {}
-                try { self_->conn->close(); } catch (...) {}
+                self_->conn->trySendPacket(proto::pl::sc::Disconnect, kick);
+                self_->conn->close();
             }
         } else {
             self_->flyingTicks = 0;
@@ -3051,11 +3103,11 @@ void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
         if(std::abs(before-after) > 1e-9){
             WriteBuffer ab;
             self_->attributes.writeUpdate(ab, self_->entityId);
-            try{ self_->conn->sendPacket(proto::pl::sc::UpdateAttributes, ab);}catch(...){}
+            self_->conn->trySendPacket(proto::pl::sc::UpdateAttributes, ab);
             srv_.broadcastPacketExcept(self_.get(), proto::pl::sc::UpdateAttributes, ab);
         }
         if(onSoul && soulLvl>0 && !self_->isSneaking){
-            if(rand()%60==0){
+            if(nextRandom()%60==0){
                 for(int i=5;i<=8;++i) if(!self_->inv[i].empty() && self_->inv[i].isArmor() && EnchantmentHelper::soulSpeedLevel(self_->inv[i])>0){
                     if(DamageComponent::applyDamage(self_->inv[i], 1)){
                         self_->inv[i]=ItemStack::air();
@@ -3199,8 +3251,8 @@ void Session::onChatMessage(ReadBuffer& in) {
         if (signature.empty()) {
             WriteBuffer kick;
             nbt::writeTextComponent(kick, "Chat message signature required (enforce-secure-profile)");
-            try { conn_->sendPacket(proto::pl::sc::Disconnect, kick); } catch (...) {}
-            try { conn_->close(); } catch (...) {}
+            conn_->trySendPacket(proto::pl::sc::Disconnect, kick);
+            conn_->close();
             return;
         }
     }
@@ -3290,7 +3342,7 @@ void Session::onPlayerAction(ReadBuffer& in) {
         WriteBuffer rb;
         rb.position(bx, by, bz);
         rb.varint(state);
-        try { conn_->sendPacket(proto::pl::sc::BlockUpdate, rb); } catch (...) {}
+            conn_->trySendPacket(proto::pl::sc::BlockUpdate, rb);
     };
     auto cancelDig = [&]() {
         if (self_->digActive) srv_.broadcastDigStage(*self_, -1);
@@ -3475,8 +3527,7 @@ bool Session::handleUseItemOnInteractions(const UseItemOnRequest& request) {
                 WriteBuffer sp;
                 sp.position(x, y, z);
                 sp.f32(0.f);
-                try { conn_->sendPacket(proto::pl::sc::SetDefaultSpawn, sp); }
-                catch (...) {}
+                conn_->trySendPacket(proto::pl::sc::SetDefaultSpawn, sp);
                 int sleepingCount = 0, survivalCount = 0;
                 for (auto& p : srv_.playersSnapshot()) {
                     if (!p->inPlay || p->gamemode != 0) continue;
@@ -3496,9 +3547,7 @@ bool Session::handleUseItemOnInteractions(const UseItemOnRequest& request) {
                             tb.f64(0); tb.f64(0); tb.f64(0);
                             tb.f32(p->yaw); tb.f32(0);
                             tb.u32(0);
-                            try { p->conn->sendPacket(
-                                      proto::pl::sc::PlayerPosition, tb); }
-                            catch (...) {}
+                            p->conn->trySendPacket(proto::pl::sc::PlayerPosition, tb);
                         }
                     srv_.broadcastSystemText((msg::kGray + "Good morning!"));
                 } else {
@@ -3563,7 +3612,7 @@ bool Session::handleUseItemOnToolActions(const UseItemOnRequest& request, const 
                         int32_t wy = oy+dy;
                         w.setBlock(wx, wy, wz, portalState);
                         srv_.broadcastBlockChange(wx, wy, wz, portalState);
-                        if (srv_.blockTicks()) srv_.blockTicks()->schedule(wx, wy, wz, srv_.tickNow() + 1 + (rand()%20));
+                        if (srv_.blockTicks()) srv_.blockTicks()->schedule(wx, wy, wz, srv_.tickNow() + 1 + (nextRandom()%20));
                     }
                     int32_t cxp = ox+1 + (orient==0?1:0);
                     int32_t czp = oz + (orient==1?1:0);
@@ -4276,7 +4325,8 @@ void Session::placeUseItemOnBlock(const UseItemOnRequest& request, const InvSlot
                     std::vector<std::pair<std::string_view,std::string_view>> props;
                     for(auto&[k,v]: gen::propsOf(st)) if(k!="leaves" && k!="age") props.emplace_back(k,v);
                     props.emplace_back("leaves", want);
-                    props.emplace_back("age", std::to_string(wantA));
+                    const std::string ageString = std::to_string(wantA);
+                    props.emplace_back("age", ageString);
                     std::uint16_t ns = static_cast<std::uint16_t>(gen::stateWithProps(*d, props));
                     srv_.world().setBlock(tx, yy, tz, ns);
                     srv_.broadcastBlockChange(tx, yy, tz, ns);
@@ -4408,7 +4458,7 @@ void Session::onUseItem(ReadBuffer& in) {
                 WriteBuffer vel;
                 vel.varint(self_->entityId);
                 vel.i16((int16_t)(vx*8000)); vel.i16((int16_t)(vy*8000)); vel.i16((int16_t)(vz*8000));
-                try { self_->conn->sendPacket(proto::pl::sc::EntityVelocity, vel); } catch(...) {}
+                self_->conn->trySendPacket(proto::pl::sc::EntityVelocity, vel);
                 // also broadcast to others
                 srv_.broadcastPacketExcept(self_.get(), proto::pl::sc::EntityVelocity, vel);
                 if (self_->gamemode==0 && ItemStack::maxDamageFor(sl.itemId)>0) {
@@ -4522,7 +4572,7 @@ void Session::onUseItem(ReadBuffer& in) {
                     auto pidIt = gen::itemIdByName().find("minecraft:ender_pearl");
                     if (pidIt!=gen::itemIdByName().end() && self_->conn) {
                         WriteBuffer cd; cd.varint((int32_t)pidIt->second); cd.varint(20 - (int)(srv_.tickNow() - self_->lastEnderPearlTick));
-                        try{ self_->conn->sendPacket(proto::pl::sc::SetCooldown, cd);}catch(...){}
+                        self_->conn->trySendPacket(proto::pl::sc::SetCooldown, cd);
                     }
                     ack(sequence); return;
                 }
@@ -4539,7 +4589,7 @@ void Session::onUseItem(ReadBuffer& in) {
                         auto pidIt = gen::itemIdByName().find("minecraft:ender_pearl");
                         if (pidIt!=gen::itemIdByName().end()){
                             WriteBuffer cd; cd.varint((int32_t)pidIt->second); cd.varint(20);
-                            try{ self_->conn->sendPacket(proto::pl::sc::SetCooldown, cd);}catch(...){}
+                            self_->conn->trySendPacket(proto::pl::sc::SetCooldown, cd);
                         }
                     }
                 }
@@ -4625,9 +4675,9 @@ void Session::onUseEntity(ReadBuffer& in) {
                             int col = m->woolColor % 16;
                             auto wit = gen::itemIdByName().find(woolNames[col]);
                             if (wit != gen::itemIdByName().end()) {
-                                int cnt = 1 + (rand() % 3);
+                                int cnt = 1 + (nextRandom() % 3);
                                 srv_.spawnItemDrop(m->x, m->y+0.8, m->z, wit->second, (uint8_t)cnt,
-                                    (rand()/(double)RAND_MAX-.5)*0.12, 0.12, (rand()/(double)RAND_MAX-.5)*0.12);
+                                    (nextRandom()/(double)RAND_MAX-.5)*0.12, 0.12, (nextRandom()/(double)RAND_MAX-.5)*0.12);
                             }
                             // metadata: sheep index 17 sheared flag (D16 Boolean 8 fix)
                             {
@@ -4658,7 +4708,7 @@ void Session::onUseEntity(ReadBuffer& in) {
                             ow.varint(windowId);
                             ow.varint(slotCount);
                             ow.varint(m->entityId);
-                            try { conn_->sendPacket(proto::pl::sc::OpenHorseWindow, ow); } catch (...) {}
+                            conn_->trySendPacket(proto::pl::sc::OpenHorseWindow, ow);
                             // Also send ContainerSetContent for the horse window's 15 slots (empty for now)
                             WriteBuffer cc;
                             cc.varint(windowId);
@@ -4666,7 +4716,7 @@ void Session::onUseEntity(ReadBuffer& in) {
                             cc.varint(slotCount);
                             for (int i = 0; i < slotCount; ++i) ItemStack::air().write(cc);
                             ItemStack::air().write(cc); // carried
-                            try { conn_->sendPacket(proto::pl::sc::ContainerSetContent, cc); } catch (...) {}
+                            conn_->trySendPacket(proto::pl::sc::ContainerSetContent, cc);
                             return;
                         }
                     }
@@ -4763,7 +4813,7 @@ void Session::onUseEntity(ReadBuffer& in) {
         double dx = victimP->x - self_->x;
         double dz = victimP->z - self_->z;
         double len = std::sqrt(dx*dx + dz*dz);
-        if (len < 0.01) { dx = (rand()/(double)RAND_MAX - 0.5); dz = (rand()/(double)RAND_MAX - 0.5); len = std::sqrt(dx*dx+dz*dz); }
+        if (len < 0.01) { dx = (nextRandom()/(double)RAND_MAX - 0.5); dz = (nextRandom()/(double)RAND_MAX - 0.5); len = std::sqrt(dx*dx+dz*dz); }
         double nx = dx / len;
         double nz = dz / len;
         WriteBuffer vel;
@@ -4771,7 +4821,7 @@ void Session::onUseEntity(ReadBuffer& in) {
         vel.i16(static_cast<std::int16_t>(nx * 400));
         vel.i16(static_cast<std::int16_t>(300));
         vel.i16(static_cast<std::int16_t>(nz * 400));
-        try { victimP->conn->sendPacket(pl::sc::EntityVelocity, vel); } catch (...) {}
+        victimP->conn->trySendPacket(pl::sc::EntityVelocity, vel);
         srv_.broadcastPacketExcept(victimP, pl::sc::EntityVelocity, vel);
         return;
     }
@@ -4876,7 +4926,7 @@ void Session::onUseEntity(ReadBuffer& in) {
                 wv.i16(0);
                 wv.i16(static_cast<std::int16_t>(windBurstLaunchVy(wb) * 8000));
                 wv.i16(0);
-                try { if (self_->conn) self_->conn->sendPacket(pl::sc::EntityVelocity, wv); } catch (...) {}
+                if (self_->conn) self_->conn->trySendPacket(pl::sc::EntityVelocity, wv);
                 srv_.broadcastPacketExcept(self_.get(), pl::sc::EntityVelocity, wv);
             }
         }
@@ -4893,7 +4943,7 @@ void Session::onUseEntity(ReadBuffer& in) {
         double dx = hitPtr->x - self_->x;
         double dz = hitPtr->z - self_->z;
         double len = std::sqrt(dx*dx + dz*dz);
-        if (len < 0.01) { dx = (rand()/(double)RAND_MAX - 0.5); dz = (rand()/(double)RAND_MAX - 0.5); len = std::sqrt(dx*dx+dz*dz); }
+        if (len < 0.01) { dx = (nextRandom()/(double)RAND_MAX - 0.5); dz = (nextRandom()/(double)RAND_MAX - 0.5); len = std::sqrt(dx*dx+dz*dz); }
         double nx = dx / len;
         double nz = dz / len;
         float kbForce = 0.4f * (punchLvl + kbLvl) + (punchLvl>0 ? 0.5f : 0.f);
@@ -4929,17 +4979,17 @@ void Session::onUseEntity(ReadBuffer& in) {
         if (drop.itemId) {
             int lootLv = weaponStack.empty() ? 0 : EnchantmentHelper::getLooting(weaponStack);
             int cnt = drop.count;
-            if (lootLv > 0) cnt = std::min(64, cnt + (rand() % (lootLv + 1)));
+            if (lootLv > 0) cnt = std::min(64, cnt + (nextRandom() % (lootLv + 1)));
             srv_.spawnItemDrop(victim->x, victim->y + 0.4, victim->z, drop.itemId, (std::uint8_t)cnt,
-                               (rand()/(double)RAND_MAX-.5)*.15, .1,
-                               (rand()/(double)RAND_MAX-.5)*.15);
+                               (nextRandom()/(double)RAND_MAX-.5)*.15, .1,
+                               (nextRandom()/(double)RAND_MAX-.5)*.15);
         }
         srv_.spawnXpOrbs(victim->x, victim->y + 0.5, victim->z,
                          mobStats(victim->kind).xpDrop, self_.get());
         // slime split on player kill
         if ((victim->kind == MobKind::Slime || victim->kind == MobKind::MagmaCube) && victim->slimeSize > 0) {
             std::vector<std::shared_ptr<MobEntity>> babies;
-            int n = 2 + (rand() % 3);
+            int n = 2 + (nextRandom() % 3);
             for (int s=0; s<n; ++s) {
                 auto baby = std::make_shared<MobEntity>();
                 baby->entityId = srv_.nextEntityId();
@@ -4947,9 +4997,9 @@ void Session::onUseEntity(ReadBuffer& in) {
                 baby->slimeSize = victim->slimeSize - 1;
                 baby->health = MobEntity::slimeHealthForSize(baby->slimeSize);
                 if (baby->health < 1.f) baby->health = 1.f;
-                baby->x = victim->x + (rand()/(double)RAND_MAX - 0.5) * 0.5;
+                baby->x = victim->x + (nextRandom()/(double)RAND_MAX - 0.5) * 0.5;
                 baby->y = victim->y;
-                baby->z = victim->z + (rand()/(double)RAND_MAX - 0.5) * 0.5;
+                baby->z = victim->z + (nextRandom()/(double)RAND_MAX - 0.5) * 0.5;
                 baby->lastSeenMs = 0;
                 if (srv_.jvmRuntime() &&
                     !srv_.jvmRuntime()->onMobSpawn(*baby, baby->x, baby->y, baby->z))

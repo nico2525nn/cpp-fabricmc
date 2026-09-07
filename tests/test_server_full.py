@@ -12,17 +12,19 @@ Covers (vanilla spec from wiki Commands + Prismarine data 1.21.4):
  7. RCON: Source RCON (little-endian, 4110 cap) auth + exec
  8. Persistence: world edit survives restart
 
-Policy: expectations are vanilla-strict; current cppfm will FAIL many checks.
-That is intentional — FAIL = gap visualization, not a bug in the test.
+Policy: expectations are vanilla-strict.  Unsupported dedicated-server
+operations return explicit vanilla-compatible feedback and are checked as
+such; a FAIL means that the observed response, lifecycle, or wire behavior is
+wrong.
 
 Usage:
   python3 tests/test_server_full.py --binary ./build/cppfm [--port 0]
-  timeout --foreground --kill-after=5 900 python3 tests/test_server_full.py --binary ./build/cppfm
+  timeout --foreground --kill-after=5 700 python3 tests/test_server_full.py --binary ./build/cppfm
 
-Exit 0 always prints summary; exit 1 if any check FAILed (strict). Caller may ignore exit for "gap visualization".
+Exit 0 prints a clean summary; exit 1 means at least one check failed.
 """
 from __future__ import annotations
-import argparse, io, json, os, re, socket, struct, subprocess, sys, tempfile, time, zlib, hashlib, threading, signal
+import argparse, io, json, os, re, socket, struct, subprocess, sys, tempfile, time, hashlib, threading, signal, shutil
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -97,7 +99,9 @@ VANILLA_COMMANDS: list[tuple[str,str,str,str]] = [
     ("weather",     "weather clear 100", "weather", "GameEvent weather"),
     ("whitelist",   "whitelist list", "whitelist", "whitelist.json"),
     ("worldborder", "worldborder get", "worldborder", "InitializeWorldBorder 0x26"),
-    # Vanilla but NOT implemented in cppfm — MUST FAIL (gap)
+    # Commands with either a dedicated-server limitation or a separate
+    # implementation path.  Each valid form still requires observable
+    # command-specific feedback below.
     ("damage",      "damage @s 1 minecraft:generic", "damage", "DamageEvent 0x1A applied via command"),
     ("debug",       "debug start", "debug", "debug profiling"),
     ("defaultgamemode","defaultgamemode survival","defaultgamemode","default gamemode"),
@@ -124,18 +128,23 @@ def find_free_port() -> int:
     s.close()
     return p
 
-def wait_for_status(host: str, port: int, timeout: float = 12.0) -> dict | None:
-    deadline = time.time() + timeout
+def wait_for_status(host: str, port: int, timeout: float = 12.0,
+                    proc: subprocess.Popen | None = None) -> dict | None:
+    deadline = time.monotonic() + timeout
     last_exc = None
-    while time.time() < deadline:
+    while time.monotonic() < deadline:
+        if proc is not None and proc.poll() is not None:
+            return None
+        c = None
         try:
             c = Conn(host, port, timeout=3)
-            js = c.status()
-            c.close()
-            return js
-        except Exception as e:
+            return c.status()
+        except (OSError, EOFError, ValueError, RuntimeError) as e:
             last_exc = e
             time.sleep(0.2)
+        finally:
+            if c is not None:
+                c.close()
     return None
 
 def launch_server(binary: str, port: int, world_dir: str, extra_env: dict | None = None, extra_args: list[str] | None = None):
@@ -145,23 +154,57 @@ def launch_server(binary: str, port: int, world_dir: str, extra_env: dict | None
     env = os.environ.copy()
     if extra_env:
         env.update(extra_env)
-    # avoid pipe deadlock: discard stdout to DEVNULL (server logs via stderr if needed)
-    # we keep a log file for diagnostics
-    log_path = Path(world_dir) / "cppfm.log"
+    # The server resolves admin files and bundled data relative to its cwd.
+    # Give every run an isolated root and expose the repository assets there.
+    root = Path(world_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    asset_link = root / "assets"
+    if not asset_link.exists() and not asset_link.is_symlink():
+        asset_link.symlink_to(HERE.parent / "assets", target_is_directory=True)
+    log_path = root / "cppfm.log"
     logf = open(log_path, "wb")
-    proc = subprocess.Popen(args, stdout=logf, stderr=subprocess.STDOUT, env=env, text=False, bufsize=0)
+    try:
+        proc = subprocess.Popen(args, cwd=str(root), stdout=logf, stderr=subprocess.STDOUT,
+                                env=env, text=False, bufsize=0, start_new_session=True)
+    except BaseException:
+        logf.close()
+        raise
     proc._logf = logf  # keep reference
     proc._log_path = log_path
-    js = wait_for_status("127.0.0.1", port, timeout=15)
+    js = wait_for_status("127.0.0.1", port, timeout=15, proc=proc)
     if js is None:
         out = b""
         try:
-            proc.terminate()
-            proc.wait(timeout=3)
+            kill_server(proc)
             out = log_path.read_bytes() if log_path.exists() else b""
-        except: pass
+        except (OSError, RuntimeError, subprocess.TimeoutExpired):
+            out = log_path.read_bytes() if log_path.exists() else b""
         raise RuntimeError(f"server failed to start on {port}: {out[:2000]!r}")
     return proc
+
+def run_owned_command(args: list[str], timeout: float) -> None:
+    """Run a build/configure command with a killable process group."""
+    proc = subprocess.Popen(args, start_new_session=True)
+    try:
+        returncode = proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        raise RuntimeError(f"command timed out after {timeout}s: {' '.join(args)}") from exc
+    if returncode != 0:
+        raise RuntimeError(f"command exited {returncode}: {' '.join(args)}")
+
+def read_world_file(world_dir: str, name: str) -> str:
+    try:
+        return (Path(world_dir) / name).read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return ""
 
 def kill_server(proc):
     """Stop only the process launched by this harness.
@@ -170,45 +213,30 @@ def kill_server(proc):
     match this harness's own arguments and unrelated concurrent test servers.
     PID-scoped cleanup keeps one test from terminating another test's server.
     """
+    if proc is None:
+        return
+    if proc.poll() is None:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
     try:
-        proc.terminate()
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        if proc.poll() is None:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
         proc.wait(timeout=5)
-    except:
-        try: proc.kill()
-        except: pass
-    try:
+    finally:
         if hasattr(proc, "_logf"):
             proc._logf.close()
-    except: pass
 
 def raw_conn(host, port, timeout=5):
     s = socket.create_connection((host, port), timeout=timeout)
     s.settimeout(timeout)
     return s
-
-def send_frame(sock: socket.socket, pid: int, payload: bytes, compression: int = -1):
-    body = write_varint(pid) + payload
-    if compression >= 0:
-        if len(body) >= compression:
-            frame = write_varint(len(body)) + body
-            pkt = write_varint(len(frame)) + zlib.compress(frame)  # wrong: server expects zlib decompress? but mcproto uses zlib.decompress directly on body+something. Use simple path: length-prefixed + compressed body
-            # Actually mcproto recv: dlen varint + body | decompressed
-            # send: frame = varint(dlen)+body if compressed else varint(0)+body
-            # we implement same as Conn.send_packet_raw
-            frame2 = write_varint(len(body)) + body
-            # use zlib compress for body
-            comp = zlib.compress(body)
-            frame2 = write_varint(len(body)) + comp
-            pkt = write_varint(len(frame2)) + frame2
-            sock.sendall(pkt)
-            return
-        else:
-            frame = write_varint(0) + body
-            pkt = write_varint(len(frame)) + frame
-            sock.sendall(pkt)
-            return
-    pkt = write_varint(len(body)) + body
-    sock.sendall(pkt)
 
 # ------------------------------------------------------------------ test harness
 checks: list[tuple[bool,str,str]] = []  # (ok, msg, location)
@@ -244,7 +272,7 @@ def summary_and_exit():
                 n+=1
                 if n>=40: break
     sys.stdout.flush()
-    # keep exit code  1 if any FAIL for CI visibility, but caller may ignore
+    # Keep a non-zero exit code for CI visibility when any check fails.
     sys.exit(1 if fail else 0)
 
 # ------------------------------------------------------------------ suites
@@ -329,8 +357,8 @@ def suite_connection_flow(host, port):
             # configuration: expect 12 registries + feature flags + known packs
             regs={}
             got_tags=False; got_brand=False; got_flags=False; got_packs=False; finished=False
-            deadline=time.time()+15
-            while time.time()<deadline and not finished:
+            deadline=time.monotonic()+15
+            while time.monotonic()<deadline and not finished:
                 pid,data=c.recv_packet()
                 if pid==0x07:
                     bio=io.BytesIO(data); key=unpack_string(bio)
@@ -365,14 +393,13 @@ def suite_connection_flow(host, port):
             check(finished, "config: FinishConfiguration sent", "test_server_full.py:finish")
             if finished:
                 # play: expect Login (join game) + chunks etc
-                c.recv_packet  # ensure we can read one more
                 # try to read JoinGame
                 got_login=False; got_chunks=False; got_pos=False
-                deadline2=time.time()+12
-                while time.time()<deadline2 and not (got_login and got_chunks):
+                deadline2=time.monotonic()+12
+                while time.monotonic()<deadline2 and not (got_login and got_chunks):
                     try:
                         pid,data=c.recv_packet()
-                    except: break
+                    except (OSError, EOFError, socket.timeout, ValueError, RuntimeError): break
                     if pid==0x2c:
                         got_login=True
                         # validate join game layout exactly consumed
@@ -418,9 +445,9 @@ def send_command_and_collect(host, port, name, command: str, timeout=2.0):
     try:
         c.login(name)
         # config
-        deadline=time.time()+12
+        deadline=time.monotonic()+12
         finished=False
-        while time.time()<deadline and not finished:
+        while time.monotonic()<deadline and not finished:
             pid,data=c.recv_packet()
             if pid==0x0E:
                 c.send_packet_raw(0x07, write_varint(0))
@@ -437,8 +464,8 @@ def send_command_and_collect(host, port, name, command: str, timeout=2.0):
         got_login=False
         chat=[]
         pkt_counts={}
-        deadline=time.time()+8
-        while time.time()<deadline and not got_login:
+        deadline=time.monotonic()+8
+        while time.monotonic()<deadline and not got_login:
             pid,data=c.recv_packet()
             pkt_counts[pid]=pkt_counts.get(pid,0)+1
             if pid==0x42:
@@ -463,7 +490,7 @@ def send_command_and_collect(host, port, name, command: str, timeout=2.0):
                     else:
                         raw_s=data.hex()[:80]
                         chat.append(raw_s)
-                except: pass
+                except (ValueError, IndexError, UnicodeDecodeError): pass
         if not got_login:
             c.close()
             return chat, pkt_counts, "no join"
@@ -473,8 +500,8 @@ def send_command_and_collect(host, port, name, command: str, timeout=2.0):
         # Helper: send as ChatCommand 0x05
         c.send_packet_raw(0x05, pack_string(command))
         # collect for timeout
-        t_end=time.time()+timeout
-        while time.time()<t_end:
+        t_end=time.monotonic()+timeout
+        while time.monotonic()<t_end:
             try:
                 pid,data=c.recv_packet()
                 pkt_counts[pid]=pkt_counts.get(pid,0)+1
@@ -501,7 +528,7 @@ def send_command_and_collect(host, port, name, command: str, timeout=2.0):
                         if b"text" in raw:
                             m=re.search(b'"text"\\s*:\\s*"([^"]*)"', raw)
                             if m: chat[-1]=m.group(1).decode()
-                    except: pass
+                    except (ValueError, IndexError, UnicodeDecodeError): pass
                 elif pid==0x1d:
                     # Disconnect on bad command
                     chat.append("__DISCONNECT__")
@@ -512,7 +539,7 @@ def send_command_and_collect(host, port, name, command: str, timeout=2.0):
         return chat, pkt_counts, None
     except Exception as e:
         try: c.close()
-        except: pass
+        except (OSError, ValueError): pass
         return [], {}, str(e)
 
 EXPECTED_FEEDBACK = {
@@ -536,8 +563,8 @@ def send_via_persistent(c: Conn, command: str, timeout=1.6):
     chat=[]
     # clear old chat drain? we collect only new packets post-send
     c.send_packet_raw(0x05, pack_string(command))
-    t_end=time.time()+timeout
-    while time.time()<t_end:
+    t_end=time.monotonic()+timeout
+    while time.monotonic()<t_end:
         try:
             pid,data=c.recv_packet()
             if pid==0x27:
@@ -557,7 +584,7 @@ def send_via_persistent(c: Conn, command: str, timeout=1.6):
                     if b"text" in raw:
                         m=re.search(b'"text"\\s*:\\s*"([^"]*)"', raw)
                         if m: chat[-1]=m.group(1).decode()
-                except: pass
+                except (ValueError, IndexError, UnicodeDecodeError): pass
             elif pid==0x1d:
                 chat.append("__DISCONNECT__")
                 break
@@ -568,9 +595,9 @@ def send_via_persistent(c: Conn, command: str, timeout=1.6):
 def persistent_join(host, port, name):
     c=Conn(host,port,timeout=8)
     c.login(name)
-    deadline=time.time()+12
+    deadline=time.monotonic()+12
     finished=False
-    while time.time()<deadline and not finished:
+    while time.monotonic()<deadline and not finished:
         pid,data=c.recv_packet()
         if pid==0x0E: c.send_packet_raw(0x07, write_varint(0))
         elif pid==0x03: finished=True; c.send_packet_raw(0x03,b"")
@@ -578,9 +605,9 @@ def persistent_join(host, port, name):
         elif pid==0x05: c.send_packet_raw(0x05,data)
     if not finished: raise RuntimeError("no finish")
     # play drain
-    deadline=time.time()+8
+    deadline=time.monotonic()+8
     got=False
-    while time.time()<deadline and not got:
+    while time.monotonic()<deadline and not got:
         pid,data=c.recv_packet()
         if pid==0x42:
             bio=io.BytesIO(data); tid,_=read_varint(bio); c.send_packet_raw(0x00, write_varint(tid))
@@ -588,20 +615,20 @@ def persistent_join(host, port, name):
         elif pid==0x27: c.send_packet_raw(0x1a,data)
     if not got: raise RuntimeError("no join")
     # drain a bit
-    t_end=time.time()+0.6
-    while time.time()<t_end:
+    t_end=time.monotonic()+0.6
+    while time.monotonic()<t_end:
         try:
             c.sock.settimeout(0.2)
             pid,data=c.recv_packet()
             if pid==0x27: c.send_packet_raw(0x1a,data)
             elif pid==0x42:
                 bio=io.BytesIO(data); tid,_=read_varint(bio); c.send_packet_raw(0x00, write_varint(tid))
-        except: break
+        except (OSError, EOFError, socket.timeout, ValueError, RuntimeError): break
     c.sock.settimeout(8)
     return c
 
 def suite_commands(host, port, proc):
-    print("\n[2] Commands — vanilla 1.21.4 exhaustive (strict, many expected FAIL)")
+    print("\n[2] Commands — vanilla 1.21.4 exhaustive (strict)")
     # Use persistent connections to avoid fd exhaustion (140 rapid connects caused pipe deadlock / accept drop)
     try:
         c_valid = persistent_join(host, port, "CmdTester")
@@ -609,18 +636,6 @@ def suite_commands(host, port, proc):
     except Exception as e:
         check(False, f"cmd: persistent join failed {e}", "test_server_full.py:cmd_persistent_join")
         return
-    def ensure_alive(conn, name):
-        # if socket broken, re-join
-        try:
-            # quick poll: try to send ping
-            conn.send_packet_raw(0x05, pack_string("ping"))
-            # short wait for pong feedback
-            txts = send_via_persistent(conn, "ping", timeout=0.8)
-            return conn
-        except Exception:
-            try: conn.close()
-            except: pass
-            return persistent_join(host, port, name)
     for idx,(name, valid, invalid, note) in enumerate(VANILLA_COMMANDS):
         # limit to avoid endless on dead server: if 3 consecutive connection failures, skip rest
         # (server may be transiently refusing but not dead)
@@ -638,7 +653,7 @@ def suite_commands(host, port, proc):
             except Exception as e:
                 if attempt==0:
                     try: c_valid = persistent_join(host, port, "CmdTester")
-                    except: pass
+                    except (OSError, EOFError, socket.timeout, ValueError, RuntimeError): pass
                     continue
                 check(False, f"cmd:{name} valid '{valid}' -> error {e}", f"test_server_full.py:cmd_{name}_valid_exc")
                 break
@@ -653,15 +668,15 @@ def suite_commands(host, port, proc):
             except Exception as e:
                 if attempt==0:
                     try: c_invalid = persistent_join(host, port, "CmdTesterInv")
-                    except: pass
+                    except (OSError, EOFError, socket.timeout, ValueError, RuntimeError): pass
                     continue
                 check(False, f"cmd:{name} invalid '{invalid}' -> error {e}", f"test_server_full.py:cmd_{name}_invalid_exc")
                 break
         time.sleep(0.03)
     try: c_valid.close()
-    except: pass
+    except (OSError, ValueError): pass
     try: c_invalid.close()
-    except: pass
+    except (OSError, ValueError): pass
 
 def suite_permissions(host, port, world_dir):
     print("\n[3] Permissions / management — op/whitelist/ban/kick")
@@ -670,20 +685,19 @@ def suite_permissions(host, port, world_dir):
         c=Conn(host, port, timeout=6)
         c.login("PermGuest1")
         c.config_finish(max_seconds=10)
-        check(True, "perm: join without whitelist (default open)", "test_server_full.py:perm_open")
+        joined = True
+        check(joined, "perm: join without whitelist (default open)", "test_server_full.py:perm_open")
         c.close()
     except Exception as e:
         check(False, f"perm: open join failed {e}", "test_server_full.py:perm_open")
     # 3b op command should grant op (ops.json) - strict: file should exist after op
     chat,_,err = send_command_and_collect(host,port,"PermOpTest","op PermOpTest",timeout=1.5)
     # vanilla: op => "Opped PermOpTest"
-    has_opped = any("Opped" in c or "opped" in c.lower() or "Op" in c for c in chat) or err is None
-    # we check file creation as strict vanilla persistence
-    ops_path = Path(world_dir)/"ops.json" if Path(world_dir).exists() else Path("ops.json")
-    # also check cwd
-    cwd_ops = Path("ops.json")
-    exists = ops_path.exists() or cwd_ops.exists()
-    check(exists or has_opped, "perm: op creates ops.json / feedback", "test_server_full.py:perm_op")
+    has_opped = any("Opped" in c or "opped" in c.lower() for c in chat)
+    # Check only the isolated server root; a stale repository file must not pass.
+    ops_path = Path(world_dir) / "ops.json"
+    exists = ops_path.exists()
+    check(exists and has_opped, "perm: op creates ops.json / feedback", "test_server_full.py:perm_op")
     # 3c ban then join should be rejected (banned-players.json)
     chat_ban,_,_ = send_command_and_collect(host,port,"PermBanner","ban PermBannedVictim Banned for test",timeout=1.2)
     # try join as banned victim
@@ -705,42 +719,40 @@ def suite_permissions(host, port, world_dir):
                 # need parse properly
                 try:
                     bio=io.BytesIO(data); th,_=read_varint(bio); c.compression_threshold=th
-                except: pass
+                except (ValueError, IndexError): pass
         check(kicked, "perm: banned player kicked at login (You are banned)", "test_server_full.py:perm_ban_kick")
         c.close()
     except Exception as e:
         check(False, f"perm: ban kick check threw {e}", "test_server_full.py:perm_ban_exc")
     # 3d deop / pardon
     chat_pardon,_,_ = send_command_and_collect(host,port,"PermBanner","pardon PermBannedVictim",timeout=1.2)
-    check(any("Pardoned" in c for c in chat_pardon) or True, "perm: pardon feedback (vanilla Pardoned)", "test_server_full.py:perm_pardon")
+    check(any("Pardoned" in c or "pardoned" in c.lower() for c in chat_pardon),
+          "perm: pardon feedback (vanilla Pardoned)", "test_server_full.py:perm_pardon")
     # 3e kick active player: should disconnect them
     # start a victim connection that stays, then kick via another conn
     try:
         victim=Conn(host,port,timeout=6)
         victim.login("KickVictimX")
         victim.config_finish(max_seconds=10)
-        # keep victim reading in thread? we will poll
+        victim_kicked = threading.Event()
         def victim_reader():
             try:
                 while True:
                     pid,data=victim.recv_packet()
+                    if pid == 0x1d:
+                        victim_kicked.set()
+                        return
                     if pid==0x27:
                         victim.send_packet_raw(0x1a,data)
-            except: pass
+            except (OSError, EOFError, socket.timeout):
+                victim_kicked.set()
         t=threading.Thread(target=victim_reader, daemon=True); t.start()
         time.sleep(0.6)
         chat_kick,_,_ = send_command_and_collect(host,port,"PermBanner","kick KickVictimX Kicked for test",timeout=1.2)
-        time.sleep(0.8)
-        # check victim got disconnect (socket closed)
-        # try to send something
-        try:
-            victim.send_packet_raw(0x05, pack_string("ping"))
-            # if not kicked, victim still alive -> FAIL
-            check(False, "perm: kick should disconnect victim", "test_server_full.py:perm_kick")
-        except:
-            check(True, "perm: kick disconnects victim", "test_server_full.py:perm_kick")
+        check(victim_kicked.wait(timeout=3), "perm: kick disconnects victim",
+              "test_server_full.py:perm_kick")
         try: victim.close()
-        except: pass
+        except (OSError, ValueError): pass
     except Exception as e:
         check(False, f"perm: kick flow threw {e}", "test_server_full.py:perm_kick_exc")
     # 3f whitelist enable then non-whitelisted should be kicked — spec
@@ -761,13 +773,13 @@ def suite_permissions(host, port, world_dir):
         for _ in range(10):
             try:
                 pid,data=c.recv_packet()
-            except: break
+            except (OSError, EOFError, socket.timeout, ValueError, RuntimeError): break
             if pid==0x00:
                 kicked=True; break
             elif pid==0x03:
                 try:
                     bio=io.BytesIO(data); th,_=read_varint(bio); c.compression_threshold=th; got_comp=True
-                except: pass
+                except (ValueError, IndexError): pass
             elif pid==0x02:
                 # success means not kicked -> FAIL for whitelist
                 break
@@ -791,11 +803,11 @@ def suite_chat(host, port):
         c2.config_finish(max_seconds=12)
         # drain play start
         for c in (c1,c2):
-            deadline=time.time()+8
-            while time.time()<deadline:
+            deadline=time.monotonic()+8
+            while time.monotonic()<deadline:
                 try:
                     pid,data=c.recv_packet()
-                except: break
+                except (OSError, EOFError, socket.timeout, ValueError, RuntimeError): break
                 if pid==0x42:
                     bio=io.BytesIO(data); tid,_=read_varint(bio); c.send_packet_raw(0x00, write_varint(tid))
                 elif pid==0x27:
@@ -806,17 +818,17 @@ def suite_chat(host, port):
             time.sleep(0.2)
         # Alice sends chat
         # PlayerChat packet 0x07: string message + timestamp + salt + ...
-        # Use same format as integration_client.py
+        # Use the wire format already implemented by this harness.
         import time as _t
         msg="hello from Alice "+str(int(_t.time()))
         c1.send_packet_raw(0x07, pack_string(msg)+struct.pack(">qq", int(_t.time()*1000),0)+b"\x00"+write_varint(0)+b"\x00\x00\x00")
         # Bob should receive SystemChat or PlayerChat/DisguisedChat
         got=False
-        deadline=time.time()+4
-        while time.time()<deadline and not got:
+        deadline=time.monotonic()+4
+        while time.monotonic()<deadline and not got:
             try:
                 pid,data=c2.recv_packet()
-            except: break
+            except (OSError, EOFError, socket.timeout, ValueError, RuntimeError): break
             if pid==0x27: c2.send_packet_raw(0x1a,data)
             elif pid in (0x73,0x3b,0x1c):
                 # check payload contains msg fragment
@@ -838,7 +850,9 @@ def suite_chat(host, port):
         txt_tr=" ".join(chat_tr)
         # vanilla: tellraw should succeed; failure (Unknown) is FAIL gap
         has_tr = "tellraw_hello" in txt_tr or "Unknown" not in txt_tr
-        check("Unknown" not in txt_tr or "tellraw_hello" in txt_tr, f"chat: tellraw should succeed (got '{txt_tr[:60]}')", "test_server_full.py:chat_tellraw")
+        check("tellraw_hello" in txt_tr and "Unknown" not in txt_tr,
+              f"chat: tellraw should deliver the requested text (got '{txt_tr[:60]}')",
+              "test_server_full.py:chat_tellraw")
         # 4e signed chat path: ChatCommandSigned 0x06 should be handled (compat)
         # We send 0x06 with same payload as 0x07? For spec, server should not crash
         try:
@@ -846,32 +860,35 @@ def suite_chat(host, port):
             cc.login("ChatSigner")
             cc.config_finish(max_seconds=10)
             # drain
-            deadline=time.time()+6
-            while time.time()<deadline:
+            deadline=time.monotonic()+6
+            while time.monotonic()<deadline:
                 try: pid,data=cc.recv_packet()
-                except: break
+                except (OSError, EOFError, socket.timeout, ValueError, RuntimeError): break
                 if pid==0x42:
                     bio=io.BytesIO(data); tid,_=read_varint(bio); cc.send_packet_raw(0x00, write_varint(tid))
                 elif pid==0x2c: break
                 elif pid==0x27: cc.send_packet_raw(0x1a,data)
             cc.send_packet_raw(0x06, pack_string("ping"))
             time.sleep(0.6)
-            check(True, "chat: ChatCommandSigned 0x06 does not crash", "test_server_full.py:chat_signed")
+            check(wait_for_status(host, port, timeout=3) is not None,
+                  "chat: ChatCommandSigned 0x06 leaves the server available",
+                  "test_server_full.py:chat_signed")
             cc.close()
         except Exception as e:
             check(False, f"chat: signed path threw {e}", "test_server_full.py:chat_signed_exc")
     finally:
         try: c1.close()
-        except: pass
+        except (OSError, ValueError): pass
         try: c2.close()
-        except: pass
+        except (OSError, ValueError): pass
 
 def suite_datapack(host, port):
     print("\n[5] Datapack — reload / function / advancement / loot predicate")
     # 5a reload should succeed and preserve registry/config
     chat,_,_ = send_command_and_collect(host,port,"DPTest","reload",timeout=2.0)
     txt=" ".join(chat)
-    check("Unknown" not in txt or "Reload" in txt or "reload" in txt.lower(), f"datapack: /reload succeeds (got '{txt[:60]}')", "test_server_full.py:dp_reload")
+    check("reload" in txt.lower() and "unknown" not in txt.lower(),
+          f"datapack: /reload succeeds (got '{txt[:60]}')", "test_server_full.py:dp_reload")
     # 5b function: create a temp datapack function file on disk and reload?
     # Instead test that function command with missing function fails gracefully (not crash) and with existent maybe ok
     # vanilla: /function <id> should report executed or error "Unknown function"
@@ -879,21 +896,27 @@ def suite_datapack(host, port):
     txt_f=" ".join(chat_f)
     has_err = "Unknown" in txt_f or "unknown" in txt_f.lower() or "Failed" in txt_f or "does_not_exist" in txt_f
     # strict: should error with Unknown function, not crash, and not claim success
-    check(has_err or "Unknown" in txt_f, f"datapack: /function nonexistent should error (got '{txt_f[:60]}')", "test_server_full.py:dp_func_missing")
+    check(has_err, f"datapack: /function nonexistent should error (got '{txt_f[:60]}')", "test_server_full.py:dp_func_missing")
     # 5c advancement grant should affect advancement packet
     chat_a,_,_ = send_command_and_collect(host,port,"DPTest","advancement grant @s only minecraft:story/root",timeout=1.5)
     txt_a=" ".join(chat_a)
-    check("Unknown" not in txt_a or "advancement" in txt_a.lower(), f"datapack: /advancement grant (got '{txt_a[:60]}')", "test_server_full.py:dp_adv")
+    check("advancement" in txt_a.lower() and "unknown" not in txt_a.lower(),
+          f"datapack: /advancement grant (got '{txt_a[:60]}')", "test_server_full.py:dp_adv")
     # 5d loot give should give item or error with feedback
     chat_l,_,_ = send_command_and_collect(host,port,"DPTest","loot give @s loot minecraft:chests/simple_dungeon",timeout=1.5)
     txt_l=" ".join(chat_l)
     # loot missing table should still not crash; any feedback counts but Unknown is FAIL gap for loot
-    check("Unknown" not in txt_l or "loot" in txt_l.lower(), f"datapack: /loot give (got '{txt_l[:60]}')", "test_server_full.py:dp_loot")
+    check("loot" in txt_l.lower() and "unknown" not in txt_l.lower(),
+          f"datapack: /loot give (got '{txt_l[:60]}')", "test_server_full.py:dp_loot")
     # 5e predicate path: /execute if predicate <id> run <cmd> — vanilla predicate system
     chat_p,_,_ = send_command_and_collect(host,port,"DPTest","execute if predicate minecraft:test_pred run ping",timeout=1.2)
     txt_p=" ".join(chat_p)
     # predicate missing should error, not crash
-    check(True, f"datapack: predicate path does not crash (got '{txt_p[:40]}')", "test_server_full.py:dp_pred")
+    predicate_feedback = ("Unknown" in txt_p or "unknown" in txt_p.lower() or
+                          "predicate" in txt_p.lower() or "Expected" in txt_p)
+    check(predicate_feedback,
+          f"datapack: predicate path returns feedback (got '{txt_p[:40]}')",
+          "test_server_full.py:dp_pred")
 
 def suite_stability(host, port):
     print("\n[6] Stability — malformed / oversized / abrupt disconnect")
@@ -912,11 +935,15 @@ def suite_stability(host, port):
         s.sendall(write_varint(len(write_varint(0x00)+payload))+write_varint(0x00)+payload)
         s.settimeout(2)
         try:
-            d=s.recv(4096)
-            check(True, "stability: oversized name does not crash (kicked/closed)", "test_server_full.py:stab_oversize")
-        except:
-            check(True, "stability: oversized name does not crash (timeout/close)", "test_server_full.py:stab_oversize")
-        s.close()
+            s.recv(4096)
+        except (socket.timeout, EOFError, OSError):
+            pass
+        finally:
+            s.close()
+        server_ok = wait_for_status(host, port, timeout=5) is not None
+        check(server_ok,
+              "stability: oversized login does not crash the server",
+              "test_server_full.py:stab_oversize")
     except Exception as e:
         check(False, f"stability: oversize threw {e}", "test_server_full.py:stab_oversize_exc")
     # 6b malformed varint (7 continuation bytes) should not crash
@@ -925,7 +952,7 @@ def suite_stability(host, port):
         s.sendall(b"\xff\xff\xff\xff\xff\xff\xff\x01\x00")  # bogus length
         s.settimeout(1)
         try: s.recv(1024)
-        except: pass
+        except (socket.timeout, EOFError, OSError): pass
         # server should still accept new connections after
         c=Conn(host,port,timeout=4)
         js=c.status()
@@ -955,8 +982,8 @@ def suite_stability(host, port):
         c.login("FloodGuy")
         c.config_finish(max_seconds=10)
         # drain join
-        deadline=time.time()+5
-        while time.time()<deadline:
+        deadline=time.monotonic()+5
+        while time.monotonic()<deadline:
             try:
                 pid,data=c.recv_packet()
                 if pid==0x42:
@@ -964,7 +991,7 @@ def suite_stability(host, port):
                 elif pid==0x27:
                     c.send_packet_raw(0x1a,data)
                 elif pid==0x2c: pass
-            except: break
+            except (OSError, EOFError, socket.timeout, ValueError, RuntimeError): break
         for i in range(20):
             c.send_packet_raw(0x1a, struct.pack(">q", i))
         time.sleep(0.6)
@@ -977,32 +1004,32 @@ def suite_stability(host, port):
 def rcon_client(host, port, password, command, timeout=3):
     s=socket.create_connection((host,port),timeout=timeout)
     s.settimeout(timeout)
-    def send_rcon(pid, typ, body):
-        b=body.encode()
-        frame=struct.pack("<iii", len(b)+10, pid, typ)+b+b"\x00\x00"
-        # Actually Source RCON: length (little) + id + type + payload + 00 00
-        # length = 4+4+len(body)+2
-        s.sendall(frame)
-    def recv_rcon():
-        hdr=s.recv(4)
-        if len(hdr)<4: raise EOFError
-        ln=struct.unpack("<i",hdr)[0]
-        data=b""
-        while len(data)<ln:
-            chunk=s.recv(ln-len(data))
-            if not chunk: raise EOFError
-            data+=chunk
-        pid,typ=struct.unpack("<ii", data[:8])
-        body=data[8:-2].decode(errors='ignore')
-        return pid,typ,body
-    send_rcon(1,3,password)
-    pid,typ,body=recv_rcon()
-    if pid==-1:
-        s.close(); return False, body
-    send_rcon(2,2,command)
-    pid,typ,body=recv_rcon()
-    s.close()
-    return True, body
+    try:
+        def send_rcon(pid, typ, body):
+            b=body.encode()
+            frame=struct.pack("<iii", len(b)+10, pid, typ)+b+b"\x00\x00"
+            s.sendall(frame)
+        def recv_rcon():
+            hdr=s.recv(4)
+            if len(hdr)<4: raise EOFError
+            ln=struct.unpack("<i",hdr)[0]
+            data=b""
+            while len(data)<ln:
+                chunk=s.recv(ln-len(data))
+                if not chunk: raise EOFError
+                data+=chunk
+            pid,typ=struct.unpack("<ii", data[:8])
+            body=data[8:-2].decode(errors='ignore')
+            return pid,typ,body
+        send_rcon(1,3,password)
+        pid,typ,body=recv_rcon()
+        if pid==-1:
+            return False, body
+        send_rcon(2,2,command)
+        pid,typ,body=recv_rcon()
+        return True, body
+    finally:
+        s.close()
 
 def suite_rcon(host, port, world_dir, rcon_port, rcon_pass):
     print("\n[7] RCON — Source RCON auth + exec (spec strict)")
@@ -1012,15 +1039,15 @@ def suite_rcon(host, port, world_dir, rcon_port, rcon_pass):
     try:
         ok,body=rcon_client(host,rcon_port,rcon_pass,"list",timeout=3)
         check(ok, f"rcon: auth with correct password (body='{body[:40]}')", "test_server_full.py:rcon_auth")
-        check("Players" in body or "online" in body.lower() or "list" in body.lower() or body=="OK" or len(body)>=0, "rcon: list command returns players", "test_server_full.py:rcon_list")
+        check("Players" in body or "online" in body.lower(),
+              "rcon: list command returns player status", "test_server_full.py:rcon_list")
     except Exception as e:
         check(False, f"rcon: correct auth throws {e}", "test_server_full.py:rcon_auth_exc")
     try:
         ok2,body2=rcon_client(host,rcon_port,"wrongpass123","list",timeout=3)
         check(not ok2, "rcon: wrong password rejected (id -1)", "test_server_full.py:rcon_wrong")
     except Exception as e:
-        # connection closed on wrong pass also counts as rejected
-        check(True, f"rcon: wrong pass closed ({e})", "test_server_full.py:rcon_wrong")
+        check(False, f"rcon: wrong pass raised unexpectedly ({e})", "test_server_full.py:rcon_wrong_exc")
     try:
         ok3,body3=rcon_client(host,rcon_port,rcon_pass,"seed",timeout=3)
         check(ok3 and ("Seed" in body3 or "seed" in body3.lower() or "137864" in body3 or body3=="OK"), f"rcon: exec seed (got '{body3[:50]}')", "test_server_full.py:rcon_seed")
@@ -1033,7 +1060,7 @@ def suite_rcon(host, port, world_dir, rcon_port, rcon_pass):
         # send length 5000 (little endian)
         s.sendall(struct.pack("<i",5000)+b"X"*5000)
         try: s.recv(1024)
-        except: pass
+        except (socket.timeout, EOFError, OSError): pass
         s.close()
         time.sleep(0.3)
         js=wait_for_status(host,port,timeout=5)
@@ -1050,10 +1077,13 @@ def suite_rcon(host, port, world_dir, rcon_port, rcon_pass):
                 results.append((ok,body))
             except Exception as e:
                 results.append((False,f"exc:{e}"))
-        ths=[_th.Thread(target=one_session,args=(i,)) for i in range(5)]
+        ths=[_th.Thread(target=one_session,args=(i,), daemon=True) for i in range(5)]
         for t in ths: t.start()
         for t in ths: t.join(timeout=10)
-        check(len(results)==5 and all(r[0] for r in results), f"rcon: 5 simultaneous sessions all answered ({len(results)}/5)", "test_server_full.py:rcon_multi5")
+        alive=sum(t.is_alive() for t in ths)
+        check(alive == 0 and len(results)==5 and all(r[0] for r in results),
+              f"rcon: 5 simultaneous sessions all answered ({len(results)}/5, {alive} still running)",
+              "test_server_full.py:rcon_multi5")
     except Exception as e:
         check(False, f"rcon: multi5 threw {e}", "test_server_full.py:rcon_multi5_exc")
     # plan46 §2 (O-09): 10 consecutive wrong passwords — rejected, server alive
@@ -1078,29 +1108,30 @@ def suite_persistence(host, port, world_dir):
     # edit block via setblock then verify after new connection streams chunk
     chat,_,_ = send_command_and_collect(host,port,"PersistGuy","setblock 5 -61 5 minecraft:diamond_block",timeout=1.5)
     txt=" ".join(chat)
-    check("Changed" in txt or "changed" in txt.lower() or "Unknown" not in txt, f"persist: setblock feedback (got '{txt[:50]}')", "test_server_full.py:persist_set")
+    check("changed" in txt.lower() and "unknown" not in txt.lower(),
+          f"persist: setblock feedback (got '{txt[:50]}')", "test_server_full.py:persist_set")
     # reconnect fresh client and parse chunk
     try:
         c=Conn(host,port,timeout=8)
         c.login("PersistReader")
         c.config_finish(max_seconds=12)
         seen=None
-        deadline=time.time()+12
-        while time.time()<deadline and seen is None:
+        deadline=time.monotonic()+12
+        while time.monotonic()<deadline and seen is None:
             try: pid,data=c.recv_packet()
-            except: break
+            except (OSError, EOFError, socket.timeout, ValueError, RuntimeError): break
             if pid==0x27: c.send_packet_raw(0x1a,data)
             elif pid==0x42:
                 bio=io.BytesIO(data); tid,_=read_varint(bio); c.send_packet_raw(0x00, write_varint(tid))
             elif pid==0x28:
-                # parse chunk like integration_client
+                # Parse the chunk payload used by this harness.
                 bio=io.BytesIO(data)
                 try:
                     cx=struct.unpack(">i",bio.read(4))[0]; cz=struct.unpack(">i",bio.read(4))[0]
                     if (cx,cz)!=(0,0): continue
                     # skip NBT
                     # peek: read compound
-                    # use integration_client helpers inline
+                    # Keep the small parser local to this suite.
                     def skip_nbt(bio2):
                         import struct as _s
                         def payload(t):
@@ -1175,9 +1206,9 @@ def suite_persistence(host, port, world_dir):
             # also check region file exists (persistence on disk) — vanilla saves on tick; we just check world dir has region
             import pathlib
             regions=list((Path(world_dir)/"region").glob("*.mca")) if Path(world_dir).exists() else []
-            # also check cwd/world
-            regions2=list(Path("world/region").glob("*.mca")) if Path("world/region").exists() else []
-            check(len(regions)+len(regions2)>=0, f"persist: region file existence check (found {len(regions)+len(regions2)})", "test_server_full.py:persist_file")
+            check(len(regions)>0,
+                  f"persist: region file exists (found {len(regions)})",
+                  "test_server_full.py:persist_file")
         else:
             check(False, f"persist: chunk parse failed (seen={seen})", "test_server_full.py:persist_chunk")
         c.close()
@@ -1186,14 +1217,14 @@ def suite_persistence(host, port, world_dir):
 
 # ------------------------------------------------------------------ main
 def suite_restart_persist(binary, proc, host, port, world_dir, extra):
-    """plan46 §2 (O-10): ban/ops survive a full server restart (same worldDir+cwd)."""
+    """Verify ban/ops JSON survive a full restart in the isolated server root."""
     print("\n[9] Restart persistence — ban/ops JSON survive restart")
     try:
         send_command_and_collect(host,port,"RestartAdmin","ban RestartVictim Banned across restart",timeout=1.5)
         send_command_and_collect(host,port,"RestartOp","op RestartOp",timeout=1.5)
         time.sleep(0.5)
-        ops_txt=Path("ops.json").read_text() if Path("ops.json").exists() else ""
-        bans_txt=Path("banned-players.json").read_text() if Path("banned-players.json").exists() else ""
+        ops_txt=read_world_file(world_dir, "ops.json")
+        bans_txt=read_world_file(world_dir, "banned-players.json")
         check("RestartOp" in ops_txt, "restart: ops.json has RestartOp before restart", "test_server_full.py:restart_op_pre")
         check("RestartVictim" in bans_txt, "restart: banned-players.json has RestartVictim before restart", "test_server_full.py:restart_ban_pre")
     except Exception as e:
@@ -1201,7 +1232,6 @@ def suite_restart_persist(binary, proc, host, port, world_dir, extra):
         return proc
     try:
         kill_server(proc)
-        time.sleep(1.0)
         proc=launch_server(binary, port, world_dir, extra_args=extra)
         host="127.0.0.1"
         print(f"[info] restarted server pid {proc.pid} for restart-persist checks")
@@ -1209,8 +1239,8 @@ def suite_restart_persist(binary, proc, host, port, world_dir, extra):
         check(False, f"restart: relaunch threw {e}", "test_server_full.py:restart_relaunch_exc")
         return proc
     try:
-        ops_txt=Path("ops.json").read_text() if Path("ops.json").exists() else ""
-        bans_txt=Path("banned-players.json").read_text() if Path("banned-players.json").exists() else ""
+        ops_txt=read_world_file(world_dir, "ops.json")
+        bans_txt=read_world_file(world_dir, "banned-players.json")
         check("RestartOp" in ops_txt, "restart: ops.json still has RestartOp after restart", "test_server_full.py:restart_op_post")
         check("RestartVictim" in bans_txt, "restart: banned-players.json still has RestartVictim after restart", "test_server_full.py:restart_ban_post")
     except Exception as e:
@@ -1220,13 +1250,13 @@ def suite_restart_persist(binary, proc, host, port, world_dir, extra):
         c=Conn(host,port,timeout=8)
         c.login("RestartVictim")
         kicked=False
-        deadline=time.time()+8
-        while time.time()<deadline and not kicked:
+        deadline=time.monotonic()+8
+        while time.monotonic()<deadline and not kicked:
             try: pid,data=c.recv_packet()
-            except: break
+            except (OSError, EOFError, socket.timeout, ValueError, RuntimeError): break
             if pid==0x1D: kicked=True; break
         try: c.close()
-        except: pass
+        except (OSError, ValueError): pass
         check(kicked, "restart: banned player still rejected after restart", "test_server_full.py:restart_ban_login")
     except Exception as e:
         # mcproto raises "kicked at login: ...You are banned..." when the server
@@ -1237,11 +1267,11 @@ def suite_restart_persist(binary, proc, host, port, world_dir, extra):
     try:
         send_command_and_collect(host,port,"RestartAdmin","deop RestartOp",timeout=1.2)
         time.sleep(0.3)
-        ops_txt=Path("ops.json").read_text() if Path("ops.json").exists() else ""
+        ops_txt=read_world_file(world_dir, "ops.json")
         check("RestartOp" not in ops_txt, "restart: deop removes RestartOp live (dynamic)", "test_server_full.py:restart_deop")
         send_command_and_collect(host,port,"RestartAdmin","op RestartOp",timeout=1.2)
         time.sleep(0.3)
-        ops_txt=Path("ops.json").read_text() if Path("ops.json").exists() else ""
+        ops_txt=read_world_file(world_dir, "ops.json")
         check("RestartOp" in ops_txt, "restart: op re-adds RestartOp live (dynamic)", "test_server_full.py:restart_reop")
     except Exception as e:
         check(False, f"restart: dynamic op threw {e}", "test_server_full.py:restart_dynop_exc")
@@ -1262,9 +1292,9 @@ def unpack_pos_block(data: bytes) -> tuple[int, int, int]:
 def _p43_drain(c: Conn, secs=1.0):
     """pump play packets, auto-answer keepalive/teleport; returns [(pid,data)]."""
     out = []
-    t_end = time.time() + secs
+    t_end = time.monotonic() + secs
     c.sock.settimeout(0.3)
-    while time.time() < t_end:
+    while time.monotonic() < t_end:
         try:
             pid, data = c.recv_packet()
         except Exception:
@@ -1304,8 +1334,8 @@ def _p43_signed(cmd: str, n: int, sig_byte: int = 0xAB) -> bytes:
     return p
 
 def _p43_expect_chat(c: Conn, needle: str, secs=4.0) -> bool:
-    t_end = time.time() + secs
-    while time.time() < t_end:
+    t_end = time.monotonic() + secs
+    while time.monotonic() < t_end:
         for t in _p43_chat_texts(_p43_drain(c, 0.8)):
             if needle in t:
                 return True
@@ -1337,8 +1367,8 @@ def suite_plan43_b1b2(host, port):
         c = persistent_join(host, port, "P43Tab")
         c.send_packet_raw(0x0D, write_varint(7) + pack_string("/gam"))
         got = None
-        t_end = time.time() + 5
-        while time.time() < t_end and got is None:
+        t_end = time.monotonic() + 5
+        while time.monotonic() < t_end and got is None:
             for pid, data in _p43_drain(c, 0.8):
                 if pid == 0x10:
                     bio = io.BytesIO(data)
@@ -1357,9 +1387,9 @@ def suite_plan43_b1b2(host, port):
         c.login("P43Fin")
         # config: answer normally until FinishConfiguration, then contaminate
         c.sock.settimeout(8)
-        deadline = time.time() + 15
+        deadline = time.monotonic() + 15
         finished = False
-        while time.time() < deadline and not finished:
+        while time.monotonic() < deadline and not finished:
             pid, data = c.recv_packet()
             if pid == 0x0E: c.send_packet_raw(0x07, write_varint(0))
             elif pid == 0x03: finished = True
@@ -1372,9 +1402,9 @@ def suite_plan43_b1b2(host, port):
             c.send_packet_raw(0x06, b"\x00" * 16 + write_varint(0))
             c.send_packet_raw(0x07, write_varint(0))
             c.send_packet_raw(0x03, b"")
-            deadline = time.time() + 12
+            deadline = time.monotonic() + 12
             pid = None
-            while time.time() < deadline:
+            while time.monotonic() < deadline:
                 try: pid, data = c.recv_packet()
                 except Exception: break
                 if pid == 0x2C:
@@ -1415,8 +1445,8 @@ def suite_plan43_b1b2(host, port):
             time.sleep(0.05)
         c.send_packet_raw(0x1C, struct.pack(">ddd", px, py, pz) + b"\x01")
         hurt = False
-        t_end = time.time() + 5
-        while time.time() < t_end and not hurt:
+        t_end = time.monotonic() + 5
+        while time.monotonic() < t_end and not hurt:
             hurt = any(p == 0x1A for p, _ in _p43_drain(c, 0.8))
         check(hurt, "plan43 W-01 0x02 fall deals DamageEvent", "test_server_full.py:p43_fall")
         c.close()
@@ -1441,8 +1471,8 @@ def suite_plan43_b1b2(host, port):
                     pass
             c.send_packet_raw(0x05, pack_string("summon minecraft:horse"))
             horse = None
-            t_end = time.time() + 6
-            while time.time() < t_end and horse is None:
+            t_end = time.monotonic() + 6
+            while time.monotonic() < t_end and horse is None:
                 for pid, data in _p43_drain(c, 0.8):
                     if pid != 0x01:
                         continue
@@ -1462,8 +1492,8 @@ def suite_plan43_b1b2(host, port):
                 w0 = 0
                 c.send_packet_raw(0x18, pay)
                 win = False
-                t_end = time.time() + 3
-                while time.time() < t_end and not win:
+                t_end = time.monotonic() + 3
+                while time.monotonic() < t_end and not win:
                     win = any(p == 0x24 for p, _ in _p43_drain(c, 0.8))
                 check(win == expect_win, f"plan43 W-02 m{mouse}/h{hand}/s{int(sneak)} window={expect_win}", "test_server_full.py:p43_use")
             c.close()
@@ -1476,14 +1506,14 @@ def suite_plan43_b1b2(host, port):
         # via /gamemode (the command re-sends abilities every execution)
         c.send_packet_raw(0x05, pack_string("gamemode creative"))
         got0d = False
-        t_end = time.time() + 5
-        while time.time() < t_end and not got0d:
+        t_end = time.monotonic() + 5
+        while time.monotonic() < t_end and not got0d:
             got0d = any(p == 0x3A and d and d[0] == 0x0D for p, d in _p43_drain(c, 0.8))
         check(got0d, "plan43 W-06 creative join 0x0D", "test_server_full.py:p43_abil_join")
         c.send_packet_raw(0x05, pack_string("gamemode survival"))
         got00 = False
-        t_end = time.time() + 5
-        while time.time() < t_end and not got00:
+        t_end = time.monotonic() + 5
+        while time.monotonic() < t_end and not got00:
             got00 = any(p == 0x3A and d and d[0] == 0x00 for p, d in _p43_drain(c, 0.8))
         check(got00, "plan43 W-06 survival flags 0x00", "test_server_full.py:p43_abil_surv")
         c.send_packet_raw(0x26, b"\x02")
@@ -1498,8 +1528,8 @@ def suite_plan43_b1b2(host, port):
         sx, sy, sz = 10, -60, 8
         c.send_packet_raw(0x05, pack_string(f"setblock {sx} {sy} {sz} minecraft:oak_sign"))
         placed = False
-        t_end = time.time() + 8
-        while time.time() < t_end and not placed:
+        t_end = time.monotonic() + 8
+        while time.monotonic() < t_end and not placed:
             for pid, data in _p43_drain(c, 0.8):
                 if pid == 0x09 and len(data) >= 8 and unpack_pos_block(data) == (sx, sy, sz):
                     placed = True
@@ -1510,8 +1540,8 @@ def suite_plan43_b1b2(host, port):
         pay = pack_pos_block(sx, sy, sz) + b"\x01" + b"".join(pack_string(l) for l in lines)
         c.send_packet_raw(0x39, pay)
         got07 = False
-        t_end = time.time() + 5
-        while time.time() < t_end and not got07:
+        t_end = time.monotonic() + 5
+        while time.monotonic() < t_end and not got07:
             got07 = any(p == 0x07 and b"P43-L1" in d for p, d in _p43_drain(c, 0.8))
         check(got07, "plan43 W-07 BlockEntityData carries line 1", "test_server_full.py:p43_sign")
         c.close()
@@ -1530,10 +1560,13 @@ def main():
     _suites=set(s.strip() for s in str(args.suites).split(",") if s.strip())
     def _run(name): return (not _suites) or (name in _suites)
     if not Path(binary).exists():
-        # try build
         print(f"[info] binary {binary} missing, attempting build...")
-        subprocess.run(["cmake","-B","build","-G","Ninja"], check=False, timeout=120)
-        subprocess.run(["cmake","--build","build","-j4"], check=False, timeout=300)
+        try:
+            run_owned_command(["cmake", "-B", "build", "-G", "Ninja"], 120)
+            run_owned_command(["cmake", "--build", "build", "-j4"], 300)
+        except (OSError, RuntimeError) as exc:
+            print(f"[fatal] automatic build failed: {exc}", file=sys.stderr)
+            sys.exit(2)
     if not Path(binary).exists():
         print(f"[fatal] binary not found: {binary}")
         sys.exit(2)
@@ -1546,15 +1579,11 @@ def main():
     rcon_pass="testRcon1337"
     print(f"[info] world_dir={world_dir} port={port} rcon={rcon_port} binary={binary}")
 
-    # write minimal server.properties for rcon enable in world_dir and cwd
-    # cppfm reads server.properties from cwd, not world_dir; so write to cwd temp copy? We'll write to worktree cwd
-    # but we will pass via CLI: --enable-rcon=true --rcon.password=...
-    # also need to ensure server writes ban/whitelist next to cwd; use cwd as world_dir? simpler to chdir to world_dir
-    orig_cwd=os.getcwd()
+    # launch_server uses world_dir as the server cwd, so admin files and logs
+    # stay isolated while the parent test process remains in the repository.
     extra=["--enable-rcon=true", f"--rcon.password={rcon_pass}", f"--rcon.port={rcon_port}"]
     proc=None
-    orig_cwd_before = os.getcwd()
-    assets_dir = str((Path(orig_cwd_before) / "assets").resolve())
+    assets_dir = str((Path.cwd() / "assets").resolve())
     extra = extra + [f"--assets={assets_dir}/registry", "--max-players=200", "--view-distance=4"]
     try:
         proc=launch_server(binary, port, world_dir, extra_args=extra)
@@ -1568,7 +1597,8 @@ def main():
         if not _is_server_alive(proc):
             print("[warn] server died during commands — restarting for remaining suites")
             try: kill_server(proc)
-            except: pass
+            except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+                print(f"[warn] unable to reap the previous server before restart: {exc}", file=sys.stderr)
             try:
                 proc = launch_server(binary, port, world_dir, extra_args=extra)
                 host="127.0.0.1"
@@ -1585,15 +1615,11 @@ def main():
         if _run("restart"): proc = suite_restart_persist(binary, proc, host, port, world_dir, extra)
 
     finally:
-        try: os.chdir(orig_cwd_before)
-        except: pass
-        os.chdir(orig_cwd)
         if proc and not args.keep_running:
             print("[info] shutting down server...")
             kill_server(proc)
-            time.sleep(0.5)
-        # cleanup world_dir? keep for inspection
-        # shutil.rmtree(world_dir, ignore_errors=True)
+        if not args.keep_running:
+            shutil.rmtree(world_dir, ignore_errors=True)
     summary_and_exit()
 
 if __name__=="__main__":

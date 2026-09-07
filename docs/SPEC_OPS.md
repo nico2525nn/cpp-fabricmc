@@ -1,8 +1,8 @@
 # SPEC_OPS — operations, limits, and recovery
 
 This is the operational contract for Minecraft 1.21.4 / protocol 769 / DataVersion
-4189 at runtime snapshot `c3a5e49e41261dacb4b9454c538aa87575fa9546`, rechecked on
-2026-09-06. It covers MISSING **#7–#10**, operational aspects of **#71–#79**,
+4189 at `main` HEAD `abcdc6b` plus the current cleanup worktree, rechecked on
+2026-09-07. It covers MISSING **#7–#10**, operational aspects of **#71–#79**,
 **#88–#90**, Fabric server-property/RCON rows, and assessment history IDs
 B-06/B-07/C-04/C-09/C-12/E-13/O-01–O-13/W-14/W-16.
 
@@ -205,12 +205,12 @@ older runs:
 
 | workload | result |
 |---|---|
-| configure/build | completed after a filesystem-slow initial 300s outer timeout; resumed build completed `104/104` |
+| configure/build | clean RelWithDebInfo build completed `119/119` with explicit timeout wrappers |
 | incremental Ninja build | `ninja: no work to do` in `0.05s` |
 | view32 dry benchmark | `PASS` in `1.74s`; 4,225 chunks, p50 `0.108ms`, p95 `2.333ms`, peak RSS ~`95MB`, hit rate `84.6%` |
 | 120-client stress | `120/120 joined; PASS` in `68.0s` |
-| multi-client integration | `ALL PASS` in `17.83s` |
-| bot smoke | `ALL PASS` in `20.65s` |
+| multi-client integration | `ALL PASS` in `17.00s` |
+| bot smoke | `ALL PASS` in `20.35s` |
 | `tests/soak_test.py --duration 300` | `PASS`; 150 keepalives, 0 disconnects, actions 2932, post-fill RSS growth `7.6%` |
 | `tools/soak_bot.py --duration 300` | `3/3 PASS`; each KeepAlive 30, chunks 182, time updates 300, all error counters 0, cleanup PASS |
 | `tests/soak_test.py --duration 1800 --movement-range 3000` | `PASS` on `17ab09f`; 900 keepalives, 0 disconnects, actions 17493, post-fill baseline `114504kB`, max `128868kB`, growth `12.5%`; diagnostic only |

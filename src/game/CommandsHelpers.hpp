@@ -73,7 +73,7 @@ inline void sendFeedback(Player* p, const std::string& msg) {
         WriteBuffer b;
         nbt::writeTextComponent(b, msg);
         b.boolean(false);
-        try { p->conn->sendPacket(proto::pl::sc::SystemChat, b); } catch (...) {}
+        p->conn->trySendPacket(proto::pl::sc::SystemChat, b);
     } else {
         if (GameServer::consoleCapture_) {
             if (!GameServer::consoleCapture_->empty()) *GameServer::consoleCapture_ += "\n";

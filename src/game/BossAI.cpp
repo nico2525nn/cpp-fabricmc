@@ -73,7 +73,7 @@ void BossBarManager::sendAddToPlayer(GameServer& srv, const BossBar& bar, Player
     b.varint(bar.color);
     b.varint(bar.division);
     b.u8(bar.flags);
-    try { p.conn->sendPacket(proto::pl::sc::BossBar, b); } catch(...) {}
+    p.conn->trySendPacket(proto::pl::sc::BossBar, b);
 }
 void BossBarManager::sendHealth(GameServer& srv, const BossBar& bar) {
     WriteBuffer b;

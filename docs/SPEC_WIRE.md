@@ -1,7 +1,7 @@
 # SPEC_WIRE — Minecraft 1.21.4 / protocol 769
 
 This is the byte-level source of truth for the current C++ implementation. Snapshot:
-runtime snapshot `c3a5e49e41261dacb4b9454c538aa87575fa9546`, rechecked 2026-09-06. Scope
+`main` HEAD `abcdc6b` plus the current cleanup worktree, rechecked 2026-09-07. Scope
 is Java Edition 1.21.4, protocol `769`, DataVersion `4189`, with an unmodified Fabric
 1.21.4 server as the behavioral reference. `docs/MISSING_FEATURES_1_21_4.md` targets
 are identified in every contract; this file does not change their status or the
@@ -330,17 +330,17 @@ Fresh byte-lock evidence at the snapshot:
 
 | target | result |
 |---|---|
-| `test_spec_wire` | `392 PASS 0 FAIL 0 SKIP` |
-| `test_wire_full` | `405 PASS 0 FAIL 0 SKIP` |
+| `test_spec_wire` | `395 PASS 0 FAIL` |
+| `test_wire_full` | `399 PASS 0 FAIL` |
 | `test_wire_b6` | `133 PASS 0 FAIL` |
 | `test_scoreboard_reset` | `22 PASS 0 FAIL` |
-| `test_fuzz` | `23 PASS 0 FAIL` |
+| `test_fuzz` | `25 PASS 0 FAIL` |
 
 These are named current-snapshot results, not inherited values from the handover or
 historical audits. In particular, the old `test_spec_wire` value `328` is stale;
-the current value is `392`. `test_native` is intentionally recorded as `ALL PASS`
+the current value is `395`. `test_native` is intentionally recorded as `ALL PASS`
 without an invented aggregate count. A passing wire lock also does not clear the
-intentional E-14 failure or missing real-client/long-run evidence; the former
+E-14 boundary or missing real-client/long-run evidence; the former
 `soak_bot` blocker is resolved by three integrated 300-second passes.
 
 Named vectors include:

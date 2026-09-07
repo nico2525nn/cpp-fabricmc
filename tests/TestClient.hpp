@@ -29,7 +29,7 @@ class TestClient {
 public:
     bool connect(const std::string& host, std::uint16_t port, int timeoutSec = 15);
     void close() noexcept;
-    ~TestClient() noexcept { try { close(); } catch (...) {} }
+    ~TestClient() noexcept { close(); }
 
     // ---- flow -------------------------------------------------------------
     // handshake -> status request -> parse json-ish (returns raw body) -> ping
@@ -48,6 +48,7 @@ public:
     void sendChatMessage(const std::string& message);
     void sendChatCommand(const std::string& command);
     void sendDig(std::int32_t x, std::int32_t y, std::int32_t z, std::int32_t seq);
+    void sendEntityAction(std::int32_t action, std::int32_t jumpBoost = 0);
     void sendUseItemOn(std::int32_t x, std::int32_t y, std::int32_t z, int face=1, std::int32_t seq=1);
     void sendUseEntity(std::int32_t entityId, int action, bool sneaking=false); // plan41 C-10 horse window
     // plan43 B1+B2: spec-exact send helpers (protocol.json 1.21.4 hand-built)
@@ -61,7 +62,7 @@ public:
     void sendAbilitiesFlags(std::int8_t flags);                                                     // cs 0x26
     void sendSignUpdate(std::int32_t x, std::int32_t y, std::int32_t z, bool front,
                         const std::string lines[4]);                                                // cs 0x39
-    void sendRawPlay(std::uint8_t pid, const WriteBuffer& body);                                    // escape hatch
+    bool sendRawPlay(std::uint8_t pid, const WriteBuffer& body);                                     // escape hatch
     bool joinWithFinishContamination(const std::string& name); // plan43 W-12: settings/pong/pack/known-packs before finish-ack
     bool alive() const { return running_.load(); }
     struct Suggestion { std::string match; };
@@ -82,26 +83,39 @@ public:
     bool waitFor(std::function<bool(const Packet&)> pred, int timeoutMs, Packet* out = nullptr);
 
     size_t count(std::uint8_t id) const;
-    // debug accessors
-    auto& mtx_public(){ return mtx_; }
-    auto& recentPublic(){ return recent_; }
-
-    // observed state
-    std::vector<std::uint8_t> joinGameBody;
-    std::vector<std::pair<std::int32_t,std::int32_t>> chunkCoords;
-    std::vector<std::vector<std::uint8_t>> rawChunks;      // bodies after header strip
-    std::vector<std::string> chatLines;
+    // The reader thread owns the observed collections.  Callers must use
+    // snapshots instead of iterating the public storage while packets are
+    // still arriving; a vector iterator cannot be made safe by the mutex
+    // used by waitFor/count.
+    std::vector<std::string> chatLinesSnapshot() const;
     struct BlockUpd { std::int32_t x,y,z; std::uint32_t state; };
-    std::vector<BlockUpd> blockUpdates;
-    int acks = 0, spawnsReceived = 0, entityMoves = 0, timeUpdates = 0, declares = 0;
-    bool gotRespawn = false;
-    bool hasChunk00 = false;
+    std::vector<BlockUpd> blockUpdatesSnapshot() const;
+    std::vector<std::pair<std::int32_t,std::int32_t>> chunkCoordsSnapshot() const;
+    std::vector<std::vector<std::uint8_t>> rawChunksSnapshot() const;
+    std::vector<Packet> recentSnapshot() const;
+    std::vector<std::uint8_t> joinGameBodySnapshot() const;
+    std::size_t chunkCount() const;
+    std::size_t blockUpdateCount() const;
+    void clearChatLines();
+
+    struct Counters {
+        int acknowledgements = 0;
+        int spawns = 0;
+        int entityMoves = 0;
+        int timeUpdates = 0;
+        int declarations = 0;
+        bool respawnReceived = false;
+        bool chunk00Received = false;
+    };
+    Counters counters() const;
+
+    struct Position { double x = 8.5, y = -60.0, z = 8.5; };
+    Position positionSnapshot() const;
 
     std::uint16_t localPort() const { return localPort_; }
-    double x = 8.5, y = -60.0, z = 8.5;
-    std::string lastError;
 
 private:
+    void sendPacketNoexcept(std::uint8_t id, const WriteBuffer& body) noexcept;
     void readerLoop();
     void filePacket(Packet p);
     static bool extractChatText(const std::vector<std::uint8_t>& nbt, std::string& out);
@@ -111,9 +125,17 @@ private:
     std::atomic<bool> running_{false};
 
     mutable std::mutex mtx_;
+    std::vector<std::uint8_t> joinGameBody_;
+    std::vector<std::pair<std::int32_t,std::int32_t>> chunkCoords_;
+    std::vector<std::vector<std::uint8_t>> rawChunks_;      // complete packet bodies
+    std::vector<std::string> chatLines_;
+    std::vector<BlockUpd> blockUpdates_;
+    Counters counters_;
+    Position position_;
+    std::string lastError_;
     bool playerLoadedSent_ = false;
     std::uint16_t localPort_ = 0;
-    int myFirstPackets = 0;
+    std::int32_t entityId_ = 0;
     std::deque<Packet> recent_;                 // ring of unmatched packets
     std::condition_variable cv_;
 };

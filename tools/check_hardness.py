@@ -75,12 +75,11 @@ for b in blocks:
                       req, eff, tier)
 
 ROW = re.compile(
-    r'^\s*\{"(minecraft:[^"]+)", (\d+), (\d+), (\d+), ([0-9.\-]+)f, '
-    r'([0-9.\-]+)f, (\d+), (\d+), (\d+), (\d+), (\d+), (?:true|false), (\d+), (\d+)\},$')
+    r'\{"(minecraft:[^"]+)", (\d+), (\d+), (\d+), ([0-9.\-]+)f, '
+    r'([0-9.\-]+)f, (\d+), (\d+), (\d+), (\d+), (\d+), (?:true|false), (\d+), (\d+)\},')
 found = {}
 for line in open(HEADER):
-    m = ROW.match(line)
-    if m:
+    for m in ROW.finditer(line):
         found[m.group(1)] = ("%.2f" % float(m.group(5)), "%.2f" % float(m.group(6)),
                              int(m.group(7)), int(m.group(8)), int(m.group(9)))
 
@@ -112,10 +111,13 @@ with open(OUT, "w") as f:
     f.write("  const char* name; float hardness; float blast;\n")
     f.write("  unsigned toolMask; unsigned effMask; unsigned needsTier;\n};\n")
     f.write("static const ExpectedMining kExpectedMining[] = {\n")
+    rows = []
     for b in blocks:
         n = "minecraft:" + b["name"]
         h, r, req, eff, tier = expected[n]
-        f.write('  {"%s", %sf, %sf, %d, %d, %d},\n' % (n, h, r, req, eff, tier))
+        rows.append('{"%s", %sf, %sf, %d, %d, %d},' % (n, h, r, req, eff, tier))
+    for start in range(0, len(rows), 4):
+        f.write("  " + " ".join(rows[start:start + 4]) + "\n")
     f.write("};\n")
     f.write("static constexpr int kExpectedMiningCount = %d;\n" % len(blocks))
 print("wrote %s (%d rows)" % (OUT, len(blocks)))

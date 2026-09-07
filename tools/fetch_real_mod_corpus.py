@@ -41,6 +41,30 @@ class MissingCache(CorpusError):
     """The offline cache is incomplete; this is a SKIP, not a PASS."""
 
 
+def _output_text(value: str | bytes | None) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value or ""
+
+
+def _collect_after_kill(process: subprocess.Popen[str]) -> tuple[str, str]:
+    """Collect bounded output after terminating an owned process group."""
+    try:
+        stdout, stderr = process.communicate(timeout=5.0)
+        return _output_text(stdout), _output_text(stderr)
+    except subprocess.TimeoutExpired as exc:
+        stdout = _output_text(exc.stdout)
+        stderr = _output_text(exc.stderr)
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
+        try:
+            process.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            pass
+        return stdout, stderr
+
+
 def _die(message: str) -> NoReturn:
     raise CorpusError(message)
 
@@ -327,7 +351,7 @@ def _run_bounded(command: list[str], timeout: float) -> tuple[int, str, str]:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-        stdout, stderr = process.communicate()
+        stdout, stderr = _collect_after_kill(process)
         _die(f"command timed out after {timeout}s: {' '.join(command)}\n{stdout}{stderr}")
     return process.returncode, stdout, stderr
 

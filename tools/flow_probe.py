@@ -26,12 +26,12 @@ def run(name="FlowBot", secs=30):
         elif pid == 0x0e: c.send_packet_raw(0x07, b"\x00")
 
     print("-- PLAY phase --")
-    t_end = time.time() + secs
+    t_end = time.monotonic() + secs
     last_move = 0
     sent_loaded = False
     counts = {}
     seq = []
-    while time.time() < t_end:
+    while time.monotonic() < t_end:
         try:
             pid, data = c.recv_packet()
         except EOFError:
@@ -49,8 +49,8 @@ def run(name="FlowBot", secs=30):
         elif pid == 0x0c: c.send_packet_raw(0x09, struct.pack(">f", 8.0))
         elif pid == 0x2c and not sent_loaded:
             pass  # hold player_loaded this time
-        if time.time() - last_move > 0.5:
-            last_move = time.time()
+        if time.monotonic() - last_move > 0.5:
+            last_move = time.monotonic()
             c.send_packet_raw(0x1c, struct.pack(">ddd", 8.5, -60.0, 8.5) + b"\x01")
     print("first packets:", " ".join(seq[:60]))
     print("counts:", {f"0x{k:02x}": v for k,v in sorted(counts.items())})

@@ -44,20 +44,6 @@ void JavaObjectCache::put(void* rawEnv, std::uint64_t handle,
     if (previous && previous != globalReference) deleteGlobal(rawEnv, previous);
 }
 
-void* JavaObjectCache::get(std::uint64_t handle) const {
-    std::lock_guard lock(mutex_);
-    for (const auto& [key, reference] : references_)
-        if (key.handle == handle) return reference;
-    return nullptr;
-}
-
-void* JavaObjectCache::get(std::uint64_t handle,
-                           const std::string& typeName) const {
-    std::lock_guard lock(mutex_);
-    const auto it = references_.find(Key{handle, typeName});
-    return it == references_.end() ? nullptr : it->second;
-}
-
 void JavaObjectCache::erase(std::uint64_t handle) {
     std::lock_guard lock(mutex_);
     for (auto it = references_.begin(); it != references_.end();) {

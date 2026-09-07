@@ -76,8 +76,8 @@ def capture_config_and_play():
     c.send_packet_raw(0x03, b"")   # login acknowledged -> CONFIGURATION
 
     registries = {}
-    t_end = time.time() + 30
-    while time.time() < t_end:
+    t_end = time.monotonic() + 30
+    while time.monotonic() < t_end:
         pid, data = c.recv_packet()
         if pid == 0x03:
             c.send_packet_raw(0x03, b"")
@@ -108,13 +108,13 @@ def capture_config_and_play():
     chat_saved = 0
     pos_x, pos_y, pos_z = 8.5, -60.0, 8.5
     teleports = 0
-    t_end = time.time() + 30
+    t_end = time.monotonic() + 30
     last_move = 0.0
     other_files = {"0x40": "play_player_info", "0x11": "play_declare_commands",
                    "0x58": "play_update_view_position", "0x69": "play_simulation_distance",
                    "0x3a": "play_abilities", "0x62": "play_update_health",
                    "0x5b": "play_spawn_position", "0x26": "play_initialize_border"}
-    while time.time() < t_end:
+    while time.monotonic() < t_end:
         try:
             pid, data = c.recv_packet()
         except EOFError:
@@ -144,8 +144,8 @@ def capture_config_and_play():
             k = other_files.get(f"0x{pid:02x}")
             if k:
                 save(k + ".bin", data)
-        if time.time() - last_move > 0.4:
-            last_move = time.time()
+        if time.monotonic() - last_move > 0.4:
+            last_move = time.monotonic()
             flags = b"\x01"
             body = struct.pack(">ddd", pos_x, pos_y, pos_z) + flags
             c.send_packet_raw(0x1c if teleports % 2 == 0 else 0x1f, body)

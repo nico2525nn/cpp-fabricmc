@@ -64,8 +64,7 @@ void GameServer::initPlayerCommandsPart01() {
             src->gamemode = static_cast<std::uint8_t>(m);
             WriteBuffer ge;                          // game event 4 = gamemode
             ge.u8(4); ge.f32(static_cast<float>(m));
-            try { src->conn->sendPacket(proto::pl::sc::GameEvent, ge); }
-            catch (...) {}
+            src->conn->trySendPacket(proto::pl::sc::GameEvent, ge);
             std::uint8_t af = 0;
             if (m == 1) af |= 0x01 | 0x04 | 0x08;
             else if (m == 3) af |= 0x02 | 0x04;
@@ -74,7 +73,7 @@ void GameServer::initPlayerCommandsPart01() {
             WriteBuffer ab;
             ab.i8(static_cast<std::int8_t>(af));
             ab.f32(0.05f); ab.f32(m == 1 ? 0.10f : 0.05f);
-            try { src->conn->sendPacket(proto::pl::sc::Abilities, ab); } catch (...) {}
+            src->conn->trySendPacket(proto::pl::sc::Abilities, ab);
             sendFeedback(src, "Set own game mode to " + c.arg("mode").asStr());
             return 1;
         };
@@ -98,7 +97,7 @@ void GameServer::initPlayerCommandsPart01() {
                     WriteBuffer ab;
                     ab.i8(static_cast<std::int8_t>(taf));
                     ab.f32(0.05f); ab.f32(m == 1 ? 0.10f : 0.05f);
-                    try { t->conn->sendPacket(proto::pl::sc::Abilities, ab); } catch (...) {}
+                    t->conn->trySendPacket(proto::pl::sc::Abilities, ab);
                     ++count;
                 }
             sendFeedback(src, "Updated gamemode for " + std::to_string(count));
@@ -267,8 +266,7 @@ void GameServer::initPlayerCommandsPart03() {
             tb.f64(0); tb.f64(0); tb.f64(0);
             tb.f32(src->yaw); tb.f32(src->pitch);
             tb.u32(0);
-            try { src->conn->sendPacket(proto::pl::sc::PlayerPosition, tb); }
-            catch (...) {}
+            src->conn->trySendPacket(proto::pl::sc::PlayerPosition, tb);
             src->x = v.x; src->y = v.y; src->z = v.z;
             sendFeedback(src, "Teleported to " + std::to_string(v.x) + ", " +
                          std::to_string(v.y) + ", " + std::to_string(v.z));
@@ -340,8 +338,7 @@ void GameServer::initPlayerCommandsPart05() {
             b.varint(ampWire);
             b.varint(e.durationTicks);
             b.u8(effectFlags(e));
-            try { t.conn->sendPacket(proto::pl::sc::EntityEffect, b); }
-            catch (...) {}
+            t.conn->trySendPacket(proto::pl::sc::EntityEffect, b);
         };
         auto give = CommandNode::literal("give");
         auto targets = CommandNode::argument("targets",
@@ -556,8 +553,7 @@ void GameServer::initPlayerCommandsPart10() {
             if (!src) return 0;
             WriteBuffer cam;
             cam.varint(src->entityId);
-            try { src->conn->sendPacket(proto::pl::sc::Camera, cam); }
-            catch (...) {}
+            src->conn->trySendPacket(proto::pl::sc::Camera, cam);
             sendFeedback(src, "Camera reset");
             return 1;
         };
@@ -570,8 +566,7 @@ void GameServer::initPlayerCommandsPart10() {
                 if (Player* t = findPlayer(*this, sel.playerNames[0])) {
                     WriteBuffer cam;
                     cam.varint(t->entityId);
-                    try { src->conn->sendPacket(
-                              proto::pl::sc::Camera, cam); } catch (...) {}
+                    src->conn->trySendPacket(proto::pl::sc::Camera, cam);
                     sendFeedback(src, "Spectating " + t->name);
                 }
             }
@@ -702,7 +697,7 @@ std::pair<Player*, Attribute> GameServer::attributeCommandHead(brigadier::Comman
 void GameServer::sendAttributeCommandUpdate(Player& p) {
     WriteBuffer ab;
     p.attributes.writeUpdate(ab, p.entityId);
-    try { p.conn->sendPacket(proto::pl::sc::UpdateAttributes, ab); } catch (...) {}
+    p.conn->trySendPacket(proto::pl::sc::UpdateAttributes, ab);
 }
 
 void GameServer::initAttributeGetCommands(const brigadier::NodePtr& attrArg) {
@@ -1108,8 +1103,7 @@ void GameServer::initPlayerCommandsPart17() {
                         tb.f64(0); tb.f64(0); tb.f64(0);
                         tb.f32(t->yaw); tb.f32(t->pitch);
                         tb.u32(0);
-                        try { t->conn->sendPacket(proto::pl::sc::PlayerPosition, tb); }
-                        catch (...) {}
+                        t->conn->trySendPacket(proto::pl::sc::PlayerPosition, tb);
                         t->x = v.x; t->y = v.y; t->z = v.z;
                         ++n;
                     }

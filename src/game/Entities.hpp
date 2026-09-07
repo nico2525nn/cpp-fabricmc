@@ -12,6 +12,7 @@
 #include "../generated/EntityIds.hpp"
 #include "../generated/ItemIds.hpp"
 #include "Items.hpp"
+#include "../core/Random.hpp"
 
 namespace cppfm {
 
@@ -391,7 +392,7 @@ struct MobEntity {
     float horseMaxHealth = 30.f; // 15..30 after randomizeHorseStats
     float horseMoveSpeed = 0.12f; // 0.1125..0.3375 after randomizeHorseStats
     struct HorseStats { float maxHealth; float moveSpeed; float jumpStrength; int variant; };
-    // Deterministic splitmix64 stream: same seed => same stats (testable, no rand()).
+    // Deterministic splitmix64 stream: same seed => same stats (testable, no nextRandom()).
     static inline std::uint64_t horseSplitmix(std::uint64_t& s) {
         std::uint64_t z = (s += 0x9E3779B97F4A7C15ULL);
         z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
@@ -592,7 +593,7 @@ struct MobEntity {
         if (!s.dropItem) return {0, 0};
         auto it = gen::itemIdByName().find(s.dropItem);
         if (it == gen::itemIdByName().end()) return {0, 0};
-        const int n = s.dropMin + (s.dropMax > s.dropMin ? (rand() % (s.dropMax - s.dropMin + 1)) : 0);
+        const int n = s.dropMin + (s.dropMax > s.dropMin ? (nextRandom() % (s.dropMax - s.dropMin + 1)) : 0);
         return {it->second, static_cast<std::uint8_t>(std::max(0, n))};
     }
     static std::uint32_t breedingItemFor(MobKind k) {

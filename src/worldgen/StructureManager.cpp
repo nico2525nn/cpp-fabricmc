@@ -1062,7 +1062,7 @@ void StructureManager::generate(Chunk& chunk, std::int32_t cx,
         if (auto* pf = placer_->getPlaced("minecraft:stronghold")) {
             std::int32_t oCx, oCz;
             if (placer_->findOrigin(*pf, cx, cz, oCx, oCz)) {
-                if (placer_->shouldPlaceAt(*pf, oCx, oCz) || true) {
+                if (placer_->shouldPlaceAt(*pf, oCx, oCz)) {
                     strongholdPiece(chunk, cx, cz, oCx*16, oCz*16, ground);
                 }
             } else if (placer_->shouldPlaceAt(*pf, cx, cz)) {

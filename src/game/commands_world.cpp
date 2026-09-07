@@ -9,6 +9,9 @@
 #include <filesystem>
 #include <unordered_set>
 #include <fstream>
+#include <cstdio>
+#include <cstdlib>
+#include <chrono>
 
 #include "CommandsHelpers.hpp"
 namespace cppfm {
@@ -325,7 +328,7 @@ void GameServer::initWorldCommandsPart06() {
             // also send Center and LerpSize for spec compliance
             for (auto& p : playersSnapshot()) {
                 WriteBuffer cc; cc.f64(worldBorderCenterX_); cc.f64(worldBorderCenterZ_);
-                try { p->conn->sendPacket(proto::pl::sc::WorldBorderCenter, cc); } catch(...) {}
+                p->conn->trySendPacket(proto::pl::sc::WorldBorderCenter, cc);
             }
             return 1;
         };
@@ -578,9 +581,18 @@ void GameServer::initWorldCommandsPart10(const brigadier::NodePtr& locate) {
                 std::string req = c.arg("locateStructureId").asStr();
                 if(req.find(':')==std::string::npos) req="minecraft:"+req;
                 std::string shortName = req.substr(req.find(':')+1);
-                // Use tmp StructureManager seeded with same seed to avoid needing World accessor
-                worldgen::StructureManager tmpMgr(cfg_.seed);
-                const auto& sets = tmpMgr.sets();
+                // Reuse the world's already-loaded manager.  Constructing a
+                // temporary manager here reloads every structure asset for
+                // every command and can block the session long enough for the
+                // keep-alive janitor to mistake a healthy client for an idle
+                // one.  It also used to search the overworld from Nether/End.
+                World& locateWorld = src ? worldFor(src->dimension) : world_;
+                const auto* manager = locateWorld.structureManager();
+                if (!manager) {
+                    sendFeedback(src, "Structure search is unavailable");
+                    return 0;
+                }
+                const auto& sets = manager->sets();
                 std::vector<const worldgen::SMStructureSet*> candidates;
                 for(auto& s : sets){
                     if(s.name==req) candidates.push_back(&s);
@@ -605,44 +617,73 @@ void GameServer::initWorldCommandsPart10(const brigadier::NodePtr& locate) {
                 int bestDist = INT32_MAX;
                 int bestX=0,bestY=64,bestZ=0;
                 std::string bestName;
-                const int maxRadius = 100; // chunk radius (Yarn uses 100 chunk steps spiral; plan spec says 1000 but 100 is faster and finds nearby)
-                // Expand ring by ring for closest
+                const int maxRadius = 100; // chunk radius (Yarn uses 100 chunk steps spiral)
                 bool found=false;
-                for(int r=0; r<=maxRadius && !found; ++r){
-                    // walk perimeter of square radius r
-                    for(int dx=-r; dx<=r && !found; ++dx){
-                        for(int dz=-r; dz<=r && !found; ++dz){
-                            if(std::abs(dx)!=r && std::abs(dz)!=r) continue; // only perimeter for efficiency except r=0
-                            int cx = srcCx + dx;
-                            int cz = srcCz + dz;
-                            for(auto* set : candidates){
-                                auto at = worldgen::smStructureAtChunk(*set, cfg_.seed, cx, cz);
-                                if(!at.present) continue;
-                                // Check biome filter similar to generate() to avoid false positives For trial_chambers reject deep_dark
-                                // biomes if needed (approx) Use world sampler for biome check if available
-                                if(!set->biomes.empty()){
-                                    std::string bio = world_.sampledBiome(at.originX+8, 64, at.originZ+8);
-                                    bool ok=false;
-                                    for(auto& want: set->biomes) if(bio.find(want)!=std::string::npos) { ok=true; break; }
-                                    if(!ok) continue;
-                                }
-                                int dist = std::abs(at.originX - (src? (int)src->x:0)) + std::abs(at.originZ - (src? (int)src->z:0));
-                                // Prefer smaller radius first, so first found is close
-                                if(dist < bestDist){
-                                    bestDist = dist;
-                                    bestX = at.originX;
-                                    bestZ = at.originZ;
-                                    // Y: use surface estimate
-                                    bestY = world_.sampledBiome(bestX,64,bestZ).empty() ? 64 : world_.surfaceFeetY(bestX, bestZ);
-                                    if(bestY < -60) bestY = 64;
-                                    if(bestY > kMaxY) bestY = 64;
-                                    bestName = set->name;
-                                    found=true;
-                                }
-                            }
-                        }
+                const int sourceX = src ? static_cast<int>(src->x) : 0;
+                const int sourceZ = src ? static_cast<int>(src->z) : 0;
+                auto consider = [&](const worldgen::SMStructureSet* set,
+                                    const worldgen::SMStructureAt& at) {
+                    if (!at.present) return;
+                    // maxHoriz is the generation footprint around the origin;
+                    // retain it in the search bound so a structure whose
+                    // origin is just outside the current square is not lost.
+                    if (std::abs(at.originCx - srcCx) > maxRadius + set->maxHoriz ||
+                        std::abs(at.originCz - srcCz) > maxRadius + set->maxHoriz)
+                        return;
+                    if (!set->biomes.empty()) {
+                        const std::string bio = locateWorld.sampledBiome(
+                            at.originX + 8, 64, at.originZ + 8);
+                        bool ok = false;
+                        for (const auto& want : set->biomes)
+                            if (bio.find(want) != std::string::npos) { ok = true; break; }
+                        if (!ok) return;
                     }
-                    if(found) break;
+                    const int dist = std::abs(at.originX - sourceX) +
+                                     std::abs(at.originZ - sourceZ);
+                    if (dist >= bestDist) return;
+                    bestDist = dist;
+                    bestX = at.originX;
+                    bestZ = at.originZ;
+                    bestName = set->name;
+                    found = true;
+                };
+
+                // Enumerate the structure-set cells directly.  The previous
+                // chunk spiral called smStructureAtChunk() for every chunk;
+                // that function itself checks a 3x3 cell neighbourhood, and
+                // strongholds regenerated all 128 ring positions per chunk.
+                // Direct cell enumeration preserves the same hash candidates
+                // while keeping /locate bounded and responsive.
+                auto floorCell = [](int value, int spacing) -> std::int64_t {
+                    return static_cast<std::int64_t>(std::floor(
+                        static_cast<double>(value) / spacing));
+                };
+                for (const auto* set : candidates) {
+                    if (set->concentric.enabled) {
+                        for (int i = 0; i < set->concentric.count; ++i)
+                            consider(set, worldgen::smConcentricStructureAtIndex(
+                                             *set, cfg_.seed, i));
+                        continue;
+                    }
+                    const int spacing = std::max(1, set->spacing);
+                    const int bound = maxRadius + set->maxHoriz + 1;
+                    const std::int64_t minCell = floorCell(srcCx - bound, spacing) - 1;
+                    const std::int64_t maxCell = floorCell(srcCx + bound, spacing) + 1;
+                    const std::int64_t minCellZ = floorCell(srcCz - bound, spacing) - 1;
+                    const std::int64_t maxCellZ = floorCell(srcCz + bound, spacing) + 1;
+                    for (std::int64_t cellX = minCell; cellX <= maxCell; ++cellX)
+                        for (std::int64_t cellZ = minCellZ; cellZ <= maxCellZ; ++cellZ)
+                            consider(set, worldgen::smStructureAtCell(
+                                             *set, cfg_.seed, cellX, cellZ));
+                }
+                if (found) {
+                    // Prefer an already loaded surface.  A locate command is
+                    // read-only and must not synchronously generate a distant
+                    // structure chunk merely to calculate its display Y.
+                    bestY = locateWorld.surfaceFeetYIfLoaded(bestX, bestZ)
+                                .value_or(locateWorld.isFlat() ? -60
+                                                               : locateWorld.seaLevel());
+                    if (bestY < kMinY || bestY >= kMaxY) bestY = 64;
                 }
                 if(!found || bestDist==INT32_MAX){
                     sendFeedback(src, "Could not find structure "+req+" nearby (searched "+std::to_string(maxRadius*16)+" blocks)");
@@ -897,7 +938,9 @@ void GameServer::initWorldCommandsPart13() {
                 structLit->then(structArg);
                 place->then(structLit);
             }
-            // place jigsaw <pool> <target> <maxDepth> -> stub
+            // The command shape is present for dispatcher compatibility.  The
+            // pool/template graph needed for vanilla jigsaw placement is not
+            // available in this implementation.
             {
                 auto jigsawLit = CommandNode::literal("jigsaw");
                 auto poolArg = CommandNode::argument("jigsawPool", args::resourceLocation());
@@ -982,7 +1025,9 @@ void GameServer::initWorldCommandsPart14() {
                 struct Pos { double x,z; };
                 std::vector<Pos> placed;
                 placed.reserve(groups.size());
-                std::srand((unsigned)std::chrono::steady_clock::now().time_since_epoch().count() ^ (unsigned)tickNo_);
+                seedRandom(static_cast<unsigned>(
+                    std::chrono::steady_clock::now().time_since_epoch().count()) ^
+                    static_cast<unsigned>(tickNo_));
                 auto findY = [&](double x, double z)->double{
                     int ix=(int)std::floor(x), iz=(int)std::floor(z);
                     // scan from top down for solid
@@ -999,8 +1044,8 @@ void GameServer::initWorldCommandsPart14() {
                     Pos pos{0,0};
                     bool ok=false;
                     for(int attempt=0; attempt<1000; ++attempt){
-                        double rx = cx + ((double)std::rand()/RAND_MAX*2.0-1.0)*maxR;
-                        double rz = cz + ((double)std::rand()/RAND_MAX*2.0-1.0)*maxR;
+                        double rx = cx + ((double)nextRandom()/RAND_MAX*2.0-1.0)*maxR;
+                        double rz = cz + ((double)nextRandom()/RAND_MAX*2.0-1.0)*maxR;
                         bool far=true;
                         for(auto& pr: placed){
                             double dx=rx-pr.x, dz=rz-pr.z;
@@ -1012,7 +1057,7 @@ void GameServer::initWorldCommandsPart14() {
                     }
                     if(!ok){
                         // fallback: just use random
-                        pos={cx + ((double)std::rand()/RAND_MAX*2.0-1.0)*maxR, cz + ((double)std::rand()/RAND_MAX*2.0-1.0)*maxR};
+                        pos={cx + ((double)nextRandom()/RAND_MAX*2.0-1.0)*maxR, cz + ((double)nextRandom()/RAND_MAX*2.0-1.0)*maxR};
                     }
                     placed.push_back(pos);
                     double y=findY(pos.x,pos.z);
@@ -1025,7 +1070,7 @@ void GameServer::initWorldCommandsPart14() {
                         tp.f64(0); tp.f64(0); tp.f64(0);
                         tp.f32(p->yaw); tp.f32(p->pitch);
                         tp.u32(0);
-                        try{ p->conn->sendPacket(proto::pl::sc::PlayerPosition, tp); }catch(...){}
+                        p->conn->trySendPacket(proto::pl::sc::PlayerPosition, tp);
                     }
                 }
                 int total = (int)players.size();
@@ -1123,7 +1168,7 @@ void GameServer::initWorldCommandsPart16() {
             qlit->action = [this, q](CommandContext& c) {
                 Player* src = static_cast<Player*>(c.source.player);
                 std::int64_t v = std::string(q) == "daytime" ? dayTime() :
-                                 std::string(q) == "day" ? (dayTime() / 24000) : tickNo_;
+                                 std::string(q) == "day" ? (dayTime() / 24000) : tickNo_.load();
                 sendFeedback(src, "The time is " + std::to_string(v));
                 return static_cast<int>(v);
             };
@@ -1309,16 +1354,17 @@ void GameServer::initWorldCommandsPart20() {
 void GameServer::initWorldCommandsPart21() {
     auto& d = commands_;
     {
-        // /jigsaw generate ... — stub (vanilla generation is via /place jigsaw).
+        // Keep the vanilla command shape, but report the unsupported template
+        // graph instead of claiming that blocks were generated.
         auto jig = CommandNode::literal("jigsaw");
         auto gen = CommandNode::literal("generate");
         auto rest = CommandNode::argument("jigsawArgs", args::stringGreedy());
         rest->executable = true;
         rest->action = [this](CommandContext& c) {
             Player* src = static_cast<Player*>(c.source.player);
-            sendFeedback(src, "Jigsaw generated " + c.arg("jigsawArgs").asStr() +
-                         " (jigsaw stub — use /place jigsaw instead)");
-            return 1;
+            sendFeedback(src, "Jigsaw generation is unavailable: template pools are not loaded (" +
+                         c.arg("jigsawArgs").asStr() + ")");
+            return 0;
         };
         gen->then(rest);
         jig->then(gen);

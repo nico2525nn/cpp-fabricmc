@@ -3,7 +3,6 @@
 #include "../proto/Ids.hpp"
 #include "../net/Crypto.hpp"
 #include <chrono>
-#include <cstdio>
 #include <climits>
 #include <unordered_map>
 
@@ -176,20 +175,16 @@ bool ChatMessageProcessor::verify(const Player& p, const std::string& msg, int64
     if (!p.hasChatSession) {
         return true;
     }
-    const bool trace = std::getenv("CPPFM_TRACE") != nullptr;
     if (p.chatSessionExpiry != 0) {
         int64_t now = nowMsLocal();
         if (now > p.chatSessionExpiry) {
-            if (trace) std::fprintf(stderr, "[cppfm] chat verify: session expired for %s\n", p.name.c_str());
             return false;
         }
     }
     if (p.chatPubKey.empty()) {
-        if (trace) std::fprintf(stderr, "[cppfm] chat verify: no pubkey for %s, fallback to SystemChat\n", p.name.c_str());
         return false;
     }
     if (signature.empty()) {
-        if (trace) std::fprintf(stderr, "[cppfm] chat verify: session present but no signature for %s\n", p.name.c_str());
         return false;
     }
     // Replay protection: check salt not duplicated within last 20 salts (if tracked)
@@ -202,9 +197,6 @@ bool ChatMessageProcessor::verify(const Player& p, const std::string& msg, int64
     data.append(reinterpret_cast<const char*>(&timestamp), sizeof(timestamp));
     data.append(reinterpret_cast<const char*>(&salt), sizeof(salt));
     bool ok = crypto::verifyRsaSha256(p.chatPubKey, reinterpret_cast<const uint8_t*>(data.data()), data.size(), signature);
-    if (trace) {
-        std::fprintf(stderr, "[cppfm] chat signature verify %s for %s\n", ok ? "OK" : "FAILED", p.name.c_str());
-    }
     return ok;
 }
 

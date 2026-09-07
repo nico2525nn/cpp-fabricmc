@@ -38,6 +38,8 @@ public:
     // decryption). If compressionThreshold <0, frame is id+payload directly. Otherwise frame = varint dataLength + (compressed|raw) body.
     static std::vector<std::uint8_t> decodeFrame(const std::vector<std::uint8_t>& frame,
                                                  int compressionThreshold) {
+        if (frame.size() > kMaxFrame)
+            throw OversizeError("frame exceeds 8MB budget");
         if (compressionThreshold < 0) {
             return frame;
         }
@@ -48,7 +50,9 @@ public:
         if (dataLen == 0) {
             if (compressionThreshold == 0)
                 throw std::runtime_error("uncompressed frame with threshold=0");
-            return std::vector<std::uint8_t>(in.p + in.off, in.p + in.off + left);
+            if (compressionThreshold > 0 && left >= static_cast<std::size_t>(compressionThreshold))
+                throw std::runtime_error("uncompressed frame is at or above compression threshold");
+            return in.bytes(left);
         }
         if (dataLen < 0)
             throw std::runtime_error("negative declared size");
@@ -62,6 +66,7 @@ public:
             throw OversizeError("declared size out of range");
         std::vector<std::uint8_t> out;
         decompressChecked(in.p + in.off, left, static_cast<std::size_t>(dataLen), out);
+        in.skipRest();
         return out;
     }
 
@@ -74,20 +79,13 @@ public:
         std::vector<std::uint8_t> work = std::move(outer);
         if (dec) dec->crypt(work.data(), work.size(), work.data());
 
-        // parse outer varint length
-        std::size_t off = 0;
-        std::int32_t len = 0;
-        int shift = 0;
-        for (int i = 0; i < 5; ++i) {
-            if (off >= work.size()) throw std::runtime_error("outer varint truncated");
-            std::uint8_t b = work[off++];
-            len |= static_cast<std::int32_t>(b & 0x7F) << shift;
-            if (!(b & 0x80)) break;
-            shift += 7;
-        }
-        if (len < 0 || static_cast<std::size_t>(len) != work.size() - off)
+        ReadBuffer in(work);
+        const std::int32_t len = in.varint();
+        if (len <= 0 || static_cast<std::uint32_t>(len) > kMaxFrame)
+            throw OversizeError("outer frame length out of range");
+        if (static_cast<std::size_t>(len) != in.remaining())
             throw std::runtime_error("outer length mismatch");
-        std::vector<std::uint8_t> frame(work.begin() + off, work.end());
+        std::vector<std::uint8_t> frame = in.bytes(static_cast<std::size_t>(len));
         return decodeFrame(frame, compressionThreshold);
     }
 
@@ -95,6 +93,8 @@ public:
     static std::vector<std::uint8_t> decodeOuter(const std::uint8_t* data, std::size_t n,
                                                   int compressionThreshold,
                                                   crypto::AesCfb8* dec = nullptr) {
+        if (n == 0) throw std::runtime_error("empty outer");
+        if (n != 0 && data == nullptr) throw std::invalid_argument("null outer buffer");
         std::vector<std::uint8_t> outer(data, data + n);
         return decodeOuter(std::move(outer), compressionThreshold, dec);
     }
@@ -123,6 +123,7 @@ public:
     // Decode directly from a ReadBuffer that holds id+payload body.
     static DecodedPacket fromReadBuffer(ReadBuffer& in, std::size_t bodyLen) {
         if (bodyLen == 0) throw std::runtime_error("empty body");
+        in.need(bodyLen);
         DecodedPacket p;
         p.id = in.u8();
         std::size_t left = bodyLen - 1;
@@ -138,20 +139,11 @@ public:
     // Decrypt helper for streaming varint (mirrors Connection::readFrame encrypted varint)
     static std::int32_t readVarintEncrypted(const std::uint8_t* encBytes, std::size_t n,
                                             crypto::AesCfb8& dec, std::size_t& consumed) {
-        std::int32_t result = 0;
-        int shift = 0;
-        consumed = 0;
-        for (std::size_t i = 0; i < n && i < 5; ++i) {
-            std::uint8_t b = encBytes[i];
-            // caller should have decrypted single byte before calling; we decrypt here if needed
-            std::uint8_t decB = b;
-            // Not decrypting here; assume already decrypted
-            result |= static_cast<std::int32_t>(decB & 0x7F) << shift;
-            consumed++;
-            if (!(decB & 0x80)) return result;
-            shift += 7;
-        }
-        throw std::runtime_error("varint overflow");
+        (void)dec; // The streaming caller decrypts each byte before this helper.
+        ReadBuffer in(encBytes, n);
+        const std::int32_t result = in.varint();
+        consumed = in.off;
+        return result;
     }
 };
 
