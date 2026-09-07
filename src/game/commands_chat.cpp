@@ -49,8 +49,7 @@ void GameServer::initChatCommandsPart02() {
         clear->action = [this](CommandContext&) {
             for (auto& p : playersSnapshot()) {
                 WriteBuffer b;
-                try { p->conn->sendPacket(proto::pl::sc::ClearTitles, b); }
-                catch (...) {}
+                p->conn->trySendPacket(proto::pl::sc::ClearTitles, b);
             }
             return 1;
         };
@@ -89,13 +88,13 @@ void GameServer::initChatCommandsPart02() {
                             if (kind == "subtitle") {
                                 WriteBuffer b;
                                 nbt::writeTextComponent(b, t);
-                                try { p->conn->sendPacket(proto::pl::sc::SetTitleSubtitle, b); } catch (...) {}
+                                p->conn->trySendPacket(proto::pl::sc::SetTitleSubtitle, b);
                             } else if (kind == "actionbar") {
                                 this->sendActionBar(*p, t);
                             } else {
                                 WriteBuffer b;
                                 nbt::writeTextComponent(b, t);
-                                try { p->conn->sendPacket(proto::pl::sc::SetTitleText, b); } catch (...) {}
+                                p->conn->trySendPacket(proto::pl::sc::SetTitleText, b);
                             }
                             ++n;
                         }
@@ -117,7 +116,7 @@ void GameServer::initChatCommandsPart02() {
                 for (auto& nm : sel.playerNames)
                     if (Player* p = findPlayer(*this, nm)) {
                         WriteBuffer b;
-                        try { p->conn->sendPacket(proto::pl::sc::ClearTitles, b); } catch (...) {}
+                        p->conn->trySendPacket(proto::pl::sc::ClearTitles, b);
                         ++n;
                     }
                 sendFeedback(src, "Cleared title for " + std::to_string(n) + " player(s)");
@@ -151,7 +150,7 @@ void GameServer::initChatCommandsPart02() {
                         b.i32(c.arg("fadeIn").asInt());
                         b.i32(c.arg("stay").asInt());
                         b.i32(c.arg("fadeOut").asInt());
-                        try { p->conn->sendPacket(proto::pl::sc::SetTitleTime, b); } catch (...) {}
+                        p->conn->trySendPacket(proto::pl::sc::SetTitleTime, b);
                         ++n;
                     }
                 sendFeedback(src, "Set title times for " + std::to_string(n) + " player(s)");
@@ -168,12 +167,10 @@ void GameServer::initChatCommandsPart02() {
             for (auto& p : playersSnapshot()) {
                 WriteBuffer sub;
                 nbt::writeTextComponent(sub, "");
-                try { p->conn->sendPacket(proto::pl::sc::SetTitleSubtitle, sub); }
-                catch (...) {}
+                p->conn->trySendPacket(proto::pl::sc::SetTitleSubtitle, sub);
                 WriteBuffer b;
                 nbt::writeTextComponent(b, "\u00a76" + t);
-                try { p->conn->sendPacket(proto::pl::sc::SetTitleText, b); }
-                catch (...) {}
+                p->conn->trySendPacket(proto::pl::sc::SetTitleText, b);
             }
             return 1;
         };
@@ -219,7 +216,7 @@ void GameServer::initChatCommandsPart03() {
                     std::string json = "{\"text\":\"["+from+" -> "+p->name+"] "+txt+"\",\"color\":\"gray\",\"italic\":true}";
                     nbt::writeTextComponent(b, json);
                     b.boolean(false);
-                    try{ p->conn->sendPacket(proto::pl::sc::SystemChat, b);}catch(...){}
+                    p->conn->trySendPacket(proto::pl::sc::SystemChat, b);
                     ++delivered;
                 }
                 // also echo to sender if not among targets
@@ -232,7 +229,7 @@ void GameServer::initChatCommandsPart03() {
                         std::string json2 = "{\"text\":\"["+from+" -> "+firstTarget+"] "+txt+"\",\"color\":\"gray\",\"italic\":true}";
                         nbt::writeTextComponent(b2, json2);
                         b2.boolean(false);
-                        try{ src->conn->sendPacket(proto::pl::sc::SystemChat, b2);}catch(...){}
+                        src->conn->trySendPacket(proto::pl::sc::SystemChat, b2);
                     }
                 }
                 if(src) sendFeedback(src, "Whispered to "+std::to_string(delivered)+" player(s)");
@@ -283,8 +280,7 @@ void GameServer::initChatCommandsPart04() {
                     WriteBuffer b;
                     nbt::writeTextComponent(b, shown);
                     b.boolean(false);
-                    try { p->conn->sendPacket(proto::pl::sc::SystemChat, b); }
-                    catch (...) {}
+                    p->conn->trySendPacket(proto::pl::sc::SystemChat, b);
                     ++n;
                 }
             if (n == 0) throw std::runtime_error("Unknown player for tellraw");

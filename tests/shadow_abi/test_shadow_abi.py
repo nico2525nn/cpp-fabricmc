@@ -13,6 +13,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -21,10 +23,25 @@ from typing import Any
 
 
 def run(command: list[str], *, timeout: int) -> subprocess.CompletedProcess[str]:
+    process: subprocess.Popen[str] | None = None
     try:
-        result = subprocess.run(command, text=True, capture_output=True, timeout=timeout)
+        process = subprocess.Popen(
+            command,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as error:
+        if process is not None and process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.communicate(timeout=5)
         raise AssertionError(f"timed out after {timeout}s: {' '.join(command)}") from error
+    result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
     if result.returncode != 0:
         detail = (result.stdout + result.stderr).strip()
         raise AssertionError(f"command failed ({result.returncode}): {' '.join(command)}\n{detail}")

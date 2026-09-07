@@ -278,7 +278,7 @@ inline void serializeLightPayload(WriteBuffer& out, const Chunk& chunk) {
     std::vector<std::int64_t> emptyBlockMask((kSectionsPerChunk + 63) / 64, 0);
     std::vector<std::vector<std::uint8_t>> skyArrays;
     std::vector<std::vector<std::uint8_t>> blockArrays;
-    const bool haveSky = static_cast<bool>(chunk.skyLight);
+    const bool haveSky = chunk.skyLightReady && static_cast<bool>(chunk.skyLight);
 
     for (int s = 0; s < kSectionsPerChunk; ++s) {
         const std::size_t base = static_cast<std::size_t>(s) * 4096;

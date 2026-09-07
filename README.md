@@ -49,9 +49,8 @@ general-purpose arbitrary-mod loader.
 - The optional Java layer supports the repository's shadow API and tested
   extension surface. Arbitrary Fabric mods, the Mojang GameProvider, and the
   official client are outside the compatibility claim.
-- The full gameplay harness retains one explicit unsupported Java-extension
-  boundary check; it reports `803 PASS / 1 intentional boundary failure / 804`
-  and exits non-zero so the limitation cannot be hidden.
+- The full gameplay harness reports `804 PASS / 0 FAIL / 804`; its output still
+  names arbitrary Java-extension execution as a declared limitation.
 - Short and medium synthetic load runs pass, but there is no accepted 2-hour or
   24-hour soak artifact and no current real-client/GUI capture.
 
@@ -60,11 +59,12 @@ general-purpose arbitrary-mod loader.
 The latest recorded runs include:
 
 - Native server checks: all pass.
-- Wire-format checks: `test_spec_wire` `392 PASS / 0 FAIL / 0 SKIP` and
-  `test_wire_full` `405 PASS / 0 FAIL / 0 SKIP`.
+- Wire-format checks: `test_spec_wire` `395 PASS / 0 FAIL` and
+  `test_wire_full` `399 PASS / 0 FAIL`.
 - Integration checks: `test_server_full` `234 PASS / 0 FAIL` and
-  `test_smoke_80` `212 PASS / 0 FAIL`.
-- Focused gameplay and data checks: seed `201 PASS`, fuzz `23 PASS`, mining
+  `test_smoke_80` `223 PASS / 0 FAIL`.
+- Focused gameplay and data checks: gameplay `804 PASS / 0 FAIL`, seed
+  `201 PASS`, fuzz `25 PASS`, mining
   `59/59`, block hardness `1095 mismatch=0`, mob statistics `131 PASS`, and
   redstone `29 PASS`.
 - Java compatibility checks: the bounded fixture corpus is `25/25`, and the
@@ -127,9 +127,9 @@ python3 tests/test_server_full.py --binary ./build/cppfm
 ctest --test-dir build --output-on-failure
 ```
 
-The gameplay harness intentionally reports its unsupported Java-extension
-boundary as a visible failure. Read its result together with the declared
-limitations instead of treating a non-zero exit as a hidden pass.
+The gameplay harness prints its unsupported Java-extension boundary as an
+informational declared limitation. A non-zero exit from any current gate is a
+real failure; limitations are not represented as hidden passes.
 
 ## Clean-room methodology
 

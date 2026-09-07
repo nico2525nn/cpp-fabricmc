@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import io
 import os
 import select
+import signal
 import shutil
 import socket
 import struct
@@ -176,20 +177,24 @@ class PlayPacketPump:
 
 
 def wait_for_server(proc: subprocess.Popen, host: str, port: int, timeout: float = 10.0) -> None:
-    """Wait until the child accepts TCP, or fail early if it exits."""
+    """Wait for a real status response, or fail early if the child exits."""
     deadline = time.monotonic() + timeout
-    last_error: OSError | None = None
+    last_error: BaseException | None = None
     while time.monotonic() < deadline:
         returncode = proc.poll()
         if returncode is not None:
             raise RuntimeError(f"server exited before readiness probe (exit={returncode})")
-        remaining = max(0.05, min(0.5, deadline - time.monotonic()))
+        client = None
         try:
-            with socket.create_connection((host, port), timeout=remaining):
-                return
-        except OSError as error:
+            client = Conn(host, port, timeout=1)
+            client.status()
+            return
+        except (OSError, EOFError, ValueError, RuntimeError) as error:
             last_error = error
-            time.sleep(min(0.05, remaining))
+            time.sleep(0.1)
+        finally:
+            if client is not None:
+                client.close()
     detail = f": {last_error}" if last_error else ""
     raise TimeoutError(f"server readiness probe timed out on {host}:{port}{detail}")
 
@@ -201,16 +206,16 @@ def free_port() -> int:
 
 
 def stop_process(proc: subprocess.Popen | None) -> bool:
-    """Terminate the owned child and verify that it has been reaped."""
+    """Terminate the owned process group and verify that its leader was reaped."""
     if proc is None:
         return True
     try:
         if proc.poll() is None:
-            proc.terminate()
+            os.killpg(proc.pid, signal.SIGTERM)
             try:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                proc.kill()
+                os.killpg(proc.pid, signal.SIGKILL)
                 proc.wait(timeout=5)
         return proc.poll() is not None
     except (OSError, subprocess.TimeoutExpired):
@@ -314,6 +319,7 @@ def main() -> int:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 cwd=cwd,
+                start_new_session=True,
             )
             wait_for_server(proc, host, port)
             print(f"[soak_bot] readiness probe passed host={host} port={port}")

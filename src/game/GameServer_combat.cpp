@@ -63,7 +63,7 @@ void GameServer::applyDamage(Player& p, float amount, const DamageSource& src, i
         de.varint(dtid >= 0 ? dtid : 0);
         de.varint(0); de.varint(0);
         de.boolean(false);
-        try { p.conn->sendPacket(pl::sc::DamageEvent, de); } catch (...) {}
+        p.conn->trySendPacket(pl::sc::DamageEvent, de);
         broadcastPacketExcept(&p, pl::sc::DamageEvent, de);
     }
     {
@@ -97,7 +97,7 @@ void GameServer::killPlayer(Player& p, const char* cause) {
                     continue;
                 }
                 // spawn drop (preserve components)
-                spawnItemDrop(p.x, p.y + 0.5, p.z, st, (rand()/(double)RAND_MAX-.5)*0.3, 0.2, (rand()/(double)RAND_MAX-.5)*0.3);
+                spawnItemDrop(p.x, p.y + 0.5, p.z, st, (nextRandom()/(double)RAND_MAX-.5)*0.3, 0.2, (nextRandom()/(double)RAND_MAX-.5)*0.3);
                 st = ItemStack::air();
             }
             // also clear cursor? handled via sync
@@ -114,8 +114,8 @@ void GameServer::killPlayer(Player& p, const char* cause) {
         if (p.conn) {
             WriteBuffer b;
             nbt::writeTextComponent(b, "You died in hardcore mode and are banned");
-            try { p.conn->sendPacket(proto::pl::sc::Disconnect, b); } catch (...) {}
-            try { p.conn->close(); } catch (...) {}
+            p.conn->trySendPacket(proto::pl::sc::Disconnect, b);
+            p.conn->close();
         }
         p.gamemode = 3; // spectator
     }
@@ -162,13 +162,13 @@ bool GameServer::tryBreedFeed(Player& p, MobEntity& m) {
 void GameServer::weatherTick() {
     // B-12 thunder lightning: 0.01/tick (~1%) while thundering (approx: raining && tick%6000<500)
     // Use strikeLightning for visuals + creeper charging + sound; also broadcast via thundering() for channeling gate
-    if (thundering() && (rand() % 100) == 0) {
+    if (thundering() && (nextRandom() % 100) == 0) {
         auto players = playersSnapshot();
         if (!players.empty()) {
-            auto* pl = players[rand() % players.size()].get();
+            auto* pl = players[nextRandom() % players.size()].get();
             if (pl && pl->inPlay) {
-                int lx = static_cast<int>(pl->x) + (rand() % 16 - 8);
-                int lz = static_cast<int>(pl->z) + (rand() % 16 - 8);
+                int lx = static_cast<int>(pl->x) + (nextRandom() % 16 - 8);
+                int lz = static_cast<int>(pl->z) + (nextRandom() % 16 - 8);
                 int ly = static_cast<int>(pl->y);
                 // find ground just above top non-air (scan down from MaxY)
                 bool found = false;
@@ -185,7 +185,7 @@ void GameServer::weatherTick() {
     if (!gamerules_.getBool("doWeatherCycle")) return;
     if (tickNo_ < weatherUntilTick_) return;
     setWeather(raining() ? Weather::Clear : Weather::Rain,
-               (6000 + rand() % 24000) * 20LL);
+               (6000 + nextRandom() % 24000) * 20LL);
 }
 void GameServer::setWeather(Weather w, std::int64_t durationTicks) {
     if (w == weather_) return;
@@ -223,7 +223,7 @@ void GameServer::broadcastSound(const char* name, double x, double y,
     b.i32(static_cast<std::int32_t>(z * 8.0));
     b.f32(volume);
     b.f32(pitch);
-    b.i64(rand());
+    b.i64(nextRandom());
     broadcastPacketExcept(nullptr, pl::sc::SoundEffect, b);
 }
 void GameServer::broadcastStopSound(const std::optional<SoundSource>& source,
@@ -329,7 +329,7 @@ void GameServer::explodeAt(double x, double y, double z, float power) {
         v.i16(static_cast<std::int16_t>(dx * inv * 12000));
         v.i16(static_cast<std::int16_t>((dy * inv + 0.4) * 12000));
         v.i16(static_cast<std::int16_t>(dz * inv * 12000));
-        try { p->conn->sendPacket(pl::sc::EntityVelocity, v); } catch (...) {}
+        p->conn->trySendPacket(pl::sc::EntityVelocity, v);
         // DamageEvent for the hurt animation/flash
         WriteBuffer de;
         de.varint(p->entityId);
@@ -340,7 +340,7 @@ void GameServer::explodeAt(double x, double y, double z, float power) {
                       : 0);
         de.varint(0); de.varint(0);
         de.boolean(false);
-        try { p->conn->sendPacket(pl::sc::DamageEvent, de); } catch (...) {}
+        p->conn->trySendPacket(pl::sc::DamageEvent, de);
     }
     std::vector<std::shared_ptr<MobEntity>> removed;
     {
@@ -370,17 +370,14 @@ void GameServer::explodeAt(double x, double y, double z, float power) {
     for (const auto& mob : removed) invalidateJvmMob(mob);
     for (int i = 0; i < 4; ++i) {
         int pid = (i == 0 ? ParticleId::explosion_emitter : ParticleId::explosion); // 21/22, Simple
-        auto body = makeWorldParticlesBody(x + (rand()%7 - 3) * 0.5,
-                                           y + (rand()%5 - 2) * 0.5,
-                                           z + (rand()%7 - 3) * 0.5,
+        auto body = makeWorldParticlesBody(x + (nextRandom()%7 - 3) * 0.5,
+                                           y + (nextRandom()%5 - 2) * 0.5,
+                                           z + (nextRandom()%7 - 3) * 0.5,
                                            0,0,0, 0, 1, pid, {}, true, false);
         broadcastPacketExcept(nullptr, pl::sc::WorldParticles, body);
     }
     broadcastSound("minecraft:entity.generic.explode", x, y, z, 4.f, 1.f,
                    "block");
-    if (getenv("CPPFM_TRACE"))
-        std::fprintf(stderr, "[cppfm] explosion at %.1f/%.1f/%.1f (%zu blocks)\n",
-                     x, y, z, changed.size());
 }
 void GameServer::spawnPrimedTnt(double x,double y,double z,double vx,double vy,double vz,int fuse){
     auto t = std::make_shared<TntEntity>();
@@ -521,7 +518,7 @@ void GameServer::applyDamageToMob(MobEntity& m, float amount, const DamageSource
     }
     if (m.kind==MobKind::Enderman && !m.dead) {
         // 50% chance to teleport when hurt, respecting cooldown
-        if (rand()%2==0 && tickNo_ - m.lastTeleportTick > 20) {
+        if (nextRandom()%2==0 && tickNo_ - m.lastTeleportTick > 20) {
             // trigger teleport via AiContext next tick; also mark hurt
             m.lastTeleportTick = tickNo_; // temporary, actual teleport will happen via BehaviorTree IsHurt->TeleportRandom
             // we also update AiContext lastHurt for IsHurtCondition
@@ -571,7 +568,7 @@ void GameServer::applyDamageToMob(MobEntity& m, float amount, const char* cause)
 void GameServer::sendActionBar(Player& p, const std::string& text) {
     if (!p.conn) return;
     WriteBuffer b; nbt::writeTextComponent(b, text);
-    try { p.conn->sendPacket(proto::pl::sc::ActionBar, b); } catch (...) {}
+    p.conn->trySendPacket(proto::pl::sc::ActionBar, b);
 }
 void GameServer::broadcastActionBar(const std::string& text, Player* except) {
     WriteBuffer b; nbt::writeTextComponent(b, text);
@@ -598,7 +595,7 @@ void GameServer::sendServerData(Player& p) {
         b.varint(static_cast<int32_t>(icon.size()));
         b.raw(icon.data(), icon.size());
     }
-    try { p.conn->sendPacket(proto::pl::sc::ServerData, b); } catch (...) {}
+    p.conn->trySendPacket(proto::pl::sc::ServerData, b);
 }
 void GameServer::broadcastServerData() {
     for (auto& pp : playersSnapshot()) sendServerData(*pp);
@@ -607,7 +604,7 @@ void GameServer::sendHurtAnimation(Player& p, int32_t entityId, float yaw) {
     if (!p.conn) return;
     if (!std::isfinite(yaw)) yaw = 0;
     WriteBuffer b; b.varint(entityId); b.f32(yaw);
-    try { p.conn->sendPacket(proto::pl::sc::HurtAnimation, b); } catch (...) {}
+    p.conn->trySendPacket(proto::pl::sc::HurtAnimation, b);
 }
 void GameServer::broadcastHurtAnimation(int32_t entityId, float yaw, Player* except) {
     if (!std::isfinite(yaw)) yaw = 0;
@@ -622,7 +619,7 @@ void GameServer::sendEntitySound(Player& p, int32_t entityId, const std::string&
     b.varint(entityId);
     b.f32(volume); b.f32(pitch);
     b.i64(static_cast<int64_t>(entityId) ^ tickNo_);
-    try { p.conn->sendPacket(proto::pl::sc::EntitySoundEffect, b); } catch (...) {}
+    p.conn->trySendPacket(proto::pl::sc::EntitySoundEffect, b);
 }
 void GameServer::broadcastEntitySound(int32_t entityId, const std::string& soundName, float volume, float pitch, SoundSource category) {
     WriteBuffer b;
@@ -637,7 +634,7 @@ void GameServer::sendChatSuggestions(Player& p, int32_t action, const std::vecto
     if (!p.conn) return;
     WriteBuffer b; b.varint(action); b.varint(static_cast<int32_t>(entries.size()));
     for (auto& s : entries) b.string(s);
-    try { p.conn->sendPacket(proto::pl::sc::ChatSuggestions, b); } catch (...) {}
+    p.conn->trySendPacket(proto::pl::sc::ChatSuggestions, b);
 }
 void GameServer::broadcastChatSuggestions(int32_t action, const std::vector<std::string>& entries, Player* except) {
     WriteBuffer b; b.varint(action); b.varint(static_cast<int32_t>(entries.size()));
@@ -647,7 +644,7 @@ void GameServer::broadcastChatSuggestions(int32_t action, const std::vector<std:
 void GameServer::sendSyncEntityPosition(Player& p, int32_t entityId, double x, double y, double z, double dx, double dy, double dz, float yaw, float pitch, bool onGround) {
     if (!p.conn) return;
     WriteBuffer b; b.varint(entityId); b.f64(x); b.f64(y); b.f64(z); b.f64(dx); b.f64(dy); b.f64(dz); b.f32(yaw); b.f32(pitch); b.boolean(onGround);
-    try { p.conn->sendPacket(proto::pl::sc::SyncEntityPosition, b); } catch (...) {}
+    p.conn->trySendPacket(proto::pl::sc::SyncEntityPosition, b);
 }
 void GameServer::broadcastSyncEntityPosition(int32_t entityId, double x, double y, double z, double dx, double dy, double dz, float yaw, float pitch, bool onGround, Player* except) {
     WriteBuffer b; b.varint(entityId); b.f64(x); b.f64(y); b.f64(z); b.f64(dx); b.f64(dy); b.f64(dz); b.f32(yaw); b.f32(pitch); b.boolean(onGround);
@@ -669,7 +666,7 @@ void GameServer::sendMapData(Player& p, int mapId, uint8_t scale, bool locked) {
     b.boolean(locked);
     b.boolean(false); // icons absent (option<array> false)
     b.u8(0); // columns 0 => no rows/x/y/data
-    try { p.conn->sendPacket(proto::pl::sc::MapData, b); } catch (...) {}
+    p.conn->trySendPacket(proto::pl::sc::MapData, b);
 }
 void GameServer::sendMapData(Player& p, int mapId, const std::array<uint8_t,16384>& colors, uint8_t scale) {
     if (!p.conn) return;
@@ -684,7 +681,7 @@ void GameServer::sendMapData(Player& p, int mapId, const std::array<uint8_t,1638
     b.u8(0); // y 0
     b.varint(16384);
     b.raw(colors.data(), 16384);
-    try { p.conn->sendPacket(proto::pl::sc::MapData, b); } catch (...) {}
+    p.conn->trySendPacket(proto::pl::sc::MapData, b);
 }
 void GameServer::broadcastMapData(int mapId, uint8_t scale, bool locked, Player* except) {
     WriteBuffer b;
@@ -703,7 +700,7 @@ void GameServer::sendMoveMinecart(Player& p, std::int32_t entityId, double x, do
     b.f32((float)x); b.f32((float)y); b.f32((float)z);
     b.f32(0.f); b.f32(0.f); b.f32(0.f);
     b.f32(yaw); b.f32(pitch); b.f32(1.f);
-    try { p.conn->sendPacket(proto::pl::sc::MoveMinecart, b); } catch (...) {}
+    p.conn->trySendPacket(proto::pl::sc::MoveMinecart, b);
 }
 void GameServer::broadcastMoveMinecart(std::int32_t entityId, double x, double y, double z, float yaw, float pitch, Player* except) {
     WriteBuffer b;
@@ -723,7 +720,7 @@ void GameServer::sendSelectAdvancementTab(Player& p, const std::string& tabId) {
         b.boolean(true);
         b.string(tabId);
     }
-    try { p.conn->sendPacket(proto::pl::sc::SelectAdvancementTab, b); } catch (...) {}
+    p.conn->trySendPacket(proto::pl::sc::SelectAdvancementTab, b);
 }
 void GameServer::broadcastSelectAdvancementTab(const std::string& tabId, Player* except) {
     WriteBuffer b;

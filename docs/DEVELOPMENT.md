@@ -2,7 +2,7 @@
 
 This guide is for the clean-room C++ implementation of Minecraft Java 1.21.4,
 protocol 769, DataVersion 4189. The source snapshot for this canonical document is
-runtime snapshot `c3a5e49e41261dacb4b9454c538aa87575fa9546` (2026-09-06). Fabric Loader
+the `main` HEAD `abcdc6b` plus the current cleanup worktree (2026-09-07). Fabric Loader
 0.16.9 is a version/reference boundary; plan51 adds an optional bounded embedded JVM,
 a version-locked class-file transformer, and a separate offline official Loader/Knot
 probe. The production path does not ship the Mojang GameProvider/server jar.
@@ -55,7 +55,7 @@ Use `DECLARED-LIMITATION` when a claim has not been independently verified.
 | core | `src/core/ByteBuffer.hpp`, `NBT.*`, `Json.*`, `Zlib.hpp` | primitive, NBT, JSON, compression utilities |
 | protocol | `src/proto/Ids.hpp` | protocol 769 state/direction constants |
 | network | `src/net/Connection.hpp`, `PacketEncoder/Decoder`, `Crypto`, `PacketBatcher`, `RateLimiter`, `Rcon` | frame, encryption, batch, limits, administration |
-| world | `src/game/World.hpp`, `WorldManager.hpp`, `ChunkCodec.hpp` | 24 sections, blocks, biomes, light and tickets |
+| world | `src/game/World.hpp`, `ChunkTicket.hpp`, `ChunkCodec.hpp` | 24 sections, blocks, biomes, light and tickets |
 | worldgen | `src/worldgen/`, `src/game/WorldGen.cpp` | density, climate, structures, placement |
 | gameplay | `src/game/Entities`, `BehaviorTree`, `AiBrain`, `CombatManager`, `HungerManager` | entities, AI, damage, survival |
 | data/UI | `Items`, `Containers`, `MenuInteraction`, `Recipes`, `DatapackManager`, `src/brigadier` | components, menus, recipes, commands |
@@ -257,7 +257,7 @@ At minimum, a source extension should add or update a focused test before relyin
 
 Published counts are named snapshots from [CURRENT_STATE.md](CURRENT_STATE.md) and
 the corresponding run output. Do not import the old `test_spec_wire` count of 328;
-the current snapshot is 392, and `test_native` is recorded as `ALL PASS` without
+the current snapshot is 395, and `test_native` is recorded as `ALL PASS` without
 inventing an aggregate count.
 
 Required evidence classes are:

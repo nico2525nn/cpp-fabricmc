@@ -4,12 +4,22 @@
 #include <cstddef>
 #include <vector>
 #include <stdexcept>
+#include <limits>
 #include <zlib.h>
 
 namespace cppfm {
 
+inline constexpr std::size_t kMaxDecompressedBytes = 64u * 1024u * 1024u;
+
+inline void validateZlibInput(const std::uint8_t* src, std::size_t n) {
+    if (n != 0 && src == nullptr) throw std::invalid_argument("null zlib input");
+    if (n > static_cast<std::size_t>(std::numeric_limits<uLong>::max()))
+        throw std::length_error("zlib input is too large");
+}
+
 inline void compressRaw(const std::uint8_t* src, std::size_t n,
                         std::vector<std::uint8_t>& out) {
+    validateZlibInput(src, n);
     uLongf bound = compressBound(static_cast<uLong>(n));
     out.resize(bound);
     if (compress2(out.data(), &bound, src, static_cast<uLong>(n),
@@ -21,6 +31,10 @@ inline void compressRaw(const std::uint8_t* src, std::size_t n,
 inline void decompressRaw(const std::uint8_t* src, std::size_t n,
                           std::size_t expected,
                           std::vector<std::uint8_t>& out) {
+    validateZlibInput(src, n);
+    if (expected > kMaxDecompressedBytes ||
+        expected > static_cast<std::size_t>(std::numeric_limits<uLongf>::max()))
+        throw std::length_error("zlib output is too large");
     out.resize(expected);
     uLongf dst = static_cast<uLongf>(expected);
     if (uncompress(out.data(), &dst, src, static_cast<uLong>(n)) != Z_OK ||
@@ -32,6 +46,12 @@ inline void decompressRaw(const std::uint8_t* src, std::size_t n,
 inline void decompressChecked(const std::uint8_t* src, std::size_t n,
                               std::size_t expected,
                               std::vector<std::uint8_t>& out) {
+    validateZlibInput(src, n);
+    if (n > static_cast<std::size_t>(std::numeric_limits<uInt>::max()) ||
+        expected > kMaxDecompressedBytes ||
+        expected > static_cast<std::size_t>(std::numeric_limits<uInt>::max()))
+        throw std::length_error("zlib stream exceeds decoder limits");
+    if (expected == 0) throw std::runtime_error("zlib output must not be empty");
     out.resize(expected);
     z_stream zs{};
     if (inflateInit(&zs) != Z_OK) throw std::runtime_error("inflateInit failed");
@@ -50,7 +70,13 @@ inline void decompressChecked(const std::uint8_t* src, std::size_t n,
 
 // Inflate without knowing the output size (region files store raw zlib streams).
 inline void decompressUnknown(const std::uint8_t* src, std::size_t n,
-                              std::vector<std::uint8_t>& out) {
+                              std::vector<std::uint8_t>& out,
+                              std::size_t maxOutput = kMaxDecompressedBytes) {
+    validateZlibInput(src, n);
+    if (n > static_cast<std::size_t>(std::numeric_limits<uInt>::max()))
+        throw std::length_error("zlib input is too large for a stream");
+    if (maxOutput == 0 || maxOutput > kMaxDecompressedBytes)
+        throw std::invalid_argument("invalid zlib output limit");
     z_stream zs{};
     if (inflateInit(&zs) != Z_OK) throw std::runtime_error("inflateInit failed");
     zs.next_in = const_cast<Bytef*>(src);
@@ -66,7 +92,16 @@ inline void decompressUnknown(const std::uint8_t* src, std::size_t n,
             inflateEnd(&zs);
             throw std::runtime_error("zlib stream corrupt");
         }
-        out.insert(out.end(), buf, buf + sizeof(buf) - zs.avail_out);
+        const std::size_t produced = sizeof(buf) - zs.avail_out;
+        if (produced > maxOutput - out.size()) {
+            inflateEnd(&zs);
+            throw std::length_error("zlib output exceeds limit");
+        }
+        out.insert(out.end(), buf, buf + produced);
+        if (ret == Z_OK && produced == 0 && zs.avail_in == 0) {
+            inflateEnd(&zs);
+            throw std::runtime_error("zlib stream made no progress");
+        }
     } while (ret != Z_STREAM_END);
     inflateEnd(&zs);
 }

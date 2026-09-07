@@ -53,10 +53,12 @@ with arbitrary JVM mods, client code, or GUI behavior.
 The latest recorded evidence includes:
 
 - Native server checks and the ordinary integration suite pass.
-- Wire checks report `392 PASS / 0 FAIL / 0 SKIP` for the specification vectors
-  and `405 PASS / 0 FAIL / 0 SKIP` for the full wire suite.
+- Wire checks report `395 PASS / 0 FAIL` for the specification vectors and
+  `399 PASS / 0 FAIL` for the full wire suite.
 - The full server harness reports `234 PASS / 0 FAIL`; the 80-scenario smoke
-  integration test reports `212 PASS / 0 FAIL`.
+  integration test reports `223 PASS / 0 FAIL`.
+- The full CTest regression set reports `33/33` tests passed, including the
+  native, JVM, wire, gameplay, recovery, and ordinary multi-client gates.
 - The bounded Java fixture corpus reports `25/25`, and the pinned offline
   Loader/Knot probe passes.
 - A 120-client synthetic load run and 300-, 600-, and 1800-second diagnostics

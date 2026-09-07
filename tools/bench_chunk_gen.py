@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
+"""Measure the deterministic chunk-cache contract used by CI.
+
+``--dry`` is intentionally synthetic: it exercises the percentile and budget
+checks without starting a server.  This tool does not claim to measure the
+native generator.  A native benchmark must be added to ``cppfm`` before a
+``--binary`` mode can be exposed; silently replacing it with synthetic data
+would make the result misleading.
 """
-bench_chunk_gen.py — C-09 bench 厳密化 (plan41 world_test)
-Measures p50/p95 ms per chunk for 100 chunks. Supports --dry synthetic, --strict assert, --storm, --json CI.
-Synthetic: 85% hit 0.05ms, 15% miss 1-3ms (noise+zlib), deterministic seed 1378645.
-Real: if --binary exists, could run C++ micro-benchmark (fallback to synthetic with tuned params).
-Exit: 0 on PASS, 1 on FAIL when --strict.
-"""
-import argparse, time, os, random, statistics, sys, json, subprocess
+import argparse, time, os, random, statistics, sys, json
 
 def bench_synthetic(chunks, vd):
     random.seed(1378645410614731511 & 0xFFFFFFFF)
@@ -33,22 +34,14 @@ def bench_synthetic(chunks, vd):
     rss_mb = 95.0 if vd >= 32 else 48.0
     return p50, p95, avg, hit_rate, rss_mb, times
 
-def bench_real(binary, vd, chunks):
-    # If binary exists, we could run a helper like `binary --bench-mode`; for now fallback to synthetic with same seed
-    # This keeps dry compatible while allowing strict to PASS with tuned params
-    if binary and not os.path.exists(binary):
-        return None, "binary not found"
-    # Real would do: subprocess + time.perf_counter per World::generateChunkIfMissing
-    # Here we reuse synthetic (deterministic) as real placeholder; storm handled separately
-    return bench_synthetic(chunks, vd)
-
 def main():
     ap = argparse.ArgumentParser(description="C-09 chunk gen bench (view-distance 32, p50<5 p95<10 hit>80)")
     ap.add_argument("--view-distance", type=int, default=32, dest="view_distance")
     ap.add_argument("--chunks", type=int, default=100)
     ap.add_argument("--port", type=int, default=25565)
-    ap.add_argument("--binary", type=str, default=None, help="path to cppfm binary for real bench")
-    ap.add_argument("--dry", action="store_true", help="synthetic only, no server")
+    ap.add_argument("--binary", type=str, default=None,
+                    help="reserved for a future native benchmark; cannot be used yet")
+    ap.add_argument("--dry", action="store_true", help="run the synthetic contract; no server")
     ap.add_argument("--strict", action="store_true", help="assert p50<5 p95<10 hit>80, exit 1 on FAIL")
     ap.add_argument("--storm", action="store_true", help="player straight 100 blocks burst 16/tick")
     ap.add_argument("--json", dest="json_path", nargs="?", const="__stdout__", type=str, default=None, help="write BenchResult JSON (path or stdout if no path)")
@@ -59,28 +52,16 @@ def main():
     print(f"[bench] view-distance={vd} chunks={chunks} port={args.port}")
     print(f"[bench] maxLoadedChunks cap = max(8192, {vd}*{vd}*4={vd*vd*4})")
     print(f"[bench] chunkCache LRU 1024, ioPool 4 workers, pendingLoads async")
-    if args.dry:
-        print(f"[bench] mode=dry (synthetic)")
-    elif args.binary:
-        print(f"[bench] mode=real binary={args.binary}")
-
-    # Choose bench
-    if args.binary and not args.dry and os.path.exists(args.binary):
-        res = bench_real(args.binary, vd, chunks)
-        if res[0] is None:
-            print(f"[bench] FAIL: --binary {args.binary} not found for strict", file=sys.stderr)
-            if args.strict:
-                sys.exit(1)
-            p50, p95, avg, hit_rate, rss_mb, times = bench_synthetic(chunks, vd)
-        else:
-            p50, p95, avg, hit_rate, rss_mb, times = res
-    else:
-        if args.binary and not args.dry and args.binary and not os.path.exists(args.binary) and args.strict:
-            # plan41 Note: CI bench --dry strict should PASS even if binary missing; only --binary strict with missing binary should FAIL if not dry
-            # But task expects `bench --strict --storm --json` without --dry to PASS (fallback synthetic)
-            # So we warn but don't fail unless explicitly --binary required; fallback to synthetic
-            print(f"[bench] note: --binary {args.binary} not found, falling back to synthetic", file=sys.stderr)
-        p50, p95, avg, hit_rate, rss_mb, times = bench_synthetic(chunks, vd)
+    if args.binary:
+        print("[bench] native measurement is not implemented; use --dry for the "
+              "synthetic contract", file=sys.stderr)
+        return 2
+    if not args.dry:
+        print("[bench] no measurement mode selected; pass --dry until a native "
+              "benchmark endpoint exists", file=sys.stderr)
+        return 2
+    print("[bench] mode=dry-synthetic")
+    p50, p95, avg, hit_rate, rss_mb, times = bench_synthetic(chunks, vd)
 
     storm_p95 = None
     if args.storm:
@@ -98,9 +79,9 @@ def main():
         print(f"[bench-storm] effective p95={p95:.3f}ms after storm overlay")
 
     print(f"[bench] p50={p50:.3f}ms p95={p95:.3f}ms avg={avg:.3f}ms hitRate={hit_rate:.1f}% RSS~{rss_mb:.0f}MB")
-    print(f"[bench] ioQueueDepth=0 pendingLoads=0 tick=20 TPS (synthetic)")
+    print(f"[bench] ioQueueDepth=0 pendingLoads=0 tick=20 TPS (synthetic contract)")
     if chunks >= 4000:
-        # plan45 O-11 view32 scenario (65x65=4225 chunks): record wall-clock + peak RSS for the report
+        # Record the synthetic scenario's wall-clock and configured RSS budget.
         total_s = sum(times) / 1000.0
         print(f"[bench-view32] chunks={chunks} total={total_s:.1f}s p50={p50:.3f}ms p95={p95:.3f}ms "
               f"peakRSS~{rss_mb:.0f}MB OOM=0 kick=0 (vd={vd})")
@@ -111,7 +92,7 @@ def main():
     status = "PASS" if (ok_p50 and ok_p95 and ok_rss and ok_hit) else "FAIL"
     print(f"[bench] criteria p50<5ms:{'PASS' if ok_p50 else 'FAIL'} p95<10ms:{'PASS' if ok_p95 else 'FAIL'} RSS<1500MB:{'PASS' if ok_rss else 'FAIL'} hit>80%:{'PASS' if ok_hit else 'FAIL'} => {status}")
     if status == "PASS":
-        print("[bench] C-09 bench PASS — LRU + async satisfies 32-view throughput (p50<5 p95<10 hit>80)")
+        print("[bench] synthetic contract PASS (p50<5 p95<10 hit>80)")
     else:
         print("[bench] C-09 bench FAIL — check values", file=sys.stderr)
 

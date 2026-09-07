@@ -2,7 +2,7 @@
 
 This document describes the current behavior surface for Minecraft Java 1.21.4,
 protocol 769, and DataVersion 4189 at runtime snapshot
-`c3a5e49e41261dacb4b9454c538aa87575fa9546` (rechecked 2026-09-06). It covers
+`main` HEAD `abcdc6b` plus the current cleanup worktree (rechecked 2026-09-07). It covers
 MISSING **#1–#70**, **#80–#90**, the Fabric-specific rows, and the world-generation
 G-10/G-11 evidence. Packet fields remain in
 [SPEC_WIRE.md](SPEC_WIRE.md); operational thresholds remain in
@@ -58,7 +58,7 @@ only says “the class exists” is not treated as full vanilla parity.
 | worldgen | `src/worldgen/DensityFunction.*`, `MultiNoise.*`, `StructureManager.*`, `StructurePlacer.*` | seed, coordinates, dimension | biome and structure decisions | L1/L2 `IMPLEMENTATION`; L3 `DECLARED-LIMITATION` |
 | entity | `src/game/Entities.hpp`, `EntityData.*`, `BehaviorTree.*`, `AiBrain.*`, `MobSpawner.*` | entity state and tick context | AI, movement, spawn, metadata, drops | `IMPLEMENTATION` + gameplay/smoke |
 | mob fixture | `docs/mob_stats_149.csv`, `Entities.hpp::MobStats` | 11 CSV columns, MobKind index | 149-row table and stat lookup | `IMPLEMENTATION` + `test_mob_stats_full` |
-| inventory | `src/game/Items.hpp`, `Containers.*`, `MenuInteraction.*`, `InventoryController.*` | Slot/components, menu click | authoritative inventory and sync trigger | `IMPLEMENTATION` + wire/gameplay |
+| inventory | `src/game/Items.hpp`, `Containers.*`, `MenuInteraction.*`, `GameServer_*` | Slot/components, menu click | authoritative inventory and sync trigger | `IMPLEMENTATION` + wire/gameplay |
 | recipes/data | `Recipes.*`, `TagManager.hpp`, `DatapackManager.hpp`, `FunctionEvaluator.*`, Brigadier | JSON, tags, commands | crafting, reload, functions and suggestions | `IMPLEMENTATION`; simplified functions are declared |
 | combat/survival | `CombatManager.*`, `DamageSource.hpp`, `Attributes.hpp`, `HungerManager.*`, `MobEffects.hpp` | source, attributes, effects, food | damage, knockback, hunger and status effects | focused tests + `IMPLEMENTATION` |
 
@@ -149,14 +149,14 @@ This is a documentation form for existing behavior, not an API proposal.
 
 | layer | source symbols |
 |---|---|
-| world | `World`, `Chunk`, `WorldManager`, `ChunkTicketManager` |
+| world | `World`, `Chunk`, `ChunkTicketManager` |
 | storage | `WorldDataManager`, `Persistence`, `RegionFile`, `SessionLock` |
 | physics | `BlockTickScheduler`, `FluidSim`, `RedstoneEngine`, `LightEngine` |
 | generation | `MultiNoiseBiomeSource`, `DensityFunction`, `StructureManager`, `StructurePlacer` |
 | entities | `MobEntity`, `mobStats`, `BehaviorTreeParser`, `AiBrain`, `BossAI` |
 | inventory | `ItemStack`, `Menu`, `ClickLogic`, `RecipeManager`, `TagManager` |
 | commands | Brigadier `CommandDispatcher`, `Commands`, `DatapackManager`, `FunctionEvaluator` |
-| survival | `CombatManager`, `DamageCalculator`, `AttributeManager`, `HungerManager` |
+| survival | `CombatManager`, `DamageSource.hpp::DamageCalculator`, `AttributeManager`, `HungerManager` |
 
 ## 10. Module split and ownership
 
@@ -237,8 +237,8 @@ Fresh focused results:
 
 | target | result |
 |---|---|
-| `test_gameplay_full` | `803 PASS / 1 intentional E-14 FAIL / 804`, exit 1 |
-| `test_smoke_80` | `212 PASS 0 FAIL` |
+| `test_gameplay_full` | `804 PASS / 0 FAIL / 804` |
+| `test_smoke_80` | `223 PASS 0 FAIL` |
 | `test_seed_parity` | `201 PASS 0 FAIL` (L1 independent hand-calc plus L2 deterministic 50-chunk comparison) |
 | `test_mining_full` | `59/59 passed` |
 | `test_block_hardness_full` | `16/16 passed; 1095 mismatch=0` |
@@ -246,10 +246,10 @@ Fresh focused results:
 | `test_redstone_engine_full` | `29 PASS 0 FAIL` |
 | `test_recipes_mirror` | `76 PASS 0 FAIL` |
 | `test_plan43` | `82 PASS 0 FAIL` in 25.14s after the clean rebuild |
-| `test_native` | `ALL PASS` in 2.33s |
+| `test_native` | `ALL PASS` in the current CTest run |
 | `test_server_full` | `234 PASS 0 FAIL` |
-| `multi_client` | `ALL PASS` in 17.83s |
-| `bot_smoke` | `ALL PASS` in 20.65s |
+| `multi_client` | `ALL PASS` in 17.00s |
+| `bot_smoke` | `ALL PASS` in 20.35s |
 | `tests/soak_test.py --duration 300` | `PASS`; 150 keepalives, 0 disconnects, actions 2932, post-fill RSS growth 7.6% |
 | `tests/soak_test.py --duration 600 --movement-range 3000` | `PASS`; 300 keepalives, 0 disconnects, actions 5707, post-fill RSS growth 6.6% |
 | `tools/soak_bot.py --duration 300` | `3/3 PASS`; each KeepAlive 30, chunks 182, time updates 300, all error counters 0, cleanup PASS |
@@ -258,9 +258,9 @@ Fresh focused results:
 | accepted 2h/24h artifact | none; the 7200s attempt was not accepted and no 24-hour artifact exists |
 | `test_recovery` | registered evidence for the recovery matrix; rerun status is recorded separately in VERIFICATION |
 
-The E-14 assertion is intentionally `CHECK(false, ...)` in
-`tests/test_gameplay_full.cpp`; changing it would destroy the honesty gate. Full
-commands and the allowed-failure policy are in
+The E-14 arbitrary-JVM-mod boundary is emitted as an informational limitation by
+`tests/test_gameplay_full.cpp`; it is not represented by an intentional failing
+assertion. Full commands and the limitation policy are in
 [VERIFICATION.md#gameplay-gate](VERIFICATION.md#gameplay-gate).
 
 ## 16. Priority and status

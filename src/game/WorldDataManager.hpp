@@ -4,6 +4,9 @@
 #include <filesystem>
 #include <fstream>
 #include <cstdio>
+#include <limits>
+#include <system_error>
+#include <utility>
 #include <vector>
 #include "../core/NBTValue.hpp"
 
@@ -41,28 +44,48 @@ public:
 
     // Atomic write helper: write to temp then rename (W16 single level.dat + level.dat_old backup)
     bool atomicWrite(const std::string& path, const std::vector<std::uint8_t>& data) const {
+        if (data.size() > kMaxLevelDataBytes ||
+            data.size() > static_cast<std::size_t>(std::numeric_limits<std::streamsize>::max())) {
+            std::fprintf(stderr, "[WorldDataManager] level data exceeds size limit\n");
+            return false;
+        }
+        const std::filesystem::path destination(path);
+        const std::filesystem::path parent = destination.parent_path();
+        const std::string tmp = path + ".new";
         try {
-            std::filesystem::create_directories(std::filesystem::path(path).parent_path());
-            std::string tmp = path + ".new";
+            if (!parent.empty()) std::filesystem::create_directories(parent);
             {
                 std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
-                if (!f) return false;
-                f.write(reinterpret_cast<const char*>(data.data()), data.size());
-                if (!f) return false;
+                if (!f) throw std::runtime_error("cannot open temporary level file");
+                f.write(reinterpret_cast<const char*>(data.data()),
+                        static_cast<std::streamsize>(data.size()));
+                f.flush();
+                if (!f) throw std::runtime_error("cannot flush temporary level file");
             }
             // W16: backup level.dat -> level.dat_old before rename (vanilla LevelStorage)
-            try {
-                if (std::filesystem::exists(path)) {
-                    std::string old = path + "_old";
-                    // level.dat -> level.dat_old (append _old)
-                    std::error_code ec;
-                    std::filesystem::copy_file(path, old, std::filesystem::copy_options::overwrite_existing, ec);
-                }
-            } catch (...) {}
+            if (std::filesystem::exists(destination)) {
+                const std::string old = path + "_old";
+                std::error_code backupError;
+                std::filesystem::copy_file(destination, old,
+                                            std::filesystem::copy_options::overwrite_existing,
+                                            backupError);
+                if (backupError)
+                    throw std::system_error(backupError, "backup level.dat");
+            }
             // atomic rename
-            std::filesystem::rename(tmp, path);
+            std::error_code renameError;
+            std::filesystem::rename(tmp, destination, renameError);
+            if (renameError) throw std::system_error(renameError, "replace level.dat");
             return true;
+        } catch (const std::exception& e) {
+            std::error_code cleanupError;
+            std::filesystem::remove(tmp, cleanupError);
+            std::fprintf(stderr, "[WorldDataManager] atomic level save failed: %s\n", e.what());
+            return false;
         } catch (...) {
+            std::error_code cleanupError;
+            std::filesystem::remove(tmp, cleanupError);
+            std::fprintf(stderr, "[WorldDataManager] atomic level save failed\n");
             return false;
         }
     }
@@ -107,13 +130,24 @@ public:
             nbt::Value* data = nullptr;
             for (auto& [k,v] : root.comp) if (k=="Data") { data = &v; break; }
             if (data) {
-                for (auto& [k,v] : data->comp) if (k=="DataVersion") { v.i = kCurrentDataVersion; break; }
+                if (auto* version = data->get("DataVersion")) {
+                    version->tag = nbt::Int;
+                    version->i = kCurrentDataVersion;
+                } else {
+                    data->set("DataVersion", nbt::Value::makeInt(kCurrentDataVersion));
+                }
             }
             WriteBuffer out;
             nbt::writeFileRoot(out, root);
             std::string path = dir_ + "/level.dat";
             return atomicWrite(path, out.data);
-        } catch (...) { return false; }
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "[WorldDataManager] level data serialization failed: %s\n", e.what());
+            return false;
+        } catch (...) {
+            std::fprintf(stderr, "[WorldDataManager] level data serialization failed\n");
+            return false;
+        }
     }
     bool saveLevelDataWithProviders(std::int64_t worldTicks, std::int64_t dayTime, class World& world,
                                     const std::string& difficulty,
@@ -139,8 +173,12 @@ public:
             std::string path = dir_ + "/level.dat";
             std::ifstream f(path, std::ios::binary);
             if (!f) return false;
+            std::error_code sizeError;
+            const auto size = std::filesystem::file_size(path, sizeError);
+            if (!sizeError && size > kMaxLevelDataBytes) return false;
             std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-            if (bytes.empty()) return false;
+            // istreambuf_iterator reaches EOF without necessarily setting eofbit.
+            if (bytes.empty() || bytes.size() > kMaxLevelDataBytes || f.bad()) return false;
             ReadBuffer in(bytes);
             nbt::Parser parser(in);
             outRoot = parser.readFileRoot();
@@ -155,6 +193,8 @@ private:
     std::function<void(nbt::Value&)> provide_;
     std::function<void(const nbt::Value&)> consume_;
     RecoveryResult lastRecovery_;
+
+    static constexpr std::size_t kMaxLevelDataBytes = 8u * 1024u * 1024u;
 };
 
 } // namespace cppfm

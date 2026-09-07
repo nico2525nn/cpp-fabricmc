@@ -1,42 +1,17 @@
-// awkward + sugar -> mundane etc is stub Full mapping: awkward + <effect ingredient> -> effect potion, awkward + fermented -> weakness,
-// awkw + gunpowder -> splash This helper centralizes transform logic for brewingTick and tests.
+// Brewing transforms and potion registry access used by brewingTick and tests.
 #pragma once
 #include <cstdint>
 #include <string>
-#include <unordered_map>
-#include "../generated/ItemIds.hpp"
+#include "Items.hpp"
 
 namespace cppfm {
 
 struct PotionBrewing {
-    // Registry-aware potion ids (minecraft:potion 45 entries, 1.21.4): water 0, mundane 1, thick 2, awkward 3, night_vision 4, ...
-    // wind_charged 42 etc. Full map duplicated from Items::potionIds for standalone header.
-    static const std::unordered_map<std::string,int>& potionIds() {
-        static const std::unordered_map<std::string,int> m{
-            {"minecraft:water",0},{"minecraft:mundane",1},{"minecraft:thick",2},{"minecraft:awkward",3},
-            {"minecraft:night_vision",4},{"minecraft:long_night_vision",5},{"minecraft:invisibility",6},{"minecraft:long_invisibility",7},
-            {"minecraft:leaping",8},{"minecraft:long_leaping",9},{"minecraft:strong_leaping",10},{"minecraft:fire_resistance",11},{"minecraft:long_fire_resistance",12},
-            {"minecraft:swiftness",13},{"minecraft:long_swiftness",14},{"minecraft:strong_swiftness",15},{"minecraft:slowness",16},{"minecraft:long_slowness",17},{"minecraft:strong_slowness",18},
-            {"minecraft:water_breathing",19},{"minecraft:long_water_breathing",20},{"minecraft:healing",21},{"minecraft:strong_healing",22},
-            {"minecraft:harming",23},{"minecraft:strong_harming",24},{"minecraft:poison",25},{"minecraft:long_poison",26},{"minecraft:strong_poison",27},
-            {"minecraft:regeneration",28},{"minecraft:long_regeneration",29},{"minecraft:strong_regeneration",30},{"minecraft:strength",31},{"minecraft:long_strength",32},{"minecraft:strong_strength",33},
-            {"minecraft:weakness",34},{"minecraft:long_weakness",35},{"minecraft:luck",36},{"minecraft:turtle_master",37},{"minecraft:long_turtle_master",38},{"minecraft:strong_turtle_master",39},
-            {"minecraft:slow_falling",40},{"minecraft:long_slow_falling",41},{"minecraft:wind_charged",42},{"minecraft:weaving",43},{"minecraft:oozing",44},{"minecraft:infested",45}
-        };
-        return m;
-    }
-    static int potionIdByName(const std::string& n) {
-        auto& mm = potionIds();
-        auto it = mm.find(n);
-        if (it != mm.end()) return it->second;
-        std::string q = n.find(':')==std::string::npos ? std::string("minecraft:")+n : n;
-        auto it2 = mm.find(q);
-        return it2 != mm.end() ? it2->second : 0;
-    }
-    static std::string potionNameById(int id) {
-        for (auto &kv : potionIds()) if (kv.second==id) return kv.first;
-        return "minecraft:water";
-    }
+    // ItemStack owns the registry table.  Brewing uses the same view so a new
+    // registry entry cannot silently make item serialization and brewing diverge.
+    static const auto& potionIds() { return ItemStack::potionIds(); }
+    static int potionIdByName(const std::string& name) { return ItemStack::potionIdByName(name); }
+    static std::string potionNameById(int id) { return ItemStack::potionNameById(id); }
     static int mix(int curId, bool hasPotionContents, std::uint32_t ingredientId) {
         int waterId = potionIdByName("minecraft:water");
         int awkwardId = potionIdByName("minecraft:awkward");

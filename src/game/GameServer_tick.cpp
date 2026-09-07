@@ -190,8 +190,8 @@ void GameServer::tickDigs() {
                     if (st.empty()) continue;
                     spawnItemDrop(p->digX+.5, p->digY+.25, p->digZ+.5,
                                   st,
-                                  (rand()/(double)RAND_MAX-.5)*.15, .12,
-                                  (rand()/(double)RAND_MAX-.5)*.15);
+                                  (nextRandom()/(double)RAND_MAX-.5)*.15, .12,
+                                  (nextRandom()/(double)RAND_MAX-.5)*.15);
                 }
             }
             cancelMiningDig(*this, *p);
@@ -199,44 +199,29 @@ void GameServer::tickDigs() {
     }
 }
 void GameServer::tickOnce() {
-    static const bool tr = getenv("CPPFM_TICK_TRACE") != nullptr;
-    auto mark = [&](char c) { if (tr) std::fprintf(stderr, "[tick] %c t=%ld\n", c, (long)tickNo_); };
     pollPendingLoads(); // W19 async I/O: poll Chunk futures (ThreadPool 4) without blocking (MC-177729)
     api::ServerTickEvent ev{tickNo_};
     events().serverTick.fire(ev);
     if (jvmRuntime_) jvmRuntime_->onServerTick(tickNo_);
-    mark('F');
     fluidSim_->tick(tickNo_);
-    mark('R');
     redstone_->tick(tickNo_);
     if (blockTicks_) blockTicks_->tick(tickNo_);
-    mark('D');
     tickDigs();
-    mark('S');
     survivalTick();
-    mark('U');
     furnacesTick();
     brewingTick();
-    mark('E');
     effectsTick();
-    mark('X');
     xpOrbsTick();
-    mark('m');
 
     // mob spawn cadence: every 20 ticks
     if (tickNo_ % 20 == 0) trySpawnMobs();
-    mark('M');
     mobsTick();
     drainPendingStructureQueues();
-    mark('R'); // rails (plan14 §5)
     minecartsTick(); // plan14 §5: powered_rail 0.06
     boatsTick(); // plan14 §5: boat friction 0.9 water / 0.6 land, buoyancy 0.04, max 0.4
-    mark('P');
     projectilesTick();
-    mark('I');
     itemsTick();
     tntTick();
-    mark('T');
 
     // periodic time sync every 20 ticks (1s); frozen when doDaylightCycle off
     if (tickNo_ % 20 == 0) {
@@ -252,9 +237,7 @@ void GameServer::tickOnce() {
 
     // light engine: drain queued BFS work, broadcast UpdateLight per chunk
     {
-        mark('L');
         const LightUpdateBatch batch = lightEngine_->drain();
-        mark('l');
         for (auto k : batch.dirtyChunks) {
             auto [cx, cz] = chunkKeyDecode(k);
             world_.withChunk(cx, cz, [&](const Chunk& c) {
@@ -278,10 +261,22 @@ void GameServer::tickOnce() {
     if (tickNo_ % 100 == 0) chunksUnloadTick();
     // level.dat periodic save every 6000 ticks (~5 min) + also 1200 (~1 min) for safety — single level.dat (W16)
     if (tickNo_ % 6000 == 0 && tickNo_ != 0) {
-        try { persist_->saveLevelData(tickNo_, dayTime()); } catch (...) {}
+        try {
+            persist_->saveLevelData(tickNo_, dayTime());
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "[cppfm] periodic level.dat save failed: %s\n", e.what());
+        } catch (...) {
+            std::fprintf(stderr, "[cppfm] periodic level.dat save failed\n");
+        }
         std::fprintf(stderr, "[cppfm] periodic level.dat save t=%ld\n", (long)tickNo_);
     } else if (tickNo_ % 1200 == 0 && tickNo_ != 0) {
-        try { persist_->saveLevelData(tickNo_, dayTime()); } catch (...) {}
+        try {
+            persist_->saveLevelData(tickNo_, dayTime());
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "[cppfm] periodic level.dat save failed: %s\n", e.what());
+        } catch (...) {
+            std::fprintf(stderr, "[cppfm] periodic level.dat save failed\n");
+        }
     }
     // WorldBorder lerp tick interpolation — Yarn WorldBorder.tick()
     {
@@ -345,10 +340,10 @@ void GameServer::drainPendingStructureQueues() {
                 if(st.empty()) continue;
                 int slot=-1;
                 for(int attempt=0; attempt<10; ++attempt){
-                    int cand = rand() % ChestData::kSlots;
+                    int cand = nextRandom() % ChestData::kSlots;
                     if(!used.count(cand)){ slot=cand; break; }
                 }
-                if(slot==-1) slot = rand()%ChestData::kSlots;
+                if(slot==-1) slot = nextRandom()%ChestData::kSlots;
                 used.insert(slot);
                 be->chest.slots[slot]=st;
             }
@@ -390,25 +385,32 @@ void GameServer::drainPendingStructureQueues() {
     if(netherWorld_) process(*netherWorld_);
     if(endWorld_) process(*endWorld_);
 }
-bool GameServer::isChunkInSimulationDistance(std::int32_t cx, std::int32_t cz) const {
-    // Spawn chunk loader: forced chunks / SPAWN ticket level 31 are always in simulation distance (ChunkTicket)
-    if (world_.isForced(cx, cz) || world_.ticketLevel(cx, cz) <= constants::kTicketLevelSpawn) return true;
-    if (netherWorld_ && (netherWorld_->isForced(cx, cz) || netherWorld_->ticketLevel(cx, cz) <= constants::kTicketLevelSpawn)) return true;
-    if (endWorld_ && (endWorld_->isForced(cx, cz) || endWorld_->ticketLevel(cx, cz) <= constants::kTicketLevelSpawn)) return true;
+bool GameServer::isChunkInSimulationDistanceFor(std::int8_t dimension,
+                                                std::int32_t cx,
+                                                std::int32_t cz) const {
+    const World& simulatedWorld = worldFor(dimension);
+    // Forced chunks and spawn-ticket chunks belong to this dimension only.
+    if (simulatedWorld.isForced(cx, cz) ||
+        simulatedWorld.ticketLevel(cx, cz) <= constants::kTicketLevelSpawn)
+        return true;
     const int sim = cfg_.simulationDistance;
     if (sim <= 0) return true;
     const double limit = sim * 16.0;
     const double chX = cx * 16.0 + 8.0;
     const double chZ = cz * 16.0 + 8.0;
-    auto players = const_cast<GameServer*>(this)->playersSnapshot();
+    const auto players = playersSnapshot();
     if (players.empty()) return false;
     for (auto &p : players) {
-        if (!p->inPlay) continue;
+        if (!p || !p->inPlay || p->dimension != dimension) continue;
         double dx = p->x - chX;
         double dz = p->z - chZ;
         if (std::max(std::abs(dx), std::abs(dz)) < limit) return true;
     }
     return false;
+}
+bool GameServer::isChunkInSimulationDistance(std::int32_t cx,
+                                             std::int32_t cz) const {
+    return isChunkInSimulationDistanceFor(0, cx, cz);
 }
 void GameServer::chunksUnloadTick() {
     const int sim = cfg_.simulationDistance;
@@ -510,20 +512,6 @@ void GameServer::chunksUnloadTick() {
                 std::fprintf(stderr, "[cppfm] unload chunk dim=%d %d,%d (dist>%d) remaining=%zu\n",
                              (int)dim, cx, cz, unloadDist, w.loadedChunkCount());
             }
-        }
-        if (std::getenv("CPPFM_CHUNK_STATS") && tickNo_ % 1000 == 0) {
-            std::size_t structurePending = 0;
-            if (auto* sm = w.structureManager())
-                structurePending = sm->pendingMobCount() + sm->pendingLootCount();
-            std::fprintf(stderr, "[cppfm] chunk-stats dim=%d loaded=%zu cache=%zu cacheBytes=%zu pending=%zu io=%zu mobs=%zu mobAi=%zu items=%zu xp=%zu proj=%zu tnt=%zu be=%zu beDirty=%zu fluid=%zu light=%zu sky=%zu redstone=%zu blockTicks=%zu randomTicks=%zu structure=%zu\n",
-                         (int)dim, w.loadedChunkCount(), chunkCacheSize(),
-                         chunkCacheBytes(), pendingLoadsSize(), ioQueueDepth(),
-                         mobs_.size(), mobAi_.size(), itemDrops_.size(), xpOrbs_.size(),
-                         projectiles_.size(), tntEntities_.size(), blockEntities_.size(),
-                         blockEntities_.dirty_.size(), fluidSim_->pending(),
-                         lightEngine_->pendingNodeCount(), lightEngine_->pendingSkyCount(),
-                         redstone_->pendingCount(), blockTicks_->pendingCount(),
-                         blockTicks_->randomTicks().size(), structurePending);
         }
     };
     doWorld(world_, persist_.get(), 0);
@@ -743,12 +731,6 @@ void GameServer::trySpawnMobs() {
     if (difficulty()=="peaceful") {
         // still allow creature spawns but no monster; handle via caps below
     }
-    static std::int64_t lastTrace = 0;
-    const bool tr = getenv("CPPFM_TRACE") != nullptr;
-    if (tr && tickNow() - lastTrace >= 200) {
-        lastTrace = tickNow();
-        std::fprintf(stderr, "[cppfm] mob-spawn tick: night=%d mobs=%zu\n", (int)isNight(), mobs_.size());
-    }
     // snapshot caps
     std::array<int,7> caps = spawnGroupCaps();
     if (difficulty()=="peaceful") caps[SG_MONSTER]=0;
@@ -757,8 +739,8 @@ void GameServer::trySpawnMobs() {
         auto* pl = pp.get();
         if (!pl->inPlay || !pl->spawned || pl->dead) continue;
         for (int attempt=0; attempt<6; ++attempt) {
-            const double ang = (rand()/(double)RAND_MAX)*6.28318;
-            const double dist = 24 + (rand()%24);
+            const double ang = (nextRandom()/(double)RAND_MAX)*6.28318;
+            const double dist = 24 + (nextRandom()%24);
             const std::int32_t wx = static_cast<std::int32_t>(pl->x + std::cos(ang)*dist);
             const std::int32_t wz = static_cast<std::int32_t>(pl->z + std::sin(ang)*dist);
             world_.generateChunkIfMissing(wx>>4, wz>>4);
@@ -809,7 +791,7 @@ void GameServer::trySpawnMobs() {
                 // fallback hardcoded hostile
                 if(cnts[SG_MONSTER] >= caps[SG_MONSTER]) continue;
                 static const MobKind hostilesTab[]={MobKind::Zombie,MobKind::Zombie,MobKind::Skeleton,MobKind::Creeper,MobKind::Spider};
-                MobKind picked = hostilesTab[rand()%5];
+                MobKind picked = hostilesTab[nextRandom()%5];
                 auto mob=std::make_shared<MobEntity>(); mob->entityId=nextEntityId(); mob->kind=picked; mob->health=mobStats(picked).maxHealth;
                 mob->x=wx+0.5; mob->y=groundY+1.0; mob->z=wz+0.5; mob->lastSeenMs=nowMs();
                 if (jvmRuntime_ && !jvmRuntime_->onMobSpawn(*mob, mob->x, mob->y, mob->z)) continue;
@@ -821,7 +803,7 @@ void GameServer::trySpawnMobs() {
             } else if(wantCreature && creatureEntries.empty()){
                 if(cnts[SG_CREATURE] >= caps[SG_CREATURE]) continue;
                 static const MobKind passive[]={MobKind::Pig,MobKind::Cow,MobKind::Sheep,MobKind::Chicken,MobKind::Rabbit};
-                MobKind picked=passive[rand()%5];
+                MobKind picked=passive[nextRandom()%5];
                 auto mob=std::make_shared<MobEntity>(); mob->entityId=nextEntityId(); mob->kind=picked; mob->health=mobStats(picked).maxHealth;
                 mob->x=wx+0.5; mob->y=groundY+1.0; mob->z=wz+0.5; mob->lastSeenMs=nowMs();
                 if (jvmRuntime_ && !jvmRuntime_->onMobSpawn(*mob, mob->x, mob->y, mob->z)) continue;
@@ -832,7 +814,7 @@ void GameServer::trySpawnMobs() {
             if(cnts[(int)gIdx] >= caps[(int)gIdx]) continue;
             // weighted pick
             int total=0; for(auto* e: *use) total+= std::max(1,e->spawnWeight);
-            int r = total>0? rand()%total : 0;
+            int r = total>0? nextRandom()%total : 0;
             const EntityDataDef* pickedDef=nullptr;
             for(auto* e: *use){ r-= std::max(1,e->spawnWeight); if(r<0){ pickedDef=e; break; } }
             if(!pickedDef) pickedDef = (*use)[0];
@@ -850,7 +832,7 @@ void GameServer::trySpawnMobs() {
 }
 void GameServer::spawnSlimeSplit(MobEntity& m) {
     if ((m.kind == MobKind::Slime || m.kind == MobKind::MagmaCube) && m.slimeSize > 0) {
-        int n = 2 + (rand() % 3);
+        int n = 2 + (nextRandom() % 3);
         for (int s = 0; s < n; ++s) {
             auto baby = std::make_shared<MobEntity>();
             baby->entityId = nextEntityId();
@@ -858,9 +840,9 @@ void GameServer::spawnSlimeSplit(MobEntity& m) {
             baby->slimeSize = m.slimeSize - 1;
             baby->health = MobEntity::slimeHealthForSize(baby->slimeSize);
             if (baby->health < 1.f) baby->health = 1.f;
-            baby->x = m.x + (rand()/(double)RAND_MAX - 0.5) * 0.5;
+            baby->x = m.x + (nextRandom()/(double)RAND_MAX - 0.5) * 0.5;
             baby->y = m.y;
-            baby->z = m.z + (rand()/(double)RAND_MAX - 0.5) * 0.5;
+            baby->z = m.z + (nextRandom()/(double)RAND_MAX - 0.5) * 0.5;
             baby->lastSeenMs = nowMs();
             if (jvmRuntime_ && !jvmRuntime_->onMobSpawn(*baby, baby->x, baby->y, baby->z)) continue;
             mobs_.push_back(baby);
@@ -986,7 +968,7 @@ void GameServer::mobsTick() {
                             if (m->creakingSameBlockTicks>100) {
                                 // respawn near heart
                                 for (int a=0;a<8;++a){
-                                    int sx=m->creakingHeartX+(rand()%8-4), sz=m->creakingHeartZ+(rand()%8-4), sy=m->creakingHeartY+1;
+                                    int sx=m->creakingHeartX+(nextRandom()%8-4), sz=m->creakingHeartZ+(nextRandom()%8-4), sy=m->creakingHeartY+1;
                                     if (world_.getBlock(sx,sy,sz)==0 && world_.getBlock(sx,sy+1,sz)==0 && world_.getBlock(sx,sy-1,sz)!=0){
                                         m->x=sx+0.5; m->y=sy; m->z=sz+0.5;
                                         m->creakingSameBlockTicks=0;
@@ -1089,7 +1071,7 @@ void GameServer::mobsTick() {
                         broadcastSound("minecraft:entity.villager.work_farm", m->x,m->y,m->z,1.f,1.f,"neutral");
                         if (m->villagerRestocksToday < 2) {
                             m->restockUntil = tickNo_ + MobEntity::kRestockSecondWindowTicks
-                                + (rand() % 2000);
+                                + (nextRandom() % 2000);
                         } else {
                             m->restockUntil = 0;
                         }
@@ -1141,8 +1123,8 @@ void GameServer::mobsTick() {
                 for (auto& st : loot) {
                     if (st.empty()) continue;
                     spawnItemDrop(m->x, m->y + 0.4, m->z, st,
-                                  (rand()/(double)RAND_MAX-.5)*.15, .1,
-                                  (rand()/(double)RAND_MAX-.5)*.15);
+                                  (nextRandom()/(double)RAND_MAX-.5)*.15, .1,
+                                  (nextRandom()/(double)RAND_MAX-.5)*.15);
                     spawnedViaLoot = true;
                 }
             }
@@ -1151,8 +1133,8 @@ void GameServer::mobsTick() {
             const auto drop = MobEntity::dropFor(m->kind);
             if (drop.itemId)
                 spawnItemDrop(m->x, m->y + 0.4, m->z, drop.itemId, drop.count,
-                              (rand()/(double)RAND_MAX-.5)*.15, .1,
-                              (rand()/(double)RAND_MAX-.5)*.15);
+                              (nextRandom()/(double)RAND_MAX-.5)*.15, .1,
+                              (nextRandom()/(double)RAND_MAX-.5)*.15);
         }
         for (int es=0; es<6; ++es) {
             if (m->equipment[es].empty()) continue;
@@ -1160,10 +1142,10 @@ void GameServer::mobsTick() {
             if (es==0) chance = m->handDropChances[0];
             else if (es==1) chance = m->handDropChances[1];
             else if (es>=2 && es<=5) chance = m->armorDropChances[es-2];
-            float r = float(rand())/float(RAND_MAX);
+            float r = float(nextRandom())/float(RAND_MAX);
             if (r < chance) {
                 spawnItemDrop(m->x, m->y+0.4, m->z, m->equipment[es],
-                              (rand()/(double)RAND_MAX-.5)*.12, 0.18, (rand()/(double)RAND_MAX-.5)*.12);
+                              (nextRandom()/(double)RAND_MAX-.5)*.12, 0.18, (nextRandom()/(double)RAND_MAX-.5)*.12);
             }
         }
         // XP orbs on kill

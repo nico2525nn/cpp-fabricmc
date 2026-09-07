@@ -8,6 +8,7 @@
 #include <vector>
 #include <stdexcept>
 #include <optional>
+#include <limits>
 
 namespace cppfm {
 
@@ -16,6 +17,8 @@ public:
     std::vector<std::uint8_t> data;
 
     void raw(const void* p, std::size_t n) {
+        if (n == 0) return;
+        if (p == nullptr) throw std::invalid_argument("cannot append bytes from null");
         const auto* b = static_cast<const std::uint8_t*>(p);
         data.insert(data.end(), b, b + n);
     }
@@ -67,6 +70,8 @@ public:
     void bytes(std::initializer_list<std::uint8_t> v) { data.insert(data.end(), v); }
 
     void string(std::string_view s) {
+        if (s.size() > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max()))
+            throw std::length_error("string is too long for a VarInt length");
         varint(static_cast<std::int32_t>(s.size()));
         raw(s.data(), s.size());
     }
@@ -77,7 +82,10 @@ public:
                         | (static_cast<std::uint64_t>(y) & 0xFFFULL);
         u64(v);
     }
-    void uuid(const std::uint8_t bytes[16]) { raw(bytes, 16); }
+    void uuid(const std::uint8_t bytes[16]) {
+        if (bytes == nullptr) throw std::invalid_argument("cannot write a null UUID");
+        raw(bytes, 16);
+    }
     void uuid(std::string_view hexNoDashes);
 
     std::size_t size() const { return data.size(); }
@@ -89,7 +97,9 @@ public:
     std::size_t len;
     std::size_t off = 0;
 
-    ReadBuffer(const std::uint8_t* d, std::size_t n) : p(d), len(n) {}
+    ReadBuffer(const std::uint8_t* d, std::size_t n) : p(d), len(n) {
+        if (d == nullptr && n != 0) throw std::invalid_argument("null buffer with non-zero length");
+    }
     explicit ReadBuffer(const std::vector<std::uint8_t>& v) : p(v.data()), len(v.size()) {}
 
     std::size_t remaining() const { return off <= len ? len - off : 0; }
@@ -124,42 +134,54 @@ public:
 
     std::int32_t varint() {
         std::uint32_t result = 0;
-        int shift = 0;
-        while (true) {
-            std::uint8_t b = u8();
-            result |= static_cast<std::uint32_t>(b & 0x7F) << shift;
-            if (!(b & 0x80)) return static_cast<std::int32_t>(result);
-            shift += 7;
-            if (shift >= 35) throw std::runtime_error("varint too large");
+        for (int byte = 0; byte < 5; ++byte) {
+            const std::uint8_t b = u8();
+            // A signed 32-bit VarInt has only four payload bits in its fifth
+            // byte.  Checking this matters because otherwise malformed input
+            // can silently wrap into a different packet length or id.
+            if (byte == 4 && (b & 0xF0u) != 0)
+                throw std::runtime_error("varint too large");
+            result |= static_cast<std::uint32_t>(b & 0x7F) << (byte * 7);
+            if ((b & 0x80u) == 0) return static_cast<std::int32_t>(result);
         }
+        throw std::runtime_error("varint too large");
     }
     std::int64_t varlong() {
         std::uint64_t result = 0;
-        int shift = 0;
-        while (true) {
-            std::uint8_t b = u8();
-            result |= static_cast<std::uint64_t>(b & 0x7F) << shift;
-            if (!(b & 0x80)) return static_cast<std::int64_t>(result);
-            shift += 7;
-            if (shift >= 70) throw std::runtime_error("varlong too large");
+        for (int byte = 0; byte < 10; ++byte) {
+            const std::uint8_t b = u8();
+            // A 64-bit Varlong has one payload bit in its tenth byte.
+            if (byte == 9 && (b & 0xFEu) != 0)
+                throw std::runtime_error("varlong too large");
+            result |= static_cast<std::uint64_t>(b & 0x7F) << (byte * 7);
+            if ((b & 0x80u) == 0) return static_cast<std::int64_t>(result);
         }
+        throw std::runtime_error("varlong too large");
     }
     std::string string(std::size_t maxLen = 262144) {
         std::int32_t n = varint();
         if (n < 0 || static_cast<std::size_t>(n) > maxLen) throw std::runtime_error("string length out of range");
         need(static_cast<std::size_t>(n));
+        if (n == 0) return {};
         std::string s(reinterpret_cast<const char*>(p + off), static_cast<std::size_t>(n));
         off += static_cast<std::size_t>(n);
         return s;
     }
     void position(std::int32_t& x, std::int32_t& y, std::int32_t& z) {
-        const std::int64_t v = static_cast<std::int64_t>(u64());   // arithmetic shifts
-        x = static_cast<std::int32_t>(v >> 38);
-        y = static_cast<std::int32_t>((v << 52) >> 52);
-        z = static_cast<std::int32_t>((v << 26) >> 38);
+        const std::uint64_t v = u64();
+        const auto signExtend = [](std::uint64_t value, unsigned bits) -> std::int32_t {
+            const std::uint64_t sign = std::uint64_t{1} << (bits - 1);
+            const std::uint64_t mask = (std::uint64_t{1} << bits) - 1;
+            value &= mask;
+            return static_cast<std::int32_t>((value ^ sign) - sign);
+        };
+        x = signExtend(v >> 38, 26);
+        y = signExtend(v, 12);
+        z = signExtend(v >> 12, 26);
     }
     std::vector<std::uint8_t> bytes(std::size_t n) {
         need(n);
+        if (n == 0) return {};
         std::vector<std::uint8_t> v(p + off, p + off + n);
         off += n;
         return v;

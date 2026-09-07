@@ -11,6 +11,14 @@
 
 namespace cppfm {
 
+namespace {
+bool chunkIsSimulated(const World& world, const GameServer* server,
+                      std::int32_t x, std::int32_t z) {
+    return !server || server->isChunkInSimulationDistanceFor(
+        world.dimensionId(), x >> 4, z >> 4);
+}
+}
+
 void RandomTickScheduler::scheduleRandomTick(std::int32_t x, std::int32_t y, std::int32_t z, std::int64_t delay) {
     queue_.insert({x, y, z, delay});
 }
@@ -32,7 +40,7 @@ void RandomTickScheduler::tick(std::int64_t now) {
             if (auto* bts = srv_->blockTicks()) beh = bts->behaviorFor(std::string(d->name));
         }
         if (beh) {
-            if (srv_ && !srv_->isChunkInSimulationDistance(e.x >> 4, e.z >> 4)) continue;
+            if (!chunkIsSimulated(world_, srv_, e.x, e.z)) continue;
             beh->randomTick(world_, e.x, e.y, e.z, st, now, srv_);
         }
     }
@@ -53,7 +61,7 @@ void BlockTickScheduler::tick(std::int64_t now) {
     randomScheduler_.tick(now);
     if (rules_) {
         const int rts = rules_->getInt("randomTickSpeed", 3);
-        if (rts > 0 && now % 5 == 0) {
+        if (rts > 0) {
             auto keys = world_.allChunkKeys();
             if (!keys.empty()) {
                 std::vector<std::int64_t> simKeys;
@@ -64,20 +72,55 @@ void BlockTickScheduler::tick(std::int64_t now) {
                     simKeys.push_back(k);
                 }
                 if (!simKeys.empty()) {
-                    for (int i = 0; i < std::min<int>(rts, 8); ++i) {
-                        const std::int64_t k = simKeys[rand() % simKeys.size()];
+                    // Vanilla samples random-ticking positions per section on
+                    // every game tick.  The old implementation sampled only
+                    // every fifth tick and capped the count at 64, which made
+                    // randomTickSpeed a misleading setting and starved crops.
+                    // A section has 4096 positions; values above that repeat
+                    // positions and are bounded to keep an operator typo from
+                    // turning the tick loop into an unbounded workload.
+                    constexpr int kMaxSamplesPerSection = 4096;
+                    const int samplesPerSection = std::min(rts, kMaxSamplesPerSection);
+                    struct RandomTickTarget {
+                        std::int32_t x, y, z;
+                        std::uint16_t state;
+                        IBlockBehavior* behavior;
+                    };
+                    std::vector<RandomTickTarget> targets;
+                    for (const auto k : simKeys) {
                         auto [cx, cz] = chunkKeyDecode(k);
-                        for (int r = 0; r < 16; ++r) {
-                            const std::int32_t x = (cx << 4) + (rand() % 16);
-                            const std::int32_t z = (cz << 4) + (rand() % 16);
-                            const std::int32_t y = kMinY + (rand() % (kMaxY - kMinY));
-                            const std::uint16_t st = world_.getBlock(x,y,z);
-                            if (st == 0) continue;
-                            const gen::BlockDef* d = gen::blockByState(st);
-                            if (!d) continue;
-                            auto* beh = behaviorFor(std::string(d->name));
-                            if (beh) beh->randomTick(world_, x, y, z, st, now, srv_);
-                        }
+                        world_.withChunk(cx, cz, [&](const Chunk& chunk) {
+                            for (int section = 0; section < kSectionsPerChunk; ++section) {
+                                const std::int32_t sectionMinY = kMinY + section * 16;
+                                const std::size_t sectionBase =
+                                    static_cast<std::size_t>(section) * 4096;
+                                // Sampling is cheaper than scanning every
+                                // 16^3 cell just to discover whether this
+                                // section has a random-ticking block.  Empty
+                                // sections naturally produce no targets.
+                                for (int sample = 0; sample < samplesPerSection; ++sample) {
+                                    const int lx = nextRandom() % 16;
+                                    const int lz = nextRandom() % 16;
+                                    const int ly = nextRandom() % 16;
+                                    const std::uint16_t st = chunk.blocks[
+                                        sectionBase + static_cast<std::size_t>(ly * 256 + lz * 16 + lx)];
+                                    auto* beh = behaviorForState(st);
+                                    if (!beh) continue;
+                                    targets.push_back({cx * 16 + lx,
+                                                       sectionMinY + ly,
+                                                       cz * 16 + lz,
+                                                       st, beh});
+                                }
+                            }
+                        });
+                    }
+                    for (const auto& target : targets) {
+                        // Re-read before invoking behavior: another callback
+                        // may have changed the block since the section snapshot.
+                        if (world_.getBlock(target.x, target.y, target.z) != target.state)
+                            continue;
+                        target.behavior->randomTick(world_, target.x, target.y,
+                                                   target.z, target.state, now, srv_);
                     }
                 }
             }
@@ -183,7 +226,8 @@ static void bambooUpdateLeaves(World& w, std::int32_t x, std::int32_t baseY, std
             std::vector<std::pair<std::string_view,std::string_view>> props;
             for(auto& [k,v]: gen::propsOf(st)) if(k!="leaves" && k!="age") props.emplace_back(k,v);
             props.emplace_back("leaves", wantLeaves);
-            props.emplace_back("age", std::to_string(wantAge));
+            const std::string ageString = std::to_string(wantAge);
+            props.emplace_back("age", ageString);
             std::uint16_t ns = static_cast<std::uint16_t>(gen::stateWithProps(*d, props));
             w.setBlock(x, yy, z, ns);
             if (srv) srv->broadcastBlockChange(x, yy, z, ns);
@@ -239,6 +283,15 @@ static int getLight(World& w, std::int32_t x, std::int32_t y, std::int32_t z){
     return std::max(bl, sl);
 }
 
+// Scheduled behavior code bypasses command/item placement, so it owns the
+// client notification for every state mutation it performs.
+static void setBlockAndBroadcast(World& w, GameServer* srv,
+                                 std::int32_t x, std::int32_t y, std::int32_t z,
+                                 std::uint16_t state) {
+    w.setBlock(x, y, z, state);
+    if (srv) srv->broadcastBlockChange(x, y, z, state);
+}
+
 // -------------------------------------------------------- Crop
 
 void CropBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
@@ -253,12 +306,13 @@ void CropBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
     if (!d) return;
     if (std::string(d->name).find("beetroots") != std::string::npos) maxAge = 3;
     if (age >= maxAge) return;
-    if (getLight(w,x,y+1,z) < 9) return;
+    const int light = getLight(w,x,y+1,z);
+    if (light < 9) return;
     float f = growthSpeed(w,x,y,z);
     int denom = (int)(25.0f / f) + 1;
     if (denom < 1) denom = 1;
-    if ((rand() % denom) != 0) return;
-    w.setBlock(x,y,z, withAge(d, state, age+1));
+    if ((nextRandom() % denom) != 0) return;
+    setBlockAndBroadcast(w, srv, x, y, z, withAge(d, state, age+1));
 }
 
 bool CropBehavior::fertilize(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
@@ -269,7 +323,7 @@ bool CropBehavior::fertilize(World& w, std::int32_t x, std::int32_t y, std::int3
     if (!d) return false;
     if (std::string(d->name).find("beetroots")!=std::string::npos) maxAge=3;
     if (age >= maxAge) return false;
-    w.setBlock(x,y,z, withAge(d, state, maxAge));
+    setBlockAndBroadcast(w, srv, x, y, z, withAge(d, state, maxAge));
     return true;
 }
 
@@ -278,7 +332,7 @@ bool CropBehavior::fertilize(World& w, std::int32_t x, std::int32_t y, std::int3
 void SaplingBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
                            std::uint16_t state, std::int64_t now, GameServer* srv) {
     if (srv && srv->gameRules().getInt("randomTickSpeed",3)==0) return;
-    if ((rand() % 100) < 5) fertilize(w,x,y,z,state,srv);
+    if ((nextRandom() % 100) < 5) fertilize(w,x,y,z,state,srv);
 }
 
 bool SaplingBehavior::fertilize(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
@@ -291,14 +345,15 @@ bool SaplingBehavior::fertilize(World& w, std::int32_t x, std::int32_t y, std::i
                 std::string(bd->name)!="minecraft:grass_block")) return false;
     const auto logId = gen::blockNameToState().at("minecraft:oak_log");
     const auto leavesId = gen::blockNameToState().at("minecraft:oak_leaves");
-    w.setBlock(x,y,z, 0);
-    const int trunkH = 4 + (rand()%3);
-    for (int t=0; t<trunkH; ++t) w.setBlock(x, y+t, z, logId);
+    setBlockAndBroadcast(w, srv, x, y, z, 0);
+    const int trunkH = 4 + (nextRandom()%3);
+    for (int t=0; t<trunkH; ++t) setBlockAndBroadcast(w, srv, x, y+t, z, logId);
     for (int dy=trunkH-2; dy<=trunkH+1; ++dy){
         int rad = dy>=trunkH ? 1 : 2;
         for(int dz=-rad; dz<=rad; ++dz) for(int dx=-rad; dx<=rad; ++dx){
             if(dx==0&&dz==0&&dy<trunkH) continue;
-            if (w.getBlock(x+dx, y+dy, z+dz)==0) w.setBlock(x+dx, y+dy, z+dz, leavesId);
+            if (w.getBlock(x+dx, y+dy, z+dz)==0)
+                setBlockAndBroadcast(w, srv, x+dx, y+dy, z+dz, leavesId);
         }
     }
     return true;
@@ -312,9 +367,9 @@ void StemBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
     // gates: randomTickSpeed 0 and simulation distance (also gated in BlockTickScheduler::tick but keep here for direct calls)
     if (srv) {
         if (srv->gameRules().getInt("randomTickSpeed",3)==0) return;
-        if (!srv->isChunkInSimulationDistance(x>>4, z>>4)) return;
+        if (!chunkIsSimulated(w, srv, x, z)) return;
     }
-    if ((rand()%100) >= 20) return; // 20% per random tick as before
+    if ((nextRandom()%100) >= 20) return; // 20% per random tick as before
     const gen::BlockDef* d = gen::blockByState(state);
     if (!d) return;
     std::string name(d->name);
@@ -408,8 +463,7 @@ void StemBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
     if (columnHeight >= maxH_) return;
     if (age < 15) {
         std::uint16_t ns = withAge(d, state, age+1);
-        w.setBlock(x,y,z, ns);
-        if (srv) srv->broadcastBlockChange(x,y,z, ns);
+        setBlockAndBroadcast(w, srv, x, y, z, ns);
     } else {
         if (w.getBlock(x,y+1,z)==0) {
             std::uint16_t cur0 = withAge(d, state, 0);
@@ -458,7 +512,7 @@ void GrassBlockBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int
 void GrassBlockBehavior::randomTick(World& w, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state, std::int64_t now, GameServer* srv) {
     if (srv) {
         if (srv->gameRules().getInt("randomTickSpeed",3)==0) return;
-        if (!srv->isChunkInSimulationDistance(x>>4, z>>4)) return;
+        if (!chunkIsSimulated(w, srv, x, z)) return;
     }
     const gen::BlockDef* d = gen::blockByState(state);
     if (!d || std::string(d->name)!="minecraft:grass_block") return;
@@ -488,11 +542,11 @@ void PaleOakLeavesBehavior::randomTick(World& w, std::int32_t x, std::int32_t y,
     (void)w; (void)state; (void)now;
     if (!srv) return;
     if (srv->gameRules().getInt("randomTickSpeed", 3) == 0) return;
-    if (!srv->isChunkInSimulationDistance(x>>4, z>>4)) return;
+    if (!chunkIsSimulated(w, srv, x, z)) return;
     const gen::BlockDef* d = gen::blockByState(state);
     if (!d || std::string(d->name) != "minecraft:pale_oak_leaves") return;
     // 2% chance (1/50) per randomTick, as vanilla PaleOakLeavesBlock randomTick
-    if ((rand() % 50) != 0) return;
+    if ((nextRandom() % 50) != 0) return;
     // Broadcast pale_oak_leaves particle 34, Simple, count 1, at center of block (D19)
     srv->broadcastPaleOakLeavesParticle(x + 0.5, y + 0.5, z + 0.5);
 }
@@ -516,9 +570,9 @@ static void trySpawnCreakingForHeart(World& w, std::int32_t hx, std::int32_t hy,
     }
     // find spawn pos within 16 horiz 8 vert, try up to 8 attempts
     for (int attempt=0; attempt<8; ++attempt) {
-        int dx = (rand() % 32) - 16;
-        int dz = (rand() % 32) - 16;
-        int dy = (rand() % 17) - 8;
+        int dx = (nextRandom() % 32) - 16;
+        int dz = (nextRandom() % 32) - 16;
+        int dy = (nextRandom() % 17) - 8;
         int sx = hx + dx;
         int sz = hz + dz;
         int sy = hy + dy;
@@ -550,7 +604,7 @@ static void trySpawnCreakingForHeart(World& w, std::int32_t hx, std::int32_t hy,
 }
 void CreakingHeartBehavior::randomTick(World& w, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state, std::int64_t now, GameServer* srv) {
     if (!srv) return;
-    if (!srv->isChunkInSimulationDistance(x>>4, z>>4)) return;
+    if (!chunkIsSimulated(w, srv, x, z)) return;
     const gen::BlockDef* d = gen::blockByState(state);
     if (!d || std::string(d->name) != "minecraft:creaking_heart") return;
     std::string axis = "y";
@@ -607,7 +661,7 @@ void FarmlandBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32
         std::string ms = std::to_string(want);
         props.emplace_back("moisture", ms);
         const std::uint16_t ns = static_cast<std::uint16_t>(gen::stateWithProps(*d, props));
-        w.setBlock(x,y,z, ns);
+        setBlockAndBroadcast(w, srv, x, y, z, ns);
         state = ns;
         moist = want;
     }
@@ -626,7 +680,8 @@ void FarmlandBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32
                 hasCrop = true;
         }
         if (!hasCrop && !hasWater) {
-            w.setBlock(x,y,z, gen::blockNameToState().at("minecraft:dirt"));
+            setBlockAndBroadcast(w, srv, x, y, z,
+                                 gen::blockNameToState().at("minecraft:dirt"));
         }
     }
 }
@@ -637,7 +692,7 @@ void CocoaBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t 
     (void)now; (void)srv;
     int age=0; for(auto&[k,v]: gen::propsOf(state)) if(k=="age") age=std::atoi(std::string(v).c_str());
     if(age>=2) return;
-    if((rand()%5)!=0) return;
+    if((nextRandom()%5)!=0) return;
     const gen::BlockDef* d=gen::blockByState(state); if(!d) return;
     // require jungle_log adjacent per facing
     std::string facing="north"; for(auto&[k,v]: gen::propsOf(state)) if(k=="facing") facing=std::string(v);
@@ -647,8 +702,10 @@ void CocoaBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t 
     if(!bd || std::string(bd->name)!="minecraft:jungle_log") return;
     std::vector<std::pair<std::string_view,std::string_view>> props;
     for(auto&[k,v]: gen::propsOf(state)) if(k!="age") props.emplace_back(k,v);
-    props.emplace_back("age", std::to_string(age+1));
-    w.setBlock(x,y,z, static_cast<std::uint16_t>(gen::stateWithProps(*d, props)));
+    const std::string ageString = std::to_string(age + 1);
+    props.emplace_back("age", ageString);
+    setBlockAndBroadcast(w, srv, x, y, z,
+                         static_cast<std::uint16_t>(gen::stateWithProps(*d, props)));
 }
 bool CocoaBehavior::fertilize(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
                               std::uint16_t state, GameServer* srv){
@@ -658,8 +715,9 @@ bool CocoaBehavior::fertilize(World& w, std::int32_t x, std::int32_t y, std::int
     std::vector<std::pair<std::string_view,std::string_view>> props;
     for(auto&[k,v]: gen::propsOf(state)) if(k!="age") props.emplace_back(k,v);
     props.emplace_back("age","2");
-    w.setBlock(x,y,z, static_cast<std::uint16_t>(gen::stateWithProps(*d, props)));
-    (void)srv; return true;
+    setBlockAndBroadcast(w, srv, x, y, z,
+                         static_cast<std::uint16_t>(gen::stateWithProps(*d, props)));
+    return true;
 }
 void SweetBerryBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
                               std::uint16_t state, std::int64_t now, GameServer* srv){
@@ -667,15 +725,17 @@ void SweetBerryBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int
     int age=0; for(auto&[k,v]: gen::propsOf(state)) if(k=="age") age=std::atoi(std::string(v).c_str());
     if(age>=3) return;
     if(age<2){
-        if((rand()%3)!=0) return;
+        if((nextRandom()%3)!=0) return;
     } else {
-        if((rand()%100)>=50) return;
+        if((nextRandom()%100)>=50) return;
     }
     const gen::BlockDef* d=gen::blockByState(state); if(!d) return;
     std::vector<std::pair<std::string_view,std::string_view>> props;
     for(auto&[k,v]: gen::propsOf(state)) if(k!="age") props.emplace_back(k,v);
-    props.emplace_back("age", std::to_string(age+1));
-    w.setBlock(x,y,z, static_cast<std::uint16_t>(gen::stateWithProps(*d, props)));
+    const std::string ageString = std::to_string(age + 1);
+    props.emplace_back("age", ageString);
+    setBlockAndBroadcast(w, srv, x, y, z,
+                         static_cast<std::uint16_t>(gen::stateWithProps(*d, props)));
 }
 bool SweetBerryBehavior::fertilize(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
                                    std::uint16_t state, GameServer* srv){
@@ -684,30 +744,34 @@ bool SweetBerryBehavior::fertilize(World& w, std::int32_t x, std::int32_t y, std
     const gen::BlockDef* d=gen::blockByState(state); if(!d) return false;
     std::vector<std::pair<std::string_view,std::string_view>> props;
     for(auto&[k,v]: gen::propsOf(state)) if(k!="age") props.emplace_back(k,v);
-    props.emplace_back("age", std::to_string(age+1));
-    w.setBlock(x,y,z, static_cast<std::uint16_t>(gen::stateWithProps(*d, props)));
-    (void)srv; return true;
+    const std::string ageString = std::to_string(age + 1);
+    props.emplace_back("age", ageString);
+    setBlockAndBroadcast(w, srv, x, y, z,
+                         static_cast<std::uint16_t>(gen::stateWithProps(*d, props)));
+    return true;
 }
 void NetherWartBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
                               std::uint16_t state, std::int64_t now, GameServer* srv){
     (void)now;(void)srv;
     int age=0; for(auto&[k,v]: gen::propsOf(state)) if(k=="age") age=std::atoi(std::string(v).c_str());
     if(age>=3) return;
-    if((rand()%10)!=0) return;
+    if((nextRandom()%10)!=0) return;
     auto below=w.getBlock(x,y-1,z); auto* bd=gen::blockByState(below);
     if(!bd || std::string(bd->name)!="minecraft:soul_sand") return;
     const gen::BlockDef* d=gen::blockByState(state); if(!d) return;
     std::vector<std::pair<std::string_view,std::string_view>> props;
     for(auto&[k,v]: gen::propsOf(state)) if(k!="age") props.emplace_back(k,v);
-    props.emplace_back("age", std::to_string(age+1));
-    w.setBlock(x,y,z, static_cast<std::uint16_t>(gen::stateWithProps(*d, props)));
+    const std::string ageString = std::to_string(age + 1);
+    props.emplace_back("age", ageString);
+    setBlockAndBroadcast(w, srv, x, y, z,
+                         static_cast<std::uint16_t>(gen::stateWithProps(*d, props)));
 }
 void ChorusFlowerBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
                                 std::uint16_t state, std::int64_t now, GameServer* srv){
     int age=0; for(auto&[k,v]: gen::propsOf(state)) if(k=="age") age=std::atoi(std::string(v).c_str());
     if(age>=5) return;
     if(!w.isEndHighlandsAt(x,z)) return;
-    if((rand()%5)!=0) return;
+    if((nextRandom()%5)!=0) return;
     const gen::BlockDef* d=gen::blockByState(state); if(!d) return;
     // vertical growth if above is air
     bool canGrowUp = (w.getBlock(x,y+1,z)==0);
@@ -750,14 +814,14 @@ void ChorusFlowerBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::i
         auto* bbd = gen::blockByState(below);
         if(bbd && std::string(bbd->name)=="minecraft:chorus_plant") adjPlants++;
         bool isBranched = adjPlants>1;
-        int attempts = isBranched ? (rand()%4) : (1+rand()%4);
+        int attempts = isBranched ? (nextRandom()%4) : (1+nextRandom()%4);
         const int DX[4]={1,-1,0,0}, DZ[4]={0,0,1,-1};
         bool branched=false;
         auto plantIt = gen::blockNameToState().find("minecraft:chorus_plant");
         uint16_t plantSt = 0;
         if(plantIt!=gen::blockNameToState().end()) plantSt = static_cast<uint16_t>(plantIt->second);
         for(int i=0;i<attempts;++i){
-            int dir = rand()%4;
+            int dir = nextRandom()%4;
             int nx = x + DX[dir], nz = z + DZ[dir];
             if(w.getBlock(nx,y,nz)!=0) continue;
             if(w.getBlock(nx,y-1,nz)!=0) continue;
@@ -783,7 +847,8 @@ void ChorusFlowerBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::i
             // success: place new flower with age+1
             std::vector<std::pair<std::string_view,std::string_view>> props;
             for(auto&[k,v]: gen::propsOf(state)) if(k!="age") props.emplace_back(k,v);
-            props.emplace_back("age", std::to_string(age+1));
+            const std::string ageString = std::to_string(age + 1);
+            props.emplace_back("age", ageString);
             uint16_t ns = static_cast<uint16_t>(gen::stateWithProps(*d, props));
             w.setBlock(nx,y,nz, ns);
             if(srv) srv->broadcastBlockChange(nx,y,nz, ns);
@@ -818,7 +883,7 @@ void KelpBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
     if (std::string(d->name)!="minecraft:kelp") return; // B26: seagrass excluded
     int age=0; for(auto&[k,v]: gen::propsOf(state)) if(k=="age") age=std::atoi(std::string(v).c_str());
     if(age>=25) return; // B26 age cap
-    if((rand()%100) >= 14) return; // B26 14% not 10%
+    if((nextRandom()%100) >= 14) return; // B26 14% not 10%
     std::uint16_t up = w.getBlock(x,y+1,z);
     if(up==0) return;
     const gen::BlockDef* upDef = gen::blockByState(up);
@@ -830,7 +895,8 @@ void KelpBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
     {
         std::vector<std::pair<std::string_view,std::string_view>> props;
         for(auto&[k,v]: gen::propsOf(state)) if(k!="age") props.emplace_back(k,v);
-        props.emplace_back("age", std::to_string(age+1));
+        const std::string ageString = std::to_string(age + 1);
+        props.emplace_back("age", ageString);
         std::uint16_t ns = static_cast<std::uint16_t>(gen::stateWithProps(*d, props));
         w.setBlock(x,y,z, ns);
         if(srv) srv->broadcastBlockChange(x,y,z, ns);
@@ -871,7 +937,8 @@ bool KelpBehavior::fertilize(World& w, std::int32_t x, std::int32_t y, std::int3
     if(!still) return false;
     std::vector<std::pair<std::string_view,std::string_view>> props;
     for(auto&[k,v]: gen::propsOf(state)) if(k!="age") props.emplace_back(k,v);
-    props.emplace_back("age", std::to_string(std::min(25, age+1)));
+    const std::string ageString = std::to_string(std::min(25, age + 1));
+    props.emplace_back("age", ageString);
     std::uint16_t ns = static_cast<std::uint16_t>(gen::stateWithProps(*d, props));
     w.setBlock(x,y,z, ns);
     if(srv) srv->broadcastBlockChange(x,y,z, ns);
@@ -1021,9 +1088,9 @@ void FireBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
         if (gr && !gr->getBool("doFireTick")) return;
     }
     int age = getAge(state);
-    if (age < 15 && (rand()%3)==0) {
+    if (age < 15 && (nextRandom()%3)==0) {
         const gen::BlockDef* d = gen::blockByState(state);
-        w.setBlock(x,y,z, withAge(d, state, age+1));
+        setBlockAndBroadcast(w, srv, x, y, z, withAge(d, state, age+1));
         age++;
         state = w.getBlock(x,y,z);
     }
@@ -1054,16 +1121,18 @@ void FireBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
                     if(ad && reg.get(std::string(ad->name))) canIgnite=true;
                 }
                 if(!canIgnite) continue;
-                if ((rand()%100) < getSpreadChance()) {
+                if ((nextRandom()%100) < getSpreadChance()) {
                     const auto fireIt = gen::blockNameToState().find("minecraft:fire");
-                    if (fireIt != gen::blockNameToState().end() && w.getBlock(sx,sy2,sz)==0) w.setBlock(sx,sy2,sz, fireIt->second);
+                    if (fireIt != gen::blockNameToState().end() && w.getBlock(sx,sy2,sz)==0)
+                        setBlockAndBroadcast(w, srv, sx, sy2, sz,
+                                             static_cast<std::uint16_t>(fireIt->second));
                 }
             } else {
                 auto opt = reg.get(std::string(nd->name));
                 if (!opt) continue;
                 int igniteOdds = opt->igniteOdds;
                 if (igniteOdds<=0) continue;
-                if ((rand() % igniteOdds)==0) {
+                if ((nextRandom() % igniteOdds)==0) {
                     // convert flammable block to fire if air above? but spec replaces flammable with fire
                     if (w.getBlock(sx,sy2,sz)!=0) {
                         // only if flammable block itself could become fire? vanilla replaces?
@@ -1071,7 +1140,9 @@ void FireBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
                     }
                     const auto fireIt = gen::blockNameToState().find("minecraft:fire");
                     if (fireIt != gen::blockNameToState().end()) {
-                        if ((rand()%2)==0) w.setBlock(sx,sy2,sz, fireIt->second);
+                        if ((nextRandom()%2)==0)
+                            setBlockAndBroadcast(w, srv, sx, sy2, sz,
+                                                 static_cast<std::uint16_t>(fireIt->second));
                     }
                 }
             }
@@ -1082,7 +1153,7 @@ void FireBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
         if (dx==0&&dy==0&&dz==0) continue;
         if (std::abs(dx)+std::abs(dy)+std::abs(dz) > 2) continue; // limit to 6 dirs plus maybe corners slight
         const std::uint16_t ns = w.getBlock(x+dx,y+dy,z+dz);
-        if (ns==0 && (rand()%100) < getSpreadChance()) {
+        if (ns==0 && (nextRandom()%100) < getSpreadChance()) {
             bool adjFlam = false;
             for (int ddx=-1; ddx<=1 && !adjFlam; ++ddx) for (int ddy=-1; ddy<=1 && !adjFlam; ++ddy) for (int ddz=-1; ddz<=1 && !adjFlam; ++ddz){
                 const std::uint16_t as = w.getBlock(x+dx+ddx, y+dy+ddy, z+dz+ddz);
@@ -1091,7 +1162,9 @@ void FireBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
             }
             if (adjFlam && w.getBlock(x+dx,y+dy,z+dz)==0) {
                 const auto fire = gen::blockNameToState().find("minecraft:fire");
-                if (fire != gen::blockNameToState().end()) w.setBlock(x+dx,y+dy,z+dz, fire->second);
+                if (fire != gen::blockNameToState().end())
+                    setBlockAndBroadcast(w, srv, x+dx, y+dy, z+dz,
+                                         static_cast<std::uint16_t>(fire->second));
             }
         }
     }
@@ -1127,7 +1200,7 @@ void FireBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
                     else props.emplace_back(k,v);
                 }
                 std::uint16_t ns = static_cast<std::uint16_t>(gen::stateWithProps(*d, props));
-                if(ns!=state) w.setBlock(x,y,z, ns);
+                if(ns!=state) setBlockAndBroadcast(w, srv, x, y, z, ns);
             }
         }
     }
@@ -1140,23 +1213,24 @@ void FireBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
             auto* bd = gen::blockByState(w.getBlock(x+dx,y+dy,z+dz));
             if(bd && isFlammable(std::string(bd->name))) hasFlammableBelow=true;
         }
-        if (!hasFlammableBelow && (rand()%4)==0) w.setBlock(x,y,z, 0);
+        if (!hasFlammableBelow && (nextRandom()%4)==0)
+            setBlockAndBroadcast(w, srv, x, y, z, 0);
     }
 }
 
 
 void PortalAgeBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z,
                              std::uint16_t state, std::int64_t now, GameServer* srv) {
-    (void)now; (void)srv;
+    (void)now;
     int age = getAge(state);
     const gen::BlockDef* d = gen::blockByState(state);
     if (!d) return;
     if (age < 15) {
-        if ((rand() % 100) < 10) {
-            w.setBlock(x,y,z, withAge(d, state, age+1));
+        if ((nextRandom() % 100) < 10) {
+            setBlockAndBroadcast(w, srv, x, y, z, withAge(d, state, age+1));
         }
     } else {
-        if ((rand() % 100) < 2) {
+        if ((nextRandom() % 100) < 2) {
             bool nearFrame = false;
             for (int dx=-2; dx<=2 && !nearFrame; ++dx) for (int dy=-2; dy<=2 && !nearFrame; ++dy) for (int dz=-2; dz<=2 && !nearFrame; ++dz){
                 if (dx==0&&dy==0&&dz==0) continue;
@@ -1164,7 +1238,7 @@ void PortalAgeBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int3
                 auto* bd = gen::blockByState(s2);
                 if (bd && std::string(bd->name)=="minecraft:obsidian") nearFrame = true;
             }
-            if (!nearFrame) w.setBlock(x,y,z, 0);
+            if (!nearFrame) setBlockAndBroadcast(w, srv, x, y, z, 0);
         }
     }
 }
@@ -1180,7 +1254,7 @@ void SoulFireBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32
         if (gr && !gr->getBool("doFireTick")) return;
     }
     if (!isSoulBaseBlock(w,x,y,z,srv)) {
-        w.setBlock(x,y,z, 0);
+        setBlockAndBroadcast(w, srv, x, y, z, 0);
         return;
     }
     FireBehavior::tick(w, x, y, z, state, now, srv);

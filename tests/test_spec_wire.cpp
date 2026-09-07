@@ -31,7 +31,6 @@ using namespace cppfm;
 
 static int g_pass = 0;
 static int g_fail = 0;
-static int g_skip = 0;
 
 static void hexDump(const std::vector<std::uint8_t>& v, size_t limit=64) {
     for (size_t i=0;i<v.size() && i<limit;++i) std::printf("%02x ", v[i]);
@@ -253,17 +252,7 @@ static void test_update_attributes_wire() {
     uint8_t third = b.data[2];
     bool isOldStringWire = (third > 0x15); // old string len 20-35 (0x14-0x23), new mapper 0-21 (0x00-0x15)
     if (isOldStringWire) {
-        std::printf("  SKIP H1 UpdateAttributes spec (old string wire detected, third=0x%02x) — TODO after entity merge\n", third);
-        ++g_skip;
-        ++g_pass; // don't fail overall
-        std::string all((char*)b.data.data(), b.data.size());
-        bool hasGeneric = all.find("minecraft:generic")!=std::string::npos;
-        check(hasGeneric, "old wire contains string key minecraft:generic");
-        WriteBuffer spec; spec.varint(1); spec.varint(1); spec.varint(8); spec.f64(2.0); spec.varint(0);
-        std::vector<std::uint8_t> specExp{0x01,0x01,0x08,0x40,0x00,0x00,0x00,0x00,0x00,0x00,0x00};
-        std::printf("       SPEC expected for armor 2.0: ");
-        for(auto v: specExp) std::printf("%02x ",v);
-        std::printf("(key varint 08 = generic.armor)\n");
+        check(false, "UpdateAttributes must use the 1.21.4 numeric attribute mapper");
         return;
     }
     ReadBuffer r(b.data);
@@ -774,7 +763,7 @@ static void test_structure_sets_40_plan36(){
     body.u64(0x0000000000000004ULL);
     body.varint(1);
     body.varint((1<<12)|(2<<8)|(3<<4)|2);
-    check(body.data.size()==8+1+2, "structureSets_40 placeholder MultiBlockChange 1 record size 11");
+    check(body.data.size()==8+1+2, "MultiBlockChange one-record fixture has the expected 11-byte body");
     WriteBuffer salt; salt.varint(94251327);
     check(salt.data.size()>=3,"trial_chambers salt 94251327 varint >=3 bytes");
 }
@@ -784,7 +773,7 @@ static void test_loot_chest_wire_plan36(){
     b.varint(1); // windowId 1 chest
     b.varint(7); // stateId
     b.varint(1); // 1 item emerald
-    ItemStack emerald = ItemStack::of(2,1); // itemId 2 placeholder
+    ItemStack emerald = ItemStack::ofName("minecraft:emerald", 1);
     emerald.write(b);
     ItemStack carried = ItemStack::air(); carried.write(b);
     check(b.data[0]==0x01 && b.data[1]==0x07,"loot chest ContainerSetContent header 01 07");
@@ -835,14 +824,24 @@ static void test_advancement_wire_plan37(){
     {
         std::unordered_map<std::string,std::string> raw;
         raw["minecraft:story/root"] = R"({"display":{"icon":{"item":"minecraft:grass_block"},"title":"Root","description":"Story"},"parent":"","criteria":{"tick":{"trigger":"minecraft:tick"}},"requirements":[["tick"]]})";
-        for(int i=0;i<30;++i){
-            raw["minecraft:test/dummy"+std::to_string(i)] = R"({"display":{"icon":{"item":"minecraft:stone"},"title":"Dummy","description":"x"},"parent":"minecraft:story/root","criteria":{"tick":{"trigger":"minecraft:tick"}},"requirements":[["tick"]]})";
-        }
+        raw["minecraft:story/mine_stone"] = R"({"display":{"icon":{"item":"minecraft:stone"},"title":"Stone","description":"Mine stone"},"parent":"minecraft:story/root","criteria":{"mine":{"trigger":"minecraft:tick"}},"requirements":[["mine"]]})";
+        raw["minecraft:husbandry/plant_seed"] = R"({"display":{"icon":{"item":"minecraft:wheat"},"title":"A Seed","description":"Plant a seed"},"parent":"minecraft:story/root","criteria":{"plant":{"trigger":"minecraft:tick"}},"requirements":[["plant"]]})";
         auto merged = mergedAdvancements(raw);
-        check((int)merged.size() >= 30, "mergedAdvancements >=30 with 30 dummies");
+        check(merged.size() == advancementDefs().size() + raw.size(),
+              "mergedAdvancements retains each distinct datapack definition");
+        bool hasRoot = false;
+        bool hasStone = false;
+        bool hasSeed = false;
+        for (const auto& def : merged) {
+            hasRoot |= def.id == "minecraft:story/root";
+            hasStone |= def.id == "minecraft:story/mine_stone";
+            hasSeed |= def.id == "minecraft:husbandry/plant_seed";
+        }
+        check(hasRoot && hasStone && hasSeed,
+              "mergedAdvancements contains all three datapack identifiers");
         WriteBuffer b;
         writeAdvancementsPacket(b, true, merged, [&](const std::string&){return false;});
-        check(b.data.size()>50, "UpdateAdvancements merged packet >50 bytes");
+        check(b.data.size()>50, "UpdateAdvancements merged packet is non-empty");
     }
 }
 static void test_container_content_wire_plan37(){
@@ -931,7 +930,46 @@ static void test_loot100_plan40(){
     if (auto it = eval.tables().find("minecraft:blocks/coal_ore"); it != eval.tables().end()){
         check(it->second.pools[0].entries[0].countMin==1, "coal_ore countMin 1");
     }
-    check(true, "loot binomial/limit fields present (compile)");
+    // Keep the production fixture honest: coal_ore does not define limit_count.
+    // Exercise the parser with a small, isolated fixture so this test verifies
+    // the optional function rather than attributing it to the wrong table.
+    namespace fs = std::filesystem;
+    const fs::path limitFixture = fs::temp_directory_path() / "cppfm-loot-limit-regression";
+    std::error_code fixtureEc;
+    fs::remove_all(limitFixture, fixtureEc);
+    fs::create_directories(limitFixture / "loot_tables/blocks", fixtureEc);
+    check(!fixtureEc, "loot limit fixture directory is created");
+    {
+        std::ofstream fixture(limitFixture / "loot_tables/blocks/limit_regression.json",
+                              std::ios::binary);
+        fixture << R"({
+          "pools": [{
+            "rolls": 1,
+            "entries": [{
+              "type": "minecraft:item",
+              "name": "minecraft:stone",
+              "functions": [{
+                "function": "minecraft:limit_count",
+                "limit": {"min": 2, "max": 5}
+              }]
+            }]
+          }]
+        })";
+        check(static_cast<bool>(fixture), "loot limit fixture is written");
+    }
+    LootTableEvaluator limitEval;
+    limitEval.loadDirectory(limitFixture.string());
+    if (const auto* table = limitEval.find("minecraft:blocks/limit_regression");
+        table && !table->pools.empty() && !table->pools[0].entries.empty()) {
+        const auto& entry = table->pools[0].entries[0];
+        check(entry.hasLimit && entry.limitMin == 2 && entry.limitMax == 5,
+              "limit_count function is parsed with its exact range");
+    } else {
+        check(false, "limit_count fixture is loaded");
+    }
+    fixtureEc.clear();
+    fs::remove_all(limitFixture, fixtureEc);
+    check(!fixtureEc, "loot limit fixture is cleaned up");
     {
         LootContext ctx0{0,0,0,"",false}; ctx0.fortuneLevel=0;
         auto d0 = eval.evaluateWithContext("minecraft:blocks/coal_ore", ItemStack::ofName("minecraft:iron_pickaxe",1), &ctx0);
@@ -989,7 +1027,6 @@ static void test_advancement80_plan40(){
 static void test_predicate22_plan40(){
     std::printf("[P3] Predicate 22 plan40 — nbt/type_specific/dimension/enchantment_active (C-07)\n");
     DatapackManager dm;
-    check(true, "predicate 22 types loaded (compile)");
     WriteBuffer b1; b1.string("minecraft:nbt");
     WriteBuffer b2; b2.string("minecraft:type_specific");
     WriteBuffer b3; b3.string("minecraft:enchantment_active_check");
@@ -1005,8 +1042,9 @@ static void test_predicate22_plan40(){
     }
     {
         json::Value v=json::Value::parse(R"({"condition":"minecraft:location_check","predicate":{"dimension":"minecraft:overworld"}})");
-        PredicateContext ctx; // world null defaults to overworld
-        check(dm.evaluatePredicateValue(v, ctx)==true, "predicate dimension overworld true when no world");
+        World world("minecraft:plains", LevelType::Flat, 0);
+        PredicateContext ctx; ctx.world=&world;
+        check(dm.evaluatePredicateValue(v, ctx)==true, "predicate dimension overworld true with world context");
     }
     {
         json::Value v=json::Value::parse(R"({"condition":"minecraft:entity_properties","predicate":{"type_specific":{"type":"minecraft:player"}}})");
@@ -1024,8 +1062,9 @@ static void test_predicate22_plan40(){
     }
     {
         json::Value v=json::Value::parse(R"({"condition":"minecraft:block_state_property","block":"minecraft:air"})");
-        PredicateContext ctx;
-        check(dm.evaluatePredicateValue(v, ctx)==true, "predicate block_state_property air true (pass-through)");
+        World world("minecraft:plains", LevelType::Flat, 0);
+        PredicateContext ctx; ctx.world=&world; ctx.y=100;
+        check(dm.evaluatePredicateValue(v, ctx)==true, "predicate block_state_property air reads world state");
     }
 }
 static void test_open_horse_window_plan41(){
@@ -1327,7 +1366,6 @@ int main(){
     test_plan43_abilities_layout();
     test_plan43_sign_layout();
 
-    std::printf("=== spec_wire: %d PASS %d FAIL %d SKIP ===\n", g_pass, g_fail, g_skip);
-    if (g_skip) std::printf("NOTE: %d SKIP are FIXMEs pending entity/network merge (H1 etc)\n", g_skip);
+    std::printf("=== spec_wire: %d PASS %d FAIL ===\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

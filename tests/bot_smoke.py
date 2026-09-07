@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Bot smoke 3-clients 30s — C-12 (real-connection wire validation)."""
-import io, os, struct, sys, time, argparse, subprocess, socket
+import io, os, struct, sys, time, argparse, subprocess, socket, signal, tempfile, shutil
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mcproto
 from mcproto import Conn, read_varint
@@ -10,6 +10,51 @@ def check(cond, msg):
     global fails
     print(("  ok  " if cond else "  FAIL ") + msg)
     if not cond: fails += 1
+
+def stop_process(proc, timeout=10):
+    if proc is None:
+        return
+    if proc.poll() is None:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    try:
+        proc.wait(timeout=timeout)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    if proc.poll() is None:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    proc.wait(timeout=5)
+
+def wait_for_server(proc, host, port, timeout=15):
+    """Wait for a live status response and fail if the owned child exits."""
+    deadline = time.monotonic() + timeout
+    last_error = None
+    while time.monotonic() < deadline:
+        returncode = proc.poll()
+        if returncode is not None:
+            raise RuntimeError(f"server exited before readiness probe (exit={returncode})")
+        client = None
+        try:
+            client = Conn(host, port, timeout=1)
+            client.status()
+            return
+        except (OSError, EOFError, ValueError, RuntimeError) as exc:
+            last_error = exc
+            time.sleep(0.1)
+        finally:
+            if client is not None:
+                try:
+                    client.close()
+                except OSError:
+                    pass
+    detail = f": {last_error}" if last_error else ""
+    raise TimeoutError(f"server readiness probe timed out on {host}:{port}{detail}")
 
 class Bot:
     def __init__(self, name, host, port):
@@ -25,11 +70,12 @@ class Bot:
         self.chat = []
         self.times = 0
         self.keepalives = 0
+        self.disconnects = 0
         self.container_updates = []
     def pump(self, seconds=1.0, move=True):
-        t_end = time.time() + seconds
-        last_move = time.time()
-        while time.time() < t_end:
+        t_end = time.monotonic() + seconds
+        last_move = time.monotonic()
+        while time.monotonic() < t_end:
             try:
                 pid, data = self.c.recv_packet()
             except OSError:
@@ -37,6 +83,9 @@ class Bot:
             if pid == 0x27:
                 self.keepalives += 1
                 self.c.send_packet_raw(0x1a, data)
+            elif pid == 0x1d:
+                self.disconnects += 1
+                return
             elif pid == 0x42:
                 bio = io.BytesIO(data); tid, _ = read_varint(bio)
                 self.c.send_packet_raw(0x00, mcproto.write_varint(tid))
@@ -61,8 +110,8 @@ class Bot:
                 self.times += 1
             elif pid in (0x12, 0x13):
                 self.container_updates.append((pid, data))
-            if move and time.time() - last_move > 0.35:
-                last_move = time.time()
+            if move and time.monotonic() - last_move > 0.35:
+                last_move = time.monotonic()
                 try:
                     self.c.send_packet_raw(0x1c, struct.pack(">ddd", 8.5, -60.0, 8.5) + b"\x01")
                 except OSError:
@@ -82,17 +131,26 @@ def main():
     duration = args.duration
     binary = args.binary
     proc = None
+    world_dir = None
 
     if binary:
         def free_port():
             s=socket.socket(); s.bind(("127.0.0.1",0)); p=s.getsockname()[1]; s.close(); return p
         port = free_port()
         host = "127.0.0.1"
+        world_dir = tempfile.mkdtemp(prefix=f"cppfm-bot-smoke-{os.getpid()}-")
         print(f"[bot_smoke] spawning {binary} --port {port}")
         cwd = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-        proc = subprocess.Popen([binary, "--port", str(port), "--view-distance", "6"],
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=cwd)
-        time.sleep(1.8)
+        try:
+            proc = subprocess.Popen([binary, "--port", str(port), "--view-distance", "6",
+                                     "--world-dir", world_dir],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=cwd,
+                                    start_new_session=True)
+            wait_for_server(proc, host, port)
+        except BaseException:
+            stop_process(proc)
+            shutil.rmtree(world_dir, ignore_errors=True)
+            raise
 
     global fails
     try:
@@ -120,19 +178,31 @@ def main():
 
         def pack_click(windowId, stateId, slot, button, mode):
             return mcproto.write_varint(windowId) + mcproto.write_varint(stateId) + struct.pack(">h", slot) + struct.pack("b", button) + mcproto.write_varint(mode) + mcproto.write_varint(0) + mcproto.write_varint(0)
+        click_ok = True
         try:
             a.c.send_packet_raw(0x10, pack_click(0, 0, 0, 0, 0))
             time.sleep(0.15)
             a.c.send_packet_raw(0x10, pack_click(0, 0, -999, 2, 5))
             time.sleep(0.3); a.pump(0.5)
-        except OSError:
-            pass
-        check(a.keepalives >= 0, f"A drag mode5 no-kick keepAlives={a.keepalives} containerUpd={len(a.container_updates)}")
+        except (OSError, EOFError) as exc:
+            click_ok = False
+            check(False, f"mode-5 inventory clicks accepted without transport error ({exc})")
+        if click_ok:
+            a.c.send_packet_raw(0x07, mcproto.pack_string("drag-mode5-survived") +
+                                struct.pack(">qq", int(time.time()*1000), 0) +
+                                b"\x00" + mcproto.write_varint(0) + b"\x00\x00\x00")
+            b.pump(0.5); c.pump(0.5)
+            check(any(b"drag-mode5-survived" in d for d in b.chat + c.chat),
+                  "A remains usable after mode-5 inventory clicks")
+        check(a.disconnects == 0, f"A has no Disconnect packet ({a.disconnects})")
 
         # block dig + chat cross-broadcast
         def pack_pos(x, y, z):
             return struct.pack(">q", ((x & 0x3FFFFFF) << 38) | ((z & 0x3FFFFFF) << 12) | (y & 0xFFF))
-        a.c.send_packet_raw(0x27, mcproto.write_varint(0)+pack_pos(4,-61,4)+bytes([1])+mcproto.write_varint(99))
+        # Stay outside the default 16-block spawn-protection radius so this
+        # checks the broadcast path rather than an intentionally rejected dig.
+        dig_x, dig_y, dig_z = 32, -61, 32
+        a.c.send_packet_raw(0x27, mcproto.write_varint(0)+pack_pos(dig_x,dig_y,dig_z)+bytes([1])+mcproto.write_varint(99))
         time.sleep(0.5); a.pump(0.5); b.pump(0.5); c.pump(0.5)
 
         def upd_pos(d):
@@ -141,12 +211,12 @@ def main():
             z=(v>>12) & 0x3FFFFFF; z-=(1<<26) if z>=(1<<25) else 0
             st,_=read_varint(bio); return x,y,z,st
         got_b=[upd_pos(d) for d in b.updates]
-        check((4,-61,4,0) in got_b or len(b.updates)>=0, f"B block update via 0x09 (got {len(got_b)} updates)")
+        check((dig_x,dig_y,dig_z,0) in got_b, f"B block update via 0x09 (got {len(got_b)} updates)")
 
         a.c.send_packet_raw(0x07, mcproto.pack_string("hello from bot_smoke") + struct.pack(">qq", int(time.time()*1000),0)+b"\x00"+mcproto.write_varint(0)+b"\x00\x00\x00")
         time.sleep(0.6); b.pump(0.5); c.pump(0.5)
-        check(any(b"hello from bot_smoke" in d for d in b.chat) or b.times>=0, "B chat/times flow ok")
-        check(a.times>=0 or b.times>=0, f"time updates flow A:{a.times} B:{b.times} (UpdateTime 0x6b)")
+        check(any(b"hello from bot_smoke" in d for d in b.chat), "B receives chat from A")
+        check(a.times>0 and b.times>0, f"time updates flow A:{a.times} B:{b.times} (UpdateTime 0x6b)")
 
         # short extra pump for remaining duration
         remain = max(0, duration - 12)
@@ -157,13 +227,12 @@ def main():
         print(f"[bot_smoke] done fails={fails}")
         for bot in (a,b,c):
             try: bot.c.close()
-            except Exception: pass
+            except (OSError, ValueError): pass
     finally:
         if proc:
-            try: proc.terminate(); proc.wait(timeout=5)
-            except Exception:
-                try: proc.kill()
-                except Exception: pass
+            stop_process(proc)
+        if world_dir:
+            shutil.rmtree(world_dir, ignore_errors=True)
 
     print(f"\n{'FAILURES' if fails else 'ALL PASS'} ({fails} failures)")
     sys.exit(1 if fails else 0)

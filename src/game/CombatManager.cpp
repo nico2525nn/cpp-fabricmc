@@ -73,7 +73,7 @@ void CombatManager::syncPlayerArmor(GameServer& srv, Player& p) {
     if (dirty && p.conn && p.inPlay) {
         WriteBuffer ab;
         p.attributes.writeUpdate(ab, p.entityId);
-        try { p.conn->sendPacket(proto::pl::sc::UpdateAttributes, ab); } catch (...) {}
+        p.conn->trySendPacket(proto::pl::sc::UpdateAttributes, ab);
         srv.broadcastPacketExcept(&p, proto::pl::sc::UpdateAttributes, ab);
     }
 }
@@ -102,7 +102,7 @@ void CombatManager::applyToPlayer(GameServer& srv, Player& p, float amount, cons
         de.varint(dtid >= 0 ? dtid : 0);
         de.varint(0); de.varint(0);
         de.boolean(false);
-        try { p.conn->sendPacket(proto::pl::sc::DamageEvent, de); } catch (...) {}
+        p.conn->trySendPacket(proto::pl::sc::DamageEvent, de);
         srv.broadcastPacketExcept(&p, proto::pl::sc::DamageEvent, de);
     }
 }
@@ -157,9 +157,9 @@ void CombatManager::applyThornsReflection(GameServer& srv, Player& victim,
         if (piece.empty()) continue;
         int lv = EnchantmentHelper::getThorns(piece);
         if (lv <= 0) continue;
-        float roll = static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
+        float roll = static_cast<float>(nextRandom()) / static_cast<float>(RAND_MAX);
         if (!thornsProcs(lv, roll)) continue;
-        float rollD = static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
+        float rollD = static_cast<float>(nextRandom()) / static_cast<float>(RAND_MAX);
         int reflected = thornsDamage(rollD);
         if (attackerMob && !attackerMob->dead) srv.applyDamageToMob(*attackerMob, static_cast<float>(reflected), thorns);
         else if (attackerPlayer && !attackerPlayer->dead && attackerPlayer != &victim)

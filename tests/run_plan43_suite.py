@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Standalone driver for suite_plan43_b1b2 (fast re-verification without the
 full 194-check server_full run)."""
-import sys, tempfile, time
+import shutil
+import sys, tempfile
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_server_full import (find_free_port, launch_server, kill_server,
@@ -17,5 +18,5 @@ try:
     suite_plan43_b1b2("127.0.0.1", port)
 finally:
     kill_server(proc)
-    time.sleep(0.5)
+    shutil.rmtree(world_dir, ignore_errors=True)
 summary_and_exit()

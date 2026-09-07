@@ -1,5 +1,5 @@
 // test_fuzz.cpp — ByteBuffer/PacketDecoder Fuzz cases (plan34 §5)
-// 20 cases covering malformed varint, compressed bomb, Position wrap, fragment, string.
+// Cases covering malformed varint, compressed bomb, Position wrap, fragment, string.
 // Each case verifies throw -> connection would close (SocketClosedError upstream).
 // Unit-form, <1s, no server.
 
@@ -31,12 +31,25 @@ static void check(bool cond, const char* name){
     else { std::printf("  FAIL %s\n", name); ++g_fail; }
 }
 
+// Keep the malformed-buffer fixture opaque to the optimiser.  The production
+// check is the explicit ReadBuffer::need() guard; a compiler-visible fixed
+// vector size otherwise reports a false array-bounds warning while inlining
+// the intentionally failing read.
+[[gnu::noinline]] static std::vector<std::uint8_t> shortBuffer(std::size_t size) {
+    return std::vector<std::uint8_t>(size, 0);
+}
+
 int main(){
-    std::printf("=== fuzz 20 — ByteBuffer/PacketDecoder ===\n");
+    std::printf("=== fuzz 21 — ByteBuffer/PacketDecoder ===\n");
 
     // 1) varint 5-byte overflow (FF FF FF FF FF) -> shift >=35
     expectThrow("F1 varint 5-byte overflow FF*5", []{
         std::vector<uint8_t> bomb{0xFF,0xFF,0xFF,0xFF,0xFF};
+        ReadBuffer r(bomb);
+        (void)r.varint();
+    });
+    expectThrow("F1b varint fifth byte has bits above 32", []{
+        std::vector<uint8_t> bomb{0xFF,0xFF,0xFF,0xFF,0x10};
         ReadBuffer r(bomb);
         (void)r.varint();
     });
@@ -66,6 +79,11 @@ int main(){
     // 5) varlong 10-byte overflow (FF*10 + 01) -> shift >=70
     expectThrow("F5 varlong 10-byte overflow", []{
         std::vector<uint8_t> v{0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0x01};
+        ReadBuffer r(v);
+        (void)r.varlong();
+    });
+    expectThrow("F5b varlong tenth byte has bits above 64", []{
+        std::vector<uint8_t> v{0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0x02};
         ReadBuffer r(v);
         (void)r.varlong();
     });
@@ -184,12 +202,12 @@ int main(){
 
     // 20) buffer underrun for u32/u64
     expectThrow("F20 u32 underrun 2 bytes", []{
-        std::vector<uint8_t> v{0x00,0x01};
+        auto v = shortBuffer(2);
         ReadBuffer r(v);
         (void)r.u32();
     });
     expectThrow("F20b u64 underrun 4 bytes", []{
-        std::vector<uint8_t> v{0x00,0x01,0x02,0x03};
+        auto v = shortBuffer(4);
         ReadBuffer r(v);
         (void)r.u64();
     });

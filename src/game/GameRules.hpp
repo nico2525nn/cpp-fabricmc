@@ -1,6 +1,10 @@
 // 37 Yarn keys + aliases, Boolean vs Int typed with validation (Yarn GameRules Type<T>)
 #pragma once
+#include <charconv>
+#include <limits>
 #include <string>
+#include <string_view>
+#include <system_error>
 #include <unordered_map>
 #include <vector>
 #include <algorithm>
@@ -132,7 +136,8 @@ public:
     int getInt(const std::string& key, int def) const {
         const std::string v = get(key);
         if (v.empty()) return def;
-        try { return std::stoi(v); } catch (...) { return def; }
+        int parsed = 0;
+        return parseInteger(v, parsed) ? parsed : def;
     }
     // W18 typed get with default from defs
     int getInt(const std::string& key) const {
@@ -180,7 +185,7 @@ public:
         if (nk=="maxBlockModifications") return 32768;
         return 0;
     }
-    static std::pair<int,int> intRange(const std::string& k){
+    static std::pair<int, int> intRange(const std::string& k) {
         std::string nk = normalizeKey(k);
         if (nk=="randomTickSpeed") return {0, 10000};
         if (nk=="spawnRadius") return {0, 32};
@@ -194,16 +199,15 @@ public:
         if (nk=="playersNetherPortalCreativeDelay") return {0, 1200};
         if (nk=="spawnChunkRadius") return {0, 32};
         if (nk=="maxBlockModifications") return {0, 2147483647};
-        return {INT_MIN, INT_MAX};
+        return {std::numeric_limits<int>::min(), std::numeric_limits<int>::max()};
     }
     static bool isValidValue(const std::string& key, const std::string& val) {
         std::string nk = normalizeKey(key);
         if (isIntRule(nk)) {
-            try {
-                int v = std::stoi(val);
-                auto [mn,mx] = intRange(nk);
-                return v >= mn && v <= mx;
-            } catch (...) { return false; }
+            int v = 0;
+            if (!parseInteger(val, v)) return false;
+            auto [mn,mx] = intRange(nk);
+            return v >= mn && v <= mx;
         } else {
             return val=="true" || val=="false";
         }
@@ -213,12 +217,18 @@ public:
         if (!contains(nk)) { if(err) *err="Unknown gamerule: "+key; return false; }
         if (!isValidValue(nk,val)) { if(err) *err="Invalid value for "+key+": "+val; return false; }
         set(nk,val,true);
-        // also mirror alias if different
-        if (nk != key) rules_[key]=val;
         return true;
     }
 
 private:
+    static bool parseInteger(std::string_view text, int& out) {
+        if (text.empty()) return false;
+        const char* first = text.data();
+        const char* last = first + text.size();
+        const auto result = std::from_chars(first, last, out, 10);
+        return result.ec == std::errc{} && result.ptr == last;
+    }
+
     std::unordered_map<std::string, std::string> rules_;
     bool dirty_ = false;
 };

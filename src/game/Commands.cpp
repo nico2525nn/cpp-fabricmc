@@ -73,7 +73,7 @@ brigadier::SelectorResult GameServer::resolveSelector(
     }
     case 'r': {
         if (players.empty()) break;
-        out.playerNames.push_back(players[rand() % players.size()].p->name);
+        out.playerNames.push_back(players[nextRandom() % players.size()].p->name);
         break;
     }
     case 'e': {

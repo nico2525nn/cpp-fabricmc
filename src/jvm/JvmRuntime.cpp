@@ -1672,14 +1672,16 @@ jobject wrapperForHandle(JNIEnv* env, JvmRuntime& runtime, std::uint64_t handle,
         error = "wrapper class is not available: " + internalName;
         return nullptr;
     }
-    if (void* cached = impl.objects.get(handle, internalName)) {
+    jobject cachedLocal = nullptr;
+    impl.objects.with(handle, internalName, [&](void* cached) {
         auto* cachedObject = static_cast<jobject>(cached);
-        if (env->IsInstanceOf(cachedObject, type) == JNI_TRUE) {
-            jobject local = env->NewLocalRef(cachedObject);
-            env->DeleteLocalRef(type);
-            if (local) localReferences.push_back(local);
-            return local;
-        }
+        if (env->IsInstanceOf(cachedObject, type) == JNI_TRUE)
+            cachedLocal = env->NewLocalRef(cachedObject);
+    });
+    if (cachedLocal) {
+        env->DeleteLocalRef(type);
+        localReferences.push_back(cachedLocal);
+        return cachedLocal;
     }
 
     jobject object = nullptr;

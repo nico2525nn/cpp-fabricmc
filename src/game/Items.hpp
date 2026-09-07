@@ -6,6 +6,8 @@
 #include <unordered_map>
 #include <vector>
 #include <algorithm>
+#include <limits>
+#include <mutex>
 #include "../core/ByteBuffer.hpp"
 #include "../core/NBT.hpp"
 #include "../generated/ItemIds.hpp"
@@ -32,11 +34,15 @@ struct ItemStack {
     // ------------------------------------------------------------------ io
     void write(WriteBuffer& out) const {
         if (empty()) { out.varint(0); return; }
+        if (components.size() > 1'000'000 || removedComponents.size() > 1'000'000)
+            throw std::length_error("too many item components");
         out.varint(count);
         out.varint(static_cast<std::int32_t>(itemId));
         out.varint(static_cast<std::int32_t>(components.size()));
         out.varint(static_cast<std::int32_t>(removedComponents.size()));
         for (auto& [typeId, payload] : components) {
+            if (payload.size() > 16u * 1024u * 1024u)
+                throw std::length_error("item component payload is too large");
             out.varint(static_cast<std::int32_t>(typeId));
             WriteBuffer tmp;
             tmp.varint(static_cast<std::int32_t>(payload.size()));
@@ -49,15 +55,25 @@ struct ItemStack {
     static ItemStack read(ReadBuffer& in) {
         const std::int32_t cnt = in.varint();
         if (cnt <= 0) return air();
+        if (cnt > std::numeric_limits<std::int16_t>::max())
+            throw std::runtime_error("item stack count out of range");
         ItemStack s;
         s.count = static_cast<std::int16_t>(cnt);
-        s.itemId = static_cast<std::uint32_t>(in.varint());
+        const std::int32_t itemId = in.varint();
+        if (itemId <= 0) throw std::runtime_error("invalid item id");
+        s.itemId = static_cast<std::uint32_t>(itemId);
         const std::int32_t addC = in.varint();
         const std::int32_t remC = in.varint();
+        if (addC < 0 || remC < 0 || addC > 1'000'000 || remC > 1'000'000)
+            throw std::runtime_error("item component count out of range");
+        s.components.reserve(static_cast<std::size_t>(addC));
+        s.removedComponents.reserve(static_cast<std::size_t>(remC));
         for (std::int32_t i = 0; i < addC; ++i) {
             const auto typeId = static_cast<std::uint32_t>(in.varint());
             const auto len = in.varint();
-            auto payload = in.bytes(static_cast<std::size_t>(len < 0 ? 0 : len));
+            if (len < 0 || static_cast<std::size_t>(len) > 16u * 1024u * 1024u)
+                throw std::runtime_error("item component payload out of range");
+            auto payload = in.bytes(static_cast<std::size_t>(len));
             s.components.emplace_back(typeId, std::move(payload));
         }
         for (std::int32_t i = 0; i < remC; ++i)
@@ -97,9 +113,13 @@ struct ItemStack {
         for (auto &pr : components) {
             if (pr.first==kDamageComponentId || pr.first==kLegacyDamageAlias) {
                 if (pr.second.empty()) return 0;
-                int v=0; int shift=0;
-                for (std::uint8_t b: pr.second) { v |= (b & 0x7F) << shift; if (!(b & 0x80)) break; shift+=7; }
-                return v;
+                try {
+                    ReadBuffer in(pr.second);
+                    const auto value = in.varint();
+                    return value < 0 ? 0 : value;
+                } catch (...) {
+                    return 0;
+                }
             }
         }
         return 0;
@@ -123,6 +143,8 @@ struct ItemStack {
     }
     static int maxDamageFor(std::uint32_t id) {
         static std::unordered_map<std::uint32_t,int> cache;
+        static std::mutex cacheMutex;
+        std::lock_guard lock(cacheMutex);
         auto itc=cache.find(id);
         if(itc!=cache.end()) return itc->second;
         std::string n;

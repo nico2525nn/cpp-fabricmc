@@ -9,6 +9,7 @@
 #include <chrono>
 #include <functional>
 #include <string>
+#include <utility>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -21,6 +22,9 @@ namespace cppfm {
 class StatsManager {
 public:
     using Counters = std::unordered_map<std::string, std::int64_t>;
+
+    explicit StatsManager(std::string worldDir = "world")
+        : worldDir_(std::move(worldDir)) {}
 
     void load(const std::string& uuidHex);
     void save(const std::string& uuidHex);
@@ -38,6 +42,7 @@ public:
     void clearDirty() { dirty_ = false; }
 
 private:
+    std::string worldDir_;
     Counters c_;
     bool dirty_ = false;
 };
@@ -119,8 +124,9 @@ std::vector<AdvancementDefOwned> mergedAdvancements(const std::unordered_map<std
 
 class AdvancementManager {
 public:
-    explicit AdvancementManager(const std::string& uuidHex)
-        : uuid_(uuidHex) {}
+    explicit AdvancementManager(const std::string& uuidHex,
+                                std::string worldDir = "world")
+        : uuid_(uuidHex), worldDir_(std::move(worldDir)) {}
 
     void load();
     void save();
@@ -147,6 +153,7 @@ public:
 
 private:
     std::string uuid_;
+    std::string worldDir_;
     std::unordered_set<std::string> unlocked_;
     bool dirty_ = false;
 };

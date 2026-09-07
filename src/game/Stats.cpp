@@ -2,36 +2,126 @@
 #include "Stats.hpp"
 #include "Items.hpp"
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <limits>
+#include <mutex>
+#include <system_error>
 
 namespace cppfm {
+
+namespace {
+
+constexpr std::size_t kMaxProgressFileBytes = 8u * 1024u * 1024u;
+std::mutex progressIoMutex;
+
+bool readProgressJson(const std::filesystem::path& path, json::Value& out) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) return false;
+
+    std::error_code sizeError;
+    const auto fileSize = std::filesystem::file_size(path, sizeError);
+    if (!sizeError && fileSize > kMaxProgressFileBytes)
+        throw std::length_error("progress file exceeds size limit");
+
+    std::string text;
+    if (!sizeError) text.reserve(static_cast<std::size_t>(fileSize));
+    char buffer[8192];
+    while (file) {
+        file.read(buffer, sizeof(buffer));
+        const std::streamsize count = file.gcount();
+        if (count <= 0) continue;
+        if (text.size() > kMaxProgressFileBytes - static_cast<std::size_t>(count))
+            throw std::length_error("progress file exceeds size limit");
+        text.append(buffer, static_cast<std::size_t>(count));
+    }
+    if (!file.eof()) throw std::runtime_error("could not read progress file");
+    out = json::Value::parse(text);
+    return true;
+}
+
+void writeProgressJson(const std::filesystem::path& path, const json::Value& root) {
+    const std::string encoded = root.dump();
+    if (encoded.size() > kMaxProgressFileBytes)
+        throw std::length_error("serialized progress file exceeds size limit");
+
+    std::filesystem::create_directories(path.parent_path());
+    const std::filesystem::path temporary = path.string() + ".new";
+    try {
+        {
+            std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
+            if (!file) throw std::runtime_error("could not open progress temporary file");
+            file.write(encoded.data(), static_cast<std::streamsize>(encoded.size()));
+            file.flush();
+            if (!file) throw std::runtime_error("could not write progress temporary file");
+        }
+        std::error_code renameError;
+        std::filesystem::rename(temporary, path, renameError);
+        if (renameError) throw std::system_error(renameError, "replace progress file");
+    } catch (...) {
+        std::error_code cleanupError;
+        std::filesystem::remove(temporary, cleanupError);
+        throw;
+    }
+}
+
+bool parseCounter(const json::Value& value, std::int64_t& result) {
+    if (!value.isNum() || !std::isfinite(value.number) ||
+        std::trunc(value.number) != value.number ||
+        value.number < -0x1p63 || value.number >= 0x1p63)
+        return false;
+    result = static_cast<std::int64_t>(value.number);
+    return true;
+}
+
+} // namespace
 
 // ---------------------------------------------------------------- stats io
 
 void StatsManager::load(const std::string& uuidHex) {
-    std::ifstream f("world/stats/" + uuidHex + ".json");
-    if (!f) return;
+    const std::filesystem::path path =
+        std::filesystem::path(worldDir_) / "stats" / (uuidHex + ".json");
+    std::lock_guard lock(progressIoMutex);
+    c_.clear();
+    dirty_ = false;
     try {
-        std::string text((std::istreambuf_iterator<char>(f)),
-                         std::istreambuf_iterator<char>());
-        const json::Value v = json::Value::parse(text);
-        const json::Value& stats = v.at("stats");
-        for (auto& [cat, entries] : stats.obj)
-            for (auto& [k, n] : entries.obj)
-                c_[cat + "|" + k] = static_cast<std::int64_t>(n.asI64());
+        json::Value root;
+        if (!readProgressJson(path, root)) return;
+        const auto* stats = root.find("stats");
+        if (!root.isObj() || !stats || !stats->isObj())
+            throw std::runtime_error("stats root has no object-valued stats field");
+
+        Counters loaded;
+        for (const auto& [category, entries] : stats->obj) {
+            if (!entries.isObj())
+                throw std::runtime_error("stats category is not an object");
+            for (const auto& [name, value] : entries.obj) {
+                std::int64_t count = 0;
+                if (!parseCounter(value, count))
+                    throw std::runtime_error("stats counter is not an integer");
+                loaded[category + "|" + name] = count;
+            }
+        }
+        c_ = std::move(loaded);
         dirty_ = false;
-    } catch (...) {}
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[Stats] ignoring malformed %s: %s\n",
+                     path.c_str(), e.what());
+    } catch (...) {
+        std::fprintf(stderr, "[Stats] ignoring malformed %s\n", path.c_str());
+    }
 }
 
 void StatsManager::save(const std::string& uuidHex) {
+    const std::filesystem::path path =
+        std::filesystem::path(worldDir_) / "stats" / (uuidHex + ".json");
+    std::lock_guard lock(progressIoMutex);
     try {
-        namespace fs = std::filesystem;
-        fs::create_directories("world/stats");
         json::Value root = json::Value::object();
         json::Value stats = json::Value::object();
-        for (auto& [key, val] : c_) {
+        for (const auto& [key, val] : c_) {
             const auto bar = key.find('|');
             if (bar == std::string::npos) continue;
             const std::string cat = key.substr(0, bar);
@@ -42,38 +132,57 @@ void StatsManager::save(const std::string& uuidHex) {
         }
         root.set("stats", stats);
         root.set("DataVersion", json::Value::ofNumber(4189));
-        std::ofstream f("world/stats/" + uuidHex + ".json", std::ios::binary);
-        f << root.dump();
+        writeProgressJson(path, root);
         dirty_ = false;
-    } catch (...) {}
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[Stats] save failed for %s: %s\n",
+                     path.c_str(), e.what());
+    } catch (...) {
+        std::fprintf(stderr, "[Stats] save failed for %s\n", path.c_str());
+    }
 }
 
 // ---------------------------------------------------------- advancements io
 
 void AdvancementManager::load() {
-    std::ifstream f("world/advancements/" + uuid_ + ".json");
-    if (!f) return;
+    const std::filesystem::path path =
+        std::filesystem::path(worldDir_) / "advancements" / (uuid_ + ".json");
+    std::lock_guard lock(progressIoMutex);
+    unlocked_.clear();
+    dirty_ = false;
     try {
-        std::string text((std::istreambuf_iterator<char>(f)),
-                         std::istreambuf_iterator<char>());
-        const json::Value v = json::Value::parse(text);
-        for (auto& [k, _] : v.obj) unlocked_.insert(k);
+        json::Value root;
+        if (!readProgressJson(path, root)) return;
+        if (!root.isObj()) throw std::runtime_error("advancement root is not an object");
+        std::unordered_set<std::string> loaded;
+        loaded.reserve(root.obj.size());
+        for (const auto& [id, _] : root.obj) loaded.insert(id);
+        unlocked_ = std::move(loaded);
         dirty_ = false;
-    } catch (...) {}
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[Advancement] ignoring malformed %s: %s\n",
+                     path.c_str(), e.what());
+    } catch (...) {
+        std::fprintf(stderr, "[Advancement] ignoring malformed %s\n", path.c_str());
+    }
 }
 
 void AdvancementManager::save() {
+    const std::filesystem::path path =
+        std::filesystem::path(worldDir_) / "advancements" / (uuid_ + ".json");
+    std::lock_guard lock(progressIoMutex);
     try {
-        namespace fs = std::filesystem;
-        fs::create_directories("world/advancements");
         json::Value root = json::Value::object();
-        for (auto& id : unlocked_)
+        for (const auto& id : unlocked_)
             root.set(id, json::Value::object());
-        std::ofstream f2("world/advancements/" + uuid_ + ".json",
-                         std::ios::binary);
-        f2 << root.dump();
+        writeProgressJson(path, root);
         dirty_ = false;
-    } catch (...) {}
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[Advancement] save failed for %s: %s\n",
+                     path.c_str(), e.what());
+    } catch (...) {
+        std::fprintf(stderr, "[Advancement] save failed for %s\n", path.c_str());
+    }
 }
 
 std::vector<AdvancementDefOwned> buildOwnedFromRaw(const std::unordered_map<std::string,std::string>& rawAdv) {
@@ -125,16 +234,19 @@ std::vector<AdvancementDefOwned> buildOwnedFromRaw(const std::unordered_map<std:
             ex.description = desc.empty() ? title : desc;
             if (ex.iconItem.empty()) ex.iconItem = "minecraft:stone";
             // criteria -> triggers
+            std::vector<std::string> criterionNames;
             if (auto* crit = v.find("criteria")) {
                 if (crit->isObj()) {
-                    for (auto& [k, cval] : crit->obj) {
+                    criterionNames.reserve(crit->obj.size());
+                    for (const auto& [k, cval] : crit->obj) {
                         if (!cval.isObj()) continue;
                         if (auto* tr = cval.find("trigger")) {
+                            if (!tr->isStr()) continue;
                             AdvancementTriggerInfo ti;
                             ti.trigger = tr->asStr();
                             if (auto* cond = cval.find("conditions")) ti.conditions = *cond;
-                            else if (auto* cond2 = cval.find("conditions")) ti.conditions = *cond2;
                             ex.triggers.push_back(std::move(ti));
+                            criterionNames.push_back(k);
                         }
                     }
                 }
@@ -142,18 +254,20 @@ std::vector<AdvancementDefOwned> buildOwnedFromRaw(const std::unordered_map<std:
             // requirements
             if (auto* req = v.find("requirements")) {
                 if (req->isArr()) {
-                    for (auto& grp : req->arr) if (grp.isArr()) {
+                    for (const auto& grp : req->arr) if (grp.isArr()) {
                         std::vector<std::string> g;
-                        for (auto& s : grp.arr) if (s.isStr()) g.push_back(s.asStr());
+                        for (const auto& s : grp.arr) if (s.isStr()) g.push_back(s.asStr());
                         if (!g.empty()) ex.requirements.push_back(std::move(g));
                     }
                 }
             }
             if (ex.requirements.empty()) {
-                if (!ex.triggers.empty()) {
-                    // fallback: single group with all criterion names? we stored triggers but names lost; use "done"
+                if (!criterionNames.empty()) {
+                    for (auto& criterion : criterionNames)
+                        ex.requirements.push_back({std::move(criterion)});
+                } else {
                     ex.requirements = {{"done"}};
-                } else ex.requirements = {{"done"}};
+                }
             }
             out.push_back(std::move(ex));
         } catch (...) { continue; }

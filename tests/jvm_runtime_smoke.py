@@ -36,6 +36,7 @@ def main() -> int:
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 text=True,
+                start_new_session=True,
             )
             output: list[str] = []
 
@@ -82,11 +83,17 @@ def main() -> int:
                     return 1
             finally:
                 if proc.poll() is None:
-                    proc.send_signal(signal.SIGTERM)
+                    try:
+                        os.killpg(proc.pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
                 try:
                     proc.wait(timeout=15.0)
                 except subprocess.TimeoutExpired:
-                    proc.kill()
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
                     proc.wait(timeout=5.0)
                 refresh()
             if proc.returncode != 0:

@@ -1,7 +1,6 @@
 // LightEngine implementation: BFS block-light updates + cached sky light.
 #include "LightEngine.hpp"
 #include <algorithm>
-#include <cstdio>
 
 namespace cppfm {
 
@@ -40,11 +39,16 @@ std::uint8_t LightEngine::blockLightAt(std::int32_t x, std::int32_t y,
 void LightEngine::onBlockChanged(std::int32_t x, std::int32_t y,
                                  std::int32_t z, std::uint16_t oldState,
                                  std::uint16_t newState) {
+    const std::int32_t chunkX = x >> 4;
+    const std::int32_t chunkZ = z >> 4;
+    const bool hadSkyCache = world_.hasSkyLightCache(chunkX, chunkZ);
+    const bool skyOpacityChanged = opacityOf(oldState) != opacityOf(newState);
+    if (skyOpacityChanged) world_.invalidateSkyLight(chunkX, chunkZ);
     // Block-light propagation is simulation-culled; sky rebuilds are also culled via isChunkInSimulationDistance.
     // For spawn chunks (forced / ChunkTicket SPAWN level 31) we always tick even outside player simulation radius.
     if (!world_.isChunkInSimulationDistance(x >> 4, z >> 4) && !world_.isPositionInSimulationDistance(x, z)) {
         // Still ensure sky storage exists for view distance rendering, but skip heavy BFS queuing.
-        world_.ensureSkyStorage(x >> 4, z >> 4);
+        world_.ensureSkyStorage(chunkX, chunkZ);
         return;
     }
     const int oldEmit = emissionOf(oldState);
@@ -61,7 +65,10 @@ void LightEngine::onBlockChanged(std::int32_t x, std::int32_t y,
         addQueue_.push({x, y, z, static_cast<std::uint8_t>(newEmit)});
     }
     // opacity change: re-run neighbors through add queue so light flows back
-    if (opacityOf(oldState) != opacityOf(newState)) {
+    // A newly generated chunk has allocated storage only after its first
+    // mutation.  Even when the mutation preserves opacity (air -> crop), the
+    // zero-filled cache still needs a full daylight rebuild.
+    if (!hadSkyCache || skyOpacityChanged) {
         static constexpr int DX[6] = {1,-1,0,0,0,0};
         static constexpr int DY[6] = {0,0,1,-1,0,0};
         static constexpr int DZ[6] = {0,0,0,0,1,-1};
@@ -90,11 +97,10 @@ void LightEngine::onBlockChanged(std::int32_t x, std::int32_t y,
                 if (dx || dz) schedSky(bcx + dx, bcz + dz);
     }
     // sky light cache is invalidated wholesale for the chunk
-    world_.ensureSkyStorage(x >> 4, z >> 4);
+    world_.ensureSkyStorage(chunkX, chunkZ);
 }
 
 LightUpdateBatch LightEngine::drain() {
-    static const bool dbg = getenv("CPPFM_LIGHT_DEBUG") != nullptr;
     LightUpdateBatch batch;
     auto mark = [&](std::int32_t x, std::int32_t z) {
         batch.dirtyChunks.insert(chunkKey(x >> 4, z >> 4));
@@ -110,9 +116,6 @@ LightUpdateBatch LightEngine::drain() {
         // clear this cell when it still holds the expected value
         if (world_.getBlockLight(n.x, n.y, n.z) == n.level)
             setBlockLight(n.x, n.y, n.z, 0);
-        if (dbg)
-            std::fprintf(stderr, "[light] rm pop (%d,%d,%d) L=%u\n",
-                         n.x, n.y, n.z, n.level);
         mark(n.x, n.z);
         for (int d = 0; d < 6; ++d) {
             const int nx = n.x + DX[d], ny = n.y + DY[d], nz = n.z + DZ[d];
@@ -186,78 +189,108 @@ LightUpdateBatch LightEngine::drain() {
 // ------------------------------------------------------------------ skylight
 
 void LightEngine::ensureSkyLight(std::int32_t cx, std::int32_t cz) {
-    // Generate the chunk and its four neighbours so column sampling works.
+    // Lighting is a consumer of chunk tickets, not a chunk-loading policy.
+    // Only the requested chunk is generated here; missing neighbours are
+    // treated as empty until normal view/simulation loading makes them
+    // available and requests their own rebuild.
     world_.generateChunkIfMissing(cx, cz);
-    world_.generateChunkIfMissing(cx - 1, cz);
-    world_.generateChunkIfMissing(cx + 1, cz);
-    world_.generateChunkIfMissing(cx, cz - 1);
-    world_.generateChunkIfMissing(cx, cz + 1);
-    world_.ensureSkyStorage(cx, cz);
+
+    std::array<std::uint16_t, kSectionsPerChunk * 4096> blocks{};
+    if (!world_.withChunk(cx, cz, [&](const Chunk& c) { blocks = c.blocks; }))
+        return;
 
     const int top = kMaxY - 1;
 
-    // Heightmap of first light-blocking block per column (with 1-block margin so boundary detection at chunk edges is accurate).
+    // Heightmap of the first light-blocking block per column.  The one-block
+    // margin lets the local pass detect overhangs at chunk edges without
+    // reading a world cell while holding a lighting write lock.
     int surf[18][18];
     auto columnBlocker = [&](std::int64_t wx, std::int64_t wz) -> int {
-        for (int y = top; y >= kMinY; --y)
-            if (opacityOf(world_.getBlock(static_cast<std::int32_t>(wx), y,
-                                          static_cast<std::int32_t>(wz))) >= 15)
-                return y;                            // blocker height
-        return kMinY - 1;
+        int blocker = kMinY - 1;
+        const auto ncx = static_cast<std::int32_t>(wx >> 4);
+        const auto ncz = static_cast<std::int32_t>(wz >> 4);
+        const int lx = static_cast<int>(wx & 15);
+        const int lz = static_cast<int>(wz & 15);
+        world_.withChunk(ncx, ncz, [&](const Chunk& c) {
+            for (int y = top; y >= kMinY; --y) {
+                const auto state = c.blocks[Chunk::index((y - kMinY) >> 4,
+                                                         (y - kMinY) & 15,
+                                                         lz, lx)];
+                if (opacityOf(state) >= 15) {
+                    blocker = y;
+                    break;
+                }
+            }
+        });
+        return blocker;
     };
     for (int z = -1; z <= 16; ++z)
         for (int x = -1; x <= 16; ++x)
             surf[z + 1][x + 1] = columnBlocker(cx * 16 + x, cz * 16 + z);
+
+    std::array<std::uint8_t, (kSectionsPerChunk * 4096 + 1) / 2> sky{};
+    auto indexAt = [](std::int32_t x, std::int32_t y,
+                      std::int32_t z) -> std::size_t {
+        const int wy = y - kMinY;
+        return Chunk::index(wy >> 4, wy & 15, z & 15, x & 15);
+    };
+    auto skyAt = [&](std::int32_t x, std::int32_t y,
+                     std::int32_t z) -> std::uint8_t {
+        if (y < kMinY || y >= kMaxY) return 0;
+        return Chunk::getNibble(sky, indexAt(x, y, z));
+    };
+    auto setSky = [&](std::int32_t x, std::int32_t y,
+                      std::int32_t z, std::uint8_t value) {
+        if (y < kMinY || y >= kMaxY) return;
+        Chunk::setNibble(sky, indexAt(x, y, z), value);
+    };
+    auto stateAt = [&](std::int32_t x, std::int32_t y,
+                       std::int32_t z) -> std::uint16_t {
+        if (y < kMinY || y >= kMaxY) return 0;
+        return blocks[Chunk::index((y - kMinY) >> 4,
+                                   (y - kMinY) & 15, z & 15, x & 15)];
+    };
 
     struct QN { std::int32_t x, y, z; std::uint8_t l; };
     std::queue<QN> q;
     constexpr int DX[4] = {1,-1,0,0};
     constexpr int DZ[4] = {0,0,1,-1};
 
-    // pass 1: vertical fill — full light from sky down to the blocker Clear shadowed region first so stale light does not persist
+    // pass 1: vertical fill.  This is intentionally computed in local
+    // storage: the old implementation acquired the world mutex once per
+    // block and made a single edit more expensive than the server tick.
     for (int lz = 0; lz < 16; ++lz)
         for (int lx = 0; lx < 16; ++lx) {
             const std::int32_t wx = cx * 16 + lx, wz = cz * 16 + lz;
             const int blocker = surf[lz + 1][lx + 1];
-            for (int y = blocker; y >= kMinY; --y)
-                world_.setSkyLightRaw(wx, y, wz, 0);
-        }
-    for (int lz = 0; lz < 16; ++lz)
-        for (int lx = 0; lx < 16; ++lx) {
-            const std::int32_t wx = cx * 16 + lx, wz = cz * 16 + lz;
-            const int blocker = surf[lz + 1][lx + 1];
-            bool lit = true;
-            int attenuated = 0;
+            int level = 15;
             for (int y = top; y > blocker; --y) {
-                const std::uint16_t st = world_.getBlock(wx, y, wz);
-                const int op = opacityOf(st);
-                if (op > 0) {
-                    attenuated += op;
-                    if (attenuated >= 15) lit = false;
-                }
-                const std::uint8_t v = lit ? 15 : 0;
-                world_.setSkyLightRaw(wx, y, wz, v);
-                if (!lit) break;
+                const int op = opacityOf(stateAt(wx, y, wz));
+                if (level <= 0) break;
+                setSky(wx, y, wz, static_cast<std::uint8_t>(level));
+                level = std::max(0, level - op);
             }
-            // boundary seeds: lit cells that can spread sideways into shadowed
-            // neighbours (under overhangs / beside cliffs) — fixed to use nbSurf
-            if (lit || true) {
-                const int runBottom = blocker + 1;
-                for (int d = 0; d < 4; ++d) {
-                    const int nbSurf =
-                        surf[lz + 1 + DZ[d]][lx + 1 + DX[d]];
-                    const int from = std::max(runBottom, nbSurf - 15);
-                    const int to = std::min(top, nbSurf);   // neighbor's dark top
-                    for (int y = std::max(from, kMinY); y <= to && y < kMaxY; ++y) {
-                        if (world_.getSkyLight(wx, y, wz) > 0)
-                            q.push({wx, y, wz,
-                                    world_.getSkyLight(wx, y, wz)});
-                    }
+
+            // Boundary seeds from the illuminated portion of this column can
+            // spread sideways into shadowed neighbours (under overhangs /
+            // beside cliffs).  The source-light check filters the range.
+            const int runBottom = blocker + 1;
+            for (int d = 0; d < 4; ++d) {
+                const int nbSurf =
+                    surf[lz + 1 + DZ[d]][lx + 1 + DX[d]];
+                const int from = std::max(runBottom, nbSurf - 15);
+                const int to = std::min(top, nbSurf);
+                for (int y = std::max(from, kMinY); y <= to && y < kMaxY; ++y) {
+                    const auto value = skyAt(wx, y, wz);
+                    if (value > 0) q.push({wx, y, wz, value});
                 }
             }
         }
 
-    // pass 2: BFS spread — now cross-chunk to fix side propagation
+    // pass 2: bounded BFS spread inside the requested chunk.  A neighbouring
+    // chunk is rebuilt by its own ticket/edit; crossing into an absent chunk
+    // here would either generate the world recursively or require retaining a
+    // second mutable cache while this one is being committed.
     while (!q.empty()) {
         const QN n = q.front(); q.pop();
         static constexpr int SDX[6] = {1,-1,0,0,0,0};
@@ -267,25 +300,29 @@ void LightEngine::ensureSkyLight(std::int32_t cx, std::int32_t cz) {
             const std::int32_t nx = n.x + SDX[d], ny = n.y + SDY[d],
                                nz = n.z + SDZ[d];
             if (ny < kMinY || ny >= kMaxY) continue;
-            const std::int32_t ncx = nx >> 4, ncz = nz >> 4;
-            if (ncx != cx || ncz != cz) {
-                world_.generateChunkIfMissing(ncx, ncz);
-                world_.ensureSkyStorage(ncx, ncz);
-            }
-            const std::uint16_t ns = world_.getBlock(nx, ny, nz);
+            if ((nx >> 4) != cx || (nz >> 4) != cz) continue;
+            const std::uint16_t ns = stateAt(nx, ny, nz);
             const int op = opacityOf(ns);
             if (op >= 15) continue;
-            const std::uint8_t target =
-                static_cast<std::uint8_t>(n.l - std::max(1, op));
+            const int target = n.l - std::max(1, op);
             if (target <= 0) continue;
-            if (world_.getSkyLight(nx, ny, nz) < target) {
-                world_.setSkyLightRaw(nx, ny, nz, target);
-                if (ncx != cx || ncz != cz)
-                    skyDirtyExtra_.insert(chunkKey(ncx, ncz));
-                q.push({nx, ny, nz, target});
+            const auto current = skyAt(nx, ny, nz);
+            if (current < target) {
+                setSky(nx, ny, nz, static_cast<std::uint8_t>(target));
+                q.push({nx, ny, nz, static_cast<std::uint8_t>(target)});
             }
         }
     }
+
+    // One exclusive lock publishes a complete, self-consistent cache.  A
+    // serializer can therefore never observe a half-rebuilt nibble array.
+    world_.withChunkMutable(cx, cz, [&](Chunk& c) {
+        if (!c.skyLight)
+            c.skyLight = std::make_shared<std::array<std::uint8_t,
+                                                       (kSectionsPerChunk * 4096 + 1) / 2>>();
+        *c.skyLight = sky;
+        c.skyLightReady = true;
+    });
 }
 
 } // namespace cppfm

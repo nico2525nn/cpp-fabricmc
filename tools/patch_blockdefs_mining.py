@@ -73,25 +73,35 @@ elif src.count(NEW_STRUCT) != 1:
     sys.exit("struct anchor not found (already patched? header changed?)")
 
 ROW = re.compile(
-    r'^\s*\{"(minecraft:[^"]+)", (\d+), (\d+), (\d+), ([0-9.\-]+)f, '
-    r'(?:[0-9.\-]+f, \d+, \d+, \d+, )?(\d+), (\d+), (true|false), (\d+), (\d+)\},$')
+    r'\{"(minecraft:[^"]+)", (\d+), (\d+), (\d+), ([0-9.\-]+)f, '
+    r'(?:[0-9.\-]+f, \d+, \d+, \d+, )?(\d+), (\d+), (true|false), (\d+), (\d+)\},')
+
+
+def format_rows(rows, width=4):
+    return "\n".join(
+        "  " + " ".join(rows[start:start + width])
+        for start in range(0, len(rows), width)
+    )
 
 out = []
 n = 0
 for line in src.split("\n"):
-    m = ROW.match(line)
-    if not m:
+    matches = list(ROW.finditer(line))
+    if not matches:
         out.append(line)
         continue
-    name = m.group(1)
-    assert name in mining, name
-    req, eff, tier, blast, hard = mining[name]
-    # MUST match gen_tables.py block_def_rows format string exactly.
-    out.append('  {"%s", %s, %s, %s, %.2ff, %.2ff, %d, %d, %d, %s, %s, %s, %s, %s},' % (
-        name, m.group(2), m.group(3), m.group(4), hard, blast,
-        req, eff, tier, m.group(6), m.group(7), m.group(8),
-        m.group(9), m.group(10)))
-    n += 1
+    replacement = []
+    for m in matches:
+        name = m.group(1)
+        assert name in mining, name
+        req, eff, tier, blast, hard = mining[name]
+        # MUST match gen_tables.py block_def_rows format string exactly.
+        replacement.append('{"%s", %s, %s, %s, %.2ff, %.2ff, %d, %d, %d, %s, %s, %s, %s, %s},' % (
+            name, m.group(2), m.group(3), m.group(4), hard, blast,
+            req, eff, tier, m.group(6), m.group(7), m.group(8),
+            m.group(9), m.group(10)))
+        n += 1
+    out.append(format_rows(replacement))
 assert n == 1095, n
 open(HEADER, "w").write("\n".join(out))
 print("patched %s: %d rows" % (HEADER, n))

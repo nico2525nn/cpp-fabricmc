@@ -1,10 +1,10 @@
 #include "game/GameServer.hpp"
 #include "game/ServerProperties.hpp"
+#include <charconv>
 #include <csignal>
 #include <cstdio>
-#include <cstring>
-#include <fstream>
 #include <string>
+#include <string_view>
 
 using namespace cppfm;
 
@@ -18,100 +18,145 @@ static void onSignal(int) {
     if (g_server) g_server->requestStop();   // async-signal-safe subset
 }
 
+template<typename T>
+static bool parseInteger(std::string_view text, T& value) {
+    if (text.empty()) return false;
+    const auto result = std::from_chars(text.data(), text.data() + text.size(), value, 10);
+    return result.ec == std::errc{} && result.ptr == text.data() + text.size();
+}
+
+static bool parseBool(std::string_view text, bool& value) {
+    if (text == "true" || text == "1" || text == "yes" || text == "on") {
+        value = true;
+        return true;
+    }
+    if (text == "false" || text == "0" || text == "no" || text == "off") {
+        value = false;
+        return true;
+    }
+    return false;
+}
+
+static bool parsePort(std::string_view text, std::uint16_t& port) {
+    int parsed = 0;
+    if (!parseInteger(text, parsed) || parsed < 1 || parsed > 65535) return false;
+    port = static_cast<std::uint16_t>(parsed);
+    return true;
+}
+
 static void loadProperties(ServerConfig& c, const std::string& path) {
     ServerProperties props;
     if (!props.load(path)) return;
-    try {
-        if (props.has("server-port")) c.port = static_cast<std::uint16_t>(props.get<int>("server-port", c.port));
-        if (props.has("max-players")) c.maxPlayers = props.get<int>("max-players", c.maxPlayers);
-        c.viewDistance = props.get<int>("view-distance", c.viewDistance);
-        c.viewDistance = std::clamp(c.viewDistance, constants::kViewDistanceMin, constants::kViewDistanceMax);
-        c.simulationDistance = props.get<int>("simulation-distance", c.simulationDistance);
-        c.simulationDistance = std::clamp(c.simulationDistance, 2, 32);
-        if (props.has("motd")) c.motd = props.get<std::string>("motd", c.motd);
-        if (props.has("spawn-protection")) c.spawnProtection = std::max(0, props.get<int>("spawn-protection", c.spawnProtection));
-        if (props.has("start-time")) c.startTime = props.get<std::int64_t>("start-time", c.startTime);
-        if (props.has("level-type")) {
-            std::string t = props.get<std::string>("level-type", c.levelType);
-            if (t.rfind("minecraft:", 0) == 0) t = t.substr(10);
-            c.levelType = (t == "normal") ? "normal" : "flat";
-        }
-        if (props.has("world-dir")) c.worldDir = props.get<std::string>("world-dir", c.worldDir);
-        if (props.has("rcon.port")) c.rcon.port = static_cast<std::uint16_t>(props.get<int>("rcon.port", c.rcon.port));
-        if (props.has("rcon.password")) c.rcon.password = props.get<std::string>("rcon.password", c.rcon.password);
-        if (props.has("enable-rcon")) c.rcon.enabled = props.get<bool>("enable-rcon", c.rcon.enabled);
-        if (props.has("whitelist")) c.whitelist = props.get<bool>("whitelist", c.whitelist);
-        if (props.has("online-mode")) c.onlineMode = props.get<bool>("online-mode", c.onlineMode);
-        if (props.has("enforce-secure-profile") || props.has("enforcesSecureChat") || props.has("enforces-secure-chat")) {
-            bool v = props.get<bool>("enforce-secure-profile", c.enforcesSecureChat);
-            v = props.get<bool>("enforcesSecureChat", v);
-            v = props.get<bool>("enforces-secure-chat", v);
-            c.enforcesSecureChat = v;
-        }
-        if (props.has("network-compression-threshold") || props.has("compression-threshold")) {
-            c.compressionThreshold = props.get<int>("network-compression-threshold", props.get<int>("compression-threshold", c.compressionThreshold));
-        }
-        // Note: current implementation in GameServer_tick.cpp:334-399 is NOT a simple clear(); it does
-        // Chebyshev distance sort + burst limit 16/tick with forced/spawn ticket protection. See GameServer_tick.cpp.
-        if (props.has("max-loaded-chunks") || props.has("maxLoadedChunks")) {
-            c.maxLoadedChunks = std::max(0, props.get<int>("max-loaded-chunks", props.get<int>("maxLoadedChunks", c.maxLoadedChunks)));
-        } else {
-            int autoCap = std::max(8192, c.viewDistance * c.viewDistance * 4);
-            c.maxLoadedChunks = autoCap;
-        }
-        if (props.has("io-worker-threads")) c.ioWorkerThreads = std::max(1, props.get<int>("io-worker-threads", c.ioWorkerThreads));
-        if (props.has("pvp")) c.pvp = props.get<bool>("pvp", c.pvp);
-        if (props.has("allow-flight")) c.allowFlight = props.get<bool>("allow-flight", c.allowFlight);
-        if (props.has("hardcore")) c.hardcore = props.get<bool>("hardcore", c.hardcore);
-        if (props.has("jvm") || props.has("jvm-enabled"))
-            c.jvmEnabled = props.get<bool>("jvm", props.get<bool>("jvm-enabled", c.jvmEnabled));
-        if (props.has("jvm-strict")) c.jvmStrict = props.get<bool>("jvm-strict", c.jvmStrict);
-        if (props.has("jvm-classes")) c.jvmClassesDir = props.get<std::string>("jvm-classes", c.jvmClassesDir);
-        if (props.has("jvm-mods")) c.jvmModsDir = props.get<std::string>("jvm-mods", c.jvmModsDir);
-        if (props.has("jvm-config")) c.jvmConfigDir = props.get<std::string>("jvm-config", c.jvmConfigDir);
-        if (props.has("jvm-java-home")) c.jvmJavaHome = props.get<std::string>("jvm-java-home", c.jvmJavaHome);
-        if (props.has("jvm-library")) c.jvmLibrary = props.get<std::string>("jvm-library", c.jvmLibrary);
-        if (props.has("jvm-libraries")) c.jvmLibrariesDir = props.get<std::string>("jvm-libraries", c.jvmLibrariesDir);
-        // max-players already handled above; keep fallback for hyphen variant online-mode / enforce-secure-profile already handled above
-    } catch (...) {}
+    if (props.has("server-port")) parsePort(props.get<std::string>("server-port"), c.port);
+    if (props.has("max-players")) c.maxPlayers = std::max(0, props.get<int>("max-players", c.maxPlayers));
+    c.viewDistance = std::clamp(props.get<int>("view-distance", c.viewDistance),
+                                constants::kViewDistanceMin, constants::kViewDistanceMax);
+    c.simulationDistance = std::clamp(props.get<int>("simulation-distance", c.simulationDistance), 2, 32);
+    if (props.has("motd")) c.motd = props.get<std::string>("motd", c.motd);
+    if (props.has("spawn-protection")) c.spawnProtection = std::max(0, props.get<int>("spawn-protection", c.spawnProtection));
+    if (props.has("start-time")) c.startTime = props.get<std::int64_t>("start-time", c.startTime);
+    if (props.has("level-type")) {
+        std::string t = props.get<std::string>("level-type", c.levelType);
+        if (t.rfind("minecraft:", 0) == 0) t = t.substr(10);
+        c.levelType = (t == "normal") ? "normal" : "flat";
+    }
+    if (props.has("world-dir")) c.worldDir = props.get<std::string>("world-dir", c.worldDir);
+    if (props.has("rcon.port")) parsePort(props.get<std::string>("rcon.port"), c.rcon.port);
+    if (props.has("rcon.password")) c.rcon.password = props.get<std::string>("rcon.password", c.rcon.password);
+    if (props.has("enable-rcon")) c.rcon.enabled = props.get<bool>("enable-rcon", c.rcon.enabled);
+    if (props.has("whitelist")) c.whitelist = props.get<bool>("whitelist", c.whitelist);
+    if (props.has("online-mode")) c.onlineMode = props.get<bool>("online-mode", c.onlineMode);
+    if (props.has("enforce-secure-profile") || props.has("enforcesSecureChat") || props.has("enforces-secure-chat")) {
+        bool v = props.get<bool>("enforce-secure-profile", c.enforcesSecureChat);
+        v = props.get<bool>("enforcesSecureChat", v);
+        v = props.get<bool>("enforces-secure-chat", v);
+        c.enforcesSecureChat = v;
+    }
+    if (props.has("network-compression-threshold") || props.has("compression-threshold")) {
+        c.compressionThreshold = std::max(-1, props.get<int>(
+            "network-compression-threshold", props.get<int>("compression-threshold", c.compressionThreshold)));
+    }
+    if (props.has("max-loaded-chunks") || props.has("maxLoadedChunks")) {
+        c.maxLoadedChunks = std::max(0, props.get<int>(
+            "max-loaded-chunks", props.get<int>("maxLoadedChunks", c.maxLoadedChunks)));
+    } else {
+        c.maxLoadedChunks = std::max(8192, c.viewDistance * c.viewDistance * 4);
+    }
+    if (props.has("io-worker-threads"))
+        c.ioWorkerThreads = std::clamp(props.get<int>("io-worker-threads", c.ioWorkerThreads), 1, 64);
+    if (props.has("pvp")) c.pvp = props.get<bool>("pvp", c.pvp);
+    if (props.has("allow-flight")) c.allowFlight = props.get<bool>("allow-flight", c.allowFlight);
+    if (props.has("hardcore")) c.hardcore = props.get<bool>("hardcore", c.hardcore);
+    if (props.has("jvm") || props.has("jvm-enabled"))
+        c.jvmEnabled = props.get<bool>("jvm", props.get<bool>("jvm-enabled", c.jvmEnabled));
+    if (props.has("jvm-strict")) c.jvmStrict = props.get<bool>("jvm-strict", c.jvmStrict);
+    if (props.has("jvm-classes")) c.jvmClassesDir = props.get<std::string>("jvm-classes", c.jvmClassesDir);
+    if (props.has("jvm-mods")) c.jvmModsDir = props.get<std::string>("jvm-mods", c.jvmModsDir);
+    if (props.has("jvm-config")) c.jvmConfigDir = props.get<std::string>("jvm-config", c.jvmConfigDir);
+    if (props.has("jvm-java-home")) c.jvmJavaHome = props.get<std::string>("jvm-java-home", c.jvmJavaHome);
+    if (props.has("jvm-library")) c.jvmLibrary = props.get<std::string>("jvm-library", c.jvmLibrary);
+    if (props.has("jvm-libraries")) c.jvmLibrariesDir = props.get<std::string>("jvm-libraries", c.jvmLibrariesDir);
 }
 
 int main(int argc, char** argv) {
     ServerConfig cfg;
     loadProperties(cfg, "server.properties");
     auto apply = [&](const std::string& k, const std::string& v) {
-        try {
-            if (k == "port") cfg.port = static_cast<std::uint16_t>(std::stoi(v));
-            else if (k == "view-distance") cfg.viewDistance = std::clamp(std::stoi(v), constants::kViewDistanceMin, constants::kViewDistanceMax);
-            else if (k == "assets") cfg.assetsDir = v;
-            else if (k == "motd") cfg.motd = v;
-            else if (k == "world-dir") cfg.worldDir = v;
-            else if (k == "spawn-protection") cfg.spawnProtection = std::max(0, std::stoi(v));
-            else if (k == "level-type") {
-                std::string t = v;
-                if (t.rfind("minecraft:", 0) == 0) t = t.substr(10);
-                cfg.levelType = (t == "normal") ? "normal" : "flat";
-            }
-            else if (k == "start-time") cfg.startTime = std::stoll(v);
-            else if (k == "rcon.port") cfg.rcon.port = (uint16_t)std::stoi(v);
-            else if (k == "rcon.password") cfg.rcon.password = v;
-            else if (k == "enable-rcon") cfg.rcon.enabled = (v == "true");
-            else if (k == "whitelist") cfg.whitelist = (v == "true");
-            else if (k == "online-mode") cfg.onlineMode = (v == "true");
-            else if (k == "enforcesSecureChat" || k == "enforce-secure-profile" || k == "enforces-secure-chat") cfg.enforcesSecureChat = (v == "true");
-            else if (k == "pvp") cfg.pvp = (v == "true");
-            else if (k == "allow-flight") cfg.allowFlight = (v == "true");
-            else if (k == "hardcore") cfg.hardcore = (v == "true");
-            else if (k == "max-players") cfg.maxPlayers = std::max(0, std::stoi(v));
-            else if (k == "jvm" || k == "jvm-enabled") cfg.jvmEnabled = (v == "true" || v == "1" || v == "yes");
-            else if (k == "jvm-strict") cfg.jvmStrict = (v == "true" || v == "1" || v == "yes");
-            else if (k == "jvm-classes") cfg.jvmClassesDir = v;
-            else if (k == "jvm-mods") cfg.jvmModsDir = v;
-            else if (k == "jvm-config") cfg.jvmConfigDir = v;
-            else if (k == "jvm-java-home") cfg.jvmJavaHome = v;
-            else if (k == "jvm-library") cfg.jvmLibrary = v;
-            else if (k == "jvm-libraries") cfg.jvmLibrariesDir = v;
-        } catch (...) {}
+        auto invalid = [&] {
+            std::fprintf(stderr, "[cppfm] invalid command-line value for --%s: %s\n",
+                         k.c_str(), v.c_str());
+        };
+        int intValue = 0;
+        std::int64_t longValue = 0;
+        bool boolValue = false;
+        if (k == "port") {
+            if (!parsePort(v, cfg.port)) invalid();
+        } else if (k == "view-distance") {
+            if (!parseInteger(v, intValue)) invalid();
+            else cfg.viewDistance = std::clamp(intValue, constants::kViewDistanceMin, constants::kViewDistanceMax);
+        } else if (k == "assets") cfg.assetsDir = v;
+        else if (k == "motd") cfg.motd = v;
+        else if (k == "world-dir") cfg.worldDir = v;
+        else if (k == "spawn-protection") {
+            if (!parseInteger(v, intValue)) invalid();
+            else cfg.spawnProtection = std::max(0, intValue);
+        } else if (k == "level-type") {
+            std::string t = v;
+            if (t.rfind("minecraft:", 0) == 0) t = t.substr(10);
+            cfg.levelType = (t == "normal") ? "normal" : "flat";
+        } else if (k == "start-time") {
+            if (!parseInteger(v, longValue)) invalid();
+            else cfg.startTime = longValue;
+        } else if (k == "rcon.port") {
+            if (!parsePort(v, cfg.rcon.port)) invalid();
+        } else if (k == "rcon.password") cfg.rcon.password = v;
+        else if (k == "enable-rcon") {
+            if (!parseBool(v, boolValue)) invalid(); else cfg.rcon.enabled = boolValue;
+        } else if (k == "whitelist") {
+            if (!parseBool(v, boolValue)) invalid(); else cfg.whitelist = boolValue;
+        } else if (k == "online-mode") {
+            if (!parseBool(v, boolValue)) invalid(); else cfg.onlineMode = boolValue;
+        } else if (k == "enforcesSecureChat" || k == "enforce-secure-profile" || k == "enforces-secure-chat") {
+            if (!parseBool(v, boolValue)) invalid(); else cfg.enforcesSecureChat = boolValue;
+        } else if (k == "pvp") {
+            if (!parseBool(v, boolValue)) invalid(); else cfg.pvp = boolValue;
+        } else if (k == "allow-flight") {
+            if (!parseBool(v, boolValue)) invalid(); else cfg.allowFlight = boolValue;
+        } else if (k == "hardcore") {
+            if (!parseBool(v, boolValue)) invalid(); else cfg.hardcore = boolValue;
+        } else if (k == "max-players") {
+            if (!parseInteger(v, intValue)) invalid();
+            else cfg.maxPlayers = std::max(0, intValue);
+        } else if (k == "jvm" || k == "jvm-enabled") {
+            if (!parseBool(v, boolValue)) invalid(); else cfg.jvmEnabled = boolValue;
+        } else if (k == "jvm-strict") {
+            if (!parseBool(v, boolValue)) invalid(); else cfg.jvmStrict = boolValue;
+        } else if (k == "jvm-classes") cfg.jvmClassesDir = v;
+        else if (k == "jvm-mods") cfg.jvmModsDir = v;
+        else if (k == "jvm-config") cfg.jvmConfigDir = v;
+        else if (k == "jvm-java-home") cfg.jvmJavaHome = v;
+        else if (k == "jvm-library") cfg.jvmLibrary = v;
+        else if (k == "jvm-libraries") cfg.jvmLibrariesDir = v;
     };
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -119,7 +164,10 @@ int main(int argc, char** argv) {
         auto eq = a.find('=');
         if (eq != std::string::npos) { apply(a.substr(2, eq - 2), a.substr(eq + 1)); continue; }
         const std::string k = a.substr(2);
-        if (i + 1 < argc) apply(k, argv[++i]);
+        if (i + 1 < argc && std::string_view(argv[i + 1]).rfind("--", 0) != 0)
+            apply(k, argv[++i]);
+        else
+            std::fprintf(stderr, "[cppfm] missing value for --%s\n", k.c_str());
     }
 
     GameServer server(cfg);

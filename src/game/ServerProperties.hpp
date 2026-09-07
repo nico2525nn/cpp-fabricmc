@@ -1,9 +1,15 @@
 #pragma once
-#include <string>
-#include <map>
+#include <charconv>
+#include <cerrno>
+#include <cmath>
+#include <cstdint>
+#include <cstdlib>
 #include <fstream>
 #include <algorithm>
 #include <cctype>
+#include <limits>
+#include <map>
+#include <string>
 #include <type_traits>
 
 namespace cppfm {
@@ -15,6 +21,7 @@ public:
     bool load(const std::string& path) {
         std::ifstream f(path);
         if (!f) return false;
+        std::map<std::string, std::string> loaded;
         std::string line;
         while (std::getline(f, line)) {
             // trim trailing \r\n and spaces
@@ -37,8 +44,10 @@ public:
             k = trim(k);
             v = trim(v);
             // case-insensitive keys? keep as-is but lower-case for lookup tolerance
-            props[k] = v;
+            loaded[k] = v;
         }
+        if (!f.eof()) return false;
+        props = std::move(loaded);
         return true;
     }
 
@@ -46,60 +55,41 @@ public:
         std::ofstream f(path);
         if (!f) return false;
         for (auto& [k,v] : props) f << k << "=" << v << "\n";
-        return true;
+        f.flush();
+        return static_cast<bool>(f);
     }
 
     bool has(const std::string& key) const {
-        return props.find(key) != props.end();
+        return findProperty(key) != props.end();
     }
 
     std::string getString(const std::string& key, const std::string& def="") const {
-        auto it = props.find(key);
-        if (it==props.end()) {
-            // try lower-case variants? also try hyphen vs without
-            for (auto& [k,v] : props) {
-                std::string kl=k, kk=key;
-                std::transform(kl.begin(), kl.end(), kl.begin(), ::tolower);
-                std::transform(kk.begin(), kk.end(), kk.begin(), ::tolower);
-                if (kl==kk) return v;
-            }
-            return def;
-        }
-        return it->second;
+        const auto it = findProperty(key);
+        return it == props.end() ? def : it->second;
     }
 
     template<typename T>
     T get(const std::string& key, T def = T{}) const {
-        auto it = props.find(key);
-        std::string v;
-        if (it==props.end()) {
-            // case-insensitive fallback
-            std::string lowKey = key; std::transform(lowKey.begin(), lowKey.end(), lowKey.begin(), ::tolower);
-            bool found=false;
-            for (auto& [k,val] : props) {
-                std::string lk=k; std::transform(lk.begin(), lk.end(), lk.begin(), ::tolower);
-                if (lk==lowKey) { v=val; found=true; break; }
-            }
-            if (!found) return def;
-        } else v = it->second;
+        const auto it = findProperty(key);
+        if (it == props.end()) return def;
+        const std::string& v = it->second;
 
         if constexpr (std::is_same_v<T, std::string>) {
             return v;
-        } else if constexpr (std::is_same_v<T, int>) {
-            try { return std::stoi(v); } catch (...) { return def; }
-        } else if constexpr (std::is_same_v<T, std::int32_t>) {
-            try { return static_cast<std::int32_t>(std::stoi(v)); } catch (...) { return def; }
-        } else if constexpr (std::is_same_v<T, std::int64_t>) {
-            try { return std::stoll(v); } catch (...) { return def; }
+        } else if constexpr (std::is_integral_v<T> && !std::is_same_v<T, bool>) {
+            T parsed{};
+            return parseInteger(v, parsed) ? parsed : def;
         } else if constexpr (std::is_same_v<T, bool>) {
-            std::string low=v; std::transform(low.begin(), low.end(), low.begin(), ::tolower);
+            const std::string low = asciiLower(v);
             if (low=="true" || low=="1" || low=="yes" || low=="on") return true;
             if (low=="false" || low=="0" || low=="no" || low=="off") return false;
             return def;
         } else if constexpr (std::is_same_v<T, double>) {
-            try { return std::stod(v); } catch (...) { return def; }
+            double parsed{};
+            return parseFloating(v, parsed) ? parsed : def;
         } else if constexpr (std::is_same_v<T, float>) {
-            try { return std::stof(v); } catch (...) { return def; }
+            float parsed{};
+            return parseFloating(v, parsed) ? parsed : def;
         } else {
             return def;
         }
@@ -124,6 +114,49 @@ public:
         if (configured >= 0) return std::max(0, configured);
         int autoCap = std::max(8192, viewDist * viewDist * 4);
         return autoCap;
+    }
+
+private:
+    using PropertyIterator = std::map<std::string, std::string>::const_iterator;
+
+    static std::string asciiLower(std::string value) {
+        std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+        return value;
+    }
+
+    PropertyIterator findProperty(const std::string& key) const {
+        auto it = props.find(key);
+        if (it != props.end()) return it;
+        const std::string loweredKey = asciiLower(key);
+        for (auto candidate = props.begin(); candidate != props.end(); ++candidate) {
+            if (asciiLower(candidate->first) == loweredKey) return candidate;
+        }
+        return props.end();
+    }
+
+    template<typename T>
+    static bool parseInteger(const std::string& text, T& value) {
+        if (text.empty()) return false;
+        const char* first = text.data();
+        const char* last = first + text.size();
+        const auto result = std::from_chars(first, last, value, 10);
+        return result.ec == std::errc{} && result.ptr == last;
+    }
+
+    template<typename T>
+    static bool parseFloating(const std::string& text, T& value) {
+        if (text.empty()) return false;
+        char* end = nullptr;
+        errno = 0;
+        const char* start = text.c_str();
+        if constexpr (std::is_same_v<T, double>) {
+            value = std::strtod(start, &end);
+        } else {
+            value = std::strtof(start, &end);
+        }
+        return end == start + text.size() && errno != ERANGE && std::isfinite(value);
     }
 };
 

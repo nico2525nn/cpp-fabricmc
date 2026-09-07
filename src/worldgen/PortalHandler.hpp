@@ -149,7 +149,7 @@ public:
             WriteBuffer ge;
             ge.u8(11); // GameEvent type for portal cooldown / enable respawn screen equivalent
             ge.f32(90.f);
-            try { p.conn->sendPacket(proto::pl::sc::GameEvent, ge); } catch (...) {}
+            p.conn->trySendPacket(proto::pl::sc::GameEvent, ge);
         }
 
         std::string dimName;
@@ -181,7 +181,7 @@ public:
         WriteBuffer b;
         b.raw(ws.data.data(), ws.data.size());
         b.u8(0x03);
-        try { p.conn->sendPacket(proto::pl::sc::Respawn, b); } catch (...) {}
+        p.conn->trySendPacket(proto::pl::sc::Respawn, b);
 
         {
             WriteBuffer ab;
@@ -192,7 +192,7 @@ public:
             ab.i8(flags);
             ab.f32(0.05f);
             ab.f32(p.gamemode == 1 ? 0.10f : 0.05f);
-            try { p.conn->sendPacket(proto::pl::sc::Abilities, ab); } catch (...) {}
+            p.conn->trySendPacket(proto::pl::sc::Abilities, ab);
         }
 
         // PlayerPosition sync
@@ -204,7 +204,7 @@ public:
         tp.f64(0); tp.f64(0); tp.f64(0);
         tp.f32(p.yaw); tp.f32(p.pitch);
         tp.u32(0);
-        try { p.conn->sendPacket(proto::pl::sc::PlayerPosition, tp); } catch (...) {}
+        p.conn->trySendPacket(proto::pl::sc::PlayerPosition, tp);
 
         srv.invalidateChunkCache(tgt.x >> 4, tgt.z >> 4);
         srv.invalidateChunkCache(outX >> 4, outZ >> 4);

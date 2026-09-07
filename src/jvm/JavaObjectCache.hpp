@@ -8,6 +8,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <utility>
 
 namespace cppfm::jvm {
 
@@ -20,8 +21,19 @@ public:
     void put(void* rawEnv, std::uint64_t handle, void* globalReference);
     void put(void* rawEnv, std::uint64_t handle, const std::string& typeName,
              void* globalReference);
-    void* get(std::uint64_t handle) const;
-    void* get(std::uint64_t handle, const std::string& typeName) const;
+    // Execute a short operation while the cache entry is protected from
+    // replacement/deletion.  Returning a jobject from a plain get() would
+    // leave a use-after-DeleteGlobalRef window between the mutex unlock and
+    // the JNI call that consumes it.
+    template <typename Callback>
+    bool with(std::uint64_t handle, const std::string& typeName,
+              Callback&& callback) const {
+        std::lock_guard lock(mutex_);
+        const auto it = references_.find(Key{handle, typeName});
+        if (it == references_.end()) return false;
+        std::forward<Callback>(callback)(it->second);
+        return true;
+    }
     void erase(std::uint64_t handle);
     void erase(void* rawEnv, std::uint64_t handle);
     std::size_t size() const;

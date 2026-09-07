@@ -242,8 +242,7 @@ class Conn:
         """offline login through configuration ack. returns after entering PLAY."""
         self.handshake(2)
         uuid = offline_uuid(name)
-        self.send_packet_raw(0x00, pack_string(name) + uuid.encode().hex().encode()
-                             if False else pack_string(name) + bytes.fromhex(uuid))
+        self.send_packet_raw(0x00, pack_string(name) + bytes.fromhex(uuid))
         while True:
             pid, data = self.recv_packet()
             if pid == 0x03:      # set compression
@@ -263,8 +262,8 @@ class Conn:
     def config_finish(self, sink=None, max_seconds=30):
         """consume config packets until Finish Configuration, replying as needed.
         sink(pid, payload) is called for every packet received."""
-        deadline = time.time() + max_seconds
-        while time.time() < deadline:
+        deadline = time.monotonic() + max_seconds
+        while time.monotonic() < deadline:
             pid, data = self.recv_packet()
             if sink:
                 sink(pid, data)

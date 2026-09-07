@@ -145,11 +145,11 @@ void GameServer::initMiscCommandsPart06() {
                 if (horse) {
                     int windowId = 1;
                     WriteBuffer ow; ow.varint(windowId); ow.varint(15); ow.varint(horse->entityId);
-                    try { p->conn->sendPacket(proto::pl::sc::OpenHorseWindow, ow); } catch(...) {}
+                    p->conn->trySendPacket(proto::pl::sc::OpenHorseWindow, ow);
                     WriteBuffer cc; cc.varint(windowId); cc.varint(++p->invStateId); cc.varint(15);
                     for (int i=0;i<15;++i) ItemStack::air().write(cc);
                     ItemStack::air().write(cc);
-                    try { p->conn->sendPacket(proto::pl::sc::ContainerSetContent, cc); } catch(...) {}
+                    p->conn->trySendPacket(proto::pl::sc::ContainerSetContent, cc);
                     sendFeedback(p, "plan41 horse window sent eid=" + std::to_string(horse->entityId));
                     return 1;
                 }
@@ -186,7 +186,8 @@ void GameServer::initMiscCommandsPart06() {
 void GameServer::initMiscCommandsPart07() {
     auto& d = commands_;
     {
-        // /debug <start|stop|report> — profiling stub (no tick sampler yet).
+        // The command is registered for protocol/dispatcher compatibility, but
+        // this dedicated server has no vanilla debug profiler to expose.
         auto dbg = CommandNode::literal("debug");
         for (const char* a : {"start", "stop", "report"}) {
             auto lit = CommandNode::literal(a);
@@ -194,10 +195,8 @@ void GameServer::initMiscCommandsPart07() {
             lit->action = [this, a](CommandContext& c) {
                 Player* src = static_cast<Player*>(c.source.player);
                 std::string act = a;
-                if (act == "start") sendFeedback(src, "Started debug profiling (debug)");
-                else if (act == "stop") sendFeedback(src, "Stopped debug profiling (debug)");
-                else sendFeedback(src, "Debug report: no profiling data yet (debug)");
-                return 1;
+                sendFeedback(src, "Debug profiling is unavailable on this dedicated server (" + act + ")");
+                return 0;
             };
             dbg->then(lit);
         }

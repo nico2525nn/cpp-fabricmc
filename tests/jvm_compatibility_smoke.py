@@ -38,15 +38,24 @@ def load_json(path: Path) -> dict[str, Any]:
 
 def run_checked(command: list[str], *, cwd: Path | None = None,
                 timeout: float = COMPILE_TIMEOUT) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    process = subprocess.Popen(
         command,
         cwd=str(cwd) if cwd else None,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        timeout=timeout,
-        check=False,
+        start_new_session=True,
     )
+    try:
+        stdout, _ = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        stdout, _ = process.communicate(timeout=5.0)
+        raise subprocess.TimeoutExpired(command, timeout, output=stdout)
+    return subprocess.CompletedProcess(command, process.returncode, stdout, None)
 
 
 def validate_metadata(
@@ -292,14 +301,20 @@ def refresh(log_file: Any) -> list[str]:
 
 
 def stop_owned_process(proc: subprocess.Popen[str], timeout: float = STOP_TIMEOUT) -> None:
-    """Terminate and reap only the Popen-owned server process."""
+    """Terminate and reap the Popen-owned server process group."""
     if proc.poll() is not None:
         return
-    proc.send_signal(signal.SIGTERM)
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
     try:
         proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
-        proc.kill()
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
         proc.wait(timeout=5.0)
 
 
@@ -321,6 +336,7 @@ def run_server(binary: Path, classes: Path, mods: Path, world: Path,
             stdout=log_file,
             stderr=subprocess.STDOUT,
             text=True,
+            start_new_session=True,
         )
         lines: list[str] = []
         deadline = time.monotonic() + timeout

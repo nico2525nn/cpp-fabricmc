@@ -176,14 +176,21 @@ int main() {
         SessionLock a;
         bool live = true;
         CHECK(a.acquire(dir, live) && a.held() && !live, "sessionlock: acquire ok, no live holder");
+#ifdef __unix__
+        SessionLock duplicate;
+        bool duplicateLive = false;
+        CHECK(!duplicate.acquire(dir, duplicateLive) && duplicateLive && !duplicate.held(),
+              "sessionlock: second owner is rejected while first lock is held");
+#endif
         {
             std::ifstream f(dir + "/session.lock");
             std::string c((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
             CHECK(SessionLock::parsePid(c) == SessionLock::selfPid(), "sessionlock: lock holds our pid");
         }
         a.release();
-        CHECK(!fs::exists(dir + "/session.lock"), "sessionlock: release removes file");
-        // stale lock (dead pid) -> acquire proceeds, no live flag
+        CHECK(fs::exists(dir + "/session.lock"),
+              "sessionlock: release keeps diagnostic inode for safe hand-off");
+        // A stale record (dead pid) -> acquire proceeds, no live flag.
         {
             std::ofstream f(dir + "/session.lock", std::ios::trunc);
             f << "99999999 1\n";

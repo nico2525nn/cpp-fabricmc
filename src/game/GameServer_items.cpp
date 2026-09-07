@@ -61,7 +61,7 @@ void GameServer::broadcastPlayerEquipment(const Player& p) {
     b.varint(p.entityId);
     comp.writePayload(b);
     broadcastPacketExcept(&p, proto::pl::sc::SetEquipment, b);
-    try { p.conn->sendPacket(proto::pl::sc::SetEquipment, b); } catch(...){}
+    p.conn->trySendPacket(proto::pl::sc::SetEquipment, b);
 }
 void GameServer::syncEquipmentOnChange(Player& p){
     broadcastPlayerEquipment(p);
@@ -261,7 +261,7 @@ void GameServer::hoppersTick() {
                 std::vector<int> nonEmpty;
                 for(int i=0;i<9;++i) if(!slots[i].empty()) nonEmpty.push_back(i);
                 if(!nonEmpty.empty()){
-                    int pick = nonEmpty[rand()%nonEmpty.size()];
+                    int pick = nonEmpty[nextRandom()%nonEmpty.size()];
                     auto& s = slots[pick];
                     double dx = 0, dy = 0, dz = 0;
                     std::string facing = "north";
@@ -555,8 +555,8 @@ void GameServer::hoppersTick() {
                                             int colD = m->woolColor % 16;
                                             auto woolIt=gen::itemIdByName().find(woolNamesD[colD]);
                                             if(woolIt!=gen::itemIdByName().end()){
-                                                int cnt=1+rand()%3;
-                                                spawnItemDrop(m->x,m->y+0.8,m->z, woolIt->second, (uint8_t)cnt, (rand()/(double)RAND_MAX-.5)*0.12, 0.12, (rand()/(double)RAND_MAX-.5)*0.12);
+                                                int cnt=1+nextRandom()%3;
+                                                spawnItemDrop(m->x,m->y+0.8,m->z, woolIt->second, (uint8_t)cnt, (nextRandom()/(double)RAND_MAX-.5)*0.12, 0.12, (nextRandom()/(double)RAND_MAX-.5)*0.12);
                                             }
                                         }
                                         WriteBuffer md; md.varint(m->entityId); md.u8(17); md.u8(8); md.u8(1); md.u8(255);
@@ -832,7 +832,7 @@ bool GameServer::openTrading(Player& p, MobEntity& v) {
     b.varint(windowId);
     b.varint(menus::kMerchant);
     nbt::writeTextComponent(b, "Villager");
-    try { p.conn->sendPacket(proto::pl::sc::OpenScreen, b); } catch (...) {}
+    p.conn->trySendPacket(proto::pl::sc::OpenScreen, b);
     WriteBuffer tl;
     tl.varint(windowId);
     // NITWIT: no trades
@@ -841,7 +841,7 @@ bool GameServer::openTrading(Player& p, MobEntity& v) {
         tl.varint(0); tl.varint(0);
         int lvl = std::clamp(v.villagerData.level,1,5);
         tl.varint(lvl); tl.i32(v.villagerXp); tl.boolean(false);
-        try { p.conn->sendPacket(proto::pl::sc::TradeList, tl); } catch (...) {}
+        p.conn->trySendPacket(proto::pl::sc::TradeList, tl);
         return true;
     }
     int lvl = std::clamp(v.villagerData.level,1,5);
@@ -898,7 +898,7 @@ bool GameServer::openTrading(Player& p, MobEntity& v) {
     tl.varint(lvl);
     tl.i32(v.villagerXp);
     tl.boolean(true);
-    try { p.conn->sendPacket(proto::pl::sc::TradeList, tl); } catch (...) {}
+    p.conn->trySendPacket(proto::pl::sc::TradeList, tl);
     return true;
 }
 bool GameServer::selectTrade(Player& p, std::int32_t index) {
@@ -972,7 +972,7 @@ bool GameServer::selectTrade(Player& p, std::int32_t index) {
         for (auto& m : mobs_) if (m->kind==MobKind::Villager) {
             double dx=m->x - p.x, dz=m->z - p.z;
             if (dx*dx+dz*dz < 64) {
-                m->villagerXp += 3 + (rand()%4);
+                m->villagerXp += 3 + (nextRandom()%4);
                 m->gossip.add(p.uuid, 2);
                 // Level up check: every 10 xp -> level++ (vanilla xp thresholds 10,70 etc simplified)
                 if (m->villagerXp >= m->villagerLevel * 10 && m->villagerLevel < 5) {
@@ -992,7 +992,7 @@ bool GameServer::selectTrade(Player& p, std::int32_t index) {
                     m->restockUntil = (curDay+1)*24000 + 2000;
                 } else {
                     if (m->restockUntil < tickNo_) {
-                        m->restockUntil = tickNo_ + MobEntity::kRestockSecondWindowTicks + (rand()%2000);
+                        m->restockUntil = tickNo_ + MobEntity::kRestockSecondWindowTicks + (nextRandom()%2000);
                     }
                 }
                 break;
@@ -1005,9 +1005,9 @@ void GameServer::growResinNearHeart(int hx,int hy,int hz) {
     if (!isNight()) return;
     // find pale_oak_log within 8 of heart and place resin_clump on side
     for (int attempt=0; attempt<8; ++attempt) {
-        int lx = hx + (rand()%17 - 8);
-        int ly = hy + (rand()%9 - 4);
-        int lz = hz + (rand()%17 - 8);
+        int lx = hx + (nextRandom()%17 - 8);
+        int ly = hy + (nextRandom()%9 - 4);
+        int lz = hz + (nextRandom()%17 - 8);
         uint16_t st = world_.getBlock(lx,ly,lz);
         auto* bd = gen::blockByState(st);
         if (!bd) continue;
@@ -1157,14 +1157,14 @@ void GameServer::resendInventory(Player& p) {
     b.varint(46);
     for (int i = 0; i < 46; ++i) p.inv[i].write(b);
     ItemStack::air().write(b);                          // carried
-    try { p.conn->sendPacket(pl::sc::ContainerSetContent, b); } catch (...) {}
+    p.conn->trySendPacket(pl::sc::ContainerSetContent, b);
 }
 void GameServer::sendSetExperience(Player& p) {
     WriteBuffer b;
     b.f32(p.xp.progress);
     b.varint(p.xp.level);
     b.varint(p.xp.totalXp);
-    try { p.conn->sendPacket(pl::sc::SetExperience, b); } catch (...) {}
+    p.conn->trySendPacket(pl::sc::SetExperience, b);
 }
 void GameServer::effectsTick() {
     for (auto& pp : playersSnapshot()) {
@@ -1190,8 +1190,7 @@ void GameServer::effectsTick() {
                 WriteBuffer b;
                 b.varint(p->entityId);
                 b.varint(it->type);
-                try { p->conn->sendPacket(pl::sc::RemoveMobEffect, b); }
-                catch (...) {}
+                p->conn->trySendPacket(pl::sc::RemoveMobEffect, b);
                 it = p->effects.erase(it);
                 changed = true;
                 continue;
@@ -1256,8 +1255,8 @@ void GameServer::effectsTick() {
             || p2->attributes.getValue(Attribute::ATTACK_DAMAGE) != 1.0)) {
             WriteBuffer ab;
             p2->attributes.writeUpdate(ab, p2->entityId);
-            try { p2->conn->sendPacket(pl::sc::UpdateAttributes, ab); } catch(...) {}
-            try { broadcastPacketExcept(p2, pl::sc::UpdateAttributes, ab); } catch(...) {}
+            p2->conn->trySendPacket(pl::sc::UpdateAttributes, ab);
+            broadcastPacketExcept(p2, pl::sc::UpdateAttributes, ab);
         }
         // sync invisibility/glowing metadata: index 0 flags, index 6 pose already
         if (tickNo_ % 20 == 0) {
@@ -1451,8 +1450,8 @@ void GameServer::spawnXpOrbs(double x, double y, double z, int totalPoints,
             auto e = std::make_shared<XpOrbEntity>();
             e->entityId = nextEntityId();
             e->value = static_cast<std::uint16_t>(v);
-            e->x = x + ((rand() % 5) - 2) * 0.1;
-            e->y = y; e->z = z + ((rand() % 5) - 2) * 0.1;
+            e->x = x + ((nextRandom() % 5) - 2) * 0.1;
+            e->y = y; e->z = z + ((nextRandom() % 5) - 2) * 0.1;
             e->vy = 0.08;
             xpOrbs_.push_back(e);
             created.push_back(e);
@@ -1507,7 +1506,7 @@ void GameServer::xpOrbsTick() {
             std::vector<int> mendingSlots;
             for (int i=0;i<46;++i) if(!p.inv[i].empty() && p.inv[i].mendingLevel()>0 && p.inv[i].getDamage()>0) mendingSlots.push_back(i);
             if(!mendingSlots.empty() && xp>0){
-                int pick = mendingSlots[rand() % mendingSlots.size()];
+                int pick = mendingSlots[nextRandom() % mendingSlots.size()];
                 ItemStack &target = p.inv[pick];
                 int dmg = target.getDamage();
                 int repair = std::min(dmg, xp * 2);
@@ -1654,7 +1653,7 @@ void GameServer::projectilesTick() {
                                 tb.f64(0); tb.f64(0); tb.f64(0);
                                 tb.f32(owner->yaw); tb.f32(owner->pitch);
                                 tb.u32(0);
-                                try { owner->conn->sendPacket(proto::pl::sc::PlayerPosition, tb); } catch(...) {}
+                                owner->conn->trySendPacket(proto::pl::sc::PlayerPosition, tb);
                             }
                             // broadcast to others
                             {
@@ -1674,7 +1673,7 @@ void GameServer::projectilesTick() {
                                     WriteBuffer cd;
                                     cd.varint(static_cast<int32_t>(pid->second));
                                     cd.varint(20); // 1 sec vanilla
-                                    try { owner->conn->sendPacket(proto::pl::sc::SetCooldown, cd); } catch(...) {}
+                                    owner->conn->trySendPacket(proto::pl::sc::SetCooldown, cd);
                                 }
                             }
                         }
@@ -1725,7 +1724,7 @@ void GameServer::projectilesTick() {
                                 double inv=1.0/(std::sqrt(pr->vx*pr->vx+pr->vz*pr->vz)+1e-6);
                                 double kx=pr->vx*inv*1.8, kz=pr->vz*inv*1.8;
                                 WriteBuffer vel; vel.varint(pp->entityId); vel.i16((int16_t)(kx*8000)); vel.i16((int16_t)(0.35*8000)); vel.i16((int16_t)(kz*8000));
-                                try{ pp->conn->sendPacket(proto::pl::sc::EntityVelocity, vel);}catch(...){}
+                                pp->conn->trySendPacket(proto::pl::sc::EntityVelocity, vel);
                             }
                             if (pr->kind == ProjectileKind::Arrow && pr->piercingLevel > 0) {
                                 pr->piercedIds.push_back(pp->entityId);
@@ -1825,8 +1824,7 @@ void GameServer::projectilesTick() {
             de.varint(dtid >= 0 ? dtid : 0);
             de.varint(0); de.varint(0);
             de.boolean(false);
-            try { h.player->conn->sendPacket(pl::sc::DamageEvent, de); }
-            catch (...) {}
+            h.player->conn->trySendPacket(pl::sc::DamageEvent, de);
         } else if (h.mob) {
             applyDamageToMob(*h.mob, h.dmg, "arrow");
             if (h.mob->dead) {

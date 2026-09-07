@@ -44,6 +44,36 @@ class ProbeCommandError(VerificationError):
         self.reason = reason
 
 
+def _output_text(value: str | bytes | None) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value or ""
+
+
+def _collect_after_kill(process: subprocess.Popen[str]) -> tuple[str, str]:
+    """Collect bounded output after the process group has been terminated.
+
+    A descendant that inherited a pipe can keep ``communicate()`` open even
+    after the Popen leader is gone.  The old unbounded call here was the source
+    of the outer timeout appearing to crash; closing the streams after a second
+    bounded wait makes cleanup finite and preserves whatever output is known.
+    """
+    try:
+        stdout, stderr = process.communicate(timeout=5.0)
+        return _output_text(stdout), _output_text(stderr)
+    except subprocess.TimeoutExpired as exc:
+        stdout = _output_text(exc.stdout)
+        stderr = _output_text(exc.stderr)
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
+        try:
+            process.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            pass
+        return stdout, stderr
+
+
 class ProbeBundle(NamedTuple):
     work_dir: Path
     game_dir: Path
@@ -171,7 +201,7 @@ def _run_command(command: list[str], stage: str, cwd: Path, timeout: float) -> t
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-        stdout, stderr = process.communicate()
+        stdout, stderr = _collect_after_kill(process)
         raise ProbeCommandError(stage, command, stdout, stderr, f"timed out after {timeout}s")
     if process.returncode != 0:
         raise ProbeCommandError(stage, command, stdout, stderr, f"exit code {process.returncode}")
@@ -526,14 +556,25 @@ def run_probe(
 
 
 def _stop_owned_process(process: subprocess.Popen[str], timeout: float) -> None:
-    """Stop and reap only the server process created by this verifier."""
+    """Stop and reap the process group created by this verifier.
+
+    The embedded probe may load a launcher that creates descendants. Signaling
+    only the Popen leader can leave descendants holding the output pipe and
+    make a caller report a timeout after the leader was reaped.
+    """
     if process.poll() is not None:
         return
-    process.send_signal(signal.SIGTERM)
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
     try:
         process.wait(timeout=max(1.0, min(15.0, timeout)))
     except subprocess.TimeoutExpired:
-        process.kill()
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
         process.wait(timeout=5.0)
 
 

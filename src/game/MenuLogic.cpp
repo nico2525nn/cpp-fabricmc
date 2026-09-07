@@ -159,8 +159,8 @@ bool AnvilMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, int but
 // ---------------- Enchantment ----------------
 
 void EnchantmentMenuLogic::onContentChanged(Menu& menu, Player& player) {
-    // slots: 0 item, 1 lapis Could compute enchantment offerings and send ContainerSetData (window property) For now, no-op; actual
-    // enchanting via onEnchantButton
+    // slots: 0 item, 1 lapis. Enchantment offerings are handled by the button path;
+    // window-property refresh is not implemented yet.
     ItemStack* item = menu.container ? &menu.container[0] : &menu.extraSlots[0];
     ItemStack* lapis = menu.container ? &menu.container[1] : &menu.extraSlots[1];
     if (item->empty() || lapis->empty()) return;
@@ -325,7 +325,8 @@ bool CrafterMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, int b
     (void)player; (void)recipes;
     // Crafter 9 slots (0..8) + player inv 36. Yarn `CrafterScreenHandler` + `CrafterBlock` `triggered` parity:
     // `triggered` toggle is handled server-side in `GameServer::handleMenuClick` (Crafter only), not here.
-    // Behaves like a chest 3x3 but with crafting-like disabled slot handling (all slots enabled for stub).
+    // Behaves like a chest 3x3; disabled-slot handling and redstone automation are
+    // outside this partial interaction implementation.
     int cont = 9;
     if (slotId < cont) {
         ItemStack* target = menu.container ? &menu.container[slotId] : &menu.extraSlots[slotId];
@@ -343,7 +344,8 @@ bool CrafterMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, int b
             }
         }
         if (changed) io.blockEntityChanged(menu.blockKey);
-        // Future: triggered property toggle on redstone pulse would craft result to facing inventory; stub keeps slots.
+        // Redstone-triggered crafting and output transfer are not implemented; the
+        // interaction path intentionally preserves the inserted slots.
         return changed;
     }
     return false;
@@ -356,9 +358,11 @@ void CartographyMenuLogic::recomputeResult(Menu& menu) {
     ItemStack* map = menu.container ? &menu.container[0] : &menu.extraSlots[0];
     ItemStack* paper = menu.container ? &menu.container[1] : &menu.extraSlots[1];
     ItemStack* result = menu.container ? &menu.container[2] : &menu.extraSlots[2];
-    // vanilla: filled_map + paper => clone, map scale upgrade with 8 paper etc. Stub: if both present, copy map to result
+    // Vanilla supports cloning and scale upgrades. This partial path currently
+    // exposes the cloning-shaped result when both inputs are present.
     if (!map->empty() && !paper->empty()) {
-        // Check map is "minecraft:filled_map" or "minecraft:map" ; accept any for stub
+        // Check map is "minecraft:filled_map" or "minecraft:map"; ItemStack names
+        // are used here because map components are not modeled by this menu yet.
         std::string mn = map->name();
         if (mn.find("map") != std::string::npos) {
             *result = *map;

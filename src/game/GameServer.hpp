@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
@@ -10,6 +11,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <thread>
 #include <unordered_set>
 #include <vector>
@@ -41,6 +43,7 @@
 #include "Stats.hpp"
 #include "Scoreboard.hpp"
 #include "Teams.hpp"
+#include "../core/Random.hpp"
 #include "../physics/LightEngine.hpp"
 #include "../physics/Fluids.hpp"
 #include "../physics/Redstone.hpp"
@@ -55,14 +58,9 @@
 #include "../net/PacketBatcher.hpp"
 #include "Attributes.hpp"
 #include "DamageSource.hpp"
-#include "ServerProperties.hpp"
 #include "SessionLock.hpp"
 #include "BossAI.hpp"
 #include "MenuLogic.hpp"
-#include "WorldManager.hpp"
-#include "EntityManager.hpp"
-#include "InventoryController.hpp"
-#include "NetworkManager.hpp"
 #include "HungerManager.hpp"
 #include "CombatManager.hpp"
 #include "DatapackManager.hpp"
@@ -274,7 +272,7 @@ class GameServer;
 // Per-connection session: drives the state machine on its own thread.
 class Session {
 public:
-    Session(GameServer& srv, std::unique_ptr<Connection> conn)
+    Session(GameServer& srv, std::shared_ptr<Connection> conn)
         : srv_(srv), conn_(std::move(conn)) {}
 
     void run();
@@ -441,7 +439,8 @@ public:
           world_(cfg_.worldBiome,
                  cfg.levelType == "normal" ? LevelType::Normal : LevelType::Flat,
                  cfg.seed),
-          startTime_(cfg.startTime) {
+          startTime_(cfg.startTime),
+          ioPool_(static_cast<std::size_t>(std::max(1, cfg_.ioWorkerThreads))) {
         netherWorld_ = std::make_unique<World>(
             "minecraft:nether_wastes", LevelType::Nether, cfg.seed ^ 0x4E37ULL);
         endWorld_ = std::make_unique<World>(
@@ -460,11 +459,24 @@ public:
         }
     }
     const World& worldFor(std::int8_t dim) const {
-        return const_cast<GameServer*>(this)->worldFor(dim);
+        switch (dim) {
+        case -1: return *netherWorld_;
+        case 1: return *endWorld_;
+        default: return world_;
+        }
     }
     ~GameServer() { stop(); }
 
     void init() {
+        if (initialized_)
+            throw std::logic_error("GameServer::init called more than once");
+        bool heldByLiveOther = false;
+        if (!sessionLock_.acquire(cfg_.worldDir, heldByLiveOther)) {
+            if (heldByLiveOther)
+                throw std::runtime_error("world is already in use: " + cfg_.worldDir);
+            throw std::runtime_error("could not acquire world session lock: " + cfg_.worldDir);
+        }
+        initialized_ = true;
         data_.load(cfg_.assetsDir);
         gameData_.load(data_);
         whitelist_.load("whitelist.json");
@@ -530,32 +542,29 @@ public:
         blockTicks_->registerBehavior("minecraft:pitcher_crop", std::make_unique<CropBehavior>());
         blockTicks_->registerBehavior("minecraft:pale_oak_leaves", std::make_unique<PaleOakLeavesBehavior>());
         blockTicks_->registerBehavior("minecraft:creaking_heart", std::make_unique<CreakingHeartBehavior>());
-        {
-            ServerProperties sp;
-            if (sp.load("server.properties")) {
-                cfg_.viewDistance = std::clamp(sp.get<int>("view-distance", cfg_.viewDistance), 2, 32);
-                cfg_.simulationDistance = std::clamp(sp.get<int>("simulation-distance", cfg_.simulationDistance), 2, 32);
-                cfg_.spawnProtection = std::max(0, sp.get<int>("spawn-protection", cfg_.spawnProtection));
-                if (sp.has("max-loaded-chunks") || sp.has("maxLoadedChunks")) {
-                    cfg_.maxLoadedChunks = std::max(0, sp.get<int>("max-loaded-chunks", sp.get<int>("maxLoadedChunks", cfg_.maxLoadedChunks)));
-                } else {
-                    cfg_.maxLoadedChunks = std::max(8192, cfg_.viewDistance * cfg_.viewDistance * 4);
-                }
-                // also mirror to world
-                world_.setSimulationDistance(cfg_.simulationDistance);
-                if (netherWorld_) netherWorld_->setSimulationDistance(cfg_.simulationDistance);
-                if (endWorld_) endWorld_->setSimulationDistance(cfg_.simulationDistance);
-            }
-        }
+        // Configuration is parsed once by main() before this object is
+        // constructed.  Re-reading server.properties here would silently
+        // override command-line values and make embedded callers behave
+        // differently from the executable.
         world_.setSimulationDistance(cfg_.simulationDistance);
         if (netherWorld_) netherWorld_->setSimulationDistance(cfg_.simulationDistance);
         if (endWorld_) endWorld_->setSimulationDistance(cfg_.simulationDistance);
-        auto simCb = [this](std::int32_t cx, std::int32_t cz) -> bool {
-            return this->isChunkInSimulationDistance(cx, cz);
-        };
-        world_.setSimulationDistanceCallback(simCb);
-        if (netherWorld_) netherWorld_->setSimulationDistanceCallback(simCb);
-        if (endWorld_) endWorld_->setSimulationDistanceCallback(simCb);
+        world_.setSimulationDistanceCallback(
+            [this](std::int32_t cx, std::int32_t cz) {
+                return isChunkInSimulationDistanceFor(0, cx, cz);
+            });
+        if (netherWorld_) {
+            netherWorld_->setSimulationDistanceCallback(
+                [this](std::int32_t cx, std::int32_t cz) {
+                    return isChunkInSimulationDistanceFor(-1, cx, cz);
+                });
+        }
+        if (endWorld_) {
+            endWorld_->setSimulationDistanceCallback(
+                [this](std::int32_t cx, std::int32_t cz) {
+                    return isChunkInSimulationDistanceFor(1, cx, cz);
+                });
+        }
 
         redstone_->setBlockEntityStore(&blockEntities_);
         redstone_->setTickRef(&tickNo_);
@@ -576,11 +585,9 @@ public:
             redstone_->onBlockChanged(x, y, z);
         });
         spawnProtection_ = cfg_.spawnProtection;
-        { bool live = false; sessionLock_.acquire(cfg_.worldDir, live); (void)live; }
         persist_ = std::make_unique<Persistence>(world_, cfg_.worldDir, cfg_.worldBiome);
         persist_->setDifficulty(difficulty_);
         persist_->setWorldBorder(worldBorderDiameter_, worldBorderCenterX_, worldBorderCenterZ_);
-        loadOps();
         {   // biome codec maps + chunk extras (block entities)
             std::unordered_map<std::uint16_t, std::string> idxToKey;
             const auto& order = gameData_.order("minecraft:worldgen/biome");
@@ -710,9 +717,6 @@ public:
         std::fprintf(stderr, "[cppfm] RCON %s (enabled=%d port=%u)\n",
                      rconUp ? "listening" : "not started", (int)cfg_.rcon.enabled,
                      cfg_.rcon.port);
-        worldMgr_ = std::make_unique<WorldManager>(world_, *netherWorld_, *endWorld_);
-        entityMgr_ = std::make_unique<EntityManager>();
-        networkMgr_ = std::make_unique<NetworkManager>(batcher_);
         bossAI_ = std::make_unique<BossAIManager>(*this);
         if (cfg_.jvmEnabled) {
             jvm::JvmConfig jvmConfig;
@@ -735,17 +739,22 @@ public:
         }
     }
     void runForever();
-    void requestStop() {                 // async-signal-safe minimal path
-        running_ = false;
-        if (listenFd_ >= 0) {
-            int fd = listenFd_;
+    void requestStop() noexcept {        // minimal path used by the POSIX signal handler
+        running_.store(false, std::memory_order_release);
+        if (const int fd = listenFd_.load(std::memory_order_acquire); fd >= 0) {
             ::shutdown(fd, SHUT_RDWR);   // wake acceptLoop
         }
     }
     void stop() {
         requestStop();
+        stopCv_.notify_all();
+        stopClientConnections();
         std::fprintf(stderr, "[cppfm] stopping tick loop\n");
         stopTickLoop();
+        joinJanitorThread();
+        joinSessionThreads();
+        std::fprintf(stderr, "[cppfm] stopping I/O workers\n");
+        ioPool_.shutdown();
         if (jvmRuntime_) {
             std::fprintf(stderr, "[cppfm] stopping embedded JVM\n");
             jvmRuntime_->stop();
@@ -756,7 +765,8 @@ public:
         if (persist_) persist_->stop();
         for (auto& d : dimPersist_) if (d) d->stop();
         std::fprintf(stderr, "[cppfm] closing listen fd\n");
-        if (listenFd_ >= 0) { ::close(listenFd_); listenFd_ = -1; }
+        if (const int fd = listenFd_.exchange(-1, std::memory_order_acq_rel); fd >= 0)
+            ::close(fd);
         sessionLock_.release(); // plan46 §2 (O-08)
         std::fprintf(stderr, "[cppfm] stopped cleanly\n");
     }
@@ -849,6 +859,9 @@ public:
     // Hopper item movement + dispenser ejection (every HOPPER_TRANSFER_INTERVAL_TICKS).
     static constexpr int HOPPER_TRANSFER_INTERVAL_TICKS = 8;
     void hoppersTick();
+    bool isChunkInSimulationDistanceFor(std::int8_t dimension,
+                                        std::int32_t cx,
+                                        std::int32_t cz) const;
     bool isChunkInSimulationDistance(std::int32_t cx, std::int32_t cz) const;
     void chunksUnloadTick();
     // Direct inventory access helpers used by the hopper simulation.
@@ -1144,7 +1157,7 @@ public:
     bool running() const { return running_; }
 
     using PlayerRef = std::shared_ptr<Player>;
-    std::vector<PlayerRef> playersSnapshot() {
+    std::vector<PlayerRef> playersSnapshot() const {
         std::lock_guard lk(playersMtx_);
         return players_;
     }
@@ -1176,8 +1189,11 @@ public:
         for (auto& v : victims) {
             WriteBuffer kick;
             nbt::writeTextComponent(kick, "You logged in from another location");
-            try { if (v->conn) v->conn->sendPacket(proto::pl::sc::Disconnect, kick); }
-            catch (...) {}
+            v->inPlay = false;
+            if (v->conn) {
+                v->conn->trySendPacket(proto::pl::sc::Disconnect, kick);
+                v->conn->abort();
+            }
             std::fprintf(stderr, "[cppfm] duplicate login %s: kicked older session\n",
                          v->name.c_str());
         }
@@ -1201,9 +1217,10 @@ public:
         broadcastPacketExcept(except, proto::pl::sc::SystemChat, body);
     }
     void broadcastPacketExcept(const Player* except, std::uint8_t id, const WriteBuffer& body) {
-        for (auto& p : playersSnapshot()) {
-            if (p.get() == except || !p->inPlay) continue;
-            try { p->conn->sendPacket(id, body); } catch (...) {}
+        const auto players = playersSnapshot();
+        for (auto& p : players) {
+            if (p.get() == except || !p->inPlay || !p->conn) continue;
+            p->conn->trySendPacket(id, body);
         }
     }
     void broadcastBlockChange(std::int32_t x, std::int32_t y, std::int32_t z,
@@ -1212,7 +1229,6 @@ public:
                           std::uint16_t state);
     void flushBlockBatches();
     void broadcastPlayerChat(Player& sender, const std::string& message, std::int64_t timestamp);
-    bool validateFeatureFlags(const std::vector<std::array<std::string,3>>& clientPacks);
     using ChunkBodyRef = std::shared_ptr<const std::vector<std::uint8_t>>;
     struct ChunkCacheStats {
         std::size_t hits = 0, misses = 0, size = 0;
@@ -1302,7 +1318,22 @@ public:
     std::size_t chunkCacheMisses() const { return cacheMisses_.load(std::memory_order_relaxed); }
 
 private:
+    struct ChunkSaveCoordinator {
+        struct Stamp {
+            std::mutex writeMutex;
+            std::atomic<std::uint64_t> latestRevision{0};
+        };
+        std::mutex mutex;
+        std::unordered_map<std::int64_t, std::shared_ptr<Stamp>> latest;
+    };
+
     void acceptLoop();
+    bool registerSessionThread(std::thread worker);
+    void joinSessionThreads();
+    void registerActiveConnection(const std::shared_ptr<Connection>& connection);
+    void unregisterActiveConnection(const std::shared_ptr<Connection>& connection);
+    void stopClientConnections();
+    void joinJanitorThread();
     void invalidateJvmMob(const std::shared_ptr<MobEntity>& mob);
 
     ServerConfig cfg_;
@@ -1329,15 +1360,24 @@ private:
     std::vector<std::shared_ptr<ProjectileEntity>> projectiles_;
     std::vector<std::shared_ptr<TntEntity>> tntEntities_;
     std::unordered_map<std::int64_t, bool> dispenserPower_;
-    std::int64_t tickNo_ = 0;
+    std::atomic<std::int64_t> tickNo_{0};
     std::int64_t timeOffset_ = 0;
     std::int64_t startTime_ = 1000;
     PacketBatcher batcher_;
     std::int64_t lastBlockBatchFlushMs_ = 0;
     std::thread tickThread_;
+    std::thread janitorThread_;
+    mutable std::mutex sessionThreadsMtx_;
+    std::vector<std::thread> sessionThreads_;
+    bool sessionThreadsStopping_ = false;
+    mutable std::mutex activeConnectionsMtx_;
+    std::vector<std::shared_ptr<Connection>> activeConnections_;
+    std::mutex stopCvMtx_;
+    std::condition_variable stopCv_;
     std::unique_ptr<Persistence> persist_;
     std::unique_ptr<Persistence> dimPersist_[2];
-    SessionLock sessionLock_; // plan46 §2 (O-08): world/session.lock guard
+    SessionLock sessionLock_; // world/session.lock guard
+    bool initialized_ = false;
     Whitelist whitelist_;
     std::unique_ptr<RconServer> rconServer_;
     crypto::RsaKeyPair loginKeys_;
@@ -1347,7 +1387,7 @@ private:
     EmbeddedData data_;
     GameData gameData_;                                 // parsed registry orders
     std::vector<PlayerRef> players_;
-    std::mutex playersMtx_;
+    mutable std::mutex playersMtx_;
     BlockEntityStore blockEntities_;                 // chests & furnaces
     RecipeManager recipes_;                          // crafting/smelting data
     TagManager tagManager_;
@@ -1402,21 +1442,21 @@ public:
     double worldBorderDamageBuffer() const { return 5.0; }
     void tickWanderingTrader() {
         // vanilla WanderingTraderManager: gated by doTraderSpawning (or doMobSpawning)
-        if (!gamerules_.getBool("doTraderSpawning")) {
-            if (gamerules_.contains("doTraderSpawning") && !gamerules_.getBool("doTraderSpawning")) return;
-            // also respect doMobSpawning as global kill-switch per audit
-            if (gamerules_.contains("doMobSpawning") && !gamerules_.getBool("doMobSpawning")) return;
-        }
+        if (gamerules_.contains("doTraderSpawning") &&
+            !gamerules_.getBool("doTraderSpawning")) return;
+        // Also respect doMobSpawning as the global spawn kill-switch.
+        if (gamerules_.contains("doMobSpawning") &&
+            !gamerules_.getBool("doMobSpawning")) return;
         if (wanderingTraderSpawnDelay_ > 0) { --wanderingTraderSpawnDelay_; return; }
-        int roll = std::rand() % 100;
+        int roll = nextRandom() % 100;
         bool shouldSpawn = roll < wanderingTraderSpawnChance_;
         if (shouldSpawn) {
             auto players = playersSnapshot();
             if (!players.empty()) {
-                auto &p = players[std::rand() % players.size()];
+                auto &p = players[nextRandom() % players.size()];
                 if (p->inPlay) {
-                    double sx = p->x + (std::rand()%48 - 24);
-                    double sz = p->z + (std::rand()%48 - 24);
+                    double sx = p->x + (nextRandom()%48 - 24);
+                    double sz = p->z + (nextRandom()%48 - 24);
                     double sy = p->y;
                     for (int y = (int)sy + 10; y > (int)sy - 10; --y) {
                         if (world_.getBlock((int)sx, y, (int)sz)==0 && world_.getBlock((int)sx, y-1, (int)sz)!=0) { sy = y; break; }
@@ -1483,27 +1523,9 @@ private:
     std::unique_ptr<FluidSim> fluidSim_;
     std::unique_ptr<RedstoneEngine> redstone_;
     std::unique_ptr<BlockTickScheduler> blockTicks_;
-    // WorldManager/EntityManager/InventoryController/NetworkManager already header-only;
-    // HungerManager/CombatManager are real classes with .cpp
-    std::unique_ptr<WorldManager> worldMgr_;
-    std::unique_ptr<EntityManager> entityMgr_;
-    std::unique_ptr<NetworkManager> networkMgr_;
+    // HungerManager/CombatManager are real classes with .cpp implementations.
     std::unique_ptr<BossAIManager> bossAI_;
     std::unique_ptr<jvm::JvmRuntime> jvmRuntime_;
-    std::vector<std::function<void(std::int32_t,std::int32_t,std::int32_t,std::uint16_t,std::uint16_t)>> onBlockPlaceHandlers_;
-    std::vector<std::function<void(std::int32_t,std::int32_t,std::int32_t,std::uint16_t,std::uint16_t)>> onBlockBreakHandlers_;
-    std::vector<std::function<void(std::int32_t,std::int32_t,std::int32_t,std::uint16_t)>> onBlockNeighborChangeHandlers_;
-public:
-    void addOnBlockPlaceHandler(std::function<void(std::int32_t,std::int32_t,std::int32_t,std::uint16_t,std::uint16_t)> h) { onBlockPlaceHandlers_.push_back(std::move(h)); }
-    void addOnBlockBreakHandler(std::function<void(std::int32_t,std::int32_t,std::int32_t,std::uint16_t,std::uint16_t)> h) { onBlockBreakHandlers_.push_back(std::move(h)); }
-    void addOnBlockNeighborChangeHandler(std::function<void(std::int32_t,std::int32_t,std::int32_t,std::uint16_t)> h) { onBlockNeighborChangeHandlers_.push_back(std::move(h)); }
-    void fireBlockPlaceEvent(std::int32_t x,std::int32_t y,std::int32_t z,std::uint16_t oldSt,std::uint16_t newSt) { for(auto& h: onBlockPlaceHandlers_) h(x,y,z,oldSt,newSt); }
-    void fireBlockBreakEvent(std::int32_t x,std::int32_t y,std::int32_t z,std::uint16_t oldSt,std::uint16_t newSt) { for(auto& h: onBlockBreakHandlers_) h(x,y,z,oldSt,newSt); }
-    void fireBlockNeighborChangeEvent(std::int32_t x,std::int32_t y,std::int32_t z,std::uint16_t ns) { for(auto& h: onBlockNeighborChangeHandlers_) h(x,y,z,ns); }
-    // alias spec names
-    void onBlockPlace(std::int32_t x,std::int32_t y,std::int32_t z,std::uint16_t o,std::uint16_t n){ fireBlockPlaceEvent(x,y,z,o,n); }
-    void onBlockBreak(std::int32_t x,std::int32_t y,std::int32_t z,std::uint16_t o,std::uint16_t n){ fireBlockBreakEvent(x,y,z,o,n); }
-    void onBlockNeighborChange(std::int32_t x,std::int32_t y,std::int32_t z,std::uint16_t ns){ fireBlockNeighborChangeEvent(x,y,z,ns); }
 private:
     const std::uint64_t explosionSeed_ = 0x51AB1EULL;
     // weather (本家互換: doWeatherCycle / rain)
@@ -1532,15 +1554,17 @@ private:
     std::atomic<std::size_t> cacheHits_{0}, cacheMisses_{0}; // plan41 C-09 LRU stats
     std::unordered_map<std::int32_t, std::int64_t> ghostThrottle_; // entityId -> last tick for PlaceGhostRecipe 0x39
     // W19/B-07 async I/O: ThreadPool for RegionFile zlib offload (Yarn ThreadedAnvilChunkStorage)
-    core::ThreadPool ioPool_{4};
+    core::ThreadPool ioPool_;
+    std::shared_ptr<ChunkSaveCoordinator> chunkSaveCoordinator_ =
+        std::make_shared<ChunkSaveCoordinator>();
     // pending async chunk loads (ChunkPos -> future) polled in tickOnce via pollPendingLoads()
     std::unordered_map<std::int64_t, std::future<std::vector<std::uint8_t>>> pendingLoads_;
     mutable std::mutex pendingLoadsMtx_;
     void pollPendingLoads(); // B-07: drain ready futures and install chunks (defined in GameServer_tick.cpp)
-    std::atomic<bool> running_{true};
-    int listenFd_ = -1;
+    std::atomic<bool> running_{false};
+    std::atomic<int> listenFd_{-1};
     AcceptGate acceptGate_{20};
-    std::int32_t entityIdCounter_ = 1;
+    std::atomic<std::int32_t> entityIdCounter_{1};
     std::atomic<int> nextMapId_{1}; // plan42 MapData allocation
 };
 

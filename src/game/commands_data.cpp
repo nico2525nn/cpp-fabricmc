@@ -980,14 +980,14 @@ void GameServer::initDataRecipeCommands() {
                 b.varint(0); b.varint(r.category); b.boolean(false); b.u8(0x03);
             }
             b.boolean(replaceFlag);
-            try{ p.conn->sendPacket(proto::pl::sc::RecipeBookAdd, b);}catch(...){}
+            p.conn->trySendPacket(proto::pl::sc::RecipeBookAdd, b);
         };
         auto sendRemoveFor = [this](Player& p, const std::vector<int>& idxs){
             if(idxs.empty()) return;
             WriteBuffer b;
             b.varint(static_cast<std::int32_t>(idxs.size()));
             for(int id: idxs) b.varint(id);
-            try{ p.conn->sendPacket(proto::pl::sc::RecipeBookRemove, b);}catch(...){}
+            p.conn->trySendPacket(proto::pl::sc::RecipeBookRemove, b);
         };
         auto resolveRecipeIds = [this](const std::string& raw, bool isStar) -> std::vector<int> {
             std::vector<int> out;

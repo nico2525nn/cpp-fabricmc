@@ -127,8 +127,10 @@ int main() {
         // with extra outside pattern -> false (vanilla outside must be empty)
         std::vector<ItemStack> gridExtra(9);
         gridExtra = grid; gridExtra[2] = stkId(oakId); // outside pattern but empty expected
-        // For 3x3 pattern in 3x3 grid, outside is none at ox0 oy0; but if pattern is 3x3, all cells are inside, so extra test uses smaller recipe below
-        CHECK(axe.matches(gridExtra, 3, 3) == false || axe.matches(gridExtra, 3, 3) == true, "mirror axe 3x3 full coverage (no outside) — not strict");
+        // Empty cells in a shaped recipe are significant: the extra item at
+        // index 2 must be rejected even though the recipe already fills the
+        // complete 3x3 crafting grid's bounding box.
+        CHECK(!axe.matches(gridExtra, 3, 3), "mirror axe rejects an extra item in an empty pattern cell");
     }
 
     // 4) All offset exploration — stick 1x2 vertical (6 offsets in 3x3)

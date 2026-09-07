@@ -67,7 +67,10 @@ static void testChunkGolden(const char* capturePath, std::int32_t cx, std::int32
 
     World world("minecraft:plains", LevelType::Flat, 12345);
     world.generateChunkIfMissing(cx, cz);
-    const Chunk* ch = world.tryGet(cx, cz);
+    const auto chSnapshot = world.tryGetCopy(cx, cz);
+    const Chunk* ch = chSnapshot ? &*chSnapshot : nullptr;
+    CHECK(ch != nullptr, "generated chunk snapshot is available");
+    if (!ch) return;
 
     WriteBuffer myBlob;
     serializeSectionData(myBlob, ch, biomeIdx);

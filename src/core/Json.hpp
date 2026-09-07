@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -14,6 +15,11 @@ namespace cppfm::json {
 
 class Value {
 public:
+    static constexpr std::size_t kMaxInputBytes = 64u * 1024u * 1024u;
+    static constexpr std::size_t kMaxDepth = 512;
+    static constexpr std::size_t kMaxContainerEntries = 1'000'000;
+    static constexpr std::size_t kMaxStringBytes = 16u * 1024u * 1024u;
+
     enum class Type { Null, Bool, Num, Str, Arr, Obj };
 
     Type type = Type::Null;
@@ -39,10 +45,28 @@ public:
     bool isArr() const { return type == Type::Arr; }
     bool isObj() const { return type == Type::Obj; }
 
-    int asInt(int def = 0) const { return isNum() ? static_cast<int>(std::lround(number)) : def; }
+    int asInt(int def = 0) const {
+        if (!isNum() || !std::isfinite(number)) return def;
+        const double rounded = std::round(number);
+        if (rounded < static_cast<double>(std::numeric_limits<int>::min()) ||
+            rounded > static_cast<double>(std::numeric_limits<int>::max()))
+            return def;
+        return static_cast<int>(rounded);
+    }
     std::int64_t asI64(std::int64_t def = 0) const {
-        return isNum() ? static_cast<std::int64_t>(std::llround(number)) : def; }
-    float asFloat(float def = 0.f) const { return isNum() ? static_cast<float>(number) : def; }
+        if (!isNum() || !std::isfinite(number)) return def;
+        const double rounded = std::round(number);
+        // Every integer in the signed 64-bit range cannot be represented by
+        // a double, but the half-open bounds still prevent an out-of-range
+        // conversion from becoming undefined or implementation-dependent.
+        if (rounded < -0x1p63 || rounded >= 0x1p63) return def;
+        return static_cast<std::int64_t>(rounded);
+    }
+    float asFloat(float def = 0.f) const {
+        if (!isNum() || !std::isfinite(number)) return def;
+        const float converted = static_cast<float>(number);
+        return std::isfinite(converted) ? converted : def;
+    }
     bool asBool(bool def = false) const { return isBool() ? boolean : def; }
     const std::string& asStr() const { static const std::string e; return isStr() ? str : e; }
 
@@ -74,8 +98,10 @@ public:
 
     // ---------------------------------------------------------------- parse
     static Value parse(std::string_view text) {
+        if (text.size() > kMaxInputBytes)
+            throw std::length_error("json: input exceeds size limit");
         std::size_t i = 0;
-        Value v = parseValue(text, i);
+        Value v = parseValue(text, i, 0);
         skipWs(text, i);
         if (i != text.size()) throw std::runtime_error("json: trailing data");
         return v;
@@ -96,12 +122,18 @@ private:
         if (i >= s.size()) throw std::runtime_error("json: unexpected end");
         return s[i];
     }
-    static Value parseValue(std::string_view s, std::size_t& i) {
+    static Value parseValue(std::string_view s, std::size_t& i,
+                            std::size_t depth) {
         skipWs(s, i);
         const char c = peek(s, i);
+        // `depth` counts enclosing containers.  Check the opening token here
+        // so kMaxDepth describes the number of nested containers, rather than
+        // allowing one extra empty container at the boundary.
+        if ((c == '{' || c == '[') && depth >= kMaxDepth)
+            throw std::runtime_error("json: nesting too deep");
         switch (c) {
-        case '{': return parseObject(s, i);
-        case '[': return parseArray(s, i);
+        case '{': return parseObject(s, i, depth);
+        case '[': return parseArray(s, i, depth);
         case '"': return Value::ofString(parseString(s, i));
         case 't':
             expect(s, i, "true");  return Value::ofBool(true);
@@ -118,18 +150,23 @@ private:
             throw std::runtime_error("json: bad literal");
         i += word.size();
     }
-    static Value parseObject(std::string_view s, std::size_t& i) {
+    static Value parseObject(std::string_view s, std::size_t& i,
+                             std::size_t depth) {
         Value out = Value::object();
         ++i;                                        // '{'
         skipWs(s, i);
         if (peek(s, i) == '}') { ++i; return out; }
         for (;;) {
+            if (out.obj.size() >= kMaxContainerEntries)
+                throw std::length_error("json: object has too many members");
             skipWs(s, i);
             std::string key = parseString(s, i);
+            if (out.find(key) != nullptr)
+                throw std::runtime_error("json: duplicate object key");
             skipWs(s, i);
             if (peek(s, i) != ':') throw std::runtime_error("json: expected ':'");
             ++i;
-            out.obj.emplace_back(std::move(key), parseValue(s, i));
+            out.obj.emplace_back(std::move(key), parseValue(s, i, depth + 1));
             skipWs(s, i);
             const char c = peek(s, i);
             if (c == ',') { ++i; continue; }
@@ -137,13 +174,16 @@ private:
             throw std::runtime_error("json: expected ',' or '}'");
         }
     }
-    static Value parseArray(std::string_view s, std::size_t& i) {
+    static Value parseArray(std::string_view s, std::size_t& i,
+                            std::size_t depth) {
         Value out = Value::array();
         ++i;                                        // '['
         skipWs(s, i);
         if (peek(s, i) == ']') { ++i; return out; }
         for (;;) {
-            out.arr.push_back(parseValue(s, i));
+            if (out.arr.size() >= kMaxContainerEntries)
+                throw std::length_error("json: array has too many elements");
+            out.arr.push_back(parseValue(s, i, depth + 1));
             skipWs(s, i);
             const char c = peek(s, i);
             if (c == ',') { ++i; continue; }
@@ -159,7 +199,14 @@ private:
             if (i >= s.size()) throw std::runtime_error("json: unterminated string");
             const char c = s[i++];
             if (c == '"') return out;
-            if (c != '\\') { out.push_back(c); continue; }
+            if (static_cast<unsigned char>(c) < 0x20)
+                throw std::runtime_error("json: unescaped control character");
+            if (c != '\\') {
+                out.push_back(c);
+                if (out.size() > kMaxStringBytes)
+                    throw std::length_error("json: string exceeds size limit");
+                continue;
+            }
             if (i >= s.size()) throw std::runtime_error("json: bad escape");
             const char e = s[i++];
             switch (e) {
@@ -174,19 +221,26 @@ private:
             case 'u': {
                 if (i + 4 > s.size()) throw std::runtime_error("json: bad \\u");
                 unsigned cp = hex4(s, i); i += 4;
-                if (cp >= 0xD800 && cp <= 0xDBFF && i + 6 <= s.size()
-                    && s[i] == '\\' && s[i + 1] == 'u') {
+                if (cp >= 0xD800 && cp <= 0xDBFF) {
+                    if (i + 6 > s.size() || s[i] != '\\' || s[i + 1] != 'u')
+                        throw std::runtime_error("json: high surrogate without pair");
                     const unsigned lo = hex4(s, i + 2);
-                    if (lo >= 0xDC00 && lo <= 0xDFFF) {
-                        cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
-                        i += 6;
-                    }
+                    if (lo < 0xDC00 || lo > 0xDFFF)
+                        throw std::runtime_error("json: invalid low surrogate");
+                    cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                    i += 6;
+                } else if (cp >= 0xDC00 && cp <= 0xDFFF) {
+                    throw std::runtime_error("json: unexpected low surrogate");
                 }
                 appendUtf8(out, cp);
+                if (out.size() > kMaxStringBytes)
+                    throw std::length_error("json: string exceeds size limit");
                 break;
             }
             default: throw std::runtime_error("json: unknown escape");
             }
+            if (out.size() > kMaxStringBytes)
+                throw std::length_error("json: string exceeds size limit");
         }
     }
     static unsigned hex4(std::string_view s, std::size_t i) {
@@ -202,6 +256,8 @@ private:
         return v;
     }
     static void appendUtf8(std::string& out, unsigned cp) {
+        if (cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF))
+            throw std::runtime_error("json: invalid Unicode code point");
         if (cp < 0x80) out.push_back(static_cast<char>(cp));
         else if (cp < 0x800) {
             out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
@@ -219,13 +275,39 @@ private:
     }
     static double parseNumber(std::string_view s, std::size_t& i) {
         const std::size_t start = i;
-        if (i < s.size() && (s[i] == '-' || s[i] == '+')) ++i;
-        while (i < s.size() && ((s[i] >= '0' && s[i] <= '9') || s[i] == '.'
-                                || s[i] == 'e' || s[i] == 'E'
-                                || s[i] == '-' || s[i] == '+')) ++i;
-        if (i == start) throw std::runtime_error("json: bad number");
+        if (i < s.size() && s[i] == '-') ++i;
+        if (i >= s.size()) throw std::runtime_error("json: incomplete number");
+
+        if (s[i] == '0') {
+            ++i;
+            // JSON does not permit a leading zero before another digit.
+            if (i < s.size() && s[i] >= '0' && s[i] <= '9')
+                throw std::runtime_error("json: leading zero");
+        } else {
+            if (s[i] < '1' || s[i] > '9') throw std::runtime_error("json: bad number");
+            while (i < s.size() && s[i] >= '0' && s[i] <= '9') ++i;
+        }
+        if (i < s.size() && s[i] == '.') {
+            ++i;
+            const std::size_t fractionStart = i;
+            while (i < s.size() && s[i] >= '0' && s[i] <= '9') ++i;
+            if (i == fractionStart) throw std::runtime_error("json: missing fraction digits");
+        }
+        if (i < s.size() && (s[i] == 'e' || s[i] == 'E')) {
+            ++i;
+            if (i < s.size() && (s[i] == '+' || s[i] == '-')) ++i;
+            const std::size_t exponentStart = i;
+            while (i < s.size() && s[i] >= '0' && s[i] <= '9') ++i;
+            if (i == exponentStart) throw std::runtime_error("json: missing exponent digits");
+        }
+        if (i == start || (i < s.size() &&
+                           (s[i] == '+' || s[i] == '-' || s[i] == '.' ||
+                            s[i] == 'e' || s[i] == 'E')))
+            throw std::runtime_error("json: bad number");
         try {
-            return std::stod(std::string(s.substr(start, i - start)));
+            const double value = std::stod(std::string(s.substr(start, i - start)));
+            if (!std::isfinite(value)) throw std::runtime_error("json: number out of range");
+            return value;
         } catch (...) {
             throw std::runtime_error("json: unparseable number");
         }
@@ -236,6 +318,7 @@ private:
         case Type::Null: out += "null"; break;
         case Type::Bool: out += boolean ? "true" : "false"; break;
         case Type::Num: {
+            if (!std::isfinite(number)) throw std::runtime_error("json: cannot serialize non-finite number");
             char buf[40];
             if (number == std::floor(number) && std::abs(number) < 1e15)
                 snprintf(buf, sizeof buf, "%lld", static_cast<long long>(number));
@@ -284,7 +367,7 @@ private:
             default:
                 if (static_cast<unsigned char>(c) < 0x20) {
                     char buf[8];
-                    snprintf(buf, sizeof buf, "\\u%04x", c);
+                    snprintf(buf, sizeof buf, "\\u%04x", static_cast<unsigned>(static_cast<unsigned char>(c)));
                     out += buf;
                 } else out.push_back(c);
             }

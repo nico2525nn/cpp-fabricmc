@@ -17,6 +17,7 @@
 #include <unistd.h>
 
 #include <chrono>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -222,6 +223,7 @@ struct ServerProc {
     pid_t pid = -1;
     std::uint16_t port = 0;
     std::string worldDir;
+    ~ServerProc() { stop(); }
     bool start(const char* bin) {
         port = static_cast<std::uint16_t>(26100 + (getpid() % 2500));
         worldDir = "/tmp/floodnet-" + std::to_string(getpid());
@@ -238,6 +240,11 @@ struct ServerProc {
             ++port;
         }
         pid = fork();
+        if (pid < 0) {
+            std::error_code ec;
+            std::filesystem::remove_all(worldDir, ec);
+            return false;
+        }
         if (pid == 0) {
             char pa[32], va[32], wa[256];
             std::snprintf(pa, sizeof(pa), "--port=%u", port);
@@ -257,22 +264,37 @@ struct ServerProc {
             if (up) return true;
             usleep(100 * 1000);
         }
+        stop();
         return false;
     }
-    void stop() {
-        if (pid > 0) {
-            kill(pid, SIGTERM);
-            int st = 0;
-            for (int i = 0; i < 25; ++i) {
-                pid_t r = waitpid(pid, &st, WNOHANG);
-                if (r == pid || r == -1) break;
-                usleep(100 * 1000);
+    void stop() noexcept {
+        if (pid <= 0) return;
+        const pid_t child = pid;
+        int status = 0;
+        bool reaped = false;
+        for (int i = 0; i < 600; ++i) {
+            const pid_t result = waitpid(child, &status, WNOHANG);
+            if (result == child) { reaped = true; break; }
+            if (result < 0) {
+                if (errno == EINTR) { --i; continue; }
+                reaped = errno == ECHILD;
+                break;
             }
-            if (kill(pid, 0) == 0) { kill(pid, SIGKILL); waitpid(pid, &st, 0); }
-            else if (pid > 0) waitpid(pid, &st, WNOHANG);
-            pid = -1;
-            std::filesystem::remove_all(worldDir);
+            if (i == 0) (void)kill(child, SIGTERM);
+            usleep(100 * 1000);
         }
+        if (!reaped) {
+            (void)kill(child, SIGKILL);
+            for (;;) {
+                const pid_t result = waitpid(child, &status, 0);
+                if (result == child || (result < 0 && errno == ECHILD)) break;
+                if (result < 0 && errno == EINTR) continue;
+                break;
+            }
+        }
+        pid = -1;
+        std::error_code ec;
+        std::filesystem::remove_all(worldDir, ec);
     }
 };
 
@@ -433,7 +455,7 @@ static void liveTests(const char* bin) {
             auto dl = std::chrono::steady_clock::now() + std::chrono::seconds(6);
             while (std::chrono::steady_clock::now() < dl) {
                 normal.pump(100);
-                for (auto& l : normal.chatLines)
+                for (const auto& l : normal.chatLinesSnapshot())
                     if (l.find("normal-after-flood") != std::string::npos) echo = true;
                 if (echo) break;
             }
@@ -462,11 +484,11 @@ static void liveTests(const char* bin) {
             auto dl = std::chrono::steady_clock::now() + std::chrono::seconds(8);
             while (std::chrono::steady_clock::now() < dl) {
                 c.pump(100);
-                for (auto& l : c.chatLines)
+                for (const auto& l : c.chatLinesSnapshot())
                     if (l.find("alive-after-malformed") != std::string::npos) echo = true;
                 if (echo) break;
             }
-            CHECK(c.alive(), "session still alive after 205 malformed");
+            CHECK(c.alive(), "session still alive after 205 malformed [liveness]");
             CHECK(echo, "valid chat after malformed burst echoes");
         }
         c.close();

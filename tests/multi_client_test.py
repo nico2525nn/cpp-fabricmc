@@ -1,5 +1,5 @@
 """Multi-client 3-way verification: chunkCoords + tracker + drag + chat/block (C-12)."""
-import io, os, struct, sys, time, argparse
+import io, os, signal, socket, struct, subprocess, sys, time, argparse, tempfile, shutil
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mcproto
 from mcproto import Conn, read_varint, unpack_string
@@ -12,6 +12,31 @@ def check(cond, msg):
     global fails
     print(("  ok  " if cond else "  FAIL ") + msg)
     if not cond: fails += 1
+
+def wait_for_server(proc, host, port, timeout=15):
+    """Wait for a live status response and fail if the owned child exits."""
+    deadline = time.monotonic() + timeout
+    last_error = None
+    while time.monotonic() < deadline:
+        returncode = proc.poll()
+        if returncode is not None:
+            raise RuntimeError(f"server exited before readiness probe (exit={returncode})")
+        client = None
+        try:
+            client = Conn(host, port, timeout=1)
+            client.status()
+            return
+        except (OSError, EOFError, ValueError, RuntimeError) as exc:
+            last_error = exc
+            time.sleep(0.1)
+        finally:
+            if client is not None:
+                try:
+                    client.close()
+                except OSError:
+                    pass
+    detail = f": {last_error}" if last_error else ""
+    raise TimeoutError(f"server readiness probe timed out on {host}:{port}{detail}")
 
 class Bot:
     def __init__(self, name, host=HOST, port=PORT):
@@ -29,10 +54,11 @@ class Bot:
         self.times = 0
         self.container_updates = []
         self.keepalives = 0
+        self.disconnects = 0
         self.last_move = 0.0
     def pump(self, seconds=1.0, move=True):
-        t_end = time.time() + seconds
-        while time.time() < t_end:
+        t_end = time.monotonic() + seconds
+        while time.monotonic() < t_end:
             try:
                 pid, data = self.c.recv_packet()
             except OSError:
@@ -40,6 +66,9 @@ class Bot:
             if pid == 0x27:
                 self.keepalives += 1
                 self.c.send_packet_raw(0x1a, data)
+            elif pid == 0x1d:
+                self.disconnects += 1
+                return
             elif pid == 0x42:
                 bio = io.BytesIO(data); tid, _ = read_varint(bio)
                 self.confirmed = True
@@ -65,7 +94,7 @@ class Bot:
                 self.times += 1
             elif pid in (0x12, 0x13, 0x14):
                 self.container_updates.append((pid, data))
-            now = time.time()
+            now = time.monotonic()
             if move and now - self.last_move > 0.35:
                 self.last_move = now
                 try:
@@ -88,19 +117,40 @@ def main():
 
     # Optional: spawn server if binary given
     proc = None
+    world_dir = None
     if binary:
-        import subprocess, socket
         # find free port if default busy
         def free_port():
             s=socket.socket(); s.bind(("127.0.0.1",0)); p=s.getsockname()[1]; s.close(); return p
         # try given port, else free
         port = args.port if args.port != 25577 else free_port()
         host = "127.0.0.1"
+        world_dir = tempfile.mkdtemp(prefix=f"cppfm-multi-client-{os.getpid()}-")
         print(f"[multi_client] spawning {binary} --port {port}")
         cwd = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-        proc = subprocess.Popen([binary, "--port", str(port), "--view-distance", "6"],
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=cwd)
-        time.sleep(1.5)
+        try:
+            proc = subprocess.Popen([binary, "--port", str(port), "--view-distance", "6",
+                                     "--world-dir", world_dir],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=cwd,
+                                    start_new_session=True)
+            wait_for_server(proc, host, port)
+        except BaseException:
+            if proc is not None:
+                if proc.poll() is None:
+                    try:
+                        os.killpg(proc.pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    proc.wait(timeout=5)
+            shutil.rmtree(world_dir, ignore_errors=True)
+            raise
         os.environ["CPPFM_PORT"]=str(port)
 
     # update env for downstream bots (HOST/PORT used only for new bots above, globals not needed)
@@ -147,8 +197,9 @@ def main():
             a.pump(0.5)
         except OSError:
             pass
-        # drag is best-effort: check no disconnect, and at least server stays alive (chat or times still flowing)
-        check(a.keepalives >= 0, f"A drag mode5 ContainerClick 0x10 no-kick (keepAlives {a.keepalives}, containerUpd {len(a.container_updates)})")
+        check(a.disconnects == 0,
+              f"A drag mode5 ContainerClick 0x10 no-kick (disconnects {a.disconnects}, "
+              f"keepAlives {a.keepalives}, containerUpd {len(a.container_updates)})")
 
         # A digs a distinctive block outside the default spawn-protection radius;
         # all clients should get the resulting update.
@@ -196,10 +247,21 @@ def main():
             except Exception: pass
     finally:
         if proc:
-            try: proc.terminate(); proc.wait(timeout=5)
-            except Exception:
-                try: proc.kill()
-                except Exception: pass
+            if proc.poll() is None:
+                try:
+                    os.killpg(proc.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                proc.wait(timeout=5)
+        if world_dir:
+            shutil.rmtree(world_dir, ignore_errors=True)
 
     print(f"\n{'FAILURES' if fails else 'ALL PASS'} ({fails} failures)")
     sys.exit(1 if fails else 0)
