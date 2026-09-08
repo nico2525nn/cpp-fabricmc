@@ -8,6 +8,7 @@
 #include <unordered_set>
 #include <cstdlib>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <string>
 
@@ -590,56 +591,167 @@ void RedstoneEngine::recomputeRailShape(std::int32_t x, std::int32_t y, std::int
         if (pd.name=="shape") hasShape=true;
     }
     if (!hasShape) return;
-    // simple stub: if neighbor rail at same y, set straight, else ascending Check neighbors east/west etc for rail presence
-    auto isRailAt = [&](int nx,int ny,int nz)->bool{
-        const gen::BlockDef* nb = gen::blockByState(world_.getBlock(nx,ny,nz));
-        if (!nb) return false;
-        std::string nn(nb->name);
-        return nn=="minecraft:rail" || nn=="minecraft:powered_rail" || nn=="minecraft:detector_rail" || nn=="minecraft:activator_rail";
-    };
-    std::string wantShape = "north_south";
-    // Check east/west neighbors
-    bool east = isRailAt(x+1,y,z);
-    bool west = isRailAt(x-1,y,z);
-    bool north = isRailAt(x,y,z-1);
-    bool south = isRailAt(x,y,z+1);
-    bool upEast = isRailAt(x+1,y+1,z);
-    bool downEast = isRailAt(x+1,y-1,z);
-    bool upWest = isRailAt(x-1,y+1,z);
-    bool upNorth = isRailAt(x,y+1,z-1);
-    bool upSouth = isRailAt(x,y+1,z+1);
-    // Ascending if rail above/below in that direction
-    if (upEast || downEast) {
-        wantShape = "ascending_east";
-    } else if (upWest || (isRailAt(x-1,y-1,z))) {
-        wantShape = "ascending_west";
-    } else if (upNorth || isRailAt(x,y-1,z-1)) {
-        wantShape = "ascending_north";
-    } else if (upSouth || isRailAt(x,y-1,z+1)) {
-        wantShape = "ascending_south";
-    } else if ((east && west) || (east && !north && !south) || (west && !north && !south)) {
-        wantShape = "east_west";
-    } else if ((north && south)) {
-        wantShape = "north_south";
-    } else if (east && south) {
-        wantShape = "south_east";
-    } else if (west && south) {
-        wantShape = "south_west";
-    } else if (west && north) {
-        wantShape = "north_west";
-    } else if (east && north) {
-        wantShape = "north_east";
-    } else if (east || west) wantShape="east_west";
-    else if (north || south) wantShape="north_south";
-    else wantShape="north_south";
 
-    // For powered rail, valid shapes are limited to straight + ascending; map curved to straight
-    if (name!="minecraft:rail") {
-        if (wantShape=="south_east" || wantShape=="south_west" || wantShape=="north_west" || wantShape=="north_east") {
-            wantShape="north_south";
+    // A rail shape is not just a pair of compass directions: an ascending
+    // shape has one end at the bottom of the block and the other one block
+    // higher.  Describing shapes as endpoint heights lets the same code
+    // validate both sides of a slope.  For example, two rails at (x,y,z) and
+    // (x+1,y+1,z) both use ascending_east; the lower rail's east endpoint and
+    // the upper rail's west endpoint are at the same world height.
+    struct Endpoint {
+        const char* direction;
+        int height;
+    };
+    auto endpointsFor = [](const std::string& shape) {
+        std::vector<Endpoint> endpoints;
+        auto add = [&](const char* direction, int height) {
+            endpoints.push_back({direction, height});
+        };
+        if (shape == "north_south") { add("north", 0); add("south", 0); }
+        else if (shape == "east_west") { add("east", 0); add("west", 0); }
+        else if (shape == "ascending_east") { add("west", 0); add("east", 1); }
+        else if (shape == "ascending_west") { add("east", 0); add("west", 1); }
+        else if (shape == "ascending_north") { add("south", 0); add("north", 1); }
+        else if (shape == "ascending_south") { add("north", 0); add("south", 1); }
+        else if (shape == "south_east") { add("south", 0); add("east", 0); }
+        else if (shape == "south_west") { add("south", 0); add("west", 0); }
+        else if (shape == "north_west") { add("north", 0); add("west", 0); }
+        else if (shape == "north_east") { add("north", 0); add("east", 0); }
+        return endpoints;
+    };
+    auto opposite = [](const char* direction) -> const char* {
+        if (std::string(direction) == "east") return "west";
+        if (std::string(direction) == "west") return "east";
+        if (std::string(direction) == "north") return "south";
+        return "north";
+    };
+    auto offsetFor = [](const char* direction) {
+        if (std::string(direction) == "east") return std::pair<int,int>{1, 0};
+        if (std::string(direction) == "west") return std::pair<int,int>{-1, 0};
+        if (std::string(direction) == "north") return std::pair<int,int>{0, -1};
+        return std::pair<int,int>{0, 1};
+    };
+    auto isRailState = [&](std::uint16_t state) {
+        const gen::BlockDef* rail = gen::blockByState(state);
+        if (!rail) return false;
+        const std::string railName(rail->name);
+        return railName == "minecraft:rail" ||
+               railName == "minecraft:powered_rail" ||
+               railName == "minecraft:detector_rail" ||
+               railName == "minecraft:activator_rail";
+    };
+    auto shapeOf = [&](std::uint16_t state) {
+        std::string shape;
+        for (auto& [key, value] : gen::propsOf(state))
+            if (key == "shape") shape = std::string(value);
+        return shape;
+    };
+    auto endpointHeight = [&](const std::string& shape, const char* direction) {
+        for (const Endpoint endpoint : endpointsFor(shape))
+            if (std::string(endpoint.direction) == direction) return endpoint.height;
+        return -1;
+    };
+
+    struct Neighbor {
+        bool present = false;
+        std::int32_t x = 0, y = 0, z = 0;
+        std::uint16_t state = 0;
+    };
+    const std::array<const char*, 4> directions = {"east", "west", "north", "south"};
+    std::array<Neighbor, 4> neighbors;
+    for (std::size_t i = 0; i < directions.size(); ++i) {
+        const auto [dx, dz] = offsetFor(directions[i]);
+        // A rail one block above/below is a valid slope neighbor.  Keep the
+        // nearest candidate in deterministic order (above, same level,
+        // below), matching vanilla's preference for an ascending connection.
+        for (const int dy : {1, 0, -1}) {
+            const std::int32_t nx = x + dx, ny = y + dy, nz = z + dz;
+            const std::uint16_t neighborState = world_.getBlock(nx, ny, nz);
+            if (isRailState(neighborState)) {
+                neighbors[i] = {true, nx, ny, nz, neighborState};
+                break;
+            }
         }
     }
 
+    const std::string currentShape = shapeOf(st);
+    const bool curvesAllowed = name == "minecraft:rail";
+    const std::array<const char*, 10> allShapes = {
+        "north_south", "east_west", "ascending_east", "ascending_west",
+        "ascending_north", "ascending_south", "south_east", "south_west",
+        "north_west", "north_east"};
+
+    struct ShapeScore {
+        int exact = 0;
+        int matched = 0;
+        int vertical = 0;
+        int ascending = 0;
+        int straight = 0;
+        int preserves = 0;
+    };
+    auto better = [](const ShapeScore& lhs, const ShapeScore& rhs) {
+        if (lhs.exact != rhs.exact) return lhs.exact > rhs.exact;
+        if (lhs.matched != rhs.matched) return lhs.matched > rhs.matched;
+        if (lhs.vertical != rhs.vertical) return lhs.vertical > rhs.vertical;
+        if (lhs.ascending != rhs.ascending) return lhs.ascending > rhs.ascending;
+        if (lhs.straight != rhs.straight) return lhs.straight > rhs.straight;
+        return lhs.preserves > rhs.preserves;
+    };
+
+    std::string wantShape = currentShape.empty() ? "north_south" : currentShape;
+    ShapeScore bestScore{};
+    bool haveCandidate = false;
+    for (const char* candidate : allShapes) {
+        const std::string candidateShape(candidate);
+        if (!curvesAllowed &&
+            (candidateShape == "south_east" || candidateShape == "south_west" ||
+             candidateShape == "north_west" || candidateShape == "north_east"))
+            continue;
+
+        ShapeScore score;
+        for (std::size_t i = 0; i < directions.size(); ++i) {
+            if (!neighbors[i].present) continue;
+            const char* direction = directions[i];
+            const int ownHeight = endpointHeight(candidateShape, direction);
+            if (ownHeight < 0) continue;
+            const Neighbor& neighbor = neighbors[i];
+            const int worldHeight = y + ownHeight;
+            const std::string neighborShape = shapeOf(neighbor.state);
+            const int neighborHeight = endpointHeight(neighborShape, opposite(direction));
+            if (neighborHeight >= 0 && neighbor.y + neighborHeight == worldHeight) {
+                ++score.exact;
+                ++score.matched;
+            } else if (neighbor.y == worldHeight || neighbor.y + 1 == worldHeight) {
+                // The neighbor may still be waiting for its own neighbor
+                // update.  Count a geometrically possible connection, but
+                // prefer the mutually aligned result above.
+                ++score.matched;
+            }
+            if (neighbor.y != y) {
+                ++score.vertical;
+                const bool candidateIsAscending = candidateShape.rfind("ascending_", 0) == 0;
+                const bool risesTowardNeighbor = neighbor.y > y && ownHeight == 1;
+                const bool risesAwayFromNeighbor = neighbor.y < y && ownHeight == 0;
+                if (candidateIsAscending && (risesTowardNeighbor || risesAwayFromNeighbor))
+                    ++score.ascending;
+            }
+        }
+        if (candidateShape == "north_south" || candidateShape == "east_west")
+            score.straight = 1;
+        if (candidateShape == currentShape) score.preserves = 1;
+        if (!haveCandidate || better(score, bestScore)) {
+            bestScore = score;
+            wantShape = candidateShape;
+            haveCandidate = true;
+        }
+    }
+
+    // With one same-level neighbor, the endpoint scoring above deliberately
+    // prefers a straight rail.  With no neighbors, vanilla's default is the
+    // north/south state.
+    if (bestScore.matched == 0) {
+        wantShape = "north_south";
+    }
     // Apply shape
     std::vector<std::pair<std::string_view,std::string_view>> props;
     for (auto& [k,v] : gen::propsOf(st)) if (k!="shape") props.emplace_back(k,v);

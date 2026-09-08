@@ -236,6 +236,29 @@ static void test_rails() {
         rig.engine.onBlockChanged(40, 2, 40); // diagonal neighbor: needs explicit update
         rig.step(1);
         CHECK(rig.prop(40, 2, 40, "shape") == "ascending_east", "rail with higher neighbor -> ascending_east");
+        CHECK(rig.prop(41, 3, 40, "shape") == "ascending_east", "higher neighbor agrees on ascending_east");
+    }
+    {
+        Rig rig;
+        rig.place(50, 2, 50, railNS());
+        rig.place(51, 2, 50, railNS());
+        rig.place(50, 2, 51, railNS());
+        rig.engine.onBlockChanged(50, 2, 50);
+        CHECK(rig.prop(50, 2, 50, "shape") == "south_east",
+              "same-level east+south neighbors form south_east curve");
+        rig.place(50, 2, 51, 0);
+        CHECK(rig.prop(50, 2, 50, "shape") == "east_west",
+              "removing curve neighbor leaves aligned east_west connection");
+    }
+    {
+        Rig rig;
+        rig.place(60, 3, 60, railNS());
+        rig.place(61, 2, 60, railNS());
+        rig.engine.onBlockChanged(60, 3, 60);
+        CHECK(rig.prop(60, 3, 60, "shape") == "ascending_west",
+              "rail with lower east neighbor rises toward west");
+        CHECK(rig.prop(61, 2, 60, "shape") == "ascending_west",
+              "lower neighbor agrees on ascending_west");
     }
     {
         Rig rig;
@@ -245,6 +268,18 @@ static void test_rails() {
         CHECK(rig.prop(30, 2, 30, "powered") == "false", "powered_rail unpowered off");
         rig.place(31, 2, 30, stateByName("minecraft:redstone_block"));
         CHECK(rig.prop(30, 2, 30, "powered") == "true", "powered_rail adjacent to source on");
+    }
+    for (const char* railName : {"minecraft:powered_rail", "minecraft:detector_rail",
+                                 "minecraft:activator_rail"}) {
+        Rig rig;
+        auto specialRail = (std::uint16_t)gen::stateWithPropsList(railName,
+            {{"powered", "false"}, {"shape", "north_south"}, {"waterlogged", "false"}});
+        rig.place(70, 2, 70, specialRail);
+        rig.place(71, 2, 70, specialRail);
+        rig.place(70, 2, 71, specialRail);
+        rig.engine.onBlockChanged(70, 2, 70);
+        std::string checkName = std::string(railName) + " rejects curves and keeps a straight shape";
+        CHECK(rig.prop(70, 2, 70, "shape") == "east_west", checkName.c_str());
     }
 }
 
