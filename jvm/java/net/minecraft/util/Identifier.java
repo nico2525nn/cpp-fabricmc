@@ -1,8 +1,16 @@
 package net.minecraft.util;
 
 import java.util.Objects;
+import net.minecraft.network.PacketByteBuf;
+import net.minecraft.network.codec.PacketCodec;
+import net.minecraft.network.codec.PacketCodecs;
+import com.mojang.serialization.Codec;
 
 public final class Identifier implements Comparable<Identifier> {
+    /** The vanilla packet representation used by custom-payload codecs. */
+    public static final PacketCodec<PacketByteBuf, Identifier> PACKET_CODEC = PacketCodecs.IDENTIFIER;
+    /** DataFixerUpper codec used by Fabric's custom-ingredient serializers. */
+    public static final Codec<Identifier> CODEC = new Codec<>() { };
     private final String namespace;
     private final String path;
 

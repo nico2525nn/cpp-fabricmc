@@ -1,6 +1,5 @@
 package net.minecraft.server.command;
 
-import java.util.Objects;
 import java.util.function.Consumer;
 import net.minecraft.command.CommandSource;
 import net.minecraft.command.EntityAnchor;

@@ -1,7 +1,6 @@
 package cppfm.corpus.fixture11;
 
 import cppfm.bridge.NativeBridge;
-import java.util.concurrent.atomic.AtomicBoolean;
 import net.fabricmc.api.DedicatedServerModInitializer;
 
 /** Corpus 11: entrypoint paired with a real HEAD hook. */

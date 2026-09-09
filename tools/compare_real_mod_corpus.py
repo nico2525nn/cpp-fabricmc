@@ -50,6 +50,46 @@ PHASES = ("load", "initialize", "behavior", "shutdown")
 STATUS = {"PASS", "FAIL", "SKIP"}
 EXPECTED_JAVA_MAJOR = 21
 
+# These are deliberately narrow.  A generic ``ERROR`` log line is not enough
+# to fail a reference server: vanilla's data-fixer path emits a known
+# ``No key layers`` error during the flat-world probe, and some mods log
+# recoverable warnings at ERROR level.  The patterns below identify a failed
+# linkage/verification/bootstrap or an uncaught process error instead.
+PROCESS_DIAGNOSTIC_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "jvm-linkage",
+        re.compile(
+            r"\b(?:AbstractMethodError|BootstrapMethodError|"
+            r"ClassCircularityError|ExceptionInInitializerError|"
+            r"IncompatibleClassChangeError|IllegalAccessError|"
+            r"NoClassDefFoundError|NoSuchFieldError|NoSuchMethodError|"
+            r"UnsupportedClassVersionError|VerifyError)\b"
+        ),
+    ),
+    ("class-not-found", re.compile(r"\bClassNotFoundException\b")),
+    ("uncaught-exception", re.compile(r"Exception in thread \"[^\"]+\"")),
+    (
+        "mixin-failure",
+        re.compile(
+            r"\b(?:MixinApplyError|MixinPrepareError|InvalidMixinException|"
+            r"InvalidInjectionException|InjectionError)\b|"
+            r"(?:Mixin|mixin).*(?:apply|transform).*(?:fail|error)"
+        ),
+    ),
+    (
+        "bootstrap-failure",
+        re.compile(
+            r"(?:asset load failed:|Knot(?:Launcher)? bootstrap failed|"
+            r"Java mod bootstrap failed|strict JVM startup failed|"
+            r"Knot callback failed|\[cppfm(?:\]\[jvm)?\].*\bfatal:)"
+        ),
+    ),
+    (
+        "command-line-failure",
+        re.compile(r"\b(?:invalid command-line value|unknown option|unrecognized option)\b"),
+    ),
+)
+
 sys.path.insert(0, str(TOOLS))
 import fetch_fabric_runtime as fabric_runtime  # noqa: E402
 import fetch_real_mod_corpus as corpus  # noqa: E402
@@ -286,6 +326,7 @@ def _skip_side(reason: str) -> dict[str, Any]:
             "attempted": False,
             "exitCode": None,
             "timedOut": False,
+            "diagnostics": [],
         },
         "phases": _skip_phases(reason),
     }
@@ -356,6 +397,31 @@ def _regex_results(patterns: Iterable[str], text: str) -> dict[str, bool]:
 def _all_patterns(patterns: Iterable[str], text: str) -> tuple[bool, dict[str, bool]]:
     matches = _regex_results(patterns, text)
     return all(matches.values()), matches
+
+
+def _process_diagnostics(lines: Iterable[str]) -> list[dict[str, Any]]:
+    """Extract unambiguous runtime failures from captured server output.
+
+    Do not treat a log level as a failure by itself.  The official reference
+    server deliberately prints a recoverable data-fixer error for the flat
+    fixture, while the errors below identify a failed class/linkage check,
+    Mixin application, bootstrap, or an uncaught process exception.
+    """
+    diagnostics: list[dict[str, Any]] = []
+    for line_number, line in enumerate(lines, start=1):
+        for kind, pattern in PROCESS_DIAGNOSTIC_PATTERNS:
+            match = pattern.search(line)
+            if match is None:
+                continue
+            diagnostics.append({
+                "kind": kind,
+                "pattern": pattern.pattern,
+                "lineNumber": line_number,
+                "line": line,
+                "match": match.group(0),
+            })
+            break
+    return diagnostics
 
 
 def _required_count(entrypoints: dict[str, list[str]]) -> int:
@@ -747,6 +813,13 @@ def _run_cppfm_process(
             pass
         _drain_queue(output, lines)
         text = "\n".join(lines)
+        diagnostics = _process_diagnostics(lines)
+        if diagnostics or any(pattern in text for pattern in failure_patterns):
+            failure_seen = True
+            if process.poll() is None:
+                _kill_group(process, signal.SIGTERM)
+            stopped = True
+            break
         if not ready and "embedded HotSpot started" in text:
             ready = True
             # Give the RCON worker a bounded window to bind after JVM startup.
@@ -759,12 +832,6 @@ def _run_cppfm_process(
                 )
                 command_responses.append(command_response)
             _kill_group(process, signal.SIGTERM)
-            stopped = True
-            break
-        if any(pattern in text for pattern in failure_patterns):
-            failure_seen = True
-            if process.poll() is None:
-                _kill_group(process, signal.SIGTERM)
             stopped = True
             break
         if process.poll() is not None:
@@ -838,9 +905,24 @@ def _process_summary(raw: dict[str, Any], evidence_dir: Path, log_name: str,
                      temp_root: Path, cache_dir: Path) -> dict[str, Any]:
     filename, digest = _write_log(evidence_dir, log_name, raw["side"], raw["lines"])
     tail = [_normalize_text(line, temp_root, cache_dir) for line in raw["lines"][-40:]]
+    diagnostics = _process_diagnostics(raw["lines"])
+    for diagnostic in diagnostics:
+        diagnostic["line"] = _normalize_text(
+            str(diagnostic["line"]), temp_root, cache_dir
+        )
+    base_pass = raw["exitCode"] == 0 and not raw["timedOut"]
+    status = "PASS" if base_pass and not diagnostics else "FAIL"
+    if diagnostics:
+        first = diagnostics[0]
+        reason = (
+            f"runtime diagnostic {first['kind']} at line {first['lineNumber']}: "
+            f"{first['line']}"
+        )
+    else:
+        reason = raw["reason"]
     return {
-        "status": "PASS" if raw["exitCode"] == 0 and not raw["timedOut"] else "FAIL",
-        "reason": raw["reason"],
+        "status": status,
+        "reason": reason,
         "attempted": bool(raw["attempted"]),
         "exitCode": raw["exitCode"],
         "timedOut": bool(raw["timedOut"]),
@@ -851,6 +933,7 @@ def _process_summary(raw: dict[str, Any], evidence_dir: Path, log_name: str,
         "logSha256": digest,
         "evidenceFile": filename,
         "tail": tail,
+        "diagnostics": diagnostics,
     }
 
 
@@ -909,21 +992,23 @@ def _reference_side(
     raw["side"] = "reference"
     process = _process_summary(raw, evidence_dir, log_name, temp_root, cache_dir)
     text = "\n".join(raw["lines"])
+    process_ok = process["status"] == "PASS"
     expected_ids = scenario["ids"]
     load_patterns = [
         rf"Loading Minecraft 1\.21\.4 with Fabric Loader {re.escape(loader_version)}",
         *[rf"- {re.escape(mod_id)}\s" for mod_id in expected_ids],
     ]
     load_ok, load_matches = _all_patterns(load_patterns, text)
-    if not raw["ready"]:
+    if not raw["ready"] or not process_ok:
         load_ok = False
     initialize_patterns = scenario["initializeLogRegex"]
     if initialize_patterns:
         initialize_ok, initialize_matches = _all_patterns(initialize_patterns, text)
     else:
-        initialize_ok = raw["ready"] and scenario["entrypointCount"] == 0
+        initialize_ok = process_ok and raw["ready"] and scenario["entrypointCount"] == 0
         initialize_matches = {}
     behavior_ok, behavior_matches = _all_patterns(scenario["referenceLogRegex"], text)
+    behavior_ok = behavior_ok and process_ok
     command_results: list[dict[str, Any]] = []
     for spec in scenario["commands"]:
         matches, pattern_results = _all_patterns(spec["referenceLogRegex"], text)
@@ -962,7 +1047,7 @@ def _reference_side(
             "reference exited cleanly after stop" if shutdown_ok else "reference did not prove clean shutdown",
         ),
     }
-    status = "PASS" if all(item["status"] == "PASS" for item in phases.values()) else "FAIL"
+    status = "PASS" if process_ok and all(item["status"] == "PASS" for item in phases.values()) else "FAIL"
     return {
         "status": status,
         "reason": "all reference phases passed" if status == "PASS" else "one or more reference phases failed",
@@ -1017,13 +1102,15 @@ def _cppfm_side(
     raw["side"] = "cppfm"
     process = _process_summary(raw, evidence_dir, log_name, temp_root, cache_dir)
     text = "\n".join(raw["lines"])
+    process_ok = process["status"] == "PASS"
     expected_count = len(scenario["modPaths"])
     expected_entrypoints = scenario["entrypointCount"]
     load_pattern = rf"loaded {expected_count} mod candidate\(s\)"
     init_pattern = rf"initialized {expected_entrypoints} entrypoint\(s\)"
-    load_ok = raw["ready"] and re.search(load_pattern, text) is not None
-    init_ok = raw["ready"] and re.search(init_pattern, text) is not None
+    load_ok = process_ok and raw["ready"] and re.search(load_pattern, text) is not None
+    init_ok = process_ok and raw["ready"] and re.search(init_pattern, text) is not None
     behavior_ok, behavior_matches = _all_patterns(scenario["referenceLogRegex"], text)
+    behavior_ok = behavior_ok and process_ok
     command_results: list[dict[str, Any]] = []
     for spec, response in zip(scenario["commands"], raw.get("commandResponses", [])):
         response_text = str(response.get("response", ""))
@@ -1074,7 +1161,7 @@ def _cppfm_side(
             "cppfm exited cleanly after SIGTERM" if shutdown_ok else "cppfm did not prove clean shutdown",
         ),
     }
-    status = "PASS" if all(item["status"] == "PASS" for item in phases.values()) else "FAIL"
+    status = "PASS" if process_ok and all(item["status"] == "PASS" for item in phases.values()) else "FAIL"
     return {
         "status": status,
         "reason": "all cppfm phases passed" if status == "PASS" else raw["reason"],

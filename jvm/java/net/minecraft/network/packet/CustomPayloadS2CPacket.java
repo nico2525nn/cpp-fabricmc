@@ -4,9 +4,14 @@ import net.minecraft.network.PacketByteBuf;
 import net.minecraft.util.Identifier;
 
 public class CustomPayloadS2CPacket implements Packet<Object> {
+    private static final int MAX_PAYLOAD_SIZE;
     private final CustomPayload.Id<? extends CustomPayload> id;
     private final PacketByteBuf data;
     private final CustomPayload payload;
+
+    static {
+        MAX_PAYLOAD_SIZE = 1048576;
+    }
     public CustomPayloadS2CPacket(Identifier id, PacketByteBuf data) { this(new CustomPayload.Id<>(id), data, null); }
     public CustomPayloadS2CPacket(CustomPayload.Id<? extends CustomPayload> id, PacketByteBuf data) { this(id, data, null); }
     public CustomPayloadS2CPacket(CustomPayload payload) { this(payload, encode(payload)); }

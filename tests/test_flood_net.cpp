@@ -246,6 +246,11 @@ struct ServerProc {
             return false;
         }
         if (pid == 0) {
+            // Keep the self-contained runtime layout isolated from the
+            // checkout and from other live tests.  Without this, every child
+            // rewrites the shared embedded class tree and a cold JVM start
+            // can miss the short readiness window under CTest load.
+            (void)::setenv("CPPFM_SERVER_DIR", worldDir.c_str(), 1);
             char pa[32], va[32], wa[256];
             std::snprintf(pa, sizeof(pa), "--port=%u", port);
             std::snprintf(va, sizeof(va), "--view-distance=%d", 4);
@@ -253,7 +258,23 @@ struct ServerProc {
             execl(bin, bin, pa, va, wa, "--online-mode=false", (char*)nullptr);
             _exit(127);
         }
-        for (int i = 0; i < 80; ++i) {
+        // JVM/resource bootstrap is intentionally part of the production
+        // launch path.  Check the child while waiting so an early bind/JVM
+        // failure is not misreported as a generic timeout, and allow a cold
+        // filesystem/JDK start enough time under a loaded CI host.
+        for (int i = 0; i < 200; ++i) {
+            int childStatus = 0;
+            const pid_t childResult = waitpid(pid, &childStatus, WNOHANG);
+            if (childResult == pid) {
+                pid = -1;
+                std::error_code ec;
+                std::filesystem::remove_all(worldDir, ec);
+                return false;
+            }
+            if (childResult < 0 && errno != EINTR) {
+                stop();
+                return false;
+            }
             int s = ::socket(AF_INET, SOCK_STREAM, 0);
             sockaddr_in ad{};
             ad.sin_family = AF_INET;

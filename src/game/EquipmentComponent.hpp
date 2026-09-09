@@ -75,5 +75,5 @@ private:
     std::array<ItemStack,6> slots_{};
 };
 
-// Helper to sync equipment to all tracking players (broadcast SetEquipment) Implemented in GameServer.cpp via GameServer::sendEquipment
+// Helper to sync equipment to all tracking players (broadcast SetEquipment) is implemented in GameServer_items.cpp.
 } // namespace cppfm

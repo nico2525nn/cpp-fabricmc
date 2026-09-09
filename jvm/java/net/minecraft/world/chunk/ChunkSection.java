@@ -6,6 +6,8 @@ import net.minecraft.fluid.FluidState;
 import net.minecraft.network.PacketByteBuf;
 import net.minecraft.registry.Registry;
 import net.minecraft.registry.entry.RegistryEntry;
+import net.minecraft.world.biome.source.BiomeSupplier;
+import net.minecraft.world.biome.source.util.MultiNoiseUtil;
 
 /** Compact 1.21.4 chunk-section ABI used by world and Lithium mixins. */
 public class ChunkSection {
@@ -75,6 +77,9 @@ public class ChunkSection {
     public void readBiomePacket(PacketByteBuf buf) {}
     public void toPacket(PacketByteBuf buf) {}
     public void populateBiomes(Object biomeSupplier, Object sampler, int x, int y, int z) {}
+    public void populateBiomes(BiomeSupplier biomeSupplier,
+                               MultiNoiseUtil.MultiNoiseSampler sampler,
+                               int x, int y, int z) {}
 
     private static int index(int x, int y, int z) { return (y << 8) | (z << 4) | x; }
 

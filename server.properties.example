@@ -4,11 +4,18 @@ max-players=20
 view-distance=6
 simulation-distance=10
 motd=CppFabricMC - C++ Minecraft 1.21.4 server
-# W19 maxLoadedChunks: cap on loaded chunks (0=unlimited). Default max(8192, view-distance²*4)
-# plan21 §3 polish: also supports maxLoadedChunks camelCase, io-worker-threads (default 4)
+# Java integration is enabled by default when a compatible JDK is available.
+# Set jvm=false for a native-only run, or jvm-strict=true to fail startup when
+# the JDK/embedded compatibility classes cannot be loaded.
+jvm=true
+jvm-strict=false
+# jvm-mods=mods
+# jvm-config=config
+
+# Maximum loaded chunks (0=unlimited). Default is max(8192, view-distance²*4).
 #max-loaded-chunks=8192
 #compression-threshold=256
 #io-worker-threads=4
 
-# Vanilla keys that are intentionally ignored (offline-mode research server):
+# Keys understood by the server include these common administration options:
 # online-mode, level-type, generator-settings, enforce-secure-profile

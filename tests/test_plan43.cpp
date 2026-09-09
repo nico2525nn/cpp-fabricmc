@@ -4,6 +4,8 @@
 // Stage-merge design: cases FAIL on pre-fix server (disconnect/misread), PASS post-fix.
 // Run: ./build/test_plan43 ./build/cppfm
 #include "TestClient.hpp"
+#include "ServerProcess.hpp"
+#include "Harness.hpp"
 #include "../src/core/NBT.hpp"
 #include "../src/proto/Ids.hpp"
 #include <sys/wait.h>
@@ -20,77 +22,6 @@
 
 using namespace cppfm;
 using namespace cpptest;
-
-static int g_fail = 0;
-static int g_pass = 0;
-#define CHECK(cond, msg) do { \
-    bool c_ = static_cast<bool>(cond); \
-    std::printf("  %s  %s\n", c_ ? " ok " : "FAIL", msg); \
-    if (c_) ++g_pass; else ++g_fail; \
-} while (0)
-#define SECTION(name) std::printf("\n[%s]\n", name)
-
-static bool waitPort(std::uint16_t port, int timeoutMs) {
-    for (int i = 0; i < timeoutMs / 100; ++i) {
-        TestClient p; if (p.connect("127.0.0.1", port, 1)) { p.close(); return true; }
-        usleep(100*1000);
-    }
-    return false;
-}
-struct ServerProc {
-    pid_t pid=-1; std::uint16_t port=0; std::string worldDir;
-    ~ServerProc() { stop(); }
-    bool start(const char* bin) {
-        port = static_cast<std::uint16_t>(27000 + (getpid()%2000));
-        worldDir = "/tmp/plan43-" + std::to_string(getpid());
-        std::filesystem::remove_all(worldDir); std::filesystem::create_directories(worldDir);
-        for(int a=0;a<20;++a){ TestClient pr; if(!pr.connect("127.0.0.1",port,1)) break; pr.close(); port++; }
-        pid = fork();
-        if (pid < 0) {
-            std::error_code ec;
-            std::filesystem::remove_all(worldDir, ec);
-            return false;
-        }
-        if(pid==0){
-            char pa[32], wa[256];
-            snprintf(pa,sizeof(pa),"--port=%u",port);
-            snprintf(wa,sizeof(wa),"--world-dir=%s",worldDir.c_str());
-            execl(bin,bin,pa,"--view-distance=4",wa,"--online-mode=false",(char*)nullptr); _exit(127);
-        }
-        if (waitPort(port,8000)) return true;
-        stop();
-        return false;
-    }
-    void stop() noexcept {
-        if (pid <= 0) return;
-        const pid_t child = pid;
-        int status = 0;
-        bool reaped = false;
-        for (int i = 0; i < 600; ++i) {
-            const pid_t result = waitpid(child, &status, WNOHANG);
-            if (result == child) { reaped = true; break; }
-            if (result < 0) {
-                if (errno == EINTR) { --i; continue; }
-                reaped = errno == ECHILD;
-                break;
-            }
-            if (i == 0) (void)kill(child, SIGTERM);
-            usleep(100 * 1000);
-        }
-        if (!reaped) {
-            (void)kill(child, SIGKILL);
-            for (;;) {
-                const pid_t result = waitpid(child, &status, 0);
-                if (result == child || (result < 0 && errno == ECHILD)) break;
-                if (result < 0 && errno == EINTR) continue;
-                break;
-            }
-        }
-        pid = -1;
-        std::error_code ec;
-        std::filesystem::remove_all(worldDir, ec);
-    }
-};
 
 static bool waitChat(TestClient& c, const std::string& substr, int ms=5000){
     Packet p;
@@ -421,8 +352,14 @@ static void tSign(ServerProc& srv) {
 
 int main(int argc, char** argv) {
     const char* bin = argc > 1 ? argv[1] : "./build/cppfm";
+    ServerProcessOptions serverOptions;
+    serverOptions.portBase = 27000;
+    serverOptions.portSpan = 2000;
+    serverOptions.viewDistance = 4;
+    serverOptions.readyTimeoutMs = 8000;
+    serverOptions.worldPrefix = "/tmp/plan43-";
     ServerProc srv;
-    if (!srv.start(bin)) { std::printf("FAIL server start\n"); return 2; }
+    if (!srv.start(bin, serverOptions)) { std::printf("FAIL server start\n"); return 2; }
     tSigned(srv);
     tTab(srv);
     tFinish(srv);

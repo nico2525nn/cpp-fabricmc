@@ -1,36 +1,11 @@
 #include "GameServer.hpp"
 #include "PlayerDataRecovery.hpp"
-#include "BlockEvent.hpp"
-#include "MetadataTypes.hpp"
-#include "../physics/LightEngine.hpp"
-#include "../physics/Fluids.hpp"
-#include "../physics/Redstone.hpp"
-#include "../worldgen/PortalHandler.hpp"
 #include "../core/Json.hpp"
-#include "GameServerHelpers.hpp"
-#include "StairsHelper.hpp"
 #include "Constants.hpp"
 #include "../generated/ItemIds.hpp"
-#include "../generated/EntityIds.hpp"
-#include "MenuInteraction.hpp"
-#include "BehaviorTree.hpp"
-#include "BehaviorTreeParser.hpp"
-#include "EquipmentComponent.hpp"
-#include "DamageComponent.hpp"
-#include "EnchantmentHelper.hpp"
-#include "MobSpawner.hpp"
-#include "BossAI.hpp"
-#include "MenuLogic.hpp"
-#include "CostCalculator.hpp"
-#include "PotionBrewing.hpp"
-#include "Particles.hpp"
 #include "../core/NBTValue.hpp"
-#include "Anvil.hpp"
 #include "RegionFile.hpp"
 #include "ChunkCodec.hpp"
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
 #include <fstream>
 #include <limits>
 #include <mutex>
@@ -41,6 +16,20 @@ namespace {
 constexpr std::size_t kMaxPlayerDataBytes = 8u * 1024u * 1024u;
 constexpr std::size_t kMaxAdminFileBytes = 8u * 1024u * 1024u;
 std::mutex adminFileMutex;
+
+std::string dimensionWorldDirectory(const ServerConfig& cfg,
+                                    std::int8_t dimension) {
+    if (dimension == -1) return cfg.worldDir + "/DIM-1";
+    if (dimension == 1) return cfg.worldDir + "/DIM1";
+    return cfg.worldDir;
+}
+
+std::string dimensionRegionPath(const ServerConfig& cfg, std::int8_t dimension,
+                                std::int32_t cx, std::int32_t cz) {
+    const auto dir = dimensionWorldDirectory(cfg, dimension);
+    return dir + "/region/r." + std::to_string(cx >> 5) + "." +
+           std::to_string(cz >> 5) + ".mca";
+}
 
 bool readAdminJsonFile(const std::string& path, json::Value& value,
                        const char* label) {
@@ -194,6 +183,7 @@ void writeItemList(nbt::Value& root, const char* key, const ItemStack* slots,
 }
 
 static bool savePlayerNBT(const std::string& path, const Player& p) {
+    std::lock_guard playerLock(p.stateMtx);
     using namespace nbt;
     Value root = Value::makeCompound();
     root.set("Health", Value::makeFloat(p.health));
@@ -203,6 +193,19 @@ static bool savePlayerNBT(const std::string& path, const Player& p) {
     root.set("XpTotal", Value::makeInt(p.xp.totalXp));
     root.set("XpP", Value::makeFloat(p.xp.progress));
     root.set("Dim", Value::makeInt(static_cast<std::int32_t>(p.dimension)));
+    if (p.hasRespawnPoint) {
+        root.set("SpawnX", Value::makeInt(p.respawnX));
+        root.set("SpawnY", Value::makeInt(p.respawnY));
+        root.set("SpawnZ", Value::makeInt(p.respawnZ));
+        const char* dimension = p.respawnDimension == -1
+                                    ? "minecraft:the_nether"
+                                    : (p.respawnDimension == 1
+                                           ? "minecraft:the_end"
+                                           : "minecraft:overworld");
+        root.set("SpawnDimension", Value::makeString(dimension));
+        root.set("SpawnAngle", Value::makeFloat(p.respawnAngle));
+        root.set("SpawnForced", Value::makeByte(0));
+    }
     // Pos as List<Double> 3
     {
         Value pos = Value::makeList(Double);
@@ -252,6 +255,7 @@ static bool savePlayerNBT(const std::string& path, const Player& p) {
 }
 
 static bool loadPlayerNBT(const std::string& path, Player& p) {
+    std::lock_guard playerLock(p.stateMtx);
     std::ifstream f(path, std::ios::binary);
     if (!f) return false;
     std::error_code sizeError;
@@ -291,6 +295,47 @@ static bool loadPlayerNBT(const std::string& path, Player& p) {
         if (const auto* v = root.get("Dim")) {
             if (v->tag == nbt::Int) p.dimension = static_cast<std::int8_t>(v->i);
             else if (v->tag == nbt::Byte) p.dimension = static_cast<std::int8_t>(v->b);
+        }
+        if (const auto* sx = root.get("SpawnX")) {
+            const auto* sy = root.get("SpawnY");
+            const auto* sz = root.get("SpawnZ");
+            auto readCoordinate = [](const nbt::Value* value,
+                                     std::int32_t& out) {
+                if (!value) return false;
+                switch (value->tag) {
+                case nbt::Byte: out = value->b; return true;
+                case nbt::Short: out = value->s; return true;
+                case nbt::Int: out = value->i; return true;
+                case nbt::Long: out = static_cast<std::int32_t>(value->l); return true;
+                default: return false;
+                }
+            };
+            if (readCoordinate(sx, p.respawnX) &&
+                readCoordinate(sy, p.respawnY) &&
+                readCoordinate(sz, p.respawnZ)) {
+                p.hasRespawnPoint = true;
+                if (const auto* dimension = root.get("SpawnDimension")) {
+                    if (dimension->tag == nbt::String) {
+                        if (dimension->str == "minecraft:the_nether")
+                            p.respawnDimension = -1;
+                        else if (dimension->str == "minecraft:the_end")
+                            p.respawnDimension = 1;
+                        else
+                            p.respawnDimension = 0;
+                    } else if (dimension->tag == nbt::Int) {
+                        p.respawnDimension = static_cast<std::int8_t>(dimension->i);
+                    } else if (dimension->tag == nbt::Byte) {
+                        p.respawnDimension = static_cast<std::int8_t>(dimension->b);
+                    }
+                } else {
+                    p.respawnDimension = 0;
+                }
+                if (const auto* angle = root.get("SpawnAngle")) {
+                    if (angle->tag == nbt::Float) p.respawnAngle = angle->f;
+                    else if (angle->tag == nbt::Double)
+                        p.respawnAngle = static_cast<float>(angle->d);
+                }
+            }
         }
         if (const auto* v = root.get("Pos")) {
             if (v->tag == nbt::List && v->list.size() == 3) {
@@ -393,6 +438,43 @@ bool GameServer::loadPlayerData(const std::string& uuidHex, Player& p) {
                                       return loadPlayerNBT(path, p);
                                   });
 }
+void GameServer::invalidateRespawnPointsAt(std::int8_t dimension,
+                                            std::int32_t x, std::int32_t y,
+                                            std::int32_t z) {
+    const auto targetDimension = canonicalDimension(dimension);
+    for (auto& player : playersSnapshot()) {
+        if (!player) continue;
+        bool invalidated = false;
+        std::string uuid;
+        std::string name;
+        {
+            std::lock_guard playerLock(player->stateMtx);
+            if (!player->hasRespawnPoint ||
+                canonicalDimension(player->respawnDimension) != targetDimension ||
+                player->respawnY != y) {
+                continue;
+            }
+            const int dx = std::abs(player->respawnX - x);
+            const int dz = std::abs(player->respawnZ - z);
+            // A bed occupies two horizontal blocks.  The caller only invokes
+            // this for bed states, so matching either half is sufficient.
+            if (dx + dz > 1) continue;
+            player->hasRespawnPoint = false;
+            uuid = uuidToHex(player->uuid);
+            name = player->name;
+            invalidated = true;
+        }
+        if (!invalidated) {
+            continue;
+        }
+        // Persistence takes the same player snapshot lock internally; do not
+        // hold it across filesystem I/O or the log callback.
+        savePlayerData(uuid, *player);
+        std::fprintf(stderr,
+                     "[cppfm] cleared respawn point for %s after bed break\n",
+                     name.c_str());
+    }
+}
 void GameServer::loadOps() {
     ops_.clear();
     json::Value root;
@@ -482,18 +564,36 @@ void GameServer::saveWhitelist() const {
         std::fprintf(stderr, "[cppfm] whitelist save failed\n");
 }
 void GameServer::kickPlayer(const std::string& name, const std::string& reason) {
-    Player* t = nullptr;
-    for (auto& p : playersSnapshot()) if (p->name == name) { t = p.get(); break; }
-    if (!t || !t->conn) return;
+    std::shared_ptr<Player> target;
+    for (auto& p : playersSnapshot()) {
+        if (!p) continue;
+        std::lock_guard playerLock(p->stateMtx);
+        if (p->name == name) {
+            target = p;
+            break;
+        }
+    }
+    if (!target) return;
+    std::shared_ptr<Connection> connection;
+    {
+        std::lock_guard playerLock(target->stateMtx);
+        connection = target->conn;
+    }
+    if (!connection) return;
     std::string txt = reason.empty() ? "Kicked by an operator." : reason;
     WriteBuffer b;
     nbt::writeTextComponent(b, txt);
-    t->conn->trySendPacket(proto::pl::sc::Disconnect, b);
-    t->conn->abort();
-    t->conn->close();
+    connection->trySendPacket(proto::pl::sc::Disconnect, b);
+    connection->abort();
+    connection->close();
 }
 void GameServer::sendWorldBorderTo(Player& p) const {
-    if (!p.conn) return;
+    std::shared_ptr<Connection> connection;
+    {
+        std::lock_guard playerLock(p.stateMtx);
+        connection = p.conn;
+    }
+    if (!connection) return;
     // InitializeWorldBorder full packet — Yarn WorldBorder 59999968, lerp interpolation
     WriteBuffer i;
     i.f64(worldBorderCenterX_); i.f64(worldBorderCenterZ_);
@@ -510,26 +610,25 @@ void GameServer::sendWorldBorderTo(Player& p) const {
     i.varint((int)constants::kWorldBorderDiameter); // max world border (portalTeleportBoundary)
     i.varint(5);  // warning blocks
     i.varint(15); // warning time
-    p.conn->trySendPacket(proto::pl::sc::InitializeWorldBorder, i);
+    connection->trySendPacket(proto::pl::sc::InitializeWorldBorder, i);
     // also send Center for spec compliance (separate packet)
     WriteBuffer c;
     c.f64(worldBorderCenterX_); c.f64(worldBorderCenterZ_);
-    p.conn->trySendPacket(proto::pl::sc::WorldBorderCenter, c);
+    connection->trySendPacket(proto::pl::sc::WorldBorderCenter, c);
     // Lerp-specific separate packets if active
     if (worldBorderLerpRemainingTicks_ > 0) {
         WriteBuffer l;
         l.f64(oldSize); l.f64(newSize); l.varlong(lerpMs);
-        p.conn->trySendPacket(proto::pl::sc::WorldBorderLerpSize, l);
+        connection->trySendPacket(proto::pl::sc::WorldBorderLerpSize, l);
     } else {
         WriteBuffer s;
         s.f64(newSize);
-        p.conn->trySendPacket(proto::pl::sc::WorldBorderSize, s);
+        connection->trySendPacket(proto::pl::sc::WorldBorderSize, s);
     }
 }
 void GameServer::broadcastWorldBorder() {
     for (auto& p : playersSnapshot()) {
-        if (!p->inPlay || !p->conn) continue;
-        sendWorldBorderTo(*p);
+        if (p) sendWorldBorderTo(*p);
     }
     if (persist_) {
         if (worldBorderLerpRemainingTicks_ > 0) {
@@ -543,6 +642,8 @@ void GameServer::broadcastWorldBorder() {
     }
 }
 std::string GameServer::dispatchConsole(const std::string& line) {
+    if (shutdownStarted_.load(std::memory_order_acquire))
+        return "error: server is stopping";
     std::string command = line;
     std::string javaResponse;
     // RCON/console is another command ingress.  A Java-registered command is
@@ -550,13 +651,14 @@ std::string GameServer::dispatchConsole(const std::string& line) {
     // through the authoritative native dispatcher below.
     if (jvmRuntime_ && !jvmRuntime_->onCommand(nullptr, command, &javaResponse))
         return javaResponse.empty() ? "OK" : javaResponse;
+    // The Java callback above is deliberately outside this lock: native
+    // command handlers may call back into the bridge, and RCON/session
+    // ingress must not interleave mutations of the Brigadier-owned state.
+    std::lock_guard commandLock(commandDispatchMtx_);
     brigadier::CommandSource src;
     src.console = true;
     src.srcX = 0; src.srcY = -60; src.srcZ = 0;
-    src.resolveSelector = [this](const std::string& raw,
-                                 brigadier::SelectorResult& out) {
-        out = resolveSelector(raw, nullptr);
-    };
+    bindCommandSelector(src);
     std::string captured;
     consoleCapture_ = &captured;
     try {
@@ -574,41 +676,57 @@ std::string GameServer::dispatchConsole(const std::string& line) {
 }
 
 void GameServer::demandChunkAsync(std::int32_t cx, std::int32_t cz) {
-    const std::int64_t k = chunkKey(cx, cz);
+    demandChunkAsyncFor(0, cx, cz);
+}
+
+void GameServer::demandChunkAsyncFor(std::int8_t dimension,
+                                     std::int32_t cx, std::int32_t cz) {
+    dimension = canonicalDimension(dimension);
+    const auto k = dimensionChunkKey(dimension, cx, cz);
     {
         std::lock_guard lk(chunkCacheMtx_);
         if (chunkCache_.find(k) != chunkCache_.end()) return;
     }
-    if (world_.hasChunk(cx, cz)) return;
-    const std::string path = cfg_.worldDir + "/region/r." + std::to_string(cx >> 5) + "." + std::to_string(cz >> 5) + ".mca";
+    if (worldFor(dimension).hasChunk(cx, cz)) return;
+    const std::string path = dimensionRegionPath(cfg_, dimension, cx, cz);
     {
         std::lock_guard lk(pendingLoadsMtx_);
         if (pendingLoads_.count(k)) return;
         try {
-            auto future = ioPool_.submit([path, cx, cz]{
+            auto future = ioPool_.submit([path, dimension, cx, cz]{
                 std::vector<std::uint8_t> raw;
                 try {
                     RegionFile rf(path);
                     raw = rf.load(cx & 31, cz & 31);
                 } catch (const std::exception& e) {
-                    std::fprintf(stderr, "[GameServer] async chunk load %d,%d failed: %s\n",
-                                 cx, cz, e.what());
+                    std::fprintf(stderr, "[GameServer] async chunk load dim=%d %d,%d failed: %s\n",
+                                 static_cast<int>(dimension), cx, cz, e.what());
                 } catch (...) {
-                    std::fprintf(stderr, "[GameServer] async chunk load %d,%d failed\n", cx, cz);
+                    std::fprintf(stderr, "[GameServer] async chunk load dim=%d %d,%d failed\n",
+                                 static_cast<int>(dimension), cx, cz);
                 }
                 return raw;
             });
             pendingLoads_.emplace(k, std::move(future));
         } catch (const std::exception& e) {
-            std::fprintf(stderr, "[GameServer] could not queue chunk load %d,%d: %s\n",
-                         cx, cz, e.what());
+            std::fprintf(stderr, "[GameServer] could not queue chunk load dim=%d %d,%d: %s\n",
+                         static_cast<int>(dimension), cx, cz, e.what());
         } catch (...) {
-            std::fprintf(stderr, "[GameServer] could not queue chunk load %d,%d\n", cx, cz);
+            std::fprintf(stderr, "[GameServer] could not queue chunk load dim=%d %d,%d\n",
+                         static_cast<int>(dimension), cx, cz);
         }
     }
 }
 void GameServer::saveChunkAsync(std::int32_t cx, std::int32_t cz) {
+    saveChunkAsyncFor(0, cx, cz);
+}
+
+void GameServer::saveChunkAsyncFor(std::int8_t dimension,
+                                   std::int32_t cx, std::int32_t cz) {
+    dimension = canonicalDimension(dimension);
     try {
+        World& saveWorld = worldFor(dimension);
+        BlockEntityStore& saveBlockEntities = blockEntitiesFor(dimension);
         std::unordered_map<std::uint16_t, std::string> idxToKey;
         { const auto& order = gameData_.order("minecraft:worldgen/biome");
           for (std::size_t i = 0; i < order.size(); ++i)
@@ -616,16 +734,16 @@ void GameServer::saveChunkAsync(std::int32_t cx, std::int32_t cz) {
         std::vector<std::uint8_t> nbtBytes;
         std::vector<std::uint8_t> bodyBytes;
         std::uint64_t revision = 0;
-        const std::uint32_t biomeIdx = data_.biomeIndex(cfg_.worldBiome);
-        const bool has = world_.withChunk(cx, cz, [&](const Chunk& c) {
+        const std::uint32_t biomeIdx = data_.biomeIndex(saveWorld.biomeKey());
+        const bool has = saveWorld.withChunk(cx, cz, [&](const Chunk& c) {
             revision = c.revision;
 
             // Serialize directly from the read-locked chunk.  Copying a full
             // Chunk here used to allocate roughly 0.8 MiB for every dirty
             // unload, then allocate the NBT and cache payloads as well.
-            nbt::Value root = chunkToNBT(cx, cz, c, world_.biomeKey(), &idxToKey);
+            nbt::Value root = chunkToNBT(cx, cz, c, saveWorld.biomeKey(), &idxToKey);
             nbt::Value list = nbt::Value::makeList(nbt::Compound);
-            blockEntities_.writeChunkNbt(cx, cz, list);
+            saveBlockEntities.writeChunkNbt(cx, cz, list);
             if (!list.list.empty()) root.set("block_entities", std::move(list));
             WriteBuffer out;
             nbt::writeFileRoot(out, root);
@@ -636,12 +754,12 @@ void GameServer::saveChunkAsync(std::int32_t cx, std::int32_t cz) {
             bodyBytes = std::move(body.data);
         });
         if (!has) return;
-        std::string path = cfg_.worldDir + "/region/r." + std::to_string(cx >> 5) + "." + std::to_string(cz >> 5) + ".mca";
+        const std::string path = dimensionRegionPath(cfg_, dimension, cx, cz);
         // Cache body update (tick thread) with the same revision/snapshot as
         // the durable NBT bytes; the I/O worker receives bytes only.
         auto body = std::make_shared<const std::vector<std::uint8_t>>(std::move(bodyBytes));
-        storeChunk(cx, cz, revision, body);
-        const std::int64_t key = chunkKey(cx, cz);
+        storeChunkFor(dimension, cx, cz, revision, body);
+        const auto key = dimensionChunkKey(dimension, cx, cz);
         const auto coordinator = chunkSaveCoordinator_;
         std::shared_ptr<ChunkSaveCoordinator::Stamp> stamp;
         {
@@ -651,7 +769,7 @@ void GameServer::saveChunkAsync(std::int32_t cx, std::int32_t cz) {
             current->latestRevision.store(revision, std::memory_order_release);
             stamp = current;
         }
-        ioPool_.submit([path, cx, cz, key, revision, stamp, coordinator,
+        ioPool_.submit([path, dimension, cx, cz, key, revision, stamp, coordinator,
                         nbtBytes = std::move(nbtBytes)]() mutable {
             try {
                 // Serialize saves for one chunk, but do not hold a global
@@ -668,24 +786,26 @@ void GameServer::saveChunkAsync(std::int32_t cx, std::int32_t cz) {
                     stamp->latestRevision.load(std::memory_order_acquire) == revision)
                     coordinator->latest.erase(it);
             } catch (const std::exception& e) {
-                std::fprintf(stderr, "[GameServer] async chunk save %d,%d failed: %s\n",
-                             cx, cz, e.what());
+                std::fprintf(stderr, "[GameServer] async chunk save dim=%d %d,%d failed: %s\n",
+                             static_cast<int>(dimension), cx, cz, e.what());
             } catch (...) {
-                std::fprintf(stderr, "[GameServer] async chunk save %d,%d failed\n", cx, cz);
+                std::fprintf(stderr, "[GameServer] async chunk save dim=%d %d,%d failed\n",
+                             static_cast<int>(dimension), cx, cz);
             }
         });
     } catch (const std::exception& e) {
-        std::fprintf(stderr, "[GameServer] could not queue chunk save %d,%d: %s\n",
-                     cx, cz, e.what());
+        std::fprintf(stderr, "[GameServer] could not queue chunk save dim=%d %d,%d: %s\n",
+                     static_cast<int>(dimension), cx, cz, e.what());
     } catch (...) {
-        std::fprintf(stderr, "[GameServer] could not queue chunk save %d,%d\n", cx, cz);
+        std::fprintf(stderr, "[GameServer] could not queue chunk save dim=%d %d,%d\n",
+                     static_cast<int>(dimension), cx, cz);
     }
 }
 void GameServer::pollPendingLoads() {
     // Drain ready futures without holding the registry lock while parsing NBT
     // or mutating the world.  Network threads can continue to queue requests.
     using ChunkFuture = std::future<std::vector<std::uint8_t>>;
-    std::vector<std::pair<std::int64_t, ChunkFuture>> ready;
+    std::vector<std::pair<DimensionChunkKey, ChunkFuture>> ready;
     {
         std::lock_guard lk(pendingLoadsMtx_);
         for (auto it = pendingLoads_.begin(); it != pendingLoads_.end(); ) {
@@ -698,52 +818,59 @@ void GameServer::pollPendingLoads() {
         }
     }
     for (auto& [key, future] : ready) {
+        const std::int8_t dimension = canonicalDimension(key.dimension);
+        const std::int32_t cx = key.cx;
+        const std::int32_t cz = key.cz;
         std::vector<std::uint8_t> bytes;
         try { bytes = future.get(); }
         catch (const std::exception& e) {
-            std::fprintf(stderr, "[GameServer] async chunk future %lld failed: %s\n",
-                         static_cast<long long>(key), e.what());
+            std::fprintf(stderr, "[GameServer] async chunk future dim=%d %d,%d failed: %s\n",
+                         static_cast<int>(dimension), cx, cz, e.what());
         } catch (...) {
-            std::fprintf(stderr, "[GameServer] async chunk future %lld failed\n",
-                         static_cast<long long>(key));
+            std::fprintf(stderr, "[GameServer] async chunk future dim=%d %d,%d failed\n",
+                         static_cast<int>(dimension), cx, cz);
         }
-        const std::int32_t cx = static_cast<std::int32_t>(key >> 32);
-        const std::int32_t cz = static_cast<std::int32_t>(key & 0xFFFFFFFFLL);
+        World& loadedWorld = worldFor(dimension);
+        Persistence* persistence = nullptr;
+        if (dimension == 0) {
+            persistence = persist_.get();
+        } else {
+            persistence = dimPersist_[dimension == -1 ? 0 : 1].get();
+        }
         if (!bytes.empty()) {
             try {
-                ReadBuffer rb(bytes);
-                nbt::Parser parser(rb);
-                nbt::Value root = parser.readFileRoot();
                 Chunk chunk;
-                std::string bio;
-                if (chunkFromNBT(root, chunk, {}, bio, nullptr)) {
-                    world_.setChunk(cx, cz, std::move(chunk));
+                const bool decoded = persistence &&
+                                     persistence->decodeChunkBytes(bytes, chunk);
+                if (decoded) {
+                    loadedWorld.setChunk(cx, cz, std::move(chunk));
                     // Populate the cache with the encoded body.
                     auto body = std::make_shared<const std::vector<std::uint8_t>>([&]{
                         WriteBuffer wb;
-                        static const std::uint32_t biomeIdx = 0;
-                        world_.withChunk(cx, cz, [&](const Chunk& c) {
+                        const std::uint32_t biomeIdx =
+                            data_.biomeIndex(loadedWorld.biomeKey());
+                        loadedWorld.withChunk(cx, cz, [&](const Chunk& c) {
                             serializeLevelChunkBody(wb, cx, cz, c, biomeIdx);
                         });
                         return wb.data;
                     }());
-                    const std::uint64_t rev = world_.revisionAt(cx, cz);
-                    storeChunk(cx, cz, rev, body);
+                    const std::uint64_t rev = loadedWorld.revisionAt(cx, cz);
+                    storeChunkFor(dimension, cx, cz, rev, body);
                 } else {
-                    world_.generateChunkIfMissing(cx, cz);
+                    loadedWorld.generateChunkIfMissing(cx, cz);
                 }
             } catch (const std::exception& e) {
-                std::fprintf(stderr, "[GameServer] stored chunk %d,%d rejected: %s; regenerating\n",
-                             cx, cz, e.what());
-                world_.generateChunkIfMissing(cx, cz);
+                std::fprintf(stderr, "[GameServer] stored chunk dim=%d %d,%d rejected: %s; regenerating\n",
+                             static_cast<int>(dimension), cx, cz, e.what());
+                loadedWorld.generateChunkIfMissing(cx, cz);
             } catch (...) {
-                std::fprintf(stderr, "[GameServer] stored chunk %d,%d rejected; regenerating\n",
-                             cx, cz);
-                world_.generateChunkIfMissing(cx, cz);
+                std::fprintf(stderr, "[GameServer] stored chunk dim=%d %d,%d rejected; regenerating\n",
+                             static_cast<int>(dimension), cx, cz);
+                loadedWorld.generateChunkIfMissing(cx, cz);
             }
         } else {
             // No stored chunk -> generate via WorldGen (tick thread, seed-safe).
-            world_.generateChunkIfMissing(cx, cz);
+            loadedWorld.generateChunkIfMissing(cx, cz);
         }
     }
 }

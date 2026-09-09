@@ -4,6 +4,7 @@ import net.minecraft.network.ClientConnection;
 import net.minecraft.network.DisconnectionInfo;
 import net.minecraft.network.PacketCallbacks;
 import net.minecraft.network.packet.Packet;
+import net.minecraft.network.packet.c2s.common.CommonPongC2SPacket;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.text.Text;
 
@@ -28,6 +29,8 @@ public abstract class ServerCommonNetworkHandler {
     }
 
     public boolean isHost() { return false; }
+    public MinecraftServer getServer() { return server; }
+    public boolean isConnectionOpen() { return connection != null && connection.isOpen(); }
     public void markTransitionTime() { transitioning = true; lastKeepAliveTime = System.currentTimeMillis(); }
     public boolean checkTransitionTimeout(long time) {
         return !transitioning || time - lastKeepAliveTime < TRANSITION_TIMEOUT * 1000L;
@@ -40,4 +43,8 @@ public abstract class ServerCommonNetworkHandler {
     public void disconnect(Text reason) { if (connection != null) connection.disconnect(); }
     public void disconnect(DisconnectionInfo reason) { if (connection != null) connection.disconnect(); }
     public void baseTick() { }
+    /** Common pong listener entrypoint used by Fabric's resource/network mixins. */
+    public void onPong(CommonPongC2SPacket packet) { }
+    /** Custom payload dispatch boundary shared by the server phases. */
+    public void onCustomPayload(net.minecraft.network.packet.c2s.common.CustomPayloadC2SPacket packet) { }
 }

@@ -186,12 +186,22 @@ def wait_for_server(proc: subprocess.Popen, host: str, port: int, timeout: float
             raise RuntimeError(f"server exited before readiness probe (exit={returncode})")
         client = None
         try:
-            client = Conn(host, port, timeout=1)
+            # Conn.status() performs several socket operations. Bound each
+            # operation by a fraction of the remaining monotonic deadline so
+            # one failed probe cannot extend the readiness timeout by seconds.
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            probe_timeout = min(1.0, remaining / 6.0)
+            client = Conn(host, port, timeout=probe_timeout)
+            client.sock.settimeout(probe_timeout)
             client.status()
             return
         except (OSError, EOFError, ValueError, RuntimeError) as error:
             last_error = error
-            time.sleep(0.1)
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                time.sleep(min(0.1, remaining))
         finally:
             if client is not None:
                 client.close()
@@ -205,21 +215,74 @@ def free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def stop_process(proc: subprocess.Popen | None) -> bool:
-    """Terminate the owned process group and verify that its leader was reaped."""
+def _signal_owned_process_group(
+    proc: subprocess.Popen, sig: signal.Signals, hard: bool = False
+) -> bool:
+    """Signal the session/process group created for the owned server."""
+    try:
+        if os.name == "posix":
+            os.killpg(proc.pid, sig)
+        elif hard:
+            proc.kill()
+        else:
+            try:
+                proc.send_signal(getattr(signal, "CTRL_BREAK_EVENT", sig))
+            except (AttributeError, OSError, ValueError):
+                proc.terminate()
+    except ProcessLookupError:
+        # The group may have exited between poll and signalling; that is a
+        # successful cleanup state, not an orphan.
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _wait_for_process_exit(proc: subprocess.Popen, deadline: float) -> bool:
+    """Wait until the owned leader is reaped, using one monotonic deadline."""
+    while proc.poll() is None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        try:
+            proc.wait(timeout=remaining)
+        except subprocess.TimeoutExpired:
+            return False
+        except OSError:
+            return proc.poll() is not None
+    return True
+
+
+def stop_process(
+    proc: subprocess.Popen | None, timeout: float = 10.0, kill_timeout: float = 5.0
+) -> bool:
+    """Terminate the owned process group, escalate, and reap its leader."""
     if proc is None:
         return True
     try:
-        if proc.poll() is None:
-            os.killpg(proc.pid, signal.SIGTERM)
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                os.killpg(proc.pid, signal.SIGKILL)
-                proc.wait(timeout=5)
-        return proc.poll() is not None
-    except (OSError, subprocess.TimeoutExpired):
-        return proc.poll() is not None
+        timeout = max(0.0, float(timeout))
+        kill_timeout = max(0.0, float(kill_timeout))
+    except (TypeError, ValueError):
+        return False
+
+    # Signal even when the leader already exited: a forked child can keep the
+    # session alive after its parent has been reaped.
+    term_ok = _signal_owned_process_group(proc, signal.SIGTERM)
+    _wait_for_process_exit(proc, time.monotonic() + timeout)
+
+    # Always issue the hard escalation after the grace period (including
+    # after an early leader exit) so descendants cannot survive cleanup.
+    kill_ok = _signal_owned_process_group(
+        proc, getattr(signal, "SIGKILL", signal.SIGTERM), hard=True
+    )
+    killed_exit = _wait_for_process_exit(proc, time.monotonic() + kill_timeout)
+    return term_ok and kill_ok and killed_exit
+
+
+def _owned_process_group_kwargs() -> dict[str, int | bool]:
+    if os.name == "posix":
+        return {}
+    return {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
 
 
 def remove_world_dir(world_dir: str | None) -> bool:
@@ -272,6 +335,30 @@ def main() -> int:
         print(f"[soak_bot] binary {binary} not found", file=sys.stderr)
         return 1
 
+    owned_proc = [None]
+    spawn_in_progress = False
+    termination_requested = False
+    termination_signum = signal.SIGTERM
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+    def handle_termination(signum, _frame):
+        nonlocal termination_requested, termination_signum
+        if spawn_in_progress:
+            # Popen has not returned a PID yet.  Let the spawn finish so the
+            # child can be registered and cleaned up instead of orphaned.
+            termination_requested = True
+            termination_signum = signum
+            return
+        child = owned_proc[0]
+        if child is not None:
+            # The outer timeout uses a five-second kill-after window.  Finish
+            # the owned group cleanup inside that window while retaining the
+            # normal TERM -> grace -> KILL -> wait order.
+            stop_process(child, timeout=1.0, kill_timeout=1.0)
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGTERM, handle_termination)
+
     def check(cond: bool, msg: str) -> None:
         nonlocal fails
         print(("  ok  " if cond else "  FAIL ") + msg)
@@ -309,22 +396,36 @@ def main() -> int:
                 f"{args.view_distance} --world-dir {world_dir} for {duration}s"
             )
             cwd = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-            proc = subprocess.Popen(
-                [
-                    binary,
-                    f"--port={port}",
-                    f"--view-distance={args.view_distance}",
-                    f"--world-dir={world_dir}",
-                ],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                cwd=cwd,
-                start_new_session=True,
-            )
+            environment = os.environ.copy()
+            environment["CPPFM_SERVER_DIR"] = world_dir
+            spawn_in_progress = True
+            try:
+                proc = subprocess.Popen(
+                    [
+                        binary,
+                        f"--port={port}",
+                        f"--view-distance={args.view_distance}",
+                        f"--world-dir={world_dir}",
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                    cwd=cwd,
+                    env=environment,
+                    start_new_session=True,
+                    **_owned_process_group_kwargs(),
+                )
+                owned_proc[0] = proc
+            finally:
+                spawn_in_progress = False
+            if termination_requested:
+                stop_process(proc, timeout=1.0, kill_timeout=1.0)
+                raise SystemExit(128 + termination_signum)
             wait_for_server(proc, host, port)
             print(f"[soak_bot] readiness probe passed host={host} port={port}")
 
         conn = Conn(host, port)
+        conn.sock.settimeout(1.0)
         conn.login("SoakBot")
         conn.config_finish(sink=lambda _pid, _data: None)
         conn.sock.settimeout(0.05)
@@ -380,10 +481,27 @@ def main() -> int:
     except Exception as error:
         fatal_error = f"{type(error).__name__}: {error}"
     finally:
-        if conn is not None:
-            conn.close()
-        process_cleanup_ok = stop_process(proc)
-        world_cleanup_ok = remove_world_dir(world_dir)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        try:
+            if conn is not None:
+                conn.close()
+        except Exception as error:
+            fatal_error = fatal_error or f"{type(error).__name__}: {error}"
+        finally:
+            try:
+                process_cleanup_ok = stop_process(proc)
+            except Exception as error:
+                process_cleanup_ok = False
+                fatal_error = fatal_error or f"{type(error).__name__}: {error}"
+            if process_cleanup_ok:
+                world_cleanup_ok = remove_world_dir(world_dir)
+            else:
+                world_cleanup_ok = False
+                print(
+                    "[soak_bot] refusing to remove world-dir while owned process cleanup is incomplete",
+                    file=sys.stderr,
+                )
+        signal.signal(signal.SIGTERM, previous_sigterm)
 
     if fatal_error:
         check(False, f"runner completed without fatal error ({fatal_error})")

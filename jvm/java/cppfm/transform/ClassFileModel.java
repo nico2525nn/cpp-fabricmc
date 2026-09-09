@@ -5,13 +5,11 @@ import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -317,6 +315,18 @@ final class ConstantPool {
     String memberDescriptor(int index) {
         int nameType = memberNameTypeIndex(index);
         return utf8(((int[]) entry(nameType).value)[1]);
+    }
+
+    /** Descriptor carried by an invokedynamic/constant-dynamic entry. */
+    String dynamicDescriptor(int index) {
+        int entryTag = entry(index).tag;
+        if (entryTag != 17 && entryTag != 18)
+            throw new TransformException("constant-pool entry is not a dynamic reference");
+        int nameType = ((int[]) entry(index).value)[1];
+        Entry nameTypeEntry = entry(nameType);
+        if (nameTypeEntry.tag != 12)
+            throw new TransformException("dynamic reference has no name-and-type entry");
+        return utf8(((int[]) nameTypeEntry.value)[1]);
     }
 
     int memberNameTypeIndex(int index) {

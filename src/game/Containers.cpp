@@ -5,6 +5,13 @@
 namespace cppfm {
 
 ItemStack* Menu::slotAt(int slot, ItemStack* playerInv) {
+    if (playerInventory) {
+        if (slot == 0) return &craftResult;
+        const int gridIndex = craftGridIndex(slot);
+        if (gridIndex >= 0) return &craftGrid[gridIndex];
+        if (slot >= 5 && slot < 46 && playerInv) return &playerInv[slot];
+        return nullptr;
+    }
     switch (type) {
     case MenuType::Hopper:
         if (slot >= 0 && slot < 5) return container ? &container[slot] : &extraSlots[slot];
@@ -103,6 +110,12 @@ ItemStack* Menu::slotAt(int slot, ItemStack* playerInv) {
 }
 
 const char* Menu::slotRegion(int slot) const {
+    if (playerInventory) {
+        if (slot == 0) return "result";
+        if (slot >= 1 && slot < 5) return "craft";
+        if (slot >= 5 && slot < 46) return "player";
+        return "?";
+    }
     switch (type) {
     case MenuType::Hopper: return slot < 5 ? "container" : "player";
     case MenuType::Dispenser: return slot < 9 ? "container" : "player";

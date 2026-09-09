@@ -37,6 +37,14 @@ bool MobSpawner::spawnFromEggStack(const ItemStack& eggStack, double x, double y
 }
 
 bool MobSpawner::spawnFromDispenser(const std::string& eggName, int x, int y, int z, const std::string& facing) {
+    const auto dimension = std::int8_t{0};
+    return spawnFromDispenserFor(dimension, eggName, x, y, z, facing);
+}
+
+bool MobSpawner::spawnFromDispenserFor(std::int8_t dimension,
+                                       const std::string& eggName, int x,
+                                       int y, int z,
+                                       const std::string& facing) {
     double dx=0, dy=0, dz=0;
     if (facing=="north") dz=-1;
     else if (facing=="south") dz=1;
@@ -47,7 +55,10 @@ bool MobSpawner::spawnFromDispenser(const std::string& eggName, int x, int y, in
     double sx = x + 0.5 + dx*0.6;
     double sy = y + 0.5 + dy*0.6;
     double sz = z + 0.5 + dz*0.6;
-    return spawnFromEgg(eggName, sx, sy, sz);
+    if (eggName.find("_spawn_egg") == std::string::npos) return false;
+    std::string mobName = eggToMobName(eggName);
+    if (mobName.find(':') == std::string::npos) mobName = "minecraft:" + mobName;
+    return srv_.spawnMobByTypeNameFor(dimension, mobName, sx, sy, sz);
 }
 
 } // namespace cppfm

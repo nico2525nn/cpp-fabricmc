@@ -6,14 +6,9 @@
 #include <mutex>
 #include <atomic>
 #include <stdexcept>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <poll.h>
-#include <unistd.h>
-#include <arpa/inet.h>
 #include "../core/ByteBuffer.hpp"
 #include "../core/Zlib.hpp"
+#include "../platform/Socket.hpp"
 #include "../net/Crypto.hpp"
 #include "PacketEncoder.hpp"
 #include "PacketDecoder.hpp"
@@ -31,7 +26,7 @@ public:
 
 class Connection {
 public:
-    explicit Connection(int fd) : fd_(fd) {}
+    explicit Connection(platform::socket_t fd) : fd_(fd) {}
 
     // Protocol encryption (online mode): AES-128/CFB8, key = iv = shared secret.
     void enableEncryption(const std::vector<std::uint8_t>& sharedSecret) {
@@ -45,61 +40,61 @@ public:
     Connection(const Connection&) = delete;
     Connection& operator=(const Connection&) = delete;
 
-    int fd() const { return fd_.load(std::memory_order_acquire); }
-    bool isOpen() const { return fd() >= 0; }
+    platform::socket_t fd() const { return fd_.load(std::memory_order_acquire); }
+    bool isOpen() const { return platform::isValid(fd()); }
 
     void close() noexcept {
         try {
             std::lock_guard lk(tx_);
-            const int fd = fd_.exchange(-1, std::memory_order_acq_rel);
-            if (fd >= 0) { ::shutdown(fd, SHUT_RDWR); ::close(fd); }
+            const auto fd = fd_.exchange(platform::invalid_socket, std::memory_order_acq_rel);
+            if (platform::isValid(fd)) {
+                platform::shutdownSocket(fd);
+                platform::closeSocket(fd);
+            }
         } catch (...) {}
     }
     void abort() noexcept {
         try {
             std::lock_guard lk(tx_);
-            const int fd = fd_.exchange(-1, std::memory_order_acq_rel);
-            if (fd >= 0) {
+            const auto fd = fd_.exchange(platform::invalid_socket, std::memory_order_acq_rel);
+            if (platform::isValid(fd)) {
                 // FIN first (reliably delivered/retransmitted), then RST.
-                ::shutdown(fd, SHUT_RDWR);
+                platform::shutdownSocket(fd);
                 struct linger l{};
                 l.l_onoff = 1; l.l_linger = 0;
-                ::setsockopt(fd, SOL_SOCKET, SO_LINGER, &l, sizeof(l));
-                ::close(fd);
+                platform::setSocketOption(fd, SOL_SOCKET, SO_LINGER, &l,
+                                          static_cast<platform::socket_length_t>(sizeof(l)));
+                platform::closeSocket(fd);
             }
         } catch (...) {}
     }
     void setNoDelay() {
-        const int fd = fd_.load(std::memory_order_acquire);
-        if (fd < 0) return;
+        const auto fd = fd_.load(std::memory_order_acquire);
+        if (!platform::isValid(fd)) return;
         int one = 1;
-        (void)setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+        (void)platform::setSocketOption(fd, IPPROTO_TCP, TCP_NODELAY, &one,
+                                        static_cast<platform::socket_length_t>(sizeof(one)));
     }
     // A send that cannot complete within this many seconds means the peer went
     // away without closing (or is maliciously stalling us); fail the session.
     void setSendTimeout(unsigned seconds) {
-        const int fd = fd_.load(std::memory_order_acquire);
-        if (fd < 0) return;
-        timeval tv{seconds, 0};
-        (void)setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+        const auto fd = fd_.load(std::memory_order_acquire);
+        if (!platform::isValid(fd)) return;
+        (void)platform::setSocketTimeout(fd, SO_SNDTIMEO, seconds);
     }
     void setRecvTimeout(unsigned seconds) {
-        const int fd = fd_.load(std::memory_order_acquire);
-        if (fd < 0) return;
-        timeval tv{seconds, 0};
-        (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        const auto fd = fd_.load(std::memory_order_acquire);
+        if (!platform::isValid(fd)) return;
+        (void)platform::setSocketTimeout(fd, SO_RCVTIMEO, seconds);
     }
     void enableFloodBudget(bool on) { floodBudget_ = on; }
     int peekFirstByte(int timeoutMs) const {
-        const int fd = fd_.load(std::memory_order_acquire);
-        if (fd < 0) return -1;
-        pollfd pfd{};
-        pfd.fd = fd;
-        pfd.events = POLLIN;
-        const int r = ::poll(&pfd, 1, timeoutMs);
+        const auto fd = fd_.load(std::memory_order_acquire);
+        if (!platform::isValid(fd)) return -1;
+        const int r = platform::waitReadable(fd, timeoutMs);
         if (r <= 0) return -1;
         std::uint8_t b = 0;
-        const ssize_t n = ::recv(fd, &b, 1, MSG_PEEK);
+        const auto n = platform::receive(fd, &b, 1, MSG_PEEK);
         if (n != 1) return -1;
         return static_cast<int>(b);
     }
@@ -118,17 +113,19 @@ public:
         }
     }
     std::uint16_t peerPort() const {
-        const int fd = fd_.load(std::memory_order_acquire);
-        if (fd < 0) return 0;
-        sockaddr_in addr{}; socklen_t sl = sizeof(addr);
-        if (getpeername(fd, reinterpret_cast<sockaddr*>(&addr), &sl) != 0) return 0;
+        const auto fd = fd_.load(std::memory_order_acquire);
+        if (!platform::isValid(fd)) return 0;
+        sockaddr_in addr{};
+        platform::socket_length_t sl = sizeof(addr);
+        if (platform::peerName(fd, reinterpret_cast<sockaddr*>(&addr), &sl) != 0) return 0;
         return ntohs(addr.sin_port);
     }
     std::string peer() const {
-        const int fd = fd_.load(std::memory_order_acquire);
-        if (fd < 0) return "?";
-        sockaddr_in addr{}; socklen_t sl = sizeof(addr);
-        if (getpeername(fd, reinterpret_cast<sockaddr*>(&addr), &sl) != 0) return "?";
+        const auto fd = fd_.load(std::memory_order_acquire);
+        if (!platform::isValid(fd)) return "?";
+        sockaddr_in addr{};
+        platform::socket_length_t sl = sizeof(addr);
+        if (platform::peerName(fd, reinterpret_cast<sockaddr*>(&addr), &sl) != 0) return "?";
         char buf[64];
         inet_ntop(AF_INET, &addr.sin_addr, buf, sizeof(buf));
         return std::string(buf) + ":" + std::to_string(ntohs(addr.sin_port));
@@ -174,16 +171,15 @@ public:
         return PacketDecoder::decodeFrame(frame_, compressionThreshold_);
     }
     std::vector<std::uint8_t> readFrameWithTimeout(std::chrono::milliseconds timeout) {
-        pollfd pfd{};
-        pfd.fd = fd_.load(std::memory_order_acquire);
-        if (pfd.fd < 0) throw SocketClosedError("closed");
-        pfd.events = POLLIN;
+        const auto fd = fd_.load(std::memory_order_acquire);
+        if (!platform::isValid(fd)) throw SocketClosedError("closed");
         for (;;) {
-            const int r = ::poll(&pfd, 1, static_cast<int>(timeout.count()));
+            const int r = platform::waitReadable(fd, static_cast<int>(timeout.count()));
             if (r > 0) return readFrame();
             if (r == 0) throw SocketClosedError("read timeout", true);
-            if (errno == EINTR) continue;
-            throw SocketClosedError(std::string("poll: ") + strerror(errno));
+            const int error = platform::lastSocketError();
+            if (platform::isInterrupted(error)) continue;
+            throw SocketClosedError("poll: " + platform::socketErrorText(error));
         }
     }
     void writeFrameRaw(const std::uint8_t* body, std::size_t n) {
@@ -247,34 +243,36 @@ private:
         if (n != 0 && dst == nullptr) throw std::invalid_argument("null receive buffer");
         auto* p = static_cast<std::uint8_t*>(dst);
         while (n > 0) {
-            const int fd = fd_.load(std::memory_order_acquire);
-            if (fd < 0) throw SocketClosedError("closed");
-            ssize_t r = ::recv(fd, p, n, 0);
+            const auto fd = fd_.load(std::memory_order_acquire);
+            if (!platform::isValid(fd)) throw SocketClosedError("closed");
+            const auto r = platform::receive(fd, p, n, 0);
             if (r == 0) throw SocketClosedError("peer closed");
             if (r < 0) {
-                if (errno == EINTR) continue;
-                throw SocketClosedError(std::string("recv: ") + strerror(errno),
-                                        errno == EAGAIN || errno == EWOULDBLOCK);
+                const int error = platform::lastSocketError();
+                if (platform::isInterrupted(error)) continue;
+                throw SocketClosedError("recv: " + platform::socketErrorText(error),
+                                        platform::isWouldBlock(error));
             }
             p += r; n -= static_cast<std::size_t>(r);
         }
     }
     void sendAll(const std::uint8_t* p, std::size_t n) {
         if (n != 0 && p == nullptr) throw std::invalid_argument("null send buffer");
-        const int fd = fd_.load(std::memory_order_acquire);
-        if (fd < 0) throw SocketClosedError("closed");
+        const auto fd = fd_.load(std::memory_order_acquire);
+        if (!platform::isValid(fd)) throw SocketClosedError("closed");
         while (n > 0) {
-            ssize_t r = ::send(fd, p, n, MSG_NOSIGNAL);
+            const auto r = platform::send(fd, p, n, platform::sendFlags());
             if (r < 0) {
-                if (errno == EINTR) continue;
-                throw SocketClosedError(std::string("send: ") + strerror(errno));
+                const int error = platform::lastSocketError();
+                if (platform::isInterrupted(error)) continue;
+                throw SocketClosedError("send: " + platform::socketErrorText(error));
             }
             if (r == 0) throw SocketClosedError("send made no progress");
             p += r; n -= static_cast<std::size_t>(r);
         }
     }
 
-    std::atomic<int> fd_;
+    std::atomic<platform::socket_t> fd_;
     std::mutex tx_;   // serialize writes from multiple threads
 };
 

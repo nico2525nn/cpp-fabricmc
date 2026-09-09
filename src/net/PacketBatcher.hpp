@@ -23,14 +23,19 @@ public:
     struct Queued {
         uint8_t id;
         WriteBuffer body;
+        std::int8_t dimension = 0;
     };
     std::vector<Queued> queue;                // guarded by mtx_
     std::mutex mtx_;
     std::atomic<int64_t> lastFlushMs{0};
 
     void queuePacket(uint8_t id, WriteBuffer body) {
+        queuePacketFor(0, id, std::move(body));
+    }
+    void queuePacketFor(std::int8_t dimension, uint8_t id, WriteBuffer body) {
         std::lock_guard lk(mtx_);
-        queue.push_back({id, std::move(body)});
+        if (dimension != -1 && dimension != 1) dimension = 0;
+        queue.push_back({id, std::move(body), dimension});
     }
     [[nodiscard]] bool empty() noexcept {
         std::lock_guard lk(mtx_);
@@ -50,6 +55,8 @@ public:
     void flush(GameServer& srv, const Player* except);
 
 private:
+    void flushDimension(GameServer& srv, const Player* except,
+                        std::vector<Queued>& q);
     bool tryFlushAsMultiBlockChange(GameServer& srv, const Player* except,
                                     std::vector<Queued>& q);
 };

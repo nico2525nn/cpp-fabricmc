@@ -58,6 +58,8 @@ public class WorldChunk extends Chunk {
 
     private final World world;
     private Map<BlockPos, BlockEntity> blockEntities = new java.util.HashMap<>();
+    /** Pending NBT entries retained between proto-chunk load and promotion. */
+    private Map<BlockPos, net.minecraft.nbt.NbtCompound> blockEntityNbts = new java.util.HashMap<>();
     /** Vanilla game-event dispatcher sections field used by 1.21.4 mixins. */
     private Int2ObjectMap<GameEventDispatcher> field_28129 = new Int2ObjectOpenHashMap<>();
     private UnsavedListener unsavedListener;
@@ -84,6 +86,13 @@ public class WorldChunk extends Chunk {
         blockEntities.putAll(initialBlockEntities);
     }
 
+    /** 1.21.4 promotion constructor used by the chunk-loading pipeline. */
+    public WorldChunk(net.minecraft.server.world.ServerWorld world,
+                      ProtoChunk protoChunk, EntityLoader entityLoader) {
+        this(world, protoChunk == null ? new ChunkPos(0, 0) : protoChunk.getPos());
+        if (entityLoader != null) entityLoader.run(this);
+    }
+
     public World getWorld() { return world; }
     @Override public BlockState getBlockState(BlockPos pos) {
         return world == null ? Blocks.AIR.getDefaultState() : world.getBlockState(pos);
@@ -105,10 +114,48 @@ public class WorldChunk extends Chunk {
         return pos == null ? null : blockEntities.get(pos);
     }
     public BlockEntity getBlockEntity(BlockPos pos, CreationType creationType) {
-        return getBlockEntity(pos);
+        if (pos == null) return null;
+        BlockEntity blockEntity = blockEntities.get(pos);
+        if (blockEntity == null) {
+            net.minecraft.nbt.NbtCompound pending = blockEntityNbts.remove(pos);
+            if (pending != null) {
+                blockEntity = loadBlockEntity(pos, pending);
+                if (blockEntity != null) return blockEntity;
+            }
+        }
+        if (blockEntity == null && creationType == CreationType.IMMEDIATE) {
+            blockEntity = createBlockEntity(pos);
+            if (blockEntity != null) setBlockEntity(blockEntity);
+        } else if (blockEntity != null && blockEntity.isRemoved()) {
+            blockEntities.remove(pos);
+            return null;
+        }
+        return blockEntity;
     }
-    public void addBlockEntity(BlockEntity blockEntity) {}
-    public void removeBlockEntity(BlockPos pos) { if (pos != null) blockEntities.remove(pos); }
+
+    /** Vanilla's block-state factory boundary; native block entities are authoritative. */
+    private BlockEntity createBlockEntity(BlockPos pos) { return null; }
+
+    /** NBT hydration boundary used while a proto chunk is promoted. */
+    private BlockEntity loadBlockEntity(BlockPos pos, net.minecraft.nbt.NbtCompound nbt) { return null; }
+    public void addBlockEntity(BlockEntity blockEntity) {
+        setBlockEntity(blockEntity);
+    }
+    /** Mojang-mapped name used by Fabric's block-entity transfer mixin. */
+    public void setBlockEntity(BlockEntity blockEntity) {
+        if (blockEntity != null && blockEntity.getPos() != null) {
+            BlockEntity previous = blockEntities.put(blockEntity.getPos(), blockEntity);
+            if (previous != null) previous.markRemoved();
+            updateTicker(blockEntity);
+        }
+    }
+    /** Block-entity ticker refresh boundary used by lifecycle mixins. */
+    public void updateTicker(BlockEntity blockEntity) { }
+    public void removeBlockEntity(BlockPos pos) {
+        if (pos == null) return;
+        BlockEntity removed = blockEntities.remove(pos);
+        if (removed != null) removed.markRemoved();
+    }
     public void loadEntities() {}
     public void updateAllBlockEntities() {}
     public void clear() { blockEntities.clear(); }

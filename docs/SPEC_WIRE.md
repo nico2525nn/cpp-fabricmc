@@ -1,7 +1,7 @@
 # SPEC_WIRE — Minecraft 1.21.4 / protocol 769
 
 This is the byte-level source of truth for the current C++ implementation. Snapshot:
-`main` HEAD `abcdc6b` plus the current cleanup worktree, rechecked 2026-09-07. Scope
+`main` HEAD `574e67b` plus the current working tree, rechecked 2026-09-09. Scope
 is Java Edition 1.21.4, protocol `769`, DataVersion `4189`, with an unmodified Fabric
 1.21.4 server as the behavioral reference. `docs/MISSING_FEATURES_1_21_4.md` targets
 are identified in every contract; this file does not change their status or the
@@ -9,7 +9,7 @@ publication status, which remains `BLOCKED`.
 
 **Status:** current wire contract, with the implementation/omitted/deferred
 classification below. **Limitations:** a protocol-compatible implementation is not
-the official Fabric JVM runtime. Plan51's optional embedded layer is a bounded
+the official Fabric JVM runtime. The default-on embedded layer is a bounded
 server-side shadow-ABI bridge and does not alter packet IDs or provide arbitrary mod,
 client GUI, or vanilla RNG parity; unverified vanilla RNG parity remains outside the
 boundary. See [PLAN51_JVM.md](PLAN51_JVM.md).
@@ -332,7 +332,7 @@ Fresh byte-lock evidence at the snapshot:
 |---|---|
 | `test_spec_wire` | `395 PASS 0 FAIL` |
 | `test_wire_full` | `399 PASS 0 FAIL` |
-| `test_wire_b6` | `133 PASS 0 FAIL` |
+| `test_wire_b6` | `136 PASS 0 FAIL` |
 | `test_scoreboard_reset` | `22 PASS 0 FAIL` |
 | `test_fuzz` | `25 PASS 0 FAIL` |
 

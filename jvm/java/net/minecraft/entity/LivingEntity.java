@@ -15,6 +15,8 @@ public class LivingEntity extends Entity {
     private float health = 20.0f;
     private float maxHealth = 20.0f;
     private boolean usingItem;
+    /** Vanilla jump state exposed by Fabric's server-side access wideners. */
+    private boolean jumping;
     /** Vanilla first-update flag retained as the FIELD injection anchor. */
     private boolean firstUpdate;
     private Hand activeHand = Hand.MAIN_HAND;
@@ -75,6 +77,21 @@ public class LivingEntity extends Entity {
         }
         return true;
     }
+    /** Server-world overload present in the 1.21.4 mapped LivingEntity ABI. */
+    protected boolean damage(net.minecraft.server.world.ServerWorld world,
+                             net.minecraft.entity.damage.DamageSource source,
+                             float amount) {
+        // Keep the two vanilla locals alive through the return boundary. The
+        // Fabric AFTER_DAMAGE event captures these exact values with
+        // LocalCapture.CAPTURE_FAILHARD; a delegation-only stub would make a
+        // real, otherwise compatible event mixin fail during transformation.
+        float dealt = 0.0f;
+        boolean blocked = false;
+        boolean result = damage(source, amount);
+        if (result) dealt = Math.max(0.0f, amount);
+        if (blocked) dealt = 0.0f;
+        return result && dealt >= 0.0f;
+    }
     /** Legacy package overload retained for source compatibility. */
     public boolean damage(DamageSource source, float amount) { return damage((net.minecraft.entity.damage.DamageSource) source, amount); }
     public boolean damage(Object source, float amount) {
@@ -124,10 +141,61 @@ public class LivingEntity extends Entity {
     public void setPose(EntityPose value) { pose = value == null ? EntityPose.STANDING : value; }
     public void setPose(net.minecraft.entity.Pose value) { pose = value == null ? EntityPose.STANDING : value.toEntityPose(); }
     public boolean isSleeping() { return pose == EntityPose.SLEEPING; }
+    public void sleep(net.minecraft.util.math.BlockPos position) {
+        // Keep the real 1.21.4 INVOKE_ASSIGN anchor used by Fabric's
+        // EntitySleepEvents mixin.  The native entity remains authoritative;
+        // this lookup is also useful for Java-side event listeners.
+        World currentWorld = getWorld();
+        BlockState state = currentWorld == null
+            ? net.minecraft.block.Blocks.AIR.getDefaultState()
+            : currentWorld.getBlockState(position);
+        if (state != null) pose = EntityPose.SLEEPING;
+    }
+    public void wakeUp() { pose = EntityPose.STANDING; }
+    /** Intermediary alias for the 1.21.4 wake-up method. */
+    public void method_18404() { wakeUp(); }
+    /** Intermediary overload used by the 1.21.4 sleep-event mixin target. */
+    public void method_18404(net.minecraft.util.math.BlockPos position) {
+        World currentWorld = getWorld();
+        BlockState state = currentWorld == null
+            ? net.minecraft.block.Blocks.AIR.getDefaultState()
+            : currentWorld.getBlockState(position);
+        if (state != null) wakeUp();
+    }
+    public Boolean method_18405(net.minecraft.util.math.BlockPos position) { return Boolean.FALSE; }
+    public net.minecraft.util.math.Direction getSleepingDirection() {
+        return net.minecraft.util.math.Direction.SOUTH;
+    }
+    public boolean isSleepingInBed() { return isSleeping(); }
+    public java.util.Optional<net.minecraft.util.math.BlockPos> getSleepingPosition() {
+        return java.util.Optional.empty();
+    }
+    public void setPositionInBed(net.minecraft.util.math.BlockPos position) { }
+    public void clearSleepingPosition() { pose = EntityPose.STANDING; }
+    public void setSleepingPosition(net.minecraft.util.math.BlockPos position) { pose = EntityPose.SLEEPING; }
     public float getArmor() { return 0.0f; }
     public float getArmorToughness() { return 0.0f; }
+    protected void damageArmor(net.minecraft.entity.damage.DamageSource source, float amount) { }
+    protected void damageHelmet(net.minecraft.entity.damage.DamageSource source, float amount) { }
+    protected void damageShield(float amount) { }
+    public boolean isJumping() { return jumping; }
+    public void setJumping(boolean value) { jumping = value; }
     /** Vanilla movement attribute hook used by server-side mixins. */
     public float getMovementSpeed(float base) { return base; }
+    /**
+     * Vanilla's equipment-placement hook.  Keep the common armor naming
+     * rules useful for server-side item/entity code while retaining a stable
+     * method for Fabric mixins and access wideners.
+     */
+    public EquipmentSlot getPreferredEquipmentSlot(ItemStack stack) {
+        if (stack == null || stack.isEmpty() || stack.getItem() == null) return EquipmentSlot.MAINHAND;
+        String path = stack.getItem().getId().getPath();
+        if (path.endsWith("_helmet") || path.equals("turtle_helmet")) return EquipmentSlot.HEAD;
+        if (path.endsWith("_chestplate") || path.equals("elytra")) return EquipmentSlot.CHEST;
+        if (path.endsWith("_leggings")) return EquipmentSlot.LEGS;
+        if (path.endsWith("_boots")) return EquipmentSlot.FEET;
+        return EquipmentSlot.MAINHAND;
+    }
     /** Equipment-diff view exposed by Lithium's equipment tracking mixin. */
     public Map<EquipmentSlot, ItemStack> getEquipmentChanges() {
         return Collections.emptyMap();
@@ -139,7 +207,7 @@ public class LivingEntity extends Entity {
     public void checkHandStackSwap(Map<EquipmentSlot, ItemStack> changes) { }
     /** Elytra/gliding tick hook used by movement optimizations. */
     public void tickGliding() {
-        if (canGlide()) { }
+        canGlide();
     }
     public boolean canGlide() { return false; }
     /** Hand-swing tick hook used by the fast-hand-swing mixin. */

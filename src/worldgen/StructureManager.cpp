@@ -822,11 +822,6 @@ void StructureManager::mineshaftPiece(Chunk& chunk, std::int32_t cx, std::int32_
     }
 }
 
-std::uint16_t StructureManager::resolvePaletteState(const std::unordered_map<std::string,std::string>& pal,
-                                             const std::string& key,
-                                             const std::string& fallback) {
-    return stateByPalette(pal, key, fallback);
-}
 void StructureManager::enqueuePendingMob(int x,int y,int z, const std::string& mob, int count) const {
     std::lock_guard<std::mutex> lk(pendingMtx_);
     pendingMobs_.push_back({{x,y,z}, mob, count});

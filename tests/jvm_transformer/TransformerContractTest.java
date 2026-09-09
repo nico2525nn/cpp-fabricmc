@@ -1,7 +1,6 @@
 package cppfm.transformer_fixture;
 
 import cppfm.loader.KnotClassLoader;
-import cppfm.loader.TransformingClassLoader;
 import cppfm.transform.MixinClassTransformer;
 import cppfm.transform.MixinConfiguration;
 import cppfm.transform.MixinDispatch;
@@ -14,7 +13,6 @@ import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.net.URL;
 import java.util.List;
-import java.util.Map;
 
 /** Process-level contract test; run with assertions enabled. */
 public final class TransformerContractTest {
@@ -51,6 +49,7 @@ public final class TransformerContractTest {
         assert ((Integer) type.getMethod("constant").invoke(instance)) == 7;
 
         phase7Cases();
+        accessorInflectionCase();
 
         URL[] empty = new URL[0];
         KnotClassLoader knot = new KnotClassLoader(empty, TransformerContractTest.class.getClassLoader());
@@ -62,6 +61,24 @@ public final class TransformerContractTest {
             throw new AssertionError("unexpected automatic mixin: " + result.getModifiedMethodDescriptors());
 
         System.out.println("TRANSFORMER CONTRACT PASS");
+    }
+
+    private static void accessorInflectionCase() throws Exception {
+        byte[] target = resource("cppfm/transformer_fixture/AcronymAccessorTarget.class");
+        byte[] mixin = resource("cppfm/transformer_fixture/AcronymAccessorMixin.class");
+        MixinClassTransformer transformer = new MixinClassTransformer(true);
+        transformer.registerMixin("cppfm.transformer_fixture.AcronymAccessorMixin", mixin);
+        TransformContext context = new TransformContext(
+            "cppfm.transformer_fixture.AcronymAccessorTarget", target, true);
+        byte[] transformed = transformer.transform(
+            "cppfm.transformer_fixture.AcronymAccessorTarget", target, context);
+        assert !java.util.Arrays.equals(target, transformed) : context.getDiagnostics();
+        Class<?> type = new ByteArrayLoader().define(
+            "cppfm.transformer_fixture.AcronymAccessorTarget", transformed);
+        Object instance = type.getConstructor().newInstance();
+        assert ((Integer) type.getMethod("getROOT").invoke(instance)) == 17;
+        assert "https://example.invalid".equals(type.getMethod("getURL").invoke(instance));
+        assert ((Integer) type.getMethod("getXValue").invoke(instance)) == 23;
     }
 
     private static void loaderAccessWidenerCase(KnotClassLoader knot) throws Exception {

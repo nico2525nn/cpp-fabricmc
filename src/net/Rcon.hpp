@@ -9,14 +9,12 @@
 #include <fstream>
 #include <functional>
 #include <mutex>
-#include <netinet/in.h>
 #include <set>
-#include <sys/socket.h>
 #include <thread>
-#include <unistd.h>
 #include <vector>
 #include "../core/ByteBuffer.hpp"
 #include "../core/Json.hpp"
+#include "../platform/Socket.hpp"
 
 namespace cppfm {
 
@@ -53,19 +51,22 @@ public:
         std::lock_guard lifecycleLock(lifecycleMtx_);
         if (!cfg_.enabled || cfg_.password.empty()) return false;
         if (running_.load(std::memory_order_acquire) || worker_.joinable()) return false;
-        const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-        if (fd < 0) return false;
+        if (!platform::initializeSockets()) return false;
+        const auto fd = platform::createTcpSocket();
+        if (!platform::isValid(fd)) return false;
         fd_.store(fd, std::memory_order_release);
         int one = 1;
-        (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+        (void)platform::setSocketOption(
+            fd, SOL_SOCKET, SO_REUSEADDR, &one,
+            static_cast<platform::socket_length_t>(sizeof(one)));
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
         addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);   // local-only by default
         addr.sin_port = htons(cfg_.port);
-        if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 ||
-            ::listen(fd, 8) != 0) {
-            fd_.exchange(-1, std::memory_order_acq_rel);
-            ::close(fd);
+        if (platform::bindSocket(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 ||
+            platform::listenSocket(fd, 8) != 0) {
+            fd_.exchange(platform::invalid_socket, std::memory_order_acq_rel);
+            platform::closeSocket(fd);
             return false;
         }
         running_ = true;
@@ -73,8 +74,9 @@ public:
             worker_ = std::thread([this]{ loop(); });
         } catch (...) {
             running_.store(false, std::memory_order_release);
-            if (const int opened = fd_.exchange(-1, std::memory_order_acq_rel); opened >= 0)
-                ::close(opened);
+            const auto opened = fd_.exchange(platform::invalid_socket,
+                                             std::memory_order_acq_rel);
+            if (platform::isValid(opened)) platform::closeSocket(opened);
             throw;
         }
         return true;
@@ -83,16 +85,18 @@ public:
         std::lock_guard lifecycleLock(lifecycleMtx_);
         running_.store(false, std::memory_order_release);
         // close() alone does not reliably interrupt it on Linux.
-        if (const int fd = fd_.exchange(-1, std::memory_order_acq_rel); fd >= 0) {
-            ::shutdown(fd, SHUT_RDWR);
-            ::close(fd);
+        if (const auto fd = fd_.exchange(platform::invalid_socket,
+                                         std::memory_order_acq_rel);
+            platform::isValid(fd)) {
+            platform::shutdownSocket(fd);
+            platform::closeSocket(fd);
         }
-        std::vector<int> clients;
+        std::vector<platform::socket_t> clients;
         {
             std::lock_guard lock(clientsMtx_);
             clients.assign(clientFds_.begin(), clientFds_.end());
         }
-        for (const int client : clients) ::shutdown(client, SHUT_RDWR);
+        for (const auto client : clients) platform::shutdownSocket(client);
         if (worker_.joinable()) {
             if (worker_.get_id() == std::this_thread::get_id()) {
                 std::fprintf(stderr, "[rcon] accept worker requested self-stop; deferred join\n");
@@ -134,20 +138,21 @@ private:
         v.push_back((x >> 16) & 0xFF); v.push_back((x >> 24) & 0xFF);
     }
 
-    static bool sendAll(int fd, const std::uint8_t* data, std::size_t size) {
-        if (fd < 0 || (size != 0 && data == nullptr)) return false;
+    static bool sendAll(platform::socket_t fd, const std::uint8_t* data,
+                        std::size_t size) {
+        if (!platform::isValid(fd) || (size != 0 && data == nullptr)) return false;
         std::size_t offset = 0;
         while (offset < size) {
-            const ssize_t sent = ::send(fd, data + offset, size - offset,
-                                        MSG_NOSIGNAL);
-            if (sent < 0 && errno == EINTR) continue;
+            const auto sent = platform::send(fd, data + offset, size - offset,
+                                             platform::sendFlags());
+            if (sent < 0 && platform::isInterrupted(platform::lastSocketError())) continue;
             if (sent <= 0) return false;
             offset += static_cast<std::size_t>(sent);
         }
         return true;
     }
 
-    static void sendPacket(int fd, std::int32_t id, std::int32_t type,
+    static void sendPacket(platform::socket_t fd, std::int32_t id, std::int32_t type,
                            const std::string& payload) {
         // Source RCON has a bounded packet length.  Long command output is
         // legal as a sequence of response packets, not as one oversized
@@ -180,18 +185,19 @@ private:
             return false;
         }
     }
-    static bool recvExact(int fd, void* dst, std::size_t n) {
+    static bool recvExact(platform::socket_t fd, void* dst, std::size_t n) {
         if (n != 0 && dst == nullptr) return false;
         auto* p = static_cast<std::uint8_t*>(dst);
         while (n > 0) {
-            ssize_t r = ::recv(fd, p, n, 0);
-            if (r < 0 && errno == EINTR) continue;
+            const auto r = platform::receive(fd, p, n, 0);
+            if (r < 0 && platform::isInterrupted(platform::lastSocketError())) continue;
             if (r <= 0) return false;
             p += r; n -= static_cast<std::size_t>(r);
         }
         return true;
     }
-    static bool recvPacket(int fd, std::int32_t& id, std::int32_t& type, std::string& body) {
+    static bool recvPacket(platform::socket_t fd, std::int32_t& id,
+                           std::int32_t& type, std::string& body) {
         std::uint8_t lb[4];
         if (!recvExact(fd, lb, 4)) return false;
         const std::uint32_t len = static_cast<std::uint32_t>(lb[0]) |
@@ -217,26 +223,31 @@ private:
 
     void loop() {
         while (running_.load(std::memory_order_acquire)) {
-            sockaddr_in cli{}; socklen_t cl = sizeof(cli);
-            const int listenFd = fd_.load(std::memory_order_acquire);
-            if (listenFd < 0) break;
-            const int cfd = ::accept(listenFd, reinterpret_cast<sockaddr*>(&cli), &cl);
-            if (cfd < 0) {
-                if (!running_.load(std::memory_order_acquire) || errno == EINTR) continue;
-                std::fprintf(stderr, "[rcon] accept failed: %s\n", std::strerror(errno));
+            sockaddr_in cli{};
+            platform::socket_length_t cl = sizeof(cli);
+            const auto listenFd = fd_.load(std::memory_order_acquire);
+            if (!platform::isValid(listenFd)) break;
+            const auto cfd = platform::acceptSocket(
+                listenFd, reinterpret_cast<sockaddr*>(&cli), &cl);
+            if (!platform::isValid(cfd)) {
+                const int error = platform::lastSocketError();
+                if (!running_.load(std::memory_order_acquire) ||
+                    platform::isInterrupted(error)) continue;
+                std::fprintf(stderr, "[rcon] accept failed: %s\n",
+                             platform::socketErrorText(error).c_str());
                 continue;
             }
             std::lock_guard lock(clientsMtx_);
             if (!running_.load(std::memory_order_acquire)) {
-                ::shutdown(cfd, SHUT_RDWR);
-                ::close(cfd);
+                platform::shutdownSocket(cfd);
+                platform::closeSocket(cfd);
                 break;
             }
             clientFds_.insert(cfd);
             if (!addClientThread(clientThreads_, [this, cfd] { clientLoop(cfd); })) {
                 clientFds_.erase(cfd);
-                ::shutdown(cfd, SHUT_RDWR);
-                ::close(cfd);
+                platform::shutdownSocket(cfd);
+                platform::closeSocket(cfd);
                 std::fprintf(stderr, "[rcon] could not create client worker\n");
             }
         }
@@ -264,26 +275,32 @@ private:
                 break;
             }
         } catch (const std::exception& e) {
-            std::fprintf(stderr, "[rcon] client fd=%d failed: %s\n", cfd, e.what());
+            std::fprintf(stderr, "[rcon] client fd=%llu failed: %s\n",
+                         static_cast<unsigned long long>(platform::socketNumber(cfd)),
+                         e.what());
         } catch (...) {
-            std::fprintf(stderr, "[rcon] client fd=%d failed\n", cfd);
+            std::fprintf(stderr, "[rcon] client fd=%llu failed\n",
+                         static_cast<unsigned long long>(platform::socketNumber(cfd)));
         }
         {
             std::lock_guard lock(clientsMtx_);
             clientFds_.erase(cfd);
         }
-        ::shutdown(cfd, SHUT_RDWR);
-        ::close(cfd);
+        platform::shutdownSocket(cfd);
+        platform::closeSocket(cfd);
     }
 
     RconConfig cfg_;
     Handler handler_;
     std::atomic<bool> running_{false};
-    std::atomic<int> fd_{-1};
+    std::atomic<platform::socket_t> fd_{platform::invalid_socket};
     std::thread worker_;
-    std::mutex lifecycleMtx_;
+    // stop() can be requested by a command running on one of our own client
+    // workers.  Recursive ownership lets that worker mark the listener
+    // stopped and defer only its own join without deadlocking on this mutex.
+    std::recursive_mutex lifecycleMtx_;
     std::mutex clientsMtx_;
-    std::set<int> clientFds_;
+    std::set<platform::socket_t> clientFds_;
     std::vector<std::thread> clientThreads_;
 };
 

@@ -1,6 +1,9 @@
 // ResetScore 0x49 (D26) — BE tick/save/load paths verified intact after scoreboard reset hardening; no BE state touches Scoreboard scores.
 #pragma once
+#include <algorithm>
 #include <cstdint>
+#include <memory>
+#include <mutex>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -60,6 +63,30 @@ struct GenericContainerData {
     std::uint8_t slotCount = kMaxSlots;
 };
 
+// CrafterBlockEntity is a nine-slot recipe inventory, but its disabled-slot
+// mask and redstone bookkeeping are distinct from a dispenser/dropper.  Keep
+// that state separate so automation cannot accidentally treat a disabled
+// recipe slot as an ordinary container slot.
+struct CrafterData {
+    static constexpr int kSlots = 9;
+    ItemStack slots[kSlots];
+    std::uint16_t disabledSlots = 0; // bit i corresponds to recipe slot i
+    std::int32_t craftingTicksRemaining = 0;
+    std::int64_t redstoneCraftDueTick = -1;
+    bool triggered = false;
+
+    bool isSlotDisabled(int slot) const {
+        return slot >= 0 && slot < kSlots &&
+               (disabledSlots & (std::uint16_t{1} << slot)) != 0;
+    }
+    void setSlotEnabled(int slot, bool enabled) {
+        if (slot < 0 || slot >= kSlots) return;
+        const auto bit = static_cast<std::uint16_t>(std::uint16_t{1} << slot);
+        if (enabled) disabledSlots = static_cast<std::uint16_t>(disabledSlots & ~bit);
+        else disabledSlots = static_cast<std::uint16_t>(disabledSlots | bit);
+    }
+};
+
 struct MovingPistonData {
     std::uint16_t state = 0;
     std::int32_t facing = 0;
@@ -76,49 +103,116 @@ struct SignData {
 };
 
 struct BlockEntity {
-    enum class Kind { Chest, Furnace, Hopper, Dispenser, Dropper, Barrel, ShulkerBox, Brewing, MovingPiston, Sign };
+    enum class Kind { Chest, Furnace, Hopper, Dispenser, Dropper, Barrel, ShulkerBox, Brewing, Crafter, MovingPiston, Sign };
     Kind kind = Kind::Chest;
     ChestData chest{};
     FurnaceData furnace{};
     GenericContainerData generic{};
+    CrafterData crafter{};
     BrewingData brewing{};
     MovingPistonData movingPiston{};
     SignData sign{};
+    // Menus from different sessions can operate on one container while the
+    // server tick is ticking the same block entity.  Keep the lock shared
+    // across copies/owners; BlockEntityStore snapshots retain the object.
+    mutable std::shared_ptr<std::recursive_mutex> stateMtx =
+        std::make_shared<std::recursive_mutex>();
+
+    BlockEntity() = default;
+    BlockEntity(const BlockEntity&) = default;
+    BlockEntity& operator=(const BlockEntity& other) {
+        if (this == &other) return *this;
+        kind = other.kind;
+        chest = other.chest;
+        furnace = other.furnace;
+        generic = other.generic;
+        crafter = other.crafter;
+        brewing = other.brewing;
+        movingPiston = other.movingPiston;
+        sign = other.sign;
+        // Preserve this object's mutex identity when resetting its contents.
+        return *this;
+    }
     bool isDropper() const { return kind == Kind::Dropper; }
     bool isDispenser() const { return kind == Kind::Dispenser; }
 };
 
 class BlockEntityStore {
 public:
+    using Owner = std::shared_ptr<BlockEntity>;
+
+    Owner getShared(std::int64_t key) const {
+        std::lock_guard lock(mutex_);
+        const auto it = map_.find(key);
+        return it == map_.end() ? Owner{} : it->second;
+    }
+
     BlockEntity* get(std::int64_t key) {
-        auto it = map_.find(key);
-        return it == map_.end() ? nullptr : &it->second;
+        return getShared(key).get();
     }
     BlockEntity* getAt(std::int32_t x, std::int32_t y, std::int32_t z) {
         return get(posKey(x, y, z));
     }
 
-    BlockEntity& create(std::int64_t key, BlockEntity::Kind kind) {
-        BlockEntity& be = map_[key];
-        be = BlockEntity{};
-        be.kind = kind;
+    Owner createShared(std::int64_t key, BlockEntity::Kind kind) {
+        std::lock_guard lock(mutex_);
+        auto& owner = map_[key];
+        if (!owner) owner = std::make_shared<BlockEntity>();
+        // Preserve the shared object's identity so menus that already hold an
+        // owner never retain a dangling pointer when a block changes kind.
+        std::lock_guard entityLock(*owner->stateMtx);
+        *owner = BlockEntity{};
+        owner->kind = kind;
         dirty_.insert(key);
-        return be;
+        return owner;
+    }
+
+    BlockEntity& create(std::int64_t key, BlockEntity::Kind kind) {
+        return *createShared(key, kind);
     }
     void remove(std::int64_t key) {
+        std::lock_guard lock(mutex_);
         auto it = map_.find(key);
         if (it != map_.end()) { map_.erase(it); dirty_.insert(key); }
     }
-    bool empty() const { return map_.empty(); }
-    std::size_t size() const { return map_.size(); }
+    void markDirty(std::int64_t key) {
+        std::lock_guard lock(mutex_);
+        dirty_.insert(key);
+    }
+    bool empty() const {
+        std::lock_guard lock(mutex_);
+        return map_.empty();
+    }
+    std::size_t size() const {
+        std::lock_guard lock(mutex_);
+        return map_.size();
+    }
 
     template <typename Fn> void forEach(Fn fn) {
-        for (auto& [k, be] : map_) fn(k, be);
+        std::vector<std::pair<std::int64_t, Owner>> snapshot;
+        {
+            std::lock_guard lock(mutex_);
+            snapshot.reserve(map_.size());
+            for (const auto& [key, owner] : map_)
+                snapshot.emplace_back(key, owner);
+        }
+        // Invoke user code outside the map lock.  Besides avoiding a long
+        // critical section, this permits callbacks to remove/create entries
+        // without invalidating the iteration.  The shared owners keep the
+        // pointed-to values alive for the callback duration.
+        for (auto& [key, owner] : snapshot)
+            if (owner) {
+                std::lock_guard entityLock(*owner->stateMtx);
+                fn(key, *owner);
+            }
     }
-    std::unordered_map<std::int64_t, BlockEntity>& raw() { return map_; }
 
     void writeChunkNbt(std::int32_t cx, std::int32_t cz, nbt::Value& outList) const {
-        for (const auto& [k, be] : map_) {
+        const auto snapshot = ownersSnapshot();
+        for (const auto& [k, owner] : snapshot) {
+            if (!owner) continue;
+            std::lock_guard entityLock(*owner->stateMtx);
+            const BlockEntity& be = *owner;
             const std::int32_t x = posKeyUnpackX(k);
             const std::int32_t y = posKeyUnpackY(k);
             const std::int32_t z = posKeyUnpackZ(k);
@@ -148,6 +242,18 @@ public:
                 writeItems(e, be.brewing.slots, BrewingData::kSlots, "Items");
                 e.set("BrewTime", nbt::Value::makeShort(be.brewing.brewTime));
                 e.set("Fuel", nbt::Value::makeByte(static_cast<std::int8_t>(be.brewing.fuel)));
+            } else if (be.kind == BlockEntity::Kind::Crafter) {
+                e.set("id", nbt::Value::makeString("minecraft:crafter"));
+                writeItems(e, be.crafter.slots, CrafterData::kSlots, "Items");
+                nbt::Value disabled;
+                disabled.tag = nbt::IntArray;
+                for (int slot = 0; slot < CrafterData::kSlots; ++slot)
+                    if (be.crafter.isSlotDisabled(slot))
+                        disabled.intArray.push_back(slot);
+                e.set("disabled_slots", std::move(disabled));
+                e.set("crafting_ticks_remaining",
+                      nbt::Value::makeInt(be.crafter.craftingTicksRemaining));
+                e.set("triggered", nbt::Value::makeByte(be.crafter.triggered ? 1 : 0));
             } else if (be.kind == BlockEntity::Kind::Sign) {
                 e.set("id", nbt::Value::makeString("minecraft:sign"));
                 e.set("is_waxed", nbt::Value::makeByte(0));
@@ -178,6 +284,7 @@ public:
     }
 
     void readChunkNbt(const nbt::Value& root) {
+        std::lock_guard lock(mutex_);
         for (auto& [k, v] : root.comp) {
             if ((k == "block_entities" || k == "TileEntities") && v.tag == nbt::List) {
                 for (const auto& e : v.list) readOne(e);
@@ -186,22 +293,37 @@ public:
     }
 
 private:
+    std::vector<std::pair<std::int64_t, Owner>> ownersSnapshot() const {
+        std::lock_guard lock(mutex_);
+        std::vector<std::pair<std::int64_t, Owner>> snapshot;
+        snapshot.reserve(map_.size());
+        for (const auto& [key, owner] : map_)
+            snapshot.emplace_back(key, owner);
+        return snapshot;
+    }
+
+    BlockEntity& upsertLocked(std::int64_t key) {
+        auto& owner = map_[key];
+        if (!owner) owner = std::make_shared<BlockEntity>();
+        return *owner;
+    }
+
     void readOne(const nbt::Value& e) {
         const auto* xs = e.get("x"), * ys = e.get("y"), * zs = e.get("z");
         const auto* idv = e.get("id");
         if (!xs || !ys || !zs || !idv || idv->tag != nbt::String) return;
         const std::int64_t key = posKey(xs->i, ys->i, zs->i);
         const std::string& id = idv->str;
+        BlockEntity& be = upsertLocked(key);
+        std::lock_guard entityLock(*be.stateMtx);
         if (id.find("chest") != std::string::npos &&
             id.find("ender") == std::string::npos) {
-            BlockEntity& be = map_[key];
             be = BlockEntity{};
             be.kind = BlockEntity::Kind::Chest;
             readItems(e, be.chest.slots, ChestData::kSlots, "Items");
             dirty_.insert(key);
         } else if (id == "minecraft:hopper" || id == "minecraft:dispenser" ||
                    id == "minecraft:dropper") {
-            BlockEntity& be = map_[key];
             be = BlockEntity{};
             if (id=="minecraft:hopper") be.kind = BlockEntity::Kind::Hopper;
             else if (id=="minecraft:dropper") be.kind = BlockEntity::Kind::Dropper;
@@ -210,29 +332,50 @@ private:
             readItems(e, be.generic.slots, n, "Items");
             dirty_.insert(key);
         } else if (id == "minecraft:barrel") {
-            BlockEntity& be = map_[key];
             be = BlockEntity{};
             be.kind = BlockEntity::Kind::Barrel;
             readItems(e, be.chest.slots, ChestData::kSlots, "Items");
             dirty_.insert(key);
         } else if (id.find("shulker_box") != std::string::npos) {
-            BlockEntity& be = map_[key];
             be = BlockEntity{};
             be.kind = BlockEntity::Kind::ShulkerBox;
             readItems(e, be.chest.slots, ChestData::kSlots, "Items");
             dirty_.insert(key);
         } else if (id.find("brewing") != std::string::npos) {
-            BlockEntity& be = map_[key];
             be = BlockEntity{};
             be.kind = BlockEntity::Kind::Brewing;
             readItems(e, be.brewing.slots, BrewingData::kSlots, "Items");
             if (const auto* b = e.get("BrewTime")) be.brewing.brewTime = b->s;
             if (const auto* f = e.get("Fuel")) be.brewing.fuel = static_cast<std::int16_t>(f->b);
             dirty_.insert(key);
+        } else if (id == "minecraft:crafter") {
+            be = BlockEntity{};
+            be.kind = BlockEntity::Kind::Crafter;
+            readItems(e, be.crafter.slots, CrafterData::kSlots, "Items");
+            if (const auto* disabled = e.get("disabled_slots")) {
+                if (disabled->tag == nbt::IntArray) {
+                    for (const auto slot : disabled->intArray)
+                        be.crafter.setSlotEnabled(slot, false);
+                } else if (disabled->tag == nbt::List) {
+                    // Be lenient with hand-authored/older fixtures that use
+                    // an integer list instead of the vanilla int array.
+                    for (const auto& value : disabled->list)
+                        if (value.tag == nbt::Int)
+                            be.crafter.setSlotEnabled(value.i, false);
+                }
+            }
+            if (const auto* ticks = e.get("crafting_ticks_remaining")) {
+                if (ticks->tag == nbt::Int) be.crafter.craftingTicksRemaining = std::max(0, ticks->i);
+                else if (ticks->tag == nbt::Short) be.crafter.craftingTicksRemaining = std::max(0, static_cast<int>(ticks->s));
+            }
+            if (const auto* triggered = e.get("triggered")) {
+                if (triggered->tag == nbt::Byte) be.crafter.triggered = triggered->b != 0;
+                else if (triggered->tag == nbt::Int) be.crafter.triggered = triggered->i != 0;
+            }
+            dirty_.insert(key);
         } else if (id.find("furnace") != std::string::npos ||
                    id.find("smoker") != std::string::npos ||
                    id.find("blast_furnace") != std::string::npos) {
-            BlockEntity& be = map_[key];
             be = BlockEntity{};
             be.kind = BlockEntity::Kind::Furnace;
             readItems(e, be.furnace.slots, 3, "Items");
@@ -241,7 +384,6 @@ private:
             if (const auto* t = e.get("CookTimeTotal")) be.furnace.cookTotal = t->s;
             dirty_.insert(key);
         } else if (id == "minecraft:sign" || id == "minecraft:hanging_sign") {
-            BlockEntity& be = map_[key];
             be = BlockEntity{};
             be.kind = BlockEntity::Kind::Sign;
             auto readSide = [&](const char* side, std::string out[4], bool& has) {
@@ -292,9 +434,8 @@ private:
         }
     }
 
-    std::unordered_map<std::int64_t, BlockEntity> map_;
-
-public:
+    mutable std::recursive_mutex mutex_;
+    std::unordered_map<std::int64_t, Owner> map_;
     std::unordered_set<std::int64_t> dirty_;
 };
 

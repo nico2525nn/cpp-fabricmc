@@ -128,12 +128,6 @@ private:
         return std::vector<std::uint8_t>((std::istreambuf_iterator<char>(f)),
                                           std::istreambuf_iterator<char>());
     }
-    static std::string restoreKey(const std::string& fileStem) {
-        // minecraft__worldgen_biome -> minecraft:worldgen/biome ; others -> minecraft:x
-        std::string s = fileStem.substr(strlen("minecraft__"));
-        if (s.starts_with("worldgen_")) return "minecraft:" + s;
-        return "minecraft:" + s;
-    }
     // walk the worldgen/biome blob capturing entry keys in wire order
     void parseBiomeOrder() {
         for (auto& r : registries_) {

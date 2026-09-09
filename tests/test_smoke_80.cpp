@@ -7,6 +7,7 @@
 // Protocol: 1.21.4 (769) — all packet IDs and NBT shapes pinned to prismarineJS minecraft-data 1.21.4.
 
 #include "TestClient.hpp"
+#include "ServerProcess.hpp"
 #include "../src/core/NBT.hpp"
 #include "../src/proto/Ids.hpp"
 #include "../src/generated/BlockStates.hpp"
@@ -30,76 +31,6 @@ using namespace cppfm;
 using namespace cpptest;
 
 #include "Harness.hpp"
-
-static bool waitPort(std::uint16_t port, int timeoutMs) {
-    for (int i = 0; i < timeoutMs / 100; ++i) {
-        TestClient p; if (p.connect("127.0.0.1", port, 1)) { p.close(); return true; }
-        usleep(100*1000);
-    }
-    return false;
-}
-struct ServerProc {
-    pid_t pid=-1; std::uint16_t port=0; std::string worldDir;
-    ~ServerProc() { stop(); }
-    bool start(const char* bin, int vd=6) {
-        port = static_cast<std::uint16_t>(26000 + (getpid()%3000));
-        worldDir = "/tmp/smoke80-" + std::to_string(getpid());
-        std::filesystem::remove_all(worldDir); std::filesystem::create_directories(worldDir);
-        for(int a=0;a<20;++a){ TestClient pr; if(!pr.connect("127.0.0.1",port,1)) break; pr.close(); port++; }
-        pid = fork();
-        if (pid < 0) {
-            std::error_code ec;
-            std::filesystem::remove_all(worldDir, ec);
-            return false;
-        }
-        if(pid==0){
-            char pa[32], va[32], wa[256];
-            snprintf(pa,sizeof(pa),"--port=%u",port);
-            snprintf(va,sizeof(va),"--view-distance=%d",vd);
-            snprintf(wa,sizeof(wa),"--world-dir=%s",worldDir.c_str());
-            execl(bin,bin,pa,va,wa,"--online-mode=false",(char*)nullptr); _exit(127);
-        }
-        if (waitPort(port,8000)) return true;
-        stop();
-        return false;
-    }
-    void stop() noexcept {
-        if (pid <= 0) return;
-        const pid_t child = pid;
-        int status = 0;
-        bool reaped = false;
-        // Shutdown joins the tick/session/I/O workers and flushes dirty
-        // chunks.  Two and a half seconds was shorter than a cold save and
-        // caused the harness to SIGKILL a healthy server before persistence
-        // completed, then removed its world directory underneath the workers.
-        for (int i = 0; i < 600; ++i) {
-            const pid_t result = waitpid(child, &status, WNOHANG);
-            if (result == child) { reaped = true; break; }
-            if (result < 0) {
-                if (errno == EINTR) { --i; continue; }
-                reaped = errno == ECHILD;
-                break;
-            }
-            if (i == 0) (void)kill(child, SIGTERM);
-            usleep(100 * 1000);
-        }
-        if (!reaped) {
-            (void)kill(child, SIGKILL);
-            for (;;) {
-                const pid_t result = waitpid(child, &status, 0);
-                if (result == child || (result < 0 && errno == ECHILD)) break;
-                if (result < 0 && errno == EINTR) continue;
-                break;
-            }
-            reaped = true;
-        }
-        pid = -1;
-        if (reaped) {
-            std::error_code ec;
-            std::filesystem::remove_all(worldDir, ec);
-        }
-    }
-};
 
 // Helpers
 static bool waitChat(TestClient& c, const std::string& substr, int ms=4000){
@@ -1320,8 +1251,11 @@ int main(int argc, char** argv){
     setvbuf(stdout,nullptr,_IONBF,0);
     const char* bin = argc>1?argv[1]:"build/cppfm";
     std::printf("=== cppfm smoke 80 — 1.21.4 (769) strict ===\n");
+    ServerProcessOptions serverOptions;
+    serverOptions.viewDistance = 6;
+    serverOptions.worldPrefix = "/tmp/smoke80-";
     ServerProc srv;
-    if(!srv.start(bin,6)){ std::printf("FATAL: server start\n"); return 2; }
+    if(!srv.start(bin, serverOptions)){ std::printf("FATAL: server start\n"); return 2; }
     {
         TestClient statusProbe;
         statusProbe.connect("127.0.0.1",srv.port);

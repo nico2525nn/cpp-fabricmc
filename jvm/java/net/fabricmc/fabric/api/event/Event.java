@@ -2,7 +2,6 @@ package net.fabricmc.fabric.api.event;
 
 import java.lang.reflect.Array;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -14,6 +13,8 @@ import java.util.function.Function;
 
 /** Small EventFactory-compatible registration object. */
 public class Event<T> {
+    public static final net.minecraft.util.Identifier DEFAULT_PHASE =
+        net.minecraft.util.Identifier.of("fabric", "default");
     private final Consumer<T> registrar;
     private final Function<T[], T> invokerFactory;
     private final Class<T> type;
@@ -23,6 +24,7 @@ public class Event<T> {
     private final List<String> declaredPhases = new ArrayList<>();
     private volatile T cachedInvoker;
 
+    public Event() { this(null, null, null); }
     public Event(Consumer<T> registrar) { this(registrar, null, null); }
     public Event(Class<T> type, Function<T[], T> invokerFactory) {
         this(null, type, invokerFactory, null);
@@ -60,7 +62,7 @@ public class Event<T> {
         phaseListeners.computeIfAbsent(id, ignored -> new ArrayList<>());
         rebuildInvoker();
     }
-    public T invoker() { return cachedInvoker; }
+    public final T invoker() { return cachedInvoker; }
     public synchronized List<T> snapshot() { return List.copyOf(flattenListeners()); }
     public synchronized List<T> snapshot(net.minecraft.util.Identifier phase) { return List.copyOf(phaseListeners.getOrDefault(phase == null ? "" : phase.toString(), List.of())); }
     public synchronized void clear() {

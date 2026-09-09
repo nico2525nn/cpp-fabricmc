@@ -119,7 +119,11 @@ final class BytecodeInstructions {
     }
 
     static boolean isInvoke(int opcode) {
-        return opcode >= 182 && opcode <= 186;
+        // Mixin's INVOKE point targets MethodInsnNode instructions.  The
+        // adjacent opcode 186 is invokedynamic and its constant-pool entry
+        // is a bootstrap method handle, not a CONSTANT_Methodref/Interface;
+        // treating it as a normal member reference corrupts site matching.
+        return opcode >= 182 && opcode <= 185;
     }
 
     static boolean isField(int opcode) {

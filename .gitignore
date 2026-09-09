@@ -10,6 +10,13 @@ server.properties
 /world/
 /world_nether/
 /world_the_end/
+/mods/
+/config/
+/libraries/
+/logs/
+/crash-reports/
+/resourcepacks/
+/.cppfm/
 __pycache__/
 captures/
 plan/

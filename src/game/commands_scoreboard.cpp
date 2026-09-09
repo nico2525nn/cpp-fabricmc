@@ -1,22 +1,6 @@
-#include "GameServer.hpp"
-#include "Messages.hpp"
-#include "Particles.hpp"
-#include "../generated/EntityIds.hpp"
-#include "../generated/BlockStates.hpp"
-#include <algorithm>
-#include <cmath>
-#include <set>
-#include <filesystem>
-#include <unordered_set>
-#include <fstream>
+#include "CommandModule.hpp"
 
-#include "CommandsHelpers.hpp"
 namespace cppfm {
-
-using brigadier::CommandNode;
-using brigadier::CommandContext;
-namespace args = brigadier::args;
-using NodePtr = brigadier::NodePtr;
 
 
 void GameServer::initScoreboardCommands() {
@@ -236,7 +220,8 @@ void GameServer::initScoreboardPlayerCommands(const brigadier::NodePtr& players)
                 const std::string raw = c.arg("target").asStr();
                 const std::string obj = c.arg("objective").asStr();
                 if (!scoreboard.find(obj)) throw std::runtime_error("objective not found: "+obj);
-                auto sel = resolveSelector(raw, src);
+                auto sel = resolveSelectorForDimension(
+                    raw, src, commandDimension(c.source));
                 std::vector<std::string> holders = sel.playerNames.empty() ? std::vector<std::string>{raw} : sel.playerNames;
                 int n=0;
                 for (auto& h : holders) if (scoreboard.resetScore(h, obj)) { sendResetScoreAll(h, &obj); ++n; }
@@ -247,7 +232,8 @@ void GameServer::initScoreboardPlayerCommands(const brigadier::NodePtr& players)
             resetWho->action = [this](CommandContext& c) {
                 Player* src = static_cast<Player*>(c.source.player);
                 const std::string raw = c.arg("target").asStr();
-                auto sel = resolveSelector(raw, src);
+                auto sel = resolveSelectorForDimension(
+                    raw, src, commandDimension(c.source));
                 std::vector<std::string> holders = sel.playerNames.empty() ? std::vector<std::string>{raw} : sel.playerNames;
                 int total=0;
                 for (auto& h : holders) {

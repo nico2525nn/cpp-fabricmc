@@ -16,9 +16,11 @@ import net.minecraft.util.math.ChunkPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.World;
+import net.minecraft.nbt.NbtCompound;
 
 /** Handle-backed base entity. A zero handle is a valid inert Java-only entity. */
-public class Entity implements net.minecraft.world.entity.EntityLike {
+public class Entity implements net.minecraft.world.entity.EntityLike,
+        net.fabricmc.fabric.api.attachment.v1.AttachmentTarget {
     protected final long nativeHandle;
     protected World world;
     protected EntityType<?> type;
@@ -67,6 +69,40 @@ public class Entity implements net.minecraft.world.entity.EntityLike {
     public void teleport(double x, double y, double z) { setPosition(x, y, z); }
     public void teleport(World targetWorld, double x, double y, double z, float yaw, float pitch) {
         this.world = targetWorld; refreshPositionAndAngles(x, y, z, yaw, pitch);
+    }
+
+    public Entity teleportTo(net.minecraft.world.TeleportTarget target) {
+        if (target == null) return this;
+        teleport(target.world, target.position.x, target.position.y, target.position.z,
+                 target.yaw, target.pitch);
+        return this;
+    }
+
+    /** Vanilla 1.21.4 movement boundary used by server-side optimization mods. */
+    public void move(MovementType movementType, Vec3d movement) {
+        Vec3d delta = movement == null ? Vec3d.ZERO : movement;
+        setPosition(getX() + delta.x, getY() + delta.y, getZ() + delta.z);
+    }
+
+    /** Persistent entity state boundary used by Fabric API and server mods. */
+    protected void readNbt(NbtCompound nbt) {
+        if (nbt == null) return;
+        if (nbt.contains("Pos")) {
+            // The native world remains authoritative; this hook intentionally
+            // only provides the exact Mixin/Access Widener ABI.
+        }
+    }
+
+    protected void readCustomDataFromNbt(NbtCompound nbt) { }
+
+    protected NbtCompound writeNbt(NbtCompound nbt) {
+        return nbt == null ? new NbtCompound() : nbt;
+    }
+
+    protected void writeCustomDataToNbt(NbtCompound nbt) { }
+
+    public void addVelocity(double x, double y, double z) {
+        setVelocity(getVelocity().add(x, y, z));
     }
 
     public UUID getUuid() {

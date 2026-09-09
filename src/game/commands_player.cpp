@@ -1,22 +1,51 @@
-#include "GameServer.hpp"
-#include "Messages.hpp"
-#include "Particles.hpp"
-#include "../generated/EntityIds.hpp"
-#include "../generated/BlockStates.hpp"
-#include <algorithm>
-#include <cmath>
-#include <set>
-#include <filesystem>
-#include <unordered_set>
-#include <fstream>
+#include "CommandModule.hpp"
 
-#include "CommandsHelpers.hpp"
 namespace cppfm {
 
-using brigadier::CommandNode;
-using brigadier::CommandContext;
-namespace args = brigadier::args;
-using NodePtr = brigadier::NodePtr;
+namespace {
+
+struct PlayerCommandSnapshot {
+    std::shared_ptr<Connection> connection;
+    std::array<std::uint8_t, 16> uuid{};
+    std::string name;
+    std::int32_t entityId = 0;
+    std::int8_t dimension = 0;
+    double x = 0.0, y = 0.0, z = 0.0;
+    float yaw = 0.0f, pitch = 0.0f;
+    std::int32_t respawnX = 0, respawnY = 0, respawnZ = 0;
+    float respawnAngle = 0.0f;
+};
+
+PlayerCommandSnapshot snapshotPlayer(const Player& player) {
+    PlayerCommandSnapshot out;
+    std::lock_guard playerLock(player.stateMtx);
+    out.connection = player.conn;
+    out.uuid = player.uuid;
+    out.name = player.name;
+    out.entityId = player.entityId;
+    out.dimension = player.dimension;
+    out.x = player.x;
+    out.y = player.y;
+    out.z = player.z;
+    out.yaw = player.yaw;
+    out.pitch = player.pitch;
+    return out;
+}
+
+std::int8_t snapshotCommandDimension(const brigadier::CommandSource& source) {
+    if (source.dimensionOverride)
+        return GameServer::canonicalDimension(*source.dimensionOverride);
+    const auto* player = static_cast<const Player*>(source.player);
+    if (!player) return 0;
+    std::lock_guard playerLock(player->stateMtx);
+    return GameServer::canonicalDimension(player->dimension);
+}
+
+void sendCommandFeedback(Player* player, const std::string& message) {
+    sendFeedback(player, message);
+}
+
+} // namespace
 
 
 void GameServer::initPlayerCommands() {
@@ -28,7 +57,6 @@ void GameServer::initPlayerCommands() {
     initPlayerCommandsPart06();
     initPlayerCommandsPart07();
     initPlayerCommandsPart08();
-    initPlayerCommandsPart09();
     initPlayerCommandsPart10();
     initPlayerCommandsPart11();
     initPlayerAttributeCommands();
@@ -61,20 +89,27 @@ void GameServer::initPlayerCommandsPart01() {
             Player* src = static_cast<Player*>(c.source.player);
             const int m = applyMode(c.arg("mode").asStr());
             if (m < 0 || !src) throw std::runtime_error("unknown gamemode");
-            src->gamemode = static_cast<std::uint8_t>(m);
+            std::shared_ptr<Connection> connection;
             WriteBuffer ge;                          // game event 4 = gamemode
             ge.u8(4); ge.f32(static_cast<float>(m));
-            src->conn->trySendPacket(proto::pl::sc::GameEvent, ge);
             std::uint8_t af = 0;
-            if (m == 1) af |= 0x01 | 0x04 | 0x08;
-            else if (m == 3) af |= 0x02 | 0x04;
-            if (src->isFlying && !(af & 0x04)) src->isFlying = false;
-            if (src->isFlying) af |= 0x02;
+            {
+                std::lock_guard playerLock(src->stateMtx);
+                src->gamemode = static_cast<std::uint8_t>(m);
+                if (m == 1) af |= 0x01 | 0x04 | 0x08;
+                else if (m == 3) af |= 0x02 | 0x04;
+                if (src->isFlying && !(af & 0x04)) src->isFlying = false;
+                if (src->isFlying) af |= 0x02;
+                connection = src->conn;
+            }
             WriteBuffer ab;
             ab.i8(static_cast<std::int8_t>(af));
             ab.f32(0.05f); ab.f32(m == 1 ? 0.10f : 0.05f);
-            src->conn->trySendPacket(proto::pl::sc::Abilities, ab);
-            sendFeedback(src, "Set own game mode to " + c.arg("mode").asStr());
+            if (connection) {
+                connection->trySendPacket(proto::pl::sc::GameEvent, ge);
+                connection->trySendPacket(proto::pl::sc::Abilities, ab);
+            }
+            sendCommandFeedback(src, "Set own game mode to " + c.arg("mode").asStr());
             return 1;
         };
         auto target = CommandNode::argument("target",
@@ -88,19 +123,25 @@ void GameServer::initPlayerCommandsPart01() {
             int count = 0;
             for (auto& name : sel.playerNames)
                 if (Player* t = findPlayer(*this, name)) {
-                    t->gamemode = static_cast<std::uint8_t>(m);
+                    std::shared_ptr<Connection> connection;
                     std::uint8_t taf = 0;
-                    if (m == 1) taf |= 0x01 | 0x04 | 0x08;
-                    else if (m == 3) taf |= 0x02 | 0x04;
-                    if (t->isFlying && !(taf & 0x04)) t->isFlying = false;
-                    if (t->isFlying) taf |= 0x02;
+                    {
+                        std::lock_guard playerLock(t->stateMtx);
+                        t->gamemode = static_cast<std::uint8_t>(m);
+                        if (m == 1) taf |= 0x01 | 0x04 | 0x08;
+                        else if (m == 3) taf |= 0x02 | 0x04;
+                        if (t->isFlying && !(taf & 0x04)) t->isFlying = false;
+                        if (t->isFlying) taf |= 0x02;
+                        connection = t->conn;
+                    }
                     WriteBuffer ab;
                     ab.i8(static_cast<std::int8_t>(taf));
                     ab.f32(0.05f); ab.f32(m == 1 ? 0.10f : 0.05f);
-                    t->conn->trySendPacket(proto::pl::sc::Abilities, ab);
+                    if (connection)
+                        connection->trySendPacket(proto::pl::sc::Abilities, ab);
                     ++count;
                 }
-            sendFeedback(src, "Updated gamemode for " + std::to_string(count));
+            sendCommandFeedback(src, "Updated gamemode for " + std::to_string(count));
             return count;
         };
         modeArg->then(target);
@@ -151,36 +192,38 @@ void GameServer::initPlayerCommandsPart02() {
             for (auto& n : sel.playerNames)
                 if (Player* t = findPlayer(*this, n)) {
                     ItemStack toGive = stack;
-                    if (base=="minecraft:filled_map" || base=="minecraft:map") {
-                        int mapId = nextMapId_.fetch_add(1);
-                        WriteBuffer tmp; tmp.varint(mapId);
-                        toGive.components.erase(std::remove_if(toGive.components.begin(), toGive.components.end(), [](auto &pr){return pr.first==36;}), toGive.components.end());
-                        toGive.components.emplace_back(36, std::vector<uint8_t>(tmp.data.begin(), tmp.data.end()));
-                        toGive.count = 1;
+                    const bool isMap = base=="minecraft:filled_map" || base=="minecraft:map";
+                    int mapId = -1;
+                    {
+                        std::lock_guard playerLock(t->stateMtx);
+                        if (isMap) {
+                            mapId = nextMapId_.fetch_add(1);
+                            WriteBuffer tmp; tmp.varint(mapId);
+                            toGive.components.erase(std::remove_if(toGive.components.begin(), toGive.components.end(), [](auto &pr){return pr.first==36;}), toGive.components.end());
+                            toGive.components.emplace_back(36, std::vector<uint8_t>(tmp.data.begin(), tmp.data.end()));
+                            toGive.count = 1;
+                        }
                         bool placed=false;
                         for(int i: kMainInventoryOrder){
                             auto &s = t->inv[i];
                             if (s.empty()) { s = toGive; placed=true; break; }
                         }
-                        if(!placed) { addToInventory(*t, toGive.itemId, 1); // fallback add without map_id already handled via inventory scan
-                            for(int i: kMainInventoryOrder) if(!t->inv[i].empty() && t->inv[i].itemId==toGive.itemId) { t->inv[i]=toGive; break; }
+                        if(!placed) {
+                            addToInventory(*t, toGive.itemId, 1);
+                            for(int i: kMainInventoryOrder)
+                                if(!t->inv[i].empty() && t->inv[i].itemId==toGive.itemId) {
+                                    t->inv[i]=toGive;
+                                    break;
+                                }
                         }
-                        resendInventory(*t);
-                        sendMapData(*t, mapId);
-                    } else {
-                        bool placed=false;
-                        for(int i: kMainInventoryOrder){
-                            auto &s = t->inv[i];
-                            if (s.empty()) { s = toGive; placed=true; break; }
-                        }
-                        if(!placed) addToInventory(*t, it->second, 1);
-                        resendInventory(*t);
                     }
+                    resendInventory(*t);
+                    if (mapId >= 0) sendMapData(*t, mapId);
                     if (base.find("_helmet")!=std::string::npos||base.find("_chestplate")!=std::string::npos||base.find("_leggings")!=std::string::npos||base.find("_boots")!=std::string::npos)
                         syncEquipmentOnChange(*t);
                     ++given;
                 }
-            sendFeedback(src, "Given 1 x " + base);
+            sendCommandFeedback(src, "Given 1 x " + base);
             return given;
         };
         auto cnt = CommandNode::argument("count", args::integer(1, 576));
@@ -215,28 +258,31 @@ void GameServer::initPlayerCommandsPart02() {
                         std::string mat = extract("material");
                         if (!pat.empty()) { ItemStack::ArmorTrim tr; tr.has=true; tr.pattern=pat; tr.material= mat.empty()?"minecraft:iron":mat; stack.setTrim(tr); }
                     }
-                    bool isMap = (base=="minecraft:filled_map" || base=="minecraft:map");
+                    const bool isMap = (base=="minecraft:filled_map" || base=="minecraft:map");
                     for(int k=0;k<n2;k++){
                         ItemStack toGive = stack;
                         int curMapId = -1;
-                        if (isMap) {
-                            curMapId = nextMapId_.fetch_add(1);
-                            WriteBuffer tmp; tmp.varint(curMapId);
-                            toGive.components.erase(std::remove_if(toGive.components.begin(), toGive.components.end(), [](auto &pr){return pr.first==36;}), toGive.components.end());
-                            toGive.components.emplace_back(36, std::vector<uint8_t>(tmp.data.begin(), tmp.data.end()));
+                        {
+                            std::lock_guard playerLock(t->stateMtx);
+                            if (isMap) {
+                                curMapId = nextMapId_.fetch_add(1);
+                                WriteBuffer tmp; tmp.varint(curMapId);
+                                toGive.components.erase(std::remove_if(toGive.components.begin(), toGive.components.end(), [](auto &pr){return pr.first==36;}), toGive.components.end());
+                                toGive.components.emplace_back(36, std::vector<uint8_t>(tmp.data.begin(), tmp.data.end()));
+                            }
+                            bool placed=false;
+                            for(int i: kMainInventoryOrder){
+                                auto &s = t->inv[i];
+                                if (s.empty()) { s = toGive; placed=true; break; }
+                            }
+                            if(!placed) addToInventory(*t, toGive.itemId, 1);
                         }
-                        bool placed=false;
-                        for(int i: kMainInventoryOrder){
-                            auto &s = t->inv[i];
-                            if (s.empty()) { s = toGive; placed=true; break; }
-                        }
-                        if(!placed) addToInventory(*t, toGive.itemId, 1);
                         if (isMap && curMapId>=0) sendMapData(*t, curMapId);
                     }
                     resendInventory(*t);
                     ++given;
                 }
-            sendFeedback(src, "Given " + std::to_string(n2) + " x " + base);
+            sendCommandFeedback(src, "Given " + std::to_string(n2) + " x " + base);
             return given;
         };
         item->then(cnt);
@@ -256,19 +302,24 @@ void GameServer::initPlayerCommandsPart03() {
             Player* src = static_cast<Player*>(c.source.player);
             if (!src) return 0;
             const auto v = c.arg("pos").asVec3();
-            src->fallDist = 0;
-            WriteBuffer b;
-            b.varint(0);                              // teleport id handled below
-            // reuse session teleport path through a synthetic packet:
+            PlayerCommandSnapshot state;
+            {
+                std::lock_guard playerLock(src->stateMtx);
+                src->fallDist = 0;
+                src->x = v.x; src->y = v.y; src->z = v.z;
+                state.connection = src->conn;
+                state.yaw = src->yaw;
+                state.pitch = src->pitch;
+            }
             WriteBuffer tb;
             tb.varint(++teleportCounterForTest_);
             tb.f64(v.x); tb.f64(v.y); tb.f64(v.z);
             tb.f64(0); tb.f64(0); tb.f64(0);
-            tb.f32(src->yaw); tb.f32(src->pitch);
+            tb.f32(state.yaw); tb.f32(state.pitch);
             tb.u32(0);
-            src->conn->trySendPacket(proto::pl::sc::PlayerPosition, tb);
-            src->x = v.x; src->y = v.y; src->z = v.z;
-            sendFeedback(src, "Teleported to " + std::to_string(v.x) + ", " +
+            if (state.connection)
+                state.connection->trySendPacket(proto::pl::sc::PlayerPosition, tb);
+            sendCommandFeedback(src, "Teleported to " + std::to_string(v.x) + ", " +
                          std::to_string(v.y) + ", " + std::to_string(v.z));
             return 1;
         };
@@ -293,26 +344,37 @@ void GameServer::initPlayerCommandsPart04() {
         targets->action = [this](CommandContext& c) {
             Player* src = static_cast<Player*>(c.source.player);
             const auto sel = c.arg("targets").asSelector();
+            const auto dimension = snapshotCommandDimension(c.source);
             int killed = 0;
             for (auto& n : sel.playerNames)
                 if (Player* t = findPlayer(*this, n)) {
                     applyDamage(*t, 1000.f, "killed");
                     ++killed;
                 }
-            std::lock_guard lk(entsMtx_);
-            std::vector<std::int32_t> ids;
-            for (auto id : sel.entityIds)
-                for (auto& m : mobs_)
-                    if (m->entityId == id && !m->dead) {
-                        m->health = 0; m->dead = true;
-                        ids.push_back(id);
-                        ++killed;
-                    }
-            for (auto id : ids) {
-                WriteBuffer rm; rm.varint(1); rm.varint(id);
-                broadcastPacketExcept(nullptr, proto::pl::sc::RemoveEntities, rm);
+            std::vector<std::shared_ptr<MobEntity>> mobs;
+            {
+                std::lock_guard lk(entsMtx_);
+                mobs = mobs_;
             }
-            sendFeedback(src, "Killed " + std::to_string(killed) + " entities");
+            std::vector<std::pair<std::int8_t, std::int32_t>> ids;
+            for (auto id : sel.entityIds)
+                for (auto& m : mobs) {
+                    if (!m) continue;
+                    std::lock_guard entityLock(*m->stateMtx);
+                    if (m->entityId == id && !m->dead &&
+                        canonicalDimension(m->dimension) == dimension) {
+                        m->health = 0; m->dead = true;
+                        ids.emplace_back(dimension, id);
+                        ++killed;
+                        break;
+                    }
+                }
+            for (const auto& [mobDimension, id] : ids) {
+                WriteBuffer rm; rm.varint(1); rm.varint(id);
+                broadcastPacketExceptInDimension(
+                    mobDimension, nullptr, proto::pl::sc::RemoveEntities, rm);
+            }
+            sendCommandFeedback(src, "Killed " + std::to_string(killed) + " entities");
             return killed;
         };
         kill->then(targets);
@@ -326,19 +388,27 @@ void GameServer::initPlayerCommandsPart05() {
         auto effect = CommandNode::literal("effect");
         // amplifier byte on the wire (site 1 sends e.amplifier, others the raw arg).
         auto storeEffect = [](Player& t, EffectInstance e, int ampWire) {
-            t.effects.erase(
-                std::remove_if(t.effects.begin(), t.effects.end(),
-                               [&](const EffectInstance& x)
-                                   { return x.type == e.type; }),
-                t.effects.end());
-            t.effects.push_back(e);
+            std::shared_ptr<Connection> connection;
+            std::int32_t entityId = 0;
+            {
+                std::lock_guard playerLock(t.stateMtx);
+                t.effects.erase(
+                    std::remove_if(t.effects.begin(), t.effects.end(),
+                                   [&](const EffectInstance& x)
+                                       { return x.type == e.type; }),
+                    t.effects.end());
+                t.effects.push_back(e);
+                entityId = t.entityId;
+                connection = t.conn;
+            }
+            if (!connection) return;
             WriteBuffer b;
-            b.varint(t.entityId);
+            b.varint(entityId);
             b.varint(e.type);
             b.varint(ampWire);
             b.varint(e.durationTicks);
             b.u8(effectFlags(e));
-            t.conn->trySendPacket(proto::pl::sc::EntityEffect, b);
+            connection->trySendPacket(proto::pl::sc::EntityEffect, b);
         };
         auto give = CommandNode::literal("give");
         auto targets = CommandNode::argument("targets",
@@ -367,7 +437,7 @@ void GameServer::initPlayerCommandsPart05() {
                     storeEffect(*t, e, e.amplifier);
                     ++applied;
                 }
-            sendFeedback(src, "Applied " + en + " to " +
+            sendCommandFeedback(src, "Applied " + en + " to " +
                          std::to_string(applied));
             return applied;
         };
@@ -388,7 +458,7 @@ void GameServer::initPlayerCommandsPart05() {
                     e.durationTicks = dur * 20;
                     storeEffect(*t, e, e.amplifier);
                 }
-            sendFeedback(src, "Applied " + en + " (" +
+            sendCommandFeedback(src, "Applied " + en + " (" +
                          std::to_string(dur) + "s)");
             return 1;
         };
@@ -411,7 +481,7 @@ void GameServer::initPlayerCommandsPart05() {
                     e.amplifier = static_cast<std::int8_t>(ampv); // level-1 model
                     storeEffect(*t, e, ampv); // raw 0..255 (int8_t wraps >127)
                 }
-            sendFeedback(src, "Applied " + en + " (" +
+            sendCommandFeedback(src, "Applied " + en + " (" +
                          std::to_string(dur) + "s, amplifier " +
                          std::to_string(ampv) + ")");
             return 1;
@@ -438,7 +508,7 @@ void GameServer::initPlayerCommandsPart05() {
                     e.showParticles = !hidep;
                     storeEffect(*t, e, ampv);
                 }
-            sendFeedback(src, "Applied " + en + " (" +
+            sendCommandFeedback(src, "Applied " + en + " (" +
                          std::to_string(dur) + "s, amplifier " +
                          std::to_string(ampv) + ", hideParticles " +
                          (hidep ? "true" : "false") + ")");
@@ -469,10 +539,13 @@ void GameServer::initPlayerCommandsPart06() {
             const int amt = c.arg("amount").asInt();
             for (auto& n : sel.playerNames)
                 if (Player* t = findPlayer(*this, n)) {
-                    t->xp.addPoints(amt);
+                    {
+                        std::lock_guard playerLock(t->stateMtx);
+                        t->xp.addPoints(amt);
+                    }
                     sendSetExperience(*t);
                 }
-            sendFeedback(src, "Gave " + std::to_string(amt) + " xp");
+            sendCommandFeedback(src, "Gave " + std::to_string(amt) + " xp");
             return 1;
         };
         targets->then(amount);
@@ -495,10 +568,13 @@ void GameServer::initPlayerCommandsPart07() {
             auto it = gen::entityTypeIdByName().find(en);
             if (it == gen::entityTypeIdByName().end())
                 throw std::runtime_error("unknown entity: " + en);
-            spawnMobByTypeName(en,
-                src ? src->x + 2.0 : 0.5, src ? src->y + 1.0 : -60.0,
-                src ? src->z + 2.0 : 0.5);
-            sendFeedback(src, "Summoned " + en);
+            const auto source = src ? snapshotPlayer(*src) : PlayerCommandSnapshot{};
+            const auto dimension = c.source.dimensionOverride
+                ? canonicalDimension(*c.source.dimensionOverride) : source.dimension;
+            spawnMobByTypeNameFor(dimension, en,
+                src ? source.x + 2.0 : 0.5, src ? source.y + 1.0 : -60.0,
+                src ? source.z + 2.0 : 0.5);
+            sendCommandFeedback(src, "Summoned " + en);
             return 1;
         };
         summon->then(ent);
@@ -514,32 +590,17 @@ void GameServer::initPlayerCommandsPart08() {
         clear->action = [this](CommandContext& c) {
             Player* src = static_cast<Player*>(c.source.player);
             int removed = 0;
-            for (auto& s : src->inv)
-                if (!s.empty()) { ++removed; s = ItemStack::air(); }
+            {
+                std::lock_guard playerLock(src->stateMtx);
+                for (auto& s : src->inv)
+                    if (!s.empty()) { ++removed; s = ItemStack::air(); }
+            }
             resendInventory(*src);
-            sendFeedback(src, "Removed " + std::to_string(removed) +
+            sendCommandFeedback(src, "Removed " + std::to_string(removed) +
                          " items");
             return removed;
         };
         d.root->then(clear);
-    }
-}
-
-void GameServer::initPlayerCommandsPart09() {
-    auto& d = commands_;
-    {
-        auto sp = CommandNode::literal("spawnpoint");
-        sp->executable = true;
-        sp->action = [this](CommandContext& c) {
-            Player* src = static_cast<Player*>(c.source.player);
-            world_.setSpawnPoint({static_cast<std::int32_t>(src->x),
-                                  static_cast<std::int32_t>(src->y),
-                                  static_cast<std::int32_t>(src->z)});
-            saveLevelData();
-            sendFeedback(src, "Set spawn point to current position");
-            return 1;
-        };
-        d.root->then(sp);
     }
 }
 
@@ -551,23 +612,30 @@ void GameServer::initPlayerCommandsPart10() {
         sp2->action = [this](CommandContext& c) {
             Player* src = static_cast<Player*>(c.source.player);
             if (!src) return 0;
-            WriteBuffer cam;
-            cam.varint(src->entityId);
-            src->conn->trySendPacket(proto::pl::sc::Camera, cam);
-            sendFeedback(src, "Camera reset");
+            const auto state = snapshotPlayer(*src);
+            if (state.connection) {
+                WriteBuffer cam;
+                cam.varint(state.entityId);
+                state.connection->trySendPacket(proto::pl::sc::Camera, cam);
+            }
+            sendCommandFeedback(src, "Camera reset");
             return 1;
         };
         auto who = CommandNode::argument("target", args::entity(true, false));
         who->executable = true;
         who->action = [this](CommandContext& c) {
             Player* src = static_cast<Player*>(c.source.player);
+            const auto source = src ? snapshotPlayer(*src) : PlayerCommandSnapshot{};
             const auto sel = c.arg("target").asSelector();
             if (!sel.playerNames.empty()) {
                 if (Player* t = findPlayer(*this, sel.playerNames[0])) {
-                    WriteBuffer cam;
-                    cam.varint(t->entityId);
-                    src->conn->trySendPacket(proto::pl::sc::Camera, cam);
-                    sendFeedback(src, "Spectating " + t->name);
+                    const auto target = snapshotPlayer(*t);
+                    if (source.connection) {
+                        WriteBuffer cam;
+                        cam.varint(target.entityId);
+                        source.connection->trySendPacket(proto::pl::sc::Camera, cam);
+                        sendCommandFeedback(src, "Spectating " + target.name);
+                    }
                 }
             }
             return 1;
@@ -595,21 +663,23 @@ void GameServer::initPlayerCommandsPart11() {
             if(base.find(':')==std::string::npos) base="minecraft:"+base;
             int removed=0;
             for(auto& n: sel.playerNames) if(Player* p=findPlayer(*this,n)){
-                for(auto& s: p->inv) if(!s.empty()){
-                    bool match=false;
-                    if(isTag){
-                        // check tag membership via datapackManager
-                        auto* tagSet = datapackManager_.tagManager.getItemTag(base);
-                        if(tagSet && tagSet->count(s.itemId)) match=true;
-                    } else {
-                        auto it=gen::itemIdByName().find(base);
-                        if(it!=gen::itemIdByName().end() && it->second==s.itemId) match=true;
+                {
+                    std::lock_guard playerLock(p->stateMtx);
+                    for(auto& s: p->inv) if(!s.empty()){
+                        bool match=false;
+                        if(isTag){
+                            auto* tagSet = datapackManager_.tagManager.getItemTag(base);
+                            if(tagSet && tagSet->count(s.itemId)) match=true;
+                        } else {
+                            auto it=gen::itemIdByName().find(base);
+                            if(it!=gen::itemIdByName().end() && it->second==s.itemId) match=true;
+                        }
+                        if(match){ removed+=s.count; s=ItemStack::air(); }
                     }
-                    if(match){ removed+=s.count; s=ItemStack::air(); }
                 }
                 resendInventory(*p);
             }
-            sendFeedback(src,"Cleared "+std::to_string(removed)+" matching "+pred);
+            sendCommandFeedback(src,"Cleared "+std::to_string(removed)+" matching "+pred);
             return removed;
         };
         auto maxCount = CommandNode::argument("maxCount", args::integer(1,64));
@@ -624,25 +694,28 @@ void GameServer::initPlayerCommandsPart11() {
             if(base.find(':')==std::string::npos) base="minecraft:"+base;
             int removed=0;
             for(auto& n: sel.playerNames) if(Player* p=findPlayer(*this,n)){
-                for(auto& s: p->inv) if(!s.empty() && removed<limit){
-                    bool match=false;
-                    if(isTag){
-                        auto* tagSet = datapackManager_.tagManager.getItemTag(base);
-                        if(tagSet && tagSet->count(s.itemId)) match=true;
-                    } else {
-                        auto it=gen::itemIdByName().find(base);
-                        if(it!=gen::itemIdByName().end() && it->second==s.itemId) match=true;
-                    }
-                    if(match){
-                        int take = std::min<int>(s.count, limit-removed);
-                        removed+=take;
-                        s.count-=take;
-                        if(s.count<=0) s=ItemStack::air();
+                {
+                    std::lock_guard playerLock(p->stateMtx);
+                    for(auto& s: p->inv) if(!s.empty() && removed<limit){
+                        bool match=false;
+                        if(isTag){
+                            auto* tagSet = datapackManager_.tagManager.getItemTag(base);
+                            if(tagSet && tagSet->count(s.itemId)) match=true;
+                        } else {
+                            auto it=gen::itemIdByName().find(base);
+                            if(it!=gen::itemIdByName().end() && it->second==s.itemId) match=true;
+                        }
+                        if(match){
+                            int take = std::min<int>(s.count, limit-removed);
+                            removed+=take;
+                            s.count-=take;
+                            if(s.count<=0) s=ItemStack::air();
+                        }
                     }
                 }
                 resendInventory(*p);
             }
-            sendFeedback(src,"Cleared "+std::to_string(removed)+" matching "+pred+" (limit)");
+            sendCommandFeedback(src,"Cleared "+std::to_string(removed)+" matching "+pred+" (limit)");
             return removed;
         };
         itemPred->then(maxCount);
@@ -695,9 +768,15 @@ std::pair<Player*, Attribute> GameServer::attributeCommandHead(brigadier::Comman
 }
 
 void GameServer::sendAttributeCommandUpdate(Player& p) {
+    std::shared_ptr<Connection> connection;
     WriteBuffer ab;
-    p.attributes.writeUpdate(ab, p.entityId);
-    p.conn->trySendPacket(proto::pl::sc::UpdateAttributes, ab);
+    {
+        std::lock_guard playerLock(p.stateMtx);
+        p.attributes.writeUpdate(ab, p.entityId);
+        connection = p.conn;
+    }
+    if (connection)
+        connection->trySendPacket(proto::pl::sc::UpdateAttributes, ab);
 }
 
 void GameServer::initAttributeGetCommands(const brigadier::NodePtr& attrArg) {
@@ -710,8 +789,12 @@ void GameServer::initAttributeGetCommands(const brigadier::NodePtr& attrArg) {
                 for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)) targets.push_back(p);
                 if(targets.empty() && src) targets.push_back(src);
                 if(targets.empty()) throw std::runtime_error("No target for attribute get");
-                double v = targets.front()->attributes.getValue(at);
-                sendFeedback(src, std::string(attributeKey(at))+" has value "+std::to_string(v));
+                double v;
+                {
+                    std::lock_guard playerLock(targets.front()->stateMtx);
+                    v = targets.front()->attributes.getValue(at);
+                }
+                sendCommandFeedback(src, std::string(attributeKey(at))+" has value "+std::to_string(v));
                 return (int)std::llround(v);
             };
             auto scaleArg = CommandNode::argument("scale", args::floatArg(-1e9f, 1e9f));
@@ -724,8 +807,12 @@ void GameServer::initAttributeGetCommands(const brigadier::NodePtr& attrArg) {
                 for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)) targets.push_back(p);
                 if(targets.empty() && src) targets.push_back(src);
                 if(targets.empty()) throw std::runtime_error("No target for attribute get");
-                double v = targets.front()->attributes.getValue(at) * scale;
-                sendFeedback(src, std::string(attributeKey(at))+" scaled value "+std::to_string(v));
+                double v;
+                {
+                    std::lock_guard playerLock(targets.front()->stateMtx);
+                    v = targets.front()->attributes.getValue(at) * scale;
+                }
+                sendCommandFeedback(src, std::string(attributeKey(at))+" scaled value "+std::to_string(v));
                 return (int)std::llround(v);
             };
             getLit->then(scaleArg);
@@ -743,12 +830,22 @@ void GameServer::initAttributeBaseCommands(const brigadier::NodePtr& attrArg) {
                 double v = c.arg("value").asDouble();
                 int cnt=0;
                 for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)){
-                    p->attributes.setBase(at, v);
+                    {
+                        std::lock_guard playerLock(p->stateMtx);
+                        p->attributes.setBase(at, v);
+                    }
                     sendAttributeCommandUpdate(*p);
                     ++cnt;
                 }
-                if(cnt==0 && src){ src->attributes.setBase(at, v); sendAttributeCommandUpdate(*src); cnt=1; }
-                sendFeedback(src, std::string(attributeKey(at))+" base set to "+std::to_string(v));
+                if(cnt==0 && src){
+                    {
+                        std::lock_guard playerLock(src->stateMtx);
+                        src->attributes.setBase(at, v);
+                    }
+                    sendAttributeCommandUpdate(*src);
+                    cnt=1;
+                }
+                sendCommandFeedback(src, std::string(attributeKey(at))+" base set to "+std::to_string(v));
                 return cnt;
             };
             baseSet->then(baseVal);
@@ -762,8 +859,12 @@ void GameServer::initAttributeBaseCommands(const brigadier::NodePtr& attrArg) {
                 for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)) targets.push_back(p);
                 if(targets.empty() && src) targets.push_back(src);
                 if(targets.empty()) throw std::runtime_error("No target");
-                double v = targets.front()->attributes.getBase(at);
-                sendFeedback(src, std::string(attributeKey(at))+" base is "+std::to_string(v));
+                double v;
+                {
+                    std::lock_guard playerLock(targets.front()->stateMtx);
+                    v = targets.front()->attributes.getBase(at);
+                }
+                sendCommandFeedback(src, std::string(attributeKey(at))+" base is "+std::to_string(v));
                 return (int)std::llround(v);
             };
             auto baseGetScale = CommandNode::argument("scale", args::floatArg(-1e9f, 1e9f));
@@ -775,8 +876,12 @@ void GameServer::initAttributeBaseCommands(const brigadier::NodePtr& attrArg) {
                 std::vector<Player*> targets;
                 for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)) targets.push_back(p);
                 if(targets.empty() && src) targets.push_back(src);
-                double v = targets.front()->attributes.getBase(at) * scale;
-                sendFeedback(src, std::string(attributeKey(at))+" base scaled "+std::to_string(v));
+                double v;
+                {
+                    std::lock_guard playerLock(targets.front()->stateMtx);
+                    v = targets.front()->attributes.getBase(at) * scale;
+                }
+                sendCommandFeedback(src, std::string(attributeKey(at))+" base scaled "+std::to_string(v));
                 return (int)std::llround(v);
             };
             baseGet->then(baseGetScale);
@@ -790,8 +895,15 @@ void GameServer::initAttributeBaseCommands(const brigadier::NodePtr& attrArg) {
                 AttributeManager defaults;
                 double def = defaults.getBase(at);
                 int cnt=0;
-                for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)){ p->attributes.setBase(at, def); sendAttributeCommandUpdate(*p); ++cnt; }
-                sendFeedback(src, std::string(attributeKey(at))+" base reset");
+                for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)){
+                    {
+                        std::lock_guard playerLock(p->stateMtx);
+                        p->attributes.setBase(at, def);
+                    }
+                    sendAttributeCommandUpdate(*p);
+                    ++cnt;
+                }
+                sendCommandFeedback(src, std::string(attributeKey(at))+" base reset");
                 return cnt;
             };
             baseLit->then(baseReset);
@@ -821,12 +933,22 @@ void GameServer::initAttributeModifierCommands(const brigadier::NodePtr& attrArg
                 else throw std::runtime_error("Unknown operation: "+opStr);
                 int cnt=0;
                 for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)){
-                    p->attributes.addModifier(at, {uuid, amount, op});
+                    {
+                        std::lock_guard playerLock(p->stateMtx);
+                        p->attributes.addModifier(at, {uuid, amount, op});
+                    }
                     sendAttributeCommandUpdate(*p);
                     ++cnt;
                 }
-                if(cnt==0 && src){ src->attributes.addModifier(at, {uuid, amount, op}); sendAttributeCommandUpdate(*src); cnt=1; }
-                sendFeedback(src, "Added modifier "+uuid+" to "+std::string(attributeKey(at)));
+                if(cnt==0 && src){
+                    {
+                        std::lock_guard playerLock(src->stateMtx);
+                        src->attributes.addModifier(at, {uuid, amount, op});
+                    }
+                    sendAttributeCommandUpdate(*src);
+                    cnt=1;
+                }
+                sendCommandFeedback(src, "Added modifier "+uuid+" to "+std::string(attributeKey(at)));
                 return cnt;
             };
             valArg->then(opArg);
@@ -843,9 +965,23 @@ void GameServer::initAttributeModifierCommands(const brigadier::NodePtr& attrArg
                 const auto sel = c.arg("target").asSelector();
                 std::string uuid = c.arg("uuid").asStr();
                 int cnt=0;
-                for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)){ p->attributes.removeModifier(at, uuid); sendAttributeCommandUpdate(*p); ++cnt; }
-                if(cnt==0 && src){ src->attributes.removeModifier(at, uuid); sendAttributeCommandUpdate(*src); cnt=1; }
-                sendFeedback(src, "Removed modifier "+uuid);
+                for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)){
+                    {
+                        std::lock_guard playerLock(p->stateMtx);
+                        p->attributes.removeModifier(at, uuid);
+                    }
+                    sendAttributeCommandUpdate(*p);
+                    ++cnt;
+                }
+                if(cnt==0 && src){
+                    {
+                        std::lock_guard playerLock(src->stateMtx);
+                        src->attributes.removeModifier(at, uuid);
+                    }
+                    sendAttributeCommandUpdate(*src);
+                    cnt=1;
+                }
+                sendCommandFeedback(src, "Removed modifier "+uuid);
                 return cnt;
             };
             remLit->then(remUuid);
@@ -863,10 +999,14 @@ void GameServer::initAttributeModifierCommands(const brigadier::NodePtr& attrArg
                 for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)) targets.push_back(p);
                 if(targets.empty() && src) targets.push_back(src);
                 if(targets.empty()) throw std::runtime_error("No target");
-                auto opt = targets.front()->attributes.getModifierValue(at, uuid);
+                std::optional<double> opt;
+                {
+                    std::lock_guard playerLock(targets.front()->stateMtx);
+                    opt = targets.front()->attributes.getModifierValue(at, uuid);
+                }
                 double amt = opt ? *opt : 0;
                 if(!opt) throw std::runtime_error("Modifier not found: "+uuid);
-                sendFeedback(src, "Modifier "+uuid+" has value "+std::to_string(amt));
+                sendCommandFeedback(src, "Modifier "+uuid+" has value "+std::to_string(amt));
                 return (int)std::llround(amt);
             };
             auto vgScale = CommandNode::argument("scale", args::floatArg(-1e9f, 1e9f));
@@ -880,10 +1020,14 @@ void GameServer::initAttributeModifierCommands(const brigadier::NodePtr& attrArg
                 for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)) targets.push_back(p);
                 if(targets.empty() && src) targets.push_back(src);
                 if(targets.empty()) throw std::runtime_error("No target");
-                auto opt = targets.front()->attributes.getModifierValue(at, uuid);
+                std::optional<double> opt;
+                {
+                    std::lock_guard playerLock(targets.front()->stateMtx);
+                    opt = targets.front()->attributes.getModifierValue(at, uuid);
+                }
                 double amt = opt ? *opt * scale : 0;
                 if(!opt) throw std::runtime_error("Modifier not found: "+uuid);
-                sendFeedback(src, "Modifier "+uuid+" scaled value "+std::to_string(amt));
+                sendCommandFeedback(src, "Modifier "+uuid+" scaled value "+std::to_string(amt));
                 return (int)std::llround(amt);
             };
             vgUuid->then(vgScale);
@@ -907,6 +1051,7 @@ void GameServer::initPlayerCommandsPart13() {
         objective->action = [this](CommandContext& c){
             Player* src = static_cast<Player*>(c.source.player);
             if(!src) throw std::runtime_error("trigger can only be run by a player");
+            const auto source = snapshotPlayer(*src);
             std::string obj = c.arg("objective").asStr();
             auto* o = scoreboard.find(obj);
             if(!o) {
@@ -918,10 +1063,10 @@ void GameServer::initPlayerCommandsPart13() {
             if(o->criteria!="trigger") throw std::runtime_error("Objective "+obj+" is not trigger criteria");
             // bare trigger enables? In vanilla, bare trigger does nothing but feedback. We implement as add 1
             // Check if score exists and enabled? Simplified: add 1
-            scoreboard.addScore(obj, src->name, 1);
-            int v = scoreboard.getScore(obj, src->name);
-            sendScoreAll(obj, src->name, v);
-            sendFeedback(src, "Triggered "+obj+" add 1 (now "+std::to_string(v)+")");
+            scoreboard.addScore(obj, source.name, 1);
+            int v = scoreboard.getScore(obj, source.name);
+            sendScoreAll(obj, source.name, v);
+            sendCommandFeedback(src, "Triggered "+obj+" add 1 (now "+std::to_string(v)+")");
             return v;
         };
         auto addLit = CommandNode::literal("add");
@@ -930,15 +1075,16 @@ void GameServer::initPlayerCommandsPart13() {
         addVal->action = [this](CommandContext& c){
             Player* src = static_cast<Player*>(c.source.player);
             if(!src) throw std::runtime_error("trigger can only be run by a player");
+            const auto source = snapshotPlayer(*src);
             std::string obj = c.arg("objective").asStr();
             auto* o = scoreboard.find(obj);
             if(!o) throw std::runtime_error("Unknown objective: "+obj);
             if(o->criteria!="trigger") throw std::runtime_error("Objective "+obj+" is not trigger criteria");
             int delta = c.arg("value").asInt();
-            scoreboard.addScore(obj, src->name, delta);
-            int v = scoreboard.getScore(obj, src->name);
-            sendScoreAll(obj, src->name, v);
-            sendFeedback(src, "Triggered "+obj+" add "+std::to_string(delta)+" (now "+std::to_string(v)+")");
+            scoreboard.addScore(obj, source.name, delta);
+            int v = scoreboard.getScore(obj, source.name);
+            sendScoreAll(obj, source.name, v);
+            sendCommandFeedback(src, "Triggered "+obj+" add "+std::to_string(delta)+" (now "+std::to_string(v)+")");
             return v;
         };
         addLit->then(addVal);
@@ -949,14 +1095,15 @@ void GameServer::initPlayerCommandsPart13() {
         setVal->action = [this](CommandContext& c){
             Player* src = static_cast<Player*>(c.source.player);
             if(!src) throw std::runtime_error("trigger can only be run by a player");
+            const auto source = snapshotPlayer(*src);
             std::string obj = c.arg("objective").asStr();
             auto* o = scoreboard.find(obj);
             if(!o) throw std::runtime_error("Unknown objective: "+obj);
             if(o->criteria!="trigger") throw std::runtime_error("Objective "+obj+" is not trigger criteria");
             int v = c.arg("value").asInt();
-            scoreboard.setScore(obj, src->name, v);
-            sendScoreAll(obj, src->name, v);
-            sendFeedback(src, "Triggered "+obj+" set "+std::to_string(v));
+            scoreboard.setScore(obj, source.name, v);
+            sendScoreAll(obj, source.name, v);
+            sendCommandFeedback(src, "Triggered "+obj+" set "+std::to_string(v));
             return v;
         };
         setLit->then(setVal);
@@ -981,13 +1128,18 @@ void GameServer::initPlayerCommandsPart14() {
             std::string names;
             for (auto& nm : sel.playerNames)
                 if (Player* p = findPlayer(*this, nm)) {
-                    for (auto& s : p->inv)
-                        if (!s.empty()) { removed += s.count; s = ItemStack::air(); }
+                    std::string targetName;
+                    {
+                        std::lock_guard playerLock(p->stateMtx);
+                        for (auto& s : p->inv)
+                            if (!s.empty()) { removed += s.count; s = ItemStack::air(); }
+                        targetName = p->name;
+                    }
                     resendInventory(*p);
                     if (!names.empty()) names += ", ";
-                    names += p->name;
+                    names += targetName;
                 }
-            sendFeedback(src, "Removed " + std::to_string(removed) +
+            sendCommandFeedback(src, "Removed " + std::to_string(removed) +
                          " items from " + (names.empty() ? "no players" : names));
             return removed;
         };
@@ -1012,10 +1164,13 @@ void GameServer::initPlayerCommandsPart15() {
                 const int amt = c.arg("xpAmount").asInt();
                 for (auto& nm : sel.playerNames)
                     if (Player* t = findPlayer(*this, nm)) {
-                        t->xp.addPoints(amt);
+                        {
+                            std::lock_guard playerLock(t->stateMtx);
+                            t->xp.addPoints(amt);
+                        }
                         sendSetExperience(*t);
                     }
-                sendFeedback(src, "Gave " + std::to_string(amt) + " xp");
+                sendCommandFeedback(src, "Gave " + std::to_string(amt) + " xp");
                 return 1;
             };
             auto suffix = CommandNode::argument("xpUnit", args::stringWord());
@@ -1032,15 +1187,18 @@ void GameServer::initPlayerCommandsPart15() {
                     throw std::runtime_error("Unknown xp unit '" + u + "' (expected points or levels)");
                 for (auto& nm : sel.playerNames)
                     if (Player* t = findPlayer(*this, nm)) {
-                        if (u == "levels") {
-                            t->xp.level = std::max(0, t->xp.level + amt);
-                            t->xp.totalXp = std::max(0, t->xp.totalXp + amt * xpToNextLevel(t->xp.level));
-                        } else {
-                            t->xp.addPoints(amt);
+                        {
+                            std::lock_guard playerLock(t->stateMtx);
+                            if (u == "levels") {
+                                t->xp.level = std::max(0, t->xp.level + amt);
+                                t->xp.totalXp = std::max(0, t->xp.totalXp + amt * xpToNextLevel(t->xp.level));
+                            } else {
+                                t->xp.addPoints(amt);
+                            }
                         }
                         sendSetExperience(*t);
                     }
-                sendFeedback(src, "Gave " + std::to_string(amt) + " xp (" + u + ")");
+                sendCommandFeedback(src, "Gave " + std::to_string(amt) + " xp (" + u + ")");
                 return 1;
             };
             amount->then(suffix);
@@ -1070,8 +1228,8 @@ void GameServer::initPlayerCommandsPart16() {
             if (it == gen::entityTypeIdByName().end())
                 throw std::runtime_error("Unknown entity: " + en);
             const auto v = c.arg("summonPos").asVec3();
-            spawnMobByTypeName(en, v.x, v.y, v.z);
-            sendFeedback(src, "Summoned " + en);
+            spawnMobByTypeNameFor(snapshotCommandDimension(c.source), en, v.x, v.y, v.z);
+            sendCommandFeedback(src, "Summoned " + en);
             return 1;
         };
         ent->then(pos);
@@ -1096,19 +1254,27 @@ void GameServer::initPlayerCommandsPart17() {
                 int n = 0;
                 for (auto& nm : sel.playerNames)
                     if (Player* t = findPlayer(*this, nm)) {
-                        t->fallDist = 0;
+                        PlayerCommandSnapshot target;
+                        {
+                            std::lock_guard playerLock(t->stateMtx);
+                            t->fallDist = 0;
+                            t->x = v.x; t->y = v.y; t->z = v.z;
+                            target.connection = t->conn;
+                            target.yaw = t->yaw;
+                            target.pitch = t->pitch;
+                        }
                         WriteBuffer tb;
                         tb.varint(++teleportCounterForTest_);
                         tb.f64(v.x); tb.f64(v.y); tb.f64(v.z);
                         tb.f64(0); tb.f64(0); tb.f64(0);
-                        tb.f32(t->yaw); tb.f32(t->pitch);
+                        tb.f32(target.yaw); tb.f32(target.pitch);
                         tb.u32(0);
-                        t->conn->trySendPacket(proto::pl::sc::PlayerPosition, tb);
-                        t->x = v.x; t->y = v.y; t->z = v.z;
+                        if (target.connection)
+                            target.connection->trySendPacket(proto::pl::sc::PlayerPosition, tb);
                         ++n;
                     }
                 if (n == 0) throw std::runtime_error("Unknown player for teleport");
-                sendFeedback(src, "Teleported " + std::to_string(n) + " entit" +
+                sendCommandFeedback(src, "Teleported " + std::to_string(n) + " entit" +
                              (n == 1 ? "y" : "ies") + " to " +
                              std::to_string(v.x) + ", " + std::to_string(v.y) +
                              ", " + std::to_string(v.z));
@@ -1126,8 +1292,38 @@ void GameServer::initPlayerCommandsPart17() {
 void GameServer::initPlayerCommandsPart18() {
     auto& d = commands_;
     {
-        // /spawnpoint [<targets>] [<pos>] [<angle>] — arg forms (bare self form already exists).
+        // /spawnpoint [<targets>] [<pos>] [<angle>].  A player respawn point
+        // is player data, not the world's default spawn; keeping these
+        // separate matters for death, reconnect, and multi-dimensional play.
         auto sp = CommandNode::literal("spawnpoint");
+        sp->executable = true;
+        sp->action = [this](CommandContext& c) {
+            Player* src = static_cast<Player*>(c.source.player);
+            if (!src) throw std::runtime_error("spawnpoint requires a player");
+            PlayerCommandSnapshot state;
+            {
+                std::lock_guard playerLock(src->stateMtx);
+                src->hasRespawnPoint = true;
+                src->respawnX = static_cast<std::int32_t>(std::floor(src->x));
+                src->respawnY = static_cast<std::int32_t>(std::floor(src->y));
+                src->respawnZ = static_cast<std::int32_t>(std::floor(src->z));
+                src->respawnDimension = canonicalDimension(src->dimension);
+                src->respawnAngle = src->yaw;
+                state.respawnX = src->respawnX;
+                state.respawnY = src->respawnY;
+                state.respawnZ = src->respawnZ;
+                state.respawnAngle = src->respawnAngle;
+                state.connection = src->conn;
+                savePlayerData(uuidToHex(src->uuid), *src);
+            }
+            WriteBuffer point;
+            point.position(state.respawnX, state.respawnY, state.respawnZ);
+            point.f32(state.respawnAngle);
+            if (state.connection)
+                state.connection->trySendPacket(proto::pl::sc::SetDefaultSpawn, point);
+            sendCommandFeedback(src, "Set spawn point to current position");
+            return 1;
+        };
         auto targets = CommandNode::argument("spTargets", args::entity(false, false));
         auto pos = CommandNode::argument("spPos", args::blockPos());
         pos->executable = true;
@@ -1135,11 +1331,34 @@ void GameServer::initPlayerCommandsPart18() {
             Player* src = static_cast<Player*>(c.source.player);
             const auto sel = c.arg("spTargets").asSelector();
             const auto p = c.arg("spPos").asBlockPos();
+            const auto commandDim = snapshotCommandDimension(c.source);
             int n = 0;
             for (auto& nm : sel.playerNames)
-                if (findPlayer(*this, nm)) ++n;
+                if (Player* target = findPlayer(*this, nm)) {
+                    PlayerCommandSnapshot state;
+                    {
+                        std::lock_guard playerLock(target->stateMtx);
+                        target->hasRespawnPoint = true;
+                        target->respawnX = p.x;
+                        target->respawnY = p.y;
+                        target->respawnZ = p.z;
+                        target->respawnDimension = c.source.dimensionOverride
+                                                       ? commandDim
+                                                       : canonicalDimension(target->dimension);
+                        target->respawnAngle = target->yaw;
+                        state.respawnAngle = target->respawnAngle;
+                        state.connection = target->conn;
+                        savePlayerData(uuidToHex(target->uuid), *target);
+                    }
+                    WriteBuffer point;
+                    point.position(p.x, p.y, p.z);
+                    point.f32(state.respawnAngle);
+                    if (state.connection)
+                        state.connection->trySendPacket(proto::pl::sc::SetDefaultSpawn, point);
+                    ++n;
+                }
             if (n == 0) throw std::runtime_error("Unknown player for spawnpoint");
-            sendFeedback(src, "Set " + std::to_string(n) + " players' spawn point to " +
+            sendCommandFeedback(src, "Set " + std::to_string(n) + " players' spawn point to " +
                          std::to_string(p.x) + ", " + std::to_string(p.y) + ", " + std::to_string(p.z));
             return n;
         };
@@ -1149,11 +1368,34 @@ void GameServer::initPlayerCommandsPart18() {
             Player* src = static_cast<Player*>(c.source.player);
             const auto sel = c.arg("spTargets").asSelector();
             const auto p = c.arg("spPos").asBlockPos();
+            const auto commandDim = snapshotCommandDimension(c.source);
+            const float angle = static_cast<float>(c.arg("spAngle").asDouble());
             int n = 0;
             for (auto& nm : sel.playerNames)
-                if (findPlayer(*this, nm)) ++n;
+                if (Player* target = findPlayer(*this, nm)) {
+                    PlayerCommandSnapshot state;
+                    {
+                        std::lock_guard playerLock(target->stateMtx);
+                        target->hasRespawnPoint = true;
+                        target->respawnX = p.x;
+                        target->respawnY = p.y;
+                        target->respawnZ = p.z;
+                        target->respawnDimension = c.source.dimensionOverride
+                                                       ? commandDim
+                                                       : canonicalDimension(target->dimension);
+                        target->respawnAngle = angle;
+                        state.connection = target->conn;
+                        savePlayerData(uuidToHex(target->uuid), *target);
+                    }
+                    WriteBuffer point;
+                    point.position(p.x, p.y, p.z);
+                    point.f32(angle);
+                    if (state.connection)
+                        state.connection->trySendPacket(proto::pl::sc::SetDefaultSpawn, point);
+                    ++n;
+                }
             if (n == 0) throw std::runtime_error("Unknown player for spawnpoint");
-            sendFeedback(src, "Set " + std::to_string(n) + " players' spawn point to " +
+            sendCommandFeedback(src, "Set " + std::to_string(n) + " players' spawn point to " +
                          std::to_string(p.x) + ", " + std::to_string(p.y) + ", " + std::to_string(p.z));
             return n;
         };
@@ -1183,7 +1425,7 @@ void GameServer::initPlayerCommandsPart19() {
                     ++n;
                 }
             if (n == 0) throw std::runtime_error("Unknown player for damage");
-            sendFeedback(src, "Dealt " + std::to_string(amt) + " generic damage to " +
+            sendCommandFeedback(src, "Dealt " + std::to_string(amt) + " generic damage to " +
                          std::to_string(n) + " entit" + (n == 1 ? "y" : "ies"));
             return n;
         };
@@ -1202,7 +1444,7 @@ void GameServer::initPlayerCommandsPart19() {
                     ++n;
                 }
             if (n == 0) throw std::runtime_error("Unknown player for damage");
-            sendFeedback(src, "Dealt " + std::to_string(amt) + " " + dt + " damage to " +
+            sendCommandFeedback(src, "Dealt " + std::to_string(amt) + " " + dt + " damage to " +
                          std::to_string(n) + " entit" + (n == 1 ? "y" : "ies"));
             return n;
         };
@@ -1283,8 +1525,9 @@ void GameServer::initPlayerCommandsPart20() {
                 static_cast<float>(c.arg("pdz").asDouble()),
                 static_cast<float>(c.arg("pSpeed").asDouble()),
                 c.arg("pCount").asInt(), itp->second, ParticleData{}, false, false);
-            broadcastPacketExcept(nullptr, proto::pl::sc::WorldParticles, body);
-            sendFeedback(src, "Displayed particle " + nm);
+            broadcastPacketExceptInDimension(snapshotCommandDimension(c.source), nullptr,
+                                             proto::pl::sc::WorldParticles, body);
+            sendCommandFeedback(src, "Displayed particle " + nm);
             return 1;
         };
         speed->then(count);
@@ -1320,7 +1563,10 @@ void GameServer::initPlayerCommandsPart21() {
             if (!kCats.count(cat))
                 throw std::runtime_error("Unknown sound source '" + cat + "'");
             const auto sel = c.arg("psTargets").asSelector();
-            double x = src ? src->x : 0, y = src ? src->y : -60, z = src ? src->z : 0;
+            const auto sourceState = src ? snapshotPlayer(*src) : PlayerCommandSnapshot{};
+            double x = src ? sourceState.x : 0;
+            double y = src ? sourceState.y : -60;
+            double z = src ? sourceState.z : 0;
             float vol = 1.f, pitch = 1.f;
             auto itPos = c.args.find("psPos");
             if (itPos != c.args.end()) {
@@ -1331,8 +1577,9 @@ void GameServer::initPlayerCommandsPart21() {
             for (auto& nm : sel.playerNames)
                 if (findPlayer(*this, nm)) ++n;
             if (n == 0) throw std::runtime_error("Unknown player for playsound");
-            broadcastSound(snd.c_str(), x, y, z, vol, pitch, cat.c_str());
-            sendFeedback(src, "Played sound " + snd + " (playsound) to " +
+            broadcastSoundFor(snapshotCommandDimension(c.source), snd.c_str(), x, y, z,
+                              vol, pitch, cat.c_str());
+            sendCommandFeedback(src, "Played sound " + snd + " (playsound) to " +
                          std::to_string(n) + " player(s)");
             return 1;
         };
@@ -1365,7 +1612,7 @@ void GameServer::initPlayerCommandsPart22() {
         ss->action = [this](CommandContext& c) {
             Player* src = static_cast<Player*>(c.source.player);
             broadcastStopSound(std::nullopt, std::nullopt);
-            sendFeedback(src, "Stopped all sounds (stopsound)");
+            sendCommandFeedback(src, "Stopped all sounds (stopsound)");
             return 1;
         };
         auto targets = CommandNode::argument("ssTargets", args::entity(false, false));
@@ -1378,7 +1625,7 @@ void GameServer::initPlayerCommandsPart22() {
                 if (findPlayer(*this, nm)) ++n;
             if (n == 0) throw std::runtime_error("Unknown player for stopsound");
             broadcastStopSound(std::nullopt, std::nullopt);
-            sendFeedback(src, "Stopped sounds for " + std::to_string(n) + " player(s) (stopsound)");
+            sendCommandFeedback(src, "Stopped sounds for " + std::to_string(n) + " player(s) (stopsound)");
             return n;
         };
         auto source = CommandNode::argument("ssSource", args::stringWord());
@@ -1395,7 +1642,7 @@ void GameServer::initPlayerCommandsPart22() {
             if (n == 0) throw std::runtime_error("Unknown player for stopsound");
             std::string snd = c.arg("ssSound").asStr();
             broadcastStopSound(GameServer::SoundSource::Master, &snd);
-            sendFeedback(src, "Stopped sound " + snd + " (stopsound)");
+            sendCommandFeedback(src, "Stopped sound " + snd + " (stopsound)");
             return n;
         };
         source->then(sound);

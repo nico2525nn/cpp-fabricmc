@@ -13,7 +13,7 @@ public class StatType<T> {
     private final Map<T, Stat<T>> stats = new HashMap<>();
     private final Registry<T> registry;
     private final PacketCodec<RegistryByteBuf, Stat<T>> packetCodec =
-        PacketCodec.ofStatic((buffer, stat) -> {}, buffer -> null);
+        PacketCodec.ofLegacy((buffer, stat) -> {}, buffer -> null);
 
     public StatType(Registry<T> registry, Text name) {
         this.registry = registry;

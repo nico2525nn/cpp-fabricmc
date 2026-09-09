@@ -5,6 +5,7 @@ import java.util.Map;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.SpawnReason;
+import net.minecraft.entity.conversion.EntityConversionContext;
 import net.minecraft.entity.ai.control.JumpControl;
 import net.minecraft.entity.ai.control.LookControl;
 import net.minecraft.entity.ai.control.MoveControl;
@@ -150,6 +151,12 @@ public class MobEntity extends LivingEntity {
     public boolean interactMob(PlayerEntity player, Hand hand) { return false; }
     public net.minecraft.util.ActionResult interactWithItem(PlayerEntity player, Hand hand) {
         return net.minecraft.util.ActionResult.PASS;
+    }
+    /** Mob conversion boundary used by Fabric entity events. */
+    public MobEntity convertTo(EntityType<?> type, EntityConversionContext context,
+                               SpawnReason reason, EntityConversionContext.Finalizer finalizer) {
+        if (finalizer != null) finalizer.finalizeConversion(this);
+        return this;
     }
     /** Riding lifecycle entrypoint used by the mob mixin set. */
     public boolean startRiding(net.minecraft.entity.Entity entity, boolean force) {

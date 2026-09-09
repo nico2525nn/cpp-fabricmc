@@ -287,9 +287,6 @@ private:
                              const std::string& pieceName,
                              const std::unordered_map<std::string,std::string>& palette,
                              int variant, const GroundFn& ground) const;
-    static std::uint16_t resolvePaletteState(const std::unordered_map<std::string,std::string>& pal,
-                                             const std::string& key,
-                                             const std::string& fallback);
     void enqueuePendingMob(int x,int y,int z, const std::string& mob, int count) const;
     void enqueuePendingLoot(int x,int y,int z, const std::string& loot) const;
 

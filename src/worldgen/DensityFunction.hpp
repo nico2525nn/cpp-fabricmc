@@ -390,20 +390,13 @@ inline void collectCaches(const NodePtr& n, std::vector<Cache2dPtr>& out,
         if (sn->shiftX) collectCaches(sn->shiftX, out, flatOut, onceOut);
         if (sn->shiftY) collectCaches(sn->shiftY, out, flatOut, onceOut);
         if (sn->shiftZ) collectCaches(sn->shiftZ, out, flatOut, onceOut);
-    } else if (std::dynamic_pointer_cast<Shift>(n)) {}
-    else if (std::dynamic_pointer_cast<ShiftA>(n)) {}
-    else if (std::dynamic_pointer_cast<ShiftB>(n)) {}
-    else if (std::dynamic_pointer_cast<BeardifierNode>(n)) {}
-    else if (auto old = std::dynamic_pointer_cast<OldBlendedNoiseNode>(n)) {
+    } else if (auto old = std::dynamic_pointer_cast<OldBlendedNoiseNode>(n)) {
         collectCaches(old->in, out, flatOut, onceOut);
     } else if (auto ws = std::dynamic_pointer_cast<WeirdScaledSamplerNode>(n)) {
         collectCaches(ws->input, out, flatOut, onceOut);
     } else if (auto bd = std::dynamic_pointer_cast<BlendDensityNode>(n)) {
         collectCaches(bd->in, out, flatOut, onceOut);
-    } else if (std::dynamic_pointer_cast<BlendAlphaNode>(n)) {}
-    else if (std::dynamic_pointer_cast<BlendOffsetNode>(n)) {}
-    else if (std::dynamic_pointer_cast<EndIslandsNode>(n)) {}
-    else if (auto ip = std::dynamic_pointer_cast<Interpolated>(n)) {
+    } else if (auto ip = std::dynamic_pointer_cast<Interpolated>(n)) {
         collectCaches(ip->in, out, flatOut, onceOut);
     } else if (auto fc = std::dynamic_pointer_cast<FlatCache>(n)) {
         if (flatOut) flatOut->push_back(fc);

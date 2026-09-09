@@ -6,7 +6,21 @@ import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.builder.RequiredArgumentBuilder;
 
 public class CommandManager {
-    public enum RegistrationEnvironment { DEDICATED, INTEGRATED }
+    public enum RegistrationEnvironment {
+        ALL(true, true),
+        DEDICATED(false, true),
+        INTEGRATED(true, false);
+
+        // These are intentionally fields, not derived methods: Fabric's
+        // transitive access widener targets the 1.21.4 named field symbols.
+        private final boolean integrated;
+        private final boolean dedicated;
+
+        RegistrationEnvironment(boolean integrated, boolean dedicated) {
+            this.integrated = integrated;
+            this.dedicated = dedicated;
+        }
+    }
     private final CommandDispatcher<ServerCommandSource> dispatcher = new CommandDispatcher<>();
     public CommandManager() {
         this(RegistrationEnvironment.DEDICATED, new net.minecraft.command.CommandRegistryAccess());
@@ -36,7 +50,28 @@ public class CommandManager {
         try { dispatcher.execute(parseResults); }
         catch (Exception ignored) { }
     }
-    public boolean hasCommand(String command) { return dispatcher.hasCommand(command); }
+    /**
+     * Return whether the command tree contains the requested root literal.
+     *
+     * <p>The production launch path intentionally resolves Brigadier from the
+     * locked server libraries before the shadow classes.  Brigadier's public
+     * tree API is stable across the supported 1.21.4 builds, while the
+     * project's convenience {@code hasCommand(String)} helper is not part of
+     * Brigadier's upstream API.  Calling that helper here therefore creates a
+     * runtime-only {@code NoSuchMethodError} when a real server Brigadier jar
+     * is present.  Minecraft uses this method as a cheap command-ingress
+     * guard, so checking the root literal preserves the intended behavior and
+     * keeps the call site ABI-safe.</p>
+     */
+    public boolean hasCommand(String command) {
+        if (command == null) return false;
+        String normalized = command.trim();
+        if (normalized.isEmpty()) return false;
+        int separator = normalized.indexOf(' ');
+        String rootName = separator < 0 ? normalized : normalized.substring(0, separator);
+        if (rootName.startsWith("/")) rootName = rootName.substring(1);
+        return dispatcher.getRoot().getChild(rootName) != null;
+    }
     public static int execute(ServerCommandSource source, String command) {
         return source == null || source.getServer() == null ? 0 :
             source.getServer().getCommandManager().execute(command, source);

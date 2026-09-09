@@ -52,6 +52,7 @@ public final class KnotLauncher {
     private static Path officialTempRoot;
     private static Path officialEmptyMods;
     private static Path officialConfigDir;
+    private static NestedJarSupport.Expansion fallbackModExpansion;
     private static boolean officialMode;
     private static boolean officialHandoff;
     private static boolean officialEventsStarted;
@@ -254,7 +255,9 @@ public final class KnotLauncher {
                 return;
             }
             try { invoke(runtimeShutdown); }
-            catch (Throwable failure) { NativeBridge.logFallback("ERROR", "Knot shutdown failed: " + failure); }
+            catch (Throwable failure) {
+                NativeBridge.logFallback("ERROR", "Knot shutdown failed:\n" + describeFailure(failure));
+            }
             finally {
                 closeLoader();
                 closeOfficialResources();
@@ -422,12 +425,32 @@ public final class KnotLauncher {
     }
 
     private static ClassLoader makeLoader(URL[] urls) throws ReflectiveOperationException {
+        boolean strict = Boolean.getBoolean("cppfm.jvm.strict");
         for (String name : List.of("cppfm.loader.KnotClassLoader",
                                   "cppfm.loader.KnotLikeClassLoader")) {
             try {
                 Class<?> type = Class.forName(name, true, KnotLauncher.class.getClassLoader());
-                Constructor<?> constructor = type.getConstructor(URL[].class, ClassLoader.class);
-                return (ClassLoader) constructor.newInstance(urls, KnotLauncher.class.getClassLoader());
+                try {
+                    Constructor<?> constructor = type.getConstructor(
+                        URL[].class, ClassLoader.class, boolean.class);
+                    return (ClassLoader) constructor.newInstance(
+                        urls, KnotLauncher.class.getClassLoader(), strict);
+                } catch (NoSuchMethodException ignored) {
+                    Constructor<?> constructor = type.getConstructor(URL[].class, ClassLoader.class);
+                    ClassLoader result = (ClassLoader) constructor.newInstance(
+                        urls, KnotLauncher.class.getClassLoader());
+                    // Third-party compatible providers may expose a mutable
+                    // strict switch instead of the three-argument
+                    // constructor.  Propagate the policy when available so
+                    // --jvm-strict cannot silently degrade to best effort.
+                    try {
+                        Method setter = type.getMethod("setStrict", boolean.class);
+                        setter.invoke(result, strict);
+                    } catch (NoSuchMethodException ignoredSetter) {
+                        // An older provider has no strict policy surface.
+                    }
+                    return result;
+                }
             } catch (ClassNotFoundException | NoSuchMethodException ignored) {
                 // Try the next provider; the plain URL loader is the final
                 // compatibility fallback for native-only deployments.
@@ -447,15 +470,8 @@ public final class KnotLauncher {
         try { register = target.getClass().getMethod("registerMixinConfig", String.class); }
         catch (NoSuchMethodException ignored) { return; }
         Set<String> resources = new LinkedHashSet<>();
-        Path directory = modsDir == null || modsDir.isBlank() ? null : Paths.get(modsDir);
-        if (directory != null && Files.isDirectory(directory)) {
-            try (var stream = Files.list(directory)) {
-                List<Path> candidates = stream
-                    .filter(item -> Files.isDirectory(item) || item.toString().endsWith(".jar"))
-                    .sorted(Comparator.comparing(Path::toString)).toList();
-                for (Path candidate : candidates) resources.addAll(mixinResources(candidate));
-            }
-        }
+        for (Path candidate : modPaths(modsDir))
+            resources.addAll(mixinResources(candidate));
         for (String resource : resources) register.invoke(target, resource);
     }
 
@@ -470,15 +486,8 @@ public final class KnotLauncher {
         try { register = target.getClass().getMethod("registerAccessWidener", String.class); }
         catch (NoSuchMethodException ignored) { return; }
         Set<String> resources = new LinkedHashSet<>();
-        Path directory = modsDir == null || modsDir.isBlank() ? null : Paths.get(modsDir);
-        if (directory != null && Files.isDirectory(directory)) {
-            try (var stream = Files.list(directory)) {
-                List<Path> candidates = stream
-                    .filter(item -> Files.isDirectory(item) || item.toString().endsWith(".jar"))
-                    .sorted(Comparator.comparing(Path::toString)).toList();
-                for (Path candidate : candidates) resources.addAll(accessWidenerResources(candidate));
-            }
-        }
+        for (Path candidate : modPaths(modsDir))
+            resources.addAll(accessWidenerResources(candidate));
         for (String resource : resources) register.invoke(target, resource);
     }
 
@@ -536,12 +545,27 @@ public final class KnotLauncher {
         return result;
     }
 
+    private static List<Path> modPaths(String modsDir) throws IOException {
+        if (fallbackModExpansion != null) return fallbackModExpansion.paths();
+        if (modsDir == null || modsDir.isBlank()) return List.of();
+        Path directory = Paths.get(modsDir);
+        if (!Files.isDirectory(directory)) return List.of();
+        try (var stream = Files.list(directory)) {
+            return stream
+                .filter(item -> Files.isDirectory(item) || item.toString().endsWith(".jar"))
+                .sorted(Comparator.comparing(Path::toString)).toList();
+        }
+    }
+
     private static List<URL> urls(String classesDir, String modsDir) throws IOException {
         List<URL> result = new ArrayList<>();
+        List<URL> classes = new ArrayList<>();
+        Path classesPath = null;
         if (classesDir != null && !classesDir.isBlank()) {
-            Path path = Paths.get(classesDir);
-            if (!Files.isDirectory(path)) throw new IOException("classes directory is missing: " + path);
-            result.add(path.toUri().toURL());
+            classesPath = Paths.get(classesDir).toAbsolutePath().normalize();
+            if (!Files.isDirectory(classesPath))
+                throw new IOException("classes directory is missing: " + classesPath);
+            classes.add(classesPath.toUri().toURL());
         }
         String librariesDir = System.getProperty("cppfm.jvm.libraries");
         if (librariesDir != null && !librariesDir.isBlank()) {
@@ -552,8 +576,27 @@ public final class KnotLauncher {
                 List<Path> libraries = stream
                     .filter(item -> Files.isDirectory(item) || item.toString().endsWith(".jar"))
                     .sorted(Comparator.comparing(Path::toString)).toList();
+                // The production classes directory contains dependency-free
+                // compile/runtime shims for Gson, Guava, Netty, DFU and
+                // Authlib.  When a real server library set is supplied, put
+                // those jars first so a mod observes the official library
+                // ABI instead of a same-named shim.  Minecraft/Fabric shadow
+                // classes remain available from `classes` below because the
+                // server library set does not contain their game namespace.
                 for (Path item : libraries) result.add(item.toUri().toURL());
             } catch (UrlFailure failure) { throw failure.io; }
+        }
+        result.addAll(classes);
+        // Dependency-free builds keep compile-only ABI implementations out of
+        // the production class tree.  Make that fallback explicit by adding
+        // the sibling directory when it exists; a supplied real library set
+        // remains first in the URL order and therefore wins for Gson/Netty,
+        // DFU, logging, and the other external namespaces.
+        if (classesPath != null) {
+            Path compileStubs = classesPath.getParent() == null ? null
+                : classesPath.getParent().resolve("compile-stubs");
+            if (compileStubs != null && Files.isDirectory(compileStubs))
+                result.add(compileStubs.toUri().toURL());
         }
         if (modsDir != null && !modsDir.isBlank()) {
             Path path = Paths.get(modsDir);
@@ -562,7 +605,9 @@ public final class KnotLauncher {
                     List<Path> candidates = stream
                         .filter(item -> Files.isDirectory(item) || item.toString().endsWith(".jar"))
                         .sorted(Comparator.comparing(Path::toString)).toList();
-                    for (Path item : candidates) result.add(item.toUri().toURL());
+                    fallbackModExpansion = NestedJarSupport.expand(candidates);
+                    for (Path item : fallbackModExpansion.paths())
+                        result.add(item.toUri().toURL());
                 } catch (UrlFailure failure) { throw failure.io; }
             }
         }
@@ -627,10 +672,18 @@ public final class KnotLauncher {
     }
 
     private static void closeLoader() {
-        if (!(loader instanceof URLClassLoader urls) || loader == officialHost) return;
-        try { urls.close(); }
-        catch (IOException failure) {
-            NativeBridge.logFallback("WARN", "Knot classloader close failed: " + failure);
+        try {
+            if (loader instanceof URLClassLoader urls && loader != officialHost) {
+                try { urls.close(); }
+                catch (IOException failure) {
+                    NativeBridge.logFallback("WARN", "Knot classloader close failed: " + failure);
+                }
+            }
+        } finally {
+            if (fallbackModExpansion != null) {
+                fallbackModExpansion.close();
+                fallbackModExpansion = null;
+            }
         }
     }
 

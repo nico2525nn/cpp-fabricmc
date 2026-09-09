@@ -1,0 +1,49 @@
+# This script is generated at configure time and run by CPack's install-script
+# hook for the `package` target.  It deliberately checks the generated header
+# rather than only the presence of the Python interpreter: a stale or failed
+# packer must not produce a release-looking archive.
+
+if(NOT "@CPPFM_PACKAGE_EMBED_READY@" STREQUAL "TRUE")
+    message(FATAL_ERROR
+        "cppfm package refused: embedded resources are unavailable. "
+        "Install Python 3 and configure again; the native executable may "
+        "still be built, but it is not a self-contained package.")
+endif()
+
+if(NOT IS_DIRECTORY "@CPPFM_PACKAGE_ASSET_ROOT@")
+    message(FATAL_ERROR
+        "cppfm package refused: required asset directory is missing: "
+        "@CPPFM_PACKAGE_ASSET_ROOT@")
+endif()
+
+if(NOT IS_DIRECTORY "@CPPFM_PACKAGE_REQUIRED_ASSET_DIR@")
+    message(FATAL_ERROR
+        "cppfm package refused: required registry assets are missing: "
+        "@CPPFM_PACKAGE_REQUIRED_ASSET_DIR@")
+endif()
+
+file(GLOB_RECURSE CPPFM_REQUIRED_REGISTRY_FILES
+     LIST_DIRECTORIES false
+     "@CPPFM_PACKAGE_REQUIRED_ASSET_DIR@/*")
+if(NOT CPPFM_REQUIRED_REGISTRY_FILES)
+    message(FATAL_ERROR
+        "cppfm package refused: required registry asset directory is empty: "
+        "@CPPFM_PACKAGE_REQUIRED_ASSET_DIR@")
+endif()
+
+if(NOT EXISTS "@CPPFM_EMBEDDED_HEADER@")
+    message(FATAL_ERROR
+        "cppfm package refused: embedded resource header was not generated: "
+        "@CPPFM_EMBEDDED_HEADER@")
+endif()
+
+file(READ "@CPPFM_EMBEDDED_HEADER@" CPPFM_EMBEDDED_HEADER_CONTENT)
+if(NOT CPPFM_EMBEDDED_HEADER_CONTENT MATCHES
+       "kHasPack[ \\t\\r\\n]*=[ \\t\\r\\n]*true")
+    message(FATAL_ERROR
+        "cppfm package refused: generated resource header does not contain "
+        "an active embedded pack: @CPPFM_EMBEDDED_HEADER@")
+endif()
+
+message(STATUS
+    "cppfm self-contained package preflight passed: embedded resources are ready")

@@ -1,25 +1,9 @@
-#include "GameServer.hpp"
-#include "Messages.hpp"
-#include "Particles.hpp"
-#include "../generated/EntityIds.hpp"
-#include "../generated/BlockStates.hpp"
-#include <algorithm>
-#include <cmath>
-#include <set>
-#include <filesystem>
-#include <unordered_set>
-#include <fstream>
+#include "CommandModule.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <chrono>
 
-#include "CommandsHelpers.hpp"
 namespace cppfm {
-
-using brigadier::CommandNode;
-using brigadier::CommandContext;
-namespace args = brigadier::args;
-using NodePtr = brigadier::NodePtr;
 
 void GameServer::initWorldCommands() {
     initWorldCommandsPart01();
@@ -140,7 +124,8 @@ void GameServer::initWorldCommandsPart03() {
         flQuery->executable = true;
         flQuery->action = [this](CommandContext& c) {
             Player* src = static_cast<Player*>(c.source.player);
-            auto keys = world_.forcedChunkKeys();
+            World& targetWorld = worldForCommand(c.source);
+            auto keys = targetWorld.forcedChunkKeys();
             if (keys.empty()) { sendFeedback(src, "No forced chunks"); return 0; }
             std::string out="Forced chunks:";
             for(auto k: keys){
@@ -157,10 +142,11 @@ void GameServer::initWorldCommandsPart03() {
         flRemoveAll->executable = true;
         flRemoveAll->action = [this](CommandContext& c) {
             Player* src = static_cast<Player*>(c.source.player);
-            auto keys = world_.forcedChunkKeys();
+            World& targetWorld = worldForCommand(c.source);
+            auto keys = targetWorld.forcedChunkKeys();
             for(auto k: keys){
                 auto [cx, cz] = chunkKeyDecode(k);
-                world_.setChunkForced(cx,cz,false);
+                targetWorld.setChunkForced(cx,cz,false);
             }
             sendFeedback(src, "Removed all forced chunks (" + std::to_string(keys.size()) + ")");
             return (int)keys.size();
@@ -176,7 +162,7 @@ void GameServer::initWorldCommandsPart03() {
             int cx = c.arg("x").asInt();
             int cz = c.arg("z").asInt();
             // vanilla forceload uses chunk coords directly; support block pos via >>4 fallback if large? keep chunk coords
-            bool ok = world_.setChunkForced(cx,cz,true);
+            bool ok = worldForCommand(c.source).setChunkForced(cx,cz,true);
             if (!ok) { sendFeedback(src, "Chunk [" + std::to_string(cx)+","+std::to_string(cz)+"] already forced"); return 0; }
             sendFeedback(src, "Added chunk [" + std::to_string(cx)+","+std::to_string(cz)+"]");
             return 1;
@@ -188,7 +174,7 @@ void GameServer::initWorldCommandsPart03() {
             Player* src = static_cast<Player*>(c.source.player);
             int cx = c.arg("x").asInt();
             int cz = c.arg("z").asInt();
-            bool ok = world_.setChunkForced(cx,cz,false);
+            bool ok = worldForCommand(c.source).setChunkForced(cx,cz,false);
             if (!ok) { sendFeedback(src, "Chunk [" + std::to_string(cx)+","+std::to_string(cz)+"] not forced"); return 0; }
             sendFeedback(src, "Removed chunk [" + std::to_string(cx)+","+std::to_string(cz)+"]");
             return 1;
@@ -203,7 +189,7 @@ void GameServer::initWorldCommandsPart03() {
         fl->executable = true;
         fl->action = [this](CommandContext& c) {
             Player* src = static_cast<Player*>(c.source.player);
-            auto keys = world_.forcedChunkKeys();
+            auto keys = worldForCommand(c.source).forcedChunkKeys();
             sendFeedback(src, "Forced chunks: " + std::to_string(keys.size()));
             return (int)keys.size();
         };
@@ -273,14 +259,13 @@ void GameServer::initWorldCommandsPart04() {
                     for(auto &pr: props) sv.emplace_back(pr.first, pr.second);
                     uint32_t cand = gen::stateWithProps(*def, sv);
                     if(cand!=0) state = static_cast<std::uint16_t>(cand);
-                    else {
-                        // fallback: try with just name
-                    }
                 }
             }
-            world_.generateChunkIfMissing(p.x >> 4, p.z >> 4);
-            world_.setBlock(p.x, p.y, p.z, state);
-            broadcastBlockChange(p.x, p.y, p.z, state);
+            const auto dimension = commandDimension(c.source);
+            World& targetWorld = worldFor(dimension);
+            targetWorld.generateChunkIfMissing(p.x >> 4, p.z >> 4);
+            targetWorld.setBlock(p.x, p.y, p.z, state);
+            broadcastBlockChangeFor(dimension, p.x, p.y, p.z, state);
             sendFeedback(src, "Changed the block at " + std::to_string(p.x) +
                          ", " + std::to_string(p.y) + ", " +
                          std::to_string(p.z));
@@ -432,12 +417,14 @@ void GameServer::initWorldCommandsPart08() {
             int minZ = std::min(p1.z, p2.z), maxZ = std::max(p1.z, p2.z);
             long long vol = static_cast<long long>(maxX - minX + 1) * (maxY - minY + 1) * (maxZ - minZ + 1);
             if (vol > 32768) throw std::runtime_error("fill volume too large (max 32768, got " + std::to_string(vol) + ")");
+            const auto dimension = commandDimension(c.source);
+            World& targetWorld = worldFor(dimension);
             int filled = 0;
             for (int y = minY; y <= maxY; ++y)
                 for (int z = minZ; z <= maxZ; ++z)
                     for (int x = minX; x <= maxX; ++x) {
-                        world_.setBlock(x, y, z, state);
-                        broadcastBlockChange(x, y, z, state);
+                        targetWorld.setBlock(x, y, z, state);
+                        broadcastBlockChangeFor(dimension, x, y, z, state);
                         ++filled;
                     }
             sendFeedback(src, "Filled " + std::to_string(filled) + " blocks with " + name);
@@ -458,6 +445,8 @@ void GameServer::initWorldCommandsPart09() {
         auto to = CommandNode::argument("to", args::blockPos());
         auto target = CommandNode::argument("target", args::blockPos());
         auto doClone = [&](CommandContext& c, bool masked, bool filtered, std::string filter, bool move) -> int {
+            const auto dimension = commandDimension(c.source);
+            World& targetWorld = worldFor(dimension);
             auto f=c.arg("from").asBlockPos(); auto t=c.arg("to").asBlockPos(); auto dst=c.arg("target").asBlockPos();
             int minX=std::min(f.x,t.x), maxX=std::max(f.x,t.x);
             int minY=std::min(f.y,t.y), maxY=std::max(f.y,t.y);
@@ -478,7 +467,7 @@ void GameServer::initWorldCommandsPart09() {
             struct Entry{int x,y,z; uint16_t st;};
             std::vector<Entry> tmp; tmp.reserve((size_t)vol);
             for(int y=minY;y<=maxY;++y) for(int z=minZ;z<=maxZ;++z) for(int x=minX;x<=maxX;++x){
-                uint16_t st=world_.getBlock(x,y,z);
+                uint16_t st=targetWorld.getBlock(x,y,z);
                 if(masked && st==0) continue;
                 if(filtered){
                     if(fdef){
@@ -491,12 +480,15 @@ void GameServer::initWorldCommandsPart09() {
             }
             for(auto &e: tmp){
                 int dx=dst.x+(e.x-minX), dy=dst.y+(e.y-minY), dz=dst.z+(e.z-minZ);
-                world_.setBlock(dx,dy,dz,e.st);
-                broadcastBlockChange(dx,dy,dz,e.st);
+                targetWorld.setBlock(dx,dy,dz,e.st);
+                broadcastBlockChangeFor(dimension, dx,dy,dz,e.st);
                 ++count;
             }
             if(move){
-                for(auto &e: tmp){ world_.setBlock(e.x,e.y,e.z,0); broadcastBlockChange(e.x,e.y,e.z,0); }
+                for(auto &e: tmp){
+                    targetWorld.setBlock(e.x,e.y,e.z,0);
+                    broadcastBlockChangeFor(dimension, e.x,e.y,e.z,0);
+                }
             }
             Player* src=static_cast<Player*>(c.source.player);
             sendFeedback(src,"Cloned "+std::to_string(count)+" blocks");
@@ -586,7 +578,7 @@ void GameServer::initWorldCommandsPart10(const brigadier::NodePtr& locate) {
                 // every command and can block the session long enough for the
                 // keep-alive janitor to mistake a healthy client for an idle
                 // one.  It also used to search the overworld from Nether/End.
-                World& locateWorld = src ? worldFor(src->dimension) : world_;
+                World& locateWorld = worldForCommand(c.source);
                 const auto* manager = locateWorld.structureManager();
                 if (!manager) {
                     sendFeedback(src, "Structure search is unavailable");
@@ -721,6 +713,7 @@ void GameServer::initWorldCommandsPart11(const brigadier::NodePtr& locate) {
                 std::string shortName = req.substr(req.find(':')+1);
                 int srcX = src ? (int)src->x : 0;
                 int srcZ = src ? (int)src->z : 0;
+                World& targetWorld = worldForCommand(c.source);
                 const int maxRadius = 6400; // blocks (Yarn locate biome radius)
                 const int step = 16;
                 int bestDist = INT32_MAX;
@@ -733,7 +726,7 @@ void GameServer::initWorldCommandsPart11(const brigadier::NodePtr& locate) {
                             if(r!=0 && std::abs(dx)!=r && std::abs(dz)!=r) continue;
                             int x = srcX + dx;
                             int z = srcZ + dz;
-                            std::string bio = world_.sampledBiome(x, 64, z);
+                            std::string bio = targetWorld.sampledBiome(x, 64, z);
                             if(bio.empty()) continue;
                             std::string bioShort = bio.substr(bio.find(':')+1);
                             bool match = (bio==req) || (bioShort==shortName) || (bio.find(shortName)!=std::string::npos);
@@ -799,22 +792,24 @@ void GameServer::initWorldCommandsPart13() {
                     int x = src ? (int)src->x : 0;
                     int y = src ? (int)src->y + 1 : 64;
                     int z = src ? (int)src->z : 0;
+                    const auto dimension = commandDimension(c.source);
+                    World& targetWorld = worldFor(dimension);
                     // simple decoration: place oak tree or ore vein
                     if(fid=="minecraft:tree" || fid=="minecraft:oak" || fid.find("tree")!=std::string::npos){
                         auto log = ((uint16_t)gen::blockByName("minecraft:oak_log")->defaultState);
                         auto leaves = ((uint16_t)gen::blockByName("minecraft:oak_leaves")->defaultState);
-                        for(int dy=0; dy<5; ++dy){ world_.setBlock(x,y+dy,z,log); broadcastBlockChange(x,y+dy,z,log); }
+                        for(int dy=0; dy<5; ++dy){ targetWorld.setBlock(x,y+dy,z,log); broadcastBlockChangeFor(dimension,x,y+dy,z,log); }
                         for(int dx=-2; dx<=2; ++dx) for(int dz=-2; dz<=2; ++dz) for(int dy=5; dy<=6; ++dy){
                             if(dx==0 && dz==0 && dy==5) continue;
-                            world_.setBlock(x+dx,y+dy,z+dz,leaves); broadcastBlockChange(x+dx,y+dy,z+dz,leaves);
+                            targetWorld.setBlock(x+dx,y+dy,z+dz,leaves); broadcastBlockChangeFor(dimension,x+dx,y+dy,z+dz,leaves);
                         }
                     } else if(fid.find("ore")!=std::string::npos){
                         auto ore = ((uint16_t)gen::blockByName("minecraft:diamond_ore")->defaultState);
-                        world_.setBlock(x,y,z,ore); broadcastBlockChange(x,y,z,ore);
-                        world_.setBlock(x+1,y,z,ore); broadcastBlockChange(x+1,y,z,ore);
+                        targetWorld.setBlock(x,y,z,ore); broadcastBlockChangeFor(dimension,x,y,z,ore);
+                        targetWorld.setBlock(x+1,y,z,ore); broadcastBlockChangeFor(dimension,x+1,y,z,ore);
                     } else {
                         auto stone = ((uint16_t)gen::blockByName("minecraft:stone")->defaultState);
-                        world_.setBlock(x,y,z,stone); broadcastBlockChange(x,y,z,stone);
+                        targetWorld.setBlock(x,y,z,stone); broadcastBlockChangeFor(dimension,x,y,z,stone);
                     }
                     sendFeedback(src, "Placed feature "+fid+" at ["+std::to_string(x)+", "+std::to_string(y)+", "+std::to_string(z)+"]");
                     return 1;
@@ -828,20 +823,22 @@ void GameServer::initWorldCommandsPart13() {
                     if(fid.find(':')==std::string::npos) fid="minecraft:"+fid;
                     auto p = c.arg("placeFeaturePos").asBlockPos();
                     int x=p.x, y=p.y, z=p.z;
+                    const auto dimension = commandDimension(c.source);
+                    World& targetWorld = worldFor(dimension);
                     if(fid=="minecraft:tree" || fid=="minecraft:oak" || fid.find("tree")!=std::string::npos){
                         auto log = ((uint16_t)gen::blockByName("minecraft:oak_log")->defaultState);
                         auto leaves = ((uint16_t)gen::blockByName("minecraft:oak_leaves")->defaultState);
-                        for(int dy=0; dy<5; ++dy){ world_.setBlock(x,y+dy,z,log); broadcastBlockChange(x,y+dy,z,log); }
+                        for(int dy=0; dy<5; ++dy){ targetWorld.setBlock(x,y+dy,z,log); broadcastBlockChangeFor(dimension,x,y+dy,z,log); }
                         for(int dx=-2; dx<=2; ++dx) for(int dz=-2; dz<=2; ++dz) for(int dy=5; dy<=6; ++dy){
                             if(dx==0 && dz==0 && dy==5) continue;
-                            world_.setBlock(x+dx,y+dy,z+dz,leaves); broadcastBlockChange(x+dx,y+dy,z+dz,leaves);
+                            targetWorld.setBlock(x+dx,y+dy,z+dz,leaves); broadcastBlockChangeFor(dimension,x+dx,y+dy,z+dz,leaves);
                         }
                     } else if(fid.find("ore")!=std::string::npos){
                         auto ore = ((uint16_t)gen::blockByName("minecraft:diamond_ore")->defaultState);
-                        world_.setBlock(x,y,z,ore); broadcastBlockChange(x,y,z,ore);
+                        targetWorld.setBlock(x,y,z,ore); broadcastBlockChangeFor(dimension,x,y,z,ore);
                     } else {
                         auto stone = ((uint16_t)gen::blockByName("minecraft:stone")->defaultState);
-                        world_.setBlock(x,y,z,stone); broadcastBlockChange(x,y,z,stone);
+                        targetWorld.setBlock(x,y,z,stone); broadcastBlockChangeFor(dimension,x,y,z,stone);
                     }
                     sendFeedback(src, "Placed feature "+fid+" at ["+std::to_string(x)+", "+std::to_string(y)+", "+std::to_string(z)+"]");
                     return 1;
@@ -867,6 +864,8 @@ void GameServer::initWorldCommandsPart13() {
                     int x = src ? (int)src->x : 0;
                     int y = src ? (int)src->y : 64;
                     int z = src ? (int)src->z : 0;
+                    const auto dimension = commandDimension(c.source);
+                    World& targetWorld = worldFor(dimension);
                     // generate small representative via World setBlock
                     auto placeAt = [&](int ox,int oy,int oz, const std::string& id){
                         if(id.find("trial_chambers")!=std::string::npos || id.find("trial")!=std::string::npos){
@@ -874,25 +873,25 @@ void GameServer::initWorldCommandsPart13() {
                             auto tuff = ((uint16_t)gen::blockByName("minecraft:tuff_bricks")->defaultState);
                             auto tuff2 = ((uint16_t)gen::blockByName("minecraft:tuff")->defaultState);
                             for(int dx=0; dx<10; ++dx) for(int dz=0; dz<10; ++dz){
-                                world_.setBlock(ox+dx, oy, oz+dz, tuff); broadcastBlockChange(ox+dx, oy, oz+dz, tuff);
-                                world_.setBlock(ox+dx, oy+5, oz+dz, tuff); broadcastBlockChange(ox+dx, oy+5, oz+dz, tuff);
-                                if(dx==0||dx==9||dz==0||dz==9) for(int dy=1; dy<5; ++dy){ world_.setBlock(ox+dx, oy+dy, oz+dz, tuff2); broadcastBlockChange(ox+dx, oy+dy, oz+dz, tuff2); }
+                                targetWorld.setBlock(ox+dx, oy, oz+dz, tuff); broadcastBlockChangeFor(dimension,ox+dx, oy, oz+dz, tuff);
+                                targetWorld.setBlock(ox+dx, oy+5, oz+dz, tuff); broadcastBlockChangeFor(dimension,ox+dx, oy+5, oz+dz, tuff);
+                                if(dx==0||dx==9||dz==0||dz==9) for(int dy=1; dy<5; ++dy){ targetWorld.setBlock(ox+dx, oy+dy, oz+dz, tuff2); broadcastBlockChangeFor(dimension,ox+dx, oy+dy, oz+dz, tuff2); }
                             }
                             auto spawner = ((uint16_t)gen::blockByName("minecraft:trial_spawner")->defaultState);
-                            world_.setBlock(ox+5, oy+1, oz+5, spawner); broadcastBlockChange(ox+5, oy+1, oz+5, spawner);
+                            targetWorld.setBlock(ox+5, oy+1, oz+5, spawner); broadcastBlockChangeFor(dimension,ox+5, oy+1, oz+5, spawner);
                         } else if(id.find("village")!=std::string::npos){
                             auto planks = ((uint16_t)gen::blockByName("minecraft:oak_planks")->defaultState);
                             auto log = ((uint16_t)gen::blockByName("minecraft:oak_log")->defaultState);
                             for(int dx=0; dx<5; ++dx) for(int dz=0; dz<5; ++dz){
-                                world_.setBlock(ox+dx, oy, oz+dz, planks); broadcastBlockChange(ox+dx, oy, oz+dz, planks);
-                                if(dx==0||dx==4||dz==0||dz==4) for(int dy=1; dy<=3; ++dy){ world_.setBlock(ox+dx, oy+dy, oz+dz, (dy==3?log:planks)); broadcastBlockChange(ox+dx, oy+dy, oz+dz,(dy==3?log:planks)); }
+                                targetWorld.setBlock(ox+dx, oy, oz+dz, planks); broadcastBlockChangeFor(dimension,ox+dx, oy, oz+dz, planks);
+                                if(dx==0||dx==4||dz==0||dz==4) for(int dy=1; dy<=3; ++dy){ targetWorld.setBlock(ox+dx, oy+dy, oz+dz, (dy==3?log:planks)); broadcastBlockChangeFor(dimension,ox+dx, oy+dy, oz+dz,(dy==3?log:planks)); }
                             }
                         } else if(id.find("desert_pyramid")!=std::string::npos || id.find("pyramid")!=std::string::npos){
                             auto sandstone = ((uint16_t)gen::blockByName("minecraft:sandstone")->defaultState);
-                            for(int step=0; step<5; ++step){ int r=4-step; int yy=oy+1+step; for(int dz=-r; dz<=r; ++dz) for(int dx=-r; dx<=r; ++dx){ world_.setBlock(ox+dx+2, yy, oz+dz+2, sandstone); broadcastBlockChange(ox+dx+2, yy, oz+dz+2, sandstone);} }
+                            for(int step=0; step<5; ++step){ int r=4-step; int yy=oy+1+step; for(int dz=-r; dz<=r; ++dz) for(int dx=-r; dx<=r; ++dx){ targetWorld.setBlock(ox+dx+2, yy, oz+dz+2, sandstone); broadcastBlockChangeFor(dimension,ox+dx+2, yy, oz+dz+2, sandstone);} }
                         } else {
                             auto stone = ((uint16_t)gen::blockByName("minecraft:stone_bricks")->defaultState);
-                            for(int dx=0; dx<5; ++dx) for(int dz=0; dz<5; ++dz){ world_.setBlock(ox+dx, oy, oz+dz, stone); broadcastBlockChange(ox+dx, oy, oz+dz, stone); }
+                            for(int dx=0; dx<5; ++dx) for(int dz=0; dz<5; ++dz){ targetWorld.setBlock(ox+dx, oy, oz+dz, stone); broadcastBlockChangeFor(dimension,ox+dx, oy, oz+dz, stone); }
                         }
                     };
                     placeAt(x,y,z,sid);
@@ -907,29 +906,31 @@ void GameServer::initWorldCommandsPart13() {
                     if(sid.find(':')==std::string::npos) sid="minecraft:"+sid;
                     auto p = c.arg("placeStructurePos").asBlockPos();
                     int x=p.x, y=p.y, z=p.z;
+                    const auto dimension = commandDimension(c.source);
+                    World& targetWorld = worldFor(dimension);
                     if(sid.find("trial_chambers")!=std::string::npos || sid.find("trial")!=std::string::npos){
                         auto tuff = ((uint16_t)gen::blockByName("minecraft:tuff_bricks")->defaultState);
                         auto tuff2 = ((uint16_t)gen::blockByName("minecraft:tuff")->defaultState);
                         for(int dx=0; dx<10; ++dx) for(int dz=0; dz<10; ++dz){
-                            world_.setBlock(x+dx, y, z+dz, tuff); broadcastBlockChange(x+dx, y, z+dz, tuff);
-                            world_.setBlock(x+dx, y+5, z+dz, tuff); broadcastBlockChange(x+dx, y+5, z+dz, tuff);
-                            if(dx==0||dx==9||dz==0||dz==9) for(int dy=1; dy<5; ++dy){ world_.setBlock(x+dx, y+dy, z+dz, tuff2); broadcastBlockChange(x+dx, y+dy, z+dz, tuff2); }
+                            targetWorld.setBlock(x+dx, y, z+dz, tuff); broadcastBlockChangeFor(dimension,x+dx, y, z+dz, tuff);
+                            targetWorld.setBlock(x+dx, y+5, z+dz, tuff); broadcastBlockChangeFor(dimension,x+dx, y+5, z+dz, tuff);
+                            if(dx==0||dx==9||dz==0||dz==9) for(int dy=1; dy<5; ++dy){ targetWorld.setBlock(x+dx, y+dy, z+dz, tuff2); broadcastBlockChangeFor(dimension,x+dx, y+dy, z+dz, tuff2); }
                         }
                         auto spawner = ((uint16_t)gen::blockByName("minecraft:trial_spawner")->defaultState);
-                        world_.setBlock(x+5, y+1, z+5, spawner); broadcastBlockChange(x+5, y+1, z+5, spawner);
+                        targetWorld.setBlock(x+5, y+1, z+5, spawner); broadcastBlockChangeFor(dimension,x+5, y+1, z+5, spawner);
                     } else if(sid.find("village")!=std::string::npos){
                         auto planks = ((uint16_t)gen::blockByName("minecraft:oak_planks")->defaultState);
                         auto log = ((uint16_t)gen::blockByName("minecraft:oak_log")->defaultState);
                         for(int dx=0; dx<5; ++dx) for(int dz=0; dz<5; ++dz){
-                            world_.setBlock(x+dx, y, z+dz, planks); broadcastBlockChange(x+dx, y, z+dz, planks);
-                            if(dx==0||dx==4||dz==0||dz==4) for(int dy=1; dy<=3; ++dy){ world_.setBlock(x+dx, y+dy, z+dz, (dy==3?log:planks)); broadcastBlockChange(x+dx, y+dy, z+dz,(dy==3?log:planks)); }
+                            targetWorld.setBlock(x+dx, y, z+dz, planks); broadcastBlockChangeFor(dimension,x+dx, y, z+dz, planks);
+                            if(dx==0||dx==4||dz==0||dz==4) for(int dy=1; dy<=3; ++dy){ targetWorld.setBlock(x+dx, y+dy, z+dz, (dy==3?log:planks)); broadcastBlockChangeFor(dimension,x+dx, y+dy, z+dz,(dy==3?log:planks)); }
                         }
                     } else if(sid.find("desert_pyramid")!=std::string::npos || sid.find("pyramid")!=std::string::npos){
                         auto sandstone = ((uint16_t)gen::blockByName("minecraft:sandstone")->defaultState);
-                        for(int step=0; step<5; ++step){ int r=4-step; int yy=y+1+step; for(int dz=-r; dz<=r; ++dz) for(int dx=-r; dx<=r; ++dx){ world_.setBlock(x+dx+2, yy, z+dz+2, sandstone); broadcastBlockChange(x+dx+2, yy, z+dz+2, sandstone);} }
+                        for(int step=0; step<5; ++step){ int r=4-step; int yy=y+1+step; for(int dz=-r; dz<=r; ++dz) for(int dx=-r; dx<=r; ++dx){ targetWorld.setBlock(x+dx+2, yy, z+dz+2, sandstone); broadcastBlockChangeFor(dimension,x+dx+2, yy, z+dz+2, sandstone);} }
                     } else {
                         auto stone = ((uint16_t)gen::blockByName("minecraft:stone_bricks")->defaultState);
-                        for(int dx=0; dx<5; ++dx) for(int dz=0; dz<5; ++dz){ world_.setBlock(x+dx, y, z+dz, stone); broadcastBlockChange(x+dx, y, z+dz, stone); }
+                        for(int dx=0; dx<5; ++dx) for(int dz=0; dz<5; ++dz){ targetWorld.setBlock(x+dx, y, z+dz, stone); broadcastBlockChangeFor(dimension,x+dx, y, z+dz, stone); }
                     }
                     sendFeedback(src, "Placed structure "+sid+" at ["+std::to_string(x)+", "+std::to_string(y)+", "+std::to_string(z)+"]");
                     return 1;
@@ -987,6 +988,7 @@ void GameServer::initWorldCommandsPart14() {
                 float maxR = (float)c.arg("spMaxRange").asDouble();
                 bool respectTeams = c.arg("spRespectTeams").asBool();
                 const auto sel = c.arg("spTargets").asSelector();
+                World& targetWorld = worldForCommand(c.source);
                 std::vector<Player*> players;
                 for(auto& n: sel.playerNames) if(Player* p=findPlayer(*this,n)) players.push_back(p);
                 if(players.empty()){
@@ -1032,13 +1034,13 @@ void GameServer::initWorldCommandsPart14() {
                     int ix=(int)std::floor(x), iz=(int)std::floor(z);
                     // scan from top down for solid
                     for(int y=kMaxY; y>=kMinY; --y){
-                        uint16_t st = world_.getBlock(ix,y,iz);
-                        uint16_t above = world_.getBlock(ix,y+1,iz);
-                        uint16_t above2 = world_.getBlock(ix,y+2,iz);
+                        uint16_t st = targetWorld.getBlock(ix,y,iz);
+                        uint16_t above = targetWorld.getBlock(ix,y+1,iz);
+                        uint16_t above2 = targetWorld.getBlock(ix,y+2,iz);
                         if(st!=0 && above==0 && above2==0) return y+1;
                     }
                     // fallback: surfaceFeetY
-                    return world_.surfaceFeetY(ix, iz);
+                    return targetWorld.surfaceFeetY(ix, iz);
                 };
                 for(size_t gi=0; gi<groups.size(); ++gi){
                     Pos pos{0,0};
@@ -1291,10 +1293,23 @@ void GameServer::initWorldCommandsPart19() {
         sws->executable = true;
         sws->action = [this](CommandContext& c) {
             Player* src = static_cast<Player*>(c.source.player);
-            world_.setSpawnPoint({static_cast<std::int32_t>(src ? src->x : 0),
-                                  static_cast<std::int32_t>(src ? src->y : -60),
-                                  static_cast<std::int32_t>(src ? src->z : 0)});
-            saveLevelData();
+            const auto dimension = commandDimension(c.source);
+            auto& targetWorld = worldFor(dimension);
+            targetWorld.setSpawnPoint({static_cast<std::int32_t>(src ? src->x : 0),
+                                       static_cast<std::int32_t>(src ? src->y : -60),
+                                       static_cast<std::int32_t>(src ? src->z : 0),
+                                       src ? src->yaw : 0.f});
+            // level.dat is intentionally a single overworld file in this
+            // implementation; dimension-local spawn points remain live for
+            // the server session until dimension persistence is added.
+            if (dimension == 0) saveLevelData();
+            WriteBuffer point;
+            const auto spawn = targetWorld.spawnPoint();
+            point.position(spawn.x, spawn.y, spawn.z);
+            point.f32(spawn.angle);
+            broadcastPacketExceptInDimension(dimension, nullptr,
+                                              proto::pl::sc::SetDefaultSpawn,
+                                              point);
             sendFeedback(src, "Set world spawn to current position");
             return 1;
         };
@@ -1303,12 +1318,15 @@ void GameServer::initWorldCommandsPart19() {
         pos->action = [this](CommandContext& c) {
             Player* src = static_cast<Player*>(c.source.player);
             const auto p = c.arg("swsPos").asBlockPos();
-            world_.setSpawnPoint({p.x, p.y, p.z});
-            saveLevelData();
+            const auto dimension = commandDimension(c.source);
+            auto& targetWorld = worldFor(dimension);
+            targetWorld.setSpawnPoint({p.x, p.y, p.z, src ? src->yaw : 0.f});
+            if (dimension == 0) saveLevelData();
             WriteBuffer b;
             b.position(p.x, p.y, p.z);
-            b.f32(0.f);
-            broadcastPacketExcept(nullptr, proto::pl::sc::SetDefaultSpawn, b);
+            b.f32(targetWorld.spawnPoint().angle);
+            broadcastPacketExceptInDimension(dimension, nullptr,
+                                              proto::pl::sc::SetDefaultSpawn, b);
             sendFeedback(src, "Set world spawn to " + std::to_string(p.x) +
                          ", " + std::to_string(p.y) + ", " + std::to_string(p.z));
             return 1;
@@ -1318,8 +1336,16 @@ void GameServer::initWorldCommandsPart19() {
         angle->action = [this](CommandContext& c) {
             Player* src = static_cast<Player*>(c.source.player);
             const auto p = c.arg("swsPos").asBlockPos();
-            world_.setSpawnPoint({p.x, p.y, p.z});
-            saveLevelData();
+            const auto dimension = commandDimension(c.source);
+            auto& targetWorld = worldFor(dimension);
+            const auto spawnAngle = static_cast<float>(c.arg("swsAngle").asDouble());
+            targetWorld.setSpawnPoint({p.x, p.y, p.z, spawnAngle});
+            if (dimension == 0) saveLevelData();
+            WriteBuffer b;
+            b.position(p.x, p.y, p.z);
+            b.f32(spawnAngle);
+            broadcastPacketExceptInDimension(dimension, nullptr,
+                                              proto::pl::sc::SetDefaultSpawn, b);
             sendFeedback(src, "Set world spawn to " + std::to_string(p.x) +
                          ", " + std::to_string(p.y) + ", " + std::to_string(p.z));
             return 1;

@@ -4,12 +4,12 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <string>
-#include <vector>
 #include <chrono>
 #include <openssl/evp.h>
+#include "../core/ByteBuffer.hpp"
 #include "../generated/BlockStates.hpp"
-#include "../generated/ItemIds.hpp"
 
 namespace cppfm {
 extern std::atomic<bool> g_stopRequested;
@@ -54,6 +54,12 @@ inline const struct { const char* name; int cnt; } kKit[] = {
 inline std::string blockNameByState(std::uint16_t sid) {
     if (auto* d = gen::blockByState(sid)) return std::string(d->name);
     return "minecraft:air";
+}
+
+// Recipe-book SlotDisplay item encoding shared by session and command paths.
+inline void writeSlotDisplayItem(WriteBuffer& out, std::uint32_t itemId) {
+    out.varint(itemId ? 2 : 0);
+    if (itemId) out.varint(static_cast<std::int32_t>(itemId));
 }
 
 } // namespace cppfm

@@ -5,6 +5,8 @@ import net.fabricmc.fabric.api.event.Event;
 import net.fabricmc.fabric.api.event.EventFactory;
 import net.minecraft.entity.damage.DamageSource;
 import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.mob.MobEntity;
+import net.minecraft.entity.conversion.EntityConversionContext;
 
 /** Damage/death callbacks. AllowDamage is evaluated before native damage is applied. */
 public final class ServerLivingEntityEvents {
@@ -29,6 +31,10 @@ public final class ServerLivingEntityEvents {
     @FunctionalInterface public interface AfterDeath {
         void afterDeath(LivingEntity entity, DamageSource source);
     }
+    @FunctionalInterface public interface MobConversion {
+        void onConversion(MobEntity previous, MobEntity converted,
+                          EntityConversionContext conversionContext);
+    }
 
     public static final Event<AllowDamage> ALLOW_DAMAGE = new Event<>(CppModRuntime::registerAllowDamage,
         AllowDamage.class, callbacks -> (entity, source, amount) -> {
@@ -52,8 +58,13 @@ public final class ServerLivingEntityEvents {
                 if (!callback.allowDeath(entity, source, amount)) return false;
             return true;
         });
+    public static final Event<MobConversion> MOB_CONVERSION = EventFactory.createArrayBacked(
+        MobConversion.class, callbacks -> (previous, converted, context) -> {
+            for (MobConversion callback : callbacks)
+                callback.onConversion(previous, converted, context);
+        });
 
     public static void clear() {
-        ALLOW_DAMAGE.clear(); AFTER_DAMAGE.clear(); AFTER_DEATH.clear(); ALLOW_DEATH.clear();
+        ALLOW_DAMAGE.clear(); AFTER_DAMAGE.clear(); AFTER_DEATH.clear(); ALLOW_DEATH.clear(); MOB_CONVERSION.clear();
     }
 }

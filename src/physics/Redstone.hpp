@@ -12,6 +12,7 @@
 #include <vector>
 #include <functional>
 #include <atomic>
+#include <mutex>
 #include "../game/World.hpp"
 #include "../game/BlockEntities.hpp"
 
@@ -111,25 +112,18 @@ public:
                     std::int64_t now);
 
     void tick(std::int64_t now);                         // delayed updates
-    std::size_t pendingCount() const {
-        return pistonQueue_.size() + pendingPistonCommits_.size() + queue_.size()
-             + pendingRepeater_.size() + observerPulseEnd_.size();
-    }
+    std::size_t pendingCount() const;
     // True when any adjacent source/wire carries power (dispenser gates).
     bool isPoweredHere(std::int32_t x, std::int32_t y, std::int32_t z);
     // JE quasi-connectivity: piston/dispenser powered if y+1 would be powered
-    bool isQuasiPowered(std::int32_t x, std::int32_t y, std::int32_t z) {
-        if (isPoweredHere(x, y, z)) return true;
-        if (isPoweredHere(x, y + 1, z)) return true;
-        return false;
-    }
+    bool isQuasiPowered(std::int32_t x, std::int32_t y, std::int32_t z);
 
-    void setBlockEntityStore(BlockEntityStore* s) { beStore_ = s; }
-    void setTickRef(std::int64_t* t) { tickRef_ = t; atomicTickRef_ = nullptr; }
-    void setTickRef(const std::atomic<std::int64_t>* t) { atomicTickRef_ = t; tickRef_ = nullptr; }
-    void setBlockTickScheduler(BlockTickScheduler* bts) { blockTicks_ = bts; }
-    void setGameServer(void* srv) { gameServer_ = srv; }
-    void setBroadcastFn(std::function<void(std::int32_t,std::int32_t,std::int32_t,std::uint16_t)> fn) { broadcastFn_ = std::move(fn); }
+    void setBlockEntityStore(BlockEntityStore* s);
+    void setTickRef(std::int64_t* t);
+    void setTickRef(const std::atomic<std::int64_t>* t);
+    void setBlockTickScheduler(BlockTickScheduler* bts);
+    void setGameServer(void* srv);
+    void setBroadcastFn(std::function<void(std::int32_t,std::int32_t,std::int32_t,std::uint16_t)> fn);
 
 private:
     enum class Comp {
@@ -143,6 +137,9 @@ private:
     int emissionLevel(std::uint16_t state, std::int32_t x, std::int32_t y, std::int32_t z);
     int analogOutputForContainer(BlockEntity* be);
     int analogOutputAt(std::int32_t x, std::int32_t y, std::int32_t z);
+    bool isPoweredHereImpl(std::int32_t x, std::int32_t y, std::int32_t z);
+    void drainBlockChanges();
+    void processBlockChanged(std::int32_t x, std::int32_t y, std::int32_t z);
     void recomputeAround(std::int32_t x, std::int32_t y, std::int32_t z);
     void reactToPower(std::int32_t x, std::int32_t y, std::int32_t z);
     // Flood-fill wire power from all sources reachable within the network containing the seed wire.
@@ -186,6 +183,16 @@ private:
                         std::greater<RedstoneTick>> queue_;
     std::unordered_map<std::int64_t, std::int64_t> pendingRepeater_;
     std::unordered_map<std::int64_t, std::int64_t> observerPulseEnd_;
+    std::unordered_set<std::int64_t> pendingBlockChanges_;
+    bool processingBlockChanges_ = false;
+
+    // Engine operations are serialized because they both mutate delayed
+    // queues and inspect/mutate World.  The notification mutex is separate:
+    // World::setBlock callbacks only enqueue a position while an operation is
+    // in progress, so they never wait for this operation lock and therefore
+    // cannot deadlock against the operation that caused the callback.
+    mutable std::recursive_mutex operationMutex_;
+    mutable std::mutex notificationMutex_;
 };
 
 } // namespace cppfm

@@ -14,14 +14,20 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
+import java.util.stream.Stream;
 import java.util.jar.JarFile;
 
 import net.fabricmc.api.DedicatedServerModInitializer;
@@ -40,6 +46,7 @@ import net.fabricmc.fabric.api.event.player.UseItemCallback;
 import net.fabricmc.fabric.api.message.v1.ServerMessageEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
+import net.fabricmc.fabric.api.resource.IdentifiableResourceReloadListener;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.block.BlockState;
 import net.minecraft.entity.DamageSource;
@@ -47,6 +54,10 @@ import net.minecraft.entity.Entity;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.network.message.MessageType;
 import net.minecraft.network.message.SignedMessage;
+import net.minecraft.resource.LifecycledResourceManager;
+import net.minecraft.resource.ResourceReloader;
+import net.minecraft.resource.ResourceType;
+import net.minecraft.registry.RegistryWrapper;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.network.ServerPlayNetworkHandler;
 import net.minecraft.server.network.ServerPlayerEntity;
@@ -58,6 +69,7 @@ import net.minecraft.util.NativeAccess;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.EntityHitResult;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.profiler.Profiler;
 
 /**
  * Java-side lifecycle and compatibility loader for the embedded runtime.
@@ -75,6 +87,13 @@ public final class CppModRuntime {
     private static final List<ServerLifecycleEvents.ServerStarting> SERVER_STARTING = new CopyOnWriteArrayList<>();
     private static final List<ServerLifecycleEvents.ServerStopping> SERVER_STOPPING = new CopyOnWriteArrayList<>();
     private static final List<ServerLifecycleEvents.ServerStopped> SERVER_STOPPED = new CopyOnWriteArrayList<>();
+    private static final List<ServerLifecycleEvents.SyncDataPackContents> SYNC_DATA_PACK_CONTENTS = new CopyOnWriteArrayList<>();
+    private static final List<ServerLifecycleEvents.StartDataPackReload> START_DATA_PACK_RELOAD = new CopyOnWriteArrayList<>();
+    private static final List<ServerLifecycleEvents.EndDataPackReload> END_DATA_PACK_RELOAD = new CopyOnWriteArrayList<>();
+    private static final List<ServerReloadRegistration> SERVER_RELOAD_LISTENERS = new CopyOnWriteArrayList<>();
+    private static final Object SERVER_RELOAD_LOCK = new Object();
+    private static final List<ServerLifecycleEvents.BeforeSave> BEFORE_SAVE = new CopyOnWriteArrayList<>();
+    private static final List<ServerLifecycleEvents.AfterSave> AFTER_SAVE = new CopyOnWriteArrayList<>();
     private static final List<ServerTickEvents.Start> TICK_START = new CopyOnWriteArrayList<>();
     private static final List<ServerTickEvents.End> TICK_END = new CopyOnWriteArrayList<>();
     private static final List<ServerTickEvents.StartServerTick> SERVER_TICK_START = new CopyOnWriteArrayList<>();
@@ -107,6 +126,8 @@ public final class CppModRuntime {
     private static final List<CommandRegistrationCallback> COMMAND_REGISTRATION = new CopyOnWriteArrayList<>();
     private static final Map<String, String> savedLoaderProperties = new LinkedHashMap<>();
     private static ClassLoader modLoader;
+    private static ClassLoader previousContextClassLoader;
+    private static NestedJarSupport.Expansion modExpansion;
     private static MinecraftServer server;
     private static boolean bootstrapped;
     // These ids are supplied by the game/loader environment rather than by a
@@ -144,7 +165,10 @@ public final class CppModRuntime {
             StringWriter details = new StringWriter();
             cause.printStackTrace(new PrintWriter(details));
             log("ERROR", "mod bootstrap failed:\n" + details);
-            if (Boolean.getBoolean("cppfm.jvm.strict")) return false;
+            if (Boolean.getBoolean("cppfm.jvm.strict")) {
+                closeModLoader();
+                return false;
+            }
             // A malformed optional mod must not make the native server vanish.
             bootstrapped = true;
             return true;
@@ -152,6 +176,7 @@ public final class CppModRuntime {
     }
 
     public static synchronized void shutdown() {
+        if (server != null) server.beginShutdown();
         if (!bootstrapped) return;
         fireWorldUnload();
         for (ServerLifecycleEvents.ServerStopping callback : snapshot(SERVER_STOPPING))
@@ -168,8 +193,9 @@ public final class CppModRuntime {
         server = null;
     }
 
-    public static void onServerTick(long tick) {
+    public static synchronized void onServerTick(long tick) {
         if (!bootstrapped) return;
+        if (server != null) server.adoptCurrentThread();
         // JvmRuntime dispatches a transformed setTick(J)V body before this
         // facade.  Do not call it a second time: a second call would execute
         // every injected handler twice.  With no transformed route this is
@@ -200,6 +226,7 @@ public final class CppModRuntime {
         }
         for (ServerTickEvents.EndServerTick callback : snapshot(SERVER_TICK_END))
             invokeSafely(() -> callback.onEndTick(server), "server tick end (fabric)");
+        if (server != null) server.runTasksTillTickEnd();
     }
 
     public static void onPlayerJoin(long handle) {
@@ -210,6 +237,8 @@ public final class CppModRuntime {
             invokeSafely(() -> callback.onPlayReady(network, ServerPlayNetworking.getSender(player), server), "player join");
         for (ServerPlayerEvents.Join callback : snapshot(PLAYER_JOIN_EVENT))
             invokeSafely(() -> callback.onPlayReady(network, player), "player entity join");
+        for (ServerLifecycleEvents.SyncDataPackContents callback : snapshot(SYNC_DATA_PACK_CONTENTS))
+            invokeSafely(() -> callback.onSyncDataPackContents(player, true), "data-pack sync");
         dispatchEntityLoad(player, player.getServerWorld());
     }
 
@@ -223,6 +252,97 @@ public final class CppModRuntime {
             invokeSafely(() -> callback.onPlayDisconnect(network, server), "player quit");
         dispatchEntityUnload(player, player.getServerWorld());
         WrapperCache.remove(handle);
+    }
+
+    /** Dispatches the Fabric data-pack reload-start lifecycle hook. */
+    public static void onDataPackReloadStart(LifecycledResourceManager resourceManager) {
+        if (!bootstrapped) return;
+        for (ServerLifecycleEvents.StartDataPackReload callback : snapshot(START_DATA_PACK_RELOAD))
+            invokeSafely(() -> callback.startDataPackReload(server, resourceManager),
+                         "data-pack reload start");
+    }
+
+    /** Dispatches the Fabric data-pack reload-end lifecycle hook. */
+    public static void onDataPackReloadEnd(LifecycledResourceManager resourceManager,
+                                           boolean success) {
+        if (!bootstrapped) return;
+        for (ServerLifecycleEvents.EndDataPackReload callback : snapshot(END_DATA_PACK_RELOAD))
+            invokeSafely(() -> callback.endDataPackReload(server, resourceManager, success),
+                         "data-pack reload end");
+    }
+
+    /**
+     * Runs the bounded server-data resource reload bridge used by native
+     * {@code /reload}.  Listener failures are isolated per listener and are
+     * returned as a failed result rather than escaping through JNI.
+     */
+    public static boolean onDataPackReload() {
+        if (!bootstrapped) return false;
+        synchronized (SERVER_RELOAD_LOCK) {
+            LifecycledResourceManager resourceManager = createServerResourceManager();
+            boolean success = true;
+            ReloadPlan plan = resolveServerReloadListeners();
+            log("INFO", "server resource reload start listeners=" + plan.listeners.size());
+            try {
+                onDataPackReloadStart(resourceManager);
+                ReloadPlan ordered = orderServerReloadListeners(plan.listeners);
+                if (!plan.success || !ordered.success) {
+                    success = false;
+                } else {
+                    ResourceReloader.Synchronizer synchronizer = new ResourceReloader.Synchronizer() {
+                        @Override
+                        public <T> CompletableFuture<T> whenPrepared(T preparedObject) {
+                            return CompletableFuture.completedFuture(preparedObject);
+                        }
+                    };
+                    java.util.concurrent.Executor directExecutor = Runnable::run;
+                    for (ResolvedReloadListener listener : ordered.listeners) {
+                        try {
+                            CompletableFuture<Void> future = listener.listener.reload(
+                                synchronizer, resourceManager, Profiler.get(), Profiler.get(),
+                                directExecutor, directExecutor);
+                            if (future == null)
+                                throw new IllegalStateException("listener returned null future");
+                            future.orTimeout(30, TimeUnit.SECONDS).join();
+                            log("INFO", "server resource reload listener " + listener.id
+                                + " completed");
+                        } catch (Throwable failure) {
+                            success = false;
+                            logReloadFailure("server resource reload listener " + listener.id,
+                                              failure);
+                        }
+                    }
+                }
+            } catch (Throwable failure) {
+                success = false;
+                logReloadFailure("server resource reload", failure);
+            } finally {
+                onDataPackReloadEnd(resourceManager, success);
+                try {
+                    resourceManager.close();
+                } catch (Throwable failure) {
+                    success = false;
+                    logReloadFailure("server resource reload resource manager close", failure);
+                }
+            }
+            log("INFO", "server resource reload complete success=" + success
+                + " listeners=" + plan.listeners.size());
+            return success;
+        }
+    }
+
+    /** Dispatches the Fabric pre-save lifecycle hook at the native save boundary. */
+    public static void onBeforeSave(boolean flush, boolean skipErrors) {
+        if (!bootstrapped) return;
+        for (ServerLifecycleEvents.BeforeSave callback : snapshot(BEFORE_SAVE))
+            invokeSafely(() -> callback.onBeforeSave(server, flush, skipErrors), "before save");
+    }
+
+    /** Dispatches the Fabric post-save lifecycle hook at the native save boundary. */
+    public static void onAfterSave(boolean flush, boolean skipErrors) {
+        if (!bootstrapped) return;
+        for (ServerLifecycleEvents.AfterSave callback : snapshot(AFTER_SAVE))
+            invokeSafely(() -> callback.onAfterSave(server, flush, skipErrors), "after save");
     }
 
     /** Return null to cancel, otherwise return the possibly rewritten message. */
@@ -284,7 +404,8 @@ public final class CppModRuntime {
         BlockState state = new BlockState(rawState);
         for (AttackBlockCallback callback : snapshot(ATTACK_BLOCK)) {
             ActionResult result = invokeResult(() -> callback.interact(player, world, Hand.MAIN_HAND,
-                                                    new BlockHitResult(pos)), "attack block");
+                                                    pos, net.minecraft.util.math.Direction.byId(face)),
+                                                "attack block");
             if (result != null && result != ActionResult.PASS) return false;
         }
         for (ModEvents.BlockClicked callback : ModEvents.BLOCK_CLICKED.snapshot())
@@ -305,6 +426,11 @@ public final class CppModRuntime {
         SignedMessage commandMessage = SignedMessage.of(current);
         if (!invokeAllow(() -> net.fabricmc.fabric.api.message.v1.ServerMessageEvents.ALLOW_COMMAND_MESSAGE.invoker()
                 .allowCommandMessage(commandMessage, player, MessageType.Parameters.EMPTY), "allow command message")) return null;
+        if ("reload".equals(current.trim())
+                && (server == null || !server.getCommandManager().hasCommand(current))) {
+            boolean success = onDataPackReload();
+            log("INFO", "server /reload Java listeners success=" + success);
+        }
         // Commands registered through Fabric's CommandRegistrationCallback
         // must be consumed here, otherwise the native command dispatcher
         // would run a second, unrelated command tree.
@@ -439,8 +565,8 @@ public final class CppModRuntime {
             for (PlayerBlockBreakEvents.After callback : snapshot(PlayerBlockBreakEvents.AFTER.snapshot()))
                 invokeSafely(() -> callback.afterBlockBreak(world, player, pos, state, null), "after block break");
         } else {
-            for (PlayerBlockBreakEvents.After callback : snapshot(PlayerBlockBreakEvents.CANCELED.snapshot()))
-                invokeSafely(() -> callback.afterBlockBreak(world, player, pos, state, null), "canceled block break");
+            for (PlayerBlockBreakEvents.Canceled callback : snapshot(PlayerBlockBreakEvents.CANCELED.snapshot()))
+                invokeSafely(() -> callback.onBlockBreakCanceled(world, player, pos, state, null), "canceled block break");
         }
     }
 
@@ -489,6 +615,11 @@ public final class CppModRuntime {
     public static void registerServerStarting(ServerLifecycleEvents.ServerStarting callback) { registerCallback(SERVER_STARTING, callback); }
     public static void registerServerStopping(ServerLifecycleEvents.ServerStopping callback) { registerCallback(SERVER_STOPPING, callback); }
     public static void registerServerStopped(ServerLifecycleEvents.ServerStopped callback) { registerCallback(SERVER_STOPPED, callback); }
+    public static void registerSyncDataPackContents(ServerLifecycleEvents.SyncDataPackContents callback) { registerCallback(SYNC_DATA_PACK_CONTENTS, callback); }
+    public static void registerStartDataPackReload(ServerLifecycleEvents.StartDataPackReload callback) { registerCallback(START_DATA_PACK_RELOAD, callback); }
+    public static void registerEndDataPackReload(ServerLifecycleEvents.EndDataPackReload callback) { registerCallback(END_DATA_PACK_RELOAD, callback); }
+    public static void registerBeforeSave(ServerLifecycleEvents.BeforeSave callback) { registerCallback(BEFORE_SAVE, callback); }
+    public static void registerAfterSave(ServerLifecycleEvents.AfterSave callback) { registerCallback(AFTER_SAVE, callback); }
     public static void registerTickStart(ServerTickEvents.Start callback) { registerCallback(TICK_START, callback); }
     public static void registerTickEnd(ServerTickEvents.End callback) { registerCallback(TICK_END, callback); }
     public static void registerStartServerTick(ServerTickEvents.StartServerTick callback) { registerCallback(SERVER_TICK_START, callback); }
@@ -520,11 +651,42 @@ public final class CppModRuntime {
     public static void registerBeforeBreak(PlayerBlockBreakEvents.Before callback) { registerCallback(BEFORE_BREAK, callback); }
     public static void registerCommandRegistration(CommandRegistrationCallback callback) { registerCallback(COMMAND_REGISTRATION, callback); }
 
+    public static void registerServerReloadListener(IdentifiableResourceReloadListener listener) {
+        Objects.requireNonNull(listener, "listener");
+        Identifier id = Objects.requireNonNull(listener.getFabricId(), "listener.fabricId");
+        registerServerReloadListener(new ServerReloadRegistration(id, listener, null));
+    }
+
+    public static void registerServerReloadListener(
+            Identifier identifier,
+            Function<RegistryWrapper.WrapperLookup, IdentifiableResourceReloadListener> factory) {
+        Objects.requireNonNull(identifier, "identifier");
+        Objects.requireNonNull(factory, "factory");
+        registerServerReloadListener(new ServerReloadRegistration(identifier, null, factory));
+    }
+
+    private static void registerServerReloadListener(ServerReloadRegistration registration) {
+        synchronized (SERVER_RELOAD_LISTENERS) {
+            for (ServerReloadRegistration existing : SERVER_RELOAD_LISTENERS) {
+                if (existing.id.equals(registration.id))
+                    throw new IllegalArgumentException(
+                        "duplicate server resource reload listener: " + registration.id);
+            }
+            SERVER_RELOAD_LISTENERS.add(registration);
+        }
+    }
+
     private static void clearRegistrations() {
         SERVER_STARTING.clear();
         SERVER_STARTED.clear();
         SERVER_STOPPING.clear();
         SERVER_STOPPED.clear();
+        SYNC_DATA_PACK_CONTENTS.clear();
+        START_DATA_PACK_RELOAD.clear();
+        END_DATA_PACK_RELOAD.clear();
+        SERVER_RELOAD_LISTENERS.clear();
+        BEFORE_SAVE.clear();
+        AFTER_SAVE.clear();
         TICK_START.clear();
         TICK_END.clear();
         SERVER_TICK_START.clear();
@@ -568,13 +730,153 @@ public final class CppModRuntime {
         net.fabricmc.fabric.api.entity.event.v1.ServerPlayerEvents.clear();
         net.fabricmc.fabric.api.entity.event.v1.ServerEntityEvents.clear();
         net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.clear();
+        net.fabricmc.fabric.api.entity.event.v1.EntityElytraEvents.clear();
+        net.fabricmc.fabric.api.entity.event.v1.EntitySleepEvents.clear();
+        net.fabricmc.fabric.api.entity.event.v1.ServerEntityCombatEvents.clear();
+        net.fabricmc.fabric.api.entity.event.v1.ServerEntityWorldChangeEvents.clear();
         net.fabricmc.fabric.api.event.lifecycle.v1.ServerEntityEvents.clear();
         net.fabricmc.fabric.api.event.lifecycle.v1.ServerLivingEntityEvents.clear();
+        net.fabricmc.fabric.api.event.lifecycle.v1.CommonLifecycleEvents.clear();
+        net.fabricmc.fabric.api.event.lifecycle.v1.ServerBlockEntityEvents.clear();
+        net.fabricmc.fabric.api.event.lifecycle.v1.ServerChunkEvents.clear();
+        net.fabricmc.fabric.api.event.player.PlayerPickItemEvents.clear();
         ServerMessageEvents.clear();
         CommandRegistrationCallback.clear();
         ServerPlayNetworking.clear();
+        net.fabricmc.fabric.api.networking.v1.ServerConfigurationNetworking.clear();
+        net.fabricmc.fabric.api.networking.v1.ServerLoginNetworking.clear();
+        net.fabricmc.fabric.api.networking.v1.ServerConfigurationConnectionEvents.clear();
+        net.fabricmc.fabric.api.networking.v1.ServerLoginConnectionEvents.clear();
+        net.fabricmc.fabric.api.networking.v1.S2CConfigurationChannelEvents.clear();
+        net.fabricmc.fabric.api.networking.v1.S2CPlayChannelEvents.clear();
+        net.fabricmc.fabric.api.networking.v1.EntityTrackingEvents.clear();
         net.fabricmc.fabric.api.itemgroup.v1.ItemGroupEvents.clear();
+        net.fabricmc.fabric.api.attachment.v1.AttachmentRegistry.clear();
         restoreLoaderMetadata();
+    }
+
+    private static LifecycledResourceManager createServerResourceManager() {
+        LinkedHashSet<Path> roots = new LinkedHashSet<>();
+        Path workingDirectory = Paths.get(System.getProperty("user.dir", "."));
+        addResourceRoot(roots, workingDirectory.resolve("assets"));
+        try {
+            addResourceRoot(roots, FabricLoader.getInstance().getGameDir().resolve("assets"));
+        } catch (Throwable failure) {
+            logReloadFailure("server resource reload game directory lookup", failure);
+        }
+
+        String worldSetting = NativeAccess.serverSetting("world-dir");
+        if (worldSetting != null && !worldSetting.isBlank()) {
+            try {
+                addDataPackRoots(roots, Paths.get(worldSetting).toAbsolutePath().normalize());
+            } catch (java.nio.file.InvalidPathException failure) {
+                log("WARN", "server resource reload ignored invalid world directory: " + worldSetting);
+            }
+        }
+        if (modExpansion != null) {
+            for (Path path : modExpansion.paths()) addResourceRoot(roots, path);
+        }
+        return LifecycledResourceManager.fromPaths(ResourceType.SERVER_DATA, roots);
+    }
+
+    private static void addResourceRoot(Set<Path> roots, Path root) {
+        if (root == null) return;
+        try { roots.add(root.toAbsolutePath().normalize()); }
+        catch (java.nio.file.InvalidPathException ignored) { }
+    }
+
+    private static void addDataPackRoots(Set<Path> roots, Path worldDirectory) {
+        Path datapacks = worldDirectory.resolve("datapacks");
+        if (!Files.isDirectory(datapacks)) return;
+        try (var stream = Files.list(datapacks)) {
+            stream.filter(path -> Files.isDirectory(path) || Files.isRegularFile(path))
+                .sorted(Comparator.comparing(Path::toString))
+                .forEach(path -> addResourceRoot(roots, path));
+        } catch (IOException failure) {
+            logReloadFailure("server resource reload data-pack discovery", failure);
+        }
+    }
+
+    private static ReloadPlan resolveServerReloadListeners() {
+        List<ResolvedReloadListener> listeners = new ArrayList<>();
+        boolean success = true;
+        RegistryWrapper.WrapperLookup lookup = RegistryWrapper.WrapperLookup.of(Stream.empty());
+        for (ServerReloadRegistration registration : snapshot(SERVER_RELOAD_LISTENERS)) {
+            try {
+                IdentifiableResourceReloadListener listener = registration.listener != null
+                    ? registration.listener : registration.factory.apply(lookup);
+                if (listener == null)
+                    throw new IllegalStateException("listener factory returned null");
+                Collection<Identifier> declared = listener.getFabricDependencies();
+                List<Identifier> dependencies = new ArrayList<>();
+                if (declared != null) {
+                    for (Identifier dependency : declared)
+                        if (dependency != null) dependencies.add(dependency);
+                }
+                listeners.add(new ResolvedReloadListener(
+                    registration.id, listener, List.copyOf(dependencies)));
+            } catch (Throwable failure) {
+                success = false;
+                logReloadFailure("server resource reload listener " + registration.id + " setup",
+                                  failure);
+            }
+        }
+        return new ReloadPlan(List.copyOf(listeners), success);
+    }
+
+    private static ReloadPlan orderServerReloadListeners(List<ResolvedReloadListener> listeners) {
+        Map<Identifier, ResolvedReloadListener> byId = new LinkedHashMap<>();
+        for (ResolvedReloadListener listener : listeners) byId.put(listener.id, listener);
+        Set<Identifier> visiting = new HashSet<>();
+        Set<Identifier> visited = new HashSet<>();
+        List<ResolvedReloadListener> ordered = new ArrayList<>();
+        boolean success = true;
+        for (ResolvedReloadListener listener : listeners) {
+            if (!visitReloadListener(listener.id, byId, visiting, visited, ordered))
+                success = false;
+        }
+        return new ReloadPlan(success ? List.copyOf(ordered) : List.of(), success);
+    }
+
+    private static boolean visitReloadListener(
+            Identifier id,
+            Map<Identifier, ResolvedReloadListener> byId,
+            Set<Identifier> visiting,
+            Set<Identifier> visited,
+            List<ResolvedReloadListener> ordered) {
+        if (visited.contains(id)) return true;
+        if (!visiting.add(id)) {
+            log("ERROR", "server resource reload dependency cycle at " + id);
+            return false;
+        }
+        ResolvedReloadListener listener = byId.get(id);
+        boolean success = listener != null;
+        if (listener != null) {
+            for (Identifier dependency : listener.dependencies) {
+                if (byId.containsKey(dependency)
+                        && !visitReloadListener(dependency, byId, visiting, visited, ordered))
+                    success = false;
+            }
+        }
+        visiting.remove(id);
+        if (success) {
+            visited.add(id);
+            ordered.add(listener);
+        }
+        return success;
+    }
+
+    private static void logReloadFailure(String operation, Throwable failure) {
+        Throwable cause = failure;
+        while ((cause instanceof java.util.concurrent.CompletionException
+                    || cause instanceof java.util.concurrent.ExecutionException
+                    || cause instanceof InvocationTargetException
+                    || cause instanceof ExceptionInInitializerError)
+                && cause.getCause() != null)
+            cause = cause.getCause();
+        StringWriter details = new StringWriter();
+        cause.printStackTrace(new PrintWriter(details));
+        log("ERROR", operation + " failed:\n" + details);
     }
 
     /**
@@ -607,8 +909,13 @@ public final class CppModRuntime {
                         // the mixin's static initializer. Shadow fields are bound when
                         // the target class is transformed; initializing the mixin here
                         // would observe them as null.
-                        Class<?> mixinClass = Class.forName(className, false, modLoader);
-                        MixinHooks.registerMixinClass(mixinClass);
+                        try {
+                            Class<?> mixinClass = Class.forName(className, false, modLoader);
+                            MixinHooks.registerMixinClass(mixinClass);
+                        } catch (Exception failure) {
+                            throw new IllegalArgumentException("mixin class " + className +
+                                " in " + config + " could not be loaded", failure);
+                        }
                     }
                 } catch (Exception failure) {
                     log("ERROR", "ignoring invalid mixin config " + config +
@@ -645,22 +952,27 @@ public final class CppModRuntime {
             configureLoaderMetadata(List.of());
             return;
         }
-        List<Candidate> candidates = new ArrayList<>();
+        List<Path> roots;
         try (var stream = Files.list(directory)) {
-            stream.filter(path -> Files.isDirectory(path) || path.toString().endsWith(".jar"))
-                  .sorted(Comparator.comparing(Path::toString))
-                  .forEach(path -> {
-                      try {
-                          Candidate candidate = readCandidate(path);
-                          if (candidate == null) return;
-                          if (candidate.environmentMatchesServer()) candidates.add(candidate);
-                          else log("INFO", "skipping client-only mod " + candidate.id);
-                      } catch (Exception e) {
-                          log("ERROR", "ignoring invalid mod metadata " + path + ": " + e);
-                          if (Boolean.getBoolean("cppfm.jvm.strict"))
-                              throw new IllegalArgumentException("invalid mod metadata: " + path, e);
-                      }
-                  });
+            roots = stream
+                .filter(path -> Files.isDirectory(path) || path.toString().endsWith(".jar"))
+                .sorted(Comparator.comparing(Path::toString)).toList();
+        }
+        if (modExpansion != null) modExpansion.close();
+        modExpansion = NestedJarSupport.expand(roots);
+
+        List<Candidate> candidates = new ArrayList<>();
+        for (Path path : modExpansion.paths()) {
+            try {
+                Candidate candidate = readCandidate(path);
+                if (candidate == null) continue;
+                if (candidate.environmentMatchesServer()) candidates.add(candidate);
+                else log("INFO", "skipping client-only mod " + candidate.id);
+            } catch (Exception e) {
+                log("ERROR", "ignoring invalid mod metadata " + path + ": " + e);
+                if (Boolean.getBoolean("cppfm.jvm.strict"))
+                    throw new IllegalArgumentException("invalid mod metadata: " + path, e);
+            }
         }
         Map<String, Candidate> byId = new LinkedHashMap<>();
         for (Candidate candidate : candidates) {
@@ -681,7 +993,7 @@ public final class CppModRuntime {
         for (Candidate candidate : candidates) visit(candidate, byId, visiting, visited, order);
 
         List<URL> urls = new ArrayList<>();
-        for (Candidate candidate : candidates) urls.add(candidate.path.toUri().toURL());
+        for (Path path : modExpansion.paths()) urls.add(path.toUri().toURL());
         // KnotLauncher puts the compatibility classes and mod roots under one
         // child-first loader.  Reusing it is essential: transformed target
         // bytecode and entrypoints must resolve the same mixin class object,
@@ -692,6 +1004,13 @@ public final class CppModRuntime {
             modLoader = parent;
         else
             modLoader = new URLClassLoader(urls.toArray(URL[]::new), parent);
+        // ServiceLoader-based Fabric mods resolve providers through the
+        // thread context loader.  Keep that lookup on the same child-first
+        // loader that owns the mod classes, then restore it when the runtime
+        // is closed so repeated embedded launches do not leak class-loader
+        // identity into the host thread.
+        previousContextClassLoader = Thread.currentThread().getContextClassLoader();
+        Thread.currentThread().setContextClassLoader(modLoader);
         int initializedEntrypoints = 0;
         // Mixin metadata must be registered before the first target class is
         // resolved.  The KnotClassLoader created by KnotLauncher has already
@@ -707,7 +1026,7 @@ public final class CppModRuntime {
         server = MinecraftServer.of(NativeAccess.serverHandle());
         for (CommandRegistrationCallback callback : snapshot(COMMAND_REGISTRATION))
             invokeSafely(() -> callback.register(server.getCommandManager().getDispatcher(),
-                new net.minecraft.server.command.CommandRegistryAccess(),
+                new net.minecraft.command.CommandRegistryAccess(),
                 net.minecraft.server.command.CommandManager.RegistrationEnvironment.DEDICATED),
                 "command registration");
         NativeBridge.nativeSetModStats(candidates.size(), initializedEntrypoints);
@@ -853,8 +1172,25 @@ public final class CppModRuntime {
         for (Map.Entry<?, ?> entry : raw.entrySet()) {
             if (!(entry.getKey() instanceof String id) || id.isBlank())
                 throw new IllegalArgumentException(key + " contains an invalid mod id");
-            if (!(entry.getValue() instanceof String requirement) || requirement.isBlank())
+            Object rawRequirement = entry.getValue();
+            String requirement;
+            if (rawRequirement instanceof String string && !string.isBlank()) {
+                requirement = string;
+            } else if (rawRequirement instanceof List<?> alternatives) {
+                ArrayList<String> values = new ArrayList<>();
+                for (Object alternative : alternatives) {
+                    if (!(alternative instanceof String string) || string.isBlank())
+                        throw new IllegalArgumentException(key + " has an invalid requirement for " + id);
+                    values.add(string);
+                }
+                if (values.isEmpty())
+                    throw new IllegalArgumentException(key + " has an invalid requirement for " + id);
+                // Fabric metadata uses an array for alternative requirements. The
+                // version matcher already implements the pipe-separated OR form.
+                requirement = String.join(" | ", values);
+            } else {
                 throw new IllegalArgumentException(key + " has an invalid requirement for " + id);
+            }
             result.put(id, requirement);
         }
         return Map.copyOf(result);
@@ -1033,13 +1369,23 @@ public final class CppModRuntime {
     }
 
     private static void closeModLoader() {
-        if (!(modLoader instanceof URLClassLoader urls) ||
-            modLoader == CppModRuntime.class.getClassLoader()) {
+        try {
+            if (modLoader instanceof URLClassLoader urls &&
+                modLoader != CppModRuntime.class.getClassLoader()) {
+                try { urls.close(); }
+                catch (IOException e) { log("WARN", "mod classloader close failed: " + e); }
+            }
+        } finally {
             modLoader = null;
-            return;
+            if (previousContextClassLoader != null) {
+                Thread.currentThread().setContextClassLoader(previousContextClassLoader);
+                previousContextClassLoader = null;
+            }
+            if (modExpansion != null) {
+                modExpansion.close();
+                modExpansion = null;
+            }
         }
-        try { urls.close(); } catch (IOException e) { log("WARN", "mod classloader close failed: " + e); }
-        modLoader = null;
     }
 
     private static void invokeSafely(Runnable action, String operation) {
@@ -1074,6 +1420,18 @@ public final class CppModRuntime {
         try { NativeBridge.nativeLog(level, String.valueOf(message)); }
         catch (Throwable ignored) { System.err.println("[cppfm][jvm][" + level + "] " + message); }
     }
+
+    private record ServerReloadRegistration(
+            Identifier id,
+            IdentifiableResourceReloadListener listener,
+            Function<RegistryWrapper.WrapperLookup, IdentifiableResourceReloadListener> factory) { }
+
+    private record ResolvedReloadListener(
+            Identifier id,
+            IdentifiableResourceReloadListener listener,
+            List<Identifier> dependencies) { }
+
+    private record ReloadPlan(List<ResolvedReloadListener> listeners, boolean success) { }
 
     private record Candidate(String id, String name, String version, String environment, Path path,
                              Map<String, String> dependencies, Map<String, String> recommends,

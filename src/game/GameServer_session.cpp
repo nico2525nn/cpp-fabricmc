@@ -14,7 +14,6 @@
 #include "../generated/EntityIds.hpp"
 #include "MenuInteraction.hpp"
 #include "BehaviorTree.hpp"
-#include "BehaviorTreeParser.hpp"
 #include "EquipmentComponent.hpp"
 #include "DamageComponent.hpp"
 #include "EnchantmentHelper.hpp"
@@ -27,9 +26,6 @@
 #include "PotionBrewing.hpp"
 #include "Particles.hpp"
 #include "MiningCalculator.hpp"
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
 
 namespace cppfm {
 using namespace proto;
@@ -75,23 +71,245 @@ MiningContext miningContextFor(const GameServer& server, const Player& player) {
     context.onGround = player.onGround;
     return context;
 }
+
+bool sameInventoryStack(const ItemStack& lhs, const ItemStack& rhs) {
+    return !lhs.empty() && !rhs.empty() &&
+           lhs.itemId == rhs.itemId &&
+           lhs.components == rhs.components &&
+           lhs.removedComponents == rhs.removedComponents;
+}
+
+struct SessionMobSnapshot {
+    std::int32_t entityId = 0;
+    std::int8_t dimension = 0;
+    MobKind kind = MobKind::Pig;
+    double x = 0.0;
+    double y = 0.0;
+    double z = 0.0;
+    bool dead = false;
+    int slimeSize = 0;
+};
+
+SessionMobSnapshot snapshotMobForSession(const MobEntity& mob) {
+    std::lock_guard entityLock(*mob.stateMtx);
+    return {mob.entityId, GameServer::canonicalDimension(mob.dimension),
+            mob.kind, mob.x, mob.y, mob.z, mob.dead, mob.slimeSize};
+}
+
+struct SessionPlayerSnapshot {
+    std::int8_t dimension = 0;
+    std::uint8_t gamemode = 0;
+    std::int32_t entityId = 0;
+    std::int32_t heldSlot = 0;
+    double x = 0.0;
+    double y = 0.0;
+    double z = 0.0;
+    float yaw = 0.0f;
+    float pitch = 0.0f;
+    bool sneaking = false;
+    bool onGround = true;
+    bool dead = false;
+    bool inPlay = false;
+};
+
+SessionPlayerSnapshot snapshotPlayerForSession(const Player& player) {
+    std::lock_guard playerLock(player.stateMtx);
+    return {GameServer::canonicalDimension(player.dimension), player.gamemode,
+            player.entityId, player.heldSlot, player.x, player.y, player.z,
+            player.yaw, player.pitch, player.isSneaking, player.onGround,
+            player.dead, player.inPlay};
+}
+
+double squaredDistanceToBox(double x, double y, double z,
+                            double minX, double minY, double minZ,
+                            double maxX, double maxY, double maxZ) {
+    const double dx = x < minX ? minX - x : (x > maxX ? x - maxX : 0.0);
+    const double dy = y < minY ? minY - y : (y > maxY ? y - maxY : 0.0);
+    const double dz = z < minZ ? minZ - z : (z > maxZ ? z - maxZ : 0.0);
+    return dx * dx + dy * dy + dz * dz;
+}
+
+bool withinBlockInteractionRange(const SessionPlayerSnapshot& player,
+                                 std::int32_t x, std::int32_t y,
+                                 std::int32_t z) {
+    if (!player.inPlay || player.dead ||
+        !std::isfinite(player.x) || !std::isfinite(player.y) ||
+        !std::isfinite(player.z))
+        return false;
+    // Player feet are stored in the same coordinate convention as vanilla.
+    // Measuring from the eye to the closest point of the block preserves
+    // legitimate edge clicks while keeping the survival/creative ranges
+    // distinct (4.5/5.0 blocks).
+    const double eyeX = player.x;
+    const double eyeY = player.y + 1.62;
+    const double eyeZ = player.z;
+    const double range = player.gamemode == 1 ? 5.0 : 4.5;
+    return squaredDistanceToBox(eyeX, eyeY, eyeZ,
+                                static_cast<double>(x),
+                                static_cast<double>(y),
+                                static_cast<double>(z),
+                                static_cast<double>(x) + 1.0,
+                                static_cast<double>(y) + 1.0,
+                                static_cast<double>(z) + 1.0) <=
+           range * range + 1e-6;
+}
+
+double interactionEntityHalfWidth(MobKind kind, int slimeSize = 2) {
+    if (MobEntity::isBoat(kind) || MobEntity::isMinecartKind(kind)) return 0.72;
+    if (kind == MobKind::EnderDragon || kind == MobKind::Wither) return 1.0;
+    if (kind == MobKind::Slime || kind == MobKind::MagmaCube)
+        return std::max(0.26, static_cast<double>(slimeWidthForSize(slimeSize)) * 0.5);
+    return 0.32;
+}
+
+double interactionEntityHeight(MobKind kind) {
+    if (MobEntity::isBoat(kind) || MobEntity::isMinecartKind(kind)) return 0.7;
+    if (kind == MobKind::EnderDragon) return 3.5;
+    if (kind == MobKind::Wither) return 3.5;
+    if (kind == MobKind::Enderman || kind == MobKind::IronGolem ||
+        kind == MobKind::Ravager || kind == MobKind::Warden) return 2.9;
+    return 1.8;
+}
+
+bool withinEntityInteractionRange(const SessionPlayerSnapshot& player,
+                                  double targetX, double targetY, double targetZ,
+                                  MobKind targetKind = MobKind::Pig,
+                                  int slimeSize = 2) {
+    if (!player.inPlay || player.dead ||
+        !std::isfinite(player.x) || !std::isfinite(player.y) ||
+        !std::isfinite(player.z) || !std::isfinite(targetX) ||
+        !std::isfinite(targetY) || !std::isfinite(targetZ))
+        return false;
+    const double range = player.gamemode == 1 ? 5.0 : 3.0;
+    const double halfWidth = interactionEntityHalfWidth(targetKind, slimeSize);
+    const double height = interactionEntityHeight(targetKind);
+    return squaredDistanceToBox(player.x, player.y + 1.62, player.z,
+                                targetX - halfWidth, targetY, targetZ - halfWidth,
+                                targetX + halfWidth, targetY + height,
+                                targetZ + halfWidth) <= range * range + 1e-6;
+}
+
+bool withinEntityInteractionRange(double playerX, double playerY, double playerZ,
+                                  std::uint8_t gamemode,
+                                  double targetX, double targetY, double targetZ,
+                                  MobKind targetKind = MobKind::Pig,
+                                  int slimeSize = 2) {
+    if (!std::isfinite(playerX) || !std::isfinite(playerY) ||
+        !std::isfinite(playerZ) || !std::isfinite(targetX) ||
+        !std::isfinite(targetY) || !std::isfinite(targetZ))
+        return false;
+    const double range = gamemode == 1 ? 5.0 : 3.0;
+    const double halfWidth = interactionEntityHalfWidth(targetKind, slimeSize);
+    const double height = interactionEntityHeight(targetKind);
+    return squaredDistanceToBox(playerX, playerY + 1.62, playerZ,
+                                targetX - halfWidth, targetY, targetZ - halfWidth,
+                                targetX + halfWidth, targetY + height,
+                                targetZ + halfWidth) <= range * range + 1e-6;
+}
+
+bool collisionSolidForPlayer(std::uint16_t state) {
+    if (state == 0) return false;
+    const auto* def = gen::blockByState(state);
+    if (!def) return false;
+    const std::string_view name = def->name;
+    // Fluids are enterable and do not form a full player collision box.
+    if (name == "minecraft:water" || name == "minecraft:lava" ||
+        name == "minecraft:bubble_column")
+        return false;
+    return isMotionBlocking(state);
+}
+
+bool intersectsPlayerCollision(const World& world, double x, double y, double z) {
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) return true;
+    constexpr double kHalfWidth = 0.3;
+    constexpr double kHeight = 1.8;
+    constexpr double kEpsilon = 1e-7;
+    const int minX = static_cast<int>(std::floor(x - kHalfWidth + kEpsilon));
+    const int maxX = static_cast<int>(std::floor(x + kHalfWidth - kEpsilon));
+    const int minY = static_cast<int>(std::floor(y + kEpsilon));
+    const int maxY = static_cast<int>(std::floor(y + kHeight - kEpsilon));
+    const int minZ = static_cast<int>(std::floor(z - kHalfWidth + kEpsilon));
+    const int maxZ = static_cast<int>(std::floor(z + kHalfWidth - kEpsilon));
+    for (int by = minY; by <= maxY; ++by)
+        for (int bz = minZ; bz <= maxZ; ++bz)
+            for (int bx = minX; bx <= maxX; ++bx)
+                if (collisionSolidForPlayer(world.getBlock(bx, by, bz))) return true;
+    return false;
+}
+
+int effectiveViewDistance(const ServerConfig& config) {
+    // Chunk streaming currently keeps a bounded 12-chunk radius.  Advertise
+    // the same value that tickChunksAround can actually satisfy so the client
+    // does not request a view larger than the server's authoritative stream.
+    return std::clamp(std::min(config.viewDistance, 12),
+                      constants::kViewDistanceMin, 12);
+}
+
+int effectiveViewDistance(const ServerConfig& config, int clientViewDistance) {
+    return std::clamp(std::min({config.viewDistance, clientViewDistance, 12}),
+                      constants::kViewDistanceMin, 12);
+}
+
+// Add a complete stack to a trial inventory.  Returning false leaves the
+// caller's inventory untouched when the whole stack cannot fit; menu close
+// and result-slot paths rely on that property to avoid partial-add + drop
+// duplication.
+bool insertCompleteInventoryStack(std::array<InvSlot, 46>& inventory,
+                                  const ItemStack& source) {
+    if (source.empty()) return true;
+    int remaining = source.count;
+    const int limit = maxStackFor(source);
+    static constexpr int kHotbar[] = {36, 37, 38, 39, 40, 41, 42, 43, 44};
+    static constexpr int kMain[] = {
+        9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+        25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35};
+
+    const auto mergeInto = [&](const int* slots, std::size_t count) {
+        for (std::size_t i = 0; i < count && remaining > 0; ++i) {
+            ItemStack& destination = inventory[slots[i]];
+            if (!sameInventoryStack(destination, source) ||
+                destination.count >= limit) continue;
+            const int moved = std::min(remaining, limit - destination.count);
+            destination.count = static_cast<std::int16_t>(destination.count + moved);
+            remaining -= moved;
+        }
+    };
+    const auto fillEmpty = [&](const int* slots, std::size_t count) {
+        for (std::size_t i = 0; i < count && remaining > 0; ++i) {
+            ItemStack& destination = inventory[slots[i]];
+            if (!destination.empty()) continue;
+            destination = source;
+            destination.count = static_cast<std::int16_t>(
+                std::min(remaining, limit));
+            remaining -= destination.count;
+        }
+    };
+
+    mergeInto(kHotbar, std::size(kHotbar));
+    mergeInto(kMain, std::size(kMain));
+    fillEmpty(kHotbar, std::size(kHotbar));
+    fillEmpty(kMain, std::size(kMain));
+    return remaining == 0;
+}
 } // namespace
 
 bool handleCakeBlockConsume(GameServer& srv, Player& p, std::int32_t x, std::int32_t y, std::int32_t z){
     return HungerManager::handleCakeBlockConsume(srv, p, x, y, z);
 }
-static WriteBuffer makeWorldState(const ServerConfig& c) {
+static WriteBuffer makeWorldState(const ServerConfig& c, const World& world,
+                                  std::uint8_t gamemode) {
+    const auto dim = GameServer::canonicalDimension(world.dimensionId());
     WriteBuffer w;
-    w.varint(0);
-    w.string("minecraft:overworld");
+    w.varint(dim == -1 ? 3 : (dim == 1 ? 2 : 0));
+    w.string(world.dimensionKey());
     w.i64(c.hashedSeed);
-    w.i8(0);
-    w.u8(255);
+    w.u8(gamemode);
+    w.i8(-1);
     w.boolean(false);
-    w.boolean(true);
+    w.boolean(world.isFlat());
     w.boolean(false);
     w.varint(0);
-    w.varint(kSeaLevelFlat);
+    w.varint(world.seaLevel());
     return w;
 }
 static WriteBuffer makeSpawnEntity(const Player& p) {
@@ -119,21 +337,89 @@ static void sendSkinMetadata(Player& to, std::int32_t entityId) {
 struct SessionMenuIo : MenuIo {
     Session& s;
     explicit SessionMenuIo(Session& ss) : s(ss) {}
+
+    // MenuLogic is called while the session owns the player/container model
+    // locks.  Its callbacks are deliberately queued so that world mutation,
+    // persistence/advancement hooks, and other extension-facing work never
+    // run from inside that critical section.  The caller flushes after it
+    // has released all model locks.
+    enum class ActionKind { Drop, BlockEntityChanged, ItemObtained };
+    struct PendingAction {
+        ActionKind kind = ActionKind::BlockEntityChanged;
+        Player* player = nullptr;
+        std::int8_t dimension = 0;
+        double x = 0.0;
+        double y = 0.0;
+        double z = 0.0;
+        std::int64_t key = 0;
+        ItemStack stack = ItemStack::air();
+        std::string how;
+    };
+    std::vector<PendingAction> pending;
+
     void dropFromPlayer(Player& p, const ItemStack& stack, bool whole) override {
         ItemStack s2 = stack;
         if (!whole) s2.count = 1;
-        s.server().spawnItemDrop(p.x, p.y + 1.2, p.z, s2, 0, 0.15, 0);
+        PendingAction action;
+        action.kind = ActionKind::Drop;
+        action.player = &p;
+        action.dimension = p.dimension;
+        action.x = p.x;
+        action.y = p.y + 1.2;
+        action.z = p.z;
+        action.stack = std::move(s2);
+        pending.push_back(std::move(action));
     }
     void blockEntityChanged(std::int64_t key) override {
-        s.server().blockEntities().dirty_.insert(key);
+        PendingAction action;
+        action.kind = ActionKind::BlockEntityChanged;
+        action.dimension = s.dimension();
+        action.key = key;
+        pending.push_back(std::move(action));
     }
     void itemCrafted(Player& p, const ItemStack& result) override {
-        s.server().onItemObtained(p, result, "crafted");
+        PendingAction action;
+        action.kind = ActionKind::ItemObtained;
+        action.player = &p;
+        action.stack = result;
+        action.how = "crafted";
+        pending.push_back(std::move(action));
     }
     void itemSmelted(Player& p, const ItemStack& result) override {
-        s.server().onItemObtained(p, result, "smelted");
+        PendingAction action;
+        action.kind = ActionKind::ItemObtained;
+        action.player = &p;
+        action.stack = result;
+        action.how = "smelted";
+        pending.push_back(std::move(action));
+    }
+    void flush() {
+        auto actions = std::move(pending);
+        pending.clear();
+        for (auto& action : actions) {
+            switch (action.kind) {
+            case ActionKind::Drop:
+                s.server().spawnItemDropFor(action.dimension, action.x, action.y,
+                                             action.z, action.stack, 0, 0.15, 0);
+                break;
+            case ActionKind::BlockEntityChanged:
+                s.server().blockEntitiesFor(action.dimension).markDirty(action.key);
+                break;
+            case ActionKind::ItemObtained:
+                if (action.player)
+                    s.server().onItemObtained(*action.player, action.stack,
+                                              action.how.c_str());
+                break;
+            }
+        }
     }
 };
+
+static std::unique_lock<std::recursive_mutex> lockMenuBlockEntity(Menu& menu) {
+    if (!menu.blockEntityOwner || !menu.blockEntityOwner->stateMtx)
+        return {};
+    return std::unique_lock<std::recursive_mutex>(*menu.blockEntityOwner->stateMtx);
+}
 
 void Session::run() {
     try {
@@ -231,7 +517,8 @@ void Session::run() {
             WriteBuffer ent;
             ent.varint(1);
             ent.varint(self_->entityId);
-            srv_.broadcastPacketExcept(nullptr, pl::sc::RemoveEntities, ent);
+            srv_.broadcastPacketExceptInDimension(self_->dimension, nullptr,
+                                                  pl::sc::RemoveEntities, ent);
         });
         cleanupStep("chat suggestions", [this] {
             srv_.broadcastChatSuggestions(1, std::vector<std::string>{self_->name}, nullptr);
@@ -798,6 +1085,11 @@ void Session::onEnterPlay() {
     self_->entityId = srv_.nextEntityId();
     self_->lastSeenMs = nowMs();
 
+    // Load the durable dimension/position before emitting Login and the
+    // first chunk view.  Loading afterwards advertised the overworld and
+    // then silently left the client at the hard-coded fresh-spawn point.
+    srv_.loadPlayerData(GameServer::uuidToHex(self_->uuid), *self_);
+    self_->dimension = GameServer::canonicalDimension(self_->dimension);
     sendJoinGame();
     srv_.sendServerData(*self_);
     srv_.sendWorldBorderTo(*self_);
@@ -815,12 +1107,13 @@ void Session::onEnterPlay() {
         conn_->sendPacket(pl::sc::SetHeldSlot, b);
     }
     {   // default spawn point
+        const auto spawn = srv_.worldFor(self_->dimension).spawnPoint();
         WriteBuffer b;
-        b.position(0, -60, 0);
-        b.f32(0.f);
+        b.position(spawn.x, spawn.y, spawn.z);
+        b.f32(spawn.angle);
         conn_->sendPacket(pl::sc::SetDefaultSpawn, b);
     }
-    sendTeleport(0.5, -60.0, 0.5, 0.f, 0.f);
+    sendTeleport(self_->x, self_->y, self_->z, self_->yaw, self_->pitch);
 
     sendPlayerInfoAddSelf();
     // tell everyone about us / tell us about everyone
@@ -848,9 +1141,7 @@ void Session::onEnterPlay() {
         if (self_->enchantmentSeed == 0) self_->enchantmentSeed = 0x5a5a5a5a;
     }
 
-    srv_.loadPlayerData(GameServer::uuidToHex(self_->uuid), *self_);
     sendAbilities();
-    if (!self_->cookies.empty()) {}                    // populated on demand
     self_->prevFeetY = self_->y;
 
     api::PlayerJoinEvent jev;
@@ -893,10 +1184,33 @@ void Session::sendDeclareCommands() {
     conn_->sendPacket(pl::sc::DeclareCommands, b);
 }
 void Session::handleRespawnRequest() {
+    const std::int8_t targetDimension = self_->hasRespawnPoint
+                                            ? GameServer::canonicalDimension(
+                                                  self_->respawnDimension)
+                                            : 0;
+    const auto& targetWorld = srv_.worldFor(targetDimension);
+    const auto worldSpawn = targetWorld.spawnPoint();
+    const std::int32_t spawnX = self_->hasRespawnPoint
+                                    ? self_->respawnX : worldSpawn.x;
+    const std::int32_t spawnY = self_->hasRespawnPoint
+                                    ? self_->respawnY : worldSpawn.y;
+    const std::int32_t spawnZ = self_->hasRespawnPoint
+                                    ? self_->respawnZ : worldSpawn.z;
+    const float spawnAngle = self_->hasRespawnPoint
+                                 ? self_->respawnAngle : worldSpawn.angle;
+    self_->dimension = targetDimension;
+    self_->x = spawnX + 0.5;
+    self_->y = spawnY;
+    self_->z = spawnZ + 0.5;
+    self_->yaw = spawnAngle;
+    self_->pitch = 0.f;
     self_->dead = false;
     self_->health = 20; self_->food = 20; self_->saturation = 5;
     self_->fallDist = 0;
-    WriteBuffer ws = makeWorldState(srv_.config());
+    self_->fireTicks = 0;
+    self_->freezeTicks = 0;
+    self_->sleeping = false;
+    WriteBuffer ws = makeWorldState(srv_.config(), targetWorld, self_->gamemode);
     WriteBuffer b;
     b.raw(ws.data.data(), ws.data.size());
     b.u8(0x03);                                    // keep metadata + attributes
@@ -906,30 +1220,39 @@ void Session::handleRespawnRequest() {
         hp.f32(20.f); hp.varint(20); hp.f32(5.f);
         conn_->sendPacket(pl::sc::SetHealth, hp);
     }
-    sendTeleport(self_->x, -60.0, self_->z, self_->yaw, self_->pitch);
+    {
+        WriteBuffer point;
+        point.position(spawnX, spawnY, spawnZ);
+        point.f32(spawnAngle);
+        conn_->sendPacket(pl::sc::SetDefaultSpawn, point);
+    }
+    sendTeleport(self_->x, self_->y, self_->z, self_->yaw, self_->pitch);
 }
 void Session::sendJoinGame() {
     const ServerConfig& c = srv_.config();
+    const World& world = srv_.worldFor(self_->dimension);
     WriteBuffer b;
     b.i32(self_->entityId);
-    b.boolean(false);                              // hardcore
-    b.varint(1);                                   // worlds[]
+    b.boolean(c.hardcore);                         // hardcore
+    b.varint(3);                                   // worlds[]
     b.string("minecraft:overworld");
+    b.string("minecraft:the_nether");
+    b.string("minecraft:the_end");
     b.varint(c.maxPlayers);
-    b.varint(c.viewDistance);
-    b.varint(std::min(c.simulationDistance, 10));
+    b.varint(effectiveViewDistance(c));
+    b.varint(std::clamp(std::min(c.simulationDistance, 12), 2, 12));
     b.boolean(false);                              // reduced debug
     b.boolean(true);                               // respawn screen
     b.boolean(false);                              // do limited crafting
     // SpawnInfo
     {
-        WriteBuffer ws = makeWorldState(c);
+        WriteBuffer ws = makeWorldState(c, world, self_->gamemode);
         b.raw(ws.data.data(), ws.data.size());
     }
     b.boolean(false);                              // enforces secure chat
     conn_->sendPacket(pl::sc::Login, b);
     WriteBuffer vd;
-    vd.varint(c.viewDistance);
+    vd.varint(effectiveViewDistance(c));
     conn_->sendPacket(pl::sc::UpdateViewDistance, vd);
 }
 void Session::sendAbilities() {
@@ -956,8 +1279,11 @@ void Session::sendSignBlockEntity(std::int32_t x, std::int32_t y, std::int32_t z
         }
         hanging = (d->name.find("hanging_sign") != std::string::npos);
     }
-    BlockEntity* be = srv_.blockEntities().getAt(x, y, z);
-    if (!be || be->kind != BlockEntity::Kind::Sign) return;
+    auto beOwner = srv_.blockEntitiesFor(self_->dimension).getShared(posKey(x, y, z));
+    const BlockEntity* be = beOwner.get();
+    if (!be) return;
+    std::lock_guard entityLock(*be->stateMtx);
+    if (be->kind != BlockEntity::Kind::Sign) return;
     WriteBuffer b;
     b.position(x, y, z);
     b.varint(hanging ? 8 : 7);
@@ -978,13 +1304,14 @@ void Session::sendSignBlockEntity(std::int32_t x, std::int32_t y, std::int32_t z
     side("back_text", be->sign.back);
     w.endCompound();
     conn_->trySendPacket(pl::sc::BlockEntityData, b);
-    srv_.broadcastPacketExcept(self_.get(), pl::sc::BlockEntityData, b);
+    srv_.broadcastPacketExceptInDimension(self_->dimension, self_.get(),
+                                          pl::sc::BlockEntityData, b);
 }
 void Session::applyClientSettings(Player::ClientSettings s) {
     if (s.locale.empty()) s.locale = "en_us";
     self_->clientSettings = s;
     WriteBuffer b;
-    b.varint(std::min({srv_.config().viewDistance, s.viewDistance, 32}));
+    b.varint(effectiveViewDistance(srv_.config(), s.viewDistance));
     conn_->trySendPacket(pl::sc::UpdateViewDistance, b);
 }
 bool Session::requireOp(int level, const char* what) {
@@ -1002,29 +1329,34 @@ void Session::sendTagQueryResponse(std::int32_t transactionId, const WriteBuffer
     conn_->trySendPacket(pl::sc::TagQueryResponse, b);
 }
 void Session::answerBlockNbt(std::int32_t transactionId, std::int32_t x, std::int32_t y, std::int32_t z) {
-    BlockEntity* be = srv_.blockEntities().getAt(x, y, z);
+    auto beOwner = srv_.blockEntitiesFor(self_->dimension).getShared(posKey(x, y, z));
+    const BlockEntity* be = beOwner.get();
     WriteBuffer nbt;
-    if (be && be->kind == BlockEntity::Kind::Sign) {
-        // Real data path: signs carry their text (same shape as the 0x07 resend).
-        World& w = srv_.worldFor(self_->dimension);
-        const auto* d = gen::blockByState(w.getBlock(x, y, z));
-        const bool hanging = d && d->name.find("hanging_sign") != std::string::npos;
-        nbt::Writer wr(nbt);
-        wr.rootCompound();
-        wr.namedString("id", hanging ? "minecraft:hanging_sign" : "minecraft:sign");
-        wr.namedInt("x", x); wr.namedInt("y", y); wr.namedInt("z", z);
-        auto side = [&](const char* key, const std::string lines[4]) {
-            wr.beginCompound(key);
-            wr.beginList("messages", nbt::String, 4);
-            for (int i = 0; i < 4; ++i) wr.bareString(lines[i]);
-            wr.namedString("color", "black");
-            wr.namedByte("has_glowing_text", 0);
+    if (be) {
+        std::lock_guard entityLock(*be->stateMtx);
+        if (be->kind == BlockEntity::Kind::Sign) {
+            // Real data path: signs carry their text (same shape as the 0x07 resend).
+            World& w = srv_.worldFor(self_->dimension);
+            const auto* d = gen::blockByState(w.getBlock(x, y, z));
+            const bool hanging = d && d->name.find("hanging_sign") != std::string::npos;
+            nbt::Writer wr(nbt);
+            wr.rootCompound();
+            wr.namedString("id", hanging ? "minecraft:hanging_sign" : "minecraft:sign");
+            wr.namedInt("x", x); wr.namedInt("y", y); wr.namedInt("z", z);
+            auto side = [&](const char* key, const std::string lines[4]) {
+                wr.beginCompound(key);
+                wr.beginList("messages", nbt::String, 4);
+                for (int i = 0; i < 4; ++i) wr.bareString(lines[i]);
+                wr.namedString("color", "black");
+                wr.namedByte("has_glowing_text", 0);
+                wr.endCompound();
+            };
+            side("front_text", be->sign.front);
+            side("back_text", be->sign.back);
             wr.endCompound();
-        };
-        side("front_text", be->sign.front);
-        side("back_text", be->sign.back);
-        wr.endCompound();
-    } else {
+        }
+    }
+    if (nbt.data.empty()) {
         // Other block entities have no NBT serializer yet — echo the
         // transaction with an empty compound (documented stub, docs/SPEC_WIRE.md).
         nbt::Writer wr(nbt);
@@ -1043,30 +1375,52 @@ void Session::answerEntityNbt(std::int32_t transactionId, std::int32_t entityId)
 }
 // and recomputes the output exactly like a grid click does (live sync).
 void Session::onNameItem(const std::string& name) {
-    if (!openMenu_ || openMenu_->type != MenuType::Anvil) return;
-    Menu& m = *openMenu_;
-    m.anvilRename = name.size() > constants::kMaxRenameLength ? name.substr(0, constants::kMaxRenameLength) : name;
-    if (auto* logic = getMenuLogic(m.type)) logic->onContentChanged(m, *self_);
+    const std::string boundedName =
+        name.size() > constants::kMaxRenameLength
+            ? name.substr(0, constants::kMaxRenameLength) : name;
+    std::shared_ptr<Menu> menu;
+    std::shared_ptr<BlockEntity> menuOwner;
     {
-        const std::string rename = m.anvilRename;
-        const int cost = CostCalculator::anvilCost(m.extraSlots[0], m.extraSlots[1], rename);
-        WriteBuffer pb;
-        pb.varint(m.windowId);
-        pb.i16(0);
-        pb.i16(static_cast<std::int16_t>(cost < 0 ? 0 : cost));
-        conn_->trySendPacket(pl::sc::ContainerSetData, pb);
-        const bool tooExp = CostCalculator::isTooExpensive(cost, self_->gamemode == 1);
-        if (!m.extraSlots[0].empty() && cost > 0 && !tooExp) {
-            m.extraSlots[2] = m.extraSlots[0];
-            m.extraSlots[2].setRepairCost(CostCalculator::nextRepairCost(m.extraSlots[0], m.extraSlots[1]));
-            if (!rename.empty()) m.extraSlots[2].setCustomName(rename);
-            sendSetSlot(m.windowId, self_->invStateId, 2, m.extraSlots[2]);
-        } else {
-            m.extraSlots[2] = ItemStack::air();
-            sendSetSlot(m.windowId, self_->invStateId, 2, m.extraSlots[2]);
-        }
+        std::lock_guard stateLock(self_->stateMtx);
+        if (!openMenu_ || openMenu_->type != MenuType::Anvil) return;
+        menu = openMenu_;
+        menuOwner = menu->blockEntityOwner;
     }
-    sendMenuContent(m);
+
+    std::unique_lock<std::recursive_mutex> entityLock;
+    if (menuOwner && menuOwner->stateMtx)
+        entityLock = std::unique_lock<std::recursive_mutex>(*menuOwner->stateMtx);
+    std::unique_lock playerLock(self_->stateMtx);
+    if (openMenu_.get() != menu.get() || menu->type != MenuType::Anvil) return;
+
+    menu->anvilRename = boundedName;
+    if (auto* logic = getMenuLogic(menu->type))
+        logic->onContentChanged(*menu, *self_);
+    const std::string rename = menu->anvilRename;
+    const int cost = CostCalculator::anvilCost(
+        menu->extraSlots[0], menu->extraSlots[1], rename);
+    const bool tooExpensive = CostCalculator::isTooExpensive(
+        cost, self_->gamemode == 1);
+    if (!menu->extraSlots[0].empty() && cost > 0 && !tooExpensive) {
+        menu->extraSlots[2] = menu->extraSlots[0];
+        menu->extraSlots[2].setRepairCost(CostCalculator::nextRepairCost(
+            menu->extraSlots[0], menu->extraSlots[1]));
+        if (!rename.empty()) menu->extraSlots[2].setCustomName(rename);
+    } else {
+        menu->extraSlots[2] = ItemStack::air();
+    }
+
+    WriteBuffer property;
+    property.varint(menu->windowId);
+    property.i16(0);
+    property.i16(static_cast<std::int16_t>(cost < 0 ? 0 : cost));
+    playerLock.unlock();
+    if (entityLock.owns_lock()) entityLock.unlock();
+
+    // Packet order remains property -> full content -> cursor, while all
+    // packets are emitted outside the model locks.
+    conn_->trySendPacket(pl::sc::ContainerSetData, property);
+    sendMenuContent(*menu);
     syncCursorItem();
 }
 // jump_boost,strength} + secondary regeneration (or primary for tier II).
@@ -1137,11 +1491,13 @@ void Session::sendTeleport(double x, double y, double z, float yaw, float pitch)
 }
 void Session::broadcastSpawnEntity(Player* about) {
     WriteBuffer b = makeSpawnEntity(*about);
-    srv_.broadcastPacketExcept(about, pl::sc::SpawnEntity, b);
+    srv_.broadcastPacketExceptInDimension(about->dimension, about,
+                                          pl::sc::SpawnEntity, b);
     sendSkinMetadata(*about, about->entityId);
     // also tell the newcomer about everyone else
     for (auto& other : srv_.playersSnapshot()) {
-        if (other.get() == about || !other->inPlay) continue;
+        if (other.get() == about || !other->inPlay ||
+            other->dimension != about->dimension) continue;
         WriteBuffer ob = makeSpawnEntity(*other);
         about->conn->trySendPacket(pl::sc::SpawnEntity, ob);
         sendSkinMetadata(*about, other->entityId);
@@ -1170,6 +1526,10 @@ void Session::broadcastPlayerInfoAdd(Player* about) {
     srv_.broadcastPacketExcept(about, pl::sc::PlayerInfoUpdate, add);
 }
 void Session::sendStarterInventory() {
+    WriteBuffer b;
+    std::shared_ptr<Connection> connection = conn_;
+    std::unique_lock playerLock(self_->stateMtx);
+    std::unique_lock packetLock(self_->inventoryPacketMtx);
     // build inventory model from starter kit
     for (auto& s2 : self_->inv) { s2.itemId = 0; s2.count = 0; }
     {
@@ -1180,18 +1540,18 @@ void Session::sendStarterInventory() {
             if (hot < 45) { self_->inv[hot] = InvSlot::of(ii->second, static_cast<std::int16_t>(e.cnt)); ++hot; }
         }
     }
-    WriteBuffer b;
     b.varint(0);                                       // window id: player inventory
     b.varint(++self_->invStateId);
-    b.varint(46);                                  // slots
+    b.varint(46);                                      // slots
     for (int i = 0; i < 46; ++i) self_->inv[i].write(b);
-    ItemStack::air().write(b);                     // carried item
-    conn_->sendPacket(pl::sc::ContainerSetContent, b);
+    ItemStack::air().write(b);                         // carried item
+    playerLock.unlock();
+    connection->sendPacket(pl::sc::ContainerSetContent, b);
 }
 void Session::onWindowClick(ReadBuffer& in) {
     // Strict 1.21.4 (protocol 769) : `window_click` 0x10 windowId VarInt + stateId VarInt (I12).
-    [[maybe_unused]] int windowId = 0;
-    [[maybe_unused]] int stateId = 0;
+    int windowId = 0;
+    int stateId = 0;
     size_t mark = in.off;
     try {
         windowId = in.varint();
@@ -1213,77 +1573,196 @@ void Session::onWindowClick(ReadBuffer& in) {
 
     // changed slots array (client prediction; we recompute server-side)
     const auto nChanged = in.varint();
+    if (nChanged < 0 || nChanged > 1024)
+        throw std::runtime_error("window click changed-slot count out of range");
     for (std::int32_t i = 0; i < nChanged; ++i) {
         (void)in.i16();
         ItemStack::read(in);
     }
     ItemStack::read(in); // discard client cursor (server-authoritative)
 
-    if (windowId != 0 && openMenu_ && openMenu_->windowId == windowId) {
-        handleMenuClick(*openMenu_, slotIdx, button, mode);
+    // Only hold stateMtx while deciding which authoritative view applies.
+    // Menu handling and every resend below take their own short model
+    // snapshot and perform network I/O after releasing the lock.  Keeping
+    // this dispatcher lock-free across those calls also prevents a stale
+    // click from acquiring the player lock and then waiting on a socket.
+    std::shared_ptr<Menu> menu;
+    bool playerWindow = false;
+    bool staleRevision = false;
+    {
+        std::lock_guard playerLock(self_->stateMtx);
+        staleRevision = stateId != self_->invStateId;
+        if (windowId != 0 && openMenu_ && openMenu_->windowId == windowId) {
+            menu = openMenu_;
+        } else if (windowId == 0) {
+            playerWindow = true;
+        }
+    }
+
+    // The revision is the server's optimistic-concurrency guard.  Applying a
+    // click built from an older menu snapshot can duplicate/lose items when a
+    // tick or another packet has already changed the inventory.  Send the
+    // current authoritative view and leave the click unapplied.
+    if (staleRevision) {
+        if (menu) sendMenuContent(*menu);
+        else if (playerWindow) srv_.resendInventory(*self_);
+        syncCursorItem();
+        return;
+    }
+
+    if (menu) {
+        handleMenuClick(*menu, slotIdx, button, mode);
         srv_.syncEquipmentOnChange(*self_);
         return;
     }
-    if (windowId == 0) {
-        // slotIdx 5..8 correspond to armor (boots/leggings/chest/head) in our 46-slot layout
-        if (slotIdx>=5 && slotIdx<=8 && !self_->inv[slotIdx].empty() && EnchantmentHelper::hasBindingCurse(self_->inv[slotIdx])) {
-            // any click that would empty the slot: mode 0 pickup, mode 1 quickMove, mode 2 hotbar, mode 4 throw
-            bool wouldRemove = (mode==0 || mode==1 || mode==2 || mode==4 || mode==5);
-            if (wouldRemove) {
-                srv_.resendInventory(*self_);
-                srv_.syncEquipmentOnChange(*self_);
-                return;
-            }
-        }
-        // player-inventory clicks: trust the predicted slots, then resync. (Full authoritative cursor handling lives in the menu path.)
-        srv_.resendInventory(*self_);
+    if (playerWindow) {
+        handlePlayerInventoryClick(slotIdx, button, mode);
         srv_.syncEquipmentOnChange(*self_);
     }
+}
+
+void Session::handlePlayerInventoryClick(int slot, int button, int mode) {
+    // Player inventory is represented by Player::inv for persistence and all
+    // non-screen callers.  The screen adapter owns only the 2x2 recipe grid
+    // and cached result, then copies those five protocol slots back before the
+    // authoritative ContainerSetContent snapshot is sent.
+    std::unique_lock playerLock(self_->stateMtx);
+    Menu& menu = playerInventoryMenu_;
+    menu.type = MenuType::Crafting;
+    menu.playerInventory = true;
+    menu.blockKey = -1;
+    menu.container = nullptr;
+    menu.containerCount = 0;
+    menu.blockEntity = nullptr;
+    menu.blockEntityOwner.reset();
+    for (auto& stack : menu.craftGrid) stack = ItemStack::air();
+    for (int i = 0; i < 4; ++i)
+        menu.craftGrid[menu.craftGridIndex(i + 1)] =
+            self_->inv[static_cast<std::size_t>(i + 1)];
+    menu.craftResult = self_->inv[0];
+    menu.refreshCraftResult(srv_.recipes());
+
+    SessionMenuIo io(*this);
+    (void)ClickLogic::apply(menu, *self_, srv_.recipes(), slot, button, mode,
+                            cursorItem_, io);
+    for (int i = 0; i < 4; ++i)
+        self_->inv[static_cast<std::size_t>(i + 1)] =
+            menu.craftGrid[menu.craftGridIndex(i + 1)];
+    self_->inv[0] = menu.craftResult;
+    playerLock.unlock();
+
+    io.flush();
+    srv_.resendInventory(*self_);
+    syncCursorItem();
 }
 void Session::onEnchantItem(ReadBuffer& in) {
     // Packet `enchant_item` 0x0F: `windowId` VarInt (protocol.json 1.21.4, strict) + `button` VarInt.
     // Yarn `EnchantmentScreenHandler` uses VarInt for windowId; retain u8 fallback for leniency (vanilla client sends VarInt, some proxies u8).
     int windowId = 0;
     int button = 0;
+    const std::size_t mark = in.off;
     try {
         windowId = in.varint();
         if (in.remaining() > 0) button = in.varint();
         else button = 0;
     } catch (...) {
+        in.off = mark;
         try { windowId = in.u8(); button = in.u8(); } catch(...) { return; }
     }
-    if (!openMenu_ || openMenu_->windowId != windowId) return;
-    if (openMenu_->type != MenuType::Enchantment) return;
+    std::shared_ptr<Menu> menu;
+    std::shared_ptr<BlockEntity> menuOwner;
+    std::int64_t blockKey = -1;
+    std::int8_t dimension = 0;
+    {
+        std::lock_guard playerLock(self_->stateMtx);
+        if (!openMenu_ || openMenu_->windowId != windowId ||
+            openMenu_->type != MenuType::Enchantment)
+            return;
+        menu = openMenu_;
+        menuOwner = menu->blockEntityOwner;
+        blockKey = menu->blockKey;
+        dimension = self_->dimension;
+    }
+
+    // The bookshelf scan only needs the immutable menu position and world;
+    // do it before acquiring the player lock so a world/chunk read cannot
+    // block a concurrent player mutation while holding stateMtx.
+    int bookshelves = 0;
+    if (blockKey != -1) {
+        const int bx = posKeyUnpackX(blockKey);
+        const int by = posKeyUnpackY(blockKey);
+        const int bz = posKeyUnpackZ(blockKey);
+        bookshelves = CostCalculator::countBookshelves(
+            srv_.worldFor(dimension), bx, by, bz);
+    }
+
+    std::unique_lock<std::recursive_mutex> entityLock;
+    if (menuOwner && menuOwner->stateMtx)
+        entityLock = std::unique_lock<std::recursive_mutex>(*menuOwner->stateMtx);
+    std::unique_lock playerLock(self_->stateMtx);
+    if (openMenu_.get() != menu.get() || menu->windowId != windowId ||
+        menu->type != MenuType::Enchantment)
+        return;
     auto* logic = getMenuLogic(MenuType::Enchantment);
-    if (!logic) return;
-    auto* ench = dynamic_cast<EnchantmentMenuLogic*>(logic);
+    auto* ench = logic ? dynamic_cast<EnchantmentMenuLogic*>(logic) : nullptr;
     if (!ench) return;
-    struct LocalIo : MenuIo {
-        Session& s;
-        explicit LocalIo(Session& ss): s(ss){}
-        void dropFromPlayer(Player& p, const ItemStack& stack, bool whole) override {
-            ItemStack s2 = stack;
-            if (!whole) s2.count = 1;
-            s.server().spawnItemDrop(p.x, p.y + 1.2, p.z, s2, 0,0.15,0);
-        }
-        void blockEntityChanged(std::int64_t key) override { s.server().blockEntities().dirty_.insert(key); }
-        void itemCrafted(Player& p, const ItemStack& result) override { s.server().onItemObtained(p,result,"crafted"); }
-        void itemSmelted(Player& p, const ItemStack& result) override { s.server().onItemObtained(p,result,"smelted"); }
-    } io(*this);
-    if (ench->onEnchantButton(*openMenu_, *self_, button, io)) {
-        if(self_){
-            int levels = (button+1)*10; // approximate vanilla 5-30 mapping
-            std::string enchItemName="minecraft:diamond_sword";
-            if(self_->heldSlot>=0 && self_->heldSlot<9){
-                auto &hs = self_->inv[36+self_->heldSlot];
-                if(!hs.empty()) enchItemName=hs.name();
-                else {
-                    if(!openMenu_->extraSlots[0].empty()) enchItemName=openMenu_->extraSlots[0].name();
-                }
-            }
-            srv_.onItemEnchanted(*self_, enchItemName, levels);
-        }
-        sendMenuContent(*openMenu_);
+
+    ItemStack* input = menu->container ? &menu->container[0]
+                                       : &menu->extraSlots[0];
+    ItemStack* lapis = menu->container ? &menu->container[1]
+                                       : &menu->extraSlots[1];
+    const auto lapisId = gen::itemIdByName().find("minecraft:lapis_lazuli");
+    if (button < 0 || button >= 3 || input->empty() || lapis->empty() ||
+        lapisId == gen::itemIdByName().end() || lapis->itemId != lapisId->second)
+        return;
+
+    const auto offers = ench->offers(*menu, *self_, bookshelves);
+    const EnchantmentOffer& choice =
+        offers[static_cast<std::size_t>(button)];
+    if (!choice.selectable() || lapis->count < choice.lapisCost)
+        return;
+    const int requiredLevel = button + 1;
+    if (self_->gamemode == 0 &&
+        (self_->xp.level < requiredLevel || self_->xp.level < choice.levelCost))
+        return;
+
+    // Apply the presented choice while the menu and player model are
+    // serialized.  This is intentionally equivalent to
+    // EnchantmentMenuLogic::onEnchantButton, but keeps its experience packet
+    // out of the critical section.
+    const std::string enchantedItemName = input->name();
+    const int consumedLapis = choice.lapisCost;
+    *input = choice.result;
+    lapis->count -= choice.lapisCost;
+    if (lapis->count <= 0) *lapis = ItemStack::air();
+    const bool experienceChanged = self_->gamemode == 0;
+    if (experienceChanged)
+        self_->xp.level = std::max(0, self_->xp.level - choice.levelCost);
+    std::uint32_t nextSeed = CostCalculator::splitmix32(
+        static_cast<std::uint32_t>(self_->enchantmentSeed) +
+        0x9e3779b9u + static_cast<std::uint32_t>(button));
+    if (nextSeed == 0) nextSeed = 0x5a5a5a5au;
+    self_->enchantmentSeed = static_cast<std::int32_t>(nextSeed);
+    const std::int32_t enchantedWindowId = menu->windowId;
+
+    SessionMenuIo io(*this);
+    io.blockEntityChanged(menu->blockKey);
+    playerLock.unlock();
+    if (entityLock.owns_lock()) entityLock.unlock();
+
+    if (experienceChanged) GameServer::sendSetExperience(*self_);
+    io.flush();
+    // Advancement/JVM hooks may synchronously close or replace the menu.
+    if (!enchantedItemName.empty())
+        srv_.onItemEnchanted(*self_, enchantedItemName, consumedLapis);
+    bool sameMenu = false;
+    {
+        std::lock_guard stateLock(self_->stateMtx);
+        sameMenu = openMenu_.get() == menu.get() &&
+                   openMenu_->windowId == enchantedWindowId;
+    }
+    if (sameMenu) {
+        sendMenuContent(*menu);
         syncCursorItem();
     }
 }
@@ -1296,10 +1775,7 @@ void Session::onTabComplete(ReadBuffer& in) {
     src.name = self_->name;
     src.console = false;
     src.srcX = self_->x; src.srcY = self_->y; src.srcZ = self_->z;
-    src.resolveSelector = [this](const std::string& raw,
-                                 brigadier::SelectorResult& out) {
-        out = srv_.resolveSelector(raw, self_.get());
-    };
+    srv_.bindCommandSelector(src);
 
     std::string query = text;
     if (!query.empty() && query[0] == '/') query = query.substr(1);
@@ -1342,31 +1818,87 @@ void Session::sendSetSlot(std::int32_t windowId, std::int32_t stateId,
     b.varint(stateId);
     b.i16(slot);
     s.write(b);
+    std::lock_guard packetLock(self_->inventoryPacketMtx);
     conn_->trySendPacket(pl::sc::ContainerSetSlot, b);
 }
 void Session::syncCursorItem() {
     WriteBuffer b;
     cursorItem_.write(b);
+    std::lock_guard packetLock(self_->inventoryPacketMtx);
     conn_->trySendPacket(pl::sc::SetCursorItem, b);
 }
 void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
+    Menu* const menuPtr = &m;
+    const std::int32_t menuWindowId = m.windowId;
+    // A menu backed by a block entity must be updated atomically with the
+    // player's inventory, but the entity lock is never held during packet
+    // I/O or deferred callbacks.  Keep one order everywhere in this file:
+    // block entity -> player.
+    auto entityLock = lockMenuBlockEntity(m);
+    std::unique_lock playerLock(self_->stateMtx);
+    SessionMenuIo io(*this);
+    std::vector<WriteBuffer> extraPackets;
+    bool experienceChanged = false;
+
+    const auto menuStillOpen = [&]() {
+        std::lock_guard playerStateLock(self_->stateMtx);
+        return openMenu_ && openMenu_.get() == menuPtr &&
+               openMenu_->windowId == menuWindowId;
+    };
+    const auto releaseModelLocks = [&]() {
+        if (playerLock.owns_lock()) playerLock.unlock();
+        if (entityLock.owns_lock()) entityLock.unlock();
+    };
+    const auto finish = [&]() {
+        releaseModelLocks();
+        // MenuIo callbacks are extension/world work and must run after both
+        // model locks have been released.  They may also close or replace the
+        // menu, so all subsequent packet emission is guarded by
+        // menuStillOpen().
+        if (experienceChanged) GameServer::sendSetExperience(*self_);
+        io.flush();
+        if (!menuStillOpen()) return;
+        sendMenuContent(*menuPtr);
+        if (!menuStillOpen()) return;
+        syncCursorItem();
+        if (!menuStillOpen()) return;
+        for (const auto& packet : extraPackets)
+            conn_->trySendPacket(pl::sc::ContainerSetData, packet);
+    };
+
+    const auto giveOutput = [&](const ItemStack& output) {
+        if (output.empty()) return false;
+        if (cursorItem_.empty()) {
+            cursorItem_ = output;
+            return true;
+        }
+        if (sameInventoryStack(cursorItem_, output)) {
+            const int limit = maxStackFor(output);
+            if (cursorItem_.count <= limit - output.count) {
+                cursorItem_.count = static_cast<std::int16_t>(
+                    cursorItem_.count + output.count);
+                return true;
+            }
+        }
+        auto trial = self_->inv;
+        if (!insertCompleteInventoryStack(trial, output)) return false;
+        self_->inv = std::move(trial);
+        return true;
+    };
+
     // Stonecutter output take (slot 1) - consume input, give result
     if (m.type == MenuType::Stonecutter && slot == 1 && mode == 0 && button == 0) {
         ItemStack* inp = m.container ? &m.container[0] : &m.extraSlots[0];
         ItemStack* out = m.container ? &m.container[1] : &m.extraSlots[1];
         if (!out->empty() && !inp->empty()) {
-            if (cursorItem_.empty()) cursorItem_ = *out;
-            else if (cursorItem_.itemId == out->itemId && cursorItem_.count + out->count <= 64) cursorItem_.count = static_cast<std::int16_t>(cursorItem_.count + out->count);
-            else srv_.addToInventory(*self_, out->itemId, out->count);
+            if (!giveOutput(*out)) return;
             if (--inp->count <= 0) *inp = ItemStack::air();
             if (!inp->empty()) {
                 const Recipe* r = srv_.recipes().findStonecutting(inp->itemId);
                 if (r) *out = r->result;
                 else *out = ItemStack::air();
             } else *out = ItemStack::air();
-            sendMenuContent(m);
-            syncCursorItem();
-            sendSetSlot(m.windowId, self_->invStateId, 1, *out);
+            finish();
             return;
         }
     }
@@ -1378,13 +1910,11 @@ void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
             if (cost < 0) cost = 0;
             bool tooExp = CostCalculator::isTooExpensive(cost, self_->gamemode==1);
             if ((self_->xp.level >= cost || self_->gamemode == 1) && cost > 0 && !tooExp) {
+                if (!giveOutput(*out)) return;
                 if (self_->gamemode == 0) {
                     self_->xp.level -= cost;
-                    GameServer::sendSetExperience(*self_);
+                    experienceChanged = true;
                 }
-                if (cursorItem_.empty()) cursorItem_ = *out;
-                else if (cursorItem_.itemId == out->itemId) cursorItem_.count = static_cast<std::int16_t>(cursorItem_.count + out->count);
-                else srv_.addToInventory(*self_, out->itemId, out->count);
                 if (--m.extraSlots[0].count <= 0) m.extraSlots[0] = ItemStack::air();
                 if (!m.extraSlots[1].empty() && --m.extraSlots[1].count <= 0) m.extraSlots[1] = ItemStack::air();
                 *out = ItemStack::air();
@@ -1394,9 +1924,8 @@ void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
                 pb.varint(m.windowId);
                 pb.i16(0);
                 pb.i16(static_cast<std::int16_t>(newCost < 0 ? 0 : newCost));
-                conn_->trySendPacket(pl::sc::ContainerSetData, pb);
-                sendMenuContent(m);
-                syncCursorItem();
+                extraPackets.push_back(std::move(pb));
+                finish();
                 return;
             }
         }
@@ -1411,9 +1940,7 @@ void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
             bool isFilledMap = out->name() == "minecraft:filled_map" || mapIn->name() == "minecraft:filled_map";
             bool isPaper = paperIn->name() == "minecraft:paper";
             if (isFilledMap && isPaper) {
-                if (cursorItem_.empty()) cursorItem_ = *out;
-                else if (cursorItem_.itemId == out->itemId && cursorItem_.count + out->count <= 64) cursorItem_.count = static_cast<std::int16_t>(cursorItem_.count + out->count);
-                else srv_.addToInventory(*self_, out->itemId, out->count);
+                if (!giveOutput(*out)) return;
                 if (--paperIn->count <= 0) *paperIn = ItemStack::air();
                 // map slot is not consumed (vanilla duplicates map, not consumes); vanilla keeps map and only consumes paper
                 // Duplicate output is single map copy already given; clear output and recompute
@@ -1423,14 +1950,11 @@ void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
                     *out = *mapIn;
                     out->count = 1;
                 }
-                sendMenuContent(m);
-                syncCursorItem();
-                sendSetSlot(m.windowId, self_->invStateId, 2, *out);
+                finish();
                 return;
             }
         }
     }
-    SessionMenuIo io(*this);
     if (auto* logic = getMenuLogic(m.type)) {
         // Check if click is within container region; let logic handle it, fallback to generic for player inv
         int cont = m.totalSlots() - 36;
@@ -1439,8 +1963,7 @@ void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
             if (handled) {
                 logic->onContentChanged(m, *self_);
                 if (m.type == MenuType::Crafting) m.refreshCraftResult(srv_.recipes());
-                sendMenuContent(m);
-                syncCursorItem();
+                finish();
                 return;
             }
         }
@@ -1452,9 +1975,10 @@ void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
     if (m.type == MenuType::Crafting) m.refreshCraftResult(srv_.recipes());
     // Also notify MenuLogic of content change for result recomputation (e.g., Anvil)
     if (auto* logic2 = getMenuLogic(m.type)) logic2->onContentChanged(m, *self_);
-    sendMenuContent(m);
-    syncCursorItem();
-    // Stonecutter ghost auto update
+    // Recompute dependent result slots before taking the authoritative menu
+    // snapshot.  The previous order emitted a full snapshot and then a
+    // separate slot packet, which allowed a newer revision to overtake that
+    // slot packet on a concurrent send path.
     if (m.type == MenuType::Stonecutter) {
         ItemStack* inp = m.container ? &m.container[0] : &m.extraSlots[0];
         ItemStack* out = m.container ? &m.container[1] : &m.extraSlots[1];
@@ -1465,7 +1989,6 @@ void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
         } else {
             *out = ItemStack::air();
         }
-        sendSetSlot(m.windowId, self_->invStateId, 1, *out);
     }
     // vanilla: filled_map + paper -> filled_map copy (count 1); paper consumed on take, map preserved
     if (m.type == MenuType::CartographyTable) {
@@ -1488,7 +2011,6 @@ void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
         } else {
             *out = ItemStack::air();
         }
-        sendSetSlot(m.windowId, self_->invStateId, 2, *out);
     }
     if (m.type == MenuType::Anvil) {
         std::string rename = m.anvilRename;
@@ -1497,7 +2019,7 @@ void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
         pb.varint(m.windowId);
         pb.i16(0);
         pb.i16(static_cast<std::int16_t>(cost < 0 ? 0 : cost));
-        conn_->trySendPacket(pl::sc::ContainerSetData, pb);
+        extraPackets.push_back(std::move(pb));
         bool tooExp = CostCalculator::isTooExpensive(cost, self_->gamemode==1);
         if (!m.extraSlots[0].empty() && cost > 0 && !tooExp) {
             m.extraSlots[2] = m.extraSlots[0];
@@ -1509,27 +2031,8 @@ void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
                 if(lvl==0) lvl = m.extraSlots[1].enchantLevel("minecraft:protection");
                 if(lvl>0) ItemStack::addEnchant(m.extraSlots[2], "minecraft:protection", lvl);
             }
-            sendSetSlot(m.windowId, self_->invStateId, 2, m.extraSlots[2]);
         } else {
             m.extraSlots[2] = ItemStack::air();
-            sendSetSlot(m.windowId, self_->invStateId, 2, m.extraSlots[2]);
-        }
-    }
-    if (m.type == MenuType::Enchantment) {
-        int bs = 0;
-        if (m.blockKey >= 0) {
-            int bx = posKeyUnpackX(m.blockKey);
-            int by = posKeyUnpackY(m.blockKey);
-            int bz = posKeyUnpackZ(m.blockKey);
-            bs = CostCalculator::countBookshelves(srv_.world(), bx, by, bz);
-        }
-        auto costs = CostCalculator::enchantingCostsForShelves(*self_, bs);
-        for (int i = 0; i < 3; ++i) {
-            WriteBuffer pb;
-            pb.varint(m.windowId);
-            pb.i16(static_cast<std::int16_t>(i));
-            pb.i16(static_cast<std::int16_t>(costs[i]));
-            conn_->trySendPacket(pl::sc::ContainerSetData, pb);
         }
     }
     if (m.type == MenuType::Brewing) {
@@ -1540,7 +2043,7 @@ void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
                 pb.varint(m.windowId);
                 pb.i16(static_cast<std::int16_t>(prop));
                 pb.i16(prop == 0 ? b.brewTime : b.fuel);
-                conn_->trySendPacket(pl::sc::ContainerSetData, pb);
+                extraPackets.push_back(std::move(pb));
             }
         }
     }
@@ -1553,36 +2056,28 @@ void Session::handleMenuClick(Menu& m, int slot, int button, int mode) {
                 pb.varint(m.windowId);
                 pb.i16(static_cast<std::int16_t>(prop));
                 pb.i16(static_cast<std::int16_t>(props[prop]));
-                conn_->trySendPacket(pl::sc::ContainerSetData, pb);
+                extraPackets.push_back(std::move(pb));
             }
         }
     }
-    // Strict audit MEDIUM: Crafter triggered toggle (1.21.4 crafter `triggered` only; stonecutter has no triggered property — crafter parity)
-    if (m.type == MenuType::Crafter && m.blockKey >= 0) {
-        int bx = posKeyUnpackX(m.blockKey);
-        int by = posKeyUnpackY(m.blockKey);
-        int bz = posKeyUnpackZ(m.blockKey);
-        std::uint16_t st = srv_.world().getBlock(bx, by, bz);
-        const auto* def = gen::blockByState(st);
-        if (def) {
-            auto props = gen::propsOf(st);
-            bool hasTrig = false;
-            std::string cur;
-            for (auto& kv : props) if (kv.first == "triggered") { hasTrig = true; cur = std::string(kv.second); }
-            if (hasTrig) {
-                std::string nxt = (cur == "true" ? "false" : "true");
-                std::vector<std::pair<std::string_view,std::string_view>> np;
-                for (auto& kv : props) if (kv.first != "triggered") np.emplace_back(kv.first, kv.second);
-                np.emplace_back("triggered", nxt);
-                std::uint16_t ns = static_cast<std::uint16_t>(gen::stateWithProps(*def, np));
-                srv_.world().setBlock(bx, by, bz, ns);
-                srv_.broadcastBlockChange(bx, by, bz, ns);
-            }
-        }
-    }
+    finish();
 }
 void Session::sendMenuContent(Menu& m) {
     WriteBuffer b;
+    std::vector<WriteBuffer> propertyPackets;
+    std::shared_ptr<Connection> connection = conn_;
+    auto entityLock = lockMenuBlockEntity(m);
+    // Keep the lock order consistent with handleMenuClick/onEnchantItem:
+    // container first, then player.  The locks are used only to snapshot the
+    // model; packet I/O happens after both are released.
+    std::unique_lock playerLock(self_->stateMtx);
+    std::unique_lock packetLock(self_->inventoryPacketMtx);
+    // The caller may have released stateMtx before requesting this snapshot.
+    // A close/reopen can therefore leave the owning handle alive while the
+    // object is no longer the session's active screen.  Do not emit a stale
+    // snapshot for that old screen.
+    if (openMenu_.get() != &m)
+        return;
     b.varint(m.windowId);
     b.varint(++self_->invStateId);
     b.varint(m.totalSlots());
@@ -1592,17 +2087,88 @@ void Session::sendMenuContent(Menu& m) {
         else ItemStack::air().write(b);
     }
     cursorItem_.write(b);
-    conn_->trySendPacket(pl::sc::ContainerSetContent, b);
+    appendEnchantmentProperties(m, propertyPackets);
+    playerLock.unlock();
+    if (entityLock.owns_lock()) entityLock.unlock();
+    connection->trySendPacket(pl::sc::ContainerSetContent, b);
+    for (const auto& packet : propertyPackets)
+        connection->trySendPacket(pl::sc::ContainerSetData, packet);
+}
+void Session::appendEnchantmentProperties(
+    Menu& m, std::vector<WriteBuffer>& packets) {
+    if (m.type != MenuType::Enchantment || !self_) return;
+
+    const std::int8_t dimension = self_->dimension;
+    int bookshelves = 0;
+    if (m.blockKey != -1) {
+        const int bx = posKeyUnpackX(m.blockKey);
+        const int by = posKeyUnpackY(m.blockKey);
+        const int bz = posKeyUnpackZ(m.blockKey);
+        bookshelves = CostCalculator::countBookshelves(
+            srv_.worldFor(dimension), bx, by, bz);
+    }
+
+    std::array<EnchantmentOffer, 3> offers{};
+    std::int32_t enchantmentSeed = 0;
+    if (auto* logic = getMenuLogic(MenuType::Enchantment)) {
+        if (auto* enchantment = dynamic_cast<EnchantmentMenuLogic*>(logic)) {
+            offers = enchantment->offers(m, *self_, bookshelves);
+            enchantmentSeed = self_->enchantmentSeed;
+        }
+    }
+
+    // EnchantmentScreenHandler's PropertyDelegate order in 1.21.4 is:
+    // power[0..2], seed, enchantmentId[0..2], enchantmentLevel[0..2].
+    auto appendProperty = [&](int property, int value) {
+        WriteBuffer pb;
+        pb.varint(m.windowId);
+        pb.i16(static_cast<std::int16_t>(property));
+        pb.i16(static_cast<std::int16_t>(value));
+        packets.push_back(std::move(pb));
+    };
+    for (int i = 0; i < 3; ++i)
+        appendProperty(i, offers[static_cast<std::size_t>(i)].levelCost);
+    appendProperty(3, enchantmentSeed);
+    for (int i = 0; i < 3; ++i)
+        appendProperty(4 + i, offers[static_cast<std::size_t>(i)].enchantmentId);
+    for (int i = 0; i < 3; ++i)
+        appendProperty(7 + i, offers[static_cast<std::size_t>(i)].enchantmentLevel);
 }
 void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
                          std::uint16_t stateOfBlock) {
+    // A UseItemOn packet carries the state observed by the client.  The
+    // block may have changed before this handler runs (redstone, a tick, or
+    // another player), so never construct a menu from a stale state.  Keep
+    // the player lock out of the world/store lookup: the normal menu lock
+    // order is block-entity -> player.
+    std::int8_t dimension = 0;
+    {
+        std::lock_guard playerLock(self_->stateMtx);
+        if (!self_->inPlay || self_->dead) return;
+        dimension = GameServer::canonicalDimension(self_->dimension);
+    }
+    const std::uint16_t currentState = srv_.worldFor(dimension).getBlock(x, y, z);
+    if (currentState != stateOfBlock) return;
     const gen::BlockDef* def = gen::blockByState(stateOfBlock);
     if (!def) return;
     const std::string name(def->name);
 
-    auto menu = std::make_unique<Menu>();
+    auto menu = std::make_shared<Menu>();
     menu->windowId = ++menuWindowCounter_;
     menu->blockKey = posKey(x, y, z);
+    auto& blockEntityStore = srv_.blockEntitiesFor(dimension);
+    const auto openBlockEntity = [&](BlockEntity::Kind kind) {
+        auto owner = blockEntityStore.getShared(menu->blockKey);
+        bool wrongKind = !owner;
+        if (owner) {
+            std::lock_guard entityLock(*owner->stateMtx);
+            wrongKind = owner->kind != kind;
+        }
+        if (wrongKind)
+            owner = blockEntityStore.createShared(menu->blockKey, kind);
+        menu->blockEntityOwner = owner;
+        return owner.get();
+    };
 
     if (name == "minecraft:ender_chest") {
         // B-14 EnderItems: per-player 27 slots, not per-block (vanilla EnderChest)
@@ -1612,43 +2178,36 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
         menu->blockEntity = nullptr;
     } else if (name.find("chest") != std::string::npos &&
         name.find("ender") == std::string::npos) {
-        auto* be = srv_.blockEntities().getAt(x, y, z);
-        if (!be)
-            be = &srv_.blockEntities().create(menu->blockKey,
-                                              BlockEntity::Kind::Chest);
+        auto* be = openBlockEntity(BlockEntity::Kind::Chest);
         menu->type = MenuType::Chest;
         menu->container = be->chest.slots;
         menu->containerCount = ChestData::kSlots;
         menu->blockEntity = be;
     } else if (name == "minecraft:hopper" || name == "minecraft:dispenser" ||
                name == "minecraft:dropper") {
-        auto* be = srv_.blockEntities().getAt(x, y, z);
         const bool hopper = name == "minecraft:hopper";
-        if (!be)
-            be = &srv_.blockEntities().create(menu->blockKey,
-                hopper ? BlockEntity::Kind::Hopper
-                       : BlockEntity::Kind::Dispenser);
+        const auto kind = hopper ? BlockEntity::Kind::Hopper
+            : (name == "minecraft:dropper" ? BlockEntity::Kind::Dropper
+                                             : BlockEntity::Kind::Dispenser);
+        auto* be = openBlockEntity(kind);
         menu->type = hopper ? MenuType::Hopper : MenuType::Dispenser;
         menu->container = be->generic.slots;
         menu->containerCount = hopper ? 5 : 9;
         menu->blockEntity = be;
     } else if (name == "minecraft:furnace") {
-        auto* be = srv_.blockEntities().getAt(x, y, z);
-        if (!be) be = &srv_.blockEntities().create(menu->blockKey, BlockEntity::Kind::Furnace);
+        auto* be = openBlockEntity(BlockEntity::Kind::Furnace);
         menu->type = MenuType::Furnace;
         menu->container = be->furnace.slots;
         menu->containerCount = 3;
         menu->blockEntity = be;
     } else if (name == "minecraft:blast_furnace") {
-        auto* be = srv_.blockEntities().getAt(x, y, z);
-        if (!be) be = &srv_.blockEntities().create(menu->blockKey, BlockEntity::Kind::Furnace);
+        auto* be = openBlockEntity(BlockEntity::Kind::Furnace);
         menu->type = MenuType::BlastFurnace;
         menu->container = be->furnace.slots;
         menu->containerCount = 3;
         menu->blockEntity = be;
     } else if (name == "minecraft:smoker") {
-        auto* be = srv_.blockEntities().getAt(x, y, z);
-        if (!be) be = &srv_.blockEntities().create(menu->blockKey, BlockEntity::Kind::Furnace);
+        auto* be = openBlockEntity(BlockEntity::Kind::Furnace);
         menu->type = MenuType::Smoker;
         menu->container = be->furnace.slots;
         menu->containerCount = 3;
@@ -1665,8 +2224,7 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
         menu->container = menu->extraSlots;
         menu->containerCount = 3;
     } else if (name == "minecraft:brewing_stand") {
-        auto* be = srv_.blockEntities().getAt(x, y, z);
-        if (!be) be = &srv_.blockEntities().create(menu->blockKey, BlockEntity::Kind::Brewing);
+        auto* be = openBlockEntity(BlockEntity::Kind::Brewing);
         menu->type = MenuType::Brewing;
         menu->container = be->brewing.slots;
         menu->containerCount = 5;
@@ -1692,23 +2250,24 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
         menu->container = menu->extraSlots;
         menu->containerCount = 4;
     } else if (name == "minecraft:barrel") {
-        auto* be = srv_.blockEntities().getAt(x, y, z);
-        if (!be) be = &srv_.blockEntities().create(menu->blockKey, BlockEntity::Kind::Barrel);
+        auto* be = openBlockEntity(BlockEntity::Kind::Barrel);
         menu->type = MenuType::Barrel;
         menu->container = be->chest.slots;
         menu->containerCount = 27;
         menu->blockEntity = be;
     } else if (name.find("shulker_box") != std::string::npos) {
-        auto* be = srv_.blockEntities().getAt(x, y, z);
-        if (!be) be = &srv_.blockEntities().create(menu->blockKey, BlockEntity::Kind::ShulkerBox);
+        auto* be = openBlockEntity(BlockEntity::Kind::ShulkerBox);
         menu->type = MenuType::ShulkerBox;
         menu->container = be->chest.slots;
         menu->containerCount = ChestData::kSlots;
         menu->blockEntity = be;
     } else if (name == "minecraft:crafter") {
+        auto* be = openBlockEntity(BlockEntity::Kind::Crafter);
         menu->type = MenuType::Crafter;
-        menu->container = menu->extraSlots;
+        menu->container = be->crafter.slots;
         menu->containerCount = 9;
+        menu->crafterDisabledSlots = &be->crafter.disabledSlots;
+        menu->blockEntity = be;
     } else if (name == "minecraft:cartography_table") {
         menu->type = MenuType::CartographyTable;
         menu->container = menu->extraSlots;
@@ -1719,12 +2278,27 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
         menu->containerCount = 1;
     } else return;
 
+    // Opening another screen first closes the previous handler.  Apart from
+    // matching vanilla's screen lifecycle, this is important because the
+    // previous handler may own a cursor item or transient input slots.  Do
+    // this before publishing the new pointer, so no re-entrant packet can
+    // observe two active menus.
+    closeOpenMenu(true);
+    menu->refreshCraftResult(srv_.recipes());
+
+    std::shared_ptr<Menu> activeMenu;
+    {
+        std::lock_guard playerLock(self_->stateMtx);
+        openMenu_ = std::move(menu);
+        activeMenu = openMenu_;
+    }
+
     {
         WriteBuffer b;
-        b.varint(menu->windowId);
-        b.varint(menu->openScreenTypeId());
+        b.varint(activeMenu->windowId);
+        b.varint(activeMenu->openScreenTypeId());
         const char* title = "Container";
-        switch(menu->type) {
+        switch(activeMenu->type) {
             case MenuType::Chest: title="Chest"; break;
             case MenuType::Furnace: title="Furnace"; break;
             case MenuType::BlastFurnace: title="Blast Furnace"; break;
@@ -1751,52 +2325,76 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
         nbt::writeTextComponent(b, title);
         conn_->sendPacket(pl::sc::OpenScreen, b);
     }
-    openMenu_ = std::move(menu);
-    openMenu_->refreshCraftResult(srv_.recipes());
-    sendMenuContent(*openMenu_);
-    if (openMenu_->type == MenuType::Enchantment) {
-        int bs = 0;
-        if (openMenu_->blockKey >= 0) {
-            int bx = posKeyUnpackX(openMenu_->blockKey);
-            int by = posKeyUnpackY(openMenu_->blockKey);
-            int bz = posKeyUnpackZ(openMenu_->blockKey);
-            bs = CostCalculator::countBookshelves(srv_.world(), bx, by, bz);
+
+    // sendMenuContent takes its own short model snapshot.  The active menu
+    // is published before the first packet so a re-entrant client/JVM path
+    // cannot click a screen that the session does not yet know about.
+    sendMenuContent(*activeMenu);
+
+    MenuType activeType = MenuType::Chest;
+    std::int32_t activeWindowId = 0;
+    ItemStack anvilLeft = ItemStack::air();
+    ItemStack anvilRight = ItemStack::air();
+    std::shared_ptr<BlockEntity> propertyOwner;
+    {
+        std::lock_guard playerLock(self_->stateMtx);
+        if (openMenu_.get() != activeMenu.get()) return;
+        activeType = activeMenu->type;
+        activeWindowId = activeMenu->windowId;
+        propertyOwner = activeMenu->blockEntityOwner;
+        if (activeType == MenuType::Anvil) {
+            anvilLeft = activeMenu->extraSlots[0];
+            anvilRight = activeMenu->extraSlots[1];
         }
-        auto costs = CostCalculator::enchantingCostsForShelves(*self_, bs);
-        for (int i = 0; i < 3; ++i) {
-            WriteBuffer pb;
-            pb.varint(openMenu_->windowId);
-            pb.i16(static_cast<std::int16_t>(i));
-            pb.i16(static_cast<std::int16_t>(costs[i]));
-            conn_->trySendPacket(pl::sc::ContainerSetData, pb);
-        }
-    } else if (openMenu_->type == MenuType::Anvil) {
-        ItemStack left = openMenu_->extraSlots[0];
-        ItemStack right = openMenu_->extraSlots[1];
+    }
+    if (activeType == MenuType::Anvil) {
+        ItemStack left = anvilLeft;
+        ItemStack right = anvilRight;
         int cost = CostCalculator::anvilCost(left, right, "");
         WriteBuffer pb;
-        pb.varint(openMenu_->windowId);
+        pb.varint(activeWindowId);
         pb.i16(0);
         pb.i16(static_cast<std::int16_t>(cost < 0 ? 0 : cost));
         conn_->trySendPacket(pl::sc::ContainerSetData, pb);
-    } else if (openMenu_->type == MenuType::Brewing) {
-        if (openMenu_->blockEntity && openMenu_->blockEntity->kind == BlockEntity::Kind::Brewing) {
-            auto &b = openMenu_->blockEntity->brewing;
+    } else if (activeType == MenuType::Brewing) {
+        int brewTime = 0;
+        int fuel = 0;
+        bool valid = false;
+        if (propertyOwner && propertyOwner->stateMtx) {
+            std::lock_guard entityLock(*propertyOwner->stateMtx);
+            if (propertyOwner->kind == BlockEntity::Kind::Brewing) {
+                brewTime = propertyOwner->brewing.brewTime;
+                fuel = propertyOwner->brewing.fuel;
+                valid = true;
+            }
+        }
+        if (valid) {
             for (int prop = 0; prop < 2; ++prop) {
                 WriteBuffer pb;
-                pb.varint(openMenu_->windowId);
+                pb.varint(activeWindowId);
                 pb.i16(static_cast<std::int16_t>(prop));
-                pb.i16(prop == 0 ? b.brewTime : b.fuel);
+                pb.i16(static_cast<std::int16_t>(prop == 0 ? brewTime : fuel));
                 conn_->trySendPacket(pl::sc::ContainerSetData, pb);
             }
         }
-    } else if (openMenu_->type == MenuType::Furnace || openMenu_->type == MenuType::BlastFurnace || openMenu_->type == MenuType::Smoker) {
-        if (openMenu_->blockEntity && openMenu_->blockEntity->kind == BlockEntity::Kind::Furnace) {
-            auto &f = openMenu_->blockEntity->furnace;
-            const int props[4] = {f.cookProgress, f.cookTotal, f.burnTicks, f.burnDuration};
+    } else if (activeType == MenuType::Furnace ||
+               activeType == MenuType::BlastFurnace ||
+               activeType == MenuType::Smoker) {
+        std::array<int, 4> props{};
+        bool valid = false;
+        if (propertyOwner && propertyOwner->stateMtx) {
+            std::lock_guard entityLock(*propertyOwner->stateMtx);
+            if (propertyOwner->kind == BlockEntity::Kind::Furnace) {
+                const auto& f = propertyOwner->furnace;
+                props = {f.cookProgress, f.cookTotal, f.burnTicks,
+                         f.burnDuration};
+                valid = true;
+            }
+        }
+        if (valid) {
             for (int prop = 0; prop < 4; ++prop) {
                 WriteBuffer pb;
-                pb.varint(openMenu_->windowId);
+                pb.varint(activeWindowId);
                 pb.i16(static_cast<std::int16_t>(prop));
                 pb.i16(static_cast<std::int16_t>(props[prop]));
                 conn_->trySendPacket(pl::sc::ContainerSetData, pb);
@@ -1805,29 +2403,103 @@ void Session::openMenuAt(std::int32_t x, std::int32_t y, std::int32_t z,
     }
 }
 void Session::closeOpenMenu(bool sendPacketToClient) {
-    if (!openMenu_) return;
-    if (openMenu_->type == MenuType::Crafting) {
-        for (auto& s : openMenu_->craftGrid) {
-            if (s.empty()) continue;
-            if (!srv_.addToInventory(*self_, s.itemId, s.count))
-                srv_.spawnItemDrop(self_->x, self_->y + 0.5, self_->z, s, 0, 0.1, 0);
-            s = ItemStack::air();
+    struct PendingDrop {
+        std::int8_t dimension = 0;
+        double x = 0.0;
+        double y = 0.0;
+        double z = 0.0;
+        ItemStack stack = ItemStack::air();
+    };
+    std::int32_t windowId = 0;
+    std::vector<PendingDrop> drops;
+    {
+        std::lock_guard playerLock(self_->stateMtx);
+        if (!openMenu_) {
+            tradingVillager_ = -1;
+            return;
+        }
+        windowId = openMenu_->windowId;
+        // Keep the original return-to-inventory transaction, but record full
+        // inventory drops separately so world/entity mutation cannot happen
+        // while stateMtx is held.
+        const auto returnToPlayerOrQueueDrop = [this, &drops](const ItemStack& stack) {
+            if (stack.empty()) return;
+            auto trial = self_->inv;
+            if (insertCompleteInventoryStack(trial, stack)) {
+                self_->inv = std::move(trial);
+                return;
+            }
+            PendingDrop drop;
+            drop.dimension = self_->dimension;
+            drop.x = self_->x;
+            drop.y = self_->y + 0.5;
+            drop.z = self_->z;
+            drop.stack = stack;
+            drops.push_back(std::move(drop));
+        };
+
+        if (openMenu_->type == MenuType::Crafting) {
+            for (auto& s : openMenu_->craftGrid) {
+                if (s.empty()) continue;
+                returnToPlayerOrQueueDrop(s);
+                s = ItemStack::air();
+            }
+            openMenu_->craftResult = ItemStack::air();
+        } else if (openMenu_->container == openMenu_->extraSlots) {
+            // These handlers use Menu::extraSlots as a per-screen temporary
+            // inventory.  Their result slot is derived, never a real item to
+            // return, but every input must survive an explicit close or a
+            // replacement by another screen.
+            int inputSlots = 0;
+            switch (openMenu_->type) {
+            case MenuType::Enchantment: inputSlots = 2; break;
+            case MenuType::Anvil: inputSlots = 2; break;
+            case MenuType::Stonecutter: inputSlots = 1; break;
+            case MenuType::Grindstone: inputSlots = 2; break;
+            case MenuType::Smithing: inputSlots = 3; break;
+            case MenuType::Beacon: inputSlots = 1; break;
+            case MenuType::Loom: inputSlots = 3; break;
+            case MenuType::CartographyTable: inputSlots = 2; break;
+            case MenuType::Lectern: inputSlots = 1; break;
+            default: break;
+            }
+            inputSlots = std::min(inputSlots, openMenu_->containerCount);
+            for (int i = 0; i < inputSlots; ++i) {
+                ItemStack& s = openMenu_->extraSlots[i];
+                if (s.empty()) continue;
+                returnToPlayerOrQueueDrop(s);
+                s = ItemStack::air();
+            }
+            // Result slots are previews.  Clear all remaining temporary
+            // slots so a stale result cannot be carried into a later screen.
+            for (int i = inputSlots; i < openMenu_->containerCount; ++i)
+                openMenu_->extraSlots[i] = ItemStack::air();
         }
         if (!cursorItem_.empty()) {
-            if (!srv_.addToInventory(*self_, cursorItem_.itemId, cursorItem_.count))
-                srv_.spawnItemDrop(self_->x, self_->y + 0.5, self_->z, cursorItem_, 0, 0.1, 0);
+            returnToPlayerOrQueueDrop(cursorItem_);
             cursorItem_ = ItemStack::air();
         }
+        openMenu_.reset();
+        tradingVillager_ = -1;
     }
-    openMenu_.reset();
+    for (const auto& drop : drops) {
+        srv_.spawnItemDropFor(drop.dimension, drop.x, drop.y, drop.z,
+                              drop.stack, 0, 0.1, 0);
+    }
     if (sendPacketToClient) {
         WriteBuffer b;
-        b.varint(0);
+        b.varint(windowId);
         conn_->trySendPacket(pl::sc::CloseContainer, b);
     }
 }
 void Session::onCloseContainer() {
+    bool hadMenu = false;
+    {
+        std::lock_guard stateLock(self_->stateMtx);
+        hadMenu = openMenu_ != nullptr;
+    }
     closeOpenMenu(false);
+    if (hadMenu) srv_.resendInventory(*self_);
     syncCursorItem();
 }
 void Session::sendRecipeBook() {
@@ -1846,11 +2518,6 @@ void Session::sendRecipeBook() {
     for (const auto& r : all) {
         // entry: {recipe:{displayId,display,group,category,requirements?},flags}
         b.varint(displayId);
-        auto writeSlotDisplayItem = [&](std::uint32_t itemId) {
-            b.varint(itemId ? 2 : 0);          // item display | empty
-            if (itemId) b.varint(static_cast<std::int32_t>(itemId));
-        };
-
         switch (r.kind) {
         case Recipe::Kind::Shaped:
             b.varint(1);                       // crafting_shaped
@@ -1858,55 +2525,55 @@ void Session::sendRecipeBook() {
             b.varint(r.height);
             b.varint(static_cast<std::int32_t>(r.cells.size()));
             for (auto& ing : r.cells)
-                writeSlotDisplayItem(ing.items.empty()
+                writeSlotDisplayItem(b, ing.items.empty()
                                          ? 0 : *ing.items.begin());
-            writeSlotDisplayItem(r.result.itemId);
-            writeSlotDisplayItem(tableItem);   // craftingStation
+            writeSlotDisplayItem(b, r.result.itemId);
+            writeSlotDisplayItem(b, tableItem);   // craftingStation
             break;
         case Recipe::Kind::Shapeless: {
             b.varint(0);                       // crafting_shapeless
             b.varint(static_cast<std::int32_t>(r.ingredients.size()));
             for (auto& ing : r.ingredients)
-                writeSlotDisplayItem(ing.items.empty()
+                writeSlotDisplayItem(b, ing.items.empty()
                                          ? 0 : *ing.items.begin());
-            writeSlotDisplayItem(r.result.itemId);
-            writeSlotDisplayItem(tableItem);
+            writeSlotDisplayItem(b, r.result.itemId);
+            writeSlotDisplayItem(b, tableItem);
             break;
         }
         case Recipe::Kind::Smelting: {
             b.varint(2);                       // furnace
-            writeSlotDisplayItem(r.cells.front().items.empty()
+            writeSlotDisplayItem(b, r.cells.front().items.empty()
                                      ? 0 : *r.cells.front().items.begin());
-            writeSlotDisplayItem(
+            writeSlotDisplayItem(b,
                 gen::itemIdByName().at("minecraft:coal"));   // fuel
-            writeSlotDisplayItem(r.result.itemId);
-            writeSlotDisplayItem(furnaceItem); // station
+            writeSlotDisplayItem(b, r.result.itemId);
+            writeSlotDisplayItem(b, furnaceItem); // station
             b.varint(r.cookingTicks);
             b.f32(r.experience);
             break;
         }
         case Recipe::Kind::Stonecutting: {
             b.varint(3);                       // stonecutter
-            writeSlotDisplayItem(r.cells.front().items.empty()
+            writeSlotDisplayItem(b, r.cells.front().items.empty()
                                      ? 0 : *r.cells.front().items.begin());
-            writeSlotDisplayItem(r.result.itemId);
-            writeSlotDisplayItem(furnaceItem);
+            writeSlotDisplayItem(b, r.result.itemId);
+            writeSlotDisplayItem(b, furnaceItem);
             break;
         }
         case Recipe::Kind::Smithing: {
             b.varint(0);                       // smithing as shapeless for book display
             b.varint(static_cast<std::int32_t>(r.ingredients.size()));
             for (auto& ing : r.ingredients)
-                writeSlotDisplayItem(ing.items.empty() ? 0 : *ing.items.begin());
-            writeSlotDisplayItem(r.result.itemId);
-            writeSlotDisplayItem(tableItem);
+                writeSlotDisplayItem(b, ing.items.empty() ? 0 : *ing.items.begin());
+            writeSlotDisplayItem(b, r.result.itemId);
+            writeSlotDisplayItem(b, tableItem);
             break;
         }
         case Recipe::Kind::Special: {
             b.varint(0);                       // special as shapeless placeholder
             b.varint(0);
-            writeSlotDisplayItem(r.result.itemId);
-            writeSlotDisplayItem(tableItem);
+            writeSlotDisplayItem(b, r.result.itemId);
+            writeSlotDisplayItem(b, tableItem);
             break;
         }
         }
@@ -1920,16 +2587,40 @@ void Session::sendRecipeBook() {
     conn_->trySendPacket(pl::sc::RecipeBookAdd, b);
 }
 void Session::handlePlaceRecipe(std::int32_t recipeId, bool makeAll) {
-    if (!openMenu_) return;
-    Menu& m = *openMenu_;
+    (void)makeAll;
+    std::shared_ptr<Menu> menu;
+    std::shared_ptr<BlockEntity> menuOwner;
+    MenuType menuType = MenuType::Chest;
+    {
+        std::lock_guard playerLock(self_->stateMtx);
+        if (!openMenu_) return;
+        menu = openMenu_;
+        menuOwner = menu->blockEntityOwner;
+        menuType = menu->type;
+    }
     const auto& all = srv_.recipes().all();
     if (recipeId < 0 || static_cast<std::size_t>(recipeId) >= all.size()) return;
     const Recipe& r = all[static_cast<std::size_t>(recipeId)];
 
-    auto take = [&](const Ingredient& ing) -> ItemStack {
-        for (auto& s : self_->inv) {
+    // A recipe placement is one inventory/menu transaction.  In particular,
+    // do not empty an existing grid and then call addToInventory(): a full
+    // inventory used to make that path silently delete the old inputs.
+    std::unique_lock<std::recursive_mutex> entityLock;
+    if (menuOwner && menuOwner->stateMtx)
+        entityLock = std::unique_lock<std::recursive_mutex>(*menuOwner->stateMtx);
+    std::unique_lock playerLock(self_->stateMtx);
+    if (openMenu_.get() != menu.get() || menu->type != menuType) return;
+    Menu& m = *menu;
+
+    auto take = [&](std::array<InvSlot, 46>& inventory,
+                    const Ingredient& ing) -> ItemStack {
+        // RecipeBook placement consumes the player's main inventory and
+        // hotbar, not armor or off-hand slots.
+        for (int i = 9; i <= 44; ++i) {
+            auto& s = inventory[static_cast<std::size_t>(i)];
             if (!s.empty() && ing.accepts(s.itemId)) {
-                ItemStack one = ItemStack::of(s.itemId, 1);
+                ItemStack one = s;
+                one.count = 1;
                 if (--s.count <= 0) s = ItemStack::air();
                 return one;
             }
@@ -1938,105 +2629,121 @@ void Session::handlePlaceRecipe(std::int32_t recipeId, bool makeAll) {
     };
 
     if (m.type == MenuType::Crafting) {
+        auto trial = self_->inv;
         for (auto& s : m.craftGrid) {
             if (!s.empty()) {
-                srv_.addToInventory(*self_, s.itemId, s.count);
-                s = ItemStack::air();
+                if (!insertCompleteInventoryStack(trial, s)) return;
             }
         }
+        std::array<ItemStack, 9> placed{};
+        for (auto& s : placed) s = ItemStack::air();
         bool complete = true;
         if (r.kind == Recipe::Kind::Shaped) {
+            if (r.width <= 0 || r.width > 3 || r.height <= 0 || r.height > 3 ||
+                r.cells.size() < static_cast<std::size_t>(r.width * r.height))
+                complete = false;
             for (int y = 0; y < r.height && complete; ++y)
                 for (int x = 0; x < r.width && complete; ++x) {
                     const auto& ing = r.cells[static_cast<std::size_t>(y) *
                                               r.width + x];
                     if (ing.empty()) continue;
-                    ItemStack it2 = take(ing);
+                    ItemStack it2 = take(trial, ing);
                     if (it2.empty()) { complete = false; break; }
-                    m.craftGrid[static_cast<std::size_t>(y) * 3 + x] = it2;
+                    placed[static_cast<std::size_t>(y) * 3 + x] = it2;
                 }
         } else if (r.kind == Recipe::Kind::Shapeless) {
             int i = 0;
             for (const auto& ing : r.ingredients) {
                 if (i >= 9) break;
-                ItemStack it2 = take(ing);
+                ItemStack it2 = take(trial, ing);
                 if (it2.empty()) { complete = false; break; }
-                m.craftGrid[i++] = it2;
+                placed[static_cast<std::size_t>(i++)] = it2;
             }
         } else complete = false;
         if (!complete) {
-            for (auto& s : m.craftGrid)
-                if (!s.empty()) {
-                    srv_.addToInventory(*self_, s.itemId, s.count);
-                    s = ItemStack::air();
-                }
+            // `trial` is discarded, so both the original grid and inventory
+            // remain exactly as they were when a required ingredient is
+            // missing.
+            return;
         }
+        self_->inv = std::move(trial);
+        for (std::size_t i = 0; i < placed.size(); ++i)
+            m.craftGrid[i] = placed[i];
         m.refreshCraftResult(srv_.recipes());
+        playerLock.unlock();
+        if (entityLock.owns_lock()) entityLock.unlock();
         srv_.resendInventory(*self_);
         sendMenuContent(m);
         syncCursorItem();
         return;
-    } else if (m.type == MenuType::Furnace) {
+    } else if (m.type == MenuType::Furnace ||
+               m.type == MenuType::BlastFurnace ||
+               m.type == MenuType::Smoker) {
         if (r.kind != Recipe::Kind::Smelting) return;
+        if (!m.container || m.containerCount < 2 || r.cells.empty()) return;
         // Place ingredient into input slot 0, and if needed fuel into slot 1
-        ItemStack* input = m.container ? &m.container[0] : &m.extraSlots[0];
-        ItemStack* fuel = m.container ? &m.container[1] : &m.extraSlots[1];
-        if (!input->empty()) {
-            srv_.addToInventory(*self_, input->itemId, input->count);
-            *input = ItemStack::air();
-        }
+        auto trial = self_->inv;
+        if (!m.container[0].empty() &&
+            !insertCompleteInventoryStack(trial, m.container[0])) return;
         const Ingredient& ing = r.cells.front();
-        ItemStack got = take(ing);
+        ItemStack got = take(trial, ing);
         if (got.empty()) return;
-        *input = got;
+        ItemStack newFuel = m.container[1];
         // try to place fuel if empty and makeAll is true or slot empty
-        if (fuel->empty()) {
+        if (newFuel.empty()) {
             // find any fuel item in inventory
-            for (auto& s : self_->inv) {
+            for (int i = 9; i <= 44; ++i) {
+                auto& s = trial[static_cast<std::size_t>(i)];
                 if (!s.empty() && isFuelItem(s.itemId)) {
-                    ItemStack one = ItemStack::of(s.itemId, 1);
+                    ItemStack one = s;
+                    one.count = 1;
                     if (--s.count <= 0) s = ItemStack::air();
-                    *fuel = one;
+                    newFuel = one;
                     break;
                 }
             }
         }
-        // sync
+        self_->inv = std::move(trial);
+        m.container[0] = got;
+        m.container[1] = newFuel;
+        const std::int32_t windowId = m.windowId;
+        const int cookProgress = m.blockEntity &&
+            m.blockEntity->kind == BlockEntity::Kind::Furnace
+                ? m.blockEntity->furnace.cookProgress : 0;
+        playerLock.unlock();
+        if (entityLock.owns_lock()) entityLock.unlock();
         sendMenuContent(m);
         srv_.resendInventory(*self_);
         syncCursorItem();
-        // also send ContainerSetData update (cook progress etc will be ticked)
-        if (m.blockEntity && m.blockEntity->kind == BlockEntity::Kind::Furnace) {
-            auto &f = m.blockEntity->furnace;
-            WriteBuffer pb;
-            pb.varint(m.windowId);
-            pb.i16(0);
-            pb.i16(f.cookProgress);
-            conn_->trySendPacket(pl::sc::ContainerSetData, pb);
-        }
+        WriteBuffer pb;
+        pb.varint(windowId);
+        pb.i16(0);
+        pb.i16(static_cast<std::int16_t>(cookProgress));
+        conn_->trySendPacket(pl::sc::ContainerSetData, pb);
         return;
     } else if (m.type == MenuType::Stonecutter) {
         if (r.kind != Recipe::Kind::Stonecutting) return;
+        if (r.cells.empty()) return;
         ItemStack* input = m.container ? &m.container[0] : &m.extraSlots[0];
         ItemStack* output = m.container ? &m.container[1] : &m.extraSlots[1];
-        if (!input->empty()) {
-            srv_.addToInventory(*self_, input->itemId, input->count);
-            *input = ItemStack::air();
-        }
+        auto trial = self_->inv;
+        if (!input->empty() && !insertCompleteInventoryStack(trial, *input)) return;
         const Ingredient& ing = r.cells.front();
-        ItemStack got = take(ing);
+        ItemStack got = take(trial, ing);
         if (got.empty()) return;
+        self_->inv = std::move(trial);
         *input = got;
         *output = r.result;
-        // ghost preview: also send PlaceGhostRecipe to client
-        {
-            WriteBuffer b;
-            b.varint(m.windowId);
-            b.varint(recipeId);
-            conn_->trySendPacket(pl::sc::PlaceGhostRecipe, b);
-        }
-        // also send ContainerSetSlot for output
-        sendSetSlot(m.windowId, self_->invStateId + 1, 1, *output);
+        const std::int32_t windowId = m.windowId;
+        playerLock.unlock();
+        if (entityLock.owns_lock()) entityLock.unlock();
+        // The full menu snapshot below advances the revision atomically; an
+        // additional `invStateId + 1` SetSlot used to advertise a revision
+        // that was not actually committed.
+        WriteBuffer b;
+        b.varint(windowId);
+        b.varint(recipeId);
+        conn_->trySendPacket(pl::sc::PlaceGhostRecipe, b);
         sendMenuContent(m);
         srv_.resendInventory(*self_);
         syncCursorItem();
@@ -2045,29 +2752,56 @@ void Session::handlePlaceRecipe(std::int32_t recipeId, bool makeAll) {
     // For other containers (Enchantment, Anvil, Brewing, etc.), PlaceRecipe is no-op but we still ack
 }
 void Session::handlePlaceGhostRecipe(std::int32_t recipeId) {
-    if (!openMenu_ || openMenu_->type != MenuType::Stonecutter) return;
+    std::shared_ptr<Menu> menu;
+    std::shared_ptr<BlockEntity> menuOwner;
+    std::int32_t playerEntityId = 0;
+    {
+        std::lock_guard playerLock(self_->stateMtx);
+        if (!openMenu_ || openMenu_->type != MenuType::Stonecutter) return;
+        menu = openMenu_;
+        menuOwner = menu->blockEntityOwner;
+        playerEntityId = self_->entityId;
+    }
     // throttle 0x39: limit to 1 per 5 ticks per player
     {
+        // ghostThrottle_ is shared by all session threads, whereas the
+        // throttle entry is not part of Player::stateMtx.  Protect the map
+        // separately and hold it only for the lookup/update.
+        static std::mutex ghostThrottleMutex;
+        std::lock_guard throttleLock(ghostThrottleMutex);
         auto& thr = srv_.ghostThrottle_;
         std::int64_t now = srv_.tickNo_;
-        auto it = thr.find(self_->entityId);
+        auto it = thr.find(playerEntityId);
         if (it != thr.end() && now - it->second < 5) return;
-        thr[self_->entityId] = now;
+        thr[playerEntityId] = now;
     }
-    Menu& m = *openMenu_;
     const auto& all = srv_.recipes().all();
     if (recipeId < 0 || static_cast<std::size_t>(recipeId) >= all.size()) return;
     const Recipe& r = all[static_cast<std::size_t>(recipeId)];
     if (r.kind != Recipe::Kind::Stonecutting) return;
+
+    std::unique_lock<std::recursive_mutex> entityLock;
+    if (menuOwner && menuOwner->stateMtx)
+        entityLock = std::unique_lock<std::recursive_mutex>(*menuOwner->stateMtx);
+    std::unique_lock playerLock(self_->stateMtx);
+    if (openMenu_.get() != menu.get() || menu->type != MenuType::Stonecutter) return;
+    Menu& m = *menu;
+    if (r.cells.empty()) return;
     ItemStack* input = m.container ? &m.container[0] : &m.extraSlots[0];
     ItemStack* output = m.container ? &m.container[1] : &m.extraSlots[1];
     if (input->empty() || !r.cells.front().accepts(input->itemId)) return;
     *output = r.result;
-    // send ghost slot update
-    sendSetSlot(m.windowId, self_->invStateId + 1, 1, *output);
+    const std::int32_t windowId = m.windowId;
+    const ItemStack outputSnapshot = *output;
+    ++self_->invStateId;
+    const std::int32_t stateId = self_->invStateId;
+    playerLock.unlock();
+    if (entityLock.owns_lock()) entityLock.unlock();
+    // Send the committed revision, not a fabricated `current + 1` value.
+    sendSetSlot(windowId, stateId, 1, outputSnapshot);
     // echo PlaceGhostRecipe back to client
     WriteBuffer b;
-    b.varint(m.windowId);
+    b.varint(windowId);
     b.varint(recipeId);
     conn_->trySendPacket(pl::sc::PlaceGhostRecipe, b);
 }
@@ -2075,7 +2809,7 @@ void Session::onPluginPayload(const std::string& channel,
                               const api::ChannelRegistry::Payload& body,
                               int phase) {
     // Forward every payload, including register/unregister, before the
-    // built-in channel bookkeeping.  The optional JVM hook is guarded and
+    // built-in channel bookkeeping.  The bounded JVM hook is guarded and
     // reentrant-safe; a failed hook does not make the native path unavailable.
     if (srv_.jvmRuntime())
         srv_.jvmRuntime()->onPluginMessage(*self_, phase, channel, body);
@@ -2086,46 +2820,35 @@ void Session::onPluginPayload(const std::string& channel,
         while (start <= joined.size()) {
             auto end = joined.find('\0', start);
             if (end == std::string::npos) end = joined.size();
-            if (end > start)
+            if (end > start) {
+                std::lock_guard stateLock(self_->stateMtx);
                 self_->clientChannels.insert(joined.substr(start, end - start));
+            }
             start = end + 1;
         }
         return;
     }
     if (channel == "minecraft:unregister") {
         std::string joined(body.begin(), body.end());
+        std::lock_guard stateLock(self_->stateMtx);
         self_->clientChannels.erase(joined);
         return;
     }
     if ((channel == "MC|ItemName" || channel == "minecraft:item_name") && phase == 1) {
-        if (openMenu_ && openMenu_->type == MenuType::Anvil) {
-            std::string rename;
-            try {
-                if (!body.empty()) {
-                    ReadBuffer rb(body.data(), body.size());
-                    rename = rb.string(constants::kMaxStringLength);
-                    if (rb.remaining() > 0) {
-                        ReadBuffer rb2(body.data(), body.size());
-                        (void)rb2.varint();
-                        if (rb2.remaining() > 0) rename = rb2.string(constants::kMaxStringLength);
-                    }
+        std::string rename;
+        try {
+            if (!body.empty()) {
+                ReadBuffer rb(body.data(), body.size());
+                rename = rb.string(constants::kMaxStringLength);
+                if (rb.remaining() > 0) {
+                    ReadBuffer rb2(body.data(), body.size());
+                    (void)rb2.varint();
+                    if (rb2.remaining() > 0)
+                        rename = rb2.string(constants::kMaxStringLength);
                 }
-            } catch (...) { rename = ""; }
-            if (rename.size() > constants::kMaxRenameLength) rename = rename.substr(0, constants::kMaxRenameLength);
-            openMenu_->anvilRename = rename;
-            if (auto* al = getMenuLogic(MenuType::Anvil)) {
-                al->onContentChanged(*openMenu_, *self_);
             }
-            std::string rname = openMenu_->anvilRename;
-            int cost = CostCalculator::anvilCost(openMenu_->extraSlots[0], openMenu_->extraSlots[1], rname);
-            WriteBuffer pb;
-            pb.varint(openMenu_->windowId);
-            pb.i16(0);
-            pb.i16(static_cast<std::int16_t>(cost < 0 ? 0 : cost));
-            conn_->trySendPacket(pl::sc::ContainerSetData, pb);
-            sendSetSlot(openMenu_->windowId, self_->invStateId, 2, openMenu_->extraSlots[2]);
-            sendMenuContent(*openMenu_);
-        }
+        } catch (...) { rename.clear(); }
+        onNameItem(rename);
         return;
     }
     api::ChannelRegistry::get().dispatch(phase, channel, body);
@@ -2146,23 +2869,25 @@ void Session::sendSystemText(const std::string& text) {
     conn_->sendPacket(pl::sc::SystemChat, body);
 }
 void Session::sendChunk(std::int32_t cx, std::int32_t cz) {
-    static const std::uint32_t biomeIdx = srv_.data().biomeIndex(srv_.config().worldBiome);
-    srv_.demandChunkAsync(cx, cz);
+    const std::int8_t dimension = GameServer::canonicalDimension(self_->dimension);
+    World& world = srv_.worldFor(dimension);
+    const std::uint32_t biomeIdx = srv_.data().biomeIndex(world.biomeKey());
+    srv_.demandChunkAsyncFor(dimension, cx, cz);
     GameServer::ChunkBodyRef body;
-    if (!srv_.getCachedChunk(cx, cz, biomeIdx, body)) {
+    if (!srv_.getCachedChunkFor(dimension, cx, cz, biomeIdx, body)) {
         auto fresh = std::make_shared<const std::vector<std::uint8_t>>([&]{
             WriteBuffer wb;
-            srv_.world().generateChunkIfMissing(cx, cz);
-            srv_.world().withChunk(cx, cz, [&](const Chunk& c) {
+            world.generateChunkIfMissing(cx, cz);
+            world.withChunk(cx, cz, [&](const Chunk& c) {
                 serializeLevelChunkBody(wb, cx, cz, c, biomeIdx);
             });
             return wb.data;
         }());
-        srv_.storeChunk(cx, cz, 0, fresh);
+        srv_.storeChunkFor(dimension, cx, cz, 0, fresh);
         body = fresh;
     }
     conn_->sendPacketBuf(pl::sc::LevelChunkWithLight, *body);
-    srv_.blockEntities().forEach([&](std::int64_t k, BlockEntity& be) {
+    srv_.blockEntitiesFor(dimension).forEach([&](std::int64_t k, BlockEntity& be) {
         if (be.kind != BlockEntity::Kind::Sign) return;
         const std::int32_t bx = posKeyUnpackX(k), by = posKeyUnpackY(k), bz = posKeyUnpackZ(k);
         if ((bx >> 4) != cx || (bz >> 4) != cz) return;
@@ -2176,9 +2901,7 @@ void Session::streamInitialChunks() {
     tickChunksAround(self_->x, self_->z);
 }
 void Session::tickChunksAround(double px, double pz) {
-    const int vd = std::min({srv_.config().viewDistance, self_->clientSettings.viewDistance, 12});
-    const int sd = std::min(srv_.config().simulationDistance, 12);
-    (void)sd; // ticking distance is checked in engines, not here; view vs sim are distinguished as required
+    const int vd = effectiveViewDistance(srv_.config(), self_->clientSettings.viewDistance);
     const std::int32_t pcx = static_cast<std::int32_t>(std::floor(px)) >> 4;
     const std::int32_t pcz = static_cast<std::int32_t>(std::floor(pz)) >> 4;
 
@@ -2408,7 +3131,8 @@ void Session::onPlaceRecipePacket(ReadBuffer& in) {
 }
 void Session::onSelectTrade(ReadBuffer& in) {
     const auto idx = in.varint();
-    if (tradingVillager_ >= 0) srv_.selectTrade(*self_, idx);
+    if (tradingVillager_ >= 0 && !srv_.selectTrade(*self_, idx, tradingVillager_))
+        srv_.resendInventory(*self_);
 }
 void Session::onPingRequest(ReadBuffer& in) {
     const std::int64_t id = in.i64();
@@ -2436,8 +3160,6 @@ void Session::onSetCreativeModeSlot(ReadBuffer& in) {
         if (slot==5||slot==6||slot==7||slot==8||slot==45||(slot>=36&&slot<=44)) {
             srv_.syncEquipmentOnChange(*self_);
         }
-    } else if (slot == -1 && stack.empty()) {
-        // cursor clear - ignore
     }
 }
 void Session::onClientCommand(ReadBuffer& in) {
@@ -2453,16 +3175,36 @@ void Session::onPlayerInput(ReadBuffer& in) {
         else { in.skipRest(); return; }
         bool wantSneak = (flags & 0x02) !=0;
         bool wantJump = (flags & 0x01) !=0;
-        if(wantSneak && self_->vehicleId!=-1){
-            int veh=self_->vehicleId;
-            self_->vehicleId=-1;
-            {
-                std::lock_guard lk(srv_.entsMtx_);
-                for(auto &m: srv_.mobsForTest()) if(m->entityId==veh) m->riderEntityId=-1;
+        std::int32_t vehicleId = -1;
+        std::int8_t dimension = 0;
+        bool dismounted = false;
+        {
+            std::lock_guard playerLock(self_->stateMtx);
+            if (wantSneak && self_->vehicleId != -1) {
+                vehicleId = self_->vehicleId;
+                dimension = GameServer::canonicalDimension(self_->dimension);
+                self_->vehicleId = -1;
+                dismounted = true;
             }
-            srv_.broadcastSetPassengersEmpty(veh);
         }
-        if(wantJump && self_->vehicleId!=-1){
+        if (dismounted) {
+            for (const auto& m : srv_.mobsSnapshot()) {
+                if (!m) continue;
+                std::lock_guard entityLock(*m->stateMtx);
+                if (m->entityId == vehicleId &&
+                    m->riderEntityId == self_->entityId) {
+                    m->riderEntityId = -1;
+                    break;
+                }
+            }
+            srv_.broadcastSetPassengersEmptyFor(dimension, vehicleId);
+        }
+        bool riding = false;
+        {
+            std::lock_guard playerLock(self_->stateMtx);
+            riding = self_->vehicleId != -1;
+        }
+        if(wantJump && riding){
             srv_.handleHorseJump(*self_, 80);
         }
         (void)sideways;(void)forward;
@@ -2483,17 +3225,25 @@ void Session::onSignUpdate(ReadBuffer& in) {
         std::string lines[4];
         for (int i = 0; i < 4; ++i) lines[i] = in.string(384);
         const std::int64_t key = posKey(sx, sy, sz);
-        BlockEntity* bep = srv_.blockEntities().get(key);
-        if (bep && bep->kind != BlockEntity::Kind::Sign) {
-            std::fprintf(stderr, "[cppfm] sign update at %d,%d,%d ignored (not a sign block entity)\n",
-                         sx, sy, sz);
-        } else {
-            if (!bep) bep = &srv_.blockEntities().create(key, BlockEntity::Kind::Sign);
+        auto& blockEntityStore = srv_.blockEntitiesFor(self_->dimension);
+        auto beOwner = blockEntityStore.getShared(key);
+        BlockEntity* bep = beOwner.get();
+        if (!bep) {
+            beOwner = blockEntityStore.createShared(key, BlockEntity::Kind::Sign);
+            bep = beOwner.get();
+        }
+        {
+            std::lock_guard entityLock(*bep->stateMtx);
+            if (bep->kind != BlockEntity::Kind::Sign) {
+                std::fprintf(stderr, "[cppfm] sign update at %d,%d,%d ignored (not a sign block entity)\n",
+                             sx, sy, sz);
+                return;
+            }
             std::string* dst = front ? bep->sign.front : bep->sign.back;
             for (int i = 0; i < 4; ++i) dst[i] = lines[i];
             if (front) bep->sign.hasFront = true; else bep->sign.hasBack = true;
-            sendSignBlockEntity(sx, sy, sz);
         }
+        sendSignBlockEntity(sx, sy, sz);
     } catch (const std::exception& e) {
         std::fprintf(stderr, "[cppfm] sign update ignored: %s\n", e.what());
     }
@@ -2502,82 +3252,127 @@ void Session::onEntityAction(ReadBuffer& in) {
     const std::int32_t eid = in.varint();
     const std::int32_t action = in.varint();
     const std::int32_t jumpBoost = in.varint();
-    (void)eid; (void)jumpBoost;
-    bool wasSneak = self_->isSneaking;
-    bool wasSprint = self_->isSprinting;
-    if (action == 0) self_->isSneaking = true;
-    else if (action == 1) self_->isSneaking = false;
-    else if (action == 3) self_->isSprinting = true;
-    else if (action == 4) self_->isSprinting = false;
-    if (wasSneak != self_->isSneaking || wasSprint != self_->isSprinting) {
-        const auto sendMetadata = [&](const WriteBuffer& body) {
-            // The tracking broadcast excludes the source player, but the
-            // source client also needs the authoritative pose/flags update.
-            conn_->trySendPacket(pl::sc::SetEntityMetadata, body);
-            srv_.broadcastPacketExcept(self_.get(), pl::sc::SetEntityMetadata, body);
-        };
-        if (wasSneak != self_->isSneaking) {
-            // pose metadata index 6 varint: 5 crouching, 0 standing
-            WriteBuffer md;
-            md.varint(self_->entityId);
-            md.u8(6); md.varint(1); md.varint(self_->isSneaking ? 5 : 0);
-            md.u8(255);
-            sendMetadata(md);
-        }
-        // flags byte index 0: 0x02 sneak + 0x08 sprint (combined)
-        {
-            WriteBuffer fl;
-            fl.varint(self_->entityId);
-            fl.u8(0); fl.varint(0);
-            uint8_t flags = 0;
-            if (self_->isSneaking) flags |= 0x02;
-            if (self_->isSprinting) flags |= 0x08;
-            fl.u8(flags);
-            fl.u8(255);
-            sendMetadata(fl);
-        }
-        {
-            int swiftLvl=0;
-            for(int i=5;i<=8;++i) if(!self_->inv[i].empty()){
-                std::string n=self_->inv[i].name();
-                if(n.find("leggings")!=std::string::npos) swiftLvl = std::max(swiftLvl, EnchantmentHelper::swiftSneakLevel(self_->inv[i]));
-            }
-            if(swiftLvl==0) for(int i=5;i<=8;++i) if(!self_->inv[i].empty()) swiftLvl = std::max(swiftLvl, EnchantmentHelper::swiftSneakLevel(self_->inv[i]));
-            double before = self_->attributes.getValue(Attribute::MOVEMENT_SPEED);
-            if(self_->isSneaking && swiftLvl>0) self_->attributes.applySwiftSneak(swiftLvl);
-            else self_->attributes.removeModifier(Attribute::MOVEMENT_SPEED, "swift_sneak");
-            double after = self_->attributes.getValue(Attribute::MOVEMENT_SPEED);
-            if(std::abs(before-after)>1e-9){
-                WriteBuffer ab; self_->attributes.writeUpdate(ab, self_->entityId);
-                self_->conn->trySendPacket(proto::pl::sc::UpdateAttributes, ab);
-                srv_.broadcastPacketExcept(self_.get(), proto::pl::sc::UpdateAttributes, ab);
-            }
-        }
-        // Vanilla sends EntityAction 0x28 with action 0 for sneak start; if player is riding, dismount.
-        if (self_->isSneaking && self_->vehicleId != -1) {
-            int veh = self_->vehicleId;
-            // clear player vehicle
+    // Entity Action is a client command for this player only.  More
+    // importantly, the packet handler runs concurrently with the tick loop;
+    // never read or mutate Player fields outside the same state boundary used
+    // by movement and inventory handlers.
+    bool stateChanged = false;
+    bool sneaking = false;
+    bool sprinting = false;
+    bool attributeChanged = false;
+    bool dismounted = false;
+    std::int32_t playerEntityId = 0;
+    std::int32_t vehicleId = -1;
+    std::int8_t playerDimension = 0;
+    WriteBuffer poseMetadata;
+    WriteBuffer flagsMetadata;
+    WriteBuffer attributeUpdate;
+
+    {
+        std::lock_guard playerLock(self_->stateMtx);
+        if (eid != self_->entityId) return;
+
+        const bool wasSneaking = self_->isSneaking;
+        const bool wasSprinting = self_->isSprinting;
+        if (action == 0) self_->isSneaking = true;
+        else if (action == 1) self_->isSneaking = false;
+        else if (action == 3) self_->isSprinting = true;
+        else if (action == 4) self_->isSprinting = false;
+
+        playerEntityId = self_->entityId;
+        playerDimension = GameServer::canonicalDimension(self_->dimension);
+        sneaking = self_->isSneaking;
+        sprinting = self_->isSprinting;
+        stateChanged = wasSneaking != sneaking || wasSprinting != sprinting;
+
+        // START_SNEAKING dismounts the current vehicle.  Clear the player
+        // link while holding the player lock, then repair the mob link after
+        // releasing it so no packet/broadcast runs under a model lock.
+        if (action == 0 && self_->vehicleId != -1) {
+            vehicleId = self_->vehicleId;
             self_->vehicleId = -1;
-            // clear mob rider
-            {
-                std::lock_guard lk(srv_.entsMtx_);
-                for (auto& m : srv_.mobsForTest()) if (m->entityId==veh) m->riderEntityId=-1;
+            dismounted = true;
+        }
+
+        if (stateChanged) {
+            if (wasSneaking != sneaking) {
+                // pose metadata index 6 varint: 5 crouching, 0 standing
+                poseMetadata.varint(playerEntityId);
+                poseMetadata.u8(6); poseMetadata.varint(1);
+                poseMetadata.varint(sneaking ? 5 : 0);
+                poseMetadata.u8(255);
             }
-            srv_.broadcastSetPassengersEmpty(veh);
+
+            // flags byte index 0: 0x02 sneak + 0x08 sprint
+            flagsMetadata.varint(playerEntityId);
+            flagsMetadata.u8(0); flagsMetadata.varint(0);
+            std::uint8_t flags = 0;
+            if (sneaking) flags |= 0x02;
+            if (sprinting) flags |= 0x08;
+            flagsMetadata.u8(flags);
+            flagsMetadata.u8(255);
+
+            int swiftLevel = 0;
+            for (int slot = 5; slot <= 8; ++slot) {
+                if (self_->inv[slot].empty()) continue;
+                const std::string name = self_->inv[slot].name();
+                if (name.find("leggings") != std::string::npos)
+                    swiftLevel = std::max(swiftLevel,
+                                          EnchantmentHelper::swiftSneakLevel(self_->inv[slot]));
+            }
+            if (swiftLevel == 0) {
+                for (int slot = 5; slot <= 8; ++slot) {
+                    if (!self_->inv[slot].empty())
+                        swiftLevel = std::max(swiftLevel,
+                                              EnchantmentHelper::swiftSneakLevel(self_->inv[slot]));
+                }
+            }
+            const double before = self_->attributes.getValue(Attribute::MOVEMENT_SPEED);
+            if (sneaking && swiftLevel > 0)
+                self_->attributes.applySwiftSneak(swiftLevel);
+            else
+                self_->attributes.removeModifier(Attribute::MOVEMENT_SPEED, "swift_sneak");
+            const double after = self_->attributes.getValue(Attribute::MOVEMENT_SPEED);
+            attributeChanged = std::abs(before - after) > 1e-9;
+            if (attributeChanged)
+                self_->attributes.writeUpdate(attributeUpdate, playerEntityId);
         }
     }
-    if (action==7) {
-        if (self_->vehicleId != -1) {
-            srv_.handleHorseJump(*self_, jumpBoost);
+
+    if (dismounted) {
+        for (const auto& mob : srv_.mobsSnapshot()) {
+            if (!mob) continue;
+            std::lock_guard entityLock(*mob->stateMtx);
+            if (mob->entityId == vehicleId && mob->riderEntityId == playerEntityId) {
+                mob->riderEntityId = -1;
+                break;
+            }
         }
-    } else if (action==5 || action==6) {
-        // horse jump start/stop – broadcast to tracking players if riding
-        if (self_->vehicleId != -1) {
-            WriteBuffer je;
-            je.varint(self_->entityId); je.varint(action);
-            srv_.broadcastPacketExcept(self_.get(), pl::sc::SetEntityMetadata, je);
-        }
+        srv_.broadcastSetPassengersEmptyFor(playerDimension, vehicleId);
     }
+
+    const auto sendMetadata = [&](const WriteBuffer& body) {
+        // The tracking broadcast excludes the source player, but the source
+        // client also needs the authoritative pose/flags update.
+        conn_->trySendPacket(pl::sc::SetEntityMetadata, body);
+        srv_.broadcastPacketExceptInDimension(playerDimension, self_.get(),
+                                              pl::sc::SetEntityMetadata, body);
+    };
+    if (!poseMetadata.data.empty()) sendMetadata(poseMetadata);
+    if (!flagsMetadata.data.empty()) sendMetadata(flagsMetadata);
+    if (attributeChanged) {
+        conn_->trySendPacket(proto::pl::sc::UpdateAttributes, attributeUpdate);
+        srv_.broadcastPacketExceptInDimension(playerDimension, self_.get(),
+                                              proto::pl::sc::UpdateAttributes,
+                                              attributeUpdate);
+    }
+
+    // Actions 5/6 only communicate horse-jump charging state to the server;
+    // they are not a serverbound request to emit SetEntityMetadata.  Action 7
+    // is OPEN_VEHICLE_INVENTORY, not a jump (the old code treated it as one).
+    // Vehicle movement/jump simulation remains owned by handleHorseJump and
+    // is invoked by the explicit jump-power path.
+    (void)jumpBoost;
 }
 void Session::onClientSettings(ReadBuffer& in) {
     try {
@@ -2644,8 +3439,8 @@ void Session::onPickItemFromEntity(ReadBuffer& in) {
         (void)includeData;
         std::string egg;
         {
-            std::lock_guard lk(srv_.entsMtx_);
-            for (auto& m : srv_.mobsForTest()) {
+            for (const auto& m : srv_.mobsSnapshot()) {
+                if (!m) continue;
                 if (m->entityId != eid) continue;
                 egg = std::string(MobEntity::kindName(m->kind)) + "_spawn_egg";
                 break;
@@ -2881,20 +3676,58 @@ void Session::onPlayerLoadedPacket() {
     if (!chunksStreamed_) streamInitialChunks();
 }
 void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
-    const double oldX = self_->x, oldY = self_->y, oldZ = self_->z;
-    const bool wasOnGround = self_->onGround;
+    const SessionPlayerSnapshot movementState = snapshotPlayerForSession(*self_);
+    const double oldX = movementState.x, oldY = movementState.y,
+                 oldZ = movementState.z;
+    const bool wasOnGround = movementState.onGround;
+    const double nx = hasPos ? in.f64() : movementState.x;
+    const double ny = hasPos ? in.f64() : movementState.y;
+    const double nz = hasPos ? in.f64() : movementState.z;
+    const float newYaw = hasRot ? in.f32() : movementState.yaw;
+    const float newPitch = hasRot ? in.f32() : movementState.pitch;
+    const std::uint8_t moveFlags = in.u8();
+    const bool nowGround = (moveFlags & 0x01) != 0;
+
     if (hasPos) {
-        const double nx = in.f64(), ny = in.f64(), nz = in.f64();
+        const double dx = nx - oldX;
+        const double dy = ny - oldY;
+        const double dz = nz - oldZ;
+        const bool finitePosition = std::isfinite(nx) && std::isfinite(ny) &&
+                                     std::isfinite(nz);
+        // Vanilla's moved-too-quickly guard is approximately a ten-block
+        // per-packet displacement before velocity allowances.  Keeping the
+        // same conservative envelope blocks forged coordinates without
+        // rejecting ordinary lag-spike movement packets.
+        const bool movedTooQuickly = dx * dx + dy * dy + dz * dz > 100.0;
+        const World& movementWorld = srv_.worldFor(movementState.dimension);
+        const bool enteredCollision = movementState.gamemode != 3 &&
+                                      intersectsPlayerCollision(
+                                          movementWorld, nx, ny, nz);
+        if (!finitePosition || !std::isfinite(newYaw) ||
+            !std::isfinite(newPitch) || ny < -2048.0 || ny > 2048.0 ||
+            movedTooQuickly || !srv_.isInsideBorder(nx, nz) ||
+            enteredCollision) {
+            // Correct the client to the last accepted authoritative pose.  A
+            // malformed movement packet must not partially update position,
+            // rotation, fall distance, or chunk streaming state.
+            sendTeleport(oldX, oldY, oldZ, movementState.yaw,
+                         movementState.pitch);
+            return;
+        }
+    } else if (!std::isfinite(newYaw) || !std::isfinite(newPitch)) {
+        sendTeleport(oldX, oldY, oldZ, movementState.yaw, movementState.pitch);
+        return;
+    }
+
+    if (hasPos) {
         if (!self_->onGround && ny < self_->y && self_->gamemode == 0)
             self_->fallDist += self_->y - ny;
         self_->x = nx; self_->y = ny; self_->z = nz;
     }
     if (hasRot) {
-        self_->yaw = in.f32();
-        self_->pitch = in.f32();
+        self_->yaw = newYaw;
+        self_->pitch = newPitch;
     }
-    const std::uint8_t moveFlags = in.u8();
-    const bool nowGround = (moveFlags & 0x01) != 0;
     // bit1 hasHorizontalCollision: no consumer yet (future wall-kick etc.).
     if (hasPos) {
         if (self_->y < -2048.0 || self_->y > 2048.0)
@@ -2921,13 +3754,8 @@ void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
         };
         if (nowGround && !self_->onGround) {
             if (self_->fallDist > 0.5 && !self_->isSneaking) {
-                // 0.512 small mob check: width*width*height >0.512 (player 0.6*0.6*1.8=0.648 passes, small mobs like rabbit 0.4*0.4*0.5=0.08 fails)
-                float entityVolume = 0.6f * 0.6f * 1.8f; // player bounding box volume; mobs would use their own dims but Session is player
-                if (entityVolume < 0.512f) {
-                    // small entity does not trample (vanilla 0.512 threshold)
-                } else {
-                // mobGriefing check: only mobs respect mobGriefing, players always trample. Session is player so we allow even if mobGriefing false.
-                // (Strict Yarn: if !mobGriefing && entity instanceof MobEntity) return; - player is not MobEntity so passes)
+                // Players always pass the vanilla 0.512 volume and mobGriefing
+                // checks; those branches only apply to mob entities.
                 int bx = static_cast<int>(std::floor(self_->x));
                 int by = static_cast<int>(std::floor(self_->y - 0.2));
                 int bz = static_cast<int>(std::floor(self_->z));
@@ -2935,12 +3763,6 @@ void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
                 std::uint16_t st = w.getBlock(bx, by, bz);
                 const gen::BlockDef* bd = gen::blockByState(st);
                 if (bd && std::string(bd->name) == "minecraft:farmland") {
-                    // respect mobGriefing for non-player entities would be checked here; player always allowed
-                    // check mobGriefing gamerule for completeness (player still tramples even if false)
-                    bool isMob = false; // Session is player, not mob
-                    if (isMob && !srv_.gameRules().getBool("mobGriefing")) {
-                        // mob griefing disabled -> skip
-                    } else {
                     float prob = std::clamp((float)(self_->fallDist - 0.5), 0.f, 1.f);
                     bool doTrample = (prob >= 1.0f) || ((nextRandom()/(float)RAND_MAX) < prob);
                     if (doTrample) {
@@ -2957,10 +3779,13 @@ void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
                                 // drop one item?
                                 auto it = gen::itemIdByName().find(ad->name);
                                 if (it != gen::itemIdByName().end()) {
-                                    srv_.spawnItemDrop(bx+0.5, by+1.2, bz+0.5, it->second, 1, 0, 0.1, 0);
+                                    srv_.spawnItemDropFor(self_->dimension, bx+0.5,
+                                                          by+1.2, bz+0.5,
+                                                          it->second, 1, 0,
+                                                          0.1, 0);
                                 }
                                 w.setBlock(bx, by+1, bz, 0);
-                                srv_.broadcastBlockChange(bx, by+1, bz, 0);
+                                srv_.broadcastBlockChangeFor(self_->dimension, bx, by+1, bz, 0);
                             }
                         }
                         if (hasMoisture) {
@@ -2970,21 +3795,22 @@ void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
                             props.emplace_back("moisture", "0");
                             std::uint16_t ns = static_cast<std::uint16_t>(gen::stateWithProps(*d, props));
                             w.setBlock(bx, by, bz, ns);
-                            srv_.broadcastBlockChange(bx, by, bz, ns);
+                            srv_.broadcastBlockChangeFor(self_->dimension, bx, by, bz, ns);
                         }
                         // revert to dirt
                         auto it = gen::blockNameToState().find("minecraft:dirt");
                         if (it != gen::blockNameToState().end()) {
                             std::uint16_t dirt = static_cast<std::uint16_t>(it->second);
                             w.setBlock(bx, by, bz, dirt);
-                            srv_.broadcastBlockChange(bx, by, bz, dirt);
+                            srv_.broadcastBlockChangeFor(self_->dimension, bx, by, bz, dirt);
                         }
                         // LevelEvent 2001: block break particles (strict B11)
-                        srv_.broadcastWorldEvent(2001, bx, by, bz, static_cast<std::int32_t>(st), false);
-                    }
-                    } // end mobGriefing else
+                    srv_.broadcastWorldEventFor(self_->dimension, 2001, bx,
+                                                    by, bz,
+                                                    static_cast<std::int32_t>(st),
+                                                    false);
                 }
-                } // end entityVolume else
+            }
             }
             {
                 int lbx = static_cast<int>(std::floor(self_->x));
@@ -3075,7 +3901,7 @@ void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
                         if (!isSource) continue;
                         if (w.getBlock(wx, by+1, wz) != 0) continue;
                         w.setBlock(wx, by, wz, frosted);
-                        srv_.broadcastBlockChange(wx, by, wz, frosted);
+                        srv_.broadcastBlockChangeFor(self_->dimension, wx, by, wz, frosted);
                     }
                 }
             }
@@ -3104,7 +3930,8 @@ void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
             WriteBuffer ab;
             self_->attributes.writeUpdate(ab, self_->entityId);
             self_->conn->trySendPacket(proto::pl::sc::UpdateAttributes, ab);
-            srv_.broadcastPacketExcept(self_.get(), proto::pl::sc::UpdateAttributes, ab);
+            srv_.broadcastPacketExceptInDimension(self_->dimension, self_.get(),
+                                                  proto::pl::sc::UpdateAttributes, ab);
         }
         if(onSoul && soulLvl>0 && !self_->isSneaking){
             if(nextRandom()%60==0){
@@ -3172,7 +3999,8 @@ void Session::broadcastMovement() {
         b.i8(static_cast<std::int8_t>(self_->yaw * 256.f / 360.f));
         b.i8(static_cast<std::int8_t>(self_->pitch * 256.f / 360.f));
         b.boolean(self_->onGround);
-        srv_.broadcastPacketExcept(nullptr, pl::sc::EntityTeleport, b);
+        srv_.broadcastPacketExceptInDimension(self_->dimension, nullptr,
+                                              pl::sc::EntityTeleport, b);
         sentX_ = self_->x; sentY_ = self_->y; sentZ_ = self_->z;
         sentYaw_ = self_->yaw; sentPitch_ = self_->pitch;
         hasSent_ = true;
@@ -3195,7 +4023,8 @@ void Session::broadcastMovement() {
                 b.i8(static_cast<std::int8_t>(self_->yaw * 256.f / 360.f));
                 b.i8(static_cast<std::int8_t>(self_->pitch * 256.f / 360.f));
                 b.boolean(self_->onGround);
-                srv_.broadcastPacketExcept(nullptr, pl::sc::MoveEntityPosRot, b);
+                srv_.broadcastPacketExceptInDimension(self_->dimension, nullptr,
+                                                      pl::sc::MoveEntityPosRot, b);
             } else {
                 WriteBuffer b;
                 b.varint(self_->entityId);
@@ -3203,12 +4032,14 @@ void Session::broadcastMovement() {
                 b.i16(static_cast<std::int16_t>(dy * 4096));
                 b.i16(static_cast<std::int16_t>(dz * 4096));
                 b.boolean(self_->onGround);
-                srv_.broadcastPacketExcept(nullptr, pl::sc::MoveEntityPos, b);
+                srv_.broadcastPacketExceptInDimension(self_->dimension, nullptr,
+                                                      pl::sc::MoveEntityPos, b);
             }
             WriteBuffer h;
             h.varint(self_->entityId);
             h.i8(static_cast<std::int8_t>(self_->yaw * 256.f / 360.f));
-            srv_.broadcastPacketExcept(nullptr, pl::sc::RotateHead, h);
+            srv_.broadcastPacketExceptInDimension(self_->dimension, nullptr,
+                                                  pl::sc::RotateHead, h);
         } else {                                    // teleport-class delta
             WriteBuffer b;
             b.varint(self_->entityId);
@@ -3216,7 +4047,8 @@ void Session::broadcastMovement() {
             b.i8(static_cast<std::int8_t>(self_->yaw * 256.f / 360.f));
             b.i8(static_cast<std::int8_t>(self_->pitch * 256.f / 360.f));
             b.boolean(self_->onGround);
-            srv_.broadcastPacketExcept(nullptr, pl::sc::EntityTeleport, b);
+            srv_.broadcastPacketExceptInDimension(self_->dimension, nullptr,
+                                                  pl::sc::EntityTeleport, b);
         }
     } else if (rotated) {                           // pure rotation
         WriteBuffer b;
@@ -3224,11 +4056,13 @@ void Session::broadcastMovement() {
         b.i8(static_cast<std::int8_t>(self_->yaw * 256.f / 360.f));
         b.i8(static_cast<std::int8_t>(self_->pitch * 256.f / 360.f));
         b.boolean(self_->onGround);
-        srv_.broadcastPacketExcept(nullptr, pl::sc::EntityLook, b);
+        srv_.broadcastPacketExceptInDimension(self_->dimension, nullptr,
+                                              pl::sc::EntityLook, b);
         WriteBuffer h;
         h.varint(self_->entityId);
         h.i8(static_cast<std::int8_t>(self_->yaw * 256.f / 360.f));
-        srv_.broadcastPacketExcept(nullptr, pl::sc::RotateHead, h);
+        srv_.broadcastPacketExceptInDimension(self_->dimension, nullptr,
+                                              pl::sc::RotateHead, h);
     }
 
     sentX_ = self_->x; sentY_ = self_->y; sentZ_ = self_->z;
@@ -3299,10 +4133,7 @@ void Session::dispatchCommand(const std::string& line) {
     src.hasOp = srv_.isOp(self_->name); // plan42 R3 (E-19): truthful op flag for kick/whitelist permission control
     src.srcX = self_->x; src.srcY = self_->y; src.srcZ = self_->z;
     src.srcYaw = self_->yaw; src.srcPitch = self_->pitch;
-    src.resolveSelector = [this](const std::string& raw,
-                                 brigadier::SelectorResult& out) {
-        out = srv_.resolveSelector(raw, self_.get());
-    };
+    srv_.bindCommandSelector(src);
 
     const auto res = [&]{
         try {
@@ -3336,7 +4167,8 @@ void Session::onPlayerAction(ReadBuffer& in) {
     (void)in.i8();                                    // face
     const std::int32_t sequence = in.varint();
 
-    World& world = srv_.worldFor(self_->dimension);
+    const SessionPlayerSnapshot playerState = snapshotPlayerForSession(*self_);
+    World& world = srv_.worldFor(playerState.dimension);
     auto sendAuthoritativeBlock = [&](std::int32_t bx, std::int32_t by,
                                       std::int32_t bz, std::uint16_t state) {
         WriteBuffer rb;
@@ -3355,6 +4187,18 @@ void Session::onPlayerAction(ReadBuffer& in) {
     // before the start/finish path so it cannot be hidden by that condition.
     if (status == 1) {
         cancelDig();
+        ack(sequence);
+        return;
+    }
+
+    if ((status == 0 || status == 2) &&
+        !withinBlockInteractionRange(playerState, x, y, z)) {
+        // A client is allowed to abort an existing dig from anywhere, but a
+        // start/finish must be close enough to the block.  Canceling and
+        // returning the authoritative state prevents a forged far-away
+        // packet from starting or completing a server-side dig.
+        cancelDig();
+        sendAuthoritativeBlock(x, y, z, world.getBlock(x, y, z));
         ack(sequence);
         return;
     }
@@ -3389,7 +4233,11 @@ void Session::onPlayerAction(ReadBuffer& in) {
                     return;
                 }
                 world.setBlock(x, y, z, 0);
-                srv_.broadcastBlockChange(x, y, z, 0);
+                srv_.broadcastBlockChangeFor(self_->dimension, x, y, z, 0);
+                if (const auto* broken = gen::blockByState(oldState);
+                    broken && std::string(broken->name).find("_bed") != std::string::npos) {
+                    srv_.invalidateRespawnPointsAt(self_->dimension, x, y, z);
+                }
                 world.scheduleNeighborUpdates(x, y, z);
             }
         } else if (oldState != 0) {
@@ -3475,7 +4323,7 @@ bool Session::handleUseItemOnInteractions(const UseItemOnRequest& request) {
     }
     // right-click on interactive blocks opens menus (vanilla behaviour)
     {
-        const std::uint16_t clickedState = srv_.world().getBlock(x, y, z);
+        const std::uint16_t clickedState = srv_.worldFor(self_->dimension).getBlock(x, y, z);
         const gen::BlockDef* bdef = gen::blockByState(clickedState);
         if (bdef) {
             const std::string bn(bdef->name);
@@ -3512,7 +4360,8 @@ bool Session::handleUseItemOnInteractions(const UseItemOnRequest& request) {
             if (bn == "minecraft:lever" ||
                 bn.find("_button") != std::string::npos ||
                 bn.find("comparator") != std::string::npos) {
-                srv_.redstone_->onInteract(x, y, z, srv_.tickNoForTest());
+                srv_.redstoneFor(self_->dimension).onInteract(
+                    x, y, z, srv_.tickNoForTest());
                 return true;
             }
             if (bn.find("_bed") != std::string::npos &&
@@ -3524,9 +4373,14 @@ bool Session::handleUseItemOnInteractions(const UseItemOnRequest& request) {
                 }
                 self_->sleeping = true;
                 self_->bedX = x; self_->bedY = y; self_->bedZ = z;
+                self_->hasRespawnPoint = true;
+                self_->respawnX = x; self_->respawnY = y; self_->respawnZ = z;
+                self_->respawnDimension = GameServer::canonicalDimension(self_->dimension);
+                self_->respawnAngle = self_->yaw;
+                srv_.savePlayerData(GameServer::uuidToHex(self_->uuid), *self_);
                 WriteBuffer sp;
                 sp.position(x, y, z);
-                sp.f32(0.f);
+                sp.f32(self_->respawnAngle);
                 conn_->trySendPacket(proto::pl::sc::SetDefaultSpawn, sp);
                 int sleepingCount = 0, survivalCount = 0;
                 for (auto& p : srv_.playersSnapshot()) {
@@ -3611,13 +4465,19 @@ bool Session::handleUseItemOnToolActions(const UseItemOnRequest& request, const 
                         else { wx = ox; wz = oz+dx; }
                         int32_t wy = oy+dy;
                         w.setBlock(wx, wy, wz, portalState);
-                        srv_.broadcastBlockChange(wx, wy, wz, portalState);
+                        srv_.broadcastBlockChangeFor(self_->dimension, wx, wy, wz, portalState);
                         if (srv_.blockTicks()) srv_.blockTicks()->schedule(wx, wy, wz, srv_.tickNow() + 1 + (nextRandom()%20));
                     }
                     int32_t cxp = ox+1 + (orient==0?1:0);
                     int32_t czp = oz + (orient==1?1:0);
-                    srv_.broadcastSound("minecraft:block.portal.ambient", cxp+0.5, oy+2, czp+0.5, 0.8f, 1.0f, "block");
-                    srv_.broadcastSound("minecraft:item.flintandsteel.use", x+0.5, y+0.5, z+0.5, 1.f, 1.f, "block");
+                    srv_.broadcastSoundFor(self_->dimension,
+                                           "minecraft:block.portal.ambient",
+                                           cxp+0.5, oy+2, czp+0.5, 0.8f, 1.0f,
+                                           "block");
+                    srv_.broadcastSoundFor(self_->dimension,
+                                           "minecraft:item.flintandsteel.use",
+                                           x+0.5, y+0.5, z+0.5, 1.f, 1.f,
+                                           "block");
                 };
                 for (int oy = y - 4; oy <= y && !ignited; ++oy) {
                     for (int ox = x - 3; ox <= x && !ignited; ++ox) {
@@ -3678,10 +4538,13 @@ bool Session::handleUseItemOnToolActions(const UseItemOnRequest& request, const 
         std::uint16_t clickedSt = srv_.worldFor(self_->dimension).getBlock(x,y,z);
         const gen::BlockDef* cbd = gen::blockByState(clickedSt);
         if (cbd && std::string(cbd->name)=="minecraft:tnt") {
-            srv_.world().setBlock(x,y,z,0);
-            srv_.broadcastBlockChange(x,y,z,0);
-            srv_.spawnPrimedTnt(x+0.5, y+0.5, z+0.5, 0, 0.2, 0, 80);
-            srv_.broadcastSound("minecraft:entity.tnt.primed", x+0.5, y+0.5, z+0.5, 1.f, 1.f, "block");
+            srv_.worldFor(self_->dimension).setBlock(x,y,z,0);
+            srv_.broadcastBlockChangeFor(self_->dimension, x,y,z,0);
+            srv_.spawnPrimedTntFor(self_->dimension, x+0.5, y+0.5, z+0.5,
+                                   0, 0.2, 0, 80);
+            srv_.broadcastSoundFor(self_->dimension,
+                                   "minecraft:entity.tnt.primed", x+0.5,
+                                   y+0.5, z+0.5, 1.f, 1.f, "block");
             if (survival) {
                 auto& mh = self_->inv[36 + self_->heldSlot];
                 if (heldItem.name()=="minecraft:flint_and_steel") { if (mh.applyDamage(1)) mh = ItemStack::air(); }
@@ -3695,7 +4558,7 @@ bool Session::handleUseItemOnToolActions(const UseItemOnRequest& request, const 
     if (!heldItem.empty()) {
         const std::string heldName = heldItem.name();
         if (heldName == "minecraft:water_bucket" || heldName == "minecraft:lava_bucket") {
-            std::uint16_t target = srv_.world().getBlock(tx, ty, tz);
+            std::uint16_t target = srv_.worldFor(self_->dimension).getBlock(tx, ty, tz);
             bool replaceable = (target == 0);
             // also consider replaceable plants? treat only air for now
             if (replaceable) {
@@ -3705,19 +4568,21 @@ bool Session::handleUseItemOnToolActions(const UseItemOnRequest& request, const 
                     auto it = gen::blockNameToState().find(fluidName);
                     if (it != gen::blockNameToState().end()) fluidState = static_cast<std::uint16_t>(it->second);
                 }
-                srv_.world().setBlock(tx, ty, tz, fluidState);
-                srv_.broadcastBlockChange(tx, ty, tz, fluidState);
+                srv_.worldFor(self_->dimension).setBlock(tx, ty, tz, fluidState);
+                srv_.broadcastBlockChangeFor(self_->dimension, tx, ty, tz, fluidState);
                 if (survival) {
                     auto* mh = &self_->inv[36 + self_->heldSlot];
                     *mh = ItemStack::ofName("minecraft:bucket", 1);
                     srv_.resendInventory(*self_);
                 }
-                srv_.broadcastSound("minecraft:item.bucket.empty", tx+0.5, ty+0.5, tz+0.5, 1.f, 1.f, "block");
+                srv_.broadcastSoundFor(self_->dimension,
+                                       "minecraft:item.bucket.empty", tx+0.5,
+                                       ty+0.5, tz+0.5, 1.f, 1.f, "block");
                 return true;
             }
         } else if (heldName == "minecraft:bucket") {
             auto tryPick = [&](std::int32_t px,std::int32_t py,std::int32_t pz)->bool{
-                std::uint16_t bs = srv_.world().getBlock(px,py,pz);
+                std::uint16_t bs = srv_.worldFor(self_->dimension).getBlock(px,py,pz);
                 const gen::BlockDef* bd = gen::blockByState(bs);
                 if (!bd) return false;
                 bool isWater=false,isLava=false;
@@ -3727,8 +4592,8 @@ bool Session::handleUseItemOnToolActions(const UseItemOnRequest& request, const 
                     for (auto& [k,v]: gen::propsOf(bs)) if (k=="level" && v=="0") isLava=true;
                 }
                 if (!isWater && !isLava) return false;
-                srv_.world().setBlock(px,py,pz, 0);
-                srv_.broadcastBlockChange(px,py,pz, 0);
+                srv_.worldFor(self_->dimension).setBlock(px,py,pz, 0);
+                srv_.broadcastBlockChangeFor(self_->dimension, px,py,pz, 0);
                 if (survival) {
                     auto* mh = &self_->inv[36 + self_->heldSlot];
                     std::string newName = isWater ? "minecraft:water_bucket" : "minecraft:lava_bucket";
@@ -3739,19 +4604,21 @@ bool Session::handleUseItemOnToolActions(const UseItemOnRequest& request, const 
                     std::string newName = isWater ? "minecraft:water_bucket" : "minecraft:lava_bucket";
                     srv_.onBucketFilled(*self_, newName);
                 }
-                srv_.broadcastSound("minecraft:item.bucket.fill", px+0.5, py+0.5, pz+0.5, 1.f, 1.f, "block");
+                srv_.broadcastSoundFor(self_->dimension,
+                                       "minecraft:item.bucket.fill", px+0.5,
+                                       py+0.5, pz+0.5, 1.f, 1.f, "block");
                 return true;
             };
             if (tryPick(x,y,z) || tryPick(tx,ty,tz)) {
                 return true;
             }
         } else if (heldName == "minecraft:flint_and_steel" || heldName == "minecraft:fire_charge") {
-            std::uint16_t target = srv_.world().getBlock(tx, ty, tz);
+            std::uint16_t target = srv_.worldFor(self_->dimension).getBlock(tx, ty, tz);
             if (target == 0) {
                 bool canPlace = true;
                 if (srv_.gameRules().contains("doFireTick") && !srv_.gameRules().getBool("doFireTick")) canPlace = false;
                 if (canPlace) {
-                    std::uint16_t belowSt = srv_.world().getBlock(tx, ty-1, tz);
+                    std::uint16_t belowSt = srv_.worldFor(self_->dimension).getBlock(tx, ty-1, tz);
                     const gen::BlockDef* belowDef = gen::blockByState(belowSt);
                     bool soulBase = false;
                     if (belowDef) {
@@ -3773,8 +4640,8 @@ bool Session::handleUseItemOnToolActions(const UseItemOnRequest& request, const 
                     if (it == gen::blockNameToState().end()) it = gen::blockNameToState().find("minecraft:fire");
                     if (it != gen::blockNameToState().end()) {
                         std::uint16_t fireState = static_cast<std::uint16_t>(it->second);
-                        srv_.world().setBlock(tx, ty, tz, fireState);
-                        srv_.broadcastBlockChange(tx, ty, tz, fireState);
+                        srv_.worldFor(self_->dimension).setBlock(tx, ty, tz, fireState);
+                        srv_.broadcastBlockChangeFor(self_->dimension, tx, ty, tz, fireState);
                         if (survival) {
                             auto* mh = &self_->inv[36 + self_->heldSlot];
                             if (heldName=="minecraft:flint_and_steel") {
@@ -3784,7 +4651,10 @@ bool Session::handleUseItemOnToolActions(const UseItemOnRequest& request, const 
                             }
                             srv_.resendInventory(*self_);
                         }
-                        srv_.broadcastSound("minecraft:item.flintandsteel.use", tx+0.5, ty+0.5, tz+0.5, 1.f, 1.f, "block");
+                        srv_.broadcastSoundFor(self_->dimension,
+                                               "minecraft:item.flintandsteel.use",
+                                               tx+0.5, ty+0.5, tz+0.5, 1.f,
+                                               1.f, "block");
                     }
                 }
                 return true;
@@ -3793,17 +4663,19 @@ bool Session::handleUseItemOnToolActions(const UseItemOnRequest& request, const 
     }
 
     // ---- bone meal fertilize hook ----
-    if (!heldItem.empty() && heldItem.name() == "minecraft:bone_meal" && srv_.blockTicks_) {
-        const std::uint16_t clickedSt = srv_.world().getBlock(x, y, z);
+    if (!heldItem.empty() && heldItem.name() == "minecraft:bone_meal") {
+        const std::uint16_t clickedSt = srv_.worldFor(self_->dimension).getBlock(x, y, z);
         if (clickedSt != 0) {
             const gen::BlockDef* cb = gen::blockByState(clickedSt);
             if (cb) {
                 const std::string bn(cb->name);
-                auto* beh = srv_.blockTicks_->behaviorFor(bn);
-                if (beh && beh->fertilize(srv_.world(), x, y, z, clickedSt, &srv_)) {
-                    const std::uint16_t newSt = srv_.world().getBlock(x, y, z);
-                    srv_.broadcastBlockChange(x, y, z, newSt);
-                    srv_.broadcastSound("minecraft:item.bone_meal.use", x + 0.5, y + 0.5, z + 0.5);
+                auto* beh = srv_.blockTicksFor(self_->dimension).behaviorFor(bn);
+                if (beh && beh->fertilize(srv_.worldFor(self_->dimension), x, y, z, clickedSt, &srv_)) {
+                    const std::uint16_t newSt = srv_.worldFor(self_->dimension).getBlock(x, y, z);
+                    srv_.broadcastBlockChangeFor(self_->dimension, x, y, z, newSt);
+                    srv_.broadcastSoundFor(self_->dimension,
+                                           "minecraft:item.bone_meal.use",
+                                           x + 0.5, y + 0.5, z + 0.5);
                     if (survival) {
                         auto* mh = &self_->inv[36 + self_->heldSlot];
                         if (--mh->count <= 0) *mh = InvSlot::air();
@@ -3828,15 +4700,12 @@ bool Session::handleUseItemOnDoorAndSlab(const UseItemOnRequest& request, const 
     const auto dir = request.face;
     const auto survival = request.survival;
     const auto& ctx = request.context;
-    static constexpr int FX[] = {0, 0, 0, 0, -1, 1};
-    static constexpr int FY[] = {-1, 1, 0, 0, 0, 0};
-    static constexpr int FZ[] = {0, 0, -1, 1, 0, 0};
     if (!heldItem.empty()) {
         const std::string heldName = heldItem.name();
         if (heldName.size() > 5 && heldName.rfind("_door", heldName.size() - 5) != std::string::npos) {
             const gen::BlockDef* ddef = gen::blockByName(heldName);
-            if (ddef && srv_.world().getBlock(tx, ty, tz) == 0 &&
-                srv_.world().getBlock(tx, ty + 1, tz) == 0) {
+            if (ddef && srv_.worldFor(self_->dimension).getBlock(tx, ty, tz) == 0 &&
+                srv_.worldFor(self_->dimension).getBlock(tx, ty + 1, tz) == 0) {
                 float yaw = self_->yaw;
                 const char* facing = "north";
                 if (yaw >= 45.f && yaw < 135.f) facing = "west";
@@ -3846,7 +4715,7 @@ bool Session::handleUseItemOnDoorAndSlab(const UseItemOnRequest& request, const 
                 std::string hingeStr = "left";
                 {
                     auto isFullCubeAt = [&](int nx,int ny,int nz)->bool{
-                        uint16_t s2 = srv_.world().getBlock(nx,ny,nz);
+                        uint16_t s2 = srv_.worldFor(self_->dimension).getBlock(nx,ny,nz);
                         if(s2==0) return false;
                         auto* bd2 = gen::blockByState(s2);
                         if(!bd2) return false;
@@ -3858,7 +4727,7 @@ bool Session::handleUseItemOnDoorAndSlab(const UseItemOnRequest& request, const 
                         return !bd2->transparent;
                     };
                     auto isDoorLowerAt = [&](int nx,int ny,int nz)->bool{
-                        uint16_t s2 = srv_.world().getBlock(nx,ny,nz);
+                        uint16_t s2 = srv_.worldFor(self_->dimension).getBlock(nx,ny,nz);
                         if(s2==0) return false;
                         auto* bd2 = gen::blockByState(s2);
                         if(!bd2 || std::string(bd2->name).find("_door")==std::string::npos) return false;
@@ -3895,7 +4764,8 @@ bool Session::handleUseItemOnDoorAndSlab(const UseItemOnRequest& request, const 
                     }
                 }
                 bool powered = false;
-                if(srv_.redstone_) powered = srv_.redstone_->isPoweredHere(tx,ty,tz) || srv_.redstone_->isPoweredHere(tx,ty+1,tz);
+                powered = srv_.redstoneFor(self_->dimension).isPoweredHere(tx,ty,tz) ||
+                          srv_.redstoneFor(self_->dimension).isPoweredHere(tx,ty+1,tz);
                 std::string openStr = powered ? "true" : "false";
                 std::string poweredStr = powered ? "true" : "false";
                 const auto lower =
@@ -3904,10 +4774,10 @@ bool Session::handleUseItemOnDoorAndSlab(const UseItemOnRequest& request, const 
                 const auto upper =
                     static_cast<std::uint16_t>(gen::stateWithProps(*ddef,
                         {{"half","upper"},{"facing",facing},{"open",openStr},{"hinge",hingeStr},{"powered",poweredStr}}));
-                srv_.world().setBlock(tx, ty, tz, lower);
-                srv_.broadcastBlockChange(tx, ty, tz, lower);
-                srv_.world().setBlock(tx, ty + 1, tz, upper);
-                srv_.broadcastBlockChange(tx, ty + 1, tz, upper);
+                srv_.worldFor(self_->dimension).setBlock(tx, ty, tz, lower);
+                srv_.broadcastBlockChangeFor(self_->dimension, tx, ty, tz, lower);
+                srv_.worldFor(self_->dimension).setBlock(tx, ty + 1, tz, upper);
+                srv_.broadcastBlockChangeFor(self_->dimension, tx, ty + 1, tz, upper);
                 if (survival) {
                     auto mh = &self_->inv[36 + self_->heldSlot];
                     if (ItemStack::maxDamageFor(mh->itemId) > 0) {
@@ -3926,7 +4796,7 @@ bool Session::handleUseItemOnDoorAndSlab(const UseItemOnRequest& request, const 
     if (!heldItem.empty()) {
         std::string hName = heldItem.name();
         if (hName.find("_slab") != std::string::npos) {
-            uint16_t existing = srv_.world().getBlock(tx, ty, tz);
+            uint16_t existing = srv_.worldFor(self_->dimension).getBlock(tx, ty, tz);
             const gen::BlockDef* ed = gen::blockByState(existing);
             if (ed && std::string(ed->name) == hName) {
                 std::string curType = getPropStr(existing, "type");
@@ -3945,8 +4815,8 @@ bool Session::handleUseItemOnDoorAndSlab(const UseItemOnRequest& request, const 
                         uint16_t dbl = static_cast<uint16_t>(gen::stateWithProps(*ed, p));
                         api::BlockPlaceEvent ev2; ev2.player=self_.get(); ev2.x=tx; ev2.y=ty; ev2.z=tz; ev2.newState=dbl;
                         if (srv_.events().blockPlace.fire(ev2)) {
-                            srv_.world().setBlock(tx,ty,tz,dbl);
-                            srv_.broadcastBlockChange(tx,ty,tz,dbl);
+                            srv_.worldFor(self_->dimension).setBlock(tx,ty,tz,dbl);
+                            srv_.broadcastBlockChangeFor(self_->dimension, tx,ty,tz,dbl);
                             if (survival) {
                                 auto* mh=&self_->inv[36 + self_->heldSlot];
                                 if(--mh->count<=0) *mh=ItemStack::air();
@@ -3956,17 +4826,17 @@ bool Session::handleUseItemOnDoorAndSlab(const UseItemOnRequest& request, const 
                         }
                     } else {
                         // same half → try adjacent placement (vanilla places single slab at offset)
-                        const int adjX = tx + FX[d];
-                        const int adjY = ty + FY[d];
-                        const int adjZ = tz + FZ[d];
-                        if (srv_.world().getBlock(adjX,adjY,adjZ)==0) {
+                        const int adjX = tx + kBlockFaceOffsetX[d];
+                        const int adjY = ty + kBlockFaceOffsetY[d];
+                        const int adjZ = tz + kBlockFaceOffsetZ[d];
+                        if (srv_.worldFor(self_->dimension).getBlock(adjX,adjY,adjZ)==0) {
                             const gen::BlockDef* sdef = gen::blockByName(hName);
                             if(sdef){
                                 const char* newType;
                                 if(d==1) newType="bottom";
                                 else if(d==0) newType="top";
                                 else newType = (ctx.cursor.y > 0.5 ? "top" : "bottom");
-                                auto adjFs = FluidSim::getFluidState(srv_.world(), adjX, adjY, adjZ);
+                                auto adjFs = FluidSim::getFluidState(srv_.worldFor(self_->dimension), adjX, adjY, adjZ);
                                 bool wl = adjFs.isStillWater();
                                 bool hasWlAdj=false; for(int i=0;i<sdef->propCount;++i){ auto &pd=gen::kPropDefs[gen::kBlockPropsRun[sdef->propsOff+i]]; if(pd.name=="waterlogged") hasWlAdj=true; }
                                 std::vector<std::pair<std::string_view,std::string_view>> ap;
@@ -3975,9 +4845,9 @@ bool Session::handleUseItemOnDoorAndSlab(const UseItemOnRequest& request, const 
                                 uint16_t adjSt = static_cast<uint16_t>(gen::stateWithProps(*sdef, ap));
                                 api::BlockPlaceEvent evA; evA.player=self_.get(); evA.x=adjX; evA.y=adjY; evA.z=adjZ; evA.newState=adjSt;
                                 if(srv_.events().blockPlace.fire(evA)){
-                                    srv_.world().setBlock(adjX,adjY,adjZ,adjSt);
-                                    srv_.broadcastBlockChange(adjX,adjY,adjZ,adjSt);
-                                    if(wl && srv_.fluidSim_) srv_.fluidSim_->touch(adjX,adjY,adjZ);
+                                    srv_.worldFor(self_->dimension).setBlock(adjX,adjY,adjZ,adjSt);
+                                    srv_.broadcastBlockChangeFor(self_->dimension, adjX,adjY,adjZ,adjSt);
+                                    if(wl) srv_.fluidsFor(self_->dimension).touch(adjX,adjY,adjZ);
                                     if(survival){
                                         auto* mh=&self_->inv[36 + self_->heldSlot];
                                         if(--mh->count<=0) *mh=ItemStack::air();
@@ -3996,7 +4866,7 @@ bool Session::handleUseItemOnDoorAndSlab(const UseItemOnRequest& request, const 
         // also check placing slab onto existing slab at click position? vanilla allows placing slab on top of clicked slab to make double.
         // If tx is offset, also check clicked pos if it is slab and face is up/down
         if (hName.find("_slab") != std::string::npos) {
-            uint16_t clickedSt = srv_.world().getBlock(x,y,z);
+            uint16_t clickedSt = srv_.worldFor(self_->dimension).getBlock(x,y,z);
             const gen::BlockDef* cd = gen::blockByState(clickedSt);
             if (cd && std::string(cd->name) == hName) {
                 std::string curType = getPropStr(clickedSt, "type");
@@ -4013,8 +4883,8 @@ bool Session::handleUseItemOnDoorAndSlab(const UseItemOnRequest& request, const 
                         bool hasWl=false; for(int i=0;i<cd->propCount;++i){ auto &pd=gen::kPropDefs[gen::kBlockPropsRun[cd->propsOff+i]]; if(pd.name=="waterlogged") hasWl=true; }
                         if(hasWl) p.emplace_back("waterlogged","false");
                         uint16_t dbl = static_cast<uint16_t>(gen::stateWithProps(*cd, p));
-                        srv_.world().setBlock(x,y,z,dbl);
-                        srv_.broadcastBlockChange(x,y,z,dbl);
+                        srv_.worldFor(self_->dimension).setBlock(x,y,z,dbl);
+                        srv_.broadcastBlockChangeFor(self_->dimension, x,y,z,dbl);
                         if (survival) {
                             auto* mh=&self_->inv[36 + self_->heldSlot];
                             if(--mh->count<=0) *mh=ItemStack::air();
@@ -4036,8 +4906,8 @@ bool Session::handleUseItemOnOccupied(const UseItemOnRequest& request, const Inv
     const auto tx = request.tx;
     const auto ty = request.ty;
     const auto tz = request.tz;
-    if (srv_.world().getBlock(tx, ty, tz) != 0 || heldItem.empty()) {
-        const std::uint16_t clickedState = srv_.world().getBlock(x, y, z);
+    if (srv_.worldFor(self_->dimension).getBlock(tx, ty, tz) != 0 || heldItem.empty()) {
+        const std::uint16_t clickedState = srv_.worldFor(self_->dimension).getBlock(x, y, z);
         const gen::BlockDef* cdef = gen::blockByState(clickedState);
         if (cdef && cdef->name.size() > 5 &&
             cdef->name.rfind("_door", cdef->name.size() - 5) != std::string::npos) {
@@ -4069,13 +4939,14 @@ bool Session::handleUseItemOnOccupied(const UseItemOnRequest& request, const Inv
                     {{"open", open ? "false" : "true"},
                      {"half", upperHalf ? "lower" : "upper"},
                      {"facing", facing}, {"hinge", hinge}, {"powered", powered?"true":"false"}}));
-            srv_.world().setBlock(x, y, z, st1);
-            srv_.broadcastBlockChange(x, y, z, st1);
-            srv_.world().setBlock(x, oy, z, st2);
-            srv_.broadcastBlockChange(x, oy, z, st2);
-            srv_.broadcastSound("minecraft:block.wooden_door.toggle",
-                                x + .5, y + .5, z + .5, 1.f,
-                                open ? 0.7f : 0.9f);
+            srv_.worldFor(self_->dimension).setBlock(x, y, z, st1);
+            srv_.broadcastBlockChangeFor(self_->dimension, x, y, z, st1);
+            srv_.worldFor(self_->dimension).setBlock(x, oy, z, st2);
+            srv_.broadcastBlockChangeFor(self_->dimension, x, oy, z, st2);
+            srv_.broadcastSoundFor(self_->dimension,
+                                   "minecraft:block.wooden_door.toggle",
+                                   x + .5, y + .5, z + .5, 1.f,
+                                   open ? 0.7f : 0.9f);
         }
         return true;
     }
@@ -4097,18 +4968,7 @@ bool Session::handleUseItemOnEntityItems(const UseItemOnRequest& request, const 
         if (self_->heldSlot >= 0 && self_->heldSlot < 9) {
             ItemStack& stk = self_->inv[36 + self_->heldSlot];
             if (!stk.empty() && stk.name().ends_with("_spawn_egg")) {
-                BlockPos spawnPos = hitPos.offset(d);
-                // check air at spawnPos before delegating to trySpawnEgg
-                World& w = srv_.worldFor(self_->dimension);
-                if (w.getBlock(spawnPos.x, spawnPos.y, spawnPos.z) == 0) {
-                    if (srv_.trySpawnEgg(*self_, stk, hitPos, d)) {
-                        return true;
-                    }
-                } else {
-                    if (srv_.trySpawnEgg(*self_, stk, hitPos, d)) {
-                        return true;
-                    }
-                }
+                if (srv_.trySpawnEgg(*self_, stk, hitPos, d)) return true;
             }
         }
         // keep itemName endsWith check for tooling/grep
@@ -4146,7 +5006,7 @@ bool Session::handleUseItemOnEntityItems(const UseItemOnRequest& request, const 
                 }();
                 if (kindOpt) {
                     double sx = tx + 0.5, sy = ty + 0.1, sz = tz + 0.5;
-                    srv_.spawnMob(*kindOpt, sx, sy, sz);
+                    srv_.spawnMobFor(self_->dimension, *kindOpt, sx, sy, sz);
                     if (survival) {
                         auto* mh = &self_->inv[36 + self_->heldSlot];
                         if (--mh->count <= 0) *mh = ItemStack::air();
@@ -4182,6 +5042,7 @@ void Session::placeUseItemOnBlock(const UseItemOnRequest& request, const InvSlot
         else if (yaw >= 225.f && yaw < 315.f) facing = "west";
         bool hasFacing = false;
         bool hasHalf = false, hasShape = false, hasSnowy = false, hasWaterlogged = false, hasAxis = false;
+        bool hasOrientation = false;
         for (int i = 0; i < bdef2->propCount; ++i) {
             const auto& pd = gen::kPropDefs[gen::kBlockPropsRun[bdef2->propsOff + i]];
             if (pd.name == "facing") hasFacing = true;
@@ -4190,6 +5051,7 @@ void Session::placeUseItemOnBlock(const UseItemOnRequest& request, const InvSlot
             if (pd.name == "snowy") hasSnowy = true;
             if (pd.name == "waterlogged") hasWaterlogged = true;
             if (pd.name == "axis") hasAxis = true;
+            if (pd.name == "orientation") hasOrientation = true;
         }
         if (hasFacing) props.emplace_back("facing", facing);
         if (hasHalf) {
@@ -4231,6 +5093,22 @@ void Session::placeUseItemOnBlock(const UseItemOnRequest& request, const InvSlot
             else if (ctx.face == 2 || ctx.face == 3) axis = "z";
             props.emplace_back("axis", axis);
         }
+        if (hasOrientation) {
+            // Crafter's `orientation` is the ordered pair front_top.  A
+            // vertical placement uses the player's horizontal direction for
+            // the top; a horizontal placement keeps the top upright.  The
+            // first token is also the ejection/front direction used by the
+            // redstone craft path.
+            std::string orientation;
+            if (ctx.face == 0 || ctx.face == 1) {
+                orientation = (ctx.face == 0 ? "down_" : "up_");
+                orientation += facing;
+            } else {
+                orientation = facing;
+                orientation += "_up";
+            }
+            props.emplace_back("orientation", orientation);
+        }
         // slab type handling: reuse half logic as type
         bool hasTypeSlab = false;
         for (int i = 0; i < bdef2->propCount; ++i) {
@@ -4263,8 +5141,14 @@ void Session::placeUseItemOnBlock(const UseItemOnRequest& request, const InvSlot
     if (!srv_.events().blockPlace.fire(ev)) {  return; }
     if (srv_.jvmRuntime() && !srv_.jvmRuntime()->onBlockPlace(*self_, tx, ty, tz, newState)) return;
 
-    srv_.world().setBlock(tx, ty, tz, newState);
-    srv_.broadcastBlockChange(tx, ty, tz, newState);
+    srv_.worldFor(self_->dimension).setBlock(tx, ty, tz, newState);
+    if (bdef2->name == "minecraft:crafter") {
+        auto& store = srv_.blockEntitiesFor(self_->dimension);
+        auto* be = store.getAt(tx, ty, tz);
+        if (!be || be->kind != BlockEntity::Kind::Crafter)
+            store.create(posKey(tx, ty, tz), BlockEntity::Kind::Crafter);
+    }
+    srv_.broadcastBlockChangeFor(self_->dimension, tx, ty, tz, newState);
     if (std::string(bdef2->name)=="minecraft:bamboo") {
         auto* bambooDef = gen::blockByName("minecraft:bamboo");
         if (bambooDef) {
@@ -4282,13 +5166,13 @@ void Session::placeUseItemOnBlock(const UseItemOnRequest& request, const InvSlot
                 props.emplace_back("stage","0");
                 props.emplace_back("age","0");
                 std::uint16_t fixed = static_cast<std::uint16_t>(gen::stateWithProps(*bambooDef, props));
-                srv_.world().setBlock(tx,ty,tz, fixed);
-                srv_.broadcastBlockChange(tx,ty,tz, fixed);
+                srv_.worldFor(self_->dimension).setBlock(tx,ty,tz, fixed);
+                srv_.broadcastBlockChangeFor(self_->dimension, tx,ty,tz, fixed);
                 newState = fixed;
             }
             int by = ty;
             while (by > kMinY) {
-                std::uint16_t bs = srv_.world().getBlock(tx, by-1, tz);
+                std::uint16_t bs = srv_.worldFor(self_->dimension).getBlock(tx, by-1, tz);
                 if (bs==0) break;
                 auto* bd = gen::blockByState(bs);
                 if(!bd || std::string(bd->name)!="minecraft:bamboo") break;
@@ -4296,7 +5180,7 @@ void Session::placeUseItemOnBlock(const UseItemOnRequest& request, const InvSlot
             }
             int h=0;
             for(int yy=by; yy<kMaxY; ++yy) {
-                std::uint16_t bs = srv_.world().getBlock(tx, yy, tz);
+                std::uint16_t bs = srv_.worldFor(self_->dimension).getBlock(tx, yy, tz);
                 if (bs==0) break;
                 auto* bd = gen::blockByState(bs);
                 if(!bd || std::string(bd->name)!="minecraft:bamboo") break;
@@ -4313,7 +5197,7 @@ void Session::placeUseItemOnBlock(const UseItemOnRequest& request, const InvSlot
                 int yy = by + i;
                 int dist = h-1 - i;
                 std::string want = bambooLeavesFor(h, dist);
-                std::uint16_t st = srv_.world().getBlock(tx, yy, tz);
+                std::uint16_t st = srv_.worldFor(self_->dimension).getBlock(tx, yy, tz);
                 auto* d = gen::blockByState(st);
                 if(!d) continue;
                 std::string curL;
@@ -4328,23 +5212,23 @@ void Session::placeUseItemOnBlock(const UseItemOnRequest& request, const InvSlot
                     const std::string ageString = std::to_string(wantA);
                     props.emplace_back("age", ageString);
                     std::uint16_t ns = static_cast<std::uint16_t>(gen::stateWithProps(*d, props));
-                    srv_.world().setBlock(tx, yy, tz, ns);
-                    srv_.broadcastBlockChange(tx, yy, tz, ns);
+                    srv_.worldFor(self_->dimension).setBlock(tx, yy, tz, ns);
+                    srv_.broadcastBlockChangeFor(self_->dimension, tx, yy, tz, ns);
                 }
             }
         }
     }
-    srv_.world().scheduleNeighborUpdates(tx, ty, tz);
+    srv_.worldFor(self_->dimension).scheduleNeighborUpdates(tx, ty, tz);
     if (std::string(bdef2->name).find("_stairs") != std::string::npos) {
-        updateNeighborStairsShapes(srv_.world(), srv_, tx, ty, tz);
+        updateNeighborStairsShapes(srv_.worldFor(self_->dimension), srv_, tx, ty, tz);
         // schedule fluid tick if waterlogged
         std::string wl = getPropStr(newState, "waterlogged");
         if (wl=="true") {
-            if (srv_.fluidSim_) srv_.fluidSim_->touch(tx,ty,tz);
+            srv_.fluidsFor(self_->dimension).touch(tx,ty,tz);
         }
     } else {
         std::string wl = getPropStr(newState, "waterlogged");
-        if (wl=="true" && srv_.fluidSim_) srv_.fluidSim_->touch(tx,ty,tz);
+        if (wl=="true") srv_.fluidsFor(self_->dimension).touch(tx,ty,tz);
     }
     {
         std::uint16_t oldSt = 0; // air before
@@ -4374,34 +5258,43 @@ void Session::onUseItemOn(ReadBuffer& in) {
     (void)in.boolean();                                 // world border hit
     const std::int32_t sequence = in.varint();
 
-    // vanilla face ids: 0 bottom(-Y), 1 top(+Y), 2 north(-Z), 3 south(+Z), 4 west(-X), 5 east(+X)
-    static constexpr int FX[] = {0, 0, 0, 0, -1, 1};
-    static constexpr int FY[] = {-1, 1, 0, 0, 0, 0};
-    static constexpr int FZ[] = {0, 0, -1, 1, 0, 0};
+    const SessionPlayerSnapshot playerState = snapshotPlayerForSession(*self_);
+    if (!withinBlockInteractionRange(playerState, x, y, z)) {
+        // The sequence still needs an acknowledgement, but no interaction,
+        // callback, item consumption, or placement may be driven by a block
+        // outside the server-side interaction range.
+        ack(sequence);
+        return;
+    }
+
     const int d = (dir >= 0 && dir < 6) ? dir : 0;
-    const std::int32_t tx = x + FX[d], ty = y + FY[d], tz = z + FZ[d];
+    const std::int32_t tx = x + kBlockFaceOffsetX[d], ty = y + kBlockFaceOffsetY[d], tz = z + kBlockFaceOffsetZ[d];
 
     ItemUseContext ctx;
     ctx.player = self_.get();
-    ctx.world = &srv_.worldFor(self_->dimension);
+    ctx.world = &srv_.worldFor(playerState.dimension);
     ctx.hitPos = {x, y, z};
     ctx.placePos = {tx, ty, tz};
     ctx.face = d;
     ctx.cursor = {static_cast<double>(cursorX), static_cast<double>(cursorY), static_cast<double>(cursorZ)};
-    ctx.yaw = self_->yaw;
-    ctx.isSneaking = self_->isSneaking;
+    ctx.yaw = playerState.yaw;
+    ctx.isSneaking = playerState.sneaking;
 
     const UseItemOnRequest request{x, y, z, tx, ty, tz, d,
-                                  self_->gamemode == 0, ctx};
+                                  playerState.gamemode == 0, ctx};
     if (handleUseItemOnInteractions(request)) {
         ack(sequence);
         return;
     }
 
-    static const InvSlot airSlot = InvSlot::air();
-    const InvSlot& heldItem =
-        (self_->heldSlot >= 0 && self_->heldSlot < 9)
-            ? self_->inv[36 + self_->heldSlot] : airSlot;
+    const InvSlot airSlot = InvSlot::air();
+    const InvSlot heldItem =
+        (playerState.heldSlot >= 0 && playerState.heldSlot < 9)
+            ? [&]() {
+                  std::lock_guard playerLock(self_->stateMtx);
+                  return self_->inv[36 + playerState.heldSlot];
+              }()
+            : airSlot;
     if (!heldItem.empty()) {
         srv_.onItemUsedOnBlock(self_.get(), x, y, z, heldItem);
     }
@@ -4432,14 +5325,14 @@ void Session::onUseItem(ReadBuffer& in) {
             bool isInWater = false;
             {
                 // check block at feet is water
-                uint16_t bst = srv_.world().getBlock((int)std::floor(self_->x), (int)std::floor(self_->y), (int)std::floor(self_->z));
+                uint16_t bst = srv_.worldFor(self_->dimension).getBlock((int)std::floor(self_->x), (int)std::floor(self_->y), (int)std::floor(self_->z));
                 if (auto* bd = gen::blockByState(bst)) {
                     std::string bn(bd->name);
                     if (bn.find("water")!=std::string::npos) isInWater = true;
                 }
                 // also check block at eye height
                 if (!isInWater) {
-                    uint16_t bst2 = srv_.world().getBlock((int)std::floor(self_->x), (int)std::floor(self_->y+1), (int)std::floor(self_->z));
+                    uint16_t bst2 = srv_.worldFor(self_->dimension).getBlock((int)std::floor(self_->x), (int)std::floor(self_->y+1), (int)std::floor(self_->z));
                     if (auto* bd2 = gen::blockByState(bst2)) {
                         std::string bn2(bd2->name);
                         if (bn2.find("water")!=std::string::npos) isInWater = true;
@@ -4460,7 +5353,9 @@ void Session::onUseItem(ReadBuffer& in) {
                 vel.i16((int16_t)(vx*8000)); vel.i16((int16_t)(vy*8000)); vel.i16((int16_t)(vz*8000));
                 self_->conn->trySendPacket(proto::pl::sc::EntityVelocity, vel);
                 // also broadcast to others
-                srv_.broadcastPacketExcept(self_.get(), proto::pl::sc::EntityVelocity, vel);
+                srv_.broadcastPacketExceptInDimension(self_->dimension,
+                                                      self_.get(),
+                                                      proto::pl::sc::EntityVelocity, vel);
                 if (self_->gamemode==0 && ItemStack::maxDamageFor(sl.itemId)>0) {
                     if (sl.applyDamage(1)) sl = ItemStack::air();
                     srv_.resendInventory(*self_);
@@ -4474,7 +5369,11 @@ void Session::onUseItem(ReadBuffer& in) {
             double vx = -std::sin(yawRad)*std::cos(pitchRad)*1.5;
             double vy = -std::sin(pitchRad)*1.5;
             double vz =  std::cos(yawRad)*std::cos(pitchRad)*1.5;
-            auto trident = srv_.spawnProjectile(ProjectileKind::Trident, self_->x, self_->y+1.6, self_->z, vx, vy, vz, self_->entityId, true);
+            auto trident = srv_.spawnProjectileFor(self_->dimension,
+                                                   ProjectileKind::Trident,
+                                                   self_->x, self_->y+1.6,
+                                                   self_->z, vx, vy, vz,
+                                                   self_->entityId, true);
             if (trident) trident->loyaltyLevel = EnchantmentHelper::getLoyalty(sl); // plan44 G-09: loyalty return
             if (self_->gamemode==0 && ItemStack::maxDamageFor(sl.itemId)>0) {
                 if (sl.applyDamage(1)) sl = ItemStack::air();
@@ -4505,7 +5404,9 @@ void Session::onUseItem(ReadBuffer& in) {
             double vx = -std::sin(yawRad)*std::cos(pitchRad)*2.0;
             double vy = -std::sin(pitchRad)*2.0 + 0.15;
             double vz =  std::cos(yawRad)*std::cos(pitchRad)*2.0;
-            srv_.spawnProjectile(ProjectileKind::Arrow, self_->x, self_->y+1.6, self_->z, vx, vy, vz, self_->entityId, true);
+            srv_.spawnProjectileFor(self_->dimension, ProjectileKind::Arrow,
+                                    self_->x, self_->y+1.6, self_->z, vx, vy,
+                                    vz, self_->entityId, true);
             // damage bow
             if (self_->gamemode==0 && ItemStack::maxDamageFor(sl.itemId)>0) {
                 if (sl.applyDamage(1)) sl = ItemStack::air();
@@ -4547,7 +5448,11 @@ void Session::onUseItem(ReadBuffer& in) {
                 double vx = -std::sin(yr)*std::cos(pitchRad)*2.0;
                 double vy = -std::sin(pitchRad)*2.0 + 0.15;
                 double vz =  std::cos(yr)*std::cos(pitchRad)*2.0;
-                auto pr = srv_.spawnProjectile(ProjectileKind::Arrow, self_->x, self_->y+1.6, self_->z, vx, vy, vz, self_->entityId, true);
+                auto pr = srv_.spawnProjectileFor(self_->dimension,
+                                                  ProjectileKind::Arrow,
+                                                  self_->x, self_->y+1.6,
+                                                  self_->z, vx, vy, vz,
+                                                  self_->entityId, true);
                 if (pr) pr->piercingLevel = pierce;
             }
             if (self_->gamemode==0 && ItemStack::maxDamageFor(sl.itemId)>0) {
@@ -4582,7 +5487,9 @@ void Session::onUseItem(ReadBuffer& in) {
                 double vy = -std::sin(pitchRad)*1.5;
                 double vz =  std::cos(yawRad)*std::cos(pitchRad)*1.5;
                 ProjectileKind pk = isPearl? ProjectileKind::EnderPearl : (isSnow? ProjectileKind::Snowball : ProjectileKind::Egg);
-                srv_.spawnProjectile(pk, self_->x, self_->y+1.6, self_->z, vx, vy, vz, self_->entityId, true);
+                srv_.spawnProjectileFor(self_->dimension, pk, self_->x,
+                                        self_->y+1.6, self_->z, vx, vy, vz,
+                                        self_->entityId, true);
                 if (isPearl) {
                     self_->lastEnderPearlTick = srv_.tickNow();
                     if (self_->conn) {
@@ -4651,90 +5558,199 @@ void Session::onUseEntity(ReadBuffer& in) {
             (void)hand;
             const bool sneaking = in.boolean();
             // stack, so hand is wire-consumed here and hand-specific item resolution stays a behavior refinement. check shear and riding
+            const SessionPlayerSnapshot playerState = snapshotPlayerForSession(*self_);
+            const std::int8_t playerDimension = playerState.dimension;
             std::shared_ptr<MobEntity> targetMob;
-            {
-                std::lock_guard lk(srv_.entsMtx_);
-                for (auto& m : srv_.mobsForTest())
-                    if (m->entityId == target) { targetMob = m; break; }
+            for (const auto& m : srv_.mobsSnapshot()) {
+                if (!m) continue;
+                std::lock_guard entityLock(*m->stateMtx);
+                if (m->entityId == target && !m->dead &&
+                    GameServer::canonicalDimension(m->dimension) == playerDimension) {
+                    targetMob = m;
+                    break;
+                }
             }
             if (targetMob) {
-                auto& m = targetMob;
-                    // shear sheep
-                    if (m->kind == MobKind::Sheep && !m->sheared) {
-                        auto &held = self_->inv[36 + self_->heldSlot];
-                        auto shearsIdIt = gen::itemIdByName().find("minecraft:shears");
-                        if (shearsIdIt != gen::itemIdByName().end() && held.itemId == shearsIdIt->second) {
-                            m->sheared = true;
-                            // drop wool: 1-3
-                            static const char* woolNames[] = {
-                                "minecraft:white_wool","minecraft:orange_wool","minecraft:magenta_wool","minecraft:light_blue_wool",
-                                "minecraft:yellow_wool","minecraft:lime_wool","minecraft:pink_wool","minecraft:gray_wool",
-                                "minecraft:light_gray_wool","minecraft:cyan_wool","minecraft:purple_wool","minecraft:blue_wool",
-                                "minecraft:brown_wool","minecraft:green_wool","minecraft:red_wool","minecraft:black_wool"
-                            };
-                            int col = m->woolColor % 16;
-                            auto wit = gen::itemIdByName().find(woolNames[col]);
-                            if (wit != gen::itemIdByName().end()) {
-                                int cnt = 1 + (nextRandom() % 3);
-                                srv_.spawnItemDrop(m->x, m->y+0.8, m->z, wit->second, (uint8_t)cnt,
-                                    (nextRandom()/(double)RAND_MAX-.5)*0.12, 0.12, (nextRandom()/(double)RAND_MAX-.5)*0.12);
-                            }
-                            // metadata: sheep index 17 sheared flag (D16 Boolean 8 fix)
-                            {
-                                WriteBuffer md;
-                                md.varint(m->entityId);
-                                md.u8(17); md.u8(8); md.u8(1);
-                                md.u8(255);
-                                srv_.broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);
-                            }
-                            // durability on shears
-                            if (held.applyDamage(1)) {
-                                held = ItemStack::air();
-                            }
-                            srv_.resendInventory(*self_);
-                            return;
+                const SessionMobSnapshot targetState = snapshotMobForSession(*targetMob);
+                if (!withinEntityInteractionRange(
+                        playerState, targetState.x, targetState.y, targetState.z,
+                        targetState.kind, targetState.slimeSize))
+                    return;
+                // Shearing is one transaction across the player's held item
+                // and the sheep state.  Capture the packet/drop data while
+                // both model locks are held, then do extension/transport work
+                // after releasing them.
+                bool sheared = false;
+                std::int8_t sheepDimension = 0;
+                std::int32_t sheepEntityId = 0;
+                int sheepColor = 0;
+                double sheepX = 0.0, sheepY = 0.0, sheepZ = 0.0;
+                {
+                    std::scoped_lock stateLock(self_->stateMtx,
+                                               *targetMob->stateMtx);
+                    if (targetMob->kind == MobKind::Sheep && !targetMob->sheared &&
+                        self_->heldSlot >= 0 && self_->heldSlot < 9) {
+                        auto& held = self_->inv[36 + self_->heldSlot];
+                        const auto shearsIdIt = gen::itemIdByName().find("minecraft:shears");
+                        if (shearsIdIt != gen::itemIdByName().end() &&
+                            held.itemId == shearsIdIt->second) {
+                            targetMob->sheared = true;
+                            if (held.applyDamage(1)) held = ItemStack::air();
+                            sheared = true;
+                            sheepDimension = targetMob->dimension;
+                            sheepEntityId = targetMob->entityId;
+                            sheepColor = targetMob->woolColor % 16;
+                            sheepX = targetMob->x;
+                            sheepY = targetMob->y;
+                            sheepZ = targetMob->z;
                         }
                     }
-                    bool isHorseLike = (m->kind == MobKind::Horse || m->kind == MobKind::Donkey || m->kind == MobKind::Mule
-                                        || m->kind == MobKind::Llama || m->kind == MobKind::TraderLlama || m->kind == MobKind::Camel
-                                        || m->kind == MobKind::SkeletonHorse || m->kind == MobKind::ZombieHorse);
-                    if (isHorseLike) {
-                        // If already riding this horse, or sneaking, open horse window instead of mounting
-                        if (self_->vehicleId == m->entityId || sneaking) {
-                            int slotCount = 15; // horse 15 slots (vanilla HorseScreenHandler 15)
-                            int windowId = ++menuWindowCounter_;
-                            if (windowId == 0 || windowId > 100) { menuWindowCounter_ = 1; windowId = 1; }
-                            WriteBuffer ow;
-                            ow.varint(windowId);
-                            ow.varint(slotCount);
-                            ow.varint(m->entityId);
-                            conn_->trySendPacket(proto::pl::sc::OpenHorseWindow, ow);
-                            // Also send ContainerSetContent for the horse window's 15 slots (empty for now)
-                            WriteBuffer cc;
-                            cc.varint(windowId);
-                            cc.varint(++self_->invStateId);
-                            cc.varint(slotCount);
-                            for (int i = 0; i < slotCount; ++i) ItemStack::air().write(cc);
-                            ItemStack::air().write(cc); // carried
-                            conn_->trySendPacket(proto::pl::sc::ContainerSetContent, cc);
-                            return;
+                }
+                if (sheared) {
+                    static const char* woolNames[] = {
+                        "minecraft:white_wool","minecraft:orange_wool","minecraft:magenta_wool","minecraft:light_blue_wool",
+                        "minecraft:yellow_wool","minecraft:lime_wool","minecraft:pink_wool","minecraft:gray_wool",
+                        "minecraft:light_gray_wool","minecraft:cyan_wool","minecraft:purple_wool","minecraft:blue_wool",
+                        "minecraft:brown_wool","minecraft:green_wool","minecraft:red_wool","minecraft:black_wool"
+                    };
+                    const auto wit = gen::itemIdByName().find(woolNames[sheepColor]);
+                    if (wit != gen::itemIdByName().end()) {
+                        const int count = 1 + (nextRandom() % 3);
+                        srv_.spawnItemDropFor(
+                            sheepDimension, sheepX, sheepY + 0.8, sheepZ,
+                            wit->second, static_cast<std::uint8_t>(count),
+                            (nextRandom() / (double)RAND_MAX - .5) * 0.12,
+                            0.12,
+                            (nextRandom() / (double)RAND_MAX - .5) * 0.12);
+                    }
+                    WriteBuffer md;
+                    md.varint(sheepEntityId);
+                    md.u8(17); md.u8(8); md.u8(1);
+                    md.u8(255);
+                    srv_.broadcastPacketExceptInDimension(
+                        sheepDimension, nullptr,
+                        proto::pl::sc::SetEntityMetadata, md);
+                    srv_.resendInventory(*self_);
+                    return;
+                }
+                // Take a value snapshot before any transport or extension
+                // call.  `openTrading` and `tryBreedFeed` can send packets or
+                // re-enter the server; neither is allowed to run while the
+                // live MobEntity lock is held.
+                MobEntity interactionSnapshot;
+                {
+                    std::lock_guard entityLock(*targetMob->stateMtx);
+                    if (targetMob->dead ||
+                        GameServer::canonicalDimension(targetMob->dimension) !=
+                            playerDimension)
+                        return;
+                    interactionSnapshot = *targetMob;
+                }
+                const auto isHorseLike = [](MobKind kind) {
+                    return kind == MobKind::Horse || kind == MobKind::Donkey ||
+                           kind == MobKind::Mule || kind == MobKind::Llama ||
+                           kind == MobKind::TraderLlama || kind == MobKind::Camel ||
+                           kind == MobKind::SkeletonHorse ||
+                           kind == MobKind::ZombieHorse;
+                };
+
+                bool openHorseWindow = false;
+                {
+                    std::lock_guard playerLock(self_->stateMtx);
+                    openHorseWindow = isHorseLike(interactionSnapshot.kind) &&
+                        (self_->vehicleId == interactionSnapshot.entityId || sneaking);
+                }
+                if (openHorseWindow) {
+                    closeOpenMenu(true);
+                    constexpr int slotCount = 15;
+                    int windowId = ++menuWindowCounter_;
+                    if (windowId == 0 || windowId > 100) {
+                        menuWindowCounter_ = 1;
+                        windowId = 1;
+                    }
+                    std::int32_t stateId = 0;
+                    {
+                        std::lock_guard playerLock(self_->stateMtx);
+                        stateId = ++self_->invStateId;
+                    }
+                    WriteBuffer ow;
+                    ow.varint(windowId);
+                    ow.varint(slotCount);
+                    ow.varint(interactionSnapshot.entityId);
+                    conn_->trySendPacket(proto::pl::sc::OpenHorseWindow, ow);
+                    // Horse inventory storage is not modelled yet, but keep
+                    // the wire snapshot internally consistent and emit it
+                    // only after the MobEntity lock has been released.
+                    WriteBuffer cc;
+                    cc.varint(windowId);
+                    cc.varint(stateId);
+                    cc.varint(slotCount);
+                    for (int i = 0; i < slotCount; ++i) ItemStack::air().write(cc);
+                    ItemStack::air().write(cc);
+                    conn_->trySendPacket(proto::pl::sc::ContainerSetContent, cc);
+                    return;
+                }
+
+                bool mounted = false;
+                std::int32_t mountedEntityId = -1;
+                {
+                    // The dead/dimension/rider checks and the two-way vehicle
+                    // link must be one transaction.  scoped_lock provides a
+                    // deadlock-safe order against the server's Player->Mob
+                    // paths while no packet is sent in this scope.
+                    std::scoped_lock stateLock(self_->stateMtx,
+                                               *targetMob->stateMtx);
+                    const bool currentTarget =
+                        !targetMob->dead && targetMob->entityId == target &&
+                        GameServer::canonicalDimension(targetMob->dimension) ==
+                            GameServer::canonicalDimension(self_->dimension);
+                    const bool mountable =
+                        targetMob->kind == MobKind::Horse ||
+                        targetMob->kind == MobKind::Llama ||
+                        targetMob->kind == MobKind::Pig ||
+                        MobEntity::isBoat(targetMob->kind) ||
+                        targetMob->kind == MobKind::Minecart;
+                    if (currentTarget && mountable && self_->vehicleId == -1 &&
+                        targetMob->riderEntityId == -1) {
+                        self_->vehicleId = targetMob->entityId;
+                        targetMob->riderEntityId = self_->entityId;
+                        mounted = true;
+                        mountedEntityId = targetMob->entityId;
+                    }
+                }
+                if (mounted) {
+                    srv_.broadcastSetPassengers(mountedEntityId);
+                    return;
+                }
+
+                // tryBreedFeed has its own deadlock-safe Player/Mob
+                // transaction and releases both locks before its packets.
+                if (srv_.tryBreedFeed(*self_, *targetMob)) return;
+                if (interactionSnapshot.kind == MobKind::Villager) {
+                    MobEntity villagerSnapshot;
+                    bool stillValid = false;
+                    {
+                        std::lock_guard entityLock(*targetMob->stateMtx);
+                        stillValid = !targetMob->dead &&
+                            targetMob->entityId == target &&
+                            GameServer::canonicalDimension(targetMob->dimension) ==
+                                playerDimension;
+                        if (stillValid) villagerSnapshot = *targetMob;
+                    }
+                    if (stillValid) {
+                        // Preserve inputs/cursor from an already-open screen
+                        // before the merchant screen is emitted.  Do not
+                        // discard openMenu_ by assigning nullptr.
+                        closeOpenMenu(true);
+                        if (srv_.openTrading(*self_, villagerSnapshot)) {
+                            std::lock_guard playerLock(self_->stateMtx);
+                            if (self_->inPlay && !self_->dead &&
+                                GameServer::canonicalDimension(self_->dimension) ==
+                                    playerDimension)
+                                tradingVillager_ = target;
                         }
                     }
-                    if (m->kind == MobKind::Horse || m->kind == MobKind::Llama || m->kind == MobKind::Pig || MobEntity::isBoat(m->kind) || m->kind == MobKind::Minecart) {
-                        if (self_->vehicleId == -1 && m->riderEntityId == -1) {
-                            self_->vehicleId = m->entityId;
-                            m->riderEntityId = self_->entityId;
-                            srv_.broadcastSetPassengers(m->entityId);
-                            return;
-                        }
-                    }
-                    // breeding
-                    if (srv_.tryBreedFeed(*self_, *m)) return;
-                    if (m->kind == MobKind::Villager) {
-                        srv_.openTrading(*self_, *m);
-                        tradingVillager_ = target;
-                        openMenu_ = nullptr;
-                    }
+                }
                 }
         } else {
             in.skipRest();
@@ -4743,93 +5759,186 @@ void Session::onUseEntity(ReadBuffer& in) {
     }
     (void)in.boolean();
 
+    struct AttackState {
+        std::int32_t entityId = 0;
+        std::int8_t dimension = 0;
+        std::uint8_t gamemode = 0;
+        std::int32_t heldSlot = 0;
+        std::shared_ptr<Connection> connection;
+        std::string name;
+        double x = 0.0;
+        double y = 0.0;
+        double z = 0.0;
+        double fallDistance = 0.0;
+        bool onGround = false;
+        bool sprinting = false;
+        bool riding = false;
+        std::int32_t attackCooldownTicks = 0;
+        std::vector<EffectInstance> effects;
+        ItemStack weapon;
+    } attacker;
+    {
+        std::lock_guard playerLock(self_->stateMtx);
+        attacker.entityId = self_->entityId;
+        attacker.dimension = GameServer::canonicalDimension(self_->dimension);
+        attacker.gamemode = self_->gamemode;
+        attacker.heldSlot = self_->heldSlot;
+        attacker.connection = self_->conn;
+        attacker.name = self_->name;
+        attacker.x = self_->x;
+        attacker.y = self_->y;
+        attacker.z = self_->z;
+        attacker.fallDistance = self_->fallDist;
+        attacker.onGround = self_->onGround;
+        attacker.sprinting = self_->isSprinting;
+        attacker.riding = self_->vehicleId != -1;
+        attacker.attackCooldownTicks = self_->attackCooldownTicks;
+        attacker.effects = self_->effects;
+        if (attacker.heldSlot >= 0 && attacker.heldSlot < 9)
+            attacker.weapon = self_->inv[36 + attacker.heldSlot];
+        // A swing consumes exhaustion and resets the attack/shield state as a
+        // single player-state transaction.  No callback or packet is reached
+        // while this lock is held.
+        srv_.addHungerExhaustion(*self_, 0.1f);
+        self_->attackCooldownTicks = 0;
+        self_->isBlocking = false;
+        self_->blockingTicks = 0;
+    }
+
     float baseDmg = 1.f;
-    ItemStack weaponStack;
-    if (self_->heldSlot >= 0 && self_->heldSlot < 9) {
-        const auto& sl = self_->inv[36 + self_->heldSlot];
-        if (sl.count > 0) {
-            weaponStack = sl;
-            std::string iname = sl.name();
+    ItemStack weaponStack = attacker.weapon;
+    if (!weaponStack.empty()) {
+            std::string iname = weaponStack.name();
             if (iname.find("sword") != std::string::npos) baseDmg = 6.f;
             else if (iname.find("axe") != std::string::npos) baseDmg = 7.f;
             else if (iname.find("_sword") != std::string::npos) baseDmg = 5.f;
-            if (sl.itemId == gen::itemIdByName().at("minecraft:iron_sword")) baseDmg = 6.f;
+            if (weaponStack.itemId == gen::itemIdByName().at("minecraft:iron_sword")) baseDmg = 6.f;
             // base enchant sharpness kept for pvp (player victims) — smite/bane for mobs applied per victim
-            baseDmg = EnchantmentHelper::meleeDamageWithEnchant(baseDmg, sl);
-        }
+            baseDmg = EnchantmentHelper::meleeDamageWithEnchant(baseDmg, weaponStack);
     }
-    float dmg = baseDmg + meleeDamageBonusFor(self_->effects);
-    srv_.addHungerExhaustion(*self_, 0.1f);
+    float dmg = baseDmg + meleeDamageBonusFor(attacker.effects);
     // E-06 wire compat: base mapping above is untouched; crit/sweep only scale the result.
-    bool charged = isChargedAttack(self_->attackCooldownTicks);
-    bool falling = !self_->onGround && self_->fallDist > 0;
+    bool charged = isChargedAttack(attacker.attackCooldownTicks);
+    bool falling = !attacker.onGround && attacker.fallDistance > 0;
     bool weaponIsSword = !weaponStack.empty() && isSwordItem(weaponStack.name());
     bool weaponIsAxe = !weaponStack.empty() && isAxeItem(weaponStack.name());
     bool weaponIsMace = !weaponStack.empty() && isMaceItem(weaponStack.name());
     bool attackerInWater = false;
     {
-        uint16_t bst = srv_.world().getBlock((int)std::floor(self_->x), (int)std::floor(self_->y), (int)std::floor(self_->z));
+        uint16_t bst = srv_.worldFor(attacker.dimension).getBlock(
+            static_cast<int>(std::floor(attacker.x)),
+            static_cast<int>(std::floor(attacker.y)),
+            static_cast<int>(std::floor(attacker.z)));
         if (auto* bd = gen::blockByState(bst)) attackerInWater = std::string(bd->name).find("water") != std::string::npos;
     }
-    bool riding = self_->vehicleId != -1;
-    bool crit = isCritAttack(self_->onGround, falling, self_->isSprinting, charged,
-                             attackerInWater, false, riding, false);
-    bool doSweep = isSweepAttack(weaponIsSword, self_->onGround, self_->isSprinting, charged);
+    bool crit = isCritAttack(attacker.onGround, falling, attacker.sprinting, charged,
+                             attackerInWater, false, attacker.riding, false);
+    bool doSweep = isSweepAttack(weaponIsSword, attacker.onGround,
+                                 attacker.sprinting, charged);
     int breachLv = weaponStack.empty() ? 0 : EnchantmentHelper::getBreach(weaponStack);
     int fireAspectLv = weaponStack.empty() ? 0 : EnchantmentHelper::getFireAspect(weaponStack);
-    self_->attackCooldownTicks = 0; // swing resets cooldown
-    self_->isBlocking = false; self_->blockingTicks = 0; // swinging lowers a raised shield
     auto broadcastCritParticles = [&](double x, double y, double z) {
         if (!crit) return;
         WriteBuffer pb = makeWorldParticlesBody(x, y + 1.0, z, 0.2f, 0.2f, 0.2f, 0.3f, 8,
                                                 ParticleId::crit, {}, false, false);
-        srv_.broadcastPacketExcept(nullptr, pl::sc::WorldParticles, pb);
+        srv_.broadcastPacketExceptInDimension(attacker.dimension, nullptr,
+                                              pl::sc::WorldParticles, pb);
     };
 
     // ---- PVP: check player victims first (items 76-80 combat)
     for (auto &pp : srv_.playersSnapshot()) {
         auto *victimP = pp.get();
-        if (victimP->entityId != target || victimP->dead) continue;
-        if (victimP == self_.get()) break; // self-hit ignore
+        if (!victimP) continue;
+        std::int8_t victimDimension = 0;
+        double victimTargetX = 0.0, victimTargetY = 0.0, victimTargetZ = 0.0;
+        {
+            std::lock_guard victimLock(victimP->stateMtx);
+            if (victimP->entityId != target || victimP->dead ||
+                GameServer::canonicalDimension(victimP->dimension) !=
+                    attacker.dimension)
+                continue;
+            victimDimension = GameServer::canonicalDimension(victimP->dimension);
+            victimTargetX = victimP->x;
+            victimTargetY = victimP->y;
+            victimTargetZ = victimP->z;
+        }
+        if (victimP == self_.get()) return; // self-hit ignore
+        if (!withinEntityInteractionRange(
+                attacker.x, attacker.y, attacker.z, attacker.gamemode,
+                victimTargetX, victimTargetY, victimTargetZ))
+            return;
         if (!srv_.config().pvp) {
             // PvP disabled: suppress damage, optionally notify
             return;
         }
         {
             DamageSource psrc("player");
-            if (CombatManager::tryShieldBlock(srv_, *victimP, psrc, self_->x, self_->z, weaponIsAxe)) return;
+            if (CombatManager::tryShieldBlock(srv_, *victimP, psrc,
+                                              attacker.x, attacker.z,
+                                              weaponIsAxe))
+                return;
         }
         float pvpDmg = dmg;
         if (crit) pvpDmg = applyCrit(pvpDmg); // plan44 G-07: falling x1.5
         if (weaponIsMace) // plan44 G-09: density smash bonus also applies in PVP
-            pvpDmg += EnchantmentHelper::densityBonus((int)std::floor(self_->fallDist), weaponStack);
-        float before = victimP->health;
+            pvpDmg += EnchantmentHelper::densityBonus(
+                static_cast<int>(std::floor(attacker.fallDistance)), weaponStack);
+        float before = 0.0f;
         DamageSource psrc2("player");
+        {
+            std::lock_guard victimLock(victimP->stateMtx);
+            if (victimP->dead || GameServer::canonicalDimension(victimP->dimension) !=
+                                    attacker.dimension)
+                return;
+            before = victimP->health;
+        }
         srv_.applyDamage(*victimP, pvpDmg, psrc2, breachLv);
-        broadcastCritParticles(victimP->x, victimP->y, victimP->z);
-        if (fireAspectLv > 0) victimP->fireTicks = 100; // plan44 G-09: fire aspect ignites PVP victims
-        if (victimP->health < before) CombatManager::applyThornsReflection(srv_, *victimP, nullptr, self_.get());
+        double victimX = 0.0, victimY = 0.0, victimZ = 0.0;
+        std::shared_ptr<Connection> victimConnection;
+        std::int32_t victimEntityId = target;
+        bool damaged = false;
+        {
+            std::lock_guard victimLock(victimP->stateMtx);
+            if (GameServer::canonicalDimension(victimP->dimension) !=
+                    attacker.dimension)
+                return;
+            damaged = victimP->health < before;
+            if (damaged && fireAspectLv > 0 && !victimP->dead)
+                victimP->fireTicks = 100; // fire aspect ignites PVP victims
+            victimX = victimP->x;
+            victimY = victimP->y;
+            victimZ = victimP->z;
+            victimConnection = victimP->conn;
+            victimEntityId = victimP->entityId;
+        }
+        broadcastCritParticles(victimX, victimY, victimZ);
+        if (damaged)
+            CombatManager::applyThornsReflection(srv_, *victimP, nullptr,
+                                                  self_.get());
         // knockback impulse
-        double dx = victimP->x - self_->x;
-        double dz = victimP->z - self_->z;
+        double dx = victimX - attacker.x;
+        double dz = victimZ - attacker.z;
         double len = std::sqrt(dx*dx + dz*dz);
         if (len < 0.01) { dx = (nextRandom()/(double)RAND_MAX - 0.5); dz = (nextRandom()/(double)RAND_MAX - 0.5); len = std::sqrt(dx*dx+dz*dz); }
         double nx = dx / len;
         double nz = dz / len;
         WriteBuffer vel;
-        vel.varint(victimP->entityId);
+        vel.varint(victimEntityId);
         vel.i16(static_cast<std::int16_t>(nx * 400));
         vel.i16(static_cast<std::int16_t>(300));
         vel.i16(static_cast<std::int16_t>(nz * 400));
-        victimP->conn->trySendPacket(pl::sc::EntityVelocity, vel);
-        srv_.broadcastPacketExcept(victimP, pl::sc::EntityVelocity, vel);
+        if (victimConnection)
+            victimConnection->trySendPacket(pl::sc::EntityVelocity, vel);
+        srv_.broadcastPacketExceptInDimension(victimDimension, victimP,
+                                              pl::sc::EntityVelocity, vel);
         return;
     }
 
     bool killed = false;
     std::shared_ptr<MobEntity> victim;
+    std::shared_ptr<MobEntity> hitTarget;
     bool hitMob = false;
-    MobEntity* hitPtr = nullptr;
+    SessionMobSnapshot hitSnapshot;
     float attackDmgNoCrit = dmg; // plan44 G-07: sweep uses enchanted AD without crit
     int flameLvl = 0; int punchLvl = 0; int kbLvl = 0;
     if (!weaponStack.empty()) {
@@ -4837,111 +5946,158 @@ void Session::onUseEntity(ReadBuffer& in) {
         punchLvl = EnchantmentHelper::getPunch(weaponStack);
         kbLvl = EnchantmentHelper::getKnockback(weaponStack);
     }
-    {
-        std::lock_guard lk(srv_.entsMtx_);
-        for (auto& m : srv_.mobsForTest()) {
-            if (m->entityId != target || m->dead) continue;
-            float mobDmg = dmg;
-            if (!weaponStack.empty()) {
-                mobDmg = baseDmg; // reset to base without generic sharpness double count? baseDmg already includes sharpness
-                // recompute with victim kind for smite/bane
-                mobDmg = EnchantmentHelper::meleeDamageWithEnchant(
-                    [&]{
-                        float b=1.f; std::string iname=weaponStack.name();
-                        if (iname.find("sword")!=std::string::npos) b=6.f;
-                        else if (iname.find("axe")!=std::string::npos) b=7.f;
-                        else if (iname.find("_sword")!=std::string::npos) b=5.f;
-                        if (weaponStack.itemId==gen::itemIdByName().at("minecraft:iron_sword")) b=6.f;
-                        return b;
-                    }(), weaponStack, m->kind);
-                mobDmg += meleeDamageBonusFor(self_->effects);
-            }
-            if (!weaponStack.empty()) {
-                mobDmg += EnchantmentHelper::impalingBonusFor(weaponStack, m->kind);
-                if (weaponIsMace)
-                    mobDmg += EnchantmentHelper::densityBonus((int)std::floor(self_->fallDist), weaponStack);
-            }
-            float attackDmgNoCritInner = mobDmg; // sweep uses enchanted AD without crit (vanilla)
-            attackDmgNoCrit = attackDmgNoCritInner;
-            if (crit) mobDmg = applyCrit(mobDmg); // plan44 G-07: falling x1.5 (main target only)
-            DamageSource msrc("player");
-            srv_.applyDamageToMob(*m, mobDmg, msrc, breachLv);
-            broadcastCritParticles(m->x, m->y, m->z);
-            // flame 100t
-            if (flameLvl>0) {
-                m->onFireTicks = 100;
-                srv_.broadcastSound("minecraft:item.firecharge.use", m->x,m->y,m->z, 1.f, 1.f, "block");
-            }
-            // AI hurt memory → panic/anger
-            auto it = srv_.mobAi_.find(m->entityId);
-            if (it != srv_.mobAi_.end()) {
-                it->second.ctx->lastHurtTick = srv_.tickNoForTest();
-                it->second.ctx->lastHurtByEntityId = self_->entityId;
-            }
-            hitMob = true;
-            hitPtr = m.get();
-            if (m->dead) { killed = true; victim = m; }
-            break;
+    for (const auto& m : srv_.mobsSnapshot()) {
+        if (!m) continue;
+        const SessionMobSnapshot before = snapshotMobForSession(*m);
+        if (before.entityId != target || before.dead ||
+            before.dimension != attacker.dimension)
+            continue;
+        if (!withinEntityInteractionRange(
+                attacker.x, attacker.y, attacker.z, attacker.gamemode,
+                before.x, before.y, before.z, before.kind, before.slimeSize))
+            return;
+        hitTarget = m;
+        float mobDmg = dmg;
+        if (!weaponStack.empty()) {
+            // Recompute with the target kind for smite/bane without retaining
+            // the Mob lock across damage callbacks.
+            mobDmg = EnchantmentHelper::meleeDamageWithEnchant(
+                [&] {
+                    float b = 1.f;
+                    const std::string iname = weaponStack.name();
+                    if (iname.find("sword") != std::string::npos) b = 6.f;
+                    else if (iname.find("axe") != std::string::npos) b = 7.f;
+                    else if (iname.find("_sword") != std::string::npos) b = 5.f;
+                    if (weaponStack.itemId ==
+                        gen::itemIdByName().at("minecraft:iron_sword"))
+                        b = 6.f;
+                    return b;
+                }(), weaponStack, before.kind);
+            mobDmg += meleeDamageBonusFor(attacker.effects);
         }
+        if (!weaponStack.empty()) {
+            mobDmg += EnchantmentHelper::impalingBonusFor(weaponStack, before.kind);
+            if (weaponIsMace)
+                mobDmg += EnchantmentHelper::densityBonus(
+                    static_cast<int>(std::floor(attacker.fallDistance)), weaponStack);
+        }
+        attackDmgNoCrit = mobDmg; // sweep uses enchanted AD without crit (vanilla)
+        if (crit) mobDmg = applyCrit(mobDmg); // plan44 G-07: falling x1.5 (main target only)
+        DamageSource msrc("player");
+        srv_.applyDamageToMob(*m, mobDmg, msrc, breachLv);
+        SessionMobSnapshot after = snapshotMobForSession(*m);
+        if (after.entityId != target || after.dimension != attacker.dimension)
+            continue;
+        if (flameLvl > 0 && !after.dead) {
+            {
+                std::lock_guard entityLock(*m->stateMtx);
+                if (m->entityId == target && !m->dead)
+                    m->onFireTicks = 100;
+            }
+            after = snapshotMobForSession(*m);
+            srv_.broadcastSoundFor(after.dimension,
+                                   "minecraft:item.firecharge.use",
+                                   after.x, after.y, after.z, 1.f, 1.f, "block");
+        }
+        // AI hurt memory → panic/anger
+        srv_.noteMobHurt(after.entityId, attacker.entityId);
+        hitMob = true;
+        hitSnapshot = after;
+        if (after.dead) { killed = true; victim = m; }
+        break;
     }
-    if (hitMob && hitPtr) {
+    if (hitMob && hitTarget) {
         if (doSweep) {
             int sweepLv = weaponStack.empty() ? 0 : EnchantmentHelper::getSweepingEdge(weaponStack);
             float sweepDmg = sweepingEdgeDamage(attackDmgNoCrit, sweepLv);
-            std::vector<std::shared_ptr<MobEntity>> splash;
-            {
-                std::lock_guard lk(srv_.entsMtx_);
-                for (auto& m : srv_.mobsForTest()) {
-                    if (m->entityId == target || m->dead) continue;
-                    if (inSweepRange(hitPtr->x, hitPtr->y, hitPtr->z, m->x, m->y, m->z)) splash.push_back(m);
-                }
+            struct SplashTarget {
+                std::shared_ptr<MobEntity> mob;
+                SessionMobSnapshot state;
+            };
+            std::vector<SplashTarget> splash;
+            for (const auto& m : srv_.mobsSnapshot()) {
+                if (!m) continue;
+                const SessionMobSnapshot state = snapshotMobForSession(*m);
+                if (state.entityId == target || state.dead ||
+                    state.dimension != attacker.dimension)
+                    continue;
+                if (!withinEntityInteractionRange(
+                        attacker.x, attacker.y, attacker.z, attacker.gamemode,
+                        state.x, state.y, state.z, state.kind, state.slimeSize))
+                    continue;
+                if (inSweepRange(hitSnapshot.x, hitSnapshot.y, hitSnapshot.z,
+                                 state.x, state.y, state.z))
+                    splash.push_back({m, state});
             }
             DamageSource ssrc("player");
-            for (auto& m : splash) {
-                srv_.applyDamageToMob(*m, sweepDmg, ssrc, breachLv);
-                if (fireAspectLv > 0 || flameLvl > 0) m->onFireTicks = 100; // MC-93669: sweep ignites
-                double dx = m->x - self_->x, dz = m->z - self_->z;
+            for (auto& candidate : splash) {
+                srv_.applyDamageToMob(*candidate.mob, sweepDmg, ssrc, breachLv);
+                SessionMobSnapshot state = snapshotMobForSession(*candidate.mob);
+                if (state.entityId != candidate.state.entityId ||
+                    state.dimension != attacker.dimension || state.dead)
+                    continue;
+                if (fireAspectLv > 0 || flameLvl > 0) {
+                    std::lock_guard entityLock(*candidate.mob->stateMtx);
+                    if (!candidate.mob->dead)
+                        candidate.mob->onFireTicks = 100; // MC-93669: sweep ignites
+                    state = snapshotMobForSession(*candidate.mob);
+                }
+                double dx = state.x - attacker.x, dz = state.z - attacker.z;
                 double len = std::sqrt(dx*dx + dz*dz);
                 if (len < 0.01) { dx = 0.5; dz = 0.0; len = 0.5; }
                 WriteBuffer vel;
-                vel.varint(m->entityId);
+                vel.varint(state.entityId);
                 vel.i16(static_cast<std::int16_t>(dx / len * 400));
                 vel.i16(static_cast<std::int16_t>(300));
                 vel.i16(static_cast<std::int16_t>(dz / len * 400));
-                srv_.broadcastPacketExcept(nullptr, pl::sc::EntityVelocity, vel);
+                srv_.broadcastPacketExceptInDimension(state.dimension, nullptr,
+                                                      pl::sc::EntityVelocity, vel);
             }
             if (!splash.empty()) {
-                WriteBuffer pb = makeWorldParticlesBody(hitPtr->x, hitPtr->y + 1.0, hitPtr->z,
+                WriteBuffer pb = makeWorldParticlesBody(hitSnapshot.x,
+                                                        hitSnapshot.y + 1.0,
+                                                        hitSnapshot.z,
                                                         0.3f, 0.2f, 0.3f, 0.2f, 6,
                                                         ParticleId::sweep_attack, {}, false, false);
-                srv_.broadcastPacketExcept(nullptr, pl::sc::WorldParticles, pb);
-                srv_.broadcastSound("minecraft:entity.player.attack.sweep", hitPtr->x, hitPtr->y, hitPtr->z, 1.f, 1.f, "player");
+                srv_.broadcastPacketExceptInDimension(hitSnapshot.dimension, nullptr,
+                                                      pl::sc::WorldParticles, pb);
+                srv_.broadcastSoundFor(hitSnapshot.dimension,
+                                       "minecraft:entity.player.attack.sweep",
+                                       hitSnapshot.x, hitSnapshot.y, hitSnapshot.z,
+                                       1.f, 1.f, "player");
             }
         }
-        if (weaponIsMace && self_->fallDist > 1.5) {
+        if (weaponIsMace && attacker.fallDistance > 1.5) {
             int wb = weaponStack.empty() ? 0 : EnchantmentHelper::getWindBurst(weaponStack);
             if (wb > 0) {
                 WriteBuffer wv;
-                wv.varint(self_->entityId);
+                wv.varint(attacker.entityId);
                 wv.i16(0);
                 wv.i16(static_cast<std::int16_t>(windBurstLaunchVy(wb) * 8000));
                 wv.i16(0);
-                if (self_->conn) self_->conn->trySendPacket(pl::sc::EntityVelocity, wv);
-                srv_.broadcastPacketExcept(self_.get(), pl::sc::EntityVelocity, wv);
+                if (attacker.connection)
+                    attacker.connection->trySendPacket(pl::sc::EntityVelocity, wv);
+                srv_.broadcastPacketExceptInDimension(attacker.dimension,
+                                                      self_.get(),
+                                                      pl::sc::EntityVelocity, wv);
             }
         }
     }
-    if (self_->heldSlot >=0 && self_->heldSlot < 9) {
-        auto &held = self_->inv[36 + self_->heldSlot];
-        if (!held.empty() && ItemStack::maxDamageFor(held.itemId) > 0) {
-            bool broken = DamageComponent::applyDamage(held, 1);
-            if (broken) held = ItemStack::air();
-            srv_.resendInventory(*self_);
+    bool inventoryChanged = false;
+    if (attacker.heldSlot >= 0 && attacker.heldSlot < 9) {
+        std::lock_guard playerLock(self_->stateMtx);
+        auto& held = self_->inv[36 + attacker.heldSlot];
+        if (self_->heldSlot == attacker.heldSlot && !held.empty() &&
+            ItemStack::maxDamageFor(held.itemId) > 0) {
+            if (DamageComponent::applyDamage(held, 1)) held = ItemStack::air();
+            inventoryChanged = true;
         }
     }
-    if (hitMob && hitPtr) {
-        double dx = hitPtr->x - self_->x;
-        double dz = hitPtr->z - self_->z;
+    if (inventoryChanged) srv_.resendInventory(*self_);
+    if (hitMob && hitTarget) {
+        const SessionMobSnapshot state = snapshotMobForSession(*hitTarget);
+        double dx = state.x - attacker.x;
+        double dz = state.z - attacker.z;
         double len = std::sqrt(dx*dx + dz*dz);
         if (len < 0.01) { dx = (nextRandom()/(double)RAND_MAX - 0.5); dz = (nextRandom()/(double)RAND_MAX - 0.5); len = std::sqrt(dx*dx+dz*dz); }
         double nx = dx / len;
@@ -4954,77 +6110,85 @@ void Session::onUseEntity(ReadBuffer& in) {
             horiz = (int)(400 + kbForce * 400);
         }
         WriteBuffer vel;
-        vel.varint(hitPtr->entityId);
+        vel.varint(state.entityId);
         vel.i16(static_cast<std::int16_t>(nx * horiz));
         vel.i16(static_cast<std::int16_t>(300 + (kbForce>0 ? 100 : 0)));
         vel.i16(static_cast<std::int16_t>(nz * horiz));
-        srv_.broadcastPacketExcept(nullptr, pl::sc::EntityVelocity, vel);
+        srv_.broadcastPacketExceptInDimension(state.dimension, nullptr,
+                                              pl::sc::EntityVelocity, vel);
         // apply to mob's vel for server-side sync
         if (kbForce>0) {
-            hitPtr->velX += nx * kbForce * 0.3;
-            hitPtr->velZ += nz * kbForce * 0.3;
-            hitPtr->velY += 0.1;
+            std::lock_guard entityLock(*hitTarget->stateMtx);
+            if (hitTarget->entityId == state.entityId && !hitTarget->dead) {
+                hitTarget->velX += nx * kbForce * 0.3;
+                hitTarget->velZ += nz * kbForce * 0.3;
+                hitTarget->velY += 0.1;
+            }
         }
         // hurt animation + sound already via applyDamageToMob
     }
     if (killed && victim) {
+        const SessionMobSnapshot death = snapshotMobForSession(*victim);
+        if (death.entityId != target || !death.dead) return;
         WriteBuffer rm;
         rm.varint(1); rm.varint(target);
-        srv_.broadcastPacketExcept(nullptr, pl::sc::RemoveEntities, rm);
-        srv_.onMobKilledBy(*self_, victim->kind);
-        srv_.scoreboard.addScore("kills", self_->name, 1);
-        srv_.sendScoreAll("kills", self_->name,
-                          srv_.scoreboard.getScore("kills", self_->name));
-        const auto drop = MobEntity::dropFor(victim->kind);
+        srv_.broadcastPacketExceptInDimension(death.dimension, nullptr,
+                                              pl::sc::RemoveEntities, rm);
+        srv_.onMobKilledBy(*self_, death.kind);
+        srv_.scoreboard.addScore("kills", attacker.name, 1);
+        srv_.sendScoreAll("kills", attacker.name,
+                          srv_.scoreboard.getScore("kills", attacker.name));
+        const auto drop = MobEntity::dropFor(death.kind);
         if (drop.itemId) {
             int lootLv = weaponStack.empty() ? 0 : EnchantmentHelper::getLooting(weaponStack);
             int cnt = drop.count;
             if (lootLv > 0) cnt = std::min(64, cnt + (nextRandom() % (lootLv + 1)));
-            srv_.spawnItemDrop(victim->x, victim->y + 0.4, victim->z, drop.itemId, (std::uint8_t)cnt,
-                               (nextRandom()/(double)RAND_MAX-.5)*.15, .1,
-                               (nextRandom()/(double)RAND_MAX-.5)*.15);
+            srv_.spawnItemDropFor(death.dimension, death.x, death.y + 0.4,
+                                  death.z, drop.itemId, (std::uint8_t)cnt,
+                                  (nextRandom()/(double)RAND_MAX-.5)*.15, .1,
+                                  (nextRandom()/(double)RAND_MAX-.5)*.15);
         }
-        srv_.spawnXpOrbs(victim->x, victim->y + 0.5, victim->z,
-                         mobStats(victim->kind).xpDrop, self_.get());
+        srv_.spawnXpOrbsFor(death.dimension, death.x, death.y + 0.5,
+                            death.z, mobStats(death.kind).xpDrop,
+                            self_.get());
         // slime split on player kill
-        if ((victim->kind == MobKind::Slime || victim->kind == MobKind::MagmaCube) && victim->slimeSize > 0) {
+        if ((death.kind == MobKind::Slime || death.kind == MobKind::MagmaCube) &&
+            death.slimeSize > 0) {
             std::vector<std::shared_ptr<MobEntity>> babies;
             int n = 2 + (nextRandom() % 3);
             for (int s=0; s<n; ++s) {
                 auto baby = std::make_shared<MobEntity>();
                 baby->entityId = srv_.nextEntityId();
-                baby->kind = victim->kind;
-                baby->slimeSize = victim->slimeSize - 1;
+                baby->kind = death.kind;
+                baby->dimension = death.dimension;
+                baby->slimeSize = death.slimeSize - 1;
                 baby->health = MobEntity::slimeHealthForSize(baby->slimeSize);
                 if (baby->health < 1.f) baby->health = 1.f;
-                baby->x = victim->x + (nextRandom()/(double)RAND_MAX - 0.5) * 0.5;
-                baby->y = victim->y;
-                baby->z = victim->z + (nextRandom()/(double)RAND_MAX - 0.5) * 0.5;
+                baby->x = death.x + (nextRandom()/(double)RAND_MAX - 0.5) * 0.5;
+                baby->y = death.y;
+                baby->z = death.z + (nextRandom()/(double)RAND_MAX - 0.5) * 0.5;
                 baby->lastSeenMs = 0;
                 if (srv_.jvmRuntime() &&
                     !srv_.jvmRuntime()->onMobSpawn(*baby, baby->x, baby->y, baby->z))
                     continue;
                 babies.push_back(std::move(baby));
             }
-            {
-                std::lock_guard lk(srv_.entsMtx_);
-                for (auto& baby : babies) srv_.mobsForTest().push_back(baby);
-            }
+            for (auto& baby : babies) srv_.addMob(baby);
             for (auto& baby : babies) srv_.broadcastMobSpawn(*baby);
         }
-        {
-            std::lock_guard lk(srv_.entsMtx_);
-            srv_.mobAi_.erase(target);
-            srv_.mobsForTest().erase(
-                std::remove_if(srv_.mobsForTest().begin(), srv_.mobsForTest().end(),
-                    [&](const std::shared_ptr<MobEntity>& x){ return x.get()==victim.get(); }),
-                srv_.mobsForTest().end());
-        }
+        srv_.eraseMobAi(target);
+        srv_.removeMob(victim);
         srv_.invalidateJvmMob(victim);
-        if (self_->vehicleId == target) {
-            self_->vehicleId = -1;
-            srv_.broadcastSetPassengersEmpty(target);
+        bool wasVehicle = false;
+        {
+            std::lock_guard playerLock(self_->stateMtx);
+            if (self_->vehicleId == target) {
+                self_->vehicleId = -1;
+                wasVehicle = true;
+            }
         }
+        if (wasVehicle)
+            srv_.broadcastSetPassengersEmptyFor(death.dimension, target);
     }
 }
 } // namespace cppfm

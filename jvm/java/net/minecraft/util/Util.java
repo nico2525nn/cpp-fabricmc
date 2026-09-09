@@ -1,7 +1,5 @@
 package net.minecraft.util;
 
-import java.util.Collections;
-import java.util.IdentityHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;

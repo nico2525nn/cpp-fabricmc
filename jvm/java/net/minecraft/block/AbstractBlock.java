@@ -4,7 +4,6 @@ import java.util.function.BiPredicate;
 import java.util.function.Function;
 import java.util.function.ToIntFunction;
 import java.util.function.BiConsumer;
-import java.util.List;
 import net.minecraft.item.ItemStack;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.math.BlockPos;
@@ -21,9 +20,15 @@ public abstract class AbstractBlock {
     private static final Direction[] DIRECTIONS = Direction.values();
     /** The construction settings exposed to block subclasses and access wideners. */
     protected final Settings settings;
+    /**
+     * Vanilla keeps this as a field on AbstractBlock (rather than only on
+     * Settings); ServerCore and Fabric access-widen this exact 1.21.4 member.
+     */
+    private boolean collidable;
 
     protected AbstractBlock(Settings settings) {
         this.settings = settings == null ? Settings.create() : settings;
+        this.collidable = this.settings.collidableValue();
     }
 
     /** Compatibility constructor for older shadow subclasses. */
@@ -31,6 +36,9 @@ public abstract class AbstractBlock {
     protected AbstractBlock() { this(Settings.create()); }
 
     public Settings getSettings() { return settings; }
+
+    /** Canonical 1.21.4 block random-tick predicate used by Fabric APIs. */
+    public boolean hasRandomTicks(BlockState state) { return settings.randomTicks(); }
 
     /** 1.21.4 neighbour-update hook used by block behaviour mixins. */
     public BlockState getStateForNeighborUpdate(BlockState state, WorldView world,

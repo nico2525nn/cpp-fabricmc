@@ -1,6 +1,6 @@
 package net.minecraft.world;
 
-/** Heightmap selector names required by the 1.21.4 world ABI. */
+/** Heightmap type names used by spawn restrictions and world generation. */
 public final class Heightmap {
     private Heightmap() { }
     public enum Type {

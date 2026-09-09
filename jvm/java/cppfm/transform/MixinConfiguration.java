@@ -200,7 +200,7 @@ public final class MixinConfiguration {
 
         private Object number() {
             int start = position;
-            if (take('-')) { }
+            take('-');
             digits();
             boolean floating = false;
             if (take('.')) {
@@ -210,7 +210,7 @@ public final class MixinConfiguration {
             if (position < input.length() && (input.charAt(position) == 'e' || input.charAt(position) == 'E')) {
                 floating = true;
                 position++;
-                if (take('+') || take('-')) { }
+                if (!take('+')) take('-');
                 digits();
             }
             String text = input.substring(start, position);

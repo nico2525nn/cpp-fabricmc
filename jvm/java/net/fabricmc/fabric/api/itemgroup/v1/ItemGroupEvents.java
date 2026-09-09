@@ -5,17 +5,42 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 import net.minecraft.item.ItemGroup;
 import net.minecraft.item.ItemStack;
+import net.minecraft.registry.RegistryKey;
+import net.fabricmc.fabric.api.event.Event;
+import net.fabricmc.fabric.api.event.EventFactory;
 
 /** In-process registration surface for server-side item-group callbacks. */
 public final class ItemGroupEvents {
     private ItemGroupEvents() {}
+    public interface ModifyEntries {
+        void modifyEntries(FabricItemGroupEntries entries);
+    }
+    public interface ModifyEntriesAll {
+        void modifyEntries(ItemGroup group, FabricItemGroupEntries entries);
+    }
+    public static final Event<ModifyEntriesAll> MODIFY_ENTRIES_ALL =
+        EventFactory.createArrayBacked(ModifyEntriesAll.class,
+            callbacks -> (group, entries) -> {
+                for (ModifyEntriesAll callback : callbacks) callback.modifyEntries(group, entries);
+            });
+    private static final Map<RegistryKey<ItemGroup>, Event<ModifyEntries>> MODIFIERS =
+        new ConcurrentHashMap<>();
+
+    public static Event<ModifyEntries> modifyEntriesEvent(RegistryKey<ItemGroup> group) {
+        if (group == null) throw new NullPointerException("group");
+        return MODIFIERS.computeIfAbsent(group, ignored -> EventFactory.createArrayBacked(
+            ModifyEntries.class, callbacks -> entries -> {
+                for (ModifyEntries callback : callbacks) callback.modifyEntries(entries);
+            }));
+    }
+
     private static final Map<ItemGroup, Entries> ENTRIES = new ConcurrentHashMap<>();
     public static EntriesEvent modifyEntriesEvent(ItemGroup group) {
         if (group == null) throw new NullPointerException("group");
         return new EntriesEvent(ENTRIES.computeIfAbsent(group, ignored -> new Entries(group)));
     }
     public static EntriesEvent modifyEntriesEvent(net.minecraft.util.Identifier group) { return modifyEntriesEvent(group == null ? null : new ItemGroup(group.toString())); }
-    public static void clear() { ENTRIES.clear(); }
+    public static void clear() { ENTRIES.clear(); MODIFIERS.clear(); MODIFY_ENTRIES_ALL.clear(); }
     public static final class EntriesEvent {
         private final Entries entries;
         private EntriesEvent(Entries entries) { this.entries = entries; }

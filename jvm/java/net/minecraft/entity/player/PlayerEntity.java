@@ -16,6 +16,19 @@ import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
 
 public class PlayerEntity extends LivingEntity {
+    /** Reasons exposed by the 1.21.4 sleep API. */
+    public enum SleepFailureReason {
+        NOT_POSSIBLE_HERE("not_possible_here"),
+        NOT_POSSIBLE_NOW("not_possible_now"),
+        TOO_FAR_AWAY("too_far_away"),
+        OBSTRUCTED("obstructed"),
+        NOT_SAFE("not_safe");
+
+        private final net.minecraft.text.Text message;
+        SleepFailureReason(String key) { message = net.minecraft.text.Text.literal(key); }
+        public net.minecraft.text.Text getMessage() { return message; }
+    }
+
     protected final PlayerInventory inventory;
     protected final PlayerAbilities abilities = new PlayerAbilities();
     protected final HungerManager hungerManager = new HungerManager();
@@ -67,6 +80,18 @@ public class PlayerEntity extends LivingEntity {
     }
     public Arm getMainArm() { return Arm.RIGHT; }
     public BlockPos getSpawnPointPosition() { return getBlockPos(); }
+    /** 1.21.4 player sleep entrypoint used by Fabric's sleep events. */
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    public com.mojang.datafixers.util.Either trySleep(BlockPos position) {
+        if (position == null || !isAlive())
+            return com.mojang.datafixers.util.Either.left("not_possible_here");
+        World currentWorld = getWorld();
+        if (currentWorld != null) currentWorld.getBlockState(position);
+        sleep(position);
+        return com.mojang.datafixers.util.Either.right(com.mojang.datafixers.util.Unit.INSTANCE);
+    }
+    /** Vanilla sleep rule hook used when calculating the day-night reset. */
+    public boolean canResetTimeBySleeping() { return true; }
     public float getBlockBreakingSpeed(net.minecraft.block.BlockState state) { return isCreative() ? 1.0f : 1.0f; }
     public float getLuck() { return 0.0f; }
     /** Server-world overload present in the 1.21.4 Yarn ABI. */

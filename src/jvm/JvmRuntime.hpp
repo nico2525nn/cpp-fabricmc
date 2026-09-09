@@ -1,9 +1,10 @@
 // Embedded Fabric-compatible JVM runtime boundary.
 //
-// The runtime is deliberately optional: the normal cppfm executable remains
-// C++-only unless `jvm-enabled=true`/`--jvm=true` is supplied.  JNI details,
-// Java references, and class-loader state stay behind this interface so game
-// code only sees typed lifecycle/event calls.
+// The runtime is a default-on Fabric compatibility boundary.  It remains
+// fail-open unless strict mode is requested: a host without a JDK can still
+// run the native server, while JNI details, Java references, and class-loader
+// state stay behind this interface so game code only sees typed lifecycle and
+// event calls.
 #pragma once
 
 #include <cstddef>
@@ -123,7 +124,7 @@ public:
 
     // Starts one HotSpot VM, registers the native bridge, and loads the Java
     // bootstrap.  When strict=false, a missing JVM/classes directory is
-    // reported and the C++ server may continue without the optional layer.
+    // reported and the C++ server may continue with its native implementation.
     bool start(std::string* error = nullptr);
     void stop();
     bool started() const noexcept;

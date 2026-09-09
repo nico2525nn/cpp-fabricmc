@@ -29,10 +29,13 @@ def main() -> int:
             "--world-dir=" + world,
             "--port=0",
         ]
+        environment = os.environ.copy()
+        environment["CPPFM_SERVER_DIR"] = world
         with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as log_file:
             proc = subprocess.Popen(
                 command,
                 cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                env=environment,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -60,6 +63,15 @@ def main() -> int:
                 "fixture COMMAND_REGISTERED",
                 "fixture COMMAND_EXECUTED 7",
                 "fixture WORLD_API",
+                "fixture RELOAD_SUCCESS resource=true",
+                "fixture RELOAD_FAILURE_INVOKED",
+                "fixture RELOAD_AFTER_FAILURE",
+                "server resource reload listener cppfm_fixture:reload_failure failed:",
+                "java.lang.IllegalStateException: fixture reload failure",
+                "server resource reload complete success=false",
+                "server /reload Java listeners success=false",
+                "fixture RELOAD_COMMAND_RESULT true",
+                "fixture POST_RELOAD_TICK",
             )
             try:
                 while time.monotonic() < deadline and proc.poll() is None:

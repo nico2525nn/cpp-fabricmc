@@ -5,7 +5,9 @@
 // rails / dispenser-dropper-hopper / QC.
 #include <cstdio>
 #include <cstdint>
+#include <atomic>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "core/ByteBuffer.hpp"
@@ -76,6 +78,12 @@ static void test_wire() {
     CHECK_EQ_INT(rig.wirePower(1, 2, 0), 15, "wire d1 from source == 15");
     CHECK_EQ_INT(rig.wirePower(6, 2, 0), 10, "wire 15 -> 5 blocks -> 10 (-1/block)");
     CHECK_EQ_INT(rig.wirePower(16, 2, 0), 0, "wire past 15 blocks unpowered");
+    rig.place(0, 2, 0, 0);
+    CHECK_EQ_INT(rig.wirePower(1, 2, 0), 0, "removing source clears adjacent wire");
+    CHECK_EQ_INT(rig.wirePower(6, 2, 0), 0, "removing source clears the whole component");
+    rig.place(16, 2, 0, stateByName("minecraft:redstone_block"));
+    CHECK_EQ_INT(rig.wirePower(15, 2, 0), 15, "replacement source powers from the opposite end");
+    CHECK_EQ_INT(rig.wirePower(6, 2, 0), 6, "replacement source recomputes attenuation");
 }
 
 // comparator helpers: chest/hopper behind comparator facing north (rear z+1),
@@ -132,15 +140,12 @@ static void test_comparator() {
         CHECK_EQ_INT(rig.wirePower(0, 2, -1), 15, "full chest => 15");
     }
     { // subtract: full chest (15) minus side 15 -> comparator off.
-      // NOTE: engine gap (handoff): updateWireNetwork only raises wire power,
-      // never decays it, so the stale front wire keeps 15. Assert the
-      // comparator's own powered prop (subtract semantics), not the wire.
         Rig rig;
         rig.place(0, 2, 0, compState("subtract"));
         fillChest(rig, dia, 64, 27);
         rig.place(0, 2, -1, wireWith(0));
-        rig.world.setBlock(1, 2, 0, wireWith(15));
-        rig.engine.onBlockChanged(1, 2, 0);
+        rig.place(1, 2, 0, wireWith(0));
+        rig.place(2, 2, 0, stateByName("minecraft:redstone_block"));
         rig.engine.onBlockChanged(0, 2, 0);
         rig.step(2);
         CHECK(rig.prop(0, 2, 0, "powered") == "false", "subtract full(15) - side(15) => comparator off");
@@ -236,6 +241,29 @@ static void test_rails() {
         rig.engine.onBlockChanged(40, 2, 40); // diagonal neighbor: needs explicit update
         rig.step(1);
         CHECK(rig.prop(40, 2, 40, "shape") == "ascending_east", "rail with higher neighbor -> ascending_east");
+        CHECK(rig.prop(41, 3, 40, "shape") == "ascending_east", "higher neighbor agrees on ascending_east");
+    }
+    {
+        Rig rig;
+        rig.place(50, 2, 50, railNS());
+        rig.place(51, 2, 50, railNS());
+        rig.place(50, 2, 51, railNS());
+        rig.engine.onBlockChanged(50, 2, 50);
+        CHECK(rig.prop(50, 2, 50, "shape") == "south_east",
+              "same-level east+south neighbors form south_east curve");
+        rig.place(50, 2, 51, 0);
+        CHECK(rig.prop(50, 2, 50, "shape") == "east_west",
+              "removing curve neighbor leaves aligned east_west connection");
+    }
+    {
+        Rig rig;
+        rig.place(60, 3, 60, railNS());
+        rig.place(61, 2, 60, railNS());
+        rig.engine.onBlockChanged(60, 3, 60);
+        CHECK(rig.prop(60, 3, 60, "shape") == "ascending_west",
+              "rail with lower east neighbor rises toward west");
+        CHECK(rig.prop(61, 2, 60, "shape") == "ascending_west",
+              "lower neighbor agrees on ascending_west");
     }
     {
         Rig rig;
@@ -245,6 +273,18 @@ static void test_rails() {
         CHECK(rig.prop(30, 2, 30, "powered") == "false", "powered_rail unpowered off");
         rig.place(31, 2, 30, stateByName("minecraft:redstone_block"));
         CHECK(rig.prop(30, 2, 30, "powered") == "true", "powered_rail adjacent to source on");
+    }
+    for (const char* railName : {"minecraft:powered_rail", "minecraft:detector_rail",
+                                 "minecraft:activator_rail"}) {
+        Rig rig;
+        auto specialRail = (std::uint16_t)gen::stateWithPropsList(railName,
+            {{"powered", "false"}, {"shape", "north_south"}, {"waterlogged", "false"}});
+        rig.place(70, 2, 70, specialRail);
+        rig.place(71, 2, 70, specialRail);
+        rig.place(70, 2, 71, specialRail);
+        rig.engine.onBlockChanged(70, 2, 70);
+        std::string checkName = std::string(railName) + " rejects curves and keeps a straight shape";
+        CHECK(rig.prop(70, 2, 70, "shape") == "east_west", checkName.c_str());
     }
 }
 
@@ -298,6 +338,31 @@ static void test_qc() {
     CHECK(!rig.engine.isQuasiPowered(0, 2, 0), "piston QC off after source removal");
 }
 
+static void test_concurrent_public_notifications() {
+    curSection = "CONCURRENCY";
+    std::printf("\n[8] concurrent callback notifications and redstone ticks\n");
+    Rig rig;
+    constexpr int notificationCount = 250;
+    std::atomic<bool> go{false};
+
+    std::thread callbackThread([&] {
+        while (!go.load(std::memory_order_acquire)) std::this_thread::yield();
+        for (int i = 0; i < notificationCount; ++i)
+            rig.engine.onBlockChanged(0, 2, 0);
+    });
+    std::thread tickThread([&] {
+        while (!go.load(std::memory_order_acquire)) std::this_thread::yield();
+        for (std::int64_t now = 1; now <= notificationCount; ++now)
+            rig.engine.tick(now);
+    });
+    go.store(true, std::memory_order_release);
+    callbackThread.join();
+    tickThread.join();
+
+    CHECK_EQ_INT(static_cast<int>(rig.engine.pendingCount()), 0,
+                 "concurrent onBlockChanged/tick drains all notifications");
+}
+
 int main() {
     std::printf("=== test_redstone_engine_full — plan44 G-12 (engine via public API) ===\n");
     test_wire();
@@ -307,6 +372,7 @@ int main() {
     test_rails();
     test_dispenser_hopper();
     test_qc();
+    test_concurrent_public_notifications();
     std::printf("\n=== REDSTONE_ENGINE_FULL: %d PASS %d FAIL %d TOTAL ===\n", g_pass, g_fail, g_total);
     return g_fail == 0 ? 0 : 1;
 }

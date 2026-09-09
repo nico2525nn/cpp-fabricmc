@@ -173,6 +173,14 @@ public final class ServerPlayNetworking {
         return player != null && id != null && canSend(player, id.id());
     }
 
+    public static boolean canSend(ServerPlayNetworkHandler handler, Identifier channel) {
+        return handler != null && handler.isConnectionOpen() && channel != null;
+    }
+
+    public static boolean canSend(ServerPlayNetworkHandler handler, CustomPayload.Id<?> id) {
+        return handler != null && id != null && canSend(handler, id.id());
+    }
+
     /** Handler form routed through Object to keep {@code canSend(null, id)} unambiguous. */
     public static boolean canSend(Object connection, CustomPayload.Id<?> id) {
         return connection instanceof ServerPlayNetworkHandler handler
@@ -217,6 +225,14 @@ public final class ServerPlayNetworking {
         if (payload == null || payload.getId() == null) return null;
         return new CustomPayloadS2CPacket(payload, encode(payload));
     }
+
+    /** Move a play connection back through Fabric's configuration boundary. */
+    public static void reconfigure(ServerPlayerEntity player) {
+        if (player != null) reconfigure(player.getNetworkHandler());
+    }
+
+    /** The native transport owns phase transitions; retain the public hook. */
+    public static void reconfigure(ServerPlayNetworkHandler handler) { }
 
     public static PacketSender getSender(ServerPlayerEntity player) {
         if (player == null) return PacketSender.NOOP;

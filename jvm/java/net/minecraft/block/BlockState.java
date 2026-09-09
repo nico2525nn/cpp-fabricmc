@@ -8,6 +8,8 @@ import net.minecraft.fluid.FluidState;
 import net.minecraft.fluid.Fluids;
 import net.minecraft.registry.TagKey;
 import net.minecraft.state.property.Property;
+import net.minecraft.state.State;
+import it.unimi.dsi.fastutil.objects.Reference2ObjectArrayMap;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.shape.VoxelShape;
 import net.minecraft.util.shape.VoxelShapes;
@@ -16,7 +18,8 @@ import net.minecraft.world.BlockView;
 import net.minecraft.util.math.BlockPos;
 
 /** C++-backed raw block-state view with immutable Java property overlays. */
-public class BlockState {
+public class BlockState extends State<Block, BlockState>
+        implements net.fabricmc.fabric.api.block.v1.FabricBlockState {
     private final int rawState;
     private final Block block;
     private final Map<Property<?>, Comparable<?>> properties;
@@ -26,9 +29,14 @@ public class BlockState {
         this(rawState, block, defaultProperties(block));
     }
     private BlockState(int rawState, Block block, Map<Property<?>, Comparable<?>> properties) {
+        super(block, toReferenceMap(properties), null);
         this.rawState = Math.max(0, rawState);
         this.block = block == null ? Blocks.AIR : block;
         this.properties = Collections.unmodifiableMap(new LinkedHashMap<>(properties));
+    }
+    private static Reference2ObjectArrayMap<Property<?>, Comparable<?>> toReferenceMap(
+            Map<Property<?>, Comparable<?>> values) {
+        return new Reference2ObjectArrayMap<>(values);
     }
     private static Map<Property<?>, Comparable<?>> defaultProperties(Block block) {
         Map<Property<?>, Comparable<?>> values = new LinkedHashMap<>();

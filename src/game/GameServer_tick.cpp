@@ -4,32 +4,83 @@
 #include "../physics/LightEngine.hpp"
 #include "../physics/Fluids.hpp"
 #include "../physics/Redstone.hpp"
-#include "../worldgen/PortalHandler.hpp"
-#include "../core/Json.hpp"
 #include "GameServerHelpers.hpp"
-#include "StairsHelper.hpp"
 #include "Constants.hpp"
 #include "../generated/ItemIds.hpp"
 #include "../generated/EntityIds.hpp"
-#include "MenuInteraction.hpp"
-#include "BehaviorTree.hpp"
-#include "BehaviorTreeParser.hpp"
-#include "EquipmentComponent.hpp"
 #include "DamageComponent.hpp"
 #include "EnchantmentHelper.hpp"
-#include "MobSpawner.hpp"
-#include "BossAI.hpp"
-#include "MenuLogic.hpp"
-#include "CostCalculator.hpp"
-#include "PotionBrewing.hpp"
-#include "Particles.hpp"
 #include "MiningCalculator.hpp"
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
 
 namespace cppfm {
 using namespace proto;
+
+namespace {
+struct PlayerTickView {
+    std::shared_ptr<Player> owner;
+    std::int8_t dimension = 0;
+    std::int32_t entityId = 0;
+    double x = 0.0;
+    double y = 0.0;
+    double z = 0.0;
+    bool inPlay = false;
+    bool spawned = false;
+    bool dead = false;
+};
+
+PlayerTickView snapshotPlayerForTick(const std::shared_ptr<Player>& player) {
+    PlayerTickView view;
+    view.owner = player;
+    if (!player) return view;
+    std::lock_guard lock(player->stateMtx);
+    view.dimension = GameServer::canonicalDimension(player->dimension);
+    view.entityId = player->entityId;
+    view.x = player->x;
+    view.y = player->y;
+    view.z = player->z;
+    view.inPlay = player->inPlay;
+    view.spawned = player->spawned;
+    view.dead = player->dead;
+    return view;
+}
+}
+
+void GameServer::drainServerThreadTasks() noexcept {
+    for (std::size_t i = 0; i < kMaxServerThreadTasksPerTick; ++i) {
+        std::shared_ptr<ServerThreadTask> request;
+        {
+            std::lock_guard lock(serverThreadTasksMtx_);
+            if (serverThreadId_ != std::this_thread::get_id() ||
+                !serverThreadAccepting_ ||
+                !running_.load(std::memory_order_acquire) ||
+                serverThreadTasks_.empty()) return;
+            request = std::move(serverThreadTasks_.front());
+            serverThreadTasks_.pop_front();
+            auto expected = ServerThreadTask::State::Pending;
+            if (!request || !request->state.compare_exchange_strong(
+                    expected, ServerThreadTask::State::Running,
+                    std::memory_order_acq_rel, std::memory_order_acquire)) {
+                continue;
+            }
+            // Increment while holding the queue mutex.  A concurrent JVM
+            // stop() can therefore not observe an empty queue and zero active
+            // work in the small window between dequeue and invocation.
+            activeServerThreadTasks_.fetch_add(1, std::memory_order_acq_rel);
+        }
+
+        try {
+            request->task();
+            request->state.store(ServerThreadTask::State::Completed,
+                                 std::memory_order_release);
+        } catch (...) {
+            request->state.store(ServerThreadTask::State::Failed,
+                                 std::memory_order_release);
+        }
+        request->waitCv.notify_all();
+        activeServerThreadTasks_.fetch_sub(1, std::memory_order_acq_rel);
+        serverThreadTaskIdleCv_.notify_all();
+    }
+}
 
 namespace {
 void cancelMiningDig(GameServer& server, Player& player) {
@@ -78,7 +129,8 @@ void GameServer::tickDigs() {
                 WriteBuffer rb;
                 rb.position(p->digX, p->digY, p->digZ);
                 rb.varint(oldState);
-                broadcastPacketExcept(nullptr, proto::pl::sc::BlockUpdate, rb);
+                broadcastPacketExceptInDimension(p->dimension, nullptr,
+                                                 proto::pl::sc::BlockUpdate, rb);
                 cancelMiningDig(*this, *p);
                 continue;
             }
@@ -92,7 +144,8 @@ void GameServer::tickDigs() {
                 WriteBuffer rb;
                 rb.position(p->digX, p->digY, p->digZ);
                 rb.varint(oldState);
-                broadcastPacketExcept(nullptr, proto::pl::sc::BlockUpdate, rb);
+                broadcastPacketExceptInDimension(p->dimension, nullptr,
+                                                 proto::pl::sc::BlockUpdate, rb);
                 cancelMiningDig(*this, *p);
                 continue;
             }
@@ -101,7 +154,8 @@ void GameServer::tickDigs() {
                 WriteBuffer rb;
                 rb.position(p->digX, p->digY, p->digZ);
                 rb.varint(oldState);
-                broadcastPacketExcept(nullptr, proto::pl::sc::BlockUpdate, rb);
+                broadcastPacketExceptInDimension(p->dimension, nullptr,
+                                                 proto::pl::sc::BlockUpdate, rb);
                 cancelMiningDig(*this, *p);
                 continue;
             }
@@ -116,7 +170,11 @@ void GameServer::tickDigs() {
                 continue;
             }
             world.setBlock(p->digX, p->digY, p->digZ, 0);
-            broadcastBlockChange(p->digX, p->digY, p->digZ, 0);
+            broadcastBlockChangeFor(p->dimension, p->digX, p->digY, p->digZ, 0);
+            if (const auto* broken = gen::blockByState(oldState);
+                broken && std::string(broken->name).find("_bed") != std::string::npos) {
+                invalidateRespawnPointsAt(p->dimension, p->digX, p->digY, p->digZ);
+            }
             HungerManager::onBlockBreak(*p, *this);
             blockEventDispatcher().onBlockBreak(p->digX, p->digY, p->digZ, oldState, p);
             onBlockMined(*p, oldState);
@@ -133,8 +191,13 @@ void GameServer::tickDigs() {
                         if (!_held.empty() && _held.name() == "minecraft:flint_and_steel") hasFlint = true;
                     }
                     if (hasFlint) {
-                        spawnPrimedTnt(p->digX + 0.5, p->digY + 0.5, p->digZ + 0.5, 0, 0.2, 0, 80);
-                        broadcastSound("minecraft:entity.tnt.primed", p->digX+0.5, p->digY+0.5, p->digZ+0.5, 1.f, 1.f, "block");
+                        spawnPrimedTntFor(p->dimension, p->digX + 0.5,
+                                          p->digY + 0.5, p->digZ + 0.5,
+                                          0, 0.2, 0, 80);
+                        broadcastSoundFor(p->dimension,
+                                          "minecraft:entity.tnt.primed",
+                                          p->digX + 0.5, p->digY + 0.5,
+                                          p->digZ + 0.5, 1.f, 1.f, "block");
                         if (!isCreative && p->heldSlot>=0 && p->heldSlot<9) {
                             auto& _h = p->inv[36 + p->heldSlot];
                             if (_h.applyDamage(1)) _h = ItemStack::air();
@@ -143,8 +206,13 @@ void GameServer::tickDigs() {
                         cancelMiningDig(*this, *p);
                         continue;
                     } else if (isUnstable && !isCreative) {
-                        spawnPrimedTnt(p->digX + 0.5, p->digY + 0.5, p->digZ + 0.5, 0, 0.2, 0, 80);
-                        broadcastSound("minecraft:entity.tnt.primed", p->digX+0.5, p->digY+0.5, p->digZ+0.5, 1.f, 1.f, "block");
+                        spawnPrimedTntFor(p->dimension, p->digX + 0.5,
+                                          p->digY + 0.5, p->digZ + 0.5,
+                                          0, 0.2, 0, 80);
+                        broadcastSoundFor(p->dimension,
+                                          "minecraft:entity.tnt.primed",
+                                          p->digX + 0.5, p->digY + 0.5,
+                                          p->digZ + 0.5, 1.f, 1.f, "block");
                         cancelMiningDig(*this, *p);
                         continue;
                     }
@@ -188,10 +256,11 @@ void GameServer::tickDigs() {
                 }
                 for (auto &st : drops) {
                     if (st.empty()) continue;
-                    spawnItemDrop(p->digX+.5, p->digY+.25, p->digZ+.5,
-                                  st,
-                                  (nextRandom()/(double)RAND_MAX-.5)*.15, .12,
-                                  (nextRandom()/(double)RAND_MAX-.5)*.15);
+                    spawnItemDropFor(p->dimension, p->digX + .5,
+                                     p->digY + .25, p->digZ + .5, st,
+                                     (nextRandom()/(double)RAND_MAX-.5)*.15,
+                                     .12,
+                                     (nextRandom()/(double)RAND_MAX-.5)*.15);
                 }
             }
             cancelMiningDig(*this, *p);
@@ -199,17 +268,30 @@ void GameServer::tickDigs() {
     }
 }
 void GameServer::tickOnce() {
+    // JVM-created workers can only mutate game state through this queue.  Run
+    // it before native simulation and again after the synchronous JVM tick
+    // callback so a short worker request is visible in the same tick when it
+    // does not have to wait behind that callback.
+    drainServerThreadTasks();
     pollPendingLoads(); // W19 async I/O: poll Chunk futures (ThreadPool 4) without blocking (MC-177729)
     api::ServerTickEvent ev{tickNo_};
     events().serverTick.fire(ev);
     if (jvmRuntime_) jvmRuntime_->onServerTick(tickNo_);
+    drainServerThreadTasks();
     fluidSim_->tick(tickNo_);
     redstone_->tick(tickNo_);
     if (blockTicks_) blockTicks_->tick(tickNo_);
+    for (int i = 0; i < 2; ++i) {
+        dimFluidSim_[i]->tick(tickNo_);
+        dimRedstone_[i]->tick(tickNo_);
+        dimBlockTicks_[i]->tick(tickNo_);
+    }
+    craftersTick();
     tickDigs();
     survivalTick();
     furnacesTick();
     brewingTick();
+    hoppersTick();
     effectsTick();
     xpOrbsTick();
 
@@ -231,22 +313,34 @@ void GameServer::tickOnce() {
             t.i64(tickNo_);
             t.i64(dayTime());
             t.boolean(true);
-            broadcastPacketExcept(nullptr, pl::sc::UpdateTime, t);
+            for (const auto dimension : {std::int8_t{0}, std::int8_t{-1},
+                                         std::int8_t{1}}) {
+                broadcastPacketExceptInDimension(dimension, nullptr,
+                                                 pl::sc::UpdateTime, t);
+            }
         }
     }
 
-    // light engine: drain queued BFS work, broadcast UpdateLight per chunk
-    {
-        const LightUpdateBatch batch = lightEngine_->drain();
+    // Each dimension owns a light queue.  Draining them independently keeps
+    // an UpdateLight packet from describing a same-coordinate chunk in the
+    // wrong world.
+    auto drainLight = [this](std::int8_t dimension, LightEngine& light,
+                             World& world) {
+        const LightUpdateBatch batch = light.drain();
         for (auto k : batch.dirtyChunks) {
             auto [cx, cz] = chunkKeyDecode(k);
-            world_.withChunk(cx, cz, [&](const Chunk& c) {
+            world.withChunk(cx, cz, [&](const Chunk& c) {
                 WriteBuffer b;
                 serializeUpdateLightBody(b, cx, cz, c);
-                broadcastPacketExcept(nullptr, pl::sc::UpdateLight, b);
+                broadcastPacketExceptInDimension(dimension, nullptr,
+                                                 pl::sc::UpdateLight, b);
             });
         }
-    }
+    };
+    drainLight(0, *lightEngine_, world_);
+    for (int i = 0; i < 2; ++i)
+        drainLight(i == 0 ? -1 : 1, *dimLightEngine_[i],
+                   *worlds_[i + 1]);
 
     // periodic progress save every 20 s (play_time accrual + crash safety)
     if (tickNo_ % 400 == 0) {
@@ -316,7 +410,8 @@ void GameServer::tickOnce() {
     }
 }
 void GameServer::drainPendingStructureQueues() {
-    auto process = [&](World& w){
+    auto process = [&](World& w, std::int8_t dimension){
+        auto& blockEntities = blockEntitiesFor(dimension);
         auto* sm = w.structureManager();
         if(!sm) return;
         std::vector<worldgen::StructureManager::PendingLoot> loots;
@@ -324,10 +419,13 @@ void GameServer::drainPendingStructureQueues() {
         for(auto &pl : loots){
             auto drops = lootTables_.evaluate(pl.lootTable);
             int x=pl.pos[0], y=pl.pos[1], z=pl.pos[2];
-            auto* be = blockEntities_.getAt(x,y,z);
-            if(!be){
-                be = &blockEntities_.create(posKey(x,y,z), BlockEntity::Kind::Chest);
-            } else if(be->kind != BlockEntity::Kind::Chest){
+            auto beOwner = blockEntities.getShared(posKey(x, y, z));
+            if (!beOwner)
+                beOwner = blockEntities.createShared(
+                    posKey(x, y, z), BlockEntity::Kind::Chest);
+            std::lock_guard entityLock(*beOwner->stateMtx);
+            auto* be = beOwner.get();
+            if(be->kind != BlockEntity::Kind::Chest){
                 be->kind = BlockEntity::Kind::Chest;
                 for(int i=0;i<ChestData::kSlots;++i) be->chest.slots[i]=ItemStack::air();
             }
@@ -347,7 +445,7 @@ void GameServer::drainPendingStructureQueues() {
                 used.insert(slot);
                 be->chest.slots[slot]=st;
             }
-            blockEntities_.dirty_.insert(posKey(x,y,z));
+            blockEntities.markDirty(posKey(x,y,z));
             if(!drops.empty())
                 std::fprintf(stderr,"[cppfm] pending loot %s at %d %d %d => %zu stacks\n", pl.lootTable.c_str(), x,y,z, drops.size());
         }
@@ -364,6 +462,7 @@ void GameServer::drainPendingStructureQueues() {
             for(int c=0;c<pm.count;++c){
                 auto mob = std::make_shared<MobEntity>();
                 mob->entityId = nextEntityId();
+                mob->dimension = canonicalDimension(dimension);
                 mob->kind = kind;
                 mob->health = mobStats(kind).maxHealth;
                 mob->x = pm.pos[0] + 0.5;
@@ -381,9 +480,9 @@ void GameServer::drainPendingStructureQueues() {
             }
         }
     };
-    process(world_);
-    if(netherWorld_) process(*netherWorld_);
-    if(endWorld_) process(*endWorld_);
+    process(world_, 0);
+    if(netherWorld_) process(*netherWorld_, -1);
+    if(endWorld_) process(*endWorld_, 1);
 }
 bool GameServer::isChunkInSimulationDistanceFor(std::int8_t dimension,
                                                 std::int32_t cx,
@@ -444,11 +543,11 @@ void GameServer::chunksUnloadTick() {
             for (auto &pl : players) if (pl->inPlay && pl->dimension == dim) { anyInDim = true; break; }
             if (!anyInDim && (w.isForced(cx, cz) || w.ticketLevel(cx, cz) <= constants::kTicketLevelSpawn)) continue;
             if (pp && pp->isDirty(cx, cz)) {
-                saveChunkAsync(cx, cz);
+                saveChunkAsyncFor(dim, cx, cz);
                 pp->markClean(cx, cz);
             }
             toErase.push_back(k);
-            invalidateChunkCache(cx, cz);
+            invalidateChunkCacheFor(dim, cx, cz);
         }
         // W19 cap-based LRU: if still over maxLoadedChunks, evict farthest beyond cap (Chebyshev)
         if (cfg_.maxLoadedChunks > 0) {
@@ -501,7 +600,7 @@ void GameServer::chunksUnloadTick() {
                         auto [cx, cz] = chunkKeyDecode(candidates[i]);
                         if (pp && pp->isDirty(cx, cz)) pp->flushChunk(cx, cz);
                         toErase.push_back(candidates[i]);
-                        invalidateChunkCache(cx, cz);
+                        invalidateChunkCacheFor(dim, cx, cz);
                     }
                 }
             }
@@ -522,14 +621,25 @@ void GameServer::chunksUnloadTick() {
     }
 }
 void GameServer::broadcastBlockChange(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state) {
-    queueBlockChange(x, y, z, state);
-    invalidateChunkCache(x >> 4, z >> 4);
+    const std::int8_t dimension = brainTickGuard_ ? brainTickGuard_->dimension : 0;
+    broadcastBlockChangeFor(dimension, x, y, z, state);
+}
+void GameServer::broadcastBlockChangeFor(std::int8_t dimension,
+                                          std::int32_t x, std::int32_t y,
+                                          std::int32_t z, std::uint16_t state) {
+    queueBlockChangeFor(dimension, x, y, z, state);
+    invalidateChunkCacheFor(dimension, x >> 4, z >> 4);
 }
 void GameServer::queueBlockChange(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state) {
+    queueBlockChangeFor(0, x, y, z, state);
+}
+void GameServer::queueBlockChangeFor(std::int8_t dimension,
+                                     std::int32_t x, std::int32_t y,
+                                     std::int32_t z, std::uint16_t state) {
     WriteBuffer b;
     b.position(x, y, z);
     b.varint(state);
-    batcher_.queuePacket(proto::pl::sc::BlockUpdate, std::move(b));
+    batcher_.queuePacketFor(dimension, proto::pl::sc::BlockUpdate, std::move(b));
     if (batcher_.size() >= constants::kBlockBatchMaxPackets) {
         flushBlockBatches();
     }
@@ -548,12 +658,7 @@ void GameServer::survivalTick() {
         if (p->attackCooldownTicks < 1000000) p->attackCooldownTicks++;
         if (p->shieldDisableTicks > 0) p->shieldDisableTicks--;
         {
-            bool holdsShield = false;
-            if (p->heldSlot >= 0 && p->heldSlot < 9) {
-                const auto& mh = p->inv[36 + p->heldSlot];
-                if (!mh.empty() && mh.name().find("shield") != std::string::npos) holdsShield = true;
-            }
-            if (!p->inv[45].empty() && p->inv[45].name().find("shield") != std::string::npos) holdsShield = true;
+            const bool holdsShield = CombatManager::holdsShield(*p);
             if (!holdsShield) { p->isBlocking = false; p->blockingTicks = 0; }
             else if ((p->isSneaking || p->isBlocking) && p->shieldDisableTicks <= 0) p->blockingTicks++;
             else p->blockingTicks = 0;
@@ -706,8 +811,6 @@ void GameServer::survivalTick() {
                     if (dmg < 1.f) dmg = 1.f;
                     // alternative if outside >0 but within buffer, no damage (vanilla buffer grace)
                     applyDamage(*p, dmg, "outside_border");
-                } else if (effective == 0 && outside > 0 && tickNo_ % 20 == 0) {
-                    // still inside damage buffer (5 blocks) — no damage per vanilla
                 }
             }
         }
@@ -722,43 +825,104 @@ inline SpawnGroupIdx groupForKind(MobKind k){
        k==MobKind::Squid||k==MobKind::GlowSquid||k==MobKind::Dolphin||k==MobKind::Turtle) return SG_WATER_CREATURE;
     return SG_CREATURE;
 }
+
+std::optional<MobKind> mobKindByName(const std::string& name) {
+    for (int i = 0; i < 149; ++i) {
+        const auto kind = static_cast<MobKind>(i);
+        if (name == mobStats(kind).name) return kind;
+    }
+    return std::nullopt;
+}
 } // namespace
-static std::array<int,7> countMobsByGroup(const std::vector<std::shared_ptr<MobEntity>>& mobs){
-    std::array<int,7> c{}; for(auto& m: mobs) c[(int)groupForKind(m->kind)]++; return c;
+static std::array<int,7> countMobsByGroup(
+    const std::vector<std::shared_ptr<MobEntity>>& mobs,
+    std::int8_t dimension) {
+    std::array<int,7> c{};
+    for (auto& m : mobs) {
+        if (!m) continue;
+        // mobsSnapshot() owns the shared_ptr lifetime, while this individual
+        // lock protects the fields.  Do not hold entsMtx_ while taking it.
+        std::lock_guard entityLock(*m->stateMtx);
+        if (GameServer::canonicalDimension(m->dimension) == dimension)
+            c[(int)groupForKind(m->kind)]++;
+    }
+    return c;
 }
 void GameServer::trySpawnMobs() {
     if (!gamerules_.getBool("doMobSpawning")) return;
-    if (difficulty()=="peaceful") {
-        // still allow creature spawns but no monster; handle via caps below
-    }
     // snapshot caps
     std::array<int,7> caps = spawnGroupCaps();
     if (difficulty()=="peaceful") caps[SG_MONSTER]=0;
-    std::array<int,7> cnts; { std::lock_guard lk(entsMtx_); cnts = countMobsByGroup(mobs_); }
+    const auto dimensionSlot = [](std::int8_t dimension) {
+        switch (GameServer::canonicalDimension(dimension)) {
+        case -1: return std::size_t{1};
+        case 1: return std::size_t{2};
+        default: return std::size_t{0};
+        }
+    };
+    std::array<std::array<int,7>,3> counts{};
+    const auto activeMobs = mobsSnapshot();
+    for (std::size_t slot = 0; slot < counts.size(); ++slot) {
+        const auto dimension = slot == 1 ? std::int8_t{-1} :
+                               slot == 2 ? std::int8_t{1} :
+                                           std::int8_t{0};
+        counts[slot] = countMobsByGroup(activeMobs, dimension);
+    }
     for (auto& pp : playersSnapshot()) {
-        auto* pl = pp.get();
-        if (!pl->inPlay || !pl->spawned || pl->dead) continue;
+        const auto player = snapshotPlayerForTick(pp);
+        if (!player.inPlay || !player.spawned || player.dead) continue;
+        const auto dimension = player.dimension;
+        auto& cnts = counts[dimensionSlot(dimension)];
+        World& world = worldFor(dimension);
+        LightEngine& light = lightsFor(dimension);
+        const auto spawnCandidate = [&](MobKind kind, int group,
+                                        float health, std::int32_t spawnX,
+                                        std::int32_t groundY,
+                                        std::int32_t spawnZ) {
+            if (cnts[group] >= caps[group]) return false;
+            auto mob = std::make_shared<MobEntity>();
+            mob->entityId = nextEntityId();
+            mob->dimension = dimension;
+            mob->kind = kind;
+            mob->health = health;
+            mob->x = spawnX + 0.5;
+            mob->y = groundY + 1.0;
+            mob->z = spawnZ + 0.5;
+            mob->lastSeenMs = nowMs();
+            if (jvmRuntime_ && !jvmRuntime_->onMobSpawn(
+                    *mob, mob->x, mob->y, mob->z))
+                return false;
+            {
+                std::lock_guard lock(entsMtx_);
+                if (cnts[group] >= caps[group]) return false;
+                mobs_.push_back(mob);
+                ++cnts[group];
+            }
+            broadcastMobSpawn(*mob);
+            return true;
+        };
         for (int attempt=0; attempt<6; ++attempt) {
             const double ang = (nextRandom()/(double)RAND_MAX)*6.28318;
             const double dist = 24 + (nextRandom()%24);
-            const std::int32_t wx = static_cast<std::int32_t>(pl->x + std::cos(ang)*dist);
-            const std::int32_t wz = static_cast<std::int32_t>(pl->z + std::sin(ang)*dist);
-            world_.generateChunkIfMissing(wx>>4, wz>>4);
+            const std::int32_t wx = static_cast<std::int32_t>(player.x + std::cos(ang)*dist);
+            const std::int32_t wz = static_cast<std::int32_t>(player.z + std::sin(ang)*dist);
+            world.generateChunkIfMissing(wx>>4, wz>>4);
             int feet=4; bool ok=false;
-            world_.withChunk(wx>>4, wz>>4, [&](const Chunk& c){
+            world.withChunk(wx>>4, wz>>4, [&](const Chunk& c){
                 for(int ry=kSectionsPerChunk*16-1; ry>=0; --ry) if(c.blocks[Chunk::index(ry>>4, ry&15, wz&15, wx&15)]!=0){ feet=ry+1; ok=true; break; }
             });
             if(!ok) continue;
             const int groundY = kMinY + feet;
-            lightEngine_->ensureSkyLight(wx>>4, wz>>4);
-            const uint8_t sky = world_.getSkyLight(wx,groundY,wz);
-            const uint8_t blk = world_.getBlockLight(wx,groundY,wz);
-            bool night=isNight(); bool rain=raining(); bool thunder=thundering();
+            light.ensureSkyLight(wx>>4, wz>>4);
+            const uint8_t sky = world.getSkyLight(wx,groundY,wz);
+            const uint8_t blk = world.getBlockLight(wx,groundY,wz);
+            bool night=isNight(); bool rain=raining() && dimension == 0;
+            bool thunder=thundering() && dimension == 0;
             double skyEff = night ? 0.0 : rain ? (thunder? sky*0.2 : sky*0.6) : double(sky);
             double effLight = std::max(double(blk), skyEff);
             // biome gate: sample biome at spawn pos
             std::string biome;
-            try { biome = world_.sampledBiome(wx, 63, wz); } catch(...){ biome="minecraft:plains"; }
+            try { biome = world.sampledBiome(wx, 63, wz); } catch(...){ biome="minecraft:plains"; }
             if(biome.empty()) biome="minecraft:plains";
             // build candidates
             std::vector<const EntityDataDef*> monsterEntries, creatureEntries;
@@ -772,10 +936,9 @@ void GameServer::trySpawnMobs() {
                 if(def.lightMin>=0 && effLight < def.lightMin) continue;
                 if(def.lightMax>=0 && effLight > def.lightMax) continue;
                 // resolve kind
-                MobKind kind = MobKind::Pig; bool found=false;
-                for(int i=0;i<149;++i){ if(std::string(mobStats(static_cast<MobKind>(i)).name)==def.type){ kind=static_cast<MobKind>(i); found=true; break; } }
-                if(!found) continue;
-                auto g = groupForKind(kind);
+                const auto kind = mobKindByName(def.type);
+                if (!kind) continue;
+                auto g = groupForKind(*kind);
                 if(g==SG_MONSTER) monsterEntries.push_back(&def);
                 else if(g==SG_CREATURE) creatureEntries.push_back(&def);
             }
@@ -792,11 +955,10 @@ void GameServer::trySpawnMobs() {
                 if(cnts[SG_MONSTER] >= caps[SG_MONSTER]) continue;
                 static const MobKind hostilesTab[]={MobKind::Zombie,MobKind::Zombie,MobKind::Skeleton,MobKind::Creeper,MobKind::Spider};
                 MobKind picked = hostilesTab[nextRandom()%5];
-                auto mob=std::make_shared<MobEntity>(); mob->entityId=nextEntityId(); mob->kind=picked; mob->health=mobStats(picked).maxHealth;
-                mob->x=wx+0.5; mob->y=groundY+1.0; mob->z=wz+0.5; mob->lastSeenMs=nowMs();
-                if (jvmRuntime_ && !jvmRuntime_->onMobSpawn(*mob, mob->x, mob->y, mob->z)) continue;
-                { std::lock_guard lk(entsMtx_); if(cnts[SG_MONSTER] >= caps[SG_MONSTER]) continue; mobs_.push_back(mob); cnts[SG_MONSTER]++; }
-                broadcastMobSpawn(*mob); continue;
+                spawnCandidate(picked, SG_MONSTER,
+                               mobStats(picked).maxHealth,
+                               wx, groundY, wz);
+                continue;
             } else if(wantCreature && !creatureEntries.empty()){
                 if(cnts[SG_CREATURE] >= caps[SG_CREATURE]) continue;
                 use=&creatureEntries; gIdx=SG_CREATURE;
@@ -804,11 +966,10 @@ void GameServer::trySpawnMobs() {
                 if(cnts[SG_CREATURE] >= caps[SG_CREATURE]) continue;
                 static const MobKind passive[]={MobKind::Pig,MobKind::Cow,MobKind::Sheep,MobKind::Chicken,MobKind::Rabbit};
                 MobKind picked=passive[nextRandom()%5];
-                auto mob=std::make_shared<MobEntity>(); mob->entityId=nextEntityId(); mob->kind=picked; mob->health=mobStats(picked).maxHealth;
-                mob->x=wx+0.5; mob->y=groundY+1.0; mob->z=wz+0.5; mob->lastSeenMs=nowMs();
-                if (jvmRuntime_ && !jvmRuntime_->onMobSpawn(*mob, mob->x, mob->y, mob->z)) continue;
-                { std::lock_guard lk(entsMtx_); if(cnts[SG_CREATURE] >= caps[SG_CREATURE]) continue; mobs_.push_back(mob); cnts[SG_CREATURE]++; }
-                broadcastMobSpawn(*mob); continue;
+                spawnCandidate(picked, SG_CREATURE,
+                               mobStats(picked).maxHealth,
+                               wx, groundY, wz);
+                continue;
             } else continue;
             if(!use || use->empty()) continue;
             if(cnts[(int)gIdx] >= caps[(int)gIdx]) continue;
@@ -818,90 +979,195 @@ void GameServer::trySpawnMobs() {
             const EntityDataDef* pickedDef=nullptr;
             for(auto* e: *use){ r-= std::max(1,e->spawnWeight); if(r<0){ pickedDef=e; break; } }
             if(!pickedDef) pickedDef = (*use)[0];
-            MobKind pickedKind=MobKind::Zombie; bool f=false;
-            for(int i=0;i<149;++i) if(std::string(mobStats(static_cast<MobKind>(i)).name)==pickedDef->type){ pickedKind=static_cast<MobKind>(i); f=true; break; }
-            if(!f) continue;
-            auto mob=std::make_shared<MobEntity>(); mob->entityId=nextEntityId(); mob->kind=pickedKind; mob->health=mobStats(pickedKind).maxHealth;
-            if(pickedDef->max_health>0) mob->health=pickedDef->max_health;
-            mob->x=wx+0.5; mob->y=groundY+1.0; mob->z=wz+0.5; mob->lastSeenMs=nowMs();
-            if (jvmRuntime_ && !jvmRuntime_->onMobSpawn(*mob, mob->x, mob->y, mob->z)) continue;
-            { std::lock_guard lk(entsMtx_); if(cnts[(int)groupForKind(pickedKind)] >= caps[(int)groupForKind(pickedKind)]) continue; mobs_.push_back(mob); cnts[(int)groupForKind(pickedKind)]++; }
-            broadcastMobSpawn(*mob);
+            const auto pickedKind = mobKindByName(pickedDef->type);
+            if (!pickedKind) continue;
+            const auto pickedGroup = static_cast<int>(groupForKind(*pickedKind));
+            const float health = pickedDef->max_health > 0
+                ? pickedDef->max_health : mobStats(*pickedKind).maxHealth;
+            spawnCandidate(*pickedKind, pickedGroup, health,
+                           wx, groundY, wz);
         }
     }
 }
 void GameServer::spawnSlimeSplit(MobEntity& m) {
-    if ((m.kind == MobKind::Slime || m.kind == MobKind::MagmaCube) && m.slimeSize > 0) {
+    MobKind kind;
+    std::int8_t dimension = 0;
+    int slimeSize = 0;
+    double x = 0.0;
+    double y = 0.0;
+    double z = 0.0;
+    {
+        // The caller normally invokes this after releasing the live entity
+        // lock.  Keep the helper safe for other callers as well by taking a
+        // short, self-contained source snapshot before any callback or
+        // container mutation.
+        std::lock_guard lock(*m.stateMtx);
+        kind = m.kind;
+        dimension = canonicalDimension(m.dimension);
+        slimeSize = m.slimeSize;
+        x = m.x;
+        y = m.y;
+        z = m.z;
+    }
+    if ((kind == MobKind::Slime || kind == MobKind::MagmaCube) && slimeSize > 0) {
         int n = 2 + (nextRandom() % 3);
         for (int s = 0; s < n; ++s) {
             auto baby = std::make_shared<MobEntity>();
             baby->entityId = nextEntityId();
-            baby->kind = m.kind;
-            baby->slimeSize = m.slimeSize - 1;
+            baby->dimension = dimension;
+            baby->kind = kind;
+            baby->slimeSize = slimeSize - 1;
             baby->health = MobEntity::slimeHealthForSize(baby->slimeSize);
             if (baby->health < 1.f) baby->health = 1.f;
-            baby->x = m.x + (nextRandom()/(double)RAND_MAX - 0.5) * 0.5;
-            baby->y = m.y;
-            baby->z = m.z + (nextRandom()/(double)RAND_MAX - 0.5) * 0.5;
+            baby->x = x + (nextRandom()/(double)RAND_MAX - 0.5) * 0.5;
+            baby->y = y;
+            baby->z = z + (nextRandom()/(double)RAND_MAX - 0.5) * 0.5;
             baby->lastSeenMs = nowMs();
             if (jvmRuntime_ && !jvmRuntime_->onMobSpawn(*baby, baby->x, baby->y, baby->z)) continue;
-            mobs_.push_back(baby);
+            addMob(baby);
             broadcastMobSpawn(*baby);
         }
     }
 }
 void GameServer::mobsTick() {
-    std::vector<std::pair<std::shared_ptr<MobEntity>, WriteBuffer>> moves;
-    std::vector<std::int32_t> despawn;
-    std::vector<std::int32_t> deadIds;
-    std::vector<std::shared_ptr<MobEntity>> drops;
+    struct PendingMove {
+        std::int8_t dimension = 0;
+        std::shared_ptr<MobEntity> owner;
+        WriteBuffer body;
+    };
+    std::vector<PendingMove> moves;
+    struct EntityRemoval {
+        std::int8_t dimension = 0;
+        std::int32_t entityId = 0;
+    };
+    struct PendingExplosion {
+        std::int8_t dimension = 0;
+        double x = 0, y = 0, z = 0;
+        float power = 0;
+    };
+    struct MobDropSnapshot {
+        std::int8_t dimension = 0;
+        MobKind kind = MobKind::Pig;
+        double x = 0.0;
+        double y = 0.0;
+        double z = 0.0;
+        std::array<ItemStack, 6> equipment{};
+        std::array<float, 2> handDropChances{};
+        std::array<float, 4> armorDropChances{};
+    };
+    std::vector<EntityRemoval> despawn;
+    std::vector<EntityRemoval> deadIds;
+    std::vector<MobDropSnapshot> drops;
     std::vector<std::shared_ptr<MobEntity>> removed;
-    {
-        std::lock_guard lk(entsMtx_);
-        for (auto it = mobs_.begin(); it != mobs_.end();) {
-            auto& m = *it;
+    std::vector<PendingExplosion> explosions;
+    std::unordered_set<std::int32_t> removedIds;
+    std::unordered_set<const MobEntity*> removedPtrs;
+    std::vector<std::int32_t> aiToErase;
+    auto queueRemoval = [&](const std::shared_ptr<MobEntity>& mob,
+                            bool death) {
+        // queueRemoval is called with the current mob's state lock held.
+        // Only copy state here; AI-map removal is deliberately deferred until
+        // after the entity lock has been released.
+        if (!mob || !removedIds.insert(mob->entityId).second) return;
+        removedPtrs.insert(mob.get());
+        const auto dimension = canonicalDimension(mob->dimension);
+        if (death) {
+            deadIds.push_back({dimension, mob->entityId});
+            MobDropSnapshot drop;
+            drop.dimension = dimension;
+            drop.kind = mob->kind;
+            drop.x = mob->x;
+            drop.y = mob->y;
+            drop.z = mob->z;
+            drop.equipment = mob->equipment;
+            drop.handDropChances = mob->handDropChances;
+            drop.armorDropChances = mob->armorDropChances;
+            drops.push_back(std::move(drop));
+        } else {
+            despawn.push_back({dimension, mob->entityId});
+        }
+        aiToErase.push_back(mob->entityId);
+        removed.push_back(mob);
+    };
+    struct MobDimensionGuard {
+        GameServer& server;
+        const MobEntity* previous;
+        MobDimensionGuard(GameServer& serverIn, const MobEntity* mob)
+            : server(serverIn), previous(serverIn.brainTickGuard_) {
+            server.brainTickGuard_ = mob;
+        }
+        ~MobDimensionGuard() { server.brainTickGuard_ = previous; }
+    };
+    std::vector<PlayerTickView> players;
+    const auto playerOwners = playersSnapshot();
+    players.reserve(playerOwners.size());
+    for (const auto& player : playerOwners)
+        players.push_back(snapshotPlayerForTick(player));
+    const auto activeMobs = mobsSnapshot();
+    for (const auto& m : activeMobs) {
+            if (!m) continue;
+            // aiFor() takes mobAiMtx_ after a short state snapshot.  Resolve it
+            // before taking the live entity lock so stateMtx -> mobAiMtx_ is
+            // never held by this loop.
+            const auto ai = aiFor(m);
+            if (!ai) continue;
+            std::unique_lock entityStateLock(*m->stateMtx);
+            auto withoutEntityStateLock = [&](auto&& operation) {
+                entityStateLock.unlock();
+                try {
+                    operation();
+                } catch (...) {
+                    entityStateLock.lock();
+                    throw;
+                }
+                entityStateLock.lock();
+            };
+            MobDimensionGuard dimensionGuard(*this, m.get());
+            const auto dimension = canonicalDimension(m->dimension);
+            World& world = worldFor(dimension);
+            LightEngine& light = lightsFor(dimension);
             bool nearPlayer = false;
-            for (auto& pp : playersSnapshot()) {
-                double dx = pp->x - m->x, dz = pp->z - m->z;
+            for (const auto& pp : players) {
+                if (!pp.inPlay || !pp.spawned || pp.dead || pp.dimension != dimension)
+                    continue;
+                double dx = pp.x - m->x, dz = pp.z - m->z;
                 if (dx*dx + dz*dz < 60*60) { nearPlayer = true; break; }
             }
             if (!nearPlayer) {
-                despawn.push_back(m->entityId);
-                if (MobEntity::isBoss(m->kind) && bossAI_) bossAI_->onDeath(*m);
-                mobAi_.erase(m->entityId);
-                removed.push_back(m);
-                it = mobs_.erase(it); continue;
+                if (MobEntity::isBoss(m->kind) && bossAI_)
+                    withoutEntityStateLock([&] { bossAI_->onDeath(*m); });
+                queueRemoval(m, false);
+                continue;
             }
 
             const auto& stats = mobStats(m->kind);
             if (m->onFireTicks > 0) {
-                if (tickNo_ % 20 == 0) applyDamageToMob(*m, 1.f, "onFire");
+                if (tickNo_ % 20 == 0)
+                    withoutEntityStateLock([&] {
+                        applyDamageToMob(*m, 1.f, "onFire");
+                    });
                 if (--m->onFireTicks <= 0) m->onFireTicks = 0;
                 // water extinguishes flame
                 {
                     int bx=(int)std::floor(m->x), by=(int)std::floor(m->y), bz=(int)std::floor(m->z);
-                    uint16_t st = world_.getBlock(bx,by,bz);
+                    uint16_t st = world.getBlock(bx,by,bz);
                     auto *d = gen::blockByState(st);
                     bool inWater = d && std::string(d->name)=="minecraft:water";
                     if (inWater) m->onFireTicks = 0;
                 }
                 if (m->dead) {
-                    deadIds.push_back(m->entityId); drops.push_back(m);
-                    mobAi_.erase(m->entityId);
-                    removed.push_back(m);
-                    it = mobs_.erase(it); continue;
+                    queueRemoval(m, true);
+                    continue;
                 }
             }
             // dead check (generic, includes combat/arrow etc) with slime split
             if (m->dead) {
-                deadIds.push_back(m->entityId);
-                drops.push_back(m);
-                if (MobEntity::isBoss(m->kind) && bossAI_) bossAI_->onDeath(*m);
+                if (MobEntity::isBoss(m->kind) && bossAI_)
+                    withoutEntityStateLock([&] { bossAI_->onDeath(*m); });
                 // slime / magma cube split
-                spawnSlimeSplit(*m);
-                mobAi_.erase(m->entityId);
-                removed.push_back(m);
-                it = mobs_.erase(it); continue;
+                withoutEntityStateLock([&] { spawnSlimeSplit(*m); });
+                queueRemoval(m, true);
+                continue;
             }
             // aging: babies grow up
             if (m->age < 0 && ++m->age >= 0) {
@@ -910,7 +1176,8 @@ void GameServer::mobsTick() {
                 md.varint(m->entityId);
                 md.u8(16); md.u8(0);                     // index16 byte = adult
                 md.u8(0);
-                broadcastPacketExcept(nullptr, pl::sc::SetEntityMetadata, md);
+                broadcastPacketExceptInDimension(dimension, nullptr,
+                                                 pl::sc::SetEntityMetadata, md);
             }
             if (m->inLove && tickNo_ > m->loveUntilTick) m->inLove = false;
 
@@ -918,62 +1185,63 @@ void GameServer::mobsTick() {
             if (stats.burnsInDaylight && MobEntity::isHostile(m->kind) &&
                 !isNight()) {
                 if (tickNo_ % 20 == 0) {
-                    applyDamageToMob(*m, 1.f, "burned to death");
+                    withoutEntityStateLock([&] {
+                        applyDamageToMob(*m, 1.f, "burned to death");
+                    });
                     if (m->dead) {
-                        deadIds.push_back(m->entityId); drops.push_back(m);
-                        spawnSlimeSplit(*m);
-                        mobAi_.erase(m->entityId);
-                        removed.push_back(m);
-                        it = mobs_.erase(it); continue;
+                        withoutEntityStateLock([&] { spawnSlimeSplit(*m); });
+                        queueRemoval(m, true);
+                        continue;
                     }
                 }
             }
 
             if (m->kind == MobKind::Creaking && m->creakingTransient) {
                 if (!isNight()) {
-                    despawn.push_back(m->entityId);
-                    mobAi_.erase(m->entityId);
-                    removed.push_back(m);
-                    it = mobs_.erase(it); continue;
+                    queueRemoval(m, false);
+                    continue;
                 }
                 if (m->hasCreakingHeart) {
                     double dx = m->x - (m->creakingHeartX+0.5), dy = m->y - (m->creakingHeartY+0.5), dz = m->z - (m->creakingHeartZ+0.5);
                     if (dx*dx+dy*dy+dz*dz > 32*32) {
                         m->dead = true;
                     } else {
-                        uint16_t hs = world_.getBlock(m->creakingHeartX,m->creakingHeartY,m->creakingHeartZ);
+                        uint16_t hs = world.getBlock(m->creakingHeartX,m->creakingHeartY,m->creakingHeartZ);
                         auto* hd = gen::blockByState(hs);
                         bool heartGone = !hd || std::string(hd->name)!="minecraft:creaking_heart";
                         if (heartGone) {
                             // twitch then death: immediate for now
                             m->dead = true;
                             if (m->dead) {
-                                broadcastSound("minecraft:entity.creaking.twitch", m->x,m->y,m->z,1.f,1.f,"hostile");
+                                broadcastSoundFor(
+                                    dimension, "minecraft:entity.creaking.twitch",
+                                    m->x,m->y,m->z,1.f,1.f,"hostile");
                             }
                         }
                     }
                     if (m->dead) {
-                        deadIds.push_back(m->entityId); drops.push_back(m);
-                        mobAi_.erase(m->entityId);
-                        removed.push_back(m);
-                        it = mobs_.erase(it); continue;
+                        queueRemoval(m, true);
+                        continue;
                     }
                     // same-block 5s respawn near heart (vanilla softlock): if within same block as player >5s, respawn near heart
-                    for (auto& pp : playersSnapshot()) {
-                        if (!pp->inPlay || pp->dead) continue;
+                    for (const auto& pp : players) {
+                        if (!pp.inPlay || !pp.spawned || pp.dead || pp.dimension != dimension)
+                            continue;
                         int mx=(int)std::floor(m->x), my=(int)std::floor(m->y), mz=(int)std::floor(m->z);
-                        int px=(int)std::floor(pp->x), py=(int)std::floor(pp->y), pz=(int)std::floor(pp->z);
+                        int px=(int)std::floor(pp.x), py=(int)std::floor(pp.y), pz=(int)std::floor(pp.z);
                         if (mx==px && my==py && mz==pz) {
                             m->creakingSameBlockTicks++;
                             if (m->creakingSameBlockTicks>100) {
                                 // respawn near heart
                                 for (int a=0;a<8;++a){
                                     int sx=m->creakingHeartX+(nextRandom()%8-4), sz=m->creakingHeartZ+(nextRandom()%8-4), sy=m->creakingHeartY+1;
-                                    if (world_.getBlock(sx,sy,sz)==0 && world_.getBlock(sx,sy+1,sz)==0 && world_.getBlock(sx,sy-1,sz)!=0){
+                                    if (world.getBlock(sx,sy,sz)==0 && world.getBlock(sx,sy+1,sz)==0 && world.getBlock(sx,sy-1,sz)!=0){
                                         m->x=sx+0.5; m->y=sy; m->z=sz+0.5;
                                         m->creakingSameBlockTicks=0;
                                         WriteBuffer tp; tp.varint(m->entityId); tp.f64(m->x); tp.f64(m->y); tp.f64(m->z); tp.f32(m->yaw); tp.f32(0); tp.boolean(true);
-                                        broadcastPacketExcept(nullptr, proto::pl::sc::EntityTeleport, tp);
+                                        broadcastPacketExceptInDimension(
+                                            dimension, nullptr,
+                                            proto::pl::sc::EntityTeleport, tp);
                                         broadcastSyncEntityPosition(*m, nullptr);
                                         break;
                                     }
@@ -986,18 +1254,35 @@ void GameServer::mobsTick() {
                 }
             }
 
-            auto& ai = aiFor(m);
-            ai.ctx->srv = this;
-            ai.ctx->world = &world_;
-            brainTickGuard_ = m.get();
-            ai.brain->tick(*m, *ai.ctx, tickNo_);
-            brainTickGuard_ = nullptr;
-            if (MobEntity::isBoss(m->kind) && bossAI_) bossAI_->tick(*m, *ai.ctx, tickNo_);
+            ai->ctx->srv = this;
+            ai->ctx->world = &world;
+            auto previousBehaviorTreeLock =
+                setBehaviorTreeMobStateLock(m.get(), &entityStateLock);
+            try {
+                ai->brain->tick(*m, *ai->ctx, tickNo_);
+            } catch (...) {
+                setBehaviorTreeMobStateLock(previousBehaviorTreeLock.mob,
+                                             previousBehaviorTreeLock.lock);
+                throw;
+            }
+            setBehaviorTreeMobStateLock(previousBehaviorTreeLock.mob,
+                                         previousBehaviorTreeLock.lock);
+            if (MobEntity::isBoss(m->kind) && bossAI_)
+                withoutEntityStateLock([&] {
+                    bossAI_->tick(*m, *ai->ctx, tickNo_);
+                });
 
-            if (m->kind == MobKind::Creeper && ai.ctx->nearestPlayer) {
-                const double cdx = ai.ctx->nearestPlayer->x - m->x;
-                const double cdy = ai.ctx->nearestPlayer->y - m->y;
-                const double cdz2 = ai.ctx->nearestPlayer->z - m->z;
+            const PlayerTickView* nearestPlayer = nullptr;
+            for (const auto& player : players) {
+                if (player.owner.get() == ai->ctx->nearestPlayer) {
+                    nearestPlayer = &player;
+                    break;
+                }
+            }
+            if (m->kind == MobKind::Creeper && nearestPlayer) {
+                const double cdx = nearestPlayer->x - m->x;
+                const double cdy = nearestPlayer->y - m->y;
+                const double cdz2 = nearestPlayer->z - m->z;
                 const double cd2 = cdx*cdx + cdy*cdy + cdz2*cdz2;
                 if (cd2 < 9) {
                     if (!m->creeperIgnited) {
@@ -1008,20 +1293,26 @@ void GameServer::mobsTick() {
                         md.varint(m->entityId);
                         meta::writeMetaBool(md, 16, true);
                         md.u8(255);
-                        broadcastPacketExcept(nullptr, pl::sc::SetEntityMetadata, md);
-                        broadcastSound("minecraft:entity.creeper.primed",
-                                       m->x, m->y, m->z, 1.f, 1.f, "hostile");
-                        broadcastEntitySound(m->entityId, "minecraft:entity.creeper.primed", 1.f, 1.f, SoundSource::Hostile);
+                        broadcastPacketExceptInDimension(
+                            dimension, nullptr, pl::sc::SetEntityMetadata, md);
+                        broadcastSoundFor(dimension,
+                                          "minecraft:entity.creeper.primed",
+                                          m->x, m->y, m->z, 1.f, 1.f,
+                                          "hostile");
+                        broadcastEntitySoundFor(
+                            dimension, m->entityId,
+                            "minecraft:entity.creeper.primed", 1.f, 1.f,
+                            SoundSource::Hostile);
                     } else if (tickNo_ - m->creeperFuseStart >= MobEntity::CREEPER_FUSE_TICKS) {
                         const double cxp = m->x, cyp = m->y, czp = m->z;
                         const std::int32_t eid = m->entityId;
                         const bool charged = m->creeperCharged;
                         WriteBuffer rm; rm.varint(1); rm.varint(eid);
-                        broadcastPacketExcept(nullptr, pl::sc::RemoveEntities, rm);
-                        mobAi_.erase(eid);
-                        removed.push_back(m);
-                        it = mobs_.erase(it);
-                        explodeAt(cxp, cyp + 0.5, czp, charged ? 6.f : 3.f);
+                        broadcastPacketExceptInDimension(
+                            dimension, nullptr, pl::sc::RemoveEntities, rm);
+                        queueRemoval(m, false);
+                        explosions.push_back({dimension, cxp, cyp + 0.5, czp,
+                                              charged ? 6.f : 3.f});
                         continue;
                     }
                 } else if (m->creeperIgnited && cd2 > 16) {
@@ -1031,30 +1322,32 @@ void GameServer::mobsTick() {
                     md.varint(m->entityId);
                     meta::writeMetaBool(md, 16, false);
                     md.u8(255);
-                    broadcastPacketExcept(nullptr, pl::sc::SetEntityMetadata, md);
+                    broadcastPacketExceptInDimension(
+                        dimension, nullptr, pl::sc::SetEntityMetadata, md);
                 }
             }
 
             // ---- light-aware daylight burn (real skylight at mob feet)
             if (stats.burnsInDaylight && MobEntity::isHostile(m->kind) &&
                 !isNight() && tickNo_ % 20 == 0) {
-                world_.generateChunkIfMissing(
+                world.generateChunkIfMissing(
                     static_cast<std::int32_t>(m->x) >> 4,
                     static_cast<std::int32_t>(m->z) >> 4);
-                lightEngine_->ensureSkyLight(
+                light.ensureSkyLight(
                     static_cast<std::int32_t>(m->x) >> 4,
                     static_cast<std::int32_t>(m->z) >> 4);
                 const std::uint8_t sky =
-                    world_.getSkyLight(static_cast<std::int32_t>(m->x),
+                    world.getSkyLight(static_cast<std::int32_t>(m->x),
                                        static_cast<std::int32_t>(m->y),
                                        static_cast<std::int32_t>(m->z));
-                if (sky >= 14) applyDamageToMob(*m, 1.f, "burned to death");
+                if (sky >= 14)
+                    withoutEntityStateLock([&] {
+                        applyDamageToMob(*m, 1.f, "burned to death");
+                    });
                 if (m->dead) {
-                    deadIds.push_back(m->entityId); drops.push_back(m);
-                    spawnSlimeSplit(*m);
-                    mobAi_.erase(m->entityId);
-                    removed.push_back(m);
-                    it = mobs_.erase(it); continue;
+                    withoutEntityStateLock([&] { spawnSlimeSplit(*m); });
+                    queueRemoval(m, true);
+                    continue;
                 }
             }
             if (m->kind==MobKind::Villager) {
@@ -1068,7 +1361,9 @@ void GameServer::mobsTick() {
                     if (m->villagerRestocksToday < 2) {
                         m->villagerRestocksToday++;
                         m->villagerLastRestockTick = tickNo_;
-                        broadcastSound("minecraft:entity.villager.work_farm", m->x,m->y,m->z,1.f,1.f,"neutral");
+                        broadcastSoundFor(dimension,
+                                          "minecraft:entity.villager.work_farm",
+                                          m->x,m->y,m->z,1.f,1.f,"neutral");
                         if (m->villagerRestocksToday < 2) {
                             m->restockUntil = tickNo_ + MobEntity::kRestockSecondWindowTicks
                                 + (nextRandom() % 2000);
@@ -1093,25 +1388,37 @@ void GameServer::mobsTick() {
                 b.i8((std::int8_t)(m->yaw * constants::kAngleScaleNum / constants::kAngleScaleDen));
                 b.i8(0);
                 b.boolean(true);
-                moves.emplace_back(m, std::move(b));
+                moves.push_back({dimension, m, std::move(b)});
                 m->sentX=m->x; m->sentY=m->y; m->sentZ=m->z; m->hasSent=true;
             }
-            ++it;
-        }
     }
-    // Native/JVM callbacks may synchronously inspect the server.  Do not
-    // invoke them while entsMtx_ is held; Java re-entry must see a quiescent
-    // entity container and cannot deadlock behind the tick lock.
+    {
+        std::lock_guard lk(entsMtx_);
+        mobs_.erase(std::remove_if(mobs_.begin(), mobs_.end(),
+                                   [&](const auto& mob) {
+                                       return mob && removedPtrs.count(mob.get()) != 0;
+                                   }),
+                    mobs_.end());
+    }
+    for (const auto entityId : aiToErase)
+        eraseMobAi(entityId);
+    // Native/JVM callbacks above run without entsMtx_.  Remove the entities
+    // selected during this snapshot before emitting their final packets and
+    // drops; newly spawned entities remain eligible for the next tick.
+    for (const auto& explosion : explosions)
+        explodeAtFor(explosion.dimension, explosion.x, explosion.y,
+                     explosion.z, explosion.power);
     for (const auto& mob : removed) invalidateJvmMob(mob);
-    for (auto id : despawn) {
+    for (const auto& removal : despawn) {
         WriteBuffer b;
-        b.varint(1); b.varint(id);
-        broadcastPacketExcept(nullptr, pl::sc::RemoveEntities, b);
+        b.varint(1); b.varint(removal.entityId);
+        broadcastPacketExceptInDimension(removal.dimension, nullptr,
+                                         pl::sc::RemoveEntities, b);
     }
-    for (auto& m : drops) {
+    for (const auto& m : drops) {
         bool spawnedViaLoot = false;
         {
-            std::string kindName = MobEntity::kindName(m->kind);
+            std::string kindName = MobEntity::kindName(m.kind);
             std::string base = kindName.find(':')!=std::string::npos ? kindName.substr(kindName.find(':')+1) : kindName;
             std::string tblId = "minecraft:entities/" + base;
             if (lootTables_.find(tblId)) {
@@ -1122,43 +1429,48 @@ void GameServer::mobsTick() {
                 auto loot = lootTables_.evaluateEntity(kindName, &ctx);
                 for (auto& st : loot) {
                     if (st.empty()) continue;
-                    spawnItemDrop(m->x, m->y + 0.4, m->z, st,
-                                  (nextRandom()/(double)RAND_MAX-.5)*.15, .1,
-                                  (nextRandom()/(double)RAND_MAX-.5)*.15);
+                    spawnItemDropFor(m.dimension, m.x, m.y + 0.4, m.z, st,
+                                     (nextRandom()/(double)RAND_MAX-.5)*.15,
+                                     .1, (nextRandom()/(double)RAND_MAX-.5)*.15);
                     spawnedViaLoot = true;
                 }
             }
         }
         if (!spawnedViaLoot) {
-            const auto drop = MobEntity::dropFor(m->kind);
+            const auto drop = MobEntity::dropFor(m.kind);
             if (drop.itemId)
-                spawnItemDrop(m->x, m->y + 0.4, m->z, drop.itemId, drop.count,
-                              (nextRandom()/(double)RAND_MAX-.5)*.15, .1,
-                              (nextRandom()/(double)RAND_MAX-.5)*.15);
+                spawnItemDropFor(m.dimension, m.x, m.y + 0.4, m.z,
+                                 drop.itemId, drop.count,
+                                 (nextRandom()/(double)RAND_MAX-.5)*.15, .1,
+                                 (nextRandom()/(double)RAND_MAX-.5)*.15);
         }
         for (int es=0; es<6; ++es) {
-            if (m->equipment[es].empty()) continue;
+            if (m.equipment[es].empty()) continue;
             float chance = 0.085f;
-            if (es==0) chance = m->handDropChances[0];
-            else if (es==1) chance = m->handDropChances[1];
-            else if (es>=2 && es<=5) chance = m->armorDropChances[es-2];
+            if (es==0) chance = m.handDropChances[0];
+            else if (es==1) chance = m.handDropChances[1];
+            else if (es>=2 && es<=5) chance = m.armorDropChances[es-2];
             float r = float(nextRandom())/float(RAND_MAX);
             if (r < chance) {
-                spawnItemDrop(m->x, m->y+0.4, m->z, m->equipment[es],
-                              (nextRandom()/(double)RAND_MAX-.5)*.12, 0.18, (nextRandom()/(double)RAND_MAX-.5)*.12);
+                spawnItemDropFor(m.dimension, m.x, m.y+0.4, m.z,
+                                 m.equipment[es],
+                                 (nextRandom()/(double)RAND_MAX-.5)*.12,
+                                 0.18, (nextRandom()/(double)RAND_MAX-.5)*.12);
             }
         }
         // XP orbs on kill
-        spawnXpOrbs(m->x, m->y + 0.5, m->z, mobStats(m->kind).xpDrop, nullptr);
+        spawnXpOrbsFor(m.dimension, m.x, m.y + 0.5, m.z,
+                       mobStats(m.kind).xpDrop, nullptr);
     }
-    for (auto id : deadIds) {
+    for (const auto& removal : deadIds) {
         WriteBuffer rm;
-        rm.varint(1); rm.varint(id);
-        broadcastPacketExcept(nullptr, pl::sc::RemoveEntities, rm);
+        rm.varint(1); rm.varint(removal.entityId);
+        broadcastPacketExceptInDimension(removal.dimension, nullptr,
+                                         pl::sc::RemoveEntities, rm);
     }
-    for (auto& [mob, body] : moves) {
-        (void)mob;
-        broadcastPacketExcept(nullptr, pl::sc::MoveEntityPosRot, body);
+    for (const auto& move : moves) {
+        broadcastPacketExceptInDimension(move.dimension, nullptr,
+                                         pl::sc::MoveEntityPosRot, move.body);
     }
 }
 } // namespace cppfm

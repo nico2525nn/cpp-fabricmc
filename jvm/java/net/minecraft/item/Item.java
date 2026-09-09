@@ -4,32 +4,34 @@ import java.util.Objects;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
-import net.minecraft.block.BlockState;
-import net.minecraft.registry.RegistryEntry;
+import net.minecraft.registry.entry.RegistryEntry;
 import net.minecraft.text.Text;
 import net.minecraft.util.ActionResult;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.TypedActionResult;
-import net.minecraft.util.hit.BlockHitResult;
-import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.World;
 import net.minecraft.entity.player.PlayerEntity;
 
-public class Item {
+public class Item implements ItemConvertible {
     private static final AtomicInteger NEXT_CUSTOM_ID = new AtomicInteger(10000);
     private final Identifier id;
     private final int rawState;
     private final Settings settings;
+    /** Vanilla Item component map field targeted by Fabric item accessors. */
+    private net.minecraft.component.ComponentMap components = net.minecraft.component.ComponentMap.EMPTY;
 
-    public static class Settings {
+    public static class Settings implements net.fabricmc.fabric.api.item.v1.FabricItem.Settings {
         private int maxCount = 64;
         private int maxDamage;
         private boolean fireproof;
         private Rarity rarity = Rarity.COMMON;
         private FoodComponent food;
         private Item recipeRemainder;
-        private final Map<net.minecraft.component.DataComponentType<?>, Object> components = new LinkedHashMap<>();
+        private final Map<net.minecraft.component.ComponentType<?>, Object> components = new LinkedHashMap<>();
         private Object attributeModifiers;
+        private net.fabricmc.fabric.api.item.v1.EquipmentSlotProvider equipmentSlotProvider;
+        private net.fabricmc.fabric.api.item.v1.CustomDamageHandler customDamageHandler;
+        private Identifier modelId;
         public Settings maxCount(int count) { if (count < 1) throw new IllegalArgumentException("maxCount must be positive"); maxCount = count; maxDamage = 0; return this; }
         public Settings maxDamage(int damage) { if (damage < 1) throw new IllegalArgumentException("maxDamage must be positive"); maxDamage = damage; maxCount = 1; return this; }
         public Settings fireproof() { fireproof = true; return this; }
@@ -45,7 +47,9 @@ public class Item {
             return this;
         }
         public Settings recipeRemainder(Item value) { recipeRemainder = value; return this; }
-        public <T> Settings component(net.minecraft.component.DataComponentType<T> type, T value) { if (type != null) components.put(type, value); return this; }
+        public <T> Settings component(net.minecraft.component.ComponentType<T> type, T value) { if (type != null) components.put(type, value); return this; }
+        /** Compatibility overload for the old shadow spelling. */
+        public <T> Settings component(net.minecraft.component.DataComponentType<T> type, T value) { return component((net.minecraft.component.ComponentType<T>) type, value); }
         public Settings attributeModifiers(Object modifiers) { attributeModifiers = modifiers; return this; }
         public int maxCount() { return maxCount; }
         public int maxDamage() { return maxDamage; }
@@ -53,8 +57,22 @@ public class Item {
         public Rarity rarity() { return rarity; }
         public FoodComponent food() { return food; }
         public Item recipeRemainder() { return recipeRemainder; }
-        public Map<net.minecraft.component.DataComponentType<?>, Object> components() { return Map.copyOf(components); }
+        public Map<net.minecraft.component.ComponentType<?>, Object> components() { return Map.copyOf(components); }
         public Object attributeModifiers() { return attributeModifiers; }
+        @Override public Settings equipmentSlot(net.fabricmc.fabric.api.item.v1.EquipmentSlotProvider provider) {
+            equipmentSlotProvider = provider; return this;
+        }
+        @Override public Settings customDamage(net.fabricmc.fabric.api.item.v1.CustomDamageHandler handler) {
+            customDamageHandler = handler; return this;
+        }
+        @Override public Settings modelId(Identifier value) { modelId = value; return this; }
+        public net.fabricmc.fabric.api.item.v1.EquipmentSlotProvider equipmentSlotProvider() {
+            return equipmentSlotProvider;
+        }
+        public net.fabricmc.fabric.api.item.v1.CustomDamageHandler customDamageHandler() {
+            return customDamageHandler;
+        }
+        public Identifier modelId() { return modelId; }
     }
 
     public Item() { this(Identifier.of("minecraft", "air"), 0, new Settings()); }
@@ -93,6 +111,12 @@ public class Item {
     public String getTranslationKey() { return "item." + id.getNamespace() + "." + id.getPath().replace('/', '.'); }
     public Text getName(ItemStack stack) { return Text.translatable(getTranslationKey()); }
     public ItemStack getDefaultStack() { return new ItemStack(this); }
+    /**
+     * Vanilla's ItemConvertible contract.  Keeping this method on Item itself
+     * matters because Fabric recipe ingredients accept both Item and Block
+     * values through the common interface.
+     */
+    @Override public Item asItem() { return this; }
     public TypedActionResult<ItemStack> use(World world, PlayerEntity user, net.minecraft.util.Hand hand) {
         return TypedActionResult.pass(user == null ? ItemStack.EMPTY : user.getStackInHand(hand));
     }

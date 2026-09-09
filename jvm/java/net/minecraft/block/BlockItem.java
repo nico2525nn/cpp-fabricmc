@@ -1,6 +1,5 @@
 package net.minecraft.block;
 
-import net.minecraft.item.ItemPlacementContext;
 
 /** @deprecated use the canonical {@link net.minecraft.item.BlockItem}. */
 @Deprecated

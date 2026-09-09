@@ -5,8 +5,10 @@
 > rows **#81–#90**. The restored matrix is a historical taxonomy baseline; it is not
 > a release gate and does not make the current cleanup or operations audit green.
 >
-> Current implementation/evidence baseline: `main` HEAD `abcdc6b` plus the
-> current uncommitted review/cleanup worktree (rechecked 2026-09-07).
+> Current implementation/evidence baseline: `main` HEAD `574e67b` plus the
+> current uncommitted review/cleanup worktree (rechecked 2026-09-10).
+> Files under the ignored `build/` tree are local run outputs, not tracked/public
+> evidence or release assets unless separately published.
 
 ## Summary
 
@@ -17,12 +19,23 @@
 - `strict_assessment_1_gap_count: 78` is a separate historical audit label. Its
   archive result is not a current aggregate, and it must not be added to or
   substituted for the 90-row taxonomy count.
-- Current publication state is `BLOCKED` only by declared boundaries: three integrated
-  `tools/soak_bot.py --duration 300` runs passed, while the attempted 7200-second soak
-  was interrupted above its RSS gate; accepted 2-hour/24-hour and current real-client
-  evidence remain absent. The E-14 arbitrary-JVM-mod boundary is informational and
-  remains explicitly declared. See [CURRENT_STATE.md](CURRENT_STATE.md) and
-  [VERIFICATION.md](VERIFICATION.md) for gate semantics.
+- Current publication state is `BLOCKED`: the confirmed focused results are
+  `fluids 23 PASS / 0 FAIL`, `redstone 42 PASS / 0 FAIL`, `menu 41 PASS / 0 FAIL`,
+  and `gameplay 807 PASS / 0 FAIL / 807`; the recorded full non-nightly CTest
+  regression is `42/42 PASS`, and the last recorded one-file package contains only `cppfm` with a
+  clean extracted-directory `test_server_full` result of `234 PASS / 0 FAIL`.
+  The separate `package_jvm_smoke` release gate also passes strict default-on
+  JVM startup against the exact CPack ZIP when JNI/classes are available.
+  In addition, three integrated `tools/soak_bot.py --duration 300` runs passed,
+  while the attempted 7200-second soak was interrupted above its RSS gate;
+  accepted 2-hour/24-hour and current real-client evidence remain absent. The
+  E-14 arbitrary-JVM-mod boundary is informational and remains explicitly
+  declared. See [CURRENT_STATE.md](CURRENT_STATE.md) and [VERIFICATION.md](VERIFICATION.md)
+  for gate semantics.
+- The latest 2026-09-10 operational baseline is full non-nightly CTest `42/42 PASS`
+  in `397.54s`, multi-client `ALL PASS` in `17.84s`, and bot smoke `ALL PASS` in
+  `20.87s`; the separate release `package_jvm_smoke` gate passes against the
+  exact CPack ZIP. Older duplicate timings are `HISTORICAL` context only.
 
 ## Machine-readable status rules
 
@@ -31,7 +44,7 @@ Every numbered table row has one ASCII `Status` token; compound values such as
 
 | token | meaning in this matrix |
 |---|---|
-| `DONE` | the feature was closed in the historical numbered taxonomy (#1–#80 plus #81–#90); this is not a universal parity claim |
+| `DONE` | the feature was closed in the historical numbered taxonomy (#1–#80 plus #81–#90); this token is not a current release result or universal parity claim and may coexist with bounded/approximate notes |
 | `PARTIAL` | implementation exists but the numbered feature remains incomplete |
 | `TODO` | the numbered feature was not started |
 | `DECLARED-LIMITATION` | intentionally unsupported or not independently verified; not counted as `DONE` |
@@ -39,9 +52,19 @@ Every numbered table row has one ASCII `Status` token; compound values such as
 
 The numbered rows retain the source/file and notes from the original matrix. The
 separate limitation sections below are deliberately not folded into a `DONE` row.
+Consequently, a `DONE` token is historical taxonomy context rather than proof that
+the current implementation is complete or release-ready. Local ignored `build/`
+outputs cited below identify run inputs/results but are not tracked/public artifacts.
 Canonical behavior, wire ownership, and evidence interpretation live in
 [SPEC_GAMEPLAY.md](SPEC_GAMEPLAY.md), [SPEC_WIRE.md](SPEC_WIRE.md),
 [SPEC_OPS.md](SPEC_OPS.md), and [VERIFICATION.md](VERIFICATION.md).
+
+The source was split into ownership-specific `GameServer_*.cpp` modules after
+the original matrix was written.  Therefore, a `GameServer.cpp:<line>` token in
+the historical rows below is a preserved pre-split citation, not a path that a
+current checkout can open.  The live owner for each concern is listed in the
+[current module map](DEVELOPMENT.md#10-module-split-and-ownership-rules); new
+entries must use those current paths.
 
 ## Base taxonomy #1–#10: World Management (10 rows)
 
@@ -71,11 +94,11 @@ Canonical behavior, wire ownership, and evidence interpretation live in
 | 17 | TNT ignition | DONE | `Entities.hpp:67` + `GameServer.cpp:587` | `TntEntity fuse 80` `primedTntsTick` + `SpawnEntity 0x02` `minecraft:tnt`, `dispenser tnt → primed` + `flint_and_steel` ignite `tnt[unstable]`. |
 | 18 | Buckets | DONE | `GameServer.cpp:3531` | `water_bucket`/`lava_bucket` ↔ `bucket` + `water`/`lava[level=0]` source, `level 0` source check, sound, `applyDamage` for flint. |
 | 19 | Pistons | DONE | `Redstone.cpp:597` | `MovingPiston` 2-tick + `isStickyBlock` + `sticksTogether slime≠honey` + 12-block BFS + `isUnpushable` + `PistonMove` sound; **plan29 §9 verified:** existing BFS 6-dir / 12-block limit / `sticksTogether slime≠honey` is plan29 §9-compliant — no change required (multi-block sticky retract already compliant). |
-| 20 | Fluid solidify | DONE | `Fluids.cpp:13` + `BlockTickScheduler.cpp:453` + `GameServer.hpp:386` | **plan12 §8 DONE; plan29 §10 polish DONE:** `water+lava→cobble/obsidian/stone` + `WaterloggableHelper` `stairs/slab/fence/wall/trapdoor` (double slab `!waterloggable`) + `kindAt` waterlogged→`Water 0` + `KelpBehavior age25 10%` + `seagrass` fallback; **plan29 §10:** `registerBehavior("minecraft:seagrass", SeagrassBehavior)` (`GameServer.hpp:386`) enables `tall_seagrass` bonemeal path; `soul_fire` tag-driven already FIXED; boat buoyancy / ghost preview throttle unchanged (verified as-is). |
+| 20 | Fluid solidify | DONE | `Fluids.cpp` + `BlockTickScheduler.cpp` + `GameServer.hpp` | **review pass:** explicit source/flowing/falling levels (`0..7`/`8`), directional water/lava interaction (`falling lava` downward stone; horizontal/top obsidian/cobblestone), conservative fluid-replaceable allowlist, waterlogging preservation, Nether water evaporation timing, and simulation culling; `test_fluids` `23 PASS / 0 FAIL`. Kelp/seagrass behavior and existing waterloggable block handling remain covered; full fluid tag/datapack parity is not claimed. |
 | 21 | Hopper `hoppersTick` | DONE | `GameServer.cpp:372` (50b) `hoppersTick` 8t | Pull from `y+1`, item entity pickup, push down, edge-trigger, redstone lock `isPoweredHere` for hopper + dispenser. |
 | 22 | Comparator | DONE | `Redstone.cpp:270` | `mode compare/subtract` + side power `max(0,out-side)` + `analogOutputForContainer` 0-15; tick. |
 | 23 | Observer | DONE | `Redstone.cpp:384` | `facing` 6-dir check `ox+fdx==x` + 2-tick pulse `powered true queue now+2`, `UpdateLight` via `onBlockChanged`. |
-| 24 | Rails | DONE | `Redstone.cpp:510` + `GameServer.cpp:4655` | `recomputeRailShape` `north_south→ascending/east_west`, `powered_rail` boost `0.06`, `detector_rail` redstone output, `activator_rail` eject, `minecartsTick` physics. |
+| 24 | Rails | DONE | `Redstone.cpp:597` + `GameServer.cpp:4655` | `recomputeRailShape` now evaluates all four horizontal neighbors, same/upper/lower slope candidates, endpoint-height alignment, deterministic straight/curve/ascending selection, and rail-family restrictions; `powered_rail` boost `0.06`, `detector_rail` redstone output, `activator_rail` eject, `minecartsTick` physics. `test_redstone_engine_full` is `42 PASS / 0 FAIL`; complete vanilla rail update ordering remains a bounded approximation. |
 | 25 | Dispenser per-item | DONE | `GameServer.cpp:1739` | **plan12 §9 DONE:** 9-slot edge-trigger `facing` 6-dir; `arrow/snowball/egg/pearl/fire_charge/tnt→explodeAt` + `bucket water/lava/powder_snow pickup/dispense` + `potion splash/lingering` + `spawn_egg/boat/minecart/armor/shears/flint/bonemeal` + fallback `spawnItemDrop`. |
 | 26 | Dropper | DONE | `GameServer.cpp:1770` + `BlockEntities.hpp:64` | **plan12 §10 DONE:** `Kind::Dropper` 9 slots + `facing` dispense: `doDropperInsert` try `containerAt` `canInsert` → `insert 1` else `spawnItemDrop` (never projectile). |
 | 27 | Cactus/sugar cane growth | DONE | `BlockTickScheduler.cpp:234` + `BlockStates.hpp:132` | **plan13 §1 DONE:** `StemBehavior` + `BambooBehavior` `stage 0→1` + `age thick >=4` + `bambooUpdateLeaves h=1→16` `leaves none/small/large` top3, `GrassBlockBehavior` snowy `snow/snow_block` above `randomTick`; `cactus 3→4` + `sugar_cane 3` maxH. |
@@ -85,7 +108,7 @@ Canonical behavior, wire ownership, and evidence interpretation live in
 | # | Feature | Status | File | Notes |
 |---|---------|--------|------|-------|
 | 28 | MobKind 46 | DONE | `Entities.hpp:52` | **plan25 E1 DONE:** 149 kinds (up from 13→46→86→149) with `MobStats` 300/200/500 etc., all `typeId` via `gen::entityTypeIdByName` (kEntities 149, armadillo/bogged/breeze/creaking etc 101 missing fixed). |
-| 29 | Brain-Goal-Sensor vs BehaviorTree | DONE | `BehaviorTree.hpp:204` + `AiBrain.cpp:142` | **plan14 §1 DONE:** `BehaviorTreeParser` maps `wither_skull/dragon_breath/warden_sonic_boom` → `WitherSkullAction/DragonBreathAction` + `BreedGoal` wild, `Brain` builds from `brain.behaviors` via `buildTreeFor`. |
+| 29 | Brain-Goal-Sensor vs BehaviorTree | DONE | `BehaviorTree.hpp:204` + `AiBrain.cpp:142` | **plan14 §1 DONE:** `BehaviorTreeParser` maps `wither_skull/dragon_breath/warden_sonic_boom` → `WitherSkullAction/DragonBreathAction` + `BreedGoal` wild, and `Brain` builds per-entity trees from `brain.behaviors`. |
 | 30 | `SetEquipment 0x60` | DONE | `EquipmentComponent.hpp:1` + `GameServer.cpp:3202` | **plan13 §2 DONE:** `ArmorTrim` `trim_pattern 18`/`trim_material 11` + `HandDropChances 0.085/1.0` + dynamic `sendEquipmentSlot`/`broadcastPlayerEquipment`/`syncEquipmentOnChange` on inventory/creative. |
 | 31 | `SetPassengers 0x65` riding | DONE | `GameServer.cpp:5145` + `BehaviorTree.cpp:70` | **plan13 §3 DONE:** `horse` jump `EntityAction 0x28:7` + `PlayerInput 0x29 shift` dismount + `MoveVehicle 0x20` + `boat` buoyancy `0.04` friction `0.9` + `minecart` `0.4` max. |
 | 32 | Durability | DONE | `Items.hpp:84` + `DamageComponent.hpp:14` + `CostCalculator.hpp:36` | **plan13 §4 DONE:** `Unbreaking 1/(l+1)` + `Mending` XP `repair/2` + `Anvil` `Too Expensive >=40` `nextRepairCost` + `CustomName` `MC|ItemName`. |
@@ -98,7 +121,7 @@ Canonical behavior, wire ownership, and evidence interpretation live in
 | 39 | Enderman | DONE | `BehaviorTree.cpp:70` | **plan13 §6 DONE:** `TeleportRandomAction` 32-block `EntityTeleport 0x77` + `PickupBlockAction` `grass/dirt/sand` 1/1000 `BlockUpdate` + `StareAction` dot `>0.985` pumpkin guard. |
 | 40 | Charged Creeper | DONE | `GameServer.cpp:3737` + `Ids.hpp:74` | **plan13 §7 DONE:** `LightningBolt 0x74` `SpawnEntity` + `channeling trident` thunder check + `creeperCharged` `SetEntityMetadata 17` + `explodeAt 6.0` vs `3.0`. |
 | 41 | XP orbs | DONE | `GameServer.cpp:372` `xpOrbsTick` | Sizes `{1,3,7,17,37,73,149,307,617,1237}`, gravity, `SetExperience 0x5B`. |
-| 42 | Projectiles tick | DONE | `GameServer.cpp:372` `projectilesTick` | `Arrow/Snowball/Egg/EnderPearl/WitherSkull/Fireball` gravity 0.05, block hit → stuck vs despawn, entity hit radius 0.55, `DamageEvent`. Now called in `tickOnce`. |
+| 42 | Projectiles tick | DONE | `GameServer.cpp:372` `projectilesTick` | `Arrow/Snowball/Egg/EnderPearl/WitherSkull/Fireball/LlamaSpit/ShulkerBullet` tick through the shared collision path; gravity/damage are per kind, Llama spit uses a 3D launch vector, and Shulker bullets retain a homing target and apply levitation on player hit. Block hit → stuck vs despawn and entity hit radius `0.55` remain; broader projectile physics is still bounded. |
 | 43 | Breeding/aging | DONE | `AiBrain.cpp:142` + `BehaviorTree.cpp:278` | **plan14 §3 DONE:** `BreedGoal` `loveTicks 600` `findLovePartner 8` + `breed()` `baby age -24000` `breedCooldown 6000` + `EntityEvent 18` + `xp 1-7`. |
 | 44 | Villager trading | DONE | `Entities.hpp:89` + `GameServer.cpp:2037` | **plan14 §4 DONE:** `VillagerData` `Type 7` `Profession 15` `level 1-5` + `Gossip` `rep` + `TradeList 0x2E` `level*2` + `SelectTrade` `demand` + `restock 24000t` + `priceMultiplier`. |
 | 45 | Boat/Minecart | DONE | `Entities.hpp:151` + `GameServer.cpp:4655` | `MobKind::Boat/Minecart 6HP` + `MoveVehicle 0x20` + `minecartsTick powered_rail 0.06` + `boat` spawn via `bucket`/`dispenser`; polish: buoyancy/friction simplified, no `VehicleMove` water physics. |
@@ -108,7 +131,7 @@ Canonical behavior, wire ownership, and evidence interpretation live in
 | # | Feature | Status | File | Notes |
 |---|---------|--------|------|-------|
 | 46 | `MenuType` `Barrel/ShulkerBox` | DONE | `Containers.hpp:29` `Barrel, ShulkerBox` + `totalSlots 27+36` | `BlockEntityStore` `writeChunkNbt` `barrel`/`shulker_box` id. |
-| 47 | Enchanting table | DONE | `CostCalculator.hpp:24` + `GameServer.cpp:410` | **plan13 §8 DONE:** `countBookshelves` air-gap max 15 + `enchantingCostsForShelves` `base 1-8+bs/2` trio `1..30`. |
+| 47 | Enchanting table | DONE | `MenuLogic.cpp/.hpp` + `CostCalculator.hpp` + `GameServer.cpp` | `countBookshelves` air-gap max 15 and shelf-derived costs remain; `EnchantmentMenuLogic` now deterministically rebuilds three bounded offers, validates the selected button/input/lapis/xp, applies the presented result atomically, and emits XP/menu dirty state. `test_menu_logic` covers `41 PASS / 0 FAIL`; complete vanilla enchantment-pool/enchantability parity is not claimed. |
 | 48 | Anvil | DONE | `CostCalculator.hpp:36` + `GameServer.cpp:4882` | **plan13 §8 DONE:** `anvilCost` + `Too Expensive >=40` `Property 0` `ContainerSetData 0x14` + `MC|ItemName` `minecraft:item_name` rename. |
 | 49 | Brewing stand | DONE | `GameServer.cpp:3156` | **plan13 §8 DONE:** `brewTime 0→400` + `fuel 20` `blaze_powder` + `canBrew`/`doBrew` `PotionBrewing` mix `nether_wart/sugar` + `ContainerSetData` sync. |
 | 50 | Stonecutter ghost | DONE | `GameServer.cpp:4780` + `GameServer.hpp:920` | **plan13 §9 DONE:** `PlaceGhostRecipe 0x39` throttle `5t` + `ContainerSetSlot 0x15` + `ghost` echo; polish: preview throttle still simplified 5t. |
@@ -180,10 +203,11 @@ numbered taxonomy status and must not be converted to PASS by documentation edit
 
 | item | status | current record / next owner |
 |---|---|---|
+| current working-tree full non-nightly CTest regression | `RECORDED PASS` | recorded `42/42` baseline passes with `ctest --test-dir build -LE 'nightly|package' --output-on-failure --timeout 450`; the separate release-only package JVM gate is not folded into this aggregate |
+| current working-tree final one-file package verification | `RECORDED PASS` | ignored local Linux ZIP `build/packages/cppfabricmc-1.21.4-Linux-x86_64.zip` contains only `cppfm`; the latest clean extraction and `test_server_full` pass `234/234`, and `package_jvm_smoke` passes strict default-on JVM startup when JNI/classes are available; it is not a tracked/public release artifact |
 | `tools/soak_bot.py --duration 300` | `RESOLVED` | three integrated main runs passed; each had KeepAlive `30`, chunks `182`, time updates `300`, all error counters `0`, and cleanup PASS; plan49 §1 |
 | accepted 2-hour/24-hour run | `INTERRUPTED / ABSENT` | the 7200-second synthetic attempt was interrupted at recorded `t=3361s`; post-fill RSS was `160388→191612kB` (`+19.5%`), above the `15%` gate; no accepted 2-hour/24-hour artifact exists; plan51 keeps this boundary explicit |
 | current real-client/GUI capture | `ABSENT` / `DECLARED-LIMITATION` | no current official-client artifact; bot/synthetic evidence is separate; plan51 JVM boundary does not provide a GUI/client artifact |
-| `wt48/cleanup` | `DIRTY` / `PRESERVE-REVIEW` | branch `wt48/cleanup`, HEAD `5f82ac0b4448f76f98753d18c83bbcd9736da61c`, 19 changed paths, `+74/-840`; plan49 §6 safety review |
 
 ## Declared limitations (outside #1–#90; not counted as `DONE`)
 
@@ -193,7 +217,7 @@ table rather than being hidden inside a numbered `DONE` row.
 | Feature / boundary | Status | Notes |
 |---|---|---|
 | Fabric `Netty` `ChannelPipeline` `Codec` abstraction | DECLARED-LIMITATION | The implementation uses manual `WriteBuffer`/`ReadBuffer`; it is not a JVM Netty channel pipeline. |
-| Fabric Loader JVM mods and Fabric event-bus bytecode | DECLARED-LIMITATION | plan51 adds an opt-in embedded HotSpot/JNI compatibility layer with a dependency-free shadow ABI, selected events, a version-locked pre-definition transformer, MixinExtras operations including `@Share`/`@Local`, selective routing, and a 25/25 dependency-free corpus. A separate offline probe verifies pinned official Loader/Knot/Mixin, and the locked Lithium/FerriteCore/Carpet server-side corpus passes with Java 21. It does not ship the Mojang GameProvider/server jar, guarantee arbitrary mods, or establish universal bytecode compatibility; the E-14 boundary remains. |
+| Fabric Loader JVM mods and Fabric event-bus bytecode | DECLARED-LIMITATION | The executable enables its bounded HotSpot/JNI compatibility layer by default only when configure/build finds the required JDK/JNI inputs. A JNI-capable binary needs a compatible runtime JDK/classes; a no-JNI binary remains native-only until rebuilt, and `jvm=false` is available for an explicit native-only run. The layer includes a dependency-free shadow ABI, selected events, a version-locked pre-definition transformer, MixinExtras operations including `@Share`/`@Local`, selective routing, and a 25/25 dependency-free corpus. A separate offline probe verifies pinned official Loader/Knot/Mixin, and the locked Lithium/FerriteCore/Carpet server-side corpus passes with Java 21; its latest local ignored report has zero classified fatal linkage/bootstrap/uncaught-exception diagnostics and is not a tracked/public artifact. The separate structural provider scan is conservative and diagnostic because raw Mixin target members can be created during transformation. It does not ship the Mojang GameProvider/server jar, guarantee arbitrary mods, or establish universal bytecode compatibility; the E-14 boundary remains. |
 | Vanilla Xoroshiro seed parity at L3 | DECLARED-LIMITATION | L1/L2 determinism is covered, but exact vanilla RNG byte parity is not independently proven. |
 | Real-client GUI and 24-hour/nightly evidence | DECLARED-LIMITATION | Procedures and bot/synthetic evidence do not substitute for a retained current real-client or long-run artifact. |
 | Session mining versus `MiningCalculator` | IMPLEMENTED | plan49 unifies session start/finish and tick completion through shared context/results; `test_mining_full` `59/59` plus live smoke/server paths pass. |
@@ -212,13 +236,16 @@ table rather than being hidden inside a numbered `DONE` row.
 `tests/test_smoke_80.cpp` exercises the base taxonomy and its historical extension
 checks. A test result is evidence for a named run, not a replacement for the matrix
 status. Current named wire counts are `test_spec_wire` `395 PASS 0 FAIL`,
-`test_wire_full` `399 PASS 0 FAIL`, and `test_wire_b6` `133 PASS 0 FAIL`;
+`test_wire_full` `399 PASS 0 FAIL`, and `test_wire_b6` `136 PASS 0 FAIL`;
 the old handover value `328` is stale. `test_native` remains `ALL PASS` without an
-invented aggregate count. The final-gates record includes `test_smoke_80` `223 PASS 0 FAIL`,
-`test_gameplay_full` `804 PASS / 0 FAIL / 804`, a passing
+invented aggregate count. The current focused record includes `test_gameplay_full`
+`807 PASS / 0 FAIL / 807`, `test_redstone_engine_full` `42 PASS / 0 FAIL`,
+`test_fluids` `23 PASS / 0 FAIL`, and `test_menu_logic` `41 PASS / 0 FAIL`.
+The record also includes `test_smoke_80` `223 PASS 0 FAIL`, a passing
 `tests/soak_test.py --duration 300` run, and three passing `tools/soak_bot.py
---duration 300` runs. No unexpected executable failure remains; the remaining
-publication limitations are recorded separately below.
+--duration 300` runs. The latest package-target rebuild, one-file package
+verification, and full CTest regression pass. The remaining compatibility
+limitations are recorded separately below.
 
 | evidence class | status | interpretation |
 |---|---|---|
@@ -227,7 +254,7 @@ publication limitations are recorded separately below.
 | `tests/soak_test.py` 300-second run | PASS | 150 keepalives, 0 disconnects, 2932 actions, post-fill RSS growth 7.6%; not a 24-hour substitute |
 | `tests/soak_test.py` 1800-second run | PASS | allocation-reuse baseline `17ab09f`; 900 keepalives, 0 disconnects, 17493 actions, post-fill RSS growth 12.5%; not a 2-hour/24-hour substitute |
 | `tests/soak_test.py` 7200-second attempt | NOT-ACCEPTED | interrupted at recorded `t=3361s`; post-fill RSS `160388→191612kB` (`+19.5%`), above the `15%` gate |
-| E-14 gameplay assertion | EXPECTED-FAIL-E14 | Intentional JVM-mod boundary; keep the failure visible |
+| E-14 gameplay boundary | DECLARED-LIMITATION | The current gameplay harness reports this unsupported arbitrary-JVM-mod scope informationally; it is not counted as a test failure or hidden pass |
 | nightly/24-hour and real-client evidence | DECLARED-LIMITATION | No accepted current artifact is recorded here |
 
 The stable fixture is `docs/mob_stats_149.csv`; it is required to contain exactly 149

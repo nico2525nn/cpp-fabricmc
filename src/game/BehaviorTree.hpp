@@ -223,7 +223,7 @@ inline std::unique_ptr<BehaviorNode> createNodeForType(const std::string& rawTyp
     if (t=="flee_sun"||t=="flee_sunlight") return std::make_unique<WanderAction>();
     if (t=="leap_at_target"||t=="leap") return std::make_unique<WanderAction>();
     if (t=="breeze_jump"||t=="breeze_wind_charge"||t=="wind_charge"||t=="armadillo_roll_up"||t=="roll_up") return std::make_unique<WanderAction>();
-    if (t=="zombie_attack"||t=="skeleton_attack"||t=="spider_attack"||t=="warden_attack") return std::make_unique<GenericRangedAttackAction>();
+    if (t=="zombie_attack"||t=="skeleton_attack"||t=="spider_attack") return std::make_unique<GenericRangedAttackAction>();
     if (t=="witch_throw_potion"||t=="witch_potion"||t=="throw_potion"||t=="witch_attack") return std::make_unique<WitchPotionAction>();
     if (t=="ravager_roar"||t=="roar") return std::make_unique<RavagerRoarAction>();
     if (t=="defend_village"||t=="iron_golem_defend"||t=="golem_defend") return std::make_unique<IronGolemDefendAction>();
@@ -252,7 +252,6 @@ inline std::unique_ptr<BehaviorNode> createNodeForType(const std::string& rawTyp
     if (t=="lay_egg") return std::make_unique<WanderAction>();
     if (t=="puff_defense") return std::make_unique<WanderAction>();
     if (t=="allay_duplicate") return std::make_unique<WanderAction>();
-    if (t=="bat_roost") return std::make_unique<WanderAction>();
     if (t=="armor_stand_pose"||t=="ominous_spawn") return std::make_unique<WanderAction>();
     if (t=="xp_magnet"||t=="item_magnet") return std::make_unique<WanderAction>();
     if (t=="falling_gravity") return std::make_unique<WanderAction>();
@@ -296,22 +295,6 @@ public:
 private:
     std::unique_ptr<BehaviorNode> root_;
 };
-
-// Build tree from a list of behavior type strings with priorities. Root is Selector ordered by priority (lowest priority number first).
-inline std::unique_ptr<BehaviorTree> buildBehaviorTreeFromTypes(const std::vector<std::pair<std::string,int>>& entries) {
-    if (entries.empty()) return nullptr;
-    auto sorted = entries;
-    std::sort(sorted.begin(), sorted.end(), [](auto& a, auto& b){ return a.second < b.second; });
-    auto sel = std::make_unique<SelectorNode>();
-    for (auto& e : sorted) {
-        auto node = createNodeForType(e.first);
-        // wrap with sequence if condition? For simplicity, each behavior becomes its own node directly.
-        // But for Is* conditions we already have them; they will be evaluated as standalone.
-        // For more complex tree, user could define composite via JSON nesting (not needed).
-        sel->addChild(std::move(node));
-    }
-    return std::make_unique<BehaviorTree>(std::move(sel));
-}
 
 // Enderman specific tree builder (item 39)
 inline std::unique_ptr<BehaviorTree> buildEndermanTree() {

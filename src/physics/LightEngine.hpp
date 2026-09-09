@@ -61,9 +61,6 @@ private:
     int emissionOf(std::uint16_t state) const;
     int opacityOf(std::uint16_t state) const;
 
-    void addLight(std::int32_t x, std::int32_t y, std::int32_t z,
-                  std::uint8_t level);
-    void removeLight(std::int32_t x, std::int32_t y, std::int32_t z);
     void setBlockLight(std::int32_t x, std::int32_t y, std::int32_t z,
                        std::uint8_t v);
 

@@ -14,7 +14,6 @@ import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.Identifier;
 import net.minecraft.registry.RegistryKey;
 import net.minecraft.registry.RegistryKeys;
-import net.minecraft.world.World;
 
 /** Argument and lookup helpers for a server dimension identifier. */
 public final class DimensionArgumentType implements ArgumentType<Identifier> {

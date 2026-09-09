@@ -62,7 +62,9 @@ struct DamageSource {
         }
         if (lower == "arrow" || lower.find("projectile") != std::string::npos || lower == "thrown" ||
             lower.find("arrow") != std::string::npos || lower == "snowball" || lower == "egg" ||
-            lower == "trident" || lower.find("wither_skull") != std::string::npos) {
+            lower == "trident" || lower == "llama_spit" ||
+            lower == "shulker_bullet" ||
+            lower.find("wither_skull") != std::string::npos) {
             isProjectileFlag = true;
         }
         if (lower == "magic" || lower == "indirectmagic" || lower == "poison" || lower == "wither") {

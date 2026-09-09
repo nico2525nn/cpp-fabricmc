@@ -1,22 +1,6 @@
-#include "GameServer.hpp"
-#include "Messages.hpp"
-#include "Particles.hpp"
-#include "../generated/EntityIds.hpp"
-#include "../generated/BlockStates.hpp"
-#include <algorithm>
-#include <cmath>
-#include <set>
-#include <filesystem>
-#include <unordered_set>
-#include <fstream>
+#include "CommandModule.hpp"
 
-#include "CommandsHelpers.hpp"
 namespace cppfm {
-
-using brigadier::CommandNode;
-using brigadier::CommandContext;
-namespace args = brigadier::args;
-using NodePtr = brigadier::NodePtr;
 
 void GameServer::initAdminCommands() {
     initAdminCommandsPart01();

@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -36,6 +37,11 @@ struct CommandSource {
     bool hasOp = true;                               // permission level >=2
     double srcX = 0, srcY = 0, srcZ = 0;
     float srcYaw = 0, srcPitch = 0;
+    // `/execute in` changes the command execution dimension without changing
+    // the source entity.  Keeping this separate from `player` preserves the
+    // source identity while allowing world-sensitive commands to resolve the
+    // selected dimension correctly.
+    std::optional<std::int8_t> dimensionOverride;
     std::function<void(const std::string&, SelectorResult&)> resolveSelector;
 };
 

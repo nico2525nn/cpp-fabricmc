@@ -74,7 +74,9 @@ int FunctionEvaluator::executeLine(const std::string& line, brigadier::CommandSo
             if (tokens.size() >= 5) { obj = tokens[4]; objPtr = &obj; }
             std::vector<std::string> holders;
             if (!holder.empty() && holder[0] == '@') {
-                auto sel = server_->resolveSelector(holder, static_cast<Player*>(src.player));
+                auto sel = server_->resolveSelectorForDimension(
+                    holder, static_cast<Player*>(src.player),
+                    server_->commandDimension(src));
                 holders = sel.playerNames;
                 if (holders.empty()) holders.push_back(holder);
             } else {
@@ -223,9 +225,7 @@ void FunctionEvaluator::tick(std::int64_t nowTick) {
         brigadier::CommandSource src;
         src.console = true;
         src.name = "Server";
-        src.resolveSelector = [this](const std::string& raw, brigadier::SelectorResult& out){
-            if (server_) out = server_->resolveSelector(raw, nullptr);
-        };
+        if (server_) server_->bindCommandSelector(src);
         executeFunction(e.functionId, src);
     }
 }
@@ -246,7 +246,9 @@ int FunctionEvaluator::executeWithStore(const std::string& storeType,
         value = res.ok ? 1 : 0;
     }
     // Store into scoreboard for each target
-    auto sel = server_->resolveSelector(targetSelector, static_cast<Player*>(src.player));
+    auto sel = server_->resolveSelectorForDimension(
+        targetSelector, static_cast<Player*>(src.player),
+        server_->commandDimension(src));
     for (auto& name : sel.playerNames) {
         server_->scoreboard.setScore(objective, name, value);
         // broadcast

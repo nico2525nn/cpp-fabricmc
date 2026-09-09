@@ -16,9 +16,15 @@ import net.minecraft.network.packet.c2s.play.CraftRequestC2SPacket;
 import net.minecraft.network.packet.c2s.play.UpdateSelectedSlotC2SPacket;
 import net.minecraft.network.packet.c2s.play.HandSwingC2SPacket;
 import net.minecraft.network.packet.c2s.play.CommandExecutionC2SPacket;
+import net.minecraft.network.packet.c2s.play.AcknowledgeReconfigurationC2SPacket;
+import net.minecraft.network.packet.c2s.play.PickItemFromBlockC2SPacket;
+import net.minecraft.network.packet.c2s.play.PickItemFromEntityC2SPacket;
 import net.minecraft.network.packet.c2s.common.CustomPayloadC2SPacket;
 import net.minecraft.network.packet.c2s.play.VehicleMoveC2SPacket;
+import net.minecraft.network.packet.c2s.play.PlayerInteractEntityC2SPacket;
 import net.minecraft.network.DisconnectionInfo;
+import net.minecraft.network.ClientConnection;
+import net.minecraft.server.MinecraftServer;
 
 public class ServerPlayNetworkHandler extends ServerCommonNetworkHandler {
     private final ServerPlayerEntity player;
@@ -28,8 +34,12 @@ public class ServerPlayNetworkHandler extends ServerCommonNetworkHandler {
     private int vehicleFloatingTicks;
     private boolean vehicleFloating;
     public ServerPlayNetworkHandler(ServerPlayerEntity player) {
-        super(player == null ? null : player.getServer(), new net.minecraft.network.ClientConnection(),
+        this(player == null ? null : player.getServer(), new ClientConnection(), player,
             new ConnectedClientData());
+    }
+    public ServerPlayNetworkHandler(MinecraftServer server, ClientConnection connection,
+                                    ServerPlayerEntity player, ConnectedClientData clientData) {
+        super(server, connection, clientData);
         this.player = player;
         ServerPlayConnectionEvents.INIT.invoker().onPlayInit(this, player == null ? null : player.getServer());
     }
@@ -55,6 +65,8 @@ public class ServerPlayNetworkHandler extends ServerCommonNetworkHandler {
     public void onPlayerInteractBlock(PlayerInteractBlockC2SPacket packet) { }
     /** Item interaction packet entrypoint retained for server-side mixin targets. */
     public void onPlayerInteractItem(PlayerInteractItemC2SPacket packet) { }
+    /** Entity-interaction packet entrypoint retained for Fabric networking mixins. */
+    public void onPlayerInteractEntity(PlayerInteractEntityC2SPacket packet) { }
     /** Block-action packet entrypoint retained for server-side mixin targets. */
     public void onPlayerAction(PlayerActionC2SPacket packet) { }
     /** Player-input packet entrypoint retained for server-side mixin targets. */
@@ -79,6 +91,12 @@ public class ServerPlayNetworkHandler extends ServerCommonNetworkHandler {
     }
     /** Command-execution packet entrypoint retained for Carpet and server mixins. */
     public void onCommandExecution(CommandExecutionC2SPacket packet) { }
+    /** Configuration-to-play acknowledgement entrypoint used by Fabric. */
+    public void onAcknowledgeReconfiguration(AcknowledgeReconfigurationC2SPacket packet) { }
+    /** Pick-block packet entrypoint retained for Fabric and server mixins. */
+    public void onPickItemFromBlock(PickItemFromBlockC2SPacket packet) { }
+    /** Pick-entity packet entrypoint retained for Fabric and server mixins. */
+    public void onPickItemFromEntity(PickItemFromEntityC2SPacket packet) { }
     /** Custom-payload packet entrypoint retained for Fabric/Carpet mixins. */
     public void onCustomPayload(CustomPayloadC2SPacket packet) { }
     /** Vehicle-movement packet entrypoint retained for server mixins. */

@@ -7,6 +7,11 @@ then launches all 25 directory mods in one owned `cppfm` process.  It does not
 depend on the current CMake fixture target, which intentionally compiles only
 `FixtureMod.java` and `ServerMixin.java`.
 
+The strict `corpus.json` and compatibility report intentionally remain a
+25-fixture contract. Case 26 is an auxiliary server-side functional mod;
+`tests/jvm_compatibility_smoke.py` stages and validates it in the same process
+without changing the meaning or count of cases 01..25.
+
 `corpus.json` is the machine-readable hand-off list.  Every entry has a stable
 case name, mod id, entrypoint, dependency edge, and execution mode.  A fixture
 is not considered complete because its class loaded: the runner requires a
@@ -40,6 +45,7 @@ compatibility manifest as well.
 | 23 | `23-threading` | attached Java worker thread JNI call | runtime |
 | 24 | `24-exception` | callback isolation and recovery | runtime |
 | 25 | `25-object-identity` | stable server/world wrapper identity | runtime |
+| 26 | `26-functional-api` | observable server-side Fabric API behavior across registry, world, tick, command, payload, lifecycle, and NBT paths | auxiliary runtime |
 
 Cases 09–10, 13–15, and 17–20 intentionally fail when only the current
 manual hook shell is present.  Their handlers are real assertions; the report

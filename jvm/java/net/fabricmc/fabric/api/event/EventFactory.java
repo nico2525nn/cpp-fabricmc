@@ -16,4 +16,9 @@ public final class EventFactory {
         if (phases != null) for (net.minecraft.util.Identifier phase : phases) event.declarePhase(phase);
         return event;
     }
+    public static String getHandlerName(Object handler) {
+        return handler == null ? "null" : handler.getClass().getName();
+    }
+    public static boolean isProfilingEnabled() { return false; }
+    public static void invalidate() { }
 }

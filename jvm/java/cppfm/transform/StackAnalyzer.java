@@ -2,7 +2,6 @@ package cppfm.transform;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.List;
@@ -153,7 +152,12 @@ final class StackAnalyzer {
                 state.stack.add(opcode == 139 ? INT : opcode == 140 ? LONG : DOUBLE);
             }
             case 142, 143, 144 -> { pop(state, 2); state.stack.add(opcode == 143 ? LONG : opcode == 144 ? FLOAT : INT); }
-            case 148, 149, 150, 151, 152 -> { pop(state, 4); state.stack.add(INT); }
+            case 148, 151, 152 -> { pop(state, 4); state.stack.add(INT); }
+            // lcmp and dcmp consume two category-2 values; fcmp consumes
+            // two category-1 values.  Treating all five compare opcodes as
+            // four slots makes valid float-heavy mixin targets look like an
+            // operand-stack underflow.
+            case 149, 150 -> { pop(state, 2); state.stack.add(INT); }
             case 153, 154, 155, 156, 157, 158, 198, 199 -> pop(state, 1);
             case 159, 160, 161, 162, 163, 164, 165, 166 -> pop(state, 2);
             case 170, 171 -> pop(state, 1);
@@ -196,7 +200,8 @@ final class StackAnalyzer {
 
     private static void invoke(ConstantPool pool, BytecodeInstructions.Instruction instruction, State state) {
         int cp = BytecodeInstructions.cpIndex(instruction);
-        Descriptor.MethodDesc descriptor = Descriptor.method(pool.memberDescriptor(cp));
+        Descriptor.MethodDesc descriptor = Descriptor.method(instruction.opcode == 186
+            ? pool.dynamicDescriptor(cp) : pool.memberDescriptor(cp));
         for (int i = descriptor.arguments.size() - 1; i >= 0; --i) pop(state, descriptor.arguments.get(i).slots);
         Value receiver = null;
         if (instruction.opcode != 184 && instruction.opcode != 186) receiver = popValue(state, 1);

@@ -6,17 +6,18 @@ import net.minecraft.util.Identifier;
 public final class Style {
     public static final Style EMPTY = new Style(null, null, null, false, false, false, false);
     private final Formatting formatting;
-    private final Integer color;
+    private final TextColor color;
     private final String insertion;
     private final boolean bold, italic, underlined, strikethrough;
-    private Style(Formatting formatting, Integer color, String insertion, boolean bold, boolean italic, boolean underlined, boolean strikethrough) {
+    private Style(Formatting formatting, TextColor color, String insertion, boolean bold, boolean italic, boolean underlined, boolean strikethrough) {
         this.formatting = formatting; this.color = color; this.insertion = insertion; this.bold = bold; this.italic = italic; this.underlined = underlined; this.strikethrough = strikethrough;
     }
-    public Style withColor(Formatting value) { return new Style(value, value == null ? null : value.getColorValue(), insertion, bold, italic, underlined, strikethrough); }
+    public Style withColor(Formatting value) { return new Style(value, TextColor.fromFormatting(net.minecraft.util.Formatting.byName(value == null ? null : value.name())), insertion, bold, italic, underlined, strikethrough); }
     public Style withColor(net.minecraft.util.Formatting value) {
-        return new Style(null, value == null ? null : value.getColorValue(), insertion,
+        return new Style(null, TextColor.fromFormatting(value), insertion,
             bold, italic, underlined, strikethrough);
     }
+    public Style withColor(TextColor value) { return new Style(formatting, value, insertion, bold, italic, underlined, strikethrough); }
     public Style withFormatting(Formatting value) { return withColor(value); }
     public Style withFormatting(net.minecraft.util.Formatting value) { return withColor(value); }
     public Style withFormatting(net.minecraft.util.Formatting... values) {
@@ -26,14 +27,14 @@ public final class Style {
         return result;
     }
     public Style withExclusiveFormatting(net.minecraft.util.Formatting value) { return withFormatting(value); }
-    public Style withColor(Integer value) { return new Style(formatting, value, insertion, bold, italic, underlined, strikethrough); }
+    public Style withColor(Integer value) { return new Style(formatting, value == null ? null : TextColor.fromRgb(value), insertion, bold, italic, underlined, strikethrough); }
     public Style withBold(Boolean value) { return new Style(formatting, color, insertion, Boolean.TRUE.equals(value), italic, underlined, strikethrough); }
     public Style withItalic(Boolean value) { return new Style(formatting, color, insertion, bold, Boolean.TRUE.equals(value), underlined, strikethrough); }
     public Style withUnderline(Boolean value) { return new Style(formatting, color, insertion, bold, italic, Boolean.TRUE.equals(value), strikethrough); }
     public Style withStrikethrough(Boolean value) { return new Style(formatting, color, insertion, bold, italic, underlined, Boolean.TRUE.equals(value)); }
     public Style withInsertion(String value) { return new Style(formatting, color, value, bold, italic, underlined, strikethrough); }
     public Formatting getFormatting() { return formatting; }
-    public Integer getColor() { return color; }
+    public TextColor getColor() { return color; }
     public String getInsertion() { return insertion; }
     public Boolean isBold() { return bold; }
     public Boolean isItalic() { return italic; }
@@ -57,7 +58,10 @@ public final class Style {
     public boolean method_10987() { return Boolean.TRUE.equals(isObfuscated()); }
     public boolean method_10967() { return this == EMPTY || (formatting == null && color == null && insertion == null && !bold && !italic && !underlined && !strikethrough); }
     public String method_10955() { return getInsertion(); }
-    public Style method_27703(Object value) { return value instanceof net.minecraft.util.Formatting f ? withColor(f) : this; }
+    public Style method_27703(Object value) {
+        if (value instanceof TextColor color) return withColor(color);
+        return value instanceof net.minecraft.util.Formatting f ? withColor(f) : this;
+    }
     public Style method_27704(Identifier font) { return withFont(font); }
     public Style method_27702(Style parent) { return withParent(parent); }
     public Style method_36139(int rgb) { return withColor(rgb); }

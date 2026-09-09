@@ -306,7 +306,7 @@ inline const std::unordered_map<std::string_view, std::uint32_t>& blockNameToSta
 // ============================ full state tables ============================
 
 // Unique property value strings, shared by all property definitions.
-inline constexpr std::array<std::string_view, 135> kPropValuePool = {{
+inline constexpr std::array<std::string_view, 145> kPropValuePool = {{
   "true",
   "false",
   "x",
@@ -380,7 +380,7 @@ inline constexpr std::array<std::string_view, 135> kPropValuePool = {{
   "sticky",
   "top",
   "bottom",
-  "straight",
+  "double",
   "inner_left",
   "inner_right",
   "outer_left",
@@ -442,6 +442,19 @@ inline constexpr std::array<std::string_view, 135> kPropValuePool = {{
   "none",
   "small",
   "large",
+  // RailShape values. Keep these contiguous: the rail block-state range
+  // has ten shapes, while several unrelated properties reuse the earlier
+  // six-value shape pool.
+  "north_south",
+  "east_west",
+  "ascending_east",
+  "ascending_west",
+  "ascending_north",
+  "ascending_south",
+  "south_east",
+  "south_west",
+  "north_west",
+  "north_east",
 }};
 
 // A named property with its ordered possible values (vanilla declaration order).
@@ -499,7 +512,7 @@ inline constexpr std::array<PropDef, 115> kPropDefs = {{
   {"rotation", 5, 16},
   {"hinge", 79, 2},
   {"open", 0, 2},
-  {"shape", 61, 10},
+  {"shape", 135, 10},
   {"attached", 0, 2},
   {"face", 87, 3},
   {"layers", 6, 8},

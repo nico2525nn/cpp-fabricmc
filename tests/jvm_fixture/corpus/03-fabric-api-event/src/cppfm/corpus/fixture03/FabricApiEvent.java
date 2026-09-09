@@ -9,6 +9,7 @@ import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerWorldEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.network.PacketByteBuf;
+import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.util.Identifier;
 
 /** Corpus 03: lifecycle, tick, world, and bounded networking API callbacks. */
@@ -70,6 +71,6 @@ public final class FabricApiEvent implements DedicatedServerModInitializer {
             .writeString("ok");
         byte[] encoded = payload.toByteArray();
         result("packet-buffer", encoded.length == 5 && (encoded[0] & 0xff) == 0xac
-            && !ServerPlayNetworking.canSend(null, CHANNEL));
+            && !ServerPlayNetworking.canSend((ServerPlayerEntity) null, CHANNEL));
     }
 }

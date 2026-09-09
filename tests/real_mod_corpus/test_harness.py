@@ -180,6 +180,62 @@ def assert_execution_decision_matrix() -> None:
         assert reason, (metadata_status, preflight_status, metadata_only)
 
 
+def assert_process_diagnostics_are_fail_closed() -> None:
+    """Reject real linkage/bootstrap failures without rejecting known WARN/ERROR noise."""
+    sys.path.insert(0, str(TOOLS))
+    import compare_real_mod_corpus as real_compare  # noqa: PLC0415
+
+    recoverable = [
+        "[main/ERROR]: No key layers in MapLike[{}]",
+        "[main/WARN]: @Mutable target field is not private",
+        "[cppfm][jvm][WARN] optional compatibility path was not selected",
+    ]
+    assert real_compare._process_diagnostics(recoverable) == [], recoverable
+
+    fatal = [
+        "[cppfm][jvm][ERROR] Knot callback failed:",
+        "java.lang.NoSuchMethodError: 'boolean net.minecraft.Foo.bar()'",
+        'Exception in thread "main" java.lang.IllegalStateException: broken',
+        "[cppfm] asset load failed: strict JVM startup failed",
+        "Mixin apply failed for target net.minecraft.server.MinecraftServer",
+    ]
+    diagnostics = real_compare._process_diagnostics(fatal)
+    assert [item["kind"] for item in diagnostics] == [
+        "bootstrap-failure",
+        "jvm-linkage",
+        "uncaught-exception",
+        "bootstrap-failure",
+        "mixin-failure",
+    ], diagnostics
+    assert [item["lineNumber"] for item in diagnostics] == [1, 2, 3, 4, 5], diagnostics
+
+    with tempfile.TemporaryDirectory(prefix="cppfm-plan51-diagnostics-") as temporary:
+        root = Path(temporary)
+        raw = {
+            "side": "cppfm",
+            "attempted": True,
+            "exitCode": 0,
+            "timedOut": False,
+            "ready": True,
+            "commandsSent": [],
+            "commandResponses": [],
+            "lines": fatal,
+            "reason": "process completed",
+        }
+        summary = real_compare._process_summary(
+            raw, root / "evidence", "diagnostic", root, root / "cache"
+        )
+        assert summary["status"] == "FAIL", summary
+        assert len(summary["diagnostics"]) == len(fatal), summary
+
+        raw["lines"] = recoverable
+        summary = real_compare._process_summary(
+            raw, root / "evidence", "recoverable", root, root / "cache"
+        )
+        assert summary["status"] == "PASS", summary
+        assert summary["diagnostics"] == [], summary
+
+
 def assert_shadow_manifest_regeneration() -> None:
     """Keep the generated ABI manifest reproducible after shadow source edits."""
     with tempfile.TemporaryDirectory(prefix="cppfm-plan51-manifest-") as temporary:
@@ -302,12 +358,14 @@ def main() -> int:
     assert_real_missing_cache_is_skip()
     assert_explicit_java_failure_is_fail_fast()
     assert_execution_decision_matrix()
+    assert_process_diagnostics_are_fail_closed()
     assert_shadow_manifest_regeneration()
     assert_synthetic_requires_behavior_assertions()
     print("real-mod corpus harness self-test: PASS")
     print("offline missing-cache: SKIP (no false PASS)")
     print("explicit Java 25 selection: FAIL (actionable Java 21 diagnostic)")
     print("runtime decision matrix: PASS")
+    print("runtime diagnostic classifier: PASS (fatal-only; known log noise ignored)")
     print("shadow manifest regeneration/check: PASS")
     print("synthetic 25-case load-only: FAIL; complete function assertions: PASS")
     return 0

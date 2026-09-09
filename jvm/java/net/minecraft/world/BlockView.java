@@ -7,6 +7,10 @@ import net.minecraft.util.math.Vec3d;
 
 public interface BlockView {
     BlockState getBlockState(BlockPos pos);
+    /** Intermediary raycast helper used by server-side optimization mixins. */
+    default net.minecraft.util.hit.BlockHitResult method_17743(RaycastContext context, BlockPos pos) {
+        return raycast(context);
+    }
     default net.minecraft.block.entity.BlockEntity getBlockEntity(BlockPos pos) { return null; }
     default net.minecraft.util.hit.BlockHitResult raycast(RaycastContext context) {
         if (context == null) return null;

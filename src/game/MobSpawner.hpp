@@ -23,6 +23,9 @@ public:
 
     // Dispenser spawn: uses facing to offset position.
     bool spawnFromDispenser(const std::string& eggName, int x, int y, int z, const std::string& facing);
+    bool spawnFromDispenserFor(std::int8_t dimension, const std::string& eggName,
+                               int x, int y, int z,
+                               const std::string& facing);
 
 private:
     GameServer& srv_;

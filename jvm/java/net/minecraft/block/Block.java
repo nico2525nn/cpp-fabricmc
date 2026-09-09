@@ -2,13 +2,14 @@ package net.minecraft.block;
 
 import java.util.concurrent.atomic.AtomicInteger;
 import net.minecraft.item.Item;
-import net.minecraft.registry.RegistryEntry;
+import net.minecraft.registry.entry.RegistryEntry;
 import net.minecraft.state.StateManager;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.shape.VoxelShape;
 
-public class Block extends AbstractBlock implements net.minecraft.item.ItemConvertible {
+public class Block extends AbstractBlock implements net.minecraft.item.ItemConvertible,
+        net.fabricmc.fabric.api.block.v1.FabricBlock {
     private static final AtomicInteger NEXT_CUSTOM_STATE = new AtomicInteger(10000);
     private final int rawState;
     private final Identifier id;
@@ -45,6 +46,9 @@ public class Block extends AbstractBlock implements net.minecraft.item.ItemConve
     public float getVelocityMultiplier() { return settings.velocityMultiplier(); }
     public int getLuminance() { return settings.luminance(); }
     public boolean isOpaque() { return settings.opaqueValue(); }
+    /** Random-tick callback used by the 1.21.4 server tick pipeline. */
+    public void randomTick(BlockState state, net.minecraft.server.world.ServerWorld world,
+                            BlockPos pos, net.minecraft.util.math.random.Random random) { }
     public boolean emitsRedstonePower(BlockState state) { return false; }
     public static boolean isShapeFullCube(VoxelShape shape) {
         return shape != null && shape.isCube();

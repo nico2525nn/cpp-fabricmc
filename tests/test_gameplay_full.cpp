@@ -247,6 +247,37 @@ static void test_blocks() {
         (void)be;
     }
     {
+        // CrafterBlockEntity state must survive the same chunk NBT boundary
+        // as vanilla: recipe slots, disabled slot mask, delayed craft state,
+        // and the triggered flag are all gameplay-visible.
+        BlockEntityStore source;
+        BlockEntity& crafter = source.create(posKey(3, 2, 1),
+                                              BlockEntity::Kind::Crafter);
+        crafter.crafter.slots[0] = ItemStack::of(
+            gen::itemIdByName().at("minecraft:oak_log"), 2);
+        crafter.crafter.setSlotEnabled(4, false);
+        crafter.crafter.craftingTicksRemaining = 5;
+        crafter.crafter.triggered = true;
+        nbt::Value root = nbt::Value::makeCompound();
+        nbt::Value entries = nbt::Value::makeList(nbt::Compound);
+        source.writeChunkNbt(0, 0, entries);
+        root.set("block_entities", std::move(entries));
+
+        BlockEntityStore restored;
+        restored.readChunkNbt(root);
+        const auto* loaded = restored.getAt(3, 2, 1);
+        CHECK(loaded && loaded->kind == BlockEntity::Kind::Crafter,
+              "crafter block entity kind survives chunk NBT");
+        CHECK(loaded && loaded->crafter.slots[0].itemId ==
+                  gen::itemIdByName().at("minecraft:oak_log") &&
+                  loaded->crafter.slots[0].count == 2,
+              "crafter recipe inventory survives chunk NBT");
+        CHECK(loaded && loaded->crafter.isSlotDisabled(4) &&
+                  loaded->crafter.craftingTicksRemaining == 5 &&
+                  loaded->crafter.triggered,
+              "crafter disabled slots and redstone state survive chunk NBT");
+    }
+    {
         RedstoneRig rig;
         rig.place(5, 2, 5, stateByName("minecraft:dispenser"));
         CHECK(!rig.engine.isQuasiPowered(5, 2, 5), "engine: dispenser initially unpowered");
@@ -553,7 +584,6 @@ static void test_combat() {
         float d = EnchantmentHelper::meleeDamageWithEnchant(5.f, sword, MobKind::Zombie);
         CHECK_NEAR(d, 5.f + 2.5f*5, 1e-4, "smite 5 vs zombie +12.5");
         float d2 = EnchantmentHelper::meleeDamageWithEnchant(5.f, sword, MobKind::Creeper);
-        CHECK_NEAR(d2, 5.f + 0.5f*0+0.5f ? 5.f : 5.f, 1e-4, "smite vs creeper no bonus (non-undead)");
         CHECK_NEAR(d2, 5.f, 1e-4, "smite vs creeper no extra");
     }
     CHECK_NEAR(HungerManager::EXHAUST_WALK, 0.0, 1e-6, "EXHAUST_WALK 0 (vanilla)");
@@ -1147,7 +1177,15 @@ bool GameServer::isChunkInSimulationDistance(std::int32_t, std::int32_t) const {
 bool GameServer::isChunkInSimulationDistanceFor(std::int8_t, std::int32_t,
                                                 std::int32_t) const { return true; }
 void GameServer::spawnMob(MobKind, double, double, double) {}
+void GameServer::spawnMobFor(std::int8_t, MobKind, double, double, double) {}
+void GameServer::broadcastBlockChangeFor(std::int8_t, std::int32_t,
+                                         std::int32_t, std::int32_t,
+                                         std::uint16_t) {}
+void GameServer::broadcastSoundFor(std::int8_t, const char*, double, double,
+                                   double, float, float, const char*) {}
 void GameServer::broadcastPaleOakLeavesParticle(double, double, double) {}
+void GameServer::broadcastPaleOakLeavesParticleFor(std::int8_t, double, double,
+                                                   double) {}
 
 static int agePropOf(std::uint16_t st) {
     for (auto& [k, v] : gen::propsOf(st))

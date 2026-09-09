@@ -9,6 +9,8 @@ import net.minecraft.text.Text;
 import net.minecraft.util.NativeAccess;
 import net.minecraft.util.Identifier;
 import net.minecraft.world.World;
+import java.util.Optional;
+import java.util.OptionalInt;
 
 public class ServerPlayerEntity extends PlayerEntity {
     protected ServerPlayerEntity(long nativeHandle) { super(nativeHandle, null, EntityType.PLAYER); }
@@ -42,12 +44,32 @@ public class ServerPlayerEntity extends PlayerEntity {
     public boolean sendPluginMessage(Identifier channel, byte[] payload) {
         return NativeAccess.sendPluginMessage(nativeHandle, channel == null ? "" : channel.toString(), payload, 1);
     }
+    /** Dimension-change lifecycle hook used by Fabric and server optimisers. */
+    public void worldChanged(ServerWorld world) { setWorld(world); }
+    /** Tracks an ender pearl launched by this player in vanilla. */
+    public void addEnderPearl(net.minecraft.entity.projectile.thrown.EnderPearlEntity pearl) { }
+    /** Reconnect/respawn state transfer hook used by server-side mods. */
+    public void copyFrom(ServerPlayerEntity oldPlayer, boolean alive) { }
+    /** Restores persisted ender-pearl state when a player joins. */
+    public void readEnderPearls(Optional<?> persisted) { }
+    /** Opens a server-side named screen and returns its synchronisation id. */
+    public OptionalInt openHandledScreen(net.minecraft.screen.NamedScreenHandlerFactory factory) {
+        return OptionalInt.empty();
+    }
+    /** Server-player declaration retained for mixins that target the concrete class. */
+    @Override
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    public com.mojang.datafixers.util.Either trySleep(net.minecraft.util.math.BlockPos position) {
+        return super.trySleep(position);
+    }
     public boolean isDisconnected() { return networkHandler == null || networkHandler.isDisconnected(); }
     public void increaseStat(net.minecraft.stat.Stat<?> stat, int amount) { }
     public void resetLastActionTime() { }
     @Override public void onDeath(net.minecraft.entity.damage.DamageSource source) {
         super.onDeath(source);
     }
+    /** Concrete declaration retained for server-player combat mixins. */
+    @Override public void attack(net.minecraft.entity.Entity target) { super.attack(target); }
     /** Item-consumption lifecycle hook used by server-player mixins. */
     public void consumeItem() { }
     @Override public void tick() { super.tick(); }
