@@ -2,7 +2,6 @@ package cppfm.api;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.function.Consumer;
 
 import net.minecraft.entity.Entity;
 import net.minecraft.server.MinecraftServer;

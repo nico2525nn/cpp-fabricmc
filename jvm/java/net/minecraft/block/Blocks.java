@@ -1,7 +1,84 @@
 package net.minecraft.block;
 
+import net.minecraft.registry.RegistryKey;
+
 public final class Blocks {
     private Blocks() {}
+
+    /** Yarn 1.21.4 registry factory used by vanilla bootstrap mixins. */
+    public static Block register(RegistryKey<Block> key, AbstractBlock.Settings settings) {
+        return new Block(settings);
+    }
+
+    /** Yarn 1.21.4 registry factory overload used by Fabric's transitive AW. */
+    public static Block register(RegistryKey<Block> key,
+            java.util.function.Function<AbstractBlock.Settings, Block> factory,
+            AbstractBlock.Settings settings) {
+        return factory == null ? new Block(settings) : factory.apply(settings);
+    }
+
+    /** Vanilla's block-state luminance function factory. */
+    public static java.util.function.ToIntFunction<BlockState> createLightLevelFromLitBlockState(int level) {
+        return state -> level;
+    }
+
+    /** Context predicate helpers exposed by the 1.21.4 named ABI. */
+    public static boolean always(BlockState state, net.minecraft.world.BlockView world,
+            net.minecraft.util.math.BlockPos pos) { return true; }
+
+    public static boolean never(BlockState state, net.minecraft.world.BlockView world,
+            net.minecraft.util.math.BlockPos pos) { return false; }
+
+    public static Boolean always(BlockState state, net.minecraft.world.BlockView world,
+            net.minecraft.util.math.BlockPos pos, net.minecraft.entity.EntityType<?> type) {
+        return Boolean.TRUE;
+    }
+
+    public static Boolean never(BlockState state, net.minecraft.world.BlockView world,
+            net.minecraft.util.math.BlockPos pos, net.minecraft.entity.EntityType<?> type) {
+        return Boolean.FALSE;
+    }
+
+    public static Boolean canSpawnOnLeaves(BlockState state, net.minecraft.world.BlockView world,
+            net.minecraft.util.math.BlockPos pos, net.minecraft.entity.EntityType<?> type) {
+        return Boolean.TRUE;
+    }
+
+    /**
+     * Yarn 1.21.4 intermediary ABI used by Fabric's block access wideners.
+     * Vanilla uses this helper when constructing log blocks; keeping the
+     * mapping in the settings object is sufficient for the Java compatibility
+     * layer while the native registry owns the resulting block state.
+     */
+    public static AbstractBlock.Settings createLogSettings(
+            MapColor topMapColor, MapColor sideMapColor,
+            net.minecraft.sound.BlockSoundGroup sounds) {
+        return AbstractBlock.Settings.create()
+            .mapColor(sideMapColor)
+            .sounds(sounds);
+    }
+
+    /** Yarn 1.21.4 helper used by the transitive Fabric access widener. */
+    public static AbstractBlock.Settings createNetherStemSettings(MapColor mapColor) {
+        return AbstractBlock.Settings.create().mapColor(mapColor);
+    }
+
+    /** Yarn 1.21.4 helper used by the transitive Fabric access widener. */
+    public static AbstractBlock.Settings createLeavesSettings(
+            net.minecraft.sound.BlockSoundGroup sounds) {
+        return AbstractBlock.Settings.create().sounds(sounds).nonOpaque();
+    }
+
+    /** Yarn 1.21.4 helper used by the transitive Fabric access widener. */
+    public static AbstractBlock.Settings createFlowerPotSettings() {
+        return AbstractBlock.Settings.create().nonOpaque().noCollision();
+    }
+
+    /** Yarn 1.21.4 helper used by the transitive Fabric access widener. */
+    public static AbstractBlock.Settings createButtonSettings() {
+        return AbstractBlock.Settings.create().noCollision();
+    }
+
     public static final Block AIR = new Block(0);
     public static final Block VOID_AIR = new Block(0, net.minecraft.util.Identifier.of("minecraft", "void_air"));
     public static final Block STONE = new Block(1, net.minecraft.util.Identifier.of("minecraft", "stone"));

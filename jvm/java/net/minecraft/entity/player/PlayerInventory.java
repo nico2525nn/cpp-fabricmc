@@ -4,7 +4,6 @@ import java.util.List;
 import java.util.Set;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Item;
-import net.minecraft.item.Items;
 import net.minecraft.inventory.Inventory;
 import net.minecraft.util.NativeAccess;
 import net.minecraft.util.collection.DefaultedList;

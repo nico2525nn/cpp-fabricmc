@@ -2,10 +2,11 @@
 
 This guide is for the clean-room C++ implementation of Minecraft Java 1.21.4,
 protocol 769, DataVersion 4189. The source snapshot for this canonical document is
-the `main` HEAD `abcdc6b` plus the current cleanup worktree (2026-09-07). Fabric Loader
-0.16.9 is a version/reference boundary; plan51 adds an optional bounded embedded JVM,
-a version-locked class-file transformer, and a separate offline official Loader/Knot
-probe. The production path does not ship the Mojang GameProvider/server jar.
+the current working tree (2026-09-09). Fabric Loader 0.16.9 is a
+version/reference boundary; the executable provides a default-on bounded embedded
+JVM, a version-locked class-file transformer, and a separate offline official
+Loader/Knot probe. The production path does not ship the Mojang GameProvider/server
+jar.
 
 **Status:** development map and extension contract. **Limitations:** this file does
 not grant permission to change runtime behavior, alter test assertions, or expand the
@@ -42,7 +43,11 @@ Use public, version-pinned material only for the clean-room contract:
 - Minecraft Wiki for supplemental encoding explanations;
 - Fabric 1.21.4 release notes and Fabric Loader 0.16.9 documentation for the
   platform/version boundary; and
-- Yarn 1.21.4 concept names, not unverified line-number or implementation claims.
+- [Fabric developer documentation](https://docs.fabricmc.net/develop/index) and
+  Fabric API `0.119.4+1.21.4` for the public server/common extension surface; and
+- Yarn `1.21.4+build.8` mappings/Javadocs for versioned names and descriptors, not
+  unverified line-number or implementation claims. Client, datagen, renderer, and
+  internal-only API surfaces are audited separately from the server boundary.
 
 Current source and executable tests outrank a stale comment. Every new claim needs a
 source path/symbol, test or capture, provenance label, version boundary, and status.
@@ -60,7 +65,8 @@ Use `DECLARED-LIMITATION` when a claim has not been independently verified.
 | gameplay | `src/game/Entities`, `BehaviorTree`, `AiBrain`, `CombatManager`, `HungerManager` | entities, AI, damage, survival |
 | data/UI | `Items`, `Containers`, `MenuInteraction`, `Recipes`, `DatapackManager`, `src/brigadier` | components, menus, recipes, commands |
 | persistence | `WorldDataManager`, `Persistence`, `Anvil`, `RegionFile`, `SessionLock` | DataVersion 4189 and recovery |
-| JVM boundary | `src/jvm/`, `jvm/java/`, `jvm/shadow_api.json`, `jvm/vendor/` | optional JNI/HotSpot bridge, structural transformer, and pinned official-loader probe; [PLAN51_JVM.md](PLAN51_JVM.md) |
+| JVM boundary | `src/jvm/`, `jvm/java/`, `jvm/shadow_api.json`, `jvm/vendor/` | default-on JNI/HotSpot bridge, structural transformer, and pinned official-loader probe; [PLAN51_JVM.md](PLAN51_JVM.md) |
+| distribution/runtime layout | `src/core/RuntimeLayout.*`, `tools/embed_runtime.py`, `cmake/verify_self_contained_package.cmake.in`, `tests/package_jvm_smoke.py`, `CMakeLists.txt` | embeds repository-owned assets/classes in the executable, fail-closes the one-file CPack package when its resource pack is unavailable, creates the server directory tree, and separately verifies the package JVM boundary |
 
 Generated IDs under `src/generated/` and assets under `assets/` are inputs, not
 handwritten canonical tables.
@@ -122,7 +128,9 @@ A failed state cannot be promoted by changing prose, counts, or assertions.
 2. Reconfirm current HEAD and any pre-existing user changes.
 3. Research externally without writing source during research.
 4. Split independent work only with separate worktrees; never place two writers in
-   one worktree.
+   one worktree. Temporary worktrees are optional; when one is created, remove that
+   exact worktree after the task only after confirming it is clean, and preserve any
+   dirty worktree for its owner.
 5. Implement the smallest source-owned change, add focused evidence, then build.
 6. Run static → unit → wire/gameplay → integration/ops gates.
 7. Review behavior diff, docs references, and declared limitations before commit.
@@ -136,7 +144,7 @@ edge cases, test method, and implementation priority/status. A plan that says
 ``13 viewpoints`` is using the old schema and must not be treated as complete.
 
 The plan50 runtime follow-up snapshot was the previous baseline. Plan51 is the
-authorized optional JVM-boundary implementation described in
+authorized JVM-boundary implementation described in
 [PLAN51_JVM.md](PLAN51_JVM.md); its focused evidence does not promote a failed gate
 or convert the bounded fixture into arbitrary Fabric compatibility.
 
@@ -191,7 +199,22 @@ future plan must not re-propose those completed refactors as documentation work.
 | gameplay cause/effect | `src/game`, `src/physics`, `src/worldgen` | GAMEPLAY |
 | limits/save/recovery/load | `src/game` persistence + `src/net` limits + tools | OPS |
 | extension workflow | this guide | all three specs |
+| JVM linkage/runtime diagnostics | `tools/scan_mod_linkage.py`, `tools/compare_real_mod_corpus.py`, `tests/real_mod_corpus/` | VERIFICATION |
 | evidence and release gate | `tests`, `CMakeLists.txt`, tools | VERIFICATION |
+
+The `GameServer` implementation is intentionally split by ownership.  Use the
+following map when tracing a current source path; older matrix entries may
+still contain pre-split `GameServer.cpp:<line>` citations as historical
+evidence.
+
+| current concern | current source owner |
+|---|---|
+| lifecycle, server-thread dispatch, JVM/entity hooks, advancements, cookies | `src/game/GameServer_core.cpp` |
+| tick scheduling, simulation distance, survival, mob spawning, block batches | `src/game/GameServer_tick.cpp` |
+| combat, effects, weather, particles, TNT, lightning, movement broadcasts | `src/game/GameServer_combat.cpp` |
+| items, containers, vehicles, trades, projectiles, XP, mob/object ticking | `src/game/GameServer_items.cpp` |
+| world persistence, player data, operators, bans, whitelist, world border | `src/game/GameServer_world.cpp` |
+| protocol sessions, handshake/login/configuration/play packet handlers | `src/game/GameServer_session.cpp` |
 
 One claim has one canonical owner. A link is preferable to a copied table.
 
@@ -204,7 +227,8 @@ One claim has one canonical owner. A link is preferable to a copied table.
 - Never copy old IDs, HEADs, PASS counts, or line-only citations without rechecking
   the current source and test.
 - Keep `docs/mob_stats_149.csv` at its stable default runtime path.
-- Do not change `CHECK(false, "E-14 HONEST GAP...")` to make a test exit zero.
+- Do not encode the E-14 boundary as an intentional failing assertion or alter an
+  assertion to make a test exit zero.
 - Do not call arbitrary JVM mod execution, Mojang GameProvider execution, or vanilla
   RNG L3 parity “supported” without a new versioned contract and evidence. The
   official Loader/Knot result is an offline probe against the shadow provider.
@@ -246,7 +270,7 @@ Review explicitly for:
 - component IDs and empty/removed component lists;
 - malformed/oversize frames, zlib trailing bytes, slow peers, RCON auth flood;
 - corrupt level/region/player files, stale locks, child process orphans; and
-- E-14, seed RNG L3, and any test with an intentional allowed failure.
+- E-14 boundary, seed RNG L3, and any deliberately non-gating diagnostic.
 
 ## 15. Test method
 
@@ -262,7 +286,8 @@ inventing an aggregate count.
 
 Required evidence classes are:
 
-1. static source/schema/link checks;
+1. static source/schema/link checks, including the conservative JVM class-file
+   linkage preflight and fail-closed process-diagnostic classifier;
 2. configure/build;
 3. focused unit/wire/fixture tests;
 4. integration/server tests; and

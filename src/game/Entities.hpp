@@ -2,6 +2,7 @@
 #pragma once
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 #include <array>
@@ -20,6 +21,11 @@ struct Vec3 { double x, y, z; };
 
 struct PrimedTntEntity {
     std::int32_t entityId = 0;
+    // Entity coordinates are not globally unique: the same position may be
+    // active in all three dimensions.  Keep the dimension alongside every
+    // server-owned transient entity so physics, persistence, and packet
+    // routing cannot accidentally fall back to the Overworld.
+    std::int8_t dimension = 0;
     double x=0, y=0, z=0;
     double vx=0, vy=0, vz=0;
     int fuse = 80;
@@ -28,6 +34,7 @@ struct PrimedTntEntity {
 
 struct ItemEntity {
     std::int32_t entityId = 0;
+    std::int8_t dimension = 0;
     std::uint32_t itemId = 0;
     std::uint8_t count = 1;
     // If `stack` is non-empty it overrides itemId/count and carries enchant/trim/damage.
@@ -51,21 +58,45 @@ struct ItemEntity {
 
 struct XpOrbEntity {
     std::int32_t entityId = 0;
+    std::int8_t dimension = 0;
     std::uint16_t value = 1;
     double x=0, y=0, z=0;
     double vy=0;
     std::int64_t ageTicks = 0;
 };
 
-enum class ProjectileKind : std::uint8_t { Arrow=0, Snowball, Egg, EnderPearl, Potion, WitherSkull, Fireball, DragonFireball, Trident, WindCharge=9, BreezeWindCharge=10 };
+// Keep the values stable for the existing native persistence/test fixtures.
+// The two mob projectiles were missing even though their entity types are
+// already part of the 1.21.4 registry.
+enum class ProjectileKind : std::uint8_t {
+    Arrow = 0,
+    Snowball,
+    Egg,
+    EnderPearl,
+    Potion,
+    WitherSkull,
+    Fireball,
+    DragonFireball,
+    Trident,
+    WindCharge = 9,
+    BreezeWindCharge = 10,
+    LlamaSpit = 11,
+    ShulkerBullet = 12
+};
 
 struct ProjectileEntity {
     std::int32_t entityId = 0;
+    std::int8_t dimension = 0;
     ProjectileKind kind = ProjectileKind::Arrow;
     double x=0, y=0, z=0;
     double vx=0, vy=0, vz=0;
     std::int32_t ownerId = -1;
     bool ownerIsPlayer = false;
+    // Shulker bullets retain their selected target instead of retargeting a
+    // different player every tick.  The target is intentionally lightweight;
+    // entity ownership remains represented by ownerId/ownerIsPlayer.
+    std::int32_t targetId = -1;
+    bool targetIsPlayer = false;
     std::int64_t ageTicks = 0;
     bool stuck = false;
     std::int64_t stuckTicks = 0;
@@ -79,12 +110,14 @@ struct ProjectileEntity {
 
 struct LightningBoltEntity {
     std::int32_t entityId = 0;
+    std::int8_t dimension = 0;
     double x=0, y=0, z=0;
     std::int64_t ageTicks = 0;
 };
 
 struct TntEntity {
     std::int32_t entityId = 0;
+    std::int8_t dimension = 0;
     double x=0, y=0, z=0;
     double vx=0, vy=0, vz=0;
     std::int32_t fuse = 80; // ticks until explode (vanilla 80)
@@ -345,7 +378,14 @@ inline float slimeWidthForSize(int sz) {
 }
 
 struct MobEntity {
+    // Mob snapshots are shared between the tick loop, network sessions, and
+    // JVM callbacks.  A shared mutex object keeps copies (for example boss
+    // callback snapshots) compatible while giving live entities one state
+    // boundary.
+    mutable std::shared_ptr<std::recursive_mutex> stateMtx =
+        std::make_shared<std::recursive_mutex>();
     std::int32_t entityId = 0;
+    std::int8_t dimension = 0;
     MobKind kind = MobKind::Pig;
     double x=0, y=0, z=0;
     float yaw=0, pitch=0;

@@ -11,7 +11,8 @@ import net.minecraft.world.BlockView;
 import net.minecraft.world.HeightLimitView;
 
 /** Minimal native-backed chunk ABI for server-side mixin class loading. */
-public class Chunk implements BlockView, HeightLimitView {
+public class Chunk implements BlockView, HeightLimitView,
+        net.fabricmc.fabric.api.attachment.v1.AttachmentTarget {
     private final ChunkPos pos;
 
     public Chunk() { this(new ChunkPos(0, 0)); }

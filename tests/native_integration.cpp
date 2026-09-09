@@ -1,6 +1,7 @@
 // Native end-to-end suite: spawns the real server binary and exercises it
 // through TestClient (production framing code). Replaces the Python suites.
 #include "TestClient.hpp"
+#include "ServerProcess.hpp"
 #include <map>
 #include "../src/core/Json.hpp"
 #include "../src/core/NBT.hpp"
@@ -33,6 +34,9 @@
 #include <cstring>
 #include <random>
 #include <filesystem>
+#include <atomic>
+#include <chrono>
+#include <thread>
 
 using namespace cppfm;
 using namespace cpptest;
@@ -42,83 +46,6 @@ static int g_fail = 0;
     const bool c_ = static_cast<bool>(cond); \
     std::printf("  %s  %s\n", c_ ? " ok " : "FAIL", msg); \
     if (!c_) ++g_fail; } while (0)
-
-// ------------------------------------------------------------------ helpers
-static bool waitPort(std::uint16_t port, int timeoutMs) {
-    for (int i = 0; i < timeoutMs / 100; ++i) {
-        TestClient probe;
-        if (probe.connect("127.0.0.1", port, 1)) { probe.close(); return true; }
-        usleep(100 * 1000);
-    }
-    return false;
-}
-
-struct ServerProc {
-    pid_t pid = -1;
-    std::uint16_t port = 0;
-
-    std::string worldDir;
-    bool online = false;
-    ~ServerProc() { stop(); }
-    bool start(const char* serverPath, int viewDistance, bool onlineMode=false,
-               const std::string& motd = {}) {
-        port = static_cast<std::uint16_t>(26000 + (getpid() % 3000));
-        worldDir = "/tmp/opencode/native-world-" + std::to_string(getpid());
-        std::error_code ec;
-        std::filesystem::remove_all(worldDir, ec);
-        if (ec) return false;
-        std::filesystem::create_directories(worldDir, ec);
-        if (ec) return false;
-        // pick a free-ish port by probing
-        for (int attempt = 0; attempt < 20; ++attempt) {
-            TestClient probe;
-            if (!probe.connect("127.0.0.1", port, 1)) break;   // free
-            probe.close();
-            port = static_cast<std::uint16_t>(port + 1);
-        }
-        pid = fork();
-        if (pid < 0) return false;
-        if (pid == 0) {
-            char portArg[32], vdArg[32], wdArg[256];
-            snprintf(portArg, sizeof(portArg), "--port=%u", port);
-            snprintf(vdArg, sizeof(vdArg), "--view-distance=%d", viewDistance);
-            snprintf(wdArg, sizeof(wdArg), "--world-dir=%s", worldDir.c_str());
-            const char* omArg = onlineMode ? "--online-mode=true" : "--online-mode=false";
-            const std::string motdArg = "--motd=" + motd;
-            if (motd.empty())
-                execl(serverPath, serverPath, portArg, vdArg, wdArg, omArg, (char*)nullptr);
-            else
-                execl(serverPath, serverPath, portArg, vdArg, wdArg, omArg,
-                      motdArg.c_str(), (char*)nullptr);
-            _exit(127);
-        }
-        if (waitPort(port, 8000)) return true;
-        stop();
-        return false;
-    }
-    void stop() noexcept {
-        const pid_t child = pid;
-        pid = -1;
-        if (child > 0) {
-            (void)kill(child, SIGTERM);
-            int st = 0;
-            bool reaped = false;
-            for (int i = 0; i < 20; ++i) {
-                pid_t r = waitpid(child, &st, WNOHANG);
-                if (r == child) { reaped = true; break; }
-                if (r < 0 && errno == ECHILD) { reaped = true; break; }
-                if (r < 0 && errno != EINTR) break;
-                usleep(100 * 1000);
-            }
-            if (!reaped) {
-                (void)kill(child, SIGKILL);
-                while (waitpid(child, &st, 0) < 0 && errno == EINTR) {}
-            }
-        }
-        std::error_code ec;
-        std::filesystem::remove_all(worldDir, ec);
-    }
-};
 
 // Minimal chunk-section reader to assert world contents from wire bytes.
 // Returns block state at (wx,wy,wz) from a LevelChunkWithLight body, or -1.
@@ -326,6 +253,38 @@ static void scenarioStress(ServerProc& srv, int n) {
         });
     for (auto& th : threads) th.join();
     CHECK(ok == n, "all stress bots joined with chunks");
+}
+
+static void scenarioMobStateLockBoundary() {
+    std::printf("\n[Mob side-effect lock boundary]\n");
+    MobEntity owner;
+    MobEntity other;
+    std::recursive_mutex mutex;
+    std::unique_lock<std::recursive_mutex> lock(mutex);
+    const auto previous = setBehaviorTreeMobStateLock(&owner, &lock);
+    bool observedReleased = false;
+    CHECK(runWithoutMobStateLock(owner, [&] {
+              observedReleased = !lock.owns_lock();
+          }),
+          "source-aware mob side-effect boundary accepts its owner");
+    CHECK(observedReleased,
+          "mob side-effect boundary releases the active state lock");
+    CHECK(lock.owns_lock(),
+          "mob side-effect boundary reacquires the active state lock");
+
+    bool wrongOwnerRan = false;
+    CHECK(!runWithoutMobStateLock(other, [&] { wrongOwnerRan = true; }),
+          "source-aware mob side-effect boundary rejects another Mob");
+    CHECK(!wrongOwnerRan && lock.owns_lock(),
+          "another Mob cannot release the current Mob state lock");
+
+    bool compatibilityReleased = false;
+    runWithoutMobStateLock([&] {
+        compatibilityReleased = !lock.owns_lock();
+    });
+    CHECK(compatibilityReleased && lock.owns_lock(),
+          "legacy no-source boundary remains safe for the active owner");
+    setBehaviorTreeMobStateLock(previous.mob, previous.lock);
 }
 
 
@@ -1048,12 +1007,212 @@ void scenarioEnchant41Plan40(){
 
 // Online-mode join is tested via crypto unit tests + manual verification.
 
+static void scenarioDimensionCacheUnit() {
+    std::printf("\n[dimension-aware chunk cache — 5 cases (W20)]\n");
+    ServerConfig cfg;
+    cfg.ioWorkerThreads = 1;
+    GameServer server(cfg);
+    auto overworld = std::make_shared<const std::vector<std::uint8_t>>(
+        std::vector<std::uint8_t>{0x0A});
+    auto nether = std::make_shared<const std::vector<std::uint8_t>>(
+        std::vector<std::uint8_t>{0x0B});
+    server.storeChunkFor(0, 7, -3, 1, overworld);
+    server.storeChunkFor(-1, 7, -3, 1, nether);
+    GameServer::ChunkBodyRef found;
+    CHECK(server.getCachedChunkFor(0, 7, -3, 0, found) &&
+          found && *found == *overworld,
+          "dimension cache: Overworld body is isolated");
+    CHECK(server.getCachedChunkFor(-1, 7, -3, 0, found) &&
+          found && *found == *nether,
+          "dimension cache: Nether body is isolated at same coordinate");
+    server.invalidateChunkCacheFor(-1, 7, -3);
+    CHECK(!server.getCachedChunkFor(-1, 7, -3, 0, found),
+          "dimension cache: invalidating Nether removes only Nether body");
+    CHECK(server.getCachedChunkFor(0, 7, -3, 0, found),
+          "dimension cache: invalidating Nether preserves Overworld body");
+    CHECK(server.chunkCacheSize() == 1,
+          "dimension cache: LRU contains the surviving dimension only");
+}
+
+static void scenarioJvmServerThreadBoundary() {
+    std::printf("\n[JVM server-thread boundary — bootstrap, queue, timeout, stop]\n");
+    const std::string worldDir =
+        "/tmp/cppfm-jvm-server-thread-" + std::to_string(getpid());
+    std::error_code ec;
+    std::filesystem::remove_all(worldDir, ec);
+
+    ServerConfig cfg;
+    cfg.ioWorkerThreads = 1;
+    cfg.jvmEnabled = false;
+    cfg.port = 0;
+    cfg.worldDir = worldDir;
+
+    {
+        GameServer server(cfg);
+        server.init();
+
+        // init() temporarily owns the boundary for bootstrap, but a foreign
+        // thread must not leave a request behind while no tick loop exists.
+        std::atomic<bool> bootstrapRan{false};
+        bool bootstrapResult = true;
+        std::thread bootstrapCaller([&] {
+            bootstrapResult = server.runOnServerThread(
+                [&] { bootstrapRan.store(true, std::memory_order_release); },
+                std::chrono::milliseconds(50));
+        });
+        bootstrapCaller.join();
+        CHECK(!bootstrapResult,
+              "JVM boundary: foreign bootstrap mutation is rejected while stopped");
+        CHECK(!bootstrapRan.load(std::memory_order_acquire),
+              "JVM boundary: rejected bootstrap mutation has no callback");
+
+        std::atomic<bool> runnerFailed{false};
+        std::thread runner([&] {
+            try {
+                server.runForever();
+            } catch (...) {
+                runnerFailed.store(true, std::memory_order_release);
+            }
+        });
+
+        const auto waitUntil = [](auto&& predicate,
+                                  std::chrono::milliseconds timeout) {
+            const auto deadline = std::chrono::steady_clock::now() + timeout;
+            while (!predicate() && std::chrono::steady_clock::now() < deadline)
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            return static_cast<bool>(predicate());
+        };
+        CHECK(waitUntil([&] { return server.running(); },
+                        std::chrono::milliseconds(2000)),
+              "JVM boundary: server enters running state");
+
+        // A regular foreign request is executed by the tick thread, never by
+        // the Java-created caller thread.
+        std::thread::id queueCallerId;
+        std::thread::id executionId;
+        std::atomic<bool> queuedRan{false};
+        bool queuedResult = false;
+        std::thread queueCaller([&] {
+            queueCallerId = std::this_thread::get_id();
+            queuedResult = server.runOnServerThread(
+                [&] {
+                    executionId = std::this_thread::get_id();
+                    queuedRan.store(true, std::memory_order_release);
+                },
+                std::chrono::milliseconds(1000));
+        });
+        queueCaller.join();
+        CHECK(queuedResult && queuedRan.load(std::memory_order_acquire),
+              "JVM boundary: foreign request completes through the queue");
+        CHECK(!bootstrapRan.load(std::memory_order_acquire),
+              "JVM boundary: rejected bootstrap mutation does not run after tick start");
+        CHECK(executionId != queueCallerId,
+              "JVM boundary: queued request runs outside the caller thread");
+
+        jvm::JvmConfig jvmConfig;
+        jvmConfig.enabled = false;
+        jvm::JvmRuntime runtime(server, std::move(jvmConfig));
+        const auto worldHandle = runtime.worldHandle(server.world());
+        auto netherMob = std::make_shared<MobEntity>();
+        netherMob->dimension = -1;
+        netherMob->kind = MobKind::Zombie;
+        server.addMob(netherMob);
+        const auto netherMobHandle = runtime.nativeEntityHandle(0);
+        const auto netherWorldHandle =
+            runtime.nativeEntityWorld(netherMobHandle);
+        CHECK(netherWorldHandle != 0 &&
+                  runtime.nativeWorldName(netherWorldHandle) ==
+                      "minecraft:the_nether",
+              "JVM boundary: entity world follows the mob dimension");
+        std::atomic<bool> nativeMutationResult{false};
+        std::thread nativeCaller([&] {
+            nativeMutationResult.store(
+                runtime.nativeWorldSetBlock(worldHandle, 3, 80, 3, 1),
+                std::memory_order_release);
+        });
+        nativeCaller.join();
+        CHECK(nativeMutationResult.load(std::memory_order_acquire),
+              "JVM boundary: native world mutation completes from a foreign thread");
+
+        // Occupy the tick thread, then verify that a timed-out pending call is
+        // cancelled instead of being run after the caller has returned false.
+        std::atomic<bool> blockerEntered{false};
+        std::atomic<bool> releaseBlocker{false};
+        bool blockerResult = false;
+        std::thread blocker([&] {
+            blockerResult = server.runOnServerThread(
+                [&] {
+                    blockerEntered.store(true, std::memory_order_release);
+                    while (!releaseBlocker.load(std::memory_order_acquire))
+                        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                },
+                std::chrono::milliseconds(1000));
+        });
+        CHECK(waitUntil([&] {
+                    return blockerEntered.load(std::memory_order_acquire);
+                },
+                std::chrono::milliseconds(1000)),
+              "JVM boundary: test task reaches the tick thread");
+
+        std::atomic<bool> timedOutTaskRan{false};
+        const auto timeoutStart = std::chrono::steady_clock::now();
+        const bool timedOut = server.runOnServerThread(
+            [&] { timedOutTaskRan.store(true, std::memory_order_release); },
+            std::chrono::milliseconds(25));
+        const auto timeoutElapsed = std::chrono::steady_clock::now() - timeoutStart;
+        CHECK(!timedOut,
+              "JVM boundary: blocked foreign mutation fails at its deadline");
+        CHECK(!timedOutTaskRan.load(std::memory_order_acquire),
+              "JVM boundary: timed-out pending mutation is cancelled");
+        CHECK(timeoutElapsed < std::chrono::milliseconds(500),
+              "JVM boundary: cancellation wait remains bounded");
+
+        // requestStop() is intentionally only a stop flag/socket wakeup.  A
+        // pending request is rejected by the running guard and any request
+        // already queued is cancelled by the normal tick-release path.
+        std::atomic<bool> stopPendingTaskRan{false};
+        bool stopPendingResult = true;
+        std::thread stopPendingCaller([&] {
+            stopPendingResult = server.runOnServerThread(
+                [&] { stopPendingTaskRan.store(true, std::memory_order_release); },
+                std::chrono::milliseconds(1000));
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        server.requestStop();
+        bool rejectedAfterStop = server.runOnServerThread(
+            [&] { stopPendingTaskRan.store(true, std::memory_order_release); },
+            std::chrono::milliseconds(25));
+        CHECK(!rejectedAfterStop,
+              "JVM boundary: new foreign mutation is rejected after requestStop");
+
+        releaseBlocker.store(true, std::memory_order_release);
+        blocker.join();
+        stopPendingCaller.join();
+        CHECK(blockerResult,
+              "JVM boundary: running task is allowed to finish during stop");
+        CHECK(!stopPendingResult &&
+                  !stopPendingTaskRan.load(std::memory_order_acquire),
+              "JVM boundary: pending stop-time mutation never runs late");
+
+        if (runner.joinable()) runner.join();
+        CHECK(!runnerFailed.load(std::memory_order_acquire),
+              "JVM boundary: server loop exits cleanly after requestStop");
+        server.stop();
+        CHECK(server.world().getBlock(3, 80, 3) == 1,
+              "JVM boundary: queued native mutation remains on the server world");
+    }
+
+    std::filesystem::remove_all(worldDir, ec);
+    CHECK(!ec, "JVM boundary: temporary world is removed");
+}
+
 int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
     bool filterMobAi=false;
     for(int i=1;i<argc;++i) if(std::string(argv[i]).find("mob_ai")!=std::string::npos) filterMobAi=true;
     if(filterMobAi){
         std::printf("=== cppfm native mob_ai filter (10 cases) ===\n");
+        scenarioMobStateLockBoundary();
         scenarioMobAI30();
         std::printf("\n%s (%d failures)\n", g_fail ? "FAILURES" : "ALL PASS", g_fail);
         return g_fail ? 1 : 0;
@@ -1063,8 +1222,14 @@ int main(int argc, char** argv) {
     for(int i=1;i<argc;++i){ if(std::string(argv[i]).rfind("build/",0)==0 || std::string(argv[i]).rfind("./build",0)==0) serverPath=argv[i]; }
     std::printf("=== cppfm native self-test (server: %s) ===\n", serverPath);
 
+    ServerProcessOptions serverOptions;
+    serverOptions.viewDistance = 2;
+    serverOptions.readyTimeoutMs = 8000;
+    serverOptions.motd = "status \"quote\" \\ slash";
+    serverOptions.worldPrefix = "/tmp/opencode/native-world-";
+    serverOptions.isolateRuntime = true;
     ServerProc srv;
-    if (!srv.start(serverPath, 2, false, "status \"quote\" \\ slash")) {
+    if (!srv.start(serverPath, serverOptions)) {
         std::printf("FATAL: could not start server\n");
         return 2;
     }
@@ -1082,6 +1247,9 @@ int main(int argc, char** argv) {
     scenarioStress(srv, 12);
 
     srv.stop();
+    scenarioMobStateLockBoundary();
+    scenarioDimensionCacheUnit();
+    scenarioJvmServerThreadBoundary();
     scenarioWorldGenParity();
     scenarioPredicateUnit();
     scenarioMobAI30();

@@ -8,7 +8,9 @@
 #include <unordered_set>
 #include <cstdlib>
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <mutex>
 #include <string>
 
 namespace cppfm {
@@ -113,7 +115,9 @@ void ComparatorBehavior::onBlockChanged(World& world, std::int32_t x, std::int32
 }
 
 static std::unordered_map<std::string, std::unique_ptr<IRedstoneBehavior>> g_redstoneBehaviors;
+static std::mutex g_redstoneBehaviorsMutex;
 IRedstoneBehavior* RedstoneBehaviorRegistry::forBlock(const std::string& blockName) {
+    std::lock_guard<std::mutex> lock(g_redstoneBehaviorsMutex);
     auto it = g_redstoneBehaviors.find(blockName);
     if (it != g_redstoneBehaviors.end()) return it->second.get();
     // fallback: generic component delegate
@@ -122,6 +126,7 @@ IRedstoneBehavior* RedstoneBehaviorRegistry::forBlock(const std::string& blockNa
     return nullptr;
 }
 void RedstoneBehaviorRegistry::initDefaults() {
+    std::lock_guard<std::mutex> lock(g_redstoneBehaviorsMutex);
     if (!g_redstoneBehaviors.empty()) return;
     g_redstoneBehaviors.emplace("minecraft:redstone_wire", std::make_unique<RedstoneWireBehavior>());
     g_redstoneBehaviors.emplace("minecraft:lever", std::make_unique<LeverBehavior>());
@@ -240,6 +245,21 @@ int RedstoneEngine::analogOutputForContainer(BlockEntity* be) {
         for (int i=0;i<5;++i) {
             auto &s = be->brewing.slots[i];
             if (!s.empty()) { ++filled; fillSum += double(s.count)/double(maxStackForId(s.itemId)); }
+        }
+        break;
+    }
+    case BlockEntity::Kind::Crafter: {
+        // Disabled recipe slots are not part of the crafter's inventory for
+        // comparator purposes.  Counting them would make a crafter emit a
+        // weaker signal simply because its recipe layout has been configured.
+        for (int i = 0; i < CrafterData::kSlots; ++i) {
+            if (be->crafter.isSlotDisabled(i)) continue;
+            ++slots;
+            const auto& s = be->crafter.slots[i];
+            if (!s.empty()) {
+                ++filled;
+                fillSum += double(s.count) / double(maxStackForId(s.itemId));
+            }
         }
         break;
     }
@@ -415,6 +435,12 @@ int RedstoneEngine::emissionLevel(std::uint16_t state, std::int32_t x, std::int3
 
 bool RedstoneEngine::isPoweredHere(std::int32_t x, std::int32_t y,
                                    std::int32_t z) {
+    std::lock_guard<std::recursive_mutex> operationLock(operationMutex_);
+    return isPoweredHereImpl(x, y, z);
+}
+
+bool RedstoneEngine::isPoweredHereImpl(std::int32_t x, std::int32_t y,
+                                       std::int32_t z) {
     static constexpr int DX[6] = {1,-1,0,0,0,0};
     static constexpr int DY[6] = {0,0,1,-1,0,0};
     static constexpr int DZ[6] = {0,0,0,0,1,-1};
@@ -436,6 +462,47 @@ bool RedstoneEngine::isPoweredHere(std::int32_t x, std::int32_t y,
 
 void RedstoneEngine::onBlockChanged(std::int32_t x, std::int32_t y,
                                     std::int32_t z) {
+    {
+        std::lock_guard<std::mutex> notificationLock(notificationMutex_);
+        pendingBlockChanges_.insert(posKey(x, y, z));
+        // A World::setBlock callback must only enqueue.  The operation that
+        // caused the callback owns operationMutex_ and will drain this set
+        // after its current world mutation returns.
+        if (processingBlockChanges_) return;
+    }
+
+    std::lock_guard<std::recursive_mutex> operationLock(operationMutex_);
+    {
+        std::lock_guard<std::mutex> notificationLock(notificationMutex_);
+        // Another operation may have become the processor after the first
+        // check.  It will also drain this notification, so do not process a
+        // second recursive walk here.
+        if (processingBlockChanges_) return;
+        processingBlockChanges_ = true;
+    }
+    drainBlockChanges();
+    {
+        std::lock_guard<std::mutex> notificationLock(notificationMutex_);
+        processingBlockChanges_ = false;
+    }
+}
+
+void RedstoneEngine::drainBlockChanges() {
+    for (;;) {
+        std::int64_t key = 0;
+        {
+            std::lock_guard<std::mutex> notificationLock(notificationMutex_);
+            if (pendingBlockChanges_.empty()) return;
+            key = *pendingBlockChanges_.begin();
+            pendingBlockChanges_.erase(pendingBlockChanges_.begin());
+        }
+        processBlockChanged(posKeyUnpackX(key), posKeyUnpackY(key),
+                            posKeyUnpackZ(key));
+    }
+}
+
+void RedstoneEngine::processBlockChanged(std::int32_t x, std::int32_t y,
+                                         std::int32_t z) {
     // Includes ChunkTicket SPAWN forced always-tick for spawn chunks.
     if (!world_.isChunkInSimulationDistance(x >> 4, z >> 4) && !world_.isPositionInSimulationDistance(x, z)) return;
     recomputeAround(x, y, z);
@@ -590,54 +657,163 @@ void RedstoneEngine::recomputeRailShape(std::int32_t x, std::int32_t y, std::int
         if (pd.name=="shape") hasShape=true;
     }
     if (!hasShape) return;
-    // simple stub: if neighbor rail at same y, set straight, else ascending Check neighbors east/west etc for rail presence
-    auto isRailAt = [&](int nx,int ny,int nz)->bool{
-        const gen::BlockDef* nb = gen::blockByState(world_.getBlock(nx,ny,nz));
-        if (!nb) return false;
-        std::string nn(nb->name);
-        return nn=="minecraft:rail" || nn=="minecraft:powered_rail" || nn=="minecraft:detector_rail" || nn=="minecraft:activator_rail";
+    // A rail shape is not just a pair of compass directions: an ascending
+    // shape has one end at the bottom of the block and the other one block
+    // higher. Describing shapes as endpoint heights lets the same code
+    // validate both sides of a slope. For example, two rails at (x,y,z) and
+    // (x+1,y+1,z) both use ascending_east; the lower rail's east endpoint and
+    // the upper rail's west endpoint are at the same world height.
+    struct Endpoint {
+        const char* direction;
+        int height;
     };
-    std::string wantShape = "north_south";
-    // Check east/west neighbors
-    bool east = isRailAt(x+1,y,z);
-    bool west = isRailAt(x-1,y,z);
-    bool north = isRailAt(x,y,z-1);
-    bool south = isRailAt(x,y,z+1);
-    bool upEast = isRailAt(x+1,y+1,z);
-    bool downEast = isRailAt(x+1,y-1,z);
-    bool upWest = isRailAt(x-1,y+1,z);
-    bool upNorth = isRailAt(x,y+1,z-1);
-    bool upSouth = isRailAt(x,y+1,z+1);
-    // Ascending if rail above/below in that direction
-    if (upEast || downEast) {
-        wantShape = "ascending_east";
-    } else if (upWest || (isRailAt(x-1,y-1,z))) {
-        wantShape = "ascending_west";
-    } else if (upNorth || isRailAt(x,y-1,z-1)) {
-        wantShape = "ascending_north";
-    } else if (upSouth || isRailAt(x,y-1,z+1)) {
-        wantShape = "ascending_south";
-    } else if ((east && west) || (east && !north && !south) || (west && !north && !south)) {
-        wantShape = "east_west";
-    } else if ((north && south)) {
-        wantShape = "north_south";
-    } else if (east && south) {
-        wantShape = "south_east";
-    } else if (west && south) {
-        wantShape = "south_west";
-    } else if (west && north) {
-        wantShape = "north_west";
-    } else if (east && north) {
-        wantShape = "north_east";
-    } else if (east || west) wantShape="east_west";
-    else if (north || south) wantShape="north_south";
-    else wantShape="north_south";
+    auto endpointsFor = [](const std::string& shape) {
+        std::vector<Endpoint> endpoints;
+        auto add = [&](const char* direction, int height) {
+            endpoints.push_back({direction, height});
+        };
+        if (shape == "north_south") { add("north", 0); add("south", 0); }
+        else if (shape == "east_west") { add("east", 0); add("west", 0); }
+        else if (shape == "ascending_east") { add("west", 0); add("east", 1); }
+        else if (shape == "ascending_west") { add("east", 0); add("west", 1); }
+        else if (shape == "ascending_north") { add("south", 0); add("north", 1); }
+        else if (shape == "ascending_south") { add("north", 0); add("south", 1); }
+        else if (shape == "south_east") { add("south", 0); add("east", 0); }
+        else if (shape == "south_west") { add("south", 0); add("west", 0); }
+        else if (shape == "north_west") { add("north", 0); add("west", 0); }
+        else if (shape == "north_east") { add("north", 0); add("east", 0); }
+        return endpoints;
+    };
+    auto opposite = [](const char* direction) -> const char* {
+        if (std::string(direction) == "east") return "west";
+        if (std::string(direction) == "west") return "east";
+        if (std::string(direction) == "north") return "south";
+        return "north";
+    };
+    auto offsetFor = [](const char* direction) {
+        if (std::string(direction) == "east") return std::pair<int,int>{1, 0};
+        if (std::string(direction) == "west") return std::pair<int,int>{-1, 0};
+        if (std::string(direction) == "north") return std::pair<int,int>{0, -1};
+        return std::pair<int,int>{0, 1};
+    };
+    auto isRailState = [&](std::uint16_t state) {
+        const gen::BlockDef* rail = gen::blockByState(state);
+        if (!rail) return false;
+        const std::string railName(rail->name);
+        return railName == "minecraft:rail" ||
+               railName == "minecraft:powered_rail" ||
+               railName == "minecraft:detector_rail" ||
+               railName == "minecraft:activator_rail";
+    };
+    auto shapeOf = [&](std::uint16_t state) {
+        std::string shape;
+        for (auto& [key, value] : gen::propsOf(state))
+            if (key == "shape") shape = std::string(value);
+        return shape;
+    };
+    auto endpointHeight = [&](const std::string& shape, const char* direction) {
+        for (const Endpoint endpoint : endpointsFor(shape))
+            if (std::string(endpoint.direction) == direction) return endpoint.height;
+        return -1;
+    };
 
-    // For powered rail, valid shapes are limited to straight + ascending; map curved to straight
-    if (name!="minecraft:rail") {
-        if (wantShape=="south_east" || wantShape=="south_west" || wantShape=="north_west" || wantShape=="north_east") {
-            wantShape="north_south";
+    struct Neighbor {
+        bool present = false;
+        std::int32_t x = 0, y = 0, z = 0;
+        std::uint16_t state = 0;
+    };
+    const std::array<const char*, 4> directions = {"east", "west", "north", "south"};
+    std::array<Neighbor, 4> neighbors;
+    for (std::size_t i = 0; i < directions.size(); ++i) {
+        const auto [dx, dz] = offsetFor(directions[i]);
+        // A rail one block above/below is a valid slope neighbor. Keep the
+        // nearest candidate in deterministic order (above, same level,
+        // below), matching vanilla's preference for an ascending connection.
+        for (const int dy : {1, 0, -1}) {
+            const std::int32_t nx = x + dx, ny = y + dy, nz = z + dz;
+            const std::uint16_t neighborState = world_.getBlock(nx, ny, nz);
+            if (isRailState(neighborState)) {
+                neighbors[i] = {true, nx, ny, nz, neighborState};
+                break;
+            }
         }
+    }
+
+    const std::string currentShape = shapeOf(st);
+    const bool curvesAllowed = name == "minecraft:rail";
+    const std::array<const char*, 10> allShapes = {
+        "north_south", "east_west", "ascending_east", "ascending_west",
+        "ascending_north", "ascending_south", "south_east", "south_west",
+        "north_west", "north_east"};
+
+    struct ShapeScore {
+        int exact = 0;
+        int matched = 0;
+        int vertical = 0;
+        int ascending = 0;
+        int straight = 0;
+        int preserves = 0;
+    };
+    auto better = [](const ShapeScore& lhs, const ShapeScore& rhs) {
+        if (lhs.exact != rhs.exact) return lhs.exact > rhs.exact;
+        if (lhs.matched != rhs.matched) return lhs.matched > rhs.matched;
+        if (lhs.vertical != rhs.vertical) return lhs.vertical > rhs.vertical;
+        if (lhs.ascending != rhs.ascending) return lhs.ascending > rhs.ascending;
+        if (lhs.straight != rhs.straight) return lhs.straight > rhs.straight;
+        return lhs.preserves > rhs.preserves;
+    };
+
+    std::string wantShape = currentShape.empty() ? "north_south" : currentShape;
+    ShapeScore bestScore{};
+    bool haveCandidate = false;
+    for (const char* candidate : allShapes) {
+        const std::string candidateShape(candidate);
+        if (!curvesAllowed &&
+            (candidateShape == "south_east" || candidateShape == "south_west" ||
+             candidateShape == "north_west" || candidateShape == "north_east"))
+            continue;
+
+        ShapeScore score;
+        for (std::size_t i = 0; i < directions.size(); ++i) {
+            if (!neighbors[i].present) continue;
+            const char* direction = directions[i];
+            const int ownHeight = endpointHeight(candidateShape, direction);
+            if (ownHeight < 0) continue;
+            const Neighbor& neighbor = neighbors[i];
+            const int worldHeight = y + ownHeight;
+            const std::string neighborShape = shapeOf(neighbor.state);
+            const int neighborHeight = endpointHeight(neighborShape, opposite(direction));
+            if (neighborHeight >= 0 && neighbor.y + neighborHeight == worldHeight) {
+                ++score.exact;
+                ++score.matched;
+            } else if (neighbor.y == worldHeight || neighbor.y + 1 == worldHeight) {
+                // The neighbor may still be waiting for its own neighbor
+                // update. Count a geometrically possible connection, but
+                // prefer the mutually aligned result above.
+                ++score.matched;
+            }
+            if (neighbor.y != y) {
+                ++score.vertical;
+                const bool candidateIsAscending = candidateShape.rfind("ascending_", 0) == 0;
+                const bool risesTowardNeighbor = neighbor.y > y && ownHeight == 1;
+                const bool risesAwayFromNeighbor = neighbor.y < y && ownHeight == 0;
+                if (candidateIsAscending && (risesTowardNeighbor || risesAwayFromNeighbor))
+                    ++score.ascending;
+            }
+        }
+        if (candidateShape == "north_south" || candidateShape == "east_west")
+            score.straight = 1;
+        if (candidateShape == currentShape) score.preserves = 1;
+        if (!haveCandidate || better(score, bestScore)) {
+            bestScore = score;
+            wantShape = candidateShape;
+            haveCandidate = true;
+        }
+    }
+
+    // With no neighbors, vanilla's default is the north/south state.
+    if (bestScore.matched == 0) {
+        wantShape = "north_south";
     }
 
     // Apply shape
@@ -851,6 +1027,14 @@ void RedstoneEngine::handleDoor(std::int32_t x, std::int32_t y, std::int32_t z) 
 
 bool RedstoneEngine::onInteract(std::int32_t x, std::int32_t y,
                                 std::int32_t z, std::int64_t now) {
+    std::lock_guard<std::recursive_mutex> operationLock(operationMutex_);
+    bool ownsProcessing = false;
+    {
+        std::lock_guard<std::mutex> notificationLock(notificationMutex_);
+        ownsProcessing = !processingBlockChanges_;
+        if (ownsProcessing) processingBlockChanges_ = true;
+    }
+    const bool handled = [&]() -> bool {
     const std::uint16_t st = world_.getBlock(x, y, z);
     const gen::BlockDef* b = gen::blockByState(st);
     if (!b) return false;
@@ -889,12 +1073,66 @@ bool RedstoneEngine::onInteract(std::int32_t x, std::int32_t y,
         return true;
     }
     return false;
+    }();
+    if (ownsProcessing) {
+        drainBlockChanges();
+        std::lock_guard<std::mutex> notificationLock(notificationMutex_);
+        processingBlockChanges_ = false;
+    }
+    return handled;
 }
 
 void RedstoneEngine::setBlockAndBroadcast(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state) {
     world_.setBlock(x,y,z,state);
     if (broadcastFn_) broadcastFn_(x,y,z,state);
 }
+
+std::size_t RedstoneEngine::pendingCount() const {
+    std::lock_guard<std::recursive_mutex> operationLock(operationMutex_);
+    std::lock_guard<std::mutex> notificationLock(notificationMutex_);
+    return pistonQueue_.size() + pendingPistonCommits_.size() + queue_.size()
+         + pendingRepeater_.size() + observerPulseEnd_.size()
+         + pendingBlockChanges_.size();
+}
+
+bool RedstoneEngine::isQuasiPowered(std::int32_t x, std::int32_t y,
+                                    std::int32_t z) {
+    std::lock_guard<std::recursive_mutex> operationLock(operationMutex_);
+    return isPoweredHereImpl(x, y, z) || isPoweredHereImpl(x, y + 1, z);
+}
+
+void RedstoneEngine::setBlockEntityStore(BlockEntityStore* s) {
+    std::lock_guard<std::recursive_mutex> operationLock(operationMutex_);
+    beStore_ = s;
+}
+
+void RedstoneEngine::setTickRef(std::int64_t* t) {
+    std::lock_guard<std::recursive_mutex> operationLock(operationMutex_);
+    tickRef_ = t;
+    atomicTickRef_ = nullptr;
+}
+
+void RedstoneEngine::setTickRef(const std::atomic<std::int64_t>* t) {
+    std::lock_guard<std::recursive_mutex> operationLock(operationMutex_);
+    atomicTickRef_ = t;
+    tickRef_ = nullptr;
+}
+
+void RedstoneEngine::setBlockTickScheduler(BlockTickScheduler* bts) {
+    std::lock_guard<std::recursive_mutex> operationLock(operationMutex_);
+    blockTicks_ = bts;
+}
+
+void RedstoneEngine::setGameServer(void* srv) {
+    std::lock_guard<std::recursive_mutex> operationLock(operationMutex_);
+    gameServer_ = srv;
+}
+
+void RedstoneEngine::setBroadcastFn(std::function<void(std::int32_t,std::int32_t,std::int32_t,std::uint16_t)> fn) {
+    std::lock_guard<std::recursive_mutex> operationLock(operationMutex_);
+    broadcastFn_ = std::move(fn);
+}
+
 void RedstoneEngine::processPendingPistonCommits(std::int64_t now) {
     for (auto it = pendingPistonCommits_.begin(); it != pendingPistonCommits_.end(); ) {
         if (it->dueTick > now) { ++it; continue; }
@@ -972,17 +1210,16 @@ void RedstoneEngine::processPendingPistonCommits(std::int64_t now) {
     }
     // also tick existing moving_piston BEs progress (0->1 over 2 ticks) for strict audit visibility
     if (beStore_ && (tickRef_ || atomicTickRef_)) {
-        for (auto &kv : beStore_->raw()) {
-            auto &be = kv.second;
-            if (be.kind != BlockEntity::Kind::MovingPiston) continue;
-            if (be.movingPiston.finishTick==0) continue;
+        beStore_->forEach([&](std::int64_t, BlockEntity& be) {
+            if (be.kind != BlockEntity::Kind::MovingPiston) return;
+            if (be.movingPiston.finishTick==0) return;
             int64_t rem = be.movingPiston.finishTick - redstoneTick(tickRef_, atomicTickRef_);
             if (rem <0) rem=0;
             float prog = 1.f - float(rem)/2.f;
             if (prog<0) prog=0;
             if (prog>1) prog=1;
             be.movingPiston.progress = prog;
-        }
+        });
     }
 }
 void RedstoneEngine::handlePistonScheduled(std::int32_t x, std::int32_t y, std::int32_t z, bool extendNow) {
@@ -1223,6 +1460,15 @@ void RedstoneEngine::processPistonQueue(std::int64_t now) {
     processPendingPistonCommits(now);
 }
 void RedstoneEngine::tick(std::int64_t now) {
+    std::lock_guard<std::recursive_mutex> operationLock(operationMutex_);
+    {
+        std::lock_guard<std::mutex> notificationLock(notificationMutex_);
+        processingBlockChanges_ = true;
+    }
+    // Process callback notifications on the same serialized operation as the
+    // delayed queues.  World callbacks generated below only append to this
+    // set and are drained after the current World mutation returns.
+    drainBlockChanges();
     processPistonQueue(now);
     processPendingPistonCommits(now);
     int budget = 4096;
@@ -1293,6 +1539,11 @@ void RedstoneEngine::tick(std::int64_t now) {
         }
     }
     // also expire pending repeaters without queue? Already handled
+    drainBlockChanges();
+    {
+        std::lock_guard<std::mutex> notificationLock(notificationMutex_);
+        processingBlockChanges_ = false;
+    }
 }
 
 void RedstoneEngine::setPoweredAt(std::int32_t x, std::int32_t y,
@@ -1398,60 +1649,90 @@ void RedstoneEngine::reactToPower(std::int32_t x, std::int32_t y,
 void RedstoneEngine::updateWireNetwork(std::int32_t sx, std::int32_t sy,
                                        std::int32_t sz) {
     struct Node { std::int32_t x, y, z; };
-    std::queue<Node> q;
-    std::unordered_set<std::int64_t> visited;
-
-    auto pushIfWire = [&](std::int32_t wx, std::int32_t wy, std::int32_t wz,
-                          std::uint8_t level) {
-        const std::int64_t key = posKey(wx, wy, wz);
-        if (visited.count(key)) return;
-        const std::uint16_t st = world_.getBlock(wx, wy, wz);
-        const Comp c = classify(st);
-        if (c == Comp::Wire) {
-            visited.insert(key);
-            setPoweredAt(wx, wy, wz, level);
-            q.push({wx, wy, wz});
-        }
-    };
-
-    auto emissionAt = [&](std::int32_t wx, std::int32_t wy, std::int32_t wz)->int {
-        std::uint16_t s = world_.getBlock(wx,wy,wz);
-        return emissionLevel(s, wx,wy,wz);
-    };
-
     static constexpr int DX[6] = {1,-1,0,0,0,0};
     static constexpr int DY[6] = {0,0,1,-1,0,0};
     static constexpr int DZ[6] = {0,0,0,0,1,-1};
 
-    if (classify(world_.getBlock(sx, sy, sz)) == Comp::Wire) {
-        int best = 0;
-        for (int d = 0; d < 6; ++d) best = std::max(best, emissionAt(sx + DX[d], sy + DY[d], sz + DZ[d]));
-        if (best > 0) {
-            visited.insert(posKey(sx, sy, sz));
-            setPoweredAt(sx, sy, sz, static_cast<std::uint8_t>(best));
-            q.push({sx, sy, sz});
+    // First collect the complete connected component.  The previous
+    // implementation only visited wires reached from a powered seed, so a
+    // wire that lost its last source could never be visited and retained its
+    // old power forever.
+    std::vector<Node> component;
+    std::unordered_map<std::int64_t, std::size_t> componentIndex;
+    std::queue<Node> pending;
+    auto enqueueWire = [&](std::int32_t x, std::int32_t y,
+                           std::int32_t z) {
+        if (classify(world_.getBlock(x, y, z)) != Comp::Wire) return;
+        const std::int64_t key = posKey(x, y, z);
+        if (componentIndex.emplace(key, component.size()).second) {
+            component.push_back({x, y, z});
+            pending.push({x, y, z});
+        }
+    };
+
+    enqueueWire(sx, sy, sz);
+    if (component.empty()) {
+        for (int d = 0; d < 6; ++d)
+            enqueueWire(sx + DX[d], sy + DY[d], sz + DZ[d]);
+    }
+    while (!pending.empty()) {
+        const Node n = pending.front();
+        pending.pop();
+        for (int d = 0; d < 6; ++d)
+            enqueueWire(n.x + DX[d], n.y + DY[d], n.z + DZ[d]);
+    }
+    if (component.empty()) return;
+
+    // Seed a max-heap with every non-wire emitter touching the component, then
+    // relax wire neighbours.  This is a multi-source shortest-path update:
+    // each edge costs one redstone level and every wire is assigned the
+    // strongest source reachable through the component.  Recomputing from
+    // zero is what makes power removal and source replacement symmetric with
+    // power insertion.
+    std::vector<int> levels(component.size(), 0);
+    std::priority_queue<std::pair<int, std::size_t>> frontier;
+    for (std::size_t i = 0; i < component.size(); ++i) {
+        const Node n = component[i];
+        for (int d = 0; d < 6; ++d) {
+            const std::int32_t nx = n.x + DX[d];
+            const std::int32_t ny = n.y + DY[d];
+            const std::int32_t nz = n.z + DZ[d];
+            const std::uint16_t state = world_.getBlock(nx, ny, nz);
+            if (classify(state) == Comp::Wire) continue;
+            const int emitted = std::clamp(emissionLevel(state, nx, ny, nz), 0, 15);
+            if (emitted > levels[i]) {
+                levels[i] = emitted;
+                frontier.push({emitted, i});
+            }
         }
     }
 
-    while (!q.empty()) {
-        const Node n = q.front(); q.pop();
-        std::uint8_t cur = 15;
-        for (auto& [k, v] : gen::propsOf(world_.getBlock(n.x, n.y, n.z)))
-            if (k == "power") cur = static_cast<std::uint8_t>(
-                std::atoi(std::string(v).c_str()));
-        if (cur <= 1) continue;
-        for (int d = 0; d < 6; ++d)
-            pushIfWire(n.x + DX[d], n.y + DY[d], n.z + DZ[d],
-                       static_cast<std::uint8_t>(cur - 1));
+    while (!frontier.empty()) {
+        const auto [power, index] = frontier.top();
+        frontier.pop();
+        if (power != levels[index] || power <= 1) continue;
+        const Node n = component[index];
+        for (int d = 0; d < 6; ++d) {
+            const std::int64_t key = posKey(n.x + DX[d], n.y + DY[d], n.z + DZ[d]);
+            const auto it = componentIndex.find(key);
+            if (it == componentIndex.end()) continue;
+            const std::size_t neighbour = it->second;
+            const int candidate = power - 1;
+            if (candidate > levels[neighbour]) {
+                levels[neighbour] = candidate;
+                frontier.push({candidate, neighbour});
+            }
+        }
     }
 
-    for (auto keyRaw : visited) {
-        const std::int32_t wx = posKeyUnpackX(keyRaw);
-        const std::int32_t wy = posKeyUnpackY(keyRaw);
-        const std::int32_t wz = posKeyUnpackZ(keyRaw);
+    for (std::size_t i = 0; i < component.size(); ++i) {
+        const Node n = component[i];
+        setPoweredAt(n.x, n.y, n.z, static_cast<std::uint8_t>(levels[i]));
+    }
+    for (const Node n : component) {
         for (int d = 0; d < 6; ++d)
-            reactToPower(wx + DX[d], wy + DY[d], wz + DZ[d]);
-        reactToPower(wx, wy, wz);
+            reactToPower(n.x + DX[d], n.y + DY[d], n.z + DZ[d]);
+        reactToPower(n.x, n.y, n.z);
     }
 }
 

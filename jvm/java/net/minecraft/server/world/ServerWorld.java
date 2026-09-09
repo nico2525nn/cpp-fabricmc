@@ -17,6 +17,7 @@ import net.minecraft.world.World;
 import net.minecraft.util.NativeAccess;
 import java.util.concurrent.Executor;
 import java.io.Writer;
+import net.minecraft.network.packet.Packet;
 
 public class ServerWorld extends World implements net.minecraft.world.ServerWorldAccess {
     private final MinecraftServer server;
@@ -43,6 +44,8 @@ public class ServerWorld extends World implements net.minecraft.world.ServerWorl
             : WrapperCache.get(ServerWorld.class, handle, h -> new ServerWorld(h, server));
     }
     @Override public MinecraftServer getServer() { return server; }
+    /** Accessor target used by server-side entity instrumentation. */
+    public ServerEntityManager getEntityManager() { return entityManager; }
     public boolean spawnEntity(Entity entity) {
         if (entity == null || entity.isRemoved()) return false;
         entity.setWorld(this);
@@ -99,13 +102,29 @@ public class ServerWorld extends World implements net.minecraft.world.ServerWorl
         }
         return null;
     }
+    public Iterable<Entity> iterateEntities() { return getEntities(); }
     @Override public boolean isChunkLoaded(int chunkX, int chunkZ) { return nativeHandle != 0; }
     public void tickChunk(net.minecraft.world.chunk.WorldChunk chunk, int randomTickSpeed) { }
     public void tick(BooleanSupplier shouldKeepTicking) {
         if (shouldKeepTicking != null && !shouldKeepTicking.getAsBoolean()) return;
         getWorldBorder().tick();
     }
+    /** Per-entity tick boundary used by server scheduling and profiling mods. */
+    public void tickEntity(Entity entity) { if (entity != null) entity.tick(); }
+    /** Vanilla passenger tick boundary used by ServerCore's vehicle limiter. */
+    public void tickPassenger(Entity entity, Entity passenger) {
+        if (passenger != null) tickEntity(passenger);
+    }
+    /** World persistence entrypoint used by C2ME's save scheduling mixin. */
+    public void save(net.minecraft.util.ProgressListener progressListener, boolean flush, boolean skipErrors) { }
     public void tick() { tick(() -> true); }
+    /** Random block-tick entrypoint used by C2ME's scheduling mixin. */
+    public void tickBlock(net.minecraft.util.math.BlockPos pos, net.minecraft.block.Block block) {
+        if (pos != null && block != null)
+            block.randomTick(getBlockState(pos), this, pos, new net.minecraft.util.math.random.Random(0L));
+    }
+    /** Fluid-tick entrypoint used by C2ME's scheduling mixin. */
+    public void tickFluid(net.minecraft.util.math.BlockPos pos, net.minecraft.fluid.Fluid fluid) { }
     public void createExplosion(Entity entity, net.minecraft.entity.damage.DamageSource damageSource,
                                 net.minecraft.world.explosion.ExplosionBehavior behavior,
                                 double x, double y, double z, float power, boolean createFire,
@@ -118,4 +137,9 @@ public class ServerWorld extends World implements net.minecraft.world.ServerWorl
                                 net.minecraft.block.BlockState oldState,
                                 net.minecraft.block.BlockState newState, int flags) { }
     public void dumpBlockEntities(Writer writer) { }
+    /** Vanilla nearby-packet dispatch boundary used by chunk/network mods. */
+    public boolean sendToPlayerIfNearby(ServerPlayerEntity player, boolean force,
+                                        double x, double y, double z, Packet<?> packet) {
+        return player != null && packet != null;
+    }
 }

@@ -1,7 +1,11 @@
 #pragma once
 // CommandsHelpers — shared command helpers (single truth). Extracted from Commands.cpp initCommands surroundings (cleanup P3).
+#include <cctype>
+#include <cstdio>
 #include <map>
+#include <memory>
 #include <string>
+#include <vector>
 #include "GameServer.hpp"
 #include "../core/ByteBuffer.hpp"
 #include "../core/NBT.hpp"
@@ -62,18 +66,42 @@ inline std::map<std::string,std::string> parseFunctionArgsNbt(const std::string&
     return out;
 }
 
+// Ownership-preserving lookup for code that may retain a target across more
+// than one operation.  The roster snapshot keeps the Player alive, and the
+// state lock makes the name comparison coherent with disconnect/rename paths.
+inline GameServer::PlayerRef findPlayerRef(GameServer& srv,
+                                           const std::string& name) {
+    for (const auto& p : srv.playersSnapshot()) {
+        if (!p) continue;
+        std::lock_guard playerLock(p->stateMtx);
+        if (p->name == name) return p;
+    }
+    return {};
+}
+
+// Compatibility API used by the existing command handlers.  This raw pointer
+// is a borrow, not a lifetime pin: callers must consume it within the current
+// command/session scope and must not retain it after the owning session or a
+// PlayerRef snapshot is gone.  New code that stores a target should use
+// findPlayerRef() instead.
 inline Player* findPlayer(GameServer& srv, const std::string& name) {
-    for (auto& p : srv.playersSnapshot())
-        if (p->name == name) return p.get();
-    return nullptr;
+    const auto player = findPlayerRef(srv, name);
+    return player ? player.get() : nullptr;
 }
 
 inline void sendFeedback(Player* p, const std::string& msg) {
-    if (p && p->conn) {
+    std::shared_ptr<Connection> connection;
+    if (p) {
+        std::lock_guard playerLock(p->stateMtx);
+        connection = p->conn;
+    }
+    if (connection) {
         WriteBuffer b;
         nbt::writeTextComponent(b, msg);
         b.boolean(false);
-        p->conn->trySendPacket(proto::pl::sc::SystemChat, b);
+        // Connection::trySendPacket may block or invoke transport-side code;
+        // the Player lock is intentionally not held across this call.
+        connection->trySendPacket(proto::pl::sc::SystemChat, b);
     } else {
         if (GameServer::consoleCapture_) {
             if (!GameServer::consoleCapture_->empty()) *GameServer::consoleCapture_ += "\n";
@@ -81,11 +109,6 @@ inline void sendFeedback(Player* p, const std::string& msg) {
         }
         std::fprintf(stderr, "[cppfm] %s\n", msg.c_str());
     }
-}
-
-inline void writeSlotDisplayItem(WriteBuffer& bb, std::uint32_t itemId) {
-    bb.varint(itemId ? 2 : 0);
-    if (itemId) bb.varint(static_cast<std::int32_t>(itemId));
 }
 
 } // namespace cppfm

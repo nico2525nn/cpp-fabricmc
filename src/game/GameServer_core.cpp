@@ -1,38 +1,159 @@
 #include "GameServer.hpp"
-#include "BlockEvent.hpp"
-#include "MetadataTypes.hpp"
-#include "../physics/LightEngine.hpp"
-#include "../physics/Fluids.hpp"
-#include "../physics/Redstone.hpp"
-#include "../worldgen/PortalHandler.hpp"
 #include "../core/Json.hpp"
 #include "GameServerHelpers.hpp"
-#include "StairsHelper.hpp"
-#include "Constants.hpp"
 #include "../generated/ItemIds.hpp"
 #include "../generated/EntityIds.hpp"
-#include "MenuInteraction.hpp"
 #include "BehaviorTree.hpp"
 #include "BehaviorTreeParser.hpp"
-#include "EquipmentComponent.hpp"
-#include "DamageComponent.hpp"
-#include "EnchantmentHelper.hpp"
-#include "MobSpawner.hpp"
-#include "BossAI.hpp"
-#include "MenuLogic.hpp"
-#include "CostCalculator.hpp"
-#include "PotionBrewing.hpp"
-#include "Particles.hpp"
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
-
 namespace cppfm {
 using namespace proto;
+
+std::atomic<bool> g_stopRequested{false};
+
+void GameServer::invalidateJvmMob(const std::shared_ptr<MobEntity>& mob) {
+    if (jvmRuntime_ && mob) jvmRuntime_->invalidateEntity(*mob);
+}
+
+namespace {
+
+bool hasAdvancementManager(const Player& player) {
+    std::lock_guard lock(player.stateMtx);
+    return player.advancements != nullptr;
+}
+
+bool hasAdvancement(const Player& player, const std::string& id) {
+    std::lock_guard lock(player.stateMtx);
+    return player.advancements && player.advancements->has(id);
+}
+
+} // namespace
+
+bool GameServer::isCurrentServerThread() const noexcept {
+    std::lock_guard lock(serverThreadTasksMtx_);
+    return serverThreadId_ != std::thread::id{} &&
+           serverThreadId_ == std::this_thread::get_id();
+}
+
+void GameServer::claimServerThreadForBootstrap() noexcept {
+    std::lock_guard lock(serverThreadTasksMtx_);
+    serverThreadId_ = std::this_thread::get_id();
+    serverThreadAccepting_ = true;
+}
+
+void GameServer::bindServerThread() noexcept {
+    std::lock_guard lock(serverThreadTasksMtx_);
+    serverThreadId_ = std::this_thread::get_id();
+    serverThreadAccepting_ = running_.load(std::memory_order_acquire) &&
+                             !shutdownStarted_.load(std::memory_order_acquire);
+}
+
+void GameServer::releaseServerThread() noexcept {
+    {
+        std::lock_guard lock(serverThreadTasksMtx_);
+        if (serverThreadId_ != std::this_thread::get_id()) return;
+        serverThreadAccepting_ = false;
+        serverThreadId_ = {};
+    }
+    cancelServerThreadTasks();
+}
+
+void GameServer::cancelServerThreadTasks() noexcept {
+    std::deque<std::shared_ptr<ServerThreadTask>> pending;
+    {
+        std::lock_guard lock(serverThreadTasksMtx_);
+        serverThreadAccepting_ = false;
+        pending.swap(serverThreadTasks_);
+    }
+    for (auto& request : pending) {
+        if (!request) continue;
+        auto expected = ServerThreadTask::State::Pending;
+        if (request->state.compare_exchange_strong(
+                expected, ServerThreadTask::State::Cancelled,
+                std::memory_order_acq_rel, std::memory_order_acquire)) {
+            request->waitCv.notify_all();
+        }
+    }
+    serverThreadTaskIdleCv_.notify_all();
+}
+
+void GameServer::waitForServerThreadTasks() {
+    if (isCurrentServerThread()) return;
+    std::unique_lock lock(serverThreadTasksMtx_);
+    serverThreadTaskIdleCv_.wait(lock, [this] {
+        return activeServerThreadTasks_.load(std::memory_order_acquire) == 0 &&
+               serverThreadTasks_.empty();
+    });
+}
+
+bool GameServer::runOnServerThread(std::function<void()> task,
+                                   std::chrono::milliseconds timeout) {
+    if (!task) return false;
+
+    std::shared_ptr<ServerThreadTask> request;
+    bool runInline = false;
+    {
+        std::lock_guard lock(serverThreadTasksMtx_);
+        const bool owner = serverThreadId_ != std::thread::id{} &&
+                           serverThreadId_ == std::this_thread::get_id();
+        if (owner && serverThreadAccepting_ &&
+            !shutdownStarted_.load(std::memory_order_acquire)) {
+            runInline = true;
+        } else if (!serverThreadAccepting_ ||
+                   serverThreadId_ == std::thread::id{} ||
+                   !running_.load(std::memory_order_acquire) ||
+                   shutdownStarted_.load(std::memory_order_acquire) ||
+                   serverThreadTasks_.size() >= kMaxServerThreadTaskQueue) {
+            return false;
+        } else {
+            try {
+                request = std::make_shared<ServerThreadTask>(std::move(task));
+                serverThreadTasks_.push_back(request);
+            } catch (...) {
+                return false;
+            }
+        }
+    }
+
+    if (runInline) {
+        try {
+            task();
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+
+    if (timeout < std::chrono::milliseconds::zero())
+        timeout = std::chrono::milliseconds::zero();
+    std::unique_lock waitLock(request->waitMtx);
+    const bool finished = request->waitCv.wait_for(
+        waitLock, timeout, [&request] {
+            const auto state = request->state.load(std::memory_order_acquire);
+            return state == ServerThreadTask::State::Completed ||
+                   state == ServerThreadTask::State::Failed ||
+                   state == ServerThreadTask::State::Cancelled;
+        });
+    if (!finished) {
+        auto expected = ServerThreadTask::State::Pending;
+        if (request->state.compare_exchange_strong(
+                expected, ServerThreadTask::State::Cancelled,
+                std::memory_order_acq_rel, std::memory_order_acquire)) {
+            request->waitCv.notify_all();
+        }
+        // If the task was already Running, it remains owned by the server
+        // thread and will finish there.  The caller deliberately fails closed
+        // at its deadline instead of extending a JNI call indefinitely.
+        return false;
+    }
+    return request->state.load(std::memory_order_acquire) ==
+           ServerThreadTask::State::Completed;
+}
+
 void GameServer::startTickLoop() {
     if (tickThread_.joinable())
         throw std::logic_error("tick loop is already running");
     tickThread_ = std::thread([this] {
+        bindServerThread();
         using clock = std::chrono::steady_clock;
         auto next = clock::now() + std::chrono::milliseconds(50);
         while (running_.load(std::memory_order_acquire)) {
@@ -54,6 +175,7 @@ void GameServer::startTickLoop() {
                 break;
             }
         }
+        releaseServerThread();
     });
 }
 void GameServer::stopTickLoop() {
@@ -71,24 +193,33 @@ void GameServer::stopTickLoop() {
     }
 }
 void GameServer::runForever() {
-    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) throw std::runtime_error("socket() failed");
+    if (!platform::initializeSockets())
+        throw std::runtime_error("could not initialize the platform socket layer");
+    const auto fd = platform::createTcpSocket();
+    if (!platform::isValid(fd)) {
+        throw std::runtime_error("socket() failed: " +
+                                 platform::socketErrorText(platform::lastSocketError()));
+    }
     listenFd_.store(fd, std::memory_order_release);
     int one = 1;
-    (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    (void)platform::setSocketOption(
+        fd, SOL_SOCKET, SO_REUSEADDR, &one,
+        static_cast<platform::socket_length_t>(sizeof(one)));
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
     addr.sin_port = htons(cfg_.port);
-    if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-        listenFd_.exchange(-1, std::memory_order_acq_rel);
-        ::close(fd);
-        throw std::runtime_error(std::string("bind() failed: ") + strerror(errno));
+    if (platform::bindSocket(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+        listenFd_.exchange(platform::invalid_socket, std::memory_order_acq_rel);
+        platform::closeSocket(fd);
+        throw std::runtime_error("bind() failed: " +
+                                 platform::socketErrorText(platform::lastSocketError()));
     }
-    if (::listen(fd, 64) != 0) {
-        listenFd_.exchange(-1, std::memory_order_acq_rel);
-        ::close(fd);
-        throw std::runtime_error("listen() failed");
+    if (platform::listenSocket(fd, 64) != 0) {
+        listenFd_.exchange(platform::invalid_socket, std::memory_order_acq_rel);
+        platform::closeSocket(fd);
+        throw std::runtime_error("listen() failed: " +
+                                 platform::socketErrorText(platform::lastSocketError()));
     }
     running_.store(true, std::memory_order_release);
     try {
@@ -104,25 +235,39 @@ void GameServer::runForever() {
                     try {
                         const auto now = nowMs();
                         for (auto& p : playersSnapshot()) {
-                            if (!p || !p->inPlay || !p->conn) continue;
-                            if (now - p->lastSeenMs > 60000) { // hard idle sweep
-                                p->conn->close();
-                                continue;
+                            if (!p) continue;
+                            std::shared_ptr<Connection> connection;
+                            enum class Action { None, CloseIdle, DisconnectTimeout,
+                                                SendKeepAlive } action = Action::None;
+                            std::int64_t keepAliveId = 0;
+                            {
+                                std::lock_guard playerLock(p->stateMtx);
+                                if (!p->inPlay || !p->conn) continue;
+                                connection = p->conn;
+                                if (now - p->lastSeenMs > 60000) {
+                                    action = Action::CloseIdle;
+                                } else if (p->pendingKeepAlive != 0 &&
+                                           now - p->lastSeenMs > 30000) {
+                                    action = Action::DisconnectTimeout;
+                                } else if (now - p->lastKeepAliveSentMs >= 10000) {
+                                    keepAliveId = ++p->keepAliveCounter;
+                                    p->pendingKeepAlive = keepAliveId;
+                                    p->lastKeepAliveSentMs = now;
+                                    action = Action::SendKeepAlive;
+                                }
                             }
-                            if (p->pendingKeepAlive != 0 && now - p->lastSeenMs > 30000) {
+                            if (!connection) continue;
+                            if (action == Action::CloseIdle) {
+                                connection->close();
+                            } else if (action == Action::DisconnectTimeout) {
                                 WriteBuffer reason;
                                 nbt::writeTextComponent(reason, "Timed out");
-                                p->conn->trySendPacket(pl::sc::Disconnect, reason);
-                                p->conn->close();
-                                continue;
-                            }
-                            if (now - p->lastKeepAliveSentMs >= 10000) {
-                                const std::int64_t id = ++p->keepAliveCounter;
-                                p->pendingKeepAlive = id;
-                                p->lastKeepAliveSentMs = now;
+                                connection->trySendPacket(pl::sc::Disconnect, reason);
+                                connection->close();
+                            } else if (action == Action::SendKeepAlive) {
                                 WriteBuffer b;
-                                b.i64(id);
-                                p->conn->trySendPacket(pl::sc::KeepAlive, b);
+                                b.i64(keepAliveId);
+                                connection->trySendPacket(pl::sc::KeepAlive, b);
                             }
                         }
                     } catch (const std::exception& e) {
@@ -146,27 +291,36 @@ void GameServer::runForever() {
         requestStop();
         stopTickLoop();
         joinJanitorThread();
-        if (const int opened = listenFd_.exchange(-1, std::memory_order_acq_rel); opened >= 0)
-            ::close(opened);
+        if (const auto opened = listenFd_.exchange(platform::invalid_socket,
+                                                   std::memory_order_acq_rel);
+            platform::isValid(opened)) {
+            platform::closeSocket(opened);
+        }
         throw;
     }
 }
 void GameServer::acceptLoop() {
     while (running_.load(std::memory_order_acquire)) {
-        sockaddr_in cli{}; socklen_t cl = sizeof(cli);
-        const int listenFd = listenFd_.load(std::memory_order_acquire);
-        if (listenFd < 0) break;
-        int fd = ::accept(listenFd, reinterpret_cast<sockaddr*>(&cli), &cl);
-        if (fd < 0) {
+        sockaddr_in cli{};
+        platform::socket_length_t cl = sizeof(cli);
+        const auto listenFd = listenFd_.load(std::memory_order_acquire);
+        if (!platform::isValid(listenFd)) break;
+        const auto fd = platform::acceptSocket(
+            listenFd, reinterpret_cast<sockaddr*>(&cli), &cl);
+        if (!platform::isValid(fd)) {
+            const int error = platform::lastSocketError();
             if (g_stopRequested || !running_.load(std::memory_order_acquire)) break;
-            if (errno == EINTR) continue;
-            std::fprintf(stderr, "[cppfm] accept failed: %s\n", strerror(errno));
+            if (platform::isInterrupted(error)) continue;
+            std::fprintf(stderr, "[cppfm] accept failed: %s\n",
+                         platform::socketErrorText(error).c_str());
             break;
         }
-        std::fprintf(stderr, "[cppfm] accepted fd=%d\n", fd);
+        std::fprintf(stderr, "[cppfm] accepted fd=%llu\n",
+                     static_cast<unsigned long long>(platform::socketNumber(fd)));
         if (!acceptGate_.allow(steadyNowMs())) {
-            std::fprintf(stderr, "[cppfm] accept gate: refusing fd=%d (rate)\n", fd);
-            ::close(fd);
+            std::fprintf(stderr, "[cppfm] accept gate: refusing fd=%llu (rate)\n",
+                         static_cast<unsigned long long>(platform::socketNumber(fd)));
+            platform::closeSocket(fd);
             continue;
         }
         try {
@@ -196,16 +350,16 @@ void GameServer::acceptLoop() {
                     }
                 }
                 if (conn) conn->close();
-                else ::close(fd);
+                else platform::closeSocket(fd);
             });
             if (!registerSessionThread(std::move(worker))) break;
         } catch (const std::exception& e) {
-            ::close(fd);
+            platform::closeSocket(fd);
             std::fprintf(stderr, "[cppfm] could not create session worker: %s\n", e.what());
             requestStop();
             break;
         } catch (...) {
-            ::close(fd);
+            platform::closeSocket(fd);
             std::fprintf(stderr, "[cppfm] could not create session worker\n");
             requestStop();
             break;
@@ -291,18 +445,36 @@ void GameServer::joinJanitorThread() {
     janitorThread_.join();
 }
 void GameServer::broadcastDigStage(Player& p, std::int8_t stage) {
+    std::int32_t entityId = 0;
+    std::int32_t digX = 0, digY = 0, digZ = 0;
+    std::int8_t dimension = 0;
+    {
+        std::lock_guard playerLock(p.stateMtx);
+        entityId = p.entityId;
+        digX = p.digX;
+        digY = p.digY;
+        digZ = p.digZ;
+        dimension = p.dimension;
+    }
     WriteBuffer b;
-    b.varint(p.entityId);
-    b.position(p.digX, p.digY, p.digZ);
+    b.varint(entityId);
+    b.position(digX, digY, digZ);
     b.i8(stage);
-    broadcastPacketExcept(nullptr, proto::pl::sc::BlockBreakAnimation, b);
+    broadcastPacketExceptInDimension(dimension, nullptr,
+                                     proto::pl::sc::BlockBreakAnimation, b);
 }
 void GameServer::sendSetHealth(Player& p) {
+    std::shared_ptr<Connection> connection;
     WriteBuffer b;
-    b.f32(p.health);
-    b.varint(p.food);
-    b.f32(p.saturation);
-    p.conn->trySendPacket(pl::sc::SetHealth, b);
+    {
+        std::lock_guard playerLock(p.stateMtx);
+        connection = p.conn;
+        if (!connection) return;
+        b.f32(p.health);
+        b.varint(p.food);
+        b.f32(p.saturation);
+    }
+    connection->trySendPacket(pl::sc::SetHealth, b);
 }
 void GameServer::addHungerExhaustion(Player& p, float amount) {
     HungerManager::addExhaustion(p, amount);
@@ -315,8 +487,15 @@ void GameServer::handleFoodConsume(Player& p, const std::string& itemName) {
     HungerManager::handleFoodConsume(p, itemName, *this);
 }
 void GameServer::broadcastPlayerChat(Player& sender, const std::string& message, int64_t timestamp) {
+    std::array<std::uint8_t, 16> uuid{};
+    std::string name;
+    {
+        std::lock_guard playerLock(sender.stateMtx);
+        uuid = sender.uuid;
+        name = sender.name;
+    }
     WriteBuffer b;
-    b.uuid(sender.uuid.data());
+    b.uuid(uuid.data());
     b.varint(0);
     b.boolean(false);
     b.string(message);
@@ -326,13 +505,18 @@ void GameServer::broadcastPlayerChat(Player& sender, const std::string& message,
     b.boolean(false);
     b.varint(0);
     b.varint(0);
-    nbt::writeTextComponent(b, sender.name);
+    nbt::writeTextComponent(b, name);
     b.boolean(false);
     broadcastPacketExcept(nullptr, proto::pl::sc::PlayerChat, b);
 }
 void GameServer::spawnMob(MobKind kind, double x, double y, double z) {
+    spawnMobFor(0, kind, x, y, z);
+}
+void GameServer::spawnMobFor(std::int8_t dimension, MobKind kind, double x,
+                             double y, double z) {
     auto mob = std::make_shared<MobEntity>();
     mob->entityId = nextEntityId();
+    mob->dimension = canonicalDimension(dimension);
     mob->kind = kind;
     const auto& stats = mobStats(kind);
     mob->health = stats.maxHealth;
@@ -383,81 +567,193 @@ void GameServer::spawnMob(MobKind kind, double x, double y, double z) {
         mobs_.push_back(mob);
     }
     broadcastMobSpawn(*mob);
-    if (MobEntity::isBoss(kind) && bossAI_) bossAI_->onSpawn(*mob);
+    if (MobEntity::isBoss(kind) && bossAI_) {
+        // BossAI also emits the boss-bar packet.  Give it a detached state
+        // snapshot so a callback cannot race the published mob (or retain a
+        // live reference while sending).  Merge the initialization fields
+        // used by the current Wither/Dragon implementations afterwards.
+        MobEntity callbackState;
+        {
+            std::lock_guard entityLock(*mob->stateMtx);
+            callbackState = *mob;
+        }
+        callbackState.stateMtx = std::make_shared<std::recursive_mutex>();
+        bossAI_->onSpawn(callbackState);
+        {
+            std::lock_guard entityLock(*mob->stateMtx);
+            if (kind == MobKind::Wither)
+                mob->witherSkullCooldown = callbackState.witherSkullCooldown;
+            else if (kind == MobKind::EnderDragon) {
+                mob->dragonPhase = callbackState.dragonPhase;
+                mob->dragonPhaseUntil = callbackState.dragonPhaseUntil;
+            }
+        }
+    }
 }
 void GameServer::broadcastMobSpawn(const MobEntity& mob) {
+    if (mobStateLockOwnedByCurrentThread()) {
+        runWithoutMobStateLock([this, &mob] { broadcastMobSpawn(mob); });
+        return;
+    }
+    MobEntity snapshot;
+    {
+        std::lock_guard entityLock(*mob.stateMtx);
+        snapshot = mob;
+    }
     WriteBuffer b;
-    b.varint(mob.entityId);
+    b.varint(snapshot.entityId);
     static std::uint8_t zero[16] = {};
     b.uuid(zero);
-    b.varint(static_cast<std::int32_t>(MobEntity::typeId(mob.kind)));
-    b.f64(mob.x); b.f64(mob.y); b.f64(mob.z);
+    b.varint(static_cast<std::int32_t>(MobEntity::typeId(snapshot.kind)));
+    b.f64(snapshot.x); b.f64(snapshot.y); b.f64(snapshot.z);
     b.i8(0); b.i8(0); b.i8(0);
     b.varint(0); b.i16(0); b.i16(0); b.i16(0);
-    broadcastPacketExcept(nullptr, pl::sc::SpawnEntity, b);
-    sendEquipment(mob);
+    broadcastPacketExceptInDimension(snapshot.dimension, nullptr,
+                                     pl::sc::SpawnEntity, b);
+    sendEquipment(snapshot);
     // JUMP_STRENGTH) via UpdateAttributes 0x7C so clients see 15-30 HP, not the static default.
-    if (mob.kind == MobKind::Horse) {
+    if (snapshot.kind == MobKind::Horse) {
         AttributeManager am;
-        am.setBase(Attribute::MAX_HEALTH, mob.horseMaxHealth);
-        am.setBase(Attribute::MOVEMENT_SPEED, mob.horseMoveSpeed);
-        am.setBase(Attribute::JUMP_STRENGTH, mob.horseJumpStrength);
+        am.setBase(Attribute::MAX_HEALTH, snapshot.horseMaxHealth);
+        am.setBase(Attribute::MOVEMENT_SPEED, snapshot.horseMoveSpeed);
+        am.setBase(Attribute::JUMP_STRENGTH, snapshot.horseJumpStrength);
         WriteBuffer ab;
-        am.writeUpdate(ab, mob.entityId);
-        broadcastPacketExcept(nullptr, pl::sc::UpdateAttributes, ab);
+        am.writeUpdate(ab, snapshot.entityId);
+        broadcastPacketExceptInDimension(snapshot.dimension, nullptr,
+                                         pl::sc::UpdateAttributes, ab);
     }
 }
 void GameServer::broadcastSetPassengersEmpty(std::int32_t vehicleId) {
+    std::int8_t dimension = 0;
+    {
+        const auto mobs = mobsSnapshot();
+        for (const auto& m : mobs) {
+            if (!m) continue;
+            std::lock_guard entityLock(*m->stateMtx);
+            if (m->entityId == vehicleId) {
+                dimension = m->dimension;
+                break;
+            }
+        }
+    }
+    broadcastSetPassengersEmptyFor(dimension, vehicleId);
+}
+void GameServer::broadcastSetPassengersEmptyFor(std::int8_t dimension,
+                                                std::int32_t vehicleId) {
     WriteBuffer b;
     b.varint(vehicleId);
     b.varint(0);
-    broadcastPacketExcept(nullptr, proto::pl::sc::SetPassengers, b);
+    broadcastPacketExceptInDimension(dimension, nullptr,
+                                     proto::pl::sc::SetPassengers, b);
 }
-GameServer::MobAiEntry& GameServer::aiFor(const std::shared_ptr<MobEntity>& m) {
-    auto it = mobAi_.find(m->entityId);
-    if (it == mobAi_.end()) {
-        MobAiEntry e;
-        e.brain = std::make_unique<Brain>();
-        e.ctx = std::make_unique<AiContext>();
-        // Parser is now BehaviorTreeParser::parse which delegates to EntityDataLoader for backward compat.
-        if (auto* def = entityDataLoader_.get(MobEntity::kindName(m->kind))) {
-            auto fresh = BehaviorTreeParser::parse(*def);
-            if (!fresh) fresh = EntityDataLoader::buildUniqueTreeFor(*def);
-            if (fresh) e.brain->setBehaviorTree(std::move(fresh));
-            else if (m->kind==MobKind::Enderman) e.brain->setBehaviorTree(buildEndermanTree());
-            else if (m->kind==MobKind::Wither) e.brain->setBehaviorTree(buildWitherTree());
-            else if (m->kind==MobKind::EnderDragon) e.brain->setBehaviorTree(buildDragonTree());
-        } else {
-            if (m->kind==MobKind::Enderman) e.brain->setBehaviorTree(buildEndermanTree());
-            else if (m->kind==MobKind::Wither) e.brain->setBehaviorTree(buildWitherTree());
-            else if (m->kind==MobKind::EnderDragon) e.brain->setBehaviorTree(buildDragonTree());
-        }
-        // EquipmentComponent: apply equipment from definition if present (already in spawnMob)
-        it = mobAi_.emplace(m->entityId, std::move(e)).first;
+std::shared_ptr<GameServer::MobAiEntry>
+GameServer::aiFor(const std::shared_ptr<MobEntity>& m) {
+    if (!m) return nullptr;
+    std::int32_t entityId = 0;
+    MobKind kind = MobKind::Pig;
+    {
+        std::lock_guard entityLock(*m->stateMtx);
+        entityId = m->entityId;
+        kind = m->kind;
     }
+    {
+        std::lock_guard lock(mobAiMtx_);
+        auto it = mobAi_.find(entityId);
+        if (it != mobAi_.end()) return it->second;
+    }
+
+    // Build a new entry outside the map lock.  Tree construction is local and
+    // can be relatively expensive; more importantly, no callback should ever
+    // run while mobAiMtx_ is held.
+    auto entry = std::make_shared<MobAiEntry>();
+    entry->brain = std::make_unique<Brain>();
+    entry->ctx = std::make_unique<AiContext>();
+    if (auto* def = entityDataLoader_.get(MobEntity::kindName(kind))) {
+        auto fresh = BehaviorTreeParser::parse(*def);
+        if (fresh) entry->brain->setBehaviorTree(std::move(fresh));
+    }
+    if (!entry->brain->hasBehaviorTree()) {
+        if (kind == MobKind::Enderman)
+            entry->brain->setBehaviorTree(buildEndermanTree());
+        else if (kind == MobKind::Wither)
+            entry->brain->setBehaviorTree(buildWitherTree());
+        else if (kind == MobKind::EnderDragon)
+            entry->brain->setBehaviorTree(buildDragonTree());
+    }
+
+    // A concurrent first lookup may have won the race while the tree was
+    // being constructed.  Reuse the canonical entry in that case.
+    std::lock_guard lock(mobAiMtx_);
+    auto it = mobAi_.find(entityId);
+    if (it == mobAi_.end())
+        it = mobAi_.emplace(entityId, std::move(entry)).first;
     return it->second;
 }
+
+void GameServer::eraseMobAi(std::int32_t entityId) {
+    std::lock_guard lock(mobAiMtx_);
+    mobAi_.erase(entityId);
+}
+
+void GameServer::noteMobHurt(std::int32_t entityId,
+                             std::int32_t attackerEntityId) {
+    std::shared_ptr<MobAiEntry> entry;
+    {
+        std::lock_guard lock(mobAiMtx_);
+        auto it = mobAi_.find(entityId);
+        if (it != mobAi_.end()) entry = it->second;
+    }
+    if (!entry || !entry->ctx) return;
+    entry->ctx->lastHurtTick.store(tickNo_, std::memory_order_release);
+    entry->ctx->lastHurtByEntityId.store(attackerEntityId,
+                                         std::memory_order_release);
+}
 std::shared_ptr<MobEntity> GameServer::findLovePartner(const MobEntity& seeker) {
-    std::lock_guard lk(entsMtx_);
-    for (auto& other : mobs_) {
-        if (other.get() == &seeker || other->kind != seeker.kind ||
-            !other->inLove || MobEntity::isBaby(*other))
+    if (mobStateLockOwnedByCurrentThread()) {
+        std::shared_ptr<MobEntity> result;
+        runWithoutMobStateLock([this, &result, &seeker] {
+            result = findLovePartner(seeker);
+        });
+        return result;
+    }
+    std::int8_t seekerDimension = 0;
+    MobKind seekerKind = MobKind::Pig;
+    double seekerX = 0.0, seekerZ = 0.0;
+    {
+        std::lock_guard seekerLock(*seeker.stateMtx);
+        seekerDimension = seeker.dimension;
+        seekerKind = seeker.kind;
+        seekerX = seeker.x;
+        seekerZ = seeker.z;
+    }
+    for (auto& other : mobsSnapshot()) {
+        if (!other || other.get() == &seeker) continue;
+        std::lock_guard entityLock(*other->stateMtx);
+        if (canonicalDimension(other->dimension) !=
+                canonicalDimension(seekerDimension) ||
+            other->kind != seekerKind || !other->inLove ||
+            MobEntity::isBaby(*other))
             continue;
-        const double dx = other->x - seeker.x, dz = other->z - seeker.z;
+        const double dx = other->x - seekerX, dz = other->z - seekerZ;
         if (dx * dx + dz * dz < 64) return other;
     }
     return nullptr;
 }
 void GameServer::initPlayerProgress(Player& p) {
-    const std::string hex = uuidToHex(p.uuid);
-    p.stats = std::make_unique<StatsManager>(cfg_.worldDir);
-    p.advancements = std::make_unique<AdvancementManager>(hex, cfg_.worldDir);
-    p.stats->load(hex);
-    p.advancements->load();
-    p.joinTick = tickNo_;
+    std::string hex;
+    {
+        std::lock_guard playerLock(p.stateMtx);
+        hex = uuidToHex(p.uuid);
+        p.stats = std::make_unique<StatsManager>(cfg_.worldDir);
+        p.advancements = std::make_unique<AdvancementManager>(hex, cfg_.worldDir);
+        p.stats->load(hex);
+        p.advancements->load();
+        p.joinTick = tickNo_;
+    }
     grantAdvancement(p, "cppfm:root");
 }
 void GameServer::savePlayerProgress(Player& p) {
+    std::lock_guard playerLock(p.stateMtx);
     if (!p.stats || !p.advancements) return;
     if (p.joinTick) {
         const std::int64_t ticks = tickNo_ - p.joinTick;
@@ -468,29 +764,39 @@ void GameServer::savePlayerProgress(Player& p) {
     p.advancements->save();
 }
 void GameServer::sendAdvancementsTo(Player& p, bool reset) {
+    const auto merged = getMergedAdvancements();
+    std::shared_ptr<Connection> connection;
     WriteBuffer b;
-    auto merged = getMergedAdvancements();
-    writeAdvancementsPacket(b, reset, merged,
-        [&](const std::string& id) {
-            return p.advancements && p.advancements->has(id);
-        });
-    p.conn->trySendPacket(pl::sc::UpdateAdvancements, b);
+    {
+        std::lock_guard playerLock(p.stateMtx);
+        connection = p.conn;
+        if (!connection || !p.advancements) return;
+        writeAdvancementsPacket(b, reset, merged,
+            [&](const std::string& id) {
+                return p.advancements->has(id);
+            });
+    }
+    connection->trySendPacket(pl::sc::UpdateAdvancements, b);
 }
 void GameServer::grantAdvancement(Player& p, const std::string& id) {
-    if (!p.advancements) return;
-    if (p.advancements->grant(id)) {
-        sendAdvancementsTo(p, false);
-        std::string tab = id;
-        auto slash = tab.find("/");
-        if (slash!=std::string::npos) tab = tab.substr(0, slash);
-        if (tab.find(":")==std::string::npos) tab = "minecraft:" + tab;
-        // special: cppfm:root -> minecraft:story/root tab, vanilla story root
-        if (id=="cppfm:root") tab = "minecraft:story/root";
-        else if (tab=="minecraft:story" || tab=="minecraft:adventure" || tab=="minecraft:nether" || tab=="minecraft:end" || tab=="minecraft:husbandry") { /* keep tab */ }
-        else if (id.rfind("minecraft:",0)==0) tab = id;
-        else tab = id;
-        sendSelectAdvancementTab(p, tab);
+    bool granted = false;
+    {
+        std::lock_guard playerLock(p.stateMtx);
+        if (!p.advancements) return;
+        granted = p.advancements->grant(id);
     }
+    if (!granted) return;
+    sendAdvancementsTo(p, false);
+    std::string tab = id;
+    auto slash = tab.find("/");
+    if (slash!=std::string::npos) tab = tab.substr(0, slash);
+    if (tab.find(":")==std::string::npos) tab = "minecraft:" + tab;
+    // special: cppfm:root -> minecraft:story/root tab, vanilla story root
+    if (id=="cppfm:root") tab = "minecraft:story/root";
+    else if (tab=="minecraft:story" || tab=="minecraft:adventure" || tab=="minecraft:nether" || tab=="minecraft:end" || tab=="minecraft:husbandry") { /* keep tab */ }
+    else if (id.rfind("minecraft:",0)==0) tab = id;
+    else tab = id;
+    sendSelectAdvancementTab(p, tab);
 }
 std::vector<AdvancementDefOwned> GameServer::getMergedAdvancements() {
     std::lock_guard lk(advMergeMtx_);
@@ -502,22 +808,36 @@ std::vector<AdvancementDefOwned> GameServer::getMergedAdvancements() {
 }
 PredicateContext GameServer::basePredicateContext(Player& p) {
     PredicateContext ctx;
-    ctx.world = &worldFor(p.dimension);
+    std::int8_t dimension = 0;
+    std::string name;
+    std::string heldItemName;
+    double x = 0.0, y = 0.0, z = 0.0;
+    {
+        std::lock_guard playerLock(p.stateMtx);
+        dimension = p.dimension;
+        name = p.name;
+        if (p.heldSlot>=0 && p.heldSlot<9) {
+            const auto& held = p.inv[36+p.heldSlot];
+            if (!held.empty()) heldItemName = held.name();
+        }
+        x = p.x; y = p.y; z = p.z;
+    }
+    ctx.world = &worldFor(dimension);
     ctx.gamerules = &gamerules_;
     ctx.player = &p;
-    ctx.playerName = p.name;
-    if (p.heldSlot>=0 && p.heldSlot<9) { auto &hs = p.inv[36+p.heldSlot]; if (!hs.empty()) ctx.heldItemName = hs.name(); }
+    ctx.playerName = std::move(name);
+    ctx.heldItemName = std::move(heldItemName);
     ctx.scoreboard = &scoreboard;
-    ctx.x = static_cast<int32_t>(p.x);
-    ctx.y = static_cast<int32_t>(p.y);
-    ctx.z = static_cast<int32_t>(p.z);
+    ctx.x = static_cast<int32_t>(x);
+    ctx.y = static_cast<int32_t>(y);
+    ctx.z = static_cast<int32_t>(z);
     return ctx;
 }
 void GameServer::evaluateTickAdvancements(Player& p) {
-    if (!p.advancements) return;
+    if (!hasAdvancementManager(p)) return;
     auto merged = getMergedAdvancements();
     for (auto& adv : merged) {
-        if (p.advancements->has(adv.id)) continue;
+        if (hasAdvancement(p, adv.id)) continue;
         for (auto& tr : adv.triggers) {
             if (tr.trigger == "minecraft:tick" || tr.trigger == "tick") {
                 if (!tr.conditions.isNull() && tr.conditions.isObj()) {
@@ -531,7 +851,7 @@ void GameServer::evaluateTickAdvancements(Player& p) {
     }
 }
 void GameServer::evaluateInventoryChanged(Player& p, const ItemStack& s) {
-    if (!p.advancements || s.empty()) return;
+    if (!hasAdvancementManager(p) || s.empty()) return;
     std::string itemName = s.name();
     // normalize itemName for tag lookup
     std::string normHave = itemName.find(':')==std::string::npos ? "minecraft:"+itemName : itemName;
@@ -555,7 +875,7 @@ void GameServer::evaluateInventoryChanged(Player& p, const ItemStack& s) {
     };
     auto merged = getMergedAdvancements();
     for (auto& adv : merged) {
-        if (p.advancements->has(adv.id)) continue;
+        if (hasAdvancement(p, adv.id)) continue;
         for (auto& tr : adv.triggers) {
             if (tr.trigger != "minecraft:inventory_changed" && tr.trigger != "inventory_changed") continue;
             bool match = false;
@@ -617,13 +937,13 @@ void GameServer::evaluateInventoryChanged(Player& p, const ItemStack& s) {
     }
 }
 void GameServer::evaluatePlayerKilledEntity(Player& p, MobKind kind) {
-    if (!p.advancements) return;
+    if (!hasAdvancementManager(p)) return;
     std::string killed = MobEntity::kindName(kind);
     auto merged = getMergedAdvancements();
     // temporary victim entity for predicate context
     MobEntity victimTmp; victimTmp.kind = kind;
     for (auto& adv : merged) {
-        if (p.advancements->has(adv.id)) continue;
+        if (hasAdvancement(p, adv.id)) continue;
         for (auto& tr : adv.triggers) {
             if (tr.trigger != "minecraft:player_killed_entity" && tr.trigger != "player_killed_entity") continue;
             bool match = false;
@@ -656,13 +976,20 @@ void GameServer::evaluatePlayerKilledEntity(Player& p, MobKind kind) {
     }
 }
 void GameServer::onBlockMined(Player& p, std::uint16_t oldState) {
-    if (!p.stats) return;
+    {
+        std::lock_guard playerLock(p.stateMtx);
+        if (!p.stats) return;
+    }
     static thread_local std::unordered_map<std::uint32_t, std::string> inv;
     if (inv.empty())
         for (auto& [n, s] : gen::kBlocks) inv.emplace(s, std::string(n));
     auto it = inv.find(oldState);
     const std::string name = it != inv.end() ? it->second : "minecraft:air";
-    p.stats->add("minecraft:mined|" + name);
+    {
+        std::lock_guard playerLock(p.stateMtx);
+        if (!p.stats) return;
+        p.stats->add("minecraft:mined|" + name);
+    }
     if (name == "minecraft:oak_log") grantAdvancement(p, "cppfm:wood");
     if (name == "minecraft:stone") { /* stone age analog */ }
     ItemStack dummy = ItemStack::ofName(name,1);
@@ -670,10 +997,16 @@ void GameServer::onBlockMined(Player& p, std::uint16_t oldState) {
 }
 void GameServer::onItemObtained(Player& p, const ItemStack& s,
                                 const char* how) {
-    if (!p.stats) return;
-    const std::string n = s.name();
-    p.stats->add(std::string("minecraft:") + how + "|" + n,
-                 s.count);
+    ItemStack stack;
+    std::string n;
+    {
+        std::lock_guard playerLock(p.stateMtx);
+        if (!p.stats) return;
+        stack = s;
+        n = stack.name();
+        p.stats->add(std::string("minecraft:") + how + "|" + n,
+                     stack.count);
+    }
     if (how == std::string("crafted")) {
         if (n == "minecraft:crafting_table") grantAdvancement(p, "cppfm:bench");
         if (n == "minecraft:stone_pickaxe") grantAdvancement(p, "cppfm:tools");
@@ -683,24 +1016,27 @@ void GameServer::onItemObtained(Player& p, const ItemStack& s,
         grantAdvancement(p, "cppfm:cook");
     }
     if (n == "minecraft:diamond") grantAdvancement(p, "cppfm:diamonds");
-    evaluateInventoryChanged(p, s);
+    evaluateInventoryChanged(p, stack);
 }
 void GameServer::onMobKilledBy(Player& p, MobKind kind) {
-    if (!p.stats) return;
-    p.stats->add(std::string("minecraft:killed|") +
-                 MobEntity::kindName(kind));
+    {
+        std::lock_guard playerLock(p.stateMtx);
+        if (!p.stats) return;
+        p.stats->add(std::string("minecraft:killed|") +
+                     MobEntity::kindName(kind));
+    }
     if (MobEntity::isHostile(kind)) grantAdvancement(p, "cppfm:hunter");
     evaluatePlayerKilledEntity(p, kind);
 }
 void GameServer::evaluateLocationTrigger(Player& p) {
-    if (!p.advancements) return;
+    if (!hasAdvancementManager(p)) return;
     auto merged = getMergedAdvancements();
     PredicateContext ctx = basePredicateContext(p);
     ctx.dayTime = dayTime();
     ctx.raining = raining();
     ctx.thundering = thundering();
     for (auto& adv : merged) {
-        if (p.advancements->has(adv.id)) continue;
+        if (hasAdvancement(p, adv.id)) continue;
         for (auto& tr : adv.triggers) {
             if (tr.trigger != "minecraft:location" && tr.trigger != "location") continue;
             bool ok = true;
@@ -727,7 +1063,7 @@ void GameServer::evaluateLocationTrigger(Player& p) {
     }
 }
 void GameServer::onPlacedBlock(Player& p, int x, int y, int z, std::uint16_t state) {
-    if (!p.advancements) return;
+    if (!hasAdvancementManager(p)) return;
     std::string placedName;
     if (auto* bd = gen::blockByState(state)) placedName = bd->name;
     if (placedName.empty()) return;
@@ -738,7 +1074,7 @@ void GameServer::onPlacedBlock(Player& p, int x, int y, int z, std::uint16_t sta
     ctx.raining = raining();
     ctx.thundering = thundering();
     for (auto& adv : merged) {
-        if (p.advancements->has(adv.id)) continue;
+        if (hasAdvancement(p, adv.id)) continue;
         for (auto& tr : adv.triggers) {
             if (tr.trigger != "minecraft:placed_block" && tr.trigger != "placed_block") continue;
             bool ok = true;
@@ -763,7 +1099,7 @@ void GameServer::onPlacedBlock(Player& p, int x, int y, int z, std::uint16_t sta
     }
 }
 void GameServer::onConsumeItem(Player& p, const ItemStack& stack) {
-    if (!p.advancements || stack.empty()) return;
+    if (!hasAdvancementManager(p) || stack.empty()) return;
     std::string itemName = stack.name();
     auto merged = getMergedAdvancements();
     PredicateContext ctx = basePredicateContext(p);
@@ -772,7 +1108,7 @@ void GameServer::onConsumeItem(Player& p, const ItemStack& stack) {
     ctx.raining = raining();
     ctx.thundering = thundering();
     for (auto& adv : merged) {
-        if (p.advancements->has(adv.id)) continue;
+        if (hasAdvancement(p, adv.id)) continue;
         for (auto& tr : adv.triggers) {
             if (tr.trigger != "minecraft:consume_item" && tr.trigger != "consume_item") continue;
             bool ok = false;
@@ -811,14 +1147,18 @@ void GameServer::onConsumeItem(Player& p, const ItemStack& stack) {
     }
 }
 void GameServer::onBredAnimals(Player* p) {
-    if (!p || !p->advancements) return;
+    if (mobStateLockOwnedByCurrentThread()) {
+        runWithoutMobStateLock([this, p] { onBredAnimals(p); });
+        return;
+    }
+    if (!p || !hasAdvancementManager(*p)) return;
     auto merged = getMergedAdvancements();
     PredicateContext ctx = basePredicateContext(*p);
     ctx.dayTime = dayTime();
     ctx.raining = raining();
     ctx.thundering = thundering();
     for (auto& adv : merged) {
-        if (p->advancements->has(adv.id)) continue;
+        if (hasAdvancement(*p, adv.id)) continue;
         for (auto& tr : adv.triggers) {
             if (tr.trigger!="minecraft:bred_animals" && tr.trigger!="bred_animals") continue;
             bool ok = true;
@@ -830,19 +1170,24 @@ void GameServer::onBredAnimals(Player* p) {
     }
 }
 void GameServer::onEnterBlock(Player* p, int x, int y, int z) {
-    if (!p || !p->advancements) return;
+    if (!p || !hasAdvancementManager(*p)) return;
     auto merged = getMergedAdvancements();
     PredicateContext ctx = basePredicateContext(*p);
     ctx.x = x; ctx.y = y; ctx.z = z;
     ctx.dayTime = dayTime();
     ctx.raining = raining();
     ctx.thundering = thundering();
-    std::uint16_t st = worldFor(p->dimension).getBlock(x,y,z);
+    std::int8_t dimension = 0;
+    {
+        std::lock_guard playerLock(p->stateMtx);
+        dimension = p->dimension;
+    }
+    std::uint16_t st = worldFor(dimension).getBlock(x,y,z);
     std::string haveBlock;
     if (auto* bd = gen::blockByState(st)) haveBlock = bd->name;
     else haveBlock = "minecraft:air";
     for (auto& adv : merged) {
-        if (p->advancements->has(adv.id)) continue;
+        if (hasAdvancement(*p, adv.id)) continue;
         for (auto& tr : adv.triggers) {
             if (tr.trigger!="minecraft:enter_block" && tr.trigger!="enter_block") continue;
             bool ok = true;
@@ -864,7 +1209,7 @@ void GameServer::onEnterBlock(Player* p, int x, int y, int z) {
     }
 }
 void GameServer::onItemUsedOnBlock(Player* p, int x, int y, int z, const ItemStack& item) {
-    if (!p || !p->advancements) return;
+    if (!p || !hasAdvancementManager(*p)) return;
     std::string itemName = item.name();
     if (itemName.empty()) itemName = "minecraft:air";
     auto merged = getMergedAdvancements();
@@ -875,7 +1220,7 @@ void GameServer::onItemUsedOnBlock(Player* p, int x, int y, int z, const ItemSta
     ctx.raining = raining();
     ctx.thundering = thundering();
     for (auto& adv : merged) {
-        if (p->advancements->has(adv.id)) continue;
+        if (hasAdvancement(*p, adv.id)) continue;
         for (auto& tr : adv.triggers) {
             if (tr.trigger!="minecraft:item_used_on_block" && tr.trigger!="item_used_on_block") continue;
             bool ok = true;
@@ -908,14 +1253,19 @@ void GameServer::onItemUsedOnBlock(Player* p, int x, int y, int z, const ItemSta
     }
 }
 void GameServer::onEffectsChanged(Player* p) {
-    if (!p || !p->advancements) return;
+    if (!p || !hasAdvancementManager(*p)) return;
+    std::vector<EffectInstance> effects;
+    {
+        std::lock_guard playerLock(p->stateMtx);
+        effects = p->effects;
+    }
     auto merged = getMergedAdvancements();
     PredicateContext ctx = basePredicateContext(*p);
     ctx.dayTime = dayTime();
     ctx.raining = raining();
     ctx.thundering = thundering();
     for (auto& adv : merged) {
-        if (p->advancements->has(adv.id)) continue;
+        if (hasAdvancement(*p, adv.id)) continue;
         for (auto& tr : adv.triggers) {
             if (tr.trigger!="minecraft:effects_changed" && tr.trigger!="effects_changed") continue;
             bool ok = true;
@@ -926,7 +1276,7 @@ void GameServer::onEffectsChanged(Player* p) {
                             if (auto* eff = e.find("effect")) {
                                 std::string want = eff->asStr();
                                 bool found=false;
-                                for (auto &pe: p->effects) {
+                                for (auto &pe: effects) {
                                     std::string have = effects::nameOf(pe.type);
                                     if (want==have) { found=true; break; }
                                     if (want.find(':')==std::string::npos) {
@@ -948,11 +1298,11 @@ void GameServer::onEffectsChanged(Player* p) {
     }
 }
 void GameServer::onItemEnchanted(Player& p, const std::string& itemName, int levels){
-    if(!p.advancements) return;
+    if(!hasAdvancementManager(p)) return;
     auto merged=getMergedAdvancements();
     std::string normHave = itemName.find(':')==std::string::npos ? "minecraft:"+itemName : itemName;
     for(auto& adv: merged){
-        if(p.advancements->has(adv.id)) continue;
+        if(hasAdvancement(p, adv.id)) continue;
         for(auto& tr: adv.triggers){
             if(tr.trigger!="minecraft:enchanted_item" && tr.trigger!="enchanted_item") continue;
             bool ok=true;
@@ -992,11 +1342,11 @@ void GameServer::onItemEnchanted(Player& p, const std::string& itemName, int lev
     }
 }
 void GameServer::onBucketFilled(Player& p, const std::string& filledName){
-    if(!p.advancements) return;
+    if(!hasAdvancementManager(p)) return;
     auto merged=getMergedAdvancements();
     std::string normHave=filledName.find(':')==std::string::npos?"minecraft:"+filledName:filledName;
     for(auto& adv: merged){
-        if(p.advancements->has(adv.id)) continue;
+        if(hasAdvancement(p, adv.id)) continue;
         for(auto& tr: adv.triggers){
             if(tr.trigger!="minecraft:filled_bucket" && tr.trigger!="filled_bucket") continue;
             bool ok=true;
@@ -1021,11 +1371,11 @@ void GameServer::onBucketFilled(Player& p, const std::string& filledName){
     }
 }
 void GameServer::onVillagerTraded(Player& p, const std::string& soldId, int count){
-    if(!p.advancements) return;
+    if(!hasAdvancementManager(p)) return;
     auto merged=getMergedAdvancements();
     std::string normHave=soldId.find(':')==std::string::npos?"minecraft:"+soldId:soldId;
     for(auto& adv: merged){
-        if(p.advancements->has(adv.id)) continue;
+        if(hasAdvancement(p, adv.id)) continue;
         for(auto& tr: adv.triggers){
             if(tr.trigger!="minecraft:villager_trade" && tr.trigger!="villager_trade") continue;
             bool ok=true;
@@ -1059,29 +1409,43 @@ void GameServer::onVillagerTraded(Player& p, const std::string& soldId, int coun
 }
 bool GameServer::spawnMobByTypeName(const std::string& name, double x, double y,
                                      double z) {
+    std::int8_t dimension = 0;
+    if (brainTickGuard_) {
+        std::lock_guard entityLock(*brainTickGuard_->stateMtx);
+        dimension = brainTickGuard_->dimension;
+    }
+    return spawnMobByTypeNameFor(dimension, name, x, y, z);
+}
+bool GameServer::spawnMobByTypeNameFor(std::int8_t dimension,
+                                       const std::string& name, double x,
+                                       double y, double z) {
     // Use dynamic count via MobKind::WitherSkull+1 so future 149+ stays correct; also handle bare name + prefix fallback
     if (name=="minecraft:lightning_bolt" || name=="lightning_bolt" || name=="minecraft:lightning") {
-        strikeLightning(x,y,z);
+        strikeLightningFor(dimension, x, y, z);
         return true;
     }
     constexpr int kMobCount = static_cast<int>(MobKind::WitherSkull) + 1; // 149 in 1.21.4
     for (int i = 0; i < kMobCount; ++i) {
         auto kind = static_cast<MobKind>(i);
         const char* n = MobEntity::kindName(kind);
-        if (name == n) { spawnMob(kind, x, y, z); return true; }
+        if (name == n) { spawnMobFor(dimension, kind, x, y, z); return true; }
     }
     if (name.find(':') == std::string::npos) {
         std::string full = "minecraft:" + name;
         for (int i = 0; i < kMobCount; ++i) {
             auto kind = static_cast<MobKind>(i);
-            if (full == MobEntity::kindName(kind)) { spawnMob(kind, x, y, z); return true; }
+            if (full == MobEntity::kindName(kind)) {
+                spawnMobFor(dimension, kind, x, y, z); return true;
+            }
         }
         // also try without prefix via entityTypeId map (some callers pass short name)
         auto it2 = gen::entityTypeIdByName().find(full);
         if (it2 != gen::entityTypeIdByName().end()) {
             for (int i = 0; i < kMobCount; ++i) {
                 auto kind = static_cast<MobKind>(i);
-                if (MobEntity::typeId(kind) == it2->second) { spawnMob(kind, x, y, z); return true; }
+                if (MobEntity::typeId(kind) == it2->second) {
+                    spawnMobFor(dimension, kind, x, y, z); return true;
+                }
             }
         }
     }
@@ -1089,7 +1453,9 @@ bool GameServer::spawnMobByTypeName(const std::string& name, double x, double y,
     if (it != gen::entityTypeIdByName().end()) {
         for (int i = 0; i < kMobCount; ++i) {
             auto kind = static_cast<MobKind>(i);
-            if (MobEntity::typeId(kind) == it->second) { spawnMob(kind, x, y, z); return true; }
+            if (MobEntity::typeId(kind) == it->second) {
+                spawnMobFor(dimension, kind, x, y, z); return true;
+            }
         }
         // fallback: handle short name without minecraft: via map (e.g., "armadillo")
         if (name.find(':') != std::string::npos) {
@@ -1098,7 +1464,9 @@ bool GameServer::spawnMobByTypeName(const std::string& name, double x, double y,
             if (itS != gen::entityTypeIdByName().end()) {
                 for (int i = 0; i < kMobCount; ++i) {
                     auto kind = static_cast<MobKind>(i);
-                    if (MobEntity::typeId(kind) == itS->second) { spawnMob(kind, x, y, z); return true; }
+                    if (MobEntity::typeId(kind) == itS->second) {
+                        spawnMobFor(dimension, kind, x, y, z); return true;
+                    }
                 }
             }
         }
@@ -1107,15 +1475,24 @@ bool GameServer::spawnMobByTypeName(const std::string& name, double x, double y,
     // but if caller passes the egg name itself, strip suffix and retry once
     if (name.ends_with("_spawn_egg")) {
         std::string base = name.substr(0, name.size()-std::string("_spawn_egg").size());
-        if (base != name) return spawnMobByTypeName(base, x, y, z);
+        if (base != name)
+            return spawnMobByTypeNameFor(dimension, base, x, y, z);
     }
     return false;
 }
 bool GameServer::trySpawnEgg(Player& p, ItemStack& stack, BlockPos hitPos, int face) {
-    std::string n = stack.name();
+    std::string n;
+    std::int8_t dimension = 0;
+    std::uint8_t gamemode = 0;
+    {
+        std::lock_guard playerLock(p.stateMtx);
+        n = stack.name();
+        dimension = p.dimension;
+        gamemode = p.gamemode;
+    }
     if (!n.ends_with("_spawn_egg")) return false;
     BlockPos spawnPos = hitPos.offset(face);
-    World& w = worldFor(p.dimension);
+    World& w = worldFor(dimension);
     {
         std::uint16_t st = w.getBlock(spawnPos.x, spawnPos.y, spawnPos.z);
         if (st != 0) {
@@ -1130,25 +1507,17 @@ bool GameServer::trySpawnEgg(Player& p, ItemStack& stack, BlockPos hitPos, int f
             }
             if (!replaceable) return false;
         }
-        // also check block above for 2-high mobs is not solid (best effort)
-        std::uint16_t st2 = w.getBlock(spawnPos.x, spawnPos.y+1, spawnPos.z);
-        if (st2 != 0) {
-            auto* d2 = gen::blockByState(st2);
-            if (d2 && std::string(d2->name)!="minecraft:air" && std::string(d2->name)!="minecraft:cave_air"
-                && std::string(d2->name).find("water")==std::string::npos
-                && std::string(d2->name)!="minecraft:short_grass" && std::string(d2->name)!="minecraft:tall_grass")
-            {
-                // allow if same replaceable, else still allow but log
-            }
-        }
     }
     if (!isInsideBorder(spawnPos.x + 0.5, spawnPos.z + 0.5)) return false;
     std::string mob = n.substr(0, n.size() - std::string("_spawn_egg").size());
     if (mob.empty()) return false;
     double sx = spawnPos.x + 0.5, sy = spawnPos.y, sz = spawnPos.z + 0.5;
-    if (!spawnMobByTypeName(mob, sx, sy, sz)) return false;
-    if (p.gamemode != 1) {
-        if (--stack.count <= 0) stack = ItemStack::air();
+    if (!spawnMobByTypeNameFor(dimension, mob, sx, sy, sz)) return false;
+    if (gamemode != 1) {
+        {
+            std::lock_guard playerLock(p.stateMtx);
+            if (--stack.count <= 0) stack = ItemStack::air();
+        }
         resendInventory(p);
     }
     return true;
@@ -1190,9 +1559,14 @@ std::vector<std::uint8_t> GameServer::loadCookie(
                                      std::istreambuf_iterator<char>());
 }
 bool GameServer::requestCookie(Player& p, const std::string& key) {
-    if (!p.conn) return false;
+    std::shared_ptr<Connection> connection;
+    {
+        std::lock_guard playerLock(p.stateMtx);
+        connection = p.conn;
+    }
+    if (!connection) return false;
     WriteBuffer b;
     b.string(key);
-    return p.conn->trySendPacket(proto::pl::sc::CookieRequest, b);
+    return connection->trySendPacket(proto::pl::sc::CookieRequest, b);
 }
 } // namespace cppfm

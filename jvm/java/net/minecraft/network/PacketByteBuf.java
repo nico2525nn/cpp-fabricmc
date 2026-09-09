@@ -1,107 +1,300 @@
 package net.minecraft.network;
 
-import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
-import java.util.Arrays;
 import java.util.UUID;
+import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
+import net.minecraft.nbt.NbtByte;
+import net.minecraft.nbt.NbtCompound;
+import net.minecraft.nbt.NbtDouble;
+import net.minecraft.nbt.NbtElement;
+import net.minecraft.nbt.NbtFloat;
+import net.minecraft.nbt.NbtInt;
+import net.minecraft.nbt.NbtLong;
+import net.minecraft.nbt.NbtShort;
+import net.minecraft.nbt.NbtString;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
+import io.netty.buffer.UnpooledByteBufAllocator;
+import io.netty.buffer.UnpooledHeapByteBuf;
 
-/** Bounded, deterministic payload buffer used by custom-channel adapters. */
-public class PacketByteBuf {
-    private final ByteArrayOutputStream output;
-    private byte[] input;
-    private int readerIndex;
-    private int markedReaderIndex;
-    public PacketByteBuf() { output = new ByteArrayOutputStream(); input = null; }
-    public PacketByteBuf(byte[] bytes) { output = new ByteArrayOutputStream(); if (bytes != null) output.writeBytes(bytes); input = null; }
-    private byte[] data() { return input == null ? output.toByteArray() : input; }
-    public PacketByteBuf writeByte(int value) { output.write(value); input = null; return this; }
-    public PacketByteBuf writeShort(int value) { writeByte(value >>> 8); return writeByte(value); }
-    public PacketByteBuf writeChar(int value) { return writeShort(value); }
-    public PacketByteBuf writeBoolean(boolean value) { return writeByte(value ? 1 : 0); }
-    public PacketByteBuf writeInt(int value) { writeByte(value >>> 24); writeByte(value >>> 16); writeByte(value >>> 8); return writeByte(value); }
-    public PacketByteBuf writeLong(long value) { for (int shift = 56; shift >= 0; shift -= 8) writeByte((int) (value >>> shift)); return this; }
-    public PacketByteBuf writeFloat(float value) { return writeInt(Float.floatToIntBits(value)); }
-    public PacketByteBuf writeDouble(double value) { return writeLong(Double.doubleToLongBits(value)); }
-    public PacketByteBuf writeVarInt(int value) { while ((value & ~0x7F) != 0) { writeByte((value & 0x7F) | 0x80); value >>>= 7; } return writeByte(value); }
-    public PacketByteBuf writeVarLong(long value) { while ((value & ~0x7FL) != 0) { writeByte((int) (value & 0x7F) | 0x80); value >>>= 7; } return writeByte((int) value); }
-    public PacketByteBuf writeBytes(byte[] bytes) { return writeBytes(bytes, 0, bytes == null ? 0 : bytes.length); }
-    public PacketByteBuf writeBytes(byte[] bytes, int offset, int length) {
-        if (bytes == null) { if (offset != 0 || length != 0) throw new NullPointerException("bytes"); return this; }
-        if (offset < 0 || length < 0 || offset > bytes.length - length)
-            throw new IndexOutOfBoundsException("offset/length");
-        output.write(bytes, offset, length); input = null; return this;
+/**
+ * 1.21.4 packet buffer backed by Netty's heap buffer implementation.
+ *
+ * <p>The real Fabric/Minecraft ABI requires this type to be assignable to
+ * {@code io.netty.buffer.ByteBuf}. The native transport still owns packet
+ * framing; this class provides the Java-side buffer operations that Fabric
+ * codecs and payloads use on top of that transport.</p>
+ */
+public class PacketByteBuf extends UnpooledHeapByteBuf {
+    private static final int INITIAL_CAPACITY = 256;
+
+    public PacketByteBuf() {
+        super(UnpooledByteBufAllocator.DEFAULT, INITIAL_CAPACITY, Integer.MAX_VALUE);
+    }
+
+    public PacketByteBuf(byte[] bytes) {
+        super(UnpooledByteBufAllocator.DEFAULT,
+            Math.max(INITIAL_CAPACITY, bytes == null ? 0 : bytes.length), Integer.MAX_VALUE);
+        if (bytes != null && bytes.length > 0) writeBytes(bytes);
+    }
+
+    @Override public PacketByteBuf writeByte(int value) { super.writeByte(value); return this; }
+    @Override public PacketByteBuf writeShort(int value) { super.writeShort(value); return this; }
+    @Override public PacketByteBuf writeChar(int value) { super.writeChar(value); return this; }
+    @Override public PacketByteBuf writeBoolean(boolean value) { super.writeBoolean(value); return this; }
+    @Override public PacketByteBuf writeInt(int value) { super.writeInt(value); return this; }
+    @Override public PacketByteBuf writeLong(long value) { super.writeLong(value); return this; }
+    @Override public PacketByteBuf writeFloat(float value) { super.writeFloat(value); return this; }
+    @Override public PacketByteBuf writeDouble(double value) { super.writeDouble(value); return this; }
+    @Override public PacketByteBuf writeBytes(byte[] bytes) {
+        if (bytes != null) super.writeBytes(bytes);
+        return this;
+    }
+    @Override public PacketByteBuf writeBytes(byte[] bytes, int offset, int length) {
+        if (bytes == null) {
+            if (offset != 0 || length != 0) throw new NullPointerException("bytes");
+            return this;
+        }
+        super.writeBytes(bytes, offset, length);
+        return this;
     }
     public PacketByteBuf writeBytes(PacketByteBuf value) {
-        return value == null ? this : writeBytes(value.data(), value.readerIndex(), value.readableBytes());
+        if (value == null) return this;
+        int length = value.readableBytes();
+        if (length > 0) {
+            byte[] bytes = new byte[length];
+            value.getBytes(value.readerIndex(), bytes);
+            writeBytes(bytes);
+        }
+        return this;
     }
-    public PacketByteBuf writeByteArray(byte[] bytes) { byte[] value = bytes == null ? new byte[0] : bytes; writeVarInt(value.length); return writeBytes(value); }
-    public PacketByteBuf writeString(String value) { byte[] bytes = (value == null ? "" : value).getBytes(StandardCharsets.UTF_8); if (bytes.length > 32767 * 4) throw new IllegalArgumentException("string too long"); writeVarInt(bytes.length); return writeBytes(bytes); }
+
+    public PacketByteBuf writeByteArray(byte[] bytes) {
+        byte[] value = bytes == null ? new byte[0] : bytes;
+        writeVarInt(value.length);
+        return writeBytes(value);
+    }
+
+    /**
+     * Writes the network NBT representation used by Minecraft: a root type,
+     * an empty root name, and the tag payload.  The implementation covers all
+     * scalar tags and compounds represented by the embedded NBT model; an
+     * unsupported tag fails explicitly instead of emitting a misleading
+     * packet.
+     */
+    public PacketByteBuf writeNbt(NbtElement value) {
+        if (value == null) return writeByte(NbtElement.END_TYPE);
+        writeByte(value.getType());
+        if (value.getType() == NbtElement.END_TYPE) return this;
+        writeNbtString("");
+        writeNbtPayload(value);
+        return this;
+    }
+
+    private void writeNbtPayload(NbtElement value) {
+        switch (value.getType()) {
+            case NbtElement.BYTE_TYPE -> writeByte(((NbtByte) value).byteValue());
+            case NbtElement.SHORT_TYPE -> writeShort(((NbtShort) value).shortValue());
+            case NbtElement.INT_TYPE -> writeInt(((NbtInt) value).intValue());
+            case NbtElement.LONG_TYPE -> writeLong(((NbtLong) value).longValue());
+            case NbtElement.FLOAT_TYPE -> writeFloat(((NbtFloat) value).floatValue());
+            case NbtElement.DOUBLE_TYPE -> writeDouble(((NbtDouble) value).doubleValue());
+            case NbtElement.STRING_TYPE -> writeNbtString(((NbtString) value).asString());
+            case NbtElement.COMPOUND_TYPE -> {
+                NbtCompound compound = (NbtCompound) value;
+                for (java.util.Map.Entry<String, NbtElement> entry : compound.entrySet()) {
+                    NbtElement element = entry.getValue();
+                    if (element == null || element.getType() == NbtElement.END_TYPE) continue;
+                    writeByte(element.getType());
+                    writeNbtString(entry.getKey());
+                    writeNbtPayload(element);
+                }
+                writeByte(NbtElement.END_TYPE);
+            }
+            default -> throw new IllegalArgumentException("Unsupported NBT tag type: " + value.getType());
+        }
+    }
+
+    private PacketByteBuf writeNbtString(String value) {
+        byte[] bytes = (value == null ? "" : value).getBytes(StandardCharsets.UTF_8);
+        if (bytes.length > 0xFFFF) throw new IllegalArgumentException("NBT string too long");
+        writeShort(bytes.length);
+        return writeBytes(bytes);
+    }
+
+    public PacketByteBuf writeString(String value) {
+        byte[] bytes = (value == null ? "" : value).getBytes(StandardCharsets.UTF_8);
+        if (bytes.length > 32767 * 4) throw new IllegalArgumentException("string too long");
+        writeVarInt(bytes.length);
+        return writeBytes(bytes);
+    }
+
     /** Alias used by the 1.21.4 packet codec API. */
     public PacketByteBuf writeUtf(String value) { return writeString(value); }
-    public PacketByteBuf writeUuid(UUID value) { UUID uuid = value == null ? new UUID(0L, 0L) : value; return writeLong(uuid.getMostSignificantBits()).writeLong(uuid.getLeastSignificantBits()); }
-    public PacketByteBuf writeIdentifier(Identifier value) { return writeString(value == null ? "minecraft:air" : value.toString()); }
-    public PacketByteBuf writeBlockPos(BlockPos value) { return writeLong(value == null ? 0L : value.asLong()); }
-    public PacketByteBuf writeItemStack(ItemStack value) { ItemStack stack = value == null ? ItemStack.EMPTY : value; writeBoolean(!stack.isEmpty()); if (!stack.isEmpty()) { writeIdentifier(stack.getItem().getId()); writeByte(stack.getCount()); } return this; }
-    public PacketByteBuf writeEnumConstant(Enum<?> value) { return writeVarInt(value == null ? 0 : value.ordinal()); }
-    public byte readByte() { return readRaw(); }
-    public int readUnsignedByte() { return readRaw() & 0xFF; }
-    public short readShort() { return (short) ((readUnsignedByte() << 8) | readUnsignedByte()); }
-    public char readChar() { return (char) (readShort() & 0xFFFF); }
-    public boolean readBoolean() { return readUnsignedByte() != 0; }
-    public int readInt() { return (readUnsignedByte() << 24) | (readUnsignedByte() << 16) | (readUnsignedByte() << 8) | readUnsignedByte(); }
-    public long readLong() { long value = 0; for (int i = 0; i < 8; i++) value = (value << 8) | readUnsignedByte(); return value; }
-    public float readFloat() { return Float.intBitsToFloat(readInt()); }
-    public double readDouble() { return Double.longBitsToDouble(readLong()); }
-    public int readVarInt() { int value = 0; for (int shift = 0; shift < 35; shift += 7) { int part = readUnsignedByte(); value |= (part & 0x7F) << shift; if ((part & 0x80) == 0) return value; } throw new IllegalArgumentException("varint too long"); }
-    public long readVarLong() { long value = 0; for (int shift = 0; shift < 70; shift += 7) { int part = readUnsignedByte(); value |= (long) (part & 0x7F) << shift; if ((part & 0x80) == 0) return value; } throw new IllegalArgumentException("varlong too long"); }
-    public byte[] readByteArray() { int length = readVarInt(); if (length < 0 || length > readableBytes()) throw new IllegalArgumentException("invalid byte array length"); return readRawBytes(length); }
+
+    public PacketByteBuf writeUuid(UUID value) {
+        UUID uuid = value == null ? new UUID(0L, 0L) : value;
+        return writeLong(uuid.getMostSignificantBits()).writeLong(uuid.getLeastSignificantBits());
+    }
+
+    public PacketByteBuf writeIdentifier(Identifier value) {
+        return writeString(value == null ? "minecraft:air" : value.toString());
+    }
+
+    public PacketByteBuf writeBlockPos(BlockPos value) {
+        return writeLong(value == null ? 0L : value.asLong());
+    }
+
+    public PacketByteBuf writeItemStack(ItemStack value) {
+        ItemStack stack = value == null ? ItemStack.EMPTY : value;
+        writeBoolean(!stack.isEmpty());
+        if (!stack.isEmpty()) writeIdentifier(stack.getItem().getId()).writeByte(stack.getCount());
+        return this;
+    }
+
+    public PacketByteBuf writeEnumConstant(Enum<?> value) {
+        return writeVarInt(value == null ? 0 : value.ordinal());
+    }
+
+    public PacketByteBuf writeVarInt(int value) {
+        while ((value & ~0x7F) != 0) {
+            writeByte((value & 0x7F) | 0x80);
+            value >>>= 7;
+        }
+        return writeByte(value);
+    }
+
+    public PacketByteBuf writeVarLong(long value) {
+        while ((value & ~0x7FL) != 0) {
+            writeByte((int) (value & 0x7F) | 0x80);
+            value >>>= 7;
+        }
+        return writeByte((int) value);
+    }
+
+    @Override public PacketByteBuf readerIndex(int index) { super.readerIndex(index); return this; }
+    @Override public PacketByteBuf writerIndex(int index) { super.writerIndex(index); return this; }
+    @Override public PacketByteBuf skipBytes(int length) { super.skipBytes(length); return this; }
+
+    public byte[] readByteArray() {
+        int length = readVarInt();
+        if (length < 0 || length > readableBytes()) throw new IllegalArgumentException("invalid byte array length");
+        return readRawBytes(length);
+    }
+
+    /** Reads a root NBT element, returning {@code null} for the END marker. */
+    public NbtElement readNbtElement() {
+        int type = readUnsignedByte();
+        if (type == NbtElement.END_TYPE) return null;
+        readNbtString(); // root name; network NBT uses an empty name
+        return readNbtPayload(type);
+    }
+
+    /** Reads a compound root, matching the common PacketByteBuf API. */
+    public NbtCompound readNbt() {
+        NbtElement value = readNbtElement();
+        if (value == null) return null;
+        if (!(value instanceof NbtCompound compound))
+            throw new IllegalArgumentException("Expected NBT compound root");
+        return compound;
+    }
+
+    private NbtElement readNbtPayload(int type) {
+        return switch (type) {
+            case NbtElement.BYTE_TYPE -> NbtByte.of(readByte());
+            case NbtElement.SHORT_TYPE -> NbtShort.of(readShort());
+            case NbtElement.INT_TYPE -> NbtInt.of(readInt());
+            case NbtElement.LONG_TYPE -> NbtLong.of(readLong());
+            case NbtElement.FLOAT_TYPE -> NbtFloat.of(readFloat());
+            case NbtElement.DOUBLE_TYPE -> NbtDouble.of(readDouble());
+            case NbtElement.STRING_TYPE -> NbtString.of(readNbtString());
+            case NbtElement.COMPOUND_TYPE -> {
+                NbtCompound compound = new NbtCompound();
+                while (true) {
+                    int childType = readUnsignedByte();
+                    if (childType == NbtElement.END_TYPE) break;
+                    String key = readNbtString();
+                    compound.put(key, readNbtPayload(childType));
+                }
+                yield compound;
+            }
+            default -> throw new IllegalArgumentException("Unsupported NBT tag type: " + type);
+        };
+    }
+
+    private String readNbtString() {
+        int length = readShort() & 0xFFFF;
+        if (length > readableBytes()) throw new IllegalArgumentException("invalid NBT string length");
+        return new String(readRawBytes(length), StandardCharsets.UTF_8);
+    }
+
     public String readString() { return readString(32767); }
-    public String readString(int maxLength) { int length = readVarInt(); if (length < 0 || length > maxLength * 4 || length > readableBytes()) throw new IllegalArgumentException("invalid string length"); String value = new String(readRawBytes(length), StandardCharsets.UTF_8); if (value.length() > maxLength) throw new IllegalArgumentException("string too long"); return value; }
+
+    public String readString(int maxLength) {
+        int length = readVarInt();
+        if (length < 0 || length > maxLength * 4 || length > readableBytes())
+            throw new IllegalArgumentException("invalid string length");
+        String value = new String(readRawBytes(length), StandardCharsets.UTF_8);
+        if (value.length() > maxLength) throw new IllegalArgumentException("string too long");
+        return value;
+    }
+
     /** Alias used by the 1.21.4 packet codec API. */
     public String readUtf() { return readString(); }
     public String readUtf(int maxLength) { return readString(maxLength); }
-    public UUID readUuid() { return new UUID(readLong(), readLong()); }
-    public Identifier readIdentifier() { Identifier id = Identifier.tryParse(readString()); if (id == null) throw new IllegalArgumentException("invalid identifier"); return id; }
-    public BlockPos readBlockPos() { return BlockPos.fromLong(readLong()); }
-    public ItemStack readItemStack() { return readBoolean() ? new ItemStack(net.minecraft.item.Item.fromRaw(0, readIdentifier().toString()), readUnsignedByte()) : ItemStack.EMPTY; }
-    public int readableBytes() { return data().length - readerIndex; }
-    public int writerIndex() { return data().length; }
-    public PacketByteBuf writerIndex(int index) {
-        byte[] current = data();
-        if (index < 0 || index > current.length) throw new IndexOutOfBoundsException(index);
-        if (index != current.length) {
-            output.reset();
-            output.write(current, 0, index);
-            input = null;
+
+    public int readVarInt() {
+        int value = 0;
+        for (int shift = 0; shift < 35; shift += 7) {
+            int part = readUnsignedByte();
+            value |= (part & 0x7F) << shift;
+            if ((part & 0x80) == 0) return value;
         }
-        if (readerIndex > index) readerIndex = index;
-        if (markedReaderIndex > index) markedReaderIndex = index;
-        return this;
+        throw new IllegalArgumentException("varint too long");
     }
-    public int capacity() { return writerIndex(); }
-    public boolean isReadable(int length) { return length >= 0 && readableBytes() >= length; }
-    public PacketByteBuf skipBytes(int length) {
-        if (length < 0 || !isReadable(length)) throw new IndexOutOfBoundsException("length");
-        readerIndex += length; return this;
+
+    public long readVarLong() {
+        long value = 0;
+        for (int shift = 0; shift < 70; shift += 7) {
+            int part = readUnsignedByte();
+            value |= (long) (part & 0x7F) << shift;
+            if ((part & 0x80) == 0) return value;
+        }
+        throw new IllegalArgumentException("varlong too long");
     }
-    public byte getByte(int index) {
-        if (index < 0 || index >= writerIndex()) throw new IndexOutOfBoundsException(index);
-        return data()[index];
+
+    public UUID readUuid() { return new UUID(readLong(), readLong()); }
+
+    public Identifier readIdentifier() {
+        Identifier id = Identifier.tryParse(readString());
+        if (id == null) throw new IllegalArgumentException("invalid identifier");
+        return id;
     }
-    public byte[] readBytes(int length) {
-        if (length < 0 || !isReadable(length)) throw new IndexOutOfBoundsException("length");
-        return readRawBytes(length);
+
+    public BlockPos readBlockPos() { return BlockPos.fromLong(readLong()); }
+
+    public ItemStack readItemStack() {
+        return readBoolean()
+            ? new ItemStack(Item.fromRaw(0, readIdentifier().toString()), readUnsignedByte())
+            : ItemStack.EMPTY;
     }
-    public int readerIndex() { return readerIndex; }
-    public PacketByteBuf readerIndex(int index) { if (index < 0 || index > data().length) throw new IndexOutOfBoundsException(index); readerIndex = index; return this; }
-    public void markReaderIndex() { markedReaderIndex = readerIndex; }
-    public void resetReaderIndex() { readerIndex(markedReaderIndex); }
-    public boolean isReadable() { return readableBytes() > 0; }
-    public byte[] toByteArray() { return data().clone(); }
-    public PacketByteBuf copy() { PacketByteBuf copy = new PacketByteBuf(data()); copy.readerIndex = readerIndex; return copy; }
-    private byte readRaw() { if (readerIndex >= data().length) throw new IndexOutOfBoundsException("buffer underflow"); return data()[readerIndex++]; }
-    private byte[] readRawBytes(int length) { byte[] value = Arrays.copyOfRange(data(), readerIndex, readerIndex + length); readerIndex += length; return value; }
+
+    public byte[] toByteArray() {
+        byte[] value = new byte[writerIndex()];
+        if (value.length > 0) getBytes(0, value);
+        return value;
+    }
+
+    @Override public PacketByteBuf copy() {
+        PacketByteBuf copy = new PacketByteBuf(toByteArray());
+        copy.readerIndex(readerIndex());
+        return copy;
+    }
+
+    private byte[] readRawBytes(int length) {
+        byte[] value = new byte[length];
+        readBytes(value);
+        return value;
+    }
 }

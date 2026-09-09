@@ -7,9 +7,8 @@ runtime or that arbitrary Fabric mods are supported.
 
 ## Outcome
 
-The native server now has an opt-in, process-local HotSpot/JNI boundary. The normal
-build and runtime remain C++-only unless `--jvm=true` or `jvm=true` is configured.
-When a JDK with JNI headers is available, the build produces the dependency-free
+The native server now has a default-on, process-local HotSpot/JNI boundary. When a
+JDK with JNI headers is available, the build produces the dependency-free
 Java compatibility classes and an executable fixture. At runtime the bridge:
 
 - starts one embedded HotSpot VM through `JNI_CreateJavaVM`;
@@ -38,7 +37,7 @@ the Mojang server jar into this repository.
 
 | plan51 area | status | evidence / boundary |
 |---|---|---|
-| Optional JVM bootstrap and clean shutdown | `IMPLEMENTED` | `src/jvm/JvmRuntime.*`; `jvm_runtime` starts HotSpot and exits through the owned process path |
+| Default-on JVM bootstrap and clean shutdown | `IMPLEMENTED` | `src/jvm/JvmRuntime.*`; `jvm_runtime` starts HotSpot and exits through the owned process path; non-strict startup remains fail-open |
 | Opaque object handles and cache | `IMPLEMENTED-PARTIAL` | `NativeHandleTable`, `JavaObjectCache`, `test_jvm_handles`; entity/world lifetime coverage remains bounded to wired server paths |
 | Native server/world/player/entity bridge | `IMPLEMENTED-PARTIAL` | `jvm/java/net/minecraft/**` and JNI methods in `JvmRuntime.cpp`; shadow objects expose only the documented subset |
 | Inventory and registry/settings surface | `IMPLEMENTED-PARTIAL` | logical PlayerInventory slots, native-backed ItemStack mutation, custom Block registration; data components and every registry are not mirrored |
@@ -47,7 +46,8 @@ the Mojang server jar into this repository.
 | Mixin `HEAD`/`TAIL`/`RETURN`/simple `Overwrite` | `IMPLEMENTED-PARTIAL` | pre-definition transformer plus native routing; corpus cases 11, 12, and 16 pass, with manual hooks retained only as fallback |
 | Accessor/Invoker/Shadow/Redirect/Modify* | `IMPLEMENTED-PARTIAL` | structural transformer and corpus cases 09, 10, 15, and 17–20 pass; MixinExtras operation and `@Share`/`@Local` contract fixtures pass; unsupported constructor/verifier-state cases remain fail-closed |
 | Structured class-file bytecode transformation | `IMPLEMENTED-PARTIAL` | `25/25` compatibility fixture cases pass; transformer contract covers MixinExtras operations and local selectors; manifest covers 94 declared methods (47 native + 47 wrapper), with 9 structured methods (`9.6%`) and all 10 declared injection-point names |
-| Official Fabric Loader/Knot probe | `PROBE-PASS / DECLARED-LIMITATION` | pinned Loader `0.16.9`, Knot, Sponge Mixin, ASM, and intermediary artifacts pass `tools/verify_fabric_runtime.py --offline --probe`; the production runtime is not the Mojang provider |
+| Fabric API/Yarn server-side ABI audit | `AUDITED / INFORMATIONAL` | Fabric API `0.119.4+1.21.4` common/server-side surface cross-checked against Yarn `1.21.4+build.8`: 206 top-level classes and 1,699 public members; no exact class/member descriptor gap in the selected surface; client/datagen/renderer/internal-only classes are intentionally excluded |
+| Official Fabric Loader/Knot probe | `PROBE-PASS / DECLARED-LIMITATION` | pinned Loader `0.16.9`, Knot, Sponge Mixin, ASM, and intermediary artifacts pass `tools/verify_fabric_runtime.py --offline --probe`; process evidence is `build/fabric-runtime/probe-evidence-after-fabric-docs-20260908-v1.json`; the production runtime is not the Mojang provider |
 
 ## Source ownership
 
@@ -67,23 +67,26 @@ specification and does not generate Mojang classes or bytecode.
 ## Configuration
 
 ```text
---jvm=true
+--jvm=true|false
 --jvm-strict=true|false
 --jvm-classes=<compiled compatibility classes>
 --jvm-mods=<directory containing mod directories or .jar files>
 --jvm-config=<config directory>
 --jvm-java-home=<JDK home, optional>
---jvm-library=<absolute libjvm.so path, optional>
+--jvm-library=<absolute JVM library path, optional>
 ```
 
 The same keys can be placed in `server.properties` (`jvm`, `jvm-strict`,
-`jvm-classes`, `jvm-mods`, `jvm-config`, `jvm-java-home`, and `jvm-library`). In
-non-strict mode an unavailable or malformed optional JVM layer is logged and the
-native server continues. Strict mode makes startup failure visible and fatal.
+`jvm-classes`, `jvm-mods`, `jvm-config`, `jvm-java-home`, and `jvm-library`).
+In non-strict mode an unavailable or malformed JVM layer is logged and the native
+server continues. Strict mode makes startup failure visible and fatal. The server
+defaults to `jvm=true`; use `--jvm=false` for an explicitly native-only run.
 
 ## Evidence
 
-The focused plan51 gate was run on 2026-09-06 from the 1.21.4/protocol-769 source:
+The focused plan51 gate was first run on 2026-09-06 from the 1.21.4/protocol-769
+source. The official Fabric API/Yarn recheck, real-mod regression, and full
+non-nightly CTest rerun were completed on 2026-09-07/08:
 
 ```text
 cppfm_jvm_classes       PASS
@@ -96,6 +99,8 @@ jvm_compatibility       PASS (25/25)
 jvm_corpus              PASS (25/25)
 jvm_manifest            PASS
 jvm_contract_audit       PASS
+shadow_abi              PASS (906 source classes, 763 class files, 8,297 audited members)
+fabric_api_yarn_audit    PASS / INFORMATIONAL (206 classes, 1,699 public members)
 official_loader_probe   PASS (pinned 0.16.9/Knot/Mixin)
 real_mod_corpus         PASS (Lithium, FerriteCore, Carpet, and combined; explicit Java 21)
 ```
@@ -107,9 +112,11 @@ command registration and integer-argument execution, World API access,
 Java-registered command from the native console ingress. The compatibility corpus
 also covers dependency ordering, API/handle identity, Accessor/Invoker, all
 declared structural injection cases, re-entry, attached-thread calls, exception
-isolation, and two-mod ordering. The official probe records
+isolation, and two-mod ordering. The process official probe records
 `CPPFM_OFFICIAL_ENTRYPOINTS_DONE` and `CPPFM_OFFICIAL_MIXIN_RETURN`; these are
-boundary tests, not evidence of arbitrary mod or client compatibility.
+boundary tests, not evidence of arbitrary mod or client compatibility. The separate
+C++-owned embedded-provider probe records the official Loader/Knot handoff and Mixin
+markers in `build/fabric-runtime/embedded-evidence-after-fabric-docs-20260908-v1.json`.
 
 The generated manifest reports 94 method entries: `nativeBackend=47` and
 `wrapperBackend=47`. Nine entries have `structuredBytecode` coverage (`9/94`,
@@ -118,11 +125,27 @@ transformer names, including the five MixinExtras operations exercised by the
 corpus; `jvm_contract_audit` verifies that every
 declared method has exactly one backend classification.
 
+The official API audit covers the selected common/server-side API surface, not every
+Fabric API class. It is an offline class/member descriptor comparison against the
+pinned Fabric API and Yarn artifacts; the counts are informational and do not prove
+runtime semantics. Client, datagen, renderer, and internal-only surfaces remain
+outside this audit.
+
 The locked real public-mod corpus (Lithium, FerriteCore, and Carpet) verifies its
 archives and metadata and passes individual plus combined runtime probes with the
-explicit `/usr/lib/jvm/java-21-openjdk-amd64/bin/java` launcher. The retained report
-is `build/real-mod-corpus/real-mod-corpus-report.json`; this is evidence for the
-three locked server-side cases, not a claim of arbitrary-mod compatibility.
+explicit `/usr/lib/jvm/java-21-openjdk-amd64/bin/java` launcher. The latest retained
+report is `build/real-mod-corpus/real-mod-corpus-report-after-diagnostics-20260908-v1.json`;
+all four runtime processes have zero classified linkage/bootstrap/uncaught-exception
+diagnostics. This is evidence for the three locked server-side cases, not a claim of
+arbitrary-mod compatibility. The separate structural provider scan remains
+conservative because raw Mixin target members may be created only during
+transformation. The wider candidate report separately classifies 12 Modrinth entries:
+8 target-compatible/runtime passes and 4 non-target or invalid classifications; the
+available Create archives have no matching Fabric 1.21.4 server artifact and are not
+counted as runtime passes. The latest bounded rerun is
+`build/real-mod-candidates/compatibility-candidates-report-final-20260908.json`;
+it also records the registry accessor inflection fix that allows Fabric API,
+ServerCore, and Spark to complete their bootstrap gate.
 
 ## Explicit non-goals
 

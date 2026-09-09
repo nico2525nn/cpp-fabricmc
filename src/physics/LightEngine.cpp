@@ -58,7 +58,6 @@ void LightEngine::onBlockChanged(std::int32_t x, std::int32_t y,
     const uint8_t cur = world_.getBlockLight(x, y, z);
     if (cur > 0 && cur > newEmit)
         removeQueue_.push({x, y, z, cur});
-    else if (cur == newEmit && newEmit == 0) {}
 
     if (newEmit > 0) {
         setBlockLight(x, y, z, static_cast<std::uint8_t>(newEmit));

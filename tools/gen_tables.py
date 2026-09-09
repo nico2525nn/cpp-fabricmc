@@ -90,6 +90,13 @@ for b in data:
             if vals is None:
                 print("WARN no values for %s.%s" % (short, s["name"]), file=sys.stderr)
                 vals = []
+        # The community state summary used for 1.21.4 has historically
+        # reported the shared `type` descriptor as top/bottom/straight for
+        # slabs.  Vanilla's slab state is top/bottom/double; keeping this
+        # correction here makes stateWithProps() reversible for every slab
+        # instead of silently mapping `type=double` to `bottom`.
+        if short.endswith("_slab") and s["name"] == "type":
+            vals = ["top", "bottom", "double"]
         plist.append(prop_id(s["name"], list(vals)))
     # defaults from mcmeta ([1] holds default property values)
     defaults = {}

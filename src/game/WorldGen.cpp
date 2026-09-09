@@ -157,9 +157,6 @@ void World::fillTerrainV3(Chunk& c, std::int32_t cx, std::int32_t cz) const {
         slot = st;
     };
 
-    thread_local ImprovedNoise caveANoise(srv_seed ^ 0xA24BAED4963EE407ULL);
-    thread_local ImprovedNoise caveBNoise(srv_seed ^ 0x9FB21C651E98DF25ULL);
-
     for (int lz = 0; lz < 16; ++lz)
         for (int lx = 0; lx < 16; ++lx) {
             const std::int32_t wx = cx * 16 + lx, wz = cz * 16 + lz;
@@ -188,10 +185,10 @@ void World::fillTerrainV3(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                 if (st == STONE || st == GRASS || st == DIRT) {
                     // spaghetti caves carve through stone only below surface-7
                     if (st == STONE && !col.ocean && y >= -58 && y < surf - 7) {
-                        const double n1 = caveANoise.sample(wx * 0.02, y * 0.03,
-                                                            wz * 0.02);
-                        const double n2 = caveBNoise.sample(wx * 0.023, y * 0.033,
-                                                            wz * 0.023);
+                        const double n1 = terrain_.caveA_.sample(
+                            wx * 0.02, y * 0.03, wz * 0.02);
+                        const double n2 = terrain_.caveB_.sample(
+                            wx * 0.023, y * 0.033, wz * 0.023);
                         if (n1 * n1 + n2 * n2 < 0.0025) st = 0;
                     }
                 }
@@ -400,10 +397,6 @@ void World::fillTerrainV3(Chunk& c, std::int32_t cx, std::int32_t cz) const {
 // ------------------------------------------------------- nether / end gen
 
 void World::fillNether(Chunk& c, std::int32_t cx, std::int32_t cz) const {
-    thread_local ImprovedNoise density(srv_seed ^ 0x6E657468ULL);
-    thread_local ImprovedNoise surfaceNoise(srv_seed ^ 0x53555246ULL); // surface pattern
-    thread_local ImprovedNoise depthNoise(srv_seed ^ 0x44455054ULL);   // depth/basal
-    thread_local ImprovedNoise floatNoise(srv_seed ^ 0x464C4F41ULL);   // floating islands
     const auto& table = gen::blockNameToState();
     auto id2 = [&](const char* n) -> std::uint16_t {
         auto it = table.find(n);
@@ -440,9 +433,12 @@ void World::fillNether(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                     for (int cx2 = 0; cx2 < 4; ++cx2) {
                         int wx = cx*16 + cx2*4 + 2;
                         int wz = cz*16 + cz2*4 + 2;
-                        double surf = surfaceNoise.octaves(wx*0.008, 0, wz*0.008, 3);
-                        double dep = depthNoise.sample(wx*0.015, 0, wz*0.015);
-                        double flt = floatNoise.sample(wx*0.02, 0, wz*0.02);
+                        double surf = terrain_.netherSurface_.octaves(
+                            wx*0.008, 0, wz*0.008, 3);
+                        double dep = terrain_.netherDepth_.sample(
+                            wx*0.015, 0, wz*0.015);
+                        double flt = terrain_.netherFloat_.sample(
+                            wx*0.02, 0, wz*0.02);
                         int biomeIdx = idxNether;
                         if (surf > 0.55) biomeIdx = idxBasalt;
                         else if (surf < -0.55 && dep > 0.3) biomeIdx = idxWarped;
@@ -454,9 +450,12 @@ void World::fillNether(Chunk& c, std::int32_t cx, std::int32_t cz) const {
     for (int lz = 0; lz < 16; ++lz)
         for (int lx = 0; lx < 16; ++lx) {
             const std::int32_t wx = cx * 16 + lx, wz = cz * 16 + lz;
-            const double surf = surfaceNoise.octaves(wx*0.008, 0, wz*0.008, 3);
-            const double dep = depthNoise.sample(wx*0.015, 0, wz*0.015);
-            const double flt = floatNoise.sample(wx*0.02, 0, wz*0.02);
+            const double surf = terrain_.netherSurface_.octaves(
+                wx*0.008, 0, wz*0.008, 3);
+            const double dep = terrain_.netherDepth_.sample(
+                wx*0.015, 0, wz*0.015);
+            const double flt = terrain_.netherFloat_.sample(
+                wx*0.02, 0, wz*0.02);
             // enum: 0=nether_wastes, 1=basalt_deltas, 2=warped, 3=crimson, 4=soul_sand_valley
             int biome = 0;
             if (surf > 0.55) biome = 1; // basalt deltas
@@ -480,7 +479,8 @@ void World::fillNether(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                          TerrainGenerator::posHash(srv_seed, wx, y, wz) < .7)
                     st = BEDROCK;
                 else {
-                    const double d = density.octaves(wx * 0.012, y * 0.02, wz * 0.012, 3);
+                    const double d = terrain_.netherDensity_.octaves(
+                        wx * 0.012, y * 0.02, wz * 0.012, 3);
                     // basalt deltas have more solid at mid heights with basalt pillars
                     double thresh = 0.02;
                     if (biome==1) thresh = -0.05; // more terrain
@@ -489,7 +489,8 @@ void World::fillNether(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                         if (biome==1) {
                             // basalt deltas: basalt/blackstone mix, occasional magma
                             if (y > 40 && y < 90) {
-                                double b = surfaceNoise.sample(wx*0.04, y*0.03, wz*0.04);
+                                double b = terrain_.netherSurface_.sample(
+                                    wx*0.04, y*0.03, wz*0.04);
                                 if (b > 0.4) st = BASALT;
                                 else if (b > 0.1) st = BLACKSTONE;
                                 else st = NETHERRACK;
@@ -498,25 +499,33 @@ void World::fillNether(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                             // warped forest: warped nylium on top, netherrack below
                             if (y > 72 && y < 78) st = WARPED_NYLIUM;
                             else st = NETHERRACK;
-                            if (density.sample(wx * 0.03, y * 0.05, wz * 0.03) > 0.55 && y < 38) st = SOUL_SOIL;
+                            if (terrain_.netherDensity_.sample(
+                                    wx * 0.03, y * 0.05, wz * 0.03) > 0.55 &&
+                                y < 38) st = SOUL_SOIL;
                         } else if (biome==3) {
                             if (y > 72 && y < 78) st = CRIMSON_NYLIUM;
                             else st = NETHERRACK;
-                            if (density.sample(wx * 0.03, y * 0.05, wz * 0.03) > 0.6 && y < 40) st = SOUL;
+                            if (terrain_.netherDensity_.sample(
+                                    wx * 0.03, y * 0.05, wz * 0.03) > 0.6 &&
+                                y < 40) st = SOUL;
                         } else if (biome==4) {
                             // soul sand valley: soul soil/sand преобладает
                             if (y < 45 && y > 32) {
-                                double s = depthNoise.sample(wx*0.05, y*0.02, wz*0.05);
+                                double s = terrain_.netherDepth_.sample(
+                                    wx*0.05, y*0.02, wz*0.05);
                                 st = (s > 0.2) ? SOUL : SOUL_SOIL;
                             } else st = NETHERRACK;
                         } else {
                             st = NETHERRACK;
-                            if (density.sample(wx * 0.03, y * 0.05, wz * 0.03) > 0.55 && y < 40)
+                            if (terrain_.netherDensity_.sample(
+                                    wx * 0.03, y * 0.05, wz * 0.03) > 0.55 &&
+                                y < 40)
                                 st = SOUL;
                         }
                         // quartz ore veins (rare)
                         if (st==NETHERRACK || st==BASALT) {
-                            double q = floatNoise.sample(wx*0.08, y*0.08, wz*0.08);
+                            double q = terrain_.netherFloat_.sample(
+                                wx*0.08, y*0.08, wz*0.08);
                             if (q > 0.82 && y > 10 && y < 110) st = QUARTZ_ORE;
                         }
                     } else if (y <= 31) {
@@ -564,7 +573,7 @@ void World::fillNether(Chunk& c, std::int32_t cx, std::int32_t cz) const {
             }
             // nether gold / magma per column low chance (augment quartz)
             {
-                double ng = floatNoise.sample(wx*0.07, 0, wz*0.07);
+                double ng = terrain_.netherFloat_.sample(wx*0.07, 0, wz*0.07);
                 if (ng > 0.65) {
                     for (int y=10; y<50; ++y) {
                         if (TerrainGenerator::posHash(srv_seed ^ 0xA11D, wx, y, wz) < 0.004) {
@@ -639,7 +648,6 @@ void World::fillEnd(Chunk& c, std::int32_t cx, std::int32_t cz) const {
     const std::uint16_t BEDROCK = id2("minecraft:bedrock");
     const std::uint16_t OBSIDIAN = id2("minecraft:obsidian") ? id2("minecraft:obsidian") : BEDROCK;
     const std::uint16_t CHORUS = id2("minecraft:chorus_plant") ? id2("minecraft:chorus_plant") : END_STONE;
-    thread_local ImprovedNoise islandNoise(srv_seed ^ 0x454E4410ULL);
     {
         int idxEnd = biomeIndexOf("minecraft:the_end");
         int idxHigh = biomeIndexOf("minecraft:end_highlands");
@@ -662,7 +670,8 @@ void World::fillEnd(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                         if (r < 60) bIdx = idxEnd;
                         else if (r < 200) bIdx = idxBarr;
                         else {
-                            double n = islandNoise.octaves(wx*0.01, 0, wz*0.01, 3);
+                            double n = terrain_.endIsland_.octaves(
+                                wx*0.01, 0, wz*0.01, 3);
                             double hash = TerrainGenerator::posHash(srv_seed ^ 0xE11D, wx, 7, wz);
                             if (hash < 0.04 + n*0.02) {
                                 if (n > 0.5) bIdx = idxHigh;
@@ -684,7 +693,8 @@ void World::fillEnd(Chunk& c, std::int32_t cx, std::int32_t cz) const {
     int outerRadius = 12;
     if (isOuterRegion) {
         outerHash = TerrainGenerator::posHash(srv_seed ^ 0xE11D, cx, cz, 0x42);
-        outerN = islandNoise.octaves(centerCX*0.01, 0, centerCZ*0.01, 3);
+        outerN = terrain_.endIsland_.octaves(
+            centerCX*0.01, 0, centerCZ*0.01, 3);
         double prob = 0.0714 + outerN*0.025; // ~1/14 + noise modulation (7-10%)
         // optional sin ring: outer islands form concentric rings every ~80 blocks
         double ring = std::sin(centerR / 80.0);
@@ -702,7 +712,7 @@ void World::fillEnd(Chunk& c, std::int32_t cx, std::int32_t cz) const {
     auto isHighlandColumn = [&](int wx, int wz)->bool{
         double r2 = std::sqrt(double(wx)*wx + double(wz)*wz);
         if (r2 < 200) return false;
-        double n2 = islandNoise.octaves(wx*0.01, 0, wz*0.01, 3);
+        double n2 = terrain_.endIsland_.octaves(wx*0.01, 0, wz*0.01, 3);
         return n2 > 0.4;
     };
     for (int lz = 0; lz < 16; ++lz)
@@ -744,7 +754,8 @@ void World::fillEnd(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                     }
                 } else if (r > 1000) {
                     // fallback small per-column islands for variety (1/14)
-                    double n = islandNoise.octaves(wx*0.01, 0, wz*0.01, 3);
+                    double n = terrain_.endIsland_.octaves(
+                        wx*0.01, 0, wz*0.01, 3);
                     double hash = TerrainGenerator::posHash(srv_seed ^ 0xE11D, wx, 7, wz);
                     double islandProb = 0.04 + n * 0.02;
                     if (hash < islandProb) {
@@ -756,7 +767,8 @@ void World::fillEnd(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                             const int wy = y - kMinY;
                             c.blocks[Chunk::index(wy >> 4, wy & 15, lz, lx)] = END_STONE;
                         }
-                        if (hash < 0.008 && islandNoise.sample(wx*0.05, 0, wz*0.05) > 0.3) {
+                        if (hash < 0.008 && terrain_.endIsland_.sample(
+                                wx*0.05, 0, wz*0.05) > 0.3) {
                             int pillarH = 4 + (int)(TerrainGenerator::posHash(srv_seed, wx, 9, wz)*5);
                             for (int dy = 1; dy <= pillarH; ++dy) {
                                 int py = islandH + dy;
@@ -771,7 +783,8 @@ void World::fillEnd(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                 }
             } else if (r > 1000) {
                 // outer region without chunk-island: per-column sparse islands
-                double n = islandNoise.octaves(wx*0.01, 0, wz*0.01, 3);
+                double n = terrain_.endIsland_.octaves(
+                    wx*0.01, 0, wz*0.01, 3);
                 double hash = TerrainGenerator::posHash(srv_seed ^ 0xE11D, wx, 7, wz);
                 double islandProb = 0.04 + n * 0.02;
                 if (hash < islandProb) {
@@ -783,7 +796,8 @@ void World::fillEnd(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                         const int wy = y - kMinY;
                         c.blocks[Chunk::index(wy >> 4, wy & 15, lz, lx)] = END_STONE;
                     }
-                    if (hash < 0.008 && islandNoise.sample(wx*0.05, 0, wz*0.05) > 0.3) {
+                    if (hash < 0.008 && terrain_.endIsland_.sample(
+                            wx*0.05, 0, wz*0.05) > 0.3) {
                         int pillarH = 4 + (int)(TerrainGenerator::posHash(srv_seed, wx, 9, wz)*5);
                         for (int dy = 1; dy <= pillarH; ++dy) {
                             int py = islandH + dy;

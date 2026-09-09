@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "corpus26_functional_api",
+  "version": "1.0.0",
+  "name": "cppfm corpus 26 functional server API",
+  "environment": "server",
+  "depends": {
+    "corpus24_exception": "*",
+    "corpus25_object_identity": "*"
+  },
+  "entrypoints": {"server": ["cppfm.corpus.fixture26.FunctionalApi"]}
+}

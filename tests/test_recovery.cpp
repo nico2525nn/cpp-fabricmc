@@ -92,6 +92,29 @@ int main() {
         CHECK(diff == "normal", "happy: difficulty round-trips");
     }
 
+    // -- 1b) a complete .new is the most recent committed save candidate ----
+    {
+        std::string dir = mkTmp("dat_new");
+        const auto good = saveGoodLevel(dir);
+        writeFile(dir + "/level.dat.new", good);
+        corruptTruncate(dir + "/level.dat");
+        World w = makeWorld();
+        WorldDataManager m(dir);
+        std::string diff = "x";
+        double dia = 1, cx = 9, cz = 9;
+        RecoveryResult r;
+        const bool ok = m.loadWithRecovery(w, diff, dia, cx, cz, nullptr, nullptr, r);
+        CHECK(ok && r.ok && r.src == LevelSource::DatNew,
+              "dat.new: valid temporary file is recovered");
+        CHECK(fs::exists(dir + "/level.dat.corrupt") &&
+                  fs::exists(dir + "/level.dat") &&
+                  !fs::exists(dir + "/level.dat.new"),
+              "dat.new: corrupt primary is quarantined and candidate promoted");
+        CHECK(readFile(dir + "/level.dat") == good,
+              "dat.new: promoted bytes are unchanged");
+        CHECK(diff == "normal", "dat.new: difficulty round-trips");
+    }
+
     // -- 2) corruption matrix: dat bad × {truncate,bitflip,empty}, old good ---
     const char* kinds[3] = {"truncate", "bitflip", "empty"};
     for (int k = 0; k < 3; ++k) {

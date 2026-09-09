@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Bot smoke 3-clients 30s — C-12 (real-connection wire validation)."""
-import io, os, struct, sys, time, argparse, subprocess, socket, signal, tempfile, shutil
+import io, math, os, struct, sys, time, argparse, subprocess, socket, signal, tempfile, shutil
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mcproto
 from mcproto import Conn, read_varint
@@ -72,6 +72,23 @@ class Bot:
         self.keepalives = 0
         self.disconnects = 0
         self.container_updates = []
+        self.position = (0.5, -60.0, 0.5)
+
+    def move_to(self, x, y, z, on_ground=True):
+        """Send a legal sequence of position packets to an integration target."""
+        ox, oy, oz = self.position
+        distance = math.sqrt((x - ox) ** 2 + (y - oy) ** 2 + (z - oz) ** 2)
+        steps = max(1, int(math.ceil(distance / 8.0)))
+        for step in range(1, steps + 1):
+            fraction = step / steps
+            position = (ox + (x - ox) * fraction,
+                        oy + (y - oy) * fraction,
+                        oz + (z - oz) * fraction)
+            self.c.send_packet_raw(
+                0x1c, struct.pack(">ddd", *position) +
+                bytes([1 if step == steps and on_ground else 0]))
+        self.position = (x, y, z)
+
     def pump(self, seconds=1.0, move=True):
         t_end = time.monotonic() + seconds
         last_move = time.monotonic()
@@ -113,7 +130,7 @@ class Bot:
             if move and time.monotonic() - last_move > 0.35:
                 last_move = time.monotonic()
                 try:
-                    self.c.send_packet_raw(0x1c, struct.pack(">ddd", 8.5, -60.0, 8.5) + b"\x01")
+                    self.move_to(8.5, -60.0, 8.5)
                 except OSError:
                     return
 
@@ -141,10 +158,13 @@ def main():
         world_dir = tempfile.mkdtemp(prefix=f"cppfm-bot-smoke-{os.getpid()}-")
         print(f"[bot_smoke] spawning {binary} --port {port}")
         cwd = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+        environment = os.environ.copy()
+        environment["CPPFM_SERVER_DIR"] = world_dir
         try:
             proc = subprocess.Popen([binary, "--port", str(port), "--view-distance", "6",
                                      "--world-dir", world_dir],
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=cwd,
+                                    env=environment,
                                     start_new_session=True)
             wait_for_server(proc, host, port)
         except BaseException:
@@ -168,6 +188,7 @@ def main():
 
         # entity tracker yaw/pitch
         a.c.send_packet_raw(0x1d, struct.pack(">ddd", 9.5, -60.0, 8.5) + struct.pack(">ff", 45.0, 10.0) + b"\x01")
+        a.position = (9.5, -60.0, 8.5)
         time.sleep(0.7); b.pump(0.5); c.pump(0.5)
         check(len(b.moves) >= 1, f"B tracker yaw/pitch moves {len(b.moves)} (0x2f/0x30/0x77)")
         check(len(c.moves) >= 1, f"C tracker moves {len(c.moves)}")
@@ -202,6 +223,8 @@ def main():
         # Stay outside the default 16-block spawn-protection radius so this
         # checks the broadcast path rather than an intentionally rejected dig.
         dig_x, dig_y, dig_z = 32, -61, 32
+        a.move_to(32.5, -60.0, 32.5)
+        time.sleep(0.2); a.pump(0.2, move=False)
         a.c.send_packet_raw(0x27, mcproto.write_varint(0)+pack_pos(dig_x,dig_y,dig_z)+bytes([1])+mcproto.write_varint(99))
         time.sleep(0.5); a.pump(0.5); b.pump(0.5); c.pump(0.5)
 

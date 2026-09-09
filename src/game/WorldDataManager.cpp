@@ -1,18 +1,133 @@
 #include "WorldDataManager.hpp"
 #include "World.hpp"
+#include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 
 namespace cppfm {
 
 namespace {
 bool isDimensionStoragePath(const std::string& path) {
-    const std::filesystem::path candidate(path);
-    for (const auto& component : candidate) {
-        const auto name = component.string();
-        if (name == "DIM-1" || name == "DIM1") return true;
+    // Only the world-directory leaf identifies a dimension.  A perfectly
+    // valid world rooted below a parent named DIM-1 must still own level.dat.
+    const auto candidate = std::filesystem::path(path).lexically_normal();
+    const auto name = candidate.filename().string();
+    return name == "DIM-1" || name == "DIM1";
+}
+
+bool readInt32(const nbt::Value& value, std::int32_t& out) {
+    if (value.tag == nbt::Int) {
+        out = value.i;
+        return true;
+    }
+    if (value.tag == nbt::Long &&
+        value.l >= std::numeric_limits<std::int32_t>::min() &&
+        value.l <= std::numeric_limits<std::int32_t>::max()) {
+        out = static_cast<std::int32_t>(value.l);
+        return true;
     }
     return false;
+}
+
+bool readInt64(const nbt::Value& value, std::int64_t& out) {
+    if (value.tag == nbt::Long) {
+        out = value.l;
+        return true;
+    }
+    if (value.tag == nbt::Int) {
+        out = value.i;
+        return true;
+    }
+    if (value.tag == nbt::Double && std::isfinite(value.d) &&
+        value.d >= static_cast<double>(std::numeric_limits<std::int64_t>::min()) &&
+        value.d <= static_cast<double>(std::numeric_limits<std::int64_t>::max())) {
+        out = static_cast<std::int64_t>(value.d);
+        return true;
+    }
+    return false;
+}
+
+bool readDouble(const nbt::Value& value, double& out) {
+    switch (value.tag) {
+        case nbt::Double: out = value.d; break;
+        case nbt::Float: out = value.f; break;
+        case nbt::Int: out = static_cast<double>(value.i); break;
+        case nbt::Long: out = static_cast<double>(value.l); break;
+        default: return false;
+    }
+    return std::isfinite(out);
+}
+
+bool validLevelDataShape(const nbt::Value& data) {
+    if (data.tag != nbt::Compound) return false;
+
+    if (const auto* version = data.get("DataVersion")) {
+        std::int64_t ignored = 0;
+        if (!readInt64(*version, ignored)) return false;
+    }
+
+    for (const char* key : {"SpawnX", "SpawnY", "SpawnZ"}) {
+        if (const auto* value = data.get(key)) {
+            std::int32_t ignored = 0;
+            if (!readInt32(*value, ignored)) return false;
+        }
+    }
+    if (const auto* angle = data.get("SpawnAngle")) {
+        double ignored = 0;
+        if ((angle->tag != nbt::Float && angle->tag != nbt::Double) ||
+            !readDouble(*angle, ignored)) return false;
+    }
+    if (const auto* difficulty = data.get("Difficulty")) {
+        if (difficulty->tag == nbt::Byte) {
+            if (difficulty->b < 0 || difficulty->b > 3) return false;
+        } else if (difficulty->tag == nbt::String) {
+            if (difficulty->str != "peaceful" && difficulty->str != "easy" &&
+                difficulty->str != "normal" && difficulty->str != "hard")
+                return false;
+        } else {
+            return false;
+        }
+    }
+
+    if (const auto* border = data.get("WorldBorder")) {
+        if (border->tag != nbt::Compound) return false;
+        for (const char* key : {"CenterX", "CenterZ", "Size", "SizeLerpTarget"}) {
+            if (const auto* value = border->get(key)) {
+                double ignored = 0;
+                if (!readDouble(*value, ignored)) return false;
+            }
+        }
+        if (const auto* value = border->get("SizeLerpTime")) {
+            std::int64_t ignored = 0;
+            if (!readInt64(*value, ignored)) return false;
+        }
+    }
+
+    if (const auto* forced = data.get("ForcedChunks")) {
+        if (forced->tag != nbt::List ||
+            (forced->listElement != nbt::End &&
+             forced->listElement != nbt::Int &&
+             forced->listElement != nbt::Long))
+            return false;
+        for (const auto& value : forced->list) {
+            if (value.tag != nbt::Int && value.tag != nbt::Long) return false;
+        }
+    }
+    return true;
+}
+
+std::string quarantineFile(const std::string& path) {
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec) || ec) return {};
+    for (std::size_t suffix = 0; suffix < 10000; ++suffix) {
+        const std::string candidate = path + ".corrupt" +
+            (suffix == 0 ? std::string{} : "." + std::to_string(suffix));
+        ec.clear();
+        std::filesystem::rename(path, candidate, ec);
+        if (!ec) return candidate;
+    }
+    return {};
 }
 }
 
@@ -30,6 +145,7 @@ bool WorldDataManager::saveLevelDataWithProviders(std::int64_t worldTicks, std::
         data.set("SpawnX", nbt::Value::makeInt(spawn.x));
         data.set("SpawnY", nbt::Value::makeInt(spawn.y));
         data.set("SpawnZ", nbt::Value::makeInt(spawn.z));
+        data.set("SpawnAngle", nbt::Value::makeFloat(spawn.angle));
         data.set("Time", nbt::Value::makeLong(worldTicks));
         data.set("DayTime", nbt::Value::makeLong(dayTime));
         data.set("LevelName", nbt::Value::makeString("CppFabricMC World"));
@@ -154,6 +270,7 @@ bool WorldDataManager::saveLevelDataWithProviders(std::int64_t worldTicks, std::
 bool WorldDataManager::tryLoadFile(const std::string& path, World& world, std::string& difficultyOut,
                        double& borderDiameterOut, double& borderCXOut, double& borderCZOut,
                        double* borderLerpTargetOut, std::int64_t* borderLerpMsOut) {
+    std::lock_guard lock(fileMutex());
     try {
         std::ifstream f(path, std::ios::binary);
         if (!f) return false;
@@ -175,14 +292,27 @@ bool WorldDataManager::tryLoadFile(const std::string& path, World& world, std::s
         nbt::Value root = parser.readFileRoot();
         const auto* d = root.get("Data");
         if (!d) return false;
+        if (!validLevelDataShape(*d)) return false;
         // version check (DataFixerUpper-like bump, in-memory only)
         checkAndFixVersion(root);
         d = root.get("Data");
-        if (!d) return false;
-        if (const auto* sx = d->get("SpawnX"))
-            if (const auto* sy = d->get("SpawnY"))
-                if (const auto* sz = d->get("SpawnZ"))
-                    world.setSpawnPoint({sx->i, sy->i, sz->i});
+        if (!d || !validLevelDataShape(*d)) return false;
+        const auto* sx = d->get("SpawnX");
+        const auto* sy = d->get("SpawnY");
+        const auto* sz = d->get("SpawnZ");
+        if ((sx || sy || sz) && (!sx || !sy || !sz)) return false;
+        if (sx && sy && sz) {
+            std::int32_t spawnX = 0, spawnY = 0, spawnZ = 0;
+            if (!readInt32(*sx, spawnX) || !readInt32(*sy, spawnY) ||
+                !readInt32(*sz, spawnZ)) return false;
+            float angle = 0.f;
+            if (const auto* a = d->get("SpawnAngle")) {
+                double parsedAngle = 0;
+                if (!readDouble(*a, parsedAngle)) return false;
+                angle = static_cast<float>(parsedAngle);
+            }
+            world.setSpawnPoint({spawnX, spawnY, spawnZ, angle});
+        }
         if (const auto* diff = d->get("Difficulty")) {
             if (diff->tag == nbt::Byte) {
                 int v = diff->b;
@@ -193,27 +323,27 @@ bool WorldDataManager::tryLoadFile(const std::string& path, World& world, std::s
             } else if (diff->tag == nbt::String) difficultyOut = diff->str;
         }
         if (const auto* wb = d->get("WorldBorder")) {
-            if (auto* cx = wb->get("CenterX")) borderCXOut = cx->d;
-            if (auto* cz = wb->get("CenterZ")) borderCZOut = cz->d;
-            if (auto* sz = wb->get("Size")) {
-                if (sz->tag==nbt::Double) borderDiameterOut = sz->d;
-                else if (sz->tag==nbt::Float) borderDiameterOut = sz->f;
-                else if (sz->tag==nbt::Int) borderDiameterOut = sz->i;
-                else if (sz->tag==nbt::Long) borderDiameterOut = (double)sz->l;
+            double parsed = 0;
+            if (auto* cx = wb->get("CenterX")) {
+                if (!readDouble(*cx, parsed)) return false;
+                borderCXOut = parsed;
+            }
+            if (auto* cz = wb->get("CenterZ")) {
+                if (!readDouble(*cz, parsed)) return false;
+                borderCZOut = parsed;
+            }
+            if (auto* size = wb->get("Size")) {
+                if (!readDouble(*size, parsed)) return false;
+                borderDiameterOut = parsed;
             }
             if (borderLerpTargetOut || borderLerpMsOut) {
                 double tgt = borderDiameterOut;
                 std::int64_t ms = 0;
                 if (auto* lt = wb->get("SizeLerpTarget")) {
-                    if (lt->tag==nbt::Double) tgt = lt->d;
-                    else if (lt->tag==nbt::Float) tgt = lt->f;
-                    else if (lt->tag==nbt::Int) tgt = lt->i;
-                    else if (lt->tag==nbt::Long) tgt = (double)lt->l;
+                    if (!readDouble(*lt, tgt)) return false;
                 }
                 if (auto* lm = wb->get("SizeLerpTime")) {
-                    if (lm->tag==nbt::Long) ms = lm->l;
-                    else if (lm->tag==nbt::Int) ms = lm->i;
-                    else if (lm->tag==nbt::Double) ms = (std::int64_t)lm->d;
+                    if (!readInt64(*lm, ms)) return false;
                 }
                 if (borderLerpTargetOut) *borderLerpTargetOut = tgt;
                 if (borderLerpMsOut) *borderLerpMsOut = ms;
@@ -261,8 +391,16 @@ bool WorldDataManager::loadWithRecovery(World& world, std::string& difficultyOut
                           double& borderDiameterOut, double& borderCXOut, double& borderCZOut,
                           double* borderLerpTargetOut, std::int64_t* borderLerpMsOut,
                           RecoveryResult& out) {
+    std::lock_guard lock(fileMutex());
     out = RecoveryResult{};
+    if (isDimensionStoragePath(dir_)) {
+        out.logLines.emplace_back(
+            "[recovery] dimension storage has no level.dat; using shared world metadata");
+        lastRecovery_ = out;
+        return false;
+    }
     const std::string dat = dir_ + "/level.dat";
+    const std::string datNew = dir_ + "/level.dat.new";
     const std::string old = dir_ + "/level.dat_old";
     char line[256];
     if (tryLoadFile(dat, world, difficultyOut, borderDiameterOut, borderCXOut, borderCZOut,
@@ -274,9 +412,57 @@ bool WorldDataManager::loadWithRecovery(World& world, std::string& difficultyOut
         lastRecovery_ = out;
         return true;
     }
-    std::snprintf(line, sizeof(line), "[recovery] level.dat unreadable, trying level.dat_old");
+    std::snprintf(line, sizeof(line),
+                  "[recovery] level.dat unreadable, trying level.dat.new");
     out.logLines.emplace_back(line);
-    std::fprintf(stderr, "[cppfm] level.dat corrupt, trying level.dat_old\n");
+    std::fprintf(stderr, "[cppfm] level.dat corrupt, trying level.dat.new\n");
+    if (tryLoadFile(datNew, world, difficultyOut, borderDiameterOut, borderCXOut, borderCZOut,
+                    borderLerpTargetOut, borderLerpMsOut)) {
+        out.src = LevelSource::DatNew;
+        out.ok = true;
+        std::snprintf(line, sizeof(line),
+                      "[recovery] level source=%s ok=1 (promoting temporary)",
+                      levelSourceName(out.src));
+        out.logLines.emplace_back(line);
+
+        // A complete .new is the last committed save candidate.  Quarantine
+        // the failed primary before promoting it so recovery never destroys
+        // the bytes that explain the original failure.
+        if (const auto quarantined = quarantineFile(dat); !quarantined.empty()) {
+            std::snprintf(line, sizeof(line),
+                          "[recovery] quarantined level.dat -> %s",
+                          quarantined.c_str());
+            out.logLines.emplace_back(line);
+        } else {
+            std::error_code existsError;
+            const bool datExists = std::filesystem::exists(dat, existsError) && !existsError;
+            if (!datExists) {
+                lastRecovery_ = out;
+                return true;
+            }
+            std::snprintf(line, sizeof(line),
+                          "[recovery] could not quarantine level.dat");
+            out.logLines.emplace_back(line);
+        }
+        std::error_code promoteError;
+        if (persistence_detail::replaceFile(datNew, dat, promoteError) &&
+            persistence_detail::syncDirectory(std::filesystem::path(dir_))) {
+            std::snprintf(line, sizeof(line),
+                          "[recovery] promoted level.dat.new -> level.dat");
+            out.logLines.emplace_back(line);
+        } else {
+            std::snprintf(line, sizeof(line),
+                          "[recovery] could not promote level.dat.new: %s",
+                          promoteError ? promoteError.message().c_str() : "directory sync failed");
+            out.logLines.emplace_back(line);
+        }
+        lastRecovery_ = out;
+        return true;
+    }
+    std::snprintf(line, sizeof(line),
+                  "[recovery] level.dat.new unreadable, trying level.dat_old");
+    out.logLines.emplace_back(line);
+    std::fprintf(stderr, "[cppfm] level.dat.new corrupt, trying level.dat_old\n");
     if (tryLoadFile(old, world, difficultyOut, borderDiameterOut, borderCXOut, borderCZOut,
                     borderLerpTargetOut, borderLerpMsOut)) {
         out.src = LevelSource::DatOld;
@@ -284,33 +470,26 @@ bool WorldDataManager::loadWithRecovery(World& world, std::string& difficultyOut
         std::snprintf(line, sizeof(line), "[recovery] level source=%s ok=1 (dat quarantined below)",
                       levelSourceName(out.src));
         out.logLines.emplace_back(line);
-        // preserve the corrupt level.dat for forensics (never overwrite-silent)
-        try {
-            if (std::filesystem::exists(dat)) {
-                std::error_code ec;
-                std::filesystem::rename(dat, dat + ".corrupt", ec);
-                if (!ec) {
-                    std::snprintf(line, sizeof(line), "[recovery] quarantined level.dat -> level.dat.corrupt");
-                    out.logLines.emplace_back(line);
-                }
+        // Preserve every failed candidate for forensics.  If a previous
+        // incident already produced .corrupt, quarantineFile chooses a
+        // numbered suffix instead of overwriting evidence.
+        for (const auto& failed : {dat, datNew}) {
+            if (const auto quarantined = quarantineFile(failed); !quarantined.empty()) {
+                std::snprintf(line, sizeof(line),
+                              "[recovery] quarantined %s -> %s",
+                              failed.c_str(), quarantined.c_str());
+                out.logLines.emplace_back(line);
             }
-        } catch (...) {}
+        }
         lastRecovery_ = out;
         return true;
     }
-    std::snprintf(line, sizeof(line), "[recovery] both level.dat and level.dat_old unreadable, generating fresh");
+    std::snprintf(line, sizeof(line),
+                  "[recovery] level.dat, level.dat.new and level.dat_old unreadable, generating fresh");
     out.logLines.emplace_back(line);
-    std::fprintf(stderr, "[cppfm] both level.dat and _old unreadable, generating fresh\n");
-    try {
-        if (std::filesystem::exists(dat)) {
-            std::error_code ec;
-            std::filesystem::rename(dat, dat + ".corrupt", ec);
-        }
-        if (std::filesystem::exists(old)) {
-            std::error_code ec;
-            std::filesystem::rename(old, old + ".corrupt", ec);
-        }
-    } catch (...) {}
+    std::fprintf(stderr, "[cppfm] level.dat, .new and _old unreadable, generating fresh\n");
+    for (const auto& failed : {dat, datNew, old})
+        (void)quarantineFile(failed);
     out.src = LevelSource::Fresh;
     out.ok = false; // caller generates a fresh world
     lastRecovery_ = out;

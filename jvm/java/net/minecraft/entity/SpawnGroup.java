@@ -8,14 +8,14 @@ import net.minecraft.util.StringIdentifiable;
  * match vanilla.
  */
 public enum SpawnGroup implements StringIdentifiable {
-    MONSTER("monster", 70, false, false, 128, 32),
-    CREATURE("creature", 10, true, true, 128, 32),
-    AMBIENT("ambient", 15, true, false, 128, 32),
-    AXOLOTLS("axolotls", 5, true, false, 128, 32),
-    UNDERGROUND_WATER_CREATURE("underground_water_creature", 5, true, false, 128, 32),
-    WATER_CREATURE("water_creature", 5, true, false, 128, 32),
-    WATER_AMBIENT("water_ambient", 20, true, false, 64, 32),
-    MISC("misc", -1, true, true, 128, 32);
+    MONSTER("monster", 70, false, false, 128),
+    CREATURE("creature", 10, true, true, 128),
+    AMBIENT("ambient", 15, true, false, 128),
+    AXOLOTLS("axolotls", 5, true, false, 128),
+    UNDERGROUND_WATER_CREATURE("underground_water_creature", 5, true, false, 128),
+    WATER_CREATURE("water_creature", 5, true, false, 128),
+    WATER_AMBIENT("water_ambient", 20, true, false, 64),
+    MISC("misc", -1, true, true, 128);
 
     private final String name;
     private final int capacity;
@@ -25,12 +25,15 @@ public enum SpawnGroup implements StringIdentifiable {
     private final int immediateDespawnRange;
 
     SpawnGroup(String name, int capacity, boolean peaceful, boolean rare,
-               int despawnStartRange, int immediateDespawnRange) {
+               int immediateDespawnRange) {
         this.name = name;
         this.capacity = capacity;
         this.peaceful = peaceful;
         this.rare = rare;
-        this.despawnStartRange = despawnStartRange;
+        // Vanilla keeps the start of the probabilistic despawn band at 32
+        // for every group; only the immediate range is constructor data in
+        // the 1.21.4 ABI.
+        this.despawnStartRange = 32;
         this.immediateDespawnRange = immediateDespawnRange;
     }
 

@@ -1683,14 +1683,6 @@ public final class MixinHooks {
         return null;
     }
 
-    private static Method findDeclaredMethodByName(Class<?> type, String name) {
-        if (type == null) throw new IllegalArgumentException("missing mixin class");
-        Method[] methods = type.getDeclaredMethods();
-        Arrays.sort(methods, Comparator.comparing(Method::getName).thenComparing(MixinHooks::descriptor));
-        for (Method method : methods) if (method.getName().equals(name)) return method;
-        throw new IllegalArgumentException("missing mixin method " + type.getName() + "." + name);
-    }
-
     private static List<Method> methodsOf(Class<?> type) {
         List<Method> methods = new ArrayList<>();
         Set<Class<?>> visited = new HashSet<>();
@@ -1737,11 +1729,6 @@ public final class MixinHooks {
             if (parent != null) queue.addLast(parent);
         }
         return owners;
-    }
-
-    private static Object invokeHandler(Handler handler, Object target, Object[] args)
-        throws ReflectiveOperationException {
-        return invokeHandlerChecked(handler, target, args);
     }
 
     private static Object readField(Object target, String name, List<String> aliases) {

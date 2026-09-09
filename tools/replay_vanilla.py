@@ -33,9 +33,12 @@ def find_free_port() -> int:
 
 def launch(binary: str, port: int, world_dir: str):
     logf = open(os.path.join(world_dir, "replay.log"), "wb")
+    environment = os.environ.copy()
+    environment["CPPFM_SERVER_DIR"] = world_dir
     proc = subprocess.Popen([binary, f"--port={port}", f"--world-dir={world_dir}",
                              "--view-distance=4", "--online-mode=false"],
                             stdout=logf, stderr=subprocess.STDOUT,
+                            env=environment,
                             start_new_session=True)
     proc._logf = logf
     return proc

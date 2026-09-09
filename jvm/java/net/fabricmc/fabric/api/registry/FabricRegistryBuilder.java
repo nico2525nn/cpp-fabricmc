@@ -3,6 +3,7 @@ package net.fabricmc.fabric.api.registry;
 import java.util.EnumSet;
 import net.minecraft.registry.Registry;
 import net.minecraft.registry.RegistryKey;
+import net.minecraft.registry.SimpleRegistry;
 
 /** Dependency-free equivalent of FabricRegistryBuilder for Java-side registries. */
 public final class FabricRegistryBuilder<T, R extends Registry<T>> {
@@ -19,7 +20,7 @@ public final class FabricRegistryBuilder<T, R extends Registry<T>> {
     public FabricRegistryBuilder<T, R> attribute(RegistryAttribute attribute) { if (attribute != null) attributes.add(attribute); return this; }
     public FabricRegistryBuilder<T, R> attribute(RegistryAttribute first, RegistryAttribute... rest) { attribute(first); if (rest != null) for (RegistryAttribute value : rest) attribute(value); return this; }
     @SuppressWarnings("unchecked") public R buildAndRegister() {
-        Registry<T> result = new Registry<>(key);
+        Registry<T> result = new SimpleRegistry<>(key);
         if (source != null) for (java.util.Map.Entry<net.minecraft.util.Identifier, T> entry : source.entrySet())
             Registry.register(result, entry.getKey(), entry.getValue());
         if (key != null && !net.minecraft.registry.Registries.ROOT.containsId(key.getValue()))

@@ -14,7 +14,15 @@
 #include <string_view>
 #include <system_error>
 #include <vector>
-#ifdef __unix__
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#elif defined(__unix__)
 #include <fcntl.h>
 #include <sys/file.h>
 #include <signal.h>
@@ -48,7 +56,16 @@ public:
     }
 
     static bool pidAlive(long pid) {
-#ifdef __unix__
+#ifdef _WIN32
+        if (pid <= 0) return false;
+        const HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
+                                           static_cast<DWORD>(pid));
+        if (process) {
+            CloseHandle(process);
+            return true;
+        }
+        return GetLastError() == ERROR_ACCESS_DENIED;
+#elif defined(__unix__)
         if (pid <= 0) return false;
         if (::kill(static_cast<pid_t>(pid), 0) == 0) return true;
         return errno != ESRCH; // EPERM => exists but not ours
@@ -58,7 +75,9 @@ public:
     }
 
     static long selfPid() {
-#ifdef __unix__
+#ifdef _WIN32
+        return static_cast<long>(GetCurrentProcessId());
+#elif defined(__unix__)
         return static_cast<long>(::getpid());
 #else
         return -1;
@@ -81,7 +100,45 @@ public:
         try {
             std::filesystem::create_directories(worldDir);
             const std::string p = lockPath(worldDir);
-#ifdef __unix__
+#ifdef _WIN32
+            const HANDLE handle = CreateFileW(
+                std::filesystem::path(p).wstring().c_str(),
+                GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS,
+                FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (handle == INVALID_HANDLE_VALUE) {
+                const auto winError = GetLastError();
+                heldByLiveOther = winError == ERROR_SHARING_VIOLATION ||
+                                  winError == ERROR_LOCK_VIOLATION;
+                std::fprintf(stderr, "[cppfm] ERROR: could not open %s (Win32 error %lu)%s\n",
+                             p.c_str(), static_cast<unsigned long>(winError),
+                             heldByLiveOther ? " (another server is running)" : "");
+                dir_.clear();
+                return false;
+            }
+            fd_ = handle;
+            LARGE_INTEGER zero{};
+            bool ok = SetFilePointerEx(fd_, zero, nullptr, FILE_BEGIN) &&
+                      SetEndOfFile(fd_);
+            const std::string record = std::to_string(selfPid()) + " " +
+                                       std::to_string(nowMs()) + "\n";
+            DWORD written = 0;
+            if (ok) {
+                ok = WriteFile(fd_, record.data(), static_cast<DWORD>(record.size()),
+                               &written, nullptr) &&
+                     written == static_cast<DWORD>(record.size());
+            }
+            if (ok) ok = FlushFileBuffers(fd_) != FALSE;
+            if (!ok) {
+                std::fprintf(stderr, "[cppfm] ERROR: could not write %s (Win32 error %lu)\n",
+                             p.c_str(), static_cast<unsigned long>(GetLastError()));
+                CloseHandle(fd_);
+                fd_ = INVALID_HANDLE_VALUE;
+                dir_.clear();
+                return false;
+            }
+            held_ = true;
+            return true;
+#elif defined(__unix__)
             const int fd = ::open(p.c_str(), O_RDWR | O_CREAT, 0644);
             if (fd < 0) {
                 std::fprintf(stderr, "[cppfm] ERROR: could not open %s: %s\n",
@@ -179,7 +236,12 @@ public:
     void release() {
         if (!held_ || dir_.empty()) return;
         held_ = false;
-#ifdef __unix__
+#ifdef _WIN32
+        if (fd_ != INVALID_HANDLE_VALUE) {
+            CloseHandle(fd_);
+            fd_ = INVALID_HANDLE_VALUE;
+        }
+#elif defined(__unix__)
         const int fd = fd_;
         fd_ = -1;
         // Keep the inode in place.  Unlinking before releasing the advisory
@@ -213,7 +275,9 @@ public:
 private:
     std::string dir_;
     bool held_ = false;
-#ifdef __unix__
+#ifdef _WIN32
+    HANDLE fd_ = INVALID_HANDLE_VALUE;
+#elif defined(__unix__)
     int fd_ = -1;
 #endif
 };

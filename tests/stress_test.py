@@ -249,9 +249,12 @@ def main():
                f"--max-players={max_players}",
                f"--world-dir={world_dir}", "--online-mode=false"]
         print(f"[stress] starting server {' '.join(cmd)} for {n} clients")
+        environment = os.environ.copy()
+        environment["CPPFM_SERVER_DIR"] = world_dir
         try:
             proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
                                     stderr=subprocess.DEVNULL,
+                                    env=environment,
                                     start_new_session=True)
         except OSError as error:
             print(f"FATAL: could not start server: {error}", file=sys.stderr)

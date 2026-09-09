@@ -24,8 +24,12 @@ public final class PlayerBlockBreakEvents {
     public static final Event<After> AFTER = new Event<>(After.class, callbacks -> (world, player, pos, state, blockEntity) -> {
         for (After callback : callbacks) callback.afterBlockBreak(world, player, pos, state, blockEntity);
     });
-    public static final Event<After> CANCELED = new Event<>(After.class, callbacks -> (world, player, pos, state, blockEntity) -> {
-        for (After callback : callbacks) callback.afterBlockBreak(world, player, pos, state, blockEntity);
+    @FunctionalInterface public interface Canceled {
+        void onBlockBreakCanceled(World world, PlayerEntity player, BlockPos pos,
+                                   BlockState state, BlockEntity blockEntity);
+    }
+    public static final Event<Canceled> CANCELED = new Event<>(Canceled.class, callbacks -> (world, player, pos, state, blockEntity) -> {
+        for (Canceled callback : callbacks) callback.onBlockBreakCanceled(world, player, pos, state, blockEntity);
     });
     public static void clear() { BEFORE.clear(); AFTER.clear(); CANCELED.clear(); }
 }

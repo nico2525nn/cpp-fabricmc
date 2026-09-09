@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -81,13 +82,29 @@ def resolve_method(
     return None
 
 
-def compile_sources(repo: Path, output: Path, fixture: Path) -> int:
+def compile_sources(repo: Path, output: Path, fixture: Path, javac: str) -> int:
     shadow_sources = sorted((repo / "jvm" / "java").rglob("*.java"))
     fixture_sources = sorted((repo / "tests" / "jvm_fixture").rglob("*.java"))
     sources = [str(path) for path in (*shadow_sources, *fixture_sources, fixture)]
     if not shadow_sources:
         fail("jvm/java contains no Java sources")
-    run(["javac", "--release", "17", "-d", str(output), *sources], timeout=180)
+    # Keep this standalone ABI gate on the same dependency-free compile path as
+    # CMake.  The shadow package intentionally contains signatures from Netty,
+    # DataFixerUpper, and SLF4J; the small source stubs are compile-time
+    # contracts, not runtime replacements for those libraries.
+    compile_stubs = sorted((repo / "jvm" / "compile-stubs").rglob("*.java"))
+    if not compile_stubs:
+        fail("jvm/compile-stubs contains no Java sources")
+    stub_output = output / "compile-stubs"
+    stub_output.mkdir()
+    run([
+        javac, "--release", "17", "-d", str(stub_output),
+        *(str(path) for path in compile_stubs),
+    ], timeout=60)
+    run([
+        javac, "--release", "17", "-cp", str(stub_output),
+        "-d", str(output), *sources,
+    ], timeout=180)
     return len(shadow_sources)
 
 
@@ -182,7 +199,13 @@ def check_manifest(repo: Path, manifest_path: Path, classes_dir: Path) -> tuple[
             fail(f"superclass mismatch for {name}: {item.get('superClass')!r}")
     world_interfaces = set(classes["net.minecraft.world.World"].get("interfaces", []))
     if world_interfaces != {
-        "net.minecraft.world.BlockView", "net.minecraft.world.WorldView", "net.minecraft.world.WorldAccess"
+        "net.minecraft.world.BlockView", "net.minecraft.world.BlockRenderView",
+        "net.minecraft.world.WorldView", "net.minecraft.world.WorldAccess",
+        "net.minecraft.world.CollisionView", "net.minecraft.world.HeightLimitView",
+        "net.minecraft.world.RedstoneView",
+        "net.fabricmc.fabric.impl.event.lifecycle.LoadedChunksCache",
+        "net.fabricmc.fabric.api.attachment.v1.AttachmentTarget",
+        "net.fabricmc.fabric.api.blockview.v2.FabricBlockView",
     }:
         fail(f"World interface set mismatch: {world_interfaces!r}")
 
@@ -211,6 +234,8 @@ def check_manifest(repo: Path, manifest_path: Path, classes_dir: Path) -> tuple[
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[2])
+    parser.add_argument("--javac", default=shutil.which("javac") or "javac")
+    parser.add_argument("--java", default=shutil.which("java") or "java")
     args = parser.parse_args()
     repo = args.repo.resolve()
     generator = repo / "tools" / "generate_shadow.py"
@@ -221,13 +246,17 @@ def main() -> int:
         classes_dir = temporary_path / "classes"
         manifest = temporary_path / "manifest.json"
         classes_dir.mkdir()
-        source_count = compile_sources(repo, classes_dir, fixture)
+        source_count = compile_sources(repo, classes_dir, fixture, args.javac)
         run([
             sys.executable, str(generator), "--input", str(spec), "--output", str(manifest),
             "--classes-dir", str(classes_dir),
         ], timeout=30)
         class_count, member_count, declared_count = check_manifest(repo, manifest, classes_dir)
-        run(["java", "-cp", str(classes_dir), "cppfm.shadowabi.ShadowAbiFixture"], timeout=30)
+        run([
+            args.java, "-cp",
+            f"{classes_dir}{os.pathsep}{classes_dir / 'compile-stubs'}",
+            "cppfm.shadowabi.ShadowAbiFixture",
+        ], timeout=30)
     print(
         f"SHADOW ABI PASS: sourceClasses={source_count} classFiles={class_count} "
         f"declaredMembers={declared_count} auditedMembers={member_count}"

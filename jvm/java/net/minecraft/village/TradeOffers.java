@@ -1,8 +1,7 @@
 package net.minecraft.village;
 
-import java.util.Random;
 import net.minecraft.entity.Entity;
-import net.minecraft.item.ItemStack;
+import net.minecraft.util.math.random.Random;
 
 /** Minimal factory namespace used by merchant recipe generation. */
 public final class TradeOffers {

@@ -15,6 +15,8 @@ public interface RegistryEntry<T> {
     default RegistryKey<T> registryKey() { return getKey().orElse(null); }
     default boolean matchesKey(RegistryKey<T> key) { return Objects.equals(registryKey(), key); }
     default boolean isIn(TagKey<T> tag) { return false; }
+    /** Compatibility overload for the legacy shadow package spelling. */
+    default boolean isIn(net.minecraft.registry.TagKey<T> tag) { return false; }
     default boolean matchesId(net.minecraft.util.Identifier id) {
         RegistryKey<T> key = registryKey();
         return key != null && key.getValue().equals(id);
@@ -32,11 +34,13 @@ public interface RegistryEntry<T> {
     }
 
     final class Reference<T> implements RegistryEntry<T> {
-        private final T value;
+        private T value;
         private final RegistryKey<T> key;
         public Reference(T value, RegistryKey<T> key) { this.value = value; this.key = key; }
         @Override public T value() { return value; }
         @Override public Optional<RegistryKey<T>> getKey() { return Optional.ofNullable(key); }
+        /** Mutable holder hook widened by Fabric's registry access widener. */
+        public void setValue(T value) { this.value = value; }
     }
 
     enum Type { DIRECT, STAND_ALONE, INTRUSIVE, REFERENCED }

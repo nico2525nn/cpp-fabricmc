@@ -188,6 +188,11 @@ public final class IntermediaryNamedMappings implements DescriptorResolver {
     public String mapFieldName(String owner, String name, String descriptor) {
         String mapped = fields.get(new MemberKey(owner, name, descriptor));
         if (mapped != null) return mapped;
+        // The fallback is for Minecraft refs recorded against an inherited
+        // owner.  Applying a short-name fallback to third-party libraries is
+        // unsafe: fastutil and other dependencies legitimately use names
+        // such as `a`, which can coincidentally be a unique Yarn field.
+        if (owner == null || !owner.startsWith("net/minecraft/")) return name;
         // Refmaps can name the concrete class even when Yarn records the
         // inherited member on an interface or superclass.  A globally unique
         // intermediary symbol is safe to resolve in that case.
@@ -198,6 +203,7 @@ public final class IntermediaryNamedMappings implements DescriptorResolver {
     public String mapMethodName(String owner, String name, String descriptor) {
         String mapped = methods.get(new MemberKey(owner, name, descriptor));
         if (mapped != null) return mapped;
+        if (owner == null || !owner.startsWith("net/minecraft/")) return name;
         // Refmaps can name the concrete class even when Yarn records the
         // inherited member on an interface or superclass.  A globally unique
         // intermediary symbol is safe to resolve in that case.
@@ -309,32 +315,39 @@ public final class IntermediaryNamedMappings implements DescriptorResolver {
     private static String remapDescriptor(String descriptor, Map<String, String> mapping) {
         if (descriptor == null || descriptor.isEmpty()) return descriptor;
         StringBuilder output = null;
-        int index = 0;
-        while (index < descriptor.length()) {
-            int start = descriptor.indexOf('L', index);
+        int scan = 0;
+        int copyFrom = 0;
+        while (scan < descriptor.length()) {
+            int start = descriptor.indexOf('L', scan);
             if (start < 0) break;
-            int end = descriptor.indexOf(';', start + 1);
+            int end = typeNameEnd(descriptor, start + 1);
             if (end < 0) break;
             String owner = descriptor.substring(start + 1, end);
             String mapped = mapping.get(owner);
             if (mapped != null && !mapped.equals(owner)) {
                 if (output == null) output = new StringBuilder(descriptor.length() + 16);
-                // `index` advances across unchanged object types before the
-                // first mapped owner.  Copy from zero on that first change;
-                // otherwise a descriptor such as
-                // `(Ljava/util/List;Lnet/minecraft/class_1297;)V` would lose
-                // its opening parenthesis and the unchanged prefix.
-                output.append(descriptor, output.length() == 0 ? 0 : index, start)
-                      .append('L').append(mapped).append(';');
-                index = end + 1;
-            } else {
-                if (output != null) output.append(descriptor, index, end + 1);
-                index = end + 1;
+                // A generic Signature terminates the owner at `<`, not at
+                // the final `;`: `Lnet/minecraft/class_1299<*>;`.  Preserve
+                // that delimiter and continue scanning inside the argument
+                // list so nested Minecraft types are converted as well.
+                output.append(descriptor, copyFrom, start)
+                      .append('L').append(mapped);
+                copyFrom = end;
             }
+            scan = end + 1;
         }
         if (output == null) return descriptor;
-        if (index < descriptor.length()) output.append(descriptor, index, descriptor.length());
+        output.append(descriptor, copyFrom, descriptor.length());
         return output.toString();
+    }
+
+    /** Return the delimiter ending an object type in a descriptor/signature. */
+    private static int typeNameEnd(String value, int from) {
+        for (int index = from; index < value.length(); ++index) {
+            char current = value.charAt(index);
+            if (current == ';' || current == '<' || current == '.') return index;
+        }
+        return -1;
     }
 
     private static String configuredPath() {

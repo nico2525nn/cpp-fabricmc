@@ -6,6 +6,12 @@ import net.minecraft.util.Identifier;
 
 /** Canonical 1.21.4 package adapter for the common custom-payload packet. */
 public class CustomPayloadS2CPacket extends net.minecraft.network.packet.CustomPayloadS2CPacket {
+    private static final int MAX_PAYLOAD_SIZE;
+
+    static {
+        MAX_PAYLOAD_SIZE = 1048576;
+    }
+
     public CustomPayloadS2CPacket(Identifier id, PacketByteBuf data) { super(id, data); }
     public CustomPayloadS2CPacket(CustomPayload.Id<? extends CustomPayload> id, PacketByteBuf data) {
         super(id, data);

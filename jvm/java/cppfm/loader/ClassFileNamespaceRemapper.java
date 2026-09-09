@@ -166,7 +166,15 @@ public final class ClassFileNamespaceRemapper implements ClassFileTransformer {
                 String value = originalUtf8[index];
                 if (value == null) continue;
                 String mapped = value;
-                if (looksLikeDescriptor(value)) mapped = mappings.mapDescriptor(mapped);
+                // Method/field descriptors start with `(`, `L`, or `[`.  A
+                // class Signature attribute can instead start with formal
+                // type parameters (`<T:...>`), while generic method/field
+                // signatures can contain intermediary owners inside nested
+                // type arguments.  Both use the same `Lowner;` grammar after
+                // erasure, so send either shape through the generic-aware
+                // descriptor mapper.
+                if (looksLikeDescriptor(value) || (!value.isEmpty() && value.charAt(0) == '<'))
+                    mapped = mappings.mapDescriptor(mapped);
                 if (mixin) mapped = mappings.mapSymbol(mapped);
                 if (!mapped.equals(value)) {
                     pool.setUtf8(index, mapped);

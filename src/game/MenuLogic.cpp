@@ -4,9 +4,10 @@
 #include "CostCalculator.hpp"
 #include "../generated/ItemIds.hpp"
 #include <algorithm>
+#include <array>
 #include <cstdio>
+#include <mutex>
 #include <random>
-#include <unordered_map>
 #include <string>
 
 namespace cppfm {
@@ -20,12 +21,11 @@ static bool isSameForMerge(const ItemStack& a, const ItemStack& b) {
 // mechanically verified). NOTE: the merge PREDICATE here (isSameForMerge: components must be EQUAL) intentionally differs from
 // MenuInteraction click merging (both components must be EMPTY) — result-slot merging (anvil/enchant) vs click merging have different
 // vanilla semantics. Only the limit lookup is unified.
-static int maxStackForMerge(std::uint32_t id) { return maxStackForId(id); }
 static bool mergeStack(ItemStack& from, ItemStack& to) {
     if (from.empty()) return false;
     if (to.empty()) { to=from; from=ItemStack::air(); return true; }
     if (!isSameForMerge(from, to)) return false;
-    int limit = maxStackForMerge(to.itemId);
+    int limit = maxStackForId(to.itemId);
     if (to.count >= limit) return false;
     int take = std::min<int>(from.count, limit - to.count);
     to.count = static_cast<std::int16_t>(to.count + take);
@@ -41,7 +41,7 @@ void AnvilMenuLogic::recomputeResult(Menu& menu) {
     ItemStack* right = menu.container ? &menu.container[1] : &menu.extraSlots[1];
     ItemStack* result = menu.container ? &menu.container[2] : &menu.extraSlots[2];
     if (left->empty()) { *result = ItemStack::air(); return; }
-    std::string rename = !menu.anvilRename.empty() ? menu.anvilRename : pendingRename_;
+    const std::string& rename = menu.anvilRename;
     int cost = CostCalculator::anvilCost(*left, *right, rename);
     if (cost < 0) { *result = ItemStack::air(); return; }
     if (cost==0 && right->empty() && rename.empty()) { *result = ItemStack::air(); return; }
@@ -99,7 +99,7 @@ bool AnvilMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, int but
         if (result->empty()) return false;
         ItemStack* left = menu.container ? &menu.container[0] : &menu.extraSlots[0];
         ItemStack* right = menu.container ? &menu.container[1] : &menu.extraSlots[1];
-        std::string rename = !menu.anvilRename.empty() ? menu.anvilRename : pendingRename_;
+        const std::string& rename = menu.anvilRename;
         int cost = CostCalculator::anvilCost(*left, *right, rename);
         if (cost < 0) return false;
         // check XP level (player.xp.level) — require cost
@@ -120,7 +120,6 @@ bool AnvilMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, int but
         if (!left->empty()) { left->count -= 1; if (left->count<=0) *left=ItemStack::air(); }
         if (!right->empty()) { right->count -= 1; if (right->count<=0) *right=ItemStack::air(); }
         *result = ItemStack::air();
-        pendingRename_.clear();
         menu.anvilRename.clear();
         io.blockEntityChanged(menu.blockKey);
         return true;
@@ -159,31 +158,155 @@ bool AnvilMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, int but
 // ---------------- Enchantment ----------------
 
 void EnchantmentMenuLogic::onContentChanged(Menu& menu, Player& player) {
-    // slots: 0 item, 1 lapis. Enchantment offerings are handled by the button path;
-    // window-property refresh is not implemented yet.
-    ItemStack* item = menu.container ? &menu.container[0] : &menu.extraSlots[0];
-    ItemStack* lapis = menu.container ? &menu.container[1] : &menu.extraSlots[1];
-    if (item->empty() || lapis->empty()) return;
-    // lapis cost check placeholder: ensure lapis count >=1
+    // Offers are derived from the two inputs and the player's seed. They are
+    // intentionally not cached here because MenuLogic instances are shared by
+    // menu type, while the inputs and seed belong to one open menu/player.
+    (void)menu;
+    (void)player;
+}
+
+namespace {
+
+struct EnchantmentKind {
+    const char* name;
+    int maxLevel;
+};
+
+std::vector<EnchantmentKind> supportedEnchantmentsFor(const ItemStack& item) {
+    const std::string itemName = item.name();
+    if (itemName == "minecraft:book") {
+        return {{"minecraft:protection", 4}, {"minecraft:efficiency", 5},
+                {"minecraft:unbreaking", 3}};
+    }
+    if (item.isArmor()) {
+        return {{"minecraft:protection", 4}, {"minecraft:fire_protection", 4},
+                {"minecraft:unbreaking", 3}};
+    }
+    if (itemName.find("sword") != std::string::npos) {
+        return {{"minecraft:sharpness", 5}, {"minecraft:looting", 3},
+                {"minecraft:unbreaking", 3}};
+    }
+    if (itemName == "minecraft:bow") {
+        return {{"minecraft:power", 5}, {"minecraft:punch", 2},
+                {"minecraft:unbreaking", 3}};
+    }
+    if (item.isTool()) {
+        return {{"minecraft:efficiency", 5}, {"minecraft:fortune", 3},
+                {"minecraft:unbreaking", 3}};
+    }
+    return {};
+}
+
+std::uint32_t offerSeed(const ItemStack& item, const Player& player,
+                        int bookshelves) {
+    std::uint32_t seed = static_cast<std::uint32_t>(player.enchantmentSeed);
+    seed ^= item.itemId * 0x9e3779b9u;
+    seed ^= static_cast<std::uint32_t>(std::clamp(bookshelves, 0, 15)) *
+            0x85ebca6bu;
+    return CostCalculator::splitmix32(seed);
+}
+
+} // namespace
+
+std::array<EnchantmentOffer, 3> EnchantmentMenuLogic::offers(
+    const Menu& menu, const Player& player, int bookshelves) const {
+    std::array<EnchantmentOffer, 3> out{};
+    const ItemStack* item = menu.container ? &menu.container[0]
+                                           : &menu.extraSlots[0];
+    if (item->empty()) return out;
+
+    auto candidates = supportedEnchantmentsFor(*item);
+    if (candidates.empty()) return out;
+
+    const auto costs = CostCalculator::enchantingCostsForShelves(
+        player, std::clamp(bookshelves, 0, 15));
+    std::mt19937 rng(offerSeed(*item, player, bookshelves));
+    const std::size_t rotation =
+        static_cast<std::size_t>(rng() % candidates.size());
+    const bool plainBook = item->name() == "minecraft:book";
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        const auto candidate = candidates[(rotation + i) % candidates.size()];
+        const int cost = std::clamp(costs[i], 1, 30);
+        const int levelRange = std::max(
+            1, std::min(candidate.maxLevel, cost / 5 + 1));
+        const int level = 1 + static_cast<int>(
+            rng() % static_cast<std::uint32_t>(levelRange));
+        out[i].levelCost = cost;
+        out[i].lapisCost = static_cast<int>(i) + 1;
+        out[i].enchantmentId = ItemStack::enchantIdByName(candidate.name);
+        out[i].enchantmentLevel = level;
+        out[i].enchantment = candidate.name;
+        out[i].result = *item;
+        if (plainBook) {
+            const auto enchantedBook = gen::itemIdByName().find(
+                "minecraft:enchanted_book");
+            if (enchantedBook != gen::itemIdByName().end())
+                out[i].result.itemId = enchantedBook->second;
+        }
+        ItemStack::addEnchant(out[i].result, out[i].enchantment, level);
+    }
+    return out;
 }
 
 bool EnchantmentMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, int button, int mode,
                                        ItemStack& cursor, MenuIo& io, const RecipeManager& recipes) {
-    (void)player; (void)io; (void)recipes; (void)button; (void)mode;
-    // Enchantment container has only 2 slots; treat similar to Anvil inputs but no result slot
+    (void)io; (void)recipes; (void)mode;
+    // Vanilla constrains the item slot to one enchantable item and the
+    // second slot to lapis lazuli.  Keep those constraints in the shared
+    // menu path so a client cannot bypass them with WindowClick.
     if (slotId==0 || slotId==1) {
         ItemStack* target = menu.container ? &menu.container[slotId] : &menu.extraSlots[slotId];
+        if (slotId == 0 && !cursor.empty() &&
+            supportedEnchantmentsFor(cursor).empty())
+            return false;
+        if (slotId == 1 && !cursor.empty()) {
+            const auto lapis = gen::itemIdByName().find("minecraft:lapis_lazuli");
+            if (lapis == gen::itemIdByName().end() ||
+                cursor.itemId != lapis->second)
+                return false;
+        }
         bool changed=false;
         if (button==0) {
             if (cursor.empty() && !target->empty()) { cursor=*target; *target=ItemStack::air(); changed=true; }
-            else if (!cursor.empty() && target->empty()) { *target=cursor; cursor=ItemStack::air(); changed=true; }
-            else { std::swap(cursor,*target); changed=true; }
+            else if (!cursor.empty() && target->empty()) {
+                const int limit = slotId == 0 ? 1 : maxStackForId(cursor.itemId);
+                const int moved = std::min<int>(cursor.count, limit);
+                *target = cursor;
+                target->count = static_cast<std::int16_t>(moved);
+                cursor.count = static_cast<std::int16_t>(cursor.count - moved);
+                if (cursor.count <= 0) cursor=ItemStack::air();
+                changed = moved > 0;
+            } else if (!cursor.empty() && !target->empty() &&
+                       cursor.itemId == target->itemId &&
+                       cursor.components == target->components &&
+                       cursor.removedComponents == target->removedComponents) {
+                const int limit = slotId == 0 ? 1 : maxStackForId(target->itemId);
+                const int moved = std::min<int>(cursor.count, limit - target->count);
+                if (moved > 0) {
+                    target->count = static_cast<std::int16_t>(target->count + moved);
+                    cursor.count = static_cast<std::int16_t>(cursor.count - moved);
+                    if (cursor.count <= 0) cursor=ItemStack::air();
+                    changed = true;
+                }
+            } else {
+                return false;
+            }
         } else {
             if (cursor.empty() && !target->empty()) {
                 int half=(target->count+1)/2;
                 cursor=*target; cursor.count=half; target->count-=half; if(target->count<=0) *target=ItemStack::air(); changed=true;
             } else if (!cursor.empty() && target->empty()) {
-                *target=ItemStack::of(cursor.itemId,1); cursor.count--; if(cursor.count<=0) cursor=ItemStack::air(); changed=true;
+                *target=cursor; target->count=1; cursor.count--; if(cursor.count<=0) cursor=ItemStack::air(); changed=true;
+            } else if (!cursor.empty() && !target->empty() &&
+                       cursor.itemId == target->itemId &&
+                       cursor.components == target->components &&
+                       cursor.removedComponents == target->removedComponents) {
+                const int limit = slotId == 0 ? 1 : maxStackForId(target->itemId);
+                if (target->count < limit) {
+                    ++target->count;
+                    if (--cursor.count <= 0) cursor=ItemStack::air();
+                    changed=true;
+                }
             }
         }
         if (changed) onContentChanged(menu, player);
@@ -198,32 +321,39 @@ bool EnchantmentMenuLogic::onEnchantButton(Menu& menu, Player& player, int butto
 bool EnchantmentMenuLogic::onEnchantButton(Menu& menu, Player& player, int buttonId, MenuIo& io, int bookshelves) {
     ItemStack* item = menu.container ? &menu.container[0] : &menu.extraSlots[0];
     ItemStack* lapis = menu.container ? &menu.container[1] : &menu.extraSlots[1];
-    if (item->empty()) return false;
-    if (lapis->empty() || lapis->count < (buttonId+1)) return false;
-    bookshelves = std::clamp(bookshelves, 0, 15);
-    auto costs = CostCalculator::enchantingCostsForShelves(player, bookshelves);
-    int levelCost = costs[std::clamp(buttonId,0,2)];
-    if (player.gamemode==0 && player.xp.level < levelCost) return false;
-    // Deduct lapis
-    lapis->count -= (buttonId+1);
+    const auto lapisId = gen::itemIdByName().find("minecraft:lapis_lazuli");
+    if (buttonId < 0 || buttonId >= 3 || item->empty() || lapis->empty() ||
+        lapisId == gen::itemIdByName().end() || lapis->itemId != lapisId->second)
+        return false;
+
+    const auto choices = offers(menu, player, bookshelves);
+    const EnchantmentOffer& choice =
+        choices[static_cast<std::size_t>(buttonId)];
+    if (!choice.selectable() || lapis->count < choice.lapisCost) return false;
+    const int requiredLevel = buttonId + 1;
+    if (player.gamemode == 0 &&
+        (player.xp.level < requiredLevel || player.xp.level < choice.levelCost))
+        return false;
+
+    // Apply the already-presented choice, rather than re-rolling a different
+    // enchantment during the packet handler.
+    *item = choice.result;
+    lapis->count -= choice.lapisCost;
     if (lapis->count<=0) *lapis=ItemStack::air();
     // Deduct XP
     if (player.gamemode==0) {
-        player.xp.level = std::max(0, player.xp.level - levelCost);
+        player.xp.level = std::max(0, player.xp.level - choice.levelCost);
         GameServer::sendSetExperience(player);
     }
-    // Yarn `EnchantmentHelper.generateEnchantments` uses Random.create(seed) where seed = player.enchantmentSeed
-    const char* enchants[] = {"minecraft:protection","minecraft:sharpness","minecraft:efficiency","minecraft:unbreaking"};
-    const char* chosen = enchants[buttonId % 4];
-    {
-        std::uint32_t baseSeed = static_cast<std::uint32_t>(player.enchantmentSeed ^ (buttonId * 0x9e3779b9u) ^ (bookshelves * 0x85ebca6bu));
-        if (baseSeed == 0) baseSeed = 0x5a5a5a5a;
-        std::mt19937 rng(baseSeed);
-        int lvl = 1 + (buttonId) + static_cast<int>(rng() % 2u);
-        // clamp lvl to enchant max (protection 4, sharpness 5 etc) — keep simple 1..5
-        lvl = std::clamp(lvl, 1, 5);
-        ItemStack::addEnchant(*item, chosen, lvl);
-    }
+    // Vanilla advances the table seed after a successful enchantment.  The
+    // exact Java Random stream is outside this bounded native model, but
+    // retaining the state transition prevents the next offer set from being
+    // a replay of the previous one.
+    std::uint32_t nextSeed = CostCalculator::splitmix32(
+        static_cast<std::uint32_t>(player.enchantmentSeed) +
+        0x9e3779b9u + static_cast<std::uint32_t>(buttonId));
+    if (nextSeed == 0) nextSeed = 0x5a5a5a5au;
+    player.enchantmentSeed = static_cast<std::int32_t>(nextSeed);
     io.blockEntityChanged(menu.blockKey);
     return true;
 }
@@ -278,7 +408,6 @@ bool StonecutterMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, i
         ItemStack* input = menu.container ? &menu.container[0] : &menu.extraSlots[0];
         if (!input->empty()) { input->count--; if(input->count<=0) *input=ItemStack::air(); }
         // result already taken
-        if (button==1) {} // right click similar
         result->count=0; *result=ItemStack::air(); // after taking, clear? Actually we already moved
         // For simplicity after taking, keep result if input remains? Should recompute ghost recipe Use recipes stonecutting
         if (!input->empty()) {
@@ -286,7 +415,9 @@ bool StonecutterMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, i
             if (r) *result = r->result;
             else *result = ItemStack::air();
         }
-        // Strict audit: stonecutter/crafter triggered toggle — mark block entity dirty and toggle triggered if present
+        // The menu mutation is persisted through the shared block-entity
+        // dirty hook; stonecutter and crafter block states are not toggled by
+        // taking an output from a menu.
         io.blockEntityChanged(menu.blockKey);
         return true;
     }
@@ -320,18 +451,82 @@ bool StonecutterMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, i
 
 // ---------------- Crafter ----------------
 
+bool CrafterMenuLogic::craftOnRedstone(Menu& menu, const RecipeManager& recipes,
+                                       ItemStack& outputSink, MenuIo& io) const {
+    if (menu.type != MenuType::Crafter) return false;
+    if (menu.containerCount > 0 && menu.containerCount < 9) return false;
+
+    ItemStack* slots = menu.container ? menu.container : menu.extraSlots;
+    std::vector<ItemStack> grid(9, ItemStack::air());
+    for (int i = 0; i < 9; ++i) {
+        // Disabled slots are not recipe inputs and automation must not consume
+        // or refill them.  Keeping them empty in the recipe view also mirrors
+        // CrafterBlockEntity's RecipeInputInventory contract.
+        if (!menu.crafterDisabledSlots ||
+            ((*menu.crafterDisabledSlots & (std::uint16_t{1} << i)) == 0))
+            grid[i] = slots[i];
+    }
+    const Recipe* recipe = recipes.findCrafting(grid, 3, 3);
+    if (!recipe || recipe->result.empty()) return false;
+
+    const ItemStack& result = recipe->result;
+    const int limit = maxStackForId(result.itemId);
+    if (result.count <= 0 || result.count > limit) return false;
+
+    // Check and reserve the destination before consuming any input. A
+    // redstone pulse must be atomic when the adjacent destination is full or
+    // contains a different item.
+    if (outputSink.empty()) {
+        outputSink = result;
+    } else {
+        const bool same = outputSink.itemId == result.itemId &&
+                          outputSink.components == result.components &&
+                          outputSink.removedComponents == result.removedComponents;
+        if (!same || outputSink.count < 0 || outputSink.count > limit - result.count)
+            return false;
+        outputSink.count = static_cast<std::int16_t>(outputSink.count + result.count);
+    }
+
+    for (int i = 0; i < 9; ++i) {
+        if (menu.crafterDisabledSlots &&
+            ((*menu.crafterDisabledSlots & (std::uint16_t{1} << i)) != 0))
+            continue;
+        if (slots[i].empty()) continue;
+        --slots[i].count;
+        if (slots[i].count <= 0) slots[i] = ItemStack::air();
+    }
+    io.blockEntityChanged(menu.blockKey);
+    return true;
+}
+
 bool CrafterMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, int button, int mode,
                                    ItemStack& cursor, MenuIo& io, const RecipeManager& recipes) {
     (void)player; (void)recipes;
-    // Crafter 9 slots (0..8) + player inv 36. Yarn `CrafterScreenHandler` + `CrafterBlock` `triggered` parity:
-    // `triggered` toggle is handled server-side in `GameServer::handleMenuClick` (Crafter only), not here.
-    // Behaves like a chest 3x3; disabled-slot handling and redstone automation are
-    // outside this partial interaction implementation.
+    // Crafter 9 slots (0..8) + player inventory 36.  An empty click on an
+    // empty input slot toggles that slot's disabled state, matching the
+    // vanilla CrafterBlockEntity mask.  Redstone automation, including the
+    // `triggered` block-state edge and output routing, belongs to the server
+    // tick path and must not be coupled to a player menu click.
     int cont = 9;
     if (slotId < cont) {
         ItemStack* target = menu.container ? &menu.container[slotId] : &menu.extraSlots[slotId];
         bool changed=false;
         if (mode==1) return false; // quick move not handled, fall back to ClickLogic
+        const bool disabled = menu.crafterDisabledSlots &&
+            ((*menu.crafterDisabledSlots & (std::uint16_t{1} << slotId)) != 0);
+        if (cursor.empty() && target->empty()) {
+            if (!menu.crafterDisabledSlots) return false;
+            const auto bit = static_cast<std::uint16_t>(std::uint16_t{1} << slotId);
+            if (disabled) *menu.crafterDisabledSlots =
+                static_cast<std::uint16_t>(*menu.crafterDisabledSlots & ~bit);
+            else *menu.crafterDisabledSlots =
+                static_cast<std::uint16_t>(*menu.crafterDisabledSlots | bit);
+            io.blockEntityChanged(menu.blockKey);
+            return true;
+        }
+        // A disabled slot is a hard automation/UI insertion barrier, but an
+        // existing stack can still be taken out after the slot is disabled.
+        if (disabled && !cursor.empty()) return false;
         if (button==0) {
             if (cursor.empty() && !target->empty()) { cursor=*target; *target=ItemStack::air(); changed=true; }
             else if (!cursor.empty() && target->empty()) { *target=cursor; cursor=ItemStack::air(); changed=true; }
@@ -344,8 +539,8 @@ bool CrafterMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, int b
             }
         }
         if (changed) io.blockEntityChanged(menu.blockKey);
-        // Redstone-triggered crafting and output transfer are not implemented; the
-        // interaction path intentionally preserves the inserted slots.
+        // The server-side redstone path is intentionally separate; a menu
+        // click must never toggle `triggered` or craft implicitly.
         return changed;
     }
     return false;
@@ -484,14 +679,20 @@ std::unique_ptr<MenuLogic> createMenuLogic(MenuType type) {
 }
 
 MenuLogic* getMenuLogic(MenuType type) {
-    static std::unordered_map<MenuType, std::unique_ptr<MenuLogic>> cache;
-    auto it = cache.find(type);
-    if (it!=cache.end()) return it->second.get();
-    auto ptr = createMenuLogic(type);
-    if (!ptr) return nullptr;
-    MenuLogic* raw = ptr.get();
-    cache.emplace(type, std::move(ptr));
-    return raw;
+    // Menu logic is shared by sessions, so initialise the complete table once
+    // instead of mutating an unordered_map on the first concurrent click.
+    // The object implementations are stateless; per-menu state stays in Menu.
+    static std::once_flag once;
+    static std::array<std::unique_ptr<MenuLogic>, 25> cache;
+    std::call_once(once, [] {
+        for (int raw = 0; raw < static_cast<int>(cache.size()); ++raw) {
+            const auto menuType = static_cast<MenuType>(raw);
+            cache[static_cast<std::size_t>(raw)] = createMenuLogic(menuType);
+        }
+    });
+    const auto raw = static_cast<int>(type);
+    if (raw < 0 || raw >= static_cast<int>(cache.size())) return nullptr;
+    return cache[static_cast<std::size_t>(raw)].get();
 }
 
 } // namespace cppfm

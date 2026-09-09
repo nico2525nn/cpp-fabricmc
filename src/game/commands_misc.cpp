@@ -1,22 +1,6 @@
-#include "GameServer.hpp"
-#include "Messages.hpp"
-#include "Particles.hpp"
-#include "../generated/EntityIds.hpp"
-#include "../generated/BlockStates.hpp"
-#include <algorithm>
-#include <cmath>
-#include <set>
-#include <filesystem>
-#include <unordered_set>
-#include <fstream>
+#include "CommandModule.hpp"
 
-#include "CommandsHelpers.hpp"
 namespace cppfm {
-
-using brigadier::CommandNode;
-using brigadier::CommandContext;
-namespace args = brigadier::args;
-using NodePtr = brigadier::NodePtr;
 
 void GameServer::initMiscCommands() {
     initMiscCommandsPart01();
@@ -136,11 +120,15 @@ void GameServer::initMiscCommandsPart06() {
             std::string t = c.arg("type").asStr();
             if (t == "horse") {
                 double x = p->x, y = p->y, z = p->z;
-                spawnMobByTypeName("minecraft:horse", x, y, z);
+                spawnMobByTypeNameFor(commandDimension(c.source),
+                                      "minecraft:horse", x, y, z);
                 std::shared_ptr<MobEntity> horse;
                 {
                     std::lock_guard<std::mutex> lk(entsMtx_);
-                    for (auto it = mobs_.rbegin(); it != mobs_.rend(); ++it) if ((*it)->kind == MobKind::Horse) { horse = *it; break; }
+                    for (auto it = mobs_.rbegin(); it != mobs_.rend(); ++it)
+                        if ((*it)->kind == MobKind::Horse &&
+                            canonicalDimension((*it)->dimension) ==
+                                commandDimension(c.source)) { horse = *it; break; }
                 }
                 if (horse) {
                     int windowId = 1;
@@ -157,18 +145,24 @@ void GameServer::initMiscCommandsPart06() {
                 return 0;
             } else if (t == "vehicle") {
                 double x = p->x, y = p->y, z = p->z;
-                spawnMobByTypeName("minecraft:oak_boat", x, y, z);
+                spawnMobByTypeNameFor(commandDimension(c.source),
+                                      "minecraft:oak_boat", x, y, z);
                 std::shared_ptr<MobEntity> boat;
                 {
                     std::lock_guard<std::mutex> lk(entsMtx_);
-                    for (auto it = mobs_.rbegin(); it != mobs_.rend(); ++it) if (MobEntity::isBoat((*it)->kind)) { boat = *it; break; }
+                    for (auto it = mobs_.rbegin(); it != mobs_.rend(); ++it)
+                        if (MobEntity::isBoat((*it)->kind) &&
+                            canonicalDimension((*it)->dimension) ==
+                                commandDimension(c.source)) { boat = *it; break; }
                 }
                 if (boat) {
                     p->vehicleId = boat->entityId;
                     boat->riderEntityId = p->entityId;
                     broadcastSetPassengers(boat->entityId);
                     WriteBuffer vm; vm.f64(x+2); vm.f64(y); vm.f64(z+2); vm.f32(45.0f); vm.f32(5.0f);
-                    broadcastPacketExcept(p, proto::pl::sc::VehicleMove, vm);
+                    broadcastPacketExceptInDimension(
+                        commandDimension(c.source), p,
+                        proto::pl::sc::VehicleMove, vm);
                     sendFeedback(p, "plan41 vehicle move sent boat eid=" + std::to_string(boat->entityId));
                     return 1;
                 }

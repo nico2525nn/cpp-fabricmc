@@ -12,7 +12,7 @@ public interface TypeFilter<B, T extends B> {
     Class<? extends B> getBaseClass();
 
     @SuppressWarnings("unchecked")
-    default T downcast(Object object) {
+    default T downcast(B object) {
         Class<? extends B> base = getBaseClass();
         return base.isInstance(object) ? (T) object : null;
     }
@@ -29,7 +29,7 @@ public interface TypeFilter<B, T extends B> {
         return new TypeFilter<>() {
             @Override public Class<T> getBaseClass() { return cls; }
             @Override @SuppressWarnings("unchecked")
-            public T downcast(Object object) {
+            public T downcast(B object) {
                 return object != null && object.getClass() == cls ? (T) object : null;
             }
         };

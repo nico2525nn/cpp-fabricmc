@@ -5,6 +5,7 @@ import java.lang.invoke.MethodType;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
+import java.util.Set;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.block.AbstractBlock;
 import net.minecraft.block.Block;
@@ -15,7 +16,6 @@ import net.minecraft.entity.damage.DamageSource;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.network.PacketByteBuf;
-import net.minecraft.network.packet.CustomPayload;
 import net.minecraft.registry.RegistryEntry;
 import net.minecraft.registry.RegistryKey;
 import net.minecraft.registry.RegistryKeys;
@@ -39,7 +39,18 @@ public final class ShadowAbiFixture {
 
     public static void main(String[] args) throws Throwable {
         check(Block.class.getSuperclass() == AbstractBlock.class, "Block inheritance");
-        check(World.class.getInterfaces().length == 3, "World interface count");
+        check(Set.of(World.class.getInterfaces()).equals(Set.of(
+            net.minecraft.world.BlockView.class,
+            net.minecraft.world.BlockRenderView.class,
+            net.minecraft.world.WorldView.class,
+            net.minecraft.world.WorldAccess.class,
+            net.minecraft.world.CollisionView.class,
+            net.minecraft.world.HeightLimitView.class,
+            net.minecraft.world.RedstoneView.class,
+            net.fabricmc.fabric.impl.event.lifecycle.LoadedChunksCache.class,
+            net.fabricmc.fabric.api.attachment.v1.AttachmentTarget.class,
+            net.fabricmc.fabric.api.blockview.v2.FabricBlockView.class)),
+            "World interface set");
         check(World.class.getInterfaces()[0] == net.minecraft.world.BlockView.class,
             "World BlockView interface");
 

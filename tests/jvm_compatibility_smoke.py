@@ -4,7 +4,10 @@
 The CMake target intentionally compiles only the historical two-file fixture.
 This runner owns the corpus build/staging step, so adding a fixture does not
 require changing the production CMake graph.  All 25 mods are then loaded by
-one cppfm process and judged by ``jvm_compatibility_report.py``.
+one cppfm process and judged by ``jvm_compatibility_report.py``.  The optional
+P2 functional fixture is staged as an auxiliary mod so the report's historical
+25-case contract remains unchanged; its own observable evidence is checked by
+this runner.
 """
 
 from __future__ import annotations
@@ -23,6 +26,8 @@ from typing import Any
 
 
 CASE_COUNT = 25
+FUNCTIONAL_FIXTURE_CASE = "26-functional-api"
+FUNCTIONAL_FIXTURE_COMPLETE = "FUNCTIONAL_FIXTURE status=PASS phase=functional-complete"
 COMPILE_TIMEOUT = 90.0
 SERVER_TIMEOUT = 45.0
 STOP_TIMEOUT = 12.0
@@ -213,6 +218,18 @@ def compile_corpus(corpus_root: Path, corpus: dict[str, Any], base_classes: Path
     classes = staging_root / "classes"
     mods = staging_root / "mods"
     shutil.copytree(base_classes, classes)
+    # PacketByteBuf is a ByteBuf subclass in the 1.21.4 ABI.  The production
+    # class tree intentionally does not contain Netty, because real launches
+    # provide it from jvm-libraries.  The dependency-free corpus has no such
+    # library path, so stage only the build-time Netty stubs beside the copied
+    # classes.  This keeps the fixture self-contained without polluting the
+    # production class path with shadow Netty classes.
+    compile_stubs = base_classes.parent / "compile-stubs"
+    if compile_stubs.is_dir():
+        for stub in compile_stubs.rglob("*.class"):
+            destination = classes / stub.relative_to(compile_stubs)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(stub, destination)
     mods.mkdir()
     fixtures = corpus.get("fixtures")
     if not isinstance(fixtures, list) or len(fixtures) != CASE_COUNT:
@@ -271,6 +288,34 @@ def compile_corpus(corpus_root: Path, corpus: dict[str, Any], base_classes: Path
                 raise ValueError(f"duplicate or invalid staged auxiliary mod id: {mod_id!r}")
             seen_mod_ids.add(mod_id)
 
+    # The strict compatibility report intentionally owns exactly 25 historical
+    # cases.  Stage the P2 functional fixture as a real auxiliary directory mod
+    # instead of changing that report contract.  Its metadata depends on case
+    # 25, which keeps initialization deterministic and exercises the same
+    # loader/dependency path as the existing auxiliary transformer fixture.
+    functional_source = corpus_root / FUNCTIONAL_FIXTURE_CASE
+    if not functional_source.is_dir():
+        raise ValueError(f"required functional fixture directory does not exist: {functional_source}")
+    functional_case, functional = auxiliary_entry(
+        corpus_root, fixtures[-1], FUNCTIONAL_FIXTURE_CASE
+    )
+    if functional_case in seen_cases or functional_case in auxiliary_cases:
+        raise ValueError(f"duplicate functional fixture directory: {functional_case}")
+    auxiliary_cases.add(functional_case)
+    metadata = compile_mod(
+        functional_source,
+        functional_case,
+        functional,
+        classes,
+        mods,
+        javac,
+        require_entrypoint=False,
+    )
+    mod_id = metadata.get("id")
+    if not isinstance(mod_id, str) or mod_id in seen_mod_ids:
+        raise ValueError(f"duplicate or invalid staged functional mod id: {mod_id!r}")
+    seen_mod_ids.add(mod_id)
+
     expected = {str(entry.get("case")) for entry in fixtures if isinstance(entry, dict)}
     if seen_cases != expected:
         raise ValueError("corpus case inventory changed while staging")
@@ -318,6 +363,23 @@ def stop_owned_process(proc: subprocess.Popen[str], timeout: float = STOP_TIMEOU
         proc.wait(timeout=5.0)
 
 
+def request_graceful_shutdown(
+    proc: subprocess.Popen[str],
+    timeout: float = STOP_TIMEOUT,
+) -> None:
+    """Request normal server shutdown, escalating only after its deadline."""
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        stop_owned_process(proc, timeout=5.0)
+
+
 def run_server(binary: Path, classes: Path, mods: Path, world: Path,
                timeout: float) -> tuple[int | None, list[str]]:
     command = [
@@ -329,30 +391,83 @@ def run_server(binary: Path, classes: Path, mods: Path, world: Path,
         "--world-dir=" + str(world),
         "--port=0",
     ]
-    with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as log_file:
+    environment = os.environ.copy()
+    environment["CPPFM_SERVER_DIR"] = str(world)
+    # Keep stdout and stderr in separate files while the server is running.
+    # C++ diagnostics and NativeBridge logs use stderr, while a small Java
+    # shutdown path uses System.out.  If both streams are redirected to the
+    # same descriptor, independent stdio
+    # buffers can interleave at byte granularity and corrupt an otherwise
+    # valid evidence marker.  Merge complete lines only after the process has
+    # finished.  NativeBridge and server diagnostics are on stderr; the small
+    # set of shutdown markers intentionally printed by Java after the native
+    # runtime lease is released is on stdout, so append that stream last to
+    # preserve the lifecycle order checked by the report.
+    with (
+        tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stdout_file,
+        tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stderr_file,
+    ):
         proc = subprocess.Popen(
             command,
             cwd=str(binary.parent.parent),
-            stdout=log_file,
-            stderr=subprocess.STDOUT,
+            env=environment,
+            stdout=stdout_file,
+            stderr=stderr_file,
             text=True,
             start_new_session=True,
         )
         lines: list[str] = []
         deadline = time.monotonic() + timeout
+        graceful_shutdown_requested = False
         try:
             while time.monotonic() < deadline and proc.poll() is None:
-                lines = refresh(log_file)
+                lines = refresh(stderr_file) + refresh(stdout_file)
                 if any(
                     "CORPUS case=25 status=PASS phase=corpus-complete" in line
                     for line in lines
-                ):
+                ) and FUNCTIONAL_FIXTURE_COMPLETE in lines:
+                    graceful_shutdown_requested = True
+                    request_graceful_shutdown(proc)
                     break
                 time.sleep(0.1)
         finally:
-            stop_owned_process(proc)
-            lines = refresh(log_file)
+            if proc.poll() is None:
+                if graceful_shutdown_requested:
+                    request_graceful_shutdown(proc)
+                else:
+                    stop_owned_process(proc)
+            lines = refresh(stderr_file) + refresh(stdout_file)
         return proc.returncode, lines
+
+
+def validate_functional_evidence(lines: list[str]) -> list[str]:
+    """Validate the P2 fixture without feeding case 26 to the 25-case report."""
+    required_passes = (
+        "registry-lookup",
+        "world-load",
+        "server-world-started",
+        "world-state-read-write",
+        "payload-codec-dispatch",
+        "nbt-state-roundtrip",
+        "command-registration",
+        "tick-counter",
+        "command-execution",
+        "world-unload",
+        "functional-complete",
+    )
+    errors: list[str] = []
+    for phase in required_passes:
+        marker = f"FUNCTIONAL_FIXTURE status=PASS phase={phase}"
+        if not any(marker in line for line in lines):
+            errors.append(f"missing functional PASS phase: {phase}")
+    if any("FUNCTIONAL_FIXTURE status=FAIL" in line for line in lines):
+        errors.append("functional fixture emitted FAIL evidence")
+    if not any(
+        "FUNCTIONAL_FIXTURE status=DIAGNOSTIC phase=persistent-state-boundary" in line
+        for line in lines
+    ):
+        errors.append("functional fixture lacks explicit persistent-state boundary diagnostic")
+    return errors
 
 
 def write_evidence(path: Path, lines: list[str]) -> None:
@@ -436,8 +551,15 @@ def main() -> int:
                 if report.stderr:
                     print(report.stderr, file=sys.stderr, end="")
                 return 1
+            functional_errors = validate_functional_evidence(lines)
+            if functional_errors:
+                print("jvm functional API fixture: FAIL", file=sys.stderr)
+                for error in functional_errors:
+                    print(f"  {error}", file=sys.stderr)
+                return 1
             if returncode != 0:
                 return 1
+            print("jvm functional API fixture: PASS")
             print("jvm compatibility corpus: PASS")
             return 0
     except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:

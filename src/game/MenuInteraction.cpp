@@ -27,6 +27,10 @@ static int containerSlotCount(const Menu& m) {
     return m.totalSlots() - 36;
 }
 static ItemStack* playerInvSlot(const Menu& m, int slot, Player& p) {
+    if (m.playerInventory) {
+        if (slot >= 5 && slot < 46) return &p.inv[slot];
+        return nullptr;
+    }
     int cont = containerSlotCount(m);
     if (slot >= cont && slot < cont + 36) return &p.inv[slot - cont + 9];
     return nullptr;
@@ -153,7 +157,10 @@ bool ClickLogic::pickupPlace(Menu& m, Player&, int slot, int button,
     ItemStack* target = nullptr;
     if (m.type == MenuType::Crafting) {
         if (slot == 0) return false;                 // handled by caller (result)
-        if (slot >= 1 && slot < 10) target = &m.craftGrid[slot - 1];
+        const int craftSlotEnd = m.playerInventory ? 5 : 10;
+        const int gridIndex = m.craftGridIndex(slot);
+        if (slot >= 1 && slot < craftSlotEnd && gridIndex >= 0)
+            target = &m.craftGrid[gridIndex];
         else return false;   // player inv via session
         if (!target) return false;
     } else {
@@ -161,7 +168,6 @@ bool ClickLogic::pickupPlace(Menu& m, Player&, int slot, int button,
         if (slot < 0 || slot >= cont) return false;
         if (m.container) target = &m.container[slot];
         else target = &m.extraSlots[slot];
-        if (m.blockKey >= 0) io.blockEntityChanged(m.blockKey);
     }
 
     if (isTakeOnlySlot(m, slot)) return false;
@@ -188,8 +194,7 @@ bool ClickLogic::pickupPlace(Menu& m, Player&, int slot, int button,
             changed = mergeInto(cursor, *target, 1);
         }
     }
-    if (changed && m.type == MenuType::Furnace) io.blockEntityChanged(m.blockKey);
-    else if (changed && m.blockKey >= 0 && m.type != MenuType::Crafting)
+    if (changed && m.blockKey != -1 && m.type != MenuType::Crafting)
         io.blockEntityChanged(m.blockKey);
     return changed;
 }
@@ -211,8 +216,17 @@ bool ClickLogic::quickMove(Menu& m, Player& p, const RecipeManager& recipes,
             }
             return crafted > 0;
         }
-        if (slot >= 1 && slot < 10) src = &m.craftGrid[slot - 1];
-        else if (slot >= 10 && slot < 46) src = playerInvSlot(m, slot, p), fromPlayer = true;
+        if (m.playerInventory) {
+            const int gridIndex = m.craftGridIndex(slot);
+            if (slot >= 1 && slot < 5 && gridIndex >= 0)
+                src = &m.craftGrid[gridIndex];
+            else if (slot >= 5 && slot < 46)
+                src = playerInvSlot(m, slot, p), fromPlayer = true;
+        } else {
+            if (slot >= 1 && slot < 10) src = &m.craftGrid[slot - 1];
+            else if (slot >= 10 && slot < 46)
+                src = playerInvSlot(m, slot, p), fromPlayer = true;
+        }
     } else {
         int cont = containerSlotCount(m);
         if (slot >= 0 && slot < cont) {
@@ -227,6 +241,61 @@ bool ClickLogic::quickMove(Menu& m, Player& p, const RecipeManager& recipes,
     // destination ranges
     bool moved = false;
     if (fromPlayer) {
+        if (m.playerInventory) {
+            // A player screen has no container destination.  Shift-clicking
+            // moves armor/off-hand into the main inventory, equips compatible
+            // items from the main inventory, or transfers between the main
+            // inventory and hotbar.  Every path consumes the source only after
+            // a destination has accepted it.
+            auto moveTo = [&](const int* slots, std::size_t count) {
+                for (std::size_t pass = 0; pass < 2 && !src->empty(); ++pass) {
+                    for (std::size_t i = 0; i < count && !src->empty(); ++i) {
+                        ItemStack& dst = p.inv[slots[i]];
+                        if (pass == 0) {
+                            if (sameItem(*src, dst))
+                                moved = mergeInto(*src, dst);
+                        } else if (dst.empty()) {
+                            dst = *src;
+                            *src = ItemStack::air();
+                            moved = true;
+                        }
+                    }
+                }
+            };
+            static constexpr int kHotbar[] = {36, 37, 38, 39, 40, 41, 42, 43, 44};
+            static constexpr int kMain[] = {
+                9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+                25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35};
+            const int sourceSlot = static_cast<int>(src - p.inv.data());
+            if (sourceSlot >= 5 && sourceSlot <= 8) {
+                moveTo(kHotbar, std::size(kHotbar));
+                if (!moved) moveTo(kMain, std::size(kMain));
+            } else if (sourceSlot == 45) {
+                moveTo(kHotbar, std::size(kHotbar));
+                if (!moved) moveTo(kMain, std::size(kMain));
+            } else if (sourceSlot >= 9 && sourceSlot <= 44) {
+                const std::string itemName = src->name();
+                int armorSlot = -1;
+                if (itemName.ends_with("_boots")) armorSlot = 5;
+                else if (itemName.ends_with("_leggings")) armorSlot = 6;
+                else if (itemName.ends_with("_chestplate")) armorSlot = 7;
+                else if (itemName.ends_with("_helmet")) armorSlot = 8;
+                if (armorSlot >= 0 && p.inv[armorSlot].empty()) {
+                    p.inv[armorSlot] = *src;
+                    *src = ItemStack::air();
+                    moved = true;
+                } else if (itemName == "minecraft:shield" && p.inv[45].empty()) {
+                    p.inv[45] = *src;
+                    *src = ItemStack::air();
+                    moved = true;
+                } else if (sourceSlot >= 36) {
+                    moveTo(kMain, std::size(kMain));
+                } else {
+                    moveTo(kHotbar, std::size(kHotbar));
+                }
+            }
+            return moved;
+        }
         // into container (or furnace special slots)
         if (m.type == MenuType::Furnace) {
             const bool smeltable =
@@ -283,11 +352,21 @@ bool ClickLogic::swapWithHotbar(Menu& m, Player& p, int slot, int button,
     if (button < 0 || button > 8) return false;
     ItemStack* hotbar = &p.inv[36 + button];
     ItemStack* target = nullptr;
+    if (m.playerInventory) {
+        if (slot < 1 || slot >= 46) return false; // result is take-only
+        target = m.slotAt(slot, p.inv.data());
+        if (!target) return false;
+        if (target == hotbar) return true;
+        std::swap(*hotbar, *target);
+        return true;
+    }
     int cont = containerSlotCount(m);
     // Yarn 1.21.4 ScreenHandler: swapWithHotbar (mode 2) works for all slots (container + player inv), not 3-type limited (I13)
     if (slot >=0 && slot < cont) {
         if (m.type == MenuType::Crafting) {
-            if (slot >=1 && slot <10) target = &m.craftGrid[slot - 1];
+            const int gridIndex = m.craftGridIndex(slot);
+            if (slot >= 1 && slot < 10 && gridIndex >= 0)
+                target = &m.craftGrid[gridIndex];
             else if (slot==0) return false; // result take-only handled by isTakeOnlySlot
         } else {
             target = m.container ? &m.container[slot] : &m.extraSlots[slot];
@@ -316,10 +395,14 @@ bool ClickLogic::throwSlot(Menu& m, Player& p, int slot, int button,
     } else {
         ItemStack* src = nullptr;
         int cont = containerSlotCount(m);
-        if (slot >=0 && slot < cont) {
+        if (m.playerInventory) {
+            src = m.slotAt(slot, p.inv.data());
+        } else if (slot >=0 && slot < cont) {
             if (m.type == MenuType::Crafting) {
                 if (slot==0) return false;
-                if (slot>=1 && slot<10) src = &m.craftGrid[slot-1];
+                const int gridIndex = m.craftGridIndex(slot);
+                if (slot >= 1 && slot < 10 && gridIndex >= 0)
+                    src = &m.craftGrid[gridIndex];
             } else {
                 src = m.container ? &m.container[slot] : &m.extraSlots[slot];
             }
@@ -333,7 +416,7 @@ bool ClickLogic::throwSlot(Menu& m, Player& p, int slot, int button,
             dropped.count = 1;
             if (--src->count <= 0) *src = ItemStack::air();
         }
-        if (m.blockKey >= 0) io.blockEntityChanged(m.blockKey);
+        if (m.blockKey != -1) io.blockEntityChanged(m.blockKey);
     }
     io.dropFromPlayer(p, dropped, true);
     return !dropped.empty();
@@ -364,7 +447,7 @@ bool ClickLogic::pickupAll(Menu& m, Player& p, int slot, ItemStack& cursor,
             }
         }
     }
-    if (collected) io.blockEntityChanged(m.blockKey);
+    if (collected && m.blockKey != -1) io.blockEntityChanged(m.blockKey);
     return collected > 0;
 }
 

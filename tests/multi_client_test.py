@@ -1,5 +1,5 @@
 """Multi-client 3-way verification: chunkCoords + tracker + drag + chat/block (C-12)."""
-import io, os, signal, socket, struct, subprocess, sys, time, argparse, tempfile, shutil
+import io, math, os, signal, socket, struct, subprocess, sys, time, argparse, tempfile, shutil
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mcproto
 from mcproto import Conn, read_varint, unpack_string
@@ -56,6 +56,23 @@ class Bot:
         self.keepalives = 0
         self.disconnects = 0
         self.last_move = 0.0
+        self.position = (0.5, -60.0, 0.5)
+
+    def move_to(self, x, y, z, on_ground=True):
+        """Send a legal sequence of position packets to an integration target."""
+        ox, oy, oz = self.position
+        distance = math.sqrt((x - ox) ** 2 + (y - oy) ** 2 + (z - oz) ** 2)
+        steps = max(1, int(math.ceil(distance / 8.0)))
+        for step in range(1, steps + 1):
+            fraction = step / steps
+            position = (ox + (x - ox) * fraction,
+                        oy + (y - oy) * fraction,
+                        oz + (z - oz) * fraction)
+            self.c.send_packet_raw(
+                0x1c, struct.pack(">ddd", *position) +
+                bytes([1 if step == steps and on_ground else 0]))
+        self.position = (x, y, z)
+
     def pump(self, seconds=1.0, move=True):
         t_end = time.monotonic() + seconds
         while time.monotonic() < t_end:
@@ -98,7 +115,7 @@ class Bot:
             if move and now - self.last_move > 0.35:
                 self.last_move = now
                 try:
-                    self.c.send_packet_raw(0x1c, struct.pack(">ddd", 8.5, -60.0, 8.5) + b"\x01")
+                    self.move_to(8.5, -60.0, 8.5)
                 except OSError:
                     return
 
@@ -128,10 +145,13 @@ def main():
         world_dir = tempfile.mkdtemp(prefix=f"cppfm-multi-client-{os.getpid()}-")
         print(f"[multi_client] spawning {binary} --port {port}")
         cwd = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+        environment = os.environ.copy()
+        environment["CPPFM_SERVER_DIR"] = world_dir
         try:
             proc = subprocess.Popen([binary, "--port", str(port), "--view-distance", "6",
                                      "--world-dir", world_dir],
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=cwd,
+                                    env=environment,
                                     start_new_session=True)
             wait_for_server(proc, host, port)
         except BaseException:
@@ -177,6 +197,7 @@ def main():
 
         # entity tracker yaw/pitch
         a.c.send_packet_raw(0x1d, struct.pack(">ddd", 9.5, -60.0, 8.5) + struct.pack(">ff", 45.0, 10.0) + b"\x01")
+        a.position = (9.5, -60.0, 8.5)
         time.sleep(0.7)
         b.pump(0.5); c.pump(0.5)
         check(len(b.moves) >= 1, f"B sees A's movement tracker yaw/pitch ({len(b.moves)} pkts)")
@@ -204,6 +225,9 @@ def main():
         # A digs a distinctive block outside the default spawn-protection radius;
         # all clients should get the resulting update.
         dig_x, dig_y, dig_z = 32, -61, 32
+        a.move_to(32.5, -60.0, 32.5)
+        time.sleep(0.2)
+        a.pump(0.2, move=False)
         def pack_pos(x, y, z):
             return struct.pack(">q", ((x & 0x3FFFFFF) << 38) | ((z & 0x3FFFFFF) << 12) | (y & 0xFFF))
         a.c.send_packet_raw(0x27, mcproto.write_varint(0) + pack_pos(dig_x, dig_y, dig_z) +

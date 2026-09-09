@@ -123,7 +123,10 @@ public:
     ~World();
 
     LevelType levelType() const { return level_; }
-    struct SpawnPoint { std::int32_t x=0, y=-60, z=0; };
+    struct SpawnPoint {
+        std::int32_t x=0, y=-60, z=0;
+        float angle=0.f;
+    };
     SpawnPoint spawnPt = {};
     SpawnPoint spawnPoint() const { return spawnPt; }
     void setSpawnPoint(const SpawnPoint& sp) { spawnPt = sp; }
@@ -373,9 +376,13 @@ public:
             const int lx = x & 15, lz = z & 15, wy = y - kMinY;
             auto& block = c.blocks[Chunk::index(wy >> 4, wy & 15, lz, lx)];
             old = block;
+            if (old == state) return;
             block = state;
             ++c.revision;
         }
+        // A state-identical write is not a block update in vanilla.  The
+        // early return above prevents redstone, fluid, light, and Fabric
+        // block hooks from recursively reprocessing an already-stable state.
         invokeWorldHook(onBlockChanged_, "block-change hook", x, y, z, old, state);
         // Block Event Bus firing
         if (old == 0 && state != 0) fireBlockPlace(x,y,z,old,state);

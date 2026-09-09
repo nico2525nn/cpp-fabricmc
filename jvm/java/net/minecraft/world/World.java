@@ -1,13 +1,11 @@
 package net.minecraft.world;
 
-import cppfm.bridge.NativeBridge;
 import cppfm.bridge.MixinHooks;
 import cppfm.bridge.WrapperCache;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
 import net.minecraft.block.entity.BlockEntity;
 import net.minecraft.entity.Entity;
-import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.util.NativeAccess;
@@ -16,7 +14,6 @@ import net.minecraft.util.Identifier;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.ChunkPos;
-import net.minecraft.util.math.Vec3d;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -25,15 +22,27 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.function.Predicate;
 import net.minecraft.util.math.random.Random;
-import net.minecraft.util.math.Direction;
+import net.minecraft.world.entity.EntityIndex;
+import net.minecraft.world.entity.EntityLookup;
+import net.minecraft.world.entity.SimpleEntityLookup;
+import net.fabricmc.fabric.impl.event.lifecycle.LoadedChunksCache;
 
-public class World implements BlockView, WorldView, WorldAccess, CollisionView, HeightLimitView, RedstoneView {
+public class World implements BlockView, BlockRenderView, WorldView, WorldAccess, CollisionView,
+        HeightLimitView, RedstoneView, LoadedChunksCache,
+        net.fabricmc.fabric.api.attachment.v1.AttachmentTarget,
+        net.fabricmc.fabric.api.blockview.v2.FabricBlockView {
     protected final long nativeHandle;
     protected final boolean client;
     /** Owning thread marker exposed to thread-safety mixins. */
     private final Thread thread = Thread.currentThread();
     private final Map<Long, BlockState> localBlocks = new HashMap<>();
     private final Map<Long, BlockEntity> localBlockEntities = new HashMap<>();
+    private final java.util.Set<net.minecraft.world.chunk.WorldChunk> loadedChunks = new java.util.HashSet<>();
+    /** Vanilla ticker list exposed to server optimisation access wideners. */
+    private final List<Object> blockEntityTickers = new ArrayList<>();
+    private final Random threadSafeRandom = new Random(0L);
+    private final SimpleEntityLookup<net.minecraft.entity.Entity> entityLookup =
+        new SimpleEntityLookup<>(new EntityIndex<>(), new net.minecraft.world.entity.SectionedEntityCache());
     private final net.minecraft.world.border.WorldBorder border = new net.minecraft.world.border.WorldBorder();
     private final Random random = new Random(0L);
     private final GameRules gameRules = new GameRules();
@@ -57,6 +66,8 @@ public class World implements BlockView, WorldView, WorldAccess, CollisionView, 
     }
     public long nativeHandle() { return nativeHandle; }
     public boolean isClient() { return client; }
+    /** Private vanilla lookup accessor used by spark's World accessor mixin. */
+    private EntityLookup<net.minecraft.entity.Entity> getEntityLookup() { return entityLookup; }
     public BlockState getBlockState(BlockPos pos) {
         if (pos == null) return new BlockState(0);
         BlockState overwritten = MixinHooks.invokeOverwrite(this, "getBlockState", pos);
@@ -139,6 +150,15 @@ public class World implements BlockView, WorldView, WorldAccess, CollisionView, 
     public int getTopY() { return dimensionType.minY() + dimensionType.height(); }
     public int getTopY(Heightmap.Type type, int x, int z) { return getTopY(); }
     public boolean isChunkLoaded(int chunkX, int chunkZ) { return nativeHandle != 0 || !localBlocks.isEmpty(); }
+    @Override public java.util.Set<net.minecraft.world.chunk.WorldChunk> fabric_getLoadedChunks() {
+        return loadedChunks;
+    }
+    @Override public void fabric_markLoaded(net.minecraft.world.chunk.WorldChunk chunk) {
+        if (chunk != null) loadedChunks.add(chunk);
+    }
+    @Override public void fabric_markUnloaded(net.minecraft.world.chunk.WorldChunk chunk) {
+        if (chunk != null) loadedChunks.remove(chunk);
+    }
     public boolean isInBuildLimit(BlockPos pos) { return pos != null && pos.getY() >= getBottomY() && pos.getY() < getTopY(); }
     public boolean isAir(BlockPos pos) { return getBlockState(pos).isAir(); }
     public net.minecraft.fluid.FluidState getFluidState(BlockPos pos) {

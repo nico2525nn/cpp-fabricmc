@@ -6,7 +6,7 @@ import net.minecraft.registry.RegistryKey;
 import net.minecraft.util.Identifier;
 
 /** Canonical 1.21.4 tag key. */
-public final class TagKey<T> {
+public final class TagKey<T> implements net.fabricmc.fabric.api.tag.FabricTagKey {
     private final RegistryKey<? extends Registry<T>> registryRef;
     private final Identifier id;
 

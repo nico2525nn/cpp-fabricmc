@@ -868,7 +868,7 @@ static void test_field_order_strict(){
 }
 
 int main(){
-    std::printf("=== test_wire_full — vanilla-exact 1.21.4 769 (Prismarine https://raw.githubusercontent.com/PrismarineJS/minecraft-data/master/data/pc/1.21.4/protocol.json) ===\n");
+    std::printf("=== test_wire_full — version-pinned 1.21.4 protocol 769 ID locks and selected field/order vectors (Prismarine https://raw.githubusercontent.com/PrismarineJS/minecraft-data/master/data/pc/1.21.4/protocol.json) ===\n");
     test_primitives_varint();
     test_primitives_varlong();
     test_primitives_string();

@@ -32,7 +32,6 @@ EntityDataDef::Behavior EntityDataLoader::parseBehaviorNode(const json::Value& v
             if (!sub.type.empty() || !sub.children.empty()) out.children.push_back(std::move(sub));
         }
     }
-    // If type is empty but children exist, treat as selector implicitly
     return out;
 }
 
@@ -47,11 +46,11 @@ static std::string stripPrefix(const std::string& t) {
 }
 static bool isSelectorType(const std::string& raw) {
     std::string t = toLowerCopy(stripPrefix(raw));
-    return t=="selector" || t=="select" || t=="minecraft:selector";
+    return t=="selector" || t=="select";
 }
 static bool isSequenceType(const std::string& raw) {
     std::string t = toLowerCopy(stripPrefix(raw));
-    return t=="sequence" || t=="seq" || t=="minecraft:sequence";
+    return t=="sequence" || t=="seq";
 }
 
 static std::unique_ptr<BehaviorNode> nodeFromBehavior(const EntityDataDef::Behavior& beh) {
@@ -87,12 +86,6 @@ static std::unique_ptr<BehaviorNode> nodeFromBehavior(const EntityDataDef::Behav
     return createNodeForType(beh.type);
 }
 
-std::shared_ptr<BehaviorTree> EntityDataLoader::buildTreeFor(const EntityDataDef& def) {
-    auto uniq = buildUniqueTreeFor(def);
-    if (!uniq) return nullptr;
-    return std::shared_ptr<BehaviorTree>(std::move(uniq));
-}
-
 std::unique_ptr<BehaviorTree> EntityDataLoader::buildUniqueTreeFor(const EntityDataDef& def) {
     if (def.behaviors.empty()) return nullptr;
     auto sorted = def.behaviors;
@@ -107,9 +100,6 @@ std::unique_ptr<BehaviorTree> EntityDataLoader::buildUniqueTreeFor(const EntityD
     for (auto& beh : sorted) {
         auto node = nodeFromBehavior(beh);
         if (node) sel->addChild(std::move(node));
-    }
-    if (sel) {
-        // If only one child and it's already selector/sequence, unwrap? keep sel anyway
     }
     return std::make_unique<BehaviorTree>(std::move(sel));
 }
@@ -142,7 +132,6 @@ void EntityDataLoader::loadDirectory(const std::string& dir){
                 if(st.type==json::Value::Type::Arr) {
                     for(auto &ee: st.arr) {
                         if(ee.isStr()) d.structures.push_back(ee.asStr());
-                        else if(st.isStr()) d.structures.push_back(st.asStr());
                     }
                 }
                 if(auto* w=sp.find("weight")) d.spawnWeight=w->asInt(10);
@@ -168,13 +157,8 @@ void EntityDataLoader::loadDirectory(const std::string& dir){
             const auto &eq=v.at("equipment");
             if(eq.type==json::Value::Type::Obj){ for(auto &kv: eq.obj){ int slot=-1; const std::string &k=kv.first; if(k=="mainhand") slot=0; else if(k=="offhand") slot=1; else if(k=="feet"||k=="boots") slot=2; else if(k=="legs"||k=="leggings") slot=3; else if(k=="chest") slot=4; else if(k=="head"||k=="helmet") slot=5; else{ try{slot=std::stoi(k);}catch(...){continue;}} if(slot>=0&&slot<6){ if(kv.second.isStr()) d.equipment[slot]=kv.second.asStr(); else if(kv.second.type==json::Value::Type::Obj){ auto it=kv.second.find("item"); if(it&&it->isStr()) d.equipment[slot]=it->asStr(); } } } }
             const auto &loot=v.at("loot"); if(loot.isStr()) d.loot=loot.asStr();
-            // build prototype behavior tree data-driven
-            d.behaviorTree = buildTreeFor(d);
-            if (d.behaviorTree) {
-                fprintf(stderr,"[cppfm] entity data loaded: %s (behaviors=%zu, tree=1)\n",p.string().c_str(), d.behaviors.size());
-            } else {
-                fprintf(stderr,"[cppfm] entity data loaded: %s (behaviors=%zu)\n",p.string().c_str(), d.behaviors.size());
-            }
+            fprintf(stderr,"[cppfm] entity data loaded: %s (behaviors=%zu)\n",
+                    p.string().c_str(), d.behaviors.size());
             defs_[d.type]=std::move(d);
         }catch(const std::exception& e){ fprintf(stderr,"[cppfm] entity json %s skipped: %s\n",p.string().c_str(),e.what()); }
     }

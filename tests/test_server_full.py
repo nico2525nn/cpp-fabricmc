@@ -4,7 +4,7 @@ test_server_full.py — Spec-based server system tests (vanilla 1.21.4)
 
 Covers (vanilla spec from wiki Commands + Prismarine data 1.21.4):
  1. Connection flow: handshake status/login/configuration/play
- 2. All vanilla commands (wiki Commands 1.21.4 — exhaustive, strict expectations)
+ 2. Representative vanilla command matrix (wiki Commands 1.21.4 examples)
  3. Permissions / management: op/whitelist/ban/kick
  4. Chat: SystemChat / PlayerChat / DisguisedChat / tellraw semantics
  5. Datapack: reload + function + advancement + loot predicate paths
@@ -19,7 +19,7 @@ wrong.
 
 Usage:
   python3 tests/test_server_full.py --binary ./build/cppfm [--port 0]
-  timeout --foreground --kill-after=5 700 python3 tests/test_server_full.py --binary ./build/cppfm
+  timeout --foreground --kill-after=5 450 python3 tests/test_server_full.py --binary ./build/cppfm
 
 Exit 0 prints a clean summary; exit 1 means at least one check failed.
 """
@@ -28,6 +28,7 @@ import argparse, io, json, os, re, socket, struct, subprocess, sys, tempfile, ti
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+REPO_ROOT = HERE.parent
 sys.path.insert(0, str(HERE))
 import mcproto
 from mcproto import Conn, write_varint, read_varint, pack_string, unpack_string, unpack_position, PROTOCOL
@@ -37,7 +38,9 @@ VANILLA = "1.21.4"
 PROTO = 769
 COMPRESSION_THRESHOLD = 256  # vanilla default
 
-# Wiki Commands 1.21.4 — exhaustive list sourced from https://minecraft.wiki/w/Commands
+# Representative Wiki Commands 1.21.4 examples sourced from
+# https://minecraft.wiki/w/Commands. This is a maintained integration matrix,
+# not an exhaustive proof of every command branch.
 # (each entry: (name, valid_example, invalid_example, notes))
 # invalid_example must be syntactic error that vanilla rejects with "Unknown or incomplete command"
 VANILLA_COMMANDS: list[tuple[str,str,str,str]] = [
@@ -155,12 +158,18 @@ def launch_server(binary: str, port: int, world_dir: str, extra_env: dict | None
     if extra_env:
         env.update(extra_env)
     # The server resolves admin files and bundled data relative to its cwd.
-    # Give every run an isolated root and expose the repository assets there.
+    # Give source-tree runs an isolated root and expose the repository assets
+    # there.  A release binary outside REPO_ROOT must not receive a symlink to
+    # the checkout: that would make the one-file package test accidentally
+    # depend on source files instead of exercising its embedded pack.
     root = Path(world_dir)
     root.mkdir(parents=True, exist_ok=True)
     asset_link = root / "assets"
-    if not asset_link.exists() and not asset_link.is_symlink():
-        asset_link.symlink_to(HERE.parent / "assets", target_is_directory=True)
+    binary_path = Path(binary).resolve()
+    source_assets = REPO_ROOT / "assets"
+    if (binary_path.is_relative_to(REPO_ROOT) and source_assets.is_dir() and
+            not asset_link.exists() and not asset_link.is_symlink()):
+        asset_link.symlink_to(source_assets, target_is_directory=True)
     log_path = root / "cppfm.log"
     logf = open(log_path, "wb")
     try:
@@ -414,7 +423,14 @@ def suite_connection_flow(host, port):
                             dt,_=read_varint(bio); dname=unpack_string(bio)
                             seed=struct.unpack(">q",bio.read(8))[0]
                             gm=struct.unpack(">b",bio.read(1))[0]
-                            check(len(worlds)==1 and worlds[0]=="minecraft:overworld","play: join worlds overworld","test_server_full.py:join_world")
+                            expected_worlds = [
+                                "minecraft:overworld",
+                                "minecraft:the_nether",
+                                "minecraft:the_end",
+                            ]
+                            check(worlds == expected_worlds,
+                                  f"play: join worlds {expected_worlds} (got {worlds})",
+                                  "test_server_full.py:join_world")
                             check(dt==0,"play: dimension id 0","test_server_full.py:join_dt")
                             check(dname=="minecraft:overworld","play: dimension overworld","test_server_full.py:join_dname")
                             check(gm in (0,1,2,3),"play: gamemode valid","test_server_full.py:join_gm")
@@ -558,15 +574,28 @@ EXPECTED_FEEDBACK = {
 def _is_server_alive(proc):
     return proc.poll() is None
 
-def send_via_persistent(c: Conn, command: str, timeout=1.6):
-    """Use already-joined Conn c, send command and collect chat for timeout. Returns chat list."""
+def send_via_persistent(c: Conn, command: str, timeout=1.6, expected: str | None = None):
+    """Send one command and collect its asynchronous chat response.
+
+    The server may enqueue command feedback behind the tick loop.  Poll with
+    a short socket timeout until the monotonic deadline instead of allowing a
+    single ``recv`` to block past the collection window.  When the caller
+    supplies the command-specific token, return as soon as that response is
+    observed; otherwise it continues with bounded socket polls until the
+    command-specific response arrives or the collection deadline expires.
+    """
     chat=[]
-    # clear old chat drain? we collect only new packets post-send
     c.send_packet_raw(0x05, pack_string(command))
     t_end=time.monotonic()+timeout
-    while time.monotonic()<t_end:
-        try:
-            pid,data=c.recv_packet()
+    previous_timeout = c.sock.gettimeout()
+    try:
+        while time.monotonic()<t_end:
+            remaining = max(0.01, t_end - time.monotonic())
+            c.sock.settimeout(min(0.25, remaining))
+            try:
+                pid,data=c.recv_packet()
+            except socket.timeout:
+                continue
             if pid==0x27:
                 c.send_packet_raw(0x1a,data)
             elif pid==0x42:
@@ -584,12 +613,16 @@ def send_via_persistent(c: Conn, command: str, timeout=1.6):
                     if b"text" in raw:
                         m=re.search(b'"text"\\s*:\\s*"([^"]*)"', raw)
                         if m: chat[-1]=m.group(1).decode()
+                    if expected and expected.lower() in chat[-1].lower():
+                        break
                 except (ValueError, IndexError, UnicodeDecodeError): pass
             elif pid==0x1d:
                 chat.append("__DISCONNECT__")
                 break
-        except Exception:
-            break
+    except (OSError, EOFError, ValueError, RuntimeError):
+        pass
+    finally:
+        c.sock.settimeout(previous_timeout)
     return chat
 
 def persistent_join(host, port, name):
@@ -628,7 +661,7 @@ def persistent_join(host, port, name):
     return c
 
 def suite_commands(host, port, proc):
-    print("\n[2] Commands — vanilla 1.21.4 exhaustive (strict)")
+    print("\n[2] Commands — vanilla 1.21.4 representative matrix (strict examples)")
     # Use persistent connections to avoid fd exhaustion (140 rapid connects caused pipe deadlock / accept drop)
     try:
         c_valid = persistent_join(host, port, "CmdTester")
@@ -642,10 +675,10 @@ def suite_commands(host, port, proc):
         # valid — with reconnect on failure
         for attempt in range(2):
             try:
-                chat = send_via_persistent(c_valid, valid, timeout=1.4)
+                expected = EXPECTED_FEEDBACK.get(name, "")
+                chat = send_via_persistent(c_valid, valid, timeout=3.0, expected=expected)
                 txt=" ".join(chat)
                 is_unknown = ("Unknown" in txt) or ("unknown" in txt.lower() and "Unknown or incomplete" in txt)
-                expected = EXPECTED_FEEDBACK.get(name, "")
                 has_expected = expected.lower() in txt.lower() if expected else (len(txt.strip())>0)
                 ok = (not is_unknown) and ("__DISCONNECT__" not in txt) and has_expected and len(txt.strip())>0
                 check(ok, f"cmd:{name} valid '{valid}' feedback ok ({note}) chat='{txt[:100]}' expected~'{expected}'", f"test_server_full.py:cmd_{name}_valid")
@@ -1572,6 +1605,7 @@ def main():
         sys.exit(2)
 
     binary = str(Path(binary).resolve())
+    binary_path = Path(binary)
     port=args.port if args.port!=0 else find_free_port()
     rcon_port=find_free_port()
     while rcon_port==port: rcon_port=find_free_port()
@@ -1583,8 +1617,15 @@ def main():
     # stay isolated while the parent test process remains in the repository.
     extra=["--enable-rcon=true", f"--rcon.password={rcon_pass}", f"--rcon.port={rcon_port}"]
     proc=None
-    assets_dir = str((Path.cwd() / "assets").resolve())
-    extra = extra + [f"--assets={assets_dir}/registry", "--max-players=200", "--view-distance=4"]
+    assets_dir = (Path.cwd() / "assets").resolve()
+    extra = extra + ["--max-players=200", "--view-distance=4"]
+    # The single-file package extracts its own assets into the isolated server
+    # root.  Only add the development checkout override when it is actually
+    # present; an absolute path into the package's parent would otherwise
+    # defeat the clean extraction test.
+    if (binary_path.parent == (REPO_ROOT / "build").resolve() and
+            (assets_dir / "registry").is_dir()):
+        extra.insert(0, f"--assets={assets_dir / 'registry'}")
     try:
         proc=launch_server(binary, port, world_dir, extra_args=extra)
         host="127.0.0.1"

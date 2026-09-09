@@ -1,26 +1,20 @@
 #include "GameServer.hpp"
-#include "Messages.hpp"
-#include "Particles.hpp"
-#include "../generated/EntityIds.hpp"
-#include "../generated/BlockStates.hpp"
 #include <algorithm>
 #include <cmath>
-#include <set>
-#include <filesystem>
-#include <unordered_set>
-#include <fstream>
+#include <unordered_map>
 
 namespace cppfm {
-
-using brigadier::CommandNode;
-using brigadier::CommandContext;
-namespace args = brigadier::args;
-
 
 // ---------------------------------------------------------------- selectors
 
 brigadier::SelectorResult GameServer::resolveSelector(
     const std::string& raw, Player* source) {
+    return resolveSelectorForDimension(raw, source,
+                                       source ? source->dimension : 0);
+}
+
+brigadier::SelectorResult GameServer::resolveSelectorForDimension(
+    const std::string& raw, Player* source, std::int8_t dimension) {
     brigadier::SelectorResult out;
     if (raw.empty()) return out;
     if (raw[0] != '@') {
@@ -47,8 +41,10 @@ brigadier::SelectorResult GameServer::resolveSelector(
 
     struct Cand { double dist; Player* p; };
     std::vector<Cand> players;
+    const auto targetDimension = canonicalDimension(dimension);
     for (auto& pl : playersSnapshot()) {
         if (!pl->inPlay || pl->dead) continue;
+        if (canonicalDimension(pl->dimension) != targetDimension) continue;
         if (!source || pl.get() != source)
             players.push_back({std::pow(pl->x - (source ? source->x : 0), 2) +
                                std::pow(pl->z - (source ? source->z : 0), 2),
@@ -81,8 +77,9 @@ brigadier::SelectorResult GameServer::resolveSelector(
         const auto typeIt = kv.find("type");
         const int limit = kv.count("limit") ? std::max(1, [&]{
             try { return std::stoi(kv["limit"]); } catch (...) { return 1; }}()) : 0;
-        std::lock_guard lk(const_cast<std::mutex&>(entsMtx_));
-        for (const auto& m : mobs_) {
+        for (const auto& m : mobsSnapshot()) {
+            if (!m) continue;
+            if (canonicalDimension(m->dimension) != targetDimension) continue;
             if (typeIt != kv.end()) {
                 const std::string want =
                     typeIt->second.find(':') == std::string::npos
@@ -101,16 +98,7 @@ brigadier::SelectorResult GameServer::resolveSelector(
     return out;
 }
 
-// -------------------------------------------------------------- helpers ----
-
-
-
-// ------------------------------------------------------------ registration --
-
-// Recipe-book UpdateRecipes SlotDisplay writer: varint presence (2 = item)
-
 void GameServer::initCommands() {
-    // one 6076-line function).
     initChatCommands();
     initAdminCommands();
     initWorldCommands();

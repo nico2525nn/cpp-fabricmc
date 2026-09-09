@@ -37,7 +37,8 @@ void RandomTickScheduler::tick(std::int64_t now) {
         if (!d) continue;
         IBlockBehavior* beh = nullptr;
         if (srv_) {
-            if (auto* bts = srv_->blockTicks()) beh = bts->behaviorFor(std::string(d->name));
+            beh = srv_->blockTicksFor(world_.dimensionId()).behaviorFor(
+                std::string(d->name));
         }
         if (beh) {
             if (!chunkIsSimulated(world_, srv_, e.x, e.z)) continue;
@@ -170,12 +171,6 @@ static std::uint16_t withStage(const gen::BlockDef* d, std::uint16_t state, int 
     props.emplace_back("stage", s);
     return static_cast<std::uint16_t>(gen::stateWithProps(*d, props));
 }
-[[maybe_unused]] static std::uint16_t withLeaves(const gen::BlockDef* d, std::uint16_t state, const std::string& nl) {
-    std::vector<std::pair<std::string_view,std::string_view>> props;
-    for (auto& [k,v] : gen::propsOf(state)) if (k!="leaves") props.emplace_back(k,v);
-    props.emplace_back("leaves", nl);
-    return static_cast<std::uint16_t>(gen::stateWithProps(*d, props));
-}
 static bool isBambooBlock(std::uint16_t st) {
     auto* bd = gen::blockByState(st);
     return bd && std::string(bd->name)=="minecraft:bamboo";
@@ -230,7 +225,7 @@ static void bambooUpdateLeaves(World& w, std::int32_t x, std::int32_t baseY, std
             props.emplace_back("age", ageString);
             std::uint16_t ns = static_cast<std::uint16_t>(gen::stateWithProps(*d, props));
             w.setBlock(x, yy, z, ns);
-            if (srv) srv->broadcastBlockChange(x, yy, z, ns);
+            if (srv) srv->broadcastBlockChangeFor(w.dimensionId(), x, yy, z, ns);
         }
     }
 }
@@ -289,7 +284,7 @@ static void setBlockAndBroadcast(World& w, GameServer* srv,
                                  std::int32_t x, std::int32_t y, std::int32_t z,
                                  std::uint16_t state) {
     w.setBlock(x, y, z, state);
-    if (srv) srv->broadcastBlockChange(x, y, z, state);
+    if (srv) srv->broadcastBlockChangeFor(w.dimensionId(), x, y, z, state);
 }
 
 // -------------------------------------------------------- Crop
@@ -381,7 +376,7 @@ void StemBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
         if (stage==0) {
             std::uint16_t ns = withStage(d, state, 1);
             w.setBlock(x,y,z, ns);
-            if (srv) srv->broadcastBlockChange(x,y,z, ns);
+            if (srv) srv->broadcastBlockChangeFor(w.dimensionId(), x, y, z, ns);
             return;
         }
         // stage 1 and age 0 -> try grow
@@ -398,7 +393,7 @@ void StemBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
             props.emplace_back("stage","0");
             std::uint16_t ns = static_cast<std::uint16_t>(gen::stateWithProps(*d, props));
             w.setBlock(x,y,z, ns);
-            if (srv) srv->broadcastBlockChange(x,y,z, ns);
+            if (srv) srv->broadcastBlockChangeFor(w.dimensionId(), x, y, z, ns);
         }
         {
             const auto* bambooDef = gen::blockByName("minecraft:bamboo");
@@ -409,7 +404,7 @@ void StemBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
             props.emplace_back("stage","0");
             std::uint16_t ns = static_cast<std::uint16_t>(gen::stateWithProps(*bambooDef, props));
             w.setBlock(x, y+1, z, ns);
-            if (srv) srv->broadcastBlockChange(x, y+1, z, ns);
+            if (srv) srv->broadcastBlockChangeFor(w.dimensionId(), x, y+1, z, ns);
         }
         int baseY = bambooFindBaseY(w,x,y,z);
         int newH = h+1;
@@ -432,7 +427,6 @@ void StemBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
             if (!nbd) continue;
             if (!nbd->transparent) return;
         }
-    } else if (name.find("sugar_cane")!=std::string::npos) {
     }
     // height check: columnHeight includes this block plus continuous same blocks below+above
     int columnHeight = 1;
@@ -468,7 +462,7 @@ void StemBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
         if (w.getBlock(x,y+1,z)==0) {
             std::uint16_t cur0 = withAge(d, state, 0);
             w.setBlock(x,y,z, cur0);
-            if (srv) srv->broadcastBlockChange(x,y,z, cur0);
+            if (srv) srv->broadcastBlockChangeFor(w.dimensionId(), x, y, z, cur0);
             // new block age 0 — polish: removed unused props0/ns/dd; directly use defaultState+age fixup below
             // place new block with default leaves? for cactus/sugar_cane no leaves
             std::uint16_t place = static_cast<std::uint16_t>(gen::blockByState(state)->defaultState);
@@ -482,7 +476,7 @@ void StemBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
                 }
             }
             w.setBlock(x,y+1,z, place);
-            if (srv) srv->broadcastBlockChange(x,y+1,z, place);
+            if (srv) srv->broadcastBlockChangeFor(w.dimensionId(), x, y+1, z, place);
         }
     }
 }
@@ -533,7 +527,7 @@ void GrassBlockBehavior::randomTick(World& w, std::int32_t x, std::int32_t y, st
         props.emplace_back("snowy", wantSnowy?"true":"false");
         std::uint16_t ns = static_cast<std::uint16_t>(gen::stateWithProps(*d, props));
         w.setBlock(x,y,z, ns);
-        if (srv) srv->broadcastBlockChange(x,y,z, ns);
+        if (srv) srv->broadcastBlockChangeFor(w.dimensionId(), x, y, z, ns);
     }
 }
 
@@ -548,7 +542,7 @@ void PaleOakLeavesBehavior::randomTick(World& w, std::int32_t x, std::int32_t y,
     // 2% chance (1/50) per randomTick, as vanilla PaleOakLeavesBlock randomTick
     if ((nextRandom() % 50) != 0) return;
     // Broadcast pale_oak_leaves particle 34, Simple, count 1, at center of block (D19)
-    srv->broadcastPaleOakLeavesParticle(x + 0.5, y + 0.5, z + 0.5);
+    srv->broadcastPaleOakLeavesParticleFor(w.dimensionId(), x + 0.5, y + 0.5, z + 0.5);
 }
 
 static bool isPaleOakLogBlock(std::uint16_t st) {
@@ -587,7 +581,7 @@ static void trySpawnCreakingForHeart(World& w, std::int32_t hx, std::int32_t hy,
         if (!bd || bd->transparent) continue;
         w.generateChunkIfMissing(sx>>4, sz>>4);
         double fx = sx + 0.5, fy = sy, fz = sz + 0.5;
-        srv->spawnMob(MobKind::Creaking, fx, fy, fz);
+        srv->spawnMobFor(w.dimensionId(), MobKind::Creaking, fx, fy, fz);
         // patch heart linkage on last spawned
         auto& mobs = srv->mobsForTest();
         if (!mobs.empty()) {
@@ -598,7 +592,7 @@ static void trySpawnCreakingForHeart(World& w, std::int32_t hx, std::int32_t hy,
                 last->creakingTransient = true;
             }
         }
-        srv->broadcastSound("minecraft:entity.creaking.spawn", fx, fy, fz, 1.f, 1.f, "hostile");
+        srv->broadcastSoundFor(w.dimensionId(), "minecraft:entity.creaking.spawn", fx, fy, fz, 1.f, 1.f, "hostile");
         return;
     }
 }
@@ -624,7 +618,7 @@ void CreakingHeartBehavior::randomTick(World& w, std::int32_t x, std::int32_t y,
         props.emplace_back("active", shouldActive ? "true" : "false");
         uint16_t ns = static_cast<uint16_t>(gen::stateWithProps(*d, props));
         w.setBlock(x,y,z,ns);
-        srv->broadcastBlockChange(x,y,z,ns);
+        srv->broadcastBlockChangeFor(w.dimensionId(), x, y, z, ns);
         // light engine handled via onBlockChanged elsewhere
     }
     if (shouldActive) trySpawnCreakingForHeart(w,x,y,z,srv);
@@ -782,11 +776,11 @@ void ChorusFlowerBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::i
             uint16_t plantSt = static_cast<uint16_t>(plantIt->second);
             // original becomes plant
             w.setBlock(x,y,z, plantSt);
-            if(srv) srv->broadcastBlockChange(x,y,z, plantSt);
+            if(srv) srv->broadcastBlockChangeFor(w.dimensionId(), x, y, z, plantSt);
             // new flower above with same age
             w.setBlock(x,y+1,z, state);
-            if(srv) srv->broadcastBlockChange(x,y+1,z, state);
-            if(srv) srv->broadcastSound("minecraft:block.chorus_flower.grow", x+0.5, y+0.5, z+0.5, 1.f, 1.f, "block");
+            if(srv) srv->broadcastBlockChangeFor(w.dimensionId(), x, y+1, z, state);
+            if(srv) srv->broadcastSoundFor(w.dimensionId(), "minecraft:block.chorus_flower.grow", x+0.5, y+0.5, z+0.5, 1.f, 1.f, "block");
             return;
         }
     }
@@ -797,7 +791,7 @@ void ChorusFlowerBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::i
         props.emplace_back("age","5");
         uint16_t dead = static_cast<uint16_t>(gen::stateWithProps(*d, props));
         w.setBlock(x,y,z, dead);
-        if(srv) srv->broadcastBlockChange(x,y,z, dead);
+        if(srv) srv->broadcastBlockChangeFor(w.dimensionId(), x, y, z, dead);
         return;
     }
     // horizontal branching 1-4 attempts (0-3 if already branched)
@@ -851,15 +845,15 @@ void ChorusFlowerBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::i
             props.emplace_back("age", ageString);
             uint16_t ns = static_cast<uint16_t>(gen::stateWithProps(*d, props));
             w.setBlock(nx,y,nz, ns);
-            if(srv) srv->broadcastBlockChange(nx,y,nz, ns);
+            if(srv) srv->broadcastBlockChangeFor(w.dimensionId(), nx, y, nz, ns);
             branched=true;
         }
         if(branched){
             // original becomes plant
             if(plantSt!=0){
                 w.setBlock(x,y,z, plantSt);
-                if(srv) srv->broadcastBlockChange(x,y,z, plantSt);
-                if(srv) srv->broadcastSound("minecraft:block.chorus_flower.grow", x+0.5, y+0.5, z+0.5, 1.f, 1.f, "block");
+                if(srv) srv->broadcastBlockChangeFor(w.dimensionId(), x, y, z, plantSt);
+                if(srv) srv->broadcastSoundFor(w.dimensionId(), "minecraft:block.chorus_flower.grow", x+0.5, y+0.5, z+0.5, 1.f, 1.f, "block");
             }
             return;
         } else {
@@ -869,7 +863,7 @@ void ChorusFlowerBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::i
             props.emplace_back("age","5");
             uint16_t dead = static_cast<uint16_t>(gen::stateWithProps(*d, props));
             w.setBlock(x,y,z, dead);
-            if(srv) srv->broadcastBlockChange(x,y,z, dead);
+            if(srv) srv->broadcastBlockChangeFor(w.dimensionId(), x, y, z, dead);
             return;
         }
     }
@@ -899,7 +893,7 @@ void KelpBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
         props.emplace_back("age", ageString);
         std::uint16_t ns = static_cast<std::uint16_t>(gen::stateWithProps(*d, props));
         w.setBlock(x,y,z, ns);
-        if(srv) srv->broadcastBlockChange(x,y,z, ns);
+        if(srv) srv->broadcastBlockChangeFor(w.dimensionId(), x, y, z, ns);
     }
     // place new kelp with age 0 at up
     {
@@ -918,7 +912,7 @@ void KelpBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
                 }
             }
             w.setBlock(x,y+1,z, ns);
-            if(srv) srv->broadcastBlockChange(x,y+1,z, ns);
+            if(srv) srv->broadcastBlockChangeFor(w.dimensionId(), x, y+1, z, ns);
         }
     }
 }
@@ -941,7 +935,7 @@ bool KelpBehavior::fertilize(World& w, std::int32_t x, std::int32_t y, std::int3
     props.emplace_back("age", ageString);
     std::uint16_t ns = static_cast<std::uint16_t>(gen::stateWithProps(*d, props));
     w.setBlock(x,y,z, ns);
-    if(srv) srv->broadcastBlockChange(x,y,z, ns);
+    if(srv) srv->broadcastBlockChangeFor(w.dimensionId(), x, y, z, ns);
     auto kelpIt=gen::blockNameToState().find("minecraft:kelp");
     if(kelpIt!=gen::blockNameToState().end()){
         auto* kelpDef = gen::blockByName("minecraft:kelp");
@@ -957,7 +951,7 @@ bool KelpBehavior::fertilize(World& w, std::int32_t x, std::int32_t y, std::int3
             }
         }
         w.setBlock(x,y+1,z, place);
-        if(srv) srv->broadcastBlockChange(x,y+1,z, place);
+        if(srv) srv->broadcastBlockChangeFor(w.dimensionId(), x, y+1, z, place);
     }
     return true;
 }
@@ -982,7 +976,7 @@ bool SeagrassBehavior::fertilize(World& w, std::int32_t x, std::int32_t y, std::
         props.emplace_back("half","lower");
         std::uint16_t lower = static_cast<std::uint16_t>(gen::stateWithProps(*tallDef, props));
         w.setBlock(x,y,z, lower);
-        if(srv) srv->broadcastBlockChange(x,y,z, lower);
+    if(srv) srv->broadcastBlockChangeFor(w.dimensionId(), x, y, z, lower);
     }
     // upper half
     {
@@ -990,7 +984,7 @@ bool SeagrassBehavior::fertilize(World& w, std::int32_t x, std::int32_t y, std::
         props.emplace_back("half","upper");
         std::uint16_t upper = static_cast<std::uint16_t>(gen::stateWithProps(*tallDef, props));
         w.setBlock(x,y+1,z, upper);
-        if(srv) srv->broadcastBlockChange(x,y+1,z, upper);
+    if(srv) srv->broadcastBlockChangeFor(w.dimensionId(), x, y+1, z, upper);
     }
     return true;
 }

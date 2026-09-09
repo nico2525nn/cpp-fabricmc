@@ -1,22 +1,6 @@
-#include "GameServer.hpp"
-#include "Messages.hpp"
-#include "Particles.hpp"
-#include "../generated/EntityIds.hpp"
-#include "../generated/BlockStates.hpp"
-#include <algorithm>
-#include <cmath>
-#include <set>
-#include <filesystem>
-#include <unordered_set>
-#include <fstream>
+#include "CommandModule.hpp"
 
-#include "CommandsHelpers.hpp"
 namespace cppfm {
-
-using brigadier::CommandNode;
-using brigadier::CommandContext;
-namespace args = brigadier::args;
-using NodePtr = brigadier::NodePtr;
 
 void GameServer::initChatCommands() {
     initChatCommandsPart01();
@@ -194,7 +178,8 @@ void GameServer::initChatCommandsPart03() {
             WriteBuffer b;
             nbt::writeTextComponent(b, "{\"text\":\""+line+"\",\"italic\":true,\"color\":\"gray\"}");
             b.boolean(false);
-            broadcastPacketExcept(nullptr, proto::pl::sc::SystemChat, b);
+            broadcastPacketExceptInDimension(commandDimension(c.source), nullptr,
+                                             proto::pl::sc::SystemChat, b);
             return 1;
         };
         me->then(act);

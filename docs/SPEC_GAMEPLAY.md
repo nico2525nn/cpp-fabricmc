@@ -2,14 +2,14 @@
 
 This document describes the current behavior surface for Minecraft Java 1.21.4,
 protocol 769, and DataVersion 4189 at runtime snapshot
-`main` HEAD `abcdc6b` plus the current cleanup worktree (rechecked 2026-09-07). It covers
+`main` HEAD `574e67b` plus the current cleanup worktree (rechecked 2026-09-09). It covers
 MISSING **#1–#70**, **#80–#90**, the Fabric-specific rows, and the world-generation
 G-10/G-11 evidence. Packet fields remain in
 [SPEC_WIRE.md](SPEC_WIRE.md); operational thresholds remain in
 [SPEC_OPS.md](SPEC_OPS.md).
 
 **Status:** source-backed behavior contract, not a claim of universal vanilla
-byte-identical gameplay. **Limitations:** plan51 provides an optional bounded embedded
+byte-identical gameplay. **Limitations:** the project provides a default-on bounded embedded
 JVM/shadow-ABI path with a version-locked structural transformer; the production path
 does not ship the Mojang GameProvider and arbitrary Fabric JVM mods cannot execute as
 native-equivalent server extensions. Pinned official Loader/Knot/Mixin is covered by a
@@ -83,7 +83,7 @@ description from accidentally reviving an old packet ID.
 
 ## 5. Events and ordering
 
-The native event hooks remain explicit C++ callbacks. With `--jvm=true`, selected
+The native event hooks remain explicit C++ callbacks. With the default `jvm=true`, selected
 server-side lifecycle/player/block/damage/spawn events are synchronously mirrored to
 the bounded Java compatibility layer; this is not the official Fabric event bus.
 
@@ -139,8 +139,8 @@ Block change pipeline
 - ordering: onBlockChanged → place/break/neighbor hooks → physics scheduling
 - persistence: chunk revision/dirty state → Persistence save cadence
 - network: PacketBatcher queue; WIRE owns bytes
-- evidence: test_gameplay_full, test_redstone_engine_full, test_spec_wire, smoke80
-- status: IMPLEMENTATION path; verify against current test run
+- evidence: test_gameplay_full, test_redstone_engine_full, test_fluids, test_menu_logic, test_spec_wire, smoke80
+- status: IMPLEMENTATION path; current focused evidence is listed in §15
 ```
 
 This is a documentation form for existing behavior, not an API proposal.
@@ -185,7 +185,7 @@ evidence, not a gameplay module.
 - Worldgen MultiNoise/structure placement is deterministic and independently
   cross-checked, but exact vanilla Xoroshiro sequence parity is a
   `DECLARED-LIMITATION` (L3), not a hidden pass.
-- `DECLARED-LIMITATION`: plan51's optional JVM layer is a dependency-free
+- `DECLARED-LIMITATION`: the default-on JVM layer is a dependency-free
   Knot-compatible loader over a shadow ABI with selected callbacks, a version-locked
   pre-definition transformer, and selective routing. Its 25-case dependency-free
   corpus passes; a separate offline probe verifies pinned official Loader/Knot/Mixin
@@ -233,30 +233,33 @@ not add a lock or move a callback to another thread.
 
 ## 15. Test method and evidence
 
-Fresh focused results:
+Focused results recorded in the 2026-09-04 gate snapshot (the current state
+tracker records later targeted reruns):
 
 | target | result |
 |---|---|
-| `test_gameplay_full` | `804 PASS / 0 FAIL / 804` |
+| `test_gameplay_full` | `807 PASS / 0 FAIL / 807` |
 | `test_smoke_80` | `223 PASS 0 FAIL` |
 | `test_seed_parity` | `201 PASS 0 FAIL` (L1 independent hand-calc plus L2 deterministic 50-chunk comparison) |
 | `test_mining_full` | `59/59 passed` |
 | `test_block_hardness_full` | `16/16 passed; 1095 mismatch=0` |
 | `test_mob_stats_full` | `131 PASS 0 FAIL` |
-| `test_redstone_engine_full` | `29 PASS 0 FAIL` |
+| `test_redstone_engine_full` | `42 PASS 0 FAIL` |
+| `test_fluids` | `23 PASS 0 FAIL` |
+| `test_menu_logic` | `41 PASS 0 FAIL` |
 | `test_recipes_mirror` | `76 PASS 0 FAIL` |
-| `test_plan43` | `82 PASS 0 FAIL` in 25.14s after the clean rebuild |
+| `test_plan43` | `82 PASS 0 FAIL` in 28.01s after the clean rebuild |
 | `test_native` | `ALL PASS` in the current CTest run |
-| `test_server_full` | `234 PASS 0 FAIL` |
-| `multi_client` | `ALL PASS` in 17.00s |
-| `bot_smoke` | `ALL PASS` in 20.35s |
+| clean extracted Linux package: `test_server_full` | `234 PASS 0 FAIL` |
+| `multi_client` | `ALL PASS` in 20.28s |
+| `bot_smoke` | `ALL PASS` in 23.59s |
 | `tests/soak_test.py --duration 300` | `PASS`; 150 keepalives, 0 disconnects, actions 2932, post-fill RSS growth 7.6% |
 | `tests/soak_test.py --duration 600 --movement-range 3000` | `PASS`; 300 keepalives, 0 disconnects, actions 5707, post-fill RSS growth 6.6% |
 | `tools/soak_bot.py --duration 300` | `3/3 PASS`; each KeepAlive 30, chunks 182, time updates 300, all error counters 0, cleanup PASS |
 | `tests/soak_test.py --duration 1800 --movement-range 3000` | `PASS` on `17ab09f`; 900 keepalives, 0 disconnects, actions 17493, post-fill baseline `114504kB`, max `128868kB`, growth `12.5%`; diagnostic only |
 | `tests/soak_test.py --duration 7200 --movement-range 3000` (parent `d1c6a7f`) | interrupted at recorded `t=3361s`; post-fill RSS `160388→191612kB` (`+19.5%`), above the `15%` gate; not accepted |
 | accepted 2h/24h artifact | none; the 7200s attempt was not accepted and no 24-hour artifact exists |
-| `test_recovery` | registered evidence for the recovery matrix; rerun status is recorded separately in VERIFICATION |
+| `test_recovery` | `54 PASS 0 FAIL` in the final current CTest run |
 
 The E-14 arbitrary-JVM-mod boundary is emitted as an informational limitation by
 `tests/test_gameplay_full.cpp`; it is not represented by an intentional failing

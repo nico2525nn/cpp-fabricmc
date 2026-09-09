@@ -5,7 +5,10 @@
 // the active goal's tick().
 #pragma once
 #include <algorithm>
+#include <atomic>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <vector>
 #include "Ai.hpp"
 #include "Entities.hpp"
@@ -15,14 +18,72 @@ namespace cppfm {
 class GameServer;
 struct Player;
 
+// GameServer side-effect APIs use this boundary while a mob brain is being
+// evaluated.  The tick loop installs both the lock and its owning Mob in a
+// thread-local slot.  Source-aware callers must pass the expected Mob so a
+// re-entrant operation for another entity can never release the outer lock.
+struct MobStateLockContext {
+    const MobEntity* mob = nullptr;
+    std::int32_t entityId = 0;
+    std::unique_lock<std::recursive_mutex>* lock = nullptr;
+};
+
+// Source-aware boundary.  Returns false, without invoking operation, when a
+// live lock belongs to another Mob.  With no live lock (standalone tests), the
+// operation is executed directly and returns true.
+bool runWithoutMobStateLock(
+    const MobEntity& expectedMob,
+    const std::function<void()>& operation);
+
+// Compatibility boundary for server APIs whose existing signature does not
+// carry a source Mob.  New AI code must use the source-aware overload above.
+void runWithoutMobStateLock(const std::function<void()>& operation);
+bool mobStateLockOwnedByCurrentThread() noexcept;
+MobStateLockContext currentMobStateLockContext() noexcept;
+MobStateLockContext setBehaviorTreeMobStateLock(
+    const MobEntity* mob,
+    std::unique_lock<std::recursive_mutex>* lock) noexcept;
+
+// A goal must never keep reading a live Player after the perception pass has
+// selected it.  Session threads can move, respawn, or change inventory while
+// the server thread is evaluating AI.  AiContext::playerOwners keeps the
+// selected object alive; the scalar fields are the coherent values observed
+// during this tick.  Goal code may still use `player` when it has to call a
+// server API, but it must use these copied fields for decisions and geometry.
+struct AiPlayerSnapshot {
+    Player* player = nullptr;
+    std::int8_t dimension = 0;
+    std::int32_t entityId = 0;
+    std::uint8_t gamemode = 0;
+    bool inPlay = false;
+    bool dead = false;
+    bool isSprinting = false;
+    bool hasPumpkin = false;
+    std::int32_t heldSlot = 0;
+    std::uint32_t heldItemId = 0;
+    bool heldItemEmpty = true;
+    double x = 0.0;
+    double y = 0.0;
+    double z = 0.0;
+    float yaw = 0.0f;
+    float pitch = 0.0f;
+};
+
 struct AiContext {
     GameServer* srv = nullptr;
     World* world = nullptr;
     Player* nearestPlayer = nullptr;
     double nearestPlayerDist2 = 1e300;
     Player* temptingPlayer = nullptr;      // holding breeding food
-    std::int32_t lastHurtByEntityId = -1;
-    std::int64_t lastHurtTick = -1000;
+    // `playerViews` is the same-tick view; `playerOwners` prevents a session
+    // removal from invalidating the raw compatibility pointers above.
+    std::vector<std::shared_ptr<Player>> playerOwners;
+    std::vector<AiPlayerSnapshot> playerViews;
+    // Damage can arrive from a session/network callback while the game tick
+    // is evaluating goals.  Keep the small cross-thread memory fields atomic;
+    // the rest of the context remains tick-owned state.
+    std::atomic<std::int32_t> lastHurtByEntityId{-1};
+    std::atomic<std::int64_t> lastHurtTick{-1000};
     bool dangerDetectedRecently = false;
     // active path
     std::vector<ai::PathNode> path;
@@ -32,6 +93,8 @@ struct AiContext {
         nearestPlayer = nullptr;
         nearestPlayerDist2 = 1e300;
         temptingPlayer = nullptr;
+        playerOwners.clear();
+        playerViews.clear();
         dangerDetectedRecently = false;
     }
 };
@@ -317,7 +380,12 @@ private:
     std::vector<std::unique_ptr<Goal>> goals_;
     Goal* active_ = nullptr;
     bool running_ = false;
-    std::unique_ptr<BehaviorTree> behaviorTree_;
+    // Tree installation happens during entity discovery, while ticking is on
+    // the authoritative server thread.  Keep a shared snapshot of the tree
+    // so a reload/reconfiguration cannot destroy it underneath a tick or a
+    // re-entrant extension callback.
+    mutable std::mutex behaviorTreeMtx_;
+    std::shared_ptr<BehaviorTree> behaviorTree_;
 };
 
 } // namespace cppfm

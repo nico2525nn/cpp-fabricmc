@@ -1,6 +1,7 @@
 #pragma once
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <vector>
 #include "BlockEntities.hpp"
@@ -49,9 +50,24 @@ public:
     // backing stores ---------------------------------------------------------
     ItemStack* container = nullptr;              // chest slots (27) | furnace(3) etc.
     int containerCount = 0;
+    // Keep the block entity alive for the entire lifetime of the menu.  The
+    // store may unload/replace its map entry while a session is still
+    // finishing a click or a packet refresh; the raw slot pointers below are
+    // views into this owner.
+    std::shared_ptr<BlockEntity> blockEntityOwner;
+    // Crafter-only slot state.  A null pointer means that the menu has no
+    // disabled-slot mask (all other container types).
+    std::uint16_t* crafterDisabledSlots = nullptr;
     ItemStack craftGrid[9];                      // crafting table only
     ItemStack craftResult;                       // cached result
     ItemStack extraSlots[27];                    // generic storage for menus without BE
+
+    // The player's own inventory screen is a 46-slot screen with a different
+    // layout from an opened crafting table: slot 0 is the result, slots 1..4
+    // are the 2x2 input, slots 5..8 are armor, slot 45 is the off-hand, and
+    // slots 9..44 are the main inventory/hotbar.  Keep this as an explicit
+    // adapter mode so normal menus retain their container+36 layout.
+    bool playerInventory = false;
 
     // transient view of the owning player's inventory is external (Player.inv) drag paint transient (mode 5)
     std::vector<int> dragSlots;
@@ -122,6 +138,14 @@ public:
     // Map a protocol slot number to a mutable stack pointer (nullptr if none).
     ItemStack* slotAt(int slot, ItemStack* playerInv /*46*/);
     const char* slotRegion(int slot) const;
+    int craftGridIndex(int slot) const {
+        if (playerInventory) {
+            static constexpr int kInventoryCraftGrid[4] = {0, 1, 3, 4};
+            return slot >= 1 && slot <= 4 ? kInventoryCraftGrid[slot - 1] : -1;
+        }
+        return type == MenuType::Crafting && slot >= 1 && slot <= 9
+                   ? slot - 1 : -1;
+    }
 
     // Crafting helpers
     void refreshCraftResult(const RecipeManager& recipes);

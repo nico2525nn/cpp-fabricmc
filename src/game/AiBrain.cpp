@@ -3,14 +3,109 @@
 #include "AiBrain.hpp"
 #include "BehaviorTree.hpp"
 #include "GameServer.hpp"
+#include "AiBehaviorSupport.hpp"
 #include "MetadataTypes.hpp"
 #include "MobBehaviorSpec.hpp"
+#include "Particles.hpp"
 #include "../proto/Ids.hpp"
 #include "../generated/BlockStates.hpp"
+#include <optional>
+#include <string_view>
+#include <utility>
 
 namespace cppfm {
 
 namespace {
+using namespace ai_detail;
+thread_local const MobEntity* activeBrainMob = nullptr;
+thread_local const AiContext* activeBrainContext = nullptr;
+
+class ActiveBrainMobScope final {
+public:
+    ActiveBrainMobScope(const MobEntity& mob, const AiContext& ctx) noexcept
+        : previousMob_(activeBrainMob), previousContext_(activeBrainContext) {
+        activeBrainMob = &mob;
+        activeBrainContext = &ctx;
+    }
+
+    ~ActiveBrainMobScope() {
+        activeBrainMob = previousMob_;
+        activeBrainContext = previousContext_;
+    }
+
+    ActiveBrainMobScope(const ActiveBrainMobScope&) = delete;
+    ActiveBrainMobScope& operator=(const ActiveBrainMobScope&) = delete;
+
+private:
+    const MobEntity* previousMob_;
+    const AiContext* previousContext_;
+};
+
+std::optional<AiPlayerSnapshot> playerView(const AiContext& ctx,
+                                           const MobEntity& mob,
+                                           Player* candidate) {
+    AiPlayerSnapshot view;
+    return snapshotPlayer(mob, ctx, candidate, view)
+        ? std::optional<AiPlayerSnapshot>(view)
+        : std::nullopt;
+}
+
+std::optional<AiPlayerSnapshot> nearestPlayerView(AiContext& ctx,
+                                                  const MobEntity& mob) {
+    return playerView(ctx, mob, ctx.nearestPlayer);
+}
+
+std::optional<AiPlayerSnapshot> temptingPlayerView(AiContext& ctx,
+                                                  const MobEntity& mob) {
+    return playerView(ctx, mob, ctx.temptingPlayer);
+}
+
+// Legacy goals historically received a raw Player* and then read its fields
+// while the Mob lock was held.  Keep the source pointer for server APIs, but
+// expose only the coherent scalar observation through operator->.  The
+// optional is deliberately built from playerView(): server-backed contexts
+// fail closed when the sensor did not publish a same-tick view, while
+// standalone goal tests may take the short direct Player snapshot.
+struct PlayerViewRef {
+    Player* player = nullptr;
+    std::int8_t dimension = 0;
+    std::int32_t entityId = 0;
+    std::uint8_t gamemode = 0;
+    bool inPlay = false;
+    bool dead = false;
+    bool isSprinting = false;
+    bool hasPumpkin = false;
+    std::int32_t heldSlot = 0;
+    std::uint32_t heldItemId = 0;
+    bool heldItemEmpty = true;
+    double x = 0.0;
+    double y = 0.0;
+    double z = 0.0;
+    float yaw = 0.0f;
+    float pitch = 0.0f;
+
+    explicit PlayerViewRef(const AiPlayerSnapshot& view)
+        : player(view.player), dimension(view.dimension),
+          entityId(view.entityId), gamemode(view.gamemode),
+          inPlay(view.inPlay), dead(view.dead),
+          isSprinting(view.isSprinting), hasPumpkin(view.hasPumpkin),
+          heldSlot(view.heldSlot), heldItemId(view.heldItemId),
+          heldItemEmpty(view.heldItemEmpty), x(view.x), y(view.y), z(view.z),
+          yaw(view.yaw), pitch(view.pitch) {}
+
+    operator Player&() const noexcept { return *player; }
+    operator Player*() const noexcept { return player; }
+};
+
+std::optional<PlayerViewRef> dimensionPlayer(const MobEntity& mob,
+                                             Player* candidate) {
+    AiContext standalone;
+    const AiContext& ctx = activeBrainContext ? *activeBrainContext : standalone;
+    const auto view = playerView(ctx, mob, candidate);
+    return view ? std::optional<PlayerViewRef>(PlayerViewRef(*view))
+                : std::nullopt;
+}
+
 bool stepAlongPath(MobEntity& m, AiContext& ctx, double speed) {
     if (ctx.pathIdx >= ctx.path.size()) return false;
     const auto& node = ctx.path[ctx.pathIdx];
@@ -22,23 +117,6 @@ bool stepAlongPath(MobEntity& m, AiContext& ctx, double speed) {
     m.x += dx / d * speed;
     m.z += dz / d * speed;
     return true;
-}
-void groundSnap(GameServer& srv, MobEntity& m) {
-    World& w = srv.world();
-    w.generateChunkIfMissing(static_cast<std::int32_t>(m.x) >> 4,
-                             static_cast<std::int32_t>(m.z) >> 4);
-    int col = 4;
-    w.withChunk(static_cast<std::int32_t>(m.x) >> 4,
-                static_cast<std::int32_t>(m.z) >> 4,
-                [&](const Chunk& c) {
-                    for (int ry = kSectionsPerChunk * 16 - 1; ry >= 0; --ry)
-                        if (c.blocks[Chunk::index(ry >> 4, ry & 15,
-                                                  static_cast<std::int32_t>(m.z) & 15,
-                                                  static_cast<std::int32_t>(m.x) & 15)] != 0) {
-                            col = ry + 1; break;
-                        }
-                });
-    m.y = kMinY + col + 1.0;
 }
 } // namespace
 
@@ -125,65 +203,125 @@ Brain::Brain() {
 }
 
 void NearestPlayerSensor::update(MobEntity& m, AiContext& ctx) {
-    if (!ctx.srv) return;
     ctx.resetPerception();
-    for (auto& p : ctx.srv->playersSnapshot()) {
-        if (!p->inPlay || p->dead || p->gamemode == 1 || p->gamemode == 3)
+    if (!ctx.srv) return;
+
+    // Do not hold the mob lock while taking Player::stateMtx.  The session
+    // path can legitimately hold a player lock before it queues a mob
+    // mutation.  Capture the mob observation first, then release it before
+    // walking the player snapshot; this also makes the distance calculation
+    // internally consistent for this sensor pass.
+    const MobSnapshot mobView = snapshotMob(m);
+    ctx.playerOwners = ctx.srv->playersSnapshot();
+    ctx.playerViews.reserve(ctx.playerOwners.size());
+    for (const auto& p : ctx.playerOwners) {
+        if (!p) continue;
+
+        AiPlayerSnapshot view;
+        view.player = p.get();
+        {
+            // Session handlers may update movement, inventory, and game mode
+            // concurrently.  Copy the complete target observation under one
+            // lock so no goal ever combines fields from different moments.
+            std::lock_guard lock(p->stateMtx);
+            view.dimension = p->dimension;
+            view.entityId = p->entityId;
+            view.gamemode = p->gamemode;
+            view.inPlay = p->inPlay;
+            view.dead = p->dead;
+            view.isSprinting = p->isSprinting;
+            view.heldSlot = p->heldSlot;
+            view.x = p->x;
+            view.y = p->y;
+            view.z = p->z;
+            view.yaw = p->yaw;
+            view.pitch = p->pitch;
+            if (view.heldSlot >= 0 && view.heldSlot < 9) {
+                const auto& held = p->inv[36 + view.heldSlot];
+                view.heldItemId = held.itemId;
+                view.heldItemEmpty = held.empty();
+            }
+            for (int i = 5; i <= 8 && i < static_cast<int>(p->inv.size()); ++i) {
+                if (!p->inv[i].empty() &&
+                    p->inv[i].name() == "minecraft:carved_pumpkin") {
+                    view.hasPumpkin = true;
+                    break;
+                }
+            }
+        }
+        ctx.playerViews.push_back(view);
+
+        if (canonicalDimension(mobView.dimension) !=
+                canonicalDimension(view.dimension) ||
+            !view.inPlay || view.dead ||
+            view.gamemode == 1 || view.gamemode == 3)
             continue;
-        const double dx = p->x - m.x, dz = p->z - m.z;
+        const double dx = view.x - mobView.x, dz = view.z - mobView.z;
         const double d2 = dx * dx + dz * dz;
         if (d2 < ctx.nearestPlayerDist2) {
             ctx.nearestPlayerDist2 = d2;
-            ctx.nearestPlayer = p.get();
+            ctx.nearestPlayer = view.player;
         }
         // temptation: player holds breeding item for this mob kind
-        const auto foodId = MobEntity::breedingItemFor(m.kind);
-        if (foodId && d2 < 12 * 12 && p->heldSlot >= 0 && p->heldSlot < 9 &&
-            p->inv[36 + p->heldSlot].itemId == foodId)
-            ctx.temptingPlayer = p.get();
+        const auto foodId = MobEntity::breedingItemFor(mobView.kind);
+        if (foodId && d2 < 12 * 12 && !view.heldItemEmpty &&
+            view.heldItemId == foodId)
+            ctx.temptingPlayer = view.player;
     }
 }
 
 bool PanicGoal::shouldStart(MobEntity& m, AiContext& ctx) {
     if (!ctx.srv) return false;
     const std::int64_t now = ctx.srv->tickNoForTest();
-    return m.health > 0 && now - ctx.lastHurtTick < 100;
+    return m.health > 0 &&
+        now - ctx.lastHurtTick.load(std::memory_order_acquire) < 100;
 }
 
 bool PanicGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t) {
     // run away from nearest player at 1.6x speed
-    if (!ctx.nearestPlayer) return false;
-    const double dx = m.x - ctx.nearestPlayer->x;
-    const double dz = m.z - ctx.nearestPlayer->z;
+    const auto target = nearestPlayerView(ctx, m);
+    if (!target) return false;
+    const double dx = m.x - target->x;
+    const double dz = m.z - target->z;
     const double d = std::sqrt(dx * dx + dz * dz) + 1e-6;
     m.yaw = static_cast<float>(std::atan2(dz, dx) * 180.0 / 3.14159 - 90.0);
     m.x += dx / d * 0.14;
     m.z += dz / d * 0.14;
-    groundSnap(*ctx.srv, m);
+    groundSnap(ctx, m);
     return true;
 }
 
 bool MeleeAttackGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
-    Player* tgt = ctx.nearestPlayer;
+    const auto target = nearestPlayerView(ctx, m);
+    const auto* tgt = target ? &*target : nullptr;
     if (!tgt) return false;
     const double dx = tgt->x - m.x, dz = tgt->z - m.z;
     const double dist = std::sqrt(dx * dx + dz * dz);
     if (dist > std::max(24.0, perceiveDist(m.kind))) return false;
     if (dist < 1.9) {
-        if (now % 20 == 0) ctx.srv->mobAttackPlayer(m, *tgt);
+        if (now % 20 == 0 && ctx.srv)
+            withoutMobStateLock(m, [&] {
+                ctx.srv->mobAttackPlayer(m, *tgt->player);
+            });
         return true;
     }
     // pathfind occasionally, follow path otherwise
     if (ctx.pathIdx >= ctx.path.size() ||
         std::abs(ctx.path.back().x - static_cast<std::int32_t>(tgt->x)) > 3 ||
         std::abs(ctx.path.back().z - static_cast<std::int32_t>(tgt->z)) > 3) {
-        ai::Pathfinder pf(*ctx.world);
-        auto res = pf.find(static_cast<std::int32_t>(std::floor(m.x)),
-                           static_cast<std::int32_t>(std::floor(m.y)),
-                           static_cast<std::int32_t>(std::floor(m.z)),
-                           static_cast<std::int32_t>(std::floor(tgt->x)),
-                           static_cast<std::int32_t>(std::floor(tgt->y)),
-                           static_cast<std::int32_t>(std::floor(tgt->z)), 800);
+        World* world = dimensionWorld(ctx, m);
+        if (!world) return false;
+        ai::Pathfinder::Result res;
+        const double mobX = m.x, mobY = m.y, mobZ = m.z;
+        withoutMobStateLock(m, [&] {
+            ai::Pathfinder pf(*world);
+            res = pf.find(static_cast<std::int32_t>(std::floor(mobX)),
+                          static_cast<std::int32_t>(std::floor(mobY)),
+                          static_cast<std::int32_t>(std::floor(mobZ)),
+                          static_cast<std::int32_t>(std::floor(tgt->x)),
+                          static_cast<std::int32_t>(std::floor(tgt->y)),
+                          static_cast<std::int32_t>(std::floor(tgt->z)), 800);
+        });
         ctx.path = std::move(res.points);
         ctx.pathIdx = res.found ? 1 : 0;
         if (!res.found) {
@@ -192,17 +330,18 @@ bool MeleeAttackGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
             const double inv = 1.0 / dist;
             m.x += dx * inv * 0.09;
             m.z += dz * inv * 0.09;
-            groundSnap(*ctx.srv, m);
+            groundSnap(ctx, m);
             return true;
         }
     }
     stepAlongPath(m, ctx, 0.10);
-    groundSnap(*ctx.srv, m);
+    groundSnap(ctx, m);
     return true;
 }
 
 bool TemptGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
-    Player* t = ctx.temptingPlayer;
+    const auto target = temptingPlayerView(ctx, m);
+    const auto* t = target ? &*target : nullptr;
     if (!t) return false;
     const double dx = t->x - m.x, dz = t->z - m.z;
     const double d = std::sqrt(dx * dx + dz * dz);
@@ -211,7 +350,7 @@ bool TemptGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     m.yaw = static_cast<float>(std::atan2(dz, dx) * 180.0 / 3.14159 - 90.0);
     m.x += dx * inv * 0.07;
     m.z += dz * inv * 0.07;
-    groundSnap(*ctx.srv, m);
+    groundSnap(ctx, m);
     return true;
 }
 
@@ -219,74 +358,170 @@ bool BreedGoal::shouldStart(MobEntity& m, AiContext& ctx) {
     if (!m.inLove || ctx.srv==nullptr) return false;
     if (ctx.srv->tickNoForTest() < m.breedCooldownUntil) return false;
     if (MobEntity::isBaby(m)) return false;
-    return ctx.srv->findLovePartner(m) != nullptr;
+    std::shared_ptr<MobEntity> partner;
+    if (!withoutMobStateLock(m, [&] {
+            partner = ctx.srv->findLovePartner(m);
+        })) return false;
+    if (!partner) return false;
+    MobSnapshot partnerState;
+    if (!withoutMobStateLock(m, [&] {
+            partnerState = snapshotMob(*partner);
+        })) return false;
+    return sameDimension(m, partnerState);
 }
 
 bool BreedGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
+    if (!ctx.srv) return false;
     GameServer& srv = *ctx.srv;
     if (!m.inLove || now < m.breedCooldownUntil) return false;
     if (MobEntity::isBaby(m)) { m.inLove=false; return false; }
     // wait 30 ticks after entering love (love 600t -> hearts)
     if (now < m.loveUntilTick - 30*20 + 30) return true;
-    auto partner = srv.findLovePartner(m);
-    if (!partner) return true; // keep waiting for partner to approach
-    double dx = partner->x - m.x, dz = partner->z - m.z;
+    std::shared_ptr<MobEntity> partner;
+    if (!withoutMobStateLock(m, [&] {
+            partner = srv.findLovePartner(m);
+        })) return true;
+    if (!partner) return true;
+    if (partner.get() == &m) return true;
+    MobSnapshot partnerState;
+    if (!withoutMobStateLock(m, [&] {
+            partnerState = snapshotMob(*partner);
+        })) return true;
+    if (!sameDimension(m, partnerState)) return true; // keep waiting for a same-dimension partner
+    double dx = partnerState.x - m.x, dz = partnerState.z - m.z;
     double d2 = dx*dx + dz*dz;
     if (d2 > 4.0) { // >2 blocks: move towards partner (plan14 §3 moveTo)
         double d = std::sqrt(d2) + 1e-6;
         m.yaw = static_cast<float>(std::atan2(dz,dx)*180.0/3.14159 -90.0);
         m.x += dx/d * 0.09;
         m.z += dz/d * 0.09;
-        // groundSnap
-        World& w = srv.world();
-        w.generateChunkIfMissing(static_cast<std::int32_t>(m.x)>>4, static_cast<std::int32_t>(m.z)>>4);
-        int col=4;
-        w.withChunk(static_cast<std::int32_t>(m.x)>>4, static_cast<std::int32_t>(m.z)>>4,[&](const Chunk& c){
-            for(int ry=kSectionsPerChunk*16-1; ry>=0; --ry) if(c.blocks[Chunk::index(ry>>4, ry&15, static_cast<std::int32_t>(m.z)&15, static_cast<std::int32_t>(m.x)&15)]!=0){col=ry+1;break;}
-        });
-        m.y = kMinY + col + 1.0;
-        partner->x += -dx/d * 0.04; partner->z += -dz/d * 0.04; // partner slowly approaches
+        groundSnap(ctx, m);
+        const auto mobId = m.entityId;
+        const auto mobDimension = canonicalDimension(m.dimension);
+        if (!withoutMobStateLock(m, [&] {
+                // Pair operations must start with no current-Mob lock.  Two
+                // concurrent brains can then use std::scoped_lock's
+                // deadlock-free acquisition instead of each holding its own
+                // Mob lock while waiting for the other.
+                std::scoped_lock pairLock(*m.stateMtx, *partner->stateMtx);
+                if (m.entityId == mobId &&
+                    canonicalDimension(m.dimension) == mobDimension &&
+                    canonicalDimension(partner->dimension) == mobDimension &&
+                    partner->entityId == partnerState.entityId &&
+                    !partner->dead && partner->inLove) {
+                    partner->x += -dx/d * 0.04;
+                    partner->z += -dz/d * 0.04;
+                }
+            })) return false;
         return true;
     }
-    const double bx = (m.x + partner->x) / 2.0;
-    const double bz = (m.z + partner->z) / 2.0;
+
+    // Reserve the pair atomically before invoking the spawn callback.  The
+    // callback can re-enter the server and another thread must not be able
+    // to observe both animals as available and create a second baby.
+    double partnerX = 0.0, partnerZ = 0.0;
+    std::int32_t partnerId = 0;
+    const std::int8_t breedDimension = canonicalDimension(m.dimension);
+    bool pairReserved = false;
+    const auto mobId = m.entityId;
+    if (!withoutMobStateLock(m, [&] {
+            std::scoped_lock pairLock(*m.stateMtx, *partner->stateMtx);
+            if (m.entityId == mobId &&
+                canonicalDimension(m.dimension) == breedDimension &&
+                canonicalDimension(partner->dimension) == breedDimension &&
+                partner->entityId == partnerState.entityId &&
+                !partner->dead && partner->inLove && !m.dead && m.inLove &&
+                now >= m.breedCooldownUntil &&
+                now >= partner->breedCooldownUntil) {
+                partnerX = partner->x;
+                partnerZ = partner->z;
+                partnerId = partner->entityId;
+                m.inLove = false;
+                partner->inLove = false;
+                m.breedCooldownUntil = now + 6000;
+                partner->breedCooldownUntil = now + 6000;
+                pairReserved = true;
+            }
+        })) return true;
+    if (!pairReserved) return true;
+
+    const double bx = (m.x + partnerX) / 2.0;
+    const double bz = (m.z + partnerZ) / 2.0;
+    const double breedY = m.y;
     auto baby = std::make_shared<MobEntity>();
     baby->entityId = ctx.srv->nextEntityId();
     baby->kind = m.kind;
     baby->health = mobStats(m.kind).maxHealth;
     baby->age = -24000; // 20 min vanilla
     baby->x = bx; baby->y = m.y; baby->z = bz;
-    ctx.srv->mobsForTest().push_back(baby);
-    ctx.srv->broadcastMobSpawn(*baby);
+    baby->dimension = breedDimension;
+    bool spawnAllowed = true;
+    if (srv.jvmRuntime()) {
+        withoutMobStateLock(m, [&] {
+            spawnAllowed = srv.jvmRuntime()->onMobSpawn(
+                *baby, baby->x, baby->y, baby->z);
+        });
+    }
+    if (!spawnAllowed) {
+        // A cancelled spawn consumes no breeding transaction.  Restore only
+        // the reservation we made; do not overwrite a callback's unrelated
+        // state changes.
+        if (!withoutMobStateLock(m, [&] {
+                std::scoped_lock pairLock(*m.stateMtx, *partner->stateMtx);
+                if (m.entityId == mobId &&
+                    canonicalDimension(m.dimension) == breedDimension &&
+                    partner->entityId == partnerId &&
+                    !m.inLove && !partner->inLove &&
+                    m.breedCooldownUntil == now + 6000 &&
+                    partner->breedCooldownUntil == now + 6000) {
+                    m.inLove = true;
+                    partner->inLove = true;
+                    m.breedCooldownUntil = 0;
+                    partner->breedCooldownUntil = 0;
+                }
+            })) return false;
+        return false;
+    }
+    withoutMobStateLock(m, [&] {
+        srv.addMob(baby);
+        srv.broadcastMobSpawn(*baby);
+    });
     // xp 1-7
-    ctx.srv->spawnXpOrbs(bx, m.y+0.5, bz, 1 + (nextRandom()%7), nullptr);
-    // reset love and set cooldown 6000t (5 min) simplified to 6000 = 300*20? use 6000
-    m.inLove = false;
-    partner->inLove = false;
-    m.breedCooldownUntil = now + 6000;
-    partner->breedCooldownUntil = now + 6000;
+    const auto xp = static_cast<std::int32_t>(1 + (nextRandom()%7));
+    withoutMobStateLock(m, [&] {
+        srv.spawnXpOrbsFor(breedDimension, bx, breedY + 0.5, bz, xp, nullptr);
+    });
     // hearts already via EntityEvent 18 in tryBreedFeed, but also broadcast here
     {
         WriteBuffer st; st.i32(m.entityId); st.i8(18);
-        ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::EntityEvent, st);
-        WriteBuffer st2; st2.i32(partner->entityId); st2.i8(18);
-        ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::EntityEvent, st2);
+        WriteBuffer st2; st2.i32(partnerId); st2.i8(18);
+        withoutMobStateLock(m, [&] {
+            srv.broadcastPacketExceptInDimension(
+                breedDimension, nullptr, proto::pl::sc::EntityEvent, st);
+            srv.broadcastPacketExceptInDimension(
+                breedDimension, nullptr, proto::pl::sc::EntityEvent, st2);
+        });
     }
     {
-        auto nearby = ctx.srv->playersSnapshot();
+        // The sensor already captured all players under Player::stateMtx in
+        // this tick.  Reusing those views avoids taking Player locks in the
+        // Mob -> Player order during the callback fan-out.
         Player* best = nullptr; double bestDist=64;
-        for (auto &pp: nearby) if (pp->inPlay) {
-            double dx=pp->x-bx, dz=pp->z-bz;
-            double d2=dx*dx+dz*dz;
-            if (d2<bestDist*bestDist) { bestDist=std::sqrt(d2); best=pp.get(); }
+        for (const auto& view : ctx.playerViews) {
+            if (!sameDimension(m, view) || !view.inPlay || view.dead) continue;
+            const double dx=view.x-bx, dz=view.z-bz;
+            const double d2=dx*dx+dz*dz;
+            if (d2<bestDist*bestDist) {
+                bestDist=std::sqrt(d2);
+                best=view.player;
+            }
         }
-        if (best) ctx.srv->onBredAnimals(best);
+        if (best) withoutMobStateLock(m, [&] { srv.onBredAnimals(best); });
     }
     return false;
 }
 
 bool WanderAroundGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
-    GameServer& srv = *ctx.srv;
     if (!m.hasTarget) {
         const double ang = (nextRandom() / double(RAND_MAX)) * 6.28318;
         const double dist = 4 + (nextRandom() % 8);
@@ -295,13 +530,18 @@ bool WanderAroundGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
         m.hasTarget = true;
         m.nextWanderAt = now + 3000 + nextRandom() % 4000;
         // build a short path
-        ai::Pathfinder pf(*ctx.world);
-        auto res = pf.find(static_cast<std::int32_t>(std::floor(m.x)),
-                           static_cast<std::int32_t>(std::floor(m.y)),
-                           static_cast<std::int32_t>(std::floor(m.z)),
-                           static_cast<std::int32_t>(std::floor(m.tx)),
-                           static_cast<std::int32_t>(std::floor(m.y)),
-                           static_cast<std::int32_t>(std::floor(m.tz)), 300);
+        World* world = dimensionWorld(ctx, m);
+        if (!world) return false;
+        const auto sx = static_cast<std::int32_t>(std::floor(m.x));
+        const auto sy = static_cast<std::int32_t>(std::floor(m.y));
+        const auto sz = static_cast<std::int32_t>(std::floor(m.z));
+        const auto gx = static_cast<std::int32_t>(std::floor(m.tx));
+        const auto gz = static_cast<std::int32_t>(std::floor(m.tz));
+        ai::Pathfinder::Result res;
+        withoutMobStateLock(m, [&] {
+            ai::Pathfinder pf(*world);
+            res = pf.find(sx, sy, sz, gx, sy, gz, 300);
+        });
         ctx.path = std::move(res.points);
         ctx.pathIdx = res.found ? 1 : 0;
     }
@@ -318,14 +558,15 @@ bool WanderAroundGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
         m.x += dx / d * 0.05;
         m.z += dz / d * 0.05;
     }
-    groundSnap(srv, m);
+    groundSnap(ctx, m);
     return true;
 }
 
 bool LookAtPlayerGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
-    if (!ctx.nearestPlayer) return false;
-    const double dx = ctx.nearestPlayer->x - m.x;
-    const double dz = ctx.nearestPlayer->z - m.z;
+    const auto target = nearestPlayerView(ctx, m);
+    if (!target) return false;
+    const double dx = target->x - m.x;
+    const double dz = target->z - m.z;
     m.yaw = static_cast<float>(std::atan2(dz, dx) * 180.0 / 3.14159 - 90.0);
     return ctx.nearestPlayerDist2 < 8 * 8;
 }
@@ -352,27 +593,30 @@ static bool raycastObstructed(World* w, double x0,double y0,double z0, double x1
     }
     return false;
 }
-static bool isPlayerLookingAtCreaking(Player* p, MobEntity& cr, World* w) {
-    if (!p) return false;
+static bool isPlayerLookingAtCreaking(const AiPlayerSnapshot& p,
+                                      MobEntity& cr, World* w) {
     const MobBehaviorSpec* spec = mobBehaviorSpec(MobKind::Creaking);
     if (!spec) return false;
-    if (p->gamemode==1 || p->gamemode==3) return false;
-    for (int i=5;i<=8;++i) if (i>=0 && i < (int)p->inv.size() && !p->inv[i].empty()) {
-        if (p->inv[i].name()=="minecraft:carved_pumpkin") return false;
-    }
-    double dx = cr.x - p->x;
-    double dy = (cr.y+0.9) - (p->y+1.62);
-    double dz = cr.z - p->z;
+    if (p.gamemode==1 || p.gamemode==3 || p.hasPumpkin) return false;
+    double dx = cr.x - p.x;
+    double dy = (cr.y+0.9) - (p.y+1.62);
+    double dz = cr.z - p.z;
     double dist = std::sqrt(dx*dx+dy*dy+dz*dz);
     const double gazeMinimumDistance = spec->gazeMinimumDistance();
     if (dist <= 0.0 || !spec->withinAuxiliaryRange(dist) || dist < gazeMinimumDistance) return false;
     double yawToMob = std::atan2(dz,dx)*180.0/3.1415926535 - 90.0;
     double pitchToMob = -std::asin(dy/dist)*180.0/3.1415926535;
-    double dYaw = std::abs(wrapDegrees((float)(yawToMob - p->yaw)));
-    double dPitch = std::abs((float)(pitchToMob - p->pitch));
+    double dYaw = std::abs(wrapDegrees((float)(yawToMob - p.yaw)));
+    double dPitch = std::abs((float)(pitchToMob - p.pitch));
     const double gazeAngle = spec->gazeAngle();
     if (gazeAngle == 0.0 || dYaw > gazeAngle || dPitch > gazeAngle) return false;
-    if (raycastObstructed(w, p->x, p->y+1.62, p->z, cr.x, cr.y+0.9, cr.z)) return false;
+    bool obstructed = false;
+    const double mobX = cr.x, mobY = cr.y, mobZ = cr.z;
+    withoutMobStateLock(cr, [&] {
+        obstructed = raycastObstructed(w, p.x, p.y+1.62, p.z,
+                                       mobX, mobY+0.9, mobZ);
+    });
+    if (obstructed) return false;
     return true;
 }
 bool CreakingGoal::shouldStart(MobEntity& m, AiContext&) {
@@ -381,49 +625,59 @@ bool CreakingGoal::shouldStart(MobEntity& m, AiContext&) {
 bool CreakingGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (m.kind != MobKind::Creaking) return false;
     const MobBehaviorSpec* spec = mobBehaviorSpec(m.kind);
-    if (!spec || !ctx.srv || !ctx.world) return false;
+    if (!spec || !ctx.srv || !dimensionWorld(ctx, m)) return false;
     // check any player looking => frozen
     bool frozen = false;
-    for (auto& pp : ctx.srv->playersSnapshot()) {
-        if (!pp->inPlay || pp->dead) continue;
-        if (isPlayerLookingAtCreaking(pp.get(), m, ctx.world)) { frozen = true; break; }
+    for (const auto& pp : ctx.playerViews) {
+        if (!sameDimension(m, pp) || !pp.inPlay || pp.dead) continue;
+        if (isPlayerLookingAtCreaking(pp, m, dimensionWorld(ctx, m))) {
+            frozen = true;
+            break;
+        }
     }
     m.creakingFrozen = frozen;
-    m.creakingAlerted = (ctx.nearestPlayer && spec->withinSecondaryThresholdSquared(ctx.nearestPlayerDist2));
+    const auto target = nearestPlayerView(ctx, m);
+    m.creakingAlerted = target.has_value() &&
+        spec->withinSecondaryThresholdSquared(ctx.nearestPlayerDist2);
     if (frozen) {
         // immobile, cannot be pushed/knocked; also do not attack
         return true;
     }
-    Player* tgt = ctx.nearestPlayer;
-    if (!tgt) return false;
-    double dx = tgt->x - m.x, dz = tgt->z - m.z;
+    if (!target) return false;
+    const double dx = target->x - m.x, dz = target->z - m.z;
     double d = std::sqrt(dx*dx+dz*dz);
     const double attackThreshold = spec->actionThreshold();
     if (attackThreshold != 0.0 && d < attackThreshold) {
-        if (now % spec->actionCooldown() == 0) ctx.srv->mobAttackPlayer(m, *tgt);
+        if (now % spec->actionCooldown() == 0)
+            withoutMobStateLock(m, [&] {
+                ctx.srv->mobAttackPlayer(m, *target->player);
+            });
         return true;
     }
     if (!spec->withinActionRange(d)) return false;
     // pathfind occasionally
     if (ctx.pathIdx >= ctx.path.size() ||
-        std::abs(ctx.path.back().x - (int)std::floor(tgt->x)) > 3 ||
-        std::abs(ctx.path.back().z - (int)std::floor(tgt->z)) > 3) {
-        ai::Pathfinder pf(*ctx.world);
-        auto res = pf.find((int)std::floor(m.x),(int)std::floor(m.y),(int)std::floor(m.z),
-                           (int)std::floor(tgt->x),(int)std::floor(tgt->y),(int)std::floor(tgt->z),800);
+        std::abs(ctx.path.back().x - (int)std::floor(target->x)) > 3 ||
+        std::abs(ctx.path.back().z - (int)std::floor(target->z)) > 3) {
+        World* world = dimensionWorld(ctx, m);
+        if (!world) return false;
+        ai::Pathfinder::Result res;
+        const double mobX = m.x, mobY = m.y, mobZ = m.z;
+        withoutMobStateLock(m, [&] {
+            ai::Pathfinder pf(*world);
+            res = pf.find((int)std::floor(mobX),(int)std::floor(mobY),
+                          (int)std::floor(mobZ),
+                          (int)std::floor(target->x),
+                          (int)std::floor(target->y),
+                          (int)std::floor(target->z),800);
+        });
         ctx.path = std::move(res.points);
         ctx.pathIdx = res.found ? 1 : 0;
         if (!res.found) {
             m.yaw = (float)(std::atan2(dz,dx)*180.0/3.1415926535 - 90.0);
             m.x += dx/d * 0.14;
             m.z += dz/d * 0.14;
-            World& w = *ctx.world;
-            w.generateChunkIfMissing((int)m.x>>4,(int)m.z>>4);
-            int col=4;
-            w.withChunk((int)m.x>>4,(int)m.z>>4,[&](const Chunk& c){
-                for(int ry=kSectionsPerChunk*16-1; ry>=0; --ry) if(c.blocks[Chunk::index(ry>>4, ry&15, (int)m.z&15, (int)m.x&15)]!=0){col=ry+1;break;}
-            });
-            m.y = kMinY + col + 1.0;
+            groundSnap(ctx, m);
             return true;
         }
     }
@@ -444,13 +698,7 @@ bool CreakingGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
         m.x += dx/d * 0.10;
         m.z += dz/d * 0.10;
     }
-    World& w = *ctx.world;
-    w.generateChunkIfMissing((int)m.x>>4,(int)m.z>>4);
-    int col=4;
-    w.withChunk((int)m.x>>4,(int)m.z>>4,[&](const Chunk& c){
-        for(int ry=kSectionsPerChunk*16-1; ry>=0; --ry) if(c.blocks[Chunk::index(ry>>4, ry&15, (int)m.z&15, (int)m.x&15)]!=0){col=ry+1;break;}
-    });
-    m.y = kMinY + col + 1.0;
+    groundSnap(ctx, m);
     return true;
 }
 
@@ -459,7 +707,8 @@ bool CreakingGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
 
 bool RangedAttackGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (!RangedAttackGoal::isRangedKind(m.kind)) return false;
-    Player* tgt = ctx.nearestPlayer;
+    const auto target = nearestPlayerView(ctx, m);
+    const auto* tgt = target ? &*target : nullptr;
     if (!tgt) return false;
     const double dx = tgt->x - m.x, dz = tgt->z - m.z;
     const double dy = (tgt->y + 1.0) - (m.y + 1.6);
@@ -476,10 +725,17 @@ bool RangedAttackGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
         double vx = dx * inv * 1.4;
         double vz = dz * inv * 1.4;
         double vy = dy * inv + dist * 0.04;
-        ctx.srv->spawnProjectile(ProjectileKind::Arrow, m.x, m.y + 1.6, m.z,
-                                 vx, vy, vz, m.entityId, false);
-        ctx.srv->broadcastSound("minecraft:entity.arrow.shoot",
-                                m.x, m.y, m.z, 1.f, 1.f, "hostile");
+        const auto dimension = canonicalDimension(m.dimension);
+        const auto entityId = m.entityId;
+        const double mobX = m.x, mobY = m.y, mobZ = m.z;
+        withoutMobStateLock(m, [&] {
+            ctx.srv->spawnProjectileFor(dimension, ProjectileKind::Arrow,
+                                        mobX, mobY + 1.6, mobZ, vx, vy, vz,
+                                        entityId, false);
+            ctx.srv->broadcastSoundFor(dimension,
+                                       "minecraft:entity.arrow.shoot",
+                                       mobX, mobY, mobZ, 1.f, 1.f, "hostile");
+        });
     }
     // hold ground while shooting
     return true;
@@ -488,18 +744,20 @@ bool RangedAttackGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
 
 bool SwellGoal::shouldStart(MobEntity& m, AiContext& ctx) {
     if (m.kind != MobKind::Creeper || m.dead) return false;
-    if (!ctx.nearestPlayer) return m.creeperIgnited;
-    double dx = ctx.nearestPlayer->x - m.x, dz = ctx.nearestPlayer->z - m.z;
+    const auto target = nearestPlayerView(ctx, m);
+    if (!target) return m.creeperIgnited;
+    double dx = target->x - m.x, dz = target->z - m.z;
     double d2 = dx*dx+dz*dz;
     if (m.creeperIgnited) return true;
     return d2 < 9; // 3 blocks
 }
 bool SwellGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (m.kind != MobKind::Creeper || m.dead) return false;
-    if (!ctx.nearestPlayer) {
+    const auto target = nearestPlayerView(ctx, m);
+    if (!target) {
         return m.creeperIgnited;
     }
-    double dx = ctx.nearestPlayer->x - m.x, dz = ctx.nearestPlayer->z - m.z;
+    double dx = target->x - m.x, dz = target->z - m.z;
     double d2 = dx*dx+dz*dz;
     // ignite already handled in GameServer_tick mobsTick; just hold position while swelling
     if (m.creeperIgnited) {
@@ -510,15 +768,23 @@ bool SwellGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
         // trigger ignite here too for Goal-driven path (server tick also does it)
         m.creeperIgnited = true;
         m.creeperFuseStart = now;
-        WriteBuffer md; md.varint(m.entityId); meta::writeMetaBool(md, 16, true); md.u8(255);
-        ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);
-        ctx.srv->broadcastSound("minecraft:entity.creeper.primed", m.x, m.y, m.z, 1.f, 1.f, "hostile");
+        const auto dimension = canonicalDimension(m.dimension);
+        const auto entityId = m.entityId;
+        const double mobX = m.x, mobY = m.y, mobZ = m.z;
+        WriteBuffer md; md.varint(entityId); meta::writeMetaBool(md, 16, true); md.u8(255);
+        withoutMobStateLock(m, [&] {
+            ctx.srv->broadcastPacketExceptInDimension(
+                dimension, nullptr, proto::pl::sc::SetEntityMetadata, md);
+            ctx.srv->broadcastSoundFor(
+                dimension, "minecraft:entity.creeper.primed", mobX, mobY,
+                mobZ, 1.f, 1.f, "hostile");
+        });
     }
     return m.creeperIgnited;
 }
 
 bool AvoidEntityGoal::shouldStart(MobEntity& m, AiContext& ctx) {
-    if (!ctx.nearestPlayer) return false;
+    if (!nearestPlayerView(ctx, m)) return false;
     // differentiate per mob: creeper avoids cat/ocelot, skeleton avoids wolf, piglin avoids zoglin etc.
     // simplified: any of those kinds use same player-distance check; for non-listed, still flee if close 4
     if (m.kind==MobKind::Creeper || m.kind==MobKind::Skeleton || m.kind==MobKind::Piglin || m.kind==MobKind::Spider) {
@@ -527,47 +793,68 @@ bool AvoidEntityGoal::shouldStart(MobEntity& m, AiContext& ctx) {
     return false;
 }
 bool AvoidEntityGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t) {
-    if (!ctx.srv || !ctx.nearestPlayer) return false;
+    const auto target = nearestPlayerView(ctx, m);
+    if (!ctx.srv || !target) return false;
     if (ctx.nearestPlayerDist2 > dist2_) return false;
-    double dx = m.x - ctx.nearestPlayer->x, dz = m.z - ctx.nearestPlayer->z;
+    double dx = m.x - target->x, dz = m.z - target->z;
     double d = std::sqrt(dx*dx+dz*dz)+1e-6;
     m.yaw = static_cast<float>(std::atan2(dz,dx)*180/3.14159 -90);
     m.x += dx/d * 0.12;
     m.z += dz/d * 0.12;
-    if (ctx.srv && ctx.world) {
-        ctx.world->generateChunkIfMissing((int)m.x>>4,(int)m.z>>4);
-        int col=4;
-        ctx.world->withChunk((int)m.x>>4,(int)m.z>>4,[&](const Chunk& c){
-            for(int ry=kSectionsPerChunk*16-1; ry>=0; --ry) if(c.blocks[Chunk::index(ry>>4, ry&15, (int)m.z&15, (int)m.x&15)]!=0){col=ry+1;break;}
-        });
-        m.y = kMinY + col + 1.0;
+    if (ctx.srv && dimensionWorld(ctx, m)) {
+        groundSnap(ctx, m);
     }
     return true;
 }
 
 bool FleeSunGoal::shouldStart(MobEntity& m, AiContext& ctx) {
-    if (!ctx.srv || !ctx.world) return false;
+    if (!ctx.srv || !dimensionWorld(ctx, m)) return false;
     if (m.kind!=MobKind::Skeleton && m.kind!=MobKind::Zombie && m.kind!=MobKind::Stray && m.kind!=MobKind::Husk && m.kind!=MobKind::Drowned) return false;
     if (ctx.srv->isNight()) return false;
     // check sky light >=14 at mob feet
-    ctx.world->generateChunkIfMissing((int)m.x>>4,(int)m.z>>4);
-    uint8_t sky = ctx.world->getSkyLight((int)m.x,(int)m.y,(int)m.z);
+    World* world = dimensionWorld(ctx, m);
+    const int chunkX = (int)m.x >> 4;
+    const int chunkZ = (int)m.z >> 4;
+    const int blockX = (int)m.x;
+    const int blockY = (int)m.y;
+    const int blockZ = (int)m.z;
+    std::uint8_t sky = 0;
+    withoutMobStateLock(m, [&] {
+        world->generateChunkIfMissing(chunkX, chunkZ);
+        sky = world->getSkyLight(blockX, blockY, blockZ);
+    });
     return sky >= 14;
 }
 bool FleeSunGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t) {
-    if (!ctx.srv || !ctx.world) return false;
+    if (!ctx.srv || !dimensionWorld(ctx, m)) return false;
     if (ctx.srv->isNight()) return false;
     // seek shade: move opposite to player or random if no player
     double dx=0, dz=0;
-    if (ctx.nearestPlayer) { dx = m.x - ctx.nearestPlayer->x; dz = m.z - ctx.nearestPlayer->z; }
+    if (const auto target = nearestPlayerView(ctx, m)) {
+        dx = m.x - target->x;
+        dz = m.z - target->z;
+    }
     else { dx = (nextRandom()/(double)RAND_MAX-0.5)*2; dz = (nextRandom()/(double)RAND_MAX-0.5)*2; }
     double d = std::sqrt(dx*dx+dz*dz)+1e-6;
     m.x += dx/d * 0.13; m.z += dz/d * 0.13;
     m.yaw = static_cast<float>(std::atan2(dz,dx)*180/3.14159 -90);
-    ctx.world->generateChunkIfMissing((int)m.x>>4,(int)m.z>>4);
+    World* world = dimensionWorld(ctx, m);
+    const int chunkX = (int)m.x >> 4;
+    const int chunkZ = (int)m.z >> 4;
+    const int blockX = (int)m.x;
+    const int blockZ = (int)m.z;
+    withoutMobStateLock(m, [&] {
+        world->generateChunkIfMissing(chunkX, chunkZ);
+    });
     int col=4;
-    ctx.world->withChunk((int)m.x>>4,(int)m.z>>4,[&](const Chunk& c){
-        for(int ry=kSectionsPerChunk*16-1; ry>=0; --ry) if(c.blocks[Chunk::index(ry>>4, ry&15, (int)m.z&15, (int)m.x&15)]!=0){col=ry+1;break;}
+    withoutMobStateLock(m, [&] {
+        world->withChunk(chunkX, chunkZ,[&](const Chunk& c){
+            for(int ry=kSectionsPerChunk*16-1; ry>=0; --ry)
+                if(c.blocks[Chunk::index(ry>>4, ry&15,
+                                        blockZ&15, blockX&15)]!=0){
+                    col=ry+1;break;
+                }
+        });
     });
     m.y = kMinY + col + 1.0;
     return true;
@@ -575,14 +862,16 @@ bool FleeSunGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t) {
 
 bool LeapAtTargetGoal::shouldStart(MobEntity& m, AiContext& ctx) {
     if (m.kind!=MobKind::Spider && m.kind!=MobKind::CaveSpider && m.kind!=MobKind::Phantom) return false;
-    if (!ctx.nearestPlayer) return false;
-    double dx=ctx.nearestPlayer->x - m.x, dz=ctx.nearestPlayer->z - m.z;
+    const auto target = nearestPlayerView(ctx, m);
+    if (!target) return false;
+    double dx=target->x - m.x, dz=target->z - m.z;
     double d = std::sqrt(dx*dx+dz*dz);
     return d >= 2.0 && d <= 5.0;
 }
 bool LeapAtTargetGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t) {
-    if (!ctx.srv || !ctx.nearestPlayer) return false;
-    double dx=ctx.nearestPlayer->x - m.x, dz=ctx.nearestPlayer->z - m.z;
+    const auto target = nearestPlayerView(ctx, m);
+    if (!ctx.srv || !target) return false;
+    double dx=target->x - m.x, dz=target->z - m.z;
     double d = std::sqrt(dx*dx+dz*dz)+1e-6;
     double vx = dx/d * 0.42, vz = dz/d * 0.42;
     double vy = 0.38;
@@ -592,12 +881,25 @@ bool LeapAtTargetGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t) {
     if (m.y > kMinY + 320) m.y = kMinY + 320;
     m.yaw = static_cast<float>(std::atan2(dz,dx)*180/3.14159 -90);
     if (ctx.srv) {
-        WriteBuffer vel; vel.varint(m.entityId); vel.i16((int16_t)(vx*8000)); vel.i16((int16_t)(vy*8000)); vel.i16((int16_t)(vz*8000));
-        ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::EntityVelocity, vel);
-        ctx.srv->broadcastSound("minecraft:entity.spider.jump", m.x, m.y, m.z, 1.f, 1.f, "hostile");
+        const auto dimension = canonicalDimension(m.dimension);
+        const double x = m.x, y = m.y, z = m.z;
+        const auto entityId = m.entityId;
+        WriteBuffer vel; vel.varint(entityId); vel.i16((int16_t)(vx*8000)); vel.i16((int16_t)(vy*8000)); vel.i16((int16_t)(vz*8000));
+        withoutMobStateLock(m, [&] {
+            ctx.srv->broadcastPacketExceptInDimension(
+                dimension, nullptr, proto::pl::sc::EntityVelocity, vel);
+            ctx.srv->broadcastSoundFor(dimension,
+                                       "minecraft:entity.spider.jump", x,
+                                       y, z, 1.f, 1.f, "hostile");
+        });
     }
-    if (ctx.world) {
-        ctx.world->generateChunkIfMissing((int)m.x>>4,(int)m.z>>4);
+    if (dimensionWorld(ctx, m)) {
+        World* world = dimensionWorld(ctx, m);
+        const int chunkX = (int)m.x >> 4;
+        const int chunkZ = (int)m.z >> 4;
+        withoutMobStateLock(m, [&] {
+            world->generateChunkIfMissing(chunkX, chunkZ);
+        });
     }
     return true;
 }
@@ -607,9 +909,9 @@ bool BreezeJumpGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     const MobBehaviorSpec* spec = mobBehaviorSpec(m.kind);
     if (!spec) return false;
     if (m.breezeJumpCooldown > now) return false;
-    Player* t = ctx.nearestPlayer;
-    if (!t) return false;
-    double dx=t->x - m.x, dz=t->z - m.z;
+    const auto target = nearestPlayerView(ctx, m);
+    if (!target) return false;
+    double dx=target->x - m.x, dz=target->z - m.z;
     double d=std::sqrt(dx*dx+dz*dz);
     if (!spec->beyondActionThreshold(d)) return false;
     double inv=1.0/(d+1e-6);
@@ -619,16 +921,24 @@ bool BreezeJumpGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     // clamp lava jump vy=1 case: we just use 0.45 normally, but if in lava would be 0.12 – simplified keep 0.45
     double jy = 0.45;
     // avoid jumping too high if already high
-    if (m.y > t->y + 6) jy = 0.15;
+    if (m.y > target->y + 6) jy = 0.15;
     m.x += jx * 2.2; m.z += jz * 2.2; m.y += jy * 3.0;
     m.breezeJumpCooldown = now + spec->secondaryCooldown();
     m.breezeLastJumpTick = now;
     if (ctx.srv) {
         WriteBuffer vel; vel.varint(m.entityId); vel.i16((int16_t)(jx*8000*2)); vel.i16((int16_t)(jy*8000)); vel.i16((int16_t)(jz*8000*2));
-        ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::EntityVelocity, vel);
-        ctx.srv->broadcastSound("minecraft:entity.breeze.jump", m.x, m.y, m.z, 1.f, 1.f, "hostile");
+        const auto dimension = m.dimension;
+        const double x = m.x, y = m.y, z = m.z;
+        withoutMobStateLock(m, [&] {
+            ctx.srv->broadcastPacketExceptInDimension(dimension, nullptr, proto::pl::sc::EntityVelocity, vel);
+            ctx.srv->broadcastSoundFor(dimension, "minecraft:entity.breeze.jump", x, y, z, 1.f, 1.f, "hostile");
+        });
     }
-    if (ctx.world) ctx.world->generateChunkIfMissing((int)m.x>>4,(int)m.z>>4);
+    if (World* world = dimensionWorld(ctx, m)) {
+        const int chunkX = static_cast<int>(m.x) >> 4;
+        const int chunkZ = static_cast<int>(m.z) >> 4;
+        withoutMobStateLock(m, [&] { world->generateChunkIfMissing(chunkX, chunkZ); });
+    }
     return true;
 }
 bool BreezeWindChargeGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
@@ -636,18 +946,25 @@ bool BreezeWindChargeGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) 
     const MobBehaviorSpec* spec = mobBehaviorSpec(m.kind);
     if (!spec) return false;
     if (m.breezeWindChargeCooldown > now) return false;
-    Player* t = ctx.nearestPlayer;
-    if (!t) return false;
-    double dx=t->x - m.x, dy=(t->y+1.0)-(m.y+1.2), dz=t->z - m.z;
+    const auto target = nearestPlayerView(ctx, m);
+    if (!target) return false;
+    double dx=target->x - m.x, dy=(target->y+1.0)-(m.y+1.2), dz=target->z - m.z;
     double d=std::sqrt(dx*dx+dz*dz);
     if (!spec->withinActionRange(d)) return false;
     double inv=1.0/(d+1e-6);
     double vx=dx*inv*1.15, vz=dz*inv*1.15, vy=dy*inv*0.2 + 0.12;
     if (ctx.srv) {
+        const auto dimension = m.dimension;
+        const std::int32_t entityId = m.entityId;
+        const double x = m.x, y = m.y, z = m.z;
         // use Fireball-like wind_charge; entity type BreezeWindCharge visual via typeId lookup inside spawnProjectile
         // spawn as BreezeWindCharge kind for correct entity type (fallback uses Fireball if mapping fails)
-        ctx.srv->spawnProjectile(ProjectileKind::BreezeWindCharge, m.x, m.y+1.2, m.z, vx, vy, vz, m.entityId, false);
-        ctx.srv->broadcastSound("minecraft:entity.breeze.wind_burst", m.x, m.y, m.z, 1.f, 1.f, "hostile");
+        withoutMobStateLock(m, [&] {
+            ctx.srv->spawnProjectileFor(dimension, ProjectileKind::BreezeWindCharge,
+                                         x, y+1.2, z, vx, vy, vz,
+                                         entityId, false);
+            ctx.srv->broadcastSoundFor(dimension, "minecraft:entity.breeze.wind_burst", x, y, z, 1.f, 1.f, "hostile");
+        });
     }
     m.breezeWindChargeCooldown = now + spec->actionCooldown();
     return true;
@@ -665,8 +982,8 @@ bool ArmadilloRollUpGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (!spec) return false;
     bool danger = ctx.dangerDetectedRecently || now < m.armadilloDangerDetectedUntil;
     // water check: immediate unroll if in water (simplified: y below sea or block water)
-    if (ctx.world) {
-        uint16_t st = ctx.world->getBlock((int)std::floor(m.x),(int)std::floor(m.y),(int)std::floor(m.z));
+    if (dimensionWorld(ctx, m)) {
+        uint16_t st = dimensionWorld(ctx, m)->getBlock((int)std::floor(m.x),(int)std::floor(m.y),(int)std::floor(m.z));
         auto* bd = gen::blockByState(st);
         if (bd && std::string(bd->name).find("water")!=std::string::npos) danger = false;
     }
@@ -674,9 +991,18 @@ bool ArmadilloRollUpGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
         m.armadilloRolledUp = true;
         m.armadilloRollUpUntil = now + spec->actionCooldown();
         if (ctx.srv) {
-            WriteBuffer md; md.varint(m.entityId); meta::writeMetaByte(md, 16, 1); md.u8(255);
-            ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);
-            ctx.srv->broadcastSound("minecraft:entity.armadillo.roll", m.x, m.y, m.z, 1.f, 1.f, "neutral");
+            const auto dimension = canonicalDimension(m.dimension);
+            const auto entityId = m.entityId;
+            const double x = m.x, y = m.y, z = m.z;
+            WriteBuffer md; md.varint(entityId); meta::writeMetaByte(md, 16, 1); md.u8(255);
+            if (!withoutMobStateLock(m, [&] {
+                    ctx.srv->broadcastPacketExceptInDimension(
+                        dimension, nullptr,
+                        proto::pl::sc::SetEntityMetadata, md);
+                    ctx.srv->broadcastSoundFor(
+                        dimension, "minecraft:entity.armadillo.roll",
+                        x, y, z, 1.f, 1.f, "neutral");
+                })) return false;
         }
         return true;
     }
@@ -685,8 +1011,14 @@ bool ArmadilloRollUpGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
             if (!danger) {
                 m.armadilloRolledUp = false;
                 if (ctx.srv) {
-                    WriteBuffer md; md.varint(m.entityId); meta::writeMetaByte(md, 16, 0); md.u8(255);
-                    ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);
+                    const auto dimension = canonicalDimension(m.dimension);
+                    const auto entityId = m.entityId;
+                    WriteBuffer md; md.varint(entityId); meta::writeMetaByte(md, 16, 0); md.u8(255);
+                    if (!withoutMobStateLock(m, [&] {
+                            ctx.srv->broadcastPacketExceptInDimension(
+                                dimension, nullptr,
+                                proto::pl::sc::SetEntityMetadata, md);
+                        })) return false;
                 }
                 return false;
             } else {
@@ -702,7 +1034,7 @@ bool WitchPotionThrowGoal::shouldStart(MobEntity& m, AiContext& ctx) {
     if (m.kind != MobKind::Witch) return false;
     const MobBehaviorSpec* spec = mobBehaviorSpec(m.kind);
     if (!spec) return false;
-    if (!ctx.nearestPlayer) return false;
+    if (!dimensionPlayer(m, ctx.nearestPlayer)) return false;
     if (!spec->withinActionRangeSquared(ctx.nearestPlayerDist2)) return false;
     if (ctx.srv && ctx.srv->tickNoForTest() < m.witchPotionCooldown) return false;
     return true;
@@ -711,25 +1043,43 @@ bool WitchPotionThrowGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) 
     if (m.kind != MobKind::Witch) return false;
     const MobBehaviorSpec* wspec = mobBehaviorSpec(m.kind);
     if (!wspec) return false;
-    Player* t = ctx.nearestPlayer; if (!t) return false;
+    auto t = dimensionPlayer(m, ctx.nearestPlayer); if (!t) return false;
     double dx=t->x - m.x, dz=t->z - m.z; double d2=dx*dx+dz*dz;
     if (!wspec->withinActionRangeSquared(d2)) return false;
     if (now < m.witchPotionCooldown) return false;
     double d=std::sqrt(d2)+1e-6;
     if (ctx.srv) {
+        const auto dimension = canonicalDimension(m.dimension);
+        const auto entityId = m.entityId;
+        const double mobX = m.x, mobY = m.y, mobZ = m.z;
         // heal if low health
         if (m.health < 13) {
             m.health = std::min(m.health + wspec->actionMagnitude(),
                                 (double)mobStats(m.kind).maxHealth);
-            ctx.srv->broadcastSound("minecraft:entity.witch.drink", m.x,m.y,m.z,1.f,1.f,"hostile");
-            WriteBuffer md; md.varint(m.entityId); meta::writeMetaBool(md,16,true); md.u8(255);
-            ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);
+            WriteBuffer md; md.varint(entityId); meta::writeMetaBool(md,16,true); md.u8(255);
+            if (!withoutMobStateLock(m, [&] {
+                    ctx.srv->broadcastSoundFor(
+                        dimension, "minecraft:entity.witch.drink",
+                        mobX,mobY,mobZ,1.f,1.f,"hostile");
+                    ctx.srv->broadcastPacketExceptInDimension(
+                        dimension, nullptr,
+                        proto::pl::sc::SetEntityMetadata, md);
+                })) return false;
         } else {
             double vx=dx/d*0.9, vz=dz/d*0.9;
-            ctx.srv->spawnProjectile(ProjectileKind::Potion, m.x, m.y+1.6, m.z, vx, 0.12, vz, m.entityId, false);
-            ctx.srv->broadcastSound("minecraft:entity.witch.throw", m.x,m.y,m.z,1.f,1.f,"hostile");
-            WriteBuffer md; md.varint(m.entityId); meta::writeMetaBool(md,16,false); md.u8(255);
-            ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);
+            WriteBuffer md; md.varint(entityId); meta::writeMetaBool(md,16,false); md.u8(255);
+            if (!withoutMobStateLock(m, [&] {
+                    ctx.srv->spawnProjectileFor(
+                        dimension, ProjectileKind::Potion,
+                        mobX, mobY+1.6, mobZ, vx, 0.12, vz,
+                        entityId, false);
+                    ctx.srv->broadcastSoundFor(
+                        dimension, "minecraft:entity.witch.throw",
+                        mobX,mobY,mobZ,1.f,1.f,"hostile");
+                    ctx.srv->broadcastPacketExceptInDimension(
+                        dimension, nullptr,
+                        proto::pl::sc::SetEntityMetadata, md);
+                })) return false;
         }
     }
     m.witchPotionCooldown = now + wspec->actionCooldown() + (nextRandom()%20);
@@ -737,7 +1087,7 @@ bool WitchPotionThrowGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) 
 }
 bool RavagerRoarGoal::shouldStart(MobEntity& m, AiContext& ctx) {
     if (m.kind != MobKind::Ravager) return false;
-    if (!ctx.nearestPlayer) return false;
+    if (!dimensionPlayer(m, ctx.nearestPlayer)) return false;
     if (ctx.nearestPlayerDist2 > 5*5) return false;
     if (ctx.srv && ctx.srv->tickNoForTest() < m.ravagerRoarCooldown) return false;
     return true;
@@ -745,15 +1095,24 @@ bool RavagerRoarGoal::shouldStart(MobEntity& m, AiContext& ctx) {
 bool RavagerRoarGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (m.kind != MobKind::Ravager) return false;
     if (now < m.ravagerRoarCooldown) return false;
-    Player* t = ctx.nearestPlayer; if (!t) return false;
-    double dx=t->x - m.x, dz=t->z - m.z; double d=std::sqrt(dx*dx+dz*dz)+1e-6;
+    auto t = dimensionPlayer(m, ctx.nearestPlayer); if (!t) return false;
+    const auto dimension = canonicalDimension(m.dimension);
+    const double mobX = m.x, mobY = m.y, mobZ = m.z;
+    double dx=t->x - mobX, dz=t->z - mobZ; double d=std::sqrt(dx*dx+dz*dz)+1e-6;
     if (d>5) return false;
     if (ctx.srv) {
         double vx=dx/d*0.4, vz=dz/d*0.4;
         WriteBuffer vel; vel.varint(t->entityId); vel.i16((int16_t)(vx*8000)); vel.i16((int16_t)(0.3*8000)); vel.i16((int16_t)(vz*8000));
-        ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::EntityVelocity, vel);
-        ctx.srv->broadcastHurtAnimation(t->entityId, (float)(std::atan2(dz,dx)*180/3.14159));
-        ctx.srv->broadcastSound("minecraft:entity.ravager.roar", m.x,m.y,m.z,1.f,1.f,"hostile");
+        if (!withoutMobStateLock(m, [&] {
+                ctx.srv->broadcastPacketExceptInDimension(
+                    dimension, nullptr, proto::pl::sc::EntityVelocity, vel);
+                ctx.srv->broadcastHurtAnimationFor(
+                    dimension, t->entityId,
+                    (float)(std::atan2(dz,dx)*180/3.14159));
+                ctx.srv->broadcastSoundFor(
+                    dimension, "minecraft:entity.ravager.roar",
+                    mobX,mobY,mobZ,1.f,1.f,"hostile");
+            })) return false;
     }
     m.ravagerRoarCooldown = now + 100;
     m.ravagerStunUntil = now + 10;
@@ -765,38 +1124,88 @@ bool IronGolemDefendGoal::shouldStart(MobEntity& m, AiContext& ctx) {
     // nearby hostile mob or a recent attack; treating the nearest player as
     // the target made every golem enter this goal in a peaceful scene.
     if (ctx.srv) {
-        for (const auto& mob : ctx.srv->mobsForTest()) {
-            if (!mob || mob->dead || !MobEntity::isHostile(mob->kind)) continue;
-            const double dx = mob->x - m.x;
-            const double dz = mob->z - m.z;
+        const auto dimension = canonicalDimension(m.dimension);
+        const double mobX = m.x, mobZ = m.z;
+        std::vector<MobSnapshot> hostileMobs;
+        if (!withoutMobStateLock(m, [&] {
+                for (const auto& mob : ctx.srv->mobsSnapshot()) {
+                    if (!mob || mob.get() == &m) continue;
+                    const MobSnapshot view = snapshotMob(*mob);
+                    if (view.dimension != dimension || view.dead ||
+                        !MobEntity::isHostile(view.kind)) continue;
+                    hostileMobs.push_back(view);
+                }
+            })) return false;
+        for (const auto& mob : hostileMobs) {
+            const double dx = mob.x - mobX;
+            const double dz = mob.z - mobZ;
             if (dx * dx + dz * dz < 12.0 * 12.0) return true;
         }
-        if (ctx.lastHurtTick >= 0 &&
-            ctx.srv->tickNoForTest() - ctx.lastHurtTick < 40) return true;
+        if (ctx.lastHurtTick.load(std::memory_order_acquire) >= 0 &&
+            ctx.srv->tickNoForTest() -
+                    ctx.lastHurtTick.load(std::memory_order_acquire) < 40)
+            return true;
     }
     return false;
 }
 bool IronGolemDefendGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (m.kind != MobKind::IronGolem) return false;
     if (now < m.ironGolemDefendCooldown) return false;
-    Player* t = ctx.nearestPlayer; if (!t) return false;
+    const auto player = dimensionPlayer(m, ctx.nearestPlayer);
+    if (!player) return false;
     // attack nearest hostile mob if present, else just approach player
     std::shared_ptr<MobEntity> nearestHostile;
+    MobSnapshot nearestHostileState;
+    const auto dimension = canonicalDimension(m.dimension);
+    const double mobX = m.x, mobZ = m.z;
     double best=1e300;
     if (ctx.srv) {
-        for (auto& mm : ctx.srv->mobsForTest()) if (MobEntity::isHostile(mm->kind) && !mm->dead) {
-            double dx=mm->x - m.x, dz=mm->z - m.z; double d2=dx*dx+dz*dz; if (d2<best){best=d2; nearestHostile=mm;}
-        }
+        if (!withoutMobStateLock(m, [&] {
+                for (const auto& mm : ctx.srv->mobsSnapshot()) {
+                    if (!mm || mm.get() == &m) continue;
+                    const MobSnapshot view = snapshotMob(*mm);
+                    if (view.dimension != dimension ||
+                        !MobEntity::isHostile(view.kind) || view.dead)
+                        continue;
+                    const double dx = view.x - mobX;
+                    const double dz = view.z - mobZ;
+                    const double d2 = dx * dx + dz * dz;
+                    if (d2 < best) {
+                        best = d2;
+                        nearestHostile = mm;
+                        nearestHostileState = view;
+                    }
+                }
+            })) return false;
     }
     if (nearestHostile && best < 12*12) {
-        double dx=nearestHostile->x - m.x, dz=nearestHostile->z - m.z; double d=std::sqrt(dx*dx+dz*dz)+1e-6;
+        double dx=nearestHostileState.x - mobX;
+        double dz=nearestHostileState.z - mobZ;
+        double d=std::sqrt(dx*dx+dz*dz)+1e-6;
         if (d < 2.2) {
-            if (ctx.srv) { ctx.srv->applyDamageToMob(*nearestHostile, 8.f, "mob"); ctx.srv->broadcastSound("minecraft:entity.iron_golem.attack", m.x,m.y,m.z,1.f,1.f,"neutral");}
+            if (ctx.srv) {
+                const double attackY = m.y;
+                if (!withoutMobStateLock(m, [&] {
+                        ctx.srv->applyDamageToMob(
+                            *nearestHostile, 8.f, "mob");
+                        ctx.srv->broadcastSoundFor(
+                            dimension, "minecraft:entity.iron_golem.attack",
+                            mobX, attackY, mobZ, 1.f, 1.f, "neutral");
+                    })) return false;
+            }
             m.ironGolemDefendCooldown = now + 20;
             return true;
         }
-        m.x += dx/d*0.12; m.z += dz/d*0.12; m.yaw=(float)(std::atan2(dz,dx)*180/3.14159-90);
-        if (ctx.srv) ctx.srv->broadcastSound("minecraft:entity.iron_golem.step", m.x,m.y,m.z,0.5f,1.f,"neutral");
+        m.x += dx/d*0.12; m.z += dz/d*0.12;
+        m.yaw=(float)(std::atan2(dz,dx)*180/3.14159-90);
+        if (ctx.srv) {
+            const double x = m.x, y = m.y, z = m.z;
+            if (!withoutMobStateLock(m, [&] {
+                    ctx.srv->broadcastSoundFor(
+                        dimension, "minecraft:entity.iron_golem.step",
+                        x, y, z, 0.5f, 1.f, "neutral");
+                })) return false;
+        }
         return true;
     }
     return false;
@@ -812,15 +1221,29 @@ bool BeePollinateGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (m.beeHasNectar) return false;
     // scan for flower every 20 ticks
     if (now % 20 != 0) return false;
-    if (!ctx.world) return false;
+    if (!dimensionWorld(ctx, m)) return false;
     for (int dx=-8; dx<=8; ++dx) for (int dz=-8; dz<=8; ++dz) for (int dy=-2; dy<=2; ++dy){
         int bx=(int)std::floor(m.x)+dx, by=(int)std::floor(m.y)+dy, bz=(int)std::floor(m.z)+dz;
-        uint16_t st=ctx.world->getBlock(bx,by,bz); if(st==0) continue;
+        uint16_t st=dimensionWorld(ctx, m)->getBlock(bx,by,bz); if(st==0) continue;
         auto* bd=gen::blockByState(st); if(!bd) continue;
         std::string n(bd->name);
         if (n.find("flower")!=std::string::npos || n=="minecraft:dandelion" || n=="minecraft:poppy") {
             double ddx=bx+0.5 - m.x, ddz=bz+0.5 - m.z; double d=std::sqrt(ddx*ddx+ddz*ddz)+1e-6;
-            m.x += ddx/d*0.08; m.z += ddz/d*0.08; if(d<1.2){ m.beeHasNectar=true; m.beePollenUntil=now+400; if(ctx.srv){ WriteBuffer md; md.varint(m.entityId); meta::writeMetaBool(md,17,true); md.u8(255); ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);} return true; }
+            m.x += ddx/d*0.08; m.z += ddz/d*0.08;
+            if(d<1.2){
+                m.beeHasNectar=true; m.beePollenUntil=now+400;
+                if(ctx.srv){
+                    const auto dimension = canonicalDimension(m.dimension);
+                    const auto entityId = m.entityId;
+                    WriteBuffer md; md.varint(entityId); meta::writeMetaBool(md,17,true); md.u8(255);
+                    if (!withoutMobStateLock(m, [&] {
+                            ctx.srv->broadcastPacketExceptInDimension(
+                                dimension, nullptr,
+                                proto::pl::sc::SetEntityMetadata, md);
+                        })) return false;
+                }
+                return true;
+            }
             return true;
         }
     }
@@ -829,39 +1252,66 @@ bool BeePollinateGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
 }
 bool WolfAngerGoal::shouldStart(MobEntity& m, AiContext& ctx) {
     if (m.kind != MobKind::Wolf) return false;
-    if (ctx.lastHurtTick>=0 && ctx.srv && ctx.srv->tickNoForTest() - ctx.lastHurtTick < 40) return true;
+    if (ctx.lastHurtTick.load(std::memory_order_acquire) >= 0 && ctx.srv &&
+        ctx.srv->tickNoForTest() -
+                ctx.lastHurtTick.load(std::memory_order_acquire) < 40)
+        return true;
     if (m.wolfAngerTarget!=-1 && ctx.srv && ctx.srv->tickNoForTest() < m.wolfAngerUntil) return true;
-    if (ctx.nearestPlayer && ctx.nearestPlayerDist2 < 4) return false; // not angry by proximity alone
+    if (dimensionPlayer(m, ctx.nearestPlayer) && ctx.nearestPlayerDist2 < 4) return false; // not angry by proximity alone
     return false;
 }
 bool WolfAngerGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (m.kind != MobKind::Wolf) return false;
     if (m.isTamed) return false;
-    Player* t=ctx.nearestPlayer; if(!t) return false;
+    auto t=dimensionPlayer(m, ctx.nearestPlayer); if(!t) return false;
     double dx=t->x - m.x, dz=t->z - m.z; double d=std::sqrt(dx*dx+dz*dz)+1e-6;
     if (d>12) return false;
-    if (d<1.9) { if(now%20==0 && ctx.srv) ctx.srv->mobAttackPlayer(m,*t); return true; }
+    if (d<1.9) {
+        if(now%20==0 && ctx.srv &&
+           !withoutMobStateLock(m, [&] {
+               ctx.srv->mobAttackPlayer(m,*t);
+           })) return false;
+        return true;
+    }
     m.x += dx/d*0.11; m.z += dz/d*0.11; m.yaw=(float)(std::atan2(dz,dx)*180/3.14159-90);
-    if (ctx.srv) { WriteBuffer md; md.varint(m.entityId); meta::writeMetaByte(md,16,1); md.u8(255); ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);}
+    if (ctx.srv) {
+        const auto dimension = canonicalDimension(m.dimension);
+        const auto entityId = m.entityId;
+        WriteBuffer md; md.varint(entityId); meta::writeMetaByte(md,16,1); md.u8(255);
+        if (!withoutMobStateLock(m, [&] {
+                ctx.srv->broadcastPacketExceptInDimension(
+                    dimension, nullptr, proto::pl::sc::SetEntityMetadata, md);
+            })) return false;
+    }
     m.wolfAngerTarget = t->entityId; m.wolfAngerUntil = now + 100;
     return true;
 }
 bool DrownedTridentGoal::shouldStart(MobEntity& m, AiContext& ctx) {
     if (m.kind != MobKind::Drowned) return false;
-    if (!ctx.nearestPlayer) return false;
+    if (!dimensionPlayer(m, ctx.nearestPlayer)) return false;
     if (ctx.nearestPlayerDist2 > perceptionRange2(MobKind::Drowned)) return false; // plan44 G-05
     if (ctx.srv && ctx.srv->tickNoForTest() < m.drownedTridentCooldown) return false;
     return true;
 }
 bool DrownedTridentGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (m.kind != MobKind::Drowned) return false;
-    Player* t=ctx.nearestPlayer; if(!t) return false;
+    auto t=dimensionPlayer(m, ctx.nearestPlayer); if(!t) return false;
     double dx=t->x - m.x, dy=(t->y+1.0)-(m.y+1.6), dz=t->z - m.z; double d=std::sqrt(dx*dx+dz*dz)+1e-6;
     if (d > perceiveDist(MobKind::Drowned)) return false; // plan44 G-05
     if (d<5) return false; // melee takes over
     if (ctx.srv) {
-        ctx.srv->spawnProjectile(ProjectileKind::Trident, m.x, m.y+1.6, m.z, dx/d*1.2, dy/d*0.2+0.15, dz/d*1.2, m.entityId, false);
-        ctx.srv->broadcastSound("minecraft:entity.drowned.shoot", m.x,m.y,m.z,1.f,1.f,"hostile");
+        const auto dimension = canonicalDimension(m.dimension);
+        const auto entityId = m.entityId;
+        const double mobX = m.x, mobY = m.y, mobZ = m.z;
+        if (!withoutMobStateLock(m, [&] {
+                ctx.srv->spawnProjectileFor(
+                    dimension, ProjectileKind::Trident,
+                    mobX, mobY+1.6, mobZ, dx/d*1.2,
+                    dy/d*0.2+0.15, dz/d*1.2, entityId, false);
+                ctx.srv->broadcastSoundFor(
+                    dimension, "minecraft:entity.drowned.shoot",
+                    mobX,mobY,mobZ,1.f,1.f,"hostile");
+            })) return false;
     }
     m.drownedTridentCooldown = now + 40;
     return true;
@@ -872,60 +1322,99 @@ bool VillagerScheduleGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) 
     const char* act = activityFor(tod);
     std::string a(act);
     if (a == "work") {
-        if (nextRandom()%40==0 && ctx.srv) ctx.srv->broadcastSound("minecraft:entity.villager.work", m.x,m.y,m.z,0.5f,1.f,"neutral");
+        if (nextRandom()%40==0 && ctx.srv) {
+            const auto dimension = canonicalDimension(m.dimension);
+            const double x=m.x, y=m.y, z=m.z;
+            if (!withoutMobStateLock(m, [&] {
+                    ctx.srv->broadcastSoundFor(
+                        dimension, "minecraft:entity.villager.work",
+                        x,y,z,0.5f,1.f,"neutral");
+                })) return false;
+        }
     } else if (a == "gather" || a == "mingle" || a == "wander" || a == "play") {
         // midday/afternoon movement: gather/mingle/play drift, wander wider
         if (nextRandom()%20==0){ double ang=nextRandom()/(double)RAND_MAX*6.28; double st=(a=="wander"?0.08:0.04); m.x+=std::cos(ang)*st; m.z+=std::sin(ang)*st; }
-        if (a == "mingle" && nextRandom()%60==0 && ctx.srv) ctx.srv->broadcastSound("minecraft:entity.villager.ambient", m.x,m.y,m.z,0.4f,1.f,"neutral");
-    } else {
-        // sleep/rest/home/idle: stay (restock tick already in mobsTick)
+        if (a == "mingle" && nextRandom()%60==0 && ctx.srv) {
+            const auto dimension = canonicalDimension(m.dimension);
+            const double x=m.x, y=m.y, z=m.z;
+            if (!withoutMobStateLock(m, [&] {
+                    ctx.srv->broadcastSoundFor(
+                        dimension, "minecraft:entity.villager.ambient",
+                        x,y,z,0.4f,1.f,"neutral");
+                })) return false;
+        }
     }
     // restock tick already in mobsTick
     return true;
 }
 bool PiglinBarterGoal::shouldStart(MobEntity& m, AiContext& ctx) {
     if (m.kind != MobKind::Piglin) return false;
-    if (!ctx.nearestPlayer) return false;
+    const auto target = dimensionPlayer(m, ctx.nearestPlayer);
+    if (!target) return false;
     if (ctx.nearestPlayerDist2 > 8*8) return false;
     if (ctx.srv && ctx.srv->tickNoForTest() < m.piglinBarterCooldown) return false;
-    // check player holds gold ingot
-    if (ctx.nearestPlayer->heldSlot>=0 && ctx.nearestPlayer->heldSlot<9) {
-        auto& h=ctx.nearestPlayer->inv[36+ctx.nearestPlayer->heldSlot];
-        if (!h.empty() && h.name()=="minecraft:gold_ingot") return true;
-    }
-    return false;
+    // The held item is part of the same-tick player snapshot.  Do not reach
+    // back into Player::inv while the Mob lock is held.
+    const auto gold = gen::itemIdByName().find("minecraft:gold_ingot");
+    return gold != gen::itemIdByName().end() &&
+           !target->heldItemEmpty && target->heldItemId == gold->second;
 }
 bool PiglinBarterGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (m.kind != MobKind::Piglin) return false;
     m.piglinBarterCooldown = now + 100;
-    if (ctx.srv) ctx.srv->broadcastSound("minecraft:entity.piglin.admiring_item", m.x,m.y,m.z,1.f,1.f,"neutral");
+    if (ctx.srv) {
+        const auto dimension = canonicalDimension(m.dimension);
+        const double x=m.x, y=m.y, z=m.z;
+        if (!withoutMobStateLock(m, [&] {
+                ctx.srv->broadcastSoundFor(
+                    dimension, "minecraft:entity.piglin.admiring_item",
+                    x,y,z,1.f,1.f,"neutral");
+            })) return false;
+    }
     return true;
 }
 bool CatScareGoal::shouldStart(MobEntity& m, AiContext& ctx) {
     if (m.kind != MobKind::Cat) return false;
-    if (!ctx.nearestPlayer) return false;
+    if (!dimensionPlayer(m, ctx.nearestPlayer)) return false;
     return ctx.nearestPlayerDist2 < 6*6;
 }
 bool CatScareGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (m.kind != MobKind::Cat) return false;
     if (now < m.catScareCooldown) return false;
     // cat scares creeper: just sit and purr
-    if (ctx.srv) ctx.srv->broadcastSound("minecraft:entity.cat.purr", m.x,m.y,m.z,0.5f,1.f,"neutral");
+    if (ctx.srv) {
+        const auto dimension = canonicalDimension(m.dimension);
+        const double x=m.x, y=m.y, z=m.z;
+        if (!withoutMobStateLock(m, [&] {
+                ctx.srv->broadcastSoundFor(
+                    dimension, "minecraft:entity.cat.purr",
+                    x,y,z,0.5f,1.f,"neutral");
+            })) return false;
+    }
     m.catScareCooldown = now + 60;
     // creeper avoid handled elsewhere
     return true;
 }
 bool FoxPounceGoal::shouldStart(MobEntity& m, AiContext& ctx) {
     if (m.kind != MobKind::Fox) return false;
-    if (!ctx.nearestPlayer) return false;
+    if (!dimensionPlayer(m, ctx.nearestPlayer)) return false;
     double d=std::sqrt(ctx.nearestPlayerDist2); return d>=2 && d<=6;
 }
 bool FoxPounceGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (m.kind != MobKind::Fox) return false;
     if (now < m.foxPounceCooldown) return false;
-    Player* t=ctx.nearestPlayer; if(!t) return false;
+    auto t=dimensionPlayer(m, ctx.nearestPlayer); if(!t) return false;
     double dx=t->x - m.x, dz=t->z - m.z; double d=std::sqrt(dx*dx+dz*dz)+1e-6;
-    m.x += dx/d*0.42; m.z += dz/d*0.42; m.y += 0.38; if(ctx.srv){ WriteBuffer vel; vel.varint(m.entityId); vel.i16((int16_t)(dx/d*0.42*8000)); vel.i16((int16_t)(0.38*8000)); vel.i16((int16_t)(dz/d*0.42*8000)); ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::EntityVelocity, vel); }
+    m.x += dx/d*0.42; m.z += dz/d*0.42; m.y += 0.38;
+    if(ctx.srv){
+        const auto dimension = canonicalDimension(m.dimension);
+        const auto entityId = m.entityId;
+        WriteBuffer vel; vel.varint(entityId); vel.i16((int16_t)(dx/d*0.42*8000)); vel.i16((int16_t)(0.38*8000)); vel.i16((int16_t)(dz/d*0.42*8000));
+        if (!withoutMobStateLock(m, [&] {
+                ctx.srv->broadcastPacketExceptInDimension(
+                    dimension, nullptr, proto::pl::sc::EntityVelocity, vel);
+            })) return false;
+    }
     m.foxPounceCooldown = now + 40;
     return true;
 }
@@ -937,43 +1426,83 @@ bool PandaRollGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (m.kind != MobKind::Panda) return false;
     if (now < m.pandaRollCooldown) return false;
     m.pandaRollCooldown = now + 100;
-    if (ctx.srv) ctx.srv->broadcastSound("minecraft:entity.panda.cant_breed", m.x,m.y,m.z,1.f,1.f,"neutral");
+    if (ctx.srv) {
+        const auto dimension = canonicalDimension(m.dimension);
+        const double x=m.x, y=m.y, z=m.z;
+        if (!withoutMobStateLock(m, [&] {
+                ctx.srv->broadcastSoundFor(
+                    dimension, "minecraft:entity.panda.cant_breed",
+                    x,y,z,1.f,1.f,"neutral");
+            })) return false;
+    }
     return true;
 }
 bool DolphinPlayGoal::shouldStart(MobEntity& m, AiContext& ctx) {
     if (m.kind != MobKind::Dolphin) return false;
-    if (!ctx.nearestPlayer) return false;
+    if (!dimensionPlayer(m, ctx.nearestPlayer)) return false;
     return ctx.nearestPlayerDist2 < 10*10;
 }
 bool DolphinPlayGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (m.kind != MobKind::Dolphin) return false;
     if (now < m.dolphinPlayCooldown) return false;
-    Player* t=ctx.nearestPlayer; if(!t) return false;
+    auto t=dimensionPlayer(m, ctx.nearestPlayer); if(!t) return false;
     double dx=t->x - m.x, dz=t->z - m.z; double d=std::sqrt(dx*dx+dz*dz)+1e-6;
     m.x += dx/d*0.13; m.z += dz/d*0.13; m.yaw=(float)(std::atan2(dz,dx)*180/3.14159-90);
-    if (ctx.srv && nextRandom()%30==0) ctx.srv->broadcastSound("minecraft:entity.dolphin.play", m.x,m.y,m.z,1.f,1.f,"neutral");
+    if (ctx.srv && nextRandom()%30==0) {
+        const auto dimension = canonicalDimension(m.dimension);
+        const double x=m.x, y=m.y, z=m.z;
+        if (!withoutMobStateLock(m, [&] {
+                ctx.srv->broadcastSoundFor(
+                    dimension, "minecraft:entity.dolphin.play",
+                    x,y,z,1.f,1.f,"neutral");
+            })) return false;
+    }
     m.dolphinPlayCooldown = now + 20;
     return true;
 }
 bool EvokerFangGoal::shouldStart(MobEntity& m, AiContext& ctx) {
     if (m.kind != MobKind::Evoker) return false;
-    if (!ctx.nearestPlayer) return false;
+    if (!dimensionPlayer(m, ctx.nearestPlayer)) return false;
     if (ctx.nearestPlayerDist2 > 12*12) return false;
     if (ctx.srv && ctx.srv->tickNoForTest() < m.evokerFangCooldown) return false;
     return true;
 }
 bool EvokerFangGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (m.kind != MobKind::Evoker) return false;
-    Player* t=ctx.nearestPlayer; if(!t) return false;
+    auto t=dimensionPlayer(m, ctx.nearestPlayer); if(!t) return false;
     if (ctx.srv) {
-        // spawn evoker fangs at target pos
+        const auto dimension = canonicalDimension(m.dimension);
+        const double mobX = m.x, mobY = m.y, mobZ = m.z;
+        std::vector<std::shared_ptr<MobEntity>> fangs;
+        fangs.reserve(3);
+        // Construct the child entities before releasing the source lock.  The
+        // callback phase below then captures no live Mob fields.
         for(int i=0;i<3;++i){
-            double fx=t->x + (nextRandom()/(double)RAND_MAX-0.5)*2, fz=t->z + (nextRandom()/(double)RAND_MAX-0.5)*2;
-            auto fang=std::make_shared<MobEntity>(); fang->entityId=ctx.srv->nextEntityId(); fang->kind=MobKind::EvokerFangs; fang->x=fx; fang->y=t->y; fang->z=fz; fang->health=1;
-            ctx.srv->mobsForTest().push_back(fang); ctx.srv->broadcastMobSpawn(*fang);
+            const double fx=t->x + (nextRandom()/(double)RAND_MAX-0.5)*2;
+            const double fz=t->z + (nextRandom()/(double)RAND_MAX-0.5)*2;
+            auto fang=std::make_shared<MobEntity>();
+            fang->entityId=ctx.srv->nextEntityId();
+            fang->kind=MobKind::EvokerFangs;
+            fang->x=fx; fang->y=t->y; fang->z=fz;
+            fang->health=1; fang->dimension=dimension;
+            fangs.push_back(std::move(fang));
         }
-        ctx.srv->broadcastSound("minecraft:entity.evoker.cast_spell", m.x,m.y,m.z,1.f,1.f,"hostile");
-        ctx.srv->applyDamage(*t, 6.f, DamageSource::magic());
+        if (!withoutMobStateLock(m, [&] {
+                for (const auto& fang : fangs) {
+                    bool spawnAllowed = true;
+                    if (ctx.srv->jvmRuntime()) {
+                        spawnAllowed = ctx.srv->jvmRuntime()->onMobSpawn(
+                            *fang, fang->x, fang->y, fang->z);
+                    }
+                    if (!spawnAllowed) continue;
+                    ctx.srv->addMob(fang);
+                    ctx.srv->broadcastMobSpawn(*fang);
+                }
+                ctx.srv->broadcastSoundFor(
+                    dimension, "minecraft:entity.evoker.cast_spell",
+                    mobX,mobY,mobZ,1.f,1.f,"hostile");
+                ctx.srv->applyDamage(*t, 6.f, DamageSource::magic());
+            })) return false;
     }
     m.evokerFangCooldown = now + 60;
     return true;
@@ -982,19 +1511,25 @@ bool EvokerFangGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
 static bool nowIn(AiContext& ctx, std::int64_t cd){ return ctx.srv && ctx.srv->tickNoForTest() < cd; }
 bool DrownedSwimGoal::shouldStart(MobEntity& m, AiContext& ctx){
     if(m.kind!=MobKind::Drowned) return false;
-    if(!ctx.world) return false;
+    if(!dimensionWorld(ctx, m)) return false;
     if(ctx.srv && ctx.srv->tickNoForTest()%5!=0) return false;
-    uint16_t st=ctx.world->getBlock((int)std::floor(m.x),(int)std::floor(m.y),(int)std::floor(m.z));
+    uint16_t st=dimensionWorld(ctx, m)->getBlock((int)std::floor(m.x),(int)std::floor(m.y),(int)std::floor(m.z));
     auto* bd=gen::blockByState(st); if(!bd) return false;
     return std::string(bd->name).find("water")!=std::string::npos;
 }
 bool DrownedSwimGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t){
     if(m.kind!=MobKind::Drowned) return false;
-    Player* t=ctx.nearestPlayer; if(!t) return true;
+    auto t=dimensionPlayer(m, ctx.nearestPlayer); if(!t) return true;
     double dx=t->x - m.x, dz=t->z - m.z; double d=std::sqrt(dx*dx+dz*dz)+1e-6;
     m.x += dx/d * 0.12; m.z += dz/d * 0.12;
     m.yaw=(float)(std::atan2(dz,dx)*180/3.14159-90);
-    if(ctx.world) ctx.world->generateChunkIfMissing((int)m.x>>4,(int)m.z>>4);
+    if (World* world = dimensionWorld(ctx, m)) {
+        const int chunkX = static_cast<int>(m.x) >> 4;
+        const int chunkZ = static_cast<int>(m.z) >> 4;
+        if (!withoutMobStateLock(m, [&] {
+                world->generateChunkIfMissing(chunkX, chunkZ);
+            })) return false;
+    }
     return true;
 }
 bool PhantomCircleGoal::shouldStart(MobEntity& m, AiContext&){
@@ -1004,7 +1539,7 @@ bool PhantomCircleGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(m.kind!=MobKind::Phantom) return false;
     const MobBehaviorSpec* spec = mobBehaviorSpec(m.kind);
     if (!spec) return false;
-    Player* t=ctx.nearestPlayer;
+    auto t=dimensionPlayer(m, ctx.nearestPlayer);
     if(t){ m.phantomOrbitCenter={t->x, t->y+spec->auxiliaryOffset(), t->z}; }
     m.phantomOrbitAngle += 0.08;
     double r = spec->actionRange() + (m.phantomSize % spec->variantRangeModulo());
@@ -1016,7 +1551,9 @@ bool PhantomCircleGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
         const double attackThreshold = spec->actionThreshold();
         if(attackThreshold != 0.0 && std::hypot(nx-m.x,nz-m.z) < attackThreshold){
             m.phantomLastSwoop=now;
-            if(ctx.srv) ctx.srv->mobAttackPlayer(m,*t);
+            if(ctx.srv && !withoutMobStateLock(m, [&] {
+                    ctx.srv->mobAttackPlayer(m,*t);
+                })) return false;
         }
     }
     double dx=nx-m.x, dy=ny-m.y, dz=nz-m.z; double d=std::sqrt(dx*dx+dy*dy+dz*dz)+1e-6;
@@ -1024,28 +1561,54 @@ bool PhantomCircleGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     m.yaw=(float)(std::atan2(dz,dx)*180/3.14159-90);
     const double altitudeFloor = spec->altitudeFloor();
     if(altitudeFloor != 0.0 && m.y < altitudeFloor) m.y=altitudeFloor;
-    if(ctx.world) ctx.world->generateChunkIfMissing((int)m.x>>4,(int)m.z>>4);
+    if (World* world = dimensionWorld(ctx, m)) {
+        const int chunkX = static_cast<int>(m.x) >> 4;
+        const int chunkZ = static_cast<int>(m.z) >> 4;
+        if (!withoutMobStateLock(m, [&] {
+                world->generateChunkIfMissing(chunkX, chunkZ);
+            })) return false;
+    }
     return true;
 }
 bool WardenSonicBoomGoal::shouldStart(MobEntity& m, AiContext& ctx){
     if(m.kind!=MobKind::Warden) return false;
     if(ctx.srv && ctx.srv->tickNoForTest()%5!=0) return false;
-    return ctx.nearestPlayer && ctx.nearestPlayerDist2 < 15*15;
+    return dimensionPlayer(m, ctx.nearestPlayer) && ctx.nearestPlayerDist2 < 15*15;
 }
 bool WardenSonicBoomGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(m.kind!=MobKind::Warden) return false;
     if(now < m.wardenSonicCooldown) return false;
-    Player* t=ctx.nearestPlayer; if(!t||ctx.nearestPlayerDist2>15*15) return false;
+    auto t=dimensionPlayer(m, ctx.nearestPlayer); if(!t||ctx.nearestPlayerDist2>15*15) return false;
+    const auto dimension = canonicalDimension(m.dimension);
+    const auto entityId = m.entityId;
+    const double mobX = m.x, mobY = m.y, mobZ = m.z;
+    const float targetYaw = (float)(std::atan2(t->z-mobZ,t->x-mobX)*180/3.14159);
     if(ctx.srv){
-        if(!raycastObstructed(ctx.world,t->x,t->y+1,t->z,m.x,m.y+0.9,m.z)){
-            ctx.srv->broadcastHurtAnimation(t->entityId, (float)(std::atan2(t->z-m.z,t->x-m.x)*180/3.14159));
-            ctx.srv->applyDamage(*t, 10.f, DamageSource::sonicBoom());
-            ctx.srv->broadcastSound("minecraft:entity.warden.sonic_boom", m.x,m.y,m.z,1.f,1.f,"hostile");
-            ctx.srv->broadcastEntitySound(m.entityId, "minecraft:entity.warden.sonic_boom", 1.f, 1.f, GameServer::SoundSource::Hostile);
+        if(!raycastObstructed(dimensionWorld(ctx, m),t->x,t->y+1,t->z,
+                              mobX,mobY+0.9,mobZ)){
             WriteBuffer vel; vel.varint(t->entityId); vel.i16(0); vel.i16((int16_t)(1.5*8000)); vel.i16(0);
-            ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::EntityVelocity, vel);
-            // particle 27 sonic_boom
-            WriteBuffer p; p.boolean(true); p.boolean(false); p.f64(m.x); p.f64(m.y+1.6); p.f64(m.z); p.f32(0);p.f32(0);p.f32(0);p.f32(0.1f); p.varint(27);
+            const WriteBuffer particle = makeWorldParticlesBody(
+                mobX, mobY + 1.6, mobZ, 0, 0, 0, 0.1f, 1,
+                ParticleId::sonic_boom, {}, true, false);
+            if (!withoutMobStateLock(m, [&] {
+                    ctx.srv->broadcastHurtAnimationFor(
+                        dimension, t->entityId, targetYaw);
+                    ctx.srv->applyDamage(*t, 10.f,
+                                         DamageSource::sonicBoom());
+                    ctx.srv->broadcastSoundFor(
+                        dimension, "minecraft:entity.warden.sonic_boom",
+                        mobX,mobY,mobZ,1.f,1.f,"hostile");
+                    ctx.srv->broadcastEntitySoundFor(
+                        dimension, entityId,
+                        "minecraft:entity.warden.sonic_boom", 1.f, 1.f,
+                        GameServer::SoundSource::Hostile);
+                    ctx.srv->broadcastPacketExceptInDimension(
+                        dimension, nullptr, proto::pl::sc::EntityVelocity,
+                        vel);
+                    ctx.srv->broadcastPacketExceptInDimension(
+                        dimension, nullptr, proto::pl::sc::WorldParticles,
+                        particle);
+                })) return false;
         }
     }
     m.wardenSonicCooldown=now+34;
@@ -1053,12 +1616,24 @@ bool WardenSonicBoomGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
 }
 bool EndermanTeleportGoal::shouldStart(MobEntity& m, AiContext& ctx){
     if(m.kind!=MobKind::Enderman) return false;
-    if(ctx.srv && ctx.srv->tickNoForTest() - ctx.lastHurtTick < 30) return true;
-    if(!ctx.world || !ctx.srv) return false;
+    if(ctx.srv &&
+       ctx.srv->tickNoForTest() -
+               ctx.lastHurtTick.load(std::memory_order_acquire) < 30)
+        return true;
+    if(!dimensionWorld(ctx, m) || !ctx.srv) return false;
     // daylight flee check simplified: if sky light high and not night
     if(!ctx.srv->isNight()){
-        ctx.world->generateChunkIfMissing((int)m.x>>4,(int)m.z>>4);
-        uint8_t sky = ctx.world->getSkyLight((int)m.x,(int)m.y,(int)m.z);
+        World* world = dimensionWorld(ctx, m);
+        const int chunkX = static_cast<int>(m.x) >> 4;
+        const int chunkZ = static_cast<int>(m.z) >> 4;
+        const int blockX = static_cast<int>(m.x);
+        const int blockY = static_cast<int>(m.y);
+        const int blockZ = static_cast<int>(m.z);
+        std::uint8_t sky = 0;
+        if (!withoutMobStateLock(m, [&] {
+                world->generateChunkIfMissing(chunkX, chunkZ);
+                sky = world->getSkyLight(blockX, blockY, blockZ);
+            })) return false;
         if(sky>=14) return true;
     }
     return false;
@@ -1066,24 +1641,51 @@ bool EndermanTeleportGoal::shouldStart(MobEntity& m, AiContext& ctx){
 bool EndermanTeleportGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(m.kind!=MobKind::Enderman) return false;
     if(now - m.lastTeleportTick < 30) return false;
-    if(!ctx.world) return false;
+    if(!dimensionWorld(ctx, m)) return false;
     for(int attempt=0; attempt<16; ++attempt){
         double nx = m.x + (nextRandom()/(double)RAND_MAX*64 -32);
         double nz = m.z + (nextRandom()/(double)RAND_MAX*64 -32);
         double ny = m.y + (nextRandom()/(double)RAND_MAX*32 -16);
         int ix=(int)std::floor(nx), iz=(int)std::floor(nz), iy=(int)std::floor(ny);
-        ctx.world->generateChunkIfMissing(ix>>4, iz>>4);
+        World* world = dimensionWorld(ctx, m);
+        if (!withoutMobStateLock(m, [&] {
+                world->generateChunkIfMissing(ix>>4, iz>>4);
+            })) return false;
         for(int dy=-4; dy<=4; ++dy){
             int tryY=iy+dy; if(tryY<kMinY || tryY>kMinY+320) continue;
-            uint16_t a1=ctx.world->getBlock(ix,tryY,iz); uint16_t a2=ctx.world->getBlock(ix,tryY+1,iz); uint16_t below=ctx.world->getBlock(ix,tryY-1,iz);
+            uint16_t a1=dimensionWorld(ctx, m)->getBlock(ix,tryY,iz); uint16_t a2=dimensionWorld(ctx, m)->getBlock(ix,tryY+1,iz); uint16_t below=dimensionWorld(ctx, m)->getBlock(ix,tryY-1,iz);
             if(a1==0 && a2==0 && below!=0){
-                double ox=m.x, oy=m.y, oz=m.z;
+                const double ox=m.x, oy=m.y, oz=m.z;
                 m.x=ix+0.5; m.z=iz+0.5; m.y=tryY+0.5; m.lastTeleportTick=now;
                 if(ctx.srv){
-                    ctx.srv->broadcastSound("minecraft:entity.enderman.teleport", m.x,m.y,m.z,1.f,1.f,"hostile");
-                    WriteBuffer tp; tp.varint(m.entityId); tp.f64(m.x); tp.f64(m.y); tp.f64(m.z); tp.f32(m.yaw); tp.f32(0); tp.boolean(true);
-                    ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::EntityTeleport, tp);
-                    (void)ox;(void)oy;(void)oz;
+                    const auto dimension = canonicalDimension(m.dimension);
+                    const auto entityId = m.entityId;
+                    const auto yaw = m.yaw;
+                    const double newX=m.x, newY=m.y, newZ=m.z;
+                    WriteBuffer tp; tp.varint(entityId); tp.f64(newX); tp.f64(newY); tp.f64(newZ); tp.f32(yaw); tp.f32(0); tp.boolean(true);
+                    if (!withoutMobStateLock(m, [&] {
+                            ctx.srv->broadcastSoundFor(
+                                dimension, "minecraft:entity.enderman.teleport",
+                                newX,newY,newZ,1.f,1.f,"hostile");
+                            ctx.srv->broadcastPacketExceptInDimension(
+                                dimension, nullptr,
+                                proto::pl::sc::EntityTeleport, tp);
+                            for(int i=0;i<8;i++){
+                                const WriteBuffer pt = makeWorldParticlesBody(
+                                    ox + (nextRandom()/(double)RAND_MAX-0.5)*1.5,
+                                    oy + nextRandom()/(double)RAND_MAX*2.0,
+                                    oz + (nextRandom()/(double)RAND_MAX-0.5)*1.5,
+                                    0, 0, 0, 0.1f, 1, ParticleId::portal,
+                                    {}, true, false);
+                                ctx.srv->broadcastPacketExceptInDimension(
+                                    dimension, nullptr,
+                                    proto::pl::sc::WorldParticles, pt);
+                            }
+                        })) return false;
+                    if (m.entityId != entityId ||
+                        canonicalDimension(m.dimension) != dimension ||
+                        m.x != newX || m.y != newY || m.z != newZ)
+                        return true;
                 }
                 return true;
             }
@@ -1093,25 +1695,48 @@ bool EndermanTeleportGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
 }
 bool ShulkerPeekGoal::shouldStart(MobEntity& m, AiContext& ctx){
     if(m.kind!=MobKind::Shulker) return false;
-    return ctx.nearestPlayer && ctx.nearestPlayerDist2 < perceptionRange2(MobKind::Shulker); // plan44 G-05
+    return dimensionPlayer(m, ctx.nearestPlayer) && ctx.nearestPlayerDist2 < perceptionRange2(MobKind::Shulker); // plan44 G-05
 }
 bool ShulkerPeekGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(m.kind!=MobKind::Shulker) return false;
-    Player* t=ctx.nearestPlayer; if(!t) return false;
+    auto t=dimensionPlayer(m, ctx.nearestPlayer); if(!t) return false;
     m.shulkerPeek = std::min(100, m.shulkerPeek+5);
     if(ctx.srv){
-        WriteBuffer md; md.varint(m.entityId); meta::writeMetaByte(md, 15, (int8_t)m.shulkerPeek); md.u8(255);
-        ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);
+        const auto dimension = canonicalDimension(m.dimension);
+        const auto entityId = m.entityId;
+        const double mobX=m.x, mobY=m.y, mobZ=m.z;
+        WriteBuffer md; md.varint(entityId); meta::writeMetaByte(md, 15, (int8_t)m.shulkerPeek); md.u8(255);
         if(now%60==0){
-            double dx=t->x-m.x, dy=(t->y+0.5)-m.y, dz=t->z-m.z; double d=std::sqrt(dx*dx+dz*dz)+1e-6;
-            ctx.srv->spawnProjectile(ProjectileKind::Arrow, m.x, m.y+0.5, m.z, dx/d*0.7, dy/d*0.2+0.1, dz/d*0.7, m.entityId, false);
-            ctx.srv->broadcastSound("minecraft:entity.shulker.shoot", m.x,m.y,m.z,1.f,1.f,"hostile");
-        }
-        if(now - ctx.lastHurtTick < 20){
+            double dx=t->x-mobX, dy=(t->y+0.5)-mobY, dz=t->z-mobZ; double d=std::sqrt(dx*dx+dz*dz)+1e-6;
+            if (!withoutMobStateLock(m, [&] {
+                    ctx.srv->broadcastPacketExceptInDimension(
+                        dimension, nullptr, proto::pl::sc::SetEntityMetadata,
+                        md);
+                    ctx.srv->spawnProjectileFor(
+                        dimension, ProjectileKind::Arrow,
+                        mobX, mobY+0.5, mobZ, dx/d*0.7,
+                        dy/d*0.2+0.1, dz/d*0.7, entityId, false);
+                    ctx.srv->broadcastSoundFor(
+                        dimension, "minecraft:entity.shulker.shoot",
+                        mobX,mobY,mobZ,1.f,1.f,"hostile");
+                })) return false;
+        } else if (!withoutMobStateLock(m, [&] {
+                       ctx.srv->broadcastPacketExceptInDimension(
+                           dimension, nullptr,
+                           proto::pl::sc::SetEntityMetadata, md);
+                   })) return false;
+        if(now - ctx.lastHurtTick.load(std::memory_order_acquire) < 20){
             // teleport 8 blocks on hurt
-            EndermanTeleportGoal tmp; (void)tmp;
-            double nx=m.x+(nextRandom()/(double)RAND_MAX*16-8), nz=m.z+(nextRandom()/(double)RAND_MAX*16-8);
-            m.x=nx; m.z=nz; if(ctx.world) ctx.world->generateChunkIfMissing((int)m.x>>4,(int)m.z>>4);
+            const double nx=mobX+(nextRandom()/(double)RAND_MAX*16-8);
+            const double nz=mobZ+(nextRandom()/(double)RAND_MAX*16-8);
+            m.x=nx; m.z=nz;
+            if (World* world = dimensionWorld(ctx, m)) {
+                if (!withoutMobStateLock(m, [&] {
+                        world->generateChunkIfMissing(
+                            static_cast<int>(nx)>>4,
+                            static_cast<int>(nz)>>4);
+                    })) return false;
+            }
         }
     }
     return true;
@@ -1119,23 +1744,32 @@ bool ShulkerPeekGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
 bool GuardianBeamGoal::shouldStart(MobEntity& m, AiContext& ctx){
     if(m.kind!=MobKind::Guardian && m.kind!=MobKind::ElderGuardian) return false;
     const MobBehaviorSpec* spec = mobBehaviorSpec(m.kind);
-    return spec && ctx.nearestPlayer && spec->withinActionRangeSquared(ctx.nearestPlayerDist2);
+    return spec && dimensionPlayer(m, ctx.nearestPlayer) && spec->withinActionRangeSquared(ctx.nearestPlayerDist2);
 }
 bool GuardianBeamGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(m.kind!=MobKind::Guardian && m.kind!=MobKind::ElderGuardian) return false;
     const MobBehaviorSpec* spec = mobBehaviorSpec(m.kind);
     if (!spec) return false;
     if(now < m.guardianBeamCooldown) return false;
-    Player* t=ctx.nearestPlayer; if(!t) return false;
-    double dx=t->x-m.x, dz=t->z-m.z; double d=std::sqrt(dx*dx+dz*dz);
+    auto t=dimensionPlayer(m, ctx.nearestPlayer); if(!t) return false;
+    const auto dimension = canonicalDimension(m.dimension);
+    const auto entityId = m.entityId;
+    const double mobX=m.x, mobY=m.y, mobZ=m.z;
+    double dx=t->x-mobX, dz=t->z-mobZ; double d=std::sqrt(dx*dx+dz*dz);
     if (!spec->withinActionRange(d)) return false;
     if(ctx.srv){
         const double magnitude = m.kind == MobKind::ElderGuardian
             ? spec->secondaryActionMagnitude() : spec->actionMagnitude();
         float dmg = static_cast<float>(magnitude);
-        ctx.srv->applyDamage(*t, dmg, DamageSource::magic());
-        ctx.srv->broadcastSound("minecraft:entity.guardian.attack", m.x,m.y,m.z,1.f,1.f,"hostile");
-        ctx.srv->broadcastEntitySound(m.entityId, "minecraft:entity.guardian.attack", 1.f, 1.f, GameServer::SoundSource::Hostile);
+        if (!withoutMobStateLock(m, [&] {
+                ctx.srv->applyDamage(*t, dmg, DamageSource::magic());
+                ctx.srv->broadcastSoundFor(
+                    dimension, "minecraft:entity.guardian.attack",
+                    mobX,mobY,mobZ,1.f,1.f,"hostile");
+                ctx.srv->broadcastEntitySoundFor(
+                    dimension, entityId, "minecraft:entity.guardian.attack",
+                    1.f, 1.f, GameServer::SoundSource::Hostile);
+            })) return false;
     }
     m.guardianBeamCooldown=now+spec->actionCooldown();
     return true;
@@ -1146,9 +1780,17 @@ bool SlimeSplitGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(nextRandom()%40!=0) return false;
     m.y += 0.4 * (m.slimeSize+1)*0.5;
     if(ctx.srv){
-        WriteBuffer vel; vel.varint(m.entityId); vel.i16(0); vel.i16((int16_t)(0.4*8000)); vel.i16(0);
-        ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::EntityVelocity, vel);
-        ctx.srv->broadcastSound("minecraft:entity.slime.jump", m.x,m.y,m.z,0.5f,1.f,"hostile");
+        const auto dimension = canonicalDimension(m.dimension);
+        const auto entityId = m.entityId;
+        const double x=m.x, y=m.y, z=m.z;
+        WriteBuffer vel; vel.varint(entityId); vel.i16(0); vel.i16((int16_t)(0.4*8000)); vel.i16(0);
+        if (!withoutMobStateLock(m, [&] {
+                ctx.srv->broadcastPacketExceptInDimension(
+                    dimension, nullptr, proto::pl::sc::EntityVelocity, vel);
+                ctx.srv->broadcastSoundFor(
+                    dimension, "minecraft:entity.slime.jump",
+                    x,y,z,0.5f,1.f,"hostile");
+            })) return false;
     }
     m.slimeJumpCooldown=now+20;
     return true;
@@ -1160,84 +1802,179 @@ bool MagmaCubeJumpGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     m.y += 0.45 * (m.slimeSize+1)*0.5;
     if(m.y < kMinY+1) m.y = kMinY+1;
     if(ctx.srv){
-        WriteBuffer vel; vel.varint(m.entityId); vel.i16(0); vel.i16((int16_t)(0.45*8000)); vel.i16(0);
-        ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::EntityVelocity, vel);
-        ctx.srv->broadcastSound("minecraft:entity.magma_cube.jump", m.x,m.y,m.z,0.5f,1.f,"hostile");
+        const auto dimension = canonicalDimension(m.dimension);
+        const auto entityId = m.entityId;
+        const double x=m.x, y=m.y, z=m.z;
+        WriteBuffer vel; vel.varint(entityId); vel.i16(0); vel.i16((int16_t)(0.45*8000)); vel.i16(0);
+        if (!withoutMobStateLock(m, [&] {
+                ctx.srv->broadcastPacketExceptInDimension(
+                    dimension, nullptr, proto::pl::sc::EntityVelocity, vel);
+                ctx.srv->broadcastSoundFor(
+                    dimension, "minecraft:entity.magma_cube.jump",
+                    x,y,z,0.5f,1.f,"hostile");
+            })) return false;
     }
     m.slimeJumpCooldown=now+18;
     return true;
 }
-bool SilverfishInfestGoal::shouldStart(MobEntity& m, AiContext& ctx){ if(m.kind!=MobKind::Silverfish) return false; return nowIn(ctx, m.silverfishCallCooldown) ? false : (ctx.lastHurtTick>=0 && ctx.srv && ctx.srv->tickNoForTest()-ctx.lastHurtTick<20); }
+bool SilverfishInfestGoal::shouldStart(MobEntity& m, AiContext& ctx){ if(m.kind!=MobKind::Silverfish) return false; return nowIn(ctx, m.silverfishCallCooldown) ? false : (ctx.lastHurtTick.load(std::memory_order_acquire)>=0 && ctx.srv && ctx.srv->tickNoForTest()-ctx.lastHurtTick.load(std::memory_order_acquire)<20); }
 bool SilverfishInfestGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(m.kind!=MobKind::Silverfish) return false;
     if(now < m.silverfishCallCooldown) return false;
     if(!ctx.srv) return false;
+    const auto dimension = canonicalDimension(m.dimension);
+    const double mobX=m.x, mobY=m.y, mobZ=m.z;
+    World* world = dimensionWorld(ctx, m);
     int spawned=0;
+    bool foundInfested=false;
     for(int dx=-6; dx<=6 && spawned<3; ++dx) for(int dz=-6; dz<=6 && spawned<3; ++dz){
-        int bx=(int)std::floor(m.x)+dx, bz=(int)std::floor(m.z)+dz, by=(int)std::floor(m.y);
-        uint16_t st=ctx.world?ctx.world->getBlock(bx,by,bz):0; if(st==0) continue;
+        int bx=(int)std::floor(mobX)+dx, bz=(int)std::floor(mobZ)+dz, by=(int)std::floor(mobY);
+        uint16_t st=world?world->getBlock(bx,by,bz):0; if(st==0) continue;
         auto* bd=gen::blockByState(st); if(!bd) continue;
         std::string n(bd->name); if(n.find("infested")!=std::string::npos){
-            auto mob=std::make_shared<MobEntity>(); mob->entityId=ctx.srv->nextEntityId(); mob->kind=MobKind::Silverfish; mob->x=bx+0.5; mob->y=by+0.5; mob->z=bz+0.5; mob->health=mobStats(MobKind::Silverfish).maxHealth;
-            ctx.srv->mobsForTest().push_back(mob); ctx.srv->broadcastMobSpawn(*mob); spawned++;
-            if(ctx.world) ctx.world->setBlock(bx,by,bz,0);
+            foundInfested=true;
+            auto silverfish=std::make_shared<MobEntity>();
+            silverfish->entityId=ctx.srv->nextEntityId();
+            silverfish->kind=MobKind::Silverfish;
+            silverfish->x=bx+0.5; silverfish->y=by+0.5;
+            silverfish->z=bz+0.5;
+            silverfish->health=mobStats(MobKind::Silverfish).maxHealth;
+            silverfish->dimension=dimension;
+            bool spawnedThis = false;
+            if (!withoutMobStateLock(m, [&] {
+                    bool spawnAllowed = true;
+                    if (ctx.srv->jvmRuntime()) {
+                        spawnAllowed = ctx.srv->jvmRuntime()->onMobSpawn(
+                            *silverfish, silverfish->x,
+                            silverfish->y, silverfish->z);
+                    }
+                    if (!spawnAllowed) return;
+                    ctx.srv->addMob(silverfish);
+                    ctx.srv->broadcastMobSpawn(*silverfish);
+                    if (world) {
+                        world->setBlock(bx, by, bz, 0);
+                        ctx.srv->broadcastBlockChangeFor(
+                            dimension, bx, by, bz, 0);
+                    }
+                    spawnedThis = true;
+                })) return false;
+            if (spawnedThis) ++spawned;
         }
     }
     // fallback spawn even without infested block for test determinism
-    if(spawned==0){
-        auto mob=std::make_shared<MobEntity>(); mob->entityId=ctx.srv->nextEntityId(); mob->kind=MobKind::Silverfish; mob->x=m.x+1; mob->y=m.y; mob->z=m.z+1; mob->health=mobStats(MobKind::Silverfish).maxHealth;
-        ctx.srv->mobsForTest().push_back(mob); ctx.srv->broadcastMobSpawn(*mob);
+    if(spawned==0 && !foundInfested){
+        auto silverfish=std::make_shared<MobEntity>();
+        silverfish->entityId=ctx.srv->nextEntityId();
+        silverfish->kind=MobKind::Silverfish;
+        silverfish->x=mobX+1; silverfish->y=mobY; silverfish->z=mobZ+1;
+        silverfish->health=mobStats(MobKind::Silverfish).maxHealth;
+        silverfish->dimension=dimension;
+        if (!withoutMobStateLock(m, [&] {
+                bool spawnAllowed = true;
+                if (ctx.srv->jvmRuntime()) {
+                    spawnAllowed = ctx.srv->jvmRuntime()->onMobSpawn(
+                        *silverfish, silverfish->x,
+                        silverfish->y, silverfish->z);
+                }
+                if (spawnAllowed) {
+                    ctx.srv->addMob(silverfish);
+                    ctx.srv->broadcastMobSpawn(*silverfish);
+                }
+            })) return false;
     }
     m.silverfishCallCooldown=now+100;
-    if(ctx.srv) ctx.srv->broadcastSound("minecraft:entity.silverfish.ambient", m.x,m.y,m.z,1.f,1.f,"hostile");
+    if(!withoutMobStateLock(m, [&] {
+            ctx.srv->broadcastSoundFor(
+                dimension, "minecraft:entity.silverfish.ambient",
+                mobX,mobY,mobZ,1.f,1.f,"hostile");
+        })) return false;
     return true;
 }
-bool EndermiteTeleportGoal::shouldStart(MobEntity& m, AiContext& ctx){ if(m.kind!=MobKind::Endermite) return false; return ctx.lastHurtTick>=0 && ctx.srv && ctx.srv->tickNoForTest()-ctx.lastHurtTick<20; }
+bool EndermiteTeleportGoal::shouldStart(MobEntity& m, AiContext& ctx){ if(m.kind!=MobKind::Endermite) return false; return ctx.lastHurtTick.load(std::memory_order_acquire)>=0 && ctx.srv && ctx.srv->tickNoForTest()-ctx.lastHurtTick.load(std::memory_order_acquire)<20; }
 bool EndermiteTeleportGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(m.kind!=MobKind::Endermite) return false;
     if(now < m.endermiteLifeUntil - 2390) return false; // throttle
     m.x += (nextRandom()/(double)RAND_MAX-0.5)*4; m.z += (nextRandom()/(double)RAND_MAX-0.5)*4;
     if(ctx.srv){
-        ctx.srv->broadcastSound("minecraft:entity.endermite.ambient", m.x,m.y,m.z,1.f,1.f,"hostile");
-        WriteBuffer tp; tp.varint(m.entityId); tp.f64(m.x); tp.f64(m.y); tp.f64(m.z); tp.f32(m.yaw); tp.f32(0); tp.boolean(true);
-        ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::EntityTeleport, tp);
+        const auto dimension = canonicalDimension(m.dimension);
+        const auto entityId = m.entityId;
+        const double x=m.x, y=m.y, z=m.z;
+        const auto yaw=m.yaw;
+        WriteBuffer tp; tp.varint(entityId); tp.f64(x); tp.f64(y); tp.f64(z); tp.f32(yaw); tp.f32(0); tp.boolean(true);
+        if (!withoutMobStateLock(m, [&] {
+                ctx.srv->broadcastSoundFor(
+                    dimension, "minecraft:entity.endermite.ambient",
+                    x,y,z,1.f,1.f,"hostile");
+                ctx.srv->broadcastPacketExceptInDimension(
+                    dimension, nullptr, proto::pl::sc::EntityTeleport, tp);
+            })) return false;
     }
     if(m.endermiteLifeUntil==0) m.endermiteLifeUntil=now+2400;
     return true;
 }
-bool VindicatorAxeGoal::shouldStart(MobEntity& m, AiContext& ctx){ if(m.kind!=MobKind::Vindicator) return false; return ctx.nearestPlayer && ctx.nearestPlayerDist2 < 12*12; }
+bool VindicatorAxeGoal::shouldStart(MobEntity& m, AiContext& ctx){ if(m.kind!=MobKind::Vindicator) return false; return dimensionPlayer(m, ctx.nearestPlayer) && ctx.nearestPlayerDist2 < 12*12; }
 bool VindicatorAxeGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(m.kind!=MobKind::Vindicator) return false;
     if(now < m.vindicatorJohnnyUntil && m.vindicatorJohnnyUntil!=0) { /* johnny cooldown */ }
-    Player* t=ctx.nearestPlayer; if(!t) return false;
+    auto t=dimensionPlayer(m, ctx.nearestPlayer); if(!t) return false;
+    const auto dimension = canonicalDimension(m.dimension);
     double dx=t->x-m.x, dz=t->z-m.z; double d=std::sqrt(dx*dx+dz*dz)+1e-6;
-    if(d<1.9){ if(now%20==0 && ctx.srv) ctx.srv->mobAttackPlayer(m,*t); return true; }
+    if(d<1.9){
+        if(now%20==0 && ctx.srv && !withoutMobStateLock(m, [&] {
+                ctx.srv->mobAttackPlayer(m,*t);
+            })) return false;
+        return true;
+    }
     m.x+=dx/d*0.11; m.z+=dz/d*0.11; m.yaw=(float)(std::atan2(dz,dx)*180/3.14159-90);
-    if(ctx.world) ctx.world->generateChunkIfMissing((int)m.x>>4,(int)m.z>>4);
-    if(ctx.srv) ctx.srv->broadcastSound("minecraft:entity.vindicator.ambient", m.x,m.y,m.z,1.f,1.f,"hostile");
+    if (World* world=dimensionWorld(ctx, m)) {
+        const int chunkX=static_cast<int>(m.x)>>4, chunkZ=static_cast<int>(m.z)>>4;
+        if (!withoutMobStateLock(m, [&] {
+                world->generateChunkIfMissing(chunkX, chunkZ);
+            })) return false;
+    }
+    if(ctx.srv) {
+        const double x=m.x,y=m.y,z=m.z;
+        if (!withoutMobStateLock(m, [&] {
+                ctx.srv->broadcastSoundFor(
+                    dimension, "minecraft:entity.vindicator.ambient",
+                    x,y,z,1.f,1.f,"hostile");
+            })) return false;
+    }
     m.vindicatorJohnnyUntil=now+20;
     return true;
 }
-bool PillagerCrossbowGoal::shouldStart(MobEntity& m, AiContext& ctx){ if(m.kind!=MobKind::Pillager) return false; return ctx.nearestPlayer && ctx.nearestPlayerDist2 < perceptionRange2(MobKind::Pillager); } // plan44 G-05
+bool PillagerCrossbowGoal::shouldStart(MobEntity& m, AiContext& ctx){ if(m.kind!=MobKind::Pillager) return false; return dimensionPlayer(m, ctx.nearestPlayer) && ctx.nearestPlayerDist2 < perceptionRange2(MobKind::Pillager); } // plan44 G-05
 bool PillagerCrossbowGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(m.kind!=MobKind::Pillager) return false;
     if(now < m.pillagerCrossbowCooldown) return false;
-    Player* t=ctx.nearestPlayer; if(!t) return false;
-    double dx=t->x-m.x, dy=(t->y+1)-(m.y+1.6), dz=t->z-m.z; double d=std::sqrt(dx*dx+dz*dz)+1e-6;
+    auto t=dimensionPlayer(m, ctx.nearestPlayer); if(!t) return false;
+    const auto dimension = canonicalDimension(m.dimension);
+    const auto entityId = m.entityId;
+    const double mobX=m.x, mobY=m.y, mobZ=m.z;
+    double dx=t->x-mobX, dy=(t->y+1)-(mobY+1.6), dz=t->z-mobZ; double d=std::sqrt(dx*dx+dz*dz)+1e-6;
     if(d<5 || d > perceiveDist(MobKind::Pillager)) { // patrol approach (plan44 G-05 follow_range)
         m.x+=dx/d*0.09; m.z+=dz/d*0.09; m.yaw=(float)(std::atan2(dz,dx)*180/3.14159-90); return true;
     }
-    if(ctx.srv) ctx.srv->spawnProjectile(ProjectileKind::Arrow, m.x, m.y+1.6, m.z, dx/d*1.4, dy/d*0.2+0.12, dz/d*1.4, m.entityId, false);
+    if(ctx.srv && !withoutMobStateLock(m, [&] {
+            ctx.srv->spawnProjectileFor(
+                dimension, ProjectileKind::Arrow,
+                mobX, mobY+1.6, mobZ, dx/d*1.4,
+                dy/d*0.2+0.12, dz/d*1.4, entityId, false);
+        })) return false;
     m.pillagerCrossbowCooldown=now+40;
-    if(ctx.srv) ctx.srv->broadcastSound("minecraft:entity.pillager.shoot", m.x,m.y,m.z,1.f,1.f,"hostile");
+    if(ctx.srv && !withoutMobStateLock(m, [&] {
+            ctx.srv->broadcastSoundFor(
+                dimension, "minecraft:entity.pillager.shoot",
+                mobX,mobY,mobZ,1.f,1.f,"hostile");
+        })) return false;
     return true;
 }
 bool HoglinRepelGoal::shouldStart(MobEntity& m, AiContext& ctx){
     if(m.kind!=MobKind::Hoglin) return false;
-    if(!ctx.world) return false;
+    if(!dimensionWorld(ctx, m)) return false;
     for(int dx=-7; dx<=7; ++dx) for(int dz=-7; dz<=7; ++dz){
         int bx=(int)std::floor(m.x)+dx, bz=(int)std::floor(m.z)+dz, by=(int)std::floor(m.y);
-        uint16_t st=ctx.world->getBlock(bx,by,bz); if(st==0) continue;
+        uint16_t st=dimensionWorld(ctx, m)->getBlock(bx,by,bz); if(st==0) continue;
         auto* bd=gen::blockByState(st); if(!bd) continue;
         std::string n(bd->name); if(n.find("warped_fungus")!=std::string::npos || n.find("respawn_anchor")!=std::string::npos || n.find("nether_portal")!=std::string::npos) return true;
     }
@@ -1246,12 +1983,17 @@ bool HoglinRepelGoal::shouldStart(MobEntity& m, AiContext& ctx){
 bool HoglinRepelGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(m.kind!=MobKind::Hoglin) return false;
     if(now < m.hoglinRepelCooldown) return false;
-    Player* t=ctx.nearestPlayer;
+    auto t=dimensionPlayer(m, ctx.nearestPlayer);
     double dx, dz;
     if(t){ dx=m.x - t->x; dz=m.z - t->z; } else { dx=(nextRandom()/(double)RAND_MAX-0.5)*2; dz=(nextRandom()/(double)RAND_MAX-0.5)*2; }
     double d=std::sqrt(dx*dx+dz*dz)+1e-6;
     m.x+=dx/d*0.14; m.z+=dz/d*0.14; m.yaw=(float)(std::atan2(dz,dx)*180/3.14159-90);
-    if(ctx.world) ctx.world->generateChunkIfMissing((int)m.x>>4,(int)m.z>>4);
+    if (World* world=dimensionWorld(ctx, m)) {
+        const int chunkX=static_cast<int>(m.x)>>4, chunkZ=static_cast<int>(m.z)>>4;
+        if (!withoutMobStateLock(m, [&] {
+                world->generateChunkIfMissing(chunkX, chunkZ);
+            })) return false;
+    }
     m.hoglinRepelCooldown=now+10;
     return true;
 }
@@ -1259,33 +2001,58 @@ bool ZoglinFrenzyGoal::shouldStart(MobEntity& m, AiContext&) { return m.kind==Mo
 bool ZoglinFrenzyGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(m.kind!=MobKind::Zoglin) return false;
     if(now < m.zoglinFrenzyUntil) return false;
-    Player* t=ctx.nearestPlayer; if(!t) return false;
+    auto t=dimensionPlayer(m, ctx.nearestPlayer); if(!t) return false;
+    const auto dimension = canonicalDimension(m.dimension);
     double dx=t->x-m.x, dz=t->z-m.z; double d=std::sqrt(dx*dx+dz*dz)+1e-6;
-    if(d<1.9){ if(now%15==0 && ctx.srv) { ctx.srv->mobAttackPlayer(m,*t); WriteBuffer vel; vel.varint(t->entityId); vel.i16((int16_t)(dx/d*1.0*8000)); vel.i16((int16_t)(0.4*8000)); vel.i16((int16_t)(dz/d*1.0*8000)); ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::EntityVelocity, vel); } return true; }
+    if(d<1.9){
+        if(now%15==0 && ctx.srv) {
+            WriteBuffer vel; vel.varint(t->entityId); vel.i16((int16_t)(dx/d*1.0*8000)); vel.i16((int16_t)(0.4*8000)); vel.i16((int16_t)(dz/d*1.0*8000));
+            if (!withoutMobStateLock(m, [&] {
+                    ctx.srv->mobAttackPlayer(m,*t);
+                    ctx.srv->broadcastPacketExceptInDimension(
+                        dimension, nullptr, proto::pl::sc::EntityVelocity,
+                        vel);
+                })) return false;
+        }
+        return true;
+    }
     m.x+=dx/d*0.14; m.z+=dz/d*0.14; m.yaw=(float)(std::atan2(dz,dx)*180/3.14159-90);
-    if(ctx.world) ctx.world->generateChunkIfMissing((int)m.x>>4,(int)m.z>>4);
+    if (World* world=dimensionWorld(ctx, m)) {
+        const int chunkX=static_cast<int>(m.x)>>4, chunkZ=static_cast<int>(m.z)>>4;
+        if (!withoutMobStateLock(m, [&] {
+                world->generateChunkIfMissing(chunkX, chunkZ);
+            })) return false;
+    }
     m.zoglinFrenzyUntil=now+10;
     return true;
 }
-bool WitherSkeletonEffectGoal::shouldStart(MobEntity& m, AiContext& ctx){ if(m.kind!=MobKind::WitherSkeleton) return false; return ctx.nearestPlayer && ctx.nearestPlayerDist2 < 3*3; }
+bool WitherSkeletonEffectGoal::shouldStart(MobEntity& m, AiContext& ctx){ if(m.kind!=MobKind::WitherSkeleton) return false; return dimensionPlayer(m, ctx.nearestPlayer) && ctx.nearestPlayerDist2 < 3*3; }
 bool WitherSkeletonEffectGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(m.kind!=MobKind::WitherSkeleton) return false;
     if(now < m.witherSkeletonEffectCooldown) return false;
-    Player* t=ctx.nearestPlayer; if(!t) return false;
+    auto t=dimensionPlayer(m, ctx.nearestPlayer); if(!t) return false;
     if(ctx.srv){
-        ctx.srv->mobAttackPlayer(m,*t);
+        const auto dimension = canonicalDimension(m.dimension);
+        const double x=m.x,y=m.y,z=m.z;
         WriteBuffer eff; eff.varint(t->entityId); eff.varint(20); eff.i8(0); eff.varint(100); eff.u8(0x01);
-        ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::EntityEffect, eff);
-        ctx.srv->broadcastSound("minecraft:entity.wither_skeleton.ambient", m.x,m.y,m.z,1.f,1.f,"hostile");
+        if (!withoutMobStateLock(m, [&] {
+                ctx.srv->mobAttackPlayer(m,*t);
+                ctx.srv->broadcastPacketExceptInDimension(
+                    dimension, nullptr, proto::pl::sc::EntityEffect, eff);
+                ctx.srv->broadcastSoundFor(
+                    dimension, "minecraft:entity.wither_skeleton.ambient",
+                    x,y,z,1.f,1.f,"hostile");
+            })) return false;
     }
     m.witherSkeletonEffectCooldown=now+40;
     return true;
 }
-bool GoatRamGoal::shouldStart(MobEntity& m, AiContext& ctx){ if(m.kind!=MobKind::Goat) return false; return ctx.nearestPlayer && ctx.nearestPlayerDist2 < 10*10; }
+bool GoatRamGoal::shouldStart(MobEntity& m, AiContext& ctx){ if(m.kind!=MobKind::Goat) return false; return dimensionPlayer(m, ctx.nearestPlayer) && ctx.nearestPlayerDist2 < 10*10; }
 bool GoatRamGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(m.kind!=MobKind::Goat) return false;
     if(now < m.goatRamCooldown) return false;
-    Player* t=ctx.nearestPlayer; if(!t) return false;
+    auto t=dimensionPlayer(m, ctx.nearestPlayer); if(!t) return false;
+    const auto dimension = canonicalDimension(m.dimension);
     double dx=t->x-m.x, dz=t->z-m.z; double d=std::sqrt(dx*dx+dz*dz)+1e-6;
     if(d>10) return false;
     // charge 30t: ram
@@ -1293,27 +2060,49 @@ bool GoatRamGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(d<1.9){
         if(ctx.srv){
             WriteBuffer vel; vel.varint(t->entityId); vel.i16((int16_t)(dx/d*1.5*8000)); vel.i16((int16_t)(0.4*8000)); vel.i16((int16_t)(dz/d*1.5*8000));
-            ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::EntityVelocity, vel);
-            ctx.srv->applyDamage(*t, 5.f, "mob");
-            ctx.srv->broadcastSound("minecraft:entity.goat.ram_impact", m.x,m.y,m.z,1.f,1.f,"neutral");
+            const double x=m.x,y=m.y,z=m.z;
+            if (!withoutMobStateLock(m, [&] {
+                    ctx.srv->broadcastPacketExceptInDimension(
+                        dimension, nullptr, proto::pl::sc::EntityVelocity, vel);
+                    ctx.srv->applyDamage(*t, 5.f, "mob");
+                    ctx.srv->broadcastSoundFor(
+                        dimension, "minecraft:entity.goat.ram_impact",
+                        x,y,z,1.f,1.f,"neutral");
+                })) return false;
         }
         m.goatRamCooldown=now+100;
         return true;
     }
-    if(ctx.srv && nextRandom()%20==0) ctx.srv->broadcastSound("minecraft:entity.goat.prepare_ram", m.x,m.y,m.z,1.f,1.f,"neutral");
+    if(ctx.srv && nextRandom()%20==0) {
+        const double x=m.x,y=m.y,z=m.z;
+        if (!withoutMobStateLock(m, [&] {
+                ctx.srv->broadcastSoundFor(
+                    dimension, "minecraft:entity.goat.prepare_ram",
+                    x,y,z,1.f,1.f,"neutral");
+            })) return false;
+    }
     m.goatRamCooldown=now+50;
     return true;
 }
-bool AxolotlPlayDeadGoal::shouldStart(MobEntity& m, AiContext& ctx){ if(m.kind!=MobKind::Axolotl) return false; if(m.health > mobStats(m.kind).maxHealth*0.33) return false; return ctx.lastHurtTick>=0 && ctx.srv && ctx.srv->tickNoForTest()-ctx.lastHurtTick<20; }
+bool AxolotlPlayDeadGoal::shouldStart(MobEntity& m, AiContext& ctx){ if(m.kind!=MobKind::Axolotl) return false; if(m.health > mobStats(m.kind).maxHealth*0.33) return false; return ctx.lastHurtTick.load(std::memory_order_acquire)>=0 && ctx.srv && ctx.srv->tickNoForTest()-ctx.lastHurtTick.load(std::memory_order_acquire)<20; }
 bool AxolotlPlayDeadGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(m.kind!=MobKind::Axolotl) return false;
     if(now < m.axolotlPlayDeadUntil && m.axolotlPlayDeadUntil!=0) return true;
     m.axolotlPlayDeadUntil=now+200;
     m.health = std::min(m.health+2.0, (double)mobStats(m.kind).maxHealth);
     if(ctx.srv){
-        WriteBuffer md; md.varint(m.entityId); meta::writeMetaBool(md, 16, true); md.u8(255);
-        ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);
-        ctx.srv->broadcastSound("minecraft:entity.axolotl.splash", m.x,m.y,m.z,1.f,1.f,"neutral");
+        const auto dimension = canonicalDimension(m.dimension);
+        const auto entityId = m.entityId;
+        const double x=m.x,y=m.y,z=m.z;
+        WriteBuffer md; md.varint(entityId); meta::writeMetaBool(md, 16, true); md.u8(255);
+        if (!withoutMobStateLock(m, [&] {
+                ctx.srv->broadcastPacketExceptInDimension(
+                    dimension, nullptr,
+                    proto::pl::sc::SetEntityMetadata, md);
+                ctx.srv->broadcastSoundFor(
+                    dimension, "minecraft:entity.axolotl.splash",
+                    x,y,z,1.f,1.f,"neutral");
+            })) return false;
     }
     return true;
 }
@@ -1332,24 +2121,64 @@ bool FrogTongueGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     // Find a small slime/magma cube within the spec's action range.
     if(ctx.srv){
         std::shared_ptr<MobEntity> prey;
+        MobSnapshot preyState;
+        const auto dimension = canonicalDimension(m.dimension);
+        const double mobX=m.x, mobY=m.y, mobZ=m.z;
         double best=0.0;
-        for(auto& mm: ctx.srv->mobsForTest()) if((mm->kind==MobKind::Slime || mm->kind==MobKind::MagmaCube) && mm->slimeSize==0 && !mm->dead){
-            double dx=mm->x-m.x, dz=mm->z-m.z; double d2=dx*dx+dz*dz;
-            if(spec->withinActionRangeSquared(d2) && (!prey || d2<best)){best=d2; prey=mm;}
-        }
+        if (!withoutMobStateLock(m, [&] {
+                for(auto& mm: ctx.srv->mobsSnapshot()) {
+                    if (!mm || mm.get() == &m) continue;
+                    const MobSnapshot view = snapshotMob(*mm);
+                    if (view.dimension != dimension ||
+                        (view.kind!=MobKind::Slime &&
+                         view.kind!=MobKind::MagmaCube) ||
+                        view.slimeSize!=0 || view.dead) continue;
+                    const double dx=view.x-mobX, dz=view.z-mobZ;
+                    const double d2=dx*dx+dz*dz;
+                    if(spec->withinActionRangeSquared(d2) &&
+                       (!prey || d2<best)) {
+                        best=d2; prey=mm; preyState=view;
+                    }
+                }
+            })) return false;
         if(prey){
-            double dx=prey->x-m.x, dz=prey->z-m.z; double d=std::sqrt(dx*dx+dz*dz)+1e-6;
+            double dx=preyState.x-mobX, dz=preyState.z-mobZ;
+            double d=std::sqrt(dx*dx+dz*dz)+1e-6;
             if(!spec->beyondActionThreshold(d)){
-                prey->dead=true;
-                ctx.srv->broadcastSound("minecraft:entity.frog.eat", m.x,m.y,m.z,1.f,1.f,"neutral");
-                ctx.srv->spawnItemDrop(m.x,m.y,m.z, gen::itemIdByName().at("minecraft:slime_ball"),
-                                       static_cast<int>(spec->actionMagnitude()));
+                const auto slimeBall = gen::itemIdByName().at("minecraft:slime_ball");
+                const auto preyId = preyState.entityId;
+                bool consumed = false;
+                if (!withoutMobStateLock(m, [&] {
+                        std::lock_guard preyLock(*prey->stateMtx);
+                        if (prey->entityId != preyId ||
+                            canonicalDimension(prey->dimension) != dimension ||
+                            prey->dead || prey->slimeSize != 0)
+                            return;
+                        prey->dead=true;
+                        consumed = true;
+                        ctx.srv->broadcastSoundFor(
+                            dimension, "minecraft:entity.frog.eat",
+                            mobX,mobY,mobZ,1.f,1.f,"neutral");
+                        ctx.srv->spawnItemDropFor(
+                            dimension, mobX,mobY,mobZ, slimeBall,
+                            static_cast<std::uint8_t>(spec->actionMagnitude()));
+                    })) return false;
+                if (!consumed) return true;
             } else {
                 m.x+=dx/d*0.12; m.z+=dz/d*0.12;
-                ctx.srv->broadcastSound("minecraft:entity.frog.tongue", m.x,m.y,m.z,1.f,1.f,"neutral");
+                const double x=m.x,y=m.y,z=m.z;
+                if (!withoutMobStateLock(m, [&] {
+                        ctx.srv->broadcastSoundFor(
+                            dimension, "minecraft:entity.frog.tongue",
+                            x,y,z,1.f,1.f,"neutral");
+                    })) return false;
             }
         } else if(nextRandom()%spec->randomDenominator()==0){
-            ctx.srv->broadcastSound("minecraft:entity.frog.ambient", m.x,m.y,m.z,1.f,1.f,"neutral");
+            if (!withoutMobStateLock(m, [&] {
+                    ctx.srv->broadcastSoundFor(
+                        dimension, "minecraft:entity.frog.ambient",
+                        mobX,mobY,mobZ,1.f,1.f,"neutral");
+                })) return false;
         }
     }
     m.frogTongueCooldown=now+spec->actionCooldown();
@@ -1366,20 +2195,46 @@ bool TurtleEggLayGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     double dx=tx-m.x, dz=tz-m.z; double d=std::sqrt(dx*dx+dz*dz)+1e-6;
     if(d>1.5){
         m.x+=dx/d*0.07; m.z+=dz/d*0.07; m.yaw=(float)(std::atan2(dz,dx)*180/3.14159-90);
-        if(ctx.world) ctx.world->generateChunkIfMissing((int)m.x>>4,(int)m.z>>4);
+        if (World* world=dimensionWorld(ctx, m)) {
+            const int chunkX=static_cast<int>(m.x)>>4;
+            const int chunkZ=static_cast<int>(m.z)>>4;
+            if (!withoutMobStateLock(m, [&] {
+                    world->generateChunkIfMissing(chunkX, chunkZ);
+                })) return false;
+        }
         return true;
     }
     // lay 1-4 eggs (simulate by placing turtle_egg block)
-    if(ctx.world && ctx.srv){
+    if(dimensionWorld(ctx, m) && ctx.srv){
         int ex=(int)std::floor(m.x), ey=(int)std::floor(m.y), ez=(int)std::floor(m.z);
         auto* bd=gen::blockByName("minecraft:turtle_egg");
         if(bd){
-            ctx.world->setBlock(ex,ey,ez, bd->defaultState);
-            ctx.srv->broadcastBlockChange(ex,ey,ez, bd->defaultState);
-            ctx.srv->broadcastSound("minecraft:entity.turtle.lay_egg", m.x,m.y,m.z,1.f,1.f,"neutral");
-            // spawn baby age -24000? actually lay egg, but simulate baby turtle spawn
-            auto baby=std::make_shared<MobEntity>(); baby->entityId=ctx.srv->nextEntityId(); baby->kind=MobKind::Turtle; baby->health=mobStats(MobKind::Turtle).maxHealth; baby->age=-24000; baby->x=ex+0.5; baby->y=ey+1; baby->z=ez+0.5;
-            ctx.srv->mobsForTest().push_back(baby); ctx.srv->broadcastMobSpawn(*baby);
+            World* world=dimensionWorld(ctx, m);
+            const auto dimension=canonicalDimension(m.dimension);
+            const double mobX=m.x,mobY=m.y,mobZ=m.z;
+            auto baby=std::make_shared<MobEntity>();
+            baby->entityId=ctx.srv->nextEntityId();
+            baby->kind=MobKind::Turtle;
+            baby->health=mobStats(MobKind::Turtle).maxHealth;
+            baby->age=-24000; baby->x=ex+0.5; baby->y=ey+1;
+            baby->z=ez+0.5; baby->dimension=dimension;
+            if (!withoutMobStateLock(m, [&] {
+                    world->setBlock(ex,ey,ez, bd->defaultState);
+                    ctx.srv->broadcastBlockChangeFor(
+                        dimension, ex,ey,ez, bd->defaultState);
+                    ctx.srv->broadcastSoundFor(
+                        dimension, "minecraft:entity.turtle.lay_egg",
+                        mobX,mobY,mobZ,1.f,1.f,"neutral");
+                    bool spawnAllowed = true;
+                    if (ctx.srv->jvmRuntime()) {
+                        spawnAllowed = ctx.srv->jvmRuntime()->onMobSpawn(
+                            *baby, baby->x, baby->y, baby->z);
+                    }
+                    if (spawnAllowed) {
+                        ctx.srv->addMob(baby);
+                        ctx.srv->broadcastMobSpawn(*baby);
+                    }
+                })) return false;
         }
     }
     m.turtleEggCooldown=now+6000;
@@ -1388,11 +2243,11 @@ bool TurtleEggLayGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
 }
 bool ParrotDanceGoal::shouldStart(MobEntity& m, AiContext& ctx){
     if(m.kind!=MobKind::Parrot) return false;
-    if(!ctx.world) return false;
+    if(!dimensionWorld(ctx, m)) return false;
     // near jukebox playing: check within 6 for jukebox block
     for(int dx=-6; dx<=6; ++dx) for(int dz=-6; dz<=6; ++dz){
         int bx=(int)std::floor(m.x)+dx, bz=(int)std::floor(m.z)+dz, by=(int)std::floor(m.y);
-        uint16_t st=ctx.world->getBlock(bx,by,bz); if(st==0) continue;
+        uint16_t st=dimensionWorld(ctx, m)->getBlock(bx,by,bz); if(st==0) continue;
         auto* bd=gen::blockByState(st); if(!bd) continue;
         if(std::string(bd->name).find("jukebox")!=std::string::npos) return true;
     }
@@ -1402,31 +2257,57 @@ bool ParrotDanceGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(m.kind!=MobKind::Parrot) return false;
     m.parrotDancing=true; m.parrotDanceUntil=now+40;
     m.yaw += 18; if(m.yaw>360) m.yaw-=360;
-    if(ctx.srv && now%20==0) ctx.srv->broadcastSound("minecraft:entity.parrot.imitate.warden", m.x,m.y,m.z,1.f,1.f,"neutral");
+    if(ctx.srv && now%20==0) {
+        const auto dimension=canonicalDimension(m.dimension);
+        const double x=m.x,y=m.y,z=m.z;
+        if (!withoutMobStateLock(m, [&] {
+                ctx.srv->broadcastSoundFor(
+                    dimension, "minecraft:entity.parrot.imitate.warden",
+                    x,y,z,1.f,1.f,"neutral");
+            })) return false;
+    }
     return true;
 }
 bool OcelotTrustGoal::shouldStart(MobEntity& m, AiContext& ctx){
     if(m.kind!=MobKind::Ocelot) return false;
-    return ctx.temptingPlayer!=nullptr || (ctx.nearestPlayer && ctx.nearestPlayerDist2 < 10*10);
+    return static_cast<bool>(dimensionPlayer(m, ctx.temptingPlayer)) ||
+           (dimensionPlayer(m, ctx.nearestPlayer) &&
+            ctx.nearestPlayerDist2 < 10*10);
 }
 bool OcelotTrustGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(m.kind!=MobKind::Ocelot) return false;
     if(now < m.ocelotTrustCooldown) return false;
-    Player* t=ctx.temptingPlayer ? ctx.temptingPlayer : ctx.nearestPlayer; if(!t) return false;
+    auto t=dimensionPlayer(m, ctx.temptingPlayer);
+    if (!t) t = dimensionPlayer(m, ctx.nearestPlayer);
+    if(!t) return false;
     double dx=t->x-m.x, dz=t->z-m.z; double d=std::sqrt(dx*dx+dz*dz)+1e-6;
     if(d<2.5){
         m.isTamed=true;
         if(ctx.srv){
-            WriteBuffer md; md.varint(m.entityId); meta::writeMetaBool(md,16,true); md.u8(255);
-            ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);
-            ctx.srv->broadcastSound("minecraft:entity.ocelot.ambient", m.x,m.y,m.z,1.f,1.f,"neutral");
+            const auto dimension=canonicalDimension(m.dimension);
+            const auto entityId=m.entityId;
+            const double x=m.x,y=m.y,z=m.z;
+            WriteBuffer md; md.varint(entityId); meta::writeMetaBool(md,16,true); md.u8(255);
+            if (!withoutMobStateLock(m, [&] {
+                    ctx.srv->broadcastPacketExceptInDimension(
+                        dimension, nullptr,
+                        proto::pl::sc::SetEntityMetadata, md);
+                    ctx.srv->broadcastSoundFor(
+                        dimension, "minecraft:entity.ocelot.ambient",
+                        x,y,z,1.f,1.f,"neutral");
+                })) return false;
         }
         m.ocelotTrustCooldown=now+100;
         return true;
     }
     // sprint 0.18 when creeper approach 6: already handled via Avoid? just move toward player
     m.x+=dx/d*0.09; m.z+=dz/d*0.09; m.yaw=(float)(std::atan2(dz,dx)*180/3.14159-90);
-    if(ctx.world) ctx.world->generateChunkIfMissing((int)m.x>>4,(int)m.z>>4);
+    if (World* world=dimensionWorld(ctx, m)) {
+        const int chunkX=static_cast<int>(m.x)>>4, chunkZ=static_cast<int>(m.z)>>4;
+        if (!withoutMobStateLock(m, [&] {
+                world->generateChunkIfMissing(chunkX, chunkZ);
+            })) return false;
+    }
     m.ocelotTrustCooldown=now+20;
     return true;
 }
@@ -1434,45 +2315,76 @@ bool SnowGolemSnowTrailGoal::shouldStart(MobEntity& m, AiContext&){ return m.kin
 bool SnowGolemSnowTrailGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(m.kind!=MobKind::SnowGolem) return false;
     if(now < m.snowGolemTrailCooldown) return false;
-    if(ctx.world && ctx.srv){
+    if(dimensionWorld(ctx, m) && ctx.srv){
+        World* world = dimensionWorld(ctx, m);
+        const auto dimension = canonicalDimension(m.dimension);
         int bx=(int)std::floor(m.x), by=(int)std::floor(m.y)-1, bz=(int)std::floor(m.z);
-        uint16_t below=ctx.world->getBlock(bx,by,bz); if(below!=0){
+        uint16_t below=world->getBlock(bx,by,bz); if(below!=0){
             auto* bdSnow=gen::blockByName("minecraft:snow");
             if(bdSnow){
                 int snowY=by+1;
-                uint16_t at=ctx.world->getBlock(bx,snowY,bz);
+                uint16_t at=world->getBlock(bx,snowY,bz);
                 if(at==0){
-                    ctx.world->setBlock(bx,snowY,bz, bdSnow->defaultState);
-                    ctx.srv->broadcastBlockChange(bx,snowY,bz, bdSnow->defaultState);
+                    if (!withoutMobStateLock(m, [&] {
+                            world->setBlock(bx,snowY,bz, bdSnow->defaultState);
+                            ctx.srv->broadcastBlockChangeFor(
+                                dimension, bx,snowY,bz, bdSnow->defaultState);
+                        })) return false;
                 }
             }
         }
         // shoot snowball
-        if(ctx.nearestPlayer && ctx.nearestPlayerDist2 < 16*16 && now%40==0){
-            Player* t=ctx.nearestPlayer; double dx=t->x-m.x, dy=(t->y+1)-(m.y+1.2), dz=t->z-m.z; double d=std::sqrt(dx*dx+dz*dz)+1e-6;
-            ctx.srv->spawnProjectile(ProjectileKind::Snowball, m.x, m.y+1.2, m.z, dx/d*1.2, dy/d*0.2+0.1, dz/d*1.2, m.entityId, false);
+        const auto t=dimensionPlayer(m, ctx.nearestPlayer);
+        if(t && ctx.nearestPlayerDist2 < 16*16 && now%40==0){
+            const double mobX=m.x,mobY=m.y,mobZ=m.z;
+            const auto entityId=m.entityId;
+            const double dx=t->x-mobX, dy=(t->y+1)-(mobY+1.2), dz=t->z-mobZ;
+            const double d=std::sqrt(dx*dx+dz*dz)+1e-6;
+            if (!withoutMobStateLock(m, [&] {
+                    ctx.srv->spawnProjectileFor(
+                        dimension, ProjectileKind::Snowball,
+                        mobX, mobY+1.2, mobZ, dx/d*1.2,
+                        dy/d*0.2+0.1, dz/d*1.2, entityId, false);
+                })) return false;
         }
         // melt in nether/desert biom check simplified: if y>60 and isNight false and biome desert -> melt damage
-        std::string biome; try{ biome=ctx.world->sampledBiome(bx,by,bz);}catch(...){}
+        std::string biome; try{ biome=dimensionWorld(ctx, m)->sampledBiome(bx,by,bz);}catch(...){}
         if(biome.find("desert")!=std::string::npos || biome.find("nether")!=std::string::npos){
-            if(now%40==0 && ctx.srv) ctx.srv->applyDamageToMob(m, 1.f, "burned to death");
+            if(now%40==0 && ctx.srv &&
+               !withoutMobStateLock(m, [&] {
+                   ctx.srv->applyDamageToMob(m, 1.f, "burned to death");
+               })) return false;
         }
     }
     m.snowGolemTrailCooldown=now+10;
     return true;
 }
-bool WitherSkullBarrageGoal::shouldStart(MobEntity& m, AiContext& ctx){ if(m.kind!=MobKind::Wither) return false; return ctx.nearestPlayer && ctx.nearestPlayerDist2 < 24*24 && m.health <= mobStats(m.kind).maxHealth*0.5f; }
+bool WitherSkullBarrageGoal::shouldStart(MobEntity& m, AiContext& ctx){ if(m.kind!=MobKind::Wither) return false; return dimensionPlayer(m, ctx.nearestPlayer) && ctx.nearestPlayerDist2 < 24*24 && m.health <= mobStats(m.kind).maxHealth*0.5f; }
 bool WitherSkullBarrageGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(m.kind!=MobKind::Wither) return false;
     if(now < m.witherBarrageCooldown) return false;
-    Player* t=ctx.nearestPlayer; if(!t) return false;
+    auto t=dimensionPlayer(m, ctx.nearestPlayer); if(!t) return false;
     if(m.health > mobStats(m.kind).maxHealth*0.5f) return false;
     if(ctx.srv){
-        for(int i=0;i<3;++i){
-            double dx=t->x-m.x, dy=(t->y+1)-(m.y+1.5), dz=t->z-m.z; double d=std::sqrt(dx*dx+dz*dz)+1e-6;
-            ctx.srv->spawnProjectile(ProjectileKind::WitherSkull, m.x, m.y+1.5, m.z, dx/d*1.1+(nextRandom()/(double)RAND_MAX-0.5)*0.1, dy/d*0.3+0.1, dz/d*1.1+(nextRandom()/(double)RAND_MAX-0.5)*0.1, m.entityId, false, true);
-        }
-        ctx.srv->broadcastSound("minecraft:entity.wither.shoot", m.x,m.y,m.z,1.f,1.f,"hostile");
+        const auto dimension=canonicalDimension(m.dimension);
+        const auto entityId=m.entityId;
+        const double mobX=m.x,mobY=m.y,mobZ=m.z;
+        const double dx=t->x-mobX, dy=(t->y+1)-(mobY+1.5), dz=t->z-mobZ;
+        const double d=std::sqrt(dx*dx+dz*dz)+1e-6;
+        if (!withoutMobStateLock(m, [&] {
+                for(int i=0;i<3;++i){
+                    ctx.srv->spawnProjectileFor(
+                        dimension, ProjectileKind::WitherSkull,
+                        mobX, mobY+1.5, mobZ,
+                        dx/d*1.1+(nextRandom()/(double)RAND_MAX-0.5)*0.1,
+                        dy/d*0.3+0.1,
+                        dz/d*1.1+(nextRandom()/(double)RAND_MAX-0.5)*0.1,
+                        entityId, false, true);
+                }
+                ctx.srv->broadcastSoundFor(
+                    dimension, "minecraft:entity.wither.shoot",
+                    mobX,mobY,mobZ,1.f,1.f,"hostile");
+            })) return false;
     }
     m.witherBarrageCooldown=now+60;
     return true;
@@ -1484,12 +2396,32 @@ bool EnderDragonPerchGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     // perch y 80, breath
     if(m.y > 82){
         m.y -= 0.2;
-        if(ctx.srv && now%40==0) ctx.srv->spawnProjectile(ProjectileKind::DragonFireball, m.x, m.y, m.z, (nextRandom()/(double)RAND_MAX-0.5)*0.6, -0.3, (nextRandom()/(double)RAND_MAX-0.5)*0.6, m.entityId, false);
+        if(ctx.srv && now%40==0) {
+            const auto dimension=canonicalDimension(m.dimension);
+            const auto entityId=m.entityId;
+            const double x=m.x,y=m.y,z=m.z;
+            const double vx=(nextRandom()/(double)RAND_MAX-0.5)*0.6;
+            const double vz=(nextRandom()/(double)RAND_MAX-0.5)*0.6;
+            if (!withoutMobStateLock(m, [&] {
+                    ctx.srv->spawnProjectileFor(
+                        dimension, ProjectileKind::DragonFireball,
+                        x,y,z,vx,-0.3,vz,entityId,false);
+                })) return false;
+        }
     } else if(m.y < 78){
         double ang=now*0.03; double rx=std::cos(ang)*28, rz=std::sin(ang)*28;
         double dx=rx-m.x, dz=rz-m.z; m.x+=dx*0.04; m.z+=dz*0.04; m.y += (68-m.y)*0.02;
     } else {
-        if(ctx.srv && now%20==0) ctx.srv->spawnProjectile(ProjectileKind::DragonFireball, m.x, m.y, m.z, 0, -0.4, 0, m.entityId, false);
+        if(ctx.srv && now%20==0) {
+            const auto dimension=canonicalDimension(m.dimension);
+            const auto entityId=m.entityId;
+            const double x=m.x,y=m.y,z=m.z;
+            if (!withoutMobStateLock(m, [&] {
+                    ctx.srv->spawnProjectileFor(
+                        dimension, ProjectileKind::DragonFireball,
+                        x,y,z,0,-0.4,0,entityId,false);
+                })) return false;
+        }
         if(nextRandom()%100<5) m.dragonPhaseUntil=now+80;
     }
     m.yaw=(float)(now*0.8);
@@ -1502,33 +2434,81 @@ bool StriderLavaWalkGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(m.kind!=MobKind::Strider) return false;
     const MobBehaviorSpec* spec = mobBehaviorSpec(m.kind);
     if (!spec) return false;
-    if(!ctx.world) return false;
-    uint16_t st=ctx.world->getBlock((int)std::floor(m.x),(int)std::floor(m.y)-1,(int)std::floor(m.z));
+    if(!dimensionWorld(ctx, m)) return false;
+    uint16_t st=dimensionWorld(ctx, m)->getBlock((int)std::floor(m.x),(int)std::floor(m.y)-1,(int)std::floor(m.z));
     auto* bd=gen::blockByState(st);
     bool onLava = bd && std::string(bd->name).find("lava")!=std::string::npos;
     if(!onLava){
         // shiver when cold
-        if(!m.striderShivering){ m.striderShivering=true; m.striderShiverUntil=now+spec->actionCooldown(); if(ctx.srv) ctx.srv->broadcastSound("minecraft:entity.strider.ambient", m.x,m.y,m.z,0.5f,1.f,"neutral"); }
+        if(!m.striderShivering){
+            m.striderShivering=true;
+            m.striderShiverUntil=now+spec->actionCooldown();
+            if(ctx.srv) {
+                const auto dimension=canonicalDimension(m.dimension);
+                const double x=m.x,y=m.y,z=m.z;
+                if (!withoutMobStateLock(m, [&] {
+                        ctx.srv->broadcastSoundFor(
+                            dimension, "minecraft:entity.strider.ambient",
+                            x,y,z,0.5f,1.f,"neutral");
+                    })) return false;
+            }
+        }
         m.y -= 0.02;
     } else {
         m.striderShivering=false;
         // lava walk no sink, steer toward player if saddled
-        if(ctx.nearestPlayer){ double dx=ctx.nearestPlayer->x-m.x, dz=ctx.nearestPlayer->z-m.z; double d=std::sqrt(dx*dx+dz*dz)+1e-6; m.x+=dx/d*0.09; m.z+=dz/d*0.09; }
+        if(const auto target=dimensionPlayer(m, ctx.nearestPlayer)){
+            double dx=target->x-m.x, dz=target->z-m.z;
+            double d=std::sqrt(dx*dx+dz*dz)+1e-6;
+            m.x+=dx/d*0.09; m.z+=dz/d*0.09;
+        }
         m.y = std::max(m.y, (double)kMinY+2);
     }
-    if(ctx.world) ctx.world->generateChunkIfMissing((int)m.x>>4,(int)m.z>>4);
+    if (World* world=dimensionWorld(ctx, m)) {
+        const int chunkX=static_cast<int>(m.x)>>4, chunkZ=static_cast<int>(m.z)>>4;
+        if (!withoutMobStateLock(m, [&] {
+                world->generateChunkIfMissing(chunkX, chunkZ);
+            })) return false;
+    }
     return true;
 }
-bool IllusionerInvisGoal::shouldStart(MobEntity& m, AiContext& ctx){ if(m.kind!=MobKind::Illusioner) return false; return ctx.nearestPlayer && ctx.nearestPlayerDist2 < 12*12; }
+bool IllusionerInvisGoal::shouldStart(MobEntity& m, AiContext& ctx){ if(m.kind!=MobKind::Illusioner) return false; return dimensionPlayer(m, ctx.nearestPlayer) && ctx.nearestPlayerDist2 < 12*12; }
 bool IllusionerInvisGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(m.kind!=MobKind::Illusioner) return false;
     if(now < m.illusionerInvisUntil) return false;
     m.illusionerInvisUntil=now+200;
     if(ctx.srv){
-        WriteBuffer md; md.varint(m.entityId); meta::writeMetaBool(md,16,true); md.u8(255);
-        ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);
-        ctx.srv->broadcastSound("minecraft:entity.illusioner.cast_spell", m.x,m.y,m.z,1.f,1.f,"hostile");
-        Player* t=ctx.nearestPlayer; if(t){ double dx=t->x-m.x, dz=t->z-m.z; double d=std::sqrt(dx*dx+dz*dz)+1e-6; ctx.srv->spawnProjectile(ProjectileKind::Arrow, m.x, m.y+1.6, m.z, dx/d*1.2, 0.12, dz/d*1.2, m.entityId, false); WriteBuffer eff; eff.varint(t->entityId); eff.varint(15); eff.i8(1); eff.varint(100); eff.u8(0x01); ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::EntityEffect, eff); }
+        const auto dimension=canonicalDimension(m.dimension);
+        const auto entityId=m.entityId;
+        const double mobX=m.x,mobY=m.y,mobZ=m.z;
+        WriteBuffer md; md.varint(entityId); meta::writeMetaBool(md,16,true); md.u8(255);
+        const auto t=dimensionPlayer(m, ctx.nearestPlayer);
+        double vx=0,vz=0;
+        bool shoot=false;
+        WriteBuffer eff;
+        if (t) {
+            const double dx=t->x-mobX, dz=t->z-mobZ;
+            const double d=std::sqrt(dx*dx+dz*dz)+1e-6;
+            vx=dx/d*1.2; vz=dz/d*1.2; shoot=true;
+            eff.varint(t->entityId); eff.varint(15); eff.i8(1);
+            eff.varint(100); eff.u8(0x01);
+        }
+        if (!withoutMobStateLock(m, [&] {
+                ctx.srv->broadcastPacketExceptInDimension(
+                    dimension, nullptr,
+                    proto::pl::sc::SetEntityMetadata, md);
+                ctx.srv->broadcastSoundFor(
+                    dimension, "minecraft:entity.illusioner.cast_spell",
+                    mobX,mobY,mobZ,1.f,1.f,"hostile");
+                if (shoot) {
+                    ctx.srv->spawnProjectileFor(
+                        dimension, ProjectileKind::Arrow,
+                        mobX, mobY+1.6, mobZ, vx, 0.12, vz,
+                        entityId, false);
+                    ctx.srv->broadcastPacketExceptInDimension(
+                        dimension, nullptr, proto::pl::sc::EntityEffect, eff);
+                }
+            })) return false;
     }
     return true;
 }
@@ -1542,48 +2522,75 @@ bool SnifferDigGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(now < m.snifferDigCooldown) return false;
     if(nextRandom()%spec->actionInterval()!=0) return false;
     // sniff 6s -> dig
-    if(ctx.srv) ctx.srv->broadcastSound("minecraft:entity.sniffer.scenting", m.x,m.y,m.z,1.f,1.f,"neutral");
+    if(ctx.srv) {
+        const auto dimension=canonicalDimension(m.dimension);
+        const double x=m.x,y=m.y,z=m.z;
+        if (!withoutMobStateLock(m, [&] {
+                ctx.srv->broadcastSoundFor(
+                    dimension, "minecraft:entity.sniffer.scenting",
+                    x,y,z,1.f,1.f,"neutral");
+            })) return false;
+    }
     m.snifferDigCooldown=now+spec->actionCooldown();
     // after sniff, dig ancient seed after 6s simplified to immediate drop
     if(nextRandom()%spec->randomDenominator()==0 && ctx.srv){
         // drop torchflower seeds
         auto it = gen::itemIdByName().find("minecraft:torchflower_seeds");
-        if(it!=gen::itemIdByName().end())
-            ctx.srv->spawnItemDrop(m.x,m.y,m.z, it->second, static_cast<int>(spec->actionMagnitude()));
-        ctx.srv->broadcastSound("minecraft:entity.sniffer.digging", m.x,m.y,m.z,1.f,1.f,"neutral");
-        WriteBuffer md; md.varint(m.entityId); meta::writeMetaBool(md,16,true); md.u8(255);
-        ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);
+        const auto dimension=canonicalDimension(m.dimension);
+        const double x=m.x,y=m.y,z=m.z;
+        const auto entityId=m.entityId;
+        WriteBuffer md; md.varint(entityId); meta::writeMetaBool(md,16,true); md.u8(255);
+        if (!withoutMobStateLock(m, [&] {
+                if(it!=gen::itemIdByName().end())
+                    ctx.srv->spawnItemDropFor(
+                        dimension, x,y,z, it->second,
+                        static_cast<std::uint8_t>(spec->actionMagnitude()));
+                ctx.srv->broadcastSoundFor(
+                    dimension, "minecraft:entity.sniffer.digging",
+                    x,y,z,1.f,1.f,"neutral");
+                ctx.srv->broadcastPacketExceptInDimension(
+                    dimension, nullptr,
+                    proto::pl::sc::SetEntityMetadata, md);
+            })) return false;
     }
     return true;
 }
 bool CamelDashGoal::shouldStart(MobEntity& m, AiContext& ctx){
     if(m.kind!=MobKind::Camel) return false;
     const MobBehaviorSpec* spec = mobBehaviorSpec(m.kind);
-    return spec && ctx.nearestPlayer && spec->withinActionRangeSquared(ctx.nearestPlayerDist2);
+    return spec && dimensionPlayer(m, ctx.nearestPlayer) && spec->withinActionRangeSquared(ctx.nearestPlayerDist2);
 }
 bool CamelDashGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(m.kind!=MobKind::Camel) return false;
     const MobBehaviorSpec* spec = mobBehaviorSpec(m.kind);
     if (!spec) return false;
     if(now < m.camelDashCooldown) return false;
-    Player* t=ctx.nearestPlayer; if(!t) return false;
+    auto t=dimensionPlayer(m, ctx.nearestPlayer); if(!t) return false;
     double dx=t->x-m.x, dz=t->z-m.z; double d=std::sqrt(dx*dx+dz*dz)+1e-6;
     if(!spec->withinActionRange(d) || !spec->beyondActionThreshold(d)) return false;
     m.x+=dx/d*0.42*10*0.1; m.z+=dz/d*0.42*10*0.1; // dash ~4.2 blocks scaled by tick
     if(ctx.srv){
-        WriteBuffer vel; vel.varint(m.entityId); vel.i16((int16_t)(dx/d*0.42*8000)); vel.i16(0); vel.i16((int16_t)(dz/d*0.42*8000));
-        ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::EntityVelocity, vel);
-        ctx.srv->broadcastSound("minecraft:entity.camel.dash", m.x,m.y,m.z,1.f,1.f,"neutral");
+        const auto dimension=canonicalDimension(m.dimension);
+        const auto entityId=m.entityId;
+        const double x=m.x,y=m.y,z=m.z;
+        WriteBuffer vel; vel.varint(entityId); vel.i16((int16_t)(dx/d*0.42*8000)); vel.i16(0); vel.i16((int16_t)(dz/d*0.42*8000));
+        if (!withoutMobStateLock(m, [&] {
+                ctx.srv->broadcastPacketExceptInDimension(
+                    dimension, nullptr, proto::pl::sc::EntityVelocity, vel);
+                ctx.srv->broadcastSoundFor(
+                    dimension, "minecraft:entity.camel.dash",
+                    x,y,z,1.f,1.f,"neutral");
+            })) return false;
     }
     m.camelDashCooldown=now+spec->actionCooldown();
     return true;
 }
 bool AllayDuplicateGoal::shouldStart(MobEntity& m, AiContext& ctx){
     if(m.kind!=MobKind::Allay) return false;
-    if(!ctx.world) return false;
+    if(!dimensionWorld(ctx, m)) return false;
     for(int dx=-4; dx<=4; ++dx) for(int dz=-4; dz<=4; ++dz){
         int bx=(int)std::floor(m.x)+dx, bz=(int)std::floor(m.z)+dz, by=(int)std::floor(m.y);
-        uint16_t st=ctx.world->getBlock(bx,by,bz); if(st==0) continue;
+        uint16_t st=dimensionWorld(ctx, m)->getBlock(bx,by,bz); if(st==0) continue;
         auto* bd=gen::blockByState(st); if(!bd) continue;
         if(std::string(bd->name).find("jukebox")!=std::string::npos) return true;
     }
@@ -1595,10 +2602,21 @@ bool AllayDuplicateGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(ctx.srv){
         // duplicate amethyst_shard emit note
         auto it=gen::itemIdByName().find("minecraft:amethyst_shard");
-        if(it!=gen::itemIdByName().end()) ctx.srv->spawnItemDrop(m.x,m.y+1,m.z, it->second, 1);
-        ctx.srv->broadcastSound("minecraft:block.note_block.chime", m.x,m.y,m.z,1.f,1.f,"block");
-        WriteBuffer md; md.varint(m.entityId); meta::writeMetaBool(md,16,true); md.u8(255);
-        ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::SetEntityMetadata, md);
+        const auto dimension=canonicalDimension(m.dimension);
+        const auto entityId=m.entityId;
+        const double x=m.x,y=m.y,z=m.z;
+        WriteBuffer md; md.varint(entityId); meta::writeMetaBool(md,16,true); md.u8(255);
+        if (!withoutMobStateLock(m, [&] {
+                if(it!=gen::itemIdByName().end())
+                    ctx.srv->spawnItemDropFor(dimension, x,y+1,z,
+                                              it->second, 1);
+                ctx.srv->broadcastSoundFor(
+                    dimension, "minecraft:block.note_block.chime",
+                    x,y,z,1.f,1.f,"block");
+                ctx.srv->broadcastPacketExceptInDimension(
+                    dimension, nullptr,
+                    proto::pl::sc::SetEntityMetadata, md);
+            })) return false;
     }
     m.allayDuplicateCooldown=now+120;
     return true;
@@ -1606,21 +2624,32 @@ bool AllayDuplicateGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
 bool BoggedPoisonGoal::shouldStart(MobEntity& m, AiContext& ctx){
     if(m.kind!=MobKind::Bogged) return false;
     const MobBehaviorSpec* spec = mobBehaviorSpec(m.kind);
-    return spec && ctx.nearestPlayer && spec->withinActionRangeSquared(ctx.nearestPlayerDist2);
+    return spec && dimensionPlayer(m, ctx.nearestPlayer) && spec->withinActionRangeSquared(ctx.nearestPlayerDist2);
 }
 bool BoggedPoisonGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(m.kind!=MobKind::Bogged) return false;
     const MobBehaviorSpec* spec = mobBehaviorSpec(m.kind);
     if (!spec) return false;
     if(now < m.boggedPoisonCooldown) return false;
-    Player* t=ctx.nearestPlayer; if(!t) return false;
-    double dx=t->x-m.x, dy=(t->y+1)-(m.y+1.6), dz=t->z-m.z; double d=std::sqrt(dx*dx+dz*dz)+1e-6;
+    auto t=dimensionPlayer(m, ctx.nearestPlayer); if(!t) return false;
+    const auto dimension=canonicalDimension(m.dimension);
+    const auto entityId=m.entityId;
+    const double mobX=m.x,mobY=m.y,mobZ=m.z;
+    double dx=t->x-mobX, dy=(t->y+1)-(mobY+1.6), dz=t->z-mobZ; double d=std::sqrt(dx*dx+dz*dz)+1e-6;
     if(!spec->withinActionRange(d) || !spec->beyondActionThreshold(d)) return false;
     if(ctx.srv){
-        ctx.srv->spawnProjectile(ProjectileKind::Arrow, m.x, m.y+1.6, m.z, dx/d*1.2, dy/d*0.2+0.12, dz/d*1.2, m.entityId, false);
         WriteBuffer eff; eff.varint(t->entityId); eff.varint(19); eff.i8(0); eff.varint(160); eff.u8(0x01);
-        ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::EntityEffect, eff);
-        ctx.srv->broadcastSound("minecraft:entity.bogged.shoot", m.x,m.y,m.z,1.f,1.f,"hostile");
+        if (!withoutMobStateLock(m, [&] {
+                ctx.srv->spawnProjectileFor(
+                    dimension, ProjectileKind::Arrow,
+                    mobX, mobY+1.6, mobZ, dx/d*1.2,
+                    dy/d*0.2+0.12, dz/d*1.2, entityId, false);
+                ctx.srv->broadcastPacketExceptInDimension(
+                    dimension, nullptr, proto::pl::sc::EntityEffect, eff);
+                ctx.srv->broadcastSoundFor(
+                    dimension, "minecraft:entity.bogged.shoot",
+                    mobX,mobY,mobZ,1.f,1.f,"hostile");
+            })) return false;
     }
     m.boggedPoisonCooldown=now+spec->actionCooldown();
     return true;
@@ -1667,18 +2696,24 @@ bool MinecartRollGoal::tick(MobEntity& m, AiContext&, std::int64_t) {
 }
 bool VexChargeGoal::shouldStart(MobEntity& m, AiContext& ctx) {
     if (m.kind != MobKind::Vex) return false;
-    return ctx.nearestPlayer && ctx.nearestPlayerDist2 < perceptionRange2(MobKind::Vex); // plan44 G-05
+    return dimensionPlayer(m, ctx.nearestPlayer) && ctx.nearestPlayerDist2 < perceptionRange2(MobKind::Vex); // plan44 G-05
 }
 bool VexChargeGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (m.kind != MobKind::Vex) return false;
     if (now < m.vexChargeCooldown) return false;
-    Player* t = ctx.nearestPlayer; if (!t) return false;
+    auto t = dimensionPlayer(m, ctx.nearestPlayer); if (!t) return false;
     double dx=t->x-m.x, dy=(t->y+1)-(m.y+1), dz=t->z-m.z;
     double d=std::sqrt(dx*dx+dz*dz)+1e-6;
     if (d < 1.9) {
         if (now%20==0 && ctx.srv) {
-            ctx.srv->mobAttackPlayer(m,*t);
-            ctx.srv->broadcastSound("minecraft:entity.vex.charge", m.x,m.y,m.z,1.f,1.f,"hostile");
+            const auto dimension=canonicalDimension(m.dimension);
+            const double x=m.x,y=m.y,z=m.z;
+            if (!withoutMobStateLock(m, [&] {
+                    ctx.srv->mobAttackPlayer(m,*t);
+                    ctx.srv->broadcastSoundFor(
+                        dimension, "minecraft:entity.vex.charge",
+                        x,y,z,1.f,1.f,"hostile");
+                })) return false;
         }
         m.vexChargeCooldown = now+20;
         return true;
@@ -1691,27 +2726,41 @@ bool VexChargeGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
 }
 bool PiglinBruteAttackGoal::shouldStart(MobEntity& m, AiContext& ctx) {
     if (m.kind != MobKind::PiglinBrute) return false;
-    return ctx.nearestPlayer && ctx.nearestPlayerDist2 < 24*24;
+    return dimensionPlayer(m, ctx.nearestPlayer) && ctx.nearestPlayerDist2 < 24*24;
 }
 bool PiglinBruteAttackGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (m.kind != MobKind::PiglinBrute) return false;
-    Player* t = ctx.nearestPlayer; if (!t) return false;
+    auto t = dimensionPlayer(m, ctx.nearestPlayer); if (!t) return false;
     double dx=t->x-m.x, dz=t->z-m.z;
     double d=std::sqrt(dx*dx+dz*dz)+1e-6;
     // brute never barters; enrages (1.5x speed) for 100t after being hurt
-    bool enraged = ctx.srv && (ctx.srv->tickNoForTest()-ctx.lastHurtTick < 100);
+    bool enraged = ctx.srv &&
+        (ctx.srv->tickNoForTest() -
+             ctx.lastHurtTick.load(std::memory_order_acquire) < 100);
     if (enraged) m.piglinBruteEnrageUntil = now+100;
     double sp = (now < m.piglinBruteEnrageUntil) ? 0.15 : 0.10;
     if (d < 1.9) {
         if (now%20==0 && ctx.srv) {
-            ctx.srv->mobAttackPlayer(m,*t);
-            ctx.srv->broadcastSound("minecraft:entity.piglin_brute.angry", m.x,m.y,m.z,1.f,1.f,"hostile");
+            const auto dimension=canonicalDimension(m.dimension);
+            const double x=m.x,y=m.y,z=m.z;
+            if (!withoutMobStateLock(m, [&] {
+                    ctx.srv->mobAttackPlayer(m,*t);
+                    ctx.srv->broadcastSoundFor(
+                        dimension, "minecraft:entity.piglin_brute.angry",
+                        x,y,z,1.f,1.f,"hostile");
+                })) return false;
         }
         return true;
     }
     m.x += dx/d*sp; m.z += dz/d*sp;
     m.yaw = static_cast<float>(std::atan2(dz,dx)*180.0/3.14159-90.0);
-    if (ctx.world) ctx.world->generateChunkIfMissing((int)m.x>>4,(int)m.z>>4);
+    if (World* world = dimensionWorld(ctx, m)) {
+        const int chunkX = static_cast<int>(m.x) >> 4;
+        const int chunkZ = static_cast<int>(m.z) >> 4;
+        if (!withoutMobStateLock(m, [&] {
+                world->generateChunkIfMissing(chunkX, chunkZ);
+            })) return false;
+    }
     return true;
 }
 bool ZombieVillagerCureGoal::shouldStart(MobEntity& m, AiContext&) {
@@ -1727,89 +2776,173 @@ bool ZombieVillagerCureGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now
     }
     if (now >= m.zombieVillagerCureUntil) { m.zombieVillagerCureUntil = 0; return false; }
     // shaking: hold still + shake sound
-    if (ctx.srv && now%40==0)
-        ctx.srv->broadcastSound("minecraft:entity.zombie_villager.cure", m.x,m.y,m.z,1.f,1.f,"hostile");
+    if (ctx.srv && now%40==0) {
+        const auto dimension=canonicalDimension(m.dimension);
+        const double x=m.x,y=m.y,z=m.z;
+        if (!withoutMobStateLock(m, [&] {
+                ctx.srv->broadcastSoundFor(
+                    dimension, "minecraft:entity.zombie_villager.cure",
+                    x,y,z,1.f,1.f,"hostile");
+            })) return false;
+    }
     return true;
 }
 bool ZombifiedPiglinAngerGoal::shouldStart(MobEntity& m, AiContext& ctx) {
     if (m.kind != MobKind::ZombifiedPiglin) return false;
-    return ctx.srv && (ctx.srv->tickNoForTest()-ctx.lastHurtTick < 200);
+    return ctx.srv &&
+        (ctx.srv->tickNoForTest() -
+             ctx.lastHurtTick.load(std::memory_order_acquire) < 200);
 }
 bool ZombifiedPiglinAngerGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (m.kind != MobKind::ZombifiedPiglin) return false;
-    Player* t = ctx.nearestPlayer; if (!t) return false;
+    auto t = dimensionPlayer(m, ctx.nearestPlayer); if (!t) return false;
     double dx=t->x-m.x, dz=t->z-m.z;
     double d=std::sqrt(dx*dx+dz*dz)+1e-6;
     if (d < 1.9) {
-        if (now%20==0 && ctx.srv) ctx.srv->mobAttackPlayer(m,*t);
+        if (now%20==0 && ctx.srv && !withoutMobStateLock(m, [&] {
+                ctx.srv->mobAttackPlayer(m,*t);
+            })) return false;
         return true;
     }
     // pack anger: nearby zombified piglins converge (vanilla anger propagation)
-    if (ctx.srv) for (auto& mm : ctx.srv->mobsForTest()) {
-        if (mm.get()==&m || mm->kind!=MobKind::ZombifiedPiglin || mm->dead) continue;
-        double ox=mm->x-m.x, oz=mm->z-m.z;
-        if (ox*ox+oz*oz < 16*16) { mm->x += dx/d*0.08; mm->z += dz/d*0.08; }
+    if (ctx.srv) {
+        const auto dimension=canonicalDimension(m.dimension);
+        const double mobX=m.x,mobZ=m.z;
+        std::vector<std::pair<std::shared_ptr<MobEntity>, MobSnapshot>> pack;
+        if (!withoutMobStateLock(m, [&] {
+                for (auto& mm : ctx.srv->mobsSnapshot()) {
+                    if (!mm || mm.get()==&m) continue;
+                    const MobSnapshot view=snapshotMob(*mm);
+                    if (view.dimension != dimension ||
+                        view.kind!=MobKind::ZombifiedPiglin || view.dead)
+                        continue;
+                    const double ox=view.x-mobX, oz=view.z-mobZ;
+                    if (ox*ox+oz*oz < 16*16)
+                        pack.emplace_back(mm, view);
+                }
+            })) return false;
+        for (auto& entry : pack) {
+            const auto& mm=entry.first;
+            const auto& view=entry.second;
+            if (!withoutMobStateLock(m, [&] {
+                    std::scoped_lock pairLock(*m.stateMtx, *mm->stateMtx);
+                    if (mm->entityId != view.entityId || mm->dead ||
+                        canonicalDimension(mm->dimension) != dimension)
+                        return;
+                    mm->x += dx/d*0.08;
+                    mm->z += dz/d*0.08;
+                })) return false;
+        }
     }
     m.x += dx/d*0.11; m.z += dz/d*0.11;
     m.yaw = static_cast<float>(std::atan2(dz,dx)*180.0/3.14159-90.0);
-    if (ctx.world) ctx.world->generateChunkIfMissing((int)m.x>>4,(int)m.z>>4);
+    if (World* world=dimensionWorld(ctx, m)) {
+        const int chunkX=static_cast<int>(m.x)>>4, chunkZ=static_cast<int>(m.z)>>4;
+        if (!withoutMobStateLock(m, [&] {
+                world->generateChunkIfMissing(chunkX, chunkZ);
+            })) return false;
+    }
     return true;
 }
 bool SkeletonHorseTrapGoal::shouldStart(MobEntity& m, AiContext& ctx) {
     if (m.kind != MobKind::SkeletonHorse) return false;
     if (!ctx.srv || ctx.srv->tickNoForTest() < m.skeletonHorseTrapCooldown) return false;
-    return ctx.nearestPlayer && ctx.nearestPlayerDist2 < 10*10;
+    return dimensionPlayer(m, ctx.nearestPlayer) && ctx.nearestPlayerDist2 < 10*10;
 }
 bool SkeletonHorseTrapGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (m.kind != MobKind::SkeletonHorse) return false;
     if (now < m.skeletonHorseTrapCooldown) return false;
     if (ctx.srv) {
         // vanilla skeleton trap: lightning strike on approach
-        ctx.srv->strikeLightning(m.x, m.y, m.z);
-        ctx.srv->broadcastSound("minecraft:entity.skeleton_horse.ambient", m.x,m.y,m.z,1.f,1.f,"neutral");
+        const auto dimension = canonicalDimension(m.dimension);
+        const double x = m.x, y = m.y, z = m.z;
+        if (!withoutMobStateLock(m, [&] {
+                ctx.srv->strikeLightningFor(dimension, x, y, z);
+                ctx.srv->broadcastSoundFor(
+                    dimension, "minecraft:entity.skeleton_horse.ambient",
+                    x, y, z, 1.f, 1.f, "neutral");
+            })) return false;
     }
     m.skeletonHorseTrapCooldown = now+1200;
     return true;
 }
 bool GiantStompGoal::shouldStart(MobEntity& m, AiContext& ctx) {
     if (m.kind != MobKind::Giant) return false;
-    return ctx.nearestPlayer && ctx.nearestPlayerDist2 < 24*24;
+    return dimensionPlayer(m, ctx.nearestPlayer) && ctx.nearestPlayerDist2 < 24*24;
 }
 bool GiantStompGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (m.kind != MobKind::Giant) return false;
     if (now < m.giantStompCooldown) return false;
-    Player* t = ctx.nearestPlayer; if (!t) return false;
+    auto t = dimensionPlayer(m, ctx.nearestPlayer); if (!t) return false;
     double dx=t->x-m.x, dz=t->z-m.z;
     double d=std::sqrt(dx*dx+dz*dz)+1e-6;
     if (d < 2.5) {
         if (ctx.srv) {
-            ctx.srv->mobAttackPlayer(m,*t);
+            const auto dimension = canonicalDimension(m.dimension);
+            const double x = m.x, y = m.y, z = m.z;
+            const auto entityId = m.entityId;
             WriteBuffer vel; vel.varint(t->entityId);
             vel.i16((int16_t)(dx/d*1.2*8000)); vel.i16((int16_t)(0.5*8000)); vel.i16((int16_t)(dz/d*1.2*8000));
-            ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::EntityVelocity, vel);
-            ctx.srv->broadcastSound("minecraft:entity.giant.stomp", m.x,m.y,m.z,1.f,1.f,"hostile");
+            if (!withoutMobStateLock(m, [&] {
+                    ctx.srv->mobAttackPlayer(m,*t);
+                    ctx.srv->broadcastPacketExceptInDimension(
+                        dimension, nullptr, proto::pl::sc::EntityVelocity, vel);
+                    ctx.srv->broadcastSoundFor(
+                        dimension, "minecraft:entity.giant.stomp",
+                        x, y, z, 1.f, 1.f, "hostile");
+                })) return false;
+            if (m.entityId != entityId ||
+                canonicalDimension(m.dimension) != dimension)
+                return false;
         }
         m.giantStompCooldown = now+40;
         return true;
     }
     m.x += dx/d*0.08; m.z += dz/d*0.08;
     m.yaw = static_cast<float>(std::atan2(dz,dx)*180.0/3.14159-90.0);
-    if (ctx.world) ctx.world->generateChunkIfMissing((int)m.x>>4,(int)m.z>>4);
+    if (World* world = dimensionWorld(ctx, m)) {
+        const int chunkX = static_cast<int>(m.x) >> 4;
+        const int chunkZ = static_cast<int>(m.z) >> 4;
+        if (!withoutMobStateLock(m, [&] {
+                world->generateChunkIfMissing(chunkX, chunkZ);
+            })) return false;
+    }
     return true;
 }
 bool LlamaSpitGoal::shouldStart(MobEntity& m, AiContext& ctx) {
     if (m.kind != MobKind::Llama && m.kind != MobKind::TraderLlama) return false;
     if (!ctx.srv || ctx.srv->tickNoForTest() < m.llamaSpitCooldown) return false;
-    return ctx.nearestPlayer && ctx.nearestPlayerDist2 > 4*4 && ctx.nearestPlayerDist2 < 16*16;
+    return dimensionPlayer(m, ctx.nearestPlayer) && ctx.nearestPlayerDist2 > 4*4 && ctx.nearestPlayerDist2 < 16*16;
 }
 bool LlamaSpitGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (m.kind != MobKind::Llama && m.kind != MobKind::TraderLlama) return false;
     if (now < m.llamaSpitCooldown) return false;
-    Player* t = ctx.nearestPlayer; if (!t) return false;
-    // no LlamaSpit projectile kind exists yet: direct 1-damage spit + sound at range
+    auto t = dimensionPlayer(m, ctx.nearestPlayer); if (!t) return false;
+    // LlamaSpitEntity is a real projectile: clients need the entity spawn and
+    // the hit must travel through the normal collision/damage pipeline.  The
+    // vanilla thrower aims at the target's body rather than applying damage
+    // immediately when the goal fires.
     if (ctx.srv) {
-        ctx.srv->applyDamage(*t, 1.f, "mob");
-        ctx.srv->broadcastSound("minecraft:entity.llama.spit", m.x,m.y,m.z,1.f,1.f,"neutral");
+        const auto dimension = canonicalDimension(m.dimension);
+        const auto entityId = m.entityId;
+        const double mobX = m.x, mobY = m.y, mobZ = m.z;
+        const double dx = t->x - mobX;
+        const double dy = (t->y + 0.9) - (mobY + 1.5);
+        const double dz = t->z - mobZ;
+        const double distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (!withoutMobStateLock(m, [&] {
+                if (distance > 1e-6) {
+                    constexpr double speed = 1.5;
+                    ctx.srv->spawnProjectileFor(
+                        dimension, ProjectileKind::LlamaSpit,
+                        mobX, mobY + 1.5, mobZ,
+                        dx / distance * speed, dy / distance * speed,
+                        dz / distance * speed, entityId, false);
+                }
+                ctx.srv->broadcastSoundFor(
+                    dimension, "minecraft:entity.llama.spit",
+                    mobX, mobY, mobZ, 1.f, 1.f, "neutral");
+            })) return false;
     }
     m.llamaSpitCooldown = now+40;
     return true;
@@ -1822,70 +2955,106 @@ bool ChickenLayEggGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (m.kind != MobKind::Chicken) return false;
     if (!ctx.srv || now < m.chickenLayCooldown) return false;
     auto it = gen::itemIdByName().find("minecraft:egg");
-    if (it != gen::itemIdByName().end())
-        ctx.srv->spawnItemDrop(m.x, m.y, m.z, it->second, 1);
-    if (ctx.srv) ctx.srv->broadcastSound("minecraft:entity.chicken.egg", m.x,m.y,m.z,1.f,1.f,"neutral");
+    const auto dimension = canonicalDimension(m.dimension);
+    const double x = m.x, y = m.y, z = m.z;
+    if (!withoutMobStateLock(m, [&] {
+            if (it != gen::itemIdByName().end())
+                ctx.srv->spawnItemDropFor(dimension, x, y, z, it->second, 1);
+            ctx.srv->broadcastSoundFor(
+                dimension, "minecraft:entity.chicken.egg",
+                x, y, z, 1.f, 1.f, "neutral");
+        })) return false;
     m.chickenLayCooldown = now+6000+(nextRandom()%6000); // vanilla 5-10min
     return true;
 }
 bool HuskHungerGoal::shouldStart(MobEntity& m, AiContext& ctx) {
     if (m.kind != MobKind::Husk) return false;
-    return ctx.nearestPlayer && ctx.nearestPlayerDist2 < 3*3;
+    return dimensionPlayer(m, ctx.nearestPlayer) && ctx.nearestPlayerDist2 < 3*3;
 }
 bool HuskHungerGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (m.kind != MobKind::Husk) return false;
     if (now < m.huskHungerCooldown) return false;
-    Player* t = ctx.nearestPlayer; if (!t) return false;
+    auto t = dimensionPlayer(m, ctx.nearestPlayer); if (!t) return false;
     if (ctx.srv) {
-        ctx.srv->mobAttackPlayer(m,*t);
+        const auto dimension = canonicalDimension(m.dimension);
+        const double x = m.x, y = m.y, z = m.z;
         // vanilla husk inflicts Hunger (effect id 9) on hit
         WriteBuffer eff; eff.varint(t->entityId); eff.varint(9); eff.i8(0); eff.varint(140); eff.u8(0x01);
-        ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::EntityEffect, eff);
-        ctx.srv->broadcastSound("minecraft:entity.husk.ambient", m.x,m.y,m.z,1.f,1.f,"hostile");
+        if (!withoutMobStateLock(m, [&] {
+                ctx.srv->mobAttackPlayer(m,*t);
+                ctx.srv->broadcastPacketExceptInDimension(
+                    dimension, nullptr, proto::pl::sc::EntityEffect, eff);
+                ctx.srv->broadcastSoundFor(
+                    dimension, "minecraft:entity.husk.ambient",
+                    x, y, z, 1.f, 1.f, "hostile");
+            })) return false;
     }
     m.huskHungerCooldown = now+40;
     return true;
 }
 bool PolarBearDefendGoal::shouldStart(MobEntity& m, AiContext& ctx) {
     if (m.kind != MobKind::PolarBear) return false;
-    return ctx.nearestPlayer && ctx.nearestPlayerDist2 < 8*8;
+    return dimensionPlayer(m, ctx.nearestPlayer) && ctx.nearestPlayerDist2 < 8*8;
 }
 bool PolarBearDefendGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (m.kind != MobKind::PolarBear) return false;
-    Player* t = ctx.nearestPlayer; if (!t) return false;
+    auto t = dimensionPlayer(m, ctx.nearestPlayer); if (!t) return false;
     double dx=t->x-m.x, dz=t->z-m.z;
     double d=std::sqrt(dx*dx+dz*dz)+1e-6;
     m.polarBearDefendUntil = now+20; // standing/defending posture window
     if (d < 1.9) {
         if (now%20==0 && ctx.srv) {
-            ctx.srv->mobAttackPlayer(m,*t);
-            ctx.srv->broadcastSound("minecraft:entity.polar_bear.warning", m.x,m.y,m.z,1.f,1.f,"neutral");
+            const auto dimension = canonicalDimension(m.dimension);
+            const double x = m.x, y = m.y, z = m.z;
+            if (!withoutMobStateLock(m, [&] {
+                    ctx.srv->mobAttackPlayer(m,*t);
+                    ctx.srv->broadcastSoundFor(
+                        dimension, "minecraft:entity.polar_bear.warning",
+                        x, y, z, 1.f, 1.f, "neutral");
+                })) return false;
         }
         return true;
     }
     m.x += dx/d*0.10; m.z += dz/d*0.10;
     m.yaw = static_cast<float>(std::atan2(dz,dx)*180.0/3.14159-90.0);
-    if (ctx.world) ctx.world->generateChunkIfMissing((int)m.x>>4,(int)m.z>>4);
+    if (World* world = dimensionWorld(ctx, m)) {
+        const int chunkX = static_cast<int>(m.x) >> 4;
+        const int chunkZ = static_cast<int>(m.z) >> 4;
+        if (!withoutMobStateLock(m, [&] {
+                world->generateChunkIfMissing(chunkX, chunkZ);
+            })) return false;
+    }
     return true;
 }
 bool PufferfishPuffGoal::shouldStart(MobEntity& m, AiContext& ctx) {
     if (m.kind != MobKind::Pufferfish) return false;
-    return ctx.nearestPlayer && ctx.nearestPlayerDist2 < 4*4;
+    return dimensionPlayer(m, ctx.nearestPlayer) && ctx.nearestPlayerDist2 < 4*4;
 }
 bool PufferfishPuffGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (m.kind != MobKind::Pufferfish) return false;
     m.pufferfishPuffUntil = now+40; // inflated while threatened
-    Player* t = ctx.nearestPlayer;
+    auto t = dimensionPlayer(m, ctx.nearestPlayer);
     if (t && ctx.srv) {
-        double dx=t->x-m.x, dz=t->z-m.z;
+        const auto dimension = canonicalDimension(m.dimension);
+        const double mobX = m.x, mobY = m.y, mobZ = m.z;
+        double dx=t->x-mobX, dz=t->z-mobZ;
         if (dx*dx+dz*dz < 1.5*1.5) {
             // vanilla contact poison (effect id 19, like bogged arrow)
-            ctx.srv->applyDamage(*t, 3.f, "mob");
             WriteBuffer eff; eff.varint(t->entityId); eff.varint(19); eff.i8(0); eff.varint(120); eff.u8(0x01);
-            ctx.srv->broadcastPacketExcept(nullptr, proto::pl::sc::EntityEffect, eff);
-            ctx.srv->broadcastSound("minecraft:entity.puffer_fish.blow_up", m.x,m.y,m.z,1.f,1.f,"neutral");
+            if (!withoutMobStateLock(m, [&] {
+                    ctx.srv->applyDamage(*t, 3.f, "mob");
+                    ctx.srv->broadcastPacketExceptInDimension(
+                        dimension, nullptr, proto::pl::sc::EntityEffect, eff);
+                    ctx.srv->broadcastSoundFor(
+                        dimension, "minecraft:entity.puffer_fish.blow_up",
+                        mobX, mobY, mobZ, 1.f, 1.f, "neutral");
+                })) return false;
         } else if (now%40==0) {
-            ctx.srv->broadcastSound("minecraft:entity.puffer_fish.blow_up", m.x,m.y,m.z,0.5f,1.f,"neutral");
+            if (!withoutMobStateLock(m, [&] {
+                    ctx.srv->broadcastSoundFor(
+                        dimension, "minecraft:entity.puffer_fish.blow_up",
+                        mobX, mobY, mobZ, 0.5f, 1.f, "neutral");
+                })) return false;
         }
     }
     return true;
@@ -1902,15 +3071,21 @@ bool ProjectileFlyGoal::tick(MobEntity& m, AiContext&, std::int64_t) {
 bool EvokerFangsSnapGoal::shouldStart(MobEntity& m, AiContext& ctx) {
     if (m.kind != MobKind::EvokerFangs) return false;
     if (!ctx.srv || ctx.srv->tickNoForTest() < m.evokerFangsSnapCooldown) return false;
-    return ctx.nearestPlayer && ctx.nearestPlayerDist2 < 2*2;
+    return dimensionPlayer(m, ctx.nearestPlayer) && ctx.nearestPlayerDist2 < 2*2;
 }
 bool EvokerFangsSnapGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (m.kind != MobKind::EvokerFangs) return false;
     if (now < m.evokerFangsSnapCooldown) return false;
-    Player* t = ctx.nearestPlayer; if (!t) return false;
+    auto t = dimensionPlayer(m, ctx.nearestPlayer); if (!t) return false;
     if (ctx.srv) {
-        ctx.srv->applyDamage(*t, 6.f, "magic");
-        ctx.srv->broadcastSound("minecraft:entity.evoker_fangs.attack", m.x,m.y,m.z,1.f,1.f,"hostile");
+        const auto dimension = canonicalDimension(m.dimension);
+        const double x = m.x, y = m.y, z = m.z;
+        if (!withoutMobStateLock(m, [&] {
+                ctx.srv->applyDamage(*t, 6.f, "magic");
+                ctx.srv->broadcastSoundFor(
+                    dimension, "minecraft:entity.evoker_fangs.attack",
+                    x, y, z, 1.f, 1.f, "hostile");
+            })) return false;
     }
     m.evokerFangsSnapCooldown = now+40;
     return true;
@@ -1931,11 +3106,26 @@ bool TntFuseGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     if (m.kind != MobKind::Tnt || m.dead) return false;
     if (m.tntFuseStartedAt < 0) {
         m.tntFuseStartedAt = now;
-        if (ctx.srv) ctx.srv->broadcastSound("minecraft:entity.tnt.primed", m.x,m.y,m.z,1.f,1.f,"block");
+        if (ctx.srv) {
+            const auto dimension = canonicalDimension(m.dimension);
+            const double x = m.x, y = m.y, z = m.z;
+            if (!withoutMobStateLock(m, [&] {
+                    ctx.srv->broadcastSoundFor(
+                        dimension, "minecraft:entity.tnt.primed",
+                        x, y, z, 1.f, 1.f, "block");
+                })) return false;
+        }
         return true;
     }
     if (now - m.tntFuseStartedAt >= 80) { // vanilla 80t fuse
-        if (ctx.srv) ctx.srv->explodeAt(m.x, m.y, m.z, 4.0f);
+        if (ctx.srv) {
+            const auto dimension = canonicalDimension(m.dimension);
+            const double x = m.x, y = m.y, z = m.z;
+            if (!withoutMobStateLock(m, [&] {
+                    ctx.srv->explodeAtFor(dimension, x, y, z, 4.0f);
+                })) return false;
+            if (canonicalDimension(m.dimension) != dimension) return false;
+        }
         m.dead = true;
         return false;
     }
@@ -1957,7 +3147,7 @@ bool AmbientObjectGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     case MobKind::ExperienceOrb:
     case MobKind::Item: {
         // vanilla magnet: drift toward nearest player within 8 (XP) / 3 (item)
-        Player* t = ctx.nearestPlayer;
+        auto t = dimensionPlayer(m, ctx.nearestPlayer);
         double range = (m.kind==MobKind::ExperienceOrb) ? 8.0 : 3.0;
         if (t && ctx.nearestPlayerDist2 < range*range) {
             double dx=t->x-m.x, dz=t->z-m.z;
@@ -1972,15 +3162,33 @@ bool AmbientObjectGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
         return true;
     case MobKind::LightningBolt:
         if (!m.lightningStruck && ctx.srv) {
-            ctx.srv->strikeLightning(m.x, m.y, m.z);
-            ctx.srv->broadcastSound("minecraft:entity.lightning_bolt.thunder", m.x,m.y,m.z,2.f,1.f,"weather");
+            const auto dimension = canonicalDimension(m.dimension);
+            const auto entityId = m.entityId;
+            const double x = m.x, y = m.y, z = m.z;
+            if (!withoutMobStateLock(m, [&] {
+                    ctx.srv->strikeLightningFor(dimension, x, y, z);
+                    ctx.srv->broadcastSoundFor(
+                        dimension, "minecraft:entity.lightning_bolt.thunder",
+                        x, y, z, 2.f, 1.f, "weather");
+                })) return false;
+            if (m.entityId != entityId ||
+                canonicalDimension(m.dimension) != dimension)
+                return false;
             m.lightningStruck = true;
         }
         m.dead = true; // instant strike entity, vanilla despawns after the flash
         return false;
     case MobKind::OminousItemSpawner:
-        if (ctx.srv && now%100==0)
-            ctx.srv->broadcastSound("minecraft:block.trial_spawner.ominous_activate", m.x,m.y,m.z,0.5f,1.f,"block");
+        if (ctx.srv && now%100==0) {
+            const auto dimension = canonicalDimension(m.dimension);
+            const double x = m.x, y = m.y, z = m.z;
+            if (!withoutMobStateLock(m, [&] {
+                    ctx.srv->broadcastSoundFor(
+                        dimension,
+                        "minecraft:block.trial_spawner.ominous_activate",
+                        x, y, z, 0.5f, 1.f, "block");
+                })) return false;
+        }
         return true; // hold, ominous idle
     case MobKind::ArmorStand:
     default:
@@ -2059,21 +3267,46 @@ bool Brain::coversKind(MobKind k) {
 // -------------------------------------------------------- ranged attacks --
 
 Brain::~Brain() = default;
-void Brain::setBehaviorTree(std::unique_ptr<BehaviorTree> t) { behaviorTree_ = std::move(t); }
-bool Brain::hasBehaviorTree() const { return behaviorTree_ != nullptr; }
+void Brain::setBehaviorTree(std::unique_ptr<BehaviorTree> t) {
+    std::shared_ptr<BehaviorTree> replacement;
+    if (t) replacement = std::shared_ptr<BehaviorTree>(std::move(t));
+    std::lock_guard lock(behaviorTreeMtx_);
+    behaviorTree_ = std::move(replacement);
+}
+bool Brain::hasBehaviorTree() const {
+    std::lock_guard lock(behaviorTreeMtx_);
+    return behaviorTree_ != nullptr;
+}
 void Brain::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
-    NearestPlayerSensor::update(m, ctx);
+    // A callback from a network/JVM operation can re-enter the server on the
+    // same thread.  Re-entering any Brain would corrupt active_ and the
+    // tick-owned AiContext, and re-entering a different mob would use the
+    // outer mob's installed lock.  Let the outer tick finish instead.
+    if (activeBrainMob != nullptr) return;
+    ActiveBrainMobScope brainScope(m, ctx);
+
+    if (ctx.srv) {
+        // The tick loop currently seeds AiContext with the Overworld.  Make
+        // the brain authoritative for the dimension before either the
+        // behavior tree or goal code performs a world query.
+        ctx.world = &ctx.srv->worldFor(m.dimension);
+    }
+    withoutMobStateLock(m, [&] {
+        NearestPlayerSensor::update(m, ctx);
+    });
     if (m.kind == MobKind::Armadillo) {
         const MobBehaviorSpec* spec = mobBehaviorSpec(m.kind);
         if (spec && now - m.armadilloLastScanTick >= spec->scanInterval()) {
             m.armadilloLastScanTick = now;
             bool danger = false;
-            const bool playerInRange = ctx.nearestPlayer &&
+            const auto target = dimensionPlayer(m, ctx.nearestPlayer);
+            const bool playerInRange = target &&
                 spec->withinActionRangeSquared(ctx.nearestPlayerDist2);
             const bool recentlyHurt = spec->alertDuration() != 0 &&
-                now - ctx.lastHurtTick < spec->alertDuration();
+                now - ctx.lastHurtTick.load(std::memory_order_acquire) <
+                    spec->alertDuration();
             if (playerInRange) {
-                if (ctx.nearestPlayer->isSprinting) danger = true;
+                if (target->isSprinting) danger = true;
                 else if (recentlyHurt) danger = true;
                 else if (m.health < mobStats(m.kind).maxHealth) danger = true;
                 else if (spec->withinSecondaryThresholdSquared(ctx.nearestPlayerDist2)) danger = true;
@@ -2084,11 +3317,21 @@ void Brain::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
         ctx.dangerDetectedRecently = now < m.armadilloDangerDetectedUntil;
         // also water immediate danger clear handled in goal tick, but keep TTL
     }
-    if (behaviorTree_) {
-        BTStatus s = behaviorTree_->tick(m, ctx, now);
+    std::shared_ptr<BehaviorTree> tree;
+    {
+        std::lock_guard lock(behaviorTreeMtx_);
+        tree = behaviorTree_;
+    }
+    if (tree) {
+        BTStatus s = tree->tick(m, ctx, now);
         if (s == BTStatus::Running || s == BTStatus::Success) {
-            // tree handled this tick; still allow fallback if tree returned Failure
-            if (s == BTStatus::Running) return;
+            // A tree owns this tick.  Stop a legacy goal before returning so
+            // a later tree failure cannot resume stale state unexpectedly.
+            if (active_) {
+                active_->stop(m, ctx);
+                active_ = nullptr;
+                running_ = false;
+            }
             return;
         }
         // Failure -> fall through to Goal logic

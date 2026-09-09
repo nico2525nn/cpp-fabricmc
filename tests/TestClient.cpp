@@ -8,6 +8,7 @@
 #include <netinet/tcp.h>
 #include <unistd.h>
 #include <algorithm>
+#include <cmath>
 #include <limits>
 
 namespace cpptest {
@@ -562,15 +563,40 @@ void TestClient::confirmTeleport(std::int32_t teleportId) {
 void TestClient::sendPlayerLoaded() { sendPacketNoexcept(proto::pl::cs::PlayerLoaded, {}); }
 
 void TestClient::sendPosition(double px, double py, double pz, bool onGround) {
+    if (!conn_) return;
+    Position from;
     {
         std::lock_guard lk(mtx_);
-        position_ = {px, py, pz};
+        from = position_;
     }
-    if (!conn_) return;
-    WriteBuffer b;
-    b.f64(px); b.f64(py); b.f64(pz);
-    b.u8(onGround ? 1 : 0);
-    sendPacketNoexcept(proto::pl::cs::MovePlayerPos, b);
+    const double dx = px - from.x;
+    const double dy = py - from.y;
+    const double dz = pz - from.z;
+    const double distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+    // The server applies the same moved-too-quickly envelope as vanilla.
+    // Keep synthetic integration teleports as a sequence of legal movement
+    // packets so tests exercise the wire/session path instead of relying on
+    // a client-side jump that a real server would correct.
+    const int steps = std::max(1, static_cast<int>(std::ceil(distance / 8.0)));
+    for (int step = 1; step <= steps; ++step) {
+        const double fraction = static_cast<double>(step) / steps;
+        const double sx = from.x + dx * fraction;
+        const double sy = from.y + dy * fraction;
+        const double sz = from.z + dz * fraction;
+        // Intermediate packets represent the airborne part of a synthetic
+        // movement.  Marking every packet as grounded would make the server
+        // process the first eight-block waypoint as a landing, apply fall
+        // damage there, and only then reach the intended landing surface.
+        const bool stepOnGround = (step == steps) ? onGround : false;
+        {
+            std::lock_guard lk(mtx_);
+            position_ = {sx, sy, sz};
+        }
+        WriteBuffer b;
+        b.f64(sx); b.f64(sy); b.f64(sz);
+        b.u8(stepOnGround ? 1 : 0);
+        sendPacketNoexcept(proto::pl::cs::MovePlayerPos, b);
+    }
 }
 
 void TestClient::sendChatMessage(const std::string& message) {

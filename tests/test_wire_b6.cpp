@@ -432,6 +432,35 @@ static void test_g13_live() {
             if (!s.empty() && s.name() == "minecraft:stick" && s.count >= 4) { found2 = true; break; }
         check(found2, "shift-click crafts full batch (4 sticks)");
     }
+    // Window 0 uses the player's real 46-slot layout, not an opened-table
+    // container layout.  Exercise armor, main inventory, and the 2x2 grid.
+    {
+        Menu inventory;
+        inventory.type = MenuType::Crafting;
+        inventory.playerInventory = true;
+        cppfm::Player p;
+        NullIo io;
+        ItemStack cursor = ItemStack::of(sid("minecraft:stone"), 3);
+        p.inv[9] = ItemStack::of(sid("minecraft:stone"), 2);
+        check(ClickLogic::apply(inventory, p, recipes, 9, 0, 0, cursor, io) &&
+                  p.inv[9].count == 5 && cursor.empty(),
+              "window 0 slot 9 mutates the real main inventory");
+        cursor = ItemStack::of(sid("minecraft:diamond_helmet"));
+        check(ClickLogic::apply(inventory, p, recipes, 8, 0, 0, cursor, io) &&
+                  p.inv[8].itemId == sid("minecraft:diamond_helmet") &&
+                  cursor.empty(),
+              "window 0 armor slot accepts a helmet");
+        p.inv[1] = ItemStack::of(sid("minecraft:oak_planks"));
+        p.inv[2] = ItemStack::of(sid("minecraft:oak_planks"));
+        p.inv[3] = ItemStack::of(sid("minecraft:oak_planks"));
+        p.inv[4] = ItemStack::of(sid("minecraft:oak_planks"));
+        for (auto& s : inventory.craftGrid) s = ItemStack::air();
+        for (int i = 0; i < 4; ++i)
+            inventory.craftGrid[inventory.craftGridIndex(i + 1)] = p.inv[i + 1];
+        inventory.refreshCraftResult(recipes);
+        check(inventory.craftResult.name() == "minecraft:crafting_table",
+              "window 0 2x2 grid produces a crafting table");
+    }
     // state separation: two players sharing a table keep independent results
     {
         Menu a, b;

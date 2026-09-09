@@ -129,7 +129,8 @@ public:
                     for (int dx=-1; dx<=1; ++dx) for (int dz=-1; dz<=1; ++dz) {
                         if (toWorld.getBlock(outX+dx, outY-1, outZ+dz)==0) {
                             toWorld.setBlock(outX+dx, outY-1, outZ+dz, obs);
-                            srv.invalidateChunkCache((outX+dx)>>4, (outZ+dz)>>4);
+                            srv.invalidateChunkCacheFor(toDim, (outX+dx)>>4,
+                                                       (outZ+dz)>>4);
                         }
                     }
                 }
@@ -206,11 +207,15 @@ public:
         tp.u32(0);
         p.conn->trySendPacket(proto::pl::sc::PlayerPosition, tp);
 
-        srv.invalidateChunkCache(tgt.x >> 4, tgt.z >> 4);
-        srv.invalidateChunkCache(outX >> 4, outZ >> 4);
-        srv.clearChunkCache();
+        // Chunk coordinates are local to a dimension.  Invalidate only the
+        // source and destination views touched by the transfer; clearing the
+        // global cache here used to evict unrelated dimensions and could also
+        // re-serve an Overworld body for a same-coordinate Nether request.
+        srv.invalidateChunkCacheFor(fromDim, src.x >> 4, src.z >> 4);
+        srv.invalidateChunkCacheFor(toDim, outX >> 4, outZ >> 4);
         for (int dz=-2; dz<=2; ++dz) for (int dx=-2; dx<=2; ++dx) {
-            srv.invalidateChunkCache((outX>>4)+dx, (outZ>>4)+dz);
+            srv.invalidateChunkCacheFor(toDim, (outX>>4)+dx,
+                                        (outZ>>4)+dz);
         }
         return true;
     }

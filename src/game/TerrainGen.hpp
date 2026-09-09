@@ -89,7 +89,12 @@ public:
           peak_(seed ^ 0x165667B19E3779F9ULL),
           caveA_(seed ^ 0xA24BAED4963EE407ULL),
           caveB_(seed ^ 0x9FB21C651E98DF25ULL),
-          oreA_(seed ^ 0x18DEE66A2D75FA36ULL) {}
+          oreA_(seed ^ 0x18DEE66A2D75FA36ULL),
+          netherDensity_(seed ^ 0x6E657468ULL),
+          netherSurface_(seed ^ 0x53555246ULL),
+          netherDepth_(seed ^ 0x44455054ULL),
+          netherFloat_(seed ^ 0x464C4F41ULL),
+          endIsland_(seed ^ 0x454E4410ULL) {}
 
 
     struct ColumnResult { int surfaceY; bool ocean; };
@@ -112,9 +117,14 @@ public:
         return {surface + 1, ocean};                                    // first air y
     }
 
-private:
 public:
+    // These are immutable after construction and are safe to sample from
+    // concurrent chunk-generation callers.  Keeping them per generator is
+    // important: a thread_local noise object would retain the first world's
+    // seed when the same process creates another world.
     ImprovedNoise cont_, ero_, peak_, caveA_, caveB_, oreA_;
+    ImprovedNoise netherDensity_, netherSurface_, netherDepth_, netherFloat_;
+    ImprovedNoise endIsland_;
 };
 
 } // namespace cppfm

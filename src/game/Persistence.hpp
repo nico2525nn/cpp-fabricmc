@@ -141,57 +141,110 @@ public:
         }
     }
     void stop() noexcept {
-        const bool wasRunning = running_.exchange(false, std::memory_order_acq_rel);
+        running_.exchange(false, std::memory_order_acq_rel);
         cv_.notify_all();
         if (worker_.joinable()) worker_.join();
-        bool pending = false;
-        {
-            std::lock_guard lk(dirtyMtx_);
-            pending = !dirty_.empty();
-        }
-        if (wasRunning || pending) {
+        // A failed disk write is put back into dirty_.  Drain a bounded
+        // number of passes so shutdown does not silently discard a chunk
+        // merely because the first final flush raced an I/O hiccup.
+        constexpr int kMaxFinalFlushPasses = 8;
+        for (int pass = 0; pass < kMaxFinalFlushPasses; ++pass) {
+            bool pending = false;
+            {
+                std::lock_guard lk(dirtyMtx_);
+                pending = !dirty_.empty();
+            }
+            if (!pending) break;
             try {
-                flushOnce(); // final save
+                flushOnce();
             } catch (const std::exception& e) {
                 std::fprintf(stderr, "[Persistence] final flush failed: %s\n", e.what());
             } catch (...) {
                 std::fprintf(stderr, "[Persistence] final flush failed\n");
             }
         }
+        {
+            std::lock_guard lk(dirtyMtx_);
+            if (!dirty_.empty())
+                std::fprintf(stderr,
+                             "[Persistence] shutdown left %zu chunk(s) dirty after retry limit\n",
+                             dirty_.size());
+        }
+        // Do not leave callbacks containing this object's address installed
+        // on a World that outlives Persistence (or is restarted with another
+        // persistence owner).
+        world_.setLoader({});
+        world_.setOnEdit({});
     }
     // stop() is idempotent and flushes the final dirty batch.
     ~Persistence() { stop(); }
 
     // World loader: read chunk from its region file; false = not stored.
     bool loadChunk(std::int32_t cx, std::int32_t cz, Chunk& out) {
+        std::lock_guard regionLock(regionFileMutex());
+        const std::string path = regionPath(cx, cz);
         try {
-            RegionFile rf(regionPath(cx, cz));
-            auto bytes = rf.load(cx & 31, cz & 31);
-            if (bytes.empty()) return false;
-            ReadBuffer in(bytes);
-            nbt::Parser parser(in);
-            nbt::Value root = parser.readFileRoot();
-            std::string bio;
-            if (!chunkFromNBT(root, out, {}, bio,
-                              [this](const std::string& k) -> std::int32_t {
-                                  auto it = biomeKeyToIdx_.find(k);
-                                  return it != biomeKeyToIdx_.end()
-                                             ? it->second : -1;
-                              }))
-                return false;
-            if (!bio.empty()) {
-                std::lock_guard lk(bioMtx_);
-                biomeOverride_ = bio;
-            }
-            if (readExtras_) readExtras_(root);
-            return true;
+            if (loadChunkFromRegion(path, cx, cz, out)) return true;
         } catch (const std::exception& e) {
-            std::fprintf(stderr, "[Persistence] load chunk %d,%d failed: %s\n", cx, cz, e.what());
-            return false;                              // corrupt/foreign chunk: regenerate
+            std::fprintf(stderr, "[Persistence] load chunk %d,%d failed: %s\n",
+                         cx, cz, e.what());
         } catch (...) {
             std::fprintf(stderr, "[Persistence] load chunk %d,%d failed\n", cx, cz);
-            return false;                              // corrupt/foreign chunk: regenerate
         }
+
+        // A staged region is complete before it is renamed into place.  If
+        // the process died between those operations, prefer a validated
+        // staged copy for this chunk and heal the primary file atomically.
+        const std::string staged = path + ".new";
+        try {
+            if (!loadChunkFromRegion(staged, cx, cz, out)) return false;
+            const auto quarantined = quarantineRegion(path);
+            if (!quarantined.empty())
+                std::fprintf(stderr,
+                             "[Persistence] quarantined corrupt region %s -> %s\n",
+                             path.c_str(), quarantined.c_str());
+            std::error_code promoteError;
+            if (!persistence_detail::replaceFile(staged, path, promoteError) ||
+                !persistence_detail::syncDirectory(std::filesystem::path(dir_) / "region")) {
+                std::fprintf(stderr,
+                             "[Persistence] could not promote staged region %s: %s\n",
+                             staged.c_str(), promoteError ? promoteError.message().c_str()
+                                                            : "directory sync failed");
+            }
+            return true;
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "[Persistence] staged chunk %d,%d failed: %s\n",
+                         cx, cz, e.what());
+        } catch (...) {
+            std::fprintf(stderr, "[Persistence] staged chunk %d,%d failed\n", cx, cz);
+        }
+        return false;                              // corrupt/foreign chunk: regenerate
+    }
+
+    // Decode bytes obtained by an asynchronous RegionFile read through the
+    // same biome resolver and chunk-extras callbacks as the synchronous
+    // loader.  Keeping one decode path avoids async loads silently dropping
+    // block entities or turning unknown biome names into uint16(-1).
+    bool decodeChunkBytes(const std::vector<std::uint8_t>& bytes, Chunk& out) {
+        if (bytes.empty()) return false;
+        ReadBuffer in(bytes);
+        nbt::Parser parser(in);
+        nbt::Value root = parser.readFileRoot();
+        std::string bio;
+        if (!chunkFromNBT(root, out, {}, bio,
+                          [this](const std::string& key) -> std::int32_t {
+                              auto it = biomeKeyToIdx_.find(key);
+                              return it != biomeKeyToIdx_.end()
+                                         ? static_cast<std::int32_t>(it->second)
+                                         : defaultBiomeIndex_;
+                          }))
+            return false;
+        if (!bio.empty()) {
+            std::lock_guard lk(bioMtx_);
+            biomeOverride_ = bio;
+        }
+        if (readExtras_) readExtras_(root);
+        return true;
     }
 
     void markDirty(std::int32_t cx, std::int32_t cz) {
@@ -216,15 +269,16 @@ public:
                 return biomeOverride_.value_or(biome_);
             }();
             bool saveFailed = false;
-            const bool found = world_.withChunk(cx, cz, [&](const Chunk& c) {
+            bool found = false;
+            try {
+                found = world_.withChunk(cx, cz, [&](const Chunk& c) {
                 try {
                     nbt::Value root = chunkToNBT(cx, cz, c, bio,
                                                  &biomeIdxToKey_);
                     if (writeExtras_) writeExtras_(cx, cz, root);
                     WriteBuffer out;
                     nbt::writeFileRoot(out, root);
-                    RegionFile rf(regionPath(cx, cz));
-                    rf.store(cx & 31, cz & 31, out.data);
+                    storeChunkAtomically(cx, cz, out.data);
                     std::fprintf(stderr, "[cppfm] saved r.%d.%d mca (%zu bytes nbt)\n",
                                  cx >> 5, cz >> 5, out.data.size());
                 } catch (const std::exception& e) {
@@ -234,7 +288,14 @@ public:
                     saveFailed = true;
                     std::fprintf(stderr, "[cppfm] SAVE ERROR chunk %d,%d: unknown error\n", cx, cz);
                 }
-            });
+                });
+            } catch (const std::exception& e) {
+                saveFailed = true;
+                std::fprintf(stderr, "[cppfm] SAVE ERROR chunk %d,%d: %s\n", cx, cz, e.what());
+            } catch (...) {
+                saveFailed = true;
+                std::fprintf(stderr, "[cppfm] SAVE ERROR chunk %d,%d: unknown error\n", cx, cz);
+            }
             if (found && saveFailed) {
                 std::lock_guard lock(dirtyMtx_);
                 dirty_.insert(k);
@@ -259,23 +320,34 @@ public:
             return biomeOverride_.value_or(biome_);
         }();
         bool ok = false;
-        const bool found = world_.withChunk(cx, cz, [&](const Chunk& c) {
-            try {
-                nbt::Value root = chunkToNBT(cx, cz, c, bio, &biomeIdxToKey_);
-                if (writeExtras_) writeExtras_(cx, cz, root);
-                WriteBuffer out;
-                nbt::writeFileRoot(out, root);
-                RegionFile rf(regionPath(cx, cz));
-                rf.store(cx & 31, cz & 31, out.data);
-                ok = true;
-                std::fprintf(stderr, "[cppfm] flushChunk %d,%d (%zu bytes)\n", cx, cz, out.data.size());
-            } catch (const std::exception& e) {
-                std::fprintf(stderr, "[cppfm] FLUSH CHUNK ERROR %d,%d: %s\n", cx, cz, e.what());
-            } catch (...) {
-                std::fprintf(stderr, "[cppfm] FLUSH CHUNK ERROR %d,%d\n", cx, cz);
-            }
-        });
-        if (found && !ok) {
+        bool saveFailed = false;
+        bool found = false;
+        try {
+            found = world_.withChunk(cx, cz, [&](const Chunk& c) {
+                try {
+                    nbt::Value root = chunkToNBT(cx, cz, c, bio, &biomeIdxToKey_);
+                    if (writeExtras_) writeExtras_(cx, cz, root);
+                    WriteBuffer out;
+                    nbt::writeFileRoot(out, root);
+                    storeChunkAtomically(cx, cz, out.data);
+                    ok = true;
+                    std::fprintf(stderr, "[cppfm] flushChunk %d,%d (%zu bytes)\n", cx, cz, out.data.size());
+                } catch (const std::exception& e) {
+                    saveFailed = true;
+                    std::fprintf(stderr, "[cppfm] FLUSH CHUNK ERROR %d,%d: %s\n", cx, cz, e.what());
+                } catch (...) {
+                    saveFailed = true;
+                    std::fprintf(stderr, "[cppfm] FLUSH CHUNK ERROR %d,%d\n", cx, cz);
+                }
+            });
+        } catch (const std::exception& e) {
+            saveFailed = true;
+            std::fprintf(stderr, "[cppfm] FLUSH CHUNK ERROR %d,%d: %s\n", cx, cz, e.what());
+        } catch (...) {
+            saveFailed = true;
+            std::fprintf(stderr, "[cppfm] FLUSH CHUNK ERROR %d,%d\n", cx, cz);
+        }
+        if (found && (saveFailed || !ok)) {
             std::lock_guard lk(dirtyMtx_);
             dirty_.insert(chunkKey(cx, cz));
         }
@@ -298,16 +370,78 @@ private:
         }
     }
     bool isDimensionDirectory() const {
-        const auto path = std::filesystem::path(dir_);
-        for (const auto& component : path) {
-            const auto name = component.string();
-            if (name == "DIM-1" || name == "DIM1") return true;
-        }
-        return false;
+        const auto path = std::filesystem::path(dir_).lexically_normal();
+        const auto name = path.filename().string();
+        return name == "DIM-1" || name == "DIM1";
     }
     std::string regionPath(std::int32_t cx, std::int32_t cz) const {
         return dir_ + "/region/r." + std::to_string(cx >> 5) + "." +
                std::to_string(cz >> 5) + ".mca";
+    }
+
+    static std::mutex& regionFileMutex() {
+        static std::mutex mutex;
+        return mutex;
+    }
+
+    static std::string quarantineRegion(const std::string& path) {
+        std::error_code ec;
+        if (!std::filesystem::exists(path, ec) || ec) return {};
+        for (std::size_t suffix = 0; suffix < 10000; ++suffix) {
+            const std::string candidate = path + ".corrupt" +
+                (suffix == 0 ? std::string{} : "." + std::to_string(suffix));
+            ec.clear();
+            std::filesystem::rename(path, candidate, ec);
+            if (!ec) return candidate;
+        }
+        return {};
+    }
+
+    bool loadChunkFromRegion(const std::string& path,
+                             std::int32_t cx, std::int32_t cz,
+                             Chunk& out) {
+        RegionFile rf(path);
+        auto bytes = rf.load(cx & 31, cz & 31);
+        if (bytes.empty()) return false;
+        return decodeChunkBytes(bytes, out);
+    }
+
+    void storeChunkAtomically(std::int32_t cx, std::int32_t cz,
+                              const std::vector<std::uint8_t>& bytes) {
+        std::lock_guard regionLock(regionFileMutex());
+        const std::string path = regionPath(cx, cz);
+        const std::string staged = path + ".new";
+        const auto parent = std::filesystem::path(path).parent_path();
+        try {
+            if (!parent.empty()) std::filesystem::create_directories(parent);
+            std::error_code existsError;
+            if (std::filesystem::exists(path, existsError) && !existsError) {
+                std::error_code copyError;
+                std::filesystem::copy_file(
+                    path, staged,
+                    std::filesystem::copy_options::overwrite_existing,
+                    copyError);
+                if (copyError)
+                    throw std::system_error(copyError, "stage region file");
+            } else {
+                std::error_code removeError;
+                std::filesystem::remove(staged, removeError);
+            }
+
+            RegionFile stagedRegion(staged);
+            stagedRegion.store(cx & 31, cz & 31, bytes);
+            if (!persistence_detail::syncFile(staged))
+                throw std::runtime_error("cannot sync staged region file");
+            std::error_code replaceError;
+            if (!persistence_detail::replaceFile(staged, path, replaceError))
+                throw std::system_error(replaceError, "replace region file");
+            if (!persistence_detail::syncDirectory(parent))
+                throw std::runtime_error("cannot sync region directory");
+        } catch (...) {
+            std::error_code cleanupError;
+            std::filesystem::remove(staged, cleanupError);
+            throw;
+        }
     }
 
     std::string difficulty_ = "normal";

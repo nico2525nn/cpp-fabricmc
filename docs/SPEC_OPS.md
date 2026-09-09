@@ -1,14 +1,14 @@
 # SPEC_OPS — operations, limits, and recovery
 
 This is the operational contract for Minecraft 1.21.4 / protocol 769 / DataVersion
-4189 at `main` HEAD `abcdc6b` plus the current cleanup worktree, rechecked on
-2026-09-07. It covers MISSING **#7–#10**, operational aspects of **#71–#79**,
+4189 at the current working tree, rechecked on
+2026-09-09. It covers MISSING **#7–#10**, operational aspects of **#71–#79**,
 **#88–#90**, Fabric server-property/RCON rows, and assessment history IDs
 B-06/B-07/C-04/C-09/C-12/E-13/O-01–O-13/W-14/W-16.
 
 **Status:** current runbook and declared-budget contract. **Limitations:** thresholds
 are implementation safety budgets unless marked as a vanilla observable; a dry or
-synthetic run is not a real-client/24-hour result. Plan51's optional embedded JVM is a
+synthetic run is not a real-client/24-hour result. The default-on embedded JVM is a
 bounded compatibility layer with a structural transformer; its separate offline
 official Loader/Knot/Mixin probe does not ship the Mojang GameProvider, and arbitrary
 Fabric JVM mods remain outside the platform boundary. See [PLAN51_JVM.md](PLAN51_JVM.md).
@@ -54,6 +54,10 @@ all vanilla servers.
 | RCON | `src/net/Rcon.hpp::RconServer` | local listener, authentication, handler response | `test_rcon_multi` |
 | measurement | `tests/stress_test.py`, `tests/soak_test.py`, `tools/bench_chunk_gen.py` | MSPT/TPS/RSS, queue depth, integrity | run ID required |
 | JVM startup/cleanup | `src/jvm/JvmRuntime.*`, `tests/jvm_runtime_smoke.py` | VM start, owned process, clean shutdown | `jvm_runtime`; bounded fixture only |
+| JVM/mod diagnostics | `tools/scan_mod_linkage.py`, `tools/compare_real_mod_corpus.py` | structural linkage gaps and fatal process diagnostics | `mod_linkage`/`real_mod_harness`; conservative and bounded |
+| one-file bootstrap | `src/core/RuntimeLayout.*`, `tools/embed_runtime.py` | embedded assets/classes, initial directories, preserved user files | `runtime_layout`; clean-directory launch check |
+| release package | `CMakeLists.txt`, `cmake/verify_self_contained_package.cmake.in` install/CPack rules | install tree contains only `cppfm`/`cppfm.exe`; missing or empty embedded resources fail the package target | package target preflight; one-file ZIP inspection |
+| package JVM boundary | `tests/package_jvm_smoke.py` | exact ZIP, clean extraction, default-on strict JVM startup with no external classes/assets override | `package_jvm_smoke`; only registered when JNI/classes are available |
 
 ## 4. Packet-facing operations
 
@@ -169,8 +173,9 @@ packet-ID table is copied here.
   can orphan the server. Treat an orphan as a failed gate.
 - Before a cleanup kill, inspect `pgrep -a -f 'cppfm --por[t]'`, then terminate the
   exact PIDs. Never use `pkill c++`, `pkill g++`, or a broad substring.
-- A POSIX signal/cleanup recipe is not a Windows implementation claim; document the
-  platform before using it.
+- Process cleanup is platform-owned: Unix uses process groups and Windows uses
+  native console/process handles. A test harness must still retain and wait for
+  every process it starts.
 - `level.dat` and `level.dat_old` are forensic inputs. Preserve a corrupt file as
   `.corrupt`; do not replace it without a log.
 - Synthetic PASS, bot PASS, a real-client screenshot, and a 24-hour soak have
@@ -197,15 +202,18 @@ commit, host, options, warm-up, and sample count is not a fresh measurement.
 The current source clamps configured view/simulation distance to `2..32`; the session
 uses the minimum of server and client view distance for sending.
 
-### Final-gates measurements
+### Historical final-gates measurements
 
-The following exact main-checkout results are recorded against runtime baseline
+The following exact measurements are retained against runtime baseline
 `17ab09f5220bf99203d2aea2b2c9d65f763f433b` on 2026-09-05. They are not averaged with
-older runs:
+older runs. The historical `37/37` result is not the current count; the later
+`42/42` normal CTest baseline and the separate release `package_jvm_smoke` gate
+are owned
+by [VERIFICATION.md](VERIFICATION.md) and [CURRENT_STATE.md](CURRENT_STATE.md):
 
 | workload | result |
 |---|---|
-| configure/build | clean RelWithDebInfo build completed `119/119` with explicit timeout wrappers |
+| configure/build | clean RelWithDebInfo build completed `129/129` with explicit timeout wrappers |
 | incremental Ninja build | `ninja: no work to do` in `0.05s` |
 | view32 dry benchmark | `PASS` in `1.74s`; 4,225 chunks, p50 `0.108ms`, p95 `2.333ms`, peak RSS ~`95MB`, hit rate `84.6%` |
 | 120-client stress | `120/120 joined; PASS` in `68.0s` |
@@ -281,7 +289,7 @@ summary, cleanup result, and any allowed limitation.
 | target | purpose |
 |---|---|
 | `test_flood_net` A1–A8 | bandwidth, decoder budget, spam, accept gate, live kicks |
-| `test_recovery` | 45-case level/player/region/session-lock recovery matrix |
+| `test_recovery` | 54-case level/player/region/session-lock recovery matrix |
 | `test_rcon_multi` | five concurrent sessions, ten wrong passwords, post-flood command |
 | `check_world` | offline integrity check and exit code |
 | `test_native`, `test_plan43`, `test_smoke_80` | server lifecycle and integration |

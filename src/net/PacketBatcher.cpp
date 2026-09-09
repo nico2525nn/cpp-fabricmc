@@ -4,6 +4,7 @@
 #include "../net/Crypto.hpp"
 #include <chrono>
 #include <climits>
+#include <array>
 #include <unordered_map>
 
 namespace cppfm {
@@ -14,16 +15,33 @@ static int64_t nowMsLocal() {
 }
 
 void PacketBatcher::flush(GameServer& srv, const Player* except) {
-    // flush while a Session thread (chat command / block change) keeps queuing.
-    std::vector<Queued> q;
+    // A single global queue can contain updates from players in different
+    // dimensions during the same 50 ms window.  Partition before coalescing
+    // so a Nether update is never bundled and broadcast to Overworld players.
+    std::vector<Queued> all;
     {
         std::lock_guard lk(mtx_);
         if (queue.empty()) return;
-        q.swap(queue);
+        all.swap(queue);
     }
+    std::array<std::vector<Queued>, 3> byDimension;
+    for (auto& queued : all) {
+        const std::size_t index = queued.dimension == -1 ? 0
+                                 : queued.dimension == 1 ? 2 : 1;
+        byDimension[index].push_back(std::move(queued));
+    }
+    for (auto& q : byDimension)
+        if (!q.empty()) flushDimension(srv, except, q);
+    lastFlushMs.store(nowMsLocal());
+}
+
+void PacketBatcher::flushDimension(GameServer& srv, const Player* except,
+                                   std::vector<Queued>& q) {
+    if (q.empty()) return;
+    const std::int8_t dimension = q.front().dimension;
     if (q.size() == 1) {
         auto &q0 = q[0];
-        srv.broadcastPacketExcept(except, q0.id, q0.body);
+        srv.broadcastPacketExceptInDimension(dimension, except, q0.id, q0.body);
     } else {
         bool allBlockUpdate = true;
         for (auto &queued : q) if (queued.id != proto::pl::sc::BlockUpdate) { allBlockUpdate = false; break; }
@@ -86,35 +104,43 @@ void PacketBatcher::flush(GameServer& srv, const Player* except) {
                         b.varint(enc);
                     }
                     parts.emplace_back(proto::pl::sc::MultiBlockChange, std::move(b));
-                    srv.invalidateChunkCache(g.first.cx, g.first.cz);
+                    srv.invalidateChunkCacheFor(dimension, g.first.cx, g.first.cz);
                 } else {
                     for (auto &r : vec) {
                         WriteBuffer b;
                         b.position(r.x, r.y, r.z);
                         b.varint(r.state);
                         parts.emplace_back(proto::pl::sc::BlockUpdate, std::move(b));
-                        srv.invalidateChunkCache(r.x >> 4, r.z >> 4);
+                        srv.invalidateChunkCacheFor(dimension, r.x >> 4, r.z >> 4);
                     }
                 }
             }
             if (parts.size() == 1) {
-                srv.broadcastPacketExcept(except, parts[0].first, parts[0].second);
+                srv.broadcastPacketExceptInDimension(dimension, except,
+                                                      parts[0].first, parts[0].second);
             } else if (!parts.empty()) {
                 WriteBuffer empty;
-                srv.broadcastPacketExcept(except, proto::pl::sc::BundleDelimiter, empty);
-                for (auto &p : parts) srv.broadcastPacketExcept(except, p.first, p.second);
+                srv.broadcastPacketExceptInDimension(dimension, except,
+                                                      proto::pl::sc::BundleDelimiter, empty);
+                for (auto &p : parts)
+                    srv.broadcastPacketExceptInDimension(dimension, except,
+                                                         p.first, p.second);
                 WriteBuffer empty2;
-                srv.broadcastPacketExcept(except, proto::pl::sc::BundleDelimiter, empty2);
+                srv.broadcastPacketExceptInDimension(dimension, except,
+                                                      proto::pl::sc::BundleDelimiter, empty2);
             }
         } else {
             // Bundle: wrap queued packets with BundleDelimiter  0x00 start/end
             WriteBuffer empty;
-            srv.broadcastPacketExcept(except, proto::pl::sc::BundleDelimiter, empty);
+            srv.broadcastPacketExceptInDimension(dimension, except,
+                                                  proto::pl::sc::BundleDelimiter, empty);
             for (auto &queued : q) {
-                srv.broadcastPacketExcept(except, queued.id, queued.body);
+                srv.broadcastPacketExceptInDimension(dimension, except,
+                                                      queued.id, queued.body);
             }
             WriteBuffer empty2;
-            srv.broadcastPacketExcept(except, proto::pl::sc::BundleDelimiter, empty2);
+            srv.broadcastPacketExceptInDimension(dimension, except,
+                                                  proto::pl::sc::BundleDelimiter, empty2);
         }
     }
     lastFlushMs.store(nowMsLocal());
@@ -127,6 +153,7 @@ bool PacketBatcher::tryFlushAsMultiBlockChange(GameServer& srv, const Player* ex
     bool allBlockUpdate = true;
     for (auto &queued : q) if (queued.id != proto::pl::sc::BlockUpdate) { allBlockUpdate = false; break; }
     if (!allBlockUpdate) return false;
+    const std::int8_t dimension = q.front().dimension;
     struct Rec { int32_t x,y,z; uint16_t state; };
     std::vector<Rec> recs;
     recs.reserve(q.size());
@@ -166,8 +193,9 @@ bool PacketBatcher::tryFlushAsMultiBlockChange(GameServer& srv, const Player* ex
         int32_t enc = (static_cast<int32_t>(r.state) << 12) | (lx << 8) | (lz << 4) | ly;
         b.varint(enc);
     }
-    srv.broadcastPacketExcept(except, proto::pl::sc::MultiBlockChange, b);
-    srv.invalidateChunkCache(baseCx, baseCz);
+    srv.broadcastPacketExceptInDimension(dimension, except,
+                                         proto::pl::sc::MultiBlockChange, b);
+    srv.invalidateChunkCacheFor(dimension, baseCx, baseCz);
     return true;
 }
 

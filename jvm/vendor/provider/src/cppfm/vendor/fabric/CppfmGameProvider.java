@@ -131,7 +131,7 @@ public final class CppfmGameProvider implements GameProvider {
         // ModInitializer/Mixin type identities.  Restrict the remaining
         // shadow source to the namespaces used by this runtime.
         launcher.setAllowedPrefixes(shadowClasses, "net.minecraft.", "com.mojang.",
-                "cppfm.", "net.fabricmc.fabric.api.");
+                "cppfm.", "net.fabricmc.fabric.api.", "net.fabricmc.fabric.impl.");
         // KnotClassDelegate calls transform() for every transformable class,
         // including a provider with no game patches.  Loader's own
         // GameTransformer initializes its lookup map only through this

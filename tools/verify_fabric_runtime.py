@@ -231,10 +231,15 @@ def _canonical(
 
 
 def _stage_shadow_classes(source: Path, destination: Path) -> None:
-    """Exclude duplicate official API/Mixin stubs from the probe class path."""
+    """Stage local game/Fabric classes without shadowing the official loader."""
     for item in source.rglob("*"):
         relative = item.relative_to(source)
-        if relative.parts[:2] in (("net", "fabricmc"), ("org", "spongepowered")):
+        # The probe supplies Loader and Mixin from their pinned official jars.
+        # Fabric API and cppfm's internal lifecycle interfaces are local
+        # shadow classes, however; excluding the whole net.fabricmc tree makes
+        # a Minecraft shadow class fail to link as soon as it implements one.
+        if relative.parts[:3] in (("net", "fabricmc", "loader"), ("net", "fabricmc", "api")) \
+                or relative.parts[:2] == ("org", "spongepowered"):
             continue
         target = destination / relative
         if item.is_dir():

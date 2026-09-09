@@ -1,23 +1,37 @@
-#include "GameServer.hpp"
-#include "Messages.hpp"
-#include "Particles.hpp"
-#include "../generated/EntityIds.hpp"
-#include "../generated/BlockStates.hpp"
-#include <algorithm>
-#include <cmath>
-#include <set>
-#include <filesystem>
-#include <unordered_set>
-#include <fstream>
-
-#include "CommandsHelpers.hpp"
+#include "CommandModule.hpp"
+#include "GameServerHelpers.hpp"
 namespace cppfm {
 
-using brigadier::CommandNode;
-using brigadier::CommandContext;
-namespace args = brigadier::args;
-using NodePtr = brigadier::NodePtr;
+namespace {
 
+ItemStack* itemCommandPlayerSlot(Player& player, const std::string& slot) {
+    if (slot == "weapon.mainhand") return &player.inv[36];
+    if (slot == "weapon.offhand") return &player.inv[45];
+    if (slot == "armor.head") return &player.inv[8];
+    if (slot == "armor.chest") return &player.inv[7];
+    if (slot == "armor.legs") return &player.inv[6];
+    if (slot == "armor.feet") return &player.inv[5];
+    if (slot.rfind("container.", 0) == 0 ||
+        slot.rfind("inventory.", 0) == 0) {
+        const auto prefixLength = slot.rfind("container.", 0) == 0 ? 10u : 9u;
+        try {
+            const int index = std::stoi(slot.substr(prefixLength));
+            if (index >= 0 && index < 27) return &player.inv[9 + index];
+        } catch (...) {
+        }
+        return nullptr;
+    }
+    if (slot.rfind("hotbar.", 0) == 0) {
+        try {
+            const int index = std::stoi(slot.substr(7));
+            if (index >= 0 && index < 9) return &player.inv[36 + index];
+        } catch (...) {
+        }
+    }
+    return nullptr;
+}
+
+} // namespace
 
 void GameServer::initDataCommands() {
     initDataFunctionCommands();
@@ -53,8 +67,10 @@ void GameServer::initDataFunctionCommands() {
                 argsMap = parseFunctionArgsNbt(nbtStr);
             }
             brigadier::CommandSource fsrc;
-            if (src){ fsrc.player=src; fsrc.name=src->name; fsrc.console=false; fsrc.srcX=src->x; fsrc.srcY=src->y; fsrc.srcZ=src->z; fsrc.resolveSelector=[this,src](const std::string& raw, brigadier::SelectorResult& out){ out=resolveSelector(raw,src); }; }
-            else { fsrc.console=true; fsrc.name="Server"; fsrc.resolveSelector=[this](const std::string& raw, brigadier::SelectorResult& out){ out=resolveSelector(raw,nullptr); }; }
+            if (src){ fsrc.player=src; fsrc.name=src->name; fsrc.console=false; fsrc.srcX=src->x; fsrc.srcY=src->y; fsrc.srcZ=src->z; }
+            else { fsrc.console=true; fsrc.name="Server"; }
+            fsrc.dimensionOverride = c.source.dimensionOverride;
+            bindCommandSelector(fsrc);
             int executed = 0;
             if (argsMap.empty()) executed = functionEvaluator_.executeFunction(norm, fsrc);
             else executed = functionEvaluator_.executeFunction(norm, fsrc, argsMap);
@@ -318,7 +334,7 @@ void GameServer::initDataGetCommands(const brigadier::NodePtr& data) {
         pos->action = [this](CommandContext& c){
             Player* src=static_cast<Player*>(c.source.player);
             auto p=c.arg("pos").asBlockPos();
-            std::uint16_t st=world_.getBlock(p.x,p.y,p.z);
+            std::uint16_t st=worldForCommand(c.source).getBlock(p.x,p.y,p.z);
             auto* def=gen::blockByState(st);
             std::string out = def?std::string(def->name):"minecraft:air";
             out += " state=" + std::to_string(st);
@@ -331,7 +347,7 @@ void GameServer::initDataGetCommands(const brigadier::NodePtr& data) {
             Player* src=static_cast<Player*>(c.source.player);
             auto p=c.arg("pos").asBlockPos();
             std::string path=c.arg("path").asStr();
-            std::uint16_t st=world_.getBlock(p.x,p.y,p.z);
+            std::uint16_t st=worldForCommand(c.source).getBlock(p.x,p.y,p.z);
             auto* def=gen::blockByState(st);
             std::string out = (def?std::string(def->name):"minecraft:air") + " path=" + path;
             sendFeedback(src, out);
@@ -388,110 +404,6 @@ void GameServer::initDataGetCommands(const brigadier::NodePtr& data) {
 }
 
 void GameServer::initDataModifyCommands(const brigadier::NodePtr& data) {
-        {
-            auto modify = CommandNode::literal("modify");
-            for(auto targetName: {"block","entity","storage"}){
-                auto tgtLit = CommandNode::literal(targetName);
-                NodePtr posArg;
-                std::string tName=targetName;
-                if(tName=="block"){
-                    posArg = CommandNode::argument("mPos", args::blockPos());
-                    auto pathArg = CommandNode::argument("mPath", args::nbtPathArg());
-                    for(auto op: {"set","merge","append","prepend","insert","remove"}){
-                        auto opLit = CommandNode::literal(op);
-                        if(std::string(op)=="remove"){
-                            opLit->executable=false;
-                            auto exec = CommandNode::argument("dummy", args::stringWord());
-                            // Actually remove has no value; make op directly executable via path
-                            // Instead make path executable when op is remove
-                        }
-                    }
-                    // set value
-                    auto setLit = CommandNode::literal("set");
-                    auto setValue = CommandNode::literal("value");
-                    auto nbtVal = CommandNode::argument("nbt", args::nbtTagArg());
-                    nbtVal->executable=true;
-                    nbtVal->action=[this](CommandContext& c){
-                        Player* src=static_cast<Player*>(c.source.player);
-                        auto p=c.arg("mPos").asBlockPos(); std::string path=c.arg("mPath").asStr(); std::string nbtStr=c.arg("nbt").asStr();
-                        sendFeedback(src,"Modified block at "+std::to_string(p.x)+" path="+path+" nbt="+nbtStr);
-                        return 1;
-                    };
-                    setValue->then(nbtVal);
-                    setLit->then(setValue);
-                    // merge value
-                    auto mergeLit = CommandNode::literal("merge");
-                    auto mergeVal = CommandNode::argument("nbt", args::nbtTagArg());
-                    mergeVal->executable=true;
-                    mergeVal->action=[this](CommandContext& c){
-                        Player* src=static_cast<Player*>(c.source.player);
-                        auto p=c.arg("mPos").asBlockPos();
-                        sendFeedback(src,"Merge at "+std::to_string(p.x));
-                        return 1;
-                    };
-                    mergeLit->then(mergeVal);
-                    // append value
-                    auto appendLit = CommandNode::literal("append");
-                    auto appendVal = CommandNode::argument("nbt", args::nbtTagArg());
-                    appendVal->executable=true; appendVal->action=[this](CommandContext& c){ Player* src=static_cast<Player*>(c.source.player); sendFeedback(src,"Append "+c.arg("mPath").asStr()); return 1; };
-                    appendLit->then(appendVal);
-                    // insert with index
-                    auto insertLit = CommandNode::literal("insert");
-                    auto insertIdx = CommandNode::argument("idx", args::integer(0,1000000));
-                    auto insertVal = CommandNode::argument("nbt", args::nbtTagArg());
-                    insertVal->executable=true; insertVal->action=[this](CommandContext& c){ sendFeedback(static_cast<Player*>(c.source.player),"Insert "+c.arg("mPath").asStr()); return 1; };
-                    insertIdx->then(insertVal);
-                    insertLit->then(insertIdx);
-                    pathArg->then(setLit); pathArg->then(mergeLit); pathArg->then(appendLit); pathArg->then(insertLit);
-                    // remove (no value)
-                    auto removeLit = CommandNode::literal("remove");
-                    // need to make pathArg's remove path executable: we add a child literal remove under path Actually structure is modify
-                    // block <pos> <path> remove So add remove as child of pathArg But we need pathArg executable false; remove as
-                    // executable Create a separate executable node for remove
-                    auto remExec = CommandNode::literal("remove");
-                    remExec->executable=false; // will add a dummy? Instead make a leaf
-                    // For simplicity, add a branch where path -> remove literal executable
-                    auto remLeaf = CommandNode::literal("remove");
-                    remLeaf->executable=true;
-                    remLeaf->action=[this](CommandContext& c){
-                        Player* src=static_cast<Player*>(c.source.player);
-                        auto p=c.arg("mPos").asBlockPos(); sendFeedback(src,"Removed path "+c.arg("mPath").asStr()+" at "+std::to_string(p.x)); return 1;
-                    };
-                    // To avoid duplicate, just add remLeaf as child of pathArg and handle via shared
-                    // We'll use a distinct literal; brigadier will handle.
-                    pathArg->then(remLeaf);
-                    posArg->then(pathArg);
-                    tgtLit->then(posArg);
-                    modify->then(tgtLit);
-                    break; // only block for now; entity/storage similar but simplified below
-                }
-            }
-            // entity modify (simplified)
-            {
-                auto entLit = CommandNode::literal("entity");
-                auto entT = CommandNode::argument("mEntity", args::entity(false,false));
-                auto entPath = CommandNode::argument("mPath", args::nbtPathArg());
-                auto setLit = CommandNode::literal("set");
-                auto setVal = CommandNode::literal("value");
-                auto nbtVal = CommandNode::argument("nbt", args::nbtTagArg());
-                nbtVal->executable=true;
-                nbtVal->action=[this](CommandContext& c){
-                    Player* src=static_cast<Player*>(c.source.player);
-                    sendFeedback(src,"Modified entity "+c.arg("mPath").asStr());
-                    return 1;
-                };
-                setVal->then(nbtVal); setLit->then(setVal); entPath->then(setLit);
-                auto remLit = CommandNode::literal("remove");
-                remLit->executable=true;
-                remLit->action=[this](CommandContext& c){ sendFeedback(static_cast<Player*>(c.source.player),"Removed entity path "+c.arg("mPath").asStr()); return 1; };
-                entPath->then(remLit);
-                entT->then(entPath);
-                // need to find entity modify node already? We created block one above; need to add entity separately
-                // Since we broke after block, we need to add entity/storage outside loop
-            }
-            // To keep code simple, rebuild modify correctly:
-        }
-        // Rebuild modify cleanly (override above loop's incomplete)
         {
             auto modify2 = CommandNode::literal("modify");
             // block
@@ -659,8 +571,9 @@ void GameServer::initDataLootCommands() {
                     auto it=gen::itemIdByName().find("minecraft:diamond");
                     if(it!=gen::itemIdByName().end()) drops.push_back(ItemStack::of(it->second,1));
                 }
-                for(auto &st: drops) spawnItemDrop(p.x,p.y,p.z,st);
                 Player* src=static_cast<Player*>(c.source.player);
+                for(auto &st: drops)
+                    spawnItemDropFor(commandDimension(c.source), p.x,p.y,p.z,st);
                 sendFeedback(src,"Spawned loot "+tbl+" at "+std::to_string((int)p.x));
                 return (int)drops.size();
             };
@@ -805,9 +718,6 @@ void GameServer::initDataAdvancementCommands() {
                         auto ids = expandAdv("", "everything");
                         int granted=0;
                         for(auto &id: ids){
-                            bool known=false;
-                            for(auto &d: advancementDefs()) if(d.id==id) known=true;
-                            if(!known && datapackManager_.advancements.find(id)==datapackManager_.advancements.end() && id.rfind("cppfm:",0)!=0) known=false; else known=true;
                             if(!p->advancements) continue;
                             if(p->advancements->grant(id)) ++granted;
                         }
@@ -828,8 +738,6 @@ void GameServer::initDataAdvancementCommands() {
                         if(!found && datapackManager_.advancements.find(advId)!=datapackManager_.advancements.end()) found=true;
                         if(!found){
                             for(auto &d: advancementDefs()) if(std::string(d.id)==advId) { found=true; full=d.id; break; }
-                        }
-                        if(!found){
                         }
                     }
                     std::vector<std::string> ids;
@@ -1118,29 +1026,6 @@ void GameServer::initDataItemCommands() {
     auto replaceLit = CommandNode::literal("replace");
     auto modifyLit = CommandNode::literal("modify");
     auto removeLit = CommandNode::literal("remove");
-        auto slotToPlayerStack = [](Player& p, const std::string& slot)->ItemStack*{
-            if(slot=="weapon.mainhand") return &p.inv[36];
-            if(slot=="weapon.offhand") return &p.inv[45];
-            if(slot=="armor.head") return &p.inv[8];
-            if(slot=="armor.chest") return &p.inv[7];
-            if(slot=="armor.legs") return &p.inv[6];
-            if(slot=="armor.feet") return &p.inv[5];
-            if(slot.rfind("container.",0)==0){
-                try{ int idx=std::stoi(slot.substr(10)); if(idx>=0 && idx<27) return &p.inv[9+idx]; }catch(...){}
-                return nullptr;
-            }
-            if(slot.rfind("hotbar.",0)==0){
-                try{ int idx=std::stoi(slot.substr(7)); if(idx>=0 && idx<9) return &p.inv[36+idx]; }catch(...){}
-                return nullptr;
-            }
-            if(slot.rfind("inventory.",0)==0){
-                try{ int idx=std::stoi(slot.substr(10)); if(idx>=0 && idx<27) return &p.inv[9+idx]; }catch(...){}
-                return nullptr;
-            }
-            if(slot.rfind("enderchest.",0)==0){ return nullptr; }
-            if(slot=="container.0") return &p.inv[9];
-            return nullptr;
-        };
         auto slotToBlockStack = [this](const brigadier::BlockPosI& pos, const std::string& slot)->ItemStack*{
             auto* be = blockEntities_.getAt(pos.x,pos.y,pos.z);
             if(!be) {
@@ -1173,7 +1058,7 @@ void GameServer::initDataItemCommands() {
             if(count>64) count=64;
             return ItemStack::of(it->second, (std::int16_t)count);
         };
-    initDataItemReplaceCommands(replaceLit, slotToPlayerStack, slotToBlockStack, parseItemStack);
+    initDataItemReplaceCommands(replaceLit, itemCommandPlayerSlot, slotToBlockStack, parseItemStack);
     initDataItemModifyCommands(modifyLit, slotToBlockStack);
     initDataItemRemoveCommands(removeLit, slotToBlockStack);
     item->then(replaceLit);
@@ -1200,7 +1085,7 @@ void GameServer::initDataItemReplaceCommands(const brigadier::NodePtr& replaceLi
                 if(!tgt){ Player* src=static_cast<Player*>(c.source.player); sendFeedback(src, "No block inventory at "+std::to_string(pos.x)+" or invalid slot "+slot); return 0; }
                 *tgt = stack;
                 // mark dirty and notify chunk?
-                blockEntities_.dirty_.insert(posKey(pos.x,pos.y,pos.z));
+                blockEntities_.markDirty(posKey(pos.x,pos.y,pos.z));
                 Player* src=static_cast<Player*>(c.source.player);
                 sendFeedback(src, "Replaced block "+std::to_string(pos.x)+" slot "+slot+" with "+itemStr);
                 // try to sync to nearby players via ContainerSetContent? For now feedback only
@@ -1218,7 +1103,7 @@ void GameServer::initDataItemReplaceCommands(const brigadier::NodePtr& replaceLi
                 ItemStack* tgt = slotToBlockStack(pos, slot);
                 if(!tgt){ Player* src=static_cast<Player*>(c.source.player); sendFeedback(src, "No block inventory at slot "+slot); return 0; }
                 *tgt = stack;
-                blockEntities_.dirty_.insert(posKey(pos.x,pos.y,pos.z));
+                blockEntities_.markDirty(posKey(pos.x,pos.y,pos.z));
                 Player* src=static_cast<Player*>(c.source.player);
                 sendFeedback(src, "Replaced block slot "+slot+" with "+itemStr+" x"+std::to_string(cnt));
                 return 1;
@@ -1314,7 +1199,7 @@ void GameServer::initDataItemModifyCommands(const brigadier::NodePtr& modifyLit,
                     Player* src=static_cast<Player*>(c.source.player);
                     sendFeedback(src, "Applied modifier "+mod+" to block slot "+slot);
                 }
-                blockEntities_.dirty_.insert(posKey(pos.x,pos.y,pos.z));
+                blockEntities_.markDirty(posKey(pos.x,pos.y,pos.z));
                 return 1;
             };
             slotArg->then(modArg);
@@ -1340,18 +1225,7 @@ void GameServer::initDataItemModifyCommands(const brigadier::NodePtr& modifyLit,
                 if(mod.find(':')==std::string::npos) mod="minecraft:"+mod;
                 int n=0;
                 for(auto &nm: sel.playerNames) if(Player* p=findPlayer(*this,nm)){
-                    ItemStack* tgt=nullptr;
-                    if(slot=="weapon.mainhand") tgt=&p->inv[36];
-                    else if(slot=="weapon.offhand") tgt=&p->inv[45];
-                    else if(slot=="armor.head") tgt=&p->inv[8];
-                    else if(slot=="armor.chest") tgt=&p->inv[7];
-                    else if(slot=="armor.legs") tgt=&p->inv[6];
-                    else if(slot=="armor.feet") tgt=&p->inv[5];
-                    else if(slot.rfind("container.",0)==0){
-                        try{int idx=std::stoi(slot.substr(10)); if(idx>=0&&idx<27) tgt=&p->inv[9+idx];}catch(...){}
-                    } else if(slot.rfind("hotbar.",0)==0){
-                        try{int idx=std::stoi(slot.substr(7)); if(idx>=0&&idx<9) tgt=&p->inv[36+idx];}catch(...){}
-                    }
+                    ItemStack* tgt=itemCommandPlayerSlot(*p, slot);
                     if(!tgt || tgt->empty()) continue;
                     bool ok = datapackManager_.applyItemModifier(mod, *tgt);
                     if(!ok){ if(tgt->count<64) tgt->count+=1; }
@@ -1380,7 +1254,7 @@ void GameServer::initDataItemRemoveCommands(const brigadier::NodePtr& removeLit,
                 ItemStack* tgt = slotToBlockStack(pos, slot);
                 if(!tgt){ Player* src=static_cast<Player*>(c.source.player); sendFeedback(src, "No block slot "+slot); return 0; }
                 *tgt = ItemStack::air();
-                blockEntities_.dirty_.insert(posKey(pos.x,pos.y,pos.z));
+                blockEntities_.markDirty(posKey(pos.x,pos.y,pos.z));
                 Player* src=static_cast<Player*>(c.source.player);
                 sendFeedback(src, "Removed item from block slot "+slot);
                 return 1;
@@ -1397,18 +1271,7 @@ void GameServer::initDataItemRemoveCommands(const brigadier::NodePtr& removeLit,
                 std::string slot=c.arg("slot").asStr();
                 int n=0;
                 for(auto &nm: sel.playerNames) if(Player* p=findPlayer(*this,nm)){
-                    ItemStack* tgt=nullptr;
-                    if(slot=="weapon.mainhand") tgt=&p->inv[36];
-                    else if(slot=="weapon.offhand") tgt=&p->inv[45];
-                    else if(slot=="armor.head") tgt=&p->inv[8];
-                    else if(slot=="armor.chest") tgt=&p->inv[7];
-                    else if(slot=="armor.legs") tgt=&p->inv[6];
-                    else if(slot=="armor.feet") tgt=&p->inv[5];
-                    else if(slot.rfind("container.",0)==0){
-                        try{int idx=std::stoi(slot.substr(10)); if(idx>=0&&idx<27) tgt=&p->inv[9+idx];}catch(...){}
-                    } else if(slot.rfind("hotbar.",0)==0){
-                        try{int idx=std::stoi(slot.substr(7)); if(idx>=0&&idx<9) tgt=&p->inv[36+idx];}catch(...){}
-                    }
+                    ItemStack* tgt=itemCommandPlayerSlot(*p, slot);
                     if(!tgt) continue;
                     *tgt = ItemStack::air();
                     resendInventory(*p);

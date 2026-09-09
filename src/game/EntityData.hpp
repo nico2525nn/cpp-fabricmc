@@ -1,5 +1,5 @@
 // EntityData: data-driven entity definitions loaded from assets/entities/*.json
-// BehaviorTree built via factory (switch on type string) and stored in def for Brain assignment.
+// BehaviorTree nodes are built per entity by the canonical loader/factory.
 #pragma once
 #include <string>
 #include <vector>
@@ -31,11 +31,9 @@ struct EntityDataDef{
     int spawnMinCount = 1;
     int spawnMaxCount = 4;
     std::string spawnGroup;
-    std::shared_ptr<BehaviorTree> behaviorTree;
 };
 class EntityDataLoader{
 public:
-    static std::shared_ptr<BehaviorTree> buildTreeFor(const EntityDataDef& def);
     static std::unique_ptr<BehaviorTree> buildUniqueTreeFor(const EntityDataDef& def);
     void loadDirectory(const std::string& dir);
     const EntityDataDef* get(const std::string& t) const{ auto it=defs_.find(t); return it==defs_.end()?nullptr:&it->second; }

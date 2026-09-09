@@ -1,7 +1,6 @@
 package net.fabricmc.fabric.api.registry;
 
 import net.fabricmc.fabric.api.event.Event;
-import net.fabricmc.fabric.api.event.EventFactory;
 import net.minecraft.registry.Registry;
 import net.minecraft.util.Identifier;
 
