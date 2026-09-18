@@ -134,8 +134,10 @@ private:
     static constexpr std::size_t kMaxPayloadLength = kMaxPacketLength - 10;
 
     static void le32(std::vector<std::uint8_t>& v, std::uint32_t x) {
-        v.push_back(x & 0xFF); v.push_back((x >> 8) & 0xFF);
-        v.push_back((x >> 16) & 0xFF); v.push_back((x >> 24) & 0xFF);
+        v.push_back(static_cast<std::uint8_t>(x & 0xFFU));
+        v.push_back(static_cast<std::uint8_t>((x >> 8) & 0xFFU));
+        v.push_back(static_cast<std::uint8_t>((x >> 16) & 0xFFU));
+        v.push_back(static_cast<std::uint8_t>((x >> 24) & 0xFFU));
     }
 
     static bool sendAll(platform::socket_t fd, const std::uint8_t* data,

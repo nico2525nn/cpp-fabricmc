@@ -34,14 +34,14 @@ public:
     static float getSharpnessBonus(const ItemStack& stack) {
         int lvl = std::max(stack.enchantLevel("sharpness"), stack.enchantLevel("minecraft:sharpness"));
         if (lvl<=0) return 0.f;
-        return 0.5f * lvl + 0.5f;
+        return 0.5f * static_cast<float>(lvl) + 0.5f;
     }
 
     // Power bonus for bows
     static float getPowerBonus(const ItemStack& stack) {
         int lvl = std::max(stack.enchantLevel("power"), stack.enchantLevel("minecraft:power"));
         if (lvl<=0) return 0.f;
-        return 0.25f * (lvl+1);
+        return 0.25f * static_cast<float>(lvl + 1);
     }
 
     static float getEfficiencyMultiplier(const ItemStack& stack) {
@@ -217,15 +217,15 @@ public:
     }
     static float meleeDamageWithEnchant(float base, const ItemStack& weapon, MobKind victimKind) {
         float bonus = getSharpnessBonus(weapon);
-        if (isUndead(victimKind)) bonus += 2.5f * getSmite(weapon);
-        if (isArthropod(victimKind)) bonus += 2.5f * getBaneOfArthropods(weapon);
+        if (isUndead(victimKind)) bonus += 2.5f * static_cast<float>(getSmite(weapon));
+        if (isArthropod(victimKind)) bonus += 2.5f * static_cast<float>(getBaneOfArthropods(weapon));
         return base + bonus;
     }
     static float extraDamageFor(const ItemStack& weapon, MobKind victimKind){
         float extra=0;
         extra += getSharpnessBonus(weapon);
-        if (isUndead(victimKind)) extra += 2.5f * getSmite(weapon);
-        if (isArthropod(victimKind)) extra += 2.5f * getBaneOfArthropods(weapon);
+        if (isUndead(victimKind)) extra += 2.5f * static_cast<float>(getSmite(weapon));
+        if (isArthropod(victimKind)) extra += 2.5f * static_cast<float>(getBaneOfArthropods(weapon));
         return extra;
     }
 };

@@ -1,8 +1,9 @@
-// Arguments: typed parsed values + argument types with wire properties (48 parsers).
+// Arguments: typed parsed values + argument types with wire properties.
 //
-// Parser ids match Minecraft Java 1.21.4 vanilla registry order 0-53 (verified
-// against PrismarineJS minecraft-data 1.21.4 protocol.json + Yarn 1.21.4).
-// through 48 Heightmap=49 / LootTable=50 / LootPredicate=51 / LootModifier=52.
+// Parser ids match Minecraft Java 1.21.4 vanilla registry order 0-55
+// (verified against PrismarineJS minecraft-data 1.21.4 protocol.json + Yarn
+// 1.21.4).  The two test argument parsers are retained in the registry even
+// though the server does not currently expose test commands.
 // Each ArgumentType knows how to:
 //   1. write its declare_commands property blob (writeProps), and
 //   2. parse itself out of a StringReader into an ArgValue (parse).
@@ -36,7 +37,7 @@ enum class ParserId : std::uint8_t {
     Gamemode = 41, Time = 42, ResourceOrTag = 43, ResourceOrTagKey = 44,
     Resource = 45, ResourceKey = 46, TemplateMirror = 47,
     TemplateRotation = 48, Heightmap = 49, LootTable = 50, LootPredicate = 51,
-    LootModifier = 52, Uuid = 53,
+    LootModifier = 52, TestArgument = 53, TestClass = 54, Uuid = 55,
     NbtCompoundTag = Nbt,
     MobEffect = ItemSlots,
     FunctionTag = Function,
@@ -137,8 +138,10 @@ inline ArgumentType integer(std::int32_t lo = INT32_MIN, std::int32_t hi = INT32
     a.id = ParserId::Integer;
     a.writeProps = [lo, hi](WriteBuffer& b) {
         b.u8(0x01 | 0x02);                           // min | max present
-        b.varint(lo);
-        b.varint(hi);
+        // Brigadier's integer parser properties are fixed-width i32 values;
+        // only the parser id and the surrounding node arrays use VarInts.
+        b.i32(lo);
+        b.i32(hi);
     };
     a.parse = [](StringReader& r, ParseCtx&) -> ArgValue { return r.readInt(); };
     a.suggest = nullptr;
@@ -342,6 +345,10 @@ inline ArgumentType gamemodeArg() {
 inline ArgumentType timeArg() {
     ArgumentType a;
     a.id = ParserId::Time;
+    // minecraft:time advertises its non-negative minimum as a fixed-width
+    // i32 in Declare Commands. The unit suffix is a command-parser detail;
+    // it is not part of this wire property.
+    a.writeProps = [](WriteBuffer& b) { b.i32(0); };
     a.parse = [](StringReader& r, ParseCtx&) -> ArgValue {
         std::int64_t v = r.readLong();
         if (r.canRead()) {
@@ -621,9 +628,15 @@ inline ArgumentType entityAnchorArg() {
     };
     return a;
 }
-inline ArgumentType scoreHolderArg() {
+inline ArgumentType scoreHolderArg(bool allowMultiple = true) {
     ArgumentType a;
     a.id = ParserId::ScoreHolder;
+    // Declare Commands encodes ScoreHolderArgumentType's allow-multiple
+    // setting as a single bit in one byte. The execute/store score target
+    // accepts selectors and therefore uses the plural form.
+    a.writeProps = [allowMultiple](WriteBuffer& b) {
+        b.u8(allowMultiple ? 0x01 : 0x00);
+    };
     a.parse = [](StringReader& r, ParseCtx& c) -> ArgValue {
         const std::size_t start=r.cursor();
         if (r.peek()=='@') {

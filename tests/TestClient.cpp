@@ -56,7 +56,12 @@ static void md5(const std::string& msg, std::uint8_t out[16]) {
         }
         h[0]+=a; h[1]+=b; h[2]+=c; h[3]+=d;
     }
-    for (int i=0;i<4;++i){ out[i*4]=h[i]&0xff; out[i*4+1]=(h[i]>>8)&0xff; out[i*4+2]=(h[i]>>16)&0xff; out[i*4+3]=(h[i]>>24)&0xff; }
+    for (int i=0;i<4;++i){
+        out[i*4]=static_cast<std::uint8_t>(h[i]&0xffu);
+        out[i*4+1]=static_cast<std::uint8_t>((h[i]>>8)&0xffu);
+        out[i*4+2]=static_cast<std::uint8_t>((h[i]>>16)&0xffu);
+        out[i*4+3]=static_cast<std::uint8_t>((h[i]>>24)&0xffu);
+    }
 }
 
 bool TestClient::connect(const std::string& host, std::uint16_t port, int timeoutSec) {

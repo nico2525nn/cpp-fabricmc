@@ -21,7 +21,9 @@ public:
     std::size_t remainingLength() const { return s_.size() - pos_; }
     char peek() const { return pos_ < s_.size() ? s_[pos_] : '\0'; }
     char peek(std::size_t ahead) const {
-        return pos_ + ahead < s_.size() ? s_[pos_ + ahead] : '\0';
+        // Avoid pos_ + ahead wrapping before the bounds check when a caller
+        // probes with a hostile size_t value.
+        return ahead < remainingLength() ? s_[pos_ + ahead] : '\0';
     }
     char read() { return pos_ < s_.size() ? s_[pos_++] : '\0'; }
     void skip() { if (pos_ < s_.size()) ++pos_; }

@@ -928,6 +928,14 @@ void GameServer::trySpawnMobs() {
             std::vector<const EntityDataDef*> monsterEntries, creatureEntries;
             for(auto& kv : entityDataLoader_.all()){
                 const auto& def = kv.second;
+                // Entity definitions also cover projectiles, vehicles,
+                // displays, and decorations.  Those entries deliberately use
+                // weight 0 because they are created by commands or gameplay
+                // events, not by natural mob spawning.  Treating zero as one
+                // here sends them through the generic mob SpawnEntity path;
+                // decoration entities then reject the missing facing data on
+                // the vanilla client.
+                if (def.spawnWeight <= 0) continue;
                 if(!def.biomes.empty()){
                     bool okB=false;
                     for(auto& b: def.biomes){ if(biome.find(b)!=std::string::npos || biome==b){ okB=true; break; } std::string tb=b; auto p=tb.find(':'); if(p!=std::string::npos) tb=tb.substr(p+1); if(biome.find(tb)!=std::string::npos) okB=true; }
@@ -1238,7 +1246,10 @@ void GameServer::mobsTick() {
                                     if (world.getBlock(sx,sy,sz)==0 && world.getBlock(sx,sy+1,sz)==0 && world.getBlock(sx,sy-1,sz)!=0){
                                         m->x=sx+0.5; m->y=sy; m->z=sz+0.5;
                                         m->creakingSameBlockTicks=0;
-                                        WriteBuffer tp; tp.varint(m->entityId); tp.f64(m->x); tp.f64(m->y); tp.f64(m->z); tp.f32(m->yaw); tp.f32(0); tp.boolean(true);
+                                        const WriteBuffer tp = makeEntityTeleportBody(
+                                            m->entityId, m->x, m->y, m->z,
+                                            0.0, 0.0, 0.0, m->yaw, 0.0f, 0,
+                                            true);
                                         broadcastPacketExceptInDimension(
                                             dimension, nullptr,
                                             proto::pl::sc::EntityTeleport, tp);

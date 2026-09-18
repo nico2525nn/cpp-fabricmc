@@ -7,6 +7,7 @@
 #include "MetadataTypes.hpp"
 #include "MobBehaviorSpec.hpp"
 #include "Particles.hpp"
+#include "GameServerHelpers.hpp"
 #include "../proto/Ids.hpp"
 #include "../generated/BlockStates.hpp"
 #include <optional>
@@ -509,10 +510,10 @@ bool BreedGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
         Player* best = nullptr; double bestDist=64;
         for (const auto& view : ctx.playerViews) {
             if (!sameDimension(m, view) || !view.inPlay || view.dead) continue;
-            const double dx=view.x-bx, dz=view.z-bz;
-            const double d2=dx*dx+dz*dz;
-            if (d2<bestDist*bestDist) {
-                bestDist=std::sqrt(d2);
+            const double viewDx=view.x-bx, viewDz=view.z-bz;
+            const double viewDistance2=viewDx*viewDx+viewDz*viewDz;
+            if (viewDistance2<bestDist*bestDist) {
+                bestDist=std::sqrt(viewDistance2);
                 best=view.player;
             }
         }
@@ -1545,7 +1546,8 @@ bool PhantomCircleGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     double r = spec->actionRange() + (m.phantomSize % spec->variantRangeModulo());
     double nx = m.phantomOrbitCenter.x + std::cos(m.phantomOrbitAngle)*r;
     double nz = m.phantomOrbitCenter.z + std::sin(m.phantomOrbitAngle)*r;
-    double ny = m.phantomOrbitCenter.y + std::sin(now*0.02)*2;
+    const double nowSeconds = static_cast<double>(now);
+    double ny = m.phantomOrbitCenter.y + std::sin(nowSeconds*0.02)*2;
     if(now - m.phantomLastSwoop >= spec->actionCooldown() && t){
         nx = t->x; nz = t->z; ny = t->y;
         const double attackThreshold = spec->actionThreshold();
@@ -1662,7 +1664,9 @@ bool EndermanTeleportGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
                     const auto entityId = m.entityId;
                     const auto yaw = m.yaw;
                     const double newX=m.x, newY=m.y, newZ=m.z;
-                    WriteBuffer tp; tp.varint(entityId); tp.f64(newX); tp.f64(newY); tp.f64(newZ); tp.f32(yaw); tp.f32(0); tp.boolean(true);
+                    const WriteBuffer tp = makeEntityTeleportBody(
+                        entityId, newX, newY, newZ, 0.0, 0.0, 0.0,
+                        yaw, 0.0f, 0, true);
                     if (!withoutMobStateLock(m, [&] {
                             ctx.srv->broadcastSoundFor(
                                 dimension, "minecraft:entity.enderman.teleport",
@@ -1900,7 +1904,8 @@ bool EndermiteTeleportGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now)
         const auto entityId = m.entityId;
         const double x=m.x, y=m.y, z=m.z;
         const auto yaw=m.yaw;
-        WriteBuffer tp; tp.varint(entityId); tp.f64(x); tp.f64(y); tp.f64(z); tp.f32(yaw); tp.f32(0); tp.boolean(true);
+        const WriteBuffer tp = makeEntityTeleportBody(
+            entityId, x, y, z, 0.0, 0.0, 0.0, yaw, 0.0f, 0, true);
         if (!withoutMobStateLock(m, [&] {
                 ctx.srv->broadcastSoundFor(
                     dimension, "minecraft:entity.endermite.ambient",
@@ -2219,9 +2224,10 @@ bool TurtleEggLayGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
             baby->age=-24000; baby->x=ex+0.5; baby->y=ey+1;
             baby->z=ez+0.5; baby->dimension=dimension;
             if (!withoutMobStateLock(m, [&] {
-                    world->setBlock(ex,ey,ez, bd->defaultState);
-                    ctx.srv->broadcastBlockChangeFor(
-                        dimension, ex,ey,ez, bd->defaultState);
+                        const auto eggState = static_cast<std::uint16_t>(bd->defaultState);
+                        world->setBlock(ex,ey,ez, eggState);
+                        ctx.srv->broadcastBlockChangeFor(
+                        dimension, ex,ey,ez, eggState);
                     ctx.srv->broadcastSoundFor(
                         dimension, "minecraft:entity.turtle.lay_egg",
                         mobX,mobY,mobZ,1.f,1.f,"neutral");
@@ -2326,9 +2332,10 @@ bool SnowGolemSnowTrailGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now
                 uint16_t at=world->getBlock(bx,snowY,bz);
                 if(at==0){
                     if (!withoutMobStateLock(m, [&] {
-                            world->setBlock(bx,snowY,bz, bdSnow->defaultState);
+                            const auto snowState = static_cast<std::uint16_t>(bdSnow->defaultState);
+                            world->setBlock(bx,snowY,bz, snowState);
                             ctx.srv->broadcastBlockChangeFor(
-                                dimension, bx,snowY,bz, bdSnow->defaultState);
+                                dimension, bx,snowY,bz, snowState);
                         })) return false;
                 }
             }
@@ -2409,7 +2416,8 @@ bool EnderDragonPerchGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
                 })) return false;
         }
     } else if(m.y < 78){
-        double ang=now*0.03; double rx=std::cos(ang)*28, rz=std::sin(ang)*28;
+        const double ang=static_cast<double>(now)*0.03;
+        double rx=std::cos(ang)*28, rz=std::sin(ang)*28;
         double dx=rx-m.x, dz=rz-m.z; m.x+=dx*0.04; m.z+=dz*0.04; m.y += (68-m.y)*0.02;
     } else {
         if(ctx.srv && now%20==0) {
@@ -2424,7 +2432,7 @@ bool EnderDragonPerchGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
         }
         if(nextRandom()%100<5) m.dragonPhaseUntil=now+80;
     }
-    m.yaw=(float)(now*0.8);
+    m.yaw=static_cast<float>(static_cast<double>(now)*0.8);
     return true;
 }
 bool StriderLavaWalkGoal::shouldStart(MobEntity& m, AiContext&){
@@ -2681,7 +2689,7 @@ bool BoatDriftGoal::shouldStart(MobEntity& m, AiContext&) { return MobEntity::is
 bool BoatDriftGoal::tick(MobEntity& m, AiContext&, std::int64_t now) {
     if (!MobEntity::isBoat(m.kind)) return false;
     // vanilla Boat: water bob + slow drift along heading
-    m.y += std::sin(now*0.15)*0.004;
+    m.y += std::sin(static_cast<double>(now)*0.15)*0.004;
     double rad = (m.yaw+90.0)*3.14159/180.0;
     m.x += std::cos(rad)*0.01; m.z += std::sin(rad)*0.01;
     return true;
@@ -3154,7 +3162,7 @@ bool AmbientObjectGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
             double d=std::sqrt(dx*dx+dz*dz)+1e-6;
             m.x += dx/d*0.12; m.z += dz/d*0.12;
         }
-        m.y += std::sin(now*0.2)*0.003; // bob
+        m.y += std::sin(static_cast<double>(now)*0.2)*0.003; // bob
         return true;
     }
     case MobKind::FallingBlock:

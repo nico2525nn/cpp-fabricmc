@@ -9,6 +9,7 @@
 #include <unordered_set>
 #include <unordered_map>
 #include <algorithm>
+#include <limits>
 #include <cstdio>
 #include "../generated/EntityIds.hpp"
 #include "../generated/ItemIds.hpp"
@@ -18,6 +19,26 @@
 namespace cppfm {
 
 struct Vec3 { double x, y, z; };
+
+// Entity spawn packets carry a UUID even though the server's gameplay model
+// uses the compact entity id as its primary key.  Keep the wire identity
+// non-zero, valid as a UUID, and one-to-one with the 32-bit entity id.  The
+// latter matters because the Java client indexes entities by UUID as well as
+// by id; sending the all-zero UUID for every spawn makes otherwise unrelated
+// entities collide in the client entity map.
+inline std::array<std::uint8_t, 16> entityUuidForId(std::int32_t entityId) {
+    std::array<std::uint8_t, 16> uuid{
+        0x63, 0x70, 0x70, 0x66, 0x6d, 0x2d, 0x65, 0x6e,
+        0x74, 0x69, 0x74, 0x79, 0x00, 0x00, 0x00, 0x00};
+    const auto id = static_cast<std::uint32_t>(entityId);
+    uuid[6] = static_cast<std::uint8_t>((uuid[6] & 0x0fU) | 0x40U);
+    uuid[8] = static_cast<std::uint8_t>((uuid[8] & 0x3fU) | 0x80U);
+    uuid[12] = static_cast<std::uint8_t>(id >> 24);
+    uuid[13] = static_cast<std::uint8_t>(id >> 16);
+    uuid[14] = static_cast<std::uint8_t>(id >> 8);
+    uuid[15] = static_cast<std::uint8_t>(id);
+    return uuid;
+}
 
 struct PrimedTntEntity {
     std::int32_t entityId = 0;
@@ -52,7 +73,8 @@ struct ItemEntity {
     void setStack(const ItemStack& s){
         stack = s;
         itemId = s.itemId;
-        count = s.count;
+        count = static_cast<std::uint8_t>(
+            std::clamp<int>(s.count, 0, std::numeric_limits<std::uint8_t>::max()));
     }
 };
 

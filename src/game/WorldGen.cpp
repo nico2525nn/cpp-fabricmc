@@ -90,7 +90,12 @@ void World::generateChunkIfMissing(std::int32_t cx, std::int32_t cz) const {
         if (chunks_.count(chunkKey(cx, cz))) return;
     }
     auto c = acquireChunk();
-    const bool loaded = loader_ && loader_(cx, cz, *c);
+    std::function<bool(std::int32_t, std::int32_t, Chunk&)> loader;
+    {
+        std::lock_guard lock(hooksMtx_);
+        loader = loader_;
+    }
+    const bool loaded = loader && loader(cx, cz, *c);
     if (!loaded) {
         if (generator_) generator_->fillChunk(*c, cx, cz);
         else generateChunkFallback(*c, cx, cz);
@@ -219,10 +224,12 @@ void World::fillTerrainV3(Chunk& c, std::int32_t cx, std::int32_t cz) const {
             return it != table.end()
                        ? static_cast<std::uint16_t>(it->second) : oreState;
         }();
-        const int attempts = static_cast<int>(rule.veinsPerChunk)
-                           + ((rng64(oreRng) % 100) / 100.f <
-                              (rule.veinsPerChunk -
-                               static_cast<int>(rule.veinsPerChunk)) ? 1 : 0);
+        const int wholeVeins = static_cast<int>(rule.veinsPerChunk);
+        const float fractionalVeins = rule.veinsPerChunk -
+                                      static_cast<float>(wholeVeins);
+        const int attempts = wholeVeins +
+            (static_cast<float>(rng64(oreRng) % 100ULL) / 100.0F <
+             fractionalVeins ? 1 : 0);
         for (int a = 0; a < attempts; ++a) {
             const int baseX = static_cast<int>(rng64(oreRng) % 16);
             const int baseZ = static_cast<int>(rng64(oreRng) % 16);
@@ -232,7 +239,10 @@ void World::fillTerrainV3(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                 double totalW = 0;
                 for (int y = rule.minY; y <= rule.maxY; y += 4)
                     totalW += triWeight(y, rule.minY, rule.maxY, rule.peakY);
-                double r = (rng64(oreRng) >> 11) / double(1ULL << 53) * totalW;
+                const double unit =
+                    static_cast<double>(rng64(oreRng) >> 11) /
+                    static_cast<double>(1ULL << 53);
+                double r = unit * totalW;
                 for (int y = rule.minY; y <= rule.maxY; y += 4) {
                     r -= triWeight(y, rule.minY, rule.maxY, rule.peakY);
                     if (r <= 0) { py = y; break; }

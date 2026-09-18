@@ -471,8 +471,9 @@ void GameServer::initWorldCommandsPart09() {
                 if(masked && st==0) continue;
                 if(filtered){
                     if(fdef){
-                        auto* d=gen::blockByState(st);
-                        std::string have=d?std::string(d->name):"minecraft:air";
+                        auto* existingDef=gen::blockByState(st);
+                        std::string have=existingDef ?
+                            std::string(existingDef->name) : "minecraft:air";
                         if(have!=std::string(fdef->name)) continue;
                     } else if(st!=filterState) continue;
                 }

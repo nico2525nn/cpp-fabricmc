@@ -5,8 +5,8 @@
 > rows **#81–#90**. The restored matrix is a historical taxonomy baseline; it is not
 > a release gate and does not make the current cleanup or operations audit green.
 >
-> Current implementation/evidence baseline: `main` HEAD `574e67b` plus the
-> current uncommitted review/cleanup worktree (rechecked 2026-09-10).
+> Current implementation/evidence baseline: `main` HEAD `6fef7d7` plus the
+> current uncommitted compatibility review worktree (rechecked 2026-09-18).
 > Files under the ignored `build/` tree are local run outputs, not tracked/public
 > evidence or release assets unless separately published.
 
@@ -22,19 +22,20 @@
 - Current publication state is `BLOCKED`: the confirmed focused results are
   `fluids 23 PASS / 0 FAIL`, `redstone 42 PASS / 0 FAIL`, `menu 41 PASS / 0 FAIL`,
   and `gameplay 807 PASS / 0 FAIL / 807`; the recorded full non-nightly CTest
-  regression is `42/42 PASS`, and the last recorded one-file package contains only `cppfm` with a
+  regression is `43/43 PASS`, and the last recorded one-file package contains only `cppfm` with a
   clean extracted-directory `test_server_full` result of `234 PASS / 0 FAIL`.
   The separate `package_jvm_smoke` release gate also passes strict default-on
   JVM startup against the exact CPack ZIP when JNI/classes are available.
   In addition, three integrated `tools/soak_bot.py --duration 300` runs passed,
   while the attempted 7200-second soak was interrupted above its RSS gate;
-  accepted 2-hour/24-hour and current real-client evidence remain absent. The
+  accepted 2-hour/24-hour and retained release artifacts remain absent; bounded
+  local mc-pilot and PrismLauncher-managed real-client probes now pass. The
   E-14 arbitrary-JVM-mod boundary is informational and remains explicitly
   declared. See [CURRENT_STATE.md](CURRENT_STATE.md) and [VERIFICATION.md](VERIFICATION.md)
   for gate semantics.
-- The latest 2026-09-10 operational baseline is full non-nightly CTest `42/42 PASS`
-  in `397.54s`, multi-client `ALL PASS` in `17.84s`, and bot smoke `ALL PASS` in
-  `20.87s`; the separate release `package_jvm_smoke` gate passes against the
+- The latest working-tree rerun on 2026-09-18 is full non-nightly CTest `43/43 PASS`
+  in `386.22s`, with multi-client `ALL PASS` in `17.60s` and bot smoke `ALL PASS`
+  in `21.09s`; the separate release `package_jvm_smoke` gate passes against the
   exact CPack ZIP. Older duplicate timings are `HISTORICAL` context only.
 
 ## Machine-readable status rules
@@ -203,11 +204,11 @@ numbered taxonomy status and must not be converted to PASS by documentation edit
 
 | item | status | current record / next owner |
 |---|---|---|
-| current working-tree full non-nightly CTest regression | `RECORDED PASS` | recorded `42/42` baseline passes with `ctest --test-dir build -LE 'nightly|package' --output-on-failure --timeout 450`; the separate release-only package JVM gate is not folded into this aggregate |
+| current working-tree full non-nightly CTest regression | `RECORDED PASS` | recorded `43/43` baseline passes in `386.22s` with `ctest --test-dir build -LE 'nightly|package' --output-on-failure --timeout 600`; the separate release-only package JVM gate is not folded into this aggregate |
 | current working-tree final one-file package verification | `RECORDED PASS` | ignored local Linux ZIP `build/packages/cppfabricmc-1.21.4-Linux-x86_64.zip` contains only `cppfm`; the latest clean extraction and `test_server_full` pass `234/234`, and `package_jvm_smoke` passes strict default-on JVM startup when JNI/classes are available; it is not a tracked/public release artifact |
 | `tools/soak_bot.py --duration 300` | `RESOLVED` | three integrated main runs passed; each had KeepAlive `30`, chunks `182`, time updates `300`, all error counters `0`, and cleanup PASS; plan49 §1 |
 | accepted 2-hour/24-hour run | `INTERRUPTED / ABSENT` | the 7200-second synthetic attempt was interrupted at recorded `t=3361s`; post-fill RSS was `160388→191612kB` (`+19.5%`), above the `15%` gate; no accepted 2-hour/24-hour artifact exists; plan51 keeps this boundary explicit |
-| current real-client/GUI capture | `ABSENT` / `DECLARED-LIMITATION` | no current official-client artifact; bot/synthetic evidence is separate; plan51 JVM boundary does not provide a GUI/client artifact |
+| current real-client/GUI capture | `PASS / LOCAL-ONLY` | mc-pilot-managed Fabric 1.21.4 client logged in offline, entered play, stayed connected for more than one minute, and completed chat/command/block/status/screenshot probes; PrismLauncher 11.1.0 also launched Fabric 1.21.4 through its CLI with an existing authenticated account and joined cppfm; temporary logs/screenshot were not retained as release artifacts; see [MC_PILOT_REAL_TEST.md](MC_PILOT_REAL_TEST.md) |
 
 ## Declared limitations (outside #1–#90; not counted as `DONE`)
 
@@ -218,8 +219,8 @@ table rather than being hidden inside a numbered `DONE` row.
 |---|---|---|
 | Fabric `Netty` `ChannelPipeline` `Codec` abstraction | DECLARED-LIMITATION | The implementation uses manual `WriteBuffer`/`ReadBuffer`; it is not a JVM Netty channel pipeline. |
 | Fabric Loader JVM mods and Fabric event-bus bytecode | DECLARED-LIMITATION | The executable enables its bounded HotSpot/JNI compatibility layer by default only when configure/build finds the required JDK/JNI inputs. A JNI-capable binary needs a compatible runtime JDK/classes; a no-JNI binary remains native-only until rebuilt, and `jvm=false` is available for an explicit native-only run. The layer includes a dependency-free shadow ABI, selected events, a version-locked pre-definition transformer, MixinExtras operations including `@Share`/`@Local`, selective routing, and a 25/25 dependency-free corpus. A separate offline probe verifies pinned official Loader/Knot/Mixin, and the locked Lithium/FerriteCore/Carpet server-side corpus passes with Java 21; its latest local ignored report has zero classified fatal linkage/bootstrap/uncaught-exception diagnostics and is not a tracked/public artifact. The separate structural provider scan is conservative and diagnostic because raw Mixin target members can be created during transformation. It does not ship the Mojang GameProvider/server jar, guarantee arbitrary mods, or establish universal bytecode compatibility; the E-14 boundary remains. |
-| Vanilla Xoroshiro seed parity at L3 | DECLARED-LIMITATION | L1/L2 determinism is covered, but exact vanilla RNG byte parity is not independently proven. |
-| Real-client GUI and 24-hour/nightly evidence | DECLARED-LIMITATION | Procedures and bot/synthetic evidence do not substitute for a retained current real-client or long-run artifact. |
+| Vanilla Xoroshiro seed parity at L3 | IMPLEMENTED-PARTIAL | `test_rng_parity` reports `25 PASS / 0 FAIL` for Java `LocalRandom`, Minecraft seed expansion, Xoroshiro128++ primitive outputs, bounded values, and long/coordinate/string splitters. Full world-generation call ordering and structure-NBT parity remain independently unproven, so the complete L3 claim stays a declared boundary. |
+| Real-client GUI and 24-hour/nightly evidence | DECLARED-LIMITATION | Bounded local mc-pilot and PrismLauncher-managed Fabric 1.21.4 probes pass, but their temporary evidence is not a retained release artifact and no accepted 2-hour/24-hour run exists. First-time Microsoft interactive login, every gameplay path, and all PrismLauncher instance configurations remain untested. |
 | Session mining versus `MiningCalculator` | IMPLEMENTED | plan49 unifies session start/finish and tick completion through shared context/results; `test_mining_full` `59/59` plus live smoke/server paths pass. |
 | `MobBehaviorSpec` live coverage | IMPLEMENTED-PARTIAL | plan49 wires 12 descriptor rows into live AI and gameplay assertions; broader species-wide vanilla equivalence remains a declared boundary. |
 | Retained marker/comment inventory | DECLARED-LIMITATION | The legacy-reference grep was zero, but a complete zero-marker inventory was not proven. |
@@ -235,7 +236,7 @@ table rather than being hidden inside a numbered `DONE` row.
 
 `tests/test_smoke_80.cpp` exercises the base taxonomy and its historical extension
 checks. A test result is evidence for a named run, not a replacement for the matrix
-status. Current named wire counts are `test_spec_wire` `395 PASS 0 FAIL`,
+status. Current named wire counts are `test_spec_wire` `417 PASS 0 FAIL`,
 `test_wire_full` `399 PASS 0 FAIL`, and `test_wire_b6` `136 PASS 0 FAIL`;
 the old handover value `328` is stale. `test_native` remains `ALL PASS` without an
 invented aggregate count. The current focused record includes `test_gameplay_full`
@@ -255,7 +256,7 @@ limitations are recorded separately below.
 | `tests/soak_test.py` 1800-second run | PASS | allocation-reuse baseline `17ab09f`; 900 keepalives, 0 disconnects, 17493 actions, post-fill RSS growth 12.5%; not a 2-hour/24-hour substitute |
 | `tests/soak_test.py` 7200-second attempt | NOT-ACCEPTED | interrupted at recorded `t=3361s`; post-fill RSS `160388→191612kB` (`+19.5%`), above the `15%` gate |
 | E-14 gameplay boundary | DECLARED-LIMITATION | The current gameplay harness reports this unsupported arbitrary-JVM-mod scope informationally; it is not counted as a test failure or hidden pass |
-| nightly/24-hour and real-client evidence | DECLARED-LIMITATION | No accepted current artifact is recorded here |
+| accepted nightly/24-hour and retained real-client release evidence | DECLARED-LIMITATION | Bounded local mc-pilot and PrismLauncher real-client probes pass and are recorded in [MC_PILOT_REAL_TEST.md](MC_PILOT_REAL_TEST.md), but no accepted long-run or retained release artifact exists. |
 
 The stable fixture is `docs/mob_stats_149.csv`; it is required to contain exactly 149
 data rows and 11 columns and must remain byte-identical to the archived source used

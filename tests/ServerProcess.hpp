@@ -25,6 +25,10 @@ struct ServerProcessOptions {
     std::uint16_t portBase = 26000;
     std::uint16_t portSpan = 3000;
     int viewDistance = 6;
+    // Most protocol fixtures use the legacy flat-world coordinates (surface
+    // at y=-61). Keep that test fixture explicit now that the production
+    // default matches vanilla normal terrain.
+    std::string levelType = "flat";
     bool onlineMode = false;
     std::string motd;
     std::string worldPrefix = "/tmp/cppfm-test-";
@@ -67,6 +71,7 @@ public:
             char portArg[32];
             char viewArg[32];
             char worldArg[256];
+            const std::string levelArg = "--level-type=" + options.levelType;
             std::snprintf(portArg, sizeof(portArg), "--port=%u", port);
             std::snprintf(viewArg, sizeof(viewArg), "--view-distance=%d",
                           options.viewDistance);
@@ -77,10 +82,11 @@ public:
             const std::string motdArg = "--motd=" + options.motd;
             if (options.motd.empty()) {
                 execl(serverPath, serverPath, portArg, viewArg, worldArg,
-                      onlineArg, static_cast<char*>(nullptr));
+                      levelArg.c_str(), onlineArg, static_cast<char*>(nullptr));
             } else {
                 execl(serverPath, serverPath, portArg, viewArg, worldArg,
-                      onlineArg, motdArg.c_str(), static_cast<char*>(nullptr));
+                      levelArg.c_str(), onlineArg, motdArg.c_str(),
+                      static_cast<char*>(nullptr));
             }
             _exit(127);
         }

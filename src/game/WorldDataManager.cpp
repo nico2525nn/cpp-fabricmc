@@ -275,8 +275,8 @@ bool WorldDataManager::tryLoadFile(const std::string& path, World& world, std::s
         std::ifstream f(path, std::ios::binary);
         if (!f) return false;
         std::error_code sizeError;
-        const auto size = std::filesystem::file_size(path, sizeError);
-        if (!sizeError && size > WorldDataManager::kMaxLevelDataBytes) {
+        const auto fileSize = std::filesystem::file_size(path, sizeError);
+        if (!sizeError && fileSize > WorldDataManager::kMaxLevelDataBytes) {
             std::fprintf(stderr, "[WorldDataManager] refusing oversized level data: %s\n",
                          path.c_str());
             return false;
@@ -332,8 +332,8 @@ bool WorldDataManager::tryLoadFile(const std::string& path, World& world, std::s
                 if (!readDouble(*cz, parsed)) return false;
                 borderCZOut = parsed;
             }
-            if (auto* size = wb->get("Size")) {
-                if (!readDouble(*size, parsed)) return false;
+            if (auto* borderSize = wb->get("Size")) {
+                if (!readDouble(*borderSize, parsed)) return false;
                 borderDiameterOut = parsed;
             }
             if (borderLerpTargetOut || borderLerpMsOut) {

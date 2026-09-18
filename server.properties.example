@@ -3,6 +3,7 @@ server-port=25565
 max-players=20
 view-distance=6
 simulation-distance=10
+level-type=normal
 motd=CppFabricMC - C++ Minecraft 1.21.4 server
 # Java integration is enabled by default when a compatible JDK is available.
 # Set jvm=false for a native-only run, or jvm-strict=true to fail startup when

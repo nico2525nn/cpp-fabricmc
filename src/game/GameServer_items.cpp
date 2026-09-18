@@ -14,6 +14,7 @@
 #include "MobSpawner.hpp"
 #include "MenuLogic.hpp"
 #include "PotionBrewing.hpp"
+#include "GameServerHelpers.hpp"
 
 namespace cppfm {
 using namespace proto;
@@ -169,10 +170,8 @@ void GameServer::handleMoveVehicle(Player& p, double x, double y, double z, floa
         entityId = veh->entityId;
         vehicleKind = veh->kind;
     }
-    WriteBuffer tp;
-    tp.varint(entityId);
-    tp.f64(x); tp.f64(y); tp.f64(z);
-    tp.f32(yaw); tp.f32(pitch); tp.boolean(true);
+    const WriteBuffer tp = makeEntityTeleportBody(
+        entityId, x, y, z, 0.0, 0.0, 0.0, yaw, pitch, 0, true);
     broadcastPacketExceptInDimension(dimension, nullptr,
                                      proto::pl::sc::EntityTeleport, tp);
     WriteBuffer vm;
@@ -216,7 +215,8 @@ void GameServer::handleHorseJump(Player& p, int power) {
             (veh->kind != MobKind::Horse && veh->kind != MobKind::Llama &&
              veh->kind != MobKind::Pig))
             return;
-        float f = std::clamp(power/100.0f, 0.0f, 1.0f);
+        const float f = std::clamp(static_cast<float>(power) / 100.0F,
+                                   0.0F, 1.0F);
         veh->velY = 0.42 + f*0.6;
         veh->velX *= 1.05; veh->velZ *= 1.05;
         if(veh->velY>1.2) veh->velY=1.2;
@@ -508,15 +508,14 @@ void GameServer::hoppersTick() {
 void GameServer::hoppersTickFor(std::int8_t dimension) {
     dimension = canonicalDimension(dimension);
     // Keep the long-established hopper implementation readable while making
-    // its world/store dependencies explicit at the boundary.  Local aliases
-    // deliberately shadow the Overworld members below; all three dimensions
-    // then execute the same transfer rules against their own state.
-    auto& blockEntities_ = blockEntitiesFor(dimension);
-    auto& world_ = worldFor(dimension);
-    auto& redstone_ = redstoneFor(dimension);
-    auto& fluidSim_ = fluidsFor(dimension);
-    auto& blockTicks_ = blockTicksFor(dimension);
-    auto& dispenserPower_ = dispenserPowerByDimension_[
+    // its world/store dependencies explicit at the boundary. All three
+    // dimensions execute the same transfer rules against their own state.
+    auto& dimensionBlockEntities = blockEntitiesFor(dimension);
+    auto& dimensionWorld = worldFor(dimension);
+    auto& dimensionRedstone = redstoneFor(dimension);
+    auto& dimensionFluids = fluidsFor(dimension);
+    auto& dimensionBlockTicks = blockTicksFor(dimension);
+    auto& dimensionDispenserPower = dispenserPowerByDimension_[
         dimension == 0 ? 0 : (dimension < 0 ? 1 : 2)];
     auto broadcastPacketExcept = [this, dimension](
         const Player* except, std::uint8_t id, const WriteBuffer& body) {
@@ -555,14 +554,14 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
     // detached copy and silently lose the result.  Re-resolve each key before
     // processing so the authoritative store receives the mutation.
     std::vector<std::pair<std::int64_t, BlockEntity::Kind>> snapshot;
-    blockEntities_.forEach([&](std::int64_t k, BlockEntity& be) {
+    dimensionBlockEntities.forEach([&](std::int64_t k, BlockEntity& be) {
         if (be.kind == BlockEntity::Kind::Hopper ||
             be.kind == BlockEntity::Kind::Dispenser ||
             be.kind == BlockEntity::Kind::Dropper)
             snapshot.emplace_back(k, be.kind);
     });
     for (const auto& [key, kind] : snapshot) {
-        auto currentOwner = blockEntities_.getShared(key);
+        auto currentOwner = dimensionBlockEntities.getShared(key);
         if (!currentOwner) continue;
         std::unique_lock entityLock(*currentOwner->stateMtx);
         auto& be = *currentOwner;
@@ -570,7 +569,7 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
         const std::int32_t x = posKeyUnpackX(key);
         const std::int32_t y = posKeyUnpackY(key);
         const std::int32_t z = posKeyUnpackZ(key);
-        if (be.kind == BlockEntity::Kind::Hopper && redstone_.isPoweredHere(x, y, z)) continue;
+        if (be.kind == BlockEntity::Kind::Hopper && dimensionRedstone.isPoweredHere(x, y, z)) continue;
         ItemStack* slots = be.generic.slots;
         const int count = be.kind == BlockEntity::Kind::Hopper ? 5 : 9;
 
@@ -580,7 +579,7 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
                 if (s.empty()) { s = src; return true; }
                 if (sameStackData(s, src) && s.count < 64) {
                     const int take = std::min<int>(64 - s.count, src.count);
-                    s.count += take;
+                    s.count = static_cast<std::int16_t>(s.count + take);
                     if (take >= src.count) return true;
                 }
             }
@@ -615,8 +614,8 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
                 ItemStack one = oneItem(s);
                 if (mergeIntoFirstFit(one)) {
                     if (--s.count <= 0) s = ItemStack::air();
-                    blockEntities_.markDirty(posKey(x, y + 1, z));
-                    blockEntities_.markDirty(key);
+                    dimensionBlockEntities.markDirty(posKey(x, y + 1, z));
+                    dimensionBlockEntities.markDirty(key);
                     return true;
                 }
             }
@@ -624,7 +623,7 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
         };
 
         // ---- pull from above
-        if (auto otherOwner = blockEntities_.getShared(posKey(x, y + 1, z)))
+        if (auto otherOwner = dimensionBlockEntities.getShared(posKey(x, y + 1, z)))
             extractOneFrom(otherOwner);
         // ---- item entity pickup from the hopper cell itself
         WriteBuffer collected;
@@ -647,7 +646,7 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
                         } else if (!e->stack.empty()) {
                             e->stack.count = e->count;
                         }
-                        blockEntities_.markDirty(key);
+                        dimensionBlockEntities.markDirty(key);
                         collected.varint(e->entityId);
                         collected.varint(0);             // collector: hopper
                         collected.varint(1);
@@ -660,7 +659,7 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
         if (collectedItem)
             broadcastPacketExcept(nullptr, pl::sc::Collect, collected);
         // ---- push downward
-        if (auto belowOwner = blockEntities_.getShared(posKey(x, y - 1, z))) {
+        if (auto belowOwner = dimensionBlockEntities.getShared(posKey(x, y - 1, z))) {
             std::lock_guard belowLock(*belowOwner->stateMtx);
             auto* below = belowOwner.get();
             auto insertOneInto = [&](BlockEntity* target,
@@ -721,8 +720,8 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
                     ItemStack one = oneItem(s);
                     if (insertOneInto(below, one)) {
                         if (--s.count <= 0) s = ItemStack::air();
-                        blockEntities_.markDirty(key);
-                        blockEntities_.markDirty(posKey(x, y - 1, z));
+                        dimensionBlockEntities.markDirty(key);
+                        dimensionBlockEntities.markDirty(posKey(x, y - 1, z));
                     }
                     break;
                 }
@@ -731,13 +730,13 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
 
         if (be.kind == BlockEntity::Kind::Dispenser ||
             be.kind == BlockEntity::Kind::Dropper) {
-            bool powered = redstone_.isQuasiPowered(x, y, z);
-            bool& was = dispenserPower_[key];
+            bool powered = dimensionRedstone.isQuasiPowered(x, y, z);
+            bool& was = dimensionDispenserPower[key];
             if (powered && !was) {
                 // detect dropper vs dispenser by world block name
                 bool isDropper = be.kind == BlockEntity::Kind::Dropper;
                 {
-                    uint16_t bs = world_.getBlock(x, y, z);
+                    uint16_t bs = dimensionWorld.getBlock(x, y, z);
                     const gen::BlockDef* bd = gen::blockByState(bs);
                     if (bd && std::string(bd->name)=="minecraft:dropper") isDropper=true;
                 }
@@ -749,7 +748,7 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
                     auto& s = slots[pick];
                     double dx = 0, dy = 0, dz = 0;
                     std::string facing = "north";
-                    std::uint16_t bstate = world_.getBlock(x, y, z);
+                    std::uint16_t bstate = dimensionWorld.getBlock(x, y, z);
                     if (bstate) {
                         for (auto& [pk, pv] : gen::propsOf(bstate))
                             if (pk == "facing") facing = std::string(pv);
@@ -767,7 +766,7 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
                     std::string iname = s.name();
 
                     auto doDropperInsert = [&]() -> bool {
-                        auto targetOwner = blockEntities_.getShared(posKey(tx,ty,tz));
+                        auto targetOwner = dimensionBlockEntities.getShared(posKey(tx,ty,tz));
                         if(!targetOwner) return false;
                         std::lock_guard targetLock(*targetOwner->stateMtx);
                         auto* beT = targetOwner.get();
@@ -786,11 +785,11 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
                             auto &dst = beT->furnace.slots[trySlot];
                             if(dst.empty()){
                                 dst = one;
-                                blockEntities_.markDirty(posKey(tx,ty,tz));
+                                dimensionBlockEntities.markDirty(posKey(tx,ty,tz));
                                 return true;
                             } else if(sameStackData(dst, one) && dst.count<64){
                                 ++dst.count;
-                                blockEntities_.markDirty(posKey(tx,ty,tz));
+                                dimensionBlockEntities.markDirty(posKey(tx,ty,tz));
                                 return true;
                             } else return false;
                         }
@@ -799,18 +798,18 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
                                 auto &dst = beT->brewing.slots[3];
                                 if(dst.empty()){
                                     dst = one;
-                                    blockEntities_.markDirty(posKey(tx,ty,tz));
+                                    dimensionBlockEntities.markDirty(posKey(tx,ty,tz));
                                     return true;
                                 } else if(sameStackData(dst, one) && dst.count<64){
                                     ++dst.count;
-                                    blockEntities_.markDirty(posKey(tx,ty,tz));
+                                    dimensionBlockEntities.markDirty(posKey(tx,ty,tz));
                                     return true;
                                 } else return false;
                             }
                             for(int idx : {0,1,2,4}){
                                 auto &d = beT->brewing.slots[idx];
-                                if(d.empty()){ d=one; blockEntities_.markDirty(posKey(tx,ty,tz)); return true; }
-                                if(sameStackData(d, one) && d.count<64){ ++d.count; blockEntities_.markDirty(posKey(tx,ty,tz)); return true; }
+                                if(d.empty()){ d=one; dimensionBlockEntities.markDirty(posKey(tx,ty,tz)); return true; }
+                                if(sameStackData(d, one) && d.count<64){ ++d.count; dimensionBlockEntities.markDirty(posKey(tx,ty,tz)); return true; }
                             }
                             return false;
                         }
@@ -835,8 +834,8 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
                                     beT->crafter.isSlotDisabled(j))
                                     continue;
                                 auto &d=oslots[j];
-                                if(d.empty()){ d=one; blockEntities_.markDirty(posKey(tx,ty,tz)); return true; }
-                                if(sameStackData(d, one) && d.count<64){ ++d.count; blockEntities_.markDirty(posKey(tx,ty,tz)); return true; }
+                                if(d.empty()){ d=one; dimensionBlockEntities.markDirty(posKey(tx,ty,tz)); return true; }
+                                if(sameStackData(d, one) && d.count<64){ ++d.count; dimensionBlockEntities.markDirty(posKey(tx,ty,tz)); return true; }
                             }
                         }
                         return false;
@@ -850,32 +849,32 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
                         }
                         if (--s.count <= 0) s = ItemStack::air();
                         broadcastSound("minecraft:block.dispenser.dispense", x+.5,y+.5,z+.5,1.f,1.f,"block");
-                        blockEntities_.markDirty(key);
+                        dimensionBlockEntities.markDirty(key);
                     } else {
                         bool handled = false;
                         if (iname.find("shulker_box") != std::string::npos) {
-                            uint16_t tSt = world_.getBlock(tx,ty,tz);
+                            uint16_t tSt = dimensionWorld.getBlock(tx,ty,tz);
                             if (tSt==0) {
-                                uint16_t belowSt = world_.getBlock(tx,ty-1,tz);
+                                uint16_t belowSt = dimensionWorld.getBlock(tx,ty-1,tz);
                                 std::string shulkerFacing = (belowSt==0 ? facing : "up");
                                 const gen::BlockDef* def = gen::blockByName(iname);
                                 if (!def) def = gen::blockByName("minecraft:shulker_box");
                                 if (def) {
                                     uint16_t ns = static_cast<uint16_t>(gen::stateWithProps(*def, {{"facing", shulkerFacing}}));
-                                    world_.setBlock(tx,ty,tz, ns);
+                                    dimensionWorld.setBlock(tx,ty,tz, ns);
                                     broadcastBlockChange(tx,ty,tz, ns);
-                                    auto beNOwner = blockEntities_.getShared(posKey(tx,ty,tz));
+                                    auto beNOwner = dimensionBlockEntities.getShared(posKey(tx,ty,tz));
                                     if (!beNOwner)
-                                        beNOwner = blockEntities_.createShared(
+                                        beNOwner = dimensionBlockEntities.createShared(
                                             posKey(tx,ty,tz), BlockEntity::Kind::ShulkerBox);
                                     std::lock_guard beNLock(*beNOwner->stateMtx);
                                     auto* beN = beNOwner.get();
                                     if (beN->kind != BlockEntity::Kind::ShulkerBox) {
                                         beN->kind = BlockEntity::Kind::ShulkerBox;
-                                        blockEntities_.markDirty(posKey(tx,ty,tz));
+                                        dimensionBlockEntities.markDirty(posKey(tx,ty,tz));
                                     }
                                     if (--s.count <= 0) s = ItemStack::air();
-                                    blockEntities_.markDirty(key);
+                                    dimensionBlockEntities.markDirty(key);
                                     broadcastSound("minecraft:block.dispenser.dispense", x+.5,y+.5,z+.5,1.f,1.f,"block");
                                     handled = true;
                                 }
@@ -889,7 +888,7 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
                         }
                         // bucket fluid dispense
                         if(!handled && (iname=="minecraft:water_bucket" || iname=="minecraft:lava_bucket" || iname=="minecraft:powder_snow_bucket")){
-                            uint16_t tSt = world_.getBlock(tx,ty,tz);
+                            uint16_t tSt = dimensionWorld.getBlock(tx,ty,tz);
                             bool replaceable = (tSt==0);
                             // check replaceable: air or non-solid? simplified air only
                             if(replaceable){
@@ -903,14 +902,14 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
                                     if(fluidSt==0){ auto it=gen::blockNameToState().find(fluid); if(it!=gen::blockNameToState().end()) fluidSt=static_cast<uint16_t>(it->second); }
                                 }
                                 // Nether water evaporates
-                                if(fluid=="minecraft:water" && world_.dimensionId()==-1){
+                                if(fluid=="minecraft:water" && dimensionWorld.dimensionId()==-1){
                                     // evaporate with particles/sound
                                     broadcastSound("minecraft:block.fire.extinguish", tx+0.5,ty+0.5,tz+0.5,0.5f,2.6f,"block");
                                 } else {
-                                    world_.setBlock(tx,ty,tz,fluidSt);
+                                    dimensionWorld.setBlock(tx,ty,tz,fluidSt);
                                     broadcastBlockChange(tx,ty,tz,fluidSt);
                                     if(fluid=="minecraft:water" || fluid=="minecraft:lava"){
-                                        fluidSim_.touch(tx,ty,tz);
+                                        dimensionFluids.touch(tx,ty,tz);
                                     }
                                 }
                                 // replace with empty bucket
@@ -924,7 +923,7 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
                                 handled=true;
                             }
                         } else if(!handled && iname=="minecraft:bucket"){
-                            uint16_t tSt = world_.getBlock(tx,ty,tz);
+                            uint16_t tSt = dimensionWorld.getBlock(tx,ty,tz);
                             const gen::BlockDef* td = gen::blockByState(tSt);
                             bool isWater=false,isLava=false,isPowder=false;
                             if(td){
@@ -935,7 +934,7 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
                                 } else if(td->name=="minecraft:powder_snow") isPowder=true;
                             }
                             if(isWater||isLava||isPowder){
-                                world_.setBlock(tx,ty,tz,0);
+                                dimensionWorld.setBlock(tx,ty,tz,0);
                                 broadcastBlockChange(tx,ty,tz,0);
                                 std::string newName = isLava?"minecraft:lava_bucket":(isPowder?"minecraft:powder_snow_bucket":"minecraft:water_bucket");
                                 s = ItemStack::ofName(newName,1);
@@ -1141,8 +1140,8 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
                                 handled=true; // don't double-decrement
                             }
                         } else if(!handled && iname=="minecraft:flint_and_steel"){
-                            uint16_t tSt = world_.getBlock(tx,ty,tz);
-                            uint16_t below = world_.getBlock(tx,ty-1,tz);
+                            uint16_t tSt = dimensionWorld.getBlock(tx,ty,tz);
+                            uint16_t below = dimensionWorld.getBlock(tx,ty-1,tz);
                             const gen::BlockDef* td=gen::blockByState(tSt);
                             const gen::BlockDef* bd=gen::blockByState(below);
                             bool isAir = tSt==0;
@@ -1152,7 +1151,7 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
                             if(td && std::string(td->name)=="minecraft:tnt"){
                                 spawnPrimedTnt(tx+0.5, ty+0.5, tz+0.5, 0, 0.2, 0, 80);
                                 broadcastSound("minecraft:entity.tnt.primed", tx+0.5, ty+0.5, tz+0.5, 1.f, 1.f, "block");
-                                world_.setBlock(tx,ty,tz,0); broadcastBlockChange(tx,ty,tz,0);
+                                dimensionWorld.setBlock(tx,ty,tz,0); broadcastBlockChange(tx,ty,tz,0);
                                 handledFS=true;
                             } else if(td && (std::string(td->name)=="minecraft:campfire" || std::string(td->name)=="minecraft:soul_campfire")){
                                 std::string lit=getPropStr(tSt,"lit");
@@ -1161,7 +1160,7 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
                                     for(auto&[k,v]: gen::propsOf(tSt)) if(k!="lit") props.emplace_back(k,v);
                                     props.emplace_back("lit","true");
                                     uint16_t ns=static_cast<uint16_t>(gen::stateWithProps(*td, props));
-                                    world_.setBlock(tx,ty,tz,ns); broadcastBlockChange(tx,ty,tz,ns);
+                                    dimensionWorld.setBlock(tx,ty,tz,ns); broadcastBlockChange(tx,ty,tz,ns);
                                     handledFS=true;
                                 }
                             } else if(isAir && belowSolid){
@@ -1179,7 +1178,7 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
                                 auto it=gen::blockNameToState().find(fn);
                                 if(it!=gen::blockNameToState().end()){
                                     uint16_t fs=static_cast<uint16_t>(it->second);
-                                    world_.setBlock(tx,ty,tz,fs); broadcastBlockChange(tx,ty,tz,fs);
+                                    dimensionWorld.setBlock(tx,ty,tz,fs); broadcastBlockChange(tx,ty,tz,fs);
                                     handledFS=true;
                                 }
                             }
@@ -1192,13 +1191,13 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
                                 handled=true;
                             }
                         } else if(!handled && iname=="minecraft:bone_meal"){
-                            uint16_t tSt = world_.getBlock(tx,ty,tz);
+                            uint16_t tSt = dimensionWorld.getBlock(tx,ty,tz);
                             const gen::BlockDef* td=gen::blockByState(tSt);
                             bool fertilized=false;
                             if(td){
-                                auto* beh=blockTicks_.behaviorFor(std::string(td->name));
-                                if(beh && beh->fertilize(world_, tx,ty,tz,tSt,this)){
-                                    uint16_t ns=world_.getBlock(tx,ty,tz);
+                                auto* beh=dimensionBlockTicks.behaviorFor(std::string(td->name));
+                                if(beh && beh->fertilize(dimensionWorld, tx,ty,tz,tSt,this)){
+                                    uint16_t ns=dimensionWorld.getBlock(tx,ty,tz);
                                     broadcastBlockChange(tx,ty,tz,ns);
                                     broadcastSound("minecraft:item.bone_meal.use", tx+0.5,ty+0.5,tz+0.5,1.f,1.f,"block");
                                     fertilized=true;
@@ -1227,7 +1226,7 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
                         }
                         if(handled){
                             broadcastSound("minecraft:block.dispenser.dispense", x + .5, y + .5, z + .5, 1.f, 1.f, "block");
-                            blockEntities_.markDirty(key);
+                            dimensionBlockEntities.markDirty(key);
                         }
                     }
                 }
@@ -1443,7 +1442,8 @@ bool GameServer::openTrading(Player& p, MobEntity& v) {
     for (int i=0;i<num;++i) {
         const auto& t = offers[i];
         float baseMult = t.priceMultiplier;
-        float gossipDiscount = std::min(0.5f, gossipRep * 0.02f);
+        const float gossipDiscount = std::min(
+            0.5F, static_cast<float>(gossipRep) * 0.02F);
         // villager Workaround: priceMult stays baseMult, specialPrice carries discount
         float priceMult = baseMult;
         int specialPrice = - int(std::floor(gossipDiscount * t.inCount));
@@ -1554,7 +1554,8 @@ bool GameServer::selectTrade(Player& p, std::int32_t index,
         if (need <= 0) break;
         if (!s.empty() && s.itemId == t.inItem) {
             const int take = std::min<int>(s.count, need);
-            s.count -= take; need -= take;
+            s.count = static_cast<std::int16_t>(s.count - take);
+            need -= take;
             if (s.count <= 0) s = ItemStack::air();
         }
     }
@@ -1564,7 +1565,8 @@ bool GameServer::selectTrade(Player& p, std::int32_t index,
             if (need2<=0) break;
             if (!s.empty() && s.itemId == t.inItem2) {
                 const int take = std::min<int>(s.count, need2);
-                s.count -= take; need2 -= take;
+                s.count = static_cast<std::int16_t>(s.count - take);
+                need2 -= take;
                 if (s.count <= 0) s = ItemStack::air();
             }
         }
@@ -1929,8 +1931,8 @@ void GameServer::spawnItemDropFor(std::int8_t dimension, double x, double y,
 void GameServer::broadcastSpawnItem(const ItemEntity& it) {
     WriteBuffer b;
     b.varint(it.entityId);
-    std::uint8_t zero[16] = {};
-    b.uuid(zero);
+    const auto uuid = entityUuidForId(it.entityId);
+    b.uuid(uuid.data());
     b.varint(static_cast<std::int32_t>(gen::entityTypeIdByName().at("minecraft:item")));
     b.f64(it.x); b.f64(it.y); b.f64(it.z);
     b.i8(0); b.i8(0); b.i8(0);
@@ -1968,15 +1970,21 @@ bool GameServer::addToInventory(Player& p, std::uint32_t itemId, std::uint16_t c
                                                              20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35})) {
             auto& s = trial[i];
             if (pass == 0 && s.itemId == itemId && s.count > 0 && s.count < 64) {
-                const auto take = std::min<int16_t>((int16_t)(64 - s.count), (int16_t)count);
-                s.count += take; count -= take;
+                const int take = std::min(64 - static_cast<int>(s.count),
+                                           static_cast<int>(count));
+                s.count = static_cast<std::int16_t>(s.count + take);
+                count = static_cast<std::uint16_t>(count -
+                                                   static_cast<std::uint16_t>(take));
                 if (count == 0) {
                     p.inv = std::move(trial);
                     return true;
                 }
             } else if (pass == 1 && s.count == 0) {
-                s.itemId = itemId; s.count = std::min<int16_t>(64, (int16_t)count);
-                count -= s.count;
+                s.itemId = itemId;
+                const int placed = std::min(64, static_cast<int>(count));
+                s.count = static_cast<std::int16_t>(placed);
+                count = static_cast<std::uint16_t>(count -
+                                                   static_cast<std::uint16_t>(placed));
                 if (count == 0) {
                     p.inv = std::move(trial);
                     return true;
@@ -2093,15 +2101,10 @@ void GameServer::effectsTick() {
                 player.fallDist = 0;
                 player.prevFeetY = player.y;
                 if (connection) {
-                    levitationPacket.varint(player.entityId);
-                    levitationPacket.f64(player.x);
-                    levitationPacket.f64(player.y);
-                    levitationPacket.f64(player.z);
-                    levitationPacket.i8(static_cast<std::int8_t>(
-                        player.yaw * 256.f / 360.f));
-                    levitationPacket.i8(static_cast<std::int8_t>(
-                        player.pitch * 256.f / 360.f));
-                    levitationPacket.boolean(player.onGround);
+                    levitationPacket = makeEntityTeleportBody(
+                        player.entityId, player.x, player.y, player.z,
+                        0.0, vy, 0.0, player.yaw, player.pitch, 0,
+                        player.onGround);
                     sendLevitation = true;
                 }
             } else if (levAmp >= 0) {
@@ -2209,22 +2212,22 @@ void GameServer::furnacesTick() {
 }
 
 void GameServer::furnacesTickFor(std::int8_t dimension) {
-    auto& blockEntities_ = blockEntitiesFor(dimension);
-    auto& world_ = worldFor(dimension);
+    auto& dimensionBlockEntities = blockEntitiesFor(dimension);
+    auto& dimensionWorld = worldFor(dimension);
     auto broadcastBlockChange = [this, dimension](std::int32_t x,
                                                    std::int32_t y,
                                                    std::int32_t z,
                                                    std::uint16_t state) {
         this->broadcastBlockChangeFor(dimension, x, y, z, state);
     };
-    blockEntities_.forEach([&](std::int64_t key, BlockEntity& be) {
+    dimensionBlockEntities.forEach([&](std::int64_t key, BlockEntity& be) {
         if (be.kind != BlockEntity::Kind::Furnace) return;
         FurnaceData& f = be.furnace;
         const std::int32_t x = posKeyUnpackX(key);
         const std::int32_t y = posKeyUnpackY(key);
         const std::int32_t z = posKeyUnpackZ(key);
-        world_.generateChunkIfMissing(x >> 4, z >> 4);
-        const std::uint16_t stateHere = world_.getBlock(x, y, z);
+        dimensionWorld.generateChunkIfMissing(x >> 4, z >> 4);
+        const std::uint16_t stateHere = dimensionWorld.getBlock(x, y, z);
 
         // fuel consumption
         if (f.burnTicks > 0) --f.burnTicks;
@@ -2240,7 +2243,7 @@ void GameServer::furnacesTickFor(std::int8_t dimension) {
                 f.burnTicks = f.burnDuration;
                 ItemStack& fuel = f.slots[FurnaceData::kFuel];
                 if (--fuel.count <= 0) fuel = ItemStack::air();
-                blockEntities_.markDirty(key);
+                dimensionBlockEntities.markDirty(key);
             }
         }
         const bool burning = f.burnTicks > 0;
@@ -2254,7 +2257,7 @@ void GameServer::furnacesTickFor(std::int8_t dimension) {
                 else { f.cookProgress = f.cookTotal; return; }
                 ItemStack& in = f.slots[FurnaceData::kInput];
                 if (--in.count <= 0) in = ItemStack::air();
-                blockEntities_.markDirty(key);
+                dimensionBlockEntities.markDirty(key);
                 // xp orbs on manual collection only; skip here
             }
         } else {
@@ -2265,10 +2268,11 @@ void GameServer::furnacesTickFor(std::int8_t dimension) {
         static const gen::BlockDef* fdef = gen::blockByName("minecraft:furnace");
         if ((fdef && stateHere == fdef->defaultState) || stateHere == 4351) {
             // NOTE(cleanup): parenthesized as evaluated — (fdef && stateHere == default) || stateHere == 4351.
-            const std::uint16_t want = gen::stateWithPropsList("minecraft:furnace",
-                {{"lit", burning ? "true" : "false"}});
+            const std::uint16_t want = static_cast<std::uint16_t>(
+                gen::stateWithPropsList("minecraft:furnace",
+                    {{"lit", burning ? "true" : "false"}}));
             if (stateHere != want) {
-                world_.setBlock(x, y, z, want);
+                dimensionWorld.setBlock(x, y, z, want);
                 broadcastBlockChange(x, y, z, want);
             }
         }
@@ -2281,22 +2285,22 @@ void GameServer::brewingTick() {
 }
 
 void GameServer::brewingTickFor(std::int8_t dimension) {
-    auto& blockEntities_ = blockEntitiesFor(dimension);
+    auto& dimensionBlockEntities = blockEntitiesFor(dimension);
     // Brewing stand: fuel (blaze powder -> kFuelPerBlaze) + brewTime kBrewTicks.
     const auto itBlaze = gen::itemIdByName().find("minecraft:blaze_powder");
     const std::uint32_t blazeId = itBlaze != gen::itemIdByName().end() ? itBlaze->second : 0;
-    blockEntities_.forEach([&](std::int64_t key, BlockEntity& be) {
+    dimensionBlockEntities.forEach([&](std::int64_t key, BlockEntity& be) {
         if (be.kind != BlockEntity::Kind::Brewing) return;
         BrewingData& b = be.brewing;
         // replenish fuel from blaze powder in slot 4
         if (b.fuel <= 0 && !b.slots[4].empty() && (blazeId == 0 || b.slots[4].itemId == blazeId)) {
             if (--b.slots[4].count <= 0) b.slots[4] = ItemStack::air();
             b.fuel = BrewingData::kFuelPerBlaze;
-            blockEntities_.markDirty(key);
+            dimensionBlockEntities.markDirty(key);
         }
         if (b.brewTime > 0) {
             --b.brewTime;
-            blockEntities_.markDirty(key);
+            dimensionBlockEntities.markDirty(key);
             if (b.brewTime == 0) {
                 // brew complete: consume ingredient slot 3 and transform potions (strict audit MEDIUM I7)
                 if (!b.slots[3].empty()) {
@@ -2350,7 +2354,7 @@ void GameServer::brewingTickFor(std::int8_t dimension) {
                             stk.setPotionId(target);
                         }
                     }
-                    blockEntities_.markDirty(key);
+                    dimensionBlockEntities.markDirty(key);
                 } else {
                     // no ingredient but timer expired? just reset
                     b.brewTime = 0;
@@ -2364,7 +2368,7 @@ void GameServer::brewingTickFor(std::int8_t dimension) {
                 // consume 1 fuel per operation
                 --b.fuel;
                 b.brewTime = BrewingData::kBrewTicks;
-                blockEntities_.markDirty(key);
+                dimensionBlockEntities.markDirty(key);
             }
         }
     });
@@ -2611,8 +2615,8 @@ std::shared_ptr<ProjectileEntity> GameServer::spawnProjectileFor(
     auto ti = types.find(entName);
     WriteBuffer b;
     b.varint(e->entityId);
-    std::uint8_t zero[16] = {};
-    b.uuid(zero);
+    const auto uuid = entityUuidForId(e->entityId);
+    b.uuid(uuid.data());
     b.varint(ti != types.end() ? static_cast<std::int32_t>(ti->second) : 0);
     b.f64(x); b.f64(y); b.f64(z);
     b.i8(0); b.i8(0); b.i8(0);
@@ -2882,12 +2886,9 @@ void GameServer::projectilesTick() {
                             }
                             // broadcast to others
                             {
-                                WriteBuffer tp;
-                                tp.varint(ownerEntityId);
-                                tp.f64(tx); tp.f64(ty); tp.f64(tz);
-                                tp.i8(static_cast<int8_t>(ownerYaw*256.f/360.f));
-                                tp.i8(static_cast<int8_t>(ownerPitch*256.f/360.f));
-                                tp.boolean(false);
+                                const WriteBuffer tp = makeEntityTeleportBody(
+                                    ownerEntityId, tx, ty, tz, 0.0, 0.0, 0.0,
+                                    ownerYaw, ownerPitch, 0, false);
                                 broadcastPacketExceptInDimension(
                                     ownerDimension, nullptr,
                                     proto::pl::sc::EntityTeleport, tp);
@@ -3103,7 +3104,8 @@ void GameServer::projectilesTick() {
                     effectPacket.varint(effects::Levitation);
                     effectPacket.varint(0);
                     effectPacket.varint(kLevitationDuration);
-                    effectPacket.u8(effectFlags(*effect));
+                    effectPacket.u8(static_cast<std::uint8_t>(
+                        effectFlags(*effect)));
                     applyLevitation = true;
                 }
             }

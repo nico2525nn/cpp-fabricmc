@@ -484,7 +484,10 @@ void Session::run() {
         // Persistence and quit hooks may take longer than one tick, and keeping
         // a disconnected player active during that window expands random ticks
         // and entity work around a position nobody can observe anymore.
-        self_->inPlay = false;
+        {
+            std::lock_guard playerLock(self_->stateMtx);
+            self_->inPlay = false;
+        }
         const auto cleanupStep = [this](const char* name, auto&& step) {
             try {
                 step();
@@ -1457,7 +1460,7 @@ void Session::onBeaconEffect(std::optional<std::int32_t> primary,
     b.varint(e.type);
     b.varint(e.amplifier);
     b.varint(e.durationTicks);
-    b.u8(effectFlags(e));
+    b.u8(static_cast<std::uint8_t>(effectFlags(e)));
     self_->conn->trySendPacket(proto::pl::sc::EntityEffect, b);
 }
 void Session::onSpectate(const std::array<std::uint8_t,16>& target) {
@@ -1733,7 +1736,7 @@ void Session::onEnchantItem(ReadBuffer& in) {
     const std::string enchantedItemName = input->name();
     const int consumedLapis = choice.lapisCost;
     *input = choice.result;
-    lapis->count -= choice.lapisCost;
+    lapis->count = static_cast<std::int16_t>(lapis->count - choice.lapisCost);
     if (lapis->count <= 0) *lapis = ItemStack::air();
     const bool experienceChanged = self_->gamemode == 0;
     if (experienceChanged)
@@ -3764,7 +3767,9 @@ void Session::onMovement(ReadBuffer& in, bool hasPos, bool hasRot) {
                 const gen::BlockDef* bd = gen::blockByState(st);
                 if (bd && std::string(bd->name) == "minecraft:farmland") {
                     float prob = std::clamp((float)(self_->fallDist - 0.5), 0.f, 1.f);
-                    bool doTrample = (prob >= 1.0f) || ((nextRandom()/(float)RAND_MAX) < prob);
+                    const bool doTrample = (prob >= 1.0F) ||
+                        (static_cast<float>(nextRandom()) /
+                         static_cast<float>(RAND_MAX) < prob);
                     if (doTrample) {
                         bool hasMoisture = false;
                         for (auto& [k,v] : gen::propsOf(st)) if (k=="moisture") hasMoisture=true;
@@ -3993,12 +3998,9 @@ void Session::broadcastMovement() {
     if (!self_->spawned) return;
     const bool first = !hasSent_;
     if (first) {                                   // initial absolute pose
-        WriteBuffer b;
-        b.varint(self_->entityId);
-        b.f64(self_->x); b.f64(self_->y); b.f64(self_->z);
-        b.i8(static_cast<std::int8_t>(self_->yaw * 256.f / 360.f));
-        b.i8(static_cast<std::int8_t>(self_->pitch * 256.f / 360.f));
-        b.boolean(self_->onGround);
+        const WriteBuffer b = makeEntityTeleportBody(
+            self_->entityId, self_->x, self_->y, self_->z,
+            0.0, 0.0, 0.0, self_->yaw, self_->pitch, 0, self_->onGround);
         srv_.broadcastPacketExceptInDimension(self_->dimension, nullptr,
                                               pl::sc::EntityTeleport, b);
         sentX_ = self_->x; sentY_ = self_->y; sentZ_ = self_->z;
@@ -4041,12 +4043,10 @@ void Session::broadcastMovement() {
             srv_.broadcastPacketExceptInDimension(self_->dimension, nullptr,
                                                   pl::sc::RotateHead, h);
         } else {                                    // teleport-class delta
-            WriteBuffer b;
-            b.varint(self_->entityId);
-            b.f64(self_->x); b.f64(self_->y); b.f64(self_->z);
-            b.i8(static_cast<std::int8_t>(self_->yaw * 256.f / 360.f));
-            b.i8(static_cast<std::int8_t>(self_->pitch * 256.f / 360.f));
-            b.boolean(self_->onGround);
+            const WriteBuffer b = makeEntityTeleportBody(
+                self_->entityId, self_->x, self_->y, self_->z,
+                0.0, 0.0, 0.0, self_->yaw, self_->pitch, 0,
+                self_->onGround);
             srv_.broadcastPacketExceptInDimension(self_->dimension, nullptr,
                                                   pl::sc::EntityTeleport, b);
         }
@@ -4752,9 +4752,13 @@ bool Session::handleUseItemOnDoorAndSlab(const UseItemOnRequest& request, const 
                         if((!rightDoor || leftDoor) && i >= 0){
                             int j = (fs=="east"?1: fs=="west"?-1:0);
                             int k = (fs=="south"?1: fs=="north"?-1:0);
-                            double d = ctx.cursor.x;
-                            double e = ctx.cursor.z;
-                            bool chooseLeft = (j >= 0 || !(e < 0.5)) && (j <= 0 || !(e > 0.5)) && (k >= 0 || !(d > 0.5)) && (k <= 0 || !(d < 0.5));
+                            const double cursorX = ctx.cursor.x;
+                            const double cursorZ = ctx.cursor.z;
+                            const bool chooseLeft =
+                                (j >= 0 || !(cursorZ < 0.5)) &&
+                                (j <= 0 || !(cursorZ > 0.5)) &&
+                                (k >= 0 || !(cursorX > 0.5)) &&
+                                (k <= 0 || !(cursorX < 0.5));
                             hingeStr = chooseLeft ? "left" : "right";
                         } else {
                             hingeStr = "left";
@@ -5161,11 +5165,12 @@ void Session::placeUseItemOnBlock(const UseItemOnRequest& request, const InvSlot
             }
             if(curLeaves!="none" || curStage!="0" || curAge!="0") needsFix=true;
             if (needsFix) {
-                std::vector<std::pair<std::string_view,std::string_view>> props;
-                props.emplace_back("leaves","none");
-                props.emplace_back("stage","0");
-                props.emplace_back("age","0");
-                std::uint16_t fixed = static_cast<std::uint16_t>(gen::stateWithProps(*bambooDef, props));
+                std::vector<std::pair<std::string_view,std::string_view>> bambooProps;
+                bambooProps.emplace_back("leaves","none");
+                bambooProps.emplace_back("stage","0");
+                bambooProps.emplace_back("age","0");
+                std::uint16_t fixed = static_cast<std::uint16_t>(
+                    gen::stateWithProps(*bambooDef, bambooProps));
                 srv_.worldFor(self_->dimension).setBlock(tx,ty,tz, fixed);
                 srv_.broadcastBlockChangeFor(self_->dimension, tx,ty,tz, fixed);
                 newState = fixed;
@@ -5186,10 +5191,10 @@ void Session::placeUseItemOnBlock(const UseItemOnRequest& request, const InvSlot
                 if(!bd || std::string(bd->name)!="minecraft:bamboo") break;
                 ++h;
             }
-            auto bambooLeavesFor = [](int h, int dist)->std::string {
-                if(dist==0) { if(h==1) return "none"; if(h==2) return "small"; return "large"; }
-                if(dist==1) { if(h==2) return "none"; if(h==3) return "small"; if(h>=4) return "large"; return "none"; }
-                if(dist==2) { if(h>=5) return "small"; return "none"; }
+            auto bambooLeavesFor = [](int height, int dist)->std::string {
+                if(dist==0) { if(height==1) return "none"; if(height==2) return "small"; return "large"; }
+                if(dist==1) { if(height==2) return "none"; if(height==3) return "small"; if(height>=4) return "large"; return "none"; }
+                if(dist==2) { if(height>=5) return "small"; return "none"; }
                 return "none";
             };
             bool thick = h>=4;
@@ -5206,12 +5211,13 @@ void Session::placeUseItemOnBlock(const UseItemOnRequest& request, const InvSlot
                 for(auto&[k,v]: gen::propsOf(st)) if(k=="age") curA=std::atoi(std::string(v).c_str());
                 int wantA = thick?1:curA;
                 if(curL!=want || (thick && curA!=1)) {
-                    std::vector<std::pair<std::string_view,std::string_view>> props;
-                    for(auto&[k,v]: gen::propsOf(st)) if(k!="leaves" && k!="age") props.emplace_back(k,v);
-                    props.emplace_back("leaves", want);
+                    std::vector<std::pair<std::string_view,std::string_view>> bambooGrowthProps;
+                    for(auto&[k,v]: gen::propsOf(st)) if(k!="leaves" && k!="age") bambooGrowthProps.emplace_back(k,v);
+                    bambooGrowthProps.emplace_back("leaves", want);
                     const std::string ageString = std::to_string(wantA);
-                    props.emplace_back("age", ageString);
-                    std::uint16_t ns = static_cast<std::uint16_t>(gen::stateWithProps(*d, props));
+                    bambooGrowthProps.emplace_back("age", ageString);
+                    std::uint16_t ns = static_cast<std::uint16_t>(
+                        gen::stateWithProps(*d, bambooGrowthProps));
                     srv_.worldFor(self_->dimension).setBlock(tx, yy, tz, ns);
                     srv_.broadcastBlockChangeFor(self_->dimension, tx, yy, tz, ns);
                 }
@@ -5344,9 +5350,10 @@ void Session::onUseItem(ReadBuffer& in) {
                 // riptide: propel player in look direction, damage trident, no projectile
                 double yawRad = self_->yaw * 3.14159265/180.0;
                 double pitchRad = self_->pitch * 3.14159265/180.0;
-                double vx = -std::sin(yawRad)*std::cos(pitchRad)*(1.2f * riptideLvl);
-                double vy = -std::sin(pitchRad)*(1.2f * riptideLvl);
-                double vz =  std::cos(yawRad)*std::cos(pitchRad)*(1.2f * riptideLvl);
+                const double riptideForce = 1.2 * static_cast<double>(riptideLvl);
+                double vx = -std::sin(yawRad)*std::cos(pitchRad)*riptideForce;
+                double vy = -std::sin(pitchRad)*riptideForce;
+                double vz =  std::cos(yawRad)*std::cos(pitchRad)*riptideForce;
                 // apply velocity via EntityVelocity packet
                 WriteBuffer vel;
                 vel.varint(self_->entityId);
@@ -6102,7 +6109,8 @@ void Session::onUseEntity(ReadBuffer& in) {
         if (len < 0.01) { dx = (nextRandom()/(double)RAND_MAX - 0.5); dz = (nextRandom()/(double)RAND_MAX - 0.5); len = std::sqrt(dx*dx+dz*dz); }
         double nx = dx / len;
         double nz = dz / len;
-        float kbForce = 0.4f * (punchLvl + kbLvl) + (punchLvl>0 ? 0.5f : 0.f);
+        const float kbForce = 0.4F * static_cast<float>(punchLvl + kbLvl) +
+                              (punchLvl > 0 ? 0.5F : 0.0F);
         // base knockback preserved as 400, add scaled extra (kbForce*8000)
         int horiz = 400 + (int)(kbForce * 8000 * 0.05); // small add to keep compat, vanilla punch force is separate
         // For clear vanilla: velocity = nx * (400 + kbForce*400) ; here we add directly

@@ -17,6 +17,8 @@ integration boundary, and verification evidence.
   clean-room methodology, and contribution workflow.
 - [Verification](VERIFICATION.md) — reproducible commands, evidence, and the
   interpretation of passing and bounded results.
+- [Real-client verification](MC_PILOT_REAL_TEST.md) — the mc-pilot-managed
+  Fabric client probe, PrismLauncher check, fixes, and tool assessment.
 - [Current status](CURRENT_STATE.md) — the latest measured state and remaining
   limitations.
 
@@ -78,13 +80,13 @@ default-on strict JVM startup without an external classes/assets override.
 
 The latest recorded working-tree evidence includes:
 
-- The 2026-09-10 operational baseline is non-nightly CTest `42/42 PASS` in
-  `397.54s`, multi-client `ALL PASS` in `17.84s`, and bot smoke `ALL PASS` in
-  `20.87s`. The named `test_native` checks also pass, but that target has no
+- The latest working-tree rerun on 2026-09-18 is non-nightly CTest `43/43 PASS`
+  in `386.22s`, with multi-client `ALL PASS` in `17.60s` and bot smoke
+  `ALL PASS` in `21.09s`. The named `test_native` checks also pass, but that target has no
   stable aggregate count. The separate `package_jvm_smoke` release gate passes
   on the exact CPack ZIP with clean extraction, embedded assets/classes, and
   default-on strict JVM startup.
-- Wire checks report `395 PASS / 0 FAIL` for the specification vectors and
+- Wire checks report `417 PASS / 0 FAIL` for the specification vectors and
   `399 PASS / 0 FAIL` for the full wire suite.
 - The clean extracted Linux package's `test_server_full` harness reports
   `234 PASS / 0 FAIL`; the source-tree 80-scenario smoke integration test
@@ -117,16 +119,26 @@ The latest recorded working-tree evidence includes:
   the available Create archives have no matching Fabric 1.21.4 server artifact
   in the lock and therefore were not counted as runtime passes.
 - A 120-client synthetic load run and 300-, 600-, and 1800-second diagnostics
-  pass.
+  pass. A local mc-pilot-managed Fabric 1.21.4 client also logged in, entered
+  the world, stayed connected for more than one minute, and completed chat,
+  command, block, status, and screenshot probes. The installed PrismLauncher
+  11.1.0 also launched a Fabric 1.21.4 client through its CLI and joined the
+  same server with an existing authenticated account. These are local checks,
+  not retained release assets; the exact scope is in [Real-client
+  verification](MC_PILOT_REAL_TEST.md).
 
 These are named-scenario results, not a universal compatibility percentage. The
 latest package-target rebuild, clean extracted-package checks, and full
-non-nightly CTest gates pass. The declared E-14, L3, long-run, and real-client
+non-nightly CTest gates pass. The declared E-14, full world-generation L3, long-run, and real-client
 boundaries remain open.
-Exact vanilla random-number parity for every generation path, arbitrary Fabric
-JVM mods, accepted two-hour or 24-hour soak evidence, and a real-client/GUI
-artifact remain outside the current claim. See [Verification](VERIFICATION.md)
-for dates, commands, and failure interpretation.
+The Java/Minecraft RNG primitive and splitter vectors are covered by
+`test_rng_parity` (`25 PASS / 0 FAIL`), but exact random-call ordering and
+structure-NBT parity for every generation path, arbitrary Fabric
+JVM mods, accepted two-hour or 24-hour soak evidence, first-time Microsoft
+interactive login, and a retained real-client/GUI release artifact remain
+outside the current claim. See [Verification](VERIFICATION.md) and [Real-client
+verification](MC_PILOT_REAL_TEST.md) for dates, commands, and failure
+interpretation.
 
 ## Clean-room boundary
 

@@ -118,9 +118,9 @@ void EntityDataLoader::loadDirectory(const std::string& dir){
             if(d.type.empty()) d.type="minecraft:"+p.stem().string();
             const auto &a=v.at("attributes");
             if(a.type==json::Value::Type::Obj){
-                if(!a.at("max_health").isNull()) d.max_health=(float)a.at("max_health").asFloat(20);
-                if(!a.at("movement_speed").isNull()) d.movement_speed=(float)a.at("movement_speed").asFloat(0.1);
-                if(!a.at("attack_damage").isNull()) d.attack_damage=(float)a.at("attack_damage").asFloat(1);
+                if(!a.at("max_health").isNull()) d.max_health=a.at("max_health").asFloat(20.0f);
+                if(!a.at("movement_speed").isNull()) d.movement_speed=a.at("movement_speed").asFloat(0.1f);
+                if(!a.at("attack_damage").isNull()) d.attack_damage=a.at("attack_damage").asFloat(1.0f);
             }
             const auto &sp=v.at("spawning");
             if(sp.type==json::Value::Type::Obj){
@@ -160,7 +160,7 @@ void EntityDataLoader::loadDirectory(const std::string& dir){
             fprintf(stderr,"[cppfm] entity data loaded: %s (behaviors=%zu)\n",
                     p.string().c_str(), d.behaviors.size());
             defs_[d.type]=std::move(d);
-        }catch(const std::exception& e){ fprintf(stderr,"[cppfm] entity json %s skipped: %s\n",p.string().c_str(),e.what()); }
+        }catch(const std::exception& parseError){ fprintf(stderr,"[cppfm] entity json %s skipped: %s\n",p.string().c_str(),parseError.what()); }
     }
     fprintf(stderr,"[cppfm] entity data total %zu types from %s\n",defs_.size(),dir.c_str());
 }

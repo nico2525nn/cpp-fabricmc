@@ -689,7 +689,9 @@ void GameServer::initExecuteStoreCommands(const brigadier::NodePtr& exec) {
                         int storeVal = (capturedType2=="success") ? (res.ok?1:0) : val;
                         if(bossAI_){
                             int key=(int)std::hash<std::string>{}(bid);
-                            float hf = std::clamp(storeVal/100.f,0.f,1.f);
+                            const float hf = std::clamp(
+                                static_cast<float>(storeVal) / 100.0F,
+                                0.0F, 1.0F);
                             bossAI_->bars().updateHealthForCommandBar(key, hf);
                             // broadcast health if needed
                             uint32_t h=(uint32_t)key*0x9e3779b1u ^ 0x85ebca6bu;

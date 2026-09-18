@@ -59,9 +59,11 @@ void Reader::skipPayload(Tag t, std::size_t depth) {
 
 Reader::Value Reader::readValue(ReadBuffer& in, Tag t, std::size_t depth) {
     if (depth > kMaxNbtDepth) throw std::runtime_error("nbt nesting depth exceeded");
+    if (!isValidTag(t)) throw std::runtime_error("bad tag");
     Value v;
     v.tag = t;
     switch (t) {
+    case End: break;
     case Byte: v.b = static_cast<std::int8_t>(in.u8()); break;
     case Short: v.s = in.i16(); break;
     case Int: v.i = in.i32(); break;
@@ -71,7 +73,8 @@ Reader::Value Reader::readValue(ReadBuffer& in, Tag t, std::size_t depth) {
     case String: {
         const std::uint16_t n = in.u16();
         const auto bytes = in.bytes(n);
-        v.str.assign(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        if (!bytes.empty())
+            v.str.assign(reinterpret_cast<const char*>(bytes.data()), bytes.size());
         break;
     }
     case List: {
@@ -80,6 +83,7 @@ Reader::Value Reader::readValue(ReadBuffer& in, Tag t, std::size_t depth) {
         if (!isValidTag(et) || n < 0 || static_cast<std::size_t>(n) > kMaxNbtElements)
             throw std::runtime_error("bad list len");
         if (n != 0 && et == End) throw std::runtime_error("non-empty list has End element type");
+        v.listElement = et;
         v.list.reserve(static_cast<std::size_t>(n));
         for (std::int32_t i = 0; i < n; ++i) v.list.push_back(readValue(in, et, depth + 1));
         break;
@@ -93,12 +97,36 @@ Reader::Value Reader::readValue(ReadBuffer& in, Tag t, std::size_t depth) {
             if (++fields > kMaxNbtElements) throw std::runtime_error("too many nbt compound fields");
             std::uint16_t n = in.u16();
             const auto nameBytes = in.bytes(n);
-            std::string name(reinterpret_cast<const char*>(nameBytes.data()), nameBytes.size());
+            std::string name;
+            if (!nameBytes.empty())
+                name.assign(reinterpret_cast<const char*>(nameBytes.data()), nameBytes.size());
             v.comp.emplace_back(std::move(name), readValue(in, et, depth + 1));
         }
         break;
     }
-    case IntArray: case LongArray: { in.skipRest(); throw std::runtime_error("array read unsupported in tree mode"); }
+    case ByteArray: {
+        const auto n = in.i32();
+        if (n < 0 || static_cast<std::size_t>(n) > kMaxNbtElements)
+            throw std::runtime_error("bad byte array");
+        v.byteArray = in.bytes(static_cast<std::size_t>(n));
+        break;
+    }
+    case IntArray: {
+        const auto n = in.i32();
+        if (n < 0 || static_cast<std::size_t>(n) > kMaxNbtElements)
+            throw std::runtime_error("bad int array");
+        v.intArray.reserve(static_cast<std::size_t>(n));
+        for (std::int32_t i = 0; i < n; ++i) v.intArray.push_back(in.i32());
+        break;
+    }
+    case LongArray: {
+        const auto n = in.i32();
+        if (n < 0 || static_cast<std::size_t>(n) > kMaxNbtElements)
+            throw std::runtime_error("bad long array");
+        v.longArray.reserve(static_cast<std::size_t>(n));
+        for (std::int32_t i = 0; i < n; ++i) v.longArray.push_back(in.i64());
+        break;
+    }
     default: throw std::runtime_error("bad tag");
     }
     return v;

@@ -21,6 +21,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from typing import Any
 
@@ -339,12 +340,6 @@ def copy_baseline_mods(source: Path | None, mods: Path) -> None:
             shutil.copy2(item, destination)
 
 
-def refresh(log_file: Any) -> list[str]:
-    log_file.flush()
-    log_file.seek(0)
-    return log_file.read().splitlines()
-
-
 def stop_owned_process(proc: subprocess.Popen[str], timeout: float = STOP_TIMEOUT) -> None:
     """Terminate and reap the Popen-owned server process group."""
     if proc.poll() is not None:
@@ -393,51 +388,62 @@ def run_server(binary: Path, classes: Path, mods: Path, world: Path,
     ]
     environment = os.environ.copy()
     environment["CPPFM_SERVER_DIR"] = str(world)
-    # Keep stdout and stderr in separate files while the server is running.
-    # C++ diagnostics and NativeBridge logs use stderr, while a small Java
-    # shutdown path uses System.out.  If both streams are redirected to the
-    # same descriptor, independent stdio
-    # buffers can interleave at byte granularity and corrupt an otherwise
-    # valid evidence marker.  Merge complete lines only after the process has
-    # finished.  NativeBridge and server diagnostics are on stderr; the small
-    # set of shutdown markers intentionally printed by Java after the native
-    # runtime lease is released is on stdout, so append that stream last to
-    # preserve the lifecycle order checked by the report.
-    with (
-        tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stdout_file,
-        tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stderr_file,
-    ):
-        proc = subprocess.Popen(
-            command,
-            cwd=str(binary.parent.parent),
-            env=environment,
-            stdout=stdout_file,
-            stderr=stderr_file,
-            text=True,
-            start_new_session=True,
-        )
-        lines: list[str] = []
-        deadline = time.monotonic() + timeout
-        graceful_shutdown_requested = False
-        try:
-            while time.monotonic() < deadline and proc.poll() is None:
-                lines = refresh(stderr_file) + refresh(stdout_file)
-                if any(
-                    "CORPUS case=25 status=PASS phase=corpus-complete" in line
-                    for line in lines
-                ) and FUNCTIONAL_FIXTURE_COMPLETE in lines:
-                    graceful_shutdown_requested = True
-                    request_graceful_shutdown(proc)
-                    break
-                time.sleep(0.1)
-        finally:
-            if proc.poll() is None:
-                if graceful_shutdown_requested:
-                    request_graceful_shutdown(proc)
-                else:
-                    stop_owned_process(proc)
-            lines = refresh(stderr_file) + refresh(stdout_file)
-        return proc.returncode, lines
+    # The normal callbacks use NativeBridge/System.err, while shutdown markers
+    # are emitted with System.out after the native bridge lease is released.
+    # Reading the streams into separate files and concatenating them later
+    # destroys their global order and can falsely fail the lifecycle-order
+    # assertion.  Merge both descriptors into one pipe and drain it in a
+    # dedicated thread so verbose startup diagnostics cannot fill the pipe.
+    output: list[str] = []
+    output_lock = threading.Lock()
+    proc = subprocess.Popen(
+        command,
+        cwd=str(binary.parent.parent),
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        start_new_session=True,
+    )
+
+    def drain_output() -> None:
+        if proc.stdout is None:
+            return
+        for line in proc.stdout:
+            with output_lock:
+                output.append(line.rstrip("\n"))
+
+    reader = threading.Thread(target=drain_output, name="cppfm-jvm-output", daemon=True)
+    reader.start()
+
+    def snapshot() -> list[str]:
+        with output_lock:
+            return list(output)
+
+    lines: list[str] = []
+    deadline = time.monotonic() + timeout
+    graceful_shutdown_requested = False
+    try:
+        while time.monotonic() < deadline and proc.poll() is None:
+            lines = snapshot()
+            if any(
+                "CORPUS case=25 status=PASS phase=corpus-complete" in line
+                for line in lines
+            ) and FUNCTIONAL_FIXTURE_COMPLETE in lines:
+                graceful_shutdown_requested = True
+                request_graceful_shutdown(proc)
+                break
+            time.sleep(0.1)
+    finally:
+        if proc.poll() is None:
+            if graceful_shutdown_requested:
+                request_graceful_shutdown(proc)
+            else:
+                stop_owned_process(proc)
+        reader.join(timeout=5.0)
+        lines = snapshot()
+    return proc.returncode, lines
 
 
 def validate_functional_evidence(lines: list[str]) -> list[str]:

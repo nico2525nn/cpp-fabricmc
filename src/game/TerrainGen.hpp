@@ -78,7 +78,8 @@ public:
         h ^= static_cast<std::uint64_t>(static_cast<std::uint32_t>(y)) * 0xBF58476D1CE4E5B9ULL;
         h ^= static_cast<std::uint64_t>(static_cast<std::uint32_t>(z)) * 0x94D049BB133111EBULL;
         h ^= h >> 30; h *= 0xBF58476D1CE4E5B9ULL; h ^= h >> 27; h *= 0x94D049BB133111EBULL; h ^= h >> 31;
-        return (h >> 11) / (double)(1ULL << 53);
+        return static_cast<double>(h >> 11) /
+               static_cast<double>(1ULL << 53);
     }
     bool treeCandidate(std::uint64_t seed, std::int32_t wx, std::int32_t wz) const {
         return posHash(seed ^ 0x5EED, wx, 777, wz) < 0.008;

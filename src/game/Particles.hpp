@@ -41,9 +41,9 @@ struct ParticleData {
     std::int32_t shriekDelay = 0;
     // provided convenience: set dust from ARGB 0xAARRGGBB
     void setDustFromARGB(std::int32_t argb, float s = 1.0f){
-        float rf = ((argb >> 16) & 0xFF) / 255.0f;
-        float gf = ((argb >> 8) & 0xFF) / 255.0f;
-        float bf = (argb & 0xFF) / 255.0f;
+        const float rf = static_cast<float>((argb >> 16) & 0xFF) / 255.0F;
+        const float gf = static_cast<float>((argb >> 8) & 0xFF) / 255.0F;
+        const float bf = static_cast<float>(argb & 0xFF) / 255.0F;
         r = rf; g = gf; b = bf; scale = s;
     }
 };

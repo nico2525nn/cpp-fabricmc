@@ -312,7 +312,7 @@ void writeAdvancementsPacket(
             out.varint(d.frame);                      // frame type
             int flags = d.flags;
             if (reset) flags &= ~0x02;                // suppress toast on reset/relog (D23)
-            out.varint(flags);
+            out.i32(flags);                           // protocol `flags` is a fixed Int
             if (flags & 0x01) {
                 const char* bg = d.background ? d.background : "minecraft:textures/gui/advancements/backgrounds/stone.png";
                 out.string(bg);
@@ -366,7 +366,7 @@ void writeAdvancementsPacket(
             out.varint(d.frame);
             int flags = d.flags;
             if (reset) flags &= ~0x02;
-            out.varint(flags);
+            out.i32(flags);                            // protocol `flags` is a fixed Int
             if (flags & 0x01) {
                 std::string bg = d.background.empty() ? std::string("minecraft:textures/gui/advancements/backgrounds/stone.png") : d.background;
                 out.string(bg);

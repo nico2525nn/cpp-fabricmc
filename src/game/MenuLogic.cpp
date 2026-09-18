@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdio>
+#include <limits>
 #include <mutex>
 #include <random>
 #include <string>
@@ -32,6 +33,16 @@ static bool mergeStack(ItemStack& from, ItemStack& to) {
     from.count = static_cast<std::int16_t>(from.count - take);
     if (from.count<=0) from=ItemStack::air();
     return true;
+}
+
+// ItemStack::count is deliberately narrow because the wire representation is
+// a signed short in this compatibility layer.  Keep arithmetic in `int` while
+// handling clicks, then clamp at the single conversion boundary.  Besides
+// satisfying the compiler's conversion checks this prevents a malformed or
+// future oversized click path from wrapping into a negative stack.
+static void setItemCount(ItemStack& stack, int count) noexcept {
+    const int maxCount = static_cast<int>(std::numeric_limits<std::int16_t>::max());
+    stack.count = static_cast<std::int16_t>(std::clamp(count, 0, maxCount));
 }
 
 // ---------------- Anvil ----------------
@@ -137,13 +148,22 @@ bool AnvilMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, int but
                 // merge
                 int limit=64;
                 int take = std::min<int>(cursor.count, limit - target->count);
-                if (take>0) { target->count+=take; cursor.count-=take; if(cursor.count<=0) cursor=ItemStack::air(); changed=true; }
+                if (take>0) {
+                    setItemCount(*target, static_cast<int>(target->count) + take);
+                    setItemCount(cursor, static_cast<int>(cursor.count) - take);
+                    if(cursor.count<=0) cursor=ItemStack::air();
+                    changed=true;
+                }
                 else { std::swap(cursor,*target); changed=true; }
             } else { std::swap(cursor,*target); changed=true; }
         } else { // right click half
             if (cursor.empty() && !target->empty()) {
                 int half=(target->count+1)/2;
-                cursor=*target; cursor.count=half; target->count-=half; if(target->count<=0) *target=ItemStack::air(); changed=true;
+                cursor=*target;
+                setItemCount(cursor, half);
+                setItemCount(*target, static_cast<int>(target->count) - half);
+                if(target->count<=0) *target=ItemStack::air();
+                changed=true;
             } else if (!cursor.empty()) {
                 if (target->empty()) { *target=ItemStack::of(cursor.itemId,1); cursor.count--; if(cursor.count<=0) cursor=ItemStack::air(); changed=true; }
                 else if (target->itemId==cursor.itemId && target->count<64) { target->count++; cursor.count--; if(cursor.count<=0) cursor=ItemStack::air(); changed=true; }
@@ -294,7 +314,11 @@ bool EnchantmentMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, i
         } else {
             if (cursor.empty() && !target->empty()) {
                 int half=(target->count+1)/2;
-                cursor=*target; cursor.count=half; target->count-=half; if(target->count<=0) *target=ItemStack::air(); changed=true;
+                cursor=*target;
+                setItemCount(cursor, half);
+                setItemCount(*target, static_cast<int>(target->count) - half);
+                if(target->count<=0) *target=ItemStack::air();
+                changed=true;
             } else if (!cursor.empty() && target->empty()) {
                 *target=cursor; target->count=1; cursor.count--; if(cursor.count<=0) cursor=ItemStack::air(); changed=true;
             } else if (!cursor.empty() && !target->empty() &&
@@ -338,7 +362,7 @@ bool EnchantmentMenuLogic::onEnchantButton(Menu& menu, Player& player, int butto
     // Apply the already-presented choice, rather than re-rolling a different
     // enchantment during the packet handler.
     *item = choice.result;
-    lapis->count -= choice.lapisCost;
+    setItemCount(*lapis, static_cast<int>(lapis->count) - choice.lapisCost);
     if (lapis->count<=0) *lapis=ItemStack::air();
     // Deduct XP
     if (player.gamemode==0) {
@@ -378,7 +402,11 @@ bool BrewingMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, int b
         } else {
             if (cursor.empty() && !target->empty()) {
                 int half=(target->count+1)/2;
-                cursor=*target; cursor.count=half; target->count-=half; if(target->count<=0) *target=ItemStack::air(); changed=true;
+                cursor=*target;
+                setItemCount(cursor, half);
+                setItemCount(*target, static_cast<int>(target->count) - half);
+                if(target->count<=0) *target=ItemStack::air();
+                changed=true;
             } else if (!cursor.empty() && target->empty()) {
                 *target=ItemStack::of(cursor.itemId,1); cursor.count--; if(cursor.count<=0) cursor=ItemStack::air(); changed=true;
             }
@@ -401,7 +429,9 @@ bool StonecutterMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, i
         if (cursor.empty()) cursor=*result;
         else if (cursor.itemId==result->itemId && cursor.count<64) {
             int take = std::min<int>(result->count, 64-cursor.count);
-            cursor.count+=take; result->count-=take; if(result->count<=0) *result=ItemStack::air();
+            setItemCount(cursor, static_cast<int>(cursor.count) + take);
+            setItemCount(*result, static_cast<int>(result->count) - take);
+            if(result->count<=0) *result=ItemStack::air();
             // already handled need to consume input
         } else return false;
         // consume input (one)
@@ -430,7 +460,12 @@ bool StonecutterMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, i
             else { std::swap(cursor,*input); changed=true; }
         } else {
             if (cursor.empty() && !input->empty()) {
-                int half=(input->count+1)/2; cursor=*input; cursor.count=half; input->count-=half; if(input->count<=0) *input=ItemStack::air(); changed=true;
+                int half=(input->count+1)/2;
+                cursor=*input;
+                setItemCount(cursor, half);
+                setItemCount(*input, static_cast<int>(input->count) - half);
+                if(input->count<=0) *input=ItemStack::air();
+                changed=true;
             } else if (!cursor.empty() && input->empty()) {
                 *input=ItemStack::of(cursor.itemId,1); cursor.count--; if(cursor.count<=0) cursor=ItemStack::air(); changed=true;
             }
@@ -533,7 +568,12 @@ bool CrafterMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, int b
             else { std::swap(cursor,*target); changed=true; }
         } else {
             if (cursor.empty() && !target->empty()) {
-                int half=(target->count+1)/2; cursor=*target; cursor.count=half; target->count-=half; if(target->count<=0) *target=ItemStack::air(); changed=true;
+                int half=(target->count+1)/2;
+                cursor=*target;
+                setItemCount(cursor, half);
+                setItemCount(*target, static_cast<int>(target->count) - half);
+                if(target->count<=0) *target=ItemStack::air();
+                changed=true;
             } else if (!cursor.empty() && target->empty()) {
                 *target=ItemStack::of(cursor.itemId,1); cursor.count--; if(cursor.count<=0) cursor=ItemStack::air(); changed=true;
             }
@@ -606,7 +646,12 @@ bool CartographyMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, i
             else { std::swap(cursor,*target); changed=true; }
         } else {
             if (cursor.empty() && !target->empty()) {
-                int half=(target->count+1)/2; cursor=*target; cursor.count=half; target->count-=half; if(target->count<=0) *target=ItemStack::air(); changed=true;
+                int half=(target->count+1)/2;
+                cursor=*target;
+                setItemCount(cursor, half);
+                setItemCount(*target, static_cast<int>(target->count) - half);
+                if(target->count<=0) *target=ItemStack::air();
+                changed=true;
             } else if (!cursor.empty() && target->empty()) {
                 *target=ItemStack::of(cursor.itemId,1); cursor.count--; if(cursor.count<=0) cursor=ItemStack::air(); changed=true;
             }
@@ -638,7 +683,12 @@ bool GenericMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, int b
             else { std::swap(cursor,*target); changed=true; }
         } else {
             if (cursor.empty() && !target->empty()) {
-                int half=(target->count+1)/2; cursor=*target; cursor.count=half; target->count-=half; if(target->count<=0) *target=ItemStack::air(); changed=true;
+                int half=(target->count+1)/2;
+                cursor=*target;
+                setItemCount(cursor, half);
+                setItemCount(*target, static_cast<int>(target->count) - half);
+                if(target->count<=0) *target=ItemStack::air();
+                changed=true;
             } else if (!cursor.empty() && target->empty()) {
                 *target=ItemStack::of(cursor.itemId,1); cursor.count--; if(cursor.count<=0) cursor=ItemStack::air(); changed=true;
             }

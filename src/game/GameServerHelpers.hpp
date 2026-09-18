@@ -1,5 +1,5 @@
 #pragma once
-// Wire-unchanged, inline helpers.
+// Shared inline server helpers.
 
 #include <array>
 #include <atomic>
@@ -60,6 +60,34 @@ inline std::string blockNameByState(std::uint16_t sid) {
 inline void writeSlotDisplayItem(WriteBuffer& out, std::uint32_t itemId) {
     out.varint(itemId ? 2 : 0);
     if (itemId) out.varint(static_cast<std::int32_t>(itemId));
+}
+
+// Minecraft 1.21.4's EntityPositionS2CPacket (play clientbound
+// `teleport_entity`) carries a PlayerPosition record, not the older
+// three-coordinate/byte-angle shape found in some protocol tables.  The
+// record is position (3 x f64), delta movement (3 x f64), rotation (2 x
+// f32), followed by PositionFlagSet (fixed i32) and on-ground (bool).
+// Relative flags are zero for the absolute teleports emitted by the server.
+inline WriteBuffer makeEntityTeleportBody(
+    std::int32_t entityId,
+    double x, double y, double z,
+    double deltaX = 0.0, double deltaY = 0.0, double deltaZ = 0.0,
+    float yaw = 0.0f, float pitch = 0.0f,
+    std::int32_t relativeFlags = 0,
+    bool onGround = true) {
+    WriteBuffer out;
+    out.varint(entityId);
+    out.f64(x);
+    out.f64(y);
+    out.f64(z);
+    out.f64(deltaX);
+    out.f64(deltaY);
+    out.f64(deltaZ);
+    out.f32(yaw);
+    out.f32(pitch);
+    out.i32(relativeFlags);
+    out.boolean(onGround);
+    return out;
 }
 
 } // namespace cppfm

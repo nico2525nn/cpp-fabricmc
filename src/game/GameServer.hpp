@@ -86,7 +86,9 @@ struct ServerConfig {
     std::string resourcePackUrl;                 // optional server pack
     std::string resourcePackSha1;
     bool resourcePackForced = false;
-    std::string levelType = "flat";          // flat | normal
+    // Vanilla's server.properties default is the normal terrain generator.
+    // Flat worlds remain available through `level-type=flat` or the CLI.
+    std::string levelType = "normal";        // flat | normal
     bool whitelist = false;
     bool onlineMode = false;
     bool enforcesSecureChat = false;
@@ -932,13 +934,21 @@ public:
         }
     }
     void stop() {
+        // stop() is reachable from both explicit test teardown and the
+        // destructor.  Without a one-shot gate, the second call could race
+        // joins, close an already-released descriptor, and invoke JVM/
+        // persistence teardown twice.
+        bool expected = false;
+        if (!shutdownStarted_.compare_exchange_strong(
+                expected, true, std::memory_order_acq_rel,
+                std::memory_order_acquire))
+            return;
         requestStop();
         // requestStop() is also used by signal/console handlers and must not
         // lock or touch the task queue.  Queue cancellation belongs to this
         // normal, fully synchronized teardown path (and to the tick thread's
         // release path below).
         cancelServerThreadTasks();
-        shutdownStarted_.store(true, std::memory_order_release);
         stopCv_.notify_all();
         stopClientConnections();
         // Stop command ingress before tearing down the JVM.  RCON workers may
@@ -1468,36 +1478,53 @@ public:
     }
     std::int32_t nextEntityId() { return entityIdCounter_++; }
     void addPlayer(PlayerRef p) {
+        if (!p) return;
+        std::lock_guard admissionLock(playerAdmissionMtx_);
         kickDuplicate(*p);   // plan45 B6 W-13(c): vanilla kicks the older session
         std::lock_guard lk(playersMtx_);
         players_.push_back(std::move(p));
     }
     void kickDuplicate(const Player& incoming) {
-        std::vector<PlayerRef> victims;
+        std::lock_guard admissionLock(playerAdmissionMtx_);
+        std::array<std::uint8_t, 16> incomingUuid{};
+        std::string incomingName;
         {
-            std::lock_guard lk(playersMtx_);
-            for (auto& e : players_) {
-                if (e.get() == &incoming) continue;
-                if (e->uuid == incoming.uuid || e->name == incoming.name)
-                    victims.push_back(e);
+            std::lock_guard incomingLock(incoming.stateMtx);
+            incomingUuid = incoming.uuid;
+            incomingName = incoming.name;
+        }
+        std::vector<PlayerRef> victims;
+        for (auto& e : playersSnapshot()) {
+            if (!e || e.get() == &incoming) continue;
+            bool duplicate = false;
+            {
+                std::lock_guard existingLock(e->stateMtx);
+                duplicate = e->uuid == incomingUuid || e->name == incomingName;
             }
+            if (duplicate) victims.push_back(e);
         }
         for (auto& v : victims) {
             WriteBuffer kick;
             nbt::writeTextComponent(kick, "You logged in from another location");
-            v->inPlay = false;
-            if (v->conn) {
-                v->conn->trySendPacket(proto::pl::sc::Disconnect, kick);
-                v->conn->abort();
+            std::shared_ptr<Connection> connection;
+            std::string name;
+            {
+                std::lock_guard victimLock(v->stateMtx);
+                v->inPlay = false;
+                connection = v->conn;
+                name = v->name;
+            }
+            if (connection) {
+                connection->trySendPacket(proto::pl::sc::Disconnect, kick);
+                connection->abort();
             }
             std::fprintf(stderr, "[cppfm] duplicate login %s: kicked older session\n",
-                         v->name.c_str());
+                         name.c_str());
         }
         if (!victims.empty()) {
             std::lock_guard lk(playersMtx_);
             std::erase_if(players_, [&](const PlayerRef& e) {
-                if (e.get() == &incoming) return false;
-                return e->uuid == incoming.uuid || e->name == incoming.name;
+                return std::find(victims.begin(), victims.end(), e) != victims.end();
             });
         }
     }
@@ -1836,6 +1863,7 @@ private:
     EmbeddedData data_;
     GameData gameData_;                                 // parsed registry orders
     std::vector<PlayerRef> players_;
+    mutable std::recursive_mutex playerAdmissionMtx_;
     mutable std::mutex playersMtx_;
     BlockEntityStore blockEntities_;                 // Overworld chests & furnaces
     BlockEntityStore dimensionBlockEntities_[2];     // Nether, End

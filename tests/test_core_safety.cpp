@@ -169,19 +169,60 @@ void testNbt() {
               values->list[1].i == 9,
           "named NBT list preserves element type and values");
 
+    nbt::Value emptyEndList = nbt::Value::makeList(nbt::End);
+    root.set("empty", emptyEndList);
+    WriteBuffer emptyEncoded;
+    nbt::writeFileRoot(emptyEncoded, root, "root");
+    ReadBuffer emptyInput(emptyEncoded.data);
+    const auto emptyDecoded = nbt::Parser(emptyInput).readFileRoot();
+    const auto* empty = emptyDecoded.get("empty");
+    check(empty && empty->tag == nbt::List && empty->elemType() == nbt::End &&
+              empty->list.empty(),
+          "empty NBT list preserves the TAG_End element marker");
+
+    WriteBuffer arrays;
+    arrays.u8(nbt::ByteArray);
+    arrays.i32(3);
+    arrays.raw("abc", 3);
+    ReadBuffer arraysInput(arrays.data);
+    nbt::Reader arrayReader(arraysInput);
+    const auto arrayValue = arrayReader.readNamedValue();
+    check(arrayValue.tag == nbt::ByteArray &&
+              arrayValue.byteArray == std::vector<std::uint8_t>({'a', 'b', 'c'}) &&
+              arraysInput.remaining() == 0,
+          "tree NBT Reader retains byte-array payload instead of consuming the rest");
+
+    WriteBuffer numericArrays;
+    numericArrays.u8(nbt::IntArray);
+    numericArrays.i32(2);
+    numericArrays.i32(-7);
+    numericArrays.i32(42);
+    numericArrays.u8(nbt::LongArray);
+    numericArrays.i32(2);
+    numericArrays.i64(-9);
+    numericArrays.i64(9001);
+    ReadBuffer numericArraysInput(numericArrays.data);
+    nbt::Reader numericArrayReader(numericArraysInput);
+    const auto ints = numericArrayReader.readNamedValue();
+    const auto longs = numericArrayReader.readNamedValue();
+    check(ints.intArray == std::vector<std::int32_t>({-7, 42}) &&
+              longs.longArray == std::vector<std::int64_t>({-9, 9001}) &&
+              numericArraysInput.remaining() == 0,
+          "tree NBT Reader retains int/long-array payloads");
+
     expectThrow("NBT rejects a negative list length", [] {
         WriteBuffer malformed;
         malformed.u8(nbt::List);
         malformed.u8(nbt::Int);
         malformed.i32(-1);
-        ReadBuffer input(malformed.data);
-        nbt::Reader reader(input);
+        ReadBuffer malformedInput(malformed.data);
+        nbt::Reader reader(malformedInput);
         reader.skipRoot();
     });
     expectThrow("NBT rejects excessive nesting", [] {
         auto bytes = nestedNetworkNbt(nbt::kMaxNbtDepth + 1);
-        ReadBuffer input(bytes);
-        nbt::Reader reader(input);
+        ReadBuffer nestingInput(bytes);
+        nbt::Reader reader(nestingInput);
         reader.skipRoot();
     });
     expectThrow("NBT rejects a negative file byte-array length", [] {
@@ -193,12 +234,9 @@ void testNbt() {
         malformed.u8('x');
         malformed.i32(-1);
         malformed.u8(nbt::End);
-        ReadBuffer input(malformed.data);
-        nbt::Parser parser(input);
-        (void)parser.readFileRoot();
-    });
-    expectThrow("NBT rejects End as a list element type", [] {
-        (void)nbt::Value::makeList(nbt::End);
+        ReadBuffer fileInput(malformed.data);
+        nbt::Parser fileParser(fileInput);
+        (void)fileParser.readFileRoot();
     });
 }
 

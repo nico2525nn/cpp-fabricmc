@@ -151,7 +151,9 @@ def wait_for_status(host: str, port: int, timeout: float = 12.0,
     return None
 
 def launch_server(binary: str, port: int, world_dir: str, extra_env: dict | None = None, extra_args: list[str] | None = None):
-    args = [binary, f"--port={port}", f"--world-dir={world_dir}"]
+    # This suite uses the legacy y=-61 fixture coordinates.  Keep that fixture
+    # explicit now that the production default is vanilla normal terrain.
+    args = [binary, f"--port={port}", f"--world-dir={world_dir}", "--level-type=flat"]
     if extra_args:
         args += extra_args
     env = os.environ.copy()

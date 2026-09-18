@@ -4,6 +4,7 @@
 #include "World.hpp"
 #include "MetadataTypes.hpp"
 #include "Particles.hpp"
+#include "GameServerHelpers.hpp"
 #include "../worldgen/MultiNoise.hpp"
 #include <mutex>
 #include <type_traits>
@@ -161,10 +162,8 @@ BTStatus TeleportRandomAction::tick(MobEntity& m, AiContext& ctx, std::int64_t n
             ctx.srv->broadcastSoundFor(
                 dimension, "minecraft:entity.enderman.teleport",
                 x, y, z, 1.f, 1.f, "hostile");
-            WriteBuffer tp;
-            tp.varint(entityId);
-            tp.f64(x); tp.f64(y); tp.f64(z);
-            tp.f32(yaw); tp.f32(0); tp.boolean(true);
+            const WriteBuffer tp = makeEntityTeleportBody(
+                entityId, x, y, z, 0.0, 0.0, 0.0, yaw, 0.0f, 0, true);
             ctx.srv->broadcastPacketExceptInDimension(
                 dimension, nullptr, proto::pl::sc::EntityTeleport, tp);
             for (int i=0; i<8; ++i) {
@@ -418,14 +417,14 @@ BTStatus DragonBreathAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now
         return BTStatus::Running;
     }
     if (m.dragonPhase == 3) {
-        double ang = now * 0.04;
+        const double ang = static_cast<double>(now) * 0.04;
         double rx = std::cos(ang)*32, rz = std::sin(ang)*32;
         double dx=rx-m.x, dz=rz-m.z;
         m.x += dx*0.08; m.z += dz*0.08; m.y += (70-m.y)*0.05;
         if (now > m.dragonPhaseUntil) { m.dragonPhase=0; m.dragonPhaseUntil=now+120+nextRandom()%120; }
         return BTStatus::Running;
     }
-    double ang = now * 0.03;
+    const double ang = static_cast<double>(now) * 0.03;
     double rx = std::cos(ang)*28, rz = std::sin(ang)*28;
     double dx=rx - m.x, dz=rz - m.z;
     m.x += dx*0.04; m.z += dz*0.04; m.y += (68 - m.y)*0.02;

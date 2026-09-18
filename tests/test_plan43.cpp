@@ -330,8 +330,8 @@ static void tSign(ServerProc& srv) {
     TestClient d;
     CHECK(d.connect("127.0.0.1", srv.port) && d.join("P43Sign"), "W-07 relogin join");
     for (int i = 0; i < 4; ++i) {
-        const auto position = d.positionSnapshot();
-        d.sendMovePlayerFlags(position.x, position.y, position.z, 0x01);
+        const auto relogPosition = d.positionSnapshot();
+        d.sendMovePlayerFlags(relogPosition.x, relogPosition.y, relogPosition.z, 0x01);
         std::this_thread::sleep_for(std::chrono::milliseconds(300));
     }
     bool persist = false;

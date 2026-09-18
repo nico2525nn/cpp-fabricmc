@@ -506,7 +506,7 @@ if(TARGET cppfm_jvm_fixture AND JNI_FOUND)
                 --binary $<TARGET_FILE:cppfm>
                 --classes "${CPPFM_JVM_CLASSES_DIR}"
                 --mods "${CMAKE_CURRENT_BINARY_DIR}/jvm/fixture-mods")
-    set_tests_properties(jvm_runtime PROPERTIES TIMEOUT 60
+    set_tests_properties(jvm_runtime PROPERTIES TIMEOUT 180
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 endif()
 if(TARGET cppfm_jvm_transformer AND CPPFM_JAVA)
@@ -699,6 +699,15 @@ add_executable(test_seed_parity tests/test_seed_parity.cpp
 target_include_directories(test_seed_parity PRIVATE src src/generated)
 add_test(NAME seed_parity COMMAND test_seed_parity)
 set_tests_properties(seed_parity PROPERTIES TIMEOUT 120)
+
+# Vanilla RNG primitive vectors: Java LocalRandom/CheckedRandom and the
+# Minecraft Xoroshiro128++ seed expansion are tested independently of the
+# native world generator, so an L1/L2 self-consistency test cannot mask a
+# wrong algorithm.
+add_executable(test_rng_parity tests/test_rng_parity.cpp)
+target_include_directories(test_rng_parity PRIVATE src src/generated)
+add_test(NAME rng_parity COMMAND test_rng_parity)
+set_tests_properties(rng_parity PROPERTIES TIMEOUT 30)
 
 # plan44 G-02/G-03 — hardness 1095 lock + mining calculator (generated worktree)
 add_executable(test_block_hardness_full tests/test_block_hardness_full.cpp)

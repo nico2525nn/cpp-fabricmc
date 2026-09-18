@@ -19,6 +19,7 @@ main references are:
 - [Operations specification](docs/SPEC_OPS.md)
 - [Development guide](docs/DEVELOPMENT.md)
 - [Verification and evidence](docs/VERIFICATION.md)
+- [Real-client verification with mc-pilot and PrismLauncher](docs/MC_PILOT_REAL_TEST.md)
 - [Current state](docs/CURRENT_STATE.md)
 - [Java integration overview](docs/VERIFICATION.md#jvm-boundary-gate)
 - [Supported feature details](docs/SPEC_GAMEPLAY.md)
@@ -35,6 +36,7 @@ main references are:
 | Items and containers | Data components, durability, enchantments, crafting, recipes, furnace, storage, villager and workstation menus, drag actions, and authoritative slot updates |
 | Commands and administration | Brigadier parsing, selectors, common vanilla commands, functions, scoreboards, teams, boss bars, permissions, whitelist, bans, RCON, and server properties |
 | Fabric-compatible Java integration | Default-on in binaries configured and built with the required JDK/JNI bridge: embedded HotSpot, a version-locked shadow API, selected callbacks, a tick-thread executor boundary, and a bounded structural transformer for server-side extensions; compatible runtime JDK/classes are still required, and a no-JNI build remains native-only |
+| Vanilla RNG primitives | Java-compatible `LocalRandom`/48-bit LCG and Minecraft `Xoroshiro128++` seed expansion, primitive outputs, splitters, and independent parity vectors |
 
 This is a compatibility-oriented implementation, not a claim that every
 Minecraft feature or every Fabric mod behaves identically. The Java integration
@@ -44,8 +46,9 @@ general-purpose arbitrary-mod loader.
 ## Known limitations
 
 - The supported target is Minecraft Java Edition 1.21.4 and protocol 769.
-- Exact vanilla random-number and structure-NBT parity has not been proven for
-  every world-generation path.
+- The Java-compatible RNG primitives and splitter contracts pass independent
+  vectors, but exact random-call ordering and structure-NBT parity have not been
+  proven for every world-generation path.
 - The Java layer supports the repository's shadow API and tested extension
   surface. It is default-on only when configure/build finds the required JDK/JNI
   inputs; a JNI-capable binary still needs a compatible runtime JDK/classes and
@@ -57,8 +60,10 @@ general-purpose arbitrary-mod loader.
   names arbitrary Java-extension execution as a declared limitation.
 - Enchanting and crafter behavior have focused coverage, but their bounded
   implementations are not presented as complete vanilla menu parity.
-- Short and medium synthetic load runs pass, but there is no accepted 2-hour or
-  24-hour soak artifact and no current real-client/GUI capture.
+- Short and medium synthetic load runs pass, and a local Fabric 1.21.4
+  real-client probe now passes. The real-client result is recorded as local
+  evidence rather than a retained release artifact; there is still no accepted
+  2-hour or 24-hour soak artifact.
 
 ## Verification evidence
 
@@ -66,7 +71,7 @@ The latest recorded runs include:
 
 - Native server checks: the named `test_native` checks pass; this target has no
   stable aggregate count.
-- Wire-format checks: `test_spec_wire` `395 PASS / 0 FAIL` and
+- Wire-format checks: `test_spec_wire` `417 PASS / 0 FAIL` and
   `test_wire_full` `399 PASS / 0 FAIL`.
 - Integration checks: the clean extracted Linux package's `test_server_full`
   reports `234 PASS / 0 FAIL`; the source-tree `test_smoke_80` reports
@@ -76,13 +81,16 @@ The latest recorded runs include:
   `201 PASS`, fuzz `25 PASS`, mining
   `59/59`, block hardness `1095 mismatch=0`, mob statistics `131 PASS`,
   redstone `42 PASS / 0 FAIL`, fluids `23 PASS / 0 FAIL`, and menu logic
-  `41 PASS / 0 FAIL`.
+  `41 PASS / 0 FAIL`. The independent `test_rng_parity` gate reports
+  `25 PASS / 0 FAIL` for the Java/Minecraft RNG primitives and splitter vectors;
+  this does not elevate full world-generation call-graph parity to a universal
+  claim.
 - Java compatibility checks: the bounded historical fixture corpus is `25/25`; its
   harness also passes the auxiliary functional API fixture, the standalone Shadow
   ABI gate passes, and the offline pinned Loader/Knot probe passes.
-- The latest recorded 2026-09-10 operational baseline is non-nightly CTest `42/42 PASS`
-  in `397.54s`, multi-client `ALL PASS` in `17.84s`, and bot smoke `ALL PASS`
-  in `20.87s`. The release-specific `package_jvm_smoke` gate is separate: it
+- The latest working-tree rerun on 2026-09-18 is non-nightly CTest `43/43 PASS`
+  in `386.22s`, with multi-client `ALL PASS` in `17.60s` and bot smoke
+  `ALL PASS` in `21.09s`. The release-specific `package_jvm_smoke` gate is separate: it
   passed against the exact CPack ZIP after clean extraction, with default-on
   strict JVM startup and embedded classes/assets verified. The locally generated
   ignored Linux CPack output contains exactly one executable; its clean
@@ -105,11 +113,19 @@ The latest recorded runs include:
   60-second post-review soak had 0 disconnects and 1.0% post-fill RSS growth;
   300-, 600-, and 1800-second diagnostic runs also passed. Longer-run and real-client
   limitations remain as listed above.
+- Real-client check: the mc-pilot-managed Fabric 1.21.4 client logged in offline,
+  entered the world, stayed connected for more than one minute, and completed
+  chat, `say`, position, block read/break/read, status, and screenshot probes.
+  The installed PrismLauncher 11.1.0 also launched a Fabric 1.21.4 client
+  through its CLI and joined cppfm with an existing authenticated account. The
+  explicit-properties run also entered the world with `port=25571`,
+  `view-distance=4`, `simulation-distance=3`, and `level-type=flat`. See the
+  [real-client report](docs/MC_PILOT_REAL_TEST.md) for scope and limitations.
 
 The latest recorded local package evidence is
 `build/packages/cppfabricmc-1.21.4-Linux-x86_64.zip` (SHA-256
-`c6ae183d4e527f1b75f4cae35a0bcbfb3dba1ab4552e7039ae0f129b378e5440`, archive size
-`54395700` bytes). The ZIP contains only `cppfm`; the package was tested from a
+`07cbccb4552b50003eec71ef827c22435a6b6442d1039458df598e1de0a0d588`, archive size
+`54377042` bytes). The ZIP contains only `cppfm`; the package was tested from a
 clean extraction directory. `build/` is an ignored local output directory, not a
 release asset embedded in this repository.
 
@@ -227,8 +243,8 @@ that every Fabric mod can run unchanged. It does not ship the official Mojang
 GameProvider, client, or GUI runtime.
 
 Connect with a Minecraft 1.21.4 client in offline mode, for example by using a
-launcher profile pointed at `127.0.0.1`. The default development world is a
-creative superflat world.
+launcher profile pointed at `127.0.0.1`. The production default is normal terrain;
+set `level-type=flat` explicitly when a creative superflat fixture is wanted.
 
 ## Running tests
 
@@ -241,8 +257,9 @@ Build first, then run focused checks as needed:
 ./build/test_wire_full
 timeout --foreground --kill-after=5 450 python3 tests/test_server_full.py --binary ./build/cppfm
 ./build/test_seed_parity
+./build/test_rng_parity
 ./build/test_fuzz
-timeout --foreground --kill-after=5 1200 ctest --test-dir build -LE 'nightly|package' --output-on-failure --timeout 450
+timeout --foreground --kill-after=5 1200 ctest --test-dir build -LE 'nightly|package' --output-on-failure --timeout 600
 ```
 
 The gameplay harness prints its unsupported Java-extension boundary as an

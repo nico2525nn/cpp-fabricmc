@@ -164,32 +164,81 @@ public:
     }
 
     // NOTE: logically const (lazy generation); mutex is mutable Loader hook: return true if it filled the chunk (e.g., from disk).
-    void setLoader(std::function<bool(std::int32_t, std::int32_t, Chunk&)> l) { loader_ = std::move(l); }
-    void setOnEdit(std::function<void(std::int32_t, std::int32_t)> cb) { onEdit_ = std::move(cb); }
+    void setLoader(std::function<bool(std::int32_t, std::int32_t, Chunk&)> l) {
+        std::lock_guard lock(hooksMtx_);
+        loader_ = std::move(l);
+    }
+    void setOnEdit(std::function<void(std::int32_t, std::int32_t)> cb) {
+        std::lock_guard lock(hooksMtx_);
+        onEdit_ = std::move(cb);
+    }
     void setOnBlockChanged(std::function<void(std::int32_t, std::int32_t,
                                                std::int32_t, std::uint16_t,
                                                std::uint16_t)> cb) {
+        std::lock_guard lock(hooksMtx_);
         onBlockChanged_ = std::move(cb);
     }
-    void setOnBlockPlace(std::function<void(std::int32_t, std::int32_t, std::int32_t, std::uint16_t, std::uint16_t)> cb) { onBlockPlace_ = std::move(cb); }
-    void setOnBlockBreak(std::function<void(std::int32_t, std::int32_t, std::int32_t, std::uint16_t, std::uint16_t)> cb) { onBlockBreak_ = std::move(cb); }
-    void setOnBlockNeighborChange(std::function<void(std::int32_t, std::int32_t, std::int32_t, std::uint16_t)> cb) { onBlockNeighborChange_ = std::move(cb); }
-    void addOnBlockPlaceListener(std::function<void(std::int32_t, std::int32_t, std::int32_t, std::uint16_t, std::uint16_t)> h) { blockPlaceListeners_.push_back(std::move(h)); }
-    void addOnBlockBreakListener(std::function<void(std::int32_t, std::int32_t, std::int32_t, std::uint16_t, std::uint16_t)> h) { blockBreakListeners_.push_back(std::move(h)); }
-    void addOnBlockNeighborChangeListener(std::function<void(std::int32_t, std::int32_t, std::int32_t, std::uint16_t)> h) { blockNeighborChangeListeners_.push_back(std::move(h)); }
+    void setOnBlockPlace(std::function<void(std::int32_t, std::int32_t, std::int32_t, std::uint16_t, std::uint16_t)> cb) {
+        std::lock_guard lock(hooksMtx_);
+        onBlockPlace_ = std::move(cb);
+    }
+    void setOnBlockBreak(std::function<void(std::int32_t, std::int32_t, std::int32_t, std::uint16_t, std::uint16_t)> cb) {
+        std::lock_guard lock(hooksMtx_);
+        onBlockBreak_ = std::move(cb);
+    }
+    void setOnBlockNeighborChange(std::function<void(std::int32_t, std::int32_t, std::int32_t, std::uint16_t)> cb) {
+        std::lock_guard lock(hooksMtx_);
+        onBlockNeighborChange_ = std::move(cb);
+    }
+    void addOnBlockPlaceListener(std::function<void(std::int32_t, std::int32_t, std::int32_t, std::uint16_t, std::uint16_t)> h) {
+        std::lock_guard lock(hooksMtx_);
+        blockPlaceListeners_.push_back(std::move(h));
+    }
+    void addOnBlockBreakListener(std::function<void(std::int32_t, std::int32_t, std::int32_t, std::uint16_t, std::uint16_t)> h) {
+        std::lock_guard lock(hooksMtx_);
+        blockBreakListeners_.push_back(std::move(h));
+    }
+    void addOnBlockNeighborChangeListener(std::function<void(std::int32_t, std::int32_t, std::int32_t, std::uint16_t)> h) {
+        std::lock_guard lock(hooksMtx_);
+        blockNeighborChangeListeners_.push_back(std::move(h));
+    }
     void fireBlockPlace(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t oldSt, std::uint16_t newSt) {
-        invokeWorldHook(onBlockPlace_, "block-place hook", x, y, z, oldSt, newSt);
-        for (auto& h : blockPlaceListeners_)
+        std::function<void(std::int32_t, std::int32_t, std::int32_t,
+                           std::uint16_t, std::uint16_t)> hook;
+        std::vector<decltype(hook)> listeners;
+        {
+            std::lock_guard lock(hooksMtx_);
+            hook = onBlockPlace_;
+            listeners = blockPlaceListeners_;
+        }
+        invokeWorldHook(hook, "block-place hook", x, y, z, oldSt, newSt);
+        for (auto& h : listeners)
             invokeWorldHook(h, "block-place listener", x, y, z, oldSt, newSt);
     }
     void fireBlockBreak(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t oldSt, std::uint16_t newSt) {
-        invokeWorldHook(onBlockBreak_, "block-break hook", x, y, z, oldSt, newSt);
-        for (auto& h : blockBreakListeners_)
+        std::function<void(std::int32_t, std::int32_t, std::int32_t,
+                           std::uint16_t, std::uint16_t)> hook;
+        std::vector<decltype(hook)> listeners;
+        {
+            std::lock_guard lock(hooksMtx_);
+            hook = onBlockBreak_;
+            listeners = blockBreakListeners_;
+        }
+        invokeWorldHook(hook, "block-break hook", x, y, z, oldSt, newSt);
+        for (auto& h : listeners)
             invokeWorldHook(h, "block-break listener", x, y, z, oldSt, newSt);
     }
     void fireBlockNeighborChange(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t neighborState) {
-        invokeWorldHook(onBlockNeighborChange_, "neighbor-change hook", x, y, z, neighborState);
-        for (auto& h : blockNeighborChangeListeners_)
+        std::function<void(std::int32_t, std::int32_t, std::int32_t,
+                           std::uint16_t)> hook;
+        std::vector<decltype(hook)> listeners;
+        {
+            std::lock_guard lock(hooksMtx_);
+            hook = onBlockNeighborChange_;
+            listeners = blockNeighborChangeListeners_;
+        }
+        invokeWorldHook(hook, "neighbor-change hook", x, y, z, neighborState);
+        for (auto& h : listeners)
             invokeWorldHook(h, "neighbor-change listener", x, y, z, neighborState);
     }
     void onBlockNeighborChange(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t ns) { fireBlockNeighborChange(x,y,z,ns); }
@@ -281,18 +330,27 @@ public:
             int fallY = y;
             while (fallY > kMinY && getBlock(x, fallY-1, z) == 0) --fallY;
             setBlockInternal(x, fallY, z, above);
-            invokeWorldHook(onEdit_, "edit hook", x >> 4, z >> 4);
+            fireEdit(x >> 4, z >> 4);
         }
         // Torch/support blocks pop off if support removed
         static const uint16_t torch = (uint16_t)names.at("minecraft:torch");
         if (above == torch) {
             setBlockInternal(x, y+1, z, 0);
-            invokeWorldHook(onEdit_, "edit hook", x >> 4, z >> 4);
+            fireEdit(x >> 4, z >> 4);
         }
     }
 
 private:
     static constexpr std::size_t kMaxRecycledChunks = 128;
+
+    void fireEdit(std::int32_t cx, std::int32_t cz) const {
+        std::function<void(std::int32_t, std::int32_t)> hook;
+        {
+            std::lock_guard lock(hooksMtx_);
+            hook = onEdit_;
+        }
+        invokeWorldHook(hook, "edit hook", cx, cz);
+    }
 
     std::unique_ptr<Chunk> acquireChunk() const {
         if (recycledChunks_.empty()) return std::make_unique<Chunk>();
@@ -383,7 +441,13 @@ public:
         // A state-identical write is not a block update in vanilla.  The
         // early return above prevents redstone, fluid, light, and Fabric
         // block hooks from recursively reprocessing an already-stable state.
-        invokeWorldHook(onBlockChanged_, "block-change hook", x, y, z, old, state);
+        std::function<void(std::int32_t, std::int32_t, std::int32_t,
+                           std::uint16_t, std::uint16_t)> blockChanged;
+        {
+            std::lock_guard lock(hooksMtx_);
+            blockChanged = onBlockChanged_;
+        }
+        invokeWorldHook(blockChanged, "block-change hook", x, y, z, old, state);
         // Block Event Bus firing
         if (old == 0 && state != 0) fireBlockPlace(x,y,z,old,state);
         else if (old != 0 && state == 0) fireBlockBreak(x,y,z,old,state);
@@ -398,7 +462,7 @@ public:
         for (int d=0; d<6; ++d) {
             fireBlockNeighborChange(x+DX[d], y+DY[d], z+DZ[d], state);
         }
-        invokeWorldHook(onEdit_, "edit hook", x >> 4, z >> 4);
+        fireEdit(x >> 4, z >> 4);
     }
     // BlockNeighborUpdater: updateBlockState loops 6 neighbors and notifies via onBlockNeighborChange
     void updateBlockState(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t newState) {
@@ -461,7 +525,7 @@ public:
         ++ptr->revision;
         chunks_[key] = std::move(ptr);
         lock.unlock();
-        invokeWorldHook(onEdit_, "edit hook", cx, cz);
+        fireEdit(cx, cz);
     }
     std::size_t loadedChunkCount() const {
         std::shared_lock lock(mutex_);
@@ -583,7 +647,12 @@ public:
             if (forcedChunks_.count(chunkKey(cx, cz))) return true;
             if (ticketManager_.getMinLevel(cx, cz) <= 31) return true;
         }
-        if (simCallback_) return simCallback_(cx, cz);
+        std::function<bool(std::int32_t, std::int32_t)> simulationCallback;
+        {
+            std::lock_guard lock(hooksMtx_);
+            simulationCallback = simCallback_;
+        }
+        if (simulationCallback) return simulationCallback(cx, cz);
         // fallback: if we have simulationDistance_ consider spawn distance
         if (simulationDistance_ <= 0) return true;
         // without callback, assume in range (tests without GameServer)
@@ -595,10 +664,16 @@ public:
             if (forcedChunks_.count(chunkKey(cx, cz))) return true;
             if (ticketManager_.getMinLevel(cx, cz) <= 31) return true;
         }
-        if (simCallback_) return simCallback_(cx, cz);
+        std::function<bool(std::int32_t, std::int32_t)> simulationCallback;
+        {
+            std::lock_guard lock(hooksMtx_);
+            simulationCallback = simCallback_;
+        }
+        if (simulationCallback) return simulationCallback(cx, cz);
         return true;
     }
     void setSimulationDistanceCallback(std::function<bool(std::int32_t,std::int32_t)> cb) {
+        std::lock_guard lock(hooksMtx_);
         simCallback_ = std::move(cb);
     }
     void setSimulationDistance(int d) { simulationDistance_ = d; }
@@ -709,6 +784,12 @@ public:
     }
 
     mutable std::shared_mutex mutex_;
+    // Hook configuration is normally installed during server bootstrap, but
+    // Persistence clears its callbacks during teardown while worker/session
+    // threads may still be finishing a read or edit.  Protect both reads and
+    // replacement, and invoke copied callbacks outside this mutex so a hook
+    // may safely re-enter World or replace another hook.
+    mutable std::mutex hooksMtx_;
     // Serializes the expensive missing-chunk generation path.  Several session
     // threads can request the same edge chunk at once while a player crosses a
     // chunk boundary; without this gate each thread builds a full ~0.6 MiB

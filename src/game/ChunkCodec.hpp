@@ -179,18 +179,21 @@ inline int columnMotionBlocking(const Chunk& c, int lx, int lz) {
 
 template <typename Fn>
 inline void packHeightmapGeneric(std::vector<std::int64_t>& out, Fn&& heightAt) {
+    // Heightmaps use Mojang's PackedIntegerArray layout: entries never
+    // straddle longs. With 9 bits per entry that is seven values per long,
+    // leaving one padding bit in every long and requiring 37 longs for 256
+    // columns. A contiguous bitstream would produce 36 longs, which the
+    // vanilla 1.21.4 client rejects before applying the heightmap.
     constexpr int kBpe = 9;
-    out.assign((256 * kBpe + 63) / 64, 0);
+    constexpr int kValuesPerLong = 64 / kBpe;
+    out.assign((256 + kValuesPerLong - 1) / kValuesPerLong, 0);
     for (int z = 0; z < 16; ++z)
         for (int x = 0; x < 16; ++x) {
             const int idx = z * 16 + x;
-            const int bit = idx * kBpe;
-            const int lo = bit & 63;
-            const int wi = bit >> 6;
+            const int wi = idx / kValuesPerLong;
+            const int lo = (idx % kValuesPerLong) * kBpe;
             const std::int64_t v = static_cast<std::int64_t>(heightAt(x, z) & ((1 << kBpe) - 1));
             out[wi] |= v << lo;
-            if (lo + kBpe > 64 && wi + 1 < (int)out.size())
-                out[wi + 1] |= v >> (64 - lo);
         }
 }
 
@@ -259,7 +262,7 @@ inline void serializeSectionData(WriteBuffer& blob, const Chunk* chunk,
 }
 
 inline void packHeightmapsNbt(WriteBuffer& out, const Chunk* chunk) {
-    std::vector<std::int64_t> ws(36), mo(36);
+    std::vector<std::int64_t> ws, mo;
     packHeightmapGeneric(ws, [&](int x,int z){ return columnSurface(*chunk, x, z); });
     packHeightmapGeneric(mo, [&](int x,int z){ return columnMotionBlocking(*chunk, x, z); });
     nbt::Writer w(out);

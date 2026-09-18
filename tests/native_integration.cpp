@@ -805,10 +805,10 @@ void scenarioQCNative(){
     auto stone = cppfm::gen::blockByName("minecraft:stone") ? cppfm::gen::blockByName("minecraft:stone")->minState : 1;
     auto redstoneBlock = cppfm::gen::blockByName("minecraft:redstone_block") ? cppfm::gen::blockByName("minecraft:redstone_block")->minState : 0;
     // basic QC: piston at 0,0,0, stone at 0,1,0, redstone_block at 1,1,0 -> QC powered
-    w.setBlock(0,0,0, pistonFalse); re.onBlockChanged(0,0,0);
+    w.setBlock(0,0,0, static_cast<std::uint16_t>(pistonFalse)); re.onBlockChanged(0,0,0);
     CHECK(re.isQuasiPowered(0,0,0)==false, "QC basic initially not powered");
-    w.setBlock(0,1,0, stone); re.onBlockChanged(0,1,0);
-    w.setBlock(1,1,0, redstoneBlock); re.onBlockChanged(1,1,0);
+    w.setBlock(0,1,0, static_cast<std::uint16_t>(stone)); re.onBlockChanged(0,1,0);
+    w.setBlock(1,1,0, static_cast<std::uint16_t>(redstoneBlock)); re.onBlockChanged(1,1,0);
     CHECK(re.isQuasiPowered(0,0,0)==true, "QC basic y+1 powered via stone");
     // y+1 only: remove direct power, keep y+1
     w.setBlock(1,0,0, 0); re.onBlockChanged(1,0,0);
@@ -816,9 +816,9 @@ void scenarioQCNative(){
     CHECK(re.isQuasiPowered(0,0,0)==true, "QC y+1 only still quasi powered");
     // dispenser QC: dispenser at 0,0,1, stone at 0,1,1, redstone_block at 1,1,1 -> QC
     auto disp = cppfm::gen::blockByName("minecraft:dispenser") ? cppfm::gen::blockByName("minecraft:dispenser")->minState : 0;
-    w.setBlock(0,0,1, disp); re.onBlockChanged(0,0,1);
-    w.setBlock(0,1,1, stone); re.onBlockChanged(0,1,1);
-    w.setBlock(1,1,1, redstoneBlock); re.onBlockChanged(1,1,1);
+    w.setBlock(0,0,1, static_cast<std::uint16_t>(disp)); re.onBlockChanged(0,0,1);
+    w.setBlock(0,1,1, static_cast<std::uint16_t>(stone)); re.onBlockChanged(0,1,1);
+    w.setBlock(1,1,1, static_cast<std::uint16_t>(redstoneBlock)); re.onBlockChanged(1,1,1);
     CHECK(re.isQuasiPowered(0,0,1)==true, "QC dispenser y+1 powered");
     (void)pistonTrue;
 }

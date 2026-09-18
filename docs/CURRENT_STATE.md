@@ -12,16 +12,16 @@
 
 | field | value |
 |---|---|
-| `updated` | `2026-09-10` |
-| `implementation_baseline` | `main` HEAD `574e67b` plus the current uncommitted review/cleanup worktree |
-| `implementation_baseline_short` | `574e67b` + working tree |
+| `updated` | `2026-09-18` |
+| `implementation_baseline` | `main` HEAD `6fef7d7` plus the current uncommitted compatibility review worktree |
+| `implementation_baseline_short` | `6fef7d7` + compatibility review worktree |
 | `documentation_commit` | working tree (not committed; synchronized with focused results and final CTest/package gates) |
-| `main_integration_merge` | `574e67b` (current HEAD; prior plan51 integration remains historical) |
+| `main_integration_merge` | `6fef7d7` (current HEAD; prior plan51 integration remains historical) |
 | `plan` | `plan51` history + active `plan52` compatibility goal |
 | `phase` | `plan52-native-behavior-and-mod-recheck` |
 | `phase_status` | `FINAL_GATES_CONFIRMED_WITH_DECLARED_BOUNDARIES` |
 | `publication_status` | `BLOCKED` |
-| `runtime_reference_snapshot` | `main` HEAD `574e67b` + current working tree |
+| `runtime_reference_snapshot` | `main` HEAD `6fef7d7` + current working tree |
 | `canonical_workflow` | `docs/DEVELOPMENT.md#research-workflow` |
 | `research_entrypoint` | `docs/research-prompt.md` is a legacy redirect only |
 | `research_viewpoints` | `16` current viewpoints; old `13` wording is historical |
@@ -46,7 +46,7 @@ plan51 implementation and its no-ff integration are recorded above.
 | archive | `DONE` | historical assessment files are present under `docs-legacy/` and their index links resolve |
 | stable tracker and fixture | `CURRENT` | this tracker and `docs/mob_stats_149.csv` retain their stable paths and checksum |
 | final-gates evidence | `CONFIRMED` | current full non-nightly CTest and clean extracted-package harness both pass locally; ignored `build/` outputs are local evidence, not tracked/public release artifacts; declared scope/evidence boundaries remain below |
-| publication | `BLOCKED` | E-14, L3, and long-run/real-client evidence remain explicit boundaries even though the executable gates pass |
+| publication | `BLOCKED` | E-14, full world-generation L3, accepted long-run evidence, and retained release artifacts remain explicit boundaries even though the executable gates and bounded local client probe pass |
 
 The cleanup commit `db12df96093a0869e958f62b11f9a9cd68ba3ef1` removed the legacy
 Structures API: 10 files, `+22/-787`, with source/test legacy-reference grep `0`.
@@ -71,20 +71,22 @@ explicit rather than being converted into a broad PASS:
 | `tools/soak_bot.py --duration 300` | `RESOLVED` | three integrated main runs passed; each had KeepAlive `30`, chunks `182`, time updates `300`, kicks/EOF/server-exit/transport/protocol errors `0`, and owned cleanup PASS |
 | chunk generation/save/unload memory | `IMPLEMENTED; 30M DIAGNOSTIC PASS / 2H NOT-ACCEPTED` | generation is serialized per world; async save no longer copies a full `Chunk`; eviction no longer adds an extra 32-block ring; bounded allocation reuse is in `17ab09f`; the 1800s run passes at `114504→128868kB` (`+12.5%`), while the earlier 7200s attempt on parent `d1c6a7f` was not accepted at `+19.5%` |
 | accepted 2-hour/24-hour evidence | `INTERRUPTED / ABSENT` | the 7200s synthetic attempt was not completed or accepted; no accepted 2-hour or 24-hour artifact exists; procedures are not results |
-| current real-client/GUI evidence | `ABSENT` / `DECLARED-LIMITATION` | no current official-client capture is available; bot/synthetic output is not a real-client proof |
+| current real-client/GUI evidence | `PASS / LOCAL-ONLY` | mc-pilot-managed Fabric 1.21.4 client logged in offline, entered play, stayed connected for more than one minute, and completed chat/command/block/status/screenshot probes; PrismLauncher 11.1.0 also launched Fabric 1.21.4 through its CLI with an existing authenticated account and joined cppfm; temporary local logs/screenshot were not retained as release artifacts; see [MC_PILOT_REAL_TEST.md](MC_PILOT_REAL_TEST.md) |
 | official Fabric API/Yarn ABI audit | `PASS / INFORMATIONAL` | Fabric API `0.119.4+1.21.4` common/server-side surface cross-checked against Yarn `1.21.4+build.8`: 206 top-level classes and 1,699 public members; no exact class/member descriptor gap in the selected surface; client/datagen/renderer/internal-only classes excluded |
 | locked real public-mod corpus | `PASS / BOUNDED` | Lithium, FerriteCore, and Carpet plus the combined run pass with the explicit Java 21 launcher; latest local ignored report `build/real-mod-corpus/real-mod-corpus-report-after-diagnostics-20260908-v1.json` records zero classified process diagnostics; it is not a tracked/public artifact and does not establish arbitrary-mod compatibility |
 | wider Modrinth candidate probe | `PASS / BOUNDED` | 12 pinned entries classify as 8 target-compatible/runtime passes and 4 explicit non-target/invalid cases; latest corrected local ignored report `build/real-mod-candidates/compatibility-candidates-report-final-20260908.json`; it is not a tracked/public artifact and provides bootstrap/clean-shutdown evidence only |
 | structural provider linkage preflight | `DIAGNOSTIC (raw FAIL)` | official server/libraries with Tiny namespace mapping were scanned; raw Mixin target/injected-member references remain (Lithium 2 classes/220 members, FerriteCore 19/15, Carpet 49/149), so this intentionally non-gating result is a conservative preflight signal rather than a runtime failure |
 
 The `RESOLVED` Structures API row does not close the structure-generation parity
-boundary. In particular, vanilla Xoroshiro L3 byte parity is not independently
-proven, and historical numbered-row `DONE` values are not universal parity claims.
+boundary. The RNG primitive and splitter contract is now independently covered by
+`test_rng_parity`; full vanilla Xoroshiro call-order and structure-NBT parity is
+still not proven, and historical numbered-row `DONE` values are not universal
+parity claims.
 
 ## 4. Exact final-gates evidence
 
 These records combine prior named evidence with the final results confirmed for
-the current working tree on 2026-09-10. Results are identified by their target
+the current working tree on 2026-09-18. Results are identified by their target
 names; package evidence is explicitly identified as a clean extracted-directory
 run rather than being conflated with the source-tree harness. Any `build/` path
 below is an ignored local output from that run, not a tracked/public evidence or
@@ -94,16 +96,17 @@ release artifact unless separately published:
 |---|---|---|
 | configure/build | current timeout-wrapped full Ninja rebuild and package target completed; the earlier clean RelWithDebInfo baseline was `129/129` targets | `PASS` |
 | `runtime_layout` | `PASS` | fresh-directory tree/resource extraction and sentinel preservation |
-| CPack package | `PASS` | CPack produced ignored local `build/packages/cppfabricmc-1.21.4-Linux-x86_64.zip`; ZIP contains exactly one `cppfm` executable, archive size `54395700` bytes, SHA-256 `c6ae183d4e527f1b75f4cae35a0bcbfb3dba1ab4552e7039ae0f129b378e5440`; CPack resource preflight and clean extraction tested; not a tracked/public release asset |
+| CPack package | `PASS` | CPack produced ignored local `build/packages/cppfabricmc-1.21.4-Linux-x86_64.zip`; ZIP contains exactly one `cppfm` executable, archive size `54377042` bytes, SHA-256 `07cbccb4552b50003eec71ef827c22435a6b6442d1039458df598e1de0a0d588`; CPack resource preflight and clean extraction tested; not a tracked/public release asset |
 | `package_jvm_smoke` | `PASS` | exact CPack ZIP extracted without checkout assets/classes overrides; default-on strict JVM startup, 1,457 embedded class files, registry assets, and owned clean shutdown verified |
 | incremental Ninja build | `ninja: no work to do` | `PASS` |
 | `test_scoreboard_reset` | `22 PASS 0 FAIL` | `PASS` |
-| `test_spec_wire` | `395 PASS 0 FAIL` | `PASS` |
+| `test_spec_wire` | `417 PASS 0 FAIL` | `PASS`; official 1.21.4 EntityTeleport field layout is covered |
 | `test_wire_full` | `399 PASS 0 FAIL` | `PASS` |
 | `test_wire_b6` | `136 PASS 0 FAIL` | `PASS` |
 | `test_fuzz` | `25 PASS 0 FAIL` | `PASS` |
 | `test_gameplay_full` | `807 PASS 0 FAIL 807` | `PASS`; arbitrary JVM-mod boundary remains informational |
-| `test_seed_parity` | `201 PASS 0 FAIL` | L1/L2 evidence only; L3 remains unproven |
+| `test_seed_parity` | `201 PASS 0 FAIL` | L1/L2 deterministic evidence |
+| `test_rng_parity` | `25 PASS 0 FAIL` | Java LocalRandom, Minecraft Xoroshiro seed expansion, primitive outputs, and long/coordinate/string splitter vectors; full worldgen call-order/NBT parity remains open |
 | `test_mining_full` | `59/59` | `PASS`; plan49 authoritative session/tick mining |
 | `test_block_hardness_full` | `16/16`, `1095 mismatch=0` | `PASS` |
 | `test_mob_stats_full` | `131 PASS 0 FAIL` | `PASS` |
@@ -116,11 +119,11 @@ release artifact unless separately published:
 | `test_plan43` | `82 PASS 0 FAIL` in `28.16s` after the latest clean rebuild | `PASS` |
 | `test_smoke_80` | `223 PASS 0 FAIL` | `PASS` |
 | `test_server_full` | `234 PASS 0 FAIL` | `PASS` from the clean extracted Linux package; source-tree and package evidence are kept distinct |
-| multi-client | `ALL PASS` in `17.84s` | `PASS` |
-| bot smoke | `ALL PASS` in `20.87s` | `PASS` |
-| full non-nightly CTest regression | `42/42 PASS` in `397.54s` | latest rerun using `ctest --test-dir build -LE 'nightly|package' --output-on-failure --timeout 450`; includes the `tautology_lint` and `mcproto_framing` quality/framing gates; the separate release-only `package_jvm_smoke` gate is not folded into this aggregate |
+| multi-client | `ALL PASS` in `17.60s` | `PASS` |
+| bot smoke | `ALL PASS` in `21.09s` | `PASS` |
+| full non-nightly CTest regression | `43/43 PASS` in `386.22s` | latest rerun using `ctest --test-dir build -LE 'nightly|package' --output-on-failure --timeout 600`; includes the `tautology_lint` and `mcproto_framing` quality/framing gates; the separate release-only `package_jvm_smoke` gate is not folded into this aggregate |
 | view32 dry benchmark | `PASS` for 4,225 chunks; p50 `0.108ms`, p95 `2.333ms`, peak RSS ~`95MB`, hit rate `84.6%` | synthetic dry result |
-| 120-client stress | `120/120 joined PASS` in `68.1s` | `PASS` |
+| 120-client stress | `120/120 joined PASS` in `68.0s` | `PASS` |
 | `tests/soak_test.py --duration 60` | `PASS`; 30 keepalives, 0 disconnects, 590 actions, post-fill RSS growth `1.0%` | latest short post-review concurrency/cleanup smoke; not 2h/24h |
 | `tests/soak_test.py --duration 300` | `PASS`; 150 keepalives, 0 disconnects, actions `2932`, post-fill RSS growth `7.6%` | short synthetic soak; not 2h/24h |
 | `tests/soak_test.py --duration 600 --movement-range 3000` | `PASS`; 300 keepalives, 0 disconnects, actions `5707`, post-fill RSS growth `6.6%` | post-fix wide synthetic soak; not 2h/24h |
@@ -151,8 +154,9 @@ The three `soak_bot` runs close the former bot-soak blocker. The chunk memory/ge
 follow-up is covered by the passing 600-second wide soak and the new 1800-second
 allocation-reuse diagnostic pass, but the attempted 7200-second
 run was interrupted at the recorded `t=3361s` after exceeding the post-fill RSS gate
-(`160388→191612kB`, `+19.5%`). No accepted 2-hour/24-hour run artifact or current
-real-client/GUI artifact exists. The structural provider linkage scan is intentionally
+(`160388→191612kB`, `+19.5%`). No accepted 2-hour/24-hour run artifact or retained
+real-client/GUI release artifact exists, although bounded local mc-pilot and
+PrismLauncher probes pass. The structural provider linkage scan is intentionally
 conservative: it exposes raw Mixin target/injected-member gaps, while the runtime
 corpus report records zero classified process diagnostics for the three locked mods
 and their combined run. The recorded full CTest baseline and the separate clean
@@ -173,15 +177,23 @@ gate. Publication remains blocked only by the declared boundaries below.
   pass. The production path is still not the Mojang GameProvider; arbitrary Fabric
   JVM mods and universal bytecode compatibility remain unsupported. The boundary
   is reported as a limitation; it is not represented by an intentional test failure.
-- **Vanilla Xoroshiro L3:** `test_seed_parity` proves the stated L1/L2 evidence, but
-  exact vanilla Xoroshiro byte parity is not independently proven.
+- **Vanilla Xoroshiro L3:** `test_rng_parity` independently covers the Java/Minecraft
+  primitive algorithms, seed expansion, bounded outputs, and splitters (`25 PASS /
+  0 FAIL`). The complete world-generation call ordering and structure-NBT output
+  still lack retained vanilla vectors, so the full L3 claim remains a declared
+  boundary.
 - **Long-run evidence:** the three 300-second bot runs, the 300-second synthetic soak,
   and the post-fix 600-second wide soak pass. The attempted 7200-second run was
   interrupted at the recorded `t=3361s` after post-fill RSS reached `191612kB` from a
   `160388kB` baseline (`+19.5%`, above the `15%` gate); no accepted 2-hour/24-hour
   artifact exists.
-- **Real-client evidence:** no current real-client/GUI artifact is available; bot and
-  synthetic evidence is not a real-client capture.
+- **Real-client evidence:** bounded local mc-pilot and PrismLauncher checks pass.
+  The mc-pilot-managed Fabric 1.21.4 client passes login, world entry, stability,
+  chat/command/block/status/screenshot checks; PrismLauncher 11.1.0 launches a
+  Fabric 1.21.4 client through its CLI and joins cppfm with an existing
+  authenticated account. Logs and screenshots were temporary local evidence,
+  not retained release artifacts; first-time Microsoft interactive login, every
+  gameplay path, and all PrismLauncher instance configurations remain untested.
 
 ## 6. Fixture
 
@@ -192,16 +204,17 @@ gate. Publication remains blocked only by the declared boundaries below.
 
 ## 7. Final documentation checks
 
-The timeout-wrapped pre-commit validation passed for Markdown links and anchors
+The timeout-wrapped documentation validation passed for Markdown links and anchors
 (including explicit `<a id="…">` anchors), required files and schema, the fixture
 checksum/shape, stale-hash and stale-claim grep, scope, and `git diff --check`.
 These checks validate publication hygiene only; they do not turn E-14, missing L3
-proof, missing long-run artifact, or missing real-client artifact into a pass.
+proof, missing accepted long-run artifact, or the lack of a retained client artifact
+into a universal compatibility claim.
 
-The latest working-tree measurement counts `95,314` lines across `292` files in
+The latest working-tree measurement counts `95,464` lines across `292` files in
 `src/`, `tests/`, and `tools/` (C++/header/Python/Java/CMake source extensions),
 versus `80,967` lines across `272` tracked files in the same `HEAD` tree. This is
-a net increase of `14,347` lines because the
+a net increase of `14,497` lines because the
 current compatibility pass includes new executable feature code, concurrency
 guards, packaging/runtime support, tests, fixtures, and review tooling; the
 measurement includes intentionally untracked review files. The earlier
@@ -218,9 +231,9 @@ server status, terminate and reap the owned group with bounded escalation,
 and report cleanup failure explicitly. The disconnected-session path also
 marks the player inactive before slow persistence/hooks. The last completed
 live-server runs left no `cppfm` process behind. The latest full CTest baseline
-passed `42/42` in `397.54s`; the release-only package JVM gate is tracked
+passed `43/43` in `386.22s`; the release-only package JVM gate is tracked
 separately. A fresh 120-client
-stress run joined `120/120` clients in `68.1s`, and the latest 60-second soak
+stress run joined `120/120` clients in `68.0s`, and the latest 60-second soak
 completed with zero disconnects and `1.0%` post-fill RSS growth.
 
 The current one-file package verification passed locally: the Linux ZIP in the
@@ -228,8 +241,9 @@ ignored `build/` output contains only `cppfm`, and its clean extracted-directory
 `test_server_full` run passed `234/234`; the separate `package_jvm_smoke` gate
 also passed strict default-on JVM startup against that ZIP. The ZIP is not a
 tracked/public release asset.
-The interrupted 7200s soak remains a negative diagnostic artifact and
-the long-run/real-client evidence boundaries remain explicit. The active broader
+The interrupted 7200s soak remains a negative diagnostic artifact. The accepted
+long-run and retained-release-artifact boundaries remain explicit even though the
+bounded local real-client probe passes. The active broader
 compatibility goal can continue expanding API, constructor/verifier-state,
 behavioral, and real-mod coverage; the structural linkage report should be used to
 prioritize those changes, not presented as a universal runtime verdict.
@@ -246,4 +260,4 @@ targeted issues. The following rules remain in force for future work:
 | evidence counts | `UPDATED` | replace only with a closed run artifact; never infer PASS from a procedure or old count |
 | strict 78-gap history | `HISTORICAL` | do not merge it into the 90-row taxonomy count |
 | `AGENTS.md` handover | `UPDATED` | the authorized handover change points to the canonical workflow, current 16-viewpoint research, protocol-769 IDs, and timeout-safe process cleanup |
-| publication | `BLOCKED` | executable gates pass; declared arbitrary-mod/E-14, L3, long-run, and real-client boundaries still prevent universal release sign-off |
+| publication | `BLOCKED` | executable gates pass; declared arbitrary-mod/E-14, full world-generation L3, long-run, and real-client boundaries still prevent universal release sign-off |

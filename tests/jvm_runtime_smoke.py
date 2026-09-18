@@ -17,6 +17,12 @@ def main() -> int:
     parser.add_argument("--binary", required=True)
     parser.add_argument("--classes", required=True)
     parser.add_argument("--mods", required=True)
+    parser.add_argument(
+        "--startup-timeout",
+        type=float,
+        default=90.0,
+        help="maximum seconds to wait for all JVM fixture evidence",
+    )
     args = parser.parse_args()
 
     with tempfile.TemporaryDirectory(prefix="cppfm-jvm-smoke-") as world:
@@ -48,7 +54,9 @@ def main() -> int:
                 log_file.seek(0)
                 output[:] = log_file.read().splitlines()
 
-            deadline = time.monotonic() + 30.0
+            if args.startup_timeout <= 0:
+                parser.error("--startup-timeout must be positive")
+            deadline = time.monotonic() + args.startup_timeout
             required = (
                 "embedded HotSpot started",
                 "fixture entrypoint initialized",

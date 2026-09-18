@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <cstdio>
+#include <limits>
 
 namespace cppfm {
 
@@ -296,7 +297,12 @@ void RecipeManager::loadDirectory(const std::string& dir) {
                 auto it = gen::itemIdByName().find(outId.empty() ? "minecraft:firework_rocket" : outId);
                 std::string ridOut = outId.empty() ? std::string("minecraft:firework_rocket") : outId;
                 auto it2 = gen::itemIdByName().find(ridOut);
-                if (it2 != gen::itemIdByName().end()) r.result = ItemStack::of(it2->second, outCount);
+                if (it2 != gen::itemIdByName().end())
+                    r.result = ItemStack::of(
+                        it2->second, static_cast<std::int16_t>(
+                            std::clamp(outCount, 0,
+                                       static_cast<int>(
+                                           std::numeric_limits<std::int16_t>::max()))));
                 else if (it != gen::itemIdByName().end()) r.result = ItemStack::of(it->second, 1);
                 recipes_.push_back(std::move(r));
             } else {

@@ -1,7 +1,7 @@
 # SPEC_WIRE — Minecraft 1.21.4 / protocol 769
 
 This is the byte-level source of truth for the current C++ implementation. Snapshot:
-`main` HEAD `574e67b` plus the current working tree, rechecked 2026-09-09. Scope
+`main` HEAD `6fef7d7` plus the current working tree, rechecked 2026-09-18. Scope
 is Java Edition 1.21.4, protocol `769`, DataVersion `4189`, with an unmodified Fabric
 1.21.4 server as the behavioral reference. `docs/MISSING_FEATURES_1_21_4.md` targets
 are identified in every contract; this file does not change their status or the
@@ -10,9 +10,10 @@ publication status, which remains `BLOCKED`.
 **Status:** current wire contract, with the implementation/omitted/deferred
 classification below. **Limitations:** a protocol-compatible implementation is not
 the official Fabric JVM runtime. The default-on embedded layer is a bounded
-server-side shadow-ABI bridge and does not alter packet IDs or provide arbitrary mod,
-client GUI, or vanilla RNG parity; unverified vanilla RNG parity remains outside the
-boundary. See [PLAN51_JVM.md](PLAN51_JVM.md).
+server-side shadow-ABI bridge and does not alter packet IDs or provide arbitrary mod
+or client GUI parity. Java-compatible RNG primitives and splitters are covered by
+independent vectors, while full world-generation RNG call-order and structure-NBT
+parity remain outside the proven boundary. See [PLAN51_JVM.md](PLAN51_JVM.md).
 
 The archived assessment-1 strict audit is a historical record labelled 78 gaps; it
 is not a current packet count or a fresh parity result. The current numbered matrix
@@ -42,15 +43,20 @@ Packet field bytes belong here. Gameplay causes belong in
 
 | source | use | label |
 |---|---|---|
-| `https://raw.githubusercontent.com/PrismarineJS/minecraft-data/master/data/pc/1.21.4/protocol.json` | IDs, fields, mapper/type definitions | `WIRE-ORACLE` |
+| `https://raw.githubusercontent.com/PrismarineJS/minecraft-data/master/data/pc/1.21.4/protocol.json` | IDs and most packet/type definitions | `WIRE-ORACLE` (field exceptions are rechecked below) |
 | `https://minecraft.wiki/w/Java_Edition_protocol` | VarInt, Position, palette and light explanations | `VANILLA-CONCEPT` |
 | `https://fabricmc.net/2024/12/02/1214.html` | Fabric 1.21.4 release boundary | `VANILLA-CONCEPT` |
 | `https://maven.fabricmc.net/docs/fabric-loader-0.16.9/index.html` | loader/JVM boundary | `VANILLA-CONCEPT` |
 | `https://maven.fabricmc.net/docs/yarn-1.21.4+build.1/` | names and concepts only | `VANILLA-CONCEPT` |
+| `https://maven.fabricmc.net/docs/yarn-1.21.4%2Bbuild.8/net/minecraft/network/packet/s2c/play/EntityPositionS2CPacket.html` | official 1.21.4 `teleport_entity` packet model | `OFFICIAL-API-REFERENCE` |
+| `https://maven.fabricmc.net/docs/yarn-1.21.4%2Bbuild.1/net/minecraft/entity/player/PlayerPosition.html` | official position/delta/rotation record | `OFFICIAL-API-REFERENCE` |
 | reference-server captures and repository golden vectors | observed bytes | `CAPTURED` |
 
-The raw protocol JSON is the first oracle for packet ID/type/field shape; captures
-and tests are the authority for the bytes this repository actually emits. A Yarn
+The raw protocol JSON is the first oracle for packet IDs and ordinary field shapes;
+official versioned Yarn packet models, real-client decoding, captures, and tests
+override a stale community field definition. In particular, the current raw
+Prismarine `teleport_entity` entry uses the older short shape, while the official
+1.21.4 client model uses `PlayerPosition` plus relative-position flags. A Yarn
 `1.21.4+build.9` URL returned 404 during research and is not used as provenance.
 
 Configuration sends twelve ordered registry payloads and waits for the client's
@@ -110,6 +116,7 @@ The table deliberately includes state and direction; an ID-only table is unsafe.
 | Play | C→S | KeepAlive `0x1A` | i64 id | `Session::handlePlay`; native | accepted, `WIRE-ORACLE` |
 | Play | S→C | LevelChunkWithLight `0x28` | i32 x, i32 z, heightmap NBT, data length/blob, block entities, masks and arrays | `ChunkCodec::serializeLevelChunkBody`; wire full | implemented, `CAPTURED` |
 | Play | S→C | UpdateLight `0x2B` | chunk x/z VarInts, trust flag, mask arrays, light arrays | `ChunkCodec::serializeUpdateLightBody`; wire full | implemented, `WIRE-ORACLE` |
+| Play | S→C | EntityTeleport `0x77` | entity id VarInt, position `Vec3d`, delta movement `Vec3d`, yaw/pitch f32, relative flags fixed i32, on-ground bool | `GameServerHelpers.hpp::makeEntityTeleportBody`; `test_spec_wire`/real Fabric client | implemented, `OFFICIAL-API-REFERENCE` + `CAPTURED` |
 | Play | S→C | OpenScreen `0x35` | window id VarInt, menu type VarInt, anonymous-NBT title | `GameServer_session.cpp`; `test_wire_full` | implemented, `WIRE-ORACLE` |
 | Play | S→C | ContainerSetContent `0x13` | window id VarInt, state id VarInt, Slot array, carried Slot | `GameServer::sendMenuContent`; wire full | implemented, `WIRE-ORACLE` |
 | Play | S→C | ContainerSetSlot `0x15` | window id VarInt, state id VarInt, slot i16, Slot | `MenuInteraction`; wire full | implemented, `WIRE-ORACLE` |
@@ -132,6 +139,7 @@ OpenScreen           = 0x35
 TradeList            = 0x2E
 ContainerSetContent  = 0x13
 MultiBlockChange     = 0x4E
+EntityTeleport       = 0x77
 ```
 
 ### From-client and omitted/deferred matrix
@@ -284,6 +292,10 @@ limit.
   not in a current packet contract.
 - `UpdateAttributes` mapper IDs and slot component IDs must not be inferred from an
   older release.
+- In 1.21.4, `EntityTeleport 0x77` is `entity id + PlayerPosition + PositionFlagSet
+  + onGround`: six `f64` values, two `f32` values, a fixed `i32`, and a boolean.
+  The short three-coordinate/two-byte-angle definition in the current raw
+  Prismarine table is stale for this packet and is not used by the implementation.
 - The current header comment in `src/proto/Ids.hpp` contains an old axis sentence;
   the implementation and byte tests win.
 
@@ -330,15 +342,15 @@ Fresh byte-lock evidence at the snapshot:
 
 | target | result |
 |---|---|
-| `test_spec_wire` | `395 PASS 0 FAIL` |
+| `test_spec_wire` | `417 PASS 0 FAIL` |
 | `test_wire_full` | `399 PASS 0 FAIL` |
 | `test_wire_b6` | `136 PASS 0 FAIL` |
 | `test_scoreboard_reset` | `22 PASS 0 FAIL` |
 | `test_fuzz` | `25 PASS 0 FAIL` |
 
 These are named current-snapshot results, not inherited values from the handover or
-historical audits. In particular, the old `test_spec_wire` value `328` is stale;
-the current value is `395`. `test_native` is intentionally recorded as `ALL PASS`
+historical audits. In particular, the old `test_spec_wire` values `328` and `395`
+are stale; the current value is `417`. `test_native` is intentionally recorded as `ALL PASS`
 without an invented aggregate count. A passing wire lock also does not clear the
 E-14 boundary or missing real-client/long-run evidence; the former
 `soak_bot` blocker is resolved by three integrated 300-second passes.

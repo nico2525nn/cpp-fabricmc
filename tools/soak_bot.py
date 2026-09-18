@@ -406,6 +406,7 @@ def main() -> int:
                         f"--port={port}",
                         f"--view-distance={args.view_distance}",
                         f"--world-dir={world_dir}",
+                        "--level-type=flat",
                     ],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,

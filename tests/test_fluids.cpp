@@ -31,7 +31,7 @@ static void check(bool condition, const char* name) {
 
 static std::uint16_t blockState(const char* name) {
     const auto* block = gen::blockByName(name);
-    return block ? block->minState : 0;
+    return block ? static_cast<std::uint16_t>(block->minState) : std::uint16_t{0};
 }
 
 static std::uint16_t fluidState(const char* name, int level) {

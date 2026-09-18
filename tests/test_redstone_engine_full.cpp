@@ -62,7 +62,7 @@ struct Rig {
 };
 static std::uint16_t stateByName(const char* n) {
     auto b = gen::blockByName(n);
-    return b ? b->minState : 0;
+    return b ? static_cast<std::uint16_t>(b->minState) : std::uint16_t{0};
 }
 static std::uint16_t wireWith(int power) {
     return (std::uint16_t)gen::stateWithPropsList("minecraft:redstone_wire", {{"power", std::to_string(power).c_str()}});

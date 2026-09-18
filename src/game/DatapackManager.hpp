@@ -520,8 +520,8 @@ public:
                                                             int haveLv = wantSilk ? (ctx.silkTouch?1:0) : ctx.fortuneLevel;
                                                             if(lv->isNum()){ if(haveLv!=lv->asInt(haveLv)) return false; }
                                                             else if(lv->isObj()){
-                                                                if(auto* mn=lv->find("min")) if(haveLv < mn->asInt(mn->number)) return false;
-                                                                if(auto* mx=lv->find("max")) if(haveLv > mx->asInt(mx->number)) return false;
+                                                                if(auto* mn=lv->find("min")) if(haveLv < mn->asInt(haveLv)) return false;
+                                                                if(auto* mx=lv->find("max")) if(haveLv > mx->asInt(haveLv)) return false;
                                                             }
                                                         }
                                                     }
@@ -698,8 +698,8 @@ public:
                                 if (range.isNum()) {
                                     if (have != range.asInt(have)) return false;
                                 } else if (range.isObj()) {
-                                    if (auto* mn = range.find("min")) if (have < mn->asInt(mn->number)) return false;
-                                    if (auto* mx = range.find("max")) if (have > mx->asInt(mx->number)) return false;
+                                    if (auto* mn = range.find("min")) if (have < mn->asInt(have)) return false;
+                                    if (auto* mx = range.find("max")) if (have > mx->asInt(have)) return false;
                                 }
                             }
                         }
@@ -717,13 +717,13 @@ public:
                         if (val->isNum()) have = val->asInt(have);
                         else if (val->isObj()) {
                             // value as range {min,max} — check have in range directly
-                            if (auto* mn = val->find("min")) if (have < mn->asInt(mn->number)) return false;
-                            if (auto* mx = val->find("max")) if (have > mx->asInt(mx->number)) return false;
+                            if (auto* mn = val->find("min")) if (have < mn->asInt(have)) return false;
+                            if (auto* mx = val->find("max")) if (have > mx->asInt(have)) return false;
                             if (val->find("min") || val->find("max")) {
                                 if (auto* rng = v.find("range")) {
                                     if (rng->isObj()) {
-                                        if (auto* mn2 = rng->find("min")) if (have < mn2->asInt(mn2->number)) return false;
-                                        if (auto* mx2 = rng->find("max")) if (have > mx2->asInt(mx2->number)) return false;
+                                        if (auto* mn2 = rng->find("min")) if (have < mn2->asInt(have)) return false;
+                                        if (auto* mx2 = rng->find("max")) if (have > mx2->asInt(have)) return false;
                                     }
                                 }
                                 return true;
@@ -733,8 +733,8 @@ public:
                     if (auto* rng = v.find("range")) {
                         if (rng->isNum()) { if (have != rng->asInt(have)) return false; }
                         else if (rng->isObj()) {
-                            if (auto* mn = rng->find("min")) if (have < mn->asInt(mn->number)) return false;
-                            if (auto* mx = rng->find("max")) if (have > mx->asInt(mx->number)) return false;
+                            if (auto* mn = rng->find("min")) if (have < mn->asInt(have)) return false;
+                            if (auto* mx = rng->find("max")) if (have > mx->asInt(have)) return false;
                         }
                     }
                     return true;
@@ -774,8 +774,8 @@ public:
                                             int haveLv = wantSilk ? (ctx.silkTouch?1:0) : ctx.fortuneLevel;
                                             if (lv->isNum()) { if (haveLv != lv->asInt(haveLv)) return false; }
                                             else if (lv->isObj()) {
-                                                if (auto* mn = lv->find("min")) if (haveLv < mn->asInt(mn->number)) return false;
-                                                if (auto* mx = lv->find("max")) if (haveLv > mx->asInt(mx->number)) return false;
+                                                if (auto* mn = lv->find("min")) if (haveLv < mn->asInt(haveLv)) return false;
+                                                if (auto* mx = lv->find("max")) if (haveLv > mx->asInt(haveLv)) return false;
                                             }
                                         }
                                     }
@@ -793,8 +793,10 @@ public:
                     return true;
                 } else if (c == "minecraft:enchantment_active_check" || c == "enchantment_active_check") {
                     std::string enchantName;
-                    if(auto* e=v.find("enchantment")) enchantName=e->asStr();
-                    else if(auto* e=v.find("enchantments")) enchantName=e->asStr();
+                    if(auto* enchantmentValue=v.find("enchantment"))
+                        enchantName=enchantmentValue->asStr();
+                    else if(auto* enchantmentsValue=v.find("enchantments"))
+                        enchantName=enchantmentsValue->asStr();
                     bool wantFortune = enchantName.find("fortune")!=std::string::npos;
                     bool wantSilk = enchantName.find("silk_touch")!=std::string::npos;
                     bool wantMending = enchantName.find("mending")!=std::string::npos;
@@ -806,8 +808,8 @@ public:
                     if(auto* lv=v.find("levels")){
                         if(lv->isNum()){ if(haveLv != lv->asInt(haveLv)) return false; }
                         else if(lv->isObj()){
-                            if(auto* mn=lv->find("min")) if(haveLv < mn->asInt(mn->number)) return false;
-                            if(auto* mx=lv->find("max")) if(haveLv > mx->asInt(mx->number)) return false;
+                            if(auto* mn=lv->find("min")) if(haveLv < mn->asInt(haveLv)) return false;
+                            if(auto* mx=lv->find("max")) if(haveLv > mx->asInt(haveLv)) return false;
                         }
                     } else {
                         if(haveLv<=0) return false;
@@ -978,7 +980,8 @@ public:
                 } else if (func == "minecraft:set_lore" || func == "set_lore") {
                     if (auto* lore=f.find("lore")) { if (lore->isArr()) for (auto& l: lore->arr) { if (l.isStr()) stack.lore.push_back(l.asStr()); else if (l.isObj()) stack.lore.push_back(l.dump()); } }
                 } else if (func == "minecraft:set_name" || func == "set_name" || func == "minecraft:set_custom_name" || func == "set_custom_name") {
-                    if(auto* nm=f.find("name")) stack.displayNameLoot=nm->asStr(); else if(auto* v=f.find("value")) stack.displayNameLoot=v->asStr();
+                    if(auto* nm=f.find("name")) stack.displayNameLoot=nm->asStr();
+                    else if(auto* valueNode=f.find("value")) stack.displayNameLoot=valueNode->asStr();
                 } else if (func == "minecraft:set_attributes" || func == "set_attributes") {
                     // store attribute name as lore stub
                     if(auto* attrs=f.find("attributes")) if(attrs->isArr()) for(auto& a: attrs->arr) if(a.isObj()) if(auto* at=a.find("attribute")) stack.lore.push_back(std::string("attr:")+at->asStr());

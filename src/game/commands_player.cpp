@@ -407,7 +407,7 @@ void GameServer::initPlayerCommandsPart05() {
             b.varint(e.type);
             b.varint(ampWire);
             b.varint(e.durationTicks);
-            b.u8(effectFlags(e));
+            b.u8(static_cast<std::uint8_t>(effectFlags(e)));
             connection->trySendPacket(proto::pl::sc::EntityEffect, b);
         };
         auto give = CommandNode::literal("give");
@@ -708,7 +708,7 @@ void GameServer::initPlayerCommandsPart11() {
                         if(match){
                             int take = std::min<int>(s.count, limit-removed);
                             removed+=take;
-                            s.count-=take;
+                            s.count = static_cast<std::int16_t>(s.count - take);
                             if(s.count<=0) s=ItemStack::air();
                         }
                     }
@@ -1369,7 +1369,7 @@ void GameServer::initPlayerCommandsPart18() {
             const auto sel = c.arg("spTargets").asSelector();
             const auto p = c.arg("spPos").asBlockPos();
             const auto commandDim = snapshotCommandDimension(c.source);
-            const float angle = static_cast<float>(c.arg("spAngle").asDouble());
+            const float spawnAngle = static_cast<float>(c.arg("spAngle").asDouble());
             int n = 0;
             for (auto& nm : sel.playerNames)
                 if (Player* target = findPlayer(*this, nm)) {
@@ -1383,13 +1383,13 @@ void GameServer::initPlayerCommandsPart18() {
                         target->respawnDimension = c.source.dimensionOverride
                                                        ? commandDim
                                                        : canonicalDimension(target->dimension);
-                        target->respawnAngle = angle;
+                        target->respawnAngle = spawnAngle;
                         state.connection = target->conn;
                         savePlayerData(uuidToHex(target->uuid), *target);
                     }
                     WriteBuffer point;
                     point.position(p.x, p.y, p.z);
-                    point.f32(angle);
+                    point.f32(spawnAngle);
                     if (state.connection)
                         state.connection->trySendPacket(proto::pl::sc::SetDefaultSpawn, point);
                     ++n;

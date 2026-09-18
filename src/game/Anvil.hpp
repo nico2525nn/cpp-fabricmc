@@ -67,15 +67,18 @@ inline nbt::Value chunkToNBT(std::int32_t cx, std::int32_t cz,
         {   // biomes: per-cell palette from the chunk's biome cells
             nv::Value bio = nv::Value::makeCompound();
             // gather palette for this section
-            std::vector<std::uint16_t> pal;
+            std::vector<std::uint16_t> biomePalette;
             std::unordered_map<std::uint16_t, std::uint16_t> bidx;
             const std::size_t bBase = static_cast<std::size_t>(s) * 64;
             for (std::size_t i = 0; i < 64; ++i) {
                 const std::uint16_t v = chunk.biomes[bBase + i];
-                if (!bidx.count(v)) { bidx.emplace(v, (std::uint16_t)pal.size()); pal.push_back(v); }
+                if (!bidx.count(v)) {
+                    bidx.emplace(v, static_cast<std::uint16_t>(biomePalette.size()));
+                    biomePalette.push_back(v);
+                }
             }
             nv::Value bp = nv::Value::makeList(nv::String);
-            for (auto v : pal) {
+            for (auto v : biomePalette) {
                 std::string key = biomeKey;
                 if (biomeIdxToKey) {
                     auto it = biomeIdxToKey->find(v);
@@ -84,8 +87,9 @@ inline nbt::Value chunkToNBT(std::int32_t cx, std::int32_t cz,
                 bp.list.push_back(nv::Value::makeString(key));
             }
             bio.set("palette", bp);
-            if (pal.size() > 1) {
-                const int bits = std::max(1, ceilLog2((std::uint32_t)pal.size()));
+            if (biomePalette.size() > 1) {
+                const int bits = std::max(1, ceilLog2(
+                    static_cast<std::uint32_t>(biomePalette.size())));
                 const int per = 64 / bits;
                 nv::Value data; data.tag = nv::LongArray;
                 data.longArray.assign((64 + per - 1) / per, 0);

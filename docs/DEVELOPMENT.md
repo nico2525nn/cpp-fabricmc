@@ -2,7 +2,7 @@
 
 This guide is for the clean-room C++ implementation of Minecraft Java 1.21.4,
 protocol 769, DataVersion 4189. The source snapshot for this canonical document is
-the current working tree (2026-09-09). Fabric Loader 0.16.9 is a
+the current working tree (2026-09-18). Fabric Loader 0.16.9 is a
 version/reference boundary; the executable provides a default-on bounded embedded
 JVM, a version-locked class-file transformer, and a separate offline official
 Loader/Knot probe. The production path does not ship the Mojang GameProvider/server
@@ -39,7 +39,7 @@ wording and is not a current acceptance count.
 
 Use public, version-pinned material only for the clean-room contract:
 
-- Prismarine 1.21.4 protocol JSON for packet type/ID/field shape;
+- Prismarine 1.21.4 protocol JSON for packet IDs and ordinary field shapes;
 - Minecraft Wiki for supplemental encoding explanations;
 - Fabric 1.21.4 release notes and Fabric Loader 0.16.9 documentation for the
   platform/version boundary; and
@@ -48,6 +48,13 @@ Use public, version-pinned material only for the clean-room contract:
 - Yarn `1.21.4+build.8` mappings/Javadocs for versioned names and descriptors, not
   unverified line-number or implementation claims. Client, datagen, renderer, and
   internal-only API surfaces are audited separately from the server boundary.
+
+When a version-pinned community table disagrees with the official client model,
+the versioned Yarn contract and a real-client decode take precedence. The current
+1.21.4 `teleport_entity` entry is one such exception: use the
+`EntityPositionS2CPacket`/`PlayerPosition` layout recorded in
+[SPEC_WIRE](SPEC_WIRE.md#packet-contract-table), not the stale short entry in
+the raw Prismarine JSON.
 
 Current source and executable tests outrank a stale comment. Every new claim needs a
 source path/symbol, test or capture, provenance label, version boundary, and status.
@@ -229,9 +236,10 @@ One claim has one canonical owner. A link is preferable to a copied table.
 - Keep `docs/mob_stats_149.csv` at its stable default runtime path.
 - Do not encode the E-14 boundary as an intentional failing assertion or alter an
   assertion to make a test exit zero.
-- Do not call arbitrary JVM mod execution, Mojang GameProvider execution, or vanilla
-  RNG L3 parity “supported” without a new versioned contract and evidence. The
-  official Loader/Knot result is an offline probe against the shadow provider.
+- Do not call arbitrary JVM mod execution, Mojang GameProvider execution, or full
+  vanilla world-generation RNG L3 parity “supported” without a new versioned
+  contract and evidence. `test_rng_parity` covers the primitive/splitter contract;
+  the official Loader/Knot result is an offline probe against the shadow provider.
 - Do not use broad process-kill patterns in development or test cleanup.
 
 ## 12. Performance
@@ -270,7 +278,7 @@ Review explicitly for:
 - component IDs and empty/removed component lists;
 - malformed/oversize frames, zlib trailing bytes, slow peers, RCON auth flood;
 - corrupt level/region/player files, stale locks, child process orphans; and
-- E-14 boundary, seed RNG L3, and any deliberately non-gating diagnostic.
+- E-14 boundary, full world-generation seed RNG L3, and any deliberately non-gating diagnostic.
 
 ## 15. Test method
 
@@ -281,7 +289,7 @@ At minimum, a source extension should add or update a focused test before relyin
 
 Published counts are named snapshots from [CURRENT_STATE.md](CURRENT_STATE.md) and
 the corresponding run output. Do not import the old `test_spec_wire` count of 328;
-the current snapshot is 395, and `test_native` is recorded as `ALL PASS` without
+the current snapshot is 417, and `test_native` is recorded as `ALL PASS` without
 inventing an aggregate count.
 
 Required evidence classes are:

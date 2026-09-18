@@ -1399,12 +1399,13 @@ void RedstoneEngine::handlePistonScheduled(std::int32_t x, std::int32_t y, std::
                             if(visited.count(k)) continue;
                             if(nx==x && ny==y && nz==z) continue;
                             if(nx==hx && ny==hy && nz==hz) continue;
-                            std::uint16_t ns=world_.getBlock(nx,ny,nz);
-                            if(ns==0) continue;
-                            const gen::BlockDef* nd=gen::blockByState(ns);
+                            const std::uint16_t neighborState =
+                                world_.getBlock(nx,ny,nz);
+                            if(neighborState==0) continue;
+                            const gen::BlockDef* nd=gen::blockByState(neighborState);
                             if(!nd) continue;
                             std::string nName(nd->name);
-                            if(!isMovable(ns,true)) continue;
+                            if(!isMovable(neighborState,true)) continue;
                             if(!sticksTogether(curName, nName)) continue;
                             if((int)visited.size()>=12){ fail=true; break; }
                             visited.insert(k);

@@ -255,7 +255,7 @@ struct ServerProc {
             std::snprintf(pa, sizeof(pa), "--port=%u", port);
             std::snprintf(va, sizeof(va), "--view-distance=%d", 4);
             std::snprintf(wa, sizeof(wa), "--world-dir=%s", worldDir.c_str());
-            execl(bin, bin, pa, va, wa, "--online-mode=false", (char*)nullptr);
+            execl(bin, bin, pa, va, wa, "--level-type=flat", "--online-mode=false", (char*)nullptr);
             _exit(127);
         }
         // JVM/resource bootstrap is intentionally part of the production

@@ -470,7 +470,7 @@ Result withNativeRuntime(JNIEnv* env, const char* operation, Result fallback,
     NativeCallGuard guard(allowBootstrap);
     if (!guard) return fallback;
     try {
-        const Result result = call(*guard.get());
+        const Result result = static_cast<Result>(call(*guard.get()));
         // JNI conversion helpers and native code can fail without throwing a
         // C++ exception (for example NewStringUTF returning null after an
         // OOM).  Never return to Java with an uncleared pending exception.
@@ -1484,7 +1484,7 @@ bool JvmRuntime::start(std::string* error) {
     // KnotLauncher.installBridge(Class<?>) callback.  `started` is made true
     // for the bootstrap window and is rolled back by stop() on failure.
     {
-        std::lock_guard lifecycleLock(g_runtimeLifecycleMutex);
+        std::lock_guard publishLock(g_runtimeLifecycleMutex);
         impl.stopping.store(false, std::memory_order_release);
         g_activeRuntime.store(this, std::memory_order_release);
     }

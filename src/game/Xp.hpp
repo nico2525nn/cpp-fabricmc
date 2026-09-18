@@ -23,14 +23,14 @@ struct XpState {
         int carry = points;
         while (carry > 0) {
             const int need = xpToNextLevel(level);
-            const float remainF = need * (1.f - progress);
+            const float remainF = static_cast<float>(need) * (1.f - progress);
             const int remain = static_cast<int>(remainF + 0.999f);   // ceil-ish
             if (carry >= remain && remain > 0) {
                 carry -= remain;
                 ++level;
                 progress = 0.f;
             } else {
-                progress += static_cast<float>(carry) / need;
+                progress += static_cast<float>(carry) / static_cast<float>(need);
                 if (progress >= 1.f) { progress -= 1.f; ++level; }
                 carry = 0;
             }
@@ -42,18 +42,19 @@ struct XpState {
         int remove = points;
         while (remove > 0 && level > 0 && progress <= 0.f) {
             --level;
-            progress = 1.f - 1.f / xpToNextLevel(level);
+            progress = 1.f - 1.f / static_cast<float>(xpToNextLevel(level));
             remove -= 1;
         }
         while (remove > 0) {
-            const float have = xpToNextLevel(level) * progress;
+            const float have = static_cast<float>(xpToNextLevel(level)) * progress;
             if (remove >= static_cast<int>(have)) {
                 remove -= static_cast<int>(have);
                 if (level == 0) { progress = 0.f; break; }
                 --level;
                 progress = 1.f;
             } else {
-                progress -= static_cast<float>(remove) / xpToNextLevel(level);
+            progress -= static_cast<float>(remove) /
+                        static_cast<float>(xpToNextLevel(level));
                 remove = 0;
             }
             if (level == 0 && progress < 0.f) { progress = 0.f; break; }

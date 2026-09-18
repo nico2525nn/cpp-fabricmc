@@ -2,7 +2,7 @@
 
 This document describes the current behavior surface for Minecraft Java 1.21.4,
 protocol 769, and DataVersion 4189 at runtime snapshot
-`main` HEAD `574e67b` plus the current cleanup worktree (rechecked 2026-09-09). It covers
+`main` HEAD `6fef7d7` plus the current compatibility review worktree (rechecked 2026-09-18). It covers
 MISSING **#1–#70**, **#80–#90**, the Fabric-specific rows, and the world-generation
 G-10/G-11 evidence. Packet fields remain in
 [SPEC_WIRE.md](SPEC_WIRE.md); operational thresholds remain in
@@ -13,9 +13,11 @@ byte-identical gameplay. **Limitations:** the project provides a default-on boun
 JVM/shadow-ABI path with a version-locked structural transformer; the production path
 does not ship the Mojang GameProvider and arbitrary Fabric JVM mods cannot execute as
 native-equivalent server extensions. Pinned official Loader/Knot/Mixin is covered by a
-separate offline probe. World-generation seed parity is self-consistent L1/L2 but
-vanilla Xoroshiro byte parity is not proven (L3); simplified features are called out
-with `DECLARED-LIMITATION`.
+separate offline probe. World-generation seed parity is self-consistent L1/L2 and
+the Java/Minecraft RNG primitive and splitter contracts are covered by
+`test_rng_parity` (25 vectors). Full vanilla world-generation call ordering and
+structure-NBT parity are not proven (remaining L3 boundary); simplified features
+are called out with `DECLARED-LIMITATION`.
 
 ## 1. Feature overview
 
@@ -55,7 +57,7 @@ only says “the class exists” is not treated as full vanilla parity.
 | world/chunk | `src/game/World.hpp::World`, `Chunk` | dimension, seed, block/biome arrays, revision | serialized lazy generation, block lookup/edits, snapshot save and configured-radius eviction | `IMPLEMENTATION` |
 | persistence | `src/game/WorldDataManager.*`, `Persistence.hpp`, `Anvil.hpp`, `RegionFile.hpp` | NBT, region entries, DataVersion | level/region/player state | `IMPLEMENTATION` + `test_recovery` |
 | block/physics | `src/physics/BlockTickScheduler.*`, `Fluids.*`, `Redstone.*`, `LightEngine.*` | state changes, tick number, gamerules | scheduled updates, light, redstone/fluid consequences | `IMPLEMENTATION` + focused tests |
-| worldgen | `src/worldgen/DensityFunction.*`, `MultiNoise.*`, `StructureManager.*`, `StructurePlacer.*` | seed, coordinates, dimension | biome and structure decisions | L1/L2 `IMPLEMENTATION`; L3 `DECLARED-LIMITATION` |
+| worldgen | `src/worldgen/DensityFunction.*`, `MultiNoise.*`, `StructureManager.*`, `StructurePlacer.*` | seed, coordinates, dimension | biome and structure decisions | L1/L2 `IMPLEMENTATION`; RNG primitive/splitter L3 `IMPLEMENTED-PARTIAL`; full call graph/NBT `DECLARED-LIMITATION` |
 | entity | `src/game/Entities.hpp`, `EntityData.*`, `BehaviorTree.*`, `AiBrain.*`, `MobSpawner.*` | entity state and tick context | AI, movement, spawn, metadata, drops | `IMPLEMENTATION` + gameplay/smoke |
 | mob fixture | `docs/mob_stats_149.csv`, `Entities.hpp::MobStats` | 11 CSV columns, MobKind index | 149-row table and stat lookup | `IMPLEMENTATION` + `test_mob_stats_full` |
 | inventory | `src/game/Items.hpp`, `Containers.*`, `MenuInteraction.*`, `GameServer_*` | Slot/components, menu click | authoritative inventory and sync trigger | `IMPLEMENTATION` + wire/gameplay |
@@ -111,9 +113,12 @@ recipe/data: discover → load/resolve tags → execute → reload
 dimension: current world → cache invalidation/Respawn → safe spawn → current world
 ```
 
-World generation is deterministic for the same implementation and seed. It is not
-documented as byte-identical vanilla RNG at L3. Dimension switching resets the
-client-visible dimension state, abilities, and safe spawn path where implemented.
+World generation is deterministic for the same implementation and seed. The
+independent RNG gate proves the Java/Minecraft primitive algorithms and splitter
+contracts, but this document does not call the complete world-generation stream
+byte-identical to vanilla until the call graph and structure-NBT output have their
+own retained vectors. Dimension switching resets the client-visible dimension
+state, abilities, and safe spawn path where implemented.
 
 ## 7. Reproduction and implementation flow
 
@@ -183,8 +188,10 @@ evidence, not a gameplay module.
   debug recipes are removed by `Recipe::trimBlankRows`; smithing recipes remain their
   own kind.
 - Worldgen MultiNoise/structure placement is deterministic and independently
-  cross-checked, but exact vanilla Xoroshiro sequence parity is a
-  `DECLARED-LIMITATION` (L3), not a hidden pass.
+  cross-checked. `test_rng_parity` covers the Java/Minecraft primitive and
+  splitter contracts (`25 PASS / 0 FAIL`); complete vanilla worldgen call-order
+  and structure-NBT parity remains a `DECLARED-LIMITATION` (L3), not a hidden
+  pass.
 - `DECLARED-LIMITATION`: the default-on JVM layer is a dependency-free
   Knot-compatible loader over a shadow ABI with selected callbacks, a version-locked
   pre-definition transformer, and selective routing. Its 25-case dependency-free
@@ -192,8 +199,12 @@ evidence, not a gameplay module.
   against the shadow provider. The Mojang GameProvider/server jar, arbitrary JVM
   mods, and universal bytecode compatibility are not claimed (E-14). See
   [PLAN51_JVM.md](PLAN51_JVM.md).
-- No current real-client/GUI artifact or accepted 2-hour/24-hour run is available;
-  bot and synthetic evidence remain separately labelled.
+- Bounded local mc-pilot-managed and PrismLauncher-managed Fabric 1.21.4
+  real-client probes pass login, world entry, stability, and
+  chat/command/block/status/screenshot checks. The PrismLauncher 11.1.0 CLI
+  path used an existing authenticated account. Temporary logs/screenshots are
+  not retained release artifacts, and no accepted 2-hour/24-hour run is
+  available; bot and synthetic evidence remain separately labelled.
 
 ## 12. Performance
 
@@ -229,7 +240,7 @@ not add a lock or move a callback to another thread.
   boss and metadata state;
 - menu slot `-1` cursor, drag modes, max stack sizes, empty shaped rows and component
   preservation; and
-- intentional E-14, seed RNG L3, and simplified vehicle/worldgen pieces.
+- intentional E-14, full world-generation seed RNG L3, and simplified vehicle/worldgen pieces.
 
 ## 15. Test method and evidence
 
@@ -241,6 +252,7 @@ tracker records later targeted reruns):
 | `test_gameplay_full` | `807 PASS / 0 FAIL / 807` |
 | `test_smoke_80` | `223 PASS 0 FAIL` |
 | `test_seed_parity` | `201 PASS 0 FAIL` (L1 independent hand-calc plus L2 deterministic 50-chunk comparison) |
+| `test_rng_parity` | `25 PASS 0 FAIL` (Java LocalRandom, Minecraft Xoroshiro seed expansion, primitive outputs, and splitter vectors) |
 | `test_mining_full` | `59/59 passed` |
 | `test_block_hardness_full` | `16/16 passed; 1095 mismatch=0` |
 | `test_mob_stats_full` | `131 PASS 0 FAIL` |
@@ -271,7 +283,7 @@ assertion. Full commands and the limitation policy are in
 **Priority: highest after WIRE.** World/block/entity/inventory/command/combat paths
 are current implementation contracts where source and tests say so. `DONE` in the
 legacy gap matrix is not expanded into “all vanilla internals are identical.” The
-declared boundaries—Fabric JVM mods, vanilla RNG L3, and missing long-run/real-client
+declared boundaries—Fabric JVM mods, full vanilla world-generation RNG L3, and missing long-run/real-client
 evidence—remain visible; the final-gates publication status is `BLOCKED` only by
 those declared boundaries. The attempted 7200-second soak was interrupted above its
 RSS gate and is not a pass. The former `soak_bot` blocker is resolved by three

@@ -97,7 +97,7 @@ struct RedstoneRig {
 };
 static std::uint16_t stateByName(const char* n) {
     auto b = gen::blockByName(n);
-    return b ? b->minState : 0;
+    return b ? static_cast<std::uint16_t>(b->minState) : std::uint16_t{0};
 }
 static void test_blocks() {
     curSection = "BLOCKS";
@@ -796,7 +796,7 @@ static void test_enchants() {
     for(int lvl=1; lvl<=5; ++lvl){
         ItemStack s = ItemStack::of(gen::itemIdByName().find("minecraft:diamond_sword")->second,1);
         ItemStack::addEnchant(s,"minecraft:sharpness",lvl);
-        float exp = 0.5f*lvl + 0.5f;
+        float exp = 0.5f*static_cast<float>(lvl) + 0.5f;
         char name[64]; std::snprintf(name,sizeof name,"sharpness %d => %.1f", lvl, exp);
         CHECK_NEAR(EnchantmentHelper::getSharpnessBonus(s), exp, 1e-4, name);
     }

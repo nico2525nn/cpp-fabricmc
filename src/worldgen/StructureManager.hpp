@@ -42,7 +42,8 @@ inline double smStructureHash(std::uint64_t seed, std::int64_t gx, std::int64_t 
     h ^= static_cast<std::uint64_t>(gx) * 0x9E3779B97F4A7C15ULL;
     h ^= static_cast<std::uint64_t>(gz) * 0xC2B2AE3D27D4EB4FULL;
     h ^= h >> 33; h *= 0xFF51AFD7ED558CCDULL; h ^= h >> 33;
-    return (h >> 11) / double(1ULL << 53);
+    return static_cast<double>(h >> 11) /
+           static_cast<double>(1ULL << 53);
 }
 inline double structureHash(std::uint64_t seed, std::int64_t gx, std::int64_t gz, std::uint64_t salt) {
     return smStructureHash(seed, gx, gz, salt);
@@ -147,8 +148,10 @@ inline SMStructureAt smStructureAtChunk(const SMStructureSet& s, std::uint64_t s
         return out;
     }
     if (s.spacing <= 0) return smStructureAtCell(s, seed, cx, cz);
-    const std::int64_t gx = std::floor(double(cx) / s.spacing);
-    const std::int64_t gz = std::floor(double(cz) / s.spacing);
+    const std::int64_t gx = static_cast<std::int64_t>(
+        std::floor(static_cast<double>(cx) / static_cast<double>(s.spacing)));
+    const std::int64_t gz = static_cast<std::int64_t>(
+        std::floor(static_cast<double>(cz) / static_cast<double>(s.spacing)));
     SMStructureAt out;
     out.set = &s;
     for (std::int64_t ox = -1; ox <= 1; ++ox)

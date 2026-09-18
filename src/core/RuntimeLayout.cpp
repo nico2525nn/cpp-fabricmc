@@ -257,6 +257,17 @@ std::uint64_t embeddedResources(const std::filesystem::path& root,
             error = "embedded resource entry exceeds bounds: " + name;
             return 0;
         }
+        // zlib's length types are not guaranteed to be 64-bit on every
+        // supported platform.  Validate before narrowing the untrusted pack
+        // metadata; otherwise a large compressedSize could wrap and make
+        // uncompress read a different amount than the bounds check allowed.
+        if (compressedSize > static_cast<std::uint64_t>(
+                std::numeric_limits<uLong>::max()) ||
+            rawSize > static_cast<std::uint64_t>(
+                std::numeric_limits<uLongf>::max())) {
+            error = "embedded resource entry is too large for zlib: " + name;
+            return 0;
+        }
         std::vector<std::uint8_t> bytes(static_cast<std::size_t>(rawSize));
         uLongf destinationSize = static_cast<uLongf>(rawSize);
         const auto result = uncompress(
@@ -326,6 +337,7 @@ bool ensureDefaultProperties(const std::filesystem::path& root, std::string& err
         "max-players=20\n"
         "view-distance=6\n"
         "simulation-distance=10\n"
+        "level-type=normal\n"
         "motd=CppFabricMC - C++ Minecraft 1.21.4 server\n";
     const std::vector<std::uint8_t> bytes(defaults.begin(), defaults.end());
     return writeIfMissing(root, "server.properties", bytes, error);

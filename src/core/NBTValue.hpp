@@ -40,7 +40,11 @@ struct Value {
     static Value makeString(std::string v) { Value x; x.tag = String; x.str = std::move(v); return x; }
     static Value makeCompound() { Value x; x.tag = Compound; return x; }
     static Value makeList(Tag elem, std::size_t reserve = 0) {
-        if (!isValidTag(elem) || elem == End)
+        // TAG_End is legal as the marker of an empty NBT list.  It is not a
+        // legal marker once an element exists, which is enforced by the
+        // serializer below because the list storage is intentionally public
+        // for the existing data-building API.
+        if (!isValidTag(elem))
             throw std::invalid_argument("NBT lists cannot use this element type");
         Value x; x.tag = List; x.listElement = elem; x.list.reserve(reserve);
         return x;
@@ -62,6 +66,10 @@ struct Value {
         if (tag != Compound) {
             tag = Compound;
             listElement = End;
+            str.clear();
+            byteArray.clear();
+            intArray.clear();
+            longArray.clear();
             list.clear();
         }
         for (auto& [existing, value] : comp) {
@@ -97,11 +105,11 @@ inline void writePayload(WriteBuffer& out, const Value& v) {
         break;
     case List: {
         const Tag et = v.elemType();
-        if (!isValidTag(et) || et == End ||
+        if (!isValidTag(et) || (et == End && !v.list.empty()) ||
             v.list.size() > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max()))
             throw std::runtime_error("invalid NBT list");
         out.u8(et);
-        out.i32((std::int32_t)v.list.size());
+        out.i32(static_cast<std::int32_t>(v.list.size()));
         for (auto& e : v.list) {
             if (e.tag != et) throw std::runtime_error("NBT list element type mismatch");
             writePayload(out, e);
@@ -143,7 +151,7 @@ inline void writeFileRoot(WriteBuffer& out, const Value& root, std::string_view 
     if (rootName.size() > std::numeric_limits<std::uint16_t>::max())
         throw std::length_error("NBT root name is too long");
     out.u8(Compound);
-    out.u16((std::uint16_t)rootName.size());
+    out.u16(static_cast<std::uint16_t>(rootName.size()));
     out.raw(rootName.data(), rootName.size());
     writePayload(out, root);
 }

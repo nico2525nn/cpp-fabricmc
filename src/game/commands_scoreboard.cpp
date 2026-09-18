@@ -485,7 +485,8 @@ void GameServer::initScoreboardCommandsPart3() {
             int v = c.arg("valueArg").asInt();
             if (!bossAI_) throw std::runtime_error("BossBar unavailable");
             int key = (int)std::hash<std::string>{}(id);
-            float hf = std::clamp(v / 100.f, 0.f, 1.f);
+            const float hf = std::clamp(
+                static_cast<float>(v) / 100.0F, 0.0F, 1.0F);
             bossAI_->bars().updateHealthForCommandBar(key, hf);
             // send health update
             {

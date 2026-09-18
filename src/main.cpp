@@ -78,7 +78,7 @@ static void printUsage(const char* program) {
         "  --help, -h                 Show this help and exit\n"
         "  --version                  Show the server version and exit\n"
         "  --port=<0..65535>          Listen port (0 selects an ephemeral port)\n"
-        "  --world-dir=<path>         World/server directory\n"
+        "  --world-dir=<path>         World save directory (server.properties stays in the server root)\n"
         "  --level-type=<normal|flat> World generator type\n"
         "  --view-distance=<2..32>    Client view distance\n"
         "  --jvm=<true|false>         Enable the embedded Java boundary (default on)\n"

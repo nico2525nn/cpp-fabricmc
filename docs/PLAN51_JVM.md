@@ -150,8 +150,9 @@ ServerCore, and Spark to complete their bootstrap gate.
 ## Explicit non-goals
 
 Plan51 does not close the project's other declared boundaries: official-client/GUI
-evidence, accepted 2-hour or 24-hour evidence, exact vanilla Xoroshiro L3 byte
-parity, or universal Fabric JVM-mod compatibility. The target remains protocol 769;
+evidence, accepted 2-hour or 24-hour evidence, full vanilla world-generation
+Xoroshiro L3 byte parity (the primitive/splitter contract is separately covered by
+`test_rng_parity`), or universal Fabric JVM-mod compatibility. The target remains protocol 769;
 no other protocol version is part of this implementation.
 
 Further Mixin coverage requires additional versioned bytecode cases and a broader

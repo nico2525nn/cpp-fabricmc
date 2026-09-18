@@ -15,6 +15,7 @@
 #include "../src/game/EnchantmentHelper.hpp"
 #include "../src/game/DamageSource.hpp"
 #include "../src/game/Entities.hpp"
+#include "../src/brigadier/Tree.hpp"
 #include "../src/proto/Ids.hpp"
 
 #include <cstdio>
@@ -85,6 +86,32 @@ static void test_varint_vectors() {
     }
 }
 
+static void test_declare_commands_argument_properties() {
+    std::printf("[A6] Declare Commands Brigadier argument properties (1.21.4)\n");
+
+    {
+        WriteBuffer props;
+        brigadier::args::integer(1, 9).writeProps(props);
+        expectEq(props.data,
+                 std::vector<std::uint8_t>{0x03, 0x00, 0x00, 0x00, 0x01,
+                                           0x00, 0x00, 0x00, 0x09},
+                 "integer min/max are flags + fixed i32");
+    }
+    {
+        WriteBuffer props;
+        brigadier::args::timeArg().writeProps(props);
+        expectEq(props.data,
+                 std::vector<std::uint8_t>{0x00, 0x00, 0x00, 0x00},
+                 "time minimum is fixed i32 zero");
+    }
+    {
+        WriteBuffer props;
+        brigadier::args::scoreHolderArg().writeProps(props);
+        expectEq(props.data, std::vector<std::uint8_t>{0x01},
+                 "score_holder allows multiple targets");
+    }
+}
+
 static void test_position_pack() {
     std::printf("[A2] Position 26-12-26 pack (wiki.vg Position)\n");
     WriteBuffer b; b.position(0,-60,0);
@@ -103,6 +130,26 @@ static void test_uuid_16b() {
     WriteBuffer b; b.uuid(raw);
     std::vector<std::uint8_t> exp(raw, raw+16);
     expectEq(b.data, exp, "uuid 16B raw preserved BE");
+}
+
+static void test_entity_spawn_uuid() {
+    std::printf("[A3b] deterministic non-colliding entity spawn UUIDs\n");
+    const auto first = entityUuidForId(1);
+    const auto second = entityUuidForId(2);
+    const auto negative = entityUuidForId(-1);
+    const auto allZero = [](const auto& uuid) {
+        return std::all_of(uuid.begin(), uuid.end(), [](std::uint8_t byte) {
+            return byte == 0;
+        });
+    };
+    check(!allZero(first) && !allZero(second) && !allZero(negative),
+          "entity UUID is never all-zero");
+    check(first != second && first != negative && second != negative,
+          "different entity ids receive different UUIDs");
+    check((first[6] & 0xf0U) == 0x40U && (first[8] & 0xc0U) == 0x80U,
+          "entity UUID has RFC 4122 version/variant bits");
+    check(first[15] == 1 && second[15] == 2 && negative[12] == 0xff,
+          "entity id is encoded without losing its 32-bit value");
 }
 
 static void test_slot_air() {
@@ -149,10 +196,17 @@ static void test_paletted_single_valued() {
     }
 }
 
-static void test_heightmaps_36_longs() {
-    std::printf("[B2] Heightmaps 36 longs straddled 9 bits (ChunkCodec packHeightmapGeneric)\n");
+static void test_heightmaps_37_longs() {
+    std::printf("[B2] Heightmaps 37 longs, 7 non-straddling 9-bit values per long\n");
     Chunk ch; ch.blocks.fill(0);
     ch.blocks[Chunk::index(4,0,0,0)] = 1; // section 4 (y 64-79), local y 0
+    std::vector<std::int64_t> packed;
+    packHeightmapGeneric(packed, [](int x, int z) {
+        return (x == 7 && z == 0) ? 0x1ff : 0;
+    });
+    check(packed.size() == 37, "heightmap has 37 longs");
+    check(packed[0] == 0 && packed[1] == 0x1ff,
+          "heightmap entries do not straddle long boundaries");
     WriteBuffer hm; packHeightmapsNbt(hm, &ch);
     check(hm.data.size()>0, "packHeightmapsNbt non-empty");
     bool hasMotion=false, hasWorld=false;
@@ -289,6 +343,32 @@ static void test_entity_velocity_wire() {
     std::vector<std::uint8_t> exp{0x2a, 0x03,0x20, 0xfe,0x70, 0x00,0x00};
     expectEq(b.data, exp, "EntityVelocity eid42 vx800 vy-400 -> 2a 03 20 fe 70 00 00");
     ReadBuffer r(b.data); check(r.varint()==42,"eid 42"); check(r.i16()==800,"vx 800");
+}
+
+static void test_entity_teleport_wire() {
+    std::printf("[C5] EntityTeleport 0x77 EntityPositionS2CPacket layout\n");
+    WriteBuffer b;
+    b.varint(7);
+    b.f64(10.5); b.f64(64.0); b.f64(-5.25);
+    b.f64(1.25); b.f64(-2.5); b.f64(0.75);
+    b.f32(45.0f); b.f32(-30.0f);
+    b.i32(0x01020304);
+    b.boolean(true);
+    check(b.data.size() == 1 + 24 + 24 + 8 + 4 + 1,
+          "EntityTeleport has position, delta, rotation, flags, onGround");
+    ReadBuffer r(b.data);
+    check(r.varint() == 7, "teleport eid 7");
+    check(r.f64() == 10.5, "teleport x 10.5");
+    check(r.f64() == 64.0, "teleport y 64");
+    check(r.f64() == -5.25, "teleport z -5.25");
+    check(r.f64() == 1.25, "teleport delta x 1.25");
+    check(r.f64() == -2.5, "teleport delta y -2.5");
+    check(r.f64() == 0.75, "teleport delta z 0.75");
+    check(std::fabs(r.f32() - 45.0f) < 0.001f, "teleport yaw f32");
+    check(std::fabs(r.f32() + 30.0f) < 0.001f, "teleport pitch f32");
+    check(r.i32() == 0x01020304, "teleport relative flags fixed i32");
+    check(r.boolean(), "teleport onGround");
+    check(r.remaining() == 0, "teleport packet exactly consumed");
 }
 
 static void test_container_set_content_wire() {
@@ -684,7 +764,7 @@ static void test_update_advancements_reset_true(){
         ItemStack icon = ItemStack::read(r);
         check(!icon.empty(),"icon non-empty");
         int frame = r.varint(); (void)frame;
-        int flags = r.varint(); check((flags & 0x02)==0,"reset suppress toast flags &~0x02");
+        int flags = r.i32(); check((flags & 0x02)==0,"reset suppress toast flags &~0x02 (fixed Int)");
         if(flags & 0x01){ std::string bg = r.string(); (void)bg; }
         r.f32(); r.f32();
     }
@@ -1284,14 +1364,16 @@ static void test_plan43_sign_layout() {
 }
 
 int main(){
-    std::printf("=== spec_wire: Prismarine 1.21.4 byte-identical lock (plan30 App.A) ===\n");
+    std::printf("=== spec_wire: protocol 769 byte-identical lock with official 1.21.4 cross-checks ===\n");
     test_varint_vectors();
+    test_declare_commands_argument_properties();
     test_position_pack();
     test_uuid_16b();
+    test_entity_spawn_uuid();
     test_slot_air();
     test_slot_component_ids();
     test_paletted_single_valued();
-    test_heightmaps_36_longs();
+    test_heightmaps_37_longs();
     test_multi_block_change_wire();
     test_bundle_delimiter();
     test_update_light_varint();
@@ -1299,6 +1381,7 @@ int main(){
     test_update_attributes_wire();
     test_spawn_entity_wire();
     test_entity_velocity_wire();
+    test_entity_teleport_wire();
     test_container_set_content_wire();
     test_open_screen_wire();
     test_reset_score_wire();

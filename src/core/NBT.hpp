@@ -4,6 +4,7 @@
 #include "ByteBuffer.hpp"
 #include <map>
 #include <functional>
+#include <limits>
 
 namespace cppfm::nbt {
 
@@ -45,7 +46,11 @@ public:
         for (auto x : v) out_.i64(x);
     }
     void beginList(std::string_view name, Tag elemType, std::int32_t count) {
-        if (!isValidTag(elemType) || elemType == End || count < 0 ||
+        // The NBT format permits an empty list to carry TAG_End as its
+        // element marker.  TAG_End is forbidden only for non-empty lists,
+        // because it has no payload to repeat.
+        if (!isValidTag(elemType) || count < 0 ||
+            (count != 0 && elemType == End) ||
             static_cast<std::size_t>(count) > kMaxNbtElements)
             throw std::invalid_argument("invalid NBT list");
         key(name, List);
@@ -117,9 +122,14 @@ public:
         std::int8_t b{}; std::int16_t s{}; std::int32_t i{}; std::int64_t l{};
         float f{}; double d{};
         std::string str;
+        std::vector<std::uint8_t> byteArray;
+        std::vector<std::int32_t> intArray;
+        std::vector<std::int64_t> longArray;
+        Tag listElement = End;
         std::vector<Value> list;
         std::vector<std::pair<std::string, Value>> comp;
         const Value* get(std::string_view k) const {
+            if (tag != Compound) return nullptr;
             for (auto& [n, v] : comp) if (n == k) return &v;
             return nullptr;
         }

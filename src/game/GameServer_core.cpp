@@ -602,8 +602,8 @@ void GameServer::broadcastMobSpawn(const MobEntity& mob) {
     }
     WriteBuffer b;
     b.varint(snapshot.entityId);
-    static std::uint8_t zero[16] = {};
-    b.uuid(zero);
+    const auto uuid = entityUuidForId(snapshot.entityId);
+    b.uuid(uuid.data());
     b.varint(static_cast<std::int32_t>(MobEntity::typeId(snapshot.kind)));
     b.f64(snapshot.x); b.f64(snapshot.y); b.f64(snapshot.z);
     b.i8(0); b.i8(0); b.i8(0);

@@ -2,7 +2,7 @@
 
 This is the operational contract for Minecraft 1.21.4 / protocol 769 / DataVersion
 4189 at the current working tree, rechecked on
-2026-09-09. It covers MISSING **#7–#10**, operational aspects of **#71–#79**,
+2026-09-18. It covers MISSING **#7–#10**, operational aspects of **#71–#79**,
 **#88–#90**, Fabric server-property/RCON rows, and assessment history IDs
 B-06/B-07/C-04/C-09/C-12/E-13/O-01–O-13/W-14/W-16.
 
@@ -207,7 +207,7 @@ uses the minimum of server and client view distance for sending.
 The following exact measurements are retained against runtime baseline
 `17ab09f5220bf99203d2aea2b2c9d65f763f433b` on 2026-09-05. They are not averaged with
 older runs. The historical `37/37` result is not the current count; the later
-`42/42` normal CTest baseline and the separate release `package_jvm_smoke` gate
+`43/43` normal CTest baseline and the separate release `package_jvm_smoke` gate
 are owned
 by [VERIFICATION.md](VERIFICATION.md) and [CURRENT_STATE.md](CURRENT_STATE.md):
 
@@ -217,19 +217,21 @@ by [VERIFICATION.md](VERIFICATION.md) and [CURRENT_STATE.md](CURRENT_STATE.md):
 | incremental Ninja build | `ninja: no work to do` in `0.05s` |
 | view32 dry benchmark | `PASS` in `1.74s`; 4,225 chunks, p50 `0.108ms`, p95 `2.333ms`, peak RSS ~`95MB`, hit rate `84.6%` |
 | 120-client stress | `120/120 joined; PASS` in `68.0s` |
-| multi-client integration | `ALL PASS` in `17.00s` |
-| bot smoke | `ALL PASS` in `20.35s` |
+| multi-client integration | `ALL PASS` in `17.60s` |
+| bot smoke | `ALL PASS` in `21.09s` |
 | `tests/soak_test.py --duration 300` | `PASS`; 150 keepalives, 0 disconnects, actions 2932, post-fill RSS growth `7.6%` |
 | `tools/soak_bot.py --duration 300` | `3/3 PASS`; each KeepAlive 30, chunks 182, time updates 300, all error counters 0, cleanup PASS |
 | `tests/soak_test.py --duration 1800 --movement-range 3000` | `PASS` on `17ab09f`; 900 keepalives, 0 disconnects, actions 17493, post-fill baseline `114504kB`, max `128868kB`, growth `12.5%`; diagnostic only |
 | `tests/soak_test.py --duration 7200 --movement-range 3000` (parent `d1c6a7f`) | interrupted at recorded `t=3361s`; post-fill RSS `160388→191612kB` (`+19.5%`), above the `15%` gate; not accepted |
 | accepted 2h/24h run | none; the 7200s attempt was not accepted and no 24-hour artifact exists |
-| current real-client/GUI artifact | none |
+| current real-client/GUI evidence | `PASS / LOCAL-ONLY`: mc-pilot-managed Fabric 1.21.4 client login, world entry, stability, chat/command/block/status/screenshot probes, plus a PrismLauncher 11.1.0 CLI-launched Fabric 1.21.4 join with an existing authenticated account; temporary local evidence only; see [MC_PILOT_REAL_TEST.md](MC_PILOT_REAL_TEST.md) |
 
 The former `soak_bot` blocker is resolved by three integrated passes. The attempted
-7200-second soak was interrupted above its RSS gate and is not a pass. No vanilla
-Xoroshiro L3 parity claim is made, and the accepted long-run/real-client evidence
-boundary remains explicit.
+7200-second soak was interrupted above its RSS gate and is not a pass. The
+Java/Minecraft RNG primitive and splitter contracts pass `test_rng_parity`; no full
+world-generation Xoroshiro L3 parity claim is made, and accepted long-run or retained real-client
+release evidence remains an explicit boundary even though the bounded local probe
+passes.
 
 ## 13. Thread safety
 

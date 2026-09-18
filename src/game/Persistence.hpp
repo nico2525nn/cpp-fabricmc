@@ -21,28 +21,55 @@
 namespace cppfm {
 
 class Persistence {
+    struct CallbackState {
+        // The callback installed on World must not retain a naked Persistence
+        // pointer across stop().  Holding this recursive lock while dispatching
+        // makes stop() wait for an in-flight callback before it invalidates
+        // the owner pointer; recursive is intentional for a hook that asks
+        // the persistence object to stop from the same thread.
+        std::recursive_mutex mutex;
+        Persistence* owner = nullptr;
+    };
+
 public:
     Persistence(World& world, std::string worldDir, std::string biomeKey)
-        : world_(world), dir_(std::move(worldDir)), worldDataManager_(dir_), biome_(std::move(biomeKey)) {}
+        : world_(world), dir_(std::move(worldDir)), worldDataManager_(dir_),
+          biome_(std::move(biomeKey)) {
+        std::lock_guard lock(callbackState_->mutex);
+        callbackState_->owner = this;
+    }
 
     // ---- level.dat ----
     void setLevelStateProvider(
         std::function<void(nbt::Value& data)> provider,
         std::function<void(const nbt::Value& data)> consumer) {
-        provideLevelState_ = std::move(provider);
-        consumeLevelState_ = std::move(consumer);
-        worldDataManager_.setLevelStateProvider(provideLevelState_, consumeLevelState_);
+        {
+            std::lock_guard lock(configMtx_);
+            provideLevelState_ = std::move(provider);
+            consumeLevelState_ = std::move(consumer);
+        }
+        std::function<void(nbt::Value&)> providerCopy;
+        std::function<void(const nbt::Value&)> consumerCopy;
+        {
+            std::lock_guard lock(configMtx_);
+            providerCopy = provideLevelState_;
+            consumerCopy = consumeLevelState_;
+        }
+        worldDataManager_.setLevelStateProvider(std::move(providerCopy),
+                                                 std::move(consumerCopy));
     }
 
     // Optional hooks: block-entity + entity NBT attached to saved chunks.
     void setChunkExtras(
         std::function<void(std::int32_t, std::int32_t, nbt::Value&)> writeFn,
         std::function<void(const nbt::Value&)> readFn) {
+        std::lock_guard lock(configMtx_);
         writeExtras_ = std::move(writeFn);
         readExtras_ = std::move(readFn);
     }
     void setBiomeCodec(std::unordered_map<std::uint16_t, std::string> idxToKey,
                        std::int32_t defaultIdx) {
+        std::lock_guard lock(configMtx_);
         biomeIdxToKey_ = std::move(idxToKey);
         defaultBiomeIndex_ = defaultIdx;
         biomeKeyToIdx_.clear();
@@ -50,13 +77,18 @@ public:
             biomeKeyToIdx_[v] = k;
     }
 
-    void setDifficulty(const std::string& d) { difficulty_ = d; }
+    void setDifficulty(const std::string& d) {
+        std::lock_guard lock(configMtx_);
+        difficulty_ = d;
+    }
     void setWorldBorder(double diameter, double cx=0, double cz=0) {
+        std::lock_guard lock(configMtx_);
         worldBorderDiameter_ = diameter; worldBorderCenterX_=cx; worldBorderCenterZ_=cz;
         worldBorderLerpFrom_ = diameter; worldBorderLerpTo_ = diameter; worldBorderLerpMs_ = 0;
         worldBorderLerpRemainingTicks_ = 0; worldBorderLerpTotalTicks_ = 0;
     }
     void setWorldBorderLerp(double from, double to, std::int64_t remainingTicks) {
+        std::lock_guard lock(configMtx_);
         worldBorderLerpFrom_ = from; worldBorderLerpTo_ = to;
         worldBorderLerpMs_ = remainingTicks * 50;
         worldBorderLerpRemainingTicks_ = remainingTicks;
@@ -66,6 +98,7 @@ public:
     }
     // interpolate per tick — Yarn WorldBorder.tick() / interpolateSize
     bool tickWorldBorder() {
+        std::lock_guard lock(configMtx_);
         if (worldBorderLerpRemainingTicks_ <= 0) return false;
         --worldBorderLerpRemainingTicks_;
         worldBorderLerpMs_ = worldBorderLerpRemainingTicks_ * 50;
@@ -79,26 +112,68 @@ public:
         worldBorderDiameter_ = worldBorderLerpFrom_ + (worldBorderLerpTo_ - worldBorderLerpFrom_) * prog;
         return true;
     }
-    std::string difficulty() const { return difficulty_; }
-    double worldBorderDiameter() const { return worldBorderDiameter_; }
-    double worldBorderCenterX() const { return worldBorderCenterX_; }
-    double worldBorderCenterZ() const { return worldBorderCenterZ_; }
-    double worldBorderLerpFrom() const { return worldBorderLerpFrom_; }
-    double worldBorderLerpTo() const { return worldBorderLerpTo_; }
-    std::int64_t worldBorderLerpMs() const { return worldBorderLerpMs_; }
-    std::int64_t worldBorderLerpRemainingTicks() const { return worldBorderLerpRemainingTicks_; }
+    std::string difficulty() const {
+        std::lock_guard lock(configMtx_);
+        return difficulty_;
+    }
+    double worldBorderDiameter() const {
+        std::lock_guard lock(configMtx_);
+        return worldBorderDiameter_;
+    }
+    double worldBorderCenterX() const {
+        std::lock_guard lock(configMtx_);
+        return worldBorderCenterX_;
+    }
+    double worldBorderCenterZ() const {
+        std::lock_guard lock(configMtx_);
+        return worldBorderCenterZ_;
+    }
+    double worldBorderLerpFrom() const {
+        std::lock_guard lock(configMtx_);
+        return worldBorderLerpFrom_;
+    }
+    double worldBorderLerpTo() const {
+        std::lock_guard lock(configMtx_);
+        return worldBorderLerpTo_;
+    }
+    std::int64_t worldBorderLerpMs() const {
+        std::lock_guard lock(configMtx_);
+        return worldBorderLerpMs_;
+    }
+    std::int64_t worldBorderLerpRemainingTicks() const {
+        std::lock_guard lock(configMtx_);
+        return worldBorderLerpRemainingTicks_;
+    }
 
     void saveLevelData(std::int64_t worldTicks = 0, std::int64_t dayTime = 0) {
         // W16 single level.dat: DIM dirs must not own level.dat
         if (isDimensionDirectory()) return;
         // Use WorldDataManager for atomic write + version handling
         worldDataManager_.setDirectory(dir_);
-        worldDataManager_.setLevelStateProvider(provideLevelState_, consumeLevelState_);
-        double lerpTgt = worldBorderLerpRemainingTicks_ > 0 ? worldBorderLerpTo_ : worldBorderDiameter_;
-        std::int64_t lerpMs = worldBorderLerpMs_;
+        std::function<void(nbt::Value&)> provider;
+        std::function<void(const nbt::Value&)> consumer;
+        std::string difficulty;
+        double diameter = 0.0;
+        double centerX = 0.0;
+        double centerZ = 0.0;
+        double lerpTgt = 0.0;
+        std::int64_t lerpMs = 0;
+        {
+            std::lock_guard lock(configMtx_);
+            provider = provideLevelState_;
+            consumer = consumeLevelState_;
+            difficulty = difficulty_;
+            diameter = worldBorderDiameter_;
+            centerX = worldBorderCenterX_;
+            centerZ = worldBorderCenterZ_;
+            lerpTgt = worldBorderLerpRemainingTicks_ > 0
+                ? worldBorderLerpTo_ : worldBorderDiameter_;
+            lerpMs = worldBorderLerpMs_;
+        }
+        worldDataManager_.setLevelStateProvider(std::move(provider),
+                                                std::move(consumer));
         bool ok = worldDataManager_.saveLevelDataWithProviders(worldTicks, dayTime, world_,
-                                                               difficulty_, worldBorderDiameter_,
-                                                               worldBorderCenterX_, worldBorderCenterZ_,
+                                                               difficulty, diameter, centerX, centerZ,
                                                                lerpTgt, lerpMs);
         if (!ok)
             std::fprintf(stderr, "[Persistence] level.dat save was rejected by WorldDataManager\n");
@@ -107,40 +182,80 @@ public:
         // W16: DIM dirs never own level.dat
         if (isDimensionDirectory()) return;
         worldDataManager_.setDirectory(dir_);
-        worldDataManager_.setLevelStateProvider(provideLevelState_, consumeLevelState_);
+        std::function<void(nbt::Value&)> provider;
+        std::function<void(const nbt::Value&)> consumer;
+        std::string difficulty;
+        double diameter = 0.0;
+        double centerX = 0.0;
+        double centerZ = 0.0;
+        {
+            std::lock_guard lock(configMtx_);
+            provider = provideLevelState_;
+            consumer = consumeLevelState_;
+            difficulty = difficulty_;
+            diameter = worldBorderDiameter_;
+            centerX = worldBorderCenterX_;
+            centerZ = worldBorderCenterZ_;
+        }
+        worldDataManager_.setLevelStateProvider(std::move(provider),
+                                                std::move(consumer));
         // try via manager (handles DataFixerUpper version check + atomic read) — include lerp
-        double lerpTgt = worldBorderDiameter_;
+        double lerpTgt = diameter;
         std::int64_t lerpMs = 0;
-        bool ok = worldDataManager_.loadLevelData(world_, difficulty_, worldBorderDiameter_, worldBorderCenterX_, worldBorderCenterZ_, &lerpTgt, &lerpMs);
+        bool ok = worldDataManager_.loadLevelData(
+            world_, difficulty, diameter, centerX, centerZ, &lerpTgt, &lerpMs);
         for (const auto& ln : worldDataManager_.lastRecovery().logLines)
             std::fprintf(stderr, "[cppfm]%s\n", ln.c_str());
         if (ok) {
+            std::lock_guard lock(configMtx_);
+            difficulty_ = std::move(difficulty);
+            worldBorderDiameter_ = diameter;
+            worldBorderCenterX_ = centerX;
+            worldBorderCenterZ_ = centerZ;
             worldBorderLerpFrom_ = worldBorderDiameter_;
             worldBorderLerpTo_ = lerpTgt;
             worldBorderLerpMs_ = lerpMs;
             worldBorderLerpRemainingTicks_ = (lerpMs + 49) / 50;
             worldBorderLerpTotalTicks_ = worldBorderLerpRemainingTicks_;
-            if (lerpMs == 0) { worldBorderLerpFrom_ = worldBorderDiameter_; worldBorderLerpTo_ = worldBorderDiameter_; }
+            if (lerpMs == 0) {
+                worldBorderLerpFrom_ = worldBorderDiameter_;
+                worldBorderLerpTo_ = worldBorderDiameter_;
+            }
             return;
         }
     }
 
     void start() {
+        std::lock_guard lifecycleLock(lifecycleMtx_);
         std::filesystem::create_directories(dir_ + "/region");
         if (running_.load(std::memory_order_acquire) || worker_.joinable()) return;
-        world_.setLoader([this](std::int32_t cx, std::int32_t cz, Chunk& c) {
-            return loadChunk(cx, cz, c);
+        {
+            std::lock_guard callbackLock(callbackState_->mutex);
+            callbackState_->owner = this;
+        }
+        const auto callbackState = callbackState_;
+        world_.setLoader([callbackState](std::int32_t cx, std::int32_t cz, Chunk& c) {
+            std::lock_guard callbackLock(callbackState->mutex);
+            return callbackState->owner && callbackState->owner->loadChunk(cx, cz, c);
         });
-        world_.setOnEdit([this](std::int32_t cx, std::int32_t cz) { markDirty(cx, cz); });
+        world_.setOnEdit([callbackState](std::int32_t cx, std::int32_t cz) {
+            std::lock_guard callbackLock(callbackState->mutex);
+            if (callbackState->owner) callbackState->owner->markDirty(cx, cz);
+        });
         running_.store(true, std::memory_order_release);
         try {
             worker_ = std::thread([this] { loop(); });
         } catch (...) {
             running_.store(false, std::memory_order_release);
+            world_.setLoader({});
+            world_.setOnEdit({});
+            std::lock_guard callbackLock(callbackState_->mutex);
+            callbackState_->owner = nullptr;
             throw;
         }
     }
     void stop() noexcept {
+        std::lock_guard lifecycleLock(lifecycleMtx_);
         running_.exchange(false, std::memory_order_acq_rel);
         cv_.notify_all();
         if (worker_.joinable()) worker_.join();
@@ -175,6 +290,10 @@ public:
         // persistence owner).
         world_.setLoader({});
         world_.setOnEdit({});
+        {
+            std::lock_guard callbackLock(callbackState_->mutex);
+            callbackState_->owner = nullptr;
+        }
     }
     // stop() is idempotent and flushes the final dirty batch.
     ~Persistence() { stop(); }
@@ -231,19 +350,29 @@ public:
         nbt::Parser parser(in);
         nbt::Value root = parser.readFileRoot();
         std::string bio;
+        std::unordered_map<std::string, std::uint16_t> biomeKeyToIdx;
+        std::int32_t defaultBiomeIndex = 0;
+        std::function<void(const nbt::Value&)> readExtras;
+        {
+            std::lock_guard lock(configMtx_);
+            biomeKeyToIdx = biomeKeyToIdx_;
+            defaultBiomeIndex = defaultBiomeIndex_;
+            readExtras = readExtras_;
+        }
         if (!chunkFromNBT(root, out, {}, bio,
-                          [this](const std::string& key) -> std::int32_t {
-                              auto it = biomeKeyToIdx_.find(key);
-                              return it != biomeKeyToIdx_.end()
+                          [biomeKeyToIdx = std::move(biomeKeyToIdx),
+                           defaultBiomeIndex](const std::string& key) -> std::int32_t {
+                              auto it = biomeKeyToIdx.find(key);
+                              return it != biomeKeyToIdx.end()
                                          ? static_cast<std::int32_t>(it->second)
-                                         : defaultBiomeIndex_;
+                                         : defaultBiomeIndex;
                           }))
             return false;
         if (!bio.empty()) {
             std::lock_guard lk(bioMtx_);
             biomeOverride_ = bio;
         }
-        if (readExtras_) readExtras_(root);
+        if (readExtras) readExtras(root);
         return true;
     }
 
@@ -262,6 +391,13 @@ public:
             std::lock_guard lk(dirtyMtx_);
             batch.swap(dirty_);
         }
+        std::unordered_map<std::uint16_t, std::string> biomeIdxToKey;
+        std::function<void(std::int32_t, std::int32_t, nbt::Value&)> writeExtras;
+        {
+            std::lock_guard lock(configMtx_);
+            biomeIdxToKey = biomeIdxToKey_;
+            writeExtras = writeExtras_;
+        }
         for (auto k : batch) {
             auto [cx, cz] = chunkKeyDecode(k);
             const std::string bio = [this] {
@@ -274,8 +410,8 @@ public:
                 found = world_.withChunk(cx, cz, [&](const Chunk& c) {
                 try {
                     nbt::Value root = chunkToNBT(cx, cz, c, bio,
-                                                 &biomeIdxToKey_);
-                    if (writeExtras_) writeExtras_(cx, cz, root);
+                                                 &biomeIdxToKey);
+                    if (writeExtras) writeExtras(cx, cz, root);
                     WriteBuffer out;
                     nbt::writeFileRoot(out, root);
                     storeChunkAtomically(cx, cz, out.data);
@@ -319,14 +455,21 @@ public:
             std::lock_guard lk(bioMtx_);
             return biomeOverride_.value_or(biome_);
         }();
+        std::unordered_map<std::uint16_t, std::string> biomeIdxToKey;
+        std::function<void(std::int32_t, std::int32_t, nbt::Value&)> writeExtras;
+        {
+            std::lock_guard lock(configMtx_);
+            biomeIdxToKey = biomeIdxToKey_;
+            writeExtras = writeExtras_;
+        }
         bool ok = false;
         bool saveFailed = false;
         bool found = false;
         try {
             found = world_.withChunk(cx, cz, [&](const Chunk& c) {
                 try {
-                    nbt::Value root = chunkToNBT(cx, cz, c, bio, &biomeIdxToKey_);
-                    if (writeExtras_) writeExtras_(cx, cz, root);
+                    nbt::Value root = chunkToNBT(cx, cz, c, bio, &biomeIdxToKey);
+                    if (writeExtras) writeExtras(cx, cz, root);
                     WriteBuffer out;
                     nbt::writeFileRoot(out, root);
                     storeChunkAtomically(cx, cz, out.data);
@@ -444,6 +587,10 @@ private:
         }
     }
 
+    mutable std::mutex configMtx_;
+    mutable std::mutex lifecycleMtx_;
+    std::shared_ptr<CallbackState> callbackState_ =
+        std::make_shared<CallbackState>();
     std::string difficulty_ = "normal";
     double worldBorderDiameter_ = constants::kWorldBorderDiameter;
     double worldBorderCenterX_ = 0, worldBorderCenterZ_ = 0;

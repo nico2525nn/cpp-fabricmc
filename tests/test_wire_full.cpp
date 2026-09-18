@@ -798,8 +798,16 @@ static void test_0x76_Collect(){
     WriteBuffer b; b.varint(1); b.varint(2); expectEq(b.data, std::vector<uint8_t>{0x01,0x02}, "Collect 1->2");
 }
 static void test_0x77_EntityTeleport(){
-    std::printf("[P77] EntityTeleport 0x77 varint f64*3 f32*2? bool\n");
-    WriteBuffer b; b.varint(7); b.f64(10); b.f64(64); b.f64(-5); b.f32(0); b.f32(0); b.boolean(true); check(b.data.size()==1+24+8+1,"EntityTeleport >30");
+    std::printf("[P77] EntityTeleport 0x77 EntityPositionS2CPacket layout\n");
+    WriteBuffer b;
+    b.varint(7);
+    b.f64(10); b.f64(64); b.f64(-5);
+    b.f64(0); b.f64(0); b.f64(0);
+    b.f32(0); b.f32(0);
+    b.i32(0);
+    b.boolean(true);
+    check(b.data.size()==1+24+24+8+4+1,
+          "EntityTeleport position+delta+rotation+flags+onGround");
 }
 static void test_0x78_SetTikingState_gap(){
     std::printf("[P78] SetTikingState 0x78 omitted — 20t fixed (tick freeze debug)\n");

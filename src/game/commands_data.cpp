@@ -653,11 +653,11 @@ void GameServer::initDataAdvancementCommands() {
             const auto& defs = advancementDefs();
             std::unordered_map<std::string, std::string> parentOf;
             std::unordered_map<std::string, std::vector<std::string>> childrenOf;
-            for(auto &d : defs){ std::string id=d.id; std::string par=d.parent?std::string(d.parent):std::string(); parentOf[id]=par; if(!par.empty()) childrenOf[par].push_back(id); }
+            for(auto &def : defs){ std::string id=def.id; std::string par=def.parent?std::string(def.parent):std::string(); parentOf[id]=par; if(!par.empty()) childrenOf[par].push_back(id); }
             for(auto &kv : datapackManager_.advancements){ std::string id=kv.first; if(!parentOf.count(id)) parentOf[id]=""; }
             std::string normBase = normalize(base);
             if(mode=="everything"){
-                for(auto &d: defs) out.push_back(d.id);
+                for(auto &def: defs) out.push_back(def.id);
                 for(auto &kv: datapackManager_.advancements) if(std::find(out.begin(),out.end(),kv.first)==out.end()) out.push_back(kv.first);
                 return out;
             }
@@ -700,7 +700,7 @@ void GameServer::initDataAdvancementCommands() {
         };
         auto knownAdvancements = [this]() -> std::vector<std::string> {
             std::vector<std::string> v;
-            for(auto &d: advancementDefs()) v.push_back(d.id);
+            for(auto &def: advancementDefs()) v.push_back(def.id);
             for(auto &kv: datapackManager_.advancements) v.push_back(kv.first);
             return v;
         };
@@ -733,11 +733,11 @@ void GameServer::initDataAdvancementCommands() {
                     if(full.find(':')==std::string::npos) full="minecraft:"+full;
                     if(full!="*" && full.find('*')==std::string::npos){
                         bool found=false;
-                        for(auto &d: advancementDefs()) if(d.id==full || d.id==advId) found=true;
+                        for(auto &def: advancementDefs()) if(def.id==full || def.id==advId) found=true;
                         if(!found && datapackManager_.advancements.find(full)!=datapackManager_.advancements.end()) found=true;
                         if(!found && datapackManager_.advancements.find(advId)!=datapackManager_.advancements.end()) found=true;
                         if(!found){
-                            for(auto &d: advancementDefs()) if(std::string(d.id)==advId) { found=true; full=d.id; break; }
+                            for(auto &def: advancementDefs()) if(std::string(def.id)==advId) { found=true; full=def.id; break; }
                         }
                     }
                     std::vector<std::string> ids;

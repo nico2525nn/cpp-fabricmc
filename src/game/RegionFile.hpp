@@ -39,10 +39,23 @@ public:
         const std::uint64_t regionEnd = (static_cast<std::uint64_t>(off) + count) * 4096u;
         if (off < 2 || regionEnd > fileSize)
             throw std::runtime_error("region chunk points outside the file");
-        f.seekg(off * 4096);
+        // `off` is a 24-bit Anvil sector address, but its declared type is
+        // uint32_t.  Multiplying it by the unsuffixed 4096 used to perform
+        // the arithmetic in 32 bits and wrap for perfectly valid region
+        // files above the 4 GiB boundary.  That silently read a different
+        // chunk and is also an easy way to turn a corrupt header into a
+        // misleading decode error.
+        const std::uint64_t byteOffset = static_cast<std::uint64_t>(off) * 4096u;
+        if (byteOffset > static_cast<std::uint64_t>(
+                std::numeric_limits<std::streamoff>::max()))
+            throw std::length_error("region chunk offset is not seekable");
+        f.seekg(static_cast<std::streamoff>(byteOffset));
         std::uint8_t lenb[4];
         if (!f.read(reinterpret_cast<char*>(lenb), 4)) return {};
-        const std::uint32_t total = (lenb[0]<<24)|(lenb[1]<<16)|(lenb[2]<<8)|lenb[3];
+        const std::uint32_t total = (static_cast<std::uint32_t>(lenb[0]) << 24) |
+                                    (static_cast<std::uint32_t>(lenb[1]) << 16) |
+                                    (static_cast<std::uint32_t>(lenb[2]) << 8) |
+                                    static_cast<std::uint32_t>(lenb[3]);
         if (total < 2 || total > static_cast<std::uint32_t>(count) * 4096u - 4u ||
             total > 8u*1024u*1024u)
             throw std::runtime_error("invalid region chunk length");
@@ -96,7 +109,32 @@ public:
             return off >= 2 && count != 0 &&
                    static_cast<std::uint64_t>(off) + count <= 0x1000000ULL;
         };
-        const bool oldValid = validRange(oldOff, oldCnt);
+        auto overlaps = [](std::uint32_t lhsOff, std::uint8_t lhsCount,
+                           std::uint32_t rhsOff, std::uint8_t rhsCount) {
+            const auto lhsEnd = static_cast<std::uint64_t>(lhsOff) + lhsCount;
+            const auto rhsEnd = static_cast<std::uint64_t>(rhsOff) + rhsCount;
+            return static_cast<std::uint64_t>(lhsOff) < rhsEnd &&
+                   static_cast<std::uint64_t>(rhsOff) < lhsEnd;
+        };
+        bool oldValid = validRange(oldOff, oldCnt);
+        if (oldValid) {
+            // A malformed header can make two chunks claim the same
+            // allocation.  Reusing this slot would overwrite the other
+            // chunk; append after the highest declared range instead.
+            for (std::size_t i = 0; i < 1024; ++i) {
+                if (i == idx) continue;
+                const std::uint32_t otherOff =
+                    (static_cast<std::uint32_t>(header[i * 4]) << 16) |
+                    (static_cast<std::uint32_t>(header[i * 4 + 1]) << 8) |
+                    static_cast<std::uint32_t>(header[i * 4 + 2]);
+                const std::uint8_t otherCnt = header[i * 4 + 3];
+                if (validRange(otherOff, otherCnt) &&
+                    overlaps(oldOff, oldCnt, otherOff, otherCnt)) {
+                    oldValid = false;
+                    break;
+                }
+            }
+        }
 
         std::uint32_t newOff = oldValid ? oldOff : 0;
         if (newOff == 0 || needSectors > oldCnt) {
@@ -126,15 +164,25 @@ public:
         // create a sparse file without allocating a giant temporary buffer.
         out.seekp(0, std::ios::end);
         const auto currentSize = out.tellp();
-        const auto want = static_cast<std::streamoff>(
-            (static_cast<std::uint64_t>(newOff) + needSectors) * 4096u);
+        const std::uint64_t wantBytes =
+            (static_cast<std::uint64_t>(newOff) + needSectors) * 4096u;
+        if (wantBytes > static_cast<std::uint64_t>(
+                std::numeric_limits<std::streamoff>::max()))
+            throw std::length_error("region file is not seekable");
+        const auto want = static_cast<std::streamoff>(wantBytes);
+        if (currentSize < 0)
+            throw std::runtime_error("cannot determine region file size: " + path_);
         if (currentSize < want) {
             out.seekp(want - 1);
             out.put('\0');
         }
         if (!out) throw std::runtime_error("cannot extend region file: " + path_);
 
-        out.seekp(static_cast<std::streamoff>(newOff) * 4096);
+        const std::uint64_t payloadOffset = static_cast<std::uint64_t>(newOff) * 4096u;
+        if (payloadOffset > static_cast<std::uint64_t>(
+                std::numeric_limits<std::streamoff>::max()))
+            throw std::length_error("region payload offset is not seekable");
+        out.seekp(static_cast<std::streamoff>(payloadOffset));
         out.write(reinterpret_cast<const char*>(payload.data()), static_cast<std::streamsize>(payload.size()));
         const std::size_t pad = needSectors * 4096u - payload.size();
         if (pad) {

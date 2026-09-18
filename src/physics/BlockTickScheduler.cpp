@@ -342,13 +342,16 @@ bool SaplingBehavior::fertilize(World& w, std::int32_t x, std::int32_t y, std::i
     const auto leavesId = gen::blockNameToState().at("minecraft:oak_leaves");
     setBlockAndBroadcast(w, srv, x, y, z, 0);
     const int trunkH = 4 + (nextRandom()%3);
-    for (int t=0; t<trunkH; ++t) setBlockAndBroadcast(w, srv, x, y+t, z, logId);
+    for (int t=0; t<trunkH; ++t)
+        setBlockAndBroadcast(w, srv, x, y+t, z,
+                             static_cast<std::uint16_t>(logId));
     for (int dy=trunkH-2; dy<=trunkH+1; ++dy){
         int rad = dy>=trunkH ? 1 : 2;
         for(int dz=-rad; dz<=rad; ++dz) for(int dx=-rad; dx<=rad; ++dx){
             if(dx==0&&dz==0&&dy<trunkH) continue;
             if (w.getBlock(x+dx, y+dy, z+dz)==0)
-                setBlockAndBroadcast(w, srv, x+dx, y+dy, z+dz, leavesId);
+                setBlockAndBroadcast(w, srv, x+dx, y+dy, z+dz,
+                                     static_cast<std::uint16_t>(leavesId));
         }
     }
     return true;
@@ -674,8 +677,8 @@ void FarmlandBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32
                 hasCrop = true;
         }
         if (!hasCrop && !hasWater) {
-            setBlockAndBroadcast(w, srv, x, y, z,
-                                 gen::blockNameToState().at("minecraft:dirt"));
+            setBlockAndBroadcast(w, srv, x, y, z, static_cast<std::uint16_t>(
+                                 gen::blockNameToState().at("minecraft:dirt")));
         }
     }
 }

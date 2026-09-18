@@ -3,6 +3,7 @@
 #include <condition_variable>
 #include <functional>
 #include <future>
+#include <type_traits>
 #include <mutex>
 #include <queue>
 #include <stdexcept>
@@ -19,17 +20,19 @@ public:
         try {
             for (std::size_t i = 0; i < threads; ++i) {
                 workers_.emplace_back([this] {
+                    currentPool_ = this;
                     for (;;) {
                         std::function<void()> task;
                         {
                             std::unique_lock<std::mutex> lk(mu_);
                             cv_.wait(lk, [this] { return stop_ || !tasks_.empty(); });
-                            if (stop_ && tasks_.empty()) return;
+                            if (stop_ && tasks_.empty()) break;
                             task = std::move(tasks_.front());
                             tasks_.pop();
                         }
                         task();
                     }
+                    currentPool_ = nullptr;
                 });
             }
         } catch (...) {
@@ -40,12 +43,25 @@ public:
     ~ThreadPool() { shutdown(); }
 
     void shutdown() {
+        // A task may request shutdown as part of its own cleanup.  Joining
+        // the current std::thread is an immediate deadlock/termination path;
+        // setting the stop flag is sufficient here and the owning thread can
+        // perform the joins later (normally from the destructor).
         {
             std::lock_guard<std::mutex> lk(mu_);
-            if (stop_ && workers_.empty()) return;
             stop_ = true;
         }
         cv_.notify_all();
+        if (currentPool_ == this) return;
+
+        // Joining and clearing workers is separate from the task mutex so
+        // concurrent owners cannot race through std::thread::join or mutate
+        // the vector while another shutdown is finishing.
+        std::lock_guard<std::mutex> joinLock(joinMtx_);
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            if (workers_.empty()) return;
+        }
         for (auto& t : workers_) if (t.joinable()) t.join();
         workers_.clear();
     }
@@ -53,8 +69,14 @@ public:
     ThreadPool& operator=(const ThreadPool&) = delete;
 
     template<class F>
-    auto submit(F&& f) -> std::future<decltype(f())> {
-        using R = decltype(f());
+    auto submit(F&& f)
+        -> std::future<std::invoke_result_t<std::decay_t<F>&>> {
+        // The callable is stored and invoked as an lvalue by the worker.  A
+        // decltype(f()) return type accidentally inspected the forwarding
+        // reference as a named lvalue and rejected otherwise valid callable
+        // types or deduced the wrong result.
+        using Function = std::decay_t<F>;
+        using R = std::invoke_result_t<Function&>;
         auto task = std::make_shared<std::packaged_task<R()>>(std::forward<F>(f));
         std::future<R> fut = task->get_future();
         {
@@ -71,10 +93,12 @@ public:
     }
 
 private:
+    inline static thread_local ThreadPool* currentPool_ = nullptr;
     std::vector<std::thread> workers_;
     std::queue<std::function<void()>> tasks_;
     mutable std::mutex mu_;
     std::condition_variable cv_;
+    std::mutex joinMtx_;
     bool stop_;
 };
 

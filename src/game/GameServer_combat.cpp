@@ -7,6 +7,7 @@
 #include "EnchantmentHelper.hpp"
 #include "CombatManager.hpp"
 #include "Particles.hpp"
+#include "GameServerHelpers.hpp"
 
 namespace cppfm {
 using namespace proto;
@@ -629,8 +630,8 @@ void GameServer::spawnPrimedTntFor(std::int8_t dimension, double x, double y,
     }
     WriteBuffer b;
     b.varint(t->entityId);
-    static std::uint8_t zero[16]={};
-    b.uuid(zero);
+    const auto uuid = entityUuidForId(t->entityId);
+    b.uuid(uuid.data());
     int typeId = 125;
     auto it = gen::entityTypeIdByName().find("minecraft:tnt");
     if(it!=gen::entityTypeIdByName().end()) typeId = it->second;
@@ -672,14 +673,9 @@ void GameServer::tntTick(){
         ++t->ageTicks;
         if (t->ageTicks % 4 != 0) continue;
 
-        WriteBuffer tp;
-        tp.varint(t->entityId);
-        tp.f64(t->x);
-        tp.f64(t->y);
-        tp.f64(t->z);
-        tp.i8(0);
-        tp.i8(0);
-        tp.boolean(false);
+        const WriteBuffer tp = makeEntityTeleportBody(
+            t->entityId, t->x, t->y, t->z, t->vx, t->vy, t->vz,
+            0.0f, 0.0f, 0, false);
         broadcastPacketExceptInDimension(dimension, nullptr,
                                          pl::sc::EntityTeleport, tp);
 
@@ -735,8 +731,8 @@ void GameServer::strikeLightningFor(std::int8_t dimension, double x, double y,
         // Broadcast SpawnEntity for lightning (type 94? Use generic)
         WriteBuffer b;
         b.varint(bolt->entityId);
-        static std::uint8_t zero[16]={};
-        b.uuid(zero);
+        const auto uuid = entityUuidForId(bolt->entityId);
+        b.uuid(uuid.data());
         b.varint(94); // lightning bolt entity type id (approx)
         b.f64(x); b.f64(y); b.f64(z);
         b.i8(0); b.i8(0); b.i8(0);

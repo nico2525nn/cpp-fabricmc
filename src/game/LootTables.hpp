@@ -144,14 +144,15 @@ public:
                                 }
                                 continue;
                             }
-                            std::string n=e.at("name").asStr();
-                            if(n.empty()) continue;
-                            LootEntry ent; ent.name=n;
+                            std::string entryName=e.at("name").asStr();
+                            if(entryName.empty()) continue;
+                            LootEntry ent; ent.name=entryName;
                             const auto& w=e.at("weight");
                             if(w.isNum()) ent.weight=w.asInt(1);
                             // entry-level conditions as functions: skip if needed (survives_explosion handled via explosionDecay)
-                            if(auto* ec=e.find("conditions")) if(ec->isArr()){
-                                for(auto& cc: ec->arr){
+                            if(auto* entryConditions=e.find("conditions"))
+                            if(entryConditions->isArr()){
+                                for(auto& cc: entryConditions->arr){
                                     std::string cn=cc.at("condition").asStr();
                                     if(cn.find("survives_explosion")!=std::string::npos) ent.explosionDecay=true;
                                 }
@@ -336,19 +337,20 @@ public:
                     int maxDmg = ItemStack::maxDamageFor(dropName.find(':')!=std::string::npos? gen::itemIdByName().at(dropName) : 0);
                     // fallback: use iid
                     if(maxDmg==0) maxDmg = ItemStack::maxDamageFor(iidIt->second);
-                    if(maxDmg>0) st.setDamage((int)(maxDmg * dmg));
+                    if(maxDmg>0) st.setDamage(static_cast<int>(
+                        static_cast<float>(maxDmg) * dmg));
                 }
                 if(!chosen->setLore.empty()) st.lore = chosen->setLore;
                 if(!chosen->setName.empty()) st.displayNameLoot = chosen->setName;
                 if (chosen->enchantRandomly) {
-                    std::string pick;
-                    if(!chosen->enchantOptions.empty()) pick = chosen->enchantOptions[nextRandom()%chosen->enchantOptions.size()];
+                    std::string enchantPick;
+                    if(!chosen->enchantOptions.empty()) enchantPick = chosen->enchantOptions[nextRandom()%chosen->enchantOptions.size()];
                     else {
                         static const char* enchants[]={"minecraft:sharpness","minecraft:protection","minecraft:efficiency","minecraft:unbreaking","minecraft:fortune","minecraft:power","minecraft:looting"};
-                        pick = enchants[nextRandom() % (sizeof(enchants)/sizeof(*enchants))];
+                        enchantPick = enchants[nextRandom() % (sizeof(enchants)/sizeof(*enchants))];
                     }
                     int lvl = 1 + nextRandom()%3;
-                    ItemStack::addEnchant(st, pick, lvl);
+                    ItemStack::addEnchant(st, enchantPick, lvl);
                 }
                 if (chosen->fillPlayerHead) {
                     st.count = 1;

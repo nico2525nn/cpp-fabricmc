@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <cmath>
+#include <limits>
 
 namespace cppfm::worldgen {
 
@@ -17,8 +18,8 @@ inline std::uint16_t stateByPalette(const std::unordered_map<std::string,std::st
                                     const std::string& key, const std::string& fallback) {
     auto it = pal.find(key);
     const std::string& name = (it != pal.end() ? it->second : fallback);
-    if (auto* d = B(name.c_str())) return d->defaultState;
-    if (auto* f = B(fallback.c_str())) return f->defaultState;
+    if (auto* d = B(name.c_str())) return static_cast<std::uint16_t>(d->defaultState);
+    if (auto* f = B(fallback.c_str())) return static_cast<std::uint16_t>(f->defaultState);
     return 0;
 }
 struct Writer {
@@ -26,18 +27,19 @@ struct Writer {
     std::int32_t cx, cz;
     std::uint16_t air = 0;
     bool set(std::int32_t wx, std::int32_t wy, std::int32_t wz,
-             std::uint16_t state, bool overwriteSolid = false) {
+             std::uint32_t state, bool overwriteSolid = false) {
         if (wy < kMinY || wy >= kMaxY) return false;
         if ((wx >> 4) != cx || (wz >> 4) != cz) return false;
+        if (state > std::numeric_limits<std::uint16_t>::max()) return false;
         const int lx = wx & 15, lz = wz & 15, wyR = wy - kMinY;
         auto& slot = c.blocks[Chunk::index(wyR >> 4, wyR & 15, lz, lx)];
         if (!overwriteSolid && slot != 0) return false;
-        slot = state;
+        slot = static_cast<std::uint16_t>(state);
         return true;
     }
     void box(std::int32_t x0, std::int32_t y0, std::int32_t z0,
              std::int32_t x1, std::int32_t y1, std::int32_t z1,
-             std::uint16_t st, bool force = false) {
+             std::uint32_t st, bool force = false) {
         for (auto y = y0; y <= y1; ++y)
             for (auto z = z0; z <= z1; ++z)
                 for (auto x = x0; x <= x1; ++x) set(x, y, z, st, force);
@@ -152,9 +154,9 @@ int StructureManager::loadFromFile(const std::string& path) {
                 s.biomes.push_back(bs->asStr());
             }
             if (auto* st = o.find("spread_type")) {
-                std::string v = st->asStr();
-                if (v == "triangular") s.spread = SMStructureSet::Triangular;
-                else if (v == "concentric") s.spread = SMStructureSet::Concentric;
+                const std::string spreadType = st->asStr();
+                if (spreadType == "triangular") s.spread = SMStructureSet::Triangular;
+                else if (spreadType == "concentric") s.spread = SMStructureSet::Concentric;
                 else s.spread = SMStructureSet::Linear;
             }
             if (auto* fr = o.find("frequency")) s.frequency = fr->asFloat(float(s.frequency));
@@ -242,7 +244,7 @@ void StructureManager::villageHouse(Chunk& chunk, std::int32_t cx, std::int32_t 
             for (int dxx = 0; dxx < 5; ++dxx) {
                 const bool wall = dxx == 0 || dxx == 4 || dzz == 0 || dzz == 4 || dy == 3 || dy == 0;
                 if (!wall) continue;
-                const std::uint16_t mat = dy == 0 || dy == 3 ? log : planks;
+                const auto mat = dy == 0 || dy == 3 ? log : planks;
                 w.set(bx + dxx, gy + 1 + dy, bz + dzz, mat);
             }
     w.set(bx + 2, gy + 1, bz, 0, true);
@@ -491,7 +493,7 @@ void StructureManager::monumentPiece(Chunk& chunk, std::int32_t cx, std::int32_t
         for (int dy=0; dy<23; ++dy) {
             int py = baseY + dy;
             if (py<kMinY||py>=kMaxY) continue;
-            std::uint16_t mat = prismarine;
+            auto mat = prismarine;
             if (dy==0 || dy==22 || edge) mat = bricks;
             else if (dx%7==0 && dz%7==0 && dy%5==0) mat = lantern;
             else if (dx>20 && dx<37 && dz>20 && dz<37) {
@@ -959,7 +961,8 @@ void StructureManager::placeGenericPalette(Chunk& chunk, std::int32_t cx, std::i
     Writer w{chunk, cx, cz};
     std::string lp = pieceName;
     // lower
-    for (auto& c: lp) c = std::tolower(c);
+    for (auto& c: lp)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     if (lp.find("village")!=std::string::npos || lp.find("house")!=std::string::npos || lp.find("farm")!=std::string::npos || lp.find("church")!=std::string::npos) {
         std::string plankName = "minecraft:oak_planks";
         if (auto it = palette.find("plank"); it!=palette.end()) plankName = it->second;

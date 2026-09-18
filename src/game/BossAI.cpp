@@ -10,26 +10,7 @@ namespace cppfm {
 // ---------------------------------------------------------------- BossBarManager
 
 std::array<std::uint8_t,16> BossBarManager::uuidForEntity(std::int32_t eid) {
-    // Deterministic UUID derived from entity id (version 4 style variant)
-    // Use FNV-like hash to fill 16 bytes, set version/variant bits for valid UUID.
-    std::array<std::uint8_t,16> u{};
-    // Simple deterministic fill
-    uint32_t h = (uint32_t)eid * 0x9e3779b1u ^ 0x85ebca6bu;
-    for (int i=0;i<4;i++) {
-        u[i] = uint8_t((h >> (i*8)) & 0xFF);
-        u[4+i] = uint8_t(((h*31) >> (i*8)) & 0xFF);
-        u[8+i] = uint8_t(((h*0x27d4eb2d) >> (i*8)) & 0xFF);
-        u[12+i]= uint8_t(((h*0x165667b1) >> (i*8)) & 0xFF);
-    }
-    // set version 4 and variant 8
-    u[6] = (u[6] & 0x0F) | 0x40;
-    u[8] = (u[8] & 0x3F) | 0x80;
-    // ensure unique per eid for predictable testing
-    u[12] ^= uint8_t(eid & 0xFF);
-    u[13] ^= uint8_t((eid>>8)&0xFF);
-    u[14] ^= uint8_t((eid>>16)&0xFF);
-    u[15] ^= uint8_t((eid>>24)&0xFF);
-    return u;
+    return entityUuidForId(eid);
 }
 
 int BossBarManager::colorForKind(MobKind k) {

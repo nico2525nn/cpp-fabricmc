@@ -319,10 +319,15 @@ private:
         case Type::Bool: out += boolean ? "true" : "false"; break;
         case Type::Num: {
             if (!std::isfinite(number)) throw std::runtime_error("json: cannot serialize non-finite number");
-            char buf[40];
-            if (number == std::floor(number) && std::abs(number) < 1e15)
+            // Ten significant digits were not enough for worldgen and
+            // persistence values: dump(parse(text)) could silently change a
+            // valid double.  max_digits10 is the shortest fixed precision
+            // that round-trips every IEEE-754 double through this parser.
+            char buf[64];
+            if (number == std::floor(number) && std::abs(number) < 1e15 &&
+                !std::signbit(number))
                 snprintf(buf, sizeof buf, "%lld", static_cast<long long>(number));
-            else snprintf(buf, sizeof buf, "%.10g", number);
+            else snprintf(buf, sizeof buf, "%.17g", number);
             out += buf;
             break;
         }
