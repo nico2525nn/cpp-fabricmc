@@ -773,6 +773,19 @@ if(Python3_Interpreter_FOUND)
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/test_mcproto_framing.py")
     set_tests_properties(mcproto_framing PROPERTIES TIMEOUT 30
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+
+    # plan53 lifecycle/negative matrix: protocol readiness, signal cleanup,
+    # session-lock isolation, malformed input recovery, and no-side-effect
+    # informational flags.  The runner uses /proc process identity, so keep it
+    # on POSIX hosts rather than presenting a false Windows result.
+    if(UNIX)
+        add_test(NAME lifecycle_matrix
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/test_lifecycle_matrix.py"
+                    --binary $<TARGET_FILE:cppfm>)
+        set_tests_properties(lifecycle_matrix PROPERTIES TIMEOUT 600
+            LABELS "lifecycle;network"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    endif()
 endif()
 
 # plan52 P1: fail-closed preflight for arbitrary Fabric/JVM mod linkage.
