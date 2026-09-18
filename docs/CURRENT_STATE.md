@@ -15,7 +15,7 @@
 | `updated` | `2026-09-19` |
 | `implementation_baseline` | integrated `main` HEAD `c857bfa` from clean checkpoint `65a7c69` |
 | `implementation_baseline_short` | `c857bfa` (`65a7c69` + plan53/54 merges and fixes) |
-| `documentation_commit` | `9859e1d` (`docs: pin final evidence snapshot`; includes `556569b`) |
+| `documentation_commit` | final documentation commit sequence after source integration `c857bfa` |
 | `main_integration_merge` | `c857bfa` (all validated plan53/54 workstreams integrated) |
 | `plan` | plan53 settings/lifecycle matrix + plan54 adversarial cleanup |
 | `phase` | `plan53-plan54-final-gates` |

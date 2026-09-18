@@ -23,9 +23,9 @@
 | protocol | 769 |
 | DataVersion | 4189 |
 | branch | main |
-| HEAD | 9859e1d (final plan53/plan54 evidence documentation) |
+| HEAD | final documentation evidence sequence after source integration `c857bfa` |
 | origin/main | local `main` is ahead by the integrated local commits; no push requested. Recheck before publishing |
-| HEADのコミット | docs: pin final evidence snapshot |
+| HEADのコミット | final docs/evidence synchronization |
 | スナップショット | 2026-09-19 JST |
 | JDK | OpenJDK 21をインストール済み。JNI/JVMビルド検出済み |
 | publication status | BLOCKED — 下記の明示された境界が残る |
