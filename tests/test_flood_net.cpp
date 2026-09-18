@@ -3,7 +3,7 @@
 //   decompressChecked (no server). Live part: forks cppfm (argv[1]) and drives
 //   real sockets + TestClient through the production net path.
 
-#include "TestClient.hpp"
+#include "ServerProcess.hpp"
 #include "../src/core/ByteBuffer.hpp"
 #include "../src/core/Zlib.hpp"
 #include "../src/net/PacketDecoder.hpp"
@@ -13,15 +13,12 @@
 
 #include <arpa/inet.h>
 #include <sys/socket.h>
-#include <sys/wait.h>
 #include <unistd.h>
 
 #include <chrono>
-#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <filesystem>
 #include <random>
 #include <string>
 #include <thread>
@@ -218,107 +215,6 @@ static void unitRecvTimeout() {
     ::close(sv[1]);
 }
 
-// ---- live harness ------------------------------------------------------------
-struct ServerProc {
-    pid_t pid = -1;
-    std::uint16_t port = 0;
-    std::string worldDir;
-    ~ServerProc() { stop(); }
-    bool start(const char* bin) {
-        port = static_cast<std::uint16_t>(26100 + (getpid() % 2500));
-        worldDir = "/tmp/floodnet-" + std::to_string(getpid());
-        std::filesystem::remove_all(worldDir);
-        std::filesystem::create_directories(worldDir);
-        for (int a = 0; a < 20; ++a) {
-            int s = ::socket(AF_INET, SOCK_STREAM, 0);
-            sockaddr_in ad{};
-            ad.sin_family = AF_INET;
-            ad.sin_port = htons(port);
-            ad.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-            if (::connect(s, reinterpret_cast<sockaddr*>(&ad), sizeof(ad)) != 0) break;
-            ::close(s);
-            ++port;
-        }
-        pid = fork();
-        if (pid < 0) {
-            std::error_code ec;
-            std::filesystem::remove_all(worldDir, ec);
-            return false;
-        }
-        if (pid == 0) {
-            // Keep the self-contained runtime layout isolated from the
-            // checkout and from other live tests.  Without this, every child
-            // rewrites the shared embedded class tree and a cold JVM start
-            // can miss the short readiness window under CTest load.
-            (void)::setenv("CPPFM_SERVER_DIR", worldDir.c_str(), 1);
-            char pa[32], va[32], wa[256];
-            std::snprintf(pa, sizeof(pa), "--port=%u", port);
-            std::snprintf(va, sizeof(va), "--view-distance=%d", 4);
-            std::snprintf(wa, sizeof(wa), "--world-dir=%s", worldDir.c_str());
-            execl(bin, bin, pa, va, wa, "--level-type=flat", "--online-mode=false", (char*)nullptr);
-            _exit(127);
-        }
-        // JVM/resource bootstrap is intentionally part of the production
-        // launch path.  Check the child while waiting so an early bind/JVM
-        // failure is not misreported as a generic timeout, and allow a cold
-        // filesystem/JDK start enough time under a loaded CI host.
-        for (int i = 0; i < 200; ++i) {
-            int childStatus = 0;
-            const pid_t childResult = waitpid(pid, &childStatus, WNOHANG);
-            if (childResult == pid) {
-                pid = -1;
-                std::error_code ec;
-                std::filesystem::remove_all(worldDir, ec);
-                return false;
-            }
-            if (childResult < 0 && errno != EINTR) {
-                stop();
-                return false;
-            }
-            int s = ::socket(AF_INET, SOCK_STREAM, 0);
-            sockaddr_in ad{};
-            ad.sin_family = AF_INET;
-            ad.sin_port = htons(port);
-            ad.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-            bool up = (::connect(s, reinterpret_cast<sockaddr*>(&ad), sizeof(ad)) == 0);
-            ::close(s);
-            if (up) return true;
-            usleep(100 * 1000);
-        }
-        stop();
-        return false;
-    }
-    void stop() noexcept {
-        if (pid <= 0) return;
-        const pid_t child = pid;
-        int status = 0;
-        bool reaped = false;
-        for (int i = 0; i < 600; ++i) {
-            const pid_t result = waitpid(child, &status, WNOHANG);
-            if (result == child) { reaped = true; break; }
-            if (result < 0) {
-                if (errno == EINTR) { --i; continue; }
-                reaped = errno == ECHILD;
-                break;
-            }
-            if (i == 0) (void)kill(child, SIGTERM);
-            usleep(100 * 1000);
-        }
-        if (!reaped) {
-            (void)kill(child, SIGKILL);
-            for (;;) {
-                const pid_t result = waitpid(child, &status, 0);
-                if (result == child || (result < 0 && errno == ECHILD)) break;
-                if (result < 0 && errno == EINTR) continue;
-                break;
-            }
-        }
-        pid = -1;
-        std::error_code ec;
-        std::filesystem::remove_all(worldDir, ec);
-    }
-};
-
 static int rawConnect(std::uint16_t port) {
     int s = ::socket(AF_INET, SOCK_STREAM, 0);
     if (s < 0) return -1;
@@ -334,6 +230,13 @@ static int rawConnect(std::uint16_t port) {
         return -1;
     }
     return s;
+}
+
+static bool rawPortProbe(std::uint16_t port) {
+    const int s = rawConnect(port);
+    if (s < 0) return false;
+    ::close(s);
+    return true;
 }
 
 static void sendVarint(int fd, std::int32_t v) {
@@ -400,8 +303,16 @@ static bool statusAlive(std::uint16_t port) {
 }
 
 static void liveTests(const char* bin) {
-    ServerProc srv;
-    CHECK(srv.start(bin), "server boot for flood tests");
+    ServerProcessOptions serverOptions;
+    serverOptions.portBase = 26100;
+    serverOptions.portSpan = 2500;
+    serverOptions.viewDistance = 4;
+    serverOptions.readyTimeoutMs = 20000;
+    serverOptions.worldPrefix = "/tmp/floodnet-";
+    serverOptions.isolateRuntime = true;
+    serverOptions.portProbe = &rawPortProbe;
+    ServerProcess srv;
+    CHECK(srv.start(bin, serverOptions), "server boot for flood tests");
     if (srv.pid <= 0) return;
     CHECK(statusAlive(srv.port), "baseline status alive");
 
