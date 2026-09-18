@@ -22,6 +22,13 @@ struct ItemStack {
     std::vector<std::uint32_t> removedComponents;
 
     bool empty() const { return count <= 0 || itemId == 0; }
+    // Item identity for merging deliberately excludes count and emptiness;
+    // callers retain their existing empty-slot policy.
+    bool sameItemData(const ItemStack& other) const {
+        return itemId == other.itemId &&
+               components == other.components &&
+               removedComponents == other.removedComponents;
+    }
     static ItemStack air() { return {}; }
     static ItemStack of(std::uint32_t id, std::int16_t n = 1) {
         ItemStack s; s.itemId = id; s.count = n; return s;

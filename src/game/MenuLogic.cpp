@@ -15,8 +15,7 @@ namespace cppfm {
 
 // helper to swap/merge like ClickLogic but for result slots — polish: respect maxStackFor and components
 static bool isSameForMerge(const ItemStack& a, const ItemStack& b) {
-    return !a.empty() && !b.empty() && a.itemId == b.itemId &&
-           a.components == b.components && a.removedComponents == b.removedComponents;
+    return !a.empty() && !b.empty() && a.sameItemData(b);
 }
 // Max stack size by item id — single-sourced from MenuInteraction::stackLimit via maxStackForId (identical 47x16 / 203x1 tables,
 // mechanically verified). NOTE: the merge PREDICATE here (isSameForMerge: components must be EQUAL) intentionally differs from
@@ -297,9 +296,7 @@ bool EnchantmentMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, i
                 if (cursor.count <= 0) cursor=ItemStack::air();
                 changed = moved > 0;
             } else if (!cursor.empty() && !target->empty() &&
-                       cursor.itemId == target->itemId &&
-                       cursor.components == target->components &&
-                       cursor.removedComponents == target->removedComponents) {
+                       cursor.sameItemData(*target)) {
                 const int limit = slotId == 0 ? 1 : maxStackForId(target->itemId);
                 const int moved = std::min<int>(cursor.count, limit - target->count);
                 if (moved > 0) {
@@ -322,9 +319,7 @@ bool EnchantmentMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, i
             } else if (!cursor.empty() && target->empty()) {
                 *target=cursor; target->count=1; cursor.count--; if(cursor.count<=0) cursor=ItemStack::air(); changed=true;
             } else if (!cursor.empty() && !target->empty() &&
-                       cursor.itemId == target->itemId &&
-                       cursor.components == target->components &&
-                       cursor.removedComponents == target->removedComponents) {
+                       cursor.sameItemData(*target)) {
                 const int limit = slotId == 0 ? 1 : maxStackForId(target->itemId);
                 if (target->count < limit) {
                     ++target->count;
@@ -514,9 +509,7 @@ bool CrafterMenuLogic::craftOnRedstone(Menu& menu, const RecipeManager& recipes,
     if (outputSink.empty()) {
         outputSink = result;
     } else {
-        const bool same = outputSink.itemId == result.itemId &&
-                          outputSink.components == result.components &&
-                          outputSink.removedComponents == result.removedComponents;
+        const bool same = outputSink.sameItemData(result);
         if (!same || outputSink.count < 0 || outputSink.count > limit - result.count)
             return false;
         outputSink.count = static_cast<std::int16_t>(outputSink.count + result.count);
