@@ -22,6 +22,8 @@
 namespace cpptest {
 
 struct ServerProcessOptions {
+    using PortProbe = bool (*)(std::uint16_t);
+
     std::uint16_t portBase = 26000;
     std::uint16_t portSpan = 3000;
     int viewDistance = 6;
@@ -34,6 +36,9 @@ struct ServerProcessOptions {
     std::string worldPrefix = "/tmp/cppfm-test-";
     int readyTimeoutMs = 30000;
     bool isolateRuntime = false;
+    // A live test may keep a raw TCP readiness policy.  The common owner still
+    // owns port collision probing, fork/exec, and the bounded child lifecycle.
+    PortProbe portProbe = nullptr;
 };
 
 class ServerProcess {
@@ -52,10 +57,15 @@ public:
         worldDir = options.worldPrefix + std::to_string(getpid());
         if (!prepareWorld()) return false;
 
-        for (int attempt = 0; attempt < 20; ++attempt) {
+        const auto probePort = [&](std::uint16_t candidate) {
+            if (options.portProbe) return options.portProbe(candidate);
             TestClient probe;
-            if (!probe.connect("127.0.0.1", port, 1)) break;
+            if (!probe.connect("127.0.0.1", candidate, 1)) return false;
             probe.close();
+            return true;
+        };
+        for (int attempt = 0; attempt < 20; ++attempt) {
+            if (!probePort(port)) break;
             ++port;
         }
 
@@ -106,9 +116,7 @@ public:
                 return false;
             }
 
-            TestClient probe;
-            if (probe.connect("127.0.0.1", port, 1)) {
-                probe.close();
+            if (probePort(port)) {
                 return true;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
