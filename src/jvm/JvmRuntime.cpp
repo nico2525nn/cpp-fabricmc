@@ -119,6 +119,7 @@ struct JvmRuntime::Impl {
 
 namespace {
 
+#if defined(CPPFM_HAS_JNI)
 std::atomic<JvmRuntime*> g_activeRuntime{nullptr};
 // JNI permits only one invocation VM per process.  Keep an explicit native
 // owner instead of relying on JNI_CreateJavaVM returning JNI_EEXIST: that
@@ -270,6 +271,7 @@ void waitForRuntimeCalls(JvmRuntime* runtime) {
         return impl.activeCalls.load(std::memory_order_acquire) <= ownCalls;
     });
 }
+#endif
 
 // NativeBridge methods may be entered by arbitrary Java-created threads.  The
 // operation itself is copied into GameServer's bounded server-thread queue;
@@ -292,6 +294,11 @@ bool runServerMutation(GameServer& server, Operation&& operation) {
             }
         }, kServerMutationTimeout);
     return dispatched && result->load(std::memory_order_acquire);
+}
+
+void setError(JvmRuntime::Impl& impl, std::string message) {
+    impl.lastError = std::move(message);
+    std::fprintf(stderr, "[cppfm][jvm] %s\n", impl.lastError.c_str());
 }
 
 #if defined(CPPFM_HAS_JNI)
@@ -395,6 +402,41 @@ void throwJavaException(JNIEnv* env, const char* className,
     env->DeleteLocalRef(type);
 }
 
+void translateNativeException(JNIEnv* env, JvmRuntime& runtime,
+                              std::string message) {
+    runtime.bridgeImpl().bridgeExceptions.fetch_add(1, std::memory_order_relaxed);
+    throwJavaException(env, "java/lang/IllegalStateException", message);
+}
+
+template <typename Reference>
+class JniLocalRef {
+public:
+    JniLocalRef(JNIEnv* env, Reference reference) noexcept
+        : env_(env), reference_(reference) {}
+    ~JniLocalRef() { reset(); }
+
+    JniLocalRef(const JniLocalRef&) = delete;
+    JniLocalRef& operator=(const JniLocalRef&) = delete;
+
+    Reference get() const noexcept { return reference_; }
+    explicit operator bool() const noexcept { return reference_ != nullptr; }
+
+    Reference release() noexcept {
+        const Reference result = reference_;
+        reference_ = nullptr;
+        return result;
+    }
+
+private:
+    void reset() noexcept {
+        if (env_ && reference_)
+            env_->DeleteLocalRef(reinterpret_cast<jobject>(reference_));
+    }
+
+    JNIEnv* const env_;
+    Reference reference_;
+};
+
 class NativeCallGuard {
 public:
     explicit NativeCallGuard(bool allowBootstrap = false)
@@ -415,49 +457,43 @@ std::string dottedClassName(std::string name) {
 
 jobject classLoaderFor(JNIEnv* env, jclass type) {
     if (!env || !type) return nullptr;
-    jclass classType = env->FindClass("java/lang/Class");
+    JniLocalRef<jclass> classType(env, env->FindClass("java/lang/Class"));
     if (!classType) { env->ExceptionClear(); return nullptr; }
     const jmethodID getLoader = env->GetMethodID(
-        classType, "getClassLoader", "()Ljava/lang/ClassLoader;");
-    if (!getLoader) { env->ExceptionClear(); env->DeleteLocalRef(classType); return nullptr; }
-    jobject loader = env->CallObjectMethod(type, getLoader);
-    env->DeleteLocalRef(classType);
+        classType.get(), "getClassLoader", "()Ljava/lang/ClassLoader;");
+    if (!getLoader) { env->ExceptionClear(); return nullptr; }
+    JniLocalRef<jobject> loader(env, env->CallObjectMethod(type, getLoader));
     if (env->ExceptionCheck()) {
         env->ExceptionClear();
-        if (loader) env->DeleteLocalRef(loader);
         return nullptr;
     }
-    return loader;
+    return loader.release();
 }
 
 jclass loadClassFromLoader(JNIEnv* env, jobject loader, const std::string& internalName) {
     if (!env) return nullptr;
     if (!loader) {
-        jclass result = env->FindClass(internalName.c_str());
+        JniLocalRef<jclass> result(env, env->FindClass(internalName.c_str()));
         if (env->ExceptionCheck()) { env->ExceptionClear(); return nullptr; }
-        return result;
+        return result.release();
     }
-    jclass loaderType = env->FindClass("java/lang/ClassLoader");
+    JniLocalRef<jclass> loaderType(env, env->FindClass("java/lang/ClassLoader"));
     if (!loaderType) { env->ExceptionClear(); return nullptr; }
     const jmethodID loadClass = env->GetMethodID(
-        loaderType, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
+        loaderType.get(), "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
     if (!loadClass) {
         env->ExceptionClear();
-        env->DeleteLocalRef(loaderType);
         return nullptr;
     }
     const std::string dotted = dottedClassName(internalName);
-    jstring name = env->NewStringUTF(dotted.c_str());
+    JniLocalRef<jstring> name(env, env->NewStringUTF(dotted.c_str()));
     if (!name) {
         if (env->ExceptionCheck()) env->ExceptionClear();
-        env->DeleteLocalRef(loaderType);
         return nullptr;
     }
-    jobject result = env->CallObjectMethod(loader, loadClass, name);
-    if (name) env->DeleteLocalRef(name);
-    env->DeleteLocalRef(loaderType);
+    JniLocalRef<jobject> result(env, env->CallObjectMethod(loader, loadClass, name.get()));
     if (env->ExceptionCheck()) { env->ExceptionClear(); return nullptr; }
-    return static_cast<jclass>(result);
+    return static_cast<jclass>(result.release());
 }
 
 bool isSameClass(JNIEnv* env, jclass left, jclass right) {
@@ -477,13 +513,11 @@ Result withNativeRuntime(JNIEnv* env, const char* operation, Result fallback,
         if (clearJavaException(env, guard.get(), operation)) return fallback;
         return result;
     } catch (const std::exception& failure) {
-        guard.get()->bridgeImpl().bridgeExceptions.fetch_add(1, std::memory_order_relaxed);
-        throwJavaException(env, "java/lang/IllegalStateException",
-                           std::string(operation) + ": " + failure.what());
+        translateNativeException(env, *guard.get(),
+                                 std::string(operation) + ": " + failure.what());
     } catch (...) {
-        guard.get()->bridgeImpl().bridgeExceptions.fetch_add(1, std::memory_order_relaxed);
-        throwJavaException(env, "java/lang/IllegalStateException",
-                           std::string(operation) + ": unknown native exception");
+        translateNativeException(env, *guard.get(),
+                                 std::string(operation) + ": unknown native exception");
     }
     return fallback;
 }
@@ -499,13 +533,11 @@ void withNativeRuntimeVoid(JNIEnv* env, const char* operation, Call&& call,
         // valid successful return from a native bridge method.
         clearJavaException(env, guard.get(), operation);
     } catch (const std::exception& failure) {
-        guard.get()->bridgeImpl().bridgeExceptions.fetch_add(1, std::memory_order_relaxed);
-        throwJavaException(env, "java/lang/IllegalStateException",
-                           std::string(operation) + ": " + failure.what());
+        translateNativeException(env, *guard.get(),
+                                 std::string(operation) + ": " + failure.what());
     } catch (...) {
-        guard.get()->bridgeImpl().bridgeExceptions.fetch_add(1, std::memory_order_relaxed);
-        throwJavaException(env, "java/lang/IllegalStateException",
-                           std::string(operation) + ": unknown native exception");
+        translateNativeException(env, *guard.get(),
+                                 std::string(operation) + ": unknown native exception");
     }
 }
 
@@ -582,11 +614,6 @@ std::filesystem::path findJvmLibrary(const JvmConfig& config) {
 }
 
 using CreateJvmFn = jint (*)(JavaVM**, void**, void*);
-
-void setError(JvmRuntime::Impl& impl, std::string message) {
-    impl.lastError = std::move(message);
-    std::fprintf(stderr, "[cppfm][jvm] %s\n", impl.lastError.c_str());
-}
 
 bool registerBridge(JNIEnv* env, JvmRuntime* runtime, jclass bridgeClass);
 
@@ -1223,12 +1250,8 @@ bool resolveDispatchMethods(JNIEnv* env, JvmRuntime* runtime, jclass dispatchCla
            impl.command && impl.entityDamage && impl.mobSpawn;
 }
 
-void deleteGlobal(JNIEnv* env, jobject& reference) {
-    if (env && reference) env->DeleteGlobalRef(reference);
-    reference = nullptr;
-}
-
-void deleteGlobal(JNIEnv* env, jclass& reference) {
+template <typename Reference>
+void deleteGlobal(JNIEnv* env, Reference& reference) {
     if (env && reference)
         env->DeleteGlobalRef(reinterpret_cast<jobject>(reference));
     reference = nullptr;
@@ -1745,8 +1768,10 @@ void JvmRuntime::stop() {
     impl.dynamicRouteReported.store(false, std::memory_order_release);
     impl.provider.store(JvmProvider::None, std::memory_order_release);
     impl.currentTick.store(0, std::memory_order_release);
+#if defined(CPPFM_HAS_JNI)
     if (!impl.vmDestroyFailed.load(std::memory_order_acquire))
         releaseRuntimeOwnership(this);
+#endif
 }
 
 bool JvmRuntime::started() const noexcept {
@@ -1787,6 +1812,35 @@ JvmStats JvmRuntime::stats() const {
         impl.bridgeExceptions.load(std::memory_order_relaxed)
     };
 }
+
+namespace {
+
+void invalidateObjectHandle(JvmRuntime::Impl& impl, JvmRuntime& runtime,
+                            void* address, HandleKind kind) {
+    std::optional<std::uint64_t> handle;
+    {
+        std::lock_guard cacheLock(impl.objectCacheMutex);
+        handle = impl.handles.findHandle(address, kind);
+        if (!handle) return;
+        impl.handles.invalidateHandle(*handle);
+    }
+#if defined(CPPFM_HAS_JNI)
+    // RuntimeCallLease acquires the process lifecycle lock.  Acquire it only
+    // after releasing objectCacheMutex: wrapperForHandle already runs under a
+    // lifecycle lease and then takes the cache mutex, so retaining this lock
+    // here would invert the order and permit a teardown/invalidation deadlock.
+    RuntimeCallLease lease(&runtime);
+    if (lease) {
+        AttachedEnv attached(impl.vm.load(std::memory_order_acquire));
+        if (attached) {
+            std::lock_guard cacheLock(impl.objectCacheMutex);
+            impl.objects.erase(attached.get(), *handle);
+        }
+    }
+#endif
+}
+
+} // namespace
 
 #if defined(CPPFM_HAS_JNI)
 namespace {
@@ -2129,21 +2183,20 @@ bool convertJvmArgument(JNIEnv* env, JvmRuntime& runtime,
 
 JvmValue readJvmResult(JNIEnv* env, jobject object,
                        const ParsedJvmType& type) {
-    if (!object) return JvmValue::nullValue();
-    jclass stringType = env->FindClass("java/lang/String");
-    if (!stringType) {
-        env->DeleteLocalRef(object);
-        return JvmValue::nullValue();
+    JniLocalRef<jobject> resultObject(env, object);
+    if (!resultObject) return JvmValue::nullValue();
+    {
+        JniLocalRef<jclass> stringType(env, env->FindClass("java/lang/String"));
+        if (!stringType) {
+            return JvmValue::nullValue();
+        }
+        if (env->IsInstanceOf(resultObject.get(), stringType.get()) == JNI_TRUE) {
+            return JvmValue::string(
+                fromJavaString(env, static_cast<jstring>(resultObject.get())));
+        }
     }
-    if (stringType && env->IsInstanceOf(object, stringType) == JNI_TRUE) {
-        const auto result = JvmValue::string(fromJavaString(env, static_cast<jstring>(object)));
-        env->DeleteLocalRef(stringType);
-        env->DeleteLocalRef(object);
-        return result;
-    }
-    if (stringType) env->DeleteLocalRef(stringType);
     if (type.descriptor == "[B") {
-        auto* bytes = static_cast<jbyteArray>(object);
+        auto* bytes = static_cast<jbyteArray>(resultObject.get());
         const jsize length = env->GetArrayLength(bytes);
         std::vector<std::uint8_t> value;
         if (length > 0) {
@@ -2151,28 +2204,23 @@ JvmValue readJvmResult(JNIEnv* env, jobject object,
             env->GetByteArrayRegion(bytes, 0, length,
                                     reinterpret_cast<jbyte*>(value.data()));
         }
-        env->DeleteLocalRef(object);
         return JvmValue::bytes(std::move(value));
     }
     // Native-backed wrappers expose nativeHandle(), allowing object results to
     // return to the C++ side without leaking a jobject across the API.
-    jclass objectClass = env->GetObjectClass(object);
+    JniLocalRef<jclass> objectClass(env, env->GetObjectClass(resultObject.get()));
     const jmethodID handleMethod = objectClass
-        ? env->GetMethodID(objectClass, "nativeHandle", "()J") : nullptr;
+        ? env->GetMethodID(objectClass.get(), "nativeHandle", "()J") : nullptr;
     if (objectClass && env->ExceptionCheck()) env->ExceptionClear();
     if (handleMethod) {
-        const auto handle = env->CallLongMethod(object, handleMethod);
+        const auto handle = env->CallLongMethod(resultObject.get(), handleMethod);
         if (!env->ExceptionCheck()) {
-            env->DeleteLocalRef(objectClass);
-            env->DeleteLocalRef(object);
             return JvmValue::handle(static_cast<std::uint64_t>(handle));
         }
         // Keep the pending exception for the dispatch boundary to report.
         // Clearing it here would silently turn a throwing nativeHandle()
         // implementation into a successful null result.
     }
-    if (objectClass) env->DeleteLocalRef(objectClass);
-    env->DeleteLocalRef(object);
     return JvmValue::nullValue();
 }
 
@@ -2255,49 +2303,11 @@ std::uint64_t JvmRuntime::worldHandle(World& world) {
 }
 
 void JvmRuntime::invalidatePlayer(Player& player) {
-    auto& impl = *impl_;
-    std::optional<std::uint64_t> handle;
-    {
-        std::lock_guard cacheLock(impl.objectCacheMutex);
-        handle = impl.handles.findHandle(&player, HandleKind::Player);
-        if (!handle) return;
-        impl.handles.invalidateHandle(*handle);
-    }
-#if defined(CPPFM_HAS_JNI)
-    // RuntimeCallLease acquires the process lifecycle lock.  Acquire it only
-    // after releasing objectCacheMutex: wrapperForHandle already runs under a
-    // lifecycle lease and then takes the cache mutex, so retaining this lock
-    // here would invert the order and permit a teardown/invalidation deadlock.
-    RuntimeCallLease lease(this);
-    if (lease) {
-        AttachedEnv attached(impl.vm.load(std::memory_order_acquire));
-        if (attached) {
-            std::lock_guard cacheLock(impl.objectCacheMutex);
-            impl.objects.erase(attached.get(), *handle);
-        }
-    }
-#endif
+    invalidateObjectHandle(*impl_, *this, &player, HandleKind::Player);
 }
 
 void JvmRuntime::invalidateEntity(MobEntity& entity) {
-    auto& impl = *impl_;
-    std::optional<std::uint64_t> handle;
-    {
-        std::lock_guard cacheLock(impl.objectCacheMutex);
-        handle = impl.handles.findHandle(&entity, HandleKind::Entity);
-        if (!handle) return;
-        impl.handles.invalidateHandle(*handle);
-    }
-#if defined(CPPFM_HAS_JNI)
-    RuntimeCallLease lease(this);
-    if (lease) {
-        AttachedEnv attached(impl.vm.load(std::memory_order_acquire));
-        if (attached) {
-            std::lock_guard cacheLock(impl.objectCacheMutex);
-            impl.objects.erase(attached.get(), *handle);
-        }
-    }
-#endif
+    invalidateObjectHandle(*impl_, *this, &entity, HandleKind::Entity);
 }
 
 void JvmRuntime::onPlayerJoin(Player& player) {
@@ -2321,6 +2331,8 @@ void JvmRuntime::onPlayerQuit(Player& player) {
         env->CallStaticVoidMethod(impl_->dispatchClass, impl_->playerQuit,
                                   static_cast<jlong>(handle));
     }, "onPlayerQuit");
+#else
+    (void)handle;
 #endif
     invalidatePlayer(player);
 }
