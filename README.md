@@ -56,7 +56,7 @@ general-purpose arbitrary-mod loader.
   without JNI remains native-only until rebuilt; arbitrary Fabric mods, the
   Mojang GameProvider, and the official client are outside the compatibility
   claim.
-- The full gameplay harness reports `807 PASS / 0 FAIL / 807`; its output still
+- The full gameplay harness reports `806 PASS / 0 FAIL / 806`; its output still
   names arbitrary Java-extension execution as a declared limitation.
 - Enchanting and crafter behavior have focused coverage, but their bounded
   implementations are not presented as complete vanilla menu parity.
@@ -77,7 +77,7 @@ The latest recorded runs include:
   reports `234 PASS / 0 FAIL`; the source-tree `test_smoke_80` reports
   `223 PASS / 0 FAIL`.
 - Focused gameplay and data checks confirmed for the current working tree:
-  gameplay `807 PASS / 0 FAIL`, seed
+  gameplay `806 PASS / 0 FAIL`, seed
   `201 PASS`, fuzz `25 PASS`, mining
   `59/59`, block hardness `1095 mismatch=0`, mob statistics `131 PASS`,
   redstone `42 PASS / 0 FAIL`, fluids `23 PASS / 0 FAIL`, and menu logic
@@ -88,8 +88,9 @@ The latest recorded runs include:
 - Java compatibility checks: the bounded historical fixture corpus is `25/25`; its
   harness also passes the auxiliary functional API fixture, the standalone Shadow
   ABI gate passes, and the offline pinned Loader/Knot probe passes.
-- The latest working-tree rerun on 2026-09-18 is non-nightly CTest `43/43 PASS`
-  in `386.22s`, with multi-client `ALL PASS` in `17.60s` and bot smoke
+- The latest integrated rerun on 2026-09-19 is non-nightly CTest `45/45 PASS`
+  in `395.76s`, with the properties matrix `33 PASS`, lifecycle matrix `8/8 PASS`,
+  multi-client `ALL PASS` in `17.60s`, and bot smoke
   `ALL PASS` in `21.09s`. The release-specific `package_jvm_smoke` gate is separate: it
   passed against the exact CPack ZIP after clean extraction, with default-on
   strict JVM startup and embedded classes/assets verified. The locally generated
@@ -113,6 +114,11 @@ The latest recorded runs include:
   60-second post-review soak had 0 disconnects and 1.0% post-fill RSS growth;
   300-, 600-, and 1800-second diagnostic runs also passed. Longer-run and real-client
   limitations remain as listed above.
+- The explicit no-JNI configure/build and the four-binary ASan/UBSan key set
+  (`core_safety`, `spec_wire`, `fuzz`, and `gameplay_full`) also pass. The safe
+  Plan54 cleanup is partial: the protected-scope ledger is reproducible, but the
+  strict 18,341-line reduction target was not reached and no tests or fixtures were
+  removed to claim it.
 - Real-client check: the mc-pilot-managed Fabric 1.21.4 client logged in offline,
   entered the world, stayed connected for more than one minute, and completed
   chat, `say`, position, block read/break/read, status, and screenshot probes.
@@ -256,6 +262,8 @@ Build first, then run focused checks as needed:
 ./build/test_spec_wire
 ./build/test_wire_full
 timeout --foreground --kill-after=5 450 python3 tests/test_server_full.py --binary ./build/cppfm
+./build/test_properties ./build/cppfm
+timeout --foreground --kill-after=5 600 python3 tests/test_lifecycle_matrix.py --binary ./build/cppfm
 ./build/test_seed_parity
 ./build/test_rng_parity
 ./build/test_fuzz

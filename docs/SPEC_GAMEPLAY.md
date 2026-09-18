@@ -2,7 +2,7 @@
 
 This document describes the current behavior surface for Minecraft Java 1.21.4,
 protocol 769, and DataVersion 4189 at runtime snapshot
-`main` HEAD `6fef7d7` plus the current compatibility review worktree (rechecked 2026-09-18). It covers
+integrated `main` HEAD `c857bfa` (rechecked 2026-09-19). It covers
 MISSING **#1–#70**, **#80–#90**, the Fabric-specific rows, and the world-generation
 G-10/G-11 evidence. Packet fields remain in
 [SPEC_WIRE.md](SPEC_WIRE.md); operational thresholds remain in
@@ -249,7 +249,7 @@ tracker records later targeted reruns):
 
 | target | result |
 |---|---|
-| `test_gameplay_full` | `807 PASS / 0 FAIL / 807` |
+| `test_gameplay_full` | `806 PASS / 0 FAIL / 806` |
 | `test_smoke_80` | `223 PASS 0 FAIL` |
 | `test_seed_parity` | `201 PASS 0 FAIL` (L1 independent hand-calc plus L2 deterministic 50-chunk comparison) |
 | `test_rng_parity` | `25 PASS 0 FAIL` (Java LocalRandom, Minecraft Xoroshiro seed expansion, primitive outputs, and splitter vectors) |

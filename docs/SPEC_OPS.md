@@ -2,7 +2,7 @@
 
 This is the operational contract for Minecraft 1.21.4 / protocol 769 / DataVersion
 4189 at the current working tree, rechecked on
-2026-09-18. It covers MISSING **#7–#10**, operational aspects of **#71–#79**,
+2026-09-19. It covers MISSING **#7–#10**, operational aspects of **#71–#79**,
 **#88–#90**, Fabric server-property/RCON rows, and assessment history IDs
 B-06/B-07/C-04/C-09/C-12/E-13/O-01–O-13/W-14/W-16.
 
@@ -207,7 +207,7 @@ uses the minimum of server and client view distance for sending.
 The following exact measurements are retained against runtime baseline
 `17ab09f5220bf99203d2aea2b2c9d65f763f433b` on 2026-09-05. They are not averaged with
 older runs. The historical `37/37` result is not the current count; the later
-`43/43` normal CTest baseline and the separate release `package_jvm_smoke` gate
+`45/45` normal CTest baseline and the separate release `package_jvm_smoke` gate
 are owned
 by [VERIFICATION.md](VERIFICATION.md) and [CURRENT_STATE.md](CURRENT_STATE.md):
 

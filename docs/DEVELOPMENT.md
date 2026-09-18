@@ -2,7 +2,7 @@
 
 This guide is for the clean-room C++ implementation of Minecraft Java 1.21.4,
 protocol 769, DataVersion 4189. The source snapshot for this canonical document is
-the current working tree (2026-09-18). Fabric Loader 0.16.9 is a
+the current working tree (2026-09-19, integrated HEAD `c857bfa`). Fabric Loader 0.16.9 is a
 version/reference boundary; the executable provides a default-on bounded embedded
 JVM, a version-locked class-file transformer, and a separate offline official
 Loader/Knot probe. The production path does not ship the Mojang GameProvider/server
@@ -72,6 +72,7 @@ Use `DECLARED-LIMITATION` when a claim has not been independently verified.
 | gameplay | `src/game/Entities`, `BehaviorTree`, `AiBrain`, `CombatManager`, `HungerManager` | entities, AI, damage, survival |
 | data/UI | `Items`, `Containers`, `MenuInteraction`, `Recipes`, `DatapackManager`, `src/brigadier` | components, menus, recipes, commands |
 | persistence | `WorldDataManager`, `Persistence`, `Anvil`, `RegionFile`, `SessionLock` | DataVersion 4189 and recovery |
+| configuration | `src/game/ServerConfig.*`, `ServerProperties.hpp`, `src/net/RconConfig.hpp`, `src/main.cpp` | defaults, typed properties/CLI precedence, diagnostics, and RCON settings |
 | JVM boundary | `src/jvm/`, `jvm/java/`, `jvm/shadow_api.json`, `jvm/vendor/` | default-on JNI/HotSpot bridge, structural transformer, and pinned official-loader probe; [PLAN51_JVM.md](PLAN51_JVM.md) |
 | distribution/runtime layout | `src/core/RuntimeLayout.*`, `tools/embed_runtime.py`, `cmake/verify_self_contained_package.cmake.in`, `tests/package_jvm_smoke.py`, `CMakeLists.txt` | embeds repository-owned assets/classes in the executable, fail-closes the one-file CPack package when its resource pack is unavailable, creates the server directory tree, and separately verifies the package JVM boundary |
 
@@ -197,6 +198,11 @@ Structures API removed, 10 files, +22/-787, source/test legacy-reference grep 0)
 `replay_vanilla.py`). The current `replay_vanilla.py`, `test_server_full.py`, and
 `run_plan43_suite.py` use PID-scoped cleanup as the follow-up ownership rule. A
 future plan must not re-propose those completed refactors as documentation work.
+Plan54 additionally records a bounded cleanup pass: item comparisons, owned flood
+process setup, login rejection paths, nested command sources, and JNI bridge
+boundary helpers were consolidated without changing fixtures or wire vectors. The
+overall mutable ledger is still `PARTIAL`, because new configuration and lifecycle
+evidence outweigh those deletions.
 
 ## 10. Module split and ownership rules
 

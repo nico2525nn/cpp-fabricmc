@@ -5,8 +5,8 @@
 > rows **#81–#90**. The restored matrix is a historical taxonomy baseline; it is not
 > a release gate and does not make the current cleanup or operations audit green.
 >
-> Current implementation/evidence baseline: `main` HEAD `6fef7d7` plus the
-> current uncommitted compatibility review worktree (rechecked 2026-09-18).
+> Current implementation/evidence baseline: integrated `main` HEAD `c857bfa`
+> (rechecked 2026-09-19; final documentation changes are the only pending snapshot).
 > Files under the ignored `build/` tree are local run outputs, not tracked/public
 > evidence or release assets unless separately published.
 
@@ -21,8 +21,8 @@
   substituted for the 90-row taxonomy count.
 - Current publication state is `BLOCKED`: the confirmed focused results are
   `fluids 23 PASS / 0 FAIL`, `redstone 42 PASS / 0 FAIL`, `menu 41 PASS / 0 FAIL`,
-  and `gameplay 807 PASS / 0 FAIL / 807`; the recorded full non-nightly CTest
-  regression is `43/43 PASS`, and the last recorded one-file package contains only `cppfm` with a
+  and `gameplay 806 PASS / 0 FAIL / 806`; the recorded full non-nightly CTest
+  regression is `45/45 PASS`, and the last recorded one-file package contains only `cppfm` with a
   clean extracted-directory `test_server_full` result of `234 PASS / 0 FAIL`.
   The separate `package_jvm_smoke` release gate also passes strict default-on
   JVM startup against the exact CPack ZIP when JNI/classes are available.
@@ -33,8 +33,9 @@
   E-14 arbitrary-JVM-mod boundary is informational and remains explicitly
   declared. See [CURRENT_STATE.md](CURRENT_STATE.md) and [VERIFICATION.md](VERIFICATION.md)
   for gate semantics.
-- The latest working-tree rerun on 2026-09-18 is full non-nightly CTest `43/43 PASS`
-  in `386.22s`, with multi-client `ALL PASS` in `17.60s` and bot smoke `ALL PASS`
+- The latest integrated rerun on 2026-09-19 is full non-nightly CTest `45/45 PASS`
+  in `395.76s`, with properties `33 PASS`, lifecycle `8/8 PASS`, multi-client `ALL PASS`
+  in `17.60s`, and bot smoke `ALL PASS`
   in `21.09s`; the separate release `package_jvm_smoke` gate passes against the
   exact CPack ZIP. Older duplicate timings are `HISTORICAL` context only.
 
@@ -204,7 +205,7 @@ numbered taxonomy status and must not be converted to PASS by documentation edit
 
 | item | status | current record / next owner |
 |---|---|---|
-| current working-tree full non-nightly CTest regression | `RECORDED PASS` | recorded `43/43` baseline passes in `386.22s` with `ctest --test-dir build -LE 'nightly|package' --output-on-failure --timeout 600`; the separate release-only package JVM gate is not folded into this aggregate |
+| current integrated full non-nightly CTest regression | `RECORDED PASS` | recorded `45/45` passes in `395.76s` with `ctest --test-dir build -LE 'nightly|package' --output-on-failure --timeout 600`; the separate release-only package JVM gate is not folded into this aggregate |
 | current working-tree final one-file package verification | `RECORDED PASS` | ignored local Linux ZIP `build/packages/cppfabricmc-1.21.4-Linux-x86_64.zip` contains only `cppfm`; the latest clean extraction and `test_server_full` pass `234/234`, and `package_jvm_smoke` passes strict default-on JVM startup when JNI/classes are available; it is not a tracked/public release artifact |
 | `tools/soak_bot.py --duration 300` | `RESOLVED` | three integrated main runs passed; each had KeepAlive `30`, chunks `182`, time updates `300`, all error counters `0`, and cleanup PASS; plan49 §1 |
 | accepted 2-hour/24-hour run | `INTERRUPTED / ABSENT` | the 7200-second synthetic attempt was interrupted at recorded `t=3361s`; post-fill RSS was `160388→191612kB` (`+19.5%`), above the `15%` gate; no accepted 2-hour/24-hour artifact exists; plan51 keeps this boundary explicit |
@@ -240,7 +241,7 @@ status. Current named wire counts are `test_spec_wire` `417 PASS 0 FAIL`,
 `test_wire_full` `399 PASS 0 FAIL`, and `test_wire_b6` `136 PASS 0 FAIL`;
 the old handover value `328` is stale. `test_native` remains `ALL PASS` without an
 invented aggregate count. The current focused record includes `test_gameplay_full`
-`807 PASS / 0 FAIL / 807`, `test_redstone_engine_full` `42 PASS / 0 FAIL`,
+`806 PASS / 0 FAIL / 806`, `test_redstone_engine_full` `42 PASS / 0 FAIL`,
 `test_fluids` `23 PASS / 0 FAIL`, and `test_menu_logic` `41 PASS / 0 FAIL`.
 The record also includes `test_smoke_80` `223 PASS 0 FAIL`, a passing
 `tests/soak_test.py --duration 300` run, and three passing `tools/soak_bot.py

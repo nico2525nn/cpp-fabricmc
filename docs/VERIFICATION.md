@@ -2,8 +2,9 @@
 
 This document is the verification contract for the canonical snapshot of Minecraft
 Java Edition **1.21.4**, protocol **769**, and DataVersion **4189**. The source snapshot
-is `main` HEAD `6fef7d7` plus the current review worktree, rechecked on
-**2026-09-18**. No new commit is implied by this working-tree record.
+is integrated `main` HEAD `c857bfa`, rechecked on **2026-09-19**. The final
+documentation synchronization is the current working-tree record; no source
+commit is implied by this sentence.
 Paths under the ignored `build/` tree are local outputs from named runs, not
 tracked/public evidence or release assets unless separately published; the
 tracked source, commands, and separately published attachments are the
@@ -250,7 +251,7 @@ operational contract is in
 Older 2026-09-04 and 2026-09-07/08 timings retained elsewhere in this document
 are explicitly `HISTORICAL` context. They must not override the canonical
 current-working-tree values below. The CTest, multi-client, and bot values were
-refreshed on 2026-09-18; package values were last refreshed on 2026-09-13; stress and soak entries retain their own
+refreshed on 2026-09-19; stress and soak entries retain their own
 recorded run dates. The final CTest and package results are recorded with their
 exact target and local-output identity; the command and options identify each
 sub-run.
@@ -263,10 +264,10 @@ sub-run.
 | one-file package | install tree contains only the server executable and its embedded native resources | `PASS`: CPack produced the ignored local `build/packages/cppfabricmc-1.21.4-Linux-x86_64.zip`, containing only `cppfm`; archive size `54377042` bytes, SHA-256 `07cbccb4552b50003eec71ef827c22435a6b6442d1039458df598e1de0a0d588`; clean extracted-directory harness `234 PASS / 0 FAIL`; the CPack preflight rejects missing embedded resources; not a tracked/public release asset |
 | package JVM smoke | exact CPack ZIP starts the embedded Java boundary by default | `PASS`: `package_jvm_smoke` extracts only the packaged executable, supplies no classes/assets override, requires strict JVM startup, verifies embedded classes and registry assets, and reaps the owned process |
 | view distance 32 | 4,225-chunk dry strict benchmark | `PASS` in `1.74s`: p50 0.108 ms, p95 2.333 ms, peak RSS ~95 MB, hit rate 84.6% |
-| 120 clients | stress script completes with owned process cleanup | `CURRENT 2026-09-18`: `PASS` in `68.0s`, 120/120 joined; prior `68.1s` rerun is `HISTORICAL` |
-| multi-client integration | cross-client visibility and state | `CURRENT 2026-09-18`: `ALL PASS` in `17.60s`; prior `17.63s`, `17.84s`, and `20.28s` reruns are `HISTORICAL` |
-| bot smoke | short bot lifecycle | `CURRENT 2026-09-18`: `ALL PASS` in `21.09s`; prior `20.94s`, `20.87s`, and `23.59s` reruns are `HISTORICAL` |
-| full non-nightly CTest regression | registered native, gameplay, operations, JVM, ABI, linkage-contract, quality, and integration tests | `PASS`: `43/43` registered tests passed in `386.22s` with `-LE 'nightly|package'`; the separate release-only `package_jvm_smoke` gate is recorded above and is not folded into this aggregate |
+| 120 clients | stress script completes with owned process cleanup | `CURRENT 2026-09-19`: `PASS` in `68.0s`, 120/120 joined; prior `68.1s` rerun is `HISTORICAL` |
+| multi-client integration | cross-client visibility and state | `CURRENT 2026-09-19`: `ALL PASS` in `17.60s`; prior `17.63s`, `17.84s`, and `20.28s` reruns are `HISTORICAL` |
+| bot smoke | short bot lifecycle | `CURRENT 2026-09-19`: `ALL PASS` in `21.09s`; prior `20.94s`, `20.87s`, and `23.59s` reruns are `HISTORICAL` |
+| full non-nightly CTest regression | registered native, gameplay, configuration, lifecycle, operations, JVM, ABI, linkage-contract, quality, and integration tests | `PASS`: `45/45` registered tests passed in `395.76s` with `-LE 'nightly|package'`; the separate release-only `package_jvm_smoke` gate is recorded above and is not folded into this aggregate |
 | entity/redstone load | P95 MSPT/TPS and bounded RSS | run-specific; no unlabelled claim |
 | `tests/soak_test.py --duration 60` | short post-review concurrency/cleanup smoke | `PASS`: 30 keepalives, 0 disconnects, actions 590, post-fill RSS growth 1.0%; not a 2h/24h result |
 | `tests/soak_test.py --duration 300` | short synthetic soak | `PASS`: 150 keepalives, 0 disconnects, actions 2932, post-fill RSS growth 7.6% |
@@ -277,7 +278,7 @@ sub-run.
 | accepted 2 h/24 h artifact | long-run completion and retained integrity log | none |
 | real-client/GUI | manual Fabric client capture with client metadata | `PASS / LOCAL-ONLY`: mc-pilot-managed 1.21.4 client logged in offline, entered play, stayed connected for more than one minute, and completed chat/command/block/status/screenshot probes; PrismLauncher 11.1.0 also launched Fabric 1.21.4 through its CLI with an existing authenticated account and joined cppfm; screenshot and logs were temporary local evidence, not a retained release artifact; see [MC_PILOT_REAL_TEST.md](MC_PILOT_REAL_TEST.md) |
 | ASan/UBSan key regression set | core, wire, fuzz, and gameplay binaries from repository root | `4/4 PASS`; no sanitizer report |
-| static quality audit | C++/Python test and process-harness review | `PASS`: 26 C++ test files, 153 production files, 42 Python files |
+| static quality audit | C++/Python test and process-harness review | `PASS`: 28 C++ test files, 156 production files, 43 Python files |
 | `mod_linkage` / `real_mod_harness` / `real_mod_candidates_harness` | class-file linkage, candidate manifest, and fail-closed runtime-diagnostic contracts | `PASS`; synthetic nested-JAR/mapping cases, the locked 12-entry manifest, offline missing-cache `SKIP`, and known recoverable log-noise handling pass |
 
 The former `soak_bot` blocker is resolved by three fresh integrated runs. The attempted
@@ -304,14 +305,14 @@ diagnostic: its raw Mixin gaps do not override the zero-diagnostic runtime corpu
   block the child process or letting separate-stream concatenation create false
   ordering failures.
 - The last completed live-server runs left no `cppfm` process behind. The latest
-  full non-package CTest baseline passed `43/43` in `386.22s`. The latest working-tree
-  measurement is `95,464` lines across `292` files in `src/`, `tests/`, and
-  `tools/` (C++/header/Python/Java/CMake source extensions), versus `80,967` across
-  `272` tracked files at the same `HEAD`; the difference is a net increase of
-  `14,497` lines and includes intentionally untracked review files and newly added
-  implementation/tests. The earlier `78,735`/`80,223` snapshot was stale. The
-  10,000-line reduction remains a later cleanup target and was not claimed by
-  deleting feature code or evidence.
+  full non-package CTest baseline passed `45/45` in `395.76s`. The primary Plan54
+  source scope (`src/`, `tests/`, `tools/`; C++/header/Python/Java suffixes) is
+  `98,587` lines across `298` files, versus baseline `65a7c69` at `96,654` lines
+  across `293` files. The reviewed protected manifest is `80` files / `8,939`
+  lines with zero hash drift; mutable lines are `87,715 → 89,648`, a net
+  **increase of 1,933 (+2.20%)**, not a reduction. The strict 18,341-line target
+  is therefore `PARTIAL`; no fixture, assertion, generated input, or evidence was
+  removed to improve the number.
 - A backup/check-world operation is offline and must not copy a world during an active
   save.
 
@@ -393,7 +394,7 @@ publication.
 
 | target | recorded result | interpretation |
 |---|---|---|
-| `test_gameplay_full` | `807 PASS / 0 FAIL / 807` | known JVM boundary is informational and remains declared |
+| `test_gameplay_full` | `806 PASS / 0 FAIL / 806` | known JVM boundary is informational and remains declared |
 | `test_smoke_80` | `223 PASS 0 FAIL` | base taxonomy plus extension checks |
 | `test_seed_parity` | `201 PASS 0 FAIL` | L1/L2 deterministic evidence |
 | `test_rng_parity` | `25 PASS 0 FAIL` | Java LocalRandom, Minecraft Xoroshiro seed expansion, primitive outputs, and long/coordinate/string splitter vectors; full worldgen L3 remains declared |
@@ -449,18 +450,20 @@ The following are required operational checks for a release candidate. The exact
 final-gates results below are tied to the named baseline/run; a result without its
 metadata and cleanup artifact is not a new claim. The canonical current values are
 the named values in this table and §12; CTest, package, multi-client, and bot
-results were refreshed on 2026-09-13, while stress and soak entries retain their
+results were refreshed on 2026-09-19, while stress and soak entries retain their
 recorded dates. Older duplicate timings are labeled `HISTORICAL` and never
 override them.
 
 | target/procedure | purpose | status at this document snapshot |
 |---|---|---|
 | `test_flood_net` / `test_recovery` / `test_rcon_multi` | frame, recovery, and RCON focused targets | `57/0`, `54/0`, and `6/0` respectively |
+| `properties` | server.properties/CLI syntax, precedence, typed fallback/clamping, and side-effect checks | `33 PASS / 0 FAIL` |
+| `lifecycle_matrix` | readiness, signal cleanup, restart/lock isolation, malformed input, port reuse, and owned-process cleanup | `8/8 PASS` |
 | `check_world` | offline NBT/world integrity | run-specific; no standalone run recorded here |
 | view32 dry benchmark | 4,225 chunk load contract | `PASS` in 1.74s: p50 0.108 ms, p95 2.333 ms, peak RSS ~95 MB, hit rate 84.6% |
-| stress 120 | concurrent connection load | `CURRENT 2026-09-18`: `PASS` in `68.0s`, 120/120 joined; prior `68.1s` rerun is `HISTORICAL` |
-| multi-client integration | cross-client behavior | `CURRENT 2026-09-18`: `ALL PASS` in `17.60s`; prior `17.63s`, `17.84s`, and `20.28s` reruns are `HISTORICAL` |
-| bot smoke | short bot lifecycle | `CURRENT 2026-09-18`: `ALL PASS` in `21.09s`; prior `20.94s`, `20.87s`, and `23.59s` reruns are `HISTORICAL` |
+| stress 120 | concurrent connection load | `CURRENT 2026-09-19`: `PASS` in `68.0s`, 120/120 joined; prior `68.1s` rerun is `HISTORICAL` |
+| multi-client integration | cross-client behavior | `CURRENT 2026-09-19`: `ALL PASS` in `17.60s`; prior `17.63s`, `17.84s`, and `20.28s` reruns are `HISTORICAL` |
+| bot smoke | short bot lifecycle | `CURRENT 2026-09-19`: `ALL PASS` in `21.09s`; prior `20.94s`, `20.87s`, and `23.59s` reruns are `HISTORICAL` |
 | `tests/soak_test.py --duration 300` | short synthetic stability | `PASS`: 150 keepalives, 0 disconnects, actions 2932, post-fill RSS growth 7.6% |
 | `tests/soak_test.py --duration 600 --movement-range 3000` | wide synthetic stability | `PASS`: 300 keepalives, 0 disconnects, actions 5707, post-fill RSS growth 6.6% |
 | `tools/soak_bot.py --duration 300` | extended bot stability | `3/3 PASS`: each KeepAlive 30, chunks 182, time updates 300, all error counters 0, cleanup PASS |
@@ -538,6 +541,8 @@ timeout --foreground --kill-after=5 60 ./build/test_redstone_engine_full
 timeout --foreground --kill-after=5 60 ./build/test_fluids
 timeout --foreground --kill-after=5 60 ./build/test_menu_logic
 timeout --foreground --kill-after=5 30 ./build/test_recipes_mirror
+timeout --foreground --kill-after=5 60 ./build/test_properties ./build/cppfm
+timeout --foreground --kill-after=5 600 python3 tests/test_lifecycle_matrix.py --binary ./build/cppfm
 timeout --foreground --kill-after=5 300 ./build/test_plan43 ./build/cppfm
 timeout --foreground --kill-after=5 450 ./build/test_smoke_80 ./build/cppfm
 timeout --foreground --kill-after=5 60 python3 tools/bench_chunk_gen.py --view-distance 32 --chunks 4225 --dry --strict

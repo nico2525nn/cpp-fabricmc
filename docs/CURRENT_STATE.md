@@ -12,22 +12,22 @@
 
 | field | value |
 |---|---|
-| `updated` | `2026-09-18` |
-| `implementation_baseline` | `main` HEAD `6fef7d7` plus the current uncommitted compatibility review worktree |
-| `implementation_baseline_short` | `6fef7d7` + compatibility review worktree |
-| `documentation_commit` | working tree (not committed; synchronized with focused results and final CTest/package gates) |
-| `main_integration_merge` | `6fef7d7` (current HEAD; prior plan51 integration remains historical) |
-| `plan` | `plan51` history + active `plan52` compatibility goal |
-| `phase` | `plan52-native-behavior-and-mod-recheck` |
-| `phase_status` | `FINAL_GATES_CONFIRMED_WITH_DECLARED_BOUNDARIES` |
+| `updated` | `2026-09-19` |
+| `implementation_baseline` | integrated `main` HEAD `c857bfa` from clean checkpoint `65a7c69` |
+| `implementation_baseline_short` | `c857bfa` (`65a7c69` + plan53/54 merges and fixes) |
+| `documentation_commit` | working tree (this final evidence synchronization is not yet committed) |
+| `main_integration_merge` | `c857bfa` (all validated plan53/54 workstreams integrated) |
+| `plan` | plan53 settings/lifecycle matrix + plan54 adversarial cleanup |
+| `phase` | `plan53-plan54-final-gates` |
+| `phase_status` | `FINAL_GATES_CONFIRMED_REFACTOR_PARTIAL_WITH_DECLARED_BOUNDARIES` |
 | `publication_status` | `BLOCKED` |
-| `runtime_reference_snapshot` | `main` HEAD `6fef7d7` + current working tree |
+| `runtime_reference_snapshot` | `main` HEAD `c857bfa` + final documentation working tree |
 | `canonical_workflow` | `docs/DEVELOPMENT.md#research-workflow` |
 | `research_entrypoint` | `docs/research-prompt.md` is a legacy redirect only |
 | `research_viewpoints` | `16` current viewpoints; old `13` wording is historical |
 | `taxonomy_snapshot` | MISSING `#1–#90`; historical matrix counts `DONE=90, PARTIAL=0, TODO=0` |
 | `strict_assessment_1` | `78 gaps`; `HISTORICAL` archive label, not a current aggregate |
-| `next_plan` | `plan52` broader compatibility goal is authorized and active after the distribution regression is closed |
+| `next_plan` | no new implementation plan authorized by this cleanup; future work must preserve the partial ledger and declared compatibility boundaries |
 
 The previous baseline was the plan50 runtime follow-up after the plan49 implementation integration and cleanup commit
 `db12df96093a0869e958f62b11f9a9cd68ba3ef1` and safety commit
@@ -86,7 +86,7 @@ parity claims.
 ## 4. Exact final-gates evidence
 
 These records combine prior named evidence with the final results confirmed for
-the current working tree on 2026-09-18. Results are identified by their target
+the integrated working tree on 2026-09-19. Results are identified by their target
 names; package evidence is explicitly identified as a clean extracted-directory
 run rather than being conflated with the source-tree harness. Any `build/` path
 below is an ignored local output from that run, not a tracked/public evidence or
@@ -104,7 +104,7 @@ release artifact unless separately published:
 | `test_wire_full` | `399 PASS 0 FAIL` | `PASS` |
 | `test_wire_b6` | `136 PASS 0 FAIL` | `PASS` |
 | `test_fuzz` | `25 PASS 0 FAIL` | `PASS` |
-| `test_gameplay_full` | `807 PASS 0 FAIL 807` | `PASS`; arbitrary JVM-mod boundary remains informational |
+| `test_gameplay_full` | `806 PASS 0 FAIL 806` | `PASS`; arbitrary JVM-mod boundary remains informational |
 | `test_seed_parity` | `201 PASS 0 FAIL` | L1/L2 deterministic evidence |
 | `test_rng_parity` | `25 PASS 0 FAIL` | Java LocalRandom, Minecraft Xoroshiro seed expansion, primitive outputs, and long/coordinate/string splitter vectors; full worldgen call-order/NBT parity remains open |
 | `test_mining_full` | `59/59` | `PASS`; plan49 authoritative session/tick mining |
@@ -119,9 +119,11 @@ release artifact unless separately published:
 | `test_plan43` | `82 PASS 0 FAIL` in `28.16s` after the latest clean rebuild | `PASS` |
 | `test_smoke_80` | `223 PASS 0 FAIL` | `PASS` |
 | `test_server_full` | `234 PASS 0 FAIL` | `PASS` from the clean extracted Linux package; source-tree and package evidence are kept distinct |
+| `properties` | `33 PASS 0 FAIL` | `PASS`; table-driven properties/CLI matrix and informational-flag side-effect checks |
+| `lifecycle_matrix` | `8/8 PASS` | `PASS`; fail-closed readiness, signal, restart, lock, malformed-input, port-reuse, and process-cleanup matrix |
 | multi-client | `ALL PASS` in `17.60s` | `PASS` |
 | bot smoke | `ALL PASS` in `21.09s` | `PASS` |
-| full non-nightly CTest regression | `43/43 PASS` in `386.22s` | latest rerun using `ctest --test-dir build -LE 'nightly|package' --output-on-failure --timeout 600`; includes the `tautology_lint` and `mcproto_framing` quality/framing gates; the separate release-only `package_jvm_smoke` gate is not folded into this aggregate |
+| full non-nightly CTest regression | `45/45 PASS` in `395.76s` | latest rerun using `ctest --test-dir build -LE 'nightly|package' --output-on-failure --timeout 600`; includes properties, lifecycle, `tautology_lint`, and `mcproto_framing`; the separate release-only `package_jvm_smoke` gate is not folded into this aggregate |
 | view32 dry benchmark | `PASS` for 4,225 chunks; p50 `0.108ms`, p95 `2.333ms`, peak RSS ~`95MB`, hit rate `84.6%` | synthetic dry result |
 | 120-client stress | `120/120 joined PASS` in `68.0s` | `PASS` |
 | `tests/soak_test.py --duration 60` | `PASS`; 30 keepalives, 0 disconnects, 590 actions, post-fill RSS growth `1.0%` | latest short post-review concurrency/cleanup smoke; not 2h/24h |
@@ -142,8 +144,9 @@ release artifact unless separately published:
 | `jvm_manifest` | `PASS` | declarative protocol-769 ABI manifest reproducibly generated; 94 methods (47 native + 47 wrapper), 9 structured methods, 10 injection points, 14 transformer names |
 | `jvm_contract_audit` | `PASS` | every declared ABI method has exactly one native or wrapper backend classification |
 | `shadow_abi` | `PASS` | standalone dependency-complete Shadow ABI compile/reflection gate; 906 source classes, 763 class files, and 8,297 declared/audited members |
+| explicit no-JNI configure/build | `PASS` | CMake fallback disabled with `CPPFM_ENABLE_JNI_FALLBACK=OFF`; `cppfm` builds cleanly under `CPPFM_HAS_JNI=0` and remains native-only |
 | ASan/UBSan key regression set | `4/4 PASS` from the repository root; no sanitizer report | `test_core_safety`, `test_spec_wire`, `test_fuzz`, and `test_gameplay_full`; direct invocation keeps relative assets visible |
-| static quality audit | `PASS` — 26 C++ test files, 153 production files, 42 Python files | rejects unconditional assertions, liveness-only fallbacks, bare Python exceptions, and unowned `Popen` launches |
+| static quality audit | `PASS` — 28 C++ test files, 156 production files, 43 Python files | rejects unconditional assertions, liveness-only fallbacks, bare Python exceptions, and unowned `Popen` launches |
 | official Loader/Knot probe | `PASS / DECLARED-LIMITATION` | offline pinned Loader 0.16.9/Knot/Mixin probe records all seven expected markers; local ignored process output is `build/fabric-runtime/probe-evidence-after-fabric-docs-20260908-v1.json`; it is not a tracked/public artifact, and no Mojang server/provider is shipped |
 | embedded official-provider probe | `PASS / DECLARED-LIMITATION` | C++-owned HotSpot starts the pinned official Loader/Knot target and records the handoff/mixin markers; local ignored output is `build/fabric-runtime/embedded-evidence-after-fabric-docs-20260908-v1.json`, not a tracked/public artifact |
 | `mod_linkage` / `real_mod_harness` / `real_mod_candidates_harness` | `PASS` | synthetic nested-JAR/Tiny-mapping linkage cases, fail-closed runtime-diagnostic classifier, locked candidate manifest, and offline missing-cache no-false-PASS contract pass |
@@ -211,17 +214,18 @@ These checks validate publication hygiene only; they do not turn E-14, missing L
 proof, missing accepted long-run artifact, or the lack of a retained client artifact
 into a universal compatibility claim.
 
-The latest working-tree measurement counts `95,464` lines across `292` files in
-`src/`, `tests/`, and `tools/` (C++/header/Python/Java/CMake source extensions),
-versus `80,967` lines across `272` tracked files in the same `HEAD` tree. This is
-a net increase of `14,497` lines because the
-current compatibility pass includes new executable feature code, concurrency
-guards, packaging/runtime support, tests, fixtures, and review tooling; the
-measurement includes intentionally untracked review files. The earlier
-`78,735`/`80,223` snapshot was stale and must not be used as evidence of a
-10,000-line reduction. The requested reduction remains a later cleanup target,
-not a completed result: deleting feature code or evidence without a
-specification-level replacement would lower quality rather than improve it.
+The Plan54 primary measurement counts `98,587` lines across `298` files in
+`src/`, `tests/`, and `tools/` (C++/header/Python/Java suffixes), versus the clean
+`65a7c69` baseline at `96,654` lines across `293` files. The protected manifest is
+`80` files / `8,939` lines with zero hash drift. Mutable lines are
+`87,715 → 89,648`, a net **increase of 1,933 (+2.20%)**. The strict 18,341-line
+reduction target is therefore `PARTIAL`; deleting feature code, fixtures,
+assertions, or evidence would not be an acceptable substitute for a safe refactor.
+
+The accepted cleanup ledger is: items `-5`, native process harness `-81`, session
+login paths `-13`, command policy `-3`, and JVM bridge `+12`; configuration and
+properties evidence added `+671`, and the lifecycle matrix added `+1,352` within
+the primary scope. The net matches the reproducible path-by-path measurement.
 
 The timeout investigation found two independent causes of misleading outer
 `timeout` failures: parent-only termination left descendants holding pipes,
@@ -231,7 +235,7 @@ server status, terminate and reap the owned group with bounded escalation,
 and report cleanup failure explicitly. The disconnected-session path also
 marks the player inactive before slow persistence/hooks. The last completed
 live-server runs left no `cppfm` process behind. The latest full CTest baseline
-passed `43/43` in `386.22s`; the release-only package JVM gate is tracked
+passed `45/45` in `395.76s`; the release-only package JVM gate is tracked
 separately. A fresh 120-client
 stress run joined `120/120` clients in `68.0s`, and the latest 60-second soak
 completed with zero disconnects and `1.0%` post-fill RSS growth.

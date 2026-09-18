@@ -23,26 +23,22 @@
 | protocol | 769 |
 | DataVersion | 4189 |
 | branch | main |
-| HEAD | 6fef7d75a88acddb735712c7349ae72fb37d1130 (6fef7d7) |
-| origin/main | 最終確認時点でHEADと同じ。Push前に必ず再確認する |
-| HEADのコミット | cleanup: consolidate compatibility runtime and test harnesses |
-| スナップショット | 2026-09-18 JST |
+| HEAD | c857bfa (integrated plan53/plan54 final-gates source) |
+| origin/main | local `main` is ahead by the integrated local commits; no push requested. Recheck before publishing |
+| HEADのコミット | merge wt54/jvm: plan54 bridge boundary |
+| スナップショット | 2026-09-19 JST |
 | JDK | OpenJDK 21をインストール済み。JNI/JVMビルド検出済み |
 | publication status | BLOCKED — 下記の明示された境界が残る |
 
 ### 重要なGit状態
 
-このスナップショットでは、作業ツリーに82個の変更済みtracked fileと2個の意図した
-untracked fileがある。既存のユーザー変更と今回の改善が混在しているため、reset --hard、
-checkout --、広範囲の削除を絶対に行わないこと。
-
-意図したuntracked fileは次の2つだけ。
-
-- docs/MC_PILOT_REAL_TEST.md
-- tests/test_rng_parity.cpp
+このスナップショットは統合済みmainを基準にしている。最終文書同期をコミットするまでは
+docs/README.md、CURRENT_STATE.md、VERIFICATION.mdなどに意図した変更が残るが、既存の
+ユーザー変更を捨てるためにreset --hard、checkout --、広範囲の削除を行ってはいけない。
 
 余計なjar、zip、class、logはGit作業ツリーに残していない。build/はignoreされた
-ローカル生成物であり、公開成果物ではない。コミット・Pushはこのスナップショットでは未実施。
+ローカル生成物であり、公開成果物ではない。ドキュメント同期後にstatusとdiff-checkを
+再確認してから、必要なら別コミットとして扱う。
 
 ## 2. ユーザーが決めた方針・前提
 
@@ -225,15 +221,16 @@ test_rng_parityは25 PASS / 0 FAIL。
 |---|---:|
 | 通常build | 成功。途中で600秒枠が100/111付近で期限切れになったが、900秒枠で残り11タスクを再開して成功 |
 | strict quality build | 266/266 tasks成功、上記warning set、Werror構成 |
-| 全non-nightly CTest | 43/43 PASS、386.22秒 |
+| 全non-nightly CTest | 45/45 PASS、395.76秒 |
 | smoke80 | PASS、175.02秒。全体の一テストであり特別扱いしない |
 | test_rng_parity | 25 PASS / 0 FAIL |
 | quality/tautology/mcproto | 4/4 PASS |
 | strict selected CTest | native/spec_wire/fuzz/core_safety/rng_parity 5/5 PASS |
-| ASan/UBSan selected CTest | native/jvm_handles/jvm_native_bridge/fuzz/core_safety/rng_parity 6/6 PASS、reportなし |
+| ASan/UBSan key regression set | core_safety/spec_wire/fuzz/gameplay_full 4/4 PASS、reportなし |
 | test_spec_wire | 417 PASS / 0 FAIL |
 | test_wire_full | 399 PASS / 0 FAIL |
-| test_gameplay_full | 807 PASS / 0 FAIL |
+| test_gameplay_full | 806 PASS / 0 FAIL |
+| properties / lifecycle_matrix | 33 PASS / 0 FAIL; 8/8 PASS |
 | test_seed_parity | 201 PASS |
 | test_mining_full | 59/59 PASS |
 | block hardness | 1095 mismatch=0 |
@@ -260,6 +257,8 @@ test_rng_parityは25 PASS / 0 FAIL。
   - contents: cppfm executable 1個
   - clean extractionのtest_server_full: 234 PASS / 0 FAIL
   - package_jvm_smoke: strict default-on JVM startup、1,457 embedded class files、registry assets、owned shutdown PASS
+- explicit no-JNI configure/build: `CPPFM_ENABLE_JNI_FALLBACK=OFF` and
+  Java/JNI package discovery disabled; native-only `cppfm` build PASS.
 
 ### 6.3 Client / load / soak
 
@@ -276,6 +275,21 @@ test_rng_parityは25 PASS / 0 FAIL。
 - soak 1800秒: 900 keepalives、0 disconnect、17493 actions、RSS +12.5%。
 - 7200秒試行: t=3361sで中断、RSS 160388→191612kB、+19.5%、15% gate超過。正式PASSではない。
 - 2時間/24時間のaccepted artifactは存在しない。
+
+### 6.4 Plan54 adversarial cleanup ledger
+
+- Baseline: clean checkpoint `65a7c69`; primary scope is `src/`, `tests/`, and
+  `tools/` with C++/header/Python/Java suffixes.
+- `293 files / 96,654 lines` → `298 files / 98,587 lines`.
+- Protected manifest: `80 files / 8,939 lines`; all protected hashes are unchanged.
+- Mutable scope: `87,715` → `89,648`, net **+1,933 (+2.20%)**. The strict
+  `18,341` reduction gate is `PARTIAL`, not a pass.
+- Accepted net reductions: items `-5`, native process harness `-81`, session
+  login paths `-13`, commands `-3`; JVM bridge `+12`. Configuration/properties
+  evidence added `+671`, lifecycle evidence added `+1,352`.
+- No fixture, generated input, expected byte, assertion, or negative case was
+  removed or weakened. Python consolidation was rejected because its helper made
+  the net scope larger.
 
 ## 7. 残課題・互換性の境界
 
