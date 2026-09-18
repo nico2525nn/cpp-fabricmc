@@ -459,7 +459,7 @@ static void liveTests(const char* bin) {
         CHECK(statusAlive(srv.port), "server alive after A6");
     }
 
-    srv.stop();
+    CHECK(srv.stop(), "owned server process and temporary world cleaned up");
 }
 
 int main(int argc, char** argv) {

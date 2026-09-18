@@ -19,7 +19,7 @@ namespace cppfm {
 // coordinates or rotation afterwards without changing selector ownership.
 inline brigadier::CommandSource makeNestedCommandSource(
     GameServer& server, Player* player,
-    const brigadier::CommandSource& parent) {
+    const brigadier::CommandSource& parent, bool copyRotation = true) {
     brigadier::CommandSource source;
     if (player) {
         source.player = player;
@@ -28,8 +28,10 @@ inline brigadier::CommandSource makeNestedCommandSource(
         source.srcX = player->x;
         source.srcY = player->y;
         source.srcZ = player->z;
-        source.srcYaw = player->yaw;
-        source.srcPitch = player->pitch;
+        if (copyRotation) {
+            source.srcYaw = player->yaw;
+            source.srcPitch = player->pitch;
+        }
     }
     source.dimensionOverride = parent.dimensionOverride;
     server.bindCommandSelector(source);

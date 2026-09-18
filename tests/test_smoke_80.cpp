@@ -1293,7 +1293,7 @@ int main(int argc, char** argv){
     testPlan39Soak(srv);
     testPlan40LootAdvPredicateEnchant(srv);
     testPlan41HorseVehicle(srv);
-    srv.stop();
+    CHECK(srv.stop(), "owned server process and temporary world cleaned up");
     std::printf("\n=== SMOKE 80: %d PASS %d FAIL ===\n", g_pass, g_fail);
     return g_fail?1:0;
 }

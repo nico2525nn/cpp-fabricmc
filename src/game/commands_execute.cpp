@@ -623,7 +623,7 @@ void GameServer::initExecuteStoreCommands(const brigadier::NodePtr& exec) {
                         const auto sel=c.arg("storeTargets").asSelector();
                         std::string obj=c.arg("storeObjective").asStr();
                         std::string inner=commandText(c, "storeCommand");
-                        auto srcCtx = makeNestedCommandSource(*this, src, c.source);
+                        auto srcCtx = makeNestedCommandSource(*this, src, c.source, false);
                         std::string targetStr;
                         if(!sel.playerNames.empty()) targetStr=sel.playerNames[0]; else targetStr="@a";
                         return functionEvaluator_.executeWithStore(capturedType, targetStr, obj, inner, srcCtx);

@@ -47,7 +47,12 @@ public:
     std::uint16_t port = 0;
     std::string worldDir;
 
-    ~ServerProcess() { stop(); }
+    ~ServerProcess() {
+        // A destructor cannot return a gate result.  Do not silently turn an
+        // unreaped child or failed temporary-world cleanup into a passing
+        // test when an early return skipped the explicit CHECK(stop()).
+        if (!stop()) std::abort();
+    }
 
     bool start(const char* serverPath,
                const ServerProcessOptions& options = ServerProcessOptions{}) {
@@ -108,7 +113,7 @@ public:
             const pid_t result = waitpid(pid, &childStatus, WNOHANG);
             if (result == pid || (result < 0 && errno == ECHILD)) {
                 pid = -1;
-                cleanupWorld();
+                (void)cleanupWorld();
                 return false;
             }
             if (result < 0 && errno != EINTR) {
@@ -125,12 +130,12 @@ public:
         return false;
     }
 
-    void stop() noexcept {
+    bool stop() noexcept {
         const pid_t child = pid;
-        pid = -1;
         bool reaped = child <= 0;
+        bool signalOk = true;
         if (child > 0) {
-            (void)kill(child, SIGTERM);
+            if (::kill(child, SIGTERM) < 0 && errno != ESRCH) signalOk = false;
             int status = 0;
             for (int i = 0; i < 600; ++i) {
                 const pid_t result = waitpid(child, &status, WNOHANG);
@@ -143,25 +148,36 @@ public:
                         --i;
                         continue;
                     }
-                    reaped = errno == ECHILD;
+                    reaped = false;
+                    signalOk = false;
                     break;
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
             if (!reaped) {
-                (void)kill(child, SIGKILL);
+                if (::kill(child, SIGKILL) < 0 && errno != ESRCH) signalOk = false;
                 for (;;) {
                     const pid_t result = waitpid(child, &status, 0);
-                    if (result == child || (result < 0 && errno == ECHILD)) {
+                    if (result == child) {
                         reaped = true;
                         break;
                     }
                     if (result < 0 && errno == EINTR) continue;
+                    signalOk = false;
                     break;
                 }
             }
         }
-        if (reaped) cleanupWorld();
+        if (reaped) pid = -1;
+        const bool worldRemoved = reaped && cleanupWorld();
+        if (!reaped || !signalOk || !worldRemoved) {
+            std::fprintf(stderr,
+                         "[ServerProcess] cleanup failed (pid=%ld reaped=%s signal=%s world=%s)\n",
+                         static_cast<long>(child), reaped ? "yes" : "no",
+                         signalOk ? "yes" : "no", worldRemoved ? "yes" : "no");
+            return false;
+        }
+        return true;
     }
 
 private:
@@ -173,10 +189,16 @@ private:
         return !ec;
     }
 
-    void cleanupWorld() noexcept {
-        if (worldDir.empty()) return;
+    bool cleanupWorld() noexcept {
+        if (worldDir.empty()) return true;
         std::error_code ec;
         std::filesystem::remove_all(worldDir, ec);
+        if (ec) {
+            std::fprintf(stderr, "[ServerProcess] world cleanup failed for %s: %s\n",
+                         worldDir.c_str(), ec.message().c_str());
+            return false;
+        }
+        return true;
     }
 };
 

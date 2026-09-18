@@ -66,7 +66,7 @@ void GameServer::initDataFunctionCommands() {
                 std::string nbtStr = c.arg("arguments").asStr();
                 argsMap = parseFunctionArgsNbt(nbtStr);
             }
-            auto fsrc = makeNestedCommandSource(*this, src, c.source);
+            auto fsrc = makeNestedCommandSource(*this, src, c.source, false);
             int executed = 0;
             if (argsMap.empty()) executed = functionEvaluator_.executeFunction(norm, fsrc);
             else executed = functionEvaluator_.executeFunction(norm, fsrc, argsMap);

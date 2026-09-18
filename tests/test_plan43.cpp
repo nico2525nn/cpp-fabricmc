@@ -368,7 +368,7 @@ int main(int argc, char** argv) {
     tUseEntity(srv);
     tAbilities(srv);
     tSign(srv);
-    srv.stop();
+    CHECK(srv.stop(), "owned server process and temporary world cleaned up");
     std::printf("\n=== TEST_PLAN43: %d PASS %d FAIL ===\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

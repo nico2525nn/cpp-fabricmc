@@ -24,6 +24,7 @@
 #include "../src/physics/Redstone.hpp"
 #include "../src/physics/BlockTickScheduler.hpp"
 #include "../src/game/FunctionEvaluator.hpp"
+#include "../src/game/CommandsHelpers.hpp"
 #include "../src/game/DamageSource.hpp"
 #include "../src/game/Scoreboard.hpp"
 #include <sys/wait.h>
@@ -1034,6 +1035,41 @@ static void scenarioDimensionCacheUnit() {
           "dimension cache: LRU contains the surviving dimension only");
 }
 
+static void scenarioNestedCommandSourcePolicy() {
+    std::printf("\n[nested command source policy — execute/function/store defaults]\n");
+    ServerConfig cfg;
+    cfg.ioWorkerThreads = 1;
+    cfg.jvmEnabled = false;
+    GameServer server(cfg);
+
+    Player player;
+    player.name = "NestedSource";
+    player.x = 12.5;
+    player.y = -59.0;
+    player.z = -4.5;
+    player.yaw = 37.0f;
+    player.pitch = -11.0f;
+
+    brigadier::CommandSource parent;
+    parent.dimensionOverride = -1;
+    const auto executeSource = makeNestedCommandSource(server, &player, parent);
+    CHECK(executeSource.player == &player && executeSource.name == player.name &&
+              executeSource.srcX == player.x && executeSource.srcY == player.y &&
+              executeSource.srcZ == player.z && executeSource.srcYaw == player.yaw &&
+              executeSource.srcPitch == player.pitch &&
+              executeSource.dimensionOverride == parent.dimensionOverride,
+          "nested execute source preserves player position, rotation, and dimension");
+    CHECK(static_cast<bool>(executeSource.resolveSelector),
+          "nested execute source binds selectors after dimension inheritance");
+
+    const auto functionSource =
+        makeNestedCommandSource(server, &player, parent, false);
+    CHECK(functionSource.srcX == player.x && functionSource.srcY == player.y &&
+              functionSource.srcZ == player.z && functionSource.srcYaw == 0.0f &&
+              functionSource.srcPitch == 0.0f,
+          "function/store source retains their legacy zero rotation defaults");
+}
+
 static void scenarioJvmServerThreadBoundary() {
     std::printf("\n[JVM server-thread boundary — bootstrap, queue, timeout, stop]\n");
     const std::string worldDir =
@@ -1246,9 +1282,10 @@ int main(int argc, char** argv) {
     scenarioMultiplayer(srv);
     scenarioStress(srv, 12);
 
-    srv.stop();
+    CHECK(srv.stop(), "owned server process and temporary world cleaned up");
     scenarioMobStateLockBoundary();
     scenarioDimensionCacheUnit();
+    scenarioNestedCommandSourcePolicy();
     scenarioJvmServerThreadBoundary();
     scenarioWorldGenParity();
     scenarioPredicateUnit();
