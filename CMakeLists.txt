@@ -32,6 +32,9 @@ endif()
 find_package(JNI QUIET)
 find_program(CPPFM_JAVAC NAMES javac)
 find_program(CPPFM_JAVA NAMES java)
+option(CPPFM_ENABLE_JNI_FALLBACK
+       "Derive JNI headers/libjvm from the resolved Java launcher when FindJNI misses them"
+       ON)
 # FindJava knows about platform-specific JDK layouts (including macOS
 # .jdk/Contents/Home bundles) better than a shell PATH lookup alone.  Keep
 # the direct find_program results when present, but use the module as a
@@ -51,7 +54,7 @@ endif()
 # JNI variables needed by the dynamically-loaded HotSpot bridge.  The bridge
 # still locates and loads libjvm/jvm.dll at runtime, so this is intentionally a
 # compile-time discovery fallback rather than a link-time JVM dependency.
-if(NOT JNI_FOUND AND CPPFM_JAVA)
+if(CPPFM_ENABLE_JNI_FALLBACK AND NOT JNI_FOUND AND CPPFM_JAVA)
     get_filename_component(CPPFM_JAVA_REAL "${CPPFM_JAVA}" REALPATH)
     get_filename_component(CPPFM_JAVA_BIN "${CPPFM_JAVA_REAL}" DIRECTORY)
     get_filename_component(CPPFM_JAVA_HOME "${CPPFM_JAVA_BIN}" DIRECTORY)
@@ -76,7 +79,12 @@ if(NOT JNI_FOUND AND CPPFM_JAVA)
     set(CPPFM_JNI_INCLUDE "${CPPFM_JAVA_HOME}/include")
     set(CPPFM_JVM_LIBRARY_FALLBACK "")
     foreach(CPPFM_JVM_CANDIDATE IN LISTS CPPFM_JVM_LIBRARY_CANDIDATES)
-        if(IS_REGULAR_FILE "${CPPFM_JVM_CANDIDATE}")
+        # `IS_REGULAR_FILE` is not an `if()` predicate on the older CMake
+        # versions supported by this project.  EXISTS plus a directory guard
+        # expresses the same fallback contract without making a no-JNI
+        # configure fail before the native-only path can be selected.
+        if(EXISTS "${CPPFM_JVM_CANDIDATE}" AND
+           NOT IS_DIRECTORY "${CPPFM_JVM_CANDIDATE}")
             set(CPPFM_JVM_LIBRARY_FALLBACK "${CPPFM_JVM_CANDIDATE}")
             break()
         endif()
