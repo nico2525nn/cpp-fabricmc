@@ -363,6 +363,7 @@ endfunction()
 set(CPPFM_SERVER_SOURCES
     src/core/NBT.cpp
     src/core/RuntimeLayout.cpp
+    src/game/ServerConfig.cpp
     src/game/GameServer_tick.cpp
     src/game/GameServer_combat.cpp
     src/game/GameServer_items.cpp
@@ -639,6 +640,17 @@ if(TARGET cppfm_embedded_resources)
 endif()
 add_test(NAME runtime_layout COMMAND test_runtime_layout)
 set_tests_properties(runtime_layout PROPERTIES TIMEOUT 30)
+
+# plan53 Chapter 1: properties/CLI precedence, typed fallback/clamping, and
+# informational flags before RuntimeLayout side effects.
+add_executable(test_properties
+    tests/test_properties.cpp
+    src/game/ServerConfig.cpp)
+target_include_directories(test_properties PRIVATE src src/generated)
+add_dependencies(test_properties cppfm)
+add_test(NAME properties COMMAND test_properties $<TARGET_FILE:cppfm>
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(properties PROPERTIES TIMEOUT 30)
 
 # Version-pinned Play S→C ID locks plus selected field/order vectors. This is
 # broad wire coverage, not an exhaustive proof of every packet payload branch.

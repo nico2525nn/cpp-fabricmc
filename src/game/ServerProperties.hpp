@@ -5,12 +5,16 @@
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
+#include <sstream>
 #include <algorithm>
 #include <cctype>
 #include <limits>
 #include <map>
 #include <string>
+#include <string_view>
 #include <type_traits>
+#include <utility>
+#include <vector>
 
 namespace cppfm {
 
@@ -19,38 +23,62 @@ public:
     std::map<std::string, std::string> props;
 
     bool load(const std::string& path) {
-        std::ifstream f(path);
+        std::ifstream f(path, std::ios::binary);
         if (!f) return false;
+        return loadStream(f);
+    }
+
+    bool loadText(std::string_view text) {
+        std::istringstream stream{std::string(text)};
+        return loadStream(stream);
+    }
+
+    const std::vector<std::pair<std::string, std::string>>& parsedEntries() const {
+        return parsedEntries_;
+    }
+
+private:
+    bool loadStream(std::istream& f) {
         std::map<std::string, std::string> loaded;
+        std::vector<std::pair<std::string, std::string>> ordered;
         std::string line;
         while (std::getline(f, line)) {
-            // trim trailing \r\n and spaces
-            while (!line.empty() && (line.back()=='\n' || line.back()=='\r' || line.back()==' ' || line.back()=='\t')) line.pop_back();
-            size_t start = line.find_first_not_of(" \t");
-            if (start==std::string::npos) continue;
-            line = line.substr(start);
-            if (line.empty() || line[0]=='#') continue;
-            auto eq = line.find('=');
-            if (eq==std::string::npos) continue;
-            std::string k = line.substr(0, eq);
-            std::string v = line.substr(eq+1);
-            // trim k and v
-            auto trim = [](std::string s){
-                size_t a = s.find_first_not_of(" \t\r\n");
-                if (a==std::string::npos) return std::string();
-                size_t b = s.find_last_not_of(" \t\r\n");
-                return s.substr(a, b-a+1);
-            };
-            k = trim(k);
-            v = trim(v);
-            // case-insensitive keys? keep as-is but lower-case for lookup tolerance
-            loaded[k] = v;
+            const std::string trimmedLine = trim(line);
+            if (trimmedLine.empty() || trimmedLine.front() == '#') continue;
+            const std::size_t eq = trimmedLine.find('=');
+            if (eq == std::string::npos) continue;
+            const std::string key = trim(trimmedLine.substr(0, eq));
+            if (key.empty()) continue;
+            const std::string value = trim(trimmedLine.substr(eq + 1));
+
+            // Java Properties treats a later duplicate as the effective
+            // value.  Apply the same rule for case variants as well, while
+            // retaining the final spelling for deterministic save output.
+            for (auto it = loaded.begin(); it != loaded.end();) {
+                if (asciiLower(it->first) == asciiLower(key)) it = loaded.erase(it);
+                else ++it;
+            }
+            loaded[key] = value;
+            for (auto it = ordered.begin(); it != ordered.end();) {
+                if (asciiLower(it->first) == asciiLower(key)) it = ordered.erase(it);
+                else ++it;
+            }
+            ordered.emplace_back(key, value);
         }
-        if (!f.eof()) return false;
+        if (f.bad()) return false;
         props = std::move(loaded);
+        parsedEntries_ = std::move(ordered);
         return true;
     }
 
+    static std::string trim(const std::string& value) {
+        const size_t first = value.find_first_not_of(" \t\r\n");
+        if (first == std::string::npos) return {};
+        const size_t last = value.find_last_not_of(" \t\r\n");
+        return value.substr(first, last - first + 1);
+    }
+
+public:
     bool save(const std::string& path) const {
         std::ofstream f(path);
         if (!f) return false;
@@ -97,6 +125,7 @@ public:
 
     template<typename T>
     void set(const std::string& key, T value) {
+        parsedEntries_.clear();
         if constexpr (std::is_same_v<T, std::string>) props[key]=value;
         else if constexpr (std::is_same_v<T, bool>) props[key]= value ? "true":"false";
         else props[key]= std::to_string(value);
@@ -118,6 +147,7 @@ public:
 
 private:
     using PropertyIterator = std::map<std::string, std::string>::const_iterator;
+    std::vector<std::pair<std::string, std::string>> parsedEntries_;
 
     static std::string asciiLower(std::string value) {
         std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
