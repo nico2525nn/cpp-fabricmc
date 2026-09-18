@@ -713,24 +713,26 @@ void Session::handleLogin() {
     ReadBuffer in(frame);
     if (in.u8() != lo::cs::Hello) throw std::runtime_error("expected login hello");
 
-    self_->name = [this, &in]{
+    const auto rejectLogin = [this](const char* reason, bool bestEffort) {
+        WriteBuffer kick;
+        nbt::writeTextComponent(kick, reason);
+        if (bestEffort) conn_->trySendPacket(proto::lo::sc::Disconnect, kick);
+        else conn_->sendPacket(proto::lo::sc::Disconnect, kick);
+        state_ = State::Done;
+    };
+
+    self_->name = [&in, &rejectLogin]{
         try {
             return in.string(16);
         } catch (const std::exception&) {
-            WriteBuffer kick;
-            nbt::writeTextComponent(kick, "Invalid username");
-            conn_->trySendPacket(proto::lo::sc::Disconnect, kick);
-            state_ = State::Done;
+            rejectLogin("Invalid username", true);
             return std::string{};
         }
     }();
     if (state_ == State::Done) return;
 
     if (!GameServer::isValidPlayerName(self_->name)) {
-        WriteBuffer kick;
-        nbt::writeTextComponent(kick, "Invalid username");
-        conn_->trySendPacket(proto::lo::sc::Disconnect, kick);
-        state_ = State::Done;
+        rejectLogin("Invalid username", true);
         return;
     }
 
@@ -738,10 +740,7 @@ void Session::handleLogin() {
     std::copy(uuidBytes.begin(), uuidBytes.end(), self_->uuid.begin());
     // ban check (banned-players.json)
     if (srv_.isBanned(self_->name)) {
-        WriteBuffer kick;
-        nbt::writeTextComponent(kick, "You are banned from this server");
-        conn_->sendPacket(proto::lo::sc::Disconnect, kick);
-        state_ = State::Done;
+        rejectLogin("You are banned from this server", false);
         return;
     }
     // ip ban check
@@ -751,10 +750,7 @@ void Session::handleLogin() {
         auto colon = ip.find(':');
         if (colon != std::string::npos) ip = ip.substr(0, colon);
         if (!ip.empty() && ip != "?" && srv_.isIpBanned(ip)) {
-            WriteBuffer kick;
-            nbt::writeTextComponent(kick, "You are IP banned from this server");
-            conn_->sendPacket(proto::lo::sc::Disconnect, kick);
-            state_ = State::Done;
+            rejectLogin("You are IP banned from this server", false);
             return;
         }
     }
@@ -762,18 +758,12 @@ void Session::handleLogin() {
         // any registered-name match is impossible pre-join; check file-backed list
         bool ok = srv_.whitelist().contains(self_->name) || srv_.isOp(self_->name);
         if (!ok) {
-            WriteBuffer kick;
-            nbt::writeTextComponent(kick, "You are not whitelisted on this server");
-            conn_->sendPacket(proto::lo::sc::Disconnect, kick);
-            state_ = State::Done;
+            rejectLogin("You are not whitelisted on this server", false);
             return;
         }
     }
     if (srv_.config().maxPlayers > 0 && (int)srv_.playerCount() >= srv_.config().maxPlayers) {
-        WriteBuffer kick;
-        nbt::writeTextComponent(kick, "Server is full");
-        conn_->sendPacket(proto::lo::sc::Disconnect, kick);
-        state_ = State::Done;
+        rejectLogin("Server is full", false);
         return;
     }
     self_->entityId = 0; // set on play entry
@@ -851,10 +841,7 @@ void Session::handleLogin() {
             }
         }
         if (!authOk) {
-            WriteBuffer kick;
-            nbt::writeTextComponent(kick, "Failed to verify your session (online mode)");
-            conn_->sendPacket(proto::lo::sc::Disconnect, kick);
-            state_ = State::Done;
+            rejectLogin("Failed to verify your session (online mode)", false);
             return;
         }
         for (int q = 0; q < 16; ++q)
