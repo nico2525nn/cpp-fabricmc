@@ -5,8 +5,8 @@
 > rows **#81–#90**. The restored matrix is a historical taxonomy baseline; it is not
 > a release gate and does not make the current cleanup or operations audit green.
 >
-> Current implementation/evidence baseline: integrated `main` HEAD `c857bfa`
-> (rechecked 2026-09-19; final documentation changes are the only pending snapshot).
+> Current implementation/evidence baseline: source integration `c857bfa`, with
+> synchronized evidence documentation at commit `556569b` (rechecked 2026-09-19).
 > Files under the ignored `build/` tree are local run outputs, not tracked/public
 > evidence or release assets unless separately published.
 

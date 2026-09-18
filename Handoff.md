@@ -23,22 +23,21 @@
 | protocol | 769 |
 | DataVersion | 4189 |
 | branch | main |
-| HEAD | c857bfa (integrated plan53/plan54 final-gates source) |
+| HEAD | 556569b (final plan53/plan54 evidence documentation) |
 | origin/main | local `main` is ahead by the integrated local commits; no push requested. Recheck before publishing |
-| HEADのコミット | merge wt54/jvm: plan54 bridge boundary |
+| HEADのコミット | docs: record plan53 and plan54 final gates |
 | スナップショット | 2026-09-19 JST |
 | JDK | OpenJDK 21をインストール済み。JNI/JVMビルド検出済み |
 | publication status | BLOCKED — 下記の明示された境界が残る |
 
 ### 重要なGit状態
 
-このスナップショットは統合済みmainを基準にしている。最終文書同期をコミットするまでは
-docs/README.md、CURRENT_STATE.md、VERIFICATION.mdなどに意図した変更が残るが、既存の
+このスナップショットは統合済みmainと最終文書同期を基準にしている。既存の
 ユーザー変更を捨てるためにreset --hard、checkout --、広範囲の削除を行ってはいけない。
 
 余計なjar、zip、class、logはGit作業ツリーに残していない。build/はignoreされた
-ローカル生成物であり、公開成果物ではない。ドキュメント同期後にstatusとdiff-checkを
-再確認してから、必要なら別コミットとして扱う。
+ローカル生成物であり、公開成果物ではない。公開前にstatus、diff-check、originとの差分を
+再確認する。
 
 ## 2. ユーザーが決めた方針・前提
 

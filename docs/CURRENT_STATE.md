@@ -15,13 +15,13 @@
 | `updated` | `2026-09-19` |
 | `implementation_baseline` | integrated `main` HEAD `c857bfa` from clean checkpoint `65a7c69` |
 | `implementation_baseline_short` | `c857bfa` (`65a7c69` + plan53/54 merges and fixes) |
-| `documentation_commit` | working tree (this final evidence synchronization is not yet committed) |
+| `documentation_commit` | `556569b` (`docs: record plan53 and plan54 final gates`) |
 | `main_integration_merge` | `c857bfa` (all validated plan53/54 workstreams integrated) |
 | `plan` | plan53 settings/lifecycle matrix + plan54 adversarial cleanup |
 | `phase` | `plan53-plan54-final-gates` |
 | `phase_status` | `FINAL_GATES_CONFIRMED_REFACTOR_PARTIAL_WITH_DECLARED_BOUNDARIES` |
 | `publication_status` | `BLOCKED` |
-| `runtime_reference_snapshot` | `main` HEAD `c857bfa` + final documentation working tree |
+| `runtime_reference_snapshot` | source integration `c857bfa` + documentation commit `556569b` |
 | `canonical_workflow` | `docs/DEVELOPMENT.md#research-workflow` |
 | `research_entrypoint` | `docs/research-prompt.md` is a legacy redirect only |
 | `research_viewpoints` | `16` current viewpoints; old `13` wording is historical |
