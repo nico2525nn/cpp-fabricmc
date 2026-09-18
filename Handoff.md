@@ -23,7 +23,7 @@
 | protocol | 769 |
 | DataVersion | 4189 |
 | branch | main |
-| HEAD | final documentation evidence sequence after source integration `c857bfa` |
+| HEAD | final documentation evidence sequence after source integration `335fca5` |
 | origin/main | local `main` is ahead by the integrated local commits; no push requested. Recheck before publishing |
 | HEADのコミット | final docs/evidence synchronization |
 | スナップショット | 2026-09-19 JST |
@@ -220,8 +220,9 @@ test_rng_parityは25 PASS / 0 FAIL。
 |---|---:|
 | 通常build | 統合後のtimeout-wrapped Ninja build、package target、incremental buildが成功 |
 | strict quality build | default Werror構成、quality audit、tautology lint、mcproto framingが成功 |
-| 全non-nightly CTest | 45/45 PASS、395.76秒 |
-| smoke80 | 223 PASS / 0 FAIL、統合後CTestで175.24秒。全体の一テストであり特別扱いしない |
+| 全non-nightly CTest | 45/45 PASS、394.71秒 |
+| smoke80 | 223 PASS / 0 FAIL、統合後CTestで175.05秒。全体の一テストであり特別扱いしない |
+| cleanup hardening性能比較 | c857bfa 45-test CTest 395.76秒 → 335fca5 394.71秒（-0.27%）、smoke80 175.24→175.05秒、package JVM 1.83→1.84秒。Linux 7.0.0-31-generic / 16 CPU / 各1回・warm-upなし |
 | test_rng_parity | 25 PASS / 0 FAIL |
 | quality/tautology/mcproto | 全対象PASS |
 | focused CTest | native/spec_wire/fuzz/core_safety/rng_parityを含む全対象PASS |
@@ -251,13 +252,14 @@ test_rng_parityは25 PASS / 0 FAIL。
 - Createは対応Fabric 1.21.4 server artifactが確認できずruntime PASSに数えていない。
 - Linux CPack ZIP（ignored local output）の記録:
   - archive: build/packages/cppfabricmc-1.21.4-Linux-x86_64.zip
-  - size: 54377042 bytes
-  - SHA-256: 07cbccb4552b50003eec71ef827c22435a6b6442d1039458df598e1de0a0d588
+  - size: 54999329 bytes
+  - SHA-256: 61b19c83100b755b06431c2568e5277e4251867b4b25df98c27ab44118d84b8b
   - contents: cppfm executable 1個
   - clean extractionのtest_server_full: 234 PASS / 0 FAIL
   - package_jvm_smoke: strict default-on JVM startup、1,457 embedded class files、registry assets、owned shutdown PASS
-- explicit no-JNI configure/build: `CPPFM_ENABLE_JNI_FALLBACK=OFF` and
-  Java/JNI package discovery disabled; native-only `cppfm` build PASS.
+- explicit no-JNI configure/build: `CPPFM_ENABLE_JNI_FALLBACK=OFF`, JNI package
+  discovery disabled, `CPPFM_HAS_JNI` absent from the native targets, and the
+  same-commit non-package CTest set `42/42 PASS`; native-only `cppfm` build PASS.
 
 ### 6.3 Client / load / soak
 
@@ -266,8 +268,8 @@ test_rng_parityは25 PASS / 0 FAIL。
 - PrismLauncher 11.1.0: existing authenticated accountを使ったFabric 1.21.4 CLI launch/join PASS。
 - fresh no-account profileで--offlineがアカウントを生成しないことも確認。normal playにはaccountが必要。
 - 120 synthetic clients: 120/120 join、最新手動rerun 68.0秒、終了後online 0、孤児cppfm 0。
-- multi-client: 17.60秒 PASS。
-- bot smoke: 21.09秒 PASS。
+- multi-client: 17.48秒 PASS。
+- bot smoke: 20.82秒 PASS。
 - soak 60秒: 0 disconnect、30 keepalives、590 actions、RSS +1.0%。
 - soak 300秒: 0 disconnect、150 keepalives、2932 actions、RSS +7.6%。
 - soak 600秒 wide movement: 0 disconnect、300 keepalives、5707 actions、RSS +6.6%。
@@ -279,13 +281,14 @@ test_rng_parityは25 PASS / 0 FAIL。
 
 - Baseline: clean checkpoint `65a7c69`; primary scope is `src/`, `tests/`, and
   `tools/` with C++/header/Python/Java suffixes.
-- `293 files / 96,654 lines` → `298 files / 98,587 lines`.
+- `293 files / 96,654 lines` → `298 files / 98,648 lines`.
 - Protected manifest: `80 files / 8,939 lines`; all protected hashes are unchanged.
-- Mutable scope: `87,715` → `89,648`, net **+1,933 (+2.20%)**. The strict
+- Mutable scope: `87,715` → `89,709`, net **+1,994 (+2.28%)**. The strict
   `18,341` reduction gate is `PARTIAL`, not a pass.
 - Accepted net reductions: items `-5`, native process harness `-81`, session
   login paths `-13`, commands `-3`; JVM bridge `+12`. Configuration/properties
-  evidence added `+671`, lifecycle evidence added `+1,352`.
+  evidence added `+671`, lifecycle evidence added `+1,352`, and the final
+  cleanup-hardening assertions/source-policy checks added `+61`.
 - No fixture, generated input, expected byte, assertion, or negative case was
   removed or weakened. Python consolidation was rejected because its helper made
   the net scope larger.

@@ -2,7 +2,7 @@
 
 This guide is for the clean-room C++ implementation of Minecraft Java 1.21.4,
 protocol 769, DataVersion 4189. The source snapshot for this canonical document is
-the current working tree (2026-09-19, integrated HEAD `c857bfa`). Fabric Loader 0.16.9 is a
+the current working tree (2026-09-19, integrated HEAD `335fca5`). Fabric Loader 0.16.9 is a
 version/reference boundary; the executable provides a default-on bounded embedded
 JVM, a version-locked class-file transformer, and a separate offline official
 Loader/Knot probe. The production path does not ship the Mojang GameProvider/server

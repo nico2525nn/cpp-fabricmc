@@ -81,9 +81,9 @@ default-on strict JVM startup without an external classes/assets override.
 The latest recorded working-tree evidence includes:
 
 - The latest integrated rerun on 2026-09-19 is non-nightly CTest `45/45 PASS`
-  in `395.76s`, with the properties matrix `33 PASS`, lifecycle matrix `8/8 PASS`,
-  multi-client `ALL PASS` in `17.60s`, and bot smoke
-  `ALL PASS` in `21.09s`. The named `test_native` checks also pass, but that target has no
+  in `394.71s`, with the properties matrix `33 PASS`, lifecycle matrix `8/8 PASS`,
+  multi-client `ALL PASS` in `17.48s`, and bot smoke
+  `ALL PASS` in `20.82s`. The named `test_native` checks also pass, but that target has no
   stable aggregate count. The separate `package_jvm_smoke` release gate passes
   on the exact CPack ZIP with clean extraction, embedded assets/classes, and
   default-on strict JVM startup.

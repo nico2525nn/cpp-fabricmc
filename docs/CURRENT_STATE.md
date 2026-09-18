@@ -13,15 +13,15 @@
 | field | value |
 |---|---|
 | `updated` | `2026-09-19` |
-| `implementation_baseline` | integrated `main` HEAD `c857bfa` from clean checkpoint `65a7c69` |
-| `implementation_baseline_short` | `c857bfa` (`65a7c69` + plan53/54 merges and fixes) |
-| `documentation_commit` | final documentation commit sequence after source integration `c857bfa` |
-| `main_integration_merge` | `c857bfa` (all validated plan53/54 workstreams integrated) |
+| `implementation_baseline` | integrated `main` HEAD `335fca5` from clean checkpoint `65a7c69` |
+| `implementation_baseline_short` | `335fca5` (`65a7c69` + plan53/54 merges and fixes) |
+| `documentation_commit` | final documentation commit sequence after source integration `335fca5` |
+| `main_integration_merge` | `335fca5` (all validated plan53/54 workstreams integrated) |
 | `plan` | plan53 settings/lifecycle matrix + plan54 adversarial cleanup |
 | `phase` | `plan53-plan54-final-gates` |
 | `phase_status` | `FINAL_GATES_CONFIRMED_REFACTOR_PARTIAL_WITH_DECLARED_BOUNDARIES` |
 | `publication_status` | `BLOCKED` |
-| `runtime_reference_snapshot` | source integration `c857bfa` + documentation commit `556569b` |
+| `runtime_reference_snapshot` | source integration `335fca5` + final documentation sequence |
 | `canonical_workflow` | `docs/DEVELOPMENT.md#research-workflow` |
 | `research_entrypoint` | `docs/research-prompt.md` is a legacy redirect only |
 | `research_viewpoints` | `16` current viewpoints; old `13` wording is historical |
@@ -96,7 +96,7 @@ release artifact unless separately published:
 |---|---|---|
 | configure/build | current timeout-wrapped full Ninja rebuild and package target completed; the earlier clean RelWithDebInfo baseline was `129/129` targets | `PASS` |
 | `runtime_layout` | `PASS` | fresh-directory tree/resource extraction and sentinel preservation |
-| CPack package | `PASS` | CPack produced ignored local `build/packages/cppfabricmc-1.21.4-Linux-x86_64.zip`; ZIP contains exactly one `cppfm` executable, archive size `54377042` bytes, SHA-256 `07cbccb4552b50003eec71ef827c22435a6b6442d1039458df598e1de0a0d588`; CPack resource preflight and clean extraction tested; not a tracked/public release asset |
+| CPack package | `PASS` | CPack produced ignored local `build/packages/cppfabricmc-1.21.4-Linux-x86_64.zip`; ZIP contains exactly one `cppfm` executable, archive size `54999329` bytes, SHA-256 `61b19c83100b755b06431c2568e5277e4251867b4b25df98c27ab44118d84b8b`; CPack resource preflight and clean extraction tested; not a tracked/public release asset |
 | `package_jvm_smoke` | `PASS` | exact CPack ZIP extracted without checkout assets/classes overrides; default-on strict JVM startup, 1,457 embedded class files, registry assets, and owned clean shutdown verified |
 | incremental Ninja build | `ninja: no work to do` | `PASS` |
 | `test_scoreboard_reset` | `22 PASS 0 FAIL` | `PASS` |
@@ -116,14 +116,15 @@ release artifact unless separately published:
 | `test_recipes_mirror` | `76 PASS 0 FAIL` | `PASS` |
 | `test_native` | `ALL PASS` | `PASS`; includes bounded foreign-thread mutation routing, stop-time cancellation, and dimension-aware entity World handles; no invented aggregate count |
 | `test_recovery` | `54 PASS 0 FAIL` | `PASS`; includes valid `level.dat.new` promotion, corrupt-primary quarantine, byte preservation, player-data quarantine, region recovery, and session-lock cases |
-| `test_plan43` | `82 PASS 0 FAIL` in `28.16s` after the latest clean rebuild | `PASS` |
+| `test_plan43` | `82 PASS 0 FAIL` in `27.61s` after the latest clean rebuild | `PASS` |
 | `test_smoke_80` | `223 PASS 0 FAIL` | `PASS` |
 | `test_server_full` | `234 PASS 0 FAIL` | `PASS` from the clean extracted Linux package; source-tree and package evidence are kept distinct |
 | `properties` | `33 PASS 0 FAIL` | `PASS`; table-driven properties/CLI matrix and informational-flag side-effect checks |
 | `lifecycle_matrix` | `8/8 PASS` | `PASS`; fail-closed readiness, signal, restart, lock, malformed-input, port-reuse, and process-cleanup matrix |
-| multi-client | `ALL PASS` in `17.60s` | `PASS` |
-| bot smoke | `ALL PASS` in `21.09s` | `PASS` |
-| full non-nightly CTest regression | `45/45 PASS` in `395.76s` | latest rerun using `ctest --test-dir build -LE 'nightly|package' --output-on-failure --timeout 600`; includes properties, lifecycle, `tautology_lint`, and `mcproto_framing`; the separate release-only `package_jvm_smoke` gate is not folded into this aggregate |
+| multi-client | `ALL PASS` in `17.48s` | `PASS` |
+| bot smoke | `ALL PASS` in `20.82s` | `PASS` |
+| full non-nightly CTest regression | `45/45 PASS` in `394.71s` | latest rerun using `ctest --test-dir build -LE 'nightly|package' --output-on-failure --timeout 600`; includes properties, lifecycle, `tautology_lint`, and `mcproto_framing`; the separate release-only `package_jvm_smoke` gate is not folded into this aggregate |
+| cleanup-hardening performance comparison | `PASS` | same 45-test shape: `c857bfa` `395.76s` → `335fca5` `394.71s` (`-0.27%`); smoke80 `175.24s` → `175.05s`; package JVM `1.83s` → `1.84s`; Linux 7.0.0-31-generic x86_64, 16 CPUs, one sample/no warm-up |
 | view32 dry benchmark | `PASS` for 4,225 chunks; p50 `0.108ms`, p95 `2.333ms`, peak RSS ~`95MB`, hit rate `84.6%` | synthetic dry result |
 | 120-client stress | `120/120 joined PASS` in `68.0s` | `PASS` |
 | `tests/soak_test.py --duration 60` | `PASS`; 30 keepalives, 0 disconnects, 590 actions, post-fill RSS growth `1.0%` | latest short post-review concurrency/cleanup smoke; not 2h/24h |
@@ -144,7 +145,7 @@ release artifact unless separately published:
 | `jvm_manifest` | `PASS` | declarative protocol-769 ABI manifest reproducibly generated; 94 methods (47 native + 47 wrapper), 9 structured methods, 10 injection points, 14 transformer names |
 | `jvm_contract_audit` | `PASS` | every declared ABI method has exactly one native or wrapper backend classification |
 | `shadow_abi` | `PASS` | standalone dependency-complete Shadow ABI compile/reflection gate; 906 source classes, 763 class files, and 8,297 declared/audited members |
-| explicit no-JNI configure/build | `PASS` | CMake fallback disabled with `CPPFM_ENABLE_JNI_FALLBACK=OFF`; `cppfm` builds cleanly under `CPPFM_HAS_JNI=0` and remains native-only |
+| explicit no-JNI configure/build + regression | `PASS` | CMake fallback disabled with `CPPFM_ENABLE_JNI_FALLBACK=OFF`; native targets omit `CPPFM_HAS_JNI`, build cleanly, and the same-commit non-package CTest set passes `42/42`; relative source assets were linked for the external build directory |
 | ASan/UBSan key regression set | `4/4 PASS` from the repository root; no sanitizer report | `test_core_safety`, `test_spec_wire`, `test_fuzz`, and `test_gameplay_full`; direct invocation keeps relative assets visible |
 | static quality audit | `PASS` — 28 C++ test files, 156 production files, 43 Python files | rejects unconditional assertions, liveness-only fallbacks, bare Python exceptions, and unowned `Popen` launches |
 | official Loader/Knot probe | `PASS / DECLARED-LIMITATION` | offline pinned Loader 0.16.9/Knot/Mixin probe records all seven expected markers; local ignored process output is `build/fabric-runtime/probe-evidence-after-fabric-docs-20260908-v1.json`; it is not a tracked/public artifact, and no Mojang server/provider is shipped |
@@ -214,30 +215,33 @@ These checks validate publication hygiene only; they do not turn E-14, missing L
 proof, missing accepted long-run artifact, or the lack of a retained client artifact
 into a universal compatibility claim.
 
-The Plan54 primary measurement counts `98,587` lines across `298` files in
+The Plan54 primary measurement counts `98,648` lines across `298` files in
 `src/`, `tests/`, and `tools/` (C++/header/Python/Java suffixes), versus the clean
 `65a7c69` baseline at `96,654` lines across `293` files. The protected manifest is
 `80` files / `8,939` lines with zero hash drift. Mutable lines are
-`87,715 → 89,648`, a net **increase of 1,933 (+2.20%)**. The strict 18,341-line
+`87,715 → 89,709`, a net **increase of 1,994 (+2.28%)**. The strict 18,341-line
 reduction target is therefore `PARTIAL`; deleting feature code, fixtures,
 assertions, or evidence would not be an acceptable substitute for a safe refactor.
 
 The accepted cleanup ledger is: items `-5`, native process harness `-81`, session
 login paths `-13`, command policy `-3`, and JVM bridge `+12`; configuration and
 properties evidence added `+671`, and the lifecycle matrix added `+1,352` within
-the primary scope. CTest registration is `46 → 48`; the two added gates are
+the primary scope. The final cleanup-hardening assertions/source-policy checks
+add `+61` lines. CTest registration is `46 → 48`; the two added gates are
 `properties` and POSIX-only `lifecycle_matrix`, with no existing target removed.
 The net matches the reproducible path-by-path measurement.
 
 The timeout investigation found two independent causes of misleading outer
 `timeout` failures: parent-only termination left descendants holding pipes,
 and readiness/output loops did not always observe the owned child state. The
-current harnesses create process groups, use monotonic deadlines, probe actual
-server status, terminate and reap the owned group with bounded escalation,
-and report cleanup failure explicitly. The disconnected-session path also
-marks the player inactive before slow persistence/hooks. The last completed
+Python/diagnostic harnesses create process groups, use monotonic deadlines,
+probe actual server status, terminate and reap the owned group with bounded
+escalation, and report cleanup failure explicitly. The C++ `ServerProcess`
+owner now checks `kill`, `waitpid`, and temporary-world removal and aborts on
+destructor cleanup failure. The disconnected-session path also marks the player
+inactive before slow persistence/hooks. The last completed
 live-server runs left no `cppfm` process behind. The latest full CTest baseline
-passed `45/45` in `395.76s`; the release-only package JVM gate is tracked
+passed `45/45` in `394.71s`; the release-only package JVM gate is tracked
 separately. A fresh 120-client
 stress run joined `120/120` clients in `68.0s`, and the latest 60-second soak
 completed with zero disconnects and `1.0%` post-fill RSS growth.

@@ -1,7 +1,7 @@
 # SPEC_WIRE — Minecraft 1.21.4 / protocol 769
 
 This is the byte-level source of truth for the current C++ implementation. Snapshot:
-`main` HEAD `c857bfa` plus the final documentation working tree, rechecked
+`main` HEAD `335fca5` plus the final documentation working tree, rechecked
 2026-09-19. Scope
 is Java Edition 1.21.4, protocol `769`, DataVersion `4189`, with an unmodified Fabric
 1.21.4 server as the behavioral reference. `docs/MISSING_FEATURES_1_21_4.md` targets

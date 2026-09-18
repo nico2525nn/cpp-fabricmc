@@ -89,9 +89,9 @@ The latest recorded runs include:
   harness also passes the auxiliary functional API fixture, the standalone Shadow
   ABI gate passes, and the offline pinned Loader/Knot probe passes.
 - The latest integrated rerun on 2026-09-19 is non-nightly CTest `45/45 PASS`
-  in `395.76s`, with the properties matrix `33 PASS`, lifecycle matrix `8/8 PASS`,
-  multi-client `ALL PASS` in `17.60s`, and bot smoke
-  `ALL PASS` in `21.09s`. The release-specific `package_jvm_smoke` gate is separate: it
+  in `394.71s`, with the properties matrix `33 PASS`, lifecycle matrix `8/8 PASS`,
+  multi-client `ALL PASS` in `17.48s`, and bot smoke
+  `ALL PASS` in `20.82s`. The release-specific `package_jvm_smoke` gate is separate: it
   passed against the exact CPack ZIP after clean extraction, with default-on
   strict JVM startup and embedded classes/assets verified. The locally generated
   ignored Linux CPack output contains exactly one executable; its clean
@@ -114,7 +114,8 @@ The latest recorded runs include:
   60-second post-review soak had 0 disconnects and 1.0% post-fill RSS growth;
   300-, 600-, and 1800-second diagnostic runs also passed. Longer-run and real-client
   limitations remain as listed above.
-- The explicit no-JNI configure/build and the four-binary ASan/UBSan key set
+- The explicit no-JNI configure/build and its `42/42` non-package CTest set,
+  plus the four-binary ASan/UBSan key set
   (`core_safety`, `spec_wire`, `fuzz`, and `gameplay_full`) also pass. The safe
   Plan54 cleanup is partial: the protected-scope ledger is reproducible, but the
   strict 18,341-line reduction target was not reached and no tests or fixtures were
@@ -130,8 +131,8 @@ The latest recorded runs include:
 
 The latest recorded local package evidence is
 `build/packages/cppfabricmc-1.21.4-Linux-x86_64.zip` (SHA-256
-`07cbccb4552b50003eec71ef827c22435a6b6442d1039458df598e1de0a0d588`, archive size
-`54377042` bytes). The ZIP contains only `cppfm`; the package was tested from a
+`61b19c83100b755b06431c2568e5277e4251867b4b25df98c27ab44118d84b8b`, archive size
+`54999329` bytes). The ZIP contains only `cppfm`; the package was tested from a
 clean extraction directory. `build/` is an ignored local output directory, not a
 release asset embedded in this repository.
 

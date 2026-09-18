@@ -2,7 +2,7 @@
 
 This document is the verification contract for the canonical snapshot of Minecraft
 Java Edition **1.21.4**, protocol **769**, and DataVersion **4189**. The source snapshot
-is source integration `c857bfa` with the final documentation commit sequence, rechecked
+is source integration `335fca5` with the final documentation commit sequence, rechecked
 on **2026-09-19**. The source and documentation snapshots are intentionally
 identified separately.
 Paths under the ignored `build/` tree are local outputs from named runs, not
@@ -261,13 +261,15 @@ sub-run.
 | configure/build | timeout and successful target completion | last recorded clean RelWithDebInfo build completed `129/129`; the current bounded package-target rebuild also completed |
 | incremental Ninja build | no source changes remain | `ninja: no work to do` in `0.05s` |
 | runtime bootstrap | executable-owned resources and fresh server directory | `runtime_layout` and clean-directory launch checks; embedded assets/classes are extracted without overwriting a sentinel user file |
-| one-file package | install tree contains only the server executable and its embedded native resources | `PASS`: CPack produced the ignored local `build/packages/cppfabricmc-1.21.4-Linux-x86_64.zip`, containing only `cppfm`; archive size `54377042` bytes, SHA-256 `07cbccb4552b50003eec71ef827c22435a6b6442d1039458df598e1de0a0d588`; clean extracted-directory harness `234 PASS / 0 FAIL`; the CPack preflight rejects missing embedded resources; not a tracked/public release asset |
+| one-file package | install tree contains only the server executable and its embedded native resources | `PASS`: CPack produced the ignored local `build/packages/cppfabricmc-1.21.4-Linux-x86_64.zip`, containing only `cppfm`; archive size `54999329` bytes, SHA-256 `61b19c83100b755b06431c2568e5277e4251867b4b25df98c27ab44118d84b8b`; clean extracted-directory harness `234 PASS / 0 FAIL`; the CPack preflight rejects missing embedded resources; not a tracked/public release asset |
 | package JVM smoke | exact CPack ZIP starts the embedded Java boundary by default | `PASS`: `package_jvm_smoke` extracts only the packaged executable, supplies no classes/assets override, requires strict JVM startup, verifies embedded classes and registry assets, and reaps the owned process |
 | view distance 32 | 4,225-chunk dry strict benchmark | `PASS` in `1.74s`: p50 0.108 ms, p95 2.333 ms, peak RSS ~95 MB, hit rate 84.6% |
 | 120 clients | stress script completes with owned process cleanup | `CURRENT 2026-09-19`: `PASS` in `68.0s`, 120/120 joined; prior `68.1s` rerun is `HISTORICAL` |
-| multi-client integration | cross-client visibility and state | `CURRENT 2026-09-19`: `ALL PASS` in `17.60s`; prior `17.63s`, `17.84s`, and `20.28s` reruns are `HISTORICAL` |
-| bot smoke | short bot lifecycle | `CURRENT 2026-09-19`: `ALL PASS` in `21.09s`; prior `20.94s`, `20.87s`, and `23.59s` reruns are `HISTORICAL` |
-| full non-nightly CTest regression | registered native, gameplay, configuration, lifecycle, operations, JVM, ABI, linkage-contract, quality, and integration tests | `PASS`: `45/45` registered tests passed in `395.76s` with `-LE 'nightly|package'`; the separate release-only `package_jvm_smoke` gate is recorded above and is not folded into this aggregate |
+| multi-client integration | cross-client visibility and state | `CURRENT 2026-09-19`: `ALL PASS` in `17.48s`; prior `17.60s`, `17.63s`, `17.84s`, and `20.28s` reruns are `HISTORICAL` |
+| bot smoke | short bot lifecycle | `CURRENT 2026-09-19`: `ALL PASS` in `20.82s`; prior `21.09s`, `20.94s`, `20.87s`, and `23.59s` reruns are `HISTORICAL` |
+| full non-nightly CTest regression | registered native, gameplay, configuration, lifecycle, operations, JVM, ABI, linkage-contract, quality, and integration tests | `PASS`: `45/45` registered tests passed in `394.71s` with `-LE 'nightly|package'`; the separate release-only `package_jvm_smoke` gate is recorded above and is not folded into this aggregate |
+| integrated performance comparison | same 45-test CTest shape, smoke gate, and package JVM gate before/after cleanup hardening | run `plan54-final-20260919`, Linux 7.0.0-31-generic x86_64, 16 CPUs, one sample/no warm-up: `c857bfa` `395.76s` → `335fca5` `394.71s` (`-0.27%`); smoke80 `175.24s` → `175.05s`; package JVM `1.83s` → `1.84s`; all remain within the 10% budget |
+| CTest registration audit | target list/invalidation provenance | `git show 65a7c69:CMakeLists.txt` vs current `CMakeLists.txt`: `46 → 48` `add_test` entries; only `properties` and POSIX-only `lifecycle_matrix` were added, no baseline target was removed, and package JVM remains separate #48 rather than part of the 45-test non-package total |
 | entity/redstone load | P95 MSPT/TPS and bounded RSS | run-specific; no unlabelled claim |
 | `tests/soak_test.py --duration 60` | short post-review concurrency/cleanup smoke | `PASS`: 30 keepalives, 0 disconnects, actions 590, post-fill RSS growth 1.0%; not a 2h/24h result |
 | `tests/soak_test.py --duration 300` | short synthetic soak | `PASS`: 150 keepalives, 0 disconnects, actions 2932, post-fill RSS growth 7.6% |
@@ -296,6 +298,9 @@ diagnostic: its raw Mixin gaps do not override the zero-diagnostic runtime corpu
 - The game tick owns world mutation and batch-flush decisions.
 - Persistence and RCON workers have explicit shutdown ownership.
 - A test harness owns any `cppfm` child and must verify that it exited.
+- The C++ `ServerProcess` owner retains its PID until `waitpid` succeeds,
+  reports non-`ESRCH` `kill`/reap failures, checks temporary-world removal, and
+  aborts from the destructor rather than silently accepting cleanup failure.
 - Test and diagnostic subprocesses create an owned process group, use a
   monotonic deadline, and are terminated/reaped with bounded escalation. A
   cleanup failure is a failed gate, not a pass based on the parent's output.
@@ -305,12 +310,12 @@ diagnostic: its raw Mixin gaps do not override the zero-diagnostic runtime corpu
   block the child process or letting separate-stream concatenation create false
   ordering failures.
 - The last completed live-server runs left no `cppfm` process behind. The latest
-  full non-package CTest baseline passed `45/45` in `395.76s`. The primary Plan54
+  full non-package CTest baseline passed `45/45` in `394.71s`. The primary Plan54
   source scope (`src/`, `tests/`, `tools/`; C++/header/Python/Java suffixes) is
-  `98,587` lines across `298` files, versus baseline `65a7c69` at `96,654` lines
+  `98,648` lines across `298` files, versus baseline `65a7c69` at `96,654` lines
   across `293` files. The reviewed protected manifest is `80` files / `8,939`
-  lines with zero hash drift; mutable lines are `87,715 → 89,648`, a net
-  **increase of 1,933 (+2.20%)**, not a reduction. The strict 18,341-line target
+  lines with zero hash drift; mutable lines are `87,715 → 89,709`, a net
+  **increase of 1,994 (+2.28%)**, not a reduction. The strict 18,341-line target
   is therefore `PARTIAL`; no fixture, assertion, generated input, or evidence was
   removed to improve the number.
 - A backup/check-world operation is offline and must not copy a world during an active
@@ -405,7 +410,7 @@ publication.
 | `test_fluids` | `23 PASS 0 FAIL` | source/flowing/falling states, directional water/lava interactions, waterlogging, Nether evaporation, and queue deduplication |
 | `test_menu_logic` | `41 PASS 0 FAIL` | bounded enchanting offers and atomic crafter redstone crafting |
 | `test_recipes_mirror` | `76 PASS 0 FAIL` | recipe mirror/offset checks |
-| `test_plan43` | `82 PASS 0 FAIL` in `28.16s` after the latest clean rebuild | plan43 integration assertions |
+| `test_plan43` | `82 PASS 0 FAIL` in `27.61s` after the latest clean rebuild | plan43 integration assertions |
 
 The gameplay table does not claim exact vanilla behavior for an untested internal. Any
 new in-scope failure is a publication blocker; E-14 is a declared boundary, not an
@@ -462,8 +467,8 @@ override them.
 | `check_world` | offline NBT/world integrity | run-specific; no standalone run recorded here |
 | view32 dry benchmark | 4,225 chunk load contract | `PASS` in 1.74s: p50 0.108 ms, p95 2.333 ms, peak RSS ~95 MB, hit rate 84.6% |
 | stress 120 | concurrent connection load | `CURRENT 2026-09-19`: `PASS` in `68.0s`, 120/120 joined; prior `68.1s` rerun is `HISTORICAL` |
-| multi-client integration | cross-client behavior | `CURRENT 2026-09-19`: `ALL PASS` in `17.60s`; prior `17.63s`, `17.84s`, and `20.28s` reruns are `HISTORICAL` |
-| bot smoke | short bot lifecycle | `CURRENT 2026-09-19`: `ALL PASS` in `21.09s`; prior `20.94s`, `20.87s`, and `23.59s` reruns are `HISTORICAL` |
+| multi-client integration | cross-client behavior | `CURRENT 2026-09-19`: `ALL PASS` in `17.48s`; prior `17.60s`, `17.63s`, `17.84s`, and `20.28s` reruns are `HISTORICAL` |
+| bot smoke | short bot lifecycle | `CURRENT 2026-09-19`: `ALL PASS` in `20.82s`; prior `21.09s`, `20.94s`, `20.87s`, and `23.59s` reruns are `HISTORICAL` |
 | `tests/soak_test.py --duration 300` | short synthetic stability | `PASS`: 150 keepalives, 0 disconnects, actions 2932, post-fill RSS growth 7.6% |
 | `tests/soak_test.py --duration 600 --movement-range 3000` | wide synthetic stability | `PASS`: 300 keepalives, 0 disconnects, actions 5707, post-fill RSS growth 6.6% |
 | `tools/soak_bot.py --duration 300` | extended bot stability | `3/3 PASS`: each KeepAlive 30, chunks 182, time updates 300, all error counters 0, cleanup PASS |
@@ -519,6 +524,10 @@ timeout --foreground --kill-after=5 30 python3 tools/compare_real_mod_corpus.py 
 timeout --foreground --kill-after=5 300 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
 timeout --foreground --kill-after=5 300 cmake --build build -j2
 timeout --foreground --kill-after=5 30 ninja -C build
+timeout --foreground --kill-after=5 300 cmake -S . -B build-no-jni -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCPPFM_BUILD_TESTS=ON -DCMAKE_DISABLE_FIND_PACKAGE_JNI=TRUE -DCMAKE_DISABLE_FIND_PACKAGE_Java=TRUE -DCPPFM_ENABLE_JNI_FALLBACK=OFF
+timeout --foreground --kill-after=5 1200 cmake --build build-no-jni -j2
+timeout --foreground --kill-after=5 30 ln -sfn "$PWD/assets" build-no-jni/assets
+timeout --foreground --kill-after=5 1200 ctest --test-dir build-no-jni -LE 'nightly|package' --output-on-failure --timeout 600
 timeout --foreground --kill-after=5 180 cmake --build build --target package
 timeout --foreground --kill-after=5 120 ctest --test-dir build -R '^package_jvm_smoke$' --output-on-failure --timeout 60
 timeout --foreground --kill-after=5 90 cmake --build build --target cppfm_jvm_classes cppfm_jvm_fixture test_jvm_handles -j4
