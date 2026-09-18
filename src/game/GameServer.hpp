@@ -28,6 +28,7 @@
 #include "Persistence.hpp"
 #include "Entities.hpp"
 #include "../net/Rcon.hpp"
+#include "ServerConfig.hpp"
 #include "../net/Crypto.hpp"
 #include "../net/MojangAuth.hpp"
 #include "Items.hpp"
@@ -71,50 +72,6 @@
 #include <list>
 
 namespace cppfm {
-
-struct ServerConfig {
-    std::uint16_t port = 25565;
-    std::int32_t maxPlayers = 20;
-    std::int32_t viewDistance = 6;
-    std::int32_t simulationDistance = 10;
-    std::string motd = "CppFabricMC - C++ Minecraft 1.21.4 server";
-    std::string worldBiome = "minecraft:plains";
-    std::int64_t hashedSeed = 1378645410614731511LL;
-    std::string assetsDir = "assets/registry";
-    std::string worldDir = "world";
-    std::string recipesDir = "assets/data/recipes";
-    std::string resourcePackUrl;                 // optional server pack
-    std::string resourcePackSha1;
-    bool resourcePackForced = false;
-    // Vanilla's server.properties default is the normal terrain generator.
-    // Flat worlds remain available through `level-type=flat` or the CLI.
-    std::string levelType = "normal";        // flat | normal
-    bool whitelist = false;
-    bool onlineMode = false;
-    bool enforcesSecureChat = false;
-    RconConfig rcon;
-    std::string levelTypeCli;
-    std::uint64_t seed = 1378645410614731511ULL;
-    std::int64_t startTime = 1000;
-    int compressionThreshold = 256;   // -1 disables Set Compression entirely (N4 respects config, not hard-coded)
-    int spawnProtection = 16;         // spawn-protection radius (0 disables)
-    int maxLoadedChunks = 8192;       // W19 cap — 0 = unlimited, default max(8192, viewDist²*4) (plan21 §3)
-    int ioWorkerThreads = 4;          // W19 async I/O workers (ThreadPool 4 for RegionFile zlib)
-    bool pvp = true;                  // plan35 §5: server.properties pvp (default true)
-    bool allowFlight = false;         // plan35 §5: server.properties allow-flight (default false)
-    bool hardcore = false;            // plan35 §5: server.properties hardcore (default false)
-    // Fabric-compatible Java integration is enabled by default.  When a JDK
-    // or the bundled shadow classes are unavailable, non-strict startup logs
-    // the reason and keeps the native server authoritative.
-    bool jvmEnabled = true;
-    bool jvmStrict = false;
-    std::string jvmClassesDir;
-    std::string jvmModsDir = "mods";
-    std::string jvmConfigDir = "config";
-    std::string jvmJavaHome;
-    std::string jvmLibrary;
-    std::string jvmLibrariesDir;
-};
 
 // Player inventory slot = full ItemStack (components preserved end-to-end).
 using InvSlot = ItemStack;

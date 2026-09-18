@@ -15,14 +15,9 @@
 #include "../core/ByteBuffer.hpp"
 #include "../core/Json.hpp"
 #include "../platform/Socket.hpp"
+#include "RconConfig.hpp"
 
 namespace cppfm {
-
-struct RconConfig {
-    bool enabled = false;
-    std::uint16_t port = 25575;
-    std::string password;
-};
 
 inline bool readBoundedTextFile(const std::string& path, std::string& content) {
     std::ifstream file(path, std::ios::binary);
