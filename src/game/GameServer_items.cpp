@@ -44,11 +44,6 @@ bool isWindCharge(ProjectileKind kind) noexcept {
            kind == ProjectileKind::BreezeWindCharge;
 }
 
-bool sameStackData(const ItemStack& lhs, const ItemStack& rhs) {
-    return lhs.itemId == rhs.itemId &&
-           lhs.components == rhs.components &&
-           lhs.removedComponents == rhs.removedComponents;
-}
 } // namespace
 
 void GameServer::sendEquipment(const MobEntity& mob) {
@@ -440,7 +435,7 @@ void GameServer::craftersTickFor(std::int8_t dimension) {
                             if (skipDisabled && destination.crafter.isSlotDisabled(i)) continue;
                             auto& slot = slots[i];
                             if (pass == 0) {
-                                if (slot.empty() || !sameStackData(slot, remaining)) continue;
+                                if (slot.empty() || !slot.sameItemData(remaining)) continue;
                                 const int limit = maxStackForId(slot.itemId);
                                 if (slot.count >= limit) continue;
                                 const int moved = std::min<int>(remaining.count,
@@ -577,7 +572,7 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
             for (int i = 0; i < count; ++i) {
                 auto& s = slots[i];
                 if (s.empty()) { s = src; return true; }
-                if (sameStackData(s, src) && s.count < 64) {
+                if (s.sameItemData(src) && s.count < 64) {
                     const int take = std::min<int>(64 - s.count, src.count);
                     s.count = static_cast<std::int16_t>(s.count + take);
                     if (take >= src.count) return true;
@@ -706,7 +701,7 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
                         dst = one;
                         return true;
                     }
-                    if (sameStackData(dst, one) && dst.count < 64) {
+                    if (dst.sameItemData(one) && dst.count < 64) {
                         ++dst.count;
                         return true;
                     }
@@ -787,7 +782,7 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
                                 dst = one;
                                 dimensionBlockEntities.markDirty(posKey(tx,ty,tz));
                                 return true;
-                            } else if(sameStackData(dst, one) && dst.count<64){
+                            } else if(dst.sameItemData(one) && dst.count<64){
                                 ++dst.count;
                                 dimensionBlockEntities.markDirty(posKey(tx,ty,tz));
                                 return true;
@@ -800,7 +795,7 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
                                     dst = one;
                                     dimensionBlockEntities.markDirty(posKey(tx,ty,tz));
                                     return true;
-                                } else if(sameStackData(dst, one) && dst.count<64){
+                                } else if(dst.sameItemData(one) && dst.count<64){
                                     ++dst.count;
                                     dimensionBlockEntities.markDirty(posKey(tx,ty,tz));
                                     return true;
@@ -809,7 +804,7 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
                             for(int idx : {0,1,2,4}){
                                 auto &d = beT->brewing.slots[idx];
                                 if(d.empty()){ d=one; dimensionBlockEntities.markDirty(posKey(tx,ty,tz)); return true; }
-                                if(sameStackData(d, one) && d.count<64){ ++d.count; dimensionBlockEntities.markDirty(posKey(tx,ty,tz)); return true; }
+                                if(d.sameItemData(one) && d.count<64){ ++d.count; dimensionBlockEntities.markDirty(posKey(tx,ty,tz)); return true; }
                             }
                             return false;
                         }
@@ -835,7 +830,7 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
                                     continue;
                                 auto &d=oslots[j];
                                 if(d.empty()){ d=one; dimensionBlockEntities.markDirty(posKey(tx,ty,tz)); return true; }
-                                if(sameStackData(d, one) && d.count<64){ ++d.count; dimensionBlockEntities.markDirty(posKey(tx,ty,tz)); return true; }
+                                if(d.sameItemData(one) && d.count<64){ ++d.count; dimensionBlockEntities.markDirty(posKey(tx,ty,tz)); return true; }
                             }
                         }
                         return false;
@@ -1698,7 +1693,7 @@ void GameServer::itemsTick() {
         const auto insertInto = [&](const int* slots, std::size_t slotCount) {
             for (std::size_t n = 0; n < slotCount && remaining > 0; ++n) {
                 auto& destination = player.inv[slots[n]];
-                if (!sameStackData(destination, source) || destination.count >= 64)
+                if (!destination.sameItemData(source) || destination.count >= 64)
                     continue;
                 const int moved = std::min<int>(64 - destination.count,
                                                 remaining);
