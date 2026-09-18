@@ -13,6 +13,39 @@
 
 namespace cppfm {
 
+// Build the source used by a nested command while preserving the existing
+// defaults for console execution. The selector binding deliberately happens
+// after the inherited dimension is copied; callers may still adjust source
+// coordinates or rotation afterwards without changing selector ownership.
+inline brigadier::CommandSource makeNestedCommandSource(
+    GameServer& server, Player* player,
+    const brigadier::CommandSource& parent) {
+    brigadier::CommandSource source;
+    if (player) {
+        source.player = player;
+        source.name = player->name;
+        source.console = false;
+        source.srcX = player->x;
+        source.srcY = player->y;
+        source.srcZ = player->z;
+        source.srcYaw = player->yaw;
+        source.srcPitch = player->pitch;
+    }
+    source.dimensionOverride = parent.dimensionOverride;
+    server.bindCommandSelector(source);
+    return source;
+}
+
+// All command argument nodes carrying an inner command accept the same
+// optional leading slash. Keep that normalization in one command-owned
+// helper; it intentionally preserves an empty argument and all other bytes.
+inline std::string commandText(const brigadier::CommandContext& context,
+                               const std::string& argument) {
+    std::string command = context.arg(argument).asStr();
+    if (!command.empty() && command.front() == '/') command.erase(0, 1);
+    return command;
+}
+
 inline std::map<std::string,std::string> parseFunctionArgsNbt(const std::string& nbtStr) {
     std::map<std::string,std::string> out;
     if (nbtStr.empty()) return out;

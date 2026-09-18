@@ -66,11 +66,7 @@ void GameServer::initDataFunctionCommands() {
                 std::string nbtStr = c.arg("arguments").asStr();
                 argsMap = parseFunctionArgsNbt(nbtStr);
             }
-            brigadier::CommandSource fsrc;
-            if (src){ fsrc.player=src; fsrc.name=src->name; fsrc.console=false; fsrc.srcX=src->x; fsrc.srcY=src->y; fsrc.srcZ=src->z; }
-            else { fsrc.console=true; fsrc.name="Server"; }
-            fsrc.dimensionOverride = c.source.dimensionOverride;
-            bindCommandSelector(fsrc);
+            auto fsrc = makeNestedCommandSource(*this, src, c.source);
             int executed = 0;
             if (argsMap.empty()) executed = functionEvaluator_.executeFunction(norm, fsrc);
             else executed = functionEvaluator_.executeFunction(norm, fsrc, argsMap);
