@@ -225,7 +225,9 @@ assertions, or evidence would not be an acceptable substitute for a safe refacto
 The accepted cleanup ledger is: items `-5`, native process harness `-81`, session
 login paths `-13`, command policy `-3`, and JVM bridge `+12`; configuration and
 properties evidence added `+671`, and the lifecycle matrix added `+1,352` within
-the primary scope. The net matches the reproducible path-by-path measurement.
+the primary scope. CTest registration is `46 → 48`; the two added gates are
+`properties` and POSIX-only `lifecycle_matrix`, with no existing target removed.
+The net matches the reproducible path-by-path measurement.
 
 The timeout investigation found two independent causes of misleading outer
 `timeout` failures: parent-only termination left descendants holding pipes,
