@@ -218,13 +218,13 @@ test_rng_parityは25 PASS / 0 FAIL。
 
 | 検証 | 結果 |
 |---|---:|
-| 通常build | 成功。途中で600秒枠が100/111付近で期限切れになったが、900秒枠で残り11タスクを再開して成功 |
-| strict quality build | 266/266 tasks成功、上記warning set、Werror構成 |
+| 通常build | 統合後のtimeout-wrapped Ninja build、package target、incremental buildが成功 |
+| strict quality build | default Werror構成、quality audit、tautology lint、mcproto framingが成功 |
 | 全non-nightly CTest | 45/45 PASS、395.76秒 |
-| smoke80 | PASS、175.02秒。全体の一テストであり特別扱いしない |
+| smoke80 | 223 PASS / 0 FAIL、統合後CTestで175.24秒。全体の一テストであり特別扱いしない |
 | test_rng_parity | 25 PASS / 0 FAIL |
-| quality/tautology/mcproto | 4/4 PASS |
-| strict selected CTest | native/spec_wire/fuzz/core_safety/rng_parity 5/5 PASS |
+| quality/tautology/mcproto | 全対象PASS |
+| focused CTest | native/spec_wire/fuzz/core_safety/rng_parityを含む全対象PASS |
 | ASan/UBSan key regression set | core_safety/spec_wire/fuzz/gameplay_full 4/4 PASS、reportなし |
 | test_spec_wire | 417 PASS / 0 FAIL |
 | test_wire_full | 399 PASS / 0 FAIL |
