@@ -26,13 +26,8 @@ void GameServer::initExecuteRunCommands(const brigadier::NodePtr& exec) {
         execRunCmd->executable = true;
         execRunCmd->action = [this](CommandContext& c){
             Player* src = static_cast<Player*>(c.source.player);
-            std::string inner = c.arg("command").asStr();
-            if(!inner.empty() && inner.front()=='/') inner=inner.substr(1);
-            brigadier::CommandSource tsrc;
-            if(src){ tsrc.player=src; tsrc.name=src->name; tsrc.console=false; tsrc.srcX=src->x; tsrc.srcY=src->y; tsrc.srcZ=src->z; tsrc.srcYaw=src->yaw; tsrc.srcPitch=src->pitch; }
-            else { tsrc.console=true; }
-            tsrc.dimensionOverride = c.source.dimensionOverride;
-            bindCommandSelector(tsrc);
+            std::string inner = commandText(c, "command");
+            auto tsrc = makeNestedCommandSource(*this, src, c.source);
             // carry over modified coords from parse context if any (positioned/at etc handled via ctx.srcX)
             tsrc.srcX = c.srcX; tsrc.srcY = c.srcY; tsrc.srcZ = c.srcZ;
             // yaw/pitch from command source if modified via rotated/facing (stored in ctx.srcYaw/srcPitch)
@@ -56,18 +51,13 @@ void GameServer::initExecuteAsCommands(const brigadier::NodePtr& exec) {
             asCmd->action = [this](CommandContext& c){
                 Player* src = static_cast<Player*>(c.source.player);
                 const auto sel = c.arg("asTargets").asSelector();
-                std::string inner = c.arg("command").asStr();
-                if(!inner.empty() && inner.front()=='/') inner=inner.substr(1);
+                std::string inner = commandText(c, "command");
                 std::vector<Player*> targets;
                 for(auto &name: sel.playerNames) if(Player* p=findPlayer(*this,name)) targets.push_back(p);
                 if(targets.empty()){ sendFeedback(src,"No targets for execute as"); return 0; }
                 int total=0;
                 for(Player* t: targets){
-                    brigadier::CommandSource tsrc;
-                    tsrc.player=t; tsrc.name=t->name; tsrc.console=false;
-                    tsrc.srcX=t->x; tsrc.srcY=t->y; tsrc.srcZ=t->z; tsrc.srcYaw=t->yaw; tsrc.srcPitch=t->pitch;
-                    tsrc.dimensionOverride = c.source.dimensionOverride;
-                    bindCommandSelector(tsrc);
+                    auto tsrc = makeNestedCommandSource(*this, t, c.source);
                     auto res=commands_.execute(inner,std::move(tsrc));
                     if(!res.ok) sendFeedback(src,"execute as "+t->name+" failed: "+res.errorText);
                     else total+=res.value;
@@ -92,8 +82,7 @@ void GameServer::initExecuteAtCommands(const brigadier::NodePtr& exec) {
             atCmd->action = [this](CommandContext& c){
                 Player* src = static_cast<Player*>(c.source.player);
                 const auto sel = c.arg("atTargets").asSelector();
-                std::string inner = c.arg("command").asStr();
-                if(!inner.empty() && inner.front()=='/') inner=inner.substr(1);
+                std::string inner = commandText(c, "command");
                 int total=0;
                 bool any=false;
                 for(auto &name: sel.playerNames) if(Player* e=findPlayer(*this,name)){
@@ -129,8 +118,7 @@ void GameServer::initExecutePositionedCommands(const brigadier::NodePtr& exec) {
             posCmd->action = [this](CommandContext& c){
                 Player* src = static_cast<Player*>(c.source.player);
                 brigadier::Vec3d p=c.arg("pos").asVec3();
-                std::string inner=c.arg("command").asStr();
-                if(!inner.empty()&&inner.front()=='/') inner=inner.substr(1);
+                std::string inner=commandText(c, "command");
                 brigadier::CommandSource tsrc;
                 if(src){ tsrc.player=src; tsrc.name=src->name; }
                 tsrc.srcX=p.x; tsrc.srcY=p.y; tsrc.srcZ=p.z;
@@ -152,8 +140,7 @@ void GameServer::initExecutePositionedCommands(const brigadier::NodePtr& exec) {
             asCmd2->action = [this](CommandContext& c){
                 Player* src = static_cast<Player*>(c.source.player);
                 const auto sel=c.arg("posAsTargets").asSelector();
-                std::string inner=c.arg("command").asStr();
-                if(!inner.empty()&&inner.front()=='/') inner=inner.substr(1);
+                std::string inner=commandText(c, "command");
                 int total=0;
                 for(auto &n: sel.playerNames) if(Player* e=findPlayer(*this,n)){
                     brigadier::CommandSource tsrc;
@@ -180,8 +167,7 @@ void GameServer::initExecutePositionedCommands(const brigadier::NodePtr& exec) {
             overCmd->executable = true;
             overCmd->action = [this](CommandContext& c){
                 Player* src = static_cast<Player*>(c.source.player);
-                std::string inner=c.arg("command").asStr();
-                if(!inner.empty()&&inner.front()=='/') inner=inner.substr(1);
+                std::string inner=commandText(c, "command");
                 double ox = src?src->x:0, oz = src?src->z:0;
                 // find top non-air at ox,oz (simple scan)
                 int topY=64;
@@ -213,8 +199,7 @@ void GameServer::initExecuteAnchoredCommands(const brigadier::NodePtr& exec) {
             ancCmd->executable = true;
             ancCmd->action = [this](CommandContext& c){
                 Player* src = static_cast<Player*>(c.source.player);
-                std::string inner=c.arg("command").asStr();
-                if(!inner.empty()&&inner.front()=='/') inner=inner.substr(1);
+                std::string inner=commandText(c, "command");
                 std::string anchor=c.arg("anchor").asStr();
                 brigadier::CommandSource tsrc;
                 if(src){ tsrc.player=src; tsrc.name=src->name; tsrc.srcX=src->x; tsrc.srcY=src->y + (anchor=="eyes"?1.62:0); tsrc.srcZ=src->z; }
@@ -243,8 +228,7 @@ void GameServer::initExecuteRotatedCommands(const brigadier::NodePtr& exec) {
                 auto v = c.arg("rot");
                 brigadier::Vec2f rv{0,0};
                 if(auto* p=std::get_if<brigadier::Vec2f>(&v.v)) rv=*p;
-                std::string inner=c.arg("command").asStr();
-                if(!inner.empty()&&inner.front()=='/') inner=inner.substr(1);
+                std::string inner=commandText(c, "command");
                 brigadier::CommandSource tsrc;
                 if(src){ tsrc.player=src; tsrc.name=src->name; tsrc.srcX=src->x; tsrc.srcY=src->y; tsrc.srcZ=src->z; }
                 tsrc.srcYaw=rv.x; tsrc.srcPitch=rv.y;
@@ -264,8 +248,7 @@ void GameServer::initExecuteRotatedCommands(const brigadier::NodePtr& exec) {
             rotAsCmd->action = [this](CommandContext& c){
                 Player* src = static_cast<Player*>(c.source.player);
                 const auto sel=c.arg("rotAsTargets").asSelector();
-                std::string inner=c.arg("command").asStr();
-                if(!inner.empty()&&inner.front()=='/') inner=inner.substr(1);
+                std::string inner=commandText(c, "command");
                 int total=0;
                 for(auto &n: sel.playerNames) if(Player* e=findPlayer(*this,n)){
                     brigadier::CommandSource tsrc;
@@ -302,8 +285,7 @@ void GameServer::initExecuteFacingCommands(const brigadier::NodePtr& exec) {
                 double dx=target.x-sx, dy=target.y-sy, dz=target.z-sz;
                 float yaw = (float)(std::atan2(-dx, dz)*180/M_PI);
                 float pitch = (float)(-std::atan2(dy, std::sqrt(dx*dx+dz*dz))*180/M_PI);
-                std::string inner=c.arg("command").asStr();
-                if(!inner.empty()&&inner.front()=='/') inner=inner.substr(1);
+                std::string inner=commandText(c, "command");
                 brigadier::CommandSource tsrc;
                 if(src){ tsrc.player=src; tsrc.name=src->name; tsrc.srcX=sx; tsrc.srcY=sy; tsrc.srcZ=sz; }
                 tsrc.srcYaw=yaw; tsrc.srcPitch=pitch;
@@ -334,8 +316,7 @@ void GameServer::initExecuteFacingCommands(const brigadier::NodePtr& exec) {
                 double dx=tx-sx, dy=ty-sy, dz=tz-sz;
                 float yaw=(float)(std::atan2(-dx, dz)*180/M_PI);
                 float pitch=(float)(-std::atan2(dy, std::sqrt(dx*dx+dz*dz))*180/M_PI);
-                std::string inner=c.arg("command").asStr();
-                if(!inner.empty()&&inner.front()=='/') inner=inner.substr(1);
+                std::string inner=commandText(c, "command");
                 brigadier::CommandSource tsrc;
                 if(src){ tsrc.player=src; tsrc.name=src->name; tsrc.srcX=sx; tsrc.srcY=sy; tsrc.srcZ=sz; }
                 tsrc.srcYaw=yaw; tsrc.srcPitch=pitch;
@@ -364,8 +345,7 @@ void GameServer::initExecuteInCommands(const brigadier::NodePtr& exec) {
             inCmd->action = [this](CommandContext& c){
                 Player* src = static_cast<Player*>(c.source.player);
                 std::string dim=c.arg("dimension").asStr();
-                std::string inner=c.arg("command").asStr();
-                if(!inner.empty()&&inner.front()=='/') inner=inner.substr(1);
+                std::string inner=commandText(c, "command");
                 brigadier::CommandSource tsrc;
                 if(src){ tsrc.player=src; tsrc.name=src->name; tsrc.srcX=src->x; tsrc.srcY=src->y; tsrc.srcZ=src->z; tsrc.srcYaw=src->yaw; tsrc.srcPitch=src->pitch; }
                 else tsrc.console=true;
@@ -405,8 +385,7 @@ void GameServer::initExecuteAlignCommands(const brigadier::NodePtr& exec) {
                 if(sw.find('x')!=std::string::npos) x=std::floor(x);
                 if(sw.find('y')!=std::string::npos) y=std::floor(y);
                 if(sw.find('z')!=std::string::npos) z=std::floor(z);
-                std::string inner=c.arg("command").asStr();
-                if(!inner.empty()&&inner.front()=='/') inner=inner.substr(1);
+                std::string inner=commandText(c, "command");
                 brigadier::CommandSource tsrc;
                 if(src){ tsrc.player=src; tsrc.name=src->name; }
                 tsrc.srcX=x; tsrc.srcY=y; tsrc.srcZ=z;
@@ -444,8 +423,7 @@ void GameServer::initExecuteConditionCommands(const brigadier::NodePtr& exec, co
                     bool match = (haveName==wantName);
                     if(isUnless) match=!match;
                     if(!match) return 0;
-                    std::string inner=c.arg("command").asStr();
-                    if(!inner.empty()&&inner.front()=='/') inner=inner.substr(1);
+                    std::string inner=commandText(c, "command");
                     Player* src=static_cast<Player*>(c.source.player);
                     brigadier::CommandSource tsrc;
                     if(src){ tsrc.player=src; tsrc.name=src->name; tsrc.srcX=src->x; tsrc.srcY=src->y; tsrc.srcZ=src->z; }
@@ -478,8 +456,7 @@ void GameServer::initExecuteConditionCommands(const brigadier::NodePtr& exec, co
                     }
                     bool pass = isUnless ? !has : has;
                     if(!pass) return 0;
-                    std::string inner=c.arg("command").asStr();
-                    if(!inner.empty()&&inner.front()=='/') inner=inner.substr(1);
+                    std::string inner=commandText(c, "command");
                     Player* src=static_cast<Player*>(c.source.player);
                     brigadier::CommandSource tsrc;
                     if(src){ tsrc.player=src; tsrc.name=src->name; }
@@ -536,8 +513,7 @@ void GameServer::initExecuteConditionCommands(const brigadier::NodePtr& exec, co
                     }
                     bool pass = isUnless ? !inRange : inRange;
                     if(!pass) return 0;
-                    std::string inner=c.arg("command").asStr();
-                    if(!inner.empty()&&inner.front()=='/') inner=inner.substr(1);
+                    std::string inner=commandText(c, "command");
                     Player* src=static_cast<Player*>(c.source.player);
                     brigadier::CommandSource tsrc;
                     if(src){ tsrc.player=src; tsrc.name=src->name; }
@@ -579,8 +555,7 @@ void GameServer::initExecuteConditionCommands(const brigadier::NodePtr& exec, co
                     const bool val = datapackManager_.testPredicate(pid, predicateContext);
                     bool pass = isUnless ? !val : val;
                     if(!pass) return 0;
-                    std::string inner=c.arg("command").asStr();
-                    if(!inner.empty()&&inner.front()=='/') inner=inner.substr(1);
+                    std::string inner=commandText(c, "command");
                     brigadier::CommandSource tsrc;
                     if(src){ tsrc.player=src; tsrc.name=src->name; }
                     tsrc.dimensionOverride = c.source.dimensionOverride;
@@ -610,8 +585,7 @@ void GameServer::initExecuteConditionCommands(const brigadier::NodePtr& exec, co
                     bool match=(have==want);
                     bool pass=isUnless?!match:match;
                     if(!pass) return 0;
-                    std::string inner=c.arg("command").asStr();
-                    if(!inner.empty()&&inner.front()=='/') inner=inner.substr(1);
+                    std::string inner=commandText(c, "command");
                     brigadier::CommandSource tsrc;
                     if(src){ tsrc.player=src; tsrc.name=src->name; }
                     tsrc.dimensionOverride = c.source.dimensionOverride;
@@ -648,13 +622,8 @@ void GameServer::initExecuteStoreCommands(const brigadier::NodePtr& exec) {
                         Player* src=static_cast<Player*>(c.source.player);
                         const auto sel=c.arg("storeTargets").asSelector();
                         std::string obj=c.arg("storeObjective").asStr();
-                        std::string inner=c.arg("storeCommand").asStr();
-                        if(!inner.empty()&&inner.front()=='/') inner=inner.substr(1);
-                        brigadier::CommandSource srcCtx;
-                        if(src){ srcCtx.player=src; srcCtx.name=src->name; srcCtx.console=false; srcCtx.srcX=src->x; srcCtx.srcY=src->y; srcCtx.srcZ=src->z; }
-                        else srcCtx.console=true;
-                        srcCtx.dimensionOverride = c.source.dimensionOverride;
-                        bindCommandSelector(srcCtx);
+                        std::string inner=commandText(c, "storeCommand");
+                        auto srcCtx = makeNestedCommandSource(*this, src, c.source);
                         std::string targetStr;
                         if(!sel.playerNames.empty()) targetStr=sel.playerNames[0]; else targetStr="@a";
                         return functionEvaluator_.executeWithStore(capturedType, targetStr, obj, inner, srcCtx);
@@ -678,8 +647,7 @@ void GameServer::initExecuteStoreCommands(const brigadier::NodePtr& exec) {
                     bossCmd->action=[this,capturedType2](CommandContext& c){
                         Player* src=static_cast<Player*>(c.source.player);
                         std::string bid=c.arg("bossbarId").asStr();
-                        std::string inner=c.arg("storeCommand").asStr();
-                        if(!inner.empty()&&inner.front()=='/') inner=inner.substr(1);
+                        std::string inner=commandText(c, "storeCommand");
                         brigadier::CommandSource srcCtx;
                         if(src){ srcCtx.player=src; srcCtx.name=src->name; }
                         srcCtx.dimensionOverride = c.source.dimensionOverride;
