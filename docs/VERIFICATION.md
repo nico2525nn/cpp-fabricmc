@@ -2,7 +2,7 @@
 
 This document is the verification contract for the canonical snapshot of Minecraft
 Java Edition **1.21.4**, protocol **769**, and DataVersion **4189**. The source snapshot
-is source integration `c857bfa` with documentation commit `556569b`, rechecked
+is source integration `c857bfa` with documentation commits `556569b..9859e1d`, rechecked
 on **2026-09-19**. The source and documentation snapshots are intentionally
 identified separately.
 Paths under the ignored `build/` tree are local outputs from named runs, not
