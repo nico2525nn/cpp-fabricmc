@@ -66,16 +66,29 @@ static void printVersion() {
                 proto::kMinecraftVersion, proto::kProtocolVersion);
 }
 
-static void printConfigDiagnostics(const ConfigDiagnostics& diagnostics) {
+static void printConfigDiagnostics(const ConfigDiagnostics& diagnostics, bool commandLine) {
     for (const auto& diagnostic : diagnostics.entries) {
         switch (diagnostic.kind) {
         case ConfigDiagnosticKind::InvalidValue:
-            std::fprintf(stderr, "[cppfm] invalid configuration value for %s: %s\n",
-                         diagnostic.key.c_str(), diagnostic.value.c_str());
+            if (commandLine) {
+                // Preserve the long-standing CLI diagnostic consumed by the
+                // lifecycle/operations probes while keeping property errors
+                // distinguishable from command-line errors.
+                std::fprintf(stderr, "[cppfm] invalid command-line value for --%s: %s\n",
+                             diagnostic.key.c_str(), diagnostic.value.c_str());
+            } else {
+                std::fprintf(stderr, "[cppfm] invalid server.properties value for %s: %s\n",
+                             diagnostic.key.c_str(), diagnostic.value.c_str());
+            }
             break;
         case ConfigDiagnosticKind::UnsupportedKey:
-            std::fprintf(stderr, "[cppfm] unsupported configuration key: %s\n",
-                         diagnostic.key.c_str());
+            if (commandLine) {
+                std::fprintf(stderr, "[cppfm] unsupported command-line option: --%s\n",
+                             diagnostic.key.c_str());
+            } else {
+                std::fprintf(stderr, "[cppfm] unsupported configuration key: %s\n",
+                             diagnostic.key.c_str());
+            }
             break;
         case ConfigDiagnosticKind::MissingValue:
             std::fprintf(stderr, "[cppfm] missing value for --%s\n",
@@ -109,10 +122,12 @@ int main(int argc, char** argv) {
         return 1;
     }
     ServerConfig cfg;
+    ConfigDiagnostics propertyDiagnostics;
+    (void)loadServerProperties(cfg, "server.properties", &propertyDiagnostics);
     ConfigDiagnostics diagnostics = commandLine.diagnostics;
-    (void)loadServerProperties(cfg, "server.properties", &diagnostics);
     applyCommandLine(cfg, commandLine, &diagnostics);
-    printConfigDiagnostics(diagnostics);
+    printConfigDiagnostics(propertyDiagnostics, false);
+    printConfigDiagnostics(diagnostics, true);
     if (cfg.jvmClassesDir.empty())
         cfg.jvmClassesDir = RuntimeLayout::embeddedClasses(serverRoot).string();
     if (cfg.jvmLibrariesDir.empty())
