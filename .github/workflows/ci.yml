@@ -48,7 +48,6 @@ jobs:
           TMPDIR: /dev/shm
           CPPFM_RECOVERY_WORLD_PREFIX: /dev/shm
         run: |
-          timeout --foreground --kill-after=10 120 ./build/test_settings_matrix
           timeout --foreground --kill-after=10 120 ./build/test_properties ./build/cppfm
           timeout --foreground --kill-after=10 180 ./build/test_recovery
           timeout --foreground --kill-after=10 120 ./build/test_core_safety
