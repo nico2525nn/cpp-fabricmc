@@ -11,6 +11,13 @@
 namespace cppfm::worldgen {
 
 namespace {
+template <typename T>
+void drainQueue(std::mutex& mutex, std::vector<T>& queue, std::vector<T>& out) {
+    std::lock_guard lock(mutex);
+    out.insert(out.end(), queue.begin(), queue.end());
+    queue.clear();
+}
+
 const gen::BlockDef* B(const char* name) {
     return gen::blockByName(name);
 }
@@ -833,27 +840,11 @@ void StructureManager::enqueuePendingLoot(int x,int y,int z, const std::string& 
     pendingLoot_.push_back({{x,y,z}, loot});
 }
 void StructureManager::drainPendingMobs(std::vector<PendingMob>& out) const {
-    std::lock_guard<std::mutex> lk(pendingMtx_);
-    out.insert(out.end(), pendingMobs_.begin(), pendingMobs_.end());
-    pendingMobs_.clear();
+    drainQueue(pendingMtx_, pendingMobs_, out);
 }
 void StructureManager::drainPendingLoot(std::vector<PendingLoot>& out) const {
-    std::lock_guard<std::mutex> lk(pendingMtx_);
-    out.insert(out.end(), pendingLoot_.begin(), pendingLoot_.end());
-    pendingLoot_.clear();
+    drainQueue(pendingMtx_, pendingLoot_, out);
 }
-std::vector<StructureManager::PendingMob> StructureManager::takePendingMobs() const {
-    std::lock_guard<std::mutex> lk(pendingMtx_);
-    auto v = pendingMobs_; pendingMobs_.clear(); return v;
-}
-std::vector<StructureManager::PendingLoot> StructureManager::takePendingLoot() const {
-    std::lock_guard<std::mutex> lk(pendingMtx_);
-    auto v = pendingLoot_; pendingLoot_.clear(); return v;
-}
-size_t StructureManager::pendingMobCount() const { std::lock_guard<std::mutex> lk(pendingMtx_); return pendingMobs_.size(); }
-size_t StructureManager::pendingLootCount() const { std::lock_guard<std::mutex> lk(pendingMtx_); return pendingLoot_.size(); }
-void StructureManager::clearPending() const { std::lock_guard<std::mutex> lk(pendingMtx_); pendingMobs_.clear(); pendingLoot_.clear(); }
-
 void StructureManager::placeTrialChambersPalette(Chunk& chunk, std::int32_t cx, std::int32_t cz,
                                    std::int32_t originX, std::int32_t originZ,
                                    const std::string& pieceName,

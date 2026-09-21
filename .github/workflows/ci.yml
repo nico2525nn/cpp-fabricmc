@@ -1,0 +1,57 @@
+name: cpp-fabricmc CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-regress:
+    name: Build and non-nightly regression
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            cmake ninja-build g++ pkg-config zlib1g-dev libssl-dev python3
+
+      - name: Configure
+        run: |
+          timeout --foreground --kill-after=10 120 \
+            cmake -S . -B build -G Ninja \
+              -DCMAKE_BUILD_TYPE=RelWithDebInfo
+
+      - name: Build
+        run: |
+          timeout --foreground --kill-after=10 900 \
+            cmake --build build -j2
+
+      - name: Static diff check
+        run: git diff --check
+
+      - name: Deterministic focused gates
+        env:
+          TMPDIR: /dev/shm
+          CPPFM_RECOVERY_WORLD_PREFIX: /dev/shm
+        run: |
+          timeout --foreground --kill-after=10 120 ./build/test_settings_matrix
+          timeout --foreground --kill-after=10 120 ./build/test_properties ./build/cppfm
+          timeout --foreground --kill-after=10 180 ./build/test_recovery
+          timeout --foreground --kill-after=10 120 ./build/test_core_safety
+
+      - name: Full non-nightly CTest regression
+        env:
+          TMPDIR: /dev/shm
+          CPPFM_RECOVERY_WORLD_PREFIX: /dev/shm
+        run: |
+          timeout --foreground --kill-after=10 1800 \
+            ctest --test-dir build \
+              -LE 'nightly|package' --output-on-failure --timeout 600
