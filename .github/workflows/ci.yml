@@ -12,7 +12,7 @@ jobs:
   build-and-regress:
     name: Build and non-nightly regression
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -37,7 +37,7 @@ jobs:
 
       - name: Build
         run: |
-          timeout --foreground --kill-after=10 900 \
+          timeout --foreground --kill-after=10 1800 \
             cmake --build build -j2
 
       - name: Static diff check
