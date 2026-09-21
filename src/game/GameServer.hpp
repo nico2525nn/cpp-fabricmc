@@ -1504,9 +1504,9 @@ public:
             // dimension so a Nether event cannot leak to Overworld clients.  The
             // pointer is set only around the synchronous brain call in mobsTick.
             const MobEntity* sourceMob = brainTickGuard_;
-            const std::optional<std::int8_t> sourceDimension =
-                sourceMob ? std::optional<std::int8_t>(canonicalDimension(sourceMob->dimension))
-                          : std::nullopt;
+            const bool hasSourceDimension = sourceMob != nullptr;
+            const std::int8_t sourceDimension =
+                hasSourceDimension ? canonicalDimension(sourceMob->dimension) : 0;
             for (auto& p : players) {
                 if (!p || p.get() == except) continue;
                 std::shared_ptr<Connection> connection;
@@ -1519,7 +1519,7 @@ public:
                     connection = p->conn;
                 }
                 if (!inPlay || !connection) continue;
-                if (sourceDimension && canonicalDimension(dimension) != *sourceDimension)
+                if (hasSourceDimension && canonicalDimension(dimension) != sourceDimension)
                     continue;
                 connection->trySendPacket(id, body);
             }
