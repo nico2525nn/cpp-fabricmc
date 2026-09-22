@@ -10,21 +10,6 @@
 
 namespace cppfm {
 
-struct DecodedPacket {
-    std::uint8_t id = 0;
-    std::vector<std::uint8_t> payload; // bytes after the id
-
-    ReadBuffer reader() const {
-        return ReadBuffer(payload.data(), payload.size());
-    }
-    ReadBuffer readerWithId(std::vector<std::uint8_t>& tmp) const {
-        tmp.clear();
-        tmp.push_back(id);
-        tmp.insert(tmp.end(), payload.begin(), payload.end());
-        return ReadBuffer(tmp.data(), tmp.size());
-    }
-};
-
 class PacketDecoder {
 public:
     static constexpr std::uint32_t kMaxFrame = 8u * 1024 * 1024;
@@ -87,53 +72,6 @@ public:
             throw std::runtime_error("outer length mismatch");
         std::vector<std::uint8_t> frame = in.bytes(static_cast<std::size_t>(len));
         return decodeFrame(frame, compressionThreshold);
-    }
-
-    // Convenience: decode outer bytes given pointer/len (includes length varint)
-    static std::vector<std::uint8_t> decodeOuter(const std::uint8_t* data, std::size_t n,
-                                                  int compressionThreshold,
-                                                  crypto::AesCfb8* dec = nullptr) {
-        if (n == 0) throw std::runtime_error("empty outer");
-        if (n != 0 && data == nullptr) throw std::invalid_argument("null outer buffer");
-        std::vector<std::uint8_t> outer(data, data + n);
-        return decodeOuter(std::move(outer), compressionThreshold, dec);
-    }
-
-    // ByteBuffer conversion: split id+payload body into DecodedPacket
-    static DecodedPacket toPacket(const std::vector<std::uint8_t>& body) {
-        if (body.empty()) throw std::runtime_error("empty packet body");
-        DecodedPacket p;
-        p.id = body[0];
-        if (body.size() > 1)
-            p.payload.assign(body.begin() + 1, body.end());
-        return p;
-    }
-
-    static DecodedPacket toPacket(std::vector<std::uint8_t>&& body) {
-        if (body.empty()) throw std::runtime_error("empty packet body");
-        DecodedPacket p;
-        p.id = body[0];
-        if (body.size() > 1) {
-            p.payload.assign(std::make_move_iterator(body.begin() + 1),
-                             std::make_move_iterator(body.end()));
-        }
-        return p;
-    }
-
-    // Decode directly from a ReadBuffer that holds id+payload body.
-    static DecodedPacket fromReadBuffer(ReadBuffer& in, std::size_t bodyLen) {
-        if (bodyLen == 0) throw std::runtime_error("empty body");
-        in.need(bodyLen);
-        DecodedPacket p;
-        p.id = in.u8();
-        std::size_t left = bodyLen - 1;
-        if (left) p.payload = in.bytes(left);
-        return p;
-    }
-
-    // Helper to get a ReadBuffer view of id+payload body for handler dispatch
-    static ReadBuffer asReadBuffer(const std::vector<std::uint8_t>& body) {
-        return ReadBuffer(body.data(), body.size());
     }
 
     // Decrypt helper for streaming varint (mirrors Connection::readFrame encrypted varint)

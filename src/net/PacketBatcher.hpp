@@ -29,9 +29,6 @@ public:
     std::mutex mtx_;
     std::atomic<int64_t> lastFlushMs{0};
 
-    void queuePacket(uint8_t id, WriteBuffer body) {
-        queuePacketFor(0, id, std::move(body));
-    }
     void queuePacketFor(std::int8_t dimension, uint8_t id, WriteBuffer body) {
         std::lock_guard lk(mtx_);
         if (dimension != -1 && dimension != 1) dimension = 0;
@@ -44,10 +41,6 @@ public:
     [[nodiscard]] size_t size() {
         std::lock_guard lk(mtx_);
         return queue.size();
-    }
-    void clear() noexcept {
-        std::lock_guard lk(mtx_);
-        queue.clear();
     }
 
     // Flushes queued packets. If multiple, wraps in BundleDelimiter (0x00) start/end

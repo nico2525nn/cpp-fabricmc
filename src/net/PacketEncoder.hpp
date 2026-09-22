@@ -17,15 +17,6 @@ public:
     // Keep the encoder and decoder symmetric.  The decoder rejects a
     // compressed packet whose uncompressed size exceeds this limit.
     static constexpr std::size_t kMaxDeclared = 2u * 1024u * 1024u;
-    // Encode id + payload (WriteBuffer) into a length-prefixed frame. If compressionThreshold >=0, compresses when total >= threshold. If
-    // enc != nullptr, encrypts the outer buffer (length+frame) with AES-CFB8.
-    static std::vector<std::uint8_t> encode(uint8_t id, const WriteBuffer& payload,
-                                            int compressionThreshold = -1,
-                                            crypto::AesCfb8* enc = nullptr) {
-        return encodeRaw(&id, 1, payload.data.data(), payload.data.size(),
-                         compressionThreshold, enc);
-    }
-
     static std::vector<std::uint8_t> encode(const std::vector<std::uint8_t>& idAndPayload,
                                             int compressionThreshold = -1,
                                             crypto::AesCfb8* enc = nullptr) {
@@ -94,36 +85,6 @@ public:
         return outer;
     }
 
-    // ByteBuffer conversion helpers ------------------------------------------------
-    // Convert id + WriteBuffer to raw idAndPayload vector (without framing).
-    static std::vector<std::uint8_t> toBytes(std::uint8_t id, const WriteBuffer& payload) {
-        std::vector<std::uint8_t> out;
-        out.reserve(1 + payload.data.size());
-        out.push_back(id);
-        out.insert(out.end(), payload.data.begin(), payload.data.end());
-        return out;
-    }
-
-    // Convert WriteBuffer payload to vector (raw bytes).
-    static std::vector<std::uint8_t> payloadToBytes(const WriteBuffer& payload) {
-        return payload.data;
-    }
-
-    // Wrap a WriteBuffer payload with an id byte into a WriteBuffer.
-    static WriteBuffer wrap(std::uint8_t id, const WriteBuffer& payload) {
-        WriteBuffer wb;
-        wb.u8(id);
-        wb.raw(payload.data.data(), payload.data.size());
-        return wb;
-    }
-
-    // Build a WriteBuffer from id + raw bytes.
-    static WriteBuffer fromRaw(std::uint8_t id, const std::uint8_t* data, std::size_t n) {
-        WriteBuffer wb;
-        wb.u8(id);
-        if (n) wb.raw(data, n);
-        return wb;
-    }
 };
 
 } // namespace cppfm
