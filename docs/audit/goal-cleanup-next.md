@@ -51,11 +51,14 @@ and the uncalled terrain helpers plus an unreachable density branch. It also
 centralized menu layouts and dimension-store selection without deleting feature
 paths.
 
-Against `origin/main`, the branch currently contains 1,275 source deletions and
-89 source insertions (net source reduction: 1,186 lines). The repository-wide
-10,000-line target remains deliberately unmet; no protected feature, test,
-fixture, generated data, evidence, or virtual/plugin ABI surface was deleted to
-inflate the count.
+The cleanup commits before the follow-up hardening pass account for 1,275
+source deletions and 89 source insertions (net cleanup reduction: 1,186 lines).
+Including the goal hardening and live-regression implementation now in the
+branch, the full `origin/main` source diff is 2,504 deletions and 2,250
+insertions (net source reduction: 254 lines). The repository-wide 10,000-line
+target remains deliberately unmet; no protected feature, test, fixture,
+generated data, evidence, or virtual/plugin ABI surface was deleted to inflate
+the count.
 
 Focused post-change checks passed locally:
 
