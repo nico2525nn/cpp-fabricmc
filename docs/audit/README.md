@@ -29,6 +29,7 @@ The current bounded goal run is indexed by:
 
 - [goal-baseline.md](goal-baseline.md) — dirty-tree snapshot, eligible LOC baseline, and protected manifest.
 - [goal-feature-ledger.md](goal-feature-ledger.md) — 90-row coverage ledger with current row-specific status counts.
+- [goal-followup-evidence-ledger.md](goal-followup-evidence-ledger.md) — additive action ledger for every remaining P0/P1 assertion and release boundary.
 - [goal-live-matrix.md](goal-live-matrix.md) — two real `cppfm` launches covering status, login, configuration, play, CLI/properties, restart, and cleanup.
 - [goal-live-features.md](goal-live-features.md) — real command, tab-completion, entity, wire-consequence, datapack, and persistence transcript.
 - [goal-live-interactions.md](goal-live-interactions.md) — real menu, block-action, metadata, equipment, projectile, and portal packet transcript.

@@ -58,12 +58,14 @@ paths.
 The cleanup commits before the follow-up hardening pass account for 1,275
 source deletions and 89 source insertions (net cleanup reduction: 1,186 lines).
 Including the goal hardening, live-regression implementation, and the latest
-12-line `requestCookie` removal, the full `origin/main` source diff is 2,516
-deletions and 2,250 insertions (net source reduction: 266 lines). The
-repository-wide 10,000-line
-target remains deliberately unmet; no protected feature, test, fixture,
-generated data, evidence, or virtual/plugin ABI surface was deleted to inflate
-the count.
+12-line `requestCookie` removal, the current `main...HEAD` source diff is 2,516
+deletions and 2,250 insertions (net source reduction: 266 lines). A rerun of
+the fixed eligible `src/tests/tools` count at this HEAD is 308 files and
+101,014 lines; the earlier 100,991 → 101,045 snapshot used a prior worktree
+scope and is retained only as historical context. The repository-wide
+10,000-line target remains deliberately unmet; no protected feature, test,
+fixture, generated data, evidence, or virtual/plugin ABI surface was deleted
+to inflate the count.
 
 Focused post-change checks passed locally:
 
@@ -96,3 +98,9 @@ conditional rather than removed without an API decision.
 - `test_goal_live_matrix.py` passed both owned launches, status/login/config/
   play, packet compression, shutdown, restart, and shared-world marker checks.
   Headless GUI and vanilla-client rendering remain explicitly unavailable.
+- The local non-nightly/package CTest run passed 53/54 because `smoke80`
+  intermittently missed the `randomTickSpeed` reset chat response. The direct
+  smoke executable rerun passed 224/224, while the CTest wrapper reproduced the
+  same one-case flake; both runs left no owned `cppfm` process. This is retained
+  in the scratch `final-tests.log` and is not promoted to a product defect
+  without a deterministic reproduction.
