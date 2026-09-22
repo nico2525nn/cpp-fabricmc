@@ -1886,14 +1886,6 @@ void GameServer::itemsTick() {
         }
     }
 }
-void GameServer::spawnItemDrop(double x,double y,double z,std::uint32_t itemId,std::uint8_t cnt,
-                               double vx,double vy,double vz) {
-    spawnItemDropFor(0, x, y, z, itemId, cnt, vx, vy, vz);
-}
-void GameServer::spawnItemDrop(double x,double y,double z,const ItemStack& stack,
-                               double vx,double vy,double vz) {
-    spawnItemDropFor(0, x, y, z, stack, vx, vy, vz);
-}
 void GameServer::spawnItemDropFor(std::int8_t dimension, double x, double y,
                                   double z, std::uint32_t itemId,
                                   std::uint8_t cnt, double vx, double vy,
