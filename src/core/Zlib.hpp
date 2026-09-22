@@ -28,21 +28,6 @@ inline void compressRaw(const std::uint8_t* src, std::size_t n,
     out.resize(bound);
 }
 
-inline void decompressRaw(const std::uint8_t* src, std::size_t n,
-                          std::size_t expected,
-                          std::vector<std::uint8_t>& out) {
-    validateZlibInput(src, n);
-    if (expected > kMaxDecompressedBytes ||
-        expected > static_cast<std::size_t>(std::numeric_limits<uLongf>::max()))
-        throw std::length_error("zlib output is too large");
-    out.resize(expected);
-    uLongf dst = static_cast<uLongf>(expected);
-    if (uncompress(out.data(), &dst, src, static_cast<uLong>(n)) != Z_OK ||
-        dst != expected)
-        throw std::runtime_error("zlib decompress failed");
-    out.resize(dst);
-}
-
 inline void decompressChecked(const std::uint8_t* src, std::size_t n,
                               std::size_t expected,
                               std::vector<std::uint8_t>& out) {

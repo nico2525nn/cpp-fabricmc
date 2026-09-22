@@ -7,7 +7,6 @@
 #include <string_view>
 #include <vector>
 #include <stdexcept>
-#include <optional>
 #include <limits>
 
 namespace cppfm {
@@ -67,8 +66,6 @@ public:
     void varint(std::int32_t v) { writeVarintTo(data, v); }
     void varlong(std::int64_t v) { writeVarlongTo(data, v); }
 
-    void bytes(std::initializer_list<std::uint8_t> v) { data.insert(data.end(), v); }
-
     void string(std::string_view s) {
         if (s.size() > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max()))
             throw std::length_error("string is too long for a VarInt length");
@@ -86,8 +83,6 @@ public:
         if (bytes == nullptr) throw std::invalid_argument("cannot write a null UUID");
         raw(bytes, 16);
     }
-    void uuid(std::string_view hexNoDashes);
-
     std::size_t size() const { return data.size(); }
 };
 
