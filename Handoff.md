@@ -9,12 +9,12 @@
 この節を最初に確認すること。旧節には過去時点の測定値が残っているため、状態判断はこの節、
 `docs/CURRENT_STATE.md`、GitHub Actionsの実行結果を優先する。
 
-- 作業ブランチは `chore/goal-cleanup-next`、HEADは `d875bd657c4eb3306d7145e2306e6311a8ba7b1a`（`test: assert live completion and gameplay fields`）。`origin/chore/goal-cleanup-next`と一致し、確認時の作業ツリーはclean。
+- 作業ブランチは `chore/goal-cleanup-next`。HEADとoriginの一致は `git status --short --branch`、最新commitは `git log -1 --oneline --decorate` で確認する。確認時の作業ツリーはclean。
 - GitHub PRは [#1](https://github.com/nico2525nn/cpp-fabricmc/pull/1)（base `main`）でOPEN。実装・テスト・文書の変更はこのPRへ積み、`main`へ直接pushしない。
 - 今回のコミットは `tests/test_goal_live_features.py` と、`docs/audit/goal-feature-ledger.md`、`docs/audit/goal-followup-evidence-ledger.md` の3ファイル。既存のowned live fixtureで、`/gi`のsuggestions packet（transaction/start/length/match/tooltip）、`/effect give @s speed 5`（EntityEffectのentity/effect/amplifier/duration/flags）、`/xp add @s 5 points`（progress/level/total）を厳密にdecode/assertした。
 - 台帳の主張は保守的に `PASS=13 / PARTIAL=39 / UNVERIFIED=38` のまま。#59、#89、#90は観測したフィールドだけを記録し、全引数候補、XP orb、全effect/removal semanticsは未証明としてPARTIALを維持する。
 - ローカルの `py_compile`、feature live fixture、remaining live fixtureはPASSし、fixtureのowned server cleanupも確認済み。scratchログはリポジトリへ追加していない。
-- HEADのpushでGitHub Actionsが新規発火している。実行IDはpushごとに変わるため固定値を記録せず、`gh run list --branch chore/goal-cleanup-next --limit 1 --json databaseId,headSha,status,conclusion` でHEAD `af8cb09a`に対応するrunを特定する。その前の試行ではSmoke80の起動競合/timeoutとremaining fixtureの一時的なchat raceで失敗したため、最新runの最終 `success` を確認するまでCI PASSと記載しない。
+- HandoffのpushごとにGitHub Actionsが新規発火する。実行IDは固定せず、`gh run list --branch chore/goal-cleanup-next --limit 1 --json databaseId,headSha,status,conclusion` で現在HEADに対応するrunを特定する。その前の試行ではSmoke80の起動競合/timeoutとremaining fixtureの一時的なchat raceで失敗したため、最新runの最終 `success` を確認するまでCI PASSと記載しない。
 - Actionsが失敗した場合でも、テストのassertを弱めて通してはいけない。失敗ログを保存し、必要なら同じrunを一度だけ再実行し、startup raceか実装回帰かを分離する。
 - ユーザー指定により、この引き継ぎ以降はSwarmを使わず、サブエージェントは原則2体程度まで。今回の追補では新規サブエージェントを起動していない。
 - 10%/20%削減や1万行削減の数字合わせのため、feature・protected test・fixture・assertion・evidenceを削除しない。現在もその目標は未達で、callsite-zeroの公開APIはABI審査なしに削除しない。
@@ -39,7 +39,7 @@
 | 対象 | Fabric 1.21.4 / DataVersion 4189 |
 | protocol | 769 |
 | branch | `chore/goal-cleanup-next` |
-| 現在のHEAD | `d875bd657c4eb3306d7145e2306e6311a8ba7b1a` — `test: assert live completion and gameplay fields` |
+| 現在のHEAD | `git log -1 --oneline --decorate` で確認（Handoff更新commitが最新） |
 | origin branch | `origin/chore/goal-cleanup-next` とHEADが一致（確認時点） |
 | tracker上の実装baseline | `335fca5`（plan53/54の統合基準） |
 | JDK | OpenJDK 21。JNI/JVM検出済みのビルド環境 |
