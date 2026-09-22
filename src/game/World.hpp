@@ -531,14 +531,6 @@ public:
         std::shared_lock lock(mutex_);
         return chunks_.size();
     }
-    // W19 async cap: Yarn getTotalChunksLoadedCount / getLoadedChunkCount
-    std::size_t getTotalChunksLoadedCount() const { return loadedChunkCount(); }
-    int getLoadedChunkCount() const { return static_cast<int>(loadedChunkCount()); }
-    void addForcedChunk(std::int32_t cx, std::int32_t cz) {
-        std::unique_lock lock(mutex_);
-        forcedChunks_.insert(chunkKey(cx, cz));
-        ticketManager_.addTicket(cx, cz, TicketType::FORCED, 31, 0);
-    }
     void addSpawnTicket(std::int32_t cx, std::int32_t cz, std::int64_t tick = 0) {
         std::unique_lock lock(mutex_);
         // W17 strict: SPAWN tickets must NOT pollute ForcedChunks persistence (avoid maxLoadedChunks inflation)
@@ -580,10 +572,7 @@ public:
     }
     struct ForcedChunkState {
         static inline std::int64_t toLong(int cx,int cz){ return chunkKey(cx,cz); }
-        static inline std::pair<int,int> fromLong(std::int64_t k){ return chunkKeyDecode(k); }
     };
-    static inline std::int64_t forcedKey(int cx,int cz){ return ForcedChunkState::toLong(cx,cz); }
-    bool isChunkForced(int cx,int cz) const { return isForced(cx,cz); }
     bool setChunkForced(int cx,int cz,bool forced){
         std::int64_t k = ForcedChunkState::toLong(cx,cz);
         std::unique_lock lock(mutex_);
@@ -689,84 +678,7 @@ private:
 
 public:
     void fillTerrain(Chunk& c, std::int32_t cx, std::int32_t cz) const {
-        const auto& table = gen::blockNameToState();
-        const std::uint16_t stone   = (uint16_t)table.at("minecraft:stone");
-        const std::uint16_t dirt    = (uint16_t)table.at("minecraft:dirt");
-        const std::uint16_t grass   = (uint16_t)table.at("minecraft:grass_block");
-        const std::uint16_t sand    = (uint16_t)table.at("minecraft:sand");
-        const std::uint16_t water   = (uint16_t)table.at("minecraft:water");
-        const std::uint16_t bedrock = (uint16_t)table.at("minecraft:bedrock");
-        const std::uint16_t coalOre = (uint16_t)table.at("minecraft:coal_ore");
-        const std::uint16_t ironOre = (uint16_t)table.at("minecraft:iron_ore");
-        const std::uint16_t log     = (uint16_t)table.at("minecraft:oak_log");
-        const std::uint16_t leaves  = (uint16_t)table.at("minecraft:oak_leaves");
-        constexpr int kSea = 63;
-
-        auto setIfIn = [&](std::int32_t wx, int wy, std::int32_t wz,
-                           std::uint16_t st, bool overwriteSolid=false) {
-            const std::int32_t ccx = wx >> 4, ccz = wz >> 4;
-            if (ccx != cx || ccz != cz) return;
-            if (wy < kMinY || wy >= kMaxY) return;
-            const int wyR = wy - kMinY;
-            auto& slot = c.blocks[Chunk::index(wyR >> 4, wyR & 15, wz & 15, wx & 15)];
-            if (!overwriteSolid && slot != 0 && slot != water) return;
-            if (overwriteSolid && slot == 0) return;
-            slot = st;
-        };
-
-        for (int lz = 0; lz < 16; ++lz)
-        for (int lx = 0; lx < 16; ++lx) {
-            const std::int32_t wx = cx * 16 + lx, wz = cz * 16 + lz;
-            const auto col = terrain_.column(wx, wz);
-            const int surf = col.surfaceY;                       // first air (world y)
-            const bool beach = col.ocean || surf <= kSea + 2;
-            for (int y = kMinY; y < kMaxY && y < surf; ++y) {
-                std::uint16_t st;
-                if (y == kMinY) st = bedrock;
-                else if (y >= surf - 1) st = beach ? sand : grass;
-                else if (y >= surf - 4) st = beach ? sand : dirt;
-                else st = stone;
-                if (!col.ocean && y >= -58 && y < surf - 8) {    // spaghetti caves
-                    const double n1 = terrain_.caveA_.sample(wx*0.02, y*0.03, wz*0.02);
-                    const double n2 = terrain_.caveB_.sample(wx*0.023, y*0.033, wz*0.023);
-                    if (n1*n1 + n2*n2 < 0.0025) st = 0;          // carve air
-                }
-                if (st == stone) {                               // ores
-                    const double o = terrain_.oreA_.sample(wx*0.09, y*0.09, wz*0.09);
-                    if (o > 0.78 && y < 128) st = coalOre;
-                    else if (o < -0.80 && y < 62) st = ironOre;
-                }
-                const int wy = y - kMinY;
-                c.blocks[Chunk::index(wy >> 4, wy & 15, lz, lx)] = st;
-            }
-            for (int y = surf; y < kSea; ++y) {                  // oceans/lakes
-                const int wy = y - kMinY;
-                c.blocks[Chunk::index(wy >> 4, wy & 15, lz, lx)] = water;
-            }
-        }
-
-        // trees: up to a few per chunk, fully inside chunk margin
-        int planted = 0;
-        for (int lz = 3; lz < 13 && planted < 3; ++lz)
-        for (int lx = 3; lx < 13 && planted < 3; ++lx) {
-            const std::int32_t wx = cx * 16 + lx, wz = cz * 16 + lz;
-            if (!terrain_.treeCandidate(srv_seed, wx, wz)) continue;
-            const auto col = terrain_.column(wx, wz);
-            if (col.ocean || col.surfaceY <= kSea + 1) continue;
-            const int gyR = col.surfaceY - 1 - kMinY;
-            if (c.blocks[Chunk::index(gyR >> 4, gyR & 15, wz & 15, wx & 15)] != grass) continue;
-            const int trunkH = 4 + static_cast<int>(terrain_.posHash(srv_seed,wx,555,wz)*3);
-            for (int t = 0; t < trunkH; ++t) setIfIn(wx, col.surfaceY + t, wz, log, true);
-            for (int dy = trunkH - 2; dy <= trunkH + 1; ++dy) {
-                const int rad = (dy >= trunkH) ? 1 : 2;
-                for (int dzl = -rad; dzl <= rad; ++dzl)
-                for (int dxl = -rad; dxl <= rad; ++dxl) {
-                    if (dxl==0 && dzl==0 && dy<trunkH) continue;
-                    setIfIn(wx+dxl, col.surfaceY+dy, wz+dzl, leaves, false);
-                }
-            }
-            ++planted;
-        }
+        fillTerrainV3(c, cx, cz);
     }
 
     void fillFlat(Chunk& c) const {
@@ -827,25 +739,6 @@ private:
     std::vector<std::function<void(std::int32_t, std::int32_t, std::int32_t, std::uint16_t, std::uint16_t)>> blockPlaceListeners_;
     std::vector<std::function<void(std::int32_t, std::int32_t, std::int32_t, std::uint16_t, std::uint16_t)>> blockBreakListeners_;
     std::vector<std::function<void(std::int32_t, std::int32_t, std::int32_t, std::uint16_t)>> blockNeighborChangeListeners_;
-};
-
-class BlockNeighborUpdater {
-public:
-    static void updateNeighbors(World& world, std::int32_t x, std::int32_t y, std::int32_t z) {
-        static constexpr int DX[6] = {1,-1,0,0,0,0};
-        static constexpr int DY[6] = {0,0,1,-1,0,0};
-        static constexpr int DZ[6] = {0,0,0,0,1,-1};
-        std::uint16_t state = world.getBlock(x, y, z);
-        for (int d = 0; d < 6; ++d) {
-            world.onBlockNeighborChange(x + DX[d], y + DY[d], z + DZ[d], state);
-        }
-    }
-    static void updateBlockState(World& world, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t newState) {
-        world.updateBlockState(x, y, z, newState);
-    }
-    static void updateBlockState(World& world, World::BlockPosI pos, std::uint16_t newState) {
-        world.updateBlockState(pos, newState);
-    }
 };
 
 } // namespace cppfm
