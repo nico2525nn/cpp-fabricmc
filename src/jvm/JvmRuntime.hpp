@@ -129,7 +129,6 @@ public:
     void stop();
     bool started() const noexcept;
     JvmProvider provider() const noexcept;
-    bool knotActive() const noexcept;
     std::string lastError() const;
     JvmStats stats() const;
 
@@ -181,10 +180,6 @@ public:
     // public only to keep JNI glue independent from the private PImpl.
     std::uint64_t nativeServerHandle() const;
     std::int64_t nativeCurrentTick() const;
-    bool nativeHandleValid(std::uint64_t handle,
-                           HandleKind expected = HandleKind::Unknown) const;
-    HandleKind nativeHandleKind(std::uint64_t handle) const;
-    bool nativeInvalidateHandle(std::uint64_t handle);
     std::string nativePlayerName(std::uint64_t handle) const;
     std::string nativePlayerUuid(std::uint64_t handle) const;
     std::int32_t nativePlayerEntityId(std::uint64_t handle) const;
@@ -248,22 +243,11 @@ public:
     void nativeRegisterTransformedMethod(const std::string& owner,
                                          const std::string& name,
                                          const std::string& descriptor);
-    void nativeRegisterTransformedMethod(const std::string& owner,
-                                         const std::string& name,
-                                         const std::string& descriptor,
-                                         std::uint64_t transformedHash);
-    void nativeRegisterMethodBaseline(const std::string& owner,
-                                      const std::string& name,
-                                      const std::string& descriptor,
-                                      std::uint64_t baselineHash,
-                                      std::uint64_t transformedHash);
     int nativeRoutePath(const std::string& owner, const std::string& name,
                         const std::string& descriptor) const;
     std::uint64_t nativeRouteHash(const std::string& owner,
                                   const std::string& name,
                                   const std::string& descriptor) const;
-    std::int32_t nativeTransformedMethodCount() const;
-    std::int32_t nativeNativeMethodCount() const;
 
     // Called by the native KnotLauncher.installBridge(Class<?>) method.  The
     // erased parameters are JNIEnv*/jclass when JNI is enabled.

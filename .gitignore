@@ -22,6 +22,7 @@ captures/
 plan/
 CONTINUATION_STATE.md
 NEXT_STEPS.md
+/Handoff.md
 *.pdf
 Testing/
 .VSCodeCounter/

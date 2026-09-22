@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <cmath>
+#include <limits>
 #include <mutex>
 
 namespace cppfm {
@@ -22,6 +24,9 @@ struct RateLimiter {
 
     // Returns true when n bytes fit the budget (and deducts them).
     bool consume(double n, std::int64_t nowMs) {
+        if (!std::isfinite(n) || n < 0.0 || !std::isfinite(tokens) ||
+            !std::isfinite(capacity) || !std::isfinite(refillPerSec))
+            return false;
         const double dt = static_cast<double>(nowMs - lastMs) / 1000.0;
         if (dt > 0) {
             tokens = std::min(capacity, tokens + dt * refillPerSec);
@@ -32,7 +37,6 @@ struct RateLimiter {
         return true;
     }
 
-    void reset(std::int64_t nowMs) { tokens = capacity; lastMs = nowMs; }
 };
 
 // ---- vanilla chat-spam throttle (O-13 A3) --------------------------------- Mirrors ServerPlayNetworkHandler.chatSpamThresholdCount =
@@ -52,7 +56,6 @@ struct SpamTracker {
         return count > 200;
     }
 
-    void reset(std::int64_t tickNo) { count = 0; lastTick = tickNo; }
 };
 
 // ---- global accept gate (O-13 A5) ------------------------------------------
@@ -64,18 +67,13 @@ public:
 
     bool allow(std::int64_t nowMs) {
         std::lock_guard<std::mutex> lk(m_);
-        if (nowMs - windowStart_ >= 1000) {
+        if (nowMs < windowStart_ || nowMs - windowStart_ >= 1000) {
             windowStart_ = nowMs;
             count_ = 0;
         }
         if (count_ >= max_) return false;
         ++count_;
         return true;
-    }
-
-    void setMax(int n) {
-        std::lock_guard<std::mutex> lk(m_);
-        max_ = n;
     }
 
 private:

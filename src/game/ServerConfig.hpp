@@ -31,7 +31,9 @@ struct ServerConfig {
     std::string levelType = "normal";
     bool whitelist = false;
     bool onlineMode = false;
+    bool enforceSecureProfile = false;
     bool enforcesSecureChat = false;
+    std::string difficulty = "normal";
     RconConfig rcon;
     std::string levelTypeCli;
     std::uint64_t seed = 1378645410614731511ULL;

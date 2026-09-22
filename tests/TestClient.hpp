@@ -45,7 +45,8 @@ public:
     void confirmTeleport(std::int32_t teleportId);
     void sendPlayerLoaded();
     void sendPosition(double x, double y, double z, bool onGround = true);
-    void sendChatMessage(const std::string& message);
+    void sendChatMessage(const std::string& message, std::int32_t lastSeenOffset = 0,
+                         std::uint32_t acknowledgedMask = 0);
     void sendChatCommand(const std::string& command);
     void sendDig(std::int32_t x, std::int32_t y, std::int32_t z, std::int32_t seq);
     void sendEntityAction(std::int32_t action, std::int32_t jumpBoost = 0);

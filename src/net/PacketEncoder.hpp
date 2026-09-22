@@ -30,6 +30,8 @@ public:
                                                const std::uint8_t* b, std::size_t nb,
                                                int compressionThreshold,
                                                crypto::AesCfb8* enc) {
+        if (compressionThreshold < -1)
+            throw std::invalid_argument("compression threshold must be -1 or non-negative");
         if ((na != 0 && a == nullptr) || (nb != 0 && b == nullptr))
             throw std::invalid_argument("null packet segment");
         if (nb > std::numeric_limits<std::size_t>::max() - na)

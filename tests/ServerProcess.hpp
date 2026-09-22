@@ -11,8 +11,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <system_error>
+#include <vector>
 #include <signal.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -35,6 +37,7 @@ struct ServerProcessOptions {
     std::string motd;
     std::string worldPrefix = "/tmp/cppfm-test-";
     int readyTimeoutMs = 30000;
+    std::vector<std::string> operatorNames;
     bool isolateRuntime = false;
     // A live test may keep a raw TCP readiness policy.  The common owner still
     // owns port collision probing, fork/exec, and the bounded child lifecycle.
@@ -60,7 +63,7 @@ public:
         port = static_cast<std::uint16_t>(
             options.portBase + (static_cast<unsigned>(getpid()) % span));
         worldDir = options.worldPrefix + std::to_string(getpid());
-        if (!prepareWorld()) return false;
+        if (!prepareWorld(options.operatorNames)) return false;
 
         const auto probePort = [&](std::uint16_t candidate) {
             if (options.portProbe) return options.portProbe(candidate);
@@ -74,12 +77,15 @@ public:
             ++port;
         }
 
+        const std::string serverPathAbs =
+            std::filesystem::absolute(serverPath).string();
         pid = fork();
         if (pid < 0) {
             cleanupWorld();
             return false;
         }
         if (pid == 0) {
+            if (::chdir(worldDir.c_str()) != 0) _exit(126);
             if (options.isolateRuntime)
                 (void)setenv("CPPFM_SERVER_DIR", worldDir.c_str(), 1);
 
@@ -96,10 +102,10 @@ public:
                 ? "--online-mode=true" : "--online-mode=false";
             const std::string motdArg = "--motd=" + options.motd;
             if (options.motd.empty()) {
-                execl(serverPath, serverPath, portArg, viewArg, worldArg,
+                execl(serverPathAbs.c_str(), serverPathAbs.c_str(), portArg, viewArg, worldArg,
                       levelArg.c_str(), onlineArg, static_cast<char*>(nullptr));
             } else {
-                execl(serverPath, serverPath, portArg, viewArg, worldArg,
+                execl(serverPathAbs.c_str(), serverPathAbs.c_str(), portArg, viewArg, worldArg,
                       levelArg.c_str(), onlineArg, motdArg.c_str(),
                       static_cast<char*>(nullptr));
             }
@@ -181,12 +187,25 @@ public:
     }
 
 private:
-    bool prepareWorld() {
+    bool prepareWorld(const std::vector<std::string>& operatorNames) {
         std::error_code ec;
         std::filesystem::remove_all(worldDir, ec);
         if (ec) return false;
         std::filesystem::create_directories(worldDir, ec);
-        return !ec;
+        if (ec) return false;
+        if (!operatorNames.empty()) {
+            std::ofstream ops(worldDir + "/ops.json", std::ios::trunc);
+            if (!ops) return false;
+            ops << '[';
+            for (std::size_t i = 0; i < operatorNames.size(); ++i) {
+                if (i != 0) ops << ',';
+                ops << "{\"name\":\"" << operatorNames[i]
+                    << "\",\"level\":4,\"bypassesPlayerLimit\":false}";
+            }
+            ops << ']';
+            if (!ops) return false;
+        }
+        return true;
     }
 
     bool cleanupWorld() noexcept {

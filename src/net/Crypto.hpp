@@ -77,6 +77,23 @@ inline bool verifyRsaSha256(const Bytes& pubDer, const std::uint8_t* data, std::
     return ok;
 }
 
+inline bool verifyRsaSha1(const Bytes& pubDer, const std::uint8_t* data, std::size_t len, const Bytes& sig) {
+    if (pubDer.empty() || sig.empty() || (len != 0 && data == nullptr) ||
+        pubDer.size() > static_cast<std::size_t>(std::numeric_limits<long>::max())) return false;
+    const unsigned char* pp = pubDer.data();
+    EVP_PKEY* pkey = d2i_PUBKEY(nullptr, &pp, static_cast<long>(pubDer.size()));
+    if (!pkey) return false;
+    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+    bool ok = false;
+    if (ctx && EVP_DigestVerifyInit(ctx, nullptr, EVP_sha1(), nullptr, pkey) == 1 &&
+        EVP_DigestVerifyUpdate(ctx, data, len) == 1) {
+        ok = EVP_DigestVerifyFinal(ctx, sig.data(), sig.size()) == 1;
+    }
+    EVP_MD_CTX_free(ctx);
+    EVP_PKEY_free(pkey);
+    return ok;
+}
+
 inline Bytes rsaDecryptP(EVP_PKEY* kp, const std::uint8_t* ct, std::size_t n) {
     if (!kp || (n != 0 && !ct)) throw std::invalid_argument("invalid RSA decrypt input");
     std::unique_ptr<EVP_PKEY_CTX, decltype(&EVP_PKEY_CTX_free)> ctx(

@@ -6,6 +6,7 @@
 #include "../proto/Ids.hpp"
 #include <algorithm>
 #include <cstdlib>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -20,12 +21,19 @@ bool chunkIsSimulated(const World& world, const GameServer* server,
 }
 
 void RandomTickScheduler::scheduleRandomTick(std::int32_t x, std::int32_t y, std::int32_t z, std::int64_t delay) {
-    queue_.insert({x, y, z, delay});
+    // This overload is relative to the scheduler's current logical clock.
+    // Callers that need an absolute deadline use the explicit `now` overload.
+    const std::int64_t due = delay > 0 && currentTick_ > std::numeric_limits<std::int64_t>::max() - delay
+        ? std::numeric_limits<std::int64_t>::max() : currentTick_ + delay;
+    queue_.insert({x, y, z, due});
 }
 void RandomTickScheduler::scheduleRandomTick(std::int32_t x, std::int32_t y, std::int32_t z, std::int64_t delay, std::int64_t now) {
-    queue_.insert({x, y, z, now + delay});
+    const std::int64_t due = delay > 0 && now > std::numeric_limits<std::int64_t>::max() - delay
+        ? std::numeric_limits<std::int64_t>::max() : now + delay;
+    queue_.insert({x, y, z, due});
 }
 void RandomTickScheduler::tick(std::int64_t now) {
+    currentTick_ = now;
     while (!queue_.empty()) {
         auto it = queue_.begin();
         if (it->dueTick > now) break;
@@ -301,7 +309,7 @@ void CropBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z
     if (!d) return;
     if (std::string(d->name).find("beetroots") != std::string::npos) maxAge = 3;
     if (age >= maxAge) return;
-    const int light = getLight(w,x,y+1,z);
+    const int light = getLight(w,x,y,z);
     if (light < 9) return;
     float f = growthSpeed(w,x,y,z);
     int denom = (int)(25.0f / f) + 1;
@@ -499,9 +507,6 @@ int BambooBehavior::countHeight(const World& w, std::int32_t x, std::int32_t y, 
 }
 void BambooBehavior::updateLeaves(World& w, std::int32_t baseX, std::int32_t baseY, std::int32_t baseZ, int h, GameServer* srv) {
     bambooUpdateLeaves(w, baseX, baseY, baseZ, h, srv);
-}
-std::int32_t BambooBehavior::findBaseY(const World& w, std::int32_t x, std::int32_t y, std::int32_t z) {
-    return bambooFindBaseY(w,x,y,z);
 }
 void GrassBlockBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state, std::int64_t now, GameServer* srv) {
     randomTick(w,x,y,z,state,now,srv);
@@ -860,13 +865,16 @@ void ChorusFlowerBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::i
             }
             return;
         } else {
-            // no branch -> die age 5
+            // A failed growth attempt advances the flower by one age, not
+            // straight to the terminal age.  The old code killed age-0..3
+            // flowers on their first blocked random tick.
             std::vector<std::pair<std::string_view,std::string_view>> props;
             for(auto&[k,v]: gen::propsOf(state)) if(k!="age") props.emplace_back(k,v);
-            props.emplace_back("age","5");
-            uint16_t dead = static_cast<uint16_t>(gen::stateWithProps(*d, props));
-            w.setBlock(x,y,z, dead);
-            if(srv) srv->broadcastBlockChangeFor(w.dimensionId(), x, y, z, dead);
+            const std::string ageString = std::to_string(age + 1);
+            props.emplace_back("age", ageString);
+            uint16_t nextState = static_cast<uint16_t>(gen::stateWithProps(*d, props));
+            w.setBlock(x,y,z, nextState);
+            if(srv) srv->broadcastBlockChangeFor(w.dimensionId(), x, y, z, nextState);
             return;
         }
     }
@@ -1020,24 +1028,15 @@ std::optional<FlammableEntry> FlammableRegistry::get(const std::string& blockNam
     if (blockName.find("leaves")!=std::string::npos) return FlammableEntry{30,60};
     if (blockName.find("wool")!=std::string::npos) return FlammableEntry{30,60};
     if (blockName=="minecraft:hay_block") return FlammableEntry{60,20};
+    if (blockName.find("bamboo")!=std::string::npos) return FlammableEntry{5,20};
+    if (blockName.find("fence")!=std::string::npos) return FlammableEntry{5,20};
+    if (blockName.find("carpet")!=std::string::npos) return FlammableEntry{30,60};
+    if (blockName.find("scaffolding")!=std::string::npos) return FlammableEntry{5,20};
     return std::nullopt;
 }
 
 bool FireBehavior::isFlammable(const std::string& blockName) const {
     return FlammableRegistry::instance().get(blockName).has_value();
-    if (blockName.find("planks") != std::string::npos) return true;
-    if (blockName.find("_log") != std::string::npos) return true;
-    if (blockName.find("leaves") != std::string::npos) return true;
-    if (blockName.find("wool") != std::string::npos) return true;
-    if (blockName == "minecraft:hay_block") return true;
-    if (blockName.find("bamboo")!=std::string::npos) return true;
-    if (blockName.find("vine")!=std::string::npos) return true;
-    if (blockName == "minecraft:tnt") return true;
-    if (blockName.find("fence")!=std::string::npos) return true;
-    if (blockName.find("carpet")!=std::string::npos) return true;
-    // also coal block, etc? include broader
-    if (blockName.find("scaffolding")!=std::string::npos) return true;
-    return false;
 }
 
 static bool isInfiniburnBlock(const World& w, std::int32_t x, std::int32_t y, std::int32_t z, GameServer* srv){
@@ -1266,8 +1265,10 @@ void CampfireBehavior::tick(World& w, std::int32_t x, std::int32_t y, std::int32
                             std::uint16_t state, std::int64_t now, GameServer* srv) {
     bool lit = false;
     for (auto& [k,v] : gen::propsOf(state)) if (k=="lit" && v=="true") lit = true;
+    // Campfires are not age-based fire blocks and do not spread fire.  Passing
+    // their state to FireBehavior adds an invalid `age` property and can
+    // silently reset lit/waterlogged/facing state.
     if (!lit) return;
-    FireBehavior::tick(w, x, y, z, state, now, srv);
 }
 
 }

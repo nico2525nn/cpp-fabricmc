@@ -73,6 +73,43 @@
 
 namespace cppfm {
 
+// The simulation gate is recursive because command/event callbacks can re-enter
+// the server.  Connection::sendFramed uses the same thread-local ownership
+// state to release the gate only while a socket write may block.
+
+class SimulationDispatchGuard {
+public:
+    explicit SimulationDispatchGuard(std::recursive_mutex& mutex)
+        : lock_(mutex) {
+        (void)mutex;
+        ++activeSimulationDispatchDepth;
+    }
+    SimulationDispatchGuard(const SimulationDispatchGuard&) = delete;
+    SimulationDispatchGuard& operator=(const SimulationDispatchGuard&) = delete;
+
+    void unlock() {
+        if (!lock_.owns_lock()) return;
+        --activeSimulationDispatchDepth;
+        lock_.unlock();
+    }
+    void lock() {
+        if (lock_.owns_lock()) return;
+        lock_.lock();
+        ++activeSimulationDispatchDepth;
+    }
+    bool owns_lock() const noexcept { return lock_.owns_lock(); }
+
+    ~SimulationDispatchGuard() {
+        if (lock_.owns_lock()) {
+            --activeSimulationDispatchDepth;
+            lock_.unlock();
+        }
+    }
+
+private:
+    std::unique_lock<std::recursive_mutex> lock_;
+};
+
 // Player inventory slot = full ItemStack (components preserved end-to-end).
 using InvSlot = ItemStack;
 
@@ -150,11 +187,17 @@ struct Player {
     std::unique_ptr<StatsManager> stats;
     std::unique_ptr<AdvancementManager> advancements;
     std::int64_t joinTick = 0;
+    std::unordered_set<std::string> enabledTriggerObjectives;
     std::vector<EffectInstance> effects;
     bool hasChatSession = false;
+    bool onlineAuthenticated = false;
+    std::vector<std::vector<std::uint8_t>> mojangProfileKeys;
     std::vector<std::uint8_t> chatPubKey;
+    std::vector<std::uint8_t> chatSessionSignature;
+    std::array<std::uint8_t, 16> chatSessionId{};
+    std::int32_t chatMessageIndex = 0;
     std::int64_t chatSessionExpiry = 0;
-    std::vector<uint8_t> lastSeenSignatures;
+    std::vector<std::int64_t> lastSeenChatSalts;
     std::unordered_map<std::string, std::vector<std::uint8_t>> cookies;
     std::int8_t dimension = 0;
     std::int64_t portalCooldownUntilTick = -100000;
@@ -265,7 +308,7 @@ private:
     void handleConfiguration();
     void handlePlay();
     // loops (packs + finish-ack) share this helper. Only unknown ids throw.
-    enum class ConfigWaitResult { Continue, FinishAck, PacksDone };
+    enum class ConfigWaitResult { Continue, FinishAck, PacksDone, Abort };
     ConfigWaitResult handleOneConfigPacket(ReadBuffer& in);
     void onEnterPlay();
     void tickChunksAround(double px, double pz);
@@ -416,6 +459,9 @@ private:
     std::int32_t menuWindowCounter_ = 0;
     std::int32_t villagerWindowSeq_ = 100;
     std::int32_t tradingVillager_ = -1;  // villager entity id while trading
+    std::array<std::uint8_t, 16> resourcePackUuid_{};
+    bool resourcePackRequired_ = false;
+    bool resourcePackLoaded_ = false;
 };
 
 class GameServer {
@@ -450,6 +496,7 @@ public:
                  cfg.seed),
           startTime_(cfg.startTime),
           ioPool_(static_cast<std::size_t>(std::max(1, cfg_.ioWorkerThreads))) {
+        difficulty_ = cfg_.difficulty;
         netherWorld_ = std::make_unique<World>(
             "minecraft:nether_wastes", LevelType::Nether, cfg.seed ^ 0x4E37ULL);
         endWorld_ = std::make_unique<World>(
@@ -698,6 +745,9 @@ public:
         }
         spawnProtection_ = cfg_.spawnProtection;
         persist_ = std::make_unique<Persistence>(world_, cfg_.worldDir, cfg_.worldBiome);
+        blockEntities_.setDirtyCallback([this](std::int32_t cx, std::int32_t cz) {
+            if (persist_) persist_->markDirty(cx, cz);
+        });
         persist_->setDifficulty(difficulty_);
         persist_->setWorldBorder(worldBorderDiameter_, worldBorderCenterX_, worldBorderCenterZ_);
         {   // biome codec maps + chunk extras (block entities)
@@ -716,6 +766,14 @@ public:
                 },
                 [this](const nbt::Value& root) {
                     blockEntities_.readChunkNbt(root);
+                });
+            persist_->setChunkSaveBarrier(
+                [this](std::int32_t cx, std::int32_t cz) {
+                    // Persistence may invoke the barrier on its worker.  All
+                    // redstone/world/light/broadcast callbacks must still run
+                    // on the same serialized simulation domain as ticks.
+                    SimulationDispatchGuard simulation(simulationDispatchMtx_);
+                    redstone_->flushPendingPistons(cx, cz);
                 });
         }
         persist_->setLevelStateProvider(
@@ -786,6 +844,12 @@ public:
                 }
             });
         persist_->loadLevelData();
+        // level.dat is authoritative for an existing world's seed.  Apply it
+        // to all dimensions before their first chunk is generated.
+        cfg_.seed = world_.seed();
+        cfg_.hashedSeed = static_cast<std::int64_t>(cfg_.seed);
+        netherWorld_->setSeed(cfg_.seed ^ 0x4E37ULL);
+        endWorld_->setSeed(cfg_.seed ^ 0xE11DULL);
         for (auto sub : {"DIM-1", "DIM1"}) {
             std::string p = cfg_.worldDir + "/" + std::string(sub) + "/level.dat";
             if (std::filesystem::exists(p)) {
@@ -795,8 +859,10 @@ public:
             std::string pn = cfg_.worldDir + "/" + std::string(sub) + "/level.dat.new";
             if (std::filesystem::exists(pn)) { std::error_code ec; std::filesystem::remove(pn, ec); }
         }
-        // sync persistence's worldborder/difficulty (file may have overridden) — include lerp
-        difficulty_ = persist_->difficulty();
+        // server.properties is the startup authority for difficulty; preserve
+        // worldborder interpolation state from level.dat.
+        difficulty_ = cfg_.difficulty;
+        persist_->setDifficulty(difficulty_);
         worldBorderDiameter_ = persist_->worldBorderDiameter();
         worldBorderCenterX_ = persist_->worldBorderCenterX();
         worldBorderCenterZ_ = persist_->worldBorderCenterZ();
@@ -839,6 +905,16 @@ public:
                 },
                 [this, dimension](const nbt::Value& root) {
                     blockEntitiesFor(dimension).readChunkNbt(root);
+                });
+            pw->setChunkSaveBarrier(
+                [this, dimension](std::int32_t cx, std::int32_t cz) {
+                    SimulationDispatchGuard simulation(simulationDispatchMtx_);
+                    redstoneFor(dimension).flushPendingPistons(cx, cz);
+                });
+            blockEntitiesFor(dimension).setDirtyCallback(
+                [this, dimension](std::int32_t cx, std::int32_t cz) {
+                    auto& persistence = dimPersist_[dimension == -1 ? 0 : 1];
+                    if (persistence) persistence->markDirty(cx, cz);
                 });
             pw->start();
         }
@@ -1234,14 +1310,17 @@ public:
     void initDataItemReplaceCommands(
         const brigadier::NodePtr& replaceLit,
         const std::function<ItemStack*(Player&, const std::string&)>& slotToPlayerStack,
-        const std::function<ItemStack*(const brigadier::BlockPosI&, const std::string&)>& slotToBlockStack,
+        const std::function<BlockEntityStore::SlotRef(
+            std::int8_t, const brigadier::BlockPosI&, const std::string&)>& slotToBlockStack,
         const std::function<ItemStack(const std::string&, int)>& parseItemStack);
     void initDataItemModifyCommands(
         const brigadier::NodePtr& modifyLit,
-        const std::function<ItemStack*(const brigadier::BlockPosI&, const std::string&)>& slotToBlockStack);
+        const std::function<BlockEntityStore::SlotRef(
+            std::int8_t, const brigadier::BlockPosI&, const std::string&)>& slotToBlockStack);
     void initDataItemRemoveCommands(
         const brigadier::NodePtr& removeLit,
-        const std::function<ItemStack*(const brigadier::BlockPosI&, const std::string&)>& slotToBlockStack);
+        const std::function<BlockEntityStore::SlotRef(
+            std::int8_t, const brigadier::BlockPosI&, const std::string&)>& slotToBlockStack);
     void initExecuteRunCommands(const brigadier::NodePtr& exec);
     void initExecuteAsCommands(const brigadier::NodePtr& exec);
     void initExecuteAtCommands(const brigadier::NodePtr& exec);
@@ -1435,7 +1514,7 @@ public:
             }
             if (connection) {
                 connection->trySendPacket(proto::pl::sc::Disconnect, kick);
-                connection->abort();
+                connection->close();
             }
             std::fprintf(stderr, "[cppfm] duplicate login %s: kicked older session\n",
                          name.c_str());
@@ -1459,6 +1538,14 @@ public:
         broadcastPacketExcept(except, proto::pl::sc::SystemChat, body);
     }
     void broadcastPacketExcept(const Player* except, std::uint8_t id, const WriteBuffer& body) {
+        // Keep chunk snapshots and the block/entity updates that modify them
+        // in one ordered low-priority stream. Control and chat may overtake it,
+        // but a block update must not overtake its snapshot.
+        const bool chunkDependent =
+            id == proto::pl::sc::BundleDelimiter ||
+            id == proto::pl::sc::BlockUpdate ||
+            id == proto::pl::sc::MultiBlockChange ||
+            id == proto::pl::sc::BlockEntityData;
         runWithoutMobStateLock([&] {
             const auto players = playersSnapshot();
             // Brain actions historically use the dimension-less broadcast helper.
@@ -1469,6 +1556,8 @@ public:
             const bool hasSourceDimension = sourceMob != nullptr;
             const std::int8_t sourceDimension =
                 hasSourceDimension ? canonicalDimension(sourceMob->dimension) : 0;
+            // Recipient state and frames remain serialized; Connection owns
+            // the asynchronous socket handoff.
             for (auto& p : players) {
                 if (!p || p.get() == except) continue;
                 std::shared_ptr<Connection> connection;
@@ -1483,7 +1572,8 @@ public:
                 if (!inPlay || !connection) continue;
                 if (hasSourceDimension && canonicalDimension(dimension) != sourceDimension)
                     continue;
-                connection->trySendPacket(id, body);
+                if (chunkDependent) connection->trySendPacketLowPriority(id, body);
+                else connection->trySendPacket(id, body);
             }
         });
     }
@@ -1491,6 +1581,11 @@ public:
                                           const Player* except,
                                           std::uint8_t id,
                                           const WriteBuffer& body) {
+        const bool chunkDependent =
+            id == proto::pl::sc::BundleDelimiter ||
+            id == proto::pl::sc::BlockUpdate ||
+            id == proto::pl::sc::MultiBlockChange ||
+            id == proto::pl::sc::BlockEntityData;
         runWithoutMobStateLock([&] {
             const auto target = canonicalDimension(dimension);
             const auto players = playersSnapshot();
@@ -1507,7 +1602,8 @@ public:
                 }
                 if (!inPlay || !connection ||
                     canonicalDimension(playerDimension) != target) continue;
-                connection->trySendPacket(id, body);
+                if (chunkDependent) connection->trySendPacketLowPriority(id, body);
+                else connection->trySendPacket(id, body);
             }
         });
     }
@@ -1947,9 +2043,26 @@ public:
     FunctionEvaluator functionEvaluator_;
     DatapackManager& datapackManager() { return datapackManager_; }
     const DatapackManager& datapackManager() const { return datapackManager_; }
+    void refreshDatapackConsumers() {
+        tagManager_ = datapackManager_.tagManager;
+        lootTables_ = datapackManager_.lootTables;
+        recipes_.clear();
+        recipes_.loadDefaults();
+        recipes_.loadDirectory(cfg_.recipesDir);
+        tagManager_.applyToRecipeTags(recipes_.tags_);
+        recipes_.syncTagsFrom(tagManager_);
+        {
+            std::lock_guard cacheLock(advMergeMtx_);
+            cachedMergedAdv_.clear();
+            cachedAdvRawSize_ = 0;
+        }
+    }
     FunctionEvaluator& functionEvaluator() { return functionEvaluator_; }
     const FunctionEvaluator& functionEvaluator() const { return functionEvaluator_; }
-    void tickScheduledFunctions() { functionEvaluator_.tick(tickNo_); }
+    void tickScheduledFunctions() {
+        std::lock_guard commandLock(commandDispatchMtx_);
+        functionEvaluator_.tick(tickNo_);
+    }
 private:
     struct CachedChunk {
         std::uint64_t rev;
@@ -1975,10 +2088,11 @@ private:
     // from running_: embedded callers and tests legitimately dispatch
     // commands before the network loop has been started.
     std::atomic<bool> shutdownStarted_{false};
-    // RCON, console, and session threads may submit commands concurrently.
-    // Serialize only the native Brigadier/state mutation section; JVM command
-    // callbacks run before this lock so a callback can safely re-enter
-    // dispatchConsole() on the same thread without creating a lock cycle.
+    // Every authoritative ingress (tick, packet, console, and RCON command)
+    // takes this lock before touching world/player state.  The recursive mutex
+    // permits command callbacks and scheduled functions to re-enter safely.
+    // The narrower command lock serializes command registration/evaluation.
+    mutable std::recursive_mutex simulationDispatchMtx_;
     mutable std::recursive_mutex commandDispatchMtx_;
     std::atomic<platform::socket_t> listenFd_{platform::invalid_socket};
     AcceptGate acceptGate_{20};

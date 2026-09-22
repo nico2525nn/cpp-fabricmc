@@ -1,6 +1,11 @@
 #pragma once
 #include <cstdint>
+#include <condition_variable>
+#include <exception>
 #include <functional>
+#include <mutex>
+#include <thread>
+#include <unordered_map>
 #include <vector>
 #include <string>
 #include "../api/EventBus.hpp"
@@ -52,35 +57,55 @@ struct EntityLandEvent {
 class BlockEventDispatcher {
 public:
     // Classic Fabric-style callbacks
-    void onBlockPlace(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t oldState, std::uint16_t newState, void* player = nullptr) {
-        BlockEvent ev; ev.type = BlockEvent::Type::Place; ev.x=x; ev.y=y; ev.z=z; ev.oldState=oldState; ev.newState=newState; ev.player=player;
-        for (auto& h : placeHandlers_) h(ev);
-        BlockPlaceBlockEvent cev; cev.player=player; cev.x=x; cev.y=y; cev.z=z; cev.oldState=oldState; cev.newState=newState;
-        placeHook_.fire(cev);
+    bool onBlockPlace(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t oldState, std::uint16_t newState, void* player = nullptr) {
+        BlockEvent ev; ev.type=BlockEvent::Type::Place; ev.x=x; ev.y=y; ev.z=z; ev.oldState=oldState; ev.newState=newState; ev.player=player;
+        BlockPlaceBlockEvent clientEvent; clientEvent.player=player; clientEvent.x=x; clientEvent.y=y; clientEvent.z=z; clientEvent.oldState=oldState; clientEvent.newState=newState;
+        return dispatchCancelable(placeHandlers_, ev, clientEvent, placeHook_);
     }
-    void onBlockBreak(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t oldState, void* player = nullptr) {
-        BlockEvent ev; ev.type = BlockEvent::Type::Break; ev.x=x; ev.y=y; ev.z=z; ev.oldState=oldState; ev.player=player;
-        for (auto& h : breakHandlers_) h(ev);
-        BlockBreakBlockEvent cev; cev.player=player; cev.x=x; cev.y=y; cev.z=z; cev.oldState=oldState;
-        breakHook_.fire(cev);
+    bool onBlockBreak(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t oldState, void* player = nullptr) {
+        BlockEvent ev; ev.type=BlockEvent::Type::Break; ev.x=x; ev.y=y; ev.z=z; ev.oldState=oldState; ev.player=player;
+        BlockBreakBlockEvent clientEvent; clientEvent.player=player; clientEvent.x=x; clientEvent.y=y; clientEvent.z=z; clientEvent.oldState=oldState;
+        return dispatchCancelable(breakHandlers_, ev, clientEvent, breakHook_);
     }
-    void onBlockClicked(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state, int face, void* player = nullptr) {
-        BlockEvent ev; ev.type = BlockEvent::Type::Clicked; ev.x=x; ev.y=y; ev.z=z; ev.oldState=state; ev.newState=state; ev.player=player; ev.face=face;
-        for (auto& h : clickedHandlers_) h(ev);
-        BlockClickedEvent cev; cev.player=player; cev.x=x; cev.y=y; cev.z=z; cev.state=state; cev.face=face;
-        clickedHook_.fire(cev);
+    bool onBlockClicked(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state, int face, void* player = nullptr) {
+        BlockEvent ev; ev.type=BlockEvent::Type::Clicked; ev.x=x; ev.y=y; ev.z=z; ev.oldState=state; ev.newState=state; ev.player=player; ev.face=face;
+        BlockClickedEvent clientEvent; clientEvent.player=player; clientEvent.x=x; clientEvent.y=y; clientEvent.z=z; clientEvent.state=state; clientEvent.face=face;
+        return dispatchCancelable(clickedHandlers_, ev, clientEvent, clickedHook_);
     }
     void onEntityLand(void* entity, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t blockState, double fallDistance = 0) {
+        LegacyDispatchScope dispatchScope(*this);
         BlockEvent ev; ev.type = BlockEvent::Type::EntityLand; ev.x=x; ev.y=y; ev.z=z; ev.oldState=blockState; ev.entity=entity; ev.face=0;
-        for (auto& h : landHandlers_) h(ev);
+        auto handlers = snapshotHandlers(landHandlers_);
+        for (auto& h : handlers) h(ev);
         EntityLandEvent lev; lev.entity=entity; lev.x=x; lev.y=y; lev.z=z; lev.blockState=blockState; lev.fallDistance=fallDistance;
         landHook_.fire(lev);
     }
 
-    void addOnBlockPlaceHandler(std::function<void(const BlockEvent&)> h) { placeHandlers_.push_back(std::move(h)); }
-    void addOnBlockBreakHandler(std::function<void(const BlockEvent&)> h) { breakHandlers_.push_back(std::move(h)); }
-    void addOnBlockClickedHandler(std::function<void(const BlockEvent&)> h) { clickedHandlers_.push_back(std::move(h)); }
-    void addOnEntityLandHandler(std::function<void(const BlockEvent&)> h) { landHandlers_.push_back(std::move(h)); }
+    void addOnBlockPlaceHandler(std::function<void(const BlockEvent&)> h) { addHandler(placeHandlers_, std::move(h)); }
+    void addOnBlockBreakHandler(std::function<void(const BlockEvent&)> h) { addHandler(breakHandlers_, std::move(h)); }
+    void addOnBlockClickedHandler(std::function<void(const BlockEvent&)> h) { addHandler(clickedHandlers_, std::move(h)); }
+    void addOnEntityLandHandler(std::function<void(const BlockEvent&)> h) { addHandler(landHandlers_, std::move(h)); }
+
+    // Legacy callbacks have no individual token for ABI compatibility. JVM
+    // unload uses this bulk removal fence before invalidating mod handles.
+    void clearLegacyHandlers() {
+        std::unique_lock lock(legacyMtx_);
+        const auto currentThread = std::this_thread::get_id();
+        const auto currentIt = activeDispatchesByThread_.find(currentThread);
+        const std::size_t currentDispatches =
+            currentIt == activeDispatchesByThread_.end() ? 0 : currentIt->second;
+        clearingLegacyHandlers_ = true;
+        legacyCv_.wait(lock, [&] {
+            return activeLegacyDispatches_ <= currentDispatches;
+        });
+        placeHandlers_.clear();
+        breakHandlers_.clear();
+        clickedHandlers_.clear();
+        landHandlers_.clear();
+        clearingLegacyHandlers_ = false;
+        lock.unlock();
+        legacyCv_.notify_all();
+    }
 
     api::EventHook<BlockPlaceBlockEvent>& placeHook() { return placeHook_; }
     api::EventHook<BlockBreakBlockEvent>& breakHook() { return breakHook_; }
@@ -88,10 +113,80 @@ public:
     api::EventHook<EntityLandEvent>& landHook() { return landHook_; }
 
 private:
-    std::vector<std::function<void(const BlockEvent&)>> placeHandlers_;
-    std::vector<std::function<void(const BlockEvent&)>> breakHandlers_;
-    std::vector<std::function<void(const BlockEvent&)>> clickedHandlers_;
-    std::vector<std::function<void(const BlockEvent&)>> landHandlers_;
+    using LegacyHandler = std::function<void(const BlockEvent&)>;
+
+    class LegacyDispatchScope {
+    public:
+        explicit LegacyDispatchScope(BlockEventDispatcher& owner) : owner_(owner) {
+            std::unique_lock lock(owner_.legacyMtx_);
+            const auto currentThread = std::this_thread::get_id();
+            owner_.legacyCv_.wait(lock, [&] {
+                return !owner_.clearingLegacyHandlers_ ||
+                       owner_.activeDispatchesByThread_.count(currentThread) != 0;
+            });
+            ++owner_.activeLegacyDispatches_;
+            ++owner_.activeDispatchesByThread_[currentThread];
+        }
+
+        ~LegacyDispatchScope() {
+            std::lock_guard lock(owner_.legacyMtx_);
+            --owner_.activeLegacyDispatches_;
+            const auto currentThread = std::this_thread::get_id();
+            auto it = owner_.activeDispatchesByThread_.find(currentThread);
+            if (it != owner_.activeDispatchesByThread_.end()) {
+                if (--it->second == 0) owner_.activeDispatchesByThread_.erase(it);
+            }
+            owner_.legacyCv_.notify_all();
+        }
+
+        LegacyDispatchScope(const LegacyDispatchScope&) = delete;
+        LegacyDispatchScope& operator=(const LegacyDispatchScope&) = delete;
+
+    private:
+        BlockEventDispatcher& owner_;
+    };
+
+    template <typename ClientEvent>
+    bool dispatchCancelable(std::vector<LegacyHandler>& handlers,
+                            BlockEvent& legacyEvent,
+                            ClientEvent& clientEvent,
+                            api::EventHook<ClientEvent>& hook) {
+        LegacyDispatchScope dispatchScope(*this);
+        try {
+            auto snapshot = snapshotHandlers(handlers);
+            for (auto& handler : snapshot) handler(legacyEvent);
+            return hook.fire(clientEvent);
+        } catch (...) {
+            return false;
+        }
+    }
+
+    template <typename Handler>
+    void addHandler(std::vector<Handler>& handlers, Handler handler) {
+        std::unique_lock lock(legacyMtx_);
+        const auto currentThread = std::this_thread::get_id();
+        legacyCv_.wait(lock, [&] {
+            return !clearingLegacyHandlers_ ||
+                   activeDispatchesByThread_.count(currentThread) != 0;
+        });
+        handlers.push_back(std::move(handler));
+    }
+
+    template <typename Handler>
+    std::vector<Handler> snapshotHandlers(const std::vector<Handler>& handlers) const {
+        std::lock_guard lock(legacyMtx_);
+        return handlers;
+    }
+
+    mutable std::mutex legacyMtx_;
+    std::condition_variable legacyCv_;
+    std::size_t activeLegacyDispatches_ = 0;
+    std::unordered_map<std::thread::id, std::size_t> activeDispatchesByThread_;
+    bool clearingLegacyHandlers_ = false;
+    std::vector<LegacyHandler> placeHandlers_;
+    std::vector<LegacyHandler> breakHandlers_;
+    std::vector<LegacyHandler> clickedHandlers_;
+    std::vector<LegacyHandler> landHandlers_;
     api::EventHook<BlockPlaceBlockEvent> placeHook_;
     api::EventHook<BlockBreakBlockEvent> breakHook_;
     api::EventHook<BlockClickedEvent> clickedHook_;

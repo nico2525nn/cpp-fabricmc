@@ -308,7 +308,9 @@ static void liveTests(const char* bin) {
     serverOptions.portSpan = 2500;
     serverOptions.viewDistance = 4;
     serverOptions.readyTimeoutMs = 20000;
-    serverOptions.worldPrefix = "/tmp/floodnet-";
+    const char* floodWorldPrefix = std::getenv("CPPFM_FLOOD_WORLD_PREFIX");
+    serverOptions.worldPrefix = (floodWorldPrefix && *floodWorldPrefix)
+        ? floodWorldPrefix : "/tmp/floodnet-";
     serverOptions.isolateRuntime = true;
     serverOptions.portProbe = &rawPortProbe;
     ServerProcess srv;

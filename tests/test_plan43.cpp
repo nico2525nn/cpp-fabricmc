@@ -23,6 +23,12 @@
 using namespace cppfm;
 using namespace cpptest;
 
+static bool waitInitialChunks(TestClient& c, int ms=10000) {
+    return c.waitFor([](const Packet& q) {
+        return q.id == proto::pl::sc::ChunkBatchFinished;
+    }, ms);
+}
+
 static bool waitChat(TestClient& c, const std::string& substr, int ms=5000){
     Packet p;
     auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
@@ -65,6 +71,7 @@ static void tSigned(ServerProc& srv) {
     for (auto& k : cases) {
         TestClient c;
         CHECK(c.connect("127.0.0.1", srv.port) && c.join("P43Sig"), "W-03 join");
+        CHECK(waitInitialChunks(c), "W-03 initial chunk batch complete");
         c.sendSignedCommand(k.cmd, k.n);
         std::this_thread::sleep_for(std::chrono::milliseconds(1200));
         bool alive = c.alive();
@@ -305,6 +312,7 @@ static void tSign(ServerProc& srv) {
     SECTION("W-07 update_sign 0x39 -> BlockEntityData 0x07 + relogin persist");
     TestClient c;
     CHECK(c.connect("127.0.0.1", srv.port) && c.join("P43Sign"), "W-07 join");
+    CHECK(waitInitialChunks(c), "W-07 initial chunk batch complete");
     const auto position = c.positionSnapshot();
     int sx = (int)std::floor(position.x) + 2, sy = (int)std::floor(position.y), sz = (int)std::floor(position.z);
     char cmd[128];
@@ -358,6 +366,12 @@ int main(int argc, char** argv) {
     serverOptions.viewDistance = 4;
     serverOptions.readyTimeoutMs = 8000;
     serverOptions.worldPrefix = "/tmp/plan43-";
+    serverOptions.operatorNames = {
+        "P43Fin", "P43Tab", "P43Mov", "P43Fall", "P43Abil", "P43Sig",
+        "P43Sign", "P43S0", "P43S1", "P43S2", "P43A0", "P43A1",
+        "P43U0", "P43U1", "P43U2", "P43U3", "P43U4", "P43U5",
+        "P43U6", "P43U7", "P43U8", "P43U9", "P43U10", "P43U11"
+    };
     ServerProc srv;
     if (!srv.start(bin, serverOptions)) { std::printf("FAIL server start\n"); return 2; }
     tSigned(srv);

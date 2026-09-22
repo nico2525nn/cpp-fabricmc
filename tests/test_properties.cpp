@@ -162,8 +162,9 @@ void testSupportedProperties() {
               hasDiagnostic(invalidDiagnostics, ConfigDiagnosticKind::InvalidValue, "view-distance") &&
               hasDiagnostic(invalidDiagnostics, ConfigDiagnosticKind::InvalidValue, "level-type") &&
               hasDiagnostic(invalidDiagnostics, ConfigDiagnosticKind::InvalidValue, "jvm") &&
-              hasDiagnostic(invalidDiagnostics, ConfigDiagnosticKind::UnsupportedKey, "difficulty"),
-          "invalid values and explicitly unsupported vanilla keys are distinguishable");
+              !hasDiagnostic(invalidDiagnostics, ConfigDiagnosticKind::InvalidValue, "difficulty") &&
+              invalid.difficulty == "hard",
+          "invalid values and supported difficulty remain distinguishable");
 }
 
 void testFileLoadingAndPrecedence() {

@@ -25,20 +25,6 @@ void resendInventoryIfConnected(GameServer& srv, Player& player) {
 
 } // namespace
 
-int CombatManager::armorForItem(uint32_t itemId) {
-    return armorPointsForItem(itemId);
-}
-
-int CombatManager::totalArmorForPlayer(const Player& p) {
-    std::lock_guard playerLock(p.stateMtx);
-    return totalArmorPoints(p.inv);
-}
-
-int CombatManager::totalArmorForMob(const MobEntity& m) {
-    std::lock_guard entityLock(*m.stateMtx);
-    return totalArmorPoints(m);
-}
-
 int CombatManager::computeEPF(const DamageSource& ds, const Player& p) {
     if (ds.bypassEnchant || ds.isDrown() || ds.isStarveFlag || ds.isSonic()) return 0;
     std::lock_guard playerLock(p.stateMtx);
@@ -61,18 +47,6 @@ int CombatManager::computeEPF(const DamageSource& ds, const MobEntity& m) {
     }
     if (total > 20) total = 20;
     return total;
-}
-
-float CombatManager::calculatePlayerDamage(float base, const DamageSource& src,
-                                          int armor, double toughness, int epf,
-                                          const std::vector<EffectInstance>& effects) {
-    return DamageCalculator::calculate(base, src, armor, toughness, epf, effects);
-}
-
-float CombatManager::calculateMobDamage(float base, const DamageSource& src,
-                                       int armor, double toughness, int epf,
-                                       const std::vector<EffectInstance>& effects) {
-    return DamageCalculator::calculate(base, src, armor, toughness, epf, effects);
 }
 
 void CombatManager::syncPlayerArmor(GameServer& srv, Player& p) {
@@ -114,121 +88,6 @@ void CombatManager::syncPlayerArmor(GameServer& srv, Player& p) {
     srv.broadcastPacketExceptInDimension(dimension, &p,
                                          proto::pl::sc::UpdateAttributes,
                                          attributes);
-}
-
-void CombatManager::applyToPlayer(GameServer& srv, Player& p, float amount, const DamageSource& src) {
-    if (amount <= 0) return;
-    {
-        std::lock_guard playerLock(p.stateMtx);
-        if (p.gamemode == 1 || p.gamemode == 3 || p.dead || p.health <= 0)
-            return;
-    }
-
-    // Armor attributes can emit an update packet, so keep this operation
-    // outside the damage mutation critical section.  Re-check the player
-    // below because a concurrent hook or tick may have changed the state.
-    syncPlayerArmor(srv, p);
-
-    struct DamageResult {
-        std::shared_ptr<Connection> connection;
-        std::int32_t entityId = 0;
-        std::int8_t dimension = 0;
-        float health = 0.f;
-        std::int32_t food = 0;
-        float saturation = 0.f;
-        bool shouldKill = false;
-    } result;
-
-    {
-        std::lock_guard playerLock(p.stateMtx);
-        if (p.gamemode == 1 || p.gamemode == 3 || p.dead || p.health <= 0)
-            return;
-
-        int armor = static_cast<int>(std::round(
-            p.attributes.getValue(Attribute::ARMOR)));
-        if (armor == 0) armor = totalArmorPoints(p.inv);
-        const double toughness = p.attributes.getValue(Attribute::ARMOR_TOUGHNESS);
-        int epf = 0;
-        if (!src.bypassEnchant && !src.isDrown() && !src.isStarveFlag &&
-            !src.isSonic()) {
-            for (int i = 5; i <= 8; ++i) {
-                if (p.inv[i].empty()) continue;
-                epf += EnchantmentHelper::getProtectionEPF(src, p.inv[i]);
-            }
-            epf = std::min(epf, 20);
-        }
-        const float finalAmt = DamageCalculator::calculate(
-            amount, src, armor, toughness, epf, p.effects);
-        if (finalAmt <= 0) return;
-
-        // HungerManager::addExhaustion is model-only today.  Keep the same
-        // vanilla amount here without invoking a server/network callback
-        // while the player lock is held.
-        if (p.gamemode == 0) p.exhaustion += 0.10f;
-        p.health -= finalAmt;
-        p.hurtCooldown = 10;
-        if (p.health <= 0) {
-            p.health = 0;
-            result.shouldKill = true;
-        }
-        result.connection = p.conn;
-        result.entityId = p.entityId;
-        result.dimension = p.dimension;
-        result.health = p.health;
-        result.food = p.food;
-        result.saturation = p.saturation;
-    }
-
-    // killPlayer performs drops, hooks, persistence, and transport.  It is
-    // deliberately called only after the state lock has been released.
-    if (result.shouldKill) srv.killPlayer(p, src.type.c_str());
-    if (!result.connection) return;
-
-    WriteBuffer health;
-    health.f32(result.health);
-    health.varint(result.food);
-    health.f32(result.saturation);
-    result.connection->trySendPacket(proto::pl::sc::SetHealth, health);
-
-    WriteBuffer damageEvent;
-    damageEvent.varint(result.entityId);
-    int damageTypeId = srv.gameData_.idOf(
-        "minecraft:damage_type", std::string("minecraft:") + src.type);
-    if (damageTypeId < 0)
-        damageTypeId = srv.gameData_.idOf("minecraft:damage_type",
-                                         "minecraft:generic");
-    if (damageTypeId < 0) damageTypeId = 0;
-    damageEvent.varint(damageTypeId);
-    damageEvent.varint(0);
-    damageEvent.varint(0);
-    damageEvent.boolean(false);
-    result.connection->trySendPacket(proto::pl::sc::DamageEvent, damageEvent);
-    srv.broadcastPacketExceptInDimension(result.dimension, &p,
-                                         proto::pl::sc::DamageEvent,
-                                         damageEvent);
-}
-
-void CombatManager::applyToMob(GameServer& srv, MobEntity& m, float amount, const DamageSource& src) {
-    (void)srv;
-    if (amount <= 0) return;
-    std::lock_guard entityLock(*m.stateMtx);
-    if (m.dead) return;
-    const int armor = totalArmorPoints(m);
-    int epf = 0;
-    if (!src.bypassEnchant && !src.isDrown() && !src.isStarveFlag &&
-        !src.isSonic()) {
-        for (int i = 2; i < 6; ++i) {
-            if (m.equipment[i].empty()) continue;
-            epf += EnchantmentHelper::getProtectionEPF(src, m.equipment[i]);
-        }
-        epf = std::min(epf, 20);
-    }
-    const float finalAmt = DamageCalculator::calculate(
-        amount, src, armor, 0.0, epf, {});
-    if (finalAmt <= 0) return;
-    m.health -= finalAmt;
-    m.hurtCooldown = 10;
-    if (m.health <= 0) m.dead = true;
 }
 
 static ItemStack* shieldStackFor(Player& p) {

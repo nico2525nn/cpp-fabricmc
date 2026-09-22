@@ -5,10 +5,15 @@
 // observe or cancel them. Handlers run on the firing thread; ordering is by
 // ascending priority value (lower = earlier), then registration order.
 #pragma once
+#include <algorithm>
+#include <condition_variable>
+#include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <typeindex>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -20,11 +25,50 @@ struct Cancelable {
     void cancel() { cancelled = true; }
 };
 
+class Subscription {
+public:
+    Subscription() = default;
+    explicit Subscription(std::function<void()> release)
+        : release_(std::move(release)) {}
+    Subscription(const Subscription&) = delete;
+    Subscription& operator=(const Subscription&) = delete;
+    Subscription(Subscription&& other) noexcept
+        : release_(std::move(other.release_)) {
+        other.release_ = {};
+    }
+    Subscription& operator=(Subscription&& other) noexcept {
+        if (this == &other) return *this;
+        reset();
+        release_ = std::move(other.release_);
+        other.release_ = {};
+        return *this;
+    }
+    ~Subscription() { reset(); }
+
+    void reset() {
+        if (!release_) return;
+        auto release = std::move(release_);
+        release();
+    }
+
+private:
+    std::function<void()> release_;
+};
+
 namespace detail {
 class BusBase {
 public:
     using ErasedFn = std::function<void(void*)>;
-    struct Entry { int priority; std::uint64_t seq; ErasedFn fn; };
+    struct Entry {
+        int priority = 0;
+        std::uint64_t seq = 0;
+        ErasedFn fn;
+        std::mutex mutex;
+        std::condition_variable drained;
+        bool active = true;
+        std::size_t inFlight = 0;
+    };
+    using EntryRef = std::shared_ptr<Entry>;
 
     static BusBase& get(std::type_index type) {
         static std::mutex mtx;
@@ -33,36 +77,104 @@ public:
         return map[type];
     }
 
-    void addRaw(int priority, ErasedFn fn) {
-        std::lock_guard lk(mtx_);
-        entries_.emplace(std::pair<int, std::uint64_t>{priority, ++seq_}, std::move(fn));
+    std::uint64_t addRaw(int priority, ErasedFn fn) {
+        std::lock_guard lk(mutex_);
+        auto entry = std::make_shared<Entry>();
+        entry->priority = priority;
+        entry->seq = ++sequence_;
+        entry->fn = std::move(fn);
+        entries_.emplace(std::pair<int, std::uint64_t>{priority, entry->seq}, entry);
+        return entry->seq;
     }
-    // ordered snapshot
-    std::vector<ErasedFn> snapshot() {
-        std::vector<ErasedFn> out;
-        std::lock_guard lk(mtx_);
+
+    void remove(std::uint64_t seq) {
+        EntryRef entry;
+        {
+            std::lock_guard lk(mutex_);
+            for (auto it = entries_.begin(); it != entries_.end(); ++it) {
+                if (it->first.second == seq) {
+                    entry = it->second;
+                    entries_.erase(it);
+                    break;
+                }
+            }
+        }
+        if (!entry) return;
+        const bool reentrant = std::find(invoking_.begin(), invoking_.end(),
+                                         entry.get()) != invoking_.end();
+        std::unique_lock lk(entry->mutex);
+        entry->active = false;
+        if (!reentrant) {
+            entry->drained.wait(lk, [&] { return entry->inFlight == 0; });
+        }
+    }
+
+    std::vector<EntryRef> snapshot() const {
+        std::vector<EntryRef> out;
+        std::lock_guard lk(mutex_);
         out.reserve(entries_.size());
-        for (auto& e : entries_) out.push_back(e.second);
+        for (const auto& [ignored, entry] : entries_) out.push_back(entry);
         return out;
     }
 
+    void invoke(const EntryRef& entry, void* raw) const {
+        {
+            std::lock_guard lk(entry->mutex);
+            if (!entry->active) return;
+            ++entry->inFlight;
+        }
+        invoking_.push_back(entry.get());
+        try {
+            entry->fn(raw);
+        } catch (...) {
+            invoking_.pop_back();
+            finish(entry);
+            throw;
+        }
+        invoking_.pop_back();
+        finish(entry);
+    }
+
 private:
-    std::mutex mtx_;
-    std::multimap<std::pair<int, std::uint64_t>, ErasedFn> entries_;  // key comparable
-    std::uint64_t seq_ = 0;
+    static void finish(const EntryRef& entry) {
+        std::lock_guard lk(entry->mutex);
+        if (--entry->inFlight == 0) entry->drained.notify_all();
+    }
+
+    mutable std::mutex mutex_;
+    std::multimap<std::pair<int, std::uint64_t>, EntryRef> entries_;
+    std::uint64_t sequence_ = 0;
+    static inline thread_local std::vector<const Entry*> invoking_{};
 };
 } // namespace detail
 
 template <typename Ev>
 class EventHook {
 public:
-    // Register a listener. Lower `priority` runs first.
+    // Register a listener. Lower `priority` runs first. This legacy entry
+    // point intentionally keeps the listener for the process lifetime.
     void subscribe(int priority, std::function<void(Ev&)> handler) const {
         detail::BusBase& bus = detail::BusBase::get(typeid(Ev));
-        bus.addRaw(priority, [h = std::move(handler)](void* raw) { h(*static_cast<Ev*>(raw)); });
+        bus.addRaw(priority, [h = std::move(handler)](void* raw) {
+            h(*static_cast<Ev*>(raw));
+        });
     }
+
+    // Scoped listeners are safe to unload: reset first prevents new calls and
+    // waits for already-running callbacks to drain before releasing the fn.
+    Subscription subscribeScoped(int priority,
+                                 std::function<void(Ev&)> handler) const {
+        detail::BusBase& bus = detail::BusBase::get(typeid(Ev));
+        const auto seq = bus.addRaw(priority,
+            [h = std::move(handler)](void* raw) {
+                h(*static_cast<Ev*>(raw));
+            });
+        return Subscription([&bus, seq] { bus.remove(seq); });
+    }
+
     bool fire(Ev& ev) const {
-        for (auto& fn : detail::BusBase::get(typeid(Ev)).snapshot()) fn(&ev);
+        auto& bus = detail::BusBase::get(typeid(Ev));
+        for (const auto& entry : bus.snapshot()) bus.invoke(entry, &ev);
         if constexpr (std::is_base_of_v<Cancelable, Ev>) return !ev.cancelled;
         else return true;
     }

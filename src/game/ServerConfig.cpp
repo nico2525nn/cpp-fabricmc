@@ -2,13 +2,16 @@
 
 #include "Constants.hpp"
 #include "ServerProperties.hpp"
+#include "../core/Random.hpp"
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <charconv>
 #include <cctype>
 #include <cstdint>
 #include <limits>
+#include <random>
 #include <string>
 #include <utility>
 
@@ -31,7 +34,13 @@ enum class ConfigKey {
     EnableRcon,
     Whitelist,
     OnlineMode,
+    SecureProfile,
     SecureChat,
+    Difficulty,
+    Seed,
+    ResourcePack,
+    ResourcePackSha1,
+    ResourcePackForced,
     CompressionThreshold,
     MaxLoadedChunks,
     IoWorkerThreads,
@@ -58,7 +67,7 @@ struct KeySpec {
 // This is the only application key registry.  In particular, an entry here
 // does not imply support for every similarly named vanilla property.  Unknown
 // server.properties keys are reported as unsupported by applyServerProperties.
-constexpr std::array<KeySpec, 45> kKeySpecs{{
+constexpr std::array<KeySpec, 57> kKeySpecs{{
     {"server-port", ConfigKey::Port, true, true},
     {"port", ConfigKey::Port, true, true},
     {"max-players", ConfigKey::MaxPlayers, true, true},
@@ -83,9 +92,20 @@ constexpr std::array<KeySpec, 45> kKeySpecs{{
     {"whitelist", ConfigKey::Whitelist, true, true},
     {"online-mode", ConfigKey::OnlineMode, true, true},
     {"onlineMode", ConfigKey::OnlineMode, true, true},
-    {"enforce-secure-profile", ConfigKey::SecureChat, true, true},
+    {"enforce-secure-profile", ConfigKey::SecureProfile, true, true},
+    {"enforceSecureProfile", ConfigKey::SecureProfile, true, true},
     {"enforcesSecureChat", ConfigKey::SecureChat, true, true},
     {"enforces-secure-chat", ConfigKey::SecureChat, true, true},
+    {"difficulty", ConfigKey::Difficulty, true, true},
+    {"level-seed", ConfigKey::Seed, true, true},
+    {"seed", ConfigKey::Seed, false, true},
+    {"resource-pack", ConfigKey::ResourcePack, true, true},
+    {"resource-pack-sha1", ConfigKey::ResourcePackSha1, true, true},
+    {"require-resource-pack", ConfigKey::ResourcePackForced, true, true},
+    {"resourcePack", ConfigKey::ResourcePack, true, true},
+    {"resourcePackSha1", ConfigKey::ResourcePackSha1, true, true},
+    {"resource-pack-required", ConfigKey::ResourcePackForced, true, true},
+    {"requireResourcePack", ConfigKey::ResourcePackForced, true, true},
     {"network-compression-threshold", ConfigKey::CompressionThreshold, true, true},
     {"compression-threshold", ConfigKey::CompressionThreshold, true, true},
     {"max-loaded-chunks", ConfigKey::MaxLoadedChunks, true, true},
@@ -159,6 +179,49 @@ bool parseLevelType(std::string_view text, std::string& levelType) {
     return true;
 }
 
+bool parseDifficulty(std::string_view text, std::string& difficulty) {
+    const std::string normalized = asciiLower(std::string(text));
+    if (normalized != "peaceful" && normalized != "easy" &&
+        normalized != "normal" && normalized != "hard") return false;
+    difficulty = normalized;
+    return true;
+}
+
+void applySeed(ServerConfig& config, std::string_view value,
+               ConfigDiagnostics* diagnostics, std::string_view originalKey) {
+    if (value.empty()) {
+        try {
+            std::random_device rd;
+            const auto now = static_cast<std::uint64_t>(
+                std::chrono::steady_clock::now().time_since_epoch().count());
+            const auto generated = (static_cast<std::uint64_t>(rd()) << 32U) ^
+                                    static_cast<std::uint64_t>(rd()) ^ now;
+            config.seed = generated;
+            config.hashedSeed = static_cast<std::int64_t>(generated);
+        } catch (...) {
+            const auto generated = static_cast<std::uint64_t>(
+                std::chrono::steady_clock::now().time_since_epoch().count());
+            config.seed = generated;
+            config.hashedSeed = static_cast<std::int64_t>(generated);
+        }
+        return;
+    }
+
+    std::int64_t numeric = 0;
+    const auto numericText = !value.empty() && value.front() == '+'
+        ? value.substr(1) : value;
+    if (!numericText.empty() && parseInteger(numericText, numeric)) {
+        config.hashedSeed = numeric;
+        config.seed = static_cast<std::uint64_t>(numeric);
+        return;
+    }
+    const auto hash = rng_detail::javaStringHash(value);
+    config.hashedSeed = hash;
+    config.seed = static_cast<std::uint64_t>(static_cast<std::int64_t>(hash));
+    (void)diagnostics;
+    (void)originalKey;
+}
+
 void invalid(ConfigDiagnostics* diagnostics, std::string_view key, std::string_view value) {
     if (diagnostics) diagnostics->invalid(std::string(key), std::string(value));
 }
@@ -223,9 +286,29 @@ void applyValue(ServerConfig& config, ConfigKey key, std::string_view value,
         if (!parseBool(value, boolValue)) invalid(diagnostics, originalKey, value);
         else config.onlineMode = boolValue;
         break;
+    case ConfigKey::SecureProfile:
+        if (!parseBool(value, boolValue)) invalid(diagnostics, originalKey, value);
+        else config.enforceSecureProfile = boolValue;
+        break;
     case ConfigKey::SecureChat:
         if (!parseBool(value, boolValue)) invalid(diagnostics, originalKey, value);
         else config.enforcesSecureChat = boolValue;
+        break;
+    case ConfigKey::Difficulty:
+        if (!parseDifficulty(value, config.difficulty)) invalid(diagnostics, originalKey, value);
+        break;
+    case ConfigKey::Seed:
+        applySeed(config, value, diagnostics, originalKey);
+        break;
+    case ConfigKey::ResourcePack:
+        config.resourcePackUrl = std::string(value);
+        break;
+    case ConfigKey::ResourcePackSha1:
+        config.resourcePackSha1 = std::string(value);
+        break;
+    case ConfigKey::ResourcePackForced:
+        if (!parseBool(value, boolValue)) invalid(diagnostics, originalKey, value);
+        else config.resourcePackForced = boolValue;
         break;
     case ConfigKey::CompressionThreshold:
         if (!parseInteger(value, intValue)) invalid(diagnostics, originalKey, value);
@@ -306,13 +389,24 @@ void ConfigDiagnostics::missing(std::string key) {
 
 void applyServerProperties(ServerConfig& config, const ServerProperties& properties,
                            ConfigDiagnostics* diagnostics) {
-    // Use the effective map rather than the optional parse-order view.  The
-    // map is also the public mutation surface retained for compatibility, so
-    // a caller may edit props after load without applying stale parsedEntries.
-    for (const auto& [key, value] : properties.props)
-        applyKnownValue(config, key, value, true, diagnostics);
+        // Preserve source order for aliases while still honoring direct edits to
+    // the public props map.  parsedEntries contains the final occurrence of
+    // every exact key; the current map supplies the value, so a caller that
+    // mutates props never applies stale parsed data.
+    std::vector<std::string> appliedKeys;
+    appliedKeys.reserve(properties.props.size());
+    for (const auto& [parsedKey, ignored] : properties.parsedEntries()) {
+        const auto current = properties.props.find(parsedKey);
+        if (current == properties.props.end()) continue;
+        applyKnownValue(config, current->first, current->second, true, diagnostics);
+        appliedKeys.push_back(current->first);
+    }
+    for (const auto& [key, value] : properties.props) {
+        if (std::find(appliedKeys.begin(), appliedKeys.end(), key) == appliedKeys.end())
+            applyKnownValue(config, key, value, true, diagnostics);
+    }
 
-    // The cap is derived only when the user did not specify it.  This keeps
+    // The cap is derived only when the user did not specify it.  This keeps the
     // the existing startup default while allowing a properties view distance
     // to size the automatic cap before CLI overrides are applied.
     bool hasMaxLoadedChunks = false;

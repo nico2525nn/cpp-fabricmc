@@ -171,6 +171,18 @@ static void scenarioJoinBuildChat(ServerProc& srv) {
     }
     CHECK(sawChat, "chat echoed back through system chat");
 
+    // LastSeenMessages.Update carries an offset, not a count capped at 20.
+    // A zero acknowledgement mask is valid even when the offset has advanced.
+    a.sendChatMessage("offset-chat", 21);
+    bool sawOffsetChat = false;
+    const auto dl3b = std::chrono::steady_clock::now() + std::chrono::milliseconds(4000);
+    while (std::chrono::steady_clock::now() < dl3b && !sawOffsetChat) {
+        a.pump(40);
+        for (const auto& line : a.chatLinesSnapshot())
+            if (line.find("offset-chat") != std::string::npos) sawOffsetChat = true;
+    }
+    CHECK(sawOffsetChat, "chat with advanced last-seen offset remains accepted");
+
     // find chunk containing origin among A's raw chunks and verify air there now
     // (post-dig re-stream check happens on B below; A keeps its original chunks)
 
@@ -1262,7 +1274,9 @@ int main(int argc, char** argv) {
     serverOptions.viewDistance = 2;
     serverOptions.readyTimeoutMs = 8000;
     serverOptions.motd = "status \"quote\" \\ slash";
-    serverOptions.worldPrefix = "/tmp/opencode/native-world-";
+    const char* nativeWorldPrefix = std::getenv("CPPFM_NATIVE_WORLD_PREFIX");
+    serverOptions.worldPrefix = (nativeWorldPrefix && *nativeWorldPrefix)
+        ? nativeWorldPrefix : "/tmp/opencode/native-world-";
     serverOptions.isolateRuntime = true;
     ServerProc srv;
     if (!srv.start(serverPath, serverOptions)) {

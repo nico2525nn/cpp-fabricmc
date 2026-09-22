@@ -12,6 +12,7 @@
 #include <functional>
 #include <atomic>
 #include <mutex>
+#include <optional>
 #include "../game/World.hpp"
 #include "../game/BlockEntities.hpp"
 
@@ -43,6 +44,9 @@ public:
                     std::int64_t now);
 
     void tick(std::int64_t now);                         // delayed updates
+    // Save barrier: commit in-flight pistons touching the snapshot chunk
+    // before it is serialized.
+    void flushPendingPistons(std::int32_t chunkX, std::int32_t chunkZ);
     std::size_t pendingCount() const;
     // True when any adjacent source/wire carries power (dispenser gates).
     bool isPoweredHere(std::int32_t x, std::int32_t y, std::int32_t z);
@@ -84,7 +88,9 @@ private:
     void handlePiston(std::int32_t x, std::int32_t y, std::int32_t z);
     void handlePistonScheduled(std::int32_t x, std::int32_t y, std::int32_t z, bool extendNow);
     void processPistonQueue(std::int64_t now);
-    void processPendingPistonCommits(std::int64_t now);
+    void processPendingPistonCommits(
+        std::int64_t now,
+        std::optional<std::pair<std::int32_t, std::int32_t>> chunk = std::nullopt);
     void handleDoor(std::int32_t x, std::int32_t y, std::int32_t z);
     void setBlockAndBroadcast(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state);
 

@@ -75,13 +75,19 @@ public:
         }
         return cf.pieces.size() - 1;
     }
-    std::uint16_t stateFor(const ConfiguredFeature& cf, const std::string& piece, const std::string& key, const std::string& fallback) const;
-
 private:
+    struct OriginCandidate {
+        std::int32_t x;
+        std::int32_t z;
+        double chance;
+    };
     std::uint64_t seed_;
     std::unordered_map<std::string, ConfiguredFeature> configured_;
     std::unordered_map<std::string, PlacedFeature> placed_;
     static double hash01(std::uint64_t seed, std::int64_t gx, std::int64_t gz, std::uint64_t salt);
+    OriginCandidate originForCell(const PlacedFeature& pf,
+                                  std::int64_t cellX,
+                                  std::int64_t cellZ) const;
 };
 
 } // namespace cppfm::worldgen

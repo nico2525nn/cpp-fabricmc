@@ -17,10 +17,9 @@ int LightEngine::opacityOf(std::uint16_t state) const {
     // dataset incorrectly marks them as filter 15; treat as transparent for light
     if (b->emitLight > 0) return 0;
     if (b->filterLight >= 15) {
-        // water attenuates by 1 in vanilla; dataset marks it opaque
-        static const std::uint16_t water = static_cast<std::uint16_t>(
-            gen::blockNameToState().at("minecraft:water"));
-        if (state == water || (state >= 86 && state <= 101)) return 1;
+        // Water attenuates by one in vanilla.  Never infer this from generated
+        // numeric state ranges: registry order is data-driven and can change.
+        if (b->name == "minecraft:water") return 1;
         return 15;
     }
     return b->filterLight;
@@ -39,6 +38,10 @@ std::uint8_t LightEngine::blockLightAt(std::int32_t x, std::int32_t y,
 void LightEngine::onBlockChanged(std::int32_t x, std::int32_t y,
                                  std::int32_t z, std::uint16_t oldState,
                                  std::uint16_t newState) {
+    constexpr std::int32_t kMinCoord = -(1 << 25);
+    constexpr std::int32_t kMaxCoord = (1 << 25) - 1;
+    if (x < kMinCoord || x > kMaxCoord || z < kMinCoord || z > kMaxCoord ||
+        y < kMinY || y >= kMaxY) return;
     const std::int32_t chunkX = x >> 4;
     const std::int32_t chunkZ = z >> 4;
     const bool hadSkyCache = world_.hasSkyLightCache(chunkX, chunkZ);
@@ -155,17 +158,17 @@ LightUpdateBatch LightEngine::drain() {
         for (auto k : batch.dirtyChunks) skyRebuildSet.insert(k);
         for (auto k : pendingSkyRebuild_) skyRebuildSet.insert(k);
         pendingSkyRebuild_.clear();
+        const auto extraSky = skyDirtyExtra_;
         skyDirtyExtra_.clear();
         for (auto k : skyRebuildSet) {
             auto [skx, skz] = chunkKeyDecode(k);
             ensureSkyLight(skx, skz);
         }
         std::unordered_set<std::int64_t> base;
-        base.reserve(batch.dirtyChunks.size() + skyRebuildSet.size() + skyDirtyExtra_.size() + 8);
+        base.reserve(batch.dirtyChunks.size() + skyRebuildSet.size() + extraSky.size() + 8);
         for (auto k : batch.dirtyChunks) base.insert(k);
         for (auto k : skyRebuildSet) base.insert(k);
-        for (auto k : skyDirtyExtra_) base.insert(k);
-        skyDirtyExtra_.clear();
+        for (auto k : extraSky) base.insert(k);
         // single 3×3 expansion — only for chunks that exist (hasChunk or hasSkyLightCache) to avoid empty UpdateLight
         std::unordered_set<std::int64_t> expanded;
         expanded.reserve(base.size() * 9 + 8);

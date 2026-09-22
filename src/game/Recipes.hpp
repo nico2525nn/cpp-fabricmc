@@ -128,6 +128,11 @@ private:
 
 class RecipeManager {
 public:
+    void clear() {
+        recipes_.clear();
+        tags_.clear();
+        tagPlanks_.clear();
+    }
     void loadDefaults();                         // built-in table (see Recipes.cpp)
     void loadDirectory(const std::string& dir);  // assets/data/recipes/*.json
 

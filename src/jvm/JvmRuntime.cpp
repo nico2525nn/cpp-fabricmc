@@ -3,6 +3,8 @@
 
 #include "../game/GameServer.hpp"
 #include "../game/World.hpp"
+#include "../game/BlockEvent.hpp"
+#include "../generated/BlockStates.hpp"
 #include "../platform/DynamicLibrary.hpp"
 
 #include <algorithm>
@@ -541,16 +543,12 @@ void withNativeRuntimeVoid(JNIEnv* env, const char* operation, Call&& call,
     }
 }
 
-HandleKind handleKindFromJava(jint raw) noexcept {
-    switch (raw) {
-    case static_cast<jint>(HandleKind::Server): return HandleKind::Server;
-    case static_cast<jint>(HandleKind::World): return HandleKind::World;
-    case static_cast<jint>(HandleKind::Player): return HandleKind::Player;
-    case static_cast<jint>(HandleKind::Entity): return HandleKind::Entity;
-    case static_cast<jint>(HandleKind::BlockState): return HandleKind::BlockState;
-    case static_cast<jint>(HandleKind::ItemStack): return HandleKind::ItemStack;
-    default: return HandleKind::Unknown;
-    }
+template <typename Call>
+jstring withNativeString(JNIEnv* env, const char* operation, Call&& call) {
+    return withNativeRuntime<jstring>(env, operation, nullptr,
+                                      [&](JvmRuntime& runtime) {
+        return toJavaString(env, call(runtime));
+    });
 }
 
 std::filesystem::path findJvmLibrary(const JvmConfig& config) {
@@ -642,16 +640,14 @@ JNIEXPORT jlong JNICALL nativeCurrentTick(JNIEnv* env, jclass) {
 }
 
 JNIEXPORT jstring JNICALL nativePlayerName(JNIEnv* env, jclass, jlong handle) {
-    return withNativeRuntime<jstring>(env, "nativePlayerName", nullptr,
-                                      [&](JvmRuntime& runtime) {
-        return toJavaString(env, runtime.nativePlayerName(static_cast<std::uint64_t>(handle)));
+    return withNativeString(env, "nativePlayerName", [&](JvmRuntime& runtime) {
+        return runtime.nativePlayerName(static_cast<std::uint64_t>(handle));
     });
 }
 
 JNIEXPORT jstring JNICALL nativePlayerUuid(JNIEnv* env, jclass, jlong handle) {
-    return withNativeRuntime<jstring>(env, "nativePlayerUuid", nullptr,
-                                      [&](JvmRuntime& runtime) {
-        return toJavaString(env, runtime.nativePlayerUuid(static_cast<std::uint64_t>(handle)));
+    return withNativeString(env, "nativePlayerUuid", [&](JvmRuntime& runtime) {
+        return runtime.nativePlayerUuid(static_cast<std::uint64_t>(handle));
     });
 }
 
@@ -717,10 +713,9 @@ JNIEXPORT jint JNICALL nativePlayerInventoryItemCount(JNIEnv* env, jclass, jlong
 
 JNIEXPORT jstring JNICALL nativePlayerInventoryItemName(JNIEnv* env, jclass,
                                                         jlong handle, jint slot) {
-    return withNativeRuntime<jstring>(env, "nativePlayerInventoryItemName", nullptr,
-                                      [&](JvmRuntime& runtime) {
-        return toJavaString(env, runtime.nativePlayerInventoryItemName(
-            static_cast<std::uint64_t>(handle), static_cast<std::int32_t>(slot)));
+    return withNativeString(env, "nativePlayerInventoryItemName", [&](JvmRuntime& runtime) {
+        return runtime.nativePlayerInventoryItemName(
+            static_cast<std::uint64_t>(handle), static_cast<std::int32_t>(slot));
     });
 }
 
@@ -788,9 +783,8 @@ JNIEXPORT jlong JNICALL nativeServerWorld(JNIEnv* env, jclass, jint dimension) {
 }
 
 JNIEXPORT jstring JNICALL nativeWorldName(JNIEnv* env, jclass, jlong handle) {
-    return withNativeRuntime<jstring>(env, "nativeWorldName", nullptr,
-                                      [&](JvmRuntime& runtime) {
-        return toJavaString(env, runtime.nativeWorldName(static_cast<std::uint64_t>(handle)));
+    return withNativeString(env, "nativeWorldName", [&](JvmRuntime& runtime) {
+        return runtime.nativeWorldName(static_cast<std::uint64_t>(handle));
     });
 }
 
@@ -839,60 +833,9 @@ JNIEXPORT void JNICALL nativeRegisterTransformedMethod(JNIEnv* env, jclass,
     });
 }
 
-JNIEXPORT void JNICALL nativeRegisterTransformedMethodHash(
-    JNIEnv* env, jclass, jstring owner, jstring name, jstring descriptor,
-    jlong transformedHash) {
-    withNativeRuntimeVoid(env, "nativeRegisterTransformedMethodHash",
-                          [&](JvmRuntime& runtime) {
-        runtime.nativeRegisterTransformedMethod(
-            fromJavaString(env, owner), fromJavaString(env, name),
-            fromJavaString(env, descriptor), static_cast<std::uint64_t>(transformedHash));
-    });
-}
-
-JNIEXPORT void JNICALL nativeRegisterMethodBaseline(
-    JNIEnv* env, jclass, jstring owner, jstring name, jstring descriptor,
-    jlong baselineHash, jlong transformedHash) {
-    withNativeRuntimeVoid(env, "nativeRegisterMethodBaseline",
-                          [&](JvmRuntime& runtime) {
-        runtime.nativeRegisterMethodBaseline(
-            fromJavaString(env, owner), fromJavaString(env, name),
-            fromJavaString(env, descriptor), static_cast<std::uint64_t>(baselineHash),
-            static_cast<std::uint64_t>(transformedHash));
-    });
-}
-
-JNIEXPORT jboolean JNICALL nativeHandleValid(JNIEnv* env, jclass, jlong handle,
-                                             jint expectedKind) {
-    return withNativeRuntime<jboolean>(env, "nativeHandleValid", JNI_FALSE,
-                                       [&](JvmRuntime& runtime) {
-        return runtime.nativeHandleValid(
-            static_cast<std::uint64_t>(handle), handleKindFromJava(expectedKind))
-                   ? JNI_TRUE : JNI_FALSE;
-    });
-}
-
-JNIEXPORT jint JNICALL nativeHandleKind(JNIEnv* env, jclass, jlong handle) {
-    return withNativeRuntime<jint>(env, "nativeHandleKind", 0,
-                                   [&](JvmRuntime& runtime) {
-        return static_cast<jint>(runtime.nativeHandleKind(
-            static_cast<std::uint64_t>(handle)));
-    });
-}
-
-JNIEXPORT jboolean JNICALL nativeInvalidateHandle(JNIEnv* env, jclass, jlong handle) {
-    return withNativeRuntime<jboolean>(env, "nativeInvalidateHandle", JNI_FALSE,
-                                       [&](JvmRuntime& runtime) {
-        return runtime.nativeInvalidateHandle(static_cast<std::uint64_t>(handle))
-                   ? JNI_TRUE : JNI_FALSE;
-    });
-}
-
 JNIEXPORT jstring JNICALL nativeEntityType(JNIEnv* env, jclass, jlong handle) {
-    return withNativeRuntime<jstring>(env, "nativeEntityType", nullptr,
-                                      [&](JvmRuntime& runtime) {
-        return toJavaString(env, runtime.nativeEntityType(
-            static_cast<std::uint64_t>(handle)));
+    return withNativeString(env, "nativeEntityType", [&](JvmRuntime& runtime) {
+        return runtime.nativeEntityType(static_cast<std::uint64_t>(handle));
     });
 }
 
@@ -984,9 +927,8 @@ JNIEXPORT jint JNICALL nativeRegistryItemId(JNIEnv* env, jclass, jstring name) {
 }
 
 JNIEXPORT jstring JNICALL nativeRegistryItemName(JNIEnv* env, jclass, jint id) {
-    return withNativeRuntime<jstring>(env, "nativeRegistryItemName", nullptr,
-                                      [&](JvmRuntime& runtime) {
-        return toJavaString(env, runtime.nativeRegistryItemName(id));
+    return withNativeString(env, "nativeRegistryItemName", [&](JvmRuntime& runtime) {
+        return runtime.nativeRegistryItemName(id);
     });
 }
 
@@ -998,9 +940,8 @@ JNIEXPORT jint JNICALL nativeRegistryBlockState(JNIEnv* env, jclass, jstring nam
 }
 
 JNIEXPORT jstring JNICALL nativeRegistryBlockName(JNIEnv* env, jclass, jint state) {
-    return withNativeRuntime<jstring>(env, "nativeRegistryBlockName", nullptr,
-                                      [&](JvmRuntime& runtime) {
-        return toJavaString(env, runtime.nativeRegistryBlockName(state));
+    return withNativeString(env, "nativeRegistryBlockName", [&](JvmRuntime& runtime) {
+        return runtime.nativeRegistryBlockName(state);
     });
 }
 
@@ -1013,10 +954,8 @@ JNIEXPORT jint JNICALL nativeRegistryEntryCount(JNIEnv* env, jclass, jstring reg
 
 JNIEXPORT jstring JNICALL nativeRegistryEntryName(JNIEnv* env, jclass, jstring registry,
                                                   jint id) {
-    return withNativeRuntime<jstring>(env, "nativeRegistryEntryName", nullptr,
-                                      [&](JvmRuntime& runtime) {
-        return toJavaString(env, runtime.nativeRegistryEntryName(
-            fromJavaString(env, registry), id));
+    return withNativeString(env, "nativeRegistryEntryName", [&](JvmRuntime& runtime) {
+        return runtime.nativeRegistryEntryName(fromJavaString(env, registry), id);
     });
 }
 
@@ -1031,9 +970,8 @@ JNIEXPORT jboolean JNICALL nativePlayerSendPluginMessage(
 }
 
 JNIEXPORT jstring JNICALL nativeServerSetting(JNIEnv* env, jclass, jstring key) {
-    return withNativeRuntime<jstring>(env, "nativeServerSetting", nullptr,
-                                      [&](JvmRuntime& runtime) {
-        return toJavaString(env, runtime.nativeServerSetting(fromJavaString(env, key)));
+    return withNativeString(env, "nativeServerSetting", [&](JvmRuntime& runtime) {
+        return runtime.nativeServerSetting(fromJavaString(env, key));
     });
 }
 
@@ -1053,20 +991,6 @@ JNIEXPORT jlong JNICALL nativeRouteHash(JNIEnv* env, jclass, jstring owner, jstr
         return static_cast<jlong>(runtime.nativeRouteHash(
             fromJavaString(env, owner), fromJavaString(env, name),
             fromJavaString(env, descriptor)));
-    });
-}
-
-JNIEXPORT jint JNICALL nativeTransformedMethodCount(JNIEnv* env, jclass) {
-    return withNativeRuntime<jint>(env, "nativeTransformedMethodCount", 0,
-                                   [](JvmRuntime& runtime) {
-        return runtime.nativeTransformedMethodCount();
-    });
-}
-
-JNIEXPORT jint JNICALL nativeNativeMethodCount(JNIEnv* env, jclass) {
-    return withNativeRuntime<jint>(env, "nativeNativeMethodCount", 0,
-                                   [](JvmRuntime& runtime) {
-        return runtime.nativeNativeMethodCount();
     });
 }
 
@@ -1114,11 +1038,6 @@ bool registerBridge(JNIEnv* env, JvmRuntime* runtime, jclass bridgeClass) {
         {"nativeExecuteCommand", "(Ljava/lang/String;)Z", reinterpret_cast<void*>(nativeExecuteCommand), true},
         {"nativeSetModStats", "(II)V", reinterpret_cast<void*>(nativeSetModStats), true},
         {"nativeRegisterTransformedMethod", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V", reinterpret_cast<void*>(nativeRegisterTransformedMethod), true},
-        {"nativeRegisterTransformedMethodHash", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;J)V", reinterpret_cast<void*>(nativeRegisterTransformedMethodHash), false},
-        {"nativeRegisterMethodBaseline", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;JJ)V", reinterpret_cast<void*>(nativeRegisterMethodBaseline), false},
-        {"nativeHandleValid", "(JI)Z", reinterpret_cast<void*>(nativeHandleValid), false},
-        {"nativeHandleKind", "(J)I", reinterpret_cast<void*>(nativeHandleKind), false},
-        {"nativeInvalidateHandle", "(J)Z", reinterpret_cast<void*>(nativeInvalidateHandle), false},
         {"nativeEntityType", "(J)Ljava/lang/String;", reinterpret_cast<void*>(nativeEntityType), false},
         {"nativeEntityTypeId", "(J)I", reinterpret_cast<void*>(nativeEntityTypeId), false},
         {"nativeEntityHealth", "(J)F", reinterpret_cast<void*>(nativeEntityHealth), false},
@@ -1140,8 +1059,6 @@ bool registerBridge(JNIEnv* env, JvmRuntime* runtime, jclass bridgeClass) {
         {"nativeServerSetting", "(Ljava/lang/String;)Ljava/lang/String;", reinterpret_cast<void*>(nativeServerSetting), false},
         {"nativeRoutePath", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)I", reinterpret_cast<void*>(nativeRoutePath), false},
         {"nativeRouteHash", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)J", reinterpret_cast<void*>(nativeRouteHash), false},
-        {"nativeTransformedMethodCount", "()I", reinterpret_cast<void*>(nativeTransformedMethodCount), false},
-        {"nativeNativeMethodCount", "()I", reinterpret_cast<void*>(nativeNativeMethodCount), false},
     };
     for (const auto& binding : bindings) {
         const jmethodID method = env->GetStaticMethodID(
@@ -1626,6 +1543,7 @@ bool JvmRuntime::start(std::string* error) {
 void JvmRuntime::stop() {
     auto& impl = *impl_;
     std::lock_guard stopLock(impl.stopMutex);
+    blockEventDispatcher().clearLegacyHandlers();
 #if defined(CPPFM_HAS_JNI)
     JavaVM* vm = nullptr;
     bool ownsLifecycle = false;
@@ -1780,10 +1698,6 @@ bool JvmRuntime::started() const noexcept {
 
 JvmProvider JvmRuntime::provider() const noexcept {
     return impl_->provider.load(std::memory_order_acquire);
-}
-
-bool JvmRuntime::knotActive() const noexcept {
-    return provider() == JvmProvider::KnotLauncher && started();
 }
 
 std::string JvmRuntime::lastError() const {
@@ -2549,37 +2463,6 @@ std::int64_t JvmRuntime::nativeCurrentTick() const {
     return impl_->currentTick.load(std::memory_order_acquire);
 }
 
-bool JvmRuntime::nativeHandleValid(std::uint64_t handle,
-                                   HandleKind expected) const {
-    return impl_->handles.valid(handle, expected);
-}
-
-HandleKind JvmRuntime::nativeHandleKind(std::uint64_t handle) const {
-    return impl_->handles.kind(handle);
-}
-
-bool JvmRuntime::nativeInvalidateHandle(std::uint64_t handle) {
-    auto& impl = *impl_;
-    bool invalidated = false;
-    {
-        std::lock_guard cacheLock(impl.objectCacheMutex);
-        invalidated = impl.handles.invalidateHandle(handle);
-    }
-#if defined(CPPFM_HAS_JNI)
-    // Keep the lifecycle -> cache lock order consistent with the bridge
-    // wrapper path; see invalidatePlayer/invalidateEntity above.
-    RuntimeCallLease lease(this);
-    if (invalidated && lease) {
-        AttachedEnv attached(impl.vm.load(std::memory_order_acquire));
-        if (attached) {
-            std::lock_guard cacheLock(impl.objectCacheMutex);
-            impl.objects.erase(attached.get(), handle);
-        }
-    }
-#endif
-    return invalidated;
-}
-
 std::string JvmRuntime::nativePlayerName(std::uint64_t handle) const {
     if (auto resolution = impl_->handles.acquire(handle, HandleKind::Player);
         resolution) {
@@ -3006,9 +2889,11 @@ bool JvmRuntime::nativeWorldSetBlock(std::uint64_t handle, std::int32_t x,
                                      std::int32_t y, std::int32_t z,
                                      std::int32_t state) {
     if (state < 0 || state > 0xFFFF) return false;
+    if (gen::blockByState(static_cast<std::uint32_t>(state)) == nullptr) return false;
     return runServerMutation(impl_->server, [this, handle, x, y, z, state]() {
         auto resolution = impl_->handles.acquire(handle, HandleKind::World);
         if (!resolution) return false;
+        if (gen::blockByState(static_cast<std::uint32_t>(state)) == nullptr) return false;
         auto* world = static_cast<World*>(resolution.get());
         world->setBlock(x, y, z, static_cast<std::uint16_t>(state));
         return true;
@@ -3106,7 +2991,9 @@ std::string JvmRuntime::nativeServerSetting(const std::string& key) const {
     if (key == "simulation-distance" || key == "simulationDistance")
         return std::to_string(cfg.simulationDistance);
     if (key == "online-mode" || key == "onlineMode") return cfg.onlineMode ? "true" : "false";
-    if (key == "enforce-secure-profile" || key == "enforces-secure-chat")
+    if (key == "enforce-secure-profile" || key == "enforceSecureProfile")
+        return cfg.enforceSecureProfile ? "true" : "false";
+    if (key == "enforces-secure-chat" || key == "enforcesSecureChat")
         return cfg.enforcesSecureChat ? "true" : "false";
     if (key == "pvp") return cfg.pvp ? "true" : "false";
     if (key == "allow-flight" || key == "allowFlight") return cfg.allowFlight ? "true" : "false";
@@ -3158,27 +3045,6 @@ void JvmRuntime::nativeRegisterTransformedMethod(const std::string& owner,
         impl_->routing.markTransformed(owner, name, descriptor);
 }
 
-void JvmRuntime::nativeRegisterTransformedMethod(const std::string& owner,
-                                                 const std::string& name,
-                                                 const std::string& descriptor,
-                                                 std::uint64_t transformedHash) {
-    if (!owner.empty() && !name.empty() && !descriptor.empty())
-        impl_->routing.markTransformed(owner, name, descriptor, transformedHash);
-}
-
-void JvmRuntime::nativeRegisterMethodBaseline(const std::string& owner,
-                                              const std::string& name,
-                                              const std::string& descriptor,
-                                              std::uint64_t baselineHash,
-                                              std::uint64_t transformedHash) {
-    if (owner.empty() || name.empty() || descriptor.empty()) return;
-    impl_->routing.markBaseline(owner, name, descriptor, baselineHash);
-    if (transformedHash && transformedHash != baselineHash)
-        impl_->routing.markTransformed(owner, name, descriptor, transformedHash);
-    else
-        impl_->routing.markNative(owner, name, descriptor, baselineHash);
-}
-
 bool JvmRuntime::shouldUseJvm(const std::string& owner, const std::string& name,
                               const std::string& descriptor) const {
     return impl_->routing.path(owner, name, descriptor) == DispatchPath::JvmTransformed;
@@ -3193,14 +3059,6 @@ std::uint64_t JvmRuntime::nativeRouteHash(const std::string& owner,
                                           const std::string& name,
                                           const std::string& descriptor) const {
     return impl_->routing.hash(owner, name, descriptor);
-}
-
-std::int32_t JvmRuntime::nativeTransformedMethodCount() const {
-    return static_cast<std::int32_t>(impl_->routing.transformedCount());
-}
-
-std::int32_t JvmRuntime::nativeNativeMethodCount() const {
-    return static_cast<std::int32_t>(impl_->routing.nativeCount());
 }
 
 JvmDispatchResult JvmRuntime::dispatchTransformed(

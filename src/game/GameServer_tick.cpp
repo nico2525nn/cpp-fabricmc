@@ -169,6 +169,15 @@ void GameServer::tickDigs() {
                 cancelMiningDig(*this, *p);
                 continue;
             }
+            if (!blockEventDispatcher().onBlockBreak(p->digX, p->digY, p->digZ,
+                                                     oldState, p)) {
+                cancelMiningDig(*this, *p);
+                continue;
+            }
+            if (world.getBlock(p->digX, p->digY, p->digZ) != oldState) {
+                cancelMiningDig(*this, *p);
+                continue;
+            }
             world.setBlock(p->digX, p->digY, p->digZ, 0);
             broadcastBlockChangeFor(p->dimension, p->digX, p->digY, p->digZ, 0);
             if (const auto* broken = gen::blockByState(oldState);
@@ -176,7 +185,6 @@ void GameServer::tickDigs() {
                 invalidateRespawnPointsAt(p->dimension, p->digX, p->digY, p->digZ);
             }
             HungerManager::onBlockBreak(*p, *this);
-            blockEventDispatcher().onBlockBreak(p->digX, p->digY, p->digZ, oldState, p);
             onBlockMined(*p, oldState);
             {
                 const std::string _bn = blockNameByState(oldState);
@@ -268,6 +276,7 @@ void GameServer::tickDigs() {
     }
 }
 void GameServer::tickOnce() {
+    SimulationDispatchGuard simulationLock(simulationDispatchMtx_);
     // JVM-created workers can only mutate game state through this queue.  Run
     // it before native simulation and again after the synchronous JVM tick
     // callback so a short worker request is visible in the same tick when it

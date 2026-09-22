@@ -14,26 +14,9 @@ class GameServer;
 
 class CombatManager {
 public:
-    // Armor helpers
-    static int armorForItem(uint32_t itemId);
-    static int totalArmorForPlayer(const Player& p);
-    static int totalArmorForMob(const MobEntity& m);
-
     // EPF calculation (vanilla-accurate per DamageSource category)
     static int computeEPF(const DamageSource& ds, const Player& p);
     static int computeEPF(const DamageSource& ds, const MobEntity& m);
-
-    // Damage pipeline wrappers
-    static float calculatePlayerDamage(float base, const DamageSource& src,
-                                       int armor, double toughness, int epf,
-                                       const std::vector<EffectInstance>& effects);
-    static float calculateMobDamage(float base, const DamageSource& src,
-                                    int armor, double toughness, int epf,
-                                    const std::vector<EffectInstance>& effects);
-
-    // High-level apply (includes armor sync, exhaustion, health, packets)
-    static void applyToPlayer(GameServer& srv, Player& p, float amount, const DamageSource& src);
-    static void applyToMob(GameServer& srv, MobEntity& m, float amount, const DamageSource& src);
 
     // defined in CombatShield.cpp (standalone TU: no GameServer methods, unit-linkable)
     static bool holdsShield(const Player& p);

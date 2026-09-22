@@ -1,536 +1,353 @@
-# CppFabricMC Handoff
+# cpp-fabricmc — 現在作業 Handoff
 
-> 次のセッションでこのプロジェクトを安全に引き継ぐためのスナップショット。
-> 動的なテスト実績・HEAD・Next Stepsの正規参照は
-> docs/CURRENT_STATE.md と docs/VERIFICATION.md。このファイルは、それらを
-> 含む会話・判断・運用上の背景をまとめたもの。状態が変わったらこのファイルと
-> CURRENT_STATE.mdの両方を更新すること。
+> 更新: 2026-09-20 JST
+> 対象: Minecraft Java Edition 1.21.4 / Fabric-compatible C++ server / protocol 769
+> 用途: 次のエージェントが、過去の議論・実装・検証・未達境界を混同せず引き継ぐための内部文書。
 
-## 0. 最初に読むもの
+この文書は公開READMEではない。Plan番号、サブエージェント、CodexのGoal、未コミット差分、
+検証の限界などをここに記録する。公開利用者向けの説明はREADME.mdとdocs/README.mdを使う。
 
-1. AGENTS.md — 正式な改善ループ、timeout、worktree、サブエージェント、Git、安全規則。
-2. docs/CURRENT_STATE.md — 最新の測定値、publication status、残課題、Next Steps。
-3. docs/VERIFICATION.md — どのPASSが何を証明し、何を証明しないか。
-4. docs/DEVELOPMENT.md — 研究手順とcanonical module map。
-5. README.md — 公開利用者向け説明。内部PlanやCodex運用はここへ追加しない。
+## 0. 最初に読むファイル
 
-## 1. プロジェクト識別情報
+1. `AGENTS.md` — worktree、研究、サブエージェント、timeout、プロセス回収、Git安全規則。
+2. `docs/CURRENT_STATE.md` — 現在の測定値、plan履歴、残課題、公開状態の正規tracker。
+3. `docs/VERIFICATION.md` — 各PASSが証明する範囲と証明しない範囲。
+4. `docs/DEVELOPMENT.md` — canonical module mapとresearch workflow。
+5. `docs/MISSING_FEATURES_1_21_4.md` — numbered matrixとdeclared limitation。
+6. `docs/audit/adversarial-review-2026-09-19.md` — 直近hardening passの敵対的レビュー。
+7. `docs/MC_PILOT_REAL_TEST.md` — mc-pilot / PrismLauncherのローカル実機証跡。
 
-| 項目 | 現在値 |
+## 1. 現在の状態
+
+| 項目 | 状態 |
 |---|---|
-| 作業ディレクトリ | /run/media/nico/d/学校/app/cpp-fabricmc |
-| 対象 | Minecraft Java Edition 1.21.4 / Fabric-compatible server |
+| 対象 | Fabric 1.21.4 / DataVersion 4189 |
 | protocol | 769 |
-| DataVersion | 4189 |
-| branch | main |
-| HEAD | final documentation evidence sequence after source integration `335fca5` |
-| origin/main | local `main` is ahead by the integrated local commits; no push requested. Recheck before publishing |
-| HEADのコミット | final docs/evidence synchronization |
-| スナップショット | 2026-09-19 JST |
-| JDK | OpenJDK 21をインストール済み。JNI/JVMビルド検出済み |
-| publication status | BLOCKED — 下記の明示された境界が残る |
+| branch | `main` |
+| 現在のHEAD | `b786093f84791e6381665f9e6aa86d4823f7a131` — `docs: record final verified gates` |
+| origin/main | 現在の確認ではHEADと同じ |
+| tracker上の実装baseline | `335fca5`（plan53/54の統合基準） |
+| JDK | OpenJDK 21。JNI/JVM検出済みのビルド環境 |
+| publication status | `BLOCKED` |
+| settings/security/authority/lifecycle pass | 実装・検証済み。ただし未コミット |
 
-### 重要なGit状態
+現在の作業ツリーは意図的にdirtyである。直近の読み取り確認では、tracked fileに多数の変更があり、
+`git diff --stat` は52ファイル、`+2051/-855`行。未追跡の主な項目は次の3つ。
 
-このスナップショットは統合済みmainと最終文書同期を基準にしている。既存の
-ユーザー変更を捨てるためにreset --hard、checkout --、広範囲の削除を行ってはいけない。
+- `.github/`
+- `docs/audit/adversarial-review-2026-09-19.md`
+- `tests/test_settings_matrix.cpp`
 
-余計なjar、zip、class、logはGit作業ツリーに残していない。build/はignoreされた
-ローカル生成物であり、公開成果物ではない。公開前にstatus、diff-check、originとの差分を
-再確認する。
+`Handoff.md`、ソース、テスト、docs、CIの変更を、ユーザーの許可なく `git reset --hard`、
+`git checkout --`、`git clean`、広範な削除で失ってはならない。コミットとPushはこのHandoff更新時点では未実施。
 
-## 2. ユーザーが決めた方針・前提
+## 2. 結論を先に
 
-- 目標は、Minecraft Fabric 1.21.4 serverをC++で非公式再実装し、可能な限りvanilla/Fabricと
-  互換にすること。完全互換を目指すが、証明できないものをPASSとは書かない。
-- 対象はprotocol 769。以前誰かが追加したprotocol 776は対象外であり、1.21.4の話に混入した
-  だけなので、今後の設計・評価・READMEで追わない。不要なら削除してよい。
-- JVM/Fabric互換は、JDK/JNIがconfigure/build時に見つかるバイナリではデフォルトON。JNIなしで
-  ビルドした既存バイナリに、後からJDKを置いてJVM機能が生えるわけではない。
-- one-file配布を目標にする。LinuxではCPack ZIP内に実行ファイル1個を入れ、初回起動時に
-  world/、mods/、config/、libraries/、logging、resourcepacks/、runtime cache、
-  server.propertiesなどを作る。Windows/macOSは各ホストでnative buildが必要。
-- README.mdは利用者向け公開文書であり、Plan番号、サブエージェント、内部会話などは書かない。
-  それらはこのHandoff、AGENTS.md、docs/CURRENT_STATE.mdなど内部技術文書に分離する。
-- 実際のクライアント・PrismLauncher・mc-pilot・Modrinth Modの動作を確認する。ただし、
-  対応artifactがないものを無理にPASSに数えない。Createは今回のFabric 1.21.4 server-side
-  対象artifactがロックできなかったため、runtime PASSに数えていない。
-- 追加を重ねてコードを汚さない。実装はまとまり単位で行い、レビュー、テスト、ドキュメントを
-  一緒に更新する。将来的に1万行削減を目指すが、featureや証跡を雑に削除して達成してはいけない。
-- /tmp worktreeは必須ではない。並列作業で本当に隔離が必要な場合だけ、作成した正確なパスを
-  後で削除する。/tmp全体、workspace root、$HOME相当を広く削除しない。
+このプロジェクトは、protocol 769のログイン・wire・基本gameplay・設定・認証・権限・イベント・
+永続化・負荷・JVM境界の限定された面を、かなり広く実装し、名前付きテストで検証できる状態にある。
+直近のsettings/security/authority/lifecycle hardeningは、記録されたgateをすべて通過している。
 
-## 3. 目標と最終判断
+しかし、これは「Minecraft全機能の完全互換」や「任意Fabric modが動く」ことの証明ではない。
+公開状態はBLOCKEDのままであり、少なくとも次の境界が残る。
 
-直前のCodex Goalは、次を目的に設定された。
+- 受入済みの2時間/24時間soak証跡がない。
+- 任意のFabric JVM mod、公式GameProvider、universal bytecode互換ではない。
+- vanilla worldgenの全Xoroshiro call orderとstructure NBT parityは未証明。
+- すべてのreal client/GUIとすべてのModrinth artifactを検証したわけではない。
+- signed commandのargument transcriptは復元せず、enforced secure chatではfail closed。
+- moving pistonのtransient NBTをそのまま永続化していない。
 
-> 2系統の敵対的レビューを起点に、4〜5回の監査・修正・検証ループで、Fabric 1.21.4 / protocol 769
-> の互換性とコード品質を改善する。通常/厳格コンパイル、テスト、サニタイザ、並行負荷、実クライアントを
-> 実施し、JVM/Fabric境界、vanilla RNG、GUI、実Modなどの残る限界を公式資料と実験で調べ、解消可能な
-> ものを実装し、解消不能または外部条件依存のものを根拠付きで明示する。
+## 3. ユーザーが決めた重要な前提
 
-このGoalは、実装可能な範囲と検証可能な範囲を完了し、universal compatibilityを主張できない残課題を
-ドキュメントへ明記した状態で完了扱いにした。Goal完了はGit commitやPushを意味しない。
+- 対象は1.21.4 / protocol 769。以前混入したprotocol 776は対象外で、設計・評価・READMEで追わない。
+- Fabric互換のJava/JVM機能は、configure/build時にJDK/JNIが見つかるバイナリではdefault-on。
+  JNIなしでビルドしたバイナリへ、後からJDKを置いてJVM機能を追加することはできない。
+- 「五感を持つ」ための実装方針は、Sidecarではなくプロセス内HotSpot/JNIを選んだ。
+  直接callback、opaque handle、tick-thread routingを得られる一方、JVMクラッシュはサーバーに影響し、
+  任意Fabric Loaderや公式GameProviderを提供するものではない。
+- one-file配布を目標にする。LinuxではCPack ZIPに実行ファイル1個を入れ、初回起動時に
+  `world/`、`mods/`、`config/`、`libraries/`、`logging/`、`resourcepacks/`、runtime cache、
+  `server.properties`などを作る。Windows/macOSは各ホストnative buildが必要。
+- READMEは公開利用者向け文書。Plan、Goal、サブエージェント、内部会話はREADMEに書かない。
+- Smoke80は特別な合格扱いではなく、通常の回帰CTestの一つ。現在の結果は224ケース。
+- 実Modは、対象artifactと実行条件が揃った範囲だけPASSとする。対象外artifactを無理に互換性の証拠にしない。
+- 1万行削減・20%削減は品質目標であって、feature、fixture、assertion、証跡を削除して数字だけ合わせてはいけない。
+- すべての長いbuild/test/benchmarkはtimeout付きで実行し、終了後に所有プロセスが残っていないことを確認する。
 
-厳しめの目安は次のとおり。
+## 4. ここまでの作業の流れ
 
-- 総合互換性: 7/10前後。protocol/login/basic gameplayの実証範囲は高いが、未証明の面積が大きい。
-- protocol/wire: 8〜8.5/10。
-- JVM境界: 6/10。tested bounded surfaceとしては動くが、任意Mod Loaderではない。
-- 任意Fabric Mod: 3〜4/10。E-14を残す。
-- full worldgen RNG/NBT parity: 5〜6/10。primitive/splitterは通るが、全call graphは未証明。
-- コード品質: 8/10近辺。strict build、sanitizer、所有権、ドキュメント整合は改善したが、
-  大きなdirty diffとheader-heavyなRNG実装、残る境界があるため9〜10とはしない。
+### 4.1 以前の実装・統合
 
-## 4. 現在の実装・修正内容
+- protocol 769のwire、login/configuration/play、compression、AES-CFB8、RCON、chunk、NBT、Anvil、
+  world、worldgen、blocks、entities、AI、items、containers、recipes、menus、commands、
+  redstone、fluids、light、persistenceなどを段階的に実装した。
+- plan49ではmining、mob behavior、world/block/entityなどの統合とcleanupを進め、`Structures.hpp`の
+  legacy APIを削除した。これはstructure generation parityそのものの証明ではない。
+- plan51ではembedded JVM boundaryを実装した。これは任意の公式Fabric runtimeを丸ごと埋め込むものではなく、
+  dependency-free shadow ABIとselected integration surfaceである。
+- plan53では設定・properties・再起動・復旧・lifecycleのmatrixを追加した。
+- plan54ではsettings/security/authority/lifecycleのhardening、writer/dispatch/persistence barrier、
+  process ownership、敵対的レビュー、CIを統合した。
 
-### 4.1 コード品質・安全性
+### 4.2 20% / 1万行削減について
 
-多数の既存変更を含むため、全変更ファイルの一覧はgit status --shortで確認すること。今回の
-レビューで特に行ったことは次のとおり。
+安全なcleanupの最終測定は、clean `65a7c69` baselineに対するもの。
 
-- C++の警告、型変換、const、符号付き整数、shadow、non-virtual destructorなどを整理。
-- strict quality buildで次の警告群を有効化して全ターゲットをビルドした。
-  -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Wnon-virtual-dtor
-- C++/Pythonのテストハーネスで、所有している子プロセスをterminate/wait/bounded escalation
-  するように整理。親だけkillして子を孤児化する実装を避ける。
-- timeout、readiness、stdout/stderr pipe、サーバー終了、disconnect後のinactive化を見直した。
-- NBT、JSON、Region/Anvil、Persistence、World、WorldGen、AI、Redstone、Fluids、Commands、
-  RCON、JVM runtime、Menu、Entity data等の警告・品質問題を横断的に整理。
-- 変更後のgit diff --checkは通過済み。
+| 測定 | 結果 |
+|---|---:|
+| baseline | 96,654行 / 293ファイル |
+| current measurement | 98,648行 / 298ファイル |
+| mutable lines | 87,715 → 89,709 |
+| net | `+1,994`行（`+2.28%`） |
+| strict reduction target | 18,341行削減、`PARTIAL` |
+| protected manifest | 80ファイル / 8,939行、hash drift 0 |
 
-### 4.2 実クライアントで発見・修正したもの
+設定証跡とlifecycle matrixを増やしたため、削除より追加が多くなった。20%削減は未達であり、
+1万行削減も達成済みではない。数字のためにテスト・fixture・機能・証拠を消すのは禁止。
 
-docs/MC_PILOT_REAL_TEST.mdに記録されている修正。
+## 5. 現在の実装内容
 
-- Advancement update flagsをVarIntではなくfixed big-endian i32に修正。
-- Declare Commandsのinteger min/maxとtime minimumをfixed i32に修正。
-- score_holderのallow-multiple byteを追加。
-- Heightmapの1.21.4 non-straddling packed layoutを修正（256個の9-bit valueを37 longs）。
-- Entity spawn UUIDを有効・nonzero・entityごとにdistinctに修正。
-- zero-weightのdecoration/display/projectile/vehicleをnatural mob selectionから除外。
-- EntityTeleport producerを1.21.4の統一encoderへ集約。entity id、2つのVec3d、yaw/pitch f32、
-  relative flags fixed i32、onGround booleanの形に修正。
-- generated/default propertiesにlevel-type=normalを明示。flatは明示設定時だけ有効。
-- --world-dirをworld save pathとして扱い、server propertiesをserver rootから読むように修正。
+### 5.1 設定・認証・secure chat
 
-### 4.3 JVM/Fabric境界
+- `ServerConfig`にdifficulty、seed、resource-pack、secure-profile、secure-chatなどの型付き設定を追加。
+- textual seedはJava `String.hashCode()`、数値seedは符号付きint64として扱う。
+- secure profileとenforced secure chatを分離。
+- Mojang profile certificateはRSA-SHA1、chat message signatureはRSA-SHA256。
+- signed chat transcript、LastSeen offset、ChatSessionUpdateのstrict failure pathを実装。
+- signed command argument transcriptは再構築せず、enforced secure chat下ではfail closed。
+- resource-pack UUID、hash、forced、finish-ackを検証。
+- server.propertiesとCLIの優先順位、不正値、範囲、unknown key、help/versionの副作用をmatrix化。
 
-- HotSpot/JNIを組み込むbounded server-side shadow ABI。
-- selected callbacks、tick-thread executor、opaque native handles、event/command/registry/networking
-  surface、version-locked transformerを実装・検証。
-- official Loader/Knot/Mixinのoffline/embedded probeを持つが、Mojang GameProvider/server jarを同梱しない。
-- 25/25のhistorical JVM fixture corpus、Shadow ABI、transformer、handles、native bridge、runtimeを検証済み。
-- arbitrary Fabric JVM Modとuniversal bytecode compatibilityはE-14として明示的に未達。
-- jvm_runtime timeoutは30秒固定から180秒に変更。環境によるJVM startup遅延を誤FAILにしないため。
+### 5.2 権限・gameplay・event
 
-#### Sidecarとプロセス内JVMの設計判断
+- root commandを正規化し、非OP許可リストを分離。
+- gamemode、pick-block/entity range、beacon payment/effect/range、sign protection/dirtyを検証。
+- block place/break/click callbackをmutation前に実行し、キャンセル可能にした。
+- callback後にdoor、slab、generic placement、creative breakの対象状態を再取得して再検証。
+- scoped event callbackのremoveはin-flight callbackと同期。
+- item command sourceは元のdimensionを保持。
 
-過去の議論で「五感を持つ」ように、Modやゲーム状態へできるだけ深くアクセスしたいという目標が確認された。
+### 5.3 tick・永続化・ネットワーク・ライフサイクル
 
-- JVM Sidecarは、C++サーバーとJavaプロセスを別プロセスにする方式。クラッシュ隔離・再起動・依存分離には
-  有利だが、ゲーム状態やポインタを直接共有できず、IPC/RPC、serialization、event ordering、latencyの
-  境界が新たに生じる。公式Fabric LoaderやGameProviderをそのまま同一プロセスへ持ち込むものでもない。
-- プロセス内JVM埋め込みは、C++プロセス内でJNI Invocation API/HotSpotを起動し、native handleとcallbackを
-  直接接続する方式。現在のPlan51系の実装はこちらであり、Sidecarではない。状態アクセス、tick-thread境界、
-  callback順序、opaque handleを同一プロセス内で扱える反面、JVMクラッシュやABI不整合がサーバー全体へ影響する。
-- 現在の実装は、プロセス内JVMを選んだが、公式Java serverを丸ごと再現したわけではない。shadow API、selected
-  events、bounded transformer、tested fixtureを提供する限定的なFabric-compatible extension surfaceである。
-- この選択によってGUI、公式client、任意Mod、Mojang GameProvider、全Fabric Loader behaviorまで自動的に解決される
-  わけではない。これらは引き続きE-14/declared limitationとして扱う。
+- mutatingなtick/session/console/handler遷移をrecursive simulation dispatch gate下に統一。
+- pistonのsource/destination pending commitを、同期・worker snapshot前にflush。
+- 接続ごとのbounded writer queue、4 MiB/client cap、graceful close 100 ms、overflow closeを実装。
+- frameはsimulation gate中にencodeし、writer lifecycle lockでenqueue/join raceを防止。
+- encrypted AES-CFB8 frameはlow-priority reorderを禁止し、状態依存FIFOを維持。
+- chunk-dependent broadcastはlow priority化。
+- teardownはgraceful close、即時異常系はabort。
+- Python/C++ harnessはowned PID/groupだけをterminate/wait/reapし、別テストをkillしない。
 
-### 4.4 配布・properties
+### 5.4 JVM/Fabric境界
 
-- JDK/JNI/Pythonが揃えばJava shadow classesとrepository-owned resourcesを実行ファイルへ埋め込む。
-- CPack one-file ZIPはLinux x86-64で確認済み。ZIPにはcppfm executable 1個だけ。
-- clean extraction、sentinel user file preservation、embedded classes/assets、strict default-on JVM startup、
-  test_server_fullを検証済み。
-- 通常のproduction defaultはnormal terrain。superflat/flatはserver.propertiesでlevel-type=flatを明示。
+- process-internal HotSpot/JNI。Sidecarではない。
+- opaque native handle、generation-safe invalidation、tick-thread executor、selected event/command/
+  registry/networking callback、version-locked pre-definition transformer、selective routingを実装。
+- shadow ABIは906 source classes、763 class files、8,297 declared/audited membersを対象に検査。
+- embedded packageには1,457 class filesを含むJVM smoke gateがある。
+- historical plan51 fixture corpusは25/25。official Loader/Knot/Mixinのoffline/embedded probeも通過。
+- ただしMojang GameProvider/server jarを同梱せず、任意Fabric modをロードするuniversal Loaderではない。
+- JNI-capable binaryにはruntime JDKと互換classesが必要。JNIなしbinaryはnative-only。
 
-## 5. Vanilla RNG実装の引き継ぎ事項
+### 5.5 vanilla RNG
 
-実装場所はsrc/core/Random.hpp、独立テストはtests/test_rng_parity.cpp。CTest登録は
-CMakeLists.txtの707行付近。
+- Java LocalRandomの48-bit LCG、Minecraft Xoroshiro128++、seed expansion、bounded primitive、
+  splitters、long/coordinate/string vectorsを実装。
+- `test_rng_parity`は25 PASS。
+- これはprimitive/splitter parityの証明であり、全worldgen call order、消費順、structure NBT parity、
+  vanillaとのL3完全一致を証明しない。
 
-### 5.1 実装済み
+### 5.6 package・実client・実Mod
 
-- VanillaLocalRandom
-  - Java 48-bit LCG
-  - multiplier 25214903917
-  - increment 11
-  - nextBits、unbounded/bounded nextInt、nextLong、boolean、float、double、Gaussian
-  - split、nextSplitter
-- VanillaXoroshiro128PlusPlus
-  - xoroshiro128++ transition
-  - GOLDEN_RATIO_64 = 0x9E3779B97F4A7C15
-  - SILVER_RATIO_64 = 0x6A09E667F3BCC909
-  - Stafford-13 seed mixing
-  - upper-bit float/double、low-bit boolean、unsigned multiply/rejection bounded int
-  - Gaussian cache、skip、split、nextSplitter
-- VanillaXoroshiroSplitter
-  - long、coordinate、String/MD5 split
-- rng_detail
-  - dependency-free MD5
-  - big-endian 64-bit word extraction
-  - Java UTF-16 semanticsを考慮したString hash
-  - 1.21.4 MathHelper.getSeed(x,y,z)相当のcoordinate hash
-- process-wide nextRandom/seedRandom
-  - atomic stateのJava LCG化、nonnegative 31-bit stream。
-  - ただし、これだけで全worldgen call siteがvanillaと同一になるわけではない。
-
-### 5.2 実装上の注意
-
-- cppfm::detailというnamespace名は既存のcppfm::worldgen::detailと衝突したため、helperは
-  cppfm::rng_detailである。戻さないこと。
-- XoroshiroのsplitとnextSplitterでは、C++関数引数の評価順序が未規定なので、seedLoを先に引き、
-  次にseedHiをローカルへ保存してからchildを構築する。これを一つのconstructor callの引数に
-  戻すとJavaのdraw orderを壊す。
-- Java signed bit patternはstd::bit_cast helperで復元している。通常のsigned conversionへ戻さない。
-- coordinate hashでは最初のx * 3129871がJava int overflowしてからlongへ拡張される点に注意。
-- full worldgenのrandom call order、structure placement、structure NBT parityはまだ証明していない。
-
-### 5.3 RNGの証跡
-
-test_rng_parityは25 PASS / 0 FAIL。
-
-- LocalRandom seed 123456789/1234のnextInt、bounded int、nextLong、float、double、next(31)
-- Xoroshiro unmixed/mixed seed vectors
-- nextLong sequence
-- float/double/bounded int
-- long/coordinate/MD5 string splitter
-
-公式参照:
-
-- Yarn LocalRandom:
-  https://maven.fabricmc.net/docs/yarn-1.21.4%2Bbuild.1/net/minecraft/util/math/random/LocalRandom.html
-- Yarn Xoroshiro128PlusPlusRandom:
-  https://maven.fabricmc.net/docs/yarn-1.21.4%2Bbuild.1/net/minecraft/util/math/random/Xoroshiro128PlusPlusRandom.html
-- Yarn RandomSeed:
-  https://maven.fabricmc.net/docs/yarn-1.21.4%2Bbuild.1/net/minecraft/util/math/random/RandomSeed.html
-- Yarn RandomSplitter:
-  https://maven.fabricmc.net/docs/yarn-1.21.4%2Bbuild.4/net/minecraft/util/math/random/RandomSplitter.html
-- xoroshiro128++ public-domain reference:
-  https://prng.di.unimi.it/xoroshiro128plusplus.c
+- Linux CPack ZIPは実行ファイル`cppfm`一つを含む形で作成・抽出・起動を検証。
+- 直近のlocal package evidenceはサイズ54,999,329 bytes、SHA-256
+  `61b19c83100b755b06431c2568e5277e4251867b4b25df98c27ab44118d84b8b`。
+- package evidenceはignored build outputであり、tracked/public release assetではない。
+- package JVM smokeではdefault-on JVM startup、1,457 embedded classes、registry assets、clean shutdownを確認。
+- mc-pilotでFabric 1.21.4 clientのlogin、world join、chat、command、position、block get/break、
+  status、screenshot、1分超のstabilityを確認。
+- PrismLauncher 11.1.0では既存authenticated accountを使いFabric 1.21.4 clientを起動してcppfmへjoin。
+  初回Microsoft loginや全instance構成を証明したものではない。
+- Lithium、FerriteCore、Carpetはserver-side bounded corpusとして個別・combined bootstrap/clean shutdown PASS。
+- Modrinth候補12件は8件がtarget-compatible/runtime pass、Create 2件はtarget-incompatible、
+  C2MEはJava 22+要求、Debugifyはinvalid metadata。Createを互換性PASSに数えない。
 
 ## 6. 最終検証証跡
 
-### 6.1 Build / CTest / sanitizer
+以下は2026-09-19に記録されたcurrent working-tree evidence。Handoffを書き直しただけで、ここに列挙した
+テストを再実行したわけではない。詳細は`docs/CURRENT_STATE.md`。
 
-| 検証 | 結果 |
-|---|---:|
-| 通常build | 統合後のtimeout-wrapped Ninja build、package target、incremental buildが成功 |
-| strict quality build | default Werror構成、quality audit、tautology lint、mcproto framingが成功 |
-| 全non-nightly CTest | 45/45 PASS、394.71秒 |
-| smoke80 | 223 PASS / 0 FAIL、統合後CTestで175.05秒。全体の一テストであり特別扱いしない |
-| cleanup hardening性能比較 | c857bfa 45-test CTest 395.76秒 → 335fca5 394.71秒（-0.27%）、smoke80 175.24→175.05秒、package JVM 1.83→1.84秒。Linux 7.0.0-31-generic / 16 CPU / 各1回・warm-upなし |
-| test_rng_parity | 25 PASS / 0 FAIL |
-| quality/tautology/mcproto | 全対象PASS |
-| focused CTest | native/spec_wire/fuzz/core_safety/rng_parityを含む全対象PASS |
-| ASan/UBSan key regression set | core_safety/spec_wire/fuzz/gameplay_full 4/4 PASS、reportなし |
-| test_spec_wire | 417 PASS / 0 FAIL |
-| test_wire_full | 399 PASS / 0 FAIL |
-| test_gameplay_full | 806 PASS / 0 FAIL |
-| properties / lifecycle_matrix | 33 PASS / 0 FAIL; 8/8 PASS |
-| test_seed_parity | 201 PASS |
-| test_mining_full | 59/59 PASS |
-| block hardness | 1095 mismatch=0 |
-| mob stats | 131 PASS / 0 FAIL |
-| redstone | 42 PASS / 0 FAIL |
-| fluids | 23 PASS / 0 FAIL |
-| menu logic | 41 PASS / 0 FAIL |
-| recipes mirror | 76 PASS / 0 FAIL |
-| recovery | 54 PASS / 0 FAIL |
+| gate | 記録された結果 |
+|---|---|
+| configure / full Ninja build | `RC=0` |
+| non-nightly CTest | `46/46 PASS`、394.82秒 |
+| settings matrix | `25 PASS / 0 FAIL` |
+| properties | `33 PASS / 0 FAIL` |
+| lifecycle matrix | `8/8 PASS` |
+| recovery | `55 PASS / 0 FAIL` |
+| core safety | `45 PASS / 0 FAIL` |
+| Plan43 | `87 PASS / 0 FAIL` |
+| Smoke80 | `224 PASS / 0 FAIL` |
+| full live matrix | `240 PASS / 0 FAIL / 240 total` |
+| test_spec_wire | `417 PASS / 0 FAIL` |
+| test_wire_full | `399 PASS / 0 FAIL` |
+| test_wire_b6 | `136 PASS / 0 FAIL` |
+| test_gameplay_full | `806 PASS / 0 FAIL` |
+| test_seed_parity | `201 PASS / 0 FAIL` |
+| test_rng_parity | `25 PASS / 0 FAIL` |
+| test_mining_full | `59/59` |
+| test_block_hardness_full | `16/16`, 1095 mismatch=0 |
+| test_mob_stats_full | `131 PASS / 0 FAIL` |
+| test_redstone_engine_full | `42 PASS / 0 FAIL` |
+| test_fluids | `23 PASS / 0 FAIL` |
+| test_menu_logic | `41 PASS / 0 FAIL` |
+| test_recipes_mirror | `76 PASS / 0 FAIL` |
+| no-JNI build + regression | `42/42 PASS` |
+| ASan/UBSan key set | `4/4 PASS`、sanitizer reportなし |
+| 120-client stress | `120/120 joined`、68.5秒 |
+| 300-second soak | 150 keepalives、0 disconnect、2,899 actions、RSS +0.2% |
+| view-distance 32 dry benchmark | 4,225 chunks、p50 0.107ms、p95 2.332ms、OOM/kick 0 |
+| multi-client | ALL PASS、17.48秒 |
+| bot smoke | ALL PASS、20.82秒 |
+| Python harness compile | `RC=0` |
+| git diff --check | `RC=0` |
 
-### 6.2 JVM / Mod / package
+補足:
 
-- jvm_handles、jvm_native_bridge、jvm_runtime、jvm_transformer、jvm_access_widener、jvm_api PASS。
-- jvm_compatibility: 25/25 fixture、functional API fixture、three consecutive direct reruns PASS。
-- Shadow ABI: 906 source classes、763 class files、8,297 audited members。
-- official Loader/Knot probe: expected markers PASS。ただしofficial Mojang GameProviderは未同梱。
-- Lithium、FerriteCore、CarpetをJava 21で個別・combined bootstrap/clean shutdown PASS。
-- 12-entry Modrinth candidate screenは8 target-compatible runtime pass、4 explicit non-target/invalid。
-- Createは対応Fabric 1.21.4 server artifactが確認できずruntime PASSに数えていない。
-- Linux CPack ZIP（ignored local output）の記録:
-  - archive: build/packages/cppfabricmc-1.21.4-Linux-x86_64.zip
-  - size: 54999329 bytes
-  - SHA-256: 61b19c83100b755b06431c2568e5277e4251867b4b25df98c27ab44118d84b8b
-  - contents: cppfm executable 1個
-  - clean extractionのtest_server_full: 234 PASS / 0 FAIL
-  - package_jvm_smoke: strict default-on JVM startup、1,457 embedded class files、registry assets、owned shutdown PASS
-- explicit no-JNI configure/build: `CPPFM_ENABLE_JNI_FALLBACK=OFF`, JNI package
-  discovery disabled, `CPPFM_HAS_JNI` absent from the native targets, and the
-  same-commit non-package CTest set `42/42 PASS`; native-only `cppfm` build PASS.
-
-### 6.3 Client / load / soak
-
-- mc-pilot managed Fabric 1.21.4 client: offline login、configuration、world join、chat、say、
-  position、block get/break/get、status、screenshot PASS。1分以上接続維持。
-- PrismLauncher 11.1.0: existing authenticated accountを使ったFabric 1.21.4 CLI launch/join PASS。
-- fresh no-account profileで--offlineがアカウントを生成しないことも確認。normal playにはaccountが必要。
-- 120 synthetic clients: 120/120 join、最新手動rerun 68.0秒、終了後online 0、孤児cppfm 0。
-- multi-client: 17.48秒 PASS。
-- bot smoke: 20.82秒 PASS。
-- soak 60秒: 0 disconnect、30 keepalives、590 actions、RSS +1.0%。
-- soak 300秒: 0 disconnect、150 keepalives、2932 actions、RSS +7.6%。
-- soak 600秒 wide movement: 0 disconnect、300 keepalives、5707 actions、RSS +6.6%。
-- soak 1800秒: 900 keepalives、0 disconnect、17493 actions、RSS +12.5%。
-- 7200秒試行: t=3361sで中断、RSS 160388→191612kB、+19.5%、15% gate超過。正式PASSではない。
+- package extracted-directoryのhistorical `test_server_full`は234/234。source-treeの240/240とは別証跡。
+- `tools/soak_bot.py --duration 300`は3/3 PASS。各回KeepAlive 30、chunks 182、time updates 300、
+  kicks/EOF/server-exit/transport/protocol errors 0。
+- 1800秒wide soakはPASS（900 keepalives、0 disconnect、17,493 actions、RSS +12.5%）。
+- 7200秒attemptはt=3361秒で中断・不受理。RSS `160388→191612kB`、+19.5%で15% gate超過。
 - 2時間/24時間のaccepted artifactは存在しない。
 
-### 6.4 Plan54 adversarial cleanup ledger
+## 7. 敵対的レビューと評価の読み方
 
-- Baseline: clean checkpoint `65a7c69`; primary scope is `src/`, `tests/`, and
-  `tools/` with C++/header/Python/Java suffixes.
-- `293 files / 96,654 lines` → `298 files / 98,648 lines`.
-- Protected manifest: `80 files / 8,939 lines`; all protected hashes are unchanged.
-- Mutable scope: `87,715` → `89,709`, net **+1,994 (+2.28%)**. The strict
-  `18,341` reduction gate is `PARTIAL`, not a pass.
-- Accepted net reductions: items `-5`, native process harness `-81`, session
-  login paths `-13`, commands `-3`; JVM bridge `+12`. Configuration/properties
-  evidence added `+671`, lifecycle evidence added `+1,352`, and the final
-  cleanup-hardening assertions/source-policy checks added `+61`.
-- No fixture, generated input, expected byte, assertion, or negative case was
-  removed or weakened. Python consolidation was rejected because its helper made
-  the net scope larger.
+`docs/audit/adversarial-review-2026-09-19.md`のcurrent hardening scopeに対する記録:
 
-## 7. 残課題・互換性の境界
+- feature adversarial review: **10/10**、未解決P0/P1/P2なし。
+- code-quality adversarial review: **9.5/10**、未解決P0/P1なし。
+- residual advisory: `DOS-CONSOLE-001`。authenticated RCONの`/reload`と`/function`がserialized
+  simulation domain内で直列化される。競合・非決定性を避ける意図的trade-offであり、レビュー範囲では
+  correctness/security bypassではない。
 
-これらを「未修正なのに隠している」と扱わないこと。現在の実装または証跡で、完全達成を主張できない
-ため、DECLARED-LIMITATION/BLOCKEDとして明示している。
+このスコアは今回レビューしたhardening scopeの評価であり、Minecraft全体の互換性スコアではない。
+過去の総合目安は互換性約7/10、wire 8〜8.5/10、JVM boundary 6/10、任意Fabric mod 3〜4/10、
+full worldgen RNG/NBT parity 5〜6/10。コード全体の以前の保守的自己評価は約8/10で、9.5/10を
+リポジトリ全体の無条件な品質保証として扱わない。
 
-1. E-14 arbitrary Fabric JVM mods / GameProvider
-   - bounded shadow ABIとtested callbacksのみ。
-   - arbitrary Mod、任意bytecode、公式Mojang server runtime、client-side Mod、GUIは未達。
-2. Full worldgen RNG L3
-   - primitive、seed expansion、splitterは25/25。
-   - 全random call order、structure NBT、全worldgen pathのbyte parityは未証明。
-3. GUI/全client behavior
-   - 実クライアントの限定probeはPASS。
-   - 全menu、全entity、全dimension、全launcher configuration、全GUIは未証明。
-4. Microsoft初回ログイン
-   - existing authenticated accountのrefresh/joinはPASS。
-   - first-time interactive loginは未検証。
-5. Long-run evidence
-   - accepted 2h/24h artifactなし。
-   - 7200秒試行はRSS gate超過のためPASSに昇格しない。
-6. Cross-platform release
-   - Linux x86-64 packageのみ実証。Windows/macOSはnative host build/testが必要。
-7. Modrinth coverage
-   - bootstrap/clean shutdown中心。gameplay、registry、rendering、client、arbitrary-mod parityを意味しない。
+## 8. 明示的な未達・境界
 
-## 8. timeout / process ownershipの引き継ぎ
+次の項目は、テスト手順が存在しても完了扱いにしてはいけない。
 
-「timeoutがクラッシュしました」と見える現象について、直前の調査で次を確認した。
+1. **任意Fabric JVM mod / official GameProvider**
+   embedded shadow ABI、Loader/Knot probe、3つのlocked server-side modはbounded evidence。
+   任意modの全bytecode、Mixin target、registry、client/render/GUI、公式providerを保証しない。
+2. **vanilla RNG L3**
+   primitiveとsplitterは通るが、全worldgen call graphとstructure NBTのvanilla byte parityは未証明。
+3. **長時間運転**
+   300秒、600秒wide、1800秒diagnosticはPASS。accepted 2h/24hはない。
+4. **real client / official GUI**
+   ローカルmc-pilot/PrismLauncherの限定probeはPASS。ログ・スクリーンショットをrelease artifactとして
+   保持しておらず、全画面・全操作・初回認証・全instanceを網羅していない。
+5. **signed command**
+   inbound signed chat verificationは実装済み。argument transcriptを再構築できないため、
+   enforced secure chatでは`ChatCommandSigned`をfail closed。
+6. **moving piston persistence**
+   snapshot barrierでpending source/destination commitを先にmaterializeするが、transient NBTそのものは保存しない。
+7. **publication**
+   ignored build/package evidence、local account、temporary logs/screenshots、未コミット差分をもって公開releaseとはしない。
 
-- 通常buildは600秒枠で100/111付近まで進んだあと124になった。コンパイル失敗ではなく時間切れ。
-- ASan buildも600秒枠で39/65で時間切れ。900秒で残り26/26を再開して完了。
-- smoke80などは子のcppfmをforkするため、親プロセスだけをkillするとpipeを子が保持し、
-  失敗やハングに見える。
-- readiness/output loopが子の実状態を見ずにtimeoutする経路もあった。
-- 現在のharnessはprocess group、monotonic deadline、owned childのterminate/reap、bounded escalation、
-  cleanup failureの明示を行う。
-- disconnect pathは遅いpersistence/hookの前にplayerをinactive化する。
+## 9. timeoutとプロセス管理の調査結果
 
-安全な確認方法:
+以前「timeoutがクラッシュしました」と見えていた問題には、少なくとも次の要因があった。
+
+- 親processだけをkillすると、子cppfmがpipeを保持して外側timeoutが終わらない。
+- readiness/output loopが、実際のowned child stateをdeadline内に観測できない場合があった。
+- build自体も、時間制限が短いとcompiler/linkerの途中でRC 124になることがあった。これは必ずしもruntime crashではない。
+
+対策済みの内容:
+
+- Python harnessはprocess group、monotonic deadline、実サーバーstatus probe、bounded terminate/wait/reap。
+- C++ `ServerProcess`はowned PIDの`kill`、`waitpid`、temporary-world removalを検査し、cleanup失敗を隠さない。
+- disconnected sessionは遅いpersistence/hook前にinactive化。
+- writer queue、graceful close、overflow closeをbounded化。
+
+許可される手動確認:
 
 ~~~bash
 pgrep -a -f 'cppfm --por[t]' || true
 ~~~
 
-対象が実際に表示された場合だけ、自己非マッチ化された明確なpatternで回収する。
+対象が実際に表示されたときだけ、自己非マッチ化patternで回収する。曖昧な`pkill -9 c++`、
+`pkill cppfm`、広いpatternは絶対に使わない。
 
-~~~bash
-timeout --foreground --kill-after=5 10 pkill -9 -f 'cppfm --por[t]' 2>/dev/null || true
-~~~
+## 10. 文書・CI・公開状態
 
-pkill -9 c++、pkill -9 cpp、compiler名を含む曖昧なpatternは禁止。テストハーネス内ではPopenの
-所有PIDを直接terminate/waitし、他のテストを巻き込むpkillを使わない。
+直近のhardening passで更新された主なファイル:
 
-## 9. 次セッションの再開手順
+- `docs/CURRENT_STATE.md`
+- `docs/MISSING_FEATURES_1_21_4.md`
+- `docs/README.md`
+- `docs/DEVELOPMENT.md`
+- `docs/VERIFICATION.md`
+- `docs/audit/README.md`
+- `docs/audit/adversarial-review-2026-09-19.md`
+- `.github/workflows/ci.yml`
+- `tests/test_settings_matrix.cpp`
 
-### 9.1 まず状態を確認
+CIはpush、pull request、manual dispatchでconfigure/build/focused gates/non-nightly CTestをtimeout付きで実行する。
+CIの存在は、現時点で未commit・未pushの作業ツリーを公開済みとするものではない。
 
-~~~bash
-cd /run/media/nico/d/学校/app/cpp-fabricmc
-git status --short
-git log -1 --format='%H%n%ad%n%s' --date=iso
-git diff --check
-sed -n '1,280p' docs/CURRENT_STATE.md
-sed -n '1,220p' Handoff.md
-~~~
+## 11. 次に再開するエージェントへの手順
 
-既存の変更を勝手に捨てない。特にsrc/core/Random.hpp、docs、JVM、test harnessの変更を、自分の変更ではない
-という理由だけで戻さない。
+新しい依頼が来るまで、上記の証跡を完了扱いに変更したり、高コストgateを機械的に再実行したりしない。
+作業を再開する場合は次の順序を守る。
 
-### 9.2 通常ビルドと基本回帰
+1. `AGENTS.md`、このHandoff、`docs/CURRENT_STATE.md`、`docs/VERIFICATION.md`を読む。
+2. `git status --short`、`git log --oneline --decorate -5`、必要な範囲の`git diff`を確認する。
+3. 既存dirty diffを分類し、ユーザー変更と新規変更を混ぜない。reset/checkout/cleanは禁止。
+4. sourceを変更した場合は、focused test → `test_native` → 必要なintegration/CTestの順で確認する。
+5. 数値、Status、制限を変えたらCURRENT_STATE、MISSING、README/docs、VERIFICATION、auditを同期する。
+6. 長いコマンドは必ず `timeout --foreground --kill-after=...` で包む。Smoke80など親子processを作るものは
+   親だけkillしない。
+7. commit、push、PR作成はユーザーの明示的な依頼がある場合だけ行う。
 
-すべてのコマンドにtimeoutを付ける。
+### サブエージェントを使う場合
 
-~~~bash
-timeout --foreground --kill-after=10 180 \
-  cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
-timeout --foreground --kill-after=10 900 \
-  cmake --build build -j2
-timeout --foreground --kill-after=10 1200 \
-  ctest --test-dir build -LE 'nightly|package' --output-on-failure --timeout 600
-timeout --foreground --kill-after=10 30 \
-  ./build/test_rng_parity
-~~~
+- 同じworktreeへ重複担当を置かない。並列実装はdisjointな/tmp worktreeを使い、完了後は正確なpathだけ整理する。
+- research agentはWeb/公式資料の確認と`plan/planX.md`だけ。研究完了前にimplementationを始めない。
+- plan番号は `ls plan/plan*.md | sort -V | tail -1` で確認し、`plan/`を`git add -f`しない。
+- UsageLimitでresumeが失敗したら、同じagent IDへ`send_input`を送り、duplicate agentを起動しない。
+- 明示的にclosed/interruptedならresumeを先に試し、それ以外は既存agentへ直接`send_input`する。
 
-smoke80単独を実行する場合:
+## 12. 重要なwire / logic不変条件
 
-~~~bash
-timeout --foreground --kill-after=10 600 \
-  ctest --test-dir build -R smoke80 --output-on-failure --timeout 600
-pgrep -a -f 'cppfm --por[t]' || true
-~~~
+- ChunkCodecのsingle-valued paletteは`longCount=0`。
+- WorldBorder diameterは`59999968`。lerpは`50ms` tick補間。
+- SimulationDistanceはEuclideanではなくChebyshev `max(abs(dx), abs(dz))`。
+- Play S→C: OpenScreen `0x35`、ContainerSetContent `0x13`、TradeList `0x2E`、KeepAlive `0x27`。
+- Play C→S KeepAliveは`0x1A`。
+- Bundle axisは`lx<<8 | lz<<4 | ly`。vanilla state indexは`state<<12 | x<<8 | z<<4 | y`。
+- SlotComponent IDsはdamage `3`、repair_cost `17`、trim `45`。
+- Armor damage formulaは`f=2+t/4`、`g=clamp(a-dmg/f, a*0.2, 20)`、caps `30/20`。
+- AES-CFB8 encrypted frameはconnection state依存のため、priority queueで順序を変えない。
+- mutation callback後は対象stateを再取得してからcommitする。
 
-### 9.3 strict quality build
+## 13. Codex固有の注記
 
-新しい一時build directoryを作る場合は、workspaceや$HOMEを消さず、明示的なunique pathを使う。
-既存の最終strict buildは/tmp/cppfm-quality-build-gZ0ivD、CMake generatorはNinja、
-RelWithDebInfo、compilerは/usr/bin/c++、flagsは次のとおり。
+- 以前のCodex Goalは完了扱いになった。最終使用量は1,269,742 tokens、経過時間13,572秒。
+  これはGit status、release status、互換性証明ではない。
+- ユーザーは過去に「2本の敵対的レビューを並列で走らせ、4〜5ループする」方針を指定した。
+  以前の一部agent起動は報告なし・停止・判定不能で、独立した合格証跡として扱えない。
+  現在の根拠は、実ファイル差分、記録されたtest output、`docs/audit/adversarial-review-2026-09-19.md`。
+- このHandoffを書き直したセッションでは、ファイルの読み取り・整理以外のbuild/test/commit/pushは行っていない。
+- account名、token、Microsoft認証情報、temporary local screenshot/logはHandoffに記録しない。
 
-~~~text
--Wall -Wextra -Wpedantic -Wconversion -Wshadow -Wnon-virtual-dtor
-~~~
+## 14. 最後に
 
-同じbuildが残っていれば:
+現在の正しい要約は次の一文である。
 
-~~~bash
-timeout --foreground --kill-after=10 1200 \
-  cmake --build /tmp/cppfm-quality-build-gZ0ivD -j2
-timeout --foreground --kill-after=10 240 \
-  ctest --test-dir /tmp/cppfm-quality-build-gZ0ivD \
-  -R '^(native|spec_wire|fuzz|core_safety|rng_parity)$' \
-  --output-on-failure --timeout 60
-~~~
+> 設定・認証・権限・イベント・tick・永続化・ネットワーク・JVM境界を含む広い範囲で実装と回帰検証を完了し、直近hardening scopeの敵対的レビューも通過したが、20%/1万行削減、任意Fabric mod、vanilla RNG L3、accepted 2h/24h、全real-client/GUI、公開releaseの完全証明は未達である。
 
-### 9.4 ASan/UBSan
-
-最終選抜buildは/tmp/cppfm-asan-build、RelWithDebInfo、Ninja、flags:
--fsanitize=address,undefined -fno-omit-frame-pointer。
-
-~~~bash
-timeout --foreground --kill-after=10 900 \
-  cmake --build /tmp/cppfm-asan-build \
-  --target cppfm test_native test_core_safety test_fuzz test_rng_parity \
-  test_jvm_handles test_jvm_native_bridge -j2
-ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 \
-UBSAN_OPTIONS=halt_on_error=1 \
-timeout --foreground --kill-after=10 300 \
-  ctest --test-dir /tmp/cppfm-asan-build \
-  -R '^(native|jvm_handles|jvm_native_bridge|fuzz|core_safety|rng_parity)$' \
-  --output-on-failure --timeout 120
-~~~
-
-### 9.5 負荷・実クライアント
-
-~~~bash
-timeout --foreground --kill-after=10 700 \
-  python3 tests/stress_test.py --clients 120 --binary ./build/cppfm
-pgrep -a -f 'cppfm --por[t]' || true
-timeout --foreground --kill-after=10 700 \
-  python3 tests/soak_test.py --duration 300 --binary ./build/cppfm
-timeout --foreground --kill-after=10 60 \
-  python3 tools/bench_chunk_gen.py --view-distance 32 --chunks 4225 --dry --strict
-~~~
-
-mc-pilot/PrismLauncher手順と、アカウント名・tokenを記録しない方針は
-docs/MC_PILOT_REAL_TEST.mdを参照。既存authenticated accountの情報をHandoffへ書かない。
-初回Microsoft loginを自動化する場合は、ユーザーの明示的な認証方針なしに進めない。
-
-## 10. 設計・実装のクイックマップ
-
-- src/core/ — ByteBuffer、NBT、JSON、Random、RuntimeLayout、ThreadPool
-- src/proto/Ids.hpp — protocol 769 packet IDs
-- src/net/ — Connection、compression、AES-CFB8、PacketBatcher、Bundle、MultiBlockChange、Crypto、RCON
-- src/game/ — World、WorldGen、ChunkCodec、Anvil/Persistence、BlockTickScheduler、Fluids、Redstone、
-  LightEngine、Entities、AI、Attributes、Items、Containers、Recipes、GameServer、Session、Menus
-- src/worldgen/ — DensityFunction、MultiNoise、Structures、StructureManager、StructurePlacer、PortalHandler
-- src/brigadier/ — command tree and argument parser
-- src/jvm/ — JvmRuntime、handles、routing、embedded HotSpot bridge
-- src/generated/ — kBlocks 1095、kItems 1385、kEntities 149
-- jvm/java/ — embedded shadow API/classes
-- tests/ — native、wire、gameplay、JVM、integration、stress/soak harness
-- tools/ — replay、package、Modrinth/linkage、benchmark、process cleanup helpers
-
-既知の実装上の落とし穴:
-
-- ChunkCodecのsingle-valued paletteはlongCount 0が必要。
-- WorldBorder diameterは59999968、tickWorldBorder()のlerpは50ms補間。
-- SimulationDistanceはEuclideanではなくChebyshev max(|dx|, |dz|)。
-- Play S→Cの重要ID: OpenScreen 0x35、ContainerSetContent 0x13、TradeList 0x2E、
-  KeepAlive 0x27。Play C→S KeepAliveは0x1A。
-- Bundle axisはlx<<8|lz<<4|ly。ly<<8|lz<<4|lxへ戻さない。
-- SlotComponent IDsはdamage 3、repair_cost 17、trim 45。
-- DamageCalculator armorはf=2+t/4; g=clamp(a-dmg/f, a*0.2, 20)で、capsは30/20。
-
-## 11. ドキュメントの役割
-
-| ファイル | 役割 |
-|---|---|
-| README.md | 公開利用者向け概要、公開できる機能・制限、基本テスト |
-| docs/README.md | 公開ドキュメントindexとsupported target |
-| docs/CURRENT_STATE.md | 最新の動的状態、evidence、publication status、Next Steps |
-| docs/VERIFICATION.md | 検証契約、証跡、PASSの意味、境界 |
-| docs/SPEC_WIRE.md | packet/wire canonical contract |
-| docs/SPEC_GAMEPLAY.md | gameplay/world/behavior canonical contract |
-| docs/SPEC_OPS.md | operations、resource、recovery、load、RCON |
-| docs/DEVELOPMENT.md | module map、research workflow、contribution rules |
-| docs/MISSING_FEATURES_1_21_4.md | numbered matrix #1–#90とdeclared residuals |
-| docs/PLAN51_JVM.md | JVM boundaryの履歴・制限。READMEには転載しない |
-| docs/MC_PILOT_REAL_TEST.md | real client / mc-pilot / PrismLauncherのlocal evidence |
-| AGENTS.md | エージェント運用・worktree・timeout・安全ルール |
-| Handoff.md | 会話背景、判断、Codex固有メモ、次セッションの入口 |
-
-Numbered matrixのDONE=90と、歴史的なstrict wire audit 78 gapsは異なる指標。どちらもuniversal
-compatibilityの証明ではない。
-
-## 12. Codex固有の注記
-
-この章はプロジェクト仕様ではなく、Codex/サブエージェントを使って引き継ぐ場合の運用メモ。
-
-### 12.1 Goal状態
-
-- 直前のCodex Goalは完了扱いになった。
-- Codex側の最終使用量は1,269,742 tokens、経過時間は13,572秒（約3時間46分）。
-- このメタデータはGitの状態やプロジェクトのrelease statusではない。次のセッションで再度Goalを作る場合は、
-  現在のGit状態を確認してから設定する。
-
-### 12.2 サブエージェント
-
-- ユーザーは、互換性と品質の敵対的レビューを2並列で行い、4〜5回程度ループする方針を指定した。
-- 過去の実装フェーズで複数のgeneral agent起動を試したが、報告なしで停止したものがある。共有workspaceに
-  変更が残っている可能性を前提に、Git diffとbuildを必ず確認する。
-- 直前の最終レビューでも2本を並列起動したが、内容のline-level監査前に停止指示へ反応し、どちらも
-  判定不能と返した。したがって、サブエージェント報告は合格証跡として扱わず、実ファイル差分と
-  実行結果を根拠にする。
-- 新しいagentを起動するなら、同一worktreeで重複させない。読み取り専用レビューなら変更範囲を明記し、
-  コーディングならdisjointなworktree/write scopeを与える。
-- AGENTS.mdにあるとおり、UsageLimitで既存agentのresumeが失敗した場合は、同じagent IDへsend_inputを
-  送り、duplicate agentを作らない。agentが明示的にclosed/interruptedならresumeを先に行い、それ以外は
-  既存agentへ直接send_inputする。
-- send_inputの正式な名前はsend_input。この環境ではCodexのagent管理ツールとして提供される。
-- research agentはweb search/fetch後、原則plan/planX.mdだけを書き、implementation agentはresearch完了後に
-  src/testを変更する。plan/はignore対象なのでgit add -fしない。
-
-### 12.3 Codexツール・web調査
-
-- 直前の調査では公式Yarn docs、公式/公開xoroshiro reference、Fabric docs、公式1.21.4 server bytecodeを照合した。
-- web検索を再度行う場合、変化し得る仕様、公式URL、Modrinth artifact、Fabric docsは必ず最新確認する。
-- webを使った回答では、最終回答に直接URLのMarkdown citationを付ける。内部検索ref IDはユーザーへ出さない。
-- CodexのSkillはこの作業では使用していない。Skillを追加する必要はない。
-- /tmp/cppfm-quality-build-gZ0ivDと/tmp/cppfm-asan-buildは一時build。次の環境に存在する保証はなく、
-  削除する場合はその正確なパスだけを対象にする。
-- 生成物・ダウンロード物を消す前に、対象をgit status/find等で特定する。workspace rootや/tmpを再帰削除しない。
-
-### 12.4 最終的な引き継ぎ判断
-
-次に行うべきことは、まずこのHandoffとCURRENT_STATE.mdの整合を確認し、必要なら実測値だけを更新すること。
-直ちに新機能追加を重ねない。新たな実装を始める場合は、
-docs/research-prompt.md、最新plan番号、MISSING matrix、strict assessment、既存dirty diffを確認し、
-研究→分離実装→review→build→CTest→docsの順序を守る。
-
-universal compatibility、protocol 776、任意Fabric JVM Mod、未実施の2h/24h PASSを、このファイルやREADMEへ
-誤って「完了」と追記しないこと。
+この境界を保ったまま、次の依頼に応じて作業すること。

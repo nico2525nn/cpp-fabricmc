@@ -112,6 +112,8 @@ struct ProjectileEntity {
     ProjectileKind kind = ProjectileKind::Arrow;
     double x=0, y=0, z=0;
     double vx=0, vy=0, vz=0;
+    double sentX=0, sentY=0, sentZ=0;
+    bool hasSent=false;
     std::int32_t ownerId = -1;
     bool ownerIsPlayer = false;
     // Shulker bullets retain their selected target instead of retargeting a

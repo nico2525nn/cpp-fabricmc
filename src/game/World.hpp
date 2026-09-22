@@ -123,6 +123,17 @@ public:
     ~World();
 
     LevelType levelType() const { return level_; }
+    std::uint64_t seed() const noexcept { return srv_seed; }
+    // Level metadata is loaded before the first chunk is generated. Refuse a
+    // seed change after chunks exist; changing it then would create terrain
+    // seams in an already authoritative world.
+    bool setSeed(std::uint64_t seed) {
+        if (!chunks_.empty()) return false;
+        terrain_ = TerrainGenerator(seed);
+        srv_seed = seed;
+        initWorldgen();
+        return true;
+    }
     struct SpawnPoint {
         std::int32_t x=0, y=-60, z=0;
         float angle=0.f;
@@ -368,6 +379,7 @@ private:
 
     void setBlockInternal(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state) {
         if (y < kMinY || y >= kMaxY) return;
+        if (gen::blockByState(state) == nullptr) return;
         generateChunkIfMissing(x >> 4, z >> 4);
         std::unique_lock lock(mutex_);
         auto it = chunks_.find(chunkKey(x >> 4, z >> 4));
@@ -464,7 +476,7 @@ public:
         }
         fireEdit(x >> 4, z >> 4);
     }
-    // BlockNeighborUpdater: updateBlockState loops 6 neighbors and notifies via onBlockNeighborChange
+    // Block state updates loop over six neighbors and notify subscribers.
     void updateBlockState(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t newState) {
         setBlock(x, y, z, newState);
         static constexpr int DX[6] = {1,-1,0,0,0,0};

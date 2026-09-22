@@ -171,24 +171,6 @@ double interactionEntityHeight(MobKind kind) {
     return 1.8;
 }
 
-bool withinEntityInteractionRange(const SessionPlayerSnapshot& player,
-                                  double targetX, double targetY, double targetZ,
-                                  MobKind targetKind = MobKind::Pig,
-                                  int slimeSize = 2) {
-    if (!player.inPlay || player.dead ||
-        !std::isfinite(player.x) || !std::isfinite(player.y) ||
-        !std::isfinite(player.z) || !std::isfinite(targetX) ||
-        !std::isfinite(targetY) || !std::isfinite(targetZ))
-        return false;
-    const double range = player.gamemode == 1 ? 5.0 : 3.0;
-    const double halfWidth = interactionEntityHalfWidth(targetKind, slimeSize);
-    const double height = interactionEntityHeight(targetKind);
-    return squaredDistanceToBox(player.x, player.y + 1.62, player.z,
-                                targetX - halfWidth, targetY, targetZ - halfWidth,
-                                targetX + halfWidth, targetY + height,
-                                targetZ + halfWidth) <= range * range + 1e-6;
-}
-
 bool withinEntityInteractionRange(double playerX, double playerY, double playerZ,
                                   std::uint8_t gamemode,
                                   double targetX, double targetY, double targetZ,
@@ -205,6 +187,16 @@ bool withinEntityInteractionRange(double playerX, double playerY, double playerZ
                                 targetX - halfWidth, targetY, targetZ - halfWidth,
                                 targetX + halfWidth, targetY + height,
                                 targetZ + halfWidth) <= range * range + 1e-6;
+}
+
+bool withinEntityInteractionRange(const SessionPlayerSnapshot& player,
+                                  double targetX, double targetY, double targetZ,
+                                  MobKind targetKind = MobKind::Pig,
+                                  int slimeSize = 2) {
+    if (!player.inPlay || player.dead) return false;
+    return withinEntityInteractionRange(player.x, player.y, player.z,
+                                        player.gamemode, targetX, targetY,
+                                        targetZ, targetKind, slimeSize);
 }
 
 bool collisionSolidForPlayer(std::uint16_t state) {
@@ -238,16 +230,13 @@ bool intersectsPlayerCollision(const World& world, double x, double y, double z)
 }
 
 int effectiveViewDistance(const ServerConfig& config) {
-    // Chunk streaming currently keeps a bounded 12-chunk radius.  Advertise
-    // the same value that tickChunksAround can actually satisfy so the client
-    // does not request a view larger than the server's authoritative stream.
-    return std::clamp(std::min(config.viewDistance, 12),
-                      constants::kViewDistanceMin, 12);
+    return std::clamp(config.viewDistance, constants::kViewDistanceMin,
+                      constants::kViewDistanceMax);
 }
 
 int effectiveViewDistance(const ServerConfig& config, int clientViewDistance) {
-    return std::clamp(std::min({config.viewDistance, clientViewDistance, 12}),
-                      constants::kViewDistanceMin, 12);
+    return std::clamp(std::min(config.viewDistance, clientViewDistance),
+                      constants::kViewDistanceMin, constants::kViewDistanceMax);
 }
 
 // Add a complete stack to a trial inventory.  Returning false leaves the
@@ -605,7 +594,8 @@ std::string makeStatusJson(const GameServer& server,
     json::Value description = json::Value::object();
     description.set("text", json::Value::ofString(server.config().motd));
     root.set("description", std::move(description));
-    root.set("enforcesSecureChat", json::Value::ofBool(false));
+    root.set("enforcesSecureChat",
+             json::Value::ofBool(server.config().enforcesSecureChat));
 
     const std::string favicon = readServerIconBase64();
     if (!favicon.empty()) root.set("favicon", json::Value::ofString(favicon));
@@ -700,16 +690,17 @@ void Session::disconnectIn(const char* textJson) {
     default:                   conn_->sendPacket(lo::sc::Disconnect, body); break;
     }
 }
-// peer reads the reason, then an abortive close (dead socket observable).
+// Queue the reason, then use the bounded graceful writer drain so the client
+// receives the protocol Disconnect even when the simulation writer is busy.
 void Session::kickPlay(const char* jsonReason) {
     if (state_ == State::Done) return;
     try { disconnectIn(jsonReason); } catch (...) {}
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    conn_->abort();
+    conn_->close();
     state_ = State::Done;
 }
 void Session::handleLogin() {
     auto frame = conn_->readFrame();
+    SimulationDispatchGuard simulationLock(srv_.simulationDispatchMtx_);
     ReadBuffer in(frame);
     if (in.u8() != lo::cs::Hello) throw std::runtime_error("expected login hello");
 
@@ -793,7 +784,10 @@ void Session::handleLogin() {
         er.boolean(true);                             // shouldAuthenticate (strict 1.21.4)
         conn_->sendPacket(proto::lo::sc::EncryptionRequest, er);
 
+        // Do not hold the world gate while waiting for the client key response.
+        simulationLock.unlock();
         auto pbody = conn_->readFrame();
+        simulationLock.lock();
         ReadBuffer rin(pbody);
         const auto respPid = rin.u8();
         if (respPid != proto::lo::cs::Key) throw std::runtime_error("expected encryption response");
@@ -810,6 +804,9 @@ void Session::handleLogin() {
         if (secret.size() != 16) throw std::runtime_error("bad shared secret size");
         // Mojang session-server authentication
         std::string hash = crypto::mcSha1Hex("", secret, srv_.loginKeys_.publicDer);
+        // Mojang session authentication is external I/O; let the simulation
+        // tick and other sessions proceed while it waits.
+        simulationLock.unlock();
         bool authOk = false;
         std::string uuidHex;
         if (getenv("CPPFM_AUTH_STUB")) {
@@ -840,10 +837,25 @@ void Session::handleLogin() {
                 authOk = false;
             }
         }
+        if (authOk && !std::getenv("CPPFM_AUTH_STUB")) {
+            try {
+                self_->mojangProfileKeys = fetchMojangProfilePublicKeys();
+            } catch (const std::exception&) {
+                self_->mojangProfileKeys.clear();
+            }
+        }
+        simulationLock.lock();
         if (!authOk) {
             rejectLogin("Failed to verify your session (online mode)", false);
             return;
         }
+        if (srv_.config().enforceSecureProfile &&
+            (std::getenv("CPPFM_AUTH_STUB") || self_->mojangProfileKeys.empty())) {
+            rejectLogin("Secure profile authentication is unavailable", false);
+            return;
+        }
+        self_->onlineAuthenticated = !std::getenv("CPPFM_AUTH_STUB") &&
+                                     !self_->mojangProfileKeys.empty();
         for (int q = 0; q < 16; ++q)
             self_->uuid[q] = static_cast<std::uint8_t>(std::stoul(uuidHex.substr(q * 2, 2), nullptr, 16));
 
@@ -862,6 +874,10 @@ void Session::handleLogin() {
         }
         std::fprintf(stderr, "[cppfm] %s sent compression+success\n", self_->name.c_str());
     }
+    if (srv_.config().enforceSecureProfile && !self_->onlineAuthenticated) {
+        rejectLogin("Secure profile authentication requires online mode", false);
+        return;
+    }
 
     // login success: uuid, name, property list (verified against capture)
     WriteBuffer ok;
@@ -876,8 +892,10 @@ void Session::handleLogin() {
     }
     conn_->sendPacket(lo::sc::GameProfile, ok);
 
+    simulationLock.unlock();
     for (;;) {
         auto f2 = conn_->readFrame();
+        simulationLock.lock();
         ReadBuffer in2(f2);
         switch (in2.u8()) {
         case lo::cs::LoginAcknowledged:
@@ -889,6 +907,7 @@ void Session::handleLogin() {
                 const auto n = in2.varint();
                 if (n >= 0) in2.bytes(static_cast<std::size_t>(n));
             }
+            simulationLock.unlock();
             break;                                       // tolerated, no server use
         case lo::cs::CookieResponse: {                   // 0x04 cookie
             const std::string key = in2.string(constants::kMaxStringLength);
@@ -899,11 +918,13 @@ void Session::handleLogin() {
             } else {
                 self_->cookies.erase(key);
             }
+            simulationLock.unlock();
             break;
         }
         case lo::cs::Hello:                              // 0x00 re-sent start
         case lo::cs::Key:                                // 0x01 late encryption
             in2.skipRest();                              // tolerated (already past)
+            simulationLock.unlock();
             break;
         default:
             throw std::runtime_error("unexpected packet during login ack wait");
@@ -955,9 +976,23 @@ Session::ConfigWaitResult Session::handleOneConfigPacket(ReadBuffer& in) {
         } else srv_.eraseCookie(self_->uuid, key);
         return ConfigWaitResult::Continue;
     }
-    case cf::cs::ResourcePackResponse:
-        (void)in.u8(); (void)in.varint();
+    case cf::cs::ResourcePackResponse: {
+        const auto uuid = in.bytes(16);
+        const bool uuidMatches = uuid.size() == resourcePackUuid_.size() &&
+            std::equal(uuid.begin(), uuid.end(), resourcePackUuid_.begin());
+        const std::int32_t result = in.varint();
+        const bool packFailure = result != 0 && result != 3 && result != 4;
+        if (resourcePackRequired_ && (!uuidMatches || packFailure)) {
+            WriteBuffer kick;
+            nbt::writeTextComponent(kick,
+                                    "Required resource pack was not accepted");
+            conn_->trySendPacket(cf::sc::Disconnect, kick);
+            state_ = State::Done;
+            return ConfigWaitResult::Abort;
+        }
+        if (uuidMatches && result == 0) resourcePackLoaded_ = true;
         return ConfigWaitResult::Continue;
+    }
     case cf::cs::Pong:
         (void)in.i32();
         return ConfigWaitResult::Continue;
@@ -977,6 +1012,9 @@ void Session::handleConfiguration() {
     if (!srv_.config().resourcePackUrl.empty()) {
         WriteBuffer b;
         auto packUuid = packUuidFromUrl(srv_.config().resourcePackUrl);
+        std::copy(packUuid.begin(), packUuid.end(), resourcePackUuid_.begin());
+        resourcePackRequired_ = srv_.config().resourcePackForced;
+        resourcePackLoaded_ = false;
         b.uuid(packUuid.data());
         b.string(srv_.config().resourcePackUrl);
         b.string(srv_.config().resourcePackSha1);
@@ -1014,7 +1052,9 @@ void Session::handleConfiguration() {
     for (;;) {
         auto frame = conn_->readFrame();
         ReadBuffer in(frame);
+        SimulationDispatchGuard simulationLock(srv_.simulationDispatchMtx_);
         auto r = handleOneConfigPacket(in);
+        if (r == ConfigWaitResult::Abort) return;
         if (r == ConfigWaitResult::PacksDone) break;
         if (r == ConfigWaitResult::FinishAck) finishAckEarly = true;
     }
@@ -1058,8 +1098,18 @@ void Session::handleConfiguration() {
             throw;
         }
         ReadBuffer in(frame);
+        SimulationDispatchGuard simulationLock(srv_.simulationDispatchMtx_);
         auto r = handleOneConfigPacket(in);
+        if (r == ConfigWaitResult::Abort) return;
         if (r == ConfigWaitResult::FinishAck) {
+            if (resourcePackRequired_ && !resourcePackLoaded_) {
+                WriteBuffer kick;
+                nbt::writeTextComponent(kick,
+                                        "Required resource pack was not loaded");
+                conn_->trySendPacket(cf::sc::Disconnect, kick);
+                state_ = State::Done;
+                return;
+            }
             std::fprintf(stderr, "[cppfm] %s: finish ack at %.2f\n", self_->name.c_str(),
                          std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count());
             state_ = State::Play;
@@ -1230,7 +1280,7 @@ void Session::sendJoinGame() {
     b.string("minecraft:the_end");
     b.varint(c.maxPlayers);
     b.varint(effectiveViewDistance(c));
-    b.varint(std::clamp(std::min(c.simulationDistance, 12), 2, 12));
+    b.varint(std::clamp(c.simulationDistance, 2, 32));
     b.boolean(false);                              // reduced debug
     b.boolean(true);                               // respawn screen
     b.boolean(false);                              // do limited crafting
@@ -1239,8 +1289,16 @@ void Session::sendJoinGame() {
         WriteBuffer ws = makeWorldState(c, world, self_->gamemode);
         b.raw(ws.data.data(), ws.data.size());
     }
-    b.boolean(false);                              // enforces secure chat
+    b.boolean(c.enforcesSecureChat);               // enforces secure chat
     conn_->sendPacket(pl::sc::Login, b);
+    WriteBuffer difficulty;
+    int difficultyId = 2;
+    if (srv_.difficulty_ == "peaceful") difficultyId = 0;
+    else if (srv_.difficulty_ == "easy") difficultyId = 1;
+    else if (srv_.difficulty_ == "hard") difficultyId = 3;
+    difficulty.u8(static_cast<std::uint8_t>(difficultyId));
+    difficulty.boolean(false);                     // difficulty locked
+    conn_->sendPacket(pl::sc::ChangeDifficulty, difficulty);
     WriteBuffer vd;
     vd.varint(effectiveViewDistance(c));
     conn_->sendPacket(pl::sc::UpdateViewDistance, vd);
@@ -1293,7 +1351,7 @@ void Session::sendSignBlockEntity(std::int32_t x, std::int32_t y, std::int32_t z
     side("front_text", be->sign.front);
     side("back_text", be->sign.back);
     w.endCompound();
-    conn_->trySendPacket(pl::sc::BlockEntityData, b);
+    conn_->trySendPacketLowPriority(pl::sc::BlockEntityData, b);
     srv_.broadcastPacketExceptInDimension(self_->dimension, self_.get(),
                                           pl::sc::BlockEntityData, b);
 }
@@ -1416,19 +1474,51 @@ void Session::onNameItem(const std::string& name) {
 // jump_boost,strength} + secondary regeneration (or primary for tier II).
 void Session::onBeaconEffect(std::optional<std::int32_t> primary,
                             std::optional<std::int32_t> secondary) {
+    auto menu = openMenu_;
+    if (!menu || menu->type != MenuType::Beacon ||
+        !menu->container || menu->containerCount < 1) {
+        std::fprintf(stderr, "[cppfm] beacon effect without an open beacon menu rejected\n");
+        return;
+    }
+    const auto bx = posKeyUnpackX(menu->blockKey);
+    const auto by = posKeyUnpackY(menu->blockKey);
+    const auto bz = posKeyUnpackZ(menu->blockKey);
+    const double dx = self_->x - (static_cast<double>(bx) + 0.5);
+    const double dy = self_->y - (static_cast<double>(by) + 0.5);
+    const double dz = self_->z - (static_cast<double>(bz) + 0.5);
+    if (dx * dx + dy * dy + dz * dz > 64.0) return;
+    const auto beaconState = srv_.worldFor(self_->dimension).getBlock(bx, by, bz);
+    const auto* beaconBlock = gen::blockByState(beaconState);
+    if (!beaconBlock || std::string(beaconBlock->name).find("beacon") == std::string::npos) return;
+    const auto payment = menu->container[0].itemId;
+    const auto& itemIds = gen::itemIdByName();
+    const bool paymentAllowed = [&] {
+        for (const char* name : {"minecraft:iron_ingot", "minecraft:gold_ingot",
+                                 "minecraft:diamond", "minecraft:emerald",
+                                 "minecraft:netherite_ingot"}) {
+            const auto it = itemIds.find(name);
+            if (it != itemIds.end() && it->second == payment) return true;
+        }
+        return false;
+    }();
+    if (menu->container[0].empty() || !paymentAllowed) return;
+
     static const std::int32_t kPrimaries[] = {1, 3, 11, 8, 5};
     auto validPrimary = [](std::int32_t v) {
         for (auto p : kPrimaries) if (p == v) return true;
         return false;
     };
-    if (primary && !validPrimary(*primary)) {
-        std::fprintf(stderr, "[cppfm] beacon primary %d rejected (unknown effect)\n", *primary);
+    if (!primary || !validPrimary(*primary)) {
+        std::fprintf(stderr, "[cppfm] beacon primary missing or invalid\n");
         return;
     }
-    if (secondary && *secondary != 10 && (!primary || *secondary != *primary)) {
+    if (secondary && *secondary != 10 && *secondary != *primary) {
         std::fprintf(stderr, "[cppfm] beacon secondary %d rejected\n", *secondary);
         return;
     }
+    --menu->container[0].count;
+    if (menu->container[0].count <= 0) menu->container[0] = ItemStack::air();
+    sendMenuContent(*menu);
     self_->beaconPrimary = primary;
     self_->beaconSecondary = secondary;
     // Live effect: beacon buffs re-apply while in range; grant locally with a
@@ -2876,7 +2966,7 @@ void Session::sendChunk(std::int32_t cx, std::int32_t cz) {
         srv_.storeChunkFor(dimension, cx, cz, 0, fresh);
         body = fresh;
     }
-    conn_->sendPacketBuf(pl::sc::LevelChunkWithLight, *body);
+    conn_->sendPacketBufLowPriority(pl::sc::LevelChunkWithLight, *body);
     srv_.blockEntitiesFor(dimension).forEach([&](std::int64_t k, BlockEntity& be) {
         if (be.kind != BlockEntity::Kind::Sign) return;
         const std::int32_t bx = posKeyUnpackX(k), by = posKeyUnpackY(k), bz = posKeyUnpackZ(k);
@@ -2899,7 +2989,7 @@ void Session::tickChunksAround(double px, double pz) {
         WriteBuffer center;
         center.varint(pcx);
         center.varint(pcz);
-        conn_->trySendPacket(pl::sc::SetCenterChunk, center);
+        conn_->trySendPacketLowPriority(pl::sc::SetCenterChunk, center);
         lastCx_ = pcx; lastCz_ = pcz;
     }
 
@@ -2917,11 +3007,11 @@ void Session::tickChunksAround(double px, double pz) {
 
     if (!todo.empty()) {
         try {
-            conn_->sendPacket(pl::sc::ChunkBatchStart, {});
+            conn_->sendPacketLowPriority(pl::sc::ChunkBatchStart, {});
             for (auto& t : todo) sendChunk(t.second.first, t.second.second);
             WriteBuffer fin;
             fin.varint(static_cast<std::int32_t>(todo.size()));
-            conn_->sendPacket(pl::sc::ChunkBatchFinished, fin);
+            conn_->sendPacketLowPriority(pl::sc::ChunkBatchFinished, fin);
         } catch (...) {}
     }
 
@@ -2937,7 +3027,7 @@ void Session::tickChunksAround(double px, double pz) {
             WriteBuffer f;
             f.i32(fcz);   // z first per schema!
             f.i32(fcx);
-            conn_->trySendPacket(pl::sc::ForgetLevelChunk, f);
+            conn_->trySendPacketLowPriority(pl::sc::ForgetLevelChunk, f);
             sentChunks_.erase(k);
         }
     }
@@ -2949,9 +3039,11 @@ void Session::ack(std::int32_t sequence) {
 }
 void Session::handlePlay() {
     for (;;) {
+        if (state_ != State::Play) return;
         try {
         auto frame = conn_->readFrame();
         ReadBuffer in(frame);
+        SimulationDispatchGuard simulationLock(srv_.simulationDispatchMtx_);
         self_->lastSeenMs = nowMs();
         switch (in.u8()) {
         case pl::cs::AcceptTeleportation: onAcceptTeleportation(in); break;
@@ -2962,7 +3054,10 @@ void Session::handlePlay() {
         case pl::cs::KeepAlive: onKeepAlivePacket(in); break;
         case pl::cs::ChatMessage:         onChatMessage(in); break;
         case pl::cs::ChatCommandSigned: if (onChatCommandSignedPacket(in)) return; break; // signed command (spec shape)
-        case pl::cs::ChatSessionUpdate: onChatSessionUpdate(in); break; // plan3 Chat signing
+        case pl::cs::ChatSessionUpdate:
+            onChatSessionUpdate(in);
+            if (state_ != State::Play) return;
+            break; // plan3 Chat signing
         case pl::cs::MessageAck: in.skipRest(); break;
         case pl::cs::CookieResponse: onCookieResponse(in); break; // plan3 Cookie
         case pl::cs::CustomPayload: onCustomPayload(in); break; // plugin messaging API
@@ -3071,8 +3166,22 @@ bool Session::onChatCommandSignedPacket(ReadBuffer& in) {
             (void)in.string(32767);            // argumentName
             in.bytes(constants::kChatSignatureBytes);  // signature: fixed 256B
         }
-        (void)in.varint();                     // messageCount
-        in.bytes(3);                           // acknowledged[3] (was 60B over-read)
+        const auto lastSeenOffset = in.varint();
+        if (lastSeenOffset < 0) return false;   // LastSeenMessages.Update offset, not a count
+        const std::uint32_t acknowledgedMask =
+            static_cast<std::uint32_t>(in.u8()) |
+            (static_cast<std::uint32_t>(in.u8()) << 8) |
+            (static_cast<std::uint32_t>(in.u8()) << 16);
+        if ((acknowledgedMask & 0xFFF00000u) != 0) return false;
+        if (srv_.config().enforcesSecureChat) {
+            // Argument signatures are distinct from chat-message signatures:
+            // dispatching this packet without reconstructing the command
+            // argument transcript would turn an unsigned argument into an
+            // authenticated command.  Fail closed until that protocol is
+            // implemented instead of executing attacker-controlled text.
+            kickPlay("{\"text\":\"Signed commands are unavailable on this server\"}");
+            return true;
+        }
         dispatchCommand(cmd);
     } catch (const std::exception& e) {
         std::fprintf(stderr, "[cppfm] signed-cmd parse ignored: %s\n", e.what());
@@ -3080,16 +3189,66 @@ bool Session::onChatCommandSignedPacket(ReadBuffer& in) {
     return false;
 }
 void Session::onChatSessionUpdate(ReadBuffer& in) {
+    self_->hasChatSession = false;
     self_->chatPubKey.clear();
-    std::array<std::uint8_t, 16> sid{};
-    auto sb = in.bytes(16);
-    std::copy(sb.begin(), sb.end(), sid.begin());
-    self_->chatSessionExpiry = in.i64();
+    self_->chatSessionSignature.clear();
+    try {
+    const auto sessionId = in.bytes(16);
+    const auto expiry = in.i64();
     const auto pkLen = in.varint();
-    self_->chatPubKey = in.bytes(static_cast<std::size_t>(pkLen));
+    if (pkLen <= 0 || pkLen > 512)
+        throw std::runtime_error("invalid chat public key length");
+    auto publicKey = in.bytes(static_cast<std::size_t>(pkLen));
     const auto sigLen = in.varint();
-    in.bytes(static_cast<std::size_t>(sigLen));
-    self_->hasChatSession = pkLen > 0;
+    if (sigLen <= 0 || sigLen > 4096)
+        throw std::runtime_error("invalid chat session signature length");
+    auto certificate = in.bytes(static_cast<std::size_t>(sigLen));
+
+    std::vector<std::uint8_t> signedData;
+    signedData.reserve(16 + sizeof(std::int64_t) + publicKey.size());
+    signedData.insert(signedData.end(), self_->uuid.begin(), self_->uuid.end());
+    const auto expiryBits = static_cast<std::uint64_t>(expiry);
+    for (int shift = 56; shift >= 0; shift -= 8)
+        signedData.push_back(static_cast<std::uint8_t>((expiryBits >> shift) & 0xFF));
+    signedData.insert(signedData.end(), publicKey.begin(), publicKey.end());
+
+    bool trusted = false;
+    if (self_->onlineAuthenticated && !self_->mojangProfileKeys.empty() && expiry > epochMs()) {
+        for (const auto& key : self_->mojangProfileKeys) {
+            // Mojang playerCertificateKeys sign the profile certificate with
+            // SHA1withRSA; the chat-message transcript below uses SHA-256.
+            if (crypto::verifyRsaSha1(key, signedData.data(),
+                                      signedData.size(), certificate)) {
+                trusted = true;
+                break;
+            }
+        }
+    }
+    if (!trusted) {
+        std::fprintf(stderr, "[cppfm] rejected untrusted chat session for %s\n",
+                     self_->name.c_str());
+        if (srv_.config().enforceSecureProfile || srv_.config().enforcesSecureChat) {
+            // A rejected profile is terminal.  Abort the transport after the
+            // disconnect packet so the client cannot continue sending play
+            // mutations while ignoring the kick.
+            kickPlay("{\"text\":\"Invalid secure profile session\"}");
+        }
+        return;
+    }
+
+    std::copy(sessionId.begin(), sessionId.end(), self_->chatSessionId.begin());
+    self_->chatMessageIndex = 0;
+    self_->chatSessionExpiry = expiry;
+    self_->chatPubKey = std::move(publicKey);
+    self_->chatSessionSignature = std::move(certificate);
+    self_->lastSeenChatSalts.clear();
+    self_->hasChatSession = true;
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[cppfm] malformed chat session update for %s: %s\n",
+                     self_->name.c_str(), e.what());
+        if (srv_.config().enforceSecureProfile || srv_.config().enforcesSecureChat)
+            kickPlay("{\"text\":\"Invalid secure profile session\"}");
+    }
 }
 void Session::onCookieResponse(ReadBuffer& in) {
     const std::string key = in.string(constants::kMaxStringLength);
@@ -3137,6 +3296,11 @@ void Session::onPlayerAbilities(ReadBuffer& in) {
     sendAbilities();
 }
 void Session::onSetCreativeModeSlot(ReadBuffer& in) {
+    if (self_->gamemode != 1) {
+        in.skipRest();
+        srv_.resendInventory(*self_);
+        return;
+    }
     const std::int16_t slot = in.i16();
     const auto stack = ItemStack::read(in);
     if (slot >= 0 && slot < 46) {
@@ -3214,6 +3378,15 @@ void Session::onSignUpdate(ReadBuffer& in) {
         const bool front = in.boolean();
         std::string lines[4];
         for (int i = 0; i < 4; ++i) lines[i] = in.string(384);
+        const double dx = static_cast<double>(sx) + 0.5 - self_->x;
+        const double dy = static_cast<double>(sy) + 0.5 - self_->y;
+        const double dz = static_cast<double>(sz) + 0.5 - self_->z;
+        if (dx * dx + dy * dy + dz * dz > 36.0) return;
+        if (!srv_.isOp(self_->name) && self_->dimension == 0 &&
+            srv_.isSpawnProtected(sx, sz)) return;
+        const auto signState = srv_.worldFor(self_->dimension).getBlock(sx, sy, sz);
+        const auto* signBlock = gen::blockByState(signState);
+        if (!signBlock || std::string(signBlock->name).find("sign") == std::string::npos) return;
         const std::int64_t key = posKey(sx, sy, sz);
         auto& blockEntityStore = srv_.blockEntitiesFor(self_->dimension);
         auto beOwner = blockEntityStore.getShared(key);
@@ -3233,6 +3406,7 @@ void Session::onSignUpdate(ReadBuffer& in) {
             for (int i = 0; i < 4; ++i) dst[i] = lines[i];
             if (front) bep->sign.hasFront = true; else bep->sign.hasBack = true;
         }
+        blockEntityStore.markDirty(key);
         sendSignBlockEntity(sx, sy, sz);
     } catch (const std::exception& e) {
         std::fprintf(stderr, "[cppfm] sign update ignored: %s\n", e.what());
@@ -3404,10 +3578,15 @@ void Session::onBeaconEffectPacket(ReadBuffer& in) {
 }
 void Session::onPickItemFromBlock(ReadBuffer& in) {
     try {
+        if (self_->gamemode != 1) { in.skipRest(); return; }
         std::int32_t bx, by, bz;
         in.position(bx, by, bz);
         const bool includeData = in.boolean();
         (void)includeData; // BE-copy detail deferred (docs/SPEC_WIRE.md)
+        const double dx = static_cast<double>(bx) + 0.5 - self_->x;
+        const double dy = static_cast<double>(by) + 0.5 - self_->y;
+        const double dz = static_cast<double>(bz) + 0.5 - self_->z;
+        if (dx * dx + dy * dy + dz * dz > 36.0) return;
         World& w = srv_.worldFor(self_->dimension);
         const std::uint16_t st = w.getBlock(bx, by, bz);
         if (st == 0) return;
@@ -3424,6 +3603,7 @@ void Session::onPickItemFromBlock(ReadBuffer& in) {
 }
 void Session::onPickItemFromEntity(ReadBuffer& in) {
     try {
+        if (self_->gamemode != 1) { in.skipRest(); return; }
         const std::int32_t eid = in.varint();
         const bool includeData = in.boolean();
         (void)includeData;
@@ -3432,6 +3612,10 @@ void Session::onPickItemFromEntity(ReadBuffer& in) {
             for (const auto& m : srv_.mobsSnapshot()) {
                 if (!m) continue;
                 if (m->entityId != eid) continue;
+                const double dx = m->x - self_->x;
+                const double dy = (m->y + 0.5) - self_->y;
+                const double dz = m->z - self_->z;
+                if (dx * dx + dy * dy + dz * dz > 36.0) return;
                 egg = std::string(MobEntity::kindName(m->kind)) + "_spawn_egg";
                 break;
             }
@@ -3472,13 +3656,17 @@ bool Session::onResourcePackReceive(ReadBuffer& in) {
         auto ub = in.bytes(16);
         std::copy(ub.begin(), ub.end(), uuid.begin());
         const std::int32_t result = in.varint();
-        // vanilla PackResult: 0 loaded, 1 declined, 2 failed_download, 3 accepted, 4 downloaded... A forced pack that is declined/failed
-        // must kick.
-        if (srv_.config().resourcePackForced && (result == 1 || result == 2)) {
-            disconnectIn("{\"text\":\"Server resource pack declined\"}");
+        const bool uuidMatches = uuid == resourcePackUuid_;
+        // A required pack is complete only after SUCCESSFULLY_LOADED (0).
+        // ACCEPTED/DOWNLOADED are valid intermediate responses; failures and
+        // an unrelated UUID are not.  FinishAcknowledgement enforces loaded.
+        const bool packFailure = result != 0 && result != 3 && result != 4;
+        if (resourcePackRequired_ && (!uuidMatches || packFailure)) {
+            disconnectIn("{\"text\":\"Required resource pack was not loaded\"}");
             state_ = State::Done;
             return true;
         }
+        if (uuidMatches && result == 0) resourcePackLoaded_ = true;
     } catch (const std::exception& e) {
         std::fprintf(stderr, "[cppfm] resource_pack_receive ignored: %s\n", e.what());
         in.skipRest();
@@ -4066,8 +4254,15 @@ void Session::onChatMessage(ReadBuffer& in) {
     std::int64_t salt = in.i64();
     std::vector<std::uint8_t> signature;
     if (in.boolean()) signature = in.bytes(256);
-    (void)in.varint();                               // offset
-    in.bytes(3);                                     // acknowledged
+    const auto lastSeenOffset = in.varint();         // LastSeenMessages.Update offset, not a count
+    if (lastSeenOffset < 0)
+        throw std::runtime_error("invalid chat last-seen offset");
+    const std::uint32_t acknowledgedMask =
+        static_cast<std::uint32_t>(in.u8()) |
+        (static_cast<std::uint32_t>(in.u8()) << 8) |
+        (static_cast<std::uint32_t>(in.u8()) << 16);
+    if ((acknowledgedMask & 0xFFF00000u) != 0)
+        throw std::runtime_error("invalid chat acknowledged bitset");
     if (srv_.config().onlineMode && srv_.config().enforcesSecureChat) {
         if (signature.empty()) {
             WriteBuffer kick;
@@ -4078,7 +4273,47 @@ void Session::onChatMessage(ReadBuffer& in) {
         }
     }
 
-    // events: PlayerChat (cancellable)
+    // Strict N6: verify RSA-SHA256 when hasChatSession; fallback to SystemChat.
+    // Slash-prefixed text is dispatched only after this verification block.
+    bool usePlayerChat = false;
+    if (self_->hasChatSession) {
+        const bool duplicate = std::find(self_->lastSeenChatSalts.begin(),
+                                         self_->lastSeenChatSalts.end(), salt) !=
+                               self_->lastSeenChatSalts.end();
+        if (duplicate) {
+            if (srv_.config().enforcesSecureChat) {
+                WriteBuffer kick;
+                nbt::writeTextComponent(kick, "Duplicate chat message");
+                conn_->trySendPacket(proto::pl::sc::Disconnect, kick);
+                conn_->close();
+            }
+            return;
+        }
+        usePlayerChat = ChatMessageProcessor::verify(*self_, msg, timestamp, salt,
+                                                      lastSeenOffset, acknowledgedMask, signature);
+        if (usePlayerChat) {
+            ++self_->chatMessageIndex;
+            self_->lastSeenChatSalts.push_back(salt);
+            if (self_->lastSeenChatSalts.size() > 20)
+                self_->lastSeenChatSalts.erase(self_->lastSeenChatSalts.begin());
+        }
+    }
+    if (srv_.config().enforcesSecureChat && !usePlayerChat) {
+        WriteBuffer kick;
+        nbt::writeTextComponent(kick, "Chat message signature invalid or missing");
+        conn_->trySendPacket(proto::pl::sc::Disconnect, kick);
+        conn_->close();
+        return;
+    }
+
+    // Never expose an unverified online message to cancellable/native/JVM
+    // callbacks.  Offline-mode sessions have no chat certificate by design;
+    // online-mode sessions without a valid signature fail closed here even
+    // when secure-chat enforcement is disabled.
+    if ((self_->hasChatSession || srv_.config().onlineMode) && !usePlayerChat)
+        return;
+
+    // events: PlayerChat (cancellable), after authentication and replay checks
     api::PlayerChatEvent ev;
     ev.player = self_.get();
     ev.message = msg;
@@ -4087,15 +4322,8 @@ void Session::onChatMessage(ReadBuffer& in) {
 
     if (!ev.message.empty() && ev.message[0] == '/')
         return dispatchCommand(ev.message.substr(1));
-    // Strict N6: verify RSA-SHA256 when hasChatSession; fallback to SystemChat
-    bool usePlayerChat = false;
-    if (self_->hasChatSession) {
-        usePlayerChat = ChatMessageProcessor::verify(*self_, ev.message, timestamp, salt, signature);
-        // record salt for replay soft-check (keep last 20)
-        self_->lastSeenSignatures.push_back(static_cast<std::uint8_t>(salt & 0xFF));
-        if (self_->lastSeenSignatures.size() > 20) self_->lastSeenSignatures.erase(self_->lastSeenSignatures.begin());
-    }
-    if (usePlayerChat && ChatMessageProcessor::shouldUsePlayerChat(*self_)) {
+    if (usePlayerChat && !srv_.config().enforcesSecureChat &&
+        ChatMessageProcessor::shouldUsePlayerChat(*self_)) {
         srv_.broadcastPlayerChat(*self_, ev.message, timestamp);
     } else {
         const std::string line = "<" + self_->name + "> " + ev.message;
@@ -4112,7 +4340,11 @@ void Session::onChatCommand(ReadBuffer& in) {
 }
 void Session::dispatchCommand(const std::string& line) {
     std::string command = line;
+    // JVM callbacks may re-enter nativeExecuteCommand, which queues work for
+    // the simulation thread.  Invoke them before taking either dispatch lock.
     if (srv_.jvmRuntime() && !srv_.jvmRuntime()->onCommand(self_.get(), command)) return;
+    SimulationDispatchGuard simulationLock(srv_.simulationDispatchMtx_);
+    std::lock_guard commandLock(srv_.commandDispatchMtx_);
     brigadier::CommandSource src;
     src.player = self_.get();
     src.name = self_->name;
@@ -4121,6 +4353,20 @@ void Session::dispatchCommand(const std::string& line) {
     src.srcX = self_->x; src.srcY = self_->y; src.srcZ = self_->z;
     src.srcYaw = self_->yaw; src.srcPitch = self_->pitch;
     srv_.bindCommandSelector(src);
+
+    const auto rootEnd = command.find_first_of(" \t\r\n");
+    std::string root = command.substr(0, rootEnd);
+    std::transform(root.begin(), root.end(), root.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    const bool unrestricted = root == "help" || root == "list" || root == "me" ||
+                              root == "msg" || root == "tell" || root == "w" ||
+                              root == "whisper" || root == "teammsg" ||
+                              root == "trigger";
+    if (!src.hasOp && !unrestricted) {
+        sendSystemText(msg::kRed + "You do not have permission to use /" + root);
+        return;
+    }
 
     const auto res = [&]{
         try {
@@ -4161,7 +4407,7 @@ void Session::onPlayerAction(ReadBuffer& in) {
         WriteBuffer rb;
         rb.position(bx, by, bz);
         rb.varint(state);
-            conn_->trySendPacket(proto::pl::sc::BlockUpdate, rb);
+        conn_->trySendPacketLowPriority(proto::pl::sc::BlockUpdate, rb);
     };
     auto cancelDig = [&]() {
         if (self_->digActive) srv_.broadcastDigStage(*self_, -1);
@@ -4210,12 +4456,21 @@ void Session::onPlayerAction(ReadBuffer& in) {
                 ev.player = self_.get();
                 ev.x = x; ev.y = y; ev.z = z;
                 ev.oldState = oldState;
+                if (!blockEventDispatcher().onBlockBreak(x, y, z, oldState, self_.get())) {
+                    ack(sequence);
+                    return;
+                }
                 if (!srv_.events().blockBreak.fire(ev)) {
                     ack(sequence);
                     return;
                 }
                 if (srv_.jvmRuntime() &&
                     !srv_.jvmRuntime()->onBlockBreak(*self_, x, y, z, oldState)) {
+                    ack(sequence);
+                    return;
+                }
+                if (world.getBlock(x, y, z) != oldState) {
+                    sendAuthoritativeBlock(x, y, z, world.getBlock(x, y, z));
                     ack(sequence);
                     return;
                 }
@@ -4303,7 +4558,7 @@ bool Session::handleUseItemOnInteractions(const UseItemOnRequest& request) {
 
     {
         const std::uint16_t _clickedSt = srv_.worldFor(self_->dimension).getBlock(x, y, z);
-        blockEventDispatcher().onBlockClicked(x, y, z, _clickedSt, d, self_.get());
+        if (!blockEventDispatcher().onBlockClicked(x, y, z, _clickedSt, d, self_.get())) return true;
         api::BlockClickedEvent _bcev; _bcev.player=self_.get(); _bcev.x=x; _bcev.y=y; _bcev.z=z; _bcev.state=_clickedSt; _bcev.face=d;
         if (!api::events().blockClicked.fire(_bcev)) return true;
         if (srv_.jvmRuntime() && !srv_.jvmRuntime()->onBlockClicked(*self_, x, y, z, _clickedSt, d)) return true;
@@ -4765,7 +5020,25 @@ bool Session::handleUseItemOnDoorAndSlab(const UseItemOnRequest& request, const 
                 const auto upper =
                     static_cast<std::uint16_t>(gen::stateWithProps(*ddef,
                         {{"half","upper"},{"facing",facing},{"open",openStr},{"hinge",hingeStr},{"powered",poweredStr}}));
-                srv_.worldFor(self_->dimension).setBlock(tx, ty, tz, lower);
+                if (!blockEventDispatcher().onBlockPlace(tx, ty, tz, 0, lower, self_.get()) ||
+                    !blockEventDispatcher().onBlockPlace(tx, ty + 1, tz, 0, upper, self_.get()))
+                    return true;
+                api::BlockPlaceEvent lowerEvent;
+                lowerEvent.player = self_.get(); lowerEvent.x = tx; lowerEvent.y = ty;
+                lowerEvent.z = tz; lowerEvent.newState = lower;
+                api::BlockPlaceEvent upperEvent;
+                upperEvent.player = self_.get(); upperEvent.x = tx; upperEvent.y = ty + 1;
+                upperEvent.z = tz; upperEvent.newState = upper;
+                if (!srv_.events().blockPlace.fire(lowerEvent) ||
+                    !srv_.events().blockPlace.fire(upperEvent)) return true;
+                if (srv_.jvmRuntime() &&
+                    (!srv_.jvmRuntime()->onBlockPlace(*self_, tx, ty, tz, lower) ||
+                     !srv_.jvmRuntime()->onBlockPlace(*self_, tx, ty + 1, tz, upper)))
+                    return true;
+                auto& doorWorld = srv_.worldFor(self_->dimension);
+                if (doorWorld.getBlock(tx, ty, tz) != 0 ||
+                    doorWorld.getBlock(tx, ty + 1, tz) != 0) return true;
+                doorWorld.setBlock(tx, ty, tz, lower);
                 srv_.broadcastBlockChangeFor(self_->dimension, tx, ty, tz, lower);
                 srv_.worldFor(self_->dimension).setBlock(tx, ty + 1, tz, upper);
                 srv_.broadcastBlockChangeFor(self_->dimension, tx, ty + 1, tz, upper);
@@ -4804,8 +5077,13 @@ bool Session::handleUseItemOnDoorAndSlab(const UseItemOnRequest& request, const 
                         bool hasWl=false; for(int i=0;i<ed->propCount;++i){ auto &pd=gen::kPropDefs[gen::kBlockPropsRun[ed->propsOff+i]]; if(pd.name=="waterlogged") hasWl=true; }
                         if(hasWl) p.emplace_back("waterlogged","false");
                         uint16_t dbl = static_cast<uint16_t>(gen::stateWithProps(*ed, p));
+                        if (!blockEventDispatcher().onBlockPlace(tx, ty, tz, existing, dbl, self_.get())) return true;
                         api::BlockPlaceEvent ev2; ev2.player=self_.get(); ev2.x=tx; ev2.y=ty; ev2.z=tz; ev2.newState=dbl;
-                        if (srv_.events().blockPlace.fire(ev2)) {
+                        if (srv_.events().blockPlace.fire(ev2) &&
+                            (!srv_.jvmRuntime() ||
+                             srv_.jvmRuntime()->onBlockPlace(*self_, tx, ty, tz, dbl))) {
+                            if (srv_.worldFor(self_->dimension).getBlock(tx, ty, tz) != existing)
+                                return true;
                             srv_.worldFor(self_->dimension).setBlock(tx,ty,tz,dbl);
                             srv_.broadcastBlockChangeFor(self_->dimension, tx,ty,tz,dbl);
                             if (survival) {
@@ -4834,8 +5112,13 @@ bool Session::handleUseItemOnDoorAndSlab(const UseItemOnRequest& request, const 
                                 ap.emplace_back("type", newType);
                                 if(hasWlAdj) ap.emplace_back("waterlogged", wl?"true":"false");
                                 uint16_t adjSt = static_cast<uint16_t>(gen::stateWithProps(*sdef, ap));
+                                if (!blockEventDispatcher().onBlockPlace(adjX, adjY, adjZ, 0, adjSt, self_.get())) return true;
                                 api::BlockPlaceEvent evA; evA.player=self_.get(); evA.x=adjX; evA.y=adjY; evA.z=adjZ; evA.newState=adjSt;
-                                if(srv_.events().blockPlace.fire(evA)){
+                                if(srv_.events().blockPlace.fire(evA) &&
+                                   (!srv_.jvmRuntime() ||
+                                    srv_.jvmRuntime()->onBlockPlace(*self_, adjX, adjY, adjZ, adjSt))) {
+                                    if (srv_.worldFor(self_->dimension).getBlock(adjX, adjY, adjZ) != 0)
+                                        return true;
                                     srv_.worldFor(self_->dimension).setBlock(adjX,adjY,adjZ,adjSt);
                                     srv_.broadcastBlockChangeFor(self_->dimension, adjX,adjY,adjZ,adjSt);
                                     if(wl) srv_.fluidsFor(self_->dimension).touch(adjX,adjY,adjZ);
@@ -5125,19 +5408,27 @@ void Session::placeUseItemOnBlock(const UseItemOnRequest& request, const InvSlot
         }
     }
 
+    const auto oldState = srv_.worldFor(self_->dimension).getBlock(tx, ty, tz);
     api::BlockPlaceEvent ev;
     ev.player = self_.get();
     ev.x = tx; ev.y = ty; ev.z = tz;
     ev.newState = newState;
     if (!srv_.events().blockPlace.fire(ev)) {  return; }
     if (srv_.jvmRuntime() && !srv_.jvmRuntime()->onBlockPlace(*self_, tx, ty, tz, newState)) return;
+    if (!blockEventDispatcher().onBlockPlace(tx, ty, tz, oldState, newState,
+                                             self_.get())) return;
+    if (srv_.worldFor(self_->dimension).getBlock(tx, ty, tz) != oldState) return;
 
     srv_.worldFor(self_->dimension).setBlock(tx, ty, tz, newState);
     if (bdef2->name == "minecraft:crafter") {
         auto& store = srv_.blockEntitiesFor(self_->dimension);
-        auto* be = store.getAt(tx, ty, tz);
-        if (!be || be->kind != BlockEntity::Kind::Crafter)
-            store.create(posKey(tx, ty, tz), BlockEntity::Kind::Crafter);
+        const auto key = posKey(tx, ty, tz);
+        auto owner = store.getShared(key);
+        const bool isCrafter = owner && [&] {
+            std::lock_guard lock(*owner->stateMtx);
+            return owner->kind == BlockEntity::Kind::Crafter;
+        }();
+        if (!isCrafter) store.createShared(key, BlockEntity::Kind::Crafter);
     }
     srv_.broadcastBlockChangeFor(self_->dimension, tx, ty, tz, newState);
     if (std::string(bdef2->name)=="minecraft:bamboo") {
@@ -5222,10 +5513,6 @@ void Session::placeUseItemOnBlock(const UseItemOnRequest& request, const InvSlot
     } else {
         std::string wl = getPropStr(newState, "waterlogged");
         if (wl=="true") srv_.fluidsFor(self_->dimension).touch(tx,ty,tz);
-    }
-    {
-        std::uint16_t oldSt = 0; // air before
-        blockEventDispatcher().onBlockPlace(tx, ty, tz, oldSt, newState, self_.get());
     }
     srv_.onPlacedBlock(*self_, tx, ty, tz, newState);
     if (survival) {

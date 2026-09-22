@@ -1,6 +1,7 @@
 // PacketDecoder: converts framed wire bytes to packet id + ByteBuffer payload. Handles VarInt length prefix, AES-CFB8 decryption and zlib
 // decompression. Provides ByteBuffer conversion helpers.
 #pragma once
+#include <algorithm>
 #include <cstdint>
 #include <vector>
 #include <stdexcept>
@@ -23,6 +24,8 @@ public:
     // decryption). If compressionThreshold <0, frame is id+payload directly. Otherwise frame = varint dataLength + (compressed|raw) body.
     static std::vector<std::uint8_t> decodeFrame(const std::vector<std::uint8_t>& frame,
                                                  int compressionThreshold) {
+        if (compressionThreshold < -1)
+            throw std::invalid_argument("compression threshold must be -1 or non-negative");
         if (frame.size() > kMaxFrame)
             throw OversizeError("frame exceeds 8MB budget");
         if (compressionThreshold < 0) {
@@ -33,6 +36,8 @@ public:
         std::int32_t dataLen = in.varint();
         std::size_t left = in.remaining();
         if (dataLen == 0) {
+            if (left == 0)
+                throw std::runtime_error("empty packet frame");
             if (compressionThreshold == 0)
                 throw std::runtime_error("uncompressed frame with threshold=0");
             if (compressionThreshold > 0 && left >= static_cast<std::size_t>(compressionThreshold))
@@ -77,11 +82,23 @@ public:
     // Decrypt helper for streaming varint (mirrors Connection::readFrame encrypted varint)
     static std::int32_t readVarintEncrypted(const std::uint8_t* encBytes, std::size_t n,
                                             crypto::AesCfb8& dec, std::size_t& consumed) {
-        (void)dec; // The streaming caller decrypts each byte before this helper.
-        ReadBuffer in(encBytes, n);
-        const std::int32_t result = in.varint();
-        consumed = in.off;
-        return result;
+        if (n == 0 || encBytes == nullptr)
+            throw std::invalid_argument("encrypted VarInt buffer is empty");
+        std::vector<std::uint8_t> plain;
+        plain.reserve(std::min<std::size_t>(n, 5));
+        for (std::size_t i = 0; i < n && i < 5; ++i) {
+            std::uint8_t byte = encBytes[i];
+            dec.crypt(&byte, 1, &byte);
+            plain.push_back(byte);
+            if ((byte & 0x80u) == 0) {
+                ReadBuffer in(plain);
+                const auto result = in.varint();
+                consumed = i + 1;
+                return result;
+            }
+        }
+        consumed = plain.size();
+        throw std::runtime_error("encrypted VarInt too large");
     }
 };
 

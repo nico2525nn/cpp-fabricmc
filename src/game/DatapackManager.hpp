@@ -2,6 +2,7 @@
 #pragma once
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <string>
 #include <unordered_map>
@@ -86,7 +87,17 @@ struct PredicateContext {
     std::string nbt;
     std::unordered_set<std::string> advancements;
     std::string dimension;
+    std::uint64_t randomSeed = 0;
+    int lootingLevel = 0;
 };
+
+inline double predicateRandom01(const PredicateContext& context) {
+    std::uint64_t state = context.randomSeed + 0x9E3779B97F4A7C15ULL;
+    state = (state ^ (state >> 30U)) * 0xBF58476D1CE4E5B9ULL;
+    state = (state ^ (state >> 27U)) * 0x94D049BB133111EBULL;
+    state ^= state >> 31U;
+    return static_cast<double>(state >> 11U) * 0x1.0p-53;
+}
 
 class DatapackManager {
 public:
@@ -101,6 +112,9 @@ public:
     // pack enable/disable state
     std::unordered_set<std::string> enabledPacks;
     std::unordered_set<std::string> availablePacks;
+    RecipeManager* recipes_ = nullptr;
+    std::string assetsBase_ = "assets/data";
+    std::string worldDatapacks_ = "world/datapacks";
 
     DatapackManager() {
         // vanilla always available and enabled
@@ -115,6 +129,9 @@ public:
     void loadAll(RecipeManager& recipes,
                  const std::string& assetsBase = "assets/data",
                  const std::string& worldDatapacks = "world/datapacks") {
+        recipes_ = &recipes;
+        assetsBase_ = assetsBase;
+        worldDatapacks_ = worldDatapacks;
         namespace fs = std::filesystem;
         std::error_code ec;
         // primary assets
@@ -276,11 +293,6 @@ public:
         return nullptr;
     }
 
-    // Apply current tag state to a RecipeManager (idempotent)
-    void applyTo(RecipeManager& recipes) const {
-        tagManager.applyToRecipeTags(recipes.tags_);
-    }
-
     std::vector<std::string> listAvailable() const {
         std::vector<std::string> v(availablePacks.begin(), availablePacks.end());
         std::sort(v.begin(), v.end());
@@ -297,17 +309,63 @@ public:
     bool isAvailable(const std::string& name) const {
         return availablePacks.find(name) != availablePacks.end();
     }
-    bool enablePack(const std::string& name) {
-        if (!isAvailable(name)) {
-            availablePacks.insert(name);
+    void rebuildEnabledContent() {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        advancements.clear();
+        predicates.clear();
+        itemModifiers.clear();
+        functions.clear();
+        if (recipes_) {
+            recipes_->clear();
+            // The built-in pack is part of every enabled-pack rebuild.  Keep
+            // direct enablePack/disablePack callers consistent with the
+            // GameServer refresh path, which otherwise used to reload these
+            // defaults only as a side effect.
+            recipes_->loadDefaults();
         }
+        tagManager.itemTags.clear();
+        tagManager.blockTags.clear();
+        lootTables.clear();
+        if (isEnabled("vanilla")) {
+            tagManager.loadDirectory(assetsBase_ + "/tags");
+            lootTables.loadDirectory(assetsBase_ + "/loot_tables");
+            loadPackDirectory(assetsBase_, "vanilla");
+        }
+        if (fs::exists(worldDatapacks_, ec)) {
+            for (const auto& entry : fs::directory_iterator(worldDatapacks_, ec)) {
+                if (!entry.is_directory(ec)) continue;
+                const auto name = entry.path().filename().string();
+                if (!isEnabled(name)) continue;
+                const auto base = entry.path().string() + "/data";
+                if (!fs::exists(base, ec)) continue;
+                TagManager extra;
+                extra.loadDirectory(base + "/tags");
+                for (auto& [k, v] : extra.itemTags)
+                    for (auto id : v) tagManager.itemTags[k].insert(id);
+                for (auto& [k, v] : extra.blockTags)
+                    for (auto id : v) tagManager.blockTags[k].insert(id);
+                lootTables.loadDirectory(base + "/loot_tables");
+                loadPackDirectory(base, name);
+            }
+        }
+        if (recipes_) {
+            tagManager.applyToRecipeTags(recipes_->tags_);
+            recipes_->syncTagsFrom(tagManager);
+        }
+    }
+
+    bool enablePack(const std::string& name) {
+        if (!isAvailable(name)) return false;
         auto [it, inserted] = enabledPacks.insert(name);
+        if (inserted) rebuildEnabledContent();
         return inserted;
     }
     bool disablePack(const std::string& name) {
         if (enabledPacks.find(name) == enabledPacks.end()) return false;
         if (name == "vanilla") return false;
         enabledPacks.erase(name);
+        rebuildEnabledContent();
         return true;
     }
 
@@ -332,14 +390,22 @@ public:
                         if (!chance->isNum() || !std::isfinite(ch)) return false;
                         if (ch >= 1.0) return true;
                         if (ch <= 0.0) return false;
-                        return ch >= 0.5;
+                        return predicateRandom01(ctx) < ch;
                     }
                     return false;
                 } else if (c == "minecraft:random_chance_with_looting" || c == "random_chance_with_looting") {
                     if (auto* chance = v.find("chance")) {
                         double ch = chance->isNum() ? chance->number : 1.0;
                         if (!chance->isNum() || !std::isfinite(ch)) return false;
-                        return ch >= 0.5;
+                        double multiplier = 0.0;
+                        if (auto* looting = v.find("looting_multiplier")) {
+                            if (!looting->isNum() || !std::isfinite(looting->number)) return false;
+                            multiplier = looting->number;
+                        }
+                        ch += multiplier * static_cast<double>(ctx.lootingLevel);
+                        if (ch >= 1.0) return true;
+                        if (ch <= 0.0) return false;
+                        return predicateRandom01(ctx) < ch;
                     }
                     return false;
                 } else if (c == "minecraft:inverted" || c == "inverted") {

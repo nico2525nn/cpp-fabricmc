@@ -112,6 +112,34 @@ Implementation changes are reviewed at these boundaries:
 The C++ block/event hooks in `World` and tick/session callbacks are implementation
 events; they do not imply a Fabric event bus.
 
+### Current hardening checkpoint
+
+The current working-tree verification records the following implementation
+contracts:
+
+- `SimulationDispatchGuard` owns all mutating tick/session/console transitions.
+  `Connection` encodes frames while that gate is held, then queues them to one
+  bounded writer thread per connection; it does not unlock the simulation gate
+  around a state mutation. Queues are capped at 4 MiB per client, and graceful
+  teardown waits at most 100 ms for a short protocol tail before closing.
+- Block place/break/click callbacks run before the world mutation and can cancel
+  it. Scoped event removal waits for in-flight callbacks. Item command sources
+  retain the originating dimension.
+- Persistence snapshot barriers flush source/destination pending piston commits
+  under the simulation gate, including background persistence workers. Moving-piston
+  transient NBT remains intentionally omitted; the barrier materializes the commit
+  before the snapshot instead.
+- Secure profile rejection is terminal when either secure-profile or enforced
+  secure-chat policy requires it. Signed command argument transcripts are not
+  reconstructed and therefore fail closed instead of dispatching.
+
+The final implementation evidence is `test_settings_matrix` (25/25),
+`test_properties` (33/33), `test_recovery` (55/55), `test_core_safety` (45/45),
+Plan43 (87/87), smoke80 (224/224), the full live matrix (240/240), and the
+non-nightly CTest aggregate (46/46). The 120-client stress, 300-second soak,
+and strict view-distance-32 dry benchmark also pass. Review artifacts and exact
+commands are recorded in `docs/audit/adversarial-review-2026-09-19.md`.
+
 ## 6. State model
 
 ```text
@@ -141,7 +169,12 @@ A failed state cannot be promoted by changing prose, counts, or assertions.
    dirty worktree for its owner.
 5. Implement the smallest source-owned change, add focused evidence, then build.
 6. Run static → unit → wire/gameplay → integration/ops gates.
-7. Review behavior diff, docs references, and declared limitations before commit.
+7. Reproduce `.github/workflows/ci.yml` locally for every PR: configure a fresh
+   Ninja build, compile all targets, run `git diff --check`, run the focused
+   settings/properties/recovery/core-safety gates, and run the non-nightly CTest
+   aggregate. Attach those logs plus the independent feature/quality review
+   artifact before merge.
+8. Review behavior diff, docs references, and declared limitations before commit.
 
 For a research plan, put the applicable MISSING target at the start of each chapter
 and cover all sixteen viewpoints: feature overview, vanilla/reference specification,

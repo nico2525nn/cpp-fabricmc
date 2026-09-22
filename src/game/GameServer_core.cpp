@@ -134,6 +134,20 @@ bool GameServer::runOnServerThread(std::function<void()> task,
                    state == ServerThreadTask::State::Cancelled;
         });
     if (!finished) {
+        if (request->state.load(std::memory_order_acquire) ==
+            ServerThreadTask::State::Running) {
+            // A running mutation owns the server-thread side effects.  Do not
+            // report failure while it can still commit after the caller
+            // returns; wait for its terminal state instead.
+            request->waitCv.wait(waitLock, [&request] {
+                const auto state = request->state.load(std::memory_order_acquire);
+                return state == ServerThreadTask::State::Completed ||
+                       state == ServerThreadTask::State::Failed ||
+                       state == ServerThreadTask::State::Cancelled;
+            });
+            return request->state.load(std::memory_order_acquire) ==
+                   ServerThreadTask::State::Completed;
+        }
         auto expected = ServerThreadTask::State::Pending;
         if (request->state.compare_exchange_strong(
                 expected, ServerThreadTask::State::Cancelled,
@@ -332,7 +346,11 @@ void GameServer::acceptLoop() {
                     registerActiveConnection(conn);
                     registered = true;
                     conn->setNoDelay();
-                    conn->setSendTimeout(15);
+                    // Packet handling shares the simulation gate with the
+                    // tick; bound a stalled client's socket hold time.  The
+                    // sub-second deadline prevents one slow peer from holding
+                    // the global simulation gate for multiple seconds.
+                    conn->setSendTimeoutMs(250);
                     conn->setRecvTimeout(30);
                     conn->enableFloodBudget(true);
                     Session s(*this, conn);
@@ -816,6 +834,12 @@ PredicateContext GameServer::basePredicateContext(Player& p) {
     ctx.x = static_cast<int32_t>(x);
     ctx.y = static_cast<int32_t>(y);
     ctx.z = static_cast<int32_t>(z);
+    ctx.dayTime = dayTime();
+    ctx.randomSeed = cfg_.seed ^
+        (static_cast<std::uint64_t>(static_cast<std::int64_t>(ctx.x)) * 0x9E3779B97F4A7C15ULL) ^
+        (static_cast<std::uint64_t>(static_cast<std::int64_t>(ctx.y)) * 0xBF58476D1CE4E5B9ULL) ^
+        (static_cast<std::uint64_t>(static_cast<std::int64_t>(ctx.z)) * 0x94D049BB133111EBULL) ^
+        static_cast<std::uint64_t>(ctx.dayTime);
     return ctx;
 }
 void GameServer::evaluateTickAdvancements(Player& p) {

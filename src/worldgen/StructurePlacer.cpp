@@ -1,6 +1,5 @@
 // StructurePlacer implementation: JSON-driven with fallback.
 #include "StructurePlacer.hpp"
-#include "../generated/BlockStates.hpp"
 #include <filesystem>
 #include <fstream>
 #include <cmath>
@@ -146,6 +145,17 @@ const PlacedFeature* StructurePlacer::getPlaced(const std::string& name) const {
     auto it = placed_.find(name);
     return it==placed_.end() ? nullptr : &it->second;
 }
+
+StructurePlacer::OriginCandidate StructurePlacer::originForCell(
+    const PlacedFeature& pf, std::int64_t cellX, std::int64_t cellZ) const {
+    const double r1 = hash01(seed_, cellX, cellZ, pf.salt);
+    const double r2 = hash01(seed_, cellX, cellZ, pf.salt ^ 0x9E37ULL);
+    const double spread = static_cast<double>(pf.spacing - pf.separation);
+    return {
+        static_cast<std::int32_t>(static_cast<double>(cellX) * pf.spacing + r1 * spread),
+        static_cast<std::int32_t>(static_cast<double>(cellZ) * pf.spacing + r2 * spread), r1};
+}
+
 bool StructurePlacer::shouldPlaceAt(const PlacedFeature& pf, std::int32_t cx, std::int32_t cz) const {
     // vanilla random spread check: chunk is origin if its grid cell's jitter matches
     if (pf.spacing <= 0) return false;
@@ -153,14 +163,8 @@ bool StructurePlacer::shouldPlaceAt(const PlacedFeature& pf, std::int32_t cx, st
         static_cast<double>(cx) / static_cast<double>(pf.spacing)));
     const std::int64_t gz = static_cast<std::int64_t>(std::floor(
         static_cast<double>(cz) / static_cast<double>(pf.spacing)));
-    const double r1 = hash01(seed_, gx, gz, pf.salt);
-    const double r2 = hash01(seed_, gx, gz, pf.salt ^ 0x9E37ULL);
-    const double spread = static_cast<double>(pf.spacing - pf.separation);
-    const std::int32_t scx = static_cast<std::int32_t>(
-        static_cast<double>(gx) * static_cast<double>(pf.spacing) + r1 * spread);
-    const std::int32_t scz = static_cast<std::int32_t>(
-        static_cast<double>(gz) * static_cast<double>(pf.spacing) + r2 * spread);
-    return scx==cx && scz==cz && r1 < pf.frequency;
+    const auto origin = originForCell(pf, gx, gz);
+    return origin.x == cx && origin.z == cz && origin.chance < pf.frequency;
 }
 bool StructurePlacer::findOrigin(const PlacedFeature& pf, std::int32_t cx, std::int32_t cz,
                                  std::int32_t& outOriginCx, std::int32_t& outOriginCz) const {
@@ -171,36 +175,14 @@ bool StructurePlacer::findOrigin(const PlacedFeature& pf, std::int32_t cx, std::
         static_cast<double>(cz) / static_cast<double>(pf.spacing)));
     for (std::int64_t ox=-1; ox<=1; ++ox) for (std::int64_t oz=-1; oz<=1; ++oz) {
         const std::int64_t cellX = gx+ox, cellZ = gz+oz;
-        const double r1 = hash01(seed_, cellX, cellZ, pf.salt);
-        const double r2 = hash01(seed_, cellX, cellZ, pf.salt ^ 0x9E37ULL);
-        const double spread = static_cast<double>(pf.spacing - pf.separation);
-        const std::int32_t scx = static_cast<std::int32_t>(
-            static_cast<double>(cellX) * static_cast<double>(pf.spacing) + r1 * spread);
-        const std::int32_t scz = static_cast<std::int32_t>(
-            static_cast<double>(cellZ) * static_cast<double>(pf.spacing) + r2 * spread);
+        const auto origin = originForCell(pf, cellX, cellZ);
+        const auto scx = origin.x;
+        const auto scz = origin.z;
         if (std::abs(scx-cx)<=3 && std::abs(scz-cz)<=3) {
             outOriginCx=scx; outOriginCz=scz; return true;
         }
     }
     return false;
-}
-
-std::uint16_t StructurePlacer::stateFor(const ConfiguredFeature& cf, const std::string& piece, const std::string& key, const std::string& fallback) const {
-    auto itV = cf.variants.find(piece);
-    if (itV != cf.variants.end()) {
-        auto it2 = itV->second.find(key);
-        if (it2 != itV->second.end()) {
-            if (auto* d = gen::blockByName(it2->second.c_str()))
-                return static_cast<std::uint16_t>(d->defaultState);
-        }
-    }
-    auto it = cf.palette.find(key);
-    const std::string& name = (it != cf.palette.end() ? it->second : fallback);
-    if (auto* d = gen::blockByName(name.c_str()))
-        return static_cast<std::uint16_t>(d->defaultState);
-    if (auto* f = gen::blockByName(fallback.c_str()))
-        return static_cast<std::uint16_t>(f->defaultState);
-    return 0;
 }
 
 } // namespace cppfm::worldgen

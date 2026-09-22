@@ -604,14 +604,17 @@ void TestClient::sendPosition(double px, double py, double pz, bool onGround) {
     }
 }
 
-void TestClient::sendChatMessage(const std::string& message) {
+void TestClient::sendChatMessage(const std::string& message, std::int32_t lastSeenOffset,
+                                 std::uint32_t acknowledgedMask) {
     if (!conn_) return;
     WriteBuffer b;
     b.string(message);
     b.i64(0); b.i64(0);
     b.boolean(false);
-    b.varint(0);
-    b.u8(0); b.u8(0); b.u8(0);   // acknowledged bitset
+    b.varint(lastSeenOffset);
+    b.u8(static_cast<std::uint8_t>(acknowledgedMask & 0xff));
+    b.u8(static_cast<std::uint8_t>((acknowledgedMask >> 8) & 0xff));
+    b.u8(static_cast<std::uint8_t>((acknowledgedMask >> 16) & 0xff));   // acknowledged bitset
     sendPacketNoexcept(proto::pl::cs::ChatMessage, b);
 }
 

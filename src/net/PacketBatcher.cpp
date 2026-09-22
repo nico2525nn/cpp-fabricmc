@@ -5,13 +5,18 @@
 #include <chrono>
 #include <climits>
 #include <array>
-#include <unordered_map>
+#include <map>
 
 namespace cppfm {
 
 static int64_t nowMsLocal() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+static int64_t epochMsLocal() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
 void PacketBatcher::flush(GameServer& srv, const Player* except) {
@@ -49,23 +54,18 @@ void PacketBatcher::flushDimension(GameServer& srv, const Player* except,
             // Deduplicate same pos -> keep last state (last write wins)
             struct Rec { int32_t x,y,z; uint16_t state; };
             // dedup map: key = (x,y,z) packed
-            std::unordered_map<int64_t, Rec> dedup;
-            dedup.reserve(q.size());
+            std::map<packet_batch_detail::PositionKey, Rec> dedup;
             for (auto &queued : q) {
                 ReadBuffer in(queued.body.data);
                 int32_t x,y,z; in.position(x,y,z);
                 uint16_t st = static_cast<uint16_t>(in.varint());
-                int64_t k2 = ((int64_t)x << 42) ^ ((int64_t)y << 21) ^ (int64_t)z;
-                dedup[k2] = {x,y,z,st};
+                dedup[{x, y, z}] = {x,y,z,st};
             }
             // Group by section
-            struct SecKey { int32_t cx, cz, sy; bool operator==(const SecKey& o) const { return cx==o.cx && cz==o.cz && sy==o.sy; } };
-            struct SecHash { size_t operator()(SecKey const& k) const noexcept { return ((size_t)k.cx*31 + k.cz)*31 + k.sy; } };
-            std::unordered_map<SecKey, std::vector<Rec>, SecHash> groups;
-            groups.reserve(dedup.size());
+            std::map<packet_batch_detail::SectionKey, std::vector<Rec>> groups;
             for (auto &kv : dedup) {
                 const Rec& r = kv.second;
-                SecKey sk{ r.x >> 4, r.z >> 4, r.y >> 4 };
+                packet_batch_detail::SectionKey sk{ r.x >> 4, r.z >> 4, r.y >> 4 };
                 groups[sk].push_back(r);
             }
             // If single group with >=2 entries, use optimized MultiBlockChange direct (no bundle overhead)
@@ -160,14 +160,12 @@ bool PacketBatcher::tryFlushAsMultiBlockChange(GameServer& srv, const Player* ex
     int32_t baseCx = INT32_MAX, baseCz = INT32_MAX, baseSy = INT32_MAX;
     bool sameSection = true;
     // Use dedup for last-write-wins as well
-    std::unordered_map<int64_t, Rec> dedup;
-    dedup.reserve(q.size());
+    std::map<packet_batch_detail::PositionKey, Rec> dedup;
     for (auto &queued : q) {
         ReadBuffer in(queued.body.data);
         int32_t x,y,z; in.position(x,y,z);
         uint16_t st = static_cast<uint16_t>(in.varint());
-        int64_t k = ((int64_t)x << 42) ^ ((int64_t)y << 21) ^ (int64_t)z;
-        dedup[k] = {x,y,z,st};
+        dedup[{x, y, z}] = {x,y,z,st};
     }
     for (auto &kv : dedup) {
         const Rec &r = kv.second;
@@ -199,39 +197,44 @@ bool PacketBatcher::tryFlushAsMultiBlockChange(GameServer& srv, const Player* ex
     return true;
 }
 
-bool ChatMessageProcessor::verify(const Player& p, const std::string& msg, int64_t timestamp, int64_t salt, const std::vector<uint8_t>& signature) {
-    if (!p.hasChatSession) {
-        return true;
-    }
-    if (p.chatSessionExpiry != 0) {
-        int64_t now = nowMsLocal();
-        if (now > p.chatSessionExpiry) {
-            return false;
-        }
-    }
-    if (p.chatPubKey.empty()) {
+bool ChatMessageProcessor::verify(const Player& p, const std::string& msg, int64_t timestamp,
+                                  int64_t salt, int32_t lastSeenOffset,
+                                  std::uint32_t acknowledgedMask,
+                                  const std::vector<uint8_t>& signature) {
+    const auto now = epochMsLocal();
+    if (!p.hasChatSession || p.chatSessionExpiry <= now ||
+        timestamp < now - 300000 || timestamp > now + 300000 ||
+        p.chatPubKey.empty() || signature.size() != 256 || lastSeenOffset < 0 ||
+        acknowledgedMask != 0 || p.chatMessageIndex < 0) {
         return false;
     }
-    if (signature.empty()) {
-        return false;
-    }
-    // Replay protection: check salt not duplicated within last 20 salts (if tracked)
-    for (auto v : p.lastSeenSignatures) if ((int64_t)v == (salt & 0xFF)) { /* soft check */ }
-    // Build data to verify: (timestamp,salt,msg,lastSeen) simplified as msg + timestamp + salt
-    // NOTE: vanilla signs (prevSignature?); we use msg+LE timestamp+salt for audit parity (N6).
-    std::string data;
-    data.reserve(msg.size() + 16);
-    data.append(msg);
-    data.append(reinterpret_cast<const char*>(&timestamp), sizeof(timestamp));
-    data.append(reinterpret_cast<const char*>(&salt), sizeof(salt));
-    bool ok = crypto::verifyRsaSha256(p.chatPubKey, reinterpret_cast<const uint8_t*>(data.data()), data.size(), signature);
-    return ok;
+
+    std::vector<std::uint8_t> data;
+    data.reserve(4 + 16 + 16 + 4 + 8 + 8 + 4 + msg.size() + 4);
+    const auto append32 = [&data](std::uint32_t value) {
+        for (int shift = 24; shift >= 0; shift -= 8)
+            data.push_back(static_cast<std::uint8_t>((value >> shift) & 0xFF));
+    };
+    const auto append64 = [&data](std::uint64_t value) {
+        for (int shift = 56; shift >= 0; shift -= 8)
+            data.push_back(static_cast<std::uint8_t>((value >> shift) & 0xFF));
+    };
+    append32(1);
+    data.insert(data.end(), p.uuid.begin(), p.uuid.end());
+    data.insert(data.end(), p.chatSessionId.begin(), p.chatSessionId.end());
+    append32(static_cast<std::uint32_t>(p.chatMessageIndex));
+    append64(static_cast<std::uint64_t>(salt));
+    append64(static_cast<std::uint64_t>(timestamp / 1000));
+    append32(static_cast<std::uint32_t>(msg.size()));
+    data.insert(data.end(), msg.begin(), msg.end());
+    append32(0); // last-seen signatures are not tracked unless the server emits signed chat
+    return crypto::verifyRsaSha256(p.chatPubKey, data.data(), data.size(), signature);
 }
 
 bool ChatMessageProcessor::shouldUsePlayerChat(const Player& p) {
     if (!p.hasChatSession) return false;
     if (p.chatSessionExpiry != 0) {
-        int64_t now = nowMsLocal();
+        int64_t now = epochMsLocal();
         if (now > p.chatSessionExpiry) return false;
     }
     return !p.chatPubKey.empty();

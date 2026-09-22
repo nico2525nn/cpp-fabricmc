@@ -1253,7 +1253,22 @@ int main(int argc, char** argv){
     std::printf("=== cppfm smoke 80 — 1.21.4 (769) strict ===\n");
     ServerProcessOptions serverOptions;
     serverOptions.viewDistance = 6;
-    serverOptions.worldPrefix = "/tmp/smoke80-";
+    // The smoke matrix exercises operator-only commands; keep this authority
+    // fixture isolated in the temporary world instead of relying on the
+    // repository working directory's ops.json.
+    serverOptions.operatorNames = {
+        "WorldTester", "BlockTester", "RedTester", "EntityTester",
+        "InvTester", "CmdTester", "NetTester", "SurvTester",
+        "Victim", "Victim35", "Plan33Tester", "Plan35Tester",
+        "Mob36", "Struct36", "Nat36", "Soak36A", "Soak36B",
+        "Loot36", "Kill36", "Rec37", "Adv37", "Loot37",
+        "Vill37", "Ench37", "Weath37", "Persist37", "QC38",
+        "Func38", "Trig38", "Bench38", "Soak39", "Plan40",
+        "Horse41", "Rider41", "Observer41"
+    };
+    const char* smokeWorldPrefix = std::getenv("CPPFM_SMOKE_WORLD_PREFIX");
+    serverOptions.worldPrefix = (smokeWorldPrefix && *smokeWorldPrefix)
+        ? smokeWorldPrefix : "/tmp/smoke80-";
     ServerProc srv;
     if(!srv.start(bin, serverOptions)){ std::printf("FATAL: server start\n"); return 2; }
     {

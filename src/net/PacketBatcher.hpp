@@ -18,6 +18,30 @@ namespace cppfm {
 struct Player;
 class GameServer;
 
+namespace packet_batch_detail {
+struct PositionKey {
+    std::int32_t x = 0;
+    std::int32_t y = 0;
+    std::int32_t z = 0;
+    bool operator<(const PositionKey& other) const {
+        if (x != other.x) return x < other.x;
+        if (y != other.y) return y < other.y;
+        return z < other.z;
+    }
+};
+
+struct SectionKey {
+    std::int32_t cx = 0;
+    std::int32_t cz = 0;
+    std::int32_t sy = 0;
+    bool operator<(const SectionKey& other) const {
+        if (cx != other.cx) return cx < other.cx;
+        if (cz != other.cz) return cz < other.cz;
+        return sy < other.sy;
+    }
+};
+}
+
 class PacketBatcher {
 public:
     struct Queued {
@@ -42,7 +66,6 @@ public:
         std::lock_guard lk(mtx_);
         return queue.size();
     }
-
     // Flushes queued packets. If multiple, wraps in BundleDelimiter (0x00) start/end
     // or coalesces to MultiBlockChange when all BlockUpdates share same chunk section.
     void flush(GameServer& srv, const Player* except);
@@ -56,9 +79,15 @@ private:
 
 class ChatMessageProcessor {
 public:
-    // Verifies RSA-SHA256 signature when hasChatSession==true. Returns true if message should be accepted as PlayerChat, false to downgrade
-    // to SystemChat / reject. Expired sessions and missing keys return false (caller should send SystemChat).
-    static bool verify(const Player& p, const std::string& msg, int64_t timestamp, int64_t salt, const std::vector<uint8_t>& signature);
+    // Verifies RSA-SHA256 signature when hasChatSession==true. The server currently
+    // emits no signed outbound chat entries, so a non-zero acknowledgement mask
+    // cannot be incorporated into the transcript and fails closed. The protocol
+    // offset itself is not a message count and may advance beyond the 20-entry
+    // acknowledgement window.
+    static bool verify(const Player& p, const std::string& msg, int64_t timestamp,
+                       int64_t salt, int32_t lastSeenOffset,
+                       std::uint32_t acknowledgedMask,
+                       const std::vector<uint8_t>& signature);
     [[nodiscard]] static bool shouldUsePlayerChat(const Player& p);
 };
 

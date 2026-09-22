@@ -2,7 +2,6 @@
 #pragma once
 #include <string>
 #include <vector>
-#include <unordered_map>
 #include <map>
 #include <functional>
 #include <algorithm>
@@ -67,14 +66,20 @@ public:
     void clearScheduled() { scheduled_.clear(); }
 
 private:
+    struct RecursionGuard {
+        FunctionEvaluator& owner;
+        ~RecursionGuard() {
+            --owner.recursionDepth_;
+            if (owner.recursionDepth_ == 0) owner.clearReturn();
+        }
+    };
+
     GameServer* server_ = nullptr;
     std::vector<ScheduledEntry> scheduled_;
     int recursionDepth_ = 0;
     static constexpr int kMaxRecursion = 10;
     bool hasReturn_ = false;
     int returnValue_ = 0;
-    std::unordered_map<std::string, std::int64_t> scheduledMap_; // id -> dueTick for replace logic
-
     std::vector<std::string> getFunctionLines(const std::string& id);
 };
 

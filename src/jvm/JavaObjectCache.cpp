@@ -45,11 +45,7 @@ void JavaObjectCache::put(void* rawEnv, std::uint64_t handle,
 }
 
 void JavaObjectCache::erase(std::uint64_t handle) {
-    std::lock_guard lock(mutex_);
-    for (auto it = references_.begin(); it != references_.end();) {
-        if (it->first.handle == handle) it = references_.erase(it);
-        else ++it;
-    }
+    erase(nullptr, handle);
 }
 
 void JavaObjectCache::erase(void* rawEnv, std::uint64_t handle) {

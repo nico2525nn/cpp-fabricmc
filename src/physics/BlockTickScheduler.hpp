@@ -55,12 +55,17 @@ public:
     void tick(std::int64_t now);
     std::size_t size() const { return queue_.size(); }
     bool empty() const { return queue_.empty(); }
+    std::optional<std::int64_t> nextDueTick() const {
+        return queue_.empty() ? std::nullopt
+                              : std::optional<std::int64_t>(queue_.begin()->dueTick);
+    }
     void clear() { queue_.clear(); }
 private:
     World& world_;
     GameRuleManager* rules_;
     GameServer* srv_;
     std::multiset<RandomTickEntry> queue_;
+    std::int64_t currentTick_ = 0;
 };
 
 struct ScheduledTick {
@@ -76,7 +81,7 @@ public:
 
     void schedule(std::int32_t x, std::int32_t y, std::int32_t z, std::int64_t dueTick);
     void tick(std::int64_t now);
-    std::size_t pendingCount() const { return queue_.size() + pendingPos_.size(); }
+    std::size_t pendingCount() const { return pendingPos_.size(); }
 
     void registerBehavior(const std::string& blockName, std::unique_ptr<IBlockBehavior> b) {
         behaviors_[blockName] = std::move(b);
@@ -122,8 +127,11 @@ private:
     std::unordered_set<std::int64_t> pendingPos_;
     RandomTickScheduler randomScheduler_;
     static std::int64_t posKey3(std::int32_t x, std::int32_t y, std::int32_t z) {
-        return (static_cast<std::int64_t>(static_cast<std::uint32_t>(x))<<32) ^
-               (static_cast<std::int64_t>(y & 0xFFF)<<20) ^ static_cast<std::uint32_t>(z);
+        return (static_cast<std::int64_t>(static_cast<std::uint64_t>(
+                    static_cast<std::uint32_t>(x)) & 0x3FFFFFFULL) << 38) |
+               (static_cast<std::int64_t>(static_cast<std::uint64_t>(
+                    static_cast<std::uint32_t>(z)) & 0x3FFFFFFULL) << 12) |
+               static_cast<std::int64_t>(static_cast<std::uint64_t>(y) & 0xFFFULL);
     }
 };
 
