@@ -59,7 +59,7 @@ the current matrix claim.
 ## Active bounded goal evidence
 
 The current goal audit keeps the numbered taxonomy honest: the 90-row ledger has
-`12 PASS`, `25 PARTIAL`, and `53 UNVERIFIED` rows. Two real protocol-769 launches
+`14 PASS`, `38 PARTIAL`, and `38 UNVERIFIED` rows. Two real protocol-769 launches
 exercise status, login, configuration, play, CLI/properties precedence, restart,
 and owned-process cleanup; a separate owned client drives commands, tab completion,
 entity use, wire consequences, datapack reload, and persistence. Separate goal reports record 23 fixed reproducible
@@ -199,7 +199,7 @@ entries must use those current paths.
 
 | # | Feature | Status | Packet | Notes |
 |---|---------|--------|--------|-------|
-| 71 | VarInt/VarLong, big-endian, Position | DONE | `ByteBuffer.hpp:1` | `varint` max 5b for negative, `i16/u16/i32/u32/i64` big-endian, `position(x,y,z)` 26-12-26 pack `((x&0x3FFFFFF)<<38)|((y&0xFFF)<<12)|(z&0x3FFFFFF)`. |
+| 71 | VarInt/VarLong, big-endian, Position | DONE | `ByteBuffer.hpp:1` | Signed VarInt/VarLong writers use at most 5/10 bytes; readers match Java's 32/64-bit shift truncation for terminal fifth/tenth-byte high payload bits and reject continued byte 6/11; fixed-width integers are big-endian; packed Position is `((x&0x3FFFFFF)<<38)|((z&0x3FFFFFF)<<12)|(y&0xFFF)` (`x:26 | z:26 | y:12`). |
 | 72 | Handshake → Status/Login/Config/Play | DONE | `GameServer.cpp:1420` `handleHandshake` | `protocol 769` gate `Outdated client`, `Status` JSON `enforcesSecureChat:false`, `favicon`, `Login` RSA 1024 `EncryptionRequest 0x01` + `mcSha1Hex` + `MojangAuth` curl, `Configuration` `SelectKnownPacks` `RegistryData 0x07` ×12 + `UpdateTags 0x0D` + `FinishConfiguration 0x03`. |
 | 73 | Compression/Encryption | DONE | `Connection.hpp:29` | `setCompression 256` `zlib` `dataLength 0` vs `>0` decompress, `readFrame` length varint byte-by-byte decrypt via `AesCfb8 0x80`, `setSendTimeout 15`. |
 | 74 | Chat signing `PlayerChat 0x3B` | DONE | `GameServer.cpp:3046` + `net/Crypto.hpp` | `ChatMessageProcessor::verify RSA-SHA256` `ChatMessage 0x07 timestamp/salt/signature` + `MessageAck 0x04` + `shouldUsePlayerChat` → `PlayerChat 0x3B` when key valid else `SystemChat 0x73`; `enforcesSecureChat:false` verified. |

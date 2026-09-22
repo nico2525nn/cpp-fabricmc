@@ -155,14 +155,19 @@ private:
                 std::uint8_t e[1];
                 readExact(e, 1, deadline);
                 decCtx_->crypt(e, 1, e);
-                if (i == 4 && (e[0] & 0xF0u) != 0)
-                    throw std::runtime_error("varint overflow");
                 ulen |= static_cast<std::uint32_t>(e[0] & 0x7F) << (i * 7);
                 if ((e[0] & 0x80u) == 0) {
                     len = static_cast<std::int32_t>(ulen);
                     break;
                 }
-                if (i == 4) throw std::runtime_error("varint overflow");
+                if (i == 4) {
+                    // Vanilla reads the sixth encrypted byte before rejecting
+                    // an over-width VarInt; advance the stateful CFB8 stream too.
+                    std::uint8_t extra[1];
+                    readExact(extra, 1, deadline);
+                    decCtx_->crypt(extra, 1, extra);
+                    throw std::runtime_error("varint overflow");
+                }
             }
         }
         if (len <= 0 || static_cast<std::uint32_t>(len) > kMaxFrame)
@@ -258,11 +263,12 @@ private:
         for (int i = 0; i < maxBytes; ++i) {
             std::uint8_t b;
             readExact(&b, 1, deadline);
-            if (i == 4 && (b & 0xF0u) != 0)
-                throw std::runtime_error("varint overflow in frame length");
             result |= static_cast<std::uint32_t>(b & 0x7F) << (i * 7);
             if ((b & 0x80u) == 0) return static_cast<std::int32_t>(result);
         }
+        // Match the vanilla decoder's one-byte-over-width consumption.
+        std::uint8_t extra;
+        readExact(&extra, 1, deadline);
         throw std::runtime_error("varint overflow in frame length");
     }
     void readExact(void* dst, std::size_t n,

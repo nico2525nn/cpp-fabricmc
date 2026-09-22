@@ -4,8 +4,8 @@
 
 This is a read-only baseline of the intentionally dirty working tree. It does not
 claim a clean checkout or a release gate. No build/test command was run for this
-ledger; recorded results remain historical evidence in `Handoff.md`,
-`docs/CURRENT_STATE.md`, and `docs/VERIFICATION.md`.
+ledger; recorded results remain historical evidence in
+`docs/CURRENT_STATE.md` and `docs/VERIFICATION.md`.
 
 | field | value |
 |---|---|

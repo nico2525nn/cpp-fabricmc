@@ -618,7 +618,7 @@ If a confirmed test-owned PID remains, repeat the command-line inspection and is
 
 The goal-specific evidence is indexed in [the audit directory](audit/README.md):
 23 fixed reproducible network/gameplay defects, three owned real-client fixtures, the 90-row
-coverage ledger (`13 PASS`, `39 PARTIAL`, `38 UNVERIFIED`), real command/entity/menu
+coverage ledger (`14 PASS`, `38 PARTIAL`, `38 UNVERIFIED`), real command/entity/menu
 transcript, the official Mojang bug oracle, adversarial security guards, and
 safe-cleanup measurements. The final security guard, settings matrix, focused goal
 tests, and production rebuild pass; unverified rows and the GUI, arbitrary-mod,

@@ -2,7 +2,7 @@
 
 ## Scope and verdict
 
-Reviewed the dirty working tree, `Handoff.md`, the goal plan, settings/security changes, secure chat, events, JVM bridge, persistence, networking, lifecycle, performance, duplication, and dependency boundaries. I did not modify product code or another specialist's path.
+Reviewed the dirty working tree, the current-state notes, goal plan, settings/security changes, secure chat, events, JVM bridge, persistence, networking, lifecycle, performance, duplication, and dependency boundaries. I did not modify product code or another specialist's path.
 
 Final severity totals: **P0: 0, P1: 0, P2: 0, P3: 0**. The six lower-severity findings from the initial review were fixed and have focused regressions or source-order guards below. This does not waive the explicit product-scope limitations in the handoff.
 
@@ -58,4 +58,4 @@ The goal tests are retained as regression gates; the source-order guard intentio
 
 - P0/P1 findings: **none reproduced**.
 - The six findings above are fixed; the remaining caveats are test-environment limitations, not open severity findings.
-- The declared arbitrary-JVM-mod, RNG-L3, long-soak, GUI, signed-command, and moving-piston-NBT limitations in `Handoff.md` remain applicable; this review does not silently waive them.
+- The declared arbitrary-JVM-mod, RNG-L3, long-soak, GUI, signed-command, and moving-piston-NBT limitations recorded in `docs/CURRENT_STATE.md` remain applicable; this review does not silently waive them.

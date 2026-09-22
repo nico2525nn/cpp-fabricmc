@@ -41,6 +41,15 @@ static bool waitChat(TestClient& c, const std::string& substr, int ms=4000){
     }
     return false;
 }
+static bool waitForTimeUpdates(TestClient& c, int target, int ms=15000) {
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(ms);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (c.counters().timeUpdates >= target) return true;
+        c.pump(40);
+    }
+    return c.counters().timeUpdates >= target;
+}
 static bool waitBlockUpdate(TestClient& c, int x,int y,int z, uint32_t state, int ms=4000){
     auto dl=std::chrono::steady_clock::now()+std::chrono::milliseconds(ms);
     while(std::chrono::steady_clock::now()<dl){
@@ -277,11 +286,16 @@ static void testBlockBehaviors(ServerProc& srv){
         }
     }
     CHECK(grew,"wheat random tick with high randomTickSpeed changes the crop state");
+    // The server's vanilla chat-spam budget decays in simulation ticks, not
+    // wall-clock time. 100 random ticks/section can delay the tick thread, so
+    // observe six time-sync packets (120 ticks) before resetting the rule.
+    const int resetAfterTicks = c.counters().timeUpdates + 6;
+    CHECK(waitForTimeUpdates(c, resetAfterTicks, 30000),
+          "server advances 120 ticks before gamerule reset");
+    c.clearChatLines();
     c.sendChatCommand("gamerule randomTickSpeed 3");
-    // The crop may grow on the first sampled tick, so the six-second growth
-    // window is not necessarily a six-second spam-budget decay window.  Let
-    // the reset command settle before the remaining behavior commands.
-    CHECK(waitChat(c, "3", 2000), "randomTickSpeed reset command accepted");
+    CHECK(waitChat(c, "Gamerule randomTickSpeed is now 3", 8000),
+          "randomTickSpeed reset command accepted");
     c.pump(5000);
     // 15 farmland moisture: place farmland without water, check it dries to dirt via BlockTickScheduler
     c.sendChatCommand("setblock 6 -60 0 minecraft:farmland[moisture=0]");
@@ -293,9 +307,10 @@ static void testBlockBehaviors(ServerProc& srv){
     c.sendChatCommand("setblock 7 -59 0 minecraft:fire");
     CHECK(waitBlockPos(c,7,-59,0,2000),"fire placement via /setblock (any state at 7,-59,0)");
     // doFireTick gamerule should affect fire tick
+    c.clearChatLines();
     c.sendChatCommand("gamerule doFireTick false");
-    c.pump(200);
-    CHECK(waitChat(c,"doFireTick"),"gamerule doFireTick toggle");
+    CHECK(waitChat(c, "Gamerule doFireTick is now false", 8000),
+          "gamerule doFireTick toggle");
     c.sendChatCommand("gamerule doFireTick true");
     // 17 TNT: place TNT and ignite via flint
     c.sendChatCommand("setblock 8 -60 0 minecraft:tnt[unstable=false]");

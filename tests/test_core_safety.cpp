@@ -76,17 +76,15 @@ void testByteBuffer() {
     check(in.varint() == -1, "signed VarInt -1 roundtrip");
     check(in.varlong() == -1, "signed VarLong -1 roundtrip");
 
-    expectThrow("VarInt rejects payload bits above bit 31", [] {
-        const std::vector<std::uint8_t> bytes{0xff, 0xff, 0xff, 0xff, 0x10};
-        ReadBuffer input(bytes);
-        (void)input.varint();
-    });
-    expectThrow("VarLong rejects payload bits above bit 63", [] {
-        const std::vector<std::uint8_t> bytes{
-            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x02};
-        ReadBuffer input(bytes);
-        (void)input.varlong();
-    });
+    const std::vector<std::uint8_t> javaVarIntHighPayload{0x80, 0x80, 0x80, 0x80, 0x10};
+    ReadBuffer javaVarIntInput(javaVarIntHighPayload);
+    check(javaVarIntInput.varint() == 0,
+          "VarInt fifth-byte high payload bits follow Java int shift truncation");
+    const std::vector<std::uint8_t> javaVarLongHighPayload{
+        0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02};
+    ReadBuffer javaVarLongInput(javaVarLongHighPayload);
+    check(javaVarLongInput.varlong() == 0,
+          "VarLong tenth-byte high payload bits follow Java long shift truncation");
 
     WriteBuffer position;
     position.position(-12345, -2048, 54321);

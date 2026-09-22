@@ -91,7 +91,7 @@ historical references do not imply that a file with the old path still exists.
 | 68 | `DatapackManager` | DONE | **PARTIAL** | `DatapackManager.hpp:12` | Live datapack `list`, `/function goal:entry`, `/schedule function`, and `/reload` feedback passed; enable/disable and every resource directory remain unverified. |
 | 69 | `FunctionEvaluator` `/function` | DONE | **UNVERIFIED** | `FunctionEvaluator.hpp:1` + `Commands.cpp:1243` | **plan13 §10 DONE:** `executeFunction` recursion 10 + `return` + `execute store result/success score` + `schedule function` `append/replace` + `tick()` from `GameServer::tickOnc... |
 | 70 | `/tag` `/team` `/bossbar` | DONE | **PARTIAL** | `Commands.cpp:872` + `Ids.hpp:129` | **plan32 DONE (30+ commands):** `/team add/remove/join/leave` + `Teams 0x67` + `/bossbar add/remove/set` + `BossBar 0x0A ADD/HEALTH` + `/tag add/remove/list`; plus **plan32 30+ ... |
-| 71 | VarInt/VarLong, big-endian, Position | DONE | **PARTIAL** | `ByteBuffer.hpp:1` | Real protocol login/config/play framing and command/entity VarInts passed; no independent boundary-vector oracle covers every VarLong, signed Position, or endian field. |
+| 71 | VarInt/VarLong, big-endian, Position | DONE | **PASS** | `ByteBuffer.hpp:1` + `Connection.hpp:146` + `PacketDecoder.hpp:83` | SHA-1-pinned official 1.21.4 bytecode confirms Java shift-truncation for terminal fifth/tenth-byte payloads, acceptance of non-minimal terminated forms, and rejection after consuming byte 6/11. `test_goal_network_bugs` passes 77/77 with literal signed endpoints, plain/encrypted frame alignment, every Position axis/range, and fixed-width endian read/write vectors; focused CTest passes 6/6. |
 | 72 | Handshake → Status/Login/Config/Play | DONE | **PASS** | `GameServer.cpp:1420` `handleHandshake` | Owned client completed status, offline login, configuration, and play for protocol 769; `DeclareCommands`, `UpdateTime`, Join Game, and non-empty play packets were observed. |
 | 73 | Compression/Encryption | DONE | **PARTIAL** | `Connection.hpp:29` | Real login/play session negotiated and used compression threshold `256`; encrypted online-mode/RSA/AES path was not exercised. |
 | 74 | Chat signing `PlayerChat 0x3B` | DONE | **PASS** | `GameServer.cpp:3046` + `net/Crypto.hpp` | `ChatMessageProcessor::verify RSA-SHA256` `ChatMessage 0x07 timestamp/salt/signature` + `MessageAck 0x04` + `shouldUsePlayerChat` → `PlayerChat 0x3B` when key valid else `System... |
@@ -112,7 +112,7 @@ historical references do not imply that a file with the old path still exists.
 | 89 | XP `SetExperience 0x61` | DONE | **PARTIAL** | `GameServer.cpp:372` `xpOrbsTick` | The owned live fixture decoded `/xp add @s 5 points` as progress `0.7142857313`, level `0`, total `5`; orb entity sizes, pickup, and kill drops remain unverified. |
 | 90 | Effects `EntityEffect 0x7D` | DONE | **PARTIAL** | `MobEffects.hpp:14` + `GameServer.cpp:2265` | The owned live fixture decoded `/effect give @s speed 5` as entity `1`, effect `1`, amplifier `0`, duration `100`, flags `6`; other effect modifiers, metadata, and removal semantics remain unverified. |
 
-Summary: **PASS=13, PARTIAL=39, TODO=0, UNVERIFIED=38** (90 rows). The source summary remains `DONE=90, PARTIAL=0, TODO=0`; that taxonomy is not current coverage.
+Summary: **PASS=14, PARTIAL=38, TODO=0, UNVERIFIED=38** (90 rows). The source summary remains `DONE=90, PARTIAL=0, TODO=0`; that taxonomy is not current coverage.
 
 ## Residual boundaries
 
@@ -130,5 +130,5 @@ Summary: **PASS=13, PARTIAL=39, TODO=0, UNVERIFIED=38** (90 rows). The source su
 
 - Matrix: `docs/MISSING_FEATURES_1_21_4.md`.
 - Gate semantics/counts: `docs/VERIFICATION.md`.
-- Publication/limitations: `docs/CURRENT_STATE.md` and `Handoff.md`.
+- Publication/limitations: `docs/CURRENT_STATE.md`.
 - Protected bytes/hashes: `docs/audit/goal-protected-manifest.txt`.

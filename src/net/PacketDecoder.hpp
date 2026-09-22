@@ -85,16 +85,20 @@ public:
         if (n == 0 || encBytes == nullptr)
             throw std::invalid_argument("encrypted VarInt buffer is empty");
         std::vector<std::uint8_t> plain;
-        plain.reserve(std::min<std::size_t>(n, 5));
-        for (std::size_t i = 0; i < n && i < 5; ++i) {
+        plain.reserve(std::min<std::size_t>(n, 6));
+        for (std::size_t i = 0; i < n && i < 6; ++i) {
             std::uint8_t byte = encBytes[i];
             dec.crypt(&byte, 1, &byte);
             plain.push_back(byte);
-            if ((byte & 0x80u) == 0) {
+            if (i < 5 && (byte & 0x80u) == 0) {
                 ReadBuffer in(plain);
                 const auto result = in.varint();
                 consumed = i + 1;
                 return result;
+            }
+            if (i == 5) {
+                consumed = i + 1;
+                throw std::runtime_error("encrypted VarInt too large");
             }
         }
         consumed = plain.size();

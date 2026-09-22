@@ -10,13 +10,16 @@
 
 ## 0. Current handoff
 
-`Handoff.md` is the current-work entrypoint for the uncommitted settings/security/authority/lifecycle hardening pass. It contains the exact final gate results, adversarial review scores, declared limitations, required agent-resume rule, and next-session procedure. This tracker remains the authoritative historical/current measurement record; update both files when a closed verification result changes.
+This tracked document is the canonical current-state entrypoint. It records the
+verification baseline, active compatibility boundaries, and publication status;
+`docs/VERIFICATION.md` holds gate definitions and reproducible evidence. Local
+handoff notes are not part of the public documentation set.
 
 ## 1. Snapshot
 
 | field | value |
 |---|---|
-| `updated` | `2026-09-19` |
+| `updated` | `2026-09-23` |
 | `implementation_baseline` | integrated `main` HEAD `335fca5` from clean checkpoint `65a7c69` |
 | `implementation_baseline_short` | `335fca5` (`65a7c69` + plan53/54 merges and fixes) |
 | `documentation_commit` | final documentation commit sequence after source integration `335fca5` |
@@ -31,7 +34,7 @@
 | `research_viewpoints` | `16` current viewpoints; old `13` wording is historical |
 | `taxonomy_snapshot` | MISSING `#1–#90`; historical matrix counts `DONE=90, PARTIAL=0, TODO=0` |
 | `strict_assessment_1` | `78 gaps`; `HISTORICAL` archive label, not a current aggregate |
-| `next_plan` | no new implementation plan authorized by this cleanup; future work must preserve the partial ledger and declared compatibility boundaries |
+| `next_plan` | close current PR #1 gates; the local plan55 protocol-primitive follow-up is implemented, while plan56 server.properties audit research remains to be implemented and verified |
 
 The previous baseline was the plan50 runtime follow-up after the plan49 implementation integration and cleanup commit
 `db12df96093a0869e958f62b11f9a9cd68ba3ef1` and safety commit
@@ -70,6 +73,20 @@ The live, focused, stress, soak, benchmark, and CTest runs prove the named paths
 only; they do not close the accepted 2-hour/24-hour soak, arbitrary JVM-mod
 compatibility, full worldgen call-order/NBT parity, or retained real-client
 artifact boundaries.
+
+## 1B. Protocol-primitive follow-up (2026-09-23)
+
+| gate | result | evidence / boundary |
+|---|---|---|
+| Official primitive oracle | `INSPECTED` | SHA-1-pinned Mojang 1.21.4 server artifact; VarInt, VarLong, and packed BlockPos decoder/packing bytecode reviewed, not executed |
+| Primitive and stream regressions | `PASS` | `test_goal_network_bugs` 77/77; independent signed endpoints, non-minimal forms, Java terminal-payload truncation, sixth/eleventh-byte rejection/consumption, plaintext/encrypted stream alignment, big-endian fixed-width fields, and packed Position axis limits |
+| Related CTest targets | `6/6 PASS` | `native`, `spec_wire`, `jvm_native_bridge`, `core_safety`, `goal_network_bugs`, and `wire_full` |
+| Smoke regression after tick-based chat pacing fix | `1/1 PASS` | `ctest --test-dir build -R smoke80 --output-on-failure --timeout 450`; 180.76 seconds. The preceding PR Actions run for SHA `185e91b` failed this ordinary test with two gamerule feedback timeouts; those assertions remain and now wait for 120 observed server ticks before the reset command. |
+| PR Actions gate | `REQUIRED / SHA-SPECIFIC` | Query PR #1 checks for the exact current head SHA; evidence from an earlier commit does not transfer to later commits. |
+
+MISSING #71's row-specific evidence is now `PASS` in the 90-row coverage ledger
+(`14 PASS`, `38 PARTIAL`, `38 UNVERIFIED`). This does not remove the independent
+publication boundaries below or imply universal protocol parity.
 
 ## 2. Prior plan48 and cleanup record
 
@@ -326,7 +343,7 @@ targeted issues. The following rules remain in force for future work:
 ## 9. Active bounded goal evidence
 
 The goal-specific audit files under `docs/audit/` record a fixed dirty-tree
-baseline and protected manifest, a 90-row coverage ledger (`13 PASS`, `39 PARTIAL`,
+baseline and protected manifest, a 90-row coverage ledger (`14 PASS`, `38 PARTIAL`,
 `38 UNVERIFIED`), three owned real-client fixtures, real command/entity/menu transcripts, and 23 reproducible network/gameplay defects
 with focused regression tests. The adversarial review is now `P0=0, P1=0, P2=0,
 P3=0`; source-order guards cover the security fixes where no authenticated client

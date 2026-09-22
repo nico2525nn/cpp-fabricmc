@@ -12,7 +12,7 @@ exists while an explicit vanilla or state-transition contract is still missing.
 | item | current evidence |
 |---|---|
 | protocol target | Java 1.21.4, protocol 769, DataVersion 4189 |
-| feature ledger | 90 rows: `PASS=13`, `PARTIAL=39`, `UNVERIFIED=38` |
+| feature ledger | 90 rows: `PASS=14`, `PARTIAL=38`, `UNVERIFIED=38` |
 | fixed eligible count at this HEAD | `src/tests/tools`: 308 files, 101,014 physical lines; the historical baseline snapshot was 302 files, 100,991 lines |
 | scoped source diff | `main...HEAD` under `src/`: 2,516 deletions and 2,250 additions, net reduction 266 lines |
 | fixed local defects | `GB-G01..GB-G13` plus `NET-01..NET-10`; see the two bug ledgers |
@@ -29,7 +29,7 @@ rows below.
 
 | row | status | real entry to run | missing assertion/artifact |
 |---|---|---|---|
-| #71 VarInt/VarLong/Position | PARTIAL | `test_server_full.py --suites=conn,chat` and `test_goal_live_matrix.py` | Independent boundary vectors for signed VarLong, packed Position, overflow rejection, and endian fields |
+| #71 VarInt/VarLong/Position | PASS (focused) | `test_goal_network_bugs`, `test_core_safety`, `test_spec_wire`, `test_wire_full` | Closed by independent literal endpoint/permissiveness vectors, plain/encrypted frame-consumption checks, all Position axis limits, and fixed-width endian read/write assertions; the branch's full Actions gate remains a separate PR requirement |
 | #73 compression/encryption | PARTIAL | owned login fixture with online-mode/RSA/AES configuration | Cipher negotiation, encrypted frame oracle, and failure/cleanup transcript; current login only proves compression |
 | #76 KeepAlive/Cookie/ResourcePack | PARTIAL | `test_server_full.py --suites=conn,chat` plus restart fixture | Cookie file round-trip, timeout at the configured deadline, and resource-pack result policy |
 | #77 DeclareCommands | PASS (presence only) | `test_goal_live_matrix.py` login capture | Decode the complete Brigadier tree, redirects, parser IDs, and suggestion metadata rather than only packet presence |

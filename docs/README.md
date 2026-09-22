@@ -169,8 +169,8 @@ input was deleted to manufacture a reduction.
 ### Active bounded goal run
 
 The current goal evidence is indexed in [the audit directory](audit/README.md).
-It records a fixed dirty-tree baseline, a 90-row feature ledger (`12 PASS`,
-`25 PARTIAL`, `53 UNVERIFIED`), two real launches, a real command/entity
+It records a fixed dirty-tree baseline, a 90-row feature ledger (`14 PASS`,
+`38 PARTIAL`, `38 UNVERIFIED`), three real launches, a real command/entity
 transcript, 23 reproducible network and
 gameplay fixes, an official Mojang bug oracle, adversarial security guards, and
 safe cleanup measurements. The accepted scope still excludes arbitrary Fabric
