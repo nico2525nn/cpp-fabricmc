@@ -14,7 +14,7 @@
 - 今回のコミットは `tests/test_goal_live_features.py` と、`docs/audit/goal-feature-ledger.md`、`docs/audit/goal-followup-evidence-ledger.md` の3ファイル。既存のowned live fixtureで、`/gi`のsuggestions packet（transaction/start/length/match/tooltip）、`/effect give @s speed 5`（EntityEffectのentity/effect/amplifier/duration/flags）、`/xp add @s 5 points`（progress/level/total）を厳密にdecode/assertした。
 - 台帳の主張は保守的に `PASS=13 / PARTIAL=39 / UNVERIFIED=38` のまま。#59、#89、#90は観測したフィールドだけを記録し、全引数候補、XP orb、全effect/removal semanticsは未証明としてPARTIALを維持する。
 - ローカルの `py_compile`、feature live fixture、remaining live fixtureはPASSし、fixtureのowned server cleanupも確認済み。scratchログはリポジトリへ追加していない。
-- GitHub Actionsの直近確認時は run `35762003706` が `in_progress`。その前の試行ではSmoke80の起動競合/timeoutとremaining fixtureの一時的なchat raceで失敗したため、再実行後の最終 `success` を確認するまでCI PASSと記載しない。確認コマンドは `gh run view 35762003706 --json status,conclusion,jobs`。
+- HEADのpushでGitHub Actionsが新規発火している。実行IDはpushごとに変わるため固定値を記録せず、`gh run list --branch chore/goal-cleanup-next --limit 1 --json databaseId,headSha,status,conclusion` でHEAD `af8cb09a`に対応するrunを特定する。その前の試行ではSmoke80の起動競合/timeoutとremaining fixtureの一時的なchat raceで失敗したため、最新runの最終 `success` を確認するまでCI PASSと記載しない。
 - Actionsが失敗した場合でも、テストのassertを弱めて通してはいけない。失敗ログを保存し、必要なら同じrunを一度だけ再実行し、startup raceか実装回帰かを分離する。
 - ユーザー指定により、この引き継ぎ以降はSwarmを使わず、サブエージェントは原則2体程度まで。今回の追補では新規サブエージェントを起動していない。
 - 10%/20%削減や1万行削減の数字合わせのため、feature・protected test・fixture・assertion・evidenceを削除しない。現在もその目標は未達で、callsite-zeroの公開APIはABI審査なしに削除しない。
@@ -221,7 +221,7 @@
 | git diff --check | `RC=0` |
 | latest goal-live feature fixture | local `PASS`（suggestions/effect/XPのrow-specific assertionsを含む） |
 | latest goal-live remaining fixture | local `PASS`（既存のremaining assertions） |
-| PR Actions run `35762003706` | 追補作成時 `in_progress`、最終PASS未確認 |
+| PR Actions for current HEAD | 最新runを `gh run list` で特定すること。追補作成時はpending/in progress、最終PASS未確認 |
 
 補足:
 
@@ -311,7 +311,7 @@ pgrep -a -f 'cppfm --por[t]' || true
 - `docs/audit/goal-followup-evidence-ledger.md`
 
 CIはpush、pull request、manual dispatchでconfigure/build/focused gates/non-nightly CTestをtimeout付きで実行する。
-今回のHEADはPR #1へpush済みだが、run `35762003706` は追補作成時点で実行中であり、成功結果が出るまで公開済みPASSとは扱わない。
+今回のHEADはPR #1へpush済みだが、対応するActions runは追補作成時点でpending/in progressであり、成功結果が出るまで公開済みPASSとは扱わない。
 
 ## 11. 次に再開するエージェントへの手順
 
@@ -319,7 +319,7 @@ CIはpush、pull request、manual dispatchでconfigure/build/focused gates/non-n
 
 1. `AGENTS.md`、このHandoff、`docs/CURRENT_STATE.md`、`docs/VERIFICATION.md`を読む。
 2. `git status --short --branch`、`git log --oneline --decorate -5`、`gh pr view 1`を確認する。
-3. Actionsを `gh run view 35762003706 --json status,conclusion,jobs` で確認し、失敗ならログの原因を分離する。
+3. `gh run list --branch chore/goal-cleanup-next --limit 1 --json databaseId,headSha,status,conclusion` でcurrent HEADのActions runを特定し、`gh run view <databaseId> --json status,conclusion,jobs` で確認する。失敗ならログの原因を分離する。
 4. sourceを変更した場合は、focused test → `test_native` → 必要なintegration/CTestの順で確認する。
 5. 数値、Status、制限を変えたらCURRENT_STATE、MISSING、README/docs、VERIFICATION、auditを同期する。
 6. 長いコマンドは必ず `timeout --foreground --kill-after=...` で包む。Smoke80など親子processを作るものは
