@@ -40,3 +40,36 @@ dirty-tree changes as eligible cleanup.
 
 No build or test was run for this documentation-only update. The PR's existing
 GitHub Actions run remains the authoritative verification for its code changes.
+
+## Continuation verification
+
+The follow-up implementation pass added only callsite-audited or behavior-neutral
+refactors. It removed the unreachable Redstone behavior registry, unused core
+serialization and packet conversion wrappers, unreferenced game/JVM helpers,
+legacy combat broadcast wrappers, unused item trim readers, dead world aliases,
+and the uncalled terrain helpers plus an unreachable density branch. It also
+centralized menu layouts and dimension-store selection without deleting feature
+paths.
+
+Against `origin/main`, the branch currently contains 1,253 source deletions and
+90 source insertions (net source reduction: 1,163 lines). The repository-wide
+10,000-line target remains deliberately unmet; no protected feature, test,
+fixture, generated data, evidence, or virtual/plugin ABI surface was deleted to
+inflate the count.
+
+Focused post-change checks passed locally:
+
+- `test_gameplay_full`: 806/806
+- `test_native`: all checks passed
+- `test_menu_logic`: 41/41
+- `test_redstone_engine_full`: 42/42
+- `test_core_safety`: 45/45
+- `test_spec_wire`: 417/417
+- `test_goal_network_bugs`: 36/36
+- `test_fuzz`: 25/25
+- `test_jvm_native_bridge` and `test_jvm_handles`: passed
+
+These local results supplement, rather than replace, the required GitHub
+Actions result for the pull request. The remaining public callsite-zero methods
+are ABI/source-compatibility candidates and are intentionally documented as
+conditional rather than removed without an API decision.
