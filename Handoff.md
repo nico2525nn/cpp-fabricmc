@@ -1,8 +1,23 @@
 # cpp-fabricmc — 現在作業 Handoff
 
-> 更新: 2026-09-20 JST
+> 更新: 2026-09-22 JST
 > 対象: Minecraft Java Edition 1.21.4 / Fabric-compatible C++ server / protocol 769
 > 用途: 次のエージェントが、過去の議論・実装・検証・未達境界を混同せず引き継ぐための内部文書。
+
+## 最新セッション追補（2026-09-22）
+
+この節を最初に確認すること。旧節には過去時点の測定値が残っているため、状態判断はこの節、
+`docs/CURRENT_STATE.md`、GitHub Actionsの実行結果を優先する。
+
+- 作業ブランチは `chore/goal-cleanup-next`、HEADは `d875bd657c4eb3306d7145e2306e6311a8ba7b1a`（`test: assert live completion and gameplay fields`）。`origin/chore/goal-cleanup-next`と一致し、確認時の作業ツリーはclean。
+- GitHub PRは [#1](https://github.com/nico2525nn/cpp-fabricmc/pull/1)（base `main`）でOPEN。実装・テスト・文書の変更はこのPRへ積み、`main`へ直接pushしない。
+- 今回のコミットは `tests/test_goal_live_features.py` と、`docs/audit/goal-feature-ledger.md`、`docs/audit/goal-followup-evidence-ledger.md` の3ファイル。既存のowned live fixtureで、`/gi`のsuggestions packet（transaction/start/length/match/tooltip）、`/effect give @s speed 5`（EntityEffectのentity/effect/amplifier/duration/flags）、`/xp add @s 5 points`（progress/level/total）を厳密にdecode/assertした。
+- 台帳の主張は保守的に `PASS=13 / PARTIAL=39 / UNVERIFIED=38` のまま。#59、#89、#90は観測したフィールドだけを記録し、全引数候補、XP orb、全effect/removal semanticsは未証明としてPARTIALを維持する。
+- ローカルの `py_compile`、feature live fixture、remaining live fixtureはPASSし、fixtureのowned server cleanupも確認済み。scratchログはリポジトリへ追加していない。
+- GitHub Actionsの直近確認時は run `35762003706` が `in_progress`。その前の試行ではSmoke80の起動競合/timeoutとremaining fixtureの一時的なchat raceで失敗したため、再実行後の最終 `success` を確認するまでCI PASSと記載しない。確認コマンドは `gh run view 35762003706 --json status,conclusion,jobs`。
+- Actionsが失敗した場合でも、テストのassertを弱めて通してはいけない。失敗ログを保存し、必要なら同じrunを一度だけ再実行し、startup raceか実装回帰かを分離する。
+- ユーザー指定により、この引き継ぎ以降はSwarmを使わず、サブエージェントは原則2体程度まで。今回の追補では新規サブエージェントを起動していない。
+- 10%/20%削減や1万行削減の数字合わせのため、feature・protected test・fixture・assertion・evidenceを削除しない。現在もその目標は未達で、callsite-zeroの公開APIはABI審査なしに削除しない。
 
 この文書は公開READMEではない。Plan番号、サブエージェント、CodexのGoal、未コミット差分、
 検証の限界などをここに記録する。公開利用者向けの説明はREADME.mdとdocs/README.mdを使う。
@@ -23,23 +38,16 @@
 |---|---|
 | 対象 | Fabric 1.21.4 / DataVersion 4189 |
 | protocol | 769 |
-| branch | `main` |
-| 現在のHEAD | `b786093f84791e6381665f9e6aa86d4823f7a131` — `docs: record final verified gates` |
-| origin/main | 現在の確認ではHEADと同じ |
+| branch | `chore/goal-cleanup-next` |
+| 現在のHEAD | `d875bd657c4eb3306d7145e2306e6311a8ba7b1a` — `test: assert live completion and gameplay fields` |
+| origin branch | `origin/chore/goal-cleanup-next` とHEADが一致（確認時点） |
 | tracker上の実装baseline | `335fca5`（plan53/54の統合基準） |
 | JDK | OpenJDK 21。JNI/JVM検出済みのビルド環境 |
 | publication status | `BLOCKED` |
-| settings/security/authority/lifecycle pass | 実装・検証済み。ただし未コミット |
+| settings/security/authority/lifecycle pass | 実装・検証済み。関連コミットはPR #1へpush済み |
 
-現在の作業ツリーは意図的にdirtyである。直近の読み取り確認では、tracked fileに多数の変更があり、
-`git diff --stat` は52ファイル、`+2051/-855`行。未追跡の主な項目は次の3つ。
-
-- `.github/`
-- `docs/audit/adversarial-review-2026-09-19.md`
-- `tests/test_settings_matrix.cpp`
-
-`Handoff.md`、ソース、テスト、docs、CIの変更を、ユーザーの許可なく `git reset --hard`、
-`git checkout --`、`git clean`、広範な削除で失ってはならない。コミットとPushはこのHandoff更新時点では未実施。
+確認時点の作業ツリーはclean。既存のPR差分を分類せずに `git reset --hard`、`git checkout --`、
+`git clean`、広範な削除を実行してはならない。次のHandoff更新も作業ブランチでcommitし、PRのActionsを通す。
 
 ## 2. 結論を先に
 
@@ -174,8 +182,8 @@
 
 ## 6. 最終検証証跡
 
-以下は2026-09-19に記録されたcurrent working-tree evidence。Handoffを書き直しただけで、ここに列挙した
-テストを再実行したわけではない。詳細は`docs/CURRENT_STATE.md`。
+以下は過去に記録されたcurrent working-tree evidenceであり、ここに列挙した全テストを今回再実行したという意味ではない。
+今回の2026-09-22 live fixture結果とActions状態は先頭の「最新セッション追補」を正とする。詳細は`docs/CURRENT_STATE.md`。
 
 | gate | 記録された結果 |
 |---|---|
@@ -211,6 +219,9 @@
 | bot smoke | ALL PASS、20.82秒 |
 | Python harness compile | `RC=0` |
 | git diff --check | `RC=0` |
+| latest goal-live feature fixture | local `PASS`（suggestions/effect/XPのrow-specific assertionsを含む） |
+| latest goal-live remaining fixture | local `PASS`（既存のremaining assertions） |
+| PR Actions run `35762003706` | 追補作成時 `in_progress`、最終PASS未確認 |
 
 補足:
 
@@ -295,29 +306,32 @@ pgrep -a -f 'cppfm --por[t]' || true
 - `docs/audit/adversarial-review-2026-09-19.md`
 - `.github/workflows/ci.yml`
 - `tests/test_settings_matrix.cpp`
+- `tests/test_goal_live_features.py`
+- `docs/audit/goal-feature-ledger.md`
+- `docs/audit/goal-followup-evidence-ledger.md`
 
 CIはpush、pull request、manual dispatchでconfigure/build/focused gates/non-nightly CTestをtimeout付きで実行する。
-CIの存在は、現時点で未commit・未pushの作業ツリーを公開済みとするものではない。
+今回のHEADはPR #1へpush済みだが、run `35762003706` は追補作成時点で実行中であり、成功結果が出るまで公開済みPASSとは扱わない。
 
 ## 11. 次に再開するエージェントへの手順
 
-新しい依頼が来るまで、上記の証跡を完了扱いに変更したり、高コストgateを機械的に再実行したりしない。
-作業を再開する場合は次の順序を守る。
+作業を再開する場合は、まず未確定のActions結果を確認し、次の順序を守る。
 
 1. `AGENTS.md`、このHandoff、`docs/CURRENT_STATE.md`、`docs/VERIFICATION.md`を読む。
-2. `git status --short`、`git log --oneline --decorate -5`、必要な範囲の`git diff`を確認する。
-3. 既存dirty diffを分類し、ユーザー変更と新規変更を混ぜない。reset/checkout/cleanは禁止。
+2. `git status --short --branch`、`git log --oneline --decorate -5`、`gh pr view 1`を確認する。
+3. Actionsを `gh run view 35762003706 --json status,conclusion,jobs` で確認し、失敗ならログの原因を分離する。
 4. sourceを変更した場合は、focused test → `test_native` → 必要なintegration/CTestの順で確認する。
 5. 数値、Status、制限を変えたらCURRENT_STATE、MISSING、README/docs、VERIFICATION、auditを同期する。
 6. 長いコマンドは必ず `timeout --foreground --kill-after=...` で包む。Smoke80など親子processを作るものは
    親だけkillしない。
-7. commit、push、PR作成はユーザーの明示的な依頼がある場合だけ行う。
+7. すべての変更は作業ブランチでcommitし、PR #1へpushしてActions成功を確認する。`main`へ直接pushしない。
 
 ### サブエージェントを使う場合
 
 - 同じworktreeへ重複担当を置かない。並列実装はdisjointな/tmp worktreeを使い、完了後は正確なpathだけ整理する。
 - research agentはWeb/公式資料の確認と`plan/planX.md`だけ。研究完了前にimplementationを始めない。
 - plan番号は `ls plan/plan*.md | sort -V | tail -1` で確認し、`plan/`を`git add -f`しない。
+- ユーザー指定によりSwarmは使わず、サブエージェントは原則2体程度までにする。モデルを明示指定しない。
 - UsageLimitでresumeが失敗したら、同じagent IDへ`send_input`を送り、duplicate agentを起動しない。
 - 明示的にclosed/interruptedならresumeを先に試し、それ以外は既存agentへ直接`send_input`する。
 
@@ -341,7 +355,8 @@ CIの存在は、現時点で未commit・未pushの作業ツリーを公開済�
 - ユーザーは過去に「2本の敵対的レビューを並列で走らせ、4〜5ループする」方針を指定した。
   以前の一部agent起動は報告なし・停止・判定不能で、独立した合格証跡として扱えない。
   現在の根拠は、実ファイル差分、記録されたtest output、`docs/audit/adversarial-review-2026-09-19.md`。
-- このHandoffを書き直したセッションでは、ファイルの読み取り・整理以外のbuild/test/commit/pushは行っていない。
+- 直近セッションでは、owned live fixtureのfocused実行、テスト/台帳のcommit `d875bd65`、PRブランチへのpushを実施した。
+  Actionsの最終結果はこのHandoff追補時点で未確定なので、成功と記録しない。
 - account名、token、Microsoft認証情報、temporary local screenshot/logはHandoffに記録しない。
 
 ## 14. 最後に
