@@ -145,31 +145,12 @@ public:
 private:
     std::vector<std::uint8_t> readFrameUntil(
         const std::chrono::steady_clock::time_point* deadline) {
-        std::int32_t len = 0;
-        if (!encrypted_) {
-            len = readVarintStream(5, deadline);
-        } else {
-            // varint bytes are encrypted: read/decrypt one at a time
-            std::uint32_t ulen = 0;
-            for (int i = 0; i < 5; ++i) {
-                std::uint8_t e[1];
-                readExact(e, 1, deadline);
-                decCtx_->crypt(e, 1, e);
-                ulen |= static_cast<std::uint32_t>(e[0] & 0x7F) << (i * 7);
-                if ((e[0] & 0x80u) == 0) {
-                    len = static_cast<std::int32_t>(ulen);
-                    break;
-                }
-                if (i == 4) {
-                    // Vanilla reads the sixth encrypted byte before rejecting
-                    // an over-width VarInt; advance the stateful CFB8 stream too.
-                    std::uint8_t extra[1];
-                    readExact(extra, 1, deadline);
-                    decCtx_->crypt(extra, 1, extra);
-                    throw std::runtime_error("varint overflow");
-                }
-            }
-        }
+        const std::int32_t len = PacketDecoder::readVarint21([&] {
+            std::uint8_t byte;
+            readExact(&byte, 1, deadline);
+            if (encrypted_) decCtx_->crypt(&byte, 1, &byte);
+            return byte;
+        });
         if (len <= 0 || static_cast<std::uint32_t>(len) > kMaxFrame)
             throw PacketDecoder::OversizeError(
                 "frame length out of range: " + std::to_string(len));
@@ -256,21 +237,6 @@ private:
     bool floodBudget_ = false;
     RateLimiter bw_;
 
-    std::int32_t readVarintStream(int maxBytes,
-                                  const std::chrono::steady_clock::time_point* deadline = nullptr) {
-        if (maxBytes <= 0 || maxBytes > 5) throw std::invalid_argument("invalid VarInt limit");
-        std::uint32_t result = 0;
-        for (int i = 0; i < maxBytes; ++i) {
-            std::uint8_t b;
-            readExact(&b, 1, deadline);
-            result |= static_cast<std::uint32_t>(b & 0x7F) << (i * 7);
-            if ((b & 0x80u) == 0) return static_cast<std::int32_t>(result);
-        }
-        // Match the vanilla decoder's one-byte-over-width consumption.
-        std::uint8_t extra;
-        readExact(&extra, 1, deadline);
-        throw std::runtime_error("varint overflow in frame length");
-    }
     void readExact(void* dst, std::size_t n,
                    const std::chrono::steady_clock::time_point* deadline = nullptr) {
         if (n != 0 && dst == nullptr) throw std::invalid_argument("null receive buffer");

@@ -20,6 +20,21 @@ public:
         explicit OversizeError(const std::string& w) : std::runtime_error(w) {}
     };
 
+    // The outer packet frame uses the stricter Varint21 encoding, not the
+    // general five-byte VarInt used by fields inside a packet. Vanilla rejects
+    // a third continuation byte immediately after consuming that 3-byte prefix.
+    template <typename ReadByte>
+    static std::int32_t readVarint21(ReadByte&& readByte) {
+        std::uint32_t result = 0;
+        for (unsigned int i = 0; i < 3; ++i) {
+            const auto byte = static_cast<std::uint8_t>(readByte());
+            result |= static_cast<std::uint32_t>(byte & 0x7Fu) << (i * 7);
+            if ((byte & 0x80u) == 0)
+                return static_cast<std::int32_t>(result);
+        }
+        throw OversizeError("frame length VarInt exceeds 21 bits");
+    }
+
     // Decode a raw outer frame (length varint already stripped) ? Actually frame_ is the content after outer length varint (and after
     // decryption). If compressionThreshold <0, frame is id+payload directly. Otherwise frame = varint dataLength + (compressed|raw) body.
     static std::vector<std::uint8_t> decodeFrame(const std::vector<std::uint8_t>& frame,
@@ -70,7 +85,7 @@ public:
         if (dec) dec->crypt(work.data(), work.size(), work.data());
 
         ReadBuffer in(work);
-        const std::int32_t len = in.varint();
+        const std::int32_t len = readVarint21([&in] { return in.u8(); });
         if (len <= 0 || static_cast<std::uint32_t>(len) > kMaxFrame)
             throw OversizeError("outer frame length out of range");
         if (static_cast<std::size_t>(len) != in.remaining())
@@ -79,7 +94,7 @@ public:
         return decodeFrame(frame, compressionThreshold);
     }
 
-    // Decrypt helper for streaming varint (mirrors Connection::readFrame encrypted varint)
+    // Decrypt helper for a generic protocol VarInt field.
     static std::int32_t readVarintEncrypted(const std::uint8_t* encBytes, std::size_t n,
                                             crypto::AesCfb8& dec, std::size_t& consumed) {
         if (n == 0 || encBytes == nullptr)

@@ -78,8 +78,8 @@ artifact boundaries.
 
 | gate | result | evidence / boundary |
 |---|---|---|
-| Official primitive oracle | `INSPECTED` | SHA-1-pinned Mojang 1.21.4 server artifact; VarInt, VarLong, and packed BlockPos decoder/packing bytecode reviewed, not executed |
-| Primitive and stream regressions | `PASS` | `test_goal_network_bugs` 77/77; independent signed endpoints, non-minimal forms, Java terminal-payload truncation, sixth/eleventh-byte rejection/consumption, plaintext/encrypted stream alignment, big-endian fixed-width fields, and packed Position axis limits |
+| Official primitive oracle | `INSPECTED` | SHA-1-pinned Mojang 1.21.4 server artifact; VarInt, VarLong, Varint21 frame splitter, and packed BlockPos decoder/packing bytecode reviewed, not executed |
+| Primitive and stream regressions | `PASS` | `test_goal_network_bugs` 79/79; independent signed endpoints, non-minimal forms, Java terminal-payload truncation, generic sixth/eleventh-byte rejection/consumption, strict three-byte Varint21 frame rejection, plaintext/encrypted stream alignment, big-endian fixed-width fields, and packed Position axis limits |
 | Related CTest targets | `6/6 PASS` | `native`, `spec_wire`, `jvm_native_bridge`, `core_safety`, `goal_network_bugs`, and `wire_full` |
 | Smoke regression after tick-based chat pacing fix | `1/1 PASS` | `ctest --test-dir build -R smoke80 --output-on-failure --timeout 450`; 180.76 seconds. The preceding PR Actions run for SHA `185e91b` failed this ordinary test with two gamerule feedback timeouts; those assertions remain and now wait for 120 observed server ticks before the reset command. |
 | PR Actions gate | `REQUIRED / SHA-SPECIFIC` | Query PR #1 checks for the exact current head SHA; evidence from an earlier commit does not transfer to later commits. |

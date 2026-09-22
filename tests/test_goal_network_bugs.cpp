@@ -225,6 +225,24 @@ void testCompressionAndFraming() {
     check(PacketDecoder::decodeOuter(belowThreshold, 5) == below,
           "uncompressed boundary round-trips through the shipped decoder");
 
+    const std::vector<std::uint8_t> continuedFramePrefix{0x80, 0x80, 0x80, 0x01};
+    ReadBuffer framePrefix(continuedFramePrefix);
+    bool framePrefixRejected = false;
+    try {
+        (void)PacketDecoder::readVarint21([&framePrefix] { return framePrefix.u8(); });
+    } catch (const PacketDecoder::OversizeError&) {
+        framePrefixRejected = true;
+    }
+    check(framePrefixRejected && framePrefix.off == 3 && framePrefix.u8() == 0x01,
+          "Varint21 rejects after exactly three continued prefix bytes");
+    bool outerPrefixRejected = false;
+    try {
+        (void)PacketDecoder::decodeOuter(continuedFramePrefix, -1);
+    } catch (const PacketDecoder::OversizeError&) {
+        outerPrefixRejected = true;
+    }
+    check(outerPrefixRejected, "complete outer decoder uses the strict Varint21 prefix contract");
+
     throws("empty compressed packet body is rejected", [] {
         (void)PacketDecoder::decodeFrame(std::vector<std::uint8_t>{0x00}, 256);
     });
@@ -303,7 +321,7 @@ void testEncryptionAndLifecycle() {
         (void)::send(nonMinimalSockets[1], frameBytes, sizeof(frameBytes), MSG_NOSIGNAL);
         const auto frame = connection.readFrameWithTimeout(std::chrono::milliseconds(100));
         check(frame == std::vector<std::uint8_t>{0x42},
-              "stream frame reader accepts vanilla non-minimal VarInt length");
+              "stream frame reader accepts a non-minimal terminated Varint21 length");
         connection.close();
         ::close(nonMinimalSockets[1]);
     }
@@ -314,19 +332,19 @@ void testEncryptionAndLifecycle() {
     if (overWidthSockets[0] >= 0) {
         Connection connection(overWidthSockets[0]);
         const std::uint8_t frameBytes[] = {
-            0x80, 0x80, 0x80, 0x80, 0x80, 0x00, // over-width frame length
+            0x80, 0x80, 0x80,                    // invalid Varint21 frame prefix
             0x01, 0x42};                         // next valid one-byte frame
         (void)::send(overWidthSockets[1], frameBytes, sizeof(frameBytes), MSG_NOSIGNAL);
         bool rejected = false;
         try {
             (void)connection.readFrameWithTimeout(std::chrono::milliseconds(100));
-        } catch (const std::runtime_error&) {
+        } catch (const PacketDecoder::OversizeError&) {
             rejected = true;
         }
-        check(rejected, "stream rejects a sixth-byte VarInt continuation");
+        check(rejected, "stream rejects a third continuation in the Varint21 frame prefix");
         const auto frame = connection.readFrameWithTimeout(std::chrono::milliseconds(100));
         check(frame == std::vector<std::uint8_t>{0x42},
-              "stream consumes sixth byte before rejecting over-width VarInt");
+              "stream consumes exactly the invalid three-byte prefix before session-level disconnect");
         connection.close();
         ::close(overWidthSockets[1]);
     }
@@ -341,20 +359,20 @@ void testEncryptionAndLifecycle() {
         crypto::AesCfb8 peerEncoder;
         peerEncoder.initEncrypt(secret);
         std::vector<std::uint8_t> encryptedFrames{
-            0x80, 0x80, 0x80, 0x80, 0x80, 0x00, // over-width frame length
+            0x80, 0x80, 0x80,                    // invalid Varint21 frame prefix
             0x01, 0x42};                         // next valid one-byte frame
         peerEncoder.crypt(encryptedFrames.data(), encryptedFrames.size(), encryptedFrames.data());
         (void)::send(encryptedSockets[1], encryptedFrames.data(), encryptedFrames.size(), MSG_NOSIGNAL);
         bool rejected = false;
         try {
             (void)connection.readFrameWithTimeout(std::chrono::milliseconds(100));
-        } catch (const std::runtime_error&) {
+        } catch (const PacketDecoder::OversizeError&) {
             rejected = true;
         }
-        check(rejected, "encrypted stream rejects a sixth-byte VarInt continuation");
+        check(rejected, "encrypted stream rejects a third continuation in the Varint21 frame prefix");
         const auto frame = connection.readFrameWithTimeout(std::chrono::milliseconds(100));
         check(frame == std::vector<std::uint8_t>{0x42},
-              "encrypted stream consumes sixth byte and preserves CFB8 alignment");
+              "encrypted stream consumes exactly three prefix bytes and preserves CFB8 alignment");
         connection.close();
         ::close(encryptedSockets[1]);
     }
