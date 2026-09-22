@@ -25,7 +25,7 @@ std::int64_t redstoneTick(const std::int64_t* plain,
 
 
 
-sRedstoneEngine::Comp RedstoneEngine::classify(std::uint16_t state) {
+RedstoneEngine::Comp RedstoneEngine::classify(std::uint16_t state) {
     const gen::BlockDef* b = gen::blockByState(state);
     if (!b) return Comp::None;
     auto prop = [&](std::string_view key) -> std::string {
