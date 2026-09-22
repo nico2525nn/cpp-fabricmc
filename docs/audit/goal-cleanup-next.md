@@ -51,8 +51,8 @@ and the uncalled terrain helpers plus an unreachable density branch. It also
 centralized menu layouts and dimension-store selection without deleting feature
 paths.
 
-Against `origin/main`, the branch currently contains 1,253 source deletions and
-90 source insertions (net source reduction: 1,163 lines). The repository-wide
+Against `origin/main`, the branch currently contains 1,275 source deletions and
+89 source insertions (net source reduction: 1,186 lines). The repository-wide
 10,000-line target remains deliberately unmet; no protected feature, test,
 fixture, generated data, evidence, or virtual/plugin ABI surface was deleted to
 inflate the count.
