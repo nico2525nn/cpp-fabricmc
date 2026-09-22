@@ -623,21 +623,6 @@ void GameServer::broadcastMobSpawn(const MobEntity& mob) {
                                          pl::sc::UpdateAttributes, ab);
     }
 }
-void GameServer::broadcastSetPassengersEmpty(std::int32_t vehicleId) {
-    std::int8_t dimension = 0;
-    {
-        const auto mobs = mobsSnapshot();
-        for (const auto& m : mobs) {
-            if (!m) continue;
-            std::lock_guard entityLock(*m->stateMtx);
-            if (m->entityId == vehicleId) {
-                dimension = m->dimension;
-                break;
-            }
-        }
-    }
-    broadcastSetPassengersEmptyFor(dimension, vehicleId);
-}
 void GameServer::broadcastSetPassengersEmptyFor(std::int8_t dimension,
                                                 std::int32_t vehicleId) {
     WriteBuffer b;
