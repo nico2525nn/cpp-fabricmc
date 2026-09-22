@@ -1567,15 +1567,4 @@ std::vector<std::uint8_t> GameServer::loadCookie(
     return std::vector<std::uint8_t>((std::istreambuf_iterator<char>(f)),
                                      std::istreambuf_iterator<char>());
 }
-bool GameServer::requestCookie(Player& p, const std::string& key) {
-    std::shared_ptr<Connection> connection;
-    {
-        std::lock_guard playerLock(p.stateMtx);
-        connection = p.conn;
-    }
-    if (!connection) return false;
-    WriteBuffer b;
-    b.string(key);
-    return connection->trySendPacket(proto::pl::sc::CookieRequest, b);
-}
 } // namespace cppfm

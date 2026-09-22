@@ -1014,7 +1014,6 @@ public:
                      const std::string& key);
     std::vector<std::uint8_t> loadCookie(
         const std::array<std::uint8_t, 16>& uuid, const std::string& key);
-    bool requestCookie(Player& p, const std::string& key);
     auto& mobsForTest() { return mobs_; }
     void addMob(const std::shared_ptr<MobEntity>& mob) {
         if (!mob) return;

@@ -26,7 +26,11 @@ evidence, and feature implementations are not deletion targets.
 
 The only additional callsite-zero production cleanup that met the current
 policy was the alternate `StructureManager` pending API already removed in
-the PR. Canonical `drainPendingMobs`/`drainPendingLoot` remain in
+the PR. A second audit also found `GameServer::requestCookie` to be an
+unreferenced public convenience wrapper (`src/game/GameServer.hpp:1017`,
+`src/game/GameServer_core.cpp:1570`); its declaration and 11-line body were
+removed while the active cookie store/erase/load and response handling remain
+untouched. Canonical `drainPendingMobs`/`drainPendingLoot` remain in
 `src/game/GameServer_tick.cpp`. No new feature, test, fixture, evidence, or
 generated-file deletion is justified by this pass.
 
@@ -53,9 +57,10 @@ paths.
 
 The cleanup commits before the follow-up hardening pass account for 1,275
 source deletions and 89 source insertions (net cleanup reduction: 1,186 lines).
-Including the goal hardening and live-regression implementation now in the
-branch, the full `origin/main` source diff is 2,504 deletions and 2,250
-insertions (net source reduction: 254 lines). The repository-wide 10,000-line
+Including the goal hardening, live-regression implementation, and the latest
+12-line `requestCookie` removal, the full `origin/main` source diff is 2,516
+deletions and 2,250 insertions (net source reduction: 266 lines). The
+repository-wide 10,000-line
 target remains deliberately unmet; no protected feature, test, fixture,
 generated data, evidence, or virtual/plugin ABI surface was deleted to inflate
 the count.
@@ -76,3 +81,18 @@ These local results supplement, rather than replace, the required GitHub
 Actions result for the pull request. The remaining public callsite-zero methods
 are ABI/source-compatibility candidates and are intentionally documented as
 conditional rather than removed without an API decision.
+
+## Latest round verification
+
+- The normal `cppfm`, `test_goal_network_bugs`, `test_wire_full`, and
+  `test_wire_b6` build completed successfully.
+- The targeted normal regression set passed: network goals 36/36, wire full
+  399/399, wire B6 136/136, and core safety 45/45.
+- The refreshed ASan/UBSan focused binaries passed `test_core_safety` 45/45,
+  `test_spec_wire`, `test_fuzz`, and `test_gameplay_full` 806/806 with no
+  sanitizer report. The all-target sanitizer build reached the native links
+  but timed out in the optional JVM auxiliary target; the focused target build
+  completed with no work remaining.
+- `test_goal_live_matrix.py` passed both owned launches, status/login/config/
+  play, packet compression, shutdown, restart, and shared-world marker checks.
+  Headless GUI and vanilla-client rendering remain explicitly unavailable.
