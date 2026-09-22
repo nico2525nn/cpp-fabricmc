@@ -126,15 +126,6 @@ inline double speedModifierFor(const std::vector<EffectInstance>& list) {
     }
     return mod;
 }
-inline double digSpeedMultiplierFor(const std::vector<EffectInstance>& list) {
-    double mult = 1.0;
-    for (auto& e : list) {
-        if (e.type == effects::Haste) mult *= 1.0 + 0.10 * (e.amplifier + 1) * 3.0 / 2.0;
-        if (e.type == effects::MiningFatigue)
-            mult *= (e.amplifier >= 0 ? 0.3 : 1.0) * std::pow(0.7, -e.amplifier);
-    }
-    return mult;
-}
 inline float meleeDamageBonusFor(const std::vector<EffectInstance>& list) {
     float bonus = 0.f;
     for (auto& e : list)
@@ -200,17 +191,4 @@ inline bool shouldApplyWither(const std::vector<EffectInstance>& list, int tickN
     int period = std::max(1, 40 >> amp);
     return tickNo % period == 0;
 }
-inline bool isBeneficial(std::uint8_t id) {
-    switch(id){
-        case effects::Speed: case effects::Haste: case effects::Strength:
-        case effects::InstantHealth: case effects::JumpBoost: case effects::Regeneration:
-        case effects::Resistance: case effects::FireResistance: case effects::WaterBreathing:
-        case effects::Invisibility: case effects::NightVision: case effects::HealthBoost:
-        case effects::Absorption: case effects::Saturation: case effects::Glowing:
-        case effects::Luck: case effects::ConduitPower: case effects::DolphinsGrace:
-        case effects::HeroOfTheVillage: return true;
-        default: return false;
-    }
-}
-
 } // namespace cppfm

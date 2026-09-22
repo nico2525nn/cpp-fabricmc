@@ -40,49 +40,6 @@ public:
         }
         return stack.applyDamage(amount);
     }
-    static bool shouldDamage(const ItemStack& stack) {
-        int unb = stack.unbreakingLevel();
-        if (unb<=0) return true;
-        thread_local std::mt19937 rng{std::random_device{}()};
-        if (isArmorItem(stack)) {
-            float ignoreChance = 0.6f + 0.4f / float(unb + 1);
-            std::uniform_real_distribution<float> dist(0.f, 1.f);
-            return dist(rng) >= ignoreChance;
-        }
-        std::uniform_int_distribution<int> intDist(0, unb);
-        return intDist(rng) == 0;
-    }
-    // Deterministic variant for tests (seeded rng)
-    static bool shouldDamageWithRng(const ItemStack& stack, std::mt19937& rng) {
-        int unb = stack.unbreakingLevel();
-        if (unb<=0) return true;
-        if (isArmorItem(stack)) {
-            float ignoreChance = 0.6f + 0.4f / float(unb + 1);
-            std::uniform_real_distribution<float> dist(0.f, 1.f);
-            return dist(rng) >= ignoreChance;
-        }
-        std::uniform_int_distribution<int> intDist(0, unb);
-        return intDist(rng) == 0;
-    }
-
-    // Repair via Mending: consume XP to repair one durability point. Returns true if repaired.
-    static bool mend(ItemStack& stack, int xp) {
-        if (stack.empty()) return false;
-        int dmg = stack.getDamage();
-        if (dmg<=0) return false;
-        // 2 durability per 1 xp (vanilla)
-        int repair = xp * 2;
-        int newDmg = dmg - repair;
-        if (newDmg<0) newDmg=0;
-        stack.setDamage(newDmg);
-        return true;
-    }
-
-    // Get current damage value (0 = undamaged)
-    static int getDamage(const ItemStack& s) { return s.getDamage(); }
-    static void setDamage(ItemStack& s, int dmg) { s.setDamage(dmg); }
-    static int maxDamage(const ItemStack& s) { return ItemStack::maxDamageFor(s.itemId); }
-    static bool isBroken(const ItemStack& s) { return s.empty(); }
 };
 
 } // namespace cppfm

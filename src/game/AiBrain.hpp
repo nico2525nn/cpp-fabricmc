@@ -373,9 +373,6 @@ public:
     bool hasBehaviorTree() const;
     void tick(MobEntity& m, AiContext& ctx, std::int64_t now);
     std::size_t goalCount() const { return goals_.size(); }
-    // (group gates: Fish/Graze/Boat/Minecart/Projectile/Ambient families + 13 singles).
-    static bool coversKind(MobKind k);
-
 private:
     std::vector<std::unique_ptr<Goal>> goals_;
     Goal* active_ = nullptr;
