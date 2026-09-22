@@ -134,16 +134,55 @@ class LiveClient:
         return {"command": text, "expected": list(expected_values), "packets": packets}
 
     def tab_complete(self, text: str) -> dict[str, object]:
-        self.conn.send_packet_raw(0x0D, write_varint(1) + pack_string(text))
+        transaction_id = 1
+        self.conn.send_packet_raw(0x0D, write_varint(transaction_id) + pack_string(text))
         deadline = time.monotonic() + 3.0
         packets: list[dict[str, object]] = []
         while time.monotonic() < deadline:
             for packet_id, payload in self.pump(min(0.25, deadline - time.monotonic())):
                 packets.append({"id": packet_id, "length": len(payload)})
                 if packet_id == 0x10:
-                    if len(payload) < 5:
-                        raise AssertionError("tab completion response was truncated")
-                    return {"text": text, "packets": packets}
+                    response_id, offset = read_varint(payload, 0)
+                    start, offset = read_varint(payload, offset)
+                    length, offset = read_varint(payload, offset)
+                    count, offset = read_varint(payload, offset)
+                    matches: list[str] = []
+                    tooltips: list[str | None] = []
+                    for _ in range(count):
+                        match_length, offset = read_varint(payload, offset)
+                        end = offset + match_length
+                        if end > len(payload):
+                            raise AssertionError("tab completion match is truncated")
+                        matches.append(payload[offset:end].decode("utf-8"))
+                        offset = end
+                        if offset >= len(payload):
+                            raise AssertionError("tab completion tooltip flag is truncated")
+                        has_tooltip = payload[offset]
+                        offset += 1
+                        if has_tooltip:
+                            tooltip_length, offset = read_varint(payload, offset)
+                            end = offset + tooltip_length
+                            if end > len(payload):
+                                raise AssertionError("tab completion tooltip is truncated")
+                            tooltips.append(payload[offset:end].decode("utf-8"))
+                            offset = end
+                        else:
+                            tooltips.append(None)
+                    if offset != len(payload):
+                        raise AssertionError("tab completion response has trailing bytes")
+                    if response_id != transaction_id:
+                        raise AssertionError(
+                            f"tab completion transaction mismatch: {response_id} != {transaction_id}"
+                        )
+                    return {
+                        "text": text,
+                        "transaction_id": response_id,
+                        "start": start,
+                        "length": length,
+                        "matches": matches,
+                        "tooltips": tooltips,
+                        "packets": packets,
+                    }
         raise AssertionError(f"tab completion did not return for {text!r}: {packets}")
 
     def use_entity(self, entity_id: int, mouse: int = 0) -> list[tuple[int, bytes]]:
@@ -247,6 +286,30 @@ def start_server(binary: Path, root: Path, world: Path) -> tuple[OwnedServer, in
     return server, port
 
 
+def parse_entity_effect(payload: bytes) -> tuple[int, int, int, int, int]:
+    entity_id, offset = read_varint(payload, 0)
+    effect_id, offset = read_varint(payload, offset)
+    amplifier, offset = read_varint(payload, offset)
+    duration, offset = read_varint(payload, offset)
+    if offset >= len(payload):
+        raise AssertionError("EntityEffect flags are truncated")
+    flags = payload[offset]
+    if offset + 1 != len(payload):
+        raise AssertionError("EntityEffect has trailing bytes")
+    return entity_id, effect_id, amplifier, duration, flags
+
+
+def parse_experience(payload: bytes) -> tuple[float, int, int]:
+    if len(payload) < 4:
+        raise AssertionError("SetExperience progress is truncated")
+    progress = struct.unpack(">f", payload[:4])[0]
+    level, offset = read_varint(payload, 4)
+    total, offset = read_varint(payload, offset)
+    if offset != len(payload):
+        raise AssertionError("SetExperience has trailing bytes")
+    return progress, level, total
+
+
 def run(binary: Path, artifact_root: Path) -> dict[str, object]:
     artifact_root.mkdir(parents=True, exist_ok=True)
     root = artifact_root / "server-root"
@@ -267,7 +330,12 @@ def run(binary: Path, artifact_root: Path) -> dict[str, object]:
         missing = sorted(required_initial.difference(client.packet_ids))
         if missing:
             raise AssertionError(f"initial play declaration/time packets missing: {missing}")
-        observations["tab_complete"] = client.tab_complete("/gi")
+        tab_complete = client.tab_complete("/gi")
+        if (tab_complete["transaction_id"] != 1 or tab_complete["start"] != 1 or
+                tab_complete["length"] != 2 or tab_complete["matches"] != ["give"] or
+                tab_complete["tooltips"] != [None]):
+            raise AssertionError(f"unexpected /gi suggestions: {tab_complete}")
+        observations["tab_complete"] = tab_complete
 
         commands = [
             ("time set day", "Time set to day"),
@@ -313,7 +381,36 @@ def run(binary: Path, artifact_root: Path) -> dict[str, object]:
         summoned_entity_ids: list[int] = []
         for text, expected in commands:
             spawn_count_before = len(client.spawn_entity_ids)
+            packet_count_before = len(client.packet_payloads)
             transcript.append(client.command(text, expected))
+            new_payloads = client.packet_payloads[packet_count_before:]
+            if text == "effect give @s speed 5":
+                effects = [parse_entity_effect(payload) for packet_id, payload in new_payloads
+                           if packet_id == PLAY_ENTITY_EFFECT]
+                expected_effect = (client.entity_id, 1, 0, 100, 6)
+                if expected_effect not in effects:
+                    raise AssertionError(
+                        f"speed effect lacked exact EntityEffect fields: "
+                        f"expected={expected_effect} observed={effects}"
+                    )
+                observations["effect"] = {
+                    "expected": expected_effect,
+                    "observed": effects,
+                }
+            if text == "xp add @s 5 points":
+                experiences = [parse_experience(payload) for packet_id, payload in new_payloads
+                               if packet_id == PLAY_SET_EXPERIENCE]
+                matching = [value for value in experiences
+                            if value[1:] == (0, 5) and 0.70 < value[0] < 0.73]
+                if not matching:
+                    raise AssertionError(
+                        f"xp command lacked exact SetExperience fields: "
+                        f"observed={experiences}"
+                    )
+                observations["experience"] = {
+                    "observed": experiences,
+                    "matching": matching,
+                }
             if text == "summon minecraft:pig 41 -60 40":
                 summoned_entity_ids = client.spawn_entity_ids[spawn_count_before:]
             if text == "tp @s 2 -60 2":

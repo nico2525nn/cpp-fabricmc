@@ -38,7 +38,7 @@ rows below.
 
 | rows | status | production entry | missing assertion/artifact |
 |---|---|---|---|
-| #57–#59 | PARTIAL/UNVERIFIED | `test_server_full.py --suites=commands,chat` | Per-node Brigadier parser/redirect transcript, every argument type, and argument-specific completion contents |
+| #57–#59 | PARTIAL/UNVERIFIED | `test_server_full.py --suites=commands,chat` plus owned live `/gi` probe | The live fixture now decodes transaction `1`, range `1/2`, match `give`, and no tooltip for `/gi`; a full per-node Brigadier parser/redirect transcript, every argument type, and all argument-specific completion lists remain open |
 | #60–#61 | PASS for named smoke | `test_server_full.py --suites=commands` | Error cases, permissions, block-state/NBT arguments, and exact `/fill` replacement/limit semantics |
 | #62 | PARTIAL | real play command `execute as @p run ...` | `at`, `positioned`, `anchored`, nested selectors, and source-position assertions |
 | #63, #69 | PARTIAL/UNVERIFIED | datapack fixture with `/function` and `/reload` | `minecraft:tick` tag dispatch, recursion limit, return/store semantics, and reload failure isolation |
@@ -54,7 +54,7 @@ rows below.
 | #84 | UNVERIFIED | hunger fixture with sprint/jump/attack/use-food actions | Saturation/exhaustion transitions, regeneration/starvation cadence, and exact food packets |
 | #87 | PARTIAL | `UseEntity` against a player and a mob | Player-victim knockback vector, armor/shield/critical modifiers, and resistance edge cases |
 | #88 | UNVERIFIED | stop/restart fixture with player activity | `playerdata`, `stats`, and `advancements` field-level NBT/JSON oracle after restart |
-| #89–#90 | PARTIAL | `/xp`, `/effect`, orb/effect entity fixture | Orb spawn/pickup/kill-drop semantics and effect modifier/metadata duration/amplifier fields |
+| #89–#90 | PARTIAL | `/xp`, `/effect`, orb/effect entity fixture | Live values now cover XP progress/level/total (`0.7142857313/0/5`) and speed effect entity/id/amplifier/duration/flags (`1/1/0/100/6`); orb spawn/pickup/kill-drop semantics and the wider effect modifier/removal matrix remain open |
 
 ## P1 world, dimension, and block mechanics
 
@@ -106,3 +106,8 @@ timeout --foreground --kill-after=5 120 python3 tests/bot_smoke.py --binary ./bu
 Each promotion requires a row ID, a product-entry command, a named assertion,
 and an artifact path. Broad CTest, packet presence, source inspection, or a
 passing implementation unit test alone cannot promote an `UNVERIFIED` row.
+
+The latest row-specific live probe uses the existing `test_goal_live_features.py`
+entrypoint with an owned `cppfm` process. Its retained JSON records the exact
+`/gi`, `/xp`, and `/effect` observations above; the fixture still exits nonzero
+if any field parser or value assertion fails.
