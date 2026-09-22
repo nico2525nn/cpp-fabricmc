@@ -81,14 +81,8 @@ public:
         return static_cast<double>(h >> 11) /
                static_cast<double>(1ULL << 53);
     }
-    bool treeCandidate(std::uint64_t seed, std::int32_t wx, std::int32_t wz) const {
-        return posHash(seed ^ 0x5EED, wx, 777, wz) < 0.008;
-    }
     explicit TerrainGenerator(std::uint64_t seed)
-        : cont_(seed ^ 0x9E3779B97F4A7C15ULL),
-          ero_(seed ^ 0xC2B2AE3D27D4EB4FULL),
-          peak_(seed ^ 0x165667B19E3779F9ULL),
-          caveA_(seed ^ 0xA24BAED4963EE407ULL),
+        : caveA_(seed ^ 0xA24BAED4963EE407ULL),
           caveB_(seed ^ 0x9FB21C651E98DF25ULL),
           oreA_(seed ^ 0x18DEE66A2D75FA36ULL),
           netherDensity_(seed ^ 0x6E657468ULL),
@@ -96,34 +90,12 @@ public:
           netherDepth_(seed ^ 0x44455054ULL),
           netherFloat_(seed ^ 0x464C4F41ULL),
           endIsland_(seed ^ 0x454E4410ULL) {}
-
-
-    struct ColumnResult { int surfaceY; bool ocean; };
-
-    // Surface height (first air y) for world column (wx,wz), minY=-64.
-    ColumnResult column(std::int32_t wx, std::int32_t wz) const {
-        const double nx = wx * 0.0015, nz = wz * 0.0015;
-        const double cont = cont_.octaves(nx, 100.0, nz, 4);           // large landmasses
-        const double ero  = ero_.octaves(wx * 0.004, 50.0, wz * 0.004, 3);
-        const double pk   = peak_.octaves(wx * 0.02, 20.0, wz * 0.02, 4);
-
-        // base height: oceans (~30) to highlands (~110)
-        double base = 68.0 + cont * 34.0;
-        base -= std::max(0.0, -cont) * 18.0;                           // deepen oceans
-        base += pk * 14.0 * std::max(0.25, 0.5 + cont * 0.5);          // mountains on land
-        base += ero * 6.0;
-
-        const int surface = std::clamp(static_cast<int>(base), -56, 150);
-        const bool ocean = surface < kSeaLevelNormal - 2;
-        return {surface + 1, ocean};                                    // first air y
-    }
-
 public:
     // These are immutable after construction and are safe to sample from
     // concurrent chunk-generation callers.  Keeping them per generator is
     // important: a thread_local noise object would retain the first world's
     // seed when the same process creates another world.
-    ImprovedNoise cont_, ero_, peak_, caveA_, caveB_, oreA_;
+    ImprovedNoise caveA_, caveB_, oreA_;
     ImprovedNoise netherDensity_, netherSurface_, netherDepth_, netherFloat_;
     ImprovedNoise endIsland_;
 };

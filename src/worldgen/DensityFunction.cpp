@@ -101,7 +101,6 @@ NodePtr DensityPipeline::parse(const json::Value& v, std::string* err) const {
         auto n = std::make_shared<detail::Unary>();
         if (type == "abs") n->op = detail::Unary::Abs;
         else if (type == "square") n->op = detail::Unary::Square;
-        else if (type == "cube") n->op = detail::Unary::Cube;
         else if (type == "half_negative") n->op = detail::Unary::HalfNeg;
         else if (type == "quarter_negative") n->op = detail::Unary::QuarterNeg;
         else if (type == "squeeze") n->op = detail::Unary::Squeeze;
