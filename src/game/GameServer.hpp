@@ -1094,7 +1094,6 @@ public:
     void broadcastPlayerEquipment(const Player& p);
     void syncEquipmentOnChange(Player& p); // helper for armor/hand changes
     void broadcastSetPassengers(std::int32_t vehicleId);
-    void broadcastSetPassengersEmpty(std::int32_t vehicleId);
     void broadcastSetPassengersEmptyFor(std::int8_t dimension,
                                         std::int32_t vehicleId);
     void handleMoveVehicle(Player& p, double x, double y, double z, float yaw, float pitch);
@@ -1290,45 +1289,31 @@ public:
                             const std::optional<std::string>& sound);
     void broadcastStopSound(SoundSource source, const std::string* soundOrNull);
     void broadcastStopSound(SoundSource source);
-    void stopRecord(const std::string& discNameWithoutPrefix); // record category
     void broadcastWorldEvent(std::int32_t eventId, std::int32_t x, std::int32_t y, std::int32_t z, std::int32_t data, bool disableRelativeVolume = false);
     void broadcastWorldEventFor(std::int8_t dimension, std::int32_t eventId,
                                 std::int32_t x, std::int32_t y,
                                 std::int32_t z, std::int32_t data,
                                 bool disableRelativeVolume = false);
-    void broadcastBlockParticle(double x, double y, double z, std::uint32_t blockState, int count = 10);
-    void broadcastDustParticle(double x, double y, double z, std::int32_t rgb, float scale = 1.0f);
     void broadcastPaleOakLeavesParticle(double x, double y, double z); // D19 helper
     void broadcastPaleOakLeavesParticleFor(std::int8_t dimension,
                                            double x, double y, double z);
     void sendActionBar(Player& p, const std::string& text);
-    void broadcastActionBar(const std::string& text, Player* except = nullptr);
     void sendServerData(Player& p);
-    void broadcastServerData();
-    void sendHurtAnimation(Player& p, std::int32_t entityId, float yaw);
-    void broadcastHurtAnimation(std::int32_t entityId, float yaw, Player* except = nullptr);
     void broadcastHurtAnimationFor(std::int8_t dimension,
                                    std::int32_t entityId, float yaw,
                                    Player* except = nullptr);
-    void broadcastEntitySound(std::int32_t entityId, const std::string& soundName, float volume = 1.f, float pitch = 1.f, SoundSource category = SoundSource::Neutral);
     void broadcastEntitySoundFor(std::int8_t dimension, std::int32_t entityId,
                                  const std::string& soundName,
                                  float volume = 1.f, float pitch = 1.f,
                                  SoundSource category = SoundSource::Neutral);
-    void sendEntitySound(Player& p, std::int32_t entityId, const std::string& soundName, float volume = 1.f, float pitch = 1.f, SoundSource category = SoundSource::Neutral);
     void sendChatSuggestions(Player& p, std::int32_t action, const std::vector<std::string>& entries);
     void broadcastChatSuggestions(std::int32_t action, const std::vector<std::string>& entries, Player* except = nullptr);
     void sendSyncEntityPosition(Player& p, std::int32_t entityId, double x, double y, double z, double dx=0, double dy=0, double dz=0, float yaw=0, float pitch=0, bool onGround=true);
-    void broadcastSyncEntityPosition(std::int32_t entityId, double x, double y, double z, double dx=0, double dy=0, double dz=0, float yaw=0, float pitch=0, bool onGround=true, Player* except=nullptr);
     void sendSyncEntityPosition(Player& p, const MobEntity& mob);
     void broadcastSyncEntityPosition(const MobEntity& mob, Player* except=nullptr);
     void sendMapData(Player& p, int mapId, uint8_t scale=2, bool locked=false);
-    void sendMapData(Player& p, int mapId, const std::array<uint8_t,16384>& colors, uint8_t scale=2);
-    void broadcastMapData(int mapId, uint8_t scale, bool locked, Player* except=nullptr);
-    void sendMoveMinecart(Player& p, std::int32_t entityId, double x, double y, double z, float yaw, float pitch);
     void broadcastMoveMinecart(std::int32_t entityId, double x, double y, double z, float yaw, float pitch, Player* except=nullptr);
     void sendSelectAdvancementTab(Player& p, const std::string& tabId);
-    void broadcastSelectAdvancementTab(const std::string& tabId, Player* except=nullptr);
     void itemsTick();
     void trySpawnMobs();
     static std::array<int,7> spawnGroupCaps() { return {70,10,15,5,20,5,5}; }
@@ -1339,10 +1324,6 @@ public:
         if (difficulty == "peaceful") return false;
         return effLight <= 7.0 && (night || rain || thunder);
     }
-    void spawnItemDrop(double x,double y,double z,std::uint32_t itemId,std::uint8_t cnt,
-                       double vx=0,double vy=0,double vz=0);
-    void spawnItemDrop(double x,double y,double z,const ItemStack& stack,
-                       double vx=0,double vy=0,double vz=0);
     void spawnItemDropFor(std::int8_t dimension, double x, double y, double z,
                           std::uint32_t itemId, std::uint8_t cnt,
                           double vx=0, double vy=0, double vz=0);
