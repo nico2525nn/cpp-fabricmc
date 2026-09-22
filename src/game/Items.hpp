@@ -351,96 +351,6 @@ struct ItemStack {
         auto it2 = mm.find(q);
         return it2 != mm.end() ? it2->second : 8; // fallback quartz
     }
-    static std::string trimPatternNameFor(int id) {
-        for (auto &kv : trimPatternIds()) if (kv.second==id) return kv.first;
-        return "minecraft:coast";
-    }
-    static std::string trimMaterialNameFor(int id) {
-        for (auto &kv : trimMaterialIds()) if (kv.second==id) return kv.first;
-        return "minecraft:quartz";
-    }
-    bool hasTrim() const {
-        for (auto &pr: components) if (pr.first==kTrimComponentId || pr.first==kLegacyTrimAlias) return true;
-        return false;
-    }
-    ArmorTrim getTrim() const {
-        for (auto &pr: components) if (pr.first==kTrimComponentId || pr.first==kLegacyTrimAlias) {
-            const auto &payload = pr.second;
-            if (payload.empty()) return {};
-            // Try holder (varint patId, varint matId, bool) if payload small and ids in range
-            if (payload.size() <= 4) {
-                try {
-                    ReadBuffer rb(payload.data(), payload.size());
-                    int patId = rb.varint();
-                    if (rb.remaining() < 1) throw std::runtime_error("short");
-                    int matId = rb.varint();
-                    bool show = true;
-                    if (rb.remaining() > 0) show = rb.boolean();
-                    if (patId >=0 && patId < 18 && matId >=0 && matId < 11 && rb.remaining()==0) {
-                        ArmorTrim t; t.has=true; t.showInTooltip=show;
-                        t.pattern = trimPatternNameFor(patId);
-                        t.material = trimMaterialNameFor(matId);
-                        return t;
-                    }
-                } catch (...) {}
-            }
-            // Also try holder for any size where first two varints are valid and payload is 3 bytes
-            if (payload.size() >= 2 && payload.size() <= 5) {
-                try {
-                    ReadBuffer rb2(payload.data(), payload.size());
-                    int p2 = rb2.varint();
-                    int m2 = rb2.varint();
-                    if (p2>=0 && p2<18 && m2>=0 && m2<11) {
-                        bool s2 = rb2.remaining()>0 ? rb2.boolean() : true;
-                        if (rb2.remaining()==0) {
-                            ArmorTrim t; t.has=true; t.showInTooltip=s2;
-                            t.pattern=trimPatternNameFor(p2); t.material=trimMaterialNameFor(m2);
-                            return t;
-                        }
-                    }
-                } catch (...) {}
-            }
-            try {
-                bool looksTextual = false;
-                for (auto b : payload) if (b=='|'||b==',') { looksTextual=true; break; }
-                if (looksTextual && !payload.empty() && payload[0] >= 'a' && payload[0] <= 'z') {
-                    std::string txt(payload.begin(), payload.end());
-                    auto sep = txt.find('|');
-                    if (sep==std::string::npos) sep = txt.find(',');
-                    ArmorTrim t; t.has=true;
-                    if (sep!=std::string::npos) { t.pattern = txt.substr(0,sep); t.material = txt.substr(sep+1); }
-                    else t.pattern = txt;
-                    if (!t.pattern.empty() && t.pattern.find(':')==std::string::npos) t.pattern = "minecraft:"+t.pattern;
-                    if (!t.material.empty() && t.material.find(':')==std::string::npos) t.material = "minecraft:"+t.material;
-                    return t;
-                }
-                ReadBuffer rb(payload.data(), payload.size());
-                int patLen = rb.varint();
-                if (patLen <0 || patLen>constants::kMaxStringLength || (size_t)rb.remaining() < (size_t)patLen) throw std::runtime_error("patLen");
-                std::string pat(reinterpret_cast<const char*>(rb.p + rb.off), patLen); rb.off+=patLen;
-                int matLen = rb.varint();
-                if (matLen <0 || matLen>constants::kMaxStringLength || (size_t)rb.remaining() < (size_t)matLen) throw std::runtime_error("matLen");
-                std::string mat(reinterpret_cast<const char*>(rb.p + rb.off), matLen); rb.off+=matLen;
-                bool show = true;
-                if (rb.remaining()>0) show = rb.boolean();
-                ArmorTrim t; t.has=true; t.showInTooltip=show; t.pattern=pat; t.material=mat;
-                if (!t.pattern.empty() && t.pattern.find(':')==std::string::npos) t.pattern = "minecraft:"+t.pattern;
-                if (!t.material.empty() && t.material.find(':')==std::string::npos) t.material = "minecraft:"+t.material;
-                return t;
-            } catch (...) {
-                std::string txt(payload.begin(), payload.end());
-                auto sep = txt.find('|');
-                if (sep==std::string::npos) sep = txt.find(',');
-                ArmorTrim t; t.has=true;
-                if (sep!=std::string::npos) { t.pattern = txt.substr(0,sep); t.material = txt.substr(sep+1); }
-                else t.pattern = txt;
-                if (!t.pattern.empty() && t.pattern.find(':')==std::string::npos) t.pattern = "minecraft:"+t.pattern;
-                if (!t.material.empty() && t.material.find(':')==std::string::npos) t.material = "minecraft:"+t.material;
-                return t;
-            }
-        }
-        return {};
-    }
     void setTrim(const ArmorTrim& t) {
         components.erase(std::remove_if(components.begin(), components.end(),
             [](auto &p){ return p.first==kTrimComponentId || p.first==kLegacyTrimAlias; }), components.end());
@@ -453,11 +363,6 @@ struct ItemStack {
         wb.boolean(t.showInTooltip);
         components.emplace_back(kTrimComponentId, std::vector<std::uint8_t>(wb.data.begin(), wb.data.end()));
     }
-    void clearTrim() {
-        components.erase(std::remove_if(components.begin(), components.end(),
-            [](auto &p){ return p.first==kTrimComponentId || p.first==kLegacyTrimAlias; }), components.end());
-    }
-
     // ----- Brewing potion_contents (41) helpers — nether_wart -> awkward ----- Payload: option potionId (bool+varint), option customColor
     // (bool), varint customEffectsCount, option customName (bool) Vanilla minecraft:potion registry 45 entries (1.21.4): water 0, mundane
     // 1, thick 2, awkward 3, night_vision 4, ... wind_charged 42 etc. Wire id is registry index. Previous code used 0 water -> 1 awkward
