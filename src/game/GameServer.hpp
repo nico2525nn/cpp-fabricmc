@@ -421,6 +421,25 @@ private:
 class GameServer {
     friend class Session;
     friend class jvm::JvmRuntime;
+
+    template <typename T>
+    static T& selectDimension(std::int8_t dim, T& overworld,
+                              T* nether, T* end) {
+        switch (dim) {
+        case -1: return *nether;
+        case 1: return *end;
+        default: return overworld;
+        }
+    }
+    template <typename T>
+    static const T& selectDimensionConst(std::int8_t dim, const T& overworld,
+                                         const T* nether, const T* end) {
+        switch (dim) {
+        case -1: return *nether;
+        case 1: return *end;
+        default: return overworld;
+        }
+    }
 public:
     enum class Dim : std::int8_t { Overworld = 0, Nether = -1, End = 1 };
 
@@ -442,18 +461,10 @@ public:
             w == &world_ ? 0 : (w == netherWorld_.get() ? -1 : 1));
     }
     World& worldFor(std::int8_t dim) {
-        switch (dim) {
-        case -1: return *netherWorld_;
-        case 1: return *endWorld_;
-        default: return world_;
-        }
+        return selectDimension(dim, world_, netherWorld_.get(), endWorld_.get());
     }
     const World& worldFor(std::int8_t dim) const {
-        switch (dim) {
-        case -1: return *netherWorld_;
-        case 1: return *endWorld_;
-        default: return world_;
-        }
+        return selectDimensionConst(dim, world_, netherWorld_.get(), endWorld_.get());
     }
     std::int8_t commandDimension(
         const brigadier::CommandSource& source) const noexcept {
@@ -480,60 +491,36 @@ public:
         };
     }
     LightEngine& lightsFor(std::int8_t dim) {
-        switch (canonicalDimension(dim)) {
-        case -1: return *dimLightEngine_[0];
-        case 1: return *dimLightEngine_[1];
-        default: return *lightEngine_;
-        }
+        return selectDimension(canonicalDimension(dim), *lightEngine_,
+                               dimLightEngine_[0].get(), dimLightEngine_[1].get());
     }
     const LightEngine& lightsFor(std::int8_t dim) const {
-        switch (canonicalDimension(dim)) {
-        case -1: return *dimLightEngine_[0];
-        case 1: return *dimLightEngine_[1];
-        default: return *lightEngine_;
-        }
+        return selectDimensionConst(canonicalDimension(dim), *lightEngine_,
+                                    dimLightEngine_[0].get(), dimLightEngine_[1].get());
     }
     FluidSim& fluidsFor(std::int8_t dim) {
-        switch (canonicalDimension(dim)) {
-        case -1: return *dimFluidSim_[0];
-        case 1: return *dimFluidSim_[1];
-        default: return *fluidSim_;
-        }
+        return selectDimension(canonicalDimension(dim), *fluidSim_,
+                               dimFluidSim_[0].get(), dimFluidSim_[1].get());
     }
     const FluidSim& fluidsFor(std::int8_t dim) const {
-        switch (canonicalDimension(dim)) {
-        case -1: return *dimFluidSim_[0];
-        case 1: return *dimFluidSim_[1];
-        default: return *fluidSim_;
-        }
+        return selectDimensionConst(canonicalDimension(dim), *fluidSim_,
+                                    dimFluidSim_[0].get(), dimFluidSim_[1].get());
     }
     RedstoneEngine& redstoneFor(std::int8_t dim) {
-        switch (canonicalDimension(dim)) {
-        case -1: return *dimRedstone_[0];
-        case 1: return *dimRedstone_[1];
-        default: return *redstone_;
-        }
+        return selectDimension(canonicalDimension(dim), *redstone_,
+                               dimRedstone_[0].get(), dimRedstone_[1].get());
     }
     const RedstoneEngine& redstoneFor(std::int8_t dim) const {
-        switch (canonicalDimension(dim)) {
-        case -1: return *dimRedstone_[0];
-        case 1: return *dimRedstone_[1];
-        default: return *redstone_;
-        }
+        return selectDimensionConst(canonicalDimension(dim), *redstone_,
+                                    dimRedstone_[0].get(), dimRedstone_[1].get());
     }
     BlockTickScheduler& blockTicksFor(std::int8_t dim) {
-        switch (canonicalDimension(dim)) {
-        case -1: return *dimBlockTicks_[0];
-        case 1: return *dimBlockTicks_[1];
-        default: return *blockTicks_;
-        }
+        return selectDimension(canonicalDimension(dim), *blockTicks_,
+                               dimBlockTicks_[0].get(), dimBlockTicks_[1].get());
     }
     const BlockTickScheduler& blockTicksFor(std::int8_t dim) const {
-        switch (canonicalDimension(dim)) {
-        case -1: return *dimBlockTicks_[0];
-        case 1: return *dimBlockTicks_[1];
-        default: return *blockTicks_;
-        }
+        return selectDimensionConst(canonicalDimension(dim), *blockTicks_,
+                                    dimBlockTicks_[0].get(), dimBlockTicks_[1].get());
     }
     ~GameServer() { stop(); }
 
@@ -972,18 +959,12 @@ public:
     Whitelist& whitelist() { return whitelist_; }
     BlockEntityStore& blockEntities() { return blockEntities_; }
     BlockEntityStore& blockEntitiesFor(std::int8_t dimension) {
-        switch (canonicalDimension(dimension)) {
-        case -1: return dimensionBlockEntities_[0];
-        case 1: return dimensionBlockEntities_[1];
-        default: return blockEntities_;
-        }
+        return selectDimension(canonicalDimension(dimension), blockEntities_,
+                               &dimensionBlockEntities_[0], &dimensionBlockEntities_[1]);
     }
     const BlockEntityStore& blockEntitiesFor(std::int8_t dimension) const {
-        switch (canonicalDimension(dimension)) {
-        case -1: return dimensionBlockEntities_[0];
-        case 1: return dimensionBlockEntities_[1];
-        default: return blockEntities_;
-        }
+        return selectDimensionConst(canonicalDimension(dimension), blockEntities_,
+                                    &dimensionBlockEntities_[0], &dimensionBlockEntities_[1]);
     }
     std::int32_t villagerWindowSeq_ = 100;
     Scoreboard scoreboard;
