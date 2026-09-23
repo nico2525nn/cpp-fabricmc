@@ -82,7 +82,7 @@ artifact boundaries.
 | Official primitive oracle | `INSPECTED` | SHA-1-pinned Mojang 1.21.4 server artifact; VarInt, VarLong, Varint21 frame splitter, and packed BlockPos decoder/packing bytecode reviewed, not executed |
 | Primitive and stream regressions | `PASS` | `test_goal_network_bugs` 79/79; independent signed endpoints, non-minimal forms, Java terminal-payload truncation, generic sixth/eleventh-byte rejection/consumption, strict three-byte Varint21 frame rejection, plaintext/encrypted stream alignment, big-endian fixed-width fields, and packed Position axis limits |
 | Related CTest targets | `7/7 PASS` | `native`, `spec_wire`, `jvm_native_bridge`, `core_safety`, `goal_network_bugs`, `wire_full`, and `fuzz` |
-| Smoke regression after tick-based chat pacing fix | `1/1 PASS` | `ctest --test-dir build -R smoke80 --output-on-failure --timeout 450`; 181.26 seconds, `225 PASS / 0 FAIL`. Reset feedback has a 30-second bounded wait and prints chat/disconnect diagnostics only on failure. Actions for prior SHA `54e7ad9` missed this feedback under the old 8-second wait after observing 120 ticks; the current PR-head Actions result is authoritative for verifying this test-only mitigation. |
+| Smoke regression after tick-based chat pacing fix | `PASS LOCALLY; CI HARDENING IN FOLLOW-UP` | `ctest --test-dir build -R smoke80 --output-on-failure --timeout 600`; last recorded local run was 181.26 seconds, `225 PASS / 0 FAIL`. Reset feedback has a 30-second bounded wait and prints chat/disconnect diagnostics only on failure. A later Actions run exposed that the target-specific `TIMEOUT 450` overrode the workflow-wide `--timeout 600`; the follow-up removes that override and lowers the random-tick stress value while keeping it above the vanilla default. |
 | PR Actions gate | `PASS / SHA-SPECIFIC` | Combined head `bac90dfbce70a8d1c09ddf525b339fac479ff350` passed the full build and non-nightly CTest ([run 35828644414](https://github.com/nico2525nn/cpp-fabricmc/actions/runs/35828644414)); subsequent review changes in this branch still require a new exact-head run. |
 
 MISSING #71's row-specific evidence is now `PASS` in the 90-row coverage ledger
@@ -453,3 +453,15 @@ pre-fix non-nightly CTest run passed `55/55` in `522.97s`. The follow-up makes
 the fixture teleport to its damage position before shrinking the border, then
 checks the same border wire and damage effects; the targeted post-change test
 passed `5/5` consecutive launches (`263.24s`).
+
+The PR #3 Actions run
+[`35877465112`](https://github.com/nico2525nn/cpp-fabricmc/actions/runs/35877465112)
+then exposed a separate `smoke80` issue: CTest reported `***Timeout 450.01 sec`
+even though the workflow supplies `--timeout 600`, because the test had its own
+`TIMEOUT 450` property. Its captured output reached the world-management cases,
+then the block-tick scenario using `randomTickSpeed 100`; subsequent disconnect
+and assertion failures were cascading output after the timeout. The follow-up
+removes the target-specific timeout so the shared CTest limit applies and uses
+`randomTickSpeed 10` (still above vanilla's default 3) with the existing 16×16
+crop field. This keeps the real random-tick behavior check while avoiding a
+whole-simulation stress setting in the ordinary regression suite.

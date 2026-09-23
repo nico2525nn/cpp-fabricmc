@@ -658,7 +658,7 @@ timeout --foreground --kill-after=5 120 python3 tests/bot_smoke.py --binary ./bu
 timeout --foreground --kill-after=5 400 python3 tools/soak_bot.py --duration 300 --binary ./build/cppfm
 timeout --foreground --kill-after=5 1200 ctest --test-dir build -LE 'nightly|package' --output-on-failure --timeout 600
 timeout --foreground --kill-after=5 300 ctest --test-dir build -R 'native|scoreboard_reset|spec_wire|plan43|flood_net|fuzz|wire_full|gameplay_full|seed_parity|block_hardness_full|redstone_engine_full|mob_stats_full|mining_full|quality_audit|tautology_lint|mcproto_framing|bench|multi_client|bot_smoke|recipes_mirror|recovery|rcon_multi' --output-on-failure --timeout 120
-timeout --foreground --kill-after=5 600 ctest --test-dir build -R smoke80 --output-on-failure --timeout 450
+timeout --foreground --kill-after=5 700 ctest --test-dir build -R smoke80 --output-on-failure --timeout 600
 ```
 
 For cleanup, first inspect and then use exact PIDs; do not paste an unreviewed broad

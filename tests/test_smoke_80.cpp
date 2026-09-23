@@ -270,8 +270,8 @@ static void testBlockBehaviors(ServerProc& srv){
     CHECK(waitBlockUpdate(c,4,-59,0,4333,2000),
           "wheat field age 0 is installed before the crop tick test");
     c.clearChatLines();
-    c.sendChatCommand("gamerule randomTickSpeed 100");
-    CHECK(waitChat(c,"100",2000), "randomTickSpeed 100 command accepted");
+    c.sendChatCommand("gamerule randomTickSpeed 10");
+    CHECK(waitChat(c,"10",2000), "randomTickSpeed 10 command accepted");
     const auto cropDeadline = std::chrono::steady_clock::now() +
                               std::chrono::milliseconds(6000);
     bool grew = false;
@@ -286,9 +286,11 @@ static void testBlockBehaviors(ServerProc& srv){
         }
     }
     CHECK(grew,"wheat random tick with high randomTickSpeed changes the crop state");
-    // The server's vanilla chat-spam budget decays in simulation ticks, not
-    // wall-clock time. 100 random ticks/section can delay the tick thread, so
-    // observe six time-sync packets (120 ticks) before resetting the rule.
+    // Random ticks apply to every simulated section, not only this field. Keep
+    // the elevated value modest (10 vs. vanilla's default 3) so this gameplay
+    // assertion does not become a world-wide CPU stress test on CI. The vanilla
+    // chat-spam budget decays in simulation ticks, so observe 120 ticks before
+    // resetting the rule.
     const int resetAfterTicks = c.counters().timeUpdates + 6;
     CHECK(waitForTimeUpdates(c, resetAfterTicks, 30000),
           "server advances 120 ticks before gamerule reset");
