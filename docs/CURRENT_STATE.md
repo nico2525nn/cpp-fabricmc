@@ -82,7 +82,7 @@ artifact boundaries.
 | Official primitive oracle | `INSPECTED` | SHA-1-pinned Mojang 1.21.4 server artifact; VarInt, VarLong, Varint21 frame splitter, and packed BlockPos decoder/packing bytecode reviewed, not executed |
 | Primitive and stream regressions | `PASS` | `test_goal_network_bugs` 79/79; independent signed endpoints, non-minimal forms, Java terminal-payload truncation, generic sixth/eleventh-byte rejection/consumption, strict three-byte Varint21 frame rejection, plaintext/encrypted stream alignment, big-endian fixed-width fields, and packed Position axis limits |
 | Related CTest targets | `7/7 PASS` | `native`, `spec_wire`, `jvm_native_bridge`, `core_safety`, `goal_network_bugs`, `wire_full`, and `fuzz` |
-| Smoke regression after tick-based chat pacing fix | `1/1 PASS` | `ctest --test-dir build -R smoke80 --output-on-failure --timeout 450`; 181.26 seconds, `225 PASS / 0 FAIL`. Reset feedback has a 30-second bounded wait and prints chat/disconnect diagnostics only on failure. Actions for prior SHA `54e7ad9` missed this feedback under the old 8-second wait after observing 120 ticks; the current PR-head Actions result is authoritative for verifying this test-only mitigation. |
+| Smoke regression after tick-based chat pacing fix | `PASS LOCALLY; CI HARDENING IN FOLLOW-UP` | `ctest --test-dir build -R smoke80 --output-on-failure --timeout 600`; last recorded local run was 181.26 seconds, `225 PASS / 0 FAIL`. Reset feedback has a 30-second bounded wait and prints chat/disconnect diagnostics only on failure. A later Actions run exposed that the target-specific `TIMEOUT 450` overrode the workflow-wide `--timeout 600`; the follow-up removes that override and lowers the random-tick stress value while keeping it above the vanilla default. |
 | PR Actions gate | `PASS / SHA-SPECIFIC` | Combined head `bac90dfbce70a8d1c09ddf525b339fac479ff350` passed the full build and non-nightly CTest ([run 35828644414](https://github.com/nico2525nn/cpp-fabricmc/actions/runs/35828644414)); subsequent review changes in this branch still require a new exact-head run. |
 
 MISSING #71's row-specific evidence is now `PASS` in the 90-row coverage ledger
@@ -424,7 +424,9 @@ baseline and protected manifest, a 90-row coverage ledger (`14 PASS`, `38 PARTIA
 with focused regression tests. The PR #1 review completed five hostile rounds
 and a final follow-up;
 the current verdict is `P0=0, P1=0, P2=0, P3=0` unresolved after the focused
-fixes and 8/8 local CTest rerun. Exact-head CI is still pending. Source-order
+fixes and 8/8 local CTest rerun. The exact PR-head Actions run
+[`35865145988`](https://github.com/nico2525nn/cpp-fabricmc/actions/runs/35865145988)
+passed before PR #1 was merged. Source-order
 guards cover security fixes where no authenticated client or external JVM fixture
 is available. Scoped production cleanup measured `-9`
 lines; the additional refactors are recorded in `goal-cleanup-runtime.md` and
@@ -439,3 +441,52 @@ remaining-entry fixture passed `1/1` in `63.93s`, and the final two-launch
 protocol matrix passed with both owned processes returning `0` and no escalation.
 The requested 7200-second soak failed at `t=1200s` with server exit `-9`; no
 accepted long-soak result is claimed.
+
+The first post-merge main Actions run
+[`35868844643`](https://github.com/nico2525nn/cpp-fabricmc/actions/runs/35868844643)
+timed out `smoke80`; a same-SHA rerun completed the suite but exposed one
+`goal_live_remaining` failure. That fixture shrank the world border while the
+player was still far outside it, then issued a teleport; on a slower runner,
+border damage could remove the command target before the teleport feedback was
+observed. Locally, `smoke80` passed all 225 cases in `178.25s`, and the full
+pre-fix non-nightly CTest run passed `55/55` in `522.97s`. The follow-up makes
+the fixture teleport to its damage position before shrinking the border, then
+checks the same border wire and damage effects; the targeted post-change test
+passed `5/5` consecutive launches (`263.24s`).
+
+The PR #3 Actions run
+[`35877465112`](https://github.com/nico2525nn/cpp-fabricmc/actions/runs/35877465112)
+then exposed a separate `smoke80` issue: CTest reported `***Timeout 450.01 sec`
+even though the workflow supplies `--timeout 600`, because the test had its own
+`TIMEOUT 450` property. Its captured output reached the world-management cases,
+then the block-tick scenario using `randomTickSpeed 100`; subsequent disconnect
+and assertion failures were cascading output after the timeout. The follow-up
+removes the target-specific timeout so the shared CTest limit applies and uses
+`randomTickSpeed 10` (still above vanilla's default 3) with the existing 16×16
+crop field. This keeps the real random-tick behavior check while avoiding a
+whole-simulation stress setting in the ordinary regression suite.
+
+The exact-head follow-up Actions run
+[`35883033964`](https://github.com/nico2525nn/cpp-fabricmc/actions/runs/35883033964)
+then completed the expanded CTest suite without the smoke timeout; one separate
+`plan43` assertion (`W-02 m2/h0/s1 window opens`) failed, leaving the other 54
+tests passing. Investigation found that `summonHorseNear` accepted any horse
+spawn observed after its snapshot, including an older horse from a delayed
+initial entity stream. The test now snapshots the highest observed entity ID
+and accepts only a horse with a larger ID. The revised `plan43` test passed five
+consecutive local launches (`130.37s` total); the new PR head still requires its
+own GitHub Actions run before merge.
+
+The following exact-head Actions run
+[`35886973563`](https://github.com/nico2525nn/cpp-fabricmc/actions/runs/35886973563)
+passed configure, build, static checks, and deterministic focused gates, but the
+full CTest regression failed only in `plan43` (`W-02 atk0 lands (HurtAnimation
+eid)`); the other 54 tests passed. This attack-only miss is distinct from the
+earlier window assertion. The W-02 fixture previously began interaction as soon
+as `join()` observed Join Game, before the initial chunk batch marked client
+startup complete. It now waits for `ChunkBatchFinished` before selecting a
+summoned horse and issuing interaction/attack packets, and exits that case
+cleanly if setup fails. This is test-readiness hardening, not a production combat
+change or proof of the failure's server-side cause. The revised `plan43` passed
+10 consecutive local launches (`260.95s` total); the new PR head still requires
+its own Actions run before merge.

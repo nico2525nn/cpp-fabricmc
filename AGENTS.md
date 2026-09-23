@@ -41,7 +41,7 @@
      }
    - 同一worktreeでの重複起動は絶対に避ける (被ると競合)。
    - 研究完了前に実装を開始しない。
-    - **すべてのコマンドに確実なタイムアウトを付与** (`test_smoke_80` は子プロセス `cppfm` を fork するため親だけを殺すと孤児化)。例: `timeout --foreground --kill-after=5 120 cmake -B build -G Ninja` / `timeout --foreground --kill-after=5 300 cmake --build build -j2` / `timeout --foreground --kill-after=5 450 ./build/test_smoke_80 ./build/cppfm`。終了確認は `pgrep -a -f 'cppfm --por[t]'` の後、対象が確認できた場合だけ `timeout --foreground --kill-after=5 10 pkill -9 -f 'cppfm --por[t]'` を使う。`ctest -R smoke80 --timeout 450` でも可。
+    - **すべてのコマンドに確実なタイムアウトを付与** (`test_smoke_80` は子プロセス `cppfm` を fork するため親だけを殺すと孤児化)。例: `timeout --foreground --kill-after=5 120 cmake -B build -G Ninja` / `timeout --foreground --kill-after=5 300 cmake --build build -j2` / `timeout --foreground --kill-after=5 600 ./build/test_smoke_80 ./build/cppfm`。終了確認は `pgrep -a -f 'cppfm --por[t]'` の後、対象が確認できた場合だけ `timeout --foreground --kill-after=5 10 pkill -9 -f 'cppfm --por[t]'` を使う。`ctest -R smoke80 --timeout 600` でも可。
 
 4. 並行で開発させ、すべてが終わったあと diff をレビューしマージ
    - `git diff main --stat` と `git log --oneline --graph` で確認
@@ -99,7 +99,7 @@ timeout --foreground --kill-after=5 60 ./build/test_native ./build/cppfm        
 timeout --foreground --kill-after=5 30 ./build/test_scoreboard_reset               # 22/22 PASS expected (ctest scoreboard_reset TIMEOUT 30)
 timeout --foreground --kill-after=5 60 ./build/test_spec_wire                     # 392 PASS 0 FAIL 0 SKIP (wire byte-identical lock; 実績は CURRENT_STATE §2)
 timeout --foreground --kill-after=5 30 ./build/test_fuzz                          # 23 PASS 0 FAIL (fuzz 23 cases, TIMEOUT 30)
-timeout --foreground --kill-after=5 450 ./build/test_smoke_80 ./build/cppfm        # 212 PASS 0 FAIL (実績は CURRENT_STATE §2) — 450s (600s under load)
+timeout --foreground --kill-after=5 600 ./build/test_smoke_80 ./build/cppfm        # 225 PASS 0 FAIL (実績は CURRENT_STATE §2)
 pgrep -a -f 'cppfm --por[t]' || true
 timeout --foreground --kill-after=5 10 pkill -9 -f 'cppfm --por[t]' 2>/dev/null || true
 timeout --foreground --kill-after=5 5 sleep 1
@@ -111,7 +111,7 @@ timeout --foreground --kill-after=5 400 python3 tests/soak_test.py --duration 30
 timeout --foreground --kill-after=5 60 python3 tools/bench_chunk_gen.py --view-distance 32 --chunks 4225 --dry --strict  # plan45 O-11 view32
 # nightly 24h (plan45 O-06 — ctest外): nohup python3 tests/soak_test.py --duration 86400 --binary ./build/cppfm > /tmp/soak24h.log 2>&1 &
 ctest -R "native|scoreboard_reset|spec_wire|fuzz" --output-on-failure --timeout 60
-ctest -R smoke80 --output-on-failure --timeout 450   # 600 under load
+ctest -R smoke80 --output-on-failure --timeout 600
 ```
 
 ## 6. Architecture Quick Map

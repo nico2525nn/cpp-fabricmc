@@ -18,7 +18,6 @@
 #include <chrono>
 #include <thread>
 #include <cmath>
-#include <unordered_set>
 
 using namespace cppfm;
 using namespace cpptest;
@@ -187,17 +186,20 @@ static std::int32_t summonHorseNear(TestClient& c, const char* who) {
     // NOTE: /summon takes NO position args (server spawns at player+(2,1,2));
     // extra tokens fail brigadier parse, so send the bare command.
     (void)who;
-    // snapshot known horse eids BEFORE summoning (a warm server answers in
-    // <ms; snapshotting after the send would swallow our own horse).
-    std::unordered_set<std::int32_t> known;
-    for (auto& s : c.spawns()) if (s.type == 63) known.insert(s.eid);
+    // Snapshot the entity-id high-water mark before summoning. A newly joined
+    // client's initial entity stream can still contain older horses after
+    // join() returns; treating any post-snapshot horse packet as ours makes
+    // this test race against that tail of the stream.
+    std::int32_t highestSeenEntityId = 0;
+    for (const auto& s : c.spawns())
+        if (s.eid > highestSeenEntityId) highestSeenEntityId = s.eid;
     c.sendChatCommand("summon minecraft:horse");
     auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(6000);
     while (std::chrono::steady_clock::now() < deadline) {
         auto ss = c.spawns();
         std::int32_t found = -1;
         for (auto& s : ss)
-            if (s.type == 63 && !known.count(s.eid)) found = s.eid; // newest birth wins
+            if (s.type == 63 && s.eid > highestSeenEntityId) found = s.eid;
         if (found >= 0) return found;
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
@@ -248,7 +250,13 @@ static void tUseEntity(ServerProc& srv) {
         char msg[160];
         snprintf(msg, sizeof(msg), "W-02 %s join", k.label);
         char nm[32]; snprintf(nm, sizeof(nm), "P43U%d", (int)(k.mouse * 4 + k.hand * 2 + (k.sneak ? 1 : 0)));
-        CHECK(c.connect("127.0.0.1", srv.port) && c.join(nm), msg);
+        const bool joined = c.connect("127.0.0.1", srv.port) && c.join(nm);
+        CHECK(joined, msg);
+        if (!joined) { c.close(); continue; }
+        const bool chunksReady = waitInitialChunks(c);
+        snprintf(msg, sizeof(msg), "W-02 %s initial chunk batch complete", k.label);
+        CHECK(chunksReady, msg);
+        if (!chunksReady) { c.close(); continue; }
         std::int32_t eid = summonHorseNear(c, k.label);
         snprintf(msg, sizeof(msg), "W-02 %s horse summoned", k.label);
         CHECK(eid >= 0, msg);
@@ -267,9 +275,15 @@ static void tUseEntity(ServerProc& srv) {
     for (int s = 0; s < 2; ++s) {
         TestClient c;
         char nm[32]; snprintf(nm, sizeof(nm), "P43A%d", s);
-        CHECK(c.connect("127.0.0.1", srv.port) && c.join(nm), "W-02 atk join");
-        std::int32_t eid = summonHorseNear(c, s ? "atk1" : "atk0");
+        const bool joined = c.connect("127.0.0.1", srv.port) && c.join(nm);
+        CHECK(joined, "W-02 atk join");
+        if (!joined) { c.close(); continue; }
+        const bool chunksReady = waitInitialChunks(c);
         char msg[160];
+        snprintf(msg, sizeof(msg), "W-02 atk%d initial chunk batch complete", s);
+        CHECK(chunksReady, msg);
+        if (!chunksReady) { c.close(); continue; }
+        std::int32_t eid = summonHorseNear(c, s ? "atk1" : "atk0");
         snprintf(msg, sizeof(msg), "W-02 atk%d horse summoned", s);
         CHECK(eid >= 0, msg);
         if (eid >= 0) {

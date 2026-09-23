@@ -487,7 +487,6 @@ if(TARGET cppfm_embedded_resources)
 endif()
 add_test(NAME smoke80 COMMAND test_smoke_80 $<TARGET_FILE:cppfm>
          WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
-set_tests_properties(smoke80 PROPERTIES TIMEOUT 450)
 
 # plan51 §1–2: generation-safe handle and selective routing invariants.
 add_executable(test_jvm_handles

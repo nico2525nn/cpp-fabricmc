@@ -273,8 +273,12 @@ def run(binary: Path, artifact_root: Path) -> dict[str, object]:
         client.command("setblock 63 -60 50 minecraft:air", "Changed the block")
         border_before = len(client.packet_payloads)
         client.command("worldborder center 0 0", "Set world border center to 0.000000, 0.000000")
-        client.command("worldborder set 2", "Set world border to 2.000000 blocks wide")
+        # Move to the eventual damage position while the default border is
+        # still large. Shrinking it first leaves the player far outside the
+        # new border and can kill them before the following teleport command
+        # is processed on a slower runner.
         client.command("tp @s 10 -60 50", "Teleported 1 entity")
+        client.command("worldborder set 2", "Set world border to 2.000000 blocks wide")
         border_packets = client.packet_payloads[border_before:]
         border_packets += client.pump(2.2)
         border_health = [parse_health(payload) for packet_id, payload in border_packets
