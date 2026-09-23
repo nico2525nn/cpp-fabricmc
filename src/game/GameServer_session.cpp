@@ -596,7 +596,9 @@ std::string makeStatusJson(const GameServer& server,
     description.set("text", json::Value::ofString(server.config().motd));
     root.set("description", std::move(description));
     root.set("enforcesSecureChat",
-             json::Value::ofBool(server.config().enforcesSecureChat));
+             json::Value::ofBool(secure_chat_policy::isEnforced(
+                 server.config().enforceSecureProfile,
+                 server.config().enforcesSecureChat)));
 
     const std::string favicon = readServerIconBase64();
     if (!favicon.empty()) root.set("favicon", json::Value::ofString(favicon));
