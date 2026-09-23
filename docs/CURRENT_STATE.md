@@ -490,3 +490,12 @@ cleanly if setup fails. This is test-readiness hardening, not a production comba
 change or proof of the failure's server-side cause. The revised `plan43` passed
 10 consecutive local launches (`260.95s` total); the new PR head still requires
 its own Actions run before merge.
+
+Final PR #3 status (supersedes the pending-at-the-time notes above): PR #3 was
+merged to `main` as `f840324827b795a0efbf69ab2eba0ea73571772d` on 2026-09-24
+(JST). Exact PR-head Actions run
+[`35891999280`](https://github.com/nico2525nn/cpp-fabricmc/actions/runs/35891999280)
+passed the full non-nightly CTest gate (`55/55`) and all preceding required
+checks. The push-triggered main Actions run
+[`35895033589`](https://github.com/nico2525nn/cpp-fabricmc/actions/runs/35895033589)
+also completed successfully on the merge commit.
