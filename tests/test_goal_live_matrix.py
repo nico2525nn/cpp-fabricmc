@@ -282,6 +282,7 @@ def run(binary: Path, artifact_root: Path) -> dict[str, object]:
                 "view-distance=2",
                 "simulation-distance=2",
                 "online-mode=false",
+                "enforce-secure-profile=false",
                 "jvm=false",
                 "compression-threshold=256",
                 "level-seed=goal-live-seed",
@@ -292,6 +293,7 @@ def run(binary: Path, artifact_root: Path) -> dict[str, object]:
             str(binary), f"--port={port}", f"--world-dir={world}",
             "--level-type=flat", f"--view-distance={view}",
             "--simulation-distance=2", f"--motd={motd}", "--jvm=false",
+            "--online-mode=false", "--enforce-secure-profile=false",
         ]
         server = OwnedServer(command, root, root / "server.log")
         active.append(server)
