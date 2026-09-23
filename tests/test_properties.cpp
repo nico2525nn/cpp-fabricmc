@@ -53,6 +53,9 @@ void testPropertiesSyntax() {
     check(camelCaseDistance.loadText("viewDistance=7") &&
               camelCaseDistance.viewDistance() == 7,
           "legacy view-distance helper retains its explicit camel-case alias");
+    ServerProperties leadingPlus;
+    check(leadingPlus.loadText("number=+42") && leadingPlus.get<int>("number", 0) == 42,
+          "typed integer properties accept Java's leading plus sign");
 
     ServerProperties properties;
     check(properties.loadText(
@@ -266,7 +269,7 @@ void testSupportedProperties() {
     invalid.port = 43123;
     invalid.viewDistance = 7;
     invalid.levelType = "flat";
-    invalid.jvmEnabled = false;
+    invalid.jvmEnabled = true;
     ServerProperties invalidProperties;
     check(invalidProperties.loadText(
               "server-port=not-a-port\n"
@@ -278,15 +281,15 @@ void testSupportedProperties() {
     ConfigDiagnostics invalidDiagnostics;
     applyServerProperties(invalid, invalidProperties, &invalidDiagnostics);
     check(invalid.port == 43123 && invalid.viewDistance == 7 &&
-              invalid.levelType == "flat" && !invalid.jvmEnabled,
-          "invalid typed values fall back without changing the prior config");
+              invalid.levelType == "flat" && !invalid.jvmEnabled &&
+              invalid.difficulty == "hard",
+          "invalid typed values retain prior fields while Java boolean and difficulty values apply");
     check(hasDiagnostic(invalidDiagnostics, ConfigDiagnosticKind::InvalidValue, "server-port") &&
               hasDiagnostic(invalidDiagnostics, ConfigDiagnosticKind::InvalidValue, "view-distance") &&
               hasDiagnostic(invalidDiagnostics, ConfigDiagnosticKind::InvalidValue, "level-type") &&
-              hasDiagnostic(invalidDiagnostics, ConfigDiagnosticKind::InvalidValue, "jvm") &&
-              !hasDiagnostic(invalidDiagnostics, ConfigDiagnosticKind::InvalidValue, "difficulty") &&
-              invalid.difficulty == "hard",
-          "invalid values and supported difficulty remain distinguishable");
+              !hasDiagnostic(invalidDiagnostics, ConfigDiagnosticKind::InvalidValue, "jvm") &&
+              !hasDiagnostic(invalidDiagnostics, ConfigDiagnosticKind::InvalidValue, "difficulty"),
+          "invalid numeric/type values are diagnosed but non-true Java booleans are valid false values");
 }
 
 void testFileLoadingAndPrecedence() {

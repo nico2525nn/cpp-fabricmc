@@ -151,6 +151,12 @@ const KeySpec* findKey(std::string_view name, bool propertySource) {
 template<typename T>
 bool parseInteger(std::string_view text, T& value) {
     if (text.empty()) return false;
+    // Java Integer/Long parsing accepts an optional leading plus sign, while
+    // std::from_chars intentionally does not.
+    if (text.front() == '+') {
+        text.remove_prefix(1);
+        if (text.empty()) return false;
+    }
     const auto result = std::from_chars(text.data(), text.data() + text.size(), value, 10);
     return result.ec == std::errc{} && result.ptr == text.data() + text.size();
 }
@@ -197,6 +203,15 @@ bool parseLevelType(std::string_view text, std::string& levelType) {
 }
 
 bool parseDifficulty(std::string_view text, std::string& difficulty) {
+    constexpr std::array<std::string_view, 4> kById{
+        "peaceful", "easy", "normal", "hard"};
+    int id = 0;
+    if (parseInteger(text, id)) {
+        if (id < 0 || static_cast<std::size_t>(id) >= kById.size()) return false;
+        difficulty = kById[static_cast<std::size_t>(id)];
+        return true;
+    }
+
     const std::string normalized = asciiLower(std::string(text));
     if (normalized != "peaceful" && normalized != "easy" &&
         normalized != "normal" && normalized != "hard") return false;

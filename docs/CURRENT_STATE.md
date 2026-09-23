@@ -34,7 +34,7 @@ handoff notes are not part of the public documentation set.
 | `research_viewpoints` | `16` current viewpoints; old `13` wording is historical |
 | `taxonomy_snapshot` | MISSING `#1–#90`; historical matrix counts `DONE=90, PARTIAL=0, TODO=0` |
 | `strict_assessment_1` | `78 gaps`; `HISTORICAL` archive label, not a current aggregate |
-| `next_plan` | close current PR #1 gates; the local plan55 protocol-primitive follow-up is implemented, while plan56 server.properties audit research remains to be implemented and verified |
+| `next_plan` | submit the locally validated vanilla 1.21.4 server.properties compatibility follow-up as a PR stacked on PR #1, then resolve any exact-SHA Actions failures before merge; the property surface remains explicitly partial |
 
 The previous baseline was the plan50 runtime follow-up after the plan49 implementation integration and cleanup commit
 `db12df96093a0869e958f62b11f9a9cd68ba3ef1` and safety commit
@@ -45,11 +45,12 @@ for binaries built with the required JNI inputs, without changing generated data
 protocol 769, or the `docs-legacy/` archive. The
 plan51 implementation and its no-ff integration are recorded above.
 
-## 1A. Current working-tree verification
+## 1A. Working-tree verification baseline (2026-09-19)
 
-The following evidence is from the current uncommitted working tree after the
+The following evidence is from the 2026-09-19 working-tree snapshot after the
 settings/security/authority hardening pass. It supersedes neither the historical
-`335fca5` baseline above nor the declared release boundaries below.
+`335fca5` baseline above nor the declared release boundaries below, and it is not
+the result of the separate plan56 compatibility follow-up in §1C.
 
 | gate | measured result | scope / limitation |
 |---|---|---|
@@ -87,6 +88,32 @@ artifact boundaries.
 MISSING #71's row-specific evidence is now `PASS` in the 90-row coverage ledger
 (`14 PASS`, `38 PARTIAL`, `38 UNVERIFIED`). This does not remove the independent
 publication boundaries below or imply universal protocol parity.
+
+## 1C. Vanilla 1.21.4 settings compatibility follow-up (2026-09-23)
+
+This work is on local branch `plan56/compatibility`, based on PR #1 head
+`26e399c0`; it is not merged. The result changes vanilla-facing defaults and
+property interpretation while keeping unsupported properties declared as
+unsupported.
+
+| gate | measured result | scope / limitation |
+|---|---|---|
+| RelWithDebInfo configure/full build | `PASS` | Full Ninja build completed in the integration worktree; all commands had explicit timeouts |
+| defaults, whitelist key, difficulty IDs, and signed integers | `47 PASS / 0 FAIL` | `settings_matrix`; vanilla online/profile defaults, view distance, MOTD, difficulty, random new-world seed, canonical `white-list`, source-order alias behavior, difficulty IDs `0..3`, and leading `+` are covered |
+| Java Properties parsing and configuration | `63 PASS / 0 FAIL` | `properties`; separators, escapes, continuations, key case, UTF-8/ISO-8859-1 fallback, Java boolean semantics, and CLI precedence; isolated UTF-16 surrogates map to U+FFFD in the UTF-8 API |
+| effective secure-chat policy | `12 PASS / 0 FAIL` | `secure_chat_policy`; status and Join Game share the effective policy, `enforce-secure-profile || enforces-secure-chat`; unsigned-after-session behavior remains unverified |
+| fake-client authentication options | `PASS` | source guard and Python syntax checks cover local fake-client launchers; each offline launcher explicitly disables both online mode and secure-profile enforcement |
+| full non-nightly CTest | `55/55 PASS` | 516.24s, exact command and scope in [VERIFICATION.md](VERIFICATION.md#vanilla-server-settings-compatibility-follow-up-2026-09-23-pre-merge) |
+| server child cleanup | `PASS` | post-suite `pgrep -a -f 'cppfm --por[t]'` found no remaining `cppfm` server process |
+| remaining property parity | `PARTIAL` | `enforce-whitelist`, query/status/network, permission, datapack, and several world/pack/operations effects are not fully implemented; `ServerProperties::save` is not `Properties.store`-compatible |
+
+Additional exploratory offline Python runs reported failures identical on the
+unmodified parent binary: replay `5/8` (signed `n=0` command, sign block-entity
+update, survival ability flags), `run_plan43_suite.py` `10/23` (signed chat,
+damage, horse IDs, join flags, and sign placement/text), and short soak-bot runs
+with `0` chunks against an expected minimum of `10`. These checks have no
+retained per-run logs and are not part of the passing CTest aggregate; the C++
+`plan43` target separately passes `87/87`.
 
 ## 2. Prior plan48 and cleanup record
 

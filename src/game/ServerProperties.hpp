@@ -372,8 +372,12 @@ private:
     }
 
     template<typename T>
-    static bool parseInteger(const std::string& text, T& value) {
+    static bool parseInteger(std::string_view text, T& value) {
         if (text.empty()) return false;
+        if (text.front() == '+') {
+            text.remove_prefix(1);
+            if (text.empty()) return false;
+        }
         const char* first = text.data();
         const char* last = first + text.size();
         const auto result = std::from_chars(first, last, value, 10);

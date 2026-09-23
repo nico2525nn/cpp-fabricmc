@@ -40,7 +40,7 @@ boundaries. Any unverified assertion uses `DECLARED-LIMITATION` rather than an
 inferred pass. See [PLAN51_JVM.md](PLAN51_JVM.md) and
 [MC_PILOT_REAL_TEST.md](MC_PILOT_REAL_TEST.md).
 
-### Current working-tree hardening gate
+### Working-tree hardening baseline (2026-09-19)
 
 The final focused run measured `test_settings_matrix` `27 PASS / 0 FAIL`,
 `test_properties` `33 PASS / 0 FAIL`, `test_recovery` `55 PASS / 0 FAIL`
@@ -64,6 +64,47 @@ encrypted frames FIFO, and has a 100 ms graceful-drain bound. Persistence piston
 barriers run under the same gate. Secure-profile rejection is terminal, block
 callbacks cancel before mutation with post-callback revalidation, and signed
 command argument transcripts fail closed as a declared limitation.
+
+### Vanilla server-settings compatibility follow-up (2026-09-23; pre-merge)
+
+This local compatibility follow-up is based on PR #1 head
+`26e399c0d1cae542d459812ef84fd5e865515e2c`. It intentionally improves the
+implemented settings subset without claiming complete `server.properties`
+parity. Pre-merge local evidence:
+
+| check | result | command / scope |
+|---|---|---|
+| RelWithDebInfo configure and full build | `PASS` | `timeout --foreground --kill-after=5 120 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo`; `timeout --foreground --kill-after=5 600 cmake --build build -j4` |
+| properties/parser | `63 PASS / 0 FAIL` | `timeout --foreground --kill-after=5 60 ./build/test_properties ./build/cppfm` |
+| config/settings matrix | `47 PASS / 0 FAIL` | `timeout --foreground --kill-after=5 60 ./build/test_settings_matrix` |
+| secure-chat policy | `12 PASS / 0 FAIL` | `timeout --foreground --kill-after=5 60 ./build/test_secure_chat_policy` |
+| source/process guards | `PASS` | `goal_security_guards`, Python syntax checks for the modified launcher scripts, and the runtime-layout CTest all pass |
+| full non-nightly CTest | `55/55 PASS` in `516.24s` | `timeout --foreground --kill-after=5 2400 ctest --test-dir build -LE 'nightly|package' --output-on-failure --timeout 600` |
+| owned server cleanup | `PASS` | `pgrep -a -f 'cppfm --por[t]'` found no remaining server process after the suite |
+
+The settings tests cover vanilla-facing defaults (`online-mode=true`,
+`enforce-secure-profile=true`, view distance 10, vanilla MOTD/easy difficulty,
+and a random seed for a new world), canonical `white-list`, Java property
+syntax/encoding/boolean behavior, difficulty ordinals, and Java's leading plus
+sign on supported integers. All offline fake-client launchers explicitly pass
+both authentication flags as false. `enforce-whitelist`, query/status/network,
+permission, datapack, and several world/pack/operations keys remain unsupported
+or without complete vanilla runtime effects; `ServerProperties::save` is not a
+`Properties.store` implementation. The secure-chat policy keeps the vanilla
+profile property and cppfm extension separately configured, but advertises and
+enforces their logical OR; unsigned messages after a player session remain an
+unverified edge case. These are subset results, not full settings parity or an
+authenticated-client revalidation.
+
+Separate exploratory offline Python checks exposed failures which were
+reproduced against the unmodified parent binary and therefore are not attributed
+to this settings change: `replay_vanilla.py` 5/8 (signed `n=0` command, sign
+block-entity update, and survival ability flags); `run_plan43_suite.py` 10/23
+(signed chat/Seed, damage event, horse entity IDs, creative/survival join flags,
+and sign placement/text); and short `soak_bot.py` runs reporting zero chunks
+instead of the expected minimum ten. The C++ `plan43` test passes 87/87, and the
+full non-nightly CTest result above is green; the exploratory failures have no
+retained per-run logs.
 
 ## 1. Feature overview
 
@@ -90,6 +131,8 @@ current assertion.
 | Minecraft Wiki Java protocol page | supplemental encoding explanation | `VANILLA-CONCEPT` |
 | Fabric 1.21.4 release note and Loader 0.16.9 docs | platform/version boundary | `VANILLA-CONCEPT` |
 | [Fabric developer documentation](https://docs.fabricmc.net/develop/index), Fabric API `0.119.4+1.21.4`, and Yarn `1.21.4+build.8` Javadocs | server/common API names, signatures, lifecycle concepts, and versioned ABI audit | `OFFICIAL-API-REFERENCE` / informational audit |
+| [Oracle Java SE 21 Properties](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Properties.html), [Boolean](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Boolean.html), [Integer](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Integer.html), and [Long](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Long.html) | property separators, escapes, continuations, encoding contract, integer sign behavior, and `parseBoolean` semantics | `OFFICIAL-JAVA-REFERENCE` |
+| [Mojang 1.21.4 version metadata](https://piston-meta.mojang.com/v1/packages/c16bd1251bdf2cab3d7c3b30393427eeb19c6b2e/1.21.4.json) and [official server artifact](https://piston-data.mojang.com/v1/objects/4707d00eb834b446575d89a61a11b5d548d8c001/server.jar) (`SHA-1 4707d00eb834b446575d89a61a11b5d548d8c001`) | version-pinned server-properties defaults and enum conversion checked by static bytecode inspection; artifact was not run for this audit | `OFFICIAL-BINARY-REFERENCE` |
 | [Yarn LocalRandom](https://maven.fabricmc.net/docs/yarn-1.21.4%2Bbuild.1/net/minecraft/util/math/random/LocalRandom.html), [Xoroshiro128PlusPlusRandom](https://maven.fabricmc.net/docs/yarn-1.21.4%2Bbuild.1/net/minecraft/util/math/random/Xoroshiro128PlusPlusRandom.html), [RandomSeed](https://maven.fabricmc.net/docs/yarn-1.21.4%2Bbuild.1/net/minecraft/util/math/random/RandomSeed.html), and [RandomSplitter](https://maven.fabricmc.net/docs/yarn-1.21.4%2Bbuild.4/net/minecraft/util/math/random/RandomSplitter.html) | 1.21.4 RNG algorithms, seed expansion, primitive API, and splitter surface | `OFFICIAL-API-REFERENCE` |
 | [xoroshiro128++ public-domain reference](https://prng.di.unimi.it/xoroshiro128plusplus.c) and official 1.21.4 server bytecode inspection | transition/orientation cross-check for the native vector implementation | `PUBLIC-REFERENCE` / local audit |
 | [EntityPositionS2CPacket](https://maven.fabricmc.net/docs/yarn-1.21.4%2Bbuild.8/net/minecraft/network/packet/s2c/play/EntityPositionS2CPacket.html) and [PlayerPosition](https://maven.fabricmc.net/docs/yarn-1.21.4%2Bbuild.1/net/minecraft/entity/player/PlayerPosition.html) | official 1.21.4 `teleport_entity` field model | `OFFICIAL-API-REFERENCE` + real-client decode |

@@ -116,10 +116,7 @@ The latest recorded runs include:
   limitations remain as listed above.
 - The explicit no-JNI configure/build and its `42/42` non-package CTest set,
   plus the four-binary ASan/UBSan key set
-  (`core_safety`, `spec_wire`, `fuzz`, and `gameplay_full`) also pass. The safe
-  Plan54 cleanup is partial: the protected-scope ledger is reproducible, but the
-  strict 18,341-line reduction target was not reached and no tests or fixtures were
-  removed to claim it.
+  (`core_safety`, `spec_wire`, `fuzz`, and `gameplay_full`) also pass.
 - Real-client check: the mc-pilot-managed Fabric 1.21.4 client logged in offline,
   entered the world, stayed connected for more than one minute, and completed
   chat, `say`, position, block read/break/read, status, and screenshot probes.

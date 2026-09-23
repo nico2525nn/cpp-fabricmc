@@ -35,8 +35,15 @@ def main():
     jvm = chat.index("srv_.jvmRuntime()->onChat")
     require(verified < event < jvm,
             "chat callbacks run only after signature and replay verification")
-    require("srv_.config().onlineMode) && !usePlayerChat" in chat,
-            "online unverified chat fails closed when enforcement is disabled")
+    require("secure_chat_policy::classifyMessage(" in chat and
+            "secure_chat_policy::isEnforced(" in chat and
+            "MessageDisposition::Reject" in chat,
+            "chat disposition follows vanilla secure-profile policy and verification")
+    status = between(session, "std::string makeStatusJson", "void Session::answerLegacyPing")
+    join = between(session, "void Session::sendJoinGame()", "void Session::sendAbilities()")
+    require("secure_chat_policy::isEnforced(" in status and
+            "secure_chat_policy::isEnforced(" in join,
+            "status and Join Game advertise the same effective secure-chat policy")
 
     jvm_source = (ROOT / "src/jvm/JvmRuntime.cpp").read_text()
     set_block = between(jvm_source, "bool JvmRuntime::nativeWorldSetBlock",

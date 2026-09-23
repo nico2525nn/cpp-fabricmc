@@ -1,9 +1,12 @@
 #include "../src/game/ServerConfig.hpp"
 #include "../src/game/ServerProperties.hpp"
 
+#include <array>
 #include <cstdint>
 #include <iostream>
+#include <string>
 #include <string_view>
+#include <utility>
 
 using namespace cppfm;
 
@@ -214,7 +217,34 @@ void testCanonicalProperties() {
     check(independentDiagnostics.entries.empty() &&
               independentConfig.enforceSecureProfile &&
               !independentConfig.enforcesSecureChat,
-          "secure profile enforcement does not silently enforce secure chat");
+          "vanilla profile and cppfm secure-chat options remain independently stored");
+}
+
+void testDifficultyOrdinals() {
+    std::cout << "\n[vanilla difficulty ordinals]\n";
+    constexpr std::array<std::pair<std::string_view, std::string_view>, 4> cases{{
+        {"0", "peaceful"}, {"1", "easy"}, {"2", "normal"}, {"3", "hard"}}};
+    bool allMapped = true;
+    for (const auto& [ordinal, expected] : cases) {
+        ServerProperties properties;
+        const std::string fixture = "difficulty=" + std::string(ordinal) + "\n";
+        ServerConfig config;
+        ConfigDiagnostics diagnostics;
+        allMapped &= properties.loadText(fixture);
+        applyServerProperties(config, properties, &diagnostics);
+        allMapped &= config.difficulty == expected && diagnostics.entries.empty();
+    }
+
+    ServerProperties plusOrdinal;
+    ServerConfig plusConfig;
+    ConfigDiagnostics plusDiagnostics;
+    const bool plusLoaded = plusOrdinal.loadText("server-port=+25571\ndifficulty=+3\n");
+    applyServerProperties(plusConfig, plusOrdinal, &plusDiagnostics);
+    check(allMapped,
+          "difficulty ordinals 0 through 3 map to the vanilla named difficulties");
+    check(plusLoaded && plusConfig.port == 25571 && plusConfig.difficulty == "hard" &&
+              plusDiagnostics.entries.empty(),
+          "Java-style leading plus signs are accepted for integers and difficulty IDs");
 }
 
 void testAliasOrderAndMapMutation() {
@@ -312,6 +342,7 @@ int main() {
     testCanonicalWhitelistAndAliasPrecedence();
     testPropertyKeyCaseAndBooleanSemantics();
     testCanonicalProperties();
+    testDifficultyOrdinals();
     testAliasOrderAndMapMutation();
     testCommandLinePrecedence();
     testInvalidSettings();
