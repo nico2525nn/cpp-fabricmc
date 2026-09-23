@@ -1952,9 +1952,12 @@ bool GameServer::addToInventory(Player& p, std::uint32_t itemId, std::uint16_t c
     auto trial = p.inv;
     // merge into existing stacks (hotbar 36..44, main 9..35)
     for (int pass = 0; pass < 2; ++pass) {
-        for (int i : (pass == 0 ? std::initializer_list<int>{36,37,38,39,40,41,42,43,44}
-                                : std::initializer_list<int>{9,10,11,12,13,14,15,16,17,18,19,
-                                                             20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35})) {
+        // A conditional initializer_list only copies its non-owning view, so
+        // range-for's lifetime extension does not keep the selected backing
+        // array alive. Iterate the contiguous slot ranges directly instead.
+        const int firstSlot = pass == 0 ? 36 : 9;
+        const int pastLastSlot = pass == 0 ? 45 : 36;
+        for (int i = firstSlot; i < pastLastSlot; ++i) {
             auto& s = trial[i];
             if (pass == 0 && s.itemId == itemId && s.count > 0 && s.count < 64) {
                 const int take = std::min(64 - static_cast<int>(s.count),

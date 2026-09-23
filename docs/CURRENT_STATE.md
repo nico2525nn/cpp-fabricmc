@@ -152,6 +152,18 @@ The previous Actions result covers only
 `bac90dfbce70a8d1c09ddf525b339fac479ff350`; it does not validate this review
 delta. The exact PR head must pass Actions before merge.
 
+The subsequent exact-head Actions run on pre-fix SHA `9e17bbe676a512400bbf97b682ded843d0faab77`
+([run 35856254690](https://github.com/nico2525nn/cpp-fabricmc/actions/runs/35856254690))
+failed in `smoke80`: `GameServer::addToInventory` read beyond the inventory
+array while `InvTester` exercised `/give`. Reproduction with GCC 11.4 and JDK 17
+showed a dangling backing array from a conditional `std::initializer_list`
+range; the stale value became slot index 256. The implementation now iterates
+the two contiguous inventory ranges directly (hotbar 36–44, main inventory
+9–35). On the fixed source, the full GCC 11.4/JDK 17 smoke run completed with
+**225 PASS / 0 FAIL** on rerun (an earlier post-fix run had one non-reproduced
+failure); local `native` and `wire_b6` CTest targets passed **2/2**. This local
+evidence does not replace Actions for the updated PR head.
+
 ## 2. Prior plan48 and cleanup record
 
 | item | state at this tracker | evidence / scope |
