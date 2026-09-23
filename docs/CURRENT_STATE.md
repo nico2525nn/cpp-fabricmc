@@ -424,7 +424,9 @@ baseline and protected manifest, a 90-row coverage ledger (`14 PASS`, `38 PARTIA
 with focused regression tests. The PR #1 review completed five hostile rounds
 and a final follow-up;
 the current verdict is `P0=0, P1=0, P2=0, P3=0` unresolved after the focused
-fixes and 8/8 local CTest rerun. Exact-head CI is still pending. Source-order
+fixes and 8/8 local CTest rerun. The exact PR-head Actions run
+[`35865145988`](https://github.com/nico2525nn/cpp-fabricmc/actions/runs/35865145988)
+passed before PR #1 was merged. Source-order
 guards cover security fixes where no authenticated client or external JVM fixture
 is available. Scoped production cleanup measured `-9`
 lines; the additional refactors are recorded in `goal-cleanup-runtime.md` and
@@ -439,3 +441,15 @@ remaining-entry fixture passed `1/1` in `63.93s`, and the final two-launch
 protocol matrix passed with both owned processes returning `0` and no escalation.
 The requested 7200-second soak failed at `t=1200s` with server exit `-9`; no
 accepted long-soak result is claimed.
+
+The first post-merge main Actions run
+[`35868844643`](https://github.com/nico2525nn/cpp-fabricmc/actions/runs/35868844643)
+timed out `smoke80`; a same-SHA rerun completed the suite but exposed one
+`goal_live_remaining` failure. That fixture shrank the world border while the
+player was still far outside it, then issued a teleport; on a slower runner,
+border damage could remove the command target before the teleport feedback was
+observed. Locally, `smoke80` passed all 225 cases in `178.25s`, and the full
+pre-fix non-nightly CTest run passed `55/55` in `522.97s`. The follow-up makes
+the fixture teleport to its damage position before shrinking the border, then
+checks the same border wire and damage effects; the targeted post-change test
+passed `5/5` consecutive launches (`263.24s`).
