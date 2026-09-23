@@ -10,6 +10,7 @@
 #include "../src/proto/Ids.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -17,6 +18,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 #ifndef _WIN32
@@ -225,6 +227,19 @@ void testCompressionAndFraming() {
     check(PacketDecoder::decodeOuter(belowThreshold, 5) == below,
           "uncompressed boundary round-trips through the shipped decoder");
 
+    const std::vector<std::uint8_t> maxFrameBody(PacketEncoder::kMaxFrame, 0x5A);
+    const auto maxFrame = PacketEncoder::encode(maxFrameBody, -1);
+    check(PacketDecoder::decodeOuter(maxFrame, -1) == maxFrameBody,
+          "encoder and decoder round-trip the largest VarInt21 frame");
+    throws("encoder rejects an uncompressed frame outside VarInt21", [] {
+        std::vector<std::uint8_t> tooLarge(PacketEncoder::kMaxFrame + 1, 0x5A);
+        (void)PacketEncoder::encode(tooLarge, -1);
+    });
+    const std::vector<std::uint8_t> maxDeclaredBody(PacketEncoder::kMaxDeclared, 0);
+    const auto compressedMaxDeclared = PacketEncoder::encode(maxDeclaredBody, 1);
+    check(PacketDecoder::decodeOuter(compressedMaxDeclared, 1) == maxDeclaredBody,
+          "compressed declared-size limit remains inclusive at 2 MiB");
+
     const std::vector<std::uint8_t> continuedFramePrefix{0x80, 0x80, 0x80, 0x01};
     ReadBuffer framePrefix(continuedFramePrefix);
     bool framePrefixRejected = false;
@@ -312,6 +327,59 @@ void testEncryptionAndLifecycle() {
         ::close(sockets[1]);
     }
 
+    int idleSockets[2] = {-1, -1};
+    check(::socketpair(AF_UNIX, SOCK_STREAM, 0, idleSockets) == 0,
+          "socketpair available for first-byte frame deadline test");
+    if (idleSockets[0] >= 0) {
+        Connection connection(idleSockets[0]);
+        std::thread delayedFrame([fd = idleSockets[1]] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(120));
+            const std::uint8_t frame[] = {0x02, 0x01, 0x02};
+            (void)::send(fd, frame, sizeof(frame), MSG_NOSIGNAL);
+        });
+        bool readSucceeded = false;
+        try {
+            readSucceeded = connection.readFrameWithFirstByteTimeout(
+                                std::chrono::milliseconds(100)) ==
+                            std::vector<std::uint8_t>({0x01, 0x02});
+        } catch (...) {}
+        delayedFrame.join();
+        check(readSucceeded,
+              "frame deadline starts at its first byte, not while the connection is idle");
+        connection.close();
+        ::close(idleSockets[1]);
+    }
+
+    int dripSockets[2] = {-1, -1};
+    check(::socketpair(AF_UNIX, SOCK_STREAM, 0, dripSockets) == 0,
+          "socketpair available for slow-drip frame deadline test");
+    if (dripSockets[0] >= 0) {
+        Connection connection(dripSockets[0]);
+        std::thread slowPeer([fd = dripSockets[1]] {
+            const std::uint8_t length = 0x05;
+            (void)::send(fd, &length, 1, MSG_NOSIGNAL);
+            const std::uint8_t byte = 0x41;
+            for (int i = 0; i < 4; ++i) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(70));
+                if (::send(fd, &byte, 1, MSG_NOSIGNAL) != 1) break;
+            }
+        });
+        const auto readStart = std::chrono::steady_clock::now();
+        bool timedOut = false;
+        try {
+            (void)connection.readFrameWithFirstByteTimeout(
+                std::chrono::milliseconds(100));
+        } catch (const SocketClosedError& error) {
+            timedOut = error.timedOut;
+        }
+        const auto elapsed = std::chrono::steady_clock::now() - readStart;
+        slowPeer.join();
+        check(timedOut && elapsed < std::chrono::milliseconds(500),
+              "slow-dripped frame is bounded by one absolute frame deadline");
+        connection.close();
+        ::close(dripSockets[1]);
+    }
+
     int nonMinimalSockets[2] = {-1, -1};
     check(::socketpair(AF_UNIX, SOCK_STREAM, 0, nonMinimalSockets) == 0,
           "socketpair available for non-minimal frame-length compatibility");
@@ -376,6 +444,100 @@ void testEncryptionAndLifecycle() {
         connection.close();
         ::close(encryptedSockets[1]);
     }
+
+    int prioritySockets[2] = {-1, -1};
+    check(::socketpair(AF_UNIX, SOCK_STREAM, 0, prioritySockets) == 0,
+          "socketpair available for output priority barrier test");
+    if (prioritySockets[0] >= 0) {
+        int sendBufferSize = 1024;
+        (void)::setsockopt(prioritySockets[0], SOL_SOCKET, SO_SNDBUF,
+                           &sendBufferSize, sizeof(sendBufferSize));
+        Connection sender(prioritySockets[0]);
+        Connection receiver(prioritySockets[1]);
+        WriteBuffer bulkPayload;
+        bulkPayload.data.assign(64u * 1024u, 0x5A);
+        ++activeSimulationDispatchDepth;
+        try {
+            sender.sendPacketLowPriority(0x41, bulkPayload);
+            sender.sendPacketLowPriority(0x42, bulkPayload);
+            sender.sendPacketBarrier(0x43, WriteBuffer{});
+            sender.sendPacketLowPriority(0x44, WriteBuffer{});
+        } catch (...) {
+            --activeSimulationDispatchDepth;
+            sender.abort();
+            receiver.abort();
+            check(false, "output barrier test queues all frames");
+            return;
+        }
+        --activeSimulationDispatchDepth;
+
+        std::vector<std::uint8_t> ids;
+        bool readAll = true;
+        for (int i = 0; i < 4; ++i) {
+            try {
+                const auto body = receiver.readFrameWithTimeout(
+                    std::chrono::seconds(3));
+                if (body.empty()) readAll = false;
+                else ids.push_back(body.front());
+            } catch (...) {
+                readAll = false;
+                break;
+            }
+        }
+        check(readAll && ids == std::vector<std::uint8_t>{0x41, 0x42, 0x43, 0x44},
+              "state-transition barrier keeps older low-priority chunks ahead of Respawn");
+        sender.close();
+        receiver.close();
+    }
+
+    int abortSockets[2] = {-1, -1};
+    check(::socketpair(AF_UNIX, SOCK_STREAM, 0, abortSockets) == 0,
+          "socketpair available for aborting a blocked writer");
+    if (abortSockets[0] >= 0) {
+        int sendBufferSize = 1024;
+        (void)::setsockopt(abortSockets[0], SOL_SOCKET, SO_SNDBUF,
+                           &sendBufferSize, sizeof(sendBufferSize));
+        Connection blockedSender(abortSockets[0]);
+        WriteBuffer blockedPayload;
+        blockedPayload.data.assign(1024u * 1024u, 0xA5);
+        ++activeSimulationDispatchDepth;
+        blockedSender.sendPacketLowPriority(0x45, blockedPayload);
+        --activeSimulationDispatchDepth;
+        const auto abortStart = std::chrono::steady_clock::now();
+        blockedSender.abort();
+        const auto abortElapsed = std::chrono::steady_clock::now() - abortStart;
+        check(!blockedSender.isOpen() && abortElapsed < std::chrono::seconds(2),
+              "abort wakes and joins a blocked writer before releasing its descriptor");
+        ::close(abortSockets[1]);
+    }
+
+    int readSockets[2] = {-1, -1};
+    check(::socketpair(AF_UNIX, SOCK_STREAM, 0, readSockets) == 0,
+          "socketpair available for aborting a blocked reader");
+    if (readSockets[0] >= 0) {
+        Connection blockedReader(readSockets[0]);
+        std::atomic<bool> readStarted{false};
+        std::atomic<bool> readFailed{false};
+        std::thread reader([&] {
+            readStarted.store(true, std::memory_order_release);
+            try {
+                (void)blockedReader.readFrameWithTimeout(std::chrono::seconds(5));
+            } catch (...) {
+                readFailed.store(true, std::memory_order_release);
+            }
+        });
+        while (!readStarted.load(std::memory_order_acquire))
+            std::this_thread::yield();
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        const auto readAbortStart = std::chrono::steady_clock::now();
+        blockedReader.abort();
+        const auto readAbortElapsed = std::chrono::steady_clock::now() - readAbortStart;
+        reader.join();
+        check(!blockedReader.isOpen() && readFailed.load(std::memory_order_acquire) &&
+                  readAbortElapsed < std::chrono::seconds(2),
+              "abort wakes and drains active readers before releasing its descriptor");
+        ::close(readSockets[1]);
+    }
 #endif
 }
 
@@ -391,6 +553,46 @@ void testLimiterAndAuthEdges() {
     check(!gate.allow(1001), "accept gate enforces per-window cap");
     check(gate.allow(0), "accept gate recovers after wall-clock rollback");
 
+    SessionAdmissionGate admission(2);
+    auto slot1 = admission.tryAcquire();
+    auto slot2 = admission.tryAcquire();
+    check(slot1.has_value() && slot2.has_value() && admission.active() == 2 &&
+              !admission.tryAcquire(),
+          "session admission enforces its concurrent-worker ceiling");
+    slot1.reset();
+    check(admission.active() == 1 && admission.tryAcquire().has_value(),
+          "session admission slot release permits the next worker");
+    slot2.reset();
+
+    SessionAdmissionGate concurrentAdmission(8);
+    std::atomic<int> attempted{0};
+    std::atomic<int> admitted{0};
+    std::atomic<bool> startAdmission{false};
+    std::atomic<bool> releaseAdmission{false};
+    std::vector<std::thread> contenders;
+    contenders.reserve(32);
+    for (int i = 0; i < 32; ++i) {
+        contenders.emplace_back([&] {
+            while (!startAdmission.load(std::memory_order_acquire))
+                std::this_thread::yield();
+            auto slot = concurrentAdmission.tryAcquire();
+            if (slot) admitted.fetch_add(1, std::memory_order_relaxed);
+            attempted.fetch_add(1, std::memory_order_release);
+            if (slot)
+                while (!releaseAdmission.load(std::memory_order_acquire))
+                    std::this_thread::yield();
+        });
+    }
+    startAdmission.store(true, std::memory_order_release);
+    while (attempted.load(std::memory_order_acquire) != 32)
+        std::this_thread::yield();
+    const bool boundedAdmission = admitted.load(std::memory_order_relaxed) == 8 &&
+                                  concurrentAdmission.active() == 8;
+    releaseAdmission.store(true, std::memory_order_release);
+    for (auto& contender : contenders) contender.join();
+    check(boundedAdmission && concurrentAdmission.active() == 0,
+          "concurrent session admissions never exceed the configured ceiling");
+
     check(cppfm::mojang_detail::base64Decode("AQID") ==
               std::vector<std::uint8_t>({1, 2, 3}),
           "strict profile-key Base64 decoder accepts canonical input");
@@ -398,6 +600,67 @@ void testLimiterAndAuthEdges() {
           "profile-key Base64 decoder rejects malformed padding");
     check(cppfm::mojang_detail::base64Decode("AB==").empty(),
           "profile-key Base64 decoder rejects non-zero unused bits");
+    const auto longKey = cppfm::mojang_detail::base64Decode(std::string(2048, 'z'));
+    check(longKey.size() == 1536 && longKey[0] == 0xCF &&
+              longKey[1] == 0x3C && longKey[2] == 0xF3 &&
+              longKey[1535] == 0xF3,
+          "profile-key Base64 decoder handles long key material without signed overflow");
+
+    cppfm::mojang_detail::ProfilePublicKeyCache cache;
+    std::atomic<int> fetchCount{0};
+    const cppfm::mojang_detail::ProfilePublicKeys expected{{1, 2, 3, 4}};
+    std::vector<cppfm::mojang_detail::ProfilePublicKeys> results(8);
+    std::vector<std::thread> callers;
+    for (std::size_t i = 0; i < results.size(); ++i) {
+        callers.emplace_back([&, i] {
+            results[i] = cache.get([&] {
+                fetchCount.fetch_add(1, std::memory_order_relaxed);
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                return expected;
+            });
+        });
+    }
+    for (auto& caller : callers) caller.join();
+    check(fetchCount.load(std::memory_order_relaxed) == 1 &&
+              std::all_of(results.begin(), results.end(),
+                          [&](const auto& result) { return result == expected; }),
+          "Mojang profile keys are fetched once for concurrent logins");
+
+    cppfm::mojang_detail::ProfilePublicKeyCache staleCache(
+        std::chrono::minutes(0), std::chrono::minutes(30), std::chrono::seconds(10));
+    const auto firstFetch = staleCache.get([&] { return expected; });
+    bool staleReturned = false;
+    try {
+        staleReturned = staleCache.get([]() -> cppfm::mojang_detail::ProfilePublicKeys {
+            throw std::runtime_error("temporary key endpoint failure");
+        }) == expected;
+    } catch (...) {}
+    check(firstFetch == expected && staleReturned,
+          "Mojang profile-key cache uses recent trusted keys during endpoint failure");
+
+    using Cache = cppfm::mojang_detail::ProfilePublicKeyCache;
+    auto fakeNow = Cache::Clock::time_point{};
+    Cache expiryCache(std::chrono::seconds(10), std::chrono::seconds(20),
+                      std::chrono::seconds(100), [&] { return fakeNow; });
+    int expiryFetches = 0;
+    const auto initiallyTrusted = expiryCache.get([&] {
+        ++expiryFetches;
+        return expected;
+    });
+    fakeNow += std::chrono::seconds(11);
+    const auto trustedWhileStale = expiryCache.get([&]() ->
+        cppfm::mojang_detail::ProfilePublicKeys {
+        ++expiryFetches;
+        throw std::runtime_error("temporary key endpoint failure");
+    });
+    fakeNow += std::chrono::seconds(10);
+    const auto afterStaleExpiry = expiryCache.get([&] {
+        ++expiryFetches;
+        return expected;
+    });
+    check(initiallyTrusted == expected && trustedWhileStale == expected &&
+              afterStaleExpiry.empty() && expiryFetches == 2,
+          "Mojang key cache stops trusting keys at the stale deadline");
 }
 
 void testProtocolBoundariesAndLimitations() {

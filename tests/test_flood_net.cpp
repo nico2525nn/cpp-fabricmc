@@ -16,6 +16,7 @@
 #include <unistd.h>
 
 #include <chrono>
+#include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -302,7 +303,136 @@ static bool statusAlive(std::uint16_t port) {
     return id == 0x00; // status response
 }
 
+static void sendLoginStart(Connection& connection, std::uint16_t port,
+                           const std::string& name, std::uint8_t uuidMarker) {
+    WriteBuffer handshake;
+    handshake.varint(proto::kProtocolVersion);
+    handshake.string("127.0.0.1");
+    handshake.u16(port);
+    handshake.varint(2);
+    connection.sendPacket(proto::hb::cs::Intention, handshake);
+
+    std::array<std::uint8_t, 16> uuid{};
+    uuid[15] = uuidMarker;
+    WriteBuffer hello;
+    hello.string(name);
+    hello.uuid(uuid.data());
+    connection.sendPacket(proto::lo::cs::Hello, hello);
+}
+
+static int readLoginResponse(Connection& connection) {
+    for (int i = 0; i < 4; ++i) {
+        const auto frame = connection.readFrameWithTimeout(std::chrono::seconds(5));
+        ReadBuffer in(frame);
+        const int id = in.u8();
+        if (id == proto::lo::sc::SetCompression) {
+            connection.setCompression(in.varint());
+            continue;
+        }
+        return id;
+    }
+    return -1;
+}
+
 static void liveTests(const char* bin) {
+    ServerProcessOptions capacityOptions;
+    capacityOptions.portBase = 26050;
+    capacityOptions.portSpan = 500;
+    capacityOptions.viewDistance = 4;
+    capacityOptions.worldPrefix = "/tmp/floodnet-capacity-";
+    capacityOptions.maxPlayers = 1;
+    ServerProcess capacityServer;
+    CHECK(capacityServer.start(bin, capacityOptions),
+          "server boot for concurrent player-admission reservation test");
+    if (capacityServer.pid > 0) {
+        const int firstFd = rawConnect(capacityServer.port);
+        CHECK(firstFd >= 0, "connect first pending capacity login");
+        if (firstFd >= 0) {
+            Connection first(firstFd);
+            sendLoginStart(first, capacityServer.port, "CapacityFirst", 1);
+            const int firstResponse = readLoginResponse(first);
+
+            const int secondFd = rawConnect(capacityServer.port);
+            CHECK(secondFd >= 0, "connect second pending capacity login");
+            if (secondFd >= 0) {
+                Connection second(secondFd);
+                sendLoginStart(second, capacityServer.port, "CapacitySecond", 2);
+                const int secondResponse = readLoginResponse(second);
+                CHECK(firstResponse == proto::lo::sc::GameProfile &&
+                          secondResponse == proto::lo::sc::Disconnect,
+                      "pending login reservation prevents exceeding maxPlayers before PLAY");
+                second.close();
+            }
+            first.close();
+        }
+        CHECK(capacityServer.stop(),
+              "capacity reservation server and temporary world clean up");
+    }
+
+    ServerProcessOptions onlineCapacityOptions;
+    onlineCapacityOptions.portBase = 26050;
+    onlineCapacityOptions.portSpan = 500;
+    onlineCapacityOptions.viewDistance = 4;
+    onlineCapacityOptions.worldPrefix = "/tmp/floodnet-online-capacity-";
+    onlineCapacityOptions.maxPlayers = 1;
+    onlineCapacityOptions.onlineMode = true;
+    onlineCapacityOptions.enforceSecureProfile = false;
+    onlineCapacityOptions.authStub = true;
+    ServerProcess onlineCapacityServer;
+    CHECK(onlineCapacityServer.start(bin, onlineCapacityOptions),
+          "server boot for pre-authentication player-slot regression");
+    if (onlineCapacityServer.pid > 0) {
+        const int stalledFd = rawConnect(onlineCapacityServer.port);
+        CHECK(stalledFd >= 0, "connect stalled online-mode login");
+        if (stalledFd >= 0) {
+            Connection stalled(stalledFd);
+            sendLoginStart(stalled, onlineCapacityServer.port,
+                           "Unauthenticated", 4);
+            CHECK(readLoginResponse(stalled) == proto::lo::sc::EncryptionRequest,
+                  "online-mode peer reaches authentication before consuming a player slot");
+
+            TestClient authenticated;
+            const bool connected = authenticated.connect(
+                "127.0.0.1", onlineCapacityServer.port);
+            CHECK(connected, "authenticated capacity client connects");
+            const bool joined = connected &&
+                authenticated.joinOnline("CapacityAuth");
+            if (connected && !joined)
+                std::fprintf(stderr, "online capacity login failed: %s\n",
+                             authenticated.lastError().c_str());
+            CHECK(joined,
+                  "stalled unauthenticated peer cannot reserve the only maxPlayers slot");
+            authenticated.close();
+            stalled.close();
+        }
+        CHECK(onlineCapacityServer.stop(),
+              "online capacity server and temporary world clean up");
+    }
+
+    ServerProcessOptions zeroCapacityOptions;
+    zeroCapacityOptions.portBase = 26050;
+    zeroCapacityOptions.portSpan = 500;
+    zeroCapacityOptions.viewDistance = 4;
+    zeroCapacityOptions.worldPrefix = "/tmp/floodnet-zero-capacity-";
+    zeroCapacityOptions.maxPlayers = 0;
+    ServerProcess zeroCapacityServer;
+    CHECK(zeroCapacityServer.start(bin, zeroCapacityOptions),
+          "server boot with zero player capacity");
+    if (zeroCapacityServer.pid > 0) {
+        const int zeroCapacityFd = rawConnect(zeroCapacityServer.port);
+        CHECK(zeroCapacityFd >= 0, "connect to zero-capacity server");
+        if (zeroCapacityFd >= 0) {
+            Connection zeroCapacity(zeroCapacityFd);
+            sendLoginStart(zeroCapacity, zeroCapacityServer.port,
+                           "CapacityZero", 3);
+            CHECK(readLoginResponse(zeroCapacity) == proto::lo::sc::Disconnect,
+                  "maxPlayers=0 rejects login as vanilla server-full capacity");
+            zeroCapacity.close();
+        }
+        CHECK(zeroCapacityServer.stop(),
+              "zero-capacity server and temporary world clean up");
+    }
+
     ServerProcessOptions serverOptions;
     serverOptions.portBase = 26100;
     serverOptions.portSpan = 2500;
@@ -317,6 +447,42 @@ static void liveTests(const char* bin) {
     CHECK(srv.start(bin, serverOptions), "server boot for flood tests");
     if (srv.pid <= 0) return;
     CHECK(statusAlive(srv.port), "baseline status alive");
+
+    SECTION("L-A0 status probes cannot occupy login worker slots");
+    {
+        std::vector<int> statusSockets;
+        for (int i = 0; i < 16; ++i) {
+            const int socket = rawConnect(srv.port);
+            CHECK(socket >= 0, "connect for bounded status session");
+            if (socket < 0) continue;
+            sendHandshake(socket, 1, srv.port);
+            const std::vector<std::uint8_t> request{0x01, 0x00};
+            (void)::send(socket, request.data(), request.size(), MSG_NOSIGNAL);
+            CHECK(readFrameId(socket) == 0x00,
+                  "status session receives response and remains open awaiting ping");
+            statusSockets.push_back(socket);
+        }
+
+        const int excessStatus = rawConnect(srv.port);
+        CHECK(excessStatus >= 0, "connect for excess status session");
+        if (excessStatus >= 0) {
+            sendHandshake(excessStatus, 1, srv.port);
+            const std::vector<std::uint8_t> request{0x01, 0x00};
+            (void)::send(excessStatus, request.data(), request.size(), MSG_NOSIGNAL);
+            CHECK(readFrameId(excessStatus) == -1,
+                  "excess status session is refused after its separate cap");
+            ::close(excessStatus);
+        }
+
+        TestClient login;
+        CHECK(login.connect("127.0.0.1", srv.port) && login.join("StatusFairness"),
+              "login remains available while status sessions hold their ping wait");
+        login.close();
+        for (const int socket : statusSockets) ::close(socket);
+        // Stay below the production accept-rate ceiling for the remainder of
+        // the flood matrix, which intentionally opens its own connection burst.
+        std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+    }
 
     SECTION("L-A1 8MB frame burst refused, server survives");
     {
@@ -347,7 +513,7 @@ static void liveTests(const char* bin) {
         CHECK(statusAlive(srv.port), "server alive after A2");
     }
 
-    SECTION("L-A2b 3MB play payload -> Disconnect kick, server survives");
+    SECTION("L-A2b 3MB play payload -> Disconnect or close, server survives");
     {
         TestClient c;
         CHECK(c.connect("127.0.0.1", srv.port) && c.join("FloodA2"), "join A2b");
@@ -358,12 +524,24 @@ static void liveTests(const char* bin) {
             b.string("minecraft:brand");
             for (int i = 0; i < 3 * 1024 * 1024; ++i)
                 b.data.push_back(static_cast<std::uint8_t>(rng()));
-            c.sendRawPlay(proto::pl::cs::CustomPayload, b);
+            // The server may close as soon as it rejects the oversized frame,
+            // making this best-effort write report a short send/reset.
+            (void)c.sendRawPlay(proto::pl::cs::CustomPayload, b);
             Packet got;
-            bool sawDisc = c.waitFor(
-                [](const Packet& p) { return p.id == proto::pl::sc::Disconnect; },
-                5000, &got);
-            CHECK(sawDisc, "oversize play payload -> Disconnect 0x1D");
+            bool sawDisc = false;
+            const auto deadline = std::chrono::steady_clock::now() +
+                                  std::chrono::seconds(5);
+            while (std::chrono::steady_clock::now() < deadline) {
+                if (c.waitFor(
+                        [](const Packet& p) { return p.id == proto::pl::sc::Disconnect; },
+                        50, &got)) {
+                    sawDisc = true;
+                    break;
+                }
+                if (!c.alive()) break;
+            }
+            CHECK(sawDisc || !c.alive(), // [liveness]
+                  "oversize play payload -> Disconnect 0x1D or transport close");
         }
         c.close();
         CHECK(statusAlive(srv.port), "server alive after A2b");

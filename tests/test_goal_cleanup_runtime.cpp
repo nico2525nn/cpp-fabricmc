@@ -7,6 +7,8 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -37,6 +39,63 @@ void testNestedArguments() {
         rejected = true;
     }
     require(rejected, "unterminated NBT was accepted");
+}
+
+void testResourceLocations() {
+    using namespace cppfm::brigadier;
+    ParseCtx context;
+    const auto argument = args::resourceLocation();
+    const auto parse = [&](const std::string& text) {
+        StringReader reader(text);
+        const auto value = argument.parse(reader, context).asStr();
+        require(reader.remainingLength() == 0,
+                "resource location parser left trailing identifier characters");
+        return value;
+    };
+    require(parse("stone") == "minecraft:stone",
+            "resource location defaults an omitted namespace");
+    require(parse("mod_id.v2:path/segment-name_0") ==
+                "mod_id.v2:path/segment-name_0",
+            "resource location accepts the vanilla namespace/path character sets");
+    // Identifier validation is character-based: path separators and dots are
+    // legal identifier characters. Filesystem path safety is enforced by the
+    // file resolver, not by changing command-parser identifier semantics.
+    require(parse("mod:../assets//entry") == "mod:../assets//entry",
+            "resource location does not impose filesystem segment rules");
+
+    for (const std::string invalid : {"Mod:path", "mod:Upper", "mod:bad+path",
+                                      "bad\\namespace:path", "mod:bad\\path",
+                                      "mod:", ":path", "mod:path:extra"}) {
+        bool rejected = false;
+        try {
+            StringReader reader(invalid);
+            (void)argument.parse(reader, context);
+            rejected = reader.remainingLength() != 0;
+        } catch (const StringReader::ParseError&) {
+            rejected = true;
+        }
+        require(rejected, "invalid resource location was accepted");
+    }
+
+    const std::vector<std::pair<ArgumentType, std::string>> specialized{
+        {args::itemStackArg(), "minecraft:Stone"},
+        {args::blockStateArg(), "minecraft:Stone"},
+        {args::blockPredicateArg(), "#minecraft:Stone"},
+        {args::itemPredicateArg(), "#minecraft:Stone"},
+        {args::dimensionArg(), "minecraft:Overworld"},
+        {args::lootTableArg(), "minecraft:Stone"},
+    };
+    for (const auto& [argumentType, text] : specialized) {
+        bool rejected = false;
+        try {
+            StringReader reader(text);
+            (void)argumentType.parse(reader, context);
+        } catch (const StringReader::ParseError&) {
+            rejected = true;
+        }
+        require(rejected,
+                "specialized identifier argument accepted a non-vanilla identifier");
+    }
 }
 
 void testStructureOrigins() {
@@ -87,6 +146,7 @@ void testJvmTables() {
 int main() {
     try {
         testNestedArguments();
+        testResourceLocations();
         testStructureOrigins();
         testJvmTables();
         std::cout << "goal-cleanup-runtime: PASS\n";

@@ -77,7 +77,13 @@ void GameServer::drainServerThreadTasks() noexcept {
                                  std::memory_order_release);
         }
         request->waitCv.notify_all();
-        activeServerThreadTasks_.fetch_sub(1, std::memory_order_acq_rel);
+        {
+            // Pair predicate changes with the mutex used by waiters. Otherwise
+            // the decrement/notify could land between their predicate check
+            // and wait, losing the only wakeup after the task becomes idle.
+            std::lock_guard lock(serverThreadTasksMtx_);
+            activeServerThreadTasks_.fetch_sub(1, std::memory_order_acq_rel);
+        }
         serverThreadTaskIdleCv_.notify_all();
     }
 }

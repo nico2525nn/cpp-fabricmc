@@ -34,7 +34,7 @@ handoff notes are not part of the public documentation set.
 | `research_viewpoints` | `16` current viewpoints; old `13` wording is historical |
 | `taxonomy_snapshot` | MISSING `#1–#90`; historical matrix counts `DONE=90, PARTIAL=0, TODO=0` |
 | `strict_assessment_1` | `78 gaps`; `HISTORICAL` archive label, not a current aggregate |
-| `next_plan` | submit the locally validated vanilla 1.21.4 server.properties compatibility follow-up as a PR stacked on PR #1, then resolve any exact-SHA Actions failures before merge; the property surface remains explicitly partial |
+| `next_plan` | finish the final diff/documentation review, commit and push the PR #1 review changes, then require exact-head Actions before considering merge; the implemented server.properties surface remains explicitly partial |
 
 The previous baseline was the plan50 runtime follow-up after the plan49 implementation integration and cleanup commit
 `db12df96093a0869e958f62b11f9a9cd68ba3ef1` and safety commit
@@ -83,7 +83,7 @@ artifact boundaries.
 | Primitive and stream regressions | `PASS` | `test_goal_network_bugs` 79/79; independent signed endpoints, non-minimal forms, Java terminal-payload truncation, generic sixth/eleventh-byte rejection/consumption, strict three-byte Varint21 frame rejection, plaintext/encrypted stream alignment, big-endian fixed-width fields, and packed Position axis limits |
 | Related CTest targets | `7/7 PASS` | `native`, `spec_wire`, `jvm_native_bridge`, `core_safety`, `goal_network_bugs`, `wire_full`, and `fuzz` |
 | Smoke regression after tick-based chat pacing fix | `1/1 PASS` | `ctest --test-dir build -R smoke80 --output-on-failure --timeout 450`; 181.26 seconds, `225 PASS / 0 FAIL`. Reset feedback has a 30-second bounded wait and prints chat/disconnect diagnostics only on failure. Actions for prior SHA `54e7ad9` missed this feedback under the old 8-second wait after observing 120 ticks; the current PR-head Actions result is authoritative for verifying this test-only mitigation. |
-| PR Actions gate | `REQUIRED / SHA-SPECIFIC` | Query PR #1 checks for the exact current head SHA; evidence from an earlier commit does not transfer to later commits. |
+| PR Actions gate | `PASS / SHA-SPECIFIC` | Combined head `bac90dfbce70a8d1c09ddf525b339fac479ff350` passed the full build and non-nightly CTest ([run 35828644414](https://github.com/nico2525nn/cpp-fabricmc/actions/runs/35828644414)); subsequent review changes in this branch still require a new exact-head run. |
 
 MISSING #71's row-specific evidence is now `PASS` in the 90-row coverage ledger
 (`14 PASS`, `38 PARTIAL`, `38 UNVERIFIED`). This does not remove the independent
@@ -91,10 +91,11 @@ publication boundaries below or imply universal protocol parity.
 
 ## 1C. Vanilla 1.21.4 settings compatibility follow-up (2026-09-23)
 
-This work is on branch `plan56/compatibility`, based on PR #1 head
-`26e399c0`, and is submitted as stacked PR #2; it is not yet part of `main`.
-The result changes vanilla-facing defaults and property interpretation while
-keeping unsupported properties declared as unsupported.
+This follow-up was developed on `plan56/compatibility` from PR #1 head
+`26e399c0`, submitted as stacked PR #2, and squash-merged into the PR #1 branch
+as `bac90dfb` on 2026-09-23. It is not yet part of `main`. The result changes
+vanilla-facing defaults and property interpretation while keeping unsupported
+properties declared as unsupported.
 
 | gate | measured result | scope / limitation |
 |---|---|---|
@@ -103,7 +104,7 @@ keeping unsupported properties declared as unsupported.
 | Java Properties parsing and configuration | `64 PASS / 0 FAIL` | `properties`; separators, escapes, continuations, key case, UTF-8/ISO-8859-1 fallback, Java boolean semantics, CLI precedence, and rejection of malformed `+-` integers; isolated UTF-16 surrogates map to U+FFFD in the UTF-8 API |
 | effective secure-chat policy | `12 PASS / 0 FAIL` | `secure_chat_policy`; status and Join Game share the effective policy, `enforce-secure-profile || enforces-secure-chat`; unsigned-after-session behavior remains unverified |
 | fake-client authentication options | `PASS` | source guard and Python syntax checks cover local fake-client launchers; each offline launcher explicitly disables both online mode and secure-profile enforcement |
-| full non-nightly CTest | `55/55 PASS` | 516.24s on pre-review head `5eb101d1`; exact-SHA Actions must also pass for PR #2's current head; command and scope in [VERIFICATION.md](VERIFICATION.md#vanilla-server-settings-compatibility-follow-up-2026-09-23-pre-merge) |
+| exact-head full non-nightly CTest | `55/55 PASS` | 544.84s in GitHub Actions on combined head `bac90dfbce70a8d1c09ddf525b339fac479ff350`; see the [exact-head Actions run](https://github.com/nico2525nn/cpp-fabricmc/actions/runs/35828644414). Later PR #1 review changes are not covered by this run. |
 | server child cleanup | `PASS` | post-suite `pgrep -a -f 'cppfm --por[t]'` found no remaining `cppfm` server process |
 | remaining property parity | `PARTIAL` | `enforce-whitelist`, query/status/network, permission, datapack, and several world/pack/operations effects are not fully implemented; `ServerProperties::save` is not `Properties.store`-compatible |
 
@@ -114,6 +115,42 @@ damage, horse IDs, join flags, and sign placement/text), and short soak-bot runs
 with `0` chunks against an expected minimum of `10`. These checks have no
 retained per-run logs and are not part of the passing CTest aggregate; the C++
 `plan43` target separately passes `87/87`.
+
+## 1D. PR #1 adversarial-review follow-up (2026-09-23)
+
+The PR #1 review branch completed five hostile review rounds using two
+independent sub-agents, followed by a final independent read-only pass and
+local fixes. The latest source changes include a stable JVM mutation-generation
+fence, a long bounded deadline in its teardown regression, deferred full stop
+when requested from a session callback, separate pending and Status worker
+admission, completed session-thread reaping, atomic login-slot reservation, and
+vanilla-matched zero-capacity rejection for ordinary profiles. A live online-
+mode regression confirms a stalled unauthenticated peer cannot hold a player
+slot ahead of an authenticated client.
+
+The `ops.json` `bypassesPlayerLimit` exception remains unsupported and is
+explicitly recorded as a partial permission boundary. The network audit records
+the official Mojang 1.21.4 artifact/hash used to confirm the zero-capacity
+branch. An oversize live Play frame may yield either a Disconnect packet or a
+transport close: Linux can reset the TCP connection when the rejected frame's
+unread body is still queued, so the test does not require a best-effort
+Disconnect to survive that reset.
+
+The focused CTest group (`native`, `flood_net`, `fuzz`, `goal_network_bugs`,
+`goal_cleanup_runtime`, `goal_cleanup_game`, `goal_security_guards`, and
+`wire_b6`) passed **8/8**. Within that run, the network bug harness was **99/99**,
+the live flood matrix **108/108**, cleanup game **13/13**, wire B6 **137/137**,
+and fuzz **25/25**. Native integration passed with both session-callback
+self-stop and JVM generation-fence cases; the source/security guards passed.
+The full local non-nightly CTest sweep passed 54/55; its only failure was the
+quality-audit requirement that the new close-or-Disconnect assertion carry an
+inline `[liveness]` label. After adding that label, both affected targets,
+`flood_net` and `quality_audit`, passed again (2/2); no other full-sweep target
+failed. This records final per-target evidence without claiming a second
+55-test run after the comment-only audit fix.
+The previous Actions result covers only
+`bac90dfbce70a8d1c09ddf525b339fac479ff350`; it does not validate this review
+delta. The exact PR head must pass Actions before merge.
 
 ## 2. Prior plan48 and cleanup record
 
@@ -372,9 +409,12 @@ targeted issues. The following rules remain in force for future work:
 The goal-specific audit files under `docs/audit/` record a fixed dirty-tree
 baseline and protected manifest, a 90-row coverage ledger (`14 PASS`, `38 PARTIAL`,
 `38 UNVERIFIED`), three owned real-client fixtures, real command/entity/menu transcripts, and 23 reproducible network/gameplay defects
-with focused regression tests. The adversarial review is now `P0=0, P1=0, P2=0,
-P3=0`; source-order guards cover the security fixes where no authenticated client
-or external JVM fixture is available. Scoped production cleanup measured `-9`
+with focused regression tests. The PR #1 review completed five hostile rounds
+and a final follow-up;
+the current verdict is `P0=0, P1=0, P2=0, P3=0` unresolved after the focused
+fixes and 8/8 local CTest rerun. Exact-head CI is still pending. Source-order
+guards cover security fixes where no authenticated client or external JVM fixture
+is available. Scoped production cleanup measured `-9`
 lines; the additional refactors are recorded in `goal-cleanup-runtime.md` and
 `goal-cleanup-game.md`. The requested 10,000-line reduction was not reached; the
 fixed production GC sweep found only small dead entrypoints after these removals,

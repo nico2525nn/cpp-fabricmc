@@ -87,13 +87,14 @@ The 2026-09-19 integrated working-tree baseline recorded:
   The named focused targets also pass: settings `27`, properties `33`,
   recovery `55`, core safety `45`, and the specification wire vectors `417`,
   all with zero failures.
-- A separate pre-merge server-settings follow-up based on PR #1 head
-  `26e399c0` reports `settings_matrix` `47/47`, `properties` `63/63`,
-  `secure_chat_policy` `12/12`, and non-nightly CTest `55/55` in `516.24s`.
-  It aligns defaults and parsing for the implemented subset only; unsupported
-  vanilla settings and several runtime effects remain partial. Offline fake-client
-  launchers explicitly disable both authentication checks. Full commands and
-  limitations are recorded in [Verification](VERIFICATION.md#vanilla-server-settings-compatibility-follow-up-2026-09-23-pre-merge).
+- The implemented vanilla-facing server-settings subset has focused results of
+  `settings_matrix` `49/49`, `properties` `64/64`, and `secure_chat_policy`
+  `12/12`. Combined snapshot `bac90dfb` passed non-nightly CTest `55/55` in
+  `544.84s` in [GitHub Actions](https://github.com/nico2525nn/cpp-fabricmc/actions/runs/35828644414).
+  Unsupported vanilla settings and several runtime effects remain partial;
+  offline fake-client launchers explicitly disable both authentication checks.
+  Full commands and limitations are recorded in
+  [Verification](VERIFICATION.md#vanilla-server-settings-compatibility-follow-up-2026-09-23-exact-head-evidence).
 - The 120-client stress gate joined `120/120` in `68.5s`; the 300-second soak
   passed with 150 keepalives, 0 disconnects, 2,899 actions, and `0.2%`
   post-fill RSS growth. The strict synthetic view-distance-32 benchmark
@@ -154,6 +155,12 @@ events are cancellable before mutation (including callback revalidation), item
 command sources retain their dimension, and background piston snapshot barriers
 run under the simulation gate. Signed command argument transcripts are
 intentionally fail-closed and remain a declared limitation.
+
+Network admission also bounds pending sessions and Status probes separately.
+Login reserves `max-players` before Play registration, including rejecting
+ordinary logins when the configured limit is zero. A frame's 30-second deadline
+starts with its first length byte, so an idle connection does not consume the
+frame budget while a slow-drip frame cannot extend it indefinitely.
 
 These are named-scenario results, not a universal compatibility percentage. The
 latest package-target rebuild, clean extracted-package checks, and full

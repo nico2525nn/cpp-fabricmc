@@ -427,6 +427,9 @@ void Session::run() {
                 if (pid != hb::cs::Intention)
                     throw std::runtime_error("expected handshake intention");
                 handleHandshake(in);
+                if (state_ == State::Status && statusAdmission_ &&
+                    !statusAdmission_())
+                    state_ = State::Done;
                 break;
             }
             case State::Status:
@@ -438,6 +441,10 @@ void Session::run() {
                 break;
             case State::Configuration:
                 handleConfiguration();
+                if (state_ == State::Play && releaseAdmission_) {
+                    releaseAdmission_();
+                    releaseAdmission_ = {};
+                }
                 break;
             case State::Play:
                 handlePlay();
@@ -526,6 +533,10 @@ void Session::run() {
         });
         cleanupStep("roster removal", [this] { srv_.removePlayer(self_.get()); });
     }
+}
+
+Session::~Session() {
+    if (playerAdmissionReserved_) srv_.releasePlayerAdmission();
 }
 
 namespace {
@@ -756,12 +767,6 @@ void Session::handleLogin() {
             return;
         }
     }
-    if (srv_.config().maxPlayers > 0 && (int)srv_.playerCount() >= srv_.config().maxPlayers) {
-        rejectLogin("Server is full", false);
-        return;
-    }
-    self_->entityId = 0; // set on play entry
-
     if (srv_.config().compressionThreshold >= 0) {
         WriteBuffer sc;
         sc.varint(srv_.config().compressionThreshold);
@@ -881,6 +886,14 @@ void Session::handleLogin() {
         rejectLogin("Secure profile authentication requires online mode", false);
         return;
     }
+    // Do not let an unauthenticated online-mode peer reserve a player slot
+    // while it stalls on the encryption/session-server exchange.
+    if (!srv_.reservePlayerAdmission()) {
+        rejectLogin("Server is full", false);
+        return;
+    }
+    playerAdmissionReserved_ = true;
+    self_->entityId = 0; // set on play entry
 
     // login success: uuid, name, property list (verified against capture)
     WriteBuffer ok;
@@ -1174,7 +1187,8 @@ void Session::onEnterPlay() {
     }
 
     registered_ = true;
-    srv_.addPlayer(self_);
+    srv_.addPlayer(self_, true);
+    playerAdmissionReserved_ = false;
     self_->inPlay = true;
     self_->gamemode = 1;   // creative default for building comfort
     self_->health = 20; self_->food = 20; self_->saturation = 5;
@@ -1257,7 +1271,7 @@ void Session::handleRespawnRequest() {
     WriteBuffer b;
     b.raw(ws.data.data(), ws.data.size());
     b.u8(0x03);                                    // keep metadata + attributes
-    conn_->sendPacket(pl::sc::Respawn, b);
+    conn_->sendPacketBarrier(pl::sc::Respawn, b);
     {   // re-sync position & vitals
         WriteBuffer hp;
         hp.f32(20.f); hp.varint(20); hp.f32(5.f);

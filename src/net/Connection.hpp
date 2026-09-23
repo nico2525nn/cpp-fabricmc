@@ -17,6 +17,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <deque>
+#include <optional>
 #include <thread>
 #include <utility>
 
@@ -35,6 +36,34 @@ public:
 };
 
 class Connection {
+    class SocketUse {
+    public:
+        explicit SocketUse(const Connection& connection) noexcept
+            : connection_(&connection) {
+            std::lock_guard lock(connection.socketUseMtx_);
+            fd_ = connection.fd_.load(std::memory_order_acquire);
+            if (connection.socketClosing_ || !platform::isValid(fd_)) {
+                connection_ = nullptr;
+                fd_ = platform::invalid_socket;
+                return;
+            }
+            ++connection.activeSocketUses_;
+        }
+        ~SocketUse() {
+            if (connection_) connection_->releaseSocketUse();
+        }
+        SocketUse(const SocketUse&) = delete;
+        SocketUse& operator=(const SocketUse&) = delete;
+        platform::socket_t fd() const noexcept { return fd_; }
+        explicit operator bool() const noexcept {
+            return connection_ != nullptr;
+        }
+
+    private:
+        const Connection* connection_ = nullptr;
+        platform::socket_t fd_ = platform::invalid_socket;
+    };
+
 public:
     explicit Connection(platform::socket_t fd) : fd_(fd) {}
 
@@ -57,40 +86,44 @@ public:
     void close() noexcept {
         // Preserve a short disconnect/configuration tail, but bound teardown
         // so a stalled client cannot hold the simulation caller indefinitely.
-        stopWriter(true, false);
         try {
             std::lock_guard lk(tx_);
+            stopWriter(true, false);
             closeFd(false);
         } catch (...) {}
     }
     void abort() noexcept {
-        stopWriter(false, true);
         try {
             std::lock_guard lk(tx_);
+            stopWriter(false, true);
             closeFd(true);
         } catch (...) {}
     }
     void setNoDelay() {
-        const auto fd = fd_.load(std::memory_order_acquire);
-        if (!platform::isValid(fd)) return;
+        const SocketUse socket(*this);
+        if (!socket) return;
+        const auto fd = socket.fd();
         int one = 1;
         (void)platform::setSocketOption(fd, IPPROTO_TCP, TCP_NODELAY, &one,
                                         static_cast<platform::socket_length_t>(sizeof(one)));
     }
     void setSendTimeoutMs(unsigned milliseconds) {
-        const auto fd = fd_.load(std::memory_order_acquire);
-        if (!platform::isValid(fd)) return;
+        const SocketUse socket(*this);
+        if (!socket) return;
+        const auto fd = socket.fd();
         (void)platform::setSocketTimeoutMs(fd, SO_SNDTIMEO, milliseconds);
     }
     void setRecvTimeout(unsigned seconds) {
-        const auto fd = fd_.load(std::memory_order_acquire);
-        if (!platform::isValid(fd)) return;
+        const SocketUse socket(*this);
+        if (!socket) return;
+        const auto fd = socket.fd();
         (void)platform::setSocketTimeout(fd, SO_RCVTIMEO, seconds);
     }
     void enableFloodBudget(bool on) { floodBudget_ = on; }
     int peekFirstByte(int timeoutMs) const {
-        const auto fd = fd_.load(std::memory_order_acquire);
-        if (!platform::isValid(fd)) return -1;
+        const SocketUse socket(*this);
+        if (!socket) return -1;
+        const auto fd = socket.fd();
         const int r = platform::waitReadable(fd, timeoutMs);
         if (r <= 0) return -1;
         std::uint8_t b = 0;
@@ -113,8 +146,9 @@ public:
         }
     }
     std::string peer() const {
-        const auto fd = fd_.load(std::memory_order_acquire);
-        if (!platform::isValid(fd)) return "?";
+        const SocketUse socket(*this);
+        if (!socket) return "?";
+        const auto fd = socket.fd();
         sockaddr_in addr{};
         platform::socket_length_t sl = sizeof(addr);
         if (platform::peerName(fd, reinterpret_cast<sockaddr*>(&addr), &sl) != 0) return "?";
@@ -133,7 +167,7 @@ public:
     // Reads one frame payload (length-prefixed, optionally compressed). Returns the packet body (packet id + payload). Throws
     // SocketClosedError on EOF. Delegates decompression to PacketDecoder for ByteBuffer handling.
     std::vector<std::uint8_t> readFrame() {
-        return readFrameUntil(nullptr);
+        return readFrameWithFirstByteTimeout(kDefaultFrameTimeout);
     }
     std::vector<std::uint8_t> readFrameWithTimeout(std::chrono::milliseconds timeout) {
         if (timeout.count() < 0)
@@ -141,13 +175,31 @@ public:
         const auto deadline = std::chrono::steady_clock::now() + timeout;
         return readFrameUntil(&deadline);
     }
+    // Start the frame budget only after its first length-prefix byte arrives.
+    // This preserves idle connections while preventing a peer from extending
+    // one partially-sent frame forever by trickling bytes before each recv timeout.
+    std::vector<std::uint8_t> readFrameWithFirstByteTimeout(
+        std::chrono::milliseconds timeout) {
+        if (timeout.count() < 0)
+            throw std::invalid_argument("negative frame timeout");
+        return readFrameUntil(nullptr, timeout);
+    }
 
 private:
+    static constexpr std::chrono::milliseconds kDefaultFrameTimeout{30'000};
+
     std::vector<std::uint8_t> readFrameUntil(
-        const std::chrono::steady_clock::time_point* deadline) {
+        const std::chrono::steady_clock::time_point* deadline,
+        std::optional<std::chrono::milliseconds> timeoutAfterFirstByte = std::nullopt) {
+        std::chrono::steady_clock::time_point firstByteDeadline;
+        const std::chrono::steady_clock::time_point* activeDeadline = deadline;
         const std::int32_t len = PacketDecoder::readVarint21([&] {
             std::uint8_t byte;
-            readExact(&byte, 1, deadline);
+            readExact(&byte, 1, activeDeadline);
+            if (!activeDeadline && timeoutAfterFirstByte) {
+                firstByteDeadline = std::chrono::steady_clock::now() + *timeoutAfterFirstByte;
+                activeDeadline = &firstByteDeadline;
+            }
             if (encrypted_) decCtx_->crypt(&byte, 1, &byte);
             return byte;
         });
@@ -158,7 +210,7 @@ private:
             !bw_.consume(static_cast<double>(len), steadyNowMs()))
             throw PacketDecoder::OversizeError("connection bandwidth budget exceeded");
         frame_.resize(static_cast<std::size_t>(len));
-        readExact(frame_.data(), frame_.size(), deadline);
+        readExact(frame_.data(), frame_.size(), activeDeadline);
         if (encrypted_) decCtx_->crypt(frame_.data(), frame_.size(), frame_.data());
         if (compressionThreshold_ < 0) return frame_;
         // Delegate to PacketDecoder for ByteBuffer conversion + decompression
@@ -169,7 +221,8 @@ public:
     // Delegates to PacketEncoder for ByteBuffer + compression + encryption handling.
     void sendFramed(const std::uint8_t* a, std::size_t na,
                     const std::uint8_t* b = nullptr, std::size_t nb = 0,
-                    bool lowPriority = false) {
+                    bool lowPriority = false,
+                    bool waitForPriorLowPriority = false) {
         std::unique_lock txLock(tx_);
         if (!isOpen()) throw SocketClosedError("closed");
         auto outer = PacketEncoder::encodeRaw(a, na, b, nb,
@@ -186,7 +239,9 @@ public:
             std::lock_guard lifecycleLock(lifecycleMtx_);
             std::lock_guard queueLock(queueMtx_);
             queue = writerStarted_ || activeSimulationDispatchDepth != 0;
-            if (queue) enqueueLocked(std::move(outer), lowPriority);
+            if (queue)
+                enqueueLocked(std::move(outer), lowPriority,
+                              waitForPriorLowPriority);
         }
         if (!queue) sendAll(outer.data(), outer.size());
     }
@@ -201,6 +256,11 @@ public:
     }
     void sendPacketLowPriority(std::uint8_t id, const WriteBuffer& payload) {
         sendFramed(&id, 1, payload.data.data(), payload.data.size(), true);
+    }
+    // Preserve earlier low-priority frames before a state transition, while
+    // allowing later low-priority work to remain deferred.
+    void sendPacketBarrier(std::uint8_t id, const WriteBuffer& payload) {
+        sendFramed(&id, 1, payload.data.data(), payload.data.size(), false, true);
     }
     // Best-effort notifications must not obscure the required send path with
     // repeated catch-all blocks.  Handshake/state transitions use sendPacket
@@ -221,12 +281,20 @@ public:
             return false;
         }
     }
+    bool trySendPacketBarrier(std::uint8_t id, const WriteBuffer& payload) noexcept {
+        try {
+            sendPacketBarrier(id, payload);
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
     void sendRawBody(const std::vector<std::uint8_t>& idAndBody) { // replay helper
         sendFramed(idAndBody.data(), idAndBody.size());
     }
 
 private:
-    static constexpr std::uint32_t kMaxFrame = 8u * 1024 * 1024;
+    static constexpr std::uint32_t kMaxFrame = PacketDecoder::kMaxFrame;
     // A stalled client gets a bounded per-connection queue; exceeding it
     // closes that client rather than multiplying memory by max-players.
     static constexpr std::size_t kMaxQueuedBytes = 4u * 1024u * 1024u;
@@ -240,10 +308,11 @@ private:
     void readExact(void* dst, std::size_t n,
                    const std::chrono::steady_clock::time_point* deadline = nullptr) {
         if (n != 0 && dst == nullptr) throw std::invalid_argument("null receive buffer");
+        const SocketUse socket(*this);
+        if (!socket) throw SocketClosedError("closed");
+        const auto fd = socket.fd();
         auto* p = static_cast<std::uint8_t*>(dst);
         while (n > 0) {
-            const auto fd = fd_.load(std::memory_order_acquire);
-            if (!platform::isValid(fd)) throw SocketClosedError("closed");
             if (deadline) {
                 const auto now = std::chrono::steady_clock::now();
                 if (now >= *deadline)
@@ -274,14 +343,20 @@ private:
             p += r; n -= static_cast<std::size_t>(r);
         }
     }
-    void enqueueLocked(std::vector<std::uint8_t>&& frame, bool lowPriority) {
+    void enqueueLocked(std::vector<std::uint8_t>&& frame, bool lowPriority,
+                       bool waitForPriorLowPriority) {
         if (!isOpen() || writerStop_) throw SocketClosedError("closed");
         if (frame.size() > kMaxQueuedBytes || queuedBytes_ > kMaxQueuedBytes - frame.size()) {
             writerStop_ = true;
             queuedFrames_.clear();
             queuedLowFrames_.clear();
             queuedBytes_ = 0;
-            closeFd(true);
+            if (writerStarted_) {
+                shutdownOnWriterExit_ = true;
+                shutdownFd(true);
+            } else {
+                closeFd(true);
+            }
             queueCv_.notify_all();
             throw SocketClosedError("connection output queue full", true);
         }
@@ -295,15 +370,26 @@ private:
                 throw;
             }
         }
-        queuedBytes_ += frame.size();
-        if (lowPriority) queuedLowFrames_.push_back(std::move(frame));
-        else queuedFrames_.push_back(std::move(frame));
+        const auto frameSize = frame.size();
+        if (lowPriority) {
+            const auto sequence = nextLowSequence_ + 1;
+            queuedLowFrames_.push_back(
+                QueuedFrame{std::move(frame), sequence, 0});
+            nextLowSequence_ = sequence;
+        } else {
+            queuedFrames_.push_back(QueuedFrame{
+                std::move(frame), 0,
+                waitForPriorLowPriority ? nextLowSequence_ : 0});
+        }
+        queuedBytes_ += frameSize;
         queueCv_.notify_one();
     }
 
     void writerLoop() noexcept {
         for (;;) {
             std::vector<std::uint8_t> frame;
+            bool lowPriorityFrame = false;
+            std::uint64_t lowSequence = 0;
             {
                 std::unique_lock lock(queueMtx_);
                 queueCv_.wait(lock, [this] {
@@ -313,12 +399,44 @@ private:
                     if (writerStop_) break;
                     continue;
                 }
-                if (!queuedFrames_.empty()) {
-                    frame = std::move(queuedFrames_.front());
-                    queuedFrames_.pop_front();
-                } else {
-                    frame = std::move(queuedLowFrames_.front());
-                    queuedLowFrames_.pop_front();
+                for (;;) {
+                    const bool barrierBlocked = !queuedFrames_.empty() &&
+                        queuedFrames_.front().waitForLowSequence >
+                            completedLowSequence_;
+                    if (!queuedFrames_.empty() && !barrierBlocked) {
+                        auto queued = std::move(queuedFrames_.front());
+                        queuedFrames_.pop_front();
+                        frame = std::move(queued.bytes);
+                        break;
+                    }
+                    if (!queuedLowFrames_.empty() &&
+                        (!barrierBlocked ||
+                         queuedLowFrames_.front().lowSequence <=
+                             queuedFrames_.front().waitForLowSequence)) {
+                        auto queued = std::move(queuedLowFrames_.front());
+                        queuedLowFrames_.pop_front();
+                        frame = std::move(queued.bytes);
+                        lowPriorityFrame = true;
+                        lowSequence = queued.lowSequence;
+                        break;
+                    }
+                    if (writerStop_) break;
+                    queueCv_.wait(lock, [this] {
+                        if (writerStop_) return true;
+                        if (queuedFrames_.empty() ||
+                            queuedFrames_.front().waitForLowSequence <=
+                                completedLowSequence_)
+                            return true;
+                        return !queuedLowFrames_.empty() &&
+                            queuedLowFrames_.front().lowSequence <=
+                                queuedFrames_.front().waitForLowSequence;
+                    });
+                    if (writerStop_ && queuedFrames_.empty() &&
+                        queuedLowFrames_.empty()) break;
+                }
+                if (frame.empty()) {
+                    if (writerStop_) break;
+                    continue;
                 }
                 queuedBytes_ -= frame.size();
                 writerBusy_ = true;
@@ -327,15 +445,14 @@ private:
             try {
                 sendAll(frame.data(), frame.size());
                 std::lock_guard lock(queueMtx_);
+                if (lowPriorityFrame)
+                    completedLowSequence_ = lowSequence;
                 writerBusy_ = false;
                 queueCv_.notify_all();
             } catch (...) {
-                const auto fd = fd_.exchange(platform::invalid_socket,
-                                             std::memory_order_acq_rel);
-                if (platform::isValid(fd)) {
-                    platform::shutdownSocket(fd);
-                    platform::closeSocket(fd);
-                }
+                // Keep the descriptor allocated until its owner joins this
+                // writer; a partial-send retry must never hit a recycled fd.
+                shutdownFd(true);
                 std::lock_guard lock(queueMtx_);
                 writerStop_ = true;
                 writerBusy_ = false;
@@ -346,6 +463,13 @@ private:
                 break;
             }
         }
+        bool shutdownOnExit = false;
+        {
+            std::lock_guard lock(queueMtx_);
+            shutdownOnExit = shutdownOnWriterExit_;
+            shutdownOnWriterExit_ = false;
+        }
+        if (shutdownOnExit) shutdownFd(true);
     }
 
     void stopWriter(bool drain, bool abortive) noexcept {
@@ -369,15 +493,17 @@ private:
                     return queuedFrames_.empty() && queuedLowFrames_.empty() && !writerBusy_;
                 })) {
                 lock.unlock();
-                closeFd(abortive);
+                shutdownFd(abortive);
                 lock.lock();
                 queuedFrames_.clear();
                 queuedLowFrames_.clear();
                 queuedBytes_ = 0;
             }
         } else {
-            // Wake a blocked send before joining the writer.
-            closeFd(abortive);
+            // Wake a blocked send without releasing its descriptor number.
+            // A partial send may still retry until the socket is shut down;
+            // close only after join so the OS cannot recycle this fd under it.
+            shutdownFd(abortive);
         }
         queueCv_.notify_all();
         if (writer_.joinable() && writer_.get_id() != std::this_thread::get_id())
@@ -391,8 +517,12 @@ private:
     }
 
     void closeFd(bool abortive) noexcept {
-        const auto fd = fd_.exchange(platform::invalid_socket,
-                                     std::memory_order_acq_rel);
+        platform::socket_t fd = platform::invalid_socket;
+        {
+            std::lock_guard lock(socketUseMtx_);
+            socketClosing_ = true;
+            fd = fd_.load(std::memory_order_acquire);
+        }
         if (!platform::isValid(fd)) return;
         platform::shutdownSocket(fd);
         if (abortive) {
@@ -401,7 +531,31 @@ private:
             platform::setSocketOption(fd, SOL_SOCKET, SO_LINGER, &l,
                                       static_cast<platform::socket_length_t>(sizeof(l)));
         }
-        platform::closeSocket(fd);
+        {
+            std::unique_lock lock(socketUseMtx_);
+            socketUseCv_.wait(lock, [this] { return activeSocketUses_ == 0; });
+            fd = fd_.exchange(platform::invalid_socket,
+                              std::memory_order_acq_rel);
+        }
+        if (platform::isValid(fd)) platform::closeSocket(fd);
+    }
+
+    void releaseSocketUse() const noexcept {
+        std::lock_guard lock(socketUseMtx_);
+        if (activeSocketUses_ != 0 && --activeSocketUses_ == 0)
+            socketUseCv_.notify_all();
+    }
+
+    void shutdownFd(bool abortive) noexcept {
+        const auto fd = fd_.load(std::memory_order_acquire);
+        if (!platform::isValid(fd)) return;
+        platform::shutdownSocket(fd);
+        if (abortive) {
+            struct linger l{};
+            l.l_onoff = 1; l.l_linger = 0;
+            platform::setSocketOption(fd, SOL_SOCKET, SO_LINGER, &l,
+                                      static_cast<platform::socket_length_t>(sizeof(l)));
+        }
     }
 
     void sendAll(const std::uint8_t* p, std::size_t n) {
@@ -421,16 +575,28 @@ private:
     }
 
     std::atomic<platform::socket_t> fd_;
+    mutable std::mutex socketUseMtx_;
+    mutable std::condition_variable socketUseCv_;
+    mutable std::size_t activeSocketUses_ = 0;
+    bool socketClosing_ = false;
     std::mutex lifecycleMtx_;
     std::mutex tx_;   // serialize framing/encryption state
     std::mutex queueMtx_;
     std::condition_variable queueCv_;
-    std::deque<std::vector<std::uint8_t>> queuedFrames_;
-    std::deque<std::vector<std::uint8_t>> queuedLowFrames_;
+    struct QueuedFrame {
+        std::vector<std::uint8_t> bytes;
+        std::uint64_t lowSequence = 0;
+        std::uint64_t waitForLowSequence = 0;
+    };
+    std::deque<QueuedFrame> queuedFrames_;
+    std::deque<QueuedFrame> queuedLowFrames_;
     std::size_t queuedBytes_ = 0;
+    std::uint64_t nextLowSequence_ = 0;
+    std::uint64_t completedLowSequence_ = 0;
     bool writerStarted_ = false;
     bool writerStop_ = false;
     bool writerBusy_ = false;
+    bool shutdownOnWriterExit_ = false;
     std::thread writer_;
 };
 

@@ -293,8 +293,13 @@ class GameServer;
 // Per-connection session: drives the state machine on its own thread.
 class Session {
 public:
-    Session(GameServer& srv, std::shared_ptr<Connection> conn)
-        : srv_(srv), conn_(std::move(conn)) {}
+    Session(GameServer& srv, std::shared_ptr<Connection> conn,
+            std::function<bool()> statusAdmission = {},
+            std::function<void()> releaseAdmission = {})
+        : srv_(srv), conn_(std::move(conn)),
+          statusAdmission_(std::move(statusAdmission)),
+          releaseAdmission_(std::move(releaseAdmission)) {}
+    ~Session();
 
     void run();
     GameServer& server() { return srv_; }
@@ -431,6 +436,9 @@ private:
 
     GameServer& srv_;
     std::shared_ptr<Connection> conn_;
+    std::function<bool()> statusAdmission_;
+    std::function<void()> releaseAdmission_;
+    bool playerAdmissionReserved_ = false;
     enum class State { Handshake, Status, Login, Configuration, Play, Done };
 
     State state_ = State::Handshake;
@@ -486,6 +494,13 @@ class GameServer {
         default: return overworld;
         }
     }
+    static std::size_t pendingSessionWorkerLimit(std::int32_t maxPlayers) noexcept {
+        constexpr std::size_t kMinimum = 64;
+        constexpr std::size_t kLoginHeadroom = 32;
+        const auto configured = maxPlayers > 0
+            ? static_cast<std::size_t>(maxPlayers) : std::size_t{0};
+        return std::max(kMinimum, configured + kLoginHeadroom);
+    }
 public:
     enum class Dim : std::int8_t { Overworld = 0, Nether = -1, End = 1 };
 
@@ -495,6 +510,7 @@ public:
                  cfg.levelType == "normal" ? LevelType::Normal : LevelType::Flat,
                  cfg.seed),
           startTime_(cfg.startTime),
+          pendingSessionAdmissionGate_(pendingSessionWorkerLimit(cfg.maxPlayers)),
           ioPool_(static_cast<std::size_t>(std::max(1, cfg_.ioWorkerThreads))) {
         difficulty_ = cfg_.difficulty;
         netherWorld_ = std::make_unique<World>(
@@ -954,6 +970,15 @@ public:
         }
     }
     void stop() {
+        // Tick and session callbacks cannot tear down resources that their
+        // own stack frames still use. Leave final teardown to the external
+        // owner (runForever's caller or the destructor).
+        if (isCurrentTickThread() || sessionThreadOwner_ == this) {
+            requestStop();
+            cancelServerThreadTasks();
+            stopCv_.notify_all();
+            return;
+        }
         // stop() is reachable from both explicit test teardown and the
         // destructor.  Without a one-shot gate, the second call could race
         // joins, close an already-released descriptor, and invoke JVM/
@@ -977,6 +1002,7 @@ public:
         // still-live external command.
         std::fprintf(stderr, "[cppfm] stopping rcon\n");
         if (rconServer_) rconServer_->stop();
+        waitForServerThreadTasks();
         std::fprintf(stderr, "[cppfm] stopping tick loop\n");
         stopTickLoop();
         joinJanitorThread();
@@ -1450,14 +1476,22 @@ public:
     bool running() const { return running_; }
 
     // Execute a short native operation on the authoritative server thread.
-    // Calls made by that thread run inline.  Foreign callers are queued with
-    // a bounded wait; a still-pending request is cancelled on timeout and is
-    // never run later.  If a request has already started, the caller may
-    // observe false at the deadline while the operation finishes on the
-    // server thread, so queued callbacks must own all captured state.
+    // Calls made by that thread run inline. Foreign callers wait at most the
+    // requested timeout; a still-pending request is cancelled and never runs
+    // later. A request already running may finish after false is returned, so
+    // callbacks must own all captured state and callers must treat timeout as
+    // an indeterminate result, not proof that no side effect occurred.
     bool runOnServerThread(
         std::function<void()> task,
         std::chrono::milliseconds timeout = std::chrono::milliseconds(250));
+    std::size_t pendingServerThreadTasksForTest() const {
+        std::lock_guard lock(serverThreadTasksMtx_);
+        return static_cast<std::size_t>(std::count_if(
+            serverThreadTasks_.begin(), serverThreadTasks_.end(), [](const auto& task) {
+                return task && task->state.load(std::memory_order_acquire) ==
+                                   ServerThreadTask::State::Pending;
+            }));
+    }
 
     using PlayerRef = std::shared_ptr<Player>;
     std::vector<PlayerRef> playersSnapshot() const {
@@ -1474,12 +1508,28 @@ public:
         return players_.size();
     }
     std::int32_t nextEntityId() { return entityIdCounter_++; }
-    void addPlayer(PlayerRef p) {
+    bool reservePlayerAdmission() {
+        std::lock_guard admissionLock(playerAdmissionMtx_);
+        std::lock_guard playersLock(playersMtx_);
+        const auto maximum = static_cast<std::size_t>(std::max(0, cfg_.maxPlayers));
+        if (players_.size() >= maximum ||
+            pendingPlayerAdmissions_ >= maximum - players_.size())
+            return false;
+        ++pendingPlayerAdmissions_;
+        return true;
+    }
+    void releasePlayerAdmission() noexcept {
+        std::lock_guard admissionLock(playerAdmissionMtx_);
+        if (pendingPlayerAdmissions_ != 0) --pendingPlayerAdmissions_;
+    }
+    void addPlayer(PlayerRef p, bool consumesReservation = false) {
         if (!p) return;
         std::lock_guard admissionLock(playerAdmissionMtx_);
         kickDuplicate(*p);   // plan45 B6 W-13(c): vanilla kicks the older session
         std::lock_guard lk(playersMtx_);
         players_.push_back(std::move(p));
+        if (consumesReservation && pendingPlayerAdmissions_ != 0)
+            --pendingPlayerAdmissions_;
     }
     void kickDuplicate(const Player& incoming) {
         std::lock_guard admissionLock(playerAdmissionMtx_);
@@ -1781,6 +1831,21 @@ private:
     static constexpr std::size_t kMaxServerThreadTasksPerTick = 256;
 
     bool isCurrentServerThread() const noexcept;
+    bool isCurrentTickThread() const noexcept;
+    inline static thread_local const GameServer* sessionThreadOwner_ = nullptr;
+    class SessionThreadScope {
+    public:
+        explicit SessionThreadScope(const GameServer* owner) noexcept
+            : previous_(sessionThreadOwner_) {
+            sessionThreadOwner_ = owner;
+        }
+        ~SessionThreadScope() { sessionThreadOwner_ = previous_; }
+        SessionThreadScope(const SessionThreadScope&) = delete;
+        SessionThreadScope& operator=(const SessionThreadScope&) = delete;
+
+    private:
+        const GameServer* previous_;
+    };
     void claimServerThreadForBootstrap() noexcept;
     void bindServerThread() noexcept;
     void releaseServerThread() noexcept;
@@ -1791,7 +1856,9 @@ private:
     mutable std::mutex serverThreadTasksMtx_;
     std::deque<std::shared_ptr<ServerThreadTask>> serverThreadTasks_;
     std::condition_variable serverThreadTaskIdleCv_;
+    std::size_t pendingServerThreadTaskCleanups_ = 0;
     std::thread::id serverThreadId_{};
+    std::thread::id tickThreadId_{};
     bool serverThreadAccepting_ = false;
     std::atomic<std::size_t> activeServerThreadTasks_{0};
 
@@ -1806,7 +1873,9 @@ private:
     };
 
     void acceptLoop();
-    bool registerSessionThread(std::thread worker);
+    bool registerSessionThread(
+        std::thread worker,
+        const std::shared_ptr<std::atomic<bool>>& finished);
     void joinSessionThreads();
     void registerActiveConnection(const std::shared_ptr<Connection>& connection);
     void unregisterActiveConnection(const std::shared_ptr<Connection>& connection);
@@ -1857,9 +1926,15 @@ private:
     std::int64_t lastBlockBatchFlushMs_ = 0;
     std::thread tickThread_;
     std::thread janitorThread_;
+    struct SessionThread {
+        std::thread worker;
+        std::shared_ptr<std::atomic<bool>> finished;
+    };
     mutable std::mutex sessionThreadsMtx_;
-    std::vector<std::thread> sessionThreads_;
+    std::vector<SessionThread> sessionThreads_;
     bool sessionThreadsStopping_ = false;
+    SessionAdmissionGate pendingSessionAdmissionGate_;
+    SessionAdmissionGate statusAdmissionGate_{16};
     mutable std::mutex activeConnectionsMtx_;
     std::vector<std::shared_ptr<Connection>> activeConnections_;
     std::mutex stopCvMtx_;
@@ -1878,6 +1953,7 @@ private:
     GameData gameData_;                                 // parsed registry orders
     std::vector<PlayerRef> players_;
     mutable std::recursive_mutex playerAdmissionMtx_;
+    std::size_t pendingPlayerAdmissions_ = 0; // protected by playerAdmissionMtx_
     mutable std::mutex playersMtx_;
     BlockEntityStore blockEntities_;                 // Overworld chests & furnaces
     BlockEntityStore dimensionBlockEntities_[2];     // Nether, End

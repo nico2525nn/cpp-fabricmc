@@ -13,7 +13,7 @@ namespace cppfm {
 
 class PacketDecoder {
 public:
-    static constexpr std::uint32_t kMaxFrame = 8u * 1024 * 1024;
+    static constexpr std::uint32_t kMaxFrame = (1u << 21) - 1;
     static constexpr std::uint32_t kMaxDeclared = 2u * 1024 * 1024;
 
     struct OversizeError : std::runtime_error {
@@ -42,7 +42,7 @@ public:
         if (compressionThreshold < -1)
             throw std::invalid_argument("compression threshold must be -1 or non-negative");
         if (frame.size() > kMaxFrame)
-            throw OversizeError("frame exceeds 8MB budget");
+            throw OversizeError("frame exceeds VarInt21 length budget");
         if (compressionThreshold < 0) {
             return frame;
         }
@@ -67,8 +67,6 @@ public:
             throw std::runtime_error("forged dataLength below threshold");
         if (static_cast<std::uint32_t>(dataLen) > kMaxDeclared)
             throw OversizeError("declared size exceeds 2MB budget");
-        if (static_cast<std::uint32_t>(dataLen) > kMaxFrame)
-            throw OversizeError("declared size out of range");
         std::vector<std::uint8_t> out;
         decompressChecked(in.p + in.off, left, static_cast<std::size_t>(dataLen), out);
         in.skipRest();

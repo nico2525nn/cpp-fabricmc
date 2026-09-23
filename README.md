@@ -75,7 +75,7 @@ The latest recorded runs include:
   `test_wire_full` `399 PASS / 0 FAIL`.
 - Integration checks: the clean extracted Linux package's `test_server_full`
   reports `234 PASS / 0 FAIL`; the source-tree `test_smoke_80` reports
-  `223 PASS / 0 FAIL`.
+  `225 PASS / 0 FAIL`.
 - Focused gameplay and data checks confirmed for the current working tree:
   gameplay `806 PASS / 0 FAIL`, seed
   `201 PASS`, fuzz `25 PASS`, mining
@@ -88,7 +88,7 @@ The latest recorded runs include:
 - Java compatibility checks: the bounded historical fixture corpus is `25/25`; its
   harness also passes the auxiliary functional API fixture, the standalone Shadow
   ABI gate passes, and the offline pinned Loader/Knot probe passes.
-- The latest integrated rerun on 2026-09-19 is non-nightly CTest `45/45 PASS`
+- The 2026-09-19 integrated rerun is non-nightly CTest `45/45 PASS`
   in `394.71s`, with the properties matrix `33 PASS`, lifecycle matrix `8/8 PASS`,
   multi-client `ALL PASS` in `17.48s`, and bot smoke
   `ALL PASS` in `20.82s`. The release-specific `package_jvm_smoke` gate is separate: it
@@ -96,6 +96,10 @@ The latest recorded runs include:
   strict JVM startup and embedded classes/assets verified. The locally generated
   ignored Linux CPack output contains exactly one executable; its clean
   extracted-directory `test_server_full` run is `234 PASS / 0 FAIL`.
+- The implemented vanilla-facing server-settings subset passed the focused
+  settings matrix (`49/49`), Java Properties parser (`64/64`), and secure-chat
+  policy checks (`12/12`). These checks cover supported settings only;
+  unsupported vanilla properties and several runtime effects remain partial.
 - The class-file linkage tooling and fail-closed runtime-diagnostic contract pass;
   raw official-provider scans are retained as conservative diagnostics for
   Mixin-added members.

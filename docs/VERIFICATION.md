@@ -65,12 +65,13 @@ barriers run under the same gate. Secure-profile rejection is terminal, block
 callbacks cancel before mutation with post-callback revalidation, and signed
 command argument transcripts fail closed as a declared limitation.
 
-### Vanilla server-settings compatibility follow-up (2026-09-23; pre-merge)
+### Vanilla server-settings compatibility follow-up (2026-09-23; exact-head evidence)
 
-This local compatibility follow-up is based on PR #1 head
-`26e399c0d1cae542d459812ef84fd5e865515e2c`. It intentionally improves the
-implemented settings subset without claiming complete `server.properties`
-parity. Pre-merge local evidence:
+This compatibility follow-up was developed from PR #1 head
+`26e399c0d1cae542d459812ef84fd5e865515e2c`, then squash-merged from stacked
+PR #2 into the PR #1 branch as `bac90dfbce70a8d1c09ddf525b339fac479ff350`.
+It intentionally improves the implemented settings subset without claiming
+complete `server.properties` parity. Focused local evidence:
 
 | check | result | command / scope |
 |---|---|---|
@@ -79,7 +80,8 @@ parity. Pre-merge local evidence:
 | config/settings matrix | `49 PASS / 0 FAIL` | `timeout --foreground --kill-after=5 60 ./build/test_settings_matrix`; includes malformed integer rejection and `level-seed` string-hash fallback |
 | secure-chat policy | `12 PASS / 0 FAIL` | `timeout --foreground --kill-after=5 60 ./build/test_secure_chat_policy` |
 | source/process guards | `PASS` | `goal_security_guards`, Python syntax checks for the modified launcher scripts, and the runtime-layout CTest all pass |
-| full non-nightly CTest baseline | `55/55 PASS` in `516.24s` on pre-review head `5eb101d1` | `timeout --foreground --kill-after=5 2400 ctest --test-dir build -LE 'nightly|package' --output-on-failure --timeout 600`; the revised PR head is separately gated by exact-SHA Actions |
+| prior local full non-nightly baseline | `55/55 PASS` in `516.24s` on pre-review head `5eb101d1` | `timeout --foreground --kill-after=5 2400 ctest --test-dir build -LE 'nightly|package' --output-on-failure --timeout 600`; retained as historical local evidence |
+| exact-head GitHub Actions | `55/55 PASS` in `544.84s` | Full build and non-nightly CTest on combined head `bac90dfbce70a8d1c09ddf525b339fac479ff350`; [run 35828644414](https://github.com/nico2525nn/cpp-fabricmc/actions/runs/35828644414). Later PR #1 review changes require a new exact-head run. |
 | owned server cleanup | `PASS` | `pgrep -a -f 'cppfm --por[t]'` found no remaining server process after the suite |
 
 The settings tests cover vanilla-facing defaults (`online-mode=true`,
@@ -369,6 +371,14 @@ diagnostic: its raw Mixin gaps do not override the zero-diagnostic runtime corpu
 - The C++ `ServerProcess` owner retains its PID until `waitpid` succeeds,
   reports non-`ESRCH` `kill`/reap failures, checks temporary-world removal, and
   aborts from the destructor rather than silently accepting cleanup failure.
+- Network admission has a bounded pending-session worker gate and a separate
+  Status-session gate. After authentication checks, a Login slot is reserved
+  before configuration and can race with Play registration, then is consumed or
+  released exactly once.
+- `Connection::readFrame()` excludes pre-frame idle time, then enforces one
+  absolute 30-second deadline from the first length-prefix byte through the body.
+  A malformed oversize frame may end with a transport close instead of a readable
+  Disconnect when its unread body causes the peer OS to reset the TCP stream.
 - Test and diagnostic subprocesses create an owned process group, use a
   monotonic deadline, and are terminated/reaped with bounded escalation. A
   cleanup failure is a failed gate, not a pass based on the parent's output.
@@ -415,6 +425,8 @@ The checker must cover:
   `MOB_STATS_CSV` override;
 - single-palette zero longs, negative Position/VarInt, compressed/uncompressed frames,
   zlib trailing data, and oversize declarations;
+- idle-before-frame and slow-drip frame deadlines, Status-worker saturation,
+  concurrent logins at `max-players=1`, and rejection at `max-players=0`;
 - stale/live session locks, corrupt level/region/player data, orphan servers, and port
   reuse; and
 - E-14, official/arbitrary JVM Fabric mods beyond plan51, full world-generation RNG L3, and unavailable
@@ -439,6 +451,11 @@ The static gate checks required files, links/anchors (including explicit `<a id>
 anchors), source references, the stable CSV, MISSING consistency, and canonical-only
 scope. The six `docs-legacy/assessment-*.md` archive links now have local targets;
 every local link and anchor must resolve.
+
+The pull-request whitespace check must compare the PR base tree with the tested
+merge tree; on push it compares the event's before and after commits. A bare
+`git diff --check` in a clean Actions checkout only checks uncommitted working-tree
+changes and does not validate the submitted diff.
 
 The JVM-side static preflight is a separate, fail-closed diagnostic. The standard-
 library scanner in `tools/scan_mod_linkage.py` reads class-file declarations,

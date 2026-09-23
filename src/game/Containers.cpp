@@ -12,6 +12,14 @@ ItemStack* Menu::slotAt(int slot, ItemStack* playerInv) {
         if (slot >= 5 && slot < 46 && playerInv) return &playerInv[slot];
         return nullptr;
     }
+    // An opened crafting table has ten menu slots, but none are backed by a
+    // block-entity container: result first, then the 3x3 grid. Click handling
+    // and menu snapshots must resolve those slots through the same storage.
+    if (type == MenuType::Crafting) {
+        if (slot == 0) return &craftResult;
+        const int gridIndex = craftGridIndex(slot);
+        if (gridIndex >= 0) return &craftGrid[gridIndex];
+    }
     const auto typeIndex = static_cast<std::size_t>(type);
     if (typeIndex >= kMenuLayouts.size()) return nullptr;
     const int containerSlots = kMenuLayouts[typeIndex].containerSlots;

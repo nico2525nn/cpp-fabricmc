@@ -67,6 +67,7 @@ public:
         std::condition_variable drained;
         bool active = true;
         std::size_t inFlight = 0;
+        std::size_t drainWaiters = 0;
     };
     using EntryRef = std::shared_ptr<Entry>;
 
@@ -100,13 +101,24 @@ public:
             }
         }
         if (!entry) return;
-        const bool reentrant = std::find(invoking_.begin(), invoking_.end(),
-                                         entry.get()) != invoking_.end();
+        const auto ownInvocations = static_cast<std::size_t>(std::count(
+            invoking_.begin(), invoking_.end(), entry.get()));
         std::unique_lock lk(entry->mutex);
         entry->active = false;
-        if (!reentrant) {
-            entry->drained.wait(lk, [&] { return entry->inFlight == 0; });
+        // A callback cannot wait for its own stack frames to return, but a
+        // reentrant reset must still drain invocations on every other thread.
+        if (entry->inFlight > ownInvocations) {
+            ++entry->drainWaiters;
+            entry->drained.wait(lk, [&] {
+                return entry->inFlight <= ownInvocations;
+            });
+            --entry->drainWaiters;
         }
+        ErasedFn released = std::move(entry->fn);
+        lk.unlock();
+        // Destroy outside the entry lock, but before reset returns. Snapshots
+        // may still own EntryRefs that have not reached invoke() yet.
+        released = nullptr;
     }
 
     std::vector<EntryRef> snapshot() const {
@@ -118,19 +130,34 @@ public:
     }
 
     void invoke(const EntryRef& entry, void* raw) const {
+        ErasedFn callback;
         {
             std::lock_guard lk(entry->mutex);
             if (!entry->active) return;
+            // Preserve snapshot semantics: each fire owns its callable copy.
+            // A mutable target must not be invoked concurrently through the
+            // same std::function object when events are fired on many threads.
+            callback = entry->fn;
             ++entry->inFlight;
         }
-        invoking_.push_back(entry.get());
         try {
-            entry->fn(raw);
+            invoking_.push_back(entry.get());
         } catch (...) {
+            callback = nullptr;
+            finish(entry);
+            throw;
+        }
+        try {
+            callback(raw);
+        } catch (...) {
+            callback = nullptr;
             invoking_.pop_back();
             finish(entry);
             throw;
         }
+        // Keep the in-flight count until destruction of the per-fire callable
+        // is complete; its target may itself live in an unloadable module.
+        callback = nullptr;
         invoking_.pop_back();
         finish(entry);
     }
@@ -138,7 +165,8 @@ public:
 private:
     static void finish(const EntryRef& entry) {
         std::lock_guard lk(entry->mutex);
-        if (--entry->inFlight == 0) entry->drained.notify_all();
+        if (--entry->inFlight == 0 || entry->drainWaiters != 0)
+            entry->drained.notify_all();
     }
 
     mutable std::mutex mutex_;
@@ -160,8 +188,10 @@ public:
         });
     }
 
-    // Scoped listeners are safe to unload: reset first prevents new calls and
-    // waits for already-running callbacks to drain before releasing the fn.
+    // Scoped listeners can be unloaded after reset returns: it prevents new
+    // calls and drains calls on other threads. A reset invoked from its own
+    // callback cannot drain that stack frame; that handler's owner must defer
+    // unloading its code until the callback returns.
     Subscription subscribeScoped(int priority,
                                  std::function<void(Ev&)> handler) const {
         detail::BusBase& bus = detail::BusBase::get(typeid(Ev));

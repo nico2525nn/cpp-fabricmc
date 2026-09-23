@@ -103,8 +103,8 @@ int main(){
         if(x != -1) throw std::runtime_error("varlong -1 failed");
     });
 
-    // 7) compressed bomb: dataLen > kMaxFrame (8M+1)
-    expectThrow("F7 compressed bomb declared size >8M", []{
+    // 7) compressed bomb: declared size exceeds the 2 MiB decompression cap.
+    expectThrow("F7 compressed bomb declared size >2M", []{
         WriteBuffer frame;
         frame.varint(8*1024*1024 + 1); // 8M+1
         std::vector<uint8_t> dummy{0x00};
@@ -112,13 +112,14 @@ int main(){
         (void)PacketDecoder::decodeFrame(frame.data, 256);
     });
 
-    // 8) compressed bomb: dataLen 8M but small payload -> decompress fails (dst mismatch)
-    expectThrow("F8 compressed bomb 8M claim with 10-zero payload", []{
+    // 8) declared size is within the cap, but the compressed stream expands
+    // to fewer bytes than promised and must still be rejected.
+    expectThrow("F8 capped compressed claim with undersized payload", []{
         std::vector<uint8_t> small(10,0);
         std::vector<uint8_t> comp;
         compressRaw(small.data(), small.size(), comp);
         WriteBuffer frame;
-        frame.varint(8*1024*1024);
+        frame.varint(2*1024*1024);
         frame.raw(comp.data(), comp.size());
         (void)PacketDecoder::decodeFrame(frame.data, 256);
     });

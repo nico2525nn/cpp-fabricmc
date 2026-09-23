@@ -1,10 +1,16 @@
 // Mojang session-server auth helpers (libcurl).
 #pragma once
 #include <algorithm>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
+#include <exception>
+#include <functional>
+#include <mutex>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace cppfm {
@@ -29,8 +35,8 @@ inline std::vector<std::uint8_t> base64Decode(const std::string& text) {
     static constexpr char alphabet[] =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     std::vector<std::uint8_t> out;
-    int value = 0;
-    int bits = -8;
+    std::uint32_t accumulator = 0;
+    unsigned int bits = 0;
     bool padding = false;
     std::size_t useful = 0;
     for (unsigned char ch : text) {
@@ -41,25 +47,27 @@ inline std::vector<std::uint8_t> base64Decode(const std::string& text) {
         const char* pos = std::find(alphabet, alphabet + 64, static_cast<char>(ch));
         if (pos == alphabet + 64 || padding) return {};
         ++useful;
-        value = (value << 6) | static_cast<int>(pos - alphabet);
+        accumulator = (accumulator << 6) |
+                      static_cast<std::uint32_t>(pos - alphabet);
         bits += 6;
-        if (bits >= 0) {
-            out.push_back(static_cast<std::uint8_t>((value >> bits) & 0xFF));
+        if (bits >= 8) {
             bits -= 8;
+            out.push_back(static_cast<std::uint8_t>(accumulator >> bits));
+            accumulator &= bits == 0 ? 0u : ((1u << bits) - 1u);
         }
     }
     const auto remainder = useful % 4;
     if (text.empty() || remainder == 1 ||
-        (remainder == 2 && (value & 0x0F) != 0) ||
-        (remainder == 3 && (value & 0x03) != 0) ||
+        (remainder == 2 && accumulator != 0) ||
+        (remainder == 3 && accumulator != 0) ||
         (text.find('=') != std::string::npos &&
          (text.size() % 4 != 0 || text.find('=') < text.size() - 2))) return {};
     return out;
 }
-}
 
-inline std::vector<std::vector<std::uint8_t>> fetchMojangProfilePublicKeys() {
-    const std::string json = httpGet("https://api.minecraftservices.com/publickeys", 10);
+using ProfilePublicKeys = std::vector<std::vector<std::uint8_t>>;
+
+inline ProfilePublicKeys parseProfilePublicKeys(const std::string& json) {
     const auto keyNamespace = json.find("\"playerCertificateKeys\"");
     if (keyNamespace == std::string::npos) return {};
     const auto arrayBegin = json.find('[', keyNamespace);
@@ -67,7 +75,7 @@ inline std::vector<std::vector<std::uint8_t>> fetchMojangProfilePublicKeys() {
     const auto arrayEnd = json.find(']', arrayBegin + 1);
     if (arrayEnd == std::string::npos) return {};
 
-    std::vector<std::vector<std::uint8_t>> keys;
+    ProfilePublicKeys keys;
     std::size_t cursor = arrayBegin + 1;
     while (cursor < arrayEnd) {
         const auto keyTag = json.find("\"publicKey\"", cursor);
@@ -81,6 +89,84 @@ inline std::vector<std::vector<std::uint8_t>> fetchMojangProfilePublicKeys() {
         cursor = end + 1;
     }
     return keys;
+}
+
+class ProfilePublicKeyCache {
+public:
+    using Clock = std::chrono::steady_clock;
+    explicit ProfilePublicKeyCache(
+        Clock::duration refresh = std::chrono::minutes(5),
+        Clock::duration stale = std::chrono::minutes(30),
+        Clock::duration retry = std::chrono::seconds(10),
+        std::function<Clock::time_point()> now = [] { return Clock::now(); })
+        : refresh_(refresh), stale_(stale), retry_(retry), now_(std::move(now)) {}
+
+    template <typename Loader>
+    ProfilePublicKeys get(Loader&& loader) {
+        std::unique_lock lock(mutex_);
+        for (;;) {
+            const auto now = now_();
+            if (now < refreshAt_) {
+                if (!keys_.empty() && now >= staleUntil_) keys_.clear();
+                return keys_;
+            }
+            if (!loading_) {
+                loading_ = true;
+                break;
+            }
+            changed_.wait(lock, [this] { return !loading_; });
+        }
+        lock.unlock();
+
+        ProfilePublicKeys fresh;
+        std::exception_ptr failure;
+        try {
+            fresh = std::forward<Loader>(loader)();
+        } catch (...) {
+            failure = std::current_exception();
+        }
+
+        lock.lock();
+        const auto now = now_();
+        if (failure) {
+            if (keys_.empty() || now >= staleUntil_) keys_.clear();
+            refreshAt_ = now + retry_;
+        } else if (!fresh.empty()) {
+            keys_ = std::move(fresh);
+            refreshAt_ = now + refresh_;
+            staleUntil_ = now + stale_;
+        } else {
+            if (keys_.empty() || now >= staleUntil_) keys_.clear();
+            refreshAt_ = now + retry_;
+        }
+        auto result = keys_;
+        loading_ = false;
+        lock.unlock();
+        changed_.notify_all();
+        if (failure && result.empty()) std::rethrow_exception(failure);
+        return result;
+    }
+
+private:
+    std::mutex mutex_;
+    std::condition_variable changed_;
+    ProfilePublicKeys keys_;
+    Clock::time_point refreshAt_{};
+    Clock::time_point staleUntil_{};
+    Clock::duration refresh_;
+    Clock::duration stale_;
+    Clock::duration retry_;
+    std::function<Clock::time_point()> now_;
+    bool loading_ = false;
+};
+} // namespace mojang_detail
+
+inline std::vector<std::vector<std::uint8_t>> fetchMojangProfilePublicKeys() {
+    static mojang_detail::ProfilePublicKeyCache cache;
+    return cache.get([] {
+        return mojang_detail::parseProfilePublicKeys(
+            httpGet("https://api.minecraftservices.com/publickeys", 10));
+    });
 }
 
 struct HasJoinedResult {

@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 
@@ -51,14 +52,49 @@ def main():
     require(set_block.index("gen::blockByState") < set_block.index("runServerMutation"),
             "JNI block mutation validates registry state before enqueueing")
     stop = between(jvm_source, "void JvmRuntime::stop()", "bool JvmRuntime::started()")
-    require("blockEventDispatcher().clearLegacyHandlers();" in stop,
-            "JVM stop clears legacy callbacks before unload")
+    require(re.search(
+                r"if\s*\(ownsLifecycle\)\s*blockEventDispatcher\(\)\.clearLegacyHandlers\(\);",
+                stop) is not None,
+            "only the owning JVM lifecycle clears global legacy callbacks")
+    mutation_helper = between(jvm_source, "bool runServerMutation(", "void setError(")
+    generation_read = mutation_helper.index("lifetime->generation.load")
+    admission_check = mutation_helper.index("lifetime->accepting.load")
+    require(generation_read < admission_check and
+                mutation_helper.count("lifetime->generation.load") >= 2,
+            "queued JVM mutations use a stable generation/admission snapshot")
+    jvm_header = (ROOT / "src/jvm/JvmRuntime.hpp").read_text()
+    native_test = (ROOT / "tests/native_integration.cpp").read_text()
+    require("serverMutationTimeout{250}" in jvm_header and
+                "lifetime->serverMutationTimeout" in mutation_helper and
+                "transientConfig.serverMutationTimeout = std::chrono::seconds(30)" in native_test,
+            "generation-fence regression uses a bounded test deadline longer than its teardown window")
 
     core = (ROOT / "src/game/GameServer_core.cpp").read_text()
+    server_header = (ROOT / "src/game/GameServer.hpp").read_text()
+    stop = between(server_header, "void stop()", "Persistence& persistence()")
+    require("sessionThreadOwner_ == this" in stop,
+            "session callbacks defer full server teardown to the external owner")
+    require("SessionThreadScope sessionThreadScope(this);" in core,
+            "every session worker is marked for re-entrant shutdown detection")
     mutation = between(core, "bool GameServer::runOnServerThread",
                        "void GameServer::drainServerThreadTasks")
-    require("State::Running" in mutation and "request->waitCv.wait" in mutation,
-            "running server mutations wait for a terminal result")
+    require("request->waitCv.wait_for" in mutation and
+            "request->state.compare_exchange_strong" in mutation and
+            "State::Pending" in mutation and "State::Cancelled" in mutation and
+            "return false;" in mutation and
+            "request->waitCv.wait(waitLock" not in mutation,
+            "foreign server mutations have a bounded wait and owned running task")
+
+    wait_tasks = between(core, "void GameServer::waitForServerThreadTasks",
+                         "bool GameServer::runOnServerThread")
+    require("pendingServerThreadTaskCleanups_ == 0" in wait_tasks,
+            "server task drain includes canceled callable cleanup")
+    tick = (ROOT / "src/game/GameServer_tick.cpp").read_text()
+    drain = between(tick, "void GameServer::drainServerThreadTasks()", "namespace {")
+    require(re.search(
+        r"std::lock_guard\s+\w+\(serverThreadTasksMtx_\);\s*"
+        r"activeServerThreadTasks_\.fetch_sub", drain) is not None,
+        "server task completion updates the condition predicate under its mutex")
 
     block_event = (ROOT / "src/game/BlockEvent.hpp").read_text()
     clear = between(block_event, "void clearLegacyHandlers()", "api::EventHook")
@@ -77,9 +113,22 @@ def main():
     spawn_args = between(server_process, "const char* onlineArg", "_exit(127);")
     require('"--online-mode=true"' in spawn_args and
             '"--enforce-secure-profile=true"' in spawn_args and
-            spawn_args.count("onlineArg, secureProfileArg") == 2,
+            spawn_args.count("onlineArg, secureProfileArg") == 4,
             "shared fixture retains independent explicit true options for online scenarios")
     require_offline_auth_flags("ServerProcess", spawn_args)
+
+    admission = between(server_header, "bool reservePlayerAdmission()",
+                        "void releasePlayerAdmission()")
+    require("std::max(0, cfg_.maxPlayers)" in admission and
+            "cfg_.maxPlayers > 0" not in admission,
+            "zero max-player capacity remains a real admission limit")
+    login = between(session, "void Session::handleLogin()",
+                    "void Session::handleConfiguration()")
+    require(login.index("if (srv_.config().onlineMode)") <
+                login.index("srv_.reservePlayerAdmission()") and
+            login.index("if (srv_.config().enforceSecureProfile && !self_->onlineAuthenticated)") <
+                login.index("srv_.reservePlayerAdmission()"),
+            "player capacity is reserved only after authentication and secure-profile checks")
 
     lifecycle = (ROOT / "tests/test_lifecycle_matrix.py").read_text()
     require_offline_auth_flags(

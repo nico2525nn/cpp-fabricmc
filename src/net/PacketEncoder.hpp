@@ -13,7 +13,9 @@ namespace cppfm {
 
 class PacketEncoder {
 public:
-    static constexpr std::size_t kMaxFrame = 8u * 1024u * 1024u;
+    // Minecraft's outer frame prefix is a VarInt21, so the largest
+    // representable positive frame length is 2^21 - 1 bytes.
+    static constexpr std::size_t kMaxFrame = (1u << 21) - 1;
     // Keep the encoder and decoder symmetric.  The decoder rejects a
     // compressed packet whose uncompressed size exceeds this limit.
     static constexpr std::size_t kMaxDeclared = 2u * 1024u * 1024u;
@@ -37,7 +39,9 @@ public:
         if (nb > std::numeric_limits<std::size_t>::max() - na)
             throw std::length_error("packet size overflow");
         const std::size_t total = na + nb;
-        if (total == 0 || total > kMaxFrame)
+        const std::size_t maxBody = compressionThreshold >= 0
+                                        ? kMaxDeclared : kMaxFrame;
+        if (total == 0 || total > maxBody)
             throw std::length_error("packet body is outside the frame budget");
         if (total > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max()))
             throw std::length_error("packet body is too large for a VarInt length");

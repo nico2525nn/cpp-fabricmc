@@ -66,6 +66,7 @@ public:
     bool sendRawPlay(std::uint8_t pid, const WriteBuffer& body);                                     // escape hatch
     bool joinWithFinishContamination(const std::string& name); // plan43 W-12: settings/pong/pack/known-packs before finish-ack
     bool alive() const { return running_.load(); }
+    const std::string& lastError() const noexcept { return lastError_; }
     struct Suggestion { std::string match; };
     struct SuggestionsResp { std::int32_t transactionId=-1, start=0, length=0; std::vector<Suggestion> matches; };
     bool waitSuggestions(std::int32_t transactionId, SuggestionsResp& out, int timeoutMs=5000);

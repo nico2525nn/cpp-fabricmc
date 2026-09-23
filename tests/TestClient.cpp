@@ -195,7 +195,8 @@ bool TestClient::joinOnline(const std::string& name) {
             sawSuccess = true;
             break;
         default:
-            lastError_ = "unexpected login packet (online)";
+            lastError_ = "unexpected login packet (online id=" +
+                         std::to_string(pid) + ")";
             return false;
         }
     }
@@ -213,7 +214,9 @@ bool TestClient::joinOnline(const std::string& name) {
         case proto::cf::sc::SelectKnownPacks: {
             const std::int32_t n = in.varint();
             for (std::int32_t i = 0; i < n; ++i) { (void)in.string(); (void)in.string(); (void)in.string(); }
-            conn_->sendPacket(proto::cf::cs::SelectKnownPacks, WriteBuffer{});
+            WriteBuffer reply;
+            reply.varint(0);
+            conn_->sendPacket(proto::cf::cs::SelectKnownPacks, reply);
             break;
         }
         case proto::cf::sc::KeepAlive: {

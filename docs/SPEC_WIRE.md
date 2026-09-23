@@ -318,7 +318,7 @@ Serialization performance is not a parity oracle. The observable budgets are:
 
 | budget | current implementation |
 |---|---|
-| outer frame | `Connection::kMaxFrame = 8 MiB` buffer guard; wire prefix independently caps the length at 21 bits (2,097,151 bytes) |
+| outer frame | `Connection::kMaxFrame = 2,097,151` bytes, matching the maximum positive VarInt21 length |
 | declared decompressed size | `PacketDecoder::kMaxDeclared = 2 MiB` |
 | configured compression | `PacketEncoder` uses `dataLength=0` below threshold and uncompressed size + zlib above it; the session negotiates the configured threshold |
 | batch | `PacketBatcher` uses the 64-count/50 ms policy documented by the current header and tick integration |

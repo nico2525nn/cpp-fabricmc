@@ -34,6 +34,12 @@ bool GameServer::isCurrentServerThread() const noexcept {
            serverThreadId_ == std::this_thread::get_id();
 }
 
+bool GameServer::isCurrentTickThread() const noexcept {
+    std::lock_guard lock(serverThreadTasksMtx_);
+    return tickThreadId_ != std::thread::id{} &&
+           tickThreadId_ == std::this_thread::get_id();
+}
+
 void GameServer::claimServerThreadForBootstrap() noexcept {
     std::lock_guard lock(serverThreadTasksMtx_);
     serverThreadId_ = std::this_thread::get_id();
@@ -43,6 +49,7 @@ void GameServer::claimServerThreadForBootstrap() noexcept {
 void GameServer::bindServerThread() noexcept {
     std::lock_guard lock(serverThreadTasksMtx_);
     serverThreadId_ = std::this_thread::get_id();
+    tickThreadId_ = serverThreadId_;
     serverThreadAccepting_ = running_.load(std::memory_order_acquire) &&
                              !shutdownStarted_.load(std::memory_order_acquire);
 }
@@ -53,6 +60,7 @@ void GameServer::releaseServerThread() noexcept {
         if (serverThreadId_ != std::this_thread::get_id()) return;
         serverThreadAccepting_ = false;
         serverThreadId_ = {};
+        tickThreadId_ = {};
     }
     cancelServerThreadTasks();
 }
@@ -63,6 +71,7 @@ void GameServer::cancelServerThreadTasks() noexcept {
         std::lock_guard lock(serverThreadTasksMtx_);
         serverThreadAccepting_ = false;
         pending.swap(serverThreadTasks_);
+        pendingServerThreadTaskCleanups_ += pending.size();
     }
     for (auto& request : pending) {
         if (!request) continue;
@@ -70,8 +79,13 @@ void GameServer::cancelServerThreadTasks() noexcept {
         if (request->state.compare_exchange_strong(
                 expected, ServerThreadTask::State::Cancelled,
                 std::memory_order_acq_rel, std::memory_order_acquire)) {
+            request->task = {};
             request->waitCv.notify_all();
         }
+    }
+    {
+        std::lock_guard lock(serverThreadTasksMtx_);
+        pendingServerThreadTaskCleanups_ -= pending.size();
     }
     serverThreadTaskIdleCv_.notify_all();
 }
@@ -81,7 +95,8 @@ void GameServer::waitForServerThreadTasks() {
     std::unique_lock lock(serverThreadTasksMtx_);
     serverThreadTaskIdleCv_.wait(lock, [this] {
         return activeServerThreadTasks_.load(std::memory_order_acquire) == 0 &&
-               serverThreadTasks_.empty();
+               serverThreadTasks_.empty() &&
+               pendingServerThreadTaskCleanups_ == 0;
     });
 }
 
@@ -134,29 +149,16 @@ bool GameServer::runOnServerThread(std::function<void()> task,
                    state == ServerThreadTask::State::Cancelled;
         });
     if (!finished) {
-        if (request->state.load(std::memory_order_acquire) ==
-            ServerThreadTask::State::Running) {
-            // A running mutation owns the server-thread side effects.  Do not
-            // report failure while it can still commit after the caller
-            // returns; wait for its terminal state instead.
-            request->waitCv.wait(waitLock, [&request] {
-                const auto state = request->state.load(std::memory_order_acquire);
-                return state == ServerThreadTask::State::Completed ||
-                       state == ServerThreadTask::State::Failed ||
-                       state == ServerThreadTask::State::Cancelled;
-            });
-            return request->state.load(std::memory_order_acquire) ==
-                   ServerThreadTask::State::Completed;
-        }
         auto expected = ServerThreadTask::State::Pending;
         if (request->state.compare_exchange_strong(
                 expected, ServerThreadTask::State::Cancelled,
                 std::memory_order_acq_rel, std::memory_order_acquire)) {
+            request->task = {};
             request->waitCv.notify_all();
         }
-        // If the task was already Running, it remains owned by the server
-        // thread and will finish there.  The caller deliberately fails closed
-        // at its deadline instead of extending a JNI call indefinitely.
+        // A task that won the Pending -> Running race stays owned by the
+        // server thread and may commit after this timeout. Its shared request
+        // owns the callable, so returning cannot leave dangling caller state.
         return false;
     }
     return request->state.load(std::memory_order_acquire) ==
@@ -337,8 +339,28 @@ void GameServer::acceptLoop() {
             platform::closeSocket(fd);
             continue;
         }
+        auto admission = pendingSessionAdmissionGate_.tryAcquire();
+        if (!admission) {
+            std::fprintf(stderr, "[cppfm] session admission: refusing fd=%llu (capacity)\n",
+                         static_cast<unsigned long long>(platform::socketNumber(fd)));
+            platform::closeSocket(fd);
+            continue;
+        }
         try {
-            std::thread worker([this, fd] {
+            auto finished = std::make_shared<std::atomic<bool>>(false);
+            std::thread worker([this, fd, finished,
+                                slot = std::move(*admission)]() mutable {
+                SessionThreadScope sessionThreadScope(this);
+                struct Completion {
+                    std::shared_ptr<std::atomic<bool>> finished;
+                    ~Completion() {
+                        finished->store(true, std::memory_order_release);
+                    }
+                } completion{finished};
+                (void)completion;
+                std::optional<SessionAdmissionGate::Slot> sessionSlot(
+                    std::move(slot));
+                std::optional<SessionAdmissionGate::Slot> statusSessionSlot;
                 std::shared_ptr<Connection> conn;
                 bool registered = false;
                 try {
@@ -353,7 +375,20 @@ void GameServer::acceptLoop() {
                     conn->setSendTimeoutMs(250);
                     conn->setRecvTimeout(30);
                     conn->enableFloodBudget(true);
-                    Session s(*this, conn);
+                    Session s(*this, conn, [this, fd, &sessionSlot,
+                                            &statusSessionSlot] {
+                        auto statusSlot = statusAdmissionGate_.tryAcquire();
+                        if (!statusSlot) {
+                            std::fprintf(stderr,
+                                "[cppfm] status admission: refusing fd=%llu (capacity)\n",
+                                static_cast<unsigned long long>(
+                                    platform::socketNumber(fd)));
+                            return false;
+                        }
+                        statusSessionSlot.emplace(std::move(*statusSlot));
+                        sessionSlot.reset();
+                        return true;
+                    }, [&sessionSlot] { sessionSlot.reset(); });
                     s.run();
                 } catch (const std::exception& e) {
                     std::fprintf(stderr, "[cppfm] unhandled session exception: %s\n", e.what());
@@ -370,7 +405,7 @@ void GameServer::acceptLoop() {
                 if (conn) conn->close();
                 else platform::closeSocket(fd);
             });
-            if (!registerSessionThread(std::move(worker))) break;
+            if (!registerSessionThread(std::move(worker), finished)) break;
         } catch (const std::exception& e) {
             platform::closeSocket(fd);
             std::fprintf(stderr, "[cppfm] could not create session worker: %s\n", e.what());
@@ -385,15 +420,33 @@ void GameServer::acceptLoop() {
     }
 }
 
-bool GameServer::registerSessionThread(std::thread worker) {
+bool GameServer::registerSessionThread(
+    std::thread worker,
+    const std::shared_ptr<std::atomic<bool>>& finished) {
     bool rejected = false;
+    std::vector<std::thread> completed;
     {
         std::lock_guard lock(sessionThreadsMtx_);
         if (sessionThreadsStopping_) {
             rejected = true;
         } else {
             try {
-                sessionThreads_.push_back(std::move(worker));
+                const auto finishedCount = static_cast<std::size_t>(std::count_if(
+                    sessionThreads_.begin(), sessionThreads_.end(), [](const auto& entry) {
+                        return entry.finished &&
+                               entry.finished->load(std::memory_order_acquire);
+                    }));
+                completed.reserve(finishedCount);
+                sessionThreads_.reserve(sessionThreads_.size() + 1);
+                for (auto it = sessionThreads_.begin(); it != sessionThreads_.end();) {
+                    if (it->finished && it->finished->load(std::memory_order_acquire)) {
+                        completed.push_back(std::move(it->worker));
+                        it = sessionThreads_.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
+                sessionThreads_.push_back(SessionThread{std::move(worker), finished});
             } catch (...) {
                 rejected = true;
             }
@@ -403,18 +456,21 @@ bool GameServer::registerSessionThread(std::thread worker) {
     // session's final unregisterActiveConnection() needs an unrelated lock
     // today, but keeping lifecycle locks independent prevents a future
     // shutdown callback from turning this into a lock inversion.
+    for (auto& completedWorker : completed) {
+        if (completedWorker.joinable()) completedWorker.join();
+    }
     if (rejected && worker.joinable()) worker.join();
     return !rejected;
 }
 
 void GameServer::joinSessionThreads() {
-    std::vector<std::thread> workers;
+    std::vector<SessionThread> workers;
     const auto self = std::this_thread::get_id();
     {
         std::lock_guard lock(sessionThreadsMtx_);
         sessionThreadsStopping_ = true;
         for (auto it = sessionThreads_.begin(); it != sessionThreads_.end();) {
-            if (it->joinable() && it->get_id() == self) {
+            if (it->worker.joinable() && it->worker.get_id() == self) {
                 ++it;
                 continue;
             }
@@ -422,9 +478,9 @@ void GameServer::joinSessionThreads() {
             it = sessionThreads_.erase(it);
         }
     }
-    for (auto& worker : workers) {
-        if (!worker.joinable()) continue;
-        worker.join();
+    for (auto& session : workers) {
+        if (!session.worker.joinable()) continue;
+        session.worker.join();
     }
     std::lock_guard lock(activeConnectionsMtx_);
     activeConnections_.clear();

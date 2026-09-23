@@ -59,10 +59,19 @@ timeout --foreground --kill-after=5 30 /tmp/test_goal_cleanup_game
 timeout --foreground --kill-after=5 300 cmake --build build -j2
 ```
 
-Observed results: the focused test passes 9/9. `cppfm`, the settings matrix, and
+Initial cleanup baseline: the focused test passed 9/9. `cppfm`, the settings matrix, and
 the security/cleanup targets link successfully in the final incremental build.
 The menu unit test passed `41/41`; the incremental production build also passed
 after the stairs and session helper refactors.
+
+PR #1 adversarial-review follow-up (2026-09-23): the expanded focused test now
+passes **13/13**, including independent callable snapshots under concurrent
+fires and a reentrant unsubscribe handshake that proves reset actually waits
+for the other in-flight callback. `test_native` also passes the bounded
+server-thread deadline and tick-callback self-stop lifecycle scenarios. The
+opened crafting-table slot routing is covered by `test_wire_b6` (137/137).
+These are local working-tree results; exact-head GitHub Actions remains the
+merge gate.
 
 ## Residual candidates
 

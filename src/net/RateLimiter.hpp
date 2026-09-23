@@ -1,11 +1,14 @@
 
 #pragma once
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cmath>
 #include <limits>
 #include <mutex>
+#include <optional>
+#include <utility>
 
 namespace cppfm {
 
@@ -81,6 +84,60 @@ private:
     std::int64_t windowStart_ = 0;
     int count_ = 0;
     std::mutex m_;
+};
+
+// Bounds the number of session workers that may own sockets at once. A move-only
+// slot makes every successful admission release exactly once, including thread
+// creation/registration failures and ordinary worker exit.
+class SessionAdmissionGate {
+public:
+    class Slot {
+    public:
+        Slot(const Slot&) = delete;
+        Slot& operator=(const Slot&) = delete;
+        Slot(Slot&& other) noexcept : owner_(std::exchange(other.owner_, nullptr)) {}
+        Slot& operator=(Slot&& other) noexcept {
+            if (this != &other) {
+                release();
+                owner_ = std::exchange(other.owner_, nullptr);
+            }
+            return *this;
+        }
+        ~Slot() { release(); }
+
+    private:
+        friend class SessionAdmissionGate;
+        explicit Slot(SessionAdmissionGate* owner) noexcept : owner_(owner) {}
+        void release() noexcept {
+            if (owner_) {
+                owner_->active_.fetch_sub(1, std::memory_order_release);
+                owner_ = nullptr;
+            }
+        }
+        SessionAdmissionGate* owner_;
+    };
+
+    explicit SessionAdmissionGate(std::size_t limit) noexcept : limit_(limit) {}
+
+    std::optional<Slot> tryAcquire() noexcept {
+        auto active = active_.load(std::memory_order_relaxed);
+        while (active < limit_) {
+            if (active_.compare_exchange_weak(active, active + 1,
+                                              std::memory_order_acquire,
+                                              std::memory_order_relaxed))
+                return std::optional<Slot>(Slot(this));
+        }
+        return std::nullopt;
+    }
+
+    std::size_t active() const noexcept {
+        return active_.load(std::memory_order_acquire);
+    }
+    std::size_t limit() const noexcept { return limit_; }
+
+private:
+    const std::size_t limit_;
+    std::atomic<std::size_t> active_{0};
 };
 
 // ---- rate-limited logging (flood-time disk-fill guard) ---------------------

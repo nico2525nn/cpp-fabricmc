@@ -473,6 +473,18 @@ static void test_g13_live() {
               b.craftResult.name() == "minecraft:bread",
               "per-menu craftResult separation (shared table, distinct cursors)");
     }
+    // An opened crafting table has no block-entity container; snapshots and
+    // clicks must resolve result/grid slots to the same per-menu backing data.
+    {
+        Menu table;
+        table.type = MenuType::Crafting;
+        ItemStack playerInv[46]{};
+        check(table.slotAt(0, playerInv) == &table.craftResult &&
+                  table.slotAt(1, playerInv) == &table.craftGrid[0] &&
+                  table.slotAt(9, playerInv) == &table.craftGrid[8] &&
+                  table.slotAt(10, playerInv) == &playerInv[9],
+              "opened crafting-table menu slots map to result, 3x3 grid, and player inventory");
+    }
     // anvil rename path (W-08→G-13 joint): rename text is per-menu state
     {
         Menu anvil;

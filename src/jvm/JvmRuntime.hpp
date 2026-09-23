@@ -7,6 +7,7 @@
 // event calls.
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -42,6 +43,9 @@ struct JvmConfig {
     // KnotLauncher is preferred when present; the fallback provider is kept
     // for the dependency-free compatibility fixture.
     bool preferKnot = true;
+    // Deadline for native bridge mutations queued to the authoritative server
+    // thread. Kept configurable so callers/tests can budget for loaded ticks.
+    std::chrono::milliseconds serverMutationTimeout{250};
 };
 
 enum class JvmProvider : std::uint8_t {
