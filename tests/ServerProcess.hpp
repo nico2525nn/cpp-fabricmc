@@ -33,7 +33,10 @@ struct ServerProcessOptions {
     // at y=-61). Keep that test fixture explicit now that the production
     // default matches vanilla normal terrain.
     std::string levelType = "flat";
+    // These live protocol fixtures use fake/offline clients. Keep both
+    // authentication settings explicit rather than inheriting server defaults.
     bool onlineMode = false;
+    bool enforceSecureProfile = false;
     std::string motd;
     std::string worldPrefix = "/tmp/cppfm-test-";
     int readyTimeoutMs = 30000;
@@ -100,13 +103,16 @@ public:
                           worldDir.c_str());
             const char* onlineArg = options.onlineMode
                 ? "--online-mode=true" : "--online-mode=false";
+            const char* secureProfileArg = options.enforceSecureProfile
+                ? "--enforce-secure-profile=true" : "--enforce-secure-profile=false";
             const std::string motdArg = "--motd=" + options.motd;
             if (options.motd.empty()) {
                 execl(serverPathAbs.c_str(), serverPathAbs.c_str(), portArg, viewArg, worldArg,
-                      levelArg.c_str(), onlineArg, static_cast<char*>(nullptr));
+                      levelArg.c_str(), onlineArg, secureProfileArg,
+                      static_cast<char*>(nullptr));
             } else {
                 execl(serverPathAbs.c_str(), serverPathAbs.c_str(), portArg, viewArg, worldArg,
-                      levelArg.c_str(), onlineArg, motdArg.c_str(),
+                      levelArg.c_str(), onlineArg, secureProfileArg, motdArg.c_str(),
                       static_cast<char*>(nullptr));
             }
             _exit(127);

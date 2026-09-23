@@ -247,7 +247,8 @@ def main():
         world_dir = tempfile.mkdtemp(prefix=f"cppfm-stress-{os.getpid()}-")
         cmd = [binary, f"--port={port}", f"--view-distance={args.view_distance}",
                f"--max-players={max_players}",
-               f"--world-dir={world_dir}", "--level-type=flat", "--online-mode=false"]
+               f"--world-dir={world_dir}", "--level-type=flat", "--online-mode=false",
+               "--enforce-secure-profile=false"]
         print(f"[stress] starting server {' '.join(cmd)} for {n} clients")
         environment = os.environ.copy()
         environment["CPPFM_SERVER_DIR"] = world_dir

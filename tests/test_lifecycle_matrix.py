@@ -744,6 +744,7 @@ def _server_command(
         "--view-distance=2",
         "--jvm=false",
         "--online-mode=false",
+        "--enforce-secure-profile=false",
         *extra,
     ]
 

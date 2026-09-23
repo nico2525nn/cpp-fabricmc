@@ -407,6 +407,8 @@ def main() -> int:
                         f"--view-distance={args.view_distance}",
                         f"--world-dir={world_dir}",
                         "--level-type=flat",
+                        "--online-mode=false",
+                        "--enforce-secure-profile=false",
                     ],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,

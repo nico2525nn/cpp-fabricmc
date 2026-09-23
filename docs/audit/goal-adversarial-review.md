@@ -30,13 +30,28 @@ The goal tests are retained as regression gates; the source-order guard intentio
 
 ## Findings
 
-### ADV-SET-001 — fixed — secure-profile setting silently enabled secure chat
+### ADV-SET-001 — reclassified — secure-profile and secure-chat configuration
 
-`src/game/ServerConfig.cpp` now assigns only `enforceSecureProfile` for the profile key. `tests/test_settings_matrix.cpp` includes an explicit profile=true/chat=false fixture and verifies both flags independently. The source-order guard also prevents the coupling from returning.
+`src/game/ServerConfig.cpp` keeps `enforceSecureProfile` and cppfm's
+`enforcesSecureChat` extension as separate stored settings. The effective
+secure-chat advertisement and unsigned-message policy use their logical OR,
+matching vanilla 1.21.4 secure-profile enforcement. The parser does not mutate
+the extension setting when the vanilla profile property is applied.
+`tests/test_settings_matrix.cpp` verifies the stored settings remain
+independent; `test_secure_chat_policy` covers the effective policy.
 
 ### ADV-CHAT-002 — fixed — unverified chat reached callbacks
 
-`Session::onChatMessage` now performs signature and replay checks before `PlayerChatEvent` or `JvmRuntime::onChat`; online-mode sessions fail closed when no authenticated message exists, even if secure-chat enforcement is disabled. `tests/test_goal_security_guards.py` locks the ordering and fail-closed branch. A full signed-session callback counter remains environment-dependent because the repository has no authenticated client fixture.
+`Session::onChatMessage` performs signature and replay checks before
+`PlayerChatEvent` or `JvmRuntime::onChat`. With effective secure-chat
+enforcement enabled, unsigned or invalidly signed messages are rejected; when
+it is disabled, vanilla's unsigned path without a player session is accepted.
+The packet disposition is covered by `test_secure_chat_policy`, and
+`tests/test_goal_security_guards.py` locks callback ordering and policy use.
+Unsigned-message behavior after a player session has been established remains
+an explicitly unverified vanilla edge case. A full signed-session callback
+counter also remains environment-dependent because the repository has no
+authenticated client fixture.
 
 ### ADV-JVM-003 — fixed — JNI world mutation accepted unregistered block states
 

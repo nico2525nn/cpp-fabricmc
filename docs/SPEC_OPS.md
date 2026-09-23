@@ -41,6 +41,26 @@ the root layout for this target, 20 TPS scheduling, and Play KeepAlive `0x27` ar
 1.21.4 facts. `SPEC_OPS` does not turn a chosen safety threshold into a claim about
 all vanilla servers.
 
+### Vanilla-facing `server.properties`
+
+The implemented settings remain a **partial** 1.21.4 subset. On first launch,
+the generated defaults use `view-distance=10`, `motd=A Minecraft Server`,
+`difficulty=easy`, an empty `level-seed` (random for a new world),
+`online-mode=true`, and `enforce-secure-profile=true`; an existing world's
+`level.dat` seed remains authoritative. Property names are case-sensitive and
+use Java Properties separators, escapes, continuations, and boolean conversion.
+Supported integer settings accept Java's leading `+`; difficulty IDs `0`–`3`
+map to `peaceful`, `easy`, `normal`, and `hard`. `white-list` is the canonical
+key; `whitelist` remains a legacy cppfm alias.
+
+The compatibility-oriented defaults require account authentication and secure
+profile enforcement. An intentionally offline fake-client test must explicitly
+pass both `--online-mode=false` and `--enforce-secure-profile=false`. This does
+not make the settings surface complete: for example, `enforce-whitelist`, query,
+permission, datapack, and several world/pack/operations keys still lack full
+vanilla runtime behavior. Passing the parser/configuration gates is not evidence
+that unsupported vanilla keys take effect.
+
 ## 3. Classes and operational data
 
 | area | implementation path/symbol | observable metric/state | evidence/status |

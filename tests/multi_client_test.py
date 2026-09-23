@@ -149,7 +149,8 @@ def main():
         environment["CPPFM_SERVER_DIR"] = world_dir
         try:
             proc = subprocess.Popen([binary, "--port", str(port), "--view-distance", "6",
-                                     "--world-dir", world_dir, "--level-type", "flat"],
+                                     "--world-dir", world_dir, "--level-type", "flat",
+                                     "--online-mode=false", "--enforce-secure-profile=false"],
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=cwd,
                                     env=environment,
                                     start_new_session=True)

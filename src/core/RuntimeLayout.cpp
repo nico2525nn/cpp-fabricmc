@@ -335,10 +335,28 @@ bool ensureDefaultProperties(const std::filesystem::path& root, std::string& err
     const std::string defaults =
         "server-port=25565\n"
         "max-players=20\n"
-        "view-distance=6\n"
+        "view-distance=10\n"
         "simulation-distance=10\n"
-        "level-type=normal\n"
-        "motd=CppFabricMC - C++ Minecraft 1.21.4 server\n";
+        "level-type=minecraft:normal\n"
+        "difficulty=easy\n"
+        "motd=A Minecraft Server\n"
+        "level-seed=\n"
+        "spawn-protection=16\n"
+        "online-mode=true\n"
+        "white-list=false\n"
+        "pvp=true\n"
+        "allow-flight=false\n"
+        "hardcore=false\n"
+        "enforce-secure-profile=true\n"
+        "network-compression-threshold=256\n"
+        "enable-rcon=false\n"
+        "rcon.port=25575\n"
+        "rcon.password=\n"
+        "resource-pack=\n"
+        "resource-pack-sha1=\n"
+        "require-resource-pack=false\n"
+        "jvm=true\n"
+        "jvm-strict=false\n";
     const std::vector<std::uint8_t> bytes(defaults.begin(), defaults.end());
     return writeIfMissing(root, "server.properties", bytes, error);
 }

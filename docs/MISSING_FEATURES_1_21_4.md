@@ -20,7 +20,7 @@
 - `strict_assessment_1_gap_count: 78` is a separate historical audit label. Its
   archive result is not a current aggregate, and it must not be added to or
   substituted for the 90-row taxonomy count.
-- Current publication state is `BLOCKED` only by the declared scope/evidence
+- At the 2026-09-19 source snapshot, publication state was `BLOCKED` by the declared scope/evidence
   boundaries: the final focused matrices report `settings 27 PASS / 0 FAIL`,
   `properties 33 PASS / 0 FAIL`, `recovery 55 PASS / 0 FAIL`, and
   `core_safety 45 PASS / 0 FAIL`; Plan43 reports `87 PASS / 0 FAIL`; smoke80
@@ -38,16 +38,16 @@
   properties `33 PASS`, and the live server matrix `240 PASS / 0 FAIL`.
   Older duplicate timings are `HISTORICAL` context only.
 
-## Current working-tree hardening evidence
+## Working-tree hardening baseline (2026-09-19)
 
 This section records the later uncommitted verification pass without changing the
 historical numbered taxonomy.
 
 | concern | current result | evidence / declared boundary |
 |---|---|---|
-| server settings and precedence | `PASS` | `test_settings_matrix`: `27 PASS / 0 FAIL`; invalid values retain prior fields, textual/numeric seed semantics are distinguished, secure-profile and secure-chat settings remain separate, and unsupported keys are reported |
+| server settings and precedence | `PASS / SUBSET` | 2026-09-19 baseline `test_settings_matrix`: `27 PASS / 0 FAIL`; invalid values retain prior fields, textual/numeric seeds are distinguished, stored secure-profile and cppfm secure-chat settings remain separate, and unsupported keys are reported. The 2026-09-23 compatibility follow-up is recorded in [CURRENT_STATE.md §1C](CURRENT_STATE.md#1c-vanilla-1214-settings-compatibility-follow-up-2026-09-23): `49` settings, `64` properties, and `12` secure-chat-policy assertions pass, with the full settings surface still partial. |
 | command/authority and inventory boundaries | `PASS` | `test_properties`: `33 PASS / 0 FAIL`; full live matrix: `240 PASS / 0 FAIL`; Plan43: `87 PASS / 0 FAIL`; op-gated roots, one-shot trigger enablement, creative/range/sign/beacon/pick checks, source-dimension item commands, resource-pack UUID completion, and signed-command offset parsing are covered |
-| secure chat/profile | `PASS / BOUNDED` | valid signed inbound chat is verified with the protocol-769 SHA256 transcript and relayed as `SystemChat` under enforced secure chat; Mojang profile certificates use SHA1withRSA and all configured keys are tried; rejected profiles terminate; signed command argument transcripts are deliberately fail-closed and remain a declared limitation |
+| secure chat/profile | `PASS / BOUNDED` | valid signed inbound chat is verified with the protocol-769 SHA256 transcript and relayed as `SystemChat` under enforced secure chat; Mojang profile certificates use SHA1withRSA and all configured keys are tried; rejected profiles terminate; signed command argument transcripts are deliberately fail-closed and remain a declared limitation. The 2026-09-23 policy/advertisement follow-up and its unsigned-after-session boundary are recorded in [CURRENT_STATE.md §1C](CURRENT_STATE.md#1c-vanilla-1214-settings-compatibility-follow-up-2026-09-23). |
 | event and persistence ordering | `PASS` | cancellable block events run before mutations; scoped callbacks synchronize removal; moving-piston source/destination commits are flushed under the simulation gate before synchronous/background snapshots; transient moving-piston NBT remains intentionally omitted |
 | stalled-client isolation | `PASS` | framed output is encoded while the simulation gate is held and sent by a per-connection writer with a 4 MiB queue cap; encrypted frames remain FIFO; graceful output drains for at most 100 ms, then teardown is bounded; no generic gate release occurs during a mutation |
 
@@ -263,7 +263,7 @@ table rather than being hidden inside a numbered `DONE` row.
 | Feature | Status | Notes |
 |---|---|---|
 | RCON `whitelist` | DONE | `RconServer` dispatches Brigadier commands and persists whitelist state. |
-| `server.properties` subset | DONE | Includes spawn protection, whitelist, online mode, secure profile, view/simulation distance, MOTD, seed, level type, difficulty, resource pack, PVP, flight, hardcore, and max players. |
+| `server.properties` subset | PARTIAL | The implemented subset now defaults to vanilla 1.21.4 values (including online/profile enforcement, view distance 10, vanilla MOTD, easy difficulty, and a random seed for a new world); parsing follows Java Properties key case, separators, escapes, continuations, Unicode escapes, UTF-8/ISO-8859-1 fallback, and `Boolean.parseBoolean` semantics. Supported integer values accept Java's leading `+`, and difficulty IDs `0`–`3` map to vanilla names. `white-list` is canonical and legacy `whitelist` remains an alias. This is not full property parity: `enforce-whitelist`, query/status/network, permission, datapack, and several world/pack/operations properties do not yet have complete runtime effects. `ServerProperties::save` also remains a simple legacy writer rather than a `Properties.store` equivalent. Do not interpret focused parser/config passes as completion of the full 1.21.4 settings surface. |
 
 ## Test and gate mapping
 

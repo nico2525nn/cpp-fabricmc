@@ -78,15 +78,22 @@ default-on strict JVM startup without an external classes/assets override.
 
 ## Verification at a glance
 
-The latest recorded working-tree evidence includes:
+The 2026-09-19 integrated working-tree baseline recorded:
 
-- The final integrated rerun on 2026-09-19 is non-nightly CTest `52/52 PASS`
+- The 2026-09-19 integrated rerun is non-nightly CTest `52/52 PASS`
   in `441.35s`; the separately run source-tree smoke matrix reports
   `224 PASS / 0 FAIL`, Plan43 reports `87 PASS / 0 FAIL`, and the full
   `test_server_full.py` matrix reports `240 PASS / 0 FAIL / 240 total`.
   The named focused targets also pass: settings `27`, properties `33`,
   recovery `55`, core safety `45`, and the specification wire vectors `417`,
   all with zero failures.
+- A separate pre-merge server-settings follow-up based on PR #1 head
+  `26e399c0` reports `settings_matrix` `47/47`, `properties` `63/63`,
+  `secure_chat_policy` `12/12`, and non-nightly CTest `55/55` in `516.24s`.
+  It aligns defaults and parsing for the implemented subset only; unsupported
+  vanilla settings and several runtime effects remain partial. Offline fake-client
+  launchers explicitly disable both authentication checks. Full commands and
+  limitations are recorded in [Verification](VERIFICATION.md#vanilla-server-settings-compatibility-follow-up-2026-09-23-pre-merge).
 - The 120-client stress gate joined `120/120` in `68.5s`; the 300-second soak
   passed with 150 keepalives, 0 disconnects, 2,899 actions, and `0.2%`
   post-fill RSS growth. The strict synthetic view-distance-32 benchmark
@@ -128,7 +135,7 @@ The latest recorded working-tree evidence includes:
   not retained release assets; the exact scope is in [Real-client
   verification](MC_PILOT_REAL_TEST.md).
 
-### Current working-tree hardening run
+### 2026-09-19 working-tree hardening baseline
 
 The final deterministic settings/security/authority pass reports
 `test_settings_matrix` `27 PASS / 0 FAIL`, `test_properties` `33 PASS / 0 FAIL`,

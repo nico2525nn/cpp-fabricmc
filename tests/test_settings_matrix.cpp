@@ -1,9 +1,12 @@
 #include "../src/game/ServerConfig.hpp"
 #include "../src/game/ServerProperties.hpp"
 
+#include <array>
 #include <cstdint>
 #include <iostream>
+#include <string>
 #include <string_view>
+#include <utility>
 
 using namespace cppfm;
 
@@ -30,6 +33,96 @@ bool hasDiagnostic(const ConfigDiagnostics& diagnostics, ConfigDiagnosticKind ki
     return false;
 }
 
+void testVanillaDefaultsAndSeedSemantics() {
+    std::cout << "\n[vanilla 1.21.4 defaults and level seed]\n";
+    const ServerConfig defaults;
+    check(defaults.onlineMode && defaults.enforceSecureProfile,
+          "online authentication and secure profiles default to vanilla enabled");
+    check(defaults.viewDistance == 10 && defaults.motd == "A Minecraft Server" &&
+              defaults.difficulty == "easy",
+          "view distance, MOTD, and difficulty use vanilla defaults");
+    check(defaults.seed != 1378645410614731511ULL &&
+              defaults.hashedSeed == static_cast<std::int64_t>(defaults.seed),
+          "an unspecified level seed is randomized and matches its signed login seed");
+
+    ServerConfig absentSeed = defaults;
+    ServerProperties noSeed;
+    ConfigDiagnostics absentDiagnostics;
+    applyServerProperties(absentSeed, noSeed, &absentDiagnostics);
+    check(absentDiagnostics.entries.empty() && absentSeed.seed == defaults.seed &&
+              absentSeed.hashedSeed == defaults.hashedSeed,
+          "an absent level-seed property preserves the generated default seed");
+
+    ServerProperties emptySeed;
+    check(emptySeed.loadText("level-seed=\n"), "empty level-seed fixture parses");
+    ServerConfig emptySeedConfig;
+    emptySeedConfig.seed = 17;
+    emptySeedConfig.hashedSeed = 17;
+    ConfigDiagnostics emptyDiagnostics;
+    applyServerProperties(emptySeedConfig, emptySeed, &emptyDiagnostics);
+    check(emptyDiagnostics.entries.empty() && emptySeedConfig.seed != 17 &&
+              emptySeedConfig.hashedSeed == static_cast<std::int64_t>(emptySeedConfig.seed),
+          "an explicitly empty level-seed generates a fresh coherent seed");
+}
+
+void testCanonicalWhitelistAndAliasPrecedence() {
+    std::cout << "\n[canonical white-list and legacy alias precedence]\n";
+    ServerProperties properties;
+    check(properties.loadText("whitelist=true\nwhite-list=false\n"),
+          "legacy alias before canonical white-list parses");
+    ServerConfig config;
+    ConfigDiagnostics diagnostics;
+    applyServerProperties(config, properties, &diagnostics);
+    check(diagnostics.entries.empty() && !config.whitelist,
+          "canonical white-list wins over a contradictory legacy alias");
+
+    check(properties.loadText("white-list=true\nwhitelist=false\n"),
+          "canonical white-list before legacy alias parses");
+    config = ServerConfig{};
+    diagnostics.entries.clear();
+    applyServerProperties(config, properties, &diagnostics);
+    check(diagnostics.entries.empty() && config.whitelist,
+          "canonical white-list remains authoritative independent of source order");
+
+    check(properties.loadText("whitelist=true\n"), "legacy whitelist alias parses alone");
+    config = ServerConfig{};
+    diagnostics.entries.clear();
+    applyServerProperties(config, properties, &diagnostics);
+    check(diagnostics.entries.empty() && config.whitelist,
+          "the exact legacy alias remains supported when canonical key is absent");
+}
+
+void testPropertyKeyCaseAndBooleanSemantics() {
+    std::cout << "\n[property key case and source-specific boolean semantics]\n";
+    ServerProperties properties;
+    check(properties.loadText("View-Distance=4\n"
+                              "Online-Mode=false\n"
+                              "pvp=on\n"
+                              "allow-flight=TrUe\n"
+                              "hardcore=1\n"),
+          "case and boolean semantics fixture parses");
+    ServerConfig config;
+    ConfigDiagnostics diagnostics;
+    applyServerProperties(config, properties, &diagnostics);
+    check(config.viewDistance == 10 && config.onlineMode,
+          "property keys with non-canonical case do not match canonical settings");
+    check(!config.pvp && config.allowFlight && !config.hardcore,
+          "property booleans use Java true-only semantics with case-insensitive true");
+    check(hasDiagnostic(diagnostics, ConfigDiagnosticKind::UnsupportedKey, "View-Distance") &&
+              hasDiagnostic(diagnostics, ConfigDiagnosticKind::UnsupportedKey, "Online-Mode") &&
+              !hasDiagnostic(diagnostics, ConfigDiagnosticKind::InvalidValue, "pvp") &&
+              !hasDiagnostic(diagnostics, ConfigDiagnosticKind::InvalidValue, "hardcore"),
+          "case-mismatched property keys are reported and non-true boolean tokens become false");
+
+    const auto cli = parseCommandLine({"--VIEW-DISTANCE=5", "--ONLINE-MODE=false",
+                                       "--pvp=on", "--hardcore=yes"});
+    check(cli.diagnostics.entries.empty() && cli.assignments.size() == 4,
+          "CLI names remain independently case-insensitive and accept CLI boolean aliases");
+    applyCommandLine(config, cli, &diagnostics);
+    check(config.viewDistance == 5 && !config.onlineMode && config.pvp && config.hardcore,
+          "CLI values override properties using the separate CLI boolean contract");
+}
+
 void testCanonicalProperties() {
     std::cout << "\n[canonical server.properties settings]\n";
     ServerProperties properties;
@@ -47,7 +140,7 @@ void testCanonicalProperties() {
               "rcon.port=25570\n"
               "rcon.password=matrix-secret\n"
               "enable-rcon=true\n"
-              "whitelist=true\n"
+              "white-list=true\n"
               "online-mode=true\n"
               "enforce-secure-profile=true\n"
               "enforces-secure-chat=true\n"
@@ -124,7 +217,47 @@ void testCanonicalProperties() {
     check(independentDiagnostics.entries.empty() &&
               independentConfig.enforceSecureProfile &&
               !independentConfig.enforcesSecureChat,
-          "secure profile enforcement does not silently enforce secure chat");
+          "vanilla profile and cppfm secure-chat options remain independently stored");
+}
+
+void testDifficultyOrdinals() {
+    std::cout << "\n[vanilla difficulty ordinals]\n";
+    constexpr std::array<std::pair<std::string_view, std::string_view>, 4> cases{{
+        {"0", "peaceful"}, {"1", "easy"}, {"2", "normal"}, {"3", "hard"}}};
+    bool allMapped = true;
+    for (const auto& [ordinal, expected] : cases) {
+        ServerProperties properties;
+        const std::string fixture = "difficulty=" + std::string(ordinal) + "\n";
+        ServerConfig config;
+        ConfigDiagnostics diagnostics;
+        allMapped &= properties.loadText(fixture);
+        applyServerProperties(config, properties, &diagnostics);
+        allMapped &= config.difficulty == expected && diagnostics.entries.empty();
+    }
+
+    ServerProperties plusOrdinal;
+    ServerConfig plusConfig;
+    ConfigDiagnostics plusDiagnostics;
+    const bool plusLoaded = plusOrdinal.loadText("server-port=+25571\ndifficulty=+3\n");
+    applyServerProperties(plusConfig, plusOrdinal, &plusDiagnostics);
+    check(allMapped,
+          "difficulty ordinals 0 through 3 map to the vanilla named difficulties");
+    check(plusLoaded && plusConfig.port == 25571 && plusConfig.difficulty == "hard" &&
+              plusDiagnostics.entries.empty(),
+          "Java-style leading plus signs are accepted for integers and difficulty IDs");
+
+    ServerProperties malformedSigns;
+    const bool malformedLoaded = malformedSigns.loadText(
+        "view-distance=+-4\nlevel-seed=+-1\n");
+    ServerConfig malformedConfig;
+    ConfigDiagnostics malformedDiagnostics;
+    applyServerProperties(malformedConfig, malformedSigns, &malformedDiagnostics);
+    check(malformedLoaded && malformedConfig.viewDistance == 10 &&
+              hasDiagnostic(malformedDiagnostics, ConfigDiagnosticKind::InvalidValue,
+                            "view-distance"),
+          "malformed signed integer properties are rejected instead of being clamped");
+    check(malformedConfig.hashedSeed == 42767 && malformedConfig.seed == 42767,
+          "a non-numeric level-seed with a doubled sign uses Java string hashing");
 }
 
 void testAliasOrderAndMapMutation() {
@@ -204,21 +337,25 @@ void testInvalidSettings() {
           "invalid settings fixture parses");
     ConfigDiagnostics diagnostics;
     applyServerProperties(config, properties, &diagnostics);
-    check(config.port == 4321 && config.hashedSeed != 77 && config.resourcePackForced,
-          "invalid settings retain prior fields while textual seed remains valid");
+    check(config.port == 4321 && config.hashedSeed != 77 && !config.resourcePackForced,
+          "invalid numeric settings retain values, textual seed hashes, and non-true booleans become false");
     check(hasDiagnostic(diagnostics, ConfigDiagnosticKind::InvalidValue, "server-port") &&
               !hasDiagnostic(diagnostics, ConfigDiagnosticKind::InvalidValue, "level-seed") &&
-              hasDiagnostic(diagnostics, ConfigDiagnosticKind::InvalidValue,
-                            "require-resource-pack") &&
+              !hasDiagnostic(diagnostics, ConfigDiagnosticKind::InvalidValue,
+                             "require-resource-pack") &&
               hasDiagnostic(diagnostics, ConfigDiagnosticKind::UnsupportedKey,
                             "unknown-setting"),
-          "invalid, textual, and unsupported settings remain distinguishable");
+          "invalid numbers, text seeds, Java-style booleans, and unsupported keys remain distinguishable");
 }
 
 } // namespace
 
 int main() {
+    testVanillaDefaultsAndSeedSemantics();
+    testCanonicalWhitelistAndAliasPrecedence();
+    testPropertyKeyCaseAndBooleanSemantics();
     testCanonicalProperties();
+    testDifficultyOrdinals();
     testAliasOrderAndMapMutation();
     testCommandLinePrecedence();
     testInvalidSettings();

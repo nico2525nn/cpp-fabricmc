@@ -134,8 +134,10 @@ void testConfigurationAndEncoding() {
     properties.props["bad-int"] = "12trailing";
     properties.props["bad-float"] = "nan";
     properties.props["bad-range"] = "1e309";
-    check(properties.get<int>("view-distance", 6) == 12,
-          "server properties lookup is ASCII case-insensitive");
+    check(properties.get<int>("View-Distance", 6) == 12 &&
+              properties.get<int>("view-distance", 6) == 6 &&
+              !properties.has("VIEW-DISTANCE"),
+          "server properties lookup follows Java's case-sensitive property keys");
     check(properties.get<int>("bad-int", 7) == 7,
           "server properties reject trailing integer data");
     check(properties.get<float>("bad-float", 3.5f) == 3.5f,

@@ -133,7 +133,7 @@ contracts:
   secure-chat policy requires it. Signed command argument transcripts are not
   reconstructed and therefore fail closed instead of dispatching.
 
-The final implementation evidence is `test_settings_matrix` (25/25),
+The 2026-09-19 final-gate baseline recorded `test_settings_matrix` (27/27),
 `test_properties` (33/33), `test_recovery` (55/55), `test_core_safety` (45/45),
 Plan43 (87/87), smoke80 (224/224), the full live matrix (240/240), and the
 non-nightly CTest aggregate (46/46). The 120-client stress, 300-second soak,
