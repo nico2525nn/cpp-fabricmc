@@ -245,6 +245,19 @@ void testDifficultyOrdinals() {
     check(plusLoaded && plusConfig.port == 25571 && plusConfig.difficulty == "hard" &&
               plusDiagnostics.entries.empty(),
           "Java-style leading plus signs are accepted for integers and difficulty IDs");
+
+    ServerProperties malformedSigns;
+    const bool malformedLoaded = malformedSigns.loadText(
+        "view-distance=+-4\nlevel-seed=+-1\n");
+    ServerConfig malformedConfig;
+    ConfigDiagnostics malformedDiagnostics;
+    applyServerProperties(malformedConfig, malformedSigns, &malformedDiagnostics);
+    check(malformedLoaded && malformedConfig.viewDistance == 10 &&
+              hasDiagnostic(malformedDiagnostics, ConfigDiagnosticKind::InvalidValue,
+                            "view-distance"),
+          "malformed signed integer properties are rejected instead of being clamped");
+    check(malformedConfig.hashedSeed == 42767 && malformedConfig.seed == 42767,
+          "a non-numeric level-seed with a doubled sign uses Java string hashing");
 }
 
 void testAliasOrderAndMapMutation() {

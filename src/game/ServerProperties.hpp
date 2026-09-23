@@ -376,7 +376,7 @@ private:
         if (text.empty()) return false;
         if (text.front() == '+') {
             text.remove_prefix(1);
-            if (text.empty()) return false;
+            if (text.empty() || text.front() == '-') return false;
         }
         const char* first = text.data();
         const char* last = first + text.size();

@@ -155,7 +155,7 @@ bool parseInteger(std::string_view text, T& value) {
     // std::from_chars intentionally does not.
     if (text.front() == '+') {
         text.remove_prefix(1);
-        if (text.empty()) return false;
+        if (text.empty() || text.front() == '-') return false;
     }
     const auto result = std::from_chars(text.data(), text.data() + text.size(), value, 10);
     return result.ec == std::errc{} && result.ptr == text.data() + text.size();
@@ -229,9 +229,7 @@ void applySeed(ServerConfig& config, std::string_view value,
     }
 
     std::int64_t numeric = 0;
-    const auto numericText = !value.empty() && value.front() == '+'
-        ? value.substr(1) : value;
-    if (!numericText.empty() && parseInteger(numericText, numeric)) {
+    if (parseInteger(value, numeric)) {
         config.hashedSeed = numeric;
         config.seed = static_cast<std::uint64_t>(numeric);
         return;

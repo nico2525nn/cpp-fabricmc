@@ -75,11 +75,11 @@ parity. Pre-merge local evidence:
 | check | result | command / scope |
 |---|---|---|
 | RelWithDebInfo configure and full build | `PASS` | `timeout --foreground --kill-after=5 120 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo`; `timeout --foreground --kill-after=5 600 cmake --build build -j4` |
-| properties/parser | `63 PASS / 0 FAIL` | `timeout --foreground --kill-after=5 60 ./build/test_properties ./build/cppfm` |
-| config/settings matrix | `47 PASS / 0 FAIL` | `timeout --foreground --kill-after=5 60 ./build/test_settings_matrix` |
+| properties/parser | `64 PASS / 0 FAIL` | `timeout --foreground --kill-after=5 60 ./build/test_properties ./build/cppfm`; includes malformed `+-` rejection |
+| config/settings matrix | `49 PASS / 0 FAIL` | `timeout --foreground --kill-after=5 60 ./build/test_settings_matrix`; includes malformed integer rejection and `level-seed` string-hash fallback |
 | secure-chat policy | `12 PASS / 0 FAIL` | `timeout --foreground --kill-after=5 60 ./build/test_secure_chat_policy` |
 | source/process guards | `PASS` | `goal_security_guards`, Python syntax checks for the modified launcher scripts, and the runtime-layout CTest all pass |
-| full non-nightly CTest | `55/55 PASS` in `516.24s` | `timeout --foreground --kill-after=5 2400 ctest --test-dir build -LE 'nightly|package' --output-on-failure --timeout 600` |
+| full non-nightly CTest baseline | `55/55 PASS` in `516.24s` on pre-review head `5eb101d1` | `timeout --foreground --kill-after=5 2400 ctest --test-dir build -LE 'nightly|package' --output-on-failure --timeout 600`; the revised PR head is separately gated by exact-SHA Actions |
 | owned server cleanup | `PASS` | `pgrep -a -f 'cppfm --por[t]'` found no remaining server process after the suite |
 
 The settings tests cover vanilla-facing defaults (`online-mode=true`,

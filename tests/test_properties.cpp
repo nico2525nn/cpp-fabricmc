@@ -56,6 +56,10 @@ void testPropertiesSyntax() {
     ServerProperties leadingPlus;
     check(leadingPlus.loadText("number=+42") && leadingPlus.get<int>("number", 0) == 42,
           "typed integer properties accept Java's leading plus sign");
+    ServerProperties malformedSignedInteger;
+    check(malformedSignedInteger.loadText("number=+-42") &&
+              malformedSignedInteger.get<int>("number", 7) == 7,
+          "a plus sign cannot be followed by a second, negative sign");
 
     ServerProperties properties;
     check(properties.loadText(

@@ -91,19 +91,19 @@ publication boundaries below or imply universal protocol parity.
 
 ## 1C. Vanilla 1.21.4 settings compatibility follow-up (2026-09-23)
 
-This work is on local branch `plan56/compatibility`, based on PR #1 head
-`26e399c0`; it is not merged. The result changes vanilla-facing defaults and
-property interpretation while keeping unsupported properties declared as
-unsupported.
+This work is on branch `plan56/compatibility`, based on PR #1 head
+`26e399c0`, and is submitted as stacked PR #2; it is not yet part of `main`.
+The result changes vanilla-facing defaults and property interpretation while
+keeping unsupported properties declared as unsupported.
 
 | gate | measured result | scope / limitation |
 |---|---|---|
 | RelWithDebInfo configure/full build | `PASS` | Full Ninja build completed in the integration worktree; all commands had explicit timeouts |
-| defaults, whitelist key, difficulty IDs, and signed integers | `47 PASS / 0 FAIL` | `settings_matrix`; vanilla online/profile defaults, view distance, MOTD, difficulty, random new-world seed, canonical `white-list`, source-order alias behavior, difficulty IDs `0..3`, and leading `+` are covered |
-| Java Properties parsing and configuration | `63 PASS / 0 FAIL` | `properties`; separators, escapes, continuations, key case, UTF-8/ISO-8859-1 fallback, Java boolean semantics, and CLI precedence; isolated UTF-16 surrogates map to U+FFFD in the UTF-8 API |
+| defaults, whitelist key, difficulty IDs, and signed integers | `49 PASS / 0 FAIL` | `settings_matrix`; vanilla online/profile defaults, view distance, MOTD, difficulty, random new-world seed, canonical `white-list`, source-order alias behavior, difficulty IDs `0..3`, leading `+`, and malformed doubled signs are covered |
+| Java Properties parsing and configuration | `64 PASS / 0 FAIL` | `properties`; separators, escapes, continuations, key case, UTF-8/ISO-8859-1 fallback, Java boolean semantics, CLI precedence, and rejection of malformed `+-` integers; isolated UTF-16 surrogates map to U+FFFD in the UTF-8 API |
 | effective secure-chat policy | `12 PASS / 0 FAIL` | `secure_chat_policy`; status and Join Game share the effective policy, `enforce-secure-profile || enforces-secure-chat`; unsigned-after-session behavior remains unverified |
 | fake-client authentication options | `PASS` | source guard and Python syntax checks cover local fake-client launchers; each offline launcher explicitly disables both online mode and secure-profile enforcement |
-| full non-nightly CTest | `55/55 PASS` | 516.24s, exact command and scope in [VERIFICATION.md](VERIFICATION.md#vanilla-server-settings-compatibility-follow-up-2026-09-23-pre-merge) |
+| full non-nightly CTest | `55/55 PASS` | 516.24s on pre-review head `5eb101d1`; exact-SHA Actions must also pass for PR #2's current head; command and scope in [VERIFICATION.md](VERIFICATION.md#vanilla-server-settings-compatibility-follow-up-2026-09-23-pre-merge) |
 | server child cleanup | `PASS` | post-suite `pgrep -a -f 'cppfm --por[t]'` found no remaining `cppfm` server process |
 | remaining property parity | `PARTIAL` | `enforce-whitelist`, query/status/network, permission, datapack, and several world/pack/operations effects are not fully implemented; `ServerProperties::save` is not `Properties.store`-compatible |
 
