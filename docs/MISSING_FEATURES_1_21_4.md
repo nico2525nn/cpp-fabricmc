@@ -24,7 +24,7 @@
   boundaries: the final focused matrices report `settings 27 PASS / 0 FAIL`,
   `properties 33 PASS / 0 FAIL`, `recovery 55 PASS / 0 FAIL`, and
   `core_safety 45 PASS / 0 FAIL`; Plan43 reports `87 PASS / 0 FAIL`; smoke80
-  reports `224 PASS / 0 FAIL`; and the full live protocol matrix reports
+  reports `225 PASS / 0 FAIL`; and the full live protocol matrix reports
   `240 PASS / 0 FAIL / 240 total`. The final non-nightly CTest regression is
   `52/52 PASS` in `441.35s`. A 120-client stress run joined `120/120` in
   `68.5s`, the 300-second soak passed with 150 keepalives and 0 disconnects,
@@ -275,7 +275,7 @@ the old handover value `328` is stale. `test_native` remains `ALL PASS` without 
 invented aggregate count. The current focused record includes `test_gameplay_full`
 `806 PASS / 0 FAIL / 806`, `test_redstone_engine_full` `42 PASS / 0 FAIL`,
 `test_fluids` `23 PASS / 0 FAIL`, and `test_menu_logic` `41 PASS / 0 FAIL`.
-The record also includes `test_smoke_80` `223 PASS 0 FAIL`, a passing
+The record also includes `test_smoke_80` `225 PASS 0 FAIL`, a passing
 `tests/soak_test.py --duration 300` run, and three passing `tools/soak_bot.py
 --duration 300` runs. The latest package-target rebuild, one-file package
 verification, and full CTest regression pass. The remaining compatibility

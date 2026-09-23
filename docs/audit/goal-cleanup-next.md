@@ -98,9 +98,13 @@ conditional rather than removed without an API decision.
 - `test_goal_live_matrix.py` passed both owned launches, status/login/config/
   play, packet compression, shutdown, restart, and shared-world marker checks.
   Headless GUI and vanilla-client rendering remain explicitly unavailable.
-- The local non-nightly/package CTest run passed 53/54 because `smoke80`
-  intermittently missed the `randomTickSpeed` reset chat response. The direct
-  smoke executable rerun passed 224/224, while the CTest wrapper reproduced the
-  same one-case flake; both runs left no owned `cppfm` process. This is retained
-  in the scratch `final-tests.log` and is not promoted to a product defect
-  without a deterministic reproduction.
+- PR #1 Actions for SHA `54e7ad9` completed configure/build, static diff checks,
+  and focused gates, but the full CTest step passed only `52/54`: `smoke80`
+  missed the `randomTickSpeed` reset feedback within its old 8-second wait, and
+  `fuzz` still expected exceptions for Java-compatible VarInt/VarLong terminal
+  payload truncation.
+- The focused follow-up updates `fuzz` to assert the exact Java-width results
+  and gives the smoke reset a bounded 30-second response wait with chat and
+  disconnect diagnostics on timeout. Fresh local CTest passed `7/7` targeted
+  regressions; `smoke80` passed `225/225` in `181.26s`, leaving no owned server
+  process. GitHub Actions on the current PR head must pass before merge.

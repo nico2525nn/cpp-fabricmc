@@ -59,7 +59,7 @@ settings/security/authority hardening pass. It supersedes neither the historical
 | recovery | `55 PASS / 0 FAIL` | `CPPFM_RECOVERY_WORLD_PREFIX=/dev/shm`; level/player/region recovery and session-lock cases |
 | core safety | `45 PASS / 0 FAIL` | parser, NBT, compression, packet, Anvil, whitelist, and scoped-event callback boundaries |
 | plan43 protocol matrix | `87 PASS / 0 FAIL` | command authority, signed-command offset parsing, abilities, horse/use-entity, movement/fall, sign persistence, and liveness |
-| smoke80 | `224 PASS / 0 FAIL` | rebuilt strict source-tree matrix with isolated operator fixture and owned cleanup |
+| smoke80 | `225 PASS / 0 FAIL` | rebuilt strict source-tree matrix with isolated operator fixture and owned cleanup |
 | live protocol/authority | `240 PASS / 0 FAIL / 240 total` | full `tests/test_server_full.py`; resource-pack UUID/ack, command authority, secure-chat paths, persistence/restart, RCON, and wire replays |
 | non-nightly CTest | full run `54/54 PASS` after final cleanup | `ctest --test-dir build -LE 'nightly|package' --output-on-failure` passed all registered non-package tests, including the three live fixtures |
 | 120-client stress | `120/120 joined PASS` in `68.5s` | `tests/stress_test.py --clients 120`; server tick remained alive and owned cleanup completed |
@@ -80,8 +80,8 @@ artifact boundaries.
 |---|---|---|
 | Official primitive oracle | `INSPECTED` | SHA-1-pinned Mojang 1.21.4 server artifact; VarInt, VarLong, Varint21 frame splitter, and packed BlockPos decoder/packing bytecode reviewed, not executed |
 | Primitive and stream regressions | `PASS` | `test_goal_network_bugs` 79/79; independent signed endpoints, non-minimal forms, Java terminal-payload truncation, generic sixth/eleventh-byte rejection/consumption, strict three-byte Varint21 frame rejection, plaintext/encrypted stream alignment, big-endian fixed-width fields, and packed Position axis limits |
-| Related CTest targets | `6/6 PASS` | `native`, `spec_wire`, `jvm_native_bridge`, `core_safety`, `goal_network_bugs`, and `wire_full` |
-| Smoke regression after tick-based chat pacing fix | `1/1 PASS` | `ctest --test-dir build -R smoke80 --output-on-failure --timeout 450`; 180.76 seconds. The preceding PR Actions run for SHA `185e91b` failed this ordinary test with two gamerule feedback timeouts; those assertions remain and now wait for 120 observed server ticks before the reset command. |
+| Related CTest targets | `7/7 PASS` | `native`, `spec_wire`, `jvm_native_bridge`, `core_safety`, `goal_network_bugs`, `wire_full`, and `fuzz` |
+| Smoke regression after tick-based chat pacing fix | `1/1 PASS` | `ctest --test-dir build -R smoke80 --output-on-failure --timeout 450`; 181.26 seconds, `225 PASS / 0 FAIL`. Reset feedback has a 30-second bounded wait and prints chat/disconnect diagnostics only on failure. Actions for prior SHA `54e7ad9` missed this feedback under the old 8-second wait after observing 120 ticks; the current PR-head Actions result is authoritative for verifying this test-only mitigation. |
 | PR Actions gate | `REQUIRED / SHA-SPECIFIC` | Query PR #1 checks for the exact current head SHA; evidence from an earlier commit does not transfer to later commits. |
 
 MISSING #71's row-specific evidence is now `PASS` in the 90-row coverage ledger
@@ -167,7 +167,7 @@ release artifact unless separately published:
 | `test_native` | `ALL PASS` | `PASS`; includes bounded foreign-thread mutation routing, stop-time cancellation, and dimension-aware entity World handles; no invented aggregate count |
 | `test_recovery` | `55 PASS 0 FAIL` | `PASS`; includes valid `level.dat.new` promotion, corrupt-primary quarantine, byte preservation, player-data quarantine, region recovery, and session-lock cases |
 | `test_plan43` | `87 PASS 0 FAIL` in the final rerun | `PASS`; command authority, signed-command offset, abilities, horse/use-entity, movement/fall, sign persistence, and liveness |
-| `test_smoke_80` | `224 PASS 0 FAIL` | `PASS`; isolated operator fixture and owned cleanup |
+| `test_smoke_80` | `225 PASS 0 FAIL` | `PASS`; isolated operator fixture and owned cleanup |
 | `test_server_full` | `240 PASS 0 FAIL / 240 total` | `PASS` from the source-tree full live matrix; package/source evidence remain distinct |
 | `properties` | `33 PASS 0 FAIL` | `PASS`; table-driven properties/CLI matrix and informational-flag side-effect checks |
 | `lifecycle_matrix` | `8/8 PASS` | `PASS`; fail-closed readiness, signal, restart, lock, malformed-input, port-reuse, and process-cleanup matrix |

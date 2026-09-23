@@ -46,7 +46,7 @@ The final focused run measured `test_settings_matrix` `27 PASS / 0 FAIL`,
 `test_properties` `33 PASS / 0 FAIL`, `test_recovery` `55 PASS / 0 FAIL`
 (with `CPPFM_RECOVERY_WORLD_PREFIX=/dev/shm`), and `test_core_safety`
 `45 PASS / 0 FAIL`. Plan43 measured `87 PASS / 0 FAIL`, smoke80 measured
-`224 PASS / 0 FAIL`; the broader `tests/test_server_full.py` matrix's historical
+`225 PASS / 0 FAIL`; the broader `tests/test_server_full.py` matrix's historical
 result is `240 PASS / 0 FAIL / 240 total`, while the latest selected
 `conn,commands,permissions,chat,datapack,persistence,restart` suites measured
 `198 PASS / 0 FAIL / 198 total`. The final non-nightly CTest aggregate measured
@@ -435,7 +435,7 @@ publication.
 | target | recorded result | interpretation |
 |---|---|---|
 | `test_gameplay_full` | `806 PASS / 0 FAIL / 806` | known JVM boundary is informational and remains declared |
-| `test_smoke_80` | `223 PASS 0 FAIL` | base taxonomy plus extension checks |
+| `test_smoke_80` | `225 PASS 0 FAIL` | base taxonomy plus extension checks |
 | `test_seed_parity` | `201 PASS 0 FAIL` | L1/L2 deterministic evidence |
 | `test_rng_parity` | `25 PASS 0 FAIL` | Java LocalRandom, Minecraft Xoroshiro seed expansion, primitive outputs, and long/coordinate/string splitter vectors; full worldgen L3 remains declared |
 | `test_mining_full` | `59/59 passed` | shared authoritative mining behavior |

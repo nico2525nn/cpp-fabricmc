@@ -294,8 +294,16 @@ static void testBlockBehaviors(ServerProc& srv){
           "server advances 120 ticks before gamerule reset");
     c.clearChatLines();
     c.sendChatCommand("gamerule randomTickSpeed 3");
-    CHECK(waitChat(c, "Gamerule randomTickSpeed is now 3", 8000),
-          "randomTickSpeed reset command accepted");
+    const bool randomTickResetAccepted =
+        waitChat(c, "Gamerule randomTickSpeed is now 3", 30000);
+    if (!randomTickResetAccepted) {
+        const auto chatLines = c.chatLinesSnapshot();
+        std::printf("   reset feedback missing: %zu chat lines, %zu disconnect packets\n",
+                    chatLines.size(), c.count(proto::pl::sc::Disconnect));
+        for (const auto& line : chatLines)
+            std::printf("   chat: %s\n", line.c_str());
+    }
+    CHECK(randomTickResetAccepted, "randomTickSpeed reset command accepted");
     c.pump(5000);
     // 15 farmland moisture: place farmland without water, check it dries to dirt via BlockTickScheduler
     c.sendChatCommand("setblock 6 -60 0 minecraft:farmland[moisture=0]");
