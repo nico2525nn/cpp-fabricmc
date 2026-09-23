@@ -344,7 +344,8 @@ public:
     // Convenience typed getters matching spec: get<int>(key), get<bool>(key) Usage: props.get<int>("viewDistance") etc.
 
     // Apply to ServerConfig helpers
-    int viewDistance() const { return get<int>("view-distance", get<int>("viewDistance", 6)); }
+    // Legacy convenience accessor; ServerConfig remains the canonical startup path.
+    int viewDistance() const { return get<int>("view-distance", get<int>("viewDistance", 10)); }
     int simulationDistance() const { return get<int>("simulation-distance", get<int>("simulationDistance", 10)); }
     int spawnProtection() const { return get<int>("spawn-protection", 16); }
     // Chebyshev-sorted + burst 16/tick with forced/spawn ticket protection — NOT a simple clear().

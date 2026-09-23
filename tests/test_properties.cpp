@@ -46,6 +46,14 @@ bool hasDiagnostic(const ConfigDiagnostics& diagnostics, ConfigDiagnosticKind ki
 
 void testPropertiesSyntax() {
     std::cout << "\n[properties syntax and duplicate keys]\n";
+    ServerProperties defaultDistance;
+    check(defaultDistance.viewDistance() == 10,
+          "legacy view-distance helper uses the vanilla 1.21.4 default of 10");
+    ServerProperties camelCaseDistance;
+    check(camelCaseDistance.loadText("viewDistance=7") &&
+              camelCaseDistance.viewDistance() == 7,
+          "legacy view-distance helper retains its explicit camel-case alias");
+
     ServerProperties properties;
     check(properties.loadText(
               "  # comment with CRLF\r\n"
