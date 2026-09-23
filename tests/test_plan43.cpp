@@ -250,7 +250,13 @@ static void tUseEntity(ServerProc& srv) {
         char msg[160];
         snprintf(msg, sizeof(msg), "W-02 %s join", k.label);
         char nm[32]; snprintf(nm, sizeof(nm), "P43U%d", (int)(k.mouse * 4 + k.hand * 2 + (k.sneak ? 1 : 0)));
-        CHECK(c.connect("127.0.0.1", srv.port) && c.join(nm), msg);
+        const bool joined = c.connect("127.0.0.1", srv.port) && c.join(nm);
+        CHECK(joined, msg);
+        if (!joined) { c.close(); continue; }
+        const bool chunksReady = waitInitialChunks(c);
+        snprintf(msg, sizeof(msg), "W-02 %s initial chunk batch complete", k.label);
+        CHECK(chunksReady, msg);
+        if (!chunksReady) { c.close(); continue; }
         std::int32_t eid = summonHorseNear(c, k.label);
         snprintf(msg, sizeof(msg), "W-02 %s horse summoned", k.label);
         CHECK(eid >= 0, msg);
@@ -269,9 +275,15 @@ static void tUseEntity(ServerProc& srv) {
     for (int s = 0; s < 2; ++s) {
         TestClient c;
         char nm[32]; snprintf(nm, sizeof(nm), "P43A%d", s);
-        CHECK(c.connect("127.0.0.1", srv.port) && c.join(nm), "W-02 atk join");
-        std::int32_t eid = summonHorseNear(c, s ? "atk1" : "atk0");
+        const bool joined = c.connect("127.0.0.1", srv.port) && c.join(nm);
+        CHECK(joined, "W-02 atk join");
+        if (!joined) { c.close(); continue; }
+        const bool chunksReady = waitInitialChunks(c);
         char msg[160];
+        snprintf(msg, sizeof(msg), "W-02 atk%d initial chunk batch complete", s);
+        CHECK(chunksReady, msg);
+        if (!chunksReady) { c.close(); continue; }
+        std::int32_t eid = summonHorseNear(c, s ? "atk1" : "atk0");
         snprintf(msg, sizeof(msg), "W-02 atk%d horse summoned", s);
         CHECK(eid >= 0, msg);
         if (eid >= 0) {

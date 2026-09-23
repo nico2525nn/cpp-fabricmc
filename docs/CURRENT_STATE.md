@@ -476,3 +476,17 @@ initial entity stream. The test now snapshots the highest observed entity ID
 and accepts only a horse with a larger ID. The revised `plan43` test passed five
 consecutive local launches (`130.37s` total); the new PR head still requires its
 own GitHub Actions run before merge.
+
+The following exact-head Actions run
+[`35886973563`](https://github.com/nico2525nn/cpp-fabricmc/actions/runs/35886973563)
+passed configure, build, static checks, and deterministic focused gates, but the
+full CTest regression failed only in `plan43` (`W-02 atk0 lands (HurtAnimation
+eid)`); the other 54 tests passed. This attack-only miss is distinct from the
+earlier window assertion. The W-02 fixture previously began interaction as soon
+as `join()` observed Join Game, before the initial chunk batch marked client
+startup complete. It now waits for `ChunkBatchFinished` before selecting a
+summoned horse and issuing interaction/attack packets, and exits that case
+cleanly if setup fails. This is test-readiness hardening, not a production combat
+change or proof of the failure's server-side cause. The revised `plan43` passed
+10 consecutive local launches (`260.95s` total); the new PR head still requires
+its own Actions run before merge.
