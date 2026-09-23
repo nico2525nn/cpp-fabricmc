@@ -83,11 +83,6 @@ bool hasExpectedFirstRunProperties(const std::filesystem::path& path) {
 } // namespace
 
 int main() {
-    if (!cppfm::embedded::kHasPack) {
-        std::cout << "runtime layout: embedded pack unavailable; skipped\n";
-        return 0;
-    }
-
     const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
     const auto root = std::filesystem::temp_directory_path() /
                       ("cppfm-runtime-layout-" + std::to_string(suffix));
@@ -132,18 +127,24 @@ int main() {
     const std::vector<std::filesystem::path> required = {
         "world", "world/region", "mods", "config", "libraries", "logs",
         "crash-reports", "resourcepacks", ".cppfm/jvm/classes",
-        "server.properties", "server.properties.example",
-        "assets/registry/tags.bin"};
+        "server.properties", "assets/registry/tags.bin"};
     bool pass = prepared;
     for (const auto& relative : required) pass = pass && pathExists(root / relative);
     pass = pass && fileContains(root / "assets/registry/tags.bin", "user-owned");
-    std::string exampleContents;
-    std::string copiedContents;
-    pass = pass && readFile(root / "server.properties.example", exampleContents) &&
-           readFile(root / "server.properties", copiedContents) &&
-           copiedContents == exampleContents &&
-           hasExpectedFirstRunProperties(root / "server.properties.example") &&
-           hasExpectedFirstRunProperties(root / "server.properties");
+    pass = pass && hasExpectedFirstRunProperties(root / "server.properties");
+    if (cppfm::embedded::kHasPack) {
+        std::string exampleContents;
+        std::string copiedContents;
+        pass = pass && pathExists(root / "server.properties.example") &&
+               readFile(root / "server.properties.example", exampleContents) &&
+               readFile(root / "server.properties", copiedContents) &&
+               copiedContents == exampleContents &&
+               hasExpectedFirstRunProperties(root / "server.properties.example");
+    } else {
+        // No-pack builds cannot extract the example and must exercise the
+        // compiled-in first-run fallback instead of skipping this contract.
+        pass = pass && !pathExists(root / "server.properties.example");
+    }
 
     selected = root;
     std::string secondError;
@@ -163,6 +164,8 @@ int main() {
         return 1;
     }
     std::filesystem::remove_all(root, ec);
-    std::cout << "runtime layout: PASS\n";
+    std::cout << "runtime layout: PASS"
+              << (cppfm::embedded::kHasPack ? " (embedded template)\n"
+                                            : " (no-pack fallback)\n");
     return 0;
 }
