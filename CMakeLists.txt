@@ -716,6 +716,11 @@ target_include_directories(test_settings_matrix PRIVATE src src/generated)
 add_test(NAME settings_matrix COMMAND test_settings_matrix)
 set_tests_properties(settings_matrix PROPERTIES TIMEOUT 30)
 
+add_executable(test_secure_chat_policy tests/test_secure_chat_policy.cpp)
+target_include_directories(test_secure_chat_policy PRIVATE src)
+add_test(NAME secure_chat_policy COMMAND test_secure_chat_policy)
+set_tests_properties(secure_chat_policy PROPERTIES TIMEOUT 30)
+
 # Version-pinned Play S→C ID locks plus selected field/order vectors. This is
 # broad wire coverage, not an exhaustive proof of every packet payload branch.
 add_executable(test_wire_full tests/test_wire_full.cpp

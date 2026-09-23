@@ -1,4 +1,5 @@
 #include "GameServer.hpp"
+#include "SecureChatPolicy.hpp"
 #include "Messages.hpp"
 #include "BlockEvent.hpp"
 #include "MetadataTypes.hpp"
@@ -1289,7 +1290,8 @@ void Session::sendJoinGame() {
         WriteBuffer ws = makeWorldState(c, world, self_->gamemode);
         b.raw(ws.data.data(), ws.data.size());
     }
-    b.boolean(c.enforcesSecureChat);               // enforces secure chat
+    b.boolean(secure_chat_policy::isEnforced(c.enforceSecureProfile,
+                                             c.enforcesSecureChat)); // enforces secure chat
     conn_->sendPacket(pl::sc::Login, b);
     WriteBuffer difficulty;
     int difficultyId = 2;
@@ -4263,25 +4265,20 @@ void Session::onChatMessage(ReadBuffer& in) {
         (static_cast<std::uint32_t>(in.u8()) << 16);
     if ((acknowledgedMask & 0xFFF00000u) != 0)
         throw std::runtime_error("invalid chat acknowledged bitset");
-    if (srv_.config().onlineMode && srv_.config().enforcesSecureChat) {
-        if (signature.empty()) {
-            WriteBuffer kick;
-            nbt::writeTextComponent(kick, "Chat message signature required (enforce-secure-profile)");
-            conn_->trySendPacket(proto::pl::sc::Disconnect, kick);
-            conn_->close();
-            return;
-        }
-    }
+    const bool secureChatEnforced = secure_chat_policy::isEnforced(
+        srv_.config().enforceSecureProfile, srv_.config().enforcesSecureChat);
 
-    // Strict N6: verify RSA-SHA256 when hasChatSession; fallback to SystemChat.
-    // Slash-prefixed text is dispatched only after this verification block.
+    // Verify signed messages whenever a player session is available. The
+    // profile-enforcement setting (or cppfm's explicit extension) controls
+    // whether an unsigned message is rejected; online-mode by itself does
+    // not suppress vanilla's unsigned-chat path.
     bool usePlayerChat = false;
-    if (self_->hasChatSession) {
+    if (self_->hasChatSession && !signature.empty()) {
         const bool duplicate = std::find(self_->lastSeenChatSalts.begin(),
                                          self_->lastSeenChatSalts.end(), salt) !=
                                self_->lastSeenChatSalts.end();
         if (duplicate) {
-            if (srv_.config().enforcesSecureChat) {
+            if (secureChatEnforced) {
                 WriteBuffer kick;
                 nbt::writeTextComponent(kick, "Duplicate chat message");
                 conn_->trySendPacket(proto::pl::sc::Disconnect, kick);
@@ -4298,7 +4295,10 @@ void Session::onChatMessage(ReadBuffer& in) {
                 self_->lastSeenChatSalts.erase(self_->lastSeenChatSalts.begin());
         }
     }
-    if (srv_.config().enforcesSecureChat && !usePlayerChat) {
+    const auto disposition = secure_chat_policy::classifyMessage(
+        srv_.config().enforceSecureProfile, srv_.config().enforcesSecureChat,
+        self_->hasChatSession, !signature.empty(), usePlayerChat);
+    if (disposition == secure_chat_policy::MessageDisposition::Reject) {
         WriteBuffer kick;
         nbt::writeTextComponent(kick, "Chat message signature invalid or missing");
         conn_->trySendPacket(proto::pl::sc::Disconnect, kick);
@@ -4306,11 +4306,7 @@ void Session::onChatMessage(ReadBuffer& in) {
         return;
     }
 
-    // Never expose an unverified online message to cancellable/native/JVM
-    // callbacks.  Offline-mode sessions have no chat certificate by design;
-    // online-mode sessions without a valid signature fail closed here even
-    // when secure-chat enforcement is disabled.
-    if ((self_->hasChatSession || srv_.config().onlineMode) && !usePlayerChat)
+    if (disposition == secure_chat_policy::MessageDisposition::DropSessionUnsigned)
         return;
 
     // events: PlayerChat (cancellable), after authentication and replay checks
