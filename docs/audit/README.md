@@ -11,6 +11,39 @@ The current source of truth is the [canonical documentation index](../README.md)
 [SPEC_OPS.md](../SPEC_OPS.md), and [VERIFICATION.md](../VERIFICATION.md).
 Historical text must not override current source definitions or fresh test output.
 
+## Current adversarial review
+
+The current final-gates pass is recorded in
+[adversarial-review-2026-09-19.md](adversarial-review-2026-09-19.md). It records
+the exact configure/build/focused/CTest/live/stress/soak/benchmark commands,
+feature review `10/10`, quality review `9.5/10`, the bounded asynchronous
+writer, secure-profile termination, piston persistence barrier, callback
+revalidation, correct profile/chat signature algorithms, and the remaining
+signed-command transcript limitation.
+The report is current working-tree evidence, not a release artifact or a claim of
+universal Minecraft/Fabric compatibility.
+
+## Active goal audit
+
+The current bounded goal run is indexed by:
+
+- [goal-baseline.md](goal-baseline.md) — dirty-tree snapshot, eligible LOC baseline, and protected manifest.
+- [goal-feature-ledger.md](goal-feature-ledger.md) — 90-row coverage ledger with current row-specific status counts.
+- [goal-followup-evidence-ledger.md](goal-followup-evidence-ledger.md) — additive action ledger for every remaining P0/P1 assertion and release boundary.
+- [goal-live-matrix.md](goal-live-matrix.md) — two real `cppfm` launches covering status, login, configuration, play, CLI/properties, restart, and cleanup.
+- [goal-live-features.md](goal-live-features.md) — real command, tab-completion, entity, wire-consequence, datapack, and persistence transcript.
+- [goal-live-interactions.md](goal-live-interactions.md) — real menu, block-action, metadata, equipment, projectile, and portal packet transcript.
+- [goal-live-remaining.md](goal-live-remaining.md) — real combat, item, menu, creative-slot, hazard, and world-border packet transcript.
+- [goal-gui-soak.md](goal-gui-soak.md) — headless GUI capability and the failed 1,200-second point of the requested two-hour soak.
+- [goal-bugs-network.md](goal-bugs-network.md) and [goal-bugs-gameplay.md](goal-bugs-gameplay.md) — 23 fixed reproducible defects with focused regressions.
+- [goal-known-vanilla-bugs.md](goal-known-vanilla-bugs.md) — official Mojang issue oracle, classified separately from local defects.
+- [goal-adversarial-review.md](goal-adversarial-review.md) — final P0/P1/P2/P3 review and security guard results.
+- [goal-cleanup-runtime.md](goal-cleanup-runtime.md) and [goal-cleanup-game.md](goal-cleanup-game.md) — safe cleanup measurements and residual candidates.
+
+These files are current working-tree evidence. They preserve explicit GUI, arbitrary
+mod, world-generation L3, signed-command, moving-piston-NBT, and accepted long-soak
+limitations rather than converting unverified rows into compatibility claims.
+
 ## Assessment history
 
 | audit | historical archive link | scope | status |

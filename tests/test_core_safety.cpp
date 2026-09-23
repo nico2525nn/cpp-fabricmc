@@ -1,6 +1,7 @@
 // Core safety regression tests: malformed input must be rejected at the
 // boundary and valid values must retain their wire representation.
 
+#include "../src/api/EventBus.hpp"
 #include "../src/core/ByteBuffer.hpp"
 #include "../src/core/Json.hpp"
 #include "../src/core/NBT.hpp"
@@ -11,12 +12,16 @@
 #include "../src/net/PacketDecoder.hpp"
 #include "../src/net/PacketEncoder.hpp"
 #include "../src/net/Rcon.hpp"
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <unistd.h>
 #include <vector>
 
@@ -71,17 +76,15 @@ void testByteBuffer() {
     check(in.varint() == -1, "signed VarInt -1 roundtrip");
     check(in.varlong() == -1, "signed VarLong -1 roundtrip");
 
-    expectThrow("VarInt rejects payload bits above bit 31", [] {
-        const std::vector<std::uint8_t> bytes{0xff, 0xff, 0xff, 0xff, 0x10};
-        ReadBuffer input(bytes);
-        (void)input.varint();
-    });
-    expectThrow("VarLong rejects payload bits above bit 63", [] {
-        const std::vector<std::uint8_t> bytes{
-            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x02};
-        ReadBuffer input(bytes);
-        (void)input.varlong();
-    });
+    const std::vector<std::uint8_t> javaVarIntHighPayload{0x80, 0x80, 0x80, 0x80, 0x10};
+    ReadBuffer javaVarIntInput(javaVarIntHighPayload);
+    check(javaVarIntInput.varint() == 0,
+          "VarInt fifth-byte high payload bits follow Java int shift truncation");
+    const std::vector<std::uint8_t> javaVarLongHighPayload{
+        0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02};
+    ReadBuffer javaVarLongInput(javaVarLongHighPayload);
+    check(javaVarLongInput.varlong() == 0,
+          "VarLong tenth-byte high payload bits follow Java long shift truncation");
 
     WriteBuffer position;
     position.position(-12345, -2048, 54321);
@@ -131,8 +134,10 @@ void testConfigurationAndEncoding() {
     properties.props["bad-int"] = "12trailing";
     properties.props["bad-float"] = "nan";
     properties.props["bad-range"] = "1e309";
-    check(properties.get<int>("view-distance", 6) == 12,
-          "server properties lookup is ASCII case-insensitive");
+    check(properties.get<int>("View-Distance", 6) == 12 &&
+              properties.get<int>("view-distance", 6) == 6 &&
+              !properties.has("VIEW-DISTANCE"),
+          "server properties lookup follows Java's case-sensitive property keys");
     check(properties.get<int>("bad-int", 7) == 7,
           "server properties reject trailing integer data");
     check(properties.get<float>("bad-float", 3.5f) == 3.5f,
@@ -303,6 +308,55 @@ void testRegionFile() {
     std::filesystem::remove_all(dir, ec);
 }
 
+void testEventBusScopedRemoval() {
+    struct Event final : api::Cancelable {
+        int value = 0;
+    };
+    api::EventHook<Event> hook;
+    std::mutex gate;
+    std::condition_variable cv;
+    bool entered = false;
+    bool release = false;
+    std::atomic<int> calls{0};
+    auto subscription = hook.subscribeScoped(0, [&](Event& event) {
+        ++calls;
+        event.value = 7;
+        std::unique_lock lock(gate);
+        entered = true;
+        cv.notify_all();
+        cv.wait(lock, [&] { return release; });
+    });
+
+    Event first;
+    std::thread firing([&] { hook.fire(first); });
+    {
+        std::unique_lock lock(gate);
+        check(cv.wait_for(lock, std::chrono::seconds(1), [&] { return entered; }),
+              "scoped event callback starts");
+    }
+    std::atomic<bool> removed{false};
+    std::thread removing([&] {
+        subscription.reset();
+        removed.store(true, std::memory_order_release);
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    check(!removed.load(std::memory_order_acquire),
+          "scoped removal waits for an in-flight callback");
+    {
+        std::lock_guard lock(gate);
+        release = true;
+    }
+    cv.notify_all();
+    removing.join();
+    firing.join();
+    check(first.value == 7 && calls.load() == 1,
+          "scoped event callback mutates the fired event once");
+
+    Event second;
+    check(hook.fire(second) && calls.load() == 1 && second.value == 0,
+          "scoped removal prevents later callbacks");
+}
+
 void testWhitelist() {
     std::printf("\n[whitelist persistence checks]\n");
     const auto dir = std::filesystem::temp_directory_path() /
@@ -347,6 +401,7 @@ int main() {
     testCompressionAndPackets();
     testRegionFile();
     testWhitelist();
+    testEventBusScopedRemoval();
     std::printf("\n=== core_safety: %d PASS %d FAIL ===\n", passed, failed);
     return failed == 0 ? 0 : 1;
 }

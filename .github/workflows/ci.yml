@@ -1,0 +1,82 @@
+name: cpp-fabricmc CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cppfm-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref_name }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-regress:
+    name: Build and non-nightly regression
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            cmake ninja-build g++ pkg-config zlib1g-dev libssl-dev python3
+
+      - name: Configure
+        run: |
+          timeout --foreground --kill-after=10 120 \
+            cmake -S . -B build -G Ninja \
+              -DCMAKE_BUILD_TYPE=RelWithDebInfo
+
+      - name: Build
+        run: |
+          timeout --foreground --kill-after=10 1800 \
+            cmake --build build -j2
+
+      - name: Static diff check
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            git diff --check "$PR_BASE_SHA" "$GITHUB_SHA"
+          elif [ -n "$PUSH_BEFORE_SHA" ] && \
+               [ "$PUSH_BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            git diff --check "$PUSH_BEFORE_SHA" "$GITHUB_SHA"
+          else
+            git diff --check "${GITHUB_SHA}^" "$GITHUB_SHA"
+          fi
+
+      - name: Deterministic focused gates
+        env:
+          TMPDIR: /dev/shm
+          CPPFM_RECOVERY_WORLD_PREFIX: /dev/shm
+        run: |
+          mkdir -p /tmp/opencode
+          timeout --foreground --kill-after=10 120 ./build/test_properties ./build/cppfm
+          timeout --foreground --kill-after=10 180 ./build/test_recovery
+          timeout --foreground --kill-after=10 120 ./build/test_core_safety
+
+      - name: Full non-nightly CTest regression
+        env:
+          TMPDIR: /dev/shm
+          CPPFM_RECOVERY_WORLD_PREFIX: /dev/shm
+        run: |
+          timeout --foreground --kill-after=10 1800 \
+            ctest --test-dir build \
+              -LE 'nightly|package' --output-on-failure --timeout 600

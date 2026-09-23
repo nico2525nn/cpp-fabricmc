@@ -6,11 +6,13 @@
 #include "../src/core/ByteBuffer.hpp"
 #include "../src/core/Zlib.hpp"
 #include "../src/net/PacketDecoder.hpp"
+#include <cstdint>
 #include <cstdio>
-#include <vector>
 #include <functional>
+#include <limits>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 using namespace cppfm;
 
@@ -48,10 +50,13 @@ int main(){
         ReadBuffer r(bomb);
         (void)r.varint();
     });
-    expectThrow("F1b varint fifth byte has bits above 32", []{
+    // Java accumulates into a 32-bit int, so unused high payload bits in the
+    // fifth byte are truncated rather than rejected.
+    expectNoThrow("F1b varint fifth-byte high bits follow Java int truncation", []{
         std::vector<uint8_t> bomb{0xFF,0xFF,0xFF,0xFF,0x10};
         ReadBuffer r(bomb);
-        (void)r.varint();
+        if (r.varint() != (std::numeric_limits<std::int32_t>::max() >> 3))
+            throw std::runtime_error("fifth-byte bits were not truncated like Java int shifts");
     });
 
     // 2) varint valid -1 (FF FF FF FF 0F) -> should NOT throw, value -1
@@ -82,10 +87,12 @@ int main(){
         ReadBuffer r(v);
         (void)r.varlong();
     });
-    expectThrow("F5b varlong tenth byte has bits above 64", []{
+    // Java accumulates into a 64-bit long; bit 64 and above are discarded.
+    expectNoThrow("F5b varlong tenth-byte high bits follow Java long truncation", []{
         std::vector<uint8_t> v{0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0x02};
         ReadBuffer r(v);
-        (void)r.varlong();
+        if (r.varlong() != std::numeric_limits<std::int64_t>::max())
+            throw std::runtime_error("tenth-byte bits were not truncated like Java long shifts");
     });
 
     // 6) varlong valid -1 (FF*9 01) -> should not throw (actually 10 bytes for -1 is FF FF FF FF FF FF FF FF FF 01)
@@ -96,8 +103,8 @@ int main(){
         if(x != -1) throw std::runtime_error("varlong -1 failed");
     });
 
-    // 7) compressed bomb: dataLen > kMaxFrame (8M+1)
-    expectThrow("F7 compressed bomb declared size >8M", []{
+    // 7) compressed bomb: declared size exceeds the 2 MiB decompression cap.
+    expectThrow("F7 compressed bomb declared size >2M", []{
         WriteBuffer frame;
         frame.varint(8*1024*1024 + 1); // 8M+1
         std::vector<uint8_t> dummy{0x00};
@@ -105,13 +112,14 @@ int main(){
         (void)PacketDecoder::decodeFrame(frame.data, 256);
     });
 
-    // 8) compressed bomb: dataLen 8M but small payload -> decompress fails (dst mismatch)
-    expectThrow("F8 compressed bomb 8M claim with 10-zero payload", []{
+    // 8) declared size is within the cap, but the compressed stream expands
+    // to fewer bytes than promised and must still be rejected.
+    expectThrow("F8 capped compressed claim with undersized payload", []{
         std::vector<uint8_t> small(10,0);
         std::vector<uint8_t> comp;
         compressRaw(small.data(), small.size(), comp);
         WriteBuffer frame;
-        frame.varint(8*1024*1024);
+        frame.varint(2*1024*1024);
         frame.raw(comp.data(), comp.size());
         (void)PacketDecoder::decodeFrame(frame.data, 256);
     });

@@ -44,14 +44,6 @@ public:
         return true;
     }
 
-    std::vector<std::string> knownChannels() const {
-        std::lock_guard lk(mtx_);
-        std::vector<std::string> out;
-        out.reserve(channels_.size());
-        for (auto& [k, _] : channels_) out.push_back(k);
-        return out;
-    }
-
 private:
     struct Entry {
         int phases = 0;                            // bit0 config, bit1 play

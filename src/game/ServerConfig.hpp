@@ -9,17 +9,24 @@
 
 namespace cppfm {
 
+namespace server_config_detail {
+// The vanilla level-seed default is empty; a fresh world receives a random
+// seed. Kept out of ServerConfig's public aggregate API implementation.
+std::uint64_t randomWorldSeed() noexcept;
+}
+
 // The default member initializers are the single source of truth for startup
 // defaults.  Configuration tests construct this type instead of maintaining a
 // second table of expected defaults.
 struct ServerConfig {
     std::uint16_t port = 25565;
     std::int32_t maxPlayers = 20;
-    std::int32_t viewDistance = 6;
+    std::int32_t viewDistance = 10;
     std::int32_t simulationDistance = 10;
-    std::string motd = "CppFabricMC - C++ Minecraft 1.21.4 server";
+    std::string motd = "A Minecraft Server";
     std::string worldBiome = "minecraft:plains";
-    std::int64_t hashedSeed = 1378645410614731511LL;
+    std::uint64_t seed = server_config_detail::randomWorldSeed();
+    std::int64_t hashedSeed = static_cast<std::int64_t>(seed);
     std::string assetsDir = "assets/registry";
     std::string worldDir = "world";
     std::string recipesDir = "assets/data/recipes";
@@ -30,11 +37,12 @@ struct ServerConfig {
     // Flat worlds remain available through `level-type=flat` or the CLI.
     std::string levelType = "normal";
     bool whitelist = false;
-    bool onlineMode = false;
+    bool onlineMode = true;
+    bool enforceSecureProfile = true;
     bool enforcesSecureChat = false;
+    std::string difficulty = "easy";
     RconConfig rcon;
     std::string levelTypeCli;
-    std::uint64_t seed = 1378645410614731511ULL;
     std::int64_t startTime = 1000;
     int compressionThreshold = 256;
     int spawnProtection = 16;

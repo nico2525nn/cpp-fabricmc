@@ -1,9 +1,9 @@
 #include "FunctionEvaluator.hpp"
 #include "GameServer.hpp"
 #include "DatapackManager.hpp"
-#include <fstream>
-#include <filesystem>
+#include <limits>
 #include <sstream>
+#include <stdexcept>
 
 namespace cppfm {
 
@@ -27,38 +27,9 @@ std::vector<std::string> FunctionEvaluator::getFunctionLines(const std::string& 
             if (!out.empty()) return out;
         }
     }
-    // Try filesystem: assets/data/<ns>/functions/<path>.mcfunction
-    auto colon = norm.find(':');
-    std::string ns = colon != std::string::npos ? norm.substr(0, colon) : "minecraft";
-    std::string path = colon != std::string::npos ? norm.substr(colon+1) : norm;
-    std::string file = "assets/data/" + ns + "/functions/" + path + ".mcfunction";
-    std::ifstream f(file);
-    if (!f) {
-        // try world/datapacks
-        namespace fs = std::filesystem;
-        std::error_code ec;
-        if (fs::exists("world/datapacks", ec)) {
-            for (auto& entry : fs::directory_iterator("world/datapacks", ec)) {
-                if (!entry.is_directory(ec)) continue;
-                std::string alt = entry.path().string() + "/data/" + ns + "/functions/" + path + ".mcfunction";
-                std::ifstream f2(alt);
-                if (f2) { f = std::move(f2); break; }
-            }
-        }
-    }
-    if (!f) return {};
-    std::vector<std::string> lines;
-    std::string line;
-    while (std::getline(f, line)) {
-        size_t start = line.find_first_not_of(" \t\r\n");
-        if (start == std::string::npos) continue;
-        size_t end = line.find_last_not_of(" \t\r\n");
-        std::string trimmed = line.substr(start, end - start + 1);
-        if (trimmed.empty() || trimmed[0] == '#') continue;
-        if (!trimmed.empty() && trimmed.front() == '/') trimmed = trimmed.substr(1);
-        lines.push_back(trimmed);
-    }
-    return lines;
+    // Functions are resolved only from the enabled, indexed datapack registry.
+    // Never derive a filesystem path from a command-provided identifier.
+    return {};
 }
 
 int FunctionEvaluator::executeLine(const std::string& line, brigadier::CommandSource src) {
@@ -166,6 +137,7 @@ int FunctionEvaluator::executeFunction(const std::string& id, brigadier::Command
         return 0;
     }
     recursionDepth_++;
+    RecursionGuard recursionGuard{*this};
     clearReturn();
     int lastResult = 0;
     for (auto origLine : lines) {
@@ -189,15 +161,16 @@ int FunctionEvaluator::executeFunction(const std::string& id, brigadier::Command
         }
     }
     int final = hasReturn() ? getReturnValue() : lastResult;
-    recursionDepth_--;
-    if (recursionDepth_ == 0) clearReturn();
     return final;
 }
 
 void FunctionEvaluator::scheduleFunction(const std::string& id, std::int64_t delayTicks, const std::string& mode, std::int64_t nowTick) {
     std::string norm = id;
     if (norm.find(':') == std::string::npos) norm = "minecraft:" + norm;
-    std::int64_t due = nowTick + delayTicks;
+    if (delayTicks < 0 ||
+        nowTick > std::numeric_limits<std::int64_t>::max() - delayTicks)
+        throw std::invalid_argument("scheduled function time is out of range");
+    const std::int64_t due = nowTick + delayTicks;
     if (mode == "append") {
         scheduled_.push_back({norm, due, 0, false, ""});
     } else { // replace (default)

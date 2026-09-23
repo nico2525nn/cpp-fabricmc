@@ -2,8 +2,6 @@
 // Needed for: text components, heightmaps, registry entry walking, chunk block entities.
 #pragma once
 #include "ByteBuffer.hpp"
-#include <map>
-#include <functional>
 #include <limits>
 
 namespace cppfm::nbt {
@@ -32,11 +30,8 @@ public:
     void rootCompound() { out_.u8(Compound); } // network NBT: no root name
 
     void namedByte(std::string_view name, std::int8_t v) { key(name, Byte); out_.i8(v); }
-    void namedShort(std::string_view name, std::int16_t v) { key(name, Short); out_.i16(v); }
     void namedInt(std::string_view name, std::int32_t v) { key(name, Int); out_.i32(v); }
     void namedLong(std::string_view name, std::int64_t v) { key(name, Long); out_.i64(v); }
-    void namedFloat(std::string_view name, float v) { key(name, Float); out_.f32(v); }
-    void namedDouble(std::string_view name, double v) { key(name, Double); out_.f64(v); }
     void namedString(std::string_view name, std::string_view v) { key(name, String); str(v); }
     void namedLongArray(std::string_view name, const std::vector<std::int64_t>& v) {
         key(name, LongArray);
@@ -62,8 +57,6 @@ public:
 
     // bare (unnamed) helpers used inside lists
     void bareString(std::string_view v) { str(v); }
-    void bareCompound() {} // compound payload has no marker itself
-    void bareEnd() { out_.u8(End); }
 
 private:
     void key(std::string_view name, Tag t) {
@@ -97,21 +90,6 @@ public:
         Tag t = static_cast<Tag>(in_.u8());
         if (t == End) return;
         skipPayload(t); // root is unnamed on the network
-    }
-    // Reads entries of the anonymous root compound: calls cb(name) per child.
-    void walkRoot(const std::function<void(const std::string&)>& cb) {
-        Tag t = static_cast<Tag>(in_.u8());
-        if (t != Compound) throw std::runtime_error("root nbt not compound");
-        while (true) {
-            Tag et = static_cast<Tag>(in_.u8());
-            if (et == End) return;
-            if (!isValidTag(et)) throw std::runtime_error("bad nbt tag");
-            std::uint16_t n = in_.u16();
-            const auto nameBytes = in_.bytes(n);
-            std::string name(reinterpret_cast<const char*>(nameBytes.data()), nameBytes.size());
-            cb(name);
-            skipPayload(et);
-        }
     }
     // Reads a full value into a generic tree (bounded).
     struct Value;

@@ -153,7 +153,8 @@ def wait_for_status(host: str, port: int, timeout: float = 12.0,
 def launch_server(binary: str, port: int, world_dir: str, extra_env: dict | None = None, extra_args: list[str] | None = None):
     # This suite uses the legacy y=-61 fixture coordinates.  Keep that fixture
     # explicit now that the production default is vanilla normal terrain.
-    args = [binary, f"--port={port}", f"--world-dir={world_dir}", "--level-type=flat"]
+    args = [binary, f"--port={port}", f"--world-dir={world_dir}", "--level-type=flat",
+            "--online-mode=false", "--enforce-secure-profile=false"]
     if extra_args:
         args += extra_args
     env = os.environ.copy()
@@ -297,7 +298,7 @@ def suite_connection_flow(host, port):
         check(js.get("version",{}).get("protocol")==769, "status: protocol 769", "test_server_full.py:status_protocol")
         check(js.get("version",{}).get("name")=="1.21.4", "status: version 1.21.4", "test_server_full.py:status_name")
         check("players" in js and "description" in js, "status: players+description present", "test_server_full.py:status_fields")
-        # status favicon / enforcesSecureChat present? vanilla includes but not required
+        check(js.get("enforcesSecureChat") is False, "status: secure-chat enforcement default", "test_server_full.py:status_secure_chat")
         check(isinstance(js.get("players",{}).get("online"), int), "status: players.online int", "test_server_full.py:status_online")
     except Exception as e:
         check(False, f"status ping throws: {e}", "test_server_full.py:status_exc")
@@ -367,7 +368,7 @@ def suite_connection_flow(host, port):
             c.send_packet_raw(0x03, b"")
             # configuration: expect 12 registries + feature flags + known packs
             regs={}
-            got_tags=False; got_brand=False; got_flags=False; got_packs=False; finished=False
+            got_tags=False; got_brand=False; got_flags=False; got_packs=False; got_resource=False; finished=False
             deadline=time.monotonic()+15
             while time.monotonic()<deadline and not finished:
                 pid,data=c.recv_packet()
@@ -383,6 +384,21 @@ def suite_connection_flow(host, port):
                         got_brand=True
                 elif pid==0x0C:
                     got_flags=True
+                elif pid==0x09:
+                    got_resource=True
+                    bio=io.BytesIO(data)
+                    pack_uuid=bio.read(16)
+                    pack_url=unpack_string(bio)
+                    pack_hash=unpack_string(bio)
+                    pack_forced=bio.read(1)[0]
+                    pack_prompt=bio.read(1)[0]
+                    check(len(pack_uuid)==16 and pack_url.startswith("https://example.invalid/"),
+                          "config: AddResourcePack UUID+URL", "test_server_full.py:resource_pack_url")
+                    check(pack_hash == "0123456789abcdef0123456789abcdef01234567",
+                          "config: AddResourcePack SHA-1", "test_server_full.py:resource_pack_hash")
+                    check(pack_forced == 1 and pack_prompt == 0,
+                          "config: AddResourcePack forced/no-prompt", "test_server_full.py:resource_pack_flags")
+                    c.send_packet_raw(0x06, pack_uuid + write_varint(0))
                 elif pid==0x0E:
                     got_packs=True
                     # must send reply
@@ -399,6 +415,7 @@ def suite_connection_flow(host, port):
             check("minecraft:dimension_type" in regs, "config: dimension_type registry", "test_server_full.py:regs_dim")
             check(got_flags, "config: FeatureFlags sent", "test_server_full.py:flags")
             check(got_packs, "config: SelectKnownPacks sent", "test_server_full.py:known_packs")
+            check(got_resource, "config: AddResourcePack sent", "test_server_full.py:resource_pack_sent")
             check(got_tags, "config: UpdateTags sent", "test_server_full.py:tags_sent")
             check(got_brand, "config: brand CustomPayload", "test_server_full.py:brand")
             check(finished, "config: FinishConfiguration sent", "test_server_full.py:finish")
@@ -467,7 +484,9 @@ def send_command_and_collect(host, port, name, command: str, timeout=2.0):
         finished=False
         while time.monotonic()<deadline and not finished:
             pid,data=c.recv_packet()
-            if pid==0x0E:
+            if pid==0x09:
+                c.send_packet_raw(0x06, data[:16] + write_varint(0))
+            elif pid==0x0E:
                 c.send_packet_raw(0x07, write_varint(0))
             elif pid==0x03:
                 finished=True
@@ -634,7 +653,8 @@ def persistent_join(host, port, name):
     finished=False
     while time.monotonic()<deadline and not finished:
         pid,data=c.recv_packet()
-        if pid==0x0E: c.send_packet_raw(0x07, write_varint(0))
+        if pid==0x09: c.send_packet_raw(0x06, data[:16] + write_varint(0))
+        elif pid==0x0E: c.send_packet_raw(0x07, write_varint(0))
         elif pid==0x03: finished=True; c.send_packet_raw(0x03,b"")
         elif pid==0x04: c.send_packet_raw(0x04,data)
         elif pid==0x05: c.send_packet_raw(0x05,data)
@@ -671,6 +691,17 @@ def suite_commands(host, port, proc):
     except Exception as e:
         check(False, f"cmd: persistent join failed {e}", "test_server_full.py:cmd_persistent_join")
         return
+    # Vanilla trigger objectives are created by datapacks/administrators and
+    # must be enabled for the invoking player before /trigger can mutate them.
+    try:
+        setup = send_via_persistent(c_valid, "scoreboard objectives add dummy trigger", timeout=2.0)
+        enabled = send_via_persistent(c_valid, "scoreboard players enable CmdTester dummy", timeout=2.0)
+        check("dummy" in " ".join(setup).lower() and
+              "enable" in " ".join(enabled).lower(),
+              "cmd: trigger objective setup succeeds",
+              "test_server_full.py:cmd_trigger_setup")
+    except Exception as e:
+        check(False, f"cmd: trigger setup failed {e}", "test_server_full.py:cmd_trigger_setup_exc")
     for idx,(name, valid, invalid, note) in enumerate(VANILLA_COMMANDS):
         # limit to avoid endless on dead server: if 3 consecutive connection failures, skip rest
         # (server may be transiently refusing but not dead)
@@ -713,7 +744,7 @@ def suite_commands(host, port, proc):
     try: c_invalid.close()
     except (OSError, ValueError): pass
 
-def suite_permissions(host, port, world_dir):
+def suite_permissions(host, port, world_dir, rcon_port, rcon_pass):
     print("\n[3] Permissions / management — op/whitelist/ban/kick")
     # 3a whitelist disabled by default -> anyone can join
     try:
@@ -726,9 +757,10 @@ def suite_permissions(host, port, world_dir):
     except Exception as e:
         check(False, f"perm: open join failed {e}", "test_server_full.py:perm_open")
     # 3b op command should grant op (ops.json) - strict: file should exist after op
-    chat,_,err = send_command_and_collect(host,port,"PermOpTest","op PermOpTest",timeout=1.5)
+    op_ok, op_body = rcon_client(host, rcon_port, rcon_pass, "op PermOpTest", timeout=3)
+    chat = [op_body]
     # vanilla: op => "Opped PermOpTest"
-    has_opped = any("Opped" in c or "opped" in c.lower() for c in chat)
+    has_opped = op_ok and ("Opped" in op_body or "opped" in op_body.lower())
     # Check only the isolated server root; a stale repository file must not pass.
     ops_path = Path(world_dir) / "ops.json"
     exists = ops_path.exists()
@@ -1426,7 +1458,8 @@ def suite_plan43_b1b2(host, port):
         finished = False
         while time.monotonic() < deadline and not finished:
             pid, data = c.recv_packet()
-            if pid == 0x0E: c.send_packet_raw(0x07, write_varint(0))
+            if pid == 0x09: c.send_packet_raw(0x06, data[:16] + write_varint(0))
+            elif pid == 0x0E: c.send_packet_raw(0x07, write_varint(0))
             elif pid == 0x03: finished = True
             elif pid == 0x04: c.send_packet_raw(0x04, data)
             elif pid == 0x05: c.send_packet_raw(0x05, data)
@@ -1434,7 +1467,13 @@ def suite_plan43_b1b2(host, port):
         if finished:
             c.send_packet_raw(0x00, pack_string("en_us") + b"\x08" + write_varint(0) + b"\x01\x7f" + write_varint(0) + b"\x00\x01")
             c.send_packet_raw(0x05, struct.pack(">i", 1234))
-            c.send_packet_raw(0x06, b"\x00" * 16 + write_varint(0))
+            # Match the server's deterministic SHA-1 URL UUID even in this
+            # intentionally contaminated configuration stream.
+            pack_id = bytearray(hashlib.sha1(
+                b"https://example.invalid/test-pack.zip").digest()[:16])
+            pack_id[6] = (pack_id[6] & 0x0F) | 0x50
+            pack_id[8] = (pack_id[8] & 0x3F) | 0x80
+            c.send_packet_raw(0x06, bytes(pack_id) + write_varint(0))
             c.send_packet_raw(0x07, write_varint(0))
             c.send_packet_raw(0x03, b"")
             deadline = time.monotonic() + 12
@@ -1560,7 +1599,8 @@ def suite_plan43_b1b2(host, port):
     # ---- W-07 sign ----
     try:
         c = persistent_join(host, port, "P43Sign")
-        sx, sy, sz = 10, -60, 8
+        # Keep the edit within the server's six-block sign interaction reach.
+        sx, sy, sz = 3, -60, 3
         c.send_packet_raw(0x05, pack_string(f"setblock {sx} {sy} {sz} minecraft:oak_sign"))
         placed = False
         t_end = time.monotonic() + 8
@@ -1612,6 +1652,21 @@ def main():
     rcon_port=find_free_port()
     while rcon_port==port: rcon_port=find_free_port()
     world_dir=tempfile.mkdtemp(prefix="wt42_test_server_full_")
+    # Command matrix clients are explicitly operators; PermGuest1 remains a
+    # non-operator for the authorization/join checks below.
+    operator_names = [
+        "CmdTester", "CmdTesterInv", "PermBanner", "ChatFeedback",
+        "ChatAlice", "ChatBob", "ChatSigner", "DPTest", "FloodGuy",
+        "PersistGuy", "PersistReader", "RestartAdmin", "RestartOp",
+        "RestartVictim", "P43Fin",
+        "P43Abil", "P43Mov", "P43Sign", "P43Tab",
+        "P43S0", "P43S1", "P43S2",
+        "P43U0", "P43U1", "P43U2", "P43U3", "P43U4", "P43U5",
+    ]
+    (Path(world_dir) / "ops.json").write_text(
+        json.dumps([{"name": name, "level": 4, "bypassesPlayerLimit": False}
+                   for name in operator_names]),
+        encoding="utf-8")
     rcon_pass="testRcon1337"
     print(f"[info] world_dir={world_dir} port={port} rcon={rcon_port} binary={binary}")
 
@@ -1620,7 +1675,10 @@ def main():
     extra=["--enable-rcon=true", f"--rcon.password={rcon_pass}", f"--rcon.port={rcon_port}"]
     proc=None
     assets_dir = (Path.cwd() / "assets").resolve()
-    extra = extra + ["--max-players=200", "--view-distance=4"]
+    extra = extra + ["--max-players=200", "--view-distance=4",
+                     "--resource-pack=https://example.invalid/test-pack.zip",
+                     "--resource-pack-sha1=0123456789abcdef0123456789abcdef01234567",
+                     "--require-resource-pack=true"]
     # The single-file package extracts its own assets into the isolated server
     # root.  Only add the development checkout override when it is actually
     # present; an absolute path into the package's parent would otherwise
@@ -1649,7 +1707,7 @@ def main():
             except Exception as e:
                 print(f"[fatal] restart failed: {e}")
                 # continue with whatever we have
-        if _run("permissions"): suite_permissions(host, port, world_dir)
+        if _run("permissions"): suite_permissions(host, port, world_dir, rcon_port, rcon_pass)
         if _run("chat"): suite_chat(host, port)
         if _run("datapack"): suite_datapack(host, port)
         if _run("stability"): suite_stability(host, port)

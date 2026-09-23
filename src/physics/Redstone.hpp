@@ -8,81 +8,13 @@
 #include <unordered_set>
 #include <unordered_map>
 #include <string>
-#include <memory>
 #include <vector>
 #include <functional>
 #include <atomic>
 #include <mutex>
+#include <optional>
 #include "../game/World.hpp"
 #include "../game/BlockEntities.hpp"
-
-namespace cppfm {
-
-class IRedstoneBehavior {
-public:
-    virtual ~IRedstoneBehavior() = default;
-    virtual int calculateOutputSignal(World& world, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state) = 0;
-    virtual void onBlockChanged(World& world, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state, std::int64_t now) = 0;
-    virtual int maxSignal() const { return 15; }
-};
-
-class RedstoneComponent : public IRedstoneBehavior {
-public:
-    explicit RedstoneComponent(std::string name) : name_(std::move(name)) {}
-    int calculateOutputSignal(World& world, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state) override;
-    void onBlockChanged(World& world, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state, std::int64_t now) override;
-private:
-    std::string name_;
-};
-
-class RedstoneWireBehavior : public IRedstoneBehavior {
-public:
-    int calculateOutputSignal(World& world, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state) override;
-    void onBlockChanged(World& world, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state, std::int64_t now) override;
-};
-
-class LeverBehavior : public IRedstoneBehavior {
-public:
-    int calculateOutputSignal(World& world, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state) override;
-    void onBlockChanged(World& world, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state, std::int64_t now) override;
-};
-
-class ObserverBehavior : public IRedstoneBehavior {
-public:
-    int calculateOutputSignal(World& world, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state) override;
-    void onBlockChanged(World& world, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state, std::int64_t now) override;
-};
-
-class ButtonBehavior : public IRedstoneBehavior {
-public:
-    int calculateOutputSignal(World& world, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state) override;
-    void onBlockChanged(World& world, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state, std::int64_t now) override;
-};
-
-class TorchBehavior : public IRedstoneBehavior {
-public:
-    int calculateOutputSignal(World& world, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state) override;
-    void onBlockChanged(World& world, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state, std::int64_t now) override;
-};
-
-class RepeaterBehavior : public IRedstoneBehavior {
-public:
-    int calculateOutputSignal(World& world, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state) override;
-    void onBlockChanged(World& world, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state, std::int64_t now) override;
-};
-
-class ComparatorBehavior : public IRedstoneBehavior {
-public:
-    int calculateOutputSignal(World& world, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state) override;
-    void onBlockChanged(World& world, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state, std::int64_t now) override;
-};
-
-struct RedstoneBehaviorRegistry {
-    static IRedstoneBehavior* forBlock(const std::string& blockName);
-    static void initDefaults();
-};
-
-} // namespace cppfm
 
 namespace cppfm {
 
@@ -102,7 +34,7 @@ struct PistonEntity {
 class BlockTickScheduler;
 class RedstoneEngine {
 public:
-    explicit RedstoneEngine(World& world) : world_(world) { RedstoneBehaviorRegistry::initDefaults(); }
+    explicit RedstoneEngine(World& world) : world_(world) {}
 
     // React to a block change: if the position or its neighbours host redstone components the surrounding network is recomputed.
     void onBlockChanged(std::int32_t x, std::int32_t y, std::int32_t z);
@@ -112,6 +44,9 @@ public:
                     std::int64_t now);
 
     void tick(std::int64_t now);                         // delayed updates
+    // Save barrier: commit in-flight pistons touching the snapshot chunk
+    // before it is serialized.
+    void flushPendingPistons(std::int32_t chunkX, std::int32_t chunkZ);
     std::size_t pendingCount() const;
     // True when any adjacent source/wire carries power (dispenser gates).
     bool isPoweredHere(std::int32_t x, std::int32_t y, std::int32_t z);
@@ -153,7 +88,9 @@ private:
     void handlePiston(std::int32_t x, std::int32_t y, std::int32_t z);
     void handlePistonScheduled(std::int32_t x, std::int32_t y, std::int32_t z, bool extendNow);
     void processPistonQueue(std::int64_t now);
-    void processPendingPistonCommits(std::int64_t now);
+    void processPendingPistonCommits(
+        std::int64_t now,
+        std::optional<std::pair<std::int32_t, std::int32_t>> chunk = std::nullopt);
     void handleDoor(std::int32_t x, std::int32_t y, std::int32_t z);
     void setBlockAndBroadcast(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state);
 

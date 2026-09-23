@@ -635,6 +635,53 @@ target_link_libraries(test_core_safety PRIVATE ZLIB::ZLIB OpenSSL::Crypto Thread
 add_test(NAME core_safety COMMAND test_core_safety)
 set_tests_properties(core_safety PROPERTIES TIMEOUT 30)
 
+# Goal-specific regression gates. These targets call the shipped protocol,
+# physics, cleanup, and event APIs directly instead of duplicating behavior in
+# the tests; keep them independent so focused failures remain actionable.
+add_executable(test_goal_network_bugs tests/test_goal_network_bugs.cpp)
+target_include_directories(test_goal_network_bugs PRIVATE src src/generated tests)
+target_link_libraries(test_goal_network_bugs PRIVATE Threads::Threads ZLIB::ZLIB OpenSSL::Crypto)
+add_test(NAME goal_network_bugs COMMAND test_goal_network_bugs)
+set_tests_properties(goal_network_bugs PROPERTIES TIMEOUT 60)
+
+add_executable(test_goal_gameplay_bugs tests/test_goal_gameplay_bugs.cpp
+    src/core/NBT.cpp
+    src/physics/Redstone.cpp
+    src/physics/Fluids.cpp
+    src/physics/LightEngine.cpp
+    src/physics/BlockTickScheduler.cpp
+    src/game/MenuInteraction.cpp
+    src/game/Containers.cpp src/game/Recipes.cpp
+    src/game/WorldGen.cpp
+    src/worldgen/DensityFunction.cpp src/worldgen/MultiNoise.cpp
+    src/worldgen/StructurePlacer.cpp src/worldgen/ChunkGenerator.cpp
+    src/worldgen/StructureManager.cpp src/game/WorldDataManager.cpp)
+target_include_directories(test_goal_gameplay_bugs PRIVATE src src/generated tests)
+target_link_libraries(test_goal_gameplay_bugs PRIVATE Threads::Threads ZLIB::ZLIB OpenSSL::Crypto)
+add_test(NAME goal_gameplay_bugs COMMAND test_goal_gameplay_bugs)
+set_tests_properties(goal_gameplay_bugs PROPERTIES TIMEOUT 60)
+
+add_executable(test_goal_cleanup_runtime tests/test_goal_cleanup_runtime.cpp
+    src/jvm/JavaObjectCache.cpp
+    src/jvm/NativeHandleTable.cpp
+    src/worldgen/StructurePlacer.cpp)
+target_include_directories(test_goal_cleanup_runtime PRIVATE src src/generated tests)
+target_link_libraries(test_goal_cleanup_runtime PRIVATE Threads::Threads)
+add_test(NAME goal_cleanup_runtime COMMAND test_goal_cleanup_runtime)
+set_tests_properties(goal_cleanup_runtime PROPERTIES TIMEOUT 60)
+
+add_executable(test_goal_cleanup_game tests/test_goal_cleanup_game.cpp)
+target_include_directories(test_goal_cleanup_game PRIVATE src src/generated tests)
+target_link_libraries(test_goal_cleanup_game PRIVATE Threads::Threads)
+add_test(NAME goal_cleanup_game COMMAND test_goal_cleanup_game)
+set_tests_properties(goal_cleanup_game PROPERTIES TIMEOUT 30)
+
+if(Python3_Interpreter_FOUND)
+    add_test(NAME goal_security_guards
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_goal_security_guards.py")
+    set_tests_properties(goal_security_guards PROPERTIES TIMEOUT 30)
+endif()
+
 # Runtime bootstrap contract: a clean directory receives the standard server
 # tree and embedded resources without overwriting user-owned assets.
 add_executable(test_runtime_layout
@@ -659,6 +706,20 @@ add_dependencies(test_properties cppfm)
 add_test(NAME properties COMMAND test_properties $<TARGET_FILE:cppfm>
          WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(properties PROPERTIES TIMEOUT 30)
+
+# Canonical server.properties/CLI settings matrix, including seed, difficulty,
+# secure-chat, and resource-pack contracts.
+add_executable(test_settings_matrix
+    tests/test_settings_matrix.cpp
+    src/game/ServerConfig.cpp)
+target_include_directories(test_settings_matrix PRIVATE src src/generated)
+add_test(NAME settings_matrix COMMAND test_settings_matrix)
+set_tests_properties(settings_matrix PROPERTIES TIMEOUT 30)
+
+add_executable(test_secure_chat_policy tests/test_secure_chat_policy.cpp)
+target_include_directories(test_secure_chat_policy PRIVATE src)
+add_test(NAME secure_chat_policy COMMAND test_secure_chat_policy)
+set_tests_properties(secure_chat_policy PROPERTIES TIMEOUT 30)
 
 # Version-pinned Play S→C ID locks plus selected field/order vectors. This is
 # broad wire coverage, not an exhaustive proof of every packet payload branch.
@@ -804,6 +865,27 @@ if(Python3_Interpreter_FOUND)
                     --binary $<TARGET_FILE:cppfm>)
         set_tests_properties(lifecycle_matrix PROPERTIES TIMEOUT 600
             LABELS "lifecycle;network"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+
+        add_test(NAME goal_live_features
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/test_goal_live_features.py"
+                    --binary $<TARGET_FILE:cppfm>)
+        set_tests_properties(goal_live_features PROPERTIES TIMEOUT 240
+            LABELS "goal;live;network"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+
+        add_test(NAME goal_live_interactions
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/test_goal_live_interactions.py"
+                    --binary $<TARGET_FILE:cppfm>)
+        set_tests_properties(goal_live_interactions PROPERTIES TIMEOUT 300
+            LABELS "goal;live;network"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+
+        add_test(NAME goal_live_remaining
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/test_goal_live_remaining.py"
+                    --binary $<TARGET_FILE:cppfm>)
+        set_tests_properties(goal_live_remaining PROPERTIES TIMEOUT 360
+            LABELS "goal;live;network"
             WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
     endif()
 endif()

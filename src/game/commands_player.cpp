@@ -1054,15 +1054,13 @@ void GameServer::initPlayerCommandsPart13() {
             const auto source = snapshotPlayer(*src);
             std::string obj = c.arg("objective").asStr();
             auto* o = scoreboard.find(obj);
-            if(!o) {
-                if(!scoreboard.addObjective(obj, "trigger", obj))
-                    throw std::runtime_error("Unknown objective: "+obj);
-                o = scoreboard.find(obj);
-                if(o) sendObjectiveAll(*o, 0);
-            }
+            if(!o) throw std::runtime_error("Unknown objective: "+obj);
             if(o->criteria!="trigger") throw std::runtime_error("Objective "+obj+" is not trigger criteria");
-            // bare trigger enables? In vanilla, bare trigger does nothing but feedback. We implement as add 1
-            // Check if score exists and enabled? Simplified: add 1
+            {
+                std::lock_guard playerLock(src->stateMtx);
+                if (!src->enabledTriggerObjectives.erase(obj))
+                    throw std::runtime_error("Trigger objective is not enabled: " + obj);
+            }
             scoreboard.addScore(obj, source.name, 1);
             int v = scoreboard.getScore(obj, source.name);
             sendScoreAll(obj, source.name, v);
@@ -1080,6 +1078,11 @@ void GameServer::initPlayerCommandsPart13() {
             auto* o = scoreboard.find(obj);
             if(!o) throw std::runtime_error("Unknown objective: "+obj);
             if(o->criteria!="trigger") throw std::runtime_error("Objective "+obj+" is not trigger criteria");
+            {
+                std::lock_guard playerLock(src->stateMtx);
+                if (!src->enabledTriggerObjectives.erase(obj))
+                    throw std::runtime_error("Trigger objective is not enabled: " + obj);
+            }
             int delta = c.arg("value").asInt();
             scoreboard.addScore(obj, source.name, delta);
             int v = scoreboard.getScore(obj, source.name);
@@ -1100,6 +1103,11 @@ void GameServer::initPlayerCommandsPart13() {
             auto* o = scoreboard.find(obj);
             if(!o) throw std::runtime_error("Unknown objective: "+obj);
             if(o->criteria!="trigger") throw std::runtime_error("Objective "+obj+" is not trigger criteria");
+            {
+                std::lock_guard playerLock(src->stateMtx);
+                if (!src->enabledTriggerObjectives.erase(obj))
+                    throw std::runtime_error("Trigger objective is not enabled: " + obj);
+            }
             int v = c.arg("value").asInt();
             scoreboard.setScore(obj, source.name, v);
             sendScoreAll(obj, source.name, v);

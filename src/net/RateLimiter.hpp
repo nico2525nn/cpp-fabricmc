@@ -1,9 +1,14 @@
 
 #pragma once
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cmath>
+#include <limits>
 #include <mutex>
+#include <optional>
+#include <utility>
 
 namespace cppfm {
 
@@ -22,6 +27,9 @@ struct RateLimiter {
 
     // Returns true when n bytes fit the budget (and deducts them).
     bool consume(double n, std::int64_t nowMs) {
+        if (!std::isfinite(n) || n < 0.0 || !std::isfinite(tokens) ||
+            !std::isfinite(capacity) || !std::isfinite(refillPerSec))
+            return false;
         const double dt = static_cast<double>(nowMs - lastMs) / 1000.0;
         if (dt > 0) {
             tokens = std::min(capacity, tokens + dt * refillPerSec);
@@ -32,7 +40,6 @@ struct RateLimiter {
         return true;
     }
 
-    void reset(std::int64_t nowMs) { tokens = capacity; lastMs = nowMs; }
 };
 
 // ---- vanilla chat-spam throttle (O-13 A3) --------------------------------- Mirrors ServerPlayNetworkHandler.chatSpamThresholdCount =
@@ -52,7 +59,6 @@ struct SpamTracker {
         return count > 200;
     }
 
-    void reset(std::int64_t tickNo) { count = 0; lastTick = tickNo; }
 };
 
 // ---- global accept gate (O-13 A5) ------------------------------------------
@@ -64,7 +70,7 @@ public:
 
     bool allow(std::int64_t nowMs) {
         std::lock_guard<std::mutex> lk(m_);
-        if (nowMs - windowStart_ >= 1000) {
+        if (nowMs < windowStart_ || nowMs - windowStart_ >= 1000) {
             windowStart_ = nowMs;
             count_ = 0;
         }
@@ -73,16 +79,65 @@ public:
         return true;
     }
 
-    void setMax(int n) {
-        std::lock_guard<std::mutex> lk(m_);
-        max_ = n;
-    }
-
 private:
     int max_;
     std::int64_t windowStart_ = 0;
     int count_ = 0;
     std::mutex m_;
+};
+
+// Bounds the number of session workers that may own sockets at once. A move-only
+// slot makes every successful admission release exactly once, including thread
+// creation/registration failures and ordinary worker exit.
+class SessionAdmissionGate {
+public:
+    class Slot {
+    public:
+        Slot(const Slot&) = delete;
+        Slot& operator=(const Slot&) = delete;
+        Slot(Slot&& other) noexcept : owner_(std::exchange(other.owner_, nullptr)) {}
+        Slot& operator=(Slot&& other) noexcept {
+            if (this != &other) {
+                release();
+                owner_ = std::exchange(other.owner_, nullptr);
+            }
+            return *this;
+        }
+        ~Slot() { release(); }
+
+    private:
+        friend class SessionAdmissionGate;
+        explicit Slot(SessionAdmissionGate* owner) noexcept : owner_(owner) {}
+        void release() noexcept {
+            if (owner_) {
+                owner_->active_.fetch_sub(1, std::memory_order_release);
+                owner_ = nullptr;
+            }
+        }
+        SessionAdmissionGate* owner_;
+    };
+
+    explicit SessionAdmissionGate(std::size_t limit) noexcept : limit_(limit) {}
+
+    std::optional<Slot> tryAcquire() noexcept {
+        auto active = active_.load(std::memory_order_relaxed);
+        while (active < limit_) {
+            if (active_.compare_exchange_weak(active, active + 1,
+                                              std::memory_order_acquire,
+                                              std::memory_order_relaxed))
+                return std::optional<Slot>(Slot(this));
+        }
+        return std::nullopt;
+    }
+
+    std::size_t active() const noexcept {
+        return active_.load(std::memory_order_acquire);
+    }
+    std::size_t limit() const noexcept { return limit_; }
+
+private:
+    const std::size_t limit_;
+    std::atomic<std::size_t> active_{0};
 };
 
 // ---- rate-limited logging (flood-time disk-fill guard) ---------------------

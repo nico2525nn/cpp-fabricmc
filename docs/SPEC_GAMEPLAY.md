@@ -250,7 +250,7 @@ tracker records later targeted reruns):
 | target | result |
 |---|---|
 | `test_gameplay_full` | `806 PASS / 0 FAIL / 806` |
-| `test_smoke_80` | `223 PASS 0 FAIL` |
+| `test_smoke_80` | `225 PASS 0 FAIL` |
 | `test_seed_parity` | `201 PASS 0 FAIL` (L1 independent hand-calc plus L2 deterministic 50-chunk comparison) |
 | `test_rng_parity` | `25 PASS 0 FAIL` (Java LocalRandom, Minecraft Xoroshiro seed expansion, primitive outputs, and splitter vectors) |
 | `test_mining_full` | `59/59 passed` |

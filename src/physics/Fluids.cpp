@@ -227,6 +227,13 @@ void FluidSim::touch(std::int32_t x, std::int32_t y, std::int32_t z) {
     // may be reading/updating the same world.  The tick-side distance check
     // below is the single gate, and an out-of-range notification is discarded
     // there without ever entering apply().
+    // Minecraft block positions are signed 26-bit x/z and the world has a
+    // finite build-height.  Reject hostile/out-of-range notifications before
+    // they can trigger chunk generation or overflowing neighbour arithmetic.
+    constexpr std::int32_t kMinCoord = -(1 << 25);
+    constexpr std::int32_t kMaxCoord = (1 << 25) - 1;
+    if (x < kMinCoord || x > kMaxCoord || z < kMinCoord || z > kMaxCoord ||
+        y < kMinY || y >= kMaxY) return;
     schedule(x, y, z, 0);
 }
 

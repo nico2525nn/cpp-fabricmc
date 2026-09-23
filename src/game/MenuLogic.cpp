@@ -13,6 +13,14 @@
 
 namespace cppfm {
 
+static ItemStack* menuSlot(Menu& menu, int slot) {
+    return menu.container ? &menu.container[slot] : &menu.extraSlots[slot];
+}
+
+static const ItemStack* menuSlot(const Menu& menu, int slot) {
+    return menu.container ? &menu.container[slot] : &menu.extraSlots[slot];
+}
+
 // helper to swap/merge like ClickLogic but for result slots — polish: respect maxStackFor and components
 static bool isSameForMerge(const ItemStack& a, const ItemStack& b) {
     return !a.empty() && !b.empty() && a.sameItemData(b);
@@ -44,12 +52,62 @@ static void setItemCount(ItemStack& stack, int count) noexcept {
     stack.count = static_cast<std::int16_t>(std::clamp(count, 0, maxCount));
 }
 
+static void takeHalf(ItemStack& source, ItemStack& destination) {
+    const int half = (source.count + 1) / 2;
+    destination = source;
+    setItemCount(destination, half);
+    setItemCount(source, static_cast<int>(source.count) - half);
+    if (source.count <= 0) source = ItemStack::air();
+}
+
+static bool clickInputSlot(ItemStack& target, ItemStack& cursor, int button,
+                           int mode, bool swapQuickMove) {
+    if (mode == 1) {
+        if (!swapQuickMove) return false;
+        std::swap(cursor, target);
+        return true;
+    }
+    if (button == 0) {
+        if (cursor.empty() && !target.empty()) {
+            cursor = target;
+            target = ItemStack::air();
+            return true;
+        }
+        if (!cursor.empty() && target.empty()) {
+            target = cursor;
+            cursor = ItemStack::air();
+            return true;
+        }
+        if (!cursor.empty() && !target.empty() && cursor.sameItemData(target)) {
+            const int moved = std::min<int>(cursor.count, 64 - target.count);
+            if (moved > 0) {
+                setItemCount(target, static_cast<int>(target.count) + moved);
+                setItemCount(cursor, static_cast<int>(cursor.count) - moved);
+                if (cursor.count <= 0) cursor = ItemStack::air();
+                return true;
+            }
+        }
+        std::swap(cursor, target);
+        return true;
+    }
+    if (cursor.empty() && !target.empty()) {
+        takeHalf(target, cursor);
+        return true;
+    }
+    if (!cursor.empty() && target.empty()) {
+        target = ItemStack::of(cursor.itemId, 1);
+        if (--cursor.count <= 0) cursor = ItemStack::air();
+        return true;
+    }
+    return false;
+}
+
 // ---------------- Anvil ----------------
 
 void AnvilMenuLogic::recomputeResult(Menu& menu) {
-    ItemStack* left = menu.container ? &menu.container[0] : &menu.extraSlots[0];
-    ItemStack* right = menu.container ? &menu.container[1] : &menu.extraSlots[1];
-    ItemStack* result = menu.container ? &menu.container[2] : &menu.extraSlots[2];
+    ItemStack* left = menuSlot(menu, 0);
+    ItemStack* right = menuSlot(menu, 1);
+    ItemStack* result = menuSlot(menu, 2);
     if (left->empty()) { *result = ItemStack::air(); return; }
     const std::string& rename = menu.anvilRename;
     int cost = CostCalculator::anvilCost(*left, *right, rename);
@@ -105,10 +163,10 @@ bool AnvilMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, int but
     // Anvil container slots 0,1 inputs 2 result
     if (slotId==2) {
         // take result
-        ItemStack* result = menu.container ? &menu.container[2] : &menu.extraSlots[2];
+        ItemStack* result = menuSlot(menu, 2);
         if (result->empty()) return false;
-        ItemStack* left = menu.container ? &menu.container[0] : &menu.extraSlots[0];
-        ItemStack* right = menu.container ? &menu.container[1] : &menu.extraSlots[1];
+        ItemStack* left = menuSlot(menu, 0);
+        ItemStack* right = menuSlot(menu, 1);
         const std::string& rename = menu.anvilRename;
         int cost = CostCalculator::anvilCost(*left, *right, rename);
         if (cost < 0) return false;
@@ -139,7 +197,7 @@ bool AnvilMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, int but
     bool changed = false;
     // Use ClickLogic pickupPlace-like for slot 0/1 via direct handling
     if (slotId==0 || slotId==1) {
-        ItemStack* target = menu.container ? &menu.container[slotId] : &menu.extraSlots[slotId];
+        ItemStack* target = menuSlot(menu, slotId);
         if (button==0) {
             if (cursor.empty() && !target->empty()) { cursor=*target; *target=ItemStack::air(); changed=true; }
             else if (!cursor.empty() && target->empty()) { *target=cursor; cursor=ItemStack::air(); changed=true; }
@@ -157,11 +215,7 @@ bool AnvilMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, int but
             } else { std::swap(cursor,*target); changed=true; }
         } else { // right click half
             if (cursor.empty() && !target->empty()) {
-                int half=(target->count+1)/2;
-                cursor=*target;
-                setItemCount(cursor, half);
-                setItemCount(*target, static_cast<int>(target->count) - half);
-                if(target->count<=0) *target=ItemStack::air();
+                takeHalf(*target, cursor);
                 changed=true;
             } else if (!cursor.empty()) {
                 if (target->empty()) { *target=ItemStack::of(cursor.itemId,1); cursor.count--; if(cursor.count<=0) cursor=ItemStack::air(); changed=true; }
@@ -230,8 +284,7 @@ std::uint32_t offerSeed(const ItemStack& item, const Player& player,
 std::array<EnchantmentOffer, 3> EnchantmentMenuLogic::offers(
     const Menu& menu, const Player& player, int bookshelves) const {
     std::array<EnchantmentOffer, 3> out{};
-    const ItemStack* item = menu.container ? &menu.container[0]
-                                           : &menu.extraSlots[0];
+    const ItemStack* item = menuSlot(menu, 0);
     if (item->empty()) return out;
 
     auto candidates = supportedEnchantmentsFor(*item);
@@ -274,7 +327,7 @@ bool EnchantmentMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, i
     // second slot to lapis lazuli.  Keep those constraints in the shared
     // menu path so a client cannot bypass them with WindowClick.
     if (slotId==0 || slotId==1) {
-        ItemStack* target = menu.container ? &menu.container[slotId] : &menu.extraSlots[slotId];
+        ItemStack* target = menuSlot(menu, slotId);
         if (slotId == 0 && !cursor.empty() &&
             supportedEnchantmentsFor(cursor).empty())
             return false;
@@ -310,11 +363,7 @@ bool EnchantmentMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, i
             }
         } else {
             if (cursor.empty() && !target->empty()) {
-                int half=(target->count+1)/2;
-                cursor=*target;
-                setItemCount(cursor, half);
-                setItemCount(*target, static_cast<int>(target->count) - half);
-                if(target->count<=0) *target=ItemStack::air();
+                takeHalf(*target, cursor);
                 changed=true;
             } else if (!cursor.empty() && target->empty()) {
                 *target=cursor; target->count=1; cursor.count--; if(cursor.count<=0) cursor=ItemStack::air(); changed=true;
@@ -338,8 +387,8 @@ bool EnchantmentMenuLogic::onEnchantButton(Menu& menu, Player& player, int butto
     return onEnchantButton(menu, player, buttonId, io, 15);
 }
 bool EnchantmentMenuLogic::onEnchantButton(Menu& menu, Player& player, int buttonId, MenuIo& io, int bookshelves) {
-    ItemStack* item = menu.container ? &menu.container[0] : &menu.extraSlots[0];
-    ItemStack* lapis = menu.container ? &menu.container[1] : &menu.extraSlots[1];
+    ItemStack* item = menuSlot(menu, 0);
+    ItemStack* lapis = menuSlot(menu, 1);
     const auto lapisId = gen::itemIdByName().find("minecraft:lapis_lazuli");
     if (buttonId < 0 || buttonId >= 3 || item->empty() || lapis->empty() ||
         lapisId == gen::itemIdByName().end() || lapis->itemId != lapisId->second)
@@ -384,28 +433,8 @@ bool BrewingMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, int b
     (void)player; (void)recipes;
     // Brewing slots: 0-2 bottles, 3 ingredient, 4 fuel (blaze powder)
     if (slotId <5) {
-        ItemStack* target = menu.container ? &menu.container[slotId] : &menu.extraSlots[slotId];
-        bool changed=false;
-        if (mode==1) { // quick move
-            // shift-click: move to player inv or from player to brewing simplified: swap with cursor
-            std::swap(cursor, *target);
-            changed=true;
-        } else if (button==0) {
-            if (cursor.empty() && !target->empty()) { cursor=*target; *target=ItemStack::air(); changed=true; }
-            else if (!cursor.empty() && target->empty()) { *target=cursor; cursor=ItemStack::air(); changed=true; }
-            else { std::swap(cursor,*target); changed=true; }
-        } else {
-            if (cursor.empty() && !target->empty()) {
-                int half=(target->count+1)/2;
-                cursor=*target;
-                setItemCount(cursor, half);
-                setItemCount(*target, static_cast<int>(target->count) - half);
-                if(target->count<=0) *target=ItemStack::air();
-                changed=true;
-            } else if (!cursor.empty() && target->empty()) {
-                *target=ItemStack::of(cursor.itemId,1); cursor.count--; if(cursor.count<=0) cursor=ItemStack::air(); changed=true;
-            }
-        }
+        ItemStack* target = menuSlot(menu, slotId);
+        const bool changed = clickInputSlot(*target, cursor, button, mode, true);
         if (changed) io.blockEntityChanged(menu.blockKey);
         return changed;
     }
@@ -419,7 +448,7 @@ bool StonecutterMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, i
     (void)player; (void)mode;
     // slots: 0 input, 1 result (take-only) — stonecutter has no `triggered` blockstate (crafter only has it); no toggle here.
     if (slotId==1) {
-        ItemStack* result = menu.container ? &menu.container[1] : &menu.extraSlots[1];
+        ItemStack* result = menuSlot(menu, 1);
         if (result->empty()) return false;
         if (cursor.empty()) cursor=*result;
         else if (cursor.itemId==result->itemId && cursor.count<64) {
@@ -430,7 +459,7 @@ bool StonecutterMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, i
             // already handled need to consume input
         } else return false;
         // consume input (one)
-        ItemStack* input = menu.container ? &menu.container[0] : &menu.extraSlots[0];
+        ItemStack* input = menuSlot(menu, 0);
         if (!input->empty()) { input->count--; if(input->count<=0) *input=ItemStack::air(); }
         // result already taken
         result->count=0; *result=ItemStack::air(); // after taking, clear? Actually we already moved
@@ -447,26 +476,10 @@ bool StonecutterMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, i
         return true;
     }
     if (slotId==0) {
-        ItemStack* input = menu.container ? &menu.container[0] : &menu.extraSlots[0];
-        bool changed=false;
-        if (button==0) {
-            if (cursor.empty() && !input->empty()) { cursor=*input; *input=ItemStack::air(); changed=true; }
-            else if (!cursor.empty() && input->empty()) { *input=cursor; cursor=ItemStack::air(); changed=true; }
-            else { std::swap(cursor,*input); changed=true; }
-        } else {
-            if (cursor.empty() && !input->empty()) {
-                int half=(input->count+1)/2;
-                cursor=*input;
-                setItemCount(cursor, half);
-                setItemCount(*input, static_cast<int>(input->count) - half);
-                if(input->count<=0) *input=ItemStack::air();
-                changed=true;
-            } else if (!cursor.empty() && input->empty()) {
-                *input=ItemStack::of(cursor.itemId,1); cursor.count--; if(cursor.count<=0) cursor=ItemStack::air(); changed=true;
-            }
-        }
+        ItemStack* input = menuSlot(menu, 0);
+        const bool changed = clickInputSlot(*input, cursor, button, 0, false);
         if (changed) {
-            ItemStack* result = menu.container ? &menu.container[1] : &menu.extraSlots[1];
+            ItemStack* result = menuSlot(menu, 1);
             if (!input->empty()) {
                 auto* rec = recipes.findStonecutting(input->itemId);
                 if (rec) *result = rec->result;
@@ -537,8 +550,7 @@ bool CrafterMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, int b
     // tick path and must not be coupled to a player menu click.
     int cont = 9;
     if (slotId < cont) {
-        ItemStack* target = menu.container ? &menu.container[slotId] : &menu.extraSlots[slotId];
-        bool changed=false;
+        ItemStack* target = menuSlot(menu, slotId);
         if (mode==1) return false; // quick move not handled, fall back to ClickLogic
         const bool disabled = menu.crafterDisabledSlots &&
             ((*menu.crafterDisabledSlots & (std::uint16_t{1} << slotId)) != 0);
@@ -555,22 +567,7 @@ bool CrafterMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, int b
         // A disabled slot is a hard automation/UI insertion barrier, but an
         // existing stack can still be taken out after the slot is disabled.
         if (disabled && !cursor.empty()) return false;
-        if (button==0) {
-            if (cursor.empty() && !target->empty()) { cursor=*target; *target=ItemStack::air(); changed=true; }
-            else if (!cursor.empty() && target->empty()) { *target=cursor; cursor=ItemStack::air(); changed=true; }
-            else { std::swap(cursor,*target); changed=true; }
-        } else {
-            if (cursor.empty() && !target->empty()) {
-                int half=(target->count+1)/2;
-                cursor=*target;
-                setItemCount(cursor, half);
-                setItemCount(*target, static_cast<int>(target->count) - half);
-                if(target->count<=0) *target=ItemStack::air();
-                changed=true;
-            } else if (!cursor.empty() && target->empty()) {
-                *target=ItemStack::of(cursor.itemId,1); cursor.count--; if(cursor.count<=0) cursor=ItemStack::air(); changed=true;
-            }
-        }
+        const bool changed = clickInputSlot(*target, cursor, button, 0, false);
         if (changed) io.blockEntityChanged(menu.blockKey);
         // The server-side redstone path is intentionally separate; a menu
         // click must never toggle `triggered` or craft implicitly.
@@ -583,9 +580,9 @@ bool CrafterMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, int b
 
 void CartographyMenuLogic::recomputeResult(Menu& menu) {
     // slots: 0 map, 1 paper, 2 result (output)
-    ItemStack* map = menu.container ? &menu.container[0] : &menu.extraSlots[0];
-    ItemStack* paper = menu.container ? &menu.container[1] : &menu.extraSlots[1];
-    ItemStack* result = menu.container ? &menu.container[2] : &menu.extraSlots[2];
+    ItemStack* map = menuSlot(menu, 0);
+    ItemStack* paper = menuSlot(menu, 1);
+    ItemStack* result = menuSlot(menu, 2);
     // Vanilla supports cloning and scale upgrades. This partial path currently
     // exposes the cloning-shaped result when both inputs are present.
     if (!map->empty() && !paper->empty()) {
@@ -609,7 +606,7 @@ bool CartographyMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, i
                                        ItemStack& cursor, MenuIo& io, const RecipeManager& recipes) {
     (void)player; (void)recipes;
     if (slotId == 2) {
-        ItemStack* result = menu.container ? &menu.container[2] : &menu.extraSlots[2];
+        ItemStack* result = menuSlot(menu, 2);
         if (result->empty()) return false;
         if (cursor.empty()) cursor = *result;
         else if (cursor.itemId == result->itemId && cursor.count < 64) {
@@ -621,8 +618,8 @@ bool CartographyMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, i
             if (!result->empty()) return true;
         } else return false;
         // consume inputs
-        ItemStack* map = menu.container ? &menu.container[0] : &menu.extraSlots[0];
-        ItemStack* paper = menu.container ? &menu.container[1] : &menu.extraSlots[1];
+        ItemStack* map = menuSlot(menu, 0);
+        ItemStack* paper = menuSlot(menu, 1);
         if (!map->empty()) { if (--map->count <= 0) *map = ItemStack::air(); }
         if (!paper->empty()) { if (--paper->count <= 0) *paper = ItemStack::air(); }
         *result = ItemStack::air();
@@ -631,24 +628,8 @@ bool CartographyMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, i
         return true;
     }
     if (slotId == 0 || slotId == 1) {
-        ItemStack* target = menu.container ? &menu.container[slotId] : &menu.extraSlots[slotId];
-        bool changed=false;
-        if (button==0) {
-            if (cursor.empty() && !target->empty()) { cursor=*target; *target=ItemStack::air(); changed=true; }
-            else if (!cursor.empty() && target->empty()) { *target=cursor; cursor=ItemStack::air(); changed=true; }
-            else { std::swap(cursor,*target); changed=true; }
-        } else {
-            if (cursor.empty() && !target->empty()) {
-                int half=(target->count+1)/2;
-                cursor=*target;
-                setItemCount(cursor, half);
-                setItemCount(*target, static_cast<int>(target->count) - half);
-                if(target->count<=0) *target=ItemStack::air();
-                changed=true;
-            } else if (!cursor.empty() && target->empty()) {
-                *target=ItemStack::of(cursor.itemId,1); cursor.count--; if(cursor.count<=0) cursor=ItemStack::air(); changed=true;
-            }
-        }
+        ItemStack* target = menuSlot(menu, slotId);
+        const bool changed = clickInputSlot(*target, cursor, button, 0, false);
         if (changed) recomputeResult(menu);
         if (changed) io.blockEntityChanged(menu.blockKey);
         return changed;
@@ -664,28 +645,8 @@ bool GenericMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, int b
     // For grindstone/smithing/beacon/loom etc., just handle inputs generically: slots 0..containerCount-1 are inputs
     int cont = menu.totalSlots() - 36;
     if (slotId < cont) {
-        ItemStack* target = menu.container ? &menu.container[slotId] : &menu.extraSlots[slotId];
-        bool changed=false;
-        if (mode==1) {
-            // quick move not handled here
-            return false;
-        }
-        if (button==0) {
-            if (cursor.empty() && !target->empty()) { cursor=*target; *target=ItemStack::air(); changed=true; }
-            else if (!cursor.empty() && target->empty()) { *target=cursor; cursor=ItemStack::air(); changed=true; }
-            else { std::swap(cursor,*target); changed=true; }
-        } else {
-            if (cursor.empty() && !target->empty()) {
-                int half=(target->count+1)/2;
-                cursor=*target;
-                setItemCount(cursor, half);
-                setItemCount(*target, static_cast<int>(target->count) - half);
-                if(target->count<=0) *target=ItemStack::air();
-                changed=true;
-            } else if (!cursor.empty() && target->empty()) {
-                *target=ItemStack::of(cursor.itemId,1); cursor.count--; if(cursor.count<=0) cursor=ItemStack::air(); changed=true;
-            }
-        }
+        ItemStack* target = menuSlot(menu, slotId);
+        const bool changed = clickInputSlot(*target, cursor, button, mode, false);
         if (changed) io.blockEntityChanged(menu.blockKey);
         return changed;
     }

@@ -315,7 +315,7 @@ def main():
             try: s.bind(("127.0.0.1", port)); s.close(); break
             except OSError: s.close(); port+=1
     world_dir=tempfile.mkdtemp(prefix=f"cppfm-soak-{os.getpid()}-")
-    cmd=[binary, f"--port={port}", f"--view-distance={args.view_distance}", f"--world-dir={world_dir}", "--level-type=flat", "--online-mode=false"]
+    cmd=[binary, f"--port={port}", f"--view-distance={args.view_distance}", f"--world-dir={world_dir}", "--level-type=flat", "--online-mode=false", "--enforce-secure-profile=false"]
     print(f"[soak] starting server {' '.join(cmd)} for {duration}s")
     server_log = None
     stop_event = threading.Event()

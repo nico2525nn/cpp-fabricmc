@@ -47,8 +47,12 @@ Packet field bytes belong here. Gameplay causes belong in
 | `https://raw.githubusercontent.com/PrismarineJS/minecraft-data/master/data/pc/1.21.4/protocol.json` | IDs and most packet/type definitions | `WIRE-ORACLE` (field exceptions are rechecked below) |
 | `https://minecraft.wiki/w/Java_Edition_protocol` | VarInt, Position, palette and light explanations | `VANILLA-CONCEPT` |
 | `https://fabricmc.net/2024/12/02/1214.html` | Fabric 1.21.4 release boundary | `VANILLA-CONCEPT` |
+| [Mojang 1.21.4 version metadata](https://piston-meta.mojang.com/v1/packages/c16bd1251bdf2cab3d7c3b30393427eeb19c6b2e/1.21.4.json) and its [server artifact](https://piston-data.mojang.com/v1/objects/4707d00eb834b446575d89a61a11b5d548d8c001/server.jar) | SHA-1-pinned official classes inspected for VarInt (`wg`), VarLong (`wh`), Varint21 frame splitter (`wi`), ClientConnection exception handling (`vi`), and packed Position (`ji`); inner server JAR SHA-1 `a091230c35e18a31007c2d395a9294d6b585b8c9` | `PRIMARY-BYTECODE-INSPECTION` |
 | `https://maven.fabricmc.net/docs/fabric-loader-0.16.9/index.html` | loader/JVM boundary | `VANILLA-CONCEPT` |
 | `https://maven.fabricmc.net/docs/yarn-1.21.4+build.1/` | names and concepts only | `VANILLA-CONCEPT` |
+| [Yarn 1.21.4+build.8 PacketByteBuf](https://maven.fabricmc.net/docs/yarn-1.21.4%2Bbuild.8/net/minecraft/network/PacketByteBuf.html) and [BlockPos](https://maven.fabricmc.net/docs/yarn-1.21.4%2Bbuild.8/net/minecraft/util/math/BlockPos.html) | map the official VarInt/VarLong and packed-position methods to named API | `OFFICIAL-API-REFERENCE` |
+| [Yarn 1.21.4+build.8 SplitterHandler](https://maven.fabricmc.net/docs/yarn-1.21.4%2Bbuild.8/net/minecraft/network/handler/SplitterHandler.html) | maps the official `wi` outer-frame decoder and its Netty `ByteToMessageDecoder` role | `OFFICIAL-API-REFERENCE` |
+| [Yarn 1.21.4+build.8 ClientConnection](https://maven.fabricmc.net/docs/yarn-1.21.4%2Bbuild.8/net/minecraft/network/ClientConnection.html) | maps the official network exception handler whose bytecode disconnects on frame-decoder errors | `OFFICIAL-API-REFERENCE` + `PRIMARY-BYTECODE-INSPECTION` |
 | `https://maven.fabricmc.net/docs/yarn-1.21.4%2Bbuild.8/net/minecraft/network/packet/s2c/play/EntityPositionS2CPacket.html` | official 1.21.4 `teleport_entity` packet model | `OFFICIAL-API-REFERENCE` |
 | `https://maven.fabricmc.net/docs/yarn-1.21.4%2Bbuild.1/net/minecraft/entity/player/PlayerPosition.html` | official position/delta/rotation record | `OFFICIAL-API-REFERENCE` |
 | reference-server captures and repository golden vectors | observed bytes | `CAPTURED` |
@@ -70,7 +74,7 @@ an arbitrary dimension string. These are protocol facts, not optional convenienc
 |---|---|---|---|---|
 | primitive writer/reader | `src/core/ByteBuffer.hpp::WriteBuffer`, `ReadBuffer` | signed/unsigned primitives, VarInt/VarLong, UUID, Position | big-endian fixed values and lock vectors | `IMPLEMENTATION` + `WIRE-ORACLE` |
 | outer frame | `src/net/PacketEncoder.hpp::encodeRaw`, `src/net/Connection.hpp::Connection::sendFramed` | id + payload, threshold, cipher | length-prefixed frame | `IMPLEMENTATION` |
-| frame decoder | `src/net/PacketDecoder.hpp::decodeFrame`, `decodeOuter` | outer frame, threshold, optional cipher | id + payload or explicit rejection | `IMPLEMENTATION` + `test_fuzz` |
+| frame decoder | `src/net/PacketDecoder.hpp::readVarint21`, `decodeFrame`, `decodeOuter`; `src/net/Connection.hpp::readFrameUntil` | outer frame, threshold, optional cipher | id + payload or explicit rejection | `IMPLEMENTATION` + `test_goal_network_bugs` |
 | session dispatch | `src/game/GameServer_session.cpp::Session::run` | state and packet direction | state-specific handler | `IMPLEMENTATION` |
 | registry data | `src/game/EmbeddedData.hpp::EmbeddedData::kRegistrySpec` | captured registry blobs | twelve registries in wire order, tags | `CAPTURED` + `IMPLEMENTATION` |
 | chunk body | `src/game/ChunkCodec.hpp::serializeLevelChunkBody` | 24 sections, heightmaps, light | LevelChunkWithLight body | `CAPTURED` + `test_spec_wire` |
@@ -81,7 +85,15 @@ an arbitrary dimension string. These are protocol facts, not optional convenienc
 
 - Fixed `i16/i32/i64` and floating-point bit patterns are big-endian.
 - VarInt is the protocol's signed two's-complement encoding, with a maximum of five
-  bytes; VarLong is at most ten bytes. This is not ZigZag encoding.
+  bytes; VarLong is at most ten bytes. This is not ZigZag encoding. The official
+  1.21.4 Java decoder accepts non-minimal terminated forms and discards fifth/
+  tenth-byte payload bits above the signed width through Java shift semantics;
+  a continued sixth/eleventh byte is consumed before the over-width error.
+- The outer packet-frame length is a distinct Varint21 contract, not a general
+  packet-field VarInt: vanilla accepts at most three prefix bytes and raises a
+  corrupted-frame error when the third byte still has its continuation bit set.
+  In a session this framing failure is terminal; do not recover and dispatch a
+  subsequent frame from the same connection.
 - Position is packed as `x:26 | z:26 | y:12`; the reader sign-extends all three
   signed fields. Negative coordinates and negative Y are therefore test cases.
 - UUID byte fields are 16 raw bytes; a textual UUID is a different field contract.
@@ -306,7 +318,7 @@ Serialization performance is not a parity oracle. The observable budgets are:
 
 | budget | current implementation |
 |---|---|
-| outer frame | `Connection::kMaxFrame = 8 MiB` |
+| outer frame | `Connection::kMaxFrame = 2,097,151` bytes, matching the maximum positive VarInt21 length |
 | declared decompressed size | `PacketDecoder::kMaxDeclared = 2 MiB` |
 | configured compression | `PacketEncoder` uses `dataLength=0` below threshold and uncompressed size + zlib above it; the session negotiates the configured threshold |
 | batch | `PacketBatcher` uses the 64-count/50 ms policy documented by the current header and tick integration |
@@ -326,7 +338,12 @@ thread, mutex, or packet worker.
 
 ## 14. Edge cases
 
-- VarInt/VarLong overflow, truncated frames, negative lengths, and empty bodies;
+- VarInt/VarLong: terminal fifth/tenth-byte payload bits use Java `int`/`long`
+  shift truncation, non-minimal terminated encodings are accepted, and a
+  continued sixth/eleventh byte is consumed before the over-width error;
+- outer frame length: Varint21 accepts no more than three prefix bytes; a third
+  continuation is malformed and session-fatal;
+- truncated frames, negative lengths, and empty bodies;
 - compression threshold `0`, `dataLength=0`, forged declarations below threshold,
   trailing zlib bytes, and decompressed-size bombs;
 - signed Position at negative X/Z/Y and section coordinates;

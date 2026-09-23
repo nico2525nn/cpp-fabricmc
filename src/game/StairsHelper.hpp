@@ -106,26 +106,28 @@ inline std::string computeStairsShape(World& w, int x,int y,int z, const std::st
     return "straight";
 }
 inline void updateNeighborStairsShapes(World& w, GameServer& srv, int x,int y,int z){
+    auto updateNeighbor = [&](int nx, int nz){
+        uint16_t ns=w.getBlock(nx,y,nz);
+        const gen::BlockDef* nd=gen::blockByState(ns);
+        if(!isStairsBlock(nd)) return;
+        std::string nf=getPropStr(ns,"facing");
+        std::string nh=getPropStr(ns,"half");
+        std::string shape=computeStairsShape(w,nx,y,nz,nf,nh);
+        std::string curShape=getPropStr(ns,"shape");
+        if(curShape==shape) return;
+        std::vector<std::pair<std::string_view,std::string_view>> props;
+        for(auto&[k,v]: gen::propsOf(ns)) if(k!="shape") props.emplace_back(k,v);
+        props.emplace_back("shape", shape);
+        uint16_t nst=static_cast<uint16_t>(gen::stateWithProps(*nd, props));
+        w.setBlock(nx,y,nz,nst);
+        srv.broadcastBlockChange(nx,y,nz,nst);
+    };
     uint16_t placed = w.getBlock(x,y,z);
     const gen::BlockDef* pd = gen::blockByState(placed);
     if(!isStairsBlock(pd)){
         static const int DX4[4]={1,-1,0,0}, DZ4[4]={0,0,1,-1};
         for(int i=0;i<4;++i){
-            int nx=x+DX4[i], nz=z+DZ4[i];
-            uint16_t ns=w.getBlock(nx,y,nz);
-            const gen::BlockDef* nd=gen::blockByState(ns);
-            if(!isStairsBlock(nd)) continue;
-            std::string nf=getPropStr(ns,"facing");
-            std::string nh=getPropStr(ns,"half");
-            std::string shape=computeStairsShape(w,nx,y,nz,nf,nh);
-            std::string curShape=getPropStr(ns,"shape");
-            if(curShape==shape) continue;
-            std::vector<std::pair<std::string_view,std::string_view>> props;
-            for(auto&[k,v]: gen::propsOf(ns)) if(k!="shape") props.emplace_back(k,v);
-            props.emplace_back("shape", shape);
-            uint16_t nst=static_cast<uint16_t>(gen::stateWithProps(*nd, props));
-            w.setBlock(nx,y,nz,nst);
-            srv.broadcastBlockChange(nx,y,nz,nst);
+            updateNeighbor(x+DX4[i], z+DZ4[i]);
         }
         return;
     }
@@ -138,42 +140,14 @@ inline void updateNeighborStairsShapes(World& w, GameServer& srv, int x,int y,in
     else {
         static const int DX4[4]={1,-1,0,0}, DZ4[4]={0,0,1,-1};
         for(int i=0;i<4;++i){
-            int nx=x+DX4[i], nz=z+DZ4[i];
-            uint16_t ns=w.getBlock(nx,y,nz);
-            const gen::BlockDef* nd=gen::blockByState(ns);
-            if(!isStairsBlock(nd)) continue;
-            std::string nf=getPropStr(ns,"facing");
-            std::string nh=getPropStr(ns,"half");
-            std::string shape=computeStairsShape(w,nx,y,nz,nf,nh);
-            std::string curShape=getPropStr(ns,"shape");
-            if(curShape==shape) continue;
-            std::vector<std::pair<std::string_view,std::string_view>> props;
-            for(auto&[k,v]: gen::propsOf(ns)) if(k!="shape") props.emplace_back(k,v);
-            props.emplace_back("shape", shape);
-            uint16_t nst=static_cast<uint16_t>(gen::stateWithProps(*nd, props));
-            w.setBlock(nx,y,nz,nst);
-            srv.broadcastBlockChange(nx,y,nz,nst);
+            updateNeighbor(x+DX4[i], z+DZ4[i]);
         }
         return;
     }
     const int DX2[2]={fdx,bdx};
     const int DZ2[2]={fdz,bdz};
     for(int i=0;i<2;++i){
-        int nx=x+DX2[i], nz=z+DZ2[i];
-        uint16_t ns=w.getBlock(nx,y,nz);
-        const gen::BlockDef* nd=gen::blockByState(ns);
-        if(!isStairsBlock(nd)) continue;
-        std::string nf=getPropStr(ns,"facing");
-        std::string nh=getPropStr(ns,"half");
-        std::string shape=computeStairsShape(w,nx,y,nz,nf,nh);
-        std::string curShape=getPropStr(ns,"shape");
-        if(curShape==shape) continue;
-        std::vector<std::pair<std::string_view,std::string_view>> props;
-        for(auto&[k,v]: gen::propsOf(ns)) if(k!="shape") props.emplace_back(k,v);
-        props.emplace_back("shape", shape);
-        uint16_t nst=static_cast<uint16_t>(gen::stateWithProps(*nd, props));
-        w.setBlock(nx,y,nz,nst);
-        srv.broadcastBlockChange(nx,y,nz,nst);
+        updateNeighbor(x+DX2[i], z+DZ2[i]);
     }
 }
 

@@ -19,20 +19,6 @@ public:
         x = (x ^ (x >> 13u)) * 0xc2b2ae35u;
         return x ^ (x >> 16u);
     }
-    static int enchantingCost(const Player& player, int bookshelves) {
-        int bs = std::clamp(bookshelves, 0, 15);
-        std::uint32_t seed = static_cast<std::uint32_t>(player.enchantmentSeed);
-        if (seed == 0) seed = static_cast<std::uint32_t>(player.entityId * 0x9e3779b9u ^ 0x85ebca6bu ^ (bs * 0x27d4eb2du));
-        std::mt19937 rng(seed);
-        int base = 1 + static_cast<int>(rng() % 8u); // 1..8
-        base += bs / 2;
-        if (bs > 0) {
-            base += static_cast<int>(rng() % static_cast<std::uint32_t>(bs + 1)); // 0..bs
-        }
-        if (base < 1) base = 1;
-        if (base > 30) base = 30;
-        return base;
-    }
     static std::array<int,3> enchantingCostsForShelves(const Player& p, int bookshelves) {
         int bs = std::clamp(bookshelves, 0, 15);
         std::uint32_t seed = static_cast<std::uint32_t>(p.enchantmentSeed);
@@ -48,18 +34,6 @@ public:
         c[1] = std::clamp(c[0]/3 + 1, 1, 30);
         c[2] = std::clamp(c[0], 1, 30);
         // For bs ==0, ensure at least 1..8 range; for bs 15, c0 tends to 30
-        return c;
-    }
-    static std::array<int,3> costsFor(int bookshelves, std::uint32_t seed){
-        std::mt19937 rng(seed);
-        int bs = std::clamp(bookshelves, 0, 15);
-        int base = 1 + static_cast<int>(rng() % 8u) + bs/2;
-        if (bs > 0) base += static_cast<int>(rng() % static_cast<std::uint32_t>(bs + 1));
-        base = std::clamp(base, 1, 30);
-        std::array<int,3> c;
-        c[0] = std::clamp(base + static_cast<int>(rng() % static_cast<std::uint32_t>(base/4+1)) + static_cast<int>(rng() % static_cast<std::uint32_t>(base/4+1)), 1, 30);
-        c[1] = std::clamp(c[0]/3+1, 1, 30);
-        c[2] = std::clamp(c[0], 1, 30);
         return c;
     }
     // vanilla bookshelf counting with air gap (Yarn EnchantingTableBlock)

@@ -77,7 +77,13 @@ void GameServer::drainServerThreadTasks() noexcept {
                                  std::memory_order_release);
         }
         request->waitCv.notify_all();
-        activeServerThreadTasks_.fetch_sub(1, std::memory_order_acq_rel);
+        {
+            // Pair predicate changes with the mutex used by waiters. Otherwise
+            // the decrement/notify could land between their predicate check
+            // and wait, losing the only wakeup after the task becomes idle.
+            std::lock_guard lock(serverThreadTasksMtx_);
+            activeServerThreadTasks_.fetch_sub(1, std::memory_order_acq_rel);
+        }
         serverThreadTaskIdleCv_.notify_all();
     }
 }
@@ -169,6 +175,15 @@ void GameServer::tickDigs() {
                 cancelMiningDig(*this, *p);
                 continue;
             }
+            if (!blockEventDispatcher().onBlockBreak(p->digX, p->digY, p->digZ,
+                                                     oldState, p)) {
+                cancelMiningDig(*this, *p);
+                continue;
+            }
+            if (world.getBlock(p->digX, p->digY, p->digZ) != oldState) {
+                cancelMiningDig(*this, *p);
+                continue;
+            }
             world.setBlock(p->digX, p->digY, p->digZ, 0);
             broadcastBlockChangeFor(p->dimension, p->digX, p->digY, p->digZ, 0);
             if (const auto* broken = gen::blockByState(oldState);
@@ -176,7 +191,6 @@ void GameServer::tickDigs() {
                 invalidateRespawnPointsAt(p->dimension, p->digX, p->digY, p->digZ);
             }
             HungerManager::onBlockBreak(*p, *this);
-            blockEventDispatcher().onBlockBreak(p->digX, p->digY, p->digZ, oldState, p);
             onBlockMined(*p, oldState);
             {
                 const std::string _bn = blockNameByState(oldState);
@@ -268,6 +282,7 @@ void GameServer::tickDigs() {
     }
 }
 void GameServer::tickOnce() {
+    SimulationDispatchGuard simulationLock(simulationDispatchMtx_);
     // JVM-created workers can only mutate game state through this queue.  Run
     // it before native simulation and again after the synchronous JVM tick
     // callback so a short worker request is visible in the same tick when it

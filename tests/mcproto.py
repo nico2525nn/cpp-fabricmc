@@ -46,6 +46,7 @@ def read_varint(data: io.BytesIO | bytes, offset: int = 0) -> tuple[int, int]:
     """returns (value, new_offset); raises ValueError on overflow"""
     if isinstance(data, (bytes, bytearray)):
         bio = io.BytesIO(data)
+        bio.seek(offset)
     else:
         bio = data
     result = 0
@@ -276,6 +277,8 @@ class Conn:
                 self.send_packet_raw(0x05, data)
             elif pid == 0x0e:    # select_known_packs -> claim none
                 self.send_packet_raw(0x07, b"\x00")
+            elif pid == 0x09:    # add_resource_pack -> accept the advertised UUID
+                self.send_packet_raw(0x06, data[:16] + write_varint(0))
             elif pid == 0x02:    # disconnect
                 raise RuntimeError("kicked at config: " + repr(data[:400]))
         raise TimeoutError("configuration never finished")

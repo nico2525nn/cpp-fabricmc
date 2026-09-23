@@ -1,5 +1,5 @@
-// ByteBuffer: read/write primitives for Minecraft Java 1.21.4 protocol 769. Clean-room implementation based on publicly documented wire
-// 26-12-26 pack per wiki.vg/NBT. Strict overflow checks: varint >5 bytes / varlong >10 bytes throws.
+// ByteBuffer: read/write primitives for Minecraft Java 1.21.4 protocol 769.
+// VarInt/VarLong decoding follows the official Java decoder's maximum-width behavior.
 #pragma once
 #include <cstdint>
 #include <cstring>
@@ -7,7 +7,6 @@
 #include <string_view>
 #include <vector>
 #include <stdexcept>
-#include <optional>
 #include <limits>
 
 namespace cppfm {
@@ -67,8 +66,6 @@ public:
     void varint(std::int32_t v) { writeVarintTo(data, v); }
     void varlong(std::int64_t v) { writeVarlongTo(data, v); }
 
-    void bytes(std::initializer_list<std::uint8_t> v) { data.insert(data.end(), v); }
-
     void string(std::string_view s) {
         if (s.size() > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max()))
             throw std::length_error("string is too long for a VarInt length");
@@ -86,8 +83,6 @@ public:
         if (bytes == nullptr) throw std::invalid_argument("cannot write a null UUID");
         raw(bytes, 16);
     }
-    void uuid(std::string_view hexNoDashes);
-
     std::size_t size() const { return data.size(); }
 };
 
@@ -136,26 +131,28 @@ public:
         std::uint32_t result = 0;
         for (int byte = 0; byte < 5; ++byte) {
             const std::uint8_t b = u8();
-            // A signed 32-bit VarInt has only four payload bits in its fifth
-            // byte.  Checking this matters because otherwise malformed input
-            // can silently wrap into a different packet length or id.
-            if (byte == 4 && (b & 0xF0u) != 0)
-                throw std::runtime_error("varint too large");
+            // Match Java's int shift semantics: high payload bits in byte five
+            // are discarded by the 32-bit result rather than rejected.
             result |= static_cast<std::uint32_t>(b & 0x7F) << (byte * 7);
             if ((b & 0x80u) == 0) return static_cast<std::int32_t>(result);
         }
+        // The vanilla decoder reads one more byte before reporting an
+        // over-width VarInt. Keep that consumption behavior for byte-buffer
+        // callers; a missing byte naturally reports the buffer underrun.
+        (void)u8();
         throw std::runtime_error("varint too large");
     }
     std::int64_t varlong() {
         std::uint64_t result = 0;
         for (int byte = 0; byte < 10; ++byte) {
             const std::uint8_t b = u8();
-            // A 64-bit Varlong has one payload bit in its tenth byte.
-            if (byte == 9 && (b & 0xFEu) != 0)
-                throw std::runtime_error("varlong too large");
+            // Match Java's long shift semantics: payload bits above bit 63 in
+            // byte ten are discarded by the 64-bit result rather than rejected.
             result |= static_cast<std::uint64_t>(b & 0x7F) << (byte * 7);
             if ((b & 0x80u) == 0) return static_cast<std::int64_t>(result);
         }
+        // The vanilla decoder consumes the eleventh byte before rejecting.
+        (void)u8();
         throw std::runtime_error("varlong too large");
     }
     std::string string(std::size_t maxLen = 262144) {

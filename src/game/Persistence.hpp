@@ -67,6 +67,14 @@ public:
         writeExtras_ = std::move(writeFn);
         readExtras_ = std::move(readFn);
     }
+
+    // Runs immediately before a chunk snapshot, including background flushes.
+    // Stateful subsystems use this to materialize transient block entities
+    // before the serializer intentionally omits them from persistent NBT.
+    void setChunkSaveBarrier(std::function<void(std::int32_t, std::int32_t)> barrier) {
+        std::lock_guard lock(configMtx_);
+        chunkSaveBarrier_ = std::move(barrier);
+    }
     void setBiomeCodec(std::unordered_map<std::uint16_t, std::string> idxToKey,
                        std::int32_t defaultIdx) {
         std::lock_guard lock(configMtx_);
@@ -393,10 +401,12 @@ public:
         }
         std::unordered_map<std::uint16_t, std::string> biomeIdxToKey;
         std::function<void(std::int32_t, std::int32_t, nbt::Value&)> writeExtras;
+        std::function<void(std::int32_t, std::int32_t)> chunkSaveBarrier;
         {
             std::lock_guard lock(configMtx_);
             biomeIdxToKey = biomeIdxToKey_;
             writeExtras = writeExtras_;
+            chunkSaveBarrier = chunkSaveBarrier_;
         }
         for (auto k : batch) {
             auto [cx, cz] = chunkKeyDecode(k);
@@ -407,6 +417,7 @@ public:
             bool saveFailed = false;
             bool found = false;
             try {
+                if (chunkSaveBarrier) chunkSaveBarrier(cx, cz);
                 found = world_.withChunk(cx, cz, [&](const Chunk& c) {
                 try {
                     nbt::Value root = chunkToNBT(cx, cz, c, bio,
@@ -457,11 +468,14 @@ public:
         }();
         std::unordered_map<std::uint16_t, std::string> biomeIdxToKey;
         std::function<void(std::int32_t, std::int32_t, nbt::Value&)> writeExtras;
+        std::function<void(std::int32_t, std::int32_t)> chunkSaveBarrier;
         {
             std::lock_guard lock(configMtx_);
             biomeIdxToKey = biomeIdxToKey_;
             writeExtras = writeExtras_;
+            chunkSaveBarrier = chunkSaveBarrier_;
         }
+        if (chunkSaveBarrier) chunkSaveBarrier(cx, cz);
         bool ok = false;
         bool saveFailed = false;
         bool found = false;
@@ -610,6 +624,7 @@ private:
     std::int32_t defaultBiomeIndex_ = 0;
     std::function<void(std::int32_t, std::int32_t, nbt::Value&)> writeExtras_;
     std::function<void(const nbt::Value&)> readExtras_;
+    std::function<void(std::int32_t, std::int32_t)> chunkSaveBarrier_;
 public:
     std::function<void(nbt::Value&)> provideLevelState_;
     std::function<void(const nbt::Value&)> consumeLevelState_;

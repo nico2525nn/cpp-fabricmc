@@ -18,6 +18,10 @@ inline std::int64_t nowMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
 }
+inline std::int64_t epochMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+}
 
 // Deterministic pack UUID for AddResourcePack 0x09
 inline std::array<std::uint8_t,16> packUuidFromUrl(const std::string& url) {

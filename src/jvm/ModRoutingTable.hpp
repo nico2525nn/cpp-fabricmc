@@ -56,10 +56,8 @@ public:
                                      const std::string& descriptor) const;
     std::uint64_t hash(const std::string& owner, const std::string& name,
                        const std::string& descriptor) const;
-    std::vector<MethodKey> transformedMethods() const;
     std::size_t transformedCount() const;
     std::size_t nativeCount() const;
-    std::size_t size() const;
     void clear();
 
 private:

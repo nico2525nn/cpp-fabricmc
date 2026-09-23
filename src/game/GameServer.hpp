@@ -73,6 +73,43 @@
 
 namespace cppfm {
 
+// The simulation gate is recursive because command/event callbacks can re-enter
+// the server.  Connection::sendFramed uses the same thread-local ownership
+// state to release the gate only while a socket write may block.
+
+class SimulationDispatchGuard {
+public:
+    explicit SimulationDispatchGuard(std::recursive_mutex& mutex)
+        : lock_(mutex) {
+        (void)mutex;
+        ++activeSimulationDispatchDepth;
+    }
+    SimulationDispatchGuard(const SimulationDispatchGuard&) = delete;
+    SimulationDispatchGuard& operator=(const SimulationDispatchGuard&) = delete;
+
+    void unlock() {
+        if (!lock_.owns_lock()) return;
+        --activeSimulationDispatchDepth;
+        lock_.unlock();
+    }
+    void lock() {
+        if (lock_.owns_lock()) return;
+        lock_.lock();
+        ++activeSimulationDispatchDepth;
+    }
+    bool owns_lock() const noexcept { return lock_.owns_lock(); }
+
+    ~SimulationDispatchGuard() {
+        if (lock_.owns_lock()) {
+            --activeSimulationDispatchDepth;
+            lock_.unlock();
+        }
+    }
+
+private:
+    std::unique_lock<std::recursive_mutex> lock_;
+};
+
 // Player inventory slot = full ItemStack (components preserved end-to-end).
 using InvSlot = ItemStack;
 
@@ -150,11 +187,17 @@ struct Player {
     std::unique_ptr<StatsManager> stats;
     std::unique_ptr<AdvancementManager> advancements;
     std::int64_t joinTick = 0;
+    std::unordered_set<std::string> enabledTriggerObjectives;
     std::vector<EffectInstance> effects;
     bool hasChatSession = false;
+    bool onlineAuthenticated = false;
+    std::vector<std::vector<std::uint8_t>> mojangProfileKeys;
     std::vector<std::uint8_t> chatPubKey;
+    std::vector<std::uint8_t> chatSessionSignature;
+    std::array<std::uint8_t, 16> chatSessionId{};
+    std::int32_t chatMessageIndex = 0;
     std::int64_t chatSessionExpiry = 0;
-    std::vector<uint8_t> lastSeenSignatures;
+    std::vector<std::int64_t> lastSeenChatSalts;
     std::unordered_map<std::string, std::vector<std::uint8_t>> cookies;
     std::int8_t dimension = 0;
     std::int64_t portalCooldownUntilTick = -100000;
@@ -250,8 +293,13 @@ class GameServer;
 // Per-connection session: drives the state machine on its own thread.
 class Session {
 public:
-    Session(GameServer& srv, std::shared_ptr<Connection> conn)
-        : srv_(srv), conn_(std::move(conn)) {}
+    Session(GameServer& srv, std::shared_ptr<Connection> conn,
+            std::function<bool()> statusAdmission = {},
+            std::function<void()> releaseAdmission = {})
+        : srv_(srv), conn_(std::move(conn)),
+          statusAdmission_(std::move(statusAdmission)),
+          releaseAdmission_(std::move(releaseAdmission)) {}
+    ~Session();
 
     void run();
     GameServer& server() { return srv_; }
@@ -265,7 +313,7 @@ private:
     void handleConfiguration();
     void handlePlay();
     // loops (packs + finish-ack) share this helper. Only unknown ids throw.
-    enum class ConfigWaitResult { Continue, FinishAck, PacksDone };
+    enum class ConfigWaitResult { Continue, FinishAck, PacksDone, Abort };
     ConfigWaitResult handleOneConfigPacket(ReadBuffer& in);
     void onEnterPlay();
     void tickChunksAround(double px, double pz);
@@ -388,6 +436,9 @@ private:
 
     GameServer& srv_;
     std::shared_ptr<Connection> conn_;
+    std::function<bool()> statusAdmission_;
+    std::function<void()> releaseAdmission_;
+    bool playerAdmissionReserved_ = false;
     enum class State { Handshake, Status, Login, Configuration, Play, Done };
 
     State state_ = State::Handshake;
@@ -416,11 +467,40 @@ private:
     std::int32_t menuWindowCounter_ = 0;
     std::int32_t villagerWindowSeq_ = 100;
     std::int32_t tradingVillager_ = -1;  // villager entity id while trading
+    std::array<std::uint8_t, 16> resourcePackUuid_{};
+    bool resourcePackRequired_ = false;
+    bool resourcePackLoaded_ = false;
 };
 
 class GameServer {
     friend class Session;
     friend class jvm::JvmRuntime;
+
+    template <typename T>
+    static T& selectDimension(std::int8_t dim, T& overworld,
+                              T* nether, T* end) {
+        switch (dim) {
+        case -1: return *nether;
+        case 1: return *end;
+        default: return overworld;
+        }
+    }
+    template <typename T>
+    static const T& selectDimensionConst(std::int8_t dim, const T& overworld,
+                                         const T* nether, const T* end) {
+        switch (dim) {
+        case -1: return *nether;
+        case 1: return *end;
+        default: return overworld;
+        }
+    }
+    static std::size_t pendingSessionWorkerLimit(std::int32_t maxPlayers) noexcept {
+        constexpr std::size_t kMinimum = 64;
+        constexpr std::size_t kLoginHeadroom = 32;
+        const auto configured = maxPlayers > 0
+            ? static_cast<std::size_t>(maxPlayers) : std::size_t{0};
+        return std::max(kMinimum, configured + kLoginHeadroom);
+    }
 public:
     enum class Dim : std::int8_t { Overworld = 0, Nether = -1, End = 1 };
 
@@ -430,7 +510,9 @@ public:
                  cfg.levelType == "normal" ? LevelType::Normal : LevelType::Flat,
                  cfg.seed),
           startTime_(cfg.startTime),
+          pendingSessionAdmissionGate_(pendingSessionWorkerLimit(cfg.maxPlayers)),
           ioPool_(static_cast<std::size_t>(std::max(1, cfg_.ioWorkerThreads))) {
+        difficulty_ = cfg_.difficulty;
         netherWorld_ = std::make_unique<World>(
             "minecraft:nether_wastes", LevelType::Nether, cfg.seed ^ 0x4E37ULL);
         endWorld_ = std::make_unique<World>(
@@ -442,18 +524,10 @@ public:
             w == &world_ ? 0 : (w == netherWorld_.get() ? -1 : 1));
     }
     World& worldFor(std::int8_t dim) {
-        switch (dim) {
-        case -1: return *netherWorld_;
-        case 1: return *endWorld_;
-        default: return world_;
-        }
+        return selectDimension(dim, world_, netherWorld_.get(), endWorld_.get());
     }
     const World& worldFor(std::int8_t dim) const {
-        switch (dim) {
-        case -1: return *netherWorld_;
-        case 1: return *endWorld_;
-        default: return world_;
-        }
+        return selectDimensionConst(dim, world_, netherWorld_.get(), endWorld_.get());
     }
     std::int8_t commandDimension(
         const brigadier::CommandSource& source) const noexcept {
@@ -480,60 +554,36 @@ public:
         };
     }
     LightEngine& lightsFor(std::int8_t dim) {
-        switch (canonicalDimension(dim)) {
-        case -1: return *dimLightEngine_[0];
-        case 1: return *dimLightEngine_[1];
-        default: return *lightEngine_;
-        }
+        return selectDimension(canonicalDimension(dim), *lightEngine_,
+                               dimLightEngine_[0].get(), dimLightEngine_[1].get());
     }
     const LightEngine& lightsFor(std::int8_t dim) const {
-        switch (canonicalDimension(dim)) {
-        case -1: return *dimLightEngine_[0];
-        case 1: return *dimLightEngine_[1];
-        default: return *lightEngine_;
-        }
+        return selectDimensionConst(canonicalDimension(dim), *lightEngine_,
+                                    dimLightEngine_[0].get(), dimLightEngine_[1].get());
     }
     FluidSim& fluidsFor(std::int8_t dim) {
-        switch (canonicalDimension(dim)) {
-        case -1: return *dimFluidSim_[0];
-        case 1: return *dimFluidSim_[1];
-        default: return *fluidSim_;
-        }
+        return selectDimension(canonicalDimension(dim), *fluidSim_,
+                               dimFluidSim_[0].get(), dimFluidSim_[1].get());
     }
     const FluidSim& fluidsFor(std::int8_t dim) const {
-        switch (canonicalDimension(dim)) {
-        case -1: return *dimFluidSim_[0];
-        case 1: return *dimFluidSim_[1];
-        default: return *fluidSim_;
-        }
+        return selectDimensionConst(canonicalDimension(dim), *fluidSim_,
+                                    dimFluidSim_[0].get(), dimFluidSim_[1].get());
     }
     RedstoneEngine& redstoneFor(std::int8_t dim) {
-        switch (canonicalDimension(dim)) {
-        case -1: return *dimRedstone_[0];
-        case 1: return *dimRedstone_[1];
-        default: return *redstone_;
-        }
+        return selectDimension(canonicalDimension(dim), *redstone_,
+                               dimRedstone_[0].get(), dimRedstone_[1].get());
     }
     const RedstoneEngine& redstoneFor(std::int8_t dim) const {
-        switch (canonicalDimension(dim)) {
-        case -1: return *dimRedstone_[0];
-        case 1: return *dimRedstone_[1];
-        default: return *redstone_;
-        }
+        return selectDimensionConst(canonicalDimension(dim), *redstone_,
+                                    dimRedstone_[0].get(), dimRedstone_[1].get());
     }
     BlockTickScheduler& blockTicksFor(std::int8_t dim) {
-        switch (canonicalDimension(dim)) {
-        case -1: return *dimBlockTicks_[0];
-        case 1: return *dimBlockTicks_[1];
-        default: return *blockTicks_;
-        }
+        return selectDimension(canonicalDimension(dim), *blockTicks_,
+                               dimBlockTicks_[0].get(), dimBlockTicks_[1].get());
     }
     const BlockTickScheduler& blockTicksFor(std::int8_t dim) const {
-        switch (canonicalDimension(dim)) {
-        case -1: return *dimBlockTicks_[0];
-        case 1: return *dimBlockTicks_[1];
-        default: return *blockTicks_;
-        }
+        return selectDimensionConst(canonicalDimension(dim), *blockTicks_,
+                                    dimBlockTicks_[0].get(), dimBlockTicks_[1].get());
     }
     ~GameServer() { stop(); }
 
@@ -711,6 +761,9 @@ public:
         }
         spawnProtection_ = cfg_.spawnProtection;
         persist_ = std::make_unique<Persistence>(world_, cfg_.worldDir, cfg_.worldBiome);
+        blockEntities_.setDirtyCallback([this](std::int32_t cx, std::int32_t cz) {
+            if (persist_) persist_->markDirty(cx, cz);
+        });
         persist_->setDifficulty(difficulty_);
         persist_->setWorldBorder(worldBorderDiameter_, worldBorderCenterX_, worldBorderCenterZ_);
         {   // biome codec maps + chunk extras (block entities)
@@ -729,6 +782,14 @@ public:
                 },
                 [this](const nbt::Value& root) {
                     blockEntities_.readChunkNbt(root);
+                });
+            persist_->setChunkSaveBarrier(
+                [this](std::int32_t cx, std::int32_t cz) {
+                    // Persistence may invoke the barrier on its worker.  All
+                    // redstone/world/light/broadcast callbacks must still run
+                    // on the same serialized simulation domain as ticks.
+                    SimulationDispatchGuard simulation(simulationDispatchMtx_);
+                    redstone_->flushPendingPistons(cx, cz);
                 });
         }
         persist_->setLevelStateProvider(
@@ -799,6 +860,12 @@ public:
                 }
             });
         persist_->loadLevelData();
+        // level.dat is authoritative for an existing world's seed.  Apply it
+        // to all dimensions before their first chunk is generated.
+        cfg_.seed = world_.seed();
+        cfg_.hashedSeed = static_cast<std::int64_t>(cfg_.seed);
+        netherWorld_->setSeed(cfg_.seed ^ 0x4E37ULL);
+        endWorld_->setSeed(cfg_.seed ^ 0xE11DULL);
         for (auto sub : {"DIM-1", "DIM1"}) {
             std::string p = cfg_.worldDir + "/" + std::string(sub) + "/level.dat";
             if (std::filesystem::exists(p)) {
@@ -808,8 +875,10 @@ public:
             std::string pn = cfg_.worldDir + "/" + std::string(sub) + "/level.dat.new";
             if (std::filesystem::exists(pn)) { std::error_code ec; std::filesystem::remove(pn, ec); }
         }
-        // sync persistence's worldborder/difficulty (file may have overridden) — include lerp
-        difficulty_ = persist_->difficulty();
+        // server.properties is the startup authority for difficulty; preserve
+        // worldborder interpolation state from level.dat.
+        difficulty_ = cfg_.difficulty;
+        persist_->setDifficulty(difficulty_);
         worldBorderDiameter_ = persist_->worldBorderDiameter();
         worldBorderCenterX_ = persist_->worldBorderCenterX();
         worldBorderCenterZ_ = persist_->worldBorderCenterZ();
@@ -853,6 +922,16 @@ public:
                 [this, dimension](const nbt::Value& root) {
                     blockEntitiesFor(dimension).readChunkNbt(root);
                 });
+            pw->setChunkSaveBarrier(
+                [this, dimension](std::int32_t cx, std::int32_t cz) {
+                    SimulationDispatchGuard simulation(simulationDispatchMtx_);
+                    redstoneFor(dimension).flushPendingPistons(cx, cz);
+                });
+            blockEntitiesFor(dimension).setDirtyCallback(
+                [this, dimension](std::int32_t cx, std::int32_t cz) {
+                    auto& persistence = dimPersist_[dimension == -1 ? 0 : 1];
+                    if (persistence) persistence->markDirty(cx, cz);
+                });
             pw->start();
         }
         rconServer_ = std::make_unique<RconServer>(cfg_.rcon,
@@ -891,6 +970,15 @@ public:
         }
     }
     void stop() {
+        // Tick and session callbacks cannot tear down resources that their
+        // own stack frames still use. Leave final teardown to the external
+        // owner (runForever's caller or the destructor).
+        if (isCurrentTickThread() || sessionThreadOwner_ == this) {
+            requestStop();
+            cancelServerThreadTasks();
+            stopCv_.notify_all();
+            return;
+        }
         // stop() is reachable from both explicit test teardown and the
         // destructor.  Without a one-shot gate, the second call could race
         // joins, close an already-released descriptor, and invoke JVM/
@@ -914,6 +1002,7 @@ public:
         // still-live external command.
         std::fprintf(stderr, "[cppfm] stopping rcon\n");
         if (rconServer_) rconServer_->stop();
+        waitForServerThreadTasks();
         std::fprintf(stderr, "[cppfm] stopping tick loop\n");
         stopTickLoop();
         joinJanitorThread();
@@ -951,7 +1040,6 @@ public:
                      const std::string& key);
     std::vector<std::uint8_t> loadCookie(
         const std::array<std::uint8_t, 16>& uuid, const std::string& key);
-    bool requestCookie(Player& p, const std::string& key);
     auto& mobsForTest() { return mobs_; }
     void addMob(const std::shared_ptr<MobEntity>& mob) {
         if (!mob) return;
@@ -972,18 +1060,12 @@ public:
     Whitelist& whitelist() { return whitelist_; }
     BlockEntityStore& blockEntities() { return blockEntities_; }
     BlockEntityStore& blockEntitiesFor(std::int8_t dimension) {
-        switch (canonicalDimension(dimension)) {
-        case -1: return dimensionBlockEntities_[0];
-        case 1: return dimensionBlockEntities_[1];
-        default: return blockEntities_;
-        }
+        return selectDimension(canonicalDimension(dimension), blockEntities_,
+                               &dimensionBlockEntities_[0], &dimensionBlockEntities_[1]);
     }
     const BlockEntityStore& blockEntitiesFor(std::int8_t dimension) const {
-        switch (canonicalDimension(dimension)) {
-        case -1: return dimensionBlockEntities_[0];
-        case 1: return dimensionBlockEntities_[1];
-        default: return blockEntities_;
-        }
+        return selectDimensionConst(canonicalDimension(dimension), blockEntities_,
+                                    &dimensionBlockEntities_[0], &dimensionBlockEntities_[1]);
     }
     std::int32_t villagerWindowSeq_ = 100;
     Scoreboard scoreboard;
@@ -1113,7 +1195,6 @@ public:
     void broadcastPlayerEquipment(const Player& p);
     void syncEquipmentOnChange(Player& p); // helper for armor/hand changes
     void broadcastSetPassengers(std::int32_t vehicleId);
-    void broadcastSetPassengersEmpty(std::int32_t vehicleId);
     void broadcastSetPassengersEmptyFor(std::int8_t dimension,
                                         std::int32_t vehicleId);
     void handleMoveVehicle(Player& p, double x, double y, double z, float yaw, float pitch);
@@ -1254,14 +1335,17 @@ public:
     void initDataItemReplaceCommands(
         const brigadier::NodePtr& replaceLit,
         const std::function<ItemStack*(Player&, const std::string&)>& slotToPlayerStack,
-        const std::function<ItemStack*(const brigadier::BlockPosI&, const std::string&)>& slotToBlockStack,
+        const std::function<BlockEntityStore::SlotRef(
+            std::int8_t, const brigadier::BlockPosI&, const std::string&)>& slotToBlockStack,
         const std::function<ItemStack(const std::string&, int)>& parseItemStack);
     void initDataItemModifyCommands(
         const brigadier::NodePtr& modifyLit,
-        const std::function<ItemStack*(const brigadier::BlockPosI&, const std::string&)>& slotToBlockStack);
+        const std::function<BlockEntityStore::SlotRef(
+            std::int8_t, const brigadier::BlockPosI&, const std::string&)>& slotToBlockStack);
     void initDataItemRemoveCommands(
         const brigadier::NodePtr& removeLit,
-        const std::function<ItemStack*(const brigadier::BlockPosI&, const std::string&)>& slotToBlockStack);
+        const std::function<BlockEntityStore::SlotRef(
+            std::int8_t, const brigadier::BlockPosI&, const std::string&)>& slotToBlockStack);
     void initExecuteRunCommands(const brigadier::NodePtr& exec);
     void initExecuteAsCommands(const brigadier::NodePtr& exec);
     void initExecuteAtCommands(const brigadier::NodePtr& exec);
@@ -1309,45 +1393,31 @@ public:
                             const std::optional<std::string>& sound);
     void broadcastStopSound(SoundSource source, const std::string* soundOrNull);
     void broadcastStopSound(SoundSource source);
-    void stopRecord(const std::string& discNameWithoutPrefix); // record category
     void broadcastWorldEvent(std::int32_t eventId, std::int32_t x, std::int32_t y, std::int32_t z, std::int32_t data, bool disableRelativeVolume = false);
     void broadcastWorldEventFor(std::int8_t dimension, std::int32_t eventId,
                                 std::int32_t x, std::int32_t y,
                                 std::int32_t z, std::int32_t data,
                                 bool disableRelativeVolume = false);
-    void broadcastBlockParticle(double x, double y, double z, std::uint32_t blockState, int count = 10);
-    void broadcastDustParticle(double x, double y, double z, std::int32_t rgb, float scale = 1.0f);
     void broadcastPaleOakLeavesParticle(double x, double y, double z); // D19 helper
     void broadcastPaleOakLeavesParticleFor(std::int8_t dimension,
                                            double x, double y, double z);
     void sendActionBar(Player& p, const std::string& text);
-    void broadcastActionBar(const std::string& text, Player* except = nullptr);
     void sendServerData(Player& p);
-    void broadcastServerData();
-    void sendHurtAnimation(Player& p, std::int32_t entityId, float yaw);
-    void broadcastHurtAnimation(std::int32_t entityId, float yaw, Player* except = nullptr);
     void broadcastHurtAnimationFor(std::int8_t dimension,
                                    std::int32_t entityId, float yaw,
                                    Player* except = nullptr);
-    void broadcastEntitySound(std::int32_t entityId, const std::string& soundName, float volume = 1.f, float pitch = 1.f, SoundSource category = SoundSource::Neutral);
     void broadcastEntitySoundFor(std::int8_t dimension, std::int32_t entityId,
                                  const std::string& soundName,
                                  float volume = 1.f, float pitch = 1.f,
                                  SoundSource category = SoundSource::Neutral);
-    void sendEntitySound(Player& p, std::int32_t entityId, const std::string& soundName, float volume = 1.f, float pitch = 1.f, SoundSource category = SoundSource::Neutral);
     void sendChatSuggestions(Player& p, std::int32_t action, const std::vector<std::string>& entries);
     void broadcastChatSuggestions(std::int32_t action, const std::vector<std::string>& entries, Player* except = nullptr);
     void sendSyncEntityPosition(Player& p, std::int32_t entityId, double x, double y, double z, double dx=0, double dy=0, double dz=0, float yaw=0, float pitch=0, bool onGround=true);
-    void broadcastSyncEntityPosition(std::int32_t entityId, double x, double y, double z, double dx=0, double dy=0, double dz=0, float yaw=0, float pitch=0, bool onGround=true, Player* except=nullptr);
     void sendSyncEntityPosition(Player& p, const MobEntity& mob);
     void broadcastSyncEntityPosition(const MobEntity& mob, Player* except=nullptr);
     void sendMapData(Player& p, int mapId, uint8_t scale=2, bool locked=false);
-    void sendMapData(Player& p, int mapId, const std::array<uint8_t,16384>& colors, uint8_t scale=2);
-    void broadcastMapData(int mapId, uint8_t scale, bool locked, Player* except=nullptr);
-    void sendMoveMinecart(Player& p, std::int32_t entityId, double x, double y, double z, float yaw, float pitch);
     void broadcastMoveMinecart(std::int32_t entityId, double x, double y, double z, float yaw, float pitch, Player* except=nullptr);
     void sendSelectAdvancementTab(Player& p, const std::string& tabId);
-    void broadcastSelectAdvancementTab(const std::string& tabId, Player* except=nullptr);
     void itemsTick();
     void trySpawnMobs();
     static std::array<int,7> spawnGroupCaps() { return {70,10,15,5,20,5,5}; }
@@ -1358,10 +1428,6 @@ public:
         if (difficulty == "peaceful") return false;
         return effLight <= 7.0 && (night || rain || thunder);
     }
-    void spawnItemDrop(double x,double y,double z,std::uint32_t itemId,std::uint8_t cnt,
-                       double vx=0,double vy=0,double vz=0);
-    void spawnItemDrop(double x,double y,double z,const ItemStack& stack,
-                       double vx=0,double vy=0,double vz=0);
     void spawnItemDropFor(std::int8_t dimension, double x, double y, double z,
                           std::uint32_t itemId, std::uint8_t cnt,
                           double vx=0, double vy=0, double vz=0);
@@ -1410,14 +1476,22 @@ public:
     bool running() const { return running_; }
 
     // Execute a short native operation on the authoritative server thread.
-    // Calls made by that thread run inline.  Foreign callers are queued with
-    // a bounded wait; a still-pending request is cancelled on timeout and is
-    // never run later.  If a request has already started, the caller may
-    // observe false at the deadline while the operation finishes on the
-    // server thread, so queued callbacks must own all captured state.
+    // Calls made by that thread run inline. Foreign callers wait at most the
+    // requested timeout; a still-pending request is cancelled and never runs
+    // later. A request already running may finish after false is returned, so
+    // callbacks must own all captured state and callers must treat timeout as
+    // an indeterminate result, not proof that no side effect occurred.
     bool runOnServerThread(
         std::function<void()> task,
         std::chrono::milliseconds timeout = std::chrono::milliseconds(250));
+    std::size_t pendingServerThreadTasksForTest() const {
+        std::lock_guard lock(serverThreadTasksMtx_);
+        return static_cast<std::size_t>(std::count_if(
+            serverThreadTasks_.begin(), serverThreadTasks_.end(), [](const auto& task) {
+                return task && task->state.load(std::memory_order_acquire) ==
+                                   ServerThreadTask::State::Pending;
+            }));
+    }
 
     using PlayerRef = std::shared_ptr<Player>;
     std::vector<PlayerRef> playersSnapshot() const {
@@ -1434,12 +1508,28 @@ public:
         return players_.size();
     }
     std::int32_t nextEntityId() { return entityIdCounter_++; }
-    void addPlayer(PlayerRef p) {
+    bool reservePlayerAdmission() {
+        std::lock_guard admissionLock(playerAdmissionMtx_);
+        std::lock_guard playersLock(playersMtx_);
+        const auto maximum = static_cast<std::size_t>(std::max(0, cfg_.maxPlayers));
+        if (players_.size() >= maximum ||
+            pendingPlayerAdmissions_ >= maximum - players_.size())
+            return false;
+        ++pendingPlayerAdmissions_;
+        return true;
+    }
+    void releasePlayerAdmission() noexcept {
+        std::lock_guard admissionLock(playerAdmissionMtx_);
+        if (pendingPlayerAdmissions_ != 0) --pendingPlayerAdmissions_;
+    }
+    void addPlayer(PlayerRef p, bool consumesReservation = false) {
         if (!p) return;
         std::lock_guard admissionLock(playerAdmissionMtx_);
         kickDuplicate(*p);   // plan45 B6 W-13(c): vanilla kicks the older session
         std::lock_guard lk(playersMtx_);
         players_.push_back(std::move(p));
+        if (consumesReservation && pendingPlayerAdmissions_ != 0)
+            --pendingPlayerAdmissions_;
     }
     void kickDuplicate(const Player& incoming) {
         std::lock_guard admissionLock(playerAdmissionMtx_);
@@ -1473,7 +1563,7 @@ public:
             }
             if (connection) {
                 connection->trySendPacket(proto::pl::sc::Disconnect, kick);
-                connection->abort();
+                connection->close();
             }
             std::fprintf(stderr, "[cppfm] duplicate login %s: kicked older session\n",
                          name.c_str());
@@ -1497,6 +1587,14 @@ public:
         broadcastPacketExcept(except, proto::pl::sc::SystemChat, body);
     }
     void broadcastPacketExcept(const Player* except, std::uint8_t id, const WriteBuffer& body) {
+        // Keep chunk snapshots and the block/entity updates that modify them
+        // in one ordered low-priority stream. Control and chat may overtake it,
+        // but a block update must not overtake its snapshot.
+        const bool chunkDependent =
+            id == proto::pl::sc::BundleDelimiter ||
+            id == proto::pl::sc::BlockUpdate ||
+            id == proto::pl::sc::MultiBlockChange ||
+            id == proto::pl::sc::BlockEntityData;
         runWithoutMobStateLock([&] {
             const auto players = playersSnapshot();
             // Brain actions historically use the dimension-less broadcast helper.
@@ -1504,9 +1602,11 @@ public:
             // dimension so a Nether event cannot leak to Overworld clients.  The
             // pointer is set only around the synchronous brain call in mobsTick.
             const MobEntity* sourceMob = brainTickGuard_;
-            const std::optional<std::int8_t> sourceDimension =
-                sourceMob ? std::optional<std::int8_t>(canonicalDimension(sourceMob->dimension))
-                          : std::nullopt;
+            const bool hasSourceDimension = sourceMob != nullptr;
+            const std::int8_t sourceDimension =
+                hasSourceDimension ? canonicalDimension(sourceMob->dimension) : 0;
+            // Recipient state and frames remain serialized; Connection owns
+            // the asynchronous socket handoff.
             for (auto& p : players) {
                 if (!p || p.get() == except) continue;
                 std::shared_ptr<Connection> connection;
@@ -1519,9 +1619,10 @@ public:
                     connection = p->conn;
                 }
                 if (!inPlay || !connection) continue;
-                if (sourceDimension && canonicalDimension(dimension) != *sourceDimension)
+                if (hasSourceDimension && canonicalDimension(dimension) != sourceDimension)
                     continue;
-                connection->trySendPacket(id, body);
+                if (chunkDependent) connection->trySendPacketLowPriority(id, body);
+                else connection->trySendPacket(id, body);
             }
         });
     }
@@ -1529,6 +1630,11 @@ public:
                                           const Player* except,
                                           std::uint8_t id,
                                           const WriteBuffer& body) {
+        const bool chunkDependent =
+            id == proto::pl::sc::BundleDelimiter ||
+            id == proto::pl::sc::BlockUpdate ||
+            id == proto::pl::sc::MultiBlockChange ||
+            id == proto::pl::sc::BlockEntityData;
         runWithoutMobStateLock([&] {
             const auto target = canonicalDimension(dimension);
             const auto players = playersSnapshot();
@@ -1545,7 +1651,8 @@ public:
                 }
                 if (!inPlay || !connection ||
                     canonicalDimension(playerDimension) != target) continue;
-                connection->trySendPacket(id, body);
+                if (chunkDependent) connection->trySendPacketLowPriority(id, body);
+                else connection->trySendPacket(id, body);
             }
         });
     }
@@ -1724,6 +1831,21 @@ private:
     static constexpr std::size_t kMaxServerThreadTasksPerTick = 256;
 
     bool isCurrentServerThread() const noexcept;
+    bool isCurrentTickThread() const noexcept;
+    inline static thread_local const GameServer* sessionThreadOwner_ = nullptr;
+    class SessionThreadScope {
+    public:
+        explicit SessionThreadScope(const GameServer* owner) noexcept
+            : previous_(sessionThreadOwner_) {
+            sessionThreadOwner_ = owner;
+        }
+        ~SessionThreadScope() { sessionThreadOwner_ = previous_; }
+        SessionThreadScope(const SessionThreadScope&) = delete;
+        SessionThreadScope& operator=(const SessionThreadScope&) = delete;
+
+    private:
+        const GameServer* previous_;
+    };
     void claimServerThreadForBootstrap() noexcept;
     void bindServerThread() noexcept;
     void releaseServerThread() noexcept;
@@ -1734,7 +1856,9 @@ private:
     mutable std::mutex serverThreadTasksMtx_;
     std::deque<std::shared_ptr<ServerThreadTask>> serverThreadTasks_;
     std::condition_variable serverThreadTaskIdleCv_;
+    std::size_t pendingServerThreadTaskCleanups_ = 0;
     std::thread::id serverThreadId_{};
+    std::thread::id tickThreadId_{};
     bool serverThreadAccepting_ = false;
     std::atomic<std::size_t> activeServerThreadTasks_{0};
 
@@ -1749,7 +1873,9 @@ private:
     };
 
     void acceptLoop();
-    bool registerSessionThread(std::thread worker);
+    bool registerSessionThread(
+        std::thread worker,
+        const std::shared_ptr<std::atomic<bool>>& finished);
     void joinSessionThreads();
     void registerActiveConnection(const std::shared_ptr<Connection>& connection);
     void unregisterActiveConnection(const std::shared_ptr<Connection>& connection);
@@ -1800,9 +1926,15 @@ private:
     std::int64_t lastBlockBatchFlushMs_ = 0;
     std::thread tickThread_;
     std::thread janitorThread_;
+    struct SessionThread {
+        std::thread worker;
+        std::shared_ptr<std::atomic<bool>> finished;
+    };
     mutable std::mutex sessionThreadsMtx_;
-    std::vector<std::thread> sessionThreads_;
+    std::vector<SessionThread> sessionThreads_;
     bool sessionThreadsStopping_ = false;
+    SessionAdmissionGate pendingSessionAdmissionGate_;
+    SessionAdmissionGate statusAdmissionGate_{16};
     mutable std::mutex activeConnectionsMtx_;
     std::vector<std::shared_ptr<Connection>> activeConnections_;
     std::mutex stopCvMtx_;
@@ -1821,6 +1953,7 @@ private:
     GameData gameData_;                                 // parsed registry orders
     std::vector<PlayerRef> players_;
     mutable std::recursive_mutex playerAdmissionMtx_;
+    std::size_t pendingPlayerAdmissions_ = 0; // protected by playerAdmissionMtx_
     mutable std::mutex playersMtx_;
     BlockEntityStore blockEntities_;                 // Overworld chests & furnaces
     BlockEntityStore dimensionBlockEntities_[2];     // Nether, End
@@ -1985,9 +2118,26 @@ public:
     FunctionEvaluator functionEvaluator_;
     DatapackManager& datapackManager() { return datapackManager_; }
     const DatapackManager& datapackManager() const { return datapackManager_; }
+    void refreshDatapackConsumers() {
+        tagManager_ = datapackManager_.tagManager;
+        lootTables_ = datapackManager_.lootTables;
+        recipes_.clear();
+        recipes_.loadDefaults();
+        recipes_.loadDirectory(cfg_.recipesDir);
+        tagManager_.applyToRecipeTags(recipes_.tags_);
+        recipes_.syncTagsFrom(tagManager_);
+        {
+            std::lock_guard cacheLock(advMergeMtx_);
+            cachedMergedAdv_.clear();
+            cachedAdvRawSize_ = 0;
+        }
+    }
     FunctionEvaluator& functionEvaluator() { return functionEvaluator_; }
     const FunctionEvaluator& functionEvaluator() const { return functionEvaluator_; }
-    void tickScheduledFunctions() { functionEvaluator_.tick(tickNo_); }
+    void tickScheduledFunctions() {
+        std::lock_guard commandLock(commandDispatchMtx_);
+        functionEvaluator_.tick(tickNo_);
+    }
 private:
     struct CachedChunk {
         std::uint64_t rev;
@@ -2013,10 +2163,11 @@ private:
     // from running_: embedded callers and tests legitimately dispatch
     // commands before the network loop has been started.
     std::atomic<bool> shutdownStarted_{false};
-    // RCON, console, and session threads may submit commands concurrently.
-    // Serialize only the native Brigadier/state mutation section; JVM command
-    // callbacks run before this lock so a callback can safely re-enter
-    // dispatchConsole() on the same thread without creating a lock cycle.
+    // Every authoritative ingress (tick, packet, console, and RCON command)
+    // takes this lock before touching world/player state.  The recursive mutex
+    // permits command callbacks and scheduled functions to re-enter safely.
+    // The narrower command lock serializes command registration/evaluation.
+    mutable std::recursive_mutex simulationDispatchMtx_;
     mutable std::recursive_mutex commandDispatchMtx_;
     std::atomic<platform::socket_t> listenFd_{platform::invalid_socket};
     AcceptGate acceptGate_{20};

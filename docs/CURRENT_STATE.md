@@ -8,11 +8,18 @@
 > boundaries, and a historical taxonomy `DONE` or a focused PASS does not become a
 > universal parity claim.
 
+## 0. Current handoff
+
+This tracked document is the canonical current-state entrypoint. It records the
+verification baseline, active compatibility boundaries, and publication status;
+`docs/VERIFICATION.md` holds gate definitions and reproducible evidence. Local
+handoff notes are not part of the public documentation set.
+
 ## 1. Snapshot
 
 | field | value |
 |---|---|
-| `updated` | `2026-09-19` |
+| `updated` | `2026-09-23` |
 | `implementation_baseline` | integrated `main` HEAD `335fca5` from clean checkpoint `65a7c69` |
 | `implementation_baseline_short` | `335fca5` (`65a7c69` + plan53/54 merges and fixes) |
 | `documentation_commit` | final documentation commit sequence after source integration `335fca5` |
@@ -27,7 +34,7 @@
 | `research_viewpoints` | `16` current viewpoints; old `13` wording is historical |
 | `taxonomy_snapshot` | MISSING `#1–#90`; historical matrix counts `DONE=90, PARTIAL=0, TODO=0` |
 | `strict_assessment_1` | `78 gaps`; `HISTORICAL` archive label, not a current aggregate |
-| `next_plan` | no new implementation plan authorized by this cleanup; future work must preserve the partial ledger and declared compatibility boundaries |
+| `next_plan` | finish the final diff/documentation review, commit and push the PR #1 review changes, then require exact-head Actions before considering merge; the implemented server.properties surface remains explicitly partial |
 
 The previous baseline was the plan50 runtime follow-up after the plan49 implementation integration and cleanup commit
 `db12df96093a0869e958f62b11f9a9cd68ba3ef1` and safety commit
@@ -37,6 +44,125 @@ the main graph: docs `e978dc6`, network `7894a4c`, block `20113bf`, and entity
 for binaries built with the required JNI inputs, without changing generated data,
 protocol 769, or the `docs-legacy/` archive. The
 plan51 implementation and its no-ff integration are recorded above.
+
+## 1A. Working-tree verification baseline (2026-09-19)
+
+The following evidence is from the 2026-09-19 working-tree snapshot after the
+settings/security/authority hardening pass. It supersedes neither the historical
+`335fca5` baseline above nor the declared release boundaries below, and it is not
+the result of the separate plan56 compatibility follow-up in §1C.
+
+| gate | measured result | scope / limitation |
+|---|---|---|
+| configure/build | `RC=0` | RelWithDebInfo Ninja configure and full build; all commands timeout-wrapped |
+| settings matrix | `27 PASS / 0 FAIL` | typed properties, CLI precedence, Java String.hashCode/textual seeds, secure-profile/chat separation, invalid-input retention, and unsupported-key reporting |
+| properties | `33 PASS / 0 FAIL` | table-driven properties/CLI and help/version side-effect checks |
+| recovery | `55 PASS / 0 FAIL` | `CPPFM_RECOVERY_WORLD_PREFIX=/dev/shm`; level/player/region recovery and session-lock cases |
+| core safety | `45 PASS / 0 FAIL` | parser, NBT, compression, packet, Anvil, whitelist, and scoped-event callback boundaries |
+| plan43 protocol matrix | `87 PASS / 0 FAIL` | command authority, signed-command offset parsing, abilities, horse/use-entity, movement/fall, sign persistence, and liveness |
+| smoke80 | `225 PASS / 0 FAIL` | rebuilt strict source-tree matrix with isolated operator fixture and owned cleanup |
+| live protocol/authority | `240 PASS / 0 FAIL / 240 total` | full `tests/test_server_full.py`; resource-pack UUID/ack, command authority, secure-chat paths, persistence/restart, RCON, and wire replays |
+| non-nightly CTest | full run `54/54 PASS` after final cleanup | `ctest --test-dir build -LE 'nightly|package' --output-on-failure` passed all registered non-package tests, including the three live fixtures |
+| 120-client stress | `120/120 joined PASS` in `68.5s` | `tests/stress_test.py --clients 120`; server tick remained alive and owned cleanup completed |
+| 300-second soak | `PASS` | 150 keepalives, 0 disconnects, 2,895 actions, post-fill RSS growth `1.0%` in the retained goal comparison run |
+| view-distance 32 dry benchmark | `PASS` | 4,225 chunks; p50 `0.107ms`, p95 `2.332ms`, peak RSS ~`95MB`, hit rate `84.6%`, OOM/kick `0` |
+| output isolation | `PASS` | simulation mutations remain under the recursive dispatch gate; frames are encoded under the gate and handed to a per-connection writer with a 4 MiB cap; encrypted frames remain FIFO; graceful close drains for at most 100 ms |
+| piston persistence barrier | `PASS` | source/destination pending piston commits are flushed under the simulation gate before synchronous or worker snapshots; full moving-piston serialization remains intentionally omitted from persistent NBT |
+| secure profile rejection | `PASS` | invalid profile sessions are terminal when secure profile or secure chat enforcement is enabled; Mojang profile certificates use SHA1withRSA, chat messages use SHA256; signed command argument transcripts remain fail-closed |
+
+The live, focused, stress, soak, benchmark, and CTest runs prove the named paths
+only; they do not close the accepted 2-hour/24-hour soak, arbitrary JVM-mod
+compatibility, full worldgen call-order/NBT parity, or retained real-client
+artifact boundaries.
+
+## 1B. Protocol-primitive follow-up (2026-09-23)
+
+| gate | result | evidence / boundary |
+|---|---|---|
+| Official primitive oracle | `INSPECTED` | SHA-1-pinned Mojang 1.21.4 server artifact; VarInt, VarLong, Varint21 frame splitter, and packed BlockPos decoder/packing bytecode reviewed, not executed |
+| Primitive and stream regressions | `PASS` | `test_goal_network_bugs` 79/79; independent signed endpoints, non-minimal forms, Java terminal-payload truncation, generic sixth/eleventh-byte rejection/consumption, strict three-byte Varint21 frame rejection, plaintext/encrypted stream alignment, big-endian fixed-width fields, and packed Position axis limits |
+| Related CTest targets | `7/7 PASS` | `native`, `spec_wire`, `jvm_native_bridge`, `core_safety`, `goal_network_bugs`, `wire_full`, and `fuzz` |
+| Smoke regression after tick-based chat pacing fix | `1/1 PASS` | `ctest --test-dir build -R smoke80 --output-on-failure --timeout 450`; 181.26 seconds, `225 PASS / 0 FAIL`. Reset feedback has a 30-second bounded wait and prints chat/disconnect diagnostics only on failure. Actions for prior SHA `54e7ad9` missed this feedback under the old 8-second wait after observing 120 ticks; the current PR-head Actions result is authoritative for verifying this test-only mitigation. |
+| PR Actions gate | `PASS / SHA-SPECIFIC` | Combined head `bac90dfbce70a8d1c09ddf525b339fac479ff350` passed the full build and non-nightly CTest ([run 35828644414](https://github.com/nico2525nn/cpp-fabricmc/actions/runs/35828644414)); subsequent review changes in this branch still require a new exact-head run. |
+
+MISSING #71's row-specific evidence is now `PASS` in the 90-row coverage ledger
+(`14 PASS`, `38 PARTIAL`, `38 UNVERIFIED`). This does not remove the independent
+publication boundaries below or imply universal protocol parity.
+
+## 1C. Vanilla 1.21.4 settings compatibility follow-up (2026-09-23)
+
+This follow-up was developed on `plan56/compatibility` from PR #1 head
+`26e399c0`, submitted as stacked PR #2, and squash-merged into the PR #1 branch
+as `bac90dfb` on 2026-09-23. It is not yet part of `main`. The result changes
+vanilla-facing defaults and property interpretation while keeping unsupported
+properties declared as unsupported.
+
+| gate | measured result | scope / limitation |
+|---|---|---|
+| RelWithDebInfo configure/full build | `PASS` | Full Ninja build completed in the integration worktree; all commands had explicit timeouts |
+| defaults, whitelist key, difficulty IDs, and signed integers | `49 PASS / 0 FAIL` | `settings_matrix`; vanilla online/profile defaults, view distance, MOTD, difficulty, random new-world seed, canonical `white-list`, source-order alias behavior, difficulty IDs `0..3`, leading `+`, and malformed doubled signs are covered |
+| Java Properties parsing and configuration | `64 PASS / 0 FAIL` | `properties`; separators, escapes, continuations, key case, UTF-8/ISO-8859-1 fallback, Java boolean semantics, CLI precedence, and rejection of malformed `+-` integers; isolated UTF-16 surrogates map to U+FFFD in the UTF-8 API |
+| effective secure-chat policy | `12 PASS / 0 FAIL` | `secure_chat_policy`; status and Join Game share the effective policy, `enforce-secure-profile || enforces-secure-chat`; unsigned-after-session behavior remains unverified |
+| fake-client authentication options | `PASS` | source guard and Python syntax checks cover local fake-client launchers; each offline launcher explicitly disables both online mode and secure-profile enforcement |
+| exact-head full non-nightly CTest | `55/55 PASS` | 544.84s in GitHub Actions on combined head `bac90dfbce70a8d1c09ddf525b339fac479ff350`; see the [exact-head Actions run](https://github.com/nico2525nn/cpp-fabricmc/actions/runs/35828644414). Later PR #1 review changes are not covered by this run. |
+| server child cleanup | `PASS` | post-suite `pgrep -a -f 'cppfm --por[t]'` found no remaining `cppfm` server process |
+| remaining property parity | `PARTIAL` | `enforce-whitelist`, query/status/network, permission, datapack, and several world/pack/operations effects are not fully implemented; `ServerProperties::save` is not `Properties.store`-compatible |
+
+Additional exploratory offline Python runs reported failures identical on the
+unmodified parent binary: replay `5/8` (signed `n=0` command, sign block-entity
+update, survival ability flags), `run_plan43_suite.py` `10/23` (signed chat,
+damage, horse IDs, join flags, and sign placement/text), and short soak-bot runs
+with `0` chunks against an expected minimum of `10`. These checks have no
+retained per-run logs and are not part of the passing CTest aggregate; the C++
+`plan43` target separately passes `87/87`.
+
+## 1D. PR #1 adversarial-review follow-up (2026-09-23)
+
+The PR #1 review branch completed five hostile review rounds using two
+independent sub-agents, followed by a final independent read-only pass and
+local fixes. The latest source changes include a stable JVM mutation-generation
+fence, a long bounded deadline in its teardown regression, deferred full stop
+when requested from a session callback, separate pending and Status worker
+admission, completed session-thread reaping, atomic login-slot reservation, and
+vanilla-matched zero-capacity rejection for ordinary profiles. A live online-
+mode regression confirms a stalled unauthenticated peer cannot hold a player
+slot ahead of an authenticated client.
+
+The `ops.json` `bypassesPlayerLimit` exception remains unsupported and is
+explicitly recorded as a partial permission boundary. The network audit records
+the official Mojang 1.21.4 artifact/hash used to confirm the zero-capacity
+branch. An oversize live Play frame may yield either a Disconnect packet or a
+transport close: Linux can reset the TCP connection when the rejected frame's
+unread body is still queued, so the test does not require a best-effort
+Disconnect to survive that reset.
+
+The focused CTest group (`native`, `flood_net`, `fuzz`, `goal_network_bugs`,
+`goal_cleanup_runtime`, `goal_cleanup_game`, `goal_security_guards`, and
+`wire_b6`) passed **8/8**. Within that run, the network bug harness was **99/99**,
+the live flood matrix **108/108**, cleanup game **13/13**, wire B6 **137/137**,
+and fuzz **25/25**. Native integration passed with both session-callback
+self-stop and JVM generation-fence cases; the source/security guards passed.
+The full local non-nightly CTest sweep passed 54/55; its only failure was the
+quality-audit requirement that the new close-or-Disconnect assertion carry an
+inline `[liveness]` label. After adding that label, both affected targets,
+`flood_net` and `quality_audit`, passed again (2/2); no other full-sweep target
+failed. This records final per-target evidence without claiming a second
+55-test run after the comment-only audit fix.
+The previous Actions result covers only
+`bac90dfbce70a8d1c09ddf525b339fac479ff350`; it does not validate this review
+delta. The exact PR head must pass Actions before merge.
+
+The subsequent exact-head Actions run on pre-fix SHA `9e17bbe676a512400bbf97b682ded843d0faab77`
+([run 35856254690](https://github.com/nico2525nn/cpp-fabricmc/actions/runs/35856254690))
+failed in `smoke80`: `GameServer::addToInventory` read beyond the inventory
+array while `InvTester` exercised `/give`. Reproduction with GCC 11.4 and JDK 17
+showed a dangling backing array from a conditional `std::initializer_list`
+range; the stale value became slot index 256. The implementation now iterates
+the two contiguous inventory ranges directly (hotbar 36–44, main inventory
+9–35). On the fixed source, the full GCC 11.4/JDK 17 smoke run completed with
+**225 PASS / 0 FAIL** on rerun (an earlier post-fix run had one non-reproduced
+failure); local `native` and `wire_b6` CTest targets passed **2/2**. This local
+evidence does not replace Actions for the updated PR head.
 
 ## 2. Prior plan48 and cleanup record
 
@@ -69,9 +195,9 @@ explicit rather than being converted into a broad PASS:
 | one-file distribution/runtime layout | `IMPLEMENTED-PARTIAL` | embedded repository-owned assets/classes, fresh-directory tree creation, user-file preservation, fail-closed CPack resource preflight, separate package JVM smoke when JNI/classes are available, and CPack one-executable ZIP; the Linux package gate was verified locally from ignored `build/` output, not a tracked/public release artifact; Windows source path requires a native Windows build and host native libraries/JDK remain external |
 | retained marker/comment inventory | `NOT-FULLY-MEASURED` | the cleanup grep was `0` for legacy references, but no complete zero-marker inventory was proven; do not claim one |
 | `tools/soak_bot.py --duration 300` | `RESOLVED` | three integrated main runs passed; each had KeepAlive `30`, chunks `182`, time updates `300`, kicks/EOF/server-exit/transport/protocol errors `0`, and owned cleanup PASS |
-| chunk generation/save/unload memory | `IMPLEMENTED; 30M DIAGNOSTIC PASS / 2H NOT-ACCEPTED` | generation is serialized per world; async save no longer copies a full `Chunk`; eviction no longer adds an extra 32-block ring; bounded allocation reuse is in `17ab09f`; the 1800s run passes at `114504→128868kB` (`+12.5%`), while the earlier 7200s attempt on parent `d1c6a7f` was not accepted at `+19.5%` |
-| accepted 2-hour/24-hour evidence | `INTERRUPTED / ABSENT` | the 7200s synthetic attempt was not completed or accepted; no accepted 2-hour or 24-hour artifact exists; procedures are not results |
-| current real-client/GUI evidence | `PASS / LOCAL-ONLY` | mc-pilot-managed Fabric 1.21.4 client logged in offline, entered play, stayed connected for more than one minute, and completed chat/command/block/status/screenshot probes; PrismLauncher 11.1.0 also launched Fabric 1.21.4 through its CLI with an existing authenticated account and joined cppfm; temporary local logs/screenshot were not retained as release artifacts; see [MC_PILOT_REAL_TEST.md](MC_PILOT_REAL_TEST.md) |
+| chunk generation/save/unload memory | `IMPLEMENTED; 300S PASS / 2H NOT-ACCEPTED` | generation is serialized per world; async save no longer copies a full `Chunk`; the retained 300s goal run passes with post-fill RSS growth `1.0%`, while the requested 7200s run stopped at `t=1200s` with exit `-9` |
+| accepted 2-hour/24-hour evidence | `INTERRUPTED / ABSENT` | the retained 7200s artifact stopped at `t=1200s`; no accepted 2-hour or 24-hour artifact exists; procedures are not results |
+| current real-client/GUI evidence | `UNAVAILABLE / CURRENT HOST` | The retained capability probe found no `DISPLAY`/`WAYLAND_DISPLAY`, no installed vanilla launcher/client, and no `glxinfo`; protocol tests are not rendering evidence. See [goal-gui-soak.md](audit/goal-gui-soak.md). Earlier local-client notes remain historical and have no retained release artifact. |
 | official Fabric API/Yarn ABI audit | `PASS / INFORMATIONAL` | Fabric API `0.119.4+1.21.4` common/server-side surface cross-checked against Yarn `1.21.4+build.8`: 206 top-level classes and 1,699 public members; no exact class/member descriptor gap in the selected surface; client/datagen/renderer/internal-only classes excluded |
 | locked real public-mod corpus | `PASS / BOUNDED` | Lithium, FerriteCore, and Carpet plus the combined run pass with the explicit Java 21 launcher; latest local ignored report `build/real-mod-corpus/real-mod-corpus-report-after-diagnostics-20260908-v1.json` records zero classified process diagnostics; it is not a tracked/public artifact and does not establish arbitrary-mod compatibility |
 | wider Modrinth candidate probe | `PASS / BOUNDED` | 12 pinned entries classify as 8 target-compatible/runtime passes and 4 explicit non-target/invalid cases; latest corrected local ignored report `build/real-mod-candidates/compatibility-candidates-report-final-20260908.json`; it is not a tracked/public artifact and provides bootstrap/clean-shutdown evidence only |
@@ -115,20 +241,20 @@ release artifact unless separately published:
 | `test_menu_logic` | `41 PASS 0 FAIL` | `PASS`; bounded enchanting offers and atomic crafter redstone crafting |
 | `test_recipes_mirror` | `76 PASS 0 FAIL` | `PASS` |
 | `test_native` | `ALL PASS` | `PASS`; includes bounded foreign-thread mutation routing, stop-time cancellation, and dimension-aware entity World handles; no invented aggregate count |
-| `test_recovery` | `54 PASS 0 FAIL` | `PASS`; includes valid `level.dat.new` promotion, corrupt-primary quarantine, byte preservation, player-data quarantine, region recovery, and session-lock cases |
-| `test_plan43` | `82 PASS 0 FAIL` in `27.61s` after the latest clean rebuild | `PASS` |
-| `test_smoke_80` | `223 PASS 0 FAIL` | `PASS` |
-| `test_server_full` | `234 PASS 0 FAIL` | `PASS` from the clean extracted Linux package; source-tree and package evidence are kept distinct |
+| `test_recovery` | `55 PASS 0 FAIL` | `PASS`; includes valid `level.dat.new` promotion, corrupt-primary quarantine, byte preservation, player-data quarantine, region recovery, and session-lock cases |
+| `test_plan43` | `87 PASS 0 FAIL` in the final rerun | `PASS`; command authority, signed-command offset, abilities, horse/use-entity, movement/fall, sign persistence, and liveness |
+| `test_smoke_80` | `225 PASS 0 FAIL` | `PASS`; isolated operator fixture and owned cleanup |
+| `test_server_full` | `240 PASS 0 FAIL / 240 total` | `PASS` from the source-tree full live matrix; package/source evidence remain distinct |
 | `properties` | `33 PASS 0 FAIL` | `PASS`; table-driven properties/CLI matrix and informational-flag side-effect checks |
 | `lifecycle_matrix` | `8/8 PASS` | `PASS`; fail-closed readiness, signal, restart, lock, malformed-input, port-reuse, and process-cleanup matrix |
 | multi-client | `ALL PASS` in `17.48s` | `PASS` |
 | bot smoke | `ALL PASS` in `20.82s` | `PASS` |
-| full non-nightly CTest regression | `45/45 PASS` in `394.71s` | latest rerun using `ctest --test-dir build -LE 'nightly|package' --output-on-failure --timeout 600`; includes properties, lifecycle, `tautology_lint`, and `mcproto_framing`; the separate release-only `package_jvm_smoke` gate is not folded into this aggregate |
-| cleanup-hardening performance comparison | `PASS` | same 45-test shape: `c857bfa` `395.76s` → `335fca5` `394.71s` (`-0.27%`); smoke80 `175.24s` → `175.05s`; package JVM `1.83s` → `1.84s`; Linux 7.0.0-31-generic x86_64, 16 CPUs, one sample/no warm-up |
-| view32 dry benchmark | `PASS` for 4,225 chunks; p50 `0.108ms`, p95 `2.333ms`, peak RSS ~`95MB`, hit rate `84.6%` | synthetic dry result |
-| 120-client stress | `120/120 joined PASS` in `68.0s` | `PASS` |
+| full non-nightly CTest regression | final full run `54/54 PASS` | latest registered set includes smoke80, properties, lifecycle, all three live feature fixtures, `tautology_lint`, and `mcproto_framing`; the separate release-only `package_jvm_smoke` gate is not folded into this aggregate |
+| cleanup-hardening performance comparison | `HISTORICAL` | prior 45-test comparison retained as historical context; current aggregate is the separate 54-test rerun above |
+| view32 dry benchmark | `PASS` for 4,225 chunks; p50 `0.107ms`, p95 `2.332ms`, peak RSS ~`95MB`, hit rate `84.6%`, OOM/kick `0` | strict synthetic dry result |
+| 120-client stress | `120/120 joined PASS` in `68.5s` | `PASS`; server tick remained alive and owned cleanup completed |
 | `tests/soak_test.py --duration 60` | `PASS`; 30 keepalives, 0 disconnects, 590 actions, post-fill RSS growth `1.0%` | latest short post-review concurrency/cleanup smoke; not 2h/24h |
-| `tests/soak_test.py --duration 300` | `PASS`; 150 keepalives, 0 disconnects, actions `2932`, post-fill RSS growth `7.6%` | short synthetic soak; not 2h/24h |
+| `tests/soak_test.py --duration 300` | `PASS`; 150 keepalives, 0 disconnects, actions `2899`, post-fill RSS growth `0.2%` | final bounded synthetic soak; not 2h/24h |
 | `tests/soak_test.py --duration 600 --movement-range 3000` | `PASS`; 300 keepalives, 0 disconnects, actions `5707`, post-fill RSS growth `6.6%` | post-fix wide synthetic soak; not 2h/24h |
 | `tests/soak_test.py --duration 1800 --movement-range 3000` | `PASS`; 900 keepalives, 0 disconnects, actions `17493`, post-fill baseline `114504kB`, max `128868kB`, growth `12.5%` | `17ab09f` bounded allocation-reuse diagnostic; not 2h/24h |
 | `tests/soak_test.py --duration 7200 --movement-range 3000` (parent `d1c6a7f`) | interrupted/not accepted at recorded `t=3361s`; post-fill baseline `160388kB`, max `191612kB`, growth `19.5%` | exceeded the `15%` post-fill gate before completion; retain as a negative/diagnostic artifact |
@@ -146,8 +272,8 @@ release artifact unless separately published:
 | `jvm_contract_audit` | `PASS` | every declared ABI method has exactly one native or wrapper backend classification |
 | `shadow_abi` | `PASS` | standalone dependency-complete Shadow ABI compile/reflection gate; 906 source classes, 763 class files, and 8,297 declared/audited members |
 | explicit no-JNI configure/build + regression | `PASS` | CMake fallback disabled with `CPPFM_ENABLE_JNI_FALLBACK=OFF`; native targets omit `CPPFM_HAS_JNI`, build cleanly, and the same-commit non-package CTest set passes `42/42`; relative source assets were linked for the external build directory |
-| ASan/UBSan key regression set | `4/4 PASS` from the repository root; no sanitizer report | `test_core_safety`, `test_spec_wire`, `test_fuzz`, and `test_gameplay_full`; direct invocation keeps relative assets visible |
-| static quality audit | `PASS` — 28 C++ test files, 156 production files, 43 Python files | rejects unconditional assertions, liveness-only fallbacks, bare Python exceptions, and unowned `Popen` launches |
+| ASan/UBSan key regression set | `4/4 PASS` from the repository root; no sanitizer report | `build-sanitize` uses `-fsanitize=address,undefined`; the four targets were rebuilt and run directly with relative assets visible |
+| static quality audit | `PASS` — 33 C++ test files, 156 production files, 48 Python files | rejects unconditional assertions, liveness-only fallbacks, bare Python exceptions, and unowned `Popen` launches |
 | official Loader/Knot probe | `PASS / DECLARED-LIMITATION` | offline pinned Loader 0.16.9/Knot/Mixin probe records all seven expected markers; local ignored process output is `build/fabric-runtime/probe-evidence-after-fabric-docs-20260908-v1.json`; it is not a tracked/public artifact, and no Mojang server/provider is shipped |
 | embedded official-provider probe | `PASS / DECLARED-LIMITATION` | C++-owned HotSpot starts the pinned official Loader/Knot target and records the handoff/mixin markers; local ignored output is `build/fabric-runtime/embedded-evidence-after-fabric-docs-20260908-v1.json`, not a tracked/public artifact |
 | `mod_linkage` / `real_mod_harness` / `real_mod_candidates_harness` | `PASS` | synthetic nested-JAR/Tiny-mapping linkage cases, fail-closed runtime-diagnostic classifier, locked candidate manifest, and offline missing-cache no-false-PASS contract pass |
@@ -222,13 +348,27 @@ The Plan54 primary measurement counts `98,648` lines across `298` files in
 `87,715 → 89,709`, a net **increase of 1,994 (+2.28%)**. The strict 18,341-line
 reduction target is therefore `PARTIAL`; deleting feature code, fixtures,
 assertions, or evidence would not be an acceptable substitute for a safe refactor.
+That Plan54 count is historical. The current dirty-tree repeat after the three
+owned live fixtures and goal regressions is `308` files / `101,045` lines; against
+the goal freeze of `302` / `100,991`, this is `+54` lines. The current protected
+manifest is `80` files / `5,994` lines with `0` hash mismatches (see the retained
+measurement logs under `/tmp/grok-goal-e8af7c070433/implementer`).
+
+The final cleanup pass removed the unreferenced legacy `World::fillTerrain` body
+by delegating the compatibility entry point to `fillTerrainV3`, the dead Redstone
+registry, obsolete CombatManager damage wrappers, unused packet conversion helpers,
+and several unreferenced compatibility accessors. The protected manifest remains
+unchanged.
 
 The accepted cleanup ledger is: items `-5`, native process harness `-81`, session
 login paths `-13`, command policy `-3`, and JVM bridge `+12`; configuration and
 properties evidence added `+671`, and the lifecycle matrix added `+1,352` within
 the primary scope. The final cleanup-hardening assertions/source-policy checks
-add `+61` lines. CTest registration is `46 → 48`; the two added gates are
-`properties` and POSIX-only `lifecycle_matrix`, with no existing target removed.
+add `+61` lines. The baseline registration diff is `46 → 50` add-test entries;
+the current configuration contains `57` total tests (`54` after excluding
+`nightly` and `package`). The added gates are `properties`, POSIX-only
+`lifecycle_matrix`, `goal_live_interactions`, and `goal_live_remaining`, with no
+existing target removed.
 The net matches the reproducible path-by-path measurement.
 
 The timeout investigation found two independent causes of misleading outer
@@ -238,19 +378,23 @@ Python/diagnostic harnesses create process groups, use monotonic deadlines,
 probe actual server status, terminate and reap the owned group with bounded
 escalation, and report cleanup failure explicitly. The C++ `ServerProcess`
 owner now checks `kill`, `waitpid`, and temporary-world removal and aborts on
-destructor cleanup failure. The disconnected-session path also marks the player
-inactive before slow persistence/hooks. The last completed
-live-server runs left no `cppfm` process behind. The latest full CTest baseline
-passed `45/45` in `394.71s`; the release-only package JVM gate is tracked
-separately. A fresh 120-client
-stress run joined `120/120` clients in `68.0s`, and the latest 60-second soak
-completed with zero disconnects and `1.0%` post-fill RSS growth.
+destructor cleanup failure. The disconnected-session path also marks the player inactive before slow persistence/hooks. The last completed
+live-server runs left no `cppfm` process behind. The prior full CTest baseline
+passed `53/53` in `469.29s`; the latest 54-test non-package run passed `54/54`
+under cumulative load;
+the release-only package JVM gate is tracked
+separately. The final 120-client stress run joined `120/120` clients in `68.5s`,
+and the final 300-second soak completed with 150 keepalives, zero disconnects,
+2,899 actions, and `0.2%` post-fill RSS growth.
 
-The current one-file package verification passed locally: the Linux ZIP in the
+The earlier one-file package verification passed locally: the Linux ZIP in the
 ignored `build/` output contains only `cppfm`, and its clean extracted-directory
 `test_server_full` run passed `234/234`; the separate `package_jvm_smoke` gate
-also passed strict default-on JVM startup against that ZIP. The ZIP is not a
-tracked/public release asset.
+also passed strict default-on JVM startup against that ZIP. The broader source-tree
+matrix's historical `240/240` result remains separate; the latest selected
+`conn,commands,permissions,chat,datapack,persistence,restart` suites passed
+`198/198` in `/tmp/grok-goal-e8af7c070433/implementer/server-full-final.log`.
+The ZIP is not a tracked/public release asset.
 The interrupted 7200s soak remains a negative diagnostic artifact. The accepted
 long-run and retained-release-artifact boundaries remain explicit even though the
 bounded local real-client probe passes. The active broader
@@ -271,3 +415,27 @@ targeted issues. The following rules remain in force for future work:
 | strict 78-gap history | `HISTORICAL` | do not merge it into the 90-row taxonomy count |
 | `AGENTS.md` handover | `UPDATED` | the authorized handover change points to the canonical workflow, current 16-viewpoint research, protocol-769 IDs, and timeout-safe process cleanup |
 | publication | `BLOCKED` | executable gates pass; declared arbitrary-mod/E-14, full world-generation L3, long-run, and real-client boundaries still prevent universal release sign-off |
+
+## 9. Active bounded goal evidence
+
+The goal-specific audit files under `docs/audit/` record a fixed dirty-tree
+baseline and protected manifest, a 90-row coverage ledger (`14 PASS`, `38 PARTIAL`,
+`38 UNVERIFIED`), three owned real-client fixtures, real command/entity/menu transcripts, and 23 reproducible network/gameplay defects
+with focused regression tests. The PR #1 review completed five hostile rounds
+and a final follow-up;
+the current verdict is `P0=0, P1=0, P2=0, P3=0` unresolved after the focused
+fixes and 8/8 local CTest rerun. Exact-head CI is still pending. Source-order
+guards cover security fixes where no authenticated client or external JVM fixture
+is available. Scoped production cleanup measured `-9`
+lines; the additional refactors are recorded in `goal-cleanup-runtime.md` and
+`goal-cleanup-game.md`. The requested 10,000-line reduction was not reached; the
+fixed production GC sweep found only small dead entrypoints after these removals,
+so no
+protected, generated, fixture, assertion, or feature code was deleted to
+manufacture that metric. GUI, arbitrary-mod, worldgen-L3, signed-command,
+moving-piston-NBT, and accepted long-soak boundaries remain explicit.
+The earlier focused feature-entry CTest passed `2/2` in `76.45s`; the additional
+remaining-entry fixture passed `1/1` in `63.93s`, and the final two-launch
+protocol matrix passed with both owned processes returning `0` and no escalation.
+The requested 7200-second soak failed at `t=1200s` with server exit `-9`; no
+accepted long-soak result is claimed.

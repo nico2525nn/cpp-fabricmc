@@ -182,7 +182,7 @@ public:
         WriteBuffer b;
         b.raw(ws.data.data(), ws.data.size());
         b.u8(0x03);
-        p.conn->trySendPacket(proto::pl::sc::Respawn, b);
+        p.conn->trySendPacketBarrier(proto::pl::sc::Respawn, b);
 
         {
             WriteBuffer ab;

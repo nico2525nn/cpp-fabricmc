@@ -584,7 +584,6 @@ void GameServer::kickPlayer(const std::string& name, const std::string& reason) 
     WriteBuffer b;
     nbt::writeTextComponent(b, txt);
     connection->trySendPacket(proto::pl::sc::Disconnect, b);
-    connection->abort();
     connection->close();
 }
 void GameServer::sendWorldBorderTo(Player& p) const {
@@ -651,9 +650,9 @@ std::string GameServer::dispatchConsole(const std::string& line) {
     // through the authoritative native dispatcher below.
     if (jvmRuntime_ && !jvmRuntime_->onCommand(nullptr, command, &javaResponse))
         return javaResponse.empty() ? "OK" : javaResponse;
-    // The Java callback above is deliberately outside this lock: native
-    // command handlers may call back into the bridge, and RCON/session
-    // ingress must not interleave mutations of the Brigadier-owned state.
+    // Serialize console/RCON mutation with the authoritative tick and with
+    // session command ingress. The recursive gates allow callbacks to re-enter.
+    SimulationDispatchGuard simulationLock(simulationDispatchMtx_);
     std::lock_guard commandLock(commandDispatchMtx_);
     brigadier::CommandSource src;
     src.console = true;
@@ -727,6 +726,11 @@ void GameServer::saveChunkAsyncFor(std::int8_t dimension,
     try {
         World& saveWorld = worldFor(dimension);
         BlockEntityStore& saveBlockEntities = blockEntitiesFor(dimension);
+        // Moving-piston entities are a two-tick transaction.  Complete that
+        // transaction while the simulation gate is held, before snapshotting
+        // the chunk; otherwise the moving block could outlive its transient BE
+        // after restart.
+        redstoneFor(dimension).flushPendingPistons(cx, cz);
         std::unordered_map<std::uint16_t, std::string> idxToKey;
         { const auto& order = gameData_.order("minecraft:worldgen/biome");
           for (std::size_t i = 0; i < order.size(); ++i)

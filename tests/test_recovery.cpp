@@ -24,8 +24,10 @@ using namespace cppfm;
 #include "Harness.hpp"
 
 static std::string mkTmp(const char* tag) {
-    char tmpl[128];
-    std::snprintf(tmpl, sizeof(tmpl), "/tmp/opencode/recov_%s_XXXXXX", tag);
+    const char* base = std::getenv("CPPFM_RECOVERY_WORLD_PREFIX");
+    if (!base || !*base) base = "/tmp/opencode";
+    char tmpl[256];
+    std::snprintf(tmpl, sizeof(tmpl), "%s/recov_%s_XXXXXX", base, tag);
     if (!::mkdtemp(tmpl)) { std::fprintf(stderr, "mkdtemp failed\n"); std::exit(2); }
     return std::string(tmpl);
 }
@@ -90,6 +92,7 @@ int main() {
         CHECK(ok && r.ok && r.src == LevelSource::Dat, "happy: src=Dat ok=1");
         CHECK(!r.logLines.empty(), "happy: logLines non-empty (O-07c)");
         CHECK(diff == "normal", "happy: difficulty round-trips");
+        CHECK(w.seed() == 12345ULL, "happy: random seed round-trips");
     }
 
     // -- 1b) a complete .new is the most recent committed save candidate ----

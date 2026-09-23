@@ -51,7 +51,7 @@ void GameServer::initScoreboardObjectiveCommands(const brigadier::NodePtr& obj) 
             Player* src = static_cast<Player*>(c.source.player);
             std::string out;
             for (auto& o : scoreboard.objectives) out += o.name + " (" + o.criteria + ") ";
-            sendFeedback(src, out.empty() ? "no objectives" : out);
+            sendFeedback(src, out.empty() ? "No objectives" : "Objectives: " + out);
             return static_cast<int>(scoreboard.objectives.size());
         };
         auto setd = CommandNode::literal("setdisplay");
@@ -88,78 +88,53 @@ void GameServer::initScoreboardObjectiveCommands(const brigadier::NodePtr& obj) 
         auto nfLit = CommandNode::literal("numberformat");
         auto blankLit = CommandNode::literal("blank");
         blankLit->executable = true;
-        blankLit->action = [this](CommandContext& c) {
-            Player* src = static_cast<Player*>(c.source.player);
-            const std::string t = c.arg("targetObjective").asStr();
-            auto* o = scoreboard.find(t);
-            if (!o) throw std::runtime_error("objective not found: " + t);
-            o->numberFormat.has = true;
-            o->numberFormat.type = Scoreboard::NumberFormatType::Blank;
-            sendObjectiveAll(*o, 2);
-            sendFeedback(src, "Set numberformat of " + t + " to blank");
-            return 1;
-        };
         auto styledLit = CommandNode::literal("styled");
         styledLit->executable = true;
-        styledLit->action = [this](CommandContext& c) {
-            Player* src = static_cast<Player*>(c.source.player);
-            const std::string t = c.arg("targetObjective").asStr();
-            auto* o = scoreboard.find(t);
-            if (!o) throw std::runtime_error("objective not found: " + t);
-            o->numberFormat.has = true;
-            o->numberFormat.type = Scoreboard::NumberFormatType::Styled;
-            o->numberFormat.color = "red";
-            sendObjectiveAll(*o, 2);
-            sendFeedback(src, "Set numberformat of " + t + " to styled red");
-            return 1;
-        };
         auto styledArg = CommandNode::argument("style", args::stringWord());
         styledArg->executable = true;
         styledArg->suggestions = [](brigadier::StringReader&, brigadier::ParseCtx&) {
             return std::vector<std::string>{"red","green","yellow","white","blue","aqua","gold"};
         };
-        styledArg->action = [this](CommandContext& c) {
-            Player* src = static_cast<Player*>(c.source.player);
-            const std::string t = c.arg("targetObjective").asStr();
-            const std::string col = c.arg("style").asStr();
-            auto* o = scoreboard.find(t);
-            if (!o) throw std::runtime_error("objective not found: " + t);
-            o->numberFormat.has = true;
-            o->numberFormat.type = Scoreboard::NumberFormatType::Styled;
-            o->numberFormat.color = col;
-            sendObjectiveAll(*o, 2);
-            sendFeedback(src, "Set numberformat of " + t + " to styled " + col);
-            return 1;
-        };
         styledLit->then(styledArg);
         auto fixedLit = CommandNode::literal("fixed");
         fixedLit->executable = true;
-        fixedLit->action = [this](CommandContext& c) {
-            Player* src = static_cast<Player*>(c.source.player);
-            const std::string t = c.arg("targetObjective").asStr();
-            auto* o = scoreboard.find(t);
-            if (!o) throw std::runtime_error("objective not found: " + t);
-            o->numberFormat.has = true;
-            o->numberFormat.type = Scoreboard::NumberFormatType::Fixed;
-            o->numberFormat.fixedText = std::string("\xE2\x99\xA5");
-            sendObjectiveAll(*o, 2);
-            sendFeedback(src, "Set numberformat of " + t + " to fixed");
-            return 1;
-        };
         auto fixedArg = CommandNode::argument("fixedText", args::stringGreedy());
         fixedArg->executable = true;
-        fixedArg->action = [this](CommandContext& c) {
+        auto setNumberFormat = [this](CommandContext& c,
+                                      Scoreboard::NumberFormatType type,
+                                      std::string value,
+                                      std::string feedbackSuffix) {
             Player* src = static_cast<Player*>(c.source.player);
             const std::string t = c.arg("targetObjective").asStr();
-            const std::string txt = c.arg("fixedText").asStr();
             auto* o = scoreboard.find(t);
             if (!o) throw std::runtime_error("objective not found: " + t);
             o->numberFormat.has = true;
-            o->numberFormat.type = Scoreboard::NumberFormatType::Fixed;
-            o->numberFormat.fixedText = txt;
+            o->numberFormat.type = type;
+            if (type == Scoreboard::NumberFormatType::Styled) o->numberFormat.color = value;
+            if (type == Scoreboard::NumberFormatType::Fixed) o->numberFormat.fixedText = value;
             sendObjectiveAll(*o, 2);
-            sendFeedback(src, "Set numberformat of " + t + " to fixed " + txt);
+            sendFeedback(src, "Set numberformat of " + t + " to " + feedbackSuffix);
             return 1;
+        };
+        blankLit->action = [setNumberFormat](CommandContext& c) {
+            return setNumberFormat(c, Scoreboard::NumberFormatType::Blank, {}, "blank");
+        };
+        styledLit->action = [setNumberFormat](CommandContext& c) {
+            return setNumberFormat(c, Scoreboard::NumberFormatType::Styled, "red", "styled red");
+        };
+        styledArg->action = [setNumberFormat](CommandContext& c) {
+            const std::string color = c.arg("style").asStr();
+            return setNumberFormat(c, Scoreboard::NumberFormatType::Styled, color,
+                                   "styled " + color);
+        };
+        fixedLit->action = [setNumberFormat](CommandContext& c) {
+            return setNumberFormat(c, Scoreboard::NumberFormatType::Fixed,
+                                   std::string("\xE2\x99\xA5"), "fixed");
+        };
+        fixedArg->action = [setNumberFormat](CommandContext& c) {
+            const std::string text = c.arg("fixedText").asStr();
+            return setNumberFormat(c, Scoreboard::NumberFormatType::Fixed, text,
+                                   "fixed " + text);
         };
         fixedLit->then(fixedArg);
         nfLit->then(blankLit); nfLit->then(styledLit); nfLit->then(fixedLit);
@@ -246,6 +221,45 @@ void GameServer::initScoreboardPlayerCommands(const brigadier::NodePtr& players)
             resetWho->then(resetObj);
             resetLit->then(resetWho);
             players->then(resetLit);
+        }
+
+        // Trigger objectives are enabled for one invocation per player.
+        {
+            auto enable = CommandNode::literal("enable");
+            auto target = CommandNode::argument("target", args::stringWord());
+            auto objective = CommandNode::argument("objective", args::objectiveArg());
+            objective->suggestions = [this](brigadier::StringReader&, brigadier::ParseCtx&) {
+                std::vector<std::string> v;
+                for (auto& o : scoreboard.objectives)
+                    if (o.criteria == "trigger") v.push_back(o.name);
+                return v;
+            };
+            objective->executable = true;
+            objective->action = [this](CommandContext& c) {
+                Player* src = static_cast<Player*>(c.source.player);
+                const std::string raw = c.arg("target").asStr();
+                const std::string obj = c.arg("objective").asStr();
+                const auto* definition = scoreboard.find(obj);
+                if (!definition || definition->criteria != "trigger")
+                    throw std::runtime_error("Objective is not a trigger objective: " + obj);
+                const auto selected = resolveSelectorForDimension(
+                    raw, src, commandDimension(c.source));
+                const auto holders = selected.playerNames.empty()
+                    ? std::vector<std::string>{raw} : selected.playerNames;
+                int enabled = 0;
+                for (const auto& holder : holders) {
+                    if (auto player = findPlayer(*this, holder)) {
+                        std::lock_guard playerLock(player->stateMtx);
+                        if (player->enabledTriggerObjectives.insert(obj).second) ++enabled;
+                    }
+                }
+                sendFeedback(src, "Enabled trigger " + obj + " for " +
+                             std::to_string(enabled) + " player(s)");
+                return enabled;
+            };
+            target->then(objective);
+            enable->then(target);
+            players->then(enable);
         }
 }
 

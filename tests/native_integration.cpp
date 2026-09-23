@@ -15,6 +15,7 @@
 #include "../src/game/AiBrain.hpp"
 #include "../src/game/BehaviorTree.hpp"
 #include "../src/game/GameServer.hpp"
+#include "../src/game/BlockEvent.hpp"
 #include "../src/game/Recipes.hpp"
 #include "../src/game/TagManager.hpp"
 #include "../src/game/LootTables.hpp"
@@ -47,6 +48,25 @@ static int g_fail = 0;
     const bool c_ = static_cast<bool>(cond); \
     std::printf("  %s  %s\n", c_ ? " ok " : "FAIL", msg); \
     if (!c_) ++g_fail; } while (0)
+
+static std::uint16_t findEphemeralPort() {
+    const auto socket = platform::createTcpSocket();
+    if (!platform::isValid(socket)) return 0;
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = 0;
+    if (platform::bindSocket(socket, reinterpret_cast<sockaddr*>(&address),
+                             sizeof(address)) != 0) {
+        platform::closeSocket(socket);
+        return 0;
+    }
+    platform::socket_length_t length = sizeof(address);
+    const int result = ::getsockname(socket, reinterpret_cast<sockaddr*>(&address),
+                                     &length);
+    platform::closeSocket(socket);
+    return result == 0 ? ntohs(address.sin_port) : 0;
+}
 
 // Minimal chunk-section reader to assert world contents from wire bytes.
 // Returns block state at (wx,wy,wz) from a LevelChunkWithLight body, or -1.
@@ -170,6 +190,18 @@ static void scenarioJoinBuildChat(ServerProc& srv) {
         for (const auto& line : a.chatLinesSnapshot()) if (line.find("integration-hello") != std::string::npos) sawChat = true;
     }
     CHECK(sawChat, "chat echoed back through system chat");
+
+    // LastSeenMessages.Update carries an offset, not a count capped at 20.
+    // A zero acknowledgement mask is valid even when the offset has advanced.
+    a.sendChatMessage("offset-chat", 21);
+    bool sawOffsetChat = false;
+    const auto dl3b = std::chrono::steady_clock::now() + std::chrono::milliseconds(4000);
+    while (std::chrono::steady_clock::now() < dl3b && !sawOffsetChat) {
+        a.pump(40);
+        for (const auto& line : a.chatLinesSnapshot())
+            if (line.find("offset-chat") != std::string::npos) sawOffsetChat = true;
+    }
+    CHECK(sawOffsetChat, "chat with advanced last-seen offset remains accepted");
 
     // find chunk containing origin among A's raw chunks and verify air there now
     // (post-dig re-stream check happens on B below; A keeps its original chunks)
@@ -717,8 +749,13 @@ void scenarioLootFunctions(){
     // zombie 3 checks
     {
         LootContext ctx; ctx.fortuneLevel=0;
-        auto drops = eval.evaluateEntity("minecraft:zombie", &ctx);
-        CHECK(!drops.empty(), "loot zombie produces at least one drop");
+        std::vector<ItemStack> drops;
+        // Rotten-flesh set_count is uniformly 0..2, so a single valid roll
+        // may intentionally produce nothing. Retry with an effectively
+        // negligible all-empty probability instead of making this suite flaky.
+        for (int attempt = 0; attempt < 32 && drops.empty(); ++attempt)
+            drops = eval.evaluateEntity("minecraft:zombie", &ctx);
+        CHECK(!drops.empty(), "zombie loot produces a drop across bounded valid rolls");
         bool valid = true;
         for (const auto& drop : drops)
             valid = valid && !drop.empty() && drop.count > 0;
@@ -1170,6 +1207,100 @@ static void scenarioJvmServerThreadBoundary() {
         CHECK(nativeMutationResult.load(std::memory_order_acquire),
               "JVM boundary: native world mutation completes from a foreign thread");
 
+        // A native caller can have its mutation queued when an inactive
+        // runtime is destroyed re-entrantly from the tick thread. The queued
+        // closure must observe the runtime generation fence and skip its
+        // captured `this` rather than touching the destroyed PImpl.
+        jvm::JvmConfig transientConfig;
+        transientConfig.enabled = false;
+        // Keep the waiter alive well beyond the teardown fence so this test
+        // exercises generation rejection, not the caller's timeout path.
+        transientConfig.serverMutationTimeout = std::chrono::seconds(30);
+        auto transientRuntime = std::make_unique<jvm::JvmRuntime>(
+            server, std::move(transientConfig));
+        const auto transientWorldHandle = transientRuntime->worldHandle(server.world());
+        auto* transientRuntimePtr = transientRuntime.get();
+        std::atomic<bool> transientMutationResult{true};
+        std::atomic<bool> transientQueued{false};
+        std::atomic<bool> transientCallerReturned{false};
+        std::atomic<bool> callerReturnedBeforeFence{true};
+        std::thread transientCaller;
+        const bool destroyedOnTick = server.runOnServerThread([&] {
+            transientCaller = std::thread([&] {
+                transientMutationResult.store(
+                    transientRuntimePtr->nativeWorldSetBlock(
+                        transientWorldHandle, 4, 80, 4, 1),
+                    std::memory_order_release);
+                transientCallerReturned.store(true, std::memory_order_release);
+            });
+            transientQueued.store(waitUntil([&] {
+                return server.pendingServerThreadTasksForTest() != 0;
+            }, std::chrono::milliseconds(1000)), std::memory_order_release);
+            callerReturnedBeforeFence.store(
+                transientCallerReturned.load(std::memory_order_acquire),
+                std::memory_order_release);
+            transientRuntime.reset();
+        }, std::chrono::milliseconds(2000));
+        if (transientCaller.joinable()) transientCaller.join();
+        CHECK(destroyedOnTick && transientQueued.load(std::memory_order_acquire) &&
+                  !callerReturnedBeforeFence.load(std::memory_order_acquire) &&
+                  !transientMutationResult.load(std::memory_order_acquire) &&
+                  server.world().getBlock(4, 80, 4) == 0,
+              "JVM boundary: tick-thread runtime destruction fences queued native mutations");
+
+        std::atomic<int> legacyHandlerCalls{0};
+        blockEventDispatcher().addOnBlockPlaceHandler(
+            [&](const BlockEvent&) { legacyHandlerCalls.fetch_add(1); });
+        jvm::JvmConfig secondaryConfig;
+        secondaryConfig.enabled = false;
+        jvm::JvmRuntime secondaryRuntime(server, std::move(secondaryConfig));
+        secondaryRuntime.stop();
+        blockEventDispatcher().onBlockPlace(5, 80, 5, 0, 1);
+        CHECK(legacyHandlerCalls.load() == 1,
+              "JVM boundary: stopping an inactive runtime preserves process-wide handlers");
+
+        // Once a callback is running it cannot be cancelled safely, but the
+        // foreign caller still returns at its deadline. The queued closure
+        // owns its state and may finish on the tick thread afterwards.
+        std::atomic<bool> runningTaskEntered{false};
+        std::atomic<bool> releaseRunningTask{false};
+        std::atomic<bool> runningTaskFinished{false};
+        bool runningTaskResult = true;
+        const auto runningCallStart = std::chrono::steady_clock::now();
+        std::thread releaseRunningThread([&] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(750));
+            releaseRunningTask.store(true, std::memory_order_release);
+        });
+        std::thread runningCaller([&] {
+            runningTaskResult = server.runOnServerThread(
+                [&] {
+                    runningTaskEntered.store(true, std::memory_order_release);
+                    while (!releaseRunningTask.load(std::memory_order_acquire))
+                        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    runningTaskFinished.store(true, std::memory_order_release);
+                }, std::chrono::milliseconds(500));
+        });
+        const bool runningTaskStarted = waitUntil([&] {
+                    return runningTaskEntered.load(std::memory_order_acquire);
+                },
+                std::chrono::milliseconds(1500));
+        CHECK(runningTaskStarted,
+              "JVM boundary: timed operation starts on the server thread");
+        runningCaller.join();
+        const auto runningCallElapsed = std::chrono::steady_clock::now() -
+                                        runningCallStart;
+        const bool taskStillHeldAtCallerReturn =
+            !runningTaskFinished.load(std::memory_order_acquire);
+        releaseRunningThread.join();
+        CHECK(!runningTaskResult &&
+                  runningCallElapsed < std::chrono::milliseconds(650) &&
+                  taskStillHeldAtCallerReturn,
+              "JVM boundary: running operation does not extend the caller deadline");
+        CHECK(waitUntil([&] {
+                  return runningTaskFinished.load(std::memory_order_acquire);
+              }, std::chrono::milliseconds(1000)),
+              "JVM boundary: running operation safely completes after caller timeout");
+
         // Occupy the tick thread, then verify that a timed-out pending call is
         // cancelled instead of being run after the caller has returned false.
         std::atomic<bool> blockerEntered{false};
@@ -1221,9 +1352,19 @@ static void scenarioJvmServerThreadBoundary() {
         CHECK(!rejectedAfterStop,
               "JVM boundary: new foreign mutation is rejected after requestStop");
 
-        releaseBlocker.store(true, std::memory_order_release);
+        std::thread releaseBlockerThread([&] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            releaseBlocker.store(true, std::memory_order_release);
+        });
+        const auto inactiveRuntimeStopStart = std::chrono::steady_clock::now();
+        runtime.stop();
+        const auto inactiveRuntimeStopElapsed =
+            std::chrono::steady_clock::now() - inactiveRuntimeStopStart;
+        releaseBlockerThread.join();
         blocker.join();
         stopPendingCaller.join();
+        CHECK(inactiveRuntimeStopElapsed >= std::chrono::milliseconds(100),
+              "inactive JVM runtime drains queued server closures before releasing its state");
         CHECK(blockerResult,
               "JVM boundary: running task is allowed to finish during stop");
         CHECK(!stopPendingResult &&
@@ -1240,6 +1381,126 @@ static void scenarioJvmServerThreadBoundary() {
 
     std::filesystem::remove_all(worldDir, ec);
     CHECK(!ec, "JVM boundary: temporary world is removed");
+}
+
+static void scenarioStopFromTickCallback() {
+    std::printf("\n[server lifecycle — stop requested by a tick callback]\n");
+    const std::string worldDir =
+        "/tmp/cppfm-self-stop-" + std::to_string(getpid());
+    std::error_code ec;
+    std::filesystem::remove_all(worldDir, ec);
+
+    ServerConfig cfg;
+    cfg.ioWorkerThreads = 1;
+    cfg.jvmEnabled = false;
+    cfg.port = 0;
+    cfg.worldDir = worldDir;
+
+    GameServer server(cfg);
+    server.init();
+    std::atomic<bool> callbackStopped{false};
+    std::atomic<bool> runnerFailed{false};
+    auto subscription = api::events().serverTick.subscribeScoped(
+        -100, [&](api::ServerTickEvent&) {
+            if (!callbackStopped.exchange(true, std::memory_order_acq_rel))
+                server.stop();
+        });
+    std::atomic<bool> runReturned{false};
+    std::thread runner([&] {
+        try {
+            server.runForever();
+        } catch (const std::exception& error) {
+            std::fprintf(stderr, "self-stop test runForever failed: %s\n", error.what());
+            runnerFailed.store(true, std::memory_order_release);
+        }
+        runReturned.store(true, std::memory_order_release);
+    });
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::seconds(5);
+    while (!runReturned.load(std::memory_order_acquire) &&
+           std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    if (!runReturned.load(std::memory_order_acquire)) server.stop();
+    runner.join();
+    server.stop();
+    subscription.reset();
+    CHECK(!runnerFailed.load(std::memory_order_acquire),
+          "tick-callback stop exits runForever without an exception");
+    CHECK(callbackStopped.load(std::memory_order_acquire),
+          "tick callback can request shutdown without tearing down its own thread");
+    CHECK(!server.running(), "tick-callback stop leaves server stopped");
+
+    std::filesystem::remove_all(worldDir, ec);
+    CHECK(!ec, "self-stop lifecycle test removes its temporary world");
+}
+
+static void scenarioStopFromPlayerJoinCallback() {
+    std::printf("\n[server lifecycle — stop requested by a player-join callback]\n");
+    const std::string worldDir =
+        "/tmp/cppfm-session-self-stop-" + std::to_string(getpid());
+    std::error_code ec;
+    std::filesystem::remove_all(worldDir, ec);
+    const auto port = findEphemeralPort();
+    CHECK(port != 0, "reserve an ephemeral test port");
+    if (!port) return;
+
+    ServerConfig cfg;
+    cfg.ioWorkerThreads = 1;
+    cfg.jvmEnabled = false;
+    cfg.onlineMode = false;
+    cfg.enforceSecureProfile = false;
+    cfg.port = port;
+    cfg.worldDir = worldDir;
+
+    GameServer server(cfg);
+    server.init();
+    std::atomic<bool> callbackReturned{false};
+    std::atomic<bool> runnerFailed{false};
+    std::atomic<bool> runReturned{false};
+    auto subscription = server.events().join.subscribeScoped(
+        -100, [&](api::PlayerJoinEvent&) {
+            server.stop();
+            callbackReturned.store(true, std::memory_order_release);
+        });
+    std::thread runner([&] {
+        try {
+            server.runForever();
+        } catch (const std::exception& error) {
+            std::fprintf(stderr, "session self-stop test runForever failed: %s\n",
+                         error.what());
+            runnerFailed.store(true, std::memory_order_release);
+        }
+        runReturned.store(true, std::memory_order_release);
+    });
+
+    const auto startDeadline = std::chrono::steady_clock::now() +
+                               std::chrono::seconds(5);
+    while (!server.running() && std::chrono::steady_clock::now() < startDeadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    TestClient client;
+    const bool connected = server.running() && client.connect("127.0.0.1", port);
+    CHECK(connected, "client connects to the callback-stop server");
+    const bool joined = connected && client.join("SessionSelfStop");
+    CHECK(joined, "client completes login that invokes the player-join callback");
+
+    const auto stopDeadline = std::chrono::steady_clock::now() +
+                              std::chrono::seconds(5);
+    while (!runReturned.load(std::memory_order_acquire) &&
+           std::chrono::steady_clock::now() < stopDeadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    if (!runReturned.load(std::memory_order_acquire)) server.stop();
+    client.close();
+    if (runner.joinable()) runner.join();
+    server.stop();
+    subscription.reset();
+
+    CHECK(callbackReturned.load(std::memory_order_acquire),
+          "session-thread stop request returns without self-joining or tearing down live state");
+    CHECK(!runnerFailed.load(std::memory_order_acquire) &&
+              runReturned.load(std::memory_order_acquire),
+          "external owner completes shutdown after player-join callback exits");
+    std::filesystem::remove_all(worldDir, ec);
+    CHECK(!ec, "session self-stop lifecycle test removes its temporary world");
 }
 
 int main(int argc, char** argv) {
@@ -1262,7 +1523,9 @@ int main(int argc, char** argv) {
     serverOptions.viewDistance = 2;
     serverOptions.readyTimeoutMs = 8000;
     serverOptions.motd = "status \"quote\" \\ slash";
-    serverOptions.worldPrefix = "/tmp/opencode/native-world-";
+    const char* nativeWorldPrefix = std::getenv("CPPFM_NATIVE_WORLD_PREFIX");
+    serverOptions.worldPrefix = (nativeWorldPrefix && *nativeWorldPrefix)
+        ? nativeWorldPrefix : "/tmp/opencode/native-world-";
     serverOptions.isolateRuntime = true;
     ServerProc srv;
     if (!srv.start(serverPath, serverOptions)) {
@@ -1287,6 +1550,8 @@ int main(int argc, char** argv) {
     scenarioDimensionCacheUnit();
     scenarioNestedCommandSourcePolicy();
     scenarioJvmServerThreadBoundary();
+    scenarioStopFromTickCallback();
+    scenarioStopFromPlayerJoinCallback();
     scenarioWorldGenParity();
     scenarioPredicateUnit();
     scenarioMobAI30();

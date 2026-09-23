@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <optional>
 
 namespace cppfm {
 
@@ -65,6 +66,10 @@ bool validLevelDataShape(const nbt::Value& data) {
     if (const auto* version = data.get("DataVersion")) {
         std::int64_t ignored = 0;
         if (!readInt64(*version, ignored)) return false;
+    }
+    if (const auto* seed = data.get("RandomSeed")) {
+        std::int64_t ignored = 0;
+        if (!readInt64(*seed, ignored)) return false;
     }
 
     for (const char* key : {"SpawnX", "SpawnY", "SpawnZ"}) {
@@ -141,6 +146,8 @@ bool WorldDataManager::saveLevelDataWithProviders(std::int64_t worldTicks, std::
         nbt::Value root = nbt::Value::makeCompound();
         nbt::Value data = nbt::Value::makeCompound();
         data.set("DataVersion", nbt::Value::makeInt(kCurrentDataVersion));
+        data.set("RandomSeed", nbt::Value::makeLong(
+            static_cast<std::int64_t>(world.seed())));
         auto spawn = world.spawnPoint();
         data.set("SpawnX", nbt::Value::makeInt(spawn.x));
         data.set("SpawnY", nbt::Value::makeInt(spawn.y));
@@ -297,6 +304,12 @@ bool WorldDataManager::tryLoadFile(const std::string& path, World& world, std::s
         checkAndFixVersion(root);
         d = root.get("Data");
         if (!d || !validLevelDataShape(*d)) return false;
+        std::optional<std::uint64_t> loadedSeed;
+        if (const auto* storedSeed = d->get("RandomSeed")) {
+            std::int64_t parsedSeed = 0;
+            if (!readInt64(*storedSeed, parsedSeed)) return false;
+            loadedSeed = static_cast<std::uint64_t>(parsedSeed);
+        }
         const auto* sx = d->get("SpawnX");
         const auto* sy = d->get("SpawnY");
         const auto* sz = d->get("SpawnZ");
@@ -371,6 +384,14 @@ bool WorldDataManager::tryLoadFile(const std::string& path, World& world, std::s
                 world.restoreForcedChunk(cx, cz);
                 ++count;
             }
+        }
+        // Apply the seed only after every persisted field above has validated.
+        // A corrupt later field must not make a rejected file control fresh-world
+        // terrain generation on the recovery path.
+        if (loadedSeed && !world.setSeed(*loadedSeed)) {
+            std::fprintf(stderr,
+                         "[WorldDataManager] refusing seed replacement after chunk generation\n");
+            return false;
         }
         if (consume_) consume_(*d);
         if (const auto* ds2 = d->get("Difficulty")) {

@@ -101,14 +101,6 @@ std::uint64_t ModRoutingTable::hash(const std::string& owner,
     return stableHash(owner, name, descriptor);
 }
 
-std::vector<MethodKey> ModRoutingTable::transformedMethods() const {
-    std::lock_guard lock(mutex_);
-    std::vector<MethodKey> result;
-    for (const auto& [key, routeValue] : paths_)
-        if (routeValue.path == DispatchPath::JvmTransformed) result.push_back(key);
-    return result;
-}
-
 std::size_t ModRoutingTable::transformedCount() const {
     std::lock_guard lock(mutex_);
     std::size_t count = 0;
@@ -123,11 +115,6 @@ std::size_t ModRoutingTable::nativeCount() const {
     for (const auto& [_, routeValue] : paths_)
         if (routeValue.path == DispatchPath::NativeFast) ++count;
     return count;
-}
-
-std::size_t ModRoutingTable::size() const {
-    std::lock_guard lock(mutex_);
-    return paths_.size();
 }
 
 void ModRoutingTable::clear() {

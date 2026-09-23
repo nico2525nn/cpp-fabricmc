@@ -8,14 +8,17 @@
 //   1. write its declare_commands property blob (writeProps), and
 //   2. parse itself out of a StringReader into an ArgValue (parse).
 #pragma once
+#include <algorithm>
 #include <cctype>
 #include <cfloat>
 #include <cmath>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <variant>
 #include <vector>
@@ -274,15 +277,48 @@ inline std::string readIdentifier(StringReader& r) {
     return r.slice(start);
 }
 
+inline std::string normalizeResourceLocation(std::string id) {
+    if (id.empty()) throw StringReader::ParseError("expected identifier");
+    if (id.find(':') == std::string::npos) id = "minecraft:" + id;
+    const auto colon = id.find(':');
+    if (colon == 0 || colon == id.size() - 1 ||
+        id.find(':', colon + 1) != std::string::npos)
+        throw StringReader::ParseError("invalid resource location");
+    const auto isNameCharacter = [](char c) {
+        return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+               c == '_' || c == '.' || c == '-';
+    };
+    const auto nameSpace = std::string_view(id).substr(0, colon);
+    const auto path = std::string_view(id).substr(colon + 1);
+    if (!std::all_of(nameSpace.begin(), nameSpace.end(), isNameCharacter))
+        throw StringReader::ParseError("invalid resource location namespace");
+    if (!std::all_of(path.begin(), path.end(), [&](char c) {
+            return isNameCharacter(c) || c == '/';
+        }))
+        throw StringReader::ParseError("invalid resource location path");
+    return id;
+}
+
+inline std::string readResourceLocation(StringReader& r) {
+    return normalizeResourceLocation(readIdentifier(r));
+}
+
+inline bool consumeBalanced(StringReader& r, char open, char close) {
+    if (!r.canRead() || r.peek() != open) return false;
+    int depth = 0;
+    while (r.canRead()) {
+        const char value = r.read();
+        if (value == open) ++depth;
+        else if (value == close && --depth == 0) return true;
+    }
+    return false;
+}
+
 inline ArgumentType resourceLocation() {
     ArgumentType a;
     a.id = ParserId::ResourceLocation;
     a.parse = [](StringReader& r, ParseCtx&) -> ArgValue {
-        std::string id = readIdentifier(r);
-        if (id.empty()) throw StringReader::ParseError("expected identifier");
-        // normalize: missing namespace implies minecraft:
-        if (id.find(':') == std::string::npos) id = "minecraft:" + id;
-        return id;
+        return readResourceLocation(r);
     };
     a.suggest = [](StringReader&, ParseCtx&) {
         return std::vector<std::string>{};             // filled by game layer
@@ -351,11 +387,15 @@ inline ArgumentType timeArg() {
     a.writeProps = [](WriteBuffer& b) { b.i32(0); };
     a.parse = [](StringReader& r, ParseCtx&) -> ArgValue {
         std::int64_t v = r.readLong();
+        if (v < 0) throw StringReader::ParseError("time must be non-negative");
         if (r.canRead()) {
             const char u = r.peek();
-            if (u == 'd') { r.skip(); v *= 24000; }
-            else if (u == 's') { r.skip(); v *= 20; }
+            const std::int64_t factor = u == 'd' ? 24000 : (u == 's' ? 20 : 1);
+            if (u == 'd' || u == 's') r.skip();
             else if (u == 't') r.skip();
+            if (factor != 1 && v > std::numeric_limits<std::int64_t>::max() / factor)
+                throw StringReader::ParseError("time is too large");
+            v *= factor;
         }
         return v;
     };
@@ -384,9 +424,7 @@ inline ArgumentType itemStackArg() {
     ArgumentType a;
     a.id = ParserId::ItemStack;
     a.parse = [](StringReader& r, ParseCtx&) -> ArgValue {
-        std::string id = readIdentifier(r);
-        if (id.empty()) throw StringReader::ParseError("expected item id");
-        if (id.find(':') == std::string::npos) id = "minecraft:" + id;
+        std::string id = readResourceLocation(r);
         if (r.peek() == '[') {
             int depth = 0;
             while (r.canRead()) {
@@ -405,9 +443,7 @@ inline ArgumentType blockStateArg() {
     ArgumentType a;
     a.id = ParserId::BlockState;
     a.parse = [](StringReader& r, ParseCtx&) -> ArgValue {
-        std::string id = readIdentifier(r);
-        if (id.empty()) throw StringReader::ParseError("expected block id");
-        if (id.find(':') == std::string::npos) id = "minecraft:" + id;
+        std::string id = readResourceLocation(r);
         // optional block state props [prop=value,...]
         if (r.peek() == '[') {
             int depth = 0;
@@ -422,14 +458,9 @@ inline ArgumentType blockStateArg() {
         }
         // optional NBT { ... } for block entity
         if (r.peek() == '{') {
-            int depth = 0;
-            std::string nbt;
-            while (r.canRead()) {
-                char ch = r.read();
-                nbt.push_back(ch);
-                if (ch == '{') ++depth;
-                else if (ch == '}') { --depth; if (!depth) break; }
-            }
+            const std::size_t start = r.cursor();
+            consumeBalanced(r, '{', '}');
+            const std::string nbt = r.slice(start);
             id += nbt;
         }
         return id;
@@ -445,7 +476,7 @@ inline ArgumentType blockPredicateArg() {
     a.id = ParserId::BlockPredicate;
     a.parse = [](StringReader& r, ParseCtx& c) -> ArgValue {
         // same as blockState but also allows leading # for tag
-        if (r.peek() == '#') { r.skip(); std::string tag = readIdentifier(r); if (tag.empty()) throw StringReader::ParseError("expected tag"); if (tag.find(':')==std::string::npos) tag="minecraft:"+tag; return std::string("#")+tag; }
+        if (r.peek() == '#') { r.skip(); return std::string("#") + readResourceLocation(r); }
         return blockStateArg().parse(r,c);
     };
     a.suggest = blockStateArg().suggest;
@@ -457,18 +488,10 @@ inline ArgumentType itemPredicateArg() {
     a.parse = [](StringReader& r, ParseCtx&) -> ArgValue {
         bool isTag = false;
         if (r.peek() == '#') { isTag=true; r.skip(); }
-        std::string id = readIdentifier(r);
-        if (id.empty()) throw StringReader::ParseError("expected item id");
-        if (id.find(':') == std::string::npos) id = "minecraft:" + id;
+        std::string id = readResourceLocation(r);
         if (isTag) id = "#" + id;
-        if (r.peek() == '[') {
-            int depth=0;
-            while(r.canRead()){ char ch=r.read(); if(ch=='[')++depth; else if(ch==']'){--depth; if(!depth)break; } }
-        }
-        if (r.peek() == '{') {
-            int depth=0;
-            while(r.canRead()){ char ch=r.read(); if(ch=='{')++depth; else if(ch=='}'){--depth; if(!depth)break; } }
-        }
+        consumeBalanced(r, '[', ']');
+        consumeBalanced(r, '{', '}');
         return id;
     };
     a.suggest = [](StringReader&, ParseCtx&) {
@@ -482,16 +505,10 @@ inline ArgumentType nbtArg() {
     a.parse = [](StringReader& r, ParseCtx&) -> ArgValue {
         r.skipWhitespace();
         if (!r.canRead() || r.peek()!='{') throw StringReader::ParseError("expected NBT compound");
-        int depth=0;
-        std::string out;
-        while(r.canRead()){
-            char ch=r.read();
-            out.push_back(ch);
-            if(ch=='{')++depth;
-            else if(ch=='}'){--depth; if(!depth)break; }
-        }
-        if(depth!=0) throw StringReader::ParseError("unterminated NBT");
-        return out;
+        const std::size_t start = r.cursor();
+        if (!consumeBalanced(r, '{', '}'))
+            throw StringReader::ParseError("unterminated NBT");
+        return r.slice(start);
     };
     return a;
 }
@@ -509,11 +526,9 @@ inline ArgumentType nbtTagArg() {
         const std::size_t start=r.cursor();
         // accept any NBT value: compound, list, primitive, string
         if(r.peek()=='{'){
-            int d=0;
-            while(r.canRead()){char c=r.read(); if(c=='{')++d; else if(c=='}'){--d; if(!d)break;}}
+            consumeBalanced(r, '{', '}');
         } else if(r.peek()=='['){
-            int d=0;
-            while(r.canRead()){char c=r.read(); if(c=='[')++d; else if(c==']'){--d; if(!d)break;}}
+            consumeBalanced(r, '[', ']');
         } else if(r.peek()=='"'){
             r.readQuotedString();
         } else {
@@ -592,10 +607,7 @@ inline ArgumentType dimensionArg() {
     ArgumentType a;
     a.id = ParserId::Dimension;
     a.parse = [](StringReader& r, ParseCtx&) -> ArgValue {
-        std::string id = readIdentifier(r);
-        if (id.empty()) throw StringReader::ParseError("expected dimension");
-        if (id.find(':') == std::string::npos) id = "minecraft:" + id;
-        return id;
+        return readResourceLocation(r);
     };
     a.suggest = [](StringReader&, ParseCtx&) {
         return std::vector<std::string>{"minecraft:overworld","minecraft:the_nether","minecraft:the_end"};
@@ -696,10 +708,7 @@ inline ArgumentType lootTableArg() {
     ArgumentType a;
     a.id = ParserId::LootTable;
     a.parse = [](StringReader& r, ParseCtx&) -> ArgValue {
-        std::string id=readIdentifier(r);
-        if(id.empty()) throw StringReader::ParseError("expected loot table");
-        if(id.find(':')==std::string::npos) id="minecraft:"+id;
-        return id;
+        return readResourceLocation(r);
     };
     return a;
 }

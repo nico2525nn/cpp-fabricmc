@@ -20,25 +20,56 @@
 - `strict_assessment_1_gap_count: 78` is a separate historical audit label. Its
   archive result is not a current aggregate, and it must not be added to or
   substituted for the 90-row taxonomy count.
-- Current publication state is `BLOCKED`: the confirmed focused results are
-  `fluids 23 PASS / 0 FAIL`, `redstone 42 PASS / 0 FAIL`, `menu 41 PASS / 0 FAIL`,
-  and `gameplay 806 PASS / 0 FAIL / 806`; the recorded full non-nightly CTest
-  regression is `45/45 PASS`, and the last recorded one-file package contains only `cppfm` with a
-  clean extracted-directory `test_server_full` result of `234 PASS / 0 FAIL`.
-  The separate `package_jvm_smoke` release gate also passes strict default-on
-  JVM startup against the exact CPack ZIP when JNI/classes are available.
-  In addition, three integrated `tools/soak_bot.py --duration 300` runs passed,
-  while the attempted 7200-second soak was interrupted above its RSS gate;
-  accepted 2-hour/24-hour and retained release artifacts remain absent; bounded
-  local mc-pilot and PrismLauncher-managed real-client probes now pass. The
-  E-14 arbitrary-JVM-mod boundary is informational and remains explicitly
-  declared. See [CURRENT_STATE.md](CURRENT_STATE.md) and [VERIFICATION.md](VERIFICATION.md)
-  for gate semantics.
-- The latest integrated rerun on 2026-09-19 is full non-nightly CTest `45/45 PASS`
-  in `394.71s`, with properties `33 PASS`, lifecycle `8/8 PASS`, multi-client `ALL PASS`
-  in `17.48s`, and bot smoke `ALL PASS`
-  in `20.82s`; the separate release `package_jvm_smoke` gate passes against the
-  exact CPack ZIP. Older duplicate timings are `HISTORICAL` context only.
+- At the 2026-09-19 source snapshot, publication state was `BLOCKED` by the declared scope/evidence
+  boundaries: the final focused matrices report `settings 27 PASS / 0 FAIL`,
+  `properties 33 PASS / 0 FAIL`, `recovery 55 PASS / 0 FAIL`, and
+  `core_safety 45 PASS / 0 FAIL`; Plan43 reports `87 PASS / 0 FAIL`; smoke80
+  reports `225 PASS / 0 FAIL`; and the full live protocol matrix reports
+  `240 PASS / 0 FAIL / 240 total`. The final non-nightly CTest regression is
+  `52/52 PASS` in `441.35s`. A 120-client stress run joined `120/120` in
+  `68.5s`, the 300-second soak passed with 150 keepalives and 0 disconnects,
+  and the strict view-distance-32 dry benchmark passed for 4,225 chunks.
+  Accepted 2-hour/24-hour and retained release artifacts remain absent; bounded
+  local real-client probes and the E-14 arbitrary-JVM-mod boundary remain
+  explicitly declared. See [CURRENT_STATE.md](CURRENT_STATE.md) and
+  [VERIFICATION.md](VERIFICATION.md) for gate semantics.
+- The latest integrated rerun on 2026-09-19 is full non-nightly CTest `52/52 PASS`
+  in `441.35s`, with smoke80 `224 PASS / 0 FAIL`, Plan43 `87 PASS / 0 FAIL`,
+  properties `33 PASS`, and the live server matrix `240 PASS / 0 FAIL`.
+  Older duplicate timings are `HISTORICAL` context only.
+
+## Working-tree hardening baseline (2026-09-19)
+
+This section records the later uncommitted verification pass without changing the
+historical numbered taxonomy.
+
+| concern | current result | evidence / declared boundary |
+|---|---|---|
+| server settings and precedence | `PASS / SUBSET` | 2026-09-19 baseline `test_settings_matrix`: `27 PASS / 0 FAIL`; invalid values retain prior fields, textual/numeric seeds are distinguished, stored secure-profile and cppfm secure-chat settings remain separate, and unsupported keys are reported. The 2026-09-23 compatibility follow-up is recorded in [CURRENT_STATE.md §1C](CURRENT_STATE.md#1c-vanilla-1214-settings-compatibility-follow-up-2026-09-23): `49` settings, `64` properties, and `12` secure-chat-policy assertions pass, with the full settings surface still partial. |
+| command/authority and inventory boundaries | `PASS` | `test_properties`: `33 PASS / 0 FAIL`; full live matrix: `240 PASS / 0 FAIL`; Plan43: `87 PASS / 0 FAIL`; op-gated roots, one-shot trigger enablement, creative/range/sign/beacon/pick checks, source-dimension item commands, resource-pack UUID completion, and signed-command offset parsing are covered |
+| secure chat/profile | `PASS / BOUNDED` | valid signed inbound chat is verified with the protocol-769 SHA256 transcript and relayed as `SystemChat` under enforced secure chat; Mojang profile certificates use SHA1withRSA and all configured keys are tried; rejected profiles terminate; signed command argument transcripts are deliberately fail-closed and remain a declared limitation. The 2026-09-23 policy/advertisement follow-up and its unsigned-after-session boundary are recorded in [CURRENT_STATE.md §1C](CURRENT_STATE.md#1c-vanilla-1214-settings-compatibility-follow-up-2026-09-23). |
+| event and persistence ordering | `PASS` | cancellable block events run before mutations; scoped callbacks synchronize removal; moving-piston source/destination commits are flushed under the simulation gate before synchronous/background snapshots; transient moving-piston NBT remains intentionally omitted |
+| stalled-client isolation | `PASS` | framed output is encoded while the simulation gate is held and sent by a per-connection writer with a 4 MiB queue cap; encrypted frames remain FIFO; graceful output drains for at most 100 ms, then teardown is bounded; no generic gate release occurs during a mutation |
+
+The focused records are not a universal parity claim. Accepted two-hour/24-hour
+soak evidence, arbitrary JVM-mod compatibility, complete world-generation
+call-order/NBT parity, and retained real-client release artifacts remain outside
+the current matrix claim.
+
+## Active bounded goal evidence
+
+The current goal audit keeps the numbered taxonomy honest: the 90-row ledger has
+`14 PASS`, `38 PARTIAL`, and `38 UNVERIFIED` rows. Two real protocol-769 launches
+exercise status, login, configuration, play, CLI/properties precedence, restart,
+and owned-process cleanup; a separate owned client drives commands, tab completion,
+entity use, wire consequences, datapack reload, and persistence. Separate goal reports record 23 fixed reproducible
+network/gameplay defects, an official Mojang known-bug oracle, and an adversarial
+review with no P0/P1/P2/P3 findings after fixes. Behavior-preserving cleanup
+refactors are recorded separately; no 10,000-line deletion is claimed. These results do not close GUI, arbitrary-mod,
+worldgen-L3, signed-command, moving-piston-NBT, or accepted long-soak boundaries.
+The feature-entry CTest passed `1/1` in `42.56s`, and the live matrix passed two
+owned launches. The requested 7200-second soak stopped at `t=1200s` with
+server exit `-9` and is not accepted.
 
 ## Machine-readable status rules
 
@@ -94,7 +125,7 @@ entries must use those current paths.
 | 14 | BoneMeal `fertilize` | DONE | `GameServer.cpp:3531` | `bone_meal` on `wheat/potatoes/carrots/beetroots/sapling` → max age / tree, sound, consume. |
 | 15 | Farmland trample | DONE | `GameServer.cpp:6031` + `BlockTickScheduler.cpp:306` | **plan12 §6 DONE:** `fallDistance>0.5` `prob=fallDist-0.5` `!isSneaking` + `mobGriefing` gate, `LevelEvent 2001`, `moisture 0-7` + `isNearWater 9×9×2` scan, `moisture==0 && !hasCrop && !hasWater → dirt` via `randomTick`. |
 | 16 | Fire `FireBehavior` | DONE | `BlockTickScheduler.cpp:543` | **plan12 §7 DONE:** `FlammableRegistry` `{planks 5/20, leaves 30/60…}` + `SoulFire` `soul_sand/soil` only + `Campfire lit` gate + `fire shape north/south/east/west/up` via `isFlammableAt`; polish: tag-driven `minecraft:soul_fire_base_blocks` not yet datapack. |
-| 17 | TNT ignition | DONE | `Entities.hpp:67` + `GameServer.cpp:587` | `TntEntity fuse 80` `primedTntsTick` + `SpawnEntity 0x02` `minecraft:tnt`, `dispenser tnt → primed` + `flint_and_steel` ignite `tnt[unstable]`. |
+| 17 | TNT ignition | DONE | `Entities.hpp:67` + `GameServer.cpp:587` | `TntEntity fuse 80` `primedTntsTick` + `SpawnEntity 0x01` `minecraft:tnt`, `dispenser tnt → primed` + `flint_and_steel` ignite `tnt[unstable]`. |
 | 18 | Buckets | DONE | `GameServer.cpp:3531` | `water_bucket`/`lava_bucket` ↔ `bucket` + `water`/`lava[level=0]` source, `level 0` source check, sound, `applyDamage` for flint. |
 | 19 | Pistons | DONE | `Redstone.cpp:597` | `MovingPiston` 2-tick + `isStickyBlock` + `sticksTogether slime≠honey` + 12-block BFS + `isUnpushable` + `PistonMove` sound; **plan29 §9 verified:** existing BFS 6-dir / 12-block limit / `sticksTogether slime≠honey` is plan29 §9-compliant — no change required (multi-block sticky retract already compliant). |
 | 20 | Fluid solidify | DONE | `Fluids.cpp` + `BlockTickScheduler.cpp` + `GameServer.hpp` | **review pass:** explicit source/flowing/falling levels (`0..7`/`8`), directional water/lava interaction (`falling lava` downward stone; horizontal/top obsidian/cobblestone), conservative fluid-replaceable allowlist, waterlogging preservation, Nether water evaporation timing, and simulation culling; `test_fluids` `23 PASS / 0 FAIL`. Kelp/seagrass behavior and existing waterloggable block handling remain covered; full fluid tag/datapack parity is not claimed. |
@@ -123,7 +154,7 @@ entries must use those current paths.
 | 38 | Spawn eggs | DONE | `GameServer.cpp:6327` + `GameServer.hpp:182` | **plan14 §2 DONE:** `onUseItemOn` `*_spawn_egg` → `trySpawnEgg` `pos.offset(face)` `air` check `spawnMobByTypeName` + consume. |
 | 39 | Enderman | DONE | `BehaviorTree.cpp:70` | **plan13 §6 DONE:** `TeleportRandomAction` 32-block `EntityTeleport 0x77` + `PickupBlockAction` `grass/dirt/sand` 1/1000 `BlockUpdate` + `StareAction` dot `>0.985` pumpkin guard. |
 | 40 | Charged Creeper | DONE | `GameServer.cpp:3737` + `Ids.hpp:74` | **plan13 §7 DONE:** `LightningBolt 0x74` `SpawnEntity` + `channeling trident` thunder check + `creeperCharged` `SetEntityMetadata 17` + `explodeAt 6.0` vs `3.0`. |
-| 41 | XP orbs | DONE | `GameServer.cpp:372` `xpOrbsTick` | Sizes `{1,3,7,17,37,73,149,307,617,1237}`, gravity, `SetExperience 0x5B`. |
+| 41 | XP orbs | DONE | `GameServer.cpp:372` `xpOrbsTick` | Sizes `{1,3,7,17,37,73,149,307,617,1237}`, gravity, `SetExperience 0x61`. |
 | 42 | Projectiles tick | DONE | `GameServer.cpp:372` `projectilesTick` | `Arrow/Snowball/Egg/EnderPearl/WitherSkull/Fireball/LlamaSpit/ShulkerBullet` tick through the shared collision path; gravity/damage are per kind, Llama spit uses a 3D launch vector, and Shulker bullets retain a homing target and apply levitation on player hit. Block hit → stuck vs despawn and entity hit radius `0.55` remain; broader projectile physics is still bounded. |
 | 43 | Breeding/aging | DONE | `AiBrain.cpp:142` + `BehaviorTree.cpp:278` | **plan14 §3 DONE:** `BreedGoal` `loveTicks 600` `findLovePartner 8` + `breed()` `baby age -24000` `breedCooldown 6000` + `EntityEvent 18` + `xp 1-7`. |
 | 44 | Villager trading | DONE | `Entities.hpp:89` + `GameServer.cpp:2037` | **plan14 §4 DONE:** `VillagerData` `Type 7` `Profession 15` `level 1-5` + `Gossip` `rep` + `TradeList 0x2E` `level*2` + `SelectTrade` `demand` + `restock 24000t` + `priceMultiplier`. |
@@ -168,7 +199,7 @@ entries must use those current paths.
 
 | # | Feature | Status | Packet | Notes |
 |---|---------|--------|--------|-------|
-| 71 | VarInt/VarLong, big-endian, Position | DONE | `ByteBuffer.hpp:1` | `varint` max 5b for negative, `i16/u16/i32/u32/i64` big-endian, `position(x,y,z)` 26-12-26 pack `((x&0x3FFFFFF)<<38)|((y&0xFFF)<<12)|(z&0x3FFFFFF)`. |
+| 71 | VarInt/VarLong, big-endian, Position | DONE | `ByteBuffer.hpp:1` | Signed VarInt/VarLong writers use at most 5/10 bytes; readers match Java's 32/64-bit shift truncation for terminal fifth/tenth-byte high payload bits and reject continued byte 6/11. Outer framing is separately limited to a three-byte Varint21 prefix, with a third continuation rejected as fatal. Fixed-width integers are big-endian; packed Position is `((x&0x3FFFFFF)<<38)|((z&0x3FFFFFF)<<12)|(y&0xFFF)` (`x:26 | z:26 | y:12`). |
 | 72 | Handshake → Status/Login/Config/Play | DONE | `GameServer.cpp:1420` `handleHandshake` | `protocol 769` gate `Outdated client`, `Status` JSON `enforcesSecureChat:false`, `favicon`, `Login` RSA 1024 `EncryptionRequest 0x01` + `mcSha1Hex` + `MojangAuth` curl, `Configuration` `SelectKnownPacks` `RegistryData 0x07` ×12 + `UpdateTags 0x0D` + `FinishConfiguration 0x03`. |
 | 73 | Compression/Encryption | DONE | `Connection.hpp:29` | `setCompression 256` `zlib` `dataLength 0` vs `>0` decompress, `readFrame` length varint byte-by-byte decrypt via `AesCfb8 0x80`, `setSendTimeout 15`. |
 | 74 | Chat signing `PlayerChat 0x3B` | DONE | `GameServer.cpp:3046` + `net/Crypto.hpp` | `ChatMessageProcessor::verify RSA-SHA256` `ChatMessage 0x07 timestamp/salt/signature` + `MessageAck 0x04` + `shouldUsePlayerChat` → `PlayerChat 0x3B` when key valid else `SystemChat 0x73`; `enforcesSecureChat:false` verified. |
@@ -191,13 +222,13 @@ entries must use those current paths.
 | 81 | Air/drown `airTicks 300` | DONE | `GameServer.cpp:333` `survivalTick` | Head `y+1.62` water check `water[level=0]`, decrement 300→0, `drowningDamage` gamerule, `1 dmg/20t` `drown`, `WaterBreathing` exempt. |
 | 82 | Freeze `freezeTicks` powder snow | DONE | `GameServer.cpp:333` | `powder_snow` foot block `freezeTicks` 0→300, `>=140 && freezeDamage && tick%20==0` `freeze` dmg, `freezeDamage` gamerule. |
 | 83 | Fire `fireTicks` lava | DONE | `GameServer.cpp:333` | `isFireOrLavaAt` `lava/fire/soul_fire/magma_block/campfire`, `FireResistance` exempt, `doFireTick` gate, `fireTicks 160` on contact, `1 dmg/20t` `onFire`, water extinguish. |
-| 84 | Hunger `saturation/food/exhaustion` | DONE | `GameServer.cpp:6173` + `HungerManager.cpp:1` | `exhaustion>=4→saturation/food--` + `food>=18 tick80 regen` + `food==0 starve` + `sprint 0.1/swim 0.01/jump 0.2/attack 0.3` exhaustion + `cake/stew` saturation `useFood` sync `SetHealth 0x5B`; **plan29 §6 polish DONE:** `EXHAUST_BOW 0.01→0.0`, `EXHAUST_BLOCK_BREAK 0.005` added (`HungerManager.cpp`) + `onBlockBreak`/`onDamageTaken` hooks + hunger-effect exhaustion `×20` overcount fixed to `0.005*(amp+1)/tick`. |
+| 84 | Hunger `saturation/food/exhaustion` | DONE | `GameServer.cpp:6173` + `HungerManager.cpp:1` | `exhaustion>=4→saturation/food--` + `food>=18 tick80 regen` + `food==0 starve` + `sprint 0.1/swim 0.01/jump 0.2/attack 0.3` exhaustion + `cake/stew` saturation `useFood` sync `SetHealth 0x62`; **plan29 §6 polish DONE:** `EXHAUST_BOW 0.01→0.0`, `EXHAUST_BLOCK_BREAK 0.005` added (`HungerManager.cpp`) + `onBlockBreak`/`onDamageTaken` hooks + hunger-effect exhaustion `×20` overcount fixed to `0.005*(amp+1)/tick`. |
 | 85 | Fall `water/slime` mitigation | DONE | `GameServer.cpp:3275` `onMovement` | Landing `fallDist` `>3` `floor(fallDist-3)` dmg, but if landing block `water/slime_block/honey_block/hay_block` or `powder_snow+SlowFalling` → `fallDist=0`, `fallDamage` gamerule guarded. |
 | 86 | Sneak pose `EntityAction 0x28` | DONE | `GameServer.cpp:3359` | `start_sneak 0/stop 1/start_sprint 3/stop 4`, broadcasts `SetEntityMetadata 0x5D` index 6 pose `5 crouch/0 stand` + index 0 flags `0x02`, via `broadcastPacketExcept`. |
 | 87 | PVP knockback `EntityVelocity 0x5F` | DONE | `GameServer.cpp:3857` | `dx*norm*400, dy300, dz*norm*400` for `Player` victim and `Mob` victim, plus `DamageEvent 0x1A` `damage_type` via `gameData.idOf`. |
 | 88 | Persistence `playerdata` `stats` `advancements` | DONE | `GameServer.cpp:1389` `savePlayerNBT` | `playerdata/*.dat` `Position/Inventory/Health/Food`, `world/stats/*.json` `play_time`, `advancements` `cppfm:root→diamonds` 9 entries → **plan35 20 entries story 20** (`assets/data/advancements` JSON-driven) `UpdateAdvancements 0x7B` + toasts + `PredicateEvaluator` 8 + loot functions。 |
-| 89 | XP `SetExperience 0x5B` | DONE | `GameServer.cpp:372` `xpOrbsTick` | `SpawnExperienceOrb 0x02` sizes `{1,3,7,17...}`, `mobsTick` `spawnXpOrbs` on kill, `sendSetExperience` level curve. |
-| 90 | Effects `EntityEffect 0x5E` | DONE | `MobEffects.hpp:14` + `GameServer.cpp:2265` | `Speed/Slowness→MOVEMENT_SPEED` + `HealthBoost→MAX_HEALTH` + `Invisibility/Glowing/Levitation` via `SetEntityMetadata 0x5D` flags + `UpdateAttributes 0x7C` 20t `applyEffectModifiers`; **plan29 §7 polish DONE:** `Levitation` `vy += (0.05*(amp+1)-vy)*0.2`, `fallDistance=0`, `swimming/vehicle` gate (`GameServer.cpp`); §5 `MobEffects.hpp` adds `bad_omen/raid_omen/trial_omen` alias + `TRIAL_OMEN_PER_LEVEL 18000` / `RAID_OMEN_DURATION 600`. |
+| 89 | XP `SetExperience 0x61` | DONE | `GameServer.cpp:372` `xpOrbsTick` | `SpawnExperienceOrb 0x02` sizes `{1,3,7,17...}`, `mobsTick` `spawnXpOrbs` on kill, `sendSetExperience` level curve. |
+| 90 | Effects `EntityEffect 0x7D` | DONE | `MobEffects.hpp:14` + `GameServer.cpp:2265` | `Speed/Slowness→MOVEMENT_SPEED` + `HealthBoost→MAX_HEALTH` + `Invisibility/Glowing/Levitation` via `SetEntityMetadata 0x5D` flags + `UpdateAttributes 0x7C` 20t `applyEffectModifiers`; **plan29 §7 polish DONE:** `Levitation` `vy += (0.05*(amp+1)-vy)*0.2`, `fallDistance=0`, `swimming/vehicle` gate (`GameServer.cpp`); §5 `MobEffects.hpp` adds `bad_omen/raid_omen/trial_omen` alias + `TRIAL_OMEN_PER_LEVEL 18000` / `RAID_OMEN_DURATION 600`. |
 
 ## Current residuals and publication boundary (outside #1–#90)
 
@@ -206,11 +237,11 @@ numbered taxonomy status and must not be converted to PASS by documentation edit
 
 | item | status | current record / next owner |
 |---|---|---|
-| current integrated full non-nightly CTest regression | `RECORDED PASS` | recorded `45/45` passes in `394.71s` with `ctest --test-dir build -LE 'nightly|package' --output-on-failure --timeout 600`; the separate release-only package JVM gate is not folded into this aggregate |
+| current integrated full non-nightly CTest regression | `RECORDED PASS` | recorded `52/52` passes in `441.35s` with `ctest --test-dir build -LE 'nightly|package' --output-on-failure --timeout 600`; the separate release-only package JVM gate is not folded into this aggregate |
 | current working-tree final one-file package verification | `RECORDED PASS` | ignored local Linux ZIP `build/packages/cppfabricmc-1.21.4-Linux-x86_64.zip` contains only `cppfm`; the latest clean extraction and `test_server_full` pass `234/234`, and `package_jvm_smoke` passes strict default-on JVM startup when JNI/classes are available; it is not a tracked/public release artifact |
 | `tools/soak_bot.py --duration 300` | `RESOLVED` | three integrated main runs passed; each had KeepAlive `30`, chunks `182`, time updates `300`, all error counters `0`, and cleanup PASS; plan49 §1 |
-| accepted 2-hour/24-hour run | `INTERRUPTED / ABSENT` | the 7200-second synthetic attempt was interrupted at recorded `t=3361s`; post-fill RSS was `160388→191612kB` (`+19.5%`), above the `15%` gate; no accepted 2-hour/24-hour artifact exists; plan51 keeps this boundary explicit |
-| current real-client/GUI capture | `PASS / LOCAL-ONLY` | mc-pilot-managed Fabric 1.21.4 client logged in offline, entered play, stayed connected for more than one minute, and completed chat/command/block/status/screenshot probes; PrismLauncher 11.1.0 also launched Fabric 1.21.4 through its CLI with an existing authenticated account and joined cppfm; temporary logs/screenshot were not retained as release artifacts; see [MC_PILOT_REAL_TEST.md](MC_PILOT_REAL_TEST.md) |
+| accepted 2-hour/24-hour run | `INTERRUPTED / ABSENT` | the retained 7200-second goal run stopped at `t=1200s` with server exit `-9`; keepalives were `605/960`, RSS post-fill growth `12.0%`; no accepted 2-hour/24-hour artifact exists |
+| current real-client/GUI capture | `UNAVAILABLE / CURRENT HOST` | Capability probe found no display, no installed vanilla launcher/client, and no `glxinfo`; protocol evidence is not visual evidence. Earlier local-client notes are historical and not retained release artifacts; see [audit/goal-gui-soak.md](audit/goal-gui-soak.md). |
 
 ## Declared limitations (outside #1–#90; not counted as `DONE`)
 
@@ -222,7 +253,7 @@ table rather than being hidden inside a numbered `DONE` row.
 | Fabric `Netty` `ChannelPipeline` `Codec` abstraction | DECLARED-LIMITATION | The implementation uses manual `WriteBuffer`/`ReadBuffer`; it is not a JVM Netty channel pipeline. |
 | Fabric Loader JVM mods and Fabric event-bus bytecode | DECLARED-LIMITATION | The executable enables its bounded HotSpot/JNI compatibility layer by default only when configure/build finds the required JDK/JNI inputs. A JNI-capable binary needs a compatible runtime JDK/classes; a no-JNI binary remains native-only until rebuilt, and `jvm=false` is available for an explicit native-only run. The layer includes a dependency-free shadow ABI, selected events, a version-locked pre-definition transformer, MixinExtras operations including `@Share`/`@Local`, selective routing, and a 25/25 dependency-free corpus. A separate offline probe verifies pinned official Loader/Knot/Mixin, and the locked Lithium/FerriteCore/Carpet server-side corpus passes with Java 21; its latest local ignored report has zero classified fatal linkage/bootstrap/uncaught-exception diagnostics and is not a tracked/public artifact. The separate structural provider scan is conservative and diagnostic because raw Mixin target members can be created during transformation. It does not ship the Mojang GameProvider/server jar, guarantee arbitrary mods, or establish universal bytecode compatibility; the E-14 boundary remains. |
 | Vanilla Xoroshiro seed parity at L3 | IMPLEMENTED-PARTIAL | `test_rng_parity` reports `25 PASS / 0 FAIL` for Java `LocalRandom`, Minecraft seed expansion, Xoroshiro128++ primitive outputs, bounded values, and long/coordinate/string splitters. Full world-generation call ordering and structure-NBT parity remain independently unproven, so the complete L3 claim stays a declared boundary. |
-| Real-client GUI and 24-hour/nightly evidence | DECLARED-LIMITATION | Bounded local mc-pilot and PrismLauncher-managed Fabric 1.21.4 probes pass, but their temporary evidence is not a retained release artifact and no accepted 2-hour/24-hour run exists. First-time Microsoft interactive login, every gameplay path, and all PrismLauncher instance configurations remain untested. |
+| Real-client GUI and 24-hour/nightly evidence | DECLARED-LIMITATION | Earlier bounded mc-pilot/PrismLauncher notes are historical and not retained artifacts; the current host has no display or installed vanilla client, and no accepted 2-hour/24-hour run exists. First-time Microsoft interactive login, every gameplay path, and all PrismLauncher instance configurations remain untested. |
 | Session mining versus `MiningCalculator` | IMPLEMENTED | plan49 unifies session start/finish and tick completion through shared context/results; `test_mining_full` `59/59` plus live smoke/server paths pass. |
 | `MobBehaviorSpec` live coverage | IMPLEMENTED-PARTIAL | plan49 wires 12 descriptor rows into live AI and gameplay assertions; broader species-wide vanilla equivalence remains a declared boundary. |
 | Retained marker/comment inventory | DECLARED-LIMITATION | The legacy-reference grep was zero, but a complete zero-marker inventory was not proven. |
@@ -232,7 +263,7 @@ table rather than being hidden inside a numbered `DONE` row.
 | Feature | Status | Notes |
 |---|---|---|
 | RCON `whitelist` | DONE | `RconServer` dispatches Brigadier commands and persists whitelist state. |
-| `server.properties` subset | DONE | Includes spawn protection, whitelist, online mode, secure profile, view/simulation distance, MOTD, seed, level type, difficulty, resource pack, PVP, flight, hardcore, and max players. |
+| `server.properties` subset | PARTIAL | The implemented subset now defaults to vanilla 1.21.4 values (including online/profile enforcement, view distance 10, vanilla MOTD, easy difficulty, and a random seed for a new world); parsing follows Java Properties key case, separators, escapes, continuations, Unicode escapes, UTF-8/ISO-8859-1 fallback, and `Boolean.parseBoolean` semantics. Supported integer values accept Java's leading `+`, and difficulty IDs `0`–`3` map to vanilla names. `white-list` is canonical and legacy `whitelist` remains an alias. This is not full property parity: `enforce-whitelist`, query/status/network, permission, datapack, and several world/pack/operations properties do not yet have complete runtime effects. `ServerProperties::save` also remains a simple legacy writer rather than a `Properties.store` equivalent. Do not interpret focused parser/config passes as completion of the full 1.21.4 settings surface. |
 
 ## Test and gate mapping
 
@@ -244,7 +275,7 @@ the old handover value `328` is stale. `test_native` remains `ALL PASS` without 
 invented aggregate count. The current focused record includes `test_gameplay_full`
 `806 PASS / 0 FAIL / 806`, `test_redstone_engine_full` `42 PASS / 0 FAIL`,
 `test_fluids` `23 PASS / 0 FAIL`, and `test_menu_logic` `41 PASS / 0 FAIL`.
-The record also includes `test_smoke_80` `223 PASS 0 FAIL`, a passing
+The record also includes `test_smoke_80` `225 PASS 0 FAIL`, a passing
 `tests/soak_test.py --duration 300` run, and three passing `tools/soak_bot.py
 --duration 300` runs. The latest package-target rebuild, one-file package
 verification, and full CTest regression pass. The remaining compatibility
@@ -254,9 +285,9 @@ limitations are recorded separately below.
 |---|---|---|
 | historical numbered-matrix baseline | HISTORICAL | 90 rows classified `DONE` at taxonomy granularity; not a current release result |
 | `tools/soak_bot.py` 300-second runs | PASS | 3/3 integrated runs; each KeepAlive 30, chunks 182, time updates 300, all error counters 0, cleanup PASS |
-| `tests/soak_test.py` 300-second run | PASS | 150 keepalives, 0 disconnects, 2932 actions, post-fill RSS growth 7.6%; not a 24-hour substitute |
+| `tests/soak_test.py` 300-second run | PASS | retained goal comparison: 150 keepalives, 0 disconnects, 2895 actions, post-fill RSS growth 1.0%; not a 24-hour substitute |
 | `tests/soak_test.py` 1800-second run | PASS | allocation-reuse baseline `17ab09f`; 900 keepalives, 0 disconnects, 17493 actions, post-fill RSS growth 12.5%; not a 2-hour/24-hour substitute |
-| `tests/soak_test.py` 7200-second attempt | NOT-ACCEPTED | interrupted at recorded `t=3361s`; post-fill RSS `160388→191612kB` (`+19.5%`), above the `15%` gate |
+| `tests/soak_test.py` 7200-second attempt | NOT-ACCEPTED | current goal run stopped at `t=1200s` with server exit `-9`; keepalives `605/960`, RSS post-fill growth `12.0%`; see [audit/goal-gui-soak.md](audit/goal-gui-soak.md) |
 | E-14 gameplay boundary | DECLARED-LIMITATION | The current gameplay harness reports this unsupported arbitrary-JVM-mod scope informationally; it is not counted as a test failure or hidden pass |
 | accepted nightly/24-hour and retained real-client release evidence | DECLARED-LIMITATION | Bounded local mc-pilot and PrismLauncher real-client probes pass and are recorded in [MC_PILOT_REAL_TEST.md](MC_PILOT_REAL_TEST.md), but no accepted long-run or retained release artifact exists. |
 

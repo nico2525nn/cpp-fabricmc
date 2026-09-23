@@ -278,28 +278,6 @@ public:
                           RecoveryResult& out);
     const RecoveryResult& lastRecovery() const { return lastRecovery_; }
 
-    // Raw load for testing: returns root
-    bool loadRaw(nbt::Value& outRoot) const {
-        std::lock_guard lock(fileMutex());
-        try {
-            std::string path = dir_ + "/level.dat";
-            std::ifstream f(path, std::ios::binary);
-            if (!f) return false;
-            std::error_code sizeError;
-            const auto size = std::filesystem::file_size(path, sizeError);
-            if (!sizeError && size > kMaxLevelDataBytes) return false;
-            std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-            // istreambuf_iterator reaches EOF without necessarily setting eofbit.
-            if (bytes.empty() || bytes.size() > kMaxLevelDataBytes || f.bad()) return false;
-            ReadBuffer in(bytes);
-            nbt::Parser parser(in);
-            outRoot = parser.readFileRoot();
-            // version check
-            checkAndFixVersion(outRoot);
-            return true;
-        } catch (...) { return false; }
-    }
-
 private:
     static std::recursive_mutex& fileMutex() {
         static std::recursive_mutex mutex;

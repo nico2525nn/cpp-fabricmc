@@ -55,10 +55,6 @@ public:
         for (auto &t : it->second) if (t.type==type) return true;
         return false;
     }
-    bool hasAnyTicket(int32_t cx, int32_t cz) const {
-        int64_t k = ticketChunkKey(cx, cz);
-        return tickets_.find(k) != tickets_.end();
-    }
     int getMinLevel(int32_t cx, int32_t cz) const {
         int64_t k = ticketChunkKey(cx, cz);
         auto it = tickets_.find(k);
@@ -67,29 +63,7 @@ public:
         for (auto &t : it->second) minL = std::min(minL, t.level);
         return minL;
     }
-    bool shouldTick(int32_t cx, int32_t cz) const {
-        return getMinLevel(cx, cz) <= 31;
-    }
-    bool shouldTickEntities(int32_t cx, int32_t cz) const {
-        return getMinLevel(cx, cz) <= 32;
-    }
     void clear() { tickets_.clear(); }
-    size_t count() const { return tickets_.size(); }
-    // Enumerate all ticket keys for persistence (ForcedChunks NBT)
-    std::vector<int64_t> allTicketKeys() const {
-        std::vector<int64_t> out;
-        out.reserve(tickets_.size());
-        for (auto &kv : tickets_) out.push_back(kv.first);
-        return out;
-    }
-    void forEach(std::function<void(int32_t,int32_t,const ChunkTicket&)> fn) const {
-        for (auto &kv : tickets_) {
-            // use chunkKeyDecode bits (same as World::chunkKey) — include via forward; manual here to avoid World cycle
-            int32_t cx = static_cast<int32_t>(kv.first >> 32);
-            int32_t cz = static_cast<int32_t>(kv.first & 0xFFFFFFFFLL);
-            for (auto &t : kv.second) fn(cx, cz, t);
-        }
-    }
 private:
     std::unordered_map<int64_t, std::vector<ChunkTicket>> tickets_;
 };

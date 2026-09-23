@@ -162,7 +162,9 @@ inline bool isMotionBlocking(std::uint32_t stateId) {
         "minecraft:tripwire","minecraft:tripwire_hook","minecraft:chain","minecraft:pointed_dripstone","minecraft:light","minecraft:barrier","minecraft:structure_void",
         "minecraft:oak_sapling","minecraft:spruce_sapling","minecraft:birch_sapling","minecraft:jungle_sapling","minecraft:acacia_sapling","minecraft:cherry_sapling","minecraft:dark_oak_sapling","minecraft:pale_oak_sapling","minecraft:mangrove_propagule",
         "minecraft:wheat","minecraft:carrots","minecraft:potatoes","minecraft:beetroots","minecraft:torchflower_crop","minecraft:pitcher_crop","minecraft:nether_wart","minecraft:cocoa","minecraft:chorus_plant","minecraft:chorus_flower",
-        "minecraft:scaffolding","minecraft:azalea","minecraft:flowering_azalea"
+        "minecraft:scaffolding","minecraft:azalea","minecraft:flowering_azalea",
+        "minecraft:nether_portal","minecraft:end_portal","minecraft:fire",
+        "minecraft:soul_fire"
     };
     if (kNonMotion.count(name)) return false;
     // default: solid / motion blocking (includes leaves, logs, stone, glass, etc.)

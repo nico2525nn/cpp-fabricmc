@@ -1886,14 +1886,6 @@ void GameServer::itemsTick() {
         }
     }
 }
-void GameServer::spawnItemDrop(double x,double y,double z,std::uint32_t itemId,std::uint8_t cnt,
-                               double vx,double vy,double vz) {
-    spawnItemDropFor(0, x, y, z, itemId, cnt, vx, vy, vz);
-}
-void GameServer::spawnItemDrop(double x,double y,double z,const ItemStack& stack,
-                               double vx,double vy,double vz) {
-    spawnItemDropFor(0, x, y, z, stack, vx, vy, vz);
-}
 void GameServer::spawnItemDropFor(std::int8_t dimension, double x, double y,
                                   double z, std::uint32_t itemId,
                                   std::uint8_t cnt, double vx, double vy,
@@ -1960,9 +1952,12 @@ bool GameServer::addToInventory(Player& p, std::uint32_t itemId, std::uint16_t c
     auto trial = p.inv;
     // merge into existing stacks (hotbar 36..44, main 9..35)
     for (int pass = 0; pass < 2; ++pass) {
-        for (int i : (pass == 0 ? std::initializer_list<int>{36,37,38,39,40,41,42,43,44}
-                                : std::initializer_list<int>{9,10,11,12,13,14,15,16,17,18,19,
-                                                             20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35})) {
+        // A conditional initializer_list only copies its non-owning view, so
+        // range-for's lifetime extension does not keep the selected backing
+        // array alive. Iterate the contiguous slot ranges directly instead.
+        const int firstSlot = pass == 0 ? 36 : 9;
+        const int pastLastSlot = pass == 0 ? 45 : 36;
+        for (int i = firstSlot; i < pastLastSlot; ++i) {
             auto& s = trial[i];
             if (pass == 0 && s.itemId == itemId && s.count > 0 && s.count < 64) {
                 const int take = std::min(64 - static_cast<int>(s.count),
@@ -2619,6 +2614,10 @@ std::shared_ptr<ProjectileEntity> GameServer::spawnProjectileFor(
     b.i16(static_cast<std::int16_t>(vx * 8000));
     b.i16(static_cast<std::int16_t>(vy * 8000));
     b.i16(static_cast<std::int16_t>(vz * 8000));
+    e->sentX = x;
+    e->sentY = y;
+    e->sentZ = z;
+    e->hasSent = true;
     broadcastPacketExceptInDimension(e->dimension, nullptr, pl::sc::SpawnEntity,
                                      b);
     return e;
@@ -2701,6 +2700,38 @@ void GameServer::projectilesTick() {
         activePlayers.push_back(std::move(state));
     }
     {
+        auto broadcastProjectileMovement = [&](const std::shared_ptr<ProjectileEntity>& projectile,
+                                               std::int8_t dimension) {
+            if (!projectile || !projectile->hasSent) return;
+            const double dx = projectile->x - projectile->sentX;
+            const double dy = projectile->y - projectile->sentY;
+            const double dz = projectile->z - projectile->sentZ;
+            if (std::abs(dx) + std::abs(dy) + std::abs(dz) <= 0.0001) return;
+            if (std::abs(dx) >= 7.999 || std::abs(dy) >= 7.999 ||
+                std::abs(dz) >= 7.999) {
+                const WriteBuffer body = makeEntityTeleportBody(
+                    projectile->entityId, projectile->x, projectile->y,
+                    projectile->z, 0.0, 0.0, 0.0, 0.0f, 0.0f, 0, false);
+                broadcastPacketExceptInDimension(dimension, nullptr,
+                                                 proto::pl::sc::EntityTeleport,
+                                                 body);
+            } else {
+                WriteBuffer body;
+                body.varint(projectile->entityId);
+                body.i16(static_cast<std::int16_t>(dx * 4096.0));
+                body.i16(static_cast<std::int16_t>(dy * 4096.0));
+                body.i16(static_cast<std::int16_t>(dz * 4096.0));
+                body.i8(0);
+                body.i8(0);
+                body.boolean(false);
+                broadcastPacketExceptInDimension(dimension, nullptr,
+                                                 proto::pl::sc::MoveEntityPosRot,
+                                                 body);
+            }
+            projectile->sentX = projectile->x;
+            projectile->sentY = projectile->y;
+            projectile->sentZ = projectile->z;
+        };
         for (auto it = activeProjectiles.begin(); it != activeProjectiles.end();) {
             auto& pr = *it;
             if (!pr) {
@@ -2743,6 +2774,7 @@ void GameServer::projectilesTick() {
                     double sp = std::min(d, 1.5);
                     pr->vx = dx/d*sp; pr->vy = dy/d*sp; pr->vz = dz/d*sp;
                     pr->x += pr->vx; pr->y += pr->vy; pr->z += pr->vz;
+                    broadcastProjectileMovement(pr, dimension);
                     ++it;
                     continue;
                 }
@@ -2827,6 +2859,7 @@ void GameServer::projectilesTick() {
                 }
                 pr->vy -= g;
                 pr->x += pr->vx; pr->y += pr->vy; pr->z += pr->vz;
+                broadcastProjectileMovement(pr, dimension);
                 world.generateChunkIfMissing(
                     static_cast<std::int32_t>(pr->x) >> 4,
                     static_cast<std::int32_t>(pr->z) >> 4);

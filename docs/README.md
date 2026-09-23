@@ -78,20 +78,28 @@ default-on strict JVM startup without an external classes/assets override.
 
 ## Verification at a glance
 
-The latest recorded working-tree evidence includes:
+The 2026-09-19 integrated working-tree baseline recorded:
 
-- The latest integrated rerun on 2026-09-19 is non-nightly CTest `45/45 PASS`
-  in `394.71s`, with the properties matrix `33 PASS`, lifecycle matrix `8/8 PASS`,
-  multi-client `ALL PASS` in `17.48s`, and bot smoke
-  `ALL PASS` in `20.82s`. The named `test_native` checks also pass, but that target has no
-  stable aggregate count. The separate `package_jvm_smoke` release gate passes
-  on the exact CPack ZIP with clean extraction, embedded assets/classes, and
-  default-on strict JVM startup.
-- Wire checks report `417 PASS / 0 FAIL` for the specification vectors and
-  `399 PASS / 0 FAIL` for the full wire suite.
-- The clean extracted Linux package's `test_server_full` harness reports
-  `234 PASS / 0 FAIL`; the source-tree 80-scenario smoke integration test
-  reports `223 PASS / 0 FAIL`.
+- The 2026-09-19 integrated rerun is non-nightly CTest `52/52 PASS`
+  in `441.35s`; the separately run source-tree smoke matrix reports
+  `224 PASS / 0 FAIL`, Plan43 reports `87 PASS / 0 FAIL`, and the full
+  `test_server_full.py` matrix reports `240 PASS / 0 FAIL / 240 total`.
+  The named focused targets also pass: settings `27`, properties `33`,
+  recovery `55`, core safety `45`, and the specification wire vectors `417`,
+  all with zero failures.
+- The implemented vanilla-facing server-settings subset has focused results of
+  `settings_matrix` `49/49`, `properties` `64/64`, and `secure_chat_policy`
+  `12/12`. Combined snapshot `bac90dfb` passed non-nightly CTest `55/55` in
+  `544.84s` in [GitHub Actions](https://github.com/nico2525nn/cpp-fabricmc/actions/runs/35828644414).
+  Unsupported vanilla settings and several runtime effects remain partial;
+  offline fake-client launchers explicitly disable both authentication checks.
+  Full commands and limitations are recorded in
+  [Verification](VERIFICATION.md#vanilla-server-settings-compatibility-follow-up-2026-09-23-exact-head-evidence).
+- The 120-client stress gate joined `120/120` in `68.5s`; the 300-second soak
+  passed with 150 keepalives, 0 disconnects, 2,899 actions, and `0.2%`
+  post-fill RSS growth. The strict synthetic view-distance-32 benchmark
+  passed all p50/p95/RSS/hit-rate and OOM/kick criteria for 4,225 chunks.
+  The separate package/JVM gates remain distinct when available.
 - Focused gameplay checks confirmed for the current working tree include
   gameplay `806 PASS / 0 FAIL`, redstone `42 PASS / 0 FAIL`, fluids
   `23 PASS / 0 FAIL`, and menu logic `41 PASS / 0 FAIL`; enchanting and crafter
@@ -128,6 +136,32 @@ The latest recorded working-tree evidence includes:
   not retained release assets; the exact scope is in [Real-client
   verification](MC_PILOT_REAL_TEST.md).
 
+### 2026-09-19 working-tree hardening baseline
+
+The final deterministic settings/security/authority pass reports
+`test_settings_matrix` `27 PASS / 0 FAIL`, `test_properties` `33 PASS / 0 FAIL`,
+`test_recovery` `55 PASS / 0 FAIL` with recovery files under `/dev/shm`,
+`test_core_safety` `45 PASS / 0 FAIL`, Plan43 `87 PASS / 0 FAIL`, smoke80
+`224 PASS / 0 FAIL`, and the full `tests/test_server_full.py` matrix
+`240 PASS / 0 FAIL / 240 total`. The feature adversarial review scores this
+tree `10/10` with no P0/P1/P2 finding; the quality review scores `9.5/10`
+with no P0/P1.
+
+The network path keeps state transitions serialized while encoding frames under
+the simulation gate and handing them to a per-connection writer. The writer queue
+is capped at 4 MiB per client; encrypted frames remain FIFO; graceful close drains
+for at most 100 ms before teardown. Secure-profile rejection is terminal, block
+events are cancellable before mutation (including callback revalidation), item
+command sources retain their dimension, and background piston snapshot barriers
+run under the simulation gate. Signed command argument transcripts are
+intentionally fail-closed and remain a declared limitation.
+
+Network admission also bounds pending sessions and Status probes separately.
+Login reserves `max-players` before Play registration, including rejecting
+ordinary logins when the configured limit is zero. A frame's 30-second deadline
+starts with its first length byte, so an idle connection does not consume the
+frame budget while a slow-drip frame cannot extend it indefinitely.
+
 These are named-scenario results, not a universal compatibility percentage. The
 latest package-target rebuild, clean extracted-package checks, and full
 non-nightly CTest gates pass. The declared E-14, full world-generation L3, long-run, and real-client
@@ -145,6 +179,26 @@ The Plan54 cleanup is intentionally recorded as `PARTIAL`: its protected-path
 hashes are unchanged and the focused reductions preserved behavior, but the strict
 18,341 mutable-line target was not reached. No fixture, assertion, or generated
 input was deleted to manufacture a reduction.
+
+### Active bounded goal run
+
+The current goal evidence is indexed in [the audit directory](audit/README.md).
+It records a fixed dirty-tree baseline, a 90-row feature ledger (`14 PASS`,
+`38 PARTIAL`, `38 UNVERIFIED`), three real launches, a real command/entity
+transcript, 23 reproducible network and
+gameplay fixes, an official Mojang bug oracle, adversarial security guards, and
+safe cleanup measurements. The accepted scope still excludes arbitrary Fabric
+mods, full world-generation L3, signed-command transcripts, GUI parity, moving
+piston NBT, and an accepted two-hour/24-hour soak. The scoped production cleanup
+measurement now includes behavior-preserving refactors in redstone, menu,
+stairs, JVM, and session helpers; the fixed whole-tree eligible ledger still
+counts retained regression tests and evidence.
+The requested 10,000-line deletion is not claimed because it would require
+removing protected or feature-bearing code.
+The current feature-entry CTest is `1/1 PASS` in `42.56s`; the existing focused
+ASan/UBSan and full non-nightly CTest counts remain recorded in their run logs.
+The two-launch live matrix is `PASS`, while the requested 7200-second soak
+failed at `t=1200s` with server exit `-9`; see `audit/goal-gui-soak.md`.
 
 ## Clean-room boundary
 

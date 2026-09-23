@@ -41,6 +41,15 @@ static bool waitChat(TestClient& c, const std::string& substr, int ms=4000){
     }
     return false;
 }
+static bool waitForTimeUpdates(TestClient& c, int target, int ms=15000) {
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(ms);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (c.counters().timeUpdates >= target) return true;
+        c.pump(40);
+    }
+    return c.counters().timeUpdates >= target;
+}
 static bool waitBlockUpdate(TestClient& c, int x,int y,int z, uint32_t state, int ms=4000){
     auto dl=std::chrono::steady_clock::now()+std::chrono::milliseconds(ms);
     while(std::chrono::steady_clock::now()<dl){
@@ -277,11 +286,24 @@ static void testBlockBehaviors(ServerProc& srv){
         }
     }
     CHECK(grew,"wheat random tick with high randomTickSpeed changes the crop state");
+    // The server's vanilla chat-spam budget decays in simulation ticks, not
+    // wall-clock time. 100 random ticks/section can delay the tick thread, so
+    // observe six time-sync packets (120 ticks) before resetting the rule.
+    const int resetAfterTicks = c.counters().timeUpdates + 6;
+    CHECK(waitForTimeUpdates(c, resetAfterTicks, 30000),
+          "server advances 120 ticks before gamerule reset");
+    c.clearChatLines();
     c.sendChatCommand("gamerule randomTickSpeed 3");
-    // The crop may grow on the first sampled tick, so the six-second growth
-    // window is not necessarily a six-second spam-budget decay window.  Let
-    // the reset command settle before the remaining behavior commands.
-    CHECK(waitChat(c, "3", 2000), "randomTickSpeed reset command accepted");
+    const bool randomTickResetAccepted =
+        waitChat(c, "Gamerule randomTickSpeed is now 3", 30000);
+    if (!randomTickResetAccepted) {
+        const auto chatLines = c.chatLinesSnapshot();
+        std::printf("   reset feedback missing: %zu chat lines, %zu disconnect packets\n",
+                    chatLines.size(), c.count(proto::pl::sc::Disconnect));
+        for (const auto& line : chatLines)
+            std::printf("   chat: %s\n", line.c_str());
+    }
+    CHECK(randomTickResetAccepted, "randomTickSpeed reset command accepted");
     c.pump(5000);
     // 15 farmland moisture: place farmland without water, check it dries to dirt via BlockTickScheduler
     c.sendChatCommand("setblock 6 -60 0 minecraft:farmland[moisture=0]");
@@ -293,9 +315,10 @@ static void testBlockBehaviors(ServerProc& srv){
     c.sendChatCommand("setblock 7 -59 0 minecraft:fire");
     CHECK(waitBlockPos(c,7,-59,0,2000),"fire placement via /setblock (any state at 7,-59,0)");
     // doFireTick gamerule should affect fire tick
+    c.clearChatLines();
     c.sendChatCommand("gamerule doFireTick false");
-    c.pump(200);
-    CHECK(waitChat(c,"doFireTick"),"gamerule doFireTick toggle");
+    CHECK(waitChat(c, "Gamerule doFireTick is now false", 8000),
+          "gamerule doFireTick toggle");
     c.sendChatCommand("gamerule doFireTick true");
     // 17 TNT: place TNT and ignite via flint
     c.sendChatCommand("setblock 8 -60 0 minecraft:tnt[unstable=false]");
@@ -1253,7 +1276,22 @@ int main(int argc, char** argv){
     std::printf("=== cppfm smoke 80 — 1.21.4 (769) strict ===\n");
     ServerProcessOptions serverOptions;
     serverOptions.viewDistance = 6;
-    serverOptions.worldPrefix = "/tmp/smoke80-";
+    // The smoke matrix exercises operator-only commands; keep this authority
+    // fixture isolated in the temporary world instead of relying on the
+    // repository working directory's ops.json.
+    serverOptions.operatorNames = {
+        "WorldTester", "BlockTester", "RedTester", "EntityTester",
+        "InvTester", "CmdTester", "NetTester", "SurvTester",
+        "Victim", "Victim35", "Plan33Tester", "Plan35Tester",
+        "Mob36", "Struct36", "Nat36", "Soak36A", "Soak36B",
+        "Loot36", "Kill36", "Rec37", "Adv37", "Loot37",
+        "Vill37", "Ench37", "Weath37", "Persist37", "QC38",
+        "Func38", "Trig38", "Bench38", "Soak39", "Plan40",
+        "Horse41", "Rider41", "Observer41"
+    };
+    const char* smokeWorldPrefix = std::getenv("CPPFM_SMOKE_WORLD_PREFIX");
+    serverOptions.worldPrefix = (smokeWorldPrefix && *smokeWorldPrefix)
+        ? smokeWorldPrefix : "/tmp/smoke80-";
     ServerProc srv;
     if(!srv.start(bin, serverOptions)){ std::printf("FATAL: server start\n"); return 2; }
     {

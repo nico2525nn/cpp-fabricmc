@@ -195,7 +195,8 @@ bool TestClient::joinOnline(const std::string& name) {
             sawSuccess = true;
             break;
         default:
-            lastError_ = "unexpected login packet (online)";
+            lastError_ = "unexpected login packet (online id=" +
+                         std::to_string(pid) + ")";
             return false;
         }
     }
@@ -213,7 +214,9 @@ bool TestClient::joinOnline(const std::string& name) {
         case proto::cf::sc::SelectKnownPacks: {
             const std::int32_t n = in.varint();
             for (std::int32_t i = 0; i < n; ++i) { (void)in.string(); (void)in.string(); (void)in.string(); }
-            conn_->sendPacket(proto::cf::cs::SelectKnownPacks, WriteBuffer{});
+            WriteBuffer reply;
+            reply.varint(0);
+            conn_->sendPacket(proto::cf::cs::SelectKnownPacks, reply);
             break;
         }
         case proto::cf::sc::KeepAlive: {
@@ -604,14 +607,17 @@ void TestClient::sendPosition(double px, double py, double pz, bool onGround) {
     }
 }
 
-void TestClient::sendChatMessage(const std::string& message) {
+void TestClient::sendChatMessage(const std::string& message, std::int32_t lastSeenOffset,
+                                 std::uint32_t acknowledgedMask) {
     if (!conn_) return;
     WriteBuffer b;
     b.string(message);
     b.i64(0); b.i64(0);
     b.boolean(false);
-    b.varint(0);
-    b.u8(0); b.u8(0); b.u8(0);   // acknowledged bitset
+    b.varint(lastSeenOffset);
+    b.u8(static_cast<std::uint8_t>(acknowledgedMask & 0xff));
+    b.u8(static_cast<std::uint8_t>((acknowledgedMask >> 8) & 0xff));
+    b.u8(static_cast<std::uint8_t>((acknowledgedMask >> 16) & 0xff));   // acknowledged bitset
     sendPacketNoexcept(proto::pl::cs::ChatMessage, b);
 }
 

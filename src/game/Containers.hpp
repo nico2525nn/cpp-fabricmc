@@ -39,6 +39,28 @@ enum class MenuType {
 };
 static_assert(static_cast<int>(MenuType::Generic9x6) == 24, "MenuType must be 25 entries (0..24)");
 
+struct MenuLayout {
+    int containerSlots;
+    int screenTypeId;
+};
+
+inline constexpr std::array<MenuLayout, 25> kMenuLayouts = {{
+    {27, menus::kGeneric9x3}, {3, menus::kFurnace}, {10, menus::kCrafting},
+    {5, menus::kHopper}, {9, menus::kGeneric3x3}, {27, menus::kGeneric9x3},
+    {27, menus::kShulkerBox}, {2, menus::kEnchantment}, {3, menus::kAnvil},
+    {5, menus::kBrewingStand}, {2, menus::kStonecutter}, {3, menus::kGrindstone},
+    {4, menus::kSmithing}, {1, menus::kBeacon}, {4, menus::kLoom},
+    {9, menus::kCrafter}, {3, menus::kCartographyTable}, {3, menus::kBlastFurnace},
+    {3, menus::kSmoker}, {1, menus::kLectern}, {3, menus::kMerchant},
+    {9, menus::kGeneric9x1}, {18, menus::kGeneric9x2}, {36, menus::kGeneric9x4},
+    {54, menus::kGeneric9x6}}};
+
+inline constexpr MenuLayout menuLayoutFor(MenuType type) {
+    const auto index = static_cast<std::size_t>(type);
+    return index < kMenuLayouts.size() ? kMenuLayouts[index]
+                                       : MenuLayout{27, menus::kGeneric9x3};
+}
+
 class RecipeManager;
 
 class Menu {
@@ -75,69 +97,14 @@ public:
     // anvil rename text (per-menu, not singleton)
     std::string anvilRename;
     int totalSlots() const {
-        switch (type) {
-        case MenuType::Chest: return 27 + 36;
-        case MenuType::Furnace: return 3 + 36;
-        case MenuType::Crafting: return 10 + 36;
-        case MenuType::Hopper: return 5 + 36;
-        case MenuType::Dispenser: return 9 + 36;
-        case MenuType::Barrel: return 27 + 36;
-        case MenuType::ShulkerBox: return 27 + 36;
-        case MenuType::Enchantment: return 2 + 36;
-        case MenuType::Anvil: return 3 + 36;
-        case MenuType::Brewing: return 5 + 36;
-        case MenuType::Stonecutter: return 2 + 36;
-        case MenuType::Grindstone: return 3 + 36;
-        case MenuType::Smithing: return 4 + 36;
-        case MenuType::Beacon: return 1 + 36;
-        case MenuType::Loom: return 4 + 36;
-        case MenuType::Crafter: return 9 + 36;
-        case MenuType::CartographyTable: return 3 + 36;
-        case MenuType::BlastFurnace: return 3 + 36;
-        case MenuType::Smoker: return 3 + 36;
-        case MenuType::Lectern: return 1 + 36;
-        case MenuType::Merchant: return 3 + 36;
-        case MenuType::Generic9x1: return 9 + 36;
-        case MenuType::Generic9x2: return 18 + 36;
-        case MenuType::Generic9x4: return 36 + 36;
-        case MenuType::Generic9x6: return 54 + 36;
-        }
-        return 63;
+        return menuLayoutFor(type).containerSlots + 36;
     }
     int openScreenTypeId() const {
-        switch (type) {
-        case MenuType::Chest: return menus::kGeneric9x3;
-        case MenuType::Furnace: return menus::kFurnace;
-        case MenuType::Crafting: return menus::kCrafting;
-        case MenuType::Hopper: return menus::kHopper;
-        case MenuType::Dispenser: return menus::kGeneric3x3;
-        case MenuType::Barrel: return menus::kGeneric9x3;
-        case MenuType::ShulkerBox: return menus::kShulkerBox;
-        case MenuType::Enchantment: return menus::kEnchantment;
-        case MenuType::Anvil: return menus::kAnvil;
-        case MenuType::Brewing: return menus::kBrewingStand;
-        case MenuType::Stonecutter: return menus::kStonecutter;
-        case MenuType::Grindstone: return menus::kGrindstone;
-        case MenuType::Smithing: return menus::kSmithing;
-        case MenuType::Beacon: return menus::kBeacon;
-        case MenuType::Loom: return menus::kLoom;
-        case MenuType::Crafter: return menus::kCrafter;
-        case MenuType::CartographyTable: return menus::kCartographyTable;
-        case MenuType::BlastFurnace: return menus::kBlastFurnace;
-        case MenuType::Smoker: return menus::kSmoker;
-        case MenuType::Lectern: return menus::kLectern;
-        case MenuType::Merchant: return menus::kMerchant;
-        case MenuType::Generic9x1: return menus::kGeneric9x1;
-        case MenuType::Generic9x2: return menus::kGeneric9x2;
-        case MenuType::Generic9x4: return menus::kGeneric9x4;
-        case MenuType::Generic9x6: return menus::kGeneric9x6;
-        }
-        return menus::kGeneric9x3;
+        return menuLayoutFor(type).screenTypeId;
     }
 
     // Map a protocol slot number to a mutable stack pointer (nullptr if none).
     ItemStack* slotAt(int slot, ItemStack* playerInv /*46*/);
-    const char* slotRegion(int slot) const;
     int craftGridIndex(int slot) const {
         if (playerInventory) {
             static constexpr int kInventoryCraftGrid[4] = {0, 1, 3, 4};

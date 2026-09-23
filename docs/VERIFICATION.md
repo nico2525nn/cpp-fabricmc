@@ -40,6 +40,74 @@ boundaries. Any unverified assertion uses `DECLARED-LIMITATION` rather than an
 inferred pass. See [PLAN51_JVM.md](PLAN51_JVM.md) and
 [MC_PILOT_REAL_TEST.md](MC_PILOT_REAL_TEST.md).
 
+### Working-tree hardening baseline (2026-09-19)
+
+The final focused run measured `test_settings_matrix` `27 PASS / 0 FAIL`,
+`test_properties` `33 PASS / 0 FAIL`, `test_recovery` `55 PASS / 0 FAIL`
+(with `CPPFM_RECOVERY_WORLD_PREFIX=/dev/shm`), and `test_core_safety`
+`45 PASS / 0 FAIL`. Plan43 measured `87 PASS / 0 FAIL`, smoke80 measured
+`225 PASS / 0 FAIL`; the broader `tests/test_server_full.py` matrix's historical
+result is `240 PASS / 0 FAIL / 240 total`, while the latest selected
+`conn,commands,permissions,chat,datapack,persistence,restart` suites measured
+`198 PASS / 0 FAIL / 198 total`. The final non-nightly CTest aggregate measured
+combined current evidence covers `54/54` after adding the remaining-entry fixture
+(`54/54` in the final serial full run; the prior 53-test run was
+`469.29s`); the 120-client stress, 300-second soak, and strict
+view-distance-32 dry benchmark also passed. The feature adversarial review
+scored the working tree `10/10`; the quality review scored `9.5/10`; no P0/P1
+finding remains. Exact commands, the low RCON CPU advisory, and CI/PR review
+path are recorded in [audit/adversarial-review-2026-09-19.md](audit/adversarial-review-2026-09-19.md).
+
+The simulation gate now covers mutation while `Connection` encodes frames; a
+bounded per-connection writer performs socket I/O with a 4 MiB queue cap, keeps
+encrypted frames FIFO, and has a 100 ms graceful-drain bound. Persistence piston
+barriers run under the same gate. Secure-profile rejection is terminal, block
+callbacks cancel before mutation with post-callback revalidation, and signed
+command argument transcripts fail closed as a declared limitation.
+
+### Vanilla server-settings compatibility follow-up (2026-09-23; exact-head evidence)
+
+This compatibility follow-up was developed from PR #1 head
+`26e399c0d1cae542d459812ef84fd5e865515e2c`, then squash-merged from stacked
+PR #2 into the PR #1 branch as `bac90dfbce70a8d1c09ddf525b339fac479ff350`.
+It intentionally improves the implemented settings subset without claiming
+complete `server.properties` parity. Focused local evidence:
+
+| check | result | command / scope |
+|---|---|---|
+| RelWithDebInfo configure and full build | `PASS` | `timeout --foreground --kill-after=5 120 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo`; `timeout --foreground --kill-after=5 600 cmake --build build -j4` |
+| properties/parser | `64 PASS / 0 FAIL` | `timeout --foreground --kill-after=5 60 ./build/test_properties ./build/cppfm`; includes malformed `+-` rejection |
+| config/settings matrix | `49 PASS / 0 FAIL` | `timeout --foreground --kill-after=5 60 ./build/test_settings_matrix`; includes malformed integer rejection and `level-seed` string-hash fallback |
+| secure-chat policy | `12 PASS / 0 FAIL` | `timeout --foreground --kill-after=5 60 ./build/test_secure_chat_policy` |
+| source/process guards | `PASS` | `goal_security_guards`, Python syntax checks for the modified launcher scripts, and the runtime-layout CTest all pass |
+| prior local full non-nightly baseline | `55/55 PASS` in `516.24s` on pre-review head `5eb101d1` | `timeout --foreground --kill-after=5 2400 ctest --test-dir build -LE 'nightly|package' --output-on-failure --timeout 600`; retained as historical local evidence |
+| exact-head GitHub Actions | `55/55 PASS` in `544.84s` | Full build and non-nightly CTest on combined head `bac90dfbce70a8d1c09ddf525b339fac479ff350`; [run 35828644414](https://github.com/nico2525nn/cpp-fabricmc/actions/runs/35828644414). Later PR #1 review changes require a new exact-head run. |
+| owned server cleanup | `PASS` | `pgrep -a -f 'cppfm --por[t]'` found no remaining server process after the suite |
+
+The settings tests cover vanilla-facing defaults (`online-mode=true`,
+`enforce-secure-profile=true`, view distance 10, vanilla MOTD/easy difficulty,
+and a random seed for a new world), canonical `white-list`, Java property
+syntax/encoding/boolean behavior, difficulty ordinals, and Java's leading plus
+sign on supported integers. All offline fake-client launchers explicitly pass
+both authentication flags as false. `enforce-whitelist`, query/status/network,
+permission, datapack, and several world/pack/operations keys remain unsupported
+or without complete vanilla runtime effects; `ServerProperties::save` is not a
+`Properties.store` implementation. The secure-chat policy keeps the vanilla
+profile property and cppfm extension separately configured, but advertises and
+enforces their logical OR; unsigned messages after a player session remain an
+unverified edge case. These are subset results, not full settings parity or an
+authenticated-client revalidation.
+
+Separate exploratory offline Python checks exposed failures which were
+reproduced against the unmodified parent binary and therefore are not attributed
+to this settings change: `replay_vanilla.py` 5/8 (signed `n=0` command, sign
+block-entity update, and survival ability flags); `run_plan43_suite.py` 10/23
+(signed chat/Seed, damage event, horse entity IDs, creative/survival join flags,
+and sign placement/text); and short `soak_bot.py` runs reporting zero chunks
+instead of the expected minimum ten. The C++ `plan43` test passes 87/87, and the
+full non-nightly CTest result above is green; the exploratory failures have no
+retained per-run logs.
+
 ## 1. Feature overview
 
 Verification has six layers:
@@ -65,6 +133,8 @@ current assertion.
 | Minecraft Wiki Java protocol page | supplemental encoding explanation | `VANILLA-CONCEPT` |
 | Fabric 1.21.4 release note and Loader 0.16.9 docs | platform/version boundary | `VANILLA-CONCEPT` |
 | [Fabric developer documentation](https://docs.fabricmc.net/develop/index), Fabric API `0.119.4+1.21.4`, and Yarn `1.21.4+build.8` Javadocs | server/common API names, signatures, lifecycle concepts, and versioned ABI audit | `OFFICIAL-API-REFERENCE` / informational audit |
+| [Oracle Java SE 21 Properties](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Properties.html), [Boolean](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Boolean.html), [Integer](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Integer.html), and [Long](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Long.html) | property separators, escapes, continuations, encoding contract, integer sign behavior, and `parseBoolean` semantics | `OFFICIAL-JAVA-REFERENCE` |
+| [Mojang 1.21.4 version metadata](https://piston-meta.mojang.com/v1/packages/c16bd1251bdf2cab3d7c3b30393427eeb19c6b2e/1.21.4.json) and [official server artifact](https://piston-data.mojang.com/v1/objects/4707d00eb834b446575d89a61a11b5d548d8c001/server.jar) (`SHA-1 4707d00eb834b446575d89a61a11b5d548d8c001`) | version-pinned server-properties defaults and enum conversion checked by static bytecode inspection; artifact was not run for this audit | `OFFICIAL-BINARY-REFERENCE` |
 | [Yarn LocalRandom](https://maven.fabricmc.net/docs/yarn-1.21.4%2Bbuild.1/net/minecraft/util/math/random/LocalRandom.html), [Xoroshiro128PlusPlusRandom](https://maven.fabricmc.net/docs/yarn-1.21.4%2Bbuild.1/net/minecraft/util/math/random/Xoroshiro128PlusPlusRandom.html), [RandomSeed](https://maven.fabricmc.net/docs/yarn-1.21.4%2Bbuild.1/net/minecraft/util/math/random/RandomSeed.html), and [RandomSplitter](https://maven.fabricmc.net/docs/yarn-1.21.4%2Bbuild.4/net/minecraft/util/math/random/RandomSplitter.html) | 1.21.4 RNG algorithms, seed expansion, primitive API, and splitter surface | `OFFICIAL-API-REFERENCE` |
 | [xoroshiro128++ public-domain reference](https://prng.di.unimi.it/xoroshiro128plusplus.c) and official 1.21.4 server bytecode inspection | transition/orientation cross-check for the native vector implementation | `PUBLIC-REFERENCE` / local audit |
 | [EntityPositionS2CPacket](https://maven.fabricmc.net/docs/yarn-1.21.4%2Bbuild.8/net/minecraft/network/packet/s2c/play/EntityPositionS2CPacket.html) and [PlayerPosition](https://maven.fabricmc.net/docs/yarn-1.21.4%2Bbuild.1/net/minecraft/entity/player/PlayerPosition.html) | official 1.21.4 `teleport_entity` field model | `OFFICIAL-API-REFERENCE` + real-client decode |
@@ -267,9 +337,9 @@ sub-run.
 | 120 clients | stress script completes with owned process cleanup | `CURRENT 2026-09-19`: `PASS` in `68.0s`, 120/120 joined; prior `68.1s` rerun is `HISTORICAL` |
 | multi-client integration | cross-client visibility and state | `CURRENT 2026-09-19`: `ALL PASS` in `17.48s`; prior `17.60s`, `17.63s`, `17.84s`, and `20.28s` reruns are `HISTORICAL` |
 | bot smoke | short bot lifecycle | `CURRENT 2026-09-19`: `ALL PASS` in `20.82s`; prior `21.09s`, `20.94s`, `20.87s`, and `23.59s` reruns are `HISTORICAL` |
-| full non-nightly CTest regression | registered native, gameplay, configuration, lifecycle, operations, JVM, ABI, linkage-contract, quality, and integration tests | `PASS`: `45/45` registered tests passed in `394.71s` with `-LE 'nightly|package'`; the separate release-only `package_jvm_smoke` gate is recorded above and is not folded into this aggregate |
-| integrated performance comparison | same 45-test CTest shape, smoke gate, and package JVM gate before/after cleanup hardening | run `plan54-final-20260919`, Linux 7.0.0-31-generic x86_64, 16 CPUs, one sample/no warm-up: `c857bfa` `395.76s` → `335fca5` `394.71s` (`-0.27%`); smoke80 `175.24s` → `175.05s`; package JVM `1.83s` → `1.84s`; all remain within the 10% budget |
-| CTest registration audit | target list/invalidation provenance | `git show 65a7c69:CMakeLists.txt` vs current `CMakeLists.txt`: `46 → 48` `add_test` entries; only `properties` and POSIX-only `lifecycle_matrix` were added, no baseline target was removed, and package JVM remains separate #48 rather than part of the 45-test non-package total |
+| full non-nightly CTest regression | registered native, gameplay, configuration, lifecycle, operations, JVM, ABI, linkage-contract, quality, and integration tests | final serial run passed all `54/54` registered non-package tests, including the three owned real-client feature fixtures; the separate release-only `package_jvm_smoke` gate is recorded above and is not folded into this aggregate |
+| integrated performance comparison | historical 45-test CTest shape, smoke gate, and package JVM gate before/after cleanup hardening | run `plan54-final-20260919`, Linux 7.0.0-31-generic x86_64, 16 CPUs, one sample/no warm-up: `c857bfa` `395.76s` → `335fca5` `394.71s` (`-0.27%`); smoke80 `175.24s` → `175.05s`; package JVM `1.83s` → `1.84s`; all remain within the 10% budget; current aggregate is the separate 54-test rerun above |
+| CTest registration audit | target list/invalidation provenance | `git show 65a7c69:CMakeLists.txt` vs current `CMakeLists.txt`: baseline diff `46 → 50` `add_test` entries; current configuration has `57` total and `54` after `nightly|package` exclusion. `properties`, POSIX-only `lifecycle_matrix`, and the three owned live fixtures were added, no baseline target was removed, and package JVM remains separate from the non-package total |
 | entity/redstone load | P95 MSPT/TPS and bounded RSS | run-specific; no unlabelled claim |
 | `tests/soak_test.py --duration 60` | short post-review concurrency/cleanup smoke | `PASS`: 30 keepalives, 0 disconnects, actions 590, post-fill RSS growth 1.0%; not a 2h/24h result |
 | `tests/soak_test.py --duration 300` | short synthetic soak | `PASS`: 150 keepalives, 0 disconnects, actions 2932, post-fill RSS growth 7.6% |
@@ -278,9 +348,9 @@ sub-run.
 | `tests/soak_test.py --duration 1800 --movement-range 3000` | allocation-reuse diagnostic soak | `PASS` on `17ab09f`: 900 keepalives, 0 disconnects, actions 17493, post-fill baseline `114504kB`, max `128868kB`, growth `12.5%`; not a 2h/24h result |
 | `tests/soak_test.py --duration 7200 --movement-range 3000` (parent `d1c6a7f`) | dedicated long-run attempt with integrity logs | interrupted at recorded `t=3361s`; post-fill RSS `160388→191612kB` (`+19.5%`), above the `15%` gate; not accepted |
 | accepted 2 h/24 h artifact | long-run completion and retained integrity log | none |
-| real-client/GUI | manual Fabric client capture with client metadata | `PASS / LOCAL-ONLY`: mc-pilot-managed 1.21.4 client logged in offline, entered play, stayed connected for more than one minute, and completed chat/command/block/status/screenshot probes; PrismLauncher 11.1.0 also launched Fabric 1.21.4 through its CLI with an existing authenticated account and joined cppfm; screenshot and logs were temporary local evidence, not a retained release artifact; see [MC_PILOT_REAL_TEST.md](MC_PILOT_REAL_TEST.md) |
-| ASan/UBSan key regression set | core, wire, fuzz, and gameplay binaries from repository root | `4/4 PASS`; no sanitizer report |
-| static quality audit | C++/Python test and process-harness review | `PASS`: 28 C++ test files, 156 production files, 43 Python files |
+| real-client/GUI | manual Fabric client capture with client metadata | `UNAVAILABLE / CURRENT HOST`: capability probe found no display, installed vanilla client, or `glxinfo`; protocol evidence is not rendering evidence. Earlier local-client notes are historical and not retained release artifacts; see [audit/goal-gui-soak.md](audit/goal-gui-soak.md) |
+| ASan/UBSan key regression set | core, wire, fuzz, and gameplay binaries from repository root | `4/4 PASS`; `build-sanitize` uses `-fsanitize=address,undefined`, and the four binaries were rebuilt and rerun with no sanitizer report |
+| static quality audit | C++/Python test and process-harness review | `PASS`: 33 C++ test files, 156 production files, 48 Python files |
 | `mod_linkage` / `real_mod_harness` / `real_mod_candidates_harness` | class-file linkage, candidate manifest, and fail-closed runtime-diagnostic contracts | `PASS`; synthetic nested-JAR/mapping cases, the locked 12-entry manifest, offline missing-cache `SKIP`, and known recoverable log-noise handling pass |
 
 The former `soak_bot` blocker is resolved by three fresh integrated runs. The attempted
@@ -301,6 +371,14 @@ diagnostic: its raw Mixin gaps do not override the zero-diagnostic runtime corpu
 - The C++ `ServerProcess` owner retains its PID until `waitpid` succeeds,
   reports non-`ESRCH` `kill`/reap failures, checks temporary-world removal, and
   aborts from the destructor rather than silently accepting cleanup failure.
+- Network admission has a bounded pending-session worker gate and a separate
+  Status-session gate. After authentication checks, a Login slot is reserved
+  before configuration and can race with Play registration, then is consumed or
+  released exactly once.
+- `Connection::readFrame()` excludes pre-frame idle time, then enforces one
+  absolute 30-second deadline from the first length-prefix byte through the body.
+  A malformed oversize frame may end with a transport close instead of a readable
+  Disconnect when its unread body causes the peer OS to reset the TCP stream.
 - Test and diagnostic subprocesses create an owned process group, use a
   monotonic deadline, and are terminated/reaped with bounded escalation. A
   cleanup failure is a failed gate, not a pass based on the parent's output.
@@ -309,8 +387,9 @@ diagnostic: its raw Mixin gaps do not override the zero-diagnostic runtime corpu
   post-lease Java shutdown markers, without allowing verbose startup output to
   block the child process or letting separate-stream concatenation create false
   ordering failures.
-- The last completed live-server runs left no `cppfm` process behind. The latest
-  full non-package CTest baseline passed `45/45` in `394.71s`. The primary Plan54
+- The last completed live-server runs left no `cppfm` process behind. The prior
+  full non-package CTest baseline passed `53/53` in `469.29s`; the latest 54-test
+  run passed `54/54` under cumulative load. The primary Plan54
   source scope (`src/`, `tests/`, `tools/`; C++/header/Python/Java suffixes) is
   `98,648` lines across `298` files, versus baseline `65a7c69` at `96,654` lines
   across `293` files. The reviewed protected manifest is `80` files / `8,939`
@@ -318,6 +397,15 @@ diagnostic: its raw Mixin gaps do not override the zero-diagnostic runtime corpu
   **increase of 1,994 (+2.28%)**, not a reduction. The strict 18,341-line target
   is therefore `PARTIAL`; no fixture, assertion, generated input, or evidence was
   removed to improve the number.
+  That Plan54 count is historical; the current dirty-tree repeat after the three
+  owned live fixtures and goal regressions is `308` files / `101,045` lines versus
+  the goal freeze `302` / `100,991` (`+54`). The current protected manifest is
+  `80` files / `5,994` lines with `0` hash mismatches.
+- The final cleanup pass delegates the retained `World::fillTerrain` compatibility
+  entry point to the canonical `fillTerrainV3` implementation and removes dead
+  Redstone/CombatManager/packet compatibility layers plus unused core helpers.
+  Focused cleanup/gameplay regression tests pass; the protected manifest remains
+  hash-clean.
 - A backup/check-world operation is offline and must not copy a world during an active
   save.
 
@@ -337,6 +425,8 @@ The checker must cover:
   `MOB_STATS_CSV` override;
 - single-palette zero longs, negative Position/VarInt, compressed/uncompressed frames,
   zlib trailing data, and oversize declarations;
+- idle-before-frame and slow-drip frame deadlines, Status-worker saturation,
+  concurrent logins at `max-players=1`, and rejection at `max-players=0`;
 - stale/live session locks, corrupt level/region/player data, orphan servers, and port
   reuse; and
 - E-14, official/arbitrary JVM Fabric mods beyond plan51, full world-generation RNG L3, and unavailable
@@ -361,6 +451,11 @@ The static gate checks required files, links/anchors (including explicit `<a id>
 anchors), source references, the stable CSV, MISSING consistency, and canonical-only
 scope. The six `docs-legacy/assessment-*.md` archive links now have local targets;
 every local link and anchor must resolve.
+
+The pull-request whitespace check must compare the PR base tree with the tested
+merge tree; on push it compares the event's before and after commits. A bare
+`git diff --check` in a clean Actions checkout only checks uncommitted working-tree
+changes and does not validate the submitted diff.
 
 The JVM-side static preflight is a separate, fail-closed diagnostic. The standard-
 library scanner in `tools/scan_mod_linkage.py` reads class-file declarations,
@@ -400,7 +495,7 @@ publication.
 | target | recorded result | interpretation |
 |---|---|---|
 | `test_gameplay_full` | `806 PASS / 0 FAIL / 806` | known JVM boundary is informational and remains declared |
-| `test_smoke_80` | `223 PASS 0 FAIL` | base taxonomy plus extension checks |
+| `test_smoke_80` | `225 PASS 0 FAIL` | base taxonomy plus extension checks |
 | `test_seed_parity` | `201 PASS 0 FAIL` | L1/L2 deterministic evidence |
 | `test_rng_parity` | `25 PASS 0 FAIL` | Java LocalRandom, Minecraft Xoroshiro seed expansion, primitive outputs, and long/coordinate/string splitter vectors; full worldgen L3 remains declared |
 | `test_mining_full` | `59/59 passed` | shared authoritative mining behavior |
@@ -469,21 +564,21 @@ override them.
 | stress 120 | concurrent connection load | `CURRENT 2026-09-19`: `PASS` in `68.0s`, 120/120 joined; prior `68.1s` rerun is `HISTORICAL` |
 | multi-client integration | cross-client behavior | `CURRENT 2026-09-19`: `ALL PASS` in `17.48s`; prior `17.60s`, `17.63s`, `17.84s`, and `20.28s` reruns are `HISTORICAL` |
 | bot smoke | short bot lifecycle | `CURRENT 2026-09-19`: `ALL PASS` in `20.82s`; prior `21.09s`, `20.94s`, `20.87s`, and `23.59s` reruns are `HISTORICAL` |
-| `tests/soak_test.py --duration 300` | short synthetic stability | `PASS`: 150 keepalives, 0 disconnects, actions 2932, post-fill RSS growth 7.6% |
+| `tests/soak_test.py --duration 300` | short synthetic stability | `PASS`: 150 keepalives, 0 disconnects, actions 2895, post-fill RSS growth 1.0% in the retained goal comparison run |
 | `tests/soak_test.py --duration 600 --movement-range 3000` | wide synthetic stability | `PASS`: 300 keepalives, 0 disconnects, actions 5707, post-fill RSS growth 6.6% |
 | `tools/soak_bot.py --duration 300` | extended bot stability | `3/3 PASS`: each KeepAlive 30, chunks 182, time updates 300, all error counters 0, cleanup PASS |
 | `tests/soak_test.py --duration 1800 --movement-range 3000` | allocation-reuse diagnostic stability | `PASS` on `17ab09f`: 900 keepalives, 0 disconnects, actions 17493, post-fill baseline `114504kB`, max `128868kB`, growth `12.5%`; not a 2h/24h result |
-| `tests/soak_test.py --duration 7200 --movement-range 3000` (parent `d1c6a7f`) | long-run stability attempt | interrupted at recorded `t=3361s`; post-fill RSS `160388→191612kB` (`+19.5%`), above the `15%` gate; not accepted |
+| `tests/soak_test.py --duration 7200 --binary ./build/cppfm` | long-run stability attempt | current goal run stopped at `t=1200s` with server exit `-9`; keepalives `605/960`, RSS post-fill growth `12.0%`; not accepted |
 | accepted soak 2 h/24 h | completed long-run artifact | none |
-| real-client/GUI | manual client evidence | `PASS / LOCAL-ONLY`: mc-pilot-managed Fabric 1.21.4 login, world entry, stability, chat/command/block/status/screenshot probes, plus a PrismLauncher 11.1.0 CLI-launched Fabric 1.21.4 join with an existing authenticated account; no retained release artifact; see [MC_PILOT_REAL_TEST.md](MC_PILOT_REAL_TEST.md) |
+| real-client/GUI | manual client evidence | `UNAVAILABLE / CURRENT HOST`: no display or installed vanilla client was available; no GUI/first-login/rendering claim is made. See [audit/goal-gui-soak.md](audit/goal-gui-soak.md) |
 
 The former `soak_bot` failure is closed by three fresh integrated passes. The
-7200-second soak attempt was interrupted above its RSS gate and is not a pass. The
-canonical documentation keeps the E-14 boundary, missing full world-generation
-Xoroshiro L3 proof (the primitive/splitter contract is covered by
-`test_rng_parity`),
-missing accepted long-run evidence, and the local-only (non-retained) real-client
-result explicitly limited.
+current 7200-second soak stopped at `t=1200s` with server exit `-9` and is not a
+pass, even though its post-fill RSS check was within threshold. The canonical
+documentation keeps the E-14 boundary, missing full world-generation Xoroshiro
+L3 proof (the primitive/splitter contract is covered by `test_rng_parity`),
+missing accepted long-run evidence, and the current host's unavailable GUI
+capability explicitly limited.
 
 ### Reproducible commands
 
@@ -578,6 +673,22 @@ timeout --foreground --kill-after=5 30 pgrep -a -f 'cppfm --por[t]' || true
 
 If a confirmed test-owned PID remains, repeat the command-line inspection and issue
 `kill -KILL <pid>` to that PID only, inside a timeout-wrapped command.
+
+### Active bounded goal run
+
+The goal-specific evidence is indexed in [the audit directory](audit/README.md):
+23 fixed reproducible network/gameplay defects, three owned real-client fixtures, the 90-row
+coverage ledger (`14 PASS`, `38 PARTIAL`, `38 UNVERIFIED`), real command/entity/menu
+transcript, the official Mojang bug oracle, adversarial security guards, and
+safe-cleanup measurements. The final security guard, settings matrix, focused goal
+tests, and production rebuild pass; unverified rows and the GUI, arbitrary-mod,
+worldgen-L3, signed-command, moving-piston-NBT, and accepted long-soak boundaries
+remain explicit.
+The earlier feature-entry CTest passed `2/2` in `76.45s`; the additional
+`goal_live_remaining` CTest passed `1/1` in `63.93s`; the four-test failure rerun
+passed `4/4`, and the final live matrix passed
+two owned launches. The requested 7200-second soak is not accepted: its server
+exited `-9` at `t=1200s`; see `audit/goal-gui-soak.md`.
 
 ## 16. Priority, status, and rollback
 

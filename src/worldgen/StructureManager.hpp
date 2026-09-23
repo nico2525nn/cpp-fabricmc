@@ -45,10 +45,6 @@ inline double smStructureHash(std::uint64_t seed, std::int64_t gx, std::int64_t 
     return static_cast<double>(h >> 11) /
            static_cast<double>(1ULL << 53);
 }
-inline double structureHash(std::uint64_t seed, std::int64_t gx, std::int64_t gz, std::uint64_t salt) {
-    return smStructureHash(seed, gx, gz, salt);
-}
-
 struct SMStructureAt {
     bool present = false;
     const SMStructureSet* set = nullptr;
@@ -176,10 +172,6 @@ inline SMStructureAt smStructureAtChunk(const SMStructureSet& s, std::uint64_t s
         }
     return out;
 }
-inline SMStructureAt structureAtChunk(const SMStructureSet& s, std::uint64_t seed, std::int32_t cx, std::int32_t cz) {
-    return smStructureAtChunk(s, seed, cx, cz);
-}
-
 class StructureManager {
 public:
     using GroundFn = std::function<std::int32_t(std::int32_t, std::int32_t)>;
@@ -206,11 +198,6 @@ public:
     struct PendingLoot { std::array<int,3> pos; std::string lootTable; };
     void drainPendingMobs(std::vector<PendingMob>& out) const;
     void drainPendingLoot(std::vector<PendingLoot>& out) const;
-    std::vector<PendingMob> takePendingMobs() const;
-    std::vector<PendingLoot> takePendingLoot() const;
-    size_t pendingMobCount() const;
-    size_t pendingLootCount() const;
-    void clearPending() const;
 
 private:
     void villagePiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,

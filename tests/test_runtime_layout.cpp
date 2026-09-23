@@ -8,7 +8,9 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -26,14 +28,61 @@ bool fileContains(const std::filesystem::path& path, const std::string& expected
     return input.good() || input.eof() ? value == expected : false;
 }
 
+bool readFile(const std::filesystem::path& path, std::string& value) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) return false;
+    value.assign(std::istreambuf_iterator<char>(input),
+                 std::istreambuf_iterator<char>());
+    return !input.bad();
+}
+
+std::map<std::string, std::string> activeProperties(std::string_view contents) {
+    std::map<std::string, std::string> properties;
+    std::size_t lineStart = 0;
+    while (lineStart < contents.size()) {
+        const auto lineEnd = contents.find('\n', lineStart);
+        auto line = contents.substr(lineStart,
+            lineEnd == std::string_view::npos ? contents.size() - lineStart
+                                               : lineEnd - lineStart);
+        if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+        if (!line.empty() && line.front() != '#' && line.front() != '!') {
+            const auto equals = line.find('=');
+            if (equals != std::string_view::npos)
+                properties[std::string(line.substr(0, equals))] =
+                    std::string(line.substr(equals + 1));
+        }
+        if (lineEnd == std::string_view::npos) break;
+        lineStart = lineEnd + 1;
+    }
+    return properties;
+}
+
+bool hasExpectedFirstRunProperties(const std::filesystem::path& path) {
+    std::string contents;
+    if (!readFile(path, contents)) return false;
+    const auto properties = activeProperties(contents);
+    const std::map<std::string, std::string> expected = {
+        {"server-port", "25565"}, {"max-players", "20"},
+        {"view-distance", "10"}, {"simulation-distance", "10"},
+        {"level-type", "minecraft:normal"}, {"difficulty", "easy"},
+        {"motd", "A Minecraft Server"}, {"level-seed", ""},
+        {"spawn-protection", "16"}, {"online-mode", "true"},
+        {"white-list", "false"},
+        {"pvp", "true"}, {"allow-flight", "false"},
+        {"hardcore", "false"}, {"enforce-secure-profile", "true"},
+        {"network-compression-threshold", "256"}, {"enable-rcon", "false"},
+        {"rcon.port", "25575"}, {"rcon.password", ""},
+        {"resource-pack", ""}, {"resource-pack-sha1", ""},
+        {"require-resource-pack", "false"}, {"jvm", "true"},
+        {"jvm-strict", "false"},
+    };
+    // Exact equality also rejects unsupported/unknown active vanilla keys.
+    return properties == expected;
+}
+
 } // namespace
 
 int main() {
-    if (!cppfm::embedded::kHasPack) {
-        std::cout << "runtime layout: embedded pack unavailable; skipped\n";
-        return 0;
-    }
-
     const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
     const auto root = std::filesystem::temp_directory_path() /
                       ("cppfm-runtime-layout-" + std::to_string(suffix));
@@ -82,6 +131,20 @@ int main() {
     bool pass = prepared;
     for (const auto& relative : required) pass = pass && pathExists(root / relative);
     pass = pass && fileContains(root / "assets/registry/tags.bin", "user-owned");
+    pass = pass && hasExpectedFirstRunProperties(root / "server.properties");
+    if (cppfm::embedded::kHasPack) {
+        std::string exampleContents;
+        std::string copiedContents;
+        pass = pass && pathExists(root / "server.properties.example") &&
+               readFile(root / "server.properties.example", exampleContents) &&
+               readFile(root / "server.properties", copiedContents) &&
+               copiedContents == exampleContents &&
+               hasExpectedFirstRunProperties(root / "server.properties.example");
+    } else {
+        // No-pack builds cannot extract the example and must exercise the
+        // compiled-in first-run fallback instead of skipping this contract.
+        pass = pass && !pathExists(root / "server.properties.example");
+    }
 
     selected = root;
     std::string secondError;
@@ -95,11 +158,14 @@ int main() {
 
     if (!pass) {
         std::cerr << "runtime layout test failed: "
-                  << (error.empty() ? secondError : error) << '\n';
+                  << (error.empty() ? secondError : error)
+                  << " (including first-run properties template/default checks)\n";
         std::filesystem::remove_all(root, ec);
         return 1;
     }
     std::filesystem::remove_all(root, ec);
-    std::cout << "runtime layout: PASS\n";
+    std::cout << "runtime layout: PASS"
+              << (cppfm::embedded::kHasPack ? " (embedded template)\n"
+                                            : " (no-pack fallback)\n");
     return 0;
 }

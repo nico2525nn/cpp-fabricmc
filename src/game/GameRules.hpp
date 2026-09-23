@@ -117,10 +117,6 @@ public:
         rules_[nk] = value;
         if (markDirty) dirty_ = true;
     }
-    void setNormalized(const std::string& key, const std::string& value, bool markDirty=true){
-        rules_[key]=value;
-        if(markDirty) dirty_=true;
-    }
     std::string get(const std::string& key) const {
         std::string nk = normalizeKey(key);
         auto it = rules_.find(nk);

@@ -151,6 +151,23 @@ inline int setSocketOption(socket_t socket, int level, int option,
 #endif
 }
 
+inline bool setSocketTimeoutMs(socket_t socket, int option,
+                               unsigned milliseconds) noexcept {
+#ifdef _WIN32
+    const auto value = static_cast<DWORD>(std::min<unsigned long long>(
+        static_cast<unsigned long long>(milliseconds),
+        static_cast<unsigned long long>(std::numeric_limits<DWORD>::max())));
+    return setSocketOption(socket, SOL_SOCKET, option, &value,
+                           static_cast<socket_length_t>(sizeof(value))) == 0;
+#else
+    timeval value{};
+    value.tv_sec = static_cast<decltype(value.tv_sec)>(milliseconds / 1000U);
+    value.tv_usec = static_cast<decltype(value.tv_usec)>((milliseconds % 1000U) * 1000U);
+    return setSocketOption(socket, SOL_SOCKET, option, &value,
+                           static_cast<socket_length_t>(sizeof(value))) == 0;
+#endif
+}
+
 inline bool setSocketTimeout(socket_t socket, int option,
                              unsigned seconds) noexcept {
 #ifdef _WIN32

@@ -75,7 +75,7 @@ The latest recorded runs include:
   `test_wire_full` `399 PASS / 0 FAIL`.
 - Integration checks: the clean extracted Linux package's `test_server_full`
   reports `234 PASS / 0 FAIL`; the source-tree `test_smoke_80` reports
-  `223 PASS / 0 FAIL`.
+  `225 PASS / 0 FAIL`.
 - Focused gameplay and data checks confirmed for the current working tree:
   gameplay `806 PASS / 0 FAIL`, seed
   `201 PASS`, fuzz `25 PASS`, mining
@@ -88,7 +88,7 @@ The latest recorded runs include:
 - Java compatibility checks: the bounded historical fixture corpus is `25/25`; its
   harness also passes the auxiliary functional API fixture, the standalone Shadow
   ABI gate passes, and the offline pinned Loader/Knot probe passes.
-- The latest integrated rerun on 2026-09-19 is non-nightly CTest `45/45 PASS`
+- The 2026-09-19 integrated rerun is non-nightly CTest `45/45 PASS`
   in `394.71s`, with the properties matrix `33 PASS`, lifecycle matrix `8/8 PASS`,
   multi-client `ALL PASS` in `17.48s`, and bot smoke
   `ALL PASS` in `20.82s`. The release-specific `package_jvm_smoke` gate is separate: it
@@ -96,6 +96,10 @@ The latest recorded runs include:
   strict JVM startup and embedded classes/assets verified. The locally generated
   ignored Linux CPack output contains exactly one executable; its clean
   extracted-directory `test_server_full` run is `234 PASS / 0 FAIL`.
+- The implemented vanilla-facing server-settings subset passed the focused
+  settings matrix (`49/49`), Java Properties parser (`64/64`), and secure-chat
+  policy checks (`12/12`). These checks cover supported settings only;
+  unsupported vanilla properties and several runtime effects remain partial.
 - The class-file linkage tooling and fail-closed runtime-diagnostic contract pass;
   raw official-provider scans are retained as conservative diagnostics for
   Mixin-added members.
@@ -116,10 +120,7 @@ The latest recorded runs include:
   limitations remain as listed above.
 - The explicit no-JNI configure/build and its `42/42` non-package CTest set,
   plus the four-binary ASan/UBSan key set
-  (`core_safety`, `spec_wire`, `fuzz`, and `gameplay_full`) also pass. The safe
-  Plan54 cleanup is partial: the protected-scope ledger is reproducible, but the
-  strict 18,341-line reduction target was not reached and no tests or fixtures were
-  removed to claim it.
+  (`core_safety`, `spec_wire`, `fuzz`, and `gameplay_full`) also pass.
 - Real-client check: the mc-pilot-managed Fabric 1.21.4 client logged in offline,
   entered the world, stayed connected for more than one minute, and completed
   chat, `say`, position, block read/break/read, status, and screenshot probes.
@@ -249,9 +250,26 @@ extension surface, not a copy of the official Minecraft server or a promise
 that every Fabric mod can run unchanged. It does not ship the official Mojang
 GameProvider, client, or GUI runtime.
 
-Connect with a Minecraft 1.21.4 client in offline mode, for example by using a
-launcher profile pointed at `127.0.0.1`. The production default is normal terrain;
-set `level-type=flat` explicitly when a creative superflat fixture is wanted.
+On its first launch, cppfm creates `server.properties` with the supported
+vanilla-facing Minecraft 1.21.4 defaults, including `motd=A Minecraft Server`,
+`difficulty=easy`, `view-distance=10`, an empty `level-seed`,
+`online-mode=true`, and `enforce-secure-profile=true`. An empty seed selects a
+random seed for a new world; a saved world's seed is retained from `level.dat`.
+Existing `server.properties` files are preserved.
+Normal startup therefore expects clients to authenticate and satisfy secure
+profile enforcement, as they do when joining a vanilla online-mode server.
+
+For an intentionally offline local test, launch with both authentication
+checks disabled and point an offline launcher profile at `127.0.0.1`:
+
+```bash
+./build/cppfm --online-mode=false --enforce-secure-profile=false
+```
+
+Both options must be explicit for offline clients; this is a development/test
+mode, not the compatibility-oriented default. The default world uses normal
+terrain; set `level-type=flat` explicitly when a creative superflat fixture is
+wanted.
 
 ## Running tests
 

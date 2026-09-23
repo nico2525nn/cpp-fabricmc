@@ -41,6 +41,30 @@ the root layout for this target, 20 TPS scheduling, and Play KeepAlive `0x27` ar
 1.21.4 facts. `SPEC_OPS` does not turn a chosen safety threshold into a claim about
 all vanilla servers.
 
+### Vanilla-facing `server.properties`
+
+The implemented settings remain a **partial** 1.21.4 subset. On first launch,
+the generated defaults use `view-distance=10`, `motd=A Minecraft Server`,
+`difficulty=easy`, an empty `level-seed` (random for a new world),
+`online-mode=true`, and `enforce-secure-profile=true`; an existing world's
+`level.dat` seed remains authoritative. Property names are case-sensitive and
+use Java Properties separators, escapes, continuations, and boolean conversion.
+Supported integer settings accept Java's leading `+`; difficulty IDs `0`–`3`
+map to `peaceful`, `easy`, `normal`, and `hard`. `white-list` is the canonical
+key; `whitelist` remains a legacy cppfm alias.
+
+The compatibility-oriented defaults require account authentication and secure
+profile enforcement. An intentionally offline fake-client test must explicitly
+pass both `--online-mode=false` and `--enforce-secure-profile=false`. This does
+not make the settings surface complete: for example, `enforce-whitelist`, query,
+permission, datapack, and several world/pack/operations keys still lack full
+vanilla runtime behavior. Passing the parser/configuration gates is not evidence
+that unsupported vanilla keys take effect.
+The current `ops.json` reader retains operator membership but not the
+`bypassesPlayerLimit` attribute. Operators therefore do not bypass a full server
+or a zero-player limit as vanilla profiles configured for that exception can;
+player-limit bypass remains part of the declared partial permission surface.
+
 ## 3. Classes and operational data
 
 | area | implementation path/symbol | observable metric/state | evidence/status |
@@ -49,7 +73,8 @@ all vanilla servers.
 | recovery | `WorldDataManager::loadWithRecovery`, `tryLoadFile` | source `Dat`, `DatOld`, or `Fresh`; log lines/quarantine | `test_recovery`; source-backed |
 | chunks | `RegionFile`, `Persistence::loadChunk`, `GameServer::saveChunkAsync`, `chunksUnloadTick` | corrupt entry isolated/regenerated; dirty snapshots saved asynchronously before configured-radius eviction | recovery matrix + wide soak |
 | session ownership | `SessionLock::acquire/release` | PID/timestamp, live/stale warning | recovery matrix |
-| frames | `Connection::readFrame`, `PacketDecoder::decodeFrame` | frame/declaration sizes and rejection | `test_flood_net` |
+| frames | `Connection::readFrame`, `PacketDecoder::decodeFrame` | frame/declaration sizes, first-byte-to-completion deadline, and rejection | `test_flood_net`, `goal_network_bugs` |
+| session admission | `SessionAdmissionGate`, `GameServer::reservePlayerAdmission` | pending worker/status caps and reserved player slots | `test_flood_net`, `goal_network_bugs` |
 | throttles | `RateLimiter`, `SpamTracker`, `AcceptGate` | tokens, chat score, accepted/shed connections | flood tests |
 | RCON | `src/net/Rcon.hpp::RconServer` | local listener, authentication, handler response | `test_rcon_multi` |
 | measurement | `tests/stress_test.py`, `tests/soak_test.py`, `tools/bench_chunk_gen.py` | MSPT/TPS/RSS, queue depth, integrity | run ID required |
@@ -67,12 +92,23 @@ policy:
 <a id="rate-limits-and-disconnect-policy"></a>
 ### Rate limits and disconnect policy
 
-- oversize, forged, malformed, or timed-out input is rejected with the state-correct
-  Disconnect path where the session can send one;
+- oversize, forged, malformed, or timed-out input is rejected with a best-effort
+  state-correct Disconnect where the session can send one, then closed; an
+  oversize frame with unread bytes can still cause the transport to reset;
 - Play KeepAlive is sent as `0x27` every 10 seconds and a pending unanswered ID is
   timed out after 30 seconds; an idle sweep is 60 seconds;
 - Login/configuration waits and unknown-packet handling follow
   [SPEC_WIRE.md#state-transitions](SPEC_WIRE.md#state-transitions);
+- each frame has a 30-second absolute budget beginning with its first length byte;
+  idle time before that byte does not consume the frame budget, while slow-drip
+  bytes cannot extend a started frame indefinitely;
+- pending handshake/login/configuration workers are capped at
+  `max(64, max-players + 32)`; accepted Status sessions use a separate cap of 16,
+  and release their pending-login slot after the Status handshake;
+- a player slot is reserved atomically at login admission and consumed on Play
+  registration, so concurrent logins cannot oversubscribe `max-players`; a value
+  of `0` rejects ordinary profiles, matching the vanilla 1.21.4 `PlayerList`
+  capacity check; the separate operator bypass flag remains unsupported;
 - RCON commands are handled outside the game tick and do not block packet encoding;
   and
 - backup, recovery, rate, and soak success are separate evidence classes from a
@@ -134,9 +170,10 @@ ambiguous `pkill` pattern.
 ```text
 Oversize input
 - implementation: Connection::readFrame / PacketDecoder::decodeFrame
-- budget: outer frame ≤ 8 MiB; declared decompressed size ≤ 2 MiB
+- budget: outer frame ≤ 2,097,151 bytes (VarInt21); declared decompressed size ≤ 2 MiB
 - ordering: charge/check before attacker-sized allocation or inflate
-- response: state-correct Disconnect, then close
+- response: best-effort state-correct Disconnect, then close; unread rejected
+  bytes may cause a transport reset
 - evidence: test_flood_net A1/A2/A7/A8
 - provenance: current code + WIRE framing contract
 ```
@@ -250,11 +287,15 @@ here.
 
 | case | action |
 |---|---|
-| frame > 8 MiB | reject as oversize before allocation |
+| frame length not representable by VarInt21, or frame > 2,097,151 bytes | reject as oversize before allocation |
 | declared decompressed > 2 MiB or negative/forged | reject/kick; do not inflate |
+| started frame takes longer than 30 seconds | close/reject using one absolute frame deadline; idle before the first length byte is not charged to this budget |
 | threshold 0 with `dataLength=0` | reject as invalid compressed-mode input |
 | trailing zlib data | strict inflate rejects it |
 | 20-connection-per-second boundary | AcceptGate refuses excess immediately |
+| more than `max(64, max-players + 32)` pending workers | refuse new pending sessions; Status uses its independent 16-session ceiling |
+| `max-players=0` | reject ordinary login before `GameProfile`; configured zero is a real capacity, not an unlimited sentinel. Operator `bypassesPlayerLimit` remains unsupported. |
+| simultaneous logins at a positive player limit | reserve capacity atomically before accepting the Login phase; reject excess reservations |
 | chat score > 200 | SpamTracker marks the peer for spam disconnect |
 | slow peer / receive timeout | kick/close according to session state |
 | live `session.lock` | loud warning; current availability-first policy continues, so operators must investigate |

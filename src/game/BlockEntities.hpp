@@ -2,6 +2,7 @@
 #pragma once
 #include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -141,6 +142,18 @@ class BlockEntityStore {
 public:
     using Owner = std::shared_ptr<BlockEntity>;
 
+    // Own the entity and its state lock for the whole mutable slot operation.
+    // A raw ItemStack* must never escape without this lifetime/lock guard.
+    struct SlotRef {
+        Owner owner;
+        ItemStack* stack = nullptr;
+        std::unique_lock<std::recursive_mutex> lock;
+
+        explicit operator bool() const noexcept { return stack != nullptr; }
+        ItemStack& operator*() const noexcept { return *stack; }
+        ItemStack* operator->() const noexcept { return stack; }
+    };
+
     Owner getShared(std::int64_t key) const {
         std::lock_guard lock(mutex_);
         const auto it = map_.find(key);
@@ -164,6 +177,7 @@ public:
         *owner = BlockEntity{};
         owner->kind = kind;
         dirty_.insert(key);
+        if (dirtyCallback_) dirtyCallback_(posKeyUnpackX(key) >> 4, posKeyUnpackZ(key) >> 4);
         return owner;
     }
 
@@ -173,11 +187,25 @@ public:
     void remove(std::int64_t key) {
         std::lock_guard lock(mutex_);
         auto it = map_.find(key);
-        if (it != map_.end()) { map_.erase(it); dirty_.insert(key); }
+        if (it != map_.end()) {
+            map_.erase(it);
+            dirty_.insert(key);
+            if (dirtyCallback_) dirtyCallback_(posKeyUnpackX(key) >> 4, posKeyUnpackZ(key) >> 4);
+        }
     }
-    void markDirty(std::int64_t key) {
+    void setDirtyCallback(std::function<void(std::int32_t, std::int32_t)> callback) {
         std::lock_guard lock(mutex_);
-        dirty_.insert(key);
+        dirtyCallback_ = std::move(callback);
+    }
+
+    void markDirty(std::int64_t key) {
+        std::function<void(std::int32_t, std::int32_t)> callback;
+        {
+            std::lock_guard lock(mutex_);
+            dirty_.insert(key);
+            callback = dirtyCallback_;
+        }
+        if (callback) callback(posKeyUnpackX(key) >> 4, posKeyUnpackZ(key) >> 4);
     }
     bool empty() const {
         std::lock_guard lock(mutex_);
@@ -254,6 +282,10 @@ public:
                 e.set("crafting_ticks_remaining",
                       nbt::Value::makeInt(be.crafter.craftingTicksRemaining));
                 e.set("triggered", nbt::Value::makeByte(be.crafter.triggered ? 1 : 0));
+            } else if (be.kind == BlockEntity::Kind::MovingPiston) {
+                // Moving piston block entities are transient; never serialize
+                // them as furnaces or fabricate a durable replacement.
+                continue;
             } else if (be.kind == BlockEntity::Kind::Sign) {
                 e.set("id", nbt::Value::makeString("minecraft:sign"));
                 e.set("is_waxed", nbt::Value::makeByte(0));
@@ -437,6 +469,7 @@ private:
     mutable std::recursive_mutex mutex_;
     std::unordered_map<std::int64_t, Owner> map_;
     std::unordered_set<std::int64_t> dirty_;
+    std::function<void(std::int32_t, std::int32_t)> dirtyCallback_;
 };
 
 } // namespace cppfm

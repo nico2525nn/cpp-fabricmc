@@ -424,10 +424,6 @@ void GameServer::broadcastStopSound(SoundSource source) {
     std::optional<std::string> snd;
     broadcastStopSound(src, snd);
 }
-void GameServer::stopRecord(const std::string& discNameWithoutPrefix) {
-    std::string sound = "minecraft:music_disc." + discNameWithoutPrefix;
-    broadcastStopSound(SoundSource::Record, &sound);
-}
 void GameServer::broadcastWorldEvent(std::int32_t eventId, std::int32_t x, std::int32_t y, std::int32_t z, std::int32_t data, bool disableRelativeVolume) {
     const std::int8_t dimension =
         brainTickGuard_ ? snapshotMobCombat(*brainTickGuard_).dimension : 0;
@@ -455,16 +451,6 @@ void GameServer::broadcastPaleOakLeavesParticleFor(std::int8_t dimension,
                                                    double x, double y, double z){
     auto body = makePaleOakLeavesBody(x, y, z);
     broadcastPacketExceptInDimension(dimension, nullptr, pl::sc::WorldParticles, body);
-}
-void GameServer::broadcastBlockParticle(double x, double y, double z, std::uint32_t blockState, int count){
-    ParticleData d; d.blockState = blockState;
-    auto body = makeWorldParticlesBody(x, y, z, 0,0,0, 0, count, ParticleId::block, d, false, false);
-    broadcastPacketExcept(nullptr, pl::sc::WorldParticles, body);
-}
-void GameServer::broadcastDustParticle(double x, double y, double z, std::int32_t rgb, float scale){
-    ParticleData d; d.setDustFromARGB(0xFF000000 | (rgb & 0xFFFFFF), scale);
-    auto body = makeWorldParticlesBody(x, y, z, 0,0,0, 0, 1, ParticleId::dust, d, false, false);
-    broadcastPacketExcept(nullptr, pl::sc::WorldParticles, body);
 }
 void GameServer::explodeAt(double x, double y, double z, float power) {
     explodeAtFor(0, x, y, z, power);
@@ -964,10 +950,6 @@ void GameServer::sendActionBar(Player& p, const std::string& text) {
     WriteBuffer b; nbt::writeTextComponent(b, text);
     connection->trySendPacket(proto::pl::sc::ActionBar, b);
 }
-void GameServer::broadcastActionBar(const std::string& text, Player* except) {
-    WriteBuffer b; nbt::writeTextComponent(b, text);
-    broadcastPacketExcept(except, proto::pl::sc::ActionBar, b);
-}
 void GameServer::sendServerData(Player& p) {
     const auto connection = snapshotPlayerConnection(p);
     if (!connection) return;
@@ -992,43 +974,6 @@ void GameServer::sendServerData(Player& p) {
     }
     connection->trySendPacket(proto::pl::sc::ServerData, b);
 }
-void GameServer::broadcastServerData() {
-    for (auto& pp : playersSnapshot()) sendServerData(*pp);
-}
-void GameServer::sendHurtAnimation(Player& p, int32_t entityId, float yaw) {
-    const auto connection = snapshotPlayerConnection(p);
-    if (!connection) return;
-    if (!std::isfinite(yaw)) yaw = 0;
-    WriteBuffer b; b.varint(entityId); b.f32(yaw);
-    connection->trySendPacket(proto::pl::sc::HurtAnimation, b);
-}
-void GameServer::broadcastHurtAnimation(int32_t entityId, float yaw, Player* except) {
-    std::int8_t dimension =
-        brainTickGuard_ ? snapshotMobCombat(*brainTickGuard_).dimension : 0;
-    if (!brainTickGuard_) {
-        bool found = false;
-        for (const auto& player : playersSnapshot()) {
-            if (!player) continue;
-            const auto state = snapshotPlayerCombat(*player);
-            if (state.entityId == entityId) {
-                dimension = state.dimension;
-                found = true;
-                break;
-            }
-        }
-        if (!found) {
-            for (const auto& mob : mobsSnapshot()) {
-                if (!mob) continue;
-                const auto state = snapshotMobCombat(*mob);
-                if (state.entityId == entityId) {
-                    dimension = state.dimension;
-                    break;
-                }
-            }
-        }
-    }
-    broadcastHurtAnimationFor(dimension, entityId, yaw, except);
-}
 void GameServer::broadcastHurtAnimationFor(std::int8_t dimension,
                                            int32_t entityId, float yaw,
                                            Player* except) {
@@ -1036,45 +981,6 @@ void GameServer::broadcastHurtAnimationFor(std::int8_t dimension,
     WriteBuffer b; b.varint(entityId); b.f32(yaw);
     broadcastPacketExceptInDimension(dimension, except,
                                      proto::pl::sc::HurtAnimation, b);
-}
-void GameServer::sendEntitySound(Player& p, int32_t entityId, const std::string& soundName, float volume, float pitch, SoundSource category) {
-    const auto connection = snapshotPlayerConnection(p);
-    if (!connection) return;
-    WriteBuffer b;
-    b.varint(0); b.string(soundName); b.boolean(false);
-    b.varint(static_cast<int32_t>(category));
-    b.varint(entityId);
-    b.f32(volume); b.f32(pitch);
-    b.i64(static_cast<int64_t>(entityId) ^ tickNo_);
-    connection->trySendPacket(proto::pl::sc::EntitySoundEffect, b);
-}
-void GameServer::broadcastEntitySound(int32_t entityId, const std::string& soundName, float volume, float pitch, SoundSource category) {
-    std::int8_t dimension =
-        brainTickGuard_ ? snapshotMobCombat(*brainTickGuard_).dimension : 0;
-    if (!brainTickGuard_) {
-        bool found = false;
-        for (const auto& player : playersSnapshot()) {
-            if (!player) continue;
-            const auto state = snapshotPlayerCombat(*player);
-            if (state.entityId == entityId) {
-                dimension = state.dimension;
-                found = true;
-                break;
-            }
-        }
-        if (!found) {
-            for (const auto& mob : mobsSnapshot()) {
-                if (!mob) continue;
-                const auto state = snapshotMobCombat(*mob);
-                if (state.entityId == entityId) {
-                    dimension = state.dimension;
-                    break;
-                }
-            }
-        }
-    }
-    broadcastEntitySoundFor(dimension, entityId, soundName, volume, pitch,
-                            category);
 }
 void GameServer::broadcastEntitySoundFor(std::int8_t dimension,
                                          int32_t entityId,
@@ -1108,10 +1014,6 @@ void GameServer::sendSyncEntityPosition(Player& p, int32_t entityId, double x, d
     WriteBuffer b; b.varint(entityId); b.f64(x); b.f64(y); b.f64(z); b.f64(dx); b.f64(dy); b.f64(dz); b.f32(yaw); b.f32(pitch); b.boolean(onGround);
     connection->trySendPacket(proto::pl::sc::SyncEntityPosition, b);
 }
-void GameServer::broadcastSyncEntityPosition(int32_t entityId, double x, double y, double z, double dx, double dy, double dz, float yaw, float pitch, bool onGround, Player* except) {
-    WriteBuffer b; b.varint(entityId); b.f64(x); b.f64(y); b.f64(z); b.f64(dx); b.f64(dy); b.f64(dz); b.f32(yaw); b.f32(pitch); b.boolean(onGround);
-    broadcastPacketExcept(except, proto::pl::sc::SyncEntityPosition, b);
-}
 void GameServer::sendSyncEntityPosition(Player& p, const MobEntity& mob) {
     const auto state = snapshotMobCombat(mob);
     float yawf = 0, pitchf = 0;
@@ -1138,42 +1040,6 @@ void GameServer::sendMapData(Player& p, int mapId, uint8_t scale, bool locked) {
     b.boolean(false); // icons absent (option<array> false)
     b.u8(0); // columns 0 => no rows/x/y/data
     connection->trySendPacket(proto::pl::sc::MapData, b);
-}
-void GameServer::sendMapData(Player& p, int mapId, const std::array<uint8_t,16384>& colors, uint8_t scale) {
-    const auto connection = snapshotPlayerConnection(p);
-    if (!connection) return;
-    WriteBuffer b;
-    b.varint(mapId);
-    b.i8((int8_t)scale);
-    b.boolean(false);
-    b.boolean(false);
-    b.u8(128); // columns 128
-    b.u8(128); // rows 128
-    b.u8(0); // x 0
-    b.u8(0); // y 0
-    b.varint(16384);
-    b.raw(colors.data(), 16384);
-    connection->trySendPacket(proto::pl::sc::MapData, b);
-}
-void GameServer::broadcastMapData(int mapId, uint8_t scale, bool locked, Player* except) {
-    WriteBuffer b;
-    b.varint(mapId);
-    b.i8((int8_t)scale);
-    b.boolean(locked);
-    b.boolean(false);
-    b.u8(0);
-    broadcastPacketExcept(except, proto::pl::sc::MapData, b);
-}
-void GameServer::sendMoveMinecart(Player& p, std::int32_t entityId, double x, double y, double z, float yaw, float pitch) {
-    const auto connection = snapshotPlayerConnection(p);
-    if (!connection) return;
-    WriteBuffer b;
-    b.varint(entityId);
-    b.varint(1); // one lerp step
-    b.f32((float)x); b.f32((float)y); b.f32((float)z);
-    b.f32(0.f); b.f32(0.f); b.f32(0.f);
-    b.f32(yaw); b.f32(pitch); b.f32(1.f);
-    connection->trySendPacket(proto::pl::sc::MoveMinecart, b);
 }
 void GameServer::broadcastMoveMinecart(std::int32_t entityId, double x, double y, double z, float yaw, float pitch, Player* except) {
     WriteBuffer b;
@@ -1209,11 +1075,5 @@ void GameServer::sendSelectAdvancementTab(Player& p, const std::string& tabId) {
         b.string(tabId);
     }
     connection->trySendPacket(proto::pl::sc::SelectAdvancementTab, b);
-}
-void GameServer::broadcastSelectAdvancementTab(const std::string& tabId, Player* except) {
-    WriteBuffer b;
-    if (tabId.empty()) b.boolean(false);
-    else { b.boolean(true); b.string(tabId); }
-    broadcastPacketExcept(except, proto::pl::sc::SelectAdvancementTab, b);
 }
 } // namespace cppfm
