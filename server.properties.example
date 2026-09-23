@@ -1,21 +1,27 @@
-# server.properties (supported CppFabricMC settings)
+# Supported cppfm server.properties settings. Unsupported vanilla keys are
+# intentionally omitted instead of being shown as if they changed behavior.
 server-port=25565
 max-players=20
-view-distance=6
+view-distance=10
 simulation-distance=10
-level-type=normal
-motd=CppFabricMC - C++ Minecraft 1.21.4 server
+level-type=minecraft:normal
+difficulty=easy
+motd=A Minecraft Server
+level-seed=
 spawn-protection=16
-# online-mode=false
-# whitelist=false
-# pvp=true
-# allow-flight=false
-# hardcore=false
-# enforce-secure-profile=false
-# network-compression-threshold=256
-# enable-rcon=false
-# rcon.port=25575
-# rcon.password=
+online-mode=true
+white-list=false
+pvp=true
+allow-flight=false
+hardcore=false
+enforce-secure-profile=true
+network-compression-threshold=256
+enable-rcon=false
+rcon.port=25575
+rcon.password=
+resource-pack=
+resource-pack-sha1=
+require-resource-pack=false
 # Java integration is enabled by default when a compatible JDK is available.
 # Set jvm=false for a native-only run, or jvm-strict=true to fail startup when
 # the JDK/embedded compatibility classes cannot be loaded.
@@ -26,7 +32,6 @@ jvm-strict=false
 
 # Maximum loaded chunks (0=unlimited). Default is max(8192, view-distance²*4).
 #max-loaded-chunks=8192
-#compression-threshold=256
 #io-worker-threads=4
 
 # Optional path/JVM settings: values may contain spaces.
@@ -37,8 +42,3 @@ jvm-strict=false
 #jvm-java-home=
 #jvm-library=
 #jvm-libraries=
-
-# Unsupported vanilla properties are intentionally not emulated by this server;
-# for example difficulty, gamemode, generator-settings, spawn-animals,
-# spawn-monsters, generate-structures, resource-pack, and query.port are
-# reported as unsupported and do not change runtime configuration.

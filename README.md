@@ -249,9 +249,26 @@ extension surface, not a copy of the official Minecraft server or a promise
 that every Fabric mod can run unchanged. It does not ship the official Mojang
 GameProvider, client, or GUI runtime.
 
-Connect with a Minecraft 1.21.4 client in offline mode, for example by using a
-launcher profile pointed at `127.0.0.1`. The production default is normal terrain;
-set `level-type=flat` explicitly when a creative superflat fixture is wanted.
+On its first launch, cppfm creates `server.properties` with the supported
+vanilla-facing Minecraft 1.21.4 defaults, including `motd=A Minecraft Server`,
+`difficulty=easy`, `view-distance=10`, an empty `level-seed`,
+`online-mode=true`, and `enforce-secure-profile=true`. An empty seed selects a
+random seed for a new world; a saved world's seed is retained from `level.dat`.
+Existing `server.properties` files are preserved.
+Normal startup therefore expects clients to authenticate and satisfy secure
+profile enforcement, as they do when joining a vanilla online-mode server.
+
+For an intentionally offline local test, launch with both authentication
+checks disabled and point an offline launcher profile at `127.0.0.1`:
+
+```bash
+./build/cppfm --online-mode=false --enforce-secure-profile=false
+```
+
+Both options must be explicit for offline clients; this is a development/test
+mode, not the compatibility-oriented default. The default world uses normal
+terrain; set `level-type=flat` explicitly when a creative superflat fixture is
+wanted.
 
 ## Running tests
 
