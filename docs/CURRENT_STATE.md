@@ -465,3 +465,14 @@ removes the target-specific timeout so the shared CTest limit applies and uses
 `randomTickSpeed 10` (still above vanilla's default 3) with the existing 16×16
 crop field. This keeps the real random-tick behavior check while avoiding a
 whole-simulation stress setting in the ordinary regression suite.
+
+The exact-head follow-up Actions run
+[`35883033964`](https://github.com/nico2525nn/cpp-fabricmc/actions/runs/35883033964)
+then completed the expanded CTest suite without the smoke timeout; one separate
+`plan43` assertion (`W-02 m2/h0/s1 window opens`) failed, leaving the other 54
+tests passing. Investigation found that `summonHorseNear` accepted any horse
+spawn observed after its snapshot, including an older horse from a delayed
+initial entity stream. The test now snapshots the highest observed entity ID
+and accepts only a horse with a larger ID. The revised `plan43` test passed five
+consecutive local launches (`130.37s` total); the new PR head still requires its
+own GitHub Actions run before merge.

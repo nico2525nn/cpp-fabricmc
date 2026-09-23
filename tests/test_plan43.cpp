@@ -18,7 +18,6 @@
 #include <chrono>
 #include <thread>
 #include <cmath>
-#include <unordered_set>
 
 using namespace cppfm;
 using namespace cpptest;
@@ -187,17 +186,20 @@ static std::int32_t summonHorseNear(TestClient& c, const char* who) {
     // NOTE: /summon takes NO position args (server spawns at player+(2,1,2));
     // extra tokens fail brigadier parse, so send the bare command.
     (void)who;
-    // snapshot known horse eids BEFORE summoning (a warm server answers in
-    // <ms; snapshotting after the send would swallow our own horse).
-    std::unordered_set<std::int32_t> known;
-    for (auto& s : c.spawns()) if (s.type == 63) known.insert(s.eid);
+    // Snapshot the entity-id high-water mark before summoning. A newly joined
+    // client's initial entity stream can still contain older horses after
+    // join() returns; treating any post-snapshot horse packet as ours makes
+    // this test race against that tail of the stream.
+    std::int32_t highestSeenEntityId = 0;
+    for (const auto& s : c.spawns())
+        if (s.eid > highestSeenEntityId) highestSeenEntityId = s.eid;
     c.sendChatCommand("summon minecraft:horse");
     auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(6000);
     while (std::chrono::steady_clock::now() < deadline) {
         auto ss = c.spawns();
         std::int32_t found = -1;
         for (auto& s : ss)
-            if (s.type == 63 && !known.count(s.eid)) found = s.eid; // newest birth wins
+            if (s.type == 63 && s.eid > highestSeenEntityId) found = s.eid;
         if (found >= 0) return found;
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
