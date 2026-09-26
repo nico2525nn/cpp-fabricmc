@@ -1,8 +1,10 @@
 # DEVELOPMENT — implementation and documentation workflow
 
 This guide is for the clean-room C++ implementation of Minecraft Java 1.21.4,
-protocol 769, DataVersion 4189. The source snapshot for this canonical document is
-the current working tree (2026-09-19, integrated HEAD `335fca5`). Fabric Loader 0.16.9 is a
+protocol 769, DataVersion 4189. The compatibility evidence baseline remains the
+integrated `main` HEAD `81b6f4f` (2026-09-24); the in-progress dimension-runtime
+refactor is tracked separately in [CURRENT_STATE §1E](CURRENT_STATE.md#1e-behavior-preserving-architecture-refactor-working-branch-2026-09-26).
+Fabric Loader 0.16.9 is a
 version/reference boundary; the executable provides a default-on bounded embedded
 JVM, a version-locked class-file transformer, and a separate offline official
 Loader/Knot probe. The production path does not ship the Mojang GameProvider/server
@@ -11,7 +13,9 @@ jar.
 **Status:** development map and extension contract. **Limitations:** this file does
 not grant permission to change runtime behavior, alter test assertions, or expand the
 plan51 JVM boundary. Further Fabric API, transformer coverage, or arbitrary-mod work
-requires a separately versioned plan and fresh evidence.
+requires a separately versioned plan and fresh evidence. Ownership refactors do not
+change compatibility status; unmerged work and its exact test evidence are tracked
+separately in CURRENT_STATE.
 
 ## 1. Feature overview
 
@@ -64,10 +68,11 @@ Use `DECLARED-LIMITATION` when a claim has not been independently verified.
 
 | layer | primary paths/symbols | contract |
 |---|---|---|
+| server composition | `src/game/GameServer.hpp`, `GameServer::DimensionRuntime` | composition root with one world-scoped aggregate for each supported dimension; service lifecycle wiring remains in `GameServer::init()` during the current refactor |
 | core | `src/core/ByteBuffer.hpp`, `NBT.*`, `Json.*`, `Zlib.hpp` | primitive, NBT, JSON, compression utilities |
 | protocol | `src/proto/Ids.hpp` | protocol 769 state/direction constants |
 | network | `src/net/Connection.hpp`, `PacketEncoder/Decoder`, `Crypto`, `PacketBatcher`, `RateLimiter`, `Rcon` | frame, encryption, batch, limits, administration |
-| world | `src/game/World.hpp`, `ChunkTicket.hpp`, `ChunkCodec.hpp` | 24 sections, blocks, biomes, light and tickets |
+| world | `src/game/World.hpp`, `ChunkTicket.hpp`, `ChunkCodec.hpp`, `GameServer::DimensionRuntime` | 24 sections, blocks, biomes, light and tickets; runtime groups block entities, per-dimension simulation services, persistence, and local dispenser/rail state |
 | worldgen | `src/worldgen/`, `src/game/WorldGen.cpp` | density, climate, structures, placement |
 | gameplay | `src/game/Entities`, `BehaviorTree`, `AiBrain`, `CombatManager`, `HungerManager` | entities, AI, damage, survival |
 | data/UI | `Items`, `Containers`, `MenuInteraction`, `Recipes`, `DatapackManager`, `src/brigadier` | components, menus, recipes, commands |

@@ -476,23 +476,49 @@ class GameServer {
     friend class Session;
     friend class jvm::JvmRuntime;
 
-    template <typename T>
-    static T& selectDimension(std::int8_t dim, T& overworld,
-                              T* nether, T* end) {
-        switch (dim) {
-        case -1: return *nether;
-        case 1: return *end;
-        default: return overworld;
+    struct DimensionRuntime {
+        World world;
+        std::unordered_map<std::int64_t, bool> dispenserPowerByPosition;
+        // Rails touched by a minecart stay tracked until a later tick clears
+        // their powered state after the last cart leaves.
+        std::unordered_set<std::int64_t> poweredDetectorRails;
+        BlockEntityStore blockEntities;
+        std::unique_ptr<LightEngine> lightEngine;
+        std::unique_ptr<FluidSim> fluidSim;
+        std::unique_ptr<RedstoneEngine> redstone;
+        std::unique_ptr<BlockTickScheduler> blockTicks;
+        // Persistence owns callbacks into the world, block-entity store, and
+        // simulation engines, so it must be destroyed before those targets.
+        // Members are destroyed in reverse declaration order.
+        std::unique_ptr<Persistence> persistence;
+
+        DimensionRuntime(std::string biome, LevelType levelType,
+                         std::uint64_t seed)
+            : world(std::move(biome), levelType, seed) {}
+    };
+
+    // Canonical storage order is Overworld, Nether, End.  Minecraft dimension
+    // ids remain 0, -1, 1 respectively; keep that mapping in one place rather
+    // than retaining parallel arrays with different index conventions.
+    static constexpr std::size_t dimensionRuntimeIndex(
+        std::int8_t dimension) noexcept {
+        switch (dimension) {
+        case -1: return 1;
+        case 1: return 2;
+        default: return 0;
         }
     }
-    template <typename T>
-    static const T& selectDimensionConst(std::int8_t dim, const T& overworld,
-                                         const T* nether, const T* end) {
-        switch (dim) {
-        case -1: return *nether;
-        case 1: return *end;
-        default: return overworld;
-        }
+    DimensionRuntime& dimensionRuntime(std::int8_t dimension) {
+        return *dimensionRuntimes_[dimensionRuntimeIndex(dimension)];
+    }
+    const DimensionRuntime& dimensionRuntime(std::int8_t dimension) const {
+        return *dimensionRuntimes_[dimensionRuntimeIndex(dimension)];
+    }
+    Persistence* persistenceFor(std::int8_t dimension) {
+        return dimensionRuntime(canonicalDimension(dimension)).persistence.get();
+    }
+    const Persistence* persistenceFor(std::int8_t dimension) const {
+        return dimensionRuntime(canonicalDimension(dimension)).persistence.get();
     }
     static std::size_t pendingSessionWorkerLimit(std::int32_t maxPlayers) noexcept {
         constexpr std::size_t kMinimum = 64;
@@ -506,28 +532,28 @@ public:
 
     explicit GameServer(ServerConfig cfg)
         : cfg_(cfg),
-          world_(cfg_.worldBiome,
-                 cfg.levelType == "normal" ? LevelType::Normal : LevelType::Flat,
-                 cfg.seed),
+          dimensionRuntimes_{std::make_unique<DimensionRuntime>(
+              cfg_.worldBiome,
+              cfg.levelType == "normal" ? LevelType::Normal : LevelType::Flat,
+              cfg.seed)},
           startTime_(cfg.startTime),
           pendingSessionAdmissionGate_(pendingSessionWorkerLimit(cfg.maxPlayers)),
           ioPool_(static_cast<std::size_t>(std::max(1, cfg_.ioWorkerThreads))) {
         difficulty_ = cfg_.difficulty;
-        netherWorld_ = std::make_unique<World>(
-            "minecraft:nether_wastes", LevelType::Nether, cfg.seed ^ 0x4E37ULL);
-        endWorld_ = std::make_unique<World>(
+        dimensionRuntimes_[1] = std::make_unique<DimensionRuntime>(
+            "minecraft:nether_wastes", LevelType::Nether,
+            cfg.seed ^ 0x4E37ULL);
+        dimensionRuntimes_[2] = std::make_unique<DimensionRuntime>(
             "minecraft:the_end", LevelType::End, cfg.seed ^ 0xE11DULL);
-        worlds_[0] = &world_;
-        worlds_[1] = netherWorld_.get();
-        worlds_[2] = endWorld_.get();
-        for (auto* w : worlds_) w->setDimensionId(
-            w == &world_ ? 0 : (w == netherWorld_.get() ? -1 : 1));
+        dimensionRuntime(0).world.setDimensionId(0);
+        dimensionRuntime(-1).world.setDimensionId(-1);
+        dimensionRuntime(1).world.setDimensionId(1);
     }
     World& worldFor(std::int8_t dim) {
-        return selectDimension(dim, world_, netherWorld_.get(), endWorld_.get());
+        return dimensionRuntime(dim).world;
     }
     const World& worldFor(std::int8_t dim) const {
-        return selectDimensionConst(dim, world_, netherWorld_.get(), endWorld_.get());
+        return dimensionRuntime(dim).world;
     }
     std::int8_t commandDimension(
         const brigadier::CommandSource& source) const noexcept {
@@ -554,36 +580,28 @@ public:
         };
     }
     LightEngine& lightsFor(std::int8_t dim) {
-        return selectDimension(canonicalDimension(dim), *lightEngine_,
-                               dimLightEngine_[0].get(), dimLightEngine_[1].get());
+        return *dimensionRuntime(canonicalDimension(dim)).lightEngine;
     }
     const LightEngine& lightsFor(std::int8_t dim) const {
-        return selectDimensionConst(canonicalDimension(dim), *lightEngine_,
-                                    dimLightEngine_[0].get(), dimLightEngine_[1].get());
+        return *dimensionRuntime(canonicalDimension(dim)).lightEngine;
     }
     FluidSim& fluidsFor(std::int8_t dim) {
-        return selectDimension(canonicalDimension(dim), *fluidSim_,
-                               dimFluidSim_[0].get(), dimFluidSim_[1].get());
+        return *dimensionRuntime(canonicalDimension(dim)).fluidSim;
     }
     const FluidSim& fluidsFor(std::int8_t dim) const {
-        return selectDimensionConst(canonicalDimension(dim), *fluidSim_,
-                                    dimFluidSim_[0].get(), dimFluidSim_[1].get());
+        return *dimensionRuntime(canonicalDimension(dim)).fluidSim;
     }
     RedstoneEngine& redstoneFor(std::int8_t dim) {
-        return selectDimension(canonicalDimension(dim), *redstone_,
-                               dimRedstone_[0].get(), dimRedstone_[1].get());
+        return *dimensionRuntime(canonicalDimension(dim)).redstone;
     }
     const RedstoneEngine& redstoneFor(std::int8_t dim) const {
-        return selectDimensionConst(canonicalDimension(dim), *redstone_,
-                                    dimRedstone_[0].get(), dimRedstone_[1].get());
+        return *dimensionRuntime(canonicalDimension(dim)).redstone;
     }
     BlockTickScheduler& blockTicksFor(std::int8_t dim) {
-        return selectDimension(canonicalDimension(dim), *blockTicks_,
-                               dimBlockTicks_[0].get(), dimBlockTicks_[1].get());
+        return *dimensionRuntime(canonicalDimension(dim)).blockTicks;
     }
     const BlockTickScheduler& blockTicksFor(std::int8_t dim) const {
-        return selectDimensionConst(canonicalDimension(dim), *blockTicks_,
-                                    dimBlockTicks_[0].get(), dimBlockTicks_[1].get());
+        return *dimensionRuntime(canonicalDimension(dim)).blockTicks;
     }
     ~GameServer() { stop(); }
 
@@ -630,8 +648,9 @@ public:
         recipes_.syncTagsFrom(tagManager_);
         functionEvaluator_.setServer(this);
         initCommands();
-        lightEngine_ = std::make_unique<LightEngine>(world_);
-        world_.setBiomeCodec(
+        dimensionRuntime(0).lightEngine =
+            std::make_unique<LightEngine>(worldFor(0));
+        worldFor(0).setBiomeCodec(
             [this](const std::string& key) {
                 return data_.biomeIndex(key);
             },
@@ -649,11 +668,13 @@ public:
                 static_cast<std::int32_t>(
                     data_.biomeIndex(dimensionWorld.biomeKey())));
         };
-        installBiomeCodec(*netherWorld_);
-        installBiomeCodec(*endWorld_);
-        fluidSim_ = std::make_unique<FluidSim>(world_);
-        redstone_ = std::make_unique<RedstoneEngine>(world_);
-        blockTicks_ = std::make_unique<BlockTickScheduler>(world_, &gamerules_, this);
+        installBiomeCodec(worldFor(-1));
+        installBiomeCodec(worldFor(1));
+        dimensionRuntime(0).fluidSim = std::make_unique<FluidSim>(worldFor(0));
+        dimensionRuntime(0).redstone =
+            std::make_unique<RedstoneEngine>(worldFor(0));
+        dimensionRuntime(0).blockTicks =
+            std::make_unique<BlockTickScheduler>(worldFor(0), &gamerules_, this);
         auto configureBlockTicks = [](BlockTickScheduler& scheduler) {
             scheduler.registerBehavior("minecraft:wheat", std::make_unique<CropBehavior>());
             scheduler.registerBehavior("minecraft:potatoes", std::make_unique<CropBehavior>());
@@ -684,40 +705,37 @@ public:
             scheduler.registerBehavior("minecraft:pale_oak_leaves", std::make_unique<PaleOakLeavesBehavior>());
             scheduler.registerBehavior("minecraft:creaking_heart", std::make_unique<CreakingHeartBehavior>());
         };
-        configureBlockTicks(*blockTicks_);
+        configureBlockTicks(*dimensionRuntime(0).blockTicks);
         for (int i = 0; i < 2; ++i) {
             const std::int8_t dimension = i == 0 ? -1 : 1;
             World& dimensionWorld = worldFor(dimension);
-            dimLightEngine_[i] = std::make_unique<LightEngine>(dimensionWorld);
-            dimFluidSim_[i] = std::make_unique<FluidSim>(dimensionWorld);
-            dimRedstone_[i] = std::make_unique<RedstoneEngine>(dimensionWorld);
-            dimBlockTicks_[i] = std::make_unique<BlockTickScheduler>(dimensionWorld,
-                                                                      &gamerules_, this);
-            configureBlockTicks(*dimBlockTicks_[i]);
+            auto& runtime = dimensionRuntime(dimension);
+            runtime.lightEngine = std::make_unique<LightEngine>(dimensionWorld);
+            runtime.fluidSim = std::make_unique<FluidSim>(dimensionWorld);
+            runtime.redstone = std::make_unique<RedstoneEngine>(dimensionWorld);
+            runtime.blockTicks = std::make_unique<BlockTickScheduler>(
+                dimensionWorld, &gamerules_, this);
+            configureBlockTicks(*runtime.blockTicks);
         }
         // Configuration is parsed once by main() before this object is
         // constructed.  Re-reading server.properties here would silently
         // override command-line values and make embedded callers behave
         // differently from the executable.
-        world_.setSimulationDistance(cfg_.simulationDistance);
-        if (netherWorld_) netherWorld_->setSimulationDistance(cfg_.simulationDistance);
-        if (endWorld_) endWorld_->setSimulationDistance(cfg_.simulationDistance);
-        world_.setSimulationDistanceCallback(
+        worldFor(0).setSimulationDistance(cfg_.simulationDistance);
+        worldFor(-1).setSimulationDistance(cfg_.simulationDistance);
+        worldFor(1).setSimulationDistance(cfg_.simulationDistance);
+        worldFor(0).setSimulationDistanceCallback(
             [this](std::int32_t cx, std::int32_t cz) {
                 return isChunkInSimulationDistanceFor(0, cx, cz);
             });
-        if (netherWorld_) {
-            netherWorld_->setSimulationDistanceCallback(
-                [this](std::int32_t cx, std::int32_t cz) {
-                    return isChunkInSimulationDistanceFor(-1, cx, cz);
-                });
-        }
-        if (endWorld_) {
-            endWorld_->setSimulationDistanceCallback(
-                [this](std::int32_t cx, std::int32_t cz) {
-                    return isChunkInSimulationDistanceFor(1, cx, cz);
-                });
-        }
+        worldFor(-1).setSimulationDistanceCallback(
+            [this](std::int32_t cx, std::int32_t cz) {
+                return isChunkInSimulationDistanceFor(-1, cx, cz);
+            });
+        worldFor(1).setSimulationDistanceCallback(
+            [this](std::int32_t cx, std::int32_t cz) {
+                return isChunkInSimulationDistanceFor(1, cx, cz);
+            });
 
         auto configureDimensionEngines = [this](
             World& dimensionWorld, std::int8_t dimension,
@@ -750,49 +768,54 @@ public:
                     redstoneEngine->onBlockChanged(x, y, z);
                 });
         };
-        configureDimensionEngines(world_, 0, *lightEngine_, *fluidSim_,
-                                  *redstone_, *blockTicks_, blockEntities_);
+        configureDimensionEngines(
+            worldFor(0), 0, *dimensionRuntime(0).lightEngine,
+            *dimensionRuntime(0).fluidSim, *dimensionRuntime(0).redstone,
+            *dimensionRuntime(0).blockTicks, blockEntitiesFor(0));
         for (int i = 0; i < 2; ++i) {
             const std::int8_t dimension = i == 0 ? -1 : 1;
-            configureDimensionEngines(
-                worldFor(dimension), dimension, *dimLightEngine_[i],
-                *dimFluidSim_[i], *dimRedstone_[i], *dimBlockTicks_[i],
-                dimensionBlockEntities_[i]);
+            auto& runtime = dimensionRuntime(dimension);
+            configureDimensionEngines(worldFor(dimension), dimension,
+                                      *runtime.lightEngine, *runtime.fluidSim,
+                                      *runtime.redstone, *runtime.blockTicks,
+                                      runtime.blockEntities);
         }
         spawnProtection_ = cfg_.spawnProtection;
-        persist_ = std::make_unique<Persistence>(world_, cfg_.worldDir, cfg_.worldBiome);
-        blockEntities_.setDirtyCallback([this](std::int32_t cx, std::int32_t cz) {
-            if (persist_) persist_->markDirty(cx, cz);
+        dimensionRuntime(0).persistence = std::make_unique<Persistence>(
+            worldFor(0), cfg_.worldDir, cfg_.worldBiome);
+        blockEntitiesFor(0).setDirtyCallback([this](std::int32_t cx, std::int32_t cz) {
+            if (auto* persistence = persistenceFor(0))
+                persistence->markDirty(cx, cz);
         });
-        persist_->setDifficulty(difficulty_);
-        persist_->setWorldBorder(worldBorderDiameter_, worldBorderCenterX_, worldBorderCenterZ_);
+        persistence().setDifficulty(difficulty_);
+        persistence().setWorldBorder(worldBorderDiameter_, worldBorderCenterX_, worldBorderCenterZ_);
         {   // biome codec maps + chunk extras (block entities)
             std::unordered_map<std::uint16_t, std::string> idxToKey;
             const auto& order = gameData_.order("minecraft:worldgen/biome");
             for (std::size_t i = 0; i < order.size(); ++i)
                 idxToKey.emplace(static_cast<std::uint16_t>(i), order[i]);
-            persist_->setBiomeCodec(std::move(idxToKey),
-                                    static_cast<std::int32_t>(
-                                        data_.biomeIndex(cfg_.worldBiome)));
-            persist_->setChunkExtras(
+            persistence().setBiomeCodec(std::move(idxToKey),
+                                        static_cast<std::int32_t>(
+                                            data_.biomeIndex(cfg_.worldBiome)));
+            persistence().setChunkExtras(
                 [this](std::int32_t cx, std::int32_t cz, nbt::Value& root) {
                     nbt::Value list = nbt::Value::makeList(nbt::Compound);
-                    blockEntities_.writeChunkNbt(cx, cz, list);
+                    blockEntitiesFor(0).writeChunkNbt(cx, cz, list);
                     if (!list.list.empty()) root.set("block_entities", list);
                 },
                 [this](const nbt::Value& root) {
-                    blockEntities_.readChunkNbt(root);
+                    blockEntitiesFor(0).readChunkNbt(root);
                 });
-            persist_->setChunkSaveBarrier(
+            persistence().setChunkSaveBarrier(
                 [this](std::int32_t cx, std::int32_t cz) {
                     // Persistence may invoke the barrier on its worker.  All
                     // redstone/world/light/broadcast callbacks must still run
                     // on the same serialized simulation domain as ticks.
                     SimulationDispatchGuard simulation(simulationDispatchMtx_);
-                    redstone_->flushPendingPistons(cx, cz);
+                    redstoneFor(0).flushPendingPistons(cx, cz);
                 });
         }
-        persist_->setLevelStateProvider(
+        persistence().setLevelStateProvider(
             [this](nbt::Value& data) {
                 namespace nv = nbt;
                 nv::Value gr = nv::Value::makeCompound();
@@ -859,13 +882,13 @@ public:
                     else if (c->tag==nbt::Long) wanderingTraderSpawnChance_ = (int)c->l;
                 }
             });
-        persist_->loadLevelData();
+        persistence().loadLevelData();
         // level.dat is authoritative for an existing world's seed.  Apply it
         // to all dimensions before their first chunk is generated.
-        cfg_.seed = world_.seed();
+        cfg_.seed = worldFor(0).seed();
         cfg_.hashedSeed = static_cast<std::int64_t>(cfg_.seed);
-        netherWorld_->setSeed(cfg_.seed ^ 0x4E37ULL);
-        endWorld_->setSeed(cfg_.seed ^ 0xE11DULL);
+        worldFor(-1).setSeed(cfg_.seed ^ 0x4E37ULL);
+        worldFor(1).setSeed(cfg_.seed ^ 0xE11DULL);
         for (auto sub : {"DIM-1", "DIM1"}) {
             std::string p = cfg_.worldDir + "/" + std::string(sub) + "/level.dat";
             if (std::filesystem::exists(p)) {
@@ -878,30 +901,31 @@ public:
         // server.properties is the startup authority for difficulty; preserve
         // worldborder interpolation state from level.dat.
         difficulty_ = cfg_.difficulty;
-        persist_->setDifficulty(difficulty_);
-        worldBorderDiameter_ = persist_->worldBorderDiameter();
-        worldBorderCenterX_ = persist_->worldBorderCenterX();
-        worldBorderCenterZ_ = persist_->worldBorderCenterZ();
-        worldBorderLerpFrom_ = persist_->worldBorderLerpFrom();
-        worldBorderLerpTo_ = persist_->worldBorderLerpTo();
-        worldBorderLerpMs_ = persist_->worldBorderLerpMs();
-        worldBorderLerpRemainingTicks_ = persist_->worldBorderLerpRemainingTicks();
+        persistence().setDifficulty(difficulty_);
+        worldBorderDiameter_ = persistence().worldBorderDiameter();
+        worldBorderCenterX_ = persistence().worldBorderCenterX();
+        worldBorderCenterZ_ = persistence().worldBorderCenterZ();
+        worldBorderLerpFrom_ = persistence().worldBorderLerpFrom();
+        worldBorderLerpTo_ = persistence().worldBorderLerpTo();
+        worldBorderLerpMs_ = persistence().worldBorderLerpMs();
+        worldBorderLerpRemainingTicks_ = persistence().worldBorderLerpRemainingTicks();
         worldBorderLerpTotalTicks_ = worldBorderLerpRemainingTicks_;
         {
-            const auto sp = world_.spawnPoint();
+            const auto sp = worldFor(0).spawnPoint();
             for (int dz = -2; dz <= 2; ++dz)
                 for (int dx = -2; dx <= 2; ++dx) {
                     const std::int32_t cx = (sp.x >> 4) + dx;
                     const std::int32_t cz = (sp.z >> 4) + dz;
-                    world_.generateChunkIfMissing(cx, cz);
-                    world_.addSpawnTicket(cx, cz, tickNo_);
+                    worldFor(0).generateChunkIfMissing(cx, cz);
+                    worldFor(0).addSpawnTicket(cx, cz, tickNo_);
                 }
         }
-        persist_->start();
+        persistence().start();
         for (int d = 0; d < 2; ++d) {
-            auto& pw = dimPersist_[d];
             const char* sub = d == 0 ? "DIM-1" : "DIM1";
             const std::int8_t dimension = d == 0 ? -1 : 1;
+            auto& dimensionRuntime = this->dimensionRuntime(dimension);
+            auto& pw = dimensionRuntime.persistence;
             World& dimensionWorld = worldFor(dimension);
             pw = std::make_unique<Persistence>(dimensionWorld,
                                                cfg_.worldDir + "/" + sub, "");
@@ -929,8 +953,8 @@ public:
                 });
             blockEntitiesFor(dimension).setDirtyCallback(
                 [this, dimension](std::int32_t cx, std::int32_t cz) {
-                    auto& persistence = dimPersist_[dimension == -1 ? 0 : 1];
-                    if (persistence) persistence->markDirty(cx, cz);
+                    if (auto* persistence = persistenceFor(dimension))
+                        persistence->markDirty(cx, cz);
                 });
             pw->start();
         }
@@ -1014,8 +1038,11 @@ public:
             jvmRuntime_->stop();
         }
         std::fprintf(stderr, "[cppfm] stopping persistence\n");
-        if (persist_) persist_->stop();
-        for (auto& d : dimPersist_) if (d) d->stop();
+        for (const std::int8_t dimension : {std::int8_t{0}, std::int8_t{-1},
+                                            std::int8_t{1}}) {
+            if (auto* persistence = persistenceFor(dimension))
+                persistence->stop();
+        }
         std::fprintf(stderr, "[cppfm] closing listen fd\n");
         if (const auto fd = listenFd_.exchange(platform::invalid_socket,
                                                std::memory_order_acq_rel);
@@ -1025,7 +1052,7 @@ public:
         sessionLock_.release(); // plan46 §2 (O-08)
         std::fprintf(stderr, "[cppfm] stopped cleanly\n");
     }
-    Persistence& persistence() { return *persist_; }
+    Persistence& persistence() { return *dimensionRuntime(0).persistence; }
     void savePlayerData(const std::string& uuidHex, Player& p);
     bool loadPlayerData(const std::string& uuidHex, Player& p);
     void invalidateRespawnPointsAt(std::int8_t dimension,
@@ -1058,14 +1085,12 @@ public:
         return mobs_.size() != oldSize;
     }
     Whitelist& whitelist() { return whitelist_; }
-    BlockEntityStore& blockEntities() { return blockEntities_; }
+    BlockEntityStore& blockEntities() { return dimensionRuntime(0).blockEntities; }
     BlockEntityStore& blockEntitiesFor(std::int8_t dimension) {
-        return selectDimension(canonicalDimension(dimension), blockEntities_,
-                               &dimensionBlockEntities_[0], &dimensionBlockEntities_[1]);
+        return dimensionRuntime(canonicalDimension(dimension)).blockEntities;
     }
     const BlockEntityStore& blockEntitiesFor(std::int8_t dimension) const {
-        return selectDimensionConst(canonicalDimension(dimension), blockEntities_,
-                                    &dimensionBlockEntities_[0], &dimensionBlockEntities_[1]);
+        return dimensionRuntime(canonicalDimension(dimension)).blockEntities;
     }
     std::int32_t villagerWindowSeq_ = 100;
     Scoreboard scoreboard;
@@ -1124,10 +1149,10 @@ public:
     void initExecuteCommands();
     void initScoreboardCommands();
     api::ServerEvents& events() { return api::events(); }
-    LightEngine& lights() { return *lightEngine_; }
+    LightEngine& lights() { return *dimensionRuntime(0).lightEngine; }
     GameRuleManager& gameRules() { return gamerules_; }
     const GameRuleManager& gameRules() const { return gamerules_; }
-    BlockTickScheduler* blockTicks() { return blockTicks_.get(); }
+    BlockTickScheduler* blockTicks() { return dimensionRuntime(0).blockTicks.get(); }
     // Resolve a selector string (@a/@e/@p/...) against players & mobs.
     brigadier::SelectorResult resolveSelector(const std::string& raw,
                                               Player* source);
@@ -1470,7 +1495,7 @@ public:
     const ServerConfig& config() const { return cfg_; }
     jvm::JvmRuntime* jvmRuntime() { return jvmRuntime_.get(); }
     const jvm::JvmRuntime* jvmRuntime() const { return jvmRuntime_.get(); }
-    World& world() { return world_; }
+    World& world() { return dimensionRuntime(0).world; }
     World& worldByDim(std::int8_t d) { return worldFor(d); }
     EmbeddedData& data() { return data_; }
     bool running() const { return running_; }
@@ -1885,9 +1910,7 @@ private:
 
     ServerConfig cfg_;
     EntityDataLoader entityDataLoader_;
-    World world_;
-    std::unique_ptr<World> netherWorld_, endWorld_;
-    World* worlds_[3] = {};
+    std::array<std::unique_ptr<DimensionRuntime>, 3> dimensionRuntimes_;
     // entities
     mutable std::mutex entsMtx_;
     struct MobAiEntry {
@@ -1913,12 +1936,6 @@ private:
     mutable std::mutex projectilesMtx_;
     std::vector<std::shared_ptr<ProjectileEntity>> projectiles_;
     std::vector<std::shared_ptr<TntEntity>> tntEntities_;
-    std::array<std::unordered_map<std::int64_t, bool>, 3> dispenserPowerByDimension_;
-    // Detector rails touched by a minecart.  Keeping the coordinates lets the
-    // next tick clear a powered rail even when the last cart has already left
-    // the neighbourhood (the old proximity-only scan could leave it latched).
-    std::array<std::unordered_set<std::int64_t>, 3>
-        poweredDetectorRailsByDimension_;
     std::atomic<std::int64_t> tickNo_{0};
     std::int64_t timeOffset_ = 0;
     std::int64_t startTime_ = 1000;
@@ -1939,8 +1956,6 @@ private:
     std::vector<std::shared_ptr<Connection>> activeConnections_;
     std::mutex stopCvMtx_;
     std::condition_variable stopCv_;
-    std::unique_ptr<Persistence> persist_;
-    std::unique_ptr<Persistence> dimPersist_[2];
     SessionLock sessionLock_; // world/session.lock guard
     bool initialized_ = false;
     Whitelist whitelist_;
@@ -1955,8 +1970,6 @@ private:
     mutable std::recursive_mutex playerAdmissionMtx_;
     std::size_t pendingPlayerAdmissions_ = 0; // protected by playerAdmissionMtx_
     mutable std::mutex playersMtx_;
-    BlockEntityStore blockEntities_;                 // Overworld chests & furnaces
-    BlockEntityStore dimensionBlockEntities_[2];     // Nether, End
     RecipeManager recipes_;                          // crafting/smelting data
     TagManager tagManager_;
     LootTableEvaluator lootTables_;
@@ -2027,7 +2040,7 @@ public:
                     double sz = p->z + (nextRandom()%48 - 24);
                     double sy = p->y;
                     for (int y = (int)sy + 10; y > (int)sy - 10; --y) {
-                        if (world_.getBlock((int)sx, y, (int)sz)==0 && world_.getBlock((int)sx, y-1, (int)sz)!=0) { sy = y; break; }
+                        if (worldFor(0).getBlock((int)sx, y, (int)sz)==0 && worldFor(0).getBlock((int)sx, y-1, (int)sz)!=0) { sy = y; break; }
                     }
                     spawnMob(MobKind::WanderingTrader, sx, sy, sz);
                     wanderingTraderSpawnChance_ = 25;
@@ -2046,7 +2059,7 @@ public:
     bool isSpawnProtected(std::int32_t x, std::int32_t z) const {
         if (spawnProtection_ <= 0) return false;
         if (ops_.empty()) return false;
-        auto sp = world_.spawnPoint();
+        auto sp = worldFor(0).spawnPoint();
         int dx = std::abs(x - sp.x);
         int dz = std::abs(z - sp.z);
         return std::max(dx, dz) <= spawnProtection_;
@@ -2087,17 +2100,6 @@ public:
     const BossAIManager* bossAI() const { return bossAI_.get(); }
     BossBarManager* bossBars() { return bossAI_ ? &bossAI_->bars() : nullptr; }
 private:
-    std::unique_ptr<LightEngine> lightEngine_;
-    std::unique_ptr<FluidSim> fluidSim_;
-    std::unique_ptr<RedstoneEngine> redstone_;
-    std::unique_ptr<BlockTickScheduler> blockTicks_;
-    // The three dimensions have independent block state, lighting, fluid,
-    // redstone, and scheduled-tick state.  The main members above remain the
-    // Overworld compatibility aliases; these arrays hold Nether and End.
-    std::unique_ptr<LightEngine> dimLightEngine_[2];
-    std::unique_ptr<FluidSim> dimFluidSim_[2];
-    std::unique_ptr<RedstoneEngine> dimRedstone_[2];
-    std::unique_ptr<BlockTickScheduler> dimBlockTicks_[2];
     // HungerManager/CombatManager are real classes with .cpp implementations.
     std::unique_ptr<BossAIManager> bossAI_;
     std::unique_ptr<jvm::JvmRuntime> jvmRuntime_;

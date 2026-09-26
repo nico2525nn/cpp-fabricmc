@@ -19,22 +19,22 @@ handoff notes are not part of the public documentation set.
 
 | field | value |
 |---|---|
-| `updated` | `2026-09-23` |
-| `implementation_baseline` | integrated `main` HEAD `335fca5` from clean checkpoint `65a7c69` |
-| `implementation_baseline_short` | `335fca5` (`65a7c69` + plan53/54 merges and fixes) |
-| `documentation_commit` | final documentation commit sequence after source integration `335fca5` |
-| `main_integration_merge` | `335fca5` (all validated plan53/54 workstreams integrated) |
-| `plan` | plan53 settings/lifecycle matrix + plan54 adversarial cleanup |
-| `phase` | `plan53-plan54-final-gates` |
-| `phase_status` | `FINAL_GATES_CONFIRMED_REFACTOR_PARTIAL_WITH_DECLARED_BOUNDARIES` |
+| `updated` | `2026-09-26` |
+| `implementation_baseline` | integrated `main` HEAD `81b6f4f` (2026-09-24); unmerged refactor work is recorded in §1E |
+| `implementation_baseline_short` | `81b6f4f` (`335fca5` history plus PR #2–#4 integration) |
+| `documentation_commit` | historical final documentation sequence after source integration `335fca5`; this snapshot refresh is on the §1E branch |
+| `main_integration_merge` | `81b6f4f` (PR #4; no architecture refactor is merged) |
+| `plan` | compatibility baseline plan53/54; separate active architecture-quality refactor in §1E |
+| `phase` | `behavior-preserving-architecture-refactor` |
+| `phase_status` | `IN_PROGRESS_DIMENSION_RUNTIME_SLICE; QUALITY_GOAL_NOT_MET` |
 | `publication_status` | `BLOCKED` |
-| `runtime_reference_snapshot` | source integration `335fca5` + final documentation sequence |
+| `runtime_reference_snapshot` | integrated main `81b6f4f`; unmerged architecture work is listed separately in §1E |
 | `canonical_workflow` | `docs/DEVELOPMENT.md#research-workflow` |
 | `research_entrypoint` | `docs/research-prompt.md` is a legacy redirect only |
 | `research_viewpoints` | `16` current viewpoints; old `13` wording is historical |
 | `taxonomy_snapshot` | MISSING `#1–#90`; historical matrix counts `DONE=90, PARTIAL=0, TODO=0` |
 | `strict_assessment_1` | `78 gaps`; `HISTORICAL` archive label, not a current aggregate |
-| `next_plan` | finish the final diff/documentation review, commit and push the PR #1 review changes, then require exact-head Actions before considering merge; the implemented server.properties surface remains explicitly partial |
+| `next_plan` | submit the dimension-runtime ownership slice through PR and exact-head Actions, then continue the block-mutation and session-state ownership refactors; do not begin Mineflayer until independent code-quality review supports the quality gate |
 
 The previous baseline was the plan50 runtime follow-up after the plan49 implementation integration and cleanup commit
 `db12df96093a0869e958f62b11f9a9cd68ba3ef1` and safety commit
@@ -163,6 +163,40 @@ the two contiguous inventory ranges directly (hotbar 36–44, main inventory
 **225 PASS / 0 FAIL** on rerun (an earlier post-fix run had one non-reproduced
 failure); local `native` and `wire_b6` CTest targets passed **2/2**. This local
 evidence does not replace Actions for the updated PR head.
+
+## 1E. Behavior-preserving architecture refactor (working branch, 2026-09-26)
+
+This is unmerged work on `codex/goal-dimension-runtime`, based on `main`
+`81b6f4f246b8616e53f537a60f2a0900cc00f690`. The source commits are
+`62691578` (group per-dimension ownership in `GameServer::DimensionRuntime`) and
+`c56c4f09` (route state selection through one dimension-to-runtime mapping).
+The changes do not add gameplay behavior or promote any compatibility-matrix
+status.
+
+Each runtime now groups its `World`, dispenser/detector-rail bookkeeping,
+`BlockEntityStore`, light/fluid/redstone/block-tick services, and persistence.
+Persistence is declared after its callback targets so reverse member destruction
+stops it first. Two independent reviews found no valid-dimension behavior or
+lifetime regression. Both identified duplicated runtime selection in the first
+commit; that finding was removed in `c56c4f09`, and both follow-up reviews had no
+remaining finding. The reviews also noted that service construction and callback
+wiring still live in `GameServer::init()` and that engine pointers are nullable
+before initialization. This is an ownership step, not a finished lifecycle
+component or evidence that the repository has reached code-quality 6/10. Reviewer
+scores for this slice were 6.5/10 and 5/10; neither is an overall repository
+score or a pass of the goal's two-review quality gate.
+
+| gate | result | scope |
+|---|---|---|
+| configured RelWithDebInfo build | `PASS` | `cmake --build build-dimension-runtime -j4`; the selector cleanup rebuilt affected targets, and a subsequent build reported no work remaining |
+| non-nightly, non-package CTest | `55/55 PASS` | exact `c56c4f09` source commit (before docs-only edits); `ctest --test-dir build-dimension-runtime -LE 'nightly|package' --output-on-failure --timeout 600`; `530.73s`, including smoke80 and live goal scenarios |
+| child-process cleanup | `PASS` | post-suite `pgrep -a -f 'cppfm --por[t]'` found no remaining server process |
+| GitHub Actions | `PENDING` | this working branch has not yet been submitted as a PR; local test results do not replace exact-head Actions |
+
+The architecture-quality goal remains active. The next source boundary is the
+world block-mutation contract; after the ownership refactors and independent
+review gate, run the pinned Mineflayer 1.21.4 real-use scenarios. No Mineflayer
+result or overall quality score is claimed by this checkpoint.
 
 ## 2. Prior plan48 and cleanup record
 

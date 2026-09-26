@@ -320,6 +320,10 @@ tests/          unit, wire, integration, compatibility, and load tests
 tools/          capture, verification, benchmarking, and diagnostics
 ```
 
+`GameServer` is the composition root. Each supported dimension has a
+`DimensionRuntime` that groups its world with block entities, simulation
+services, persistence, and dimension-local dispenser/rail state.
+
 For ownership, implementation details, and evidence maintenance, see the
 [development guide](docs/DEVELOPMENT.md).
 

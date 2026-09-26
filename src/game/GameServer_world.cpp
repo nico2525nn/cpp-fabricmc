@@ -413,10 +413,10 @@ static bool loadPlayerNBT(const std::string& path, Player& p) {
 }
 
 void GameServer::saveLevelData() {
-    persist_->saveLevelData(tickNo_, dayTime());
+    persistence().saveLevelData(tickNo_, dayTime());
 }
 void GameServer::loadLevelData() {
-    persist_->loadLevelData();
+    persistence().loadLevelData();
 }
 void GameServer::savePlayerData(const std::string& uuidHex, Player& p) {
     const std::string path = cfg_.worldDir + "/playerdata/" + uuidHex + ".dat";
@@ -629,15 +629,15 @@ void GameServer::broadcastWorldBorder() {
     for (auto& p : playersSnapshot()) {
         if (p) sendWorldBorderTo(*p);
     }
-    if (persist_) {
+    if (auto* persistence = persistenceFor(0)) {
         if (worldBorderLerpRemainingTicks_ > 0) {
             double cur = worldBorderDiameter_;
-            persist_->setWorldBorder(cur, worldBorderCenterX_, worldBorderCenterZ_);
-            persist_->setWorldBorderLerp(cur, worldBorderLerpTo_, worldBorderLerpRemainingTicks_);
+            persistence->setWorldBorder(cur, worldBorderCenterX_, worldBorderCenterZ_);
+            persistence->setWorldBorderLerp(cur, worldBorderLerpTo_, worldBorderLerpRemainingTicks_);
         } else {
-            persist_->setWorldBorder(worldBorderDiameter_, worldBorderCenterX_, worldBorderCenterZ_);
+            persistence->setWorldBorder(worldBorderDiameter_, worldBorderCenterX_, worldBorderCenterZ_);
         }
-        persist_->saveLevelData(tickNo_, dayTime());
+        persistence->saveLevelData(tickNo_, dayTime());
     }
 }
 std::string GameServer::dispatchConsole(const std::string& line) {
@@ -835,12 +835,7 @@ void GameServer::pollPendingLoads() {
                          static_cast<int>(dimension), cx, cz);
         }
         World& loadedWorld = worldFor(dimension);
-        Persistence* persistence = nullptr;
-        if (dimension == 0) {
-            persistence = persist_.get();
-        } else {
-            persistence = dimPersist_[dimension == -1 ? 0 : 1].get();
-        }
+        Persistence* persistence = persistenceFor(dimension);
         if (!bytes.empty()) {
             try {
                 Chunk chunk;
