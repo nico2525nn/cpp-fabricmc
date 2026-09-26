@@ -293,13 +293,14 @@ void GameServer::tickOnce() {
     events().serverTick.fire(ev);
     if (jvmRuntime_) jvmRuntime_->onServerTick(tickNo_);
     drainServerThreadTasks();
-    fluidSim_->tick(tickNo_);
-    redstone_->tick(tickNo_);
-    if (blockTicks_) blockTicks_->tick(tickNo_);
+    fluidsFor(0).tick(tickNo_);
+    redstoneFor(0).tick(tickNo_);
+    if (auto* scheduler = blockTicks()) scheduler->tick(tickNo_);
     for (int i = 0; i < 2; ++i) {
-        dimFluidSim_[i]->tick(tickNo_);
-        dimRedstone_[i]->tick(tickNo_);
-        dimBlockTicks_[i]->tick(tickNo_);
+        const std::int8_t dimension = i == 0 ? -1 : 1;
+        fluidsFor(dimension).tick(tickNo_);
+        redstoneFor(dimension).tick(tickNo_);
+        blockTicksFor(dimension).tick(tickNo_);
     }
     craftersTick();
     tickDigs();
@@ -352,10 +353,10 @@ void GameServer::tickOnce() {
             });
         }
     };
-    drainLight(0, *lightEngine_, world_);
+    drainLight(0, lightsFor(0), worldFor(0));
     for (int i = 0; i < 2; ++i)
-        drainLight(i == 0 ? -1 : 1, *dimLightEngine_[i],
-                   *worlds_[i + 1]);
+        drainLight(i == 0 ? -1 : 1, lightsFor(i == 0 ? -1 : 1),
+                   worldFor(i == 0 ? -1 : 1));
 
     // periodic progress save every 20 s (play_time accrual + crash safety)
     if (tickNo_ % 400 == 0) {
@@ -371,7 +372,7 @@ void GameServer::tickOnce() {
     // level.dat periodic save every 6000 ticks (~5 min) + also 1200 (~1 min) for safety — single level.dat (W16)
     if (tickNo_ % 6000 == 0 && tickNo_ != 0) {
         try {
-            persist_->saveLevelData(tickNo_, dayTime());
+            persistence().saveLevelData(tickNo_, dayTime());
         } catch (const std::exception& e) {
             std::fprintf(stderr, "[cppfm] periodic level.dat save failed: %s\n", e.what());
         } catch (...) {
@@ -380,7 +381,7 @@ void GameServer::tickOnce() {
         std::fprintf(stderr, "[cppfm] periodic level.dat save t=%ld\n", (long)tickNo_);
     } else if (tickNo_ % 1200 == 0 && tickNo_ != 0) {
         try {
-            persist_->saveLevelData(tickNo_, dayTime());
+            persistence().saveLevelData(tickNo_, dayTime());
         } catch (const std::exception& e) {
             std::fprintf(stderr, "[cppfm] periodic level.dat save failed: %s\n", e.what());
         } catch (...) {
@@ -390,7 +391,8 @@ void GameServer::tickOnce() {
     // WorldBorder lerp tick interpolation — Yarn WorldBorder.tick()
     {
         bool changed = tickWorldBorder();
-        if (persist_) changed |= persist_->tickWorldBorder();
+        if (auto* persistence = persistenceFor(0))
+            changed |= persistence->tickWorldBorder();
         if (changed && tickNo_ % 20 == 0) {
             // periodically broadcast interpolated size to keep client in sync (lerp packet)
             broadcastWorldBorder();
@@ -495,9 +497,9 @@ void GameServer::drainPendingStructureQueues() {
             }
         }
     };
-    process(world_, 0);
-    if(netherWorld_) process(*netherWorld_, -1);
-    if(endWorld_) process(*endWorld_, 1);
+    process(worldFor(0), 0);
+    process(worldFor(-1), -1);
+    process(worldFor(1), 1);
 }
 bool GameServer::isChunkInSimulationDistanceFor(std::int8_t dimension,
                                                 std::int32_t cx,
@@ -628,11 +630,11 @@ void GameServer::chunksUnloadTick() {
             }
         }
     };
-    doWorld(world_, persist_.get(), 0);
+    doWorld(worldFor(0), persistenceFor(0), 0);
     for (int d = 0; d < 2; ++d) {
         World &w = worldFor(d == 0 ? -1 : 1);
-        Persistence *pp = dimPersist_[d] ? dimPersist_[d].get() : nullptr;
-        doWorld(w, pp, d == 0 ? -1 : 1);
+        const std::int8_t dimension = d == 0 ? -1 : 1;
+        doWorld(w, persistenceFor(dimension), dimension);
     }
 }
 void GameServer::broadcastBlockChange(std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t state) {

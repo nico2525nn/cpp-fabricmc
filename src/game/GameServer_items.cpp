@@ -510,8 +510,8 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
     auto& dimensionRedstone = redstoneFor(dimension);
     auto& dimensionFluids = fluidsFor(dimension);
     auto& dimensionBlockTicks = blockTicksFor(dimension);
-    auto& dimensionDispenserPower = dispenserPowerByDimension_[
-        dimension == 0 ? 0 : (dimension < 0 ? 1 : 2)];
+    auto& dimensionDispenserPower =
+        dimensionRuntimeForStateMap(dimension).dispenserPowerByPosition;
     auto broadcastPacketExcept = [this, dimension](
         const Player* except, std::uint8_t id, const WriteBuffer& body) {
         this->broadcastPacketExceptInDimension(dimension, except, id, body);
@@ -3238,9 +3238,8 @@ void GameServer::minecartsTick() {
         }
         // Detector rail: powered when cart on it
         if (found && railName=="minecraft:detector_rail") {
-            poweredDetectorRailsByDimension_[dimension == 0 ? 0 :
-                                             (dimension < 0 ? 1 : 2)]
-                .insert(posKey(rx, ry, rz));
+            dimensionRuntimeForStateMap(dimension).poweredDetectorRails.insert(
+                posKey(rx, ry, rz));
             bool curPowered=false;
             for (auto &pr : gen::propsOf(railState)) if (pr.first=="powered" && pr.second=="true") curPowered=true;
             bool wantPowered = true; // cart present implies powered
@@ -3388,7 +3387,7 @@ void GameServer::minecartsTick() {
             (dimIndex == 1 ? static_cast<std::int8_t>(-1) :
                              static_cast<std::int8_t>(1));
         World& world = worldFor(dimension);
-        auto& known = poweredDetectorRailsByDimension_[dimIndex];
+        auto& known = dimensionRuntimeAtIndex(dimIndex).poweredDetectorRails;
         for (auto it = known.begin(); it != known.end();) {
             const auto key = *it;
             const int nx = posKeyUnpackX(key);

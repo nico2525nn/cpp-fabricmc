@@ -308,7 +308,8 @@ void GameServer::initWorldCommandsPart06() {
         sz->executable = true;
         sz->action = [this](CommandContext& c) {
             worldBorderDiameter_ = c.arg("diameter").asDouble();
-            if (persist_) persist_->setWorldBorder(worldBorderDiameter_, worldBorderCenterX_, worldBorderCenterZ_);
+            if (auto* persistence = persistenceFor(0))
+                persistence->setWorldBorder(worldBorderDiameter_, worldBorderCenterX_, worldBorderCenterZ_);
             broadcastWorldBorder();
             // also send Center and LerpSize for spec compliance
             for (auto& p : playersSnapshot()) {
@@ -1244,7 +1245,8 @@ void GameServer::initWorldCommandsPart18() {
         diam->action = [this](CommandContext& c) {
             Player* src = static_cast<Player*>(c.source.player);
             worldBorderDiameter_ = c.arg("diameter").asDouble();
-            if (persist_) persist_->setWorldBorder(worldBorderDiameter_, worldBorderCenterX_, worldBorderCenterZ_);
+            if (auto* persistence = persistenceFor(0))
+                persistence->setWorldBorder(worldBorderDiameter_, worldBorderCenterX_, worldBorderCenterZ_);
             broadcastWorldBorder();
             sendFeedback(src, "Set world border to " + std::to_string(worldBorderDiameter_) + " blocks wide");
             return 1;
@@ -1259,7 +1261,8 @@ void GameServer::initWorldCommandsPart18() {
             Player* src = static_cast<Player*>(c.source.player);
             worldBorderCenterX_ = c.arg("centerX").asDouble();
             worldBorderCenterZ_ = c.arg("centerZ").asDouble();
-            if (persist_) persist_->setWorldBorder(worldBorderDiameter_, worldBorderCenterX_, worldBorderCenterZ_);
+            if (auto* persistence = persistenceFor(0))
+                persistence->setWorldBorder(worldBorderDiameter_, worldBorderCenterX_, worldBorderCenterZ_);
             broadcastWorldBorder();
             sendFeedback(src, "Set world border center to " +
                          std::to_string(worldBorderCenterX_) + ", " +
@@ -1275,7 +1278,8 @@ void GameServer::initWorldCommandsPart18() {
         delta->action = [this](CommandContext& c) {
             Player* src = static_cast<Player*>(c.source.player);
             worldBorderDiameter_ = std::clamp(worldBorderDiameter_ + c.arg("delta").asDouble(), 1.0, 59999968.0);
-            if (persist_) persist_->setWorldBorder(worldBorderDiameter_, worldBorderCenterX_, worldBorderCenterZ_);
+            if (auto* persistence = persistenceFor(0))
+                persistence->setWorldBorder(worldBorderDiameter_, worldBorderCenterX_, worldBorderCenterZ_);
             broadcastWorldBorder();
             sendFeedback(src, "Set world border to " + std::to_string(worldBorderDiameter_) + " blocks wide");
             return 1;
