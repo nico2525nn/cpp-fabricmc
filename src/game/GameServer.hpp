@@ -514,15 +514,6 @@ class GameServer {
     const DimensionRuntime& dimensionRuntime(std::int8_t dimension) const {
         return *dimensionRuntimes_[dimensionRuntimeIndex(dimension)];
     }
-    DimensionRuntime& dimensionRuntimeAtIndex(std::size_t index) {
-        return *dimensionRuntimes_[index];
-    }
-    // These two legacy maps historically used 0/negative/positive -> 0/1/2.
-    // Preserve that exact selector while storing each map in its runtime.
-    DimensionRuntime& dimensionRuntimeForStateMap(std::int8_t dimension) {
-        const std::size_t index = dimension == 0 ? 0 : (dimension < 0 ? 1 : 2);
-        return dimensionRuntimeAtIndex(index);
-    }
     Persistence* persistenceFor(std::int8_t dimension) {
         return dimensionRuntime(canonicalDimension(dimension)).persistence.get();
     }

@@ -511,7 +511,7 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
     auto& dimensionFluids = fluidsFor(dimension);
     auto& dimensionBlockTicks = blockTicksFor(dimension);
     auto& dimensionDispenserPower =
-        dimensionRuntimeForStateMap(dimension).dispenserPowerByPosition;
+        dimensionRuntime(dimension).dispenserPowerByPosition;
     auto broadcastPacketExcept = [this, dimension](
         const Player* except, std::uint8_t id, const WriteBuffer& body) {
         this->broadcastPacketExceptInDimension(dimension, except, id, body);
@@ -3238,7 +3238,7 @@ void GameServer::minecartsTick() {
         }
         // Detector rail: powered when cart on it
         if (found && railName=="minecraft:detector_rail") {
-            dimensionRuntimeForStateMap(dimension).poweredDetectorRails.insert(
+            dimensionRuntime(dimension).poweredDetectorRails.insert(
                 posKey(rx, ry, rz));
             bool curPowered=false;
             for (auto &pr : gen::propsOf(railState)) if (pr.first=="powered" && pr.second=="true") curPowered=true;
@@ -3382,12 +3382,10 @@ void GameServer::minecartsTick() {
     // Clear every detector rail we have touched when no cart remains on its
     // exact block.  This also handles the final cart being removed or moved
     // between ticks, which a scan around current cart positions cannot see.
-    for (int dimIndex = 0; dimIndex < 3; ++dimIndex) {
-        const std::int8_t dimension = dimIndex == 0 ? 0 :
-            (dimIndex == 1 ? static_cast<std::int8_t>(-1) :
-                             static_cast<std::int8_t>(1));
+    constexpr std::array<std::int8_t, 3> dimensions{0, -1, 1};
+    for (const std::int8_t dimension : dimensions) {
         World& world = worldFor(dimension);
-        auto& known = dimensionRuntimeAtIndex(dimIndex).poweredDetectorRails;
+        auto& known = dimensionRuntime(dimension).poweredDetectorRails;
         for (auto it = known.begin(); it != known.end();) {
             const auto key = *it;
             const int nx = posKeyUnpackX(key);
