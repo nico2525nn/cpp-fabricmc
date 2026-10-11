@@ -16,6 +16,7 @@
 #include "../core/Json.hpp"
 #include "../platform/Socket.hpp"
 #include "RconConfig.hpp"
+#include "platform/StorageFileOps.hpp"
 
 namespace cppfm {
 
@@ -308,26 +309,33 @@ class Whitelist {
 public:
     void load(const std::string& path) {
         names_.clear();
-        std::ifstream f(path);
-        enabled_ = f.good();
-        if (!f) return;
-        std::string content;
-        if (!readBoundedTextFile(path, content)) {
-            std::fprintf(stderr, "[Whitelist] refusing unreadable or oversized %s\n",
-                         path.c_str());
+        std::vector<std::uint8_t> bytes;
+        std::error_code readError;
+        const auto readStatus = storage_file_ops::readRegularFileBounded(
+            path, json::Value::kMaxInputBytes, bytes, readError);
+        enabled_ = readStatus !=
+                   storage_file_ops::BoundedReadStatus::Missing;
+        if (readStatus != storage_file_ops::BoundedReadStatus::Read) {
+            if (enabled_)
+                std::fprintf(stderr,
+                             "[Whitelist] refusing non-regular, unreadable, or oversized %s\n",
+                             path.c_str());
             return;
         }
+        const std::string content(bytes.begin(), bytes.end());
         try {
             const auto root = json::Value::parse(content);
             if (!root.isArr()) {
                 throw std::runtime_error("whitelist root must be an array");
             }
+            std::set<std::string> loadedNames;
             for (const auto& entry : root.arr) {
                 if (!entry.isObj()) continue;
                 const auto* name = entry.find("name");
                 if (name && name->isStr() && !name->str.empty())
-                    names_.insert(name->str);
+                    loadedNames.insert(name->str);
             }
+            names_.swap(loadedNames);
         } catch (const std::exception& e) {
             std::fprintf(stderr, "[Whitelist] ignoring malformed %s: %s\n",
                          path.c_str(), e.what());
@@ -356,31 +364,54 @@ public:
             root.push(std::move(entry));
         }
         const std::string serialized = root.dump() + "\n";
-        const std::string temporary = path + ".new";
-        std::ofstream f(temporary, std::ios::binary | std::ios::trunc);
-        if (!f) {
-            std::fprintf(stderr, "[Whitelist] could not write %s\n", path.c_str());
+        if (serialized.size() > json::Value::kMaxInputBytes) {
+            std::fprintf(stderr, "[Whitelist] refusing oversized %s\n",
+                         path.c_str());
             return false;
         }
-        f.write(serialized.data(), static_cast<std::streamsize>(serialized.size()));
-        f.flush();
-        if (!f) {
+        const std::filesystem::path destination(path);
+        std::filesystem::path temporary;
+        bool temporaryCreated = false;
+        const auto parent = destination.parent_path();
+        const auto cleanupTemporary = [&] {
+            if (!temporaryCreated) return;
             std::error_code cleanupError;
             std::filesystem::remove(temporary, cleanupError);
-            std::fprintf(stderr, "[Whitelist] write failed for %s\n", path.c_str());
-            return false;
+            if (!cleanupError) temporaryCreated = false;
+        };
+        try {
+            if (!parent.empty()) {
+                std::error_code directoryError;
+                if (!storage_file_ops::createDirectoriesDurably(
+                        parent, directoryError))
+                    throw std::filesystem::filesystem_error(
+                        "create durable whitelist directory", parent,
+                        directoryError);
+            }
+            std::error_code writeError;
+            if (!storage_file_ops::writeFileToNewSibling(
+                    path + ".new", serialized.data(), serialized.size(),
+                    temporary, writeError, &temporaryCreated, 0600))
+                throw std::system_error(writeError,
+                                        "write whitelist temporary file");
+            std::error_code replaceError;
+            if (!storage_file_ops::replaceFile(temporary, destination,
+                                               replaceError))
+                throw std::system_error(replaceError, "replace whitelist file");
+            temporaryCreated = false;
+            if (!storage_file_ops::syncDirectory(parent))
+                throw std::runtime_error("could not sync whitelist directory");
+            return true;
+        } catch (const std::exception& error) {
+            cleanupTemporary();
+            std::fprintf(stderr, "[Whitelist] save failed for %s: %s\n",
+                         path.c_str(), error.what());
+        } catch (...) {
+            cleanupTemporary();
+            std::fprintf(stderr, "[Whitelist] save failed for %s\n",
+                         path.c_str());
         }
-        f.close();
-        std::error_code ec;
-        std::filesystem::rename(temporary, path, ec);
-        if (ec) {
-            std::error_code cleanupError;
-            std::filesystem::remove(temporary, cleanupError);
-            std::fprintf(stderr, "[Whitelist] replace failed for %s: %s\n",
-                         path.c_str(), ec.message().c_str());
-            return false;
-        }
-        return true;
+        return false;
     }
 
 private:

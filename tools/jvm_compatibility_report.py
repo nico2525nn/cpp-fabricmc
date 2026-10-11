@@ -213,10 +213,11 @@ REQUIRED_PHASES: dict[str, list[str]] = {
     "01": ["entrypoint"],
     "02": ["dependency"],
     "03": [
-        "server-starting", "world-load-minecraft:overworld", "server-started",
+        "server-starting", "server-starting-before-world-load",
+        "world-load-minecraft:overworld", "server-started",
         "packet-buffer", "tick-start-1", "tick-end-1", "command-cancel-callback",
-        "command-cancel-return-true", "world-unload",
-        "server-stopping", "server-stopped",
+        "command-cancel-return-true", "server-stopping", "world-unload",
+        "server-stopped",
     ],
     "04": ["world-state-before"],
     "05": ["empty-entity-boundary"],
@@ -293,9 +294,10 @@ def validate_evidence(
             errors.append(f"case {case}: callback order mismatch for {' < '.join(phases)}")
 
     require_order("03", [
-        "server-starting", "world-load-minecraft:overworld", "server-started",
+        "server-starting", "server-starting-before-world-load",
+        "world-load-minecraft:overworld", "server-started",
         "tick-start-1", "tick-end-1", "command-cancel-callback",
-        "command-cancel-return-true", "world-unload", "server-stopping",
+        "command-cancel-return-true", "server-stopping", "world-unload",
         "server-stopped",
     ])
     require_order("21", ["order-first", "order-second"])

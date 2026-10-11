@@ -28,7 +28,7 @@ main references are:
 
 | Area | Coverage |
 |---|---|
-| Network protocol | Status ping, login, online-mode encryption, configuration, play state, chunk streaming, batching, cookies, resource packs, transfer, plugin channels, and signed chat verification |
+| Network protocol | Status ping, login, online-mode encryption, configuration, play state, chunk streaming, batching, resource packs, transfer, plugin channels, and signed chat verification; cookie packet support is partial (responses are consumed but no outbound request/store flow is implemented) |
 | World and persistence | Anvil region files, `level.dat`, block entities, per-cell biomes, chunk loading/unloading, and interoperability with vanilla world data |
 | World generation | Multi-noise biomes, density functions, Nether and End terrain, ores, configured/placed features, and common structures |
 | Simulation | Block and fluid ticks, lighting, weather, redstone, pistons, rails, explosions, fire, portals, and world borders |
@@ -55,7 +55,10 @@ general-purpose arbitrary-mod loader.
   fails open to the native server when they are unavailable. A binary built
   without JNI remains native-only until rebuilt; arbitrary Fabric mods, the
   Mojang GameProvider, and the official client are outside the compatibility
-  claim.
+  claim. Selected JNI callbacks can overlap across session and tick threads;
+  native world mutations are queued to the server thread, but Fabric's exact
+  callback thread affinity is not reproduced and mod-owned callback state must
+  tolerate concurrency.
 - The full gameplay harness reports `806 PASS / 0 FAIL / 806`; its output still
   names arbitrary Java-extension execution as a declared limitation.
 - Enchanting and crafter behavior have focused coverage, but their bounded
@@ -88,10 +91,11 @@ The latest recorded runs include:
 - Java compatibility checks: the bounded historical fixture corpus is `25/25`; its
   harness also passes the auxiliary functional API fixture, the standalone Shadow
   ABI gate passes, and the offline pinned Loader/Knot probe passes.
-- The 2026-09-19 integrated rerun is non-nightly CTest `45/45 PASS`
-  in `394.71s`, with the properties matrix `33 PASS`, lifecycle matrix `8/8 PASS`,
-  multi-client `ALL PASS` in `17.48s`, and bot smoke
-  `ALL PASS` in `20.82s`. The release-specific `package_jvm_smoke` gate is separate: it
+- A historical 2026-09-19 integrated run passed the then-current non-nightly
+  CTest set (`45/45` in `394.71s`), properties matrix (`33 PASS`), lifecycle
+  matrix (`8/8 PASS`), multi-client test, and bot smoke. That 45-test count is
+  not the current suite size; later changes added coverage. The release-specific
+  `package_jvm_smoke` gate is separate: it
   passed against the exact CPack ZIP after clean extraction, with default-on
   strict JVM startup and embedded classes/assets verified. The locally generated
   ignored Linux CPack output contains exactly one executable; its clean
@@ -118,7 +122,8 @@ The latest recorded runs include:
   60-second post-review soak had 0 disconnects and 1.0% post-fill RSS growth;
   300-, 600-, and 1800-second diagnostic runs also passed. Longer-run and real-client
   limitations remain as listed above.
-- The explicit no-JNI configure/build and its `42/42` non-package CTest set,
+- A historical explicit no-JNI configure/build and its then-current `42/42`
+  non-package CTest set (not the current suite size),
   plus the four-binary ASan/UBSan key set
   (`core_safety`, `spec_wire`, `fuzz`, and `gameplay_full`) also pass.
 - Real-client check: the mc-pilot-managed Fabric 1.21.4 client logged in offline,
@@ -152,6 +157,8 @@ Requirements:
 
 - C++20 compiler
 - CMake 3.20 or newer and Ninja (or another supported CMake generator)
+- `curl` on `PATH` for Mojang session authentication when `online-mode=true`
+  (the default); an explicitly offline test does not require it
 - Python 3 for the self-contained resource pack; the `package` target refuses
   to create a release-looking archive when the pack is unavailable
 - JDK 17 or newer, available at configure/build time, for the embedded

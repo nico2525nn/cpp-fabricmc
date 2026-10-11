@@ -113,6 +113,10 @@ public:
 
     struct Position { double x = 8.5, y = -60.0, z = 8.5; };
     Position positionSnapshot() const;
+    std::int32_t entityId() const {
+        std::lock_guard lock(mtx_);
+        return entityId_;
+    }
 
     std::uint16_t localPort() const { return localPort_; }
 

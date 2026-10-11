@@ -20,6 +20,7 @@ import net.minecraft.nbt.NbtCompound;
 import net.minecraft.util.collection.DefaultedList;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.Hand;
+import net.minecraft.util.NativeAccess;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.random.Random;
 import net.minecraft.world.ServerWorldAccess;
@@ -28,6 +29,19 @@ import net.minecraft.world.WorldAccess;
 
 /** 1.21.4 mob superclass ABI shared by hostile and passive entities. */
 public class MobEntity extends LivingEntity {
+    public static MobEntity of(long handle) {
+        if (handle == 0L) return null;
+        net.minecraft.entity.Entity entity = net.minecraft.entity.Entity.of(handle);
+        return entity instanceof MobEntity mob ? mob : null;
+    }
+
+    public static MobEntity createNativeWrapper(long handle) {
+        String typeId = NativeAccess.entityType(handle);
+        return new MobEntity(handle,
+            World.of(NativeAccess.entityWorld(handle)),
+            EntityType.byId(typeId));
+    }
+
     protected GoalSelector targetSelector = new GoalSelector();
     protected GoalSelector goalSelector = new GoalSelector();
     protected boolean persistent;

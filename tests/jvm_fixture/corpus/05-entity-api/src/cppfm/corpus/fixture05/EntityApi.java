@@ -20,11 +20,22 @@ public final class EntityApi implements DedicatedServerModInitializer {
             ServerWorld world = server.getOverworld();
             Entity noHandle = Entity.of(0);
             ServerPlayerEntity noPlayer = ServerPlayerEntity.of(0);
-            boolean ok = noHandle == null && noPlayer == null
-                && world.getPlayers().isEmpty()
-                && server.getPlayerManager().getPlayerList().isEmpty()
-                && !world.spawnEntity(null) && !world.addEntity(null);
-            result("empty-entity-boundary", ok);
+            boolean entityFactoryEmpty = noHandle == null;
+            boolean playerFactoryEmpty = noPlayer == null;
+            boolean worldPlayersEmpty = world.getPlayers().isEmpty();
+            boolean serverPlayersEmpty = server.getPlayerManager().getPlayerList().isEmpty();
+            boolean spawnNullRejected = !world.spawnEntity(null);
+            boolean addNullRejected = !world.addEntity(null);
+
+            result("entity-of-zero", entityFactoryEmpty);
+            result("server-player-of-zero", playerFactoryEmpty);
+            result("world-player-list-empty", worldPlayersEmpty);
+            result("server-player-list-empty", serverPlayersEmpty);
+            result("spawn-entity-null-rejected", spawnNullRejected);
+            result("add-entity-null-rejected", addNullRejected);
+            result("empty-entity-boundary", entityFactoryEmpty && playerFactoryEmpty
+                && worldPlayersEmpty && serverPlayersEmpty && spawnNullRejected
+                && addNullRejected);
         });
     }
 }

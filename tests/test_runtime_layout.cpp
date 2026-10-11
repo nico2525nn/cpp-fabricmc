@@ -82,7 +82,59 @@ bool hasExpectedFirstRunProperties(const std::filesystem::path& path) {
 
 } // namespace
 
-int main() {
+int testSymlinkParentRejection() {
+    const auto suffix = std::chrono::steady_clock::now()
+                            .time_since_epoch().count();
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("cppfm-runtime-layout-symlink-" +
+                       std::to_string(suffix));
+    const auto outside = root.parent_path() /
+                         (root.filename().string() + "-outside");
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::remove_all(outside, ec);
+    std::filesystem::create_directories(outside, ec);
+    if (ec) return 1;
+    std::filesystem::create_directories(root, ec);
+    if (ec) return 1;
+    const auto symlinkPath = root / (cppfm::embedded::kHasPack
+        ? "assets" : ".cppfm");
+    std::filesystem::create_directory_symlink(outside, symlinkPath, ec);
+    if (ec) {
+        const auto symlinkError = ec;
+        std::filesystem::remove_all(root, ec);
+        std::filesystem::remove_all(outside, ec);
+        if (symlinkError == std::make_error_code(std::errc::permission_denied) ||
+            symlinkError == std::make_error_code(
+                std::errc::operation_not_permitted)) {
+            std::cout << "runtime layout symlink-parent: SKIP "
+                         "(directory symlinks unavailable)\n";
+            return 0;
+        }
+        std::cerr << "could not create symlink fixture: "
+                  << symlinkError.message() << '\n';
+        return 1;
+    }
+    std::filesystem::path selected = root;
+    std::string error;
+    const bool prepared = cppfm::RuntimeLayout::prepare(selected, &error);
+    const bool escaped = cppfm::embedded::kHasPack
+        ? std::filesystem::exists(outside / "registry" / "tags.bin")
+        : std::filesystem::exists(outside / "server.lock");
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::remove_all(outside, ec);
+    if (prepared || escaped || error.find("symlink") == std::string::npos) {
+        std::cerr << "runtime layout followed a symlinked directory parent: "
+                  << error << '\n';
+        return 1;
+    }
+    std::cout << "runtime layout symlink-parent: PASS\n";
+    return 0;
+}
+
+int main(int argc, char** argv) {
+    if (argc == 2 && std::string_view(argv[1]) == "--symlink-parent")
+        return testSymlinkParentRejection();
     const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
     const auto root = std::filesystem::temp_directory_path() /
                       ("cppfm-runtime-layout-" + std::to_string(suffix));

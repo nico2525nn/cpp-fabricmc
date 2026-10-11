@@ -1,5 +1,6 @@
 package net.minecraft.server.network;
 
+import cppfm.bridge.NativeBridge;
 import net.minecraft.network.packet.Packet;
 import net.minecraft.text.Text;
 import net.fabricmc.fabric.api.networking.v1.PacketSender;
@@ -50,7 +51,15 @@ public class ServerPlayNetworkHandler extends ServerCommonNetworkHandler {
     public void disconnect(Text reason) {
         if (disconnected) return;
         disconnected = true;
-        if (player != null) player.sendMessage(reason, false);
+        if (player == null) return;
+        String message = reason == null ? "Disconnected" : reason.getString();
+        try {
+            if (NativeBridge.nativePlayerDisconnect(
+                    player.nativeHandle(), message)) return;
+        } catch (LinkageError | RuntimeException ignored) {
+            // Java-only fixtures and standalone API tests have no native server.
+        }
+        player.sendMessage(reason, false);
     }
     public boolean isConnectionOpen() { return player != null && !disconnected && !player.isRemoved(); }
     public boolean isDisconnected() { return disconnected; }

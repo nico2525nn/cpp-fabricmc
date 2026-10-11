@@ -33,16 +33,27 @@ std::uint64_t NativeHandleTable::registerObject(void* address, HandleKind kind) 
     // reused id could make an old Java wrapper alias a new native object.
     constexpr std::uint64_t kMaxId = 0xFFFFFFFFFFULL;
     if (nextId_ == 0 || nextId_ > kMaxId) return 0;
-    const std::uint64_t id = nextId_++;
+    const std::uint64_t id = nextId_;
     // IDs are not recycled during a server lifetime.  This makes a stale Java
     // handle fail closed even if an allocator reuses the same C++ address.
-    auto& lastGeneration = generations_[key];
-    const std::uint16_t generation = lastGeneration == 0 || lastGeneration == 0xFFFF
-        ? 1 : static_cast<std::uint16_t>(lastGeneration + 1);
-    lastGeneration = generation;
+    constexpr std::uint16_t generation = 1;
     const std::uint64_t handle = encode(id, kind, generation);
-    byAddress_.emplace(key, handle);
-    byHandle_.emplace(handle, HandleRecord{address, kind, generation});
+    const auto [addressEntry, addressInserted] = byAddress_.emplace(key, handle);
+    if (!addressInserted) return addressEntry->second;
+    try {
+        const auto [handleEntry, handleInserted] = byHandle_.emplace(
+            handle, HandleRecord{address, kind, generation});
+        (void)handleEntry;
+        if (!handleInserted) {
+            byAddress_.erase(addressEntry);
+            nextId_ = id + 1;
+            return 0;
+        }
+    } catch (...) {
+        byAddress_.erase(addressEntry);
+        throw;
+    }
+    nextId_ = id + 1;
     return handle;
 }
 
@@ -93,22 +104,6 @@ NativeHandleTable::ScopedResolution NativeHandleTable::acquire(
     return ScopedResolution(std::move(lock), it->second);
 }
 
-std::optional<HandleRecord> NativeHandleTable::describe(std::uint64_t handle) const {
-    if (!handle) return std::nullopt;
-    std::lock_guard lock(mutex_);
-    const auto it = byHandle_.find(handle);
-    if (it == byHandle_.end()) return std::nullopt;
-    if (idOf(handle) == 0 || kindOf(handle) != it->second.kind ||
-        generationOf(handle) != it->second.generation)
-        return std::nullopt;
-    return it->second;
-}
-
-void* NativeHandleTable::resolve(std::uint64_t handle, HandleKind expected) const {
-    auto resolution = acquire(handle, expected);
-    return resolution.get();
-}
-
 bool NativeHandleTable::valid(std::uint64_t handle, HandleKind expected) const {
     return static_cast<bool>(acquire(handle, expected));
 }
@@ -127,7 +122,6 @@ void NativeHandleTable::clear() {
     std::lock_guard lock(mutex_);
     byAddress_.clear();
     byHandle_.clear();
-    generations_.clear();
 }
 
 } // namespace cppfm::jvm

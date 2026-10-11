@@ -164,8 +164,8 @@ BTStatus TeleportRandomAction::tick(MobEntity& m, AiContext& ctx, std::int64_t n
                 x, y, z, 1.f, 1.f, "hostile");
             const WriteBuffer tp = makeEntityTeleportBody(
                 entityId, x, y, z, 0.0, 0.0, 0.0, yaw, 0.0f, 0, true);
-            ctx.srv->broadcastPacketExceptInDimension(
-                dimension, nullptr, proto::pl::sc::EntityTeleport, tp);
+            ctx.srv->broadcastMobPositionUpdate(
+                m, proto::pl::sc::EntityTeleport, tp);
             for (int i=0; i<8; ++i) {
                 const WriteBuffer pt = makeWorldParticlesBody(
                     oldX + (nextRandom()/(double)RAND_MAX-0.5)*1.5,
@@ -188,9 +188,10 @@ BTStatus TeleportRandomAction::tick(MobEntity& m, AiContext& ctx, std::int64_t n
                 world->generateChunkIfMissing(ix>>4, iz>>4);
             })) return BTStatus::Failure;
         // try around iy first, fall back to column search if needed
+        const auto geometry = world->verticalGeometry();
         for (int dy=-4; dy<=4; ++dy) {
             int tryY = iy + dy;
-            if (tryY < kMinY || tryY > kMinY+320) continue;
+            if (tryY < geometry.minY || tryY >= geometry.maxY() - 1) continue;
             std::uint16_t a1 = world->getBlock(ix, tryY, iz);
             std::uint16_t a2 = world->getBlock(ix, tryY+1, iz);
             std::uint16_t below = world->getBlock(ix, tryY-1, iz);
@@ -208,21 +209,32 @@ BTStatus TeleportRandomAction::tick(MobEntity& m, AiContext& ctx, std::int64_t n
                 // packets were emitted.  Do not overwrite its new state.
                 if (m.entityId == entityId &&
                     canonicalDimension(m.dimension) == dimension &&
-                    m.x == newX && m.y == newY && m.z == newZ)
+                    m.x == newX && m.y == newY && m.z == newZ) {
+                    m.recordPositionSent();
                     m.lastTeleportTick = now;
+                }
                 return BTStatus::Success;
             }
         }
         // fallback column search if not found around ny
-        int col = 4;
+        int feetY = geometry.minY + 4;
         bool found=false;
         if (!withoutMobStateLock(m, [&] {
                 world->withChunk(ix>>4, iz>>4,[&](const Chunk& c){
-                    for(int ry=kSectionsPerChunk*16-1; ry>=0; --ry) if(c.blocks[Chunk::index(ry>>4, ry&15, iz&15, ix&15)]!=0){col=ry+1; found=true; break;}
+                    for (int y = geometry.maxY() - 1;
+                         y >= geometry.minY; --y) {
+                        const int storageY = y - kMinY;
+                        if (c.blockAt(Chunk::index(storageY >> 4,
+                                                   storageY & 15,
+                                                   iz & 15, ix & 15)) != 0) {
+                            feetY = y + 1;
+                            found = true;
+                            break;
+                        }
+                    }
                 });
             })) return BTStatus::Failure;
         if(!found) continue;
-        int feetY = kMinY + col;
         std::uint16_t a1 = world->getBlock(ix, feetY, iz);
         std::uint16_t a2 = world->getBlock(ix, feetY+1, iz);
         std::uint16_t below = world->getBlock(ix, feetY-1, iz);
@@ -238,8 +250,10 @@ BTStatus TeleportRandomAction::tick(MobEntity& m, AiContext& ctx, std::int64_t n
                     ox, oy, oz)) return BTStatus::Failure;
             if (m.entityId == entityId &&
                 canonicalDimension(m.dimension) == dimension &&
-                m.x == newX && m.y == newY && m.z == newZ)
+                m.x == newX && m.y == newY && m.z == newZ) {
+                m.recordPositionSent();
                 m.lastTeleportTick = now;
+            }
             return BTStatus::Success;
         }
     }
@@ -601,15 +615,25 @@ BTStatus WanderAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
         withoutMobStateLock(m, [&] {
             world->generateChunkIfMissing(chunkX, chunkZ);
         });
-        int col=4;
+        const auto geometry = world->verticalGeometry();
+        int feetY = geometry.minY + 4;
         withoutMobStateLock(m, [&] {
             world->withChunk(chunkX, chunkZ,[&](const Chunk& c){
-                for(int ry=kSectionsPerChunk*16-1; ry>=0; --ry) if(c.blocks[Chunk::index(ry>>4, ry&15, blockZ&15, blockX&15)]!=0){col=ry+1;break;}
+                for (int y = geometry.maxY() - 1;
+                     y >= geometry.minY; --y) {
+                    const int storageY = y - kMinY;
+                    if (c.blockAt(Chunk::index(storageY >> 4,
+                                               storageY & 15,
+                                               blockZ & 15, blockX & 15)) != 0) {
+                        feetY = y + 1;
+                        break;
+                    }
+                }
             });
         });
         if (canonicalDimension(m.dimension) == dimension &&
             m.x == queryX && m.z == queryZ)
-            m.y = kMinY + col + 1.0;
+            m.y = feetY + 1.0;
     }
     return BTStatus::Running;
 }

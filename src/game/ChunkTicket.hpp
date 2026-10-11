@@ -1,4 +1,5 @@
 #pragma once
+#include <bit>
 #include <cstdint>
 #include <unordered_map>
 #include <unordered_set>
@@ -10,8 +11,10 @@
 namespace cppfm {
 
 inline std::int64_t ticketChunkKey(std::int32_t cx, std::int32_t cz) {
-    return (static_cast<std::int64_t>(static_cast<std::uint32_t>(cx)) << 32)
-         | static_cast<std::uint32_t>(cz);
+    const auto bits =
+        (static_cast<std::uint64_t>(static_cast<std::uint32_t>(cx)) << 32) |
+        static_cast<std::uint32_t>(cz);
+    return std::bit_cast<std::int64_t>(bits);
 }
 
 // ChunkTicket levels mirror vanilla: lower level = higher priority / more ticking

@@ -1,13 +1,21 @@
 package net.minecraft.entity.passive;
 
 import net.minecraft.entity.EntityType;
+import net.minecraft.entity.mob.WaterCreatureEntity;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.item.ItemStack;
 import net.minecraft.util.Hand;
 import net.minecraft.world.World;
 
 /** Water-creature hierarchy anchor used by ServerCore activation-range fixes. */
-public class FishEntity extends AnimalEntity {
+public class FishEntity extends WaterCreatureEntity {
+    public static FishEntity createNativeWrapper(long handle) {
+        String typeId = net.minecraft.util.NativeAccess.entityType(handle);
+        return new FishEntity(handle,
+            World.of(net.minecraft.util.NativeAccess.entityWorld(handle)),
+            EntityType.byId(typeId));
+    }
+
     protected FishEntity(EntityType<?> type, World world) { super(type, world); }
     protected FishEntity(long nativeHandle, World world, EntityType<?> type) { super(nativeHandle, world, type); }
     protected FishEntity() { super(); }

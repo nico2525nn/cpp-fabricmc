@@ -25,7 +25,9 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import java.util.stream.Stream;
 import java.util.jar.JarFile;
@@ -52,6 +54,7 @@ import net.minecraft.block.BlockState;
 import net.minecraft.entity.DamageSource;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.mob.MobEntity;
 import net.minecraft.network.message.MessageType;
 import net.minecraft.network.message.SignedMessage;
 import net.minecraft.resource.LifecycledResourceManager;
@@ -91,7 +94,7 @@ public final class CppModRuntime {
     private static final List<ServerLifecycleEvents.StartDataPackReload> START_DATA_PACK_RELOAD = new CopyOnWriteArrayList<>();
     private static final List<ServerLifecycleEvents.EndDataPackReload> END_DATA_PACK_RELOAD = new CopyOnWriteArrayList<>();
     private static final List<ServerReloadRegistration> SERVER_RELOAD_LISTENERS = new CopyOnWriteArrayList<>();
-    private static final Object SERVER_RELOAD_LOCK = new Object();
+    private static final AtomicBoolean SERVER_RELOAD_IN_PROGRESS = new AtomicBoolean();
     private static final List<ServerLifecycleEvents.BeforeSave> BEFORE_SAVE = new CopyOnWriteArrayList<>();
     private static final List<ServerLifecycleEvents.AfterSave> AFTER_SAVE = new CopyOnWriteArrayList<>();
     private static final List<ServerTickEvents.Start> TICK_START = new CopyOnWriteArrayList<>();
@@ -110,12 +113,16 @@ public final class CppModRuntime {
     private static final List<ServerPlayerEvents.Leave> PLAYER_LEAVE_EVENT = new CopyOnWriteArrayList<>();
     private static final List<ServerEntityEvents.Load> ENTITY_LOAD = new CopyOnWriteArrayList<>();
     private static final List<ServerEntityEvents.Unload> ENTITY_UNLOAD = new CopyOnWriteArrayList<>();
+    private static final Set<Long> LOADED_PLAYER_HANDLES = ConcurrentHashMap.newKeySet();
     private static final List<net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.AllowDamage> ALLOW_DAMAGE = new CopyOnWriteArrayList<>();
+    private static final List<net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.AllowDeath> ALLOW_DEATH = new CopyOnWriteArrayList<>();
     private static final List<net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.AfterDamage> AFTER_DAMAGE = new CopyOnWriteArrayList<>();
     private static final List<net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.AfterDeath> AFTER_DEATH = new CopyOnWriteArrayList<>();
+    private static final List<ServerPlayerEvents.AllowDeath> PLAYER_ALLOW_DEATH = new CopyOnWriteArrayList<>();
     private static final List<net.fabricmc.fabric.api.event.lifecycle.v1.ServerEntityEvents.Load> LEGACY_ENTITY_LOAD = new CopyOnWriteArrayList<>();
     private static final List<net.fabricmc.fabric.api.event.lifecycle.v1.ServerEntityEvents.Unload> LEGACY_ENTITY_UNLOAD = new CopyOnWriteArrayList<>();
     private static final List<net.fabricmc.fabric.api.event.lifecycle.v1.ServerLivingEntityEvents.AllowDamage> LEGACY_ALLOW_DAMAGE = new CopyOnWriteArrayList<>();
+    private static final List<net.fabricmc.fabric.api.event.lifecycle.v1.ServerLivingEntityEvents.AllowDeath> LEGACY_ALLOW_DEATH = new CopyOnWriteArrayList<>();
     private static final List<net.fabricmc.fabric.api.event.lifecycle.v1.ServerLivingEntityEvents.AfterDamage> LEGACY_AFTER_DAMAGE = new CopyOnWriteArrayList<>();
     private static final List<net.fabricmc.fabric.api.event.lifecycle.v1.ServerLivingEntityEvents.AfterDeath> LEGACY_AFTER_DEATH = new CopyOnWriteArrayList<>();
     private static final List<ServerMessageEvents.AllowChatMessage> ALLOW_CHAT_MESSAGE = new CopyOnWriteArrayList<>();
@@ -128,8 +135,32 @@ public final class CppModRuntime {
     private static ClassLoader modLoader;
     private static ClassLoader previousContextClassLoader;
     private static NestedJarSupport.Expansion modExpansion;
-    private static MinecraftServer server;
-    private static boolean bootstrapped;
+    /** Immutable, safely-published lifecycle view read once by each callback. */
+    private static final class RuntimeState {
+        private static final RuntimeState STOPPED = new RuntimeState(null, false, false);
+
+        private final MinecraftServer server;
+        private final boolean bootstrapped;
+        private final boolean serverWorldsLoaded;
+
+        private RuntimeState(MinecraftServer server, boolean bootstrapped,
+                             boolean serverWorldsLoaded) {
+            this.server = server;
+            this.bootstrapped = bootstrapped;
+            this.serverWorldsLoaded = serverWorldsLoaded;
+        }
+    }
+
+    private static volatile RuntimeState runtimeState = RuntimeState.STOPPED;
+    private static final Object SHUTDOWN_LOCK = new Object();
+    // Stage values: 0=running, 1=stopping, 2=worlds unloaded, 3=stopped.
+    // State is claimed under SHUTDOWN_LOCK, but mod callbacks run outside it.
+    private static int shutdownLifecycleStage;
+    private static int shutdownCallbacksInFlight;
+    private static boolean shutdownCleanupRequested;
+    private static boolean shutdownCleanupStarted;
+    // Guarded by SHUTDOWN_LOCK; callbacks never run while this lock is held.
+    private static boolean bootstrapInProgress;
     // These ids are supplied by the game/loader environment rather than by a
     // jar under the configured mods directory.  Treating them as ordinary
     // candidates makes otherwise valid Fabric metadata fail before an
@@ -144,17 +175,56 @@ public final class CppModRuntime {
 
     private CppModRuntime() {}
 
-    public static synchronized boolean bootstrap(String modsDir, String configDir) {
-        if (bootstrapped) return true;
+    /** One acquire-read for the full runtime view used by a callback. */
+    private static RuntimeState activeRuntime() {
+        RuntimeState state = runtimeState;
+        return state.bootstrapped ? state : null;
+    }
+
+    private static void publishLoadingServer(MinecraftServer current) {
+        synchronized (SHUTDOWN_LOCK) {
+            if (!bootstrapInProgress || shutdownCleanupRequested)
+                throw new IllegalStateException("server shutdown requested during mod bootstrap");
+            runtimeState = new RuntimeState(current, false, false);
+        }
+    }
+
+    public static boolean bootstrap(String modsDir, String configDir) {
+        synchronized (SHUTDOWN_LOCK) {
+            if (runtimeState.bootstrapped) return true;
+            if (bootstrapInProgress || shutdownCleanupStarted || shutdownCallbacksInFlight != 0)
+                return false;
+            bootstrapInProgress = true;
+            shutdownLifecycleStage = 0;
+            shutdownCleanupRequested = false;
+            shutdownCleanupStarted = false;
+            runtimeState = RuntimeState.STOPPED;
+        }
         try {
             loadMods(Paths.get(modsDir));
-            if (server == null) server = MinecraftServer.of(NativeAccess.serverHandle());
-            bootstrapped = true;
+            RuntimeState loadingState = runtimeState;
+            MinecraftServer current = loadingState.server;
+            if (current == null) {
+                current = MinecraftServer.of(NativeAccess.serverHandle());
+                publishLoadingServer(current);
+            }
+            MinecraftServer activeServer = current;
+            synchronized (SHUTDOWN_LOCK) {
+                if (!bootstrapInProgress || shutdownCleanupRequested)
+                    throw new IllegalStateException("server shutdown requested during mod bootstrap");
+                runtimeState = new RuntimeState(activeServer, true, false);
+            }
             for (ServerLifecycleEvents.ServerStarting callback : snapshot(SERVER_STARTING))
-                invokeSafely(() -> callback.onServerStarting(server), "server starting");
-            fireWorldLoad();
-            for (ServerLifecycleEvents.ServerStarted callback : snapshot(SERVER_STARTED))
-                invokeSafely(() -> callback.onServerStarted(server), "server started");
+                invokeSafely(() -> callback.onServerStarting(activeServer), "server starting");
+            boolean cleanupRequested;
+            synchronized (SHUTDOWN_LOCK) {
+                bootstrapInProgress = false;
+                cleanupRequested = shutdownCleanupRequested;
+            }
+            if (cleanupRequested) {
+                drainShutdownAndCleanup();
+                return false;
+            }
             return true;
         } catch (Throwable failure) {
             Throwable cause = failure;
@@ -162,112 +232,288 @@ public final class CppModRuntime {
                     || cause instanceof ExceptionInInitializerError)
                    && cause.getCause() != null)
                 cause = cause.getCause();
+            clearRuntime();
             StringWriter details = new StringWriter();
             cause.printStackTrace(new PrintWriter(details));
             log("ERROR", "mod bootstrap failed:\n" + details);
-            if (Boolean.getBoolean("cppfm.jvm.strict")) {
-                closeModLoader();
-                return false;
-            }
-            // A malformed optional mod must not make the native server vanish.
-            bootstrapped = true;
-            return true;
+            return false;
         }
     }
 
-    public static synchronized void shutdown() {
-        if (server != null) server.beginShutdown();
-        if (!bootstrapped) return;
-        fireWorldUnload();
-        for (ServerLifecycleEvents.ServerStopping callback : snapshot(SERVER_STOPPING))
-            invokeSafely(() -> callback.onServerStopping(server), "server stopping");
-        for (ServerLifecycleEvents.ServerStopped callback : snapshot(SERVER_STOPPED))
-            invokeSafely(() -> callback.onServerStopped(server), "server stopped");
-        WrapperCache.clear();
-        clearRegistrations();
-        MixinHooks.clear();
-        ModEvents.clearAll();
-        clearLoaderRuntime();
-        closeModLoader();
-        bootstrapped = false;
-        server = null;
+    /** Completes the startup phases after native worlds have loaded. */
+    public static void onServerWorldsLoaded() {
+        MinecraftServer current;
+        synchronized (SHUTDOWN_LOCK) {
+            RuntimeState state = runtimeState;
+            if (!state.bootstrapped || state.server == null || state.serverWorldsLoaded ||
+                bootstrapInProgress || shutdownLifecycleStage != 0 || shutdownCallbacksInFlight != 0)
+                return;
+            current = state.server;
+            runtimeState = new RuntimeState(current, true, true);
+            shutdownCallbacksInFlight++;
+        }
+        try {
+            current.adoptCurrentThread();
+            current.finishWorldLoad();
+            fireWorldLoad(current);
+            for (ServerLifecycleEvents.ServerStarted callback : snapshot(SERVER_STARTED))
+                invokeSafely(() -> callback.onServerStarted(current), "server started");
+        } finally {
+            completeShutdownStage();
+        }
     }
 
-    public static synchronized void onServerTick(long tick) {
-        if (!bootstrapped) return;
-        if (server != null) server.adoptCurrentThread();
+    /** Fabric SERVER_STOPPING: the network and worlds remain available. */
+    public static void onServerStopping() {
+        dispatchShutdownStage(1);
+    }
+
+    /** Fabric ServerWorldEvents.UNLOAD, once for each live server world. */
+    public static void onWorldsUnloading() {
+        RuntimeState runtime = claimShutdownStage(2);
+        if (runtime == null) return;
+        try {
+            MinecraftServer current = runtime.server;
+            if (current != null) {
+                for (ServerWorld world : current.getWorlds()) {
+                    if (world == null) continue;
+                    for (ServerWorldEvents.Unload callback : snapshot(WORLD_UNLOAD))
+                        invokeSafely(() -> callback.onWorldUnload(current, world),
+                                     "world unload " + world.getRegistryKey().getValue());
+                }
+                current.finishWorldUnload();
+            }
+        } finally {
+            completeShutdownStage();
+        }
+    }
+
+    /** Fabric SERVER_STOPPED: all worlds have been closed and detached. */
+    public static void onServerStopped() {
+        dispatchShutdownStage(3);
+    }
+
+    /** Idempotent compatibility entrypoint that advances every remaining stage. */
+    public static void onServerShutdown() {
+        onServerStopping();
+        onWorldsUnloading();
+        onServerStopped();
+    }
+
+    private static void dispatchShutdownStage(int stage) {
+        RuntimeState runtime = claimShutdownStage(stage);
+        if (runtime == null) return;
+        MinecraftServer current = runtime.server;
+        try {
+            if (stage == 1) {
+                current.beginShutdown();
+                for (ServerLifecycleEvents.ServerStopping callback : snapshot(SERVER_STOPPING))
+                    invokeSafely(() -> callback.onServerStopping(current), "server stopping");
+            } else if (stage == 3) {
+                for (ServerLifecycleEvents.ServerStopped callback : snapshot(SERVER_STOPPED))
+                    invokeSafely(() -> callback.onServerStopped(current), "server stopped");
+            }
+        } finally {
+            completeShutdownStage();
+        }
+    }
+
+    private static RuntimeState claimShutdownStage(int stage) {
+        synchronized (SHUTDOWN_LOCK) {
+            RuntimeState state = runtimeState;
+            if (!state.bootstrapped || state.server == null || bootstrapInProgress ||
+                shutdownCallbacksInFlight != 0 ||
+                shutdownLifecycleStage + 1 != stage)
+                return null;
+            shutdownLifecycleStage = stage;
+            shutdownCallbacksInFlight = 1;
+            return state;
+        }
+    }
+
+    private static void completeShutdownStage() {
+        boolean resumeShutdown;
+        synchronized (SHUTDOWN_LOCK) {
+            shutdownCallbacksInFlight = Math.max(0, shutdownCallbacksInFlight - 1);
+            resumeShutdown = shutdownCleanupRequested &&
+                shutdownCallbacksInFlight == 0 && !shutdownCleanupStarted;
+        }
+        if (resumeShutdown) drainShutdownAndCleanup();
+    }
+
+    private static void drainShutdownAndCleanup() {
+        synchronized (SHUTDOWN_LOCK) {
+            shutdownCleanupRequested = true;
+            if (shutdownCleanupStarted || bootstrapInProgress || shutdownCallbacksInFlight != 0) return;
+            shutdownCleanupStarted = true;
+        }
+        onServerStopping();
+        onWorldsUnloading();
+        onServerStopped();
+        synchronized (SHUTDOWN_LOCK) {
+            if (shutdownCallbacksInFlight != 0) {
+                shutdownCleanupStarted = false;
+                return;
+            }
+        }
+        clearRuntime();
+    }
+
+    public static void shutdown() {
+        RuntimeState state = runtimeState;
+        MinecraftServer current = state.server;
+        if (current != null) current.beginShutdown();
+        // Native teardown normally dispatched every stage at its real server
+        // boundary. This fallback also covers direct Java shutdown and partial
+        // bootstrap; it never holds the class monitor across mod code.
+        drainShutdownAndCleanup();
+    }
+
+    private static void clearRuntime() {
+        synchronized (SHUTDOWN_LOCK) {
+            runtimeState = RuntimeState.STOPPED;
+        }
+        Throwable cleanupFailure = null;
+        cleanupFailure = attemptCleanup(cleanupFailure, WrapperCache::clear);
+        cleanupFailure = attemptCleanup(cleanupFailure, CppModRuntime::clearRegistrations);
+        cleanupFailure = attemptCleanup(cleanupFailure, CppModRuntime::restoreLoaderMetadata);
+        cleanupFailure = attemptCleanup(cleanupFailure, MixinHooks::clear);
+        cleanupFailure = attemptCleanup(cleanupFailure, ModEvents::clearAll);
+        cleanupFailure = attemptCleanup(cleanupFailure, CppModRuntime::clearLoaderRuntime);
+        cleanupFailure = attemptCleanup(cleanupFailure, CppModRuntime::closeModLoader);
+        synchronized (SHUTDOWN_LOCK) {
+            runtimeState = RuntimeState.STOPPED;
+            shutdownLifecycleStage = 0;
+            shutdownCallbacksInFlight = 0;
+            shutdownCleanupRequested = false;
+            shutdownCleanupStarted = false;
+            bootstrapInProgress = false;
+        }
+        if (cleanupFailure != null) {
+            StringWriter details = new StringWriter();
+            cleanupFailure.printStackTrace(new PrintWriter(details));
+            log("ERROR", "JVM runtime cleanup had failures:\n" + details);
+        }
+    }
+
+    private static Throwable attemptCleanup(Throwable previous, Runnable cleanup) {
+        try {
+            cleanup.run();
+        } catch (Throwable failure) {
+            if (previous == null) return failure;
+            if (failure != previous) previous.addSuppressed(failure);
+        }
+        return previous;
+    }
+
+    public static void onServerTick(long tick) {
+        RuntimeState runtime = activeRuntime();
+        if (runtime == null) return;
+        MinecraftServer current = runtime.server;
+        if (current != null) current.adoptCurrentThread();
         // JvmRuntime dispatches a transformed setTick(J)V body before this
         // facade.  Do not call it a second time: a second call would execute
         // every injected handler twice.  With no transformed route this is
         // the historical shadow/native path and remains unchanged; the
         // NativeAccess fallback returns zero for javac-only execution.
-        if (server != null && NativeAccess.routePath(
+        if (current != null && NativeAccess.routePath(
                 "net/minecraft/server/MinecraftServer", "setTick", "(J)V") == 0)
-            server.setTick(tick);
+            current.setTick(tick);
         for (ModEvents.Tick callback : ModEvents.TICK.snapshot())
-            invokeSafely(() -> callback.onTick(server, tick), "cppfm tick");
+            invokeSafely(() -> callback.onTick(current, tick), "cppfm tick");
         for (ServerTickEvents.Start callback : snapshot(TICK_START))
-            invokeSafely(() -> callback.onStartTick(server), "server tick start");
+            invokeSafely(() -> callback.onStartTick(current), "server tick start");
         for (ServerTickEvents.End callback : snapshot(TICK_END))
-            invokeSafely(() -> callback.onEndTick(server), "server tick end");
+            invokeSafely(() -> callback.onEndTick(current), "server tick end");
         for (ServerTickEvents.StartServerTick callback : snapshot(SERVER_TICK_START))
-            invokeSafely(() -> callback.onStartTick(server), "server tick start (fabric)");
-        if (server != null) {
-            for (ServerWorld world : server.getWorlds()) {
+            invokeSafely(() -> callback.onStartTick(current), "server tick start (fabric)");
+        if (current != null) {
+            for (ServerWorld world : current.getWorlds()) {
                 for (ServerTickEvents.StartWorldTick callback : snapshot(WORLD_TICK_START))
                     invokeSafely(() -> callback.onStartTick((ServerWorld) world), "world tick start");
             }
         }
-        if (server != null) {
-            for (ServerWorld world : server.getWorlds()) {
+        if (current != null) {
+            for (ServerWorld world : current.getWorlds()) {
                 for (ServerTickEvents.EndWorldTick callback : snapshot(WORLD_TICK_END))
                     invokeSafely(() -> callback.onEndTick(world), "world tick end");
             }
         }
         for (ServerTickEvents.EndServerTick callback : snapshot(SERVER_TICK_END))
-            invokeSafely(() -> callback.onEndTick(server), "server tick end (fabric)");
-        if (server != null) server.runTasksTillTickEnd();
+            invokeSafely(() -> callback.onEndTick(current), "server tick end (fabric)");
+        if (current != null) current.runTasksTillTickEnd();
     }
 
     public static void onPlayerJoin(long handle) {
-        if (!bootstrapped) return;
+        RuntimeState runtime = activeRuntime();
+        if (runtime == null || handle == 0L) return;
+        MinecraftServer current = runtime.server;
         ServerPlayerEntity player = ServerPlayerEntity.of(handle);
         ServerPlayNetworkHandler network = player.getNetworkHandler();
-        for (ServerPlayConnectionEvents.Join callback : snapshot(PLAYER_JOIN))
-            invokeSafely(() -> callback.onPlayReady(network, ServerPlayNetworking.getSender(player), server), "player join");
-        for (ServerPlayerEvents.Join callback : snapshot(PLAYER_JOIN_EVENT))
+        for (ServerPlayConnectionEvents.Join callback : snapshot(PLAYER_JOIN)) {
+            invokeSafely(() -> callback.onPlayReady(network, ServerPlayNetworking.getSender(player), current), "player join");
+            if (network.isDisconnected()) return;
+        }
+        for (ServerPlayerEvents.Join callback : snapshot(PLAYER_JOIN_EVENT)) {
             invokeSafely(() -> callback.onPlayReady(network, player), "player entity join");
-        for (ServerLifecycleEvents.SyncDataPackContents callback : snapshot(SYNC_DATA_PACK_CONTENTS))
+            if (network.isDisconnected()) return;
+        }
+        for (ServerLifecycleEvents.SyncDataPackContents callback : snapshot(SYNC_DATA_PACK_CONTENTS)) {
             invokeSafely(() -> callback.onSyncDataPackContents(player, true), "data-pack sync");
-        dispatchEntityLoad(player, player.getServerWorld());
+            if (network.isDisconnected()) return;
+        }
+        if (LOADED_PLAYER_HANDLES.add(handle))
+            dispatchEntityLoad(runtime, player, player.getServerWorld());
     }
 
     public static void onPlayerQuit(long handle) {
-        if (!bootstrapped) return;
+        RuntimeState runtime = activeRuntime();
+        if (runtime == null || handle == 0L) return;
+        MinecraftServer current = runtime.server;
         ServerPlayerEntity player = ServerPlayerEntity.of(handle);
         ServerPlayNetworkHandler network = player.getNetworkHandler();
+        // The native session owns the socket lifecycle. Reflect its completed
+        // disconnect into the Java handler before Fabric's Disconnect event,
+        // whose contract forbids packet sends from callbacks.
+        network.onDisconnected(null);
         for (ServerPlayerEvents.Leave callback : snapshot(PLAYER_LEAVE_EVENT))
             invokeSafely(() -> callback.onPlayDisconnect(network, player), "player entity leave");
         for (ServerPlayConnectionEvents.Disconnect callback : snapshot(PLAYER_QUIT))
-            invokeSafely(() -> callback.onPlayDisconnect(network, server), "player quit");
-        dispatchEntityUnload(player, player.getServerWorld());
+            invokeSafely(() -> callback.onPlayDisconnect(network, current), "player quit");
+        if (LOADED_PLAYER_HANDLES.remove(handle))
+            dispatchEntityUnload(runtime, player, player.getServerWorld());
         WrapperCache.remove(handle);
     }
 
     /** Dispatches the Fabric data-pack reload-start lifecycle hook. */
     public static void onDataPackReloadStart(LifecycledResourceManager resourceManager) {
-        if (!bootstrapped) return;
+        RuntimeState runtime = activeRuntime();
+        if (runtime == null) return;
+        dispatchDataPackReloadStart(runtime, resourceManager);
+    }
+
+    private static void dispatchDataPackReloadStart(RuntimeState runtime,
+                                                    LifecycledResourceManager resourceManager) {
+        MinecraftServer current = runtime.server;
         for (ServerLifecycleEvents.StartDataPackReload callback : snapshot(START_DATA_PACK_RELOAD))
-            invokeSafely(() -> callback.startDataPackReload(server, resourceManager),
+            invokeSafely(() -> callback.startDataPackReload(current, resourceManager),
                          "data-pack reload start");
     }
 
     /** Dispatches the Fabric data-pack reload-end lifecycle hook. */
     public static void onDataPackReloadEnd(LifecycledResourceManager resourceManager,
                                            boolean success) {
-        if (!bootstrapped) return;
+        RuntimeState runtime = activeRuntime();
+        if (runtime == null) return;
+        dispatchDataPackReloadEnd(runtime, resourceManager, success);
+    }
+
+    private static void dispatchDataPackReloadEnd(RuntimeState runtime,
+                                                  LifecycledResourceManager resourceManager,
+                                                  boolean success) {
+        MinecraftServer current = runtime.server;
         for (ServerLifecycleEvents.EndDataPackReload callback : snapshot(END_DATA_PACK_RELOAD))
-            invokeSafely(() -> callback.endDataPackReload(server, resourceManager, success),
+            invokeSafely(() -> callback.endDataPackReload(current, resourceManager, success),
                          "data-pack reload end");
     }
 
@@ -277,14 +523,19 @@ public final class CppModRuntime {
      * returned as a failed result rather than escaping through JNI.
      */
     public static boolean onDataPackReload() {
-        if (!bootstrapped) return false;
-        synchronized (SERVER_RELOAD_LOCK) {
+        return onDataPackReload(activeRuntime());
+    }
+
+    private static boolean onDataPackReload(RuntimeState runtime) {
+        if (runtime == null || !SERVER_RELOAD_IN_PROGRESS.compareAndSet(false, true))
+            return false;
+        try {
             LifecycledResourceManager resourceManager = createServerResourceManager();
             boolean success = true;
             ReloadPlan plan = resolveServerReloadListeners();
             log("INFO", "server resource reload start listeners=" + plan.listeners.size());
             try {
-                onDataPackReloadStart(resourceManager);
+                dispatchDataPackReloadStart(runtime, resourceManager);
                 ReloadPlan ordered = orderServerReloadListeners(plan.listeners);
                 if (!plan.success || !ordered.success) {
                     success = false;
@@ -317,7 +568,7 @@ public final class CppModRuntime {
                 success = false;
                 logReloadFailure("server resource reload", failure);
             } finally {
-                onDataPackReloadEnd(resourceManager, success);
+                dispatchDataPackReloadEnd(runtime, resourceManager, success);
                 try {
                     resourceManager.close();
                 } catch (Throwable failure) {
@@ -328,26 +579,32 @@ public final class CppModRuntime {
             log("INFO", "server resource reload complete success=" + success
                 + " listeners=" + plan.listeners.size());
             return success;
+        } finally {
+            SERVER_RELOAD_IN_PROGRESS.set(false);
         }
     }
 
     /** Dispatches the Fabric pre-save lifecycle hook at the native save boundary. */
     public static void onBeforeSave(boolean flush, boolean skipErrors) {
-        if (!bootstrapped) return;
+        RuntimeState runtime = activeRuntime();
+        if (runtime == null) return;
+        MinecraftServer current = runtime.server;
         for (ServerLifecycleEvents.BeforeSave callback : snapshot(BEFORE_SAVE))
-            invokeSafely(() -> callback.onBeforeSave(server, flush, skipErrors), "before save");
+            invokeSafely(() -> callback.onBeforeSave(current, flush, skipErrors), "before save");
     }
 
     /** Dispatches the Fabric post-save lifecycle hook at the native save boundary. */
     public static void onAfterSave(boolean flush, boolean skipErrors) {
-        if (!bootstrapped) return;
+        RuntimeState runtime = activeRuntime();
+        if (runtime == null) return;
+        MinecraftServer current = runtime.server;
         for (ServerLifecycleEvents.AfterSave callback : snapshot(AFTER_SAVE))
-            invokeSafely(() -> callback.onAfterSave(server, flush, skipErrors), "after save");
+            invokeSafely(() -> callback.onAfterSave(current, flush, skipErrors), "after save");
     }
 
     /** Return null to cancel, otherwise return the possibly rewritten message. */
     public static String onChat(long handle, String message) {
-        if (!bootstrapped) return message;
+        if (activeRuntime() == null) return message;
         String current = message;
         ServerPlayerEntity player = ServerPlayerEntity.of(handle);
         SignedMessage signed = SignedMessage.of(message);
@@ -365,7 +622,7 @@ public final class CppModRuntime {
     }
 
     public static boolean onBlockBreak(long handle, int x, int y, int z, int rawState) {
-        if (!bootstrapped) return true;
+        if (activeRuntime() == null) return true;
         ServerPlayerEntity player = ServerPlayerEntity.of(handle);
         ServerWorld world = player.getServerWorld();
         BlockPos pos = new BlockPos(x, y, z);
@@ -380,7 +637,7 @@ public final class CppModRuntime {
     }
 
     public static boolean onBlockPlace(long handle, int x, int y, int z, int rawState) {
-        if (!bootstrapped) return true;
+        if (activeRuntime() == null) return true;
         ServerPlayerEntity player = ServerPlayerEntity.of(handle);
         ServerWorld world = player.getServerWorld();
         BlockPos pos = new BlockPos(x, y, z);
@@ -397,7 +654,7 @@ public final class CppModRuntime {
 
     public static boolean onBlockClicked(long handle, int x, int y, int z,
                                          int rawState, int face) {
-        if (!bootstrapped) return true;
+        if (activeRuntime() == null) return true;
         ServerPlayerEntity player = ServerPlayerEntity.of(handle);
         ServerWorld world = player.getServerWorld();
         BlockPos pos = new BlockPos(x, y, z);
@@ -415,7 +672,9 @@ public final class CppModRuntime {
 
     /** Return null to cancel, otherwise return the possibly rewritten command. */
     public static String onCommand(long handle, String command) {
-        if (!bootstrapped) return command;
+        RuntimeState runtime = activeRuntime();
+        if (runtime == null) return command;
+        MinecraftServer currentServer = runtime.server;
         ServerPlayerEntity player = handle == 0 ? null : ServerPlayerEntity.of(handle);
         String current = command;
         for (ModEvents.Command callback : ModEvents.COMMAND.snapshot()) {
@@ -427,14 +686,14 @@ public final class CppModRuntime {
         if (!invokeAllow(() -> net.fabricmc.fabric.api.message.v1.ServerMessageEvents.ALLOW_COMMAND_MESSAGE.invoker()
                 .allowCommandMessage(commandMessage, player, MessageType.Parameters.EMPTY), "allow command message")) return null;
         if ("reload".equals(current.trim())
-                && (server == null || !server.getCommandManager().hasCommand(current))) {
-            boolean success = onDataPackReload();
+                && (currentServer == null || !currentServer.getCommandManager().hasCommand(current))) {
+            boolean success = onDataPackReload(runtime);
             log("INFO", "server /reload Java listeners success=" + success);
         }
         // Commands registered through Fabric's CommandRegistrationCallback
         // must be consumed here, otherwise the native command dispatcher
         // would run a second, unrelated command tree.
-        if (server != null && server.getCommandManager().hasCommand(current)) {
+        if (currentServer != null && currentServer.getCommandManager().hasCommand(current)) {
             StringBuilder commandResponse = new StringBuilder();
             net.minecraft.server.command.ServerCommandSource commandSource = new net.minecraft.server.command.ServerCommandSource(
                 message -> {
@@ -448,14 +707,14 @@ public final class CppModRuntime {
                 },
                 player == null ? net.minecraft.util.math.Vec3d.ZERO : player.getPos(),
                 net.minecraft.util.math.Vec2f.ZERO,
-                player == null ? server.getOverworld() : player.getServerWorld(),
+                player == null ? currentServer.getOverworld() : player.getServerWorld(),
                 4,
                 player == null ? "Console" : player.getName().getString(),
                 player == null ? net.minecraft.text.Text.literal("Console") : player.getName(),
-                server,
+                currentServer,
                 player);
             try {
-                server.getCommandManager().getDispatcher().execute(current, commandSource);
+                currentServer.getCommandManager().getDispatcher().execute(current, commandSource);
             } catch (Throwable failure) {
                 StringWriter details = new StringWriter();
                 failure.printStackTrace(new PrintWriter(details));
@@ -474,7 +733,7 @@ public final class CppModRuntime {
 
     public static boolean onEntityDamage(long playerHandle, long entityHandle,
                                          float amount, String cause) {
-        if (!bootstrapped) return true;
+        if (activeRuntime() == null) return true;
         LivingEntity victim = playerHandle != 0 ? ServerPlayerEntity.of(playerHandle) : LivingEntity.of(entityHandle);
         if (victim == null) return true;
         DamageSource source = new DamageSource(cause == null ? "generic" : cause);
@@ -488,41 +747,153 @@ public final class CppModRuntime {
     }
 
     /**
-     * Completion hook for a native damage implementation.  The current native
-     * call site only has a pre-damage boolean gate, so AFTER_DAMAGE/AFTER_DEATH
-     * are deliberately emitted here or by a future native post-damage hook,
-     * never speculatively from onEntityDamage.
+     * Decide whether a lethal native damage application may kill its victim.
+     * Any Fabric ALLOW_DEATH listener returning false vetoes the lethal
+     * transition; native combat must keep the victim alive and report
+     * {@code died=false} to the post-damage hook. Callback exceptions are
+     * logged and treated as allow so they cannot abort JNI.
      */
+    public static boolean onEntityAllowDeath(long playerHandle, long entityHandle,
+                                              float amount, String cause) {
+        RuntimeState runtime = activeRuntime();
+        if (runtime == null) return true;
+        LivingEntity victim = playerHandle != 0L
+            ? ServerPlayerEntity.of(playerHandle) : LivingEntity.of(entityHandle);
+        return dispatchEntityAllowDeath(runtime, victim, amount, cause);
+    }
+
+    /** Shared event dispatcher; native handle adaptation remains at the JNI boundary. */
+    public static boolean dispatchEntityAllowDeath(LivingEntity victim,
+                                                    float amount,
+                                                    String cause) {
+        return dispatchEntityAllowDeath(activeRuntime(), victim, amount, cause);
+    }
+
+    private static boolean dispatchEntityAllowDeath(RuntimeState runtime,
+                                                     LivingEntity victim,
+                                                     float amount,
+                                                     String cause) {
+        if (runtime == null) return true;
+        if (victim == null) return true;
+        DamageSource source = new DamageSource(cause == null ? "generic" : cause);
+        for (net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.AllowDeath callback : snapshot(ALLOW_DEATH))
+            if (!invokeAllow(() -> callback.allowDeath(victim, source, amount), "allow death")) return false;
+        for (net.fabricmc.fabric.api.event.lifecycle.v1.ServerLivingEntityEvents.AllowDeath callback : snapshot(LEGACY_ALLOW_DEATH))
+            if (!invokeAllow(() -> callback.allowDeath(victim, source, amount), "allow death (legacy)")) return false;
+        if (victim instanceof ServerPlayerEntity player) {
+            for (ServerPlayerEvents.AllowDeath callback : snapshot(PLAYER_ALLOW_DEATH))
+                if (!invokeAllow(() -> callback.allowDeath(player, source, amount), "player allow death")) return false;
+        }
+        return true;
+    }
+
+    /** Dispatch the post-commit Fabric damage callbacks from native combat. */
     public static void onEntityDamageApplied(long playerHandle, long entityHandle,
-                                              float amount, String cause, boolean died) {
-        if (!bootstrapped) return;
+                                              float baseDamage, float damageTaken,
+                                              boolean blocked, boolean died, String cause) {
+        RuntimeState runtime = activeRuntime();
+        if (runtime == null) return;
         LivingEntity victim = playerHandle != 0 ? ServerPlayerEntity.of(playerHandle) : LivingEntity.of(entityHandle);
+        dispatchEntityDamageApplied(runtime, victim, baseDamage, damageTaken,
+                                    blocked, died, cause);
+    }
+
+    /** Shared post-damage dispatcher used by the JNI adapter and API fixture. */
+    public static void dispatchEntityDamageApplied(LivingEntity victim,
+                                                    float baseDamage,
+                                                    float damageTaken,
+                                                    boolean blocked,
+                                                    boolean died,
+                                                    String cause) {
+        dispatchEntityDamageApplied(activeRuntime(), victim, baseDamage, damageTaken,
+                                    blocked, died, cause);
+    }
+
+    private static void dispatchEntityDamageApplied(RuntimeState runtime,
+                                                    LivingEntity victim,
+                                                    float baseDamage,
+                                                    float damageTaken,
+                                                    boolean blocked,
+                                                    boolean died,
+                                                    String cause) {
+        if (runtime == null) return;
         if (victim == null) return;
         DamageSource source = new DamageSource(cause == null ? "generic" : cause);
-        for (net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.AfterDamage callback : snapshot(AFTER_DAMAGE))
-            invokeSafely(() -> callback.afterDamage(victim, source, amount), "after damage");
-        for (net.fabricmc.fabric.api.event.lifecycle.v1.ServerLivingEntityEvents.AfterDamage callback : snapshot(LEGACY_AFTER_DAMAGE))
-            invokeSafely(() -> callback.afterDamage(victim, source, amount), "after damage (legacy)");
         if (died) {
             for (net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.AfterDeath callback : snapshot(AFTER_DEATH))
                 invokeSafely(() -> callback.afterDeath(victim, source), "after death");
             for (net.fabricmc.fabric.api.event.lifecycle.v1.ServerLivingEntityEvents.AfterDeath callback : snapshot(LEGACY_AFTER_DEATH))
                 invokeSafely(() -> callback.afterDeath(victim, source), "after death (legacy)");
+        } else {
+            for (net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.AfterDamage callback : snapshot(AFTER_DAMAGE))
+                invokeSafely(() -> callback.afterDamage(victim, source, baseDamage, damageTaken, blocked), "after damage");
+            for (net.fabricmc.fabric.api.event.lifecycle.v1.ServerLivingEntityEvents.AfterDamage callback : snapshot(LEGACY_AFTER_DAMAGE))
+                invokeSafely(() -> callback.afterDamage(victim, source, baseDamage, damageTaken, blocked), "after damage (legacy)");
         }
     }
 
-    public static boolean onMobSpawn(long entityHandle, double x, double y, double z) {
-        if (!bootstrapped) return true;
+    /** Compatibility for the older native call shape; current native damage is unblocked. */
+    public static void onEntityDamageApplied(long playerHandle, long entityHandle,
+                                              float amount, String cause, boolean died) {
+        onEntityDamageApplied(playerHandle, entityHandle, amount, amount, false, died, cause);
+    }
+
+    public static boolean onMobSpawn(long entityHandle, double x, double y,
+                                     double z, int dimension) {
+        RuntimeState runtime = activeRuntime();
+        if (runtime == null) return true;
+        if (entityHandle == 0L) return false;
+        List<ModEvents.MobSpawn> callbacks = ModEvents.MOB_SPAWN.snapshot();
+        if (callbacks.isEmpty()) return true;
         Entity entity = Entity.of(entityHandle);
-        ServerWorld world = server == null ? null : server.getOverworld();
-        for (ModEvents.MobSpawn callback : ModEvents.MOB_SPAWN.snapshot())
-            if (!invokeAllow(() -> callback.onMobSpawn(entity, world, x, y, z), "mob spawn")) return false;
-        dispatchEntityLoad(entity, world);
+        MinecraftServer current = runtime.server;
+        ServerWorld world = current == null ? null : ServerWorld.of(
+            NativeAccess.serverWorld(dimension), current);
+        if (world != null) entity.setWorld(world);
+        for (ModEvents.MobSpawn callback : callbacks) {
+            if (!invokeAllow(() -> callback.onMobSpawn(entity, world, x, y, z), "mob spawn")) {
+                NativeAccess.beginEntityRetirement(entityHandle);
+                WrapperCache.remove(entityHandle);
+                return false;
+            }
+        }
         return true;
     }
 
+    public static void onMobLoad(long entityHandle, int dimension) {
+        RuntimeState runtime = activeRuntime();
+        if (runtime == null || entityHandle == 0L) return;
+        Entity entity = Entity.of(entityHandle);
+        MinecraftServer current = runtime.server;
+        ServerWorld world = current == null ? null : ServerWorld.of(
+            NativeAccess.serverWorld(dimension), current);
+        if (entity == null || world == null) return;
+        entity.setWorld(world);
+        dispatchEntityLoad(runtime, entity, world);
+    }
+
+    public static void onMobUnload(long entityHandle, int dimension) {
+        if (entityHandle == 0L) return;
+        try {
+            RuntimeState runtime = activeRuntime();
+            if (runtime == null) return;
+            Entity entity = Entity.of(entityHandle);
+            MinecraftServer current = runtime.server;
+            ServerWorld world = current == null ? null : ServerWorld.of(
+                NativeAccess.serverWorld(dimension), current);
+            if (entity == null || world == null) return;
+            entity.setWorld(world);
+            dispatchEntityUnload(runtime, entity, world);
+        } finally {
+            // Keep native-backed methods usable for the unload listener, then
+            // evict the strong Java identity wrapper before its native handle
+            // is invalidated by JvmRuntime.
+            WrapperCache.remove(entityHandle);
+        }
+    }
+
     public static ActionResult onEntityUse(long playerHandle, long entityHandle, Hand hand) {
-        if (!bootstrapped) return ActionResult.PASS;
+        if (activeRuntime() == null || playerHandle == 0L || entityHandle == 0L) return ActionResult.PASS;
         ServerPlayerEntity player = ServerPlayerEntity.of(playerHandle);
         ServerWorld world = player.getServerWorld();
         Entity entity = Entity.of(entityHandle);
@@ -531,7 +902,7 @@ public final class CppModRuntime {
     }
 
     public static ActionResult onItemUse(long playerHandle, Hand hand) {
-        if (!bootstrapped) return ActionResult.PASS;
+        if (activeRuntime() == null) return ActionResult.PASS;
         ServerPlayerEntity player = ServerPlayerEntity.of(playerHandle);
         return invokeResult(() -> UseItemCallback.EVENT.invoker().interact(player, player.getServerWorld(),
             hand == null ? Hand.MAIN_HAND : hand), "use item");
@@ -539,13 +910,15 @@ public final class CppModRuntime {
 
     /** Native play/config plugin-message entrypoint (JILjava/lang/String;[B)V. */
     public static void onPluginMessage(long handle, int phase, String channel, byte[] payload) {
-        if (!bootstrapped || channel == null) return;
+        RuntimeState runtime = activeRuntime();
+        if (runtime == null || channel == null) return;
+        MinecraftServer current = runtime.server;
         Identifier id = Identifier.tryParse(channel);
         if (id == null) return;
         ServerPlayerEntity player = ServerPlayerEntity.of(handle);
         ServerPlayNetworkHandler handler = player == null ? null : player.getNetworkHandler();
         try {
-            ServerPlayNetworking.receive(server, player, handler, id,
+            ServerPlayNetworking.receive(current, player, handler, id,
                 new net.minecraft.network.PacketByteBuf(payload == null ? new byte[0] : payload));
         } catch (Throwable failure) {
             // Do not leave a Java exception pending across the native void
@@ -556,7 +929,7 @@ public final class CppModRuntime {
 
     public static void onBlockBreakResult(long handle, int x, int y, int z, int rawState,
                                           boolean broken) {
-        if (!bootstrapped) return;
+        if (activeRuntime() == null) return;
         ServerPlayerEntity player = ServerPlayerEntity.of(handle);
         ServerWorld world = player.getServerWorld();
         BlockPos pos = new BlockPos(x, y, z);
@@ -571,7 +944,7 @@ public final class CppModRuntime {
     }
 
     public static void onPlayerRespawn(long oldHandle, long newHandle, boolean alive) {
-        if (!bootstrapped) return;
+        if (activeRuntime() == null) return;
         ServerPlayerEntity oldPlayer = ServerPlayerEntity.of(oldHandle);
         ServerPlayerEntity newPlayer = ServerPlayerEntity.of(newHandle);
         for (ServerPlayerEvents.CopyFrom callback : snapshot(PLAYER_COPY_FROM))
@@ -581,18 +954,24 @@ public final class CppModRuntime {
     }
 
     public static boolean onGameMessage(long playerHandle, String message, boolean overlay) {
-        if (!bootstrapped) return true;
+        RuntimeState runtime = activeRuntime();
+        if (runtime == null) return true;
+        MinecraftServer current = runtime.server;
         ServerPlayerEntity player = playerHandle == 0L ? null : ServerPlayerEntity.of(playerHandle);
         net.minecraft.text.Text text = net.minecraft.text.Text.literal(message == null ? "" : message);
         if (!invokeAllow(() -> ServerMessageEvents.ALLOW_GAME_MESSAGE.invoker()
-                .allowGameMessage(server, player, text, overlay), "allow game message")) return false;
+                .allowGameMessage(current, player, text, overlay), "allow game message")) return false;
         for (ServerMessageEvents.GameMessage callback : snapshot(ServerMessageEvents.GAME_MESSAGE.snapshot()))
-            invokeSafely(() -> callback.onGameMessage(server, player, text, overlay), "game message");
+            invokeSafely(() -> callback.onGameMessage(current, player, text, overlay), "game message");
         return true;
     }
 
     public static void dispatchEntityLoad(Entity entity, ServerWorld world) {
-        if (!bootstrapped || entity == null) return;
+        dispatchEntityLoad(activeRuntime(), entity, world);
+    }
+
+    private static void dispatchEntityLoad(RuntimeState runtime, Entity entity, ServerWorld world) {
+        if (runtime == null || entity == null) return;
         for (ServerEntityEvents.Load callback : snapshot(ENTITY_LOAD))
             invokeSafely(() -> callback.onLoad(entity, world), "entity load");
         for (net.fabricmc.fabric.api.event.lifecycle.v1.ServerEntityEvents.Load callback : snapshot(LEGACY_ENTITY_LOAD))
@@ -600,7 +979,11 @@ public final class CppModRuntime {
     }
 
     public static void dispatchEntityUnload(Entity entity, ServerWorld world) {
-        if (!bootstrapped || entity == null) return;
+        dispatchEntityUnload(activeRuntime(), entity, world);
+    }
+
+    private static void dispatchEntityUnload(RuntimeState runtime, Entity entity, ServerWorld world) {
+        if (runtime == null || entity == null) return;
         for (ServerEntityEvents.Unload callback : snapshot(ENTITY_UNLOAD))
             invokeSafely(() -> callback.onUnload(entity, world), "entity unload");
         for (net.fabricmc.fabric.api.event.lifecycle.v1.ServerEntityEvents.Unload callback : snapshot(LEGACY_ENTITY_UNLOAD))
@@ -637,11 +1020,14 @@ public final class CppModRuntime {
     public static void registerEntityLoad(ServerEntityEvents.Load callback) { registerCallback(ENTITY_LOAD, callback); }
     public static void registerEntityUnload(ServerEntityEvents.Unload callback) { registerCallback(ENTITY_UNLOAD, callback); }
     public static void registerAllowDamage(net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.AllowDamage callback) { registerCallback(ALLOW_DAMAGE, callback); }
+    public static void registerAllowDeath(net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.AllowDeath callback) { registerCallback(ALLOW_DEATH, callback); }
     public static void registerAfterDamage(net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.AfterDamage callback) { registerCallback(AFTER_DAMAGE, callback); }
     public static void registerAfterDeath(net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.AfterDeath callback) { registerCallback(AFTER_DEATH, callback); }
+    public static void registerPlayerAllowDeath(ServerPlayerEvents.AllowDeath callback) { registerCallback(PLAYER_ALLOW_DEATH, callback); }
     public static void registerLegacyEntityLoad(net.fabricmc.fabric.api.event.lifecycle.v1.ServerEntityEvents.Load callback) { registerCallback(LEGACY_ENTITY_LOAD, callback); }
     public static void registerLegacyEntityUnload(net.fabricmc.fabric.api.event.lifecycle.v1.ServerEntityEvents.Unload callback) { registerCallback(LEGACY_ENTITY_UNLOAD, callback); }
     public static void registerLegacyAllowDamage(net.fabricmc.fabric.api.event.lifecycle.v1.ServerLivingEntityEvents.AllowDamage callback) { registerCallback(LEGACY_ALLOW_DAMAGE, callback); }
+    public static void registerLegacyAllowDeath(net.fabricmc.fabric.api.event.lifecycle.v1.ServerLivingEntityEvents.AllowDeath callback) { registerCallback(LEGACY_ALLOW_DEATH, callback); }
     public static void registerLegacyAfterDamage(net.fabricmc.fabric.api.event.lifecycle.v1.ServerLivingEntityEvents.AfterDamage callback) { registerCallback(LEGACY_AFTER_DAMAGE, callback); }
     public static void registerLegacyAfterDeath(net.fabricmc.fabric.api.event.lifecycle.v1.ServerLivingEntityEvents.AfterDeath callback) { registerCallback(LEGACY_AFTER_DEATH, callback); }
     public static void registerAllowChatMessage(ServerMessageEvents.AllowChatMessage callback) { registerCallback(ALLOW_CHAT_MESSAGE, callback); }
@@ -703,12 +1089,16 @@ public final class CppModRuntime {
         PLAYER_LEAVE_EVENT.clear();
         ENTITY_LOAD.clear();
         ENTITY_UNLOAD.clear();
+        LOADED_PLAYER_HANDLES.clear();
         ALLOW_DAMAGE.clear();
+        ALLOW_DEATH.clear();
         AFTER_DAMAGE.clear();
         AFTER_DEATH.clear();
+        PLAYER_ALLOW_DEATH.clear();
         LEGACY_ENTITY_LOAD.clear();
         LEGACY_ENTITY_UNLOAD.clear();
         LEGACY_ALLOW_DAMAGE.clear();
+        LEGACY_ALLOW_DEATH.clear();
         LEGACY_AFTER_DAMAGE.clear();
         LEGACY_AFTER_DEATH.clear();
         ALLOW_CHAT_MESSAGE.clear();
@@ -1018,31 +1408,45 @@ public final class CppModRuntime {
         // their first load rather than being patched after the fact.
         configureLoaderMetadata(candidates);
         registerMixins(order);
-        // Fabric initializes server entrypoints before DedicatedServer creates
-        // its command manager.  Preserve that ordering so constructor-return
-        // mixins (notably Carpet's command registration hook) observe their
-        // initialized mod state instead of an empty settings registry.
-        for (Candidate candidate : order) initializedEntrypoints += initialize(candidate);
-        server = MinecraftServer.of(NativeAccess.serverHandle());
+        // Fabric initializes common entrypoints before dedicated-server
+        // entrypoints. Preserve dependency order within each phase while
+        // ensuring every mod's main initializer precedes every server one.
+        for (String key : List.of("main", "server"))
+            for (Candidate candidate : order)
+                initializedEntrypoints += initialize(candidate, key);
+        MinecraftServer current = MinecraftServer.of(NativeAccess.serverHandle());
+        publishLoadingServer(current);
         for (CommandRegistrationCallback callback : snapshot(COMMAND_REGISTRATION))
-            invokeSafely(() -> callback.register(server.getCommandManager().getDispatcher(),
+            invokeSafely(() -> callback.register(current.getCommandManager().getDispatcher(),
                 new net.minecraft.command.CommandRegistryAccess(),
                 net.minecraft.server.command.CommandManager.RegistrationEnvironment.DEDICATED),
                 "command registration");
-        NativeBridge.nativeSetModStats(candidates.size(), initializedEntrypoints);
+        try {
+            NativeBridge.nativeSetModStats(candidates.size(), initializedEntrypoints);
+        } catch (LinkageError | RuntimeException failure) {
+            // Mod discovery and initialization remain usable in Java-only
+            // fixtures; this native callback publishes diagnostics only.
+            log("WARN", "could not publish mod bootstrap stats: " + failure);
+        }
         log("INFO", "loaded " + candidates.size() + " mod candidate(s), initialized " + initializedEntrypoints + " entrypoint(s)");
     }
 
-    private static void fireWorldLoad() {
-        ServerWorld world = ServerWorld.of(NativeAccess.serverWorld(0), server);
-        for (ServerWorldEvents.Load callback : snapshot(WORLD_LOAD))
-            invokeSafely(() -> callback.onWorldLoad(server, world), "world load");
+    private static void fireWorldLoad(MinecraftServer current) {
+        if (current == null) return;
+        for (ServerWorld world : current.getWorlds()) {
+            if (world == null) continue;
+            for (ServerWorldEvents.Load callback : snapshot(WORLD_LOAD))
+                invokeSafely(() -> callback.onWorldLoad(current, world),
+                             "world load " + world.getRegistryKey().getValue());
+        }
     }
 
     private static void fireWorldUnload() {
-        ServerWorld world = server == null ? null : server.getOverworld();
+        RuntimeState runtime = runtimeState;
+        MinecraftServer current = runtime.server;
+        ServerWorld world = current == null ? null : current.getOverworld();
         for (ServerWorldEvents.Unload callback : snapshot(WORLD_UNLOAD))
-            invokeSafely(() -> callback.onWorldUnload(server, world), "world unload");
+            invokeSafely(() -> callback.onWorldUnload(current, world), "world unload");
     }
 
     private static void visit(Candidate candidate, Map<String, Candidate> byId,
@@ -1061,9 +1465,10 @@ public final class CppModRuntime {
         order.add(candidate);
     }
 
-    private static int initialize(Candidate candidate) throws Exception {
+    private static int initialize(Candidate candidate, String key) throws Exception {
         int initialized = 0;
         for (Entrypoint entrypointDefinition : candidate.entrypoints) {
+            if (!key.equals(entrypointDefinition.key)) continue;
             String entrypoint = entrypointDefinition.definition;
             String className = entrypoint;
             String methodName = null;
@@ -1138,8 +1543,8 @@ public final class CppModRuntime {
         List<Entrypoint> entrypoints = new ArrayList<>();
         Object entrypointObject = json.get("entrypoints");
         if (entrypointObject instanceof Map<?, ?> entries) {
-            addEntrypoints(entrypoints, entries.get("server"), "server");
             addEntrypoints(entrypoints, entries.get("main"), "main");
+            addEntrypoints(entrypoints, entries.get("server"), "server");
         }
         Map<String, String> dependencies = dependencyMap(json.get("depends"), "depends");
         Map<String, String> recommends = dependencyMap(json.get("recommends"), "recommends");
@@ -1187,7 +1592,7 @@ public final class CppModRuntime {
                     throw new IllegalArgumentException(key + " has an invalid requirement for " + id);
                 // Fabric metadata uses an array for alternative requirements. The
                 // version matcher already implements the pipe-separated OR form.
-                requirement = String.join(" | ", values);
+                requirement = String.join(" || ", values);
             } else {
                 throw new IllegalArgumentException(key + " has an invalid requirement for " + id);
             }
@@ -1369,22 +1774,23 @@ public final class CppModRuntime {
     }
 
     private static void closeModLoader() {
-        try {
-            if (modLoader instanceof URLClassLoader urls &&
-                modLoader != CppModRuntime.class.getClassLoader()) {
-                try { urls.close(); }
-                catch (IOException e) { log("WARN", "mod classloader close failed: " + e); }
-            }
-        } finally {
-            modLoader = null;
-            if (previousContextClassLoader != null) {
-                Thread.currentThread().setContextClassLoader(previousContextClassLoader);
-                previousContextClassLoader = null;
-            }
-            if (modExpansion != null) {
-                modExpansion.close();
-                modExpansion = null;
-            }
+        ClassLoader loader = modLoader;
+        modLoader = null;
+        if (loader instanceof URLClassLoader urls && loader != CppModRuntime.class.getClassLoader()) {
+            try { urls.close(); }
+            catch (Throwable failure) { log("WARN", "mod classloader close failed: " + failure); }
+        }
+        ClassLoader previous = previousContextClassLoader;
+        previousContextClassLoader = null;
+        if (previous != null) {
+            try { Thread.currentThread().setContextClassLoader(previous); }
+            catch (Throwable failure) { log("WARN", "context classloader restore failed: " + failure); }
+        }
+        NestedJarSupport.Expansion expansion = modExpansion;
+        modExpansion = null;
+        if (expansion != null) {
+            try { expansion.close(); }
+            catch (Throwable failure) { log("WARN", "nested mod expansion close failed: " + failure); }
         }
     }
 

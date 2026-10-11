@@ -14,6 +14,15 @@ public class ArmorStandEntity extends LivingEntity {
     private final DefaultedList<ItemStack> equipment = DefaultedList.ofSize(2, ItemStack.EMPTY);
     public ArmorStandEntity(EntityType<?> type, World world) { super(type, world); }
     protected ArmorStandEntity(long nativeHandle) { super(nativeHandle); }
+    private ArmorStandEntity(long nativeHandle, World world, EntityType<?> type) {
+        super(nativeHandle, world, type);
+    }
+    public static ArmorStandEntity createNativeWrapper(long handle) {
+        String typeId = net.minecraft.util.NativeAccess.entityType(handle);
+        return new ArmorStandEntity(handle,
+            World.of(net.minecraft.util.NativeAccess.entityWorld(handle)),
+            EntityType.byId(typeId));
+    }
     public void readAdditionalSaveData(NbtCompound nbt) { }
     public void readCustomDataFromNbt(NbtCompound nbt) {
         equipment.set(0, ItemStack.EMPTY);

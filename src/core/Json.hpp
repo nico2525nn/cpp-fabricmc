@@ -1,6 +1,7 @@
 // Json: minimal self-contained JSON value + parser + serializer. Used by: recipe loading, worldgen definitions, stats/advancement
 // persistence, server-list ping responses, plugin payloads. Clean-room implementation.
 #pragma once
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -8,16 +9,23 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
 namespace cppfm::json {
+
+class ResourceLimitExceeded : public std::length_error {
+public:
+    using std::length_error::length_error;
+};
 
 class Value {
 public:
     static constexpr std::size_t kMaxInputBytes = 64u * 1024u * 1024u;
     static constexpr std::size_t kMaxDepth = 512;
     static constexpr std::size_t kMaxContainerEntries = 1'000'000;
+    static constexpr std::size_t kMaxTotalValues = 500'000;
     static constexpr std::size_t kMaxStringBytes = 16u * 1024u * 1024u;
 
     enum class Type { Null, Bool, Num, Str, Arr, Obj };
@@ -97,11 +105,17 @@ public:
     }
 
     // ---------------------------------------------------------------- parse
-    static Value parse(std::string_view text) {
+    static Value parse(std::string_view text,
+                       std::size_t maxTotalValues = kMaxTotalValues,
+                       std::size_t maxStringBytes = kMaxStringBytes) {
         if (text.size() > kMaxInputBytes)
-            throw std::length_error("json: input exceeds size limit");
+            throw ResourceLimitExceeded("json: input exceeds size limit");
         std::size_t i = 0;
-        Value v = parseValue(text, i, 0);
+        std::size_t remainingValues =
+            std::min(maxTotalValues, kMaxTotalValues);
+        const auto stringByteLimit =
+            std::min(maxStringBytes, kMaxStringBytes);
+        Value v = parseValue(text, i, 0, remainingValues, stringByteLimit);
         skipWs(text, i);
         if (i != text.size()) throw std::runtime_error("json: trailing data");
         return v;
@@ -123,18 +137,26 @@ private:
         return s[i];
     }
     static Value parseValue(std::string_view s, std::size_t& i,
-                            std::size_t depth) {
+                            std::size_t depth,
+                            std::size_t& remainingValues,
+                            std::size_t maxStringBytes) {
+        if (remainingValues == 0)
+            throw ResourceLimitExceeded(
+                "json: total value count exceeds limit");
+        --remainingValues;
         skipWs(s, i);
         const char c = peek(s, i);
         // `depth` counts enclosing containers.  Check the opening token here
         // so kMaxDepth describes the number of nested containers, rather than
         // allowing one extra empty container at the boundary.
         if ((c == '{' || c == '[') && depth >= kMaxDepth)
-            throw std::runtime_error("json: nesting too deep");
+            throw ResourceLimitExceeded("json: nesting too deep");
         switch (c) {
-        case '{': return parseObject(s, i, depth);
-        case '[': return parseArray(s, i, depth);
-        case '"': return Value::ofString(parseString(s, i));
+        case '{': return parseObject(s, i, depth, remainingValues,
+                                     maxStringBytes);
+        case '[': return parseArray(s, i, depth, remainingValues,
+                                    maxStringBytes);
+        case '"': return Value::ofString(parseString(s, i, maxStringBytes));
         case 't':
             expect(s, i, "true");  return Value::ofBool(true);
         case 'f':
@@ -151,22 +173,28 @@ private:
         i += word.size();
     }
     static Value parseObject(std::string_view s, std::size_t& i,
-                             std::size_t depth) {
+                             std::size_t depth,
+                             std::size_t& remainingValues,
+                             std::size_t maxStringBytes) {
         Value out = Value::object();
+        std::unordered_set<std::string> keys;
         ++i;                                        // '{'
         skipWs(s, i);
         if (peek(s, i) == '}') { ++i; return out; }
         for (;;) {
             if (out.obj.size() >= kMaxContainerEntries)
-                throw std::length_error("json: object has too many members");
+                throw ResourceLimitExceeded(
+                    "json: object has too many members");
             skipWs(s, i);
-            std::string key = parseString(s, i);
-            if (out.find(key) != nullptr)
+            std::string key = parseString(s, i, maxStringBytes);
+            if (!keys.insert(key).second)
                 throw std::runtime_error("json: duplicate object key");
             skipWs(s, i);
             if (peek(s, i) != ':') throw std::runtime_error("json: expected ':'");
             ++i;
-            out.obj.emplace_back(std::move(key), parseValue(s, i, depth + 1));
+            out.obj.emplace_back(std::move(key),
+                parseValue(s, i, depth + 1, remainingValues,
+                           maxStringBytes));
             skipWs(s, i);
             const char c = peek(s, i);
             if (c == ',') { ++i; continue; }
@@ -175,15 +203,19 @@ private:
         }
     }
     static Value parseArray(std::string_view s, std::size_t& i,
-                            std::size_t depth) {
+                            std::size_t depth,
+                            std::size_t& remainingValues,
+                            std::size_t maxStringBytes) {
         Value out = Value::array();
         ++i;                                        // '['
         skipWs(s, i);
         if (peek(s, i) == ']') { ++i; return out; }
         for (;;) {
             if (out.arr.size() >= kMaxContainerEntries)
-                throw std::length_error("json: array has too many elements");
-            out.arr.push_back(parseValue(s, i, depth + 1));
+                throw ResourceLimitExceeded(
+                    "json: array has too many elements");
+            out.arr.push_back(parseValue(s, i, depth + 1, remainingValues,
+                                         maxStringBytes));
             skipWs(s, i);
             const char c = peek(s, i);
             if (c == ',') { ++i; continue; }
@@ -191,7 +223,8 @@ private:
             throw std::runtime_error("json: expected ',' or ']'");
         }
     }
-    static std::string parseString(std::string_view s, std::size_t& i) {
+    static std::string parseString(std::string_view s, std::size_t& i,
+                                   std::size_t maxStringBytes) {
         if (peek(s, i) != '"') throw std::runtime_error("json: expected string");
         ++i;
         std::string out;
@@ -203,8 +236,9 @@ private:
                 throw std::runtime_error("json: unescaped control character");
             if (c != '\\') {
                 out.push_back(c);
-                if (out.size() > kMaxStringBytes)
-                    throw std::length_error("json: string exceeds size limit");
+                if (out.size() > maxStringBytes)
+                    throw ResourceLimitExceeded(
+                        "json: string exceeds size limit");
                 continue;
             }
             if (i >= s.size()) throw std::runtime_error("json: bad escape");
@@ -233,14 +267,16 @@ private:
                     throw std::runtime_error("json: unexpected low surrogate");
                 }
                 appendUtf8(out, cp);
-                if (out.size() > kMaxStringBytes)
-                    throw std::length_error("json: string exceeds size limit");
+                if (out.size() > maxStringBytes)
+                    throw ResourceLimitExceeded(
+                        "json: string exceeds size limit");
                 break;
             }
             default: throw std::runtime_error("json: unknown escape");
             }
-            if (out.size() > kMaxStringBytes)
-                throw std::length_error("json: string exceeds size limit");
+            if (out.size() > maxStringBytes)
+                throw ResourceLimitExceeded(
+                    "json: string exceeds size limit");
         }
     }
     static unsigned hex4(std::string_view s, std::size_t i) {

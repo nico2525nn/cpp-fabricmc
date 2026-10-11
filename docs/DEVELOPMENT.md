@@ -1,9 +1,10 @@
 # DEVELOPMENT — implementation and documentation workflow
 
 This guide is for the clean-room C++ implementation of Minecraft Java 1.21.4,
-protocol 769, DataVersion 4189. The compatibility evidence baseline remains the
-integrated `main` HEAD `81b6f4f` (2026-09-24); the in-progress dimension-runtime
-refactor is tracked separately in [CURRENT_STATE §1E](CURRENT_STATE.md#1e-behavior-preserving-architecture-refactor-working-branch-2026-09-26).
+protocol 769, DataVersion 4189. The compatibility evidence baseline is the
+integrated `main` HEAD `4756a5b0` (PR #5, 2026-09-26); the current unmerged
+world-mutation refactor is tracked separately in
+[CURRENT_STATE §1E](CURRENT_STATE.md#1e-behavior-preserving-architecture-refactor-2026-09-26).
 Fabric Loader 0.16.9 is a
 version/reference boundary; the executable provides a default-on bounded embedded
 JVM, a version-locked class-file transformer, and a separate offline official
@@ -68,21 +69,39 @@ Use `DECLARED-LIMITATION` when a claim has not been independently verified.
 
 | layer | primary paths/symbols | contract |
 |---|---|---|
-| server composition | `src/game/GameServer.hpp`, `GameServer::DimensionRuntime` | composition root with one world-scoped aggregate for each supported dimension; service lifecycle wiring remains in `GameServer::init()` during the current refactor |
+| server composition | `src/game/GameServer.hpp`, `GameServer::DimensionRuntime`, `ChunkKey.hpp`, `ChunkSaveCoordinator.hpp`, `ChunkBodyCache.hpp` | composition root with one world-scoped aggregate per dimension; the dimension-qualified key, save/load generations, and encoded-body cache state have separate owners |
+| player lifecycle | `src/game/Player.hpp`, `PlayerDirectory.hpp/.cpp`, `GameServer_player_directory.cpp` | `GameServer` exposes stable roster snapshots and identity-scoped admission tokens; the directory projects concurrent replacement reservations against UUID/name identity, privately owns membership, and retires duplicate sessions outside roster/admission locks |
+| connection session | `src/game/Session.hpp`, `SimulationDispatchGuard.hpp`, `GameServer_session*.cpp` | per-connection protocol state is separate from the server composition header; session implementations explicitly include the server services they use |
+| client world/entity visibility (working-tree refactor) | `src/game/ClientEntityTracking.hpp`, `Player::entityTracking`, `GameServer_session.cpp`, `GameServer_core.cpp` | one per-player owner couples built-in dimension-qualified sent-chunk state with mob visibility; chunk forget removes associated mobs in packet order, while mob movement reconciles spawn/update/remove. Only the current Overworld/Nether/End runtime IDs are accepted |
 | core | `src/core/ByteBuffer.hpp`, `NBT.*`, `Json.*`, `Zlib.hpp` | primitive, NBT, JSON, compression utilities |
 | protocol | `src/proto/Ids.hpp` | protocol 769 state/direction constants |
 | network | `src/net/Connection.hpp`, `PacketEncoder/Decoder`, `Crypto`, `PacketBatcher`, `RateLimiter`, `Rcon` | frame, encryption, batch, limits, administration |
-| world | `src/game/World.hpp`, `ChunkTicket.hpp`, `ChunkCodec.hpp`, `GameServer::DimensionRuntime` | 24 sections, blocks, biomes, light and tickets; runtime groups block entities, per-dimension simulation services, persistence, and local dispenser/rail state |
+| world | `src/game/World.hpp`, `ChunkTicket.hpp`, `ChunkCodec.hpp`, `ChunkBodyCache.hpp`, `GameServer::DimensionRuntime` | 24 sections, blocks, biomes, light and tickets; the bounded encoded-body cache owns LRU and snapshot invalidation ordering, with tickets safely detached after owner teardown |
 | worldgen | `src/worldgen/`, `src/game/WorldGen.cpp` | density, climate, structures, placement |
 | gameplay | `src/game/Entities`, `BehaviorTree`, `AiBrain`, `CombatManager`, `HungerManager` | entities, AI, damage, survival |
 | data/UI | `Items`, `Containers`, `MenuInteraction`, `Recipes`, `DatapackManager`, `src/brigadier` | components, menus, recipes, commands |
+| staged world edits | `src/game/CloneTransaction.*`, `World::setBlockBatch` | clone applies block and block-entity changes as one admitted mutation and restores snapshots on failure |
+| block-entity persistence projection | `src/game/BlockEntities.hpp`, `BlockEntityChunkCodec.hpp`, `BlockEntityNbtCodec.hpp` | the store captures typed/raw chunk snapshots; dedicated codecs project durable NBT and transient initial-packet piston state under explicit size limits |
 | persistence | `WorldDataManager`, `Persistence`, `Anvil`, `RegionFile`, `SessionLock` | DataVersion 4189 and recovery |
 | configuration | `src/game/ServerConfig.*`, `ServerProperties.hpp`, `src/net/RconConfig.hpp`, `src/main.cpp` | defaults, typed properties/CLI precedence, diagnostics, and RCON settings |
+| server lifecycle | `src/game/GameServer_lifecycle.cpp`, `GameServer::init` | startup data, per-dimension engine wiring, primary/dimension persistence, optional-service startup, and ordered shutdown; `init` remains the public lifecycle entry point and delegates to named phases |
 | JVM boundary | `src/jvm/`, `jvm/java/`, `jvm/shadow_api.json`, `jvm/vendor/` | default-on JNI/HotSpot bridge, structural transformer, and pinned official-loader probe; [PLAN51_JVM.md](PLAN51_JVM.md) |
 | distribution/runtime layout | `src/core/RuntimeLayout.*`, `tools/embed_runtime.py`, `cmake/verify_self_contained_package.cmake.in`, `tests/package_jvm_smoke.py`, `CMakeLists.txt` | embeds repository-owned assets/classes in the executable, fail-closes the one-file CPack package when its resource pack is unavailable, creates the server directory tree, and separately verifies the package JVM boundary |
 
 Generated IDs under `src/generated/` and assets under `assets/` are inputs, not
 handwritten canonical tables.
+
+To regenerate the protocol-769 block registry table, install the version-pinned
+data package and run its checked-in generator:
+
+```sh
+npm --prefix tests/mineflayer ci
+python3 tools/gen_block_registry_ids.py
+```
+
+The generator verifies `minecraft-data` version `3.117.0` and reads its
+`pc/1.21.4/blocks.json` table. Set `BLOCKS_JSON` only when intentionally using
+another verified copy of that same versioned table.
 
 ## 4. Packets and public contracts
 
@@ -134,6 +153,12 @@ contracts:
   under the simulation gate, including background persistence workers. Moving-piston
   transient NBT remains intentionally omitted; the barrier materializes the commit
   before the snapshot instead.
+- The embedded JVM does not hold a native global callback mutex across mod code:
+  synchronous native-to-Java callbacks can overlap across session and tick
+  threads, while NativeBridge game mutations are queued to the server thread.
+  This avoids silently dropping an event or deadlocking callback-driven worker
+  joins, but mod-owned callback state must be thread-safe and Fabric's exact
+  server-thread callback affinity is not yet reproduced.
 - Secure profile rejection is terminal when either secure-profile or enforced
   secure-chat policy requires it. Signed command argument transcripts are not
   reconstructed and therefore fail closed instead of dispatching.
@@ -260,12 +285,14 @@ evidence.
 
 | current concern | current source owner |
 |---|---|
-| lifecycle, server-thread dispatch, JVM/entity hooks, advancements, cookies | `src/game/GameServer_core.cpp` |
+| lifecycle, server-thread dispatch, JVM/entity hooks, advancements | `src/game/GameServer_core.cpp` |
 | tick scheduling, simulation distance, survival, mob spawning, block batches | `src/game/GameServer_tick.cpp` |
 | combat, effects, weather, particles, TNT, lightning, movement broadcasts | `src/game/GameServer_combat.cpp` |
 | items, containers, vehicles, trades, projectiles, XP, mob/object ticking | `src/game/GameServer_items.cpp` |
 | world persistence, player data, operators, bans, whitelist, world border | `src/game/GameServer_world.cpp` |
-| protocol sessions, handshake/login/configuration/play packet handlers | `src/game/GameServer_session.cpp` |
+| player roster, slot reservations, duplicate-login replacement | `src/game/PlayerDirectory.cpp`, `src/game/GameServer_player_directory.cpp` |
+| protocol session lifecycle and dispatch, handshake/login/configuration, movement/chat, and chunk streaming | `src/game/GameServer_session.cpp` (`src/net/CookieResponse.hpp`) |
+| block/item interactions, menus, and held-item use | `src/game/GameServer_session_interaction.cpp`, `src/game/GameServer_session_menu.cpp`, `src/game/GameServer_session_use.cpp` |
 
 One claim has one canonical owner. A link is preferable to a copied table.
 
@@ -305,6 +332,9 @@ The code's existing model is part of the extension contract:
 - shared world reads use shared locking and writes use unique locking;
 - entity and world lock ownership must not be inverted through callbacks;
 - connection writes are serialized by `Connection::tx_`;
+- JNI calls are protected against VM teardown by runtime leases, not globally
+  serialized around user callbacks; session-originated events may overlap tick
+  callbacks, and native state changes still enter through the server-thread queue;
 - persistence and RCON workers have explicit shutdown ownership; and
 - docs generation is single-writer even when read-only research is parallel.
 
@@ -344,6 +374,60 @@ Required evidence classes are:
 3. focused unit/wire/fixture tests;
 4. integration/server tests; and
 5. operational recovery/limit/load evidence.
+
+### Optional live-client gameplay probe (Mineflayer)
+
+The opt-in black-box probe in `tests/mineflayer_live_smoke.cjs` starts and owns
+an isolated cppfm process in a fresh temporary directory, then exercises two
+offline Minecraft 1.21.4 clients. It checks login/spawn, cross-client chat,
+player movement, block breaking and updates, then opening a chest and
+transferring an item. It also checks filtered `/clone`, block-entity-safe
+`/place feature` rejection, supporting-soil and obstruction checks, a
+coordinate-free feature command from an operator player, and block destruction
+with retained container contents. A filled shulker is dispensed into cave air
+with cave air below it, checking replaceability, facing, and retained contents.
+It restarts the same isolated world and checks
+that edited sign text and a remote chunk's container inventory are restored to
+a newly joined client. This catches regressions in both Anvil persistence and
+startup loading of saved spawn-area chunks. The test-generated world, server properties,
+clients, RCON connection, and server process are cleaned up by the harness on
+success or failure; set `CPPFM_MINEFLAYER_KEEP_WORLD=1` only when a failed run
+needs its isolated files retained for diagnosis. It does not attach to an
+arbitrary server or an existing world.
+
+The feature-command cases are safety/command-path regressions, **not vanilla
+configured-feature parity**. The current implementation uses fixed patterns
+for a small set of IDs; it does not resolve and execute the 1.21.4 registry,
+placement modifiers, or feature-specific randomness. Keep this as an explicit
+compatibility limitation until that execution path exists.
+
+The probe's Node dependencies are pinned in the isolated
+`tests/mineflayer/package.json` and lockfile; they are not part of the C++ build
+or runtime package. Install and run them with npm:
+
+```sh
+npm ci --prefix tests/mineflayer
+npm --prefix tests/mineflayer run live-smoke
+```
+
+PowerShell equivalent:
+
+```powershell
+npm ci --prefix tests/mineflayer
+npm --prefix tests/mineflayer run live-smoke
+```
+
+The harness uses `build/cppfm` by default (`build/cppfm.exe` on Windows). Set
+`CPPFM_BINARY` to an alternate build output when needed, for example
+`build/deep-refactor/cppfm` on POSIX shells or `build\deep-refactor\cppfm.exe`
+in PowerShell.
+
+This is a focused automated play probe, not a substitute for the official GUI
+client, first-time Microsoft authentication, Fabric/JVM mod loading, protocol
+byte parity, world-generation RNG parity, or long-duration soak evidence. The
+upstream API documents the `dig` and `openContainer` calls used by the scenario:
+[Mineflayer 1.21.4 release history](https://github.com/PrismarineJS/mineflayer/blob/master/docs/history.md),
+[Mineflayer API](https://github.com/PrismarineJS/mineflayer/blob/master/docs/api.md).
 
 ## 16. Priority and status
 

@@ -1,6 +1,9 @@
 #include "JvmRuntime.hpp"
 #include "JvmContract.hpp"
+#include "HandleCacheTransaction.hpp"
+#include "PlayerHandleLifetime.hpp"
 
+#include "../core/Utf8.hpp"
 #include "../game/GameServer.hpp"
 #include "../game/World.hpp"
 #include "../game/BlockEvent.hpp"
@@ -10,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <condition_variable>
 #include <cctype>
 #include <cstdio>
@@ -26,6 +30,7 @@
 #include <string_view>
 #include <thread>
 #include <type_traits>
+#include <unordered_map>
 #include <vector>
 
 #if defined(CPPFM_HAS_JNI)
@@ -35,6 +40,15 @@
 namespace cppfm::jvm {
 
 struct JvmRuntime::Impl {
+    struct MobLifecycleState {
+        std::mutex mutex;
+        std::size_t callbacksInFlight = 0;
+        bool loaded = false;
+        bool unloadRequested = false;
+        bool unloadDispatched = false;
+        bool invalidationClaimed = false;
+    };
+
     struct MutationLifetime {
         explicit MutationLifetime(std::chrono::milliseconds timeout)
             : serverMutationTimeout(timeout) {}
@@ -48,17 +62,29 @@ struct JvmRuntime::Impl {
     JvmConfig config;
     std::shared_ptr<MutationLifetime> mutationLifetime;
     NativeHandleTable handles;
+    PlayerHandleLifetime playerHandleLifetime;
     JavaObjectCache objects;
     ModRoutingTable routing;
-    mutable std::recursive_mutex callMutex;
+    // Serializes setup, bridge publication, and teardown only. Java user
+    // callbacks must not hold this mutex: a mod callback may wait for a worker
+    // whose server-thread operation synchronously enters another callback.
+    mutable std::recursive_mutex lifecycleMutex;
+    mutable std::mutex errorMutex;
     // Stop can be reached both from GameServer teardown and from a bootstrap
-    // failure while start() still owns callMutex.  Keep stop idempotent and
-    // serialize concurrent callers without making that failure path deadlock.
+    // failure while start() still owns lifecycleMutex. Keep stop idempotent
+    // and serialize callers without making that failure path deadlock.
     std::recursive_mutex stopMutex;
     // Wrapper creation and handle invalidation must be atomic with respect to
     // the Java-object cache.  Otherwise invalidation can remove a handle
     // between the validity check and the cache insertion.
     std::mutex objectCacheMutex;
+    // Serializes native entity-handle publication with entity/player
+    // invalidation. The handle table stores addresses, so a fresh handle must
+    // never be published after its owning roster entry has been retired.
+    std::mutex entityHandleLifetimeMutex;
+    std::mutex mobLifecycleMapMutex;
+    std::unordered_map<MobEntity*, std::shared_ptr<MobLifecycleState>>
+        mobLifecycleStates;
     std::string lastError;
     std::atomic<bool> started{false};
     std::atomic<bool> stopping{false};
@@ -67,6 +93,13 @@ struct JvmRuntime::Impl {
     std::atomic<bool> vmDestroyFailed{false};
     bool bootstrapInvoked = false;
     std::atomic<std::uint64_t> serverHandle{0};
+    std::atomic<bool> worldsUnloaded{false};
+    // The server loop, explicit teardown, and JvmRuntime::stop() converge on
+    // the same terminal stages. Record the result as well as the attempt so
+    // each Fabric lifecycle event is dispatched once and failures stay visible.
+    std::atomic<std::uint8_t> serverStoppingState{0};
+    std::atomic<std::uint8_t> worldsUnloadingState{0};
+    std::atomic<std::uint8_t> serverStoppedState{0};
     std::atomic<JvmProvider> provider{JvmProvider::None};
     // A native bridge call may execute on a Java-created thread while the
     // server thread is synchronously inside a callback.  This count is the
@@ -105,6 +138,11 @@ struct JvmRuntime::Impl {
     jmethodID bootstrap = nullptr;
     bool bootstrapHasClassesDir = false;
     jmethodID shutdown = nullptr;
+    jmethodID serverShutdown = nullptr;
+    jmethodID serverStopping = nullptr;
+    jmethodID serverWorldsLoaded = nullptr;
+    jmethodID worldsUnloading = nullptr;
+    jmethodID serverStopped = nullptr;
     jmethodID serverTick = nullptr;
     jmethodID playerJoin = nullptr;
     jmethodID playerQuit = nullptr;
@@ -114,7 +152,11 @@ struct JvmRuntime::Impl {
     jmethodID blockClicked = nullptr;
     jmethodID command = nullptr;
     jmethodID entityDamage = nullptr;
+    jmethodID entityAllowDeath = nullptr;
+    jmethodID entityDamageApplied = nullptr;
     jmethodID mobSpawn = nullptr;
+    jmethodID mobLoad = nullptr;
+    jmethodID mobUnload = nullptr;
     jmethodID pluginMessage = nullptr;
 #endif
 
@@ -128,7 +170,8 @@ struct JvmRuntime::Impl {
     explicit Impl(GameServer& s, JvmConfig c)
         : server(s), config(std::move(c)),
           mutationLifetime(std::make_shared<MutationLifetime>(
-              config.serverMutationTimeout)) {}
+              config.serverMutationTimeout)),
+          playerHandleLifetime(handles) {}
 };
 
 namespace {
@@ -148,6 +191,35 @@ bool g_runtimePermanentlyUnavailable = false;
 
 thread_local JvmRuntime* g_callRuntime = nullptr;
 thread_local std::size_t g_callDepth = 0;
+thread_local JvmRuntime* g_damageCallbackRuntime = nullptr;
+thread_local std::size_t g_damageCallbackDepth = 0;
+
+class DamageCallbackScope {
+public:
+    explicit DamageCallbackScope(JvmRuntime* runtime)
+        : previousRuntime_(g_damageCallbackRuntime),
+          previousDepth_(g_damageCallbackDepth) {
+        g_damageCallbackRuntime = runtime;
+        g_damageCallbackDepth = previousRuntime_ == runtime
+            ? previousDepth_ + 1 : 1;
+    }
+
+    ~DamageCallbackScope() {
+        g_damageCallbackRuntime = previousRuntime_;
+        g_damageCallbackDepth = previousDepth_;
+    }
+
+    DamageCallbackScope(const DamageCallbackScope&) = delete;
+    DamageCallbackScope& operator=(const DamageCallbackScope&) = delete;
+
+private:
+    JvmRuntime* previousRuntime_;
+    std::size_t previousDepth_;
+};
+
+bool isInsideDamageCallback(const JvmRuntime* runtime) noexcept {
+    return g_damageCallbackRuntime == runtime && g_damageCallbackDepth != 0;
+}
 
 struct DynamicDispatchKey {
     JvmRuntime* runtime = nullptr;
@@ -257,7 +329,14 @@ public:
     ~RuntimeCallLease() {
         if (!runtime_) return;
         auto& impl = runtime_->bridgeImpl();
-        impl.activeCalls.fetch_sub(1, std::memory_order_acq_rel);
+        {
+            // Pair the predicate change with waitForRuntimeCalls' mutex.
+            // Without this lock, the final decrement can race between the
+            // waiter's predicate check and its transition to sleeping, losing
+            // the only notification and hanging JVM teardown indefinitely.
+            std::lock_guard lock(g_runtimeLifecycleMutex);
+            impl.activeCalls.fetch_sub(1, std::memory_order_acq_rel);
+        }
         if (g_callRuntime == runtime_) {
             if (g_callDepth > 0) --g_callDepth;
             if (g_callDepth == 0) g_callRuntime = nullptr;
@@ -307,7 +386,7 @@ bool runServerMutation(
     const std::weak_ptr<JvmRuntime::Impl::MutationLifetime> weakLifetime = lifetime;
     const auto timeout = std::max(lifetime->serverMutationTimeout,
                                   std::chrono::milliseconds::zero());
-    const bool dispatched = server.runOnServerThread(
+    const auto dispatch = server.runOnServerThreadDetailed(
         [operationHolder, result, weakLifetime, generation]() noexcept {
             const auto activeLifetime = weakLifetime.lock();
             if (!activeLifetime ||
@@ -319,13 +398,23 @@ bool runServerMutation(
             } catch (...) {
                 result->store(false, std::memory_order_release);
             }
-        }, timeout);
-    return dispatched && result->load(std::memory_order_acquire);
+        }, timeout, ServerThreadTaskWaitPolicy::WaitIfRunning);
+    return dispatch == ServerThreadTaskOutcome::Completed &&
+           result->load(std::memory_order_acquire);
 }
 
 void setError(JvmRuntime::Impl& impl, std::string message) {
-    impl.lastError = std::move(message);
-    std::fprintf(stderr, "[cppfm][jvm] %s\n", impl.lastError.c_str());
+    const std::string logMessage = message;
+    {
+        std::lock_guard errorLock(impl.errorMutex);
+        impl.lastError = std::move(message);
+    }
+    std::fprintf(stderr, "[cppfm][jvm] %s\n", logMessage.c_str());
+}
+
+std::string lastErrorSnapshot(const JvmRuntime::Impl& impl) {
+    std::lock_guard errorLock(impl.errorMutex);
+    return impl.lastError;
 }
 
 #if defined(CPPFM_HAS_JNI)
@@ -371,10 +460,26 @@ std::string envString(const char* name) {
 
 std::string fromJavaString(JNIEnv* env, jstring value) {
     if (!env || !value) return {};
-    const char* chars = env->GetStringUTFChars(value, nullptr);
+    const jsize length = env->GetStringLength(value);
+    if (env->ExceptionCheck()) return {};
+    const jchar* chars = env->GetStringChars(value, nullptr);
     if (!chars) return {};
-    std::string result(chars);
-    env->ReleaseStringUTFChars(value, chars);
+    struct StringCharsRelease final {
+        JNIEnv* env;
+        jstring value;
+        const jchar* chars;
+        ~StringCharsRelease() { env->ReleaseStringChars(value, chars); }
+    } release{env, value, chars};
+
+    std::u16string codeUnits;
+    codeUnits.reserve(static_cast<std::size_t>(length));
+    for (jsize index = 0; index < length; ++index)
+        codeUnits.push_back(static_cast<char16_t>(chars[index]));
+    std::string result;
+    // Java permits isolated UTF-16 surrogates; the native side uses standard
+    // UTF-8, so canonicalize those rare values instead of emitting invalid
+    // UTF-8 (Modified UTF-8 also cannot preserve embedded NUL semantics).
+    (void)utf8::fromUtf16(codeUnits, result, true);
     return result;
 }
 
@@ -401,7 +506,29 @@ jbyteArray toJavaBytes(JNIEnv* env, const std::vector<std::uint8_t>& value) {
 }
 
 jstring toJavaString(JNIEnv* env, const std::string& value) {
-    return env ? env->NewStringUTF(value.c_str()) : nullptr;
+    if (!env) return nullptr;
+    std::u16string codeUnits;
+    if (!utf8::toUtf16(value, codeUnits) ||
+        codeUnits.size() > static_cast<std::size_t>(
+                               std::numeric_limits<jsize>::max())) {
+        if (!env->ExceptionCheck()) {
+            jclass exception = env->FindClass("java/lang/IllegalArgumentException");
+            if (exception) {
+                env->ThrowNew(exception,
+                              "native string is not representable as Java UTF-16");
+                env->DeleteLocalRef(exception);
+            }
+        }
+        return nullptr;
+    }
+
+    std::vector<jchar> javaChars;
+    javaChars.reserve(codeUnits.size());
+    for (const char16_t codeUnit : codeUnits)
+        javaChars.push_back(static_cast<jchar>(codeUnit));
+    static constexpr jchar kEmptyString = 0;
+    const auto* data = javaChars.empty() ? &kEmptyString : javaChars.data();
+    return env->NewString(data, static_cast<jsize>(javaChars.size()));
 }
 
 bool clearJavaException(JNIEnv* env, JvmRuntime* runtime, const char* where) {
@@ -513,7 +640,7 @@ jclass loadClassFromLoader(JNIEnv* env, jobject loader, const std::string& inter
         return nullptr;
     }
     const std::string dotted = dottedClassName(internalName);
-    JniLocalRef<jstring> name(env, env->NewStringUTF(dotted.c_str()));
+    JniLocalRef<jstring> name(env, toJavaString(env, dotted));
     if (!name) {
         if (env->ExceptionCheck()) env->ExceptionClear();
         return nullptr;
@@ -535,7 +662,7 @@ Result withNativeRuntime(JNIEnv* env, const char* operation, Result fallback,
     try {
         const Result result = static_cast<Result>(call(*guard.get()));
         // JNI conversion helpers and native code can fail without throwing a
-        // C++ exception (for example NewStringUTF returning null after an
+        // C++ exception (for example NewString returning null after an
         // OOM).  Never return to Java with an uncleared pending exception.
         if (clearJavaException(env, guard.get(), operation)) return fallback;
         return result;
@@ -670,6 +797,17 @@ JNIEXPORT jstring JNICALL nativePlayerName(JNIEnv* env, jclass, jlong handle) {
     });
 }
 
+JNIEXPORT jboolean JNICALL nativePlayerHandleLive(JNIEnv* env, jclass,
+                                                   jlong handle) {
+    return withNativeRuntime<jboolean>(
+        env, "nativePlayerHandleLive", JNI_FALSE,
+        [&](JvmRuntime& runtime) {
+            return runtime.nativePlayerHandleLive(
+                       static_cast<std::uint64_t>(handle))
+                ? JNI_TRUE : JNI_FALSE;
+        });
+}
+
 JNIEXPORT jstring JNICALL nativePlayerUuid(JNIEnv* env, jclass, jlong handle) {
     return withNativeString(env, "nativePlayerUuid", [&](JvmRuntime& runtime) {
         return runtime.nativePlayerUuid(static_cast<std::uint64_t>(handle));
@@ -793,6 +931,17 @@ JNIEXPORT jboolean JNICALL nativePlayerSendMessage(JNIEnv* env, jclass, jlong ha
     });
 }
 
+JNIEXPORT jboolean JNICALL nativePlayerDisconnect(JNIEnv* env, jclass,
+                                                   jlong handle,
+                                                   jstring reason) {
+    return withNativeRuntime<jboolean>(env, "nativePlayerDisconnect", JNI_FALSE,
+                                       [&](JvmRuntime& runtime) {
+        return runtime.nativePlayerDisconnect(
+            static_cast<std::uint64_t>(handle), fromJavaString(env, reason))
+                   ? JNI_TRUE : JNI_FALSE;
+    });
+}
+
 JNIEXPORT jlong JNICALL nativePlayerWorld(JNIEnv* env, jclass, jlong handle) {
     return withNativeRuntime<jlong>(env, "nativePlayerWorld", 0,
                                     [&](JvmRuntime& runtime) {
@@ -810,6 +959,17 @@ JNIEXPORT jlong JNICALL nativeServerWorld(JNIEnv* env, jclass, jint dimension) {
 JNIEXPORT jstring JNICALL nativeWorldName(JNIEnv* env, jclass, jlong handle) {
     return withNativeString(env, "nativeWorldName", [&](JvmRuntime& runtime) {
         return runtime.nativeWorldName(static_cast<std::uint64_t>(handle));
+    });
+}
+
+JNIEXPORT jboolean JNICALL nativeWorldHasChunk(JNIEnv* env, jclass,
+                                               jlong handle, jint chunkX,
+                                               jint chunkZ) {
+    return withNativeRuntime<jboolean>(env, "nativeWorldHasChunk", JNI_FALSE,
+                                      [&](JvmRuntime& runtime) {
+        return runtime.nativeWorldHasChunk(static_cast<std::uint64_t>(handle),
+                                           chunkX, chunkZ)
+            ? JNI_TRUE : JNI_FALSE;
     });
 }
 
@@ -864,11 +1024,67 @@ JNIEXPORT jstring JNICALL nativeEntityType(JNIEnv* env, jclass, jlong handle) {
     });
 }
 
+JNIEXPORT jboolean JNICALL nativeEntityHandleCreatable(
+    JNIEnv* env, jclass, jlong handle) {
+    return withNativeRuntime<jboolean>(
+        env, "nativeEntityHandleCreatable", JNI_FALSE,
+        [&](JvmRuntime& runtime) {
+            return runtime.nativeEntityHandleCreatable(
+                static_cast<std::uint64_t>(handle)) ? JNI_TRUE : JNI_FALSE;
+        });
+}
+
+JNIEXPORT jboolean JNICALL nativeEntityBeginRetirement(
+    JNIEnv* env, jclass, jlong handle) {
+    return withNativeRuntime<jboolean>(
+        env, "nativeEntityBeginRetirement", JNI_FALSE,
+        [&](JvmRuntime& runtime) {
+            return runtime.nativeEntityBeginRetirement(
+                static_cast<std::uint64_t>(handle)) ? JNI_TRUE : JNI_FALSE;
+        });
+}
+
 JNIEXPORT jint JNICALL nativeEntityTypeId(JNIEnv* env, jclass, jlong handle) {
     return withNativeRuntime<jint>(env, "nativeEntityTypeId", -1,
                                    [&](JvmRuntime& runtime) {
         return static_cast<jint>(runtime.nativeEntityTypeId(
             static_cast<std::uint64_t>(handle)));
+    });
+}
+
+JNIEXPORT jboolean JNICALL nativeEntityIsLiving(JNIEnv* env, jclass,
+                                                jlong handle) {
+    return withNativeRuntime<jboolean>(env, "nativeEntityIsLiving", JNI_FALSE,
+                                      [&](JvmRuntime& runtime) {
+        return runtime.nativeEntityIsLiving(
+            static_cast<std::uint64_t>(handle)) ? JNI_TRUE : JNI_FALSE;
+    });
+}
+
+JNIEXPORT jboolean JNICALL nativeEntityIsHostile(JNIEnv* env, jclass,
+                                                 jlong handle) {
+    return withNativeRuntime<jboolean>(env, "nativeEntityIsHostile", JNI_FALSE,
+                                      [&](JvmRuntime& runtime) {
+        return runtime.nativeEntityIsHostile(
+            static_cast<std::uint64_t>(handle)) ? JNI_TRUE : JNI_FALSE;
+    });
+}
+
+JNIEXPORT jboolean JNICALL nativeEntityIsAnimal(JNIEnv* env, jclass,
+                                                jlong handle) {
+    return withNativeRuntime<jboolean>(env, "nativeEntityIsAnimal", JNI_FALSE,
+                                      [&](JvmRuntime& runtime) {
+        return runtime.nativeEntityIsAnimal(
+            static_cast<std::uint64_t>(handle)) ? JNI_TRUE : JNI_FALSE;
+    });
+}
+
+JNIEXPORT jboolean JNICALL nativeEntityIsFish(JNIEnv* env, jclass,
+                                              jlong handle) {
+    return withNativeRuntime<jboolean>(env, "nativeEntityIsFish", JNI_FALSE,
+                                      [&](JvmRuntime& runtime) {
+        return runtime.nativeEntityIsFish(
+            static_cast<std::uint64_t>(handle)) ? JNI_TRUE : JNI_FALSE;
     });
 }
 
@@ -879,12 +1095,40 @@ JNIEXPORT jfloat JNICALL nativeEntityHealth(JNIEnv* env, jclass, jlong handle) {
     });
 }
 
+JNIEXPORT jfloat JNICALL nativeEntityMaxHealth(JNIEnv* env, jclass,
+                                               jlong handle) {
+    return withNativeRuntime<jfloat>(env, "nativeEntityMaxHealth", 0.0f,
+                                     [&](JvmRuntime& runtime) {
+        return runtime.nativeEntityMaxHealth(
+            static_cast<std::uint64_t>(handle));
+    });
+}
+
 JNIEXPORT jboolean JNICALL nativeEntitySetHealth(JNIEnv* env, jclass, jlong handle,
                                                  jfloat health) {
     return withNativeRuntime<jboolean>(env, "nativeEntitySetHealth", JNI_FALSE,
                                        [&](JvmRuntime& runtime) {
         return runtime.nativeEntitySetHealth(
             static_cast<std::uint64_t>(handle), health) ? JNI_TRUE : JNI_FALSE;
+    });
+}
+
+JNIEXPORT jboolean JNICALL nativeEntityDamage(JNIEnv* env, jclass, jlong handle,
+                                              jfloat amount, jstring cause) {
+    return withNativeRuntime<jboolean>(env, "nativeEntityDamage", JNI_FALSE,
+                                       [&](JvmRuntime& runtime) {
+        return runtime.nativeEntityDamage(
+            static_cast<std::uint64_t>(handle), amount,
+            fromJavaString(env, cause)) ? JNI_TRUE : JNI_FALSE;
+    });
+}
+
+JNIEXPORT jboolean JNICALL nativeEntityRemove(JNIEnv* env, jclass,
+                                              jlong handle, jint reason) {
+    return withNativeRuntime<jboolean>(env, "nativeEntityRemove", JNI_FALSE,
+                                       [&](JvmRuntime& runtime) {
+        return runtime.nativeEntityRemove(
+            static_cast<std::uint64_t>(handle), reason) ? JNI_TRUE : JNI_FALSE;
     });
 }
 
@@ -918,6 +1162,26 @@ JNIEXPORT jboolean JNICALL nativeEntitySetPosition(JNIEnv* env, jclass, jlong ha
                                        [&](JvmRuntime& runtime) {
         return runtime.nativeEntitySetPosition(
             static_cast<std::uint64_t>(handle), x, y, z) ? JNI_TRUE : JNI_FALSE;
+    });
+}
+
+JNIEXPORT jfloat JNICALL nativeEntityRotation(JNIEnv* env, jclass,
+                                              jlong handle, jint axis) {
+    return withNativeRuntime<jfloat>(env, "nativeEntityRotation", 0.0f,
+                                    [&](JvmRuntime& runtime) {
+        return runtime.nativeEntityRotation(
+            static_cast<std::uint64_t>(handle), axis);
+    });
+}
+
+JNIEXPORT jboolean JNICALL nativeEntitySetRotation(JNIEnv* env, jclass,
+                                                    jlong handle, jint axis,
+                                                    jfloat degrees) {
+    return withNativeRuntime<jboolean>(env, "nativeEntitySetRotation", JNI_FALSE,
+                                       [&](JvmRuntime& runtime) {
+        return runtime.nativeEntitySetRotation(
+            static_cast<std::uint64_t>(handle), axis, degrees)
+                   ? JNI_TRUE : JNI_FALSE;
     });
 }
 
@@ -1039,6 +1303,7 @@ bool registerBridge(JNIEnv* env, JvmRuntime* runtime, jclass bridgeClass) {
         {"nativeLog", "(Ljava/lang/String;Ljava/lang/String;)V", reinterpret_cast<void*>(nativeLog), true},
         {"nativeServerHandle", "()J", reinterpret_cast<void*>(nativeServerHandle), true},
         {"nativeCurrentTick", "()J", reinterpret_cast<void*>(nativeCurrentTick), true},
+        {"nativePlayerHandleLive", "(J)Z", reinterpret_cast<void*>(nativePlayerHandleLive), true},
         {"nativePlayerName", "(J)Ljava/lang/String;", reinterpret_cast<void*>(nativePlayerName), true},
         {"nativePlayerUuid", "(J)Ljava/lang/String;", reinterpret_cast<void*>(nativePlayerUuid), true},
         {"nativePlayerEntityId", "(J)I", reinterpret_cast<void*>(nativePlayerEntityId), true},
@@ -1055,22 +1320,35 @@ bool registerBridge(JNIEnv* env, JvmRuntime* runtime, jclass bridgeClass) {
         {"nativePlayerCoordinate", "(JI)D", reinterpret_cast<void*>(nativePlayerCoordinate), true},
         {"nativePlayerSetPosition", "(JDDD)Z", reinterpret_cast<void*>(nativePlayerSetPosition), true},
         {"nativePlayerSendMessage", "(JLjava/lang/String;Z)Z", reinterpret_cast<void*>(nativePlayerSendMessage), true},
+        {"nativePlayerDisconnect", "(JLjava/lang/String;)Z", reinterpret_cast<void*>(nativePlayerDisconnect), true},
         {"nativePlayerWorld", "(J)J", reinterpret_cast<void*>(nativePlayerWorld), true},
         {"nativeServerWorld", "(I)J", reinterpret_cast<void*>(nativeServerWorld), true},
         {"nativeWorldName", "(J)Ljava/lang/String;", reinterpret_cast<void*>(nativeWorldName), true},
+        {"nativeWorldHasChunk", "(JII)Z", reinterpret_cast<void*>(nativeWorldHasChunk), true},
         {"nativeWorldBlock", "(JIII)I", reinterpret_cast<void*>(nativeWorldBlock), true},
         {"nativeWorldSetBlock", "(JIIII)Z", reinterpret_cast<void*>(nativeWorldSetBlock), true},
         {"nativeExecuteCommand", "(Ljava/lang/String;)Z", reinterpret_cast<void*>(nativeExecuteCommand), true},
         {"nativeSetModStats", "(II)V", reinterpret_cast<void*>(nativeSetModStats), true},
         {"nativeRegisterTransformedMethod", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V", reinterpret_cast<void*>(nativeRegisterTransformedMethod), true},
         {"nativeEntityType", "(J)Ljava/lang/String;", reinterpret_cast<void*>(nativeEntityType), false},
+        {"nativeEntityHandleCreatable", "(J)Z", reinterpret_cast<void*>(nativeEntityHandleCreatable), false},
+        {"nativeEntityBeginRetirement", "(J)Z", reinterpret_cast<void*>(nativeEntityBeginRetirement), false},
         {"nativeEntityTypeId", "(J)I", reinterpret_cast<void*>(nativeEntityTypeId), false},
+        {"nativeEntityIsLiving", "(J)Z", reinterpret_cast<void*>(nativeEntityIsLiving), true},
+        {"nativeEntityIsHostile", "(J)Z", reinterpret_cast<void*>(nativeEntityIsHostile), true},
+        {"nativeEntityIsAnimal", "(J)Z", reinterpret_cast<void*>(nativeEntityIsAnimal), true},
+        {"nativeEntityIsFish", "(J)Z", reinterpret_cast<void*>(nativeEntityIsFish), true},
         {"nativeEntityHealth", "(J)F", reinterpret_cast<void*>(nativeEntityHealth), false},
+        {"nativeEntityMaxHealth", "(J)F", reinterpret_cast<void*>(nativeEntityMaxHealth), true},
         {"nativeEntitySetHealth", "(JF)Z", reinterpret_cast<void*>(nativeEntitySetHealth), false},
+        {"nativeEntityDamage", "(JFLjava/lang/String;)Z", reinterpret_cast<void*>(nativeEntityDamage), false},
+        {"nativeEntityRemove", "(JI)Z", reinterpret_cast<void*>(nativeEntityRemove), false},
         {"nativeEntityDead", "(J)Z", reinterpret_cast<void*>(nativeEntityDead), false},
         {"nativeEntityWorld", "(J)J", reinterpret_cast<void*>(nativeEntityWorld), false},
         {"nativeEntityCoordinate", "(JI)D", reinterpret_cast<void*>(nativeEntityCoordinate), false},
         {"nativeEntitySetPosition", "(JDDD)Z", reinterpret_cast<void*>(nativeEntitySetPosition), false},
+        {"nativeEntityRotation", "(JI)F", reinterpret_cast<void*>(nativeEntityRotation), false},
+        {"nativeEntitySetRotation", "(JIF)Z", reinterpret_cast<void*>(nativeEntitySetRotation), false},
         {"nativeEntityCount", "()I", reinterpret_cast<void*>(nativeEntityCount), false},
         {"nativeEntityHandle", "(I)J", reinterpret_cast<void*>(nativeEntityHandle), false},
         {"nativeWorldTime", "(J)J", reinterpret_cast<void*>(nativeWorldTime), false},
@@ -1152,6 +1430,21 @@ bool resolveDispatchMethods(JNIEnv* env, JvmRuntime* runtime, jclass dispatchCla
     impl.shutdown = requiredStaticMethod(env, runtime, dispatchClass,
                                          contract::ShutdownName,
                                          contract::ShutdownDescriptor);
+    impl.serverShutdown = requiredStaticMethod(
+        env, runtime, dispatchClass, contract::OnServerShutdownName,
+        contract::OnServerShutdownDescriptor);
+    impl.serverStopping = requiredStaticMethod(
+        env, runtime, dispatchClass, contract::OnServerStoppingName,
+        contract::OnServerStoppingDescriptor);
+    impl.serverWorldsLoaded = requiredStaticMethod(
+        env, runtime, dispatchClass, contract::OnServerWorldsLoadedName,
+        contract::OnServerWorldsLoadedDescriptor);
+    impl.worldsUnloading = requiredStaticMethod(
+        env, runtime, dispatchClass, contract::OnWorldsUnloadingName,
+        contract::OnWorldsUnloadingDescriptor);
+    impl.serverStopped = requiredStaticMethod(
+        env, runtime, dispatchClass, contract::OnServerStoppedName,
+        contract::OnServerStoppedDescriptor);
     impl.serverTick = requiredStaticMethod(env, runtime, dispatchClass,
                                            contract::OnServerTickName,
                                            contract::OnServerTickDescriptor);
@@ -1179,17 +1472,34 @@ bool resolveDispatchMethods(JNIEnv* env, JvmRuntime* runtime, jclass dispatchCla
     impl.entityDamage = requiredStaticMethod(env, runtime, dispatchClass,
                                               contract::OnEntityDamageName,
                                               contract::OnEntityDamageDescriptor);
+    impl.entityAllowDeath = requiredStaticMethod(
+        env, runtime, dispatchClass, contract::OnEntityAllowDeathName,
+        contract::OnEntityAllowDeathDescriptor);
+    impl.entityDamageApplied = requiredStaticMethod(
+        env, runtime, dispatchClass, contract::OnEntityDamageAppliedName,
+        contract::OnEntityDamageAppliedDescriptor);
     impl.mobSpawn = requiredStaticMethod(env, runtime, dispatchClass,
                                           contract::OnMobSpawnName,
                                           contract::OnMobSpawnDescriptor);
+    impl.mobLoad = requiredStaticMethod(env, runtime, dispatchClass,
+                                        contract::OnMobLoadName,
+                                        contract::OnMobLoadDescriptor);
+    impl.mobUnload = requiredStaticMethod(env, runtime, dispatchClass,
+                                          contract::OnMobUnloadName,
+                                          contract::OnMobUnloadDescriptor);
     // Network callbacks are optional until the full Java event facade exposes
     // them.  The native side still exposes sendPluginMessage immediately.
     impl.pluginMessage = optionalStaticMethod(
         env, dispatchClass, "onPluginMessage", contract::NativePluginMessageDescriptor);
     (void)knotProvider;
-    return impl.shutdown && impl.serverTick && impl.playerJoin && impl.playerQuit &&
+    return impl.shutdown && impl.serverShutdown && impl.serverStopping &&
+           impl.serverWorldsLoaded &&
+           impl.worldsUnloading && impl.serverStopped && impl.serverTick &&
+           impl.playerJoin && impl.playerQuit &&
            impl.chat && impl.blockBreak && impl.blockPlace && impl.blockClicked &&
-           impl.command && impl.entityDamage && impl.mobSpawn;
+           impl.command && impl.entityDamage && impl.entityAllowDeath &&
+           impl.entityDamageApplied && impl.mobSpawn && impl.mobLoad &&
+           impl.mobUnload;
 }
 
 template <typename Reference>
@@ -1216,6 +1526,11 @@ void resetJniState(JvmRuntime::Impl& impl) noexcept {
     impl.bootstrap = nullptr;
     impl.bootstrapHasClassesDir = false;
     impl.shutdown = nullptr;
+    impl.serverShutdown = nullptr;
+    impl.serverStopping = nullptr;
+    impl.serverWorldsLoaded = nullptr;
+    impl.worldsUnloading = nullptr;
+    impl.serverStopped = nullptr;
     impl.serverTick = nullptr;
     impl.playerJoin = nullptr;
     impl.playerQuit = nullptr;
@@ -1225,11 +1540,22 @@ void resetJniState(JvmRuntime::Impl& impl) noexcept {
     impl.blockClicked = nullptr;
     impl.command = nullptr;
     impl.entityDamage = nullptr;
+    impl.entityAllowDeath = nullptr;
+    impl.entityDamageApplied = nullptr;
     impl.mobSpawn = nullptr;
+    impl.mobLoad = nullptr;
+    impl.mobUnload = nullptr;
     impl.pluginMessage = nullptr;
 }
 
 #endif // CPPFM_HAS_JNI
+
+bool isLivingDamageTarget(const MobKind kind) noexcept {
+    // The native entity roster also contains boats, projectiles, and other
+    // non-living objects. Armor stands are LivingEntity subclasses without a
+    // follow range, so they are the sole explicit exception to this marker.
+    return kind == MobKind::ArmorStand || mobStats(kind).followRange > 0.0F;
+}
 
 } // namespace
 
@@ -1260,7 +1586,7 @@ bool JvmRuntime::installNativeBridge(void* rawEnv, void* rawClass) {
     if (!env || !bridgeClass || !impl.vm.load(std::memory_order_acquire) ||
         impl.stopping.load(std::memory_order_acquire))
         return false;
-    std::lock_guard lock(impl.callMutex);
+    std::lock_guard lock(impl.lifecycleMutex);
     if (impl.bridgeClass) {
         if (isSameClass(env, impl.bridgeClass, bridgeClass)) return true;
         setError(impl, "NativeBridge was requested from a second classloader");
@@ -1304,23 +1630,27 @@ bool JvmRuntime::start(std::string* error) {
     // must not observe impl.vm == nullptr in the middle of JNI_CreateJavaVM
     // and then let start() publish a VM after teardown has returned.
     std::lock_guard lifecycleLock(impl.stopMutex);
-    std::lock_guard callLock(impl.callMutex);
+    std::lock_guard callLock(impl.lifecycleMutex);
     if (!impl.mutationLifetime->accepting.load(std::memory_order_acquire)) {
         impl.mutationLifetime->generation.fetch_add(1, std::memory_order_acq_rel);
         impl.mutationLifetime->accepting.store(true, std::memory_order_release);
     }
     if (impl.started.load(std::memory_order_acquire)) return true;
     if (!impl.config.enabled) return true;
+    impl.worldsUnloaded.store(false, std::memory_order_release);
+    impl.serverStoppingState.store(0, std::memory_order_release);
+    impl.worldsUnloadingState.store(0, std::memory_order_release);
+    impl.serverStoppedState.store(0, std::memory_order_release);
     if (impl.stopping.load(std::memory_order_acquire) ||
         impl.vmDestroyFailed.load(std::memory_order_acquire)) {
         setError(impl, "JVM runtime is stopping or has a terminal teardown failure");
-        if (error) *error = impl.lastError;
+        if (error) *error = lastErrorSnapshot(impl);
         return false;
     }
 
 #if !defined(CPPFM_HAS_JNI)
     setError(impl, "cppfm was built without JNI headers; rebuild with a JDK");
-    if (error) *error = impl.lastError;
+    if (error) *error = lastErrorSnapshot(impl);
     return false;
 #else
     std::filesystem::path classesDir = impl.config.classesDir;
@@ -1336,7 +1666,7 @@ bool JvmRuntime::start(std::string* error) {
     classesDir = std::filesystem::absolute(classesDir, ec);
     if (ec || !std::filesystem::is_directory(classesDir, ec)) {
         setError(impl, "JVM classes directory does not exist: " + classesDir.string());
-        if (error) *error = impl.lastError;
+        if (error) *error = lastErrorSnapshot(impl);
         return false;
     }
 
@@ -1345,7 +1675,7 @@ bool JvmRuntime::start(std::string* error) {
         setError(impl, ownership == RuntimeOwnershipResult::PermanentlyUnavailable
                            ? "process JVM is permanently unavailable after a failed DestroyJavaVM"
                            : "another JvmRuntime already owns the process JVM");
-        if (error) *error = impl.lastError;
+        if (error) *error = lastErrorSnapshot(impl);
         return false;
     }
 
@@ -1353,7 +1683,7 @@ bool JvmRuntime::start(std::string* error) {
     if (library.empty()) {
         setError(impl, "HotSpot JVM library was not found; set JAVA_HOME or CPPFM_JVM_LIBRARY");
         releaseRuntimeOwnership(this);
-        if (error) *error = impl.lastError;
+        if (error) *error = lastErrorSnapshot(impl);
         return false;
     }
     impl.jvmLibrary = platform::openDynamicLibrary(library);
@@ -1361,7 +1691,7 @@ bool JvmRuntime::start(std::string* error) {
         setError(impl, "loading JVM library (" + library.string() + ") failed: " +
                            platform::dynamicLibraryError());
         releaseRuntimeOwnership(this);
-        if (error) *error = impl.lastError;
+        if (error) *error = lastErrorSnapshot(impl);
         return false;
     }
     auto* create = reinterpret_cast<CreateJvmFn>(
@@ -1371,7 +1701,7 @@ bool JvmRuntime::start(std::string* error) {
         platform::closeDynamicLibrary(impl.jvmLibrary);
         impl.jvmLibrary = platform::invalid_dynamic_library;
         releaseRuntimeOwnership(this);
-        if (error) *error = impl.lastError;
+        if (error) *error = lastErrorSnapshot(impl);
         return false;
     }
 
@@ -1389,7 +1719,7 @@ bool JvmRuntime::start(std::string* error) {
         if (ec || !std::filesystem::is_directory(librariesDir, ec)) {
             setError(impl, "JVM libraries directory does not exist: " + librariesDir.string());
             stop();
-            if (error) *error = impl.lastError;
+            if (error) *error = lastErrorSnapshot(impl);
             return false;
         }
     }
@@ -1431,7 +1761,7 @@ bool JvmRuntime::start(std::string* error) {
             impl.jvmLibrary = platform::invalid_dynamic_library;
             releaseRuntimeOwnership(this);
         }
-        if (error) *error = impl.lastError;
+        if (error) *error = lastErrorSnapshot(impl);
         return false;
     }
 
@@ -1444,7 +1774,7 @@ bool JvmRuntime::start(std::string* error) {
     if (impl.serverHandle.load(std::memory_order_acquire) == 0) {
         setError(impl, "failed to register the JVM server handle");
         stop();
-        if (error) *error = impl.lastError;
+        if (error) *error = lastErrorSnapshot(impl);
         return false;
     }
 
@@ -1470,7 +1800,7 @@ bool JvmRuntime::start(std::string* error) {
         clearJavaException(env, this, "JvmRuntime.start");
         setError(impl, message);
         stop();
-        if (error) *error = impl.lastError;
+        if (error) *error = lastErrorSnapshot(impl);
         return false;
     };
 
@@ -1502,9 +1832,9 @@ bool JvmRuntime::start(std::string* error) {
 
         impl.started.store(true, std::memory_order_release);
         impl.bootstrapInvoked = true;
-        const jstring classes = toJavaString(env, classesDir.string());
-        const jstring mods = toJavaString(env, modsDir.string());
-        const jstring config = toJavaString(env, configDir.string());
+        const jstring classes = toJavaString(env, utf8::pathToUtf8(classesDir));
+        const jstring mods = toJavaString(env, utf8::pathToUtf8(modsDir));
+        const jstring config = toJavaString(env, utf8::pathToUtf8(configDir));
         const jboolean ok = env->CallStaticBooleanMethod(
             impl.providerClass, impl.providerBootstrap, classes, mods, config);
         if (classes) env->DeleteLocalRef(classes);
@@ -1552,8 +1882,8 @@ bool JvmRuntime::start(std::string* error) {
 
         impl.started.store(true, std::memory_order_release);
         impl.bootstrapInvoked = true;
-        const jstring mods = toJavaString(env, modsDir.string());
-        const jstring config = toJavaString(env, configDir.string());
+        const jstring mods = toJavaString(env, utf8::pathToUtf8(modsDir));
+        const jstring config = toJavaString(env, utf8::pathToUtf8(configDir));
         const jboolean ok = env->CallStaticBooleanMethod(
             impl.runtimeClass, impl.bootstrap, mods, config);
         if (mods) env->DeleteLocalRef(mods);
@@ -1572,6 +1902,28 @@ bool JvmRuntime::start(std::string* error) {
 void JvmRuntime::stop() {
     auto& impl = *impl_;
     std::lock_guard stopLock(impl.stopMutex);
+
+#if defined(CPPFM_HAS_JNI)
+    // Complete any lifecycle phases skipped by partial bootstrap or a server
+    // lifetime without a running loop, before native mutation and call leases
+    // are fenced. Normal server teardown has already dispatched these phases
+    // at their exact ingress/world/persistence boundaries; Java makes the
+    // aggregate fallback idempotent.
+    // When shutdown has been requested but the owner loop is still unwinding,
+    // wait for that owner-thread callback instead of racing it from teardown.
+    if (impl.bootstrapInvoked && impl.vm.load(std::memory_order_acquire)) {
+        bool tickLoopActive = false;
+        {
+            std::lock_guard taskLock(impl.server.serverThreadTasksMtx_);
+            tickLoopActive = impl.server.tickLoopActive_;
+        }
+        if (tickLoopActive && !impl.server.running() &&
+            !impl.server.isServerThread())
+            impl.server.stopTickLoop();
+        (void)onServerShutdown();
+    }
+#endif
+
     impl.mutationLifetime->accepting.store(false, std::memory_order_release);
     impl.mutationLifetime->generation.fetch_add(1, std::memory_order_acq_rel);
 #if defined(CPPFM_HAS_JNI)
@@ -1617,10 +1969,9 @@ void JvmRuntime::stop() {
 
     if (ownsLifecycle && impl.vmDestroyFailed.load(std::memory_order_acquire)) return;
     if (ownsLifecycle && vm) {
-        // Do not hold callMutex while draining bridge calls.  A NativeBridge
-        // worker may be inside nativeExecuteCommand(), which can synchronously
-        // re-enter onCommand() and wait for callMutex.  Holding it here would
-        // make stop wait forever for the worker that needs the lock to finish.
+        // Drain bridge calls before taking lifecycleMutex. An active bridge
+        // call may still need that mutex to finish publishing bootstrap state;
+        // taking it first would make teardown wait on work that cannot finish.
         waitForRuntimeCalls(this);
 
         // Destroying a VM from inside one of its own native callbacks is not
@@ -1634,7 +1985,7 @@ void JvmRuntime::stop() {
             return;
         }
 
-        std::lock_guard callLock(impl.callMutex);
+        std::lock_guard callLock(impl.lifecycleMutex);
         if (impl.vm.load(std::memory_order_acquire) != vm) return;
 
         // AttachedEnv must be destroyed before DestroyJavaVM().  If this
@@ -1710,9 +2061,14 @@ void JvmRuntime::stop() {
     impl.server.waitForServerThreadTasks();
     impl.started.store(false, std::memory_order_release);
 #endif
+    impl.playerHandleLifetime.clear();
     {
         std::lock_guard cacheLock(impl.objectCacheMutex);
         impl.handles.clear();
+    }
+    {
+        std::lock_guard lifecycleLock(impl.mobLifecycleMapMutex);
+        impl.mobLifecycleStates.clear();
     }
     impl.routing.clear();
     impl.serverHandle.store(0, std::memory_order_release);
@@ -1738,7 +2094,7 @@ JvmProvider JvmRuntime::provider() const noexcept {
 }
 
 std::string JvmRuntime::lastError() const {
-    std::lock_guard lock(impl_->callMutex);
+    std::lock_guard lock(impl_->errorMutex);
     return impl_->lastError;
 }
 
@@ -1770,6 +2126,7 @@ void invalidateObjectHandle(JvmRuntime::Impl& impl, JvmRuntime& runtime,
                             void* address, HandleKind kind) {
     std::optional<std::uint64_t> handle;
     {
+        std::lock_guard lifetimeLock(impl.entityHandleLifetimeMutex);
         std::lock_guard cacheLock(impl.objectCacheMutex);
         handle = impl.handles.findHandle(address, kind);
         if (!handle) return;
@@ -1791,34 +2148,53 @@ void invalidateObjectHandle(JvmRuntime::Impl& impl, JvmRuntime& runtime,
 #endif
 }
 
+bool claimMobLifecycleInvalidation(
+    JvmRuntime::Impl& impl, MobEntity& mob,
+    const std::shared_ptr<JvmRuntime::Impl::MobLifecycleState>& lifecycle) {
+    {
+        std::lock_guard stateLock(lifecycle->mutex);
+        if (!lifecycle->unloadRequested ||
+            lifecycle->callbacksInFlight != 0 ||
+            lifecycle->invalidationClaimed)
+            return false;
+        lifecycle->invalidationClaimed = true;
+    }
+    return true;
+}
+
 } // namespace
 
 #if defined(CPPFM_HAS_JNI)
 namespace {
 
-bool acquireCallbackLock(
-    JvmRuntime::Impl& impl, JvmRuntime& runtime,
-    std::unique_lock<std::recursive_mutex>& lock) {
-    lock = std::unique_lock<std::recursive_mutex>(impl.callMutex,
-                                                   std::defer_lock);
-    // Same-thread native -> Java -> native recursion is part of the bridge
-    // contract.  A different thread must never wait here: Java user code can
-    // legally join that thread while this callback is still running.
-    if (g_callRuntime == &runtime) {
-        lock.lock();
-        return true;
-    }
-    if (lock.try_lock()) return true;
-    std::fprintf(stderr,
-                 "[cppfm][jvm] callback skipped while another Java callback is active\n");
-    return false;
-}
-
 template <typename Call>
-bool invokeVoid(JvmRuntime& runtime, Call&& call, const char* name) {
+bool invokeVoid(JvmRuntime& runtime, Call&& call, const char* name,
+                const bool allowDuringShutdown = false) {
     auto& impl = runtime.bridgeImpl();
-    std::unique_lock<std::recursive_mutex> lock;
-    if (!acquireCallbackLock(impl, runtime, lock)) return true;
+    const bool terminalOwnerAvailable = allowDuringShutdown &&
+        impl.server.acceptsShutdownCallbackTasks();
+    if (impl.started.load(std::memory_order_acquire) &&
+        (impl.server.running() || terminalOwnerAvailable) &&
+        !impl.server.isServerThread()) {
+        auto callback = std::make_shared<std::decay_t<Call>>(
+            std::forward<Call>(call));
+        bool result = false;
+        const auto outcome = SimulationDispatchGuard::withCurrentLockReleased(
+            [&] {
+                return impl.server.runOnServerThreadDetailed(
+                    [&runtime, callback, &result, name, allowDuringShutdown] {
+                        result = invokeVoid(runtime, std::move(*callback), name,
+                                            allowDuringShutdown);
+                    }, impl.config.serverCallbackTimeout,
+                    ServerThreadTaskWaitPolicy::WaitIfRunning,
+                    allowDuringShutdown);
+            });
+        if (outcome != ServerThreadTaskOutcome::Completed) {
+            ++impl.callbackErrors;
+            return false;
+        }
+        return result;
+    }
     RuntimeCallLease lease(&runtime);
     if (!lease) return true;
     if (!impl.started.load(std::memory_order_acquire) ||
@@ -1839,8 +2215,26 @@ template <typename Call>
 bool invokeBoolean(JvmRuntime& runtime, Call&& call, const char* name,
                    bool defaultValue = true) {
     auto& impl = runtime.bridgeImpl();
-    std::unique_lock<std::recursive_mutex> lock;
-    if (!acquireCallbackLock(impl, runtime, lock)) return defaultValue;
+    if (impl.started.load(std::memory_order_acquire) &&
+        impl.server.running() && !impl.server.isServerThread()) {
+        auto callback = std::make_shared<std::decay_t<Call>>(
+            std::forward<Call>(call));
+        bool result = defaultValue;
+        const auto outcome = SimulationDispatchGuard::withCurrentLockReleased(
+            [&] {
+                return impl.server.runOnServerThreadDetailed(
+                    [&runtime, callback, &result, name, defaultValue] {
+                        result = invokeBoolean(runtime, std::move(*callback),
+                                               name, defaultValue);
+                    }, impl.config.serverCallbackTimeout,
+                    ServerThreadTaskWaitPolicy::WaitIfRunning);
+            });
+        if (outcome != ServerThreadTaskOutcome::Completed) {
+            ++impl.callbackErrors;
+            return defaultValue;
+        }
+        return result;
+    }
     RuntimeCallLease lease(&runtime);
     if (!lease) return defaultValue;
     if (!impl.started.load(std::memory_order_acquire) ||
@@ -2245,25 +2639,188 @@ bool JvmRuntime::onServerTick(std::int64_t tick) {
 #endif
 }
 
+bool JvmRuntime::dispatchFinalLifecycleCallback(const std::uint8_t stage) {
+#if defined(CPPFM_HAS_JNI)
+    auto& impl = *impl_;
+    if (!impl.started.load(std::memory_order_acquire) ||
+        !impl.vm.load(std::memory_order_acquire) || !impl.dispatchClass)
+        return true;
+    jmethodID method = nullptr;
+    const char* methodName = nullptr;
+    switch (stage) {
+    case 0: method = impl.serverStopping; methodName = "onServerStopping"; break;
+    case 1: method = impl.worldsUnloading; methodName = "onWorldsUnloading"; break;
+    case 2: method = impl.serverStopped; methodName = "onServerStopped"; break;
+    default: return false;
+    }
+    if (!method) return true;
+
+    bool invoked = false;
+    const auto dispatchOnOwner = [&] {
+        return impl.server.runFinalLifecycleCallback([&] {
+            return invokeVoid(*this, [&](JNIEnv* env) {
+                env->CallStaticVoidMethod(impl.dispatchClass, method);
+            }, methodName);
+        });
+    };
+    bool tickLoopActive = false;
+    {
+        std::lock_guard taskLock(impl.server.serverThreadTasksMtx_);
+        tickLoopActive = impl.server.tickLoopActive_;
+    }
+    if (tickLoopActive && impl.server.running() &&
+        !impl.server.isServerThread()) {
+        const auto outcome = impl.server.runOnServerThreadDetailed(
+            [&] { invoked = dispatchOnOwner(); },
+            impl.config.serverCallbackTimeout,
+            ServerThreadTaskWaitPolicy::WaitIfRunning);
+        invoked = outcome == ServerThreadTaskOutcome::Completed && invoked;
+    } else {
+        invoked = dispatchOnOwner();
+    }
+    if (!invoked)
+        std::fprintf(stderr,
+                     "[cppfm][jvm] Fabric lifecycle callback %s failed\n",
+                     methodName);
+    return invoked;
+#else
+    (void)stage;
+    return true;
+#endif
+}
+
+bool JvmRuntime::onServerWorldsLoaded() {
+#if defined(CPPFM_HAS_JNI)
+    auto& impl = *impl_;
+    if (!impl.started.load(std::memory_order_acquire) || !impl.serverWorldsLoaded)
+        return true;
+    return invokeVoid(*this, [&](JNIEnv* env) {
+        env->CallStaticVoidMethod(impl.dispatchClass, impl.serverWorldsLoaded);
+    }, "onServerWorldsLoaded");
+#else
+    return true;
+#endif
+}
+
+bool JvmRuntime::onServerStopping() {
+    std::uint8_t expected = 0;
+    if (!impl_->serverStoppingState.compare_exchange_strong(
+            expected, 1, std::memory_order_acq_rel,
+            std::memory_order_acquire))
+        return expected == 1 || expected == 2;
+    const bool succeeded = dispatchFinalLifecycleCallback(0);
+    impl_->serverStoppingState.store(succeeded ? 2 : 3,
+                                     std::memory_order_release);
+    return succeeded;
+}
+
+bool JvmRuntime::onWorldsUnloading() {
+    auto& impl = *impl_;
+    std::uint8_t expected = 0;
+    if (!impl.worldsUnloadingState.compare_exchange_strong(
+            expected, 1, std::memory_order_acq_rel,
+            std::memory_order_acquire))
+        return expected == 1 || expected == 2;
+    const bool invoked = dispatchFinalLifecycleCallback(1);
+    impl.worldsUnloaded.store(true, std::memory_order_release);
+    impl.worldsUnloadingState.store(invoked ? 2 : 3,
+                                    std::memory_order_release);
+    invalidateObjectHandle(impl, *this, &impl.server.worldFor(0),
+                           HandleKind::World);
+    invalidateObjectHandle(impl, *this, &impl.server.worldFor(-1),
+                           HandleKind::World);
+    invalidateObjectHandle(impl, *this, &impl.server.worldFor(1),
+                           HandleKind::World);
+    return invoked;
+}
+
+bool JvmRuntime::onServerStopped() {
+    std::uint8_t expected = 0;
+    if (!impl_->serverStoppedState.compare_exchange_strong(
+            expected, 1, std::memory_order_acq_rel,
+            std::memory_order_acquire))
+        return expected == 1 || expected == 2;
+    const bool succeeded = dispatchFinalLifecycleCallback(2);
+    impl_->serverStoppedState.store(succeeded ? 2 : 3,
+                                    std::memory_order_release);
+    return succeeded;
+}
+
+bool JvmRuntime::onServerShutdown() {
+    bool success = onServerStopping();
+    success = onWorldsUnloading() && success;
+    success = onServerStopped() && success;
+    return success;
+}
+
+namespace {
+
+bool isCurrentLivePlayer(GameServer& server, Player& player) {
+    const auto roster = server.playersSnapshot();
+    const auto member = std::find_if(
+        roster.begin(), roster.end(), [&player](const auto& candidate) {
+            return candidate && candidate.get() == &player;
+        });
+    if (member == roster.end()) return false;
+    std::lock_guard stateLock(player.stateMtx);
+    return player.inPlay.load(std::memory_order_acquire);
+}
+
+} // namespace
+
 std::uint64_t JvmRuntime::playerHandle(Player& player) {
-    return impl_->handles.registerObject(&player, HandleKind::Player);
+    return impl_->playerHandleLifetime.publish(
+        &player, player.jvmHandleLifecycle, [this, &player] {
+        return impl_->started.load(std::memory_order_acquire) &&
+               isCurrentLivePlayer(impl_->server, player);
+    });
 }
 
 std::uint64_t JvmRuntime::worldHandle(World& world) {
+    std::lock_guard lifetimeLock(impl_->entityHandleLifetimeMutex);
+    if (impl_->worldsUnloaded.load(std::memory_order_acquire)) return 0;
     return impl_->handles.registerObject(&world, HandleKind::World);
 }
 
 void JvmRuntime::invalidatePlayer(Player& player) {
-    invalidateObjectHandle(*impl_, *this, &player, HandleKind::Player);
+    auto invalidate = [&] {
+        return impl_->playerHandleLifetime.retire(
+            &player, player.jvmHandleLifecycle);
+    };
+#if defined(CPPFM_HAS_JNI)
+    // Match wrapperForHandle's lifecycle-lease -> cache-lock ordering. The
+    // transaction closes publication and removes the wrapper atomically with
+    // respect to cache lookup/insertion.
+    RuntimeCallLease lease(this);
+    if (lease) {
+        AttachedEnv attached(impl_->vm.load(std::memory_order_acquire));
+        invalidateHandleAndEraseCache(
+            impl_->objectCacheMutex, invalidate, [&](std::uint64_t handle) {
+                if (attached) impl_->objects.erase(attached.get(), handle);
+            });
+        return;
+    }
+#endif
+    invalidateHandleAndEraseCache(
+        impl_->objectCacheMutex, invalidate, [](std::uint64_t) {});
 }
 
 void JvmRuntime::invalidateEntity(MobEntity& entity) {
     invalidateObjectHandle(*impl_, *this, &entity, HandleKind::Entity);
+    std::lock_guard mapLock(impl_->mobLifecycleMapMutex);
+    const auto found = impl_->mobLifecycleStates.find(&entity);
+    if (found != impl_->mobLifecycleStates.end())
+        impl_->mobLifecycleStates.erase(found);
 }
 
 void JvmRuntime::onPlayerJoin(Player& player) {
-    const auto handle = playerHandle(player);
     impl_->joins.fetch_add(1, std::memory_order_relaxed);
+    const auto handle = impl_->playerHandleLifetime.activate(
+        &player, player.jvmHandleLifecycle, [this, &player] {
+            return impl_->started.load(std::memory_order_acquire) &&
+                   isCurrentLivePlayer(impl_->server, player);
+        });
+    if (!handle) return;
 #if defined(CPPFM_HAS_JNI)
     invokeVoid(*this, [&](JNIEnv* env) {
         env->CallStaticVoidMethod(impl_->dispatchClass, impl_->playerJoin,
@@ -2274,26 +2831,57 @@ void JvmRuntime::onPlayerJoin(Player& player) {
 #endif
 }
 
+void JvmRuntime::beginPlayerRetirement(Player& player) {
+    (void)impl_->playerHandleLifetime.beginRetirement(
+        &player, player.jvmHandleLifecycle);
+}
+
 void JvmRuntime::onPlayerQuit(Player& player) {
-    const auto handle = playerHandle(player);
+    const auto handle = impl_->playerHandleLifetime.beginRetirement(
+        &player, player.jvmHandleLifecycle);
     impl_->quits.fetch_add(1, std::memory_order_relaxed);
 #if defined(CPPFM_HAS_JNI)
-    invokeVoid(*this, [&](JNIEnv* env) {
-        env->CallStaticVoidMethod(impl_->dispatchClass, impl_->playerQuit,
-                                  static_cast<jlong>(handle));
-    }, "onPlayerQuit");
+    if (handle) {
+        invokeVoid(*this, [&](JNIEnv* env) {
+            env->CallStaticVoidMethod(impl_->dispatchClass, impl_->playerQuit,
+                                      static_cast<jlong>(handle));
+        }, "onPlayerQuit", true);
+    }
 #else
     (void)handle;
 #endif
     invalidatePlayer(player);
 }
 
+void JvmRuntime::finishPlayerRetirement(Player& player) {
+    (void)impl_->playerHandleLifetime.finishRetirement(
+        &player, player.jvmHandleLifecycle);
+}
+
 bool JvmRuntime::onChat(Player& player, std::string& message) {
     const auto handle = playerHandle(player);
+    if (!handle) return true;
 #if defined(CPPFM_HAS_JNI)
     auto& impl = *impl_;
-    std::unique_lock<std::recursive_mutex> lock;
-    if (!acquireCallbackLock(impl, *this, lock)) return true;
+    if (impl.started.load(std::memory_order_acquire) && impl.server.running() &&
+        !impl.server.isServerThread()) {
+        std::string queuedMessage = message;
+        bool accepted = true;
+        const auto outcome = SimulationDispatchGuard::withCurrentLockReleased(
+            [&] {
+                return impl.server.runOnServerThreadDetailed(
+                    [this, &player, &queuedMessage, &accepted] {
+                        accepted = onChat(player, queuedMessage);
+                    }, impl.config.serverCallbackTimeout,
+                    ServerThreadTaskWaitPolicy::WaitIfRunning);
+            });
+        if (outcome != ServerThreadTaskOutcome::Completed) {
+            ++impl.callbackErrors;
+            return true;
+        }
+        message = std::move(queuedMessage);
+        return accepted;
+    }
     RuntimeCallLease lease(this);
     if (!lease) return true;
     if (!impl.started.load(std::memory_order_acquire) ||
@@ -2333,6 +2921,7 @@ bool JvmRuntime::onChat(Player& player, std::string& message) {
 bool JvmRuntime::onBlockBreak(Player& player, std::int32_t x, std::int32_t y,
                               std::int32_t z, std::uint16_t oldState) {
     const auto handle = playerHandle(player);
+    if (!handle) return true;
 #if defined(CPPFM_HAS_JNI)
     return invokeBoolean(*this, [&](JNIEnv* env) {
         return env->CallStaticBooleanMethod(impl_->dispatchClass, impl_->blockBreak,
@@ -2348,6 +2937,7 @@ bool JvmRuntime::onBlockBreak(Player& player, std::int32_t x, std::int32_t y,
 bool JvmRuntime::onBlockPlace(Player& player, std::int32_t x, std::int32_t y,
                               std::int32_t z, std::uint16_t newState) {
     const auto handle = playerHandle(player);
+    if (!handle) return true;
 #if defined(CPPFM_HAS_JNI)
     return invokeBoolean(*this, [&](JNIEnv* env) {
         return env->CallStaticBooleanMethod(impl_->dispatchClass, impl_->blockPlace,
@@ -2363,6 +2953,7 @@ bool JvmRuntime::onBlockPlace(Player& player, std::int32_t x, std::int32_t y,
 bool JvmRuntime::onBlockClicked(Player& player, std::int32_t x, std::int32_t y,
                                 std::int32_t z, std::uint16_t state, int face) {
     const auto handle = playerHandle(player);
+    if (!handle) return true;
 #if defined(CPPFM_HAS_JNI)
     return invokeBoolean(*this, [&](JNIEnv* env) {
         return env->CallStaticBooleanMethod(impl_->dispatchClass, impl_->blockClicked,
@@ -2379,10 +2970,31 @@ bool JvmRuntime::onCommand(Player* player, std::string& command,
                            std::string* response) {
     const auto handle = player ? playerHandle(*player) : 0;
     if (response) response->clear();
+    if (player && !handle) return true;
 #if defined(CPPFM_HAS_JNI)
     auto& impl = *impl_;
-    std::unique_lock<std::recursive_mutex> lock;
-    if (!acquireCallbackLock(impl, *this, lock)) return true;
+    if (impl.started.load(std::memory_order_acquire) && impl.server.running() &&
+        !impl.server.isServerThread()) {
+        std::string queuedCommand = command;
+        std::string queuedResponse;
+        bool consumed = false;
+        const auto outcome = SimulationDispatchGuard::withCurrentLockReleased(
+            [&] {
+                return impl.server.runOnServerThreadDetailed(
+                    [this, player, &queuedCommand, &queuedResponse, &consumed] {
+                        consumed = onCommand(player, queuedCommand,
+                                             &queuedResponse);
+                    }, impl.config.serverCallbackTimeout,
+                    ServerThreadTaskWaitPolicy::WaitIfRunning);
+            });
+        if (outcome != ServerThreadTaskOutcome::Completed) {
+            ++impl.callbackErrors;
+            return true;
+        }
+        command = std::move(queuedCommand);
+        if (response) *response = std::move(queuedResponse);
+        return consumed;
+    }
     RuntimeCallLease lease(this);
     if (!lease) return true;
     if (!impl.started.load(std::memory_order_acquire) ||
@@ -2432,9 +3044,14 @@ bool JvmRuntime::onCommand(Player* player, std::string& command,
 bool JvmRuntime::onEntityDamage(Player* victimPlayer, MobEntity* victimMob,
                                 float& amount, const std::string& cause) {
     const auto player = victimPlayer ? playerHandle(*victimPlayer) : 0;
+    if (victimPlayer && !player) return true;
     const auto mob = victimMob ? impl_->handles.registerObject(victimMob, HandleKind::Entity) : 0;
 #if defined(CPPFM_HAS_JNI)
     return invokeBoolean(*this, [&](JNIEnv* env) {
+        // This lambda runs on the server thread. Keep the recursion guard on
+        // that same thread so nested NativeBridge.damageEntity calls are
+        // rejected instead of re-entering ALLOW_DAMAGE indefinitely.
+        DamageCallbackScope callbackScope(this);
         const jstring javaCause = toJavaString(env, cause);
         if (!javaCause && env->ExceptionCheck())
             return static_cast<jboolean>(JNI_TRUE);
@@ -2451,17 +3068,309 @@ bool JvmRuntime::onEntityDamage(Player* victimPlayer, MobEntity* victimMob,
 #endif
 }
 
-bool JvmRuntime::onMobSpawn(MobEntity& mob, double x, double y, double z) {
-    const auto handle = impl_->handles.registerObject(&mob, HandleKind::Entity);
+bool JvmRuntime::onEntityAllowDeath(Player* victimPlayer, MobEntity* victimMob,
+                                    const float amount,
+                                    const std::string& cause) {
+    const auto player = victimPlayer ? playerHandle(*victimPlayer) : 0;
+    if (victimPlayer && !player) return true;
+    const auto mob = victimMob
+        ? impl_->handles.registerObject(victimMob, HandleKind::Entity) : 0;
 #if defined(CPPFM_HAS_JNI)
-    const bool allowed = invokeBoolean(*this, [&](JNIEnv* env) {
-        return env->CallStaticBooleanMethod(impl_->dispatchClass, impl_->mobSpawn,
-                                            static_cast<jlong>(handle), x, y, z);
-    }, "onMobSpawn");
-    if (!allowed) invalidateEntity(mob);
+    return invokeBoolean(*this, [&](JNIEnv* env) {
+        DamageCallbackScope callbackScope(this);
+        const jstring javaCause = toJavaString(env, cause);
+        if (!javaCause && env->ExceptionCheck())
+            return static_cast<jboolean>(JNI_TRUE);
+        const jboolean result = env->CallStaticBooleanMethod(
+            impl_->dispatchClass, impl_->entityAllowDeath,
+            static_cast<jlong>(player), static_cast<jlong>(mob),
+            static_cast<jfloat>(amount), javaCause);
+        if (javaCause) env->DeleteLocalRef(javaCause);
+        return result;
+    }, "onEntityAllowDeath");
+#else
+    (void)player; (void)mob; (void)amount; (void)cause;
+    return true;
+#endif
+}
+
+void JvmRuntime::onEntityDamageApplied(Player* victimPlayer,
+                                      MobEntity* victimMob,
+                                      const float baseDamage,
+                                      const float damageTaken,
+                                      const bool blocked, const bool died,
+                                      const std::string& cause) {
+    const auto player = victimPlayer ? playerHandle(*victimPlayer) : 0;
+    if (victimPlayer && !player && !victimMob) return;
+    const auto mob = victimMob
+        ? impl_->handles.registerObject(victimMob, HandleKind::Entity) : 0;
+#if defined(CPPFM_HAS_JNI)
+    invokeVoid(*this, [&](JNIEnv* env) {
+        DamageCallbackScope callbackScope(this);
+        const jstring javaCause = toJavaString(env, cause);
+        if (!javaCause && env->ExceptionCheck()) return;
+        env->CallStaticVoidMethod(
+            impl_->dispatchClass, impl_->entityDamageApplied,
+            static_cast<jlong>(player), static_cast<jlong>(mob),
+            static_cast<jfloat>(baseDamage), static_cast<jfloat>(damageTaken),
+            blocked ? JNI_TRUE : JNI_FALSE, died ? JNI_TRUE : JNI_FALSE,
+            javaCause);
+        if (javaCause) env->DeleteLocalRef(javaCause);
+    }, "onEntityDamageApplied");
+#else
+    (void)player; (void)mob; (void)baseDamage; (void)damageTaken;
+    (void)blocked; (void)died; (void)cause;
+#endif
+}
+
+bool JvmRuntime::onMobSpawn(MobEntity& mob, double x, double y, double z) {
+    std::uint64_t handle = 0;
+    {
+        std::lock_guard lifetimeLock(impl_->entityHandleLifetimeMutex);
+        handle = impl_->handles.registerObject(&mob, HandleKind::Entity);
+    }
+#if defined(CPPFM_HAS_JNI)
+    std::shared_ptr<Impl::MobLifecycleState> lifecycle;
+    {
+        std::lock_guard mapLock(impl_->mobLifecycleMapMutex);
+        auto& entry = impl_->mobLifecycleStates[&mob];
+        if (!entry) entry = std::make_shared<Impl::MobLifecycleState>();
+        lifecycle = entry;
+    }
+    {
+        std::lock_guard lifecycleLock(lifecycle->mutex);
+        if (lifecycle->unloadRequested || lifecycle->invalidationClaimed)
+            return false;
+        ++lifecycle->callbacksInFlight;
+    }
+    bool allowed = false;
+    try {
+        allowed = invokeBoolean(*this, [&](JNIEnv* env) {
+            return env->CallStaticBooleanMethod(
+                impl_->dispatchClass, impl_->mobSpawn,
+                static_cast<jlong>(handle), x, y, z,
+                static_cast<jint>(mob.dimension));
+        }, "onMobSpawn");
+    } catch (...) {
+        {
+            std::lock_guard lifecycleLock(lifecycle->mutex);
+            --lifecycle->callbacksInFlight;
+            lifecycle->unloadRequested = true;
+        }
+        if (claimMobLifecycleInvalidation(*impl_, mob, lifecycle))
+            invalidateEntity(mob);
+        throw;
+    }
+    bool invalidate = false;
+    {
+        std::lock_guard lifecycleLock(lifecycle->mutex);
+        --lifecycle->callbacksInFlight;
+        if (!allowed) lifecycle->unloadRequested = true;
+        invalidate = lifecycle->unloadRequested;
+    }
+    if (invalidate && claimMobLifecycleInvalidation(
+            *impl_, mob, lifecycle))
+        invalidateEntity(mob);
+    allowed = allowed && !invalidate;
     return allowed;
 #else
     (void)handle; (void)x; (void)y; (void)z;
+    return true;
+#endif
+}
+
+void JvmRuntime::onMobLoad(MobEntity& mob) {
+#if defined(CPPFM_HAS_JNI)
+    // A worker may have queued this lifecycle callback before the mob was
+    // concurrently removed.  Recheck at execution time on the owner thread;
+    // the captured shared_ptr keeps memory alive, but roster membership is
+    // the authority for whether Fabric should observe a load.
+    if (impl_->started.load(std::memory_order_acquire) &&
+        impl_->server.running() && impl_->server.isServerThread() &&
+        !impl_->server.containsMob(&mob))
+        return;
+    if (impl_->started.load(std::memory_order_acquire) &&
+        impl_->server.running() && !impl_->server.isServerThread()) {
+        const auto candidates = impl_->server.mobsSnapshot();
+        const auto found = std::find_if(
+            candidates.begin(), candidates.end(),
+            [&mob](const auto& candidate) {
+                return candidate && candidate.get() == &mob;
+            });
+        if (found == candidates.end()) return;
+        const auto owner = *found;
+        const auto outcome = SimulationDispatchGuard::withCurrentLockReleased(
+            [&] {
+                return impl_->server.runOnServerThreadDetailed(
+                    [this, owner] { onMobLoad(*owner); },
+                    impl_->config.serverCallbackTimeout,
+                    ServerThreadTaskWaitPolicy::WaitIfRunning);
+            });
+        if (outcome != ServerThreadTaskOutcome::Completed)
+            ++impl_->callbackErrors;
+        return;
+    }
+#endif
+    const auto handle = impl_->handles.registerObject(&mob, HandleKind::Entity);
+#if defined(CPPFM_HAS_JNI)
+    std::shared_ptr<Impl::MobLifecycleState> lifecycle;
+    {
+        std::lock_guard mapLock(impl_->mobLifecycleMapMutex);
+        auto& entry = impl_->mobLifecycleStates[&mob];
+        if (!entry) entry = std::make_shared<Impl::MobLifecycleState>();
+        lifecycle = entry;
+    }
+    {
+        std::lock_guard lifecycleLock(lifecycle->mutex);
+        if (lifecycle->loaded || lifecycle->unloadRequested) return;
+        lifecycle->loaded = true;
+        ++lifecycle->callbacksInFlight;
+    }
+
+    try {
+        SimulationDispatchGuard::withCurrentLockReleased([&] {
+            invokeVoid(*this, [&](JNIEnv* env) {
+                env->CallStaticVoidMethod(
+                    impl_->dispatchClass, impl_->mobLoad,
+                    static_cast<jlong>(handle),
+                    static_cast<jint>(mob.dimension));
+            }, "onMobLoad");
+        });
+    } catch (...) {
+        {
+            std::lock_guard lifecycleLock(lifecycle->mutex);
+            --lifecycle->callbacksInFlight;
+        }
+        if (claimMobLifecycleInvalidation(*impl_, mob, lifecycle))
+            invalidateEntity(mob);
+        throw;
+    }
+
+    bool dispatchDeferredUnload = false;
+    {
+        std::lock_guard lifecycleLock(lifecycle->mutex);
+        --lifecycle->callbacksInFlight;
+        if (lifecycle->unloadRequested && !lifecycle->unloadDispatched &&
+            lifecycle->callbacksInFlight == 0) {
+            lifecycle->unloadDispatched = true;
+            ++lifecycle->callbacksInFlight;
+            dispatchDeferredUnload = true;
+        }
+    }
+    if (dispatchDeferredUnload) {
+        try {
+            SimulationDispatchGuard::withCurrentLockReleased([&] {
+                invokeVoid(*this, [&](JNIEnv* env) {
+                    env->CallStaticVoidMethod(
+                        impl_->dispatchClass, impl_->mobUnload,
+                        static_cast<jlong>(handle),
+                        static_cast<jint>(mob.dimension));
+                }, "onMobUnload");
+            });
+        } catch (...) {
+            {
+                std::lock_guard lifecycleLock(lifecycle->mutex);
+                --lifecycle->callbacksInFlight;
+            }
+            if (claimMobLifecycleInvalidation(*impl_, mob, lifecycle))
+                invalidateEntity(mob);
+            throw;
+        }
+        std::lock_guard lifecycleLock(lifecycle->mutex);
+        --lifecycle->callbacksInFlight;
+    }
+    if (claimMobLifecycleInvalidation(*impl_, mob, lifecycle))
+        invalidateEntity(mob);
+#else
+    (void)handle;
+#endif
+}
+
+bool JvmRuntime::onMobUnload(MobEntity& mob) {
+#if defined(CPPFM_HAS_JNI)
+    if (impl_->started.load(std::memory_order_acquire) &&
+        impl_->server.running() && !impl_->server.isServerThread()) {
+        const auto candidates = impl_->server.mobsSnapshot();
+        const auto found = std::find_if(
+            candidates.begin(), candidates.end(),
+            [&mob](const auto& candidate) {
+                return candidate && candidate.get() == &mob;
+            });
+        if (found == candidates.end()) return true;
+        const auto owner = *found;
+        bool invalidateNow = true;
+        const auto outcome = SimulationDispatchGuard::withCurrentLockReleased(
+            [&] {
+                return impl_->server.runOnServerThreadDetailed(
+                    [this, owner, &invalidateNow] {
+                        invalidateNow = onMobUnload(*owner);
+                    }, impl_->config.serverCallbackTimeout,
+                    ServerThreadTaskWaitPolicy::WaitIfRunning);
+            });
+        if (outcome != ServerThreadTaskOutcome::Completed) {
+            ++impl_->callbackErrors;
+            // The callback could not be delivered, but the caller is about to
+            // remove the entity. Ask it to invalidate the outstanding handle.
+            return true;
+        }
+        return invalidateNow;
+    }
+
+    const auto handle = impl_->handles.findHandle(&mob, HandleKind::Entity);
+    if (!handle) return true;
+
+    std::shared_ptr<Impl::MobLifecycleState> lifecycle;
+    {
+        std::lock_guard mapLock(impl_->mobLifecycleMapMutex);
+        const auto it = impl_->mobLifecycleStates.find(&mob);
+        if (it == impl_->mobLifecycleStates.end()) return true;
+        lifecycle = it->second;
+    }
+
+    bool dispatchUnload = false;
+    SimulationDispatchGuard::withCurrentLockReleased([&] {
+        std::lock_guard lifecycleLock(lifecycle->mutex);
+        lifecycle->loaded = false;
+        lifecycle->unloadRequested = true;
+        if (!lifecycle->unloadDispatched &&
+            lifecycle->callbacksInFlight == 0) {
+            lifecycle->unloadDispatched = true;
+            ++lifecycle->callbacksInFlight;
+            dispatchUnload = true;
+        }
+    });
+
+    if (!dispatchUnload)
+        return claimMobLifecycleInvalidation(*impl_, mob, lifecycle);
+
+    try {
+        SimulationDispatchGuard::withCurrentLockReleased([&] {
+        invokeVoid(*this, [&](JNIEnv* env) {
+            env->CallStaticVoidMethod(
+                impl_->dispatchClass, impl_->mobUnload,
+                static_cast<jlong>(*handle), static_cast<jint>(mob.dimension));
+        }, "onMobUnload");
+        });
+    } catch (...) {
+        {
+            std::lock_guard lifecycleLock(lifecycle->mutex);
+            --lifecycle->callbacksInFlight;
+        }
+        if (claimMobLifecycleInvalidation(*impl_, mob, lifecycle))
+            invalidateEntity(mob);
+        throw;
+    }
+
+    {
+        std::lock_guard lifecycleLock(lifecycle->mutex);
+        --lifecycle->callbacksInFlight;
+    }
+    // If a Load callback is still in flight, it claims and performs the
+    // eventual invalidation when it unwinds. The roster owner can continue
+    // removal without waiting on arbitrary mod code.
+    return claimMobLifecycleInvalidation(*impl_, mob, lifecycle);
+#else
+    (void)mob;
     return true;
 #endif
 }
@@ -2470,6 +3379,7 @@ bool JvmRuntime::onPluginMessage(Player& player, int phase,
                                  const std::string& channel,
                                  const std::vector<std::uint8_t>& payload) {
     const auto handle = playerHandle(player);
+    if (!handle) return true;
 #if defined(CPPFM_HAS_JNI)
     auto& impl = *impl_;
     if (!impl.pluginMessage) return true;
@@ -2498,6 +3408,10 @@ std::uint64_t JvmRuntime::nativeServerHandle() const {
 }
 std::int64_t JvmRuntime::nativeCurrentTick() const {
     return impl_->currentTick.load(std::memory_order_acquire);
+}
+
+bool JvmRuntime::nativePlayerHandleLive(std::uint64_t handle) const {
+    return impl_->playerHandleLifetime.isLiveHandle(handle);
 }
 
 std::string JvmRuntime::nativePlayerName(std::uint64_t handle) const {
@@ -2539,6 +3453,42 @@ std::string JvmRuntime::nativeEntityType(std::uint64_t handle) const {
     return {};
 }
 
+bool JvmRuntime::nativeEntityHandleCreatable(
+    const std::uint64_t handle) const {
+    if (impl_->playerHandleLifetime.isLiveHandle(handle)) return true;
+    auto resolution = impl_->handles.acquire(handle, HandleKind::Entity);
+    if (!resolution) return false;
+    auto* mob = static_cast<MobEntity*>(resolution.get());
+    std::shared_ptr<Impl::MobLifecycleState> lifecycle;
+    {
+        std::lock_guard mapLock(impl_->mobLifecycleMapMutex);
+        const auto found = impl_->mobLifecycleStates.find(mob);
+        if (found == impl_->mobLifecycleStates.end()) return false;
+        lifecycle = found->second;
+    }
+    std::lock_guard lifecycleLock(lifecycle->mutex);
+    return !lifecycle->unloadRequested &&
+           !lifecycle->invalidationClaimed;
+}
+
+bool JvmRuntime::nativeEntityBeginRetirement(
+    const std::uint64_t handle) {
+    auto resolution = impl_->handles.acquire(handle, HandleKind::Entity);
+    if (!resolution) return false;
+    auto* mob = static_cast<MobEntity*>(resolution.get());
+    std::shared_ptr<Impl::MobLifecycleState> lifecycle;
+    {
+        std::lock_guard mapLock(impl_->mobLifecycleMapMutex);
+        const auto found = impl_->mobLifecycleStates.find(mob);
+        if (found == impl_->mobLifecycleStates.end()) return false;
+        lifecycle = found->second;
+    }
+    std::lock_guard lifecycleLock(lifecycle->mutex);
+    lifecycle->loaded = false;
+    lifecycle->unloadRequested = true;
+    return true;
+}
+
 std::int32_t JvmRuntime::nativeEntityTypeId(std::uint64_t handle) const {
     if (impl_->handles.valid(handle, HandleKind::Player))
         return static_cast<std::int32_t>(gen::kPlayerEntityTypeId);
@@ -2549,6 +3499,49 @@ std::int32_t JvmRuntime::nativeEntityTypeId(std::uint64_t handle) const {
         return static_cast<std::int32_t>(MobEntity::typeId(mob->kind));
     }
     return -1;
+}
+
+bool JvmRuntime::nativeEntityIsLiving(std::uint64_t handle) const {
+    if (auto resolution = impl_->handles.acquire(handle, HandleKind::Player);
+        resolution)
+        return true;
+    if (auto resolution = impl_->handles.acquire(handle, HandleKind::Entity);
+        resolution) {
+        const auto* entity = static_cast<const MobEntity*>(resolution.get());
+        std::lock_guard stateLock(*entity->stateMtx);
+        return isLivingDamageTarget(entity->kind);
+    }
+    return false;
+}
+
+bool JvmRuntime::nativeEntityIsHostile(std::uint64_t handle) const {
+    if (auto resolution = impl_->handles.acquire(handle, HandleKind::Entity);
+        resolution) {
+        const auto* entity = static_cast<const MobEntity*>(resolution.get());
+        std::lock_guard stateLock(*entity->stateMtx);
+        return MobEntity::isHostile(entity->kind);
+    }
+    return false;
+}
+
+bool JvmRuntime::nativeEntityIsAnimal(std::uint64_t handle) const {
+    if (auto resolution = impl_->handles.acquire(handle, HandleKind::Entity);
+        resolution) {
+        const auto* entity = static_cast<const MobEntity*>(resolution.get());
+        std::lock_guard stateLock(*entity->stateMtx);
+        return MobEntity::breedingItemFor(entity->kind) != 0;
+    }
+    return false;
+}
+
+bool JvmRuntime::nativeEntityIsFish(std::uint64_t handle) const {
+    if (auto resolution = impl_->handles.acquire(handle, HandleKind::Entity);
+        resolution) {
+        const auto* entity = static_cast<const MobEntity*>(resolution.get());
+        std::lock_guard stateLock(*entity->stateMtx);
+        return MobEntity::isFishKind(entity->kind);
+    }
+    return false;
 }
 
 float JvmRuntime::nativeEntityHealth(std::uint64_t handle) const {
@@ -2567,6 +3560,25 @@ float JvmRuntime::nativeEntityHealth(std::uint64_t handle) const {
     return 0.0f;
 }
 
+float JvmRuntime::nativeEntityMaxHealth(std::uint64_t handle) const {
+    if (auto resolution = impl_->handles.acquire(handle, HandleKind::Player);
+        resolution) {
+        const auto* player = static_cast<const Player*>(resolution.get());
+        std::lock_guard stateLock(player->stateMtx);
+        return static_cast<float>(
+            player->attributes.getValue(Attribute::MAX_HEALTH));
+    }
+    if (auto resolution = impl_->handles.acquire(handle, HandleKind::Entity);
+        resolution) {
+        const auto* mob = static_cast<const MobEntity*>(resolution.get());
+        std::lock_guard stateLock(*mob->stateMtx);
+        return mob->kind == MobKind::Horse
+            ? mob->horseMaxHealth
+            : mobStats(mob->kind).maxHealth;
+    }
+    return 0.0f;
+}
+
 bool JvmRuntime::nativeEntitySetHealth(std::uint64_t handle, float health) {
     if (!std::isfinite(health) || health < 0.0f) return false;
     return runServerMutation(impl_->server, impl_->mutationLifetime,
@@ -2575,19 +3587,140 @@ bool JvmRuntime::nativeEntitySetHealth(std::uint64_t handle, float health) {
             resolution) {
             auto* player = static_cast<Player*>(resolution.get());
             std::lock_guard stateLock(player->stateMtx);
-            player->health = health;
-            player->dead = health <= 0.0f;
+            const float maximum = static_cast<float>(
+                player->attributes.getValue(Attribute::MAX_HEALTH));
+            player->health = std::clamp(health, 0.0f, maximum);
+            if (player->health <= 0.0F) {
+                if (!player->dead) {
+                    player->pendingDeathTick = impl_->server.tickNow() + 1;
+                    player->pendingDeathCause = "generic";
+                }
+            } else {
+                player->dead = false;
+                player->pendingDeathTick = -1;
+                player->pendingDeathCause.clear();
+            }
             return true;
         }
         if (auto resolution = impl_->handles.acquire(handle, HandleKind::Entity);
             resolution) {
             auto* mob = static_cast<MobEntity*>(resolution.get());
             std::lock_guard stateLock(*mob->stateMtx);
-            mob->health = health;
-            mob->dead = health <= 0.0f;
+            const double maximum = mob->kind == MobKind::Horse
+                ? mob->horseMaxHealth : mobStats(mob->kind).maxHealth;
+            mob->health = std::clamp(static_cast<double>(health), 0.0,
+                                     maximum);
+            if (mob->health <= 0.0) {
+                if (!mob->dead) {
+                    mob->pendingDeathTick = impl_->server.tickNow() + 1;
+                    mob->pendingDeathCause = "generic";
+                }
+            } else {
+                mob->dead = false;
+                mob->pendingDeathTick = -1;
+                mob->pendingDeathCause.clear();
+            }
             return true;
         }
         return false;
+    });
+}
+
+bool JvmRuntime::nativeEntityDamage(std::uint64_t handle, float amount,
+                                    const std::string& cause) {
+    if (!handle || !std::isfinite(amount) || amount <= 0.0f) return false;
+#if defined(CPPFM_HAS_JNI)
+    // Damage callbacks can legitimately mutate health, but recursively
+    // applying damage from one of those callbacks would re-enter the same
+    // Fabric event chain without a vanilla hurt/death state machine to stop
+    // it. Fail closed for that synchronous recursion.
+    if (isInsideDamageCallback(this)) return false;
+#endif
+
+    const std::string safeCause = cause.empty() ? "generic" : cause;
+    return runServerMutation(impl_->server, impl_->mutationLifetime,
+                             [this, handle, amount, safeCause]() {
+        // Keep server mutations ordered before borrowing a generation-checked
+        // handle. The borrow is released before applyDamage can call Java.
+        SimulationDispatchGuard simulation(
+            impl_->server.simulationDispatchMtx_);
+        std::shared_ptr<Player> player;
+        {
+            auto resolution = impl_->handles.acquire(handle, HandleKind::Player);
+            if (resolution) {
+                auto* address = static_cast<Player*>(resolution.get());
+                const auto candidates = impl_->server.playersSnapshot();
+                const auto it = std::find_if(
+                    candidates.begin(), candidates.end(),
+                    [address](const auto& candidate) {
+                        return candidate.get() == address;
+                    });
+                if (it != candidates.end()) player = *it;
+            }
+        }
+        if (player) {
+            return impl_->server.applyDamage(
+                *player, amount, DamageSource(safeCause), 0, &simulation);
+        }
+
+        std::shared_ptr<MobEntity> mob;
+        {
+            auto resolution = impl_->handles.acquire(handle, HandleKind::Entity);
+            if (!resolution) return false;
+            auto* address = static_cast<MobEntity*>(resolution.get());
+            const auto candidates = impl_->server.mobsSnapshot();
+            const auto it = std::find_if(
+                candidates.begin(), candidates.end(),
+                [address](const auto& candidate) {
+                    return candidate.get() == address;
+            });
+            if (it != candidates.end()) mob = *it;
+        }
+        if (!mob) return false;
+        {
+            std::lock_guard entityLock(*mob->stateMtx);
+            if (!isLivingDamageTarget(mob->kind)) return false;
+        }
+        return impl_->server.applyDamageToMob(
+            *mob, amount, DamageSource(safeCause), 0, &simulation);
+    });
+}
+
+bool JvmRuntime::nativeEntityRemove(std::uint64_t handle, const int reason) {
+    constexpr int kKilled = 0;
+    constexpr int kDiscarded = 1;
+    if (!handle || (reason != kKilled && reason != kDiscarded)) return false;
+
+    // Removal is idempotent. Wait for a running server-thread operation to
+    // finish so Java's local removed state cannot diverge from a later native
+    // commit reported as failure.
+    return runServerMutation(impl_->server, impl_->mutationLifetime,
+                             [this, handle, reason]() {
+        // Establish the server's mutation order before borrowing a handle.
+        // A handle-table borrow holds its mutex until destruction, so do not
+        // wait on the simulation gate or invoke Java while that borrow lives.
+        SimulationDispatchGuard simulation(
+            impl_->server.simulationDispatchMtx_);
+        std::shared_ptr<MobEntity> mob;
+        {
+            auto resolution = impl_->handles.acquire(
+                handle, HandleKind::Entity);
+            if (!resolution) return false;
+            auto* address = static_cast<MobEntity*>(resolution.get());
+            const auto candidates = impl_->server.mobsSnapshot();
+            const auto it = std::find_if(
+                candidates.begin(), candidates.end(),
+                [address](const auto& candidate) {
+                    return candidate.get() == address;
+                });
+            if (it == candidates.end()) return false;
+            mob = *it;
+        }
+
+        const auto request = reason == kKilled
+            ? MobEntity::RemovalRequest::Killed
+            : MobEntity::RemovalRequest::Discarded;
+        return impl_->server.requestMobRemoval(mob, request);
     });
 }
 
@@ -2620,18 +3753,81 @@ bool JvmRuntime::nativeEntitySetPosition(std::uint64_t handle, double x,
     return nativePlayerSetPosition(handle, x, y, z);
 }
 
+float JvmRuntime::nativeEntityRotation(std::uint64_t handle, int axis) const {
+    if (axis < 0 || axis > 1) return 0.0f;
+    if (auto resolution = impl_->handles.acquire(handle, HandleKind::Player);
+        resolution) {
+        const auto* player = static_cast<const Player*>(resolution.get());
+        std::lock_guard stateLock(player->stateMtx);
+        return axis == 0 ? player->yaw : player->pitch;
+    }
+    if (auto resolution = impl_->handles.acquire(handle, HandleKind::Entity);
+        resolution) {
+        const auto* mob = static_cast<const MobEntity*>(resolution.get());
+        std::lock_guard stateLock(*mob->stateMtx);
+        return axis == 0 ? mob->yaw : mob->pitch;
+    }
+    return 0.0f;
+}
+
+bool JvmRuntime::nativeEntitySetRotation(std::uint64_t handle, int axis,
+                                         float degrees) {
+    if (axis < 0 || axis > 1 || !std::isfinite(degrees)) return false;
+    return runServerMutation(impl_->server, impl_->mutationLifetime,
+                             [this, handle, axis, degrees] {
+        if (auto resolution = impl_->handles.acquire(handle, HandleKind::Player);
+            resolution) {
+            auto* player = static_cast<Player*>(resolution.get());
+            std::lock_guard stateLock(player->stateMtx);
+            if (axis == 0) player->yaw = degrees;
+            else player->pitch = degrees;
+            return true;
+        }
+        if (auto resolution = impl_->handles.acquire(handle, HandleKind::Entity);
+            resolution) {
+            auto* mob = static_cast<MobEntity*>(resolution.get());
+            std::lock_guard stateLock(*mob->stateMtx);
+            if (axis == 0) mob->yaw = degrees;
+            else mob->pitch = degrees;
+            return true;
+        }
+        return false;
+    });
+}
+
 std::int32_t JvmRuntime::nativeEntityCount() const {
+    SimulationDispatchGuard simulation(
+        impl_->server.simulationDispatchMtx_);
     const auto players = impl_->server.playersSnapshot();
     const auto mobs = impl_->server.mobsSnapshot();
-    const std::size_t count = players.size() + mobs.size();
+    const auto activePlayers = static_cast<std::size_t>(std::count_if(
+        players.begin(), players.end(), [](const auto& player) {
+            if (!player) return false;
+            std::lock_guard playerLock(player->stateMtx);
+            return player->inPlay.load(std::memory_order_acquire);
+        }));
+    const std::size_t count = activePlayers + mobs.size();
     return static_cast<std::int32_t>(std::min<std::size_t>(
         count, static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max())));
 }
 
 std::uint64_t JvmRuntime::nativeEntityHandle(std::size_t index) {
-    const auto players = impl_->server.playersSnapshot();
-    if (index < players.size() && players[index]) return playerHandle(*players[index]);
-    index -= std::min(index, players.size());
+    SimulationDispatchGuard simulation(
+        impl_->server.simulationDispatchMtx_);
+    std::vector<std::shared_ptr<Player>> players;
+    for (const auto& player : impl_->server.playersSnapshot()) {
+        if (!player) continue;
+        std::lock_guard playerLock(player->stateMtx);
+        if (player->inPlay.load(std::memory_order_acquire))
+            players.push_back(player);
+    }
+    if (index < players.size())
+        return playerHandle(*players[index]);
+    index -= players.size();
+
+    // Entity handles are protected separately because their owning vector is
+    // retired independently from PlayerDirectory and PlayerHandleLifetime.
+    std::lock_guard lifetimeLock(impl_->entityHandleLifetimeMutex);
     const auto mobs = impl_->server.mobsSnapshot();
     if (index >= mobs.size() || !mobs[index]) return 0;
     return impl_->handles.registerObject(mobs[index].get(), HandleKind::Entity);
@@ -2674,13 +3870,30 @@ bool JvmRuntime::nativePlayerSneaking(std::uint64_t handle) const {
 }
 
 std::int32_t JvmRuntime::nativeOnlinePlayerCount() const {
-    return static_cast<std::int32_t>(impl_->server.playerCount());
+    const auto players = impl_->server.playersSnapshot();
+    const auto count = std::count_if(
+        players.begin(), players.end(), [](const auto& player) {
+            if (!player) return false;
+            std::lock_guard playerLock(player->stateMtx);
+            return player->inPlay.load(std::memory_order_acquire);
+        });
+    return static_cast<std::int32_t>(count);
 }
 
 std::uint64_t JvmRuntime::nativeOnlinePlayerHandle(std::size_t index) {
     const auto players = impl_->server.playersSnapshot();
-    if (index >= players.size() || !players[index]) return 0;
-    return playerHandle(*players[index]);
+    for (const auto& player : players) {
+        if (!player) continue;
+        bool inPlay = false;
+        {
+            std::lock_guard playerLock(player->stateMtx);
+            inPlay = player->inPlay.load(std::memory_order_acquire);
+        }
+        if (!inPlay) continue;
+        if (index-- == 0)
+            return playerHandle(*player);
+    }
+    return 0;
 }
 
 namespace {
@@ -2773,7 +3986,6 @@ bool JvmRuntime::nativePlayerSetInventoryItemCount(std::uint64_t handle,
             else item->count = static_cast<std::int16_t>(count);
         }
         impl_->server.resendInventory(*player);
-        impl_->server.syncEquipmentOnChange(*player);
         return true;
     });
 }
@@ -2802,7 +4014,6 @@ bool JvmRuntime::nativePlayerSetInventoryItem(std::uint64_t handle,
             }
         }
         impl_->server.resendInventory(*player);
-        impl_->server.syncEquipmentOnChange(*player);
         return true;
     });
 }
@@ -2917,6 +4128,16 @@ std::string JvmRuntime::nativeWorldName(std::uint64_t handle) const {
     return {};
 }
 
+bool JvmRuntime::nativeWorldHasChunk(std::uint64_t handle,
+                                     const std::int32_t chunkX,
+                                     const std::int32_t chunkZ) const {
+    if (auto resolution = impl_->handles.acquire(handle, HandleKind::World);
+        resolution)
+        return static_cast<const World*>(resolution.get())->hasChunk(chunkX,
+                                                                      chunkZ);
+    return false;
+}
+
 std::int32_t JvmRuntime::nativeWorldBlock(std::uint64_t handle, std::int32_t x,
                                           std::int32_t y, std::int32_t z) const {
     if (auto resolution = impl_->handles.acquire(handle, HandleKind::World);
@@ -3024,6 +4245,47 @@ bool JvmRuntime::nativePlayerSendPluginMessage(
     });
 }
 
+bool JvmRuntime::nativePlayerDisconnect(std::uint64_t handle,
+                                       const std::string& reason) {
+    auto resolution = impl_->handles.acquire(handle, HandleKind::Player);
+    if (!resolution) return false;
+    auto* resolvedPlayer = static_cast<Player*>(resolution.get());
+    std::shared_ptr<Player> player;
+    for (const auto& candidate : impl_->server.playersSnapshot()) {
+        if (candidate && candidate.get() == resolvedPlayer) {
+            player = candidate;
+            break;
+        }
+    }
+    if (!player) return false;
+
+    std::shared_ptr<Connection> connection;
+    {
+        std::lock_guard stateLock(player->stateMtx);
+        if (!player->inPlay || !player->conn) return false;
+        connection = player->conn;
+    }
+
+    // Keep the object alive through the transition, but release the handle
+    // table mutex before beginRetirementForHandle() consults that same table.
+    resolution = {};
+    if (!impl_->playerHandleLifetime.beginRetirementForHandle(
+            player.get(), handle, player->jvmHandleLifecycle))
+        return false;
+    {
+        std::lock_guard stateLock(player->stateMtx);
+        player->inPlay = false;
+    }
+    const std::string message = reason.empty() ? "Disconnected" : reason;
+    return SimulationDispatchGuard::withCurrentLockReleased([&] {
+        WriteBuffer body;
+        nbt::writeTextComponent(body, message);
+        (void)connection->trySendPacket(proto::pl::sc::Disconnect, body);
+        connection->close();
+        return true;
+    });
+}
+
 std::string JvmRuntime::nativeServerSetting(const std::string& key) const {
     const auto& cfg = impl_->server.config();
     if (key == "motd") return cfg.motd;
@@ -3110,21 +4372,6 @@ JvmDispatchResult JvmRuntime::dispatchTransformed(
     const std::vector<JvmValue>& arguments) {
     JvmDispatchResult result;
     auto& impl = *impl_;
-#if defined(CPPFM_HAS_JNI)
-    // Do not wait for a callback owned by another thread.  Transformed Java
-    // code is user code too, and that thread may be waiting for this call to
-    // return before it can release the callback.
-    std::unique_lock<std::recursive_mutex> callLock;
-    if (!acquireCallbackLock(impl, *this, callLock)) {
-        result.invoked = true;
-        result.success = false;
-        result.error = "transformed dispatch skipped while another Java callback is active";
-        impl.dispatchFailures.fetch_add(1, std::memory_order_relaxed);
-        return result;
-    }
-#else
-    std::lock_guard callLock(impl.callMutex);
-#endif
     const auto route = impl.routing.route(owner, name, descriptor);
     if (!route || route->path == DispatchPath::NativeFast) {
         impl.nativeDispatches.fetch_add(1, std::memory_order_relaxed);

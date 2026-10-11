@@ -43,9 +43,15 @@ struct JvmConfig {
     // KnotLauncher is preferred when present; the fallback provider is kept
     // for the dependency-free compatibility fixture.
     bool preferKnot = true;
-    // Deadline for native bridge mutations queued to the authoritative server
-    // thread. Kept configurable so callers/tests can budget for loaded ticks.
+    // Queue deadline for native bridge mutations submitted to the authoritative
+    // server thread. A still-pending task is cancelled at this deadline; once
+    // the task starts, synchronous callers wait for its result rather than
+    // reporting failure for a mutation that may still commit.
     std::chrono::milliseconds serverMutationTimeout{250};
+    // Fabric callbacks are serialized on the authoritative server thread.
+    // This bounds how long a foreign caller waits for a queued callback to
+    // start; once running, its synchronous event result is awaited.
+    std::chrono::milliseconds serverCallbackTimeout{30000};
 };
 
 enum class JvmProvider : std::uint8_t {
@@ -136,15 +142,36 @@ public:
     std::string lastError() const;
     JvmStats stats() const;
 
-    // Synchronous lifecycle and cancellable event boundaries.  A disabled or
+    // Synchronous lifecycle and cancellable event boundaries. A disabled or
     // unavailable runtime is an allow/no-op result so existing C++ behavior is
-    // unchanged unless the layer is explicitly active.  The server tick
+    // unchanged unless the layer is explicitly active. Callbacks originating
+    // from foreign session threads are synchronously marshalled to the
+    // authoritative server thread; the simulation gate is released while
+    // waiting so callbacks can re-enter native server operations.
+    // The server tick
     // boundary selectively routes the shadow MinecraftServer.setTick(J)V body
     // through dispatchTransformed() when Mixin changed that method; the event
     // facade then observes the already-applied tick without calling it again.
     bool onServerTick(std::int64_t tick);
+    // Terminal Fabric lifecycle phases. The tick-loop owner dispatches
+    // SERVER_STOPPING before ingress closes; teardown dispatches world unload
+    // after disconnect and SERVER_STOPPED after persistence closes. stop()
+    // supplies idempotent fallbacks for partial/no-loop lifetimes.
+    bool onServerWorldsLoaded();
+    bool onServerStopping();
+    bool onWorldsUnloading();
+    bool onServerStopped();
+    // Compatibility aggregate for providers that still request one terminal
+    // call; production teardown uses the ordered phase methods above.
+    bool onServerShutdown();
     void onPlayerJoin(Player& player);
+    void beginPlayerRetirement(Player& player);
     void onPlayerQuit(Player& player);
+    void finishPlayerRetirement(Player& player);
+    void onMobLoad(MobEntity& mob);
+    // Returns false only when invalidation must wait for an active re-entrant
+    // load callback to unwind; that callback performs the deferred invalidation.
+    bool onMobUnload(MobEntity& mob);
     bool onChat(Player& player, std::string& message);
     bool onBlockBreak(Player& player, std::int32_t x, std::int32_t y,
                       std::int32_t z, std::uint16_t oldState);
@@ -159,6 +186,12 @@ public:
                    std::string* response = nullptr);
     bool onEntityDamage(Player* victimPlayer, MobEntity* victimMob,
                         float& amount, const std::string& cause);
+    bool onEntityAllowDeath(Player* victimPlayer, MobEntity* victimMob,
+                            float amount, const std::string& cause);
+    void onEntityDamageApplied(Player* victimPlayer, MobEntity* victimMob,
+                               float baseDamage, float damageTaken,
+                               bool blocked, bool died,
+                               const std::string& cause);
     bool onMobSpawn(MobEntity& mob, double x, double y, double z);
     bool onPluginMessage(Player& player, int phase, const std::string& channel,
                          const std::vector<std::uint8_t>& payload);
@@ -184,6 +217,9 @@ public:
     // public only to keep JNI glue independent from the private PImpl.
     std::uint64_t nativeServerHandle() const;
     std::int64_t nativeCurrentTick() const;
+    bool nativePlayerHandleLive(std::uint64_t handle) const;
+    bool nativeEntityHandleCreatable(std::uint64_t handle) const;
+    bool nativeEntityBeginRetirement(std::uint64_t handle);
     std::string nativePlayerName(std::uint64_t handle) const;
     std::string nativePlayerUuid(std::uint64_t handle) const;
     std::int32_t nativePlayerEntityId(std::uint64_t handle) const;
@@ -213,17 +249,30 @@ public:
     std::uint64_t nativePlayerWorld(std::uint64_t handle) const;
     std::string nativeEntityType(std::uint64_t handle) const;
     std::int32_t nativeEntityTypeId(std::uint64_t handle) const;
+    bool nativeEntityIsLiving(std::uint64_t handle) const;
+    bool nativeEntityIsHostile(std::uint64_t handle) const;
+    bool nativeEntityIsAnimal(std::uint64_t handle) const;
+    bool nativeEntityIsFish(std::uint64_t handle) const;
     float nativeEntityHealth(std::uint64_t handle) const;
+    float nativeEntityMaxHealth(std::uint64_t handle) const;
     bool nativeEntitySetHealth(std::uint64_t handle, float health);
+    bool nativeEntityDamage(std::uint64_t handle, float amount,
+                            const std::string& cause);
+    bool nativeEntityRemove(std::uint64_t handle, int reason);
     bool nativeEntityDead(std::uint64_t handle) const;
     std::uint64_t nativeEntityWorld(std::uint64_t handle) const;
     double nativeEntityCoordinate(std::uint64_t handle, int axis) const;
     bool nativeEntitySetPosition(std::uint64_t handle, double x, double y,
                                  double z);
+    float nativeEntityRotation(std::uint64_t handle, int axis) const;
+    bool nativeEntitySetRotation(std::uint64_t handle, int axis,
+                                 float degrees);
     std::int32_t nativeEntityCount() const;
     std::uint64_t nativeEntityHandle(std::size_t index);
     std::uint64_t nativeServerWorld(int dimension) const;
     std::string nativeWorldName(std::uint64_t handle) const;
+    bool nativeWorldHasChunk(std::uint64_t handle, std::int32_t chunkX,
+                             std::int32_t chunkZ) const;
     std::int32_t nativeWorldBlock(std::uint64_t handle, std::int32_t x,
                                   std::int32_t y, std::int32_t z) const;
     bool nativeWorldSetBlock(std::uint64_t handle, std::int32_t x,
@@ -240,6 +289,8 @@ public:
     bool nativePlayerSendPluginMessage(
         std::uint64_t handle, const std::string& channel,
         const std::vector<std::uint8_t>& payload, int phase);
+    bool nativePlayerDisconnect(std::uint64_t handle,
+                                const std::string& reason);
     std::string nativeServerSetting(const std::string& key) const;
     bool nativeExecuteCommand(const std::string& command);
     void nativeLog(const std::string& level, const std::string& message) const;
@@ -263,6 +314,7 @@ public:
     const Impl& bridgeImpl() const noexcept { return *impl_; }
 
 private:
+    bool dispatchFinalLifecycleCallback(std::uint8_t stage);
     std::unique_ptr<Impl> impl_;
 };
 

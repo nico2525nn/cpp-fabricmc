@@ -21,6 +21,17 @@
 #include <thread>
 #include <vector>
 
+#ifndef _WIN32
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#if defined(__linux__)
+#include <sys/syscall.h>
+#elif defined(__APPLE__)
+#include <stdio.h>
+#endif
+#endif
+
 #include <zlib.h>
 
 namespace cppfm {
@@ -78,30 +89,322 @@ std::string temporarySuffix() {
     return ".tmp-" + std::to_string(now) + "-" + std::to_string(thread);
 }
 
+#ifdef _WIN32
 bool regularNonSymlink(const std::filesystem::path& path,
                        std::error_code& error) {
     const auto status = std::filesystem::symlink_status(path, error);
     if (error) return false;
     return std::filesystem::is_regular_file(status);
 }
+#endif
+
+#ifndef _WIN32
+class ScopedFileDescriptor {
+public:
+    ScopedFileDescriptor() noexcept = default;
+    explicit ScopedFileDescriptor(int value) noexcept : value_(value) {}
+    ScopedFileDescriptor(const ScopedFileDescriptor&) = delete;
+    ScopedFileDescriptor& operator=(const ScopedFileDescriptor&) = delete;
+    ScopedFileDescriptor(ScopedFileDescriptor&& other) noexcept
+        : value_(other.release()) {}
+    ScopedFileDescriptor& operator=(ScopedFileDescriptor&& other) noexcept {
+        if (this == &other) return *this;
+        reset(other.release());
+        return *this;
+    }
+    ~ScopedFileDescriptor() { reset(); }
+
+    explicit operator bool() const noexcept { return value_ >= 0; }
+    int get() const noexcept { return value_; }
+    int release() noexcept {
+        const int result = value_;
+        value_ = -1;
+        return result;
+    }
+    void reset(int next = -1) noexcept {
+        if (value_ >= 0) (void)::close(value_);
+        value_ = next;
+    }
+
+private:
+    int value_ = -1;
+};
+
+ScopedFileDescriptor openSafeDirectoryTree(
+    const std::filesystem::path& root, std::string_view relative,
+    std::string& error, bool createMissing, bool allowAssetRootSymlink,
+    bool* followedAssetRootSymlink) {
+    if (followedAssetRootSymlink) *followedAssetRootSymlink = false;
+    const int rootFd = ::open(root.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (rootFd < 0) {
+        error = "runtime root is not an accessible directory: " +
+                root.string() + ": " + std::strerror(errno);
+        return {};
+    }
+    ScopedFileDescriptor current(rootFd);
+    bool followedAssetLink = false;
+    std::size_t begin = 0;
+    while (begin < relative.size()) {
+        const auto end = relative.find('/', begin);
+        const std::string component(relative.substr(begin,
+            end == std::string_view::npos
+                ? relative.size() - begin : end - begin));
+        struct stat status {};
+        if (::fstatat(current.get(), component.c_str(), &status,
+                      AT_SYMLINK_NOFOLLOW) != 0) {
+            if (errno != ENOENT || !createMissing) {
+                error = "could not inspect runtime directory " +
+                        (root / std::filesystem::path(std::string(relative)))
+                            .string() + ": " + std::strerror(errno);
+                return {};
+            }
+            if (followedAssetLink) {
+                error = "refusing to create runtime directory through "
+                        "symlinked assets root: " + component;
+                return {};
+            }
+            if (::mkdirat(current.get(), component.c_str(), 0755) != 0 &&
+                errno != EEXIST) {
+                error = "could not create runtime directory " +
+                        (root / std::filesystem::path(std::string(relative)))
+                            .string() + ": " + std::strerror(errno);
+                return {};
+            }
+            if (::fstatat(current.get(), component.c_str(), &status,
+                          AT_SYMLINK_NOFOLLOW) != 0) {
+                error = "could not inspect created runtime directory " +
+                        component + ": " + std::strerror(errno);
+                return {};
+            }
+        }
+
+        const bool allowedAssetLink = allowAssetRootSymlink && begin == 0 &&
+                                      component == "assets" &&
+                                      S_ISLNK(status.st_mode);
+        if (S_ISLNK(status.st_mode) && !allowedAssetLink) {
+            error = "runtime directory must not be a symlink: " +
+                    (root / std::filesystem::path(std::string(relative)))
+                        .string();
+            return {};
+        }
+        if (!S_ISDIR(status.st_mode) && !allowedAssetLink) {
+            error = "runtime path component is not a directory: " +
+                    (root / std::filesystem::path(std::string(relative)))
+                        .string();
+            return {};
+        }
+
+        int flags = O_RDONLY | O_DIRECTORY | O_CLOEXEC;
+        if (!allowedAssetLink) flags |= O_NOFOLLOW;
+        const int childFd = ::openat(current.get(), component.c_str(), flags);
+        if (childFd < 0) {
+            error = "could not open runtime directory component " + component +
+                    ": " + std::strerror(errno);
+            return {};
+        }
+        struct stat openedStatus {};
+        const int statResult = ::fstat(childFd, &openedStatus);
+        if (statResult != 0 || !S_ISDIR(openedStatus.st_mode)) {
+            const int statusError = statResult != 0 ? errno : ENOTDIR;
+            (void)::close(childFd);
+            error = "runtime directory component is not a directory: " +
+                    component + ": " + std::strerror(statusError);
+            return {};
+        }
+        current.reset(childFd);
+        if (allowedAssetLink) {
+            followedAssetLink = true;
+            if (followedAssetRootSymlink)
+                *followedAssetRootSymlink = true;
+        }
+        if (end == std::string_view::npos) break;
+        begin = end + 1;
+    }
+    return current;
+}
+
+int renameWithoutReplaceAt(int directoryFd, const char* source,
+                           const char* destination) {
+#if defined(__linux__) && defined(SYS_renameat2)
+    constexpr unsigned int kRenameNoReplace = 1u;
+    return static_cast<int>(::syscall(SYS_renameat2, directoryFd, source,
+                                      directoryFd, destination,
+                                      kRenameNoReplace));
+#elif defined(__APPLE__)
+    return ::renameatx_np(directoryFd, source, directoryFd, destination,
+                          RENAME_EXCL);
+#else
+    (void)directoryFd;
+    (void)source;
+    (void)destination;
+    errno = ENOTSUP;
+    return -1;
+#endif
+}
+
+bool writeIfMissingPosix(const std::filesystem::path& root,
+                         std::string_view name,
+                         const std::vector<std::uint8_t>& bytes,
+                         std::string& error,
+                         const std::filesystem::path* anchorRoot = nullptr) {
+    const auto separator = name.find_last_of('/');
+    const auto fileParent = separator == std::string_view::npos
+        ? std::string_view{} : name.substr(0, separator);
+    const std::string filename(name.substr(separator == std::string_view::npos
+        ? 0 : separator + 1));
+    bool followedAssetLink = false;
+    ScopedFileDescriptor directory;
+    if (anchorRoot) {
+        const auto relativeRoot = root.lexically_relative(*anchorRoot);
+        if (relativeRoot.empty() || relativeRoot.is_absolute()) {
+            error = "embedded resource root is not below its safe anchor: " +
+                    root.string();
+            return false;
+        }
+        auto relativeParent = relativeRoot.generic_string();
+        if (!fileParent.empty()) {
+            relativeParent.push_back('/');
+            relativeParent.append(fileParent);
+        }
+        if (!safeResourcePath(relativeParent)) {
+            error = "embedded resource root has an unsafe relative path: " +
+                    relativeParent;
+            return false;
+        }
+        directory = openSafeDirectoryTree(*anchorRoot, relativeParent, error,
+                                          true, false, nullptr);
+    } else {
+        directory = openSafeDirectoryTree(root, fileParent, error, true,
+            name.starts_with("assets/"), &followedAssetLink);
+    }
+    if (!directory) return false;
+
+    struct stat existing {};
+    if (::fstatat(directory.get(), filename.c_str(), &existing,
+                  AT_SYMLINK_NOFOLLOW) == 0) {
+        if (S_ISREG(existing.st_mode)) return true;
+        error = "embedded resource target is not a regular file: " +
+                (root / std::filesystem::path(std::string(name))).string();
+        return false;
+    }
+    if (errno != ENOENT) {
+        error = "could not inspect embedded resource " +
+                (root / std::filesystem::path(std::string(name))).string() +
+                ": " + std::strerror(errno);
+        return false;
+    }
+    if (followedAssetLink) {
+        error = "refusing to create embedded resource through symlinked "
+                "assets root: " +
+                (root / std::filesystem::path(std::string(name))).string();
+        return false;
+    }
+
+    std::string temporaryName;
+    ScopedFileDescriptor temporary;
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        temporaryName = filename + temporarySuffix() + "-" +
+                        std::to_string(attempt);
+        const int fd = ::openat(directory.get(), temporaryName.c_str(),
+            O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+        if (fd >= 0) {
+            temporary.reset(fd);
+            break;
+        }
+        if (errno != EEXIST) {
+            error = "could not create temporary embedded resource " +
+                    temporaryName + ": " + std::strerror(errno);
+            return false;
+        }
+    }
+    if (!temporary) {
+        error = "could not allocate a unique temporary embedded resource name";
+        return false;
+    }
+    const auto removeTemporary = [&]() {
+        if (::unlinkat(directory.get(), temporaryName.c_str(), 0) == 0 ||
+            errno == ENOENT)
+            return std::string{};
+        return std::string("; cleanup also failed: ") + std::strerror(errno);
+    };
+    std::size_t offset = 0;
+    while (offset < bytes.size()) {
+        const auto remaining = bytes.size() - offset;
+        const auto written = ::write(temporary.get(), bytes.data() + offset,
+                                     remaining);
+        if (written < 0 && errno == EINTR) continue;
+        if (written <= 0) {
+            const std::string failure =
+                "could not write temporary embedded resource " +
+                temporaryName + ": " +
+                std::strerror(written < 0 ? errno : EIO);
+            error = failure + removeTemporary();
+            return false;
+        }
+        offset += static_cast<std::size_t>(written);
+    }
+    if (::fsync(temporary.get()) != 0) {
+        const std::string failure =
+            "could not finish temporary embedded resource " +
+            temporaryName + ": " + std::strerror(errno);
+        error = failure + removeTemporary();
+        return false;
+    }
+    temporary.reset();
+
+    if (::linkat(directory.get(), temporaryName.c_str(), directory.get(),
+                 filename.c_str(), 0) == 0) {
+        if (::unlinkat(directory.get(), temporaryName.c_str(), 0) != 0) {
+            error = "could not remove temporary embedded resource " +
+                    temporaryName + ": " + std::strerror(errno);
+            return false;
+        }
+        return true;
+    }
+
+    const int linkError = errno;
+    int renameError = 0;
+    if (linkError != EEXIST) {
+        // Filesystems without hard-link support can still provide an atomic
+        // exclusive rename (renameat2 on Linux, renameatx_np on Apple).
+        if (renameWithoutReplaceAt(directory.get(), temporaryName.c_str(),
+                                   filename.c_str()) == 0)
+            return true;
+        renameError = errno;
+    }
+    if ((linkError == EEXIST || renameError == EEXIST) &&
+        ::fstatat(directory.get(), filename.c_str(), &existing,
+                  AT_SYMLINK_NOFOLLOW) == 0 && S_ISREG(existing.st_mode)) {
+        const auto cleanupError = removeTemporary();
+        if (!cleanupError.empty()) {
+            error = "could not accept concurrently installed embedded "
+                    "resource " + filename + cleanupError;
+            return false;
+        }
+        return true;
+    }
+    error = "could not install embedded resource " + filename +
+            ": linkat failed: " + std::strerror(linkError);
+    if (renameError != 0)
+        error += "; exclusive rename failed: " +
+                 std::string(std::strerror(renameError));
+    error += removeTemporary();
+    return false;
+}
+#endif
 
 // Install a completed temporary file without ever replacing a file that may
-// have appeared after the initial status check.  The hard-link paths are
-// atomic and no-replace on the native filesystems used by the server.  The
-// copy_file fallback is still explicitly SKIP_EXISTING, which preserves the
-// same user-file invariant on filesystems that do not support hard links.
+// have appeared after the initial status check.
+#ifdef _WIN32
 bool installWithoutReplace(const std::filesystem::path& temporary,
                            const std::filesystem::path& destination,
                            std::error_code& error) {
-#ifdef _WIN32
-    if (::CreateHardLinkW(destination.wstring().c_str(),
-                          temporary.wstring().c_str(), nullptr)) {
-        std::error_code removeError;
-        std::filesystem::remove(temporary, removeError);
-        if (removeError) {
-            error = removeError;
-            return false;
-        }
+    // The temporary and final names share a parent and volume. Omitting
+    // MOVEFILE_REPLACE_EXISTING gives an atomic no-clobber rename without a
+    // copy fallback that might leave a partial final file after a crash.
+    if (::MoveFileExW(temporary.wstring().c_str(),
+                      destination.wstring().c_str(),
+                      MOVEFILE_WRITE_THROUGH)) {
         error.clear();
         return true;
     }
@@ -111,51 +414,115 @@ bool installWithoutReplace(const std::filesystem::path& temporary,
     else
         error = std::error_code(static_cast<int>(nativeError),
                                 std::system_category());
-#else
-    if (::link(temporary.c_str(), destination.c_str()) == 0) {
-        std::error_code removeError;
-        std::filesystem::remove(temporary, removeError);
-        if (removeError) {
-            error = removeError;
-            return false;
-        }
-        error.clear();
-        return true;
-    }
-    if (errno == EEXIST)
-        error = std::make_error_code(std::errc::file_exists);
-    else
-        error = std::error_code(errno, std::generic_category());
+    return false;
+}
 #endif
 
-    // Hard links can be disabled by a filesystem policy.  copy_file with
-    // skip_existing is the portable fallback and, unlike rename, cannot
-    // replace a file created by a user or another installer.
-    std::error_code copyError;
-    const bool copied = std::filesystem::copy_file(
-        temporary, destination,
-        std::filesystem::copy_options::skip_existing, copyError);
-    if (copied) {
-        std::error_code removeError;
-        std::filesystem::remove(temporary, removeError);
-        if (removeError) {
-            error = removeError;
+bool ensureSafeDirectoryTree(const std::filesystem::path& root,
+                             std::string_view relative,
+                             std::string& error,
+                             bool allowAssetRootSymlink = false,
+                             bool* followedAssetRootSymlink = nullptr) {
+    namespace fs = std::filesystem;
+    if (followedAssetRootSymlink) *followedAssetRootSymlink = false;
+    if (relative.empty()) return true;
+    if (!safeResourcePath(relative)) {
+        error = "runtime directory has an unsafe relative path: " +
+                std::string(relative);
+        return false;
+    }
+#ifndef _WIN32
+    auto directory = openSafeDirectoryTree(root, relative, error, true,
+        allowAssetRootSymlink, followedAssetRootSymlink);
+    return static_cast<bool>(directory);
+#else
+    std::error_code ec;
+    const auto rootStatus = fs::status(root, ec);
+    if (ec || !fs::is_directory(rootStatus)) {
+        error = "runtime root is not an accessible directory: " +
+                root.string() + (ec ? ": " + ec.message() : std::string());
+        return false;
+    }
+
+    fs::path current = root;
+    bool followedAssetLink = false;
+    std::size_t begin = 0;
+    while (begin < relative.size()) {
+        const auto end = relative.find('/', begin);
+        current /= std::string(relative.substr(
+            begin, end == std::string_view::npos
+                ? relative.size() - begin : end - begin));
+        ec.clear();
+        auto status = fs::symlink_status(current, ec);
+        if (ec == std::make_error_code(std::errc::no_such_file_or_directory) ||
+            (!ec && status.type() == fs::file_type::not_found)) {
+            if (followedAssetLink) {
+                error = "refusing to create runtime directory through "
+                        "symlinked assets root: " + current.string();
+                return false;
+            }
+            ec.clear();
+            fs::create_directory(current, ec);
+            if (ec && ec != std::make_error_code(std::errc::file_exists)) {
+                error = "could not create runtime directory " +
+                        current.string() + ": " + ec.message();
+                return false;
+            }
+            ec.clear();
+            status = fs::symlink_status(current, ec);
+        }
+        if (ec) {
+            error = "could not inspect runtime directory " + current.string() +
+                    ": " + ec.message();
             return false;
         }
-        error.clear();
-        return true;
+        if (fs::is_symlink(status)) {
+            if (allowAssetRootSymlink && current == root / "assets") {
+                const auto targetStatus = fs::status(current, ec);
+                if (ec || !fs::is_directory(targetStatus)) {
+                    error = "symlinked assets root is not an accessible "
+                            "directory: " + current.string() +
+                            (ec ? ": " + ec.message() : std::string());
+                    return false;
+                }
+                followedAssetLink = true;
+                if (followedAssetRootSymlink)
+                    *followedAssetRootSymlink = true;
+            } else {
+                error = "runtime directory must not be a symlink: " +
+                        current.string();
+                return false;
+            }
+        }
+        if (!fs::is_symlink(status) && !fs::is_directory(status)) {
+            error = "runtime path component is not a directory: " +
+                    current.string();
+            return false;
+        }
+        if (end == std::string_view::npos) break;
+        begin = end + 1;
     }
-    if (copyError) error = copyError;
-    return false;
+    return true;
+#endif
 }
 
 bool writeIfMissing(const std::filesystem::path& root, std::string_view name,
-                   const std::vector<std::uint8_t>& bytes, std::string& error) {
+                   const std::vector<std::uint8_t>& bytes, std::string& error,
+                   const std::filesystem::path* anchorRoot = nullptr) {
     if (!safeResourcePath(name)) {
         error = "embedded resource has an unsafe path: " + std::string(name);
         return false;
     }
+#ifndef _WIN32
+    return writeIfMissingPosix(root, name, bytes, error, anchorRoot);
+#else
     const auto destination = root / std::filesystem::path(std::string(name));
+    const auto separator = name.find_last_of('/');
+    bool assetRootIsSymlink = false;
+    if (separator != std::string_view::npos &&
+        !ensureSafeDirectoryTree(root, name.substr(0, separator), error,
+                                 name.starts_with("assets/"),
+                                 &assetRootIsSymlink)) return false;
     std::error_code ec;
     const auto status = std::filesystem::symlink_status(destination, ec);
     if (ec && ec != std::make_error_code(std::errc::no_such_file_or_directory)) {
@@ -171,9 +538,9 @@ bool writeIfMissing(const std::filesystem::path& root, std::string_view name,
         }
         return true;
     }
-    if (!std::filesystem::create_directories(destination.parent_path(), ec) && ec) {
-        error = "could not create resource directory " + destination.parent_path().string() +
-                ": " + ec.message();
+    if (assetRootIsSymlink) {
+        error = "refusing to create embedded resource through symlinked "
+                "assets root: " + destination.string();
         return false;
     }
     std::filesystem::path temporary = destination;
@@ -217,6 +584,7 @@ bool writeIfMissing(const std::filesystem::path& root, std::string_view name,
     error = "could not install embedded resource " + destination.string() +
             ": " + (statusError ? statusError.message() : installError.message());
     return false;
+#endif
 }
 
 std::uint64_t embeddedResources(const std::filesystem::path& root,
@@ -284,7 +652,9 @@ std::uint64_t embeddedResources(const std::filesystem::path& root,
         const auto destinationName = isClass
             ? std::string_view(name).substr(classesPrefix.size())
             : std::string_view(name);
-        if (!writeIfMissing(destinationRoot, destinationName, bytes, error)) return 0;
+        if (!writeIfMissing(destinationRoot, destinationName, bytes, error,
+                            isClass ? &root : nullptr))
+            return 0;
         extracted += rawSize;
     }
     return extracted;
@@ -292,13 +662,7 @@ std::uint64_t embeddedResources(const std::filesystem::path& root,
 
 bool ensureDirectory(const std::filesystem::path& root, std::string_view relative,
                      std::string& error) {
-    std::error_code ec;
-    const auto path = root / std::filesystem::path(std::string(relative));
-    if (!std::filesystem::create_directories(path, ec) && ec) {
-        error = "could not create server directory " + path.string() + ": " + ec.message();
-        return false;
-    }
-    return true;
+    return ensureSafeDirectoryTree(root, relative, error);
 }
 
 bool ensureDefaultProperties(const std::filesystem::path& root, std::string& error) {
@@ -338,6 +702,8 @@ bool ensureDefaultProperties(const std::filesystem::path& root, std::string& err
         "view-distance=10\n"
         "simulation-distance=10\n"
         "level-type=minecraft:normal\n"
+        "gamemode=survival\n"
+        "force-gamemode=false\n"
         "difficulty=easy\n"
         "motd=A Minecraft Server\n"
         "level-seed=\n"
@@ -452,8 +818,20 @@ bool RuntimeLayout::prepareForProcess(std::filesystem::path& root,
         if (error) *error = std::move(failure);
         return false;
     }
+#ifdef _WIN32
     auto processLock = std::make_unique<platform::FileLock>(
         root / ".cppfm" / "server.lock", failure);
+#else
+    auto cppfmDirectory = openSafeDirectoryTree(
+        root, ".cppfm", failure, false, false, nullptr);
+    if (!cppfmDirectory) {
+        if (error) *error = std::move(failure);
+        return false;
+    }
+    auto processLock = std::make_unique<platform::FileLock>();
+    processLock->acquireAt(cppfmDirectory.get(), "server.lock",
+                           root / ".cppfm" / "server.lock", failure);
+#endif
     if (!processLock->locked()) {
         if (error) *error = std::move(failure);
         return false;
@@ -496,12 +874,14 @@ bool RuntimeLayout::prepareForProcess(std::filesystem::path& root,
 
     std::filesystem::path classStage;
     if (embedded::kHasPack && embedded::kPackSize != 0) {
-        classStage = root / ".cppfm" / "jvm" /
-                     ("classes.staging" + temporarySuffix());
-        ec.clear();
-        if (!std::filesystem::create_directories(classStage, ec) && ec) {
+        const auto stageRelative = std::string(".cppfm/jvm/classes.staging") +
+                                   temporarySuffix();
+        classStage = root / stageRelative;
+        auto stageDirectory = openSafeDirectoryTree(
+            root, stageRelative, failure, true, false, nullptr);
+        if (!stageDirectory) {
             failure = "could not create embedded JVM staging directory " +
-                      classStage.string() + ": " + ec.message();
+                      classStage.string() + ": " + failure;
             if (error) *error = std::move(failure);
             return false;
         }

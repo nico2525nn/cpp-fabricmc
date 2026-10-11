@@ -2,11 +2,57 @@
 #include "Recipes.hpp"
 #include "TagManager.hpp"
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <cstdio>
+#include <fstream>
+#include <iterator>
 #include <limits>
+#include <optional>
 
 namespace cppfm {
+
+namespace {
+
+std::string normalizeResourceName(std::string name) {
+    const bool isTag = !name.empty() && name.front() == '#';
+    if (isTag) name.erase(name.begin());
+    if (name.find(':') == std::string::npos)
+        name.insert(0, "minecraft:");
+    if (isTag) name.insert(name.begin(), '#');
+    return name;
+}
+
+std::string pathToUtf8(const std::filesystem::path& path) {
+    const auto encoded = path.u8string();
+    return {reinterpret_cast<const char*>(encoded.data()), encoded.size()};
+}
+
+std::string genericPathToUtf8(const std::filesystem::path& path) {
+    const auto encoded = path.generic_u8string();
+    return {reinterpret_cast<const char*>(encoded.data()), encoded.size()};
+}
+
+std::optional<std::int16_t> checkedRecipeStackCount(int count) noexcept {
+    if (count <= 0 ||
+        count > std::numeric_limits<std::int16_t>::max())
+        return std::nullopt;
+    return static_cast<std::int16_t>(count);
+}
+
+std::optional<int> parseRecipeStackCount(const json::Value& result) noexcept {
+    const json::Value* value = result.find("count");
+    if (!value) value = result.find("Count");
+    if (!value) return 1;
+    if (!value->isNum() || !std::isfinite(value->number) ||
+        std::trunc(value->number) != value->number || value->number < 1.0 ||
+        value->number >
+            static_cast<double>(std::numeric_limits<std::int16_t>::max()))
+        return std::nullopt;
+    return static_cast<int>(value->number);
+}
+
+} // namespace
 
 // ------------------------------------------------------------------ helpers
 
@@ -23,13 +69,39 @@ Ingredient RecipeManager::fromName(const std::string& n) const {
 }
 
 Ingredient RecipeManager::makeIngredient(const json::Value& v) const {
-    if (v.isStr()) return fromName(v.asStr());
-    const json::Value empty;
-    const json::Value& item = v.type == json::Value::Type::Obj ? v.at("item") : empty;
-    const json::Value& tag = v.type == json::Value::Type::Obj ? v.at("tag") : empty;
-    if (!item.isNull()) return fromName(item.asStr());
-    if (!tag.isNull()) return fromName("#" + tag.asStr());
-    return {};
+    Ingredient ingredient;
+    const auto addName = [&](std::string_view name, bool tag) {
+        std::string normalized = normalizeResourceName(
+            std::string(tag ? "#" : "") + std::string(name));
+        const auto resolved = fromName(normalized);
+        ingredient.items.insert(resolved.items.begin(), resolved.items.end());
+    };
+
+    if (v.isStr()) {
+        const auto& name = v.asStr();
+        const bool tag = !name.empty() && name.front() == '#';
+        addName(tag ? std::string_view(name).substr(1) : name, tag);
+    } else if (v.type == json::Value::Type::Arr) {
+        for (const auto& alternative : v.arr) {
+            const auto resolved = makeIngredient(alternative);
+            ingredient.items.insert(resolved.items.begin(), resolved.items.end());
+        }
+    } else if (v.type == json::Value::Type::Obj) {
+        const auto& item = v.at("item");
+        const auto& tag = v.at("tag");
+        const auto& items = v.at("items");
+        if (item.isStr()) addName(item.asStr(), false);
+        else if (tag.isStr()) addName(tag.asStr(), true);
+        else if (items.type == json::Value::Type::Arr) {
+            for (const auto& entry : items.arr) {
+                if (!entry.isStr()) continue;
+                const auto resolved = makeIngredient(entry);
+                ingredient.items.insert(resolved.items.begin(),
+                                        resolved.items.end());
+            }
+        }
+    }
+    return ingredient;
 }
 
 std::vector<std::string> Recipe::trimBlankRows(const std::vector<std::string>& rows) {
@@ -44,12 +116,20 @@ std::vector<std::string> Recipe::trimBlankRows(const std::vector<std::string>& r
     return out;
 }
 void RecipeManager::syncTagsFrom(const TagManager& tm) {
-    tm.applyToRecipeTags(tags_);
-    if (auto* p = tm.getItemTag("minecraft:planks")) tagPlanks_ = *p;
+    auto replacementTags = builtInTags_;
+    for (const auto& [name, values] : tm.itemTags)
+        replacementTags[name] = values;
+    const auto planks = replacementTags.find("minecraft:planks");
+    auto replacementPlanks = planks == replacementTags.end()
+        ? std::unordered_set<std::uint32_t>{} : planks->second;
+    tags_.swap(replacementTags);
+    tagPlanks_.swap(replacementPlanks);
 }
 void RecipeManager::addShaped(const std::string& id, const std::string& outName,
                               int count, const std::vector<std::string>& rows,
-                              const std::unordered_map<char, std::string>& keys) {
+                              const std::unordered_map<char, Ingredient>& keys) {
+    const auto stackCount = checkedRecipeStackCount(count);
+    if (!stackCount) return;
     auto norm = Recipe::trimBlankRows(rows);
     Recipe r;
     r.kind = Recipe::Kind::Shaped;
@@ -61,51 +141,57 @@ void RecipeManager::addShaped(const std::string& id, const std::string& outName,
         for (char c : row) {
             if (c == ' ') { r.cells.push_back(Ingredient{}); continue; }
             auto it = keys.find(c);
-            r.cells.push_back(it != keys.end() ? fromName(it->second) : Ingredient{});
+            r.cells.push_back(it != keys.end() ? it->second : Ingredient{});
         }
     auto it = gen::itemIdByName().find(outName);
     if (it == gen::itemIdByName().end()) return;
-    r.result = ItemStack::of(it->second, static_cast<std::int16_t>(count));
+    r.result = ItemStack::of(it->second, *stackCount);
     recipes_.push_back(std::move(r));
 }
 
 void RecipeManager::addShapeless(const std::string& id, const std::string& outName,
-                                 int count, const std::vector<std::string>& inputs) {
+                                 int count, const std::vector<Ingredient>& inputs) {
+    const auto stackCount = checkedRecipeStackCount(count);
+    if (!stackCount) return;
     Recipe r;
     r.kind = Recipe::Kind::Shapeless;
     r.id = id;
-    for (auto& n : inputs) r.ingredients.push_back(fromName(n));
+    if (inputs.empty() || std::any_of(inputs.begin(), inputs.end(),
+            [](const Ingredient& input) { return input.empty(); }))
+        return;
+    r.ingredients = inputs;
     auto it = gen::itemIdByName().find(outName);
     if (it == gen::itemIdByName().end()) return;
-    r.result = ItemStack::of(it->second, static_cast<std::int16_t>(count));
+    r.result = ItemStack::of(it->second, *stackCount);
     recipes_.push_back(std::move(r));
 }
 
-void RecipeManager::addSmelting(const std::string& inName, const std::string& outName,
+void RecipeManager::addSmelting(const Ingredient& input,
+                                const std::string& outName,
                                 float xp, int ticks, Recipe::Kind kind) {
-    auto in = itemIdOr0(inName), out = itemIdOr0(outName);
-    if (!in || !out) return;
+    const auto out = itemIdOr0(outName);
+    if (input.empty() || !out) return;
     Recipe r;
     r.kind = kind;
     r.id = "minecraft:" + outName.substr(10);
     r.cookingTicks = ticks;
     r.experience = xp;
-    Ingredient i; i.items.insert(in);
-    r.cells.push_back(std::move(i));
+    r.cells.push_back(input);
     r.result = ItemStack::of(out, 1);
     recipes_.push_back(std::move(r));
 }
 
-void RecipeManager::addStonecutting(const std::string& inName,
+void RecipeManager::addStonecutting(const Ingredient& input,
                                     const std::string& outName, int count) {
-    auto in = itemIdOr0(inName), out = itemIdOr0(outName);
-    if (!in || !out) return;
+    const auto stackCount = checkedRecipeStackCount(count);
+    if (!stackCount) return;
+    const auto out = itemIdOr0(outName);
+    if (input.empty() || !out) return;
     Recipe r;
     r.kind = Recipe::Kind::Stonecutting;
     r.id = "minecraft:" + outName.substr(10);
-    Ingredient i; i.items.insert(in);
-    r.cells.push_back(i);
-    r.result = ItemStack::of(out, static_cast<std::int16_t>(count));
+    r.cells.push_back(input);
+    r.result = ItemStack::of(out, *stackCount);
     recipes_.push_back(std::move(r));
 }
 
@@ -120,7 +206,7 @@ void RecipeManager::loadDefaults() {
             const auto id = itemIdOr0(n);
             if (id) s.insert(id);
         }
-        tags_["minecraft:" + name] = std::move(s);
+        builtInTags_["minecraft:" + name] = std::move(s);
     };
     fillTag("planks", {"minecraft:oak_planks", "minecraft:spruce_planks",
                        "minecraft:birch_planks", "minecraft:jungle_planks",
@@ -132,193 +218,296 @@ void RecipeManager::loadDefaults() {
                      "minecraft:acacia_log", "minecraft:dark_oak_log"});
     fillTag("stone", {"minecraft:stone", "minecraft:granite", "minecraft:diorite",
                       "minecraft:andesite"});
+    tags_ = builtInTags_;
     tagPlanks_ = tags_["minecraft:planks"];
     // §3). loadDirectory will populate recipes_; no built-in registration here.
 }
 
 // ------------------------------------------------------------------ json io
 
-void RecipeManager::loadDirectory(const std::string& dir) {
+void RecipeManager::loadDirectory(const std::filesystem::path& dir) {
+    datapack_detail::LooseDataBudget budget;
+    loadDirectory(dir, budget);
+}
+
+void RecipeManager::loadDirectory(
+    const std::filesystem::path& dir,
+    datapack_detail::LooseDataBudget& budget) {
+    RecipeManager staged = *this;
+    staged.loadRecipeFiles(dir, {}, budget);
+    swap(staged);
+}
+
+void RecipeManager::loadDatapackDirectory(
+    const std::filesystem::path& dataRoot) {
+    datapack_detail::LooseDataBudget budget;
+    loadDatapackDirectory(dataRoot, budget);
+}
+
+void RecipeManager::loadDatapackDirectory(
+    const std::filesystem::path& dataRoot,
+    datapack_detail::LooseDataBudget& budget) {
+    RecipeManager staged = *this;
     namespace fs = std::filesystem;
-    std::error_code ec;
-    if (!fs::exists(dir, ec)) return;
-    std::vector<fs::path> files;
-    for (auto& e : fs::directory_iterator(dir, ec)) {
-        if (!e.is_regular_file() || e.path().extension().string() != ".json") continue;
-        files.push_back(e.path());
+    std::error_code error;
+    if (!fs::exists(dataRoot, error)) {
+        if (error)
+            throw fs::filesystem_error("inspect datapack recipe root",
+                                       dataRoot, error);
+        return;
     }
-    std::sort(files.begin(), files.end());
-    for (auto& path : files) {
+    if (!fs::is_directory(dataRoot, error) || error)
+        throw fs::filesystem_error("inspect datapack recipe root", dataRoot,
+            error ? error : std::make_error_code(std::errc::not_a_directory));
+
+    std::vector<fs::path> namespaces;
+    for (fs::directory_iterator it(dataRoot, error), end;
+         !error && it != end; it.increment(error)) {
+        budget.recordDirectoryEntry(it->path());
+        std::error_code statusError;
+        if (it->is_directory(statusError)) namespaces.push_back(it->path());
+        else if (statusError)
+            throw fs::filesystem_error("inspect datapack namespace",
+                                       it->path(), statusError);
+    }
+    if (error)
+        throw fs::filesystem_error("enumerate datapack namespaces", dataRoot,
+                                   error);
+    std::sort(namespaces.begin(), namespaces.end(),
+        [](const fs::path& lhs, const fs::path& rhs) {
+            return pathToUtf8(lhs.filename()) < pathToUtf8(rhs.filename());
+        });
+
+    for (const auto& nameSpace : namespaces)
+        staged.loadRecipeFiles(nameSpace / "recipe",
+                               pathToUtf8(nameSpace.filename()), budget);
+    swap(staged);
+}
+
+void RecipeManager::loadRecipeFiles(const std::filesystem::path& dir,
+                                    const std::string& nameSpace,
+                                    datapack_detail::LooseDataBudget& budget) {
+    namespace fs = std::filesystem;
+    std::error_code error;
+    if (!fs::exists(dir, error)) {
+        if (error) throw fs::filesystem_error("inspect recipe directory", dir,
+                                               error);
+        return;
+    }
+    if (!fs::is_directory(dir, error) || error)
+        throw fs::filesystem_error("inspect recipe directory", dir,
+            error ? error : std::make_error_code(std::errc::not_a_directory));
+
+    std::vector<fs::path> files;
+    for (fs::recursive_directory_iterator it(dir, error), end;
+         !error && it != end; it.increment(error)) {
+        budget.recordDirectoryEntry(it->path());
+        std::error_code statusError;
+        if (it->is_regular_file(statusError) && !statusError &&
+            it->path().extension() == ".json") {
+            budget.recordFile(it->path());
+            files.push_back(it->path());
+        } else if (statusError)
+            throw fs::filesystem_error("inspect recipe file", it->path(),
+                                       statusError);
+    }
+    if (error)
+        throw fs::filesystem_error("enumerate recipe directory", dir, error);
+    std::sort(files.begin(), files.end(), [](const fs::path& lhs,
+                                             const fs::path& rhs) {
+        return genericPathToUtf8(lhs) < genericPathToUtf8(rhs);
+    });
+
+    const auto parseIngredientList = [this](const json::Value& values) {
+        std::vector<Ingredient> result;
+        if (values.type != json::Value::Type::Arr) return result;
+        result.reserve(values.arr.size());
+        for (const auto& value : values.arr)
+            result.push_back(makeIngredient(value));
+        return result;
+    };
+
+    for (const auto& path : files) {
+        const std::string pathText = pathToUtf8(path);
+        std::string relative = genericPathToUtf8(path.lexically_relative(dir));
+        if (relative.size() <= 5 ||
+            relative.compare(relative.size() - 5, 5, ".json") != 0)
+            continue;
+        relative.resize(relative.size() - 5);
+        const std::string recipeId = nameSpace.empty()
+            ? normalizeResourceName(relative)
+            : nameSpace + ":" + relative;
+        std::erase_if(recipes_, [&recipeId](const Recipe& recipe) {
+            return recipe.id == recipeId;
+        });
         try {
-            FILE* f = fopen(path.string().c_str(), "rb");
-            if (!f) continue;
-            std::string text;
-            char buf[4096];
-            size_t n;
-            while ((n = fread(buf, 1, sizeof buf, f)) > 0) text.append(buf, n);
-            fclose(f);
-            const json::Value v = json::Value::parse(text);
-            std::string type =
-                v.at("type").isStr()
-                    ? v.at("type").asStr()
-                    : std::string();
-            if (type.rfind("minecraft:",0)==0) type = type.substr(10);
-            std::string rid = path.stem().string();
-            std::string group = v.at("group").isStr() ? v.at("group").asStr() : "";
-            std::string categoryStr = v.at("category").isStr() ? v.at("category").asStr() : "";
-            int categoryInt = 3;
-            if (type == "smelting" || type == "smoking" || type == "blasting" || type == "campfire_cooking") categoryInt = 6;
-            else if (type == "stonecutting") categoryInt = 10;
-            else if (categoryStr == "blocks" || categoryStr == "building") categoryInt = 3;
-            else if (categoryStr == "equipment") categoryInt = 3;
-            else if (categoryStr == "misc") categoryInt = 3;
-            else if (categoryStr == "food") categoryInt = 6;
-            // result may be string, object {id,count}, or object with id/count; handle all
-            const json::Value result = v.at("result");
-            std::string outId;
-            int outCount = 1;
-            if (result.isStr()) outId = result.asStr();
-            else if (!result.isNull()) {
-                if (result.at("id").isStr()) outId = result.at("id").asStr();
-                // some recipes store result as {item: ...} (smithing)
-                if (outId.empty() && result.at("item").isStr()) outId = result.at("item").asStr();
-                outCount = result.at("count").asInt(1);
-                if (outCount==1) outCount = result.at("Count").asInt(1);
-            }
-            if (outId.empty()) continue;
+            const std::string text = budget.readFile(path);
 
-            auto normalizeName = [](std::string s)->std::string{
-                if (s.rfind("minecraft:",0)!=0 && s.rfind("#",0)!=0) {
-                    if (s.find(':')==std::string::npos) s = "minecraft:"+s;
-                }
-                return s;
-            };
-            outId = normalizeName(outId);
+            const json::Value document = json::Value::parse(
+                text, json::Value::kMaxTotalValues);
+            std::string type = document.at("type").isStr()
+                ? document.at("type").asStr() : std::string{};
+            if (type.rfind("minecraft:", 0) == 0) type.erase(0, 10);
+            const std::string group = document.at("group").isStr()
+                ? document.at("group").asStr() : std::string{};
+            const std::string category = document.at("category").isStr()
+                ? document.at("category").asStr() : std::string{};
 
-            size_t before = recipes_.size();
-            if (type == "crafting_shaped") {
-                std::vector<std::string> rows;
-                for (auto& rv : v.at("pattern").arr)
-                    if (rv.isStr()) rows.push_back(rv.asStr());
-                rows = Recipe::trimBlankRows(rows);
-                if (rows.empty()) {
-                    std::fprintf(stderr,"[cppfm] recipe %s empty pattern after trim, skipped\n", path.string().c_str());
-                    continue;
-                }
-                std::unordered_map<char, std::string> keys;
-                for (auto& [k, def] : v.at("key").obj) {
-                    if (def.isStr()) keys[k[0]] = normalizeName(def.asStr());
-                    else {
-                        const json::Value& it = def.at("item");
-                        const json::Value& tg = def.at("tag");
-                        if (it.isStr()) keys[k[0]] = normalizeName(it.asStr());
-                        else if (tg.isStr()) {
-                            std::string t = tg.asStr();
-                            if (t.find(':')==std::string::npos) t = "minecraft:"+t;
-                            keys[k[0]] = "#" + t;
-                        }
-                    }
-                }
-                addShaped(rid, outId, outCount, rows, keys);
-            } else if (type == "crafting_shapeless") {
-                std::vector<std::string> inputs;
-                for (auto& iv : v.at("ingredients").arr) {
-                    if (iv.isStr()) inputs.push_back(normalizeName(iv.asStr()));
-                    else if (iv.at("item").isStr())
-                        inputs.push_back(normalizeName(iv.at("item").asStr()));
-                    else if (iv.at("tag").isStr()) {
-                        std::string t = iv.at("tag").asStr();
-                        if (t.find(':')==std::string::npos) t = "minecraft:"+t;
-                        inputs.push_back("#" + t);
-                    }
-                }
-                addShapeless(rid, outId, outCount, inputs);
-            } else if (type == "smelting" || type == "smoking" ||
-                       type == "blasting" || type == "campfire_cooking") {
-                const json::Value ing = v.at("ingredient");
-                std::string name;
-                if (ing.isStr()) name = normalizeName(ing.asStr());
-                else if (ing.type == json::Value::Type::Arr && !ing.arr.empty()) {
-                    // ingredient may be array with one entry
-                    const auto &first = ing.arr[0];
-                    if (first.isStr()) name = normalizeName(first.asStr());
-                    else if (first.at("item").isStr()) name = normalizeName(first.at("item").asStr());
-                    else if (first.at("tag").isStr()) name = "#"+first.at("tag").asStr();
-                } else if (ing.at("item").isStr()) name = normalizeName(ing.at("item").asStr());
-                else if (ing.at("tag").isStr()) {
-                    std::string t = ing.at("tag").asStr();
-                    if (t.find(':')==std::string::npos) t = "minecraft:"+t;
-                    name = "#"+t;
-                }
-                if (name.empty()) continue;
-                addSmelting(name, outId,
-                            static_cast<float>(
-                                v.at("experience").asFloat(0.f)),
-                            v.at("cookingtime").asInt(v.at("cookingTime").asInt(200)),
-                            Recipe::Kind::Smelting);
+            int categoryId = 3; // crafting_misc
+            if (type.starts_with("crafting_")) {
+                if (category == "building") categoryId = 0;
+                else if (category == "redstone") categoryId = 1;
+                else if (category == "equipment") categoryId = 2;
+            } else if (type == "smelting") {
+                categoryId = category == "food" ? 4
+                    : category == "blocks" ? 5 : 6;
+            } else if (type == "blasting") {
+                categoryId = category == "blocks" ? 7 : 8;
+            } else if (type == "smoking") {
+                categoryId = 9;
+            } else if (type == "campfire_cooking") {
+                categoryId = 12;
             } else if (type == "stonecutting") {
-                const json::Value ing = v.at("ingredient");
-                std::string name;
-                if (ing.isStr()) name = normalizeName(ing.asStr());
-                else if (ing.at("item").isStr()) name = normalizeName(ing.at("item").asStr());
-                else if (ing.at("tag").isStr()) {
-                    std::string t = ing.at("tag").asStr();
-                    if (t.find(':')==std::string::npos) t="minecraft:"+t;
-                    name = "#"+t;
-                }
-                if (name.empty()) continue;
-                addStonecutting(name, outId, outCount);
+                categoryId = 10;
             } else if (type == "smithing_transform" || type == "smithing_trim") {
-                std::vector<std::string> inputs;
-                auto addIng = [&](const char* field){
-                    const json::Value vv = v.at(field);
-                    if (vv.isStr()) inputs.push_back(normalizeName(vv.asStr()));
-                    else if (vv.at("item").isStr()) inputs.push_back(normalizeName(vv.at("item").asStr()));
-                    else if (vv.at("tag").isStr()) inputs.push_back("#"+vv.at("tag").asStr());
-                };
-                addIng("template"); addIng("base"); addIng("addition");
-                if (!inputs.empty()) {
-                    // register as Smithing kind with 3 cells for future MenuType::Smithing
-                    size_t pre = recipes_.size();
-                    addShapeless(rid, outId, outCount, inputs);
-                    if (recipes_.size() > pre) {
-                        recipes_.back().kind = Recipe::Kind::Smithing;
-                        recipes_.back().cells = recipes_.back().ingredients;
-                        // keep ingredients for matching fallback as shapeless too
-                    }
-                }
-            } else if (type == "crafting_special" || type == "crafting_transmute" || type == "crafting_decorated_pot") {
-                // register as Special (matches false, book display only)
-                Recipe r;
-                r.kind = Recipe::Kind::Special;
-                r.id = rid;
-                r.group = group;
-                r.category = categoryInt;
-                auto it = gen::itemIdByName().find(outId.empty() ? "minecraft:firework_rocket" : outId);
-                std::string ridOut = outId.empty() ? std::string("minecraft:firework_rocket") : outId;
-                auto it2 = gen::itemIdByName().find(ridOut);
-                if (it2 != gen::itemIdByName().end())
-                    r.result = ItemStack::of(
-                        it2->second, static_cast<std::int16_t>(
-                            std::clamp(outCount, 0,
-                                       static_cast<int>(
-                                           std::numeric_limits<std::int16_t>::max()))));
-                else if (it != gen::itemIdByName().end()) r.result = ItemStack::of(it->second, 1);
-                recipes_.push_back(std::move(r));
-            } else {
-                // unknown type -> skip but keep size stable
-                std::fprintf(stderr, "[cppfm] recipe %s unknown type '%s' skipped\n",
-                             path.string().c_str(), type.c_str());
+                categoryId = 11;
+            }
+
+            const json::Value result = document.at("result");
+            std::string outputName;
+            const auto outputCount = parseRecipeStackCount(result);
+            if (result.isStr()) outputName = result.asStr();
+            else if (result.type == json::Value::Type::Obj) {
+                if (result.at("id").isStr())
+                    outputName = result.at("id").asStr();
+                else if (result.at("item").isStr())
+                    outputName = result.at("item").asStr();
+            }
+            if (!outputCount) {
+                std::fprintf(stderr,
+                    "[cppfm] recipe %s skipped: result count must be an integer in 1..%d\n",
+                    pathText.c_str(),
+                    std::numeric_limits<std::int16_t>::max());
                 continue;
             }
-            if (recipes_.size() > before) {
-                recipes_.back().id = "minecraft:" + rid;
-                recipes_.back().group = group;
-                recipes_.back().category = categoryInt;
+            if (!outputName.empty())
+                outputName = normalizeResourceName(std::move(outputName));
+
+            const bool special = type == "crafting_special" ||
+                                 type == "crafting_decorated_pot";
+            if (outputName.empty() && type != "smithing_trim" && !special)
+                continue;
+
+            const std::size_t before = recipes_.size();
+            if (type == "crafting_shaped") {
+                std::vector<std::string> rows;
+                const auto& pattern = document.at("pattern");
+                if (pattern.type == json::Value::Type::Arr) {
+                    for (const auto& row : pattern.arr)
+                        if (row.isStr()) rows.push_back(row.asStr());
+                }
+                rows = Recipe::trimBlankRows(rows);
+                if (rows.empty()) continue;
+
+                std::unordered_map<char, Ingredient> keys;
+                const auto& keyObject = document.at("key");
+                if (keyObject.type != json::Value::Type::Obj) continue;
+                for (const auto& [symbol, definition] : keyObject.obj) {
+                    if (symbol.size() != 1) continue;
+                    keys.emplace(symbol.front(), makeIngredient(definition));
+                }
+                bool validPattern = true;
+                for (const auto& row : rows)
+                    for (const char symbol : row)
+                        if (symbol != ' ' &&
+                            (!keys.contains(symbol) || keys.at(symbol).empty()))
+                            validPattern = false;
+                if (!validPattern) continue;
+                addShaped(recipeId, outputName, *outputCount, rows, keys);
+            } else if (type == "crafting_shapeless") {
+                const auto inputs = parseIngredientList(
+                    document.at("ingredients"));
+                addShapeless(recipeId, outputName, *outputCount, inputs);
+            } else if (type == "crafting_transmute") {
+                std::vector<Ingredient> inputs{
+                    makeIngredient(document.at("input")),
+                    makeIngredient(document.at("material"))};
+                addShapeless(recipeId, outputName, *outputCount, inputs);
+            } else if (type == "smelting" || type == "smoking" ||
+                       type == "blasting" || type == "campfire_cooking") {
+                const auto input = makeIngredient(document.at("ingredient"));
+                const int cookingTicks = document.at("cookingtime").asInt(
+                    document.at("cookingTime").asInt(200));
+                if (cookingTicks <= 0 ||
+                    cookingTicks > std::numeric_limits<std::int16_t>::max()) {
+                    std::fprintf(stderr,
+                        "[cppfm] recipe %s has invalid cookingtime %d\n",
+                        pathText.c_str(), cookingTicks);
+                    continue;
+                }
+                addSmelting(input, outputName,
+                    static_cast<float>(document.at("experience").asFloat(0.f)),
+                    cookingTicks,
+                    Recipe::Kind::Smelting);
+            } else if (type == "stonecutting") {
+                addStonecutting(makeIngredient(document.at("ingredient")),
+                                outputName, *outputCount);
+            } else if (type == "smithing_transform" ||
+                       type == "smithing_trim") {
+                std::vector<Ingredient> inputs{
+                    makeIngredient(document.at("template")),
+                    makeIngredient(document.at("base")),
+                    makeIngredient(document.at("addition"))};
+
+                if (type == "smithing_transform") {
+                    addShapeless(recipeId, outputName, *outputCount, inputs);
+                    if (recipes_.size() > before) {
+                        recipes_.back().kind = Recipe::Kind::Smithing;
+                        recipes_.back().cells = std::move(inputs);
+                    }
+                } else {
+                    Recipe trim;
+                    trim.kind = Recipe::Kind::Smithing;
+                    trim.id = recipeId;
+                    trim.cells = std::move(inputs);
+                    trim.smithingTrimResult = true;
+                    recipes_.push_back(std::move(trim));
+                }
+            } else if (special) {
+                Recipe recipe;
+                recipe.kind = Recipe::Kind::Special;
+                recipe.id = recipeId;
+                recipes_.push_back(std::move(recipe));
+            } else {
+                std::fprintf(stderr,
+                    "[cppfm] recipe %s has unsupported type '%s'\n",
+                    pathText.c_str(), type.c_str());
+                continue;
             }
-        } catch (const std::exception& e) {
+
+            if (recipes_.size() > before) {
+                auto& recipe = recipes_.back();
+                recipe.id = recipeId;
+                recipe.group = group;
+                recipe.category = categoryId;
+                if (recipe.kind == Recipe::Kind::Smelting) {
+                    if (type == "blasting")
+                        recipe.cookingStation =
+                            Recipe::CookingStation::BlastFurnace;
+                    else if (type == "smoking")
+                        recipe.cookingStation =
+                            Recipe::CookingStation::Smoker;
+                    else if (type == "campfire_cooking")
+                        recipe.cookingStation = Recipe::CookingStation::Campfire;
+                }
+            }
+        } catch (const datapack_detail::LooseDataLimitExceeded&) {
+            throw;
+        } catch (const json::ResourceLimitExceeded&) {
+            throw;
+        } catch (const std::exception& error) {
             std::fprintf(stderr, "[cppfm] recipe %s skipped: %s\n",
-                         path.string().c_str(), e.what());
+                         pathText.c_str(), error.what());
         }
     }
 }
@@ -333,9 +522,12 @@ const Recipe* RecipeManager::findCrafting(const std::vector<ItemStack>& grid,
             return &r;
     return nullptr;
 }
-const Recipe* RecipeManager::findSmelting(std::uint32_t itemId) const {
+const Recipe* RecipeManager::findCooking(
+    const std::uint32_t itemId,
+    const Recipe::CookingStation station) const {
     for (const auto& r : recipes_)
-        if (r.kind == Recipe::Kind::Smelting && !r.cells.empty() &&
+        if (r.kind == Recipe::Kind::Smelting &&
+            r.cookingStation == station && !r.cells.empty() &&
             r.cells.front().accepts(itemId))
             return &r;
     return nullptr;

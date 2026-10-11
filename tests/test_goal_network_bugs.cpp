@@ -8,14 +8,21 @@
 #include "../src/net/PacketBatcher.hpp"
 #include "../src/net/RateLimiter.hpp"
 #include "../src/proto/Ids.hpp"
+#include "../src/game/ClientEntityTracking.hpp"
+#include "../src/game/PacketOrder.hpp"
+#include "../src/game/PlayerTrackingSequencer.hpp"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <functional>
+#include <filesystem>
+#include <fstream>
 #include <limits>
+#include <latch>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -156,6 +163,299 @@ void testVarints() {
         encryptedHighPayload.data(), encryptedHighPayload.size(), highDecoder, highConsumed);
     check(highDecoded == 0 && highConsumed == encryptedHighPayload.size(),
           "encrypted VarInt accepts vanilla fifth-byte payload truncation");
+}
+
+void testChunkPacketOrderingClassification() {
+    check(requiresWorldStateOrdering(proto::pl::sc::LevelChunkWithLight),
+          "chunk snapshots use the ordered chunk output lane");
+    check(requiresWorldStateOrdering(proto::pl::sc::ForgetLevelChunk),
+          "chunk forget shares the ordered lane with entity removals");
+    check(requiresWorldStateOrdering(proto::pl::sc::SyncEntityPosition),
+          "absolute entity correction cannot overtake its spawn or chunk forget");
+    check(requiresWorldStateOrdering(proto::pl::sc::MoveMinecart),
+          "minecart tracking cannot overtake its spawn or chunk forget");
+    check(requiresWorldStateOrdering(proto::pl::sc::UpdateLight),
+          "UpdateLight cannot overtake a pending chunk snapshot");
+    check(requiresWorldStateOrdering(proto::pl::sc::BlockUpdate) &&
+              requiresWorldStateOrdering(proto::pl::sc::BlockEntityData) &&
+              requiresWorldStateOrdering(proto::pl::sc::BundleDelimiter) &&
+              requiresWorldStateOrdering(proto::pl::sc::MultiBlockChange),
+          "block, entity, bundle, and section deltas share the chunk output lane");
+    check(!requiresWorldStateOrdering(proto::pl::sc::KeepAlive) &&
+              !requiresWorldStateOrdering(proto::pl::sc::SystemChat),
+          "keepalive and chat remain eligible to overtake bulk chunk streaming");
+}
+
+void testClientEntityTrackingLifecycle() {
+    ClientEntityTracking tracking;
+    tracking.markChunkSent(0, 3, -2);
+    tracking.markChunkSent(-1, 3, -2);
+    check(tracking.hasChunk(0, 3, -2) && tracking.hasChunk(-1, 3, -2),
+          "client chunk visibility is dimension-qualified");
+    tracking.markChunkSent(2, 3, -2);
+    check(!tracking.hasChunk(2, 3, -2) &&
+              tracking.hasChunk(0, 3, -2) &&
+              !tracking.tryTrackEntity(90, 2, 3, -2),
+          "unsupported dimension IDs cannot alias a vanilla chunk");
+    check(!tracking.tryTrackEntity(10, 0, 4, -2),
+          "entity cannot be tracked before its chunk snapshot is sent");
+    check(tracking.tryTrackEntity(10, 0, 3, -2) &&
+              !tracking.tryTrackEntity(10, 0, 3, -2),
+          "entity tracking accepts one visible spawn per client");
+    check(tracking.tryTrackEntity(9, 0, 3, -2) &&
+              tracking.tryTrackEntity(11, 0, 3, -2) &&
+              tracking.tryTrackEntity(12, -1, 3, -2),
+          "entity visibility records the owning dimension and chunk");
+    tracking.markChunkSent(0, 5, 7);
+    check(tracking.updateTrackedEntityChunk(11, 0, 5, 7),
+          "tracked entity location follows a visible chunk transition");
+    const auto removedSource = tracking.forgetChunk(0, 3, -2);
+    check(removedSource == std::vector<std::int32_t>{9, 10} &&
+              !tracking.tracksEntity(10) && tracking.tracksEntity(11) &&
+              tracking.tracksEntity(12),
+          "forgetting a chunk invalidates only its entities");
+    const auto removedDestination = tracking.forgetChunk(0, 5, 7);
+    check(removedDestination == std::vector<std::int32_t>{11},
+          "moved entity is retired with its current chunk");
+    tracking.clear();
+    check(tracking.sentChunks().empty() &&
+              !tracking.tracksEntity(12) &&
+              !tracking.hasChunk(-1, 3, -2),
+          "dimension reset clears both chunk and entity visibility");
+}
+
+void testPlayerTrackingPublicationOrdering() {
+    PlayerTrackingSequencer sequencer;
+    std::latch staleSnapshotCaptured(1);
+    std::latch allowStaleEnqueue(1);
+    std::latch transferStarted(1);
+    std::int8_t dimension = 0;
+    bool inPlay = true;
+    bool trackingSpawnPublished = true;
+    std::vector<std::string> publications;
+
+    std::thread joiningClient([&] {
+        sequencer.serialize([&] {
+            const auto snapshotDimension = dimension;
+            const auto snapshotWasPublished = trackingSpawnPublished;
+            staleSnapshotCaptured.count_down();
+            allowStaleEnqueue.wait();
+            if (inPlay && snapshotWasPublished)
+                publications.push_back(
+                    "spawn:" + std::to_string(snapshotDimension));
+        });
+    });
+    staleSnapshotCaptured.wait();
+
+    std::thread dimensionTransfer([&] {
+        transferStarted.count_down();
+        sequencer.serialize([&] {
+            inPlay = false;
+            trackingSpawnPublished = false;
+            dimension = -1;
+            publications.push_back("remove:0");
+        });
+    });
+    transferStarted.wait();
+    allowStaleEnqueue.count_down();
+    joiningClient.join();
+    dimensionTransfer.join();
+
+    // A source-dimension spawn captured before transfer must be enqueued before
+    // removal. A later join sees the hidden transfer and cannot resurrect it.
+    sequencer.serialize([&] {
+        if (inPlay && trackingSpawnPublished)
+            publications.push_back(
+                "spawn:" + std::to_string(dimension));
+    });
+    const bool staleSpawnPrecedesRemoval = publications ==
+        std::vector<std::string>{"spawn:0", "remove:0"};
+    sequencer.serialize([&] {
+        inPlay = true;
+        trackingSpawnPublished = true;
+        publications.push_back("spawn:-1");
+    });
+    check(staleSpawnPrecedesRemoval &&
+              publications == std::vector<std::string>{
+                  "spawn:0", "remove:0", "spawn:-1"},
+          "player spawn snapshots cannot enqueue after dimension removal");
+}
+
+void testPlayerListPublicationOrdering() {
+    PlayerTrackingSequencer sequencer;
+    std::latch joinSnapshotCaptured(1);
+    std::latch allowJoinAdd(1);
+    std::latch disconnectStarted(1);
+    bool existingPlayerListed = true;
+    bool newViewerAdmitted = false;
+    std::vector<std::string> newViewerPlayerList;
+
+    // Model a new viewer taking its existing-player snapshot, queuing Add,
+    // then joining the recipient roster for later PlayerInfoRemove packets.
+    std::thread joiningNewViewer([&] {
+        sequencer.serialize([&] {
+            const bool includeExistingPlayer = existingPlayerListed;
+            joinSnapshotCaptured.count_down();
+            allowJoinAdd.wait();
+            if (includeExistingPlayer)
+                newViewerPlayerList.push_back("PlayerInfoUpdate/Add:existing-player");
+            newViewerAdmitted = true;
+        });
+    });
+    joinSnapshotCaptured.wait();
+
+    std::thread disconnectingExistingPlayer([&] {
+        disconnectStarted.count_down();
+        sequencer.serialize([&] {
+            existingPlayerListed = false;
+            if (newViewerAdmitted)
+                newViewerPlayerList.push_back("PlayerInfoRemove:existing-player");
+        });
+    });
+    disconnectStarted.wait();
+    allowJoinAdd.count_down();
+    joiningNewViewer.join();
+    disconnectingExistingPlayer.join();
+
+    // A viewer joining after the removal snapshots the updated roster and
+    // must not receive a stale Add for the departed player.
+    std::vector<std::string> laterViewerPlayerList;
+    sequencer.serialize([&] {
+        if (existingPlayerListed)
+            laterViewerPlayerList.push_back("PlayerInfoUpdate/Add:existing-player");
+    });
+
+    check(newViewerAdmitted && newViewerPlayerList == std::vector<std::string>{
+              "PlayerInfoUpdate/Add:existing-player",
+              "PlayerInfoRemove:existing-player"} &&
+              laterViewerPlayerList.empty(),
+          "delayed new-viewer PlayerInfo Add precedes disconnect Remove, and later joins omit departed players");
+}
+
+bool createTestSocketPair(platform::socket_t (&sockets)[2]) {
+#ifdef _WIN32
+    if (!platform::initializeSockets()) return false;
+    const auto listener = platform::createTcpSocket();
+    if (!platform::isValid(listener)) return false;
+
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = 0;
+    if (platform::bindSocket(listener,
+            reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0 ||
+        platform::listenSocket(listener, 1) != 0) {
+        platform::closeSocket(listener);
+        return false;
+    }
+    platform::socket_length_t addressLength = sizeof(address);
+    if (::getsockname(listener, reinterpret_cast<sockaddr*>(&address),
+                      &addressLength) != 0) {
+        platform::closeSocket(listener);
+        return false;
+    }
+
+    const auto client = platform::createTcpSocket();
+    if (!platform::isValid(client) ||
+        ::connect(client, reinterpret_cast<const sockaddr*>(&address),
+                  sizeof(address)) != 0) {
+        if (platform::isValid(client)) platform::closeSocket(client);
+        platform::closeSocket(listener);
+        return false;
+    }
+    const auto server = platform::acceptSocket(listener, nullptr, nullptr);
+    platform::closeSocket(listener);
+    if (!platform::isValid(server)) {
+        platform::closeSocket(client);
+        return false;
+    }
+    sockets[0] = client;
+    sockets[1] = server;
+    return true;
+#else
+    return ::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0;
+#endif
+}
+
+void testChunkSnapshotAndLightQueueOrder() {
+    platform::socket_t sockets[2]{platform::invalid_socket,
+                                   platform::invalid_socket};
+    if (!createTestSocketPair(sockets)) {
+        check(false, "local stream socket pair available for chunk/light ordering regression");
+        return;
+    }
+    int sendBufferSize = 1024;
+    (void)platform::setSocketOption(
+        sockets[0], SOL_SOCKET, SO_SNDBUF, &sendBufferSize,
+        static_cast<platform::socket_length_t>(sizeof(sendBufferSize)));
+    Connection sender(sockets[0]);
+    Connection receiver(sockets[1]);
+    WriteBuffer body;
+    body.data.assign(64u * 1024u, 0x5A);
+    const std::vector<std::uint8_t> queuedIds{
+        proto::pl::sc::LevelChunkWithLight,
+        proto::pl::sc::UpdateLight,
+        proto::pl::sc::BundleDelimiter,
+        proto::pl::sc::MultiBlockChange,
+        proto::pl::sc::BlockEntityData,
+        proto::pl::sc::BlockUpdate,
+        proto::pl::sc::RemoveEntities,
+        proto::pl::sc::ForgetLevelChunk,
+        proto::pl::sc::SyncEntityPosition,
+        proto::pl::sc::MoveMinecart,
+        proto::pl::sc::KeepAlive,
+    };
+    ++activeSimulationDispatchDepth;
+    bool queued = true;
+    try {
+        for (const auto id : queuedIds) {
+            if (requiresWorldStateOrdering(id))
+                sender.sendPacketLowPriority(id, body);
+            else
+                sender.sendPacket(id, body);
+        }
+    } catch (...) {
+        queued = false;
+    }
+    --activeSimulationDispatchDepth;
+
+    std::vector<std::uint8_t> received;
+    bool readAll = queued;
+    if (queued) {
+        for (std::size_t i = 0; i < queuedIds.size(); ++i) {
+            try {
+                const auto frame = receiver.readFrameWithTimeout(
+                    std::chrono::seconds(3));
+                if (frame.empty()) {
+                    readAll = false;
+                    break;
+                }
+                received.push_back(frame.front());
+            } catch (...) {
+                readAll = false;
+                break;
+            }
+        }
+    }
+    std::vector<std::uint8_t> orderedChunkPackets;
+    for (const auto id : received)
+        if (requiresWorldStateOrdering(id)) orderedChunkPackets.push_back(id);
+    const std::vector<std::uint8_t> expectedChunkOrder{
+        proto::pl::sc::LevelChunkWithLight,
+        proto::pl::sc::UpdateLight,
+        proto::pl::sc::BundleDelimiter,
+        proto::pl::sc::MultiBlockChange,
+        proto::pl::sc::BlockEntityData,
+        proto::pl::sc::BlockUpdate,
+        proto::pl::sc::RemoveEntities,
+        proto::pl::sc::ForgetLevelChunk,
+        proto::pl::sc::SyncEntityPosition,
+        proto::pl::sc::MoveMinecart,
+    };
+    check(readAll && orderedChunkPackets == expectedChunkOrder,
+          "chunk snapshot, UpdateLight, and deltas retain enqueue order on plaintext connections");
+    sender.close();
+    receiver.close();
 }
 
 void testFixedWidthAndPositionVectors() {
@@ -606,6 +906,31 @@ void testLimiterAndAuthEdges() {
               longKey[1535] == 0xF3,
           "profile-key Base64 decoder handles long key material without signed overflow");
 
+    HasJoinedResult parsedProfile;
+    const bool parsedSession = parseHasJoined(
+        R"({"id":"0123456789abcdef0123456789abcdef","properties":[{"name":"textures","value":"AQID","signature":"BAUG"}],"unrelated":{"properties":[{"name":"ignored","value":"eA=="}]}})",
+        parsedProfile);
+    check(parsedSession &&
+              parsedProfile.uuidNoDashes == "0123456789abcdef0123456789abcdef" &&
+              parsedProfile.props.size() == 1 &&
+              parsedProfile.props.front().name == "textures" &&
+              parsedProfile.props.front().value == "AQID" &&
+              parsedProfile.props.front().signature == "BAUG",
+          "hasJoined parser reads only typed top-level identity and properties");
+    HasJoinedResult unchangedProfile{"fedcba9876543210fedcba9876543210", {}};
+    check(!parseHasJoined(
+              R"({"id":"0123456789abcdef0123456789abcdefx","properties":[]})",
+              unchangedProfile) &&
+              unchangedProfile.uuidNoDashes == "fedcba9876543210fedcba9876543210" &&
+              unchangedProfile.props.empty(),
+          "hasJoined parser rejects malformed UUIDs without partially mutating output");
+    const auto publicKeys = mojang_detail::parseProfilePublicKeys(
+        R"({"playerCertificateKeys":[{"publicKey":"AQID"},{"publicKey":"BAUG"}]})");
+    check(publicKeys == std::vector<std::vector<std::uint8_t>>({{1, 2, 3}, {4, 5, 6}}) &&
+              mojang_detail::parseProfilePublicKeys(
+                  R"({"playerCertificateKeys":"not-an-array"})").empty(),
+          "public-key endpoint parser validates JSON shape and decodes each key");
+
     cppfm::mojang_detail::ProfilePublicKeyCache cache;
     std::atomic<int> fetchCount{0};
     const cppfm::mojang_detail::ProfilePublicKeys expected{{1, 2, 3, 4}};
@@ -661,6 +986,102 @@ void testLimiterAndAuthEdges() {
     check(initiallyTrusted == expected && trustedWhileStale == expected &&
               afterStaleExpiry.empty() && expiryFetches == 2,
           "Mojang key cache stops trusting keys at the stale deadline");
+
+    constexpr std::string_view hasJoinedUrl =
+        "https://sessionserver.mojang.com/session/minecraft/hasJoined"
+        "?username=Example_1&serverId=-0123456789abcdef";
+    check(mojang_detail::isAllowedServiceUrl(hasJoinedUrl) &&
+              mojang_detail::isAllowedServiceUrl(
+                  "https://api.minecraftservices.com/publickeys"),
+          "Mojang HTTP accepts only the two required HTTPS service origins");
+    check(!mojang_detail::isAllowedServiceUrl(
+              "http://sessionserver.mojang.com/session/minecraft/hasJoined") &&
+              !mojang_detail::isAllowedServiceUrl(
+                  "https://sessionserver.mojang.com.attacker.invalid/path") &&
+              !mojang_detail::isAllowedServiceUrl(
+                  "https://sessionserver.mojang.com/path%0d%0aInjected:yes"),
+          "Mojang HTTP rejects insecure, lookalike-host, and shell-encoded URLs");
+
+#ifndef _WIN32
+    struct ScopedPath {
+        bool hadOriginal = false;
+        std::string original;
+        explicit ScopedPath(const std::filesystem::path& path) {
+            if (const char* value = std::getenv("PATH")) {
+                hadOriginal = true;
+                original = value;
+            }
+            if (::setenv("PATH", path.c_str(), 1) != 0)
+                throw std::runtime_error("could not isolate PATH for curl fixture");
+        }
+        ~ScopedPath() {
+            if (hadOriginal) (void)::setenv("PATH", original.c_str(), 1);
+            else (void)::unsetenv("PATH");
+        }
+    };
+
+    std::filesystem::path fixtureDir;
+    for (unsigned attempt = 0; attempt < 64; ++attempt) {
+        fixtureDir = std::filesystem::temp_directory_path() /
+            ("cppfm-mojang-http-" + std::to_string(
+                std::chrono::steady_clock::now().time_since_epoch().count()) +
+             "-" + std::to_string(attempt));
+        std::error_code error;
+        if (std::filesystem::create_directory(fixtureDir, error)) break;
+        if (error && error != std::errc::file_exists) {
+            fixtureDir.clear();
+            break;
+        }
+        fixtureDir.clear();
+    }
+    bool httpFixturePassed = false;
+    if (!fixtureDir.empty()) {
+        try {
+            const auto curlFixture = fixtureDir / "curl";
+            auto writeCurlFixture = [&](const char* body, int exitCode) {
+                std::ofstream script(curlFixture, std::ios::binary | std::ios::trunc);
+                script << "#!/bin/sh\nprintf '%s' '" << body << "'\nexit "
+                       << exitCode << "\n";
+                script.close();
+                if (!script) throw std::runtime_error("could not write fake curl");
+                std::filesystem::permissions(curlFixture,
+                    std::filesystem::perms::owner_read |
+                    std::filesystem::perms::owner_write |
+                    std::filesystem::perms::owner_exec,
+                    std::filesystem::perm_options::replace);
+            };
+            ScopedPath isolatedPath(fixtureDir);
+            writeCurlFixture("valid-body", 0);
+            const bool successBody = httpGet(std::string(hasJoinedUrl), 1) ==
+                                     "valid-body";
+            writeCurlFixture("error-body", 22);
+            const bool failedStatus = [&] {
+                try {
+                    (void)httpGet(std::string(hasJoinedUrl), 1);
+                } catch (const std::runtime_error&) {
+                    return true;
+                }
+                return false;
+            }();
+            writeCurlFixture("oversized", 0);
+            const bool responseLimit = [&] {
+                try {
+                    (void)httpGet(std::string(hasJoinedUrl), 1, 4);
+                } catch (const std::runtime_error&) {
+                    return true;
+                }
+                return false;
+            }();
+            httpFixturePassed = successBody && failedStatus && responseLimit;
+        } catch (...) {
+            httpFixturePassed = false;
+        }
+        std::error_code ignored;
+        std::filesystem::remove_all(fixtureDir, ignored);
+    }
+    check(httpFixturePassed,
+          "Mojang HTTP requires curl success and enforces its response-size cap");
+#endif
 }
 
 void testProtocolBoundariesAndLimitations() {
@@ -693,6 +1114,11 @@ void testProtocolBoundariesAndLimitations() {
 
 int main() {
     testVarints();
+    testChunkPacketOrderingClassification();
+    testClientEntityTrackingLifecycle();
+    testPlayerTrackingPublicationOrdering();
+    testPlayerListPublicationOrdering();
+    testChunkSnapshotAndLightQueueOrder();
     testCompressionAndFraming();
     testEncryptionAndLifecycle();
     testLimiterAndAuthEdges();

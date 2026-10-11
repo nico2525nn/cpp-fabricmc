@@ -52,7 +52,7 @@ public final class ServerLivingEntityEvents {
         AfterDeath.class, callbacks -> (entity, source) -> {
             for (AfterDeath callback : callbacks) callback.afterDeath(entity, source);
         });
-    public static final Event<AllowDeath> ALLOW_DEATH = EventFactory.createArrayBacked(
+    public static final Event<AllowDeath> ALLOW_DEATH = new Event<>(CppModRuntime::registerAllowDeath,
         AllowDeath.class, callbacks -> (entity, source, amount) -> {
             for (AllowDeath callback : callbacks)
                 if (!callback.allowDeath(entity, source, amount)) return false;

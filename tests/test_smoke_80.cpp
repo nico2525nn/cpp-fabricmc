@@ -8,11 +8,13 @@
 
 #include "TestClient.hpp"
 #include "ServerProcess.hpp"
+#include "../src/core/ByteBuffer.hpp"
 #include "../src/core/NBT.hpp"
 #include "../src/proto/Ids.hpp"
 #include "../src/generated/BlockStates.hpp"
 #include "../src/generated/ItemIds.hpp"
 #include "../src/generated/EntityIds.hpp"
+#include "../src/game/Constants.hpp"
 #include "../src/game/Items.hpp"
 #include <sys/wait.h>
 #include <unistd.h>
@@ -21,16 +23,165 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <chrono>
 #include <thread>
 #include <atomic>
+#include <algorithm>
 #include <map>
 #include <cmath>
+#include <optional>
+#include <utility>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/time.h>
 
 using namespace cppfm;
 using namespace cpptest;
 
 #include "Harness.hpp"
+
+static std::uint16_t findEphemeralLoopbackPort() {
+    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return 0;
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = 0;
+    std::uint16_t port = 0;
+    if (::bind(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0) {
+        socklen_t length = sizeof(address);
+        if (::getsockname(fd, reinterpret_cast<sockaddr*>(&address), &length) == 0)
+            port = ntohs(address.sin_port);
+    }
+    ::close(fd);
+    return port;
+}
+
+class SmokeRconClient {
+public:
+    ~SmokeRconClient() { close(); }
+
+    bool connectAndAuthenticate(std::uint16_t port, const std::string& password) {
+        const auto deadline = std::chrono::steady_clock::now() +
+                              std::chrono::seconds(8);
+        do {
+            fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
+            if (fd_ < 0) return false;
+            timeval timeout{3, 0};
+            (void)::setsockopt(fd_, SOL_SOCKET, SO_RCVTIMEO, &timeout,
+                               sizeof(timeout));
+            sockaddr_in address{};
+            address.sin_family = AF_INET;
+            address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            address.sin_port = htons(port);
+            if (::connect(fd_, reinterpret_cast<sockaddr*>(&address),
+                          sizeof(address)) == 0)
+                return authenticate(password);
+            close();
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        } while (std::chrono::steady_clock::now() < deadline);
+        return false;
+    }
+
+    std::string command(const std::string& text) {
+        const std::int32_t id = nextId_++;
+        if (!sendPacket(id, 2, text)) return {};
+        std::int32_t responseId = 0, responseType = 0;
+        std::string response;
+        if (!receivePacket(responseId, responseType, response) ||
+            responseId != id || responseType != 2)
+            return {};
+        return response;
+    }
+
+    void close() {
+        if (fd_ >= 0) {
+            ::close(fd_);
+            fd_ = -1;
+        }
+    }
+
+private:
+    static void appendLe32(std::vector<std::uint8_t>& bytes,
+                           std::uint32_t value) {
+        for (int i = 0; i < 4; ++i)
+            bytes.push_back(static_cast<std::uint8_t>(value >> (i * 8)));
+    }
+
+    bool sendPacket(std::int32_t id, std::int32_t type,
+                    const std::string& payload) {
+        std::vector<std::uint8_t> packet;
+        appendLe32(packet, static_cast<std::uint32_t>(payload.size() + 10));
+        appendLe32(packet, static_cast<std::uint32_t>(id));
+        appendLe32(packet, static_cast<std::uint32_t>(type));
+        packet.insert(packet.end(), payload.begin(), payload.end());
+        packet.push_back(0);
+        packet.push_back(0);
+        std::size_t offset = 0;
+        while (offset < packet.size()) {
+            const auto sent = ::send(fd_, packet.data() + offset,
+                                     packet.size() - offset, MSG_NOSIGNAL);
+            if (sent <= 0) return false;
+            offset += static_cast<std::size_t>(sent);
+        }
+        return true;
+    }
+
+    bool receiveExact(void* destination, std::size_t size) {
+        auto* bytes = static_cast<std::uint8_t*>(destination);
+        std::size_t offset = 0;
+        while (offset < size) {
+            const auto received = ::recv(fd_, bytes + offset, size - offset, 0);
+            if (received <= 0) return false;
+            offset += static_cast<std::size_t>(received);
+        }
+        return true;
+    }
+
+    bool receivePacket(std::int32_t& id, std::int32_t& type,
+                       std::string& payload) {
+        std::uint8_t lengthBytes[4]{};
+        if (!receiveExact(lengthBytes, sizeof(lengthBytes))) return false;
+        const std::uint32_t length =
+            static_cast<std::uint32_t>(lengthBytes[0]) |
+            (static_cast<std::uint32_t>(lengthBytes[1]) << 8) |
+            (static_cast<std::uint32_t>(lengthBytes[2]) << 16) |
+            (static_cast<std::uint32_t>(lengthBytes[3]) << 24);
+        if (length < 10 || length > 4110) return false;
+        std::vector<std::uint8_t> body(length);
+        if (!receiveExact(body.data(), body.size()) ||
+            body[length - 1] != 0 || body[length - 2] != 0)
+            return false;
+        const auto readLe32 = [&](std::size_t offset) {
+            const auto value = static_cast<std::uint32_t>(body[offset]) |
+                (static_cast<std::uint32_t>(body[offset + 1]) << 8) |
+                (static_cast<std::uint32_t>(body[offset + 2]) << 16) |
+                (static_cast<std::uint32_t>(body[offset + 3]) << 24);
+            return static_cast<std::int32_t>(value);
+        };
+        id = readLe32(0);
+        type = readLe32(4);
+        payload.assign(reinterpret_cast<const char*>(body.data() + 8),
+                       body.size() - 10);
+        return true;
+    }
+
+    bool authenticate(const std::string& password) {
+        if (!sendPacket(1, 3, password)) return false;
+        std::int32_t responseId = 0, responseType = 0;
+        std::string ignored;
+        if (!receivePacket(responseId, responseType, ignored) ||
+            responseId != 1 || responseType != 2)
+            return false;
+        nextId_ = 2;
+        return true;
+    }
+
+    int fd_ = -1;
+    std::int32_t nextId_ = 2;
+};
 
 // Helpers
 static bool waitChat(TestClient& c, const std::string& substr, int ms=4000){
@@ -49,6 +200,20 @@ static bool waitForTimeUpdates(TestClient& c, int target, int ms=15000) {
         c.pump(40);
     }
     return c.counters().timeUpdates >= target;
+}
+static bool sendVanillaPacedCommand(TestClient& c,
+                                    const std::string& command,
+                                    int timeoutMs = 30000) {
+    // SpamTracker decays once per server tick. Wait for an observed vanilla
+    // time-sync interval instead of wall-clock time, which may be shorter than
+    // 20 ticks on a loaded or slow CI runner.
+    // The first periodic update may arrive immediately after this wait starts.
+    // Observe two updates so at least one full 20-tick decay interval elapses.
+    const int nextTimeSync = c.counters().timeUpdates + 2;
+    if (!waitForTimeUpdates(c, nextTimeSync, timeoutMs)) return false;
+    c.clearChatLines();
+    c.sendChatCommand(command);
+    return true;
 }
 static bool waitBlockUpdate(TestClient& c, int x,int y,int z, uint32_t state, int ms=4000){
     auto dl=std::chrono::steady_clock::now()+std::chrono::milliseconds(ms);
@@ -77,6 +242,29 @@ static bool hasBlockTypeAt(const TestClient& c, int x, int y, int z,
     }
     return false;
 }
+static std::optional<std::string_view> latestBlockTypeAt(
+    const TestClient& c, int x, int y, int z) {
+    const auto updates = c.blockUpdatesSnapshot();
+    for (auto it = updates.rbegin(); it != updates.rend(); ++it) {
+        if (it->x != x || it->y != y || it->z != z) continue;
+        const auto* def = gen::blockByState(it->state);
+        if (def) return def->name;
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+static bool waitForLatestBlockTypeAt(TestClient& c, int x, int y, int z,
+                                     std::string_view blockName,
+                                     int ms = 5000) {
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(ms);
+    while (std::chrono::steady_clock::now() < deadline) {
+        c.pump(40);
+        const auto latest = latestBlockTypeAt(c, x, y, z);
+        if (latest && *latest == blockName) return true;
+    }
+    return false;
+}
 static bool waitBlockTypeAt(TestClient& c, int x, int y, int z,
                             std::string_view blockName, int ms=2000) {
     const auto deadline = std::chrono::steady_clock::now() +
@@ -86,6 +274,18 @@ static bool waitBlockTypeAt(TestClient& c, int x, int y, int z,
         if (hasBlockTypeAt(c, x, y, z, blockName)) return true;
     }
     return hasBlockTypeAt(c, x, y, z, blockName);
+}
+static bool waitFilteredCloneCount(TestClient& c, int x, int y, int z,
+                                   std::string_view blockName,
+                                   int expectedCount) {
+    const std::string command =
+        "execute in minecraft:the_nether run clone " +
+        std::to_string(x) + " " + std::to_string(y) + " " +
+        std::to_string(z) + " " + std::to_string(x) + " " +
+        std::to_string(y) + " " + std::to_string(z) +
+        " 100 10 40 filtered " + std::string(blockName);
+    return sendVanillaPacedCommand(c, command) &&
+           waitChat(c, "Cloned " + std::to_string(expectedCount) + " blocks");
 }
 static bool hasSpawnType(const TestClient& c, std::string_view entityName) {
     const auto it = gen::entityTypeIdByName().find(entityName);
@@ -168,12 +368,11 @@ static LocateObservation waitLocateResponse(TestClient& c, const std::string& na
     // (20 points per command, one point decayed per tick).  This helper sends
     // a deliberately broad matrix of commands, so pace them like a normal
     // client instead of making the 11th command a spam-kick test.
-    c.pump(1100);
-    c.clearChatLines();
-    c.sendChatCommand("locate structure " + name);
+    LocateObservation result;
+    if (!sendVanillaPacedCommand(c, "locate structure " + name, ms))
+        return result;
     const auto deadline = std::chrono::steady_clock::now() +
                           std::chrono::milliseconds(ms);
-    LocateObservation result;
     while (std::chrono::steady_clock::now() < deadline) {
         c.pump(40);
         for (const auto& line : c.chatLinesSnapshot()) {
@@ -187,14 +386,188 @@ static LocateObservation waitLocateResponse(TestClient& c, const std::string& na
     }
     return result;
 }
-// plan28 finish: the server streams a client's initial chunks on its Session
-// thread (cold-cache serialization of a dirtied world can take seconds); chat
-// commands queue behind it. Latency-sensitive checks must wait for the stream
-// (mirrors tests/repro_fill.cpp which waits for chunk (2,0) before filling).
+// Initial chunks are delivered in bounded protocol batches on the Session
+// thread. Tests that rely on specific terrain must wait until its chunk has
+// arrived (mirrors tests/repro_fill.cpp which waits for chunk (2,0) before
+// filling), while ordinary packets can now run between batch acknowledgements.
 static bool waitForChunks(TestClient& c, std::size_t minChunks, int ms=8000){
     auto dl=std::chrono::steady_clock::now()+std::chrono::milliseconds(ms);
     while(std::chrono::steady_clock::now()<dl){ c.pump(40); if(c.chunkCount()>=minChunks) return true; }
     return c.chunkCount()>=minChunks;
+}
+
+static bool hasChunkAt(TestClient& c, std::int32_t expectedX,
+                       std::int32_t expectedZ) {
+    const auto received = c.chunkCoordsSnapshot();
+    return std::find(received.begin(), received.end(),
+                     std::pair{expectedX, expectedZ}) != received.end();
+}
+
+static bool waitForChunkAt(TestClient& c, std::int32_t expectedX,
+                           std::int32_t expectedZ, int ms = 8000) {
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(ms);
+    while (std::chrono::steady_clock::now() < deadline) {
+        c.pump(40);
+        if (hasChunkAt(c, expectedX, expectedZ)) return true;
+    }
+    return hasChunkAt(c, expectedX, expectedZ);
+}
+
+static bool updateLightContains(const cpptest::Packet& packet,
+                                std::int32_t expectedChunkX,
+                                std::int32_t expectedChunkZ,
+                                int sectionBit,
+                                std::size_t blockIndex,
+                                std::uint8_t expectedLevel) {
+    constexpr int kLightSectionCount = 26;
+    if (packet.id != proto::pl::sc::UpdateLight || sectionBit < 0 ||
+        sectionBit >= kLightSectionCount || blockIndex >= 4096 ||
+        expectedLevel > 15)
+        return false;
+    try {
+        ReadBuffer in(packet.body);
+        if (in.varint() != expectedChunkX ||
+            in.varint() != expectedChunkZ)
+            return false;
+        const auto readMask = [](ReadBuffer& input) {
+            const auto count = input.varint();
+            // Protocol 769's overworld has 24 block sections plus the two
+            // light-border sections, so every valid mask fits in one long.
+            if (count < 0 || count > 1)
+                throw std::runtime_error("invalid light mask length");
+            std::vector<std::uint64_t> words;
+            words.reserve(static_cast<std::size_t>(count));
+            for (int i = 0; i < count; ++i)
+                words.push_back(static_cast<std::uint64_t>(input.i64()));
+            return words;
+        };
+        const auto skyMask = readMask(in);
+        const auto blockMask = readMask(in);
+        const auto emptySkyMask = readMask(in);
+        const auto emptyBlockMask = readMask(in);
+        const auto readArrays = [](ReadBuffer& input) {
+            const auto count = input.varint();
+            if (count < 0 || count > 26)
+                throw std::runtime_error("invalid light array count");
+            std::vector<std::vector<std::uint8_t>> arrays;
+            arrays.reserve(static_cast<std::size_t>(count));
+            for (int i = 0; i < count; ++i) {
+                const auto length = input.varint();
+                if (length != 2048)
+                    throw std::runtime_error("invalid light array length");
+                arrays.push_back(input.bytes(static_cast<std::size_t>(length)));
+            }
+            return arrays;
+        };
+        const auto skyArrays = readArrays(in);
+        const auto blockArrays = readArrays(in);
+        if (in.remaining() != 0)
+            throw std::runtime_error("trailing bytes in UpdateLight payload");
+        const auto maskValid = [](const std::vector<std::uint64_t>& mask) {
+            constexpr std::uint64_t kValidBits = (std::uint64_t{1} << 26) - 1;
+            return mask.empty() || (mask[0] & ~kValidBits) == 0;
+        };
+        const auto maskCount = [](const std::vector<std::uint64_t>& mask) {
+            std::size_t count = 0;
+            for (const auto word : mask) {
+                auto remaining = word;
+                while (remaining != 0) {
+                    remaining &= remaining - 1;
+                    ++count;
+                }
+            }
+            return count;
+        };
+        const auto disjoint = [](const std::vector<std::uint64_t>& a,
+                                 const std::vector<std::uint64_t>& b) {
+            return a.empty() || b.empty() || (a[0] & b[0]) == 0;
+        };
+        if (!maskValid(skyMask) || !maskValid(blockMask) ||
+            !maskValid(emptySkyMask) || !maskValid(emptyBlockMask) ||
+            !disjoint(skyMask, emptySkyMask) ||
+            !disjoint(blockMask, emptyBlockMask))
+            return false;
+        if (skyArrays.size() != maskCount(skyMask) ||
+            blockArrays.size() != maskCount(blockMask))
+            return false;
+
+        const auto maskHas = [](const std::vector<std::uint64_t>& mask,
+                                int bit) {
+            const auto word = static_cast<std::size_t>(bit / 64);
+            return word < mask.size() &&
+                   ((mask[word] >> (bit % 64)) & std::uint64_t{1}) != 0;
+        };
+        if (!maskHas(blockMask, sectionBit)) return false;
+        std::size_t arrayIndex = 0;
+        for (int bit = 0; bit < sectionBit; ++bit)
+            if (maskHas(blockMask, bit)) ++arrayIndex;
+        if (arrayIndex >= blockArrays.size()) return false;
+        const auto& light = blockArrays[arrayIndex];
+        const auto byteIndex = blockIndex / 2;
+        if (byteIndex >= light.size()) return false;
+        const auto nibble = static_cast<std::uint8_t>(
+            (blockIndex & 1) ? light[byteIndex] >> 4
+                             : light[byteIndex] & 0x0f);
+        return nibble == expectedLevel;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+static cpptest::Packet makeUpdateLightProbe(std::int32_t chunkX,
+                                             std::int32_t chunkZ,
+                                             std::uint64_t blockMask,
+                                             std::uint64_t emptyBlockMask,
+                                             std::size_t blockArrayCount,
+                                             std::size_t arrayBytes) {
+    WriteBuffer payload;
+    payload.varint(chunkX);
+    payload.varint(chunkZ);
+    payload.varint(0); // sky mask
+    payload.varint(blockMask == 0 ? 0 : 1);
+    if (blockMask != 0) payload.i64(static_cast<std::int64_t>(blockMask));
+    payload.varint(0); // empty sky mask
+    payload.varint(emptyBlockMask == 0 ? 0 : 1);
+    if (emptyBlockMask != 0)
+        payload.i64(static_cast<std::int64_t>(emptyBlockMask));
+    payload.varint(0); // sky arrays
+    payload.varint(static_cast<std::int32_t>(blockArrayCount));
+    for (std::size_t i = 0; i < blockArrayCount; ++i) {
+        payload.varint(static_cast<std::int32_t>(arrayBytes));
+        std::vector<std::uint8_t> bytes(arrayBytes, 0);
+        if (bytes.size() > 513) bytes[513] = 0x0f;
+        payload.raw(bytes.data(), bytes.size());
+    }
+    return {proto::pl::sc::UpdateLight, std::move(payload.data), 0};
+}
+
+static void testUpdateLightParser() {
+    SECTION("UpdateLight packet parser rejects malformed masks and nibble arrays");
+    const auto valid = makeUpdateLightProbe(0, 0, std::uint64_t{1} << 1,
+                                             0, 1, 2048);
+    CHECK(updateLightContains(valid, 0, 0, 1, 1026, 15),
+          "UpdateLight parser accepts a valid section mask and 2048-byte array");
+
+    const auto truncated = makeUpdateLightProbe(0, 0, std::uint64_t{1} << 1,
+                                                 0, 1, 514);
+    CHECK(!updateLightContains(truncated, 0, 0, 1, 1026, 15),
+          "UpdateLight parser rejects a truncated nibble array");
+
+    const auto highMaskBit = makeUpdateLightProbe(0, 0,
+        std::uint64_t{1} << 26, 0, 1, 2048);
+    CHECK(!updateLightContains(highMaskBit, 0, 0, 1, 1026, 15),
+          "UpdateLight parser rejects a bit beyond overworld light sections");
+
+    const auto countMismatch = makeUpdateLightProbe(0, 0,
+        (std::uint64_t{1} << 1) | (std::uint64_t{1} << 2), 0, 1, 2048);
+    CHECK(!updateLightContains(countMismatch, 0, 0, 1, 1026, 15),
+          "UpdateLight parser rejects mask/array cardinality mismatch");
+
+    const auto overlappingMasks = makeUpdateLightProbe(0, 0,
+        std::uint64_t{1} << 1, std::uint64_t{1} << 1, 1, 2048);
+    CHECK(!updateLightContains(overlappingMasks, 0, 0, 1, 1026, 15),
+          "UpdateLight parser rejects overlap between populated and empty masks");
 }
 
 // Smoke coverage — each SECTION exercises a protocol/gameplay area.
@@ -203,9 +576,15 @@ static bool waitForChunks(TestClient& c, std::size_t minChunks, int ms=8000){
 
 static void testWorldManagement(ServerProc& srv){
     SECTION("01-09 World Management: nether/end/portal/light/spawn/level.dat/border/sim/unload/structures");
+    testUpdateLightParser();
     TestClient c; CHECK(c.connect("127.0.0.1",srv.port),"connect for world tests");
     CHECK(c.join("WorldTester"),"join for world tests");
-    c.pump(800);
+    // The test server clamps the client to view-distance 6, so a complete
+    // spawn view contains (2*6+1)^2 chunks. Waiting for the first 26 chunks
+    // only proves that streaming started; commands sent then can sit behind
+    // the rest of the initial batch and make their packet assertions flaky.
+    CHECK(waitForChunks(c, 169, 20000),
+          "complete initial spawn view arrives before world commands");
     // 1-2 Nether/End terrain: join should have dimension_type registry; we check raw JoinGame body contains dimension 0
     CHECK(!c.joinGameBodySnapshot().empty(),"joinGame received (overworld)");
     // 3 WorldBorder: /worldborder size
@@ -214,20 +593,102 @@ static void testWorldManagement(ServerProc& srv){
     auto dl=std::chrono::steady_clock::now()+std::chrono::milliseconds(2000);
     while(std::chrono::steady_clock::now()<dl){ c.pump(40); if(c.count(proto::pl::sc::InitializeWorldBorder)>0) gotBorder=true; }
     CHECK(gotBorder,"worldborder size broadcasts InitializeWorldBorder 0x26");
+    const auto borderPacketId = proto::pl::sc::InitializeWorldBorder;
+    const auto borderPacketsBeforeSet = c.count(borderPacketId);
+    c.sendChatCommand("worldborder set 60000000");
+    bool gotClampedBorderPacket = false;
+    const auto clampDeadline = std::chrono::steady_clock::now() +
+                               std::chrono::milliseconds(3000);
+    while (std::chrono::steady_clock::now() < clampDeadline &&
+           !gotClampedBorderPacket) {
+        c.pump(40);
+        if (c.count(borderPacketId) <= borderPacketsBeforeSet) continue;
+        const auto packets = c.recentSnapshot();
+        for (auto packet = packets.rbegin(); packet != packets.rend(); ++packet) {
+            if (packet->id != borderPacketId) continue;
+            try {
+                ReadBuffer input(packet->body);
+                (void)input.f64(); // center X
+                (void)input.f64(); // center Z
+                const double oldSize = input.f64();
+                const double newSize = input.f64();
+                const double expected = static_cast<double>(
+                    constants::kWorldBorderDiameter);
+                gotClampedBorderPacket = oldSize == expected &&
+                                         newSize == expected;
+            } catch (...) {
+                // Ignore unrelated or incomplete packets; the wait below
+                // requires a complete InitializeWorldBorder payload.
+            }
+            break;
+        }
+    }
+    CHECK(gotClampedBorderPacket,
+          "worldborder set 60000000 stores and broadcasts the vanilla maximum diameter");
     // 4 Light: place glowstone and check block light propagated (via UpdateLight)
     // glowstone state ~ 2150 (approx)
+    const auto countGlowstoneLightUpdates = [&] {
+        std::size_t count = 0;
+        for (const auto& packet : c.recentSnapshot())
+            if (updateLightContains(packet, 0, 0, 1, 4 * 256 + 2, 15))
+                ++count;
+        return count;
+    };
+    const auto lightPacketsBefore = countGlowstoneLightUpdates();
+    c.clearChatLines();
     c.sendChatCommand("setblock 2 -60 0 minecraft:glowstone");
+    const bool glowstonePlaced = waitChat(c, "Changed the block", 4000);
+    CHECK(glowstonePlaced,
+          "setblock accepts the glowstone light-update probe");
     bool sawLight=false;
     dl=std::chrono::steady_clock::now()+std::chrono::milliseconds(2000);
-    while(std::chrono::steady_clock::now()<dl){ c.pump(40); if(c.count(proto::pl::sc::UpdateLight)>0) sawLight=true; }
-    CHECK(sawLight,"placing glowstone triggers UpdateLight (block-light BFS)");
-    // 5 Spawn chunks: server should have 5x5 pre-generated (we check chunk count >=25 already in join)
+    while(std::chrono::steady_clock::now()<dl){
+        c.pump(40);
+        if (countGlowstoneLightUpdates() > lightPacketsBefore) sawLight=true;
+    }
+    CHECK(sawLight,
+          "glowstone UpdateLight includes level-15 light in its chunk/section");
+    // Keep the lighting fixture from changing collision along the separate
+    // movement scenario below.  The movement test intentionally sweeps through
+    // the spawn area, so it must not inherit a solid probe block.
+    c.clearChatLines();
+    const bool glowstoneRemoved =
+        sendVanillaPacedCommand(c, "setblock 2 -60 0 air") &&
+        waitChat(c, "Changed the block", 4000);
+    CHECK(glowstoneRemoved,
+          "light probe is removed before the independent movement scenario");
+    // 5 Spawn chunks: server should have sent the 5x5 spawn area before edits.
     CHECK(c.chunkCount()>=25,"spawn chunks pre-generated 5x5");
     // 6 Simulation distance: /gamerule simulation not directly, but check that far chunk not ticked (indirect)
     // 7 Chunk cache movement: a distant position must stream a chunk while
     // the bounded cache keeps the initial view from growing without limit.
-    c.sendPosition(128, -60, 128);
-    CHECK(waitForChunks(c, 26, 8000),
+    for (int step = 1; step <= 26; ++step) {
+        const double fraction = static_cast<double>(step) / 26.0;
+        c.sendPosition(128.0 * fraction, -60.0, 128.0 * fraction);
+        c.pump(40);
+    }
+    const bool movementChunkArrived = waitForChunkAt(c, 8, 8, 8000);
+    if (!movementChunkArrived) {
+        const auto position = c.positionSnapshot();
+        const auto chunks = c.chunkCoordsSnapshot();
+        std::int32_t minX = 0, maxX = 0, minZ = 0, maxZ = 0;
+        if (!chunks.empty()) {
+            minX = maxX = chunks.front().first;
+            minZ = maxZ = chunks.front().second;
+            for (const auto& [cx, cz] : chunks) {
+                minX = std::min(minX, cx);
+                maxX = std::max(maxX, cx);
+                minZ = std::min(minZ, cz);
+                maxZ = std::max(maxZ, cz);
+            }
+        }
+        std::fprintf(stderr,
+            "chunk movement diagnostic: client=(%.3f,%.3f,%.3f) "
+            "received=%zu bounds=[%d..%d,%d..%d] target=(8,8)\n",
+            position.x, position.y, position.z, chunks.size(),
+            minX, maxX, minZ, maxZ);
+    }
+    CHECK(movementChunkArrived,
           "chunk movement streams a new chunk after leaving the spawn view");
     CHECK(c.chunkCount() <= 2048,
           "chunk movement keeps the loaded-chunk cache within its bound");
@@ -236,27 +697,30 @@ static void testWorldManagement(ServerProc& srv){
     const auto villageLocate = waitLocateResponse(c, "minecraft:village");
     CHECK(!villageLocate.unknown && villageLocate.response,
           "locate structure returns a valid response (C-03)");
-    // 9 level.dat: persistence tested via reconnect in native_integration; here check /time persistence
-    const auto timeUpdatesBefore = c.count(proto::pl::sc::UpdateTime);
-    c.sendChatCommand("time set 6000");
-    CHECK(waitChat(c,"6000",5000) ||
-          c.count(proto::pl::sc::UpdateTime) > timeUpdatesBefore,
-          "time set 6000 via /time");
+    // Persistence is verified by the reconnect fixture; this checks command
+    // execution itself and must not pass merely because a periodic time packet
+    // arrived before the command was processed.
+    CHECK(sendVanillaPacedCommand(c, "time set 6000") &&
+              waitChat(c, "6000", 5000),
+          "time set 6000 command reports its executed value");
     c.close();
 }
 
 static void testBlockBehaviors(ServerProc& srv){
     SECTION("10-29 Block Behaviors: stairs/slab/farm/fire/TNT/buckets/pistons + BlockTickScheduler");
     TestClient c; CHECK(c.connect("127.0.0.1",srv.port)&&c.join("BlockTester"),"connect+join block tester");
-    c.pump(800);
+    CHECK(waitForChunks(c, 169, 20000),
+          "complete initial spawn view arrives before block commands");
     // 10 stairs/slab placement context: place oak_stairs and check half/top via block update state
     c.sendChatCommand("give BlockTester minecraft:oak_stairs 5");
     c.pump(300);
     // place via UseItemOn is via dig+place; we use /setblock with state via command and check stateWithProps
-    c.sendChatCommand("setblock 3 -60 0 minecraft:oak_stairs[facing=north,half=top]");
+    const bool stairsCommandPaced = sendVanillaPacedCommand(
+        c, "setblock 3 -60 0 minecraft:oak_stairs[facing=north,half=top]");
     const auto expectedStairs = gen::stateWithPropsList(
         "minecraft:oak_stairs", {{"facing", "north"}, {"half", "top"}});
-    CHECK(expectedStairs != 0 && waitBlockUpdate(c,3,-60,0,expectedStairs,2000),
+    CHECK(stairsCommandPaced && expectedStairs != 0 &&
+              waitBlockUpdate(c,3,-60,0,expectedStairs,5000),
           "stairs half=top placement uses the requested block state");
     // 12 farming: use a field rather than one crop.  Vanilla random ticks are
     // stochastic, so one crop can legitimately miss even at a high speed;
@@ -386,20 +850,24 @@ static void testEntities(ServerProc& srv){
     const char* mobs[]={"minecraft:zombie","minecraft:skeleton","minecraft:creeper","minecraft:wither","minecraft:ender_dragon","minecraft:warden","minecraft:shulker"};
     for(auto* m:mobs){
         std::string cmd = std::string("summon ")+m;
-        c.sendChatCommand(cmd);
+        CHECK(sendVanillaPacedCommand(c, cmd),
+              "mob fixture waits for vanilla command-spam decay");
         CHECK(waitSpawnType(c, m), std::string("/summon emits typed SpawnEntity: ")+m);
     }
     // 32 equipment: check SetEquipment 0x60 after summon with equipment (wither has nether star)
     CHECK(waitForEquipmentItem(c, "minecraft:nether_star"),
           "wither summon emits SetEquipment containing its nether star");
     // 33 riding: a horse summon must be represented by the horse entity type.
-    c.sendChatCommand("summon minecraft:horse");
+    CHECK(sendVanillaPacedCommand(c, "summon minecraft:horse"),
+          "horse fixture waits for vanilla command-spam decay");
     CHECK(waitSpawnType(c, "minecraft:horse"),
           "riding fixture summons a typed horse entity");
     // 36 durability: give iron_pickaxe, break block, check damage component
-    c.sendChatCommand("give EntityTester minecraft:iron_pickaxe 1");
+    CHECK(sendVanillaPacedCommand(c, "give EntityTester minecraft:iron_pickaxe 1"),
+          "tool fixture waits for vanilla command-spam decay");
     c.pump(200);
-    c.sendChatCommand("setblock 20 -60 0 minecraft:stone");
+    CHECK(sendVanillaPacedCommand(c, "setblock 20 -60 0 minecraft:stone"),
+          "mining fixture waits for vanilla command-spam decay");
     c.pump(200);
     // dig via protocol
     c.sendPosition(20.5,-60,0.5);
@@ -407,21 +875,21 @@ static void testEntities(ServerProc& srv){
     c.pump(800);
     CHECK(c.counters().acknowledgements>0,"tool durability: dig ack (tool should take damage)");
     // 40 spawn egg: use via /give and right-click
-    c.clearChatLines();
-    c.sendChatCommand("give EntityTester minecraft:zombie_spawn_egg 1");
+    CHECK(sendVanillaPacedCommand(c, "give EntityTester minecraft:zombie_spawn_egg 1"),
+          "spawn egg fixture waits for vanilla command-spam decay");
     c.pump(200);
     CHECK(waitChat(c,"Given"),"spawn egg grant returns a Give result");
     // 38 shear: summon sheep, try shear
     // The preceding fixture deliberately exercises ten commands.  Allow the
     // vanilla 200-point chat budget to decay before issuing the next command;
     // otherwise this test turns its own sheep fixture into a spam-kick case.
-    c.pump(1100);
-    c.sendChatCommand("summon minecraft:sheep");
+    CHECK(sendVanillaPacedCommand(c, "summon minecraft:sheep"),
+          "sheep fixture waits for vanilla spam decay");
     c.pump(300);
     CHECK(waitSpawnType(c,"minecraft:sheep"),"shear fixture summons a typed sheep entity");
     // 39 pearl: give pearl and check teleport
-    c.clearChatLines();
-    c.sendChatCommand("give EntityTester minecraft:ender_pearl 5");
+    CHECK(sendVanillaPacedCommand(c, "give EntityTester minecraft:ender_pearl 5"),
+          "ender pearl fixture waits for vanilla command-spam decay");
     c.pump(200);
     CHECK(waitChat(c,"Given"),"ender pearl grant returns a Give result");
     c.close();
@@ -497,32 +965,150 @@ static void testCommandsDatapack(ServerProc& srv){
         if (gotFill && fillFeedback) break;
     }
     CHECK(gotFill && fillFeedback,"/fill 3x3 area (command + block updates)");
+
+    // Vanilla fill modes are checked against the latest real block update,
+    // rather than merely accepting command feedback.
+    CHECK(sendVanillaPacedCommand(c, "fill 70 20 0 72 22 2 minecraft:stone") &&
+              waitChat(c, "blocks", 5000),
+          "/fill outline fixture seeds a solid range");
+    CHECK(sendVanillaPacedCommand(c, "fill 70 20 0 72 22 2 minecraft:glass") &&
+              waitChat(c, "Filled 27 blocks", 5000),
+          "/fill fixture initializes a 3x3x3 volume");
+    CHECK(sendVanillaPacedCommand(
+              c, "fill 70 20 0 72 22 2 minecraft:gold_block outline") &&
+              waitChat(c, "Filled 26 blocks", 5000) &&
+              waitForLatestBlockTypeAt(c, 70, 20, 0, "minecraft:gold_block") &&
+              waitForLatestBlockTypeAt(c, 71, 21, 1, "minecraft:glass"),
+          "/fill outline edits the shell and preserves the interior");
+    CHECK(sendVanillaPacedCommand(
+              c, "fill 70 20 0 72 22 2 minecraft:gold_block hollow") &&
+              waitChat(c, "Filled 1 blocks", 5000) &&
+              waitForLatestBlockTypeAt(c, 70, 20, 0, "minecraft:gold_block") &&
+              waitForLatestBlockTypeAt(c, 71, 21, 1, "minecraft:air"),
+          "/fill hollow keeps the boundary and clears the interior");
+
+    CHECK(sendVanillaPacedCommand(c, "fill 74 20 0 75 20 0 minecraft:air") &&
+              waitChat(c, "blocks", 5000),
+          "/fill keep fixture clears any generated blocks first");
+    CHECK(sendVanillaPacedCommand(c, "fill 74 20 0 75 20 0 minecraft:stone") &&
+              waitChat(c, "Filled 2 blocks", 5000),
+          "/fill keep fixture initializes its target range");
+    CHECK(sendVanillaPacedCommand(c, "fill 74 20 0 75 20 0 minecraft:air") &&
+              waitChat(c, "Filled 2 blocks", 5000),
+          "/fill keep fixture clears its target range");
+    CHECK(sendVanillaPacedCommand(c, "setblock 74 20 0 minecraft:stone") &&
+              waitChat(c, "Changed the block", 5000),
+          "/fill keep fixture places a non-air block");
+    CHECK(sendVanillaPacedCommand(
+              c, "fill 74 20 0 75 20 0 minecraft:dirt keep") &&
+              waitChat(c, "Filled 1 blocks", 5000) &&
+              waitForLatestBlockTypeAt(c, 74, 20, 0, "minecraft:stone") &&
+              waitForLatestBlockTypeAt(c, 75, 20, 0, "minecraft:dirt"),
+          "/fill keep edits only air blocks");
+
+    CHECK(sendVanillaPacedCommand(c, "setblock 78 20 0 minecraft:cave_air") &&
+              waitChat(c, "Changed the block", 5000),
+          "/fill keep fixture places cave_air");
+    CHECK(sendVanillaPacedCommand(c, "setblock 79 20 0 minecraft:void_air") &&
+              waitChat(c, "Changed the block", 5000),
+          "/fill keep fixture places void_air");
+    CHECK(sendVanillaPacedCommand(
+              c, "fill 78 20 0 79 20 0 minecraft:dirt keep") &&
+              waitChat(c, "Filled 2 blocks", 5000) &&
+              waitForLatestBlockTypeAt(c, 78, 20, 0, "minecraft:dirt") &&
+              waitForLatestBlockTypeAt(c, 79, 20, 0, "minecraft:dirt"),
+          "/fill keep treats cave_air and void_air as air");
+
+    CHECK(sendVanillaPacedCommand(c, "setblock 76 20 0 minecraft:stone") &&
+              waitChat(c, "Changed the block", 5000),
+          "/fill replace fixture places stone");
+    CHECK(sendVanillaPacedCommand(c, "setblock 77 20 0 minecraft:dirt") &&
+              waitChat(c, "Changed the block", 5000),
+          "/fill replace fixture places dirt");
+    CHECK(sendVanillaPacedCommand(
+              c, "fill 76 20 0 77 20 0 minecraft:gold_block replace minecraft:stone") &&
+              waitChat(c, "Filled 1 blocks", 5000) &&
+              waitForLatestBlockTypeAt(c, 76, 20, 0, "minecraft:gold_block") &&
+              waitForLatestBlockTypeAt(c, 77, 20, 0, "minecraft:dirt"),
+          "/fill replace filter changes matching blocks only");
+    const auto updatesBeforeNoop = c.blockUpdatesSnapshot();
+    const auto updatesInReplaceRange = std::count_if(
+        updatesBeforeNoop.begin(), updatesBeforeNoop.end(), [](const auto& u) {
+            return u.y == 20 && u.z == 0 && u.x >= 76 && u.x <= 77;
+        });
+    const bool noOpFeedback = sendVanillaPacedCommand(
+        c, "fill 76 20 0 77 20 0 minecraft:gold_block replace minecraft:stone") &&
+        waitChat(c, "No blocks were filled", 5000);
+    c.pump(200);
+    const auto updatesAfterNoop = c.blockUpdatesSnapshot();
+    const auto updatesInReplaceRangeAfter = std::count_if(
+        updatesAfterNoop.begin(), updatesAfterNoop.end(), [](const auto& u) {
+            return u.y == 20 && u.z == 0 && u.x >= 76 && u.x <= 77;
+        });
+    CHECK(noOpFeedback && updatesInReplaceRangeAfter == updatesInReplaceRange,
+          "/fill matching no-op reports zero and emits no block updates");
+
+    const auto invalidPropertyBefore = latestBlockTypeAt(c, 79, 20, 0);
+    const bool invalidPropertyPaced = sendVanillaPacedCommand(
+        c, "setblock 79 20 0 minecraft:stone[waterlogged=true]");
+    const bool invalidPropertyFeedback = invalidPropertyPaced &&
+        waitChat(c, "invalid block-state property", 5000);
+    const auto invalidPropertyAfter = latestBlockTypeAt(c, 79, 20, 0);
+    const bool invalidPropertyPreserved =
+        invalidPropertyAfter == invalidPropertyBefore;
+    const std::string invalidPropertyBeforeName = invalidPropertyBefore
+        ? std::string(*invalidPropertyBefore) : "<none>";
+    const std::string invalidPropertyAfterName = invalidPropertyAfter
+        ? std::string(*invalidPropertyAfter) : "<none>";
+    if (invalidPropertyBefore != "minecraft:dirt" ||
+        !invalidPropertyPaced || !invalidPropertyFeedback ||
+        !invalidPropertyPreserved) {
+        std::fprintf(stderr,
+            "   /setblock invalid-property diagnostic: before=%s paced=%d feedback=%d after=%s\n",
+            invalidPropertyBeforeName.c_str(), invalidPropertyPaced,
+            invalidPropertyFeedback, invalidPropertyAfterName.c_str());
+        for (const auto& line : c.chatLinesSnapshot())
+            std::fprintf(stderr, "   chat: %s\n", line.c_str());
+    }
+    CHECK(invalidPropertyBefore == "minecraft:dirt" &&
+              invalidPropertyPaced && invalidPropertyFeedback &&
+              invalidPropertyPreserved,
+          "/setblock rejects unknown properties without mutating the world");
+    const auto unsupportedNbtBefore = latestBlockTypeAt(c, 79, 20, 0);
+    CHECK(unsupportedNbtBefore == "minecraft:dirt" &&
+              sendVanillaPacedCommand(c, "setblock 79 20 0 minecraft:chest{}") &&
+              waitChat(c, "Block-entity NBT is not supported", 5000) &&
+              latestBlockTypeAt(c, 79, 20, 0) == unsupportedNbtBefore,
+          "/setblock reports unsupported block-entity NBT instead of silently dropping it");
     // /gamerule
-    c.sendChatCommand("gamerule randomTickSpeed 10"); c.pump(250); // pacing: vanilla 200-budget spam throttle kicks 12-chat bursts on fast hosts
-    CHECK(waitChat(c,"randomTickSpeed"),"gamerule randomTickSpeed 10");
+    CHECK(sendVanillaPacedCommand(c, "gamerule randomTickSpeed 10") &&
+              waitChat(c,"randomTickSpeed"), "gamerule randomTickSpeed 10");
     // /time
-    c.sendChatCommand("time set day"); c.pump(250); // pacing: vanilla 200-budget spam throttle kicks 12-chat bursts on fast hosts
-    CHECK(waitChat(c,"day")||c.count(proto::pl::sc::UpdateTime)>0,"/time set day");
+    CHECK(sendVanillaPacedCommand(c, "time set day") && waitChat(c,"day"),
+          "/time set day");
     // /weather
-    c.sendChatCommand("weather clear"); c.pump(250); // pacing: vanilla 200-budget spam throttle kicks 12-chat bursts on fast hosts
-    CHECK(waitChat(c,"Weather"),"weather clear");
+    CHECK(sendVanillaPacedCommand(c, "weather clear") &&
+              waitChat(c,"Weather"), "weather clear");
     // /execute
-    c.sendChatCommand("execute as @p run say executed"); c.pump(250); // pacing: vanilla 200-budget spam throttle kicks 12-chat bursts on fast hosts
-    CHECK(waitChat(c,"executed"),"execute as @p run say executed");
+    CHECK(sendVanillaPacedCommand(c, "execute as @p run say executed") &&
+              waitChat(c,"executed"), "execute as @p run say executed");
     // /function
-    c.sendChatCommand("function minecraft:tick"); c.pump(250); // pacing: vanilla 200-budget spam throttle kicks 12-chat bursts on fast hosts
-    CHECK(c.count(proto::pl::sc::Disconnect) == 0,
+    CHECK(sendVanillaPacedCommand(c, "function minecraft:tick") &&
+              c.count(proto::pl::sc::Disconnect) == 0,
           "/function missing-function path is handled without a disconnect [liveness]");
     // /reload
-    c.sendChatCommand("reload"); c.pump(250); // pacing: vanilla 200-budget spam throttle kicks 12-chat bursts on fast hosts
+    const bool reloadSent = sendVanillaPacedCommand(c, "reload");
     // actual feedback is "Reloaded whitelist" (capital R), and datapack reload is no-op; check case-insensitive or whitelist
-    CHECK(waitChat(c,"Reload") || waitChat(c,"whitelist") || c.count(proto::pl::sc::SystemChat)>0,"reload (whitelist reload)");
+    CHECK(reloadSent && (waitChat(c,"Reload") || waitChat(c,"whitelist") ||
+                         c.count(proto::pl::sc::SystemChat)>0),
+          "reload (whitelist reload)");
     // tags: check that #minecraft:planks ingredient matches (via crafting)
-    c.sendChatCommand("give CmdTester minecraft:oak_planks 3");
-    CHECK(waitChat(c,"Given",5000),"tag ingredient #minecraft:planks item grant");
+    CHECK(sendVanillaPacedCommand(c, "give CmdTester minecraft:oak_planks 3") &&
+              waitChat(c,"Given",5000),
+          "tag ingredient #minecraft:planks item grant");
     // loot tables: break stone should drop cobblestone via loot
-    c.sendChatCommand("setblock 44 -60 0 minecraft:stone");
-    CHECK(waitChat(c,"Changed the block",5000),"loot fixture stone placed");
+    CHECK(sendVanillaPacedCommand(c, "setblock 44 -60 0 minecraft:stone") &&
+              waitChat(c,"Changed the block",5000), "loot fixture stone placed");
     c.sendPosition(44.5,-60,0.5);
     c.sendDig(44,-60,0,5);
     c.pump(1500);
@@ -872,12 +1458,37 @@ static void testPlan36Soak(ServerProc& srv){
     bool okB=b.connect("127.0.0.1",srv.port)&&b.join("Soak36B");
     CHECK(okA && okB,"plan36 soak 2 bots join");
     a.pump(600); b.pump(600);
-    for(int i=0;i<50;++i){
-        a.sendPosition( (i%2?500:-500), -60, (i%3?300:-300));
-        b.sendPosition( (i%2?-400:400), -60, (i%3?-200:200));
-        a.pump(60); b.pump(60);
+    const auto aStart = a.positionSnapshot();
+    const auto bStart = b.positionSnapshot();
+    // Exercise ordinary grounded movement while crossing several chunk
+    // borders. Large airborne jumps here were correctly rejected by vanilla's
+    // flight check and made this cache test measure invalid movement instead.
+    for (int step = 1; step <= 240; ++step) {
+        const double distance = step * 0.5;
+        a.sendPosition(aStart.x + distance, aStart.y, aStart.z, true);
+        b.sendPosition(bStart.x - distance, bStart.y, bStart.z, true);
+        a.pump(50); b.pump(50);
     }
-    bool noKick = a.count(proto::pl::sc::Disconnect)==0 && b.count(proto::pl::sc::Disconnect)==0;
+    const auto aDisconnects = a.count(proto::pl::sc::Disconnect);
+    const auto bDisconnects = b.count(proto::pl::sc::Disconnect);
+    const bool noKick = aDisconnects == 0 && bDisconnects == 0;
+    if (!noKick) {
+        std::printf("  disconnect packets: Soak36A=%zu Soak36B=%zu\n",
+                    aDisconnects, bDisconnects);
+        const auto dumpDisconnects = [](const char* name,
+                                        const TestClient& client) {
+            for (const auto& packet : client.recentSnapshot()) {
+                if (packet.id != proto::pl::sc::Disconnect) continue;
+                std::printf("  %s disconnect body:", name);
+                const auto bytes = std::min<std::size_t>(packet.body.size(), 96);
+                for (std::size_t i = 0; i < bytes; ++i)
+                    std::printf(" %02x", packet.body[i]);
+                std::printf("\n");
+            }
+        };
+        dumpDisconnects("Soak36A", a);
+        dumpDisconnects("Soak36B", b);
+    }
     CHECK(noKick,"plan36 soak no kick after moves");
     CHECK(a.chunkCount() <= 2048 && b.chunkCount() <= 2048,
           "plan36 soak keeps both client chunk views within the cache bound");
@@ -1064,6 +1675,24 @@ static void testPlan37Weather(ServerProc& srv){
     auto dl=std::chrono::steady_clock::now()+std::chrono::milliseconds(1500);
     while(std::chrono::steady_clock::now()<dl){ c.pump(40); for(const auto &l:c.chatLinesSnapshot()) if(l.find("Weather")!=std::string::npos||l.find("thunder")!=std::string::npos) thunderOk=true; if(c.count(proto::pl::sc::WorldParticles)>0 || c.count(proto::pl::sc::SoundEffect)>0) thunderOk=true; if(thunderOk) break; }
     CHECK(thunderOk,"plan37 thunder weather command + possible lightning packets strict (C-03)");
+    std::int32_t highestSpawnId = 0;
+    for (const auto& spawn : c.spawns())
+        highestSpawnId = std::max(highestSpawnId, spawn.eid);
+    c.sendChatCommand("summon minecraft:lightning_bolt ~ ~ ~");
+    const auto lightningType = static_cast<std::int32_t>(
+        gen::entityTypeIdByName().at("minecraft:lightning_bolt"));
+    bool sawTypedLightning = false;
+    const auto lightningDeadline = std::chrono::steady_clock::now() +
+                                  std::chrono::milliseconds(2000);
+    while (std::chrono::steady_clock::now() < lightningDeadline) {
+        c.pump(40);
+        for (const auto& spawn : c.spawns())
+            if (spawn.type == lightningType && spawn.eid > highestSpawnId)
+                sawTypedLightning = true;
+        if (sawTypedLightning) break;
+    }
+    CHECK(sawTypedLightning,
+          "summoned lightning uses the registry lightning_bolt entity type, not pig");
     // restore clear
     c.sendChatCommand("weather clear");
     c.pump(300);
@@ -1080,11 +1709,10 @@ static void testPlan37Persist(ServerProc& srv){
     CHECK(hasBlockTypeAt(c,201,-60,0,"minecraft:ender_chest") &&
           waitChat(c,"Given"),
           "plan37 ender chest placement and item grant are observed");
-    // level.dat persistence: time set then query
-    const auto timeUpdatesBefore = c.count(proto::pl::sc::UpdateTime);
-    c.sendChatCommand("time set 12345");
-    bool timeOk = waitChat(c,"12345",5000) ||
-                  c.count(proto::pl::sc::UpdateTime)>timeUpdatesBefore;
+    // level.dat persistence is checked on restart elsewhere; here require the
+    // command's own feedback instead of accepting an unrelated periodic sync.
+    const bool timeOk = sendVanillaPacedCommand(c, "time set 12345") &&
+                        waitChat(c, "12345", 5000);
     CHECK(timeOk,"plan37 level.dat time persistence strict (C-03)");
     c.close();
 }
@@ -1238,39 +1866,468 @@ static void testPlan41HorseVehicle(ServerProc& srv){
         CHECK(sawHorseSpawn, "plan41 horse spawn has entity type horse");
         c.close();
     }
-    // Vehicle: rider triggers plan41test vehicle, observer sees VehicleMove and SetPassengers
+    // VehicleMove is a rider correction, while SetPassengers is visible to observers.
     {
         TestClient rider; CHECK(rider.connect("127.0.0.1",srv.port)&&rider.join("Rider41"),"plan41 rider join");
-        rider.pump(600);
+        CHECK(waitForChunks(rider, 169, 20000),
+              "plan41 rider chunk is published before vehicle spawn");
         TestClient observer; CHECK(observer.connect("127.0.0.1",srv.port)&&observer.join("Observer41"),"plan41 observer join");
-        observer.pump(600);
+        CHECK(waitForChunks(observer, 169, 20000),
+              "plan41 observer chunk is published before vehicle spawn");
+        const auto riderEntityId = rider.entityId();
+        const auto oakBoatEntityId = [](const Packet& packet)
+                -> std::optional<std::int32_t> {
+            if (packet.id != proto::pl::sc::SpawnEntity) return std::nullopt;
+            try {
+                ReadBuffer body(packet.body.data(), packet.body.size());
+                const auto entityId = body.varint();
+                (void)body.bytes(16);
+                if (body.varint() != 84) return std::nullopt; // minecraft:oak_boat
+                return entityId;
+            } catch (...) {
+                return std::nullopt;
+            }
+        };
+        std::vector<std::int32_t> previouslySeenBoats;
+        for (const auto& packet : rider.recentSnapshot())
+            if (const auto id = oakBoatEntityId(packet))
+                previouslySeenBoats.push_back(*id);
         rider.sendChatCommand("plan41test vehicle");
-        rider.pump(500); observer.pump(800);
-        CHECK(observer.count(proto::pl::sc::VehicleMove)>0 || rider.count(proto::pl::sc::VehicleMove)>0, "plan41 VehicleMove 0x33 strict (observer)");
+        Packet riderBoatSpawn;
+        const bool riderSawBoat = rider.waitFor(
+            [&](const Packet& packet) {
+                const auto id = oakBoatEntityId(packet);
+                return id && std::find(previouslySeenBoats.begin(),
+                                       previouslySeenBoats.end(), *id) ==
+                                 previouslySeenBoats.end();
+            }, 5000, &riderBoatSpawn);
+        std::int32_t vehicleEntityId = 0;
+        double vehicleX = 0.0, vehicleY = 0.0, vehicleZ = 0.0;
+        if (riderSawBoat) {
+            try {
+                ReadBuffer body(riderBoatSpawn.body.data(),
+                                riderBoatSpawn.body.size());
+                vehicleEntityId = body.varint();
+                (void)body.bytes(16);
+                (void)body.varint();
+                vehicleX = body.f64();
+                vehicleY = body.f64();
+                vehicleZ = body.f64();
+            } catch (...) {
+                vehicleEntityId = 0;
+            }
+        }
+        CHECK(riderSawBoat && vehicleEntityId > 0,
+              "plan41 rider receives this oak-boat spawn before its mount");
+
+        const auto isRiderMount = [vehicleEntityId, riderEntityId](
+                                      const Packet& packet) {
+            if (packet.id != proto::pl::sc::SetPassengers) return false;
+            try {
+                ReadBuffer body(packet.body.data(), packet.body.size());
+                if (body.varint() != vehicleEntityId) return false;
+                const auto count = body.varint();
+                if (count < 0 || count > 16) return false;
+                bool hasRider = false;
+                for (int index = 0; index < count; ++index)
+                    hasRider |= body.varint() == riderEntityId;
+                return hasRider && body.remaining() == 0;
+            } catch (...) {
+                return false;
+            }
+        };
+        Packet riderMount;
+        const bool riderSawMount = vehicleEntityId > 0 &&
+            rider.waitFor(isRiderMount, 5000, &riderMount);
+        CHECK(riderSawMount,
+              "plan41 SetPassengers identifies this boat and rider");
+        Packet riderCorrection;
+        const bool riderSawCorrection = rider.waitFor(
+            [](const Packet& packet) {
+                return packet.id == proto::pl::sc::VehicleMove;
+            }, 5000, &riderCorrection);
+        CHECK(riderSawCorrection,
+              "plan41 VehicleMove correction is sent to the mounted rider");
+        CHECK(observer.count(proto::pl::sc::VehicleMove)==0,
+              "plan41 VehicleMove does not correct unrelated observer vehicles");
+
+        const auto packetIndex = [](const std::vector<Packet>& packets,
+                                    const auto& predicate) {
+            for (std::size_t index = 0; index < packets.size(); ++index)
+                if (predicate(packets[index])) return index;
+            return packets.size();
+        };
+        const auto riderPackets = rider.recentSnapshot();
+        const auto spawnIndex = packetIndex(riderPackets,
+            [vehicleEntityId](const Packet& packet) {
+                if (packet.id != proto::pl::sc::SpawnEntity) return false;
+                try {
+                    ReadBuffer body(packet.body.data(), packet.body.size());
+                    return body.varint() == vehicleEntityId;
+                } catch (...) { return false; }
+            });
+        const auto mountIndex = packetIndex(riderPackets, isRiderMount);
+        const auto correctionIndex = packetIndex(riderPackets,
+            [&riderCorrection](const Packet& packet) {
+                return packet.id == proto::pl::sc::VehicleMove &&
+                       packet.body == riderCorrection.body;
+            });
+        const bool mountPrecedesCorrection =
+            spawnIndex < mountIndex && mountIndex < correctionIndex;
+        CHECK(mountPrecedesCorrection,
+              "plan41 boat spawn, rider mount, and correction share FIFO order");
         bool okPos = false;
-        {
-            for (const auto &p : observer.recentSnapshot()) if (p.id == proto::pl::sc::VehicleMove) {
-                try { ReadBuffer r(p.body.data(), p.body.size()); double x=r.f64(); double y=r.f64(); double z=r.f64(); if (std::abs(x-10.0)<5.0 && std::abs(y+60.0)<2.0) okPos=true; (void)z; } catch(...) {}
-            }
-            if (!okPos) {
-                for (const auto &p : rider.recentSnapshot()) if (p.id == proto::pl::sc::VehicleMove) {
-                    try { ReadBuffer r(p.body.data(), p.body.size()); double x=r.f64(); double y=r.f64(); if (std::abs(x-10.0)<5.0) okPos=true; (void)y; } catch(...) {}
-                }
-            }
-        }
-        // fallback: if no VehicleMove yet, try explicit MoveVehicle from rider
-        if (!okPos) {
-            rider.sendMoveVehicle(12.5, -60.0, 12.5, 45.0f, 5.0f);
-            rider.pump(300); observer.pump(800);
-            for (const auto &p : observer.recentSnapshot()) if (p.id == proto::pl::sc::VehicleMove) {
-                try { ReadBuffer r(p.body.data(), p.body.size()); double x=r.f64(); double y=r.f64(); double z=r.f64(); if (std::abs(x-12.5)<0.01) okPos=true; (void)y; (void)z; } catch(...) {}
+        if (riderSawCorrection && riderSawBoat) {
+            try {
+                ReadBuffer body(riderCorrection.body.data(),
+                                riderCorrection.body.size());
+                okPos = std::abs(body.f64() - vehicleX) < 0.01 &&
+                        std::abs(body.f64() - vehicleY) < 0.01 &&
+                        std::abs(body.f64() - vehicleZ) < 0.01;
+            } catch (...) {
+                okPos = false;
             }
         }
-        CHECK(okPos, "plan41 VehicleMove pos check strict");
-        CHECK(observer.count(proto::pl::sc::SetPassengers)>0 || rider.count(proto::pl::sc::SetPassengers)>0, "plan41 SetPassengers after vehicle mount strict");
+        CHECK(okPos,
+              "plan41 rider correction matches the spawned boat position");
+
+        Packet observerBoatSpawn;
+        const bool observerSawBoat = observer.waitFor(
+            [vehicleEntityId, &oakBoatEntityId](const Packet& packet) {
+                const auto id = oakBoatEntityId(packet);
+                return id && *id == vehicleEntityId;
+            }, 5000, &observerBoatSpawn);
+        bool observerSpawnMatches = false;
+        if (observerSawBoat) {
+            try {
+                ReadBuffer body(observerBoatSpawn.body.data(),
+                                observerBoatSpawn.body.size());
+                observerSpawnMatches = body.varint() == vehicleEntityId;
+            } catch (...) {
+                observerSpawnMatches = false;
+            }
+        }
+        CHECK(observerSpawnMatches,
+              "plan41 observer receives the same tracked boat spawn");
+        Packet observerMount;
+        const bool observerSawMount = observer.waitFor(
+            isRiderMount, 5000, &observerMount);
+        CHECK(observerSawMount,
+              "plan41 observer receives the matching passenger relationship");
+
+        // A subsequent actual rider move is fanned out as an entity-specific
+        // teleport to every client tracking the boat.
+        const auto observerPacketsBeforeMove = observer.recentSnapshot();
+        rider.sendMoveVehicle(12.5, -60.0, 12.5, 45.0f, 5.0f);
+        rider.pump(300); observer.pump(800);
+        bool observerSawEntityTeleport = false;
+        const auto observerPacketsAfterMove = observer.recentSnapshot();
+        const auto firstNewObserverPacket = std::min(
+            observerPacketsBeforeMove.size(), observerPacketsAfterMove.size());
+        for (std::size_t index = firstNewObserverPacket;
+             index < observerPacketsAfterMove.size(); ++index) {
+            const auto& p = observerPacketsAfterMove[index];
+            if (p.id != proto::pl::sc::EntityTeleport) continue;
+            try {
+                ReadBuffer r(p.body.data(), p.body.size());
+                const int entityId = r.varint();
+                const double x = r.f64();
+                const double y = r.f64();
+                const double z = r.f64();
+                if (entityId == vehicleEntityId && std::abs(x-12.5)<0.01 &&
+                    std::abs(y+60.0)<0.01 && std::abs(z-12.5)<0.01)
+                    observerSawEntityTeleport = true;
+            } catch(...) {}
+        }
+        CHECK(observerSawEntityTeleport,
+              "plan41 observer sees this boat's entity-specific teleport after movement");
         rider.close(); observer.close();
     }
 }
+
+static void testDimensionCommandBounds(ServerProc& srv) {
+    SECTION("Dimension bounds and overlapping clone move — live commands");
+    TestClient c;
+    CHECK(c.connect("127.0.0.1", srv.port) && c.join("DimBounds59"),
+          "dimension command boundary fixture joins");
+    c.pump(600);
+
+    CHECK(sendVanillaPacedCommand(c,
+        "execute in minecraft:the_nether run setblock 40 -1 40 minecraft:stone"),
+        "command fixture waits for vanilla spam decay");
+    CHECK(waitChat(c, "Cannot set a block outside the world's build height"),
+          "Nether /setblock rejects an invalid Y instead of claiming success");
+
+    CHECK(sendVanillaPacedCommand(c,
+        "execute in minecraft:the_nether run fill 40 -1 40 40 -1 40 minecraft:stone"),
+        "command fixture waits for vanilla spam decay");
+    CHECK(waitChat(c, "Cannot fill outside the world's build height"),
+          "Nether /fill rejects an invalid Y before making partial edits");
+
+    CHECK(sendVanillaPacedCommand(c,
+        "execute in minecraft:the_nether run setblock 40 10 40 minecraft:diamond_block"),
+        "command fixture waits for vanilla spam decay");
+    const bool sourceReady = waitChat(c, "Changed the block");
+    CHECK(sourceReady, "Nether /clone source fixture is created in bounds");
+
+    CHECK(sendVanillaPacedCommand(c,
+        "execute in minecraft:the_nether run clone 40 10 40 40 10 40 40 -1 40"),
+        "command fixture waits for vanilla spam decay");
+    CHECK(waitChat(c, "Cannot clone outside the world's build height"),
+          "Nether /clone rejects an invalid destination instead of counting it");
+
+    CHECK(sendVanillaPacedCommand(c,
+        "execute in minecraft:the_nether run setblock 41 10 40 minecraft:gold_block"),
+        "command fixture waits for vanilla spam decay");
+    CHECK(waitChat(c, "Changed the block"),
+          "overlapping /clone move fixture has distinct source blocks");
+
+    CHECK(sendVanillaPacedCommand(c,
+        "execute in minecraft:the_nether run clone 40 10 40 41 10 40 41 10 40 replace normal"),
+        "command fixture waits for vanilla spam decay");
+    CHECK(waitChat(c, "Source and destination cannot overlap"),
+          "normal /clone rejects overlapping source and destination regions");
+    CHECK(waitFilteredCloneCount(c, 40, 10, 40, "minecraft:diamond_block", 1) &&
+              waitFilteredCloneCount(c, 41, 10, 40, "minecraft:gold_block", 1),
+          "rejected normal /clone leaves source and destination unchanged");
+
+    CHECK(sendVanillaPacedCommand(c,
+        "execute in minecraft:the_nether run clone 40 10 40 41 10 40 41 10 40 replace force"),
+        "command fixture waits for vanilla spam decay");
+    CHECK(waitChat(c, "Cloned 2 blocks"),
+          "force /clone permits overlapping source and destination regions");
+    CHECK(waitFilteredCloneCount(c, 40, 10, 40, "minecraft:diamond_block", 1) &&
+              waitFilteredCloneCount(c, 41, 10, 40, "minecraft:diamond_block", 1) &&
+              waitFilteredCloneCount(c, 42, 10, 40, "minecraft:gold_block", 1),
+          "force /clone copies the full source snapshot across overlap");
+
+    CHECK(sendVanillaPacedCommand(c,
+        "execute in minecraft:the_nether run setblock 41 10 40 minecraft:gold_block"),
+        "command fixture waits for vanilla spam decay");
+    CHECK(waitChat(c, "Changed the block"),
+          "overlapping /clone move fixture restores its second source block");
+    CHECK(sendVanillaPacedCommand(c,
+        "execute in minecraft:the_nether run setblock 42 10 40 minecraft:air"),
+        "command fixture waits for vanilla spam decay");
+    CHECK(waitChat(c, "Changed the block"),
+          "overlapping /clone move fixture clears the force destination");
+
+    CHECK(sendVanillaPacedCommand(c,
+        "execute in minecraft:the_nether run clone 40 10 40 41 10 40 41 10 40 move"),
+        "command fixture waits for vanilla spam decay");
+    const bool overlappingMoveAccepted = waitChat(c, "Cloned 2 blocks");
+    CHECK(overlappingMoveAccepted,
+          "overlapping /clone move reports both copied source blocks");
+    CHECK(waitFilteredCloneCount(c, 41, 10, 40, "minecraft:diamond_block", 1),
+          "overlapping /clone move leaves the first destination as diamond block");
+    CHECK(waitFilteredCloneCount(c, 42, 10, 40, "minecraft:gold_block", 1),
+          "overlapping /clone move preserves the second source state at destination");
+    CHECK(waitFilteredCloneCount(c, 40, 10, 40, "minecraft:air", 1),
+          "overlapping /clone move clears only the non-overlapping source");
+
+    CHECK(sendVanillaPacedCommand(c,
+        "execute in minecraft:the_nether run clone 41 10 40 41 10 40 60 10 40 masked"),
+        "command fixture waits for vanilla spam decay");
+    CHECK(waitChat(c, "Cloned 1 blocks"),
+          "overlapping /clone move preserves the block in the intersection");
+    CHECK(waitFilteredCloneCount(c, 60, 10, 40, "minecraft:diamond_block", 1),
+          "masked /clone preserves the exact block state at its destination");
+
+    CHECK(sendVanillaPacedCommand(c,
+        "execute in minecraft:the_nether run setblock 61 10 40 minecraft:cave_air"),
+        "command fixture waits for vanilla spam decay");
+    CHECK(waitChat(c, "Changed the block"),
+          "masked /clone cave-air source is prepared");
+    CHECK(sendVanillaPacedCommand(c,
+        "execute in minecraft:the_nether run setblock 62 10 40 minecraft:gold_block"),
+        "command fixture waits for vanilla spam decay");
+    CHECK(waitChat(c, "Changed the block"),
+          "masked /clone cave-air destination is prepared");
+    CHECK(sendVanillaPacedCommand(c,
+        "execute in minecraft:the_nether run clone 61 10 40 61 10 40 62 10 40 masked"),
+        "command fixture waits for vanilla spam decay");
+    CHECK(waitChat(c, "Cloned 0 blocks") &&
+              waitFilteredCloneCount(c, 62, 10, 40, "minecraft:gold_block", 1),
+          "masked /clone treats cave_air as air and preserves the destination");
+
+    CHECK(sendVanillaPacedCommand(c,
+        "execute in minecraft:the_nether run setblock 63 10 40 minecraft:void_air"),
+        "command fixture waits for vanilla spam decay");
+    CHECK(waitChat(c, "Changed the block"),
+          "masked /clone void-air source is prepared");
+    CHECK(sendVanillaPacedCommand(c,
+        "execute in minecraft:the_nether run setblock 64 10 40 minecraft:diamond_block"),
+        "command fixture waits for vanilla spam decay");
+    CHECK(waitChat(c, "Changed the block"),
+          "masked /clone void-air destination is prepared");
+    CHECK(sendVanillaPacedCommand(c,
+        "execute in minecraft:the_nether run clone 63 10 40 63 10 40 64 10 40 masked"),
+        "command fixture waits for vanilla spam decay");
+    CHECK(waitChat(c, "Cloned 0 blocks") &&
+              waitFilteredCloneCount(c, 64, 10, 40,
+                                     "minecraft:diamond_block", 1),
+          "masked /clone treats void_air as air and preserves the destination");
+
+    CHECK(sendVanillaPacedCommand(c,
+        "execute in minecraft:the_nether run setblock 40 253 50 minecraft:gold_block"),
+        "command fixture waits for vanilla spam decay");
+    CHECK(waitChat(c, "Changed the block"),
+          "known-feature fixture seeds a sentinel block");
+    CHECK(sendVanillaPacedCommand(c,
+        "execute in minecraft:the_nether run place feature minecraft:oak 40 253 50"),
+        "command fixture waits for vanilla spam decay");
+    CHECK(waitChat(c, "no vanilla configured-feature registry is loaded") &&
+              waitFilteredCloneCount(c, 40, 253, 50,
+                                     "minecraft:gold_block", 1),
+          "formerly hard-coded oak feature fails closed without changing the sentinel");
+
+    CHECK(sendVanillaPacedCommand(c,
+        "execute in minecraft:the_nether run place structure minecraft:trial_chambers 40 251 40"),
+        "command fixture waits for vanilla spam decay");
+    CHECK(waitChat(c, "Vanilla structure templates are unavailable for /place structure"),
+          "unsupported /place structure refuses instead of fabricating a template");
+
+    CHECK(sendVanillaPacedCommand(c,
+        "execute in minecraft:the_nether run clone 40 251 40 40 255 40 60 251 40 masked"),
+        "command fixture waits for vanilla spam decay");
+    CHECK(waitChat(c, "Cloned 0 blocks"),
+          "rejected Nether structure leaves no partial floor or wall");
+
+    CHECK(sendVanillaPacedCommand(c,
+        "execute in minecraft:the_nether run setblock 40 10 40 minecraft:gold_block"),
+        "command fixture waits for vanilla spam decay");
+    CHECK(waitChat(c, "Changed the block"),
+          "birch feature fixture seeds a sentinel block");
+    CHECK(sendVanillaPacedCommand(c,
+        "execute in minecraft:the_nether run place feature minecraft:birch 40 10 40"),
+        "command fixture waits for vanilla spam decay");
+    CHECK(waitChat(c, "no vanilla configured-feature registry is loaded") &&
+              waitFilteredCloneCount(c, 40, 10, 40,
+                                     "minecraft:gold_block", 1),
+          "formerly hard-coded birch feature fails closed without changing the sentinel");
+
+    CHECK(sendVanillaPacedCommand(c,
+        "execute in minecraft:the_nether run setblock 48 10 40 minecraft:stone"),
+        "command fixture waits for vanilla spam decay");
+    CHECK(waitChat(c, "Changed the block"),
+          "flower feature fixture seeds a sentinel block");
+    CHECK(sendVanillaPacedCommand(c,
+        "execute in minecraft:the_nether run place feature minecraft:flower_plain 48 10 40"),
+        "command fixture waits for vanilla spam decay");
+    CHECK(waitChat(c, "no vanilla configured-feature registry is loaded") &&
+              waitFilteredCloneCount(c, 48, 10, 40,
+                                     "minecraft:stone", 1),
+          "formerly hard-coded flower feature fails closed without changing the sentinel");
+
+    CHECK(sendVanillaPacedCommand(c,
+        "execute in minecraft:the_nether run setblock 55 10 40 minecraft:diamond_block"),
+        "command fixture waits for vanilla spam decay");
+    CHECK(waitChat(c, "Changed the block"),
+          "unsupported feature fixture seeds a sentinel block");
+
+    CHECK(sendVanillaPacedCommand(c,
+        "execute in minecraft:the_nether run place feature example:unknown 55 10 40"),
+        "command fixture waits for vanilla spam decay");
+    CHECK(waitChat(c, "no vanilla configured-feature registry is loaded") &&
+              waitFilteredCloneCount(c, 55, 10, 40,
+                                     "minecraft:diamond_block", 1),
+          "unsupported feature ID returns failure without changing the sentinel");
+
+    CHECK(sendVanillaPacedCommand(c,
+        "execute in minecraft:the_nether run place structure minecraft:mansion 60 10 40"),
+        "command fixture waits for vanilla spam decay");
+    CHECK(waitChat(c, "Vanilla structure templates are unavailable for /place structure") &&
+              !waitBlockPos(c, 60, 10, 40, 800),
+          "structure placement fails explicitly instead of placing a hand-built substitute");
+    c.close();
+}
+
+static void testConsolePlaceFeatureFailsClosed(std::uint16_t rconPort,
+                                               const std::string& password) {
+    SECTION("Console /place feature fails closed without a vanilla registry");
+    SmokeRconClient rcon;
+    const bool authenticated = rcon.connectAndAuthenticate(rconPort, password);
+    CHECK(authenticated, "RCON authenticates for console feature regression");
+    if (!authenticated) return;
+
+    const auto consoleFixture = rcon.command(
+        "setblock 0 -60 0 minecraft:stone");
+    CHECK(consoleFixture.find("Changed the block") != std::string::npos,
+          "console feature fixture prepares its sentinel block");
+    const auto consolePlacement = rcon.command(
+        "place feature minecraft:ore_diamond");
+    CHECK(consolePlacement.find(
+              "no vanilla configured-feature registry is loaded") !=
+              std::string::npos,
+          "formerly hard-coded ore feature returns failure from the console");
+    const auto consoleSentinel = rcon.command(
+        "fill 0 -60 0 0 -60 0 minecraft:gold_block replace minecraft:stone");
+    CHECK(consoleSentinel.find("Filled 1 blocks") != std::string::npos,
+          "failed feature placement leaves the console sentinel unchanged");
+
+    const auto positionedFixture = rcon.command(
+        "setblock 48 -61 49 minecraft:diamond_block");
+    CHECK(positionedFixture.find("Changed the block") != std::string::npos,
+          "execute-positioned fixture prepares a sentinel block");
+    const auto positionedPlacement = rcon.command(
+        "execute positioned 48.9 -60.2 49.7 run place feature minecraft:ore_diamond");
+    CHECK(positionedPlacement.find(
+              "no vanilla configured-feature registry is loaded") !=
+              std::string::npos,
+          "execute-positioned feature request fails closed too");
+    const auto positionedSentinel = rcon.command(
+        "fill 48 -61 49 48 -61 49 minecraft:gold_block replace minecraft:diamond_block");
+    CHECK(positionedSentinel.find("Filled 1 blocks") != std::string::npos,
+          "positioned feature failure leaves the target sentinel unchanged");
+    const auto cleanup = rcon.command(
+        "fill -1 -60 -1 1 -57 1 minecraft:air");
+    CHECK(cleanup.find("Filled ") != std::string::npos,
+          "console fixture clears its spawn-volume blocks before client tests");
+    const auto positionedCleanup = rcon.command(
+        "setblock 48 -61 49 minecraft:air");
+    CHECK(positionedCleanup.find("Changed the block") != std::string::npos,
+          "positioned console fixture is cleared");
+    rcon.close();
+}
+
+struct SmokeScenario {
+    const char* name;
+    void (*run)(ServerProc&);
+};
+
+static constexpr SmokeScenario kSmokeScenarios[] = {
+    {"world-management", testWorldManagement},
+    {"block-behaviors", testBlockBehaviors},
+    {"redstone", testRedstone},
+    {"entities", testEntities},
+    {"inventory-ui", testInventoryUI},
+    {"commands-datapack", testCommandsDatapack},
+    {"network", testNetwork},
+    {"survival-combat", testSurvivalCombat},
+    {"plan33-worldgen", testPlan33WorldGen},
+    {"plan35-adv-loot", testPlan35AdvLootPredicate},
+    {"plan36-mob-ai", testPlan36MobAI},
+    {"plan36-structures", testPlan36Structures},
+    {"plan36-natural-spawn", testPlan36NaturalSpawn},
+    {"plan36-soak", testPlan36Soak},
+    {"plan36-loot-chest", testPlan36LootChest},
+    {"plan36-kill-trigger", testPlan36KillTrigger},
+    {"plan37-recipes", testPlan37Recipes},
+    {"plan37-advancement", testPlan37Advancement},
+    {"plan37-loot", testPlan37Loot},
+    {"plan37-villager", testPlan37Villager},
+    {"plan37-enchant", testPlan37Enchant},
+    {"plan37-weather", testPlan37Weather},
+    {"plan37-persistence", testPlan37Persist},
+    {"plan38-qc", testPlan38QC},
+    {"plan38-function-macro", testPlan38FunctionMacro},
+    {"plan38-triggers", testPlan38Triggers},
+    {"plan38-bench-view", testPlan38BenchView},
+    {"plan39-soak", testPlan39Soak},
+    {"plan40-loot-adv-predicate-enchant", testPlan40LootAdvPredicateEnchant},
+    {"plan41-horse-vehicle", testPlan41HorseVehicle},
+    {"dimension-command-bounds", testDimensionCommandBounds},
+};
 
 int main(int argc, char** argv){
     setvbuf(stdout,nullptr,_IONBF,0);
@@ -1289,13 +2346,79 @@ int main(int argc, char** argv){
         "Loot36", "Kill36", "Rec37", "Adv37", "Loot37",
         "Vill37", "Ench37", "Weath37", "Persist37", "QC38",
         "Func38", "Trig38", "Bench38", "Soak39", "Plan40",
-        "Horse41", "Rider41", "Observer41"
+        "Horse41", "Rider41", "Observer41", "DimBounds59"
     };
     const char* smokeWorldPrefix = std::getenv("CPPFM_SMOKE_WORLD_PREFIX");
     serverOptions.worldPrefix = (smokeWorldPrefix && *smokeWorldPrefix)
         ? smokeWorldPrefix : "/tmp/smoke80-";
+
+    constexpr char rconPassword[] = "smoke80-feature-coordinate-test";
+    const std::uint16_t rconPort = findEphemeralLoopbackPort();
+    if (rconPort == 0) {
+        std::printf("FATAL: could not reserve an ephemeral loopback RCON port\n");
+        return 2;
+    }
+    std::string runtimeTemplate =
+        (std::filesystem::temp_directory_path() /
+         ("smoke80-runtime-" + std::to_string(getpid()) + "-XXXXXX")).string();
+    std::vector<char> runtimeTemplateBuffer(runtimeTemplate.begin(),
+                                             runtimeTemplate.end());
+    runtimeTemplateBuffer.push_back('\0');
+    char* runtimeDirectory = ::mkdtemp(runtimeTemplateBuffer.data());
+    if (!runtimeDirectory) {
+        std::printf("FATAL: could not create isolated smoke runtime directory\n");
+        return 2;
+    }
+    const std::filesystem::path runtimeRoot(runtimeDirectory);
+    {
+        std::ofstream properties(runtimeRoot / "server.properties",
+                                 std::ios::trunc);
+        properties << "enable-rcon=true\n"
+                   << "rcon.port=" << rconPort << '\n'
+                   << "rcon.password=" << rconPassword << '\n';
+        if (!properties) {
+            std::error_code cleanupError;
+            std::filesystem::remove_all(runtimeRoot, cleanupError);
+            std::printf("FATAL: could not configure isolated smoke RCON\n");
+            return 2;
+        }
+    }
+    {
+        std::ofstream operators(runtimeRoot / "ops.json", std::ios::trunc);
+        operators << '[';
+        for (std::size_t i = 0; i < serverOptions.operatorNames.size(); ++i) {
+            if (i != 0) operators << ',';
+            operators << "{\"name\":\""
+                      << serverOptions.operatorNames[i]
+                      << "\",\"level\":4,\"bypassesPlayerLimit\":false}";
+        }
+        operators << ']';
+        if (!operators) {
+            std::error_code cleanupError;
+            std::filesystem::remove_all(runtimeRoot, cleanupError);
+            std::printf("FATAL: could not configure isolated smoke operators\n");
+            return 2;
+        }
+    }
+    const char* inheritedServerDirectory = std::getenv("CPPFM_SERVER_DIR");
+    const std::optional<std::string> savedServerDirectory =
+        inheritedServerDirectory
+            ? std::optional<std::string>(inheritedServerDirectory)
+            : std::nullopt;
+    const bool runtimeEnvironmentSet =
+        ::setenv("CPPFM_SERVER_DIR", runtimeRoot.c_str(), 1) == 0;
     ServerProc srv;
-    if(!srv.start(bin, serverOptions)){ std::printf("FATAL: server start\n"); return 2; }
+    const bool serverStarted = runtimeEnvironmentSet && srv.start(bin, serverOptions);
+    if (savedServerDirectory)
+        (void)::setenv("CPPFM_SERVER_DIR", savedServerDirectory->c_str(), 1);
+    else
+        (void)::unsetenv("CPPFM_SERVER_DIR");
+    if (!serverStarted) {
+        std::error_code cleanupError;
+        std::filesystem::remove_all(runtimeRoot, cleanupError);
+        std::printf("FATAL: server start\n");
+        return 2;
+    }
     {
         TestClient statusProbe;
         statusProbe.connect("127.0.0.1",srv.port);
@@ -1303,37 +2426,36 @@ int main(int argc, char** argv){
         CHECK(js.find("\"protocol\":769")!=std::string::npos,"status protocol 769");
         statusProbe.close();
     }
-    testWorldManagement(srv);
-    testBlockBehaviors(srv);
-    testRedstone(srv);
-    testEntities(srv);
-    testInventoryUI(srv);
-    testCommandsDatapack(srv);
-    testNetwork(srv);
-    testSurvivalCombat(srv);
-    testPlan33WorldGen(srv);
-    testPlan35AdvLootPredicate(srv);
-    testPlan36MobAI(srv);
-    testPlan36Structures(srv);
-    testPlan36NaturalSpawn(srv);
-    testPlan36Soak(srv);
-    testPlan36LootChest(srv);
-    testPlan36KillTrigger(srv);
-    testPlan37Recipes(srv);
-    testPlan37Advancement(srv);
-    testPlan37Loot(srv);
-    testPlan37Villager(srv);
-    testPlan37Enchant(srv);
-    testPlan37Weather(srv);
-    testPlan37Persist(srv);
-    testPlan38QC(srv);
-    testPlan38FunctionMacro(srv);
-    testPlan38Triggers(srv);
-    testPlan38BenchView(srv);
-    testPlan39Soak(srv);
-    testPlan40LootAdvPredicateEnchant(srv);
-    testPlan41HorseVehicle(srv);
-    CHECK(srv.stop(), "owned server process and temporary world cleaned up");
+    const char* smokeFilter = std::getenv("CPPFM_SMOKE_FILTER");
+    if (!smokeFilter && std::getenv("CPPFM_SMOKE_COMMANDS_ONLY"))
+        smokeFilter = "commands-datapack";
+    if (!smokeFilter || !*smokeFilter) {
+        testConsolePlaceFeatureFailsClosed(rconPort, rconPassword);
+        for (const auto& scenario : kSmokeScenarios)
+            scenario.run(srv);
+    } else if (std::strcmp(smokeFilter, "place-feature") == 0) {
+        testConsolePlaceFeatureFailsClosed(rconPort, rconPassword);
+        testDimensionCommandBounds(srv);
+    } else {
+        const auto selected = std::find_if(
+            std::begin(kSmokeScenarios), std::end(kSmokeScenarios),
+            [smokeFilter](const SmokeScenario& scenario) {
+                return std::strcmp(scenario.name, smokeFilter) == 0;
+            });
+        if (selected == std::end(kSmokeScenarios)) {
+            std::printf("Unknown CPPFM_SMOKE_FILTER: %s\n", smokeFilter);
+            ++g_fail;
+        } else {
+            selected->run(srv);
+        }
+    }
+    const bool serverStopped = srv.stop();
+    CHECK(serverStopped, "owned server process and temporary world cleaned up");
+    if (serverStopped) {
+        std::error_code cleanupError;
+        std::filesystem::remove_all(runtimeRoot, cleanupError);
+        CHECK(!cleanupError, "isolated smoke RCON runtime directory removed");
+    }
     std::printf("\n=== SMOKE 80: %d PASS %d FAIL ===\n", g_pass, g_fail);
     return g_fail?1:0;
 }

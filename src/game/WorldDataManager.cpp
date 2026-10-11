@@ -1,22 +1,20 @@
 #include "WorldDataManager.hpp"
 #include "World.hpp"
+#include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <limits>
 #include <optional>
+#include <stdexcept>
+#include <string>
+#include <vector>
 
 namespace cppfm {
 
 namespace {
-bool isDimensionStoragePath(const std::string& path) {
-    // Only the world-directory leaf identifies a dimension.  A perfectly
-    // valid world rooted below a parent named DIM-1 must still own level.dat.
-    const auto candidate = std::filesystem::path(path).lexically_normal();
-    const auto name = candidate.filename().string();
-    return name == "DIM-1" || name == "DIM1";
-}
-
 bool readInt32(const nbt::Value& value, std::int32_t& out) {
     if (value.tag == nbt::Int) {
         out = value.i;
@@ -40,9 +38,12 @@ bool readInt64(const nbt::Value& value, std::int64_t& out) {
         out = value.i;
         return true;
     }
+    // double(INT64_MAX) rounds up to +2^63, outside int64_t. Use an
+    // exclusive upper bound so that value cannot reach an out-of-range cast.
+    constexpr double kInt64Min = -0x1p63;
+    constexpr double kInt64MaxExclusive = 0x1p63;
     if (value.tag == nbt::Double && std::isfinite(value.d) &&
-        value.d >= static_cast<double>(std::numeric_limits<std::int64_t>::min()) &&
-        value.d <= static_cast<double>(std::numeric_limits<std::int64_t>::max())) {
+        value.d >= kInt64Min && value.d < kInt64MaxExclusive) {
         out = static_cast<std::int64_t>(value.d);
         return true;
     }
@@ -94,6 +95,13 @@ bool validLevelDataShape(const nbt::Value& data) {
             return false;
         }
     }
+    if (const auto* gameType = data.get("GameType")) {
+        std::int32_t mode = 0;
+        if (gameType->tag == nbt::Byte) mode = gameType->b;
+        else if (gameType->tag == nbt::Short) mode = gameType->s;
+        else if (!readInt32(*gameType, mode)) return false;
+        if (mode < 0 || mode > 3) return false;
+    }
 
     if (const auto* border = data.get("WorldBorder")) {
         if (border->tag != nbt::Compound) return false;
@@ -122,17 +130,57 @@ bool validLevelDataShape(const nbt::Value& data) {
     return true;
 }
 
+bool fileEntryExists(const std::string& path, std::error_code& error) {
+    const auto status = std::filesystem::symlink_status(path, error);
+    if (error == std::errc::no_such_file_or_directory) {
+        error.clear();
+        return false;
+    }
+    return !error && status.type() != std::filesystem::file_type::not_found;
+}
+
 std::string quarantineFile(const std::string& path) {
     std::error_code ec;
-    if (!std::filesystem::exists(path, ec) || ec) return {};
+    if (!fileEntryExists(path, ec) || ec) return {};
     for (std::size_t suffix = 0; suffix < 10000; ++suffix) {
         const std::string candidate = path + ".corrupt" +
             (suffix == 0 ? std::string{} : "." + std::to_string(suffix));
         ec.clear();
-        std::filesystem::rename(path, candidate, ec);
-        if (!ec) return candidate;
+        const auto outcome = storage_file_ops::moveFileWithoutReplace(
+            path, candidate, ec);
+        if (outcome == storage_file_ops::MoveWithoutReplaceStatus::Moved)
+            return candidate;
+        if (outcome == storage_file_ops::MoveWithoutReplaceStatus::
+                           MovedWithUncertainSourceRemoval) {
+            std::fprintf(stderr,
+                         "[WorldDataManager] quarantine destination %s is durable, but source unlink durability is uncertain\n",
+                         candidate.c_str());
+            return candidate;
+        }
+        if (ec == std::errc::file_exists) continue;
+        return {};
     }
     return {};
+}
+
+std::vector<std::string> quarantineUnreadableCandidates(
+    std::initializer_list<std::string> candidates, RecoveryResult& recovery) {
+    std::vector<std::string> unpreserved;
+    for (const auto& candidate : candidates) {
+        if (const auto quarantined = quarantineFile(candidate);
+            !quarantined.empty()) {
+            recovery.logLines.push_back(
+                "[recovery] quarantined " + candidate + " -> " + quarantined);
+            continue;
+        }
+        std::error_code statusError;
+        if (fileEntryExists(candidate, statusError) || statusError) {
+            recovery.logLines.push_back(
+                "[recovery] could not durably quarantine " + candidate);
+            unpreserved.push_back(candidate);
+        }
+    }
+    return unpreserved;
 }
 }
 
@@ -140,11 +188,20 @@ bool WorldDataManager::saveLevelDataWithProviders(std::int64_t worldTicks, std::
                                     const std::string& difficulty,
                                     double borderDiameter, double borderCX, double borderCZ,
                                     double borderLerpTarget, std::int64_t borderLerpMs) {
-    // W16 single level.dat: DIM dirs must not own level.dat
-    if (isDimensionStoragePath(dir_)) return false;
+    // Keep the directory and the opaque-root template in one transaction.
+    // setDirectory() takes this same lock before replacing either value.
+    std::lock_guard saveLock(fileMutex());
+    if (!ownsLevelData()) return false;
     try {
         nbt::Value root = nbt::Value::makeCompound();
         nbt::Value data = nbt::Value::makeCompound();
+        {
+            std::lock_guard lock(levelRootMtx_);
+            if (hasLoadedLevelRoot_) root = loadedLevelRoot_;
+        }
+        if (const auto* savedData = root.get("Data");
+            savedData && savedData->tag == nbt::Compound)
+            data = *savedData;
         data.set("DataVersion", nbt::Value::makeInt(kCurrentDataVersion));
         data.set("RandomSeed", nbt::Value::makeLong(
             static_cast<std::int64_t>(world.seed())));
@@ -156,8 +213,10 @@ bool WorldDataManager::saveLevelDataWithProviders(std::int64_t worldTicks, std::
         data.set("Time", nbt::Value::makeLong(worldTicks));
         data.set("DayTime", nbt::Value::makeLong(dayTime));
         data.set("LevelName", nbt::Value::makeString("CppFabricMC World"));
-        data.set("raining", nbt::Value::makeByte(0));
-        data.set("thundering", nbt::Value::makeByte(0));
+        if (!data.get("raining"))
+            data.set("raining", nbt::Value::makeByte(0));
+        if (!data.get("thundering"))
+            data.set("thundering", nbt::Value::makeByte(0));
         {
             int diffByte = 2;
             if (difficulty=="peaceful") diffByte=0;
@@ -165,10 +224,14 @@ bool WorldDataManager::saveLevelDataWithProviders(std::int64_t worldTicks, std::
             else if (difficulty=="normal") diffByte=2;
             else if (difficulty=="hard") diffByte=3;
             data.set("Difficulty", nbt::Value::makeByte((std::int8_t)diffByte));
-            data.set("DifficultyLocked", nbt::Value::makeByte(0));
+            if (!data.get("DifficultyLocked"))
+                data.set("DifficultyLocked", nbt::Value::makeByte(0));
         }
         {
             nbt::Value ver = nbt::Value::makeCompound();
+            if (const auto* savedVersion = data.get("Version");
+                savedVersion && savedVersion->tag == nbt::Compound)
+                ver = *savedVersion;
             ver.set("Name", nbt::Value::makeString("1.21.4"));
             ver.set("Id", nbt::Value::makeInt(kCurrentDataVersion));
             ver.set("Snapshot", nbt::Value::makeByte(0));
@@ -177,6 +240,9 @@ bool WorldDataManager::saveLevelDataWithProviders(std::int64_t worldTicks, std::
         }
         {
             nbt::Value wb = nbt::Value::makeCompound();
+            if (const auto* savedBorder = data.get("WorldBorder");
+                savedBorder && savedBorder->tag == nbt::Compound)
+                wb = *savedBorder;
             wb.set("CenterX", nbt::Value::makeDouble(borderCX));
             wb.set("CenterZ", nbt::Value::makeDouble(borderCZ));
             wb.set("Size", nbt::Value::makeDouble(borderDiameter));
@@ -191,12 +257,18 @@ bool WorldDataManager::saveLevelDataWithProviders(std::int64_t worldTicks, std::
             wb.set("WarningTime", nbt::Value::makeInt(15));
             data.set("WorldBorder", wb);
         }
-        data.set("WanderingTraderSpawnDelay", nbt::Value::makeInt(0));
-        data.set("WanderingTraderSpawnChance", nbt::Value::makeInt(25));
-        data.set("WanderingTraderId", nbt::Value::makeCompound());
-        data.set("WasModded", nbt::Value::makeByte(0));
-        data.set("allowCommands", nbt::Value::makeByte(1));
-        data.set("GameType", nbt::Value::makeInt(1));
+        if (!data.get("WanderingTraderSpawnDelay"))
+            data.set("WanderingTraderSpawnDelay", nbt::Value::makeInt(0));
+        if (!data.get("WanderingTraderSpawnChance"))
+            data.set("WanderingTraderSpawnChance", nbt::Value::makeInt(25));
+        if (!data.get("WanderingTraderId"))
+            data.set("WanderingTraderId", nbt::Value::makeCompound());
+        if (!data.get("WasModded"))
+            data.set("WasModded", nbt::Value::makeByte(0));
+        if (!data.get("allowCommands"))
+            data.set("allowCommands", nbt::Value::makeByte(1));
+        if (!data.get("GameType"))
+            data.set("GameType", nbt::Value::makeInt(0));
         // ForcedChunks — Yarn ForcedChunkState: only ticket FORCED set, truncate 256 (W17 strict)
         {
             nbt::Value fc = nbt::Value::makeList(nbt::Long);
@@ -215,7 +287,7 @@ bool WorldDataManager::saveLevelDataWithProviders(std::int64_t worldTicks, std::
         }
         // W16 single level.dat: DragonFight Gateways 12 intact (vanilla 1.21.4 Data.DragonFight) Yarn PrimaryLevelData
         // EnderDragonFight.Data 12 Gateways, single world/level.dat 26.1 moves to ender_dragon_fight.dat, but 1.21.4 keeps it in level.dat.
-        {
+        if (!data.get("DragonFight")) {
             nbt::Value dragon = nbt::Value::makeCompound();
             dragon.set("DragonKilled", nbt::Value::makeByte(0));
             dragon.set("PreviouslyKilled", nbt::Value::makeByte(0));
@@ -264,7 +336,13 @@ bool WorldDataManager::saveLevelDataWithProviders(std::int64_t worldTicks, std::
         }
         if (provide_) provide_(data);
         root.set("Data", data);
-        return saveLevelData(root);
+        if (!saveLevelData(root)) return false;
+        {
+            std::lock_guard rootLock(levelRootMtx_);
+            loadedLevelRoot_ = std::move(root);
+            hasLoadedLevelRoot_ = true;
+        }
+        return true;
     } catch (const std::exception& e) {
         std::fprintf(stderr, "[WorldDataManager] level data save failed: %s\n", e.what());
         return false;
@@ -278,21 +356,19 @@ bool WorldDataManager::tryLoadFile(const std::string& path, World& world, std::s
                        double& borderDiameterOut, double& borderCXOut, double& borderCZOut,
                        double* borderLerpTargetOut, std::int64_t* borderLerpMsOut) {
     std::lock_guard lock(fileMutex());
+    bool stateCommitStarted = false;
     try {
-        std::ifstream f(path, std::ios::binary);
-        if (!f) return false;
-        std::error_code sizeError;
-        const auto fileSize = std::filesystem::file_size(path, sizeError);
-        if (!sizeError && fileSize > WorldDataManager::kMaxLevelDataBytes) {
+        std::vector<std::uint8_t> bytes;
+        std::error_code readError;
+        const auto readStatus = storage_file_ops::readRegularFileBounded(
+            path, WorldDataManager::kMaxLevelDataBytes, bytes, readError);
+        if (readStatus == storage_file_ops::BoundedReadStatus::TooLarge) {
             std::fprintf(stderr, "[WorldDataManager] refusing oversized level data: %s\n",
                          path.c_str());
             return false;
         }
-        std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(f)),
-                                         std::istreambuf_iterator<char>());
-        // istreambuf_iterator reaches EOF without necessarily setting eofbit;
-        // badbit is the meaningful signal for an I/O failure here.
-        if (bytes.empty() || bytes.size() > WorldDataManager::kMaxLevelDataBytes || f.bad())
+        if (readStatus != storage_file_ops::BoundedReadStatus::Read ||
+            bytes.empty())
             return false;
         ReadBuffer in(bytes);
         nbt::Parser parser(in);
@@ -304,12 +380,31 @@ bool WorldDataManager::tryLoadFile(const std::string& path, World& world, std::s
         checkAndFixVersion(root);
         d = root.get("Data");
         if (!d || !validLevelDataShape(*d)) return false;
+        // Retain the accepted document, not just fields this implementation
+        // currently understands. Future save cycles merge live values into
+        // this template so vanilla, datapack, and mod extension NBT survives.
+        nbt::Value acceptedRoot = root;
         std::optional<std::uint64_t> loadedSeed;
         if (const auto* storedSeed = d->get("RandomSeed")) {
             std::int64_t parsedSeed = 0;
             if (!readInt64(*storedSeed, parsedSeed)) return false;
             loadedSeed = static_cast<std::uint64_t>(parsedSeed);
         }
+
+        // Decode the whole candidate into temporaries first. Recovery may try
+        // another file after this one is rejected (for example, because its
+        // seed cannot replace a world whose chunk loading has already begun).
+        // No output parameter or live World field may be changed on that path.
+        std::string candidateDifficulty = difficultyOut;
+        std::optional<World::SpawnPoint> candidateSpawn;
+        std::optional<double> candidateBorderDiameter;
+        std::optional<double> candidateBorderCX;
+        std::optional<double> candidateBorderCZ;
+        std::optional<double> candidateBorderLerpTarget;
+        std::optional<std::int64_t> candidateBorderLerpMs;
+        std::vector<std::pair<std::int32_t, std::int32_t>> candidateForcedChunks;
+        bool hasCandidateForcedChunks = false;
+
         const auto* sx = d->get("SpawnX");
         const auto* sy = d->get("SpawnY");
         const auto* sz = d->get("SpawnZ");
@@ -324,33 +419,35 @@ bool WorldDataManager::tryLoadFile(const std::string& path, World& world, std::s
                 if (!readDouble(*a, parsedAngle)) return false;
                 angle = static_cast<float>(parsedAngle);
             }
-            world.setSpawnPoint({spawnX, spawnY, spawnZ, angle});
+            candidateSpawn = World::SpawnPoint{spawnX, spawnY, spawnZ, angle};
         }
         if (const auto* diff = d->get("Difficulty")) {
             if (diff->tag == nbt::Byte) {
                 int v = diff->b;
-                if (v==0) difficultyOut="peaceful";
-                else if (v==1) difficultyOut="easy";
-                else if (v==2) difficultyOut="normal";
-                else if (v==3) difficultyOut="hard";
-            } else if (diff->tag == nbt::String) difficultyOut = diff->str;
+                if (v == 0) candidateDifficulty = "peaceful";
+                else if (v == 1) candidateDifficulty = "easy";
+                else if (v == 2) candidateDifficulty = "normal";
+                else if (v == 3) candidateDifficulty = "hard";
+            } else if (diff->tag == nbt::String) {
+                candidateDifficulty = diff->str;
+            }
         }
         if (const auto* wb = d->get("WorldBorder")) {
             double parsed = 0;
             if (auto* cx = wb->get("CenterX")) {
                 if (!readDouble(*cx, parsed)) return false;
-                borderCXOut = parsed;
+                candidateBorderCX = parsed;
             }
             if (auto* cz = wb->get("CenterZ")) {
                 if (!readDouble(*cz, parsed)) return false;
-                borderCZOut = parsed;
+                candidateBorderCZ = parsed;
             }
             if (auto* borderSize = wb->get("Size")) {
                 if (!readDouble(*borderSize, parsed)) return false;
-                borderDiameterOut = parsed;
+                candidateBorderDiameter = parsed;
             }
             if (borderLerpTargetOut || borderLerpMsOut) {
-                double tgt = borderDiameterOut;
+                double tgt = candidateBorderDiameter.value_or(borderDiameterOut);
                 std::int64_t ms = 0;
                 if (auto* lt = wb->get("SizeLerpTarget")) {
                     if (!readDouble(*lt, tgt)) return false;
@@ -358,21 +455,20 @@ bool WorldDataManager::tryLoadFile(const std::string& path, World& world, std::s
                 if (auto* lm = wb->get("SizeLerpTime")) {
                     if (!readInt64(*lm, ms)) return false;
                 }
-                if (borderLerpTargetOut) *borderLerpTargetOut = tgt;
-                if (borderLerpMsOut) *borderLerpMsOut = ms;
+                if (borderLerpTargetOut) candidateBorderLerpTarget = tgt;
+                if (borderLerpMsOut) candidateBorderLerpMs = ms;
             }
-        }
-        if (const auto* ds = d->get("Difficulty")) {
-            if (ds->tag==nbt::String) difficultyOut = ds->str;
         }
         // ForcedChunks — Yarn ForcedChunkState: restore LongSet with 256 cap and sign-correct ChunkPos.toLong
         if (const auto* fc = d->get("ForcedChunks")) {
-            world.clearForcedChunks();
+            hasCandidateForcedChunks = true;
             if (fc->list.size() > constants::kMaxForcedChunks) {
                 std::fprintf(stderr, "[WorldDataManager] load ForcedChunks %zu >%d, truncating to %d\n", fc->list.size(), constants::kMaxForcedChunks, constants::kMaxForcedChunks);
             }
             size_t count = 0;
-            for (auto &v : fc->list) {
+            candidateForcedChunks.reserve(
+                std::min<std::size_t>(fc->list.size(), constants::kMaxForcedChunks));
+            for (const auto& v : fc->list) {
                 if (count >= constants::kMaxForcedChunks) break;
                 std::int64_t key = 0;
                 if (v.tag == nbt::Long) key = v.l;
@@ -381,28 +477,73 @@ bool WorldDataManager::tryLoadFile(const std::string& path, World& world, std::s
                 // ChunkPos.toLong: (long)x<<32 | (z & 0xffffffffL) — sign-extend via uint32_t cast already
                 std::int32_t cx = static_cast<std::int32_t>(key >> 32);
                 std::int32_t cz = static_cast<std::int32_t>(key & 0xFFFFFFFFLL);
-                world.restoreForcedChunk(cx, cz);
+                candidateForcedChunks.emplace_back(cx, cz);
                 ++count;
             }
         }
-        // Apply the seed only after every persisted field above has validated.
-        // A corrupt later field must not make a rejected file control fresh-world
-        // terrain generation on the recovery path.
-        if (loadedSeed && !world.setSeed(*loadedSeed)) {
-            std::fprintf(stderr,
-                         "[WorldDataManager] refusing seed replacement after chunk generation\n");
-            return false;
+
+        // setSeed() is the only remaining candidate rejection point that can
+        // depend on live World state. It is deliberately checked before any
+        // other candidate value is committed, so recovery can safely continue
+        // to level.dat.new or level.dat_old without leaking rejected metadata.
+        if (loadedSeed) {
+            // setSeed may allocate/rebuild world-generation state, so an
+            // exception from it must also abort startup rather than trigger
+            // fallback after a potentially partial mutation.
+            stateCommitStarted = true;
+            if (!world.setSeed(*loadedSeed)) {
+                // World::setSeed returns false only before touching terrain or
+                // worldgen state, so this is a safe candidate rejection.
+                stateCommitStarted = false;
+                std::fprintf(stderr,
+                             "[WorldDataManager] refusing seed replacement after chunk generation\n");
+                return false;
+            }
         }
+
+        // From here onward an exception is not a corrupt-candidate result:
+        // state may already be partly committed, and trying another file
+        // would combine two saves. Let startup fail closed instead.
+        stateCommitStarted = true;
+        if (candidateSpawn) world.setSpawnPoint(*candidateSpawn);
+        difficultyOut.swap(candidateDifficulty);
+        if (candidateBorderDiameter) borderDiameterOut = *candidateBorderDiameter;
+        if (candidateBorderCX) borderCXOut = *candidateBorderCX;
+        if (candidateBorderCZ) borderCZOut = *candidateBorderCZ;
+        if (borderLerpTargetOut && candidateBorderLerpTarget)
+            *borderLerpTargetOut = *candidateBorderLerpTarget;
+        if (borderLerpMsOut && candidateBorderLerpMs)
+            *borderLerpMsOut = *candidateBorderLerpMs;
+        if (hasCandidateForcedChunks) {
+            world.clearForcedChunks();
+            for (const auto& [cx, cz] : candidateForcedChunks)
+                world.restoreForcedChunk(cx, cz);
+        }
+
         if (consume_) consume_(*d);
-        if (const auto* ds2 = d->get("Difficulty")) {
-            if (ds2->tag==nbt::String) difficultyOut = ds2->str;
+        {
+            std::lock_guard rootLock(levelRootMtx_);
+            loadedLevelRoot_ = std::move(acceptedRoot);
+            hasLoadedLevelRoot_ = true;
         }
         return true;
     } catch (const std::exception& e) {
+        if (stateCommitStarted) {
+            std::fprintf(stderr,
+                         "[WorldDataManager] accepted level data could not be applied (%s): %s\n",
+                         path.c_str(), e.what());
+            throw;
+        }
         std::fprintf(stderr, "[WorldDataManager] level data load failed (%s): %s\n",
                      path.c_str(), e.what());
         return false;
     } catch (...) {
+        if (stateCommitStarted) {
+            std::fprintf(stderr,
+                         "[WorldDataManager] accepted level data could not be applied (%s)\n",
+                         path.c_str());
+            throw;
+        }
         std::fprintf(stderr, "[WorldDataManager] level data load failed (%s)\n", path.c_str());
         return false;
     }
@@ -414,7 +555,7 @@ bool WorldDataManager::loadWithRecovery(World& world, std::string& difficultyOut
                           RecoveryResult& out) {
     std::lock_guard lock(fileMutex());
     out = RecoveryResult{};
-    if (isDimensionStoragePath(dir_)) {
+    if (!ownsLevelData()) {
         out.logLines.emplace_back(
             "[recovery] dimension storage has no level.dat; using shared world metadata");
         lastRecovery_ = out;
@@ -456,25 +597,37 @@ bool WorldDataManager::loadWithRecovery(World& world, std::string& difficultyOut
             out.logLines.emplace_back(line);
         } else {
             std::error_code existsError;
-            const bool datExists = std::filesystem::exists(dat, existsError) && !existsError;
-            if (!datExists) {
+            const bool datExists = fileEntryExists(dat, existsError);
+            if (existsError || datExists) {
+                // The in-memory world already came from the complete .new
+                // candidate. Keep that candidate and the primary untouched
+                // when the failed primary cannot be quarantined.
+                std::snprintf(line, sizeof(line),
+                              "[recovery] retained level.dat.new; primary quarantine failed%s",
+                              existsError ? " while checking level.dat" : "");
+                out.logLines.emplace_back(line);
                 lastRecovery_ = out;
                 return true;
             }
             std::snprintf(line, sizeof(line),
-                          "[recovery] could not quarantine level.dat");
+                          "[recovery] level.dat disappeared before quarantine");
             out.logLines.emplace_back(line);
         }
         std::error_code promoteError;
-        if (persistence_detail::replaceFile(datNew, dat, promoteError) &&
-            persistence_detail::syncDirectory(std::filesystem::path(dir_))) {
+        if (!persistence_detail::replaceFile(datNew, dat, promoteError)) {
             std::snprintf(line, sizeof(line),
-                          "[recovery] promoted level.dat.new -> level.dat");
+                          "[recovery] could not promote level.dat.new: %s",
+                          promoteError.message().c_str());
+            out.logLines.emplace_back(line);
+        } else if (!persistence_detail::syncDirectory(
+                       std::filesystem::path(dir_))) {
+            out.durabilityUncertain = true;
+            std::snprintf(line, sizeof(line),
+                          "[recovery] promoted level.dat.new, but directory durability is uncertain");
             out.logLines.emplace_back(line);
         } else {
             std::snprintf(line, sizeof(line),
-                          "[recovery] could not promote level.dat.new: %s",
-                          promoteError ? promoteError.message().c_str() : "directory sync failed");
+                          "[recovery] promoted level.dat.new -> level.dat");
             out.logLines.emplace_back(line);
         }
         lastRecovery_ = out;
@@ -491,28 +644,46 @@ bool WorldDataManager::loadWithRecovery(World& world, std::string& difficultyOut
         std::snprintf(line, sizeof(line), "[recovery] level source=%s ok=1 (dat quarantined below)",
                       levelSourceName(out.src));
         out.logLines.emplace_back(line);
-        // Preserve every failed candidate for forensics.  If a previous
-        // incident already produced .corrupt, quarantineFile chooses a
-        // numbered suffix instead of overwriting evidence.
-        for (const auto& failed : {dat, datNew}) {
-            if (const auto quarantined = quarantineFile(failed); !quarantined.empty()) {
-                std::snprintf(line, sizeof(line),
-                              "[recovery] quarantined %s -> %s",
-                              failed.c_str(), quarantined.c_str());
-                out.logLines.emplace_back(line);
-            }
+        // Preserve every failed candidate before a later save can rotate the
+        // known-good level.dat_old over it. Never continue if a failed source
+        // remains active and could replace that rollback copy.
+        const auto unpreserved = quarantineUnreadableCandidates(
+            {dat, datNew}, out);
+        if (!unpreserved.empty()) {
+            std::string message =
+                "[recovery] refusing to continue from level.dat_old; could not preserve unreadable candidate(s):";
+            for (const auto& candidate : unpreserved)
+                message += " " + candidate;
+            lastRecovery_ = out;
+            std::fprintf(stderr, "%s\n", message.c_str());
+            throw std::runtime_error(message);
         }
         lastRecovery_ = out;
         return true;
     }
     std::snprintf(line, sizeof(line),
-                  "[recovery] level.dat, level.dat.new and level.dat_old unreadable, generating fresh");
+                  "[recovery] all level data candidates are unreadable; preserving before fresh fallback");
     out.logLines.emplace_back(line);
-    std::fprintf(stderr, "[cppfm] level.dat, .new and _old unreadable, generating fresh\n");
-    for (const auto& failed : {dat, datNew, old})
-        (void)quarantineFile(failed);
+    std::fprintf(stderr,
+                 "[cppfm] level.dat, .new and _old unreadable; preserving candidates before fallback\n");
     out.src = LevelSource::Fresh;
     out.ok = false; // caller generates a fresh world
+    const auto unpreservedCandidates = quarantineUnreadableCandidates(
+        {dat, datNew, old}, out);
+    if (!unpreservedCandidates.empty()) {
+        std::string message =
+            "[recovery] refusing fresh-world fallback; could not preserve unreadable candidate(s):";
+        for (const auto& candidate : unpreservedCandidates) {
+            message += " " + candidate;
+        }
+        lastRecovery_ = out;
+        std::fprintf(stderr, "%s\n", message.c_str());
+        throw std::runtime_error(message);
+    }
+    out.logLines.emplace_back(
+        "[recovery] no valid level data candidate remains; generating fresh");
+    std::fprintf(stderr,
+                 "[cppfm] no valid level data candidate remains, generating fresh\n");
     lastRecovery_ = out;
     return false;
 }

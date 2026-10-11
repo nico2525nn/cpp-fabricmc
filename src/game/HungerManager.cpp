@@ -1,5 +1,6 @@
 #include "HungerManager.hpp"
 #include "GameServer.hpp"
+#include "DamageSource.hpp"
 #include "Items.hpp"
 #include "../generated/ItemIds.hpp"
 #include "../generated/BlockStates.hpp"
@@ -14,45 +15,6 @@ void HungerManager::addExhaustion(Player& p, float amount) {
     p.exhaustion += amount;
 }
 
-void HungerManager::addFoodAndSaturation(Player& p, int food, float sat) {
-    p.food = std::clamp(p.food + food, 0, 20);
-    p.saturation = std::clamp(p.saturation + sat, 0.f, static_cast<float>(p.food));
-    if (p.saturation > static_cast<float>(p.food)) p.saturation = static_cast<float>(p.food);
-}
-
-
-void HungerManager::handleFoodConsume(Player& p, const std::string& itemName, GameServer& srv) {
-    auto it = foodTable().find(itemName);
-    if (it != foodTable().end()) {
-        addFoodAndSaturation(p, it->second.food, it->second.saturation);
-        if (itemName.find("stew") != std::string::npos || itemName.find("soup") != std::string::npos) {
-            auto pit = gen::itemIdByName().find("minecraft:bowl");
-            if (pit != gen::itemIdByName().end()) {
-                srv.addToInventory(p, pit->second, 1);
-                srv.resendInventory(p);
-            }
-        }
-        if (itemName == "minecraft:honey_bottle") {
-            auto pit = gen::itemIdByName().find("minecraft:glass_bottle");
-            if (pit != gen::itemIdByName().end()) {
-                srv.addToInventory(p, pit->second, 1);
-                srv.resendInventory(p);
-            }
-        }
-        srv.sendSetHealth(p);
-        return;
-    }
-    if (itemName.find("stew") != std::string::npos || itemName.find("soup") != std::string::npos) {
-        addFoodAndSaturation(p, 6, 7.2f);
-        auto pit = gen::itemIdByName().find("minecraft:bowl");
-        if (pit != gen::itemIdByName().end()) { srv.addToInventory(p, pit->second, 1); srv.resendInventory(p); }
-        srv.sendSetHealth(p);
-    } else if (itemName.find("cake") != std::string::npos) {
-        addFoodAndSaturation(p, 2, 0.4f);
-        srv.sendSetHealth(p);
-    }
-}
-
 bool HungerManager::handleCakeBlockConsume(GameServer& srv, Player& p, std::int32_t x, std::int32_t y, std::int32_t z) {
     World& w = srv.worldFor(p.dimension);
     uint16_t st = w.getBlock(x, y, z);
@@ -61,7 +23,9 @@ bool HungerManager::handleCakeBlockConsume(GameServer& srv, Player& p, std::int3
     if (p.food >= 20) return false;
     int bites = 0;
     for (auto& kv : gen::propsOf(st)) if (kv.first == "bites") bites = std::stoi(std::string(kv.second));
-    handleFoodConsume(p, "minecraft:cake", srv);
+    // Cake is eaten from the placed block, not by consuming its inventory
+    // item. Keep this block-only rule separate from FoodComponent items.
+    addFoodAndSaturation(p, 2, 0.4f);
     addExhaustion(p, EXHAUST_EAT);
     if (bites >= 6) {
         w.setBlock(x, y, z, 0);
@@ -120,9 +84,7 @@ void HungerManager::tickRegenAndStarve(Player& p, int64_t tickNo, GameServer& sr
         if (p.foodTickTimer >= SLOW_HEALING_INTERVAL) {
             bool canStarve = canStarveForDifficulty(diff, p.health);
             if (canStarve) {
-                p.health = std::max(0.f, p.health - 1.f);
-                srv.sendSetHealth(p);
-                if (p.health <= 0.f) srv.killPlayer(p, "starve");
+                srv.applyDamage(p, 1.0F, DamageSource::starve());
             }
             p.foodTickTimer = 0;
         }
